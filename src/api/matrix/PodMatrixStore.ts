@@ -276,9 +276,12 @@ export class PodMatrixStore {
   public async sendEvent(roomId: string, eventType: string, txnId: string, content: MatrixSendEventRequest,
     context: MatrixStoreContext): Promise<MatrixEventRecord> {
     const db = await this.getDb(context);
-    await this.requireJoined(db, roomId, context);
+    // Membership and grant checks share one timeline read; each extra read is a
+    // full Pod document fetch with its own authorization cost.
+    const events = await this.listEvents(db, roomId, context);
+    await this.requireJoined(db, roomId, context, events);
     if (eventType !== 'm.room.message') throw new MatrixError(400, 'M_UNRECOGNIZED', 'Only m.room.message timeline events are supported');
-    await this.authorizeTargets(db, roomId, content, context);
+    await this.authorizeTargets(db, roomId, content, context, events);
     const reservation = await this.journal.reserveTransaction(this.scope(context),
       JSON.stringify([this.deviceId(context), roomId, eventType, txnId]), {
         eventId: this.generateEventId(context), createdAt: Date.now(), contentHash: this.hash(this.canonicalJson(['user',context.webId,eventType,content])),
