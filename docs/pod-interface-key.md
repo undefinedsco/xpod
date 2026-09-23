@@ -118,7 +118,8 @@ rebuild、定时任务、关闭浏览器后继续执行的 Chat/agent，由用�
 - Runtime 验证 CSS credential 对应的用户 WebID，按 §1.1 分开保存用户凭证、Agent 授权和任务绑定；固定目标 Pod/API/CSS，校验 owner 一致。
   三者都写成**用户 Pod 内的资源**（任务注册用 `taskResource`，凭证信封用 `task-auth` 凭证资源，与现有 `TaskRecordData` / `TaskAuthBinding` 一致）；
   这把"存哪"落在 Pod，"用什么打开"落在部署侧解锁材料（第 9 节决策 5）——两者不可互相替代。
-- 用户 CSS credential 以信封形式存于用户 Pod（`task-auth` 凭证资源）；任务与 Inngest event 只带引用和版本，由可信 resolver 核对绑定后用部署侧解锁材料恢复，不把 secret 当 step 返回值。不新增 API 通用 vault，不把应用事实写进 Inngest 私有表（理由见第 7.3 节）。
+- 用户 CSS credential 以信封形式存于用户 Pod（`task-auth` 凭证资源）；任务与 Inngest event 只带引用和版本，由可信 resolver 核对绑定后恢复，不把 secret 当 step 返回值、不放进事件载荷。
+- **Runtime 侧另有一份"运行态钥匙"**：后台执行必须先能打开用户 Pod，而这份材料不能放在被打开的那个 Pod 里（自锁），也不能放进 Inngest 的事件/step 数据（见第 7.3 节）。它存在**任务层自己的表**里（`identity_task_credential` 草案见第 7.4 节），由任务层读写；Inngest 只通过引用与版本指向它。
 - 恢复不能先要求读取 Pod 内的同一凭证，也不能依赖旧内存 registry。周期调度需要持久任务注册，不能仅靠 event 或内存 context 发现任务。
 - 开始/恢复任务以及每次工具操作前，检查当前 Agent policy、task binding 和 credential 状态/版本/期限；执行中变更按 §4 撤销契约生效。旧事件不携带可覆盖当前授权的权限快照，不回退旧 context。
 - tasks/ingest 使用受控 embeddings 工具；工具的可信适配器携带用户 CSS sk 调 `/v1/embeddings`。任务业务逻辑只取得向量等非秘密结果，不接收 sk 或 Provider secret。源数据读写走单独受控文件工具。
@@ -246,7 +247,7 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | 3 | `POST /api/ai/gateway/keys` 改为请求级 Pod fetch，不再持久化部署 owner 密钥（§4） | 登记成功、Pod 记录写入成功、`identity_pod_interface_key` 不再新增；旧记录仍可读 | 保留（迁移期只读） |
 | 4 | Runtime 侧凭证存储 + Agent 授权 + 任务绑定（pending/active、幂等投递、崩溃恢复，§4） | 授权状态行 + 任务执行行：pending 不执行、失败不留 active、重试/并发/轮换/撤销符合版本语义 | 保留 |
 | 5 | 后台入口逐个迁移：配额定时刷新、索引重建、chatkit 后台 run、Matrix/Reconciler（§3.3、7.2） | 每迁一个：该入口在无 API vault 的情况下完成一次真实执行；对应 legacy 调用点在同一提交内摘除 | 逐步缩小 |
-| 6 | 删除 `storedKeyFetch` 通用回退与旧表数据 | 旁路退场行 + 全量 §8 通过；旧数据按"可恢复迁移 → 清理验证"处理，不直接删 | 移除 |
+| 6 | 移除 `storedKeyFetch` 通用回退；把 `identity_pod_interface_key` 迁移为任务层的运行态钥匙表（§7.4，含版本/状态列）而非直接删除 | 旁路退场行 + 全量 §8 通过；旧数据按"可恢复迁移 → 清理验证"处理 | 改造后 API 侧不再使用它，只有任务层显式引用 |
 
 约束：第 2、3 步完成前不得删除 legacy；第 5 步每个入口必须"先有替代验收、再摘调用点"；第 6 步前 `pod_interface_key_*` 诊断码仍需保留，因为迁移期它们仍是有效状态。
 
@@ -273,6 +274,8 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
     但它的表是 **Inngest server 的私有 schema**（event/run/step/queue 运行状态），会随 Inngest 版本演进——把授权/绑定语义写进去等于绑死在别人的内部结构上；
   - step 输出与事件载荷会出现在 Inngest 的 UI/调试面，正是 §3.3/§5 禁止秘密进入的地方；
   - Inngest 自己持有的 key 是**传输/认证**用的（`INNGEST_EVENT_KEY`、`INNGEST_SIGNING_KEY`），它不提供应用秘密保管语义：官方模型就是"应用自己保管秘密，Inngest 只传引用"。
+- **"存 Inngest"落到基础设施上是什么**：cloud 模式下 Inngest server 用的就是我们交给它的那个 Postgres（`INNGEST_POSTGRES_URI = databaseUrl`）+ Redis；local 模式是 `<root>/.inngest` 下的 SQLite 目录。因此"密钥存 Inngest 侧"的可执行含义是：**存进任务层自己拥有的表**，与 Inngest server 管理的表并列在同一套基础设施里，双方都不读写对方的内部结构。运行态钥匙的表结构草案见第 7.4 节。
+- **明确不做**：把 secret 放进 Inngest 的 event payload、`step.run` 返回值或 function state。这些是会被 Inngest 持久化并在其 UI/dev-server 调试面暴露的运行数据，且结构随 Inngest 版本演进；载荷里只允许出现引用（`credentialRef`、`credentialVersion`、`ownerWebId` 这类非秘密值）。
 - **可靠性取舍**：Pod 内状态流与 Inngest 投递之间没有跨系统事务，因此 §4 的幂等 `executionKey`、pending→active 状态机与崩溃恢复必须建立在"Pod 为权威、Inngest 可重放"之上：先写 Pod 的 pending，再投递；恢复时以 Pod 状态为准补投或终止。
 
 - [ ] 收敛 token exchange/session factory；修复直接 Bearer 的来源限制、DPoP key 生命周期及缓存隔离。
@@ -286,6 +289,23 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 - [ ] 逐一迁移当前使用 owner vault 的配额刷新、模型选择、重建及遗留 Key 校验入口，区分前台操作与后台授权。
 - [ ] 替代功能通过后移除 `storedKeyFetch` 通用回退，处理旧 `identity_pod_interface_key` 数据及缓存；不得直接删除旧数据造成不可恢复任务。
 - [ ] 更新 caller-owned、产品规范、错误映射、旧测试和 smoke 脚本，移除“普通交互注册前不可用才正确”的假设。
+
+### 7.4 运行态钥匙的表草案（任务层自有表）
+
+后台执行路径：`Inngest event(credentialRef, credentialVersion, taskId)` → resolver 读本表 → 开封 → 打开用户 Pod 读任务事实（Pod 为权威）→ 执行。
+
+| 列 | 说明 |
+| --- | --- |
+| `owner_web_id` | 该钥匙代表的用户 WebID；与任务事实里的 owner 必须一致 |
+| `issuer` | 签发该 credential 的 CSS issuer；换 issuer 不覆盖旧行，避免同名串用 |
+| `credential_id` | 稳定引用 id，任务绑定只引用它，不引用明文 |
+| `client_id` | CSS client id（非秘密） |
+| `sealed_secret` | 信封；**是否再加密见决策 6** |
+| `credential_version` | 轮换版本；绑定记录引用版本，版本不匹配即拒绝（§4） |
+| `status` | `active` / `revoked` / `expired`；撤销只改状态，不删行 |
+| `created_at` / `rotated_at` / `last_used_at` / `expires_at` | 轮换与审计 |
+
+约束：表在 Pod 之外，因此它的访问控制就是"能开多少个 Pod"的边界——这一条决定了它是否需要独立加密（决策 6）；`Agent` 授权范围**不放这张表**，按决策 2 写在用户 Pod 里。
 
 ## 8. 验收要求与证据
 
@@ -319,6 +339,7 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | 2 | Agent 授权对象的存储位置 | **已定：写在用户 Pod 内**（与任务注册同资源族）；目前 `src/agents/` 无 policy/scope 持久化 | 按 `taskResource` 的资源模式新增授权记录，不新建平行 registry |
 | 3 | 任务权威存储 | **已定：Pod 资源为权威，Inngest 只承载引用与运行状态**（理由见 §7.3） | pending/active 与版本字段加在 Pod 任务资源上；Inngest 侧靠幂等 `executionKey` 重放 |
 | 4 | `caller_pod_access_unavailable` 是否拆分 | 一个 reason 承载"未认证"与"已认证但无出站能力" | 拆出 `caller_outbound_capability_missing`，兼容期保留旧码 + `details.capability` |
-| 5 | **Runtime 打开 Pod 的解锁材料放哪**（Pod 之外，唯一未定项） | 任务凭证信封在 Pod 内，后台执行必须先能打开该 Pod；把解锁材料也放同一个 Pod 会自锁 | 三选一：(a) 部署级解锁材料（环境/KMS，配置一次）解封 Pod 内信封——最贴近"不新增 API 服务身份"；(b) 任务容器在 Pod 侧授权给一个服务身份，Runtime 持该身份凭据——Pod 侧可审计、可撤销，机制已存在（`ensureAgentAccess` + ACP）；(c) 每任务一次性 sk 由调用方代入并随绑定保存——重启后仍需 (a) 或 (b) 才能在 Pod 外恢复。**建议 (b)**，因为它把"Runtime 能碰哪些容器"落在 Pod 的授权判断里，而不是落在部署密钥的分发上 |
+| 5 | Runtime 打开 Pod 的运行态钥匙放哪 | **已定：放任务层自己的表**（`identity_task_credential` 草案见 §7.4），与 Inngest server 的表并列在同一套基础设施（cloud 同 Postgres、local 同 SQLite 目录），Inngest 只带引用与版本。密钥不进 Pod（自锁）、不进事件/step 数据（会进调试面） | 表结构按 §7.4 落库；`Agent` 授权仍写用户 Pod（决策 2）。**注意**：这把钥匙是 Pod 之外唯一能开 Pod 的东西，因此表访问控制即权限边界——见决策 6 |
+| 6 | §7.4 的 `sealed_secret` 是否再用部署密钥加密 | 按决策 1，Pod 内数据不再加密；但本表在 Pod 之外，DB 泄露即等于"可打开所有已登记的 Pod" | (a) 不加密：实现最简，靠 DB 凭据与网络隔离，风险写进威胁模型；(b) 用部署侧密钥（env/KMS）加密该列：多一个部署配置项，但把"读到表"与"能开 Pod"分开。**建议 (b)**，且只加密这一列 |
 
 本次为文档修订，未修改运行代码、未执行运行验收。
