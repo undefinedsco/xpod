@@ -3,10 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AccessRoute, P2PSession, P2PTransportCandidate, RawTcpP2PConnectAttempt, RouteSet } from '../../../src/edge/reachability';
 import {
   attachTcpP2PDataPlaneSocket,
+  createDataPlaneSecret,
   createP2PDataPlaneHandler,
   createRawTcpHolePunchCandidates,
   runManagedClientP2PSmoke,
 } from '../../../src/edge/reachability';
+
+// Shared by both ends because the node side is attached by hand here (audit N03).
+const DATA_PLANE_SECRET = createDataPlaneSecret();
 
 const p2pRoute: AccessRoute = {
   id: 'p2p-raw-tcp',
@@ -76,7 +80,11 @@ describe('runManagedClientP2PSmoke', () => {
       fetchImpl: localFetch as typeof fetch,
     });
     const { clientSocket, serverSocket, close } = await createSocketPair();
-    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+    const socketHandle = attachTcpP2PDataPlaneSocket({
+      socket: serverSocket,
+      handler,
+      secure: { role: 'server', sessionId: 'p2p_smoke', secret: DATA_PLANE_SECRET },
+    });
     const clientPort = await reserveTcpPort();
     const nodePort = await reserveTcpPort();
     const plan = {
@@ -113,6 +121,7 @@ describe('runManagedClientP2PSmoke', () => {
 
     try {
       const result = await runManagedClientP2PSmoke({
+        dataPlaneSecret: DATA_PLANE_SECRET,
         apiBaseUrl: 'https://api.example/',
         nodeId: 'node-1',
         token: 'service-token',

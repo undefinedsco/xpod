@@ -7,6 +7,7 @@ import { buildRouteSet } from '../../edge/reachability/RouteSetBuilder';
 import {
   InvalidRelaySessionRequestError,
   NodeRouteSourceNotFoundError,
+  InvalidP2PSessionRequestError,
   P2PActiveSessionLimitExceededError,
   P2PCandidateSessionLimitExceededError,
   P2PCandidateUpdateLimitExceededError,
@@ -100,6 +101,7 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
             Array.isArray(body.candidates) ? body.candidates : [],
             resolveObservedAddress(request),
           ),
+          ...(typeof body.dataPlaneSecret === 'string' ? { dataPlaneSecret: body.dataPlaneSecret } : {}),
         });
         sendJson(response, 201, session);
       } catch (error) {
@@ -109,6 +111,10 @@ export function registerReachabilityRoutes(server: ApiServer, options: Reachabil
         }
         if (error instanceof P2PActiveSessionLimitExceededError) {
           sendJson(response, 429, { error: 'P2P active session limit exceeded' });
+          return;
+        }
+        if (error instanceof InvalidP2PSessionRequestError) {
+          sendJson(response, 400, { error: error.message });
           return;
         }
         if (error instanceof P2PCandidateUpdateLimitExceededError) {

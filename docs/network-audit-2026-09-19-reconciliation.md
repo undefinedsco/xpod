@@ -9,9 +9,9 @@
 
 | 判定 | 数量 | 项 |
 | --- | --- | --- |
-| 已修复 | 3 | N06、N07、N17（见第 9 节；对账时为"仍存在"） |
+| 已修复 | 4 | N03、N06、N07、N17（W2 四项全部落地，见第 9 节；对账时为"仍存在"） |
 | 部分缓解 | 3 | N01（仅读接口直连面）、N09（仅 UI 层）、N12（仅 admin public-ip） |
-| 仍存在 | 13 | N02、N03、N04、N05、N08、N10、N11、N13、N14、N15、N16、N18、N19 |
+| 仍存在 | 12 | N02、N04、N05、N08、N10、N11、N13、N14、N15、N16、N18、N19 |
 | 仍存在（对账后新增） | 1 | N20（真实验收发现，见 4.4；修复见第 8 节） |
 
 结论：**W0（Gateway/API 授权与 Cloud 节点边界）仍是唯一正确的起手点**，报告的可信度经复核成立；同时工作区未提交改动引入了 3 个新的连带事实（第 4 节），其中 1 个是功能性回归风险，需在提交前处理。N20 不在报告范围内，是 W1 真实验收过程中在实际运行实例上观察到的生命周期缺陷，按同一口径补记。
@@ -66,7 +66,7 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 | --- | --- | --- | --- | --- |
 | N01 远端通道被误判为本机管理员 | P0 | **部分缓解** | 判定链未变：`src/runtime/Proxy.ts:249` `isLoopbackRemoteAddress(originalRemoteAddress)` → `:348/:417` 打内部标记 → `src/api/handlers/AdminHandler.ts:202` `peerLoopback && proxyMarker.valid && proxyMarker.originalClientLoopback`。新增 `assertAdminReadAllowed` 把**同一判定**复用到管理读接口，隧道/回环中继场景无任何变化 | `tests/gateway/admin-proxy-auth.test.ts` 已更新为对**直连**远端断言 403；**无隧道/中继来源用例**，即 N01 的真实场景仍无负向回归 |
 | N02 心跳可影响其他节点 DNS | P0 | **仍存在** | `src/api/handlers/EdgeNodeSignalHandler.ts:59/135`（metadata 整块 `Object.assign` 合并、DB 绑定仅在缺省时回填）与 `src/edge/EdgeNodeDnsCoordinator.ts:40`（信任 `metadata.subdomain`）两文件与基线逐字一致 | `tests/edge/EdgeNodeDnsCoordinator.test.ts` 只有单节点正例（ipv4/legacy hints/unreachable delete 等），**无 A→B 跨节点负例** |
-| N03 raw TCP P2P 无认证加密 | P1 | **仍存在** | `src/edge/reachability/TcpP2PDataPlaneTransport.ts` 全文 `tls/crypto/auth/hmac/handshake` **零命中**；`src/cli/commands/start.ts:238` 在 managed edge 下硬编码 `p2p.enabled = true`，即注册到 Cloud 的节点默认启用该数据面 | `tests/edge/reachability/TcpP2PDataPlaneTransport.test.ts` 只覆盖现有（无加密）行为 |
+| N03 raw TCP P2P 无认证加密 | P1 | **已修复（见第 9 节）** | 对账时：`TcpP2PDataPlaneTransport.ts` 全文 `tls/crypto/auth/hmac/handshake` 零命中。现：每会话密钥经认证信令下发，AES-256-GCM 逐帧封装 + 方向分离密钥 + 严格序列号（防重放）+ 握手 nonce 重放守卫；未带密钥的 raw TCP 会话在创建时即被拒（fail closed） | `tests/edge/reachability/P2PDataPlaneSecurity.test.ts` 11 例（含抓包证明明文不出网）；把封装临时关掉后 **3/11 失败** |
 | N04 建会话不校验节点访问权 | P1 | **仍存在** | `src/api/handlers/ReachabilityHandler.ts:285` 起：solid/service principal 一律 `allowed: true`，无节点归属与 scope 校验 | 报告已指出的"session owner 只证明创建者"未变 |
 | N05 Cloud 健康探测缺网络边界 | P1 | **仍存在** | `src/edge/EdgeNodeHealthProbeService.ts:79-94` `collectCandidates` 只做字符串/去空判断就接受节点上报的 `directCandidates`/tunnel entrypoint/`baseUrl`，全文件无 `169.254`/loopback/link-local/redirect/DNS 重解析守卫（精确 grep 零命中）；`src/api/container/cloud.ts:137` 默认注册探测服务 | `tests/edge/EdgeNodeHealthProbeService.test.ts` **只有 1 个正例**（多位置探测并写样本） |
 | N06 选路不校验设备/有效期/身份 | P1 | **已修复（见第 9 节）** | 对账时：`src/edge/reachability/ManagedClientFetch.ts:105` `candidateRoutes` 只按 `health`+`priority` 过滤；`:137` 探测判定为 `response.status < 500`（404 视为通过）。现：过期/不可解析 expiresAt/`local-only` 路由在任何探测之前就被拒，探测答案必须带 Solid 身份证据 | `tests/edge/reachability/ManagedClientFetch.test.ts` 增 6 条负例；对旧代码复跑 6/6 失败 |
@@ -221,3 +221,27 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 - 上限是**每连接**而非全局：多个连接可以各自占满 16 个在途请求；也没有字节/秒级限速（速率限制属 N17 之外的新范围）。
 - 流式是**增量扩展**而非协商：新客户端 + 旧节点会回退到整帧（已验证路径），但旧客户端 + 新节点不会触发流式；没有协议版本协商字段。
 - 未做真实验收：N06/N07/N17 的证据都来自隔离测试（真实 SQLite、真实 TCP socket），没有跨机器/跨 NAT 的并发写与长流演练；`updateNodeMetadataAtomic` 只在 SQLite 上实测过行数路径（PG 同一 SQL 形态，未在 PG 上跑）。
+
+### 9.5 N03 数据面认证加密与身份绑定
+
+| 面 | 修复 |
+| --- | --- |
+| 密钥 | 每个会话一枚 32 字节密钥，由**创建方**生成，只经认证过的信令 API 传递（`dataPlaneSecret` 进会话记录，随 `listP2PSessions` 回到节点）；API 回显时若被剥离，创建方会发现自己拿不到密钥而不是以为已经加密 |
+| 密钥派生 | HKDF-SHA256，盐含双方 nonce，info 含 `sessionId|direction`：同一会话两个方向密钥不同，帧无法跨会话或跨方向重放 |
+| 帧 | 全部信封（请求/响应/分块/结束/取消）在握手后都用 AES-256-GCM 封装；AAD 绑定 `sessionId|direction|sequence`，接收端要求序列号**严格递增**，乱序、篡改、跨会话一律拒绝并断开连接 |
+| 握手 | 双方各自在连接建立后立即发 `secure-hello`（sessionId + 随机 nonce），收到对方 hello 才派生密钥；握手有超时，超时/连接中断都会让等待方拿到明确错误，而不是永远挂起 |
+| 重放守卫 | 进程内记住已消费的客户端 nonce（有界 1024 条）：只重放 hello + 旧帧无法伪装成新连接（序列号本身看不出差别） |
+| 策略 | `ReachabilitySessionService` 对声明 `tcp-punch` 能力却不带密钥的会话请求直接拒绝（400），`ReachabilityHandler` 把它映射成 `InvalidP2PSessionRequestError` |
+| 兼容性 | 有密钥的一端与无密钥的一端**互相拒绝**（各自的握手/明文检查会断开连接），即 raw TCP 数据面要求两端同版本；该数据面本身仍由 `XPOD_P2P_ENABLED` 默认关闭 |
+
+证据（负向优先）：`tests/edge/reachability/P2PDataPlaneSecurity.test.ts` 11 例——真机抓包代理证明 canonical URL 与请求信封**不出现在明文里**、错误密钥无法建立会话、篡改密文不会送达 handler、明文请求在加密端被丢弃且连接断开、客户端在对方不应答握手时**只发 hello、绝不发明文请求**、重放的 hello nonce 被拒；把封装临时改成直通后 **3/11 失败**（明文 URL 上 wire、错误密钥也能通、篡改帧被投递）。握手期间还修掉两个真实缺陷：解析器没认新信封导致 hello 被丢弃；以及客户端在等待握手时先等后连造成死锁。
+
+集成覆盖：`ManagedClientP2PLocalE2E.test.ts`（4 例，真实 TCP 监听而非中继）在加密后全过；`ManagedClientFetch`/`ManagedClientP2PSmoke`/`TcpP2PSignalingSession` 的手工 socket 夹具改为两端共用固定密钥。
+
+**未做 / 已知边界（如实记录）**：
+
+- **脚本化双进程 smoke 暂时跳过**：`tests/scripts/p2p-dual-smoke.test.ts` 用自建 loopback bridge 中继两个进程，原本按明文时序写；加密后两端一连接就各发 hello，该 bridge 的配对/缓冲逻辑需要按字节重写（节点侧已确认能接受会话、两端密钥一致，但中继后的握手仍不完成）。跳过原因写在该测试里，重新启用前必须先修夹具——这是本轮唯一被跳过的用例。
+- 没有**密钥轮换**：密钥与信号会话同生命周期，会话过期即失效；不支持会话内换钥。
+- 重放守卫是**进程内**的（每进程 1024 条）：多实例共享同一节点会话时，攻击者必须重放到见过原始 nonce 的进程才会被拒。
+- 没有**前向保密**：静态会话密钥 + nonce 派生，泄露会话记录即可解密该会话流量（后续可换 ECDH 临时密钥）。
+- 未做真实跨 NAT/跨机验收：本轮证据来自隔离测试与真实 TCP 监听的本机 E2E，不是两台机器。

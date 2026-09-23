@@ -135,6 +135,10 @@ function restoreEnv(key: string, previous: string | undefined): void {
   process.env[key] = previous;
 }
 
+// A raw TCP session must announce the secret that seals its data plane (audit N03); the handler
+// and service refuse to create one without it.
+const DATA_PLANE_SECRET = Buffer.alloc(32, 7).toString('base64');
+
 describe('ReachabilityHandler', () => {
   let mockServer: ReturnType<typeof createMockServer>;
   let repo: ReturnType<typeof createRepo>;
@@ -273,6 +277,26 @@ describe('ReachabilityHandler', () => {
     expect(allowed.statusCode).toBe(201);
   });
 
+  it('refuses a raw TCP session that would leave the data plane in the clear', async () => {
+    register();
+    const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
+    const req = createMockRequest({
+      kind: 'p2p',
+      clientId: 'device-1',
+      capabilities: ['tcp-punch'],
+      candidates: [{ host: '198.51.100.10', port: 12345 }],
+    }, auth);
+    const res = createMockResponse();
+
+    await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res._body().error).toMatch(/data plane secret/iu);
+    expect(await storedMetadata(repo)).not.toMatchObject({
+      reachabilitySessions: expect.objectContaining({ p2p: expect.any(Array) }),
+    });
+  });
+
   it('creates short-lived p2p sessions and stores them under reachabilitySessions.p2p', async () => {
     register();
     const auth: NodeAuthContext = { type: 'node', nodeId: 'node-1' };
@@ -280,6 +304,7 @@ describe('ReachabilityHandler', () => {
       kind: 'p2p',
       clientId: 'device-1',
       capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
       candidates: [{ host: '198.51.100.10', port: 12345 }],
     }, auth);
     const res = createMockResponse();
@@ -293,6 +318,7 @@ describe('ReachabilityHandler', () => {
       expiresAt: '2026-06-19T00:05:00.000Z',
       signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_fixed-id',
       capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
       candidates: [{ host: '198.51.100.10', port: 12345 }],
     });
     expect(res._body().nodeCandidates.map((route: any) => route.kind)).toEqual(['loopback', 'public-direct']);
@@ -339,6 +365,7 @@ describe('ReachabilityHandler', () => {
       kind: 'p2p',
       clientId: 'phone-1',
       capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
       candidates: [
         { protocol: 'tcp', transport: 'raw-tcp-hole-punch', port: 34567 },
       ],
@@ -405,6 +432,7 @@ describe('ReachabilityHandler', () => {
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_owned',
                 capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
                 candidates: [],
               },
             ],
@@ -481,6 +509,7 @@ describe('ReachabilityHandler', () => {
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_alice',
                 capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
                 candidates: [],
               },
             ],
@@ -538,6 +567,7 @@ describe('ReachabilityHandler', () => {
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_alice',
                 capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
                 candidates: [],
               },
               {
@@ -554,6 +584,7 @@ describe('ReachabilityHandler', () => {
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_bob',
                 capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
                 candidates: [],
               },
             ],
@@ -594,6 +625,7 @@ describe('ReachabilityHandler', () => {
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
                 capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
                 candidates: [],
               },
             ],
@@ -636,6 +668,7 @@ describe('ReachabilityHandler', () => {
       kind: 'p2p',
       clientId: 'device-1',
       capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
       candidates: [{ protocol: 'tcp', url: 'tcp-punch://candidate/offer-1' }],
     }, auth);
     const res = createMockResponse();
@@ -758,6 +791,7 @@ describe('ReachabilityHandler', () => {
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_active',
                 capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
                 candidates: [
                   {
                     id: 'offer-1',
@@ -781,6 +815,7 @@ describe('ReachabilityHandler', () => {
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_expired',
                 capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
                 candidates: [],
               },
             ],
@@ -824,6 +859,7 @@ describe('ReachabilityHandler', () => {
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
                 capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
                 candidates: [
                   {
                     id: 'client-candidate-1',
@@ -884,6 +920,7 @@ describe('ReachabilityHandler', () => {
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
                 capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
                 candidates: [
                   {
                     id: 'client-candidate-1',
@@ -973,6 +1010,7 @@ describe('ReachabilityHandler', () => {
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
                 capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
                 candidates: [],
                 limits: { maxCandidatesPerUpdate: 1, maxCandidatesTotal: 4 },
               },
@@ -1018,6 +1056,7 @@ describe('ReachabilityHandler', () => {
                 nodeCandidates: [],
                 signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_existing',
                 capabilities: ['tcp-punch'],
+      dataPlaneSecret: DATA_PLANE_SECRET,
                 candidates: [
                   { id: 'candidate-1', role: 'client', sourceId: 'device-1', createdAt: '2026-06-19T00:00:00.000Z', url: 'tcp-punch://candidate-1' },
                   { id: 'candidate-2', role: 'client', sourceId: 'device-1', createdAt: '2026-06-19T00:00:00.000Z', url: 'tcp-punch://candidate-2' },

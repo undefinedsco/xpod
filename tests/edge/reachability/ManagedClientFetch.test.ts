@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AccessRoute, P2PSession, P2PSignalingClient, P2PTransportCandidate, RouteSet, RawTcpP2PConnectAttempt } from '../../../src/edge/reachability';
 import {
   attachTcpP2PDataPlaneSocket,
+  createDataPlaneSecret,
   createManagedClientFetch,
   createP2PDataPlaneHandler,
   createRawTcpHolePunchCandidates,
@@ -69,6 +70,7 @@ function p2pSession(candidates: P2PTransportCandidate[]): P2PSession {
     nodeId: 'node-1',
     clientId: 'device-1',
     auditId: 'audit-managed-fetch',
+    dataPlaneSecret: DATA_PLANE_SECRET,
     createdAt: '2026-06-20T00:00:00.000Z',
     expiresAt: '2026-06-20T00:05:00.000Z',
     nodeCandidates: [p2pRoute],
@@ -77,6 +79,10 @@ function p2pSession(candidates: P2PTransportCandidate[]): P2PSession {
     candidates,
   };
 }
+
+// The node side is hand-attached in these tests, so both ends share one fixed secret; in
+// production it reaches the node through the signaling API (audit N03).
+const DATA_PLANE_SECRET = createDataPlaneSecret();
 
 describe('createManagedClientFetch', () => {
   it('keeps an opened LAN route when the Solid well-known probe returns method-not-allowed', async () => {
@@ -113,7 +119,11 @@ describe('createManagedClientFetch', () => {
       fetchImpl: localFetch as typeof fetch,
     });
     const { clientSocket, serverSocket, close } = await createSocketPair();
-    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+    const socketHandle = attachTcpP2PDataPlaneSocket({
+      socket: serverSocket,
+      handler,
+      secure: { role: 'server', sessionId: 'p2p_managed_fetch', secret: DATA_PLANE_SECRET },
+    });
     const clientPort = await reserveTcpPort();
     const nodePort = await reserveTcpPort();
     const plan = {
@@ -147,6 +157,7 @@ describe('createManagedClientFetch', () => {
         p2p: {
           signaling,
           clientId: 'device-1',
+          dataPlaneSecret: DATA_PLANE_SECRET,
           host: '127.0.0.1',
           plan,
           connectTimeoutMs: 1_000,
@@ -193,7 +204,11 @@ describe('createManagedClientFetch', () => {
       fetchImpl: localFetch as typeof fetch,
     });
     const { clientSocket, serverSocket, close } = await createSocketPair();
-    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+    const socketHandle = attachTcpP2PDataPlaneSocket({
+      socket: serverSocket,
+      handler,
+      secure: { role: 'server', sessionId: 'p2p_managed_fetch', secret: DATA_PLANE_SECRET },
+    });
     const clientPort = await reserveTcpPort();
     const nodePort = await reserveTcpPort();
     const plan = {
@@ -232,6 +247,7 @@ describe('createManagedClientFetch', () => {
 
     try {
       const managed = await createSignaledManagedClientFetch({
+        dataPlaneSecret: DATA_PLANE_SECRET,
         apiBaseUrl: 'https://api.example/',
         nodeId: 'node-1',
         token: 'service-token',

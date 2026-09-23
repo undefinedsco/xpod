@@ -145,9 +145,24 @@ export async function runLocalManagedClientP2PE2ESmoke(
         nodeId,
         baseUrl: `https://${nodeId}.${baseStorageDomain}/`,
       });
+      // The node serves many sessions on one socket, so it resolves the per-session data plane
+      // secret from the signaling API on handshake (audit N03). A session without a secret is
+      // refused there, which is why the smoke client always creates one.
+      const dataPlaneSignaling = createP2PSignalingClient({
+        apiBaseUrl: signalApi.baseUrl,
+        nodeId,
+        token: nodeToken,
+      });
       const dataPlaneServer = createTcpP2PDataPlaneServer({
         handler: createP2PDataPlaneHandler({ targetBaseUrl: target.baseUrl }),
         host: p2pHost,
+        secure: {
+          role: 'server',
+          resolveSessionSecret: async (sessionId: string) => {
+            const session = await dataPlaneSignaling.getP2PSession(sessionId);
+            return session.dataPlaneSecret;
+          },
+        },
       });
       await dataPlaneServer.listen(0);
       nodePlan = {

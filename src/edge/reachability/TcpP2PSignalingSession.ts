@@ -2,6 +2,8 @@ import { createConnection, type Socket } from 'node:net';
 import type { AccessRoute, P2PCandidateRole, P2PSession, P2PTransportCandidate } from './types';
 import type { CreateP2PSessionInput, P2PSignalingClient } from './P2PSignalingClient';
 import type { P2PDataPlaneHandler } from './P2PDataPlane';
+import { createDataPlaneSecret } from './P2PDataPlaneCrypto';
+import type { P2PDataPlaneSecurityOptions } from './TcpP2PDataPlaneTransport';
 import {
   attachTcpP2PDataPlaneSocket,
   computeTcpHolePunchPlan,
@@ -30,6 +32,8 @@ export interface CreateRawTcpHolePunchCandidatesOptions {
 export interface SignaledRawTcpP2PSessionOptions {
   signaling: P2PSignalingClient;
   clientId: string;
+  /** Overrides the generated per-session data plane secret (tests only). */
+  dataPlaneSecret?: string;
   host?: string;
   address?: string;
   capabilities?: string[];
@@ -45,6 +49,8 @@ export interface SignaledRawTcpP2PSession {
   plan: TcpHolePunchPlan;
   localCandidates: P2PTransportCandidate[];
   rawTcpRoute?: AccessRoute;
+  /** Secret both peers use to seal the data plane (audit N03). */
+  dataPlaneSecret: string;
 }
 
 export interface AnswerPendingRawTcpP2PSessionsOnceOptions {
@@ -68,6 +74,8 @@ export interface WaitForRawTcpRemoteCandidatesOptions {
 }
 
 export interface ConnectRawTcpP2PTransportOptions {
+  /** Data plane authentication; the signaled path always sets it (audit N03). */
+  secure?: P2PDataPlaneSecurityOptions;
   localCandidates: P2PTransportCandidate[];
   remoteCandidates: P2PTransportCandidate[];
   connectTimeoutMs?: number;
@@ -211,6 +219,7 @@ export async function createSignaledRawTcpP2PSession(
     plan,
     candidateIdPrefix: options.candidateIdPrefix,
   });
+  const dataPlaneSecret = options.dataPlaneSecret ?? createDataPlaneSecret();
   const request: CreateP2PSessionInput = {
     clientId: options.clientId,
     capabilities: uniqueStrings([
@@ -218,6 +227,7 @@ export async function createSignaledRawTcpP2PSession(
       ...(options.capabilities ?? []),
     ]),
     candidates: localCandidates,
+    dataPlaneSecret,
   };
   const session = await options.signaling.createP2PSession(request);
   const effectiveLocalCandidates = localRawTcpCandidatesFromSessionOrFallback(
@@ -232,6 +242,9 @@ export async function createSignaledRawTcpP2PSession(
     plan,
     localCandidates: effectiveLocalCandidates,
     rawTcpRoute: selectRawTcpP2PRoute(session.nodeCandidates),
+    // The API echoes the session back; a node that stripped the secret would otherwise let the
+    // client believe the plane is sealed while the node cannot open a single frame.
+    dataPlaneSecret: session.dataPlaneSecret ?? dataPlaneSecret,
   };
 }
 
@@ -332,7 +345,19 @@ export async function acceptSignaledRawTcpP2PConnectionOnce(
         plan,
         localCandidates: effectiveLocalCandidates,
         remoteCandidates,
-        socketHandle: attachTcpP2PDataPlaneSocket({ socket, handler: options.handler }),
+        socketHandle: attachTcpP2PDataPlaneSocket({
+          socket,
+          handler: options.handler,
+          ...(answeredSession.dataPlaneSecret
+            ? {
+              secure: {
+                role: 'server' as const,
+                sessionId: answeredSession.sessionId,
+                secret: answeredSession.dataPlaneSecret,
+              },
+            }
+            : {}),
+        }),
       };
     } catch (error) {
       errors.push(`${session.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -391,6 +416,11 @@ export async function connectSignaledRawTcpP2PTransport(
     nowMs: options.nowMs,
     sleepMs: options.sleepMs,
     connectSocket: options.connectSocket,
+    secure: {
+      role: 'client',
+      sessionId: signaled.session.sessionId,
+      secret: signaled.dataPlaneSecret,
+    },
   });
   return {
     ...signaled,
@@ -408,6 +438,7 @@ export async function connectRawTcpP2PTransport(
     remotePort: attempt.remotePort,
     socket,
     timeoutMs: options.timeoutMs,
+    ...(options.secure ? { secure: options.secure } : {}),
   });
 }
 

@@ -1,5 +1,6 @@
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { buildRouteSet } from './RouteSetBuilder';
+import { RAW_TCP_HOLE_PUNCH_CAPABILITY } from './TcpP2PSignalingSession';
 import type {
   AccessRoute,
   BuildRouteSetSource,
@@ -60,6 +61,7 @@ export class ReachabilitySessionService {
     if (Array.isArray(request.candidates) && request.candidates.length > limits.maxCandidatesPerUpdate) {
       throw new P2PCandidateUpdateLimitExceededError('P2P candidate update limit exceeded');
     }
+    const dataPlaneSecret = this.resolveDataPlaneSecret(request);
     const candidates = this.normalizeP2PCandidates(request.candidates, {
       role: 'client',
       sourceId: request.clientId,
@@ -93,6 +95,7 @@ export class ReachabilitySessionService {
       capabilities: normalizeStringArray(request.capabilities),
       candidates,
       limits,
+      ...(dataPlaneSecret ? { dataPlaneSecret } : {}),
     };
     await this.appendSession(nodeId, 'p2p', session, (metadata) => {
       const activeSessions = this.readActiveP2PSessions(metadata);
@@ -261,6 +264,22 @@ export class ReachabilitySessionService {
     );
   }
 
+  /**
+   * Fail closed for the raw TCP data plane: a session that announces that capability must carry
+   * a data-plane secret, otherwise the peer would be invited to speak in the clear (audit N03).
+   */
+  private resolveDataPlaneSecret(request: P2PSessionRequest): string | undefined {
+    const capabilities = normalizeStringArray(request.capabilities);
+    const wantsRawTcp = capabilities.includes(RAW_TCP_HOLE_PUNCH_CAPABILITY);
+    const secret = typeof request.dataPlaneSecret === 'string' ? request.dataPlaneSecret : undefined;
+    if (wantsRawTcp && !secret) {
+      throw new InvalidP2PSessionRequestError(
+        'A raw TCP P2P session must carry a data plane secret',
+      );
+    }
+    return secret;
+  }
+
   private async loadNodeRouteSource(nodeId: string): Promise<BuildRouteSetSource> {
     const [metadataRow, connectivity] = await Promise.all([
       this.options.repository.getNodeMetadata(nodeId),
@@ -420,6 +439,7 @@ export class ReachabilitySessionService {
   }
 }
 
+export class InvalidP2PSessionRequestError extends Error {}
 export class InvalidRelaySessionRequestError extends Error {}
 export class NodeMetadataConflictError extends Error {}
 export class NodeRouteSourceNotFoundError extends Error {}
@@ -518,6 +538,9 @@ function toP2PSession(value: unknown): P2PSession | undefined {
   const expiresAt = getString(value.expiresAt);
   const signalingUrl = getString(value.signalingUrl);
   const limits = normalizeP2PSessionLimits(value.limits);
+  // Dropping this here would silently downgrade every listed session to a plaintext data plane:
+  // the node reads its secret from the listed session (audit N03).
+  const dataPlaneSecret = getString(value.dataPlaneSecret);
   if (!sessionId || !nodeId || !clientId || !createdAt || !expiresAt || !signalingUrl) {
     return undefined;
   }
@@ -533,6 +556,7 @@ function toP2PSession(value: unknown): P2PSession | undefined {
     nodeCandidates: Array.isArray(value.nodeCandidates) ? value.nodeCandidates as AccessRoute[] : [],
     signalingUrl,
     capabilities: normalizeStringArray(value.capabilities),
+    ...(dataPlaneSecret ? { dataPlaneSecret } : {}),
     candidates: Array.isArray(value.candidates)
       ? value.candidates.map(toP2PTransportCandidate).filter((candidate): candidate is P2PTransportCandidate => Boolean(candidate))
       : [],
