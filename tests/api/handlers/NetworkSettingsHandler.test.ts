@@ -426,6 +426,51 @@ describe('NetworkSettingsHandler', () => {
     }
   });
 
+  it('probes the declared entry only when the operator asks, and says what it measured', async () => {
+    const { server, routes } = createServer();
+    const probe = vi.fn(async (endpoint: string) => ({
+      target: endpoint,
+      verdict: 'reachable-from-this-node' as const,
+      httpStatus: 200,
+      latencyMs: 42,
+      detail: 'reachable from this node: HTTP 200 in 42ms（网络可能不支持回环，不代表外部用户可达）',
+      checkedAt: '2026-09-23T00:00:00.000Z',
+    }));
+    registerNetworkSettingsRoutes(server, {
+      endpoint: 'https://node-1.pods.example/',
+      endpointReachabilityProbe: probe,
+    });
+
+    const readOnlyAuth = { type: 'service' as const, serviceType: 'local' as const, serviceId: 'local-owner', scopes: [ 'network:read' ] };
+    const res = response();
+    await routes['POST /api/network/settings/diagnose'](request(readOnlyAuth), res, {});
+
+    const body = JSON.parse(res.body) as { checks: Array<{ id: string; status: string; detail?: string }> };
+    const reachability = body.checks.find((check) => check.id === 'endpoint-reachability');
+    expect(probe).toHaveBeenCalledWith('https://node-1.pods.example/');
+    expect(reachability).toMatchObject({ status: 'ok' });
+    expect(reachability?.detail).toContain('reachable from this node');
+    expect(reachability?.detail).toContain('42ms');
+  });
+
+  it('does not probe anything when no endpoint is declared', async () => {
+    const { server, routes } = createServer();
+    const probe = vi.fn();
+    registerNetworkSettingsRoutes(server, {
+      endpoint: '',
+      endpointReachabilityProbe: probe,
+    });
+
+    const readOnlyAuth = { type: 'service' as const, serviceType: 'local' as const, serviceId: 'local-owner', scopes: [ 'network:read' ] };
+    const res = response();
+    await routes['POST /api/network/settings/diagnose'](request(readOnlyAuth), res, {});
+
+    const body = JSON.parse(res.body) as { checks: Array<{ id: string; status: string; detail?: string }> };
+    expect(probe).not.toHaveBeenCalled();
+    expect(body.checks.find((check) => check.id === 'endpoint-reachability'))
+      .toMatchObject({ status: 'unsupported', detail: 'endpoint_unavailable' });
+  });
+
   it('requires explicit deployment read/write authorization for network settings actions', async () => {
     const { server, routes } = createServer();
     const renew = vi.fn(async () => undefined);

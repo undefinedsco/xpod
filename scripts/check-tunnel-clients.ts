@@ -102,6 +102,7 @@ function main(argv: string[]): number {
       }
     }
     console.log(`policy: ${redistributePolicyNote()}`);
+    console.log('plugin directory: <package root>/vendor/tunnel-clients/ 见 docs/tunnel-clients.md');
   }
 
   const missingRequired = [ ...options.require ].filter((provider) => {

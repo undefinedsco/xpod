@@ -1,6 +1,10 @@
 import type { ServerResponse } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { getLoggerFor } from 'global-logger-factory';
+import {
+  probeEndpointReachability,
+  type EndpointReachabilityResult,
+} from '../network/EndpointReachabilityProbe';
 import type { ApiServer } from '../ApiServer';
 import type { AuthContext } from '../auth/AuthContext';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
@@ -135,6 +139,13 @@ export interface NetworkPublicAddressReaderOptions {
 
 export interface NetworkSettingsHandlerOptions {
   endpoint: string | (() => string | undefined);
+  /**
+   * On-demand reachability probe for the declared public entry (audit N12).
+   *
+   * It runs only when the operator triggers a diagnose pass — never on a timer — and defaults to
+   * the public-address-only probe; tests inject a stub.
+   */
+  endpointReachabilityProbe?: (endpoint: string) => Promise<EndpointReachabilityResult>;
   localAddresses?: () => string[];
   lanAddresses?: () => string[];
   publicAddresses?: () => string[];
@@ -501,6 +512,28 @@ function buildDefaultDiagnostics(
         return endpoint
           ? { status: 'ok', detail: `configured: ${endpoint}` }
           : { status: 'unsupported', detail: 'endpoint_unavailable' };
+      },
+    },
+    {
+      // Only runs because the operator asked for a diagnose pass; it never polls. The verdict
+      // is deliberately "from this node": a node reaching its own public entry says nothing
+      // about a remote user's path (NAT hairpin), so the wording keeps that distinction.
+      id: 'endpoint-reachability',
+      label: 'Endpoint reachability from this node',
+      run: async () => {
+        const endpoint = normalizeEndpoint(resolveValue(options.endpoint));
+        if (!endpoint) {
+          return { status: 'unsupported' as const, detail: 'endpoint_unavailable' };
+        }
+        const probe = options.endpointReachabilityProbe ?? probeEndpointReachability;
+        const result = await probe(endpoint);
+        if (result.verdict === 'reachable-from-this-node') {
+          return { status: 'ok' as const, detail: result.detail };
+        }
+        if (result.verdict === 'blocked') {
+          return { status: 'unsupported' as const, detail: result.detail };
+        }
+        return { status: 'warning' as const, detail: result.detail };
       },
     },
     {

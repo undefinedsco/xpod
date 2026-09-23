@@ -9,8 +9,8 @@
 
 | 判定 | 数量 | 项 |
 | --- | --- | --- |
-| 已修复 | 17 | W0：N01、N02、N04、N05；W1：N08、N09、N10、N11、N13；W2：N03、N06、N07、N17；W3–W5：N14、N15、N18、N19 |
-| 部分修复 | 2 | N12（诊断面已改，admin 端仍不做真实探测）、N16（声明/解析/探测已做，产物仍未携带客户端） |
+| 已修复 | 19 | W0：N01、N02、N04、N05；W1：N08、N09、N10、N11、N13；W2：N03、N06、N07、N17；W3–W5：N12、N14、N15、N16、N18、N19 |
+| 部分修复 | 0 | — |
 | 仍存在 | 0 | — |
 | 对账后新增 | 1 | N20（真实验收发现的子服务生命周期缺陷，已修复并合入主干，见 4.4 与第 8 节） |
 
@@ -79,11 +79,11 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 | N09 profile 字段/provider 列表跨层不一致 | P1 | **部分缓解** | UI 侧已收敛为单表 `ui/src/utils/tunnel-providers.ts`（含 `sakura_frp`/`frp`，附 `ui/src/utils/tunnel-providers.test.ts`），三处 UI 分支消除；但 API store 仍只认三家（`src/api/network/NetworkEnvironmentConfigurationStore.ts:93`）、runtime 认四家（`src/tunnel/TunnelProfiles.ts:1`）、`NetworkPage.tsx:372` 下拉仅三家 → 跨层契约仍不一致 | `tests/api/ai-config/NetworkEnvironmentConfigurationStore.test.ts` 仍只测 envPatch，无"UI shape → API parser → store → runtime"合同测试 |
 | N10 多 profile 凭据按 provider 全局覆盖 | P1 | **仍存在** | `src/api/network/NetworkEnvironmentConfigurationStore.ts:79` 在循环里写 provider 级全局 key（后写覆盖前写）；`src/api/container/index.ts`、`local.ts` 未变 | 无 A/B 切换精确对应各自账号的用例 |
 | N11 DNS/HTTPS/P2P 控件未控制真实运行 | P1 | **仍存在** | store 写 `XPOD_HTTPS_CERT_PATH`/`XPOD_HTTPS_KEY_PATH`（`:65-66`），而 `src/runtime/bootstrap.ts:324-325` 实际读 `XPOD_ACME_CERTIFICATE_PATH`/`XPOD_ACME_CERTIFICATE_KEY_PATH`；`XPOD_HTTPS_*` **全仓只写不读**（仅 store 与 AdminHandler 白名单引用）。DNS/P2P 控件映射问题同基线 | 每个控件缺"保存→应用/重启→行为变化与关闭"用例 |
-| N12 诊断把"有 URL"当"可达/延迟" | P1 | **部分缓解** | `AdminHandler.ts:411` 新增 `describeUnservedPublicRoute`，并在 `:794` 把 public-ip 从 `pass` 改为 `unknown`（不再仅凭地址断言可达）；但 `src/api/handlers/NetworkSettingsHandler.ts:423/468` 与 `NetworkPage.tsx:491` 未变，仍是"endpoint check 无探测 + 函数耗时当延迟 + 同一结果映射多条地址" | 无"不存在域名/关闭端口/错证书/异网 LAN 不得显示 Reachable"负例 |
+| N12 诊断把"有 URL"当"可达/延迟" | P1 | **已修复（见 10.5/10.7）** | 对账时：诊断只读本地状态，`durationMs` 被当延迟。现：`checkDurationMs` 明确是检查耗时；设置页诊断新增**按需**探测 `endpoint-reachability`（只 https、只公网地址、每跳重定向重校验、连接钉在已校验地址）并如实标注"从这个节点可达…不代表外部用户可达"；admin 侧 public-ip 保持 `unknown`（那里没有按钮，不发探针） | 探测 11 例（绕过守卫后 5 例失败）+ 诊断负例 2 例 |
 | N13 provider 就绪误报及错误目标 | P1 | **仍存在** | ngrok `src/tunnel/NgrokTunnelProvider.ts:197/301-315/381-404`；Cloudflare `LocalTunnelProvider.ts:159/331`；Sakura `SakuraFrpTunnelProvider.ts:93/163`（`login to server success` 即 connected、任意 frpc 即接管）三处均与基线一致 | 无错 token/退出/超时/端口冲突/多隧道/无关 frpc 的负例 |
 | N14 Cloudflare DNS 误删可并存记录 | P1 | **已修复（见第 10 节）** | 对账时：`CloudflareDnsProvider` 类型不同即 DELETE、`findRecord` 不带 type 时取 `response[0]`。现：一次拉回同名全部记录、按类型判定；只有 CNAME 互斥才按 ID 删除，MX/TXT 与 A/AAAA 共存；删除强制带类型且拒绝类型不匹配的记录 | `tests/dns/CloudflareDnsProvider.test.ts` +8 例；对旧实现 **4/8 失败**。腾讯云 provider 经核查本来就按 type 过滤，无同类缺陷 |
 | N15 生产证书失败回退 staging、续期链不完整 | P1 | **已修复（见 10.2/10.6）** | 对账时：默认 fallback 含 `letsencrypt.staging`，失败即换下一个 CA，且没有任何东西驱动续期。现：默认链只有生产 CA、staging 仅限显式配置并告警、失败报出全部尝试；`CertificateRenewalScheduler` 按间隔检查状态、到期自动续期、失败指数退避、停止后不再续期，`EdgeNodeAgent` 启动续期并在 stop 时收尾 | ACME 6 例 + 调度器 6 例 + agent 侧接线；关掉调度循环后 **4 例失败** |
-| N16 发布产物不含隧道客户端 | P1（若承诺免安装） | **部分修复（见第 10.4 节）** | 对账时：产物对三家客户端零命中，也没有"客户端从哪来"的声明。现：provider 目录声明每个客户端（名字/环境变量/安装提示/许可/可否随产物分发），一个解析器统一顺序（显式路径 → 打包目录 → PATH），缺失时报 `binary-missing:<provider>:<binary>` **并附安装提示**，另有 `scripts/check-tunnel-clients.ts` 预检。**产物仍未携带任何客户端**（ngrok 与 natfrp fork 不可分发；cloudflared/frpc 可分发的打包工作未完） | `tests/tunnel/TunnelClientResolver.test.ts` 9 例 + provider 环境变量解析 1 例；绕过解析顺序后 **5 例失败** |
+| N16 发布产物不含隧道客户端 | P1（若承诺免安装） | **已修复（按决策：不内置，走插件式，见 10.4/10.7）** | 对账时：产物对三家客户端零命中，也没有"客户端从哪来"的声明。现：provider 目录声明客户端（名字/环境变量/安装提示/许可/可否分发），解析顺序统一（显式路径 → **插件目录 `vendor/tunnel-clients/`** → PATH），缺失报 `binary-missing:<provider>:<binary>` 并附安装提示，`scripts/check-tunnel-clients.ts` 预检并打印插件目录，决策与安装方式写在 [`tunnel-clients.md`](tunnel-clients.md)。**不承诺免安装、不自动下载**（下载器需要版本/校验和/签名策略，属供应链决策） | `TunnelClientResolver.test.ts` 9 例 + provider 环境变量 1 例；绕过解析顺序后 5 例失败 |
 | N17 数据面资源上限、流式与取消缺口 | P1（若启用公网 P2P） | **已修复（见第 9 节）** | 对账时：`TcpP2PDataPlaneTransport.ts` 无帧/请求体/并发上限（仅 `DEFAULT_MAX_CLOCK_ERROR_SECONDS` 常量）；`P2PDataPlane.ts:103` 仍全量读取。现：帧/请求体/响应体/并发四类上限 + 取消信封 + 分块流式（head→chunk→end） | `tests/edge/reachability/P2PDataPlaneLimits.test.ts` 11 例；暂时关掉强制后 **7/11 失败** |
 | N18 恢复监督、动态选路与文件权限 | P2 | **已修复（见 10.3/10.6）** | 对账时：frpc 固定 1s 重启、`stop()` 不取消待重启、私钥与 frpc 配置默认 0644、`startBackgroundServices()` 对每个后台服务只 start 一次。现：frpc 指数退避 + 健康清零 + 停止/替换语义修正；私钥与 frpc 配置 0600；**DDNS 与隧道 provider 由 `BackgroundServiceSupervisor` 接管**（启动失败退避重试、起来后按间隔复查存活、失败即重启、停止后不被待重试复活）；选路侧由 N06 的按有效期/身份过滤 + 失败关闭覆盖 | `tests/api/BackgroundServiceSupervisor.test.ts` 7 例（去掉监督循环后 1 例失败）、frpc +4 例、ACME 私钥 0600 1 例 |
 | N19 测试入口与合同覆盖漂移 | P2 | **已修复（见第 10.5 节）** | 对账时：`tests/bun/**` 与 10 个 `bun:test` 的 UI 测试都只被排除、没有任何执行入口。现：`bun run test:bun`（`scripts/run-bun-tests.ts`）自动收集并执行这些文件，CI 的 unit job 同时跑 vitest 入口与 Bun 入口；两处漂移已修（`network-settings.test.ts` 参数名、AiConfig 模型 ref 改为从 models 包推导） | Bun 入口 11 文件 / 32 例全过；故意放一个失败用例时入口 exit=1 |
@@ -332,3 +332,17 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 证据（负向优先）：调度器 6 例（到期续期、缺证书也算到期、失败退避 100→200→400→上限、并发不重复续期、定时循环与停止、重复 start 不叠定时器）+ 管理面 2 例（自行续期并在停止后停手、重复启动不叠定时器）；把调度循环去掉后 **4 例失败**。监督器 7 例（退避重试至成功、退避封顶、存活复查触发重启、存活检查抛错按已死处理、定时循环与停止、停止后不被待重试复活、重复 start 不叠）；去掉监督循环后 1 例失败。
 
 **本轮明确未做**：会话内已建立路由的中途切换（把正在用的路由换成另一条并保持请求）仍未实现——N06 保证不会选中过期/无关路由并对失败关闭，但"换路"是另一个设计；cluster 模式证书走心跳下发（`ClusterCertificateManager`），不带本地续期调度；N12 的 admin 侧真实探测与 N16 的产物携带客户端仍是待决策项。
+
+### 10.7 N12 按需探测与 N16 插件式分发（按操作者决策收口）
+
+**N12（操作者口径：点按钮才探测）**：新增 `src/api/network/EndpointReachabilityProbe.ts`，接到设置页诊断（`POST /api/network/settings/diagnose`，只有点诊断按钮才会走）新增的 `endpoint-reachability` 检查上：
+
+- 只接受 `https`（明文入口先报 `insecure-scheme`，不发任何请求）；
+- 复用 Cloud 探测同一套 `assertPublicProbeTarget`：**每个解析结果**都必须是公网地址，混入私网/环回/链路本地/元数据地址即拒绝；重定向逐跳重新校验；连接钉在已校验的地址上（防 DNS rebinding 换地址）；
+- 结论只有三种：`reachable-from-this-node`（记录状态码与耗时）、`unreachable`（超时/连接错误/重定向过多）、`blocked`（目标不合规）；
+- 文案明确写"从这个节点可达……网络可能不支持回环，不代表外部用户可达"——不做超出测量范围的断言；
+- admin 侧 public-ip 保持 `unknown`：那里没有按钮，按"不发探针"处理。
+
+证据（负向优先）：`tests/api/network/EndpointReachabilityProbe.test.ts` 11 例（公网 200/403 算可达、明文拒绝且不发请求、私网/元数据/公私混合地址拒绝、重定向落到私网拒绝且只发一跳、公网重定向跟随、超时与连接错误、非法地址）；绕过 https 与公网守卫后 **5 例失败**。handler 侧 2 例（注入探针只在诊断时调用、未配 endpoint 时不调用）。
+
+**N16（操作者口径：不内置，把 cloudflared 当插件）**：产物继续不携带任何客户端；插件落点是解析顺序里的 `vendor/tunnel-clients/`，安装方式与许可边界写入 [`tunnel-clients.md`](tunnel-clients.md)，`check-tunnel-clients.ts` 现在会打印插件目录。**不提供自动下载器**：下载第三方二进制需要先定版本锁定、校验和来源与签名校验策略，属供应链决策；在此之前"缺客户端"能在启动前被预检发现，且报错带安装提示。
