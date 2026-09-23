@@ -25,9 +25,12 @@
 
 1. 运行受影响的单文件编译/行为测试，例如：
    `bun test qlever/tests/QleverCandidateOperationBridge.test.ts qlever/tests/QleverExecutorFactory.test.ts`
-2. 运行完整原生契约：`bun test qlever/tests`
-3. 运行 Python 构建与交付契约：
+2. 运行可独立构建的原生插件门禁：`bun run test:qlever:sqlite-plugin`
+   （把 RDF SQLite 后端编成共享插件并 dlopen，验证 ABI v7 入口、provider JSON 配置、
+   既有 facts schema 的读路径，以及"可写 provider 只做回滚暂存"的契约）
+3. 运行完整原生契约：`bun test qlever/tests`
+4. 运行 Python 构建与交付契约：
    `python3 -m unittest discover -s qlever/tests -p 'test_*.py'`
-4. 再进入 TypeScript 全量、integration、immutable image 和集群验收。
+5. 再进入 TypeScript 全量、integration、immutable image 和集群验收。
 
 完整镜像 conformance 是最终交付证据，不能替代前面的快速夹具门禁。

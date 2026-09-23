@@ -17,6 +17,16 @@ typedef struct xpod_rdf_sqlite_backend_config {
   uint8_t require_vector_search;
 } xpod_rdf_sqlite_backend_config;
 
+/* Function-pointer types for hosts that resolve the plugin at runtime. */
+typedef xpod_rdf_status (*xpod_rdf_sqlite_backend_create_fn)(
+    const xpod_rdf_sqlite_backend_config* config,
+    xpod_rdf_backend_v1** out_backend);
+typedef void (*xpod_rdf_sqlite_backend_destroy_fn)(xpod_rdf_backend_v1* backend);
+typedef xpod_rdf_status (*xpod_qlever_backend_provider_create_fn)(
+    const xpod_rdf_bytes* config_json,
+    xpod_rdf_backend_v1** out_backend);
+typedef void (*xpod_qlever_backend_provider_destroy_fn)(xpod_rdf_backend_v1* backend);
+
 xpod_rdf_status xpod_rdf_sqlite_backend_create(
     const xpod_rdf_sqlite_backend_config* config,
     xpod_rdf_backend_v1** out_backend);
