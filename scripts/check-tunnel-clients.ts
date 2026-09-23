@@ -9,7 +9,6 @@
  *
  * Usage: bun scripts/check-tunnel-clients.ts [--require ngrok,cloudflare] [--json]
  */
-import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import {
   redistributePolicyNote,
@@ -30,36 +29,23 @@ interface ProbeRow {
   ready: boolean;
 }
 
-function onPath(binary: string): string | undefined {
-  const entries = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
-  for (const entry of entries) {
-    const candidate = path.join(entry, binary);
-    try {
-      if (existsSync(candidate) && statSync(candidate).isFile()) {
-        return candidate;
-      }
-    } catch {
-      // Unreadable PATH entries are not this probe's problem.
-    }
-  }
-  return undefined;
-}
-
 function probe(): ProbeRow[] {
   const resolved = resolveAllTunnelClients({ packageRoot: path.resolve(import.meta.dir, '..') });
   return TUNNEL_PROVIDERS.map((descriptor) => {
     const entry = resolved.find((candidate) => candidate.provider === descriptor.id);
     const client = entry?.resolved;
-    const pathHit = client?.source === 'path' ? onPath(client.command) : undefined;
+    // The resolver already resolved a PATH hit to an absolute path; this probe must not keep
+    // its own second opinion about what is on PATH.
+    const resolvedPath = client?.resolvedPath;
     const source: ProbeRow['source'] = client
-      ? (client.source === 'path' && !pathHit ? 'unresolved' : client.source)
+      ? (client.source === 'path' && !resolvedPath ? 'unresolved' : client.source)
       : 'unresolved';
     return {
       provider: descriptor.id,
       label: descriptor.label,
       binary: descriptor.client.binary,
       source,
-      command: pathHit ?? client?.command ?? descriptor.client.binary,
+      command: resolvedPath ?? client?.command ?? descriptor.client.binary,
       installHint: descriptor.client.installHint,
       redistributable: descriptor.client.redistributable,
       ready: Boolean(client) && source !== 'unresolved',

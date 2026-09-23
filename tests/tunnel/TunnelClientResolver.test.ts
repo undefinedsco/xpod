@@ -78,10 +78,29 @@ describe('tunnel client resolution (N16)', () => {
     expect(resolved).toMatchObject({ command: bundled, source: 'bundled' });
   });
 
-  it('falls back to the bare name so the OS resolves it through PATH', () => {
-    const resolved = resolveTunnelClient('cloudflare', { env: {}, packageRoot: '/nonexistent' });
+  it('resolves a PATH hit to an absolute path so readiness can be judged', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'tunnel-path-'));
+    const binary = path.join(directory, 'cloudflared');
+    await fs.writeFile(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+    const resolved = resolveTunnelClient('cloudflare', {
+      env: { PATH: directory },
+      packageRoot: '/nonexistent',
+    });
+
+    // The settings page has to be able to say "ready, at <path>"; leaving the bare name for the
+    // OS made PATH clients permanently "missing" while the preflight script called them ready.
+    expect(resolved).toMatchObject({ command: binary, source: 'path', resolvedPath: binary });
+  });
+
+  it('falls back to the bare name when nothing on PATH matches', () => {
+    const resolved = resolveTunnelClient('cloudflare', {
+      env: { PATH: '/definitely/not/here' },
+      packageRoot: '/nonexistent',
+    });
 
     expect(resolved).toMatchObject({ command: 'cloudflared', source: 'path' });
+    expect(resolved.resolvedPath).toBeUndefined();
   });
 
   it('reports a missing client with the provider hint while keeping the machine-readable prefix', () => {

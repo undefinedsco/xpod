@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describeTunnelClientMissing } from './TunnelClientResolver';
 import type { TunnelProviderId } from './TunnelProviderCatalog';
 import type { TunnelStage, TunnelStatus } from './TunnelProvider';
@@ -34,7 +35,11 @@ export function mergeTunnelError(previous: string | undefined, next: string | un
 export function describeSpawnError(provider: string, binary: string, error: unknown): string {
   const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: unknown }).code) : '';
   if (code === 'ENOENT') {
-    return describeTunnelClientMissing(provider as TunnelProviderId, binary);
+    // The prefix stays `binary-missing:<provider>:<binary name>` because callers assert on it;
+    // when the command was an absolute path, which file was tried is appended for the operator.
+    const name = path.basename(binary);
+    const message = describeTunnelClientMissing(provider as TunnelProviderId, name);
+    return name === binary ? message : `${message} (tried: ${binary})`;
   }
   return `spawn-failed:${provider}:${(error as Error)?.message ?? String(error)}`;
 }

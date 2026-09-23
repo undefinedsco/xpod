@@ -89,8 +89,17 @@ export function resolveTunnelClient(
     return { command: bundled, source: 'bundled', resolvedPath: bundled, client };
   }
 
-  // The OS resolves the bare name through PATH; a missing binary then surfaces as ENOENT and
-  // becomes `binary-missing:<provider>:<binary>` with the install hint attached.
+  // Look the name up on PATH ourselves instead of leaving it to the spawn: the settings page
+  // has to be able to say "ready, at <path>, version X", and two places deciding "is it on
+  // PATH" is how the check button and the preflight script ended up disagreeing.
+  const onPath = findOnPath(client.binary, env, isExecutable);
+  if (onPath) {
+    return { command: onPath, source: 'path', resolvedPath: onPath, client };
+  }
+
+  // Not found: hand the bare name to the OS anyway, so a PATH entry this process cannot read
+  // still gets its chance; a real miss surfaces as ENOENT and becomes
+  // `binary-missing:<provider>:<binary>` with the install hint attached.
   return { command: client.binary, source: 'path', client };
 }
 
@@ -123,6 +132,24 @@ export function redistributePolicyNote(): string {
     .filter((descriptor) => !descriptor.client.redistributable)
     .map((descriptor) => `${descriptor.id} (${descriptor.client.license})`);
   return `bundled clients allowed: ${allowed.join(', ') || 'none'}; not ours to ship: ${blocked.join(', ') || 'none'}`;
+}
+
+/** Finds an executable by name on the given environment's PATH (no shell involved). */
+export function findOnPath(
+  binary: string,
+  env: NodeJS.ProcessEnv = process.env,
+  isExecutable: (candidate: string) => boolean = defaultIsExecutable,
+): string | undefined {
+  for (const entry of (env.PATH ?? '').split(path.delimiter)) {
+    if (!entry) {
+      continue;
+    }
+    const candidate = path.join(entry, binary);
+    if (isExecutable(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function normalizePath(value: string | undefined): string | undefined {

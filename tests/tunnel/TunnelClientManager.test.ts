@@ -145,3 +145,34 @@ describe('TunnelClientManager (N16)', () => {
     await expect(manager.install('cloudflare')).rejects.toThrow(/HTTP 502/u);
   });
 });
+
+describe('TunnelClientManager PATH detection (N16 修复)', () => {
+  it('marks a client that is on PATH as ready, with its real path and version', async () => {
+    const root = await tempRoot();
+    const pathDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tunnel-manager-path-'));
+    await fakeClient(path.join(pathDir, 'cloudflared'), 'cloudflared version 2026.9.0');
+    const manager = new TunnelClientManager({
+      packageRoot: root,
+      env: { PATH: pathDir },
+      runVersion: async () => 'cloudflared version 2026.9.0',
+      logger: silentLogger,
+    });
+
+    const cloudflare = await manager.inspect('cloudflare');
+
+    expect(cloudflare).toMatchObject({
+      state: 'ready',
+      source: 'path',
+      path: path.join(pathDir, 'cloudflared'),
+      version: 'cloudflared version 2026.9.0',
+    });
+  });
+
+  it('keeps reporting missing when the PATH entry has no such client', async () => {
+    const root = await tempRoot();
+    const emptyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tunnel-manager-empty-'));
+    const manager = new TunnelClientManager({ packageRoot: root, env: { PATH: emptyDir }, logger: silentLogger });
+
+    expect(await manager.inspect('cloudflare')).toMatchObject({ state: 'missing' });
+  });
+});
