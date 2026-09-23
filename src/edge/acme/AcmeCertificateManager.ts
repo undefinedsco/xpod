@@ -5,6 +5,7 @@ import { X509Certificate } from 'node:crypto';
 import acme from 'acme-client';
 import type { Authorization } from 'acme-client';
 import { getLoggerFor } from 'global-logger-factory';
+import { CertificateRenewalScheduler, type CertificateRenewalSchedulerStatus } from './CertificateRenewalScheduler';
 import { DnsChallengeClient } from './DnsChallengeClient';
 import { toDns01Value } from './utils';
 import type { DnsProvider } from '../../dns/DnsProvider';
@@ -125,6 +126,7 @@ export class AcmeCertificateManager {
   private readonly renewBeforeDays: number;
   private readonly propagationDelayMs: number;
   private issuing = false;
+  private renewalScheduler?: CertificateRenewalScheduler;
 
   public constructor(options: AcmeCertificateManagerOptions) {
     // 确定 DNS 验证处理器
@@ -193,6 +195,46 @@ export class AcmeCertificateManager {
     } catch {
       return { status: 'missing' };
     }
+  }
+
+  /**
+   * Starts the background renewal loop (audit N15).
+   *
+   * `ensureCertificate()` only looks at startup: a long-running node needed someone to call
+   * `renewCertificate()` by hand before the certificate expired. The scheduler checks on an
+   * interval, renews when the status is due, and backs off when the CA is unreachable.
+   */
+  public startAutoRenewal(options: {
+    intervalMs?: number;
+    retryBaseDelayMs?: number;
+    retryMaxDelayMs?: number;
+  } = {}): void {
+    if (this.renewalScheduler) {
+      // Already created: start() is a no-op while running, and restarts it after a stop.
+      this.renewalScheduler.start();
+      return;
+    }
+    this.renewalScheduler = new CertificateRenewalScheduler({
+      readStatus: async () => await this.readCertificateStatus(),
+      renew: async () => {
+        await this.renewCertificate();
+      },
+      ...options,
+    });
+    this.renewalScheduler.start();
+  }
+
+  /**
+   * Stops the loop but keeps its final status readable: "why did it stop renewing" is exactly
+   * the question an operator asks after a failed renewal, and a discarded scheduler cannot
+   * answer it.
+   */
+  public stopAutoRenewal(): void {
+    this.renewalScheduler?.stop();
+  }
+
+  public getRenewalSchedulerStatus(): CertificateRenewalSchedulerStatus | undefined {
+    return this.renewalScheduler?.getStatus();
   }
 
   public isAvailable(): boolean {

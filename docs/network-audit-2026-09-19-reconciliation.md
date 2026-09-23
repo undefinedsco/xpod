@@ -9,8 +9,8 @@
 
 | 判定 | 数量 | 项 |
 | --- | --- | --- |
-| 已修复 | 15 | W0：N01、N02、N04、N05；W1：N08、N09、N10、N11、N13；W2：N03、N06、N07、N17；W3：N14；W4：N19 |
-| 部分修复 | 4 | N12（诊断面已改，admin 端仍不做真实探测）、N15（禁隐式 staging 已做，续期调度链未闭环）、N16（声明/解析/探测已做，产物仍未携带客户端）、N18（退避与 0600 已做，动态选路监督未做） |
+| 已修复 | 17 | W0：N01、N02、N04、N05；W1：N08、N09、N10、N11、N13；W2：N03、N06、N07、N17；W3–W5：N14、N15、N18、N19 |
+| 部分修复 | 2 | N12（诊断面已改，admin 端仍不做真实探测）、N16（声明/解析/探测已做，产物仍未携带客户端） |
 | 仍存在 | 0 | — |
 | 对账后新增 | 1 | N20（真实验收发现的子服务生命周期缺陷，已修复并合入主干，见 4.4 与第 8 节） |
 
@@ -80,10 +80,10 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 | N12 诊断把"有 URL"当"可达/延迟" | P1 | **部分缓解** | `AdminHandler.ts:411` 新增 `describeUnservedPublicRoute`，并在 `:794` 把 public-ip 从 `pass` 改为 `unknown`（不再仅凭地址断言可达）；但 `src/api/handlers/NetworkSettingsHandler.ts:423/468` 与 `NetworkPage.tsx:491` 未变，仍是"endpoint check 无探测 + 函数耗时当延迟 + 同一结果映射多条地址" | 无"不存在域名/关闭端口/错证书/异网 LAN 不得显示 Reachable"负例 |
 | N13 provider 就绪误报及错误目标 | P1 | **仍存在** | ngrok `src/tunnel/NgrokTunnelProvider.ts:197/301-315/381-404`；Cloudflare `LocalTunnelProvider.ts:159/331`；Sakura `SakuraFrpTunnelProvider.ts:93/163`（`login to server success` 即 connected、任意 frpc 即接管）三处均与基线一致 | 无错 token/退出/超时/端口冲突/多隧道/无关 frpc 的负例 |
 | N14 Cloudflare DNS 误删可并存记录 | P1 | **已修复（见第 10 节）** | 对账时：`CloudflareDnsProvider` 类型不同即 DELETE、`findRecord` 不带 type 时取 `response[0]`。现：一次拉回同名全部记录、按类型判定；只有 CNAME 互斥才按 ID 删除，MX/TXT 与 A/AAAA 共存；删除强制带类型且拒绝类型不匹配的记录 | `tests/dns/CloudflareDnsProvider.test.ts` +8 例；对旧实现 **4/8 失败**。腾讯云 provider 经核查本来就按 type 过滤，无同类缺陷 |
-| N15 生产证书失败回退 staging、续期链不完整 | P1 | **部分修复（见第 10 节）** | 对账时：默认 fallback 含 `letsencrypt.staging`，失败即换下一个 CA。现：默认链只有生产 CA（ZeroSSL），staging 仅当操作者显式列出才使用，且进入链中会告警、签发成功也会再告警；全部失败时报出尝试过的每个 CA。**续期调度链仍未闭环**（只有按需 `renewCertificate` + 阈值状态），见 10.2 | `tests/edge/AcmeCertificateManager.test.ts` +5 例；对旧实现 **3/5 失败** |
+| N15 生产证书失败回退 staging、续期链不完整 | P1 | **已修复（见 10.2/10.6）** | 对账时：默认 fallback 含 `letsencrypt.staging`，失败即换下一个 CA，且没有任何东西驱动续期。现：默认链只有生产 CA、staging 仅限显式配置并告警、失败报出全部尝试；`CertificateRenewalScheduler` 按间隔检查状态、到期自动续期、失败指数退避、停止后不再续期，`EdgeNodeAgent` 启动续期并在 stop 时收尾 | ACME 6 例 + 调度器 6 例 + agent 侧接线；关掉调度循环后 **4 例失败** |
 | N16 发布产物不含隧道客户端 | P1（若承诺免安装） | **部分修复（见第 10.4 节）** | 对账时：产物对三家客户端零命中，也没有"客户端从哪来"的声明。现：provider 目录声明每个客户端（名字/环境变量/安装提示/许可/可否随产物分发），一个解析器统一顺序（显式路径 → 打包目录 → PATH），缺失时报 `binary-missing:<provider>:<binary>` **并附安装提示**，另有 `scripts/check-tunnel-clients.ts` 预检。**产物仍未携带任何客户端**（ngrok 与 natfrp fork 不可分发；cloudflared/frpc 可分发的打包工作未完） | `tests/tunnel/TunnelClientResolver.test.ts` 9 例 + provider 环境变量解析 1 例；绕过解析顺序后 **5 例失败** |
 | N17 数据面资源上限、流式与取消缺口 | P1（若启用公网 P2P） | **已修复（见第 9 节）** | 对账时：`TcpP2PDataPlaneTransport.ts` 无帧/请求体/并发上限（仅 `DEFAULT_MAX_CLOCK_ERROR_SECONDS` 常量）；`P2PDataPlane.ts:103` 仍全量读取。现：帧/请求体/响应体/并发四类上限 + 取消信封 + 分块流式（head→chunk→end） | `tests/edge/reachability/P2PDataPlaneLimits.test.ts` 11 例；暂时关掉强制后 **7/11 失败** |
-| N18 恢复监督、动态选路与文件权限 | P2 | **部分修复（见第 10.3 节）** | 对账时：frpc 固定 1s 重启、`stop()` 不取消待重启、私钥与 frpc 配置（含 token）默认 0644。现：指数退避（1s→60s 上限）、活过 60s 视为健康清零、停止/替换进程时取消待重启并把被替换进程的退出排除在状态与重启之外、私钥与 frpc 配置 0600（含对旧文件 chmod）。**动态选路监督（`src/api/runtime.ts` 侧）仍未做** | `tests/edge/frp/FrpcProcessManager.test.ts` +4 例、`tests/edge/AcmeCertificateManager.test.ts` +1 例；对旧实现 **8 例失败**（含 N15 的 3 例） |
+| N18 恢复监督、动态选路与文件权限 | P2 | **已修复（见 10.3/10.6）** | 对账时：frpc 固定 1s 重启、`stop()` 不取消待重启、私钥与 frpc 配置默认 0644、`startBackgroundServices()` 对每个后台服务只 start 一次。现：frpc 指数退避 + 健康清零 + 停止/替换语义修正；私钥与 frpc 配置 0600；**DDNS 与隧道 provider 由 `BackgroundServiceSupervisor` 接管**（启动失败退避重试、起来后按间隔复查存活、失败即重启、停止后不被待重试复活）；选路侧由 N06 的按有效期/身份过滤 + 失败关闭覆盖 | `tests/api/BackgroundServiceSupervisor.test.ts` 7 例（去掉监督循环后 1 例失败）、frpc +4 例、ACME 私钥 0600 1 例 |
 | N19 测试入口与合同覆盖漂移 | P2 | **已修复（见第 10.5 节）** | 对账时：`tests/bun/**` 与 10 个 `bun:test` 的 UI 测试都只被排除、没有任何执行入口。现：`bun run test:bun`（`scripts/run-bun-tests.ts`）自动收集并执行这些文件，CI 的 unit job 同时跑 vitest 入口与 Bun 入口；两处漂移已修（`network-settings.test.ts` 参数名、AiConfig 模型 ref 改为从 models 包推导） | Bun 入口 11 文件 / 32 例全过；故意放一个失败用例时入口 exit=1 |
 | N20 子服务放弃重启后网关仍报健康 | P0 | **仍存在（对账后新增，见 4.4）** | 修复前 `src/supervisor/Supervisor.ts`：`restartCount <= MAX_RESTARTS(5)` 之后只 `console.error` 并把状态留在 `stopped`，重启间隔固定 2s、无健康度重置；`src/supervisor/types.ts` 状态集只有 `stopped/starting/running/crashed`，没有"已放弃"；`src/runtime/Proxy.ts` 的 `/service/status` 只按 CSS 就绪判定 `200/503`（`:705-712`）；`src/cli/commands/stop.ts` 把 `503` 当不可达直接抛错 | 无"子服务反复失败/不可恢复失败/停机取消重启"的负向回归；W1 真实验收在活实例上直接复现（见 4.4） |
 
@@ -320,3 +320,13 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 证据（负向优先）：把 handler 改回旧映射与旧字段名后，诊断相关 **2 例失败**（含新增负例）。
 
 **N12 仍未闭环**：`AdminHandler` 侧的 endpoint/public-ip 探针仍只报 `unknown` 而不做真实探测（设计上"配置不等于探测结果"已经做到，但"存在域名/关闭端口/错证书/异网 LAN"这组负例没有真实探针可测）；这属于"要不要真探测"的产品决策，记在下一轮。
+
+### 10.6 N15 续期调度链与 N18 后台服务监督（补完）
+
+**N15（续期链闭环）**：新增 `src/edge/acme/CertificateRenewalScheduler.ts`——与 CA 实现无关的调度器（状态读取 + 续期动作 + 退避），行为是：启动即查一次；`renewal_due`/`missing` → 续期；`valid` → 只更新状态；续期失败按 60s 起指数退避（上限 1 小时），成功即清零；同一时刻只允许一次续期（并发调用共享在飞的那次）；`stop()` 之后不再触发；状态里带 `lastStatus`/`lastCheckedAt`/`lastRenewedAt`/`lastError`/`consecutiveFailures`/`nextCheckInMs`。`AcmeCertificateManager.startAutoRenewal()/stopAutoRenewal()/getRenewalSchedulerStatus()` 把它接到自己身上，`EdgeNodeAgent` 在本地 ACME 签发成功后启动（间隔/退避可用 `renewalCheckIntervalMs` 等覆盖），`agent.stop()` 时收尾。停止后仍保留调度器实例，好让"为什么没续期"这个问题有答案。
+
+**N18（后台服务监督）**：新增 `src/api/background-service-supervisor.ts`——`start()` 失败 → 指数退避重试（5s 起、上限 5 分钟）；起来后按 `checkIntervalMs`（默认 30s）复查 `isRunning()`，返回 false 或抛错都视为已死并立即重启，`restarts` 计数可见；`stop()` 取消待重试定时器（同一类"停掉的会被自己排的重试复活"缺陷）；重复 `start()` 不会叠定时器；定时器 `unref()`，不拖住进程退出。`src/api/runtime.ts` 的 `startBackgroundServices()` 改为用它接管 **DDNS** 与 **隧道 provider**（隧道用 `getStatus().running` 做存活判据），`stopBackgroundServices()` 先停监督器再停其余服务。
+
+证据（负向优先）：调度器 6 例（到期续期、缺证书也算到期、失败退避 100→200→400→上限、并发不重复续期、定时循环与停止、重复 start 不叠定时器）+ 管理面 2 例（自行续期并在停止后停手、重复启动不叠定时器）；把调度循环去掉后 **4 例失败**。监督器 7 例（退避重试至成功、退避封顶、存活复查触发重启、存活检查抛错按已死处理、定时循环与停止、停止后不被待重试复活、重复 start 不叠）；去掉监督循环后 1 例失败。
+
+**本轮明确未做**：会话内已建立路由的中途切换（把正在用的路由换成另一条并保持请求）仍未实现——N06 保证不会选中过期/无关路由并对失败关闭，但"换路"是另一个设计；cluster 模式证书走心跳下发（`ClusterCertificateManager`），不带本地续期调度；N12 的 admin 侧真实探测与 N16 的产物携带客户端仍是待决策项。

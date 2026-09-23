@@ -4,6 +4,7 @@ import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory'
 import { resolveLogFilePattern } from '../logging/log-file';
 import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig, type ApiContainerCradle } from './container';
 import { registerRoutes } from './container/routes';
+import { BackgroundServiceSupervisor } from './background-service-supervisor';
 import type { AuthContext } from './auth/AuthContext';
 import { OpenAuthMiddleware } from './middleware/OpenAuthMiddleware';
 import type { AccountRoleRepository } from '../identity/drizzle/AccountRoleRepository';
@@ -421,6 +422,14 @@ export function resolveTunnelIngressPort(env: NodeJS.ProcessEnv = process.env): 
   return 3000;
 }
 
+/**
+ * 后台服务由 supervisor 接管（审计 N18）。
+ *
+ * 此前每个服务只 start 一次，失败只写日志：开机时断网、provider 抖动的隧道会一直躺着，
+ * 跑着跑着死掉的也没人发现。现在启动失败按退避重试，起来之后按间隔复查存活。
+ */
+const backgroundSupervisors: BackgroundServiceSupervisor[] = [];
+
 async function startBackgroundServices(
   container: AwilixContainer<ApiContainerCradle>,
   logger: ReturnType<typeof getLoggerFor>,
@@ -437,8 +446,18 @@ async function startBackgroundServices(
   try {
     const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true }) as any;
     if (ddnsManager) {
-      await ddnsManager.start();
-      logger.info('DDNS Manager started');
+      const supervisor = new BackgroundServiceSupervisor({
+        name: 'ddns',
+        start: async () => {
+          await ddnsManager.start();
+        },
+        stop: async () => {
+          ddnsManager.stop?.();
+        },
+        logger,
+      });
+      backgroundSupervisors.push(supervisor);
+      supervisor.start();
     }
   } catch (error) {
     logger.error(`Failed to initialize DdnsManager: ${error}`);
@@ -449,13 +468,25 @@ async function startBackgroundServices(
 
     if (localTunnelProvider) {
       logger.info('Starting local tunnel provider...');
-      const config = await localTunnelProvider.setup({
-        subdomain: 'local',
-        localPort: resolveTunnelIngressPort(),
-        localProtocol: 'http',
+      const supervisor = new BackgroundServiceSupervisor({
+        name: `tunnel:${String(localTunnelProvider.name ?? 'local')}`,
+        start: async () => {
+          const config = await localTunnelProvider.setup({
+            subdomain: 'local',
+            localPort: resolveTunnelIngressPort(),
+            localProtocol: 'http',
+          });
+          await localTunnelProvider.start(config);
+        },
+        stop: async () => {
+          await localTunnelProvider.stop?.();
+        },
+        // 隧道进程退出后 provider 自己知道状态，supervisor 据此重启。
+        isRunning: () => Boolean(localTunnelProvider.getStatus?.().running),
+        logger,
       });
-      await localTunnelProvider.start(config);
-      logger.info('Local tunnel provider started');
+      backgroundSupervisors.push(supervisor);
+      supervisor.start();
     }
   } catch (error) {
     logger.error(`Failed to start local tunnel provider: ${error}`);
@@ -463,11 +494,10 @@ async function startBackgroundServices(
 }
 
 async function stopBackgroundServices(container: AwilixContainer<ApiContainerCradle>): Promise<void> {
-  try {
-    const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true }) as any;
-    ddnsManager?.stop();
-  } catch {
-    // ignore shutdown errors
+  // 先停监督器：否则一次关停会被自己排的重试撤销（ddns/tunnel 的 stop 由它们负责调用）。
+  while (backgroundSupervisors.length > 0) {
+    const supervisor = backgroundSupervisors.pop();
+    await supervisor?.stop();
   }
 
   try {
@@ -477,12 +507,8 @@ async function stopBackgroundServices(container: AwilixContainer<ApiContainerCra
     // ignore shutdown errors
   }
 
-  try {
-    const localTunnelProvider = container.resolve('localTunnelProvider', { allowUnregistered: true }) as any;
-    await localTunnelProvider?.stop();
-  } catch {
-    // ignore shutdown errors
-  }
+  // The tunnel provider's stop is owned by its supervisor above; stopping it twice would kill
+  // the same process twice and make the shutdown path look like it did more than it did.
 }
 
 async function stopApiRuntimeServices(container: AwilixContainer<ApiContainerCradle>): Promise<void> {

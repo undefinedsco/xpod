@@ -212,3 +212,61 @@ describe('AcmeCertificateManager CA failover (N15)', () => {
     expect(acmeMock.attempted).toEqual([ STAGING ]);
   });
 });
+
+/**
+ * N15（续期链）：`ensureCertificate()` 只在启动时看一次状态，长期运行的节点此前没有任何
+ * 东西驱动续期——证书到期只能靠人手调管理接口。这里验证后台续期真的接上了，而且停得掉。
+ */
+describe('AcmeCertificateManager auto renewal (N15)', () => {
+  beforeEach(() => {
+    acmeMock.attempted.length = 0;
+    acmeMock.failures.clear();
+  });
+
+  it('renews by itself while the certificate is missing, and stops when told to', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'acme-autorenew-'));
+    const manager = new AcmeCertificateManager({
+      dnsChallengeHandler: { setChallenge: vi.fn(), removeChallenge: vi.fn() },
+      email: 'ops@example.com',
+      domains: [ 'node-1.cluster.example' ],
+      accountKeyPath: path.join(tmpDir, 'account.key'),
+      certificateKeyPath: path.join(tmpDir, 'tls.key'),
+      certificatePath: path.join(tmpDir, 'tls.crt'),
+      propagationDelayMs: 0,
+    });
+
+    manager.startAutoRenewal({ intervalMs: 40 });
+    try {
+      await vi.waitFor(() => expect(acmeMock.attempted.length).toBeGreaterThan(0), { timeout: 3_000 });
+    } finally {
+      manager.stopAutoRenewal();
+    }
+
+    const attemptsWhenStopped = acmeMock.attempted.length;
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    expect(acmeMock.attempted.length).toBe(attemptsWhenStopped);
+    expect(manager.getRenewalSchedulerStatus()?.running).toBe(false);
+  });
+
+  it('does not double the timer when auto renewal is started twice', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'acme-autorenew-twice-'));
+    const manager = new AcmeCertificateManager({
+      dnsChallengeHandler: { setChallenge: vi.fn(), removeChallenge: vi.fn() },
+      email: 'ops@example.com',
+      domains: [ 'node-1.cluster.example' ],
+      accountKeyPath: path.join(tmpDir, 'account.key'),
+      certificateKeyPath: path.join(tmpDir, 'tls.key'),
+      certificatePath: path.join(tmpDir, 'tls.crt'),
+      propagationDelayMs: 0,
+    });
+
+    manager.startAutoRenewal({ intervalMs: 10_000 });
+    manager.startAutoRenewal({ intervalMs: 10_000 });
+    await vi.waitFor(() => expect(acmeMock.attempted.length).toBe(1), { timeout: 3_000 });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(acmeMock.attempted.length).toBe(1);
+
+    manager.stopAutoRenewal();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+});
