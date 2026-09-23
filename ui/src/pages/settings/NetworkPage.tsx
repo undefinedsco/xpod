@@ -5,6 +5,8 @@ import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitl
 import { Activity, Copy, Download, ExternalLink, Globe2, Network, RefreshCw, RotateCcw, ShieldCheck, Wifi } from 'lucide-react';
 import {
   fetchNetworkSettingsStatus,
+  fetchTunnelClients,
+  installTunnelClient,
   updateNetworkConfiguration,
   renewNetworkCertificate,
   runNetworkDiagnostics,
@@ -12,6 +14,7 @@ import {
   type NetworkSettingsStatus,
   type NetworkConfigurationPatch,
   type NetworkDesiredConfiguration,
+  type TunnelClientInspection,
   type TunnelProviderDescriptor,
 } from '../../api/network-settings';
 import { PaneListHeader } from './PaneListHeader';
@@ -217,7 +220,7 @@ export default function NetworkPage() {
           {activeSection === 'overview' && <CapabilityCard status={status} />}
           {activeSection === 'domain-dns' && <><ObservedDnsCard status={status} /><DnsConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
           {activeSection === 'https' && <><ObservedTlsCard status={status} /><HttpsConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
-          {activeSection === 'tunnel-profiles' && <><SingleCapabilityCard title="Observed tunnel" label="Tunnel" capability={status?.tunnel} /><TunnelConfigurationCard configuration={status?.configuration} providers={status?.providers ?? []} ingress={status?.ingress} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></>}
+          {activeSection === 'tunnel-profiles' && <><SingleCapabilityCard title="Observed tunnel" label="Tunnel" capability={status?.tunnel} /><TunnelConfigurationCard configuration={status?.configuration} providers={status?.providers ?? []} ingress={status?.ingress} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /><TunnelClientsCard fetchImpl={hostFetch} /></>}
           {activeSection === 'p2p' && <P2pConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} />}
           {(activeSection === 'overview' || activeSection === 'diagnostics' || activeSection === 'https') && <ActionsCard
             status={status}
@@ -341,6 +344,55 @@ function HttpsConfigurationCard({ configuration, saving, applyState, onSave }: C
     </div>
     <SaveConfigurationButton label="Save HTTPS configuration" saving={saving} onClick={() => onSave({ https: value })} />
   </ConfigurationCard>;
+}
+
+/**
+ * "检查"与"下载"就放在隧道配置旁边（审计 N16）。
+ *
+ * 产物不内置任何客户端，所以这两个按钮是插件式的入口：检查报告每个 provider 的客户端从哪来、
+ * 能不能跑；下载只对存在稳定直链的客户端开放（cloudflared），装到插件目录并且**必须能跑**才留下。
+ */
+function TunnelClientsCard({ fetchImpl }: { fetchImpl: typeof fetch }) {
+  const [clients, setClients] = useState<TunnelClientInspection[] | undefined>(undefined);
+  const [busy, setBusy] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  const inspect = async () => {
+    setBusy('inspect'); setError(undefined);
+    try {
+      const result = await fetchTunnelClients({ fetchImpl });
+      setClients(result.clients);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  const download = async (provider: string) => {
+    setBusy(provider); setError(undefined);
+    try {
+      const result = await installTunnelClient({ fetchImpl, provider });
+      setClients(result.clients);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  return <Card><CardHeader><CardTitle className="text-base">Tunnel clients</CardTitle><CardDescription>Clients are not bundled with this build: check where one comes from, or download it into the plugin directory.</CardDescription></CardHeader><CardContent className="space-y-3 text-sm">
+    <Button type="button" size="sm" variant="outline" onClick={inspect} disabled={busy === 'inspect'}>{busy === 'inspect' ? 'Checking…' : 'Check clients'}</Button>
+    {error && <div className="text-destructive">{error}</div>}
+    {clients && <div className="space-y-2">{clients.map((client) => <div key={client.provider} className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2">
+      <Badge variant={client.state === 'ready' ? 'default' : 'outline'}>{client.state === 'ready' ? 'Ready' : 'Missing'}</Badge>
+      <span className="font-medium">{client.label}</span>
+      <span className="text-xs text-muted-foreground">{client.path ?? client.binary}{client.version ? ` · ${client.version}` : ''}{client.source === 'bundled' ? ' · plugin directory' : ''}</span>
+      {client.state === 'missing' && <span className="text-xs text-muted-foreground">{client.installHint}</span>}
+      {client.state === 'missing' && client.installable && <Button type="button" size="sm" onClick={() => download(client.provider)} disabled={busy === client.provider}>{busy === client.provider ? 'Downloading…' : 'Download'}</Button>}
+      {client.state === 'missing' && !client.installable && <span className="text-xs text-muted-foreground">（{client.installableReason}）</span>}
+    </div>)}</div>}
+  </CardContent></Card>;
 }
 
 function TunnelConfigurationCard({ configuration, providers, ingress, saving, applyState, onSave }: ConfigurationCardProps & { providers: TunnelProviderDescriptor[]; ingress?: { port: number; originUrl: string } }) {

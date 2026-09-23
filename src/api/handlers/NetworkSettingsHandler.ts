@@ -5,6 +5,8 @@ import {
   probeEndpointReachability,
   type EndpointReachabilityResult,
 } from '../network/EndpointReachabilityProbe';
+import { TunnelClientManager, type TunnelClientInspection } from '../../tunnel/TunnelClientManager';
+import type { TunnelProviderId } from '../../tunnel/TunnelProviderCatalog';
 import type { ApiServer } from '../ApiServer';
 import type { AuthContext } from '../auth/AuthContext';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
@@ -146,6 +148,14 @@ export interface NetworkSettingsHandlerOptions {
    * the public-address-only probe; tests inject a stub.
    */
   endpointReachabilityProbe?: (endpoint: string) => Promise<EndpointReachabilityResult>;
+  /**
+   * Tunnel-client plugin actions for the settings page (audit N16): list where each provider's
+   * client would come from, and install one on request. Injectable for tests.
+   */
+  tunnelClients?: {
+    inspectAll: () => Promise<TunnelClientInspection[]>;
+    install: (provider: TunnelProviderId) => Promise<{ installedPath: string; version?: string; sourceUrl: string }>;
+  };
   localAddresses?: () => string[];
   lanAddresses?: () => string[];
   publicAddresses?: () => string[];
@@ -212,6 +222,46 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
     } catch (error) {
       logger.error(`Failed to run network diagnostics: ${redactSecretText(error)}`);
       sendJson(response, 500, { error: 'Failed to run network diagnostics' });
+    }
+  }, { optionalAuth: true });
+
+  // The tunnel-client plugin actions live next to the tunnel configuration they serve: one
+  // "check" that says where each client comes from, one "download" that installs it (N16).
+  server.get('/api/network/settings/tunnel-clients', async (request, response) => {
+    if (!await requireNetworkPermission(request, response, authorizer, 'read', options.internalAdminAuthSecret)) {
+      return;
+    }
+    try {
+      const manager = options.tunnelClients ?? new TunnelClientManager();
+      sendJson(response, 200, { clients: await manager.inspectAll() });
+    } catch (error) {
+      logger.error(`Failed to inspect tunnel clients: ${redactSecretText(error)}`);
+      sendJson(response, 500, { error: 'Failed to inspect tunnel clients' });
+    }
+  }, { optionalAuth: true });
+
+  server.post('/api/network/settings/tunnel-clients/:provider/install', async (request, response, params) => {
+    const provider = String((params as Record<string, unknown> | undefined)?.provider ?? '');
+    const known = [ 'ngrok', 'cloudflare', 'sakura_frp', 'frp' ].includes(provider);
+    if (!known) {
+      sendJson(response, 404, { error: `Unknown tunnel provider: ${provider}` });
+      return;
+    }
+    if (!await requireNetworkPermission(request, response, authorizer, 'write', options.internalAdminAuthSecret)) {
+      return;
+    }
+    try {
+      const manager = options.tunnelClients ?? new TunnelClientManager();
+      const installed = await manager.install(provider as TunnelProviderId);
+      sendJson(response, 200, {
+        installed,
+        clients: await manager.inspectAll(),
+      });
+    } catch (error) {
+      // A refused download is a normal answer (no pinned asset), not a server fault.
+      const message = redactSecretText(error);
+      logger.warn(`Tunnel client install refused for ${provider}: ${message}`);
+      sendJson(response, 400, { error: message });
     }
   }, { optionalAuth: true });
 
