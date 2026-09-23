@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../../src/runtime/XpodRuntime';
 import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
+import { startTestRuntime } from '../helpers/testRuntime';
 import { FAKE_QLEVER_LOCAL_RUNTIME_COMMAND } from '../helpers/qleverRuntime';
 import { createTestDir } from '../utils/sqlite';
 
@@ -292,7 +293,7 @@ describe('settings dashboard static launch smoke', () => {
     settingsScriptPath = scriptMatch![1];
     expect(fs.existsSync(productUrlToStaticPath(settingsScriptPath))).toBe(true);
 
-    runtime = await startXpodRuntime({
+    runtime = await startTestRuntime(startXpodRuntime, {
       mode: 'local',
       open: true,
       transport: resolveTestRuntimeTransport('port'),

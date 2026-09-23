@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../../src/runtime/XpodRuntime';
 import { createGatewayAdminProxyHeaders } from '../../src/runtime/GatewayAdminProxyAuth';
 import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
+import { startTestRuntime } from '../helpers/testRuntime';
 import { setupAccount, type AccountSetup } from '../integration/helpers/solidAccount';
 import { createTestDir } from '../utils/sqlite';
 import { createSolidLocalRouteFetch } from '../../packages/solid-sdk/src/local-route-fetch';
@@ -98,7 +99,7 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
 
     const runtimeRoot = createTestDir('xpod-runtime-auto-provision');
     setupPath = path.join(runtimeRoot, '.xpod-cloud-registration.json');
-    runtime = await startXpodRuntime({
+    runtime = await startTestRuntime(startXpodRuntime, {
       mode: 'local',
       transport: resolveTestRuntimeTransport('port'),
       runtimeRoot,
@@ -196,7 +197,7 @@ describe('XpodRuntime', () => {
   let account: AccountSetup | null;
 
   beforeAll(async () => {
-    runtime = await startXpodRuntime({
+    runtime = await startTestRuntime(startXpodRuntime, {
       mode: 'local',
       open: true,
       transport: resolveTestRuntimeTransport('port'),
@@ -262,7 +263,7 @@ describe('XpodRuntime admin proxy authorization lifecycle', () => {
     const envFile = path.join(runtimeRoot, '.env.local');
     fs.writeFileSync(envFile, 'CSS_BASE_URL=http://localhost:3000/\n', 'utf8');
 
-    runtime = await startXpodRuntime({
+    runtime = await startTestRuntime(startXpodRuntime, {
       mode: 'local',
       open: true,
       transport: resolveTestRuntimeTransport('port'),
@@ -386,7 +387,7 @@ describe('XpodRuntime standalone profile authorization', () => {
   let runtime: XpodRuntimeHandle;
 
   beforeAll(async () => {
-    runtime = await startXpodRuntime({
+    runtime = await startTestRuntime(startXpodRuntime, {
       mode: 'local',
       transport: resolveTestRuntimeTransport('port'),
       runtimeRoot: createTestDir('xpod-runtime-standalone-profile'),
@@ -424,7 +425,7 @@ describe('XpodRuntime seeded profile authorization', () => {
       { email: 'seeded-profile-b@example.test', password: 'test123456', pods: [{ name: 'seeded-profile-b' }] },
     ]));
 
-    runtime = await startXpodRuntime({
+    runtime = await startTestRuntime(startXpodRuntime, {
       mode: 'local',
       transport: resolveTestRuntimeTransport('port'),
       runtimeRoot,
@@ -483,7 +484,7 @@ describe('XpodRuntime Local SP OIDC key material', () => {
     });
     cloudOrigin = (await listen(cloudServer)).origin;
 
-    runtime = await startXpodRuntime({
+    runtime = await startTestRuntime(startXpodRuntime, {
       mode: 'local',
       transport: resolveTestRuntimeTransport('port'),
       runtimeRoot: createTestDir('xpod-runtime-local-sp-oidc'),
@@ -575,7 +576,7 @@ describe('XpodRuntime SP provisioning authorization', () => {
     });
     cloudOrigin = (await listen(cloudServer)).origin;
 
-    runtime = await startXpodRuntime({
+    runtime = await startTestRuntime(startXpodRuntime, {
       mode: 'local',
       transport: resolveTestRuntimeTransport('port'),
       runtimeRoot: createTestDir('xpod-runtime-sp-provisioning'),
