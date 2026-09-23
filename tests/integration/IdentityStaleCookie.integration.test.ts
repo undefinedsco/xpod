@@ -87,7 +87,9 @@ suite('Identity stale account cookie recovery', () => {
       logLevel: 'warn',
     });
     db = getSqliteRuntime().openDatabase(identityDbPath);
-  }, 120_000);
+    // The hook starts a stack, drives the OIDC flow and waits out a stale cookie: measured
+    // well past two minutes when other integration files run in parallel.
+  }, 240_000);
 
   afterAll(async() => {
     db?.close();

@@ -66,4 +66,6 @@ it.skipIf(!nativeCommand)('restores password login in fresh CLI processes and re
     await stack.stop();
     await rm(root, { recursive: true, force: true });
   }
-}, 240_000);
+  // Six CLI child processes, each booting bun and TypeScript against the same stack; the
+  // per-command budget is 60s, so the file needs room for the slowest path plus the rest.
+}, 480_000);
