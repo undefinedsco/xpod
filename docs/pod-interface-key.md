@@ -312,6 +312,20 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 - 因此边界必须是**强制**的，而不是命名约定：任务层使用独立 schema/表 + 独立 DB role（或独立逻辑库；RC overlay 已有"独立 logical database/schema"的先例），local 模式给任务层单独的 SQLite 文件，不复用 identity 库。
 - 唯一消费者是后台执行；前台交互走 host Session，不读这份存储。API 需要触发后台工作时只传非秘密引用（`taskId` / `credentialRef` / `credentialVersion`），解析发生在任务层。
 
+### 7.5 Inngest 侧的秘密边界与可用口子
+
+Inngest **原生不是密钥保管方**：它只持有自己的传输/信任密钥 —— `INNGEST_EVENT_KEY`（投递事件时的认证）与 `INNGEST_SIGNING_KEY`（校验来自 Inngest 的请求），我们正是把这两个值交给自托管 server（`EmbeddedInngestService`）。应用密钥默认来自**你自己的运行环境或自有存储**；事件载荷与 step 输出会被持久化，并在 dashboard / traces 里可见，所以官方语义就是"不要把明文秘密放进去"。
+
+它确实留了扩展口子，而且是官方维护的：
+
+| 口子 | 内容 | 对本设计的意义 |
+| --- | --- | --- |
+| **加密中间件**（`@inngest/middleware-encryption`，npm 2.0.0） | 对 events、step output、function output 做端到端加密——"只有密文发到 Inngest server，加解密发生在你自己的基础设施内"；支持只解密模式、fallback 解密密钥、跨语言 | 若将来确实要把秘密放进 event/step（当前设计不做），这是**唯一**正规做法：密文 + 我们自己持有的加密密钥，绝不明文 |
+| 通用 middleware 接口（本仓库已装 SDK 4.14.0 带 `middleware/dependencyInjection`、`middleware/logger`、`components/middleware`） | 可自定义序列化/加解密/依赖注入 | 需要自定义封装密钥解析时使用；不改变"只传引用"的默认设计 |
+| 自托管存储插件（Postgres/Redis/SQLite 目录，我们已在配置） | Inngest server 自己的数据存哪 | 只是"它自己的数据放哪"，不是应用秘密保管；与任务层凭据表并列但互不读写 |
+
+结论：**当前设计不需要这些口子**——事件只带 `credentialRef`/`credentialVersion`，密钥在任务层自有表、执行时解析（官方推荐模式）。若未来启用加密中间件，它的加密密钥与决策 6 的那把部署密钥可以是**同一份部署材料、两处用途**（启用前须单独验证：Inngest 侧仅存密文、本地可正确解密、fallback 密钥轮换可用；`@inngest/middleware-encryption` 目前**未安装**在本仓库，也未针对自托管 server 验证过）。
+
 ## 8. 验收要求与证据
 
 | 场景 | 必须证明 |
@@ -345,6 +359,6 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | 3 | 任务权威存储 | **已定：Pod 资源为权威，Inngest 只承载引用与运行状态**（理由见 §7.3） | pending/active 与版本字段加在 Pod 任务资源上；Inngest 侧靠幂等 `executionKey` 重放 |
 | 4 | `caller_pod_access_unavailable` 是否拆分 | 一个 reason 承载"未认证"与"已认证但无出站能力" | 拆出 `caller_outbound_capability_missing`，兼容期保留旧码 + `details.capability` |
 | 5 | Runtime 打开 Pod 的运行态钥匙放哪 | **已定：放任务层自己的表**（`identity_task_credential` 草案见 §7.4），与 Inngest server 的表并列在同一套基础设施（cloud 同 Postgres、local 同 SQLite 目录），Inngest 只带引用与版本。密钥不进 Pod（自锁）、不进事件/step 数据（会进调试面） | 表结构按 §7.4 落库；`Agent` 授权仍写用户 Pod（决策 2）。**归属**：该存储只归任务层，API 不共用、不读；API 只传非秘密引用。边界靠独立 schema/表 + 独立 DB role（或独立库）强制，见 §7.4。这把钥匙是 Pod 之外唯一能开 Pod 的东西，因此存储访问控制即权限边界——见决策 6 |
-| 6 | §7.4 的 `sealed_secret` 是否再用部署密钥加密 | 按决策 1，Pod 内数据不再加密；但本表在 Pod 之外，DB 泄露即等于"可打开所有已登记的 Pod" | (a) 不加密：实现最简，靠 DB 凭据与网络隔离，风险写进威胁模型；(b) 用部署侧密钥（env/KMS）加密该列：多一个部署配置项，但把"读到表"与"能开 Pod"分开。**建议 (b)**，且只加密这一列 |
+| 6 | §7.4 的 `sealed_secret` 是否再用部署密钥加密 | 按决策 1，Pod 内数据不再加密；但本表在 Pod 之外，DB 泄露即等于"可打开所有已登记的 Pod" | (a) 不加密：实现最简，靠独立 DB role 与网络隔离，风险写进威胁模型；(b) 用部署侧密钥（env/KMS）加密该列：多一个部署配置项，但把"读到表"与"能开 Pod"分开。**建议 (b)**，且只加密这一列；若将来启用 §7.5 的 Inngest 加密中间件，同一份部署密钥可复用于两处 |
 
 本次为文档修订，未修改运行代码、未执行运行验收。
