@@ -64,7 +64,7 @@ Pod 即静态秘密的信任边界；因此不为 Pod 内数据再引入一层�
 | `CallerPodAccess` | Bearer 除身份/token 检查外还要求 `viaApiKey` | 有效且适用的直接 Bearer 不应因不是 sk 来源被排除 |
 | `PodInterfaceKeyStore` + `identity_pod_interface_key` | 用 `CredentialVault` 长期封存 owner 的 CSS secret | 这是 API 部署凭证库，即使按用户隔离，也不符合任务层持久化归属 |
 | `credentialVaultForConfig`（`src/api/container/common.ts`） | 写入路径一律是 `PlaintextCredentialVault`（base64，非加密）；`SecretCellCredentialVault` 只作为 `legacyVault` 参与**解密** | 第 1.1/3.3 节要求"加密保存、解密 key 与密文分离"，与现状不符；新凭证存储须明确走 `SecretCellCredentialVault`（依赖 `XPOD_SECRET_CELL_KEY_ID` / `XPOD_SECRET_CELL_KEY`），否则改口径（见第 9 节决策 1） |
-| 本轮已上线的 `identity_pod_interface_key` | 与 Provider secret 用同一个 plaintext vault 封存 | 同样受上一条影响；迁移时必须按"密文-密钥分离"重写或明确接受明文口径 |
+| 本轮已上线的 `identity_pod_interface_key` | 行数据存在 API 的 identity DB；API 通过 `storedKeyFetch` 机会式使用 | **迁出后删除**：把行数据迁入任务层凭据存储（第 7.4 节），随后删除该表与 API 侧读路径（`PodInterfaceKeyStore`、`storedKeyFetch`、注册时 `saveKey`）。表归任务层，API 不保留访问；过渡期只读、不再新增写入 |
 | `POST /api/ai/gateway/keys` | 校验凭证后先 `saveKey`，再写 Pod 记录；后者失败没有补偿 | 注册配置与后台授权解耦；不以持久化密钥解决第一次 Pod 写入 |
 | `OwnerPodAccess` 的身份保护 | 拒绝另一个 Solid WebID；无 auth 时仍可读取存储密钥 | owner 字符串不能成为后台授权；恢复须经过任务绑定状态校验 |
 
@@ -247,7 +247,7 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | 3 | `POST /api/ai/gateway/keys` 改为请求级 Pod fetch，不再持久化部署 owner 密钥（§4） | 登记成功、Pod 记录写入成功、`identity_pod_interface_key` 不再新增；旧记录仍可读 | 保留（迁移期只读） |
 | 4 | Runtime 侧凭证存储 + Agent 授权 + 任务绑定（pending/active、幂等投递、崩溃恢复，§4） | 授权状态行 + 任务执行行：pending 不执行、失败不留 active、重试/并发/轮换/撤销符合版本语义 | 保留 |
 | 5 | 后台入口逐个迁移：配额定时刷新、索引重建、chatkit 后台 run、Matrix/Reconciler（§3.3、7.2） | 每迁一个：该入口在无 API vault 的情况下完成一次真实执行；对应 legacy 调用点在同一提交内摘除 | 逐步缩小 |
-| 6 | 移除 `storedKeyFetch` 通用回退；把 `identity_pod_interface_key` 迁移为任务层的运行态钥匙表（§7.4，含版本/状态列）而非直接删除 | 旁路退场行 + 全量 §8 通过；旧数据按"可恢复迁移 → 清理验证"处理 | 改造后 API 侧不再使用它，只有任务层显式引用 |
+| 6 | 把 `identity_pod_interface_key` 的行**迁出**到任务层凭据存储（§7.4），验证后**删除 API 侧的表**，并移除 `storedKeyFetch` 与注册时 `saveKey` | 迁移逐行核对（owner/issuer/credential_id 一一对应）+ 旁路退场行 + 全量 §8 通过；迁移失败时保持只读可回滚 | 移除（API 侧不再持有任何 owner 长期凭据） |
 
 约束：第 2、3 步完成前不得删除 legacy；第 5 步每个入口必须"先有替代验收、再摘调用点"；第 6 步前 `pod_interface_key_*` 诊断码仍需保留，因为迁移期它们仍是有效状态。
 
@@ -305,7 +305,12 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | `status` | `active` / `revoked` / `expired`；撤销只改状态，不删行 |
 | `created_at` / `rotated_at` / `last_used_at` / `expires_at` | 轮换与审计 |
 
-约束：表在 Pod 之外，因此它的访问控制就是"能开多少个 Pod"的边界——这一条决定了它是否需要独立加密（决策 6）；`Agent` 授权范围**不放这张表**，按决策 2 写在用户 Pod 里。
+约束与归属：
+
+- 表在 Pod 之外，因此它的访问控制就是"能开多少个 Pod"的边界——这决定了它是否需要独立加密（决策 6）；`Agent` 授权范围**不放这张表**，按决策 2 写在用户 Pod 里。
+- **这张表归任务层，API 不共用**。共用一张表（哪怕约定"只有任务层引用"）等于 API 依然持有打开 Pod 的凭据，与第 1 节"API sidecar 不建通用长期 CSS credential vault"直接冲突。
+- 因此边界必须是**强制**的，而不是命名约定：任务层使用独立 schema/表 + 独立 DB role（或独立逻辑库；RC overlay 已有"独立 logical database/schema"的先例），local 模式给任务层单独的 SQLite 文件，不复用 identity 库。
+- 唯一消费者是后台执行；前台交互走 host Session，不读这份存储。API 需要触发后台工作时只传非秘密引用（`taskId` / `credentialRef` / `credentialVersion`），解析发生在任务层。
 
 ## 8. 验收要求与证据
 
@@ -339,7 +344,7 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | 2 | Agent 授权对象的存储位置 | **已定：写在用户 Pod 内**（与任务注册同资源族）；目前 `src/agents/` 无 policy/scope 持久化 | 按 `taskResource` 的资源模式新增授权记录，不新建平行 registry |
 | 3 | 任务权威存储 | **已定：Pod 资源为权威，Inngest 只承载引用与运行状态**（理由见 §7.3） | pending/active 与版本字段加在 Pod 任务资源上；Inngest 侧靠幂等 `executionKey` 重放 |
 | 4 | `caller_pod_access_unavailable` 是否拆分 | 一个 reason 承载"未认证"与"已认证但无出站能力" | 拆出 `caller_outbound_capability_missing`，兼容期保留旧码 + `details.capability` |
-| 5 | Runtime 打开 Pod 的运行态钥匙放哪 | **已定：放任务层自己的表**（`identity_task_credential` 草案见 §7.4），与 Inngest server 的表并列在同一套基础设施（cloud 同 Postgres、local 同 SQLite 目录），Inngest 只带引用与版本。密钥不进 Pod（自锁）、不进事件/step 数据（会进调试面） | 表结构按 §7.4 落库；`Agent` 授权仍写用户 Pod（决策 2）。**注意**：这把钥匙是 Pod 之外唯一能开 Pod 的东西，因此表访问控制即权限边界——见决策 6 |
+| 5 | Runtime 打开 Pod 的运行态钥匙放哪 | **已定：放任务层自己的表**（`identity_task_credential` 草案见 §7.4），与 Inngest server 的表并列在同一套基础设施（cloud 同 Postgres、local 同 SQLite 目录），Inngest 只带引用与版本。密钥不进 Pod（自锁）、不进事件/step 数据（会进调试面） | 表结构按 §7.4 落库；`Agent` 授权仍写用户 Pod（决策 2）。**归属**：该存储只归任务层，API 不共用、不读；API 只传非秘密引用。边界靠独立 schema/表 + 独立 DB role（或独立库）强制，见 §7.4。这把钥匙是 Pod 之外唯一能开 Pod 的东西，因此存储访问控制即权限边界——见决策 6 |
 | 6 | §7.4 的 `sealed_secret` 是否再用部署密钥加密 | 按决策 1，Pod 内数据不再加密；但本表在 Pod 之外，DB 泄露即等于"可打开所有已登记的 Pod" | (a) 不加密：实现最简，靠 DB 凭据与网络隔离，风险写进威胁模型；(b) 用部署侧密钥（env/KMS）加密该列：多一个部署配置项，但把"读到表"与"能开 Pod"分开。**建议 (b)**，且只加密这一列 |
 
 本次为文档修订，未修改运行代码、未执行运行验收。
