@@ -248,7 +248,7 @@ export class PodMatrixStore {
   public async joinRoom(roomIdOrAlias: string, context: MatrixStoreContext): Promise<{ roomId: string }> {
     const db = await this.getDb(context);
     const roomId = await this.resolveRoomId(db, roomIdOrAlias);
-    const room = await this.roomSource(db, roomId);
+    const room = await this.roomSource(db, roomId, context);
     const sender = this.getMatrixUserId(context);
     const existing = await this.findLatestStateEvent(db, roomId, 'm.room.member', sender, context);
     if (existing?.content.membership === 'join') return { roomId };
@@ -503,7 +503,7 @@ export class PodMatrixStore {
     const originIso = new Date(input.originServerTs).toISOString();
     const needsRoomMetadata = input.reconcilerOwner === undefined
       || (input.type === 'm.room.message' && this.serverGroupReconcilerService !== undefined);
-    const roomContext = needsRoomMetadata ? await this.getRoomContext(db, input.roomId) : undefined;
+    const roomContext = needsRoomMetadata ? await this.getRoomContext(db, input.roomId, context) : undefined;
     const roomMetadata = roomContext?.metadata;
     const reconcilerOwner = input.reconcilerOwner ?? this.reconcilerOwnerFromRoomMetadata(roomMetadata);
     const coordination = reconcilerCoordinationMetadata(reconcilerOwner);
@@ -746,18 +746,34 @@ export class PodMatrixStore {
     return threadResource.buildIri(this.scope(context), {id:'thread',parent:this.chatIri(roomId,context)});
   }
 
-  private async roomSource(db: Db, roomId: string): Promise<MatrixRoomSource> {
-    const room = await db.findById(chatResource,this.chatResourceIdFromRoomId(roomId)) as MatrixRoomSource | undefined;
+  /**
+   * The room record is written once by `createRoom` and never mutated on the
+   * Matrix path, so one lookup per request serves membership, owner, metadata
+   * and grant checks. Each extra lookup is a full chat-resource SPARQL SELECT.
+   * The cache lives on the request context, not on this container singleton.
+   */
+  private async findRoomSource(db: Db, roomId: string, context: MatrixStoreContext): Promise<MatrixRoomSource | undefined> {
+    const holder = context as MatrixStoreContext & { _roomSources?: Map<string, MatrixRoomSource | undefined> };
+    holder._roomSources ??= new Map();
+    const key = this.chatResourceIdFromRoomId(roomId);
+    if (!holder._roomSources.has(key)) {
+      holder._roomSources.set(key, await db.findById(chatResource, key) as MatrixRoomSource | undefined);
+    }
+    return holder._roomSources.get(key);
+  }
+
+  private async roomSource(db: Db, roomId: string, context: MatrixStoreContext): Promise<MatrixRoomSource> {
+    const room = await this.findRoomSource(db, roomId, context);
     if (!room) throw new MatrixError(404,'M_NOT_FOUND','Room not found');
     return room;
   }
 
   private async requireRoomOwner(db: Db, roomId: string, context: MatrixStoreContext): Promise<void> {
-    if ((await this.roomSource(db,roomId)).author !== context.webId) throw new MatrixError(403,'M_FORBIDDEN','Room owner authority is required');
+    if ((await this.roomSource(db,roomId,context)).author !== context.webId) throw new MatrixError(403,'M_FORBIDDEN','Room owner authority is required');
   }
 
   private async requireJoined(db: Db, roomId: string, context: MatrixStoreContext, events?: MatrixEventRecord[]): Promise<void> {
-    const room = await this.roomSource(db,roomId);
+    const room = await this.roomSource(db,roomId,context);
     const state = events ? this.latestState(events,'m.room.member',this.getMatrixUserId(context)) : await this.findLatestStateEvent(db,roomId,'m.room.member',this.getMatrixUserId(context),context);
     if (state?.content.membership === 'join' || (!state && room.author === context.webId)) return;
     throw new MatrixError(403,'M_FORBIDDEN','Join the room before accessing its timeline');
@@ -815,7 +831,7 @@ export class PodMatrixStore {
     const pending: string[] = [];
     for (const target of targets) if (await this.ensureDelivery(db,event,target,context)) pending.push(target);
     if (!pending.length) return;
-    const room = await this.roomSource(db,event.roomId);
+    const room = await this.roomSource(db,event.roomId,context);
     await this.reconcileGroupUserMessage({thread:this.threadIri(event.roomId,context),
       triggerMessage:messageResource.buildIri(this.scope(context),{id:event.resourceId!}), actor, role:'user',
       content:typeof event.content.body==='string' ? event.content.body : '', createdAt:new Date(event.originServerTs).toISOString(),
@@ -1056,8 +1072,8 @@ export class PodMatrixStore {
     return Number.isFinite(value) ? value : undefined;
   }
 
-  private async getRoomContext(db: Db, roomId: string): Promise<MatrixRoomContext> {
-    const room = await db.findById(chatResource, this.chatResourceIdFromRoomId(roomId)) as MatrixRoomSource | null;
+  private async getRoomContext(db: Db, roomId: string, context: MatrixStoreContext): Promise<MatrixRoomContext> {
+    const room = await this.findRoomSource(db, roomId, context);
     return {
       metadata: this.parseJsonObject(room?.metadata),
       participants: normalizeAgentUris(room?.participants),
