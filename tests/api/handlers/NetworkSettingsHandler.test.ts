@@ -209,7 +209,7 @@ describe('NetworkSettingsHandler', () => {
       { id: 'dns', label: 'DNS', status: 'error', detail: '[redacted]' },
       { id: 'endpoint', label: 'Endpoint', status: 'ok', detail: 'https://xpod.example/ responded' },
     ]);
-    expect(body.checks.every((check: NetworkDiagnosticCheckResult) => typeof check.durationMs === 'number' && typeof check.checkedAt === 'string')).toBe(true);
+    expect(body.checks.every((check: NetworkDiagnosticCheckResult) => typeof check.checkDurationMs === 'number' && typeof check.checkedAt === 'string')).toBe(true);
     expect(JSON.stringify(body)).not.toContain('super-secret');
     expect(JSON.stringify(body)).not.toContain('postgres://');
     expect(JSON.stringify(body)).not.toContain('/Users/alice');
@@ -389,6 +389,41 @@ describe('NetworkSettingsHandler', () => {
     expect(addressCheck).toMatchObject({ status: 'ok' });
     expect(addressCheck.detail).toContain('configured:');
     expect(body.checks.some((check: { id: string }) => check.id === 'endpoint')).toBe(false);
+  });
+
+  it('never turns a configured but unreachable endpoint or a broken certificate into a pass', async () => {
+    const { server, routes } = createServer();
+    registerNetworkSettingsRoutes(server, {
+      // A domain that does not resolve and a port nothing listens on: still "configured".
+      endpoint: 'https://does-not-resolve.invalid:9/',
+      tlsStatusReader: { read: async () => ({ supported: true, status: 'invalid' }) },
+      dnsStatusReader: { read: async () => ({ supported: true, status: 'error' }) },
+      tunnelStatusReader: { read: async () => ({ supported: true, status: 'failed' }) },
+    });
+
+    const res = response();
+    const readOnlyAuth = { type: 'service' as const, serviceType: 'local' as const, serviceId: 'local-owner', scopes: [ 'network:read' ] };
+    await routes['POST /api/network/settings/diagnose'](request(readOnlyAuth), res, {});
+
+    const body = JSON.parse(res.body) as { checks: Array<Record<string, unknown>> };
+    const byId = new Map(body.checks.map((check) => [ check.id as string, check ]));
+
+    // Configured is not reachable: the address check says only what it knows.
+    expect(byId.get('address-configuration')).toMatchObject({ status: 'ok' });
+    expect(String(byId.get('address-configuration')?.detail)).toContain('configured:');
+    // A broken certificate and a failing tunnel must not read as fine.
+    expect(byId.get('tls')).toMatchObject({ status: 'error' });
+    expect(byId.get('dns')).toMatchObject({ status: 'error' });
+    expect(byId.get('tunnel')).toMatchObject({ status: 'error' });
+
+    // No check may claim a measurement it did not take: only the check's own duration exists,
+    // and nothing claims reachability or a round-trip time.
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toMatch(/reachable|latency|round.?trip/iu);
+    for (const check of body.checks) {
+      expect(check.latencyMs).toBeUndefined();
+      expect(typeof check.checkDurationMs).toBe('number');
+    }
   });
 
   it('requires explicit deployment read/write authorization for network settings actions', async () => {

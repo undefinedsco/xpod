@@ -44,6 +44,11 @@ jobs:
       - name: Unit tests
         run: bun run test:run
 
+      # The audit's N19: the Bun-only tests (tests/bun/** and every file importing bun:test)
+      # are excluded from vitest, so they need their own gate or they silently rot.
+      - name: Bun-only tests
+        run: bun run test:bun
+
       - name: Install browser for Account layout regression
         run: bunx playwright install --with-deps chromium
 

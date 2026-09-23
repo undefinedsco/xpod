@@ -10,8 +10,9 @@
 | 判定 | 数量 | 项 |
 | --- | --- | --- |
 | 已修复 | 7 | N03、N06、N07、N14、N15、N17、N18（W2 全部 + W3 除 N16 外，见第 9/10 节；对账时为"仍存在"） |
-| 部分缓解 | 4 | N01（仅读接口直连面）、N09（仅 UI 层）、N12（仅 admin public-ip）、N16（声明/解析/探测已做，产物仍未携带客户端） |
-| 仍存在 | 8 | N02、N04、N05、N08、N10、N11、N13、N19 |
+| 已修复 | 8 | N03、N06、N07、N14、N15、N17、N18、N19（见第 9/10 节） |
+| 部分缓解 | 4 | N01（仅读接口直连面）、N09（仅 UI 层）、N12（诊断面已改，admin 探针仍无探测）、N16（声明/解析/探测已做，产物仍未携带客户端） |
+| 仍存在 | 6 | N02、N04、N05、N08、N10、N11、N13 |
 | 仍存在（对账后新增） | 1 | N20（真实验收发现，见 4.4；修复见第 8 节） |
 
 结论：**W0（Gateway/API 授权与 Cloud 节点边界）仍是唯一正确的起手点**，报告的可信度经复核成立；同时工作区未提交改动引入了 3 个新的连带事实（第 4 节），其中 1 个是功能性回归风险，需在提交前处理。N20 不在报告范围内，是 W1 真实验收过程中在实际运行实例上观察到的生命周期缺陷，按同一口径补记。
@@ -82,7 +83,7 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 | N16 发布产物不含隧道客户端 | P1（若承诺免安装） | **部分修复（见第 10.4 节）** | 对账时：产物对三家客户端零命中，也没有"客户端从哪来"的声明。现：provider 目录声明每个客户端（名字/环境变量/安装提示/许可/可否随产物分发），一个解析器统一顺序（显式路径 → 打包目录 → PATH），缺失时报 `binary-missing:<provider>:<binary>` **并附安装提示**，另有 `scripts/check-tunnel-clients.ts` 预检。**产物仍未携带任何客户端**（ngrok 与 natfrp fork 不可分发；cloudflared/frpc 可分发的打包工作未完） | `tests/tunnel/TunnelClientResolver.test.ts` 9 例 + provider 环境变量解析 1 例；绕过解析顺序后 **5 例失败** |
 | N17 数据面资源上限、流式与取消缺口 | P1（若启用公网 P2P） | **已修复（见第 9 节）** | 对账时：`TcpP2PDataPlaneTransport.ts` 无帧/请求体/并发上限（仅 `DEFAULT_MAX_CLOCK_ERROR_SECONDS` 常量）；`P2PDataPlane.ts:103` 仍全量读取。现：帧/请求体/响应体/并发四类上限 + 取消信封 + 分块流式（head→chunk→end） | `tests/edge/reachability/P2PDataPlaneLimits.test.ts` 11 例；暂时关掉强制后 **7/11 失败** |
 | N18 恢复监督、动态选路与文件权限 | P2 | **部分修复（见第 10.3 节）** | 对账时：frpc 固定 1s 重启、`stop()` 不取消待重启、私钥与 frpc 配置（含 token）默认 0644。现：指数退避（1s→60s 上限）、活过 60s 视为健康清零、停止/替换进程时取消待重启并把被替换进程的退出排除在状态与重启之外、私钥与 frpc 配置 0600（含对旧文件 chmod）。**动态选路监督（`src/api/runtime.ts` 侧）仍未做** | `tests/edge/frp/FrpcProcessManager.test.ts` +4 例、`tests/edge/AcmeCertificateManager.test.ts` +1 例；对旧实现 **8 例失败**（含 N15 的 3 例） |
-| N19 测试入口与合同覆盖漂移 | P2 | **仍存在（并新增一例）** | `vitest.config.ts` 排除表仍含 `ui/src/api/network-settings.test.ts`（该测试与 `ui/src/api/network-settings.ts` 均未更新），且**新增** `tests/bun/**` 排除；CI（`.github/workflows/ci.yml:45`）只跑 `bun run test:run`，`package.json` 无执行 `tests/bun/**` 的脚本 | 见 4.3：新测试文件当前**没有任何执行入口** |
+| N19 测试入口与合同覆盖漂移 | P2 | **已修复（见第 10.5 节）** | 对账时：`tests/bun/**` 与 10 个 `bun:test` 的 UI 测试都只被排除、没有任何执行入口。现：`bun run test:bun`（`scripts/run-bun-tests.ts`）自动收集并执行这些文件，CI 的 unit job 同时跑 vitest 入口与 Bun 入口；两处漂移已修（`network-settings.test.ts` 参数名、AiConfig 模型 ref 改为从 models 包推导） | Bun 入口 11 文件 / 32 例全过；故意放一个失败用例时入口 exit=1 |
 | N20 子服务放弃重启后网关仍报健康 | P0 | **仍存在（对账后新增，见 4.4）** | 修复前 `src/supervisor/Supervisor.ts`：`restartCount <= MAX_RESTARTS(5)` 之后只 `console.error` 并把状态留在 `stopped`，重启间隔固定 2s、无健康度重置；`src/supervisor/types.ts` 状态集只有 `stopped/starting/running/crashed`，没有"已放弃"；`src/runtime/Proxy.ts` 的 `/service/status` 只按 CSS 就绪判定 `200/503`（`:705-712`）；`src/cli/commands/stop.ts` 把 `503` 当不可达直接抛错 | 无"子服务反复失败/不可恢复失败/停机取消重启"的负向回归；W1 真实验收在活实例上直接复现（见 4.4） |
 
 ## 4. 工作区未提交改动带来的三个新事实
@@ -136,7 +137,7 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 | W1 | N08–N11 | N09 的 UI 单表是收敛起点；N12 的 `describeUnservedPublicRoute` 展示了"本机可判定事实"的写法 | 统一 provider 注册与 profile 契约；停用语义权威化；profile-scoped 凭据；控件字段逐个定性（用户决策/推导值/不支持） | `tests/tunnel/TunnelProfiles.test.ts:90` 需改写；补 `NetworkEnvironmentConfigurationStore` 合同测试（真实 UI shape → API → store → runtime） |
 | W2 | N03、N06、N07、N17 | — | 数据面认证加密与身份绑定；按设备/网络范围/expiresAt/身份过滤后再探测；会话原子写；帧/并发/取消/流式限额 | 各 `tests/edge/reachability/*` 增负例；未完成前显式禁用公网数据面 |
 | W3 | N13–N16、N18、N20 | — | 生命周期四阶段状态；DNS 按自有记录 ID/type 更新；生产禁隐式 staging；发行产物携带客户端；退避与 0600 权限；**子服务失败必须可观察且不得被报成健康** | `tests/tunnel/*`、`tests/dns/*`、`tests/edge/*` + `tests/edge/frp/*`、`tests/supervisor/lifecycle.test.ts` |
-| W4 | N12、N19 | N12 已有 admin 侧先例 | 运维界面区分"已配置"与"已验证"；两类测试入口都进 CI（含 `tests/bun/**` 与 `ui/src/api/network-settings.test.ts`） | 修复 `ui/src/api/network-settings.test.ts` 签名漂移，并纳入默认入口 |
+| W4 | N12、N19 | N12 已有 admin 侧先例 | 运维界面区分"已配置"与"已验证"；两类测试入口都进 CI（含 `tests/bun/**` 与 `ui/src/api/network-settings.test.ts`） | 修复 `ui/src/api/network-settings.test.ts` 签名漂移，并纳入默认入口 ✅ 见 10.5 |
 | W5 | 验收矩阵 A01–A12 | — | 同一候选 SHA/产物取证；冻结阈值 | 报告第 7 节 |
 
 ## 6. 对报告本身的勘误
@@ -300,3 +301,21 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 证据（负向优先）：`tests/tunnel/TunnelClientResolver.test.ts` 9 例（显式路径优先、目录环境变量生效、显式路径不存在时拒绝回退、打包目录优先于 PATH、裸名字回落、缺失提示保留机器可读前缀、许可策略只允许可分发的客户端）+ `NgrokTunnelProvider` 新增 1 例（未给显式选项时按目录环境变量解析）；把解析顺序临时改成"永远用裸名字"后 **5 例失败**。
 
 **仍未闭环（下一轮）**：产物真的携带客户端——需要决定镜像/包的体积与签名策略（cloudflared 约 40MB、frpc 约 14MB），在 `Dockerfile` 与 `scripts/build-platform-package.cjs` 里落地并做一次干净 OS/架构的产物启动验收；ngrok 与 natfrp fork 在拿到许可前只能保持"用户自装 + 预检提示"。
+
+### 10.5 N19 测试入口统一进 CI（已完成）与 N12 诊断面收尾
+
+**N19**：`tests/bun/**` 与 10 个 import `bun:test` 的 UI 测试此前只被 `vitest.config.ts` 排除，没有任何执行入口——所以它们可以一直漂移。现在：
+
+- `scripts/run-bun-tests.ts` 自动收集「`tests/bun/**` 的全部文件」+「`ui/src`、`src` 下任何 import `bun:test` 的文件」，交给 `bun test` 执行；`--list` 可查看清单。`package.json` 新增 `test:bun`，CI 的 unit job 在 vitest 之后加了一步 `bun run test:bun`（两个入口都在 CI 里）。
+- **修掉两处真实漂移**（入口一跑就暴露）：`ui/src/api/network-settings.test.ts` 用的是 `authenticatedFetch`，而模块参数早已叫 `fetchImpl`；`AiConfigContext.test.ts` 把模型 ref 硬编码成带前导斜杠的旧形状，而 models 包的 `aiConfigModelRef()` 现在返回相对形式——改成**从 models 包推导期望值**，不再保留第二份定义。
+- 入口现在真的会失败：故意放一个失败用例时 `bun run test:bun` 退出码 1；当前 11 文件 / 32 例全过。
+
+**N12（部分）**：设置页诊断此前把「检查函数耗时」放在 `durationMs` 里，语义上容易被当成网络延迟。现在：
+
+- 字段改名 `checkDurationMs` 并在类型注释里写明"这是检查自身耗时，不是网络延迟"，`ui/src/api/network-settings.ts` 与 UI 测试夹具同步。
+- 能力状态到诊断级别的映射写成显式白/黑名单：只有 `active/valid/synced/direct/ready` 算 `ok`，`error/invalid/failed/expired/untrusted/mismatch` 算 `error`（**坏证书是失败，不是警告**），其余一律 `warning`——无法归类的状态永远不会变成通过。
+- 新增负例：endpoint 指向不存在域名 + 关闭端口、TLS 报 `invalid`、DNS 报 `error`、隧道报 `failed` 时，地址检查仍然只写 `configured:`，TLS/DNS/隧道三项都不得是 ok，整个响应里不出现 `reachable`/`latency`/`round-trip` 字样，且每个检查只有 `checkDurationMs`（没有 `latencyMs`）。
+
+证据（负向优先）：把 handler 改回旧映射与旧字段名后，诊断相关 **2 例失败**（含新增负例）。
+
+**N12 仍未闭环**：`AdminHandler` 侧的 endpoint/public-ip 探针仍只报 `unknown` 而不做真实探测（设计上"配置不等于探测结果"已经做到，但"存在域名/关闭端口/错证书/异网 LAN"这组负例没有真实探针可测）；这属于"要不要真探测"的产品决策，记在下一轮。

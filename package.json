@@ -135,6 +135,7 @@
     "test:integration:full": "bun scripts/run-integration-full.ts",
     "test:integration:all": "bun run test:integration:lite && bun run test:integration:full",
     "test:bun:runtime": "bun run build:ts && bun run build:components && XPOD_TEST_TRANSPORT=port bun scripts/run-bun-runtime-smoke.ts",
+    "test:bun": "bun scripts/run-bun-tests.ts",
     "test:integration:lite:up": "docker compose -f docker-compose.standalone.yml up -d --build",
     "test:integration:lite:down": "docker compose -f docker-compose.standalone.yml down",
     "smoke:server:reader-embedding": "bun scripts/smoke-reader-embedding-from-pod.ts",

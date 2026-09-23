@@ -65,7 +65,8 @@ export interface NetworkDiagnosticCheckResult {
   label: string;
   status: 'ok' | 'warning' | 'error' | 'unsupported';
   detail?: string;
-  durationMs?: number;
+  /** 检查本身耗时，不是网络延迟：见服务端 NetworkDiagnosticCheckResult 的说明。 */
+  checkDurationMs?: number;
   checkedAt?: string;
 }
 

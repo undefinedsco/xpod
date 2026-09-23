@@ -79,7 +79,15 @@ export interface NetworkDiagnosticCheckResult {
   label: string;
   status: DiagnosticStatus;
   detail?: string;
-  durationMs?: number;
+  /**
+   * How long the check itself took — **not** a network latency (audit N12).
+   *
+   * These checks read local state (is an address configured, what does the TLS/DNS/tunnel
+   * capability say); a duration here says nothing about reachability, so it is named after the
+   * check and consumers must not render it as a round-trip time. A real probe would have to add
+   * its own measurement.
+   */
+  checkDurationMs?: number;
   checkedAt?: string;
 }
 
@@ -533,7 +541,7 @@ async function runDiagnostic(
   logger: Pick<ReturnType<typeof getLoggerFor>, 'warn' | 'error'>,
 ): Promise<NetworkDiagnosticCheckResult> {
   const startedAt = Date.now();
-  const evidence = () => ({ durationMs: Math.max(0, Date.now() - startedAt), checkedAt: new Date().toISOString() });
+  const evidence = () => ({ checkDurationMs: Math.max(0, Date.now() - startedAt), checkedAt: new Date().toISOString() });
   try {
     const result = await check.run();
     if (typeof result === 'string') {
@@ -552,14 +560,24 @@ async function runDiagnostic(
   }
 }
 
+/**
+ * Maps a provider capability onto a diagnostic level.
+ *
+ * Only statuses that positively mean "verified" become `ok`, and known-bad ones become `error`
+ * (an invalid or expired certificate is a failure, not something to warn about). Anything else
+ * stays a warning: a status we cannot place must never be rendered as a pass (audit N12).
+ */
+const VERIFIED_CAPABILITY_STATUSES = new Set([ 'active', 'valid', 'synced', 'direct', 'ready' ]);
+const FAILED_CAPABILITY_STATUSES = new Set([ 'error', 'invalid', 'failed', 'expired', 'untrusted', 'mismatch' ]);
+
 function capabilityToDiagnostic(capability: CapabilityStatus): Omit<NetworkDiagnosticCheckResult, 'id' | 'label'> {
   if (!capability.supported) {
     return { status: 'unsupported', detail: capability.status };
   }
-  if (capability.status === 'active' || capability.status === 'valid' || capability.status === 'synced' || capability.status === 'direct') {
+  if (VERIFIED_CAPABILITY_STATUSES.has(capability.status)) {
     return { status: 'ok', detail: capability.status };
   }
-  if (capability.status === 'error') {
+  if (FAILED_CAPABILITY_STATUSES.has(capability.status)) {
     return { status: 'error', detail: capability.status };
   }
   return { status: 'warning', detail: capability.status };
