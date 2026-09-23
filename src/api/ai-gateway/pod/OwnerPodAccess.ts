@@ -1,13 +1,13 @@
-import { buildAuthenticatedFetch, createDpopHeader, generateDpopKeyPair } from '@inrupt/solid-client-authn-core';
+import { buildAuthenticatedFetch } from '@inrupt/solid-client-authn-core';
 import { getLoggerFor } from 'global-logger-factory';
 import { hasSolidClientCredentialsAuthority, type AuthContext } from '../../auth/AuthContext';
+import { SolidSessionError, type SolidSession, type SolidSessionFactory } from '../../auth/SolidSessionFactory';
 import {
   CALLER_DPOP_REPLAY_UNSUPPORTED,
   CALLER_OWNER_MISMATCH,
   CALLER_POD_ACCESS_UNAVAILABLE,
   createCallerAuthenticatedPodFetch,
 } from '../auth/CallerPodAccess';
-import { resolveTokenEndpointRoute, type TokenEndpointRoute } from '../../auth/TokenEndpointRoute';
 import { createHostedPodRouteTransport, type HostedPodRoute } from './HostedPodRoute';
 import type {
   PodInterfaceCredential,
@@ -39,24 +39,16 @@ export interface PodAccessFetchProvider {
 
 export interface OwnerPodAccessOptions {
   keys: PodInterfaceKeyAccess;
-  /** Token endpoint of this deployment's Solid interface. */
-  tokenEndpoint: string;
-  /** Canonical base URL of that interface, used to keep the DPoP proof canonical. */
-  publicBaseUrl?: string;
+  /**
+   * Shared Solid session factory. The caller's own credential was already exchanged while
+   * authenticating the request, so reaching the Pod reuses that session and its DPoP key
+   * instead of exchanging the same credential a second time.
+   */
+  sessions: SolidSessionFactory;
   /** Route this deployment exposes for its own hosted Pods, when one is needed. */
   route?: HostedPodRoute;
   fetch?: typeof fetch;
-  now?: () => number;
 }
-
-interface CachedPodFetch {
-  fetch: typeof fetch;
-  expiresAt: number;
-}
-
-const TOKEN_EXPIRY_SKEW_MS = 30_000;
-const DEFAULT_TOKEN_LIFETIME_SECONDS = 300;
-const MAX_CACHED_TOKENS = 128;
 
 /**
  * Reaches a Pod as its owner over the standard Solid interface.
@@ -72,29 +64,26 @@ const MAX_CACHED_TOKENS = 128;
 export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGrant {
   private readonly logger = getLoggerFor(this);
   private readonly keys: PodInterfaceKeyAccess;
+  private readonly sessions: SolidSessionFactory;
   private readonly fetchImpl: typeof fetch;
-  private readonly now: () => number;
-  private readonly tokenRoute: TokenEndpointRoute;
   private readonly route?: HostedPodRoute;
-  private readonly podFetches = new Map<string, CachedPodFetch>();
+  private transport?: Promise<typeof fetch>;
 
   public constructor(options: OwnerPodAccessOptions) {
     this.keys = options.keys;
+    this.sessions = options.sessions;
     this.fetchImpl = options.fetch ?? fetch;
-    this.now = options.now ?? Date.now;
-    this.tokenRoute = resolveTokenEndpointRoute(options.tokenEndpoint, options.publicBaseUrl);
     this.route = options.route;
   }
 
   /** Grant, or rotate, the owner's Pod interface key. */
   public async saveKey(owner: string, credential: PodInterfaceCredential): Promise<void> {
     await this.keys.saveKey(owner, credential);
-    this.podFetches.clear();
+    this.sessions.invalidate(credential);
   }
 
   public async forgetKey(owner: string): Promise<void> {
     await this.keys.forgetKey(owner);
-    this.podFetches.clear();
   }
 
   public async hasKey(owner: string): Promise<boolean> {
@@ -111,8 +100,8 @@ export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGr
       return undefined;
     }
     if (hasSolidClientCredentialsAuthority(auth)) {
-      // The caller's own interface key. Its exchanged token may be DPoP-bound to a proof that
-      // was never kept, so the key is exchanged again with a key this process controls.
+      // The caller's own interface key, already exchanged while authenticating this request: the
+      // session factory hands back that same token together with the key it is bound to.
       return await this.credentialFetch(
         owner,
         { clientId: auth.clientId, clientSecret: auth.clientSecret },
@@ -134,63 +123,32 @@ export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGr
     owner: string,
     credential: PodInterfaceCredential,
   ): Promise<typeof fetch> {
-    const cacheKey = `${owner}\u0000${credential.clientId}`;
-    const cached = this.podFetches.get(cacheKey);
-    if (cached && cached.expiresAt > this.now() + TOKEN_EXPIRY_SKEW_MS) {
-      return cached.fetch;
-    }
-    this.podFetches.delete(cacheKey);
-
-    const exchanged = await this.exchange(owner, credential);
-    this.podFetches.set(cacheKey, exchanged);
-    pruneOldest(this.podFetches, MAX_CACHED_TOKENS);
-    return exchanged.fetch;
-  }
-
-  private async exchange(owner: string, credential: PodInterfaceCredential): Promise<CachedPodFetch> {
-    const dpopKey = await generateDpopKeyPair();
-    const response = await this.fetchImpl(this.tokenRoute.url, {
-      method: 'POST',
-      headers: {
-        accept: 'application/json',
-        'content-type': 'application/x-www-form-urlencoded',
-        authorization: `Basic ${
-          Buffer.from(`${credential.clientId}:${credential.clientSecret}`, 'utf8').toString('base64')
-        }`,
-        DPoP: await createDpopHeader(this.tokenRoute.proofUrl, 'POST', dpopKey),
-        ...this.tokenRoute.headers,
-      },
-      body: new URLSearchParams({ grant_type: 'client_credentials', scope: 'webid' }),
-    });
-
-    const body = await response.text().catch(() => '');
-    if (!response.ok) {
-      this.logger.warn(`Pod interface key refused for ${owner}: ${response.status} ${body.slice(0, 200)}`);
-      throw new Error(`${POD_INTERFACE_KEY_REJECTED}:${response.status}`);
-    }
-    const token = parseTokenResponse(body);
-    if (!token) {
-      this.logger.warn(`Pod interface key exchange returned no access token for ${owner}`);
-      throw new Error(`${POD_INTERFACE_KEY_REJECTED}:invalid_response`);
+    let session: SolidSession;
+    try {
+      session = await this.sessions.session(credential);
+    } catch (error) {
+      const status = error instanceof SolidSessionError ? error.status : undefined;
+      this.logger.warn(`Pod interface key refused for ${owner}: ${String(error)}`);
+      throw new Error(`${POD_INTERFACE_KEY_REJECTED}:${status ?? 'invalid_response'}`);
     }
 
-    const transport = await createHostedPodRouteTransport(this.fetchImpl, this.route);
-    const authenticated = buildAuthenticatedFetch(token.accessToken, {
-      ...(token.dpopBound ? { dpopKey } : {}),
+    const transport = await (this.transport ??= createHostedPodRouteTransport(this.fetchImpl, this.route));
+    const authenticated = buildAuthenticatedFetch(session.accessToken, {
+      ...(session.dpopKey ? { dpopKey: session.dpopKey } : {}),
       fetch: transport,
     });
-    return {
-      fetch: this.invalidateOnUnauthorized(`${owner}\u0000${credential.clientId}`, authenticated),
-      expiresAt: this.now() + token.expiresInSeconds * 1000,
-    };
+    return this.invalidateOnUnauthorized(credential, authenticated);
   }
 
-  private invalidateOnUnauthorized(cacheKey: string, podFetch: typeof fetch): typeof fetch {
+  private invalidateOnUnauthorized(
+    credential: PodInterfaceCredential,
+    podFetch: typeof fetch,
+  ): typeof fetch {
     return async (input, init) => {
       const response = await podFetch(input, init);
       if (response.status === 401) {
         // The token stopped being accepted; the next request exchanges the key again.
-        this.podFetches.delete(cacheKey);
+        this.sessions.invalidate(credential);
       }
       return response;
     };
@@ -204,6 +162,11 @@ export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGr
  * present to the Pod on the user's behalf. A browser session explains why its own credential was
  * not enough - its proof is bound to the URL it was made for - while a bearer session simply has
  * no Pod credential at all. Either way the fix is the same: grant the interface key.
+ *
+ * One cause is not covered by that fix: a principal Xpod authenticated for itself (a gateway
+ * access key, or a runtime invocation token) is not a Pod principal, so it reports the missing
+ * key even though the caller's remedy is to present a Pod credential. Splitting that into its
+ * own reason is tracked in `docs/pod-interface-key.md` decision 4.
  */
 export function podAccessError(owner: string, auth?: AuthContext): string {
   if (!auth || auth.type !== 'solid') {
@@ -233,32 +196,3 @@ export function isPodAccessFailure(message: string): boolean {
     || message.startsWith(CALLER_POD_ACCESS_UNAVAILABLE);
 }
 
-function pruneOldest(cache: Map<string, CachedPodFetch>, limit: number): void {
-  while (cache.size > limit) {
-    const oldest = cache.keys().next();
-    if (oldest.done) return;
-    cache.delete(oldest.value);
-  }
-}
-
-function parseTokenResponse(
-  body: string,
-): { accessToken: string; dpopBound: boolean; expiresInSeconds: number } | undefined {
-  let parsed: { access_token?: unknown; token_type?: unknown; expires_in?: unknown };
-  try {
-    parsed = JSON.parse(body) as typeof parsed;
-  } catch {
-    return undefined;
-  }
-  if (typeof parsed.access_token !== 'string' || !parsed.access_token) {
-    return undefined;
-  }
-  const expiresIn = typeof parsed.expires_in === 'number' && parsed.expires_in > 0
-    ? parsed.expires_in
-    : DEFAULT_TOKEN_LIFETIME_SECONDS;
-  return {
-    accessToken: parsed.access_token,
-    dpopBound: String(parsed.token_type ?? 'DPoP').toUpperCase() !== 'BEARER',
-    expiresInSeconds: expiresIn,
-  };
-}

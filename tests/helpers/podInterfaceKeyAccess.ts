@@ -1,6 +1,7 @@
 import { PlaintextCredentialVault } from '../../src/api/ai-gateway/credentials/PlaintextCredentialVault';
 import { OwnerPodAccess } from '../../src/api/ai-gateway/pod/OwnerPodAccess';
 import { PodInterfaceKeyStore } from '../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
+import { createTestSolidSessions } from './solidSessions';
 import type {
   PodInterfaceKeyRecord,
   PodInterfaceKeyRepositoryPort,
@@ -43,8 +44,10 @@ export async function createInterfaceKeyPodAccess(input: {
     keys,
     podAccess: new OwnerPodAccess({
       keys,
-      tokenEndpoint: input.tokenEndpoint,
-      ...(input.publicBaseUrl ? { publicBaseUrl: input.publicBaseUrl } : {}),
+      sessions: createTestSolidSessions({
+        tokenEndpoint: input.tokenEndpoint,
+        ...(input.publicBaseUrl ? { publicBaseUrl: input.publicBaseUrl } : {}),
+      }),
     }),
   };
 }

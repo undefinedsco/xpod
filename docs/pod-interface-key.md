@@ -60,8 +60,8 @@ Pod 即静态秘密的信任边界；因此不为 Pod 内数据再引入一层�
 
 | 当前实现 | 行为 | 待修正 |
 | --- | --- | --- |
-| `OwnerPodAccess.getPodFetch` | 优先交换调用方 CSS credential，再尝试 caller Bearer，最后读取 owner 存储密钥 | 去掉缺少出站能力时的通用 owner 密钥回退；任务应自行恢复授权 |
-| `CallerPodAccess` | Bearer 除身份/token 检查外还要求 `viaApiKey` | 有效且适用的直接 Bearer 不应因不是 sk 来源被排除 |
+| `OwnerPodAccess.getPodFetch` | **已改**：调用方 sk 与 owner 存储密钥都走共享 `SolidSessionFactory`（同一凭证只交换一次，DPoP key 由 factory 持有）；再尝试 caller Bearer；最后读取 owner 存储密钥 | 去掉缺少出站能力时的通用 owner 密钥回退；任务应自行恢复授权 |
+| `CallerPodAccess` | **已改**：`isCallerOwnPodBearer` 接受任何已通过 issuer 校验、owner 匹配的直接 Bearer，只排除网关 API key / 运行态 invocation 主体与 DPoP | 保持；后续按决策 4 拆分 `caller_outbound_capability_missing` |
 | `PodInterfaceKeyStore` + `identity_pod_interface_key` | 用 `CredentialVault` 长期封存 owner 的 CSS secret | 这是 API 部署凭证库，即使按用户隔离，也不符合任务层持久化归属 |
 | `credentialVaultForConfig`（`src/api/container/common.ts`） | 写入路径一律是 `PlaintextCredentialVault`（base64，非加密）；`SecretCellCredentialVault` 只作为 `legacyVault` 参与**解密** | 第 1.1/3.3 节要求"加密保存、解密 key 与密文分离"，与现状不符；新凭证存储须明确走 `SecretCellCredentialVault`（依赖 `XPOD_SECRET_CELL_KEY_ID` / `XPOD_SECRET_CELL_KEY`），否则改口径（见第 9 节决策 1） |
 | 本轮已上线的 `identity_pod_interface_key` | 行数据存在 API 的 identity DB；API 通过 `storedKeyFetch` 机会式使用 | **迁出后删除**：把行数据迁入任务层凭据存储（第 7.4 节），随后删除该表与 API 侧读路径（`PodInterfaceKeyStore`、`storedKeyFetch`、注册时 `saveKey`）。表归任务层，API 不保留访问；过渡期只读、不再新增写入 |
@@ -89,6 +89,12 @@ Bearer 与 DPoP 都支持，分开入口认证与出站能力：
 - 浏览器入站 DPoP 只证明当前 API 请求；API 不持有浏览器私钥，不能重放到 Pod，也不能将 DPoP 改名为 Bearer。
 - token 缓存按 issuer、完整凭证的安全指纹及凭证版本隔离，与 DPoP key 配对；不只按 owner/clientId 缓存。日志和 cache key 不含明文秘密。
 - 401 失效缓存并按操作幂等性决定是否受控重试；403 不更换身份重试。不得回退全局服务身份或 owner 存储密钥。
+
+**本轮落地（§7.1 第 1 步）**：`src/api/auth/SolidSessionFactory.ts` 是唯一的 token exchange 实现，`ClientCredentialsAuthenticator`（入站）与 `OwnerPodAccess`（出站）在容器里共用一个实例（`src/api/container/common.ts` 的 `solidSessions`）。缓存 key = issuer + 完整凭证 SHA-256 指纹 + 凭证版本，会话与 DPoP key 同存；过期留 30s 余量，401 触发 `invalidate` 后按下一次请求重新交换。`buildAuthenticatedFetch` 用 factory 交回的 key 为每个规范 URL/方法现算 proof。
+
+仍存在两处非本路径的交换，**未收敛，已记录原因**：
+- `src/solidfs/PodSolidFsHttpClient.ts`：只产出 headers（`createAuthHeaders`），拿不到目标 URL/方法就无法生成 DPoP proof，因此仍以 body 传递 `client_id/client_secret` 换取 Bearer；随 §7.1 第 5 步（后台入口迁移到 Runtime 任务）改为 fetch 形态后并入 factory。
+- `src/cli/lib/solid-auth.ts` 的 `getAccessToken`（已标 `@deprecated`）：CLI/桌面向 CSS 走 discovery 后自行交换并返回可重放的 Bearer，不在 API runtime 内；待其调用方迁移到 `authenticate()`/`Session.fetch` 后删除。
 
 ### 3.2 普通浏览器交互
 
@@ -234,7 +240,7 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 
 ## 7. 实施清单
 
-所有条目为未来实施，本次仅更新文档。
+第 1 步已实施（2026-09-24），实现与验收见 §3.1、§8；其余条目为未来实施。
 
 ### 7.1 迁移顺序（每步都可运行，且不先删回退）
 
@@ -242,7 +248,7 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 
 | 步 | 做什么 | 完成判据（验收） | 此时 legacy 状态 |
 | --- | --- | --- | --- |
-| 1 | 收敛 token exchange / session factory；修直接 Bearer 的来源限制、DPoP key 生命周期、缓存隔离（§3.1） | 机器认证行（§8）：sk、直接 Bearer、服务器自持 key 的 DPoP 各自成功；错误 owner/proof/过期/缓存串用被拒 | 保留（唯一路径） |
+| 1 | **已完成**：收敛 token exchange / session factory；修直接 Bearer 的来源限制、DPoP key 生命周期、缓存隔离（§3.1） | 机器认证行（§8）：sk、直接 Bearer、服务器自持 key 的 DPoP 各自成功；错误 owner/proof/过期/缓存串用被拒 | 保留（唯一路径） |
 | 2 | 新增 host 交互适配器，迁移**前台** Chat、模型测试与交互 embedding（§3.2） | 普通浏览器行：已登录 + 已配置模型 + **无 sk、无 task binding** 的真实 Chat 与 embedding 成功 | 保留（后台仍用） |
 | 3 | `POST /api/ai/gateway/keys` 改为请求级 Pod fetch，不再持久化部署 owner 密钥（§4） | 登记成功、Pod 记录写入成功、`identity_pod_interface_key` 不再新增；旧记录仍可读 | 保留（迁移期只读） |
 | 4 | Runtime 侧凭证存储 + Agent 授权 + 任务绑定（pending/active、幂等投递、崩溃恢复，§4） | 授权状态行 + 任务执行行：pending 不执行、失败不留 active、重试/并发/轮换/撤销符合版本语义 | 保留 |
@@ -278,7 +284,7 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 - **明确不做**：把 secret 放进 Inngest 的 event payload、`step.run` 返回值或 function state。这些是会被 Inngest 持久化并在其 UI/dev-server 调试面暴露的运行数据，且结构随 Inngest 版本演进；载荷里只允许出现引用（`credentialRef`、`credentialVersion`、`ownerWebId` 这类非秘密值）。
 - **可靠性取舍**：Pod 内状态流与 Inngest 投递之间没有跨系统事务，因此 §4 的幂等 `executionKey`、pending→active 状态机与崩溃恢复必须建立在"Pod 为权威、Inngest 可重放"之上：先写 Pod 的 pending，再投递；恢复时以 Pod 状态为准补投或终止。
 
-- [ ] 收敛 token exchange/session factory；修复直接 Bearer 的来源限制、DPoP key 生命周期及缓存隔离。
+- [x] 收敛 token exchange/session factory；修复直接 Bearer 的来源限制、DPoP key 生命周期及缓存隔离。（2026-09-24：`SolidSessionFactory` + `isCallerOwnPodBearer`；`src/solidfs`、CLI 两处遗留交换已记录，见 §3.1）
 - [ ] 新增 host 交互适配器，迁移模型测试与普通 Chat；拆开前台推理与持久 run/step。
 - [ ] 将客户端配置登记改为请求级 Pod fetch；删除注册时自动保存部署 owner 密钥的行为。
 - [ ] 分开用户凭证记录、Agent 授权和任务绑定；Runtime 恢复可信 owner/Agent 上下文，拒绝事件或参数伪造身份。
@@ -344,6 +350,8 @@ Inngest **原生不是密钥保管方**：它只持有自己的传输/信任密�
 
 现有测试文件可作为迁移入口：`OwnerPodAccess.test.ts`、`PodInterfaceKeyStore.test.ts`、`HostedPodRoute.test.ts`、`AiGatewayManagementHandler.test.ts`，以及 `localQleverCredentialRepository.test.ts`、`chatkit-pod-store.integration.test.ts`、`AiGatewayPodIsolation.integration.test.ts`。现有 vault 测试通过不代表目标设计通过。
 
+**机器认证行的当前证据**（§7.1 第 1 步）：`tests/api/SolidSessionFactory.test.ts`（一次交换、DPoP key 保留、按 secret/version/issuer 隔离、过期与 401 后重换、缓存上限、loopback 下 proof 仍用规范 URL）、`tests/api/ClientCredentialsAuthenticator.test.ts`（sk 成功、拒绝与不可用分类、无 owner 的响应被拒）、`tests/api/ai-gateway/SolidCredentialSessionSharing.test.ts`（同一次交换同时服务入站认证与出站 Pod 读，Pod 收到 DPoP 证明）、`tests/api/ai-gateway/CallerPodAccess.test.ts`（直接 Bearer 可用；网关 key/invocation 主体、错误 owner、DPoP、空 token 被拒）。真实实例的六层验收（Pod CRUD、API 认证、`/v1/models`、Chat、embedding、任务恢复）尚未在本步执行。
+
 实现后运行适用单元/集成检查、typecheck 和完整 `bun run test:integration`。按 [真实实例指南](cli-dev-testing.md) 分别记录 Pod CRUD、API 认证、模型列表、真实 Chat、真实 embedding 和任务恢复；`listed>=1` 或旧 `pod-interface-key-granted` 阶段不能代替推理结果。外部 CSS 单独验收，缺少专用索引能力不能用 embeddings 成功掩盖。
 
 ## 9. 决策记录
@@ -361,4 +369,4 @@ Inngest **原生不是密钥保管方**：它只持有自己的传输/信任密�
 | 5 | Runtime 打开 Pod 的运行态钥匙放哪 | **已定：放任务层自己的表**（`identity_task_credential` 草案见 §7.4），与 Inngest server 的表并列在同一套基础设施（cloud 同 Postgres、local 同 SQLite 目录），Inngest 只带引用与版本。密钥不进 Pod（自锁）、不进事件/step 数据（会进调试面） | 表结构按 §7.4 落库；`Agent` 授权仍写用户 Pod（决策 2）。**归属**：该存储只归任务层，API 不共用、不读；API 只传非秘密引用。边界靠独立 schema/表 + 独立 DB role（或独立库）强制，见 §7.4。这把钥匙是 Pod 之外唯一能开 Pod 的东西，因此存储访问控制即权限边界——见决策 6 |
 | 6 | §7.4 的 `sealed_secret` 是否再用部署密钥加密 | 按决策 1，Pod 内数据不再加密；但本表在 Pod 之外，DB 泄露即等于"可打开所有已登记的 Pod" | (a) 不加密：实现最简，靠独立 DB role 与网络隔离，风险写进威胁模型；(b) 用部署侧密钥（env/KMS）加密该列：多一个部署配置项，但把"读到表"与"能开 Pod"分开。**建议 (b)**，且只加密这一列；若将来启用 §7.5 的 Inngest 加密中间件，同一份部署密钥可复用于两处 |
 
-本次为文档修订，未修改运行代码、未执行运行验收。
+本文档修订本身未修改运行代码；其后 §7.1 第 1 步的实现在独立提交中落地（`SolidSessionFactory` 等，见 §3.1）。上述机器认证行证据为单元级；按本节的真实实例要求，`bun run test:integration` 与六层真实验收仍须在第 2 步之前补齐。

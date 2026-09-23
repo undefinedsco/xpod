@@ -25,6 +25,7 @@ import {
 import { CodexSubscriptionQuotaAdapter } from '../../../src/api/ai-gateway/quota';
 import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
 import type { PodInterfaceKeyStore } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
+import { createTestSolidSessions } from '../../helpers/solidSessions';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
@@ -3245,7 +3246,10 @@ describe('ProviderConnectService', () => {
     const repository = new PodConnectedCredentialRepository({
       podAccess: new OwnerPodAccess({
         keys: keys as unknown as PodInterfaceKeyStore,
-        tokenEndpoint: 'https://id.example/alice/.oidc/token',
+        sessions: createTestSolidSessions({
+          tokenEndpoint: 'https://id.example/alice/.oidc/token',
+          fetch: callerFetch as unknown as typeof fetch,
+        }),
         fetch: callerFetch as unknown as typeof fetch,
       }),
       dbFactory: async ({ fetch: podFetch }) => {
