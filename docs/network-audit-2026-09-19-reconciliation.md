@@ -9,9 +9,9 @@
 
 | 判定 | 数量 | 项 |
 | --- | --- | --- |
-| 已修复 | 2 | N06、N07（见第 9 节；对账时为"仍存在"） |
+| 已修复 | 3 | N06、N07、N17（见第 9 节；对账时为"仍存在"） |
 | 部分缓解 | 3 | N01（仅读接口直连面）、N09（仅 UI 层）、N12（仅 admin public-ip） |
-| 仍存在 | 14 | N02、N03、N04、N05、N08、N10、N11、N13、N14、N15、N16、N17、N18、N19 |
+| 仍存在 | 13 | N02、N03、N04、N05、N08、N10、N11、N13、N14、N15、N16、N18、N19 |
 | 仍存在（对账后新增） | 1 | N20（真实验收发现，见 4.4；修复见第 8 节） |
 
 结论：**W0（Gateway/API 授权与 Cloud 节点边界）仍是唯一正确的起手点**，报告的可信度经复核成立；同时工作区未提交改动引入了 3 个新的连带事实（第 4 节），其中 1 个是功能性回归风险，需在提交前处理。N20 不在报告范围内，是 W1 真实验收过程中在实际运行实例上观察到的生命周期缺陷，按同一口径补记。
@@ -80,7 +80,7 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 | N14 Cloudflare DNS 误删可并存记录 | P1 | **仍存在** | `src/dns/cloudflare/CloudflareDnsProvider.ts:90-100` 类型不同即 DELETE；`findRecord`（`:229-251`）不带 type 时返回 `response[0]` | `tests/dns/CloudflareDnsProvider.test.ts` 全部为 A 记录用例，**无 MX/TXT 共存负例** |
 | N15 生产证书失败回退 staging、续期链不完整 | P1 | **仍存在** | `src/edge/acme/AcmeCertificateManager.ts:102` 默认 fallback 列表含 `letsencrypt.staging`；`:255-265` 失败即换下一个 CA，无"生产禁止隐式 staging"约束 | 无 CA 失败/续期阈值/长期运行用例 |
 | N16 发布产物不含隧道客户端 | P1（若承诺免安装） | **仍存在** | `Dockerfile`、`scripts/build-platform-package.cjs` 对 `cloudflared`/`ngrok`/`frpc` **零命中**；Dockerfile 的工作区改动仅 bun 版本与构建顺序 | 无干净 OS/架构的产物启动验收 |
-| N17 数据面资源上限、流式与取消缺口 | P1（若启用公网 P2P） | **仍存在** | `TcpP2PDataPlaneTransport.ts` 无帧/请求体/并发上限（仅 `DEFAULT_MAX_CLOCK_ERROR_SECONDS` 常量）；`P2PDataPlane.ts:103` 仍全量读取 | 无超额拒绝、SSE 首字节、取消释放用例 |
+| N17 数据面资源上限、流式与取消缺口 | P1（若启用公网 P2P） | **已修复（见第 9 节）** | 对账时：`TcpP2PDataPlaneTransport.ts` 无帧/请求体/并发上限（仅 `DEFAULT_MAX_CLOCK_ERROR_SECONDS` 常量）；`P2PDataPlane.ts:103` 仍全量读取。现：帧/请求体/响应体/并发四类上限 + 取消信封 + 分块流式（head→chunk→end） | `tests/edge/reachability/P2PDataPlaneLimits.test.ts` 11 例；暂时关掉强制后 **7/11 失败** |
 | N18 恢复监督、动态选路与文件权限 | P2 | **仍存在** | `src/api/runtime.ts` 无 supervisor/重启退避相关引用（工作区改动仅日志文件解析）；`FrpcProcessManager.ts`、`AcmeCertificateManager.ts` 无 `chmod`/`mode`/`0o600` | 无 kill 子进程/断网恢复/umask022 用例 |
 | N19 测试入口与合同覆盖漂移 | P2 | **仍存在（并新增一例）** | `vitest.config.ts` 排除表仍含 `ui/src/api/network-settings.test.ts`（该测试与 `ui/src/api/network-settings.ts` 均未更新），且**新增** `tests/bun/**` 排除；CI（`.github/workflows/ci.yml:45`）只跑 `bun run test:run`，`package.json` 无执行 `tests/bun/**` 的脚本 | 见 4.3：新测试文件当前**没有任何执行入口** |
 | N20 子服务放弃重启后网关仍报健康 | P0 | **仍存在（对账后新增，见 4.4）** | 修复前 `src/supervisor/Supervisor.ts`：`restartCount <= MAX_RESTARTS(5)` 之后只 `console.error` 并把状态留在 `stopped`，重启间隔固定 2s、无健康度重置；`src/supervisor/types.ts` 状态集只有 `stopped/starting/running/crashed`，没有"已放弃"；`src/runtime/Proxy.ts` 的 `/service/status` 只按 CSS 就绪判定 `200/503`（`:705-712`）；`src/cli/commands/stop.ts` 把 `503` 当不可达直接抛错 | 无"子服务反复失败/不可恢复失败/停机取消重启"的负向回归；W1 真实验收在活实例上直接复现（见 4.4） |
@@ -200,8 +200,24 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 
 同一族的遗留（本轮未动，记为后续）：`src/edge/EdgeNodeCapabilityDetector.ts:486` 仍用 `response.ok || response.status < 500` 判断能力探测结果，属 N12/N06 家族，改动会影响能力上报口径，需与 N12 一起处理。
 
-### 9.3 本轮未做（W2 剩余）
+### 9.3 N17 数据面限额、取消与流式
 
-- **N03**：raw TCP 数据面仍无认证与加密（`TcpP2PDataPlaneTransport` 全文无 tls/crypto/hmac）；当前缓解只有 `XPOD_P2P_ENABLED` 默认关闭。
-- **N17**：帧/请求体/并发上限、取消与流式边界未做。
-- 未做真实验收：N06/N07 的证据来自隔离测试（真实 SQLite + 真实仓储/服务），没有跨进程/跨机器的并发写演练；`updateNodeMetadataAtomic` 在 PostgreSQL 上的行为只有静态判断（同一 SQL 形态），未在 PG 上跑过。
+上限集中在 `P2P_DATA_PLANE_LIMITS`（`P2PDataPlane.ts`）：`maxFrameBytes` 8 MiB、`maxBodyBytes` 4 MiB、`maxConcurrentRequests` 16、`chunkBytes` 256 KiB。超限抛 `P2PDataPlaneLimitError`（带 `limit` 字段，便于上层回 413/429），取消抛 `P2PDataPlaneAbortError`。
+
+| 面 | 修复 |
+| --- | --- |
+| 帧 | 两端都在"累积到分隔符之前"检查：超过上限即断开连接并回 `limit` 错误——无限长的行无法重新同步，缓冲它就是这条限制要防的事 |
+| 请求体 | 客户端在读取之前先看 `content-length`，读后再校验一次；**服务端同样校验**，不信任对端 |
+| 响应体 | 上游响应超过上限时返回明确错误，而不是把整个响应读进内存 |
+| 并发 | 每条 transport / 每个 socket 分别计数，超出即拒绝（不排队），让背压可见 |
+| 取消 | `fetch(url, { signal })` → transport 删除待处理项并向对端发 cancel 信封 → 服务端 abort 上游 fetch；socket 关闭时同样 abort 在途请求 |
+| 流式 | 新增 `response-chunk` / `response-end` 信封：head 先回，chunk 逐块回，end 收尾。客户端只在 transport 声明 `supportsStreaming` 时才请求分块（否则仍走整帧路径），旧对端忽略该请求头即回整帧，协议保持向后兼容 |
+
+**实测的流式语义**（`tests/edge/reachability/P2PDataPlaneLimits.test.ts`）：上游 SSE 风格响应推第一块后**不关闭**，客户端已经读到第一块，证明不是"攒完再回"；过程中修掉一个真实缺陷——第一版按 `chunkBytes` 攒够才发，13 字节的事件会一直等到下一块，等于没有流式（改用"每次 read 立即 flush，只在单次读取超过 `chunkBytes` 时切分"）。
+
+### 9.4 本轮未做（W2 剩余）
+
+- **N03**：raw TCP 数据面仍无认证与加密（`TcpP2PDataPlaneTransport` 全文无 tls/crypto/hmac）；当前缓解只有 `XPOD_P2P_ENABLED` 默认关闭。这是 W2 剩下的唯一一项，也是最大的一项。
+- 上限是**每连接**而非全局：多个连接可以各自占满 16 个在途请求；也没有字节/秒级限速（速率限制属 N17 之外的新范围）。
+- 流式是**增量扩展**而非协商：新客户端 + 旧节点会回退到整帧（已验证路径），但旧客户端 + 新节点不会触发流式；没有协议版本协商字段。
+- 未做真实验收：N06/N07/N17 的证据都来自隔离测试（真实 SQLite、真实 TCP socket），没有跨机器/跨 NAT 的并发写与长流演练；`updateNodeMetadataAtomic` 只在 SQLite 上实测过行数路径（PG 同一 SQL 形态，未在 PG 上跑）。
