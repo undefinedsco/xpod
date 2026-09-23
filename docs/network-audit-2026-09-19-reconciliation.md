@@ -9,10 +9,10 @@
 
 | 判定 | 数量 | 项 |
 | --- | --- | --- |
-| 已修复 | 0 | — |
+| 已修复 | 2 | N06、N07（见第 9 节；对账时为"仍存在"） |
 | 部分缓解 | 3 | N01（仅读接口直连面）、N09（仅 UI 层）、N12（仅 admin public-ip） |
-| 仍存在 | 16 | N02、N03、N04、N05、N06、N07、N08、N10、N11、N13、N14、N15、N16、N17、N18、N19 |
-| 仍存在（对账后新增） | 1 | N20（真实验收发现，见 4.4） |
+| 仍存在 | 14 | N02、N03、N04、N05、N08、N10、N11、N13、N14、N15、N16、N17、N18、N19 |
+| 仍存在（对账后新增） | 1 | N20（真实验收发现，见 4.4；修复见第 8 节） |
 
 结论：**W0（Gateway/API 授权与 Cloud 节点边界）仍是唯一正确的起手点**，报告的可信度经复核成立；同时工作区未提交改动引入了 3 个新的连带事实（第 4 节），其中 1 个是功能性回归风险，需在提交前处理。N20 不在报告范围内，是 W1 真实验收过程中在实际运行实例上观察到的生命周期缺陷，按同一口径补记。
 
@@ -69,8 +69,8 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 | N03 raw TCP P2P 无认证加密 | P1 | **仍存在** | `src/edge/reachability/TcpP2PDataPlaneTransport.ts` 全文 `tls/crypto/auth/hmac/handshake` **零命中**；`src/cli/commands/start.ts:238` 在 managed edge 下硬编码 `p2p.enabled = true`，即注册到 Cloud 的节点默认启用该数据面 | `tests/edge/reachability/TcpP2PDataPlaneTransport.test.ts` 只覆盖现有（无加密）行为 |
 | N04 建会话不校验节点访问权 | P1 | **仍存在** | `src/api/handlers/ReachabilityHandler.ts:285` 起：solid/service principal 一律 `allowed: true`，无节点归属与 scope 校验 | 报告已指出的"session owner 只证明创建者"未变 |
 | N05 Cloud 健康探测缺网络边界 | P1 | **仍存在** | `src/edge/EdgeNodeHealthProbeService.ts:79-94` `collectCandidates` 只做字符串/去空判断就接受节点上报的 `directCandidates`/tunnel entrypoint/`baseUrl`，全文件无 `169.254`/loopback/link-local/redirect/DNS 重解析守卫（精确 grep 零命中）；`src/api/container/cloud.ts:137` 默认注册探测服务 | `tests/edge/EdgeNodeHealthProbeService.test.ts` **只有 1 个正例**（多位置探测并写样本） |
-| N06 选路不校验设备/有效期/身份 | P1 | **仍存在** | `src/edge/reachability/ManagedClientFetch.ts:105` `candidateRoutes` 只按 `health`+`priority` 过滤；`:137` 探测判定为 `response.status < 500`（404 视为通过） | 需补"两设备同端口/无关服务返回 200/404/过期路径"负例 |
-| N07 并发会话读改写丢更新 | P1 | **仍存在** | `src/edge/reachability/ReachabilitySessionService.ts:257-269` 是 `getNodeMetadata` → `mergeNodeMetadata` 的读改写；`src/identity/drizzle/EdgeNodeRepository.ts:146-158` 整列写 `metadata`。工作区对该仓库文件的改动只涉及时间戳与 JSON 解析辅助，**合并语义未变** | 无 `ReachabilitySessionService` 并发/限额回归 |
+| N06 选路不校验设备/有效期/身份 | P1 | **已修复（见第 9 节）** | 对账时：`src/edge/reachability/ManagedClientFetch.ts:105` `candidateRoutes` 只按 `health`+`priority` 过滤；`:137` 探测判定为 `response.status < 500`（404 视为通过）。现：过期/不可解析 expiresAt/`local-only` 路由在任何探测之前就被拒，探测答案必须带 Solid 身份证据 | `tests/edge/reachability/ManagedClientFetch.test.ts` 增 6 条负例；对旧代码复跑 6/6 失败 |
+| N07 并发会话读改写丢更新 | P1 | **已修复（见第 9 节）** | 对账时：`src/edge/reachability/ReachabilitySessionService.ts:257-269` 是 `getNodeMetadata` → `mergeNodeMetadata` 的读改写；`src/identity/drizzle/EdgeNodeRepository.ts:146-158` 整列写 `metadata`。现：`updateNodeMetadataAtomic` 做比较交换，服务在冲突时重读重放，耗尽即报错 | `tests/edge/reachability/ReachabilitySessionService.atomic.test.ts` + `tests/identity/EdgeNodeRepository.metadata-cas.test.ts`；对旧语义复跑 4/5 失败 |
 | N08 关闭/删除后隧道被复活 | P1 | **仍存在** | `src/tunnel/TunnelProfiles.ts:176-192` 回退顺序：显式 ID → legacy provider → 首个可用 profile；`ui/src/pages/settings/NetworkPage.tsx:368` 空值即 None。该文件与基线逐字一致 | ⚠️ `tests/tunnel/TunnelProfiles.test.ts:90`「keeps legacy auto priority when only old provider env values exist」把现有回退行为**断言为预期**，修 N08 必须同步改这条测试 |
 | N09 profile 字段/provider 列表跨层不一致 | P1 | **部分缓解** | UI 侧已收敛为单表 `ui/src/utils/tunnel-providers.ts`（含 `sakura_frp`/`frp`，附 `ui/src/utils/tunnel-providers.test.ts`），三处 UI 分支消除；但 API store 仍只认三家（`src/api/network/NetworkEnvironmentConfigurationStore.ts:93`）、runtime 认四家（`src/tunnel/TunnelProfiles.ts:1`）、`NetworkPage.tsx:372` 下拉仅三家 → 跨层契约仍不一致 | `tests/api/ai-config/NetworkEnvironmentConfigurationStore.test.ts` 仍只测 envPatch，无"UI shape → API parser → store → runtime"合同测试 |
 | N10 多 profile 凭据按 provider 全局覆盖 | P1 | **仍存在** | `src/api/network/NetworkEnvironmentConfigurationStore.ts:79` 在循环里写 provider 级全局 key（后写覆盖前写）；`src/api/container/index.ts`、`local.ts` 未变 | 无 A/B 切换精确对应各自账号的用例 |
@@ -173,3 +173,35 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 - 未在真实运行的实例上复演"api 连续失败 5 次"的全链路（需要人为制造依赖损坏）；N20 的真实验收仍待补 A 级证据；
 - 未覆盖 `crashed`（spawn 失败）路径的端到端表现；
 - 退避上限 60s 与健康阈值 60s 是估值，未做长时间压测标定。
+
+## 9. W2 处置记录（2026-09-23）
+
+W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是"客户端信任节点自报数据"的同一类问题，先做它们是因为它们不改变协议，只改变判定位置。
+
+### 9.1 N07 并发会话读改写丢更新
+
+| 层 | 修复 |
+| --- | --- |
+| 数据库 | `executeStatementWithCount()`（`src/identity/drizzle/db.ts`）取回被 `executeStatement` 丢弃的影响行数；驱动不报行数时按"回读校验"处理，宁可重试也不假设成功 |
+| 仓储 | `EdgeNodeRepository.updateNodeMetadataAtomic(nodeId, expected, next)`：`UPDATE … WHERE id = ? AND metadata = ?`（NULL 走 `IS NULL`），返回是否落盘。比较的是序列化后的 payload，因此"等价但键序不同"只会多一次重试，**不会丢写** |
+| 服务 | `ReachabilitySessionService.mutateNodeMetadata()`：读 → 变换 → 交换，失败即重读重放（默认 5 次），耗尽抛 `NodeMetadataConflictError`；`createP2PSession`/`addP2PCandidates`/`appendSession` 全部改走该路径，**会话上限校验也在被写入的那份 metadata 上执行**（并发建会话不再超限） |
+
+证据（负向优先）：把服务临时改回旧的读改写语义后，`ReachabilitySessionService.atomic.test.ts` **4/5 失败**，失败信息正是丢更新的症状——`expected [ '10.0.0.2' ] to deeply equal [ '10.0.0.1', '10.0.0.2' ]`（一个客户端的候选被覆盖）、并发探测写 `reachability` 整块消失、冲突未报错、`maxActiveP2PSessionsPerNode: 1` 下并发建会话建出 2 条。恢复修复后 11/11 通过。
+
+### 9.2 N06 选路不校验设备/有效期/身份
+
+`src/edge/reachability/ManagedClientFetch.ts`：
+
+- **任何探测之前**先做本地判定：`expiresAt` 早于当前时间 → 跳过；`expiresAt` 无法解析 → **按不可用处理（fail closed）**；`visibility: 'local-only'` → 跳过（托管客户端按定义在别的机器上，环回地址对它没有意义）。每条被跳过的路由都写进错误串，选择失败时能看出原因，而不是只报"打不开"。
+- **探测答案必须证明自己是 Solid 服务**：`/.well-known/solid` 返回 404 或 5xx 一律不算（旧的 `status < 500` 会把同端口的无关服务当成路由）；其余状态还需带身份证据——`Link` 头含 `http://www.w3.org/ns/solid/terms#…` 关系，或真实的 `acl` + `describedby` 组合，或 `x-powered-by: Community Solid Server`。判据取自**在运行实例上实测**的响应（HEAD 返回 405，附上述 Link 头），不是猜测。
+- **两条选路共用一套判定**：`src/edge/reachability/RouteValidation.ts`（`routeUnusableReason` / `probeSolidWellKnown` / `isSolidWellKnownResponse`）是唯一实现，`ManagedClientFetch` 与 `ManagedRouteSelector` 都改为消费它——后者原来的默认探测是 `response.ok || 401 || 403`，同样会把无关服务当路由，且完全不看 expiry。
+
+证据（负向优先，两条路径分别验过）：`ManagedClientFetch.test.ts` 新增 6 条负例、`ManagedRouteSelector.test.ts` 新增 3 条负例；把对应源文件临时改回旧实现后，前者 **6/6 失败**（选中过期路由 / 无关服务 / 404 路由），后者 **3/6 失败**（选中过期路由、选中无关服务、把环回路由拨出去）；恢复后分别 10/10、6/6 通过。
+
+同一族的遗留（本轮未动，记为后续）：`src/edge/EdgeNodeCapabilityDetector.ts:486` 仍用 `response.ok || response.status < 500` 判断能力探测结果，属 N12/N06 家族，改动会影响能力上报口径，需与 N12 一起处理。
+
+### 9.3 本轮未做（W2 剩余）
+
+- **N03**：raw TCP 数据面仍无认证与加密（`TcpP2PDataPlaneTransport` 全文无 tls/crypto/hmac）；当前缓解只有 `XPOD_P2P_ENABLED` 默认关闭。
+- **N17**：帧/请求体/并发上限、取消与流式边界未做。
+- 未做真实验收：N06/N07 的证据来自隔离测试（真实 SQLite + 真实仓储/服务），没有跨进程/跨机器的并发写演练；`updateNodeMetadataAtomic` 在 PostgreSQL 上的行为只有静态判断（同一 SQL 形态），未在 PG 上跑过。

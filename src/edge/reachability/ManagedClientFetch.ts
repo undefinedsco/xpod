@@ -1,4 +1,5 @@
 import { createCanonicalFetch, type CanonicalFetch } from './CanonicalFetch';
+import { isHttpTarget, probeSolidWellKnown, routeUnusableReason } from './RouteValidation';
 import { createP2PDataPlaneFetch } from './P2PDataPlane';
 import { createP2PSignalingClient } from './P2PSignalingClient';
 import {
@@ -20,6 +21,8 @@ export interface ManagedClientFetchOptions {
   probe?: (route: AccessRoute, signal: AbortSignal) => Promise<boolean> | boolean;
   probeTimeoutMs?: number;
   p2p?: ManagedClientP2POptions;
+  /** Injectable clock: route validity must be decided against a known time in tests. */
+  now?: () => Date;
 }
 
 export interface ManagedClientFetch {
@@ -74,8 +77,10 @@ export async function createSignaledManagedClientFetch(options: SignaledManagedC
 
 export async function createManagedClientFetch(options: ManagedClientFetchOptions): Promise<ManagedClientFetch> {
   const errors: string[] = [];
-  for (const route of candidateRoutes(options.routeSet)) {
+  const now = (options.now ?? (() => new Date()))();
+  for (const route of candidateRoutes(options.routeSet, now, errors)) {
     if (!await routeProbeSucceeds(route, options)) {
+      errors.push(`Route ${route.id} failed its reachability probe`);
       continue;
     }
     if (route.kind === 'p2p') {
@@ -102,11 +107,24 @@ export async function createManagedClientFetch(options: ManagedClientFetchOption
   throw new Error(`No managed client route could be opened${errors.length > 0 ? `: ${errors.join('; ')}` : ''}`);
 }
 
-function candidateRoutes(routeSet: RouteSet): AccessRoute[] {
-  return routeSet.routes
-    .filter((route) => route.health !== 'unreachable')
-    .slice()
-    .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id));
+/**
+ * Routes worth dialling, decided locally before any probe. Skipped routes are named in
+ * `skipped` so a failed selection says why instead of just failing.
+ */
+function candidateRoutes(routeSet: RouteSet, now: Date, skipped: string[]): AccessRoute[] {
+  const candidates: AccessRoute[] = [];
+  for (const route of routeSet.routes) {
+    if (route.health === 'unreachable') {
+      continue;
+    }
+    const reason = routeUnusableReason(route, { now, remoteClient: true });
+    if (reason) {
+      skipped.push(`Route ${route.id} skipped: ${reason}`);
+      continue;
+    }
+    candidates.push(route);
+  }
+  return candidates.sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id));
 }
 
 async function routeProbeSucceeds(route: AccessRoute, options: ManagedClientFetchOptions): Promise<boolean> {
@@ -127,14 +145,10 @@ async function defaultManagedProbe(route: AccessRoute, signal: AbortSignal, fetc
   if (route.kind === 'p2p') {
     return route.health !== 'unreachable';
   }
-  if (!route.targetUrl.startsWith('http://') && !route.targetUrl.startsWith('https://')) {
+  if (!isHttpTarget(route.targetUrl)) {
     return route.health === 'healthy';
   }
-  const response = await (fetchImpl ?? fetch)(new URL('/.well-known/solid', route.targetUrl), {
-    method: 'HEAD',
-    signal,
-  });
-  return response.status < 500;
+  return await probeSolidWellKnown(route.targetUrl, signal, fetchImpl);
 }
 
 function managedResult(

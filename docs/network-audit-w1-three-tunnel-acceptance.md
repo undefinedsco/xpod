@@ -93,4 +93,4 @@
 2. Sakura **真实数据面**（需自动 HTTPS + 原生官方客户端或 config 模式结论）。
 3. ngrok **固定/保留域名**：本机 agent 为 Free 套餐，明确拒绝自定义 hostname（`ERR_NGROK_314`）；随机域名分支已验。
 4. A04 的 AI 四层（需 Provider key）、Cloud-managed canonical Pod 读取（需 Cloud 凭据）、A07（DNS 测试 zone）、A09（双 Cloud）、A11 的 24 小时窗口（需挂机授权）。
-5. N16 打包分发（客户端内置）与 W2–W4 其余项（N03/N06/N07/N14/N15/N17/N18/N19）。
+5. N16 打包分发（客户端内置）与 W2–W4 其余项。W2 已完成两项（**N07 会话原子写、N06 选路校验**，见 [`network-audit-2026-09-19-reconciliation.md`](network-audit-2026-09-19-reconciliation.md) 第 9 节）；仍待做：N03（数据面认证加密）、N17（限额/取消/流式）、N14/N15/N18、N12/N19、N16。

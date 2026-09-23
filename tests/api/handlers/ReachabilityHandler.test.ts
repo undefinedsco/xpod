@@ -64,41 +64,67 @@ function createMockResponse(): ServerResponse & { _body: () => any; _text: () =>
 }
 
 function createRepo(overrides: Record<string, any> = {}) {
-  return {
-    getNodeMetadata: vi.fn().mockResolvedValue({
+  // The session service now writes through a compare-and-swap (N07), so the stub keeps the
+  // metadata it hands out and only accepts a swap that still matches what the caller read.
+  const state: { metadata: Record<string, unknown> | null } = {
+    metadata: {
+      routes: [
+        {
+          id: 'loopback-main',
+          kind: 'loopback',
+          targetUrl: 'http://127.0.0.1:5737/',
+          priority: 10,
+          requiresManagedClient: true,
+          visibility: 'local-only',
+          health: 'healthy',
+        },
+        {
+          id: 'public-main',
+          kind: 'public-direct',
+          targetUrl: 'https://node-1.pods.example/',
+          priority: 30,
+          requiresManagedClient: false,
+          visibility: 'public',
+          health: 'healthy',
+        },
+      ],
+    },
+  };
+  const repo: any = {
+    getNodeMetadata: vi.fn(async () => ({
       nodeId: 'node-1',
-      metadata: {
-        routes: [
-          {
-            id: 'loopback-main',
-            kind: 'loopback',
-            targetUrl: 'http://127.0.0.1:5737/',
-            priority: 10,
-            requiresManagedClient: true,
-            visibility: 'local-only',
-            health: 'healthy',
-          },
-          {
-            id: 'public-main',
-            kind: 'public-direct',
-            targetUrl: 'https://node-1.pods.example/',
-            priority: 30,
-            requiresManagedClient: false,
-            visibility: 'public',
-            health: 'healthy',
-          },
-        ],
-      },
+      metadata: state.metadata,
       lastSeen: new Date('2026-06-19T00:00:00.000Z'),
-    }),
+    })),
     getNodeConnectivityInfo: vi.fn().mockResolvedValue({
       nodeId: 'node-1',
       publicUrl: 'https://node-1.pods.example/',
       connectivityStatus: 'reachable',
     }),
-    mergeNodeMetadata: vi.fn().mockResolvedValue(undefined),
+    mergeNodeMetadata: vi.fn(async (_nodeId: string, patch: Record<string, unknown>) => {
+      state.metadata = { ...(state.metadata ?? {}), ...patch };
+    }),
+    updateNodeMetadataAtomic: vi.fn(async (
+      nodeId: string,
+      expected: Record<string, unknown> | null,
+      next: Record<string, unknown>,
+    ) => {
+      const current = await repo.getNodeMetadata(nodeId);
+      if (JSON.stringify(current?.metadata ?? null) !== JSON.stringify(expected ?? null)) {
+        return false;
+      }
+      state.metadata = next;
+      return true;
+    }),
+    __metadataState: state,
     ...overrides,
-  } as any;
+  };
+  return repo;
+}
+
+/** Reads what the stub actually stored: the write path is a swap now, not a merge call. */
+async function storedMetadata(repo: any): Promise<Record<string, unknown>> {
+  return repo.__metadataState?.metadata ?? (await repo.getNodeMetadata('node-1'))?.metadata ?? {};
 }
 
 function restoreEnv(key: string, previous: string | undefined): void {
@@ -206,7 +232,7 @@ describe('ReachabilityHandler', () => {
 
     expect(res.statusCode).toBe(403);
     expect(res._body().error).toBe('WebID is not authorized for this node');
-    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+    expect(repo.updateNodeMetadataAtomic).not.toHaveBeenCalled();
   });
 
   it('rejects a solid principal when node access cannot be resolved', async () => {
@@ -220,7 +246,7 @@ describe('ReachabilityHandler', () => {
     await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(403);
-    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+    expect(repo.updateNodeMetadataAtomic).not.toHaveBeenCalled();
   });
 
   it('requires network:write for service principals creating sessions', async () => {
@@ -270,11 +296,11 @@ describe('ReachabilityHandler', () => {
       candidates: [{ host: '198.51.100.10', port: 12345 }],
     });
     expect(res._body().nodeCandidates.map((route: any) => route.kind)).toEqual(['loopback', 'public-direct']);
-    expect(repo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
+    expect(await storedMetadata(repo)).toMatchObject({
       reachabilitySessions: expect.objectContaining({
         p2p: [expect.objectContaining({ sessionId: 'p2p_fixed-id' })],
       }),
-    }));
+    });
   });
 
   it('enriches port-only p2p session candidates with the observed forwarded address', async () => {
@@ -343,7 +369,7 @@ describe('ReachabilityHandler', () => {
         }),
       ],
     });
-    expect(repo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
+    expect(await storedMetadata(repo)).toMatchObject({
       reachabilitySessions: expect.objectContaining({
         p2p: [
           expect.objectContaining({
@@ -355,7 +381,7 @@ describe('ReachabilityHandler', () => {
           }),
         ],
       }),
-    }));
+    });
   });
 
   it('lets solid auth read and append only client candidates for its owned p2p signaling session', async () => {
@@ -488,7 +514,7 @@ describe('ReachabilityHandler', () => {
 
     expect(updateRes.statusCode).toBe(403);
     expect(updateRes._body()).toEqual({ error: 'Solid user cannot access another client signaling session' });
-    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+    expect(repo.updateNodeMetadataAtomic).not.toHaveBeenCalled();
   });
 
   it('filters p2p signaling session lists to the solid user owner', async () => {
@@ -625,7 +651,7 @@ describe('ReachabilityHandler', () => {
         maxCandidatesTotal: 8,
       },
     });
-    expect(repo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
+    expect(await storedMetadata(repo)).toMatchObject({
       reachabilitySessions: expect.objectContaining({
         p2p: [expect.objectContaining({
           sessionId: 'p2p_fixed-id',
@@ -636,7 +662,7 @@ describe('ReachabilityHandler', () => {
           },
         })],
       }),
-    }));
+    });
   });
 
   it('rejects new p2p sessions when active session limit is reached', async () => {
@@ -684,7 +710,7 @@ describe('ReachabilityHandler', () => {
 
     expect(res.statusCode).toBe(429);
     expect(res._body()).toEqual({ error: 'P2P active session limit exceeded' });
-    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+    expect(repo.updateNodeMetadataAtomic).not.toHaveBeenCalled();
   });
 
   it('reads p2p signaling limits from env when registering reachability routes', async () => {
@@ -915,7 +941,7 @@ describe('ReachabilityHandler', () => {
         metadata: { provider: 'raw-tcp-hole-punch' },
       }),
     ]);
-    expect(repo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
+    expect(await storedMetadata(repo)).toMatchObject({
       reachabilitySessions: expect.objectContaining({
         p2p: [
           expect.objectContaining({
@@ -927,7 +953,7 @@ describe('ReachabilityHandler', () => {
           }),
         ],
       }),
-    }));
+    });
   });
 
   it('rejects p2p candidate updates over per-update limit', async () => {
@@ -972,7 +998,7 @@ describe('ReachabilityHandler', () => {
 
     expect(res.statusCode).toBe(429);
     expect(res._body()).toEqual({ error: 'P2P candidate update limit exceeded' });
-    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+    expect(repo.updateNodeMetadataAtomic).not.toHaveBeenCalled();
   });
 
   it('rejects p2p candidate updates over total session limit', async () => {
@@ -1015,7 +1041,7 @@ describe('ReachabilityHandler', () => {
 
     expect(res.statusCode).toBe(429);
     expect(res._body()).toEqual({ error: 'P2P candidate session limit exceeded' });
-    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+    expect(repo.updateNodeMetadataAtomic).not.toHaveBeenCalled();
   });
 
   it('rejects p2p candidate updates after session expiry', async () => {
@@ -1054,7 +1080,7 @@ describe('ReachabilityHandler', () => {
 
     expect(res.statusCode).toBe(410);
     expect(res._body()).toEqual({ error: 'P2P session expired' });
-    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+    expect(repo.updateNodeMetadataAtomic).not.toHaveBeenCalled();
   });
 
   it('rejects relay sessions without explicit reason', async () => {
@@ -1066,7 +1092,7 @@ describe('ReachabilityHandler', () => {
     await mockServer.routes['POST /v1/signal/nodes/:nodeId/sessions'](req, res, { nodeId: 'node-1' });
 
     expect(res.statusCode).toBe(400);
-    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+    expect(repo.updateNodeMetadataAtomic).not.toHaveBeenCalled();
   });
 
   it('rejects generic sessions without a supported kind', async () => {
@@ -1079,7 +1105,7 @@ describe('ReachabilityHandler', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res._body()).toEqual({ error: 'kind must be p2p or relay' });
-    expect(repo.mergeNodeMetadata).not.toHaveBeenCalled();
+    expect(repo.updateNodeMetadataAtomic).not.toHaveBeenCalled();
   });
 
   it('creates bounded relay sessions with ttl, bandwidth and audit fields', async () => {
@@ -1110,10 +1136,10 @@ describe('ReachabilityHandler', () => {
         visibility: 'public',
       }),
     });
-    expect(repo.mergeNodeMetadata).toHaveBeenCalledWith('node-1', expect.objectContaining({
+    expect(await storedMetadata(repo)).toMatchObject({
       reachabilitySessions: expect.objectContaining({
         relay: [expect.objectContaining({ sessionId: 'relay_fixed-id', auditId: 'audit_fixed-id' })],
       }),
-    }));
+    });
   });
 });

@@ -51,10 +51,6 @@ export class ReachabilitySessionService {
 
   public async createP2PSession(nodeId: string, request: P2PSessionRequest): Promise<P2PSession> {
     const source = await this.loadNodeRouteSource(nodeId);
-    const activeSessions = this.readActiveP2PSessions(source.metadata);
-    if (activeSessions.length >= this.maxActiveP2PSessionsPerNode) {
-      throw new P2PActiveSessionLimitExceededError(`Node ${nodeId} reached active P2P session limit`);
-    }
     const createdAt = this.now();
     const expiresAt = addSeconds(createdAt, this.defaultP2PTtlSeconds);
     const suffix = this.randomId();
@@ -98,7 +94,12 @@ export class ReachabilitySessionService {
       candidates,
       limits,
     };
-    await this.appendSession(nodeId, 'p2p', session);
+    await this.appendSession(nodeId, 'p2p', session, (metadata) => {
+      const activeSessions = this.readActiveP2PSessions(metadata);
+      if (activeSessions.length >= this.maxActiveP2PSessionsPerNode) {
+        throw new P2PActiveSessionLimitExceededError(`Node ${nodeId} reached active P2P session limit`);
+      }
+    });
     return session;
   }
 
@@ -129,39 +130,44 @@ export class ReachabilitySessionService {
     sessionId: string,
     request: P2PCandidateUpdateRequest,
   ): Promise<P2PSession> {
-    const { reachabilitySessions, p2pSessions, sessionIndex, session } = await this.loadP2PSession(nodeId, sessionId);
-    this.assertP2PSessionActive(session);
+    return await this.mutateNodeMetadata(nodeId, (metadata) => {
+      const { reachabilitySessions, p2pSessions, sessionIndex, session } = this.readP2PSession(metadata, sessionId);
+      this.assertP2PSessionActive(session);
 
-    const limits = this.resolveP2PSessionLimits(session);
-    if (request.candidates.length > limits.maxCandidatesPerUpdate) {
-      throw new P2PCandidateUpdateLimitExceededError('P2P candidate update limit exceeded');
-    }
-    const normalizedCandidates = this.normalizeP2PCandidates(request.candidates, {
-      role: request.role,
-      sourceId: request.sourceId,
-      createdAt: this.now(),
-    });
-    const nextCandidates = [
-      ...session.candidates,
-      ...normalizedCandidates,
-    ];
-    if (nextCandidates.length > limits.maxCandidatesTotal) {
-      throw new P2PCandidateSessionLimitExceededError('P2P candidate session limit exceeded');
-    }
-    const nextSession: P2PSession = {
-      ...session,
-      candidates: nextCandidates,
-    };
-    const nextP2PSessions = [...p2pSessions];
-    nextP2PSessions[sessionIndex] = nextSession;
+      const limits = this.resolveP2PSessionLimits(session);
+      if (request.candidates.length > limits.maxCandidatesPerUpdate) {
+        throw new P2PCandidateUpdateLimitExceededError('P2P candidate update limit exceeded');
+      }
+      const normalizedCandidates = this.normalizeP2PCandidates(request.candidates, {
+        role: request.role,
+        sourceId: request.sourceId,
+        createdAt: this.now(),
+      });
+      const nextCandidates = [
+        ...session.candidates,
+        ...normalizedCandidates,
+      ];
+      if (nextCandidates.length > limits.maxCandidatesTotal) {
+        throw new P2PCandidateSessionLimitExceededError('P2P candidate session limit exceeded');
+      }
+      const nextSession: P2PSession = {
+        ...session,
+        candidates: nextCandidates,
+      };
+      const nextP2PSessions = [...p2pSessions];
+      nextP2PSessions[sessionIndex] = nextSession;
 
-    await this.options.repository.mergeNodeMetadata(nodeId, {
-      reachabilitySessions: {
-        ...reachabilitySessions,
-        p2p: nextP2PSessions,
-      },
+      return {
+        result: nextSession,
+        next: {
+          ...metadata,
+          reachabilitySessions: {
+            ...reachabilitySessions,
+            p2p: nextP2PSessions,
+          },
+        },
+      };
     });
-    return nextSession;
   }
 
   public async createRelaySession(nodeId: string, request: RelaySessionRequest): Promise<RelaySession> {
@@ -214,6 +220,47 @@ export class ReachabilitySessionService {
     return session;
   }
 
+  /**
+   * Apply a metadata mutation without losing concurrent writes.
+   *
+   * Every reachability write lives inside the node's `metadata` blob, so the old
+   * read-modify-write pattern dropped whatever landed in between (audit N07). `mutate` is
+   * re-run against freshly read metadata on each attempt, which also re-runs the validations
+   * (session limits, expiry) against the state it is actually writing to.
+   */
+  private async mutateNodeMetadata<T>(
+    nodeId: string,
+    mutate: (metadata: Record<string, unknown>) => { next: Record<string, unknown>; result: T },
+    attempts = 5,
+  ): Promise<T> {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const current = await this.options.repository.getNodeMetadata(nodeId);
+      if (!current) {
+        throw new NodeRouteSourceNotFoundError(`Node ${nodeId} not found`);
+      }
+      const metadata = current.metadata ?? {};
+      const { next, result } = mutate(metadata);
+      const applied = await this.options.repository.updateNodeMetadataAtomic(
+        nodeId,
+        current.metadata ?? null,
+        next,
+      );
+      if (applied) {
+        return result;
+      }
+    }
+
+    // Retries exhausted: report the conflict instead of pretending the write happened. A node
+    // that disappeared meanwhile is a different failure and keeps its own error type.
+    const exists = await this.options.repository.getNodeMetadata(nodeId);
+    if (!exists) {
+      throw new NodeRouteSourceNotFoundError(`Node ${nodeId} not found`);
+    }
+    throw new NodeMetadataConflictError(
+      `Node ${nodeId} metadata changed concurrently; gave up after ${attempts} attempts`,
+    );
+  }
+
   private async loadNodeRouteSource(nodeId: string): Promise<BuildRouteSetSource> {
     const [metadataRow, connectivity] = await Promise.all([
       this.options.repository.getNodeMetadata(nodeId),
@@ -257,30 +304,37 @@ export class ReachabilitySessionService {
     return normalizeP2PSessionLimits(session.limits) ?? this.p2pSessionLimits();
   }
 
-  private async appendSession(nodeId: string, key: 'p2p' | 'relay', session: P2PSession | RelaySession): Promise<void> {
-    const current = await this.options.repository.getNodeMetadata(nodeId);
-    const metadata = current?.metadata ?? {};
-    const existing = isRecord(metadata.reachabilitySessions) ? metadata.reachabilitySessions : {};
-    const previousSessions = Array.isArray(existing[key]) ? existing[key] : [];
-    await this.options.repository.mergeNodeMetadata(nodeId, {
-      reachabilitySessions: {
-        ...existing,
-        [key]: [...previousSessions, session],
-      },
+  private async appendSession(
+    nodeId: string,
+    key: 'p2p' | 'relay',
+    session: P2PSession | RelaySession,
+    guard?: (metadata: Record<string, unknown>) => void,
+  ): Promise<void> {
+    await this.mutateNodeMetadata(nodeId, (metadata) => {
+      // The guard runs against the metadata being written, not against a copy read earlier:
+      // that is what keeps a limit from being exceeded by two concurrent creates.
+      guard?.(metadata);
+      const existing = isRecord(metadata.reachabilitySessions) ? metadata.reachabilitySessions : {};
+      const previousSessions = Array.isArray(existing[key]) ? existing[key] : [];
+      return {
+        result: undefined,
+        next: {
+          ...metadata,
+          reachabilitySessions: {
+            ...existing,
+            [key]: [...previousSessions, session],
+          },
+        },
+      };
     });
   }
 
-  private async loadP2PSession(nodeId: string, sessionId: string): Promise<{
+  private readP2PSession(metadata: Record<string, unknown>, sessionId: string): {
     reachabilitySessions: Record<string, unknown>;
     p2pSessions: P2PSession[];
     sessionIndex: number;
     session: P2PSession;
-  }> {
-    const current = await this.options.repository.getNodeMetadata(nodeId);
-    if (!current) {
-      throw new NodeRouteSourceNotFoundError(`Node ${nodeId} not found`);
-    }
-    const metadata = current.metadata ?? {};
+  } {
     const reachabilitySessions = isRecord(metadata.reachabilitySessions) ? metadata.reachabilitySessions : {};
     const p2pSessions = Array.isArray(reachabilitySessions.p2p)
       ? reachabilitySessions.p2p.map(toP2PSession).filter((session): session is P2PSession => Boolean(session))
@@ -295,6 +349,19 @@ export class ReachabilitySessionService {
       sessionIndex,
       session: p2pSessions[sessionIndex],
     };
+  }
+
+  private async loadP2PSession(nodeId: string, sessionId: string): Promise<{
+    reachabilitySessions: Record<string, unknown>;
+    p2pSessions: P2PSession[];
+    sessionIndex: number;
+    session: P2PSession;
+  }> {
+    const current = await this.options.repository.getNodeMetadata(nodeId);
+    if (!current) {
+      throw new NodeRouteSourceNotFoundError(`Node ${nodeId} not found`);
+    }
+    return this.readP2PSession(current.metadata ?? {}, sessionId);
   }
 
   private assertP2PSessionActive(session: P2PSession): void {
@@ -354,6 +421,7 @@ export class ReachabilitySessionService {
 }
 
 export class InvalidRelaySessionRequestError extends Error {}
+export class NodeMetadataConflictError extends Error {}
 export class NodeRouteSourceNotFoundError extends Error {}
 export class P2PActiveSessionLimitExceededError extends Error {}
 export class P2PCandidateUpdateLimitExceededError extends Error {}
