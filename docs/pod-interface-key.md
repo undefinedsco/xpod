@@ -44,6 +44,12 @@ Agent 的模型输入、工具参数和事件 payload 都不决定执行身份�
 
 完整 CSS 凭证和 authenticated fetch 仅在可信 host/Runtime/API 适配器中使用，不放进 prompt、工具返回值或任意代码执行环境。自定义代码或 shell 若能读取 Runtime 的内存、凭证文件或注入凭证的环境变量，就不在这个受限 Agent 边界内；要执行此类代码，必须提供不暴露这些材料的隔离环境。此方案信任自动化软件本身，不保证软件整体被攻破后仍能约束用户凭证。
 
+**静态秘密的信任边界（已定，2026-09-23）**：用户凭证、Provider secret 与任务授权信封都放在**用户自己的 Pod** 里，
+Pod 即静态秘密的信任边界；因此不为 Pod 内数据再引入一层专用加密（`SecretCellCredentialVault` 只保留其历史解密用途）。
+推论：**"Pod 里安全"只回答"秘密存哪"，不回答"Runtime 拿什么打开这个 Pod"**。后台任务要读 Pod 内的凭证信封，
+而这份解锁材料不可能也放在同一个 Pod 里（自锁），因此它必须位于 Pod 之外：要么是部署侧解锁材料（环境/KMS 配置一次），
+要么是 Pod 侧已授权的服务身份凭据（见第 9 节决策 5）。这不属于"给 Pod 数据加密"，属于部署密钥的管理。
+
 **范围限定（必须与本文一起读）**：Agent 隔离是**进程内**保证，不是 Pod/CSS 级保证。因为没有 Pod 侧的 Agent 身份，组件最小权限只由 Runtime 的检查点表达，而 Runtime 持有 owner 级凭证；CSS 只看到"用户本人在访问"。它的价值是防误用、防越界、可审计，**不是**"凭证泄露后仍只能读受限资源"。需要后者时，必须走 Pod 侧资源授权（本仓库当前不采用该路线，理由见第 1 节：外部 CSS 无法理解 Xpod Agent 策略）。
 
 **命名区分**：本文的 Agent 指自动化软件内部的模型/执行角色。Matrix 存储另有 `MatrixAgentGrant`（`src/api/matrix/PodMatrixStore.ts`，房间内协作 Agent 的授权），两者概念不同、不得混用。
@@ -110,7 +116,9 @@ Bearer 与 DPoP 都支持，分开入口认证与出站能力：
 rebuild、定时任务、关闭浏览器后继续执行的 Chat/agent，由用户显式授权：
 
 - Runtime 验证 CSS credential 对应的用户 WebID，按 §1.1 分开保存用户凭证、Agent 授权和任务绑定；固定目标 Pod/API/CSS，校验 owner 一致。
-- 用户 CSS credential 在 Runtime 自有持久凭证存储中加密保存，解密 key 跨重启稳定且与密文存储分离。任务/Inngest event 只带引用和版本；由可信 resolver 核对绑定后恢复，不把 secret 当 step 返回值。复用现有加密与数据库设施，不新增 API 通用 vault，不直接操作 Inngest 私有表。
+  三者都写成**用户 Pod 内的资源**（任务注册用 `taskResource`，凭证信封用 `task-auth` 凭证资源，与现有 `TaskRecordData` / `TaskAuthBinding` 一致）；
+  这把"存哪"落在 Pod，"用什么打开"落在部署侧解锁材料（第 9 节决策 5）——两者不可互相替代。
+- 用户 CSS credential 以信封形式存于用户 Pod（`task-auth` 凭证资源）；任务与 Inngest event 只带引用和版本，由可信 resolver 核对绑定后用部署侧解锁材料恢复，不把 secret 当 step 返回值。不新增 API 通用 vault，不把应用事实写进 Inngest 私有表（理由见第 7.3 节）。
 - 恢复不能先要求读取 Pod 内的同一凭证，也不能依赖旧内存 registry。周期调度需要持久任务注册，不能仅靠 event 或内存 context 发现任务。
 - 开始/恢复任务以及每次工具操作前，检查当前 Agent policy、task binding 和 credential 状态/版本/期限；执行中变更按 §4 撤销契约生效。旧事件不携带可覆盖当前授权的权限快照，不回退旧 context。
 - tasks/ingest 使用受控 embeddings 工具；工具的可信适配器携带用户 CSS sk 调 `/v1/embeddings`。任务业务逻辑只取得向量等非秘密结果，不接收 sk 或 Provider secret。源数据读写走单独受控文件工具。
@@ -260,7 +268,12 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 
 - **任务绑定已有家**：`src/api/tasks/TaskAuthBinding.ts`（`TaskAuthBindingKind.SOLID_CLIENT_CREDENTIALS`、`TaskAuthBindingStatus.ACTIVE|REVOKED`、`TaskAuthBindingSnapshot`、`saveTaskAuthCredential` / `loadTaskAuthCredential`、`TaskAuthBindingService`）。§1.1 的"任务执行绑定"与 §4 的"显式任务授权登记"应写为**扩展它**，delta 至少包括：新增 `pending` 状态、授权/凭证版本字段、与 Agent 授权对象的引用关系。
 - **Agent 授权对象目前没有载体**（`src/agents/` 只有执行器与类型）。需要先定它的存储位置（identity DB 独立表，还是任务存储内独立记录），否则 §4 的"三者分别管理"无法落地。
-- **权威存储选型是阻塞项**：§4 要求"不直接操作 Inngest 私有表"，但未指定替代。建议在实施前定一个自有持久层（与 `TaskAuthBinding` 同库/同事务边界），并把 pending/active 的状态流写在它上面。
+- **权威存储：Pod 资源为权威，Inngest 只带引用与运行状态**（2026-09-23 定）。任务注册与凭证信封已是 Pod 资源（`TaskRecordData.id` 形如 `index.ttl#task_*`；`TaskAuthBindingRepository.saveTaskAuthCredential` 写 `task-auth` 凭证资源），pending/active 与版本字段加在同一资源上。不把应用事实写进 Inngest 的表，理由是可核对的：
+  - Inngest 在本部署是**我们自托管的 server**（`inngest-cli`，local 模式 spawn + `INNGEST_SQLITE_DIR=<root>/.inngest`，cloud 模式指向 `xpod-inngest:8288` 并把 `INNGEST_POSTGRES_URI` 设为同一个 Postgres URI + Redis），
+    但它的表是 **Inngest server 的私有 schema**（event/run/step/queue 运行状态），会随 Inngest 版本演进——把授权/绑定语义写进去等于绑死在别人的内部结构上；
+  - step 输出与事件载荷会出现在 Inngest 的 UI/调试面，正是 §3.3/§5 禁止秘密进入的地方；
+  - Inngest 自己持有的 key 是**传输/认证**用的（`INNGEST_EVENT_KEY`、`INNGEST_SIGNING_KEY`），它不提供应用秘密保管语义：官方模型就是"应用自己保管秘密，Inngest 只传引用"。
+- **可靠性取舍**：Pod 内状态流与 Inngest 投递之间没有跨系统事务，因此 §4 的幂等 `executionKey`、pending→active 状态机与崩溃恢复必须建立在"Pod 为权威、Inngest 可重放"之上：先写 Pod 的 pending，再投递；恢复时以 Pod 状态为准补投或终止。
 
 - [ ] 收敛 token exchange/session factory；修复直接 Bearer 的来源限制、DPoP key 生命周期及缓存隔离。
 - [ ] 新增 host 交互适配器，迁移模型测试与普通 Chat；拆开前台推理与持久 run/step。
@@ -294,17 +307,18 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 
 实现后运行适用单元/集成检查、typecheck 和完整 `bun run test:integration`。按 [真实实例指南](cli-dev-testing.md) 分别记录 Pod CRUD、API 认证、模型列表、真实 Chat、真实 embedding 和任务恢复；`listed>=1` 或旧 `pod-interface-key-granted` 阶段不能代替推理结果。外部 CSS 单独验收，缺少专用索引能力不能用 embeddings 成功掩盖。
 
-## 9. 实施前必须确认的决策
+## 9. 决策记录
 
 > 设计冲突记录：[`pod-agent-authorization.md`](pod-agent-authorization.md) 提出的"给组件类发 agent WebID + owner 在 Pod 里用 ACP 授权"
 > 已被本文取代（理由见第 1 节：外部 CSS 无法理解 Xpod Agent 策略）。该文件保留为被否决方案的记录。
 
 
-| # | 决策 | 现状事实 | 建议 |
+| # | 决策 | 结论 / 现状事实 | 待办 |
 | --- | --- | --- | --- |
-| 1 | 用户 CSS credential 与 Provider secret 的**加密口径** | `credentialVaultForConfig` 写入路径是 `PlaintextCredentialVault`（base64）；`SecretCellCredentialVault` 只参与解密旧数据；本轮上线的 `identity_pod_interface_key` 同样如此 | 新凭证存储明确走 `SecretCellCredentialVault`（部署须配置 `XPOD_SECRET_CELL_KEY_ID` / `XPOD_SECRET_CELL_KEY`，并在 §8 增加"密钥-密文分离"验收）；既有数据按可恢复迁移重写；若暂不升级，则把 §1.1/§3.3 的"加密"改为与现状一致的措辞 |
-| 2 | Agent 授权对象的存储位置 | 目前不存在（`src/agents/` 无 policy/scope 持久化） | 与 `TaskAuthBinding` 同库、独立记录；不新建平行 registry |
-| 3 | 任务权威存储 | §4 排除直接操作 Inngest 私有表，替代未指定 | 用自有持久层承载 pending/active、授权与绑定版本；Inngest 只做投递 |
+| 1 | 是否给 Pod 内秘密再加密 | **已定：不加密**。Pod 即静态秘密的信任边界，`SecretCellCredentialVault` 仅保留历史解密用途 | 把"加密"措辞从本文移除（已改）；上线的 `identity_pod_interface_key` 属于 Pod 之外的遗留路径，按 §7.1 第 6 步随迁移删除，不新增加密工作 |
+| 2 | Agent 授权对象的存储位置 | **已定：写在用户 Pod 内**（与任务注册同资源族）；目前 `src/agents/` 无 policy/scope 持久化 | 按 `taskResource` 的资源模式新增授权记录，不新建平行 registry |
+| 3 | 任务权威存储 | **已定：Pod 资源为权威，Inngest 只承载引用与运行状态**（理由见 §7.3） | pending/active 与版本字段加在 Pod 任务资源上；Inngest 侧靠幂等 `executionKey` 重放 |
 | 4 | `caller_pod_access_unavailable` 是否拆分 | 一个 reason 承载"未认证"与"已认证但无出站能力" | 拆出 `caller_outbound_capability_missing`，兼容期保留旧码 + `details.capability` |
+| 5 | **Runtime 打开 Pod 的解锁材料放哪**（Pod 之外，唯一未定项） | 任务凭证信封在 Pod 内，后台执行必须先能打开该 Pod；把解锁材料也放同一个 Pod 会自锁 | 三选一：(a) 部署级解锁材料（环境/KMS，配置一次）解封 Pod 内信封——最贴近"不新增 API 服务身份"；(b) 任务容器在 Pod 侧授权给一个服务身份，Runtime 持该身份凭据——Pod 侧可审计、可撤销，机制已存在（`ensureAgentAccess` + ACP）；(c) 每任务一次性 sk 由调用方代入并随绑定保存——重启后仍需 (a) 或 (b) 才能在 Pod 外恢复。**建议 (b)**，因为它把"Runtime 能碰哪些容器"落在 Pod 的授权判断里，而不是落在部署密钥的分发上 |
 
 本次为文档修订，未修改运行代码、未执行运行验收。
