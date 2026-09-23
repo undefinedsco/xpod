@@ -26,9 +26,33 @@ export interface TunnelProviderParameterField {
   label: string;
 }
 
+/**
+ * The local client this provider needs (audit N16).
+ *
+ * Declared here so there is one place that knows the executable name, how an operator points at
+ * a specific build, whether the artifact may ship the binary at all, and what to tell them when
+ * it is missing. Providers consume it instead of each keeping its own default string.
+ */
+export interface TunnelProviderClient {
+  /** Executable name; also the name reported in `binary-missing:<provider>:<binary>`. */
+  binary: string;
+  /** Env var that names an explicit path; highest precedence, and never silently ignored. */
+  envKey: string;
+  /** Where an operator can get it (shown next to a missing-binary failure). */
+  installHint: string;
+  /**
+   * Whether the release artifact may ship this binary. ngrok and the natfrp frpc fork are not
+   * ours to redistribute; cloudflared and upstream frpc are Apache-2.0 and could be bundled.
+   */
+  redistributable: boolean;
+  /** Upstream licence / redistribution note, for whoever changes that decision later. */
+  license: string;
+}
+
 export interface TunnelProviderDescriptor {
   id: TunnelProviderId;
   label: string;
+  client: TunnelProviderClient;
   /** Legacy provider-scoped credential key, still honoured for single-profile setups. */
   legacyCredentialEnvKey: string;
   /** Legacy env keys that used to declare this provider's public entry. */
@@ -71,6 +95,14 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
   {
     id: 'ngrok',
     label: 'ngrok',
+    client: {
+      binary: 'ngrok',
+      envKey: 'NGROK_BIN',
+      installHint: 'install the ngrok agent and put it on PATH (or set NGROK_BIN)',
+      // ngrok's agent is proprietary: bundling it in our artifact needs their permission.
+      redistributable: false,
+      license: 'proprietary (ngrok terms of service)',
+    },
     legacyCredentialEnvKey: 'NGROK_AUTHTOKEN',
     legacyPublicUrlKeys: [ 'NGROK_URL' ],
     endpointSource: 'discovered',
@@ -85,6 +117,13 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
   {
     id: 'cloudflare',
     label: 'Cloudflare Tunnel',
+    client: {
+      binary: 'cloudflared',
+      envKey: 'CLOUDFLARED_BIN',
+      installHint: 'install cloudflared and put it on PATH (or set CLOUDFLARED_BIN)',
+      redistributable: true,
+      license: 'Apache-2.0',
+    },
     legacyCredentialEnvKey: 'CLOUDFLARE_TUNNEL_TOKEN',
     legacyPublicUrlKeys: [ 'CLOUDFLARE_TUNNEL_URL', 'XPOD_TUNNEL_PUBLIC_URL' ],
     // The hostname is configured in the Cloudflare dashboard and cloudflared is only
@@ -100,6 +139,14 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
   {
     id: 'sakura_frp',
     label: 'Sakura FRP',
+    client: {
+      binary: 'frpc',
+      envKey: 'FRPC_BIN',
+      // The official client is required: upstream frpc cannot express `-f <token>`.
+      installHint: 'install the natfrp client (its frpc accepts `-f <token>`) and put it on PATH',
+      redistributable: false,
+      license: 'natfrp fork (no published source; redistribution needs their permission)',
+    },
     legacyCredentialEnvKey: 'SAKURA_TUNNEL_TOKEN',
     legacyPublicUrlKeys: [ 'SAKURA_TUNNEL_URL', 'XPOD_TUNNEL_PUBLIC_URL' ],
     // The console only asks for a node and a local port: the public entry (node host +
@@ -115,6 +162,13 @@ export const TUNNEL_PROVIDERS: readonly TunnelProviderDescriptor[] = [
   {
     id: 'frp',
     label: 'FRP',
+    client: {
+      binary: 'frpc',
+      envKey: 'FRPC_BIN',
+      installHint: 'install upstream frpc and put it on PATH (or set FRPC_BIN)',
+      redistributable: true,
+      license: 'Apache-2.0',
+    },
     legacyCredentialEnvKey: 'FRP_TUNNEL_TOKEN',
     legacyPublicUrlKeys: [ 'FRP_TUNNEL_URL' ],
     endpointSource: 'declared',

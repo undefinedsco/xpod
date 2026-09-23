@@ -1,3 +1,5 @@
+import { describeTunnelClientMissing } from './TunnelClientResolver';
+import type { TunnelProviderId } from './TunnelProviderCatalog';
 import type { TunnelStage, TunnelStatus } from './TunnelProvider';
 
 /**
@@ -22,11 +24,17 @@ export function mergeTunnelError(previous: string | undefined, next: string | un
   return next ?? previous;
 }
 
-/** Recognizes a missing client binary, which is a deployment fact, not a network failure. */
+/**
+ * Recognizes a missing client binary, which is a deployment fact, not a network failure.
+ *
+ * The prefix stays `binary-missing:<provider>:<binary>` (callers and acceptance assert on it);
+ * the install hint from the provider catalog is appended so an operator reading the failure
+ * knows what to install instead of having to search (audit N16).
+ */
 export function describeSpawnError(provider: string, binary: string, error: unknown): string {
   const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: unknown }).code) : '';
   if (code === 'ENOENT') {
-    return `binary-missing:${provider}:${binary}`;
+    return describeTunnelClientMissing(provider as TunnelProviderId, binary);
   }
   return `spawn-failed:${provider}:${(error as Error)?.message ?? String(error)}`;
 }

@@ -1,3 +1,4 @@
+import { resolveTunnelClient } from './TunnelClientResolver';
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import { getLoggerFor } from 'global-logger-factory';
 import { createTunnelStatus, describeSpawnError } from './TunnelLifecycle';
@@ -24,6 +25,8 @@ export interface LocalTunnelProviderOptions {
 
   /** cloudflared 可执行文件路径 (默认 'cloudflared') */
   cloudflaredPath?: string;
+  /** Environment used to resolve the client binary; injectable for tests. */
+  env?: NodeJS.ProcessEnv;
 
   /** 等待代理发布的毫秒数；超时后状态为 failed，而不是"仍在连接" */
   connectTimeoutMs?: number;
@@ -61,7 +64,8 @@ export class LocalTunnelProvider implements TunnelProvider {
   constructor(options: LocalTunnelProviderOptions) {
     this.tunnelToken = options.tunnelToken;
     this.publicUrl = normalizePublicEndpoint(options.publicUrl);
-    this.cloudflaredPath = options.cloudflaredPath ?? 'cloudflared';
+    this.cloudflaredPath = options.cloudflaredPath
+      ?? resolveTunnelClient('cloudflare', { env: options.env }).command;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
   }
 

@@ -1,3 +1,4 @@
+import { resolveTunnelClient } from './TunnelClientResolver';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { getLoggerFor } from 'global-logger-factory';
 import type {
@@ -17,6 +18,8 @@ export interface NgrokTunnelProviderOptions {
 
   /** ngrok executable path. */
   ngrokPath?: string;
+  /** Environment used to resolve the client binary; injectable for tests. */
+  env?: NodeJS.ProcessEnv;
 
   /** ngrok local Agent API, used to discover generated dev domains. */
   agentApiUrl?: string;
@@ -56,7 +59,8 @@ export class NgrokTunnelProvider implements TunnelProvider {
   public constructor(options: NgrokTunnelProviderOptions = {}) {
     this.authtoken = options.authtoken;
     this.configuredUrl = normalizeEndpointForCli(options.url);
-    this.ngrokPath = options.ngrokPath ?? 'ngrok';
+    this.ngrokPath = options.ngrokPath
+      ?? resolveTunnelClient('ngrok', { env: options.env }).command;
     this.agentApiUrl = options.agentApiUrl ?? 'http://127.0.0.1:4040';
     this.connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
   }

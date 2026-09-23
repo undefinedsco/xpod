@@ -10,6 +10,7 @@
  * 声明字段只作为 API 不可用时的可选兜底。
  */
 
+import { resolveTunnelClient } from './TunnelClientResolver';
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import { getLoggerFor } from 'global-logger-factory';
 import { createTunnelStatus, describeSpawnError } from './TunnelLifecycle';
@@ -32,6 +33,8 @@ export interface SakuraFrpTunnelProviderOptions {
 
   /** frpc 可执行文件路径 (默认 'frpc') */
   frpcPath?: string;
+  /** Environment used to resolve the client binary; injectable for tests. */
+  env?: NodeJS.ProcessEnv;
 
   /** 等待代理发布的毫秒数；超时后状态为 failed */
   connectTimeoutMs?: number;
@@ -102,7 +105,8 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
   constructor(options: SakuraFrpTunnelProviderOptions) {
     this.token = options.token;
     this.publicUrl = normalizePublicEndpoint(options.publicUrl);
-    this.frpcPath = options.frpcPath ?? 'frpc';
+    this.frpcPath = options.frpcPath
+      ?? resolveTunnelClient('sakura_frp', { env: options.env }).command;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
     this.serverAddr = options.serverAddr;
     this.apiBaseUrl = (options.apiBaseUrl ?? DEFAULT_SAKURA_API_BASE_URL).replace(/\/+$/u, '');

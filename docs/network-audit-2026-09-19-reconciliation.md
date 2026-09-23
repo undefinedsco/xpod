@@ -10,8 +10,8 @@
 | 判定 | 数量 | 项 |
 | --- | --- | --- |
 | 已修复 | 7 | N03、N06、N07、N14、N15、N17、N18（W2 全部 + W3 除 N16 外，见第 9/10 节；对账时为"仍存在"） |
-| 部分缓解 | 3 | N01（仅读接口直连面）、N09（仅 UI 层）、N12（仅 admin public-ip） |
-| 仍存在 | 9 | N02、N04、N05、N08、N10、N11、N13、N16、N19 |
+| 部分缓解 | 4 | N01（仅读接口直连面）、N09（仅 UI 层）、N12（仅 admin public-ip）、N16（声明/解析/探测已做，产物仍未携带客户端） |
+| 仍存在 | 8 | N02、N04、N05、N08、N10、N11、N13、N19 |
 | 仍存在（对账后新增） | 1 | N20（真实验收发现，见 4.4；修复见第 8 节） |
 
 结论：**W0（Gateway/API 授权与 Cloud 节点边界）仍是唯一正确的起手点**，报告的可信度经复核成立；同时工作区未提交改动引入了 3 个新的连带事实（第 4 节），其中 1 个是功能性回归风险，需在提交前处理。N20 不在报告范围内，是 W1 真实验收过程中在实际运行实例上观察到的生命周期缺陷，按同一口径补记。
@@ -79,7 +79,7 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 | N13 provider 就绪误报及错误目标 | P1 | **仍存在** | ngrok `src/tunnel/NgrokTunnelProvider.ts:197/301-315/381-404`；Cloudflare `LocalTunnelProvider.ts:159/331`；Sakura `SakuraFrpTunnelProvider.ts:93/163`（`login to server success` 即 connected、任意 frpc 即接管）三处均与基线一致 | 无错 token/退出/超时/端口冲突/多隧道/无关 frpc 的负例 |
 | N14 Cloudflare DNS 误删可并存记录 | P1 | **已修复（见第 10 节）** | 对账时：`CloudflareDnsProvider` 类型不同即 DELETE、`findRecord` 不带 type 时取 `response[0]`。现：一次拉回同名全部记录、按类型判定；只有 CNAME 互斥才按 ID 删除，MX/TXT 与 A/AAAA 共存；删除强制带类型且拒绝类型不匹配的记录 | `tests/dns/CloudflareDnsProvider.test.ts` +8 例；对旧实现 **4/8 失败**。腾讯云 provider 经核查本来就按 type 过滤，无同类缺陷 |
 | N15 生产证书失败回退 staging、续期链不完整 | P1 | **部分修复（见第 10 节）** | 对账时：默认 fallback 含 `letsencrypt.staging`，失败即换下一个 CA。现：默认链只有生产 CA（ZeroSSL），staging 仅当操作者显式列出才使用，且进入链中会告警、签发成功也会再告警；全部失败时报出尝试过的每个 CA。**续期调度链仍未闭环**（只有按需 `renewCertificate` + 阈值状态），见 10.2 | `tests/edge/AcmeCertificateManager.test.ts` +5 例；对旧实现 **3/5 失败** |
-| N16 发布产物不含隧道客户端 | P1（若承诺免安装） | **仍存在** | `Dockerfile`、`scripts/build-platform-package.cjs` 对 `cloudflared`/`ngrok`/`frpc` **零命中**；Dockerfile 的工作区改动仅 bun 版本与构建顺序 | 无干净 OS/架构的产物启动验收 |
+| N16 发布产物不含隧道客户端 | P1（若承诺免安装） | **部分修复（见第 10.4 节）** | 对账时：产物对三家客户端零命中，也没有"客户端从哪来"的声明。现：provider 目录声明每个客户端（名字/环境变量/安装提示/许可/可否随产物分发），一个解析器统一顺序（显式路径 → 打包目录 → PATH），缺失时报 `binary-missing:<provider>:<binary>` **并附安装提示**，另有 `scripts/check-tunnel-clients.ts` 预检。**产物仍未携带任何客户端**（ngrok 与 natfrp fork 不可分发；cloudflared/frpc 可分发的打包工作未完） | `tests/tunnel/TunnelClientResolver.test.ts` 9 例 + provider 环境变量解析 1 例；绕过解析顺序后 **5 例失败** |
 | N17 数据面资源上限、流式与取消缺口 | P1（若启用公网 P2P） | **已修复（见第 9 节）** | 对账时：`TcpP2PDataPlaneTransport.ts` 无帧/请求体/并发上限（仅 `DEFAULT_MAX_CLOCK_ERROR_SECONDS` 常量）；`P2PDataPlane.ts:103` 仍全量读取。现：帧/请求体/响应体/并发四类上限 + 取消信封 + 分块流式（head→chunk→end） | `tests/edge/reachability/P2PDataPlaneLimits.test.ts` 11 例；暂时关掉强制后 **7/11 失败** |
 | N18 恢复监督、动态选路与文件权限 | P2 | **部分修复（见第 10.3 节）** | 对账时：frpc 固定 1s 重启、`stop()` 不取消待重启、私钥与 frpc 配置（含 token）默认 0644。现：指数退避（1s→60s 上限）、活过 60s 视为健康清零、停止/替换进程时取消待重启并把被替换进程的退出排除在状态与重启之外、私钥与 frpc 配置 0600（含对旧文件 chmod）。**动态选路监督（`src/api/runtime.ts` 侧）仍未做** | `tests/edge/frp/FrpcProcessManager.test.ts` +4 例、`tests/edge/AcmeCertificateManager.test.ts` +1 例；对旧实现 **8 例失败**（含 N15 的 3 例） |
 | N19 测试入口与合同覆盖漂移 | P2 | **仍存在（并新增一例）** | `vitest.config.ts` 排除表仍含 `ui/src/api/network-settings.test.ts`（该测试与 `ui/src/api/network-settings.ts` 均未更新），且**新增** `tests/bun/**` 排除；CI（`.github/workflows/ci.yml:45`）只跑 `bun run test:run`，`package.json` 无执行 `tests/bun/**` 的脚本 | 见 4.3：新测试文件当前**没有任何执行入口** |
@@ -285,3 +285,18 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 证据（负向优先）：`tests/edge/frp/FrpcProcessManager.test.ts` 新增 4 例（退避 1s→2s→4s、活够久清零、stop 不被待重启复活、配置文件 0600 且含 token）；`tests/edge/AcmeCertificateManager.test.ts` 新增 1 例（账户私钥与证书私钥 0600）。把两个源文件改回旧实现后 **8 例失败**（含 N15 的 3 例）。
 
 **仍未闭环（下一轮）**：N18 的另一半——**动态选路与运行监督**（`src/api/runtime.ts` 只有日志文件解析，没有 supervisor/健康探测/选路收敛），以及"kill 子进程后断网恢复"的用例；`umask` 非默认（如 000）场景未验（当前显式传 mode，不依赖 umask）。
+
+### 10.4 N16 客户端声明、解析顺序与探测（部分修复）
+
+| 面 | 修复 |
+| --- | --- |
+| 声明 | `TunnelProviderDescriptor.client` 成为唯一事实来源：可执行名（也是 `binary-missing:<provider>:<binary>` 里的名字）、指定路径的环境变量（`NGROK_BIN`/`CLOUDFLARED_BIN`/`FRPC_BIN`）、安装提示、**许可以及能否随产物分发** |
+| 解析 | `src/tunnel/TunnelClientResolver.ts` 统一顺序：显式路径（provider 选项或目录里的环境变量）→ 包内 `vendor/tunnel-clients/<binary>` → 交给 PATH 的裸名字；三家 provider 的默认命令都改为消费该解析器 |
+| 失败语义 | 缺失仍报 `binary-missing:<provider>:<binary>`（前缀不变，验收脚本的断言继续有效），后面附上该客户端的安装提示；配置了显式路径但不存在时不静默改用别的二进制（解析器直接报错） |
+| 探测 | `scripts/check-tunnel-clients.ts [--require ngrok,cloudflare] [--json]`：逐个 provider 打印来源（显式/打包/PATH）、命中路径或安装提示，并打印"哪些客户端允许随产物分发"的策略句；可用于验收前置检查 |
+
+本机实测（预检脚本真实输出）：`ngrok` 与 `cloudflared` 命中 `/opt/homebrew/bin`，`sakura_frp`/`frp` 的 `frpc` **未安装**（Homebrew 的上游 frpc 不接受 `-f <token>`，与 W1 结论一致），策略句为"允许打包 cloudflared、frpc；ngrok 与 natfrp fork 不随产物分发"。
+
+证据（负向优先）：`tests/tunnel/TunnelClientResolver.test.ts` 9 例（显式路径优先、目录环境变量生效、显式路径不存在时拒绝回退、打包目录优先于 PATH、裸名字回落、缺失提示保留机器可读前缀、许可策略只允许可分发的客户端）+ `NgrokTunnelProvider` 新增 1 例（未给显式选项时按目录环境变量解析）；把解析顺序临时改成"永远用裸名字"后 **5 例失败**。
+
+**仍未闭环（下一轮）**：产物真的携带客户端——需要决定镜像/包的体积与签名策略（cloudflared 约 40MB、frpc 约 14MB），在 `Dockerfile` 与 `scripts/build-platform-package.cjs` 里落地并做一次干净 OS/架构的产物启动验收；ngrok 与 natfrp fork 在拿到许可前只能保持"用户自装 + 预检提示"。

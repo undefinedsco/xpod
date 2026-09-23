@@ -163,7 +163,9 @@ describe('LocalTunnelProvider', () => {
     child.emit('error', error);
 
     await expect(started).rejects.toThrow(/cloudflared/);
-    expect(provider.getStatus().error).toBe('binary-missing:cloudflare:cloudflared');
+    // The prefix stays machine-readable; the catalog's install hint is appended for operators.
+    expect(provider.getStatus().error).toMatch(/^binary-missing:cloudflare:cloudflared/u);
+    expect(provider.getStatus().error).toContain('CLOUDFLARED_BIN');
   }, 20_000);
 
   it('only reports ready once cloudflared registered the tunnel connection', async () => {

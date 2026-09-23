@@ -1,3 +1,6 @@
+import os from 'node:os';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NgrokTunnelProvider } from '../../src/tunnel/NgrokTunnelProvider';
@@ -320,4 +323,43 @@ describe('NgrokTunnelProvider', () => {
     expect(status.stage).toBe('failed');
     expect(status.endpoint).not.toBe('https://someone-elses.ngrok-free.app/');
   }, 20_000);
+});
+
+/**
+ * N16: the client is resolved through one order (explicit option → catalog env key → bundled →
+ * PATH). A provider that ignored the env key would keep spawning whatever `ngrok` happened to be
+ * first on PATH, even though the operator pointed it at a specific build.
+ */
+describe('NgrokTunnelProvider client resolution (N16)', () => {
+  beforeEach(() => {
+    spawnMock.mockReset();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('agent api unavailable')));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('spawns the binary named by the catalog env key when no explicit option is given', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ngrok-client-'));
+    const binary = path.join(tmpDir, 'ngrok-from-env');
+    await fs.writeFile(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const provider = new NgrokTunnelProvider({
+      env: { NGROK_BIN: binary },
+      url: 'https://ravioli-basics-throbbing.ngrok-free.dev',
+      authtoken: 'test-token',
+    });
+    const config = await provider.setup({ subdomain: 'node-0000', localPort: 3000 });
+    const started = provider.start(config);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled());
+    child.stdout.emit('data', Buffer.from('started tunnel url=https://ravioli-basics-throbbing.ngrok-free.dev\n'));
+    await started;
+
+    expect(spawnMock.mock.calls[0][0]).toBe(binary);
+    provider.stop();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
 });
