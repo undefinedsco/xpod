@@ -912,7 +912,14 @@ export class PodMatrixStore {
     const key = JSON.stringify(['wake-result',job.id]);
     const reservation = await this.journal.reserveTransaction(this.scope(context),key,{
       eventId:`$${this.hash(key)}:${this.getServerName(context)}`,createdAt:Date.now(),contentHash});
-    if (reservation.contentHash !== contentHash) throw new MatrixError(409,'M_CONFLICT','A different result was already reserved for this wake');
+    if (reservation.contentHash !== contentHash) {
+      // A crashed executor can leave a reservation whose output never reached the
+      // Pod. That reserved event is deterministic, so its absence proves nothing
+      // is committed: let the current attempt take the reservation over.
+      const dangling = !events.some(event => event.eventId === reservation.eventId);
+      if (!dangling) throw new MatrixError(409,'M_CONFLICT','A different result was already reserved for this wake');
+      await this.journal.updateReservation(this.scope(context), key, contentHash);
+    }
     let output = events.find(e=>e.eventId===reservation.eventId);
     if (!output) {
       output = await this.appendEvent(db,{roomId,type:'m.room.message',sender:this.getMatrixUserId({...context,webId:job.agent}),

@@ -15,6 +15,12 @@ export interface MatrixTransactionReservation {
 /** Operational references only: event bodies and room state remain authoritative in the Pod. */
 export interface MatrixEventJournal {
   reserveTransaction(scope: string, key: string, candidate: MatrixTransactionReservation): Promise<MatrixTransactionReservation>;
+  /**
+   * Replace the content hash of an existing reservation while keeping its event
+   * id and time. Only valid for a reservation whose output was never written;
+   * callers must verify that before taking one over.
+   */
+  updateReservation(scope: string, key: string, contentHash: string): Promise<void>;
   registerEvent(scope: string, roomId: string, eventId: string): Promise<number>;
   getHighWatermark(scope: string): Promise<number>;
   findReservation(scope: string, eventId: string): Promise<MatrixTransactionReservation | undefined>;
@@ -37,6 +43,12 @@ export class InMemoryMatrixEventJournal implements MatrixEventJournal {
   public async findReservation(scope: string, eventId: string): Promise<MatrixTransactionReservation | undefined> {
     for (const [key,value] of this.transactions) if (JSON.parse(key)[0] === scope && value.eventId === eventId) return {...value};
     return undefined;
+  }
+
+  public async updateReservation(scope: string, key: string, contentHash: string): Promise<void> {
+    const identity = JSON.stringify([ scope, key ]);
+    const existing = this.transactions.get(identity);
+    if (existing) this.transactions.set(identity, { ...existing, contentHash });
   }
 
   public async registerEvent(scope: string, roomId: string, eventId: string): Promise<number> {
@@ -77,6 +89,14 @@ export class SqlMatrixEventJournal implements MatrixEventJournal {
       throw new Error('Matrix transaction reservation disappeared');
     }
     return { eventId: row.event_id, createdAt: Number(row.created_at), contentHash: row.content_hash };
+  }
+
+  public async updateReservation(scope: string, key: string, contentHash: string): Promise<void> {
+    await this.ensureInitialized();
+    await executeStatement(this.db, sql`
+      UPDATE xpod_matrix_transactions SET content_hash = ${contentHash}
+      WHERE scope = ${scope} AND transaction_key = ${key}
+    `);
   }
 
   public async findReservation(scope: string, eventId: string): Promise<MatrixTransactionReservation | undefined> {

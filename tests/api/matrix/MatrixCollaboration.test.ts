@@ -252,6 +252,36 @@ describe('Matrix collaboration contract (in-memory persistence; no LLM)', () => 
     }
   });
 
+  it('lets a replacement execution commit after a reservation whose output never reached the Pod', async () => {
+    const f = await fixture();
+    await f.store.sendEvent(f.room.roomId, 'm.room.message', 'dangling-result', f.content, f.context);
+    const claimed = await f.runtime.claim(f.request(), f.context);
+    const job = claimed.job!;
+    // Attempt 1 reserves its result and dies before the ASSISTANT Message lands.
+    const reserve = f.journal.reserveTransaction.bind(f.journal);
+    const crashAfterReservation = vi.spyOn(f.journal, 'reserveTransaction')
+      .mockImplementation(async (scope, key, candidate) => {
+        const reservation = await reserve(scope, key, candidate);
+        if (key.includes('wake-result')) throw new Error('Injected crash after result reservation');
+        return reservation;
+      });
+    try {
+      await expect(f.store.commitResult(f.room.roomId, job, { body: 'attempt one' }, f.context))
+        .rejects.toThrow('Injected crash after result reservation');
+    } finally {
+      crashAfterReservation.mockRestore();
+    }
+    expect(f.rows.get(messageResource)!.filter(row => row.role === MessageRole.ASSISTANT)).toHaveLength(0);
+
+    // Attempt 2 cannot reproduce the same bytes, which must not block it forever.
+    const replacement = f.makeStore();
+    const result = await replacement.commitResult(f.room.roomId, job, { body: 'attempt two' }, f.context);
+    expect(typeof result.eventId).toBe('string');
+    const assistants = f.rows.get(messageResource)!.filter(row => row.role === MessageRole.ASSISTANT);
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].content).toBe('attempt two');
+  });
+
   it('starts a fresh execution chain for user input despite supplied execution metadata', async () => {
     const f = await fixture();
     await f.store.sendEvent(f.room.roomId, 'm.room.message', 'user-chain-injection', { ...f.content,
