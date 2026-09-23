@@ -11,6 +11,13 @@ export interface WakeAgentFailureOptions extends WakeAgentLeaseReference { error
 export interface WakeAgentQueue {
   enqueue(job: SharedWakeAgentJob): Promise<WakeAgentEnqueueResult>;
   listQueued(thread: string, agent?: string): Promise<SharedWakeAgentJob[]>;
+  /**
+   * Jobs this queue marked `failed` on its own authority (in-flight attempts
+   * exhausted). Unlike a reported failure these may still hold Pod work.
+   */
+  listExhausted(thread: string, agent?: string): Promise<SharedWakeAgentJob[]>;
+  /** Put an exhausted job back in its lane; terminal decisions stay with the Pod. */
+  requeue(job: Pick<SharedWakeAgentJob, 'thread' | 'agent' | 'id' | 'triggerMessage'>): Promise<boolean>;
   claim(options: WakeAgentClaimOptions): Promise<SharedWakeAgentJob | undefined>;
   renew(options: WakeAgentLeaseReference): Promise<boolean>;
   complete(options: WakeAgentLeaseReference): Promise<boolean>;
@@ -66,6 +73,22 @@ export class InMemoryWakeAgentQueue implements WakeAgentQueue {
   public async listQueued(thread: string, agent?: string): Promise<SharedWakeAgentJob[]> {
     return [...this.jobs.values()].filter(job => job.thread === thread && (!agent || job.agent === agent) && (job.status === 'queued' || job.status === 'leased')).map(job => ({ ...job }));
   }
+  public async listExhausted(thread: string, agent?: string): Promise<SharedWakeAgentJob[]> {
+    return [...this.jobs.values()].filter(job => job.thread === thread && (!agent || job.agent === agent) && job.status === 'failed' && job.exhausted === true).map(job => ({ ...job }));
+  }
+  public async requeue(job: Pick<SharedWakeAgentJob, 'thread' | 'agent' | 'id' | 'triggerMessage'>): Promise<boolean> {
+    const key = sharedWakeAgentJobDedupeKey(job);
+    const stored = this.jobs.get(key);
+    if (!stored || stored.id !== job.id || stored.status !== 'failed' || stored.exhausted !== true) return false;
+    stored.status = 'queued';
+    stored.attempts = 0;
+    delete stored.exhausted;
+    stored.lastError = undefined;
+    const lane = wakeAgentQueueKey(stored);
+    const keys = this.pending.get(lane) ?? [];
+    if (!keys.includes(key)) this.pending.set(lane, [...keys, key]);
+    return true;
+  }
   public async claim(options: WakeAgentClaimOptions): Promise<SharedWakeAgentJob | undefined> {
     const duration = leaseDuration(options);
     const keys = this.pending.get(wakeAgentQueueKey(options)) ?? [];
@@ -75,7 +98,9 @@ export class InMemoryWakeAgentQueue implements WakeAgentQueue {
       if (job.status === 'leased' && Date.parse(job.leaseExpiresAt!) > now) { return undefined; }
       if ((job.attempts ?? 0) >= this.maxAttempts) {
         job.status = 'failed';
-        job.lastError = 'Lease expired after maximum attempts';
+        // In-flight attempts say nothing about Pod work: keep the job repairable.
+        job.exhausted = true;
+        job.lastError = 'In-flight attempts exhausted before any execution was recorded';
         clearLease(job);
         keys.shift();
         continue;
@@ -110,6 +135,8 @@ export class InMemoryWakeAgentQueue implements WakeAgentQueue {
     const keys = this.pending.get(wakeAgentQueueKey(options))!;
     const key = keys.shift()!;
     job.status = failed ? (options.retry !== false && job.attempts! < this.maxAttempts ? 'queued' : 'failed') : 'completed';
+    // A reported failure is Pod-verified, so it is no longer repairable.
+    delete job.exhausted;
     if (failed && options.error) { job.lastError = options.error; }
     clearLease(job);
     if (job.status === 'queued') { keys.push(key); }
@@ -121,7 +148,7 @@ export class InMemoryWakeAgentQueue implements WakeAgentQueue {
 // clock skew cannot steal leases. The head stays in the list until acknowledgement.
 const TRANSITION = `
 local op = ARGV[1]
-local input = cjson.decode(ARGV[2])
+local input = ARGV[2] ~= '' and cjson.decode(ARGV[2]) or nil
 local duration = tonumber(ARGV[3])
 local maxAttempts = tonumber(ARGV[4])
 local time = redis.call('TIME')
@@ -130,11 +157,36 @@ local function save(key, job) redis.call('HSET', KEYS[1], key, cjson.encode(job)
 local function clear(job) job.leaseOwner = nil; job.leaseExpiresAt = nil; job.fencingToken = nil; job.leaseUntil = nil end
 if op == 'enqueue' then
  local existing = redis.call('HGET', KEYS[1], ARGV[5])
+ if existing then
+  local stale = cjson.decode(existing)
+  if stale.status == 'failed' and stale.exhausted == true then
+   existing = nil
+   redis.call('SREM', KEYS[5], ARGV[5])
+  end
+ end
  if existing then return cjson.encode({job=cjson.decode(existing), inserted=false}) end
  save(ARGV[5], input)
  redis.call('RPUSH', KEYS[2], ARGV[5])
  redis.call('SADD', KEYS[4], input.agent)
+ redis.call('SREM', KEYS[5], ARGV[5])
  return cjson.encode({job=input, inserted=true})
+end
+if op == 'requeue' then
+ if redis.call('SISMEMBER', KEYS[5], input.key) == 0 then return '' end
+ local queued = cjson.decode(redis.call('HGET', KEYS[1], input.key))
+ if queued == nil or queued.id ~= input.id or queued.status ~= 'failed' or queued.exhausted ~= true then return '' end
+ queued.status = 'queued'
+ queued.attempts = 0
+ queued.exhausted = nil
+ queued.lastError = nil
+ queued.leaseOwner = nil
+ queued.leaseExpiresAt = nil
+ queued.leaseUntil = nil
+ queued.fencingToken = nil
+ save(input.key, queued)
+ redis.call('RPUSH', KEYS[2], input.key)
+ redis.call('SREM', KEYS[5], input.key)
+ return 'true'
 end
 while true do
  local key = redis.call('LINDEX', KEYS[2], 0)
@@ -143,7 +195,7 @@ while true do
  if op == 'claim' then
   if job.status == 'leased' and job.leaseUntil > now then return '' end
   if (job.attempts or 0) >= maxAttempts then
-   job.status='failed'; job.lastError='Lease expired after maximum attempts'; clear(job); save(key, job); redis.call('LPOP', KEYS[2])
+   job.status='failed'; job.exhausted=true; job.lastError='In-flight attempts exhausted before any execution was recorded'; clear(job); save(key, job); redis.call('LPOP', KEYS[2]); redis.call('SADD', KEYS[5], key)
   else
    job.status='leased'; job.attempts=(job.attempts or 0)+1; job.leaseOwner=input.owner
    job.leaseUntil=now+duration; job.fencingToken=tostring(redis.call('INCR', KEYS[3])) .. ':' .. ARGV[6]
@@ -159,6 +211,8 @@ while true do
    if input.retry ~= false and job.attempts < maxAttempts then job.status='queued'; redis.call('RPUSH', KEYS[2],key) end
    if input.error then job.lastError=input.error end
   end
+  job.exhausted = nil
+  redis.call('SREM', KEYS[5], key)
   save(key,job); return 'true'
  end
 end
@@ -179,14 +233,35 @@ class RedisWakeAgentQueue implements WakeAgentQueue {
     // A thread hash tag keeps the transaction in one Redis Cluster slot.
     const root = `${this.namespace}{${hash(thread)}}`;
     const lane = `${root}:${wakeAgentQueueKey({ thread, agent })}`;
-    return [`${lane}:jobs`, `${lane}:pending`, `${lane}:fence`, `${root}:agents`];
+    return [`${lane}:jobs`, `${lane}:pending`, `${lane}:fence`, `${root}:agents`, `${lane}:exhausted`];
   }
   public async enqueue(job: SharedWakeAgentJob): Promise<WakeAgentEnqueueResult> {
-    const raw = await this.redis.eval(TRANSITION, 4, ...this.keys(job.thread, job.agent), 'enqueue', JSON.stringify(initialJob(job)), '0', String(this.maxAttempts), sharedWakeAgentJobDedupeKey(job)) as string;
+    const raw = await this.redis.eval(TRANSITION, 5, ...this.keys(job.thread, job.agent), 'enqueue', JSON.stringify(initialJob(job)), '0', String(this.maxAttempts), sharedWakeAgentJobDedupeKey(job)) as string;
     const result = JSON.parse(raw) as WakeAgentEnqueueResult;
     result.job = fromRedis(result.job);
     return result;
   }
+  public async listExhausted(thread: string, agent?: string): Promise<SharedWakeAgentJob[]> {
+    const agents = agent ? [agent] : await this.redis.smembers(this.keys(thread, '')[3]);
+    const jobs: SharedWakeAgentJob[] = [];
+    for (const id of agents) {
+      const keys = this.keys(thread, id);
+      const members = await this.redis.smembers(keys[4]);
+      if (!members.length) { continue; }
+      for (const raw of await this.redis.hmget(keys[0], ...members)) {
+        if (!raw) { continue; }
+        const job = fromRedis(JSON.parse(raw));
+        if (job.status === 'failed' && job.exhausted === true) { jobs.push(job); }
+      }
+    }
+    return jobs;
+  }
+
+  public async requeue(job: Pick<SharedWakeAgentJob, 'thread' | 'agent' | 'id' | 'triggerMessage'>): Promise<boolean> {
+    const payload = JSON.stringify({ key: sharedWakeAgentJobDedupeKey(job), id: job.id });
+    return Boolean(await this.redis.eval(TRANSITION, 5, ...this.keys(job.thread, job.agent), 'requeue', payload, '0', String(this.maxAttempts), '') as string);
+  }
+
   public async listQueued(thread: string, agent?: string): Promise<SharedWakeAgentJob[]> {
     const agents = agent ? [agent] : await this.redis.smembers(this.keys(thread, '')[3]);
     const jobs: SharedWakeAgentJob[] = [];
@@ -211,7 +286,7 @@ class RedisWakeAgentQueue implements WakeAgentQueue {
   public async complete(options: WakeAgentLeaseReference): Promise<boolean> { return Boolean(await this.transition('complete', options)); }
   public async fail(options: WakeAgentFailureOptions): Promise<boolean> { return Boolean(await this.transition('fail', options)); }
   private async transition(operation: string, options: WakeAgentClaimOptions): Promise<string> {
-    return await this.redis.eval(TRANSITION, 4, ...this.keys(options.thread, options.agent), operation, JSON.stringify(options), String(leaseDuration(options)), String(this.maxAttempts), '', randomUUID()) as string;
+    return await this.redis.eval(TRANSITION, 5, ...this.keys(options.thread, options.agent), operation, JSON.stringify(options), String(leaseDuration(options)), String(this.maxAttempts), '', randomUUID()) as string;
   }
   public async close(): Promise<void> {
     this.shuttingDown = true;

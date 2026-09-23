@@ -946,6 +946,22 @@ export class PodMatrixStore {
     }
   }
 
+  /**
+   * Whether the Pod still holds work for this job. The queue is only a working
+   * set: it can spend its own in-flight attempts on claims that crashed before
+   * any execution happened, so a queue-terminal job is not evidence of a
+   * terminal execution. Pod facts stay authoritative.
+   */
+  public async isJobActionable(thread: string, job: SharedWakeAgentJob, context: MatrixStoreContext): Promise<boolean> {
+    const db = await this.getDb(context);
+    const values = { id: job.id, thread, createdAt: job.createdAt };
+    const delivery = await db.findById(deliveryResource, deliveryResource.buildId(values));
+    if (delivery && ['completed', 'failed', 'cancelled'].includes(String(delivery.status))) return false;
+    const run = await db.findById(runResource, runResource.buildId(values));
+    if (run?.status === 'completed' || run?.status === 'failed') return false;
+    return this.runAttempts(run) < 3;
+  }
+
   public async recordFailure(roomId: string, job: SharedWakeAgentJob,
     failure: {error?:string;retry:boolean}, context: MatrixStoreContext): Promise<void> {
     const db = await this.getDb(context);

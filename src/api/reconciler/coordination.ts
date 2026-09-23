@@ -20,6 +20,12 @@ export interface SharedWakeAgentJob {
   leaseExpiresAt?: string;
   fencingToken?: string;
   lastError?: string;
+  /**
+   * Set when this queue spent its in-flight attempt budget without any recorded
+   * execution. Such a job may still hold Pod work; only the Pod decides terminal
+   * outcomes, so recovery may requeue it.
+   */
+  exhausted?: boolean;
 }
 
 export interface WakeAgentLeaseFields {
