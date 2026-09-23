@@ -6,7 +6,9 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 async function waitFor(
   predicate: () => boolean,
   label: string,
-  timeoutMs = 10_000,
+  // Child processes are real `bun` starts: under a full-suite run (many workers) a single
+  // start can take seconds, so the budget must not be tight enough to time out on load.
+  timeoutMs = 30_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
