@@ -1,6 +1,7 @@
 # 每次 SPARQL 授权的 ACR 祖先链重复读取
 
 状态：2026-09-23 真实栈实测定位；上游源码已自带 TODO，未修改上游包。
+完整测量口径、被排除的解释与已实施的适配层优化见 [Matrix Pod 写入延迟调研](../matrix-pod-write-path-investigation.md)。
 
 ## 现象
 

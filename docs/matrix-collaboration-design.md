@@ -124,7 +124,7 @@ Redis 入队、领取、续租和确认使用 Lua 原子操作；使用 Redis �
 
 **执行语义是至少一次。** SQL、Pod、Redis 之间没有分布式事务。续租/检查之后仍可能在 Pod 写入期间发生租约过期，队列 fencing 并未原子覆盖 Pod 写入；不能承诺旧执行器绝不产生写入或外部副作用。执行器必须以稳定 job/操作 ID 为工具提供幂等控制，并在结果不确定时先核实外部状态。相关 drizzle-solid 原子性问题见 [问题记录](issues/drizzle-solid-matrix-atomicity.md)。
 
-已知运维限制还包括房间全量扫描成本、journal/Redis 去重记录无自动保留期，以及 PostgreSQL 首次事件登记的表锁串行开销。安装版 ORM 的 inline metadata 回填会按文档再次查询；当前只在一次操作内复用事件读取，跨请求仍重新验证权限。现象、缓解范围与上游需求见 [hydration 开销记录](issues/drizzle-solid-matrix-hydration.md)。生产容量与延迟需要独立压测；不能由当前功能测试推定。
+已知运维限制还包括房间全量扫描成本、journal/Redis 去重记录无自动保留期，以及 PostgreSQL 首次事件登记的表锁串行开销。安装版 ORM 的 inline metadata 回填会按文档再次查询；当前只在一次操作内复用事件读取，跨请求仍重新验证权限。现象、缓解范围与上游需求见 [hydration 开销记录](issues/drizzle-solid-matrix-hydration.md)。一次消息写入在本机隔离栈上的延迟构成、已做的适配层复用与仍未解决的授权读取开销见 [Pod 写入延迟调研](matrix-pod-write-path-investigation.md)。生产容量与延迟需要独立压测；不能由当前功能测试推定。
 
 ## 兼容性与迁移
 
