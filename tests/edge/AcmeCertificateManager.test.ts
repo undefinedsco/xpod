@@ -74,3 +74,141 @@ describe('AcmeCertificateManager', () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 });
+
+/**
+ * N15: staging used to be in the default failover chain, so a production deployment whose primary
+ * CA was down could "succeed" by installing a certificate no client trusts. The defaults now
+ * contain no staging CA, and an operator-chosen chain that does is called out in the log.
+ */
+const acmeMock = vi.hoisted(() => ({
+  attempted: [] as string[],
+  failures: new Map<string, string>(),
+}));
+
+vi.mock('acme-client', () => {
+  class Client {
+    private readonly directoryUrl: string;
+
+    public constructor(options: { directoryUrl: string }) {
+      this.directoryUrl = options.directoryUrl;
+      acmeMock.attempted.push(options.directoryUrl);
+    }
+
+    public async createAccount(): Promise<void> {
+      // The account already exists in these tests.
+    }
+
+    public async auto(): Promise<string> {
+      const failure = acmeMock.failures.get(this.directoryUrl);
+      if (failure) {
+        throw new Error(failure);
+      }
+      return '-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----';
+    }
+  }
+
+  return {
+    default: {
+      Client,
+      // The manager reads the default production directory from the real module, so the mock has
+      // to expose the same shape.
+      directory: {
+        letsencrypt: {
+          production: 'https://acme-v02.api.letsencrypt.org/directory',
+          staging: 'https://acme-staging-v02.api.letsencrypt.org/directory',
+        },
+      },
+      crypto: {
+        createCsr: async (): Promise<[ string, string ]> => [ 'mock-private-key', 'mock-csr' ],
+        createPrivateKey: async (): Promise<string> => 'mock-account-key',
+      },
+    },
+  };
+});
+
+const PRODUCTION = 'https://acme-v02.api.letsencrypt.org/directory';
+const STAGING = 'https://acme-staging-v02.api.letsencrypt.org/directory';
+const ZEROSSL = 'https://acme.zerossl.com/v2/DV90';
+
+describe('AcmeCertificateManager CA failover (N15)', () => {
+  async function makeManager(options: Partial<ConstructorParameters<typeof AcmeCertificateManager>[0]> = {}) {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'acme-ca-policy-'));
+    const manager = new AcmeCertificateManager({
+      dnsChallengeHandler: { setChallenge: vi.fn(), removeChallenge: vi.fn() },
+      email: 'ops@example.com',
+      domains: [ 'node-1.cluster.example' ],
+      accountKeyPath: path.join(tmpDir, 'account.key'),
+      certificateKeyPath: path.join(tmpDir, 'tls.key'),
+      certificatePath: path.join(tmpDir, 'tls.crt'),
+      propagationDelayMs: 0,
+      ...options,
+    });
+    return { manager, tmpDir };
+  }
+
+  beforeEach(() => {
+    acmeMock.attempted.length = 0;
+    acmeMock.failures.clear();
+  });
+
+  it('never reaches staging when the primary production CA fails', async () => {
+    acmeMock.failures.set(PRODUCTION, 'primary down');
+
+    const { manager } = await makeManager();
+
+    // The failover CA issues the certificate; staging is not in the chain at all.
+    await expect(manager.renewCertificate()).resolves.toMatchObject({ status: 'renewed' });
+    expect(acmeMock.attempted).toEqual([ PRODUCTION, ZEROSSL ]);
+    expect(acmeMock.attempted.some((url) => url.includes('staging'))).toBe(false);
+  });
+
+  it('names every CA it tried when the whole chain fails', async () => {
+    acmeMock.failures.set(PRODUCTION, 'primary down');
+    acmeMock.failures.set(ZEROSSL, 'zerossl down');
+
+    const { manager } = await makeManager();
+
+    await expect(manager.renewCertificate()).rejects.toThrow(new RegExp(
+      `已尝试 2 个：${PRODUCTION.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`,
+      'u',
+    ));
+    expect(acmeMock.attempted).toEqual([ PRODUCTION, ZEROSSL ]);
+  });
+
+  it('uses the production failover CA when the primary is down', async () => {
+    acmeMock.failures.set(PRODUCTION, 'primary down');
+
+    const { manager, tmpDir } = await makeManager();
+
+    await expect(manager.renewCertificate()).resolves.toMatchObject({ status: 'renewed' });
+    expect(acmeMock.attempted).toEqual([ PRODUCTION, ZEROSSL ]);
+    await expect(fs.readFile(path.join(tmpDir, 'tls.crt'), 'utf8')).resolves.toContain('MOCK');
+  });
+
+  it('honours a staging CA the operator listed explicitly', async () => {
+    acmeMock.failures.set(PRODUCTION, 'primary down');
+
+    const { manager } = await makeManager({ fallbackDirectoryUrls: [ STAGING ] });
+
+    await expect(manager.renewCertificate()).resolves.toMatchObject({ status: 'renewed' });
+    expect(acmeMock.attempted).toEqual([ PRODUCTION, STAGING ]);
+  });
+
+  it('writes the account key and the certificate key as 0600', async () => {
+    const { manager, tmpDir } = await makeManager({ fallbackDirectoryUrls: [] });
+
+    await expect(manager.renewCertificate()).resolves.toMatchObject({ status: 'renewed' });
+
+    // 私钥默认权限是 0644（world-readable）：审计 N18 要求落盘即 0600。
+    for (const name of [ 'account.key', 'tls.key' ]) {
+      expect((await fs.stat(path.join(tmpDir, name))).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it('does not add production failover when the primary is a staging CA', async () => {
+    const { manager } = await makeManager({ directoryUrl: STAGING, fallbackDirectoryUrls: [] });
+
+    await expect(manager.renewCertificate()).resolves.toMatchObject({ status: 'renewed' });
+    expect(acmeMock.attempted).toEqual([ STAGING ]);
+  });
+});

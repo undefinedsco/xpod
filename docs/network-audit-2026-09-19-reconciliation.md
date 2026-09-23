@@ -9,9 +9,9 @@
 
 | 判定 | 数量 | 项 |
 | --- | --- | --- |
-| 已修复 | 4 | N03、N06、N07、N17（W2 四项全部落地，见第 9 节；对账时为"仍存在"） |
+| 已修复 | 7 | N03、N06、N07、N14、N15、N17、N18（W2 全部 + W3 除 N16 外，见第 9/10 节；对账时为"仍存在"） |
 | 部分缓解 | 3 | N01（仅读接口直连面）、N09（仅 UI 层）、N12（仅 admin public-ip） |
-| 仍存在 | 12 | N02、N04、N05、N08、N10、N11、N13、N14、N15、N16、N18、N19 |
+| 仍存在 | 9 | N02、N04、N05、N08、N10、N11、N13、N16、N19 |
 | 仍存在（对账后新增） | 1 | N20（真实验收发现，见 4.4；修复见第 8 节） |
 
 结论：**W0（Gateway/API 授权与 Cloud 节点边界）仍是唯一正确的起手点**，报告的可信度经复核成立；同时工作区未提交改动引入了 3 个新的连带事实（第 4 节），其中 1 个是功能性回归风险，需在提交前处理。N20 不在报告范围内，是 W1 真实验收过程中在实际运行实例上观察到的生命周期缺陷，按同一口径补记。
@@ -77,11 +77,11 @@ git log --oneline -1        # 确认 HEAD 仍是被审基线
 | N11 DNS/HTTPS/P2P 控件未控制真实运行 | P1 | **仍存在** | store 写 `XPOD_HTTPS_CERT_PATH`/`XPOD_HTTPS_KEY_PATH`（`:65-66`），而 `src/runtime/bootstrap.ts:324-325` 实际读 `XPOD_ACME_CERTIFICATE_PATH`/`XPOD_ACME_CERTIFICATE_KEY_PATH`；`XPOD_HTTPS_*` **全仓只写不读**（仅 store 与 AdminHandler 白名单引用）。DNS/P2P 控件映射问题同基线 | 每个控件缺"保存→应用/重启→行为变化与关闭"用例 |
 | N12 诊断把"有 URL"当"可达/延迟" | P1 | **部分缓解** | `AdminHandler.ts:411` 新增 `describeUnservedPublicRoute`，并在 `:794` 把 public-ip 从 `pass` 改为 `unknown`（不再仅凭地址断言可达）；但 `src/api/handlers/NetworkSettingsHandler.ts:423/468` 与 `NetworkPage.tsx:491` 未变，仍是"endpoint check 无探测 + 函数耗时当延迟 + 同一结果映射多条地址" | 无"不存在域名/关闭端口/错证书/异网 LAN 不得显示 Reachable"负例 |
 | N13 provider 就绪误报及错误目标 | P1 | **仍存在** | ngrok `src/tunnel/NgrokTunnelProvider.ts:197/301-315/381-404`；Cloudflare `LocalTunnelProvider.ts:159/331`；Sakura `SakuraFrpTunnelProvider.ts:93/163`（`login to server success` 即 connected、任意 frpc 即接管）三处均与基线一致 | 无错 token/退出/超时/端口冲突/多隧道/无关 frpc 的负例 |
-| N14 Cloudflare DNS 误删可并存记录 | P1 | **仍存在** | `src/dns/cloudflare/CloudflareDnsProvider.ts:90-100` 类型不同即 DELETE；`findRecord`（`:229-251`）不带 type 时返回 `response[0]` | `tests/dns/CloudflareDnsProvider.test.ts` 全部为 A 记录用例，**无 MX/TXT 共存负例** |
-| N15 生产证书失败回退 staging、续期链不完整 | P1 | **仍存在** | `src/edge/acme/AcmeCertificateManager.ts:102` 默认 fallback 列表含 `letsencrypt.staging`；`:255-265` 失败即换下一个 CA，无"生产禁止隐式 staging"约束 | 无 CA 失败/续期阈值/长期运行用例 |
+| N14 Cloudflare DNS 误删可并存记录 | P1 | **已修复（见第 10 节）** | 对账时：`CloudflareDnsProvider` 类型不同即 DELETE、`findRecord` 不带 type 时取 `response[0]`。现：一次拉回同名全部记录、按类型判定；只有 CNAME 互斥才按 ID 删除，MX/TXT 与 A/AAAA 共存；删除强制带类型且拒绝类型不匹配的记录 | `tests/dns/CloudflareDnsProvider.test.ts` +8 例；对旧实现 **4/8 失败**。腾讯云 provider 经核查本来就按 type 过滤，无同类缺陷 |
+| N15 生产证书失败回退 staging、续期链不完整 | P1 | **部分修复（见第 10 节）** | 对账时：默认 fallback 含 `letsencrypt.staging`，失败即换下一个 CA。现：默认链只有生产 CA（ZeroSSL），staging 仅当操作者显式列出才使用，且进入链中会告警、签发成功也会再告警；全部失败时报出尝试过的每个 CA。**续期调度链仍未闭环**（只有按需 `renewCertificate` + 阈值状态），见 10.2 | `tests/edge/AcmeCertificateManager.test.ts` +5 例；对旧实现 **3/5 失败** |
 | N16 发布产物不含隧道客户端 | P1（若承诺免安装） | **仍存在** | `Dockerfile`、`scripts/build-platform-package.cjs` 对 `cloudflared`/`ngrok`/`frpc` **零命中**；Dockerfile 的工作区改动仅 bun 版本与构建顺序 | 无干净 OS/架构的产物启动验收 |
 | N17 数据面资源上限、流式与取消缺口 | P1（若启用公网 P2P） | **已修复（见第 9 节）** | 对账时：`TcpP2PDataPlaneTransport.ts` 无帧/请求体/并发上限（仅 `DEFAULT_MAX_CLOCK_ERROR_SECONDS` 常量）；`P2PDataPlane.ts:103` 仍全量读取。现：帧/请求体/响应体/并发四类上限 + 取消信封 + 分块流式（head→chunk→end） | `tests/edge/reachability/P2PDataPlaneLimits.test.ts` 11 例；暂时关掉强制后 **7/11 失败** |
-| N18 恢复监督、动态选路与文件权限 | P2 | **仍存在** | `src/api/runtime.ts` 无 supervisor/重启退避相关引用（工作区改动仅日志文件解析）；`FrpcProcessManager.ts`、`AcmeCertificateManager.ts` 无 `chmod`/`mode`/`0o600` | 无 kill 子进程/断网恢复/umask022 用例 |
+| N18 恢复监督、动态选路与文件权限 | P2 | **部分修复（见第 10.3 节）** | 对账时：frpc 固定 1s 重启、`stop()` 不取消待重启、私钥与 frpc 配置（含 token）默认 0644。现：指数退避（1s→60s 上限）、活过 60s 视为健康清零、停止/替换进程时取消待重启并把被替换进程的退出排除在状态与重启之外、私钥与 frpc 配置 0600（含对旧文件 chmod）。**动态选路监督（`src/api/runtime.ts` 侧）仍未做** | `tests/edge/frp/FrpcProcessManager.test.ts` +4 例、`tests/edge/AcmeCertificateManager.test.ts` +1 例；对旧实现 **8 例失败**（含 N15 的 3 例） |
 | N19 测试入口与合同覆盖漂移 | P2 | **仍存在（并新增一例）** | `vitest.config.ts` 排除表仍含 `ui/src/api/network-settings.test.ts`（该测试与 `ui/src/api/network-settings.ts` 均未更新），且**新增** `tests/bun/**` 排除；CI（`.github/workflows/ci.yml:45`）只跑 `bun run test:run`，`package.json` 无执行 `tests/bun/**` 的脚本 | 见 4.3：新测试文件当前**没有任何执行入口** |
 | N20 子服务放弃重启后网关仍报健康 | P0 | **仍存在（对账后新增，见 4.4）** | 修复前 `src/supervisor/Supervisor.ts`：`restartCount <= MAX_RESTARTS(5)` 之后只 `console.error` 并把状态留在 `stopped`，重启间隔固定 2s、无健康度重置；`src/supervisor/types.ts` 状态集只有 `stopped/starting/running/crashed`，没有"已放弃"；`src/runtime/Proxy.ts` 的 `/service/status` 只按 CSS 就绪判定 `200/503`（`:705-712`）；`src/cli/commands/stop.ts` 把 `503` 当不可达直接抛错 | 无"子服务反复失败/不可恢复失败/停机取消重启"的负向回归；W1 真实验收在活实例上直接复现（见 4.4） |
 
@@ -245,3 +245,43 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 - 重放守卫是**进程内**的（每进程 1024 条）：多实例共享同一节点会话时，攻击者必须重放到见过原始 nonce 的进程才会被拒。
 - 没有**前向保密**：静态会话密钥 + nonce 派生，泄露会话记录即可解密该会话流量（后续可换 ECDH 临时密钥）。
 - 未做真实跨 NAT/跨机验收：本轮证据来自隔离测试与真实 TCP 监听的本机 E2E，不是两台机器。
+
+## 10. W3 处置记录（2026-09-23，进行中）
+
+### 10.1 N14 DNS 记录按 ID/type 更新（已完成）
+
+`src/dns/cloudflare/CloudflareDnsProvider.ts`：
+
+- **一次拉回同名全部记录**（`findRecords`，不再用 `response[0]` 猜），再按类型判断：同类型 → `PATCH` 那条记录的 ID；不同类型 → 先判断是否互斥。
+- **只有 CNAME 与其他类型互斥**（RFC 1034）：写 A/AAAA 前删同名 CNAME、写 CNAME 前删同名 A/AAAA，且都是**按记录 ID** 删。MX/TXT（含 `_acme-challenge`）与 A/AAAA 可以共存，一律不动。
+- **删除必须带类型**（接口里 `type` 本就是必填）：查询下发 `type=`（有 `value` 时一并下发），并且即使 API 返回了别的类型也拒绝删除（日志告警）。旧实现注释里"以防类型传错"的泛查找正是误删来源。
+- 同一名字下多条 TXT（多次 `_acme-challenge` 验证）仍按接口语义删第一条匹配项；带 `value` 时精确匹配。
+
+证据（负向优先）：`tests/dns/CloudflareDnsProvider.test.ts` 新增 8 例——MX/TXT 共存不被删、写 `_acme-challenge` TXT 不动同名 A、CNAME 互斥时按 ID 替换、同类型原地 PATCH、删除只删请求类型、类型不匹配时拒绝删除；把 provider 改回旧实现后 **4/8 失败**。腾讯云 provider 复核：`findRecord` 请求与本地双重按 type 过滤，无同类缺陷（不改）。
+
+### 10.2 N15 生产禁隐式 staging（部分修复）
+
+`src/edge/acme/AcmeCertificateManager.ts`：
+
+- 默认失败切换链改为只含生产 CA（ZeroSSL），**staging 不再隐式加入**；staging 只可能来自操作者显式给出的 `fallbackDirectoryUrls`。
+- 链中一旦出现 staging（且主 CA 不是 staging），启动签发前告警；真的用它签下来时再告警一次"客户端不会信任"。
+- 全部 CA 失败时错误信息列出**尝试过的每个 CA**（数量 + URL）与最后错误，运维不必猜。
+
+证据：`tests/edge/AcmeCertificateManager.test.ts` 新增 5 例（主 CA 失败时不触碰 staging、整链失败时报出全部 CA、生产切换 CA 成功落盘、显式 staging 链被尊重、主 CA 为 staging 时不引入生产）；对旧实现 **3/5 失败**。
+
+**仍未闭环（下一轮）**：只有按需 `renewCertificate()` 与 `getCertificateStatus()` 的阈值状态，**没有调度器**在 `renewal_due` 时自动续期、没有续期失败的重试/退避、也没有"长期运行跨过阈值"的用例；证书到期告警（管理面/日志之外）未接。
+
+### 10.3 N18 重启退避与密钥文件权限（部分修复）
+
+`src/edge/frp/FrpcProcessManager.ts`：
+
+- **退避**：固定 1 秒改为指数（1s、2s、4s… 上限 60s）；一次运行活过 60s 即视为健康、失败计数清零；状态里暴露 `restartCount` 与 `nextRestartInMs`，崩溃循环不再只能靠日志推断。隧道是兜底路径，到达上限后继续以 60s 重试，不放弃。
+- **停止不再被自己排的重启撤销**：`stop()` 取消待重启定时器并清零计数；自动重启路径改用 `stopProcess()`（只结束进程、不碰计数）。
+- **被替换进程的退出不再算数**：先清 `this.process` 再 kill，退出回调发现"自己已不是当前进程"就直接返回，既不写状态也不排重启——否则一次配置更新会额外触发一轮重启。
+- **配置权限**：frpc 配置含隧道 token，写盘用 `mode: 0o600` 并对已存在的旧文件再 `chmod`（失败只告警）。
+
+`src/edge/acme/AcmeCertificateManager.ts`：账户私钥与证书私钥改为 `writePrivateFile()`（0600 + chmod），读到旧的 0644 私钥时顺手收紧；证书本身是公开材料，保持默认权限。
+
+证据（负向优先）：`tests/edge/frp/FrpcProcessManager.test.ts` 新增 4 例（退避 1s→2s→4s、活够久清零、stop 不被待重启复活、配置文件 0600 且含 token）；`tests/edge/AcmeCertificateManager.test.ts` 新增 1 例（账户私钥与证书私钥 0600）。把两个源文件改回旧实现后 **8 例失败**（含 N15 的 3 例）。
+
+**仍未闭环（下一轮）**：N18 的另一半——**动态选路与运行监督**（`src/api/runtime.ts` 只有日志文件解析，没有 supervisor/健康探测/选路收敛），以及"kill 子进程后断网恢复"的用例；`umask` 非默认（如 000）场景未验（当前显式传 mode，不依赖 umask）。
