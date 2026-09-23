@@ -1,11 +1,13 @@
 # Pod Agent 授权（设计草案）
 
-> 状态：**待评审**。目标是把"服务端组件访问用户 Pod"从"借用 owner 的接口密钥"改成"以 agent 身份访问，
-> 权限由 owner 在 Pod 里授予"。实现尚未开始。
-> 相关：[`pod-interface-key.md`](pod-interface-key.md)（现行机制）、[`multi-channel-access.md`](multi-channel-access.md)、
+> 状态：**已被取代，不作为实施依据**。`pod-interface-key.md` 的 2026-09-24 审查修订版确认：Agent 是自动化软件
+> 内部的执行角色，**不是 CSS 可识别主体**；授权检查在可信 Runtime，Pod 访问仍用用户自己的凭证，CSS 只校验用户权限。
+> 本文件保留为被否决方案的记录（给组件类发 agent WebID + owner 在 Pod 里用 ACP `acp:agent` 授权）：它在随部署 CSS 上可行，
+> 但**外部 CSS 无法理解 Xpod 的 Agent 策略**，与 caller-owned 方向不兼容。
+> 现行机制与迁移计划见 [`pod-interface-key.md`](pod-interface-key.md)；相关背景见 [`multi-channel-access.md`](multi-channel-access.md)、
 > [`superpowers/specs/2026-08-09-caller-owned-ai-connections-access-design.md`](superpowers/specs/2026-08-09-caller-owned-ai-connections-access-design.md)
 
-## 1. 结论
+## 1. 结论（已否决）
 
 服务端组件以 **agent** 身份访问 Pod：
 
