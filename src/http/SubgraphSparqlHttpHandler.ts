@@ -455,7 +455,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         if (source === queryRequest.baseUrl) {
           continue;
         }
-        await this.authorizeIdentifier(source, credentials, [ PERMISSIONS.Read ]);
+        await this.authorizeIdentifier(source, credentials, [ PERMISSIONS.Read ], request);
       }
 
       for (const [ graph, graphModes ] of accessPlan.writeTargets) {
@@ -463,14 +463,14 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         if (resourceUrl === queryRequest.baseUrl) {
           continue;
         }
-        await this.authorizeIdentifier(resourceUrl, credentials, [...graphModes]);
+        await this.authorizeIdentifier(resourceUrl, credentials, [...graphModes], request);
       }
     }
 
     const readAccessScope = accessPlan.needsReadScope
       ? trusted
         ? this.trustedReadAccessScope(queryRequest.baseUrl)
-        : await this.resolveReadAccessScopeForCredentials(queryRequest.baseUrl, credentials!)
+        : await this.resolveReadAccessScopeForCredentials(queryRequest.baseUrl, credentials!, request)
       : undefined;
 
     const loadDocumentPlan = accessPlan.loadDocuments[0];
@@ -741,10 +741,10 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
 
   private async resolveReadAccessScope(baseUrl: string, request: HttpRequest): Promise<RdfAccessScope> {
     const credentials = await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
-    return this.resolveReadAccessScopeForCredentials(baseUrl, credentials);
+    return this.resolveReadAccessScopeForCredentials(baseUrl, credentials, request);
   }
 
-  private async resolveReadAccessScopeForCredentials(baseUrl: string, credentials: Credentials): Promise<RdfAccessScope> {
+  private async resolveReadAccessScopeForCredentials(baseUrl: string, credentials: Credentials, request?: HttpRequest): Promise<RdfAccessScope> {
     const graphs = await this.engine.listGraphs(baseUrl);
     const deniedGraphUrls: string[] = [];
 
@@ -753,7 +753,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       if (!resourceUrl.startsWith(baseUrl)) {
         continue;
       }
-      const allowed = await this.canAuthorizeFor(resourceUrl, credentials, [ PERMISSIONS.Read ]);
+      const allowed = await this.canAuthorizeFor(resourceUrl, credentials, [ PERMISSIONS.Read ], request);
       if (!allowed) {
         deniedGraphUrls.push(graph);
       }
@@ -785,13 +785,13 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       return this.credentialsExtractor.handleSafe(request);
     }
     const credentials = await this.credentialsExtractor.handleSafe(request);
-    await this.authorizeIdentifier(basePath, credentials, modes);
+    await this.authorizeIdentifier(basePath, credentials, modes, request);
     return credentials;
   }
 
-  private async canAuthorizeFor(basePath: string, credentials: Credentials, modes: string[]): Promise<boolean> {
+  private async canAuthorizeFor(basePath: string, credentials: Credentials, modes: string[], request?: HttpRequest): Promise<boolean> {
     try {
-      await this.authorizeIdentifier(basePath, credentials, modes);
+      await this.authorizeIdentifier(basePath, credentials, modes, request);
       return true;
     } catch (error) {
       this.logger.debug(`ACL/ACR graph denied for ${basePath}: ${error instanceof Error ? error.message : String(error)}`);
@@ -799,14 +799,43 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
   }
 
-  private async authorizeIdentifier(basePath: string, credentials: Credentials, modes: string[]): Promise<void> {
+  private async authorizeIdentifier(basePath: string, credentials: Credentials, modes: string[], request?: HttpRequest): Promise<void> {
     const identifier = { path: basePath } satisfies ResourceIdentifier;
     const requestedModes = new IdentifierSetMultiMap<string>();
     for (const mode of modes) {
       requestedModes.add(identifier, mode);
     }
-    const availablePermissions = await this.permissionReader.handleSafe({ credentials, requestedModes });
-    await this.authorizer.handleSafe({ credentials, requestedModes, availablePermissions });
+    // One request authorizes the SPARQL target and every graph in scope, and the
+    // same identifier repeats when an update touches a graph it already checked.
+    // Reuse the decision inside the request only: credentials cannot change and
+    // no ACL can be modified by these read-only checks.
+    const decisionCache = request === undefined ? undefined : this.requestAuthorizationCache(request);
+    const cacheKey = decisionCache === undefined ? undefined : this.authorizationCacheKey(basePath, credentials, modes);
+    const cached = cacheKey === undefined ? undefined : decisionCache!.get(cacheKey);
+    if (cached !== undefined) {
+      if (cached.error !== undefined) throw cached.error;
+      return;
+    }
+    try {
+      const availablePermissions = await this.permissionReader.handleSafe({ credentials, requestedModes });
+      await this.authorizer.handleSafe({ credentials, requestedModes, availablePermissions });
+      if (cacheKey !== undefined) decisionCache!.set(cacheKey, {});
+    } catch (error: unknown) {
+      if (cacheKey !== undefined) decisionCache!.set(cacheKey, { error });
+      throw error;
+    }
+  }
+
+  private requestAuthorizationCache(request: HttpRequest): Map<string, { error?: unknown }> {
+    const holder = request as HttpRequest & { __xpodSparqlAuthz?: Map<string, { error?: unknown }> };
+    holder.__xpodSparqlAuthz ??= new Map();
+    return holder.__xpodSparqlAuthz;
+  }
+
+  private authorizationCacheKey(basePath: string, credentials: Credentials, modes: string[]): string {
+    const agent = credentials.agent?.webId ?? '';
+    const client = credentials.client?.clientId ?? '';
+    return JSON.stringify([ basePath, agent, client, [ ...modes ].sort() ]);
   }
 
   private inspectUpdateGraphs(update: SparqlUpdate, basePath: string): UpdateAccessPlan {
