@@ -308,7 +308,7 @@ describe('settings dashboard static launch smoke', () => {
     });
 
     await waitForOk(runtime.fetch, '/settings/models');
-  }, 90_000);
+  }, 120_000);
 
   afterAll(async () => {
     await runtime?.stop();

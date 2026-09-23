@@ -23,6 +23,13 @@ export function isPortConflict(error: unknown): boolean {
   return /EADDRINUSE|address already in use|port \d+ in use/iu.test(message);
 }
 
+export interface TestRuntimeStartLimits {
+  /** How many probe-and-bind attempts a port conflict is worth. */
+  attempts?: number;
+  /** Lock directory to serialise on; defaults to the workspace-wide one. */
+  lockDir?: string;
+}
+
 /**
  * Start a real runtime for a test, serialised against every other test process in this workspace.
  *
@@ -36,13 +43,13 @@ export function isPortConflict(error: unknown): boolean {
 export async function startTestRuntime(
   start: (options: XpodRuntimeOptions) => Promise<XpodRuntimeHandle>,
   options: XpodRuntimeOptions,
-  attempts = 3,
+  limits: TestRuntimeStartLimits = {},
 ): Promise<XpodRuntimeHandle> {
   const pinned = options.gatewayPort !== undefined
     || options.cssPort !== undefined
     || options.apiPort !== undefined
     || options.transport === 'socket';
-  const limit = pinned ? 1 : attempts;
+  const limit = pinned ? 1 : limits.attempts ?? 3;
 
   return await withRuntimeStartLock(async () => {
     for (let attempt = 1; ; attempt += 1) {
@@ -52,9 +59,12 @@ export async function startTestRuntime(
         if (attempt >= limit || !isPortConflict(error)) {
           throw error;
         }
+        // Visible on purpose: a retry means the suite lost a port race, and the next person to
+        // debug a slow hook needs to know that the runtime started more than once.
+        console.warn(`[testRuntime] port conflict on attempt ${attempt}/${limit}; probing again: ${String(error)}`);
       }
     }
-  });
+  }, limits.lockDir);
 }
 
 /**
@@ -64,24 +74,27 @@ export async function startTestRuntime(
  * waits and tries again. The directory is removed in `finally`, and a lock older than the stale
  * window is reclaimed so a killed process cannot wedge the suite.
  */
-export async function withRuntimeStartLock<T>(start: () => Promise<T>): Promise<T> {
+export async function withRuntimeStartLock<T>(
+  start: () => Promise<T>,
+  lockDir: string = START_LOCK_DIR,
+): Promise<T> {
   const waitStartedAt = Date.now();
-  await mkdir(path.dirname(START_LOCK_DIR), { recursive: true });
+  await mkdir(path.dirname(lockDir), { recursive: true });
 
   for (;;) {
     try {
-      await mkdir(START_LOCK_DIR, { recursive: false });
+      await mkdir(lockDir, { recursive: false });
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
         throw error;
       }
-      if (await isStaleLock()) {
-        await rm(START_LOCK_DIR, { recursive: true, force: true }).catch(() => undefined);
+      if (await isStaleLock(lockDir)) {
+        await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
         continue;
       }
       if (Date.now() - waitStartedAt > LOCK_WAIT_TIMEOUT_MS) {
-        throw new Error(`Timed out waiting for the runtime start lock at ${START_LOCK_DIR}`);
+        throw new Error(`Timed out waiting for the runtime start lock at ${lockDir}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 50 + Math.floor(Math.random() * 100)));
     }
@@ -90,13 +103,13 @@ export async function withRuntimeStartLock<T>(start: () => Promise<T>): Promise<
   try {
     return await start();
   } finally {
-    await rm(START_LOCK_DIR, { recursive: true, force: true }).catch(() => undefined);
+    await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
-async function isStaleLock(): Promise<boolean> {
+async function isStaleLock(lockDir: string): Promise<boolean> {
   try {
-    const info = await stat(START_LOCK_DIR);
+    const info = await stat(lockDir);
     return Date.now() - info.mtimeMs > STALE_LOCK_MS;
   } catch {
     // The holder released it between the failed mkdir and this check; try again immediately.

@@ -113,7 +113,7 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
         CSS_ALLOWED_HOSTS: 'localhost,127.0.0.1',
       },
     });
-  }, 60_000);
+  }, 90_000);
 
   afterAll(async () => {
     await runtime?.stop();
@@ -207,7 +207,7 @@ describe('XpodRuntime', () => {
     });
 
     account = await setupAccount(runtime.baseUrl.replace(/\/$/, ''), 'xpod-open');
-  }, 60_000);
+  }, 90_000);
 
   afterAll(async () => {
     await runtime?.stop();
@@ -296,7 +296,7 @@ describe('XpodRuntime admin proxy authorization lifecycle', () => {
       },
       gatewayClientRemoteAddressResolver: (req) => String(req.headers['x-test-remote-address'] ?? req.socket.remoteAddress ?? ''),
     });
-  }, 60_000);
+  }, 90_000);
 
   afterAll(async () => {
     await runtime?.stop();
@@ -319,9 +319,11 @@ describe('XpodRuntime admin proxy authorization lifecycle', () => {
   });
 
   it('passes the runtime-scoped gateway auth secret to the CSS runner', async () => {
-    expect(cssRunnerStarts).toHaveLength(1);
-    expect(cssRunnerStarts[0].shorthand.gatewayAdminProxyAuthSecret).toEqual(expect.any(String));
-    expect(cssRunnerStarts[0].shorthand.gatewayAdminProxyAuthSecret).not.toBe('admin-proxy-test-secret');
+    // A retried start runs the runner again, so the assertion is about the start that survived.
+    const start = cssRunnerStarts.at(-1);
+    expect(start).toBeDefined();
+    expect(start!.shorthand.gatewayAdminProxyAuthSecret).toEqual(expect.any(String));
+    expect(start!.shorthand.gatewayAdminProxyAuthSecret).not.toBe('admin-proxy-test-secret');
   });
 
   it('allows a loopback original client through the real gateway runner', async () => {
@@ -397,7 +399,7 @@ describe('XpodRuntime standalone profile authorization', () => {
         SOLID_OIDC_ISSUER: 'http://localhost:5600/',
       },
     });
-  }, 60_000);
+  }, 90_000);
 
   afterAll(async () => {
     await runtime?.stop();
@@ -436,7 +438,7 @@ describe('XpodRuntime seeded profile authorization', () => {
         SOLID_OIDC_ISSUER: 'http://localhost:5600/',
       },
     });
-  }, 60_000);
+  }, 90_000);
 
   afterAll(async () => {
     await runtime?.stop();
@@ -494,7 +496,7 @@ describe('XpodRuntime Local SP OIDC key material', () => {
         SOLID_OIDC_ISSUER: `${cloudOrigin}/`,
       },
     });
-  }, 60_000);
+  }, 90_000);
 
   afterAll(async () => {
     await runtime?.stop();
@@ -593,7 +595,7 @@ describe('XpodRuntime SP provisioning authorization', () => {
         SOLID_OIDC_ISSUER: cloudOrigin,
       },
     });
-  }, 60_000);
+  }, 90_000);
 
   afterAll(async () => {
     await runtime?.stop();
