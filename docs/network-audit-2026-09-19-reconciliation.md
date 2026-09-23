@@ -14,6 +14,8 @@
 | 仍存在 | 0 | — |
 | 对账后新增 | 1 | N20（真实验收发现的子服务生命周期缺陷，已修复并合入主干，见 4.4 与第 8 节） |
 
+W2–W4 的逐项交付（改了什么、证据在哪、还差什么）见 [`network-audit-w2-w4-delivery.md`](network-audit-w2-w4-delivery.md)。
+
 本表是**滚动状态**：第 3 节的逐项表是对账当日（2026-09-19）的快照，其中标"仍存在/部分缓解"的项若已由 W0–W4 修掉，以本表与各工作包交付记录为准（W0 见 [`network-audit-w0-delivery.md`](network-audit-w0-delivery.md)，W1 见 [`network-audit-w1-self-audit.md`](network-audit-w1-self-audit.md)，W2–W4 见第 9、10 节）。W1 的三家隧道真实验收边界仍以 [`network-audit-w1-three-tunnel-acceptance.md`](network-audit-w1-three-tunnel-acceptance.md) 为准。
 
 结论：**W0（Gateway/API 授权与 Cloud 节点边界）仍是唯一正确的起手点**，报告的可信度经复核成立；同时工作区未提交改动引入了 3 个新的连带事实（第 4 节），其中 1 个是功能性回归风险，需在提交前处理。N20 不在报告范围内，是 W1 真实验收过程中在实际运行实例上观察到的生命周期缺陷，按同一口径补记。
