@@ -6,7 +6,7 @@ import {
   type StorageBinding,
 } from '@undefineds.co/solid-sdk';
 import { type SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
 import type { WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import {
@@ -27,6 +27,9 @@ import {
   type XpodSolidRuntimeValue,
 } from './XpodSolidRuntime';
 import { currentHostLocalPodRoutes } from './xpod-local-route';
+import { createAccountClientCredentialsCapability } from '../auth/account-client-credentials';
+import { createSessionRequestCredential, type SessionRequestCredential } from '../auth/session-request-credential';
+import { AuthContext } from '../context/AuthContextValue';
 
 export function XpodSolidRuntimeProvider({
   children,
@@ -115,6 +118,39 @@ export function XpodSolidRuntimeProvider({
     fetch: exposedFetch,
     getSnapshot: () => snapshotRef.current,
   }), [exposedFetch, runtime.session]);
+
+  // The Account session is what may create a client credential for this WebID, so the holder is
+  // rebuilt whenever the Account binding changes and released when it goes away.
+  const account = useContext(AuthContext);
+  const accountBinding = useMemo(() => ({
+    collection: account?.controls?.account?.clientCredentials,
+    webId: account?.identity?.webId,
+    bind: account?.bindAccountCapability,
+  }), [account?.controls?.account?.clientCredentials, account?.identity?.webId, account?.bindAccountCapability]);
+  const requestCredentialRef = useRef<SessionRequestCredential | undefined>(undefined);
+  if (!requestCredentialRef.current) {
+    requestCredentialRef.current = createSessionRequestCredential({});
+  }
+  useEffect(() => {
+    const previous = requestCredentialRef.current;
+    const capability = accountBinding.collection && accountBinding.bind
+      ? createAccountClientCredentialsCapability({
+        collection: accountBinding.collection,
+        assertCurrent: accountBinding.bind(),
+        accountIndex: account?.idpIndex ?? window.location.origin,
+      })
+      : undefined;
+    const next = createSessionRequestCredential({
+      ...(capability ? { capability } : {}),
+      ...(accountBinding.webId ? { webId: accountBinding.webId } : {}),
+    });
+    requestCredentialRef.current = next;
+    return () => {
+      requestCredentialRef.current = createSessionRequestCredential({});
+      void previous?.release().catch(() => undefined);
+      void next.release().catch(() => undefined);
+    };
+  }, [accountBinding, account?.idpIndex]);
 
   useEffect(() => {
     const projectSnapshot = (nextSnapshot: SolidSessionSnapshot) => {
@@ -264,6 +300,7 @@ export function XpodSolidRuntimeProvider({
       // Bound here rather than passed by reference: the value is handed to
       // callers that do not share the core object.
       resolveLocalUrl: (url: string) => runtime.resolveLocalUrl(url),
+      requestPodAuthorization: () => requestCredentialRef.current?.authorization() ?? Promise.resolve(undefined),
       login: async (transaction: WebIdLoginTransaction) => {
         const validated = normalizeXpodLoginTransaction(transaction);
         const loginContext = await resolveXpodLoginContext(
@@ -310,6 +347,7 @@ export function XpodSolidRuntimeProvider({
         }
       },
       logout: async () => {
+        await requestCredentialRef.current?.release().catch(() => undefined);
         await runtime.session.logout();
         runtime.pod.clear();
         clearXpodSelectedStorage({ storage: runtimeStorage.selectedStorage });

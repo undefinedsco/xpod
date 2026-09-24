@@ -117,7 +117,11 @@ export function ModelAssignmentsPanel() {
               onTest={async (selected) => {
                 setTesting(assignment.name);
                 try {
-                  await testAiConfigModel(runtime.fetch, selected);
+                  await testAiConfigModel(runtime.fetch, selected, {
+                    ...(runtime.requestPodAuthorization
+                      ? { authorization: runtime.requestPodAuthorization }
+                      : {}),
+                  });
                   setTestResults((current) => ({ ...current, [assignment.name]: 'ready' }));
                 } catch {
                   setTestResults((current) => ({ ...current, [assignment.name]: 'failed' }));

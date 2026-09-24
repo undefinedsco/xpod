@@ -55,6 +55,15 @@ export interface XpodSolidRuntimeValue {
   retryPodOpen?(): void;
   readonly aiClientConfiguration?: Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>;
   /**
+   * Authorization for an API request that must open this user's Pod.
+   *
+   * The API cannot spend the session's DPoP token, so a Pod-backed call carries a client
+   * credential of this browser session instead: created on first use, kept in memory, revoked
+   * when the session ends. `undefined` means no credential could be prepared, and the caller has
+   * to report the missing Pod access rather than fall back to a stored key.
+   */
+  requestPodAuthorization?(): Promise<string | undefined>;
+  /**
    * See {@link XpodSolidRuntimeCore.resolveLocalUrl}. Optional so a caller that
    * only needs the session state can still build a value; an absent resolver
    * means "no rewrite", which is today's behaviour.
