@@ -8,6 +8,7 @@ test('the published package includes the API-served callback product', async () 
   const manifest = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
 
   assert.ok(manifest.files?.includes('static'));
-  await stat(new URL('static/auth-callback/auth-callback.html', root));
-  await stat(new URL('static/auth-callback/assets', root));
+  // The callback entry is built with the settings target so the browser engine ships once.
+  await stat(new URL('static/settings/auth-callback.html', root));
+  await stat(new URL('static/settings/assets', root));
 });

@@ -1,3 +1,6 @@
+import { createMatrixPodResolver, resolveMatrixContext } from '../matrix/MatrixPodResolver';
+import { AgentWakeRuntimeService } from '../reconciler/AgentWakeRuntimeService';
+import { registerAgentWakeRoutes } from '../handlers/AgentWakeHandler';
 /**
  * 路由注册
  *
@@ -111,8 +114,9 @@ function registerHealthRoutes(server: ApiServer): void {
   registerDashboardRoutes(server, { staticDir });
   const settingsStaticDir = path.resolve(PACKAGE_ROOT, 'static/settings');
   registerSettingsRoutes(server, { staticDir: settingsStaticDir });
-  const authCallbackStaticDir = path.resolve(PACKAGE_ROOT, 'static/auth-callback');
-  registerAuthCallbackRoutes(server, { staticDir: authCallbackStaticDir });
+  // The callback entry is part of the settings build (one browser engine, one asset set), so its
+  // HTML and theme bootstrap are served from the settings directory.
+  registerAuthCallbackRoutes(server, { staticDir: settingsStaticDir });
 }
 
 /**
@@ -186,7 +190,12 @@ function registerSharedRoutes(
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });
-  registerMatrixRoutes(server, { store: matrixStore });
+  const matrixPodResolver = createMatrixPodResolver(podLookupRepository);
+  registerMatrixRoutes(server, { store: matrixStore, resolvePodUrl:matrixPodResolver, baseUrl:process.env.CSS_BASE_URL });
+  registerAgentWakeRoutes(server, {
+    service:new AgentWakeRuntimeService(container.resolve('serverGroupReconcilerService').getQueue(),matrixStore),
+    resolveContext:request=>resolveMatrixContext(request,matrixPodResolver),
+  });
   registerCoordinationRoutes(server, { clientReconcilerCoordinator });
   registerInngestRoutes(server, {
     backend: runExecutionBackend,
