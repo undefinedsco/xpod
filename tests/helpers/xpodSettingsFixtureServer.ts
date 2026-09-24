@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import { listenOnUnreservedPort } from '../../src/runtime/port-reservations';
 import { mkdir, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -175,13 +176,11 @@ class OpenAiCompatibleFixture {
       }
       this.writeJson(response, 404, { error: 'fixture route not found' });
     });
-    await new Promise<void>((resolve, reject) => {
-      this.server?.once('error', reject);
-      this.server?.listen(0, '127.0.0.1', () => resolve());
-    });
-    const address = this.server.address();
-    if (!address || typeof address === 'string') throw new Error('fixture did not expose a TCP port');
-    this.baseUrl = `http://127.0.0.1:${address.port}/v1`;
+    const server = this.server;
+    if (!server) throw new Error('fixture server was not created');
+    // `listen(0)` alone would happily take a port another group reserved for its tunnel.
+    const port = await listenOnUnreservedPort(server);
+    this.baseUrl = `http://127.0.0.1:${port}/v1`;
   }
 
   async stop(): Promise<void> {

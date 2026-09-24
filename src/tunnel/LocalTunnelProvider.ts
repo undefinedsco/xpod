@@ -425,10 +425,16 @@ function normalizePublicEndpoint(value: string | undefined): string | undefined 
  *
  * Both halves are reported: pointing the dashboard at `https://localhost:<port>` while this
  * runtime serves plain HTTP there fails the TLS handshake, and the edge shows only a 502.
+ *
+ * cloudflared logs the configuration it fetched as an escaped JSON string inside one log line
+ * (`config="{\"ingress\":[{\"service\":\"http://localhost:5737\"}]}"`), so the quotes around
+ * the JSON keys arrive backslash-escaped. Unescaping first is what makes this read-back work
+ * against a real connector; a line where the JSON is not escaped is still accepted.
  */
 export function readDashboardOrigin(output: string): { scheme: string; port: number } | undefined {
-  const match = /"service"\s*:\s*"(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output)
-    ?? /ingress[^\n]*service["']?\s*[:=]\s*["']?(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output);
+  const unescaped = output.includes('\\"') ? output.replace(/\\"/gu, '"') : output;
+  const match = /"service"\s*:\s*"(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(unescaped)
+    ?? /ingress[^\n]*service["']?\s*[:=]\s*["']?(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(unescaped);
   if (!match) {
     return undefined;
   }

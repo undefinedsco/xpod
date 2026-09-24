@@ -393,6 +393,9 @@ describe('SakuraFrpTunnelProvider', () => {
     child.emit('error', Object.assign(new Error('spawn frpc ENOENT'), { code: 'ENOENT' }));
 
     await expect(started).rejects.toThrow(/frpc/);
-    expect(provider.getStatus().error).toBe('binary-missing:sakura-frp:frpc');
+    // The provider segment is the catalog id (`sakura_frp`), never the implementation-local
+    // `sakura-frp`; the install hint from the catalog follows the machine-readable prefix.
+    expect(provider.getStatus().error).toMatch(/^binary-missing:sakura_frp:frpc/u);
+    expect(provider.getStatus().error).toContain('natfrp');
   }, 40_000);
 });

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describeTunnelClientMissing } from './TunnelClientResolver';
-import type { TunnelProviderId } from './TunnelProviderCatalog';
+import { canonicalTunnelProviderId } from './TunnelProviderCatalog';
 import type { TunnelStage, TunnelStatus } from './TunnelProvider';
 
 /**
@@ -29,17 +29,22 @@ export function mergeTunnelError(previous: string | undefined, next: string | un
  * Recognizes a missing client binary, which is a deployment fact, not a network failure.
  *
  * The prefix stays `binary-missing:<provider>:<binary>` (callers and acceptance assert on it);
- * the install hint from the provider catalog is appended so an operator reading the failure
+ * `<provider>` is resolved to the catalog id first, so an implementation that calls itself
+ * `sakura-frp` cannot put a provider id into the message that no catalog lookup resolves.
+ * The install hint from the provider catalog is appended so an operator reading the failure
  * knows what to install instead of having to search (audit N16).
  */
 export function describeSpawnError(provider: string, binary: string, error: unknown): string {
   const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: unknown }).code) : '';
+  // `spawn-failed` is a plain diagnostic, but its provider segment is normalized the same way
+  // so both families of message name the same provider.
+  const id = canonicalTunnelProviderId(provider) ?? provider;
   if (code === 'ENOENT') {
     // The prefix stays `binary-missing:<provider>:<binary name>` because callers assert on it;
     // when the command was an absolute path, which file was tried is appended for the operator.
     const name = path.basename(binary);
-    const message = describeTunnelClientMissing(provider as TunnelProviderId, name);
+    const message = describeTunnelClientMissing(id, name);
     return name === binary ? message : `${message} (tried: ${binary})`;
   }
-  return `spawn-failed:${provider}:${(error as Error)?.message ?? String(error)}`;
+  return `spawn-failed:${id}:${(error as Error)?.message ?? String(error)}`;
 }

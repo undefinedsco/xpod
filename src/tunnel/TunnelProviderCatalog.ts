@@ -197,6 +197,19 @@ export function parseTunnelProvider(value: unknown): ActiveTunnelProvider | unde
   return PROVIDER_ALIASES[value.trim().toLowerCase()];
 }
 
+/**
+ * The one spelling of a provider that may appear in machine-readable messages.
+ *
+ * Provider implementations and callers historically used their own hyphenated names
+ * (`sakura-frp`), which is how a failure detail ended up carrying a provider id that no
+ * catalog lookup could resolve. Anything that renders a provider into a message resolves it
+ * here first, so the catalog id is the only one that can reach an operator.
+ */
+export function canonicalTunnelProviderId(value: unknown): TunnelProviderId | undefined {
+  const provider = parseTunnelProvider(value);
+  return provider && provider !== 'none' ? provider : undefined;
+}
+
 export function isTunnelProviderId(value: unknown): value is TunnelProviderId {
   return parseTunnelProvider(value) !== undefined && parseTunnelProvider(value) !== 'none';
 }

@@ -20,6 +20,7 @@ vi.mock('node:os', () => ({
 }));
 
 import { getFreePort, getFreePortForWildcard } from '../../src/runtime/port-finder';
+import { PORT_RESERVATION_DIR_ENV, RESERVED_PORTS_ENV } from '../../src/runtime/port-reservations';
 
 type ServerBehavior = 'error' | 'listening' | 'hang';
 const globalWithBun = globalThis as typeof globalThis & { Bun?: unknown };
@@ -103,6 +104,30 @@ describe('getFreePort', () => {
       .mockReturnValueOnce(createMockServer('listening'));
 
     await expect(getFreePortForWildcard(5600)).resolves.toBe(5601);
+  });
+
+  it('should skip a reserved port, so other groups never take the network group\'s fixed one', async() => {
+    // The tunnel acceptance's console-owned port (5737 here) is reserved; every allocator in
+    // the repo goes around it instead of racing for it. Without this, another session's
+    // `run-integration-full` sits on 5737 and the tunnel leg fails.
+    const previousDirectory = process.env[PORT_RESERVATION_DIR_ENV];
+    const previousPorts = process.env[RESERVED_PORTS_ENV];
+    // A directory that does not exist keeps the file source out of this test: the env source is
+    // what the reservation is being proven through here.
+    process.env[PORT_RESERVATION_DIR_ENV] = '/nonexistent/xpod-port-reservations';
+    process.env[RESERVED_PORTS_ENV] = '5600';
+    try {
+      // 5600 is free in this mock, so only the reservation can move the answer.
+      createServerMock.mockReturnValue(createMockServer('listening'));
+
+      await expect(getFreePort(5600)).resolves.toBe(5601);
+      await expect(getFreePortForWildcard(5600)).resolves.toBe(5601);
+    } finally {
+      if (previousDirectory === undefined) delete process.env[PORT_RESERVATION_DIR_ENV];
+      else process.env[PORT_RESERVATION_DIR_ENV] = previousDirectory;
+      if (previousPorts === undefined) delete process.env[RESERVED_PORTS_ENV];
+      else process.env[RESERVED_PORTS_ENV] = previousPorts;
+    }
   });
 
   it('should not probe IPv6 when the host has no IPv6 address', async() => {

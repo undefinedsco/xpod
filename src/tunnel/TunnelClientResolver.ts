@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import {
+  canonicalTunnelProviderId,
   TUNNEL_PROVIDERS,
   type TunnelProviderClient,
   type TunnelProviderId,
@@ -55,11 +56,15 @@ export class TunnelClientPathError extends Error {
   }
 }
 
-export function describeTunnelClientMissing(provider: TunnelProviderId, binary?: string): string {
-  const descriptor = TUNNEL_PROVIDERS.find((entry) => entry.id === provider);
+export function describeTunnelClientMissing(provider: TunnelProviderId | string, binary?: string): string {
+  // One spelling reaches an operator: the catalog id. A caller that still uses a legacy or
+  // implementation-local name (`sakura-frp`) is normalized here instead of leaking a provider
+  // id no catalog lookup can resolve.
+  const id = canonicalTunnelProviderId(provider) ?? provider;
+  const descriptor = TUNNEL_PROVIDERS.find((entry) => entry.id === id);
   const client = descriptor?.client;
   const name = binary ?? client?.binary ?? 'unknown';
-  return `binary-missing:${provider}:${name}` + (client ? ` (${client.installHint})` : '');
+  return `binary-missing:${id}:${name}` + (client ? ` (${client.installHint})` : '');
 }
 
 export function resolveTunnelClient(

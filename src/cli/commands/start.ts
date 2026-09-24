@@ -5,18 +5,15 @@ import { getLoggerFor } from 'global-logger-factory';
 import { Supervisor } from '../../supervisor';
 import {
   createGatewayAdminProxyAuthSecret,
-  findGatewayIngressPort,
   GatewayProxy,
-  getEphemeralLoopbackPort,
   getFreePortForWildcard,
   initRuntimeLogger,
-  requireFreePortForWildcard,
   PACKAGE_ROOT,
   loadEnvFile,
   resolveXpodEnvPath,
   validateBaseUrl,
 } from '../../runtime';
-import { resolveSakuraAssignedLocalPort } from '../../tunnel/SakuraFrpTunnelProvider';
+import { resolveIngressPort } from '../../runtime/ingress-port';
 import {
   buildApiChildEnv,
   buildCssArgs,
@@ -133,17 +130,30 @@ export const startCommand: CommandModule<object, StartArgs> = {
     const cssPort = await getFreePortForWildcard(requestedCssPort);
     const requestedApiPort = resolveServicePort(process.env.API_PORT, cssPort + 1, new Set([mainPort, cssPort]));
     const apiPort = await getFreePortForWildcard(requestedApiPort);
-    // Remote forwarding (managed tunnels, P2P data plane) terminates on this machine, so
-    // its origin is a dedicated ingress port instead of the gateway port: the Gateway
-    // never treats requests accepted there as local. An explicit override is honoured;
-    // otherwise the OS assigns a loopback port, because neighbouring ports may already
-    // belong to another service this deployment planned.
-    // The port is a fact of whichever tunnel forwards to us: an explicit override pins it,
-    // and the SakuraFrp console's own 本地端口 is read back from the provider, so the
-    // operator never types the same number twice. Only an unmanaged ingress is ephemeral.
-    // A pinned port is taken as-is: silently moving it would leave the tunnel pointing at a
-    // port nobody listens on.
-    const ingressPort = await resolveIngressPort(provisionedConfig, mainPort);
+    // Remote forwarding (managed tunnels, P2P data plane) terminates on this machine, so its
+    // origin is a dedicated ingress port instead of the gateway port: the Gateway never treats
+    // requests accepted there as local.
+    //
+    // Order (see `resolveIngressPort`): an explicit `XPOD_GATEWAY_INGRESS_PORT` wins; otherwise
+    // the *active* profile's provider console decides — for a console-owned tunnel the runtime
+    // adopts the port that console already declares (SakuraFrp's `local_port`, the Cloudflare
+    // dashboard's remote configuration read back through the connector) instead of asking the
+    // operator to edit the console; only an entry nobody declares is derived from the gateway
+    // port (gateway+3..+9).
+    //
+    // Both strict sources are strict: a port that somebody else holds fails the start with the
+    // occupant named (pid, command line, cwd), and nothing is ever signalled or silently moved
+    // to another port - the tunnel forwards to a number, so it must find this runtime there.
+    const ingress = await resolveIngressPort({
+      mainPort,
+      env: process.env,
+      profiles: provisionedConfig.tunnelProfiles ?? [],
+      ...(provisionedConfig.tunnelActiveProfileId
+        ? { activeProfileId: provisionedConfig.tunnelActiveProfileId }
+        : {}),
+      reservedPorts: [ mainPort, cssPort, apiPort ],
+    });
+    const ingressPort = ingress.port;
     // Published so the API can tell the operator which address a tunnel must forward to.
     process.env.XPOD_GATEWAY_INGRESS_PORT = String(ingressPort);
     const runtimeRoot = path.join(process.cwd(), '.xpod/runtime/legacy-css');
@@ -179,6 +189,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
     console.log(`  Gateway: ${baseUrl} (${argv.host}:${mainPort})`);
     console.log(`  CSS (internal): http://localhost:${cssPort}`);
     console.log(`  API (internal): http://localhost:${apiPort}`);
+    console.log(`  Tunnel entry: http://127.0.0.1:${ingressPort} — ${describeIngressDecision(ingress)}`);
     if (externalOidcIssuer) {
       console.log(`  SP mode: Cloud IdP = ${externalOidcIssuer}`);
     }
@@ -281,42 +292,23 @@ export const startCommand: CommandModule<object, StartArgs> = {
 /**
  * Where remote-forwarded traffic lands on this machine.
  *
- * Order: explicit `XPOD_GATEWAY_INGRESS_PORT` → the active SakuraFrp tunnel's assigned local
- * port → an OS-assigned loopback port. The first two are strict, because a tunnel that
- * forwards to a specific port cannot follow us somewhere else.
+ * The decision (explicit pin → the active profile's console declaration → the gateway-derived
+ * entry) lives in `src/runtime/ingress-port.ts`, together with the strict "taken means taken"
+ * check and the occupant naming. This only reports the outcome, so the startup banner says
+ * whether the entry was pinned, adopted from a console, or derived from the gateway port.
  */
-/**
- * The port a remote tunnel forwards to: the Gateway's tunnel entry.
- *
- * It is derived from the Gateway port by the same rule the runtime uses, so the CLI can hand
- * it to the managed edge agent before the runtime binds it. A console that forwards somewhere
- * else is a mismatch the tunnel provider reports from its own read-back - the runtime never
- * moves its gate to match a console.
- */
-export async function resolveIngressPort(
-  provisionedConfig: {
-    tunnelProfiles?: Array<{ id: string; provider: string; credentialEnvKey?: string }>;
-    tunnelActiveProfileId?: string;
-  },
-  mainPort: number,
-): Promise<number> {
-  const port = await findGatewayIngressPort(mainPort);
-  const active = provisionedConfig.tunnelProfiles?.find(
-    (profile) => profile.id === provisionedConfig.tunnelActiveProfileId,
-  ) ?? provisionedConfig.tunnelProfiles?.find((profile) => profile.provider === 'sakura_frp');
-  if (active?.provider === 'sakura_frp') {
-    const credential = active.credentialEnvKey
-      ? process.env[active.credentialEnvKey] ?? process.env.SAKURA_TUNNEL_TOKEN
-      : process.env.SAKURA_TUNNEL_TOKEN;
-    const assigned = await resolveSakuraAssignedLocalPort(credential);
-    if (assigned !== undefined && assigned !== port) {
-      getLoggerFor('XpodStart').warn(
-        `The Sakura console forwards to local port ${assigned}, but this runtime's tunnel entry is ${port}; `
-        + `update the tunnel's local port in the console to ${port}`,
-      );
-    }
+export function describeIngressDecision(ingress: {
+  port: number;
+  source: string;
+  declared?: { provider: string; readBack: string };
+}): string {
+  if (ingress.source === 'explicit') {
+    return `pinned by XPOD_GATEWAY_INGRESS_PORT`;
   }
-  return port;
+  if (ingress.source === 'console-declared' && ingress.declared) {
+    return `adopted from the ${ingress.declared.provider} console (${ingress.declared.readBack})`;
+  }
+  return 'derived from the gateway port (gateway+3..+9)';
 }
 
 export function resolveCliOidcIssuer(

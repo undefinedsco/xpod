@@ -110,6 +110,18 @@ describe('tunnel client resolution (N16)', () => {
     expect(message).toContain('natfrp');
   });
 
+  it('renders the catalog id even when a provider calls itself by a legacy name', () => {
+    // Drift guard: the SakuraFrp provider used to pass `sakura-frp` (its class-local name), so
+    // an operator-visible failure carried a provider id that no catalog lookup resolves. Every
+    // provider name and every catalog alias must render as the catalog id.
+    expect(describeTunnelClientMissing('sakura-frp')).toMatch(/^binary-missing:sakura_frp:frpc/u);
+    for (const descriptor of TUNNEL_PROVIDERS) {
+      const message = describeTunnelClientMissing(descriptor.id);
+      expect(message.startsWith(`binary-missing:${descriptor.id}:${descriptor.client.binary}`)).toBe(true);
+      expect(message).toContain(descriptor.client.installHint);
+    }
+  });
+
   it('resolves every provider without throwing, even when clients are absent', () => {
     const results = resolveAllTunnelClients({ env: {}, packageRoot: '/nonexistent' });
 

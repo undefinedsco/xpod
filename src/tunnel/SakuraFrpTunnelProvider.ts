@@ -68,7 +68,9 @@ interface SakuraTunnelRecord {
  * 通过 frpc 客户端连接 SakuraFRP 服务
  */
 export class SakuraFrpTunnelProvider implements TunnelProvider {
-  public readonly name = 'sakura-frp';
+  // The catalog id, not a hyphenated implementation name: the provider vocabulary has exactly
+  // one spelling, and this one is also what failure details embed.
+  public readonly name = 'sakura_frp';
   private readonly logger = getLoggerFor(this);
 
   private readonly token: string;
@@ -345,7 +347,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
     });
 
     this.process.on('error', (error) => {
-      const described = describeSpawnError('sakura-frp', this.frpcPath, error);
+      const described = describeSpawnError('sakura_frp', this.frpcPath, error);
       this.logger.error(`Failed to start frpc: ${described}`);
       this.status = createTunnelStatus('failed', { endpoint: this.currentEndpoint(), error: described });
       this.process = null;
