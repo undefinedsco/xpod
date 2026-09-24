@@ -235,14 +235,14 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 由此得到两类 CSS 的分工（这一条决定第 2 步的实现范围）：
 
 - **随部署 CSS（自家 Pod）**：浏览器与 Account API 同源，可以**静默**为当前 WebID 创建/持有一把 client credential，请求级携带给 API；API 代读、内部 transport、索引扩展都可用。
-- **外部 CSS**：浏览器侧的 Account 控制解析是**刻意 fail-closed 的同源校验**（`ui/src/utils/account-control-url.ts`：非当前 Xpod origin 一律拒绝），因此静默创建不可用。外部 CSS 的前台按"host 用当前会话直读 Pod、API 只做推理"工作；要用后台任务时，由用户显式导入一把该 issuer 的凭据，存任务层（决策 5/7）。API 代读外部 Pod 还要求按 issuer 解析 token endpoint（今天是单一 `config.cssTokenEndpoint`），这是外部 CSS 的待补项。
+- **外部 CSS**：机制上是通的——`resolveHostedAccountControlUrl` 已支持"控制 URL 与**受信任账户索引**同源且都在 `/.account/` 下"的第三方 authority 分支（`ui/src/utils/account-control-url.ts`），CSS 默认中间件也带 CORS（`CorsHandler`，origin 反射 + `options_credentials: true`，作用于所有入站请求），所以浏览器可以跨源携带 `CSS-Account-Token` 调外部 CSS 的账户接口。**当前限制在"账户索引的来源"**：`resolveXpodAccountIndex()` 只认当前 Xpod 的 authority（公网用 `window.__XPOD__.idpIndex`，local 用 `/provision/status`），因此凭据总是创建在当前 Xpod 自己的 CSS 上。要把静默创建扩到外部 CSS，需要三件事：(1) 由用户的 WebID/issuer 解析**其 Pod authority** 的账户索引并按 issuer 校验；(2) 按 authority 保存/使用账户会话（现为单 authority：`xpod.cssAccountToken` + `xpod.cssAccountAuthority`）；(3) API 侧按 issuer 解析 token endpoint 才能用这把凭据代读（今天是单一 `config.cssTokenEndpoint`）。在三件事完成前，外部 CSS 的前台按"host 用当前会话直读 Pod、API 只做推理"工作，后台任务由用户显式导入一把该 issuer 的凭据存任务层（决策 5/7）。
 
 外部 CSS 上的能力边界（实施与验收都以此为准，缺能力要显式报缺口而不是静默降级）：
 
 | 能力 | 随部署 CSS | 外部 CSS |
 | --- | --- | --- |
 | 标准 LDP/RDF 读写（drizzle-solid，资源与集合） | 支持 | 支持 |
-| 浏览器静默准备请求级 client credential（Account API，同源） | 支持 | **不支持**（同源 fail-closed）：改由 host 直读或用户显式导入 |
+| 浏览器静默准备请求级 client credential（Account API） | 支持 | 机制可行（CORS 默认允许、`trustedAccountIndex` 分支存在），但需补"按 Pod authority 解析账户索引 + 多 authority 会话"；未补前改由 host 直读或用户显式导入 |
 | API 用调用方凭据代读 Pod | 支持 | 需按 issuer 解析 token endpoint（待补），且 loopback transport 不适用 |
 | 模型/凭证文档（由 host 写 Pod，路径来自 models） | 支持 | 支持（标准资源写入） |
 | 内部 transport（`HostedPodRoute` + canonical 头） | 支持 | 不适用（直接用标准 URL） |
