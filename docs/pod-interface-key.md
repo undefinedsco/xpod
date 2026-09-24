@@ -96,7 +96,7 @@ Bearer 与 DPoP 都支持，分开入口认证与出站能力：
 
 同时发现两件必须记住的事：
 - **浏览器会话目前是 DPoP**：`ui/src/solid/XpodSolidRuntimeProvider.tsx` 的 `session.login(...)` 没有传 `tokenType`，走 inrupt 默认 `DPoP`。所以"浏览器拿自己的凭据直调 chatkit/API 读 Pod"今天还不成立——要么登录时改 `tokenType: 'Bearer'`（前端一行，安全姿态变化：Bearer 无持有证明，API 在有效期内可重放），要么浏览器侧持有 sk（`ui/src/auth/account-client-credentials.ts` 已有创建/撤销能力）。
-- **chatkit 会掩盖 Pod 不可达**：`PodChatKitStore.loadThreads` 在 `getDb` 失败时返回空列表（`pod-store.ts:1490`），于是没有可用 Pod 凭据的调用方拿到 `200 {"data":[]}` 而不是原因码；同一 token 在 keys 面上是 403。验收脚本已把这一行为记为已知问题（`chatkit-masks-dpop-caller`），修好后该断言会失败并提示更新。
+- **chatkit 曾掩盖 Pod 不可达（已修）**：`PodChatKitStore.getDb` 原来在拿不到 Pod 凭据时返回 `null`，26 个调用点据此返回空列表/空值，因此没有可用 Pod 凭据的调用方拿到 `200 {"data":[]}` 而不是原因码。现在 `getDb` 直接抛出原因码（无身份 → `caller_pod_access_unavailable`，不可用 → `podAccessError(...)`），`/v1/chatkit` 与 `/v1/chatkit/threads*` 通过 `src/api/handlers/PodAccessFailureResponse.ts` 映射为 401 `authentication_required` / 403 `service_access_missing` / 403 `pod_owner_mismatch`。验收脚本对应断言为 `chatkit-reports-dpop-caller`。
 
 仍存在两处非本路径的交换，**未收敛，已记录原因**：
 - `src/solidfs/PodSolidFsHttpClient.ts`：只产出 headers（`createAuthHeaders`），拿不到目标 URL/方法就无法生成 DPoP proof，因此仍以 body 传递 `client_id/client_secret` 换取 Bearer；随 §7.1 第 5 步（后台入口迁移到 Runtime 任务）改为 fetch 形态后并入 factory。

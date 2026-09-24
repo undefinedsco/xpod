@@ -140,7 +140,7 @@ try {
     `GET 127.0.0.1:${stack.apiPort}/api/ai/gateway/keys -> ${direct.status} ${direct.body.slice(0, 120)}`);
 
   // 3b. The chatkit surface accepts the Bearer caller. Returned on its own this proves nothing:
-  //     see the DPoP control below, where the same endpoint answers 200 without reading a Pod.
+  //     see the DPoP control below, where the same endpoint reports the missing Pod access.
   const chatkit = await callApi({ baseUrl: stack.baseUrl, path: '/v1/chatkit/threads', token: bearer });
   record('chatkit-accepts-bearer-caller', chatkit.status === 200,
     `GET /v1/chatkit/threads -> ${chatkit.status} ${chatkit.body.slice(0, 120)}`);
@@ -183,10 +183,9 @@ try {
     token: dpopForChatkit,
     dpopKey: dpopForChatkit.dpopKey,
   });
-  // A caller the API cannot use for the Pod gets an empty list instead of the reason, while the
-  // key surface returns 403 for the same caller and token. Documented here, not endorsed.
-  record('chatkit-masks-dpop-caller', chatkitDpop.status === 200 && chatkitDpop.body.includes('"data":[]'),
-    `GET /v1/chatkit/threads (DPoP) -> ${chatkitDpop.status} ${chatkitDpop.body.slice(0, 80)} (Pod reads are refused, see the key surface)`);
+  // A caller the API cannot use for the Pod hears the reason, exactly as on the key surface.
+  record('chatkit-reports-dpop-caller', chatkitDpop.status === 403 && chatkitDpop.body.includes('service_access_missing'),
+    `GET /v1/chatkit/threads (DPoP) -> ${chatkitDpop.status} ${chatkitDpop.body.slice(0, 80)}`);
 
   // 4. The same user's DPoP token authenticates but must not be replayed to the Pod.
   const dpop = await exchange(stack.baseUrl, { ...account, dpop: true });

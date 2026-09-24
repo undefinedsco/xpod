@@ -16,6 +16,7 @@ import type { StoreContext, ChatKitStore } from '../chatkit/store';
 import type { Page, ThreadItem, ThreadMetadata, ThreadRef } from '../chatkit/types';
 import { toThreadRef } from '../chatkit/types';
 import { getWebId, getAccountId } from '../auth/AuthContext';
+import { guardPodAccessRoute } from './PodAccessFailureResponse';
 
 export interface ChatKitV1HandlerOptions {
   store: ChatKitStore<StoreContext>;
@@ -34,7 +35,7 @@ export function registerChatKitV1Routes(server: ApiServer, options: ChatKitV1Han
   };
 
   // GET /v1/chatkit/threads
-  server.get('/v1/chatkit/threads', async (request, response) => {
+  server.get('/v1/chatkit/threads', guardPodAccessRoute(async (request, response) => {
     const url = new URL(request.url ?? '', `http://${request.headers.host}`);
     const limit = parseOptionalInt(url.searchParams.get('limit')) ?? 20;
     const after = url.searchParams.get('after') ?? undefined;
@@ -49,10 +50,10 @@ export function registerChatKitV1Routes(server: ApiServer, options: ChatKitV1Han
       has_more: page.has_more,
       after: page.after,
     });
-  });
+  }));
 
   // GET /v1/chatkit/threads/:thread_id
-  server.get('/v1/chatkit/threads/:thread_id', async (request, response, params) => {
+  server.get('/v1/chatkit/threads/:thread_id', guardPodAccessRoute(async (request, response, params) => {
     const threadRef = getThreadRefFromRequest(request, response, params.thread_id);
     if (!threadRef) {
       return;
@@ -70,10 +71,10 @@ export function registerChatKitV1Routes(server: ApiServer, options: ChatKitV1Han
         data: items.data.map((it) => ({ ...it, object: 'chatkit.thread_item' })),
       },
     });
-  });
+  }));
 
   // DELETE /v1/chatkit/threads/:thread_id
-  server.delete('/v1/chatkit/threads/:thread_id', async (request, response, params) => {
+  server.delete('/v1/chatkit/threads/:thread_id', guardPodAccessRoute(async (request, response, params) => {
     const threadRef = getThreadRefFromRequest(request, response, params.thread_id);
     if (!threadRef) {
       return;
@@ -81,10 +82,10 @@ export function registerChatKitV1Routes(server: ApiServer, options: ChatKitV1Han
     await store.deleteThread(threadRef, buildContext(request));
     // OpenAI style: return a success object (keep simple)
     sendJson(response, 200, { success: true });
-  });
+  }));
 
   // GET /v1/chatkit/threads/:thread_id/items
-  server.get('/v1/chatkit/threads/:thread_id/items', async (request, response, params) => {
+  server.get('/v1/chatkit/threads/:thread_id/items', guardPodAccessRoute(async (request, response, params) => {
     const url = new URL(request.url ?? '', `http://${request.headers.host}`);
     const threadRef = getThreadRefFromRequest(request, response, params.thread_id);
     if (!threadRef) {
@@ -109,7 +110,7 @@ export function registerChatKitV1Routes(server: ApiServer, options: ChatKitV1Han
       has_more: page.has_more,
       after: page.after,
     });
-  });
+  }));
 }
 
 function parseOptionalInt(value: string | null): number | undefined {

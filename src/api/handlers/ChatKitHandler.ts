@@ -14,6 +14,7 @@ import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ChatKitService, StreamingResult, NonStreamingResult } from '../chatkit/service';
 import type { StoreContext } from '../chatkit/store';
 import { getWebId, getAccountId } from '../auth/AuthContext';
+import { sendPodAccessFailure } from './PodAccessFailureResponse';
 
 export interface ChatKitHandlerOptions {
   chatKitService: ChatKitService<StoreContext>;
@@ -70,8 +71,12 @@ export function registerChatKitRoutes(server: ApiServer, options: ChatKitHandler
         sendJsonResponse(response, result);
       }
     } catch (error: any) {
+      // A Pod this process cannot open is the caller's state to fix, not an internal failure.
+      if (!response.headersSent && sendPodAccessFailure(response, error)) {
+        return;
+      }
       logger.error(`ChatKit request failed: ${error}`);
-      
+
       if (!response.headersSent) {
         sendJsonError(response, 500, 'internal_error', error.message || 'Internal server error');
       }
