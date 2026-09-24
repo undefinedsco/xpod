@@ -88,24 +88,12 @@ export async function scheduleAiConfigRebuild(authenticatedFetch: typeof fetch, 
 export async function testAiConfigModel(
   authenticatedFetch: typeof fetch,
   model: { id: string; capabilities: string[] },
-  options: {
-    /**
-     * Authorization for the request. The API opens this user's Pod to read the selected model and
-     * its Provider credential, and the session's DPoP token cannot be spent there.
-     */
-    authorization?: () => Promise<string | undefined>;
-  } = {},
 ): Promise<void> {
   const embedding = model.capabilities.some((capability) => capability.toLowerCase() === 'embedding');
-  const authorization = await options.authorization?.().catch(() => undefined);
   const response = await authenticatedFetch(currentOriginApiUrl(embedding ? '/v1/embeddings' : '/v1/chat/completions'), {
     method: 'POST',
     credentials: 'include',
-    headers: {
-      accept: 'application/json',
-      'content-type': 'application/json',
-      ...(authorization ? { authorization } : {}),
-    },
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify(embedding
       ? { model: model.id, input: 'xpod readiness probe' }
       : { model: model.id, messages: [{ role: 'user', content: 'Reply OK.' }], max_tokens: 1, stream: false }),

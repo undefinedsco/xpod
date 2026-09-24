@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createSessionRequestCredential } from './session-request-credential';
+import {
+  createSessionRequestCredential,
+  needsPodAuthorization,
+  withRequestPodAuthorization,
+} from './session-request-credential';
 import type { AiClientCredentialsCapability } from '@undefineds.co/extension-sdk/web';
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
@@ -97,5 +101,94 @@ describe('createSessionRequestCredential', () => {
 
     await expect(credential.release()).resolves.toBeUndefined();
     expect(credentials.revoke).toHaveBeenCalledWith(expect.objectContaining({ clientId: '' }));
+  });
+});
+
+describe('withRequestPodAuthorization', () => {
+  const missing = () => Response.json({ error: 'service_access_missing' }, { status: 403 });
+
+  it('retries once with the session credential when the API reports missing Pod access', async() => {
+    const attempts: Array<string | null> = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get('authorization');
+      attempts.push(authorization);
+      return authorization ? Response.json({ ok: true }) : missing();
+    }) as typeof fetch;
+    const wrapped = withRequestPodAuthorization(fetchImpl, async() => 'Bearer sk-session');
+
+    const response = await wrapped('https://xpod.example/v1/chat/completions', { method: 'POST' });
+
+    expect(response.status).toBe(200);
+    expect(attempts).toEqual([ null, 'Bearer sk-session' ]);
+  });
+
+  it('replays a consumed Request body on the retry', async() => {
+    const bodies: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(String(input), init);
+      const authorization = new Headers(init?.headers ?? request.headers).get('authorization');
+      bodies.push(await request.text());
+      return authorization ? Response.json({ ok: true }) : missing();
+    }) as typeof fetch;
+    const wrapped = withRequestPodAuthorization(fetchImpl, async() => 'Bearer sk-session');
+
+    const response = await wrapped(new Request('https://xpod.example/v1/chat/completions', {
+      method: 'POST',
+      body: 'messages',
+    }));
+
+    expect(response.status).toBe(200);
+    expect(bodies).toEqual([ 'messages', 'messages' ]);
+  });
+
+  it('leaves other failures, other statuses and other bodies alone', async() => {
+    const attempts: number[] = [];
+    const fetchImpl = (async () => {
+      attempts.push(1);
+      return Response.json({ error: 'pod_owner_mismatch' }, { status: 403 });
+    }) as typeof fetch;
+    const wrapped = withRequestPodAuthorization(fetchImpl, async() => 'Bearer sk-session');
+
+    const mismatched = await wrapped('https://xpod.example/api/ai/gateway/keys');
+    expect(mismatched.status).toBe(403);
+    expect(attempts).toHaveLength(1);
+
+    const notJson = (async () => new Response('nope', { status: 403 })) as typeof fetch;
+    await expect(withRequestPodAuthorization(notJson, async() => 'Bearer sk-session')('https://xpod.example/v1/models'))
+      .resolves.toMatchObject({ status: 403 });
+  });
+
+  it('returns the original refusal when no credential can be prepared or the retry still fails', async() => {
+    const noCredential = (async () => missing()) as typeof fetch;
+    const withNone = withRequestPodAuthorization(noCredential, async() => undefined);
+    await expect(withNone('https://xpod.example/api/ai/gateway/keys')).resolves.toMatchObject({ status: 403 });
+
+    let calls = 0;
+    const stillRefused = (async () => {
+      calls += 1;
+      return missing();
+    }) as typeof fetch;
+    const wrapped = withRequestPodAuthorization(stillRefused, async() => 'Bearer sk-session');
+    await expect(wrapped('https://xpod.example/api/ai/gateway/keys')).resolves.toMatchObject({ status: 403 });
+    expect(calls).toBe(2);
+  });
+
+  it('keeps the caller headers it was given', async() => {
+    let seen: Record<string, string | null> = {};
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      seen = { authorization: headers.get('authorization'), accept: headers.get('accept') };
+      return headers.get('authorization') ? Response.json({ ok: true }) : missing();
+    }) as typeof fetch;
+    const wrapped = withRequestPodAuthorization(fetchImpl, async() => 'Bearer sk-session');
+
+    await wrapped('https://xpod.example/api/ai/gateway/keys', { headers: { accept: 'application/json' } });
+
+    expect(seen).toEqual({ authorization: 'Bearer sk-session', accept: 'application/json' });
+  });
+
+  it('is a no-op without an authorization provider', () => {
+    const fetchImpl = (async() => new Response('ok')) as typeof fetch;
+    expect(withRequestPodAuthorization(fetchImpl, undefined)).toBe(fetchImpl);
   });
 });

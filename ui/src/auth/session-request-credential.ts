@@ -106,3 +106,54 @@ function clientIdFromApiKey(apiKey: string): string {
     return '';
   }
 }
+
+/**
+ * Turn "the API could not open the Pod" into "here is the credential for this session".
+ *
+ * The server decides which calls need a Pod credential: it answers 403
+ * `service_access_missing` when the caller's own context has none. That is the moment to prepare
+ * the session credential and retry once, which keeps this wrapper out of the business of knowing
+ * which routes read a Pod - and keeps Pod traffic, capability calls and other origins untouched.
+ */
+export function withRequestPodAuthorization(
+  fetchImpl: typeof fetch,
+  authorization: (() => Promise<string | undefined>) | undefined,
+): typeof fetch {
+  if (!authorization) {
+    return fetchImpl;
+  }
+  return async (input, init) => {
+    // A 403 is refused before any work, so replaying the request is safe - but a Request body is
+    // consumed by the first attempt, so the replay needs its own copy.
+    const replay = input instanceof Request ? cloneRequest(input) : input;
+    const response = await fetchImpl(input, init);
+    if (!replay || response.status !== 403 || !await isMissingPodAccess(response)) {
+      return response;
+    }
+    const value = await authorization().catch(() => undefined);
+    if (!value) {
+      return response;
+    }
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    headers.set('authorization', value);
+    return fetchImpl(replay, { ...init, headers });
+  };
+}
+
+function cloneRequest(request: Request): Request | undefined {
+  try {
+    return request.clone();
+  } catch {
+    // A streamed body cannot be replayed; the caller keeps the original refusal.
+    return undefined;
+  }
+}
+
+async function isMissingPodAccess(response: Response): Promise<boolean> {
+  try {
+    const body = await response.clone().json() as { error?: unknown };
+    return body?.error === 'service_access_missing';
+  } catch {
+    return false;
+  }
+}

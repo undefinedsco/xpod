@@ -96,9 +96,12 @@ describe('PodSettingsHandler', () => {
     expect(podLookupRepository.findByWebId).toHaveBeenCalledWith(WEB_ID);
     expect(podLookupRepository.findByWebId).not.toHaveBeenCalledWith(OTHER_WEB_ID);
     expect(usageRepo.getPodUsage).toHaveBeenCalledWith('pod-alice');
+    // The status read carries the caller's own context: the deployment must not answer with a
+    // Pod key the user never presented.
     expect(aiReader.read).toHaveBeenCalledWith({
       webId: WEB_ID,
       podUrl: 'https://pod.example/alice/',
+      auth: { type: 'solid', webId: WEB_ID },
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({
@@ -179,6 +182,7 @@ describe('PodSettingsHandler', () => {
     expect(aiReader.read).toHaveBeenCalledWith({
       webId: 'https://id.example/alice/profile/card#me',
       podUrl: 'https://storage.example/alice/',
+      auth: { type: 'solid', webId: 'https://id.example/alice/profile/card#me' },
     });
     expect(JSON.parse(res.body)).toMatchObject({
       identity: {
@@ -234,16 +238,18 @@ describe('PodSettingsHandler', () => {
     };
     const reader = new DrizzlePodAiConnectionsStatusReader(podAccess, 'cloud', dbFactory);
 
+    const caller = { type: 'solid' as const, webId: 'https://id.example/alice/profile/card#me' };
     const status = await reader.read({
-      webId: 'https://id.example/alice/profile/card#me',
+      webId: caller.webId,
       podUrl: 'https://storage.example/alice/',
+      auth: caller,
     });
 
     expect(status).toMatchObject({
       status: 'available',
       containerUrl: 'https://storage.example/alice/settings/credentials.ttl',
     });
-    expect(podAccess.getPodFetch).toHaveBeenCalledWith('https://id.example/alice/profile/card#me');
+    expect(podAccess.getPodFetch).toHaveBeenCalledWith(caller.webId, { auth: caller });
     expect(dbFactory).toHaveBeenCalledWith(expect.objectContaining({
       webId: 'https://id.example/alice/profile/card#me',
       podUrl: 'https://storage.example/alice/',

@@ -76,25 +76,6 @@ describe('AI Config API', () => {
     }));
   });
 
-  test('carries the session Pod credential and tolerates its absence', async () => {
-    const fetch = mock(async () => Response.json({ ok: true })) as typeof globalThis.fetch;
-
-    await testAiConfigModel(fetch, { id: 'qwen-vl', capabilities: ['chat'] }, {
-      authorization: async () => 'Bearer sk-session-credential',
-    });
-    expect(fetch).toHaveBeenNthCalledWith(1, `${CURRENT_ORIGIN}/v1/chat/completions`, expect.objectContaining({
-      headers: expect.objectContaining({ authorization: 'Bearer sk-session-credential' }),
-    }));
-
-    // A session that cannot prepare a credential sends none: the API reports the missing Pod
-    // access instead of the request silently borrowing a stored key.
-    await testAiConfigModel(fetch, { id: 'qwen-vl', capabilities: ['chat'] }, {
-      authorization: async () => undefined,
-    });
-    const headers = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls[1]?.[1] as { headers: Record<string, string> };
-    expect(headers.headers).not.toHaveProperty('authorization');
-  });
-
   test('fails closed when no current browser origin is available', async () => {
     const currentWindow = (globalThis as typeof globalThis & { window?: unknown }).window;
     delete (globalThis as typeof globalThis & { window?: unknown }).window;

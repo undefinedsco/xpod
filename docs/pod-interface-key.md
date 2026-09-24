@@ -283,6 +283,8 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 
 **前台请求级凭据的生命周期（第 2 步采用）**：登录后静默创建、**仅保存在内存**、登出即撤销。需要跨会话/跨设备复用时再改为存进用户自己的 Pod（那时浏览器用会话读取，凭据不进 API 侧存储）。
 
+**前台凭据的携带方式（第 2 步实现）**：由**服务端**决定哪些调用需要 Pod 凭据——调用方自己的 context 打不开 Pod 时，API 返回 403 `service_access_missing`；host 的会话 fetch 捕获这一响应后准备本会话凭据并**重试一次**（`withRequestPodAuthorization`，`ui/src/auth/session-request-credential.ts`）。这样客户端不需要维护"哪些路由读 Pod"的名单：Pod 直读、capability 调用（`/api/applets/...` 需要交互式主体）与其他 origin 都不受影响；重试只发生在请求被拒绝、尚未产生副作用时。
+
 ### 7.2 现有入口的目标归属
 
 | 入口 | 触发方式 | 目标归属 |

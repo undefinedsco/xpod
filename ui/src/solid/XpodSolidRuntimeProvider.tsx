@@ -28,7 +28,11 @@ import {
 } from './XpodSolidRuntime';
 import { currentHostLocalPodRoutes } from './xpod-local-route';
 import { createAccountClientCredentialsCapability } from '../auth/account-client-credentials';
-import { createSessionRequestCredential, type SessionRequestCredential } from '../auth/session-request-credential';
+import {
+  createSessionRequestCredential,
+  withRequestPodAuthorization,
+  type SessionRequestCredential,
+} from '../auth/session-request-credential';
 import { AuthContext } from '../context/AuthContextValue';
 
 export function XpodSolidRuntimeProvider({
@@ -113,9 +117,21 @@ export function XpodSolidRuntimeProvider({
     return reset;
   }, [runtime, runtimeStorage.issuer, runtimeStorage.selectedStorage]);
 
+  // API calls that open the user's Pod retry with this session's request credential; Pod traffic,
+  // capability calls and other origins keep using the session itself.
+  const podAuthorizedFetch = useCallback<typeof fetch>(
+    (input, init) => withRequestPodAuthorization(
+      authenticatedFetch,
+      () => requestCredentialRef.current?.authorization() ?? Promise.resolve(undefined),
+    )(input, init),
+    [authenticatedFetch],
+  );
   const exposedSession = useMemo(() => ({
     ...runtime.session,
-    fetch: exposedFetch,
+    fetch: withRequestPodAuthorization(
+      exposedFetch,
+      () => requestCredentialRef.current?.authorization() ?? Promise.resolve(undefined),
+    ),
     getSnapshot: () => snapshotRef.current,
   }), [exposedFetch, runtime.session]);
 
@@ -214,7 +230,7 @@ export function XpodSolidRuntimeProvider({
     const openArgs = {
       webId: snapshot.webId,
       ...(rememberedBinding ? { podUrl: rememberedBinding.storageUrl } : {}),
-      fetch: authenticatedFetch,
+      fetch: podAuthorizedFetch,
     };
     void (async () => {
       try {
