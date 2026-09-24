@@ -20,7 +20,7 @@ import {
 } from '../reconciler';
 import { getProtocolMetadata, withProtocolMetadata } from '../protocol-metadata';
 import { MatrixError } from './MatrixError';
-import { InMemoryMatrixEventJournal, type MatrixEventJournal } from './MatrixEventJournal';
+import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
 import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import type { SharedWakeAgentJob } from '../reconciler/coordination';
 import { sharedWakeAgentJobId } from '../reconciler/WakeAgentQueue';
@@ -636,12 +636,12 @@ export class PodMatrixStore {
     const sources = await db.select().from(messageResource)
       .where(eq(messageResource.thread, this.threadIri(roomId, context))) as MatrixEventSource[];
     sources.sort((a,b) => (this.isoToMillis(a.createdAt) ?? 0) - (this.isoToMillis(b.createdAt) ?? 0) || a.id.localeCompare(b.id));
-    const events: MatrixEventRecord[] = [];
-    for (const source of sources) {
-      const event = this.eventSourceToRecord(source, roomId, context);
-      event.depth = await this.journal.registerEvent(this.scope(context), roomId, event.eventId);
-      events.push(event);
-    }
+    // One journal round trip per page instead of one per event: the per-event
+    // form made every read cost O(history) SQL calls.
+    const records = sources.map(source => this.eventSourceToRecord(source, roomId, context));
+    const sequences = await this.journal.registerEvents(this.scope(context), roomId, records.map(record => record.eventId));
+    records.forEach((record, index) => { record.depth = sequences[index]; });
+    const events = records;
     events.sort((a,b)=>a.depth! - b.depth!);
     return options.newestFirst ? events.reverse() : events;
   }
@@ -821,11 +821,12 @@ export class PodMatrixStore {
     return targets;
   }
 
-  private async reconcileEvent(db: Db, event: MatrixEventRecord, context: MatrixStoreContext, events?: MatrixEventRecord[]): Promise<void> {
+  private async reconcileEvent(db: Db, event: MatrixEventRecord, context: MatrixStoreContext, events?: MatrixEventRecord[],
+    knownReceipt?: MatrixTransactionReservation): Promise<void> {
     if (!this.serverGroupReconcilerService || event.type !== 'm.room.message' || event.role !== MessageRole.USER) return;
     const actor = event.senderWebId;
     if (!actor) return;
-    const receipt = await this.journal.findReservation(this.scope(context),event.eventId);
+    const receipt = knownReceipt ?? await this.journal.findReservation(this.scope(context),event.eventId);
     if (!receipt || receipt.contentHash !== this.hash(this.canonicalJson(['user',actor,event.type,event.content]))) return;
     const targets = await this.authorizeTargets(db,event.roomId,event.content,{...context,webId:actor},events);
     const pending: string[] = [];
@@ -854,9 +855,11 @@ export class PodMatrixStore {
     const db = await this.getDb(context);
     const events = await this.listEvents(db,roomId,context);
     await this.requireJoined(db,roomId,context,events);
+    // Recovery asks for one receipt per scanned event; fetch them as a page.
+    const receipts = await this.journal.findReservations(this.scope(context), events.map(event => event.eventId));
     for (const event of events) {
       if (event.role === MessageRole.USER) {
-        try { await this.reconcileEvent(db,event,context,events); }
+        try { await this.reconcileEvent(db,event,context,events,receipts.get(event.eventId)); }
         catch (error) { if (!(error instanceof MatrixError && error.status === 403)) throw error; }
       }
       if (event.role === MessageRole.ASSISTANT) await this.reconcileHandoff(db,event,context,events);

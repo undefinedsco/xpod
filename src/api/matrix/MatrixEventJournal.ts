@@ -22,6 +22,14 @@ export interface MatrixEventJournal {
    */
   updateReservation(scope: string, key: string, contentHash: string): Promise<void>;
   registerEvent(scope: string, roomId: string, eventId: string): Promise<number>;
+  /**
+   * Register a page of events in one pass. Sequences are assigned in input
+   * order, exactly as sequential `registerEvent` calls would, but the journal
+   * round-trips stay bounded instead of growing with the page size.
+   */
+  registerEvents(scope: string, roomId: string, eventIds: readonly string[]): Promise<number[]>;
+  /** Look up several receipts at once: recovery needs one per scanned event. */
+  findReservations(scope: string, eventIds: readonly string[]): Promise<Map<string, MatrixTransactionReservation>>;
   getHighWatermark(scope: string): Promise<number>;
   findReservation(scope: string, eventId: string): Promise<MatrixTransactionReservation | undefined>;
 }
@@ -61,6 +69,21 @@ export class InMemoryMatrixEventJournal implements MatrixEventJournal {
     this.events.set(identity, sequence);
     this.highWatermarks.set(scope, sequence);
     return sequence;
+  }
+
+  public async registerEvents(scope: string, roomId: string, eventIds: readonly string[]): Promise<number[]> {
+    const sequences: number[] = [];
+    for (const eventId of eventIds) sequences.push(await this.registerEvent(scope, roomId, eventId));
+    return sequences;
+  }
+
+  public async findReservations(scope: string, eventIds: readonly string[]): Promise<Map<string, MatrixTransactionReservation>> {
+    const wanted = new Set(eventIds);
+    const found = new Map<string, MatrixTransactionReservation>();
+    for (const [ key, value ] of this.transactions) {
+      if (JSON.parse(key)[0] === scope && wanted.has(value.eventId)) found.set(value.eventId, { ...value });
+    }
+    return found;
   }
 
   public async getHighWatermark(scope: string): Promise<number> {
@@ -125,6 +148,70 @@ export class SqlMatrixEventJournal implements MatrixEventJournal {
       await executeStatement(transaction, sql`LOCK TABLE xpod_matrix_events IN SHARE ROW EXCLUSIVE MODE`);
       return this.insertEvent(transaction, scope, roomId, eventId);
     });
+  }
+
+  public async registerEvents(scope: string, roomId: string, eventIds: readonly string[]): Promise<number[]> {
+    await this.ensureInitialized();
+    if (eventIds.length === 0) return [];
+    const unique = [...new Set(eventIds)];
+    const known = await this.sequencesFor(this.db, scope, roomId, unique);
+    const missing = unique.filter(eventId => !known.has(eventId));
+    if (missing.length > 0) {
+      if (isDatabaseSqlite(this.db)) {
+        await this.insertEvents(this.db, scope, roomId, missing);
+      } else {
+        // One lock for the whole page instead of one per event; commit order is
+        // still serialized so the high watermark cannot pass an uncommitted page.
+        await this.db.transaction(async (transaction: IdentityDatabase): Promise<void> => {
+          await executeStatement(transaction, sql`LOCK TABLE xpod_matrix_events IN SHARE ROW EXCLUSIVE MODE`);
+          await this.insertEvents(transaction, scope, roomId, missing);
+        });
+      }
+      for (const [ eventId, sequence ] of await this.sequencesFor(this.db, scope, roomId, missing)) {
+        known.set(eventId, sequence);
+      }
+    }
+    return eventIds.map(eventId => {
+      const sequence = known.get(eventId);
+      if (sequence === undefined) throw new Error('Matrix event registration disappeared');
+      return sequence;
+    });
+  }
+
+  public async findReservations(scope: string, eventIds: readonly string[]): Promise<Map<string, MatrixTransactionReservation>> {
+    await this.ensureInitialized();
+    const found = new Map<string, MatrixTransactionReservation>();
+    if (eventIds.length === 0) return found;
+    const result = await executeQuery<{ event_id: string; created_at: number | string; content_hash: string }>(this.db, sql`
+      SELECT event_id, created_at, content_hash FROM xpod_matrix_transactions
+      WHERE scope = ${scope} AND event_id IN (${sql.join([...new Set(eventIds)].map(id => sql`${id}`), sql`, `)})
+    `);
+    for (const row of result.rows) {
+      found.set(row.event_id, { eventId: row.event_id, createdAt: Number(row.created_at), contentHash: row.content_hash });
+    }
+    return found;
+  }
+
+  private async sequencesFor(db: IdentityDatabase, scope: string, roomId: string, eventIds: readonly string[]): Promise<Map<string, number>> {
+    const sequences = new Map<string, number>();
+    if (eventIds.length === 0) return sequences;
+    const result = await executeQuery<{ event_id: string; sequence: number | string }>(db, sql`
+      SELECT event_id, sequence FROM xpod_matrix_events
+      WHERE scope = ${scope} AND room_id = ${roomId}
+        AND event_id IN (${sql.join([...eventIds].map(id => sql`${id}`), sql`, `)})
+    `);
+    for (const row of result.rows) sequences.set(row.event_id, this.toSequence(row.sequence));
+    return sequences;
+  }
+
+  private async insertEvents(db: IdentityDatabase, scope: string, roomId: string, eventIds: readonly string[]): Promise<void> {
+    // Values are bound as parameters, so embedded quotes cannot break out.
+    const rows = eventIds.map(eventId => sql`(${scope}, ${roomId}, ${eventId})`);
+    await executeStatement(db, sql`
+      INSERT INTO xpod_matrix_events (scope, room_id, event_id)
+      VALUES ${sql.join(rows, sql`, `)}
+      ON CONFLICT (scope, room_id, event_id) DO NOTHING
+    `);
   }
 
   public async getHighWatermark(scope: string): Promise<number> {
