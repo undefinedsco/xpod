@@ -26,7 +26,7 @@ export interface ResolveTunnelClientOptions {
   explicitPath?: string;
   /** Package root that may contain `vendor/tunnel-clients/`. */
   packageRoot?: string;
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
   /** Injectable for tests: decides whether a resolved path is usable. */
   isExecutable?: (candidate: string) => boolean;
 }
@@ -142,7 +142,7 @@ export function redistributePolicyNote(): string {
 /** Finds an executable by name on the given environment's PATH (no shell involved). */
 export function findOnPath(
   binary: string,
-  env: NodeJS.ProcessEnv = process.env,
+  env: Record<string, string | undefined> = process.env,
   isExecutable: (candidate: string) => boolean = defaultIsExecutable,
 ): string | undefined {
   for (const entry of (env.PATH ?? '').split(path.delimiter)) {

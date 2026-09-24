@@ -44,7 +44,7 @@ export interface TunnelClientInspection {
 
 export interface TunnelClientManagerOptions {
   packageRoot?: string;
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
   platform?: NodeJS.Platform;
   arch?: string;
   fetchImpl?: typeof fetch;

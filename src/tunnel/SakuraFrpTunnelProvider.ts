@@ -34,7 +34,7 @@ export interface SakuraFrpTunnelProviderOptions {
   /** frpc 可执行文件路径 (默认 'frpc') */
   frpcPath?: string;
   /** Environment used to resolve the client binary; injectable for tests. */
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
 
   /** 等待代理发布的毫秒数；超时后状态为 failed */
   connectTimeoutMs?: number;

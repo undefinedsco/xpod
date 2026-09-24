@@ -37,7 +37,7 @@ export interface DeclaredOriginProfile {
 }
 
 export interface ReadDeclaredOriginOptions {
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
   /**
    * Whether this profile is the active one. A Cloudflare read-back starts a short-lived
    * connector, so it only runs for the profile whose port the runtime is about to adopt.
@@ -131,7 +131,7 @@ function resolveCloudflaredCommand(options: ReadDeclaredOriginOptions): string {
 export interface CloudflareOriginReadOptions {
   command: string;
   timeoutMs?: number;
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
   /** Injected in tests: yields the lines a real cloudflared would print. */
   spawnImpl?: typeof spawn;
 }

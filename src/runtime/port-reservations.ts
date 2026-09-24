@@ -97,7 +97,7 @@ export function parseReservedPortsEnv(value: string | undefined): number[] {
 
 /** Every reservation in force right now: env var plus unexpired files. */
 export function readPortReservations(
-  options: { env?: NodeJS.ProcessEnv; root?: string; now?: number; ttlMs?: number } = {},
+  options: { env?: Record<string, string | undefined>; root?: string; now?: number; ttlMs?: number } = {},
 ): PortReservation[] {
   const env = options.env ?? process.env;
   const root = options.root ?? process.cwd();
@@ -144,14 +144,14 @@ export function readPortReservations(
 }
 
 /** The set every allocator skips. Cheap enough to call once per allocation. */
-export function reservedPorts(options: { env?: NodeJS.ProcessEnv; root?: string; now?: number } = {}): Set<number> {
+export function reservedPorts(options: { env?: Record<string, string | undefined>; root?: string; now?: number } = {}): Set<number> {
   return new Set(readPortReservations(options).map((reservation) => reservation.port));
 }
 
 /** The reservation covering a port, when there is one: what a failure message should name. */
 export function portReservation(
   port: number,
-  options: { env?: NodeJS.ProcessEnv; root?: string; now?: number } = {},
+  options: { env?: Record<string, string | undefined>; root?: string; now?: number } = {},
 ): PortReservation | undefined {
   return readPortReservations(options).find((reservation) => reservation.port === port);
 }

@@ -6,7 +6,7 @@ export function defaultXpodEnvPath({
   platform = process.platform,
   homeDir = os.homedir(),
 }: {
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
   platform?: NodeJS.Platform;
   homeDir?: string;
 } = {}): string {
@@ -21,7 +21,7 @@ export function defaultXpodEnvPath({
 
 export function resolveXpodEnvPath(
   explicitPath: string | undefined,
-  env: NodeJS.ProcessEnv = process.env,
+  env: Record<string, string | undefined> = process.env,
 ): string {
   return path.resolve(explicitPath || env.XPOD_ENV_FILE || defaultXpodEnvPath({ env }));
 }

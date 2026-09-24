@@ -65,14 +65,14 @@ export interface IngressPortDeps {
   identifyOccupants(port: number): string;
   readDeclaredOrigin(
     profile: IngressProfileLike,
-    options: { env: NodeJS.ProcessEnv; active: boolean },
+    options: { env: Record<string, string | undefined>; active: boolean },
   ): Promise<DeclaredOriginReadResult>;
   logger: IngressPortLogger;
 }
 
 export interface IngressPortRequest {
   mainPort: number;
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
   profiles?: readonly IngressProfileLike[];
   activeProfileId?: string;
   /** Service ports this run serves (gateway/CSS/API): never a valid tunnel origin. */
@@ -244,7 +244,7 @@ async function requireFree(port: number, label: string, deps: IngressPortDeps): 
 async function readInactiveConsoleDeclarations(input: {
   profiles: readonly IngressProfileLike[];
   active?: IngressProfileLike;
-  env: NodeJS.ProcessEnv;
+  env: Record<string, string | undefined>;
   deps: IngressPortDeps;
 }): Promise<IngressPortDeclaration[]> {
   const declarations: IngressPortDeclaration[] = [];

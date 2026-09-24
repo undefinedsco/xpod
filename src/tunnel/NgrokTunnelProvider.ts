@@ -19,7 +19,7 @@ export interface NgrokTunnelProviderOptions {
   /** ngrok executable path. */
   ngrokPath?: string;
   /** Environment used to resolve the client binary; injectable for tests. */
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
 
   /** ngrok local Agent API, used to discover generated dev domains. */
   agentApiUrl?: string;

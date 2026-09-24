@@ -34,7 +34,7 @@ export interface AiConnectionsRuntimeConfig {
 }
 
 export function sanitizeRuntimeEnv(
-  source: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  source: Record<string, string | undefined> | Record<string, string | undefined> = process.env,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(source)) {

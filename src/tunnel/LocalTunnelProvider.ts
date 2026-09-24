@@ -26,7 +26,7 @@ export interface LocalTunnelProviderOptions {
   /** cloudflared 可执行文件路径 (默认 'cloudflared') */
   cloudflaredPath?: string;
   /** Environment used to resolve the client binary; injectable for tests. */
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
 
   /** 等待代理发布的毫秒数；超时后状态为 failed，而不是"仍在连接" */
   connectTimeoutMs?: number;
