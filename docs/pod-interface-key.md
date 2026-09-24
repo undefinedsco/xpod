@@ -250,18 +250,19 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 
 ### 7.1 迁移顺序（每步都可运行，且不先删回退）
 
-现状：0.4.15 上线的 9 个 Pod 访问入口**全部**依赖 legacy owner vault。因此在替代能力通过验收前，任何一步都不得删除该回退，否则前台或后台能力立刻退化。顺序与"每步的验收证据"绑定：
+原则（2026-09-24 确认）：**API 只在用户在场的同步路径上工作——凭据随请求而来，API 不持久化 owner 凭据；异步任务自己管理凭据。**
+
+现状：0.4.15 上线的 9 个 Pod 访问入口**全部**依赖 legacy owner vault（`identity_pod_interface_key` + `storedKeyFetch`）。因此在替代能力通过验收前，任何一步都不得删除该回退，否则前台或后台能力立刻退化。顺序与"每步的验收证据"绑定：
 
 | 步 | 做什么 | 完成判据（验收） | 此时 legacy 状态 |
 | --- | --- | --- | --- |
 | 1 | **已完成**：收敛 token exchange / session factory；修直接 Bearer 的来源限制、DPoP key 生命周期、缓存隔离（§3.1） | 机器认证行（§8）：sk、直接 Bearer、服务器自持 key 的 DPoP 各自成功；错误 owner/proof/过期/缓存串用被拒 | 保留（唯一路径） |
-| 2 | 新增 host 交互适配器，迁移**前台** Chat、模型测试与交互 embedding（§3.2） | 普通浏览器行：已登录 + 已配置模型 + **无 sk、无 task binding** 的真实 Chat 与 embedding 成功 | 保留（后台仍用） |
-| 3 | `POST /api/ai/gateway/keys` 改为请求级 Pod fetch，不再持久化部署 owner 密钥（§4） | 登记成功、Pod 记录写入成功、`identity_pod_interface_key` 不再新增；旧记录仍可读 | 保留（迁移期只读） |
-| 4 | Runtime 侧凭证存储 + Agent 授权 + 任务绑定（pending/active、幂等投递、崩溃恢复，§4） | 授权状态行 + 任务执行行：pending 不执行、失败不留 active、重试/并发/轮换/撤销符合版本语义 | 保留 |
-| 5 | 后台入口逐个迁移：配额定时刷新、索引重建、chatkit 后台 run、Matrix/Reconciler（§3.3、7.2） | 每迁一个：该入口在无 API vault 的情况下完成一次真实执行；对应 legacy 调用点在同一提交内摘除 | 逐步缩小 |
-| 6 | 把 `identity_pod_interface_key` 的行**迁出**到任务层凭据存储（§7.4），验证后**删除 API 侧的表**，并移除 `storedKeyFetch` 与注册时 `saveKey` | 迁移逐行核对（owner/issuer/credential_id 一一对应）+ 旁路退场行 + 全量 §8 通过；迁移失败时保持只读可回滚 | 移除（API 侧不再持有任何 owner 长期凭据） |
+| 2 | **前台改为请求级凭据**：前台的 Pod 访问由调用方在请求里带凭据（浏览器为当前 WebID 准备并持有自己的 client credential；Pod 直读仍走 Session，§3.2 的 host 适配器是这条路的实现形态之一），API 不再用存储的 owner 密钥给前台兜底 | 普通浏览器行：登录 + 模型已配置的真实 Chat 与 embedding 成功，且全程 `identity_pod_interface_key` 不新增；无凭据的调用方拿到 `service_access_missing` 而不是空结果 | 前台已不依赖；后台仍用 |
+| 3 | **任务层凭据存储 + 显式授权**：Runtime 侧凭证表（§7.4，`sealed_secret` 按决策 6 加密）+ Agent 授权 + 任务绑定（pending/active、幂等投递、崩溃恢复，§4） | 授权状态行 + 任务执行行：pending 不执行、失败不留 active、重试/并发/轮换/撤销符合版本语义 | 保留（后台仍用） |
+| 4 | **后台入口逐个迁移**：配额定时刷新、索引重建、chatkit 后台 run、Matrix/Reconciler（§3.3、7.2） | 每迁一个：该入口在无 API vault 的情况下完成一次真实执行；对应 legacy 调用点在同一提交内摘除 | 逐步缩小 |
+| 5 | **收尾**：注册不再 `saveKey`；把 `identity_pod_interface_key` 的行迁出到任务层凭据存储；验证后删除 API 侧的表，并移除 `storedKeyFetch` | 迁移逐行核对（owner/issuer/credential_id 一一对应）+ 旁路退场行 + 全量 §8 通过；迁移失败时保持只读可回滚 | 移除（API 侧不再持有任何 owner 长期凭据） |
 
-约束：第 2、3 步完成前不得删除 legacy；第 5 步每个入口必须"先有替代验收、再摘调用点"；第 6 步前 `pod_interface_key_*` 诊断码仍需保留，因为迁移期它们仍是有效状态。
+约束：第 2 步只改前台，不动后台（后台此时仍靠存储的密钥）；第 3 步必须先于第 5 步，否则新用户的**后台**任务会没有密钥；第 4 步每个入口必须"先有替代验收、再摘调用点"；第 5 步前 `pod_interface_key_*` 诊断码仍需保留，因为迁移期它们仍是有效状态。
 
 ### 7.2 现有入口的目标归属
 
@@ -374,6 +375,7 @@ Inngest **原生不是密钥保管方**：它只持有自己的传输/信任密�
 | 3 | 任务权威存储 | **已定：Pod 资源为权威，Inngest 只承载引用与运行状态**（理由见 §7.3） | pending/active 与版本字段加在 Pod 任务资源上；Inngest 侧靠幂等 `executionKey` 重放 |
 | 4 | `caller_pod_access_unavailable` 是否拆分 | 一个 reason 承载"未认证"与"已认证但无出站能力" | 拆出 `caller_outbound_capability_missing`，兼容期保留旧码 + `details.capability` |
 | 5 | Runtime 打开 Pod 的运行态钥匙放哪 | **已定：放任务层自己的表**（`identity_task_credential` 草案见 §7.4），与 Inngest server 的表并列在同一套基础设施（cloud 同 Postgres、local 同 SQLite 目录），Inngest 只带引用与版本。密钥不进 Pod（自锁）、不进事件/step 数据（会进调试面） | 表结构按 §7.4 落库；`Agent` 授权仍写用户 Pod（决策 2）。**归属**：该存储只归任务层，API 不共用、不读；API 只传非秘密引用。边界靠独立 schema/表 + 独立 DB role（或独立库）强制，见 §7.4。这把钥匙是 Pod 之外唯一能开 Pod 的东西，因此存储访问控制即权限边界——见决策 6 |
+| 7 | API 是否持久化 owner 凭据 | **已定：不持久化。** API 只在用户在场的同步路径工作，凭据随请求而来（浏览器持有自己的 client credential，或调用方带 sk/适用 Bearer）；异步任务自己管理凭据（决策 5 的任务层表）。现状的 `identity_pod_interface_key` + `storedKeyFetch` 是"能力新、归属旧"的过渡物 | 按 §7.1 新顺序执行：前台先去依赖（第 2 步）→ 任务层存储（第 3 步）→ 后台入口迁移（第 4 步）→ 停写、迁行、删表（第 5 步） |
 | 6 | §7.4 的 `sealed_secret` 是否再用部署密钥加密 | **已定：(b) 加密，且只加密这一列。** 本表在 Pod 之外，按决策 1 的"Pod 是 Pod 内秘密的信任边界"并不覆盖它；DB 泄露或只读副本外流否则等于"可打开所有已登记的 Pod" | 第 4 步落表时实现：部署侧密钥来自 env/KMS（与密文分离），行内记 `sealed_secret_key_id`，支持轮换与旧行回退解密；密钥名与派生方式在该步定，并与 §7.5 的 Inngest 加密中间件共用同一份部署材料 |
 
 本文档修订本身未修改运行代码；其后 §7.1 第 1 步的实现在独立提交中落地（`SolidSessionFactory` 等，见 §3.1）。上述机器认证行证据为单元级；按本节的真实实例要求，`bun run test:integration` 与六层真实验收仍须在第 2 步之前补齐。
