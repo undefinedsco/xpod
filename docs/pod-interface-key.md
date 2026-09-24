@@ -306,14 +306,15 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | `issuer` | 签发该 credential 的 CSS issuer；换 issuer 不覆盖旧行，避免同名串用 |
 | `credential_id` | 稳定引用 id，任务绑定只引用它，不引用明文 |
 | `client_id` | CSS client id（非秘密） |
-| `sealed_secret` | 信封；**是否再加密见决策 6** |
+| `sealed_secret` | 信封；**按决策 6 用部署侧密钥（env/KMS）加密，只加密这一列** |
+| `sealed_secret_key_id` | 加密该行所用的部署密钥标识；轮换时旧行仍可解，新行用新 key |
 | `credential_version` | 轮换版本；绑定记录引用版本，版本不匹配即拒绝（§4） |
 | `status` | `active` / `revoked` / `expired`；撤销只改状态，不删行 |
 | `created_at` / `rotated_at` / `last_used_at` / `expires_at` | 轮换与审计 |
 
 约束与归属：
 
-- 表在 Pod 之外，因此它的访问控制就是"能开多少个 Pod"的边界——这决定了它是否需要独立加密（决策 6）；`Agent` 授权范围**不放这张表**，按决策 2 写在用户 Pod 里。
+- 表在 Pod 之外，因此它的访问控制就是"能开多少个 Pod"的边界。决策 6 已定：`sealed_secret` **必须**再用部署侧密钥（env/KMS）加密，且只加密这一列——这样"读到表"与"能开 Pod"是两件事，DB 泄露或只读副本外流不再直接等于拿到所有用户 Pod 的钥匙。加密材料与密文分离（密钥在 env/KMS，密文在库），行内记 `sealed_secret_key_id` 以支持轮换与旧行回退解密。`Agent` 授权范围**不放这张表**，按决策 2 写在用户 Pod 里。
 - **这张表归任务层，API 不共用**。共用一张表（哪怕约定"只有任务层引用"）等于 API 依然持有打开 Pod 的凭据，与第 1 节"API sidecar 不建通用长期 CSS credential vault"直接冲突。
 - 因此边界必须是**强制**的，而不是命名约定：任务层使用独立 schema/表 + 独立 DB role（或独立逻辑库；RC overlay 已有"独立 logical database/schema"的先例），local 模式给任务层单独的 SQLite 文件，不复用 identity 库。
 - 唯一消费者是后台执行；前台交互走 host Session，不读这份存储。API 需要触发后台工作时只传非秘密引用（`taskId` / `credentialRef` / `credentialVersion`），解析发生在任务层。
@@ -330,7 +331,7 @@ Inngest **原生不是密钥保管方**：它只持有自己的传输/信任密�
 | 通用 middleware 接口（本仓库已装 SDK 4.14.0 带 `middleware/dependencyInjection`、`middleware/logger`、`components/middleware`） | 可自定义序列化/加解密/依赖注入 | 需要自定义封装密钥解析时使用；不改变"只传引用"的默认设计 |
 | 自托管存储插件（Postgres/Redis/SQLite 目录，我们已在配置） | Inngest server 自己的数据存哪 | 只是"它自己的数据放哪"，不是应用秘密保管；与任务层凭据表并列但互不读写 |
 
-结论：**当前设计不需要这些口子**——事件只带 `credentialRef`/`credentialVersion`，密钥在任务层自有表、执行时解析（官方推荐模式）。若未来启用加密中间件，它的加密密钥与决策 6 的那把部署密钥可以是**同一份部署材料、两处用途**（启用前须单独验证：Inngest 侧仅存密文、本地可正确解密、fallback 密钥轮换可用；`@inngest/middleware-encryption` 目前**未安装**在本仓库，也未针对自托管 server 验证过）。
+结论：**当前设计不需要这些口子**——事件只带 `credentialRef`/`credentialVersion`，密钥在任务层自有表、执行时解析（官方推荐模式）。若未来启用加密中间件，它的加密密钥**就是**决策 6 那把部署密钥：同一份部署材料、两处用途（启用前须单独验证：Inngest 侧仅存密文、本地可正确解密、fallback 密钥轮换可用；`@inngest/middleware-encryption` 目前**未安装**在本仓库，也未针对自托管 server 验证过）。
 
 ## 8. 验收要求与证据
 
@@ -367,6 +368,6 @@ Inngest **原生不是密钥保管方**：它只持有自己的传输/信任密�
 | 3 | 任务权威存储 | **已定：Pod 资源为权威，Inngest 只承载引用与运行状态**（理由见 §7.3） | pending/active 与版本字段加在 Pod 任务资源上；Inngest 侧靠幂等 `executionKey` 重放 |
 | 4 | `caller_pod_access_unavailable` 是否拆分 | 一个 reason 承载"未认证"与"已认证但无出站能力" | 拆出 `caller_outbound_capability_missing`，兼容期保留旧码 + `details.capability` |
 | 5 | Runtime 打开 Pod 的运行态钥匙放哪 | **已定：放任务层自己的表**（`identity_task_credential` 草案见 §7.4），与 Inngest server 的表并列在同一套基础设施（cloud 同 Postgres、local 同 SQLite 目录），Inngest 只带引用与版本。密钥不进 Pod（自锁）、不进事件/step 数据（会进调试面） | 表结构按 §7.4 落库；`Agent` 授权仍写用户 Pod（决策 2）。**归属**：该存储只归任务层，API 不共用、不读；API 只传非秘密引用。边界靠独立 schema/表 + 独立 DB role（或独立库）强制，见 §7.4。这把钥匙是 Pod 之外唯一能开 Pod 的东西，因此存储访问控制即权限边界——见决策 6 |
-| 6 | §7.4 的 `sealed_secret` 是否再用部署密钥加密 | 按决策 1，Pod 内数据不再加密；但本表在 Pod 之外，DB 泄露即等于"可打开所有已登记的 Pod" | (a) 不加密：实现最简，靠独立 DB role 与网络隔离，风险写进威胁模型；(b) 用部署侧密钥（env/KMS）加密该列：多一个部署配置项，但把"读到表"与"能开 Pod"分开。**建议 (b)**，且只加密这一列；若将来启用 §7.5 的 Inngest 加密中间件，同一份部署密钥可复用于两处 |
+| 6 | §7.4 的 `sealed_secret` 是否再用部署密钥加密 | **已定：(b) 加密，且只加密这一列。** 本表在 Pod 之外，按决策 1 的"Pod 是 Pod 内秘密的信任边界"并不覆盖它；DB 泄露或只读副本外流否则等于"可打开所有已登记的 Pod" | 第 4 步落表时实现：部署侧密钥来自 env/KMS（与密文分离），行内记 `sealed_secret_key_id`，支持轮换与旧行回退解密；密钥名与派生方式在该步定，并与 §7.5 的 Inngest 加密中间件共用同一份部署材料 |
 
 本文档修订本身未修改运行代码；其后 §7.1 第 1 步的实现在独立提交中落地（`SolidSessionFactory` 等，见 §3.1）。上述机器认证行证据为单元级；按本节的真实实例要求，`bun run test:integration` 与六层真实验收仍须在第 2 步之前补齐。
