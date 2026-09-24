@@ -230,11 +230,20 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 
 外部 CSS 走标准 URL，不依赖本地 Gateway、identity 账户记录或 Xpod 专用头。issuer、WebID、Pod root、API URL 不应从彼此的字符串路径猜测；复用规范配置和 discovery，避免重复配置。数据层优先 drizzle-solid，验证标准资源与集合访问，不假定外部 CSS 提供 Xpod SPARQL/vector 扩展；库能力缺口先记录 issue。
 
+**支持范围（2026-09-24 确认）：只支持 CSS——随部署 CSS 与外部 CSS。** ESS/Inrupt PodSpaces、NSS 等不在范围内：它们没有 CSS 的 Account `client-credentials` 能力，"静默准备一把 API 可花的凭据"和 Xpod 扩展都无从谈起，浏览器直读之外的能力无法按同一口径验收。
+
+由此得到两类 CSS 的分工（这一条决定第 2 步的实现范围）：
+
+- **随部署 CSS（自家 Pod）**：浏览器与 Account API 同源，可以**静默**为当前 WebID 创建/持有一把 client credential，请求级携带给 API；API 代读、内部 transport、索引扩展都可用。
+- **外部 CSS**：浏览器侧的 Account 控制解析是**刻意 fail-closed 的同源校验**（`ui/src/utils/account-control-url.ts`：非当前 Xpod origin 一律拒绝），因此静默创建不可用。外部 CSS 的前台按"host 用当前会话直读 Pod、API 只做推理"工作；要用后台任务时，由用户显式导入一把该 issuer 的凭据，存任务层（决策 5/7）。API 代读外部 Pod 还要求按 issuer 解析 token endpoint（今天是单一 `config.cssTokenEndpoint`），这是外部 CSS 的待补项。
+
 外部 CSS 上的能力边界（实施与验收都以此为准，缺能力要显式报缺口而不是静默降级）：
 
 | 能力 | 随部署 CSS | 外部 CSS |
 | --- | --- | --- |
 | 标准 LDP/RDF 读写（drizzle-solid，资源与集合） | 支持 | 支持 |
+| 浏览器静默准备请求级 client credential（Account API，同源） | 支持 | **不支持**（同源 fail-closed）：改由 host 直读或用户显式导入 |
+| API 用调用方凭据代读 Pod | 支持 | 需按 issuer 解析 token endpoint（待补），且 loopback transport 不适用 |
 | 模型/凭证文档（由 host 写 Pod，路径来自 models） | 支持 | 支持（标准资源写入） |
 | 内部 transport（`HostedPodRoute` + canonical 头） | 支持 | 不适用（直接用标准 URL） |
 | FTS / VEC 索引与检索（`rdfEngine`、`rdfSearchIndexingService` 扩展） | 支持 | **不支持**：不得用 embeddings 成功掩盖索引缺失 |
@@ -375,6 +384,7 @@ Inngest **原生不是密钥保管方**：它只持有自己的传输/信任密�
 | 3 | 任务权威存储 | **已定：Pod 资源为权威，Inngest 只承载引用与运行状态**（理由见 §7.3） | pending/active 与版本字段加在 Pod 任务资源上；Inngest 侧靠幂等 `executionKey` 重放 |
 | 4 | `caller_pod_access_unavailable` 是否拆分 | 一个 reason 承载"未认证"与"已认证但无出站能力" | 拆出 `caller_outbound_capability_missing`，兼容期保留旧码 + `details.capability` |
 | 5 | Runtime 打开 Pod 的运行态钥匙放哪 | **已定：放任务层自己的表**（`identity_task_credential` 草案见 §7.4），与 Inngest server 的表并列在同一套基础设施（cloud 同 Postgres、local 同 SQLite 目录），Inngest 只带引用与版本。密钥不进 Pod（自锁）、不进事件/step 数据（会进调试面） | 表结构按 §7.4 落库；`Agent` 授权仍写用户 Pod（决策 2）。**归属**：该存储只归任务层，API 不共用、不读；API 只传非秘密引用。边界靠独立 schema/表 + 独立 DB role（或独立库）强制，见 §7.4。这把钥匙是 Pod 之外唯一能开 Pod 的东西，因此存储访问控制即权限边界——见决策 6 |
+| 8 | Pod provider 支持范围 | **已定：只支持 CSS（随部署 CSS 与外部 CSS）。** ESS/NSS 不在范围内 | 第 2 步按"自家=静默请求级凭据 / 外部=host 直读 + 显式导入"分别落地；外部 CSS 的 API 代读需补按 issuer 解析 token endpoint |
 | 7 | API 是否持久化 owner 凭据 | **已定：不持久化。** API 只在用户在场的同步路径工作，凭据随请求而来（浏览器持有自己的 client credential，或调用方带 sk/适用 Bearer）；异步任务自己管理凭据（决策 5 的任务层表）。现状的 `identity_pod_interface_key` + `storedKeyFetch` 是"能力新、归属旧"的过渡物 | 按 §7.1 新顺序执行：前台先去依赖（第 2 步）→ 任务层存储（第 3 步）→ 后台入口迁移（第 4 步）→ 停写、迁行、删表（第 5 步） |
 | 6 | §7.4 的 `sealed_secret` 是否再用部署密钥加密 | **已定：(b) 加密，且只加密这一列。** 本表在 Pod 之外，按决策 1 的"Pod 是 Pod 内秘密的信任边界"并不覆盖它；DB 泄露或只读副本外流否则等于"可打开所有已登记的 Pod" | 第 4 步落表时实现：部署侧密钥来自 env/KMS（与密文分离），行内记 `sealed_secret_key_id`，支持轮换与旧行回退解密；密钥名与派生方式在该步定，并与 §7.5 的 Inngest 加密中间件共用同一份部署材料 |
 
