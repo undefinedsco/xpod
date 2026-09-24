@@ -29,6 +29,7 @@ import { quotaSnapshotId, quotaSnapshotResource } from '@undefineds.co/models';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
+import { createTestSolidSessions } from '../../helpers/solidSessions';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
@@ -1617,7 +1618,10 @@ describe('ProviderQuotaAdapters', () => {
     const repository = new PodQuotaSnapshotRepository({
       podAccess: new OwnerPodAccess({
         keys: keys as unknown as PodInterfaceKeyStore,
-        tokenEndpoint: 'https://id.example/alice/.oidc/token',
+        sessions: createTestSolidSessions({
+          tokenEndpoint: 'https://id.example/alice/.oidc/token',
+          fetch: callerFetch as unknown as typeof fetch,
+        }),
         fetch: callerFetch as unknown as typeof fetch,
       }),
       dbFactory: async ({ fetch: podFetch }) => {

@@ -10,6 +10,7 @@ import {
 } from '../../../src/api/ai-gateway/models/PodModelSelectionRepository';
 import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
 import type { PodInterfaceKeyStore } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
+import { createTestSolidSessions } from '../../helpers/solidSessions';
 
 const ALICE = 'https://pod.example/alice/profile/card#me';
 const BOB = 'https://pod.example/bob/profile/card#me';
@@ -158,7 +159,7 @@ function ownerPodAccess(
 ): OwnerPodAccess {
   return new OwnerPodAccess({
     keys: { read } as unknown as PodInterfaceKeyStore,
-    tokenEndpoint: 'https://pod.example/.oidc/token',
+    sessions: createTestSolidSessions({ tokenEndpoint: 'https://pod.example/.oidc/token' }),
   });
 }
 

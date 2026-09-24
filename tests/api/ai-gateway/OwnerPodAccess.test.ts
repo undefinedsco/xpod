@@ -11,6 +11,7 @@ import type {
   PodInterfaceKeyGrant,
 } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 import type { SolidAuthContext } from '../../../src/api/auth/AuthContext';
+import { createTestSolidSessions } from '../../helpers/solidSessions';
 
 const OWNER = 'https://pod.example/alice/profile/card#me';
 const OTHER_OWNER = 'https://pod.example/bob/profile/card#me';
@@ -109,8 +110,11 @@ function createHarness(options: {
   const keys = new FakeKeyStore(options.stored);
   const access = new OwnerPodAccess({
     keys,
-    tokenEndpoint: TOKEN_ENDPOINT,
-    publicBaseUrl: 'https://pod.example',
+    sessions: createTestSolidSessions({
+      tokenEndpoint: TOKEN_ENDPOINT,
+      publicBaseUrl: 'https://pod.example',
+      fetch: fetchImpl,
+    }),
     ...(options.route ? { route: options.route } : {}),
     fetch: fetchImpl,
   });

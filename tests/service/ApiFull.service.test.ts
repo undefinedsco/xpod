@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
 import { MultiAuthenticator } from '../../src/api/auth/MultiAuthenticator';
 import { ClientCredentialsAuthenticator } from '../../src/api/auth/ClientCredentialsAuthenticator';
+import type { SolidSessionFactory } from '../../src/api/auth/SolidSessionFactory';
 import { registerEdgeNodeSignalRoutes } from '../../src/api/handlers/EdgeNodeSignalHandler';
 import { registerNodeRoutes } from '../../src/api/handlers/NodeHandler';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
@@ -35,18 +36,18 @@ describe('API Full Service', () => {
     const db = getIdentityDatabase('sqlite::memory:');
     repo = new EdgeNodeRepository(db);
 
-    const clientAuth = new ClientCredentialsAuthenticator({
-      tokenEndpoint: 'http://localhost:9999/token'
-    });
-
-    // Mock the token exchange to bypass external HTTP
-    // @ts-ignore
-    clientAuth.exchangeForToken = async () => ({
-      success: true,
-      token: 'fake-token',
-      webId: 'https://bot#me',
-      expiresAt: new Date(Date.now() + 3600000)
-    });
+    // A stub session factory keeps the exchange offline; the authenticator's own behaviour is
+    // covered by its unit test against the real factory.
+    const sessions = {
+      session: async () => ({
+        accessToken: 'fake-token',
+        tokenType: 'Bearer' as const,
+        webId: 'https://bot#me',
+        expiresAt: Date.now() + 3600_000,
+      }),
+      invalidate: () => undefined,
+    } as unknown as SolidSessionFactory;
+    const clientAuth = new ClientCredentialsAuthenticator({ sessions });
 
     const multiAuth = new MultiAuthenticator({
       authenticators: [mockSolidAuth as any, clientAuth]

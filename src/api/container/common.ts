@@ -17,6 +17,7 @@ import { AccountRoleRepository } from '../../identity/drizzle/AccountRoleReposit
 import { ServiceTokenRepository } from '../../identity/drizzle/ServiceTokenRepository';
 import { LocalSetupServiceTokenRepository } from '../../setup/LocalSetupServiceTokenRepository';
 import { SolidTokenAuthenticator } from '../auth/SolidTokenAuthenticator';
+import { SolidSessionFactory } from '../auth/SolidSessionFactory';
 import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthenticator';
 import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
 import { ServiceTokenAuthenticator } from '../auth/ServiceTokenAuthenticator';
@@ -194,14 +195,20 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    ownerPodAccess: asFunction(({ config, db }: ApiContainerCradle) => {
+    solidSessions: asFunction(({ config }: ApiContainerCradle) => {
+      return new SolidSessionFactory({
+        tokenEndpoint: config.cssTokenEndpoint,
+        publicBaseUrl: config.solidBaseUrl,
+      });
+    }).singleton(),
+
+    ownerPodAccess: asFunction(({ config, db, solidSessions }: ApiContainerCradle) => {
       return new OwnerPodAccess({
         keys: new PodInterfaceKeyStore({
           repository: new PodInterfaceKeyRepository(db),
           vault: credentialVaultForConfig(config),
         }),
-        tokenEndpoint: config.cssTokenEndpoint,
-        publicBaseUrl: config.solidBaseUrl,
+        sessions: solidSessions,
         route: resolveHostedPodRoute({
           canonicalBaseUrl: config.solidBaseUrl,
           // API_HOST is the address the runtime bound its services to; XPOD_MAIN_PORT is the
@@ -546,6 +553,7 @@ export function registerCommonServices(
       serviceTokenRepo,
       invocationTokenCodec,
       gatewayAccessKeyRepository,
+      solidSessions,
       config,
     }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
@@ -557,8 +565,7 @@ export function registerCommonServices(
       });
 
       const clientCredAuthenticator = new ClientCredentialsAuthenticator({
-        tokenEndpoint: config.cssTokenEndpoint,
-        publicBaseUrl: config.solidBaseUrl,
+        sessions: solidSessions,
       });
 
       const nodeTokenAuthenticator = new NodeTokenAuthenticator({

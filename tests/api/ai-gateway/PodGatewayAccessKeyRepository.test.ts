@@ -26,6 +26,7 @@ import type {
   PodInterfaceKeyStore,
 } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 import '../../../src/runtime/configure-drizzle-solid';
+import { createTestSolidSessions } from '../../helpers/solidSessions';
 
 type GatewayAccessKeyTestDb = Awaited<ReturnType<NonNullable<PodGatewayAccessKeyRepositoryOptions['dbFactory']>>>;
 
@@ -597,7 +598,10 @@ function ownerPodAccess(
 ): OwnerPodAccess {
   return new OwnerPodAccess({
     keys: { read } as unknown as PodInterfaceKeyStore,
-    tokenEndpoint: 'https://pod.example/.oidc/token',
+    sessions: createTestSolidSessions({
+      tokenEndpoint: 'https://pod.example/.oidc/token',
+      fetch: upstream,
+    }),
     fetch: upstream,
   });
 }

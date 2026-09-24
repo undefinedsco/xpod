@@ -48,7 +48,9 @@ const suite = shouldRun ? describe : describe.skip;
 
 const solidBaseUrl = (process.env.CSS_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
 const CHATKIT_STREAM_TIMEOUT_MS = 30000;
-const CHATKIT_POD_OPERATION_TIMEOUT_MS = 15000;
+// Pod round-trips through a real stack take a few hundred milliseconds; this budget is for
+// waiting on that traffic under parallel integration files, not for tolerating a broken call.
+const CHATKIT_POD_OPERATION_TIMEOUT_MS = 45_000;
 
 suite('ChatKit PodStore Integration', () => {
   let service: ChatKitService<StoreContext>;

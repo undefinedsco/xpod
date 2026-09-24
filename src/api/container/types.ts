@@ -7,6 +7,7 @@
 import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
+import type { SolidSessionFactory } from '../auth/SolidSessionFactory';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { VercelChatService } from '../service/VercelChatService';
@@ -245,6 +246,13 @@ export interface ApiContainerCradle {
   // 仓库
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
+  /**
+   * Exchanges Solid client credentials for tokens, once per credential.
+   *
+   * Shared by inbound authentication and outbound Pod access so one credential yields one
+   * exchange and keeps the key its token is bound to.
+   */
+  solidSessions: SolidSessionFactory;
   ownerPodAccess: OwnerPodAccess;
   invocationTokenCodec?: InvocationTokenCodec;
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;

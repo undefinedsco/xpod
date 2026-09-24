@@ -1,42 +1,15 @@
 import type { IncomingMessage } from 'node:http';
-import { createHash } from 'node:crypto';
-import {
-  createDpopHeader,
-  generateDpopKeyPair,
-} from '@inrupt/solid-client-authn-core';
 import { getLoggerFor } from 'global-logger-factory';
 import type { Authenticator, AuthResult } from './Authenticator';
-import { resolveTokenEndpointRoute } from './TokenEndpointRoute';
 import type { SolidAuthContext } from './AuthContext';
-import { extractAuthoritativeWebIdFromTokenResponse } from './TokenIdentity';
-
-/**
- * Cache keys bind the issuer and complete credentials, without storing secrets in keys.
- */
-export interface TokenCache {
-  get(credentialKey: string): Promise<{
-    token: string;
-    tokenType?: 'Bearer' | 'DPoP';
-    webId: string;
-    expiresAt: Date;
-  } | undefined>;
-  set(
-    credentialKey: string,
-    token: string,
-    webId: string,
-    expiresAt: Date,
-    tokenType?: 'Bearer' | 'DPoP',
-  ): Promise<void>;
-}
+import { SolidSessionError, type SolidSession, type SolidSessionFactory } from './SolidSessionFactory';
 
 export interface ClientCredentialsAuthenticatorOptions {
-  tokenCache?: TokenCache;
   /**
-   * CSS token endpoint URL
+   * Shared Solid session factory. Inbound bearer credentials and outbound Pod access resolve to
+   * the same session, so a credential is exchanged for a token only once.
    */
-  tokenEndpoint: string;
-  /** Canonical CSS URL represented by an internal token endpoint. */
-  publicBaseUrl?: string;
+  sessions: SolidSessionFactory;
 }
 
 /**
@@ -52,17 +25,10 @@ export interface ClientCredentialsAuthenticatorOptions {
  */
 export class ClientCredentialsAuthenticator implements Authenticator {
   private readonly logger = getLoggerFor(this);
-  private readonly tokenCache?: TokenCache;
-  private readonly tokenEndpoint: string;
-  private readonly tokenEndpointHeaders: Record<string, string>;
-  private readonly tokenEndpointProofUrl: string;
+  private readonly sessions: SolidSessionFactory;
 
   public constructor(options: ClientCredentialsAuthenticatorOptions) {
-    this.tokenCache = options.tokenCache;
-    const route = resolveTokenEndpointRoute(options.tokenEndpoint, options.publicBaseUrl);
-    this.tokenEndpoint = route.url;
-    this.tokenEndpointHeaders = route.headers;
-    this.tokenEndpointProofUrl = route.proofUrl;
+    this.sessions = options.sessions;
   }
 
   public canAuthenticate(request: IncomingMessage): boolean {
@@ -122,128 +88,39 @@ export class ClientCredentialsAuthenticator implements Authenticator {
         return { success: false, error: 'Invalid client credentials wrapper: must start with sk-' };
       }
 
-      const credentialKey = createHash('sha256')
-        .update(JSON.stringify([this.tokenEndpoint, this.tokenEndpointProofUrl, clientId, clientSecret]))
-        .digest('hex');
-      // A client ID alone is public identification, not authentication evidence.
-      if (this.tokenCache) {
-        const cached = await this.tokenCache.get(credentialKey);
-        if (cached && cached.expiresAt > new Date()) {
-          this.logger.debug(`Using cached token for ${clientId.slice(0, 8)}...`);
-          return {
-            success: true,
-            context: {
-              type: 'solid',
-              webId: cached.webId,
-              accountId: cached.webId,
-              clientId,
-              clientSecret,
-              accessToken: cached.token,
-              tokenType: cached.tokenType ?? 'Bearer',
-              viaApiKey: true,
-            },
-          };
-        }
+      // One exchange per credential: the factory keeps the token together with the DPoP key it
+      // is bound to, so outbound Pod access reuses this session instead of exchanging again.
+      let session: SolidSession;
+      try {
+        session = await this.sessions.session({ clientId, clientSecret });
+      } catch (error) {
+        const status = error instanceof SolidSessionError ? error.status : undefined;
+        const unavailable = status === undefined || status >= 500;
+        this.logger.warn(`Client credentials exchange failed for ${clientId.slice(0, 8)}...: ${String(error)}`);
+        return unavailable
+          ? { success: false, error: 'Token exchange temporarily unavailable', category: 'service_unavailable', statusCode: 503, cause: error }
+          : { success: false, error: `Token exchange failed: ${status ?? 'unknown'}`, cause: error };
       }
-
-      // Exchange for token at CSS endpoint
-      this.logger.debug(`Exchanging client credentials at ${this.tokenEndpoint}`);
-      const tokenResult = await this.exchangeForToken(clientId, clientSecret);
-      this.logger.debug(`Token exchange result: success=${tokenResult.success}, webId=${tokenResult.webId}, error=${tokenResult.error}`);
-      
-      if (!tokenResult.success || !tokenResult.webId || !tokenResult.token) {
-        return { success: false, error: tokenResult.error || 'Token exchange failed' };
-      }
-
-      // Cache the token
-      if (this.tokenCache && tokenResult.expiresAt) {
-        await this.tokenCache.set(
-          credentialKey,
-          tokenResult.token!,
-          tokenResult.webId,
-          tokenResult.expiresAt,
-          tokenResult.tokenType,
-        );
+      if (!session.webId) {
+        return { success: false, error: 'Could not determine webId from token response' };
       }
 
       const context: SolidAuthContext = {
         type: 'solid',
-        webId: tokenResult.webId,
-        accountId: tokenResult.webId,
+        webId: session.webId,
+        accountId: session.webId,
         clientId,
         clientSecret,
-        accessToken: tokenResult.token,
-        tokenType: tokenResult.tokenType ?? 'Bearer',
+        accessToken: session.accessToken,
+        tokenType: session.tokenType,
         viaApiKey: true,
       };
 
-      this.logger.debug(`Authenticated client credentials for webId: ${tokenResult.webId}`);
+      this.logger.debug(`Authenticated client credentials for webId: ${session.webId}`);
       return { success: true, context };
     } catch (error) {
       this.logger.error(`Client credentials authentication error: ${error}`);
       return { success: false, error: 'Authentication failed' };
-    }
-  }
-
-  private async exchangeForToken(clientId: string, clientSecret: string): Promise<{
-    success: boolean;
-    token?: string;
-    tokenType?: 'Bearer' | 'DPoP';
-    webId?: string;
-    expiresAt?: Date;
-    error?: string;
-  }> {
-    try {
-      const dpopKey = await generateDpopKeyPair();
-      const response = await fetch(this.tokenEndpoint, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`, 'utf8').toString('base64')}`,
-          DPoP: await createDpopHeader(this.tokenEndpointProofUrl, 'POST', dpopKey),
-          ...this.tokenEndpointHeaders,
-        },
-        body: new URLSearchParams({
-          grant_type: 'client_credentials',
-          scope: 'webid',
-        }),
-      });
-
-      if (!response.ok) {
-        const error = await response.text();
-        this.logger.warn(`Token exchange failed: ${response.status} ${error}`);
-        return { success: false, error: `Token exchange failed: ${response.status}` };
-      }
-
-      const data = await response.json() as {
-        access_token: string;
-        expires_in?: number;
-        token_type: string;
-        webid?: string;  // CSS returns webid in response
-      };
-
-      // Extract webId from token response or decode from JWT
-      const webId = extractAuthoritativeWebIdFromTokenResponse(data);
-
-      if (!webId) {
-        return { success: false, error: 'Could not determine webId from token response' };
-      }
-
-      const expiresAt = data.expires_in
-        ? new Date(Date.now() + data.expires_in * 1000 - 60000) // 1 min buffer
-        : new Date(Date.now() + 3600000); // Default 1 hour
-
-      return {
-        success: true,
-        token: data.access_token,
-        tokenType: data.token_type?.toUpperCase() === 'DPOP' ? 'DPoP' : 'Bearer',
-        webId,
-        expiresAt,
-      };
-    } catch (error) {
-      this.logger.error(`Token exchange error: ${error}`);
-      return { success: false, error: 'Token exchange failed' };
     }
   }
 }
