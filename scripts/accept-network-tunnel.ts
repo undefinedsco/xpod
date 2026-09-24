@@ -2080,6 +2080,10 @@ async function main(): Promise<void> {
     }
   }
   const reservations = reserveNetworkPorts(options);
+  // The set every dynamic leg steers by: this run's console-bound ports plus whatever another
+  // group published. A console-bound leg ignores it (its number comes from the console), so a
+  // leg never reserves itself out of its own port.
+  const reservedNow = reservedPorts();
 
   // Every leg's port decision, so a run can explain a "5737 vs 3303" mismatch afterwards.
   const legRecords: LegPortRecord[] = [];
