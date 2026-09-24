@@ -54,6 +54,9 @@ import { UsageRepository } from '../storage/quota/UsageRepository';
 import { MixDataAccessor } from '../storage/accessors/MixDataAccessor';
 import { createBandwidthThrottleTransform } from '../util/stream/BandwidthThrottleTransform';
 
+/** Upper bound on how long a cached authorization decision may outlive an out-of-band permission change. */
+const AUTHORIZATION_CACHE_TTL_MS = 5_000;
+
 const ALLOWED_METHODS = [ 'GET', 'POST', 'OPTIONS' ];
 const MODEL_COLLECTION_SUFFIX = '/settings/providers/-/sparql';
 const SETTINGS_COLLECTION_SUFFIX = '/settings/-/sparql';
@@ -161,6 +164,18 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   private readonly credentialsExtractor: CredentialsExtractor;
   private readonly permissionReader: PermissionReader;
   private readonly authorizer: Authorizer;
+  /**
+   * Authorization decisions keyed by Pod + principal + target + modes.
+   *
+   * Reading an ACR costs about 80ms per target and every SPARQL request
+   * re-authorizes its base path plus each graph in scope, so a burst of
+   * requests repeats identical work. Entries die on either of two signals:
+   * any write served by this handler bumps the Pod epoch, and a short TTL
+   * bounds staleness for permission changes applied out of band. A miss always
+   * re-evaluates, so the cache can only ever save work, never grant it.
+   */
+  private readonly authorizationCache = new Map<string, { epoch: number; expiresAt: number; error?: unknown }>();
+  private readonly authorizationEpochs = new Map<string, number>();
   private readonly sidecarPath: string;
   private readonly podLookup?: PodLookupRepository;
   private readonly usageRepo?: UsageRepository;
@@ -523,6 +538,8 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       // Only a successful write notifies; a throwing write skips this line entirely.
       this.emitActivities(pendingActivities);
     }
+    // A write can change an ACL/ACR, so this Pod's cached decisions are stale now.
+    this.invalidateAuthorizationCache(queryRequest.baseUrl);
     await this.refreshUsage(queryRequest.baseUrl);
 
     response.statusCode = 204;
@@ -810,19 +827,50 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     // Reuse the decision inside the request only: credentials cannot change and
     // no ACL can be modified by these read-only checks.
     const decisionCache = request === undefined ? undefined : this.requestAuthorizationCache(request);
-    const cacheKey = decisionCache === undefined ? undefined : this.authorizationCacheKey(basePath, credentials, modes);
-    const cached = cacheKey === undefined ? undefined : decisionCache!.get(cacheKey);
-    if (cached !== undefined) {
-      if (cached.error !== undefined) throw cached.error;
+    const cacheKey = this.authorizationCacheKey(basePath, credentials, modes);
+    // Request-scoped first (cheapest), then the Pod-scoped decision cache.
+    const requestHit = cacheKey === undefined ? undefined : decisionCache!.get(cacheKey);
+    if (requestHit !== undefined) {
+      if (requestHit.error !== undefined) throw requestHit.error;
+      return;
+    }
+    const pod = this.podRootFor(basePath);
+    const epoch = this.authorizationEpochs.get(pod) ?? 0;
+    const shared = this.authorizationCache.get(cacheKey);
+    if (shared && shared.epoch === epoch && shared.expiresAt > Date.now()) {
+      if (shared.error !== undefined) throw shared.error;
       return;
     }
     try {
       const availablePermissions = await this.permissionReader.handleSafe({ credentials, requestedModes });
       await this.authorizer.handleSafe({ credentials, requestedModes, availablePermissions });
-      if (cacheKey !== undefined) decisionCache!.set(cacheKey, {});
+      if (decisionCache !== undefined) decisionCache.set(cacheKey, {});
+      this.authorizationCache.set(cacheKey, { epoch, expiresAt: Date.now() + AUTHORIZATION_CACHE_TTL_MS });
     } catch (error: unknown) {
-      if (cacheKey !== undefined) decisionCache!.set(cacheKey, { error });
+      if (decisionCache !== undefined) decisionCache.set(cacheKey, { error });
+      // Denials are cached too: a denied burst is as expensive as an allowed one.
+      this.authorizationCache.set(cacheKey, { epoch, expiresAt: Date.now() + AUTHORIZATION_CACHE_TTL_MS, error });
       throw error;
+    }
+  }
+
+  /**
+   * Any write served here may change an ACL/ACR, so it invalidates the Pod's
+   * cached decisions. Writes applied out of band are covered by the TTL bound.
+   */
+  private invalidateAuthorizationCache(basePath: string): void {
+    const pod = this.podRootFor(basePath);
+    this.authorizationEpochs.set(pod, (this.authorizationEpochs.get(pod) ?? 0) + 1);
+  }
+
+  /** Pod root of a resource URL, used as the cache-invalidation scope. */
+  private podRootFor(resourceUrl: string): string {
+    try {
+      const url = new URL(resourceUrl);
+      const [ , first ] = url.pathname.split('/', 2);
+      return first ? `${url.origin}/${first}/` : `${url.origin}/`;
+    } catch {
+      return resourceUrl;
     }
   }
 

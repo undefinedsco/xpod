@@ -1349,3 +1349,74 @@ describe('SubgraphSparqlHttpHandler', () => {
     });
   });
 });
+
+describe('SubgraphSparqlHttpHandler authorization decision cache', () => {
+  let handler: SubgraphSparqlHttpHandler;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockQueryEngine.listGraphs.mockResolvedValue(new Set());
+    mockQueryEngine.queryBindings.mockResolvedValue((async function*() { /* empty page */ })());
+    handler = new SubgraphSparqlHttpHandler(
+      mockQueryEngine as any,
+      mockCredentialsExtractor as any,
+      mockPermissionReader as any,
+      mockAuthorizer as any,
+      {},
+    );
+  });
+
+  async function select(): Promise<HttpResponse> {
+    const request = createMockRequest(`/alice/-/sparql?query=${encodeURIComponent('SELECT * WHERE { ?s ?p ?o }')}`);
+    const response = createMockResponse();
+    await handler.handle({ request, response });
+    return response;
+  }
+
+  async function postUpdate(update: string): Promise<void> {
+    const request = createMockRequest('/alice/-/sparql', 'POST', { 'content-type': 'application/sparql-update' });
+    let dataCallback: (chunk: string) => void;
+    let endCallback: () => void;
+    (request as any).on = vi.fn((event: string, cb: any) => {
+      if (event === 'data') dataCallback = cb;
+      if (event === 'end') endCallback = cb;
+    });
+    const pending = handler.handle({ request, response: createMockResponse() });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    dataCallback!(update);
+    endCallback!();
+    await pending;
+  }
+
+  it('reuses one authorization decision across repeated requests', async () => {
+    await select();
+    const afterFirst = mockPermissionReader.handleSafe.mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(0);
+    await select();
+    await select();
+    // Every request would otherwise re-read the ACR chain for the same target.
+    expect(mockPermissionReader.handleSafe.mock.calls.length).toBe(afterFirst);
+  });
+
+  it('re-authorizes after a write, because a write can change an ACL', async () => {
+    await select();
+    const afterSelect = mockPermissionReader.handleSafe.mock.calls.length;
+    await postUpdate('INSERT DATA { <https://example.org/s> <https://example.org/p> <https://example.org/o> }');
+    const afterWrite = mockPermissionReader.handleSafe.mock.calls.length;
+    expect(afterWrite).toBeGreaterThan(afterSelect);
+    await select();
+    expect(mockPermissionReader.handleSafe.mock.calls.length).toBeGreaterThan(afterWrite);
+  });
+
+  it('re-reads after the write instead of serving a cached allow', async () => {
+    await select();
+    const beforeWrite = mockPermissionReader.handleSafe.mock.calls.length;
+    await postUpdate('INSERT DATA { <https://example.org/s> <https://example.org/p> <https://example.org/o> }');
+    // The write itself re-authorizes, and the next read must not reuse the
+    // pre-write decision: revoke and confirm the denial is observed.
+    mockPermissionReader.handleSafe.mockRejectedValueOnce(new ForbiddenHttpError('revoked'));
+    // The handler answers denials itself, so assert on the response status.
+    expect((await select()).statusCode).toBe(403);
+    expect(mockPermissionReader.handleSafe.mock.calls.length).toBeGreaterThan(beforeWrite + 1);
+  });
+});
