@@ -340,6 +340,10 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | `status` | `active` / `revoked` / `expired`；撤销只改状态，不删行 |
 | `created_at` / `rotated_at` / `last_used_at` / `expires_at` | 轮换与审计 |
 
+**落地（第 3 步第 1 片，2026-09-24）**：`src/api/tasks/TaskCredentialStore.ts` 按上表实现，`src/api/tasks/TaskCredentialSchema.ts` 定义 `task_credential` 表（sqlite 与 pg 两套），`src/api/tasks/TaskCredentialDatabase.ts` 负责归属：显式 `CSS_TASK_DB_URL` 优先；SQLite 部署默认落在 identity 库**同目录的 `tasks.sqlite`**（独立文件，泄露其一不牵连另一）；PostgreSQL 目前仍复用同一 server 的独立连接，**独立 role/schema 属部署待办**（不在代码里猜）。
+
+语义要点：`grant` 默认 `pending`（不执行），`activate` 后才可用；`rotate` 递增 `credential_version`，旧绑定版本不匹配即拒绝；`revoke` 只改状态留行；过期在 `lease` 时判定并落 `expired`；同一 `credentialRef` + 同密钥的重复 `grant` 视为幂等（不涨版本），换 owner/issuer 直接拒绝。`lease` 校验 owner、状态、版本与有效期，并按需记录 `last_used_at`。
+
 约束与归属：
 
 - 表在 Pod 之外，因此它的访问控制就是"能开多少个 Pod"的边界。决策 6 已定：`sealed_secret` **必须**再用部署侧密钥（env/KMS）加密，且只加密这一列——这样"读到表"与"能开 Pod"是两件事，DB 泄露或只读副本外流不再直接等于拿到所有用户 Pod 的钥匙。加密材料与密文分离（密钥在 env/KMS，密文在库），行内记 `sealed_secret_key_id` 以支持轮换与旧行回退解密。`Agent` 授权范围**不放这张表**，按决策 2 写在用户 Pod 里。

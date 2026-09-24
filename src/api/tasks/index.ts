@@ -23,6 +23,32 @@ export {
   type TaskServiceOptions,
 } from './TaskService';
 export {
+  getTaskCredentialDatabase,
+  resolveTaskCredentialDatabaseUrl,
+  resetTaskCredentialDatabases,
+  type TaskCredentialDatabase,
+} from './TaskCredentialDatabase';
+export {
+  TASK_CREDENTIAL_ENCRYPTION_FAILED,
+  TASK_CREDENTIAL_NOT_ACTIVE,
+  TASK_CREDENTIAL_NOT_FOUND,
+  TASK_CREDENTIAL_OWNER_MISMATCH,
+  TASK_CREDENTIAL_VERSION_CONFLICT,
+  TaskCredentialStore,
+  type GrantTaskCredentialInput,
+  type TaskCredentialLease,
+  type TaskCredentialRef,
+  type TaskCredentialStatus,
+  type TaskCredentialStoreOptions,
+  type TaskCredentialSummary,
+} from './TaskCredentialStore';
+export {
+  ensureTaskCredentialTables,
+  taskCredentialSchema,
+  taskCredentialsPg,
+  taskCredentialsSqlite,
+} from './TaskCredentialSchema';
+export {
   TASK_AUTH_CREDENTIAL_SERVICE,
   TaskAuthBindingKind,
   TaskAuthBindingService,
