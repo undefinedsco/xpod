@@ -55,12 +55,14 @@ import {
 import { loginWithClientCredentials, setupAccount, type AccountSetup } from '../tests/integration/helpers/solidAccount';
 
 /**
- * The Gateway port of the candidate under test.
+ * Two different numbers, and never the same one.
  *
- * It is the runtime's own local port - the number the product shows and the user
- * copies into a provider console - because a console-owned tunnel (Cloudflare
- * named, Sakura, frp) forwards to the port written there. A harness-specific
- * constant would make the acceptance pass on a port no real user ever fills in.
+ * A candidate's own port (`candidatePort`, and each leg's own) is its *Gateway*: the runtime's
+ * local port, dynamic so several sessions can run side by side. The number a provider console
+ * forwards to is a *fixed* parameter of a leg, and it is pinned as that candidate's ingress
+ * listener through `XPOD_GATEWAY_INGRESS_PORT`. The runtime refuses to serve both roles on one
+ * port, and a tunnel that reached the Gateway would land on the operator surface this matrix
+ * exists to protect - so a console-bound leg takes a dynamic Gateway and pins only the ingress.
  */
 
 
@@ -170,23 +172,96 @@ export interface LegPortDecision {
   leg: string;
   policy: LegPortPolicy;
   ok: boolean;
-  /** The port the leg will use (a console-bound leg only has one when it is free). */
+  /** The port the leg's candidate Gateway listens on. Dynamic for every policy. */
   port?: number;
   requestedPort?: number;
+  /** The port a provider console declares, for a console-bound leg. */
   consolePort?: number;
+  /** The port pinned as the candidate's tunnel ingress listener, for a console-bound leg. */
+  ingressPort?: number;
+  ingressPinned?: boolean;
   detail: string;
 }
 
 /**
- * Decides one leg's port.
+ * The number a console forwards to is the candidate's *ingress* listener, never its Gateway.
+ *
+ * Conflating the two is not a style question. The runtime refuses to start when the pinned
+ * ingress is one of its own service ports ("5737 is a port this runtime already serves"), so a
+ * leg that did it could only ever report a candidate that never came up; and a runtime that did
+ * accept it would forward the tunnel's traffic onto the Gateway, which is the operator surface
+ * this whole matrix exists to keep off a remote entry. Guarded where the ports are decided and
+ * again right before every spawn, so no call site can reintroduce the conflation.
+ */
+export function assertLegGatewayIsNotIngress(leg: string, gatewayPort: number, ingressPort: number): void {
+  if (gatewayPort === ingressPort) {
+    throw new Error(
+      `${leg}: the candidate Gateway port ${gatewayPort} is also the pinned tunnel ingress port; `
+      + 'a console-bound leg needs its own Gateway on a dynamic port, or forwarded traffic would land on the Gateway',
+    );
+  }
+}
+
+/**
+ * Chooses the candidate-Gateway port for one leg: the preferred number when it is usable, else a
+ * free one. `forbidden` holds the ports this leg may never serve on - for a console-bound leg,
+ * the console's own port, which has to stay the ingress listener.
+ */
+async function takeGatewayPort(
+  request: LegPortRequest,
+  deps: {
+    isFree: (port: number) => Promise<boolean>;
+    chooseFreePort: (exclude: ReadonlySet<number>) => Promise<number>;
+    describeOccupant: (port: number) => string;
+  },
+  reserved: ReadonlySet<number>,
+  forbidden: ReadonlySet<number>,
+): Promise<{ port: number; requestedPort?: number; detail: string }> {
+  const preferred = request.preferred;
+  const preferredUsable = preferred !== undefined
+    && !reserved.has(preferred)
+    && !forbidden.has(preferred)
+    && await deps.isFree(preferred);
+  if (preferred !== undefined && preferredUsable) {
+    return { port: preferred, requestedPort: preferred, detail: `preferred port ${preferred} was free` };
+  }
+  const exclude = new Set<number>([
+    ...reserved,
+    ...forbidden,
+    ...(preferred === undefined ? [] : [ preferred ]),
+  ]);
+  const chosen = await deps.chooseFreePort(exclude);
+  const why = preferred === undefined
+    ? 'no preferred port was given'
+    : forbidden.has(preferred)
+      ? `port ${preferred} is the console's own port and has to stay the ingress listener`
+      : reserved.has(preferred)
+        ? `port ${preferred} is reserved for a console-bound leg`
+        : `port ${preferred} is taken (${deps.describeOccupant(preferred)})`;
+  return {
+    port: chosen,
+    ...(preferred === undefined ? {} : { requestedPort: preferred }),
+    detail: `${why}; chose free port ${chosen}`,
+  };
+}
+
+/**
+ * Decides one leg's ports.
  *
  * A foreign occupant is never signalled, and a console-bound leg is never re-pointed: the whole
- * point of that policy is that the tunnel already forwards to a specific number.
+ * point of that policy is that the tunnel already forwards to a specific number, so that number
+ * becomes the candidate's pinned ingress listener. The candidate's Gateway is a different,
+ * dynamic port for every leg - an ingress listener has to be its own listener.
  */
 export async function decideLegPort(request: LegPortRequest): Promise<LegPortDecision> {
   const isFree = request.isFree ?? isPortFree;
   const describeOccupant = request.describeOccupant ?? describePortHolder;
   const reserved = new Set(request.reserved ?? []);
+  const deps = {
+    isFree,
+    describeOccupant,
+    chooseFreePort: request.chooseFreePort ?? findFreeLoopbackPort,
+  };
 
   if (request.policy === 'console-bound') {
     const consolePort = request.consolePort;
@@ -198,51 +273,39 @@ export async function decideLegPort(request: LegPortRequest): Promise<LegPortDec
         detail: 'the provider console declares no local port for this leg, so there is nothing to bind',
       };
     }
-    if (await isFree(consolePort)) {
+    if (!await isFree(consolePort)) {
       return {
         leg: request.leg,
         policy: request.policy,
-        ok: true,
-        port: consolePort,
+        ok: false,
         consolePort,
-        detail: `using the console's own port ${consolePort}`,
+        detail: `the console's port ${consolePort} is held by ${describeOccupant(consolePort)}; `
+          + 'this harness refuses to kill a foreign process and refuses to move a console-bound leg to another port',
       };
     }
-    return {
-      leg: request.leg,
-      policy: request.policy,
-      ok: false,
-      consolePort,
-      detail: `the console's port ${consolePort} is held by ${describeOccupant(consolePort)}; `
-        + 'this harness refuses to kill a foreign process and refuses to move a console-bound leg to another port',
-    };
-  }
-
-  const preferred = request.preferred;
-  if (preferred !== undefined && !reserved.has(preferred) && await isFree(preferred)) {
+    const gateway = await takeGatewayPort(request, deps, reserved, new Set([ consolePort ]));
+    assertLegGatewayIsNotIngress(request.leg, gateway.port, consolePort);
     return {
       leg: request.leg,
       policy: request.policy,
       ok: true,
-      port: preferred,
-      requestedPort: preferred,
-      detail: `preferred port ${preferred} was free`,
+      port: gateway.port,
+      ...(gateway.requestedPort === undefined ? {} : { requestedPort: gateway.requestedPort }),
+      consolePort,
+      ingressPort: consolePort,
+      ingressPinned: true,
+      detail: `the console's port ${consolePort} is free and becomes the pinned ingress listener; ${gateway.detail}`,
     };
   }
-  const exclude = new Set<number>([ ...reserved, ...(preferred === undefined ? [] : [ preferred ]) ]);
-  const chosen = await (request.chooseFreePort ?? findFreeLoopbackPort)(exclude);
-  const why = preferred === undefined
-    ? 'no preferred port was given'
-    : reserved.has(preferred)
-      ? `port ${preferred} is reserved for a console-bound leg`
-      : `port ${preferred} is taken (${describeOccupant(preferred)})`;
+
+  const gateway = await takeGatewayPort(request, deps, reserved, new Set());
   return {
     leg: request.leg,
     policy: request.policy,
     ok: true,
-    port: chosen,
-    ...(preferred === undefined ? {} : { requestedPort: preferred }),
-    detail: `${why}; chose free port ${chosen}`,
+    port: gateway.port,
+    ...(gateway.requestedPort === undefined ? {} : { requestedPort: gateway.requestedPort }),
+    detail: gateway.detail,
   };
 }
 
@@ -1270,9 +1333,16 @@ async function startCandidate(
   // Ports this run must leave alone: the candidate's own gateway, and the ports a
   // console-bound leg's tunnel already forwards to. Handing one of them to a child service is
   // how a candidate once occupied the very origin the tunnel was configured for.
-  const avoid = new Set<number>([ options.candidatePort, ...options.reservedPorts ]);
+  const avoid = new Set<number>([ port, ...options.reservedPorts ]);
   const cssForCandidate = extraEnv.CSS_PORT ?? String(await findFreeLoopbackPort(avoid));
   const apiForCandidate = extraEnv.API_PORT ?? String(await findFreeLoopbackPort(avoid));
+  // The pinned ingress is the tunnel's origin: if it ever equalled the port this candidate
+  // serves on, the runtime would refuse to boot (or the tunnel would reach the Gateway). The
+  // port decision already separates them; this is the last gate before the process exists.
+  const pinnedIngress = Number(extraEnv.XPOD_GATEWAY_INGRESS_PORT);
+  if (Number.isInteger(pinnedIngress)) {
+    assertLegGatewayIsNotIngress(`candidate on port ${port}`, port, pinnedIngress);
+  }
   const child = spawn(
     'bun',
     [
@@ -1787,6 +1857,8 @@ export async function takeLegPort(
     ...(recorded.requestedPort === undefined ? {} : { requestedPort: recorded.requestedPort }),
     ...(recorded.port === undefined ? {} : { port: recorded.port }),
     ...(recorded.consolePort === undefined ? {} : { consolePort: recorded.consolePort, fixedPort: recorded.consolePort }),
+    ...(recorded.ingressPort === undefined ? {} : { ingressPort: recorded.ingressPort }),
+    ...(recorded.ingressPinned === undefined ? {} : { ingressPinned: recorded.ingressPinned }),
     ok: recorded.ok,
     detail: recorded.detail,
   });
@@ -2561,10 +2633,13 @@ async function main(): Promise<void> {
     // ---------------------------------------------------------------------------------------
     // Console-bound line: the two legs whose origin port lives in a provider console.
     //
-    // Both pin `XPOD_GATEWAY_INGRESS_PORT` to the number that console already forwards to, and
-    // both fail (naming the occupant) when that number is not free. Nothing here ever signals a
-    // foreign process, and nothing re-points a platform config at a different port: a tunnel
-    // that forwards to a number must find this candidate listening on it.
+    // The console's number is pinned as the candidate's *ingress* listener
+    // (`XPOD_GATEWAY_INGRESS_PORT`), and it becomes the leg's ingress port; the candidate's
+    // Gateway is a separate dynamic port (`takeLegPort` decides both, and the spawn guards the
+    // two apart). Both legs fail - naming the occupant - when the console's number is not free.
+    // Nothing here ever signals a foreign process, and nothing re-points a platform config at a
+    // different port: a tunnel that forwards to a number must find this candidate listening on
+    // it, on its ingress listener rather than on the Gateway.
     // ---------------------------------------------------------------------------------------
     if (options.namedTunnel) {
       const namedToken = env.CLOUDFLARE_TUNNEL_TOKEN;
@@ -2611,8 +2686,6 @@ async function main(): Promise<void> {
             });
           } else {
             const legPort = portDecision.port!;
-            legRecords[legRecords.length - 1].ingressPort = consolePort;
-            legRecords[legRecords.length - 1].ingressPinned = true;
             legRecords[legRecords.length - 1].detail += `; console port from ${cloudflaredConsole.source}`;
             const legLog = path.join(options.evidenceDir, `candidate-named-${Date.now()}.log`);
             const namedChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
@@ -2736,8 +2809,6 @@ async function main(): Promise<void> {
             }
           }
           const legPort = portDecision.port!;
-          legRecords[legRecords.length - 1].ingressPort = consolePort;
-          legRecords[legRecords.length - 1].ingressPinned = true;
           const legLog = path.join(options.evidenceDir, `candidate-sakura-${Date.now()}.log`);
           const sakuraChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
             XPOD_TUNNEL_PROFILES: JSON.stringify([

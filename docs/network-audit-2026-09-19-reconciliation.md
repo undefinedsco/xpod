@@ -404,5 +404,32 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 - **预留只覆盖"分配"**：直接 `net.createServer().listen(0)` 的第三方/新代码仍可能拿到预留端口（本仓库的两个自建 server 夹具已改走 `listenOnUnreservedPort`）；预留文件也不是锁，一个不读它的外部进程（例如别的分支的旧代码）照样能占 5737。
 - **`default` 组本身不读控制台端口**，因此它可能恰好动态选中一个当时空闲的控制台端口；此时 `network` 组会点名失败（占用者是 default 组的候选）。这是"两组互不依赖"的直接代价，未被消除：两组同时跑在同一台机器上时仍建议错开。
 - **cloudflared 回读只对"远程管理"的具名隧道有效**：本地 `config.yml` 管理 ingress 的隧道不会打印远端配置，回读会超时 → CLI 告警后用动态入口，需要确定值就显式 `XPOD_GATEWAY_INGRESS_PORT`。
-- **联网组的真实三隧道验收本轮未跑**（按任务分工留给后续步骤）：本节的真机证据只到 preflight 与两个 provider 的只读回读，`network` 组的端到端公网可达性、隔离矩阵仍待后续步骤取证。
+- **联网组的真实三隧道验收**：已在 §10.8.6 跑完（`--group network --start` 20/20 通过，两条公网入口可达且隔离矩阵全过）；本节 10.8.1–10.8.4 的真机证据仍只到 preflight 与两个 provider 的只读回读。
 - 未改动 Dashboard/Sakura 控制台，也未重跑 5737 之外的端口拓扑；`--group all` 会在同一进程里顺序跑两组，它自身不具备并行性（联网腿仍是独占的）。
+
+#### 10.8.6 联网组真实验收与两个 harness 缺陷（2026-09-24，收口）
+
+按操作者要求"联网组必须真跑通再进主干"，本轮把 `--group network --start` 端到端跑通。**结论：产品侧两条真实隧道都通，之前跑不通是两个 harness 缺陷。**
+
+| # | 缺陷（本仓自有，非操作者环境） | 现象 | 修法 |
+| --- | --- | --- | --- |
+| 1 | `9d69264f` 拆分两组时丢掉了 `reservedNow` 的声明（6 处引用、0 处定义） | 任一组 `--start` 都在**发布预留之后、选端口之前**崩溃：`ReferenceError: reservedNow is not defined` at `scripts/accept-network-tunnel.ts:2091`；`--preflight` 在该行之前返回，所以两组 preflight 一直显示正常，这条路径从未跑通过 | `reserveNetworkPorts()` 之后取一次预留快照 `const reservedNow = reservedPorts();`（commit `be08dc28`）。语义：动态腿按它绕开预留，console-bound 腿在 `decideLegPort` 里根本不看这个集合 |
+| 2 | console-bound 腿把**控制台端口同时当成候选 gateway 端口**（`-p 5737`）**和** `XPOD_GATEWAY_INGRESS_PORT=5737` | 候选启动即被运行时按设计拒绝：`XPOD_GATEWAY_INGRESS_PORT=5737 is a port this runtime already serves (gateway/CSS/API)`（`src/runtime/ingress-port.ts:134`）→ 两条腿的 4 项检查全是 `observed=unknown`。若某个运行时真接受了，隧道的流量会直接落在 Gateway（操作者面）上 | console-bound 腿的 gateway 改为**动态端口**（3600 / 3650），只把控制台端口钉成 **ingress 监听**：`decideLegPort` 用 `takeGatewayPort(..., forbidden = {consolePort})` 选 gateway，`LegPortDecision` 增 `ingressPort` / `ingressPinned` 并进 `legs[]` 记录；新增 `assertLegGatewayIsNotIngress()`，在**端口决策处**与**每次 spawn 前**（`startCandidate`，比对 `XPOD_GATEWAY_INGRESS_PORT` 与实际启动端口）各守一次；`startCandidate` 的 CSS/API `avoid` 集合改用本腿自己的端口 |
+
+**缺陷通道（值得单独记）**：`tsconfig.json` 的 `include` 只有 `bin/**` 与 `src/**`，`scripts/**` 完全不参与 `bun run build:ts`，因此**没有任何类型检查看过这个 harness** —— 未声明标识符这类缺陷可以一路进主干。本轮只做记录，未改 include（扩大类型检查面会牵动既有 scripts 的报错面，需单独一轮）。
+
+命令与结果（2026-09-24，本机，独占运行；5737 先预留）：
+
+- `bun scripts/accept-network-tunnel.ts --group network --start`：**20 项检查全过（20/20，exit 0）**。
+  - 端口决策（`legs[]`）：`candidate-gateway` 3300 dynamic；`cloudflared-named` gateway **3600** dynamic / `consolePort 5737` / `ingressPort 5737` / `ingressPinned true`；`sakura-real-tunnel` gateway **3650** / 同样钉 5737。
+  - cloudflared 具名腿：`candidate/cloudflared-named-ingress observed=5737`（候选 status 报告的 ingress 就是控制台端口）；`public/cloudflared-named-tunnel observed=active · https://node-0000.undefineds.co/ · serving`。
+  - Sakura 腿：`candidate/sakura-ingress observed=5737`；`public/sakura-real-tunnel observed=active · https://frp-dad.com:35246/ · serving` —— 客户端走 **natfrp 官方镜像 + loopback relay**（原生 `frpc` 未安装，镜像本地已有）。
+  - 两条公网入口各自：`public/entry-serves-this-candidate`（运行时 PID 与候选一致）通过；隔离矩阵 `admin-status-anonymous` / `admin-status-forged-headers` / `service-logs-anonymous` / `service-restart-anonymous` / `admin-config-mutation-anonymous` **全 403**，`admin-status-explicit-token` **200**（正向对照），`ordinary-route` **200**。
+- **401 vs 403 的澄清**：隔离矩阵打的是 `/api/admin/status`（远程 403），此前手工 scratch 打的是 `/api/network/settings/status`（`requireNetworkPermission` 未通过时 401）。因此矩阵**不需要**为候补种子账号；"补种子"这一项经证据判定为不必要，未改。
+- `bun test tests/scripts/accept-network-tunnel.test.ts`：**22 例全过**（新增 3 例：console-bound 的 Gateway 不得落在控制台端口、`assertLegGatewayIsNotIngress` 的抛/不抛、`takeLegPort` 记录 gateway 与控制台端口的分工）。
+- `bunx tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict scripts/accept-network-tunnel.ts`：只剩既有的 `import.meta.dir` 类型缺口（Bun 扩展，非未声明标识符）。
+- 证据：`.test-data/acceptance/group-network/evidence.json`（本轮，20/20）、`.test-data/acceptance/group-network/evidence-prefix-shim.json`（修复前 0/4，两条腿候选启动被拒）、`.test-data/acceptance/group-default/evidence.json`（default 组 34/4）、`.test-data/acceptance/group-default-postfix/evidence.json`（修复后 24/1）。
+
+环境 gap（按 gap 记录，非回归）：ngrok `api.ngrok.com:443` TLS reset（curl 35 `Recv failure: Connection reset by peer` 独立复现）→ default 组 ngrok 腿与 A01 connect 失败；`*.trycloudflare.com` 快速隧道主机名在本机**不可解析**（独立最小 quick tunnel 连接器已注册到边缘，主机名仍 `dig` 为空）→ quick tunnel 腿失败；原生 `frpc` 未安装（走 natfrp 镜像）。
+
+仍遗留（未做）：network 组 `evidence.json` 的 `tunnels[]` 为空 —— 该数组在 `groups.dynamic` 分支里按 catalog 填充，联网组不填；两条腿的隧道结论目前只落在 `checks[]` 的名称与 `detail` 里。

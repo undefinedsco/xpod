@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  assertLegGatewayIsNotIngress,
   decideLegPort,
   describePortHolder,
   entryServesCandidate,
@@ -280,13 +281,72 @@ describe('accept-network-tunnel leg ports', () => {
       describeOccupant: describePortHolder,
     });
 
-    expect(consoleLeg).toMatchObject({ ok: true, port: consolePort });
+    expect(consoleLeg.ok).toBe(true);
+    // The console's number is the *ingress* listener this leg pins; the candidate's Gateway is
+    // a port of its own. Serving both roles on one number is what the runtime refuses (and what
+    // would put forwarded traffic on the operator surface), so this separation is the contract.
+    expect(consoleLeg.consolePort).toBe(consolePort);
+    expect(consoleLeg.ingressPort).toBe(consolePort);
+    expect(consoleLeg.ingressPinned).toBe(true);
+    expect(consoleLeg.port).toBeDefined();
+    expect(consoleLeg.port).not.toBe(consolePort);
     expect(dynamicLeg.ok).toBe(true);
     expect(dynamicLeg.port).not.toBe(consolePort);
     expect(dynamicLeg.port).not.toBe(busyPort);
     // The console's port is still the console's after the dynamic leg picked its own.
     expect(await isPortFree(consolePort)).toBe(true);
     expect(dynamicLeg.detail).toMatch(new RegExp(`taken \\(pid ${holder.pid}`, 'u'));
+  }, 30_000);
+
+  it('keeps a console-bound Gateway off the console port even when that port is preferred', async() => {
+    const consolePort = await freePort();
+    const decision = await decideLegPort({
+      leg: 'cloudflared-named',
+      policy: 'console-bound',
+      consolePort,
+      // The conflation this guards against: asking for the console's number as the Gateway.
+      preferred: consolePort,
+      isFree: isPortFree,
+      describeOccupant: describePortHolder,
+    });
+
+    expect(decision.ok).toBe(true);
+    expect(decision.port).toBeDefined();
+    expect(decision.port).not.toBe(consolePort);
+    expect(decision.ingressPort).toBe(consolePort);
+    expect(decision.ingressPinned).toBe(true);
+    expect(decision.detail).toMatch(/has to stay the ingress listener/u);
+    expect(() => assertLegGatewayIsNotIngress('cloudflared-named', decision.port!, consolePort)).not.toThrow();
+  }, 30_000);
+
+  it('refuses, before any spawn, to serve the Gateway on the pinned ingress port', () => {
+    expect(() => assertLegGatewayIsNotIngress('sakura-real-tunnel', 5737, 5737))
+      .toThrow(/needs its own Gateway on a dynamic port/u);
+    expect(() => assertLegGatewayIsNotIngress('sakura-real-tunnel', 3650, 5737)).not.toThrow();
+  });
+
+  it('records the console port as the ingress and a dynamic port as the Gateway', async() => {
+    const consolePort = await freePort();
+    const records: LegPortRecord[] = [];
+    const decision = await takeLegPort(
+      { leg: 'cloudflared-named', group: 'network', policy: 'console-bound', consolePort },
+      records,
+      new Set([ consolePort ]),
+    );
+
+    expect(decision.ok).toBe(true);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      leg: 'cloudflared-named',
+      group: 'network',
+      portPolicy: 'console-bound',
+      consolePort,
+      fixedPort: consolePort,
+      ingressPort: consolePort,
+      ingressPinned: true,
+      ok: true,
+    });
+    expect(records[0].port).not.toBe(consolePort);
   }, 30_000);
 
   it('publishes the network group\'s fixed ports as a reservation every other group skips', () => {
@@ -338,7 +398,8 @@ describe('accept-network-tunnel leg ports', () => {
       expect(dynamicLeg.ok).toBe(true);
       expect(dynamicLeg.port).not.toBe(fixed);
 
-      // The network group's own leg gets exactly that port.
+      // The network group's own leg adopts exactly that port - as its ingress listener, while
+      // its Gateway stays a port of its own.
       const networkLeg = await decideLegPort({
         leg: 'cloudflared-named',
         policy: 'console-bound',
@@ -346,7 +407,10 @@ describe('accept-network-tunnel leg ports', () => {
         isFree: isPortFree,
         describeOccupant: describePortHolder,
       });
-      expect(networkLeg).toMatchObject({ ok: true, port: fixed });
+      expect(networkLeg.ok).toBe(true);
+      expect(networkLeg.ingressPort).toBe(fixed);
+      expect(networkLeg.ingressPinned).toBe(true);
+      expect(networkLeg.port).not.toBe(fixed);
     } finally {
       rmSync(reservationDirectory, { recursive: true, force: true });
       if (previousDirectory === undefined) delete process.env[PORT_RESERVATION_DIR_ENV];
