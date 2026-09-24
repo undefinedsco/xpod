@@ -346,3 +346,63 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 证据（负向优先）：`tests/api/network/EndpointReachabilityProbe.test.ts` 11 例（公网 200/403 算可达、明文拒绝且不发请求、私网/元数据/公私混合地址拒绝、重定向落到私网拒绝且只发一跳、公网重定向跟随、超时与连接错误、非法地址）；绕过 https 与公网守卫后 **5 例失败**。handler 侧 2 例（注入探针只在诊断时调用、未配 endpoint 时不调用）。
 
 **N16（操作者口径：不内置，把 cloudflared 当插件）**：产物继续不携带任何客户端；插件落点是解析顺序里的 `vendor/tunnel-clients/`，安装方式与许可边界写入 [`tunnel-clients.md`](tunnel-clients.md)，`check-tunnel-clients.ts` 现在会打印插件目录。**不提供自动下载器**：下载第三方二进制需要先定版本锁定、校验和来源与签名校验策略，属供应链决策；在此之前"缺客户端"能在启动前被预检发现，且报错带安装提示。
+
+### 10.8 隧道入口端口：显式优先、控制台端口采纳与联网组隔离（2026-09-24）
+
+真实验收（候选 `5fdeb05a`）暴露两个事实，本节按操作者口径收口。**本节不引入任何"回收/杀进程"机制**：被占用的端口一律只报告、不动手（操作者明确要求），也不存在 `--reclaim-ingress` 之类的开关。
+
+| # | 事实（验收现场） | 现在的语义 | 落点 |
+| --- | --- | --- | --- |
+| A | 缺客户端的报错渲染成 `binary-missing:sakura-frp:frpc`（连字符），而 catalog id 是 `sakura_frp`，于是这条消息永远查不到安装提示 | 提供方一律归一化成 catalog id：`binary-missing:sakura_frp:frpc (install the natfrp client…)` | `src/tunnel/TunnelProviderCatalog.ts`（`canonicalTunnelProviderId`）、`TunnelClientResolver.ts`、`TunnelLifecycle.ts`、`SakuraFrpTunnelProvider.ts` |
+| B | `f62c638a` 删掉了显式优先分支，`start.ts` 无条件用 `findGatewayIngressPort(mainPort)` 覆盖 `XPOD_GATEWAY_INGRESS_PORT`：harness 钉不住 5737，网关 3300 的候选入口变成 3303、3600 的变成 3603 | 显式钉住**最优先且严格**：被占用即启动失败并点名占用者，绝不换端口、绝不发信号 | `src/runtime/ingress-port.ts`、`src/cli/commands/start.ts` |
+
+#### 10.8.1 入口端口的三级来源（`src/runtime/ingress-port.ts`）
+
+顺序（严格程度递减），docstring 与行为逐字一致：
+
+1. **显式 `XPOD_GATEWAY_INGRESS_PORT`**：占用即失败（`IngressPortConflictError`，消息含 pid / 命令行 / cwd / 启动时间），不会回落到别的端口。格式非法（如 `fifty-seven`）按错误处理，不当作"未设置"。
+2. **活动 profile 的控制台声明**（仅 `originOwner: 'console'` 的 provider，且端口空闲时采纳）：
+   - Sakura：`resolveSakuraAssignedLocalPort()` 读 `GET https://api.natfrp.com/v4/tunnels` 的 `local_port`（既有 reader，未新增第二份）；
+   - cloudflared 具名隧道：复用 provider 已有的远端配置回读（`readDashboardOrigin`，经 `readCloudflareRemoteOrigin` 起一个短命 connector 取回日志行后立即终止）。
+   端口被占 → 该次启动失败并点名占用者；读不到声明 → 明确告警"控制台端口读不到，本次用动态入口"，并提示用 `XPOD_GATEWAY_INGRESS_PORT` 显式决定。**不修改 Dashboard/Sakura 控制台**是本次的口径前提。
+3. **动态入口** `findGatewayIngressPort(gatewayPort)`：gateway+3..+9 的第一个空闲端口，这是日常路径的默认值。
+
+顺带修掉一个真实缺陷：`readDashboardOrigin` 的两条正则要求 JSON 未被转义，而真实 cloudflared 打印的是**转义后的 JSON**（`config="{\"ingress\":[{\"service\":\"http://localhost:5737\"}]}"`，本机实测抓取，2026-09-24），也就是说此前的 `origin-mismatch` 诊断在真实 connector 上**从未触发过**。现在先解转义再匹配，并新增用真实日志行做夹具的用例。
+
+非活动 profile 的控制台声明会被读出并**报告**（"profile X 不是活动的，但它的控制台声明 5737"），绝不采纳；cloudflared 的非活动 profile 不做回读（回读要起 connector，不值得）。
+
+#### 10.8.2 验收分组与固定端口预留
+
+`scripts/accept-network-tunnel.ts` 的 selectable 面收敛成**一个 flag**：`--group default|network|all`（默认 `default`）。
+
+- **`network`（联网组，固定参数，独占）**：只有两条腿需要固定参数 —— cloudflared 具名隧道（Dashboard 的 local service port）与 Sakura 真实隧道（控制台的 `local_port`），本机两者都是 **5737**。该组把这两个端口作为**固定参数显式声明**，启动前写入预留，运行时把入口 `XPOD_GATEWAY_INGRESS_PORT` 钉在声明值上，并额外断言候选 status 里报告的 `ingress.port` 就等于该值。声明端口被别的进程占着 → 该腿失败，消息同时点名占用者与预留记录，**不杀进程、不改端口**。
+- **`default`（动态组，可并行）**：candidate gateway / CSS / API / ingress 全部取空闲端口，不依赖任何外部控制台；覆盖隔离矩阵、隔离候选身份链、A01 配置-重启、cloudflared quick tunnel、ngrok、显式关闭腿与失败腿（错 token、缺客户端、外来 frpc）。它和 `network` 组互不为前提：`--group network` 单独可跑（不启动动态候选），`--group default` 单独可跑（不读任何控制台端口）。
+- **预留机制（一个小机制，不是框架）**：`src/runtime/port-reservations.ts`。预留同时写两处 —— `.test-data/port-reservations/<port>.json`（port/owner/group/reservedAt/note）与进程内 `XPOD_RESERVED_PORTS=5737`（子候选继承）。**所有分配器**都跳过预留端口：`src/runtime/port-finder.ts` 的 `getFreePort`/`getFreePortForWildcard`/`getEphemeralLoopbackPort`，harness 自己的 free-port 助手，`listenOnUnreservedPort()`（两个自建 server 的测试夹具改走它），因此 `run-integration-full`（`LOCAL_PORT` 默认就是 5737）、`run-integration-lite`（经 `XpodTestStack`）与 vitest 侧助手都会绕开。预留**不是锁**：它只对未来分配生效，占着端口的进程不会被怎样，只能被点名。
+- `isFreePortForWildcard`/`isPortFree` 保持**探测**语义（"这个号码现在能不能绑"），分配语义才跳过预留 —— 否则联网组自己"检查 5737 是否空闲"会得到预留的答案而不是 socket 的答案。
+- 预留 12 小时后过期（防止崩掉的运行永久占号）；正常结束在 `finally` 里由 owner 释放。
+
+#### 10.8.3 证据
+
+`evidence.json` 新增：`group`（本次跑的是哪一组）、`groups`、`reservations`（本次声明的固定参数及预留记录）、`candidatePortRequested` 与逐腿的 `legs[]`（`leg` / `group` / `portPolicy: dynamic|console-bound` / `requestedPort` / `port` / `consolePort`(=固定参数) / `ingressPort` / `ingressPinned` / `ok` / `detail`）。"5737 vs 3303"这类不一致因此能自解释：是动态选的、是钉住的、还是没拿到。
+
+#### 10.8.4 测试与负向证据
+
+- 新增：`tests/runtime/ingress-port.test.ts`（13 例：采纳控制台端口、显式优先（finding B 回归）、占用即点名失败且不回退不换端口、真实外来 listener 失败后**仍然活着**、0/70000/80 声明端口拒绝、保留端口拒绝、双 profile 活动者胜出、https scheme 告警、读不到声明则动态落地、provider 自有 origin 不读回）、`tests/runtime/ingress-occupant.test.ts`（4 例：真实 listener 的 pid/命令行、无法识别时明说、导出面里**没有**任何 kill/signal/reclaim/owner 符号）、`tests/runtime/port-reservations.test.ts`（5 例：文件与环境变量两种来源、过期忽略、只有 owner 能释放、坏文件不炸分配）、`tests/tunnel/TunnelDeclaredOrigin.test.ts`（9 例：Sakura `local_port`、cloudflared 真实转义 JSON 行回读并终止探针、退出码/缺客户端/超时错误、非活动 profile 不起 connector、runtime-owned/无凭据/未知 provider 不声明）。
+- 既有用例更新：`tests/runtime/port-finder.test.ts` 增"分配器跳过预留端口"（负向优先，机制的核心）；`tests/scripts/accept-network-tunnel.test.ts` 增分组选择、`reserveNetworkPorts` 发布预留、动态腿绕开预留端口、固定端口被占时同时点名占用者与预留；`tests/tunnel/SakuraFrpTunnelProvider.test.ts` 与 `TunnelClientResolver.test.ts` 改为断言 catalog id（后者新增"provider 自称 `sakura-frp` 也必须渲染成 `sakura_frp`"的漂移守卫）；`tests/runtime/start-command-config.test.ts` 删除已废弃的旧 `resolveIngressPort(provisioned, port)` 断言。
+- 负向优先实测：把显式优先分支去掉（复刻 `f62c638a`）后 `ingress-port.test.ts` **4/13 失败**（钉住的端口被控制台声明顶掉、显式值被默认值顶掉、占用时不再失败、非法值被当未设置）；把命名改回 `sakura-frp` 且去掉归一化后，`SakuraFrpTunnelProvider.test.ts` 与 `TunnelClientResolver.test.ts` 各 **1 例失败**，失败信息正是 `binary-missing:sakura-frp:…`。
+- 真机（只读）验证：`readCloudflareRemoteOrigin` 对操作者的具名隧道回读到 `{port: 5737, scheme: 'http'}`，耗时 **1.3s** 且无残留 connector；Sakura 回读到 `local_port 5737`；`bun scripts/accept-network-tunnel.ts --preflight` 输出 `--group default: ngrok blocked（操作者网络 TLS reset）`、`--group network: 2/2 ready`（两条腿都读到 5737）。分配器实测：`XPOD_RESERVED_PORTS=5737` 下 `getFreePort(5737)→5738`、`getFreePortForWildcard(5737)→5738`、`findGatewayIngressPort(5734)→5738`，同时 `isFreePortForWildcard(5737)` 仍为 true（联网组自己还要绑它）。
+- 命令与结果（2026-09-24，本机负载 load ~12–21，8 核）：
+  - `bun run build:ts` 通过；
+  - `bunx vitest run tests/runtime tests/tunnel tests/scripts/accept-network-tunnel.test.ts` **37 文件 / 318 例全过**；
+  - `bun run test`（仓库 vitest 全量入口）**624 文件通过 / 38 跳过（共 662），6101 例通过 / 272 跳过 / 1 todo，exit 0**，耗时 373s。`tests/integration/**`（35 个文件）在收集范围内；其中依赖真实容器/集群的用例按仓库既有开关（如 `XPOD_RUN_INTEGRATION_TESTS`）自行 skip，本轮未额外开启（改动不触及容器路径）；
+  - `bun run test:bun`（Bun 入口）**11 文件 / 32 例全过，exit 0**。
+  - 未跑：`bun run test:integration:lite` / `test:integration:full`（Docker 编排，本轮改动不触及容器路径；`run-integration-full` 的端口分配已通过 `getFreePort` 的预留行为单测与真机 `getFreePort(5737)→5738` 覆盖）。
+
+#### 10.8.5 明确未做 / 仍不确定
+
+- **不做抢占**：端口被占只有"点名失败"这一条路。被占用的进程不会被发任何信号（操作者口径），因此 `network` 组的端口若被不遵守预留的进程占着，只能人工释放。
+- **预留只覆盖"分配"**：直接 `net.createServer().listen(0)` 的第三方/新代码仍可能拿到预留端口（本仓库的两个自建 server 夹具已改走 `listenOnUnreservedPort`）；预留文件也不是锁，一个不读它的外部进程（例如别的分支的旧代码）照样能占 5737。
+- **`default` 组本身不读控制台端口**，因此它可能恰好动态选中一个当时空闲的控制台端口；此时 `network` 组会点名失败（占用者是 default 组的候选）。这是"两组互不依赖"的直接代价，未被消除：两组同时跑在同一台机器上时仍建议错开。
+- **cloudflared 回读只对"远程管理"的具名隧道有效**：本地 `config.yml` 管理 ingress 的隧道不会打印远端配置，回读会超时 → CLI 告警后用动态入口，需要确定值就显式 `XPOD_GATEWAY_INGRESS_PORT`。
+- **联网组的真实三隧道验收本轮未跑**（按任务分工留给后续步骤）：本节的真机证据只到 preflight 与两个 provider 的只读回读，`network` 组的端到端公网可达性、隔离矩阵仍待后续步骤取证。
+- 未改动 Dashboard/Sakura 控制台，也未重跑 5737 之外的端口拓扑；`--group all` 会在同一进程里顺序跑两组，它自身不具备并行性（联网腿仍是独占的）。

@@ -1,16 +1,31 @@
-import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
+  decideLegPort,
+  describePortHolder,
   entryServesCandidate,
   evaluatePreflight,
   isPortFree,
+  parseTunnelGroup,
   readServicePids,
+  reserveNetworkPorts,
   requireCredentialFile,
+  resolveTunnelGroups,
   stripCloudRegistrationEnv,
+  takeLegPort,
+  type LegPortRecord,
 } from '../../scripts/accept-network-tunnel';
+import {
+  portReservation,
+  PORT_RESERVATION_DIR_ENV,
+  releasePort,
+  reservePort,
+  RESERVED_PORTS_ENV,
+} from '../../src/runtime/port-reservations';
 
 describe('accept-network-tunnel candidate environment', () => {
   it('removes every input that would register the candidate with a Cloud', () => {
@@ -69,25 +84,64 @@ describe('accept-network-tunnel entry provenance', () => {
 describe('accept-network-tunnel preflight', () => {
   const base = {
     ngrok: { credential: true, agentConfiguration: false, tcpReachable: true, tlsReachable: true },
-    cloudflared: { token: true, hostname: 'entry.example.com', resolvedAddresses: [ '104.21.48.63' ] },
+    cloudflared: {
+      token: true,
+      hostname: 'entry.example.com',
+      resolvedAddresses: [ '104.21.48.63' ],
+      // The Dashboard's local service port, and the fact that it is free to pin right now.
+      consolePort: 5737,
+      consolePortFree: true,
+    },
     sakura: {
       apiReachable: true,
       tunnelCount: 1,
-      tunnel: { id: 114514, localIp: '127.0.0.1', localPort: 3399, node: 62, remote: '23333', nodeHost: 'frp-ski.com' },
+      tunnel: { id: 114514, localIp: '127.0.0.1', localPort: 5737, node: 62, remote: '23333', nodeHost: 'frp-ski.com' },
+      localPortFree: true,
     },
     frpc: { source: 'configured' as const },
-    // The console forwards this tunnel to the entry the candidate itself serves.
-    gatewayPort: 3399,
   };
   const verdict = (leg: string, legs: ReturnType<typeof evaluatePreflight>): string =>
     legs.find((entry) => entry.leg === leg)?.status ?? 'missing';
 
   it('calls every leg ready when the console facts and the network are in place', () => {
     const legs = evaluatePreflight(base);
-    // ngrok, the named cloudflared tunnel and Sakura: the origin port needs no leg of its own
-    // because the candidate serves the entry the console already forwards to.
+    // ngrok, the named cloudflared tunnel and Sakura: the console-bound legs pin the port
+    // their console already forwards to, so a free console port is the whole prerequisite.
     expect(legs.map((entry) => entry.leg)).toEqual([ 'ngrok', 'cloudflared-named', 'sakura' ]);
     expect(legs.map((entry) => entry.status)).toEqual([ 'ready', 'ready', 'ready' ]);
+    expect(legs[1].detail).toMatch(/pins the Dashboard's local port 5737/u);
+    expect(legs[2].detail).toMatch(/pins the console's local port/u);
+  });
+
+  it('blocks a console-bound leg whose console port a foreign process holds, and names it', () => {
+    const cloudflaredBlocked = evaluatePreflight({
+      ...base,
+      cloudflared: { ...base.cloudflared, consolePortFree: false, consolePortOccupant: 'pid 4242 · other-service' },
+    });
+    expect(verdict('cloudflared-named', cloudflaredBlocked)).toBe('blocked');
+    expect(cloudflaredBlocked[1].detail).toMatch(/pid 4242/u);
+    expect(cloudflaredBlocked[1].detail).toMatch(/never kills it and never moves the leg/u);
+
+    const sakuraBlocked = evaluatePreflight({
+      ...base,
+      sakura: { ...base.sakura, localPortFree: false, localPortOccupant: 'pid 4243 · another-service' },
+    });
+    expect(verdict('sakura', sakuraBlocked)).toBe('blocked');
+    expect(sakuraBlocked[2].detail).toMatch(/pid 4243/u);
+  });
+
+  it('needs the Dashboard port read back for the named leg, never a derived entry', () => {
+    const legs = evaluatePreflight({
+      ...base,
+      cloudflared: {
+        ...base.cloudflared,
+        consolePort: undefined,
+        consolePortFree: undefined,
+        consolePortError: 'cloudflared exited with code 255 before reporting the tunnel\'s remote configuration',
+      },
+    });
+    expect(verdict('cloudflared-named', legs)).toBe('blocked');
+    expect(legs[1].detail).toMatch(/could not be determined.*exited with code 255/u);
   });
 
   it('names a blocked network hop instead of blaming the provider', () => {
@@ -105,31 +159,22 @@ describe('accept-network-tunnel preflight', () => {
     expect(legs[1].detail).toMatch(/does not own a tunnel/u);
   });
 
-  it('blocks Sakura until a tunnel exists and forwards to the origin port', () => {
+  it('blocks Sakura until a tunnel exists and declares a local port', () => {
     const missing = evaluatePreflight({ ...base, sakura: { apiReachable: true, tunnelCount: 0 } });
     expect(verdict('sakura', missing)).toBe('blocked');
     expect(missing[2].detail).toMatch(/no tunnel yet/u);
 
-    // A configured frpc is spawned with `-f`, which cannot be re-pointed at the candidate.
-    const mismatched = evaluatePreflight({
+    // The console owns the port, so a console that declares none gives the leg nothing to pin.
+    const undeclared = evaluatePreflight({
       ...base,
-      sakura: { ...base.sakura, tunnel: { ...base.sakura.tunnel, localPort: 443 } },
+      sakura: { ...base.sakura, tunnel: { ...base.sakura.tunnel, localPort: undefined }, localPortFree: undefined },
     });
-    expect(verdict('sakura', mismatched)).toBe('blocked');
-    expect(mismatched[2].detail).toMatch(/cannot be re-pointed/u);
-
-    // With the vendor image the config can name this candidate's port instead.
-    const adaptable = evaluatePreflight({
-      ...base,
-      frpc: { source: 'image' },
-      sakura: { ...base.sakura, tunnel: { ...base.sakura.tunnel, localPort: 443, localIp: 'host.docker.internal' } },
-    });
-    expect(verdict('sakura', adaptable)).toBe('ready');
-    expect(adaptable[2].detail).toMatch(/re-pointed from 443/u);
+    expect(verdict('sakura', undeclared)).toBe('blocked');
+    expect(undeclared[2].detail).toMatch(/declares no local port/u);
   });
 
   it('plans the relay for a container client whose origin is the host loopback', () => {
-    // The leg carries a loopback origin into the container's own namespace, so this is a
+    // The leg carries the console's own port into the container's namespace, so this is a
     // plan the run can execute rather than a blocker.
     const legs = evaluatePreflight({ ...base, frpc: { source: 'image' } });
     expect(verdict('sakura', legs)).toBe('ready');
@@ -149,4 +194,231 @@ describe('accept-network-tunnel preflight', () => {
     await new Promise<void>((resolve) => holder.close(() => resolve()));
     expect(await isPortFree(address.port)).toBe(true);
   });
+});
+
+describe('accept-network-tunnel groups', () => {
+  it('selects one group with one flag, and validates it', () => {
+    expect(parseTunnelGroup('default')).toBe('default');
+    expect(parseTunnelGroup(' network ')).toBe('network');
+    expect(parseTunnelGroup('all')).toBe('all');
+    expect(() => parseTunnelGroup('core')).toThrow(/unknown --group/u);
+
+    // The default group is the parallel-safe one; the network group (fixed parameters) never
+    // becomes a prerequisite for it, and it never runs as part of it.
+    expect(resolveTunnelGroups('default')).toEqual({ dynamic: true, network: false });
+    expect(resolveTunnelGroups('network')).toEqual({ dynamic: false, network: true });
+    expect(resolveTunnelGroups('all')).toEqual({ dynamic: true, network: true });
+  });
+});
+
+describe('accept-network-tunnel leg ports', () => {
+  const children: ChildProcess[] = [];
+
+  afterEach(() => {
+    for (const child of children.splice(0)) {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // Already gone.
+      }
+    }
+  });
+
+  async function freePort(): Promise<number> {
+    return await new Promise<number>((resolve, reject) => {
+      const server = createServer();
+      server.once('error', reject);
+      server.listen(0, '0.0.0.0', () => {
+        const address = server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+        server.close((error) => (error ? reject(error) : resolve(port)));
+      });
+    });
+  }
+
+  function startListener(port: number): ChildProcess {
+    const script = 'const net = require("node:net");'
+      + 'const server = net.createServer(() => undefined);'
+      + 'server.listen(Number(process.argv[1]), "0.0.0.0");';
+    const child = spawn(process.execPath, [ '-e', script, String(port) ], { stdio: 'ignore' });
+    children.push(child);
+    return child;
+  }
+
+  async function waitForListener(port: number): Promise<void> {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (!await isPortFree(port)) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`nothing started listening on ${port}`);
+  }
+
+  it('runs a dynamic leg and a console-bound leg together without interfering', async() => {
+    const consolePort = await freePort();
+    const reserved = new Set([ consolePort ]);
+    // A busy preferred port: the dynamic leg has to move, and the only port it may not take is
+    // the one the console-bound leg needs.
+    const busyPort = await freePort();
+    const holder = startListener(busyPort);
+    await waitForListener(busyPort);
+
+    const consoleLeg = await decideLegPort({
+      leg: 'sakura-real-tunnel',
+      policy: 'console-bound',
+      consolePort,
+      isFree: isPortFree,
+      describeOccupant: describePortHolder,
+    });
+    const dynamicLeg = await decideLegPort({
+      leg: 'ngrok-real',
+      policy: 'dynamic',
+      preferred: busyPort,
+      reserved,
+      isFree: isPortFree,
+      describeOccupant: describePortHolder,
+    });
+
+    expect(consoleLeg).toMatchObject({ ok: true, port: consolePort });
+    expect(dynamicLeg.ok).toBe(true);
+    expect(dynamicLeg.port).not.toBe(consolePort);
+    expect(dynamicLeg.port).not.toBe(busyPort);
+    // The console's port is still the console's after the dynamic leg picked its own.
+    expect(await isPortFree(consolePort)).toBe(true);
+    expect(dynamicLeg.detail).toMatch(new RegExp(`taken \\(pid ${holder.pid}`, 'u'));
+  }, 30_000);
+
+  it('publishes the network group\'s fixed ports as a reservation every other group skips', () => {
+    const previousDirectory = process.env[PORT_RESERVATION_DIR_ENV];
+    const previousPorts = process.env[RESERVED_PORTS_ENV];
+    const reservationDirectory = mkdtempSync(path.join(tmpdir(), 'xpod-accept-reservations-'));
+    process.env[PORT_RESERVATION_DIR_ENV] = reservationDirectory;
+    delete process.env[RESERVED_PORTS_ENV];
+    try {
+      const reservations = reserveNetworkPorts(
+        { reservedPorts: [ 5737, 5737 ], group: 'network' } as Parameters<typeof reserveNetworkPorts>[0],
+        'accept-network-test',
+      );
+
+      expect(reservations).toHaveLength(1);
+      expect(reservations[0]).toMatchObject({ port: 5737, group: 'network', owner: 'accept-network-test' });
+      // The env var is what child candidates inherit; the file is what other groups read.
+      expect(process.env[RESERVED_PORTS_ENV]).toBe('5737');
+      expect(portReservation(5737)?.owner).toBe('accept-network-test');
+      expect(releasePort(5737, 'accept-network-test')).toBe(true);
+    } finally {
+      rmSync(reservationDirectory, { recursive: true, force: true });
+      if (previousDirectory === undefined) delete process.env[PORT_RESERVATION_DIR_ENV];
+      else process.env[PORT_RESERVATION_DIR_ENV] = previousDirectory;
+      if (previousPorts === undefined) delete process.env[RESERVED_PORTS_ENV];
+      else process.env[RESERVED_PORTS_ENV] = previousPorts;
+    }
+  });
+
+  it('skips a reserved port in a non-network group and reports it for the network group', async() => {
+    const previousDirectory = process.env[PORT_RESERVATION_DIR_ENV];
+    const previousPorts = process.env[RESERVED_PORTS_ENV];
+    const reservationDirectory = mkdtempSync(path.join(tmpdir(), 'xpod-accept-reservations-'));
+    process.env[PORT_RESERVATION_DIR_ENV] = reservationDirectory;
+    process.env[RESERVED_PORTS_ENV] = '';
+    try {
+      const fixed = await freePort();
+      reservePort({ port: fixed, owner: 'accept-network-test', group: 'network' });
+
+      // A dynamic leg must never take a reserved port, even when it is free and preferred.
+      const dynamicLeg = await decideLegPort({
+        leg: 'candidate-gateway',
+        policy: 'dynamic',
+        preferred: fixed,
+        reserved: new Set([ fixed ]),
+        isFree: isPortFree,
+        describeOccupant: describePortHolder,
+      });
+      expect(dynamicLeg.ok).toBe(true);
+      expect(dynamicLeg.port).not.toBe(fixed);
+
+      // The network group's own leg gets exactly that port.
+      const networkLeg = await decideLegPort({
+        leg: 'cloudflared-named',
+        policy: 'console-bound',
+        consolePort: fixed,
+        isFree: isPortFree,
+        describeOccupant: describePortHolder,
+      });
+      expect(networkLeg).toMatchObject({ ok: true, port: fixed });
+    } finally {
+      rmSync(reservationDirectory, { recursive: true, force: true });
+      if (previousDirectory === undefined) delete process.env[PORT_RESERVATION_DIR_ENV];
+      else process.env[PORT_RESERVATION_DIR_ENV] = previousDirectory;
+      if (previousPorts === undefined) delete process.env[RESERVED_PORTS_ENV];
+      else process.env[RESERVED_PORTS_ENV] = previousPorts;
+    }
+  }, 30_000);
+
+  it('names both the occupant and the reservation when a fixed port is taken anyway', async() => {
+    const previousDirectory = process.env[PORT_RESERVATION_DIR_ENV];
+    const reservationDirectory = mkdtempSync(path.join(tmpdir(), 'xpod-accept-reservations-'));
+    process.env[PORT_RESERVATION_DIR_ENV] = reservationDirectory;
+    try {
+      const fixed = await freePort();
+      const holder = startListener(fixed);
+      await waitForListener(fixed);
+      reservePort({ port: fixed, owner: 'accept-network-test', group: 'network' });
+
+      const records: LegPortRecord[] = [];
+      const decision = await takeLegPort(
+        { leg: 'cloudflared-named', group: 'network', policy: 'console-bound', consolePort: fixed },
+        records,
+        new Set([ fixed ]),
+      );
+
+      expect(decision.ok).toBe(false);
+      expect(decision.detail).toContain(`pid ${holder.pid}`);
+      expect(decision.detail).toMatch(/reserved by group network \(owner accept-network-test/u);
+      expect(records[0]).toMatchObject({ group: 'network', portPolicy: 'console-bound', fixedPort: fixed, ok: false });
+      // Still no eviction: the holder keeps the port.
+      expect(holder.exitCode).toBeNull();
+      expect(await isPortFree(fixed)).toBe(false);
+    } finally {
+      if (previousDirectory === undefined) delete process.env[PORT_RESERVATION_DIR_ENV];
+      else process.env[PORT_RESERVATION_DIR_ENV] = previousDirectory;
+    }
+  }, 30_000);
+
+  it('reports a console-bound leg whose port is foreign-occupied, and leaves that process alive', async() => {
+    const consolePort = await freePort();
+    const holder = startListener(consolePort);
+    await waitForListener(consolePort);
+
+    const decision = await decideLegPort({
+      leg: 'cloudflared-named',
+      policy: 'console-bound',
+      consolePort,
+      isFree: isPortFree,
+      describeOccupant: describePortHolder,
+    });
+
+    expect(decision.ok).toBe(false);
+    expect(decision.port).toBeUndefined();
+    expect(decision.detail).toContain(`pid ${holder.pid}`);
+    expect(decision.detail).toMatch(/refuses to kill a foreign process/u);
+    expect(decision.detail).toMatch(/refuses to move a console-bound leg/u);
+
+    // A dynamic leg in the same run still gets a free port of its own.
+    const dynamicLeg = await decideLegPort({
+      leg: 'candidate-gateway',
+      policy: 'dynamic',
+      preferred: consolePort,
+      reserved: new Set([ consolePort ]),
+      isFree: isPortFree,
+      describeOccupant: describePortHolder,
+    });
+    expect(dynamicLeg.ok).toBe(true);
+    expect(dynamicLeg.port).not.toBe(consolePort);
+
+    // The foreign process is untouched: no signal, no eviction, just a named refusal.
+    expect(holder.exitCode).toBeNull();
+    expect(await isPortFree(consolePort)).toBe(false);
+  }, 30_000);
 });

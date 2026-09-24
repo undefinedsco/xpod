@@ -11,8 +11,17 @@
  * status codes, URLs, timestamps and fingerprints.
  *
  * Usage:
- *   bun scripts/accept-network-tunnel.ts --candidate-port 3300 --start
+ *   bun scripts/accept-network-tunnel.ts --start                     # default group, dynamic ports
+ *   bun scripts/accept-network-tunnel.ts --start --group network     # the two fixed-parameter legs
+ *   bun scripts/accept-network-tunnel.ts --start --group all         # both, in one process
  *   bun scripts/accept-network-tunnel.ts --reuse --public-url https://entry.example/
+ *
+ * The default group takes every port from the OS, so it is safe to run next to another session's
+ * candidate or integration run. The network group's legs have fixed parameters (the ports the
+ * operator's Cloudflare Dashboard and Sakura console already forward to), so it reserves them
+ * under `.test-data/port-reservations/` and runs exclusively: every other allocator in the repo
+ * skips a reserved port, and a reserved port held by a process that ignored the reservation is
+ * reported by name - never taken by force.
  */
 
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
@@ -32,7 +41,17 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
-import { findGatewayIngressPort, getFreePortForWildcard } from '../src/runtime/port-finder';
+import { findGatewayIngressPort, isFreePortForWildcard } from '../src/runtime/port-finder';
+import { readDeclaredIngressOrigin } from '../src/tunnel/TunnelDeclaredOrigin';
+import {
+  parseReservedPortsEnv,
+  portReservation,
+  releasePort,
+  reservePort,
+  RESERVED_PORTS_ENV,
+  reservedPorts,
+  type PortReservation,
+} from '../src/runtime/port-reservations';
 import { loginWithClientCredentials, setupAccount, type AccountSetup } from '../tests/integration/helpers/solidAccount';
 
 /**
@@ -63,8 +82,6 @@ interface Options {
   /** Local port the provider console/dashboard is told to forward to. */
   /** frpc executable the candidate should spawn; falls back to FRPC_BIN, then Docker. */
   frpcBin?: string;
-  /** Vendor client version the platform generates the SakuraFrp config for. */
-  sakuraClientVersion: string;
   /**
    * The port the operator's provider console forwards to. It is the tunnel entry of the
    * runtime being verified (network settings page), and it only has to be declared when that
@@ -79,6 +96,154 @@ interface Options {
   keepCandidate: boolean;
   a01: boolean;
   soakMinutes: number;
+  /**
+   * Which group to run.
+   *
+   * `default` takes every port dynamically (candidate gateway/CSS/API and the ingress
+   * listener), so it needs no provider console and any number of sessions can run it while
+   * another agent runs `run-integration-full` or its own candidate. `network` is the group
+   * whose legs have *fixed* parameters (the Cloudflare Dashboard's local service port and the
+   * SakuraFrp console's `local_port`): it reserves those ports, pins them, and runs exclusively.
+   */
+  group: TunnelGroup;
+  /** Ports this run keeps free for a console-bound leg (filled in by `main`). */
+  reservedPorts: number[];
+}
+
+export type TunnelGroup = 'default' | 'network' | 'all';
+
+export function parseTunnelGroup(value: string): TunnelGroup {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'default' || normalized === 'network' || normalized === 'all') {
+    return normalized;
+  }
+  throw new Error(`unknown --group "${value}"; expected one of default, network, all`);
+}
+
+export interface TunnelGroups {
+  dynamic: boolean;
+  network: boolean;
+}
+
+/**
+ * One flag selects a group, because the two groups have different prerequisites.
+ *
+ * `default` only needs free ports: the isolation matrices, the identity chain, A01, the
+ * cloudflared quick tunnel, ngrok, the explicit-off and failure legs. It stays runnable while
+ * another session runs `run-integration-full` or its own candidate.
+ * `network` needs the exact ports the operator's consoles already forward to (5737 on this
+ * machine), so it reserves them, pins them, runs exclusively, and never blocks - or is blocked
+ * by - the default group.
+ */
+export function resolveTunnelGroups(group: TunnelGroup): TunnelGroups {
+  return {
+    dynamic: group === 'default' || group === 'all',
+    network: group === 'network' || group === 'all',
+  };
+}
+
+/**
+ * How a leg gets its ports.
+ *
+ * `dynamic` takes whatever is free, so parallel runs coexist; `console-bound` needs the port a
+ * provider console already declares, and it is never moved to another port: a leg that cannot
+ * get it fails with the occupant named, because moving it would test a port no console knows.
+ * No policy ever signals a process: an occupied port is somebody's, and the harness reports it.
+ */
+export type LegPortPolicy = 'dynamic' | 'console-bound';
+
+export interface LegPortRequest {
+  leg: string;
+  policy: LegPortPolicy;
+  /** A dynamic leg's first choice; being taken only moves this leg, nothing else. */
+  preferred?: number;
+  /** Ports reserved for console-bound legs: a dynamic leg never takes one. */
+  reserved?: Iterable<number>;
+  /** The port the console declares, for a console-bound leg. */
+  consolePort?: number;
+  isFree?: (port: number) => Promise<boolean>;
+  chooseFreePort?: (exclude: ReadonlySet<number>) => Promise<number>;
+  describeOccupant?: (port: number) => string;
+}
+
+export interface LegPortDecision {
+  leg: string;
+  policy: LegPortPolicy;
+  ok: boolean;
+  /** The port the leg will use (a console-bound leg only has one when it is free). */
+  port?: number;
+  requestedPort?: number;
+  consolePort?: number;
+  detail: string;
+}
+
+/**
+ * Decides one leg's port.
+ *
+ * A foreign occupant is never signalled, and a console-bound leg is never re-pointed: the whole
+ * point of that policy is that the tunnel already forwards to a specific number.
+ */
+export async function decideLegPort(request: LegPortRequest): Promise<LegPortDecision> {
+  const isFree = request.isFree ?? isPortFree;
+  const describeOccupant = request.describeOccupant ?? describePortHolder;
+  const reserved = new Set(request.reserved ?? []);
+
+  if (request.policy === 'console-bound') {
+    const consolePort = request.consolePort;
+    if (consolePort === undefined) {
+      return {
+        leg: request.leg,
+        policy: request.policy,
+        ok: false,
+        detail: 'the provider console declares no local port for this leg, so there is nothing to bind',
+      };
+    }
+    if (await isFree(consolePort)) {
+      return {
+        leg: request.leg,
+        policy: request.policy,
+        ok: true,
+        port: consolePort,
+        consolePort,
+        detail: `using the console's own port ${consolePort}`,
+      };
+    }
+    return {
+      leg: request.leg,
+      policy: request.policy,
+      ok: false,
+      consolePort,
+      detail: `the console's port ${consolePort} is held by ${describeOccupant(consolePort)}; `
+        + 'this harness refuses to kill a foreign process and refuses to move a console-bound leg to another port',
+    };
+  }
+
+  const preferred = request.preferred;
+  if (preferred !== undefined && !reserved.has(preferred) && await isFree(preferred)) {
+    return {
+      leg: request.leg,
+      policy: request.policy,
+      ok: true,
+      port: preferred,
+      requestedPort: preferred,
+      detail: `preferred port ${preferred} was free`,
+    };
+  }
+  const exclude = new Set<number>([ ...reserved, ...(preferred === undefined ? [] : [ preferred ]) ]);
+  const chosen = await (request.chooseFreePort ?? findFreeLoopbackPort)(exclude);
+  const why = preferred === undefined
+    ? 'no preferred port was given'
+    : reserved.has(preferred)
+      ? `port ${preferred} is reserved for a console-bound leg`
+      : `port ${preferred} is taken (${describeOccupant(preferred)})`;
+  return {
+    leg: request.leg,
+    policy: request.policy,
+    ok: true,
+    port: chosen,
+    ...(preferred === undefined ? {} : { requestedPort: preferred }),
+    detail: `${why}; chose free port ${chosen}`,
+  };
 }
 
 interface CheckResult {
@@ -104,13 +269,14 @@ function parseArgs(argv: string[]): Options {
     quickTunnel: true,
     namedTunnel: true,
     sakuraTunnel: true,
-    sakuraClientVersion: '0.51.0-sakura-14',
     preflight: false,
     checkCloudflaredRegistration: false,
     identityChain: true,
     keepCandidate: false,
     a01: true,
     soakMinutes: 0,
+    group: 'default',
+    reservedPorts: [],
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -135,7 +301,6 @@ function parseArgs(argv: string[]): Options {
       case '--no-named-tunnel': options.namedTunnel = false; break;
       case '--no-sakura-tunnel': options.sakuraTunnel = false; break;
       case '--frpc-bin': options.frpcBin = next(); break;
-      case '--sakura-client-version': options.sakuraClientVersion = next(); break;
       case '--tunnel-entry-port': options.tunnelEntryPort = Number(next()); break;
       case '--preflight': options.preflight = true; break;
       case '--check-cloudflared-registration': options.checkCloudflaredRegistration = true; break;
@@ -143,6 +308,7 @@ function parseArgs(argv: string[]): Options {
       case '--keep-candidate': options.keepCandidate = true; break;
       case '--no-a01': options.a01 = false; break;
       case '--soak-minutes': options.soakMinutes = Number(next()); break;
+      case '--group': options.group = parseTunnelGroup(next()); break;
       case '--tunnel-timeout-ms': options.tunnelTimeoutMs = Number(next()); break;
       default: throw new Error(`Unknown argument: ${arg}`);
     }
@@ -501,38 +667,6 @@ async function describeSakuraTunnel(
 }
 
 /** The config the platform generates for the vendor client version. */
-async function fetchSakuraVendorConfig(accessKey: string, tunnelId: number, frpcVersion: string): Promise<string> {
-  const response = await fetch('https://api.natfrp.com/v4/tunnel/config', {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${accessKey}`,
-      'content-type': 'application/x-www-form-urlencoded',
-      accept: 'text/plain',
-    },
-    body: new URLSearchParams({ query: String(tunnelId), frpc: frpcVersion }),
-    signal: AbortSignal.timeout(20_000),
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`/tunnel/config answered ${response.status}`);
-  }
-  return text;
-}
-
-/**
- * Points the client at the port this candidate listens on.
- *
- * A console port that the operator's own instance already holds would otherwise make the
- * tunnel's origin someone else's process; the client accepts the local port from its config,
- * so the acceptance can still drive the real tunnel from an isolated candidate.
- */
-export function rewriteConfigLocalPort(config: string, port: number): string {
-  return config
-    .split('\n')
-    .map((line) => /^\s*local_port\s*=/u.test(line) ? `local_port = ${port}` : line)
-    .join('\n');
-}
-
 /** Containers the frpc shim may have left behind are removed with the leg that made them. */
 function cleanupAcceptanceFrpc(): void {
   try {
@@ -749,6 +883,7 @@ async function runA01ConfigurationRestart(
     candidateLog: string;
     child?: ChildProcess;
     /** Explicit ingress port, so a restart does not land on a different one. */
+    ingressPort?: number;
     },
   checks: CheckResult[],
 ): Promise<{ endpoint?: string; child?: ChildProcess; logFile?: string }> {
@@ -1132,7 +1267,10 @@ async function startCandidate(
   // and the leg would report the tunnel origin as taken — while the tunnel quietly reached a
   // different process than the one under test.
   // A tunnel forwards to the candidate's Gateway port, so nothing else may take it.
-  const avoid = options.candidatePort;
+  // Ports this run must leave alone: the candidate's own gateway, and the ports a
+  // console-bound leg's tunnel already forwards to. Handing one of them to a child service is
+  // how a candidate once occupied the very origin the tunnel was configured for.
+  const avoid = new Set<number>([ options.candidatePort, ...options.reservedPorts ]);
   const cssForCandidate = extraEnv.CSS_PORT ?? String(await findFreeLoopbackPort(avoid));
   const apiForCandidate = extraEnv.API_PORT ?? String(await findFreeLoopbackPort(avoid));
   const child = spawn(
@@ -1308,20 +1446,66 @@ async function startLoopbackRelay(port: number, directory: string): Promise<{ na
  * That runtime is the one a provider console points at, so its entry is the port the console
  * must name - not something derived from a throwaway candidate.
  */
-async function readReusedTunnelEntryPort(options: Options): Promise<number | undefined> {
-  if (!options.reuse || !options.publicUrl) {
-    return undefined;
-  }
-  const status = await fetchStatus(`${options.publicUrl.replace(/\/+$/u, '')}/api/network/settings/status`);
+/** The tunnel entry the runtime reports in its own status: the one a console has to name. */
+function readReportedIngressPort(statusBody: string): number | undefined {
   try {
-    const parsed = JSON.parse(status.body) as { ingress?: { port?: number } };
+    const parsed = JSON.parse(statusBody) as { ingress?: { port?: number } };
     return typeof parsed.ingress?.port === 'number' ? parsed.ingress.port : undefined;
   } catch {
     return undefined;
   }
 }
 
-async function findFreeLoopbackPort(exclude?: number): Promise<number> {
+/**
+ * The local service port the Cloudflare Dashboard forwards to.
+ *
+ * Three sources, in order: the operator's `--tunnel-entry-port` (the port the runtime they
+ * verified reports), the status of the runtime this run reuses, and the Dashboard's own remote
+ * configuration — read back with the same reader the runtime uses (`readDeclaredIngressOrigin`),
+ * so the harness never keeps a second parser and never asks the operator to type a number the
+ * Dashboard already holds.
+ */
+async function resolveCloudflaredConsolePort(
+  options: Options,
+  env: Record<string, string>,
+): Promise<{ port?: number; source: string; error?: string }> {
+  if (options.tunnelEntryPort !== undefined) {
+    return { port: options.tunnelEntryPort, source: '--tunnel-entry-port' };
+  }
+  const reused = await readReusedTunnelEntryPort(options);
+  if (reused !== undefined) {
+    return { port: reused, source: `the runtime at ${options.publicUrl} reports it` };
+  }
+  if (!env.CLOUDFLARE_TUNNEL_TOKEN) {
+    return { source: 'none', error: 'CLOUDFLARE_TUNNEL_TOKEN is not configured' };
+  }
+  const read = await readDeclaredIngressOrigin(
+    { id: 'accept-named', provider: 'cloudflare' },
+    { env: { ...process.env, ...env }, active: true },
+  );
+  if (read.origin) {
+    return { port: read.origin.port, source: `${read.origin.readBack} (${read.origin.scheme ?? 'http'})` };
+  }
+  return {
+    source: 'none',
+    error: `${read.error ?? 'the Dashboard origin could not be read'}; pass --tunnel-entry-port if you know the number`,
+  };
+}
+
+async function readReusedTunnelEntryPort(options: Options): Promise<number | undefined> {
+  if (!options.reuse || !options.publicUrl) {
+    return undefined;
+  }
+  const status = await fetchStatus(`${options.publicUrl.replace(/\/+$/u, '')}/api/network/settings/status`);
+  return readReportedIngressPort(status.body);
+}
+
+async function findFreeLoopbackPort(exclude?: number | ReadonlySet<number>): Promise<number> {
+  // A group that declared a fixed port published a reservation; this is the pool every other
+  // group allocates from, so reserved ports are never handed out here either.
+  const reserved = reservedPorts();
+  const base = typeof exclude === 'number' ? new Set([ exclude ]) : exclude ?? new Set<number>();
+  const excluded = new Set<number>([ ...base, ...reserved ]);
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const port = await new Promise<number>((resolve, reject) => {
       const server = createServer();
@@ -1334,11 +1518,11 @@ async function findFreeLoopbackPort(exclude?: number): Promise<number> {
         server.close((error) => (error ? reject(error) : resolve(resolved)));
       });
     });
-    if (port !== exclude) {
+    if (!excluded.has(port)) {
       return port;
     }
   }
-  throw new Error('could not find a loopback port other than the reserved tunnel origin');
+  throw new Error('could not find a free port outside the ports this run reserved');
 }
 
 
@@ -1356,21 +1540,6 @@ async function waitForLoopbackRelay(name: string, port: number): Promise<boolean
     }
   }
   return false;
-}
-
-/** A shim that runs the vendor client from a platform-generated config the harness adjusted. */
-function writeConfigModeShim(directory: string, relayName: string, configPath: string): string {
-  const shim = path.join(directory, 'frpc');
-  writeFileSync(shim, [
-    '#!/bin/sh',
-    '# Acceptance shim: the vendor client runs from the platform-generated config with the',
-    '# candidate\'s port, sharing the relay namespace so 127.0.0.1 reaches this host.',
-    `exec docker run --rm --network=container:${relayName} -v ${configPath}:/run/frpc/frpc.ini:ro ` +
-    'natfrp.com/frpc --disable_log_color -n -c /run/frpc/frpc.ini',
-    '',
-  ].join('\n'));
-  chmodSync(shim, 0o755);
-  return shim;
 }
 
 function stopLoopbackRelay(name: string | undefined): void {
@@ -1417,15 +1586,28 @@ export interface PreflightLeg {
  */
 export function evaluatePreflight(input: {
   ngrok: { credential: boolean; agentConfiguration: boolean; tcpReachable: boolean; tlsReachable: boolean };
-  cloudflared: { token: boolean; hostname?: string; resolvedAddresses: string[]; registration?: string };
+  cloudflared: {
+    token: boolean;
+    hostname?: string;
+    resolvedAddresses: string[];
+    registration?: string;
+    /** The local service port the Dashboard forwards to, and whether it is free right now. */
+    consolePort?: number;
+    /** Where that number came from, or why it could not be read. */
+    consolePortSource?: string;
+    consolePortError?: string;
+    consolePortFree?: boolean;
+    consolePortOccupant?: string;
+  };
   sakura: {
     apiReachable: boolean;
     tunnelCount: number;
     tunnel?: { id: number; localIp: string; localPort?: number; node?: number; remote?: string; nodeHost?: string };
+    /** Whether the console's own local port is free right now, and who has it otherwise. */
+    localPortFree?: boolean;
+    localPortOccupant?: string;
   };
   frpc: { source: 'configured' | 'image' | 'absent' };
-  /** The tunnel entry this candidate would serve, when the console already forwards to it. */
-  gatewayPort?: number;
 }): PreflightLeg[] {
   const legs: PreflightLeg[] = [];
 
@@ -1459,11 +1641,29 @@ export function evaluatePreflight(input: {
       status: 'blocked',
       detail: `the token does not own a tunnel: ${input.cloudflared.registration.slice(0, 120)}`,
     });
+  } else if (input.cloudflared.consolePort === undefined) {
+    // The Dashboard owns the local service port; when it cannot be read back, the leg has
+    // nothing to pin and must say so instead of picking a number of its own.
+    legs.push({
+      leg: 'cloudflared-named',
+      status: 'blocked',
+      detail: `the Dashboard's local service port could not be determined (${input.cloudflared.consolePortError ?? 'no reason reported'})`,
+    });
+  } else if (input.cloudflared.consolePortFree === false) {
+    legs.push({
+      leg: 'cloudflared-named',
+      status: 'blocked',
+      detail: `the Dashboard forwards to local port ${input.cloudflared.consolePort}, which is held by `
+        + `${input.cloudflared.consolePortOccupant ?? 'another process'}; this harness never kills it and never moves the leg`,
+    });
   } else {
     legs.push({
       leg: 'cloudflared-named',
       status: 'ready',
-      detail: `${input.cloudflared.hostname} resolves (${input.cloudflared.resolvedAddresses.slice(0, 2).join(', ')})${input.cloudflared.registration ? `; ${input.cloudflared.registration}` : ''}`,
+      detail: `${input.cloudflared.hostname} resolves (${input.cloudflared.resolvedAddresses.slice(0, 2).join(', ')})`
+        + `; the candidate pins the Dashboard's local port ${input.cloudflared.consolePort}`
+        + `${input.cloudflared.consolePortSource ? ` (from ${input.cloudflared.consolePortSource})` : ''}`
+        + `${input.cloudflared.registration ? `; ${input.cloudflared.registration}` : ''}`,
     });
   }
 
@@ -1477,13 +1677,11 @@ export function evaluatePreflight(input: {
     });
   } else if (!input.sakura.tunnel) {
     legs.push({ leg: 'sakura', status: 'blocked', detail: 'no tunnel matches the credential tunnel ids' });
-  } else if (input.sakura.tunnel.localPort !== input.gatewayPort && input.frpc.source === 'configured') {
-    // A configured frpc is spawned with `-f`, which takes the console's port as given: the
-    // candidate cannot be the origin unless that port is the one it listens on.
+  } else if (input.sakura.tunnel.localPort === undefined) {
     legs.push({
       leg: 'sakura',
       status: 'blocked',
-      detail: `tunnel ${input.sakura.tunnel.id} forwards to local port ${input.sakura.tunnel.localPort ?? 'unset'}, not ${input.gatewayPort}, and the configured frpc cannot be re-pointed`,
+      detail: `tunnel ${input.sakura.tunnel.id} declares no local port: set one in the Sakura console`,
     });
   } else if (input.frpc.source === 'absent') {
     legs.push({
@@ -1491,19 +1689,24 @@ export function evaluatePreflight(input: {
       status: 'blocked',
       detail: 'no frpc binary: pass --frpc-bin, set FRPC_BIN, or provide the natfrp image',
     });
+  } else if (input.sakura.localPortFree === false) {
+    legs.push({
+      leg: 'sakura',
+      status: 'blocked',
+      detail: `the console forwards to local port ${input.sakura.tunnel.localPort}, which is held by `
+        + `${input.sakura.localPortOccupant ?? 'another process'}; this harness never kills it and never moves the leg`,
+    });
   } else {
-    // A container client cannot dial the host loopback, so the leg relays it and, when the
-    // console's port is taken, re-points the platform config at this candidate.
     const loopbackOrigin = /^(127\.0\.0\.1|localhost)$/iu.test(input.sakura.tunnel.localIp);
-    const adapted = input.sakura.tunnel.localPort !== input.gatewayPort
-      ? `; the client config will be re-pointed from ${input.sakura.tunnel.localPort} to this candidate`
-      : loopbackOrigin && input.frpc.source === 'image'
-        ? '; a relay namespace will carry the loopback origin to the container client'
-        : '';
+    const adapted = loopbackOrigin && input.frpc.source === 'image'
+      ? '; a relay namespace will carry the loopback origin to the container client'
+      : '';
     legs.push({
       leg: 'sakura',
       status: 'ready',
-      detail: `tunnel ${input.sakura.tunnel.id} → ${input.sakura.tunnel.localIp}:${input.sakura.tunnel.localPort}, remote ${input.sakura.tunnel.remote ?? '?'} on ${input.sakura.tunnel.nodeHost ?? 'unknown node'}${adapted}`,
+      detail: `tunnel ${input.sakura.tunnel.id} → ${input.sakura.tunnel.localIp}:${input.sakura.tunnel.localPort}, `
+        + `remote ${input.sakura.tunnel.remote ?? '?'} on ${input.sakura.tunnel.nodeHost ?? 'unknown node'}; `
+        + `the candidate pins the console's local port${adapted}`,
     });
   }
 
@@ -1512,30 +1715,107 @@ export function evaluatePreflight(input: {
 }
 
 /**
- * Whether the runtime could take this port.
+ * The network group's fixed parameters, reserved before any dynamic port is chosen.
  *
- * The candidate binds the ingress port on the wildcard address, so probing 127.0.0.1 is not
- * enough: a listener on `*:<port>` leaves the loopback bind free while still forcing the
- * candidate onto a different port — which then silently stops being the tunnel's origin.
+ * Every allocator in this repo (the runtime's port helpers, the integration runners, the test
+ * fixtures, this harness) skips a reserved port, so the two legs whose origin port lives in a
+ * provider console cannot be raced for by another group. A reservation is published both as a
+ * file under `.test-data/port-reservations/` and as `XPOD_RESERVED_PORTS` in this process, so
+ * child candidates inherit it too.
  */
-/**
- * A leg port that is free right now.
- *
- * Several worktrees can be running their own deployments at the same time, so a fixed offset
- * from this run's gateway port is a preference, not a guarantee: taking a busy port would
- * either fail the leg or — worse — make it test whatever else is listening there.
- */
-async function reserveLegPort(preferred: number): Promise<number> {
-  if (await isPortFree(preferred)) {
-    return preferred;
+export function reserveNetworkPorts(
+  options: Options,
+  owner = `accept-network-${process.pid}`,
+): PortReservation[] {
+  const ports = [ ...new Set(options.reservedPorts) ];
+  if (ports.length === 0) {
+    return [];
   }
-  const fallback = await findFreeLoopbackPort();
-  console.log(`[accept] port ${preferred} is taken (${describePortHolder(preferred)}); using ${fallback} instead`);
-  return fallback;
+  const reservations = ports.map((port) => reservePort({
+    port,
+    owner,
+    group: 'network',
+    note: 'tunnel acceptance: the port a provider console already forwards to',
+  }));
+  process.env[RESERVED_PORTS_ENV] = [
+    ...new Set([ ...parseReservedPortsEnv(process.env[RESERVED_PORTS_ENV]), ...ports ]),
+  ].join(',');
+  console.log(`[accept] network group reserved ${ports.join(', ')} (${owner})`);
+  return reservations;
+}
+
+/**
+ * A leg's port, decided by the leg's own policy and recorded for the evidence.
+ *
+ * Several worktrees can run their own deployments at the same time, so a fixed offset from this
+ * run's gateway port is a preference, not a guarantee: taking a busy port would either fail the
+ * leg or — worse — make it test whatever else is listening there. A console-bound leg is the
+ * exception: its number is already written in a provider console, so being taken is a failure
+ * that names the occupant, never a reason to move.
+ */
+export async function takeLegPort(
+  input: {
+    leg: string;
+    group: TunnelGroup;
+    policy: LegPortPolicy;
+    preferred?: number;
+    consolePort?: number;
+  },
+  records: LegPortRecord[],
+  reserved: ReadonlySet<number>,
+): Promise<LegPortDecision> {
+  const decision = await decideLegPort({
+    ...input,
+    reserved,
+    isFree: isPortFree,
+    describeOccupant: describePortHolder,
+  });
+  let detail = decision.detail;
+  if (!decision.ok && input.consolePort !== undefined) {
+    // A fixed port that somebody else holds is the one failure mode the reservation cannot
+    // prevent: the holder simply did not honour it. Say so, and name both facts.
+    const reservation = portReservation(input.consolePort);
+    if (reservation) {
+      detail += `; the port is reserved by group ${reservation.group} (owner ${reservation.owner}, since ${reservation.reservedAt})`;
+    }
+  }
+  const recorded: LegPortDecision = { ...decision, detail };
+  records.push({
+    leg: input.leg,
+    group: input.group,
+    portPolicy: input.policy,
+    ...(recorded.requestedPort === undefined ? {} : { requestedPort: recorded.requestedPort }),
+    ...(recorded.port === undefined ? {} : { port: recorded.port }),
+    ...(recorded.consolePort === undefined ? {} : { consolePort: recorded.consolePort, fixedPort: recorded.consolePort }),
+    ok: recorded.ok,
+    detail: recorded.detail,
+  });
+  console.log(`[accept] ${input.leg}: ${recorded.ok ? 'port' : 'BLOCKED'} ${recorded.port ?? 'none'} (${input.policy}) — ${recorded.detail}`);
+  return recorded;
+}
+
+/** One leg's port decision, as the evidence records it. */
+export interface LegPortRecord {
+  leg: string;
+  group: TunnelGroup;
+  portPolicy: LegPortPolicy;
+  /** Preferred port for a dynamic leg, before it was moved to a free one. */
+  requestedPort?: number;
+  /** The port the leg's candidate was started on. */
+  port?: number;
+  /** The port the provider console declares, for a console-bound leg. */
+  consolePort?: number;
+  /** The tunnel entry the leg pinned or observed, when it got that far. */
+  ingressPort?: number;
+  ingressPinned?: boolean;
+  /** The fixed value this leg declared for itself, when it has one. */
+  fixedPort?: number;
+  ok: boolean;
+  detail: string;
 }
 
 /** Names the process holding a port, so a blocked leg points at a culprit instead of a number. */
-function describePortHolder(port: number): string {
+export function describePortHolder(port: number): string {
   try {
     const output = execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN`, { encoding: 'utf8', timeout: 15_000 });
     const lines = output.trim().split('\n').slice(1);
@@ -1563,7 +1843,9 @@ function describePortHolder(port: number): string {
  * `*:<port>` owns the number even when IPv4 loopback alone still looks free.
  */
 export async function isPortFree(port: number): Promise<boolean> {
-  return await getFreePortForWildcard(port) === port;
+  // Probing, not allocating: `getFreePortForWildcard` skips reserved ports by design, so asking
+  // it "is 5737 free?" would answer about the reservation instead of about the socket.
+  return await isFreePortForWildcard(port);
 }
 
 async function probeTls(host: string): Promise<{ tcpReachable: boolean; tlsReachable: boolean }> {
@@ -1619,6 +1901,13 @@ async function runPreflight(options: Options, env: Record<string, string>): Prom
     ? 'configured'
     : frpc.path ? 'image' : 'absent';
 
+  // Console-bound legs pin the port their console already forwards to, so "is that port free
+  // right now" is the fact that decides whether the leg can run at all.
+  const cloudflaredConsole = await resolveCloudflaredConsolePort(options, env);
+  const cloudflaredConsolePort = cloudflaredConsole.port;
+  const cloudflaredPortFree = cloudflaredConsolePort === undefined ? undefined : await isPortFree(cloudflaredConsolePort);
+  const sakuraPortFree = selected?.local_port === undefined ? undefined : await isPortFree(selected.local_port);
+
   return evaluatePreflight({
     ngrok: {
       credential: Boolean(env.NGROK_AUTHTOKEN),
@@ -1630,6 +1919,13 @@ async function runPreflight(options: Options, env: Record<string, string>): Prom
       hostname,
       resolvedAddresses,
       ...(registration ? { registration } : {}),
+      ...(cloudflaredConsolePort === undefined
+        ? { consolePortError: cloudflaredConsole.error ?? cloudflaredConsole.source }
+        : { consolePort: cloudflaredConsolePort, consolePortSource: cloudflaredConsole.source }),
+      ...(cloudflaredPortFree === undefined ? {} : { consolePortFree: cloudflaredPortFree }),
+      ...(cloudflaredPortFree === false && cloudflaredConsolePort !== undefined
+        ? { consolePortOccupant: describePortHolder(cloudflaredConsolePort) }
+        : {}),
     },
     sakura: {
       apiReachable,
@@ -1646,8 +1942,11 @@ async function runPreflight(options: Options, env: Record<string, string>): Prom
             },
           }
         : {}),
+      ...(sakuraPortFree === undefined ? {} : { localPortFree: sakuraPortFree }),
+      ...(sakuraPortFree === false && selected?.local_port !== undefined
+        ? { localPortOccupant: describePortHolder(selected.local_port) }
+        : {}),
     },
-    gatewayPort: await findGatewayIngressPort(options.candidatePort),
     frpc: { source: frpcSource },
   });
 }
@@ -1716,12 +2015,15 @@ async function main(): Promise<void> {
   // Preflight answers "can this leg run at all" in seconds, so a missing console fact or a
   // blocked network hop is never discovered as a failed ten-minute acceptance run.
   if (options.preflight) {
-    const legs = await runPreflight(options, env);
+    const selected = resolveTunnelGroups(options.group);
+    const legs = (await runPreflight(options, env)).filter((entry) => (entry.leg === 'ngrok'
+      ? selected.dynamic
+      : selected.network));
     for (const entry of legs) {
       console.log(`${entry.status === 'ready' ? 'READY  ' : 'BLOCKED'} ${entry.leg.padEnd(18)} ${entry.detail}`);
     }
     const blocked = legs.filter((entry) => entry.status === 'blocked');
-    console.log(`[preflight] ${legs.length - blocked.length}/${legs.length} ready; credential file ${path.relative(checkout, options.envFile)}`);
+    console.log(`[preflight] group=${options.group}: ${legs.length - blocked.length}/${legs.length} ready; credential file ${path.relative(checkout, options.envFile)}`);
     process.exitCode = blocked.length > 0 ? 1 : 0;
     return;
   }
@@ -1755,319 +2057,511 @@ async function main(): Promise<void> {
     : createFakeQleverRuntimeCommand();
   const qleverCommand = process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND ?? qleverFixture!.command;
 
+  const groups = resolveTunnelGroups(options.group);
+
+  // The console-bound legs need the exact ports their consoles already forward to, so those
+  // are discovered *before* any dynamic port is chosen: a dynamic candidate, or one of its
+  // child services, must never occupy a port a tunnel is already pointed at.
+  let sakuraFacts: SakuraTunnelFacts | undefined;
+  if (groups.network && env.SAKURA_TUNNEL_TOKEN) {
+    sakuraFacts = await readSakuraTunnelFacts(env.SAKURA_TUNNEL_TOKEN);
+    if (sakuraFacts?.localPort !== undefined) {
+      options.reservedPorts.push(sakuraFacts.localPort);
+    }
+  }
+  let cloudflaredConsole: { port?: number; source: string; error?: string } = { source: 'none' };
+  if (groups.network) {
+    cloudflaredConsole = await resolveCloudflaredConsolePort(options, env);
+    if (cloudflaredConsole.port !== undefined) {
+      options.tunnelEntryPort = cloudflaredConsole.port;
+      options.reservedPorts.push(cloudflaredConsole.port);
+    } else {
+      console.log(`[accept] cloudflared named leg: no Dashboard port to pin (${cloudflaredConsole.error ?? cloudflaredConsole.source})`);
+    }
+  }
+  const reservations = reserveNetworkPorts(options);
+
+  // Every leg's port decision, so a run can explain a "5737 vs 3303" mismatch afterwards.
+  const legRecords: LegPortRecord[] = [];
+  const requestedCandidatePort = options.candidatePort;
+  const candidateDecision = await takeLegPort(
+    { leg: 'candidate-gateway', group: options.group, policy: 'dynamic', preferred: options.candidatePort },
+    legRecords,
+    reservedNow,
+  );
+  if (candidateDecision.port === undefined) {
+    throw new Error(`no gateway port available for the candidate: ${candidateDecision.detail}`);
+  }
+  options.candidatePort = candidateDecision.port;
+
   let child: ChildProcess | undefined;
-  // Remembered so the A01 restart lands on the same ingress port.
+  // Read from the candidate's own status/log; pinned into the A01 restart so it lands on the
+  // same tunnel entry instead of re-deriving one.
   let candidateIngressPort: number | undefined;
   const checks: CheckResult[] = [];
   const tunnels: TunnelObservation[] = [];
   let identityEvidence: { identity?: unknown; resource?: unknown } = {};
   let soakSamples: SoakSample[] = [];
+  let catalog: Array<{ id: string; legacyCredentialEnvKey: string }> = [];
+  let readiness: string | undefined;
+  // Declared (or configured) public entry, recorded with the tunnel observations.
+  let publicEntry: string | undefined;
   try {
-    if (options.start) {
-      await assertPortFree(options.candidatePort);
-      console.log(`[accept] starting candidate on port ${options.candidatePort} (sha ${candidateSha.slice(0, 8)})`);
-      if (options.keepCandidate) {
-        console.log(`[accept] keeping the candidate alive for inspection (cwd ${scratchDir})`);
+    // The default line: every port here is dynamic, so this line needs no provider console
+    // and can run next to any other session's candidate or integration run.
+    if (groups.dynamic) {
+      if (options.start) {
+        await assertPortFree(options.candidatePort);
+        console.log(`[accept] starting candidate on port ${options.candidatePort} (sha ${candidateSha.slice(0, 8)})`);
+        if (options.keepCandidate) {
+          console.log(`[accept] keeping the candidate alive for inspection (cwd ${scratchDir})`);
+        }
+        // The untrusted-when-forwarded listener is internal now; a tunnel reaches the
+        // Gateway port itself, so nothing here has to pin or avoid a second number.
+        child = await startCandidate(options, checkout, logFile, adminToken, scratchDir, qleverCommand, candidateEnvFile, options.candidatePort);
       }
-      // The untrusted-when-forwarded listener is internal now; a tunnel reaches the
-      // Gateway port itself, so nothing here has to pin or avoid a second number.
-      child = await startCandidate(options, checkout, logFile, adminToken, scratchDir, qleverCommand, candidateEnvFile, options.candidatePort);
-    }
-    const ready = await waitForCandidate(options.candidatePort, options.timeoutMs);
-    if (!ready) {
-      throw new Error(`candidate did not become ready on port ${options.candidatePort}`);
-    }
-    // The Gateway answers before its children do, and the API child only starts listening
-    // after its tunnel provider has connected or timed out. Waiting here keeps that delay
-    // from being reported as a wall of 502s from a candidate that is merely still booting.
-    const apiReady = await waitForApiChild(options.candidatePort, options.timeoutMs * 2);
-    checks.push({
-      id: 'candidate-api-ready',
-      entry: 'loopback',
-      expectation: 'the API child answers before its endpoints are probed',
-      observed: apiReady ? '200' : 'not answering',
-      ok: apiReady,
-      ...(apiReady ? {} : { detail: 'the API child never answered; later 502s are this, not the endpoints' }),
-    });
-
-    const loopbackBase = `http://127.0.0.1:${options.candidatePort}/`;
-    const status = await fetchStatus(`${loopbackBase}service/status`);
-    checks.push({
-      id: 'candidate-runtime',
-      entry: 'loopback',
-      expectation: '200 with css and api running',
-      observed: String(status.status),
-      ok: status.status === 200 && /"css"/u.test(status.body) && /"api"/u.test(status.body),
-      detail: status.body.slice(0, 400),
-    });
-
-    const networkStatus = await fetchStatus(`${loopbackBase}api/network/settings/status`);
-    const catalog = readCatalog(networkStatus.body);
-    const readiness = readTunnelCapability(networkStatus.body);
-    writeFileSync(path.join(options.evidenceDir, 'candidate-network-status.json'), JSON.stringify({
-      sha: candidateSha,
-      dirty: candidateDirty,
-      fetchedAt: new Date().toISOString(),
-      httpStatus: networkStatus.status,
-      providers: catalog,
-      tunnel: readiness,
-    }, null, 2));
-
-    // A04 local layers run first: the isolation matrix below mutates the admin
-    // configuration, and identity/Pod evidence must describe the candidate as configured
-    // by this harness rather than a configuration it just changed.
-    if (options.identityChain && options.start) {
-      identityEvidence = await runIdentityAndPodChain(loopbackBase, checks);
-    } else if (options.identityChain) {
-      checks.push({
-        id: 'a04-identity',
-        entry: 'candidate',
-        expectation: 'a real account and Pod exist on this candidate',
-        observed: 'skipped',
-        ok: false,
-        detail: 'identity chain only runs on a candidate started by this harness (--start)',
-      });
-    }
-
-    // 1) The loopback listener must keep serving the local operator.
-    // `--reuse` points at an instance the operator runs: probe it, never write to it.
-    checks.push(...await runIsolationMatrix(
-      { id: 'loopback', label: 'local listener', baseUrl: loopbackBase },
-      adminToken,
-      { mutateLocal: options.start },
-    ));
-
-
-    // A01: configure → restart → connect, driven through the settings API.
-    if (options.a01 && options.start) {
-      const a01 = await runA01ConfigurationRestart(options, {
-        checkout,
-        scratchDir,
-        qleverCommand,
-        adminToken,
-        envFilePath: candidateEnvFile,
-        candidateLog: logFile,
-        child,
-        // The restart must land on the same ingress port, or the ingress matrix below would
-        // probe a listener the new process never opened.
-        ...(candidateIngressPort ? { ingressPort: candidateIngressPort } : {}),
-      }, checks);
-      if (a01.child) child = a01.child;
-      if (a01.logFile) logFile = a01.logFile;
-    }
-
-    const ingressPort = candidateIngressPort ?? await waitForIngressPort(logFile, 30_000);
-
-    // 2) The untrusted ingress listener is the origin every remote forwarder uses, so it
-    //    stands in for a real tunnel when no credential is available.
-    if (ingressPort) {
-      checks.push(...await runIsolationMatrix({
-        id: 'ingress',
-        label: 'untrusted ingress listener',
-        baseUrl: `http://127.0.0.1:${ingressPort}/`,
-      }, adminToken));
-    }
-
-    // 3) A real public entry, when one is configured or declared.
-    const publicEntry = options.publicUrl
-      ?? env.NGROK_URL
-      ?? env.CLOUDFLARE_TUNNEL_URL
-      ?? env.SAKURA_TUNNEL_URL;
-    if (publicEntry) {
-      // A declared entry with no connector behind it cannot test anything: say that once
-      // instead of reporting five matrix checks as failures of our own isolation.
-      const declaredEntry: Entry = {
-        id: 'public',
-        label: 'public entry',
-        baseUrl: publicEntry,
-        allowSelfSigned: /self-signed/iu.test(await describeCertificate(publicEntry)),
-      };
-      const declaredReachable = await waitForPublicEntry(publicEntry, 15_000, declaredEntry.allowSelfSigned === true);
-      if (declaredReachable) {
-        checks.push(...await runIsolationMatrix(declaredEntry, adminToken));
-      } else if (options.namedTunnel && env.CLOUDFLARE_TUNNEL_TOKEN && env.CLOUDFLARE_TUNNEL_URL) {
-        // No connector is up yet at this point: the named-tunnel leg starts one and probes
-        // this very entry, so reporting it as unreachable here would be a false negative.
-        checks.push({
-          id: 'public-entry-declared-deferred',
-          entry: 'public',
-          expectation: 'the declared entry is probed by the leg that can bring its connector up',
-          observed: `${publicEntry} · no connector yet`,
-          ok: true,
-          detail: 'deferred to the cloudflared named-tunnel leg',
-        });
-      } else {
-        checks.push({
-          id: 'public-entry-declared-unreachable',
-          entry: 'public',
-          expectation: 'the declared public entry answers before its isolation matrix runs',
-          observed: `${publicEntry} · unreachable`,
-          ok: false,
-          detail: 'the declared entry has no healthy connector: fix the provider side (or clear the declared URL) rather than reading this as an isolation failure',
-        });
+      const ready = await waitForCandidate(options.candidatePort, options.timeoutMs);
+      if (!ready) {
+        throw new Error(`candidate did not become ready on port ${options.candidatePort}`);
       }
-    } else {
+      // The Gateway answers before its children do, and the API child only starts listening
+      // after its tunnel provider has connected or timed out. Waiting here keeps that delay
+      // from being reported as a wall of 502s from a candidate that is merely still booting.
+      const apiReady = await waitForApiChild(options.candidatePort, options.timeoutMs * 2);
       checks.push({
-        id: 'public-entry',
-        entry: 'public',
-        expectation: '403 for anonymous/forged admin requests',
-        observed: 'not available',
-        ok: true,
-        detail: 'no public entry configured or declared; tunnel leg recorded as uncovered',
+        id: 'candidate-api-ready',
+        entry: 'loopback',
+        expectation: 'the API child answers before its endpoints are probed',
+        observed: apiReady ? '200' : 'not answering',
+        ok: apiReady,
+        ...(apiReady ? {} : { detail: 'the API child never answered; later 502s are this, not the endpoints' }),
       });
-    }
 
-    // Scope isolation (A12) and the peer-to-peer default are configuration facts the
-    // candidate can prove without any third-party credential.
-    const catalogIds = catalog.map((provider) => provider.id);
-    checks.push({
-      id: 'scope-no-relay-no-tailscale',
-      entry: 'candidate',
-      expectation: 'no tailscale or relay provider is offered',
-      observed: catalogIds.join(',') || 'none',
-      ok: !catalogIds.some((id) => /tailscale|relay/iu.test(id)),
-    });
-    const p2pEnabled = readP2pEnabled(networkStatus.body);
-    checks.push({
-      id: 'p2p-opt-in-default',
-      entry: 'candidate',
-      expectation: 'false unless the deployment opted in',
-      observed: String(p2pEnabled),
-      ok: p2pEnabled === false,
-    });
-
-    // A02: an explicitly closed tunnel must stay closed even with a stored credential —
-    // the check needs no real account, only a dummy credential the runtime must not use.
-    if (options.explicitOff) {
-      // Far enough from the first candidate: the CLI derives its CSS/API ports from the
-      // gateway port, so a neighbour would collide instead of testing anything.
-      const offPort = await reserveLegPort(options.candidatePort + 100);
-      const offLog = path.join(options.evidenceDir, `candidate-explicit-off-${Date.now()}.log`);
-      const offChild = await startCandidate(options, checkout, offLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, offPort, {
-        XPOD_TUNNEL_PROFILES: JSON.stringify([
-          { id: 'accept-off', provider: 'ngrok', label: 'closed tunnel', publicUrl: 'https://closed.example.com' },
-        ]),
-        XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'none',
-        XPOD_TUNNEL_PROFILE_ACCEPT_OFF_TOKEN: 'dummy-credential-never-used',
+      const loopbackBase = `http://127.0.0.1:${options.candidatePort}/`;
+      const status = await fetchStatus(`${loopbackBase}service/status`);
+      checks.push({
+        id: 'candidate-runtime',
+        entry: 'loopback',
+        expectation: '200 with css and api running',
+        observed: String(status.status),
+        ok: status.status === 200 && /"css"/u.test(status.body) && /"api"/u.test(status.body),
+        detail: status.body.slice(0, 400),
       });
-      try {
-        const offReady = await waitForCandidate(offPort, options.timeoutMs);
-        const offStatus = await fetchStatus(`http://127.0.0.1:${offPort}/api/network/settings/status`);
-        const offTunnel = readTunnelCapability(offStatus.body);
-        const offLogText = existsSync(offLog) ? readFileSync(offLog, 'utf8') : '';
+
+      const networkStatus = await fetchStatus(`${loopbackBase}api/network/settings/status`);
+      catalog = readCatalog(networkStatus.body);
+      readiness = readTunnelCapability(networkStatus.body);
+      writeFileSync(path.join(options.evidenceDir, 'candidate-network-status.json'), JSON.stringify({
+        sha: candidateSha,
+        dirty: candidateDirty,
+        fetchedAt: new Date().toISOString(),
+        httpStatus: networkStatus.status,
+        providers: catalog,
+        tunnel: readiness,
+      }, null, 2));
+
+      // A04 local layers run first: the isolation matrix below mutates the admin
+      // configuration, and identity/Pod evidence must describe the candidate as configured
+      // by this harness rather than a configuration it just changed.
+      if (options.identityChain && options.start) {
+        identityEvidence = await runIdentityAndPodChain(loopbackBase, checks);
+      } else if (options.identityChain) {
         checks.push({
-          id: 'explicit-off-stays-off',
+          id: 'a04-identity',
           entry: 'candidate',
-          expectation: 'tunnel inactive and no provider started',
-          observed: `${offTunnel ?? 'unknown'}${/Starting ngrok tunnel|ngrok http/iu.test(offLogText) ? ' + provider started' : ''}`,
-          ok: offReady && (offTunnel === 'inactive' || offTunnel === 'unsupported')
-            && !/Starting ngrok tunnel|ngrok http/iu.test(offLogText),
-        });
-      } finally {
-        await stopChild(offChild);
-      }
-    }
-
-    // Real tunnel leg: when ngrok can run (its own agent credentials or a configured
-    // token), bring up a genuine public entry and run the isolation matrix over it. The
-    // profile deliberately declares no publicUrl, because a generated entry is the one a
-    // free account may create — and the provider is supposed to discover it.
-    if (options.realTunnel) {
-      const legPort = await reserveLegPort(options.candidatePort + 200);
-      const legLog = path.join(options.evidenceDir, `candidate-ngrok-real-${Date.now()}.log`);
-      const realChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
-        XPOD_TUNNEL_PROFILES: JSON.stringify([
-          { id: 'accept-ngrok', provider: 'ngrok', label: 'acceptance ngrok' },
-        ]),
-        XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-ngrok',
-        ...(env.NGROK_AUTHTOKEN ? { NGROK_AUTHTOKEN: env.NGROK_AUTHTOKEN } : {}),
-      });
-      try {
-        const legReady = await waitForCandidate(legPort, options.timeoutMs);
-        let entry: string | undefined;
-        let observed: string | undefined;
-        let detail: string | undefined;
-        const deadline = Date.now() + options.tunnelTimeoutMs;
-        while (legReady && Date.now() < deadline) {
-          const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
-          observed = readTunnelCapability(legStatus.body);
-          detail = readTunnelDetail(legStatus.body);
-          // Prefer the endpoint the provider actually observed over any configured or
-          // Cloud-issued address.
-          entry = readTunnelEndpoint(legStatus.body)
-            ?? readPublicAddresses(legStatus.body).find((value) => /^https?:\/\//u.test(value));
-          if (observed === 'active' && entry) break;
-          await new Promise((resolve) => setTimeout(resolve, 2_000));
-        }
-
-        const credentialSource = env.NGROK_AUTHTOKEN ? 'env file' : 'operator ngrok agent configuration';
-        checks.push({
-          id: 'ngrok-real-entry',
-          entry: 'public',
-          expectation: 'readiness active with a discovered public entry',
-          observed: `${observed ?? 'unknown'} · ${entry ?? 'no entry'}`,
-          ok: observed === 'active' && Boolean(entry),
-          detail: `credential source: ${credentialSource}`,
-        });
-
-        if (entry) {
-          checks.push(await checkEntryServesCandidate({ id: 'public', label: 'real ngrok entry', baseUrl: entry }, `http://127.0.0.1:${legPort}/`));
-          checks.push(...await runIsolationMatrix({ id: 'public', label: 'real ngrok entry', baseUrl: entry }, adminToken));
-        }
-      } finally {
-        await stopChild(realChild);
-      }
-    }
-
-    // Real cloudflared edge without an account: the quick tunnel terminates on the same
-    // ingress listener a managed named tunnel uses.
-    if (options.quickTunnel) {
-      const ingressForTunnel = candidateIngressPort ?? await waitForIngressPort(logFile, 30_000);
-      if (!ingressForTunnel) {
-        checks.push({
-          id: 'cloudflared-quick-tunnel',
-          entry: 'public',
-          expectation: 'real cloudflared entry serves the candidate',
+          expectation: 'a real account and Pod exist on this candidate',
           observed: 'skipped',
           ok: false,
-          detail: 'candidate did not report an ingress listener port',
+          detail: 'identity chain only runs on a candidate started by this harness (--start)',
         });
+      }
+
+      // 1) The loopback listener must keep serving the local operator.
+      // `--reuse` points at an instance the operator runs: probe it, never write to it.
+      checks.push(...await runIsolationMatrix(
+        { id: 'loopback', label: 'local listener', baseUrl: loopbackBase },
+        adminToken,
+        { mutateLocal: options.start },
+      ));
+
+
+      // The tunnel entry the candidate actually bound. It is read once, here, so the A01
+      // restart can be pinned to the same number: re-deriving it after a restart could open a
+      // listener the ingress matrix below never probes.
+      candidateIngressPort = await waitForIngressPort(logFile, 30_000);
+      if (candidateIngressPort !== undefined) {
+        legRecords.push({
+          leg: 'candidate-ingress',
+          group: 'default',
+          portPolicy: 'dynamic',
+          port: options.candidatePort,
+          ingressPort: candidateIngressPort,
+          ingressPinned: false,
+          ok: true,
+          detail: 'chosen by the runtime from free ports (gateway+3..+9)',
+        });
+      }
+
+      // A01: configure → restart → connect, driven through the settings API.
+      if (options.a01 && options.start) {
+        const a01 = await runA01ConfigurationRestart(options, {
+          checkout,
+          scratchDir,
+          qleverCommand,
+          adminToken,
+          envFilePath: candidateEnvFile,
+          candidateLog: logFile,
+          child,
+          // The restart must land on the same ingress port, or the ingress matrix below would
+          // probe a listener the new process never opened.
+          ...(candidateIngressPort ? { ingressPort: candidateIngressPort } : {}),
+        }, checks);
+        if (a01.child) child = a01.child;
+        if (a01.logFile) logFile = a01.logFile;
+      }
+
+      const ingressPort = candidateIngressPort ?? await waitForIngressPort(logFile, 30_000);
+      if (candidateIngressPort !== undefined) {
+        legRecords.push({
+          leg: 'a01-restart',
+          group: 'default',
+          portPolicy: 'dynamic',
+          port: options.candidatePort,
+          ingressPort: candidateIngressPort,
+          ingressPinned: true,
+          ok: true,
+          detail: 'restart pinned to the entry observed before it, so the same listener keeps serving',
+        });
+      }
+
+      // 2) The untrusted ingress listener is the origin every remote forwarder uses, so it
+      //    stands in for a real tunnel when no credential is available.
+      if (ingressPort) {
+        checks.push(...await runIsolationMatrix({
+          id: 'ingress',
+          label: 'untrusted ingress listener',
+          baseUrl: `http://127.0.0.1:${ingressPort}/`,
+        }, adminToken));
+      }
+
+      // 3) A real public entry, when one is configured or declared.
+      publicEntry = options.publicUrl
+        ?? env.NGROK_URL
+        ?? env.CLOUDFLARE_TUNNEL_URL
+        ?? env.SAKURA_TUNNEL_URL;
+      if (publicEntry) {
+        // A declared entry with no connector behind it cannot test anything: say that once
+        // instead of reporting five matrix checks as failures of our own isolation.
+        const declaredEntry: Entry = {
+          id: 'public',
+          label: 'public entry',
+          baseUrl: publicEntry,
+          allowSelfSigned: /self-signed/iu.test(await describeCertificate(publicEntry)),
+        };
+        const declaredReachable = await waitForPublicEntry(publicEntry, 15_000, declaredEntry.allowSelfSigned === true);
+        if (declaredReachable) {
+          checks.push(...await runIsolationMatrix(declaredEntry, adminToken));
+        } else if (options.namedTunnel && env.CLOUDFLARE_TUNNEL_TOKEN && env.CLOUDFLARE_TUNNEL_URL) {
+          // No connector is up yet at this point: the named-tunnel leg starts one and probes
+          // this very entry, so reporting it as unreachable here would be a false negative.
+          checks.push({
+            id: 'public-entry-declared-deferred',
+            entry: 'public',
+            expectation: 'the declared entry is probed by the leg that can bring its connector up',
+            observed: `${publicEntry} · no connector yet`,
+            ok: true,
+            detail: 'deferred to the cloudflared named-tunnel leg',
+          });
+        } else {
+          checks.push({
+            id: 'public-entry-declared-unreachable',
+            entry: 'public',
+            expectation: 'the declared public entry answers before its isolation matrix runs',
+            observed: `${publicEntry} · unreachable`,
+            ok: false,
+            detail: 'the declared entry has no healthy connector: fix the provider side (or clear the declared URL) rather than reading this as an isolation failure',
+          });
+        }
       } else {
-        const quickLog = path.join(options.evidenceDir, `cloudflared-quick-${Date.now()}.log`);
-        const quick = await startQuickTunnel(ingressForTunnel, quickLog, options.tunnelTimeoutMs);
+        checks.push({
+          id: 'public-entry',
+          entry: 'public',
+          expectation: '403 for anonymous/forged admin requests',
+          observed: 'not available',
+          ok: true,
+          detail: 'no public entry configured or declared; tunnel leg recorded as uncovered',
+        });
+      }
+
+      // Scope isolation (A12) and the peer-to-peer default are configuration facts the
+      // candidate can prove without any third-party credential.
+      const catalogIds = catalog.map((provider) => provider.id);
+      checks.push({
+        id: 'scope-no-relay-no-tailscale',
+        entry: 'candidate',
+        expectation: 'no tailscale or relay provider is offered',
+        observed: catalogIds.join(',') || 'none',
+        ok: !catalogIds.some((id) => /tailscale|relay/iu.test(id)),
+      });
+      const p2pEnabled = readP2pEnabled(networkStatus.body);
+      checks.push({
+        id: 'p2p-opt-in-default',
+        entry: 'candidate',
+        expectation: 'false unless the deployment opted in',
+        observed: String(p2pEnabled),
+        ok: p2pEnabled === false,
+      });
+
+      // A02: an explicitly closed tunnel must stay closed even with a stored credential —
+      // the check needs no real account, only a dummy credential the runtime must not use.
+      if (options.explicitOff) {
+        // Far enough from the first candidate: the CLI derives its CSS/API ports from the
+        // gateway port, so a neighbour would collide instead of testing anything.
+        const offPortDecision = await takeLegPort({
+          leg: 'explicit-off',
+          group: 'default',
+          policy: 'dynamic',
+          preferred: options.candidatePort + 100,
+        }, legRecords, reservedNow);
+        const offPort = offPortDecision.port!;
+        const offLog = path.join(options.evidenceDir, `candidate-explicit-off-${Date.now()}.log`);
+        const offChild = await startCandidate(options, checkout, offLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, offPort, {
+          XPOD_TUNNEL_PROFILES: JSON.stringify([
+            { id: 'accept-off', provider: 'ngrok', label: 'closed tunnel', publicUrl: 'https://closed.example.com' },
+          ]),
+          XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'none',
+          XPOD_TUNNEL_PROFILE_ACCEPT_OFF_TOKEN: 'dummy-credential-never-used',
+        });
         try {
-          if (!quick.url) {
-            checks.push({
-              id: 'cloudflared-quick-tunnel',
-              entry: 'public',
-              expectation: 'real cloudflared entry serves the candidate',
-              observed: 'no quick tunnel URL',
-              ok: false,
-              detail: 'cloudflared did not publish a trycloudflare.com entry',
-            });
-          } else {
-            const reachable = await waitForPublicEntry(quick.url, options.tunnelTimeoutMs);
-            checks.push({
-              id: 'cloudflared-quick-tunnel',
-              entry: 'public',
-              expectation: 'real cloudflared entry serves the candidate',
-              observed: `${quick.url} · ${reachable ? 'serving' : 'unreachable'}`,
-              ok: reachable,
-              detail: 'no account required (quick tunnel)',
-            });
-            if (reachable) {
-              checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, loopbackBase));
-              checks.push(...await runIsolationMatrix({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, adminToken));
-            }
-          }
+          const offReady = await waitForCandidate(offPort, options.timeoutMs);
+          const offStatus = await fetchStatus(`http://127.0.0.1:${offPort}/api/network/settings/status`);
+          const offTunnel = readTunnelCapability(offStatus.body);
+          const offLogText = existsSync(offLog) ? readFileSync(offLog, 'utf8') : '';
+          checks.push({
+            id: 'explicit-off-stays-off',
+            entry: 'candidate',
+            expectation: 'tunnel inactive and no provider started',
+            observed: `${offTunnel ?? 'unknown'}${/Starting ngrok tunnel|ngrok http/iu.test(offLogText) ? ' + provider started' : ''}`,
+            ok: offReady && (offTunnel === 'inactive' || offTunnel === 'unsupported')
+              && !/Starting ngrok tunnel|ngrok http/iu.test(offLogText),
+          });
         } finally {
-          await stopChild(quick.child);
+          await stopChild(offChild);
         }
       }
+
+      // Real tunnel leg: when ngrok can run (its own agent credentials or a configured
+      // token), bring up a genuine public entry and run the isolation matrix over it. The
+      // profile deliberately declares no publicUrl, because a generated entry is the one a
+      // free account may create — and the provider is supposed to discover it.
+      if (options.realTunnel) {
+        const legPort = (await takeLegPort({
+          leg: 'ngrok-real',
+          group: 'default',
+          policy: 'dynamic',
+          preferred: options.candidatePort + 200,
+        }, legRecords, reservedNow)).port!;
+        const legLog = path.join(options.evidenceDir, `candidate-ngrok-real-${Date.now()}.log`);
+        const realChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
+          XPOD_TUNNEL_PROFILES: JSON.stringify([
+            { id: 'accept-ngrok', provider: 'ngrok', label: 'acceptance ngrok' },
+          ]),
+          XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-ngrok',
+          ...(env.NGROK_AUTHTOKEN ? { NGROK_AUTHTOKEN: env.NGROK_AUTHTOKEN } : {}),
+        });
+        try {
+          const legReady = await waitForCandidate(legPort, options.timeoutMs);
+          let entry: string | undefined;
+          let observed: string | undefined;
+          let detail: string | undefined;
+          const deadline = Date.now() + options.tunnelTimeoutMs;
+          while (legReady && Date.now() < deadline) {
+            const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
+            observed = readTunnelCapability(legStatus.body);
+            detail = readTunnelDetail(legStatus.body);
+            // Prefer the endpoint the provider actually observed over any configured or
+            // Cloud-issued address.
+            entry = readTunnelEndpoint(legStatus.body)
+              ?? readPublicAddresses(legStatus.body).find((value) => /^https?:\/\//u.test(value));
+            if (observed === 'active' && entry) break;
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
+          }
+
+          const credentialSource = env.NGROK_AUTHTOKEN ? 'env file' : 'operator ngrok agent configuration';
+          checks.push({
+            id: 'ngrok-real-entry',
+            entry: 'public',
+            expectation: 'readiness active with a discovered public entry',
+            observed: `${observed ?? 'unknown'} · ${entry ?? 'no entry'}`,
+            ok: observed === 'active' && Boolean(entry),
+            detail: `credential source: ${credentialSource}`,
+          });
+
+          if (entry) {
+            checks.push(await checkEntryServesCandidate({ id: 'public', label: 'real ngrok entry', baseUrl: entry }, `http://127.0.0.1:${legPort}/`));
+            checks.push(...await runIsolationMatrix({ id: 'public', label: 'real ngrok entry', baseUrl: entry }, adminToken));
+          }
+        } finally {
+          await stopChild(realChild);
+        }
+      }
+
+      // Real cloudflared edge without an account: the quick tunnel terminates on the same
+      // ingress listener a managed named tunnel uses.
+      if (options.quickTunnel) {
+        const ingressForTunnel = ingressPort;
+        if (!ingressForTunnel) {
+          checks.push({
+            id: 'cloudflared-quick-tunnel',
+            entry: 'public',
+            expectation: 'real cloudflared entry serves the candidate',
+            observed: 'skipped',
+            ok: false,
+            detail: 'candidate did not report an ingress listener port',
+          });
+        } else {
+          const quickLog = path.join(options.evidenceDir, `cloudflared-quick-${Date.now()}.log`);
+          const quick = await startQuickTunnel(ingressForTunnel, quickLog, options.tunnelTimeoutMs);
+          try {
+            if (!quick.url) {
+              checks.push({
+                id: 'cloudflared-quick-tunnel',
+                entry: 'public',
+                expectation: 'real cloudflared entry serves the candidate',
+                observed: 'no quick tunnel URL',
+                ok: false,
+                detail: 'cloudflared did not publish a trycloudflare.com entry',
+              });
+            } else {
+              const reachable = await waitForPublicEntry(quick.url, options.tunnelTimeoutMs);
+              checks.push({
+                id: 'cloudflared-quick-tunnel',
+                entry: 'public',
+                expectation: 'real cloudflared entry serves the candidate',
+                observed: `${quick.url} · ${reachable ? 'serving' : 'unreachable'}`,
+                ok: reachable,
+                detail: 'no account required (quick tunnel)',
+              });
+              if (reachable) {
+                checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, loopbackBase));
+                checks.push(...await runIsolationMatrix({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, adminToken));
+              }
+            }
+          } finally {
+            await stopChild(quick.child);
+          }
+        }
+      }
+
+      // A08 failure legs: a provider that cannot come up must never be reported as active,
+      // and the reason must be named. Neither leg needs a real account, so they run today.
+      const failureLegs: Array<{
+        id: string;
+        label: string;
+        env: Record<string, string>;
+        provider?: { id: string; provider: string; label: string };
+        expectDetail?: RegExp;
+        foreignFrpc?: boolean;
+      }> = [
+        {
+          id: 'wrong-credential-never-active',
+          label: 'invalid ngrok credential',
+          env: { NGROK_AUTHTOKEN: 'accept-invalid-token-never-used' },
+        },
+        {
+          id: 'missing-binary-named',
+          label: 'ngrok binary absent',
+          env: {
+            NGROK_AUTHTOKEN: 'accept-invalid-token-never-used',
+            NGROK_BIN: '/nonexistent/xpod-accept-ngrok',
+          },
+          expectDetail: /^binary-missing:ngrok:/u,
+        },
+        {
+          id: 'cloudflare-invalid-token',
+          label: 'invalid cloudflare tunnel token',
+          provider: { id: 'accept-cf', provider: 'cloudflare', label: 'failure leg' },
+          env: { XPOD_TUNNEL_PROFILE_ACCEPT_CF_TOKEN: 'accept-invalid-token-never-used' },
+          expectDetail: /cloudflared|token|credentials/iu,
+        },
+        {
+          id: 'sakura-missing-binary',
+          label: 'frpc absent',
+          provider: { id: 'accept-sakura', provider: 'sakura_frp', label: 'failure leg' },
+          env: {
+            XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_TOKEN: 'accept-invalid-token-never-used',
+            FRPC_BIN: '/nonexistent/xpod-accept-frpc',
+          },
+          expectDetail: /^binary-missing:sakura_frp:/u,
+        },
+        {
+          id: 'sakura-refuses-foreign-frpc',
+          label: 'another frpc already running',
+          provider: { id: 'accept-sakura', provider: 'sakura_frp', label: 'failure leg' },
+          env: { XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_TOKEN: 'accept-invalid-token-never-used' },
+          expectDetail: /frpc-already-running/u,
+          foreignFrpc: true,
+        },
+      ];
+
+      for (const [ index, leg ] of failureLegs.entries()) {
+        const legPort = (await takeLegPort({
+          leg: leg.id,
+          group: 'default',
+          policy: 'dynamic',
+          preferred: options.candidatePort + 400 + index * 100,
+        }, legRecords, reservedNow)).port!;
+        const legLog = path.join(options.evidenceDir, `candidate-${leg.id}-${Date.now()}.log`);
+        const provider = leg.provider ?? { id: 'accept-failure', provider: 'ngrok', label: 'failure leg' };
+        const foreign = leg.foreignFrpc ? await startForeignFrpc() : undefined;
+        const legChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
+          XPOD_TUNNEL_PROFILES: JSON.stringify([
+            { ...provider, publicUrl: 'https://failure.example.com' },
+          ]),
+          XPOD_TUNNEL_ACTIVE_PROFILE_ID: provider.id,
+          XPOD_TUNNEL_PROFILE_ACCEPT_FAILURE_TOKEN: 'accept-invalid-token-never-used',
+          ...(leg.provider ? {} : {}),
+          ...leg.env,
+        });
+        try {
+          const legReady = await waitForCandidate(legPort, options.timeoutMs);
+          // Give the provider a moment to attempt its start and record the outcome.
+          await new Promise((resolve) => setTimeout(resolve, 5_000));
+          const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
+          const observed = readTunnelCapability(legStatus.body);
+          const detail = readTunnelDetail(legStatus.body);
+          const named = leg.expectDetail ? leg.expectDetail.test(detail ?? '') : Boolean(detail);
+          checks.push({
+            id: leg.id,
+            entry: 'candidate',
+            expectation: leg.expectDetail
+              ? `never active and detail matches ${String(leg.expectDetail)}`
+              : 'never active and a reason is reported',
+            observed: `${observed ?? 'unknown'} · ${detail ?? 'no detail'}`,
+            ok: legReady && observed !== 'active' && observed !== 'unsupported' && named,
+            ...(detail ? { detail } : {}),
+          });
+        } finally {
+          await stopChild(legChild);
+          await stopChild(foreign?.child);
+          foreign?.cleanup();
+        }
+      }
+
+      soakSamples = await runSoakProbe(options, loopbackBase, ingressPort, checks);
+
     }
 
-    // A real *named* cloudflared tunnel: the hostname belongs to the Cloudflare dashboard,
-    // so this proves the declared-endpoint branch against a genuine account edge.
+    // The console-bound line: exclusive, because its two legs need ports a console already owns.
+    if (groups.network) {
+    // ---------------------------------------------------------------------------------------
+    // Console-bound line: the two legs whose origin port lives in a provider console.
+    //
+    // Both pin `XPOD_GATEWAY_INGRESS_PORT` to the number that console already forwards to, and
+    // both fail (naming the occupant) when that number is not free. Nothing here ever signals a
+    // foreign process, and nothing re-points a platform config at a different port: a tunnel
+    // that forwards to a number must find this candidate listening on it.
+    // ---------------------------------------------------------------------------------------
     if (options.namedTunnel) {
       const namedToken = env.CLOUDFLARE_TUNNEL_TOKEN;
       const namedUrl = env.CLOUDFLARE_TUNNEL_URL;
@@ -2082,12 +2576,7 @@ async function main(): Promise<void> {
         });
       } else {
         const declaredUrl = /^https?:\/\//u.test(namedUrl) ? namedUrl : `https://${namedUrl}/`;
-        const legPort = await reserveLegPort(options.candidatePort + 300);
-        const legLog = path.join(options.evidenceDir, `candidate-named-${Date.now()}.log`);
-        // A labelled block so a missing console port skips this leg instead of aborting
-        // the whole run: the check above is already recorded.
-        namedLeg: {
-        const consolePort = options.tunnelEntryPort ?? await readReusedTunnelEntryPort(options);
+        const consolePort = options.tunnelEntryPort;
         if (consolePort === undefined) {
           checks.push({
             id: 'cloudflared-named-tunnel',
@@ -2097,85 +2586,95 @@ async function main(): Promise<void> {
             ok: false,
             // The dashboard names a local service port, and only the runtime the console
             // points at can be listening there: an isolated candidate has its own entry.
-            detail: 'pass --tunnel-entry-port <the port your console forwards to, from the network settings page> or run with --reuse against that runtime',
+            detail: `the Dashboard's local service port could not be determined (${cloudflaredConsole.error ?? cloudflaredConsole.source}); pass --tunnel-entry-port or run with --reuse against that runtime`,
           });
-          break namedLeg;
-        }
-        const namedEntryPort = consolePort;
-        const namedChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
-          XPOD_TUNNEL_PROFILES: JSON.stringify([
-            { id: 'accept-named', provider: 'cloudflare', label: 'acceptance named tunnel', publicUrl: declaredUrl },
-          ]),
-          XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-named',
-          XPOD_TUNNEL_PROFILE_ACCEPT_NAMED_TOKEN: namedToken,
-          // The dashboard's public hostname forwards to the Gateway tunnel entry; pinning it
-          // keeps the console value and the listener under test the same number.
-          XPOD_GATEWAY_INGRESS_PORT: String(namedEntryPort),
-        });
-        try {
-          const legReady = await waitForCandidate(legPort, options.timeoutMs);
-          let observed: string | undefined;
-          let detail: string | undefined;
-          let endpoint: string | undefined;
-          const deadline = Date.now() + options.tunnelTimeoutMs;
-          while (legReady && Date.now() < deadline) {
-            const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
-            observed = readTunnelCapability(legStatus.body);
-            detail = readTunnelDetail(legStatus.body);
-            endpoint = readTunnelEndpoint(legStatus.body) ?? declaredUrl;
-            if (observed === 'active') break;
-            await new Promise((resolve) => setTimeout(resolve, 2_000));
+        } else {
+          const portDecision = await takeLegPort({
+            leg: 'cloudflared-named',
+            group: 'network',
+            policy: 'console-bound',
+            consolePort,
+            preferred: options.candidatePort + 300,
+          }, legRecords, reservedNow);
+          if (!portDecision.ok) {
+            checks.push({
+              id: 'cloudflared-named-tunnel',
+              entry: 'public',
+              expectation: 'real named tunnel serves the candidate at its declared hostname',
+              observed: `console port ${consolePort} unavailable`,
+              ok: false,
+              detail: portDecision.detail,
+            });
+          } else {
+            const legPort = portDecision.port!;
+            legRecords[legRecords.length - 1].ingressPort = consolePort;
+            legRecords[legRecords.length - 1].ingressPinned = true;
+            legRecords[legRecords.length - 1].detail += `; console port from ${cloudflaredConsole.source}`;
+            const legLog = path.join(options.evidenceDir, `candidate-named-${Date.now()}.log`);
+            const namedChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
+              XPOD_TUNNEL_PROFILES: JSON.stringify([
+                { id: 'accept-named', provider: 'cloudflare', label: 'acceptance named tunnel', publicUrl: declaredUrl },
+              ]),
+              XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-named',
+              XPOD_TUNNEL_PROFILE_ACCEPT_NAMED_TOKEN: namedToken,
+              // The dashboard's public hostname forwards to this number; pinning it is what
+              // keeps the console value and the listener under test the same port.
+              XPOD_GATEWAY_INGRESS_PORT: String(consolePort),
+            });
+            try {
+              const legReady = await waitForCandidate(legPort, options.timeoutMs);
+              let observed: string | undefined;
+              let detail: string | undefined;
+              let endpoint: string | undefined;
+              let reportedIngress: number | undefined;
+              const deadline = Date.now() + options.tunnelTimeoutMs;
+              while (legReady && Date.now() < deadline) {
+                const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
+                observed = readTunnelCapability(legStatus.body);
+                detail = readTunnelDetail(legStatus.body);
+                endpoint = readTunnelEndpoint(legStatus.body) ?? declaredUrl;
+                reportedIngress = readReportedIngressPort(legStatus.body) ?? reportedIngress;
+                if (observed === 'active') break;
+                await new Promise((resolve) => setTimeout(resolve, 2_000));
+              }
+              checks.push({
+                id: 'cloudflared-named-ingress',
+                entry: 'candidate',
+                expectation: `the candidate serves the console's port ${consolePort}`,
+                observed: String(reportedIngress ?? 'unknown'),
+                ok: reportedIngress === consolePort,
+                detail: 'the pinned port is the one the Dashboard forwards to; a different number would mean the tunnel reaches another process',
+              });
+              const reachable = observed === 'active' && endpoint
+                ? await waitForPublicEntry(endpoint, options.tunnelTimeoutMs)
+                : false;
+              checks.push({
+                id: 'cloudflared-named-tunnel',
+                entry: 'public',
+                expectation: 'real named tunnel serves the candidate at its declared hostname',
+                observed: `${observed ?? 'unknown'} · ${endpoint ?? 'no endpoint'} · ${reachable ? 'serving' : 'unreachable'}`,
+                ok: reachable,
+                detail: `${detail ? `${detail}; ` : ''}console local service port ${consolePort}; token ${fingerprint(namedToken)}`,
+              });
+              if (reachable && endpoint) {
+                checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, `http://127.0.0.1:${legPort}/`));
+                checks.push(...await runIsolationMatrix({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, adminToken));
+              }
+            } finally {
+              await stopChild(namedChild);
+            }
           }
-          const reachable = observed === 'active' && endpoint
-            ? await waitForPublicEntry(endpoint, options.tunnelTimeoutMs)
-            : false;
-          checks.push({
-            id: 'cloudflared-named-tunnel',
-            entry: 'public',
-            expectation: 'real named tunnel serves the candidate at its declared hostname',
-            observed: `${observed ?? 'unknown'} · ${endpoint ?? 'no endpoint'} · ${reachable ? 'serving' : 'unreachable'}`,
-            ok: reachable,
-            detail: `${detail ? `${detail}; ` : ''}console local service port ${namedEntryPort}; token ${fingerprint(namedToken)}`,
-          });
-          if (reachable && endpoint) {
-            checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, `http://127.0.0.1:${legPort}/`));
-            checks.push(...await runIsolationMatrix({ id: 'public', label: 'cloudflared named tunnel', baseUrl: endpoint }, adminToken));
-          }
-        } finally {
-          await stopChild(namedChild);
-        }
         }
       }
     }
 
-    // A real SakuraFrp tunnel. The console never asks for a domain: it assigns the entry,
-    // so the candidate has to discover it instead of being told.
+    // A real SakuraFrp tunnel. The console assigns the public entry *and* owns the local port,
+    // so the candidate pins the console's port and the leg fails when it is taken.
     if (options.sakuraTunnel) {
       const sakuraToken = env.SAKURA_TUNNEL_TOKEN;
       let frpc = await resolveFrpcBinary(options, scratchDir);
-      const sakuraFacts = sakuraToken ? await readSakuraTunnelFacts(sakuraToken) : undefined;
       let relayName: string | undefined;
-      let sakuraOriginPort: number | undefined;
-      // The console sets the tunnel's local IP to 127.0.0.1, which a container client cannot
-      // reach; a relay namespace lets the official image run without editing the tunnel.
-      if (sakuraToken && !(options.frpcBin ?? process.env.FRPC_BIN) && sakuraFacts?.localPort
-        && /^(127\.0\.0\.1|localhost)$/iu.test(sakuraFacts.localIp)) {
-        const relay = await startLoopbackRelay(sakuraFacts.localPort, scratchDir);
-        if (relay && await waitForLoopbackRelay(relay.name, sakuraFacts.localPort)) {
-          relayName = relay.name;
-          frpc = { path: relay.shim, note: `natfrp image (official client) in a relay namespace for ${sakuraFacts.localIp}:${sakuraFacts.localPort}` };
-        } else {
-          stopLoopbackRelay(relay?.name);
-          checks.push({
-            id: 'sakura-loopback-relay',
-            entry: 'candidate',
-            expectation: 'the loopback relay for a container client answers before the client starts',
-            observed: 'unavailable',
-            ok: false,
-            detail: 'the official client needs a reachable 127.0.0.1 origin; download a native frpc or set the tunnel local IP to host.docker.internal',
-          });
-        }
-      }
+      const consolePort = sakuraFacts?.localPort;
       if (!sakuraToken || !frpc.path) {
         checks.push({
           id: 'sakura-real-tunnel',
@@ -2185,213 +2684,123 @@ async function main(): Promise<void> {
           ok: false,
           detail: !sakuraToken ? 'SAKURA_TUNNEL_TOKEN is not configured' : frpc.note,
         });
-      } else if (sakuraFacts?.localPort !== undefined && sakuraFacts.localPort !== (await findGatewayIngressPort(options.candidatePort))) {
+      } else if (!sakuraFacts || consolePort === undefined) {
         checks.push({
           id: 'sakura-real-tunnel',
           entry: 'public',
           expectation: 'real SakuraFrp tunnel serves the candidate at the assigned entry',
           observed: 'blocked',
           ok: false,
-          detail: `the console forwards to local port ${sakuraFacts.localPort}, but this runtime's tunnel entry is ${await findGatewayIngressPort(options.candidatePort)}: point the tunnel at that port in the Sakura console`,
+          detail: 'the Sakura console declares no local_port for this tunnel (GET /v4/tunnels)',
         });
-      } else if (!await isPortFree(sakuraFacts?.localPort ?? await findGatewayIngressPort(options.candidatePort))) {
-        // The console's port belongs to another process. The vendor client takes its local
-        // port from the platform config, so the tunnel can still be driven from an isolated
-        // candidate — and the evidence records that the port was adjusted.
-        const overridePort = await findFreeLoopbackPort();
-        const credentialParts = parseSakuraCredentialForHarness(sakuraToken);
-        let configPath: string | undefined;
-        try {
-          const config = await fetchSakuraVendorConfig(
-            credentialParts.accessKey ?? '',
-            credentialParts.tunnelIds[0] ?? sakuraFacts?.id ?? 0,
-            options.sakuraClientVersion,
-          );
-          configPath = path.join(scratchDir, 'sakura-frpc.ini');
-          writeFileSync(configPath, rewriteConfigLocalPort(config, overridePort));
-        } catch (error) {
-          configPath = undefined;
-          checks.push({
-            id: 'sakura-config-mode',
-            entry: 'candidate',
-            expectation: 'the platform config can be pointed at this candidate',
-            observed: 'unavailable',
-            ok: false,
-            detail: (error as Error).message,
-          });
-        }
-        if (configPath) {
-          const relay = await startLoopbackRelay(overridePort, scratchDir);
-          if (relay && await waitForLoopbackRelay(relay.name, overridePort)) {
-            relayName = relay.name;
-            frpc = {
-              path: writeConfigModeShim(scratchDir, relay.name, configPath),
-              note: `natfrp image (vendor client) in config mode: console port ${sakuraFacts?.localPort} was busy, candidate listens on ${overridePort}`,
-            };
-            sakuraOriginPort = overridePort;
-          } else {
-            stopLoopbackRelay(relay?.name);
-            checks.push({
-              id: 'sakura-loopback-relay',
-              entry: 'candidate',
-              expectation: 'the loopback relay answers before the client starts',
-              observed: 'unavailable',
-              ok: false,
-              detail: 'the vendor client needs a reachable 127.0.0.1 origin',
-            });
-          }
-        }
-      }
-      if (frpc.path && sakuraOriginPort === undefined) {
-        sakuraOriginPort = await findGatewayIngressPort(options.candidatePort);
-      }
-      if (frpc.path && sakuraOriginPort !== undefined) {
-        const legPort = await reserveLegPort(options.candidatePort + 350);
-        const legLog = path.join(options.evidenceDir, `candidate-sakura-${Date.now()}.log`);
-        const sakuraChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
-          XPOD_TUNNEL_PROFILES: JSON.stringify([
-            { id: 'accept-sakura-real', provider: 'sakura_frp', label: 'acceptance sakura tunnel' },
-          ]),
-          XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-sakura-real',
-          XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_REAL_TOKEN: sakuraToken,
-          FRPC_BIN: frpc.path,
-          XPOD_GATEWAY_INGRESS_PORT: String(sakuraOriginPort),
-        });
-        try {
-          const legReady = await waitForCandidate(legPort, options.timeoutMs);
-          let observed: string | undefined;
-          let detail: string | undefined;
-          let endpoint: string | undefined;
-          const deadline = Date.now() + options.tunnelTimeoutMs;
-          while (legReady && Date.now() < deadline) {
-            const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
-            observed = readTunnelCapability(legStatus.body);
-            detail = readTunnelDetail(legStatus.body);
-            endpoint = readTunnelEndpoint(legStatus.body);
-            if (observed === 'active' && endpoint) break;
-            await new Promise((resolve) => setTimeout(resolve, 2_000));
-          }
-          // SakuraFrp's auto-HTTPS entry serves a self-signed certificate until the operator
-          // installs one: probe it, but record the certificate state rather than implying trust.
-          const certificate = endpoint ? await describeCertificate(endpoint) : 'no entry';
-          const reachable = observed === 'active' && endpoint
-            ? await waitForPublicEntry(endpoint, options.tunnelTimeoutMs, true)
-            : false;
-          const platformNote = reachable
-            ? ''
-            : `${await describeSakuraTunnel(sakuraToken, await findGatewayIngressPort(options.candidatePort), { containerClient: frpc.note.includes('image') })}; `;
+      } else {
+        const portDecision = await takeLegPort({
+          leg: 'sakura-real-tunnel',
+          group: 'network',
+          policy: 'console-bound',
+          consolePort,
+          preferred: options.candidatePort + 350,
+        }, legRecords, reservedNow);
+        if (!portDecision.ok) {
           checks.push({
             id: 'sakura-real-tunnel',
             entry: 'public',
             expectation: 'real SakuraFrp tunnel serves the candidate at the assigned entry',
-            observed: `${observed ?? 'unknown'} · ${endpoint ?? 'no assigned entry'} · ${reachable ? 'serving' : 'unreachable'}`,
-            ok: reachable,
-            detail: `${detail ? `${detail}; ` : ''}${platformNote}frpc: ${frpc.note}; Gateway port ${options.candidatePort}; entry ${certificate}; token ${fingerprint(sakuraToken)}`,
+            observed: `console port ${consolePort} unavailable`,
+            ok: false,
+            detail: portDecision.detail,
           });
-          if (reachable && endpoint) {
-            const sakuraEntry: Entry = { id: 'public', label: 'sakura tunnel', baseUrl: endpoint, allowSelfSigned: true };
-            checks.push(await checkEntryServesCandidate(sakuraEntry, `http://127.0.0.1:${legPort}/`));
-            checks.push(...await runIsolationMatrix(sakuraEntry, adminToken));
+        } else {
+          // The console sets the tunnel's local IP to 127.0.0.1, which a container client
+          // cannot reach; a relay namespace carries that same number to this host, so the
+          // console's port is never edited to make room for the candidate.
+          if (!(options.frpcBin ?? process.env.FRPC_BIN) && /^(127\.0\.0\.1|localhost)$/iu.test(sakuraFacts.localIp)) {
+            const relay = await startLoopbackRelay(consolePort, scratchDir);
+            if (relay && await waitForLoopbackRelay(relay.name, consolePort)) {
+              relayName = relay.name;
+              frpc = { path: relay.shim, note: `natfrp image (official client) in a relay namespace for ${sakuraFacts.localIp}:${consolePort}` };
+            } else {
+              stopLoopbackRelay(relay?.name);
+              checks.push({
+                id: 'sakura-loopback-relay',
+                entry: 'candidate',
+                expectation: 'the loopback relay for a container client answers before the client starts',
+                observed: 'unavailable',
+                ok: false,
+                detail: 'the official client needs a reachable 127.0.0.1 origin; download a native frpc or set the tunnel local IP to host.docker.internal',
+              });
+            }
           }
-        } finally {
-          await stopChild(sakuraChild);
-          cleanupAcceptanceFrpc();
-          stopLoopbackRelay(relayName);
+          const legPort = portDecision.port!;
+          legRecords[legRecords.length - 1].ingressPort = consolePort;
+          legRecords[legRecords.length - 1].ingressPinned = true;
+          const legLog = path.join(options.evidenceDir, `candidate-sakura-${Date.now()}.log`);
+          const sakuraChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
+            XPOD_TUNNEL_PROFILES: JSON.stringify([
+              { id: 'accept-sakura-real', provider: 'sakura_frp', label: 'acceptance sakura tunnel' },
+            ]),
+            XPOD_TUNNEL_ACTIVE_PROFILE_ID: 'accept-sakura-real',
+            XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_REAL_TOKEN: sakuraToken,
+            // The guard above proved a path exists; the relay block either keeps it or replaces
+            // it with the relay shim's.
+            FRPC_BIN: frpc.path!,
+            XPOD_GATEWAY_INGRESS_PORT: String(consolePort),
+          });
+          try {
+            const legReady = await waitForCandidate(legPort, options.timeoutMs);
+            let observed: string | undefined;
+            let detail: string | undefined;
+            let endpoint: string | undefined;
+            let reportedIngress: number | undefined;
+            const deadline = Date.now() + options.tunnelTimeoutMs;
+            while (legReady && Date.now() < deadline) {
+              const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
+              observed = readTunnelCapability(legStatus.body);
+              detail = readTunnelDetail(legStatus.body);
+              endpoint = readTunnelEndpoint(legStatus.body);
+              reportedIngress = readReportedIngressPort(legStatus.body) ?? reportedIngress;
+              if (observed === 'active' && endpoint) break;
+              await new Promise((resolve) => setTimeout(resolve, 2_000));
+            }
+            checks.push({
+              id: 'sakura-ingress',
+              entry: 'candidate',
+              expectation: `the candidate serves the console's port ${consolePort}`,
+              observed: String(reportedIngress ?? 'unknown'),
+              ok: reportedIngress === consolePort,
+              detail: 'the pinned port is the one the Sakura console forwards to',
+            });
+            // SakuraFrp's auto-HTTPS entry serves a self-signed certificate until the operator
+            // installs one: probe it, but record the certificate state rather than implying trust.
+            const certificate = endpoint ? await describeCertificate(endpoint) : 'no entry';
+            const reachable = observed === 'active' && endpoint
+              ? await waitForPublicEntry(endpoint, options.tunnelTimeoutMs, true)
+              : false;
+            const platformNote = reachable
+              ? ''
+              : `${await describeSakuraTunnel(sakuraToken, consolePort, { containerClient: frpc.note.includes('image') })}; `;
+            checks.push({
+              id: 'sakura-real-tunnel',
+              entry: 'public',
+              expectation: 'real SakuraFrp tunnel serves the candidate at the assigned entry',
+              observed: `${observed ?? 'unknown'} · ${endpoint ?? 'no assigned entry'} · ${reachable ? 'serving' : 'unreachable'}`,
+              ok: reachable,
+              detail: `${detail ? `${detail}; ` : ''}${platformNote}frpc: ${frpc.note}; console local port ${consolePort}; candidate gateway ${options.candidatePort}; entry ${certificate}; token ${fingerprint(sakuraToken)}`,
+            });
+            if (reachable && endpoint) {
+              const sakuraEntry: Entry = { id: 'public', label: 'sakura tunnel', baseUrl: endpoint, allowSelfSigned: true };
+              checks.push(await checkEntryServesCandidate(sakuraEntry, `http://127.0.0.1:${legPort}/`));
+              checks.push(...await runIsolationMatrix(sakuraEntry, adminToken));
+            }
+          } finally {
+            await stopChild(sakuraChild);
+            cleanupAcceptanceFrpc();
+            stopLoopbackRelay(relayName);
+          }
         }
       }
     }
-
-    // A08 failure legs: a provider that cannot come up must never be reported as active,
-    // and the reason must be named. Neither leg needs a real account, so they run today.
-    const failureLegs: Array<{
-      id: string;
-      label: string;
-      env: Record<string, string>;
-      provider?: { id: string; provider: string; label: string };
-      expectDetail?: RegExp;
-      foreignFrpc?: boolean;
-    }> = [
-      {
-        id: 'wrong-credential-never-active',
-        label: 'invalid ngrok credential',
-        env: { NGROK_AUTHTOKEN: 'accept-invalid-token-never-used' },
-      },
-      {
-        id: 'missing-binary-named',
-        label: 'ngrok binary absent',
-        env: {
-          NGROK_AUTHTOKEN: 'accept-invalid-token-never-used',
-          NGROK_BIN: '/nonexistent/xpod-accept-ngrok',
-        },
-        expectDetail: /^binary-missing:ngrok:/u,
-      },
-      {
-        id: 'cloudflare-invalid-token',
-        label: 'invalid cloudflare tunnel token',
-        provider: { id: 'accept-cf', provider: 'cloudflare', label: 'failure leg' },
-        env: { XPOD_TUNNEL_PROFILE_ACCEPT_CF_TOKEN: 'accept-invalid-token-never-used' },
-        expectDetail: /cloudflared|token|credentials/iu,
-      },
-      {
-        id: 'sakura-missing-binary',
-        label: 'frpc absent',
-        provider: { id: 'accept-sakura', provider: 'sakura_frp', label: 'failure leg' },
-        env: {
-          XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_TOKEN: 'accept-invalid-token-never-used',
-          FRPC_BIN: '/nonexistent/xpod-accept-frpc',
-        },
-        expectDetail: /^binary-missing:sakura-frp:/u,
-      },
-      {
-        id: 'sakura-refuses-foreign-frpc',
-        label: 'another frpc already running',
-        provider: { id: 'accept-sakura', provider: 'sakura_frp', label: 'failure leg' },
-        env: { XPOD_TUNNEL_PROFILE_ACCEPT_SAKURA_TOKEN: 'accept-invalid-token-never-used' },
-        expectDetail: /frpc-already-running/u,
-        foreignFrpc: true,
-      },
-    ];
-
-    for (const [ index, leg ] of failureLegs.entries()) {
-      const legPort = await reserveLegPort(options.candidatePort + 400 + index * 100);
-      const legLog = path.join(options.evidenceDir, `candidate-${leg.id}-${Date.now()}.log`);
-      const provider = leg.provider ?? { id: 'accept-failure', provider: 'ngrok', label: 'failure leg' };
-      const foreign = leg.foreignFrpc ? await startForeignFrpc() : undefined;
-      const legChild = await startCandidate(options, checkout, legLog, adminToken, scratchDir, qleverCommand, candidateEnvFile, legPort, {
-        XPOD_TUNNEL_PROFILES: JSON.stringify([
-          { ...provider, publicUrl: 'https://failure.example.com' },
-        ]),
-        XPOD_TUNNEL_ACTIVE_PROFILE_ID: provider.id,
-        XPOD_TUNNEL_PROFILE_ACCEPT_FAILURE_TOKEN: 'accept-invalid-token-never-used',
-        ...(leg.provider ? {} : {}),
-        ...leg.env,
-      });
-      try {
-        const legReady = await waitForCandidate(legPort, options.timeoutMs);
-        // Give the provider a moment to attempt its start and record the outcome.
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-        const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
-        const observed = readTunnelCapability(legStatus.body);
-        const detail = readTunnelDetail(legStatus.body);
-        const named = leg.expectDetail ? leg.expectDetail.test(detail ?? '') : Boolean(detail);
-        checks.push({
-          id: leg.id,
-          entry: 'candidate',
-          expectation: leg.expectDetail
-            ? `never active and detail matches ${String(leg.expectDetail)}`
-            : 'never active and a reason is reported',
-          observed: `${observed ?? 'unknown'} · ${detail ?? 'no detail'}`,
-          ok: legReady && observed !== 'active' && observed !== 'unsupported' && named,
-          ...(detail ? { detail } : {}),
-        });
-      } finally {
-        await stopChild(legChild);
-        await stopChild(foreign?.child);
-        foreign?.cleanup();
-      }
     }
-
-    soakSamples = await runSoakProbe(options, loopbackBase, ingressPort, checks);
 
     for (const provider of catalog) {
       const credential = env[provider.legacyCredentialEnvKey]
@@ -2414,6 +2823,9 @@ async function main(): Promise<void> {
       detail: (error as Error).message,
     });
   } finally {
+    for (const reservation of reservations) {
+      releasePort(reservation.port, reservation.owner);
+    }
     qleverFixture?.cleanup();
     await stopChild(child);
     if (!options.keepCandidate) {
@@ -2426,9 +2838,20 @@ async function main(): Promise<void> {
   const evidence = {
     schemaVersion: 1,
     kind: 'tunnel-ingress-acceptance',
+    /** `default` = every port dynamic; `network` = the two legs with fixed parameters. */
+    group: options.group,
+    groups: resolveTunnelGroups(options.group),
+    /** Fixed parameters this run declared, and the reservations it published for them. */
+    reservations: reservations.map((reservation) => ({ ...reservation })),
     candidateSha,
     candidateDirty,
     candidatePort: options.candidatePort,
+    candidatePortRequested: requestedCandidatePort,
+    /**
+     * Per-leg port policy and the ports that were dynamic versus pinned. A mismatch such as
+     * "the console forwards to 5737 but the candidate served 3303" is explained here.
+     */
+    legs: legRecords,
     candidateLog: path.relative(checkout, logFile),
     envFile: path.relative(checkout, options.envFile),
     // Which credentials the run had, as fingerprints: a missing key explains a skipped leg.
