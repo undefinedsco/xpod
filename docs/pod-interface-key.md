@@ -92,6 +92,12 @@ Bearer 与 DPoP 都支持，分开入口认证与出站能力：
 
 **本轮落地（§7.1 第 1 步）**：`src/api/auth/SolidSessionFactory.ts` 是唯一的 token exchange 实现，`ClientCredentialsAuthenticator`（入站）与 `OwnerPodAccess`（出站）在容器里共用一个实例（`src/api/container/common.ts` 的 `solidSessions`）。缓存 key = issuer + 完整凭证 SHA-256 指纹 + 凭证版本，会话与 DPoP key 同存；过期留 30s 余量，401 触发 `invalidate` 后按下一次请求重新交换。`buildAuthenticatedFetch` 用 factory 交回的 key 为每个规范 URL/方法现算 proof。
 
+**已验证（2026-09-24，`scripts/accept-solid-bearer-pod-access.ts`，临时本地栈 10/10）**：CSS 对不带 DPoP proof 的请求签发**真 Bearer** access token；该 token 可直接读写 Pod（`PUT` 201）并访问 `/-/sparql`（200）；**API 接受它并用调用方自己的 token 读 Pod**（`GET /api/ai/gateway/keys` 经网关与直达 API 均 200，同 token 下 SPARQL 面 200）；同一用户的 **DPoP** token 在同一接口上 403 `service_access_missing`（API 不重放 DPoP）；无凭据 401。也就是说"API 用调用方自己的 Bearer 打开用户 Pod"这条链路**当前代码已支持，不需要改后端**。
+
+同时发现两件必须记住的事：
+- **浏览器会话目前是 DPoP**：`ui/src/solid/XpodSolidRuntimeProvider.tsx` 的 `session.login(...)` 没有传 `tokenType`，走 inrupt 默认 `DPoP`。所以"浏览器拿自己的凭据直调 chatkit/API 读 Pod"今天还不成立——要么登录时改 `tokenType: 'Bearer'`（前端一行，安全姿态变化：Bearer 无持有证明，API 在有效期内可重放），要么浏览器侧持有 sk（`ui/src/auth/account-client-credentials.ts` 已有创建/撤销能力）。
+- **chatkit 会掩盖 Pod 不可达**：`PodChatKitStore.loadThreads` 在 `getDb` 失败时返回空列表（`pod-store.ts:1490`），于是没有可用 Pod 凭据的调用方拿到 `200 {"data":[]}` 而不是原因码；同一 token 在 keys 面上是 403。验收脚本已把这一行为记为已知问题（`chatkit-masks-dpop-caller`），修好后该断言会失败并提示更新。
+
 仍存在两处非本路径的交换，**未收敛，已记录原因**：
 - `src/solidfs/PodSolidFsHttpClient.ts`：只产出 headers（`createAuthHeaders`），拿不到目标 URL/方法就无法生成 DPoP proof，因此仍以 body 传递 `client_id/client_secret` 换取 Bearer；随 §7.1 第 5 步（后台入口迁移到 Runtime 任务）改为 fetch 形态后并入 factory。
 - `src/cli/lib/solid-auth.ts` 的 `getAccessToken`（已标 `@deprecated`）：CLI/桌面向 CSS 走 discovery 后自行交换并返回可重放的 Bearer，不在 API runtime 内；待其调用方迁移到 `authenticate()`/`Session.fetch` 后删除。

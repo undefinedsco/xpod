@@ -9,6 +9,8 @@ import { FAKE_QLEVER_LOCAL_RUNTIME_COMMAND } from './qleverRuntime';
 export class XpodTestStack {
   public port = 0;
   public baseUrl = '';
+  /** API port of the running runtime, for tests that must bypass the gateway. */
+  public apiPort = 0;
   public socketPath?: string;
   private runtime: XpodRuntimeHandle | null = null;
   private runtimeGatewayAdminProxyAuthSecret?: string;
@@ -117,6 +119,7 @@ export class XpodTestStack {
 
     this.port = this.runtime.ports.gateway ?? 0;
     this.baseUrl = this.runtime.baseUrl;
+    this.apiPort = this.runtime.ports.api ?? 0;
     this.socketPath = this.runtime.sockets.gateway;
 
     await this.waitReady();

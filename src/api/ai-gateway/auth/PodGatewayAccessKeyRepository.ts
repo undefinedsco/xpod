@@ -8,6 +8,7 @@ import {
   type GatewayAccessKeyRow,
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
+import { getLoggerFor } from 'global-logger-factory';
 import { podAccessError, type PodAccessFetchProvider } from '../pod/OwnerPodAccess';
 import {
   resolveGatewayAccessKeySparqlEndpoint,
@@ -292,12 +293,15 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
       podBaseUrl: podUrl,
     });
     if (!trustedFetch) {
-      throw new Error(podAccessError(owner, auth));
+      const reason = podAccessError(owner, auth);
+      // The reason decides what the user has to do, and it is invisible in the wire response.
+      getLoggerFor('PodGatewayAccessKeyRepository').warn(`No Pod fetch for ${owner}: ${reason}`);
+      throw new Error(reason);
     }
-    return this.wrapPodFetch(trustedFetch);
+    return this.wrapPodFetch(trustedFetch, owner);
   }
 
-  private wrapPodFetch(trustedFetch: typeof fetch): typeof fetch {
+  private wrapPodFetch(trustedFetch: typeof fetch, owner: string): typeof fetch {
     return async (input, init) => {
       // Comunica can inject a malformed content-length value; let the runtime recompute it.
       const headers = new Headers(input instanceof Request ? input.headers : undefined);
@@ -307,6 +311,8 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
       headers.delete('content-length');
       const response = await trustedFetch(input, { ...init, headers });
       if (response.status === 403) {
+        const url = input instanceof Request ? input.url : String(input);
+        getLoggerFor('PodGatewayAccessKeyRepository').warn(`The Pod refused the caller's credential for ${owner}: ${url}`);
         throw new Error('service_access_missing');
       }
       return response;

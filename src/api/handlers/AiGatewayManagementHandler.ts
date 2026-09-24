@@ -1509,6 +1509,7 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
 function sendGatewayAccessKeyError(response: ServerResponse, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   if (isPodAccessFailure(message)) {
+    logger.warn(`Gateway API Key operation refused: ${redactSecretText(message)}`);
     sendJson(response, 403, { error: 'service_access_missing' });
     return;
   }
