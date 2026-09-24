@@ -428,7 +428,9 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 - **401 vs 403 的澄清**：隔离矩阵打的是 `/api/admin/status`（远程 403），此前手工 scratch 打的是 `/api/network/settings/status`（`requireNetworkPermission` 未通过时 401）。因此矩阵**不需要**为候补种子账号；"补种子"这一项经证据判定为不必要，未改。
 - `bun test tests/scripts/accept-network-tunnel.test.ts`：**22 例全过**（新增 3 例：console-bound 的 Gateway 不得落在控制台端口、`assertLegGatewayIsNotIngress` 的抛/不抛、`takeLegPort` 记录 gateway 与控制台端口的分工）。
 - `bunx tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict scripts/accept-network-tunnel.ts`：只剩既有的 `import.meta.dir` 类型缺口（Bun 扩展，非未声明标识符）。
-- 证据：`.test-data/acceptance/group-network/evidence.json`（本轮，20/20）、`.test-data/acceptance/group-network/evidence-prefix-shim.json`（修复前 0/4，两条腿候选启动被拒）、`.test-data/acceptance/group-default/evidence.json`（default 组 34/4）、`.test-data/acceptance/group-default-postfix/evidence.json`（修复后 24/1）。
+- `bun scripts/accept-network-tunnel.ts --group network --start` 跑了两次：修复后未提交时 **20/20**（`candidateDirty=true`），提交后再次 **20/20**（`sha=da5facf0 dirty=false`）—— "跑通"不是一次侥幸，且最终证据钉在提交后的干净树上。
+- default 组全量回归（`--group default --start`，接线修复后）：**34 通过 / 4 失败**，与接线修复前逐项一致（同样这 4 项：`a01-tunnel-connects`、`ngrok-real-entry`、`cloudflared-quick-tunnel`、`wrong-credential-never-active`），即本次改动对动态组**无回归**；这 4 项全部归因于操作者网络（见下方环境 gap），不是产品缺陷。
+- 证据：`.test-data/acceptance/group-network/evidence.json`（联网组 20/20，提交后干净树）、`.test-data/acceptance/group-network/evidence-precommit.json`（联网组 20/20，提交前）、`.test-data/acceptance/group-network/evidence-prefix-shim.json`（接线修复前 0/4，两条腿候选启动被拒）、`.test-data/acceptance/group-default-postwiring/evidence.json`（default 组 34/4，接线修复后）、`.test-data/acceptance/group-default/evidence.json`（default 组 34/4，修复前基线）、`.test-data/acceptance/group-default-postfix/evidence.json`（24/1 短跑）。`.test-data/` 按仓库约定是 gitignore 的测试数据，这些证据不入库，入库的是本节结论。
 
 环境 gap（按 gap 记录，非回归）：ngrok `api.ngrok.com:443` TLS reset（curl 35 `Recv failure: Connection reset by peer` 独立复现）→ default 组 ngrok 腿与 A01 connect 失败；`*.trycloudflare.com` 快速隧道主机名在本机**不可解析**（独立最小 quick tunnel 连接器已注册到边缘，主机名仍 `dig` 为空）→ quick tunnel 腿失败；原生 `frpc` 未安装（走 natfrp 镜像）。
 
