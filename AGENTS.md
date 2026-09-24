@@ -132,6 +132,7 @@ Xpod 采用**等位替换**策略扩展 CSS：用自定义组件替换 CSS 同�
 - 端到端检查：启动对应配置（`bun run dev` 最快），访问 `http://localhost:3000` 验证。
 - **CLI 本地开发测试**：全栈启动、凭据申请、认证架构等详见 [`docs/cli-dev-testing.md`](docs/cli-dev-testing.md)。
 - **原生夹具契约**：QLever/RDF/C++ 生成夹具必须与生产接口和 ABI 同步，并先通过快速编译门禁；不得用产品 fallback 迁就过时夹具。详见 [`docs/testing/native-fixture-contracts.md`](docs/testing/native-fixture-contracts.md)。
+- **原生插件门禁**：RDF SQLite 后端可脱离 QLever 引擎独立构建为共享插件并 dlopen 验证，命令 `bun run test:qlever:sqlite-plugin`；它验证 ABI v7 入口、provider JSON 配置、既有 facts schema 的读路径，以及"可写 provider 只做回滚暂存"的契约。
 - **依赖状态自检**：补丁依赖必须"版本对齐且恰好应用一次"，工作区包构建产物必须存在；`bun run test` 会先跑 `bun scripts/check-dependency-state.ts`。漂移时用 `bun install` / `bun run build:packages` 修复，不要手改 `node_modules`。详见 [`docs/testing/dependency-state.md`](docs/testing/dependency-state.md)。
 
 ### 必须执行的回归检查

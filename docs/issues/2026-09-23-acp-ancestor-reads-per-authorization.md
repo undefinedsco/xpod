@@ -36,15 +36,24 @@ Xpod 的 SPARQL 处理器每次调用都新建 `{ credentials, requestedModes }`
 `SubgraphSparqlHttpHandler.authorizeIdentifier` 增加请求内判定复用（成功与失败都缓存），
 覆盖 base、各 graph 以及 SPARQL update 的 readTargets/writeTargets 重复判定。
 
-## 未解决
+## 已解决（跨请求复用）
 
-跨请求复用才是主杠杆（同一批 graph 在连续请求中被反复判定），但授权结果缓存属于
-安全语义变更，需要先确定：
+三个待决问题的落地口径（2026-09-24，提交 `bee50085`）：
 
-1. 失效键：按 Pod 根 + 主体 + 路径 + 模式，还是按 ACR/ACL 资源版本；
-2. 失效时机：处理器自身的 SPARQL update 可主动失效，但普通 PUT/PATCH 到 `.acl`/`.acr`
-   不经过该处理器；
-3. TTL 兜底取值与集群下的一致性（多实例各自持有缓存）。
+1. **失效键**：Pod 根 + 主体（WebID/clientId）+ 目标路径 + 模式；
+2. **失效时机**：本 handler 服务的任何成功写入都递增该 Pod 的世代号；绕过 handler 的
+   权限变更由 TTL 兜底；
+3. **TTL 与集群**：TTL 5 秒，即多实例部署下的最大不一致窗口；缓存是进程内的，不引入
+   跨实例失效通道。
 
-在这些确定之前不应加跨请求缓存。任何方案都必须保留 fail-closed：缓存未命中或失效
-不确定时重新判定。
+未命中一律重新判定（fail-closed）；允许与拒绝都缓存。**未**采用
+`ObservableResourceStore` 作为失效依赖：它只在 `config/cloud.json` 挂载，local 没有，
+押在它身上会让 local 的失效静默失灵。
+
+实测把连续消息写入的中位延迟从 1801/2254ms 降到 918–923ms（同机隔离栈，两次独立测量）。
+回归：`tests/http` + `tests/api/matrix` + `tests/api/reconciler` 242 通过。
+
+## 仍受 TTL 约束的部分
+
+授权缓存只覆盖**经该 handler** 的路径。多实例部署下，A 实例写的权限变更在 B 实例上
+最多 5 秒后生效。如果部署要求"撤销立即全局生效"，需要跨实例失效通道，那是独立议题。
