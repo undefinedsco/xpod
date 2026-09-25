@@ -11,6 +11,12 @@ import { ensureTaskCredentialTables } from './TaskCredentialSchema';
 export type TaskCredentialRef = string;
 
 /**
+ * Every generated reference starts with this, which is what lets a binding tell "this id names a
+ * task-layer grant" from "this id is a Pod-stored credential".
+ */
+export const TASK_CREDENTIAL_REF_PREFIX = 'taskcred_';
+
+/**
  * `pending` is a grant that exists but must not be used yet: the user asked for it, and the
  * runtime activates it only once the grant is confirmed. `expired` and `revoked` are terminal for
  * execution but keep the row, so audits and rotation keep their history.
@@ -92,7 +98,7 @@ export class TaskCredentialStore {
     // One grant per owner and issuer: the reference is derived, so a retried registration lands on
     // the same row instead of leaving a second credential behind.
     this.newCredentialRef = options.newCredentialRef
-      ?? ((input) => `taskcred_${createHash('sha256').update(`${input.issuer}\u0000${input.ownerWebId}`).digest('hex').slice(0, 32)}`);
+      ?? ((input) => `${TASK_CREDENTIAL_REF_PREFIX}${createHash('sha256').update(`${input.issuer}\u0000${input.ownerWebId}`).digest('hex').slice(0, 32)}`);
     this.ready = ensureTaskCredentialTables(this.db).catch((error: unknown) => {
       this.initError = error;
     });

@@ -680,9 +680,15 @@ export function registerCommonServices(
       return new RunAuthContextRegistry();
     }).singleton(),
 
-    taskAuthBindingService: asFunction(({ chatKitStore }: ApiContainerCradle) => {
+    taskAuthBindingService: asFunction(({ chatKitStore, taskCredentialStore, config }: ApiContainerCradle) => {
+      const issuer = config.solidBaseUrl ?? config.publicUrl;
       return new TaskAuthBindingService({
         repository: chatKitStore,
+        // Unattended runs take their credential from the task layer; the Pod-stored credential
+        // stays the fallback until every binding names a grant.
+        ...(taskCredentialStore && issuer
+          ? { taskCredentials: createTaskCredentialSource({ store: taskCredentialStore, issuer }) }
+          : {}),
       });
     }).singleton(),
 
