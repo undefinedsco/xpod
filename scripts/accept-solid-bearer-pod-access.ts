@@ -11,6 +11,8 @@
  *
  * Usage: bun scripts/accept-solid-bearer-pod-access.ts
  */
+import { Database } from 'bun:sqlite';
+import path from 'node:path';
 import { createDpopHeader, generateDpopKeyPair } from '@inrupt/solid-client-authn-core';
 import { XpodTestStack } from '../tests/helpers/XpodTestStack';
 import { setupAccount } from '../tests/integration/helpers/solidAccount';
@@ -93,15 +95,21 @@ function record(step: string, ok: boolean, detail: string): void {
 }
 
 const stack = new XpodTestStack();
+const RUNTIME_ROOT = createTestDir('accept-bearer-pod-access');
 try {
   await stack.start('local', {
     // Strict auth: an open stack injects the local owner for credential-less calls, which would
     // make every probe below pass for the wrong reason.
     open: false,
     transport: 'port',
-    runtimeRoot: createTestDir('accept-bearer-pod-access'),
+    runtimeRoot: RUNTIME_ROOT,
     logLevel: 'debug',
-    env: { XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: FAKE_QLEVER_LOCAL_RUNTIME_COMMAND },
+    env: {
+      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: FAKE_QLEVER_LOCAL_RUNTIME_COMMAND,
+      // The task layer only stores a credential when it can encrypt it.
+      XPOD_SECRET_CELL_KEY_ID: 'accept-bearer-pod-access',
+      XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 7).toString('base64'),
+    },
   });
   console.log(`Stack ready on ${stack.baseUrl}`);
 
@@ -186,6 +194,69 @@ try {
   // A caller the API cannot use for the Pod hears the reason, exactly as on the key surface.
   record('chatkit-reports-dpop-caller', chatkitDpop.status === 403 && chatkitDpop.body.includes('service_access_missing'),
     `GET /v1/chatkit/threads (DPoP) -> ${chatkitDpop.status} ${chatkitDpop.body.slice(0, 80)}`);
+
+  // 3f. The task layer can be granted without the API storing an owner key, and a rebuild then
+  //     runs from that grant. The identity database must stay free of a stored owner key.
+  const sk = `sk-${Buffer.from(`${account.clientId}:${account.clientSecret}`, 'utf8').toString('base64')}`;
+  const granted = await fetch(new URL('/api/ai/task-credentials', stack.baseUrl), {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      authorization: `Bearer ${bearer.accessToken}`,
+    },
+    body: JSON.stringify({ apiKey: sk, name: 'acceptance' }),
+  });
+  const grantedBody = await granted.text();
+  record('task-layer-grant-without-api-key', granted.status === 201,
+    `POST /api/ai/task-credentials -> ${granted.status} ${grantedBody.slice(0, 120)}`);
+  const credentialRef = (JSON.parse(grantedBody || '{}') as { credential?: { credentialRef?: string } })
+    .credential?.credentialRef;
+
+  const listed = await callApi({ baseUrl: stack.baseUrl, path: '/api/ai/task-credentials', token: bearer });
+  record('task-layer-grant-listed-active',
+    listed.status === 200 && listed.body.includes('"status":"active"') && listed.body.includes(credentialRef ?? '\u0000'),
+    `GET /api/ai/task-credentials -> ${listed.status} ${listed.body.slice(0, 140)}`);
+
+  const rebuild = await callApi({
+    baseUrl: stack.baseUrl,
+    path: '/api/ai/config/rebuild',
+    token: bearer,
+    method: 'POST',
+    body: JSON.stringify({ target: 'fts' }),
+  });
+  const jobId = (JSON.parse(rebuild.body || '{}') as { job?: { id?: string } }).job?.id;
+  // Scheduling is not running: the queued job has to reach a terminal state, and it can only do
+  // that by opening the Pod with the grant, because no owner key is stored anywhere.
+  let jobStatus = 'queued';
+  for (let attempt = 0; attempt < 60 && jobStatus !== 'succeeded' && jobStatus !== 'failed'; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const lifecycle = await callApi({ baseUrl: stack.baseUrl, path: '/api/ai/config', token: bearer });
+    const recent = (JSON.parse(lifecycle.body || '{}') as {
+      lifecycle?: { recent?: Array<{ id: string; status: string; error?: string }> };
+    }).lifecycle?.recent ?? [];
+    jobStatus = recent.find((job) => job.id === jobId)?.status ?? jobStatus;
+  }
+  record('rebuild-runs-from-the-task-grant', rebuild.status === 202 && jobStatus === 'succeeded',
+    `POST /api/ai/config/rebuild -> ${rebuild.status}, job ${jobId} -> ${jobStatus}`);
+
+  const identity = new Database(path.join(RUNTIME_ROOT, 'identity.sqlite'), { readonly: true });
+  const storedKeys = identity
+    .query("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name='identity_pod_interface_key'")
+    .get() as { count: number };
+  const storedRows = storedKeys.count > 0
+    ? (identity.query('SELECT COUNT(*) AS count FROM identity_pod_interface_key').get() as { count: number }).count
+    : 0;
+  identity.close();
+  record('api-side-key-store-stays-empty', storedRows === 0,
+    `identity_pod_interface_key rows: ${storedRows}`);
+
+  const taskDatabasePath = path.join(RUNTIME_ROOT, 'tasks.sqlite');
+  const taskDatabase = new Database(taskDatabasePath, { readonly: true });
+  const taskRows = (taskDatabase.query('SELECT status FROM task_credential').all() as { status: string }[]);
+  taskDatabase.close();
+  record('task-layer-keeps-its-own-file', taskRows.length === 1 && taskRows[0]?.status === 'active',
+    `${path.basename(taskDatabasePath)} rows: ${JSON.stringify(taskRows)}`);
 
   // 4. The same user's DPoP token authenticates but must not be replayed to the Pod.
   const dpop = await exchange(stack.baseUrl, { ...account, dpop: true });

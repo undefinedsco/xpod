@@ -340,6 +340,8 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | `status` | `active` / `revoked` / `expired`；撤销只改状态，不删行 |
 | `created_at` / `rotated_at` / `last_used_at` / `expires_at` | 轮换与审计 |
 
+**已验证（第 4 步验收，2026-09-24，`scripts/accept-solid-bearer-pod-access.ts`，临时本地栈 15/15）**：脚本现在跑通"**没有 API 侧 owner 密钥也能执行后台任务**"这条链：`POST /api/ai/task-credentials` 只写任务层授权（201）→ 列表里是 `active` → `POST /api/ai/config/rebuild` 排队的 FTS 重建任务**执行成功**（`lifecycle.recent` 里 `succeeded`）→ `identity_pod_interface_key` **0 行**（API 侧从未存过 owner 密钥）→ 任务层凭据落在**独立文件** `tasks.sqlite`（1 行 `active`）。也就是说索引重建入口已经"在没有 API vault 的情况下完成一次真实执行"。
+
 **落地（第 4 步第 3 片，2026-09-24）**：无人执行的 run 也改从任务层取凭据。`TaskAuthBindingService.resolveRunContext` 先看 binding id 是否**命名了一条任务层授权**（前缀 `taskcred_`，常量 `TASK_CREDENTIAL_REF_PREFIX`）：是则从任务层 `forRef` 取用，**完全不读 Pod**；不是则走原有的 Pod 内 `task-auth` 凭据（迁移期回退），无需改 models schema。两条规则保证不倒退：**形如授权的 id 解析失败即失败**（撤销/过期/版本不符不会退回 Pod 里那份旧凭据，否则等于让撤销失效）；**没有 owner 时不解析**（owner 来自运行恢复的上下文，不来自 binding id）。容器把 `createTaskCredentialSource` 注入绑定服务。
 
 **落地（第 4 步第 2 片，2026-09-24）**：授权入口做成**用户可见的动作**，放在**维护索引 / 选择 embedding 的地方**（`ui/src/pages/settings/ai-config/`），不进 AI Connections applet。后端新增 `POST /api/ai/task-credentials`（body：用户的 `sk-` wrapper + 可选 name）：复用配置好的 CSS 认证器校验凭据、拒绝"凭据属于别的 WebID"、校验通过即写成 `active` 授权（**用户刚点的按钮就是显式授权**；程序发起、等用户确认的场景走 `pending`）。前端新增 `ui/src/api/task-credentials.ts`（列表/授权/撤销，响应不含秘密）+ `BackgroundPodAccess` 面板与 `useBackgroundPodAccess`：显示"已授权 · vN · 最近使用/到期"或"未授权"，一键授权（用本会话凭据）/撤销；索引重建按钮被 `service_access_missing` 拒绝时就地显示"需要后台 Pod 访问"，授权成功后**自动重试原操作**。会话凭据为此多暴露一个 `requestPodApiKey()`（只在这一次授权请求里离开浏览器）。
