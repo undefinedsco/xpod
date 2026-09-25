@@ -3,9 +3,10 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { getFreePort } from '../../src/runtime/port-finder';
 import { XpodTestStack } from './XpodTestStack';
+import { hasObjectStore, objectStoreContainerArgs, OBJECT_STORE_PORT } from './dockerObjectStore';
 
 // Run the same browser acceptance against two real, disposable services.
-// Cloud uses PostgreSQL/Redis/MinIO; Local uses the configured native QLever.
+// Cloud uses PostgreSQL/Redis/S3; Local uses the configured native QLever.
 const nativeCommand = process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND;
 if (!nativeCommand) throw new Error('Set XPOD_QLEVER_LOCAL_RUNTIME_COMMAND to the installed native QLever runtime');
 const cloud = new XpodTestStack();
@@ -38,10 +39,10 @@ try {
   const minioPort = await getFreePort(pgPort + 1);
   const redisPort = await getFreePort(minioPort + 1);
   startContainer('pg', ['-p', `127.0.0.1:${pgPort}:5432`, '-e', 'POSTGRES_USER=xpod', '-e', 'POSTGRES_PASSWORD=xpod', '-e', 'POSTGRES_DB=registration', 'postgres:16-alpine']);
-  startContainer('minio', ['-p', `127.0.0.1:${minioPort}:9000`, '--entrypoint', 'sh', 'minio/minio:latest', '-c', 'mkdir -p /data/registration && exec minio server /data']);
+  startContainer('minio', ['-p', `127.0.0.1:${minioPort}:${OBJECT_STORE_PORT}`, ...objectStoreContainerArgs('registration')]);
   startContainer('redis', ['-p', `127.0.0.1:${redisPort}:6379`, 'redis:7-alpine', 'redis-server', '--save', '', '--appendonly', 'no']);
   await waitReady(async () => spawnSync('docker', ['exec', containers[0], 'pg_isready', '-U', 'xpod'], { stdio: 'ignore' }).status === 0);
-  await waitReady(async () => (await fetch(`http://localhost:${minioPort}/minio/health/live`)).ok);
+  await waitReady(async () => hasObjectStore(minioPort, 'registration'));
   await waitReady(async () => spawnSync('docker', ['exec', containers[2], 'redis-cli', 'ping'], { stdio: 'ignore' }).status === 0);
 
   const pgUrl = `postgres://xpod:xpod@localhost:${pgPort}/registration`;
