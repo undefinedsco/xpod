@@ -3461,6 +3461,22 @@ async function main(): Promise<void> {
   // reported either way and only `--strict` turns it into a failure.
   const decision = decideRunOutcome(checks, { strict: options.strict });
 
+  // Every selected leg's readiness in one place. The external legs were probed before the run;
+  // the console-bound legs report their missing fact where it was found (the credential file, the
+  // console's port, the client binary), so those are folded in here instead of being probed twice.
+  const prerequisites = [
+    ...externalPrerequisites,
+    ...checks.flatMap((check) => (check.blockedBy
+      ? [{
+          prerequisite: check.blockedBy.prerequisite as LegPrerequisite['prerequisite'],
+          status: 'blocked' as const,
+          detail: check.blockedBy.detail,
+          owner: check.blockedBy.owner,
+        }]
+      : []))
+      .filter((entry) => !externalPrerequisites.some((probed) => probed.prerequisite === entry.prerequisite)),
+  ];
+
   const evidence = {
     schemaVersion: 2,
     kind: 'tunnel-ingress-acceptance',
@@ -3473,7 +3489,7 @@ async function main(): Promise<void> {
     /** `strict` makes a blocked prerequisite fail the run; the gate reading of the same facts. */
     strict: options.strict,
     /** What each selected leg needed before it could run, and whether it had it. */
-    prerequisites: externalPrerequisites,
+    prerequisites,
     /**
      * Legs this group deliberately does not run. Out of scope is not the same as blocked, and
      * saying it here keeps a hermetic run from being read as a full matrix.
@@ -3522,7 +3538,7 @@ async function main(): Promise<void> {
     group: options.group,
     strict: options.strict,
     checks: checks.map((check) => ({ id: check.id, outcome: outcomeOf(check) })),
-    prerequisites: externalPrerequisites.map((entry) => ({
+    prerequisites: prerequisites.map((entry) => ({
       prerequisite: entry.prerequisite,
       status: entry.status,
       detail: entry.detail,

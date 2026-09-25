@@ -443,7 +443,7 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 **改动（`scripts/accept-network-tunnel.ts`）**：
 
 1. **第三条线**：`--group default|external|network|all`。`default` 现在是**封闭（hermetic）**组：不探测、不触碰任何 provider；`external` 是第三方出口腿（ngrok 真实入口、cloudflared quick tunnel）；`network` 仍是控制台固定参数腿。证据里新增 `legsNotSelected`，日志明说"group=default does not run: …"，避免 hermetic 运行被读成全矩阵。
-2. **先探前置条件，再决定跑不跑**：每条外部腿的前置事实（客户端二进制、凭据、provider API 可达性、控制台端口是否空闲）在候选启动前探一次（`runPreflight` 按组裁剪，`evaluatePreflight({ngrok?, cloudflared?, cloudflaredQuick?, sakura?, frpc?})` 用"传了才探"表达选择）。缺哪条就记 `outcome:'blocked'` + `blockedBy{prerequisite, detail, owner}`，**不再花掉隧道超时**，也不再写成产品失败。`owner` 明确归属（本机出口 / 操作者凭据文件 / 操作者控制台）。
+2. **先探前置条件，再决定跑不跑**：每条外部腿的前置事实（客户端二进制、凭据、provider API 可达性、控制台端口是否空闲）在候选启动前探一次（`runPreflight` 按组裁剪，`evaluatePreflight({ngrok?, cloudflared?, cloudflaredQuick?, sakura?, frpc?})` 用"传了才探"表达选择）。缺哪条就记 `outcome:'blocked'` + `blockedBy{prerequisite, detail, owner}`，**不再花掉隧道超时**，也不再写成产品失败。`owner` 明确归属（本机出口 / 操作者凭据文件 / 操作者控制台）。证据的 `prerequisites[]` 是**所有被选腿**的单一清单：外部腿来自运行前探测，控制台腿来自「缺哪条事实就在哪条事实处记下」的那次读取（不重复探测），两者按 prerequisite 去重合并。
 3. **有独立证据才敢归因环境**：quick tunnel 发布了入口但本机不可达时，先问本地解析器，再问 **DNS-over-HTTPS**（`resolvesPublicly`）。"公网有、本机没有"= `blocked`（本机解析器看不到，不是产品缺陷）；"两边都没有"= `failed`（服务商确实没发布可用入口）。`classifyUnreachableEntry` 是纯函数，可单测。
 4. **合法迟到才重试，且带抖动**：`retryTransient` 用于"刚创建的 hostname 还没传播"这类事实（具名隧道解析 3 次 × 1.5s，delay 上叠加随机抖动，避免多会话按同一节拍打同一 provider）；断言正确性的检查永不重试。
 5. **`--strict` 是另一半契约**：默认非严格下 `blocked` 不影响退出码（但逐条打印 blocked 与 owner，并明确"green over the legs that ran"）；`--strict` 把 `blocked` 变成 exit 1，供发布门禁用（"你承诺这条腿跑过"）。判定收敛到纯函数 `decideRunOutcome(checks, {strict})`。
