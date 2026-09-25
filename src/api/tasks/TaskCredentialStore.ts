@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { getLoggerFor } from 'global-logger-factory';
 import { fromDbTimestamp, toDbTimestamp } from '../../identity/drizzle/db';
@@ -87,8 +88,10 @@ export class TaskCredentialStore {
     this.table = options.database.schema.taskCredentials;
     this.vault = options.vault;
     this.now = options.now ?? (() => new Date());
+    // One grant per owner and issuer: the reference is derived, so a retried registration lands on
+    // the same row instead of leaving a second credential behind.
     this.newCredentialRef = options.newCredentialRef
-      ?? ((input) => `taskcred_${Buffer.from(`${input.issuer}\u0000${input.ownerWebId}\u0000${this.now().getTime()}\u0000${Math.random()}`).toString('base64url').slice(0, 32)}`);
+      ?? ((input) => `taskcred_${createHash('sha256').update(`${input.issuer}\u0000${input.ownerWebId}`).digest('hex').slice(0, 32)}`);
     this.ready = ensureTaskCredentialTables(this.db).catch((error: unknown) => {
       this.initError = error;
     });

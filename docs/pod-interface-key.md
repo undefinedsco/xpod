@@ -340,6 +340,10 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | `status` | `active` / `revoked` / `expired`；撤销只改状态，不删行 |
 | `created_at` / `rotated_at` / `last_used_at` / `expires_at` | 轮换与审计 |
 
+**落地（第 3 步第 2 片，2026-09-24）**：容器注册 `taskCredentialStore`（`src/api/container/common.ts`），只在部署配置了根密钥时存在——**无法加密就不保存**；任务库地址由 `CSS_TASK_DB_URL` 覆盖、否则按上面的派生规则。根密钥解析抽成 `loadDeploymentRootKeyProvider`（`src/api/container/index.ts`），与 API 侧的凭证 vault 共用同一份部署材料。`grant` 的 `credentialRef` 改为**按 owner+issuer 派生**（一个 owner 一个 issuer 一行，重复登记落在同一行）。
+
+**显式授权入口**（`src/api/handlers/TaskCredentialHandler.ts`）：`GET /api/ai/task-credentials`（只回元数据，无秘密）、`POST /api/ai/task-credentials/:ref/activate`、`DELETE /api/ai/task-credentials/:ref`；全部按调用方 WebID 归属校验，别人的 ref 表现为 404。同时 `POST /api/ai/gateway/keys`（登记）在写完 legacy `saveKey` 之后**双写**一份任务层授权（`status: active`，因为登记本身就是用户的显式授权）；任务层写入失败只告警、不影响登记成功——迁移期以 legacy 为准。
+
 **落地（第 3 步第 1 片，2026-09-24）**：`src/api/tasks/TaskCredentialStore.ts` 按上表实现，`src/api/tasks/TaskCredentialSchema.ts` 定义 `task_credential` 表（sqlite 与 pg 两套），`src/api/tasks/TaskCredentialDatabase.ts` 负责归属：显式 `CSS_TASK_DB_URL` 优先；SQLite 部署默认落在 identity 库**同目录的 `tasks.sqlite`**（独立文件，泄露其一不牵连另一）；PostgreSQL 目前仍复用同一 server 的独立连接，**独立 role/schema 属部署待办**（不在代码里猜）。
 
 语义要点：`grant` 默认 `pending`（不执行），`activate` 后才可用；`rotate` 递增 `credential_version`，旧绑定版本不匹配即拒绝；`revoke` 只改状态留行；过期在 `lease` 时判定并落 `expired`；同一 `credentialRef` + 同密钥的重复 `grant` 视为幂等（不涨版本），换 owner/issuer 直接拒绝。`lease` 校验 owner、状态、版本与有效期，并按需记录 `last_used_at`。

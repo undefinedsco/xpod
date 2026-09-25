@@ -162,6 +162,24 @@ describe('TaskCredentialStore', () => {
     })).rejects.toThrow(`${TASK_CREDENTIAL_VERSION_CONFLICT}:2`);
   });
 
+  it('derives one stable reference per owner and issuer', async () => {
+    const directory = await temporaryDirectory();
+    const { store } = await storeAt(directory);
+
+    const first = await store.grant({ ownerWebId: OWNER, issuer: ISSUER, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET });
+    const again = await store.grant({ ownerWebId: OWNER, issuer: ISSUER, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET });
+    const otherIssuer = await store.grant({
+      ownerWebId: OWNER,
+      issuer: 'https://other.example/',
+      clientId: CLIENT_ID,
+      clientSecret: CLIENT_SECRET,
+    });
+
+    expect(again.credentialRef).toBe(first.credentialRef);
+    expect(otherIssuer.credentialRef).not.toBe(first.credentialRef);
+    expect(await store.listForOwner(OWNER)).toHaveLength(2);
+  });
+
   it('treats a retried grant with the same reference and secret as idempotent', async () => {
     const directory = await temporaryDirectory();
     const { store } = await storeAt(directory);

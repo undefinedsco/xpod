@@ -53,6 +53,7 @@ import { registerQuotaRoutes } from '../handlers/QuotaHandler';
 import { createPodLookupUsageOwnershipResolver, registerUsageRoutes } from '../handlers/UsageHandler';
 import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
 import { registerAiGatewayManagementRoutes } from '../handlers/AiGatewayManagementHandler';
+import { registerTaskCredentialRoutes } from '../handlers/TaskCredentialHandler';
 import { registerAiClientConfigurationRoutes } from '../handlers/AiClientConfigurationHandler';
 import { registerDeviceNotificationRuntime, type DeviceNotificationRuntimeOptions } from '../handlers/DeviceNotificationRuntime';
 import { AiClientConfigurationService } from '../service/AiClientConfigurationService';
@@ -206,6 +207,8 @@ function registerSharedRoutes(
     customModelsService: providerCustomModelsService,
     gatewayAccessKeyRepository,
     podInterfaceKeys: ownerPodAccess,
+    taskCredentials: container.resolve('taskCredentialStore', { allowUnregistered: true }),
+    clientCredentialIssuer: config.solidBaseUrl ?? config.publicUrl,
     validateClientCredential: (apiKey) => container.resolve('authenticator').authenticate({
       headers: { authorization: `Bearer ${apiKey}` },
       method: 'POST',
@@ -216,6 +219,9 @@ function registerSharedRoutes(
   });
   registerAiClientConfigurationRoutes(server, {
     service: aiClientConfigurationService,
+  });
+  registerTaskCredentialRoutes(server, {
+    taskCredentials: container.resolve('taskCredentialStore', { allowUnregistered: true }),
   });
   const notificationOrigin = config.publicUrl ?? config.solidBaseUrl ?? process.env.CSS_BASE_URL ?? `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`;
   registerDeviceNotificationRuntime(server, {

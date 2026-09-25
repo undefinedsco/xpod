@@ -40,6 +40,7 @@ import {
   isEmbeddingModelNotAllowedError,
 } from '../../ai/service/EmbeddingModelPolicy';
 import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../service/provider-http-transport';
+import type { TaskCredentialStore } from '../tasks/TaskCredentialStore';
 
 const logger = getLoggerFor('AiGatewayManagementHandler');
 
@@ -63,6 +64,13 @@ export interface AiGatewayManagementHandlerOptions {
    * interface key, so registering it is also the moment Xpod is granted its use.
    */
   podInterfaceKeys?: PodInterfaceKeyGrant;
+  /**
+   * The task layer's own credential store. Registering also records the grant tasks may use while
+   * nobody is present; the API-side key stays the runtime's fallback until background entries move.
+   */
+  taskCredentials?: Pick<TaskCredentialStore, 'grant'>;
+  /** Issuer the registered credential belongs to; part of the task-layer grant identity. */
+  clientCredentialIssuer?: string;
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue' | 'issueClientConfiguration'>;
   jsonBodyLimitBytes?: number;
@@ -187,6 +195,22 @@ export function registerAiGatewayManagementRoutes(
           clientId: verified.context.clientId,
           clientSecret: verified.context.clientSecret,
         });
+        // The task layer keeps its own copy so background work stops depending on the API's vault.
+        // Registration is the user's explicit grant, so it activates here; a failure must not
+        // reject a registration the legacy path already accepted.
+        if (options.taskCredentials && options.clientCredentialIssuer) {
+          try {
+            await options.taskCredentials.grant({
+              ownerWebId: owner,
+              issuer: options.clientCredentialIssuer,
+              clientId: verified.context.clientId,
+              clientSecret: verified.context.clientSecret,
+              status: 'active',
+            });
+          } catch (error) {
+            logger.warn(`Task credential grant was not stored: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
       }
       const name = normalizeOptionalString(body.name) ?? 'Xpod API Key';
       const keyId = repository.createKeyId(owner, options.deployment);

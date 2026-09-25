@@ -30,6 +30,8 @@ import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorC
 import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { OwnerPodAccess } from '../ai-gateway/pod/OwnerPodAccess';
 import { resolveHostedPodRoute } from '../ai-gateway/pod/HostedPodRoute';
+import { getTaskCredentialDatabase, resolveTaskCredentialDatabaseUrl } from '../tasks/TaskCredentialDatabase';
+import { TaskCredentialStore } from '../tasks/TaskCredentialStore';
 import { PodInterfaceKeyRepository } from '../../identity/drizzle/PodInterfaceKeyRepository';
 import { PodInterfaceKeyStore } from '../ai-gateway/pod/PodInterfaceKeyStore';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
@@ -193,6 +195,19 @@ export function registerCommonServices(
         serviceId: config.nodeId ?? 'local-1',
         scopes: ['quota:write', 'usage:read', 'account:manage', 'network:read', 'network:write'],
       });
+    }).singleton(),
+
+    taskCredentialStore: asFunction(({ config }: ApiContainerCradle) => {
+      // No root key means no encrypted store: a credential that cannot be sealed is not kept.
+      const vault = config.secretCellVaultFactory?.();
+      if (!vault) {
+        return undefined;
+      }
+      const url = resolveTaskCredentialDatabaseUrl({
+        identityDatabaseUrl: config.databaseUrl,
+        configuredUrl: config.taskDatabaseUrl,
+      });
+      return new TaskCredentialStore({ database: getTaskCredentialDatabase(url), vault });
     }).singleton(),
 
     solidSessions: asFunction(({ config }: ApiContainerCradle) => {
