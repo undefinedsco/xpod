@@ -9,6 +9,7 @@ import {
   resetTaskCredentialDatabases,
 } from '../../../src/api/tasks/TaskCredentialDatabase';
 import {
+  createTaskCredentialSource,
   TASK_CREDENTIAL_ENCRYPTION_FAILED,
   TASK_CREDENTIAL_NOT_ACTIVE,
   TASK_CREDENTIAL_NOT_FOUND,
@@ -326,5 +327,96 @@ describe('TaskCredentialStore', () => {
 
     await expect(foreignKeyStore.lease({ credentialRef: granted.credentialRef, ownerWebId: OWNER }))
       .rejects.toThrow(TASK_CREDENTIAL_ENCRYPTION_FAILED);
+  });
+});
+
+describe('createTaskCredentialSource', () => {
+  const OTHER_ISSUER = 'https://other.example/';
+
+  it('answers with the active grant of this deployment only', async () => {
+    const directory = await temporaryDirectory();
+    const { store } = await storeAt(directory);
+    await store.grant({
+      ownerWebId: OWNER,
+      issuer: OTHER_ISSUER,
+      clientId: 'other-issuer-client',
+      clientSecret: 'other-issuer-secret',
+      status: 'active',
+    });
+    const pending = await store.grant({
+      ownerWebId: OWNER,
+      issuer: ISSUER,
+      clientId: 'alice-client',
+      clientSecret: CLIENT_SECRET,
+    });
+    const source = createTaskCredentialSource({ store, issuer: ISSUER });
+
+    // A pending grant is not authorization yet, and another issuer's grant is not ours.
+    await expect(source.activeFor(OWNER)).resolves.toBeUndefined();
+
+    await store.activate(pending.credentialRef);
+    await expect(source.activeFor(OWNER)).resolves.toMatchObject({
+      credentialRef: pending.credentialRef,
+      version: 1,
+      clientId: 'alice-client',
+      clientSecret: CLIENT_SECRET,
+    });
+  });
+
+  it('refuses a named grant whose owner or version does not match', async () => {
+    const directory = await temporaryDirectory();
+    const { store } = await storeAt(directory);
+    const granted = await store.grant({
+      ownerWebId: OWNER,
+      issuer: ISSUER,
+      clientId: 'alice-client',
+      clientSecret: CLIENT_SECRET,
+      status: 'active',
+    });
+    const source = createTaskCredentialSource({ store, issuer: ISSUER });
+
+    await expect(source.forRef({ credentialRef: granted.credentialRef, ownerWebId: OWNER, version: 1 }))
+      .resolves.toMatchObject({ clientId: 'alice-client' });
+    await expect(source.forRef({ credentialRef: granted.credentialRef, ownerWebId: OTHER_OWNER }))
+      .resolves.toBeUndefined();
+    await expect(source.forRef({ credentialRef: granted.credentialRef, ownerWebId: OWNER, version: 2 }))
+      .resolves.toBeUndefined();
+    await expect(source.forRef({ credentialRef: 'taskcred_missing', ownerWebId: OWNER }))
+      .resolves.toBeUndefined();
+  });
+
+  it('stops answering once a grant is revoked', async () => {
+    const directory = await temporaryDirectory();
+    const { store } = await storeAt(directory);
+    const granted = await store.grant({
+      ownerWebId: OWNER,
+      issuer: ISSUER,
+      clientId: 'alice-client',
+      clientSecret: CLIENT_SECRET,
+      status: 'active',
+    });
+    const source = createTaskCredentialSource({ store, issuer: ISSUER });
+
+    await store.revoke(granted.credentialRef);
+
+    await expect(source.activeFor(OWNER)).resolves.toBeUndefined();
+    await expect(source.forRef({ credentialRef: granted.credentialRef, ownerWebId: OWNER }))
+      .resolves.toBeUndefined();
+  });
+
+  it('takes the newest version when an owner holds several grants for this issuer', async () => {
+    const directory = await temporaryDirectory();
+    const { store } = await storeAt(directory);
+    const first = await store.grant({
+      ownerWebId: OWNER,
+      issuer: ISSUER,
+      clientId: 'alice-client',
+      clientSecret: CLIENT_SECRET,
+      status: 'active',
+    });
+    await store.rotate(first.credentialRef, { clientId: 'alice-client-2', clientSecret: 'rotated', expectedVersion: 1 });
+    const source = createTaskCredentialSource({ store, issuer: ISSUER });
+
+    await expect(source.activeFor(OWNER)).resolves.toMatchObject({ version: 2, clientId: 'alice-client-2' });
   });
 });

@@ -31,7 +31,7 @@ import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAcce
 import { OwnerPodAccess } from '../ai-gateway/pod/OwnerPodAccess';
 import { resolveHostedPodRoute } from '../ai-gateway/pod/HostedPodRoute';
 import { getTaskCredentialDatabase, resolveTaskCredentialDatabaseUrl } from '../tasks/TaskCredentialDatabase';
-import { TaskCredentialStore } from '../tasks/TaskCredentialStore';
+import { createTaskCredentialSource, TaskCredentialStore } from '../tasks/TaskCredentialStore';
 import { PodInterfaceKeyRepository } from '../../identity/drizzle/PodInterfaceKeyRepository';
 import { PodInterfaceKeyStore } from '../ai-gateway/pod/PodInterfaceKeyStore';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
@@ -217,13 +217,19 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    ownerPodAccess: asFunction(({ config, db, solidSessions }: ApiContainerCradle) => {
+    ownerPodAccess: asFunction(({ config, db, solidSessions, taskCredentialStore }: ApiContainerCradle) => {
+      // Task-layer grants are what background work uses; the stored key stays the fallback for
+      // entries that have not migrated yet.
+      const issuer = config.solidBaseUrl ?? config.publicUrl;
       return new OwnerPodAccess({
         keys: new PodInterfaceKeyStore({
           repository: new PodInterfaceKeyRepository(db),
           vault: credentialVaultForConfig(config),
         }),
         sessions: solidSessions,
+        ...(taskCredentialStore && issuer
+          ? { taskCredentials: createTaskCredentialSource({ store: taskCredentialStore, issuer }) }
+          : {}),
         route: resolveHostedPodRoute({
           canonicalBaseUrl: config.solidBaseUrl,
           // API_HOST is the address the runtime bound its services to; XPOD_MAIN_PORT is the

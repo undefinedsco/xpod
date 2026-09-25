@@ -25,6 +25,37 @@ export interface PodAccessRequestContext {
   auth?: AuthContext;
   /** Physical Pod root when the identity WebID is hosted by a separate IdP. */
   podBaseUrl?: string;
+  /**
+   * Work that runs without a caller takes its credential from the task layer.
+   *
+   * `ownerGrant` asks for the owner's active grant; `credentialRef` names one grant, optionally
+   * frozen at the `version` its binding recorded. Setting this means the request may not borrow
+   * the API's stored key: an unusable grant fails the call so the caller reports why.
+   */
+  taskCredential?: {
+    credentialRef?: string;
+    version?: number;
+    ownerGrant?: true;
+  };
+}
+
+/** A credential the task layer holds for an owner, with the grant it came from. */
+export interface TaskPodCredential extends PodInterfaceCredential {
+  credentialRef: string;
+  version: number;
+}
+
+/**
+ * The task layer's credentials, as this component needs them.
+ *
+ * Kept as an interface so Pod access depends on "a grant the task layer vouches for" rather than
+ * on the task layer's storage.
+ */
+export interface TaskCredentialSource {
+  /** The owner's active grant for this deployment, if the owner made one. */
+  activeFor(ownerWebId: string): Promise<TaskPodCredential | undefined>;
+  /** One named grant, checked for its owner and version. */
+  forRef(input: { credentialRef: string; ownerWebId: string; version?: number }): Promise<TaskPodCredential | undefined>;
 }
 
 /**
@@ -45,6 +76,11 @@ export interface OwnerPodAccessOptions {
    * instead of exchanging the same credential a second time.
    */
   sessions: SolidSessionFactory;
+  /**
+   * Task-layer credentials for work that runs without a caller. Absent means such work can only
+   * use the deployment's stored key, which is the pre-migration behaviour.
+   */
+  taskCredentials?: TaskCredentialSource;
   /** Route this deployment exposes for its own hosted Pods, when one is needed. */
   route?: HostedPodRoute;
   fetch?: typeof fetch;
@@ -65,6 +101,7 @@ export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGr
   private readonly logger = getLoggerFor(this);
   private readonly keys: PodInterfaceKeyAccess;
   private readonly sessions: SolidSessionFactory;
+  private readonly taskCredentials?: TaskCredentialSource;
   private readonly fetchImpl: typeof fetch;
   private readonly route?: HostedPodRoute;
   private transport?: Promise<typeof fetch>;
@@ -72,6 +109,7 @@ export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGr
   public constructor(options: OwnerPodAccessOptions) {
     this.keys = options.keys;
     this.sessions = options.sessions;
+    this.taskCredentials = options.taskCredentials;
     this.fetchImpl = options.fetch ?? fetch;
     this.route = options.route;
   }
@@ -99,6 +137,9 @@ export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGr
       // A caller authenticated as somebody else never borrows this owner's credential.
       return undefined;
     }
+    if (context.taskCredential) {
+      return await this.taskCredentialFetch(owner, context.taskCredential);
+    }
     if (hasSolidClientCredentialsAuthority(auth)) {
       // The caller's own interface key, already exchanged while authenticating this request: the
       // session factory hands back that same token together with the key it is bound to.
@@ -112,6 +153,31 @@ export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGr
       return callerFetch;
     }
     return await this.storedKeyFetch(owner);
+  }
+
+  /**
+   * Reach the Pod with a task-layer grant. There is no fallback on purpose: falling back to the
+   * API's stored key would make "this task was authorized" indistinguishable from "somebody
+   * registered once".
+   */
+  private async taskCredentialFetch(
+    owner: string,
+    request: NonNullable<PodAccessRequestContext['taskCredential']>,
+  ): Promise<typeof fetch | undefined> {
+    if (!this.taskCredentials) {
+      return undefined;
+    }
+    const credential = request.credentialRef
+      ? await this.taskCredentials.forRef({
+        credentialRef: request.credentialRef,
+        ownerWebId: owner,
+        ...(request.version !== undefined ? { version: request.version } : {}),
+      })
+      : await this.taskCredentials.activeFor(owner);
+    if (!credential) {
+      return undefined;
+    }
+    return await this.credentialFetch(owner, credential);
   }
 
   private async storedKeyFetch(owner: string): Promise<typeof fetch | undefined> {

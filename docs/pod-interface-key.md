@@ -340,6 +340,8 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | `status` | `active` / `revoked` / `expired`；撤销只改状态，不删行 |
 | `created_at` / `rotated_at` / `last_used_at` / `expires_at` | 轮换与审计 |
 
+**落地（第 4 步第 1 片，2026-09-24）**：后台执行开始使用任务层授权。`PodAccessRequestContext.taskCredential`（`{ ownerGrant: true }` 或 `{ credentialRef, version }`）表示"这次读取必须用任务层授权"——**不设回退**：没有可用授权就直接失败，避免把"某次登记过"当成"这个任务被授权"。`OwnerPodAccess` 通过 `TaskCredentialSource` 取用（`activeFor(owner)` 取该 owner 在本部署 issuer 下的 active 授权、`forRef` 校验 owner 与冻结版本），适配器 `createTaskCredentialSource` 在 tasks 层实现，容器把二者接起来。首批迁移的入口是**索引重建**（`rebuildFts`/`rebuildVector`，`src/api/container/routes.ts`）——它们已经在用任务层授权取 Pod fetch。剩余入口（向量重建内部的 Provider 凭据读取、配额定时刷新、chatkit 后台 run、Matrix/Reconciler）仍需逐个迁移，判据仍是"在没有 API vault 的情况下完成一次真实执行"。
+
 **落地（第 3 步第 2 片，2026-09-24）**：容器注册 `taskCredentialStore`（`src/api/container/common.ts`），只在部署配置了根密钥时存在——**无法加密就不保存**；任务库地址由 `CSS_TASK_DB_URL` 覆盖、否则按上面的派生规则。根密钥解析抽成 `loadDeploymentRootKeyProvider`（`src/api/container/index.ts`），与 API 侧的凭证 vault 共用同一份部署材料。`grant` 的 `credentialRef` 改为**按 owner+issuer 派生**（一个 owner 一个 issuer 一行，重复登记落在同一行）。
 
 **显式授权入口**（`src/api/handlers/TaskCredentialHandler.ts`）：`GET /api/ai/task-credentials`（只回元数据，无秘密）、`POST /api/ai/task-credentials/:ref/activate`、`DELETE /api/ai/task-credentials/:ref`；全部按调用方 WebID 归属校验，别人的 ref 表现为 404。同时 `POST /api/ai/gateway/keys`（登记）在写完 legacy `saveKey` 之后**双写**一份任务层授权（`status: active`，因为登记本身就是用户的显式授权）；任务层写入失败只告警、不影响登记成功——迁移期以 legacy 为准。

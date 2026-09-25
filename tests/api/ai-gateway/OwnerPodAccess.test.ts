@@ -12,6 +12,7 @@ import type {
 } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 import type { SolidAuthContext } from '../../../src/api/auth/AuthContext';
 import { createTestSolidSessions } from '../../helpers/solidSessions';
+import type { TaskCredentialSource } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
 
 const OWNER = 'https://pod.example/alice/profile/card#me';
 const OTHER_OWNER = 'https://pod.example/bob/profile/card#me';
@@ -76,6 +77,7 @@ function createHarness(options: {
   tokenResponse?: () => Response;
   podResponse?: () => Response;
   route?: { canonicalBaseUrl: string; localBaseUrl: string };
+  taskCredentials?: TaskCredentialSource;
 } = {}) {
   const tokenRequests: TokenRequest[] = [];
   const podRequests: PodRequest[] = [];
@@ -110,6 +112,7 @@ function createHarness(options: {
   const keys = new FakeKeyStore(options.stored);
   const access = new OwnerPodAccess({
     keys,
+    ...(options.taskCredentials ? { taskCredentials: options.taskCredentials } : {}),
     sessions: createTestSolidSessions({
       tokenEndpoint: TOKEN_ENDPOINT,
       publicBaseUrl: 'https://pod.example',
@@ -303,5 +306,85 @@ describe('OwnerPodAccess', () => {
     await access.forgetKey(OWNER);
     expect(keys.forgotten).toEqual([OWNER]);
     await expect(access.getPodFetch(OWNER)).resolves.toBeUndefined();
+  });
+});
+
+describe('OwnerPodAccess task credentials', () => {
+  const TASK_KEY: PodInterfaceCredential = { clientId: 'task-client', clientSecret: 'task-secret' };
+
+  it('uses the owner\'s task-layer grant for background work', async () => {
+    const { access, tokenRequests, podRequests } = createHarness({
+      taskCredentials: {
+        activeFor: async () => ({ ...TASK_KEY, credentialRef: 'taskcred_1', version: 3 }),
+        forRef: async () => undefined,
+      },
+    });
+
+    const podFetch = await access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } });
+    expect(podFetch).toBeTypeOf('function');
+    await podFetch!(POD_RESOURCE);
+
+    expect(tokenRequests).toHaveLength(1);
+    expect(tokenRequests[0].authorization).toBe(
+      `Basic ${Buffer.from('task-client:task-secret', 'utf8').toString('base64')}`,
+    );
+    expect(podRequests[0].authorization).toBe('DPoP access-token-1');
+  });
+
+  it('never falls back to the stored key when the task grant is unusable', async () => {
+    const { access, tokenRequests, fetchImpl } = createHarness({
+      stored: STORED_KEY,
+      taskCredentials: { activeFor: async () => undefined, forRef: async () => undefined },
+    });
+
+    await expect(access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } })).resolves.toBeUndefined();
+    expect(tokenRequests).toHaveLength(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('resolves a named grant at its frozen version', async () => {
+    const seen: Array<{ credentialRef: string; ownerWebId: string; version?: number }> = [];
+    const { access, tokenRequests } = createHarness({
+      taskCredentials: {
+        activeFor: async () => undefined,
+        forRef: async (input) => {
+          seen.push(input);
+          return input.version === 4 ? { ...TASK_KEY, credentialRef: input.credentialRef, version: 4 } : undefined;
+        },
+      },
+    });
+
+    await expect(access.getPodFetch(OWNER, {
+      taskCredential: { credentialRef: 'taskcred_9', version: 4 },
+    })).resolves.toBeTypeOf('function');
+    await expect(access.getPodFetch(OWNER, {
+      taskCredential: { credentialRef: 'taskcred_9', version: 2 },
+    })).resolves.toBeUndefined();
+
+    expect(seen).toEqual([
+      { credentialRef: 'taskcred_9', ownerWebId: OWNER, version: 4 },
+      { credentialRef: 'taskcred_9', ownerWebId: OWNER, version: 2 },
+    ]);
+    expect(tokenRequests).toHaveLength(1);
+  });
+
+  it('cannot use a task credential for another owner', async () => {
+    const { access, tokenRequests } = createHarness({
+      taskCredentials: {
+        activeFor: async () => ({ ...TASK_KEY, credentialRef: 'taskcred_1', version: 1 }),
+        forRef: async () => ({ ...TASK_KEY, credentialRef: 'taskcred_1', version: 1 }),
+      },
+    });
+
+    await expect(access.getPodFetch(OWNER, { auth: callerAuth({ webId: OTHER_OWNER }), taskCredential: { ownerGrant: true } }))
+      .resolves.toBeUndefined();
+    expect(tokenRequests).toHaveLength(0);
+  });
+
+  it('reports no task credential when the deployment wired none', async () => {
+    const { access, tokenRequests } = createHarness({ stored: STORED_KEY });
+
+    await expect(access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } })).resolves.toBeUndefined();
+    expect(tokenRequests).toHaveLength(0);
   });
 });

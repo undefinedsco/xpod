@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import { getLoggerFor } from 'global-logger-factory';
 import { fromDbTimestamp, toDbTimestamp } from '../../identity/drizzle/db';
 import type { SecretCellVault } from '../../security/secret-cell';
+import type { TaskCredentialSource } from '../ai-gateway/pod/OwnerPodAccess';
 import type { TaskCredentialDatabase } from './TaskCredentialDatabase';
 import { ensureTaskCredentialTables } from './TaskCredentialSchema';
 
@@ -368,4 +369,60 @@ export class TaskCredentialStore {
         : new Error(`task_credential_table_unavailable:${String(this.initError)}`);
     }
   }
+}
+
+/**
+ * The task layer's credentials as Pod access needs them.
+ *
+ * `activeFor` answers "may background work use this owner's grant at all", which is what a
+ * scheduled entry needs; `forRef` answers a task binding that names its credential and version.
+ */
+export function createTaskCredentialSource(input: {
+  store: TaskCredentialStore;
+  /** Issuer whose grants this deployment can use; grants for other issuers are ignored. */
+  issuer: string;
+}): TaskCredentialSource {
+  const { store, issuer } = input;
+  return {
+    async activeFor(ownerWebId: string) {
+      const grants = await store.listForOwner(ownerWebId);
+      const active = grants
+        .filter((grant) => grant.status === 'active' && grant.issuer === issuer)
+        .sort((left, right) => right.version - left.version)[0];
+      if (!active) {
+        return undefined;
+      }
+      const lease = await store.lease({
+        credentialRef: active.credentialRef,
+        ownerWebId,
+        version: active.version,
+      });
+      return {
+        credentialRef: lease.credentialRef,
+        version: lease.version,
+        clientId: lease.clientId,
+        clientSecret: lease.clientSecret,
+      };
+    },
+
+    async forRef({ credentialRef, ownerWebId, version }) {
+      try {
+        const lease = await store.lease({
+          credentialRef,
+          ownerWebId,
+          ...(version !== undefined ? { version } : {}),
+          // A version probe must not look like a use of the credential.
+          recordUsage: false,
+        });
+        return {
+          credentialRef: lease.credentialRef,
+          version: lease.version,
+          clientId: lease.clientId,
+          clientSecret: lease.clientSecret,
+        };
+      } catch {
+        return undefined;
+      }
+    },
+  };
 }

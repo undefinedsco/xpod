@@ -239,7 +239,12 @@ function registerSharedRoutes(
   const ftsRebuildAvailable = Boolean(ownerPodAccess && rdfEngine?.indexTextSource);
   const vectorRebuildAvailable = Boolean(ownerPodAccess && rdfSearchIndexingService && chatKitStore.createTrustedContext);
   const rebuildFts = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await ownerPodAccess.getPodFetch(owner.webId, { podBaseUrl: owner.podUrl });
+    // Background work uses the owner's task-layer grant: the rebuild is exactly the kind of run
+    // that happens while nobody is watching.
+    const trustedFetch = await ownerPodAccess.getPodFetch(owner.webId, {
+      podBaseUrl: owner.podUrl,
+      taskCredential: { ownerGrant: true },
+    });
     if (!trustedFetch || !rdfEngine?.indexTextSource) throw new Error('fts_rebuild_unavailable');
     const result = await new PodSearchIndexRebuilder({
       trustedFetch,
@@ -250,7 +255,10 @@ function registerSharedRoutes(
     if (result.failed > 0) throw new Error('fts_rebuild_incomplete');
   };
   const rebuildVector = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await ownerPodAccess.getPodFetch(owner.webId, { podBaseUrl: owner.podUrl });
+    const trustedFetch = await ownerPodAccess.getPodFetch(owner.webId, {
+      podBaseUrl: owner.podUrl,
+      taskCredential: { ownerGrant: true },
+    });
     if (!trustedFetch || !rdfSearchIndexingService) throw new Error('vector_rebuild_unavailable');
     const context = await chatKitStore.createTrustedContext({ ...owner, fetch: trustedFetch });
     const result = await new PodSearchIndexRebuilder({
