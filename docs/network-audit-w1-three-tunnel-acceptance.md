@@ -6,6 +6,7 @@
 - **最新统一运行：`.test-data/acceptance/w1-round19/evidence.json`（58 项检查 / 2 项失败）—— 三家里的三家都在同一次运行里拿到真实入口**：ngrok、cloudflared quick tunnel、SakuraFrp（后者用 vendor 客户端 config 模式把平台生成的配置指到隔离候选的端口，因为控制台的 5737 被操作者实例占用；证据里记录了这次端口调整与自签证书）。两项失败都是同一个控制台事实：`node-0000.undefineds.co` 尚未挂到隧道 `6ee69e25-…` 的 public hostname 上（530/1033）。
 - 端口语义（2026-09-20 修订）：Sakura 不再需要操作者填端口 —— runtime 用同一凭据读 `GET /v4/tunnels` 的 `local_port` 并把 ingress 钉在该端口（`resolveIngressPort()`，提交 `d2fcfb4a`）；显式 `XPOD_GATEWAY_INGRESS_PORT` 仍优先但**严格**（被占用即报错，不再静默换端口）。cloudflared **具名**隧道的回源端口在 Dashboard 里，provider 现在会读回远端配置并报 `origin-mismatch:dashboard=<p>,runtime=<q>`（提交 `9d0576a0`），不再让这种不匹配表现为"入口不可达"。
 - 运行方式：`bun run accept:network-tunnel --start --candidate-port 3300 --env-file <keyfile>`；跑的是**隔离候选实例**，不触碰操作者的实例。隧道腿一律打到该候选的**隧道入口**（`findGatewayIngressPort(3300)` = 3303），与产品口径一致
+- **分线与判定口径（2026-09-25 起）**：`--group default` 只跑封闭腿（全动态端口、不探任何 provider，本机实测 43/0/0）；`--group external` 跑第三方出口腿（ngrok 真实入口、cloudflared quick tunnel，实测 61/0/0）；`--group network` 跑控制台固定参数腿（cloudflared 具名 + Sakura，20/20）。腿的前置条件（二进制/凭据/provider 可达性/控制台端口空闲）先探再跑，缺失记 **blocked**（附 `blockedBy.owner`）而不是 failed；`--strict` 才把 blocked 判成 exit 1，供发布门禁使用。quick tunnel 入口本机不可达时会用 **DNS-over-HTTPS** 交叉判定"公网有、本机没有"（环境）还是"两边都没有"（产品）。每次运行的每条腿结果追加到 `.test-data/acceptance/tunnel/history.jsonl`，`--flake-report` 输出每条腿的 passed/blocked/failed 与 not-passed 率。细节与证据见 [`network-audit-2026-09-19-reconciliation.md`](network-audit-2026-09-19-reconciliation.md) 第 10.9 节。
 
 ## 1. 逐家结论
 

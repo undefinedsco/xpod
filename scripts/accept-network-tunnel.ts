@@ -12,23 +12,39 @@
  *
  * Usage:
  *   bun scripts/accept-network-tunnel.ts --start                     # default group, dynamic ports
+ *   bun scripts/accept-network-tunnel.ts --start --group external    # legs that leave this machine
  *   bun scripts/accept-network-tunnel.ts --start --group network     # the two fixed-parameter legs
- *   bun scripts/accept-network-tunnel.ts --start --group all         # both, in one process
+ *   bun scripts/accept-network-tunnel.ts --start --group all --strict # every leg must really run
  *   bun scripts/accept-network-tunnel.ts --reuse --public-url https://entry.example/
  *
- * The default group takes every port from the OS, so it is safe to run next to another session's
- * candidate or integration run. The network group's legs have fixed parameters (the ports the
- * operator's Cloudflare Dashboard and Sakura console already forward to), so it reserves them
- * under `.test-data/port-reservations/` and runs exclusively: every other allocator in the repo
- * skips a reserved port, and a reserved port held by a process that ignored the reservation is
- * reported by name - never taken by force.
+ * Three groups, because the legs fail for three different reasons: `default` only needs free
+ * ports, so it is hermetic and safe to run next to another session's candidate or integration
+ * run; `external` adds the legs whose verdict depends on a third-party service this machine has
+ * to reach (ngrok, a cloudflared quick tunnel); `network` adds the two legs whose parameters live
+ * in the operator's own consoles (Cloudflare Dashboard, SakuraFrp), reserves those ports under
+ * `.test-data/port-reservations/`, and runs exclusively: every other allocator in the repo skips
+ * a reserved port, and a reserved port held by a process that ignored the reservation is reported
+ * by name - never taken by force.
+ *
+ * A leg that cannot run is never reported as a failure. Each external leg probes its own
+ * prerequisites first (binary, credential, API reachability, the console's port being free) and,
+ * when one is missing, records `blocked` with the fact and its owner instead of burning the tunnel
+ * timeout and painting the run red. `--strict` is the other half of that contract: it makes a
+ * blocked leg fail the run, which is what an acceptance gate wants ("you promised this leg ran").
+ * Non-strict runs print their coverage (`N passed, M failed, K blocked`) and still exit 0, so a
+ * blocked prerequisite can never be mistaken for a green full matrix.
+ *
+ * Every real run appends its per-leg outcome to `.test-data/acceptance/tunnel/history.jsonl`;
+ * `--flake-report` turns that file into per-leg pass/blocked/fail counts, so "this suite is
+ * unstable" becomes a number with a leg attached to it instead of an impression.
  */
 
-import { execSync, spawn, type ChildProcess } from 'node:child_process';
+import { execSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { lookup } from 'node:dns/promises';
 import { createConnection, createServer } from 'node:net';
 import { createHash } from 'node:crypto';
 import {
+  appendFileSync,
   chmodSync,
   copyFileSync,
   existsSync,
@@ -103,43 +119,56 @@ interface Options {
    *
    * `default` takes every port dynamically (candidate gateway/CSS/API and the ingress
    * listener), so it needs no provider console and any number of sessions can run it while
-   * another agent runs `run-integration-full` or its own candidate. `network` is the group
-   * whose legs have *fixed* parameters (the Cloudflare Dashboard's local service port and the
-   * SakuraFrp console's `local_port`): it reserves those ports, pins them, and runs exclusively.
+   * another agent runs `run-integration-full` or its own candidate. `external` adds the
+   * third-party-egress legs (ngrok, cloudflared quick tunnel). `network` is the group whose legs
+   * have *fixed* parameters (the Cloudflare Dashboard's local service port and the SakuraFrp
+   * console's `local_port`): it reserves those ports, pins them, and runs exclusively.
    */
   group: TunnelGroup;
+  /** Turn a blocked prerequisite into a failed run: the acceptance-gate reading. */
+  strict: boolean;
+  /** Print per-leg outcome counts from the run history and exit, running nothing. */
+  flakeReport: boolean;
   /** Ports this run keeps free for a console-bound leg (filled in by `main`). */
   reservedPorts: number[];
 }
 
-export type TunnelGroup = 'default' | 'network' | 'all';
+export type TunnelGroup = 'default' | 'external' | 'network' | 'all';
 
 export function parseTunnelGroup(value: string): TunnelGroup {
   const normalized = value.trim().toLowerCase();
-  if (normalized === 'default' || normalized === 'network' || normalized === 'all') {
+  if (normalized === 'default' || normalized === 'external' || normalized === 'network' || normalized === 'all') {
     return normalized;
   }
-  throw new Error(`unknown --group "${value}"; expected one of default, network, all`);
+  throw new Error(`unknown --group "${value}"; expected one of default, external, network, all`);
 }
 
 export interface TunnelGroups {
+  /** The hermetic line: every port dynamic, no provider involved. */
   dynamic: boolean;
+  /** The third-party-egress line: ngrok and the cloudflared quick tunnel. */
+  external: boolean;
+  /** The console-bound line: Cloudflare named tunnel and SakuraFrp. */
   network: boolean;
 }
 
 /**
- * One flag selects a group, because the two groups have different prerequisites.
+ * One flag selects a group, because the three groups have different prerequisites.
  *
  * `default` only needs free ports: the isolation matrices, the identity chain, A01, the
- * cloudflared quick tunnel, ngrok, the explicit-off and failure legs. It stays runnable while
- * another session runs `run-integration-full` or its own candidate.
+ * explicit-off and failure legs. It stays runnable while another session runs
+ * `run-integration-full` or its own candidate, and - unlike the external line - it does not
+ * change verdict when a third-party service is unreachable.
+ * `external` adds the two legs that need outbound access to a provider this machine does not
+ * own (api.ngrok.com, Cloudflare's quick-tunnel edge). Their prerequisites are probed first.
  * `network` needs the exact ports the operator's consoles already forward to (5737 on this
  * machine), so it reserves them, pins them, runs exclusively, and never blocks - or is blocked
- * by - the default group.
+ * by - the other two groups.
  */
 export function resolveTunnelGroups(group: TunnelGroup): TunnelGroups {
   return {
-    dynamic: group === 'default' || group === 'all',
+    dynamic: group === 'default' || group === 'external' || group === 'all',
+    external: group === 'external' || group === 'all',
     network: group === 'network' || group === 'all',
   };
 }
@@ -309,13 +338,95 @@ export async function decideLegPort(request: LegPortRequest): Promise<LegPortDec
   };
 }
 
+/**
+ * What one check actually established.
+ *
+ * `blocked` is not a soft failure: it means the check never ran, because a prerequisite this
+ * harness probed (a binary, a credential, a third-party API, the console's port) was missing.
+ * Keeping it apart from `failed` is the whole point - an unreachable provider must not read as a
+ * defect in our tunnel, and a strict gate must still be able to demand that the leg really ran.
+ */
+export type CheckOutcome = 'passed' | 'failed' | 'blocked';
+
+/** The missing fact that stopped a leg, and who owns fixing it. */
+export interface BlockedBy {
+  prerequisite: string;
+  detail: string;
+  owner: string;
+}
+
 interface CheckResult {
   id: string;
   entry: string;
   expectation: string;
   observed: string;
   ok: boolean;
+  /** Authoritative outcome; absent means `ok ? 'passed' : 'failed'`. */
+  outcome?: CheckOutcome;
+  blockedBy?: BlockedBy;
   detail?: string;
+}
+
+export function outcomeOf(check: { ok: boolean; outcome?: CheckOutcome }): CheckOutcome {
+  return check.outcome ?? (check.ok ? 'passed' : 'failed');
+}
+
+export function blockedCheck(input: {
+  id: string;
+  entry: string;
+  expectation: string;
+  leg: LegPrerequisite;
+  detail?: string;
+}): CheckResult {
+  return {
+    id: input.id,
+    entry: input.entry,
+    expectation: input.expectation,
+    observed: `blocked · ${input.leg.detail}`,
+    ok: false,
+    outcome: 'blocked',
+    blockedBy: {
+      prerequisite: input.leg.prerequisite,
+      detail: input.leg.detail,
+      owner: input.leg.owner,
+    },
+    ...(input.detail ? { detail: input.detail } : {}),
+  };
+}
+
+export interface RunDecision {
+  exitCode: 0 | 1;
+  passed: number;
+  failed: number;
+  blocked: number;
+  /** Human-readable reason a strict run refuses to be green, one line per blocking fact. */
+  reasons: string[];
+}
+
+/**
+ * The exit policy, in one pure function so it can be tested without running a tunnel.
+ *
+ * A run is red when a leg that could run failed. A blocked leg is reported either way; only
+ * `--strict` turns it into a failure, because only a caller who promised coverage can judge it.
+ */
+export function decideRunOutcome(
+  checks: ReadonlyArray<{ ok: boolean; outcome?: CheckOutcome; id: string; blockedBy?: BlockedBy }>,
+  options: { strict: boolean },
+): RunDecision {
+  const passed = checks.filter((check) => outcomeOf(check) === 'passed').length;
+  const failedChecks = checks.filter((check) => outcomeOf(check) === 'failed');
+  const blockedChecks = checks.filter((check) => outcomeOf(check) === 'blocked');
+  const reasons = failedChecks.map((check) => `${check.id} failed`)
+    .concat(blockedChecks.map((check) => `${check.id} blocked: ${check.blockedBy?.detail ?? 'prerequisite missing'}`
+      + `${check.blockedBy?.owner ? ` (owner: ${check.blockedBy.owner})` : ''}`));
+  const red = failedChecks.length > 0 || (options.strict && blockedChecks.length > 0);
+  return {
+    exitCode: red ? 1 : 0,
+    passed,
+    failed: failedChecks.length,
+    blocked: blockedChecks.length,
+    reasons,
+  };
 }
 
 function parseArgs(argv: string[]): Options {
@@ -339,6 +450,8 @@ function parseArgs(argv: string[]): Options {
     a01: true,
     soakMinutes: 0,
     group: 'default',
+    strict: false,
+    flakeReport: false,
     reservedPorts: [],
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -372,6 +485,8 @@ function parseArgs(argv: string[]): Options {
       case '--no-a01': options.a01 = false; break;
       case '--soak-minutes': options.soakMinutes = Number(next()); break;
       case '--group': options.group = parseTunnelGroup(next()); break;
+      case '--strict': options.strict = true; break;
+      case '--flake-report': options.flakeReport = true; break;
       case '--tunnel-timeout-ms': options.tunnelTimeoutMs = Number(next()); break;
       default: throw new Error(`Unknown argument: ${arg}`);
     }
@@ -1649,14 +1764,55 @@ export interface PreflightLeg {
 }
 
 /**
+ * A leg's readiness plus who owns the missing fact when it is not ready.
+ *
+ * The owner is what turns "blocked" into an action: a blocked leg on a machine's own egress is
+ * nobody's bug, a blocked leg on a credential is the operator's to fix, and a blocked leg on a
+ * console-declared port is the console's.
+ */
+export interface LegPrerequisite {
+  prerequisite: 'ngrok' | 'cloudflared-quick' | 'cloudflared-named' | 'sakura';
+  status: 'ready' | 'blocked';
+  detail: string;
+  owner: string;
+}
+
+const PREREQUISITE_OWNERS: Record<LegPrerequisite['prerequisite'], string> = {
+  ngrok: "the operator's credential file (NGROK_AUTHTOKEN) or this machine's egress to api.ngrok.com",
+  'cloudflared-quick': "the cloudflared client on this machine and its egress to Cloudflare's quick-tunnel edge",
+  'cloudflared-named': "the operator's Cloudflare console (token, hostname, declared local service port)",
+  sakura: "the operator's SakuraFrp console (access key, tunnel, local_port, frpc)",
+};
+
+/** Names each leg the way the preflight reports it, so callers never re-spell the mapping. */
+export function prerequisiteOf(leg: string): LegPrerequisite['prerequisite'] {
+  if (leg === 'ngrok') return 'ngrok';
+  if (leg === 'cloudflared-quick') return 'cloudflared-quick';
+  if (leg === 'cloudflared-named') return 'cloudflared-named';
+  if (leg === 'sakura') return 'sakura';
+  throw new Error(`no prerequisite is known for leg "${leg}"`);
+}
+
+export function legPrerequisites(legs: readonly PreflightLeg[]): LegPrerequisite[] {
+  return legs.map((entry) => ({
+    prerequisite: prerequisiteOf(entry.leg),
+    status: entry.status,
+    detail: entry.detail,
+    owner: PREREQUISITE_OWNERS[prerequisiteOf(entry.leg)],
+  }));
+}
+
+/**
  * Whether each real-tunnel leg can run at all, decided from facts instead of from a failed run.
  *
  * Every blocked entry names the missing fact and who owns it: a leg that cannot run must never
  * be discovered after a ten-minute acceptance run, and it must never be reported as a failure.
+ * An input that is absent was not probed, which is how a group keeps its legs hermetic: the
+ * default group probes no provider at all, so no third-party outage can change its verdict.
  */
 export function evaluatePreflight(input: {
-  ngrok: { credential: boolean; agentConfiguration: boolean; tcpReachable: boolean; tlsReachable: boolean };
-  cloudflared: {
+  ngrok?: { credential: boolean; agentConfiguration: boolean; tcpReachable: boolean; tlsReachable: boolean };
+  cloudflared?: {
     token: boolean;
     hostname?: string;
     resolvedAddresses: string[];
@@ -1669,7 +1825,15 @@ export function evaluatePreflight(input: {
     consolePortFree?: boolean;
     consolePortOccupant?: string;
   };
-  sakura: {
+  /** The account-less cloudflared edge: a binary this machine has, and an edge it can reach. */
+  cloudflaredQuick?: {
+    binary: boolean;
+    apiReachable: boolean;
+    /** Whether a published `*.trycloudflare.com` entry could be resolved from this machine. */
+    publicSuffixResolvable: boolean;
+    resolutionDetail?: string;
+  };
+  sakura?: {
     apiReachable: boolean;
     tunnelCount: number;
     tunnel?: { id: number; localIp: string; localPort?: number; node?: number; remote?: string; nodeHost?: string };
@@ -1677,25 +1841,58 @@ export function evaluatePreflight(input: {
     localPortFree?: boolean;
     localPortOccupant?: string;
   };
-  frpc: { source: 'configured' | 'image' | 'absent' };
+  frpc?: { source: 'configured' | 'image' | 'absent' };
 }): PreflightLeg[] {
   const legs: PreflightLeg[] = [];
 
-  if (!input.ngrok.credential && !input.ngrok.agentConfiguration) {
-    legs.push({ leg: 'ngrok', status: 'blocked', detail: 'no NGROK_AUTHTOKEN and no ngrok agent configuration' });
-  } else if (!input.ngrok.tcpReachable) {
-    legs.push({ leg: 'ngrok', status: 'blocked', detail: 'api.ngrok.com:443 is unreachable (network or proxy)' });
-  } else if (!input.ngrok.tlsReachable) {
-    legs.push({ leg: 'ngrok', status: 'blocked', detail: 'api.ngrok.com:443 resets TLS; the agent cannot authenticate' });
-  } else {
-    legs.push({
-      leg: 'ngrok',
-      status: 'ready',
-      detail: input.ngrok.credential ? 'token present' : 'operator agent configuration',
-    });
+  if (input.ngrok) {
+    if (!input.ngrok.credential && !input.ngrok.agentConfiguration) {
+      legs.push({ leg: 'ngrok', status: 'blocked', detail: 'no NGROK_AUTHTOKEN and no ngrok agent configuration' });
+    } else if (!input.ngrok.tcpReachable) {
+      legs.push({ leg: 'ngrok', status: 'blocked', detail: 'api.ngrok.com:443 is unreachable (network or proxy)' });
+    } else if (!input.ngrok.tlsReachable) {
+      legs.push({ leg: 'ngrok', status: 'blocked', detail: 'api.ngrok.com:443 resets TLS; the agent cannot authenticate' });
+    } else {
+      legs.push({
+        leg: 'ngrok',
+        status: 'ready',
+        detail: input.ngrok.credential ? 'token present' : 'operator agent configuration',
+      });
+    }
   }
 
-  if (!input.cloudflared.token) {
+  // The quick tunnel needs no account, so its prerequisites are a client this machine has and
+  // an edge it can reach. Whether a *published* entry resolves from here is a fourth fact, and
+  // it is deliberately not part of readiness: the entry does not exist until the leg runs, and
+  // the leg classifies an unresolvable entry against public DNS instead of guessing.
+  if (input.cloudflaredQuick) {
+    const quick = input.cloudflaredQuick;
+    if (!quick.binary) {
+      legs.push({
+        leg: 'cloudflared-quick',
+        status: 'blocked',
+        detail: 'no cloudflared binary on PATH: a quick tunnel has no account to fall back on',
+      });
+    } else if (!quick.apiReachable) {
+      legs.push({
+        leg: 'cloudflared-quick',
+        status: 'blocked',
+        detail: "Cloudflare's quick-tunnel edge (api.trycloudflare.com:443) is unreachable from this machine",
+      });
+    } else if (!quick.publicSuffixResolvable) {
+      legs.push({
+        leg: 'cloudflared-quick',
+        status: 'blocked',
+        detail: 'trycloudflare.com does not resolve here, so a published quick-tunnel entry could never be '
+          + `verified from this machine${quick.resolutionDetail ? ` (${quick.resolutionDetail})` : ''}`,
+      });
+    } else {
+      legs.push({ leg: 'cloudflared-quick', status: 'ready', detail: 'cloudflared present; the edge answers' });
+    }
+  }
+
+  if (input.cloudflared) {
+    if (!input.cloudflared.token) {
     legs.push({ leg: 'cloudflared-named', status: 'blocked', detail: 'CLOUDFLARE_TUNNEL_TOKEN is not configured' });
   } else if (!input.cloudflared.hostname) {
     legs.push({ leg: 'cloudflared-named', status: 'blocked', detail: 'CLOUDFLARE_TUNNEL_URL is not configured' });
@@ -1735,11 +1932,13 @@ export function evaluatePreflight(input: {
         + `${input.cloudflared.consolePortSource ? ` (from ${input.cloudflared.consolePortSource})` : ''}`
         + `${input.cloudflared.registration ? `; ${input.cloudflared.registration}` : ''}`,
     });
+    }
   }
 
-  if (!input.sakura.apiReachable) {
-    legs.push({ leg: 'sakura', status: 'blocked', detail: 'the SakuraFrp API is unreachable' });
-  } else if (input.sakura.tunnelCount === 0) {
+  if (input.sakura) {
+    if (!input.sakura.apiReachable) {
+      legs.push({ leg: 'sakura', status: 'blocked', detail: 'the SakuraFrp API is unreachable' });
+    } else if (input.sakura.tunnelCount === 0) {
     legs.push({
       leg: 'sakura',
       status: 'blocked',
@@ -1753,7 +1952,7 @@ export function evaluatePreflight(input: {
       status: 'blocked',
       detail: `tunnel ${input.sakura.tunnel.id} declares no local port: set one in the Sakura console`,
     });
-  } else if (input.frpc.source === 'absent') {
+  } else if ((input.frpc?.source ?? 'absent') === 'absent') {
     legs.push({
       leg: 'sakura',
       status: 'blocked',
@@ -1768,7 +1967,7 @@ export function evaluatePreflight(input: {
     });
   } else {
     const loopbackOrigin = /^(127\.0\.0\.1|localhost)$/iu.test(input.sakura.tunnel.localIp);
-    const adapted = loopbackOrigin && input.frpc.source === 'image'
+    const adapted = loopbackOrigin && input.frpc?.source === 'image'
       ? '; a relay namespace will carry the loopback origin to the container client'
       : '';
     legs.push({
@@ -1778,8 +1977,8 @@ export function evaluatePreflight(input: {
         + `remote ${input.sakura.tunnel.remote ?? '?'} on ${input.sakura.tunnel.nodeHost ?? 'unknown node'}; `
         + `the candidate pins the console's local port${adapted}`,
     });
+    }
   }
-
 
   return legs;
 }
@@ -1937,56 +2136,281 @@ async function probeTls(host: string): Promise<{ tcpReachable: boolean; tlsReach
   return { tcpReachable: true, tlsReachable: response };
 }
 
-async function runPreflight(options: Options, env: Record<string, string>): Promise<PreflightLeg[]> {
-  const ngrokConfiguration = existsSync(path.join(homedir(), 'Library/Application Support/ngrok/ngrok.yml'))
-    || existsSync(path.join(homedir(), '.config/ngrok/ngrok.yml'));
-  const ngrok = await probeTls('api.ngrok.com');
-
-  const hostname = env.CLOUDFLARE_TUNNEL_URL?.replace(/^https?:\/\//u, '').replace(/\/.*$/u, '');
-  const resolvedAddresses = hostname
-    ? await lookup(hostname, { all: true }).then((records) => records.map((record) => record.address)).catch(() => [])
-    : [];
-  let registration: string | undefined;
-  if (options.checkCloudflaredRegistration && env.CLOUDFLARE_TUNNEL_TOKEN) {
-    registration = await checkCloudflaredRegistration(env.CLOUDFLARE_TUNNEL_TOKEN);
-  }
-
-  const credential = parseSakuraCredentialForHarness(env.SAKURA_TUNNEL_TOKEN);
-  let apiReachable = false;
-  let tunnels: Array<{ id: number; node?: number; local_ip?: string; local_port?: number; remote?: string }> = [];
-  let nodes: Record<string, { host?: string }> = {};
-  if (credential.accessKey) {
-    try {
-      tunnels = await fetchSakuraJson('/tunnels', credential.accessKey) as typeof tunnels;
-      nodes = await fetchSakuraJson('/nodes', credential.accessKey) as typeof nodes;
-      apiReachable = true;
-    } catch {
-      apiReachable = false;
+/**
+ * Retries only what is allowed to be late.
+ *
+ * A published tunnel hostname, a fresh DNS record and a connector's first request are all
+ * eventually-consistent, so a single probe result is not a verdict. Jitter is deliberate: two
+ * sessions that poll the same provider on a fixed schedule keep colliding on it.
+ */
+export async function retryTransient<T>(
+  attempt: (attemptNumber: number) => Promise<T>,
+  options: { attempts: number; delayMs: number; sleep?: (ms: number) => Promise<void> },
+): Promise<{ value: T; attempts: number }> {
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
+  let last: T | undefined;
+  for (let attemptNumber = 1; attemptNumber <= options.attempts; attemptNumber += 1) {
+    last = await attempt(attemptNumber);
+    if (attemptNumber < options.attempts) {
+      const jitter = Math.floor(Math.random() * options.delayMs);
+      await sleep(options.delayMs + jitter);
     }
   }
-  const selected = credential.tunnelIds.length > 0
-    ? tunnels.find((tunnel) => credential.tunnelIds.includes(tunnel.id))
-    : tunnels[0];
+  return { value: last as T, attempts: options.attempts };
+}
 
-  const frpc = await resolveFrpcBinary(options, options.evidenceDir);
-  const frpcSource = (options.frpcBin ?? process.env.FRPC_BIN)
-    ? 'configured'
-    : frpc.path ? 'image' : 'absent';
+/** Whether a machine-local resolver can see a name, with the failure code kept for evidence. */
+async function localResolves(hostname: string): Promise<{ resolved: boolean; detail?: string }> {
+  try {
+    const records = await lookup(hostname, { all: true });
+    return records.length > 0 ? { resolved: true } : { resolved: false, detail: 'the resolver returned no record' };
+  } catch (error) {
+    return { resolved: false, detail: (error as NodeJS.ErrnoException).code ?? (error as Error).message };
+  }
+}
 
-  // Console-bound legs pin the port their console already forwards to, so "is that port free
-  // right now" is the fact that decides whether the leg can run at all.
-  const cloudflaredConsole = await resolveCloudflaredConsolePort(options, env);
-  const cloudflaredConsolePort = cloudflaredConsole.port;
-  const cloudflaredPortFree = cloudflaredConsolePort === undefined ? undefined : await isPortFree(cloudflaredConsolePort);
-  const sakuraPortFree = selected?.local_port === undefined ? undefined : await isPortFree(selected.local_port);
+/**
+ * Whether the name exists in public DNS, asked over HTTPS.
+ *
+ * This is the independent witness that separates "our tunnel is broken" from "this machine's
+ * resolver cannot see trycloudflare.com": a published quick-tunnel entry that exists publicly
+ * but not locally is an environment fact, not a product defect, and the harness has to be able
+ * to tell the two apart instead of reporting whichever one it happens to hit.
+ */
+export async function resolvesPublicly(hostname: string): Promise<{ exists: boolean; detail: string }> {
+  try {
+    const response = await fetch(
+      `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=A`,
+      { headers: { accept: 'application/dns-json' }, signal: AbortSignal.timeout(8_000) },
+    );
+    if (!response.ok) {
+      return { exists: false, detail: `DNS-over-HTTPS answered ${response.status}` };
+    }
+    const body = await response.json() as { Status?: number; Answer?: unknown[] };
+    const exists = body.Status === 0 && Array.isArray(body.Answer) && body.Answer.length > 0;
+    return { exists, detail: exists ? 'public DNS has the name' : `public DNS status ${body.Status ?? 'unknown'}` };
+  } catch (error) {
+    return { exists: false, detail: `DNS-over-HTTPS unreachable: ${(error as Error).message}` };
+  }
+}
 
-  return evaluatePreflight({
-    ngrok: {
+/**
+ * What an unreachable public entry means: a product failure, or this machine's resolver.
+ *
+ * Only the mismatch (public DNS has the name, the local resolver does not) is an environment
+ * fact. When neither resolver has it, the provider never published a usable entry, and that is
+ * a real failure of the leg - reported as one.
+ */
+export function classifyUnreachableEntry(input: {
+  hostname: string;
+  localResolved: boolean;
+  localDetail?: string;
+  publicDns: { exists: boolean; detail: string };
+}): { outcome: 'failed' | 'blocked'; detail: string } {
+  if (!input.localResolved && input.publicDns.exists) {
+    return {
+      outcome: 'blocked',
+      detail: `${input.hostname} exists in public DNS but not in this machine's resolver`
+        + `${input.localDetail ? ` (${input.localDetail})` : ''}; the entry could not be probed from here`,
+    };
+  }
+  return {
+    outcome: 'failed',
+    detail: `${input.hostname} is not resolvable for this machine (${input.localDetail ?? 'no local reason'}) `
+      + `nor in public DNS (${input.publicDns.detail})`,
+  };
+}
+
+/** Whether a client binary is runnable here, asked of the binary itself. */
+function probeBinary(name: string): boolean {
+  try {
+    const result = spawnSync(name, [ '--version' ], { timeout: 5_000, stdio: 'ignore' });
+    return !result.error;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One run's per-leg outcomes, appended to `history.jsonl`.
+ *
+ * Stability has to be measurable or it stays an impression. A leg that is green on Monday and
+ * blocked on Tuesday is only visible when the outcomes are kept across runs, so every real run
+ * appends them here - including the blocked ones, which are the interesting half.
+ */
+export interface RunHistoryRecord {
+  ranAt: string;
+  candidateSha: string;
+  candidateDirty: boolean;
+  group: TunnelGroup;
+  strict: boolean;
+  checks: Array<{ id: string; outcome: CheckOutcome }>;
+  prerequisites: Array<{ prerequisite: string; status: 'ready' | 'blocked'; detail: string }>;
+}
+
+export function historyFile(evidenceDir: string): string {
+  return path.join(evidenceDir, 'history.jsonl');
+}
+
+export function appendRunHistory(evidenceDir: string, record: RunHistoryRecord): void {
+  mkdirSync(evidenceDir, { recursive: true });
+  // One JSON object per line: a crashed run leaves a readable prefix, and nothing rewrites the
+  // file, so two sessions appending at once cannot lose each other's rows.
+  appendFileSync(historyFile(evidenceDir), `${JSON.stringify(record)}\n`);
+}
+
+export interface FlakeRow {
+  leg: string;
+  runs: number;
+  passed: number;
+  failed: number;
+  blocked: number;
+  /** Runs where the leg did not pass, as a fraction: the number that says "unstable". */
+  notPassedRate: number;
+}
+
+/**
+ * Per-leg outcome counts over the recorded runs.
+ *
+ * Blocked is reported next to failed rather than folded into it: a leg blocked four times out of
+ * five is an environment problem with the operator's name on it, not a flaky assertion.
+ */
+export function summarizeHistory(records: readonly RunHistoryRecord[]): FlakeRow[] {
+  const byLeg = new Map<string, FlakeRow>();
+  for (const record of records) {
+    const seen = new Set<string>();
+    for (const check of record.checks) {
+      const leg = check.id;
+      const row = byLeg.get(leg) ?? { leg, runs: 0, passed: 0, failed: 0, blocked: 0, notPassedRate: 0 };
+      seen.add(leg);
+      if (check.outcome === 'passed') row.passed += 1;
+      else if (check.outcome === 'blocked') row.blocked += 1;
+      else row.failed += 1;
+      byLeg.set(leg, row);
+    }
+    for (const leg of seen) {
+      byLeg.get(leg)!.runs += 1;
+    }
+  }
+  return [ ...byLeg.values() ]
+    .map((row) => ({ ...row, notPassedRate: row.runs === 0 ? 0 : (row.failed + row.blocked) / row.runs }))
+    .sort((left, right) => right.notPassedRate - left.notPassedRate || left.leg.localeCompare(right.leg));
+}
+
+function reportFlakes(evidenceDir: string): void {
+  const file = historyFile(evidenceDir);
+  if (!existsSync(file)) {
+    console.log(`[flake] no history yet at ${file}: run the harness first`);
+    return;
+  }
+  const records = readFileSync(file, 'utf8').split('\n').filter((line) => line.trim().length > 0)
+    .flatMap((line) => {
+      try {
+        return [ JSON.parse(line) as RunHistoryRecord ];
+      } catch {
+        return [];
+      }
+    });
+  const rows = summarizeHistory(records);
+  console.log(`[flake] ${records.length} run(s) in ${path.basename(file)}`);
+  for (const row of rows) {
+    console.log(`  ${row.leg.padEnd(42)} ${String(row.runs).padStart(3)} runs  `
+      + `passed=${row.passed} blocked=${row.blocked} failed=${row.failed}  not-passed=${(row.notPassedRate * 100).toFixed(0)}%`);
+  }
+  const unstable = rows.filter((row) => row.failed > 0 || row.blocked > 0);
+  console.log(unstable.length === 0
+    ? '[flake] every recorded leg passed in every run'
+    : `[flake] ${unstable.length} leg(s) did not pass in at least one run`);
+}
+
+/**
+ * Probes only the legs the selected groups can run.
+ *
+ * The default group must stay hermetic, so nothing here touches a provider unless the group
+ * asks for it: an outage on somebody else's API cannot change a hermetic run's verdict, and a
+ * hermetic run does not wait on it either.
+ */
+async function runPreflight(options: Options, env: Record<string, string>): Promise<PreflightLeg[]> {
+  const groups = resolveTunnelGroups(options.group);
+
+  let ngrok: Parameters<typeof evaluatePreflight>[0]['ngrok'];
+  if (groups.external) {
+    const ngrokConfiguration = existsSync(path.join(homedir(), 'Library/Application Support/ngrok/ngrok.yml'))
+      || existsSync(path.join(homedir(), '.config/ngrok/ngrok.yml'));
+    ngrok = {
       credential: Boolean(env.NGROK_AUTHTOKEN),
       agentConfiguration: ngrokConfiguration,
-      ...ngrok,
-    },
-    cloudflared: {
+      ...await probeTls('api.ngrok.com'),
+    };
+  }
+
+  let cloudflaredQuick: Parameters<typeof evaluatePreflight>[0]['cloudflaredQuick'];
+  if (groups.external) {
+    // A quick-tunnel hostname only exists once the tunnel does, so readiness is judged on the
+    // facts that must hold *before* the leg: a client, a reachable edge, and a resolver that
+    // can see the domain the entry will live in.
+    const suffix = await localResolves('trycloudflare.com');
+    cloudflaredQuick = {
+      binary: probeBinary('cloudflared'),
+      apiReachable: (await probeTls('api.trycloudflare.com')).tlsReachable,
+      publicSuffixResolvable: suffix.resolved,
+      ...(suffix.detail ? { resolutionDetail: suffix.detail } : {}),
+    };
+  }
+
+  let cloudflared: Parameters<typeof evaluatePreflight>[0]['cloudflared'];
+  let sakura: Parameters<typeof evaluatePreflight>[0]['sakura'];
+  let frpc: Parameters<typeof evaluatePreflight>[0]['frpc'];
+  if (groups.network) {
+    const hostname = env.CLOUDFLARE_TUNNEL_URL?.replace(/^https?:\/\//u, '').replace(/\/.*$/u, '');
+    // A hostname that was just created may not have propagated yet: retry before calling it
+    // "does not resolve", because that verdict skips the leg entirely.
+    const resolution = hostname
+      ? await retryTransient(
+        () => lookup(hostname, { all: true })
+          .then((records) => records.map((record) => record.address))
+          .catch(() => [] as string[]),
+        { attempts: 3, delayMs: 1_500 },
+      )
+      : { value: [] as string[], attempts: 0 };
+    const resolvedAddresses = resolution.value;
+    let registration: string | undefined;
+    if (options.checkCloudflaredRegistration && env.CLOUDFLARE_TUNNEL_TOKEN) {
+      registration = await checkCloudflaredRegistration(env.CLOUDFLARE_TUNNEL_TOKEN);
+    }
+
+    const credential = parseSakuraCredentialForHarness(env.SAKURA_TUNNEL_TOKEN);
+    let apiReachable = false;
+    let tunnels: Array<{ id: number; node?: number; local_ip?: string; local_port?: number; remote?: string }> = [];
+    let nodes: Record<string, { host?: string }> = {};
+    if (credential.accessKey) {
+      try {
+        tunnels = await fetchSakuraJson('/tunnels', credential.accessKey) as typeof tunnels;
+        nodes = await fetchSakuraJson('/nodes', credential.accessKey) as typeof nodes;
+        apiReachable = true;
+      } catch {
+        apiReachable = false;
+      }
+    }
+    const selectedTunnel = credential.tunnelIds.length > 0
+      ? tunnels.find((tunnel) => credential.tunnelIds.includes(tunnel.id))
+      : tunnels[0];
+
+    const frpcBinary = await resolveFrpcBinary(options, options.evidenceDir);
+    frpc = {
+      source: (options.frpcBin ?? process.env.FRPC_BIN)
+        ? 'configured'
+        : frpcBinary.path ? 'image' : 'absent',
+    };
+
+    // Console-bound legs pin the port their console already forwards to, so "is that port free
+    // right now" is the fact that decides whether the leg can run at all.
+    const cloudflaredConsole = await resolveCloudflaredConsolePort(options, env);
+    const cloudflaredConsolePort = cloudflaredConsole.port;
+    const cloudflaredPortFree = cloudflaredConsolePort === undefined ? undefined : await isPortFree(cloudflaredConsolePort);
+    const sakuraPortFree = selectedTunnel?.local_port === undefined ? undefined : await isPortFree(selectedTunnel.local_port);
+
+    cloudflared = {
       token: Boolean(env.CLOUDFLARE_TUNNEL_TOKEN),
       hostname,
       resolvedAddresses,
@@ -1998,30 +2422,59 @@ async function runPreflight(options: Options, env: Record<string, string>): Prom
       ...(cloudflaredPortFree === false && cloudflaredConsolePort !== undefined
         ? { consolePortOccupant: describePortHolder(cloudflaredConsolePort) }
         : {}),
-    },
-    sakura: {
+    };
+    sakura = {
       apiReachable,
       tunnelCount: tunnels.length,
-      ...(selected
+      ...(selectedTunnel
         ? {
             tunnel: {
-              id: selected.id,
-              localIp: selected.local_ip?.trim() || '127.0.0.1',
-              localPort: selected.local_port,
-              node: selected.node,
-              remote: selected.remote,
-              nodeHost: selected.node === undefined ? undefined : nodes[String(selected.node)]?.host?.trim(),
+              id: selectedTunnel.id,
+              localIp: selectedTunnel.local_ip?.trim() || '127.0.0.1',
+              localPort: selectedTunnel.local_port,
+              node: selectedTunnel.node,
+              remote: selectedTunnel.remote,
+              nodeHost: selectedTunnel.node === undefined ? undefined : nodes[String(selectedTunnel.node)]?.host?.trim(),
             },
           }
         : {}),
       ...(sakuraPortFree === undefined ? {} : { localPortFree: sakuraPortFree }),
-      ...(sakuraPortFree === false && selected?.local_port !== undefined
-        ? { localPortOccupant: describePortHolder(selected.local_port) }
+      ...(sakuraPortFree === false && selectedTunnel?.local_port !== undefined
+        ? { localPortOccupant: describePortHolder(selectedTunnel.local_port) }
         : {}),
-    },
-    frpc: { source: frpcSource },
+    };
+  }
+
+  return evaluatePreflight({
+    ...(ngrok ? { ngrok } : {}),
+    ...(cloudflaredQuick ? { cloudflaredQuick } : {}),
+    ...(cloudflared ? { cloudflared } : {}),
+    ...(sakura ? { sakura } : {}),
+    ...(frpc ? { frpc } : {}),
   });
 }
+
+/**
+ * The prerequisite of one leg, as the gating code wants it.
+ *
+ * A leg whose group was not probed has no entry, which is not the same as "ready": callers must
+ * treat `undefined` as "this run did not select the leg" instead of running it blind.
+ */
+export function prerequisiteFor(
+  prerequisites: readonly LegPrerequisite[],
+  prerequisite: LegPrerequisite['prerequisite'],
+): LegPrerequisite | undefined {
+  return prerequisites.find((entry) => entry.prerequisite === prerequisite);
+}
+
+/** A blocked prerequisite built where the missing fact was found, instead of from a probe. */
+export function blockedPrerequisite(
+  prerequisite: LegPrerequisite['prerequisite'],
+  detail: string,
+): LegPrerequisite {
+  return { prerequisite, status: 'blocked', detail, owner: PREREQUISITE_OWNERS[prerequisite] };
+}
+
 
 function parseSakuraCredentialForHarness(value: string | undefined): { accessKey?: string; tunnelIds: number[] } {
   const raw = value?.trim();
@@ -2084,19 +2537,29 @@ async function main(): Promise<void> {
   const env = loadEnvFile(requireCredentialFile(options.envFile));
   mkdirSync(options.evidenceDir, { recursive: true });
 
+  // The history is the measurement, not a leg: reporting on it runs nothing.
+  if (options.flakeReport) {
+    reportFlakes(options.evidenceDir);
+    return;
+  }
+
   // Preflight answers "can this leg run at all" in seconds, so a missing console fact or a
-  // blocked network hop is never discovered as a failed ten-minute acceptance run.
+  // blocked network hop is never discovered as a failed ten-minute acceptance run. Only the
+  // selected groups are probed, so a hermetic run never waits on - or is judged by - a provider.
   if (options.preflight) {
-    const selected = resolveTunnelGroups(options.group);
-    const legs = (await runPreflight(options, env)).filter((entry) => (entry.leg === 'ngrok'
-      ? selected.dynamic
-      : selected.network));
+    const legs = await runPreflight(options, env);
     for (const entry of legs) {
       console.log(`${entry.status === 'ready' ? 'READY  ' : 'BLOCKED'} ${entry.leg.padEnd(18)} ${entry.detail}`);
     }
-    const blocked = legs.filter((entry) => entry.status === 'blocked');
-    console.log(`[preflight] group=${options.group}: ${legs.length - blocked.length}/${legs.length} ready; credential file ${path.relative(checkout, options.envFile)}`);
-    process.exitCode = blocked.length > 0 ? 1 : 0;
+    const blockers = legPrerequisites(legs.filter((entry) => entry.status === 'blocked'));
+    for (const blocker of blockers) {
+      console.log(`[preflight] owner of "${blocker.prerequisite}": ${blocker.owner}`);
+    }
+    console.log(`[preflight] group=${options.group}: ${legs.length - blockers.length}/${legs.length} ready; credential file ${path.relative(checkout, options.envFile)}`);
+    if (blockers.length > 0 && !options.strict) {
+      console.log('[preflight] not a gate: pass --strict to make a blocked prerequisite an exit code 1');
+    }
+    process.exitCode = options.strict && blockers.length > 0 ? 1 : 0;
     return;
   }
   // A fresh *parent* directory per run, not just a fresh child: the SolidFS and RDF
@@ -2130,6 +2593,17 @@ async function main(): Promise<void> {
   const qleverCommand = process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND ?? qleverFixture!.command;
 
   const groups = resolveTunnelGroups(options.group);
+
+  // Every selected leg's prerequisites are probed once, before any leg can spend its tunnel
+  // timeout: a leg whose provider is unreachable or whose console fact is missing is recorded as
+  // blocked (naming the fact and its owner) instead of being run and reported as a defect.
+  const externalPrerequisites = groups.external
+    ? legPrerequisites(await runPreflight({ ...options, group: 'external' }, env))
+    : [];
+  for (const entry of externalPrerequisites) {
+    console.log(`${entry.status === 'ready' ? '[prereq] READY  ' : '[prereq] BLOCKED'} `
+      + `${entry.prerequisite.padEnd(18)} ${entry.detail}`);
+  }
 
   // The console-bound legs need the exact ports their consoles already forward to, so those
   // are discovered *before* any dynamic port is chosen: a dynamic candidate, or one of its
@@ -2430,7 +2904,17 @@ async function main(): Promise<void> {
       // token), bring up a genuine public entry and run the isolation matrix over it. The
       // profile deliberately declares no publicUrl, because a generated entry is the one a
       // free account may create — and the provider is supposed to discover it.
-      if (options.realTunnel) {
+      if (options.realTunnel && groups.external) {
+        const ngrokPrerequisite = prerequisiteFor(externalPrerequisites, 'ngrok');
+        if (ngrokPrerequisite && ngrokPrerequisite.status === 'blocked') {
+          checks.push(blockedCheck({
+            id: 'ngrok-real-entry',
+            entry: 'public',
+            expectation: 'readiness active with a discovered public entry',
+            leg: ngrokPrerequisite,
+            detail: 'the leg was not attempted: its prerequisite is missing, so nothing here is a verdict about ngrok support',
+          }));
+        } else {
         const legPort = (await takeLegPort({
           leg: 'ngrok-real',
           group: 'default',
@@ -2480,11 +2964,22 @@ async function main(): Promise<void> {
         } finally {
           await stopChild(realChild);
         }
+        }
       }
 
       // Real cloudflared edge without an account: the quick tunnel terminates on the same
       // ingress listener a managed named tunnel uses.
-      if (options.quickTunnel) {
+      if (options.quickTunnel && groups.external) {
+        const quickPrerequisite = prerequisiteFor(externalPrerequisites, 'cloudflared-quick');
+        if (quickPrerequisite && quickPrerequisite.status === 'blocked') {
+          checks.push(blockedCheck({
+            id: 'cloudflared-quick-tunnel',
+            entry: 'public',
+            expectation: 'real cloudflared entry serves the candidate',
+            leg: quickPrerequisite,
+            detail: 'the leg was not attempted: its prerequisite is missing, so nothing here is a verdict about quick tunnels',
+          }));
+        } else {
         const ingressForTunnel = ingressPort;
         if (!ingressForTunnel) {
           checks.push({
@@ -2498,27 +2993,75 @@ async function main(): Promise<void> {
         } else {
           const quickLog = path.join(options.evidenceDir, `cloudflared-quick-${Date.now()}.log`);
           const quick = await startQuickTunnel(ingressForTunnel, quickLog, options.tunnelTimeoutMs);
+          let quickServes = false;
           try {
             if (!quick.url) {
-              checks.push({
-                id: 'cloudflared-quick-tunnel',
-                entry: 'public',
-                expectation: 'real cloudflared entry serves the candidate',
-                observed: 'no quick tunnel URL',
-                ok: false,
-                detail: 'cloudflared did not publish a trycloudflare.com entry',
-              });
+              // The edge answered, but no entry came back. That is either our client failing or
+              // Cloudflare refusing to hand one out (a rate limit is the usual reason), and the
+              // client's own log is what tells the two apart instead of a guess.
+              const quickLogText = existsSync(quickLog) ? readFileSync(quickLog, 'utf8') : '';
+              const refusal = quickLogText.split('\n').reverse()
+                .find((line) => /429|too many requests|rate.?limit/iu.test(line));
+              checks.push(refusal
+                ? blockedCheck({
+                    id: 'cloudflared-quick-tunnel',
+                    entry: 'public',
+                    expectation: 'real cloudflared entry serves the candidate',
+                    leg: blockedPrerequisite(
+                      'cloudflared-quick',
+                      `Cloudflare refused a new quick tunnel from this machine: ${refusal.trim().slice(0, 160)}`,
+                    ),
+                  })
+                : {
+                    id: 'cloudflared-quick-tunnel',
+                    entry: 'public',
+                    expectation: 'real cloudflared entry serves the candidate',
+                    observed: 'no quick tunnel URL',
+                    ok: false,
+                    detail: 'cloudflared did not publish a trycloudflare.com entry',
+                  });
             } else {
               const reachable = await waitForPublicEntry(quick.url, options.tunnelTimeoutMs);
-              checks.push({
-                id: 'cloudflared-quick-tunnel',
-                entry: 'public',
-                expectation: 'real cloudflared entry serves the candidate',
-                observed: `${quick.url} · ${reachable ? 'serving' : 'unreachable'}`,
-                ok: reachable,
-                detail: 'no account required (quick tunnel)',
-              });
+              quickServes = reachable;
               if (reachable) {
+                checks.push({
+                  id: 'cloudflared-quick-tunnel',
+                  entry: 'public',
+                  expectation: 'real cloudflared entry serves the candidate',
+                  observed: `${quick.url} · serving`,
+                  ok: true,
+                  detail: 'no account required (quick tunnel)',
+                });
+              } else {
+                // A published entry that this machine cannot see is not the same finding as an
+                // entry nobody can see, so public DNS is asked before the verdict is written.
+                const hostname = new URL(quick.url).hostname;
+                const local = await localResolves(hostname);
+                const publicDns = await resolvesPublicly(hostname);
+                const verdict = classifyUnreachableEntry({
+                  hostname,
+                  localResolved: local.resolved,
+                  ...(local.detail ? { localDetail: local.detail } : {}),
+                  publicDns,
+                });
+                checks.push(verdict.outcome === 'blocked'
+                  ? blockedCheck({
+                      id: 'cloudflared-quick-tunnel',
+                      entry: 'public',
+                      expectation: 'real cloudflared entry serves the candidate',
+                      leg: blockedPrerequisite('cloudflared-quick', verdict.detail),
+                      detail: `cloudflared published ${quick.url}`,
+                    })
+                  : {
+                      id: 'cloudflared-quick-tunnel',
+                      entry: 'public',
+                      expectation: 'real cloudflared entry serves the candidate',
+                      observed: `${quick.url} · unreachable`,
+                      ok: false,
+                      detail: verdict.detail,
+                    });
+              }
+              if (quickServes) {
                 checks.push(await checkEntryServesCandidate({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, loopbackBase));
                 checks.push(...await runIsolationMatrix({ id: 'public', label: 'cloudflared quick tunnel', baseUrl: quick.url }, adminToken));
               }
@@ -2526,6 +3069,7 @@ async function main(): Promise<void> {
           } finally {
             await stopChild(quick.child);
           }
+        }
         }
       }
 
@@ -2645,28 +3189,32 @@ async function main(): Promise<void> {
       const namedToken = env.CLOUDFLARE_TUNNEL_TOKEN;
       const namedUrl = env.CLOUDFLARE_TUNNEL_URL;
       if (!namedToken || !namedUrl) {
-        checks.push({
+        checks.push(blockedCheck({
           id: 'cloudflared-named-tunnel',
           entry: 'public',
           expectation: 'real named tunnel serves the candidate at its declared hostname',
-          observed: 'skipped',
-          ok: false,
-          detail: 'CLOUDFLARE_TUNNEL_TOKEN / CLOUDFLARE_TUNNEL_URL are not configured',
-        });
+          leg: blockedPrerequisite(
+            'cloudflared-named',
+            'CLOUDFLARE_TUNNEL_TOKEN / CLOUDFLARE_TUNNEL_URL are not configured',
+          ),
+        }));
       } else {
         const declaredUrl = /^https?:\/\//u.test(namedUrl) ? namedUrl : `https://${namedUrl}/`;
         const consolePort = options.tunnelEntryPort;
         if (consolePort === undefined) {
-          checks.push({
+          // The dashboard names a local service port, and only the runtime the console points
+          // at can be listening there: an isolated candidate has its own entry. That is a
+          // missing console fact, not a defect in the named-tunnel support.
+          checks.push(blockedCheck({
             id: 'cloudflared-named-tunnel',
             entry: 'public',
             expectation: 'real named tunnel serves the candidate at its declared hostname',
-            observed: 'blocked',
-            ok: false,
-            // The dashboard names a local service port, and only the runtime the console
-            // points at can be listening there: an isolated candidate has its own entry.
-            detail: `the Dashboard's local service port could not be determined (${cloudflaredConsole.error ?? cloudflaredConsole.source}); pass --tunnel-entry-port or run with --reuse against that runtime`,
-          });
+            leg: blockedPrerequisite(
+              'cloudflared-named',
+              `the Dashboard's local service port could not be determined (${cloudflaredConsole.error ?? cloudflaredConsole.source}); `
+                + 'pass --tunnel-entry-port or run with --reuse against that runtime',
+            ),
+          }));
         } else {
           const portDecision = await takeLegPort({
             leg: 'cloudflared-named',
@@ -2753,23 +3301,22 @@ async function main(): Promise<void> {
       let relayName: string | undefined;
       const consolePort = sakuraFacts?.localPort;
       if (!sakuraToken || !frpc.path) {
-        checks.push({
+        checks.push(blockedCheck({
           id: 'sakura-real-tunnel',
           entry: 'public',
           expectation: 'real SakuraFrp tunnel serves the candidate at the assigned entry',
-          observed: 'skipped',
-          ok: false,
-          detail: !sakuraToken ? 'SAKURA_TUNNEL_TOKEN is not configured' : frpc.note,
-        });
+          leg: blockedPrerequisite(
+            'sakura',
+            !sakuraToken ? 'SAKURA_TUNNEL_TOKEN is not configured' : (frpc.note ?? 'no frpc binary'),
+          ),
+        }));
       } else if (!sakuraFacts || consolePort === undefined) {
-        checks.push({
+        checks.push(blockedCheck({
           id: 'sakura-real-tunnel',
           entry: 'public',
           expectation: 'real SakuraFrp tunnel serves the candidate at the assigned entry',
-          observed: 'blocked',
-          ok: false,
-          detail: 'the Sakura console declares no local_port for this tunnel (GET /v4/tunnels)',
-        });
+          leg: blockedPrerequisite('sakura', 'the Sakura console declares no local_port for this tunnel (GET /v4/tunnels)'),
+        }));
       } else {
         const portDecision = await takeLegPort({
           leg: 'sakura-real-tunnel',
@@ -2910,12 +3457,32 @@ async function main(): Promise<void> {
     }
   }
 
+  // One policy for the exit code: a leg that could run and failed is red; a blocked leg is
+  // reported either way and only `--strict` turns it into a failure.
+  const decision = decideRunOutcome(checks, { strict: options.strict });
+
   const evidence = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'tunnel-ingress-acceptance',
-    /** `default` = every port dynamic; `network` = the two legs with fixed parameters. */
+    /**
+     * `default` = hermetic, every port dynamic; `external` = the third-party-egress legs;
+     * `network` = the two legs with fixed parameters; `all` = every line in one process.
+     */
     group: options.group,
     groups: resolveTunnelGroups(options.group),
+    /** `strict` makes a blocked prerequisite fail the run; the gate reading of the same facts. */
+    strict: options.strict,
+    /** What each selected leg needed before it could run, and whether it had it. */
+    prerequisites: externalPrerequisites,
+    /**
+     * Legs this group deliberately does not run. Out of scope is not the same as blocked, and
+     * saying it here keeps a hermetic run from being read as a full matrix.
+     */
+    legsNotSelected: [
+      ...(groups.external ? [] : [ 'ngrok-real-entry', 'cloudflared-quick-tunnel' ]),
+      ...(groups.network ? [] : [ 'cloudflared-named-tunnel', 'sakura-real-tunnel' ]),
+    ],
+    coverage: { passed: decision.passed, failed: decision.failed, blocked: decision.blocked },
     /** Fixed parameters this run declared, and the reservations it published for them. */
     reservations: reservations.map((reservation) => ({ ...reservation })),
     candidateSha,
@@ -2948,19 +3515,52 @@ async function main(): Promise<void> {
     soak: soakSamples,
   };
   writeFileSync(path.join(options.evidenceDir, 'evidence.json'), JSON.stringify(evidence, null, 2));
+  appendRunHistory(options.evidenceDir, {
+    ranAt: evidence.ranAt,
+    candidateSha,
+    candidateDirty,
+    group: options.group,
+    strict: options.strict,
+    checks: checks.map((check) => ({ id: check.id, outcome: outcomeOf(check) })),
+    prerequisites: externalPrerequisites.map((entry) => ({
+      prerequisite: entry.prerequisite,
+      status: entry.status,
+      detail: entry.detail,
+    })),
+  });
 
-  const failed = checks.filter((check) => !check.ok);
   for (const check of checks) {
-    console.log(`${check.ok ? 'PASS' : 'FAIL'}  ${check.entry}/${check.id}  expected=${check.expectation} observed=${check.observed}`);
+    const outcome = outcomeOf(check);
+    const label = outcome === 'passed' ? 'PASS   ' : outcome === 'blocked' ? 'BLOCKED' : 'FAIL   ';
+    console.log(`${label}  ${check.entry}/${check.id}  expected=${check.expectation} observed=${check.observed}`);
   }
   for (const tunnel of tunnels) {
     console.log(`TUNNEL ${tunnel.provider}  credential=${tunnel.credential}  readiness=${tunnel.readiness ?? 'unknown'}  ${tunnel.detail ?? ''}`);
   }
-  console.log(`[accept] evidence: ${path.relative(checkout, path.join(options.evidenceDir, 'evidence.json'))}`);
-  if (failed.length > 0) {
-    console.log(`[accept] ${failed.length} check(s) failed`);
-    process.exitCode = 1;
+  const blockedChecks = checks.filter((check) => outcomeOf(check) === 'blocked');
+  for (const check of blockedChecks) {
+    console.log(`[accept] blocked: ${check.id} — ${check.blockedBy?.detail ?? 'prerequisite missing'}`
+      + `${check.blockedBy?.owner ? ` (owner: ${check.blockedBy.owner})` : ''}`);
   }
+  console.log(`[accept] coverage: ${decision.passed} passed, ${decision.failed} failed, ${decision.blocked} blocked`
+    + ` (group=${options.group}${options.strict ? ', strict' : ''})`);
+  if (evidence.legsNotSelected.length > 0) {
+    console.log(`[accept] group=${options.group} does not run: ${evidence.legsNotSelected.join(', ')}`
+      + ' (use --group external|network|all when those legs are in scope)');
+  }
+  console.log(`[accept] evidence: ${path.relative(checkout, path.join(options.evidenceDir, 'evidence.json'))}`);
+  if (decision.exitCode !== 0) {
+    console.log(`[accept] ${decision.failed > 0 ? `${decision.failed} check(s) failed` : 'a required leg did not run (--strict)'}`
+      + `${decision.blocked > 0 ? `; ${decision.blocked} blocked` : ''}`);
+    for (const reason of decision.reasons) {
+      console.log(`[accept]   ${reason}`);
+    }
+  } else if (blockedChecks.length > 0) {
+    // Green because nothing that ran failed - said out loud, so a partial matrix is never read
+    // as a full one, and `--strict` is the switch that refuses this outcome.
+    console.log(`[accept] green over the legs that ran; ${blockedChecks.length} leg(s) never ran (pass --strict to fail on that)`);
+  }
+  process.exitCode = decision.exitCode;
 }
 
 // Importable for tests: only run the harness when executed directly.

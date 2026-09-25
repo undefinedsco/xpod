@@ -435,3 +435,28 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 环境 gap（按 gap 记录，非回归）：ngrok `api.ngrok.com:443` TLS reset（curl 35 `Recv failure: Connection reset by peer` 独立复现）→ default 组 ngrok 腿与 A01 connect 失败；`*.trycloudflare.com` 快速隧道主机名在本机**不可解析**（独立最小 quick tunnel 连接器已注册到边缘，主机名仍 `dig` 为空）→ quick tunnel 腿失败；原生 `frpc` 未安装（走 natfrp 镜像）。
 
 仍遗留（未做）：network 组 `evidence.json` 的 `tunnels[]` 为空 —— 该数组在 `groups.dynamic` 分支里按 catalog 填充，联网组不填；两条腿的隧道结论目前只落在 `checks[]` 的名称与 `detail` 里。
+
+### 10.9 网络验收测试的稳定性契约（2026-09-25，操作者要求"想办法搞一下"）
+
+**问题（不是"测试太严"，是判定口径丢了信息）**：`--group default` 曾出现"34 通过 / 4 失败"，而这 4 项（`a01-tunnel-connects`、`ngrok-real-entry`、`cloudflared-quick-tunnel`、`wrong-credential-never-active`）全部由本机出口决定：`api.ngrok.com:443` 被 TLS reset、`*.trycloudflare.com` 在本机不可解析。同一份代码在不同时刻会红或绿，而**运行结果里没有任何字段能区分"产品坏了"和"这台机器到不了服务商"**——`checks[].ok=false` 把两者写成同一句话，退出码也不区分。用 `--group network`（固定参数）与 `default`（全动态）分组只是第一步：动态组里仍然混着两条第三方出口腿。
+
+**改动（`scripts/accept-network-tunnel.ts`）**：
+
+1. **第三条线**：`--group default|external|network|all`。`default` 现在是**封闭（hermetic）**组：不探测、不触碰任何 provider；`external` 是第三方出口腿（ngrok 真实入口、cloudflared quick tunnel）；`network` 仍是控制台固定参数腿。证据里新增 `legsNotSelected`，日志明说"group=default does not run: …"，避免 hermetic 运行被读成全矩阵。
+2. **先探前置条件，再决定跑不跑**：每条外部腿的前置事实（客户端二进制、凭据、provider API 可达性、控制台端口是否空闲）在候选启动前探一次（`runPreflight` 按组裁剪，`evaluatePreflight({ngrok?, cloudflared?, cloudflaredQuick?, sakura?, frpc?})` 用"传了才探"表达选择）。缺哪条就记 `outcome:'blocked'` + `blockedBy{prerequisite, detail, owner}`，**不再花掉隧道超时**，也不再写成产品失败。`owner` 明确归属（本机出口 / 操作者凭据文件 / 操作者控制台）。
+3. **有独立证据才敢归因环境**：quick tunnel 发布了入口但本机不可达时，先问本地解析器，再问 **DNS-over-HTTPS**（`resolvesPublicly`）。"公网有、本机没有"= `blocked`（本机解析器看不到，不是产品缺陷）；"两边都没有"= `failed`（服务商确实没发布可用入口）。`classifyUnreachableEntry` 是纯函数，可单测。
+4. **合法迟到才重试，且带抖动**：`retryTransient` 用于"刚创建的 hostname 还没传播"这类事实（具名隧道解析 3 次 × 1.5s，delay 上叠加随机抖动，避免多会话按同一节拍打同一 provider）；断言正确性的检查永不重试。
+5. **`--strict` 是另一半契约**：默认非严格下 `blocked` 不影响退出码（但逐条打印 blocked 与 owner，并明确"green over the legs that ran"）；`--strict` 把 `blocked` 变成 exit 1，供发布门禁用（"你承诺这条腿跑过"）。判定收敛到纯函数 `decideRunOutcome(checks, {strict})`。
+6. **可测量的不稳定**：每次真实运行把每条腿的结果追加到 `.test-data/acceptance/tunnel/history.jsonl`，`--flake-report` 汇总每条腿的 `passed/blocked/failed` 与 not-passed 率（blocked 与 failed 分开统计）。"不稳定"从此是一个带腿名的数字，而不是印象。
+7. **顺带修掉一个真实的测试竞态**：`tests/scripts/accept-network-tunnel.test.ts` 的占位监听器是"先探一个空闲端口、再让子进程去 bind"，两个 worker（或旁边另一个 run）在这中间抢到同一端口时，子进程 `EADDRINUSE` 退出、而测试在等一个永远不会来的监听者，报成 `nothing started listening on <port>`。改成**子进程自己宣告 listening、错误即换端口重试**（最多 5 次），等待改为事件驱动而非轮询外网端口。
+
+**本轮证据（2026-09-25，本机，`--env-file` 指向操作者凭据文件）**：
+
+- `--preflight --group default`：`0/0 ready` —— 封闭组**一个 provider 都不探**（旧实现无论哪组都会探 ngrok/Sakura，hermetic 组被第三方的可用性牵着走）。
+- `--preflight --group all`：`ngrok READY`（token present）、`cloudflared-quick READY`、`cloudflared-named READY`（`node-0000.undefineds.co` 解析、控制台端口 5737 回读成功）、`sakura BLOCKED`（本机无 frpc，提示 `--frpc-bin`/`FRPC_BIN`/natfrp 镜像）+ 归属行 `owner of "sakura": the operator's SakuraFrp console …`；`--strict` 下 exit 1。
+- `--group default --start`：**43 passed / 0 failed / 0 blocked，exit 0**，并打印 `group=default does not run: ngrok-real-entry, cloudflared-quick-tunnel, cloudflared-named-tunnel, sakura-real-tunnel`；提交后干净树复跑，证据 `sha=b365fb26 dirty=false`（本节文字其后 amend 进同一提交，代码与该 sha 相同）。
+- `--group external --start`：**61 passed / 0 failed / 0 blocked，exit 0**（`sha=b365fb26`；该次 `dirty=true` 只因工作区里无关的 `bun.lock` 重排，回退后 default 腿复跑为 `dirty=false`）—— 本轮网络恰好可用（ngrok `https://ravioli-basics-throbbing.ngrok-free.dev/`、quick tunnel `https://spending-consolidation-perception-stan.trycloudflare.com · serving`），入口归属校验与隔离矩阵全过；说明分线不是"把腿藏起来"：网络好时照跑全。
+- `--flake-report`：2 条历史记录、全部腿 not-passed 0%。
+- `bun run test`（全量）：**633 文件 / 6212 例通过**（含改写后的 32 例 harness 单测：分组矩阵、blocked 不判红 / strict 判红、前置条件归属、DNS 交叉判定、`retryTransient` 抖动、历史汇总排序）。
+
+**仍未做**：`--reuse` 模式下 `a04-identity` 仍记为失败（复用别人的实例时身份链确实没跑，属"调用者选择"而非环境，未纳入 blocked——需要时再单独定口径）；`network` 组证据的 `tunnels[]` 仍为空（既有限制，见 10.8 末）。

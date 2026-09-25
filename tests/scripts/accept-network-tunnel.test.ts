@@ -6,17 +6,26 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   assertLegGatewayIsNotIngress,
+  blockedCheck,
+  blockedPrerequisite,
+  classifyUnreachableEntry,
   decideLegPort,
+  decideRunOutcome,
   describePortHolder,
   entryServesCandidate,
   evaluatePreflight,
   isPortFree,
+  legPrerequisites,
+  outcomeOf,
   parseTunnelGroup,
+  prerequisiteFor,
   readServicePids,
   reserveNetworkPorts,
   requireCredentialFile,
   resolveTunnelGroups,
+  retryTransient,
   stripCloudRegistrationEnv,
+  summarizeHistory,
   takeLegPort,
   type LegPortRecord,
 } from '../../scripts/accept-network-tunnel';
@@ -200,15 +209,177 @@ describe('accept-network-tunnel preflight', () => {
 describe('accept-network-tunnel groups', () => {
   it('selects one group with one flag, and validates it', () => {
     expect(parseTunnelGroup('default')).toBe('default');
+    expect(parseTunnelGroup(' external ')).toBe('external');
     expect(parseTunnelGroup(' network ')).toBe('network');
     expect(parseTunnelGroup('all')).toBe('all');
     expect(() => parseTunnelGroup('core')).toThrow(/unknown --group/u);
+  });
 
-    // The default group is the parallel-safe one; the network group (fixed parameters) never
-    // becomes a prerequisite for it, and it never runs as part of it.
-    expect(resolveTunnelGroups('default')).toEqual({ dynamic: true, network: false });
-    expect(resolveTunnelGroups('network')).toEqual({ dynamic: false, network: true });
-    expect(resolveTunnelGroups('all')).toEqual({ dynamic: true, network: true });
+  it('keeps the third-party legs out of the hermetic group', () => {
+    // The default group is the parallel-safe one and it needs no provider: the legs whose verdict
+    // depends on somebody else's API are selected only by `external` (or `all`), so an outage on
+    // api.ngrok.com cannot change what a default run reports. The network group (fixed
+    // parameters) never becomes a prerequisite for either, and never runs as part of them.
+    expect(resolveTunnelGroups('default')).toEqual({ dynamic: true, external: false, network: false });
+    expect(resolveTunnelGroups('external')).toEqual({ dynamic: true, external: true, network: false });
+    expect(resolveTunnelGroups('network')).toEqual({ dynamic: false, external: false, network: true });
+    expect(resolveTunnelGroups('all')).toEqual({ dynamic: true, external: true, network: true });
+  });
+});
+
+describe('accept-network-tunnel outcome policy', () => {
+  const passed = { id: 'isolation-matrix', ok: true };
+  const failed = { id: 'public-entry-serves-candidate', ok: false };
+  const blocked = {
+    id: 'ngrok-real-entry',
+    ok: false,
+    outcome: 'blocked' as const,
+    blockedBy: { prerequisite: 'ngrok', detail: 'api.ngrok.com:443 resets TLS', owner: "this machine's egress" },
+  };
+
+  it('is red only for a leg that could run and did not', () => {
+    expect(decideRunOutcome([ passed, failed ], { strict: false })).toMatchObject({
+      exitCode: 1, passed: 1, failed: 1, blocked: 0,
+    });
+    const green = decideRunOutcome([ passed ], { strict: false });
+    expect(green.exitCode).toBe(0);
+    expect(green.reasons).toEqual([]);
+  });
+
+  it('keeps a blocked prerequisite green unless the caller promised coverage', () => {
+    const tolerant = decideRunOutcome([ passed, blocked ], { strict: false });
+    expect(tolerant).toMatchObject({ exitCode: 0, passed: 1, failed: 0, blocked: 1 });
+    // Reported even when it stays green: an unreached leg is a fact about the run.
+    expect(tolerant.reasons).toEqual([ expect.stringContaining('api.ngrok.com:443 resets TLS') ]);
+
+    const strict = decideRunOutcome([ passed, blocked ], { strict: true });
+    expect(strict).toMatchObject({ exitCode: 1, blocked: 1 });
+    expect(strict.reasons[0]).toContain("this machine's egress");
+  });
+});
+
+describe('accept-network-tunnel prerequisites', () => {
+  it('probes nothing it was not asked about, so a hermetic group stays hermetic', () => {
+    expect(evaluatePreflight({})).toEqual([]);
+    expect(evaluatePreflight({ frpc: { source: 'absent' } })).toEqual([]);
+  });
+
+  it('blocks a quick tunnel on the fact that is actually missing', () => {
+    const noBinary = evaluatePreflight({ cloudflaredQuick: { binary: false, apiReachable: true, publicSuffixResolvable: true } });
+    expect(noBinary).toEqual([ expect.objectContaining({ leg: 'cloudflared-quick', status: 'blocked' }) ]);
+    expect(noBinary[0]!.detail).toMatch(/no cloudflared binary/u);
+
+    const noEdge = evaluatePreflight({ cloudflaredQuick: { binary: true, apiReachable: false, publicSuffixResolvable: true } });
+    expect(noEdge[0]!.detail).toMatch(/api\.trycloudflare\.com:443\) is unreachable/u);
+
+    const noDns = evaluatePreflight({
+      cloudflaredQuick: { binary: true, apiReachable: true, publicSuffixResolvable: false, resolutionDetail: 'ENOTFOUND' },
+    });
+    expect(noDns[0]!.detail).toMatch(/does not resolve here/u);
+    expect(noDns[0]!.detail).toContain('ENOTFOUND');
+
+    const ready = evaluatePreflight({ cloudflaredQuick: { binary: true, apiReachable: true, publicSuffixResolvable: true } });
+    expect(ready).toEqual([ expect.objectContaining({ leg: 'cloudflared-quick', status: 'ready' }) ]);
+  });
+
+  it('names who owns each missing fact', () => {
+    const blockers = legPrerequisites(evaluatePreflight({
+      ngrok: { credential: false, agentConfiguration: false, tcpReachable: true, tlsReachable: true },
+      cloudflaredQuick: { binary: false, apiReachable: true, publicSuffixResolvable: true },
+      cloudflared: { token: false, resolvedAddresses: [] },
+      sakura: { apiReachable: false, tunnelCount: 0 },
+      frpc: { source: 'absent' },
+    }));
+    expect(blockers.map((entry) => entry.prerequisite)).toEqual([ 'ngrok', 'cloudflared-quick', 'cloudflared-named', 'sakura' ]);
+    for (const blocker of blockers) {
+      expect(blocker.status).toBe('blocked');
+      expect(blocker.owner.length).toBeGreaterThan(0);
+    }
+    expect(prerequisiteFor(blockers, 'sakura')?.owner).toMatch(/SakuraFrp console/u);
+    expect(prerequisiteFor(blockers, 'cloudflared-named')?.owner).toMatch(/Cloudflare console/u);
+    expect(prerequisiteFor([], 'ngrok')).toBeUndefined();
+  });
+
+  it('records a blocked leg as blocked, never as a failure with a product name on it', () => {
+    const check = blockedCheck({
+      id: 'sakura-real-tunnel',
+      entry: 'public',
+      expectation: 'real SakuraFrp tunnel serves the candidate',
+      leg: blockedPrerequisite('sakura', 'SAKURA_TUNNEL_TOKEN is not configured'),
+    });
+    expect(check.ok).toBe(false);
+    expect(outcomeOf(check)).toBe('blocked');
+    expect(check.blockedBy).toMatchObject({ prerequisite: 'sakura' });
+    expect(outcomeOf({ ok: true })).toBe('passed');
+    expect(outcomeOf({ ok: false })).toBe('failed');
+  });
+});
+
+describe('accept-network-tunnel transient classification', () => {
+  it('separates a provider defect from this machine not seeing the entry', () => {
+    expect(classifyUnreachableEntry({
+      hostname: 'thin-brook.trycloudflare.com',
+      localResolved: false,
+      localDetail: 'ENOTFOUND',
+      publicDns: { exists: true, detail: 'public DNS has the name' },
+    })).toMatchObject({ outcome: 'blocked' });
+    expect(classifyUnreachableEntry({
+      hostname: 'thin-brook.trycloudflare.com',
+      localResolved: false,
+      localDetail: 'ENOTFOUND',
+      publicDns: { exists: true, detail: 'public DNS has the name' },
+    }).detail).toMatch(/not in this machine's resolver|not resolvable/u);
+
+    // Neither resolver knows the name: the provider never published anything usable, which is a
+    // real failure of the leg and stays one.
+    expect(classifyUnreachableEntry({
+      hostname: 'thin-brook.trycloudflare.com',
+      localResolved: false,
+      localDetail: 'ENOTFOUND',
+      publicDns: { exists: false, detail: 'public DNS status 3' },
+    }).outcome).toBe('failed');
+  });
+
+  it('retries a late fact and jitters so parallel runs stop colliding', async () => {
+    const waits: number[] = [];
+    let calls = 0;
+    const result = await retryTransient(
+      async (attempt) => {
+        calls += 1;
+        return `try-${attempt}`;
+      },
+      { attempts: 3, delayMs: 1_000, sleep: async (ms) => { waits.push(ms); } },
+    );
+    expect(result).toEqual({ value: 'try-3', attempts: 3 });
+    expect(calls).toBe(3);
+    expect(waits).toHaveLength(2);
+    for (const wait of waits) {
+      expect(wait).toBeGreaterThanOrEqual(1_000);
+      expect(wait).toBeLessThan(2_000);
+    }
+  });
+});
+
+describe('accept-network-tunnel run history', () => {
+  it('turns per-leg outcomes into a rate, with blocked kept apart from failed', () => {
+    const rows = summarizeHistory([
+      {
+        ranAt: '2026-01-01T00:00:00.000Z', candidateSha: 'a', candidateDirty: false, group: 'default', strict: false,
+        checks: [ { id: 'isolation-matrix', outcome: 'passed' }, { id: 'ngrok-real-entry', outcome: 'blocked' } ],
+        prerequisites: [],
+      },
+      {
+        ranAt: '2026-01-02T00:00:00.000Z', candidateSha: 'b', candidateDirty: false, group: 'all', strict: false,
+        checks: [ { id: 'isolation-matrix', outcome: 'passed' }, { id: 'ngrok-real-entry', outcome: 'passed' } ],
+        prerequisites: [],
+      },
+    ]);
+    const matrix = rows.find((row) => row.leg === 'isolation-matrix')!;
+    expect(matrix).toMatchObject({ runs: 2, passed: 2, blocked: 0, failed: 0, notPassedRate: 0 });
+    const ngrok = rows.find((row) => row.leg === 'ngrok-real-entry')!;
+    expect(ngrok).toMatchObject({ runs: 2, passed: 1, blocked: 1, failed: 0, notPassedRate: 0.5 });
+    // Worst first: the row that says "unstable" is the one to read.
+    expect(rows[0]!.leg).toBe('ngrok-real-entry');
   });
 });
 
@@ -237,23 +408,56 @@ describe('accept-network-tunnel leg ports', () => {
     });
   }
 
-  function startListener(port: number): ChildProcess {
-    const script = 'const net = require("node:net");'
-      + 'const server = net.createServer(() => undefined);'
-      + 'server.listen(Number(process.argv[1]), "0.0.0.0");';
-    const child = spawn(process.execPath, [ '-e', script, String(port) ], { stdio: 'ignore' });
-    children.push(child);
-    return child;
+  interface Listener {
+    child: ChildProcess;
+    port: number;
   }
 
-  async function waitForListener(port: number): Promise<void> {
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      if (!await isPortFree(port)) {
-        return;
+  /**
+   * Binds a real listener, and reports the port it actually got.
+   *
+   * "Ask for a free port, then let a child bind it later" is a race: another worker of the same
+   * suite (or a concurrent run next door) can take the number in between, and the child then dies
+   * with EADDRINUSE while the test waits for a listener that will never come. The child therefore
+   * announces its own success, and a failed bind is retried on a new port instead of being read as
+   * a timeout.
+   */
+  async function startListener(preferredPort?: number): Promise<Listener> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const port = preferredPort ?? await freePort();
+      const script = 'const net = require("node:net");'
+        + 'const server = net.createServer(() => undefined);'
+        + 'server.on("error", (error) => { console.error(error.code); process.exit(1); });'
+        + 'server.listen(Number(process.argv[1]), "0.0.0.0", () => console.log("listening"));';
+      const child = spawn(process.execPath, [ '-e', script, String(port) ], { stdio: [ 'ignore', 'pipe', 'ignore' ] });
+      children.push(child);
+      if (await waitForListener(child)) {
+        return { child, port };
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // Already gone.
+      }
     }
-    throw new Error(`nothing started listening on ${port}`);
+    throw new Error('no listener could bind a port of its own');
+  }
+
+  /** The child says so itself: polling the port cannot tell "not yet" from "the bind failed". */
+  async function waitForListener(child: ChildProcess): Promise<boolean> {
+    return await new Promise<boolean>((resolve) => {
+      const deadline = setTimeout(() => resolve(false), 15_000);
+      child.stdout?.on('data', (chunk: Buffer) => {
+        if (chunk.toString().includes('listening')) {
+          clearTimeout(deadline);
+          resolve(true);
+        }
+      });
+      child.once('exit', () => {
+        clearTimeout(deadline);
+        resolve(false);
+      });
+    });
   }
 
   it('runs a dynamic leg and a console-bound leg together without interfering', async() => {
@@ -261,9 +465,8 @@ describe('accept-network-tunnel leg ports', () => {
     const reserved = new Set([ consolePort ]);
     // A busy preferred port: the dynamic leg has to move, and the only port it may not take is
     // the one the console-bound leg needs.
-    const busyPort = await freePort();
-    const holder = startListener(busyPort);
-    await waitForListener(busyPort);
+    const holder = await startListener();
+    const busyPort = holder.port;
 
     const consoleLeg = await decideLegPort({
       leg: 'sakura-real-tunnel',
@@ -295,7 +498,7 @@ describe('accept-network-tunnel leg ports', () => {
     expect(dynamicLeg.port).not.toBe(busyPort);
     // The console's port is still the console's after the dynamic leg picked its own.
     expect(await isPortFree(consolePort)).toBe(true);
-    expect(dynamicLeg.detail).toMatch(new RegExp(`taken \\(pid ${holder.pid}`, 'u'));
+    expect(dynamicLeg.detail).toMatch(new RegExp(`taken \\(pid ${holder.child.pid}`, 'u'));
   }, 30_000);
 
   it('keeps a console-bound Gateway off the console port even when that port is preferred', async() => {
@@ -425,9 +628,8 @@ describe('accept-network-tunnel leg ports', () => {
     const reservationDirectory = mkdtempSync(path.join(tmpdir(), 'xpod-accept-reservations-'));
     process.env[PORT_RESERVATION_DIR_ENV] = reservationDirectory;
     try {
-      const fixed = await freePort();
-      const holder = startListener(fixed);
-      await waitForListener(fixed);
+      const holder = await startListener();
+      const fixed = holder.port;
       reservePort({ port: fixed, owner: 'accept-network-test', group: 'network' });
 
       const records: LegPortRecord[] = [];
@@ -438,11 +640,11 @@ describe('accept-network-tunnel leg ports', () => {
       );
 
       expect(decision.ok).toBe(false);
-      expect(decision.detail).toContain(`pid ${holder.pid}`);
+      expect(decision.detail).toContain(`pid ${holder.child.pid}`);
       expect(decision.detail).toMatch(/reserved by group network \(owner accept-network-test/u);
       expect(records[0]).toMatchObject({ group: 'network', portPolicy: 'console-bound', fixedPort: fixed, ok: false });
       // Still no eviction: the holder keeps the port.
-      expect(holder.exitCode).toBeNull();
+      expect(holder.child.exitCode).toBeNull();
       expect(await isPortFree(fixed)).toBe(false);
     } finally {
       if (previousDirectory === undefined) delete process.env[PORT_RESERVATION_DIR_ENV];
@@ -451,9 +653,8 @@ describe('accept-network-tunnel leg ports', () => {
   }, 30_000);
 
   it('reports a console-bound leg whose port is foreign-occupied, and leaves that process alive', async() => {
-    const consolePort = await freePort();
-    const holder = startListener(consolePort);
-    await waitForListener(consolePort);
+    const holder = await startListener();
+    const consolePort = holder.port;
 
     const decision = await decideLegPort({
       leg: 'cloudflared-named',
@@ -465,7 +666,7 @@ describe('accept-network-tunnel leg ports', () => {
 
     expect(decision.ok).toBe(false);
     expect(decision.port).toBeUndefined();
-    expect(decision.detail).toContain(`pid ${holder.pid}`);
+    expect(decision.detail).toContain(`pid ${holder.child.pid}`);
     expect(decision.detail).toMatch(/refuses to kill a foreign process/u);
     expect(decision.detail).toMatch(/refuses to move a console-bound leg/u);
 
@@ -482,7 +683,7 @@ describe('accept-network-tunnel leg ports', () => {
     expect(dynamicLeg.port).not.toBe(consolePort);
 
     // The foreign process is untouched: no signal, no eviction, just a named refusal.
-    expect(holder.exitCode).toBeNull();
+    expect(holder.child.exitCode).toBeNull();
     expect(await isPortFree(consolePort)).toBe(false);
   }, 30_000);
 });
