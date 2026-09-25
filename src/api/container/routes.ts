@@ -222,6 +222,12 @@ function registerSharedRoutes(
   });
   registerTaskCredentialRoutes(server, {
     taskCredentials: container.resolve('taskCredentialStore', { allowUnregistered: true }),
+    clientCredentialIssuer: config.solidBaseUrl ?? config.publicUrl,
+    validateClientCredential: (apiKey) => container.resolve('authenticator').authenticate({
+      headers: { authorization: `Bearer ${apiKey}` },
+      method: 'POST',
+      url: '/api/ai/task-credentials',
+    } as IncomingMessage),
   });
   const notificationOrigin = config.publicUrl ?? config.solidBaseUrl ?? process.env.CSS_BASE_URL ?? `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`;
   registerDeviceNotificationRuntime(server, {

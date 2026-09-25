@@ -49,6 +49,15 @@ describe('createSessionRequestCredential', () => {
     expect(credentials.create).toHaveBeenCalledTimes(1);
   });
 
+  it('hands out the raw wrapper only while the session is live', async() => {
+    const credentials = capability();
+    const credential = createSessionRequestCredential({ capability: credentials, webId: WEB_ID });
+
+    await expect(credential.apiKey()).resolves.toBe(API_KEY);
+    await credential.release();
+    await expect(credential.apiKey()).resolves.toBeUndefined();
+  });
+
   it('revokes the credential on release and stops handing it out', async() => {
     const credentials = capability();
     const credential = createSessionRequestCredential({ capability: credentials, webId: WEB_ID });

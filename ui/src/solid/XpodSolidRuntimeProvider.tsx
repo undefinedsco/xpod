@@ -317,6 +317,7 @@ export function XpodSolidRuntimeProvider({
       // callers that do not share the core object.
       resolveLocalUrl: (url: string) => runtime.resolveLocalUrl(url),
       requestPodAuthorization: () => requestCredentialRef.current?.authorization() ?? Promise.resolve(undefined),
+      requestPodApiKey: () => requestCredentialRef.current?.apiKey() ?? Promise.resolve(undefined),
       login: async (transaction: WebIdLoginTransaction) => {
         const validated = normalizeXpodLoginTransaction(transaction);
         const loginContext = await resolveXpodLoginContext(

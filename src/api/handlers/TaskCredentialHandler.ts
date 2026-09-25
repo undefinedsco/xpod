@@ -1,5 +1,6 @@
-import type { ServerResponse } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ApiServer } from '../ApiServer';
+import type { AuthResult } from '../auth/Authenticator';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import {
   TASK_CREDENTIAL_NOT_ACTIVE,
@@ -12,6 +13,11 @@ import {
 export interface TaskCredentialHandlerOptions {
   /** The task layer's own credential store; absent when the deployment has no root key. */
   taskCredentials?: TaskCredentialStore;
+  /** Reuses the configured CSS authenticator; never trusts the claimed owner. */
+  validateClientCredential?: (apiKey: string) => Promise<AuthResult>;
+  /** Issuer the granted credential belongs to; part of the grant identity. */
+  clientCredentialIssuer?: string;
+  jsonBodyLimitBytes?: number;
 }
 
 /**
@@ -32,6 +38,61 @@ export function registerTaskCredentialRoutes(
     }
     return auth.webId;
   };
+
+  /**
+   * The user's explicit grant: a credential the task layer may use while nobody is present.
+   *
+   * It takes the same `sk-` wrapper registration does, because that wrapper is the user's own
+   * credential; the difference is what is stored - a task-layer grant, not an API-side copy.
+   */
+  server.post('/api/ai/task-credentials', async (request, response) => {
+    const owner = requireOwner(request, response);
+    if (!owner) return;
+    if (!options.taskCredentials) {
+      sendJson(response, 503, { error: 'task_credential_storage_unconfigured' });
+      return;
+    }
+    if (!options.validateClientCredential || !options.clientCredentialIssuer) {
+      sendJson(response, 503, { error: 'task_credential_grant_unavailable' });
+      return;
+    }
+    const body = await readJsonObject(request, response, options.jsonBodyLimitBytes ?? 64 * 1024);
+    if (!body) return;
+    const apiKey = typeof body.apiKey === 'string' ? body.apiKey : '';
+    if (!validClientCredentialWrapper(apiKey)) {
+      sendJson(response, 400, { error: 'A CSS client credential wrapper is required' });
+      return;
+    }
+    const verified = await options.validateClientCredential(apiKey);
+    if (!verified.success || verified.context?.type !== 'solid') {
+      sendJson(response, verified.category === 'service_unavailable' ? 503 : 401, {
+        error: 'CSS client credential verification failed',
+      });
+      return;
+    }
+    if (verified.context.webId !== owner) {
+      sendJson(response, 403, { error: 'CSS client credential belongs to another WebID' });
+      return;
+    }
+    if (!verified.context.clientId || !verified.context.clientSecret) {
+      sendJson(response, 400, { error: 'CSS client credential is incomplete' });
+      return;
+    }
+    try {
+      // The user granted it just now, so it is active immediately; a program that needs the user
+      // to confirm later creates a pending grant instead.
+      const credential = await options.taskCredentials.grant({
+        ownerWebId: owner,
+        issuer: options.clientCredentialIssuer,
+        clientId: verified.context.clientId,
+        clientSecret: verified.context.clientSecret,
+        status: 'active',
+      });
+      sendJson(response, 201, { credential });
+    } catch (error) {
+      sendTaskCredentialError(response, error);
+    }
+  });
 
   server.get('/api/ai/task-credentials', async (request, response) => {
     const owner = requireOwner(request, response);
@@ -120,4 +181,45 @@ function sendJson(response: ServerResponse, status: number, data: unknown): void
   response.statusCode = status;
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(data));
+}
+
+function validClientCredentialWrapper(value: string): boolean {
+  if (!value.startsWith('sk-')) return false;
+  const encoded = value.slice(3);
+  const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+  return Buffer.from(decoded, 'utf8').toString('base64') === encoded
+    && /^[^\s\x00-\x1f\x7f:]+:[^\s\x00-\x1f\x7f]+$/u.test(decoded);
+}
+
+async function readJsonObject(
+  request: IncomingMessage,
+  response: ServerResponse,
+  limitBytes: number,
+): Promise<Record<string, unknown> | undefined> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    size += buffer.byteLength;
+    if (size > limitBytes) {
+      sendJson(response, 413, { error: 'Request body is too large' });
+      return undefined;
+    }
+    chunks.push(buffer);
+  }
+  if (size === 0) {
+    sendJson(response, 400, { error: 'Request body is required' });
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      sendJson(response, 400, { error: 'Request body must be a JSON object' });
+      return undefined;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    sendJson(response, 400, { error: 'Request body must be valid JSON' });
+    return undefined;
+  }
 }

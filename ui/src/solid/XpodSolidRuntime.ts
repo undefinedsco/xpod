@@ -64,6 +64,11 @@ export interface XpodSolidRuntimeValue {
    */
   requestPodAuthorization?(): Promise<string | undefined>;
   /**
+   * The `sk-` wrapper behind {@link requestPodAuthorization}, for the single request that hands
+   * the task layer its own copy of the credential.
+   */
+  requestPodApiKey?(): Promise<string | undefined>;
+  /**
    * See {@link XpodSolidRuntimeCore.resolveLocalUrl}. Optional so a caller that
    * only needs the session state can still build a value; an absent resolver
    * means "no rewrite", which is today's behaviour.

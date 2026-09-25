@@ -15,6 +15,7 @@ import type {
   AiConfigRebuildTarget,
 } from '../../../api/ai-config';
 import { modelsForAssignment, useAiConfig, type AiConfigModelOption } from './AiConfigContext';
+import { BackgroundPodAccess } from './BackgroundPodAccess';
 import { isPolicyValueDirty } from './form-state';
 import { testAiConfigModel } from '../../../api/ai-config';
 import { useXpodSolidRuntime } from '../../../solid/useXpodSolidRuntime';
@@ -130,6 +131,8 @@ export function ModelAssignmentsPanel() {
         </div>
         <RebuildStatusLine lifecycle={lifecycle} fallbackNotice={rebuildNotice} />
       </AiConfigForm>
+      {/* The embedding model is what turns on vector maintenance, so its grant belongs here too. */}
+      <BackgroundPodAccess />
       <EmbeddingSwitchDialog
         request={pendingChange?.switch}
         models={models}

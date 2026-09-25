@@ -2,9 +2,11 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { AiConfigForm } from './ModelAssignmentsPanel';
 import { useAiConfig } from './AiConfigContext';
 import { isPolicyValueDirty } from './form-state';
+import { BackgroundPodAccess } from './BackgroundPodAccess';
 
 export function IndexLifecyclePanel() {
-  const { config, capabilities, lifecycle, save, rebuild, saving, rebuilding } = useAiConfig();
+  const { config, capabilities, lifecycle, save, rebuild, saving, rebuilding, error } = useAiConfig();
+  const [blockedTarget, setBlockedTarget] = useState<'fts' | 'vector' | 'all' | undefined>();
   const [value, setValue] = useState(config?.lifecycle);
   useEffect(() => {
     let cancelled = false;
@@ -16,6 +18,17 @@ export function IndexLifecyclePanel() {
   if (!value) return null;
   const dirty = isPolicyValueDirty(value, config?.lifecycle);
   const submit = async (event: FormEvent) => { event.preventDefault(); await save({ lifecycle: value }); };
+  const startRebuild = async (target: 'fts' | 'vector' | 'all') => {
+    setBlockedTarget(undefined);
+    try {
+      await rebuild(target);
+    } catch (reason) {
+      // A refused rebuild is the moment the user can grant the access it needs, right here.
+      if ((reason instanceof Error ? reason.message : String(reason)).includes('service_access_missing')) {
+        setBlockedTarget(target);
+      }
+    }
+  };
   return (
     <AiConfigForm title="Index Lifecycle" description="Control automatic maintenance and explicitly schedule rebuilds of derived data." onSubmit={submit} onRestore={() => save({ lifecycle: { automaticIndexing: true, refreshAfterSourceUpdate: true, removeAfterSourceDeletion: true } })} saving={saving} dirty={dirty}>
       <div className="divide-y divide-border rounded-xl border border-border">
@@ -33,9 +46,19 @@ export function IndexLifecyclePanel() {
         <h2 className="text-sm font-medium">Rebuild derived indexes</h2>
         <p className="mt-1 text-xs text-muted-foreground">Rebuild actions never modify authority data in the Pod.</p>
         <div className="mt-4 flex flex-wrap gap-2">
-          {(['fts', 'vector', 'all'] as const).map((target) => <button key={target} type="button" disabled={!capabilities?.rebuildTargets?.includes(target) || rebuilding} onClick={() => rebuild(target)} className="h-9 rounded-md border border-input px-3 text-sm font-medium disabled:opacity-50">Rebuild {target === 'all' ? 'all' : target.toUpperCase()}</button>)}
+          {(['fts', 'vector', 'all'] as const).map((target) => <button key={target} type="button" disabled={!capabilities?.rebuildTargets?.includes(target) || rebuilding} onClick={() => void startRebuild(target)} className="h-9 rounded-md border border-input px-3 text-sm font-medium disabled:opacity-50">Rebuild {target === 'all' ? 'all' : target.toUpperCase()}</button>)}
         </div>
       </section>
+      <BackgroundPodAccess
+        {...(blockedTarget
+          ? {
+            notice: error?.includes('service_access_missing')
+              ? `Rebuild ${blockedTarget.toUpperCase()} needs background Pod access.`
+              : undefined,
+            onGranted: () => startRebuild(blockedTarget),
+          }
+          : {})}
+      />
       <section className="rounded-xl border border-border p-4">
         <h2 className="text-sm font-medium">Lifecycle evidence</h2>
         <div className="mt-3 grid gap-3 sm:grid-cols-2"><Evidence label="Configuration version" value={lifecycle?.configurationVersion ?? config?.updatedAt ?? 'Default'} /><Evidence label="Pending queue" value={String(lifecycle?.pending ?? 0)} /></div>

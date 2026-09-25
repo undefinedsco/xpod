@@ -11,6 +11,11 @@ import type { AiClientCredentialsCapability } from '@undefineds.co/extension-sdk
 export interface SessionRequestCredential {
   /** The `Authorization` value to send, creating the credential on first use. */
   authorization(): Promise<string | undefined>;
+  /**
+   * The `sk-` wrapper itself, for the one request that grants the task layer its own copy. It
+   * never travels anywhere else.
+   */
+  apiKey(): Promise<string | undefined>;
   /** The client id behind the credential, for diagnostics and revocation. */
   clientId(): string | undefined;
   /** Drop and revoke the credential; safe to call when nothing was created. */
@@ -73,6 +78,14 @@ export function createSessionRequestCredential(
       }
       const credential = await ensure();
       return credential ? `Bearer ${credential.apiKey}` : undefined;
+    },
+
+    async apiKey() {
+      if (released) {
+        return undefined;
+      }
+      const credential = await ensure();
+      return credential?.apiKey;
     },
 
     clientId() {
