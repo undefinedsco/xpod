@@ -14,12 +14,32 @@
 ## 2) Full（按需）
 - 命令：`bun run test:integration:full`
 - 运行方式：
-  - 启动或复用本地 `postgres` / `redis` / `minio`
+  - 启动或复用本地 `postgres` / `redis` / `minio`（S3 端点由 VersityGW 提供，见下）
   - 以 runtime 方式拉起 cloud / cloud_b / local / standalone
   - 自动执行 `bun run test:setup`
   - 只执行 full 目标用例：`DockerCluster` / `MultiNodeCluster` / `ProvisionFlow` / `CloudQuotaBusinessToken`
 
 适用场景：发布前验证、跨节点/集群改动验证。
+
+### 测试用 S3 端点（VersityGW）
+
+Compose 服务名仍是 `minio`，端口仍是 9000，凭据仍是 `minioadmin`，端点仍是 path-style，
+但镜像已从官方 MinIO 换成 [VersityGW](https://github.com/versity/versitygw)：
+
+- 官方镜像无法再匿名拉取：`quay.io/minio/minio` 对原先固定的 index 返回 401，
+  `minio/minio` 已从 Docker Hub 下架，`test:integration:full` 会卡在
+  `docker compose ... up -d postgres redis minio`。
+- VersityGW 是单个静态 Rust 二进制（Apache-2.0，Alpine 底座），提供同样的 path-style S3 API
+  （含 presign、multipart、`x-amz-meta-*` 往返、SigV4 校验），因此 `MinioDataAccessor`、
+  `CSS_MINIO_*`、测试代码与凭据都不需要改。
+- 体积：压缩 ~58 MiB → ~28 MiB，落盘 ~350 MiB → ~93 MiB。
+- digest 固定为 v1.8.0 多架构 index（arm64/amd64 均覆盖），需与
+  `docker-compose.cluster.yml`、`docker-compose.acceptance.yml`、
+  `tests/helpers/dockerObjectStore.ts` 保持一致。
+- 镜像内没有 `mc`，也没有 9001 console；健康检查改为探测 9000 端口，
+  full runner 改为用 `minio` 客户端做一次带认证的 bucket 探测。
+- 测试 bucket 必须预先存在（Xpod 代码不建 bucket）：posix 后端把根目录下的每个子目录当作 bucket，
+  所以 compose 在启动前 `mkdir` 出 `xpod`。
 
 ## 3) Bun Runtime Smoke
 - 命令：`bun run test:bun:runtime`
