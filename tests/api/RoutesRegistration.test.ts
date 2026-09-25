@@ -118,7 +118,8 @@ describe('registerRoutes mode wiring', () => {
         loadRun: vi.fn(),
         loadRunSteps: vi.fn(),
       },
-      matrixStore: {},
+      // The shared wake queue the Matrix store already owns.
+      matrixStore: { getQueue: () => ({}) },
       clientReconcilerCoordinator: {},
       runExecutionBackend: {
         getClient: vi.fn(() => ({ id: 'test-inngest' })),

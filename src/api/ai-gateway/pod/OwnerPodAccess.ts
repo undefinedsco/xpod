@@ -25,7 +25,18 @@ export interface PodAccessRequestContext {
   auth?: AuthContext;
   /** Physical Pod root when the identity WebID is hosted by a separate IdP. */
   podBaseUrl?: string;
+  /**
+   * Require a fresh authorization decision for every request this fetch makes.
+   *
+   * Cached decisions are a freshness relaxation, so paths whose correctness
+   * depends on current permissions (execution claims, result submission) opt out
+   * instead of inheriting the cache's TTL window.
+   */
+  requiresFreshAuthorization?: boolean;
 }
+
+/** Internal marker read by the SPARQL sidecar handler; never a caller-controlled grant. */
+export const FRESH_AUTHORIZATION_HEADER = 'x-xpod-authorization-fresh';
 
 /**
  * Source of a fetch that reaches an owner's Pod through its standard interface.
@@ -113,16 +124,39 @@ export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGr
     if (hasSolidClientCredentialsAuthority(auth)) {
       // The caller's own interface key. Its exchanged token may be DPoP-bound to a proof that
       // was never kept, so the key is exchanged again with a key this process controls.
-      return await this.credentialFetch(
-        owner,
-        { clientId: auth.clientId, clientSecret: auth.clientSecret },
+      return this.withFreshness(
+        await this.credentialFetch(
+          owner,
+          { clientId: auth.clientId, clientSecret: auth.clientSecret },
+        ),
+        context,
       );
     }
     const callerFetch = createCallerAuthenticatedPodFetch(owner, auth, this.fetchImpl, this.route);
     if (callerFetch) {
-      return callerFetch;
+      return this.withFreshness(callerFetch, context);
     }
-    return await this.storedKeyFetch(owner);
+    return this.withFreshness(await this.storedKeyFetch(owner), context);
+  }
+
+  /**
+   * Mark requests that may not reuse a cached authorization decision.
+   *
+   * The cached fetch instances are shared, so the marker is applied per call site
+   * rather than baked into the credential cache.
+   */
+  private withFreshness(
+    podFetch: typeof fetch | undefined,
+    context: PodAccessRequestContext,
+  ): typeof fetch | undefined {
+    if (!podFetch || !context.requiresFreshAuthorization) {
+      return podFetch;
+    }
+    return async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      headers.set(FRESH_AUTHORIZATION_HEADER, '1');
+      return podFetch(input, { ...init, headers });
+    };
   }
 
   private async storedKeyFetch(owner: string): Promise<typeof fetch | undefined> {

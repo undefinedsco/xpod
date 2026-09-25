@@ -192,8 +192,12 @@ function registerSharedRoutes(
   const matrixPodResolver = createMatrixPodResolver(podLookupRepository);
   registerMatrixRoutes(server, { store: matrixStore, resolvePodUrl:matrixPodResolver, baseUrl:process.env.CSS_BASE_URL });
   registerAgentWakeRoutes(server, {
-    service:new AgentWakeRuntimeService(container.resolve('serverGroupReconcilerService').getQueue(),matrixStore),
-    resolveContext:request=>resolveMatrixContext(request,matrixPodResolver),
+    // Same queue instance the reconciler enqueues into, taken from the store
+    // that already holds it instead of resolving the collaborator twice.
+    service:new AgentWakeRuntimeService(matrixStore.getQueue()!,matrixStore),
+    // Execution submission re-verifies permissions instead of reusing a cached
+    // authorization decision; the Matrix client routes keep the cache.
+    resolveContext:async request=>({...await resolveMatrixContext(request,matrixPodResolver),requiresFreshAuthorization:true}),
   });
   registerCoordinationRoutes(server, { clientReconcilerCoordinator });
   registerInngestRoutes(server, {

@@ -7,6 +7,12 @@ export interface MatrixStoreContext {
   /** Storage Pod selected by the current SP/gateway, not necessarily the WebID issuer origin. */
   podUrl?: string;
   auth?: AuthContext;
+  /**
+   * Execution paths (agent wake claim/complete) must re-verify permissions rather
+   * than reuse a cached authorization decision; the user-facing Matrix paths keep
+   * the cached decision. Set by the caller that knows which path it serves.
+   */
+  requiresFreshAuthorization?: boolean;
 }
 
 export interface MatrixRoomRecord {

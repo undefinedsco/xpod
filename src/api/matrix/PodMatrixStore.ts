@@ -23,7 +23,7 @@ import { MatrixError } from './MatrixError';
 import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
 import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import type { SharedWakeAgentJob } from '../reconciler/coordination';
-import { sharedWakeAgentJobId } from '../reconciler/WakeAgentQueue';
+import { sharedWakeAgentJobId, type WakeAgentQueue } from '../reconciler/WakeAgentQueue';
 import { isSolidAuth, type AuthContext } from '../auth/AuthContext';
 import type {
   MatrixAccountInfo,
@@ -441,6 +441,14 @@ export class PodMatrixStore {
     return event.content;
   }
 
+  /**
+   * The queue the runtime and this store's reconciler already share. Exposed so
+   * the API container does not have to resolve the same collaborator twice.
+   */
+  public getQueue(): WakeAgentQueue | undefined {
+    return this.serverGroupReconcilerService?.getQueue();
+  }
+
   private async getDb(context: MatrixStoreContext): Promise<Db> {
     if ((context as any)._matrixDb) {
       return (context as any)._matrixDb;
@@ -452,7 +460,11 @@ export class PodMatrixStore {
     }
 
     const podFetch = this.podAccess
-      ? await this.podAccess.getPodFetch(context.webId, {auth, podBaseUrl: context.podUrl})
+      ? await this.podAccess.getPodFetch(context.webId, {
+        auth,
+        podBaseUrl: context.podUrl,
+        ...(context.requiresFreshAuthorization ? { requiresFreshAuthorization: true } : {}),
+      })
       : undefined;
     if (!podFetch) throw new MatrixError(403, 'M_FORBIDDEN', 'Grant Pod interface access before using Matrix');
     const db: Db = drizzle(

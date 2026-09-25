@@ -1420,3 +1420,42 @@ describe('SubgraphSparqlHttpHandler authorization decision cache', () => {
     expect(mockPermissionReader.handleSafe.mock.calls.length).toBeGreaterThan(beforeWrite + 1);
   });
 });
+
+describe('SubgraphSparqlHttpHandler fresh-authorization opt-out', () => {
+  let handler: SubgraphSparqlHttpHandler;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockQueryEngine.listGraphs.mockResolvedValue(new Set());
+    mockQueryEngine.queryBindings.mockResolvedValue((async function*() { /* empty page */ })());
+    handler = new SubgraphSparqlHttpHandler(
+      mockQueryEngine as any,
+      mockCredentialsExtractor as any,
+      mockPermissionReader as any,
+      mockAuthorizer as any,
+      {},
+    );
+  });
+
+  async function select(headers: Record<string, string> = {}): Promise<void> {
+    const request = createMockRequest(`/alice/-/sparql?query=${encodeURIComponent('SELECT * WHERE { ?s ?p ?o }')}`, 'GET', headers);
+    await handler.handle({ request, response: createMockResponse() });
+  }
+
+  it('re-verifies on every request when the caller demands freshness', async () => {
+    await select({ 'x-xpod-authorization-fresh': '1' });
+    const afterFirst = mockPermissionReader.handleSafe.mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(0);
+    await select({ 'x-xpod-authorization-fresh': '1' });
+    await select({ 'x-xpod-authorization-fresh': '1' });
+    // Execution paths must not inherit the cached decision's TTL window.
+    expect(mockPermissionReader.handleSafe.mock.calls.length).toBeGreaterThan(afterFirst);
+  });
+
+  it('still reuses the decision for ordinary client reads', async () => {
+    await select();
+    const afterFirst = mockPermissionReader.handleSafe.mock.calls.length;
+    await select();
+    expect(mockPermissionReader.handleSafe.mock.calls.length).toBe(afterFirst);
+  });
+});

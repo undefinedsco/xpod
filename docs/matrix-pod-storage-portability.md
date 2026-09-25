@@ -186,8 +186,14 @@ client 与模式；本 handler 成功写入递增所推导 Pod 范围的世代�
 延迟新授权生效。TTL 是缓存项寿命，不是已经验证的端到端最大撤权窗口，在途判定和请求仍需考虑。
 
 生产门禁必须明确可接受的撤权语义，验证真实 Pod 根范围、祖先 ACR、普通 ACL/ACR 写入、
-跨实例及在途请求。工具/执行提交等要求即时重验的路径应采用新鲜判定或可靠版本失效机制。
-当前进程内 epoch 不能宣称已提供跨实例失效。
+跨实例及在途请求。当前进程内 epoch 不能宣称已提供跨实例失效。
+
+**已落地：执行提交路径采用新鲜判定**（`x-xpod-authorization-fresh` 内部标记）。API 侧由
+`agent-wakes` 的上下文置位（`requiresFreshAuthorization`）→ `OwnerPodAccess.getPodFetch`
+在该 fetch 的每个请求上加头 → SPARQL sidecar 处理器见到该标记即**跳过跨请求缓存**（仍保留
+请求内去重，因为一次请求内凭据与 ACL 不会变）。用户面 Matrix 路由不置位，继续使用缓存。
+该标记只能使判定更严，不能放宽权限。仍未完成的是：普通 ACL/ACR 写入经通用 PUT/PATCH 不经过
+SPARQL 处理器，这类撤权在 TTL 内仍可能命中旧 allow——即上面要求的"可接受撤权语义"仍未定。
 
 `ObservableResourceStore` 目前仅 cloud 挂载，local 未挂载，不能把它作为已经覆盖全部模式
 的失效来源。没有可靠失效支撑时，可先采用请求内复用；跨请求 allow 缓存是否满足产品契约

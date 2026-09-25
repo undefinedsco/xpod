@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
 import { getLoggerFor } from 'global-logger-factory';
+import { FRESH_AUTHORIZATION_HEADER } from '../api/ai-gateway/pod/OwnerPodAccess';
 import { pipeline } from 'node:stream/promises';
 import { HttpHandler } from '@solid/community-server';
 import type { HttpHandlerInput, HttpRequest, HttpResponse } from '@solid/community-server';
@@ -836,22 +837,42 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
     const pod = this.podRootFor(basePath);
     const epoch = this.authorizationEpochs.get(pod) ?? 0;
-    const shared = this.authorizationCache.get(cacheKey);
-    if (shared && shared.epoch === epoch && shared.expiresAt > Date.now()) {
-      if (shared.error !== undefined) throw shared.error;
-      return;
+    // Paths whose correctness depends on current permissions opt out of the
+    // cross-request cache entirely; the in-request decision above still applies
+    // because credentials and ACLs cannot change within one request.
+    const fresh = this.requiresFreshAuthorization(request);
+    if (!fresh) {
+      const shared = this.authorizationCache.get(cacheKey);
+      if (shared && shared.epoch === epoch && shared.expiresAt > Date.now()) {
+        if (shared.error !== undefined) throw shared.error;
+        return;
+      }
     }
     try {
       const availablePermissions = await this.permissionReader.handleSafe({ credentials, requestedModes });
       await this.authorizer.handleSafe({ credentials, requestedModes, availablePermissions });
       if (decisionCache !== undefined) decisionCache.set(cacheKey, {});
-      this.authorizationCache.set(cacheKey, { epoch, expiresAt: Date.now() + AUTHORIZATION_CACHE_TTL_MS });
+      if (!fresh) {
+        this.authorizationCache.set(cacheKey, { epoch, expiresAt: Date.now() + AUTHORIZATION_CACHE_TTL_MS });
+      }
     } catch (error: unknown) {
       if (decisionCache !== undefined) decisionCache.set(cacheKey, { error });
       // Denials are cached too: a denied burst is as expensive as an allowed one.
-      this.authorizationCache.set(cacheKey, { epoch, expiresAt: Date.now() + AUTHORIZATION_CACHE_TTL_MS, error });
+      if (!fresh) {
+        this.authorizationCache.set(cacheKey, { epoch, expiresAt: Date.now() + AUTHORIZATION_CACHE_TTL_MS, error });
+      }
       throw error;
     }
+  }
+
+  /**
+   * Internal marker set by this deployment's Pod access layer for execution paths
+   * that must re-verify permissions instead of reusing a cached decision.
+   */
+  private requiresFreshAuthorization(request?: HttpRequest): boolean {
+    if (request === undefined) return false;
+    const value = request.headers?.[FRESH_AUTHORIZATION_HEADER];
+    return Array.isArray(value) ? value.length > 0 : typeof value === 'string' && value.length > 0;
   }
 
   /**
