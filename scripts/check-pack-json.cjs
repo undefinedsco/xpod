@@ -37,6 +37,15 @@ if (buildCacheFile) {
   throw new Error(`Build cache leaked into npm tarball: ${buildCacheFile.path}`);
 }
 
+// Bundled dependencies are copied file by file, so their test sources would
+// otherwise ride along even though no runtime path can load them.
+const bundledTestFile = (pack.files || []).find((file) =>
+  /(?:^|\/)node_modules\//.test(file.path) &&
+  (/(?:^|\/)__tests__\//.test(file.path) || /(?:^|\/)[^/]+\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file.path)));
+if (bundledTestFile) {
+  throw new Error(`Bundled dependency test source leaked into npm tarball: ${bundledTestFile.path}`);
+}
+
 const packedLimitBytes = packedSizeLimitMb * 1024 * 1024;
 const unpackedLimitBytes = unpackedSizeLimitMb * 1024 * 1024;
 

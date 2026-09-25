@@ -82,6 +82,112 @@ function isCompilerDiagnostic(filePath) {
   return /(?:\.[cm]?[jt]sx?\.map|\.tsbuildinfo)$/.test(filePath);
 }
 
+// Trees that exist to author, browse, build for another platform or test a
+// package are never runtime payload - except where a package declares them as
+// its entry point (`node-fetch` ships `src/index.js`, `jose` maps a browser
+// build through its `browser`/`bun` conditions). The declared entries decide.
+const NON_RUNTIME_DIRECTORY_NAMES = new Set([
+  'browser', 'src', 'test', 'tests', '__tests__', 'spec', 'specs',
+  'benchmark', 'benchmarks', 'example', 'examples', 'doc', 'docs', 'coverage',
+]);
+// Entry conditions that a Node, Bun or TypeScript resolver selects on its own
+// when it loads the packed artifact. Custom conditions (`@zod/source`),
+// browser-only targets and foreign platform conditions are never selected by
+// runtime resolution, so a target listed under one of them must not keep a
+// source or browser tree alive - `jose` maps its `bun` condition into
+// `dist/node/esm` while its `browser` condition stays droppable.
+const PROTECTED_ENTRY_CONDITIONS = new Set([
+  'node', 'node-addons', 'bun', 'import', 'require', 'default', 'types', 'typings', 'module-sync',
+]);
+const NON_RUNTIME_FILE = /(?:^|[\\/])[^\\/]+\.(?:test|spec)\.[cm]?[jt]sx?$/;
+
+function toPackageRelativePath(value) {
+  return String(value)
+    .replace(/^\.\//u, '')
+    .split(/[\\/]/u)
+    .filter((segment) => segment.length > 0 && segment !== '.')
+    .join('/');
+}
+
+function collectDeclaredEntryPaths(manifest) {
+  const entries = new Set();
+  const add = (value) => {
+    if (typeof value === 'string' && value.length > 0) {
+      entries.add(toPackageRelativePath(value));
+    }
+  };
+  const walk = (value) => {
+    if (typeof value === 'string') {
+      add(value);
+      return;
+    }
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+    for (const [ key, nested ] of Object.entries(value)) {
+      // Subpath keys ('.', './mini') are not conditions; every other key is.
+      if (!key.startsWith('.') && !PROTECTED_ENTRY_CONDITIONS.has(key)) continue;
+      walk(nested);
+    }
+  };
+
+  for (const field of [ 'main', 'module', 'types', 'typings' ]) {
+    add(manifest[field]);
+  }
+  if (manifest.bin) {
+    // `bin` keys are command names, not conditions.
+    if (typeof manifest.bin === 'string') add(manifest.bin);
+    else for (const commandPath of Object.values(manifest.bin)) add(commandPath);
+  }
+  walk(manifest.exports);
+  return entries;
+}
+
+// A directory that holds a declared entry is runtime payload together with
+// everything below it: the entry may import its siblings. The copy filters run
+// once per path, so manifest-derived answers are cached per package root instead
+// of re-reading `package.json` for every file.
+const protectedDirectoryCache = new Map();
+
+function collectProtectedDirectoryPaths(packageRoot, manifest) {
+  const cached = protectedDirectoryCache.get(packageRoot);
+  if (cached) {
+    return cached;
+  }
+  const protectedPaths = new Set();
+  for (const entry of collectDeclaredEntryPaths(manifest)) {
+    const segments = entry.split('/');
+    for (let index = 1; index < segments.length; index += 1) {
+      protectedPaths.add(segments.slice(0, index).join('/'));
+    }
+  }
+  protectedDirectoryCache.set(packageRoot, protectedPaths);
+  return protectedPaths;
+}
+
+function readPackageManifest(packageRoot) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
+function isNonRuntimeBundledPath(relativePath, protectedPaths) {
+  if (NON_RUNTIME_FILE.test(relativePath)) {
+    return true;
+  }
+  const segments = relativePath.split(/[\\/]/u);
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    if (!NON_RUNTIME_DIRECTORY_NAMES.has(segments[index])) continue;
+    const directoryPath = segments.slice(0, index + 1).join('/');
+    if (!protectedPaths.has(directoryPath)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function shouldCopyBundledDependency(sourceRoot, sourcePath, patchedRuntime = false) {
   const relativePath = path.relative(sourceRoot, sourcePath);
   if (!relativePath) {
@@ -92,12 +198,24 @@ function shouldCopyBundledDependency(sourceRoot, sourcePath, patchedRuntime = fa
   }
 
   const topLevelEntry = relativePath.split(path.sep)[0];
-  if (topLevelEntry === 'node_modules' || topLevelEntry === '.git' || topLevelEntry === 'src' || topLevelEntry === 'tsconfig.json') {
+  if (topLevelEntry === 'node_modules' || topLevelEntry === '.git' || topLevelEntry === 'tsconfig.json') {
     return false;
   }
 
+  const manifest = readPackageManifest(sourceRoot);
+  const protectedPaths = manifest ? collectProtectedDirectoryPaths(sourceRoot, manifest) : undefined;
+  if (protectedPaths && isNonRuntimeBundledPath(relativePath, protectedPaths)) {
+    return false;
+  }
+  // A declared entry outside the usual runtime directories (`node-fetch` keeps
+  // its entry under `src/`) still has to be packaged with its siblings.
+  const declaredTopLevelEntry = protectedPaths
+    ? [ ...protectedPaths ].some((entryPath) => entryPath.split('/')[0] === topLevelEntry)
+    : false;
+
   return (
     (patchedRuntime && [ 'bin', 'config', 'templates', 'lib' ].includes(topLevelEntry)) ||
+    declaredTopLevelEntry ||
     topLevelEntry === 'dist' ||
     topLevelEntry === 'package.json' ||
     topLevelEntry.startsWith('README') ||
@@ -160,7 +278,41 @@ function patchBundledDrizzleSolid(destinationDir) {
     }
   }
 
+  pruneMirroredEsmTypeDeclarations(destinationDir);
   fs.writeFileSync(path.join(esmDir, 'package.json'), JSON.stringify({ type: 'module' }, null, 2) + '\n');
+}
+
+// `@undefineds.co/drizzle-solid` compiles its sources twice: `dist/core` for
+// CommonJS and `dist/esm` for ESM. Both JavaScript trees are loaded at runtime,
+// but the ESM tree also mirrors declaration files that the package's own
+// `types` entry (`dist/index.d.ts`, resolved ahead of `import`/`require` for
+// every condition) already provides. The mirrors are byte-identical, no export
+// subpath reaches them, and declarations are never runtime payload, so they are
+// dropped rather than shipped twice.
+function pruneMirroredEsmTypeDeclarations(destinationDir) {
+  const distDir = path.join(destinationDir, 'dist');
+  const esmDir = path.join(distDir, 'esm');
+  const queue = [ esmDir ];
+  while (queue.length > 0) {
+    const currentDir = queue.pop();
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(entryPath);
+        continue;
+      }
+      if (!entry.isFile() || !entryPath.endsWith('.d.ts')) {
+        continue;
+      }
+      const mirrorPath = path.join(distDir, path.relative(esmDir, entryPath));
+      if (!fs.existsSync(mirrorPath)) {
+        continue;
+      }
+      if (fs.readFileSync(mirrorPath).equals(fs.readFileSync(entryPath))) {
+        fs.rmSync(entryPath);
+      }
+    }
+  }
 }
 
 // Installers do not traverse bundled packages. Declare their external runtime
@@ -220,12 +372,15 @@ function exposeBundledRuntimeDependencies(packageDir, dependencies) {
         throw new Error(`Cannot bundle platform-specific dependency conflict: ${name}`);
       }
       const childDestination = path.join(destination, 'node_modules', ...name.split('/'));
+      const childProtectedPaths = collectProtectedDirectoryPaths(childSource, nestedManifest);
       fs.mkdirSync(path.dirname(childDestination), { recursive: true });
       fs.cpSync(childSource, childDestination, {
         recursive: true, dereference: true,
         filter: (file) => {
-          if (['node_modules', '.git'].includes(path.relative(childSource, file).split(path.sep)[0])) return false;
-          if (isCompilerDiagnostic(file)) return false;
+          const childRelativePath = path.relative(childSource, file);
+          if (['node_modules', '.git'].includes(childRelativePath.split(path.sep)[0])) return false;
+          if (isCompilerDiagnostic(childRelativePath)) return false;
+          if (isNonRuntimeBundledPath(childRelativePath, childProtectedPaths)) return false;
           if (/\.(node|dylib|so|dll|exe)$/.test(file)) throw new Error(`Cannot bundle native dependency file: ${file}`);
           return true;
         },

@@ -58,4 +58,22 @@ describe('npm package boundary', () => {
       stdio: 'pipe',
     })).toThrow(/Source map leaked into npm tarball: dist\/index\.js\.map/u);
   });
+  it.each([
+    'node_modules/auth/node_modules/zod/src/v4/core/tests/index.test.ts',
+    'node_modules/auth/dist/__tests__/routes.js',
+    'node_modules/auth/node_modules/external/dist/gateway.spec.js',
+  ])('rejects bundled dependency test sources: %s', (file) => {
+    const packJson = writePackJson([{ path: file, size: 100 }]);
+    expect(() => execFileSync(process.execPath, [checker, packJson], { cwd: root, stdio: 'pipe' }))
+      .toThrow(/Bundled dependency test source leaked into npm tarball/u);
+  });
+  it('permits application payload and bundled runtime files that are not tests', () => {
+    const packJson = writePackJson([
+      { path: 'dist/storage/rdf/models-benchmark.js', size: 100 },
+      { path: 'node_modules/auth/lib/index.js', size: 100 },
+      { path: 'node_modules/auth/dist/test-utils/helpers.js', size: 100 },
+    ]);
+    expect(() => execFileSync(process.execPath, [checker, packJson], { cwd: root, stdio: 'pipe' }))
+      .not.toThrow();
+  });
 });
