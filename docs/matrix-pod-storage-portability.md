@@ -171,6 +171,33 @@ contact URI，以及 `metadata` 里放什么。消息文档仍是
 - 事务幂等需要的是"按 txnId 找回**首次**签发的结果并原样返回"，那是对**一个可按 txnId
   寻址的记录**的操作，与消息在哪、是不是第一条无关。
 
+### 身份的归属：message URI 是身份，`event_id` 是它的投影
+
+Matrix 的 `event_id` 与 Solid 的资源身份其实可以统一，且代码里已经是半统一状态：
+
+- 语义引用早就走 **message URI**：wake 的目标、`Delivery`/`Run` 的 input、`replyTo` 都是
+  `messageResource.buildIri(scope, { id, parent, createdAt })`；
+- `event_id` 只是同一个东西的客户端句柄，现为 `$<random>:<serverName>`，
+  而资源 id 是 `hash(event_id)` —— 也就是 **URI 由 event_id 派生**。
+
+**候选改动：把派生方向倒过来** —— 让 `event_id` 成为 canonical message URI 的确定性投影：
+
+```
+messageUri = messageResource.buildIri(scope, { id: hash(eventId), parent, createdAt })
+eventId    = '$' + hash(messageUri)        // 确定性、稳定
+```
+
+这样：
+
+- 身份仍以 Solid URI 为准，`event_id` 是可随时重算的投影，不引入第二套身份；
+- 重放同一事务 ⇒ 同一 URI ⇒ `INSERT DATA` 幂等 ⇒ 不产生重复消息；
+  **仍不需要"是不是首条消息"这个判断**；
+- 内容冲突仍需**事务记录**判定：重放同 txnId 但正文不同时，确定性投影会给出**不同** URI，
+  只有记录能回答"这个 txnId 首次接受的是什么"并返回 409。
+
+保留 `$` 前缀的理由：Matrix 客户端普遍按 `$` 前缀校验/使用 event_id，且要求跨服务器唯一。
+纯 Solid URI 更"原生"，但会把 event_id 变成非 Matrix 形状，属于协议面不兼容，不在本决定范围内。
+
 ### 候选一：事务记录独立资源（承载去重，不承载正文）
 
 - 路径按事务键的结构化编码确定性派生，覆盖 Pod scope、认证身份/设备、完整端点作用域
