@@ -159,6 +159,18 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
      `co.undefineds.execution.agent` 里：规则可通过，但 Agent 归属变成事件内容而非协议身份。
   在定之前，授权规则只作为**纯校验器**使用（入站事件校验、测试、后续状态解析），不在写入
   路径强制，避免把未定的归属语义固化进历史事件。
+- **已落地**（2026-09-27）：room v11 的 **v2 状态解析**实现为纯函数
+  （`protocol/stateResolution.ts`，五步算法按规范编号注释）：状态后置 `S′(E)`、unconflicted/
+  conflicted 分类、auth chain 与 auth difference、reverse topological power ordering（含
+  发送者 power 优先、时间与 event_id 决胜）、mainline ordering（含「位置越大越先」与
+  「不引用 power levels = 位置 ∞」）、iterative auth checks（槽位缺失时回退到事件自身 auth
+  events，且**不使用被 rejected 的条目**）。测试
+  `tests/api/matrix/protocol/stateResolution.test.ts` 15 项，覆盖分叉收敛（ban 与自助 leave
+  两个分支都收敛到 ban，与分支到达顺序无关）、并发 power_levels 变更的确定性、auth
+  difference、以及 unconflicted 覆盖规则。
+- **待接线**：状态解析目前不在读路径生效——`sync` 的 state 仍取「journal 序号最大的同槽位
+  事件」。接线需要先能从 Pod 事件算出**各前向极值点的状态**（按 auth_events 回放），再对
+  极值点状态集合调用 `resolveState`，并让 `requireJoined`/授权检查读取解析后的状态。
 
 ## 已撤销或否决的前提
 
