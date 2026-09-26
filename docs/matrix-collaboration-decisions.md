@@ -102,9 +102,25 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
      惰性供给、管理端显式供给、还是配置白名单）。这决定"本部署可以替谁签名"，属于部署决策，
      代码只提供幂等入口，不替用户猜；
   2. **绑定持久化**（服务身份契约 §2.2 第 4 步）：WebID ↔ MXID ↔ 选定 Pod ↔ server name 的
-     绑定及其版本、服务授权引用，需落到用户选定的 Pod；key 行本身只证明密钥在哪，不记录
-     "这个人用哪个 Pod、绑定版本几"。这条需要先定承载位置（models schema 还是既有资源的
-     metadata），再实现 Pod 迁移/多 Pod 场景下的切换与并发热恢复。
+     绑定及其版本、服务授权引用，需落到用户选定的 Pod。**承载位置查证结果（2026-09-27）：
+     models 目前没有一个「每用户 + 带不透明 metadata」的文档可装**——
+     `solidProfileResource` 无 `metadata` 且 base 是 `idp:///profile/card`（IdP 内部存储，不是
+     用户 Pod 文档）；`aiConfigResource` 是 `/settings/ai/` 下的 `UDFS.AIConfig` 类型化设置，
+     把 Matrix 绑定塞进 AI 配置语义不对；`credentialResource`（密钥行已在此）字段全是凭据语义，
+     用 `scopes`/`keyVersion` 硬塞等于用类型字段冒充维度；带 `metadata` 的 15 个资源
+     （chat/thread/message/task/run/delivery/agent/skill 等）都按房间或工作项划分，没有每用户
+     一份的通用文档。因此需要一处最小 models 改动，三选一（推荐 1）：
+     1. 在 models 新增一个小实体 `matrixIdentityBinding`（一 WebID 一行，字段即绑定那 8 项）：
+        语义最干净，代价是新表；
+     2. 把 `/settings/` 下某个文档定为**通用用户设置载体**并给它加 `metadata` 列，绑定写进
+        `metadata.protocols.matrix.binding`：贴合"Matrix 事实放 metadata"的既有取向，但需要先
+        确认哪个文档是通用设置（现在只有 ai 与 credentials 两个类型化文档）；
+     3. 继续用 `credentialResource` 的同一文档再加一行、以 `service: 'matrix-binding'` 判别：
+        不动表结构，但该判别取值仍需在 models 声明，否则就是 adapter 自己造维度。
+- **已落地（不依赖承载）**：`identityBinding.ts` 的编解码与迁移状态机——幂等绑定（同 Pod 同
+  server 不churn 版本）、Pod 迁移 `version+1` 且 `pending`、由新 Pod 内容确认后转 `active`、
+  陈旧判定（版本落后或指向别的 Pod 的写入者必须刷新）、跨 Pod 取最高版本；测试
+  `identityBinding.test.ts` 7 项。承载一定，接存储即可。
   在这两条落地前，容器仍只注册部署级身份；每参与者身份已经可以端到端工作，但由谁供给仍是
   部署的操作决定。
 
