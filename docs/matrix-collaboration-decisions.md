@@ -295,9 +295,24 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
   （下一条本机事件的 `prev_events` 会指向它，证明写入路径读到的极值点来自 Pod）。测试
   `tests/api/matrix/receivedEvent.test.ts` 5 项，含"远端 join 经 `validateInboundPdu` 接受后
   落 Pod 并在房间状态里显示为 join"的端到端链路。
-- **待建**：入站事务接收与 `PUT /_matrix/federation/v1/send/{txnId}`（事务重放要返回同一响应，
-  依赖控制 Pod 的事务记录承载）、`/get_missing_events` 补依赖、状态与历史获取、`.well-known`
-  服务发现、以及**出站**投递。
+- **已落地**（2026-09-27）：**入站事务的接收语义**（`federation/inboundTransaction.ts`）。事务 id 是
+  **对端去重的键，不是我们的信任来源**，所以先 `reserve` 再处理：同一个 `(scope, origin, txnId)`
+  只允许一个处理者，第二个进来拿不到预留就是「事务在处理中」，按规范回
+  **503 `M_UNKNOWN` "Transaction is still being processed; retry"**（可重试，绝不重复落库）。
+  处理完成后把**每条 PDU 的应答原样记下**，重放事务直接返回首次响应而不重新处理——这是
+  `PUT /_matrix/federation/v1/send/{txnId}` 对重试的硬要求（否则对端重发会写出第二份事件或
+  拿到不一致的应答）。对端用同一个 txnId 换了载荷（指纹不符）时**保留首次记录**并打上 `conflictAt`
+  标记，不覆盖首次结果、也不静默接受新载荷。逐条 PDU 的应答沿用入站校验流水线：通过则
+  `{}`，被拒/延后则带 `error`，且**不影响同一事务里其他 PDU**（规范允许部分成功）。
+  预留的载荷指纹用规范化 JSON（键序无关），canonical JSON 本身拒绝的载荷也要能算出指纹而不是抛错。
+  当前承载是内存实现 `InMemoryMatrixInboundTransactionStore`；**落控制 Pod 是待办**（接口已经按
+  `scope` 分片，Pod 实现只需替换 store）。测试
+  `tests/api/matrix/federation/inboundTransaction.test.ts` 7 项（接受并逐条应答、重放同一响应且只处理
+  一次、同 txnId 异载荷保留首次并标记冲突、验签失败记 error、未完成事务返回 503、
+  auth_events 两种列表形态与指纹稳定性、不同 origin 的 txnId 互不干扰）。
+- **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 HTTP 路由与 X-Matrix 签名请求认证、
+  事务记录与控制 Pod 承载（去 SQL）、`/get_missing_events` 补依赖、状态与历史获取、
+  `.well-known` 服务发现、以及**出站**投递。
 
 ## 已撤销或否决的前提
 
