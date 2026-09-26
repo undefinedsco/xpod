@@ -6,11 +6,11 @@ import { getFreePort } from '../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import {
-  hasObjectStore,
   OBJECT_STORE_ACCESS_KEY,
   OBJECT_STORE_BUCKET,
   OBJECT_STORE_PORT,
   OBJECT_STORE_SECRET_KEY,
+  probeObjectStore,
 } from '../tests/helpers/dockerObjectStore';
 
 const DEFAULT_CLOUD_PORT = Number(process.env.CLOUD_PORT || '6300');
@@ -160,11 +160,16 @@ async function hasWritableRedis(port = 6379, host = '127.0.0.1', timeoutMs = 150
   });
 }
 
-async function hasMinio(): Promise<boolean> {
+async function probeMinio(): Promise<{ ok: boolean; detail: string }> {
   // The Compose service is still named `minio`, but it is VersityGW now, so the
   // MinIO-only /minio/health/live path is gone. Probe what the tests actually
-  // need instead: an authenticated request for the test bucket.
-  return await hasObjectStore(OBJECT_STORE_PORT, OBJECT_STORE_BUCKET);
+  // need instead: an authenticated request for the test bucket. The probe never
+  // throws, so a container that is still starting is a retry, not a crash.
+  return await probeObjectStore(OBJECT_STORE_PORT, OBJECT_STORE_BUCKET);
+}
+
+async function hasMinio(): Promise<boolean> {
+  return (await probeMinio()).ok;
 }
 
 async function hasHealthyComposeInfra(): Promise<boolean> {
@@ -182,13 +187,14 @@ async function hasHealthyComposeInfra(): Promise<boolean> {
 async function waitForInfraServices(maxRetries = 60, delayMs = 1000): Promise<void> {
   let lastStatus = '';
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const [postgresReady, redisReady, postgresHostReady, redisHostReady, minioReady] = await Promise.all([
+    const [postgresReady, redisReady, postgresHostReady, redisHostReady, minio] = await Promise.all([
       commandExitCode('docker', [...composeArgs, 'exec', '-T', 'postgres', 'pg_isready', '-U', 'xpod', '-d', 'xpod']),
       commandExitCode('docker', [...composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping']),
       hasTcpService(5432),
       hasTcpService(6379),
-      hasMinio(),
+      probeMinio(),
     ]);
+    const minioReady = minio.ok;
 
     if (postgresReady === 0 && redisReady === 0 && postgresHostReady && redisHostReady && minioReady) {
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -200,7 +206,9 @@ async function waitForInfraServices(maxRetries = 60, delayMs = 1000): Promise<vo
       `redis=${redisReady}`,
       `postgresHost=${postgresHostReady}`,
       `redisHost=${redisHostReady}`,
-      `minio=${minioReady}`,
+      // The object store's own words, so a timeout says "code ECONNRESET" or
+      // "Access Denied" instead of only "minio=false".
+      `minio=${minioReady ? 'true' : minio.detail}`,
     ].join(' ');
 
     await new Promise((resolve) => setTimeout(resolve, delayMs));

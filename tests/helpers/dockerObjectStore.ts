@@ -55,13 +55,20 @@ export function objectStoreContainerArgs(bucket: string): string[] {
  * Readiness probe for the object store: the authenticated bucket probe the
  * accessor itself needs, so an endpoint that listens but cannot serve the test
  * bucket is not reported as ready.
+ *
+ * The probe answers, it never throws. While a container is still coming up,
+ * `ECONNRESET`/`ECONNREFUSED` is the *expected* reply, and a caller that retries
+ * has to be able to retry: an escaping rejection used to abort a 60-attempt
+ * readiness loop on its first try (and, under Bun, to kill the runner with an
+ * unhandled error), which is what made the full integration stack look flaky.
+ * The reason travels with the verdict so a caller that does give up can say why.
  */
-export async function hasObjectStore(
+export async function probeObjectStore(
   port: number,
   bucket: string,
   accessKey = OBJECT_STORE_ACCESS_KEY,
   secretKey = OBJECT_STORE_SECRET_KEY,
-): Promise<boolean> {
+): Promise<{ ok: boolean; detail: string }> {
   const client = new Client({
     endPoint: '127.0.0.1',
     port,
@@ -69,5 +76,24 @@ export async function hasObjectStore(
     accessKey,
     secretKey,
   });
-  return await client.bucketExists(bucket);
+  try {
+    const exists = await client.bucketExists(bucket);
+    return {
+      ok: exists,
+      detail: exists ? `bucket ${bucket} is served on :${port}` : `bucket ${bucket} does not exist on :${port}`,
+    };
+  } catch (error) {
+    const failure = error as Error & { code?: string | number };
+    const detail = `${failure.code !== undefined ? `code ${String(failure.code)}: ` : ''}${failure.message}`;
+    return { ok: false, detail: detail.replace(/\s+/gu, ' ').slice(0, 200) };
+  }
+}
+
+export async function hasObjectStore(
+  port: number,
+  bucket: string,
+  accessKey = OBJECT_STORE_ACCESS_KEY,
+  secretKey = OBJECT_STORE_SECRET_KEY,
+): Promise<boolean> {
+  return (await probeObjectStore(port, bucket, accessKey, secretKey)).ok;
 }

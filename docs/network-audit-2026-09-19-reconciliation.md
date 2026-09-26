@@ -459,4 +459,6 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 - `--flake-report`：2 条历史记录、全部腿 not-passed 0%。
 - `bun run test`（全量）：**633 文件 / 6212 例通过**（含改写后的 32 例 harness 单测：分组矩阵、blocked 不判红 / strict 判红、前置条件归属、DNS 交叉判定、`retryTransient` 抖动、历史汇总排序）。
 
+**同源的 CI 抖动（本轮一并修掉）**：`integration-full` 在 CI 上以 `ECONNRESET http://127.0.0.1:9000/xpod?location` 失败（run 36169817113，容器 `Started` 后 0.25s 就进入拆除，全程 80s）。根因不是 VersityGW，而是**就绪探测把"容器还没起来"抛成了异常**：`hasObjectStore` 直接 `return await client.bucketExists(bucket)`，transport 错误（`ECONNRESET`/`ECONNREFUSED`）以 rejected promise 逃出，`waitForInfraServices` 的 60 次重试**第一次就中断**（Bun 下未处理的 rejection 还直接让 runner 以 1 退出）。CI 冷启动（要 pull 镜像）几乎必现，本机镜像热时不出现 —— 这就是"看起来不稳定"的机制。修法：探测改为**只回答不抛**（`probeObjectStore` → `{ok, detail}`，`hasObjectStore` 退化为 `.ok`），重试循环用 detail 汇报真实原因（`minio=code ECONNRESET: ...`）；同一改动也让 `runManagedLocalRegistration` / `runLoginDeploymentMatrix` 的 `waitReady(hasObjectStore)` 真正重试而不是首次即失败。新增单测 `tests/helpers/dockerObjectStore.test.ts`（负向优先：关端口的探测必须返回 `ok:false` 且带原因、不得抛；外加"三个 compose 文件必须钉同一个 digest"的漂移守卫）。验证：删掉镜像与 compose 栈后冷启动跑 `bun run test:integration:full` → `[full] postgres/redis/minio ready.` + **4 文件 / 45 例通过，exit 0**。
+
 **仍未做**：`--reuse` 模式下 `a04-identity` 仍记为失败（复用别人的实例时身份链确实没跑，属"调用者选择"而非环境，未纳入 blocked——需要时再单独定口径）；`network` 组证据的 `tunnels[]` 仍为空（既有限制，见 10.8 末）。
