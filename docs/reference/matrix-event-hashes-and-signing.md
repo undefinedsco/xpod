@@ -98,7 +98,10 @@ Canonical JSON（规范原文示例）：
 | `{"one":1,"two":"Two"}` | `{"one":1,"two":"Two"}` |
 | `{"b":"2","a":"1"}` | `{"a":"1","b":"2"}` |
 
-签名（规范原文示例，signing name `example.org`，key id `ed25519:1`）：
+### 不可复现的规范示例（不作为向量）
+
+规范 appendices 的 "Signing Details" 给出下面这个对象（signing name `example.org`，
+key id `ed25519:1`）：
 
 ```json
 {
@@ -113,8 +116,24 @@ Canonical JSON（规范原文示例）：
 }
 ```
 
-（该示例的完整构造见规范 appendices 的 "Signing JSON → Examples"，实现时应把上表与
-该示例固化成仓库内的测试向量文件，而不是只写在文档里。）
+**本仓库无法用它做测试向量**：按 `sign_json` 的语义（移除 `signatures` 与 `unsigned` 后
+Canonical JSON 签名），用文中公钥对这组数据验签**不通过**；原因未确认（该小节讲的是结构，
+可能取自更早的示例或另有构造）。Ed25519 与 SPKI 重建路径本身已用自签往返验证可用，
+因此登记为"不可复现示例"，等能对账时再决定是否纳入。
+
+### 仓库内自建的向量
+
+`tests/api/matrix/protocol/eventIntegrity.test.ts` 固定：
+
+- 规范给出的 3 个 Canonical JSON 向量；
+- 码点排序（`Ｚ` U+FF3A 在 `😀` U+1F600 之前）、最小转义、整数边界与浮点/负零拒绝；
+- redaction 白名单（含 `m.room.member` 的 `third_party_invite.signed` 与 `m.room.create` 全量 content）；
+- Ed25519 自签往返、篡改与错误签名者/错误 key id/缺签名 fail-closed；
+- `unsigned` 变化不影响验签；
+- server key 以标准 unpadded base64 发布并可解析回公钥。
+
+**签名算法本身仍需外部对账**：以上是自洽性证明，不等于与其它 Matrix 实现对等。
+与独立实现互验属服务身份契约的验收门禁。
 
 ## 8. 仓库内可用的实现依赖
 
