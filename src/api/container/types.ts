@@ -115,6 +115,9 @@ export interface ApiContainerConfig {
   corsOrigins: string[];
 
   /** CSS Token 端点 */
+  /** Deployment Matrix signing identity; undefined disables protocol signing routes. */
+  matrixServiceIdentity?: import('../matrix/protocol/serviceIdentity').MatrixServiceIdentity;
+
   cssTokenEndpoint: string;
   solidBaseUrl?: string;
 
@@ -281,6 +284,7 @@ export interface ApiContainerCradle {
   taskService: TaskService<StoreContext>;
   inngestTaskScheduler: InngestTaskScheduler<StoreContext>;
   chatKitService: ChatKitService<StoreContext>;
+  matrixServiceIdentity: import('../matrix/protocol/serviceIdentity').MatrixServiceIdentity | undefined;
   matrixStore: PodMatrixStore;
   clientReconcilerCoordinator: ClientReconcilerCoordinator;
   serverGroupReconcilerService: ServerGroupReconcilerService;

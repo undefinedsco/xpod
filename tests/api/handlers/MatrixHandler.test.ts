@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import { MatrixError } from '../../../src/api/matrix/MatrixError';
@@ -6,6 +7,8 @@ import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { MatrixStore } from '../../../src/api/matrix';
 import type { ReconcilerOwner } from '../../../src/api/reconciler';
+import { decodeVerifyKey, verifyJson } from '../../../src/api/matrix/protocol/eventIntegrity';
+import { MatrixServiceIdentity } from '../../../src/api/matrix/protocol/serviceIdentity';
 
 type CapturedRoute = {
   method: string;
@@ -539,4 +542,49 @@ describe('MatrixHandler', () => {
     expect(store.createRoom).not.toHaveBeenCalled();
   });
 
+});
+
+describe('Matrix server key publication', () => {
+  it('publishes the deployment verify keys as a public route', async () => {
+    const { server, routes } = createMockServer();
+    const identity = new MatrixServiceIdentity({
+      serverName: 'chat.example.com',
+      activeKey: (() => {
+        const { privateKey } = generateKeyPairSync('ed25519');
+        return { keyId: 'ed25519:1', privateKeyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString() };
+      })(),
+    });
+    registerMatrixRoutes(server, {
+      store: createStore(),
+      baseUrl: 'https://chat.example.com',
+      resolvePodUrl: async () => 'https://pods.example/alice/',
+      serviceIdentity: identity,
+    });
+
+    const route = routes['GET /_matrix/key/v2/server'];
+    expect(route.options).toEqual({ public: true });
+    expect(route.path.startsWith('/_matrix/')).toBe(true);
+
+    const mock = createResponse();
+    await route.handler(createRequest(), mock.response);
+    const body = mock.body();
+    expect(body.server_name).toBe('chat.example.com');
+    expect(Object.keys(body.verify_keys)).toEqual([ 'ed25519:1' ]);
+    expect(body.valid_until_ts).toBeGreaterThan(Date.now() - 1);
+    // The published response verifies with the key it advertises.
+    expect(verifyJson(body, 'chat.example.com', 'ed25519:1',
+      decodeVerifyKey(body.verify_keys['ed25519:1'].key))).toBe(true);
+  });
+
+  it('answers 404 when the deployment has no signing identity', async () => {
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, {
+      store: createStore(),
+      resolvePodUrl: async () => 'https://pods.example/alice/',
+    });
+    const mock = createResponse();
+    await routes['GET /_matrix/key/v2/server'].handler(createRequest(), mock.response);
+    expect(mock.response.statusCode).toBe(404);
+    expect(mock.body()).toMatchObject({ errcode: 'M_NOT_FOUND' });
+  });
 });

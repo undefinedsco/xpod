@@ -632,6 +632,8 @@ export function registerCommonServices(
       });
     }).singleton(),
 
+    matrixServiceIdentity: asFunction(({ config }: ApiContainerCradle) => config.matrixServiceIdentity).singleton(),
+
     matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
       return new PodMatrixStore({
         serverGroupReconcilerService,

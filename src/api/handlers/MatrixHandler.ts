@@ -5,12 +5,15 @@ import type { ServerResponse } from 'node:http';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { MatrixCreateRoomRequest, MatrixStore, MatrixStoreContext } from '../matrix/types';
+import type { MatrixServiceIdentity } from '../matrix/protocol/serviceIdentity';
 
 export interface MatrixHandlerOptions {
   store: MatrixStore;
   baseUrl?: string;
   /** Resolve and authorize the selected Pod from persisted ownership records. */
   resolvePodUrl?: (webId: string, requestedPodUrl?: string) => Promise<string>;
+  /** Deployment signing identity; absent means this deployment cannot sign protocol facts. */
+  serviceIdentity?: MatrixServiceIdentity;
 }
 
 /**
@@ -26,6 +29,16 @@ export interface MatrixHandlerOptions {
  */
 export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOptions): void {
   const { store } = options;
+
+  // Federation dependency: other servers fetch this to verify our signatures.
+  // Public by design, like the discovery documents below.
+  server.get('/_matrix/key/v2/server', async (_request, response) => {
+    if (!options.serviceIdentity) {
+      sendJson(response, 404, { errcode: 'M_NOT_FOUND', error: 'This deployment has no Matrix signing identity' });
+      return;
+    }
+    sendJson(response, 200, options.serviceIdentity.serverKeyResponse());
+  }, { public: true });
 
   server.get('/.well-known/matrix/client', async (request, response) => {
     sendJson(response, 200, {

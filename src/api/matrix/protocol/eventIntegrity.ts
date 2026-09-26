@@ -92,6 +92,20 @@ function redactContent(type: string, content: unknown): Record<string, unknown> 
   return kept;
 }
 
+/**
+ * A redacted event: the keys room v11 keeps, with `content` already filtered.
+ * Producing a signed event is the only supported way to build one, so a
+ * projection consumer cannot accidentally receive unredacted content.
+ */
+export interface RedactedEvent extends Record<string, unknown> {
+  type?: string;
+  room_id?: string;
+  sender?: string;
+  content?: Record<string, unknown>;
+  hashes?: Record<string, unknown>;
+  signatures?: Record<string, Record<string, string>>;
+}
+
 export interface SigningKeyPair {
   /** Key identifier used in `signatures`, e.g. `ed25519:1`. */
   keyId: string;
@@ -107,7 +121,7 @@ export function signEvent(
   event: Record<string, unknown>,
   key: SigningKeyPair,
   signingName: string,
-): Record<string, unknown> {
+): RedactedEvent {
   const signed = { ...event };
   signed.hashes = { sha256: encodeUnpaddedBase64(computeContentHash(signed)) };
   const signature = signJson(signed, key);

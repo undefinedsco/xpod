@@ -24,6 +24,7 @@ import {
   SecretCellVault,
 } from '../../security/secret-cell';
 import { SecretCellCredentialVault } from '../ai-gateway/credentials/SecretCellCredentialVault';
+import { createMatrixServiceIdentity, type MatrixServiceIdentity } from '../matrix/protocol/serviceIdentity';
 import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 
 export type { ApiContainerCradle, ApiContainerConfig } from './types';
@@ -166,6 +167,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     redisUrl: process.env.CSS_REDIS_CLIENT ?? process.env.REDIS_URL,
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),
+    matrixServiceIdentity: loadMatrixServiceIdentity(process.env, solidBaseUrl),
     solidBaseUrl,
     aiConnectionInvocationSecret: process.env.XPOD_AI_CONNECTION_INVOCATION_SECRET,
     aiConnectionInvocationKeyId: process.env.XPOD_AI_CONNECTION_INVOCATION_KEY_ID,
@@ -265,6 +267,38 @@ function loadAiClientConfiguration(env: NodeJS.ProcessEnv): ApiContainerConfig['
 function nonEmptyEnv(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed || undefined;
+}
+
+/**
+ * The deployment's Matrix signing identity.
+ *
+ * Derived from the deployment's own base URL unless explicitly overridden, so a
+ * zero-configuration stack still signs events. A generated key is reported once
+ * per process instead of failing startup: local runs must work, while a
+ * deployment that cares about a stable server identity configures
+ * XPOD_MATRIX_SIGNING_PRIVATE_KEY.
+ */
+function loadMatrixServiceIdentity(
+  env: NodeJS.ProcessEnv,
+  solidBaseUrl: string | undefined,
+): MatrixServiceIdentity | undefined {
+  const serverName = env.XPOD_MATRIX_SERVER_NAME?.trim() || (solidBaseUrl ? new URL(solidBaseUrl).host : undefined);
+  if (!serverName) {
+    return undefined;
+  }
+  return createMatrixServiceIdentity({
+    serverName,
+    activeKeyId: env.XPOD_MATRIX_SIGNING_KEY_ID,
+    activePrivateKeyPem: nonEmptyEnv(env.XPOD_MATRIX_SIGNING_PRIVATE_KEY),
+    oldKeysJson: nonEmptyEnv(env.XPOD_MATRIX_SIGNING_OLD_KEYS),
+    onGeneratedKey: (keyId) => {
+      process.emitWarning(
+        `Matrix signing identity for ${serverName} uses the generated key ${keyId}; ` +
+        'configure XPOD_MATRIX_SIGNING_PRIVATE_KEY for a stable server identity.',
+        { code: 'XPOD_MATRIX_EPHEMERAL_SIGNING_KEY' },
+      );
+    },
+  });
 }
 
 function loadSecretCellCredentialVaultFactory(env: NodeJS.ProcessEnv): (() => CredentialVault) | undefined {

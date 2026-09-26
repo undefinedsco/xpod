@@ -190,7 +190,8 @@ function registerSharedRoutes(
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });
   const matrixPodResolver = createMatrixPodResolver(podLookupRepository);
-  registerMatrixRoutes(server, { store: matrixStore, resolvePodUrl:matrixPodResolver, baseUrl:process.env.CSS_BASE_URL });
+  registerMatrixRoutes(server, { store: matrixStore, resolvePodUrl:matrixPodResolver, baseUrl:process.env.CSS_BASE_URL,
+    serviceIdentity: container.resolve('matrixServiceIdentity') });
   registerAgentWakeRoutes(server, {
     // Same queue instance the reconciler enqueues into, taken from the store
     // that already holds it instead of resolving the collaborator twice.

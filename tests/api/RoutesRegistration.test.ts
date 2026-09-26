@@ -120,6 +120,8 @@ describe('registerRoutes mode wiring', () => {
       },
       // The shared wake queue the Matrix store already owns.
       matrixStore: { getQueue: () => ({}) },
+      // Signing identity is optional in a deployment; undefined keeps the route registered but disabled.
+      matrixServiceIdentity: undefined,
       clientReconcilerCoordinator: {},
       runExecutionBackend: {
         getClient: vi.fn(() => ({ id: 'test-inngest' })),
