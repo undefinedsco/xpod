@@ -50,3 +50,27 @@ bun scripts/check-tunnel-clients.ts --json
 
 **仍未做**：下载不校验发布方签名（只验证"能执行且 `--version` 有输出"）。要做校验和/签名
 校验，需要先确定每个客户端的校验和来源与轮换策略，属供应链决策。
+
+## Sakura FRP / natfrp 的 frpc 从哪来（以及验收为什么用过 Docker）
+
+上游 `frpc`（fatedier/frp）**不能**用于 Sakura：它不认厂商的 `frpc -f <访问密钥>:<隧道ID>`
+语法，官方文档明确要求版本号里带 `sakura`（≥ `0.51.0-sakura-14`），否则失去官方支持。
+natfrp 客户端的获取渠道只有两个：
+
+1. **管理面板「软件下载」**：按系统与架构给出直链（Linux/macOS/Windows、amd64/arm64/…）。
+   链接来自登录后的面板，**没有可钉进仓库的公共直链**，所以设置页按"没有稳定直链"处理，
+   只显示安装提示（见上一节）。拿到后放进 PATH 或 `vendor/tunnel-clients/frpc` 即可。
+2. **官方镜像 `natfrp.com/frpc`**（亦有 `natfrp/frpc`、`ghcr.io/natfrp/frpc`）：可与
+   `docker pull` 一起被钉住，是**唯一可复现拉取**的渠道，因此验收 harness 在"这台机器没有
+   原生客户端"时用它。
+
+**为什么在 macOS 上不能"从镜像里抠出二进制直接用"**：镜像是 **Linux** 二进制。实测
+`docker create` + `docker cp` 取出 `/frpc` 后 `file` 报
+`ELF 64-bit LSB executable, ARM aarch64`，在 darwin 上执行得到 `cannot execute binary file`
+（`--version` 都跑不起来）。所以 Docker 不是产品需要，而是**这台机器的客户端处境**：要么用
+面板给的 macOS 构建（原生跑，无需 Docker），要么让 Docker 提供一个 Linux 运行时。
+
+验收 harness 的解析顺序已与产品**完全一致**（`--frpc-bin`/`FRPC_BIN` → `vendor/tunnel-clients/`
+→ PATH → 官方镜像兜底），并在证据里记 `source`（`configured|bundled|path|image|absent`）与
+版本号；原生客户端存在时**不再碰 Docker**。只有走镜像时才需要 loopback relay 命名空间
+（容器到不了宿主的 `127.0.0.1`），原生客户端直接连本机回环，relay 不参与。

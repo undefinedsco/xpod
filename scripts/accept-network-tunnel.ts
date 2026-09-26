@@ -59,6 +59,7 @@ import path from 'node:path';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import { findGatewayIngressPort, isFreePortForWildcard } from '../src/runtime/port-finder';
 import { readDeclaredIngressOrigin } from '../src/tunnel/TunnelDeclaredOrigin';
+import { resolveTunnelClient } from '../src/tunnel/TunnelClientResolver';
 import {
   parseReservedPortsEnv,
   portReservation,
@@ -980,15 +981,93 @@ function cleanupAcceptanceFrpc(): void {
  * official image carries the same binary. A PATH shim keeps the provider's own spawn path
  * under test with a genuine frpc behind it.
  */
-async function resolveFrpcBinary(options: Options, directory: string): Promise<{ path?: string; note: string }> {
-  const configured = options.frpcBin ?? process.env.FRPC_BIN;
+/** Where an frpc client came from, in the order the product itself resolves one. */
+export type FrpcSource = 'configured' | 'bundled' | 'path' | 'image' | 'absent';
+
+/** The vendor build says `sakura` in its version; an upstream frpc cannot read `-f <token>:<id>`. */
+export function describeFrpcBuild(output: string): { version?: string; vendorBuild: boolean } {
+  const version = output.split('\n').map((line) => line.trim()).find((line) => line.length > 0);
+  return { ...(version ? { version } : {}), vendorBuild: /sakura/iu.test(output) };
+}
+
+/**
+ * Which frpc this run will spawn, resolved exactly the way the product resolves it.
+ *
+ * The provider does not care where the client came from - it spawns what the resolver hands it -
+ * so the harness must not invent a second order. It asks the product's own resolver first
+ * (`--frpc-bin`/`FRPC_BIN`, then `vendor/tunnel-clients/`, then PATH) and only falls back to the
+ * vendor's Docker image when this machine has no native client at all.
+ *
+ * That fallback exists because the image is a *Linux* binary: on macOS it is the one channel that
+ * works without the operator downloading the panel's macOS build, and extracting the file out of
+ * the image does not help (an aarch64 ELF is not runnable on darwin). Docker is therefore a
+ * property of this machine's client situation, not of the product, and the evidence says which
+ * source was used.
+ */
+export async function resolveFrpcBinary(
+  options: Options,
+  directory: string,
+  deps: {
+    packageRoot?: string;
+    env?: Record<string, string | undefined>;
+    isExecutable?: (candidate: string) => boolean;
+    dockerImagePresent?: () => boolean;
+    inspectVersion?: (binary: string) => string;
+  } = {},
+): Promise<{ path?: string; note: string; source: FrpcSource; version?: string; vendorBuild?: boolean }> {
+  const env = deps.env ?? process.env;
+  const configured = options.frpcBin ?? env.FRPC_BIN;
+  const inspectVersion = deps.inspectVersion
+    ?? ((binary: string) => {
+      try {
+        return execSync(`${JSON.stringify(binary)} -v`, { encoding: 'utf8', timeout: 15_000, stdio: [ 'ignore', 'pipe', 'ignore' ] });
+      } catch {
+        return '';
+      }
+    });
+
   if (configured) {
-    return { path: configured, note: `configured frpc: ${configured}` };
+    const build = describeFrpcBuild(inspectVersion(configured));
+    return {
+      path: configured,
+      source: 'configured',
+      note: `configured frpc: ${configured}${build.version ? ` (${build.version}${build.vendorBuild ? '' : '; not a natfrp build'})` : ''}`,
+      ...build,
+    };
   }
-  try {
-    execSync('docker image inspect natfrp.com/frpc', { stdio: 'ignore', timeout: 20_000 });
-  } catch {
-    return { note: 'no frpc binary and no natfrp.com/frpc image' };
+
+  const resolved = resolveTunnelClient('sakura_frp', {
+    packageRoot: deps.packageRoot ?? path.resolve(import.meta.dir, '..'),
+    env,
+    ...(deps.isExecutable ? { isExecutable: deps.isExecutable } : {}),
+  });
+  if (resolved.resolvedPath) {
+    const build = describeFrpcBuild(inspectVersion(resolved.resolvedPath));
+    return {
+      path: resolved.resolvedPath,
+      source: resolved.source === 'bundled' ? 'bundled' : 'path',
+      note: `native frpc (${resolved.source}): ${resolved.resolvedPath}`
+        + `${build.version ? ` · ${build.version}` : ''}`
+        + `${build.vendorBuild ? '' : ' · not a natfrp build: upstream frpc does not accept `-f <token>:<id>`'}`,
+      ...build,
+    };
+  }
+
+  const imagePresent = deps.dockerImagePresent
+    ?? (() => {
+      try {
+        execSync('docker image inspect natfrp.com/frpc', { stdio: 'ignore', timeout: 20_000 });
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  if (!imagePresent()) {
+    return {
+      source: 'absent',
+      note: 'no frpc client: checked --frpc-bin/FRPC_BIN, vendor/tunnel-clients/, PATH, '
+        + 'and the natfrp.com/frpc image is not present either',
+    };
   }
   const shim = path.join(directory, 'frpc');
   writeFileSync(shim, [
@@ -998,7 +1077,11 @@ async function resolveFrpcBinary(options: Options, directory: string): Promise<{
     '',
   ].join('\n'));
   chmodSync(shim, 0o755);
-  return { path: shim, note: 'natfrp.com/frpc image behind a frpc shim' };
+  return {
+    path: shim,
+    source: 'image',
+    note: 'natfrp.com/frpc image behind a frpc shim (no native frpc on this machine)',
+  };
 }
 
 function readP2pEnabled(statusBody: string): boolean | undefined {
@@ -1959,7 +2042,7 @@ export function evaluatePreflight(input: {
     localPortFree?: boolean;
     localPortOccupant?: string;
   };
-  frpc?: { source: 'configured' | 'image' | 'absent' };
+  frpc?: { source: FrpcSource };
 }): PreflightLeg[] {
   const legs: PreflightLeg[] = [];
 
@@ -2515,11 +2598,7 @@ async function runPreflight(options: Options, env: Record<string, string>): Prom
       : tunnels[0];
 
     const frpcBinary = await resolveFrpcBinary(options, options.evidenceDir);
-    frpc = {
-      source: (options.frpcBin ?? process.env.FRPC_BIN)
-        ? 'configured'
-        : frpcBinary.path ? 'image' : 'absent',
-    };
+    frpc = { source: frpcBinary.source };
 
     // Console-bound legs pin the port their console already forwards to, so "is that port free
     // right now" is the fact that decides whether the leg can run at all.
@@ -3470,11 +3549,18 @@ async function main(): Promise<void> {
           // The console sets the tunnel's local IP to 127.0.0.1, which a container client
           // cannot reach; a relay namespace carries that same number to this host, so the
           // console's port is never edited to make room for the candidate.
-          if (!(options.frpcBin ?? process.env.FRPC_BIN) && /^(127\.0\.0\.1|localhost)$/iu.test(sakuraFacts.localIp)) {
+          // Only the container client needs the relay: a native frpc reaches this host's loopback
+          // directly, so the relay is decided by where the client came from, not by whether an
+          // explicit path was configured.
+          if (frpc.source === 'image' && /^(127\.0\.0\.1|localhost)$/iu.test(sakuraFacts.localIp)) {
             const relay = await startLoopbackRelay(consolePort, scratchDir);
             if (relay && await waitForLoopbackRelay(relay.name, consolePort)) {
               relayName = relay.name;
-              frpc = { path: relay.shim, note: `natfrp image (official client) in a relay namespace for ${sakuraFacts.localIp}:${consolePort}` };
+              frpc = {
+                path: relay.shim,
+                source: 'image',
+                note: `natfrp image (official client) in a relay namespace for ${sakuraFacts.localIp}:${consolePort}`,
+              };
             } else {
               stopLoopbackRelay(relay?.name);
               checks.push({

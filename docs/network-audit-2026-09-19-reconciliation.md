@@ -472,4 +472,12 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 
 三处分级都是同一条原则：**"没有应答/还没定态"是时序事实，"答了但答错"才是结论**。harness 单测 38 例（新增 6 例：丢包重试与"已作答不重试"、终端态轮询与未定态、占位页重试、身份错配一次定论、无身份时如实记录状态码/次数/body 片段）。
 
+**Sakura 腿的客户端来源与 Docker（操作者提问后的收口）**：此前 harness 的 frpc 解析只有两条路——`--frpc-bin`/`FRPC_BIN`，或官方镜像 `natfrp.com/frpc`——**即使机器上装了原生 frpc 也不会用**（与产品的解析顺序不一致）。现状：
+
+- harness 改为**完全复用产品解析器**：`--frpc-bin`/`FRPC_BIN` → `vendor/tunnel-clients/frpc` → PATH → 官方镜像兜底，证据记 `source`（`configured|bundled|path|image|absent`）与 `frpc -v` 版本号；版本里没有 `sakura` 时明确标注"非 natfrp 构建"（上游 frpc 不认 `-f <token>:<id>`）。原生客户端存在时**不再碰 Docker**；loopback relay 只在 `source='image'` 时启用（容器到不了宿主回环）。
+- **为什么这台机器仍在用 Docker**：natfrp 客户端只有两个渠道——登录后面板「软件下载」的按平台直链（无可钉公共直链，故设置页只给安装提示），或官方镜像。镜像是 **Linux** 二进制：实测 `docker create`+`docker cp` 取出 `/frpc`，`file` 报 `ELF 64-bit LSB executable, ARM aarch64`，在 darwin 上 `cannot execute binary file`（连 `--version` 都跑不起来）。所以在 macOS 上"从镜像抠二进制"不可行，Docker 是这台机器缺 macOS 客户端时的运行时替代，不是产品需求。官方文档：[frpc 基本使用指南](https://doc.natfrp.com/frpc/usage.html)。
+- 新增 4 例单测（bundled 优先且不碰 Docker、PATH 命中、非 natfrp 构建被标注、两者都没有时兜底镜像/如实报 `absent` 并列出检查过的三个位置）；harness 单测共 **42 例**。回归：`--group network --start` 仍 **20/20 / 0 blocked**（`https://frp-dad.com:35246/ · serving`）。
+
+**门禁发现（未修，需操作者定）**：`bun run typecheck:test`（AGENTS.md 称为"唯一检查测试代码类型的门禁"）**在当前环境跑不起来**：根 `node_modules` 里 `@vitejs/plugin-react@5.2.0` 的 `index.d.ts` 用了 TS 5.6+ 的 `export { … as "module.exports" }` 语法，而本机 `tsc` 是 **5.5.4**（`error TS1003: Identifier expected`）；`skipLibCheck` 不抑制 .d.ts 的**语法**错误。该 gate 也**没有进 CI**（workflows 里搜不到），且 AGENTS.md 指向的 `docs/testing/test-typecheck.md` **不存在**。本地改用逐文件定向检查验证了本轮改动的测试文件（只剩 `scripts/**` 既有的 `import.meta.dir` Bun 扩展缺口）。
+
 **仍未做**：`--reuse` 模式下 `a04-identity` 仍记为失败（复用别人的实例时身份链确实没跑，属"调用者选择"而非环境，未纳入 blocked——需要时再单独定口径）；`network` 组证据的 `tunnels[]` 仍为空（既有限制，见 10.8 末）。

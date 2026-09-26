@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -23,6 +23,7 @@ import {
   prerequisiteFor,
   readEntryProvenance,
   readServicePids,
+  resolveFrpcBinary,
   reserveNetworkPorts,
   requireCredentialFile,
   resolveTunnelGroups,
@@ -833,5 +834,109 @@ describe('accept-network-tunnel entry provenance', () => {
     expect(provenance.attempts).toBe(3);
     expect(provenance.lastStatus).toBe(404);
     expect(provenance.bodySnippet).toBe('empty body');
+  });
+});
+
+describe('accept-network-tunnel frpc resolution', () => {
+  const unconfigured = {} as Parameters<typeof resolveFrpcBinary>[0];
+  const neverCalled = () => {
+    throw new Error('docker must not be consulted when a native client exists');
+  };
+
+  it('prefers a native client the product would also find, without touching Docker', async() => {
+    // The provider spawns what the product's resolver hands it, so the harness must not invent a
+    // second order - and a machine that has a real client must never be pushed into a container.
+    const root = mkdtempSync(path.join(tmpdir(), 'xpod-frpc-bundled-'));
+    try {
+      mkdirSync(path.join(root, 'vendor', 'tunnel-clients'), { recursive: true });
+      const bundled = path.join(root, 'vendor', 'tunnel-clients', 'frpc');
+      writeFileSync(bundled, '#!/bin/sh\n');
+      chmodSync(bundled, 0o755);
+      const resolved = await resolveFrpcBinary(unconfigured, tmpdir(), {
+        packageRoot: root,
+        env: {},
+        dockerImagePresent: neverCalled,
+        inspectVersion: () => '0.51.0-sakura-14',
+      });
+      expect(resolved.source).toBe('bundled');
+      expect(resolved.path).toBe(bundled);
+      expect(resolved.vendorBuild).toBe(true);
+      expect(resolved.note).toMatch(/native frpc \(bundled\)/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('finds a client on PATH as well, and says so', async() => {
+    const root = mkdtempSync(path.join(tmpdir(), 'xpod-frpc-path-'));
+    try {
+      const onPath = path.join(root, 'frpc');
+      writeFileSync(onPath, '#!/bin/sh\n');
+      chmodSync(onPath, 0o755);
+      const resolved = await resolveFrpcBinary(unconfigured, tmpdir(), {
+        // An empty package root keeps the bundled step out of the way, exactly like a checkout
+        // that ships no client.
+        packageRoot: mkdtempSync(path.join(tmpdir(), 'xpod-frpc-empty-')),
+        env: { PATH: root },
+        dockerImagePresent: neverCalled,
+        inspectVersion: () => '0.51.0-sakura-14',
+      });
+      expect(resolved.source).toBe('path');
+      expect(resolved.path).toBe(onPath);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('flags a client that is not the vendor build instead of pretending it will work', async() => {
+    const root = mkdtempSync(path.join(tmpdir(), 'xpod-frpc-upstream-'));
+    try {
+      const upstream = path.join(root, 'frpc');
+      writeFileSync(upstream, '#!/bin/sh\n');
+      chmodSync(upstream, 0o755);
+      const resolved = await resolveFrpcBinary(unconfigured, tmpdir(), {
+        packageRoot: mkdtempSync(path.join(tmpdir(), 'xpod-frpc-empty2-')),
+        env: { PATH: root },
+        dockerImagePresent: neverCalled,
+        // Upstream frpc does not understand the vendor's `-f <token>:<id>` syntax.
+        inspectVersion: () => '0.61.0',
+      });
+      expect(resolved.source).toBe('path');
+      expect(resolved.vendorBuild).toBe(false);
+      expect(resolved.note).toMatch(/not a natfrp build/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the vendor image only when there is no native client anywhere', async() => {
+    const root = mkdtempSync(path.join(tmpdir(), 'xpod-frpc-image-'));
+    try {
+      const resolved = await resolveFrpcBinary(unconfigured, root, {
+        packageRoot: mkdtempSync(path.join(tmpdir(), 'xpod-frpc-empty3-')),
+        env: { PATH: root },
+        dockerImagePresent: () => true,
+      });
+      expect(resolved.source).toBe('image');
+      expect(resolved.path).toBe(path.join(root, 'frpc'));
+      expect(resolved.note).toMatch(/no native frpc on this machine/u);
+
+      // A separate directory: the image branch wrote its shim into the first one, and reusing it
+      // as PATH would find that shim - which is real behaviour, not the case under test here.
+      const clean = mkdtempSync(path.join(tmpdir(), 'xpod-frpc-clean-'));
+      const absent = await resolveFrpcBinary(unconfigured, clean, {
+        packageRoot: mkdtempSync(path.join(tmpdir(), 'xpod-frpc-empty4-')),
+        env: { PATH: clean },
+        dockerImagePresent: () => false,
+      });
+      expect(absent.source).toBe('absent');
+      expect(absent.path).toBeUndefined();
+      // The message has to name every place that was checked, or "blocked" is a dead end.
+      expect(absent.note).toMatch(/vendor\/tunnel-clients\//u);
+      expect(absent.note).toMatch(/PATH/u);
+      expect(absent.note).toMatch(/natfrp\.com\/frpc/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
