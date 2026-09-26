@@ -88,10 +88,16 @@ Pod 资源 URI 指 Pod 中持久资源的位置，不是浏览器缓存；同一
 | `bun run test:integration` | 完整命令 `exit 0` | lite：30 文件通过、3 跳过，153 用例通过、6 跳过；cluster：4 文件 45/45 通过 |
 | 真实 Gateway 协作闭环 | 通过，144.8 秒 | `tests/integration/MatrixCollaboration.integration.test.ts`；63 事件、交接与 409 断言未放宽 |
 
-本轮新增的可验证性证据边界：验证材料（`hashes` / `signatures` / `event_id`）可从单个 Pod
-的消息 metadata 独立复核，且有跨实现依据（内容哈希排除 `event_id`）；但**仍未**验证跨部署
-互操作，且 Pod 内尚无 `room_version`、`prev_events`、`auth_events`，因此状态解析与授权链
-复核不能仅凭 Pod 完成——仍属下方待执行的分布式门禁。
+本轮新增的可验证性证据边界：验证材料（`hashes` / `signatures` / `event_id`）与房间依赖图
+（`prev_events` / `auth_events` / `depth`）都随事件持久化，可从单个 Pod 的消息 metadata 独立
+复核，且有跨实现依据（内容哈希排除 `event_id`，规则见[房间事件图](reference/matrix-room-event-graph.md)）。
+**仍未**验证跨部署互操作，也**未**实现状态解析与事件授权规则的执行：依赖图完整，缺的是
+resolution——仍属下方待执行的分布式门禁。
+
+| 追加验证 | 结果 |
+| --- | --- |
+| 图与依赖（`tests/api/matrix/protocol/roomGraph.test.ts` 11 项、`persistedEvent.test.ts` 8 项） | 通过：create 为根、链式 depth、auth 选择顺序、极值点 >20 保留最深、分叉合并、无悬挂引用、房间前进后重占预占 |
+| `./node_modules/.bin/vitest --run tests/api tests/http` | 130 文件通过、11 跳过；1523 用例通过、67 跳过 |
 
 ## 分布式目标的新增验收门禁（均待实现与执行）
 

@@ -50,6 +50,13 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
 - 协议事件（含 `hashes`/`signatures`）作为事件本身持久到 Message 的
   `metadata.protocols.matrix.event`；作者 WebID、txnId 等应用簿记留在同一 metadata 的
   其他键上，不进入被签名的对象。已落地（`src/api/matrix/persistedEvent.ts`）。
+- 事件在房间 DAG 中的位置（`prev_events` 前向极值点、`auth_events` 授权事件、`depth`）是
+  事件的一部分，必须真实写入并签名，不得用占位值：写入 Pod 的事件要能被独立复核，且状态解析
+  所需的依赖必须能从同一房间取回。规则与来源见[房间事件图](reference/matrix-room-event-graph.md)。
+  已落地（`src/api/matrix/protocol/roomGraph.ts`），无悬挂引用有测试固定。
+- 并发写同一房间可以分叉（Matrix 语义），下一个事件列出全部极值点即完成合并；分叉期间哪一侧
+  状态获胜属于状态解析，本仓库尚未实现，本地顺序仍以 journal 序号为准，两者不得互相代替。
+  **未落地**：状态解析与事件授权规则的执行。
 
 ## 三种同步各自承担什么
 
@@ -84,6 +91,12 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   新正文推导出新 id，记录必须改名为将要存在的事件；若旧 id 对应的事件已经存在，必须
   409 而不是覆盖。已落地（`MatrixEventJournal.replaceReservation`，in-memory 与 SQL 两个
   实现同步；对应崩溃恢复测试断言存储事件的 id 与记录一致）。
+- 重放的三条分支要分清（位置已进入事件 ID，所以预占即固定位置）：①首次尝试已写入 → 直接按
+  预占寻址读回返回，不重建；②首次尝试未写入且房间未前进 → 用记录里的时间戳与 id 重建；
+  ③首次尝试未写入但房间已前进 → 记录钉住的 id 已无法推导，由本次尝试在当前位置重新预占。
+  ③ 仅以「该事件确实不在 Pod」为前提，因此不产生孤儿事件；但若首个尝试只是很慢、随后落盘，
+  就会形成分叉。已落地；**未知结果处理仍未定契约**，不得把 ③ 记作恰好一次。
+  三条分支的实现见 `reserveEventTransaction` / `reservationInForce`。
 
 ## 授权与执行
 
@@ -116,7 +129,7 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
 | 事项 | 必须产出的契约 |
 | --- | --- |
 | 协议服务身份与 Pod 归属 | MXID/WebID、server name、服务签名身份、参与者 Pod、执行 Agent 的关系及授权；草案见 [服务身份契约](matrix-service-identity-contract.md) |
-| 完整事件与 Solid Chat 表示 | 原始事件验证材料、room version、图关系、索引、资源布局和旧房间迁移；共享 schema 归 models 已定 |
+| 完整事件与 Solid Chat 表示 | 原始事件验证材料、图关系与 room version 已落地（见[房间事件图](reference/matrix-room-event-graph.md)）；剩余：状态解析与事件授权规则、索引与旧房间迁移；共享 schema 归 models |
 | 传输与落 Pod | 接收持久化、去重、确认、部分投递失败、补发与恢复各自的责任和进度 |
 | 客户端增量 | 有界发现/分页、晚到事件、授权状态变化、token 版本与重建 |
 | 可恢复事务 | 记录寻址、首次结果、载荷保留、发布、回收及未知结果处理 |

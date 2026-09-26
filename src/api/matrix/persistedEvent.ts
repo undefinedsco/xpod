@@ -33,6 +33,12 @@ export interface PersistedMatrixEvent extends RedactedEvent {
   content?: Record<string, unknown>;
   hashes?: Record<string, unknown>;
   signatures?: Record<string, Record<string, string>>;
+  /** Parents in the room DAG: the events that had no child when this one was made. */
+  prev_events?: string[];
+  /** The events that authorise this one, selected by the room version's rules. */
+  auth_events?: string[];
+  /** One more than the deepest parent; 1 for the create event. */
+  depth?: number;
 }
 
 export interface PersistedEventInput {

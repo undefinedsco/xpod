@@ -14,17 +14,23 @@ Xpod 不单方面决定共享布局；本文件列出需要 models 定义的字�
 
 **现已落地**（`src/api/matrix/persistedEvent.ts`）：整份协议事件保存在
 `metadata.protocols.matrix.event`，包含 `event_id`、`room_id`、`type`、`sender`、
-`origin_server_ts`、`content`、`hashes.sha256`，配置了服务身份时还有 `signatures`。
-因此现在可以从 Pod 独立完成：
+`origin_server_ts`、`content`、`hashes.sha256`、`prev_events`、`auth_events`、`depth`，
+配置了服务身份时还有 `signatures`。因此现在可以从 Pod 独立完成：
 
 - 重算内容哈希并与 `hashes.sha256` 比对（`contentHashMatches`）；
 - 重算 reference hash 并与 `event_id` 比对（`eventIdMatches`）；
-- 按 redaction 后的对象验签（`verifyPersistedEventSignature`）。
+- 按 redaction 后的对象验签（`verifyPersistedEventSignature`）；
+- 沿 `prev_events` / `auth_events` 走完整房间依赖图：每个引用都指向同一房间内已存的事件
+  （`tests/api/matrix/persistedEvent.test.ts` 断言无悬挂引用），事件生成时依据的授权状态
+  因此可从 Pod 取回，不需要第二个存储；
+- room version 取自 `m.room.create` 的 `content.room_version`：v11 的 redaction 保留 create
+  的全部 content，且 create 事件本身就在 `auth_events` 里，可核；不再每个事件冗余一份。
 
-**仍然缺**：`room_version`、`prev_events`、`auth_events`、真实 `depth`。因此状态解析与
-授权链复核仍无法仅凭 Pod 完成——这仍是需要 models 定义的部分。刻意不写入的字段：本地事件
-不写 `depth`（事件自身的 depth 只有拿到 prev_events 才成立，本仓库的顺序由 journal 序号承载，
-写占位值会把假字段签进 event_id）；作者 WebID、txnId 等应用簿记也留在 event 之外。
+**仍然缺**：状态解析算法本身（fork 之后哪一侧的状态获胜）与事件授权规则的执行。图与依赖
+已经完整，缺的是 resolution。规则与来源见[房间事件图](matrix-room-event-graph.md)。
+
+作者 WebID、txnId 等应用簿记刻意留在 event 之外：写进去会改变 canonical form 与 event_id。
+本仓库的同步顺序由 journal 序号承载，与事件自带的 `depth` 是两个不同的量，不得互相代替。
 
 ## 2. 需要持久保存的三类事实
 
@@ -32,10 +38,10 @@ Xpod 不单方面决定共享布局；本文件列出需要 models 定义的字�
 
 | 字段 | 为什么必须 | 备注 |
 | --- | --- | --- |
-| `room_version` | 决定 redaction 算法与事件授权规则 | 房间级属性，事件侧冗余一份便于独立验证 |
-| `event_json` | 重算内容哈希与 reference hash、验签的唯一依据 | **原始 JSON 文本**，见 2.4 |
+| `room_version` | 决定 redaction 算法与事件授权规则 | 房间级属性；从 create 事件 content 读取即可，**已落地** |
+| `event_json` | 重算内容哈希与 reference hash、验签的唯一依据 | 现以解析后的对象保存，见 §3 的取舍 |
 | `signatures` | 验签与历史回填 | 服务器 → key id → 签名的映射；**不得**与展示正文混存 |
-| `depth` / `prev_events` / `auth_events` | 状态解析与依赖获取 | 缺失即无法做状态解析 |
+| `depth` / `prev_events` / `auth_events` | 状态解析与依赖获取 | **已落地**，写法见[房间事件图](matrix-room-event-graph.md) |
 | `origin_server_ts` | 事件时间语义 | 已有投影，但需与协议字段区分 |
 | `event_id` | 事件身份 | 已有；须为 reference hash 形式 |
 

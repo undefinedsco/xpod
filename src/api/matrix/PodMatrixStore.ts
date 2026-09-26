@@ -22,6 +22,8 @@ import { getProtocolMetadata, withProtocolMetadata, type ProtocolMetadata } from
 import { MatrixError } from './MatrixError';
 import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
 import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type PersistedMatrixEvent } from './persistedEvent';
+import { roomGraphPosition, type RoomGraphEvent } from './protocol/roomGraph';
+import { EventIntegrityError } from './protocol/eventIntegrity';
 import type { MatrixServiceIdentity } from './protocol/serviceIdentity';
 import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import type { SharedWakeAgentJob } from '../reconciler/coordination';
@@ -91,6 +93,11 @@ export interface MatrixAgentGrant {
   workspace: string;
   allowedActors: string[];
   handoffTo: string[];
+}
+
+/** An event-id list read back from stored JSON, ignoring anything malformed. */
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 }
 
 export class PodMatrixStore {
@@ -177,67 +184,59 @@ export class PodMatrixStore {
       updatedAt: new Date(now).toISOString(),
     });
 
-    await this.appendEvent(db, {
-      roomId,
-      reconcilerOwner,
+    // The setup events form the start of the room's event graph: each one is
+    // appended against what this call has already appended, so building a room
+    // costs one Pod read fewer per event instead of re-reading the room each time.
+    const appended: MatrixEventRecord[] = [];
+    const append = async (event: {
+      type: string;
+      originServerTs: number;
+      stateKey?: string;
+      content: Record<string, unknown>;
+    }): Promise<void> => {
+      appended.push(await this.appendEvent(db, { roomId, reconcilerOwner, sender, ...event }, context, appended));
+    };
+
+    await append({
       type: 'm.room.create',
-      sender,
       originServerTs: now,
       stateKey: '',
       content: {
-        creator: sender,
+        // Room version 11 removed `creator` from create events (MSC3820); the
+        // sender is the creator, and clients read it from there.
         room_version: String(input.creation_content?.room_version ?? '11'),
         type: input.creation_content?.type,
         'm.federate': input.creation_content?.['m.federate'] === true,
       },
-    }, context);
-    await this.appendEvent(db, {
-      roomId,
-      reconcilerOwner,
+    });
+    await append({
       type: 'm.room.member',
-      sender,
       originServerTs: now + 1,
       stateKey: sender,
       content: {
         membership: 'join',
         displayname: this.displayNameFromUserId(sender),
       },
-    }, context);
+    });
     if (input.name) {
-      await this.appendEvent(db, {
-        roomId,
-        reconcilerOwner,
-        type: 'm.room.name',
-        sender,
-        originServerTs: now + 2,
-        stateKey: '',
-        content: { name: input.name },
-      }, context);
+      await append({ type: 'm.room.name', originServerTs: now + 2, stateKey: '', content: { name: input.name } });
     }
     if (input.topic) {
-      await this.appendEvent(db, {
-        roomId,
-        reconcilerOwner,
-        type: 'm.room.topic',
-        sender,
-        originServerTs: now + 3,
-        stateKey: '',
-        content: { topic: input.topic },
-      }, context);
+      await append({ type: 'm.room.topic', originServerTs: now + 3, stateKey: '', content: { topic: input.topic } });
     }
     for (const state of input.initial_state ?? []) {
-      await this.appendEvent(db, {
-        roomId,
-        reconcilerOwner,
+      await append({
         type: state.type,
-        sender,
         originServerTs: Date.now(),
         stateKey: state.state_key ?? '',
         content: state.content ?? {},
-      }, context);
+      });
     }
     for (const invitee of input.invite ?? []) {
-      await this.appendMembershipEvent(db, roomId, invitee, 'invite', context, { sender, reconcilerOwner });
+      // Each invite follows the previous one: the list passed in is the graph as it
+      // stands, and the result is added to it for the next append.
+      appended.push(await this.appendMembershipEvent(db, roomId, invitee, 'invite', context,
+        { sender, reconcilerOwner, observed: appended }));
     }
 
     return {
@@ -290,13 +289,20 @@ export class PodMatrixStore {
     await this.authorizeTargets(db, roomId, content, context, events);
     const sender = this.getMatrixUserId(context);
     const contentHash = this.hash(this.canonicalJson(['user',context.webId,eventType,content]));
-    const { reservation } = await this.reserveEventTransaction(context,
-      JSON.stringify([this.deviceId(context), roomId, eventType, txnId]),
-      { roomId, type: eventType, sender, content }, contentHash);
+    // The graph position is part of the event, so it is fixed before the id is
+    // reserved — including on a replay, which therefore has to attach to the same
+    // place as the first attempt rather than to whatever the room looks like now.
+    const eventInput = {
+      roomId, type: eventType, sender, content,
+      ...this.graphPosition(events, { type: eventType, sender, content }),
+    };
+    const transactionKey = JSON.stringify([this.deviceId(context), roomId, eventType, txnId]);
+    const { reservation, proposal } = await this.reserveEventTransaction(context, transactionKey, eventInput, contentHash);
     if (reservation.contentHash !== contentHash) {
       throw new MatrixError(409, 'M_CONFLICT', 'Transaction already reserved with different content');
     }
-    const pending = this.eventForReservation({ roomId, type: eventType, sender, content }, reservation);
+    // A retry whose first attempt completed is answered from the Pod: the event is
+    // already there, so nothing is rebuilt, re-signed or written again.
     const source = await db.findById(messageResource,this.messageResourceIdFromEvent(roomId,reservation.eventId,reservation.createdAt));
     if (source) {
       const existing = this.eventSourceToRecord(source,roomId,context);
@@ -307,8 +313,10 @@ export class PodMatrixStore {
       await this.reconcileEvent(db, existing, context);
       return existing;
     }
+    const active = await this.reservationInForce(context, transactionKey, reservation, proposal, eventInput, contentHash);
     return this.appendEvent(db, { roomId, type: eventType, sender, txnId,
-      eventId: reservation.eventId, originServerTs: reservation.createdAt, content, event: pending }, context);
+      eventId: active.reservation.eventId, originServerTs: active.reservation.createdAt, content, event: active.event },
+    context, events);
   }
 
   /**
@@ -331,6 +339,39 @@ export class PodMatrixStore {
       eventId: proposal.event_id!, createdAt: proposal.origin_server_ts as number, contentHash,
     });
     return { reservation, proposal };
+  }
+
+  /**
+   * The reservation in force for this attempt, and the event it pins.
+   *
+   * Normally the reservation wins: a retry must land on the event the first attempt
+   * reserved, so the event is rebuilt from the reservation's timestamp and id. The
+   * room moves on, though, and `prev_events`/`auth_events`/`depth` are part of the
+   * event: a reservation taken before other events landed pins an id that this
+   * content can no longer derive. When that happens the proposal — built against
+   * the room as it is now — takes the reservation over. That is only sound because
+   * every caller checks first that the reserved event is not in the Pod, so no
+   * event is orphaned; a concurrent attempt that lands afterwards becomes a branch
+   * in the graph, which the still-open "unknown outcome" contract has to resolve.
+   */
+  private async reservationInForce(
+    context: MatrixStoreContext,
+    key: string,
+    reservation: MatrixTransactionReservation,
+    proposal: PersistedMatrixEvent,
+    input: Omit<PersistedEventInput, 'originServerTs' | 'eventId'>,
+    contentHash: string,
+  ): Promise<{ reservation: MatrixTransactionReservation; event: PersistedMatrixEvent }> {
+    try {
+      return { reservation, event: this.eventForReservation(input, reservation) };
+    } catch (error) {
+      if (!(error instanceof EventIntegrityError)) throw error;
+      const replacement = {
+        eventId: proposal.event_id!, createdAt: proposal.origin_server_ts as number, contentHash,
+      };
+      await this.journal.replaceReservation(this.scope(context), key, replacement);
+      return { reservation: replacement, event: proposal };
+    }
   }
 
   /**
@@ -539,6 +580,33 @@ export class PodMatrixStore {
     return db;
   }
 
+  /**
+   * Where the new event attaches: its parents, the events that authorise it, and
+   * its depth. Read from the events the caller already has, so appending costs no
+   * extra Pod read on the send path.
+   */
+  private graphPosition(
+    events: readonly MatrixEventRecord[],
+    input: { type: string; sender: string; stateKey?: string; content: Record<string, unknown> },
+  ): { prevEvents: string[]; authEvents: string[]; depth: number } {
+    return roomGraphPosition(events.map(event => this.graphEvent(event)), input);
+  }
+
+  /** The graph facts a stored event carries; absent on rows written before they were recorded. */
+  private graphEvent(event: MatrixEventRecord): RoomGraphEvent {
+    const stored = event.event as PersistedMatrixEvent | undefined;
+    return {
+      eventId: event.eventId,
+      type: event.type,
+      sender: event.sender,
+      stateKey: event.stateKey,
+      content: event.content,
+      sequence: event.depth ?? 0,
+      prevEvents: stringList(stored?.prev_events),
+      depth: stored?.depth,
+    };
+  }
+
   private async appendEvent(
     db: Db,
     input: {
@@ -557,17 +625,13 @@ export class PodMatrixStore {
       event?: PersistedMatrixEvent;
     },
     context: MatrixStoreContext,
+    /** Events already read from this room; loaded here when the caller has none. */
+    observed?: readonly MatrixEventRecord[],
   ): Promise<MatrixEventRecord> {
     const depth = 0;
     // The protocol event is built first: its content-derived id is the event's
     // identity, and the stored copy carries the hashes and signature that make
     // the event verifiable from the Pod alone.
-    //
-    // `depth` is deliberately not part of it. A PDU's depth is a protocol fact
-    // that only exists once prev_events are known, and this store sequences
-    // events through the journal instead, so writing a placeholder here would
-    // sign a false field into the event id. `depth` is still accepted for events
-    // received from another server, where the sender supplies the real value.
     const persistedEvent = input.event ?? buildPersistedEvent({
       roomId: input.roomId,
       type: input.type,
@@ -576,6 +640,7 @@ export class PodMatrixStore {
       content: input.content,
       ...(input.stateKey === undefined ? {} : { stateKey: input.stateKey }),
       ...(input.eventId === undefined ? {} : { eventId: input.eventId }),
+      ...this.graphPosition(observed ?? await this.listEvents(db, input.roomId, context), input),
     }, this.serviceIdentity);
     const eventId = persistedEvent.event_id ?? this.generateEventId(context);
     const originIso = new Date(input.originServerTs).toISOString();
@@ -604,6 +669,7 @@ export class PodMatrixStore {
       stateKey: input.stateKey ?? undefined,
       content: input.content,
       createdAt: originIso,
+      event: persistedEvent as unknown as Record<string, unknown>,
     };
     await db.insert(messageResource).values({
       id: messageResourceId,
@@ -647,7 +713,7 @@ export class PodMatrixStore {
     memberUserId: string,
     membership: 'invite' | 'join' | 'leave' | 'ban',
     context: MatrixStoreContext,
-    options: { sender?: string; reconcilerOwner?: ReconcilerOwner } = {},
+    options: { sender?: string; reconcilerOwner?: ReconcilerOwner; observed?: readonly MatrixEventRecord[] } = {},
   ): Promise<MatrixEventRecord> {
     const sender = options.sender ?? this.getMatrixUserId(context);
     return this.appendEvent(db, {
@@ -661,7 +727,7 @@ export class PodMatrixStore {
         membership,
         displayname: this.displayNameFromUserId(memberUserId),
       },
-    }, context);
+    }, context, options.observed);
   }
 
   private async listRooms(db: Db): Promise<MatrixRoomRecord[]> {
@@ -991,7 +1057,11 @@ export class PodMatrixStore {
         root:prior?.root ?? job.triggerMessage,evidence:result.evidence ?? []}};
     const contentHash = this.hash(this.canonicalJson(['assistant',job.agent,'m.room.message',content]));
     const key = JSON.stringify(['wake-result',job.id]);
-    const resultInput = { roomId, type: 'm.room.message', sender: this.getMatrixUserId({...context,webId:job.agent}), content };
+    const resultSender = this.getMatrixUserId({...context,webId:job.agent});
+    const resultInput = {
+      roomId, type: 'm.room.message', sender: resultSender, content,
+      ...this.graphPosition(events, { type: 'm.room.message', sender: resultSender, content }),
+    };
     const { reservation, proposal } = await this.reserveEventTransaction(context, key, resultInput, contentHash);
     let active = reservation;
     if (reservation.contentHash !== contentHash) {
@@ -1007,9 +1077,11 @@ export class PodMatrixStore {
     const pendingResult = this.eventForReservation(resultInput, active);
     let output = events.find(e=>e.eventId===active.eventId);
     if (!output) {
-      output = await this.appendEvent(db,{roomId,type:'m.room.message',sender:this.getMatrixUserId({...context,webId:job.agent}),
-        maker:job.agent,role:MessageRole.ASSISTANT,eventId:reservation.eventId,originServerTs:reservation.createdAt,content,
-        event:pendingResult},context);
+      // The reservation that is actually in force is `active`: after a takeover it
+      // names a different event with a different time, and the row has to match it.
+      output = await this.appendEvent(db,{roomId,type:'m.room.message',sender:resultSender,
+        maker:job.agent,role:MessageRole.ASSISTANT,eventId:active.eventId,originServerTs:active.createdAt,content,
+        event:pendingResult},context,events);
     } else if (this.hash(this.canonicalJson(['assistant',job.agent,output.type,output.content])) !== reservation.contentHash) {
       throw new MatrixError(409,'M_CONFLICT','Stored result no longer matches its receipt');
     }
