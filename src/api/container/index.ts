@@ -14,7 +14,7 @@ import { registerCommonServices } from './common';
 import { registerCloudServices } from './cloud';
 import { registerLocalServices } from './local';
 import { registerBusinessToken } from './business-token';
-import { cloudApiEndpointFromIssuer, oidcTokenEndpoint, resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
+import { cloudApiEndpointFromIssuer, isLoopbackIssuer, oidcTokenEndpoint, resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
 import { resolveAuthModeFromEnv } from '../../authorization/AuthMode';
 import { readLocalProvisionState, resolveLocalSetupPath, resolveLocalSetupProviderId } from '../../provision/LocalProvisionState';
 import { resolveTunnelProfileState } from '../../tunnel/TunnelProfiles';
@@ -119,8 +119,15 @@ export function loadConfigFromEnv(): ApiContainerConfig {
   const nodeToken = process.env.XPOD_NODE_TOKEN ?? localSetupState?.nodeToken;
   const serviceToken = process.env.XPOD_SERVICE_TOKEN ?? localSetupState?.serviceToken;
   const solidBaseUrl = normalizeOptionalUrl(process.env.CSS_BASE_URL);
+  // A remembered issuer that only loopback can serve is residue: nothing in this process listens
+  // there, so adopting it would point every login (and token exchange) at a dead port. Explicit
+  // configuration still wins, including an intentional loopback one.
+  const rememberedIssuer = localSetupState?.cloudIdentityUrl;
+  if (rememberedIssuer && isLoopbackIssuer(rememberedIssuer)) {
+    console.warn(`[Local] Ignoring the remembered identity issuer ${rememberedIssuer}: nothing serves it on this machine`);
+  }
   const oidcIssuer = resolveExternalOidcIssuer(process.env)
-    ?? localSetupState?.cloudIdentityUrl
+    ?? (rememberedIssuer && !isLoopbackIssuer(rememberedIssuer) ? rememberedIssuer : undefined)
     ?? (
       edition === 'cloud'
         ? solidBaseUrl

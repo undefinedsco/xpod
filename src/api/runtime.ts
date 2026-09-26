@@ -11,7 +11,7 @@ import type { AccountRoleRepository } from '../identity/drizzle/AccountRoleRepos
 import type { RuntimeHost } from '../runtime/host/types';
 import { EmbeddedInngestService, type EmbeddedInngestRuntimeConfig } from './runs/EmbeddedInngestService';
 import { resolveLocalSetupPath, resolveLocalSetupProviderId, upsertLocalProvisionState } from '../provision/LocalProvisionState';
-import { cloudApiEndpointFromIssuer } from '../runtime/oidc-issuer';
+import { cloudApiEndpointFromIssuer, DEFAULT_LOCAL_OIDC_ISSUER } from '../runtime/oidc-issuer';
 
 export interface StartApiServiceOptions {
   config?: ApiContainerConfig;
@@ -41,7 +41,8 @@ interface ProvisionNodeResponse {
 }
 
 const OFFICIAL_CLOUD_API_ORIGIN = 'https://api.undefineds.co';
-const OFFICIAL_CLOUD_IDENTITY_ORIGIN = 'https://id.undefineds.co';
+/** One source of truth for the Cloud identity: the local edition's default issuer. */
+export const OFFICIAL_CLOUD_IDENTITY_ORIGIN = new URL(DEFAULT_LOCAL_OIDC_ISSUER).origin;
 
 function ensureTrailingSlash(url: string): string {
   return url.endsWith('/') ? url : `${url}/`;

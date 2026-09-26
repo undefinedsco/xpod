@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { OFFICIAL_CLOUD_IDENTITY_ORIGIN } from '../../../src/api/runtime';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -85,6 +87,36 @@ describe('loadConfigFromEnv', () => {
       registered: false,
       publicUrl: 'http://localhost:3000/',
     });
+  });
+
+  it('ignores a remembered loopback identity issuer nothing serves', () => {
+    fs.mkdirSync('.test-data', { recursive: true });
+    const root = fs.mkdtempSync(path.resolve('.test-data/api-config-loopback-issuer-'));
+    cleanupRoots.push(root);
+    const setupPath = path.join(root, 'setup.json');
+    fs.writeFileSync(setupPath, JSON.stringify({ local: {
+      nodeId: 'stale-node',
+      nodeToken: 'stale-token',
+      // Residue from a run that served a local identity facade on this port.
+      cloudIdentityUrl: 'http://127.0.0.1:41300/',
+      cloudApiUrl: 'https://api.undefineds.co/',
+    } }));
+    process.env = {
+      XPOD_EDITION: 'local',
+      CSS_ROOT_FILE_PATH: root,
+      CSS_BASE_URL: 'https://stale-node.nodes.example/',
+      XPOD_LOCAL_SETUP_PATH: setupPath,
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const config = loadConfigFromEnv();
+
+      // A managed local node falls back to the Cloud identity instead of the dead loopback port.
+      expect(config.oidcIssuer).toBe(OFFICIAL_CLOUD_IDENTITY_ORIGIN);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('http://127.0.0.1:41300/'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not create a Cloud API endpoint for standalone local mode', () => {

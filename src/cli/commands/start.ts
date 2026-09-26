@@ -20,7 +20,7 @@ import {
   buildCssChildEnv,
   createCssChildRuntimeConfig,
 } from '../../runtime/css-process';
-import { DEFAULT_LOCAL_OIDC_ISSUER, resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
+import { DEFAULT_LOCAL_OIDC_ISSUER, isLoopbackIssuer, resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
 import { resolveAuthModeFromEnv } from '../../authorization/AuthMode';
 import { loadConfigFromEnv } from '../../api/container';
 import { autoProvisionFirstRunLocal } from '../../api/runtime';
@@ -316,8 +316,11 @@ export function resolveCliOidcIssuer(
   provisionedIssuer?: string,
   edition?: string,
 ): string | undefined {
+  // A remembered loopback issuer is residue from a run that served it; this one does not, so the
+  // local edition falls back to the Cloud identity instead of a port with no listener.
+  const remembered = isLoopbackIssuer(provisionedIssuer) ? undefined : provisionedIssuer;
   return resolveExternalOidcIssuer(env)
-    ?? resolveExternalOidcIssuer({ SOLID_OIDC_ISSUER: provisionedIssuer })
+    ?? resolveExternalOidcIssuer({ SOLID_OIDC_ISSUER: remembered })
     ?? (edition === 'local' ? DEFAULT_LOCAL_OIDC_ISSUER : undefined);
 }
 

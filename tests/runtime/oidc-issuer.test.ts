@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   cloudApiEndpointFromIssuer,
+  isLoopbackIssuer,
   resolveExternalOidcIssuer,
 } from '../../src/runtime/oidc-issuer';
 
@@ -15,6 +16,17 @@ describe('OIDC issuer configuration', () => {
 
   it('ignores the internal Components.js shorthand as a process alias', () => {
     expect(resolveExternalOidcIssuer({ oidcIssuer: 'https://wrong.example/' })).toBeUndefined();
+  });
+
+  it('recognizes an issuer only this machine could serve', () => {
+    expect(isLoopbackIssuer('http://127.0.0.1:41300/')).toBe(true);
+    expect(isLoopbackIssuer('http://127.0.0.1:3000/')).toBe(true);
+    expect(isLoopbackIssuer('http://localhost:41300/')).toBe(true);
+    expect(isLoopbackIssuer('http://[::1]:41300/')).toBe(true);
+    expect(isLoopbackIssuer('https://id.undefineds.co/')).toBe(false);
+    expect(isLoopbackIssuer('https://127.example.com/')).toBe(false);
+    expect(isLoopbackIssuer(undefined)).toBe(false);
+    expect(isLoopbackIssuer('not a url')).toBe(false);
   });
 
   it('derives the official split control plane and self-hosted same-origin control plane', () => {

@@ -98,6 +98,16 @@ describe('start command runtime configuration', () => {
     )).toBe('https://self.example/');
   });
 
+  it('ignores a remembered loopback issuer that nothing serves any more', () => {
+    // Residue from an older run: adopting it would send every login to a dead port.
+    expect(resolveCliOidcIssuer({}, 'http://127.0.0.1:41300/', 'local'))
+      .toBe('https://id.undefineds.co/');
+    expect(resolveCliOidcIssuer({}, 'http://localhost:41300/', 'cloud')).toBeUndefined();
+    // An explicit choice still wins, loopback included.
+    expect(resolveCliOidcIssuer({ SOLID_OIDC_ISSUER: 'http://127.0.0.1:41300/' }, undefined, 'local'))
+      .toBe('http://127.0.0.1:41300/');
+  });
+
   it('defaults only an unconfigured Local CLI runtime to the official Cloud identity', () => {
     expect(resolveCliOidcIssuer({}, undefined, 'local'))
       .toBe('https://id.undefineds.co/');
