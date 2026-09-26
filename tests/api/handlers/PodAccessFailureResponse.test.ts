@@ -1,4 +1,7 @@
+import type { ServerResponse } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
+
+import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 
 import {
   guardPodAccessRoute,
@@ -42,7 +45,7 @@ describe('guardPodAccessRoute', () => {
       throw new Error(POD_INTERFACE_KEY_MISSING);
     });
 
-    await handler({}, res, {});
+    await handler({} as unknown as AuthenticatedRequest, res as unknown as ServerResponse, {});
 
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({ error: 'service_access_missing' });
@@ -54,7 +57,8 @@ describe('guardPodAccessRoute', () => {
       throw new Error('database is down');
     });
 
-    await expect(handler({}, res, {})).rejects.toThrow('database is down');
+    await expect(handler({} as unknown as AuthenticatedRequest, res as unknown as ServerResponse, {}))
+      .rejects.toThrow('database is down');
     expect(res.statusCode).toBe(0);
   });
 
@@ -63,9 +67,10 @@ describe('guardPodAccessRoute', () => {
     const inner = vi.fn(async() => undefined);
     const handler = guardPodAccessRoute(inner);
 
-    await handler({ url: '/v1/chatkit/threads' }, res, { thread_id: 'thread-1' });
+    const request = { url: '/v1/chatkit/threads' } as unknown as AuthenticatedRequest;
+    await handler(request, res as unknown as ServerResponse, { thread_id: 'thread-1' });
 
-    expect(inner).toHaveBeenCalledWith({ url: '/v1/chatkit/threads' }, res, { thread_id: 'thread-1' });
+    expect(inner).toHaveBeenCalledWith(request, res, { thread_id: 'thread-1' });
     expect(res.statusCode).toBe(0);
   });
 });

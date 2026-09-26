@@ -201,34 +201,39 @@ async function encryptedSecret(
   return vault().seal({ webId: WEB_ID }, credentialIri, provider, secret);
 }
 
-type PartialDeviceCodeProtocolDescriptor = Omit<Partial<DeviceCodeProtocolDescriptor>, 'begin' | 'poll' | 'refresh' | 'tokenExchange'> & {
-  begin?: Partial<DeviceCodeProtocolDescriptor['begin']>;
-  poll?: Partial<DeviceCodeProtocolDescriptor['poll']>;
-  refresh?: Partial<NonNullable<DeviceCodeProtocolDescriptor['refresh']>>;
-  tokenExchange?: Partial<NonNullable<DeviceCodeProtocolDescriptor['tokenExchange']>>;
-};
+// The merged fields are partial; everything else is a whole-field override. `tokenExchange` has no
+// default in this fixture, so it is not offered as a partial override.
+type PartialDeviceCodeProtocolDescriptor =
+  Omit<Partial<DeviceCodeProtocolDescriptor>, 'begin' | 'poll' | 'refresh' | 'tokenExchange'> & {
+    begin?: Partial<DeviceCodeProtocolDescriptor['begin']>;
+    poll?: Partial<DeviceCodeProtocolDescriptor['poll']>;
+    refresh?: Partial<NonNullable<DeviceCodeProtocolDescriptor['refresh']>>;
+  };
+
+/** An override replaces a field of the fixture; it never clears one the protocol requires. */
+function withDefaults<T extends object>(defaults: T, overrides: Partial<T> | undefined): T {
+  return { ...defaults, ...overrides } as T;
+}
 
 function kimiDeviceCodeProtocol(overrides: PartialDeviceCodeProtocolDescriptor = {}): DeviceCodeProtocolDescriptor {
+  const { begin, poll, refresh, ...rest } = overrides;
   return {
     id: 'oauth-device-code-form-pkce',
     verificationUriOrigins: ['https://kimi.moonshot.cn'],
-    begin: {
+    begin: withDefaults<DeviceCodeProtocolDescriptor['begin']>({
       endpoint: 'https://auth.kimi.com/api/oauth/device_authorization',
       codec: 'oauthDeviceCodePkce',
-      ...overrides.begin,
-    },
-    poll: {
+    }, begin),
+    poll: withDefaults<DeviceCodeProtocolDescriptor['poll']>({
       endpoint: 'https://auth.kimi.com/api/oauth/token',
       codec: 'oauthDeviceCodePkce',
-      ...overrides.poll,
-    },
-    refresh: {
+    }, poll),
+    refresh: withDefaults<NonNullable<DeviceCodeProtocolDescriptor['refresh']>>({
       endpoint: 'https://auth.kimi.com/api/oauth/token',
       codec: 'refreshTokenForm',
-      ...overrides.refresh,
-    },
+    }, refresh),
     defaultVerificationUri: 'https://kimi.moonshot.cn/device',
-    ...overrides,
+    ...rest,
   };
 }
 

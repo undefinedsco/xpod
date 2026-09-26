@@ -2649,7 +2649,7 @@ async function assertPortFree(port: number): Promise<void> {
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
-  const checkout = path.resolve(import.meta.dir, '..');
+  const checkout = path.resolve(import.meta.dirname, '..');
   // A missing credential file silently turns real legs into "not configured" checks, which
   // reads like a result instead of the operator's mistake it is. Refuse instead.
   const env = loadEnvFile(requireCredentialFile(options.envFile));

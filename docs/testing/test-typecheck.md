@@ -22,17 +22,36 @@ import 到的 `ui/src`。它和 `build:ts`（只含 `bin/` + `src/`）互补，�
   同一套环境（`import.meta.env`、`*.svg`、`window.__XPOD__`）。
 - `types/lucide-react/index.d.ts` 补上 UI 用到的 `ChevronRight` / `Clock` / `Layers`。
 
-## 当前欠账（门禁已能报出，尚未清零）
+## 2026-09-26：欠账清零
 
-打开检查后立刻报出 60+ 个历史类型错误（2026-09-26 在 `main` 上实测 64 个 / 30 个文件），分三类：
+打开检查后立刻报出 60+ 个历史类型错误（实测 64 个 / 30 个文件）。同一轮全部修完，`main` 上现在
+`bun run typecheck:test` 干净通过。仍然**不加依赖、不关检查**：
 
-1. **缺类型依赖**（需要新增 devDependency；未在共享工作区擅自安装，因为 `bun install` 会重写
-   `bun.lock`）：`jsdom` 缺 `@types/jsdom`（5 处），`Bun` / `bun:test` / `import.meta.dir` 缺
-   `@types/bun`（`tests/bun/*`、`tests/helpers/seedProviderCredential.ts`）。
-2. **测试夹具与源码签名漂移**（数量最多，门禁空转期间积累）：`RecordingCredentialRepository` 缺
-   `getActiveCredential`、`DdnsManager.getStatus` 形状、`PodChatKitStore` 构造项、
-   `PostgresRdfEngine` 参数个数、`tests/cli/obj.test.ts` 对象字面量重复属性等。
-3. **运行环境差异**：`tests/e2e/*`（Playwright）与 `tests/bun/*`（`bun test`）跑在别的运行时里；
-   `Object.hasOwn` 需要 ES2022 lib，而仓库基线是 ES2021，应改成 ES2021 可用的写法而不是抬高 lib。
+- **缺类型依赖 → 用本仓库既有的 `types/` 垫片约定**：`types/jsdom/index.d.ts`（jsdom 不带类型、
+  仓库也明确不装 `@types/jsdom`，垫片只声明测试真正调用的 `JSDOM` / `CookieJar` /
+  `VirtualConsole`）、`types/bun/index.d.ts`（`tests/bun/*` 跑在 `bun test` 下，只声明该套件用到的
+  `bun:test` 子集）。两者都刻意保持"窄"：清单外的 API 应当报错，而不是退化成 `any`。
+- **测试夹具与源码签名漂移**：`RecordingCredentialRepository` 补上真实接口要求的
+  `getActiveCredential`；`DdnsManager.getStatus` 夹具补 `allocated`；`PodChatKitStore` 构造项去掉
+  已删除的 `tokenEndpoint`；`PostgresRdfEngine.replaceSource` 去掉已经不接受的超时参数；
+  `AiGatewayPodIsolation` 的 `auth` 断言改用 `toMatchObject`（`AuthContext` 是联合类型）；
+  `ingress-port` / `SakuraFrp` / `TunnelDeclaredOrigin` / `ManagedClientFetch` 的 mock 形状；
+  `inrupt-session-restore` 的 `SigningJwk`（DOM 的 `JsonWebKey` 没有 `kid`）与 React 19 要求的
+  `children`。
+- **真 bug（不是类型噪点）**：`tests/cli/obj.test.ts` 与 `tests/scripts/p2p-dual-smoke.test.ts` 的
+  对象字面量重复键（后者让 `debug` 永远取后一个值）；e2e 里的 `Object.hasOwn` 改成 ES2021 可用的
+  `Object.prototype.hasOwnProperty.call`（仓库基线是 ES2021，不抬高 lib）。
 
-清零后再把该脚本接进 CI（目前 CI 不跑它，因此这次修复前它坏了很久也没人发现）。
+顺带把两处**生产**类型收紧（都是"门禁本该早就拦住"的那类）：`guardPodAccessRoute` 的签名从
+`<T extends (...args: any[]) => Promise<unknown>>` 改成 `RouteHandler`，包装错形状的路由会直接报错；
+`createGatewayAdminProxyHeaders` 的返回类型从 `OutgoingHttpHeaders` 收到 `Record<string, string>`，
+因为它实际只产出字符串值。
+
+`tests/e2e/*`（Playwright）与 `tests/bun/*`（`bun test`）仍在这个程序里检查：前者靠依赖自带的类型，
+后者靠上面的垫片。
+
+## 下一步
+
+把该脚本接进 CI（目前 CI 不跑它，因此修复前它坏了很久也没人发现）。合并前请确保新加的运行时专属
+类型没有把真实错误挡在外面：垫片只声明用到的 API，新增 Bun / jsdom API 时先补齐垫片，或改成装官方类型。
+

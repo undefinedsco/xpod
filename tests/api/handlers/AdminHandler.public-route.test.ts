@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { describeUnservedPublicRoute } from '../../../src/api/handlers/AdminHandler';
 
-function ddns(state: { mode: string; tunnelProvider: string }) {
-  return { getStatus: () => state };
+function ddns(state: { mode: 'unknown' | 'direct' | 'tunnel'; tunnelProvider: string }) {
+  return { getStatus: () => ({ allocated: false, ...state }) };
 }
 
 describe('public route verdict', () => {

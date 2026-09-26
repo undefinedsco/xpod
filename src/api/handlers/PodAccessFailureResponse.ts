@@ -1,4 +1,5 @@
 import type { ServerResponse } from 'node:http';
+import type { RouteHandler } from '../ApiServer';
 import { CALLER_OWNER_MISMATCH, CALLER_POD_ACCESS_UNAVAILABLE } from '../ai-gateway/auth/CallerPodAccess';
 import { isPodAccessFailure } from '../ai-gateway/pod/OwnerPodAccess';
 
@@ -48,15 +49,14 @@ export function sendPodAccessFailure(response: ServerResponse, error: unknown): 
  *
  * Anything else keeps propagating, so unrelated bugs are not reported as missing Pod access.
  */
-export function guardPodAccessRoute<T extends (...args: any[]) => Promise<unknown>>(handler: T): T {
-  return (async(...args: any[]) => {
+export function guardPodAccessRoute(handler: RouteHandler): RouteHandler {
+  return async(request, response, params) => {
     try {
-      await handler(...args);
+      await handler(request, response, params);
     } catch (error) {
-      const response = args[1] as ServerResponse | undefined;
-      if (!response || !sendPodAccessFailure(response, error)) {
+      if (!sendPodAccessFailure(response, error)) {
         throw error;
       }
     }
-  }) as T;
+  };
 }

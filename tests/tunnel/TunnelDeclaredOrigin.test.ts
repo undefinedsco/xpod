@@ -46,7 +46,7 @@ const CLOUDFLARED_REMOTE_CONFIG_LINE =
 
 describe('declared ingress origin read-back', () => {
   it('reads the SakuraFrp console local_port through GET /v4/tunnels', async() => {
-    const fetchImpl = vi.fn(async() => new Response(
+    const fetchImpl = vi.fn(async(_input: RequestInfo | URL) => new Response(
       JSON.stringify([ { id: 29212252, local_ip: '127.0.0.1', local_port: 5737 } ]),
       { status: 200, headers: { 'content-type': 'application/json' } },
     ));

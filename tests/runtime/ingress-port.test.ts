@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import {
   assertUsableIngressPort,
@@ -27,7 +27,7 @@ interface Harness {
   deps: Partial<IngressPortDeps>;
   logger: { info: string[]; warn: string[] };
   occupied: Set<number>;
-  findDefaultPort: ReturnType<typeof vi.fn>;
+  findDefaultPort: Mock<[mainPort: number], Promise<number>>;
 }
 
 function harness(input: {

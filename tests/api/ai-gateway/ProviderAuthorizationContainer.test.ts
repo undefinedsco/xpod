@@ -11,7 +11,7 @@ function connectService(edition: 'local' | 'cloud') {
     config: asValue({ edition } as ApiContainerCradle['config']),
     // Pod access is not under test here; keep the production registration from
     // constructing an OwnerPodAccess that needs a live identity database.
-    ownerPodAccess: asValue(undefined),
+    ownerPodAccess: asValue(undefined as unknown as ApiContainerCradle['ownerPodAccess']),
   });
   return container.resolve('providerConnectService')!;
 }

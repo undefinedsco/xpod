@@ -86,7 +86,10 @@ describe('Web dev proxy preserves DPoP request identity', () => {
     });
     gateway.setTargets({ api: issuer, css: { socketPath } });
     await gateway.start();
-    devProxy = httpProxy.createProxyServer(xpodGatewayProxy(`http://127.0.0.1:${gatewayPort}`)['/api']);
+    // Vite hands this same object to http-proxy internally; the extra Vite-only fields it may
+    // carry are not part of http-proxy's own option type.
+    const apiProxyOptions = xpodGatewayProxy(`http://127.0.0.1:${gatewayPort}`)['/api'] as unknown as httpProxy.ServerOptions;
+    devProxy = httpProxy.createProxyServer(apiProxyOptions);
     devServer = http.createServer((req, res) => devProxy.web(req, res));
     await listen(devServer, devPort);
   });
