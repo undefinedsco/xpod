@@ -5,11 +5,7 @@ import {
   POD_INTERFACE_KEY_REJECTED,
   podAccessError,
 } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
-import type {
-  PodInterfaceCredential,
-  PodInterfaceKeyAccess,
-  PodInterfaceKeyGrant,
-} from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
+import type { PodInterfaceCredential } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 import type { SolidAuthContext } from '../../../src/api/auth/AuthContext';
 import { createTestSolidSessions } from '../../helpers/solidSessions';
 import type { TaskCredentialSource } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
@@ -19,7 +15,6 @@ const OTHER_OWNER = 'https://pod.example/bob/profile/card#me';
 const TOKEN_ENDPOINT = 'https://pod.example/.oidc/token';
 const POD_RESOURCE = 'https://pod.example/alice/settings/providers/';
 const CALLER_KEY: PodInterfaceCredential = { clientId: 'caller-client', clientSecret: 'caller-secret' };
-const STORED_KEY: PodInterfaceCredential = { clientId: 'stored-client', clientSecret: 'stored-secret' };
 
 interface TokenRequest {
   url: string;
@@ -41,31 +36,6 @@ function dpopPayload(proof: string): { htu: string; htm: string } {
   return JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as { htu: string; htm: string };
 }
 
-class FakeKeyStore implements PodInterfaceKeyAccess {
-  public readonly saved: { owner: string; credential: PodInterfaceCredential }[] = [];
-  public readonly forgotten: string[] = [];
-
-  public constructor(public stored: PodInterfaceCredential | undefined) {}
-
-  public async read(): Promise<PodInterfaceCredential | undefined> {
-    return this.stored;
-  }
-
-  public async saveKey(owner: string, credential: PodInterfaceCredential): Promise<void> {
-    this.saved.push({ owner, credential });
-    this.stored = credential;
-  }
-
-  public async forgetKey(owner: string): Promise<void> {
-    this.forgotten.push(owner);
-    this.stored = undefined;
-  }
-
-  public async hasKey(): Promise<boolean> {
-    return this.stored !== undefined;
-  }
-}
-
 /** A real fetch reports the URL it ended up at; DPoP replay logic depends on it. */
 function withUrl(response: Response, url: string): Response {
   Object.defineProperty(response, 'url', { value: url, configurable: true });
@@ -73,7 +43,6 @@ function withUrl(response: Response, url: string): Response {
 }
 
 function createHarness(options: {
-  stored?: PodInterfaceCredential;
   tokenResponse?: () => Response;
   podResponse?: () => Response;
   route?: { canonicalBaseUrl: string; localBaseUrl: string };
@@ -109,9 +78,7 @@ function createHarness(options: {
     return withUrl(podResponse(), url);
   }) as unknown as typeof fetch;
 
-  const keys = new FakeKeyStore(options.stored);
   const access = new OwnerPodAccess({
-    keys,
     ...(options.taskCredentials ? { taskCredentials: options.taskCredentials } : {}),
     sessions: createTestSolidSessions({
       tokenEndpoint: TOKEN_ENDPOINT,
@@ -121,7 +88,7 @@ function createHarness(options: {
     ...(options.route ? { route: options.route } : {}),
     fetch: fetchImpl,
   });
-  return { access, keys, fetchImpl, tokenRequests, podRequests };
+  return { access, fetchImpl, tokenRequests, podRequests };
 }
 
 function callerAuth(overrides: Partial<SolidAuthContext> = {}): SolidAuthContext {
@@ -192,18 +159,14 @@ describe('OwnerPodAccess', () => {
     expect(tokenRequests).toHaveLength(1);
   });
 
-  it('uses the key the owner granted when the caller brought none', async () => {
-    const { access, tokenRequests, podRequests } = createHarness({ stored: STORED_KEY });
+  it('borrows no deployment key when the caller brought none', async () => {
+    const { access, tokenRequests, fetchImpl } = createHarness();
 
-    const podFetch = await access.getPodFetch(OWNER);
-    expect(podFetch).toBeTypeOf('function');
-    await podFetch!(POD_RESOURCE);
-
-    expect(tokenRequests).toHaveLength(1);
-    expect(tokenRequests[0].authorization).toBe(
-      `Basic ${Buffer.from('stored-client:stored-secret', 'utf8').toString('base64')}`,
-    );
-    expect(podRequests[0].authorization).toBe('DPoP access-token-1');
+    // A deployment-held key would make "this request was authorized" indistinguishable from
+    // "somebody registered once", so the call fails instead.
+    await expect(access.getPodFetch(OWNER)).resolves.toBeUndefined();
+    expect(tokenRequests).toHaveLength(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('reports a missing key instead of inventing access when nothing is on file', async () => {
@@ -220,7 +183,7 @@ describe('OwnerPodAccess', () => {
   });
 
   it('never borrows another owner\'s key for a mismatched caller', async () => {
-    const { access, tokenRequests } = createHarness({ stored: STORED_KEY });
+    const { access, tokenRequests } = createHarness();
 
     await expect(access.getPodFetch(OWNER, { auth: callerAuth({ webId: OTHER_OWNER }) }))
       .resolves.toBeUndefined();
@@ -229,32 +192,43 @@ describe('OwnerPodAccess', () => {
     expect(podAccessError(OWNER, undefined)).toBe('caller_pod_access_unavailable');
   });
 
-  it('fails loudly when the Pod refuses the key', async () => {
+  it('fails loudly when the issuer refuses the credential', async () => {
     const { access } = createHarness({
-      stored: STORED_KEY,
+      taskCredentials: {
+        activeFor: async () => ({ clientId: 'task-client', clientSecret: 'task-secret', credentialRef: 'taskcred_1', version: 1 }),
+        forRef: async () => undefined,
+      },
       tokenResponse: () => new Response('invalid_client', { status: 401 }),
     });
 
-    await expect(access.getPodFetch(OWNER)).rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:401`);
+    await expect(access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } }))
+      .rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:401`);
   });
 
   it('does not make a DPoP proof for a credential the Pod answers with a Bearer token', async () => {
     const { access, podRequests } = createHarness({
-      stored: STORED_KEY,
+      taskCredentials: {
+        activeFor: async () => ({ clientId: 'task-client', clientSecret: 'task-secret', credentialRef: 'taskcred_1', version: 1 }),
+        forRef: async () => undefined,
+      },
       tokenResponse: () => Response.json({ access_token: 'bearer-token', token_type: 'Bearer', expires_in: 300 }),
     });
 
-    const podFetch = await access.getPodFetch(OWNER);
+    const podFetch = await access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } });
     await podFetch!(POD_RESOURCE);
 
     expect(podRequests[0].authorization).toBe('Bearer bearer-token');
     expect(podRequests[0].dpop).toBeNull();
   });
 
-  it('re-exchanges the key after the Pod stops accepting the token', async () => {
+  it('re-exchanges the credential after the Pod stops accepting the token', async () => {
     let tokenCount = 0;
+    const source = {
+      activeFor: async () => ({ clientId: 'task-client', clientSecret: 'task-secret', credentialRef: 'taskcred_1', version: 1 }),
+      forRef: async () => undefined,
+    };
     const { access, tokenRequests } = createHarness({
-      stored: STORED_KEY,
+      taskCredentials: source,
       tokenResponse: () => {
         tokenCount += 1;
         return Response.json({ access_token: `access-token-${tokenCount}`, token_type: 'DPoP', expires_in: 300 });
@@ -262,9 +236,9 @@ describe('OwnerPodAccess', () => {
       podResponse: () => new Response('expired', { status: 401 }),
     });
 
-    const podFetch = await access.getPodFetch(OWNER);
+    const podFetch = await access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } });
     expect((await podFetch!(POD_RESOURCE)).status).toBe(401);
-    const nextFetch = await access.getPodFetch(OWNER);
+    const nextFetch = await access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } });
     expect((await nextFetch!(POD_RESOURCE)).status).toBe(401);
 
     expect(tokenRequests).toHaveLength(2);
@@ -286,26 +260,6 @@ describe('OwnerPodAccess', () => {
 
     expect(tokenRequests).toHaveLength(0);
     expect(podRequests[0].authorization).toBe('Bearer session-token');
-  });
-
-  it('drops cached access when a new key is granted or withdrawn', async () => {
-    const { access, keys, tokenRequests } = createHarness({ stored: STORED_KEY });
-    await access.getPodFetch(OWNER);
-    expect(tokenRequests).toHaveLength(1);
-
-    await access.saveKey(OWNER, CALLER_KEY);
-    expect(keys.saved).toEqual([{ owner: OWNER, credential: CALLER_KEY }]);
-    await access.getPodFetch(OWNER);
-    expect(tokenRequests).toHaveLength(2);
-    expect(tokenRequests[1].authorization).toBe(
-      `Basic ${Buffer.from('caller-client:caller-secret', 'utf8').toString('base64')}`,
-    );
-
-    await access.hasKey(OWNER);
-    expect(await access.hasKey(OWNER)).toBe(true);
-    await access.forgetKey(OWNER);
-    expect(keys.forgotten).toEqual([OWNER]);
-    await expect(access.getPodFetch(OWNER)).resolves.toBeUndefined();
   });
 });
 
@@ -333,7 +287,6 @@ describe('OwnerPodAccess task credentials', () => {
 
   it('never falls back to the stored key when the task grant is unusable', async () => {
     const { access, tokenRequests, fetchImpl } = createHarness({
-      stored: STORED_KEY,
       taskCredentials: { activeFor: async () => undefined, forRef: async () => undefined },
     });
 
@@ -382,7 +335,7 @@ describe('OwnerPodAccess task credentials', () => {
   });
 
   it('reports no task credential when the deployment wired none', async () => {
-    const { access, tokenRequests } = createHarness({ stored: STORED_KEY });
+    const { access, tokenRequests } = createHarness();
 
     await expect(access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } })).resolves.toBeUndefined();
     expect(tokenRequests).toHaveLength(0);

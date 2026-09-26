@@ -26,7 +26,6 @@ import type { ProviderModelSelectionService } from '../ai-gateway/models/Provide
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { ProviderModelsFetchError, ProviderModelsResponseError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
 import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
-import type { PodInterfaceKeyGrant } from '../ai-gateway/pod/PodInterfaceKeyStore';
 import { isPodAccessFailure } from '../ai-gateway/pod/OwnerPodAccess';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
@@ -59,11 +58,6 @@ export interface AiGatewayManagementHandlerOptions {
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   /** Reuses the configured CSS authenticator; never trusts the claimed registration owner. */
   validateClientCredential?: (apiKey: string) => Promise<AuthResult>;
-  /**
-   * Server-side Pod access for the owner. The wrapper being registered is the owner's own
-   * interface key, so registering it is also the moment Xpod is granted its use.
-   */
-  podInterfaceKeys?: PodInterfaceKeyGrant;
   /**
    * The task layer's own credential store. Registering also records the grant tasks may use while
    * nobody is present; the API-side key stays the runtime's fallback until background entries move.
@@ -188,16 +182,9 @@ export function registerAiGatewayManagementRoutes(
         return;
       }
       if (hasSolidClientCredentialsAuthority(verified.context)) {
-        // Sealed before the record is written, because writing the record is the first thing
-        // that needs it: background components reach this Pod through the standard interface
-        // as the owner, never through the caller's network position.
-        await options.podInterfaceKeys?.saveKey(owner, {
-          clientId: verified.context.clientId,
-          clientSecret: verified.context.clientSecret,
-        });
-        // The task layer keeps its own copy so background work stops depending on the API's vault.
-        // Registration is the user's explicit grant, so it activates here; a failure must not
-        // reject a registration the legacy path already accepted.
+        // Registering is the user's grant of background Pod access, and the task layer is where
+        // that credential lives. The API keeps no copy: it only ever uses a credential the caller
+        // brings with the request.
         if (options.taskCredentials && options.clientCredentialIssuer) {
           try {
             await options.taskCredentials.grant({
@@ -208,6 +195,7 @@ export function registerAiGatewayManagementRoutes(
               status: 'active',
             });
           } catch (error) {
+            // The record is still worth keeping; the client can grant again from settings.
             logger.warn(`Task credential grant was not stored: ${error instanceof Error ? error.message : String(error)}`);
           }
         }

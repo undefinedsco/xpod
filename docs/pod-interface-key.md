@@ -269,7 +269,7 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | 2 | **前台改为请求级凭据**：前台的 Pod 访问由调用方在请求里带凭据（浏览器为当前 WebID 准备并持有自己的 client credential；Pod 直读仍走 Session，§3.2 的 host 适配器是这条路的实现形态之一），API 不再用存储的 owner 密钥给前台兜底 | 普通浏览器行：登录 + 模型已配置的真实 Chat 与 embedding 成功，且全程 `identity_pod_interface_key` 不新增；无凭据的调用方拿到 `service_access_missing` 而不是空结果 | 前台已不依赖；后台仍用 |
 | 3 | **任务层凭据存储 + 显式授权**：Runtime 侧凭证表（§7.4，`sealed_secret` 按决策 6 加密）+ Agent 授权 + 任务绑定（pending/active、幂等投递、崩溃恢复，§4） | 授权状态行 + 任务执行行：pending 不执行、失败不留 active、重试/并发/轮换/撤销符合版本语义 | 保留（后台仍用） |
 | 4 | **后台入口逐个迁移**：配额定时刷新、索引重建、chatkit 后台 run、Matrix/Reconciler（§3.3、7.2） | 每迁一个：该入口在无 API vault 的情况下完成一次真实执行；对应 legacy 调用点在同一提交内摘除 | 逐步缩小 |
-| 5 | **收尾**：注册不再 `saveKey`；把 `identity_pod_interface_key` 的行迁出到任务层凭据存储；验证后删除 API 侧的表，并移除 `storedKeyFetch` | 迁移逐行核对（owner/issuer/credential_id 一一对应）+ 旁路退场行 + 全量 §8 通过；迁移失败时保持只读可回滚 | 移除（API 侧不再持有任何 owner 长期凭据） |
+| 5 | **已落地（2026-09-26）**：注册不再 `saveKey`；`storedKeyFetch`（连同 `keys` 依赖与 `PodInterfaceKeyGrant` 实现）已移除；存量行由 API 启动时一次性迁出（§7.4 注）。**未做**：`identity_pod_interface_key` 表的 drop 留作显式运维动作 | 迁移幂等（逐行核对 owner/issuer/credential_id）+ 旁路退场（`OwnerPodAccess`、`PodGatewayAccessKeyRepository`、`AiGatewayManagementHandler`、`container/config` 单测）+ 集成"凭据随请求"（`chatkit-pod-store` 22/22）；待做：删表后复跑 §8 全量 | 请求与后台都不再读；表仍可读（回滚窗口） |
 
 约束：第 2 步只改前台，不动后台（后台此时仍靠存储的密钥）；第 3 步必须先于第 5 步，否则新用户的**后台**任务会没有密钥；第 4 步每个入口必须"先有替代验收、再摘调用点"；第 5 步前 `pod_interface_key_*` 诊断码仍需保留，因为迁移期它们仍是有效状态。
 
@@ -339,6 +339,10 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | `credential_version` | 轮换版本；绑定记录引用版本，版本不匹配即拒绝（§4） |
 | `status` | `active` / `revoked` / `expired`；撤销只改状态，不删行 |
 | `created_at` / `rotated_at` / `last_used_at` / `expires_at` | 轮换与审计 |
+
+**落地（第 5 步，2026-09-26）**：API 侧不再持有 owner 凭据。① 注册（`POST /api/ai/gateway/keys`）**不再写 `identity_pod_interface_key`**，只写管理记录 + 任务层授权；② `OwnerPodAccess` 删除 `storedKeyFetch`（连同 `keys` 依赖与 `PodInterfaceKeyGrant` 实现），请求只能用调用方自己的凭据，后台只能用任务层授权；③ 存量行由 `src/api/tasks/PodInterfaceKeyMigration.ts` 在 **API 启动时一次性迁入任务层**（幂等：同 owner+issuer 是同一条授权、同密钥不涨版本；打不开的行只报告不删除，旧表保持可读 → 可回滚）；④ 旧表与 `identity_pod_interface_key` 的**删除留作显式运维动作**，不在启动时自动 drop（迁移窗口仍可回退）。
+
+**已验证（第 5 步，2026-09-26）**：单测覆盖"没有部署侧密钥就没有 fetch"（`OwnerPodAccess` 14 项、`PodGatewayAccessKeyRepository`、`AiGatewayManagementHandler`、`container/config`、`PodInterfaceKeyMigration` 幂等与打不开的行），集成测试改成**凭据随请求携带**：`tests/integration/chatkit-pod-store.integration.test.ts` 用 `viaApiKey` + owner 自己的 interface key 走真实换取（22/22 通过，不再依赖内存 key store），`localQleverCredentialRepository` 断言"没带凭据就拿不到 fetch"。
 
 **已验证（第 4 步验收，2026-09-24，`scripts/accept-solid-bearer-pod-access.ts`，临时本地栈 15/15）**：脚本现在跑通"**没有 API 侧 owner 密钥也能执行后台任务**"这条链：`POST /api/ai/task-credentials` 只写任务层授权（201）→ 列表里是 `active` → `POST /api/ai/config/rebuild` 排队的 FTS 重建任务**执行成功**（`lifecycle.recent` 里 `succeeded`）→ `identity_pod_interface_key` **0 行**（API 侧从未存过 owner 密钥）→ 任务层凭据落在**独立文件** `tasks.sqlite`（1 行 `active`）。也就是说索引重建入口已经"在没有 API vault 的情况下完成一次真实执行"。
 

@@ -206,7 +206,6 @@ function registerSharedRoutes(
     providerModelSelectionService,
     customModelsService: providerCustomModelsService,
     gatewayAccessKeyRepository,
-    podInterfaceKeys: ownerPodAccess,
     taskCredentials: container.resolve('taskCredentialStore', { allowUnregistered: true }),
     clientCredentialIssuer: config.solidBaseUrl ?? config.publicUrl,
     validateClientCredential: (apiKey) => container.resolve('authenticator').authenticate({

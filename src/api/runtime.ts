@@ -343,6 +343,30 @@ function normalizeUrl(value: string | undefined): string | undefined {
   }
 }
 
+/**
+ * Move the API's legacy owner keys into the task layer before anything serves traffic.
+ *
+ * A failure here is reported and left for the next boot: the legacy table stays readable, and the
+ * migration is idempotent, so a half-done run is repeatable rather than a data loss.
+ */
+async function migrateLegacyPodKeys(
+  container: AwilixContainer<ApiContainerCradle>,
+  logger: ReturnType<typeof getLoggerFor>,
+): Promise<void> {
+  const migrate = container.resolve('legacyPodKeyMigration', { allowUnregistered: true });
+  if (!migrate) {
+    return;
+  }
+  try {
+    const result = await migrate();
+    if (result.migrated > 0 || result.failed > 0) {
+      logger.info(`Legacy Pod keys migrated into the task layer: ${JSON.stringify(result)}`);
+    }
+  } catch (error) {
+    logger.warn(`Legacy Pod key migration failed: ${String(error)}`);
+  }
+}
+
 async function registerPrimaryServiceToken(
   container: AwilixContainer<ApiContainerCradle>,
   config: ApiContainerConfig,
@@ -605,6 +629,7 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
     registerRoutes(container);
     server = container.resolve('apiServer');
     await container.resolve('rdfEngine', { allowUnregistered: true })?.open?.();
+    await migrateLegacyPodKeys(container, logger);
     await registerPrimaryServiceToken(container, config, logger);
     await reconcileLocalOwnerRoles(container, config, logger);
     await startBackgroundServices(container, logger);
