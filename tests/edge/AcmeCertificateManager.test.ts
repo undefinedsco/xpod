@@ -217,6 +217,27 @@ describe('AcmeCertificateManager CA failover (N15)', () => {
  * N15（续期链）：`ensureCertificate()` 只在启动时看一次状态，长期运行的节点此前没有任何
  * 东西驱动续期——证书到期只能靠人手调管理接口。这里验证后台续期真的接上了，而且停得掉。
  */
+/**
+ * Reads a counter once it stops moving for one scheduler interval.
+ *
+ * The property under test is "a stopped scheduler schedules nothing new"; a renewal that was
+ * already in flight when it was stopped still lands afterwards, and racing the sample against it
+ * is a test bug, not a product finding.
+ */
+async function stableCount(read: () => number, intervalMs: number, timeoutMs = 3_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let previous = read();
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const current = read();
+    if (current === previous) {
+      return current;
+    }
+    previous = current;
+  }
+  return read();
+}
+
 describe('AcmeCertificateManager auto renewal (N15)', () => {
   beforeEach(() => {
     acmeMock.attempted.length = 0;
@@ -242,8 +263,12 @@ describe('AcmeCertificateManager auto renewal (N15)', () => {
       manager.stopAutoRenewal();
     }
 
-    const attemptsWhenStopped = acmeMock.attempted.length;
-    await new Promise((resolve) => setTimeout(resolve, 160));
+    // An attempt the last tick had *already started* is not a new one, so the counter is sampled
+    // only once it has stopped moving: sampling it right after `stopAutoRenewal()` counted that
+    // in-flight attempt as if the stopped scheduler had scheduled it, which made this test fail
+    // under load and pass in isolation.
+    const attemptsWhenStopped = await stableCount(() => acmeMock.attempted.length, 40);
+    await new Promise((resolve) => setTimeout(resolve, 200));
     expect(acmeMock.attempted.length).toBe(attemptsWhenStopped);
     expect(manager.getRenewalSchedulerStatus()?.running).toBe(false);
   });
