@@ -126,7 +126,8 @@ Xpod 采用**等位替换**策略扩展 CSS：用自定义组件替换 CSS 同�
 - **复杂组件单独文档**：如 `docs/chained-http-handler.md` 详细说明中间件系统
 
 ## Testing Guidelines
-- `bun run build:ts` — 快速类型检查。
+- `bun run build:ts` — 快速类型检查（只含 `bin/` + `src/`）。
+- `bun run typecheck:test` — 测试程序类型检查（`tsconfig.test.json`，含 `tests/` 与测试 import 的 UI 源码）；这是唯一检查测试代码类型的门禁，现状与欠账见 [`docs/testing/test-typecheck.md`](docs/testing/test-typecheck.md)。
 - `bun run test:integration` — 完整集成测试。
 - 针对存储或数据库逻辑，可在 `scripts/` 下编写专项 Node 脚本验证。
 - 端到端检查：启动对应配置（`bun run dev` 最快），访问 `http://localhost:3000` 验证。

@@ -7,11 +7,6 @@ import {
   OwnerPodAccess,
   POD_INTERFACE_KEY_MISSING,
 } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
-import type {
-  PodInterfaceCredential,
-  PodInterfaceKeyAccess,
-} from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
-
 const OWNER = 'https://pod.example/alice/profile/card#me';
 const TOKEN_ENDPOINT = 'https://pod.example/.oidc/token';
 const POD_RESOURCE = 'https://pod.example/alice/settings/ai/models.ttl';
@@ -48,18 +43,12 @@ describe('Solid credential session sharing', () => {
       fetch: fetchImpl,
     });
     const authenticator = new ClientCredentialsAuthenticator({ sessions });
-    const keys: PodInterfaceKeyAccess = {
-      read: async (): Promise<PodInterfaceCredential | undefined> => undefined,
-      saveKey: async () => undefined,
-      forgetKey: async () => undefined,
-      hasKey: async () => false,
-    };
-    const access = new OwnerPodAccess({ keys, sessions, fetch: fetchImpl });
+    const access = new OwnerPodAccess({ sessions, fetch: fetchImpl });
 
     const request = { headers: { authorization: `Bearer ${SK_KEY}` } } as IncomingMessage;
     const result = await authenticator.authenticate(request);
     expect(result).toMatchObject({ success: true, context: { webId: OWNER, accessToken: 'token-1' } });
-    const auth = result.success && result.context.type === 'solid' ? result.context : undefined;
+    const auth = result.success && result.context?.type === 'solid' ? result.context : undefined;
 
     const podFetch = await access.getPodFetch(OWNER, { auth });
     await podFetch!(POD_RESOURCE);
@@ -73,14 +62,7 @@ describe('Solid credential session sharing', () => {
   });
 
   it('does not fall back to an owner key the caller never granted', async () => {
-    const keys: PodInterfaceKeyAccess = {
-      read: async () => undefined,
-      saveKey: async () => undefined,
-      forgetKey: async () => undefined,
-      hasKey: async () => false,
-    };
     const access = new OwnerPodAccess({
-      keys,
       sessions: new SolidSessionFactory({ tokenEndpoint: TOKEN_ENDPOINT, fetch: vi.fn() as unknown as typeof fetch }),
     });
 

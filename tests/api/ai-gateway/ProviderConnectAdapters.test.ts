@@ -24,7 +24,6 @@ import {
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import { CodexSubscriptionQuotaAdapter } from '../../../src/api/ai-gateway/quota';
 import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
-import type { PodInterfaceKeyStore } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 import { createTestSolidSessions } from '../../helpers/solidSessions';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
@@ -3233,19 +3232,10 @@ describe('ProviderConnectService', () => {
     expect(hostedFetch).toHaveBeenCalledOnce();
   });
 
-  it('uses an owner-bound sk client-credentials Bearer token before the stored Pod interface key', async () => {
+  it('uses an owner-bound sk client-credentials Bearer token', async () => {
     const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
-    const keys = {
-      read: vi.fn(async () => {
-        throw new Error('stored Pod interface key must not be used for caller-owned access');
-      }),
-      saveKey: vi.fn(async () => undefined),
-      forgetKey: vi.fn(async () => undefined),
-      hasKey: vi.fn(async () => true),
-    };
     const repository = new PodConnectedCredentialRepository({
       podAccess: new OwnerPodAccess({
-        keys: keys as unknown as PodInterfaceKeyStore,
         sessions: createTestSolidSessions({
           tokenEndpoint: 'https://id.example/alice/.oidc/token',
           fetch: callerFetch as unknown as typeof fetch,
@@ -3278,7 +3268,6 @@ describe('ProviderConnectService', () => {
       },
     });
 
-    expect(keys.read).not.toHaveBeenCalled();
     expect(callerFetch).toHaveBeenCalledWith(
       'https://id.example/alice/settings/credentials.ttl',
       expect.objectContaining({ headers: expect.any(Headers) }),

@@ -24,7 +24,6 @@ import {
   type QuotaCredentialRecord,
 } from '../../../src/api/ai-gateway/quota';
 import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
-import type { PodInterfaceKeyStore } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 import { quotaSnapshotId, quotaSnapshotResource } from '@undefineds.co/models';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
@@ -1605,19 +1604,10 @@ describe('ProviderQuotaAdapters', () => {
     })).rejects.toThrow('pod_interface_key_missing');
   });
 
-  it('uses an owner-bound sk client-credentials Bearer token before the stored Pod interface key for persisted quota snapshots', async () => {
+  it('uses an owner-bound sk client-credentials Bearer token for persisted quota snapshots', async () => {
     const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
-    const keys = {
-      read: vi.fn(async () => {
-        throw new Error('stored Pod interface key must not be used for caller-owned quota access');
-      }),
-      saveKey: vi.fn(async () => undefined),
-      forgetKey: vi.fn(async () => undefined),
-      hasKey: vi.fn(async () => true),
-    };
     const repository = new PodQuotaSnapshotRepository({
       podAccess: new OwnerPodAccess({
-        keys: keys as unknown as PodInterfaceKeyStore,
         sessions: createTestSolidSessions({
           tokenEndpoint: 'https://id.example/alice/.oidc/token',
           fetch: callerFetch as unknown as typeof fetch,
@@ -1652,7 +1642,6 @@ describe('ProviderQuotaAdapters', () => {
       },
     });
 
-    expect(keys.read).not.toHaveBeenCalled();
     const headers = callerFetch.mock.calls[0]![1]!.headers as Headers;
     expect(headers.get('Authorization')).toBe('Bearer caller-bearer-token');
     callerFetch.mockRestore();
