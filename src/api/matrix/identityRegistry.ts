@@ -16,6 +16,14 @@ import type { MatrixSigningIdentityProvider } from './signingKeyStore';
 /** The identity for a server name, or `undefined` when this store signs nothing. */
 export interface MatrixSigningIdentitySource {
   identityFor(serverName: string): Promise<MatrixServiceIdentity | undefined>;
+  /**
+   * The server names this source can sign for, when it knows them up front.
+   *
+   * Used to decide which server an event belongs to: a participant is only treated as
+   * its own server when this deployment actually holds that identity's key, so an
+   * event is never attributed to a server we cannot sign for.
+   */
+  serverNames?(): readonly string[];
 }
 
 export interface MatrixSigningIdentityRegistryOptions {

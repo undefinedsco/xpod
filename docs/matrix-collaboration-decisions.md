@@ -60,10 +60,12 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
    非创建者 server 的事件，因此开启每参与者身份必须同时让房间可联邦。已改：缺省即 federated，
    只有显式传 `false` 才写 `m.federate: false`；仍写 false 的房间只能容纳同一 server 的参与者，
    属兼容边界而非目标形态。
-5. **仍需你定的一个子问题**：切换 server name 会改变 MXID，而房间里的 `sender`/`state_key` 是
-   历史事实不能改写，所以"老房间继续用老身份、新房间用新身份"需要把房间所属的 server name
-   记在房间里（候选位置 `metadata.protocols.matrix.serverName`）。上传 per-participant 身份前
-   需要先定这条记录位置与切换规则，否则同一个人的新老 MXID 会在同一房间里并存而不互认。
+5. **已按此收口（2026-09-27，依据如下，若你认为需要显式记录请指出）**：不需要房间级
+   `serverName` 字段——房间的"来源 server"已经在 create 事件的 `sender` 里；成员身份在
+   `m.room.member` 的 `state_key` 里逐字保存，从不按当前 server name 重算；身份选择是按**每个
+   事件**的 sender 做的。因此老房间里的老 MXID 保持原样、继续由老身份验证，新房间用新身份，
+   不会出现"同一房间内同一人的新老 MXID 互认"问题——真正需要的是**能力判定**（见下条），
+   而不是多记一个字段。
 
 实现进度：
 
@@ -83,10 +85,16 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   （fetch 必须已带该身份授权；拿不到 Pod 访问权即拒绝）。测试覆盖：读写同一行（第二次写是
   update）、只存密文、跨进程重启后读到同一身份、轮换写回同一行且旧 key 仍可验、换部署根密钥
   打不开时**响亮失败且不覆盖原行**、无 Pod 访问权即拒绝。
-- **待接线**：把每参与者 provider 注册进注册表还缺一件已定但未建的持久事实——
-  **server name → 身份 Pod 绑定**（服务身份契约 §2.2 第 4 步要求绑定落用户选定的 Pod），
-  以及随后的 `getServerName` 翻转（现在仍是部署域名优先）与上面第 5 条的房间级 server name
-  记录位置。三件要一起上，否则会在没有对应密钥时签名失败或错签。
+- **已落地**（2026-09-27）：server name 改为**能力判定**：WebID host 只有在注册表确实持有
+  该身份密钥时才作为该参与者的 server name，否则回落到部署自身名字（`getServerName`）。
+  因此不可能把事件归给一个签不了的 server；老房间的老 MXID 原样保留；单身份部署行为不变。
+  测试 `tests/api/matrix/participantIdentity.test.ts`：alice.example 与 bob.example 两个身份
+  下，MXID/room_id/签名各自归属、跨身份验签失败、未注册 host 回落部署身份、成员列表按各自
+  server 呈现。
+- **仍待建**：**身份密钥的供给与绑定流程**——谁在何时为该身份生成并封存密钥（
+  `signingKeyChannel.ts` 已能读写该身份 Pod 的 credential 行，但还没有触发它的入口），以及
+  服务身份契约 §2.2 第 4 步要求的绑定持久化（绑定版本、目的存储范围、服务授权引用）。
+  在这条流程落地前，容器仍只注册部署级身份，每参与者身份只在测试中成立。
 
 ## 消息身份与表示
 

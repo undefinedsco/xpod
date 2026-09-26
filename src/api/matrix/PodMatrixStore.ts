@@ -101,6 +101,15 @@ export interface MatrixAgentGrant {
   handoffTo: string[];
 }
 
+/** The host of a WebID, which is what a participant's server name is derived from. */
+function webIdHost(webId: string): string | undefined {
+  try {
+    return new URL(webId).host || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** An event-id list read back from stored JSON, ignoring anything malformed. */
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
@@ -1360,15 +1369,20 @@ export class PodMatrixStore {
     return `@${localpart}:${serverName}`;
   }
 
+  /**
+   * The server this caller's events belong to.
+   *
+   * A participant is their own server when this deployment holds that identity's key,
+   * and only then: attributing an event to a server we cannot sign for would either
+   * fail the write or, worse, sign it under a name that never signed it. So the
+   * WebID host wins when it is signable, and the deployment's own name is the
+   * fallback for everyone this deployment serves under one identity.
+   */
   private getServerName(context: MatrixStoreContext): string {
-    if (this.serverName) {
-      return this.serverName;
-    }
-    try {
-      return new URL(context.webId).host || 'localhost';
-    } catch {
-      return 'localhost';
-    }
+    const host = webIdHost(context.webId);
+    if (host && (this.identities?.serverNames?.() ?? []).includes(host)) return host;
+    if (this.serverName) return this.serverName;
+    return host ?? 'localhost';
   }
 
   private displayNameFromUserId(matrixUserId: string): string {
