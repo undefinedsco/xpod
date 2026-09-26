@@ -31,6 +31,22 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
 “每个用户一个 homeserver”当作协议要求。Xpod 将各参与者的持久数据落其 Pod，具体服务
 身份、部署与 Pod 的对应关系需要落实，但跨 Pod 分发本身已在目标范围。
 
+## 签名身份与密钥归属（2026-09-27 讨论，按参与者身份登记）
+
+- **签名主体是参与者身份，不是部署**：数据在各自 Pod、控制记录在房间主 Pod，因此不存在部署级
+  homeserver；server name 取参与者的稳定域名（不是 Pod 地址、也不是部署域名），MXID 形如
+  `@<localpart>:<参与者域名>`。Pod 迁移不改 MXID、room_id、event_id。
+- **私钥以密文存于该身份自己的 Pod**，通过 Pod API 读写：复用 models 已有的 `credential` 资源
+  字段（`secretPayload`/`encryptedSecret`/`wrappedDataKey`/`algorithm`/`keyVersion`/`status`/
+  `expiresAt`）与既有 `SecretCellVault` + `DeploymentRootKeyProvider`（根密钥本身支持多 keyId +
+  activeKeyId）。**公钥明文**，由 `/_matrix/key/v2/server` 按身份发布。
+- 签名服务端读取后内存缓存，按 `keyVersion`/etag 失效；轮换两阶段：先发布新公钥 → 切 active →
+  旧 key 保留到 `expiresAt` 之后再移除。每把 key 不需要环境变量；env 只保留部署根密钥与显式 PEM
+  兜底（宿主没有原生 JWKS 时）。
+- **明确不做**：明文私钥写进 RDF/metadata；把某把能被用来冒充他人或整个部署的私钥放进别人的 Pod。
+- 现状实现（部署级单一 `serverName` + `MatrixServiceIdentity`）不再是目标形态，只作为
+  **旧房间兼容边界**保留，迁移按 D5 处理；新签名身份上线前必须先定这两者的边界。
+
 ## 消息身份与表示
 
 - Matrix event_id 按所选 room version 的协议规则生成/验证，跨部署和 Pod 副本保持一致。
@@ -123,6 +139,7 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
 | 不要全局序号就能省去全部变更发现/发布机制 | 必须另证有界增量与恢复，而非只换 token 形状 |
 | SQL journal 保留为长期权威；用行锁优化代替迁出 | 已确定 Pod 存储归属；SQL 仅在有界迁移阶段存在 |
 | 给 claim/complete 加 fresh 标记就算授权缓存问题已解决 | 当前代码覆盖 agent-wakes 路由，但普通 Matrix 路径仍有旧判定窗口 |
+| 签名身份由部署单一持有（现状实现） | 数据与控制记录都已按 Pod/房间归属，部署不再是 homeserver；部署级身份仅作旧房间兼容边界 |
 
 ## 待细化的实现事项
 
