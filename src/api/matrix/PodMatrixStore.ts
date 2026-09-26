@@ -62,6 +62,11 @@ export interface PodMatrixStoreOptions {
    * Every event is signed by the identity of the server named in its `sender`.
    */
   identities?: MatrixSigningIdentitySource;
+  /**
+   * How many rooms keep a resolved state in memory. `0` disables the cache, which
+   * trades repeat replays for memory; the default bounds it at 64 rooms.
+   */
+  stateCacheLimit?: number;
 }
 
 type Db = any;
@@ -101,6 +106,25 @@ export interface MatrixAgentGrant {
   handoffTo: string[];
 }
 
+/** How many rooms keep a resolved state to answer repeat reads inside one operation. */
+const STATE_CACHE_LIMIT = 64;
+
+/**
+ * A cheap identity for the event list a state was resolved from.
+ *
+ * Events are append-only and their content is immutable once stored, so the count, the
+ * newest event and the sum of the sequences identify the list: an append, a backfill in
+ * the middle or a re-registered sequence all change at least one of them. A content
+ * edit in place would not be detected — nothing in this store does that.
+ */
+function roomFingerprint(events: readonly MatrixEventRecord[]): string {
+  if (events.length === 0) return '0';
+  let sequenceSum = 0;
+  for (const event of events) sequenceSum += event.depth ?? 0;
+  const newest = events[events.length - 1];
+  return `${events.length}:${newest.eventId}:${sequenceSum}`;
+}
+
 /** The host of a WebID, which is what a participant's server name is derived from. */
 function webIdHost(webId: string): string | undefined {
   try {
@@ -119,6 +143,8 @@ export class PodMatrixStore {
   private readonly podAccess?: PodAccessFetchProvider;
   private readonly journal: MatrixEventJournal;
   private readonly identities?: MatrixSigningIdentitySource;
+  private readonly stateCache = new Map<string, { fingerprint: string; state: MatrixRoomState }>();
+  private readonly stateCacheLimit: number;
   private readonly logger = getLoggerFor(this);
   private readonly serverName?: string;
   private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
@@ -128,6 +154,10 @@ export class PodMatrixStore {
     this.podAccess = options.podAccess;
     this.journal = options.journal ?? new InMemoryMatrixEventJournal();
     this.identities = options.identities;
+    this.stateCacheLimit = options.stateCacheLimit ?? STATE_CACHE_LIMIT;
+    if (!Number.isSafeInteger(this.stateCacheLimit) || this.stateCacheLimit < 0) {
+      throw new MatrixError(500, 'M_UNKNOWN', 'stateCacheLimit must be a non-negative integer');
+    }
     this.serverGroupReconcilerService = options.serverGroupReconcilerService;
   }
 
@@ -468,7 +498,7 @@ export class PodMatrixStore {
     const batches: Array<{room: MatrixRoomRecord; events: MatrixEventRecord[]}> = [];
     for (const room of await this.listRooms(db)) {
       const events = (await this.listEvents(db, room.roomId, context)).filter(e=>e.depth! <= snapshot);
-      const membership = resolveRoomState(events).get('m.room.member', this.getMatrixUserId(context));
+      const membership = this.resolvedState(room.roomId, context, events).get('m.room.member', this.getMatrixUserId(context));
       if (membership?.content.membership === 'invite') {
         if ((membership.depth ?? 0) > since) invite[room.roomId] = { invite_state: { events: [this.toClientEvent(membership)] } };
         continue;
@@ -490,7 +520,10 @@ export class PodMatrixStore {
       // State at the start of this timeline; events in the timeline apply after it.
       // Resolving the prefix rather than taking the last event per slot matters when
       // the history before the page contains a fork.
-      const state = resolveRoomState(events.filter(event => (event.depth ?? 0) < firstSequence));
+      // The page-start state is a different event list, so it is memoized under its own
+      // key rather than displacing the room's current state.
+      const state = this.resolvedState(`${room.roomId}@${firstSequence}`, context,
+        events.filter(event => (event.depth ?? 0) < firstSequence));
       join[room.roomId] = {state: {events: state.events().map(e=>this.toClientEvent(e))},
         timeline: {events: page.map(e=>this.toClientEvent(e)), limited: candidates.length > selected.length,
           ...(page.length ? {prev_batch: this.encodeSyncToken((page[0].depth ?? 1) - 1)} : {})},
@@ -950,7 +983,7 @@ export class PodMatrixStore {
     // resolved to" different events, so the resolved state decides whether the caller
     // is in the room.
     const state = events
-      ? resolveRoomState(events).get('m.room.member', this.getMatrixUserId(context))
+      ? this.resolvedState(roomId, context, events).get('m.room.member', this.getMatrixUserId(context))
       : await this.findLatestStateEvent(db,roomId,'m.room.member',this.getMatrixUserId(context),context);
     if (state?.content.membership === 'join' || (!state && room.author === context.webId)) return;
     throw new MatrixError(403,'M_FORBIDDEN','Join the room before accessing its timeline');
@@ -959,7 +992,38 @@ export class PodMatrixStore {
   /** The room's current state, resolved across forks. */
   public async currentState(roomId: string, context: MatrixStoreContext, events?: MatrixEventRecord[]): Promise<MatrixRoomState> {
     const db = await this.getDb(context);
-    return resolveRoomState(events ?? await this.listEvents(db, roomId, context));
+    return this.resolvedState(roomId, context, events ?? await this.listEvents(db, roomId, context));
+  }
+
+  /**
+   * The resolved state of a room, memoized per Pod and room.
+   *
+   * Replaying a room costs O(events × state) and one operation asks for the same answer
+   * several times — a write checks membership and agent grants against the same
+   * timeline, a sync loop re-reads every room it did not change. The cache is keyed by
+   * the events it was built from, so an appended event changes the key and no caller
+   * can read a state that predates its write. Entries hold references to the records
+   * the caller already has; the map is bounded and evicts the least recently used room.
+   */
+  private resolvedState(roomId: string, context: MatrixStoreContext, events: readonly MatrixEventRecord[]): MatrixRoomState {
+    if (this.stateCacheLimit === 0) return resolveRoomState(events);
+    const key = `${this.scope(context)}::${roomId}`;
+    const fingerprint = roomFingerprint(events);
+    const cached = this.stateCache.get(key);
+    if (cached && cached.fingerprint === fingerprint) {
+      // Refresh the insertion order so the least recently used room is evicted first.
+      this.stateCache.delete(key);
+      this.stateCache.set(key, cached);
+      return cached.state;
+    }
+    const state = resolveRoomState(events);
+    this.stateCache.set(key, { fingerprint, state });
+    while (this.stateCache.size > this.stateCacheLimit) {
+      const oldest = this.stateCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.stateCache.delete(oldest);
+    }
+    return state;
   }
 
   private validateAgentGrants(content: Record<string, unknown>): MatrixAgentGrant[] {
@@ -986,7 +1050,7 @@ export class PodMatrixStore {
 
   private async agentGrants(db: Db, roomId: string, context: MatrixStoreContext, events?: MatrixEventRecord[]): Promise<MatrixAgentGrant[]> {
     const state = events
-      ? resolveRoomState(events).get('co.undefineds.agents')
+      ? this.resolvedState(roomId, context, events).get('co.undefineds.agents')
       : await this.findLatestStateEvent(db,roomId,'co.undefineds.agents','',context);
     return state ? this.validateAgentGrants(state.content) : [];
   }
