@@ -24,7 +24,6 @@ import {
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import { CodexSubscriptionQuotaAdapter } from '../../../src/api/ai-gateway/quota';
 import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
-import type { PodInterfaceKeyStore } from '../../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 import { createTestSolidSessions } from '../../helpers/solidSessions';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
@@ -202,34 +201,39 @@ async function encryptedSecret(
   return vault().seal({ webId: WEB_ID }, credentialIri, provider, secret);
 }
 
-type PartialDeviceCodeProtocolDescriptor = Omit<Partial<DeviceCodeProtocolDescriptor>, 'begin' | 'poll' | 'refresh' | 'tokenExchange'> & {
-  begin?: Partial<DeviceCodeProtocolDescriptor['begin']>;
-  poll?: Partial<DeviceCodeProtocolDescriptor['poll']>;
-  refresh?: Partial<NonNullable<DeviceCodeProtocolDescriptor['refresh']>>;
-  tokenExchange?: Partial<NonNullable<DeviceCodeProtocolDescriptor['tokenExchange']>>;
-};
+// The merged fields are partial; everything else is a whole-field override. `tokenExchange` has no
+// default in this fixture, so it is not offered as a partial override.
+type PartialDeviceCodeProtocolDescriptor =
+  Omit<Partial<DeviceCodeProtocolDescriptor>, 'begin' | 'poll' | 'refresh' | 'tokenExchange'> & {
+    begin?: Partial<DeviceCodeProtocolDescriptor['begin']>;
+    poll?: Partial<DeviceCodeProtocolDescriptor['poll']>;
+    refresh?: Partial<NonNullable<DeviceCodeProtocolDescriptor['refresh']>>;
+  };
+
+/** An override replaces a field of the fixture; it never clears one the protocol requires. */
+function withDefaults<T extends object>(defaults: T, overrides: Partial<T> | undefined): T {
+  return { ...defaults, ...overrides } as T;
+}
 
 function kimiDeviceCodeProtocol(overrides: PartialDeviceCodeProtocolDescriptor = {}): DeviceCodeProtocolDescriptor {
+  const { begin, poll, refresh, ...rest } = overrides;
   return {
     id: 'oauth-device-code-form-pkce',
     verificationUriOrigins: ['https://kimi.moonshot.cn'],
-    begin: {
+    begin: withDefaults<DeviceCodeProtocolDescriptor['begin']>({
       endpoint: 'https://auth.kimi.com/api/oauth/device_authorization',
       codec: 'oauthDeviceCodePkce',
-      ...overrides.begin,
-    },
-    poll: {
+    }, begin),
+    poll: withDefaults<DeviceCodeProtocolDescriptor['poll']>({
       endpoint: 'https://auth.kimi.com/api/oauth/token',
       codec: 'oauthDeviceCodePkce',
-      ...overrides.poll,
-    },
-    refresh: {
+    }, poll),
+    refresh: withDefaults<NonNullable<DeviceCodeProtocolDescriptor['refresh']>>({
       endpoint: 'https://auth.kimi.com/api/oauth/token',
       codec: 'refreshTokenForm',
-      ...overrides.refresh,
-    },
+    }, refresh),
     defaultVerificationUri: 'https://kimi.moonshot.cn/device',
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -3233,19 +3237,10 @@ describe('ProviderConnectService', () => {
     expect(hostedFetch).toHaveBeenCalledOnce();
   });
 
-  it('uses an owner-bound sk client-credentials Bearer token before the stored Pod interface key', async () => {
+  it('uses an owner-bound sk client-credentials Bearer token', async () => {
     const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
-    const keys = {
-      read: vi.fn(async () => {
-        throw new Error('stored Pod interface key must not be used for caller-owned access');
-      }),
-      saveKey: vi.fn(async () => undefined),
-      forgetKey: vi.fn(async () => undefined),
-      hasKey: vi.fn(async () => true),
-    };
     const repository = new PodConnectedCredentialRepository({
       podAccess: new OwnerPodAccess({
-        keys: keys as unknown as PodInterfaceKeyStore,
         sessions: createTestSolidSessions({
           tokenEndpoint: 'https://id.example/alice/.oidc/token',
           fetch: callerFetch as unknown as typeof fetch,
@@ -3278,7 +3273,6 @@ describe('ProviderConnectService', () => {
       },
     });
 
-    expect(keys.read).not.toHaveBeenCalled();
     expect(callerFetch).toHaveBeenCalledWith(
       'https://id.example/alice/settings/credentials.ttl',
       expect.objectContaining({ headers: expect.any(Headers) }),

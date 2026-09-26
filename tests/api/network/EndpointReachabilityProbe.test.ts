@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { probeEndpointReachability } from '../../../src/api/network/EndpointReachabilityProbe';
-import type { HeadProbeRequest } from '../../../src/edge/ProbeTargetGuard';
+import type { HeadProbeRequest, HeadProbeRequestOptions } from '../../../src/edge/ProbeTargetGuard';
 
 /**
  * N12：诊断里的"可达"以前只是"地址配了"。现在操作者点按钮时会真的去请求入口，但探测本身
@@ -14,7 +14,7 @@ const resolveTo = (address: string) => async (): Promise<string[]> => [ address 
 
 describe('probeEndpointReachability (N12)', () => {
   it('reports reachability from this node with the measured status and time', async () => {
-    const headRequest: HeadProbeRequest = vi.fn(async () => ({ status: 200 }));
+    const headRequest = vi.fn(async (_url: URL, _options: HeadProbeRequestOptions) => ({ status: 200 }));
 
     const result = await probeEndpointReachability('https://node-1.pods.example/', {
       headRequest,
@@ -37,7 +37,7 @@ describe('probeEndpointReachability (N12)', () => {
   });
 
   it('treats an entry that answers 403 as serving, not as unreachable', async () => {
-    const headRequest: HeadProbeRequest = vi.fn(async () => ({ status: 403 }));
+    const headRequest = vi.fn(async () => ({ status: 403 }));
 
     const result = await probeEndpointReachability('https://node-1.pods.example/', {
       headRequest,

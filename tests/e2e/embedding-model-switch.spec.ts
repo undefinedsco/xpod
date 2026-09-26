@@ -32,9 +32,10 @@ class Harness {
   readonly ready: HarnessReady;
   private log = '';
 
-  private constructor(child: ReturnType<typeof spawn>, ready: HarnessReady) {
+  private constructor(child: ReturnType<typeof spawn>, ready: HarnessReady, log: string) {
     this.child = child;
     this.ready = ready;
+    this.log = log;
   }
 
   static async start(): Promise<Harness> {
@@ -49,11 +50,12 @@ class Harness {
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let log = '';
     const ready = await new Promise<HarnessReady>((resolve, reject) => {
       let output = '';
       const timeout = setTimeout(() => reject(new Error('fixture harness startup timed out')), 120_000);
       const onChunk = (chunk: Buffer): void => {
-        this.log = `${this.log}${chunk.toString()}`.slice(-20_000);
+        log = `${log}${chunk.toString()}`.slice(-20_000);
         output += chunk.toString();
         for (const line of output.split('\n')) {
           if (line.startsWith(FAILURE_PREFIX)) {
@@ -81,7 +83,7 @@ class Harness {
         }
       });
     });
-    return new Harness(child, ready);
+    return new Harness(child, ready, log);
   }
 
   diagnostics(): string {

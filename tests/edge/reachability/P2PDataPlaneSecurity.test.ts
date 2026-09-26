@@ -295,7 +295,7 @@ describe('P2P data plane sealed transport (N03)', () => {
     cleanups.push(() => server.close());
 
     const socket = createConnection({ host: '127.0.0.1', port: server.address().port });
-    cleanups.push(() => socket.destroy());
+    cleanups.push(() => { socket.destroy(); });
     const received: string[] = [];
     socket.on('data', (chunk) => received.push(chunk.toString('utf8')));
     // The server tears the connection down by design, so a reset here is the expected outcome.

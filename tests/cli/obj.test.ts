@@ -309,7 +309,6 @@ describe('obj command helpers', () => {
       object: {
         id: 'ai-openai-api-key',
         service: 'ai',
-        id: 'ai-openai-api-key',
         apiKey: '[redacted]',
       },
     });

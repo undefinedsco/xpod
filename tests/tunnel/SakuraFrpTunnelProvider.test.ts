@@ -21,7 +21,7 @@ function createSakuraApi(options: {
   nodes?: unknown;
   tunnelsStatus?: number;
   reject?: Error;
-}): ReturnType<typeof vi.fn> {
+}) {
   return vi.fn(async (input: string | URL | Request) => {
     const url = String(input);
     if (options.reject) {

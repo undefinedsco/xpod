@@ -444,7 +444,7 @@ describe('createManagedClientFetch route validation (N06)', () => {
   };
 
   it('never dials an expired access point even when it has the best priority', async () => {
-    const fetchImpl = vi.fn(async () => new Response('', { status: 405, headers: solidHeaders }));
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => new Response('', { status: 405, headers: solidHeaders }));
 
     const managed = await createManagedClientFetch({
       routeSet: routeSet([
@@ -479,7 +479,7 @@ describe('createManagedClientFetch route validation (N06)', () => {
   });
 
   it('does not dial a loopback-only access point from a remote client', async () => {
-    const fetchImpl = vi.fn(async () => new Response('', { status: 405, headers: solidHeaders }));
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => new Response('', { status: 405, headers: solidHeaders }));
 
     const managed = await createManagedClientFetch({
       routeSet: routeSet([
