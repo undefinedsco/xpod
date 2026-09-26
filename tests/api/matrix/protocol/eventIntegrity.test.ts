@@ -73,9 +73,13 @@ describe('event integrity', () => {
     expect(computeEventId(reordered)).toBe(eventId);
   });
 
-  it('excludes signatures and unsigned from the reference hash', () => {
+  it('excludes signatures, unsigned and event_id from the reference hash', () => {
     const withNoise = { ...messageEvent, unsigned: { age: 1 }, signatures: { 'example.org': { 'ed25519:1': 'sig' } } };
     expect(computeEventId(withNoise)).toBe(computeEventId(messageEvent));
+    // The id is computed before it exists, so hashing a stored event that already
+    // carries one must not fold it back into its own identity.
+    const stored = { ...messageEvent, event_id: computeEventId(messageEvent) };
+    expect(computeEventId(stored)).toBe(stored.event_id);
   });
 
   it('keeps unsigned out of the content hash but covers content', () => {
@@ -100,27 +104,67 @@ describe('event integrity', () => {
     expect(redactEvent({ ...messageEvent, unexpected: 'x' })).not.toHaveProperty('unexpected');
   });
 
-  it('signs and verifies an event round trip, and rejects tampering', () => {
+  it('signs the redacted event, so the signature survives redaction', () => {
     const key = keyPair();
     const signed = signEvent(messageEvent, key, 'example.org');
     expect(signed.hashes).toEqual({ sha256: encodeUnpaddedBase64(computeContentHash(signed)) });
-    expect(verifyJson(signed, 'example.org', key.keyId, key.publicKeyPem)).toBe(true);
 
-    const tampered = { ...signed, content: { msgtype: 'm.text', body: 'tampered' } };
-    expect(verifyJson(tampered, 'example.org', key.keyId, key.publicKeyPem)).toBe(false);
+    // The signature covers the redacted event: that is what other servers see.
+    const redacted = redactEvent(signed);
+    expect(verifyJson(redacted, 'example.org', key.keyId, key.publicKeyPem)).toBe(true);
+    // Signing the unredacted event would instead produce a signature that fails
+    // here, which is exactly the bug this test guards.
+    expect(verifyJson(signed, 'example.org', key.keyId, key.publicKeyPem)).toBe(false);
+
     // Wrong signer, wrong key id and missing signature all fail closed.
-    expect(verifyJson(signed, 'other.example', key.keyId, key.publicKeyPem)).toBe(false);
-    expect(verifyJson(signed, 'example.org', 'ed25519:9', key.publicKeyPem)).toBe(false);
+    expect(verifyJson(redacted, 'other.example', key.keyId, key.publicKeyPem)).toBe(false);
+    expect(verifyJson(redacted, 'example.org', 'ed25519:9', key.publicKeyPem)).toBe(false);
     expect(verifyJson(messageEvent, 'example.org', key.keyId, key.publicKeyPem)).toBe(false);
+  });
+
+  it('keeps the signature valid when only unredacted content changes', () => {
+    const key = keyPair();
+    const signed = signEvent({ ...messageEvent, content: { msgtype: 'm.text', body: 'first' } }, key, 'example.org');
+    // A message redacts to `{}`, so its body is outside the signed surface. The
+    // content hash is what guards the payload, not the signature.
+    const edited = { ...signed, content: { msgtype: 'm.text', body: 'edited' } };
+    expect(verifyJson(redactEvent(edited), 'example.org', key.keyId, key.publicKeyPem)).toBe(true);
+    expect(encodeUnpaddedBase64(computeContentHash(edited)))
+      .not.toBe(encodeUnpaddedBase64(computeContentHash(signed)));
+  });
+
+  it('binds the signature to redacted fields that survive redaction', () => {
+    const key = keyPair();
+    const signed = signEvent(messageEvent, key, 'example.org');
+    // `sender` survives redaction, so changing it must break the signature.
+    const tampered = redactEvent({ ...signed, sender: '@mallory:example.org' });
+    expect(verifyJson(tampered, 'example.org', key.keyId, key.publicKeyPem)).toBe(false);
   });
 
   it('ignores unsigned changes when verifying, as the specification requires', () => {
     const key = keyPair();
     const signed = signEvent(messageEvent, key, 'example.org');
     // `unsigned` is transport metadata: adding or changing it must not invalidate
-    // a signature that covers the redacted event.
+    // the signature. Redaction drops it entirely, so the redacted form — the only
+    // form a verifier ever sees — carries no trace of it.
     const withUnsigned = { ...signed, unsigned: { age_ts: 123 } };
-    expect(verifyJson(withUnsigned, 'example.org', key.keyId, key.publicKeyPem)).toBe(true);
+    expect(redactEvent(withUnsigned)).not.toHaveProperty('unsigned');
+    expect(verifyJson(redactEvent(withUnsigned), 'example.org', key.keyId, key.publicKeyPem)).toBe(true);
+    expect(verifyJson(redactEvent({ ...withUnsigned, unsigned: { age_ts: 999 } }), 'example.org', key.keyId, key.publicKeyPem))
+      .toBe(true);
+  });
+
+  it('hashes the content without the event id, which does not exist when a sender hashes', () => {
+    // Room v4+ derives the id from the event, so implementations keep it beside
+    // the event rather than inside it (Synapse caches the derived id and hashes
+    // the parsed event, which has none). Hashing must therefore ignore an
+    // attached id, or an event read back out of a Pod could never verify.
+    const withId = { ...messageEvent, event_id: '$derived' };
+    expect(encodeUnpaddedBase64(computeContentHash(withId)))
+      .toBe(encodeUnpaddedBase64(computeContentHash(messageEvent)));
+    const edited = { ...withId, content: { msgtype: 'm.text', body: 'changed' } };
+    expect(encodeUnpaddedBase64(computeContentHash(edited)))
+      .not.toBe(encodeUnpaddedBase64(computeContentHash(withId)));
   });
 
   it('signs and verifies a server key response payload', () => {

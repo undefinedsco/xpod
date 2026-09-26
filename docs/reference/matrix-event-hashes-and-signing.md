@@ -27,6 +27,25 @@ event_id / 内容哈希 / 签名规则，附**可复现来源**与**测试向量
 理由（规范原文）：`unsigned` 可被其他服务器修改；`signatures` 依赖当前 `hashes` 值；
 `hashes` 未来可能含多种算法，不能自指。
 
+### 2.1 `event_id` 同样必须排除（实现事实，非规范原文）
+
+room v4 及以后 event_id 是事件自身的哈希，**在哈希发生时还不存在**：先算内容哈希，再写入
+`hashes`，再由 redaction 后的对象算出 id。因此实现都把 id 放在参与哈希的 JSON 之外。核对
+来源（`develop` 分支，`curl` 拉取 `raw.githubusercontent.com`）：
+
+- `synapse/crypto/event_signing.py`：`check_event_content_hash` 校验
+  `compute_content_hash(event.get_pdu_json(), …)`，而 `compute_content_hash` 只移除
+  `age_ts` / `unsigned` / `signatures` / `hashes` / `outlier` / `destinations`；
+- `rust/src/events/mod.rs`：`Event::get_pdu_json` → `get_dict` → `pythonize(parsed_event)`，
+  序列化的是解析后的事件 JSON，**不含** `event_id`；id 是 `Event` 结构体上另存的缓存字段
+  （模块注释：format v1 从 JSON 读，v2+ 由 canonical-JSON 哈希推导）。
+
+结论：**重算内容哈希时必须排除 `event_id`**。否则把一个从 Pod 读回、id 已附加的事件重新
+哈希，会与发送方的哈希不一致，而这种不一致与内容是否被篡改无关。本仓库因此让
+`computeContentHash` 移除 `unsigned` / `signatures` / `hashes` / `event_id` 四个键：结果只
+取决于事件本身，与调用方是否把 id 放在同一对象里无关。id 的完整性由 reference hash
+（`eventIdMatches`）独立保障，不依赖内容哈希。
+
 ## 3. reference hash（用于 event_id）
 
 1. 先对事件执行**该 room version 的 redaction 算法**；
@@ -130,6 +149,9 @@ Canonical JSON 签名），用文中公钥对这组数据验签**不通过**；�
 - redaction 白名单（含 `m.room.member` 的 `third_party_invite.signed` 与 `m.room.create` 全量 content）；
 - Ed25519 自签往返、篡改与错误签名者/错误 key id/缺签名 fail-closed；
 - `unsigned` 变化不影响验签；
+- 附加 `event_id` 不改变内容哈希（第 2.1 节），而改动 content 会改变它；
+- 签名覆盖 redaction 后的对象：只改 content（`m.room.message` 的内容会被 redaction 清空）
+  签名仍有效，改 `sender` 等 redaction 保留字段则签名失效；
 - server key 以标准 unpadded base64 发布并可解析回公钥。
 
 **签名算法本身仍需外部对账**：以上是自洽性证明，不等于与其它 Matrix 实现对等。

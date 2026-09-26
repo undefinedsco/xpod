@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { decodeVerifyKey, verifyJson } from '../../../../src/api/matrix/protocol/eventIntegrity';
+import { decodeVerifyKey, redactEvent, verifyJson } from '../../../../src/api/matrix/protocol/eventIntegrity';
 import { EventIntegrityError } from '../../../../src/api/matrix/protocol/eventIntegrity';
 import { MatrixServiceIdentity } from '../../../../src/api/matrix/protocol/serviceIdentity';
 
@@ -63,7 +63,10 @@ describe('MatrixServiceIdentity', () => {
       content: { msgtype: 'm.text', body: 'hi' }, origin_server_ts: 1,
     });
     expect((signed.signatures as Record<string, Record<string, string>>)['example.org']).toHaveProperty('ed25519:1');
-    expect(verifyJson(signed, 'example.org', key.keyId, key.publicKeyPem)).toBe(true);
+    // The signature covers the redacted event, which is the form a verifier
+    // reconstructs; the full content is not part of the signed surface.
+    expect(verifyJson(redactEvent(signed as Record<string, unknown>), 'example.org', key.keyId, key.publicKeyPem))
+      .toBe(true);
   });
 
   it('generates a development key only when none is configured, and reports it', () => {

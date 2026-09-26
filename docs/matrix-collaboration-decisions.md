@@ -43,6 +43,13 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   models 规则确定；不能只保存展示正文而丢掉协议事实。
 - 旧随机 event_id 按兼容边界保留，不宣称可直接升级为合法 federation 事件；旧房间导入或
   新建协议房间的迁移过程须明确，不能悄悄重算并破坏已有引用。
+- 三种派生值各有覆盖对象，不得混用：内容哈希覆盖事件（排除 `unsigned`/`signatures`/
+  `hashes`/`event_id`）、reference hash 覆盖 redaction 后的事件（即 event_id）、签名覆盖
+  redaction 后且去掉 `signatures`/`unsigned` 的对象。`event_id` 必须排除的理由与外部实现
+  证据见[实现参考 §2.1](reference/matrix-event-hashes-and-signing.md)。已落地。
+- 协议事件（含 `hashes`/`signatures`）作为事件本身持久到 Message 的
+  `metadata.protocols.matrix.event`；作者 WebID、txnId 等应用簿记留在同一 metadata 的
+  其他键上，不进入被签名的对象。已落地（`src/api/matrix/persistedEvent.ts`）。
 
 ## 三种同步各自承担什么
 
@@ -68,6 +75,15 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   event_id 副本去重、Agent 执行去重是不同职责，不能共用一个含混的 key。
 - If-None-Match: * 保护 HTTP 文档，不保护日期桶中的单条消息；可用于独立事务记录，
   但创建后的正文与发布恢复仍需定义。
+- 事务记录与事件身份不得各说一套：event_id 由事件本身推导，因此**预占 id 时必须先构建
+  事件**，并由事务记录持有该次构建的时间戳；重放（同 txnId、并发重试）一律采用记录里的
+  时间戳与 id 重建事件，而不是采用本次请求自己的时间。`buildPersistedEvent` 对不一致的 id
+  直接报错，避免同一事务写出两个事件身份。已落地（`reserveTransaction` /
+  `eventForReservation`，并发 8 次同 txnId 只产生 1 个事件与 1 行）。
+- 事务记录只有在**其输出从未写入 Pod** 时才可整体替换（含 id）：崩溃后由新执行接替时，
+  新正文推导出新 id，记录必须改名为将要存在的事件；若旧 id 对应的事件已经存在，必须
+  409 而不是覆盖。已落地（`MatrixEventJournal.replaceReservation`，in-memory 与 SQL 两个
+  实现同步；对应崩溃恢复测试断言存储事件的 id 与记录一致）。
 
 ## 授权与执行
 

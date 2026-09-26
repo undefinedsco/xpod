@@ -678,6 +678,7 @@ export function registerCommonServices(
       return new PodMatrixStore({
         serverGroupReconcilerService,
         podAccess: ownerPodAccess,
+        serviceIdentity: config.matrixServiceIdentity,
         journal: new SqlMatrixEventJournal(db),
         serverName: (() => {
           try {

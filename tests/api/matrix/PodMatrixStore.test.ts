@@ -9,7 +9,7 @@ vi.mock('@undefineds.co/drizzle-solid', async () => {
   return { ...actual, drizzle: vi.fn() };
 });
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); });
 
 describe('PodMatrixStore shared Pod contract', () => {
   it('stores room, thread and event relationships using the shared models resources', async () => {
@@ -33,10 +33,11 @@ describe('PodMatrixStore shared Pod contract', () => {
     const metadata = rows.get(chatResource)![0].metadata;
     expect(metadata).toMatchObject({ protocol: 'matrix', reconcilerOwner: 'server', protocols: { matrix: { roomId: room.roomId } } });
     expect(metadata.roomId).toBeUndefined();
-    const invite = rows.get(messageResource)!.find((row) => row.metadata.protocols.matrix.stateKey === '@bob:example.test');
-    expect(invite.metadata).toMatchObject({ protocols: { matrix: {
-      eventType: 'm.room.member', stateKey: '@bob:example.test', content: { membership: 'invite' },
-    } } });
+    const invite = rows.get(messageResource)!.find((row) => row.metadata.protocols.matrix.event.state_key === '@bob:example.test');
+    expect(invite.metadata).toMatchObject({ protocols: { matrix: { event: {
+      type: 'm.room.member', state_key: '@bob:example.test', content: { membership: 'invite' },
+    } } } });
+    // The protocol fact lives under the event; the row itself must not mirror it.
     expect(invite.metadata.eventType).toBeUndefined();
     expect(invite.metadata.stateKey).toBeUndefined();
     const sync = await store.sync(context);

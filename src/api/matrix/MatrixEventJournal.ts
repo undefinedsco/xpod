@@ -16,11 +16,13 @@ export interface MatrixTransactionReservation {
 export interface MatrixEventJournal {
   reserveTransaction(scope: string, key: string, candidate: MatrixTransactionReservation): Promise<MatrixTransactionReservation>;
   /**
-   * Replace the content hash of an existing reservation while keeping its event
-   * id and time. Only valid for a reservation whose output was never written;
-   * callers must verify that before taking one over.
+   * Replace an existing reservation entirely. Only valid for a reservation whose
+   * output was never written, which callers must verify before taking one over:
+   * an event's id is derived from the event, so a later attempt with different
+   * content derives a different id and the reservation has to name the event
+   * that will actually exist.
    */
-  updateReservation(scope: string, key: string, contentHash: string): Promise<void>;
+  replaceReservation(scope: string, key: string, candidate: MatrixTransactionReservation): Promise<void>;
   registerEvent(scope: string, roomId: string, eventId: string): Promise<number>;
   /**
    * Register a page of events in one pass. Sequences are assigned in input
@@ -53,10 +55,10 @@ export class InMemoryMatrixEventJournal implements MatrixEventJournal {
     return undefined;
   }
 
-  public async updateReservation(scope: string, key: string, contentHash: string): Promise<void> {
+  public async replaceReservation(scope: string, key: string, candidate: MatrixTransactionReservation): Promise<void> {
     const identity = JSON.stringify([ scope, key ]);
     const existing = this.transactions.get(identity);
-    if (existing) this.transactions.set(identity, { ...existing, contentHash });
+    if (existing) this.transactions.set(identity, { ...candidate });
   }
 
   public async registerEvent(scope: string, roomId: string, eventId: string): Promise<number> {
@@ -114,10 +116,11 @@ export class SqlMatrixEventJournal implements MatrixEventJournal {
     return { eventId: row.event_id, createdAt: Number(row.created_at), contentHash: row.content_hash };
   }
 
-  public async updateReservation(scope: string, key: string, contentHash: string): Promise<void> {
+  public async replaceReservation(scope: string, key: string, candidate: MatrixTransactionReservation): Promise<void> {
     await this.ensureInitialized();
     await executeStatement(this.db, sql`
-      UPDATE xpod_matrix_transactions SET content_hash = ${contentHash}
+      UPDATE xpod_matrix_transactions
+      SET event_id = ${candidate.eventId}, created_at = ${candidate.createdAt}, content_hash = ${candidate.contentHash}
       WHERE scope = ${scope} AND transaction_key = ${key}
     `);
   }

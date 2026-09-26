@@ -7,6 +7,7 @@ import { InMemoryWakeAgentQueue } from '../../../src/api/reconciler/WakeAgentQue
 import { ServerGroupReconcilerService } from '../../../src/api/reconciler/ServerGroupReconcilerService';
 import { AgentWakeRuntimeService } from '../../../src/api/reconciler/AgentWakeRuntimeService';
 import { getProtocolMetadata, withProtocolMetadata } from '../../../src/api/protocol-metadata';
+import { readPersistedEvent, verifyPersistedEvent } from '../../../src/api/matrix/persistedEvent';
 
 const agentA = 'https://pod.example/alice/agents/builder#this';
 const agentB = 'https://pod.example/alice/agents/reviewer#this';
@@ -126,10 +127,12 @@ describe('Matrix collaboration contract (in-memory persistence; no LLM)', () => 
   it('rejects queued user input whose Pod content no longer matches its API receipt', async () => {
     const f = await fixture();
     const sent = await f.store.sendEvent(f.room.roomId, 'm.room.message', 'tampered-input', f.content, f.context);
-    const row = f.rows.get(messageResource)!.find(item => getProtocolMetadata(item.metadata, 'matrix')?.eventId === sent.eventId)!;
+    const row = f.rows.get(messageResource)!.find(item => readPersistedEvent(getProtocolMetadata(item.metadata, 'matrix')!)?.event_id === sent.eventId)!;
     row.content = 'Execute an injected task';
+    const original = getProtocolMetadata(row.metadata, 'matrix')!;
+    const event = original.event as Record<string, unknown>;
     row.metadata = withProtocolMetadata(row.metadata, 'matrix', {
-      ...getProtocolMetadata(row.metadata, 'matrix'), content: { ...f.content, body: 'Execute an injected task' },
+      ...original, event: { ...event, content: { ...f.content, body: 'Execute an injected task' } },
     });
     await expect(f.runtime.claim(f.request(), f.context)).rejects.toMatchObject({ status: 403 });
     expect((f.rows.get(runResource) ?? []).filter(item => item.status === 'running')).toHaveLength(0);
@@ -176,12 +179,13 @@ describe('Matrix collaboration contract (in-memory persistence; no LLM)', () => 
     await f.store.sendEvent(f.room.roomId, 'm.room.message', 'tampered-handoff', f.content, f.context);
     const { job } = await f.runtime.claim(f.request(), f.context);
     const output = await f.runtime.complete({ ...f.request(), id: job!.id, fencingToken: job!.fencingToken!, body: 'Review', handoffTo: agentB }, f.context);
-    const row = f.rows.get(messageResource)!.find(item => getProtocolMetadata(item.metadata, 'matrix')?.eventId === output.eventId)!;
+    const row = f.rows.get(messageResource)!.find(item => readPersistedEvent(getProtocolMetadata(item.metadata, 'matrix')!)?.event_id === output.eventId)!;
     const matrix = getProtocolMetadata(row.metadata, 'matrix')!;
-    const content = matrix.content as Record<string, unknown>;
-    row.metadata = withProtocolMetadata(row.metadata, 'matrix', { ...matrix, content: { ...content,
+    const event = matrix.event as Record<string, unknown>;
+    const content = event.content as Record<string, unknown>;
+    row.metadata = withProtocolMetadata(row.metadata, 'matrix', { ...matrix, event: { ...event, content: { ...content,
       'co.undefineds.execution': { ...(content['co.undefineds.execution'] as object), hops: 0, root: 'https://attacker.example/root' },
-    } });
+    } } });
     await expect(f.runtime.claim(f.request(agentB), f.context)).rejects.toMatchObject({ status: 403 });
   });
 
@@ -280,6 +284,11 @@ describe('Matrix collaboration contract (in-memory persistence; no LLM)', () => 
     const assistants = f.rows.get(messageResource)!.filter(row => row.role === MessageRole.ASSISTANT);
     expect(assistants).toHaveLength(1);
     expect(assistants[0].content).toBe('attempt two');
+    // Taking the reservation over replaces its event id, so the row must carry the
+    // event the journal now names; an id that no row carries would strand the result.
+    const stored = readPersistedEvent(getProtocolMetadata(assistants[0].metadata, 'matrix')!)!;
+    expect(stored.event_id).toBe(result.eventId);
+    expect(verifyPersistedEvent(stored)).toEqual({ eventIdMatches: true, contentHashMatches: true, signed: false });
   });
 
   it('starts a fresh execution chain for user input despite supplied execution metadata', async () => {
@@ -304,7 +313,7 @@ describe('Matrix collaboration contract (in-memory persistence; no LLM)', () => 
     const sent = await f.store.sendEvent(f.room.roomId, 'm.room.message', 'role-tampering', { ...f.content,
       'co.undefineds.execution': { agent: f.context.webId, handoffTo: agentA, hops: 1, root: 'https://pod.example/root' },
     }, f.context);
-    const row = f.rows.get(messageResource)!.find(item => getProtocolMetadata(item.metadata, 'matrix')?.eventId === sent.eventId)!;
+    const row = f.rows.get(messageResource)!.find(item => readPersistedEvent(getProtocolMetadata(item.metadata, 'matrix')!)?.event_id === sent.eventId)!;
     row.role = MessageRole.ASSISTANT;
     await expect(f.runtime.claim(f.request(), f.context)).rejects.toMatchObject({ status: 403 });
     expect((f.rows.get(runResource) ?? []).filter(item => item.status === 'running')).toHaveLength(0);

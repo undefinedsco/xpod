@@ -1,5 +1,7 @@
 import { PodMatrixStore } from '../../src/api/matrix/PodMatrixStore';
-export function matrixHarness() {
+export function matrixHarness(
+  options?: { serviceIdentity?: import('../../src/api/matrix/protocol/serviceIdentity').MatrixServiceIdentity },
+) {
   const rows = new Map<any, any[]>();
   const db: any = {
     init: async () => undefined,
@@ -23,6 +25,6 @@ export function matrixHarness() {
   };
   const context: any = { webId: 'https://alice.example/profile/card#me', podUrl: 'https://pod.example/alice/',
     auth: {type:'solid', webId:'https://alice.example/profile/card#me', clientId:'device-a'}, _matrixDb: db };
-  const store = new PodMatrixStore({serverName:'example.test'});
+  const store = new PodMatrixStore({serverName:'example.test', ...(options ?? {})});
   return {store,context,db,rows};
 }

@@ -18,9 +18,11 @@ import {
   type ReconcilerOwner,
   type ServerGroupReconcilerService,
 } from '../reconciler';
-import { getProtocolMetadata, withProtocolMetadata } from '../protocol-metadata';
+import { getProtocolMetadata, withProtocolMetadata, type ProtocolMetadata } from '../protocol-metadata';
 import { MatrixError } from './MatrixError';
 import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
+import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type PersistedMatrixEvent } from './persistedEvent';
+import type { MatrixServiceIdentity } from './protocol/serviceIdentity';
 import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import type { SharedWakeAgentJob } from '../reconciler/coordination';
 import { sharedWakeAgentJobId, type WakeAgentQueue } from '../reconciler/WakeAgentQueue';
@@ -50,6 +52,8 @@ export interface PodMatrixStoreOptions {
   journal?: MatrixEventJournal;
   serverName?: string;
   serverGroupReconcilerService?: ServerGroupReconcilerService;
+  /** Deployment signing identity; absent means stored events carry no signature. */
+  serviceIdentity?: MatrixServiceIdentity;
 }
 
 type Db = any;
@@ -92,6 +96,7 @@ export interface MatrixAgentGrant {
 export class PodMatrixStore {
   private readonly podAccess?: PodAccessFetchProvider;
   private readonly journal: MatrixEventJournal;
+  private readonly serviceIdentity?: MatrixServiceIdentity;
   private readonly logger = getLoggerFor(this);
   private readonly serverName?: string;
   private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
@@ -100,6 +105,7 @@ export class PodMatrixStore {
     this.serverName = options.serverName;
     this.podAccess = options.podAccess;
     this.journal = options.journal ?? new InMemoryMatrixEventJournal();
+    this.serviceIdentity = options.serviceIdentity;
     this.serverGroupReconcilerService = options.serverGroupReconcilerService;
   }
 
@@ -282,13 +288,15 @@ export class PodMatrixStore {
     await this.requireJoined(db, roomId, context, events);
     if (eventType !== 'm.room.message') throw new MatrixError(400, 'M_UNRECOGNIZED', 'Only m.room.message timeline events are supported');
     await this.authorizeTargets(db, roomId, content, context, events);
-    const reservation = await this.journal.reserveTransaction(this.scope(context),
-      JSON.stringify([this.deviceId(context), roomId, eventType, txnId]), {
-        eventId: this.generateEventId(context), createdAt: Date.now(), contentHash: this.hash(this.canonicalJson(['user',context.webId,eventType,content])),
-      });
-    if (reservation.contentHash !== this.hash(this.canonicalJson(['user',context.webId,eventType,content]))) {
+    const sender = this.getMatrixUserId(context);
+    const contentHash = this.hash(this.canonicalJson(['user',context.webId,eventType,content]));
+    const { reservation } = await this.reserveEventTransaction(context,
+      JSON.stringify([this.deviceId(context), roomId, eventType, txnId]),
+      { roomId, type: eventType, sender, content }, contentHash);
+    if (reservation.contentHash !== contentHash) {
       throw new MatrixError(409, 'M_CONFLICT', 'Transaction already reserved with different content');
     }
+    const pending = this.eventForReservation({ roomId, type: eventType, sender, content }, reservation);
     const source = await db.findById(messageResource,this.messageResourceIdFromEvent(roomId,reservation.eventId,reservation.createdAt));
     if (source) {
       const existing = this.eventSourceToRecord(source,roomId,context);
@@ -299,8 +307,50 @@ export class PodMatrixStore {
       await this.reconcileEvent(db, existing, context);
       return existing;
     }
-    return this.appendEvent(db, { roomId, type: eventType, sender: this.getMatrixUserId(context), txnId,
-      eventId: reservation.eventId, originServerTs: reservation.createdAt, content }, context);
+    return this.appendEvent(db, { roomId, type: eventType, sender, txnId,
+      eventId: reservation.eventId, originServerTs: reservation.createdAt, content, event: pending }, context);
+  }
+
+  /**
+   * Reserve a transaction for an event that does not exist yet.
+   *
+   * The event id is derived from the event, so an id can only be reserved by
+   * building the event first. The proposal therefore supplies the id and the
+   * timestamp; a retry at the same key must adopt the reservation rather than its
+   * own proposal, which is what `eventForReservation` does. The proposal is
+   * returned for the one caller that may legitimately replace a reservation.
+   */
+  private async reserveEventTransaction(
+    context: MatrixStoreContext,
+    key: string,
+    input: Omit<PersistedEventInput, 'originServerTs' | 'eventId'>,
+    contentHash: string,
+  ): Promise<{ reservation: MatrixTransactionReservation; proposal: PersistedMatrixEvent }> {
+    const proposal = buildPersistedEvent({ ...input, originServerTs: Date.now() }, this.serviceIdentity);
+    const reservation = await this.journal.reserveTransaction(this.scope(context), key, {
+      eventId: proposal.event_id!, createdAt: proposal.origin_server_ts as number, contentHash,
+    });
+    return { reservation, proposal };
+  }
+
+  /**
+   * Build the event a reservation pins.
+   *
+   * The reservation owns the timestamp: a retry that reserved a moment later must
+   * still land on the event the first attempt reserved, so the event is rebuilt
+   * from the reservation instead of from the clock. `buildPersistedEvent` asserts
+   * the id, so a reservation naming an id that this content and time do not
+   * derive fails loudly rather than writing a second id for one transaction.
+   */
+  private eventForReservation(
+    input: Omit<PersistedEventInput, 'originServerTs' | 'eventId'>,
+    reservation: MatrixTransactionReservation,
+  ): PersistedMatrixEvent {
+    return buildPersistedEvent({
+      ...input,
+      originServerTs: reservation.createdAt,
+      eventId: reservation.eventId,
+    }, this.serviceIdentity);
   }
 
   public async setState(roomId: string, eventType: string, stateKey: string, content: Record<string, unknown>,
@@ -503,11 +553,31 @@ export class PodMatrixStore {
       eventId?: string;
       role?: string;
       maker?: string;
+      /** Already-built protocol event, so a caller that reserved an id can reuse it. */
+      event?: PersistedMatrixEvent;
     },
     context: MatrixStoreContext,
   ): Promise<MatrixEventRecord> {
-    const eventId = input.eventId ?? this.generateEventId(context);
     const depth = 0;
+    // The protocol event is built first: its content-derived id is the event's
+    // identity, and the stored copy carries the hashes and signature that make
+    // the event verifiable from the Pod alone.
+    //
+    // `depth` is deliberately not part of it. A PDU's depth is a protocol fact
+    // that only exists once prev_events are known, and this store sequences
+    // events through the journal instead, so writing a placeholder here would
+    // sign a false field into the event id. `depth` is still accepted for events
+    // received from another server, where the sender supplies the real value.
+    const persistedEvent = input.event ?? buildPersistedEvent({
+      roomId: input.roomId,
+      type: input.type,
+      sender: input.sender,
+      originServerTs: input.originServerTs,
+      content: input.content,
+      ...(input.stateKey === undefined ? {} : { stateKey: input.stateKey }),
+      ...(input.eventId === undefined ? {} : { eventId: input.eventId }),
+    }, this.serviceIdentity);
+    const eventId = persistedEvent.event_id ?? this.generateEventId(context);
     const originIso = new Date(input.originServerTs).toISOString();
     const needsRoomMetadata = input.reconcilerOwner === undefined
       || (input.type === 'm.room.message' && this.serverGroupReconcilerService !== undefined);
@@ -554,16 +624,12 @@ export class PodMatrixStore {
         surface_id: this.surfaceIdFromRoomId(input.roomId),
         ...coordination,
       }, 'matrix', {
-        eventId,
-        roomId: input.roomId,
-        eventType: input.type,
-        sender: input.sender,
+        // Verifiable protocol fact: hashes and signatures live in here.
+        event: persistedEvent as unknown as ProtocolMetadata,
+        // Application bookkeeping that is deliberately not part of the event:
+        // putting it inside would change the canonical form and the event id.
         senderWebId: input.maker ?? context.webId,
-        originServerTs: input.originServerTs,
-        depth,
         txnId: input.txnId ?? null,
-        stateKey: input.stateKey ?? null,
-        content: input.content,
       }),
       createdAt: originIso,
       updatedAt: originIso,
@@ -673,27 +739,31 @@ export class PodMatrixStore {
   private eventSourceToRecord(source: MatrixEventSource, roomId: string, context: MatrixStoreContext): MatrixEventRecord {
     const metadata = this.parseJsonObject(source.metadata) ?? {};
     const matrix = getProtocolMetadata(metadata, 'matrix') ?? {};
-    const content = this.parseJsonObject(matrix.content as JsonObjectSource)
+    const stored = readPersistedEvent(matrix);
+    const content = this.parseJsonObject(stored?.content as JsonObjectSource)
+      ?? this.parseJsonObject(matrix.content as JsonObjectSource)
       ?? this.parseJsonObject(metadata.content as JsonObjectSource)
       ?? {msgtype: 'm.text', body: typeof source.content === 'string' ? source.content : JSON.stringify(source.content ?? '')};
-    const unsigned = this.parseJsonObject(matrix.unsigned as JsonObjectSource)
+    const unsigned = this.parseJsonObject(stored?.unsigned as JsonObjectSource)
+      ?? this.parseJsonObject(matrix.unsigned as JsonObjectSource)
       ?? this.parseJsonObject(metadata.unsigned as JsonObjectSource);
-    const stateKey = this.stringValue(matrix.stateKey ?? matrix.state_key ?? metadata.stateKey);
+    const stateKey = this.stringValue(stored?.state_key ?? matrix.stateKey ?? matrix.state_key ?? metadata.stateKey);
     const txnId = this.stringValue(matrix.txnId ?? matrix.txn_id ?? metadata.txnId);
     return {
-      eventId: this.stringValue(matrix.eventId ?? matrix.event_id ?? metadata.eventId) ?? `$${this.hash(source.id)}:${this.getServerName(context)}`,
-      roomId: this.stringValue(matrix.roomId ?? matrix.room_id ?? metadata.roomId) ?? roomId,
-      type: this.stringValue(matrix.eventType ?? matrix.event_type ?? metadata.eventType) ?? 'm.room.message',
-      sender: this.stringValue(matrix.sender ?? metadata.sender) ?? this.getMatrixUserId({...context, webId: source.maker ?? context.webId}),
+      eventId: this.stringValue(stored?.event_id ?? matrix.eventId ?? matrix.event_id ?? metadata.eventId) ?? `$${this.hash(source.id)}:${this.getServerName(context)}`,
+      roomId: this.stringValue(stored?.room_id ?? matrix.roomId ?? matrix.room_id ?? metadata.roomId) ?? roomId,
+      type: this.stringValue(stored?.type ?? matrix.eventType ?? matrix.event_type ?? metadata.eventType) ?? 'm.room.message',
+      sender: this.stringValue(stored?.sender ?? matrix.sender ?? metadata.sender) ?? this.getMatrixUserId({...context, webId: source.maker ?? context.webId}),
       senderWebId: this.stringValue(matrix.senderWebId ?? matrix.sender_web_id ?? metadata.senderWebId) ?? source.maker ?? undefined,
-      originServerTs: this.numberValue(matrix.originServerTs ?? matrix.origin_server_ts ?? metadata.originServerTs) ?? this.isoToMillis(source.createdAt) ?? Date.now(),
-      depth: this.numberValue(matrix.depth ?? metadata.depth),
+      originServerTs: this.numberValue(stored?.origin_server_ts ?? matrix.originServerTs ?? matrix.origin_server_ts ?? metadata.originServerTs) ?? this.isoToMillis(source.createdAt) ?? Date.now(),
+      depth: this.numberValue(stored?.depth ?? matrix.depth ?? metadata.depth),
       role: source.role,
       resourceId: source.id,
       txnId: txnId ?? undefined,
       content,
       stateKey: stateKey ?? undefined,
       unsigned,
+      ...(stored === undefined ? {} : { event: stored as unknown as Record<string, unknown> }),
     };
   }
 
@@ -921,20 +991,25 @@ export class PodMatrixStore {
         root:prior?.root ?? job.triggerMessage,evidence:result.evidence ?? []}};
     const contentHash = this.hash(this.canonicalJson(['assistant',job.agent,'m.room.message',content]));
     const key = JSON.stringify(['wake-result',job.id]);
-    const reservation = await this.journal.reserveTransaction(this.scope(context),key,{
-      eventId:`$${this.hash(key)}:${this.getServerName(context)}`,createdAt:Date.now(),contentHash});
+    const resultInput = { roomId, type: 'm.room.message', sender: this.getMatrixUserId({...context,webId:job.agent}), content };
+    const { reservation, proposal } = await this.reserveEventTransaction(context, key, resultInput, contentHash);
+    let active = reservation;
     if (reservation.contentHash !== contentHash) {
       // A crashed executor can leave a reservation whose output never reached the
-      // Pod. That reserved event is deterministic, so its absence proves nothing
-      // is committed: let the current attempt take the reservation over.
+      // Pod. Its absence proves nothing is committed, so the current attempt takes
+      // the reservation over — id included, since an event's id is derived from
+      // the event and this attempt's content derives its own.
       const dangling = !events.some(event => event.eventId === reservation.eventId);
       if (!dangling) throw new MatrixError(409,'M_CONFLICT','A different result was already reserved for this wake');
-      await this.journal.updateReservation(this.scope(context), key, contentHash);
+      active = { eventId: proposal.event_id!, createdAt: proposal.origin_server_ts as number, contentHash };
+      await this.journal.replaceReservation(this.scope(context), key, active);
     }
-    let output = events.find(e=>e.eventId===reservation.eventId);
+    const pendingResult = this.eventForReservation(resultInput, active);
+    let output = events.find(e=>e.eventId===active.eventId);
     if (!output) {
       output = await this.appendEvent(db,{roomId,type:'m.room.message',sender:this.getMatrixUserId({...context,webId:job.agent}),
-        maker:job.agent,role:MessageRole.ASSISTANT,eventId:reservation.eventId,originServerTs:reservation.createdAt,content},context);
+        maker:job.agent,role:MessageRole.ASSISTANT,eventId:reservation.eventId,originServerTs:reservation.createdAt,content,
+        event:pendingResult},context);
     } else if (this.hash(this.canonicalJson(['assistant',job.agent,output.type,output.content])) !== reservation.contentHash) {
       throw new MatrixError(409,'M_CONFLICT','Stored result no longer matches its receipt');
     }
@@ -1025,9 +1100,14 @@ export class PodMatrixStore {
     const existing = await db.findById(deliveryResource,id);
     if (existing?.status==='completed' || existing?.status==='cancelled' || existing?.status==='failed') return false;
     // Complete a write interrupted after the result Message but before Run/Delivery ACK.
-    const resultEventId = `$${this.hash(JSON.stringify(['wake-result',jobId]))}:${this.getServerName(context)}`;
-    const receipt = await this.journal.findReservation(this.scope(context),resultEventId);
-    if (receipt) {
+    // The result is looked up through its own record rather than a derived id: the
+    // id now depends on the result content, which only the record knows.
+    const records = await this.listEvents(db, event.roomId, context);
+    const stored = records.find(record => record.role === MessageRole.ASSISTANT &&
+      this.parseJsonObject(record.content['co.undefineds.execution'] as JsonObjectSource)?.jobId === jobId);
+    const receipt = stored === undefined ? undefined : await this.journal.findReservation(this.scope(context), stored.eventId);
+    const resultEventId = stored?.eventId;
+    if (receipt && resultEventId) {
       const source = await db.findById(messageResource,this.messageResourceIdFromEvent(event.roomId,resultEventId,receipt.createdAt));
       if (source) {
         const output = this.eventSourceToRecord(source,event.roomId,context);

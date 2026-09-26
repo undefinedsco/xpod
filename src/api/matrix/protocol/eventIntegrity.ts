@@ -10,11 +10,22 @@
 import { createHash, createPrivateKey, createPublicKey, sign as signBytes, verify as verifyBytes } from 'node:crypto';
 import { encodeCanonicalJson } from './canonicalJson';
 
-/** Room v11 redaction: the top-level keys an event keeps. */
+/**
+ * Room v11 redaction: the top-level keys an event keeps.
+ *
+ * `event_id` is part of the redaction list because a redacted event still
+ * references its own id, but it is deliberately **not** part of a reference
+ * hash: the id is computed from the event before the id exists. Anything that
+ * hashes a stored event must therefore strip `event_id` first, which is what
+ * `computeReferenceHash` does.
+ */
 export const REDACTION_KEPT_EVENT_KEYS = [
-  'event_id', 'type', 'room_id', 'sender', 'state_key', 'content', 'hashes',
+  'type', 'room_id', 'sender', 'state_key', 'content', 'hashes',
   'signatures', 'depth', 'prev_events', 'auth_events', 'origin_server_ts',
 ] as const;
+
+/** Redaction keys as the specification lists them, for documentation and tests. */
+export const SPEC_REDACTION_KEPT_EVENT_KEYS = [ 'event_id', ...REDACTION_KEPT_EVENT_KEYS ] as const;
 
 /** Room v11 redaction: `content` keys kept per event type. Anything else is emptied. */
 export const REDACTION_KEPT_CONTENT_KEYS: Record<string, readonly string[]> = {
@@ -47,14 +58,26 @@ export function computeEventId(event: Record<string, unknown>): string {
 }
 
 /**
- * Content hash: covers the complete event except `unsigned`, `signatures` and
- * `hashes`. Stored as `hashes.sha256` in unpadded (standard) base64.
+ * Content hash: covers the complete event except `unsigned`, `signatures`,
+ * `hashes` and `event_id`. Stored as `hashes.sha256` in unpadded (standard)
+ * base64.
+ *
+ * `event_id` is excluded because it does not exist yet when a sender hashes the
+ * event: in room v4 and later the id *is* a hash of the event, so it is derived
+ * after the fact and, in every implementation checked, kept outside the event
+ * JSON rather than inside it. Synapse parses an event, caches the derived id in
+ * a sibling field, and hashes `get_pdu_json()` — the parsed event, which has no
+ * `event_id` — so hashing the same event with the id attached would disagree
+ * with the sender for no reason. Excluding it makes the value independent of
+ * whether a caller holds the id in the same object, which is exactly the case
+ * for an event read back out of a Pod.
  */
 export function computeContentHash(event: Record<string, unknown>): Buffer {
   const copy = { ...event };
   delete copy.unsigned;
   delete copy.signatures;
   delete copy.hashes;
+  delete copy.event_id;
   return sha256(encodeCanonicalJson(copy));
 }
 
@@ -114,8 +137,13 @@ export interface SigningKeyPair {
 }
 
 /**
- * Sign an event: add the content hash, then sign the redacted event with
+ * Sign an event: add the content hash, then sign the **redacted** event with
  * `signatures` and `unsigned` removed, and merge the signature back in.
+ *
+ * The redaction step is what the specification signs, and it matters: a verifier
+ * only ever sees the redacted form, so signing the unredacted event would produce
+ * a signature that verifies for `m.room.message` (whose redaction empties the
+ * content) but fails for every event type whose content survives redaction.
  */
 export function signEvent(
   event: Record<string, unknown>,
@@ -124,7 +152,7 @@ export function signEvent(
 ): RedactedEvent {
   const signed = { ...event };
   signed.hashes = { sha256: encodeUnpaddedBase64(computeContentHash(signed)) };
-  const signature = signJson(signed, key);
+  const signature = signJson(redactEvent(signed), key);
   const signatures = { ...(isRecord(signed.signatures) ? signed.signatures : {}) };
   signatures[signingName] = { ...(isRecord(signatures[signingName]) ? signatures[signingName] as Record<string, unknown> : {}), [key.keyId]: signature };
   signed.signatures = signatures;

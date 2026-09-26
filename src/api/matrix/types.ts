@@ -33,6 +33,8 @@ export interface MatrixEventRecord {
   content: Record<string, unknown>;
   stateKey?: string;
   unsigned?: Record<string, unknown>;
+  /** Verifiable protocol event as persisted, when the row carries one. */
+  event?: Record<string, unknown>;
 }
 
 export interface MatrixCreateRoomRequest {

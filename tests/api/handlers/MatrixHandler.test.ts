@@ -115,7 +115,8 @@ function createRequest(
 
 function createResponse(): {
   response: any;
-  body(): unknown;
+  /** Parsed JSON body; the routes under test answer with objects. */
+  body(): Record<string, any>;
 } {
   let text = '';
   const response = {
@@ -566,7 +567,7 @@ describe('Matrix server key publication', () => {
     expect(route.path.startsWith('/_matrix/')).toBe(true);
 
     const mock = createResponse();
-    await route.handler(createRequest(), mock.response);
+    await route.handler(createRequest('/_matrix/key/v2/server'), mock.response);
     const body = mock.body();
     expect(body.server_name).toBe('chat.example.com');
     expect(Object.keys(body.verify_keys)).toEqual([ 'ed25519:1' ]);
@@ -583,7 +584,7 @@ describe('Matrix server key publication', () => {
       resolvePodUrl: async () => 'https://pods.example/alice/',
     });
     const mock = createResponse();
-    await routes['GET /_matrix/key/v2/server'].handler(createRequest(), mock.response);
+    await routes['GET /_matrix/key/v2/server'].handler(createRequest('/_matrix/key/v2/server'), mock.response);
     expect(mock.response.statusCode).toBe(404);
     expect(mock.body()).toMatchObject({ errcode: 'M_NOT_FOUND' });
   });
