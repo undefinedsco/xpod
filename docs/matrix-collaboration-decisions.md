@@ -285,10 +285,19 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
   本模块不写 Pod——持久化接收到的事件是调用方的事。测试
   `tests/api/matrix/federation/inboundPdu.test.ts` 7 项（接受、结构不符、伪造 sender/无密钥、
   内容篡改→redact、缺 auth event→deferred、未加入者发言被拒、二元组归一）。
+- **已落地**（2026-09-27）：**接收到的事件按原样落 Pod**（`acceptReceivedEvent`）。它刻意不复用
+  本机写入路径：本机事件是"构建并签名"，而收到的事件已经带着自己的 hashes 与签名，重建或重签会
+  毁掉验签材料、加签则会冒认作者。存进 `metadata.protocols.matrix.event` 的是原事件 + **本机推导
+  出的 `event_id`**（推导是安全的：内容哈希、reference hash、签名都不覆盖 `event_id`，而读者
+  必须对身份有共识）；另标记 `received: true`，因此该行的所有者**不会被误当成作者**——
+  `senderWebId` 保持未知，因为远端作者的 WebID 无法从 MXID（哈希）反推，要等对方自己的绑定可查。
+  按 event_id **幂等**（对端重放事务不会写出重复事件），并进入房间时间线、解析后的状态与事件图
+  （下一条本机事件的 `prev_events` 会指向它，证明写入路径读到的极值点来自 Pod）。测试
+  `tests/api/matrix/receivedEvent.test.ts` 5 项，含"远端 join 经 `validateInboundPdu` 接受后
+  落 Pod 并在房间状态里显示为 join"的端到端链路。
 - **待建**：入站事务接收与 `PUT /_matrix/federation/v1/send/{txnId}`（事务重放要返回同一响应，
-  依赖控制 Pod 的事务记录承载）、把接受的事件**按原样**落 Pod（现有写入路径会重新签名/重建事件，
-  入站事件必须保留原签名与推导出的 id，需要一条独立的持久化路径）、`/get_missing_events`
-  补依赖、状态与历史获取、`.well-known` 服务发现、以及**出站**投递。
+  依赖控制 Pod 的事务记录承载）、`/get_missing_events` 补依赖、状态与历史获取、`.well-known`
+  服务发现、以及**出站**投递。
 
 ## 已撤销或否决的前提
 

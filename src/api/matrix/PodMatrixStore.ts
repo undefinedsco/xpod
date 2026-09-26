@@ -26,7 +26,7 @@ import { roomGraphPosition, type RoomGraphEvent } from './protocol/roomGraph';
 import { MatrixRoomState, MatrixRoomStateReplay, resolveRoomState } from './roomState';
 import { SUPPORTED_ROOM_VERSION } from './protocol/authRules';
 import type { MatrixSigningIdentitySource } from './identityRegistry';
-import { EventIntegrityError } from './protocol/eventIntegrity';
+import { computeEventId, EventIntegrityError } from './protocol/eventIntegrity';
 import type { MatrixServiceIdentity } from './protocol/serviceIdentity';
 import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import type { SharedWakeAgentJob } from '../reconciler/coordination';
@@ -116,6 +116,11 @@ function webIdHost(webId: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** A plain object, as JSON fields must be. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** An event-id list read back from stored JSON, ignoring anything malformed. */
@@ -752,6 +757,91 @@ export class PodMatrixStore {
     return record;
   }
 
+  /**
+   * Store an event received from another server exactly as it arrived.
+   *
+   * Deliberately not the writer above: an event we author is built and signed here,
+   * while a received one already carries its own derived id, hashes and signatures —
+   * rebuilding or re-signing it would destroy the material a verifier checks, and
+   * adding our signature would claim authorship we do not have. The Pod keeps the
+   * received event verbatim under `metadata.protocols.matrix.event`, with `received`
+   * marking it so the row's owner is not mistaken for its author.
+   *
+   * Idempotent by event id: accepting the same event again returns the stored record
+   * without a second write, which is what a peer's transaction replay needs.
+   */
+  public async acceptReceivedEvent(input: {
+    event: Record<string, unknown>;
+    context: MatrixStoreContext;
+  }): Promise<MatrixEventRecord> {
+    const db = await this.getDb(input.context);
+    const event = input.event;
+    const roomId = String(event.room_id ?? '');
+    const type = String(event.type ?? '');
+    const sender = String(event.sender ?? '');
+    const originServerTs = Number(event.origin_server_ts ?? Number.NaN);
+    const content = isRecord(event.content) ? event.content : {};
+    if (!roomId || !type || !sender || !Number.isSafeInteger(originServerTs)) {
+      throw new MatrixError(400, 'M_BAD_JSON', 'A received event needs room_id, type, sender and origin_server_ts');
+    }
+    const eventId = computeEventId(event);
+    // The identity is derived here, not sent; attaching it is what every reader agrees
+    // on, and it is safe because neither the content hash, the reference hash nor the
+    // signature covers `event_id`.
+    const storedEvent: Record<string, unknown> = { ...event, event_id: eventId };
+    const messageResourceId = this.messageResourceIdFromEvent(roomId, eventId, originServerTs);
+    const existing = await db.findById(messageResource, messageResourceId);
+    if (existing) return this.eventSourceToRecord(existing, roomId, input.context);
+
+    const originIso = new Date(originServerTs).toISOString();
+    const role = type === 'm.room.message' ? MessageRole.USER : MessageRole.SYSTEM;
+    const coordination = reconcilerCoordinationMetadata(
+      this.reconcilerOwnerFromRoomMetadata((await this.getRoomContext(db, roomId, input.context))?.metadata));
+    await db.insert(messageResource).values({
+      id: messageResourceId,
+      parent: this.chatIri(roomId, input.context),
+      chat: this.chatIri(roomId, input.context),
+      thread: this.threadIri(roomId, input.context),
+      maker: input.context.webId,
+      role,
+      content: this.messageContentFromMatrixEvent(type, content),
+      status: MessageStatus.SENT,
+      mentions: this.mentionsFromMatrixContent(content),
+      routeTargetAgent: this.routeTargetAgentFromMatrixContent(content) ?? null,
+      replyTo: typeof content['co.undefineds.replyTo'] === 'string' ? content['co.undefineds.replyTo'] : null,
+      metadata: withProtocolMetadata({
+        '@id': `${messageResource.buildIri(this.scope(input.context),{id:messageResourceId})}/metadata`,
+        protocol: 'matrix',
+        commandKind: 'chat',
+        surface_id: this.surfaceIdFromRoomId(roomId),
+        ...coordination,
+      }, 'matrix', {
+        // The event as received: its own hashes and signatures, nothing re-signed, with
+        // the id this server derived attached.
+        event: storedEvent as unknown as ProtocolMetadata,
+        // This row's owner is not the author; the author is the event's `sender`.
+        received: true,
+      }),
+      createdAt: originIso,
+      updatedAt: originIso,
+    });
+
+    const record: MatrixEventRecord = {
+      eventId,
+      roomId,
+      type,
+      sender,
+      originServerTs,
+      role,
+      resourceId: messageResourceId,
+      content,
+      event: storedEvent,
+      ...(typeof storedEvent.state_key === 'string' ? { stateKey: storedEvent.state_key } : {}),
+    };
+    record.depth = await this.journal.registerEvent(this.scope(input.context), roomId, eventId);
+    return record;
+  }
+
   private async appendMembershipEvent(
     db: Db,
     roomId: string,
@@ -865,7 +955,11 @@ export class PodMatrixStore {
       roomId: this.stringValue(stored?.room_id ?? matrix.roomId ?? matrix.room_id ?? metadata.roomId) ?? roomId,
       type: this.stringValue(stored?.type ?? matrix.eventType ?? matrix.event_type ?? metadata.eventType) ?? 'm.room.message',
       sender: this.stringValue(stored?.sender ?? matrix.sender ?? metadata.sender) ?? this.getMatrixUserId({...context, webId: source.maker ?? context.webId}),
-      senderWebId: this.stringValue(matrix.senderWebId ?? matrix.sender_web_id ?? metadata.senderWebId) ?? source.maker ?? undefined,
+      // A received event's row is owned by this Pod's user, not by its author: the
+      // remote author's WebID is not derivable from their MXID, so it stays unknown
+      // until the sender's own binding can be consulted.
+      senderWebId: this.stringValue(matrix.senderWebId ?? matrix.sender_web_id ?? metadata.senderWebId)
+        ?? (matrix.received === true ? undefined : source.maker ?? undefined),
       originServerTs: this.numberValue(stored?.origin_server_ts ?? matrix.originServerTs ?? matrix.origin_server_ts ?? metadata.originServerTs) ?? this.isoToMillis(source.createdAt) ?? Date.now(),
       depth: this.numberValue(stored?.depth ?? matrix.depth ?? metadata.depth),
       role: source.role,
