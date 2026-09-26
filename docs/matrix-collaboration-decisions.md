@@ -76,10 +76,17 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   （版本一致则复用，读取失败绝不回退生成新 key）。见 `protocol/signingKeys.ts`、
   `signingKeyStore.ts`，测试 `tests/api/matrix/protocol/signingKeys.test.ts`、
   `tests/api/matrix/signingKeyStore.test.ts`。
-- **待接线**：把 `SealedSecretChannel` 接到该身份自己 Pod 的 `credential` 资源（Pod API 读写）+
-  容器装配；随后才把 `getServerName` 从「部署域名优先」改为「WebID host 优先」（现在反过来，
-  因为改早了会在没有对应密钥时无法签名——注册表已经会把这种情况变成响亮失败）；以及上面第 5
-  条的房间级 server name 记录位置。
+- **已落地**（2026-09-27）：密文落 Pod 的传输层 `signingKeyChannel.ts` —— 该身份自己 Pod 的
+  一条 `credential` 行承载 secret-cell 信封；行上另记只读的描述列（`service: matrix`、
+  server name、信封算法与 root keyId）便于运维识别与轮换，**信封本身仍是字节的唯一来源**，
+  且该层永远看不到明文私钥。`createPodSigningKeyDb` 用 drizzle-solid 绑定该身份的 Pod
+  （fetch 必须已带该身份授权；拿不到 Pod 访问权即拒绝）。测试覆盖：读写同一行（第二次写是
+  update）、只存密文、跨进程重启后读到同一身份、轮换写回同一行且旧 key 仍可验、换部署根密钥
+  打不开时**响亮失败且不覆盖原行**、无 Pod 访问权即拒绝。
+- **待接线**：把每参与者 provider 注册进注册表还缺一件已定但未建的持久事实——
+  **server name → 身份 Pod 绑定**（服务身份契约 §2.2 第 4 步要求绑定落用户选定的 Pod），
+  以及随后的 `getServerName` 翻转（现在仍是部署域名优先）与上面第 5 条的房间级 server name
+  记录位置。三件要一起上，否则会在没有对应密钥时签名失败或错签。
 
 ## 消息身份与表示
 
