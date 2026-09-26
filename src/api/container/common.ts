@@ -34,6 +34,7 @@ import { getTaskCredentialDatabase, resolveTaskCredentialDatabaseUrl } from '../
 import { createTaskCredentialSource, TaskCredentialStore } from '../tasks/TaskCredentialStore';
 import { PodInterfaceKeyRepository } from '../../identity/drizzle/PodInterfaceKeyRepository';
 import { PodInterfaceKeyStore } from '../ai-gateway/pod/PodInterfaceKeyStore';
+import { migratePodInterfaceKeysToTaskCredentials } from '../tasks/PodInterfaceKeyMigration';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCredentialVault';
 import { createAiCredentialSecretDecoder } from '../ai-gateway/credentials/AiCredentialSecretDecoder';
@@ -197,6 +198,21 @@ export function registerCommonServices(
       });
     }).singleton(),
 
+    legacyPodKeyMigration: asFunction(({ config, db, taskCredentialStore }: ApiContainerCradle) => {
+      const issuer = config.solidBaseUrl ?? config.publicUrl;
+      if (!taskCredentialStore || !issuer) {
+        return undefined;
+      }
+      return async() => await migratePodInterfaceKeysToTaskCredentials({
+        keys: new PodInterfaceKeyStore({
+          repository: new PodInterfaceKeyRepository(db),
+          vault: credentialVaultForConfig(config),
+        }),
+        taskCredentials: taskCredentialStore,
+        issuer,
+      });
+    }).singleton(),
+
     taskCredentialStore: asFunction(({ config }: ApiContainerCradle) => {
       // No root key means no encrypted store: a credential that cannot be sealed is not kept.
       const vault = config.secretCellVaultFactory?.();
@@ -217,15 +233,11 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    ownerPodAccess: asFunction(({ config, db, solidSessions, taskCredentialStore }: ApiContainerCradle) => {
-      // Task-layer grants are what background work uses; the stored key stays the fallback for
-      // entries that have not migrated yet.
+    ownerPodAccess: asFunction(({ config, solidSessions, taskCredentialStore }: ApiContainerCradle) => {
+      // Background work uses the owner's task-layer grant; a request uses the credential its
+      // caller brought. Nothing is read from a deployment-held key any more.
       const issuer = config.solidBaseUrl ?? config.publicUrl;
       return new OwnerPodAccess({
-        keys: new PodInterfaceKeyStore({
-          repository: new PodInterfaceKeyRepository(db),
-          vault: credentialVaultForConfig(config),
-        }),
         sessions: solidSessions,
         ...(taskCredentialStore && issuer
           ? { taskCredentials: createTaskCredentialSource({ store: taskCredentialStore, issuer }) }

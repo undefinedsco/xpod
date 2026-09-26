@@ -10,6 +10,7 @@ import type { Authenticator } from '../auth/Authenticator';
 import type { SolidSessionFactory } from '../auth/SolidSessionFactory';
 import type { SecretCellVault } from '../../security/secret-cell';
 import type { TaskCredentialStore } from '../tasks/TaskCredentialStore';
+import type { PodInterfaceKeyMigrationResult } from '../tasks/PodInterfaceKeyMigration';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { VercelChatService } from '../service/VercelChatService';
@@ -274,6 +275,11 @@ export interface ApiContainerCradle {
    * a credential that cannot be encrypted is not stored at all.
    */
   taskCredentialStore?: TaskCredentialStore;
+  /**
+   * Moves rows out of the API-side owner-key table into the task layer. Defined only when the task
+   * layer can store them; safe to call on every boot.
+   */
+  legacyPodKeyMigration?: () => Promise<PodInterfaceKeyMigrationResult>;
   invocationTokenCodec?: InvocationTokenCodec;
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   aiConnectionInvocationKeyIssuer?: AiConnectionsInvocationKeyIssuer;

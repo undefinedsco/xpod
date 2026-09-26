@@ -1,7 +1,6 @@
-import { PlaintextCredentialVault } from '../../src/api/ai-gateway/credentials/PlaintextCredentialVault';
 import { OwnerPodAccess } from '../../src/api/ai-gateway/pod/OwnerPodAccess';
-import { PodInterfaceKeyStore } from '../../src/api/ai-gateway/pod/PodInterfaceKeyStore';
 import { createTestSolidSessions } from './solidSessions';
+import type { SolidAuthContext } from '../../src/api/auth/AuthContext';
 import type {
   PodInterfaceKeyRecord,
   PodInterfaceKeyRepositoryPort,
@@ -15,6 +14,10 @@ export class InMemoryInterfaceKeyRepository implements PodInterfaceKeyRepository
     return this.records.get(ownerWebId);
   }
 
+  public async list(): Promise<PodInterfaceKeyRecord[]> {
+    return [ ...this.records.values() ];
+  }
+
   public async write(record: Omit<PodInterfaceKeyRecord, 'createdAt' | 'updatedAt'>): Promise<void> {
     this.records.set(record.ownerWebId, { ...record, createdAt: new Date(0), updatedAt: new Date(0) });
   }
@@ -24,9 +27,22 @@ export class InMemoryInterfaceKeyRepository implements PodInterfaceKeyRepository
   }
 }
 
+/** A caller the API authenticated with its own API key: the owner's interface key rides along. */
+export type OwnerInterfaceKeyAuth = SolidAuthContext & {
+  clientId: string;
+  clientSecret: string;
+  viaApiKey: true;
+};
+
 /**
- * Real Pod access for an integration test: the actual provider, the actual vault envelope, and
- * the owner's actual client credentials. Only the key store's persistence is in memory.
+ * Real Pod access for an integration test: the actual provider, the actual token exchange, and
+ * the owner's actual interface key. Only the request that carries the key is built here.
+ *
+ * The API stores no key of its own (`docs/pod-interface-key.md` decision 7), so the credential
+ * travels with the request: `auth` is the shape `ClientCredentialsAuthenticator` produces once a
+ * caller has presented its API key, and `OwnerPodAccess` exchanges it for a Pod token this
+ * process can prove. No access token is attached on purpose - the one an exchange yields is
+ * bound to the key pair that asked for it, which is exactly what a caller cannot hand over.
  */
 export async function createInterfaceKeyPodAccess(input: {
   webId: string;
@@ -34,20 +50,22 @@ export async function createInterfaceKeyPodAccess(input: {
   clientSecret: string;
   tokenEndpoint: string;
   publicBaseUrl?: string;
-}): Promise<{ podAccess: OwnerPodAccess; keys: PodInterfaceKeyStore }> {
-  const keys = new PodInterfaceKeyStore({
-    repository: new InMemoryInterfaceKeyRepository(),
-    vault: new PlaintextCredentialVault(),
-  });
-  await keys.saveKey(input.webId, { clientId: input.clientId, clientSecret: input.clientSecret });
+}): Promise<{ podAccess: OwnerPodAccess; auth: OwnerInterfaceKeyAuth }> {
   return {
-    keys,
     podAccess: new OwnerPodAccess({
-      keys,
       sessions: createTestSolidSessions({
         tokenEndpoint: input.tokenEndpoint,
         ...(input.publicBaseUrl ? { publicBaseUrl: input.publicBaseUrl } : {}),
       }),
     }),
+    auth: {
+      type: 'solid',
+      webId: input.webId,
+      accountId: input.webId,
+      clientId: input.clientId,
+      clientSecret: input.clientSecret,
+      viaApiKey: true,
+      tokenType: 'DPoP',
+    },
   };
 }

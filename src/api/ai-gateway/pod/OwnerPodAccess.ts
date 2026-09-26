@@ -9,11 +9,7 @@ import {
   createCallerAuthenticatedPodFetch,
 } from '../auth/CallerPodAccess';
 import { createHostedPodRouteTransport, type HostedPodRoute } from './HostedPodRoute';
-import type {
-  PodInterfaceCredential,
-  PodInterfaceKeyAccess,
-  PodInterfaceKeyGrant,
-} from './PodInterfaceKeyStore';
+import type { PodInterfaceCredential } from './PodInterfaceKeyStore';
 
 /** No usable Pod credential is on file for this owner; the user has to grant one. */
 export const POD_INTERFACE_KEY_MISSING = 'pod_interface_key_missing';
@@ -69,7 +65,6 @@ export interface PodAccessFetchProvider {
 }
 
 export interface OwnerPodAccessOptions {
-  keys: PodInterfaceKeyAccess;
   /**
    * Shared Solid session factory. The caller's own credential was already exchanged while
    * authenticating the request, so reaching the Pod reuses that session and its DPoP key
@@ -97,9 +92,8 @@ export interface OwnerPodAccessOptions {
  * request carries a credential for the owner and addresses the Pod's own URLs, so the Pod's own
  * authorization decides - exactly as it does for the browser.
  */
-export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGrant {
+export class OwnerPodAccess implements PodAccessFetchProvider {
   private readonly logger = getLoggerFor(this);
-  private readonly keys: PodInterfaceKeyAccess;
   private readonly sessions: SolidSessionFactory;
   private readonly taskCredentials?: TaskCredentialSource;
   private readonly fetchImpl: typeof fetch;
@@ -107,25 +101,10 @@ export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGr
   private transport?: Promise<typeof fetch>;
 
   public constructor(options: OwnerPodAccessOptions) {
-    this.keys = options.keys;
     this.sessions = options.sessions;
     this.taskCredentials = options.taskCredentials;
     this.fetchImpl = options.fetch ?? fetch;
     this.route = options.route;
-  }
-
-  /** Grant, or rotate, the owner's Pod interface key. */
-  public async saveKey(owner: string, credential: PodInterfaceCredential): Promise<void> {
-    await this.keys.saveKey(owner, credential);
-    this.sessions.invalidate(credential);
-  }
-
-  public async forgetKey(owner: string): Promise<void> {
-    await this.keys.forgetKey(owner);
-  }
-
-  public async hasKey(owner: string): Promise<boolean> {
-    return await this.keys.hasKey(owner);
   }
 
   public async getPodFetch(
@@ -148,11 +127,9 @@ export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGr
         { clientId: auth.clientId, clientSecret: auth.clientSecret },
       );
     }
-    const callerFetch = createCallerAuthenticatedPodFetch(owner, auth, this.fetchImpl, this.route);
-    if (callerFetch) {
-      return callerFetch;
-    }
-    return await this.storedKeyFetch(owner);
+    // Only the caller's own credential opens the Pod. A deployment-held key would make "this
+    // request was authorized" indistinguishable from "somebody registered once".
+    return createCallerAuthenticatedPodFetch(owner, auth, this.fetchImpl, this.route);
   }
 
   /**
@@ -178,11 +155,6 @@ export class OwnerPodAccess implements PodAccessFetchProvider, PodInterfaceKeyGr
       return undefined;
     }
     return await this.credentialFetch(owner, credential);
-  }
-
-  private async storedKeyFetch(owner: string): Promise<typeof fetch | undefined> {
-    const credential = await this.keys.read(owner);
-    return credential ? await this.credentialFetch(owner, credential) : undefined;
   }
 
   private async credentialFetch(
