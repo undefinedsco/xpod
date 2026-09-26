@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:net';
+import { createServer, type Server } from 'node:http';
+import { createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -14,11 +15,13 @@ import {
   describePortHolder,
   entryServesCandidate,
   evaluatePreflight,
+  fetchStatusWithRetry,
   isPortFree,
   legPrerequisites,
   outcomeOf,
   parseTunnelGroup,
   prerequisiteFor,
+  readEntryProvenance,
   readServicePids,
   reserveNetworkPorts,
   requireCredentialFile,
@@ -27,6 +30,7 @@ import {
   stripCloudRegistrationEnv,
   summarizeHistory,
   takeLegPort,
+  waitForTerminalTunnelState,
   type LegPortRecord,
 } from '../../scripts/accept-network-tunnel';
 import {
@@ -686,4 +690,148 @@ describe('accept-network-tunnel leg ports', () => {
     expect(holder.child.exitCode).toBeNull();
     expect(await isPortFree(consolePort)).toBe(false);
   }, 30_000);
+});
+
+describe('accept-network-tunnel timing facts', () => {
+  const servers: Server[] = [];
+
+  afterEach(async() => {
+    await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    })));
+  });
+
+  /** Answers a scripted list of responses; a `null` entry destroys the socket (no answer). */
+  async function serve(script: Array<{ status: number; body: string } | null>): Promise<string> {
+    let call = 0;
+    const server = createServer((request, response) => {
+      const step = script[Math.min(call, script.length - 1)];
+      call += 1;
+      if (step === null) {
+        request.socket.destroy();
+        return;
+      }
+      response.writeHead(step.status, { 'content-type': 'application/json' });
+      response.end(step.body);
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    return `http://127.0.0.1:${port}/api/admin/status`;
+  }
+
+  it('retries a request nothing answered, and never retries an answer', async() => {
+    // A public edge that has just been assigned can drop one request; a red isolation check for
+    // that would be the edge's timing reported as our bug. An answered 200/403 is always final.
+    const dropped = await serve([ null, { status: 403, body: '{}' } ]);
+    const retried = await fetchStatusWithRetry(dropped);
+    expect(retried.status).toBe(403);
+    expect(retried.attempts).toBe(2);
+
+    const answered = await serve([ { status: 200, body: '{"ok":true}' } ]);
+    const single = await fetchStatusWithRetry(answered);
+    expect(single.status).toBe(200);
+    expect(single.attempts).toBe(1);
+  });
+
+  it('polls a tunnel until the provider commits, and reports how long it took', async() => {
+    const starting = JSON.stringify({ tunnel: { supported: true, status: 'starting' } });
+    const failed = JSON.stringify({ tunnel: { supported: true, status: 'error', detail: 'cloudflared exited with code 255' } });
+    const server = createServer((() => {
+      let call = 0;
+      return (_request: unknown, response: import('node:http').ServerResponse) => {
+        call += 1;
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(call === 1 ? starting : failed);
+      };
+    })());
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    const verdict = await waitForTerminalTunnelState(port, 10_000);
+    expect(verdict.decided).toBe(true);
+    expect(verdict.observed).toBe('error');
+    expect(verdict.detail).toMatch(/exited with code 255/u);
+    expect(verdict.waitedMs).toBeGreaterThanOrEqual(1_000);
+  });
+
+  it('reports "still starting" as undecided instead of inventing a verdict', async() => {
+    const starting = JSON.stringify({ tunnel: { supported: true, status: 'starting' } });
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(starting);
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    const verdict = await waitForTerminalTunnelState(port, 1_200);
+    expect(verdict.decided).toBe(false);
+    expect(verdict.observed).toBe('starting');
+  });
+});
+
+describe('accept-network-tunnel entry provenance', () => {
+  const entry = { id: 'public', label: 'public entry', baseUrl: 'https://entry.example/' };
+  const statusBody = (pids: number[]): string => JSON.stringify(pids.map((pid) => ({ pid })));
+
+  it('waits out an edge placeholder instead of calling it a wrong origin', async() => {
+    // A freshly assigned entry can answer with its own 404 page for a moment. That is the edge
+    // warming up, not "another instance answers here", and only the latter is a finding.
+    const answers = [ '<!doctype html><title>404</title>', '', statusBody([ 11, 12 ]) ];
+    const waits: number[] = [];
+    let call = 0;
+    const provenance = await readEntryProvenance({
+      candidateBaseUrl: 'http://127.0.0.1:1/',
+      entry,
+      sleep: async(ms) => { waits.push(ms); },
+      probe: async(url) => {
+        if (url.includes('127.0.0.1')) return { status: 200, body: statusBody([ 11, 12 ]) };
+        const body = answers[Math.min(call, answers.length - 1)];
+        call += 1;
+        return { status: body === '' ? 502 : 200, body };
+      },
+    });
+    expect(provenance.observed).toEqual([ 11, 12 ]);
+    expect(provenance.attempts).toBe(3);
+    expect(waits).toHaveLength(2);
+  });
+
+  it('treats a different runtime behind the entry as a verdict on the first answer', async() => {
+    let entryCalls = 0;
+    const provenance = await readEntryProvenance({
+      candidateBaseUrl: 'http://127.0.0.1:1/',
+      entry,
+      sleep: async() => undefined,
+      probe: async(url) => {
+        if (url.includes('127.0.0.1')) return { status: 200, body: statusBody([ 11, 12 ]) };
+        entryCalls += 1;
+        return { status: 200, body: statusBody([ 99, 100 ]) };
+      },
+    });
+    // Retrying this could only hide an origin mismatch, so it is answered once and reported.
+    expect(entryCalls).toBe(1);
+    expect(provenance.observed).toEqual([ 99, 100 ]);
+    expect(provenance.attempts).toBe(1);
+  });
+
+  it('reports what the entry actually said when it never names a runtime', async() => {
+    const provenance = await readEntryProvenance({
+      candidateBaseUrl: 'http://127.0.0.1:1/',
+      entry,
+      attempts: 3,
+      sleep: async() => undefined,
+      probe: async(url) => (url.includes('127.0.0.1')
+        ? { status: 200, body: statusBody([ 11 ]) }
+        : { status: 404, body: '   ' }),
+    });
+    expect(provenance.observed).toEqual([]);
+    expect(provenance.attempts).toBe(3);
+    expect(provenance.lastStatus).toBe(404);
+    expect(provenance.bodySnippet).toBe('empty body');
+  });
 });

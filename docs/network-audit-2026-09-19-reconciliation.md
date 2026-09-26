@@ -456,11 +456,20 @@ W2 的第一批：**N07 会话并发写**与 **N06 选路校验**。两项都是
 - `--preflight --group all`：`ngrok READY`（token present）、`cloudflared-quick READY`、`cloudflared-named READY`（`node-0000.undefineds.co` 解析、控制台端口 5737 回读成功）、`sakura BLOCKED`（本机无 frpc，提示 `--frpc-bin`/`FRPC_BIN`/natfrp 镜像）+ 归属行 `owner of "sakura": the operator's SakuraFrp console …`；`--strict` 下 exit 1。
 - `--group default --start`：**43 passed / 0 failed / 0 blocked，exit 0**，并打印 `group=default does not run: ngrok-real-entry, cloudflared-quick-tunnel, cloudflared-named-tunnel, sakura-real-tunnel`；提交后干净树复跑，证据 `sha=b365fb26 dirty=false`（本节文字其后 amend 进同一提交，代码与该 sha 相同）。
 - `--group external --start`：**61 passed / 0 failed / 0 blocked，exit 0**（`sha=b365fb26`；该次 `dirty=true` 只因工作区里无关的 `bun.lock` 重排，回退后 default 腿复跑为 `dirty=false`）—— 本轮网络恰好可用（ngrok `https://ravioli-basics-throbbing.ngrok-free.dev/`、quick tunnel `https://spending-consolidation-perception-stan.trycloudflare.com · serving`），入口归属校验与隔离矩阵全过；说明分线不是"把腿藏起来"：网络好时照跑全。
-- `--flake-report`：2 条历史记录、全部腿 not-passed 0%。
+- `--group all --strict --start`（三条线一个进程、严格模式）：**81 passed / 0 failed / 0 blocked，exit 0** —— ngrok、cloudflared quick tunnel、cloudflared 具名（`https://node-0000.undefineds.co/`）、SakuraFrp（`https://frp-dad.com:35246/`）四条真实入口全部 `serving` 且入口归属校验通过（入口回打 PID ＝ 本候选），四套隔离矩阵全绿。这条线此前从未跑过，前两次分别红 2 项与 1 项（即上面三处时序抖动），修完后一次通过。
+- `--flake-report`：全部腿 not-passed 0%。
 - `bun run test`（全量）：**633 文件 / 6212 例通过**（含改写后的 32 例 harness 单测：分组矩阵、blocked 不判红 / strict 判红、前置条件归属、DNS 交叉判定、`retryTransient` 抖动、历史汇总排序）。
 
 **同源的 CI 抖动（本轮一并修掉）**：`integration-full` 在 CI 上以 `ECONNRESET http://127.0.0.1:9000/xpod?location` 失败（run 36169817113，容器 `Started` 后 0.25s 就进入拆除，全程 80s）。根因不是 VersityGW，而是**就绪探测把"容器还没起来"抛成了异常**：`hasObjectStore` 直接 `return await client.bucketExists(bucket)`，transport 错误（`ECONNRESET`/`ECONNREFUSED`）以 rejected promise 逃出，`waitForInfraServices` 的 60 次重试**第一次就中断**（Bun 下未处理的 rejection 还直接让 runner 以 1 退出）。CI 冷启动（要 pull 镜像）几乎必现，本机镜像热时不出现 —— 这就是"看起来不稳定"的机制。修法：探测改为**只回答不抛**（`probeObjectStore` → `{ok, detail}`，`hasObjectStore` 退化为 `.ok`），重试循环用 detail 汇报真实原因（`minio=code ECONNRESET: ...`）；同一改动也让 `runManagedLocalRegistration` / `runLoginDeploymentMatrix` 的 `waitReady(hasObjectStore)` 真正重试而不是首次即失败。新增单测 `tests/helpers/dockerObjectStore.test.ts`（负向优先：关端口的探测必须返回 `ok:false` 且带原因、不得抛；外加"三个 compose 文件必须钉同一个 digest"的漂移守卫）。验证：删掉镜像与 compose 栈后冷启动跑 `bun run test:integration:full` → `[full] postgres/redis/minio ready.` + **4 文件 / 45 例通过，exit 0**。
 
 **同一类的第二处（release 通道 helper）**：`runManagedLocalRegistration` / `runLoginDeploymentMatrix` 在 `waitReady` 之后用**一次性 `fetch('/provision/status')`** 判定"节点是否注册成功"——刚启动的节点第一次回答可能是 connection refused/reset，于是流程因时序而失败。新增 `tests/helpers/fetchJson.ts`（`fetchJsonWithRetry`）：传输失败按抖动退避重试，**HTTP 响应不重试**（服务器已作答，重试改不了结论），耗尽重试时报出尝试次数与最后一次原因；两个 helper 改用它。单测 `tests/helpers/fetchJson.test.ts` 3 例（拒绝两次后成功、500 只问一次、耗尽时报次数与原因）。这两个流程本身仍需 `XPOD_QLEVER_LOCAL_RUNTIME_COMMAND` 才能真机跑通，属既有环境 gap，本次只消除其中的时序抖动源。
+
+**`--group all` 才暴露出来的两处时序抖动（同轮修掉）**：三条线合到一个进程跑（`--group all --strict --start`）时，负载与并发都上一个量级，两次真实的红都不是产品问题：
+
+1. `public/admin-status-anonymous observed=0` —— 刚分配的 ngrok 入口**丢了一条请求**（`status 0`＝无应答），而隔离矩阵是单发探测，于是把边缘的时序写成了"隔离失败"。修法：`fetchStatusWithRetry`，**只在"没有任何应答"时重试**（最多 3 次、退避+抖动），**已作答的状态永不重试**（包括 200）；发生过重试时把"第几次才答"写进 `observed`，证据不掩盖重试。
+2. `candidate/cloudflare-invalid-token observed=starting` —— 失败腿用**固定 sleep 5 秒**再读一次状态，重负载下 provider 还是 `starting`，而 `starting` 不是结论。修法：`waitForTerminalTunnelState` 轮询到 provider 给出终态（`active|error|inactive|unsupported`）或到预算（`min(tunnelTimeoutMs, 45s)`），并把"轮询多久才定态"写进证据；若始终未定态，安全属性（"从未 active"）记为成立、原因匹配记为**blocked**（owner＝provider 自身启动延迟），不再写成产品缺陷。
+3. 第三次 `--group all --strict` 又暴露出第三处：`public/entry-serves-this-candidate observed=candidate 27305,27306 vs entry none` —— 入口刚挂上时会返回边缘自己的占位页/空体，`readServicePids` 读不到任何身份，被当成"入口不通"。修法：`readEntryProvenance` **只在"入口没给出任何可读身份"时重试**（最多 5 次、抖动退避）；**一旦入口报出了别的运行时 PID 就立即定论**（重试只会掩盖真实的 origin 错配），最终仍读不到身份时把状态码、尝试次数与body 片段一起写进证据。
+
+三处分级都是同一条原则：**"没有应答/还没定态"是时序事实，"答了但答错"才是结论**。harness 单测 38 例（新增 6 例：丢包重试与"已作答不重试"、终端态轮询与未定态、占位页重试、身份错配一次定论、无身份时如实记录状态码/次数/body 片段）。
 
 **仍未做**：`--reuse` 模式下 `a04-identity` 仍记为失败（复用别人的实例时身份链确实没跑，属"调用者选择"而非环境，未纳入 blocked——需要时再单独定口径）；`network` 组证据的 `tunnels[]` 仍为空（既有限制，见 10.8 末）。

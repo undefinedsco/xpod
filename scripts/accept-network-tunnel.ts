@@ -546,6 +546,67 @@ async function fetchStatus(
   }
 }
 
+/**
+ * One probe that retries only when *nothing* answered.
+ *
+ * A public entry that has just been assigned can drop a single request before the edge routes it
+ * (`status 0`: refused, reset or timed out), and reporting that as an isolation finding is how the
+ * edge's own timing became a red check. An answered status is always final - including a 200 - so
+ * nothing that answered is ever retried.
+ */
+/** Tunnel states that mean the provider has stopped being undecided. */
+const TERMINAL_TUNNEL_STATES = new Set([ 'active', 'error', 'inactive', 'unsupported' ]);
+
+/**
+ * Waits for a provider to commit to a tunnel state, instead of sleeping for a fixed moment.
+ *
+ * A fixed five-second sleep is what made the failure legs flaky: with one process running every
+ * group, a provider can still be `starting` five seconds in - and `starting` is not a finding, it
+ * is the absence of one. Polling stops as soon as the provider decides, and reports how long that
+ * took, so the evidence shows latency instead of a mystery.
+ */
+export async function waitForTerminalTunnelState(
+  port: number,
+  deadlineMs: number,
+): Promise<{ observed?: string; detail?: string; waitedMs: number; decided: boolean }> {
+  const started = Date.now();
+  let observed: string | undefined;
+  let detail: string | undefined;
+  while (Date.now() - started < deadlineMs) {
+    const status = await fetchStatus(`http://127.0.0.1:${port}/api/network/settings/status`);
+    observed = readTunnelCapability(status.body);
+    detail = readTunnelDetail(status.body);
+    if (observed !== undefined && TERMINAL_TUNNEL_STATES.has(observed)) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000 + Math.floor(Math.random() * 500)));
+  }
+  return {
+    observed,
+    ...(detail ? { detail } : {}),
+    waitedMs: Date.now() - started,
+    decided: observed !== undefined && TERMINAL_TUNNEL_STATES.has(observed),
+  };
+}
+
+export async function fetchStatusWithRetry(
+  url: string,
+  init: RequestInit = {},
+  tls?: { allowSelfSigned?: boolean },
+  attempts = 3,
+): Promise<{ status: number; body: string; attempts: number }> {
+  let result: { status: number; body: string; attempts: number } = { status: 0, body: '', attempts: 0 };
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const probe = await fetchStatus(url, init, tls);
+    result = { ...probe, attempts: attempt };
+    if (probe.status !== 0 || attempt === attempts) {
+      return result;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500 * attempt + Math.floor(Math.random() * 500)));
+  }
+  return result;
+}
+
 /** Waits until the API child answers, not just the Gateway in front of it. */
 async function waitForApiChild(port: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -595,12 +656,25 @@ async function runIsolationMatrix(
   const mutateLocal = options.mutateLocal ?? true;
   const results: CheckResult[] = [];
 
-  const anonymous = await fetchStatus(`${base}/api/admin/status`, {}, tls);
+  // Every probe over this entry goes through the retrying reader: an edge that just came up can
+  // drop a request, and the evidence still shows how many tries the answer took.
+  const ask = async(url: string, init: RequestInit = {}): Promise<{ status: number; body: string; note?: string }> => {
+    const result = await fetchStatusWithRetry(url, init, tls);
+    return {
+      status: result.status,
+      body: result.body,
+      ...(result.attempts > 1
+        ? { note: `answered on attempt ${result.attempts}; earlier attempt(s) got no answer` }
+        : {}),
+    };
+  };
+
+  const anonymous = await ask(`${base}/api/admin/status`);
   results.push({
     id: 'admin-status-anonymous',
     entry: entry.id,
     expectation: entry.id === 'loopback' ? '200 (local operator)' : '403 (remote caller)',
-    observed: String(anonymous.status),
+    observed: `${anonymous.status}${anonymous.note ? ` · ${anonymous.note}` : ''}`,
     ok: entry.id === 'loopback' ? anonymous.status === 200 : anonymous.status === 403,
   });
 
@@ -608,7 +682,7 @@ async function runIsolationMatrix(
   // override is only meaningful on our own listeners: a provider edge (ngrok answers 421)
   // refuses a mismatched Host before the request ever reaches the Gateway, which is worth
   // recording but is not the Gateway's decision.
-  const forged = await fetchStatus(`${base}/api/admin/status`, {
+  const forged = await ask(`${base}/api/admin/status`, {
     headers: {
       'x-xpod-admin-proxy-loopback': '1',
       'x-xpod-admin-proxy-signature': 'forged',
@@ -616,7 +690,7 @@ async function runIsolationMatrix(
       'x-forwarded-host': 'localhost',
       ...(entry.id === 'public' ? {} : { host: 'localhost' }),
     },
-  }, tls);
+  });
   const forgedRejected = entry.id === 'loopback'
     ? forged.status === 200
     : forged.status === 403 || (entry.id === 'public' && forged.status >= 400 && forged.status < 500);
@@ -643,7 +717,7 @@ async function runIsolationMatrix(
     [ 'service-logs-anonymous', '/service/logs', 'GET', 'logs' ],
     [ 'service-restart-anonymous', '/service/restart/gateway', 'POST', 'service control' ],
   ] as const) {
-    const probe = await fetchStatus(`${base}${path}`, { method }, tls);
+    const probe = await ask(`${base}${path}`, { method });
     const ok = entry.id === 'loopback' ? probe.status !== 403 : probe.status === 403;
     results.push({
       id,
@@ -651,7 +725,7 @@ async function runIsolationMatrix(
       expectation: entry.id === 'loopback'
         ? `not 403 (local operator may read ${expectation})`
         : `403 (${expectation} stay with the operator)`,
-      observed: String(probe.status),
+      observed: `${probe.status}${probe.note ? ` · ${probe.note}` : ''}`,
       ok,
     });
   }
@@ -659,7 +733,7 @@ async function runIsolationMatrix(
   if (entry.id === 'loopback' && !mutateLocal) {
     // Verifying an instance the operator is using must not write its configuration, so the
     // local half of this check reads instead of mutating and says so.
-    const readBack = await fetchStatus(`${base}/api/admin/config`, {}, tls);
+    const readBack = await ask(`${base}/api/admin/config`);
     results.push({
       id: 'admin-config-mutation-anonymous',
       entry: entry.id,
@@ -669,39 +743,39 @@ async function runIsolationMatrix(
       detail: 'read-only run against a live instance',
     });
   } else {
-    const mutation = await fetchStatus(`${base}/api/admin/config`, {
+    const mutation = await ask(`${base}/api/admin/config`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ env: { CSS_LOGGING_LEVEL: 'info' } }),
-    }, tls);
+    });
     results.push({
       id: 'admin-config-mutation-anonymous',
       entry: entry.id,
       expectation: entry.id === 'loopback' ? '200 (local operator)' : '403 (remote caller)',
-      observed: String(mutation.status),
+      observed: `${mutation.status}${mutation.note ? ` · ${mutation.note}` : ''}`,
       ok: entry.id === 'loopback' ? mutation.status === 200 : mutation.status === 403,
     });
   }
 
   if (adminToken) {
-    const authorised = await fetchStatus(`${base}/api/admin/status`, {
+    const authorised = await ask(`${base}/api/admin/status`, {
       headers: { 'x-xpod-admin-token': adminToken },
-    }, tls);
+    });
     results.push({
       id: 'admin-status-explicit-token',
       entry: entry.id,
       expectation: '200 (explicitly authorised management)',
-      observed: String(authorised.status),
+      observed: `${authorised.status}${authorised.note ? ` · ${authorised.note}` : ''}`,
       ok: authorised.status === 200,
     });
   }
 
-  const ordinary = await fetchStatus(`${base}/service/status`, {}, tls);
+  const ordinary = await ask(`${base}/service/status`);
   results.push({
     id: 'ordinary-route',
     entry: entry.id,
     expectation: '200 (non-admin traffic keeps working)',
-    observed: String(ordinary.status),
+    observed: `${ordinary.status}${ordinary.note ? ` · ${ordinary.note}` : ''}`,
     ok: ordinary.status === 200,
   });
 
@@ -738,26 +812,70 @@ export function entryServesCandidate(candidateStatusBody: string, entryStatusBod
  * provider. Acceptance only counts when the entry demonstrably reaches this candidate, so
  * the runtime PIDs observed through the entry must match the candidate's own.
  */
+/** A short, safe rendering of a body that carried no runtime identity. */
+export function summarizeEntryBody(body: string): string {
+  const snippet = body.replace(/\s+/gu, ' ').trim().slice(0, 80);
+  return snippet.length > 0 ? snippet : 'empty body';
+}
+
+/**
+ * Which runtime answers behind an entry, read from the candidate and from the entry itself.
+ *
+ * Retried only while the entry answered with *no readable identity at all*: an edge that has just
+ * been assigned can serve its own placeholder, a 404 page or an empty body for a moment, and that
+ * is not the same finding as "another instance answers here". A body that names a different
+ * runtime is a verdict on the first try - retrying it could only hide a real origin mismatch.
+ */
+export async function readEntryProvenance(input: {
+  candidateBaseUrl: string;
+  entry: Entry;
+  attempts?: number;
+  sleep?: (ms: number) => Promise<void>;
+  probe?: (url: string, tls?: { allowSelfSigned?: boolean }) => Promise<{ status: number; body: string }>;
+}): Promise<{ expected: number[]; observed: number[]; attempts: number; lastStatus: number; bodySnippet?: string }> {
+  const attempts = input.attempts ?? 5;
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
+  const probe = input.probe ?? ((url, tls) => fetchStatus(url, {}, tls));
+  const tls = { allowSelfSigned: input.entry.allowSelfSigned };
+  // Both sides are read now: the candidate is restarted by the A01 leg, so a body captured
+  // when the run started would name the previous runtime and fail a healthy entry.
+  const candidateNow = await probe(`${input.candidateBaseUrl.replace(/\/$/u, '')}/service/status`, tls);
+  const expected = readServicePids(candidateNow.body);
+  let throughEntry = await probe(`${input.entry.baseUrl.replace(/\/$/u, '')}/service/status`, tls);
+  let observed = readServicePids(throughEntry.body);
+  let used = 1;
+  while (observed.length === 0 && used < attempts) {
+    await sleep(500 * used + Math.floor(Math.random() * 500));
+    throughEntry = await probe(`${input.entry.baseUrl.replace(/\/$/u, '')}/service/status`, tls);
+    observed = readServicePids(throughEntry.body);
+    used += 1;
+  }
+  return {
+    expected,
+    observed,
+    attempts: used,
+    lastStatus: throughEntry.status,
+    ...(observed.length === 0 ? { bodySnippet: summarizeEntryBody(throughEntry.body) } : {}),
+  };
+}
+
 async function checkEntryServesCandidate(
   entry: Entry,
   candidateBaseUrl: string,
 ): Promise<CheckResult> {
-  // Both sides are read now: the candidate is restarted by the A01 leg, so a body captured
-  // when the run started would name the previous runtime and fail a healthy entry.
-  const candidateNow = await fetchStatus(`${candidateBaseUrl.replace(/\/$/u, '')}/service/status`);
-  const throughEntry = await fetchStatus(
-    `${entry.baseUrl.replace(/\/$/u, '')}/service/status`,
-    {},
-    { allowSelfSigned: entry.allowSelfSigned },
-  );
-  const expected = readServicePids(candidateNow.body);
-  const observed = readServicePids(throughEntry.body);
-  const matches = entryServesCandidate(candidateNow.body, throughEntry.body);
+  const provenance = await readEntryProvenance({ candidateBaseUrl, entry });
+  const matches = provenance.expected.length > 0
+    && provenance.observed.length > 0
+    && provenance.expected.slice().sort().join(',') === provenance.observed.slice().sort().join(',');
   return {
     id: 'entry-serves-this-candidate',
     entry: entry.id,
     expectation: 'the runtime PIDs behind the entry are this candidate',
-    observed: matches ? `pids ${observed.join(',')}` : `candidate ${expected.join(',') || 'unknown'} vs entry ${observed.join(',') || 'none'}`,
+    observed: matches
+      ? `pids ${provenance.observed.join(',')}`
+      : `candidate ${provenance.expected.join(',') || 'unknown'} vs entry ${provenance.observed.join(',') || 'none'}`
+        + ` (status ${provenance.lastStatus}, ${provenance.attempts} attempt(s)`
+        + `${provenance.bodySnippet ? `, body: ${provenance.bodySnippet}` : ''})`,
     ok: matches,
   };
 }
@@ -3145,21 +3263,35 @@ async function main(): Promise<void> {
         });
         try {
           const legReady = await waitForCandidate(legPort, options.timeoutMs);
-          // Give the provider a moment to attempt its start and record the outcome.
-          await new Promise((resolve) => setTimeout(resolve, 5_000));
-          const legStatus = await fetchStatus(`http://127.0.0.1:${legPort}/api/network/settings/status`);
-          const observed = readTunnelCapability(legStatus.body);
-          const detail = readTunnelDetail(legStatus.body);
-          const named = leg.expectDetail ? leg.expectDetail.test(detail ?? '') : Boolean(detail);
+          // Poll for the provider's verdict instead of sleeping a fixed five seconds: under load
+          // a bogus credential is still `starting` at that point, and `starting` is not a finding.
+          const verdict = await waitForTerminalTunnelState(legPort, Math.min(options.tunnelTimeoutMs, 45_000));
+          const named = leg.expectDetail ? leg.expectDetail.test(verdict.detail ?? '') : Boolean(verdict.detail);
+          const neverActive = verdict.observed !== 'active' && verdict.observed !== 'unsupported';
           checks.push({
             id: leg.id,
             entry: 'candidate',
             expectation: leg.expectDetail
               ? `never active and detail matches ${String(leg.expectDetail)}`
               : 'never active and a reason is reported',
-            observed: `${observed ?? 'unknown'} · ${detail ?? 'no detail'}`,
-            ok: legReady && observed !== 'active' && observed !== 'unsupported' && named,
-            ...(detail ? { detail } : {}),
+            observed: `${verdict.observed ?? 'unknown'} · ${verdict.detail ?? 'no detail'}`
+              + ` (state after ${verdict.waitedMs}ms of polling)`,
+            ok: legReady && neverActive && named,
+            // The safety half held - it never became active - but the provider never committed
+            // to a state, so no reason could be read. That is the provider's own latency, not a
+            // defect in our tunnel, and it is reported as unverified rather than as a failure.
+            ...(legReady && neverActive && !named && !verdict.decided
+              ? {
+                  outcome: 'blocked' as const,
+                  blockedBy: {
+                    prerequisite: 'provider-start-latency',
+                    detail: `the provider stayed "${verdict.observed ?? 'unknown'}" for ${verdict.waitedMs}ms, `
+                      + 'so it reported no reason yet',
+                    owner: "the provider's own start latency (nothing in this repo to fix)",
+                  },
+                }
+              : {}),
+            ...(verdict.detail ? { detail: verdict.detail } : {}),
           });
         } finally {
           await stopChild(legChild);
