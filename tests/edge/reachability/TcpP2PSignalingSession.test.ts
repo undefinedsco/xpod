@@ -12,6 +12,7 @@ import {
   attachTcpP2PDataPlaneSocket,
   connectRawTcpP2PTransport,
   connectSignaledRawTcpP2PTransport,
+  createDataPlaneSecret,
   createNodeRawTcpP2PConnectSocket,
   createP2PDataPlaneFetch,
   createP2PDataPlaneHandler,
@@ -53,6 +54,10 @@ const baseSession: P2PSession = {
   capabilities: ['tcp-punch'],
   candidates: [],
 };
+
+// Fixed so the hand-built node side can use the same data plane secret as the client
+// (audit N03): in production the secret travels through the signaling API instead.
+const DATA_PLANE_SECRET = createDataPlaneSecret();
 
 describe('signaled raw TCP P2P sessions', () => {
   it('creates a p2p session with deterministic raw TCP hole-punch candidates', async () => {
@@ -438,7 +443,11 @@ describe('signaled raw TCP P2P sessions', () => {
       fetchImpl: localFetch as typeof fetch,
     });
     const { clientSocket, serverSocket, close } = await createSocketPair();
-    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+    const socketHandle = attachTcpP2PDataPlaneSocket({
+      socket: serverSocket,
+      handler,
+      secure: { role: 'server', sessionId: 'p2p_1', secret: DATA_PLANE_SECRET },
+    });
     const remotePort = await reserveTcpPort();
     const localPort = await reserveTcpPort();
     const plan = {
@@ -480,6 +489,7 @@ describe('signaled raw TCP P2P sessions', () => {
         clientId: 'device-1',
         host: '127.0.0.1',
         plan,
+        dataPlaneSecret: DATA_PLANE_SECRET,
         timeoutMs: 2_000,
         connectTimeoutMs: 1_000,
         pollIntervalMs: 1,

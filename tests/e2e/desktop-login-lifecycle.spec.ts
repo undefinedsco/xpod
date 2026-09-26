@@ -307,7 +307,7 @@ async function assertDesktopIdentity(page: Page, account: FixtureReady['accounts
   expect(state.controls.account?.webId).toBeTruthy();
   const ownsWebId = await page.evaluate(async ({ control, webId }) => {
     const response = await fetch(control, { credentials: 'include', headers: { Accept: 'application/json' } });
-    return response.ok && Object.hasOwn((await response.json()).webIdLinks ?? {}, webId);
+    return response.ok && Object.prototype.hasOwnProperty.call((await response.json()).webIdLinks ?? {}, webId);
   }, { control: state.controls.account!.webId!, webId: account.webId });
   expect(ownsWebId).toBe(true);
 }

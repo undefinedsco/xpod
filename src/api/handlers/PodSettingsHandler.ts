@@ -11,6 +11,7 @@ import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { PodLookupRepository, PodLookupResult } from '../../identity/drizzle/PodLookupRepository';
 import type { UsageRepository, PodUsageRecord } from '../../storage/quota/UsageRepository';
 import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
+import type { AuthContext } from '../auth/AuthContext';
 
 export interface PodSettingsStatus {
   identity: {
@@ -59,7 +60,12 @@ export type PodAiConnectionsStatus =
   };
 
 export interface PodAiConnectionsStatusReader {
-  read(input: { webId: string; podUrl?: string }): Promise<PodAiConnectionsStatus>;
+  /**
+   * `auth` is the caller's own context. A signed-in user's status has to be read with the
+   * credential that user presented; without one this reports `not_configured` instead of
+   * borrowing the deployment's stored owner key.
+   */
+  read(input: { webId: string; podUrl?: string; auth?: AuthContext }): Promise<PodAiConnectionsStatus>;
 }
 
 export interface PodSettingsHandlerOptions {
@@ -89,7 +95,7 @@ export function registerPodSettingsRoutes(server: ApiServer, options: PodSetting
       const podUrl = pod?.storageUrl ?? pod?.baseUrl;
       const [storage, aiConnection] = await Promise.all([
         readStorageStatus(options.usageRepo, pod),
-        aiConnectionStatusReader.read({ webId, podUrl }).catch((error: unknown) => {
+        aiConnectionStatusReader.read({ webId, podUrl, auth: request.auth }).catch((error: unknown) => {
           const reason = safeAiConnectionsFailureReason(error);
           logger.warn(`Failed to read Pod AI Connection status: ${reason}`);
           return { status: 'error', reason } as const;
@@ -161,8 +167,10 @@ export class DrizzlePodAiConnectionsStatusReader implements PodAiConnectionsStat
     }) => Promise<AiConnectionsStatusDb> = createAiConnectionsStatusDb,
   ) {}
 
-  public async read({ webId, podUrl }: { webId: string; podUrl?: string }): Promise<PodAiConnectionsStatus> {
-    const trustedFetch = await this.podAccess?.getPodFetch(webId);
+  public async read(
+    { webId, podUrl, auth }: { webId: string; podUrl?: string; auth?: AuthContext },
+  ): Promise<PodAiConnectionsStatus> {
+    const trustedFetch = await this.podAccess?.getPodFetch(webId, auth ? { auth } : {});
     if (!trustedFetch) {
       return { status: 'unsupported', reason: 'not_configured' };
     }

@@ -5,16 +5,15 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  describeIngressDecision,
   resolveCanonicalRuntimeBaseUrl,
   resolveChildDatabaseUrl,
   resolveCliOidcIssuer,
-  resolveIngressPort,
   resolveManagedEdgeAgentConfig,
   resolveMainPort,
   resolveServicePort,
 } from '../../src/cli/commands/start';
 import { resolveDefaultRdfIndexPath } from '../../src/runtime/database-url';
-import { findGatewayIngressPort } from '../../src/runtime/port-finder';
 
 describe('start command runtime configuration', () => {
   it('uses one env file to derive the gateway, CSS, and API ports', () => {
@@ -163,39 +162,17 @@ describe('start command runtime configuration', () => {
   });
 });
 
-describe('tunnel origin port', () => {
-  const previousCredential = process.env.XPOD_TUNNEL_PROFILE_SAKURA_TOKEN;
-
-  afterEach(() => {
-    if (previousCredential === undefined) {
-      delete process.env.XPOD_TUNNEL_PROFILE_SAKURA_TOKEN;
-    } else {
-      process.env.XPOD_TUNNEL_PROFILE_SAKURA_TOKEN = previousCredential;
-    }
-    vi.unstubAllGlobals();
-  });
-
-  it('is the Gateway tunnel entry: predictable, and never the Gateway port itself', async () => {
-    // The listener a console forwards to. The Gateway's own port grants local trust to
-    // loopback callers, so tunnelled traffic must not land there.
-    const port = await resolveIngressPort({ tunnelProfiles: [], tunnelActiveProfileId: 'none' }, 5737);
-    expect(port).not.toBe(5737);
-    expect(port).toBe(await findGatewayIngressPort(5737));
-  });
-
-  it('keeps the Gateway port when a console forwards somewhere else', async () => {
-    process.env.XPOD_TUNNEL_PROFILE_SAKURA_TOKEN = 'access-key:29212252';
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(
-      JSON.stringify([{ id: 29212252, local_ip: '127.0.0.1', local_port: 3599 }]),
-      { status: 200, headers: { 'content-type': 'application/json' } },
-    )));
-
-    // The console value is reported (as a warning to update it), never adopted: moving the
-    // gate to match a console would put tunnelled traffic on the trusted listener.
-    const port = await resolveIngressPort({
-      tunnelProfiles: [ { id: 'sakura', provider: 'sakura_frp', credentialEnvKey: 'XPOD_TUNNEL_PROFILE_SAKURA_TOKEN' } ],
-      tunnelActiveProfileId: 'sakura',
-    }, 5737);
-    expect(port).toBe(await findGatewayIngressPort(5737));
+describe('tunnel entry decision reporting', () => {
+  it('says where the entry came from instead of implying one source', () => {
+    // The decision itself is made by `src/runtime/ingress-port.ts`; the CLI only reports it.
+    expect(describeIngressDecision({ port: 5737, source: 'explicit' }))
+      .toMatch(/XPOD_GATEWAY_INGRESS_PORT/u);
+    expect(describeIngressDecision({
+      port: 5737,
+      source: 'console-declared',
+      declared: { provider: 'sakura_frp', readBack: 'sakura_frp:GET /v4/tunnels local_port' },
+    })).toMatch(/adopted from the sakura_frp console/u);
+    expect(describeIngressDecision({ port: 3303, source: 'gateway-default' }))
+      .toMatch(/derived from the gateway port/u);
   });
 });

@@ -101,7 +101,8 @@ describe('remembered client consent with CSS and oidc-provider', () => {
     const entries = [];
     for await (const [, value] of storage.entries()) entries.push(value);
     expect(entries).toHaveLength(1);
-    expect(entries.every((entry) => entry.expires === grant!.exp * 1000)).toBe(true);
+    expect(grant?.exp).toBeTypeOf('number');
+    expect(entries.every((entry) => entry.expires === grant!.exp! * 1000)).toBe(true);
     // A new service instance using the same backing storage can recover it.
     expect((await new RememberedClientGrantStore(storage).find(provider, accountId, clientId))?.jti).toBe(id);
   });

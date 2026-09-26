@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AccessRoute, P2PSession, P2PSignalingClient, P2PTransportCandidate, RouteSet, RawTcpP2PConnectAttempt } from '../../../src/edge/reachability';
 import {
   attachTcpP2PDataPlaneSocket,
+  createDataPlaneSecret,
   createManagedClientFetch,
   createP2PDataPlaneHandler,
   createRawTcpHolePunchCandidates,
@@ -69,6 +70,7 @@ function p2pSession(candidates: P2PTransportCandidate[]): P2PSession {
     nodeId: 'node-1',
     clientId: 'device-1',
     auditId: 'audit-managed-fetch',
+    dataPlaneSecret: DATA_PLANE_SECRET,
     createdAt: '2026-06-20T00:00:00.000Z',
     expiresAt: '2026-06-20T00:05:00.000Z',
     nodeCandidates: [p2pRoute],
@@ -78,12 +80,20 @@ function p2pSession(candidates: P2PTransportCandidate[]): P2PSession {
   };
 }
 
+// The node side is hand-attached in these tests, so both ends share one fixed secret; in
+// production it reaches the node through the signaling API (audit N03).
+const DATA_PLANE_SECRET = createDataPlaneSecret();
+
 describe('createManagedClientFetch', () => {
   it('keeps an opened LAN route when the Solid well-known probe returns method-not-allowed', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe('http://172.19.0.7:16310/.well-known/solid');
       expect(init?.method).toBe('HEAD');
-      return new Response('', { status: 405 });
+      // What a Community Solid Server really answers for HEAD, identity evidence included.
+      return new Response('', {
+        status: 405,
+        headers: { link: '<https://node-1.pods.example/.well-known/solid.acr>; rel="acl", <https://node-1.pods.example/.well-known/solid.meta>; rel="describedby"' },
+      });
     });
 
     const managed = await createManagedClientFetch({
@@ -109,7 +119,11 @@ describe('createManagedClientFetch', () => {
       fetchImpl: localFetch as typeof fetch,
     });
     const { clientSocket, serverSocket, close } = await createSocketPair();
-    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+    const socketHandle = attachTcpP2PDataPlaneSocket({
+      socket: serverSocket,
+      handler,
+      secure: { role: 'server', sessionId: 'p2p_managed_fetch', secret: DATA_PLANE_SECRET },
+    });
     const clientPort = await reserveTcpPort();
     const nodePort = await reserveTcpPort();
     const plan = {
@@ -143,6 +157,7 @@ describe('createManagedClientFetch', () => {
         p2p: {
           signaling,
           clientId: 'device-1',
+          dataPlaneSecret: DATA_PLANE_SECRET,
           host: '127.0.0.1',
           plan,
           connectTimeoutMs: 1_000,
@@ -189,7 +204,11 @@ describe('createManagedClientFetch', () => {
       fetchImpl: localFetch as typeof fetch,
     });
     const { clientSocket, serverSocket, close } = await createSocketPair();
-    const socketHandle = attachTcpP2PDataPlaneSocket({ socket: serverSocket, handler });
+    const socketHandle = attachTcpP2PDataPlaneSocket({
+      socket: serverSocket,
+      handler,
+      secure: { role: 'server', sessionId: 'p2p_managed_fetch', secret: DATA_PLANE_SECRET },
+    });
     const clientPort = await reserveTcpPort();
     const nodePort = await reserveTcpPort();
     const plan = {
@@ -228,6 +247,7 @@ describe('createManagedClientFetch', () => {
 
     try {
       const managed = await createSignaledManagedClientFetch({
+        dataPlaneSecret: DATA_PLANE_SECRET,
         apiBaseUrl: 'https://api.example/',
         nodeId: 'node-1',
         token: 'service-token',
@@ -388,3 +408,143 @@ function jsonResponse(value: unknown, status = 200): Response {
     headers: { 'content-type': 'application/json' },
   });
 }
+
+/**
+ * N06: the client used to dial whatever the node advertised and treated any answer below 500
+ * as proof of life, so an expired access point, a loopback address or an unrelated service on
+ * the same port could receive Pod traffic. Validity is now decided locally, before any probe,
+ * and a probe answer only counts when it identifies a Solid server.
+ */
+describe('createManagedClientFetch route validation (N06)', () => {
+  const now = (): Date => new Date('2026-06-20T00:00:00.000Z');
+
+  function httpRoute(overrides: Partial<AccessRoute> & Pick<AccessRoute, 'id'>): AccessRoute {
+    return {
+      nodeId: 'node-1',
+      canonicalUrl: 'https://node-1.pods.example/',
+      kind: 'public-direct',
+      targetUrl: `https://${overrides.id}.example/`,
+      priority: 50,
+      requiresManagedClient: false,
+      visibility: 'public',
+      health: 'unknown',
+      ...overrides,
+    };
+  }
+
+  // Captured from a running Community Solid Server: HEAD /.well-known/solid answers 405 with
+  // these relations, which is how an access point proves it is a Solid server and not just
+  // something listening on the port.
+  const solidHeaders = {
+    link: '<https://node-1.pods.example/.well-known/solid.acr>; rel="acl", '
+      + '<https://node-1.pods.example/.well-known/solid.meta>; rel="describedby", '
+      + '<https://node-1.pods.example/.notifications/StreamingHTTPChannel2023/b0>; '
+      + 'rel="http://www.w3.org/ns/solid/terms#updatesViaStreamingHttp2023"',
+    'x-powered-by': 'Community Solid Server',
+  };
+
+  it('never dials an expired access point even when it has the best priority', async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => new Response('', { status: 405, headers: solidHeaders }));
+
+    const managed = await createManagedClientFetch({
+      routeSet: routeSet([
+        httpRoute({ id: 'expired-best', priority: 1, expiresAt: '2026-06-19T23:59:59.000Z' }),
+        httpRoute({ id: 'fresh', priority: 50, expiresAt: '2026-06-20T00:05:00.000Z' }),
+      ]),
+      fetchImpl: fetchImpl as typeof fetch,
+      now,
+    });
+
+    expect(managed.route.id).toBe('fresh');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0][0])).toBe('https://fresh.example/.well-known/solid');
+    managed.close();
+  });
+
+  it('treats an unparseable expiry as unusable instead of guessing', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 405, headers: solidHeaders }));
+
+    const managed = await createManagedClientFetch({
+      routeSet: routeSet([
+        httpRoute({ id: 'bogus-expiry', priority: 1, expiresAt: 'not-a-date' }),
+        httpRoute({ id: 'fresh', priority: 50 }),
+      ]),
+      fetchImpl: fetchImpl as typeof fetch,
+      now,
+    });
+
+    expect(managed.route.id).toBe('fresh');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    managed.close();
+  });
+
+  it('does not dial a loopback-only access point from a remote client', async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => new Response('', { status: 405, headers: solidHeaders }));
+
+    const managed = await createManagedClientFetch({
+      routeSet: routeSet([
+        httpRoute({ id: 'loopback', priority: 1, visibility: 'local-only', targetUrl: 'http://127.0.0.1:3000/' }),
+        httpRoute({ id: 'fresh', priority: 50 }),
+      ]),
+      fetchImpl: fetchImpl as typeof fetch,
+      now,
+    });
+
+    expect(managed.route.id).toBe('fresh');
+    expect(String(fetchImpl.mock.calls[0][0])).toBe('https://fresh.example/.well-known/solid');
+    managed.close();
+  });
+
+  it('rejects an unrelated service that answers 200 without Solid identity', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('unrelated')) {
+        return new Response('<html>hello</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      }
+      return new Response('', { status: 200, headers: solidHeaders });
+    });
+
+    const managed = await createManagedClientFetch({
+      routeSet: routeSet([
+        httpRoute({ id: 'unrelated', priority: 1 }),
+        httpRoute({ id: 'solid', priority: 50 }),
+      ]),
+      fetchImpl: fetchImpl as typeof fetch,
+      now,
+    });
+
+    expect(managed.route.id).toBe('solid');
+    managed.close();
+  });
+
+  it('rejects a 404 answer instead of counting it as reachable', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => String(input).includes('missing')
+      ? new Response('', { status: 404 })
+      : new Response('', { status: 200, headers: solidHeaders }));
+
+    const managed = await createManagedClientFetch({
+      routeSet: routeSet([
+        httpRoute({ id: 'missing', priority: 1 }),
+        httpRoute({ id: 'solid', priority: 50 }),
+      ]),
+      fetchImpl: fetchImpl as typeof fetch,
+      now,
+    });
+
+    expect(managed.route.id).toBe('solid');
+    managed.close();
+  });
+
+  it('says why nothing could be opened when every route is invalid', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+
+    await expect(createManagedClientFetch({
+      routeSet: routeSet([
+        httpRoute({ id: 'expired', priority: 1, expiresAt: '2026-06-19T00:00:00.000Z' }),
+        httpRoute({ id: 'loopback', priority: 2, visibility: 'local-only' }),
+      ]),
+      fetchImpl: fetchImpl as typeof fetch,
+      now,
+    })).rejects.toThrow(/expired at 2026-06-19T00:00:00\.000Z.*loopback-only/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});

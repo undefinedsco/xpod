@@ -11,7 +11,7 @@ vi.mock('global-logger-factory', () => ({
 }));
 
 import { AclPermissionService } from '../../src/terminal/AclPermissionService';
-import type { SubgraphQueryEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
+import type { SparqlEngine, SubgraphQueryEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
 
 interface MockAclEngine {
   queryBoolean: ReturnType<typeof vi.fn>;
@@ -20,7 +20,8 @@ interface MockAclEngine {
 
 class TestAclPermissionService extends AclPermissionService {
   public constructor(private readonly mockEngine: MockAclEngine) {
-    super(undefined);
+    // The base engine is never used: every query goes through the override below.
+    super(undefined as unknown as SparqlEngine);
   }
 
   protected override async getEngine(): Promise<SubgraphQueryEngine> {

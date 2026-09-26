@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import type { IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http';
+import type { IncomingHttpHeaders } from 'node:http';
 import { isIP } from 'node:net';
 
 export const GATEWAY_ADMIN_PROXY_LOOPBACK_HEADER = 'x-xpod-admin-proxy-loopback';
@@ -37,7 +37,7 @@ export interface GatewayAdminProxyMarkerVerification {
   reason?: string;
 }
 
-export function createGatewayAdminProxyHeaders(input: GatewayAdminProxyMarkerInput): OutgoingHttpHeaders {
+export function createGatewayAdminProxyHeaders(input: GatewayAdminProxyMarkerInput): Record<string, string> {
   const issuedAt = input.issuedAt ?? Date.now();
   const loopback = input.originalClientLoopback ? '1' : '0';
   return {

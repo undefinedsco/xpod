@@ -60,6 +60,12 @@ export class PodInterfaceKeyStore implements PodInterfaceKeyAccess {
     this.credentialIri = options.credentialIri ?? CREDENTIAL_IRI;
   }
 
+  /** Every owner with a stored key, for the migration into the task layer. */
+  public async listOwners(): Promise<string[]> {
+    const records = await this.repository.list();
+    return records.map((record) => record.ownerWebId);
+  }
+
   /** Store, or rotate, the owner's interface key. */
   public async saveKey(ownerWebId: string, credential: PodInterfaceCredential): Promise<void> {
     const sealed = await this.vault.seal(

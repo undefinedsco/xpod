@@ -215,7 +215,7 @@ async function accountProbe(page: Page, expectedWebId: string): Promise<{
     const webIdControl = account.controls.account?.webId;
     const ownsWebId = account.status === 'authenticated' && Boolean(webIdControl) && await page.evaluate(async ({ url, webId }) => {
       const response = await fetch(url, { credentials: 'include', headers: { Accept: 'application/json' } });
-      return response.ok && Object.hasOwn((await response.json()).webIdLinks ?? {}, webId);
+      return response.ok && Object.prototype.hasOwnProperty.call((await response.json()).webIdLinks ?? {}, webId);
     }, { url: webIdControl!, webId: expectedWebId });
     return { authenticated: account.status === 'authenticated', anonymous: account.isAnonymous,
       authority: account.authority, webIdControl, ownsWebId };

@@ -57,7 +57,8 @@ describe('PodChatKitStore Message parent', () => {
 
   it('writes Task messages with the Task command surface as parent even when no Chat relation exists', async () => {
     const { db, records } = createInsertRecorder();
-    const store = new PodChatKitStore({ tokenEndpoint: 'https://issuer.example/token' });
+    // The context below carries its own database, so the store never opens the Pod itself.
+    const store = new PodChatKitStore({});
     const threadId = 'task/task_1/index.ttl#worker-thread-1';
 
     await store.addThreadItem(

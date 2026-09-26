@@ -2,6 +2,7 @@ import net from 'node:net';
 import os from 'node:os';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { getUnreservedEphemeralPort, reservedPorts } from './port-reservations';
 
 const HIGHEST_PORT = 65_535;
 const PORT_PROBE_TIMEOUT_MS = 1_000;
@@ -126,6 +127,10 @@ async function canListen(port: number, host: string, timeoutMs = PORT_PROBE_TIME
  * into a provider console and it survives restarts - while staying clear of the block a
  * neighbouring runtime plans for its own services. When the neighbourhood is busy the caller
  * gets an OS-assigned port instead of a stolen one; the runtime reports whichever it got.
+ *
+ * Reserved ports are skipped here too: a group that needs a fixed port has published a
+ * reservation, and a dynamic entry that took it would break that group's tunnel instead of
+ * merely moving its own listener.
  */
 export async function findGatewayIngressPort(gatewayPort: number): Promise<number> {
   for (let offset = 3; offset < 10; offset += 1) {
@@ -137,8 +142,20 @@ export async function findGatewayIngressPort(gatewayPort: number): Promise<numbe
   return await getEphemeralLoopbackPort();
 }
 
+/**
+ * The first free port at or above `basePort`.
+ *
+ * Reserved ports are skipped, not merely avoided by convention: a group that needs a fixed port
+ * (the tunnel acceptance's console-owned 5737) publishes a reservation, and every allocator -
+ * the runtime, the test helpers, the integration runners - goes around it instead of racing for
+ * it. That is the difference between "usually fine" and "cannot collide".
+ */
 export async function getFreePort(basePort: number, host = '127.0.0.1', timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<number> {
+  const reserved = reservedPorts();
   for (let port = basePort; port <= HIGHEST_PORT; port++) {
+    if (reserved.has(port)) {
+      continue;
+    }
     if (await canListen(port, host, timeoutMs)) {
       return port;
     }
@@ -157,21 +174,9 @@ export async function getFreePort(basePort: number, host = '127.0.0.1', timeoutM
  * runtime's service.
  */
 export async function getEphemeralLoopbackPort(): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
+  // One retry rule for "the OS does not know about reservations", shared with the fixtures that
+  // bind their own server (`listenOnUnreservedPort`).
+  return await getUnreservedEphemeralPort('127.0.0.1');
 }
 
 function hasIpv6Address(): boolean {
@@ -181,10 +186,28 @@ function hasIpv6Address(): boolean {
 }
 
 /**
- * Allocates a port for child services that bind wildcard addresses.
- * CSS may bind `::` while the API binds `0.0.0.0`, so probing only localhost
- * can miss an occupied port on the other address family.
+ * Whether this runtime could take the port as-is, on both address families.
+ *
+ * A tunnel origin is bound on the wildcard address, so a listener on `*:<port>` owns the
+ * number even when IPv4 loopback alone still looks free.
+ *
+ * This is a probe, not an allocation: it answers about the socket, so a *reserved* port that is
+ * genuinely free answers `true` (the group that reserved it still has to bind it). The
+ * `getFreePort*` family is the allocating one, and it skips reserved ports.
  */
+export async function isFreePortForWildcard(port: number, timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<boolean> {
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    return false;
+  }
+  if (!await canListen(port, '0.0.0.0', timeoutMs)) {
+    return false;
+  }
+  if (hasIpv6Address() && !await canListen(port, '::', timeoutMs)) {
+    return false;
+  }
+  return true;
+}
+
 /**
  * Takes exactly this port or fails.
  *
@@ -195,18 +218,25 @@ export async function requireFreePortForWildcard(port: number, timeoutMs = PORT_
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error(`ingress port ${port} is not a valid port number`);
   }
-  if (!await canListen(port, '0.0.0.0', timeoutMs)) {
+  if (!await isFreePortForWildcard(port, timeoutMs)) {
     throw new Error(`ingress port ${port} is already in use; free it or point the tunnel at another port`);
-  }
-  if (hasIpv6Address() && !await canListen(port, '::', timeoutMs)) {
-    throw new Error(`ingress port ${port} is already in use on IPv6; free it or point the tunnel at another port`);
   }
   return port;
 }
 
+/**
+ * Allocates a port for child services that bind wildcard addresses.
+ *
+ * CSS may bind `::` while the API binds `0.0.0.0`, so probing only localhost can miss an
+ * occupied port on the other address family - and a reserved port is skipped either way.
+ */
 export async function getFreePortForWildcard(basePort: number, timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<number> {
   const probeIpv6 = hasIpv6Address();
+  const reserved = reservedPorts();
   for (let port = basePort; port <= HIGHEST_PORT; port++) {
+    if (reserved.has(port)) {
+      continue;
+    }
     if (!await canListen(port, '0.0.0.0', timeoutMs)) {
       continue;
     }

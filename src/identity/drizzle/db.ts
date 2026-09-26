@@ -235,6 +235,26 @@ export async function executeStatement(
   await db.execute(query);
 }
 
+/**
+ * Execute a statement and report how many rows it changed.
+ *
+ * Optimistic concurrency (compare-and-swap) has to tell an applied write from a rejected one,
+ * which `executeStatement` throws away. Returns `undefined` when the driver reports no count,
+ * in which case callers must verify the stored value themselves instead of assuming success.
+ */
+export async function executeStatementWithCount(
+  db: IdentityDatabase,
+  query: SQL,
+): Promise<number | undefined> {
+  await ensureDatabaseReady(db);
+  if (isDatabaseSqlite(db)) {
+    const result = db.run(query) as unknown as { changes?: unknown } | undefined;
+    return typeof result?.changes === 'number' ? result.changes : undefined;
+  }
+  const result = await db.execute(query) as unknown as { rowCount?: unknown } | undefined;
+  return typeof result?.rowCount === 'number' ? result.rowCount : undefined;
+}
+
 export async function executePostgresLockedStatements(
   db: IdentityDatabase,
   lockKey: number,

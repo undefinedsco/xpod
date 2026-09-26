@@ -21,6 +21,8 @@ export interface PodInterfaceKeyRecord {
 
 export interface PodInterfaceKeyRepositoryPort {
   read(ownerWebId: string): Promise<PodInterfaceKeyRecord | undefined>;
+  /** Every stored row, for the one-shot migration into the task layer. */
+  list(): Promise<PodInterfaceKeyRecord[]>;
   write(record: Omit<PodInterfaceKeyRecord, 'createdAt' | 'updatedAt'>): Promise<void>;
   remove(ownerWebId: string): Promise<void>;
 }
@@ -59,6 +61,18 @@ export class PodInterfaceKeyRepository implements PodInterfaceKeyRepositoryPort 
       createdAt: fromDbTimestamp(row.createdAt) ?? new Date(),
       updatedAt: fromDbTimestamp(row.updatedAt) ?? new Date(),
     };
+  }
+
+  public async list(): Promise<PodInterfaceKeyRecord[]> {
+    await this.ensureReady();
+    const rows = await this.db.select().from(this.schema.podInterfaceKeys);
+    return (rows as any[]).map((row) => ({
+      ownerWebId: String(row.ownerWebId),
+      clientId: String(row.clientId),
+      sealedSecret: String(row.sealedSecret),
+      createdAt: fromDbTimestamp(row.createdAt) ?? new Date(),
+      updatedAt: fromDbTimestamp(row.updatedAt) ?? new Date(),
+    }));
   }
 
   public async write(record: Omit<PodInterfaceKeyRecord, 'createdAt' | 'updatedAt'>): Promise<void> {

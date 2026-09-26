@@ -26,7 +26,6 @@ import type { ProviderModelSelectionService } from '../ai-gateway/models/Provide
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { ProviderModelsFetchError, ProviderModelsResponseError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
 import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
-import type { PodInterfaceKeyGrant } from '../ai-gateway/pod/PodInterfaceKeyStore';
 import { isPodAccessFailure } from '../ai-gateway/pod/OwnerPodAccess';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
@@ -40,6 +39,7 @@ import {
   isEmbeddingModelNotAllowedError,
 } from '../../ai/service/EmbeddingModelPolicy';
 import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../service/provider-http-transport';
+import type { TaskCredentialStore } from '../tasks/TaskCredentialStore';
 
 const logger = getLoggerFor('AiGatewayManagementHandler');
 
@@ -59,10 +59,12 @@ export interface AiGatewayManagementHandlerOptions {
   /** Reuses the configured CSS authenticator; never trusts the claimed registration owner. */
   validateClientCredential?: (apiKey: string) => Promise<AuthResult>;
   /**
-   * Server-side Pod access for the owner. The wrapper being registered is the owner's own
-   * interface key, so registering it is also the moment Xpod is granted its use.
+   * The task layer's own credential store. Registering also records the grant tasks may use while
+   * nobody is present; the API-side key stays the runtime's fallback until background entries move.
    */
-  podInterfaceKeys?: PodInterfaceKeyGrant;
+  taskCredentials?: Pick<TaskCredentialStore, 'grant'>;
+  /** Issuer the registered credential belongs to; part of the task-layer grant identity. */
+  clientCredentialIssuer?: string;
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue' | 'issueClientConfiguration'>;
   jsonBodyLimitBytes?: number;
@@ -180,13 +182,23 @@ export function registerAiGatewayManagementRoutes(
         return;
       }
       if (hasSolidClientCredentialsAuthority(verified.context)) {
-        // Sealed before the record is written, because writing the record is the first thing
-        // that needs it: background components reach this Pod through the standard interface
-        // as the owner, never through the caller's network position.
-        await options.podInterfaceKeys?.saveKey(owner, {
-          clientId: verified.context.clientId,
-          clientSecret: verified.context.clientSecret,
-        });
+        // Registering is the user's grant of background Pod access, and the task layer is where
+        // that credential lives. The API keeps no copy: it only ever uses a credential the caller
+        // brings with the request.
+        if (options.taskCredentials && options.clientCredentialIssuer) {
+          try {
+            await options.taskCredentials.grant({
+              ownerWebId: owner,
+              issuer: options.clientCredentialIssuer,
+              clientId: verified.context.clientId,
+              clientSecret: verified.context.clientSecret,
+              status: 'active',
+            });
+          } catch (error) {
+            // The record is still worth keeping; the client can grant again from settings.
+            logger.warn(`Task credential grant was not stored: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
       }
       const name = normalizeOptionalString(body.name) ?? 'Xpod API Key';
       const keyId = repository.createKeyId(owner, options.deployment);
@@ -1509,6 +1521,7 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
 function sendGatewayAccessKeyError(response: ServerResponse, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   if (isPodAccessFailure(message)) {
+    logger.warn(`Gateway API Key operation refused: ${redactSecretText(message)}`);
     sendJson(response, 403, { error: 'service_access_missing' });
     return;
   }

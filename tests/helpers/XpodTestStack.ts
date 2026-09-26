@@ -3,11 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { getFreePort } from '../../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle, type XpodRuntimeOptions } from '../../src/runtime/XpodRuntime';
 import { resolveTestRuntimeTransport } from './runtimeTransport';
+import { isPortConflict, withRuntimeStartLock } from './testRuntime';
 import { FAKE_QLEVER_LOCAL_RUNTIME_COMMAND } from './qleverRuntime';
 
 export class XpodTestStack {
   public port = 0;
   public baseUrl = '';
+  /** API port of the running runtime, for tests that must bypass the gateway. */
+  public apiPort = 0;
   public socketPath?: string;
   private runtime: XpodRuntimeHandle | null = null;
   private runtimeGatewayAdminProxyAuthSecret?: string;
@@ -27,10 +30,44 @@ export class XpodTestStack {
 
   async start(mode = 'local', options: Partial<XpodRuntimeOptions> = {}): Promise<void> {
     const transport = resolveTestRuntimeTransport(options.transport);
-    const portOptions = transport === 'port' ? await this.resolvePortOptions(options) : {};
     const runtimeRoot = options.runtimeRoot
       ?? path.resolve('.test-data', 'xpod-test-stack', randomUUID());
     const rootFilePath = options.rootFilePath ?? path.join(runtimeRoot, 'data');
+
+    // Several integration files start their own full stack in parallel, so a port
+    // that probed free a moment ago can be taken before the runtime binds it. That
+    // is a test-harness race, not a product failure: re-probe and retry instead of
+    // failing the file. A stack that explicitly pinned its ports is never retried.
+    const pinned = options.gatewayPort !== undefined
+      || options.cssPort !== undefined
+      || options.apiPort !== undefined;
+    const attempts = pinned ? 1 : 3;
+    // Probing ports and binding them is not atomic, so the whole start is serialised against
+    // other test processes in this workspace; the retry below covers everyone else.
+    await withRuntimeStartLock(async() => {
+      for (let attempt = 1; ; attempt += 1) {
+        const portOptions = transport === 'port' ? await this.resolvePortOptions(options) : {};
+        try {
+          await this.startOnce(mode, options, transport, runtimeRoot, rootFilePath, portOptions);
+          return;
+        } catch (error) {
+          if (attempt >= attempts || !isPortConflict(error)) {
+            throw error;
+          }
+          await this.stop().catch(() => undefined);
+        }
+      }
+    });
+  }
+
+  private async startOnce(
+    mode: string,
+    options: Partial<XpodRuntimeOptions>,
+    transport: XpodRuntimeOptions['transport'],
+    runtimeRoot: string,
+    rootFilePath: string,
+    portOptions: Partial<XpodRuntimeOptions>,
+  ): Promise<void> {
 
     const runtimeBaseUrl = options.baseUrl ?? portOptions.baseUrl;
     const env = {
@@ -82,6 +119,7 @@ export class XpodTestStack {
 
     this.port = this.runtime.ports.gateway ?? 0;
     this.baseUrl = this.runtime.baseUrl;
+    this.apiPort = this.runtime.ports.api ?? 0;
     this.socketPath = this.runtime.sockets.gateway;
 
     await this.waitReady();

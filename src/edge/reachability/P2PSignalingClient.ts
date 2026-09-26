@@ -17,6 +17,8 @@ export interface CreateP2PSessionInput {
   clientId: string;
   capabilities?: string[];
   candidates?: P2PTransportCandidate[];
+  /** Per-session data plane secret; required for raw TCP sessions (audit N03). */
+  dataPlaneSecret?: string;
 }
 
 export interface P2PSignalingClient {
@@ -55,6 +57,7 @@ class HttpP2PSignalingClient implements P2PSignalingClient {
         clientId: request.clientId,
         capabilities: request.capabilities ?? [],
         candidates: request.candidates ?? [],
+        ...(request.dataPlaneSecret ? { dataPlaneSecret: request.dataPlaneSecret } : {}),
       } satisfies P2PSessionRequest,
     });
   }

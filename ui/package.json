@@ -11,8 +11,7 @@
     "build:app": "tsc -b && vite build",
     "build:dashboard": "tsc -b && BUILD_TARGET=dashboard vite build",
     "build:settings": "tsc -b && BUILD_TARGET=settings vite build",
-    "build:callback": "tsc -b && BUILD_TARGET=authCallback vite build",
-    "build:all": "bun run build:app && bun run build:dashboard && bun run build:settings && bun run build:callback",
+    "build:all": "bun run build:app && bun run build:dashboard && bun run build:settings",
     "lint": "eslint .",
     "preview": "vite preview"
   },

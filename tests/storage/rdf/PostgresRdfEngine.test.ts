@@ -72,7 +72,7 @@ describe('PostgresRdfEngine', () => {
         workspace: basePath,
         contentType: 'text/turtle',
         sourceVersion: 'v1',
-      }, 60_000);
+      });
 
       const result = await engine.query(applyRdfAccessScope({
         patterns: [{
@@ -115,7 +115,7 @@ describe('PostgresRdfEngine', () => {
           workspace: container,
           contentType: 'text/turtle',
           sourceVersion: 'v1',
-        }, 60_000);
+        });
       }
 
       const scope = {

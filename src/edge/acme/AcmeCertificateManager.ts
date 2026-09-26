@@ -5,6 +5,7 @@ import { X509Certificate } from 'node:crypto';
 import acme from 'acme-client';
 import type { Authorization } from 'acme-client';
 import { getLoggerFor } from 'global-logger-factory';
+import { CertificateRenewalScheduler, type CertificateRenewalSchedulerStatus } from './CertificateRenewalScheduler';
 import { DnsChallengeClient } from './DnsChallengeClient';
 import { toDns01Value } from './utils';
 import type { DnsProvider } from '../../dns/DnsProvider';
@@ -79,6 +80,7 @@ export interface AcmeCertificateManagerOptions {
   domains: string[];
   directoryUrl?: string;
   fallbackDirectoryUrls?: string[]; // CA failover support
+
   accountKeyPath: string;
   certificateKeyPath: string;
   certificatePath: string;
@@ -98,10 +100,17 @@ export interface RuntimeCertificateRenewalResult {
 }
 
 const DEFAULT_DIRECTORY_URL = acme.directory.letsencrypt.production;
+// Staging is deliberately NOT in the default failover list: a staging certificate is not trusted
+// by any browser, so a production deployment that "succeeded" through it would be serving a
+// broken endpoint while reporting success (audit N15). ZeroSSL is a real alternative CA.
 const DEFAULT_FALLBACK_URLS = [
-  acme.directory.letsencrypt.staging, // Staging as fallback for testing
-  'https://acme.zerossl.com/v2/DV90', // ZeroSSL as alternative CA
+  'https://acme.zerossl.com/v2/DV90',
 ];
+
+/** A staging/test directory: certificates from here are not trusted by clients. */
+function isStagingDirectory(directoryUrl: string): boolean {
+  return /staging|acme-staging/iu.test(directoryUrl);
+}
 
 export class AcmeCertificateManager {
   private readonly logger = getLoggerFor(this);
@@ -117,6 +126,7 @@ export class AcmeCertificateManager {
   private readonly renewBeforeDays: number;
   private readonly propagationDelayMs: number;
   private issuing = false;
+  private renewalScheduler?: CertificateRenewalScheduler;
 
   public constructor(options: AcmeCertificateManagerOptions) {
     // 确定 DNS 验证处理器
@@ -140,6 +150,8 @@ export class AcmeCertificateManager {
     this.email = options.email;
     this.domains = options.domains;
     this.directoryUrl = options.directoryUrl ?? DEFAULT_DIRECTORY_URL;
+    // A staging CA only ever appears here because the operator listed it explicitly; the
+    // defaults never add one (audit N15).
     this.fallbackDirectoryUrls = options.fallbackDirectoryUrls ?? DEFAULT_FALLBACK_URLS;
     this.accountKeyPath = options.accountKeyPath;
     this.certificateKeyPath = options.certificateKeyPath;
@@ -183,6 +195,46 @@ export class AcmeCertificateManager {
     } catch {
       return { status: 'missing' };
     }
+  }
+
+  /**
+   * Starts the background renewal loop (audit N15).
+   *
+   * `ensureCertificate()` only looks at startup: a long-running node needed someone to call
+   * `renewCertificate()` by hand before the certificate expired. The scheduler checks on an
+   * interval, renews when the status is due, and backs off when the CA is unreachable.
+   */
+  public startAutoRenewal(options: {
+    intervalMs?: number;
+    retryBaseDelayMs?: number;
+    retryMaxDelayMs?: number;
+  } = {}): void {
+    if (this.renewalScheduler) {
+      // Already created: start() is a no-op while running, and restarts it after a stop.
+      this.renewalScheduler.start();
+      return;
+    }
+    this.renewalScheduler = new CertificateRenewalScheduler({
+      readStatus: async () => await this.readCertificateStatus(),
+      renew: async () => {
+        await this.renewCertificate();
+      },
+      ...options,
+    });
+    this.renewalScheduler.start();
+  }
+
+  /**
+   * Stops the loop but keeps its final status readable: "why did it stop renewing" is exactly
+   * the question an operator asks after a failed renewal, and a discarded scheduler cannot
+   * answer it.
+   */
+  public stopAutoRenewal(): void {
+    this.renewalScheduler?.stop();
+  }
+
+  public getRenewalSchedulerStatus(): CertificateRenewalSchedulerStatus | undefined {
+    return this.renewalScheduler?.getStatus();
   }
 
   public isAvailable(): boolean {
@@ -251,13 +303,24 @@ export class AcmeCertificateManager {
       await this.ensureDirectory(dirname(this.fullChainPath));
     }
 
-    // Try primary CA first, then fallback CAs
+    // Try the primary CA first, then the failover chain. The chain is exactly what the operator
+    // configured: the defaults contain no staging CA, so a production deployment cannot silently
+    // end up serving a certificate no client trusts (audit N15).
     const directoryUrls = [this.directoryUrl, ...this.fallbackDirectoryUrls];
-    let lastError: Error | undefined;
+    const stagingInChain = directoryUrls.filter(isStagingDirectory);
+    if (stagingInChain.length > 0 && !isStagingDirectory(this.directoryUrl)) {
+      this.logger.warn(
+        `ACME 失败切换链包含 staging CA（${stagingInChain.join(', ')}）：该 CA 签发的证书客户端不信任`,
+      );
+    }
 
+    let lastError: Error | undefined;
     for (const directoryUrl of directoryUrls) {
       try {
         await this.issueCertificateFromCA(directoryUrl);
+        if (isStagingDirectory(directoryUrl)) {
+          this.logger.warn(`证书由 staging CA 签发，客户端不会信任：${directoryUrl}`);
+        }
         return; // Success!
       } catch (error: unknown) {
         lastError = error as Error;
@@ -268,8 +331,11 @@ export class AcmeCertificateManager {
       }
     }
 
-    // All CAs failed
-    throw new Error(`所有 ACME CA 都失败。最后错误: ${lastError?.message}`);
+    // All CAs failed: name every CA that was tried, so the operator does not have to guess.
+    throw new Error(
+      `所有 ACME CA 都失败（已尝试 ${directoryUrls.length} 个：${directoryUrls.join(', ')}）。`
+      + `最后错误: ${lastError?.message}`,
+    );
   }
 
   private async issueCertificateFromCA(directoryUrl: string): Promise<void> {
@@ -306,7 +372,8 @@ export class AcmeCertificateManager {
       },
     });
 
-    await fs.writeFile(this.certificateKeyPath, privateKey.toString());
+    // 私钥 0600（证书本身是公开材料，保持默认权限即可）：审计 N18。
+    await this.writePrivateFile(this.certificateKeyPath, privateKey.toString());
     await fs.writeFile(this.certificatePath, certificate);
     if (this.fullChainPath) {
       await fs.writeFile(this.fullChainPath, certificate);
@@ -333,12 +400,28 @@ export class AcmeCertificateManager {
   private async loadOrCreateAccountKey(path: string): Promise<string> {
     const existing = await this.readOptionalFile(path);
     if (existing) {
+      // 旧版本可能留下了 0644 的账户私钥，读到就顺手收紧。
+      await this.restrictFileMode(path);
       return existing.toString();
     }
     await this.ensureDirectory(dirname(path));
     const key = await acme.crypto.createPrivateKey();
-    await fs.writeFile(path, key);
+    await this.writePrivateFile(path, key.toString());
     return key.toString();
+  }
+
+  /** 写私钥：创建时就用 0600，并对已存在的文件再 chmod 一次。 */
+  private async writePrivateFile(path: string, contents: string): Promise<void> {
+    await fs.writeFile(path, contents, { encoding: 'utf8', mode: 0o600 });
+    await this.restrictFileMode(path);
+  }
+
+  private async restrictFileMode(path: string): Promise<void> {
+    try {
+      await fs.chmod(path, 0o600);
+    } catch (error: unknown) {
+      this.logger.warn(`无法收紧私钥文件权限 ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private async readOptionalFile(path: string): Promise<Buffer | undefined> {

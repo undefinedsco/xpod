@@ -4,12 +4,50 @@ import type { ServiceConfig, ServiceState, ServiceStatus, StatusChangeHandler } 
 
 const MAX_RESTARTS = 5;
 const MAX_LOGS = 500;
+/** Restart backoff: 2s, 4s, 8s, 16s, 32s, capped at 60s. */
+const RESTART_BASE_DELAY_MS = 2_000;
+const RESTART_MAX_DELAY_MS = 60_000;
+/** A run that stays up this long counts as healthy and clears the failure streak. */
+const HEALTHY_UPTIME_MS = 60_000;
+/** Bounded tail of child output kept per service for crash diagnosis. */
+const MAX_CHILD_OUTPUT_LINES = 20;
+
+/**
+ * Failures that cannot be fixed by retrying: the child's own runtime cannot resolve a module,
+ * so every restart fails identically. Retrying only hides the breakage behind a healthy-looking
+ * gateway, which is exactly how the audited instance stayed half-dead for hours (N20).
+ */
+const NON_RETRYABLE_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /Cannot find package ['"][^'"]+['"]/u, reason: 'missing dependency (Cannot find package)' },
+  { pattern: /Cannot find module ['"][^'"]+['"]/u, reason: 'missing module (Cannot find module)' },
+  { pattern: /\bMODULE_NOT_FOUND\b/u, reason: 'missing module (MODULE_NOT_FOUND)' },
+];
+
+/** Mask credentials before child output is stored in supervisor state or served over HTTP. */
+function redactSecrets(line: string): string {
+  return line
+    .replace(
+      /([A-Za-z0-9_]*(?:token|secret|password|passwd|api[_-]?key|credential)[A-Za-z0-9_]*)(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/giu,
+      (_match, key: string, separator: string) => `${key}${separator}***`,
+    )
+    .replace(/\b([Bb]earer)\s+[A-Za-z0-9\-._~+/=]{8,}/gu, '$1 ***');
+}
 
 export interface SupervisorLog {
   timestamp: string;
   level: 'info' | 'warn' | 'error';
   source: string;
   message: string;
+}
+
+export interface SupervisorOptions {
+  handleProcessSignals?: boolean;
+  /** Consecutive failed runs tolerated before giving up. */
+  maxRestarts?: number;
+  /** First restart delay; doubles per consecutive failure up to 60s. */
+  restartBaseDelayMs?: number;
+  /** Uptime that counts as a healthy run and resets the failure streak. */
+  healthyUptimeMs?: number;
 }
 
 export class Supervisor {
@@ -20,8 +58,18 @@ export class Supervisor {
   private logs: SupervisorLog[] = [];
   private onStatusChange?: StatusChangeHandler;
   private isShuttingDown = false;
+  private childOutput: Map<string, string[]> = new Map();
+  private pendingRestarts: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private intentionalStops: Set<string> = new Set();
+  private readonly maxRestarts: number;
+  private readonly restartBaseDelayMs: number;
+  private readonly healthyUptimeMs: number;
 
-  constructor(options: { handleProcessSignals?: boolean } = {}) {
+  constructor(options: SupervisorOptions = {}) {
+    this.maxRestarts = options.maxRestarts ?? MAX_RESTARTS;
+    this.restartBaseDelayMs = options.restartBaseDelayMs ?? RESTART_BASE_DELAY_MS;
+    this.healthyUptimeMs = options.healthyUptimeMs ?? HEALTHY_UPTIME_MS;
+
     if (options.handleProcessSignals === false) {
       return;
     }
@@ -136,6 +184,10 @@ export class Supervisor {
 
   public async stopAll(): Promise<void> {
     this.isShuttingDown = true;
+    for (const [ name, timer ] of this.pendingRestarts) {
+      clearTimeout(timer);
+      this.pendingRestarts.delete(name);
+    }
     const promises: Promise<void>[] = [];
     for (const name of this.processes.keys()) {
       promises.push(this.stop(name));
@@ -155,9 +207,17 @@ export class Supervisor {
 
     if (state.status === 'running' || state.status === 'starting') return;
 
+    const pendingRestart = this.pendingRestarts.get(name);
+    if (pendingRestart) {
+      clearTimeout(pendingRestart);
+      this.pendingRestarts.delete(name);
+    }
+    this.intentionalStops.delete(name);
+    this.childOutput.set(name, []);
+
     console.log(`[Supervisor] Starting ${name}...`);
     this.addLog(name, 'info', 'Service starting');
-    this.updateState(name, { status: 'starting', startTime: Date.now() });
+    this.updateState(name, { status: 'starting', startTime: Date.now(), givenUpReason: undefined });
 
     const env = config.env ?? process.env;
 
@@ -171,6 +231,17 @@ export class Supervisor {
     this.processes.set(name, child);
     this.updateState(name, { status: 'running', pid: child.pid });
 
+    const recordOutput = (line: string): void => {
+      const tail = this.childOutput.get(name);
+      if (!tail) {
+        return;
+      }
+      tail.push(line);
+      if (tail.length > MAX_CHILD_OUTPUT_LINES) {
+        tail.splice(0, tail.length - MAX_CHILD_OUTPUT_LINES);
+      }
+    };
+
     const prefixLog = (source: string, data: Buffer, isError = false): void => {
       const output = data.toString();
       const lines = output.split('\n');
@@ -180,12 +251,18 @@ export class Supervisor {
           continue;
         }
 
+        // Redact once, at the single point where child output enters supervisor state:
+        // the console, the log ring buffer (served by /service/logs) and the retained
+        // crash tail must not disagree about what the child printed.
+        const text = redactSecrets(trimmed);
+        recordOutput(text);
+
         if (isError) {
-          console.error(`[${source}] ${trimmed}`);
-          this.addLog(source, 'error', trimmed);
+          console.error(`[${source}] ${text}`);
+          this.addLog(source, 'error', text);
         } else {
-          console.log(`[${source}] ${trimmed}`);
-          this.addLog(source, 'info', trimmed);
+          console.log(`[${source}] ${text}`);
+          this.addLog(source, 'info', text);
         }
       }
     };
@@ -201,49 +278,116 @@ export class Supervisor {
     child.on('error', (err) => {
       console.error(`[Supervisor] Error spawning ${name}:`, err);
       this.addLog(name, 'error', `Spawn error: ${String(err)}`);
-      this.updateState(name, { status: 'crashed' });
+      this.updateState(name, { status: 'crashed', givenUpReason: `Spawn error: ${String(err)}` });
     });
 
     child.on('exit', (code, signal) => {
+      const exitedAt = Date.now();
+      const stateBeforeExit = this.states.get(name);
+      const uptimeMs = stateBeforeExit?.startTime ? exitedAt - stateBeforeExit.startTime : 0;
+      const wasManualStop = stateBeforeExit?.status === 'stopped' || this.intentionalStops.has(name);
+      const wasHealthy = uptimeMs >= this.healthyUptimeMs;
+      const consecutiveFailures = wasHealthy ? 0 : (stateBeforeExit?.consecutiveFailures ?? 0) + 1;
+      const outputTail = this.childOutput.get(name) ?? [];
+      const nonRetryable = NON_RETRYABLE_PATTERNS.find(({ pattern }) =>
+        outputTail.some((line) => pattern.test(line)));
+
       console.log(`[Supervisor] ${name} exited with code ${code} signal ${signal}`);
       this.addLog(name, code === 0 ? 'info' : 'error', `Exited with code ${code ?? 'null'} signal ${signal ?? 'null'}`);
-      const currentState = this.states.get(name);
-      const wasManualStop = currentState?.status === 'stopped';
+
+      this.processes.delete(name);
+      this.childOutput.delete(name);
+      this.intentionalStops.delete(name);
 
       this.updateState(name, {
         status: 'stopped',
         lastExitCode: code ?? undefined,
+        lastExitAt: exitedAt,
+        lastOutput: outputTail,
+        consecutiveFailures,
         pid: undefined,
       });
-      this.processes.delete(name);
 
-      // Auto-restart on crash (not on manual stop or shutdown)
-      if (code !== 0 && !wasManualStop && !this.isShuttingDown) {
-        const newState = this.states.get(name);
-        const restartCount = (newState?.restartCount || 0) + 1;
-
-        if (restartCount <= MAX_RESTARTS) {
-          this.updateState(name, { restartCount });
-          console.log(`[Supervisor] Restarting ${name} in 2s... (attempt ${restartCount}/${MAX_RESTARTS})`);
-          this.addLog(name, 'warn', `Restarting in 2s (attempt ${restartCount}/${MAX_RESTARTS})`);
-          setTimeout(() => this.start(name), 2000);
-        } else {
-          console.error(`[Supervisor] ${name} exceeded max restarts (${MAX_RESTARTS}), giving up`);
-          this.addLog(name, 'error', `Exceeded max restarts (${MAX_RESTARTS})`);
-        }
+      // Auto-restart on crash (not on clean exit, manual stop or shutdown)
+      if (code === 0 || wasManualStop || this.isShuttingDown) {
+        return;
       }
+
+      if (nonRetryable) {
+        this.giveUp(name, `Unrecoverable child failure: ${nonRetryable.reason}; restart suppressed`, consecutiveFailures);
+        return;
+      }
+
+      if (consecutiveFailures > this.maxRestarts) {
+        this.giveUp(
+          name,
+          `Exceeded max restarts (budget ${this.maxRestarts}, ${consecutiveFailures} consecutive failures)`,
+          consecutiveFailures,
+        );
+        return;
+      }
+
+      const delay = Math.min(
+        this.restartBaseDelayMs * 2 ** (consecutiveFailures - 1),
+        RESTART_MAX_DELAY_MS,
+      );
+      this.updateState(name, { restartCount: (stateBeforeExit?.restartCount ?? 0) + 1 });
+      const attempt = `(${consecutiveFailures}/${this.maxRestarts} consecutive failures)`;
+      console.log(`[Supervisor] Restarting ${name} in ${delay}ms... ${attempt}`);
+      this.addLog(name, 'warn', `Restarting in ${Math.round(delay / 1000)}s ${attempt}`);
+
+      const timer = setTimeout(() => {
+        this.pendingRestarts.delete(name);
+        this.start(name);
+      }, delay);
+      this.pendingRestarts.set(name, timer);
     });
+  }
+
+  /**
+   * Stop restarting a service and say why. The gateway must not keep advertising itself as
+   * healthy afterwards: readiness derives from supervised state, not from HTTP reachability.
+   */
+  private giveUp(name: string, reason: string, consecutiveFailures: number): void {
+    console.error(`[Supervisor] ${name}: ${reason}`);
+    this.addLog(name, 'error', `Giving up on ${name}: ${reason}`);
+    this.updateState(name, { status: 'given-up', givenUpReason: reason, consecutiveFailures });
+  }
+
+  /**
+   * Readiness of the supervised set: every configured child must be running. Managed services
+   * (for example the gateway itself) are lifecycle-owned elsewhere and are not required here.
+   */
+  public isReady(): boolean {
+    for (const name of this.configs.keys()) {
+      if (this.states.get(name)?.status !== 'running') {
+        return false;
+      }
+    }
+    return true;
   }
 
   public stop(name: string): Promise<void> {
     return new Promise((resolve) => {
+      const pendingRestart = this.pendingRestarts.get(name);
+      if (pendingRestart) {
+        // A service waiting out its backoff is not running, but it is not stopped either:
+        // cancel the timer so a stop request cannot be undone by a scheduled restart.
+        clearTimeout(pendingRestart);
+        this.pendingRestarts.delete(name);
+      }
+
       const child = this.processes.get(name);
       if (!child || !child.pid) {
+        if (this.states.has(name)) {
+          this.updateState(name, { status: 'stopped', pid: undefined, givenUpReason: undefined });
+        }
         resolve();
         return;
       }
 
       // Mark as stopped first to prevent auto-restart
+      this.intentionalStops.add(name);
       this.updateState(name, { status: 'stopped' });
       this.addLog(name, 'info', 'Stopping service');
 
@@ -272,6 +416,8 @@ export class Supervisor {
       return false;
     }
 
+    // An explicit restart follows a deliberate operator action: grant a fresh retry budget.
+    this.updateState(name, { consecutiveFailures: 0, givenUpReason: undefined });
     this.addLog(name, 'info', 'Service restart requested');
     this.start(name);
     return true;

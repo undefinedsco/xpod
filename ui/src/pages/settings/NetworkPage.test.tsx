@@ -203,7 +203,7 @@ describe('NetworkPage', () => {
       if (String(input).endsWith('/api/network/settings/diagnose')) {
         return new Response(JSON.stringify({
           checks: [
-            { id: 'address-configuration', label: 'Address configuration', status: 'ok', detail: 'configured: https://xpod.example/', durationMs: 3, checkedAt: '2026-01-01T00:00:00.000Z' },
+            { id: 'address-configuration', label: 'Address configuration', status: 'ok', detail: 'configured: https://xpod.example/', checkDurationMs: 3, checkedAt: '2026-01-01T00:00:00.000Z' },
           ],
         }), { headers: { 'content-type': 'application/json' } });
       }

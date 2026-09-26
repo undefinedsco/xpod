@@ -144,9 +144,9 @@ describe('Local QLever credential repository', () => {
     });
 
     // The Gateway reaches the Pod through its standard interface, authenticated with the owner's
-    // own interface key: the same client credentials the session above holds. Only the key store's
-    // persistence is in-memory here; the key exchange and every Pod request below are real.
-    const { podAccess } = await createInterfaceKeyPodAccess({
+    // own interface key: the credential rides with the request, as it does for an API-key caller.
+    // The key exchange and every Pod request below are real.
+    const { podAccess, auth: callerAuth } = await createInterfaceKeyPodAccess({
       webId: account!.webId,
       clientId: account!.clientId,
       clientSecret: account!.clientSecret,
@@ -161,12 +161,7 @@ describe('Local QLever credential repository', () => {
     const credentials = await repository.listCredentials({
       webId: account!.webId,
       deployment: 'local',
-      auth: {
-        type: 'solid',
-        webId: account!.webId,
-        internalInvocation: true,
-        tokenType: 'Bearer',
-      },
+      auth: callerAuth,
     });
 
     expect(credentials).toHaveLength(1);
@@ -181,7 +176,9 @@ describe('Local QLever credential repository', () => {
       algorithm: 'PLAINTEXT',
       webId: account!.webId,
     });
-    // The provider is keyed per owner: a WebID that never granted an interface key gets no fetch.
+    // Credentials are keyed per caller: a request that brings none gets no fetch, because the
+    // API keeps no interface key of its own to fall back on.
+    await expect(podAccess.getPodFetch(account!.webId)).resolves.toBeUndefined();
     await expect(podAccess.getPodFetch('https://id.example/other/profile/card#me'))
       .resolves.toBeUndefined();
 

@@ -16,10 +16,21 @@ services:
       - /var/lib/postgresql/tmpdata:rw,size=512m
 
   minio:
-    # Official MinIO source; immutable multi-arch index keeps arm64/x64 portable.
-    # RELEASE.2025-09-07T16-13-09Z, documented in minio/minio docs/docker/README.md.
-    image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    # Tests only need a small, path-style S3 endpoint, and the official MinIO
+    # images are no longer anonymously pullable: quay.io/minio/minio answers 401
+    # for the index this file used to pin, and minio/minio is gone from Docker
+    # Hub. The test stacks therefore run VersityGW, one static Apache-2.0 Rust
+    # binary that speaks the same path-style S3 API on the same port with the
+    # same root credentials, so MinioDataAccessor, CSS_MINIO_* and the tests stay
+    # untouched while the image drops from ~58 MiB to ~28 MiB compressed (and
+    # ~350 MiB to ~93 MiB on disk). Pinned to the v1.8.0 multi-arch index so
+    # arm64 (local dev) and amd64 (CI) both resolve.
+    image: ghcr.io/versity/versitygw@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499
+    # The runner always tears this project down with volumes, so the posix
+    # backend lives on tmpfs. It needs a path of its own because the base
+    # compose already claims /data with the minio_data named volume.
+    environment:
+      VGW_BACKEND_ARG: /tmp/vgw-data
     tmpfs:
-      - /tmp/minio-data:rw,size=512m
-    command: server /tmp/minio-data --console-address ":9001"
-    entrypoint: sh -c "mkdir -p /tmp/minio-data/xpod && exec minio $$@" --
+      - /tmp/vgw-data:rw,size=512m
+    entrypoint: sh -c "mkdir -p /tmp/vgw-data/xpod && exec /usr/local/bin/docker-entrypoint.sh"

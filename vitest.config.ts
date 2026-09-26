@@ -40,7 +40,9 @@ export default defineConfig({
       'scripts/patch-inrupt-authn-refresh.test.js',
       'tests/e2e/**',
       'tests/package/**',
-      // Bun-only runtime tests (bun:test); the vitest pool always runs on Node.
+      // Bun-only tests: the vitest pool always runs on Node, so these run through
+      // `bun run test:bun` (`scripts/run-bun-tests.ts`), which is wired into CI. Every entry
+      // below must be covered by that entry — an exclusion without a runner is how N19 started.
       'tests/bun/**',
       'tests/terminal/*.integration.test.ts',
       'ui/src/api/ai-config.test.ts',

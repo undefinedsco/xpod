@@ -27,7 +27,7 @@ export function buildCssChildEnv(
   cssPort: number,
   oidcIssuer?: string,
   authModeInput?: AuthMode | string,
-  baseEnv: NodeJS.ProcessEnv = process.env,
+  baseEnv: Record<string, string | undefined> = process.env,
   gatewayAdminProxyAuthSecret?: string,
   mode?: 'local' | 'cloud',
 ): Record<string, string> {
@@ -138,7 +138,7 @@ export function createCssChildRuntimeConfig(options: {
   runtimeRoot: string
   authMode?: AuthMode | string
   externalOidcIssuer?: string
-  baseEnv?: NodeJS.ProcessEnv
+  baseEnv?: Record<string, string | undefined>
 }): { configPath: string; cwd?: string } {
   fs.mkdirSync(options.runtimeRoot, { recursive: true });
   const runtimeConfigPath = path.join(options.runtimeRoot, 'css-child-runtime.config.json');
@@ -339,7 +339,7 @@ export function buildApiChildEnv(options: {
   authMode?: AuthMode | string
   externalOidcIssuer?: string
   gatewayAdminProxyAuthSecret?: string
-  baseEnv?: NodeJS.ProcessEnv
+  baseEnv?: Record<string, string | undefined>
 }): Record<string, string> {
   const authMode = resolveAuthModeInput(options.authMode, options.baseEnv);
   const baseUrl = new URL(options.baseUrl).toString();

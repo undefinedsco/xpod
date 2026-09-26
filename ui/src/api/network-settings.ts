@@ -65,7 +65,8 @@ export interface NetworkDiagnosticCheckResult {
   label: string;
   status: 'ok' | 'warning' | 'error' | 'unsupported';
   detail?: string;
-  durationMs?: number;
+  /** 检查本身耗时，不是网络延迟：见服务端 NetworkDiagnosticCheckResult 的说明。 */
+  checkDurationMs?: number;
   checkedAt?: string;
 }
 
@@ -87,6 +88,47 @@ export async function runNetworkDiagnostics({
   fetchImpl: typeof fetch;
 }): Promise<NetworkDiagnosticsResult> {
   return readJson<NetworkDiagnosticsResult>(fetchImpl, currentOriginApiUrl('/api/network/settings/diagnose'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { accept: 'application/json' },
+  });
+}
+
+export interface TunnelClientInspection {
+  provider: string;
+  label: string;
+  binary: string;
+  state: 'ready' | 'missing';
+  source: 'explicit' | 'bundled' | 'path';
+  path?: string;
+  version?: string;
+  installHint: string;
+  redistributable: boolean;
+  license: string;
+  installable: boolean;
+  installableReason?: string;
+}
+
+export async function fetchTunnelClients({
+  fetchImpl,
+}: {
+  fetchImpl: typeof fetch;
+}): Promise<{ clients: TunnelClientInspection[] }> {
+  return readJson<{ clients: TunnelClientInspection[] }>(fetchImpl, currentOriginApiUrl('/api/network/settings/tunnel-clients'), {
+    method: 'GET',
+    credentials: 'include',
+    headers: { accept: 'application/json' },
+  });
+}
+
+export async function installTunnelClient({
+  fetchImpl,
+  provider,
+}: {
+  fetchImpl: typeof fetch;
+  provider: string;
+}): Promise<{ installed: { installedPath: string; version?: string; sourceUrl: string }; clients: TunnelClientInspection[] }> {
+  return readJson(fetchImpl, currentOriginApiUrl(`/api/network/settings/tunnel-clients/${encodeURIComponent(provider)}/install`), {
     method: 'POST',
     credentials: 'include',
     headers: { accept: 'application/json' },

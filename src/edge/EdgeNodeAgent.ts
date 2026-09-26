@@ -64,6 +64,11 @@ export interface EdgeNodeAgentOptions {
     certificatePath: string;
     fullChainPath?: string;
     renewBeforeDays?: number;
+    /** 后台续期检查间隔（默认 6 小时）；仅在本地 ACME 模式使用。 */
+    renewalCheckIntervalMs?: number;
+    /** 续期失败后的首次重试延迟（默认 60 秒，指数增长到上限）。 */
+    renewalRetryBaseDelayMs?: number;
+    renewalRetryMaxDelayMs?: number;
     propagationDelayMs?: number;
     postDeployCommand?: string[];
   };
@@ -198,6 +203,8 @@ export class EdgeNodeAgent {
     this.p2pAcceptRunning = false;
     void this.frpManager?.stop();
     this.clusterCertificate?.stop();
+    // 停止后不该再有后台续期：一个已停的 agent 不该继续向 CA 发请求。
+    this.localCertificate?.stopAutoRenewal();
     this.localCertificate = undefined;
     this.clusterCertificate = undefined;
   }
@@ -608,6 +615,12 @@ export class EdgeNodeAgent {
       if (issued && acmeOptions.postDeployCommand && acmeOptions.postDeployCommand.length > 0) {
         await this.runPostDeploy(acmeOptions.postDeployCommand);
       }
+      // 启动即检查只解决"开机时过期"，节点长期运行要靠后台续期（审计 N15）。
+      manager.startAutoRenewal({
+        intervalMs: acmeOptions.renewalCheckIntervalMs,
+        retryBaseDelayMs: acmeOptions.renewalRetryBaseDelayMs,
+        retryMaxDelayMs: acmeOptions.renewalRetryMaxDelayMs,
+      });
     } catch (error: unknown) {
       this.logger.error(`自动签发证书失败：${(error as Error).message}`);
       throw error;

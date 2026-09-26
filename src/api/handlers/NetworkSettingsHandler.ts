@@ -1,6 +1,12 @@
 import type { ServerResponse } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { getLoggerFor } from 'global-logger-factory';
+import {
+  probeEndpointReachability,
+  type EndpointReachabilityResult,
+} from '../network/EndpointReachabilityProbe';
+import { TunnelClientManager, type TunnelClientInspection } from '../../tunnel/TunnelClientManager';
+import type { TunnelProviderId } from '../../tunnel/TunnelProviderCatalog';
 import type { ApiServer } from '../ApiServer';
 import type { AuthContext } from '../auth/AuthContext';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
@@ -79,7 +85,15 @@ export interface NetworkDiagnosticCheckResult {
   label: string;
   status: DiagnosticStatus;
   detail?: string;
-  durationMs?: number;
+  /**
+   * How long the check itself took — **not** a network latency (audit N12).
+   *
+   * These checks read local state (is an address configured, what does the TLS/DNS/tunnel
+   * capability say); a duration here says nothing about reachability, so it is named after the
+   * check and consumers must not render it as a round-trip time. A real probe would have to add
+   * its own measurement.
+   */
+  checkDurationMs?: number;
   checkedAt?: string;
 }
 
@@ -127,6 +141,21 @@ export interface NetworkPublicAddressReaderOptions {
 
 export interface NetworkSettingsHandlerOptions {
   endpoint: string | (() => string | undefined);
+  /**
+   * On-demand reachability probe for the declared public entry (audit N12).
+   *
+   * It runs only when the operator triggers a diagnose pass — never on a timer — and defaults to
+   * the public-address-only probe; tests inject a stub.
+   */
+  endpointReachabilityProbe?: (endpoint: string) => Promise<EndpointReachabilityResult>;
+  /**
+   * Tunnel-client plugin actions for the settings page (audit N16): list where each provider's
+   * client would come from, and install one on request. Injectable for tests.
+   */
+  tunnelClients?: {
+    inspectAll: () => Promise<TunnelClientInspection[]>;
+    install: (provider: TunnelProviderId) => Promise<{ installedPath: string; version?: string; sourceUrl: string }>;
+  };
   localAddresses?: () => string[];
   lanAddresses?: () => string[];
   publicAddresses?: () => string[];
@@ -193,6 +222,46 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
     } catch (error) {
       logger.error(`Failed to run network diagnostics: ${redactSecretText(error)}`);
       sendJson(response, 500, { error: 'Failed to run network diagnostics' });
+    }
+  }, { optionalAuth: true });
+
+  // The tunnel-client plugin actions live next to the tunnel configuration they serve: one
+  // "check" that says where each client comes from, one "download" that installs it (N16).
+  server.get('/api/network/settings/tunnel-clients', async (request, response) => {
+    if (!await requireNetworkPermission(request, response, authorizer, 'read', options.internalAdminAuthSecret)) {
+      return;
+    }
+    try {
+      const manager = options.tunnelClients ?? new TunnelClientManager();
+      sendJson(response, 200, { clients: await manager.inspectAll() });
+    } catch (error) {
+      logger.error(`Failed to inspect tunnel clients: ${redactSecretText(error)}`);
+      sendJson(response, 500, { error: 'Failed to inspect tunnel clients' });
+    }
+  }, { optionalAuth: true });
+
+  server.post('/api/network/settings/tunnel-clients/:provider/install', async (request, response, params) => {
+    const provider = String((params as Record<string, unknown> | undefined)?.provider ?? '');
+    const known = [ 'ngrok', 'cloudflare', 'sakura_frp', 'frp' ].includes(provider);
+    if (!known) {
+      sendJson(response, 404, { error: `Unknown tunnel provider: ${provider}` });
+      return;
+    }
+    if (!await requireNetworkPermission(request, response, authorizer, 'write', options.internalAdminAuthSecret)) {
+      return;
+    }
+    try {
+      const manager = options.tunnelClients ?? new TunnelClientManager();
+      const installed = await manager.install(provider as TunnelProviderId);
+      sendJson(response, 200, {
+        installed,
+        clients: await manager.inspectAll(),
+      });
+    } catch (error) {
+      // A refused download is a normal answer (no pinned asset), not a server fault.
+      const message = redactSecretText(error);
+      logger.warn(`Tunnel client install refused for ${provider}: ${message}`);
+      sendJson(response, 400, { error: message });
     }
   }, { optionalAuth: true });
 
@@ -496,6 +565,28 @@ function buildDefaultDiagnostics(
       },
     },
     {
+      // Only runs because the operator asked for a diagnose pass; it never polls. The verdict
+      // is deliberately "from this node": a node reaching its own public entry says nothing
+      // about a remote user's path (NAT hairpin), so the wording keeps that distinction.
+      id: 'endpoint-reachability',
+      label: 'Endpoint reachability from this node',
+      run: async () => {
+        const endpoint = normalizeEndpoint(resolveValue(options.endpoint));
+        if (!endpoint) {
+          return { status: 'unsupported' as const, detail: 'endpoint_unavailable' };
+        }
+        const probe = options.endpointReachabilityProbe ?? probeEndpointReachability;
+        const result = await probe(endpoint);
+        if (result.verdict === 'reachable-from-this-node') {
+          return { status: 'ok' as const, detail: result.detail };
+        }
+        if (result.verdict === 'blocked') {
+          return { status: 'unsupported' as const, detail: result.detail };
+        }
+        return { status: 'warning' as const, detail: result.detail };
+      },
+    },
+    {
       id: 'tls',
       label: 'TLS',
       run: async () => capabilityToDiagnostic(await safeReadCapability(
@@ -533,7 +624,7 @@ async function runDiagnostic(
   logger: Pick<ReturnType<typeof getLoggerFor>, 'warn' | 'error'>,
 ): Promise<NetworkDiagnosticCheckResult> {
   const startedAt = Date.now();
-  const evidence = () => ({ durationMs: Math.max(0, Date.now() - startedAt), checkedAt: new Date().toISOString() });
+  const evidence = () => ({ checkDurationMs: Math.max(0, Date.now() - startedAt), checkedAt: new Date().toISOString() });
   try {
     const result = await check.run();
     if (typeof result === 'string') {
@@ -552,14 +643,24 @@ async function runDiagnostic(
   }
 }
 
+/**
+ * Maps a provider capability onto a diagnostic level.
+ *
+ * Only statuses that positively mean "verified" become `ok`, and known-bad ones become `error`
+ * (an invalid or expired certificate is a failure, not something to warn about). Anything else
+ * stays a warning: a status we cannot place must never be rendered as a pass (audit N12).
+ */
+const VERIFIED_CAPABILITY_STATUSES = new Set([ 'active', 'valid', 'synced', 'direct', 'ready' ]);
+const FAILED_CAPABILITY_STATUSES = new Set([ 'error', 'invalid', 'failed', 'expired', 'untrusted', 'mismatch' ]);
+
 function capabilityToDiagnostic(capability: CapabilityStatus): Omit<NetworkDiagnosticCheckResult, 'id' | 'label'> {
   if (!capability.supported) {
     return { status: 'unsupported', detail: capability.status };
   }
-  if (capability.status === 'active' || capability.status === 'valid' || capability.status === 'synced' || capability.status === 'direct') {
+  if (VERIFIED_CAPABILITY_STATUSES.has(capability.status)) {
     return { status: 'ok', detail: capability.status };
   }
-  if (capability.status === 'error') {
+  if (FAILED_CAPABILITY_STATUSES.has(capability.status)) {
     return { status: 'error', detail: capability.status };
   }
   return { status: 'warning', detail: capability.status };

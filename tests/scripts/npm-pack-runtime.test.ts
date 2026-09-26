@@ -92,6 +92,101 @@ it('omits compiler diagnostics from direct and nested bundles while preserving r
     }
   }
 });
+it('omits authored, browser and test trees from bundled dependencies while keeping runtime entries', () => {
+  const f = fixture(true);
+  const directRoot = f.source;
+  const nestedRoot = path.join(f.source, 'node_modules/external');
+  for (const [ packageRoot, relativePaths ] of [
+    [ directRoot, [
+      'dist/index.js', 'dist/index.d.ts', 'dist/vendor/chunk.js',
+      'src/index.ts', 'browser/n3.min.js', 'dist/browser/web.js',
+      'dist/tests/units.test.ts', 'dist/benchmarks/scale.js', 'docs/guide.md',
+    ] ],
+    [ nestedRoot, [
+      'dist/index.js', 'src/index.ts', 'src/v4/tests/parse.test.ts',
+      'browser/n3.min.js', 'test/fixture.js', 'index.d.ts',
+    ] ],
+  ] as const) {
+    for (const relative of relativePaths) {
+      const target = path.join(packageRoot, relative);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, relative);
+    }
+  }
+  bundleLocalDependenciesIntoTarball(f.tarball, f.dependencies);
+  const packaged = unpack(f);
+  for (const relative of [
+    'node_modules/auth/dist/index.js',
+    'node_modules/auth/dist/index.d.ts',
+    'node_modules/auth/dist/vendor/chunk.js',
+    'node_modules/auth/node_modules/external/dist/index.js',
+    'node_modules/auth/node_modules/external/index.js',
+    'node_modules/auth/node_modules/external/index.d.ts',
+  ]) {
+    expect(existsSync(path.join(packaged, relative)), `${relative} must stay`).toBe(true);
+  }
+  for (const relative of [
+    'node_modules/auth/src/index.ts',
+    'node_modules/auth/browser/n3.min.js',
+    'node_modules/auth/dist/browser/web.js',
+    'node_modules/auth/dist/tests/units.test.ts',
+    'node_modules/auth/dist/benchmarks/scale.js',
+    'node_modules/auth/docs/guide.md',
+    'node_modules/auth/node_modules/external/src/index.ts',
+    'node_modules/auth/node_modules/external/src/v4/tests/parse.test.ts',
+    'node_modules/auth/node_modules/external/browser/n3.min.js',
+    'node_modules/auth/node_modules/external/test/fixture.js',
+  ]) {
+    expect(existsSync(path.join(packaged, relative)), `${relative} must be dropped`).toBe(false);
+  }
+});
+it('keeps dependencies whose declared entry point points into src or a browser build', () => {
+  const f = fixture(true);
+  const nestedRoot = path.join(f.source, 'node_modules/external');
+  json(path.join(nestedRoot, 'package.json'), {
+    name: 'external', version: '2.0.0',
+    main: 'src/index.js',
+    exports: { '.': { bun: './dist/browser/index.js', default: './src/index.js' } },
+    dependencies: { leaf: '^1.0.0' },
+  });
+  for (const relative of [ 'src/index.js', 'src/helper.js', 'src/ignored.test.js', 'dist/browser/index.js', 'dist/node/index.js' ]) {
+    const target = path.join(nestedRoot, relative);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, relative);
+  }
+  bundleLocalDependenciesIntoTarball(f.tarball, f.dependencies);
+  const packaged = unpack(f);
+  for (const relative of [
+    'src/index.js', 'src/helper.js', 'dist/browser/index.js', 'dist/node/index.js',
+  ]) {
+    expect(existsSync(path.join(packaged, 'node_modules/auth/node_modules/external', relative)), relative).toBe(true);
+  }
+  expect(existsSync(path.join(packaged, 'node_modules/auth/node_modules/external/src/ignored.test.js'))).toBe(false);
+});
+it('does not let custom or browser-only export conditions keep a source tree alive', () => {
+  const f = fixture(true);
+  const directRoot = f.source;
+  // zod maps `@zod/source` into `src/` and `browser` into a browser build, but
+  // no runtime resolver selects either condition.
+  json(path.join(directRoot, 'package.json'), {
+    name: 'auth', version: '1.0.0',
+    main: 'dist/index.js',
+    exports: { '.': { '@zod/source': './src/index.ts', browser: './browser/index.js', default: './dist/index.js' } },
+    dependencies: { external: '^2.0.0' },
+    optionalDependencies: { 'other-platform': '^1.0.0' },
+  });
+  for (const relative of [ 'dist/index.js', 'src/index.ts', 'src/nested/impl.ts', 'browser/index.js' ]) {
+    const target = path.join(directRoot, relative);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, relative);
+  }
+  bundleLocalDependenciesIntoTarball(f.tarball, f.dependencies);
+  const packaged = unpack(f);
+  expect(existsSync(path.join(packaged, 'node_modules/auth/dist/index.js'))).toBe(true);
+  for (const relative of [ 'src/index.ts', 'src/nested/impl.ts', 'browser/index.js' ]) {
+    expect(existsSync(path.join(packaged, 'node_modules/auth', relative)), relative).toBe(false);
+  }
+});
 it('promotes a root optional dependency when a bundled package requires it', () => {
   const f = fixture();
   json(path.join(f.root, 'seed/package/package.json'), { name: 'consumer-package', version: '1.0.0', optionalDependencies: { external: '^2.0.0' } });

@@ -10,6 +10,7 @@
  * 声明字段只作为 API 不可用时的可选兜底。
  */
 
+import { resolveTunnelClient } from './TunnelClientResolver';
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import { getLoggerFor } from 'global-logger-factory';
 import { createTunnelStatus, describeSpawnError } from './TunnelLifecycle';
@@ -32,6 +33,8 @@ export interface SakuraFrpTunnelProviderOptions {
 
   /** frpc 可执行文件路径 (默认 'frpc') */
   frpcPath?: string;
+  /** Environment used to resolve the client binary; injectable for tests. */
+  env?: Record<string, string | undefined>;
 
   /** 等待代理发布的毫秒数；超时后状态为 failed */
   connectTimeoutMs?: number;
@@ -65,7 +68,9 @@ interface SakuraTunnelRecord {
  * 通过 frpc 客户端连接 SakuraFRP 服务
  */
 export class SakuraFrpTunnelProvider implements TunnelProvider {
-  public readonly name = 'sakura-frp';
+  // The catalog id, not a hyphenated implementation name: the provider vocabulary has exactly
+  // one spelling, and this one is also what failure details embed.
+  public readonly name = 'sakura_frp';
   private readonly logger = getLoggerFor(this);
 
   private readonly token: string;
@@ -102,7 +107,8 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
   constructor(options: SakuraFrpTunnelProviderOptions) {
     this.token = options.token;
     this.publicUrl = normalizePublicEndpoint(options.publicUrl);
-    this.frpcPath = options.frpcPath ?? 'frpc';
+    this.frpcPath = options.frpcPath
+      ?? resolveTunnelClient('sakura_frp', { env: options.env }).command;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
     this.serverAddr = options.serverAddr;
     this.apiBaseUrl = (options.apiBaseUrl ?? DEFAULT_SAKURA_API_BASE_URL).replace(/\/+$/u, '');
@@ -341,7 +347,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
     });
 
     this.process.on('error', (error) => {
-      const described = describeSpawnError('sakura-frp', this.frpcPath, error);
+      const described = describeSpawnError('sakura_frp', this.frpcPath, error);
       this.logger.error(`Failed to start frpc: ${described}`);
       this.status = createTunnelStatus('failed', { endpoint: this.currentEndpoint(), error: described });
       this.process = null;

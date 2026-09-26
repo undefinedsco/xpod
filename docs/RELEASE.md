@@ -289,8 +289,23 @@ RC 里最重的一环是 `build_qlever_macos_runtime`（macOS ARM64 原生运行
 不会产出错误二进制。
 
 `publish_qlever_runtime_sdk` 与 `publish_qlever_local_runtime` 另有 BuildKit
-GHA 缓存（scope `qlever-runtime-sdk`）和"复用上一版 SDK 镜像"两条增量路径，
-暖态下分别约 4 分钟，不需要在 main 上额外预热。
+GHA 缓存（scope `qlever-runtime-sdk`）和"复用已有 SDK 镜像"两条增量路径。缓存
+暖态下整个 job 约 4 分钟；但**缓存是分支隔离的**，而这条 workflow 只在
+`release/*`（或 `workflow_dispatch`）上跑，所以新建 release 分支的第一次仍然是
+冷编译（实测 37.5 分钟）。
+
+因此 SDK 侧靠的是**按构建输入复用**，而不是预热缓存：
+
+- SDK 镜像除了不可变的 `sha-<commit>`，还会打一个按 QLever 构建输入命名的别名
+  `qlever-inputs-<hash12>`（hash 取自该 commit 的 `qlever/` 与
+  `docker/qlever-runtime-sdk/` 两棵树）；
+- 同一批输入已经构建过时，新的 RC 直接复用该镜像（0 构建分钟）；输入变了才全量
+  编译。这个别名是**追加式**的：已存在的名字不会被覆盖，digest 不一致只记进
+  summary；
+- 复用路径同样要过镜像 smoke（与新建路径相同的 `docker run` 检查），
+  `resolve-runtime-sdk-build.sh` 里 `reuse_identical_inputs=false` 可强制重建。
+
+即：只要这一版没有改 `qlever/**` 或 SDK Dockerfile，RC 就不会再花那 36–39 分钟。
 
 **并行度按机器实测决定，不再手写**：
 

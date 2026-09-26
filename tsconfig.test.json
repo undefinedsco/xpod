@@ -4,11 +4,23 @@
     "noEmit": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    // The tests import UI sources, which are written against the browser's DOM iteration
+    // (for instance `Headers.entries`) exactly as `ui/tsconfig.app.json` declares it.
+    "lib": ["es2021", "DOM", "DOM.Iterable"],
+    "baseUrl": ".",
+    "paths": {
+      // The plugin's published types use syntax our TypeScript cannot parse, which would drop
+      // every semantic diagnostic in this program. See types/vite-plugin-react.d.ts.
+      "@vitejs/plugin-react": ["./types/vite-plugin-react.d.ts"]
+    }
   },
   "include": [
     "bin/**/*",
     "src/**/*",
-    "tests/**/*"
+    "tests/**/*",
+    "types/ui-test-env.d.ts",
+    "ui/src/global.d.ts",
+    "ui/src/xpod-desktop.d.ts"
   ]
 }

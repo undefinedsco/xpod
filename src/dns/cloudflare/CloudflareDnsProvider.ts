@@ -87,40 +87,43 @@ export class CloudflareDnsProvider implements ListableDnsProvider {
     const fullName = this.buildFullName(options.subdomain, options.domain);
     const ttl = options.ttl ?? 1; // Cloudflare: 1 = auto
 
-    // 查找所有同名记录（不限类型），以处理 CNAME 与 A/AAAA 冲突
-    const existing = await this.findRecord(zoneId, fullName);
+    // 一次拉回该名字下的全部记录，再按类型判断（审计 N14）。
+    // 旧实现只取第一条、类型不同就删除——于是 `_acme-challenge` 的 TXT 或同一名字下的 MX
+    // 会被“为写 A 记录”误删。
+    const records = await this.findRecords(zoneId, fullName);
+    const existing = records.find((record) => record.type === options.type);
 
     if (existing) {
-      // 如果现有记录类型不同（如 CNAME vs AAAA），必须先删除旧记录
-      if (existing.type !== options.type) {
-        this.logger.info(`发现 DNS 类型冲突 (现有: ${existing.type}, 目标: ${options.type})，正在删除旧记录 ${fullName}...`);
-        await this.callApi(
-          `zones/${zoneId}/dns_records/${existing.id}`,
-          'DELETE'
-        );
-        // 删除后继续执行创建逻辑
-      } else {
-        // 类型相同，检查内容是否需要更新
-        if (existing.content === options.value && (existing.ttl === ttl || ttl === 1)) {
-          this.logger.debug(`DNS 记录已存在且一致，跳过更新 ${fullName} ${options.type}`);
-          return;
-        }
-
-        // 更新现有记录
-        await this.callApi<CloudflareDnsRecord>(
-          `zones/${zoneId}/dns_records/${existing.id}`,
-          'PATCH',
-          {
-            type: options.type,
-            name: fullName,
-            content: options.value,
-            ttl,
-            proxied: false, // DNS-01 验证需要关闭代理
-          }
-        );
-        this.logger.info(`已更新 DNS 记录 ${fullName} ${options.type}`);
+      // 类型相同，检查内容是否需要更新
+      if (existing.content === options.value && (existing.ttl === ttl || ttl === 1)) {
+        this.logger.debug(`DNS 记录已存在且一致，跳过更新 ${fullName} ${options.type}`);
         return;
       }
+
+      // 更新现有记录
+      await this.callApi<CloudflareDnsRecord>(
+        `zones/${zoneId}/dns_records/${existing.id}`,
+        'PATCH',
+        {
+          type: options.type,
+          name: fullName,
+          content: options.value,
+          ttl,
+          proxied: false, // DNS-01 验证需要关闭代理
+        }
+      );
+      this.logger.info(`已更新 DNS 记录 ${fullName} ${options.type}`);
+      return;
+    }
+
+    // 只有 CNAME 与其他记录类型互斥（RFC 1034）：写 A/AAAA 前要清掉同名 CNAME，写 CNAME 前
+    // 要清掉同名 A/AAAA。MX/TXT 等类型可以与 A/AAAA 共存，必须原样保留。
+    const conflicting = records.find((record) => CloudflareDnsProvider.isMutuallyExclusive(options.type, record.type));
+    if (conflicting) {
+      this.logger.info(
+        `发现互斥 DNS 记录 (现有: ${conflicting.type}, 目标: ${options.type})，删除该记录 ${conflicting.id} (${fullName})...`,
+      );
+      await this.callApi(`zones/${zoneId}/dns_records/${conflicting.id}`, 'DELETE');
     }
 
     // 创建新记录
@@ -146,11 +149,21 @@ export class CloudflareDnsProvider implements ListableDnsProvider {
 
     const zoneId = await this.getZoneId(options.domain);
     const fullName = this.buildFullName(options.subdomain, options.domain);
-    // 删除时也要支持泛查找，以防类型传错，但通常 deleteRecord 会传 type
-    const existing = await this.findRecord(zoneId, fullName, options.type, options.value);
+    // 删除必须带类型（接口里 type 是必填）：按“同名 + 同类型（+ 同内容）”精确匹配，
+    // 绝不退化成“删这个名字下的第一条记录”。
+    const matches = await this.findRecords(zoneId, fullName, options.type, options.value);
+    const existing = matches[0];
 
     if (!existing) {
       this.logger.debug(`DNS 记录不存在，跳过删除 ${fullName} ${options.type}`);
+      return;
+    }
+
+    if (existing.type !== options.type) {
+      // API 不该返回别的类型；真返回了就宁可不删，也不动别人的记录。
+      this.logger.warn(
+        `拒绝删除类型不匹配的记录 ${fullName}：请求 ${options.type}，返回 ${existing.type}`,
+      );
       return;
     }
 
@@ -224,14 +237,17 @@ export class CloudflareDnsProvider implements ListableDnsProvider {
   }
 
   /**
-   * 查找现有 DNS 记录
+   * 查找现有 DNS 记录。
+   *
+   * `type` 与 `value` 都会下推到 API 查询里，返回**全部**匹配项而不是 `response[0]`：
+   * 调用方要按类型判断能不能动这条记录，靠“第一条”猜类型正是 N14 的成因。
    */
-  private async findRecord(
+  private async findRecords(
     zoneId: string,
     fullName: string,
     type?: DnsRecordTypeValue,
     value?: string
-  ): Promise<CloudflareDnsRecord | undefined> {
+  ): Promise<CloudflareDnsRecord[]> {
     const params = new URLSearchParams({
       name: fullName,
     });
@@ -247,7 +263,35 @@ export class CloudflareDnsProvider implements ListableDnsProvider {
       'GET'
     );
 
-    return response[0];
+    return Array.isArray(response) ? response : [];
+  }
+
+  private async findRecord(
+    zoneId: string,
+    fullName: string,
+    type?: DnsRecordTypeValue,
+    value?: string
+  ): Promise<CloudflareDnsRecord | undefined> {
+    return (await this.findRecords(zoneId, fullName, type, value)).find(
+      (record) => type === undefined || record.type === type,
+    );
+  }
+
+  /**
+   * 是否与目标类型互斥：CNAME 不能与任何其他记录共存（RFC 1034），其余组合（含 TXT 与
+   * A/AAAA、MX 与 A/AAAA）都可以并存。
+   */
+  private static isMutuallyExclusive(target: DnsRecordTypeValue, existing: string): boolean {
+    if (existing === target) {
+      return false;
+    }
+    if (target === 'TXT') {
+      return false;
+    }
+    if (existing === 'CNAME') {
+      return true;
+    }
+    return target === 'CNAME' && (existing === 'A' || existing === 'AAAA');
   }
 
   /**

@@ -66,12 +66,19 @@ describe('managed-client P2P smoke script', () => {
       status: 200,
       headers: { 'content-type': 'text/plain' },
     }));
+    // The scripted client seals its data plane (audit N03), so this listener resolves the
+    // per-session secret from the fake signaling API exactly like a node does.
+    let sessionDataPlaneSecret: string | undefined;
     const dataPlaneServer = createTcpP2PDataPlaneServer({
       host: '127.0.0.1',
       handler: createP2PDataPlaneHandler({
         targetBaseUrl: 'http://127.0.0.1:5737/',
         fetchImpl: localFetch as typeof fetch,
       }),
+      secure: {
+        role: 'server',
+        resolveSessionSecret: () => sessionDataPlaneSecret,
+      },
     });
     await dataPlaneServer.listen(0);
     cleanupStack.push(() => dataPlaneServer.close());
@@ -93,7 +100,11 @@ describe('managed-client P2P smoke script', () => {
         return;
       }
       if (req.method === 'POST' && url.pathname === '/v1/signal/nodes/node-1/sessions') {
-        const body = JSON.parse(await readBody(req)) as { candidates?: P2PTransportCandidate[] };
+        const body = JSON.parse(await readBody(req)) as {
+          candidates?: P2PTransportCandidate[];
+          dataPlaneSecret?: string;
+        };
+        sessionDataPlaneSecret = body.dataPlaneSecret;
         createdCandidates = body.candidates ?? [];
         enrichedClientCandidates = createdCandidates.map((candidate) => ({
           ...candidate,

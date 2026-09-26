@@ -1,3 +1,4 @@
+import { resolveTunnelClient } from './TunnelClientResolver';
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import { getLoggerFor } from 'global-logger-factory';
 import { createTunnelStatus, describeSpawnError } from './TunnelLifecycle';
@@ -24,6 +25,8 @@ export interface LocalTunnelProviderOptions {
 
   /** cloudflared 可执行文件路径 (默认 'cloudflared') */
   cloudflaredPath?: string;
+  /** Environment used to resolve the client binary; injectable for tests. */
+  env?: Record<string, string | undefined>;
 
   /** 等待代理发布的毫秒数；超时后状态为 failed，而不是"仍在连接" */
   connectTimeoutMs?: number;
@@ -61,7 +64,8 @@ export class LocalTunnelProvider implements TunnelProvider {
   constructor(options: LocalTunnelProviderOptions) {
     this.tunnelToken = options.tunnelToken;
     this.publicUrl = normalizePublicEndpoint(options.publicUrl);
-    this.cloudflaredPath = options.cloudflaredPath ?? 'cloudflared';
+    this.cloudflaredPath = options.cloudflaredPath
+      ?? resolveTunnelClient('cloudflare', { env: options.env }).command;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
   }
 
@@ -421,10 +425,16 @@ function normalizePublicEndpoint(value: string | undefined): string | undefined 
  *
  * Both halves are reported: pointing the dashboard at `https://localhost:<port>` while this
  * runtime serves plain HTTP there fails the TLS handshake, and the edge shows only a 502.
+ *
+ * cloudflared logs the configuration it fetched as an escaped JSON string inside one log line
+ * (`config="{\"ingress\":[{\"service\":\"http://localhost:5737\"}]}"`), so the quotes around
+ * the JSON keys arrive backslash-escaped. Unescaping first is what makes this read-back work
+ * against a real connector; a line where the JSON is not escaped is still accepted.
  */
 export function readDashboardOrigin(output: string): { scheme: string; port: number } | undefined {
-  const match = /"service"\s*:\s*"(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output)
-    ?? /ingress[^\n]*service["']?\s*[:=]\s*["']?(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(output);
+  const unescaped = output.includes('\\"') ? output.replace(/\\"/gu, '"') : output;
+  const match = /"service"\s*:\s*"(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(unescaped)
+    ?? /ingress[^\n]*service["']?\s*[:=]\s*["']?(https?):\/\/(?:localhost|127\.0\.0\.1):(\d+)/iu.exec(unescaped);
   if (!match) {
     return undefined;
   }

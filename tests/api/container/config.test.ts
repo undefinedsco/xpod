@@ -281,14 +281,10 @@ describe('loadConfigFromEnv', () => {
     expect(aiGatewayService.router.selectionRepository).toBeUndefined();
     expect(aiGatewayService.cloudModels).toBeUndefined();
 
-    // The same singleton carries the owner's interface-key grant, keyed per owner.
-    const alice = 'https://id.example/alice/profile/card#me';
-    const bob = 'https://id.example/bob/profile/card#me';
-    await ownerPodAccess.saveKey(alice, { clientId: 'client-alice', clientSecret: 'secret-alice' });
-    await expect(ownerPodAccess.hasKey(alice)).resolves.toBe(true);
-    await expect(ownerPodAccess.hasKey(bob)).resolves.toBe(false);
-    await ownerPodAccess.forgetKey(alice);
-    await expect(ownerPodAccess.hasKey(alice)).resolves.toBe(false);
+    // The Provider reaching a Pod is the caller's own access: this component no longer stores an
+    // owner key, and the legacy migration is what moves old rows into the task layer.
+    expect(container.resolve('legacyPodKeyMigration', { allowUnregistered: true })).toBeUndefined();
+    expect(ownerPodAccess).not.toHaveProperty('saveKey');
   });
 
   it('splices Cloud /v1/models for local edition using the Cloud identity origin', () => {

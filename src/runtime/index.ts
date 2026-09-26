@@ -23,7 +23,24 @@ export {
 export type { RuntimeServices } from './lifecycle';
 export { GatewayProxy } from './Proxy';
 export { createGatewayAdminProxyAuthSecret } from './GatewayAdminProxyAuth';
-export { findGatewayIngressPort, getEphemeralLoopbackPort, getFreePort, getFreePortForWildcard, requireFreePortForWildcard } from './port-finder';
+export { findGatewayIngressPort, getEphemeralLoopbackPort, getFreePort, getFreePortForWildcard, isFreePortForWildcard, requireFreePortForWildcard } from './port-finder';
+export { assertUsableIngressPort, parseExplicitIngressPort, resolveIngressPort, IngressPortConflictError } from './ingress-port';
+export type { IngressPortDeclaration, IngressPortResolution, IngressPortSource } from './ingress-port';
+export { identifyIngressPortOccupants } from './ingress-occupant';
+export {
+  getUnreservedEphemeralPort,
+  listenOnUnreservedPort,
+  PORT_RESERVATION_DIR_ENV,
+  RESERVED_PORTS_ENV,
+  portReservation,
+  portReservationDir,
+  readPortReservations,
+  releasePort,
+  reservePort,
+  reservedPorts,
+} from './port-reservations';
+export type { PortReservation } from './port-reservations';
+export type { IngressPortOccupant, IngressPortOccupants } from './ingress-occupant';
 export { ensureTrailingSlash, INVALID_CONFIGURATION_PREFIX, validateBaseUrl } from './base-url';
 export type { ValidateBaseUrlOptions } from './base-url';
 export { applyEnv, loadEnvFile } from './env-utils';

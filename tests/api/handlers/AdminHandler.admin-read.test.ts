@@ -1,11 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ApiServer } from '../../../src/api/ApiServer';
+import { AuthMiddleware } from '../../../src/api/middleware/AuthMiddleware';
 import { registerAdminRoutes } from '../../../src/api/handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../../../src/api/handlers/AdminDdnsHandler';
 import { createGatewayAdminProxyHeaders } from '../../../src/runtime/GatewayAdminProxyAuth';
 
 describe('Admin route authorization', () => {
-  const server = new ApiServer({ port: 3195 });
+  // These routes authorize by loopback/proxy marker (they register `public: true`), so the server
+  // only needs a middleware that declines every credential.
+  const server = new ApiServer({
+    port: 3195,
+    authMiddleware: new AuthMiddleware({ authenticator: { canAuthenticate: () => false } as never }),
+  });
   const baseUrl = 'http://localhost:3195';
   const internalAdminAuthSecret = 'admin-read-fixture-secret';
 

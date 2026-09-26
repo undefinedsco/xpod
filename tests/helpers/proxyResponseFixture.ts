@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import { GatewayProxy } from '../../src/runtime/Proxy';
 import { Supervisor } from '../../src/supervisor/Supervisor';
+import { listenOnUnreservedPort } from '../../src/runtime/port-reservations';
 
 // Keep this fixture independent of authentication, filesystems and UI builds.
 const runtimeVersion = process.versions.bun;
@@ -23,8 +24,7 @@ const upstream = http.createServer((request, response) => {
   response.setHeader('Content-Length', payload.byteLength);
   response.end(payload);
 });
-await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
-const upstreamPort = (upstream.address() as { port: number }).port;
+const upstreamPort = await listenOnUnreservedPort(upstream);
 const gateway = new GatewayProxy(0, new Supervisor(), '127.0.0.1');
 gateway.setTargets({ css: `http://127.0.0.1:${upstreamPort}` });
 

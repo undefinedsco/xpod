@@ -15,12 +15,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ChatKitService, type AiProvider } from '../../src/api/chatkit/service';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 import type { OwnerPodAccess } from '../../src/api/ai-gateway/pod/OwnerPodAccess';
-import { createInterfaceKeyPodAccess } from '../helpers/podInterfaceKeyAccess';
+import { createInterfaceKeyPodAccess, type OwnerInterfaceKeyAuth } from '../helpers/podInterfaceKeyAccess';
 import type { StoreContext } from '../../src/api/chatkit/store';
 import { RunStepType, RunStatus } from '../../src/api/runs/schema';
 import { generateRunResourceId, generateRunStepResourceId } from '../../src/api/runs/store';
 import { CredentialStatus, ServiceType } from '../../src/credential/schema/types';
-import { getClientCredentialsToken, getConfiguredAccount, type AccountSetup } from './helpers/solidAccount';
+import { getConfiguredAccount, type AccountSetup } from './helpers/solidAccount';
 
 // Mock AI Provider - simulates AI responses
 class MockAiProvider implements AiProvider {
@@ -48,7 +48,9 @@ const suite = shouldRun ? describe : describe.skip;
 
 const solidBaseUrl = (process.env.CSS_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
 const CHATKIT_STREAM_TIMEOUT_MS = 30000;
-const CHATKIT_POD_OPERATION_TIMEOUT_MS = 15000;
+// Pod round-trips through a real stack take a few hundred milliseconds; this budget is for
+// waiting on that traffic under parallel integration files, not for tolerating a broken call.
+const CHATKIT_POD_OPERATION_TIMEOUT_MS = 45_000;
 
 suite('ChatKit PodStore Integration', () => {
   let service: ChatKitService<StoreContext>;
@@ -67,11 +69,11 @@ suite('ChatKit PodStore Integration', () => {
     }
     account = createdAccount;
     podUrl = account.podUrl;
-    const token = await getClientCredentialsToken(account);
 
-    // The store reaches the Pod the way the API does in production: through the Pod's standard
-    // interface, with the owner's own interface key (only its persistence is in memory here).
-    ({ podAccess } = await createInterfaceKeyPodAccess({
+    // The store reaches the Pod the way the API does in production: as the caller, through the
+    // Pod's standard interface, with the owner's own interface key carried by the request.
+    let callerAuth: OwnerInterfaceKeyAuth;
+    ({ podAccess, auth: callerAuth } = await createInterfaceKeyPodAccess({
       webId: account.webId,
       clientId: account.clientId,
       clientSecret: account.clientSecret,
@@ -90,14 +92,7 @@ suite('ChatKit PodStore Integration', () => {
 
     testContext = {
       userId: account.webId,
-      auth: {
-        type: 'solid',
-        webId: account.webId,
-        clientId: account.clientId,
-        clientSecret: account.clientSecret,
-        accessToken: token.accessToken,
-        tokenType: token.tokenType,
-      },
+      auth: callerAuth,
     } as StoreContext;
 
     await store.loadThreads(1, undefined, 'desc', testContext);

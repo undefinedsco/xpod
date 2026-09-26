@@ -18,6 +18,7 @@ import { AccountRoleRepository } from '../../identity/drizzle/AccountRoleReposit
 import { ServiceTokenRepository } from '../../identity/drizzle/ServiceTokenRepository';
 import { LocalSetupServiceTokenRepository } from '../../setup/LocalSetupServiceTokenRepository';
 import { SolidTokenAuthenticator } from '../auth/SolidTokenAuthenticator';
+import { SolidSessionFactory } from '../auth/SolidSessionFactory';
 import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthenticator';
 import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
 import { ServiceTokenAuthenticator } from '../auth/ServiceTokenAuthenticator';
@@ -30,8 +31,11 @@ import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorC
 import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { OwnerPodAccess } from '../ai-gateway/pod/OwnerPodAccess';
 import { resolveHostedPodRoute } from '../ai-gateway/pod/HostedPodRoute';
+import { getTaskCredentialDatabase, resolveTaskCredentialDatabaseUrl } from '../tasks/TaskCredentialDatabase';
+import { createTaskCredentialSource, TaskCredentialStore } from '../tasks/TaskCredentialStore';
 import { PodInterfaceKeyRepository } from '../../identity/drizzle/PodInterfaceKeyRepository';
 import { PodInterfaceKeyStore } from '../ai-gateway/pod/PodInterfaceKeyStore';
+import { migratePodInterfaceKeysToTaskCredentials } from '../tasks/PodInterfaceKeyMigration';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCredentialVault';
 import { createAiCredentialSecretDecoder } from '../ai-gateway/credentials/AiCredentialSecretDecoder';
@@ -195,14 +199,50 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    ownerPodAccess: asFunction(({ config, db }: ApiContainerCradle) => {
-      return new OwnerPodAccess({
+    legacyPodKeyMigration: asFunction(({ config, db, taskCredentialStore }: ApiContainerCradle) => {
+      const issuer = config.solidBaseUrl ?? config.publicUrl;
+      if (!taskCredentialStore || !issuer) {
+        return undefined;
+      }
+      return async() => await migratePodInterfaceKeysToTaskCredentials({
         keys: new PodInterfaceKeyStore({
           repository: new PodInterfaceKeyRepository(db),
           vault: credentialVaultForConfig(config),
         }),
+        taskCredentials: taskCredentialStore,
+        issuer,
+      });
+    }).singleton(),
+
+    taskCredentialStore: asFunction(({ config }: ApiContainerCradle) => {
+      // No root key means no encrypted store: a credential that cannot be sealed is not kept.
+      const vault = config.secretCellVaultFactory?.();
+      if (!vault) {
+        return undefined;
+      }
+      const url = resolveTaskCredentialDatabaseUrl({
+        identityDatabaseUrl: config.databaseUrl,
+        configuredUrl: config.taskDatabaseUrl,
+      });
+      return new TaskCredentialStore({ database: getTaskCredentialDatabase(url), vault });
+    }).singleton(),
+
+    solidSessions: asFunction(({ config }: ApiContainerCradle) => {
+      return new SolidSessionFactory({
         tokenEndpoint: config.cssTokenEndpoint,
         publicBaseUrl: config.solidBaseUrl,
+      });
+    }).singleton(),
+
+    ownerPodAccess: asFunction(({ config, solidSessions, taskCredentialStore }: ApiContainerCradle) => {
+      // Background work uses the owner's task-layer grant; a request uses the credential its
+      // caller brought. Nothing is read from a deployment-held key any more.
+      const issuer = config.solidBaseUrl ?? config.publicUrl;
+      return new OwnerPodAccess({
+        sessions: solidSessions,
+        ...(taskCredentialStore && issuer
+          ? { taskCredentials: createTaskCredentialSource({ store: taskCredentialStore, issuer }) }
+          : {}),
         route: resolveHostedPodRoute({
           canonicalBaseUrl: config.solidBaseUrl,
           // API_HOST is the address the runtime bound its services to; XPOD_MAIN_PORT is the
@@ -547,6 +587,7 @@ export function registerCommonServices(
       serviceTokenRepo,
       invocationTokenCodec,
       gatewayAccessKeyRepository,
+      solidSessions,
       config,
     }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
@@ -558,8 +599,7 @@ export function registerCommonServices(
       });
 
       const clientCredAuthenticator = new ClientCredentialsAuthenticator({
-        tokenEndpoint: config.cssTokenEndpoint,
-        publicBaseUrl: config.solidBaseUrl,
+        sessions: solidSessions,
       });
 
       const nodeTokenAuthenticator = new NodeTokenAuthenticator({
@@ -657,9 +697,15 @@ export function registerCommonServices(
       return new RunAuthContextRegistry();
     }).singleton(),
 
-    taskAuthBindingService: asFunction(({ chatKitStore }: ApiContainerCradle) => {
+    taskAuthBindingService: asFunction(({ chatKitStore, taskCredentialStore, config }: ApiContainerCradle) => {
+      const issuer = config.solidBaseUrl ?? config.publicUrl;
       return new TaskAuthBindingService({
         repository: chatKitStore,
+        // Unattended runs take their credential from the task layer; the Pod-stored credential
+        // stays the fallback until every binding names a grant.
+        ...(taskCredentialStore && issuer
+          ? { taskCredentials: createTaskCredentialSource({ store: taskCredentialStore, issuer }) }
+          : {}),
       });
     }).singleton(),
 

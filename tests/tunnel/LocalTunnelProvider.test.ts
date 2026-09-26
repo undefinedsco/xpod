@@ -163,7 +163,9 @@ describe('LocalTunnelProvider', () => {
     child.emit('error', error);
 
     await expect(started).rejects.toThrow(/cloudflared/);
-    expect(provider.getStatus().error).toBe('binary-missing:cloudflare:cloudflared');
+    // The prefix stays machine-readable; the catalog's install hint is appended for operators.
+    expect(provider.getStatus().error).toMatch(/^binary-missing:cloudflare:cloudflared/u);
+    expect(provider.getStatus().error).toContain('CLOUDFLARED_BIN');
   }, 20_000);
 
   it('only reports ready once cloudflared registered the tunnel connection', async () => {
@@ -193,5 +195,18 @@ describe('cloudflared dashboard origin', () => {
     const https = 'INF Updated to new configuration config="{\"ingress\":[{\"service\":\"https://localhost:5737\"}]}"';
     expect(readDashboardOrigin(https)).toEqual({ scheme: 'https', port: 5737 });
     expect(readDashboardOrigin('INF Registered tunnel connection connIndex=0')).toBeUndefined();
+  });
+
+  it('parses the escaped JSON a real connector prints, not just a hand-written line', () => {
+    // Captured from a real `cloudflared tunnel run --token` against the operator's named
+    // tunnel (2026-09-24): the configuration is a JSON string inside the log line, so every
+    // inner quote is backslash-escaped. The previous regex only matched the unescaped shape,
+    // which is why the origin-mismatch diagnostic never fired on a real connector.
+    const real = '2026-09-24T02:56:58Z INF Updated to new configuration '
+      + 'config="{\"ingress\":[{\"hostname\":\"node-0000.undefineds.co\",\"originRequest\":{},'
+      + '\"service\":\"http://localhost:5737\"},{\"service\":\"http_status:404\"}],'
+      + '\"warp-routing\":{\"enabled\":false}}" version=2';
+
+    expect(readDashboardOrigin(real)).toEqual({ scheme: 'http', port: 5737 });
   });
 });

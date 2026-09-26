@@ -16,7 +16,13 @@ const cases = [
     imageEnv: 'SDK_IMAGE',
     publishedImage: '${{ env.SDK_IMAGE }}@${{ steps.push.outputs.digest }}',
     dockerfile: '${{ steps.resolve.outputs.dockerfile }}',
-    tags: '${{ env.SDK_IMAGE }}:${{ steps.resolve.outputs.tag }}',
+    // The immutable commit tag plus the alias named for the QLever build inputs; the
+    // local build and the registry push must carry the same names, because they must be
+    // the same image.
+    tags: [
+      '${{ env.SDK_IMAGE }}:${{ steps.resolve.outputs.tag }}',
+      '${{ env.SDK_IMAGE }}:${{ steps.sdk_inputs.outputs.tag }}',
+    ].join('\n') + '\n',
     // One workflow-level value now feeds all three build steps, so the job count
     // is not repeated per step (and no longer halves the runner's four CPUs).
     args: [ 'XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}', 'XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}' ],

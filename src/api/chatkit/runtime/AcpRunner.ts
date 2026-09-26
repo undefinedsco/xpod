@@ -64,7 +64,7 @@ export class AcpRunner extends EventEmitter {
         ...sanitizeRuntimeEnv(process.env),
         ...(options.env ?? {}),
         FORCE_COLOR: process.env.FORCE_COLOR ?? '0',
-      } as NodeJS.ProcessEnv,
+      } as Record<string, string | undefined>,
       stdio: 'pipe',
     });
 

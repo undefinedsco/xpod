@@ -1,18 +1,25 @@
+import { isHttpTarget, probeSolidWellKnown, routeUnusableReason } from './RouteValidation';
 import type { AccessRoute, RouteSet } from './types';
 
 export interface ChooseAccessRouteOptions {
   managedClient: boolean;
   timeoutMs?: number;
   probe?: (route: AccessRoute, signal: AbortSignal) => Promise<boolean> | boolean;
+  /** Injectable clock: expired access points must be rejected against a known time in tests. */
+  now?: () => Date;
 }
 
 export async function chooseAccessRoute(
   routeSet: RouteSet,
   options: ChooseAccessRouteOptions,
 ): Promise<AccessRoute | null> {
+  const now = (options.now ?? (() => new Date()))();
   const candidates = routeSet.routes
     .filter((route) => route.health !== 'unreachable')
     .filter((route) => options.managedClient || !route.requiresManagedClient)
+    // Expired and loopback-only access points are dropped before any probe: the node
+    // advertises its own list, so validating it is the client's job (N06).
+    .filter((route) => routeUnusableReason(route, { now, remoteClient: options.managedClient }) === undefined)
     .slice()
     .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id));
 
@@ -46,12 +53,8 @@ async function probeWithTimeout(
 }
 
 async function defaultProbe(route: AccessRoute, signal: AbortSignal): Promise<boolean> {
-  if (!route.targetUrl.startsWith('http://') && !route.targetUrl.startsWith('https://')) {
+  if (!isHttpTarget(route.targetUrl)) {
     return route.health === 'healthy';
   }
-  const response = await fetch(new URL('/.well-known/solid', route.targetUrl), {
-    method: 'HEAD',
-    signal,
-  });
-  return response.ok || response.status === 401 || response.status === 403;
+  return await probeSolidWellKnown(route.targetUrl, signal);
 }

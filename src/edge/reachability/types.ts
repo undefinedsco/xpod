@@ -65,6 +65,12 @@ export interface P2PSessionRequest {
   owner?: P2PSessionOwner;
   capabilities?: string[];
   candidates?: unknown[];
+  /**
+   * Base64 per-session secret for the data plane (audit N03). The creator generates it; the
+   * signaling API is the only channel that carries it, so a network peer that can reach the
+   * punched port still cannot read or forge frames.
+   */
+  dataPlaneSecret?: string;
 }
 
 export interface P2PSessionOwner {
@@ -114,6 +120,8 @@ export interface P2PSession {
   capabilities: string[];
   candidates: P2PTransportCandidate[];
   limits?: P2PSessionLimits;
+  /** Present for data planes that authenticate and encrypt their frames (audit N03). */
+  dataPlaneSecret?: string;
 }
 
 export interface P2PSessionList {

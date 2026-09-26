@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { sql, eq } from 'drizzle-orm';
 import type { IdentityDatabase } from './db';
-import { ensureCloudClusterTables, executeStatement, executeQuery, toDbTimestamp, fromDbTimestamp } from './db';
+import { ensureCloudClusterTables, executeStatement, executeStatementWithCount, executeQuery, toDbTimestamp, fromDbTimestamp } from './db';
 import { edgeNodes } from './schema';
 
 export interface EdgeNodeRepositoryOptions {
@@ -239,6 +239,50 @@ export class EdgeNodeRepository {
           updated_at = ${ts}
       WHERE id = ${nodeId}
     `);
+  }
+
+  /**
+   * Compare-and-swap on the whole `metadata` blob.
+   *
+   * Reachability state (sessions, candidates) lives inside that blob, so a read-modify-write
+   * silently drops whatever another writer committed in between — the lost update the audit
+   * calls out as N07. This write only lands when the stored value is still the one the caller
+   * read; `false` means somebody else won and the caller must re-read and re-apply.
+   *
+   * The comparison is on the serialized payload. Two equivalent-but-differently-ordered
+   * payloads therefore fail the swap, which costs a retry but can never lose a write.
+   */
+  public async updateNodeMetadataAtomic(
+    nodeId: string,
+    expected: Record<string, unknown> | null,
+    next: Record<string, unknown>,
+  ): Promise<boolean> {
+    await this.ready;
+    const payload = JSON.stringify(next);
+    const expectedPayload = expected === null ? null : JSON.stringify(expected);
+    const ts = toDbTimestamp(this.db, new Date());
+
+    const changed = await executeStatementWithCount(this.db, expectedPayload === null
+      ? sql`
+          UPDATE cluster_node
+          SET metadata = ${payload},
+              updated_at = ${ts}
+          WHERE id = ${nodeId} AND metadata IS NULL
+        `
+      : sql`
+          UPDATE cluster_node
+          SET metadata = ${payload},
+              updated_at = ${ts}
+          WHERE id = ${nodeId} AND metadata = ${expectedPayload}
+        `);
+    if (typeof changed === 'number') {
+      return changed > 0;
+    }
+
+    // A driver that reports no row count cannot answer "did my write land": verify instead of
+    // assuming, so a lost race is retried rather than reported as success.
+    const stored = await this.getNodeMetadata(nodeId);
+    return JSON.stringify(stored?.metadata ?? null) === payload;
   }
 
   public async getNodeMetadata(nodeId: string): Promise<{ nodeId: string; metadata: Record<string, unknown> | null; lastSeen?: Date } | undefined> {
