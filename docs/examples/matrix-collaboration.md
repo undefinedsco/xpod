@@ -1,6 +1,12 @@
-# Matrix 多 Agent 协作验收样例
+# Matrix 多 Agent 单 Pod 基线样例
 
 这个样例通过**正在运行的 Xpod Gateway** 写入真实 Pod，并使用两个确定性脚本执行器验证消息、领取租约、交接、结果回写和增量同步。它不会请求 LLM，也不能证明模型推理、真实工具执行、不同身份隔离或跨实例故障恢复已经通过。
+
+## 样例定位
+
+这是当前单部署、同一 WebID、同一 Pod 的可运行基线，不是目标分布式群聊拓扑。目标为 Matrix 分布式房间/事件语义以及各参与者 Pod 持久化，见 [协作设计](../matrix-collaboration-design.md)、[决策登记册](../matrix-collaboration-decisions.md)。下述共享 Pod 授权和同一队列要求是现有脚本的前提，不是参与者必须共享存储或互授 Pod 写权限的产品要求。
+
+文档中的 Pod 资源 URI 是服务器访问的持久存储地址，不是浏览器缓存；同一 Matrix 事件跨 Pod 保持同一 event_id。该目标不要求额外的浏览器缓存、Message 副本或独立映射表。
 
 ## 前提与运行
 
@@ -112,10 +118,15 @@ curl --fail-with-body "$GATEWAY/v1/agent-wakes/complete" \
 
 失败时调用 `/v1/agent-wakes/fail`，带相同租约字段以及 `error`、`retry`。`retry: true` 表示允许重新领取；实际外部动作能否安全重试由工具自身幂等保证。
 
-## 共享房间与验收边界
+## 当前单 Pod 样例的授权与验收边界
 
 同一验收凭据执行 author/reviewer，是为了让样例可直接跑通协议。生产部署需为不同 executor 分配独立身份和授权，另行验证越权领取、写 state、读取输入及提交结果均被拒绝。
 
-`X-Xpod-Pod-Url` 只选择已注册的 Pod 根，不提供额外权限。共享 Pod 请求始终携带请求者自身凭据；Matrix 邀请不会创建 Solid ACL。邀请其他人或 executor 后，必须通过已有 Pod 授权机制授予相应访问面，并验证读取/写入边界。
+在当前实现中，`X-Xpod-Pod-Url` 只选择已注册的 Pod 根，不提供额外权限。共享 Pod 请求携带请求者自身凭据；Matrix 邀请不会创建 Solid ACL。若用该实现测试其他身份，必须显式授予目标 Pod 的相应访问面并验证边界。这是当前单 Pod 实现限制，不应推广为分布式房间的权限设计。
+
+分布式实现应由协议服务验证远端事件，再依本地用户授予的权限持久化到对应 Pod；Matrix 房间授权与 Solid 存储授权各自生效，不要求用户相互持有对方 Pod 的写权限。复制到另一个 Pod 不自动赋予 Agent 执行权。
 
 脚本输出 `mode: "deterministic-runtime"` 和明确的 `evidenceScope`。只有实际运行成功的报告才算这条真实 HTTP 验收通过；`--help`、转译成功或单测通过都不能替代。真实 LLM 对话、工具质量、租约过期接替、Redis 断连、进程崩溃恢复及跨实例并发仍需独立验收。
+
+
+分布式样例尚未实现。后续必须使用两个独立部署、不同身份和 Pod，验证跨副本事件身份、断网补发、重复/乱序投递、缺失事件补取、事件授权和状态解析，以及复制不会引发额外 Agent 执行。完整门禁见 [验收记录](../matrix-collaboration-acceptance.md)。本脚本的成功报告不能代表这些门禁通过。

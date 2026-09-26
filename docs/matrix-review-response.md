@@ -3,7 +3,13 @@
 日期：2026-09-24。复审对象见主仓库 `docs/matrix-implementation-review.md`
 （本 worktree 不含该文件）。本文只记录**已核对的结论**、**已修复项的证据**与**未解决项的处置**。
 
-## 结论
+## 2026-09-26 目标更新
+
+本文的修复与测试记录属于旧单 Pod adapter。分布式目标以
+[协作设计](matrix-collaboration-design.md) 和 [决策登记册](matrix-collaboration-decisions.md)
+为准；历史通过不证明跨部署事件验证、Pod 投递或执行归属已经实现。
+
+## 原实现复审结论
 
 复审的六条发现全部核对属实，代码位置与复现描述一致。其中三条 P1 已在本次修复：
 
@@ -62,7 +68,7 @@ Redis 用独立 exhausted 集合记录已移出 pending 的 job，`requeue` 在 
 截断**，否则漏晚到原生消息（复审已指出，与 `drizzle-solid-matrix-hydration.md` 的
 结论一致）。这属于新的持久状态设计，需要先确定：
 
-1. 索引放在 SQL journal 还是 Pod；
+1. Pod 内发布/发现记录的资源形态与恢复方式（存储归属已定，不再选择 SQL 权威）；
 2. 原生 Pod 写入的发现方式（无变更订阅器，当前靠读取时登记）；
 3. 有界补偿扫描的窗口与误判代价。
 
@@ -71,11 +77,11 @@ Redis 用独立 exhausted 集合记录已移出 pending 的 job，`requeue` 在 
 `xpod_matrix_events` 新事件登记使用 `SHARE ROW EXCLUSIVE` 并持有到提交，保证高水位不
 越过未提交事件，但会串行化无关 scope 的登记。
 
-**处置已升级**：曾计划做"scope 级序号分配"（行锁替换表锁），现已否决——那是在优化一个
-我们自己发明的全局分配器。按可移植性决定，正确做法是**去掉这两张表**：去重改为确定性
-`eventId` + `If-None-Match: *`，游标改为 Pod 内的位置资源 + `If-Match` 的 CAS。
-条件写前提已实测通过，方案、实现约束与待决项见
-[Matrix 数据必须走 Pod](matrix-pod-storage-portability.md) 的"游标与去重也必须可移植"章节。
+**目标处置**：SQL journal 迁出到 Pod，原表及表锁随旧实现退出。此前“确定性 eventId +
+消息文档 If-None-Match”以及“CAS 计数器即可替代发布”的方案已撤销。事件 ID 依 room version
+规则跨副本保持不变；去重需要 Pod 事务记录；事件发布需要正文、事件引用和可见位置的
+可恢复协议。原顺序条件写测试只证明单文档行为，不证明目标方案已成立。
+实现和迁移要求见 [Pod 存储契约](matrix-pod-storage-portability.md)。
 
 在此之前，本提交已把表锁的**频次**从"每事件一次"降到"整页一次"（`2054a753`），
 但锁的**粒度未变**，跨 Pod 串行仍在。
