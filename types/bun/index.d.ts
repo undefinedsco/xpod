@@ -34,3 +34,18 @@ declare module 'bun:test' {
   export function afterAll(body: TestBody): void;
   export function expect(value: unknown): Expectation;
 }
+
+/**
+ * Bun's `import.meta` extensions.
+ *
+ * tsc knows the standard `import.meta` shape, and this repository deliberately does not install
+ * `@types/bun` (that would put Bun's globals into every program), so the two members the scripts
+ * actually use are declared here. Without them, the first Bun-run file that reaches the test
+ * type-check gate cannot compile even though Bun executes it.
+ */
+interface ImportMeta {
+  /** Absolute path of the directory containing the current module (Bun). */
+  readonly dir: string;
+  /** Whether this module is the process entry point (Bun). */
+  readonly main: boolean;
+}
