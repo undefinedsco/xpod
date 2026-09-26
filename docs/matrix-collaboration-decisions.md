@@ -123,6 +123,16 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   `identityBinding.test.ts` 7 项。承载一定，接存储即可。
   在这两条落地前，容器仍只注册部署级身份；每参与者身份已经可以端到端工作，但由谁供给仍是
   部署的操作决定。
+  3. **入站 federation 的路由归属**（2026-09-27 发现，被上面第 2 条阻塞）：`PUT
+     /_matrix/federation/v1/send/{txnId}` 没有 Pod 路径段，而按本决策"数据在各自 Pod"，
+     收到的事件应当写进**目标 server name 对应参与者自己的 Pod**（接收方服务器存自己房间里的事件，
+     与 Matrix 语义一致）。因此路由需要 `destination server name → 该参与者的 WebID → Pod`，
+     而这正是上面第 2 条要落的绑定；当前 `MatrixSigningIdentitySource` 只回答"这个 server name
+     我能不能签"，不带 WebID，所以路由还拼不起来。绑定承载一定，这一步就是"查绑定 + 选 Pod +
+     落 `acceptReceivedEvent`"，不需要新增机制；destination 的判定同时复用同一个能力口径
+     （只接受本部署持有密钥的 server name，否则 401）。
+     备选（不推荐）：把 Pod 放进路径前缀（协议插件式前缀入口），能立刻绕开绑定，但偏离 Matrix
+     标准路由形状，会让现有 SDK/对端按标准地址打过来时直接 404。
 
 ## 消息身份与表示
 
@@ -329,9 +339,25 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
   pre-v1.3 无 destination 仍接受、method/uri/query/body 任一被改都失败、密钥不对、退役密钥不认、
   未知 origin 报"无法验证"、非 server name 的 origin、头解析的大小写/空白/引号/转义/别名/未知参数、
   残缺头视为无授权、server name 正反例）。
-- **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 HTTP 路由（认证件与事务件都已就位）、
-  事务记录与控制 Pod 承载（去 SQL）、`/get_missing_events` 补依赖、状态与历史获取、
-  `.well-known` 服务发现、以及**出站**投递。
+- **已落地**（2026-09-27）：**server name → 可达目标**（`federation/serverNameResolution.ts`），即
+  federation 的客户端解析面。严格按规范的顺序实现：① IP 字面量直接用（无端口则 8448）；
+  ② 带显式端口的 server name 直接连，不问 `.well-known`；③ 否则取
+  `https://<host>/.well-known/matrix/server`，`m.server` 合法则按 `host[:port]` 处理，
+  且**委派不再递归查 `.well-known`**（规范 3.1–3.5 没有第二次查询）；④ `.well-known` 缺失/不可用/
+  出错时才查 SRV `_matrix-fed._tcp.<host>`，再退到已弃用的 `_matrix._tcp.<host>`；⑤ 都没有则
+  `https://<host>:8448`。**每个分支都按规范保留 Host**，所以结果同时给出 `baseUrl` 与 `hostHeader`
+  ——委派到别的 host 时请求仍要声明原 server name，这正是目标机用 TLS 证明"我是合法委派"的方式。
+  发现结果按规范缓存：尊重 `Cache-Control: max-age`、缺省 24h、上限 48h、`no-store` 不缓存；
+  失败缓存 1h 且**连续失败指数退避**（仍以 48h 封顶）；并发解析共用一次请求；SRV 的缓存交给 DNS 解析器。
+  SRV 解析函数是注入的（部署接 `node:dns`，缺省即不查 SRV，测试保持无网络）；`selectSrvRecord` 实现
+  RFC 2782 的最低优先级 + 权重选择。测试 `tests/api/matrix/federation/serverNameResolution.test.ts`
+  13 项（IP 字面量、显式端口不发请求、合法委派、委派端口/SRV、`.well-known` 缺失与坏 JSON 与 404、
+  隐式 8448、24h/max-age/48h 上限/no-store 缓存、失败 1h 与指数退避、并发共请求、非法名、
+  `m.server` 解析、server name 拆分、SRV 选择）。
+- **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 HTTP 路由（认证件、事务件与域名解析件都已
+  就位；**剩下的阻塞点是路由归属**——见下方"待细化的实现事项"）、事务记录与控制 Pod 承载（去 SQL）、
+  `/get_missing_events` 补依赖、状态与历史获取、以及**出站**投递（用 `buildXMatrixAuthorization`
+  + `MatrixServerNameResolver` 组装）。
 
 ## 已撤销或否决的前提
 
