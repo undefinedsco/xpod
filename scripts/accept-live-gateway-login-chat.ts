@@ -774,10 +774,16 @@ async function main(): Promise<void> {
   ) {
     fail('aiConnections', 'The Pod store does not expose the required credential and model persistence operations');
   }
+  // Xpod holds no owner key (docs/pod-interface-key.md decision 7), so every Pod-backed API call
+  // has to carry the caller's own interface key - the same credential the host's session fetch
+  // attaches after the API answers 403 service_access_missing. This acceptance drives the API
+  // directly, so it attaches the account's interface key itself; the Solid session stays in use for
+  // the direct Pod reads and writes above.
+  const ownerCredentialFetch = createOwnerCredentialFetch(account);
   const client = createXpodAiConnectionsClient({
     webId: account.webId,
     podUrl: account.podUrl,
-    authenticatedFetch,
+    authenticatedFetch: ownerCredentialFetch,
   });
 
   const { gatewayKey, initialModelIds } = await verifyGatewayKeyLifecycle(client, {
@@ -785,7 +791,7 @@ async function main(): Promise<void> {
     authorization: cloudAccount.authorization,
     controls: cloudAccount.controls,
     webId: account.webId,
-  }, authenticatedFetch);
+  }, ownerCredentialFetch);
 
   const fileState = providerFromFile();
   if (fileState.present && !fileState.spec) {
@@ -896,10 +902,28 @@ async function main(): Promise<void> {
   writeEvidence();
 }
 
+/**
+ * The owner's own interface key as a request credential.
+ *
+ * `POST /api/ai/gateway/keys` and its list/delete siblings are backed by the owner's Pod, so the API
+ * exchanges whatever credential the request carries. A DPoP-bound session token cannot be replayed
+ * by the API, which is why the host attaches an `sk-` wrapper instead - and why this caller does too.
+ */
+function createOwnerCredentialFetch(account: { clientId: string; clientSecret: string }): typeof fetch {
+  const wrapper = `sk-${Buffer.from(`${account.clientId}:${account.clientSecret}`, 'utf8').toString('base64')}`;
+  return (input, init) => {
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    headers.set('authorization', `Bearer ${wrapper}`);
+    // A Request body's encoded length can change when it is replayed with a new init object.
+    headers.delete('content-length');
+    return fetch(input, { ...init, headers });
+  };
+}
+
 async function verifyGatewayKeyLifecycle(
   client: ReturnType<typeof createXpodAiConnectionsClient>,
   account: Omit<Parameters<typeof createCloudClientCredentials>[0], 'name'>,
-  authenticatedFetch: typeof fetch,
+  requestFetch: typeof fetch,
 ): Promise<{
   gatewayKey: string;
   initialModelIds: string[];
@@ -940,7 +964,7 @@ async function verifyGatewayKeyLifecycle(
     phase = 'list wire metadata excludes secrets';
     // Inspect the wire response as well: the client intentionally normalizes
     // records and could otherwise hide an unexpected secret field from this gate.
-    const rawList = await readJson(await authenticatedFetch(
+    const rawList = await readJson(await requestFetch(
       new URL('/api/ai/gateway/keys', client.apiBase),
       { headers: { Accept: 'application/json' } },
     ), 'GET Gateway key metadata');
