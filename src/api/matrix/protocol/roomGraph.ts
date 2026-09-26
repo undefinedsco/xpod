@@ -67,7 +67,7 @@ export function roomGraphPosition(events: readonly RoomGraphEvent[], next: NewRo
     // any prev_events, its depth is the first one, and it has nothing to authorise it.
     return { prevEvents: [], authEvents: [], depth: 1 };
   }
-  const prevEvents = forwardExtremities(events);
+  const prevEvents = forwardExtremityIds(events, { limit: MAX_PREV_EVENTS });
   return {
     prevEvents,
     authEvents: authEventsFor(events, next),
@@ -75,18 +75,25 @@ export function roomGraphPosition(events: readonly RoomGraphEvent[], next: NewRo
   };
 }
 
-/** The events nothing else references yet, newest first, capped as the spec requires. */
-function forwardExtremities(events: readonly RoomGraphEvent[]): string[] {
+/**
+ * The events nothing else references yet: the forward extremities.
+ *
+ * Ordered newest first so a cap keeps the events a receiver is least likely to have
+ * already missed. `prev_events` itself caps at 20; state resolution needs all of
+ * them, so the cap is the caller's choice rather than baked in.
+ */
+export function forwardExtremityIds(
+  events: readonly RoomGraphEvent[],
+  options: { limit?: number } = {},
+): string[] {
   const hasChild = new Set<string>();
   for (const event of events) for (const prev of event.prevEvents) hasChild.add(prev);
-  return events
+  const ordered = events
     .filter(event => !hasChild.has(event.eventId))
-    // A room with more extremities than the cap keeps the deepest ones: those are
-    // the events a receiver is least likely to have already missed.
     .sort((left, right) =>
       (depthOf(right) - depthOf(left)) || (right.sequence - left.sequence) || left.eventId.localeCompare(right.eventId))
-    .slice(0, MAX_PREV_EVENTS)
     .map(event => event.eventId);
+  return options.limit === undefined ? ordered : ordered.slice(0, options.limit);
 }
 
 function nextDepth(events: readonly RoomGraphEvent[], prevEvents: readonly string[]): number {

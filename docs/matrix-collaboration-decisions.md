@@ -168,9 +168,16 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
   `tests/api/matrix/protocol/stateResolution.test.ts` 15 项，覆盖分叉收敛（ban 与自助 leave
   两个分支都收敛到 ban，与分支到达顺序无关）、并发 power_levels 变更的确定性、auth
   difference、以及 unconflicted 覆盖规则。
-- **待接线**：状态解析目前不在读路径生效——`sync` 的 state 仍取「journal 序号最大的同槽位
-  事件」。接线需要先能从 Pod 事件算出**各前向极值点的状态**（按 auth_events 回放），再对
-  极值点状态集合调用 `resolveState`，并让 `requireJoined`/授权检查读取解析后的状态。
+- **已接线**（2026-09-27）：`src/api/matrix/roomState.ts` 用 Pod 里已有的事件回放房间
+  （按 `prev_events` 拓扑排序，父事件缺失的事件自成链起点），对**前向极值点**的状态集合调用
+  `resolveState`，得到当前状态。已改为读解析后状态的位置：`requireJoined`（写入与读取的成员
+  门禁）、`sync` 的邀请/离开/加入判定、`sync` 的 timeline 起始 state、`getMembers`、
+  `getState`、`agentGrants`。对线性历史结果与旧的「序号最大」一致（全部既有测试不变），只在
+  分叉时不同：测试注入「ALICE 封禁 BOB」与「BOB 重新加入（序号更靠后）」两个分支，解析结果
+  取 ban，因而 BOB 发消息被 403，即使本地顺序上最后的成员事件是 join。
+- **待收口**：`requireJoined` 等在没有现成事件列表时的回退路径仍用单槽位 Pod 读
+  （`findLatestStateEvent`），未走解析；解析目前每次调用 O(事件数 × 状态数)，未来需要按房间
+  缓存或增量重放。写入路径强制执行授权规则仍等 D6 定案。
 
 ## 已撤销或否决的前提
 

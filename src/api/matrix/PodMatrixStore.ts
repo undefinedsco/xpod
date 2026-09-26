@@ -23,6 +23,7 @@ import { MatrixError } from './MatrixError';
 import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
 import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type PersistedMatrixEvent } from './persistedEvent';
 import { roomGraphPosition, type RoomGraphEvent } from './protocol/roomGraph';
+import { MatrixRoomState, resolveRoomState } from './roomState';
 import { EventIntegrityError } from './protocol/eventIntegrity';
 import type { MatrixServiceIdentity } from './protocol/serviceIdentity';
 import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
@@ -436,7 +437,7 @@ export class PodMatrixStore {
     const batches: Array<{room: MatrixRoomRecord; events: MatrixEventRecord[]}> = [];
     for (const room of await this.listRooms(db)) {
       const events = (await this.listEvents(db, room.roomId, context)).filter(e=>e.depth! <= snapshot);
-      const membership = this.latestState(events, 'm.room.member', this.getMatrixUserId(context));
+      const membership = resolveRoomState(events).get('m.room.member', this.getMatrixUserId(context));
       if (membership?.content.membership === 'invite') {
         if ((membership.depth ?? 0) > since) invite[room.roomId] = { invite_state: { events: [this.toClientEvent(membership)] } };
         continue;
@@ -454,11 +455,12 @@ export class PodMatrixStore {
     const ids = new Set(selected.map(e => e.eventId));
     for (const {room, events} of batches) {
       const page = events.filter(e => ids.has(e.eventId));
-      const state = new Map<string, MatrixEventRecord>();
       const firstSequence = page[0]?.depth ?? since;
       // State at the start of this timeline; events in the timeline apply after it.
-      for (const event of events) if (event.stateKey !== undefined && (event.depth ?? 0) < firstSequence) state.set(JSON.stringify([event.type,event.stateKey]),event);
-      join[room.roomId] = {state: {events: [...state.values()].map(e=>this.toClientEvent(e))},
+      // Resolving the prefix rather than taking the last event per slot matters when
+      // the history before the page contains a fork.
+      const state = resolveRoomState(events.filter(event => (event.depth ?? 0) < firstSequence));
+      join[room.roomId] = {state: {events: state.events().map(e=>this.toClientEvent(e))},
         timeline: {events: page.map(e=>this.toClientEvent(e)), limited: candidates.length > selected.length,
           ...(page.length ? {prev_batch: this.encodeSyncToken((page[0].depth ?? 1) - 1)} : {})},
         'co.undefineds.coordination': {reconcilerOwner: room.reconcilerOwner}};
@@ -478,15 +480,9 @@ export class PodMatrixStore {
   public async getMembers(roomId: string, context: MatrixStoreContext): Promise<MatrixClientEvent[]> {
     const db = await this.getDb(context);
     await this.requireJoined(db, roomId, context);
-    const events = await this.listEvents(db, roomId, context, { newestFirst: true });
-    const latestByStateKey = new Map<string, MatrixEventRecord>();
-    for (const event of events) {
-      if (event.type !== 'm.room.member' || event.stateKey === undefined || latestByStateKey.has(event.stateKey)) {
-        continue;
-      }
-      latestByStateKey.set(event.stateKey, event);
-    }
-    return Array.from(latestByStateKey.values())
+    const state = await this.currentState(roomId, context);
+    return state.events()
+      .filter(event => event.type === 'm.room.member' && event.stateKey !== undefined)
       .sort((left, right) => (left.originServerTs - right.originServerTs) || ((left.depth ?? 0) - (right.depth ?? 0)))
       .map((event) => this.toClientEvent(event));
   }
@@ -525,7 +521,8 @@ export class PodMatrixStore {
   ): Promise<Record<string, unknown>> {
     const db = await this.getDb(context);
     await this.requireJoined(db, roomId, context);
-    const event = await this.findLatestStateEvent(db, roomId, eventType, stateKey, context);
+    // Resolved state, so a fork cannot make a stale or banned state event the answer.
+    const event = (await this.currentState(roomId, context)).get(eventType, stateKey);
     if (!event) {
       throw new MatrixError(404, 'M_NOT_FOUND', 'State not found');
     }
@@ -918,13 +915,20 @@ export class PodMatrixStore {
 
   private async requireJoined(db: Db, roomId: string, context: MatrixStoreContext, events?: MatrixEventRecord[]): Promise<void> {
     const room = await this.roomSource(db,roomId,context);
-    const state = events ? this.latestState(events,'m.room.member',this.getMatrixUserId(context)) : await this.findLatestStateEvent(db,roomId,'m.room.member',this.getMatrixUserId(context),context);
+    // A fork makes "the latest member event by local order" and "the member the room
+    // resolved to" different events, so the resolved state decides whether the caller
+    // is in the room.
+    const state = events
+      ? resolveRoomState(events).get('m.room.member', this.getMatrixUserId(context))
+      : await this.findLatestStateEvent(db,roomId,'m.room.member',this.getMatrixUserId(context),context);
     if (state?.content.membership === 'join' || (!state && room.author === context.webId)) return;
     throw new MatrixError(403,'M_FORBIDDEN','Join the room before accessing its timeline');
   }
 
-  private latestState(events: MatrixEventRecord[], type: string, key: string): MatrixEventRecord | undefined {
-    return [...events].reverse().find(e=>e.type===type && e.stateKey===key);
+  /** The room's current state, resolved across forks. */
+  public async currentState(roomId: string, context: MatrixStoreContext, events?: MatrixEventRecord[]): Promise<MatrixRoomState> {
+    const db = await this.getDb(context);
+    return resolveRoomState(events ?? await this.listEvents(db, roomId, context));
   }
 
   private validateAgentGrants(content: Record<string, unknown>): MatrixAgentGrant[] {
@@ -950,7 +954,9 @@ export class PodMatrixStore {
   }
 
   private async agentGrants(db: Db, roomId: string, context: MatrixStoreContext, events?: MatrixEventRecord[]): Promise<MatrixAgentGrant[]> {
-    const state = events ? this.latestState(events,'co.undefineds.agents','') : await this.findLatestStateEvent(db,roomId,'co.undefineds.agents','',context);
+    const state = events
+      ? resolveRoomState(events).get('co.undefineds.agents')
+      : await this.findLatestStateEvent(db,roomId,'co.undefineds.agents','',context);
     return state ? this.validateAgentGrants(state.content) : [];
   }
 
