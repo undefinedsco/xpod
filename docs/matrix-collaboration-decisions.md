@@ -140,6 +140,26 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
 后续请求不得复用跨请求的旧 allow/deny；在途请求及断网期间是否允许新的外部副作用，需在
 执行租约和授权新鲜度契约中单独规定，不能声称本地重新读取即可知道尚未收到的远端撤权。
 
+实现进度与发现：
+
+- **已落地**（2026-09-27）：room v11 事件授权规则实现为纯函数
+  （`protocol/authRules.ts`，按规范条目编号注释，便于逐条对账），覆盖 create、
+  auth_events 选取一致性、非联邦房间来源限制、成员全状态（join/invite/leave/ban/knock）、
+  third_party_invite/restricted join 的**失败即拒绝**、state/message 的 power level 门槛、
+  `@` 开头 state_key 限制、power_levels 变更的 9.1–9.10 全部检查。测试
+  `tests/api/matrix/protocol/authRules.test.ts` 28 项。
+- **发现的缺口（写入路径尚未启用这些规则的原因）**：Agent 结果事件的 `sender` 是 Agent 的
+  MXID（`commitResult` 用 `job.agent` 派生），但本仓库从不为 Agent 追加 `m.room.member`，
+  只按 grants 授权。因此一旦在写入路径按 v11 规则校验，Agent 消息会被 rule 5
+  （sender 未 join）拒绝。两种可选收口，都属 D6「执行归属」范围，需先定：
+  1. **让 Agent 成为房间成员**：建 grant 时同时写入 Agent 的成员事件；难点是 join 要求
+     `sender == state_key`，需要 Agent 以自己身份完成 join（服务身份代签），或走 restricted
+     join 的附加签名（本仓库尚未实现）；
+  2. **sender 改为执行者**（已 join 的人类身份），Agent 只记录在
+     `co.undefineds.execution.agent` 里：规则可通过，但 Agent 归属变成事件内容而非协议身份。
+  在定之前，授权规则只作为**纯校验器**使用（入站事件校验、测试、后续状态解析），不在写入
+  路径强制，避免把未定的归属语义固化进历史事件。
+
 ## 已撤销或否决的前提
 
 | 前提 | 处置依据 |
