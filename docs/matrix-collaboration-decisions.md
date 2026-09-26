@@ -47,6 +47,17 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
 - 现状实现（部署级单一 `serverName` + `MatrixServiceIdentity`）不再是目标形态，只作为
   **旧房间兼容边界**保留，迁移按 D5 处理；新签名身份上线前必须先定这两者的边界。
 
+实现进度：
+
+- **已落地**（2026-09-27）：key set 状态机与两阶段轮换、`/_matrix/key/v2/server` 的发布投影
+  （active + staged 进 `verify_keys`；retired 进 `old_verify_keys`，`expired_ts` = 停止使用时
+  刻，保留窗口过后 `prune` 移除）、secret-cell 封装的存储层与内存缓存 provider
+  （版本一致则复用，读取失败绝不回退生成新 key）。见 `protocol/signingKeys.ts`、
+  `signingKeyStore.ts`，测试 `tests/api/matrix/protocol/signingKeys.test.ts`、
+  `tests/api/matrix/signingKeyStore.test.ts`。
+- **待接线**：把 `SealedSecretChannel` 接到该身份自己 Pod 的 `credential` 资源（Pod API 读写）+
+  容器装配；每参与者 server name 与 MXID 形状；与部署级旧身份的兼容边界。
+
 ## 消息身份与表示
 
 - Matrix event_id 按所选 room version 的协议规则生成/验证，跨部署和 Pod 副本保持一致。

@@ -1,12 +1,20 @@
 /**
- * The deployment's Matrix signing identity.
+ * A Matrix signing identity: the keys it signs with and the key response it
+ * publishes.
  *
- * A logical homeserver signs events and server-key responses with one Ed25519
- * key. The key never belongs to a Pod or to a user credential: Pods store
- * participant data, this identity signs protocol facts.
+ * The identity is what makes a protocol fact attributable. Per the key-custody
+ * decision (docs/matrix-collaboration-decisions.md, "签名身份与密钥归属") the signing
+ * subject is a participant identity and its private key is sealed inside that
+ * identity's own Pod; this object is the in-memory projection of a key set and
+ * never owns storage.
  */
 import { createPrivateKey, createPublicKey, generateKeyPairSync } from 'node:crypto';
 import { EventIntegrityError, encodeVerifyKey, signEvent, signJson, type SigningKeyPair } from './eventIntegrity';
+import {
+  activeSigningKey,
+  publishableVerifyKeys,
+  type MatrixSigningKeySet,
+} from './signingKeys';
 
 /** Key IDs are `ed25519:<version>`; the version charset is fixed by the specification. */
 const KEY_ID_PATTERN = /^ed25519:[a-zA-Z0-9_]+$/u;
@@ -19,12 +27,31 @@ export interface MatrixServiceIdentityOptions {
   /** Active signing key. When omitted a development key is generated. */
   activeKey?: SigningKeyPair;
   /** Keys that may still verify older events, with the moment they stopped signing. */
-  oldKeys?: Array<{ keyId: string; privateKeyPem: string; expiredTs: number }>;
+  oldKeys?: MatrixRetiredKey[];
+  /** Staged keys: published so peers can fetch them before they sign anything. */
+  pendingKeys?: MatrixPublishedKey[];
   /** How long the published key list stays fresh. Must stay well under seven days. */
   keyRefreshMs?: number;
   now?: () => number;
   /** Reports that a generated key was used, so deployments can object loudly. */
   onGeneratedKey?: (keyId: string) => void;
+}
+
+/**
+ * A key that no longer signs. Only the public half is needed to publish it, so a
+ * caller reading a key set does not have to hold every retired private key.
+ */
+export interface MatrixRetiredKey {
+  keyId: string;
+  expiredTs: number;
+  verifyKey?: string;
+  privateKeyPem?: string;
+}
+
+/** A key that is published but not yet signing. */
+export interface MatrixPublishedKey {
+  keyId: string;
+  verifyKey: string;
 }
 
 export interface PublishedVerifyKey {
@@ -94,7 +121,8 @@ function parseOldKeys(json: string): NonNullable<MatrixServiceIdentityOptions['o
 export class MatrixServiceIdentity {
   public readonly serverName: string;
   private readonly activeKey: SigningKeyPair;
-  private readonly oldKeys: NonNullable<MatrixServiceIdentityOptions['oldKeys']>;
+  private readonly oldKeys: MatrixRetiredKey[];
+  private readonly pendingKeys: MatrixPublishedKey[];
   private readonly keyRefreshMs: number;
   private readonly now: () => number;
 
@@ -104,6 +132,7 @@ export class MatrixServiceIdentity {
     }
     this.serverName = options.serverName;
     this.oldKeys = options.oldKeys ?? [];
+    this.pendingKeys = options.pendingKeys ?? [];
     this.keyRefreshMs = options.keyRefreshMs ?? DEFAULT_REFRESH_MS;
     // The specification caps key validity at seven days regardless of what a
     // server publishes, so refuse to publish a longer window in the first place.
@@ -115,6 +144,17 @@ export class MatrixServiceIdentity {
       assertKeyId(old.keyId);
       if (!Number.isSafeInteger(old.expiredTs) || old.expiredTs <= 0) {
         throw new EventIntegrityError('Old verify keys require a positive expired_ts');
+      }
+      if (old.verifyKey === undefined && old.privateKeyPem === undefined) {
+        throw new EventIntegrityError(`Old verify key ${old.keyId} needs a verify key or a private key`);
+      }
+    }
+    // A staged key is published *before* it signs; publishing the active key as
+    // staged as well would be a contradiction, not a harmless duplicate.
+    for (const pending of this.pendingKeys) {
+      assertKeyId(pending.keyId);
+      if (options.activeKey && pending.keyId === options.activeKey.keyId) {
+        throw new EventIntegrityError(`Staged verify key ${pending.keyId} is already the active key`);
       }
     }
     if (options.activeKey) {
@@ -147,19 +187,52 @@ export class MatrixServiceIdentity {
   public serverKeyResponse(): ServerKeyResponse {
     const payload: ServerKeyResponse = {
       server_name: this.serverName,
-      verify_keys: { [this.activeKey.keyId]: { key: encodeVerifyKey(publicKeyOf(this.activeKey)) } },
+      verify_keys: {
+        [this.activeKey.keyId]: { key: encodeVerifyKey(publicKeyOf(this.activeKey)) },
+        ...Object.fromEntries(this.pendingKeys.map(key => [ key.keyId, { key: key.verifyKey } ])),
+      },
       valid_until_ts: this.now() + this.keyRefreshMs,
       signatures: {},
     };
     if (this.oldKeys.length > 0) {
       payload.old_verify_keys = Object.fromEntries(this.oldKeys.map(old => [
         old.keyId,
-        { key: encodeVerifyKey(publicKeyOf(old)), expired_ts: old.expiredTs },
+        { key: old.verifyKey ?? encodeVerifyKey(publicKeyOf({
+          keyId: old.keyId,
+          privateKeyPem: old.privateKeyPem!,
+        })), expired_ts: old.expiredTs },
       ]));
     }
     payload.signatures = { [this.serverName]: { [this.activeKey.keyId]: signJson(payload, this.activeKey) } };
     return payload;
   }
+}
+
+/**
+ * Project a stored key set into an identity: the active key signs, staged keys are
+ * published, and retired keys within their window stay verifiable.
+ *
+ * Publication goes through `publishableVerifyKeys` so the identity and the
+ * `/_matrix/key/v2/server` projection cannot disagree about what is published.
+ */
+export function createMatrixServiceIdentityFromKeySet(
+  keySet: MatrixSigningKeySet,
+  input: { serverName: string; now?: () => number; keyRefreshMs?: number },
+): MatrixServiceIdentity {
+  const now = input.now?.() ?? Date.now();
+  const active = activeSigningKey(keySet);
+  const publication = publishableVerifyKeys(keySet, now);
+  return new MatrixServiceIdentity({
+    serverName: input.serverName,
+    activeKey: { keyId: active.keyId, privateKeyPem: active.privateKeyPem },
+    pendingKeys: Object.entries(publication.verify_keys)
+      .filter(([ keyId ]) => keyId !== active.keyId)
+      .map(([ keyId, key ]) => ({ keyId, verifyKey: key.key })),
+    oldKeys: Object.entries(publication.old_verify_keys)
+      .map(([ keyId, key ]) => ({ keyId, verifyKey: key.key, expiredTs: key.expired_ts })),
+    ...(input.now ? { now: input.now } : {}),
+    ...(input.keyRefreshMs === undefined ? {} : { keyRefreshMs: input.keyRefreshMs }),
+  });
 }
 
 function assertKeyId(keyId: string): void {
