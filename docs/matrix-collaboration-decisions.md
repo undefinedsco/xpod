@@ -261,6 +261,22 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
   事（需要存储侧按序号/日期分桶的有界查询）。`requireJoined` 等在没有现成事件列表时的回退路径
   仍用单槽位 Pod 读（`findLatestStateEvent`），未走解析。写入路径强制执行授权规则仍等 D6 定案。
 
+## Federation 兼容面（D4）实现进度
+
+- **已落地**（2026-09-27）：**远端 verify key 的获取与信任**（`federation/serverKeys.ts`）。
+  `MatrixServerKeyFetcher` 拉取 `GET /_matrix/key/v2/server` 并做三件规范要求的事：
+  ① 响应必须**自签**（用自己的 verify_keys 之一验签），否则中继可以替别人的 server name 塞进
+  自己的密钥；② 有效期取「发布值与 7 天」的**较小者**（key exchange 要求，防长期密钥绕过撤销）；
+  ③ 并发调用共享一次请求、按 `valid_until_ts` 缓存、拉取失败一律报"没有密钥"而不是"未签名"。
+  `verifyRemoteEventSignature` 按规范校验事件签名：签名覆盖 **redaction 后**的事件；
+  `valid_until_ts` 必须 **≥ 事件的 `origin_server_ts`**（room v5+ 签名要求）；`old_verify_keys`
+  里的密钥只接受 `origin_server_ts <= expired_ts` 的事件（那台服务器声明停用该密钥之前的事件）。
+  这一步补上了此前 `authorizeEvent` 说明里"签名由调用方负责"的空缺——现在有了可用的实现。
+  测试 `tests/api/matrix/federation/serverKeys.test.ts` 9 项（缓存/合并请求/过期重取/7 天截断/
+  伪造自签/不可达/内容篡改/过期后才发出的事件/退役密钥窗口/可注入 endpoint 供 discovery）。
+- **待建**：入站事务接收（需控制 Pod 记录承载）、`/send`、`/get_missing_events`、状态与历史
+  获取、`.well-known` 服务发现、以及**出站**投递（当前只做了密钥消费侧）。
+
 ## 已撤销或否决的前提
 
 | 前提 | 处置依据 |
