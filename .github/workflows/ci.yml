@@ -35,6 +35,11 @@ jobs:
       - name: Type check
         run: bun run build:ts
 
+      # build:ts covers only bin/ and src/. Without this step the tests are unchecked, and they
+      # were silently unchecked for a long time (see docs/testing/test-typecheck.md).
+      - name: Type check tests
+        run: bun run typecheck:test
+
       - name: Build Components artifacts
         run: bun run build:components
 
