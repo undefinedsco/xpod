@@ -12,6 +12,34 @@ vi.mock('@undefineds.co/drizzle-solid', async () => {
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe('PodMatrixStore shared Pod contract', () => {
+  it('creates federated rooms by default and records an explicit opt-out', async () => {
+    const { store, context, rows } = matrixHarness();
+    const createContent = async (creation_content?: Record<string, unknown>) => {
+      const room = await store.createRoom(creation_content ? { creation_content } : {}, context);
+      const event = rows.get(messageResource)!
+        .map((row: any) => row.metadata.protocols.matrix.event)
+        .find((stored: any) => stored?.type === 'm.room.create' && stored?.room_id === room.roomId)!;
+      const chat = rows.get(chatResource)!.find((row: any) => row.metadata.protocols.matrix.roomId === room.roomId)!;
+      return { event, federate: chat.metadata.protocols.matrix.federate };
+    };
+
+    // Absent means the room federates: the distributed target requires it.
+    const implicit = await createContent();
+    expect(implicit.event.content['m.federate']).toBeUndefined();
+    expect(implicit.federate).toBe(true);
+
+    const explicit = await createContent({ 'm.federate': true });
+    expect(explicit.event.content['m.federate']).toBeUndefined();
+
+    const optedOut = await createContent({ 'm.federate': false });
+    expect(optedOut.event.content['m.federate']).toBe(false);
+    expect(optedOut.federate).toBe(false);
+
+    // Room version is still pinned: only the version this store validates is accepted.
+    await expect(store.createRoom({ creation_content: { room_version: '10' } }, context))
+      .rejects.toMatchObject({ status: 400, errcode: 'M_UNSUPPORTED_ROOM_VERSION' });
+  });
+
   it('stores room, thread and event relationships using the shared models resources', async () => {
     const { store, context, rows } = matrixHarness();
     const room = await store.createRoom({ name: 'Team' }, context);

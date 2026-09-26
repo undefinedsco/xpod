@@ -1,4 +1,5 @@
 import { PodMatrixStore } from '../../src/api/matrix/PodMatrixStore';
+import { matrixSigningIdentityRegistry } from '../../src/api/matrix/identityRegistry';
 export function matrixHarness(
   options?: { serviceIdentity?: import('../../src/api/matrix/protocol/serviceIdentity').MatrixServiceIdentity },
 ) {
@@ -25,6 +26,11 @@ export function matrixHarness(
   };
   const context: any = { webId: 'https://alice.example/profile/card#me', podUrl: 'https://pod.example/alice/',
     auth: {type:'solid', webId:'https://alice.example/profile/card#me', clientId:'device-a'}, _matrixDb: db };
-  const store = new PodMatrixStore({serverName:'example.test', ...(options ?? {})});
+  const store = new PodMatrixStore({
+    serverName: 'example.test',
+    ...(options?.serviceIdentity
+      ? { identities: matrixSigningIdentityRegistry({ identity: options.serviceIdentity }) }
+      : {}),
+  });
   return {store,context,db,rows};
 }

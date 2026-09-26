@@ -99,6 +99,7 @@ import { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliatio
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 import { PodMatrixStore } from '../matrix';
+import { matrixSigningIdentityRegistry } from '../matrix/identityRegistry';
 import { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
@@ -678,7 +679,9 @@ export function registerCommonServices(
       return new PodMatrixStore({
         serverGroupReconcilerService,
         podAccess: ownerPodAccess,
-        serviceIdentity: config.matrixServiceIdentity,
+        identities: config.matrixServiceIdentity
+          ? matrixSigningIdentityRegistry({ identity: config.matrixServiceIdentity })
+          : undefined,
         journal: new SqlMatrixEventJournal(db),
         serverName: (() => {
           try {

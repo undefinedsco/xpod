@@ -47,8 +47,29 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
 - 现状实现（部署级单一 `serverName` + `MatrixServiceIdentity`）不再是目标形态，只作为
   **旧房间兼容边界**保留，迁移按 D5 处理；新签名身份上线前必须先定这两者的边界。
 
+边界（上线前必须先定的两件事，2026-09-27 记录）：
+
+1. **server name = 参与者 WebID 的 host**，不是 Pod 地址、也不是部署域名。Pod 换地址/换节点
+   不改 MXID、room_id、event_id；换 WebID 域才是换身份。
+2. **一个 server name 一把签名身份，事件只能由 `sender` 所属 server 的密钥签名**。本部署没有
+   该 server name 的密钥时**必须拒绝写入**（`identityRegistry.ts` 已实现：只认自己注册过的
+   server name，没注册就报错），不得用别的密钥代签——代签会让验签方无法区分它与伪造。
+3. **一个房间跨多个 server 是正常 Matrix 语义**，不需要"整房间迁移"：历史事件的 `sender` 与
+   签名是历史事实，不回写、不重签。
+4. **per-participant server name 与 `m.federate: false` 互相约束**：v11 授权规则第 3 条会拒绝
+   非创建者 server 的事件，因此开启每参与者身份必须同时让房间可联邦。已改：缺省即 federated，
+   只有显式传 `false` 才写 `m.federate: false`；仍写 false 的房间只能容纳同一 server 的参与者，
+   属兼容边界而非目标形态。
+5. **仍需你定的一个子问题**：切换 server name 会改变 MXID，而房间里的 `sender`/`state_key` 是
+   历史事实不能改写，所以"老房间继续用老身份、新房间用新身份"需要把房间所属的 server name
+   记在房间里（候选位置 `metadata.protocols.matrix.serverName`）。上传 per-participant 身份前
+   需要先定这条记录位置与切换规则，否则同一个人的新老 MXID 会在同一房间里并存而不互认。
+
 实现进度：
 
+- **已落地**（2026-09-27）：签名身份注册表（`identityRegistry.ts`）与事件按 `sender` 所属
+  server 选身份；写入路径经 `signingIdentity(context)` 取身份，未注册的 server name 直接失败。
+  容器把现有部署级身份注册为其自身 server name 下的默认身份（行为不变），为每参与者密钥铺路。
 - **已落地**（2026-09-27）：key set 状态机与两阶段轮换、`/_matrix/key/v2/server` 的发布投影
   （active + staged 进 `verify_keys`；retired 进 `old_verify_keys`，`expired_ts` = 停止使用时
   刻，保留窗口过后 `prune` 移除）、secret-cell 封装的存储层与内存缓存 provider
@@ -56,7 +77,9 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   `signingKeyStore.ts`，测试 `tests/api/matrix/protocol/signingKeys.test.ts`、
   `tests/api/matrix/signingKeyStore.test.ts`。
 - **待接线**：把 `SealedSecretChannel` 接到该身份自己 Pod 的 `credential` 资源（Pod API 读写）+
-  容器装配；每参与者 server name 与 MXID 形状；与部署级旧身份的兼容边界。
+  容器装配；随后才把 `getServerName` 从「部署域名优先」改为「WebID host 优先」（现在反过来，
+  因为改早了会在没有对应密钥时无法签名——注册表已经会把这种情况变成响亮失败）；以及上面第 5
+  条的房间级 server name 记录位置。
 
 ## 消息身份与表示
 

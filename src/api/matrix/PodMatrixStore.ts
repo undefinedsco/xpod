@@ -24,6 +24,8 @@ import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransac
 import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type PersistedMatrixEvent } from './persistedEvent';
 import { roomGraphPosition, type RoomGraphEvent } from './protocol/roomGraph';
 import { MatrixRoomState, resolveRoomState } from './roomState';
+import { SUPPORTED_ROOM_VERSION } from './protocol/authRules';
+import type { MatrixSigningIdentitySource } from './identityRegistry';
 import { EventIntegrityError } from './protocol/eventIntegrity';
 import type { MatrixServiceIdentity } from './protocol/serviceIdentity';
 import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
@@ -55,8 +57,11 @@ export interface PodMatrixStoreOptions {
   journal?: MatrixEventJournal;
   serverName?: string;
   serverGroupReconcilerService?: ServerGroupReconcilerService;
-  /** Deployment signing identity; absent means stored events carry no signature. */
-  serviceIdentity?: MatrixServiceIdentity;
+  /**
+   * Signing identities by server name; absent means stored events carry no signature.
+   * Every event is signed by the identity of the server named in its `sender`.
+   */
+  identities?: MatrixSigningIdentitySource;
 }
 
 type Db = any;
@@ -104,7 +109,7 @@ function stringList(value: unknown): string[] {
 export class PodMatrixStore {
   private readonly podAccess?: PodAccessFetchProvider;
   private readonly journal: MatrixEventJournal;
-  private readonly serviceIdentity?: MatrixServiceIdentity;
+  private readonly identities?: MatrixSigningIdentitySource;
   private readonly logger = getLoggerFor(this);
   private readonly serverName?: string;
   private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
@@ -113,7 +118,7 @@ export class PodMatrixStore {
     this.serverName = options.serverName;
     this.podAccess = options.podAccess;
     this.journal = options.journal ?? new InMemoryMatrixEventJournal();
-    this.serviceIdentity = options.serviceIdentity;
+    this.identities = options.identities;
     this.serverGroupReconcilerService = options.serverGroupReconcilerService;
   }
 
@@ -134,9 +139,13 @@ export class PodMatrixStore {
       }
       if (state.type === 'co.undefineds.agents') this.validateAgentGrants(state.content ?? {});
     }
-    if (input.creation_content?.['m.federate'] === true || (input.creation_content?.room_version && input.creation_content.room_version !== '11')) {
-      throw new MatrixError(400, 'M_UNSUPPORTED_ROOM_VERSION', 'Only non-federated room version 11 is supported');
+    if (input.creation_content?.room_version && input.creation_content.room_version !== SUPPORTED_ROOM_VERSION) {
+      throw new MatrixError(400, 'M_UNSUPPORTED_ROOM_VERSION', `Only room version ${SUPPORTED_ROOM_VERSION} is supported`);
     }
+    // Absent `m.federate` means the room federates, as the create event defines it. A
+    // room whose participants are on different servers (the distributed target) must
+    // not opt out, so only an explicit `false` is written.
+    const federate = input.creation_content?.['m.federate'] !== false;
     const sender = this.getMatrixUserId(context);
     const now = Date.now();
     const roomId = this.generateRoomId(context);
@@ -160,8 +169,8 @@ export class PodMatrixStore {
         roomId,
         canonicalAlias: input.room_alias_name ? `#${input.room_alias_name}:${this.getServerName(context)}` : null,
         visibility: input.visibility === 'public' ? 'public' : 'private',
-        roomVersion: String(input.creation_content?.room_version ?? '11'),
-        federate: input.creation_content?.['m.federate'] === true,
+        roomVersion: String(input.creation_content?.room_version ?? SUPPORTED_ROOM_VERSION),
+        federate,
         members: [context.webId],
         preset: input.preset,
         invite: input.invite ?? [],
@@ -205,9 +214,9 @@ export class PodMatrixStore {
       content: {
         // Room version 11 removed `creator` from create events (MSC3820); the
         // sender is the creator, and clients read it from there.
-        room_version: String(input.creation_content?.room_version ?? '11'),
+        room_version: String(input.creation_content?.room_version ?? SUPPORTED_ROOM_VERSION),
         type: input.creation_content?.type,
-        'm.federate': input.creation_content?.['m.federate'] === true,
+        ...(federate ? {} : { 'm.federate': false }),
       },
     });
     await append({
@@ -329,13 +338,24 @@ export class PodMatrixStore {
    * own proposal, which is what `eventForReservation` does. The proposal is
    * returned for the one caller that may legitimately replace a reservation.
    */
+  /**
+   * The identity that signs for this caller's server, or `undefined` when events are
+   * written unsigned. A registry in use answers only for the server names it holds
+   * keys for, so asking for another name fails instead of mis-attributing the event.
+   */
+  private async signingIdentity(context: MatrixStoreContext): Promise<MatrixServiceIdentity | undefined> {
+    if (!this.identities) return undefined;
+    return this.identities.identityFor(this.getServerName(context));
+  }
+
   private async reserveEventTransaction(
     context: MatrixStoreContext,
     key: string,
     input: Omit<PersistedEventInput, 'originServerTs' | 'eventId'>,
     contentHash: string,
   ): Promise<{ reservation: MatrixTransactionReservation; proposal: PersistedMatrixEvent }> {
-    const proposal = buildPersistedEvent({ ...input, originServerTs: Date.now() }, this.serviceIdentity);
+    const identity = await this.signingIdentity(context);
+    const proposal = buildPersistedEvent({ ...input, originServerTs: Date.now() }, identity);
     const reservation = await this.journal.reserveTransaction(this.scope(context), key, {
       eventId: proposal.event_id!, createdAt: proposal.origin_server_ts as number, contentHash,
     });
@@ -364,14 +384,15 @@ export class PodMatrixStore {
     contentHash: string,
   ): Promise<{ reservation: MatrixTransactionReservation; event: PersistedMatrixEvent }> {
     try {
-      return { reservation, event: this.eventForReservation(input, reservation) };
+      return { reservation, event: await this.eventForReservation(input, reservation, context) };
     } catch (error) {
       if (!(error instanceof EventIntegrityError)) throw error;
       const replacement = {
         eventId: proposal.event_id!, createdAt: proposal.origin_server_ts as number, contentHash,
       };
+      const event = await this.eventForReservation(input, replacement, context);
       await this.journal.replaceReservation(this.scope(context), key, replacement);
-      return { reservation: replacement, event: proposal };
+      return { reservation: replacement, event };
     }
   }
 
@@ -384,15 +405,16 @@ export class PodMatrixStore {
    * the id, so a reservation naming an id that this content and time do not
    * derive fails loudly rather than writing a second id for one transaction.
    */
-  private eventForReservation(
+  private async eventForReservation(
     input: Omit<PersistedEventInput, 'originServerTs' | 'eventId'>,
     reservation: MatrixTransactionReservation,
-  ): PersistedMatrixEvent {
+    context: MatrixStoreContext,
+  ): Promise<PersistedMatrixEvent> {
     return buildPersistedEvent({
       ...input,
       originServerTs: reservation.createdAt,
       eventId: reservation.eventId,
-    }, this.serviceIdentity);
+    }, await this.signingIdentity(context));
   }
 
   public async setState(roomId: string, eventType: string, stateKey: string, content: Record<string, unknown>,
@@ -638,7 +660,7 @@ export class PodMatrixStore {
       ...(input.stateKey === undefined ? {} : { stateKey: input.stateKey }),
       ...(input.eventId === undefined ? {} : { eventId: input.eventId }),
       ...this.graphPosition(observed ?? await this.listEvents(db, input.roomId, context), input),
-    }, this.serviceIdentity);
+    }, await this.signingIdentity(context));
     const eventId = persistedEvent.event_id ?? this.generateEventId(context);
     const originIso = new Date(input.originServerTs).toISOString();
     const needsRoomMetadata = input.reconcilerOwner === undefined
@@ -1080,7 +1102,7 @@ export class PodMatrixStore {
       active = { eventId: proposal.event_id!, createdAt: proposal.origin_server_ts as number, contentHash };
       await this.journal.replaceReservation(this.scope(context), key, active);
     }
-    const pendingResult = this.eventForReservation(resultInput, active);
+    const pendingResult = await this.eventForReservation(resultInput, active, context);
     let output = events.find(e=>e.eventId===active.eventId);
     if (!output) {
       // The reservation that is actually in force is `active`: after a takeover it
