@@ -274,8 +274,21 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
   这一步补上了此前 `authorizeEvent` 说明里"签名由调用方负责"的空缺——现在有了可用的实现。
   测试 `tests/api/matrix/federation/serverKeys.test.ts` 9 项（缓存/合并请求/过期重取/7 天截断/
   伪造自签/不可达/内容篡改/过期后才发出的事件/退役密钥窗口/可注入 endpoint 供 discovery）。
-- **待建**：入站事务接收（需控制 Pod 记录承载）、`/send`、`/get_missing_events`、状态与历史
-  获取、`.well-known` 服务发现、以及**出站**投递（当前只做了密钥消费侧）。
+- **已落地**（2026-09-27）：**入站 PDU 校验流水线**（`federation/inboundPdu.ts`），按规范
+  §"Checks performed on receipt of a PDU" 的顺序执行并逐条注明：① 结构合法（room v11 事件格式；
+  `prev_events`/`auth_events` 同时接受纯 id 与 Synapse 历史上用的 `[id, {sha256}]` 二元组，统一
+  归一为 id）；② 由 `sender` 所属 server 的密钥验签（复用上一轮的 key 获取与有效性规则）；
+  ③ **内容哈希不符时按规范 redact 后继续处理，而不是丢弃**（载荷不可信不等于事件不可信）；
+  ④ 授权规则，且**只用事件自己选中的 auth_events** 判定——调用方给的列表只作查表，多给房间
+  状态也不会改变判定。另外：事件 ID 由收到的事件推导（v11 reference hash），调用方可据此去重
+  而不必相信对方给的 id；`auth_events` 有引用取不到时返回 **`deferred`**（依赖缺口要补，不能猜）；
+  本模块不写 Pod——持久化接收到的事件是调用方的事。测试
+  `tests/api/matrix/federation/inboundPdu.test.ts` 7 项（接受、结构不符、伪造 sender/无密钥、
+  内容篡改→redact、缺 auth event→deferred、未加入者发言被拒、二元组归一）。
+- **待建**：入站事务接收与 `PUT /_matrix/federation/v1/send/{txnId}`（事务重放要返回同一响应，
+  依赖控制 Pod 的事务记录承载）、把接受的事件**按原样**落 Pod（现有写入路径会重新签名/重建事件，
+  入站事件必须保留原签名与推导出的 id，需要一条独立的持久化路径）、`/get_missing_events`
+  补依赖、状态与历史获取、`.well-known` 服务发现、以及**出站**投递。
 
 ## 已撤销或否决的前提
 

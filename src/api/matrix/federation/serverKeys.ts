@@ -36,6 +36,11 @@ export interface MatrixServerKeys {
   validUntilTs: number;
 }
 
+/** Where a verifier gets a server's published keys. */
+export interface MatrixServerKeySource {
+  keysFor(serverName: string): Promise<MatrixServerKeys | undefined>;
+}
+
 export interface MatrixServerKeyFetcherOptions {
   fetch: typeof fetch;
   now?: () => number;
@@ -56,7 +61,7 @@ export interface MatrixServerKeyFetcherOptions {
  * (clamped) `valid_until_ts`. A failed fetch is reported as "no keys", never as an
  * empty key set: the caller must refuse the event rather than treat it as unsigned.
  */
-export class MatrixServerKeyFetcher {
+export class MatrixServerKeyFetcher implements MatrixServerKeySource {
   private readonly cache = new Map<string, MatrixServerKeys>();
   private readonly inFlight = new Map<string, Promise<MatrixServerKeys | undefined>>();
   private readonly fetch: typeof fetch;
