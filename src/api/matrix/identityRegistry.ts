@@ -50,6 +50,17 @@ export class MatrixSigningIdentityRegistry implements MatrixSigningIdentitySourc
     // over the static identity: that is the shape a migration onto Pod-held keys has.
   }
 
+  /**
+   * Add or replace the identity for a server name.
+   *
+   * Provisioning mints an identity while the deployment is running, so a registry has
+   * to be able to grow; `serverNames()` reflects the change immediately.
+   */
+  public register(serverName: string, provider: MatrixSigningIdentityProvider): void {
+    if (!serverName.trim()) throw new EventIntegrityError('A signing identity needs a server name');
+    this.byServerName.set(serverName, provider);
+  }
+
   /** The server names this registry can sign for. */
   public serverNames(): string[] {
     const names = new Set(this.byServerName.keys());

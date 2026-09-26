@@ -91,10 +91,22 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   测试 `tests/api/matrix/participantIdentity.test.ts`：alice.example 与 bob.example 两个身份
   下，MXID/room_id/签名各自归属、跨身份验签失败、未注册 host 回落部署身份、成员列表按各自
   server 呈现。
-- **仍待建**：**身份密钥的供给与绑定流程**——谁在何时为该身份生成并封存密钥（
-  `signingKeyChannel.ts` 已能读写该身份 Pod 的 credential 行，但还没有触发它的入口），以及
-  服务身份契约 §2.2 第 4 步要求的绑定持久化（绑定版本、目的存储范围、服务授权引用）。
-  在这条流程落地前，容器仍只注册部署级身份，每参与者身份只在测试中成立。
+- **已落地**（2026-09-27）：**身份密钥的供给**。`identityProvisioning.ts` 在**该身份自己的 Pod**
+  里生成并封存密钥集（用该参与者的 Pod 授权；拿不到访问权即拒绝），幂等——已存在就读回、
+  **绝不替换**（替换会让该身份已发布的所有签名失效），并报告 `created`/`keyId`/`storageId`
+  供审计与轮换；`MatrixSigningIdentityRegistry.register` 让运行中的部署能把新身份挂上，
+  能力判定随之生效。测试 `identityProvisioning.test.ts` 含端到端闭环：供给 → 注册 → Alice 的
+  MXID/room_id 变为 `alice.example` → 事件由该身份签名 → 用其发布公钥验签通过。
+- **仍待定/待建**：
+  1. **供给策略**——哪些参与者由本部署作为其自身 server 提供服务、在什么时机供给（首次写入时
+     惰性供给、管理端显式供给、还是配置白名单）。这决定"本部署可以替谁签名"，属于部署决策，
+     代码只提供幂等入口，不替用户猜；
+  2. **绑定持久化**（服务身份契约 §2.2 第 4 步）：WebID ↔ MXID ↔ 选定 Pod ↔ server name 的
+     绑定及其版本、服务授权引用，需落到用户选定的 Pod；key 行本身只证明密钥在哪，不记录
+     "这个人用哪个 Pod、绑定版本几"。这条需要先定承载位置（models schema 还是既有资源的
+     metadata），再实现 Pod 迁移/多 Pod 场景下的切换与并发热恢复。
+  在这两条落地前，容器仍只注册部署级身份；每参与者身份已经可以端到端工作，但由谁供给仍是
+  部署的操作决定。
 
 ## 消息身份与表示
 

@@ -9,15 +9,10 @@ import {
   type MatrixSigningKeyRow,
 } from '../../../src/api/matrix/signingKeyChannel';
 import { MatrixSigningIdentityProvider, SealedMatrixSigningKeyStore } from '../../../src/api/matrix/signingKeyStore';
-import {
-  DeploymentRootKeyProvider,
-  parseDeploymentRootKeyConfig,
-  SecretCellVault,
-  type SecretCellContext,
-} from '../../../src/security/secret-cell';
+import { type SecretCellContext } from '../../../src/security/secret-cell';
+import { fakePodCredentialDb, testSecretCellVault } from '../../helpers/podCredentialDb';
 import { redactEvent, verifyJson, decodeVerifyKey } from '../../../src/api/matrix/protocol/eventIntegrity';
 
-const ROOT_KEY = Buffer.alloc(32, 7).toString('base64');
 const context: SecretCellContext = {
   ownerWebId: 'https://alice.example/profile#me',
   resourceIri: 'https://alice.example/settings/credentials.ttl',
@@ -27,39 +22,9 @@ const context: SecretCellContext = {
   provider: 'matrix',
 };
 
-/** The credential document of one identity's Pod, as far as this channel is concerned. */
-function fakePodDb() {
-  const rows = new Map<string, MatrixSigningKeyRow & Record<string, unknown>>();
-  const writes: string[] = [];
-  const db: MatrixSigningKeyChannelDb = {
-    async findById<T>(_resource: unknown, id: string) { return (rows.get(id) as T) ?? undefined; },
-    insert() {
-      return {
-        values: (row: Record<string, unknown>) => ({
-          execute: async () => {
-            rows.set(String(row.id), row as MatrixSigningKeyRow & Record<string, unknown>);
-            writes.push('insert');
-          },
-        }),
-      };
-    },
-    async updateById(_resource: unknown, id: string, value: Record<string, unknown>) {
-      rows.set(id, { ...(rows.get(id) ?? { id }), ...value } as MatrixSigningKeyRow & Record<string, unknown>);
-      writes.push('update');
-    },
-  };
-  return { db, rows, writes };
-}
-
-function vault(): SecretCellVault {
-  return new SecretCellVault({
-    rootKeys: new DeploymentRootKeyProvider({ activeKeyId: 'root-v1', keys: { 'root-v1': parseDeploymentRootKeyConfig(ROOT_KEY) } }),
-  });
-}
-
 describe('Matrix signing key channel', () => {
   it('round-trips the payload through one credential row', async () => {
-    const pod = fakePodDb();
+    const pod = fakePodCredentialDb();
     const channel = createPodSigningKeyChannel({ db: pod.db, serverName: 'alice.example', now: () => 1_000 });
     const id = matrixSigningKeyStorageId('alice.example');
 
@@ -83,9 +48,9 @@ describe('Matrix signing key channel', () => {
   });
 
   it('stores the sealed envelope, never the key', async () => {
-    const pod = fakePodDb();
+    const pod = fakePodCredentialDb();
     const channel = createPodSigningKeyChannel({ db: pod.db, serverName: 'alice.example' });
-    const store = new SealedMatrixSigningKeyStore({ vault: vault(), context, channel });
+    const store = new SealedMatrixSigningKeyStore({ vault: testSecretCellVault(), context, channel });
     const provider = new MatrixSigningIdentityProvider({ store, serverName: 'alice.example', now: () => 1_000 });
     const identity = await provider.identity();
 
@@ -102,9 +67,9 @@ describe('Matrix signing key channel', () => {
   });
 
   it('persists an identity across restarts and rotates it through the Pod', async () => {
-    const pod = fakePodDb();
+    const pod = fakePodCredentialDb();
     const channel = createPodSigningKeyChannel({ db: pod.db, serverName: 'alice.example' });
-    const store = new SealedMatrixSigningKeyStore({ vault: vault(), context, channel });
+    const store = new SealedMatrixSigningKeyStore({ vault: testSecretCellVault(), context, channel });
     const first = new MatrixSigningIdentityProvider({ store, serverName: 'alice.example', now: () => 1_000 });
     const before = await first.identity();
     const signed = before.signEvent({
@@ -130,20 +95,15 @@ describe('Matrix signing key channel', () => {
   });
 
   it('fails loudly when the Pod row cannot be opened, and leaves it alone', async () => {
-    const pod = fakePodDb();
+    const pod = fakePodCredentialDb();
     const channel = createPodSigningKeyChannel({ db: pod.db, serverName: 'alice.example' });
-    const store = new SealedMatrixSigningKeyStore({ vault: vault(), context, channel });
+    const store = new SealedMatrixSigningKeyStore({ vault: testSecretCellVault(), context, channel });
     const provider = new MatrixSigningIdentityProvider({ store, serverName: 'alice.example', now: () => 1_000 });
     await provider.identity();
     const stored = pod.rows.get(matrixSigningKeyStorageId('alice.example'))!.secretPayload;
 
     // A different deployment root key cannot open this identity's keys.
-    const foreignVault = new SecretCellVault({
-      rootKeys: new DeploymentRootKeyProvider({
-        activeKeyId: 'root-v2',
-        keys: { 'root-v2': parseDeploymentRootKeyConfig(Buffer.alloc(32, 9).toString('base64')) },
-      }),
-    });
+    const foreignVault = testSecretCellVault(9);
     const foreign = new MatrixSigningIdentityProvider({
       store: new SealedMatrixSigningKeyStore({ vault: foreignVault, context, channel }),
       serverName: 'alice.example', now: () => 2_000,
