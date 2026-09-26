@@ -183,19 +183,16 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(res.body)).toMatchObject({ record: { owner: WEB_ID } });
   });
 
-  it('records the task-layer grant and keeps registration alive when that store is unavailable', async () => {
+  it('registers the application without touching background task access', async () => {
     const apiKey = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
     const verifiedContext: SolidAuthContext = {
       ...callerOwnedAuth(), type: 'solid', webId: WEB_ID,
       clientId: 'client-id', clientSecret: 'client-secret',
     };
-    const grant = vi.fn(async () => ({}) as never);
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
       validateClientCredential: async () => ({ success: true, context: verifiedContext }),
-      taskCredentials: { grant },
-      clientCredentialIssuer: 'https://id.example/',
       gatewayAccessKeyRepository: {
         createKeyId: () => 'registered-id',
         create: (async (record: GatewayAccessKeyRecord) => record) as unknown as GatewayAccessKeyRepository['create'],
@@ -204,21 +201,12 @@ describe('AiGatewayManagementHandler', () => {
     const res = response();
     await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), { name: 'Codex', apiKey }), res, {});
 
+    // An application keeps its own credential: where it is in effect, and how to revoke it.
+    // Background Pod access is granted separately, where the user manages index/embedding work.
     expect(res.statusCode).toBe(201);
-    // Registration is the explicit grant, so the task layer's copy is active immediately.
-    expect(grant).toHaveBeenCalledWith({
-      ownerWebId: WEB_ID,
-      issuer: 'https://id.example/',
-      clientId: 'client-id',
-      clientSecret: 'client-secret',
-      status: 'active',
+    expect(JSON.parse(res.body)).toMatchObject({
+      record: { id: 'registered-id', owner: WEB_ID, clientCredentialId: 'client-id' },
     });
-
-    // A task-layer failure must not reject a registration the legacy path already accepted.
-    grant.mockRejectedValueOnce(new Error('tasks.sqlite is locked'));
-    const retry = response();
-    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), { name: 'Codex', apiKey }), retry, {});
-    expect(retry.statusCode).toBe(201);
   });
 
   it.each<[string, SolidAuthContext]>([

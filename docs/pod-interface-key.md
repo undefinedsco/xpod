@@ -340,7 +340,7 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | `status` | `active` / `revoked` / `expired`；撤销只改状态，不删行 |
 | `created_at` / `rotated_at` / `last_used_at` / `expires_at` | 轮换与审计 |
 
-**落地（第 5 步，2026-09-26）**：API 侧不再持有 owner 凭据。① 注册（`POST /api/ai/gateway/keys`）**不再写 `identity_pod_interface_key`**，只写管理记录 + 任务层授权；② `OwnerPodAccess` 删除 `storedKeyFetch`（连同 `keys` 依赖与 `PodInterfaceKeyGrant` 实现），请求只能用调用方自己的凭据，后台只能用任务层授权；③ 存量行由 `src/api/tasks/PodInterfaceKeyMigration.ts` 在 **API 启动时一次性迁入任务层**（幂等：同 owner+issuer 是同一条授权、同密钥不涨版本；打不开的行只报告不删除，旧表保持可读 → 可回滚）；④ 旧表与 `identity_pod_interface_key` 的**删除留作显式运维动作**，不在启动时自动 drop（迁移窗口仍可回退）。
+**落地（第 5 步，2026-09-26）**：API 侧不再持有 owner 凭据。① 注册（`POST /api/ai/gateway/keys`）**不再写 `identity_pod_interface_key`**，只写管理记录（应用端归属：`name`/`appliedTo`/`appliedOn`/`clientCredentialId`）；后台授权是设置页里的独立显式动作（见下文"显式授权入口"），登记不碰任务层；② `OwnerPodAccess` 删除 `storedKeyFetch`（连同 `keys` 依赖与 `PodInterfaceKeyGrant` 实现），请求只能用调用方自己的凭据，后台只能用任务层授权；③ 存量行由 `src/api/tasks/PodInterfaceKeyMigration.ts` 在 **API 启动时一次性迁入任务层**（幂等：同 owner+issuer 是同一条授权、同密钥不涨版本；打不开的行只报告不删除，旧表保持可读 → 可回滚）；④ 旧表与 `identity_pod_interface_key` 的**删除留作显式运维动作**，不在启动时自动 drop（迁移窗口仍可回退）。
 
 **已验证（第 5 步，2026-09-26）**：单测覆盖"没有部署侧密钥就没有 fetch"（`OwnerPodAccess` 14 项、`PodGatewayAccessKeyRepository`、`AiGatewayManagementHandler`、`container/config`、`PodInterfaceKeyMigration` 幂等与打不开的行），集成测试改成**凭据随请求携带**：`tests/integration/chatkit-pod-store.integration.test.ts` 用 `viaApiKey` + owner 自己的 interface key 走真实换取（22/22 通过，不再依赖内存 key store），`localQleverCredentialRepository` 断言"没带凭据就拿不到 fetch"。
 
@@ -354,7 +354,7 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 
 **落地（第 3 步第 2 片，2026-09-24）**：容器注册 `taskCredentialStore`（`src/api/container/common.ts`），只在部署配置了根密钥时存在——**无法加密就不保存**；任务库地址由 `CSS_TASK_DB_URL` 覆盖、否则按上面的派生规则。根密钥解析抽成 `loadDeploymentRootKeyProvider`（`src/api/container/index.ts`），与 API 侧的凭证 vault 共用同一份部署材料。`grant` 的 `credentialRef` 改为**按 owner+issuer 派生**（一个 owner 一个 issuer 一行，重复登记落在同一行）。
 
-**显式授权入口**（`src/api/handlers/TaskCredentialHandler.ts`）：`GET /api/ai/task-credentials`（只回元数据，无秘密）、`POST /api/ai/task-credentials/:ref/activate`、`DELETE /api/ai/task-credentials/:ref`；全部按调用方 WebID 归属校验，别人的 ref 表现为 404。同时 `POST /api/ai/gateway/keys`（登记）在写完 legacy `saveKey` 之后**双写**一份任务层授权（`status: active`，因为登记本身就是用户的显式授权）；任务层写入失败只告警、不影响登记成功——迁移期以 legacy 为准。
+**显式授权入口**（`src/api/handlers/TaskCredentialHandler.ts`）：`GET /api/ai/task-credentials`（只回元数据，无秘密）、`POST /api/ai/task-credentials/:ref/activate`、`DELETE /api/ai/task-credentials/:ref`；全部按调用方 WebID 归属校验，别人的 ref 表现为 404。**后台授权只走这一个入口**：用户在哪里维护索引/选择 embedding，就在哪里点这次授权（第 4 步第 2 片的前端面板）。AI Connections 的登记（`POST /api/ai/gateway/keys`）**不写任务层**——它管的是"某个应用端拿到并应用了哪把凭据"，与"用户是否允许无人执行的后台任务"是两件事（2026-09-26 定）；早先版本曾在这里双写一份授权，已移除。
 
 **落地（第 3 步第 1 片，2026-09-24）**：`src/api/tasks/TaskCredentialStore.ts` 按上表实现，`src/api/tasks/TaskCredentialSchema.ts` 定义 `task_credential` 表（sqlite 与 pg 两套），`src/api/tasks/TaskCredentialDatabase.ts` 负责归属：显式 `CSS_TASK_DB_URL` 优先；SQLite 部署默认落在 identity 库**同目录的 `tasks.sqlite`**（独立文件，泄露其一不牵连另一）；PostgreSQL 目前仍复用同一 server 的独立连接，**独立 role/schema 属部署待办**（不在代码里猜）。
 

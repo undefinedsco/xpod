@@ -10,7 +10,7 @@ import {
   isGatewayApiKeyPrincipal,
   ownerWebIdForGatewayKeyManagement,
 } from '../ai-gateway/auth/GatewayPrincipal';
-import { hasSolidClientCredentialsAuthority, type SolidAuthContext } from '../auth/AuthContext';
+import type { SolidAuthContext } from '../auth/AuthContext';
 import type { AuthResult } from '../auth/Authenticator';
 import type { GatewayDeployment } from '../ai-gateway/auth/GatewayApiKey';
 import {
@@ -39,7 +39,6 @@ import {
   isEmbeddingModelNotAllowedError,
 } from '../../ai/service/EmbeddingModelPolicy';
 import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../service/provider-http-transport';
-import type { TaskCredentialStore } from '../tasks/TaskCredentialStore';
 
 const logger = getLoggerFor('AiGatewayManagementHandler');
 
@@ -58,13 +57,6 @@ export interface AiGatewayManagementHandlerOptions {
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   /** Reuses the configured CSS authenticator; never trusts the claimed registration owner. */
   validateClientCredential?: (apiKey: string) => Promise<AuthResult>;
-  /**
-   * The task layer's own credential store. Registering also records the grant tasks may use while
-   * nobody is present; the API-side key stays the runtime's fallback until background entries move.
-   */
-  taskCredentials?: Pick<TaskCredentialStore, 'grant'>;
-  /** Issuer the registered credential belongs to; part of the task-layer grant identity. */
-  clientCredentialIssuer?: string;
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue' | 'issueClientConfiguration'>;
   jsonBodyLimitBytes?: number;
@@ -181,25 +173,10 @@ export function registerAiGatewayManagementRoutes(
         sendJson(response, 403, { error: 'CSS client credential belongs to another WebID' });
         return;
       }
-      if (hasSolidClientCredentialsAuthority(verified.context)) {
-        // Registering is the user's grant of background Pod access, and the task layer is where
-        // that credential lives. The API keeps no copy: it only ever uses a credential the caller
-        // brings with the request.
-        if (options.taskCredentials && options.clientCredentialIssuer) {
-          try {
-            await options.taskCredentials.grant({
-              ownerWebId: owner,
-              issuer: options.clientCredentialIssuer,
-              clientId: verified.context.clientId,
-              clientSecret: verified.context.clientSecret,
-              status: 'active',
-            });
-          } catch (error) {
-            // The record is still worth keeping; the client can grant again from settings.
-            logger.warn(`Task credential grant was not stored: ${error instanceof Error ? error.message : String(error)}`);
-          }
-        }
-      }
+      // Registering an application is about that application's own credential - where it is in
+      // effect, and how to revoke it. Background Pod access is a separate, explicit grant the user
+      // makes where they manage index/embedding work (`POST /api/ai/task-credentials`), so nothing
+      // about it is written here.
       const name = normalizeOptionalString(body.name) ?? 'Xpod API Key';
       const keyId = repository.createKeyId(owner, options.deployment);
       const createdAt = new Date();

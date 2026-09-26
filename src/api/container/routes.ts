@@ -206,8 +206,6 @@ function registerSharedRoutes(
     providerModelSelectionService,
     customModelsService: providerCustomModelsService,
     gatewayAccessKeyRepository,
-    taskCredentials: container.resolve('taskCredentialStore', { allowUnregistered: true }),
-    clientCredentialIssuer: config.solidBaseUrl ?? config.publicUrl,
     validateClientCredential: (apiKey) => container.resolve('authenticator').authenticate({
       headers: { authorization: `Bearer ${apiKey}` },
       method: 'POST',
