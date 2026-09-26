@@ -830,17 +830,6 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
   }
 
-  /** Pod root of a resource URL. */
-  private podRootFor(resourceUrl: string): string {
-    try {
-      const url = new URL(resourceUrl);
-      const [ , first ] = url.pathname.split('/', 2);
-      return first ? `${url.origin}/${first}/` : `${url.origin}/`;
-    } catch {
-      return resourceUrl;
-    }
-  }
-
   private requestAuthorizationCache(request: HttpRequest): Map<string, { error?: unknown }> {
     const holder = request as HttpRequest & { __xpodSparqlAuthz?: Map<string, { error?: unknown }> };
     holder.__xpodSparqlAuthz ??= new Map();
