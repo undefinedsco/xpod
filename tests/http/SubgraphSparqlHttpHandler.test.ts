@@ -1350,7 +1350,7 @@ describe('SubgraphSparqlHttpHandler', () => {
   });
 });
 
-describe('SubgraphSparqlHttpHandler authorization decision cache', () => {
+describe('SubgraphSparqlHttpHandler authorization decisions', () => {
   let handler: SubgraphSparqlHttpHandler;
 
   beforeEach(() => {
@@ -1366,11 +1366,9 @@ describe('SubgraphSparqlHttpHandler authorization decision cache', () => {
     );
   });
 
-  async function select(): Promise<HttpResponse> {
+  async function select(): Promise<void> {
     const request = createMockRequest(`/alice/-/sparql?query=${encodeURIComponent('SELECT * WHERE { ?s ?p ?o }')}`);
-    const response = createMockResponse();
-    await handler.handle({ request, response });
-    return response;
+    await handler.handle({ request, response: createMockResponse() });
   }
 
   async function postUpdate(update: string): Promise<void> {
@@ -1388,40 +1386,37 @@ describe('SubgraphSparqlHttpHandler authorization decision cache', () => {
     await pending;
   }
 
-  it('reuses one authorization decision across repeated requests', async () => {
+  it('re-evaluates on every request, because a revocation may arrive by any write path', async () => {
     await select();
     const afterFirst = mockPermissionReader.handleSafe.mock.calls.length;
     expect(afterFirst).toBeGreaterThan(0);
     await select();
     await select();
-    // Every request would otherwise re-read the ACR chain for the same target.
-    expect(mockPermissionReader.handleSafe.mock.calls.length).toBe(afterFirst);
+    expect(mockPermissionReader.handleSafe.mock.calls.length).toBeGreaterThan(afterFirst);
   });
 
-  it('re-authorizes after a write, because a write can change an ACL', async () => {
+  it('observes a revocation applied to the next request', async () => {
     await select();
-    const afterSelect = mockPermissionReader.handleSafe.mock.calls.length;
-    await postUpdate('INSERT DATA { <https://example.org/s> <https://example.org/p> <https://example.org/o> }');
-    const afterWrite = mockPermissionReader.handleSafe.mock.calls.length;
-    expect(afterWrite).toBeGreaterThan(afterSelect);
-    await select();
-    expect(mockPermissionReader.handleSafe.mock.calls.length).toBeGreaterThan(afterWrite);
-  });
-
-  it('re-reads after the write instead of serving a cached allow', async () => {
-    await select();
-    const beforeWrite = mockPermissionReader.handleSafe.mock.calls.length;
-    await postUpdate('INSERT DATA { <https://example.org/s> <https://example.org/p> <https://example.org/o> }');
-    // The write itself re-authorizes, and the next read must not reuse the
-    // pre-write decision: revoke and confirm the denial is observed.
     mockPermissionReader.handleSafe.mockRejectedValueOnce(new ForbiddenHttpError('revoked'));
+    const request = createMockRequest(`/alice/-/sparql?query=${encodeURIComponent('SELECT * WHERE { ?s ?p ?o }')}`);
+    const response = createMockResponse();
+    await handler.handle({ request, response });
     // The handler answers denials itself, so assert on the response status.
-    expect((await select()).statusCode).toBe(403);
-    expect(mockPermissionReader.handleSafe.mock.calls.length).toBeGreaterThan(beforeWrite + 1);
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('still de-duplicates repeated decisions inside one request', async () => {
+    await select();
+    const forOneRequest = mockPermissionReader.handleSafe.mock.calls.length;
+    expect(forOneRequest).toBeGreaterThan(0);
+    // A repeat request performs the same number of checks again: no reuse across
+    // requests, but no growth inside one either.
+    await select();
+    expect(mockPermissionReader.handleSafe.mock.calls.length).toBe(forOneRequest * 2);
   });
 });
 
-describe('SubgraphSparqlHttpHandler fresh-authorization opt-out', () => {
+describe('SubgraphSparqlHttpHandler fresh-authorization marker', () => {
   let handler: SubgraphSparqlHttpHandler;
 
   beforeEach(() => {
@@ -1437,25 +1432,12 @@ describe('SubgraphSparqlHttpHandler fresh-authorization opt-out', () => {
     );
   });
 
-  async function select(headers: Record<string, string> = {}): Promise<void> {
-    const request = createMockRequest(`/alice/-/sparql?query=${encodeURIComponent('SELECT * WHERE { ?s ?p ?o }')}`, 'GET', headers);
+  it('re-verifies with the marker set, as it does for every other request', async () => {
+    const request = createMockRequest(`/alice/-/sparql?query=${encodeURIComponent('SELECT * WHERE { ?s ?p ?o }')}`, 'GET', { 'x-xpod-authorization-fresh': '1' });
     await handler.handle({ request, response: createMockResponse() });
-  }
-
-  it('re-verifies on every request when the caller demands freshness', async () => {
-    await select({ 'x-xpod-authorization-fresh': '1' });
     const afterFirst = mockPermissionReader.handleSafe.mock.calls.length;
-    expect(afterFirst).toBeGreaterThan(0);
-    await select({ 'x-xpod-authorization-fresh': '1' });
-    await select({ 'x-xpod-authorization-fresh': '1' });
-    // Execution paths must not inherit the cached decision's TTL window.
+    const second = createMockRequest(`/alice/-/sparql?query=${encodeURIComponent('SELECT * WHERE { ?s ?p ?o }')}`, 'GET', { 'x-xpod-authorization-fresh': '1' });
+    await handler.handle({ request: second, response: createMockResponse() });
     expect(mockPermissionReader.handleSafe.mock.calls.length).toBeGreaterThan(afterFirst);
-  });
-
-  it('still reuses the decision for ordinary client reads', async () => {
-    await select();
-    const afterFirst = mockPermissionReader.handleSafe.mock.calls.length;
-    await select();
-    expect(mockPermissionReader.handleSafe.mock.calls.length).toBe(afterFirst);
   });
 });

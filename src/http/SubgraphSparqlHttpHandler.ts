@@ -1,6 +1,5 @@
 import { Readable } from 'node:stream';
 import { getLoggerFor } from 'global-logger-factory';
-import { FRESH_AUTHORIZATION_HEADER } from '../api/ai-gateway/pod/OwnerPodAccess';
 import { pipeline } from 'node:stream/promises';
 import { HttpHandler } from '@solid/community-server';
 import type { HttpHandlerInput, HttpRequest, HttpResponse } from '@solid/community-server';
@@ -54,9 +53,6 @@ import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
 import { UsageRepository } from '../storage/quota/UsageRepository';
 import { MixDataAccessor } from '../storage/accessors/MixDataAccessor';
 import { createBandwidthThrottleTransform } from '../util/stream/BandwidthThrottleTransform';
-
-/** Upper bound on how long a cached authorization decision may outlive an out-of-band permission change. */
-const AUTHORIZATION_CACHE_TTL_MS = 5_000;
 
 const ALLOWED_METHODS = [ 'GET', 'POST', 'OPTIONS' ];
 const MODEL_COLLECTION_SUFFIX = '/settings/providers/-/sparql';
@@ -165,18 +161,6 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   private readonly credentialsExtractor: CredentialsExtractor;
   private readonly permissionReader: PermissionReader;
   private readonly authorizer: Authorizer;
-  /**
-   * Authorization decisions keyed by Pod + principal + target + modes.
-   *
-   * Reading an ACR costs about 80ms per target and every SPARQL request
-   * re-authorizes its base path plus each graph in scope, so a burst of
-   * requests repeats identical work. Entries die on either of two signals:
-   * any write served by this handler bumps the Pod epoch, and a short TTL
-   * bounds staleness for permission changes applied out of band. A miss always
-   * re-evaluates, so the cache can only ever save work, never grant it.
-   */
-  private readonly authorizationCache = new Map<string, { epoch: number; expiresAt: number; error?: unknown }>();
-  private readonly authorizationEpochs = new Map<string, number>();
   private readonly sidecarPath: string;
   private readonly podLookup?: PodLookupRepository;
   private readonly usageRepo?: UsageRepository;
@@ -539,8 +523,6 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       // Only a successful write notifies; a throwing write skips this line entirely.
       this.emitActivities(pendingActivities);
     }
-    // A write can change an ACL/ACR, so this Pod's cached decisions are stale now.
-    this.invalidateAuthorizationCache(queryRequest.baseUrl);
     await this.refreshUsage(queryRequest.baseUrl);
 
     response.statusCode = 204;
@@ -827,64 +809,28 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     // same identifier repeats when an update touches a graph it already checked.
     // Reuse the decision inside the request only: credentials cannot change and
     // no ACL can be modified by these read-only checks.
+    //
+    // Cross-request reuse is deliberately absent. A cached allow could outlive a
+    // revocation applied by an ordinary PUT/PATCH that never reaches this handler,
+    // so every request re-reads the current decision. See the decision register.
     const decisionCache = request === undefined ? undefined : this.requestAuthorizationCache(request);
     const cacheKey = this.authorizationCacheKey(basePath, credentials, modes);
-    // Request-scoped first (cheapest), then the Pod-scoped decision cache.
-    const requestHit = cacheKey === undefined ? undefined : decisionCache!.get(cacheKey);
+    const requestHit = decisionCache?.get(cacheKey);
     if (requestHit !== undefined) {
       if (requestHit.error !== undefined) throw requestHit.error;
       return;
     }
-    const pod = this.podRootFor(basePath);
-    const epoch = this.authorizationEpochs.get(pod) ?? 0;
-    // Paths whose correctness depends on current permissions opt out of the
-    // cross-request cache entirely; the in-request decision above still applies
-    // because credentials and ACLs cannot change within one request.
-    const fresh = this.requiresFreshAuthorization(request);
-    if (!fresh) {
-      const shared = this.authorizationCache.get(cacheKey);
-      if (shared && shared.epoch === epoch && shared.expiresAt > Date.now()) {
-        if (shared.error !== undefined) throw shared.error;
-        return;
-      }
-    }
     try {
       const availablePermissions = await this.permissionReader.handleSafe({ credentials, requestedModes });
       await this.authorizer.handleSafe({ credentials, requestedModes, availablePermissions });
-      if (decisionCache !== undefined) decisionCache.set(cacheKey, {});
-      if (!fresh) {
-        this.authorizationCache.set(cacheKey, { epoch, expiresAt: Date.now() + AUTHORIZATION_CACHE_TTL_MS });
-      }
+      decisionCache?.set(cacheKey, {});
     } catch (error: unknown) {
-      if (decisionCache !== undefined) decisionCache.set(cacheKey, { error });
-      // Denials are cached too: a denied burst is as expensive as an allowed one.
-      if (!fresh) {
-        this.authorizationCache.set(cacheKey, { epoch, expiresAt: Date.now() + AUTHORIZATION_CACHE_TTL_MS, error });
-      }
+      decisionCache?.set(cacheKey, { error });
       throw error;
     }
   }
 
-  /**
-   * Internal marker set by this deployment's Pod access layer for execution paths
-   * that must re-verify permissions instead of reusing a cached decision.
-   */
-  private requiresFreshAuthorization(request?: HttpRequest): boolean {
-    if (request === undefined) return false;
-    const value = request.headers?.[FRESH_AUTHORIZATION_HEADER];
-    return Array.isArray(value) ? value.length > 0 : typeof value === 'string' && value.length > 0;
-  }
-
-  /**
-   * Any write served here may change an ACL/ACR, so it invalidates the Pod's
-   * cached decisions. Writes applied out of band are covered by the TTL bound.
-   */
-  private invalidateAuthorizationCache(basePath: string): void {
-    const pod = this.podRootFor(basePath);
-    this.authorizationEpochs.set(pod, (this.authorizationEpochs.get(pod) ?? 0) + 1);
-  }
-
-  /** Pod root of a resource URL, used as the cache-invalidation scope. */
+  /** Pod root of a resource URL. */
   private podRootFor(resourceUrl: string): string {
     try {
       const url = new URL(resourceUrl);
