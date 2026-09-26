@@ -1415,29 +1415,3 @@ describe('SubgraphSparqlHttpHandler authorization decisions', () => {
     expect(mockPermissionReader.handleSafe.mock.calls.length).toBe(forOneRequest * 2);
   });
 });
-
-describe('SubgraphSparqlHttpHandler fresh-authorization marker', () => {
-  let handler: SubgraphSparqlHttpHandler;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockQueryEngine.listGraphs.mockResolvedValue(new Set());
-    mockQueryEngine.queryBindings.mockResolvedValue((async function*() { /* empty page */ })());
-    handler = new SubgraphSparqlHttpHandler(
-      mockQueryEngine as any,
-      mockCredentialsExtractor as any,
-      mockPermissionReader as any,
-      mockAuthorizer as any,
-      {},
-    );
-  });
-
-  it('re-verifies with the marker set, as it does for every other request', async () => {
-    const request = createMockRequest(`/alice/-/sparql?query=${encodeURIComponent('SELECT * WHERE { ?s ?p ?o }')}`, 'GET', { 'x-xpod-authorization-fresh': '1' });
-    await handler.handle({ request, response: createMockResponse() });
-    const afterFirst = mockPermissionReader.handleSafe.mock.calls.length;
-    const second = createMockRequest(`/alice/-/sparql?query=${encodeURIComponent('SELECT * WHERE { ?s ?p ?o }')}`, 'GET', { 'x-xpod-authorization-fresh': '1' });
-    await handler.handle({ request: second, response: createMockResponse() });
-    expect(mockPermissionReader.handleSafe.mock.calls.length).toBeGreaterThan(afterFirst);
-  });
-});

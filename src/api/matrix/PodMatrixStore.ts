@@ -460,11 +460,7 @@ export class PodMatrixStore {
     }
 
     const podFetch = this.podAccess
-      ? await this.podAccess.getPodFetch(context.webId, {
-        auth,
-        podBaseUrl: context.podUrl,
-        ...(context.requiresFreshAuthorization ? { requiresFreshAuthorization: true } : {}),
-      })
+      ? await this.podAccess.getPodFetch(context.webId, {auth, podBaseUrl: context.podUrl})
       : undefined;
     if (!podFetch) throw new MatrixError(403, 'M_FORBIDDEN', 'Grant Pod interface access before using Matrix');
     const db: Db = drizzle(
