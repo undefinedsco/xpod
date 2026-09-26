@@ -23,7 +23,7 @@ import { MatrixError } from './MatrixError';
 import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
 import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type PersistedMatrixEvent } from './persistedEvent';
 import { roomGraphPosition, type RoomGraphEvent } from './protocol/roomGraph';
-import { MatrixRoomState, resolveRoomState } from './roomState';
+import { MatrixRoomState, MatrixRoomStateReplay, resolveRoomState } from './roomState';
 import { SUPPORTED_ROOM_VERSION } from './protocol/authRules';
 import type { MatrixSigningIdentitySource } from './identityRegistry';
 import { EventIntegrityError } from './protocol/eventIntegrity';
@@ -106,24 +106,8 @@ export interface MatrixAgentGrant {
   handoffTo: string[];
 }
 
-/** How many rooms keep a resolved state to answer repeat reads inside one operation. */
+/** How many rooms keep a replay to answer repeat reads and extend on append. */
 const STATE_CACHE_LIMIT = 64;
-
-/**
- * A cheap identity for the event list a state was resolved from.
- *
- * Events are append-only and their content is immutable once stored, so the count, the
- * newest event and the sum of the sequences identify the list: an append, a backfill in
- * the middle or a re-registered sequence all change at least one of them. A content
- * edit in place would not be detected — nothing in this store does that.
- */
-function roomFingerprint(events: readonly MatrixEventRecord[]): string {
-  if (events.length === 0) return '0';
-  let sequenceSum = 0;
-  for (const event of events) sequenceSum += event.depth ?? 0;
-  const newest = events[events.length - 1];
-  return `${events.length}:${newest.eventId}:${sequenceSum}`;
-}
 
 /** The host of a WebID, which is what a participant's server name is derived from. */
 function webIdHost(webId: string): string | undefined {
@@ -143,7 +127,7 @@ export class PodMatrixStore {
   private readonly podAccess?: PodAccessFetchProvider;
   private readonly journal: MatrixEventJournal;
   private readonly identities?: MatrixSigningIdentitySource;
-  private readonly stateCache = new Map<string, { fingerprint: string; state: MatrixRoomState }>();
+  private readonly stateCache = new Map<string, MatrixRoomStateReplay>();
   private readonly stateCacheLimit: number;
   private readonly logger = getLoggerFor(this);
   private readonly serverName?: string;
@@ -1008,22 +992,20 @@ export class PodMatrixStore {
   private resolvedState(roomId: string, context: MatrixStoreContext, events: readonly MatrixEventRecord[]): MatrixRoomState {
     if (this.stateCacheLimit === 0) return resolveRoomState(events);
     const key = `${this.scope(context)}::${roomId}`;
-    const fingerprint = roomFingerprint(events);
     const cached = this.stateCache.get(key);
-    if (cached && cached.fingerprint === fingerprint) {
-      // Refresh the insertion order so the least recently used room is evicted first.
-      this.stateCache.delete(key);
-      this.stateCache.set(key, cached);
-      return cached.state;
-    }
-    const state = resolveRoomState(events);
-    this.stateCache.set(key, { fingerprint, state });
+    // An appended list extends the cached replay, so a write costs the new events
+    // rather than the room. Anything else is replayed in full.
+    const extended = cached?.extend(events);
+    const replay = extended ?? MatrixRoomStateReplay.from(events);
+    // Refresh the insertion order so the least recently used room is evicted first.
+    this.stateCache.delete(key);
+    this.stateCache.set(key, replay);
     while (this.stateCache.size > this.stateCacheLimit) {
       const oldest = this.stateCache.keys().next().value;
       if (oldest === undefined) break;
       this.stateCache.delete(oldest);
     }
-    return state;
+    return replay.state;
   }
 
   private validateAgentGrants(content: Record<string, unknown>): MatrixAgentGrant[] {
