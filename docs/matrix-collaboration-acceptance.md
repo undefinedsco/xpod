@@ -75,6 +75,24 @@ Pod 资源 URI 指 Pod 中持久资源的位置，不是浏览器缓存；同一
 - 大历史量、生产并发、网络分区与长时故障恢复仍需单独验收。当前 ORM hydration 成本已记录于 [性能问题](issues/drizzle-solid-matrix-hydration.md)。
 - 旧 metadata 碰撞数据、旧 MXID/游标和旧 Redis 队列没有自动修复迁移，按设计文档的迁移边界处理。
 
+## 分支 `codex/matrix-event-primitives` 复跑记录（2026-09-27）
+
+实现内容：协议事件随消息持久化并可仅凭 Pod 验证（内容哈希、reference hash、签名），
+事务记录与事件身份对齐。设计落点见[决策登记册](matrix-collaboration-decisions.md)，
+字段与排除项的规范依据见[事件哈希与签名 §2.1](reference/matrix-event-hashes-and-signing.md)。
+
+| 验证 | 结果 | 备注 |
+| --- | --- | --- |
+| 依赖状态、`bun run build:ts`、`bun run typecheck:test`、`git diff --check` | 通过 | 无依赖漂移；分支自身引入的测试类型错误已清零 |
+| `./node_modules/.bin/vitest --run tests/api tests/http` | 129 文件通过、11 跳过；1508 用例通过、67 跳过 | 含 `eventIntegrity` 15、`serviceIdentity` 6、`persistedEvent` 4 与并发/崩溃恢复专项 |
+| `bun run test:integration` | 完整命令 `exit 0` | lite：30 文件通过、3 跳过，153 用例通过、6 跳过；cluster：4 文件 45/45 通过 |
+| 真实 Gateway 协作闭环 | 通过，144.8 秒 | `tests/integration/MatrixCollaboration.integration.test.ts`；63 事件、交接与 409 断言未放宽 |
+
+本轮新增的可验证性证据边界：验证材料（`hashes` / `signatures` / `event_id`）可从单个 Pod
+的消息 metadata 独立复核，且有跨实现依据（内容哈希排除 `event_id`）；但**仍未**验证跨部署
+互操作，且 Pod 内尚无 `room_version`、`prev_events`、`auth_events`，因此状态解析与授权链
+复核不能仅凭 Pod 完成——仍属下方待执行的分布式门禁。
+
 ## 分布式目标的新增验收门禁（均待实现与执行）
 
 以下条目是准入要求，不是本次已经通过的测试：
@@ -82,7 +100,7 @@ Pod 资源 URI 指 Pod 中持久资源的位置，不是浏览器缓存；同一
 | 门禁 | 必须取得的证据 |
 | --- | --- |
 | 两个独立部署、两种身份、两个 Pod | 参与同一逻辑房间；各服务仅依授权写入自己负责的 Pod，参与者无需相互持有 Pod 写权限 |
-| 协议身份一致 | 相同 room_id、event_id 及事件引用跨 Pod 保持一致；Pod 资源位置变化不改变事件身份，原始协议事件可供验证 |
+| 协议身份一致 | 相同 room_id、event_id 及事件引用跨 Pod 保持一致；Pod 资源位置变化不改变事件身份，原始协议事件可供验证（单 Pod 内的持久化与验证已落地，跨 Pod 一致性未验证） |
 | 传输与落盘恢复 | 断网后补发、重复和乱序投递、缺失事件补取均恢复；分别核对服务器传输确认、各 Pod 持久化进度和客户端同步游标 |
 | 授权与房间状态 | 非法签名/事件授权被拒绝；并发成员和 power-level 变更按 room version 的状态解析收敛；历史可见性符合房间规则 |
 | Agent 执行归属 | 同一事件的多份持久副本不会分别触发独立执行；归属、接替与重试使用稳定逻辑标识，复制不授予执行权 |
