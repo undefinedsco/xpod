@@ -4,6 +4,7 @@ import path from 'node:path';
 import { getFreePort } from '../../src/runtime/port-finder';
 import { XpodTestStack } from './XpodTestStack';
 import { hasObjectStore, objectStoreContainerArgs, OBJECT_STORE_PORT } from './dockerObjectStore';
+import { fetchJsonWithRetry } from './fetchJson';
 
 // Three real deployment topologies; no fake QLever or open authentication.
 // Standalone is the local edition with its own issuer, as in the shipped
@@ -77,9 +78,9 @@ try {
       },
     });
   }
-  const provision = await fetch(new URL('/provision/status', managed.baseUrl)).then(response => response.json()) as {
+  const provision = (await fetchJsonWithRetry<{
     managed?: boolean; registered?: boolean; oidcIssuer?: string; provisionCode?: string;
-  };
+  }>(new URL('/provision/status', managed.baseUrl).toString())).value;
   if (!provision.managed || !provision.registered || !provision.provisionCode
     || new URL(provision.oidcIssuer!).origin !== new URL(cloud.baseUrl).origin
     || new URL(managed.baseUrl).origin === new URL(cloud.baseUrl).origin) {

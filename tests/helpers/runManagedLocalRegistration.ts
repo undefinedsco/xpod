@@ -4,6 +4,7 @@ import path from 'node:path';
 import { getFreePort } from '../../src/runtime/port-finder';
 import { XpodTestStack } from './XpodTestStack';
 import { hasObjectStore, objectStoreContainerArgs, OBJECT_STORE_PORT } from './dockerObjectStore';
+import { fetchJsonWithRetry } from './fetchJson';
 
 // Run the same browser acceptance against two real, disposable services.
 // Cloud uses PostgreSQL/Redis/S3; Local uses the configured native QLever.
@@ -73,7 +74,11 @@ try {
       XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: nativeCommand,
     },
   });
-  const status = await fetch(`${baseUrl}provision/status`).then((response) => response.json()) as { managed?: boolean; registered?: boolean; provisionCode?: string };
+  // The node has only just finished booting, so its first answers can be a refused or reset
+  // connection: read the state with the retrying reader rather than judging the flow on it.
+  const status = (await fetchJsonWithRetry<{ managed?: boolean; registered?: boolean; provisionCode?: string }>(
+    `${baseUrl}provision/status`,
+  )).value;
   if (!status.managed || !status.registered || !status.provisionCode) throw new Error('The real Local node did not register with the real Cloud');
   const exitCode = await new Promise<number>((resolve, reject) => {
     const child = spawn('bunx', ['playwright', 'test', 'tests/e2e/managed-local-registration.spec.ts', '--workers=1'], {
