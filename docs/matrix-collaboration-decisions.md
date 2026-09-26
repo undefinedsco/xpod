@@ -310,7 +310,26 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
   `tests/api/matrix/federation/inboundTransaction.test.ts` 7 项（接受并逐条应答、重放同一响应且只处理
   一次、同 txnId 异载荷保留首次并标记冲突、验签失败记 error、未完成事务返回 503、
   auth_events 两种列表形态与指纹稳定性、不同 origin 的 txnId 互不干扰）。
-- **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 HTTP 路由与 X-Matrix 签名请求认证、
+- **已落地**（2026-09-27）：**federation 请求签名认证**（`federation/requestAuth.ts`）。每个出站请求带
+  `Authorization: X-Matrix origin=…,destination=…,key=…,sig=…`，签名覆盖的 JSON 是**从请求本身重建**的
+  `{method, uri, origin, destination, content?}`，因此方法、目标（含 query）与请求体都被签名绑定：
+  为 `GET /…/version` 签出的东西不能改成 `POST` 打到别的端点，动一个字节的 body 就失效。头里的
+  `origin` 是**发送方的声明**，签名才是让声明可用的东西——所以用 `origin` 选密钥、用头里的 `key` 选试哪把。
+  两个容易做错的规范细节在这里定死：① `destination` **可以缺席**（v1.3 以前的发送方不带，
+  接收方必须继续接受；这种情况必须按"签名对象里也没有该字段"重建，补上就一定验不过），
+  但**一旦出现且不是本机 server name 就必须 401 拒绝**，否则截获的请求能被重放到非目标服务器；
+  ② `old_verify_keys`「只用于签事件」，所以**退役密钥永远不能认证请求**，哪怕它仍能验旧事件。
+  头解析按 RFC 9110：参数名大小写不敏感、顺序无关、值可加引号（反斜杠转义要还原）也可为裸 token、
+  兼容性上允许裸值含冒号、未知参数忽略；规范正文写 `signature` 而所有实现发 `sig`，**两个名字都收**。
+  密钥的新鲜度仍由 key source 负责（请求没有事件时间戳可比，不叠加第二层窗口）。
+  顺带把「server name 形状」抽成 `isMatrixServerName` 并在 `MatrixServerKeyFetcher` 里使用：server name
+  来自对端数据（事件的 `sender`、请求的 `origin`）而会被拼进 URL，先把 `/`、`@`、空白、凭据、fragment、
+  非法端口挡掉，避免它把请求引向别的主机或路径。测试
+  `tests/api/matrix/federation/requestAuth.test.ts` 13 项（往返与签名字段、验签通过、destination 不符被拒、
+  pre-v1.3 无 destination 仍接受、method/uri/query/body 任一被改都失败、密钥不对、退役密钥不认、
+  未知 origin 报"无法验证"、非 server name 的 origin、头解析的大小写/空白/引号/转义/别名/未知参数、
+  残缺头视为无授权、server name 正反例）。
+- **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 HTTP 路由（认证件与事务件都已就位）、
   事务记录与控制 Pod 承载（去 SQL）、`/get_missing_events` 补依赖、状态与历史获取、
   `.well-known` 服务发现、以及**出站**投递。
 
