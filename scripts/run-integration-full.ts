@@ -42,6 +42,7 @@ const composeArgs = [
 const runtimeRoot = path.resolve('.test-data/full-runtime', process.env.XPOD_FULL_RUN_ID || `${Date.now()}-${process.pid}`);
 const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@localhost:5432/xpod';
 const defaultTargets = [
+  'tests/integration/CloudClientCredentialVisibility.integration.test.ts',
   'tests/integration/DockerCluster.integration.test.ts',
   'tests/integration/MultiNodeCluster.integration.test.ts',
   'tests/integration/DockerClusterProvisionFlow.integration.test.ts',
