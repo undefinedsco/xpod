@@ -161,7 +161,9 @@
 | 项 | 状态 | 证据 |
 |---|---|---|
 | W4-DESIGN-03 语义色回到公共映射 | 已实施 | `ui/tailwind.config.js` 新增 `success`/`warning`（含 foreground），映射 W1 在 `theme.css` 发布的同名 token；`ui/src/**/*.tsx` 中 14 个文件的 17 处调色板字面量（amber/green/emerald/red/blue 等）改为语义类（`text-success`、`border-warning/40`、`bg-destructive/10` …）；新增 `tests/ui/semantic-colour-contract.test.ts` 断言产品页面不再出现语义性调色板类，并核对 theme.css 与 Tailwind 映射同时存在。未完成：中性调色板（slate/zinc/stone/gray）仍有使用，属结构化中性色，列入下一轮收敛 |
-验证记录（第四轮）：`ui/src` + `tests/ui` + `packages/shared-ui/test` + `packages/extension-sdk/test` 138 文件 / 1162 测试；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
+验证记录（第五轮）：`ui/src` + `tests/ui` + `packages/shared-ui/test` + `packages/extension-sdk/test` 139 文件 / 1163 测试；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
+
+第四轮验证记录：`ui/src` + `tests/ui` + `packages/shared-ui/test` + `packages/extension-sdk/test` 138 文件 / 1162 测试；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
 
 第三轮验证记录：`ui/src` + `tests/ui` + `packages/shared-ui/test` + `packages/extension-sdk/test` 138 文件 / 1161 测试；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
 
@@ -171,4 +173,4 @@
 
 | W4-DESIGN-01 概览重排 | 已实施 | `StatusPage.tsx` 现在先给一个结论（`data-testid="overview-conclusion"`，tone 取 normal/attention/unknown，五种情况折叠为正常／服务未就绪／对外访问有问题／读取失败／状态未知），再一次 ≤4 组事实（实例、核心服务 N/M、推荐访问、上次检查；服务未知显示「状态无法确认」而非 0，符合 AC-09），服务明细、访问路径、Cloud 与配置摘要收进默认收起的 `<details>`（`overview-details`/`overview-access-details`/`overview-runtime-details`）。`StatusPage.test.tsx` 新增两条用例：正常态恰一个结论、事实 ≤4、无强调动作、details 均收起；服务未知时 tone=unknown 且不出现 `0/`。第二轮补充：「访问与空间」事实组已接入空间用量（复用 `fetchPodSettingsStatus`，`describeStorageUsage` 对未支持/失败分别给「此部署不提供用量」「用量未知」，不回落成 0）；需处理事项改为问题列表驱动：只铺一张最高影响卡片，其余以「还有 N 项：<标题链接>」计数（§7.1）。`StatusPage.test.tsx` 增补服务异常 + 外部访问异常同时出现时只有一张卡且计数为 1 的用例。未完成：AI 摘要依赖 W5；`index-storage` 仍无独立来源（已在用量页说明）。 |
 | W4-DESIGN-02 用量域 | 已实施 | 新增 `ui/src/pages/admin/UsagePage.tsx`（复用既有 `fetchPodSettingsStatus` 客户端，此前无任何消费者），路由 `/status/usage/{overview,storage,bandwidth,ai,index-storage}`（§3.1 的五个深链），`status-navigation.ts` 增加 Usage 分组；三态严格区分：`available` 显示实测值（真的 0 显示 0）、`unsupported` 说明部署不提供、读取失败显示「状态无法确认」并提供重试，均不回落成 0（AC-09）；`index-storage` 明确说明尚无独立数据来源，不编造。空间详情（Pod 面板）新增「查看用量」入口（§7.2）。`/dashboard/usage` 的旧入口改指 §3.3 的目标 `/status/usage/overview`，W2-DESIGN-04 记录的目标路由缺口随之关闭。`UsagePage.test.tsx` 四条用例覆盖有值/零/不支持/失败。未完成：用量记录时间与来源字段在部分部署可能缺失，显示为「未标注」 |
-| W4-DESIGN-04 服务与访问分区 | 未开始 | —— |
+| W4-DESIGN-04 服务与访问分区 | 已实施（同页四主题 + 配置就地） | `/settings/runtime`（§3.1 的服务与访问默认路径）现在先渲染四个主题的卡片：服务与启动（服务状态 + 运行时长，配置表单就在本页下方）、访问与连接（当前存储地址/登录态 + 连接页入口）、对外访问设置（公网地址与可达性，读不到写「对外访问状态无法确认」）、诊断（索引与用量直达）。状态只呈现读到的值，未知不写成正常或 0（AC-09）。`ServicesAccessSections.test.tsx` 断言四个主题的顺序与未知态文案。未完成：访问范围（本机/局域网/外部）与隧道切换仍在 `/network`，尚未并入同页分区 |

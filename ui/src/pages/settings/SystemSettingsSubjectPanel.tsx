@@ -219,9 +219,100 @@ function SubjectContent({ kind, runtime, admin, configuration, provision, public
   }
   if (kind === 'identity-access') return <IdentityAccessContent runtime={runtime} />;
   if (kind === 'storage') return <><EvidenceGrid rows={projectStorageBackends(env, configuration?.secrets)} /><p className="text-xs text-muted-foreground">Measured storage and bandwidth are intentionally shown in Status → Usage, not here. Storage migration is unavailable because this runtime does not report a migration capability.</p></>;
-  if (kind === 'runtime') return <RuntimeForm env={env} admin={admin} save={save} />;
+  if (kind === 'runtime') {
+    // §7.5：服务与访问在同一任务内给出四个主题的状态与去向，配置编辑就在本页
+    return (
+      <>
+        <ServicesAccessSections admin={admin} runtime={runtime} publicRoute={publicRoute} />
+        <RuntimeForm env={env} admin={admin} save={save} />
+      </>
+    );
+  }
   if (kind === 'cloud') return <CloudForm env={env} provision={provision} save={save} />;
   return <AdvancedForm env={env} save={save} />;
+}
+
+/**
+ * 服务与访问的四个主题（spec §7.5）：服务与启动、访问与连接、对外访问设置、诊断。
+ * 只呈现读到的状态；读不到就说未知，不显示成 0 或"正常"。
+ */
+function ServicesAccessSections({
+  admin,
+  runtime,
+  publicRoute,
+}: {
+  admin: AdminStatus | null;
+  runtime: ReturnType<typeof useXpodSolidRuntime>;
+  publicRoute: PublicIpCheckResult | null;
+}) {
+  const serviceState = admin
+    ? `${admin.status === 'running' ? '运行中' : admin.status} · 已运行 ${Math.round((admin.uptime ?? 0) / 1000)} 秒`
+    : '状态无法确认';
+  const accessState = runtime.podUrl
+    ? runtime.podUrl
+    : runtime.webId ? '已登录，尚未确认存储地址' : '尚未登录';
+  const publicState = publicRoute
+    ? `${publicRoute.publicIp ?? '公网地址未知'} · ${publicRoute.status === 'pass' ? '可达' : '不可达或未确认'}`
+    : '对外访问状态无法确认';
+
+  const sections = [
+    {
+      id: 'services',
+      title: '服务与启动',
+      state: serviceState,
+      detail: '启动设置就在本页下方；服务明细与日志可直达。',
+      links: [
+        { label: '服务明细', href: '/status/services/gateway' },
+        { label: '日志', href: '/status/logs' },
+      ],
+    },
+    {
+      id: 'access',
+      title: '访问与连接',
+      state: accessState,
+      detail: '本机、局域网与外部访问范围在连接页里检测。',
+      links: [{ label: '连接与地址', href: '/network' }],
+    },
+    {
+      id: 'public-access',
+      title: '对外访问设置',
+      state: publicState,
+      detail: '域名、HTTPS 与隧道按实际支持的方式配置；切换只保留一条活动隧道。',
+      links: [{ label: '打开网络设置', href: '/network' }],
+    },
+    {
+      id: 'diagnostics',
+      title: '诊断',
+      state: '证据与专业维度',
+      detail: '日志、索引与用量都在诊断上下文里，可带对象与筛选进入。',
+      links: [
+        { label: '索引诊断', href: '/status/index' },
+        { label: '用量', href: '/status/usage/overview' },
+      ],
+    },
+  ] as const;
+
+  return (
+    <section data-testid="services-access-sections" className="space-y-3">
+      <div className="text-sm font-medium">服务与访问</div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {sections.map((section) => (
+          <div key={section.id} data-testid="services-access-section" data-section={section.id} className="rounded-lg border border-border bg-card p-3">
+            <div className="text-sm font-medium">{section.title}</div>
+            <div className="mt-1 break-all text-sm text-muted-foreground">{section.state}</div>
+            <p className="mt-1 text-xs text-muted-foreground">{section.detail}</p>
+            <div className="mt-2 flex flex-wrap gap-3">
+              {section.links.map((link) => (
+                <a key={link.href} className="text-sm text-primary underline-offset-4 hover:underline" href={link.href}>
+                  {link.label}
+                </a>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function IdentityAccessContent({ runtime }: { runtime: ReturnType<typeof useXpodSolidRuntime> }) {
