@@ -23,7 +23,7 @@ import { MatrixError } from './MatrixError';
 import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
 import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type PersistedMatrixEvent } from './persistedEvent';
 import { roomGraphPosition } from './protocol/roomGraph';
-import { storedGraphEvent } from './storedEvent';
+import { storedGraphEvent, storedProtocolEvent } from './storedEvent';
 import { MatrixRoomState, MatrixRoomStateReplay, resolveRoomState } from './roomState';
 import { serverNameOf, SUPPORTED_ROOM_VERSION } from './protocol/authRules';
 import { eventDestinations } from './federation/destinations';
@@ -754,6 +754,25 @@ export class PodMatrixStore {
       throw new MatrixError(404, 'M_NOT_FOUND', 'State not found');
     }
     return event.content;
+  }
+
+  /**
+   * The room's events as protocol PDUs.
+   *
+   * This is the read federation answers are built from: an inbound transaction resolves the
+   * `auth_events` a PDU names from here, and the read endpoints (`/state`, `/backfill`,
+   * `/event_auth`) answer with the same events. It is deliberately not a client read — no
+   * membership is required, because the caller is the deployment serving a peer on a Pod it
+   * already holds events for, not a user reading somebody's room.
+   *
+   * Each PDU is returned with the id this store derived for it (the content hash, reference hash
+   * and signature do not cover `event_id`, which is why attaching it is safe and why a row written
+   * before the graph existed still carries one).
+   */
+  public async protocolEvents(roomId: string, context: MatrixStoreContext): Promise<Record<string, unknown>[]> {
+    const db = await this.getDb(context);
+    const records = await this.listEvents(db, roomId, context);
+    return records.map(record => ({ ...storedProtocolEvent(record), event_id: record.eventId }));
   }
 
   /**

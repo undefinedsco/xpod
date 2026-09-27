@@ -647,8 +647,9 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   `GET /make_knock`、`PUT /send_knock` 十个端点的 **HTTP 外壳与 Pod 归属解析**（十个服务侧都已实现为纯函数/
   处理体；**剩下的阻塞点仍是路由归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、投递记录与控制 Pod 承载
   （去 SQL）、状态与历史获取。互通面上还没动的：`GET /_matrix/federation/v1/version`、
-  `GET /_matrix/federation/v1/query/{directory,profile}`、由本部署提供 `.well-known/matrix/server`
-  与 `/_matrix/key/v2/server`（密钥响应已能生成，只差路由；后者还要先定"以谁的名义发布"）。
+  `GET /_matrix/federation/v1/query/{directory,profile}`、`.well-known/matrix/server` 的**服务侧**，以及
+  `/_matrix/key/v2/server` **以参与者名义**发布（部署自己名义的那条早已在 `MatrixHandler` 里路由；参与者名义
+  需要先定"密钥以谁的名义发布/如何路由"，与前一条同源）。
 - **已落地**（2026-09-27）：**逐条拒绝不再等于已投递**（缺口 2 的修复）。事务返回 200 只回答"这笔
   事务收到了"，不回答"每条 PDU 都被接受了"，所以发送方现在按 per-PDU 结果拆分：被接受的落地即完成，
   被拒的**换一个新 txnId** 重新入队（对端会重放旧 txnId 的存档应答，所以必须换 id），带**有界退避**
@@ -818,6 +819,33 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   歧义、同一 WebID 两个 Pod 歧义、多 WebID 登记逐个服务且跳过不可用 WebID、同一个 Pod 登记两次不算歧义、没有
   登记时没有路由），`MatrixOutboundContainer.test.ts` 新增 1 项（有 Pod 注册表时容器里的路由能解析出归一化的
   Pod 根；没有注册表时为 undefined 而不是猜）。
+- **已落地**（2026-09-27）：**入站 `PUT /_matrix/federation/v1/send/{txnId}` 的 HTTP 外壳**
+  （`src/api/handlers/FederationHandler.ts`；容器新增 `matrixServerNameResolver` / `matrixServerKeyFetcher` /
+  `matrixInboundTransactions`，路由在 `container/routes.ts` 里"有 Pod 注册表且有验签密钥"才注册）。
+  - **被寻址的名字从 `Host` 取，并容忍隐式端口**：`Host` 是 HTTP 唯一携带"这条请求发给谁"的地方；走隐式联邦端口的
+    对端会写 `alice.example:8448`，而它签进 `destination` 的 server name 是 `alice.example`。两个拼写都是候选，
+    **本部署服务哪个就用哪个**（也就是 `destination` 必须匹配的那个）；都不服务 → 403，与处理体拒绝"不是本 Pod 的
+    房间"同一条规则。**前提**：网关/反代必须原样转发 `Host`。
+  - **一次事务只读一遍房间**：auth events 要从 Pod 解出来，而一笔事务里的 PDU 通常引用同一个房间；索引按房间建一次，
+    并**在接受一条事件后就地打补丁**，所以"后一条 PDU 依赖同一事务里刚接受的那条"也能解析（端到端测试证明了这一
+    条），代价是每房间 1 次读 + 每事件 1 次写，而不是每 PDU 读一遍房间。
+  - **认证走 X-Matrix、不走会话**：路由是 `public` 的（联邦请求不带用户凭据），由 `handleFederationSend` 用对端发布
+    的密钥验签；`destination` 与"我们认定的被寻址名字"不一致即 401，缺 `destination`（v1.3 以前的发送方）仍接受。
+  - **补取 auth chain 已接上生产**：PDU 判为 deferred 时，外壳用**出站发送器**、以"被寻址的那个名字"为 origin 去问
+    发送方要链（`fetchAuthChain`），所以"接收方自己补齐依赖"这条闭环在有身份时默认开启。
+  - **请求体有上限**：4 MiB，超了回 413 `M_TOO_LARGE`，而不是先把对端给的东西收下再说。
+  - **顺带修掉的互通缺口**：server keys 的获取现在**可以走委派**——`resolveKeyEndpoint` 允许返回 Promise，容器用
+    部署共享的 `MatrixServerNameResolver` 解析出 key 端点，且与出站投递**共用同一个解析器与缓存**；否则一个把联邦
+    端点委派到别的 host 的对端（很常见）会因为"默认端口找不到密钥"而永远验不过。**仍未改**的是委派时的 TLS/Host
+    缺口（`fetch` 不能改 SNI/Host），出站与这里同样受限，已在册。
+  - **仍未证**：两个部署**真的经 HTTP** 跑完整事务（本轮外壳测试是真的 HTTP，但对端是假 store；部署级真实 HTTP
+    证据留下一轮）、事务存档与投递进度的 Pod 承载（当前内存）、另外九个端点的外壳，以及**部署用哪份授权写被路由到
+    的参与者 Pod**——外壳把 `{webId, podUrl}` 交给 store，实际写入走 store 的 `podAccess`（部署 owner 访问器 +
+    任务层 grant 来源）；对"别人的 Pod"是否被授权，要等任务层 grant 落地才能证明。
+  测试：`tests/api/handlers/FederationHandler.test.ts` 6 项，**全部经真实 HTTP 套接字**（`ApiServer` 监听随机端口 +
+  `node:http` 请求，因此能设置 `Host`）：签名事务被接受并写进被路由的 Pod、重放同一 txnId 只写一次、同一事务里
+  "后一条依赖刚接受的那条"能解析、不服务的名字 403、伪造签名 401 与 `destination` 不符 401、隐式端口 `:8448` 被认作
+  同一个名字且 deferred 时向发送方索链（只按"无法授权的那条事件"的 id 索要）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

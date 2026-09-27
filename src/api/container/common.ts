@@ -100,6 +100,9 @@ import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 import { PodMatrixStore } from '../matrix';
 import { createParticipantRoutes } from '../matrix/participantRoutes';
+import { MatrixServerKeyFetcher } from '../matrix/federation/serverKeys';
+import { InMemoryMatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
+import { MatrixServerNameResolver } from '../matrix/federation/serverNameResolution';
 import { matrixSigningIdentityRegistry } from '../matrix/identityRegistry';
 import { matrixSigningIdentityForPod } from '../matrix/identityProvisioning';
 import { createPodParticipantIdentityProvider } from '../matrix/podParticipantIdentity';
@@ -720,16 +723,38 @@ export function registerCommonServices(
       return createParticipantRoutes({ pods });
     }).singleton(),
 
+    // Where a server name is reached: `.well-known` is preferred, SRV is the fallback the
+    // specification still allows, and answers are cached. One resolver for the deployment, so
+    // delivery and key fetching cannot disagree — or ask twice.
+    matrixServerNameResolver: asFunction((_cradle: ApiContainerCradle) => new MatrixServerNameResolver({
+      fetch: globalThis.fetch,
+      resolveSrv: async name => nodeSrvRecords(await dns.resolveSrv(name)),
+    })).singleton(),
+
+    // Verifying what peers send us: their published keys, fetched from a key endpoint that may
+    // itself be delegated.
+    matrixServerKeyFetcher: asFunction(({ matrixServerNameResolver }: ApiContainerCradle) => new MatrixServerKeyFetcher({
+      fetch: globalThis.fetch,
+      resolveKeyEndpoint: async serverName => {
+        const target = await matrixServerNameResolver.resolve(serverName);
+        return `${target?.baseUrl ?? `https://${serverName}`}/_matrix/key/v2/server`;
+      },
+    })).singleton(),
+
+    // A peer's retry must be answered, not processed twice: the record of what a transaction id
+    // already produced. In memory for now — the Pod carrier is a tracked item in the register.
+    matrixInboundTransactions: asFunction((_cradle: ApiContainerCradle) =>
+      new InMemoryMatrixInboundTransactionStore()).singleton(),
+
     // The outbound path: where a server name is reached, which identity signs as the origin,
     // and what is still owed. Absent without an identity of our own: a queue whose every
     // batch would be abandoned is worse than no queue.
-    matrixOutboundDelivery: asFunction(({ config, matrixSigningIdentities }: ApiContainerCradle) => {
+    matrixOutboundDelivery: asFunction(({ config, matrixSigningIdentities, matrixServerNameResolver }: ApiContainerCradle) => {
       if (!config.matrixServiceIdentity) return undefined;
       return createMatrixOutboundDelivery({
         identities: matrixSigningIdentities,
         fetch: globalThis.fetch,
-        // `.well-known` is preferred; SRV is the fallback the specification still allows.
-        resolveSrv: async name => nodeSrvRecords(await dns.resolveSrv(name)),
+        resolver: matrixServerNameResolver,
       });
     }).singleton(),
 

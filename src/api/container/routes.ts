@@ -28,6 +28,7 @@ import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
 import { registerInngestRoutes } from '../handlers/InngestHandler';
 import { registerRunRoutes } from '../handlers/RunHandler';
 import { registerMatrixRoutes } from '../handlers/MatrixHandler';
+import { registerFederationRoutes } from '../handlers/FederationHandler';
 import { registerCoordinationRoutes } from '../handlers/CoordinationHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerSettingsRoutes } from '../handlers/SettingsHandler';
@@ -194,6 +195,32 @@ function registerSharedRoutes(
   const matrixPodResolver = createMatrixPodResolver(podLookupRepository);
   registerMatrixRoutes(server, { store: matrixStore, resolvePodUrl:matrixPodResolver, baseUrl:process.env.CSS_BASE_URL,
     serviceIdentity: container.resolve('matrixServiceIdentity') });
+
+  // Federation is authenticated by the peer's `X-Matrix` signature rather than by a session, and
+  // it needs three things this deployment may not have: a Pod registry to route a name to, keys to
+  // verify the sender with, and (optionally) an identity of our own to ask a peer for an auth
+  // chain. Without the first two there is nothing to serve, so the routes stay unregistered.
+  const federationRoutes = container.resolve('matrixParticipantRoutes', { allowUnregistered: true });
+  const federationKeys = container.resolve('matrixServerKeyFetcher', { allowUnregistered: true });
+  if (federationRoutes && federationKeys) {
+    const delivery = container.resolve('matrixOutboundDelivery', { allowUnregistered: true });
+    registerFederationRoutes(server, {
+      routes: federationRoutes,
+      store: matrixStore,
+      keys: federationKeys,
+      transactions: container.resolve('matrixInboundTransactions'),
+      // A PDU we cannot authorise yet is asked about — the sender holds the chain, and the name we
+      // answer as is the one we were addressed as.
+      ...(delivery ? {
+        fetchAuthChain: async ({ roomId, eventId, sender, servedName }) => {
+          const outcome = await delivery.sender.requestAuthChain({
+            origin: servedName, destination: sender, roomId, eventId,
+          });
+          return outcome.status === 'ok' ? outcome.events : undefined;
+        },
+      } : {}),
+    });
+  }
   registerAgentWakeRoutes(server, {
     // Same queue instance the reconciler enqueues into, taken from the store
     // that already holds it instead of resolving the collaborator twice.

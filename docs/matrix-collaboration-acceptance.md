@@ -192,11 +192,18 @@ HTTP 跳转；**唯一的测试替身是"缺依赖事件如何送到对端"**—
 多个 Pod 时**拒绝**而不是猜（写错 Pod 无法撤销），未登记的名字报 unknown 由外壳回 403。**仍未接**：外壳本身，
 以及部署写目标 Pod 用的服务授权。
 
+**入站 `/send` 的 HTTP 外壳（已落地，真实 HTTP 证据）**：`PUT /_matrix/federation/v1/send/{txnId}` 现在有真正的
+路由与外壳（`src/api/handlers/FederationHandler.ts`，容器在有 Pod 注册表与验签密钥时注册）。测试
+`tests/api/handlers/FederationHandler.test.ts` 6 项**全部经真实 HTTP 套接字**（随机端口 + `node:http` 以便设置
+`Host`）：签名事务被接受并写进被路由的 Pod、重放同一 txnId 只写一次、同一事务内"后一条依赖刚接受的那条"可解析、
+不服务的名字 403、伪造签名与 `destination` 不符 401、`Host: <name>:8448` 与 `<name>` 视为同一个名字。
+**仍未证**：两个部署之间真的经 HTTP 跑完整闭环（本轮对端是假 store）、写入被路由 Pod 的授权（任务层 grant）。
+
 **联邦读取端点（服务侧算法已就绪，等 HTTP 外壳）**：`/event_auth`、`/get_missing_events`、`/backfill`、
 `/state`、`/state_ids` 五个端点的服务侧都已实现为纯函数/处理体并各有测试（回溯方向与语义按规范：
 `/backfill` 含点名事件且从新到旧，`/state` 返回事件**之前**的状态），客户端调用也已就位；
 **只差"从请求取 roomId/eventId → 从某个 Pod 取房间事件 → 应答"这一层**，它与入站 `/send` 共用同一个
-Pod 归属解析（已落地，见上）。
+Pod 归属解析（已落地，见上），外壳的写法也可照 `/send` 那一份（`FederationHandler.ts`）。
 
 **成员资格握手（同样只差 HTTP 外壳）**：`GET /make_join`、`PUT /send_join`、`GET /make_leave`、
 `PUT /send_leave`、`PUT /invite`、`GET /make_knock`、`PUT /send_knock` 七个端点的服务侧已实现

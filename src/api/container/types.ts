@@ -328,6 +328,12 @@ export interface ApiContainerCradle {
    * deployment has no Pod registry to derive it from.
    */
   matrixParticipantRoutes: import('../matrix/participantRoutes').MatrixParticipantRoutes | undefined;
+  /** Where a server name is reached (delegation and SRV, cached). */
+  matrixServerNameResolver: import('../matrix/federation/serverNameResolution').MatrixServerNameResolver;
+  /** Verifying what peers send us: their published keys. */
+  matrixServerKeyFetcher: import('../matrix/federation/serverKeys').MatrixServerKeyFetcher;
+  /** Transaction ids we have already processed, for inbound federation. */
+  matrixInboundTransactions: import('../matrix/federation/inboundTransaction').InMemoryMatrixInboundTransactionStore;
   /** Resolves, signs and queues outbound federation traffic; absent disables it. */
   matrixOutboundDelivery: import('../matrix/federation/outboundDelivery').MatrixOutboundDelivery | undefined;
   /** Drives the outbound queue; absent when there is nothing to drive. */

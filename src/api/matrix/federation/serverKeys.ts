@@ -49,10 +49,10 @@ export interface MatrixServerKeyFetcherOptions {
   maxValidityMs?: number;
   /**
    * Where a server name's key endpoint lives. Matrix server discovery
-   * (`.well-known/matrix/server`) plugs in here so the fetcher itself does not have to
-   * know about delegation.
+   * (`.well-known/matrix/server`) plugs in here so the fetcher itself does not have to know about
+   * delegation; it may answer asynchronously, because discovery is a request of its own.
    */
-  resolveKeyEndpoint?: (serverName: string) => string;
+  resolveKeyEndpoint?: (serverName: string) => string | Promise<string>;
 }
 
 /**
@@ -68,14 +68,14 @@ export class MatrixServerKeyFetcher implements MatrixServerKeySource {
   private readonly fetch: typeof fetch;
   private readonly now: () => number;
   private readonly maxValidityMs: number;
-  private readonly resolveKeyEndpoint: (serverName: string) => string;
+  private readonly resolveKeyEndpoint: (serverName: string) => string | Promise<string>;
 
   public constructor(options: MatrixServerKeyFetcherOptions) {
     this.fetch = options.fetch;
     this.now = options.now ?? Date.now;
     this.maxValidityMs = options.maxValidityMs ?? MAX_SERVER_KEY_VALIDITY_MS;
-    this.resolveKeyEndpoint = options.resolveKeyEndpoint
-      ?? ((serverName: string) => `https://${serverName}/_matrix/key/v2/server`);
+    const endpoint = options.resolveKeyEndpoint;
+    this.resolveKeyEndpoint = endpoint ?? ((serverName: string) => `https://${serverName}/_matrix/key/v2/server`);
   }
 
   /** The keys to verify `serverName`'s signatures with, or `undefined` when unavailable. */
@@ -101,7 +101,7 @@ export class MatrixServerKeyFetcher implements MatrixServerKeySource {
     if (!isMatrixServerName(serverName)) return undefined;
     let response: Response;
     try {
-      response = await this.fetch(this.resolveKeyEndpoint(serverName), { headers: { accept: 'application/json' } });
+      response = await this.fetch(await this.resolveKeyEndpoint(serverName), { headers: { accept: 'application/json' } });
     } catch {
       // Unreachable keys are "cannot verify", not "verified": the caller rejects.
       return undefined;

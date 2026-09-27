@@ -25,6 +25,12 @@ export interface MatrixOutboundDelivery {
 export interface MatrixOutboundDeliveryOptions {
   identities: MatrixSigningIdentitySource;
   fetch: typeof fetch;
+  /**
+   * A resolver the deployment already built. Sharing one keeps its cache warm across everything
+   * that reaches a peer — delivery and key fetching resolve the same names — instead of each
+   * asking `.well-known` for itself.
+   */
+  resolver?: MatrixServerNameResolver;
   /** SRV lookup, consulted only when `.well-known` is unavailable. */
   resolveSrv?: (name: string) => Promise<readonly MatrixSrvRecord[] | undefined>;
   now?: () => number;
@@ -34,7 +40,7 @@ export interface MatrixOutboundDeliveryOptions {
 }
 
 export function createMatrixOutboundDelivery(options: MatrixOutboundDeliveryOptions): MatrixOutboundDelivery {
-  const resolver = new MatrixServerNameResolver({
+  const resolver = options.resolver ?? new MatrixServerNameResolver({
     fetch: options.fetch,
     ...(options.resolveSrv === undefined ? {} : { resolveSrv: options.resolveSrv }),
     ...(options.now === undefined ? {} : { now: options.now }),
