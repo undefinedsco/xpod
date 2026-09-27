@@ -39,7 +39,7 @@ export default function SystemSettingsPage() {
     mode="auto"
     listHeader={<PaneListHeader title="Settings" />}
     list={<SystemSettingsList groups={groups} />}
-    mainHeader={<div className="flex h-full items-center px-4"><div><h1 className="text-sm font-semibold">Settings · {selected.label}</h1><div className="text-xs text-muted-foreground">{selected.description}</div>{selectedScope === 'node' ? <div className="text-xs text-amber-700 dark:text-amber-300">Applies to every Pod on this machine.</div> : null}</div></div>}
+    mainHeader={<div className="flex h-full items-center px-4"><div><h1 className="text-sm font-semibold">Settings · {selected.label}</h1><div className="text-xs text-muted-foreground">{selected.description}</div>{selectedScope === 'node' ? <div className="text-xs text-warning dark:text-warning">Applies to every Pod on this machine.</div> : null}</div></div>}
     main={<section className="min-h-full bg-background"><Outlet /></section>}
     className="min-h-full"
   />;

@@ -636,7 +636,7 @@ export function SettingsPage() {
         <p className="mt-2 text-sm text-muted-foreground">高级运行时设置。大多数用户应在常规设置中完成配置。</p>
       </div>
 
-      <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-200">
+      <div className="mb-6 rounded-xl border border-warning/40 bg-warning/70 p-4 text-sm text-warning dark:border-warning/40 dark:bg-warning/20 dark:text-warning">
         <div className="flex gap-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
@@ -683,7 +683,7 @@ export function SettingsPage() {
           <div className="flex items-center justify-between gap-4">
             <CardTitle>网络访问</CardTitle>
             <span className="text-sm">
-              外网: <span className={clsx(publicIpCheck === 'pass' ? 'text-green-700 dark:text-green-300' : publicIpCheck === 'fail' ? 'text-destructive' : 'text-muted-foreground')}>{statusText}</span>
+              外网: <span className={clsx(publicIpCheck === 'pass' ? 'text-success dark:text-success' : publicIpCheck === 'fail' ? 'text-destructive' : 'text-muted-foreground')}>{statusText}</span>
             </span>
           </div>
         </CardHeader>
@@ -880,7 +880,7 @@ export function SettingsPage() {
             'mt-4 rounded-md border px-3 py-2 text-sm',
             validationError || (message && message.includes('失败'))
               ? 'border-destructive/30 bg-destructive/10 text-destructive'
-              : 'border-green-200 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-950/20 dark:text-green-200',
+              : 'border-success/40 bg-success/10 text-success dark:border-success/40 dark:bg-success/20 dark:text-success',
           )}
         >
           {message || validationError}

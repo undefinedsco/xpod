@@ -242,7 +242,7 @@ export function RebuildStatusLine({
   const status = rebuildStatusFrom(lifecycle)
   if (!status) {
     return fallbackNotice
-      ? <p role="status" className="text-xs text-amber-600">{fallbackNotice}</p>
+      ? <p role="status" className="text-xs text-warning">{fallbackNotice}</p>
       : null
   }
   const detail = [
@@ -410,7 +410,7 @@ export function ModelAssignmentRow({
           </span>
         )}
         {notice && (
-          <span data-testid="model-assignment-notice" className="text-xs text-amber-600 sm:col-span-2">
+          <span data-testid="model-assignment-notice" className="text-xs text-warning sm:col-span-2">
             {notice}
           </span>
         )}

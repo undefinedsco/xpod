@@ -650,11 +650,11 @@ export function AccountPage() {
               )}
 
               {newCredential && (
-                <div className="mb-4 p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl">
+                <div className="mb-4 p-4 bg-success/10 border border-success/30 rounded-xl">
                   <div className="flex items-start gap-3">
-                    <div className="p-2 bg-emerald-500/15 rounded-lg"><Key className="w-4 h-4 text-emerald-600 dark:text-emerald-300" /></div>
+                    <div className="p-2 bg-success/15 rounded-lg"><Key className="w-4 h-4 text-success dark:text-success" /></div>
                     <div className="flex-1">
-                      <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300 mb-1">New Solid Client Credential Created</p>
+                      <p className="text-sm font-medium text-success dark:text-success mb-1">New Solid Client Credential Created</p>
                       <p className="text-xs text-muted-foreground mb-3">Copy the Client ID and Client Secret now. The secret will not be shown again.</p>
                       <div className="space-y-3 text-xs font-mono bg-card p-3 rounded-lg border border-border">
                         <div className="flex items-center justify-between gap-2">
@@ -667,7 +667,7 @@ export function AccountPage() {
                             className={copyButtonClass}
                             title="Copy Client ID"
                           >
-                            {copiedField === 'id' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                            {copiedField === 'id' ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
                           </button>
                         </div>
                         <div className="flex items-center justify-between gap-2">
@@ -680,7 +680,7 @@ export function AccountPage() {
                             className={copyButtonClass}
                             title="Copy Client Secret"
                           >
-                            {copiedField === 'secret' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                            {copiedField === 'secret' ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
                           </button>
                         </div>
                       </div>

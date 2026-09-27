@@ -4,8 +4,8 @@ import type { ReactNode } from 'react';
 export type HealthState = 'healthy' | 'degraded' | 'failed' | 'unknown';
 
 const healthClass: Record<HealthState, string> = {
-  healthy: 'border-green-200 bg-green-50 text-green-700 dark:border-green-900 dark:bg-green-950/40 dark:text-green-300',
-  degraded: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300',
+  healthy: 'border-success/40 bg-success/10 text-success dark:border-success/40 dark:bg-success/40 dark:text-success',
+  degraded: 'border-warning/40 bg-warning/10 text-warning dark:border-warning/40 dark:bg-warning/40 dark:text-warning',
   failed: 'border-destructive/30 bg-destructive/10 text-destructive',
   unknown: 'border-border bg-muted text-muted-foreground',
 };

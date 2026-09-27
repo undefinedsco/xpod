@@ -218,8 +218,8 @@ export function XpodUserCard() {
                   </Button>
                   {copyFeedback ? <span role="status" className="shrink-0 text-xs text-primary">{copyFeedback}</span> : null}
                 </div>
-                <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-                  <span className={`h-1.5 w-1.5 rounded-full ${podReady ? 'bg-emerald-500' : 'bg-muted-foreground/50'}`} aria-hidden="true" />
+                <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2 py-1 text-xs font-medium text-success dark:text-success">
+                  <span className={`h-1.5 w-1.5 rounded-full ${podReady ? 'bg-success' : 'bg-muted-foreground/50'}`} aria-hidden="true" />
                   <span>{podReady ? 'Pod connected' : webIdAuthenticated ? 'WebID connected' : 'Account connected'}</span>
                 </div>
               </div>
@@ -242,7 +242,7 @@ export function XpodUserCard() {
                     <span className="block truncate text-sm font-medium text-foreground">{podDisplayName(podLabel)}</span>
                     <span className="mt-0.5 block truncate text-xs text-muted-foreground">Personal Pod · {podHost(podUrl)}</span>
                   </span>
-                  {podReady ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" aria-label="Pod ready" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
+                  {podReady ? <CheckCircle2 className="h-4 w-4 shrink-0 text-success" aria-label="Pod ready" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
                 </a>
               </Button>
             </div>

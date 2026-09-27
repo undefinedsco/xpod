@@ -23,8 +23,8 @@ export function StatusBar(props: {
 
   return (
     <header className="h-14 bg-layout-sidebar border-b border-border flex items-center px-4 gap-3 min-w-0">
-      <div className={clsx('flex items-center gap-2 text-sm font-medium shrink-0', ok ? 'text-green-600 dark:text-green-400' : 'text-destructive')}>
-        <span className={clsx('w-2 h-2 rounded-full shrink-0', ok ? 'bg-green-500' : 'bg-destructive')} />
+      <div className={clsx('flex items-center gap-2 text-sm font-medium shrink-0', ok ? 'text-success dark:text-success' : 'text-destructive')}>
+        <span className={clsx('w-2 h-2 rounded-full shrink-0', ok ? 'bg-success' : 'bg-destructive')} />
         <span className="hidden sm:inline">{ok ? '运行中' : '服务异常'}</span>
       </div>
 

@@ -200,12 +200,12 @@ function ActionNeededCard(props: {
     : 'Xpod 在本机运行正常，但从外网暂时无法访问。请检查公网域名、端口映射或用户隧道。';
 
   return (
-    <Card variant="bordered" className="border-amber-200 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/20">
+    <Card variant="bordered" className="border-warning/40 bg-warning/60 dark:border-warning/40 dark:bg-warning/20">
       <CardHeader>
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-sm text-amber-800 dark:text-amber-200">{message}</p>
+        <p className="text-sm text-warning dark:text-warning">{message}</p>
         {servicesFailed ? (
           <Button variant="secondary" onClick={() => window.location.assign('/status/logs')}>
             查看日志
@@ -450,7 +450,7 @@ export function StatusPage() {
         </div>
       </div>
 
-      {copyMessage ? <p className="text-sm text-green-700 dark:text-green-300">{copyMessage}</p> : null}
+      {copyMessage ? <p className="text-sm text-success dark:text-success">{copyMessage}</p> : null}
       {loadError ? (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {loadError}

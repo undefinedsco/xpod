@@ -176,7 +176,7 @@ export function LogsPage() {
   const getLevelColor = (level: LogEntry['level']) => {
     switch (level) {
       case 'error': return 'text-destructive';
-      case 'warn': return 'text-amber-600 dark:text-amber-300';
+      case 'warn': return 'text-warning dark:text-warning';
       case 'debug': return 'text-muted-foreground';
       default: return 'text-foreground';
     }
@@ -185,9 +185,9 @@ export function LogsPage() {
   const getSourceColor = (source: string) => {
     switch (source) {
       case 'xpod': return 'text-primary';
-      case 'css': return 'text-green-700 dark:text-green-300';
-      case 'api': return 'text-blue-700 dark:text-blue-300';
-      case 'gateway': return 'text-amber-700 dark:text-amber-300';
+      case 'css': return 'text-success dark:text-success';
+      case 'api': return 'text-primary dark:text-primary';
+      case 'gateway': return 'text-warning dark:text-warning';
       default: return 'text-muted-foreground';
     }
   };
@@ -261,7 +261,7 @@ export function LogsPage() {
       </div>
 
       {streamError ? <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{streamError}</div> : null}
-      {firstHint ? <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-200">{firstHint}</div> : null}
+      {firstHint ? <div className="mb-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning dark:border-warning/40 dark:bg-warning/20 dark:text-warning">{firstHint}</div> : null}
 
       <Card variant="bordered" className="flex-1 min-h-[420px] overflow-hidden">
         <CardContent className="h-full p-0">

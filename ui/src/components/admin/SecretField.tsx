@@ -21,7 +21,7 @@ export function SecretField(props: {
         <span
           className={clsx(
             'inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs',
-            configured ? 'border-green-200 text-green-700 dark:border-green-900 dark:text-green-300' : 'border-border text-muted-foreground',
+            configured ? 'border-success/40 text-success dark:border-success/40 dark:text-success' : 'border-border text-muted-foreground',
           )}
         >
           <KeyRound className="h-3.5 w-3.5" />

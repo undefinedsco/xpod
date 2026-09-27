@@ -328,7 +328,7 @@ function UnavailablePanel(props: { snapshot: RdfStatsSnapshot | null }) {
     <Card variant="bordered">
       <CardContent>
         <div className="flex items-center gap-3 text-muted-foreground">
-          <AlertTriangle className="h-5 w-5 text-yellow-600" />
+          <AlertTriangle className="h-5 w-5 text-warning" />
           <span>{reason}</span>
         </div>
       </CardContent>
@@ -354,8 +354,8 @@ function MetricCard(props: {
         <div
           className={clsx(
             'text-xl font-semibold',
-            props.tone === 'good' && 'text-green-600',
-            props.tone === 'warn' && 'text-yellow-700',
+            props.tone === 'good' && 'text-success',
+            props.tone === 'warn' && 'text-warning',
           )}
         >
           {props.value}
@@ -564,7 +564,7 @@ function BenchmarkReportsTable(props: { snapshot?: RdfBenchmarkReportCatalogSnap
       </CardHeader>
       <CardContent className="p-0">
         {errors.length > 0 && (
-          <div className="border-b border-border px-5 py-3 text-sm text-yellow-700">
+          <div className="border-b border-border px-5 py-3 text-sm text-warning">
             {formatInteger(errors.length)} 个报告读取失败，最近一个：{errors[0].path} - {errors[0].message}
           </div>
         )}
@@ -629,7 +629,7 @@ function BenchmarkReportRow(props: { report: RdfBenchmarkReportSummary }) {
           <StatusPill ok={report.concurrencyMatched !== false && failedConcurrencyCount === 0} label={`conc ${report.concurrency ?? 1}`} />
         </div>
         {(failedPlanCount > 0 || failedConcurrencyCount > 0) && (
-          <div className="mt-1 text-xs text-yellow-700">
+          <div className="mt-1 text-xs text-warning">
             fail {formatInteger(failedPlanCount + failedConcurrencyCount)}
           </div>
         )}
@@ -666,7 +666,7 @@ function StatusPill(props: { ok: boolean; label: string }) {
   return (
     <span className={clsx(
       'inline-flex rounded-md px-2 py-0.5 text-xs',
-      props.ok ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-800',
+      props.ok ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning',
     )}>
       {props.label}
     </span>
@@ -677,7 +677,7 @@ function ReasonList(props: { reasons: string[] }) {
   return (
     <div className="flex max-w-[320px] flex-wrap gap-1.5">
       {props.reasons.map((reason) => (
-        <span key={reason} className="rounded-md bg-yellow-100 px-2 py-0.5 text-xs text-yellow-800">
+        <span key={reason} className="rounded-md bg-warning/15 px-2 py-0.5 text-xs text-warning">
           {reason}
         </span>
       ))}

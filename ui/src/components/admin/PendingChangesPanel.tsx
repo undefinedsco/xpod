@@ -22,7 +22,7 @@ export function PendingChangesPanel(props: {
           <p className="text-sm text-muted-foreground">没有未保存的变更。</p>
         ) : (
           <div className="space-y-3">
-            <p className="text-sm text-amber-700 dark:text-amber-300">保存后需要重启运行时才能完全生效。</p>
+            <p className="text-sm text-warning dark:text-warning">保存后需要重启运行时才能完全生效。</p>
             <div className="divide-y divide-border rounded-md border border-border">
               {changes.map((change) => (
                 <div key={change.key} className="grid gap-1 px-3 py-2 text-sm sm:grid-cols-[180px_1fr]">
