@@ -61,6 +61,9 @@ export class SolidSessionFactory {
   private readonly now: () => number;
   private readonly maxEntries: number;
   private readonly sessions = new Map<string, SolidSession>();
+  /** Cache keys per client id, so a revoked credential can be forgotten without its secret. */
+  private readonly keysByClientId = new Map<string, Set<string>>();
+  private readonly clientIdByKey = new Map<string, string>();
 
   public constructor(options: SolidSessionFactoryOptions) {
     this.route = resolveTokenEndpointRoute(options.tokenEndpoint, options.publicBaseUrl);
@@ -76,12 +79,57 @@ export class SolidSessionFactory {
     if (cached && cached.expiresAt > this.now() + TOKEN_EXPIRY_SKEW_MS) {
       return cached;
     }
-    this.sessions.delete(key);
+    this.forgetKey(key);
 
     const session = await this.exchange(credential);
-    this.sessions.set(key, session);
-    pruneOldest(this.sessions, this.maxEntries);
+    this.remember(key, credential.clientId, session);
     return session;
+  }
+
+  /**
+   * Forget every cached session for one client.
+   *
+   * Revocation happens at the issuer, which this process cannot observe, so the record that
+   * represents the credential has to say so: without this an already-issued token keeps
+   * authenticating the wrapper until it expires, and a deleted API Key looks like it still works.
+   */
+  public invalidateClientCredential(clientId: string): void {
+    const keys = this.keysByClientId.get(clientId);
+    if (!keys) {
+      return;
+    }
+    for (const key of keys) {
+      this.sessions.delete(key);
+      this.clientIdByKey.delete(key);
+    }
+    this.keysByClientId.delete(clientId);
+  }
+
+  private remember(key: string, clientId: string, session: SolidSession): void {
+    this.sessions.set(key, session);
+    const keys = this.keysByClientId.get(clientId) ?? new Set<string>();
+    keys.add(key);
+    this.keysByClientId.set(clientId, keys);
+    this.clientIdByKey.set(key, clientId);
+    pruneOldest(this.sessions, this.maxEntries, (evicted) => this.forgetKey(evicted));
+  }
+
+  /** Drop one cache entry and its client-id index, whichever path removed it. */
+  private forgetKey(key: string): void {
+    this.sessions.delete(key);
+    const clientId = this.clientIdByKey.get(key);
+    if (!clientId) {
+      return;
+    }
+    this.clientIdByKey.delete(key);
+    const tracked = this.keysByClientId.get(clientId);
+    if (!tracked) {
+      return;
+    }
+    tracked.delete(key);
+    if (tracked.size === 0) {
+      this.keysByClientId.delete(clientId);
+    }
   }
 
   /**
@@ -91,7 +139,7 @@ export class SolidSessionFactory {
    * says nothing about who the caller is.
    */
   public invalidate(credential: SolidClientCredential): void {
-    this.sessions.delete(cacheKey(this.route, credential));
+    this.forgetKey(cacheKey(this.route, credential));
   }
 
   private async exchange(credential: SolidClientCredential): Promise<SolidSession> {
@@ -157,11 +205,16 @@ function fingerprintSecret(secret: string): string {
   return createHash('sha256').update(secret).digest('hex');
 }
 
-function pruneOldest(cache: Map<string, SolidSession>, limit: number): void {
+function pruneOldest(
+  cache: Map<string, SolidSession>,
+  limit: number,
+  onEvict?: (key: string) => void,
+): void {
   while (cache.size > limit) {
     const oldest = cache.keys().next();
     if (oldest.done) return;
     cache.delete(oldest.value);
+    onEvict?.(oldest.value);
   }
 }
 

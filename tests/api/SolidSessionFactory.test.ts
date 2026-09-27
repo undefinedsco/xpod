@@ -130,6 +130,29 @@ describe('SolidSessionFactory', () => {
     expect(proof.htu).toBe('https://pod.example/.oidc/token');
   });
 
+  it('forgets one client\'s sessions when its credential is revoked', async () => {
+    const request = vi.fn().mockImplementation(async () => tokenResponse());
+    const sessions = new SolidSessionFactory({ tokenEndpoint: TOKEN_ENDPOINT, fetch: request });
+
+    const revoked = { clientId: 'client-revoked', clientSecret: CLIENT_SECRET };
+    const kept = { clientId: 'client-kept', clientSecret: CLIENT_SECRET };
+    await sessions.session(revoked);
+    await sessions.session(kept);
+    expect(request).toHaveBeenCalledTimes(2);
+
+    sessions.invalidateClientCredential('client-revoked');
+
+    // The revoked client is exchanged again (and would now be refused by the issuer); the other
+    // client keeps its session, so an unrelated revocation does not cost every caller an exchange.
+    await sessions.session(revoked);
+    await sessions.session(kept);
+    expect(request).toHaveBeenCalledTimes(3);
+
+    sessions.invalidateClientCredential('never-seen');
+    await sessions.session(kept);
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
   it('caps how many sessions it remembers', async () => {
     const request = vi.fn().mockImplementation(async () => tokenResponse());
     const sessions = new SolidSessionFactory({

@@ -206,6 +206,7 @@ function registerSharedRoutes(
     providerModelSelectionService,
     customModelsService: providerCustomModelsService,
     gatewayAccessKeyRepository,
+    invalidateClientCredential: (clientId) => container.resolve('solidSessions').invalidateClientCredential(clientId),
     validateClientCredential: (apiKey) => container.resolve('authenticator').authenticate({
       headers: { authorization: `Bearer ${apiKey}` },
       method: 'POST',
