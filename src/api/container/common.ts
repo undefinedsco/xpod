@@ -100,6 +100,8 @@ import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 import { PodMatrixStore } from '../matrix';
 import { matrixSigningIdentityRegistry } from '../matrix/identityRegistry';
+import { matrixSigningIdentityForPod } from '../matrix/identityProvisioning';
+import { createPodParticipantIdentityProvider } from '../matrix/podParticipantIdentity';
 import { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
@@ -675,13 +677,45 @@ export function registerCommonServices(
 
     matrixServiceIdentity: asFunction(({ config }: ApiContainerCradle) => config.matrixServiceIdentity).singleton(),
 
-    matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
+    matrixSigningIdentities: asFunction(({ config }: ApiContainerCradle) => {
+      return matrixSigningIdentityRegistry({
+        ...(config.matrixServiceIdentity ? { identity: config.matrixServiceIdentity } : {}),
+      });
+    }).singleton(),
+
+    // Participants become their own Matrix server by having this deployment mint their key
+    // into their own Pod. It needs a root key to seal with and the Pod registry to find
+    // that Pod; without either, everybody keeps writing under the deployment identity.
+    matrixParticipantIdentity: asFunction((cradle: ApiContainerCradle) => {
+      const vault = cradle.config.secretCellVaultFactory?.();
+      const pods = cradle.podLookupRepo;
+      if (!vault || !pods) return undefined;
+      return createPodParticipantIdentityProvider({
+        registry: cradle.matrixSigningIdentities,
+        pods,
+        provision: async ({ serverName, ownerWebId, podUrl, context }) => matrixSigningIdentityForPod({
+          serverName,
+          ownerWebId,
+          podUrl,
+          vault,
+          podAccess: cradle.ownerPodAccess,
+          context: {
+            ...(context.auth ? { auth: context.auth } : {}),
+            ...(context.podUrl ? { podBaseUrl: context.podUrl } : {}),
+          },
+        }),
+      });
+    }).singleton(),
+
+    matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService, matrixSigningIdentities, matrixParticipantIdentity }: ApiContainerCradle) => {
       return new PodMatrixStore({
         serverGroupReconcilerService,
         podAccess: ownerPodAccess,
-        identities: config.matrixServiceIdentity
-          ? matrixSigningIdentityRegistry({ identity: config.matrixServiceIdentity })
-          : undefined,
+        // Registering participants only makes sense while the deployment itself can sign:
+        // an unserved participant falls back to the deployment name, and a registry
+        // without that identity would refuse their writes instead of signing nothing.
+        identities: config.matrixServiceIdentity ? matrixSigningIdentities : undefined,
+        participantIdentity: config.matrixServiceIdentity ? matrixParticipantIdentity : undefined,
         journal: new SqlMatrixEventJournal(db),
         serverName: (() => {
           try {

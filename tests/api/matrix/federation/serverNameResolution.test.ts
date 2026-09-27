@@ -4,7 +4,6 @@ import {
   MatrixServerNameResolver,
   readMServer,
   selectSrvRecord,
-  splitServerName,
 } from '../../../../src/api/matrix/federation/serverNameResolution';
 
 const NOW = 1_700_000_000_000;
@@ -208,13 +207,6 @@ describe('resolution helpers', () => {
     expect(readMServer({})).toBeUndefined();
     expect(readMServer('m.server')).toBeUndefined();
     expect(readMServer([ { 'm.server': 'example.com' } ])).toBeUndefined();
-  });
-
-  it('splits server names into host and port', () => {
-    expect(splitServerName('example.com')).toEqual({ host: 'example.com' });
-    expect(splitServerName('example.com:8448')).toEqual({ host: 'example.com', port: 8448 });
-    expect(splitServerName('[::1]')).toEqual({ host: '::1' });
-    expect(splitServerName('[::1]:8448')).toEqual({ host: '::1', port: 8448 });
   });
 
   it('selects SRV records by priority and weight', () => {

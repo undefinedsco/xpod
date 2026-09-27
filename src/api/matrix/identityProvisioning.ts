@@ -25,6 +25,17 @@ import {
   type MatrixSigningKeyChannelDb,
 } from './signingKeyChannel';
 
+/**
+ * A provisioned identity plus the provider that can sign with it.
+ *
+ * The provider is what a running deployment keeps: it reads the sealed key set from the
+ * Pod, caches it, and produces the `MatrixServiceIdentity` events are signed with. The
+ * metadata-only view exists for callers that just report what happened.
+ */
+export interface MatrixSigningIdentityResult extends ProvisionedMatrixIdentity {
+  provider: MatrixSigningIdentityProvider;
+}
+
 export interface ProvisionedMatrixIdentity {
   serverName: string;
   /** The key that now signs for this identity. */
@@ -33,6 +44,10 @@ export interface ProvisionedMatrixIdentity {
   storageId: string;
   /** `true` when this call created the key set, `false` when it read an existing one. */
   created: boolean;
+}
+
+export interface MatrixSigningIdentityInDbInput extends ProvisionMatrixSigningIdentityInput {
+  db: MatrixSigningKeyChannelDb;
 }
 
 export interface ProvisionMatrixSigningIdentityInput {
@@ -46,10 +61,8 @@ export interface ProvisionMatrixSigningIdentityInput {
   keyRefreshMs?: number;
 }
 
-/** Provision into an already-built Pod database. */
-export async function provisionMatrixSigningIdentityWithDb(
-  input: ProvisionMatrixSigningIdentityInput & { db: MatrixSigningKeyChannelDb },
-): Promise<ProvisionedMatrixIdentity> {
+/** Provision into an already-built Pod database and keep the provider that signs with it. */
+export async function matrixSigningIdentityInPodDb(input: MatrixSigningIdentityInDbInput): Promise<MatrixSigningIdentityResult> {
   if (!input.serverName.trim()) throw new Error('A Matrix signing identity needs a server name');
   const channel = createPodSigningKeyChannel({ db: input.db, serverName: input.serverName, now: input.now });
   const created = (await channel.read()) === undefined;
@@ -58,18 +71,20 @@ export async function provisionMatrixSigningIdentityWithDb(
     context: signingKeySecretContext(input.serverName, input.ownerWebId),
     channel,
   });
-  const identity = await new MatrixSigningIdentityProvider({
+  const provider = new MatrixSigningIdentityProvider({
     store,
     serverName: input.serverName,
     ...(input.now === undefined ? {} : { now: input.now }),
     ...(input.retentionMs === undefined ? {} : { retentionMs: input.retentionMs }),
     ...(input.keyRefreshMs === undefined ? {} : { keyRefreshMs: input.keyRefreshMs }),
-  }).identity();
+  });
+  const identity = await provider.identity();
   return {
     serverName: input.serverName,
     keyId: identity.keyId,
     storageId: matrixSigningKeyStorageId(input.serverName),
     created,
+    provider,
   };
 }
 
@@ -79,19 +94,41 @@ export async function provisionMatrixSigningIdentityWithDb(
  * A deployment that holds no access to the identity's Pod cannot mint its key, and is
  * refused rather than given somewhere else to put it.
  */
-export async function provisionMatrixSigningIdentity(
+export async function matrixSigningIdentityForPod(
   input: ProvisionMatrixSigningIdentityInput & {
     podAccess: PodAccessFetchProvider;
     context?: PodAccessRequestContext;
   },
-): Promise<ProvisionedMatrixIdentity> {
+): Promise<MatrixSigningIdentityResult> {
   const db = await createPodSigningKeyDb({
     podAccess: input.podAccess,
     owner: input.ownerWebId,
     podUrl: input.podUrl,
     ...(input.context === undefined ? {} : { context: input.context }),
   });
-  return provisionMatrixSigningIdentityWithDb({ ...input, db });
+  return matrixSigningIdentityInPodDb({ ...input, db });
+}
+
+/** Provision into an already-built Pod database; the provider is the caller's to keep. */
+export async function provisionMatrixSigningIdentityWithDb(
+  input: MatrixSigningIdentityInDbInput,
+): Promise<ProvisionedMatrixIdentity> {
+  return withoutProvider(await matrixSigningIdentityInPodDb(input));
+}
+
+/** Provision in the participant's own Pod. */
+export async function provisionMatrixSigningIdentity(
+  input: ProvisionMatrixSigningIdentityInput & {
+    podAccess: PodAccessFetchProvider;
+    context?: PodAccessRequestContext;
+  },
+): Promise<ProvisionedMatrixIdentity> {
+  return withoutProvider(await matrixSigningIdentityForPod(input));
+}
+
+function withoutProvider(result: MatrixSigningIdentityResult): ProvisionedMatrixIdentity {
+  const { provider: _provider, ...identity } = result;
+  return identity;
 }
 
 /**

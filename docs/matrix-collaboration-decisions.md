@@ -110,10 +110,13 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   仍然缺的只有一件，且它本来就是另一个问题：**远端成员的 WebID**——收到的事件 `senderWebId`
   必须为空，因为 MXID 的 localpart 是 `u_sha256(WebID)`，不可反推；它的承载位置同样是房间成员记录
   （由对方的可验证绑定提供），不是全局用户表。
-- **待确认**：`identityBinding.ts`（含 7 项测试）在"房间就是索引"下**已无消费方**——路由与签名都不
-  依赖它，Pod 迁移的版本/确认也由房间成员记录 + WebID→Pod 查询覆盖。按"同一事实不留第二份副本"
-  应当删除；若你认为它另有用途（例如跨设备读取"我选了哪个 Pod"），请指出唯一消费方，否则它只是
-  第二份事实。**在确认前保留，不接任何存储。**
+- **待确认（2026-09-27 收窄到一个具体消费方）**：`identityBinding.ts`（含 7 项测试）在"房间就是索引"
+  下**没有消费方**——路由与签名都不依赖它，Pod 迁移的版本/确认也由房间成员记录 + WebID→Pod 查询覆盖。
+  唯一能想到的真实用途是**多 Pod 参与者**：一个 WebID 注册了多个 Pod 时，"哪一份 Pod 存着他的
+  签名密钥"是既有事实，而它推不出来（见下条策略为此拒绝供给）。因此三选一：① 删除（多 Pod 参与者
+  就固定用部署身份，行为已文档化）；② 把这个事实收窄成"server name → 存放密钥的 Pod"一条最小记录
+  并接存储；③ 改成在**部署侧**（而不是用户 Pod）记这条对应关系，避免写进用户数据。**确认前保留、
+  不接存储。**
 - **已定（2026-09-27，用户答复"进 room 的时候给"，并按 MXID 的性质收口为"不得晚于第一次命名"）**：
   **供给必须发生在本部署第一次"命名"该参与者之前**。原因不是策略偏好而是协议事实：MXID 是
   Matrix 里唯一的用户标识（事件的 `sender`、成员 state_key、power level、invite 都只能写 MXID），
@@ -137,6 +140,24 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   参与者自己的 server、不服务他时保持部署名、create 前供给使 room id 与 create 事件由该 server 命名
   并验签、join 前供给并传 target Pod、已加入/发送/离开不写第二份成员事件、供给失败不落任何事件、
   无钩子行为不变）。
+- **已落地**（2026-09-27）：**供给真正接上了运行部署**。新增 `podParticipantIdentity.ts`
+  （`createPodParticipantIdentityProvider`）做"选哪个 Pod、什么时候不供给"的判定，容器在
+  `matrixParticipantIdentity` 里用 `matrixSigningIdentityForPod`（根密钥封存 + 该参与者自己的
+  Pod 授权）把它接上，并只在本部署**自己也能签**（存在 `matrixServiceIdentity`）时启用——否则未被
+  供给的参与者会回落到一个签不了的部署名，写入会被拒。判定规则与理由：
+  - **只用注册在该 WebID 名下的 Pod**，绝不用"本次请求写入的 Pod"：共享房间 Pod 属于别人，
+    私钥不进别人的 Pod；
+  - **注册了多个 Pod 时拒绝猜**（记 warn 并保持部署身份）：给同一个 server name 造出第二把 key set
+    会让该名字的签名变得有二义，宁可不供给；
+  - **已经能签就直接返回**（不读 Pod、不铸造），所以第一次之后零成本；
+  - 供给失败**向上抛**（写入失败），不把参与者悄悄挂到别的身份下。
+  测试 `tests/api/matrix/podParticipantIdentity.test.ts` 7 项（用注册的 Pod 供给并注册 server name、
+  已能签则短路、无 Pod 时不供给、多 Pod 拒绝猜、同一 Pod 重复登记视为一个、WebID 无可用 host 时跳过、
+  失败向上抛）。
+- **已落地**（2026-09-27）：**server name 的语法与推导收进一处**（`protocol/serverName.ts`：
+  `isMatrixServerName`、`splitServerName`、`webIdServerName`）。此前 `PodMatrixStore` 里另有一份
+  "WebID 的 host"实现，现在 store、key 拉取、请求认证、域名解析四处共用同一份判定，
+  "这个 WebID 属于哪个 server"只有一个答案。测试 `tests/api/matrix/protocol/serverName.test.ts` 4 项。
 - **待建（阻塞已解除）**：**入站 federation 的路由归属**。`PUT /_matrix/federation/v1/send/{txnId}`
   没有 Pod 路径段，而按"数据在各自 Pod"，收到的事件写进**目标 server name 对应参与者自己的 Pod**。
   按上面第 1 条，`destination name → 参与者`不再需要绑定记录：用 PDU 的 `room_id` 找到房间，

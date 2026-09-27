@@ -25,6 +25,7 @@ import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type
 import { roomGraphPosition, type RoomGraphEvent } from './protocol/roomGraph';
 import { MatrixRoomState, MatrixRoomStateReplay, resolveRoomState } from './roomState';
 import { SUPPORTED_ROOM_VERSION } from './protocol/authRules';
+import { webIdServerName } from './protocol/serverName';
 import type { MatrixSigningIdentitySource } from './identityRegistry';
 import { computeEventId, EventIntegrityError } from './protocol/eventIntegrity';
 import type { MatrixServiceIdentity } from './protocol/serviceIdentity';
@@ -150,15 +151,6 @@ export interface MatrixAgentGrant {
 
 /** How many rooms keep a replay to answer repeat reads and extend on append. */
 const STATE_CACHE_LIMIT = 64;
-
-/** The host of a WebID, which is what a participant's server name is derived from. */
-function webIdHost(webId: string): string | undefined {
-  try {
-    return new URL(webId).host || undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /** A plain object, as JSON fields must be. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1592,7 +1584,7 @@ export class PodMatrixStore {
    * fallback for everyone this deployment serves under one identity.
    */
   private getServerName(context: MatrixStoreContext): string {
-    const host = webIdHost(context.webId);
+    const host = webIdServerName(context.webId);
     if (host && (this.identities?.serverNames?.() ?? []).includes(host)) return host;
     if (this.serverName) return this.serverName;
     return host ?? 'localhost';

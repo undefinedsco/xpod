@@ -22,22 +22,10 @@
  * Without that check a MITM could hand us its own keys for somebody else's name.
  */
 import { decodeVerifyKey, redactEvent, verifyJson } from '../protocol/eventIntegrity';
+import { isMatrixServerName } from '../protocol/serverName';
 
 /** Servers must use the lesser of the published validity and seven days. */
 export const MAX_SERVER_KEY_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
- * Whether a string can be a Matrix server name: a hostname or bracketed IP literal,
- * optionally with a port. Server names come from peer-supplied data and get resolved
- * to endpoints, so anything that could point somewhere else (`/`, `@`, whitespace,
- * credentials, fragments) is refused before use.
- */
-export function isMatrixServerName(value: string): boolean {
-  const match = /^(?<host>\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*)(?::(?<port>\d{1,5}))?$/u.exec(value);
-  if (!match?.groups) return false;
-  const port = match.groups.port;
-  return port === undefined || (Number(port) >= 1 && Number(port) <= 65535);
-}
 
 export interface MatrixServerKeys {
   serverName: string;

@@ -319,6 +319,10 @@ export interface ApiContainerCradle {
   inngestTaskScheduler: InngestTaskScheduler<StoreContext>;
   chatKitService: ChatKitService<StoreContext>;
   matrixServiceIdentity: import('../matrix/protocol/serviceIdentity').MatrixServiceIdentity | undefined;
+  /** Signing identities by server name, shared by the store and participant provisioning. */
+  matrixSigningIdentities: import('../matrix/identityRegistry').MatrixSigningIdentityRegistry;
+  /** Supplies a participant's own identity from their own Pod; absent disables it. */
+  matrixParticipantIdentity: import('../matrix/PodMatrixStore').MatrixParticipantIdentityProvider | undefined;
   matrixStore: PodMatrixStore;
   clientReconcilerCoordinator: ClientReconcilerCoordinator;
   serverGroupReconcilerService: ServerGroupReconcilerService;

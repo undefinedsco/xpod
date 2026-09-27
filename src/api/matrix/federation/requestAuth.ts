@@ -29,7 +29,8 @@
  * request to compare against, so no second window is applied here.
  */
 import { signJson, verifyJson, decodeVerifyKey } from '../protocol/eventIntegrity';
-import { isMatrixServerName, type MatrixServerKeySource } from './serverKeys';
+import { isMatrixServerName } from '../protocol/serverName';
+import type { MatrixServerKeySource } from './serverKeys';
 
 export interface XMatrixAuthorization {
   /** Server name that claims to have sent the request. */

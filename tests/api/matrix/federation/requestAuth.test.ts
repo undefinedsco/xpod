@@ -7,7 +7,6 @@ import {
   xMatrixSignedObject,
 } from '../../../../src/api/matrix/federation/requestAuth';
 import {
-  isMatrixServerName,
   parseServerKeyResponse,
   type MatrixServerKeySource,
 } from '../../../../src/api/matrix/federation/serverKeys';
@@ -144,19 +143,5 @@ describe('X-Matrix request authentication', () => {
     expect(parseXMatrixAuthorization('X-Matrix origin="a.example",key="k"')).toBeUndefined();
     expect(parseXMatrixAuthorization('X-Matrix origin="unterminated,key="k",sig="s"')).toBeUndefined();
     expect(parseXMatrixAuthorization('X-Matrix origin="a.example",key="k",sig')).toBeUndefined();
-  });
-});
-
-describe('server names', () => {
-  it('accepts hostnames, IP literals and ports', () => {
-    for (const name of [ 'example.com', 'a.b.c.example', 'localhost', 'EXAMPLE.com', '[::1]', 'example.com:8448', '[2001:db8::1]:443' ]) {
-      expect(isMatrixServerName(name), name).toBe(true);
-    }
-  });
-
-  it('refuses names that could steer a request elsewhere', () => {
-    for (const name of [ '', 'example.com/path', 'user@example.com', 'example.com?x=1', 'example.com#f', 'exa mple.com', '-bad.example', 'example.com:0', 'example.com:99999', 'example.com:abc', 'a..b' ]) {
-      expect(isMatrixServerName(name), name).toBe(false);
-    }
   });
 });

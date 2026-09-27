@@ -26,7 +26,7 @@
  * an hour and back off exponentially while failures repeat. SRV answers are left to the
  * DNS resolver's own cache.
  */
-import { isMatrixServerName } from './serverKeys';
+import { isMatrixServerName, splitServerName } from '../protocol/serverName';
 
 export const DEFAULT_WELL_KNOWN_CACHE_MS = 24 * 60 * 60 * 1000;
 export const MAX_WELL_KNOWN_CACHE_MS = 48 * 60 * 60 * 1000;
@@ -253,14 +253,6 @@ export function selectSrvRecord(records: readonly MatrixSrvRecord[], random: () 
     if (target < 0) return record;
   }
   return candidates[candidates.length - 1];
-}
-
-/** Split `host[:port]`; the host is returned without brackets, ports as numbers. */
-export function splitServerName(serverName: string): { host: string; port?: number } {
-  const match = /^(?<host>\[[0-9A-Fa-f:.]+\]|[^:]+)(?::(?<port>\d+))?$/u.exec(serverName);
-  const rawHost = match?.groups?.host ?? serverName;
-  const port = match?.groups?.port;
-  return { host: stripBrackets(rawHost), ...(port === undefined ? {} : { port: Number(port) }) };
 }
 
 function readMaxAge(cacheControl: string | null): number | 'no-store' | undefined {
