@@ -109,7 +109,8 @@ HTTP 跳转；**唯一的测试替身是"缺依赖事件如何送到对端"**—
 
 | 验证 | 结果 |
 | --- | --- |
-| `tests/api/matrix/federation/twoDeployment.test.ts` 4 项 | 通过：房间状态与邀请跨 Pod 送达且被授权；Bob 在 B 上加入、其加入事件由 `bob.example` 签名、A 原样保存；Alice 的消息以**相同 event_id** 落到 B；**重放事务返回首次响应且不写第二次**；未服务的目的地 403、未知签名 401、非 JSON 400；缺依赖的 PDU 报 error 且不落库 |
+| `tests/api/matrix/federation/twoDeployment.test.ts` 9 项 | 通过：房间状态与邀请跨 Pod 送达且被授权；Bob 在 B 上加入、其加入事件由 `bob.example` 签名、A 原样保存；Alice 的消息以**相同 event_id** 落到 B；**重放事务返回首次响应且不写第二次**；未服务的目的地 403、未知签名 401、非 JSON 400；缺依赖的 PDU 报 error 且不落库 |
+| 对端不可达与恢复（同文件 2 项） | 通过：断网期间的写入**不等投递**（写入返回时对端一条都没有）；整批留在队列里（3 条 PDU 不被拆散）；再次尝试**复用同一 txnId**、`attempts` 递增、`lastReason` 记不可达；恢复后这条事务送达且 3 条消息**恰好一次**、顺序与写入一致、两侧 event_id 集合相同；**队首未被应答时后面的批次不越队**（`deferred` 只提队首），恢复后仍按写入顺序到达 |
 | `tests/api/matrix/federation/inboundRoute.test.ts` 8 项 | 通过：接受已知服务器签名的整笔事务并逐条报告、未知密钥拒绝、未服务目的地 403、非 JSON/非对象 400、超 50 PDU 拒绝、body origin 与签名 origin 不一致拒绝、处理中返回可重试 503、事务 id 从路径解析（含 URL 编码） |
 | 接收方可见性（`PodMatrixStore.materializeReceivedRoom`） | 通过：收到的事件若属于本 Pod 尚未记录的房间，会**按事件本身**补出房间记录（room id 用对端 id、author 用 create 事件的 sender，**绝不写成 Pod 所有者**），因此邀请在接收方可见、也能被加入 |
 
@@ -119,7 +120,7 @@ HTTP 跳转；**唯一的测试替身是"缺依赖事件如何送到对端"**—
 | --- | --- |
 | 两个独立部署、两种身份、两个 Pod | **已取得模块级证据**（上表）；真实 HTTP/TLS 跳转与部署级 Pod 授权（谁有权读写哪个 Pod）仍未验证 |
 | 协议身份一致 | **已取得模块级证据**：同一 room_id 与 event_id 跨两个 Pod 一致，接收副本按推导 id 保存 |
-| 传输与落盘恢复 | 部分：事务重放与去重已证；**逐条拒绝后的重发已落地并端到端验证**（邀请先被拒、依赖到达后自动重发成功）；接收方主动补取（`/event_auth` + `/get_missing_events` 两半）已落地并端到端验证；**出站队列已由调度器驱动、随 API server 启停，并被写入本身触发**（端到端：一次写入无需任何手工 flush 即到达对端 Pod）；投递记录落控制 Pod 仍待做 |
+| 传输与落盘恢复 | 部分：事务重放与去重已证；**逐条拒绝后的重发已落地并端到端验证**（邀请先被拒、依赖到达后自动重发成功）；接收方主动补取（`/event_auth` + `/get_missing_events` 两半）已落地并端到端验证；**出站队列已由调度器驱动、随 API server 启停，并被写入本身触发**（端到端：一次写入无需任何手工 flush 即到达对端 Pod）；**断网与恢复已取得模块级证据**（保序、同 txnId 重试、恢复后恰好一次，见上表）；**仍缺**真实 HTTP/TLS 跳转、对端重启后的恢复（接收侧事务存档与投递进度目前是内存实现）、投递记录落控制 Pod |
 | 授权与房间状态 | 已证：非法签名、缺依赖、未知 server 被拒（本表 + `inboundPdu` / `authRules` / `stateResolution` 单测） |
 | Agent 执行归属 | 未做（待决策） |
 | 仅凭 Pod 恢复 | 未做（旧 SQL journal 仍在） |

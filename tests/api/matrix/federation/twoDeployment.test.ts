@@ -131,8 +131,9 @@ function deployment(input: {
     now: () => NOW,
   });
 
+  const outboundStore = new InMemoryMatrixOutboundStore();
   const outbox = new MatrixOutbox({
-    store: new InMemoryMatrixOutboundStore(),
+    store: outboundStore,
     send: async sendInput => await sender.send(sendInput),
     now: () => NOW,
     // Retry a refused PDU on the next flush rather than after a real backoff.
@@ -162,6 +163,7 @@ function deployment(input: {
     registry,
     identities: [ deploymentIdentity, input.participantIdentity ],
     outbox,
+    outboundStore,
     transactions,
     scheduler,
     schedulerErrors,
@@ -459,4 +461,116 @@ describe('two deployments federating one room', () => {
     expect(flush.deferred[0].reason).toMatch(/v11/u);
     expect(flush.abandoned).toEqual([]);
   });
+});
+
+describe('when the other deployment cannot be reached', () => {
+  /** A room on Alice's deployment with Bob joined, handed over the way the first test does it. */
+  async function joinedRoom() {
+    const pair = twoDeployments();
+    const { a, b } = pair;
+    const alice = (await a.store.getAccount(a.context)).userId;
+    const bob = (await b.store.getAccount(b.context)).userId;
+    const room = await a.store.createRoom({}, a.context);
+    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findPdu(a.rows, 'm.room.member', alice) ]) {
+      await a.outbox.enqueue({ scope: a.context.podUrl!, origin: 'alice.example', destination: 'bob.example', pdus: [ pdu ] });
+    }
+    await a.outbox.flush({ scope: a.context.podUrl! });
+    await a.store.inviteUser(room.roomId, bob, a.context);
+    await a.outbox.flush({ scope: a.context.podUrl! });
+    await b.store.joinRoom(room.roomId, b.context);
+    await b.outbox.flush({ scope: b.context.podUrl! });
+    return { ...pair, room, alice, bob };
+  }
+
+  // The harness signs and verifies real events and writes through the real store paths, so these
+  // two do several times the work of the tests above; the budget is for a loaded machine.
+  it('holds the queue, keeps one transaction id, and delivers each event once after recovery', async () => {
+    const { a, b, room } = await joinedRoom();
+    const messagesIn = () => pdusOf(b.rows).filter(event => event.type === 'm.room.message');
+
+    // Bob's deployment stops answering: every request fails at the transport, which is what an
+    // unreachable peer looks like — the peer has not decided anything.
+    const reachable = b.handle;
+    let down = true;
+    b.handle = async request => {
+      if (down) throw new Error('bob.example is unreachable');
+      return await reachable(request);
+    };
+
+    // Three writes while it is down. A write never waits for delivery: the messages are queued
+    // and the caller is done, and none of them has left Alice's Pod yet.
+    const written: string[] = [];
+    for (const body of [ 'one', 'two', 'three' ]) {
+      const sent = await a.store.sendEvent(room.roomId, 'm.room.message', `txn-${body}`, { body }, a.context);
+      written.push(sent.eventId);
+      expect(messagesIn()).toHaveLength(0);
+    }
+
+    // A pass fails and leaves the work in place, as a whole batch: nothing was delivered, so
+    // nothing may be treated as delivered.
+    const failed = await a.outbox.flush({ scope: a.context.podUrl! });
+    expect(failed).toMatchObject({ delivered: [], rejected: [], abandoned: [] });
+    const pending = await a.outboundStore.pending(a.context.podUrl!);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].pdus).toHaveLength(3);
+    const [ { txnId } ] = pending;
+
+    // A second attempt while it is still down reuses the transaction id — the peer dedups on it,
+    // so minting a new one per attempt would make it process the same PDUs twice — and counts up.
+    const again = await a.outbox.flush({ scope: a.context.podUrl! });
+    expect(again.deferred.map(entry => entry.txnId)).toEqual([ txnId ]);
+    const stillPending = await a.outboundStore.pending(a.context.podUrl!);
+    expect(stillPending.map(batch => batch.txnId)).toEqual([ txnId ]);
+    expect(stillPending[0].attempts).toBe(2);
+    expect(stillPending[0].lastReason).toMatch(/unreachable/u);
+    expect(messagesIn()).toHaveLength(0);
+
+    // Recovery: the same transaction goes out and the queue drains.
+    down = false;
+    const recovered = await a.outbox.flush({ scope: a.context.podUrl! });
+    expect(recovered.delivered).toEqual([ txnId ]);
+    expect(await a.outboundStore.pending(a.context.podUrl!)).toEqual([]);
+
+    // Every message arrived exactly once, in the order it was written, with the ids Alice has.
+    const received = messagesIn();
+    expect(received.map(event => String(event.event_id))).toEqual(written);
+    expect(new Set(received.map(event => String(event.event_id))).size).toBe(3);
+    // And the two Pods agree on the room: same events, same ids.
+    const idsIn = (rows: Map<unknown, any[]>) => pdusOf(rows).map(event => String(event.event_id)).sort();
+    expect(idsIn(b.rows)).toEqual(idsIn(a.rows));
+  }, 120_000);
+
+  it('lets nothing overtake a transaction the peer has not answered', async () => {
+    const { a, b, room } = await joinedRoom();
+    const reachable = b.handle;
+    let down = true;
+    b.handle = async request => {
+      if (down) throw new Error('bob.example is unreachable');
+      return await reachable(request);
+    };
+
+    // The first write is attempted (and fails); the two after it are queued behind it.
+    await a.store.sendEvent(room.roomId, 'm.room.message', 'txn-1', { body: 'first' }, a.context);
+    await a.outbox.flush({ scope: a.context.podUrl! });
+    for (const body of [ 'second', 'third' ]) {
+      await a.store.sendEvent(room.roomId, 'm.room.message', `txn-${body}`, { body }, a.context);
+    }
+    const queued = await a.outboundStore.pending(a.context.podUrl!);
+    expect(queued.map(batch => batch.pdus.length)).toEqual([ 1, 2 ]);
+
+    // While the head is unanswered, the batches behind it stay put — they may depend on it, and
+    // the peer has not seen any of it. Serial delivery per destination is what keeps a room's
+    // events applicable in order at the other end.
+    const blocked = await a.outbox.flush({ scope: a.context.podUrl! });
+    expect(blocked.delivered).toEqual([]);
+    expect(blocked.deferred.map(entry => entry.txnId)).toEqual([ queued[0].txnId ]);
+    expect(pdusOf(b.rows).filter(event => event.type === 'm.room.message')).toHaveLength(0);
+
+    down = false;
+    await a.outbox.flush({ scope: a.context.podUrl! });
+    await a.outbox.flush({ scope: a.context.podUrl! });
+    expect(await a.outboundStore.pending(a.context.podUrl!)).toEqual([]);
+    expect(pdusOf(b.rows).filter(event => event.type === 'm.room.message')
+      .map(event => String((event.content as Record<string, unknown>).body))).toEqual([ 'first', 'second', 'third' ]);
+  }, 120_000);
 });
