@@ -61,6 +61,7 @@ export function XpodProductLayout({ product }: XpodProductLayoutProps) {
   return (
     <AppLayout
       className={`xpod-${product}-shell`}
+      navigationLabel="Xpod 工作区导航"
       navigation={
         <div className="flex h-full w-full flex-row items-center px-2 md:min-h-full md:flex-col md:px-0 md:py-4" data-list-navigation>
           <div className="mr-1 shrink-0 md:mb-2 md:ml-2 md:mr-0">

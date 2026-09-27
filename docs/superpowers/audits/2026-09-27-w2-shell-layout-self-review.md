@@ -167,9 +167,11 @@
 | 项 | 状态 | 证据 |
 |---|---|---|
 | W2-DESIGN-01 四入口 + 身份入口 | 已实施 | `global-navigation.ts` 四入口与 §2 标签；`XpodProductLayout` 单组渲染；`global-navigation.test.ts` 锁定顺序/标签/归属/唯一命中；旧五入口测试已改为新契约 |
-| W2-DESIGN-02 页型与条件对象列 | 协议已实施；宽窗导航已采用；对象列与窄窗抽屉待做 | `AppletPageType` + `resolveAppletPanePlan`（经 `src/index.ts` 导出，既有 pane 描述符保留）；`AppLayout` 改为 ≥768px 的 184px 文字导航 + 内容，`sm:` 已从 shell 清空 |
+| W2-DESIGN-02 页型与条件对象列 | 协议与壳层已实施；对象列接入待做 | `AppletPageType` + `resolveAppletPanePlan`（经 `src/index.ts` 导出，既有 pane 描述符保留）；`AppLayout` ≥768px 用 184px 文字导航，<768px 用 48px 任务栏 + 导航抽屉（复用同一棵树，不再用底部 Tab）；`sm:` 已从 shell 清空 |
 | W2-DESIGN-03 §8.3 断点 | 单一来源已建立并用于宽窗切换；1100 对象列与页面级 `sm:`/`lg:` 收敛待做 | `XPOD_LAYOUT_BREAKPOINTS = { narrow: 768, wideObjects: 1100 }`；`AppLayout`/导航按 768 切换（与 Tailwind `md` 对齐）；`packages/extension-sdk/test/app-layout.test.tsx` 断言 184px 断点 |
 | W2-DESIGN-04 §3.3 历史映射核对 | 已实施（目标路由缺口已记录） | `canonical-routes.ts` 修正 `/dashboard/settings`、`/dashboard/services`、`/settings/services`、`/settings/system` → `/settings/runtime`，补 `/dashboard/status`、`/dashboard/runtime` → `/status/overview`、`/dashboard/logs` → `/status/logs`、`/dashboard/rdf` → `/status/index/rdf`；`canonical-routes.test.ts` 覆盖 §3.3 各行并断言目标都落在 shell 拥有的路由族 |
+
+实现状态补充（第三轮）：`AppLayout` 的窄窗分支从 64px 底部栏改为 §8.3 的 48px 顶部任务栏（返回按钮可选、标题、有名称的导航按钮）+ 导航抽屉；抽屉用 shared-ui 的 `DialogContent variant="sheet-left"`，导航树是同一个节点，不复制第二套导航，`XpodProductLayout` 传入抽屉名「Xpod 工作区导航」。对象列（真正集合在 ≥1100px 才出现）仍需由工作区接入 `resolveAppletPanePlan`，属下一轮。
 
 实现状态补充（第二轮）：`AppLayout` 与产品导航按 §8.3 改为 ≥768px 的 184px 文字导航（标签由 `sr-only` 改为可见），紧凑窗口仍保留原任务栏（抽屉待做）；§3.3 映射逐行核对并补齐，`/status/usage/*` 与 `/network/overview` 当前尚无页面，前者暂落概览、后者暂落 `/network`，已在映射表注释与本报告记录，待 W4/W2 建立后再改回。
 
