@@ -226,8 +226,10 @@ store 拒绝"既是会话又是部署干活"的上下文，拿不到 grant 就 4
 
 **传输层（已落地，SNI/Host 缺口补上）**：`federation/federationFetch.ts` 把"连到解析出的地址、但以**被寻址的
 server name** 作 SNI 与 `Host`"做成真正的传输（`fetch` 两者都改不了），出站投递与密钥获取共用同一实例；非 2xx 返回
-Response 而非抛错，只有传输失败才抛。5 项测试（含真实回环往返断言对端看到的 `Host` 就是 server name）。**仍未证**：
-与真实委派对端的真实 TLS 握手（需要真实证书/CA）。
+Response 而非抛错，只有传输失败才抛。5 项测试（含真实回环往返断言对端看到的 `Host` 就是 server name），另有 **2 项真实 TLS 握手测试**
+（`federationTls.test.ts`：证书只覆盖 `alice.example` 时，连回环地址也能握手成功且对端同时从 SNI 与 `Host` 看到
+这个名字；同一张证书下声称 `bob.example` 则**握手被拒**，证明校验按 server name 而非连接地址）。**仍未证**：与公网上
+真实委派对端的一次握手。
 
 **不做联邦发现文档（决定）**：`.well-known/matrix/server` 按用户判断**不实现**——Pod 稀疏，拓扑来自房间成员
 关系网，不需要按 host 做联邦发现；本部署的联邦端点按 server name 自身的主机可达。

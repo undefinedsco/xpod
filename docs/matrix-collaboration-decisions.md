@@ -1048,6 +1048,17 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   404**（`{"error":"Not Found"}`，不是 Matrix 形状的 `M_NOT_FOUND`），说明这些路由在该构建里未注册。因此**本轮工作
   尚未取得真实实例证据**，只有模块级 + 进程内真实 HTTP 证据；要补真实实例验收必须用本分支的构建另起一个栈（细节与
   探测清单见[验收记录](matrix-collaboration-acceptance.md)的"真实实例探测"一节）。
+- **已落地（证据，2026-09-27）**：**委派下的真实 TLS 握手**（`tests/api/matrix/federation/federationTls.test.ts`）。
+  用一张**只覆盖 `alice.example`** 的自签证书起一个真 TLS 服务器，让传输层连**回环地址**、却声称要访问
+  `alice.example`：
+  - 握手成功，且对端**两次**看到这个名字——`SNICallback` 收到 `alice.example`（SNI），`Host` 头也是
+    `alice.example`。这正是规范要求"被委派的 host 必须证明自己代表这个 server name"的方式。
+  - **反例同样成立**：同一张证书、同一个地址、CA 也受信任，但当请求声称的名字是 `bob.example` 时**握手被拒**
+    （错误里带 `bob.example`）。这证明校验是**按 server name** 而不是按连接地址做的——`servername` 一设，
+    Node 的 `checkServerIdentity` 就用它而不是 `host`，于是"证书覆盖谁"与"我们在跟谁说话"是同一件事。
+  - 生产默认**不传 `ca`、也不关校验**（走系统信任库）；`rejectUnauthorized: false` 只是留给"决定与无法验证的
+    对端通信"的部署的开关，默认不接。
+  **仍未证**：与公网上真实委派对端的一次握手（需要真实证书/CA 与一个真实对端）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，
