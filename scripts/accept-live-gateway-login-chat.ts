@@ -779,7 +779,7 @@ async function main(): Promise<void> {
   // attaches after the API answers 403 service_access_missing. This acceptance drives the API
   // directly, so it attaches the account's interface key itself; the Solid session stays in use for
   // the direct Pod reads and writes above.
-  const ownerCredentialFetch = createOwnerCredentialFetch(account);
+  const ownerCredentialFetch = createOwnerCredentialFetch(account, localSolidTransport);
   const client = createXpodAiConnectionsClient({
     webId: account.webId,
     podUrl: account.podUrl,
@@ -909,14 +909,19 @@ async function main(): Promise<void> {
  * exchanges whatever credential the request carries. A DPoP-bound session token cannot be replayed
  * by the API, which is why the host attaches an `sk-` wrapper instead - and why this caller does too.
  */
-function createOwnerCredentialFetch(account: { clientId: string; clientSecret: string }): typeof fetch {
+export function createOwnerCredentialFetch(
+  account: { clientId: string; clientSecret: string },
+  transport: typeof fetch = fetch,
+): typeof fetch {
   const wrapper = `sk-${Buffer.from(`${account.clientId}:${account.clientSecret}`, 'utf8').toString('base64')}`;
   return (input, init) => {
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
     headers.set('authorization', `Bearer ${wrapper}`);
     // A Request body's encoded length can change when it is replayed with a new init object.
     headers.delete('content-length');
-    return fetch(input, { ...init, headers });
+    // The transport keeps canonical Pod/API URLs routed to this runtime; a bare `fetch` would
+    // send them to the node's public entry, which a managed local node need not serve.
+    return transport(input, { ...init, headers });
   };
 }
 
