@@ -158,16 +158,13 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   `isMatrixServerName`、`splitServerName`、`webIdServerName`）。此前 `PodMatrixStore` 里另有一份
   "WebID 的 host"实现，现在 store、key 拉取、请求认证、域名解析四处共用同一份判定，
   "这个 WebID 属于哪个 server"只有一个答案。测试 `tests/api/matrix/protocol/serverName.test.ts` 4 项。
-- **待建（阻塞已解除）**：**入站 federation 的路由归属**。`PUT /_matrix/federation/v1/send/{txnId}`
-  没有 Pod 路径段，而按"数据在各自 Pod"，收到的事件写进**目标 server name 对应参与者自己的 Pod**。
-  按上面第 1 条，`destination name → 参与者`不再需要绑定记录：用 PDU 的 `room_id` 找到房间，
-  在房间成员记录里找 `senderWebId` 的 host 等于 destination 的那个成员，再用既有 WebID → Pod
-  查询得到 Pod，然后 `acceptReceivedEvent`。destination 的判定复用同一能力口径（只接受本部署持有
-  密钥的 server name，否则 401）；能力判定顺手也就拒绝了"替别人收事件"。
-  剩余的真实开放点有两个：① 房间成员记录里**远端成员的 WebID 必须可验证**（对方 join 时带来自证，
-  否则只能按 MXID 记账，路由就退化成"按 MXID 找 Pod"）；② destination 落到**部署名**（旧房间兼容
-  边界）时，一个 server name 下有多位参与者，PDU 该写进哪个 Pod 需要部署级存储策略——这是兼容
-  边界的代价，不阻塞每参与者身份。
+- **已落地（当时记为"待建"，现更正）**：**入站 federation 的路由归属**。当时的方案是"用 PDU 的 `room_id` 找房间、
+  在成员记录里找 `senderWebId` 的 host 等于 destination 的那个成员"；实际落地的方案更简单也更硬：
+  **destination name → 参与者 WebID → 该 WebID 已登记的 Pod**，全部由 `participantRoutes.ts` 派生（不记录绑定），
+  歧义（同名多参与者、同参与者多 Pod）**直接拒绝**。请求侧只接受本部署持有密钥/登记的 server name，否则 403。
+  当时列的两个开放点现状：① **不需要**"远端成员的 WebID 可验证"——路由不看成员记录，只看 destination；
+  ② destination 落到**部署名**（旧房间兼容边界）时不再有"写哪个 Pod"的歧义：部署名不在派生出的服务集合里，
+  因此**拒绝**（403），而不是猜一个 Pod。
   备选（不推荐）：把 Pod 放进路径前缀（协议插件式前缀入口），能立刻绕开这些，但偏离 Matrix 标准
   路由形状，现有 SDK/对端按标准地址打过来会直接 404。
 
@@ -663,11 +660,13 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   自身的状态变化、id 形式、缺 auth 事件如实上报、未知事件无答案、分叉按解析收敛）、客户端 5 项
   （query 与签名一致、多起点、state/state_ids 解析、缺字段重试、拒绝/不可达分类），`authChain.test.ts`
   相应更新为"含被问事件"。
-- **待建**：`PUT /_matrix/federation/v1/send/{txnId}`、`GET /event_auth/...`、`POST /get_missing_events/...`
-  以及成员资格握手的 `GET /make_join`、`PUT /send_join`、`GET /make_leave`、`PUT /send_leave`、`PUT /invite`、
-  `GET /make_knock`、`PUT /send_knock` 十个端点的 **HTTP 外壳与 Pod 归属解析**（十个服务侧都已实现为纯函数/
-  处理体；**剩下的阻塞点仍是路由归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、投递记录与控制 Pod 承载
-  （去 SQL）、状态与历史获取。互通面上还没动的只剩**联邦可发布的资料内容**（展示名/头像要不要发、依据什么词表、是否需要参与者同意——这是个人
+- **已落地（当时记为"待建"，现更正）**：`PUT /_matrix/federation/v1/send/{txnId}`、`GET /event_auth/...`、
+  `POST /get_missing_events/...`、`GET /backfill/...`、`GET /state/...`、`GET /state_ids/...`、成员资格握手七个
+  （`make_join`/`send_join`/`make_leave`/`send_leave`/`invite`/`make_knock`/`send_knock`）、`GET /query/directory`、
+  `GET /query/profile`、`GET /version` 的 **HTTP 外壳都已落地**（`FederationHandler.ts`），Pod 归属由
+  `participantRoutes.ts` 派生；**仍未接的**只有：**通知接成调度器的第二个信号**（后已判定**作废**：收到的事件不转发，
+  Pod 变更不产生出站工作）、**投递记录与控制 Pod 承载**（去 SQL；契约已写出，等 models 侧那张 keyed 记录表）、
+  以及**联邦可发布的资料内容**（个人数据决定，端点已就位）。互通面上还没动的只剩**联邦可发布的资料内容**（展示名/头像要不要发、依据什么词表、是否需要参与者同意——这是个人
   数据决定，端点已经就位等它）。`.well-known/matrix/server` 已按用户 2026-09-27 的判断**否决**（见"已撤销或否决的
   前提"：Pod 稀疏，拓扑来自房间成员关系网，不做按 host 的联邦发现）。
 - **已落地**（2026-09-27）：**逐条拒绝不再等于已投递**（缺口 2 的修复）。事务返回 200 只回答"这笔
@@ -833,8 +832,8 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   - **一次读取给出全集**：`routes()` 从 `listAllPods()` 一次读取推导出全部 (server name → WebID → Pod)，供需要
     整集的调用方（例如"本部署服务哪些参与者"的订阅接线）使用；`route(name)` 是单点问题。WebID 没有可用 host
     的登记被跳过——它不可能是任何人的 server，编一个名字只会得到谁也签不了的归属。
-  - **仍未接线**：HTTP 外壳本身还没接（`handleFederationSend` 需要 `resolveTarget`），以及**用谁的凭据写目标
-    Pod**（部署对参与者 Pod 的服务 grant）——后者是下一格待细化项，不是这一格。
+  - **仍未接线（当时的记录）**：HTTP 外壳本身还没接、以及"用谁的凭据写目标 Pod"。**现状**：外壳已落地（`/send` 与
+    读取端点、握手、查询全部），凭据走部署侧 `service` 上下文（参与者任务层 grant，缺 grant 即 403 点名 Pod）。
   测试：`participantRoutes.test.ts` 7 项（两个参与者各自解析、未知名字与带端口的名字不猜、同一名字两个 WebID
   歧义、同一 WebID 两个 Pod 歧义、多 WebID 登记逐个服务且跳过不可用 WebID、同一个 Pod 登记两次不算歧义、没有
   登记时没有路由），`MatrixOutboundContainer.test.ts` 新增 1 项（有 Pod 注册表时容器里的路由能解析出归一化的
@@ -885,8 +884,9 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
     与 Alice 的一条消息（A→B）**全部经 HTTP**，两侧 `event_id` 集合一致、两个队列都清空；测试还断言"确实发生了
     至少 3 次 A→B 与 1 次 B→A 请求，每次的 `Host` 都是被寻址的 server name"——**这是验收文档里"唯一的测试替身是
     网络这一跳"被去掉的那一步**。
-  - **仍未证**：真实 TLS/SNI（`fetch` 改不了 SNI/Host 的缺口依旧）、grant 的**签发流程**（本轮用的是测试部署
-    已有的会话上下文；生产里要靠参与者给部署的任务层 grant，签发与撤销仍未做）、以及另外九个端点的外壳。
+  - **仍未证（当时的记录）**：真实 TLS/SNI、grant 的签发流程、其余九个端点的外壳。**现状**：TLS/SNI 已由
+    `federationFetch.ts` + 真实握手测试补上；外壳全部落地；**grant 的签发流程仍未做**（机制在
+    `TaskCredentialStore.grant`，缺的是索取时机与界面——见[控制记录契约](matrix-control-records-contract.md) §5.4）。
   测试：`twoDeployment.test.ts` 新增 1 项（上述跨 socket 闭环，180s 预算）；`FederationHandler.test.ts` 新增 1 项
   （`contextFor` 的答案就是 store 收到的上下文）；`tests/api/matrix/storePodAccess.test.ts` 4 项（无会话无 service
   仍然 401 且**不问** Pod 访问器、`service` 以 `taskCredential` 提问且无 grant 时 403 并点名 Pod、
@@ -1094,10 +1094,10 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
     只以一个 server 签名**，需要其中任何一个的调用方要的都是同一个东西。
   测试：`remoteJoinStore.test.ts` 新增 2 项（alias 只向它命名的 server 提问、随后按房间 id 完成远端加入并落库；
   两边都不认识时 404 `alias not found`），共 4 项。
-- **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
-  纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
-  Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，
-  接收侧补取处理"对端还持有依赖"的情况；两者都不覆盖"对端也没有"的缺口（那需要更远的 backfill）。
+- **已落地（当时记为"仍待建"，现更正）**：`/event_auth` 与 `/get_missing_events`（以及 `/state`、`/state_ids`、
+  `/backfill`）的 HTTP 外壳与 Pod 归属解析都已完成，`twoDeployment.test.ts` 里"接收方自己补取 auth chain"也已改成
+  **经 HTTP 调真路由**。发送侧排序与重试、接收侧补取各自覆盖的缺口不变：两者都不覆盖"对端也没有"（那需要更远的
+  backfill，仍待建）。
 
 ## 已撤销或否决的前提
 
