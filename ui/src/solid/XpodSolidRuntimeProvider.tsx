@@ -26,7 +26,11 @@ import {
   type XpodSolidRuntimeCore,
   type XpodSolidRuntimeValue,
 } from './XpodSolidRuntime';
-import { currentHostLocalPodRoutes } from './xpod-local-route';
+import {
+  currentHostLocalPodRoutes,
+  fetchCurrentProvisionRouteStatus,
+  provisionLocalPodRoutes,
+} from './xpod-local-route';
 import { createAccountClientCredentialsCapability } from '../auth/account-client-credentials';
 import {
   createSessionRequestCredential,
@@ -235,6 +239,20 @@ export function XpodSolidRuntimeProvider({
     };
     void (async () => {
       try {
+        // Without a remembered binding the Pod has to be *discovered* by reading
+        // the canonical WebID, and this client reaches that canonical origin only
+        // through a local route. Register the node's routes first, exactly as the
+        // login callback does; with none registered that read leaves for a public
+        // address the node has no ingress on and fails.
+        if (!rememberedBinding) {
+          const provisionStatus = await fetchCurrentProvisionRouteStatus(fetch);
+          if (cancelled) return;
+          if (provisionStatus.storageRoot) {
+            runtime.setLocalPodRoutes?.(
+              provisionLocalPodRoutes(provisionStatus.storageRoot, provisionStatus),
+            );
+          }
+        }
         const opened = await runtime.pod.open(openArgs);
         const localRoutes = await currentHostLocalPodRoutes(opened.podUrl, fetch);
         if (cancelled) return;
