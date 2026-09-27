@@ -278,3 +278,22 @@ state、`/invite` 为我们的用户加签且不读 Pod）。加签用**被寻�
 | 有界同步与权限更新 | 晚到事件不漏，分页稳定，token 和读取工作量有界；普通 ACL/ACR 写入后后续请求不复用旧授权判定 |
 
 LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证据。单 Pod 历史闭环继续作为回归基线，不能替代以上分布式协议准入门禁。
+
+## 真实实例探测（2026-09-27，本机 127.0.0.1:3000）
+
+本机有一个**正在运行的 Xpod Gateway**（进程 `xpod`，监听 3000）。按 AGENTS.md"真实实例验收不可替代"的要求探测了它，
+结论是**它跑的不是本分支的构建**，因此不能用它验收本轮工作：
+
+| 探测 | 结果 | 说明 |
+| --- | --- | --- |
+| `GET /.well-known/matrix/client` | **200** `{"m.homeserver":{"base_url":"https://<hash>.nodes.undefineds.co"}}` | 客户端发现可用，Gateway→API 路由通 |
+| `GET /_matrix/client/versions` | **200**（含 `co.undefineds.matrix.pod_storage`） | 客户端面在运行构建里 |
+| `GET /_matrix/key/v2/server` | **404** `{"error":"Not Found"}` | **API server 自己的 404**（不是 Matrix 形状的 `M_NOT_FOUND`）→ 这条路由在该构建里根本没注册 |
+| `PUT /_matrix/federation/v1/send/txn-1` | **404** 同上 | 联邦路由不存在 |
+| `GET /_matrix/federation/v1/version` | **404** 同上 | 同上 |
+| `GET /.well-known/matrix/server` | **401**（CSS 侧对未知 `.well-known` 路径的响应） | 与"不做联邦发现文档"的决定一致；无需处理 |
+
+**待办**：要取得真实实例证据，需要**用本分支的构建重启一个栈**（不能覆盖用户正在运行的那个）。做法二选一：
+① 用户同意后用本分支重启 3000；② 用独立 env（另一些端口 + 独立数据目录 + 独立凭据，参照
+`SOLID_ENV_FILE=.test-data/integration/lite.env`）起第二个栈，再按上表逐条探测（`/version`、`/key/v2/server` 按名字发布、
+`/send` 无签名 401、`/query/directory` 无签名 401、`/state` 404/401 等）。

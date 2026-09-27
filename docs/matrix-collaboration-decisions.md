@@ -1043,6 +1043,11 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
     信息淹掉；现在按 scope 去重，Pod 不再被服务时忘记该失败（将来重新出现算新消息），成功 watch 时也清掉标记。
   测试：`roomWatchService.test.ts` 新增 1 项（连续对账只报一次、Pod 消失后忘记、重现时再报一次），
   `FederationHandler.test.ts` 26 项在端口收窄后不变。
+- **已探测（2026-09-27）**：本机 3000 上运行的 Xpod Gateway **不是本分支的构建**——`/_matrix/client/*` 与
+  `/.well-known/matrix/client` 正常，但 `/_matrix/key/v2/server` 与全部 `/_matrix/federation/*` 都回 **API server 自己的
+  404**（`{"error":"Not Found"}`，不是 Matrix 形状的 `M_NOT_FOUND`），说明这些路由在该构建里未注册。因此**本轮工作
+  尚未取得真实实例证据**，只有模块级 + 进程内真实 HTTP 证据；要补真实实例验收必须用本分支的构建另起一个栈（细节与
+  探测清单见[验收记录](matrix-collaboration-acceptance.md)的"真实实例探测"一节）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，
