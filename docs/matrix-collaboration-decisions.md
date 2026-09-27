@@ -190,6 +190,9 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
 - 协议事件（含 `hashes`/`signatures`）作为事件本身持久到 Message 的
   `metadata.protocols.matrix.event`；作者 WebID、txnId 等应用簿记留在同一 metadata 的
   其他键上，不进入被签名的对象。已落地（`src/api/matrix/persistedEvent.ts`）。
+  **metadata 不需要"声明"**（用户 2026-09-27 确认）：它是不透明的 JSON 列，把协议事实放进去不产生 models 变更，
+  也不需要为每个键先加 schema；真正需要在 models 声明的，是**成为一等实体或可查询维度**的东西（表、列、可下推的
+  索引字段）。这条同时是"哪些控制记录能先落 Pod、哪些必须先补 models"的判据。
 - 事件在房间 DAG 中的位置（`prev_events` 前向极值点、`auth_events` 授权事件、`depth`）是
   事件的一部分，必须真实写入并签名，不得用占位值：写入 Pod 的事件要能被独立复核，且状态解析
   所需的依赖必须能从同一房间取回。规则与来源见[房间事件图](reference/matrix-room-event-graph.md)。
@@ -663,9 +666,9 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   以及成员资格握手的 `GET /make_join`、`PUT /send_join`、`GET /make_leave`、`PUT /send_leave`、`PUT /invite`、
   `GET /make_knock`、`PUT /send_knock` 十个端点的 **HTTP 外壳与 Pod 归属解析**（十个服务侧都已实现为纯函数/
   处理体；**剩下的阻塞点仍是路由归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、投递记录与控制 Pod 承载
-  （去 SQL）、状态与历史获取。互通面上还没动的只剩：`.well-known/matrix/server` 的**服务侧**（属于部署拓扑：联邦端点是否在隐式 8448 之外，
-  需要部署级配置，不是协议决定）与**联邦可发布的资料内容**（展示名/头像要不要发、依据什么词表、是否需要参与者
-  同意——这是个人数据决定，端点已经就位等它）。
+  （去 SQL）、状态与历史获取。互通面上还没动的只剩**联邦可发布的资料内容**（展示名/头像要不要发、依据什么词表、是否需要参与者同意——这是个人
+  数据决定，端点已经就位等它）。`.well-known/matrix/server` 已按用户 2026-09-27 的判断**否决**（见"已撤销或否决的
+  前提"：Pod 稀疏，拓扑来自房间成员关系网，不做按 host 的联邦发现）。
 - **已落地**（2026-09-27）：**逐条拒绝不再等于已投递**（缺口 2 的修复）。事务返回 200 只回答"这笔
   事务收到了"，不回答"每条 PDU 都被接受了"，所以发送方现在按 per-PDU 结果拆分：被接受的落地即完成，
   被拒的**换一个新 txnId** 重新入队（对端会重放旧 txnId 的存档应答，所以必须换 id），带**有界退避**
@@ -1001,6 +1004,7 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
 | SQL journal 保留为长期权威；用行锁优化代替迁出 | 已确定 Pod 存储归属；SQL 仅在有界迁移阶段存在 |
 | 给 claim/complete 加 fresh 标记就算授权缓存问题已解决 | 当前代码覆盖 agent-wakes 路由，但普通 Matrix 路径仍有旧判定窗口 |
 | 签名身份由部署单一持有（现状实现） | 数据与控制记录都已按 Pod/房间归属，部署不再是 homeserver；部署级身份仅作旧房间兼容边界 |
+| 为每个 server name 发布 `.well-known/matrix/server` 做联邦委派 | 用户 2026-09-27：**Pod 很稀疏，不需要按 host 做联邦发现；拓扑来自房间成员关系网**（成员列表就是"要跟谁说话"的来源）。因此不实现该文档，本部署的联邦端点仍按 server name 自身的主机可达（部署名义的 `/.well-known/matrix/client` 与 `/_matrix/key/v2/server` 已有）。**前提**：WebID 的 host 与承载其 Pod 的部署 host 是同一个；一旦两者分离，"这条 name 由谁承载"会重新成为问题（与房间关系网是两件事） |
 | 参与者 ↔ Pod 归属需要一条 Matrix 自己的绑定记录（`identityBinding.ts` 的方向） | 用户 2026-09-27 质疑"server name 跟 webid 本来不就是一一对应，为什么还要记录"；改为派生（`participantRoutes.ts`），该模块已无消费者，建议连同其 7 项测试删除（**待用户确认**；其中的 Pod 迁移版本/状态机语义仍作为待细化项保留在册） |
 
 ## 待细化的实现事项
@@ -1011,7 +1015,7 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
 | 完整事件与 Solid Chat 表示 | 原始事件验证材料、图关系与 room version 已落地（见[房间事件图](reference/matrix-room-event-graph.md)）；剩余：状态解析与事件授权规则、索引与旧房间迁移；共享 schema 归 models |
 | 传输与落 Pod | 接收持久化、去重、确认、部分投递失败、补发与恢复各自的责任和进度 |
 | 客户端增量 | 有界发现/分页、晚到事件、授权状态变化、token 版本与重建 |
-| 可恢复事务 | 记录寻址、首次结果、载荷保留、发布、回收及未知结果处理 |
+| 可恢复事务 | 记录寻址、首次结果、载荷保留、发布、回收及未知结果处理。**判据已明确**（用户 2026-09-27 的 metadata 澄清）：随实体而生的控制事实（事件本体、投递进度）放进该实体的 `metadata.protocols.matrix` 即可，**不需要 models 声明**；而**自由存在**的控制记录（按 `(origin, txnId)` 归档的事务）需要一个可寻址的资源去承载——那一步才是 models 的 schema 决定，不是"声明 metadata 键" |
 | Agent 执行 | 唯一逻辑触发、执行归属、接替、撤权、工具幂等与分区处理 |
 | 验收 | 两个独立部署/身份/Pod 的真实互通和故障注入，见主设计；原单 Pod 测试只作回归基线 |
 
