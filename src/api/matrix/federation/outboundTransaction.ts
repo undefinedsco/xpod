@@ -85,6 +85,11 @@ export interface MembershipTemplateOutcome extends FederationCallOutcome {
   event?: Record<string, unknown>;
 }
 
+/** What an `/invite` request produced: the invite event with the invited server's signature. */
+export interface SendInviteOutcome extends FederationCallOutcome {
+  event?: Record<string, unknown>;
+}
+
 /** What a `/send_join` request produced: the room, and the join event as it was accepted. */
 export interface SendJoinOutcome extends FederationCallOutcome {
   /** The room's resolved state *before* the join. */
@@ -421,6 +426,49 @@ export class MatrixFederationClient {
     const result = await this.execute({ destination: input.destination, method: 'PUT', uri, content: input.event });
     if (result.status !== 'ok') return result;
     return { status: 'ok', reason: 'ok' };
+  }
+
+  /**
+   * Ask a peer to sign an invite for one of its users (`PUT /invite`, v2).
+   *
+   * The body is a container — `{room_version, event, invite_room_state?}` — rather than the bare
+   * event, and the answer is the same event with the invited server's signature added. Its
+   * signature is the reason the request was made, and the caller still has to verify it against
+   * that server's keys before the invite goes out to the room (this client holds no key source);
+   * a 200 without a usable event, or without that server's signature on it, is answered as worth
+   * retrying, and an event that is not the one submitted as a refusal.
+   */
+  public async sendInvite(input: {
+    destination: string;
+    roomId: string;
+    eventId: string;
+    event: Record<string, unknown>;
+    /** The room version the invite is for; the version this deployment implements by default. */
+    roomVersion?: string;
+    /** Stripped state to help the invited server's user identify the room. */
+    inviteRoomState?: Record<string, unknown>[];
+  }): Promise<SendInviteOutcome> {
+    const content: Record<string, unknown> = {
+      room_version: input.roomVersion ?? SUPPORTED_ROOM_VERSION,
+      event: input.event,
+    };
+    // An empty list would be a field the peer has to interpret for nothing.
+    if (input.inviteRoomState && input.inviteRoomState.length > 0) content.invite_room_state = [ ...input.inviteRoomState ];
+    const uri = `/_matrix/federation/v2/invite/${encodeURIComponent(input.roomId)}/${encodeURIComponent(input.eventId)}`;
+    const result = await this.execute({ destination: input.destination, method: 'PUT', uri, content });
+    if (result.status !== 'ok') return result;
+
+    const event = isRecord(result.body) ? result.body.event : undefined;
+    if (!isRecord(event)) return { status: 'retry', reason: 'destination answered 200 without the signed invite event' };
+    const id = derivedEventId(event);
+    if (id !== input.eventId) {
+      return { status: 'rejected', reason: `destination signed ${id ?? 'an unusable'} invite event, not ${input.eventId}` };
+    }
+    const signatures = isRecord(event.signatures) ? event.signatures : undefined;
+    if (!isRecord(signatures?.[input.destination])) {
+      return { status: 'retry', reason: `destination answered 200 without its own signature on the invite` };
+    }
+    return { status: 'ok', event, reason: 'ok' };
   }
 
   /** Both templates are the same request shape with a different endpoint and expected membership. */

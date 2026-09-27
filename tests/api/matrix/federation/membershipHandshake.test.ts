@@ -352,3 +352,113 @@ describe('accepting a submitted join or leave', () => {
     expect(room.events.length).toBe(5);
   });
 });
+
+describe('accepting a submitted invite', () => {
+  const INVITED = `@u_carol:${REMOTE}`;
+  const INVITER = `@u_alice:${ALICE_SERVER}`;
+
+  /** The invite the inviting server built: a membership event for a user of ours. */
+  const inviteFor = (alice: ReturnType<typeof deployment>) => alice.sign({
+    room_id: ROOM, type: 'm.room.member', sender: INVITER, state_key: INVITED, origin: ALICE_SERVER,
+    origin_server_ts: NOW - 1_000, content: { membership: 'invite' }, depth: 6,
+    prev_events: [ '$prev' ], auth_events: [ '$create', '$alice' ],
+  });
+
+  async function submitInvite(options: {
+    /** Build the invite with the inviting server's identity; the default is a valid one. */
+    build?: (alice: ReturnType<typeof deployment>) => Record<string, unknown>;
+    eventId?: string;
+    roomVersion?: string;
+    inviteRoomState?: unknown;
+    counterSign?: boolean;
+    /** Whose keys the invited server holds: the real sender's, or its own (a forged sender). */
+    signature?: 'sender' | 'ours';
+  } = {}) {
+    const alice = deployment(ALICE_SERVER);
+    const event = options.build ? options.build(alice) : inviteFor(alice);
+    // Our deployment adds the second signature; the first is verified against whoever signed it.
+    const ours = deployment(REMOTE);
+    const keysFor = options.signature === 'ours' ? ours : alice;
+    return await handleMembershipSubmission({
+      membership: 'invite',
+      roomId: ROOM,
+      eventId: options.eventId ?? computeEventId(event),
+      event,
+      origin: ALICE_SERVER,
+      serverName: REMOTE,
+      roomVersion: options.roomVersion ?? '11',
+      keys: keysFor.source,
+      ...(options.inviteRoomState === undefined ? {} : { inviteRoomState: options.inviteRoomState }),
+      ...(options.counterSign === false ? {} : { counterSign: ours.identity }),
+      now: () => NOW,
+    });
+  }
+
+  it('adds this server\'s signature and answers with the event alone', async () => {
+    let invited: Record<string, unknown> = {};
+    const answer = await submitInvite({ build: alice => (invited = inviteFor(alice)) });
+
+    expect(answer.status).toBe(200);
+    const accepted = answer.body.event as Record<string, unknown>;
+    expect(computeEventId(accepted)).toBe(computeEventId(invited));
+    expect(Object.keys(accepted.signatures as Record<string, unknown>).sort()).toEqual([ ALICE_SERVER, REMOTE ]);
+    // Nothing to show state for: the invited server does not know the room.
+    expect('state' in answer.body).toBe(false);
+    expect('auth_chain' in answer.body).toBe(false);
+    expect(answer.warnings).toBeUndefined();
+  });
+
+  it('refuses an invite for somebody who is not one of its users', async () => {
+    const answer = await submitInvite({ build: alice => ({ ...inviteFor(alice), state_key: `@u_dave:${ALICE_SERVER}` }) });
+    expect(answer.status).toBe(400);
+    expect(answer.body).toMatchObject({ errcode: 'M_INVALID_PARAM' });
+    expect(String(answer.body.error)).toMatch(/not a user of remote\.example/u);
+  });
+
+  it('refuses an invite that is not a signed invite for a user of the sender', async () => {
+    const wrongType = await submitInvite({ build: alice => ({ ...inviteFor(alice), type: 'm.room.name' }) });
+    expect(String(wrongType.body.error)).toMatch(/m\.room\.member/u);
+
+    const wrongMembership = await submitInvite({ build: alice => ({ ...inviteFor(alice), content: { membership: 'join' } }) });
+    expect(String(wrongMembership.body.error)).toMatch(/membership is join/u);
+
+    const forged = await submitInvite({ signature: 'ours' });
+    expect(forged.status).toBe(400);
+    expect(String(forged.body.error)).toMatch(/v11-2/u);
+
+    const wrongId = await submitInvite({ eventId: '$not-this-event' });
+    expect(String(wrongId.body.error)).toMatch(/request path/u);
+  });
+
+  it('cannot verify an event for a room version it does not implement', async () => {
+    const answer = await submitInvite({ roomVersion: '10' });
+    expect(answer.status).toBe(400);
+    expect(answer.body).toMatchObject({ errcode: 'M_INCOMPATIBLE_ROOM_VERSION', room_version: '10' });
+  });
+
+  it('will not answer an invite it cannot sign', async () => {
+    const answer = await submitInvite({ counterSign: false });
+    expect(answer.status).toBe(500);
+    expect(String(answer.body.error)).toMatch(/no signing identity/u);
+  });
+
+  it('reports invite_room_state problems instead of refusing the invite', async () => {
+    const create = { type: 'm.room.create', state_key: '', sender: INVITER, content: { room_version: '11' } };
+    const complete = await submitInvite({ inviteRoomState: [ create, { type: 'm.room.name', state_key: '', sender: INVITER, content: { name: 'Room' } } ] });
+    expect(complete.status).toBe(200);
+    expect(complete.warnings).toBeUndefined();
+
+    // Matrix 1.16 requires the create event; for room version 11 the specification says to warn.
+    const noCreate = await submitInvite({ inviteRoomState: [ { type: 'm.room.name', state_key: '', sender: INVITER, content: { name: 'Room' } } ] });
+    expect(noCreate.status).toBe(200);
+    expect(noCreate.warnings).toEqual([ expect.stringMatching(/create event/u) ]);
+
+    const malformed = await submitInvite({ inviteRoomState: [ create, { type: 'm.room.name' }, 'nonsense' ] });
+    expect(malformed.status).toBe(200);
+    expect(malformed.warnings).toHaveLength(2);
+
+    const notAList = await submitInvite({ inviteRoomState: { type: 'm.room.create' } });
+    expect(notAList.status).toBe(200);
+    expect(notAList.warnings).toEqual([ expect.stringMatching(/not an array/u) ]);
+  });
+});

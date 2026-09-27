@@ -580,3 +580,70 @@ describe('the join and leave handshake', () => {
     expect(captured[0].body).toEqual(leave);
   });
 });
+
+describe('asking a peer to sign an invite', () => {
+  const ROOM = '!r:remote.example';
+  const SENDER = `@u_us:${US}`;
+  const INVITED = `@u_them:${THEM}`;
+  const invite = () => ({
+    room_id: ROOM, type: 'm.room.member', sender: SENDER, state_key: INVITED, origin: US, origin_server_ts: NOW,
+    content: { membership: 'invite' }, depth: 4, prev_events: [ '$prev' ], auth_events: [ '$create' ],
+  });
+  const inviteId = () => computeEventId(invite());
+  const createState = { type: 'm.room.create', state_key: '', sender: SENDER, content: { room_version: '11' } };
+  /** The same event with the invited server's signature on it. */
+  const signedByThem = () => ({ ...invite(), event_id: inviteId(), signatures: { [THEM]: { 'ed25519:1': 'sig' } } });
+
+  it('sends the container the specification asks for, and reads the signed event back', async () => {
+    const { client: instance, captured, identity } = client({
+      respond: () => new Response(JSON.stringify({ event: signedByThem() }), { status: 200 }),
+    });
+    const outcome = await instance.sendInvite({
+      destination: THEM, roomId: ROOM, eventId: inviteId(), event: invite(), inviteRoomState: [ createState ],
+    });
+
+    expect(outcome.status).toBe('ok');
+    expect(outcome.event).toMatchObject({ event_id: inviteId(), signatures: { [THEM]: { 'ed25519:1': 'sig' } } });
+
+    const [ sent ] = captured;
+    const uri = `/_matrix/federation/v2/invite/${encodeURIComponent(ROOM)}/${encodeURIComponent(inviteId())}`;
+    expect(sent.method).toBe('PUT');
+    expect(sent.url).toBe(`https://${THEM}:8448${uri}`);
+    // Not the bare event: `/invite` wraps it with the room version and the display state.
+    expect(sent.body).toEqual({ room_version: '11', event: invite(), invite_room_state: [ createState ] });
+    // The signature covers the container that is actually sent.
+    await expect(authenticateXMatrixRequest({
+      authorization: sent.headers.authorization, method: 'PUT', uri, content: sent.body, keys: peerKeySource(identity), serverName: THEM,
+    })).resolves.toMatchObject({ valid: true, origin: US });
+  });
+
+  it('omits the display state when there is none, and keeps the version the caller named', async () => {
+    const { client: instance, captured } = client({ respond: () => new Response(JSON.stringify({ event: signedByThem() }), { status: 200 }) });
+    await instance.sendInvite({
+      destination: THEM, roomId: ROOM, eventId: inviteId(), event: invite(), roomVersion: '10', inviteRoomState: [],
+    });
+    // An empty list would be a field the peer has to interpret for nothing.
+    expect('invite_room_state' in captured[0].body).toBe(false);
+    expect(captured[0].body.room_version).toBe('10');
+  });
+
+  it('will not take an answer that is unsigned, unreadable or about another event', async () => {
+    // The signature is the reason for the request: without it there is nothing to use.
+    const unsigned = client({ respond: () => new Response(JSON.stringify({ event: { ...invite(), event_id: inviteId() } }), { status: 200 }) });
+    await expect(unsigned.client.sendInvite({ destination: THEM, roomId: ROOM, eventId: inviteId(), event: invite() }))
+      .resolves.toMatchObject({ status: 'retry', reason: expect.stringMatching(/without its own signature/u) });
+
+    const unreadable = client({ respond: () => new Response('{}', { status: 200 }) });
+    await expect(unreadable.client.sendInvite({ destination: THEM, roomId: ROOM, eventId: inviteId(), event: invite() }))
+      .resolves.toMatchObject({ status: 'retry' });
+
+    const other = { ...signedByThem(), depth: 9 };
+    const elsewhere = client({ respond: () => new Response(JSON.stringify({ event: other }), { status: 200 }) });
+    await expect(elsewhere.client.sendInvite({ destination: THEM, roomId: ROOM, eventId: inviteId(), event: invite() }))
+      .resolves.toMatchObject({ status: 'rejected', reason: expect.stringMatching(/not \$/u) });
+
+    const refused = client({ respond: () => new Response(JSON.stringify({ errcode: 'M_FORBIDDEN' }), { status: 403 }) });
+    await expect(refused.client.sendInvite({ destination: THEM, roomId: ROOM, eventId: inviteId(), event: invite() }))
+      .resolves.toMatchObject({ status: 'rejected' });
+  });
+});

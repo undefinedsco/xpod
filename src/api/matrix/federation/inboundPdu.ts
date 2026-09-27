@@ -16,6 +16,11 @@
  * dependency gap to fill before it can judge the event), and nothing here writes to a
  * Pod — persisting what was accepted is the caller's step.
  *
+ * Steps 1–3 are also exported on their own (`verifyInboundPdu`), because `/invite` needs exactly
+ * them and not step 4: the invited server usually does not know the room, so it cannot judge the
+ * invite's authorisation — the room's own servers do that when the invite reaches them in a
+ * transaction.
+ *
  * The event id is derived from the received event (room v11: the reference hash), so a
  * caller can use it for de-duplication without trusting the sender for an id.
  */
@@ -26,12 +31,14 @@ import {
   encodeUnpaddedBase64,
   redactEvent,
 } from '../protocol/eventIntegrity';
+import { eventReferenceIds } from '../protocol/eventReferences';
 import { verifyRemoteEventSignature, type MatrixServerKeySource } from './serverKeys';
 
 export type InboundPduOutcome = 'accepted' | 'rejected' | 'deferred';
 
 /**
- * The step that decided the outcome, in the specification's order above.
+ * The step that decided the outcome, in the specification's order above — for an accepted event,
+ * the step that accepted it.
  *
  * A caller that has to answer differently depending on *why* an event was refused — the join
  * handshake must, because the specification nominates `M_INVALID_PARAM` for a bad signature but
@@ -66,6 +73,50 @@ export interface InboundPduOptions {
 }
 
 export async function validateInboundPdu(pdu: unknown, options: InboundPduOptions): Promise<InboundPduResult> {
+  const verified = await verifyInboundPdu(pdu, options);
+  if (verified.outcome !== 'accepted' || !verified.event) return verified;
+  const event = verified.event;
+
+  // 4. Authorisation, judged against the events the *event* selected — the caller's
+  //    list is only a lookup, so passing extra room state cannot change the decision.
+  const authEventIds = eventReferenceIds(event, 'auth_events');
+  const resolved = new Map(options.authEvents.map(authEvent => [ authEvent.event_id ?? '', authEvent ]));
+  const selected = authEventIds.map(id => resolved.get(id));
+  const missing = authEventIds.filter(id => !resolved.has(id));
+  if (missing.length > 0) {
+    return {
+      eventId: verified.eventId,
+      outcome: 'deferred',
+      stage: 'dependencies',
+      reason: `v11-4: ${missing.length} auth event(s) are not available yet`,
+      redacted: verified.redacted,
+    };
+  }
+  const decision = authorizeEvent(
+    asAuthorizable(event),
+    selected.filter((entry): entry is AuthEvent => entry !== undefined),
+  );
+  if (!decision.allowed) {
+    return {
+      eventId: verified.eventId,
+      outcome: 'rejected',
+      stage: 'authorisation',
+      reason: `v11-4: ${decision.reason}`,
+      redacted: verified.redacted,
+    };
+  }
+  return { ...verified, reason: decision.reason };
+}
+
+/**
+ * The first three checks: a structurally valid event whose signature verifies, with a content hash
+ * that may have forced a redaction. `event` is what a caller should store, and `outcome` is
+ * `accepted` for "well formed and signed" rather than for "allowed" — that is step 4's question.
+ */
+export async function verifyInboundPdu(
+  pdu: unknown,
+  options: { keys: MatrixServerKeySource; now?: () => number },
+): Promise<InboundPduResult> {
   // 1. Structure.
   const shape = normalizeInboundPdu(pdu);
   if (!shape.event) return reject('v11-1: malformed event', shape.reason);
@@ -89,26 +140,7 @@ export async function validateInboundPdu(pdu: unknown, options: InboundPduOption
     stored = redactEvent(event);
     redacted = true;
   }
-
-  // 4. Authorisation, judged against the events the *event* selected — the caller's
-  //    list is only a lookup, so passing extra room state cannot change the decision.
-  const resolved = new Map(options.authEvents.map(authEvent => [ authEvent.event_id ?? '', authEvent ]));
-  const selected = shape.authEventIds.map(id => resolved.get(id));
-  const missing = shape.authEventIds.filter(id => !resolved.has(id));
-  if (missing.length > 0) {
-    return {
-      eventId,
-      outcome: 'deferred',
-      stage: 'dependencies',
-      reason: `v11-4: ${missing.length} auth event(s) are not available yet`,
-      redacted,
-    };
-  }
-  const decision = authorizeEvent(asAuthorizable(stored), selected.filter((entry): entry is AuthEvent => entry !== undefined));
-  if (!decision.allowed) {
-    return { eventId, outcome: 'rejected', stage: 'authorisation', reason: `v11-4: ${decision.reason}`, redacted };
-  }
-  return { eventId, outcome: 'accepted', stage: 'authorisation', reason: decision.reason, redacted, event: stored };
+  return { eventId, outcome: 'accepted', stage: 'signature', reason: 'v11-3: signature and content hash verified', redacted, event: stored };
 }
 
 interface NormalizedPdu {

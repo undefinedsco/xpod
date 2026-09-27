@@ -643,9 +643,9 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   （query 与签名一致、多起点、state/state_ids 解析、缺字段重试、拒绝/不可达分类），`authChain.test.ts`
   相应更新为"含被问事件"。
 - **待建**：`PUT /_matrix/federation/v1/send/{txnId}`、`GET /event_auth/...`、`POST /get_missing_events/...`
-  以及握手的 `GET /make_join`、`PUT /send_join`、`GET /make_leave`、`PUT /send_leave` 七个端点的
-  **HTTP 外壳与 Pod 归属解析**（七个服务侧都已实现为纯函数/处理体；**剩下的阻塞点仍是路由归属**——
-  见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、投递记录与控制 Pod 承载
+  以及握手的 `GET /make_join`、`PUT /send_join`、`GET /make_leave`、`PUT /send_leave`、`PUT /invite`
+  八个端点的 **HTTP 外壳与 Pod 归属解析**（八个服务侧都已实现为纯函数/处理体；**剩下的阻塞点仍是路由
+  归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、投递记录与控制 Pod 承载
   （去 SQL）、状态与历史获取。互通面上还没动的：`GET /_matrix/federation/v1/version`、
   `GET /_matrix/federation/v1/query/{directory,profile}`、由本部署提供 `.well-known/matrix/server`
   与 `/_matrix/key/v2/server`（密钥响应已能生成，只差路由）、敲门的 `make_knock`/`send_knock`
@@ -738,6 +738,36 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   空应答），`outboundTransaction.test.ts` 新增 10 项（GET/PUT 目标与签名往返、`ver` 三态、模板不符与版本不符
   被丢弃、send_join 读回 state/auth_chain/event/omit_members、应答事件 id 不符被拒、缺字段重试与 4xx/5xx
   分类、send_leave 空应答）。
+- **已落地**（2026-09-27）：**邀请握手的接收侧与客户端**（`handleMembershipSubmission` 的 invite 分支、
+  `federation/strippedState.ts`、客户端的 `sendInvite`）。
+  - **`/invite` 与 join/leave 的分工不同，这是它特别的地方**：邀请方**不需要模板**（它在房间里，自己建事件），
+    被邀请方**通常根本不认识这个房间**，所以它只被要求做一件事——为自己用户的这条 invite 加一个签名。它因此
+    **只校验、不授权**：走 `verifyInboundPdu`（结构→签名→内容哈希）而不是 `validateInboundPdu`；房间的授权
+    由房间自己的服务器在邀请经事务送达时判定。应答也就**没有状态**可言。
+  - **拆出 `verifyInboundPdu`**：收到的 PDU 检查的前三步（结构、签名、内容哈希→必要时 redact）现在是独立导出
+    的函数，`validateInboundPdu` = 它 + 第四步授权规则。`/invite` 复用的是同一条实现，不是平行的第二条弱路径。
+  - **`state_key` 规则是这一家里唯一不同的地方**：join/leave 要求 `state_key === sender`；invite 要求
+    `state_key` 是**接收方服务器**的用户（这正是签名对我们有价值的原因）。其余前置条件（类型、membership、
+    `sender` 属于签发请求的 server、路径 `event_id` 等于推导 id）与 join/leave 完全相同，写在同一段代码里，
+    靠一个 `stateKey` 参数区分。
+  - **没有签名身份就不能服务这个端点**：被邀请方的签名正是端点的意义，所以缺 `counterSign` 时回 500
+    `M_UNKNOWN`，而不是回一个没签过名的事件让对端无限重试；不认识的房间版本回 400
+    `M_INCOMPATIBLE_ROOM_VERSION`（我们只能用 v11 的规则验哈希）。
+  - **`invite_room_state` 只报告不拒绝**：规范对 room version 1–11 明确要求"告警而不是报错"（我们服务的正是
+    11），所以 `strippedStateWarnings` 返回原因列表由调用方记录，邀请照常接受。发送侧 `strippedRoomState` 给
+    的是 CS 规范定义的 **stripped state 事件**：**只有** `type`/`state_key`/`sender`/`content` 四个字段——
+    接收方无法验证其余字段，就不发那些字段；`m.room.create` 必需，其余是规范点名的展示状态
+    （name/avatar/canonical_alias/join_rules）加 topic，且取自房间**当前解析后的状态**。
+  - **请求体是容器不是事件**：`/invite` v2 的 body 是 `{room_version, event, invite_room_state?}`（与
+    `/send_join`、`/send_leave` 的裸事件不同），`sendInvite` 照此发送，签名覆盖这个容器。
+  - **客户端不替调用方验签**：`sendInvite` 只检查"回的是同一个 event id"和"对端自己的签名在事件上"；对端签名的
+    **密码学验证必须由调用方用客户端的 key source 之外的实现完成**（`MatrixFederationClient` 不持有 key
+    source），这条写进了方法注释——邀请在转给房间的服务器之前必须验，否则等于转发一个自称的签名。
+  - **v1 不做**：`/invite` v1 只为 room version 1/2 存在且自 v1.1 起弃用，v2 的"400/404 回退 v1"对本部署不适用。
+  测试：`membershipHandshake.test.ts` 新增 6 项（签名后只回事件、不是我们的用户被拒、四种非 invite 体、伪造
+  签名、版本不符、无签名身份 500、`invite_room_state` 告警四态），`strippedState.test.ts` 3 项（只含四个字段
+  与必需 create、取当前解析状态而非每个历史状态、告警逐条），客户端 3 项（容器 body 与签名往返、空展示状态
+  省略且版本可指定、缺签名/不可读/换事件/4xx 四类分类）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，
