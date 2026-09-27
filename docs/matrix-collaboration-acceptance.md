@@ -211,8 +211,11 @@ store 拒绝"既是会话又是部署干活"的上下文，拿不到 grant 就 4
 `/state_ids` 五个端点现在都有 HTTP 外壳（`FederationHandler.ts`，与 `/send` 共用"认定被寻址名字 → X-Matrix 验签 →
 按名字派生 Pod → 读协议事件"的前奏；房间为空回 404、缺参数回 400）并有 6 项真实 HTTP 测试；`twoDeployment` 里
 "接收方补取 auth chain"也已改成**经 HTTP 调真路由**（断言请求过 `/event_auth` 且 `event_id` 与发送方一致）。
-剩下的只有**七个成员资格握手端点**（`make_join`/`send_join`/`make_leave`/`send_leave`/`invite`/`make_knock`/
-`send_knock`）的外壳，写法可直接照 `FederationHandler.ts`。
+**成员资格握手端点也已落地外壳**：`make_join`/`send_join`(v2)/`make_leave`/`send_leave`(v2)/`invite`(v2)/
+`make_knock`/`send_knock` 七个端点现在都能应答（同一份 `FederationHandler.ts`，5 项真实 HTTP 测试：模板带图位置、
+`ver` 不符 400 带 `room_version`、`send_join` 回"加入前状态 + 双方签名"、leave 回空对象、敲门回四字段 stripped
+state、`/invite` 为我们的用户加签且不读 Pod）。加签用**被寻址参与者的身份**（`signerFor`），查不到就不签。
+**仍未做**：`send_join`/`send_leave` 的 v1（已弃用、只为 room version 1/2 存在）。
 
 **成员资格握手（同样只差 HTTP 外壳）**：`GET /make_join`、`PUT /send_join`、`GET /make_leave`、
 `PUT /send_leave`、`PUT /invite`、`GET /make_knock`、`PUT /send_knock` 七个端点的服务侧已实现

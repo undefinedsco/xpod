@@ -204,6 +204,7 @@ function registerSharedRoutes(
   const federationKeys = container.resolve('matrixServerKeyFetcher', { allowUnregistered: true });
   if (federationRoutes && federationKeys) {
     const delivery = container.resolve('matrixOutboundDelivery', { allowUnregistered: true });
+    const signingIdentities = container.resolve('matrixSigningIdentities');
     registerFederationRoutes(server, {
       routes: federationRoutes,
       store: matrixStore,
@@ -213,6 +214,17 @@ function registerSharedRoutes(
       // as deployment work. No session is borrowed and no deployment-held key is used — a
       // participant who has granted nothing gets a refusal rather than a silent write.
       contextFor: route => ({ webId: route.webId, podUrl: route.podUrl, service: {} }),
+      // A membership event accepted into a participant's Pod is signed by *that participant*, so
+      // the signer is looked up by the name the request was addressed to — never by the deployment.
+      signerFor: async serverName => {
+        try {
+          return await signingIdentities.identityFor(serverName);
+        } catch {
+          // A name this deployment holds no key for is accepted unsigned rather than signed by
+          // somebody else; `/invite` reports that it cannot sign at all.
+          return undefined;
+        }
+      },
       // A PDU we cannot authorise yet is asked about — the sender holds the chain, and the name we
       // answer as is the one we were addressed as.
       ...(delivery ? {

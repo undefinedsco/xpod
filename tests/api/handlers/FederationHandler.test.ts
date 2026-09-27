@@ -75,7 +75,7 @@ function podStore(initial: readonly Record<string, unknown>[] = []) {
  * Everything the auth rules need for a joiner is here, so the peer's events can be authorised
  * against it.
  */
-function heldRoom() {
+function heldRoom(options: { joinRule?: 'public' | 'knock' } = {}) {
   const alice = identity(SERVED);
   const stored = (event: Record<string, unknown>) => ({ ...event, event_id: computeEventId(event) });
   const create = stored(signEvent({
@@ -88,7 +88,7 @@ function heldRoom() {
   }, { keyId: alice.keyId, privateKeyPem: alice.privateKeyPem }, SERVED));
   const rules = stored(signEvent({
     type: 'm.room.join_rules', room_id: ROOM, sender: ALICE, state_key: '', origin_server_ts: NOW - 8_000,
-    content: { join_rule: 'public' }, depth: 3,
+    content: { join_rule: options.joinRule ?? 'public' }, depth: 3,
     prev_events: [ join.event_id as string ], auth_events: [ create.event_id as string, join.event_id as string ],
   }, { keyId: alice.keyId, privateKeyPem: alice.privateKeyPem }, SERVED));
   return { create, join, rules, alice };
@@ -151,6 +151,8 @@ interface Harness {
   port: number;
   store: ReturnType<typeof podStore>;
   peer: ReturnType<typeof identity>;
+  /** The identity this deployment accepts under, which countersigns what it takes. */
+  ours: ReturnType<typeof identity>;
   sent: string[];
 }
 
@@ -170,6 +172,9 @@ async function harness(options: {
   });
   const served = options.served ?? [ SERVED ];
   const sent: string[] = [];
+  // The identity this deployment signs as for the name it serves; a join accepted into the routed
+  // participant's Pod is countersigned by that participant, not by the deployment.
+  const ours = identity(SERVED);
   registerFederationRoutes(server, {
     routes: {
       async route(name) {
@@ -182,6 +187,7 @@ async function harness(options: {
     keys: keySourceFor(peer),
     transactions: new InMemoryMatrixInboundTransactionStore(),
     ...(options.contextFor === undefined ? {} : { contextFor: options.contextFor }),
+    signerFor: async serverName => (served.includes(serverName) ? ours.instance : undefined),
     fetchAuthChain: async ({ eventId }) => {
       sent.push(eventId);
       return undefined;
@@ -191,7 +197,7 @@ async function harness(options: {
   await server.start();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('ApiServer did not bind a TCP port');
-  return { server, port: address.port, store, peer, sent };
+  return { server, port: address.port, store, peer, ours, sent };
 }
 
 /** One HTTP request with full control over `Host`, which is how a peer addresses a server name. */
@@ -571,6 +577,201 @@ describe('the federation read endpoints', () => {
       });
       expect(ids.status).toBe(404);
       expect(message.event_id).toBeTruthy();
+    } finally {
+      await running.server.stop();
+    }
+  });
+});
+
+/** A PUT with a body, signed as the peer with that body as the signed content. */
+function signedPut(input: {
+  peer: ReturnType<typeof identity>;
+  destination: string;
+  uri: string;
+  body: Record<string, unknown>;
+}): string {
+  return buildXMatrixAuthorization({
+    origin: PEER, destination: input.destination, method: 'PUT', uri: input.uri, content: input.body,
+  }, input.peer.instance);
+}
+
+describe('the membership handshake endpoints', () => {
+  const ROOM_PATH = encodeURIComponent(ROOM);
+  const BOB_PATH = encodeURIComponent(BOB);
+
+  /** The event the asking server derives from a template: the template, signed and stamped. */
+  function signTemplate(template: Record<string, unknown>, peer: ReturnType<typeof identity>) {
+    const event = signEvent({
+      room_id: template.room_id,
+      type: template.type,
+      sender: template.sender,
+      state_key: template.state_key,
+      content: template.content,
+      depth: template.depth,
+      prev_events: template.prev_events,
+      auth_events: template.auth_events,
+      origin: PEER,
+      origin_server_ts: NOW - 500,
+    }, { keyId: peer.keyId, privateKeyPem: peer.privateKeyPem }, PEER);
+    return { ...event, event_id: computeEventId(event) } as Record<string, unknown>;
+  }
+
+  async function makeTemplate(input: {
+    running: Harness;
+    membership: 'join' | 'leave' | 'knock';
+    userId?: string;
+    versions?: string;
+  }) {
+    const path = input.membership === 'join' ? 'make_join' : input.membership === 'leave' ? 'make_leave' : 'make_knock';
+    const uri = `/_matrix/federation/v1/${path}/${ROOM_PATH}/${encodeURIComponent(input.userId ?? BOB)}${input.versions ?? '?ver=11'}`;
+    const answer = await send({
+      port: input.running.port, method: 'GET', path: uri, host: SERVED,
+      authorization: signedGet({ peer: input.running.peer, destination: SERVED, uri }),
+    });
+    return { answer, uri };
+  }
+
+  it('answers make_join with a template carrying the room\'s graph position', async () => {
+    const room = heldRoom();
+    const running = await harness({ events: [ room.create, room.join, room.rules ] });
+    try {
+      const { answer } = await makeTemplate({ running, membership: 'join' });
+      expect(answer.status).toBe(200);
+      expect(answer.body.room_version).toBe('11');
+      expect(answer.body.event).toMatchObject({
+        room_id: ROOM, type: 'm.room.member', sender: BOB, state_key: BOB, content: { membership: 'join' },
+      });
+      const template = answer.body.event as Record<string, unknown>;
+      // The parents are the room's current extremity and the authorisers include the join rules.
+      expect(template.prev_events).toEqual([ room.rules.event_id ]);
+      expect(template.auth_events).toContain(room.rules.event_id);
+
+      // A version the asking server offered but this room is not comes back as the one error that
+      // names the room's version.
+      const refused = await makeTemplate({ running, membership: 'join', versions: '?ver=10' });
+      expect(refused.answer.status).toBe(400);
+      expect(refused.answer.body).toMatchObject({ errcode: 'M_INCOMPATIBLE_ROOM_VERSION', room_version: '11' });
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('accepts send_join, countersigns it, and answers with the state before it', async () => {
+    const room = heldRoom();
+    const running = await harness({ events: [ room.create, room.join, room.rules ] });
+    try {
+      const template = (await makeTemplate({ running, membership: 'join' })).answer.body.event as Record<string, unknown>;
+      const join = signTemplate(template, running.peer);
+      const uri = `/_matrix/federation/v2/send_join/${ROOM_PATH}/${encodeURIComponent(String(join.event_id))}`;
+      const answer = await send({
+        port: running.port, method: 'PUT', path: uri, host: SERVED, body: JSON.stringify(join),
+        authorization: signedPut({ peer: running.peer, destination: SERVED, uri, body: join }),
+      });
+
+      expect(answer.status).toBe(200);
+      // The state the joining server gets is the room before the join, and the auth chain it rests on.
+      expect((answer.body.state as Record<string, unknown>[]).map(event => String(event.event_id)).sort())
+        .toEqual([ room.create.event_id, room.join.event_id, room.rules.event_id ].sort());
+      expect((answer.body.auth_chain as Record<string, unknown>[]).length).toBeGreaterThan(0);
+      // The join comes back signed by the joining server *and* by the server that accepted it.
+      const accepted = answer.body.event as Record<string, unknown>;
+      expect(computeEventId(accepted)).toBe(join.event_id);
+      expect(Object.keys(accepted.signatures as Record<string, unknown>).sort()).toEqual([ PEER, SERVED ].sort());
+      expect(running.store.accepted).toEqual([]);
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('answers make_leave and accepts send_leave for a member', async () => {
+    const room = heldRoom();
+    const peer = identity(PEER);
+    const membership = peerJoin({ room, peer });
+    const running = await harness({ events: [ room.create, room.join, room.rules, membership ] });
+    try {
+      // The leaving server asks for a template for one of *its* users, who is in the room.
+      const { answer } = await makeTemplate({ running, membership: 'leave', userId: BOB });
+      expect(answer.status).toBe(200);
+      expect(answer.body.event).toMatchObject({ sender: BOB, state_key: BOB, content: { membership: 'leave' } });
+
+      const leave = signTemplate(answer.body.event as Record<string, unknown>, running.peer);
+      const uri = `/_matrix/federation/v2/send_leave/${ROOM_PATH}/${encodeURIComponent(String(leave.event_id))}`;
+      const accepted = await send({
+        port: running.port, method: 'PUT', path: uri, host: SERVED, body: JSON.stringify(leave),
+        authorization: signedPut({ peer: running.peer, destination: SERVED, uri, body: leave }),
+      });
+      expect(accepted.status).toBe(200);
+      // v2 answers a leave with an empty object: there is nothing for the leaving server to learn.
+      expect(accepted.body).toEqual({});
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('answers make_knock and accepts send_knock with the room\'s stripped state', async () => {
+    const room = heldRoom({ joinRule: 'knock' });
+    const running = await harness({ events: [ room.create, room.join, room.rules ] });
+    try {
+      const { answer } = await makeTemplate({ running, membership: 'knock' });
+      expect(answer.status).toBe(200);
+      expect(answer.body.event).toMatchObject({ content: { membership: 'knock' }, sender: BOB, state_key: BOB });
+
+      const knock = signTemplate(answer.body.event as Record<string, unknown>, running.peer);
+      const uri = `/_matrix/federation/v1/send_knock/${ROOM_PATH}/${encodeURIComponent(String(knock.event_id))}`;
+      const accepted = await send({
+        port: running.port, method: 'PUT', path: uri, host: SERVED, body: JSON.stringify(knock),
+        authorization: signedPut({ peer: running.peer, destination: SERVED, uri, body: knock }),
+      });
+      expect(accepted.status).toBe(200);
+      // What the knocking client shows: the display state, in the four fields a receiver may rely on.
+      const state = accepted.body.knock_room_state as Record<string, unknown>[];
+      expect(state.map(entry => entry.type)).toEqual([ 'm.room.create', 'm.room.join_rules' ]);
+      expect(Object.keys(state[0]).sort()).toEqual([ 'content', 'sender', 'state_key', 'type' ]);
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('countersigns an invite for one of its users, and refuses one for anybody else', async () => {
+    const running = await harness();
+    try {
+      const invited = `@u_dave:${SERVED}`;
+      const invite = signEvent({
+        room_id: ROOM, type: 'm.room.member', sender: BOB, state_key: invited, origin: PEER,
+        origin_server_ts: NOW - 500, content: { membership: 'invite' }, depth: 6,
+        prev_events: [ '$prev' ], auth_events: [ '$create' ],
+      }, { keyId: running.peer.keyId, privateKeyPem: running.peer.privateKeyPem }, PEER);
+      const signed = { ...invite, event_id: computeEventId(invite) } as Record<string, unknown>;
+      const uri = `/_matrix/federation/v2/invite/${ROOM_PATH}/${encodeURIComponent(String(signed.event_id))}`;
+      const container = {
+        room_version: '11',
+        event: signed,
+        invite_room_state: [ { type: 'm.room.create', state_key: '', sender: BOB, content: { room_version: '11' } } ],
+      };
+      const answer = await send({
+        port: running.port, method: 'PUT', path: uri, host: SERVED, body: JSON.stringify(container),
+        authorization: signedPut({ peer: running.peer, destination: SERVED, uri, body: container }),
+      });
+
+      expect(answer.status).toBe(200);
+      const accepted = answer.body.event as Record<string, unknown>;
+      expect(computeEventId(accepted)).toBe(signed.event_id);
+      expect(Object.keys(accepted.signatures as Record<string, unknown>).sort()).toEqual([ PEER, SERVED ].sort());
+      // No Pod is touched: the invited server does not know the room, which is the point.
+      expect(running.store.accepted).toEqual([]);
+
+      // An invite for somebody who is not one of this deployment's users is not ours to sign.
+      const elsewhere = { ...signed, state_key: `@u_eve:${PEER}`, event_id: undefined } as Record<string, unknown>;
+      delete elsewhere.event_id;
+      const foreign = { ...elsewhere, event_id: computeEventId(elsewhere) };
+      const foreignUri = `/_matrix/federation/v2/invite/${ROOM_PATH}/${encodeURIComponent(String(foreign.event_id))}`;
+      const refused = await send({
+        port: running.port, method: 'PUT', path: foreignUri, host: SERVED,
+        body: JSON.stringify({ room_version: '11', event: foreign }),
+        authorization: signedPut({ peer: running.peer, destination: SERVED, uri: foreignUri, body: { room_version: '11', event: foreign } }),
+      });
+      expect(refused.status).toBe(400);
+      expect(refused.body.errcode).toBe('M_INVALID_PARAM');
     } finally {
       await running.server.stop();
     }

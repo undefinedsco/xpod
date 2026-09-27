@@ -39,16 +39,26 @@ import { selectMissingEvents } from '../matrix/federation/missingEvents';
 import { stateIdsBefore, stateSnapshotBefore } from '../matrix/federation/roomStateSnapshot';
 import { recordOfProtocolEvent } from '../matrix/storedEvent';
 import { authenticateXMatrixRequest } from '../matrix/federation/requestAuth';
+import {
+  buildMembershipTemplate,
+  handleMembershipSubmission,
+  type MatrixEventSigner,
+  type MembershipKind,
+} from '../matrix/federation/membershipHandshake';
+import { eventReferenceIds } from '../matrix/protocol/eventReferences';
 import type { FederationSendTarget } from '../matrix/federation/inboundRoute';
 import type { InMemoryMatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
 import type { MatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
 import type { MatrixServerKeySource } from '../matrix/federation/serverKeys';
 import type { MatrixParticipantRoutes, MatrixServerRoute } from '../matrix/participantRoutes';
+import { getLoggerFor } from 'global-logger-factory';
 import type { AuthEvent } from '../matrix/protocol/authRules';
 import type { MatrixEventRecord, MatrixStoreContext } from '../matrix/types';
 import type { ApiServer, RouteHandler } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ServerResponse } from 'node:http';
+
+const logger = getLoggerFor('MatrixFederation');
 
 /** How much of a request body this server will read: 50 PDUs with room to spare. */
 export const MAX_FEDERATION_BODY_BYTES = 4 * 1024 * 1024;
@@ -92,6 +102,12 @@ export interface FederationHandlerOptions {
    * honest default for a caller that has not said who it is.
    */
   contextFor?: (route: MatrixServerRoute) => MatrixStoreContext | Promise<MatrixStoreContext>;
+  /**
+   * The identity that countersigns what this deployment accepts under a server name. A join
+   * accepted into a participant's Pod is signed by *that participant*, not by the deployment, so
+   * the signer is looked up per name; absent means accepted events are stored unsigned by us.
+   */
+  signerFor?: (serverName: string) => Promise<MatrixEventSigner | undefined>;
   now?: () => number;
 }
 
@@ -105,6 +121,158 @@ export function registerFederationRoutes(server: ApiServer, options: FederationH
   server.get('/_matrix/federation/v1/state_ids/:roomId', createStateIdsHandler(options), publicRoute);
   server.get('/_matrix/federation/v1/backfill/:roomId', createBackfillHandler(options), publicRoute);
   server.post('/_matrix/federation/v1/get_missing_events/:roomId', createMissingEventsHandler(options), publicRoute);
+
+  // The membership handshakes. A template is answered from the room; the submission is judged by
+  // the same code a transaction goes through, with this deployment's signature added.
+  server.get('/_matrix/federation/v1/make_join/:roomId/:userId', createTemplateHandler(options, 'join'), publicRoute);
+  server.get('/_matrix/federation/v1/make_leave/:roomId/:userId', createTemplateHandler(options, 'leave'), publicRoute);
+  server.get('/_matrix/federation/v1/make_knock/:roomId/:userId', createTemplateHandler(options, 'knock'), publicRoute);
+  server.put('/_matrix/federation/v2/send_join/:roomId/:eventId', createSubmissionHandler(options, 'join'), publicRoute);
+  server.put('/_matrix/federation/v2/send_leave/:roomId/:eventId', createSubmissionHandler(options, 'leave'), publicRoute);
+  server.put('/_matrix/federation/v1/send_knock/:roomId/:eventId', createSubmissionHandler(options, 'knock'), publicRoute);
+  server.put('/_matrix/federation/v2/invite/:roomId/:eventId', createInviteHandler(options), publicRoute);
+}
+
+/**
+ * `GET /make_join`, `/make_leave`, `/make_knock`: the template the asking server fills in and signs.
+ *
+ * The room's version is checked against the `ver` the asking server offered, and its own permission
+ * is decided here — on the template, with the same auth rules the finished event will meet — so a
+ * refusal comes back as one answer instead of a signed event the room would reject.
+ */
+export function createTemplateHandler(options: FederationHandlerOptions, membership: MembershipKind): RouteHandler {
+  return async (request, response, params) => {
+    const roomId = decode(params.roomId);
+    const room = await readRoom({ request, response, options, roomId });
+    if (!room) return;
+    // `make_knock` requires the parameter; the others default to the specification's `['1']`.
+    const versions = queryOf(request).getAll('ver');
+    const answer = buildMembershipTemplate({
+      roomId,
+      userId: decode(params.userId),
+      membership,
+      serverName: room.serverName,
+      records: room.events.map(recordOfProtocolEvent),
+      ...(versions.length === 0 ? {} : { versions }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+    sendJson(response, answer.status, answer.body);
+  };
+}
+
+/**
+ * `PUT /send_join`, `/send_leave`, `/send_knock`: the signed membership event, judged and countersigned.
+ *
+ * The event is resolved against the room this deployment holds — that is what the auth events and
+ * the state a join answers with come from — and the countersignature is that room's server, which
+ * is the name this request was addressed to.
+ */
+export function createSubmissionHandler(
+  options: FederationHandlerOptions,
+  membership: MembershipKind,
+): RouteHandler {
+  return async (request, response, params) => {
+    const body = await readJsonBody(request);
+    if (!body.ok) return void fail(response, body.status, body.errcode, body.error);
+    const roomId = decode(params.roomId);
+    const room = await readRoom({ request, response, options, roomId, content: body.body });
+    if (!room) return;
+
+    const signer = await signerForName(room.serverName, options);
+    const answer = await handleMembershipSubmission({
+      membership,
+      roomId,
+      eventId: decode(params.eventId),
+      event: body.body,
+      origin: room.origin,
+      keys: options.keys,
+      authEvents: authEventsNamed(room.events, body.body),
+      records: room.events.map(recordOfProtocolEvent),
+      ...(signer === undefined ? {} : { counterSign: signer }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+    reportWarnings(answer, roomId);
+    sendJson(response, answer.status, answer.body);
+  };
+}
+
+/**
+ * `PUT /invite`: add this deployment's signature to an invite for one of its users.
+ *
+ * No Pod is read: the invited server need not know the room, which is the whole shape of this
+ * endpoint. The body is the specification's container, not the bare event.
+ */
+export function createInviteHandler(options: FederationHandlerOptions): RouteHandler {
+  return async (request, response, params) => {
+    const body = await readJsonBody(request);
+    if (!body.ok) return void fail(response, body.status, body.errcode, body.error);
+    const serverName = await addressedServerName(request, options);
+    if (!serverName) {
+      return void fail(response, 403, 'M_FORBIDDEN', `This deployment does not serve ${hostOf(request)}`);
+    }
+    const authentication = await authenticateXMatrixRequest({
+      authorization: headerValue(request.headers.authorization),
+      method: (request.method ?? 'PUT').toUpperCase(),
+      uri: requestTarget(request),
+      content: body.body,
+      keys: options.keys,
+      serverName,
+    });
+    if (!authentication.valid || !authentication.origin) {
+      return void fail(response, 401, 'M_UNAUTHORIZED', authentication.reason);
+    }
+
+    const signer = await signerForName(serverName, options);
+    const answer = await handleMembershipSubmission({
+      membership: 'invite',
+      roomId: decode(params.roomId),
+      eventId: decode(params.eventId),
+      event: body.body.event,
+      origin: authentication.origin,
+      serverName,
+      roomVersion: String(body.body.room_version ?? ''),
+      ...(body.body.invite_room_state === undefined ? {} : { inviteRoomState: body.body.invite_room_state }),
+      keys: options.keys,
+      ...(signer === undefined ? {} : { counterSign: signer }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+    reportWarnings(answer, decode(params.roomId));
+    sendJson(response, answer.status, answer.body);
+  };
+}
+
+/** The events a submitted membership event names as its authorisers, out of the room we hold. */
+function authEventsNamed(events: readonly Record<string, unknown>[], event: Record<string, unknown>): AuthEvent[] {
+  const index = new Map(events.map(entry => [ String(entry.event_id), entry ]));
+  return eventReferenceIds(event, 'auth_events')
+    .map(id => index.get(id))
+    .filter((found): found is Record<string, unknown> => found !== undefined)
+    .map(asAuthEvent);
+}
+
+/** The signer for a server name, or `undefined` when this deployment holds no key for it. */
+async function signerForName(
+  serverName: string,
+  options: FederationHandlerOptions,
+): Promise<MatrixEventSigner | undefined> {
+  if (!options.signerFor) return undefined;
+  try {
+    return await options.signerFor(serverName);
+  } catch {
+    // A name this deployment holds no identity for is not an error here: it simply means the event
+    // is accepted without our signature, and `/invite` says so for itself.
+    return undefined;
+  }
+}
+
+/**
+ * Report what the specification says to warn about rather than refuse.
+ *
+ * Invites whose display state is malformed are the case today: for the room versions this
+ * deployment serves the specification asks for a warning, and the invite stays usable.
+ */
+function reportWarnings(answer: { warnings?: string[] }, subject: string): void {
+  for (const warning of answer.warnings ?? []) logger.warn(`${subject}: ${warning}`);
 }
 
 /**
@@ -176,17 +344,9 @@ export function createBackfillHandler(options: FederationHandlerOptions): RouteH
  */
 export function createMissingEventsHandler(options: FederationHandlerOptions): RouteHandler {
   return async (request, response, params) => {
-    let content: Record<string, unknown>;
-    try {
-      const raw = Buffer.concat(await readBoundedRequestBody(request, MAX_FEDERATION_BODY_BYTES,
-        'The request body is larger than this server accepts')).toString('utf8');
-      const parsed: unknown = raw ? JSON.parse(raw) : {};
-      if (!isRecord(parsed)) return void fail(response, 400, 'M_BAD_JSON', 'Request body is not a JSON object');
-      content = parsed;
-    } catch (error) {
-      return void fail(response, 400, 'M_BAD_JSON',
-        error instanceof Error ? error.message : 'The request body could not be read');
-    }
+    const body = await readJsonBody(request);
+    if (!body.ok) return void fail(response, body.status, body.errcode, body.error);
+    const content = body.body;
     const room = await readRoom({ request, response, options, roomId: decode(params.roomId), content });
     if (!room) return;
     const earliest = stringList(content.earliest_events);
@@ -202,6 +362,35 @@ export function createMissingEventsHandler(options: FederationHandlerOptions): R
     });
     sendJson(response, 200, { events: selection.events });
   };
+}
+
+/**
+ * A request body that is JSON, read with a bound.
+ *
+ * The signature covers the body, so it is read and parsed before anything is authenticated; a body
+ * this server cannot read has no content to verify, and saying so is a 400 rather than a rejection.
+ */
+async function readJsonBody(request: AuthenticatedRequest): Promise<
+  { ok: true; body: Record<string, unknown> } | { ok: false; status: number; errcode: string; error: string }
+> {
+  let raw: string;
+  try {
+    raw = Buffer.concat(await readBoundedRequestBody(request, MAX_FEDERATION_BODY_BYTES,
+      'The request body is larger than this server accepts')).toString('utf8');
+  } catch (error) {
+    return { ok: false, status: 413, errcode: 'M_TOO_LARGE',
+      error: error instanceof Error ? error.message : 'The request body could not be read' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = raw ? JSON.parse(raw) : {};
+  } catch {
+    return { ok: false, status: 400, errcode: 'M_NOT_JSON', error: 'Request body is not JSON' };
+  }
+  if (!isRecord(parsed)) {
+    return { ok: false, status: 400, errcode: 'M_BAD_JSON', error: 'Request body is not a JSON object' };
+  }
+  return { ok: true, body: parsed };
 }
 
 /** The room a read endpoint was asked about, or why the answer is an error instead. */

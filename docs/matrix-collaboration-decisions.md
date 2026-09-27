@@ -894,6 +894,28 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   状态的两种形式、`/backfill` 含点名事件且从新到旧且带 `origin`/`origin_server_ts`、`/get_missing_events` 从父事件
   起走且停在请求方已有处、缺签名 401/不服务的名字 403/未知房间 404、缺参数 400），`twoDeployment.test.ts` 新增
   1 项（上述经 HTTP 的链补取）。
+- **已落地**（2026-09-27）：**七个成员资格握手端点的 HTTP 外壳**（`FederationHandler.ts`：`make_join`、
+  `send_join`(v2)、`make_leave`、`send_leave`(v2)、`invite`(v2)、`make_knock`、`send_knock`）——至此**登记册里列出的
+  联邦端点全部可达**。
+  - **模板端点**：读房间（同一条 `readRoom` 前奏）→ `buildMembershipTemplate` 用 `ver`（`make_knock` 缺它仍 400
+    `M_MISSING_PARAM`）与房版本判定 → 直接回该函数的状态与 body，因此"未知房间 404 / 版本不符 400 / 房间不允许 403"
+    的优先级与纯函数完全一致，外壳不再重复判定一次。
+  - **提交端点**：先按 4 MiB 上限读 body（签名覆盖它）→ 验签 → 读房间 → 把**提交事件点名的 auth_events**从本机
+    房间里解出来交给 `handleMembershipSubmission`，走的就是事务那条流水线；因此"房间不知道/依赖取不齐/授权不过"
+    的答复与 `/send` 同源。
+  - **加签用的是"被寻址那个参与者"的身份，不是部署身份**：新增 `signerFor(serverName)`（容器接
+    `matrixSigningIdentities.identityFor`）；查不到就**不签**（而不是拿别人的身份签），`/invite` 自己会因为
+    "没有签名身份"回 500——这正是它存在的意义。测试断言被接受的 join/invite 事件上**同时**有发送方与接收方两个
+    签名，且 `event_id` 不变（reference hash 覆盖的是 redaction 后的事件，`signatures` 不在其中）。
+  - **`/invite` 不读任何 Pod**：被邀请方通常不认识房间，外壳只做"验签 + 为我们的用户加签 + 回事件"；请求体是规范
+    的容器 `{room_version, event, invite_room_state?}`，`invite_room_state` 的问题按规范对 v1–11 的要求**告警不拒绝**
+    （`getLoggerFor('MatrixFederation')` 记录）。
+  - **仍未做**：`send_join`/`send_leave` 的 **v1**（自 v1.1 弃用、只为 room version 1/2 存在，本部署服务 v11，
+    没有回退目标）。
+  测试：`FederationHandler.test.ts` 新增 5 项（`make_join` 模板带图位置与 `ver=10` → 400 带 `room_version`；
+  `send_join` 回"加入前的状态 + 双方签名的事件"且不写 Pod；会员 `make_leave` + `send_leave` 回空对象；
+  可敲门房间的 `make_knock` + `send_knock` 回四字段 stripped state；`/invite` 为我们的用户加签且不读 Pod、
+  为他人的用户回 400 `M_INVALID_PARAM`），全部经真实 HTTP。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，
