@@ -1015,3 +1015,60 @@ describe('a failure while answering a read', () => {
     }
   });
 });
+
+describe('the bound on what a peer can make us read', () => {
+  it('refuses an oversized transaction instead of buffering it', async () => {
+    const room = heldRoom();
+    const running = await harness({ events: [ room.create, room.join, room.rules ] });
+    try {
+      // Larger than the limit the shell reads (4 MiB), so the answer has to come from the bound
+      // rather than from anything inside the body.
+      const oversized = `{"origin":"${PEER}","origin_server_ts":1,"pdus":[],"padding":"${'x'.repeat(4 * 1024 * 1024)}"}`;
+      const answer = await send({
+        port: running.port, method: 'PUT', path: '/_matrix/federation/v1/send/txn-big', host: SERVED,
+        authorization: 'X-Matrix origin="peer.example"', body: oversized,
+      });
+
+      expect(answer.status).toBe(413);
+      expect(answer.body.errcode).toBe('M_TOO_LARGE');
+      expect(running.store.accepted).toEqual([]);
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('bounds the body of a query that carries one', async () => {
+    const running = await harness();
+    try {
+      const oversized = `{"earliest_events":[],"latest_events":[],"padding":"${'y'.repeat(4 * 1024 * 1024)}"}`;
+      const answer = await send({
+        port: running.port, method: 'POST',
+        path: `/_matrix/federation/v1/get_missing_events/${encodeURIComponent(ROOM)}`,
+        host: SERVED, authorization: 'X-Matrix origin="peer.example"', body: oversized,
+      });
+
+      expect(answer.status).toBe(413);
+      expect(answer.body.errcode).toBe('M_TOO_LARGE');
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('answers that the state before the create event is empty, not that the room is unknown', async () => {
+    const room = heldRoom();
+    const running = await harness({ events: [ room.create, room.join, room.rules ] });
+    try {
+      const uri = `/_matrix/federation/v1/state/${encodeURIComponent(ROOM)}?event_id=${encodeURIComponent(String(room.create.event_id))}`;
+      const answer = await send({
+        port: running.port, method: 'GET', path: uri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri }),
+      });
+
+      // The room exists and the event is known: there is simply nothing before the first event.
+      expect(answer.status).toBe(200);
+      expect(answer.body).toEqual({ pdus: [], auth_chain: [] });
+    } finally {
+      await running.server.stop();
+    }
+  });
+});
