@@ -846,6 +846,64 @@ export class PodMatrixStore {
   }
 
   /**
+   * Make a room this Pod has only heard about visible in it.
+   *
+   * A received event for an unknown room arrives with no chat record, and without one the
+   * room is invisible: `listRooms` does not report it, so a client never sees the invite
+   * that would let its user join, and joining fails because the room cannot be read. The
+   * record is therefore created from the event, not from a local decision to open a room:
+   * the room id is the remote one and the author is the create event's sender, never the
+   * local Pod owner — a received event must not make the owner look like the room's
+   * creator, which would read as "already a member".
+   *
+   * Idempotent: an existing record is left exactly as it is.
+   */
+  private async materializeReceivedRoom(db: Db, roomId: string, context: MatrixStoreContext): Promise<void> {
+    const chatId = this.chatResourceIdFromRoomId(roomId);
+    if (await db.findById(chatResource, chatId)) return;
+    const timeline = await this.listEvents(db, roomId, context);
+    const create = timeline.find(record => record.type === 'm.room.create');
+    const nowIso = new Date().toISOString();
+    const coordination = reconcilerCoordinationMetadata('server');
+    await db.insert(chatResource).values({
+      id: chatId,
+      title: roomId,
+      description: null,
+      // The remote creator's MXID, not the local owner: see above.
+      author: create?.sender ?? null,
+      status: 'active',
+      participants: [],
+      metadata: withProtocolMetadata({
+        '@id': `${this.chatIri(roomId, context)}/metadata`,
+        protocol: 'matrix',
+        ...coordination,
+      }, 'matrix', {
+        roomId,
+        roomVersion: String((create?.content?.room_version as string | undefined) ?? SUPPORTED_ROOM_VERSION),
+        federate: create?.content?.['m.federate'] !== false,
+        members: [],
+      }),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+    await db.insert(threadResource).values({
+      id: this.threadResourceIdFromRoomId(roomId),
+      parent: this.chatIri(roomId, context),
+      title: roomId,
+      status: 'active',
+      metadata: withProtocolMetadata({
+        '@id': `${this.threadIri(roomId, context)}/metadata`,
+        protocol: 'matrix',
+        commandKind: 'chat',
+        surface_id: this.surfaceIdFromRoomId(roomId),
+        ...coordination,
+      }, 'matrix', { roomId }),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+  }
+
+  /**
    * Store an event received from another server exactly as it arrived.
    *
    * Deliberately not the writer above: an event we author is built and signed here,
@@ -880,6 +938,7 @@ export class PodMatrixStore {
     const messageResourceId = this.messageResourceIdFromEvent(roomId, eventId, originServerTs);
     const existing = await db.findById(messageResource, messageResourceId);
     if (existing) return this.eventSourceToRecord(existing, roomId, input.context);
+    await this.materializeReceivedRoom(db, roomId, input.context);
 
     const originIso = new Date(originServerTs).toISOString();
     const role = type === 'm.room.message' ? MessageRole.USER : MessageRole.SYSTEM;

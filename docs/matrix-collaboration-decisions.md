@@ -491,9 +491,36 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   与它一起待定的是**投递记录落在哪**（内存 store 已就位，控制 Pod 承载去 SQL 仍是待办）。
   另需记住：**真 Matrix homeserver（Synapse 等）不会说 Solid notifications**，所以 `/send` 推送路径
   是"与现有 Matrix 生态互通"的兼容面，不会因为走通知而消失。
-- **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 **HTTP 路由**（认证件、事务件与域名解析件都已
-  就位；**剩下的阻塞点是路由归属**——见下方"待细化的实现事项"）、事务记录与控制 Pod 承载（去 SQL）、
-  `/get_missing_events` 补依赖、状态与历史获取。
+- **已落地**（2026-09-27）：**入站 `/send` 的处理体**（`federation/inboundRoute.ts`）。把
+  `PUT /_matrix/federation/v1/send/{txnId}` 上"接收方必须做的判断"从 HTTP 传输里剥离出来，按规范顺序
+  执行：body 必须是 JSON 对象 → 请求必须带**覆盖本次请求**的有效 `X-Matrix` 签名（复用 `requestAuth`）
+  → 事务 id 从路径取（与签名里的 uri 一致）→ **body 里的 `origin` 必须等于签名认证出的 origin**
+  （否则等于把别人的请求记到自己名下，而对端按 (origin, txnId) 去重）→ `pdus` 必须是数组且 ≤50 →
+  再交给事务层（预占、重放、逐条应答、处理中 503）。**刻意不在处理体里决定**两件事：**写哪个 Pod**
+  （按请求所指向的 server name 向调用方要目标；本部署不服务该名字就 403，而不是把别人的房间写进任意
+  Pod）与**谁有权读写那个 Pod**（`acceptEvent` / `resolveAuthEvents` 由调用方提供）。因此 HTTP 外壳
+  与 Pod 归属解析是仅剩的接线，处理体本身已完整可测。
+- **已落地**（2026-09-27）：**收到的事件让房间在接收方可见**（`materializeReceivedRoom`）。此前
+  `acceptReceivedEvent` 只写消息行，房间没有 chat 记录，于是 `listRooms` 看不到它——**邀请在接收方
+  不可见、也无法加入**。现在收到未知房间的事件会**按事件本身**补出房间记录：room id 用对端的、
+  author 用 create 事件的 sender（**绝不写成 Pod 所有者**，否则 `requireJoined` 的兜底会把本地用户
+  当成已加入），幂等且不覆盖已有记录。
+- **已落地**（2026-09-27）：**两个独立部署的闭环验证**（`tests/api/matrix/federation/twoDeployment.test.ts`
+  4 项 + `inboundRoute.test.ts` 8 项）：两个 Pod、两种身份、各自队列与事务记录，出站请求交给对端
+  处理体（等价真实 HTTP 跳转）；房间状态与邀请跨 Pod 送达并被授权、Bob 的加入事件由 `bob.example`
+  签名且 A 原样保存、Alice 的消息以相同 event_id 落到 B、**重放事务返回首次响应且不写第二次**。
+  证据与门禁现状见[验收记录](matrix-collaboration-acceptance.md)的"跨部署闭环证据"。
+- **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 **HTTP 外壳与 Pod 归属解析**（处理体、
+  认证件、事务件、域名解析件都已就位；**剩下的阻塞点仍是路由归属**——见下方"待细化的实现事项"）、
+  **出站队列的调用点**（谁触发 flush、投递记录与控制 Pod 承载）、事务记录与控制 Pod 承载（去 SQL）、
+  状态与历史获取。
+- **本轮发现的两个缺口（必须解决，不是可选优化）**：
+  1. **依赖顺序**：同一事务内 PDU 按入队顺序处理，被依赖的事件若排在后面，对端只能对前者报 error。
+     规范路径是接收方用 `/get_missing_events` 主动补取；在它建成前，发送方也可以选择先发依赖
+     （省一次往返但放大流量），或在同事务内**按依赖拓扑排序**。
+  2. **逐条 `error` 被当成已投递**：事务返回 200 时发送方就删除批次，于是对端因缺依赖拒绝的 PDU
+     **永远不会重发**。这直接违反验收门禁"断网后补发、缺失事件补取均恢复"；出路是**按目的端的持久
+     投递进度只补它缺的**（与控制 Pod 承载一起做），或至少把被拒 PDU 留在队列里重试。
 
 ## 已撤销或否决的前提
 

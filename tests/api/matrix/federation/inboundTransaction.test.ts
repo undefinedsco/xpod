@@ -65,7 +65,7 @@ function handler(server: ReturnType<typeof remoteServer>, prefix: ReturnType<typ
     run: () => handleInboundTransaction({
       scope: 'https://pod.example/alice/', origin: REMOTE, transactionId: 'txn-1', pdus,
       store, keys: server.source,
-      resolveAuthEvents: async ids => prefix.auth.filter(event => ids.includes(event.event_id ?? '')),
+      resolveAuthEvents: async (ids: readonly string[]) => prefix.auth.filter(event => ids.includes(event.event_id ?? '')),
       acceptEvent,
       now: () => NOW,
     }),
@@ -107,7 +107,7 @@ describe('inbound transactions', () => {
     const acceptEvent = vi.fn(async (_event: Record<string, unknown>) => undefined);
     const run = (pdus: readonly unknown[]) => handleInboundTransaction({
       scope: 'scope', origin: REMOTE, transactionId: 'txn-conflict', pdus, store, keys: server.source,
-      resolveAuthEvents: async ids => prefix.auth.filter(event => ids.includes(event.event_id ?? '')),
+      resolveAuthEvents: async (ids: readonly string[]) => prefix.auth.filter(event => ids.includes(event.event_id ?? '')),
       acceptEvent, now: () => NOW,
     });
 

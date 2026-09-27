@@ -114,8 +114,12 @@ export interface HandleInboundTransactionInput {
   pdus: readonly unknown[];
   store: MatrixInboundTransactionStore;
   keys: MatrixServerKeySource;
-  /** The receiver resolves the events a PDU's `auth_events` name. */
-  resolveAuthEvents: (eventIds: readonly string[]) => Promise<readonly AuthEvent[]>;
+  /**
+   * The receiver resolves the events a PDU's `auth_events` name. The PDU comes along
+   * because the events have to be looked up in *its* room: an event id alone does not say
+   * which room's history to search.
+   */
+  resolveAuthEvents: (eventIds: readonly string[], pdu: unknown) => Promise<readonly AuthEvent[]>;
   /** Persist an accepted event; the caller owns the Pod write. */
   acceptEvent: (event: Record<string, unknown>) => Promise<void>;
   now?: () => number;
@@ -150,7 +154,7 @@ export async function handleInboundTransaction(input: HandleInboundTransactionIn
   const pdus: Record<string, Record<string, unknown>> = {};
   for (const [ index, pdu ] of input.pdus.entries()) {
     const authEventIds = referencedAuthEventIds(pdu);
-    const authEvents = authEventIds.length > 0 ? await input.resolveAuthEvents(authEventIds) : [];
+    const authEvents = authEventIds.length > 0 ? await input.resolveAuthEvents(authEventIds, pdu) : [];
     const result = await validateInboundPdu(pdu, { keys: input.keys, authEvents, now });
     if (result.outcome === 'accepted' && result.event && result.eventId) {
       await input.acceptEvent(result.event);

@@ -99,6 +99,39 @@ resolution——仍属下方待执行的分布式门禁。
 | 图与依赖（`tests/api/matrix/protocol/roomGraph.test.ts` 11 项、`persistedEvent.test.ts` 8 项） | 通过：create 为根、链式 depth、auth 选择顺序、极值点 >20 保留最深、分叉合并、无悬挂引用、房间前进后重占预占 |
 | `./node_modules/.bin/vitest --run tests/api tests/http` | 130 文件通过、11 跳过；1523 用例通过、67 跳过 |
 
+## 跨部署闭环证据（2026-09-27，分支 `codex/matrix-event-primitives`）
+
+两个**独立部署**参与同一逻辑房间的闭环：各自一个 Pod 数据库、各自签名身份（`alice.example` /
+`bob.example`，部署名只是回落）、各自出站队列与入站事务记录。出站请求交给对端
+`handleFederationSend`（`PUT /_matrix/federation/v1/send/{txnId}` 的处理体）处理，等价于真实
+HTTP 跳转；**唯一的测试替身是"缺依赖事件如何送到对端"**——规范路径是 `/get_missing_events`（未建），
+测试按真实部署会做的那样先把房间状态交过去。
+
+| 验证 | 结果 |
+| --- | --- |
+| `tests/api/matrix/federation/twoDeployment.test.ts` 4 项 | 通过：房间状态与邀请跨 Pod 送达且被授权；Bob 在 B 上加入、其加入事件由 `bob.example` 签名、A 原样保存；Alice 的消息以**相同 event_id** 落到 B；**重放事务返回首次响应且不写第二次**；未服务的目的地 403、未知签名 401、非 JSON 400；缺依赖的 PDU 报 error 且不落库 |
+| `tests/api/matrix/federation/inboundRoute.test.ts` 8 项 | 通过：接受已知服务器签名的整笔事务并逐条报告、未知密钥拒绝、未服务目的地 403、非 JSON/非对象 400、超 50 PDU 拒绝、body origin 与签名 origin 不一致拒绝、处理中返回可重试 503、事务 id 从路径解析（含 URL 编码） |
+| 接收方可见性（`PodMatrixStore.materializeReceivedRoom`） | 通过：收到的事件若属于本 Pod 尚未记录的房间，会**按事件本身**补出房间记录（room id 用对端 id、author 用 create 事件的 sender，**绝不写成 Pod 所有者**），因此邀请在接收方可见、也能被加入 |
+
+对照门禁的现状：
+
+| 门禁 | 现状 |
+| --- | --- |
+| 两个独立部署、两种身份、两个 Pod | **已取得模块级证据**（上表）；真实 HTTP/TLS 跳转与部署级 Pod 授权（谁有权读写哪个 Pod）仍未验证 |
+| 协议身份一致 | **已取得模块级证据**：同一 room_id 与 event_id 跨两个 Pod 一致，接收副本按推导 id 保存 |
+| 传输与落盘恢复 | 部分：事务重放与去重已证；**两个缺口已发现**（见下） |
+| 授权与房间状态 | 已证：非法签名、缺依赖、未知 server 被拒（本表 + `inboundPdu` / `authRules` / `stateResolution` 单测） |
+| Agent 执行归属 | 未做（待决策） |
+| 仅凭 Pod 恢复 | 未做（旧 SQL journal 仍在） |
+| 有界同步与权限更新 | 部分：空闲 sync 不再逐房间读；每次调用仍有一次索引读，需 Pod 侧变更信号或索引 |
+
+**本轮发现的两个缺口（已登记到决策册）**：
+
+1. **依赖顺序**：同一事务内 PDU 按入队顺序处理，若被依赖的事件排在其后，对端只能对前者报 error；
+   规范路径是接收方 `/get_missing_events` 主动补取（未建）。
+2. **逐条 error 被当成已投递**：事务返回 200 时发送方删除批次，因此对端因缺依赖而拒绝的 PDU
+   **不会被重发**。需要"按目的端持久进度只补它缺的"，或至少保留被拒 PDU 重试。
+
 ## 分布式目标的新增验收门禁（均待实现与执行）
 
 以下条目是准入要求，不是本次已经通过的测试：
