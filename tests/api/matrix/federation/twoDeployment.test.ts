@@ -126,6 +126,8 @@ function deployment(input: {
     store: new InMemoryMatrixOutboundStore(),
     send: async sendInput => await sender.send(sendInput),
     now: () => NOW,
+    // Retry a refused PDU on the next flush rather than after a real backoff.
+    retryRefused: { initialBackoffMs: 0, maxBackoffMs: 0, maxAttempts: 4 },
   });
   // The store queues what it writes, so the queue has to exist before it.
   const harness = matrixHarness({ identities: registry, outbound: outbox });
@@ -281,6 +283,33 @@ describe('two deployments federating one room', () => {
     expect(b.rows.get(messageResource as never)!.length).toBe(rowsAfterFirst);
   });
 
+  it('retries an invite the peer refused for missing dependencies, once they arrive', async () => {
+    const { a, b } = twoDeployments();
+    const alice = (await a.store.getAccount(a.context)).userId;
+    const bob = (await b.store.getAccount(b.context)).userId;
+
+    // Alice invites Bob into a room his deployment has never seen, so the invite travels
+    // alone and is refused: the events that authorise it are not there yet.
+    const room = await a.store.createRoom({ invite: [ bob ] }, a.context);
+    const invite = findMembership(a.rows, bob, 'invite');
+    const first = await a.outbox.flush({ scope: a.context.podUrl! });
+    expect(first.deferred).toHaveLength(1);
+    expect(pdusOf(b.rows)).toEqual([]);
+
+    // The state it depends on arrives afterwards — the `/get_missing_events` job, played by
+    // the test. The refused invite is *not* dropped, so it goes out again on its own.
+    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findMembership(a.rows, alice, 'join') ]) {
+      await a.outbox.enqueue({ scope: a.context.podUrl!, origin: 'alice.example', destination: 'bob.example', pdus: [ pdu ] });
+    }
+    await a.outbox.flush({ scope: a.context.podUrl! });
+    expect(pdusOf(b.rows).map(event => event.type)).toEqual(expect.arrayContaining([ 'm.room.create', 'm.room.member' ]));
+
+    const retried = await a.outbox.flush({ scope: a.context.podUrl! });
+    expect(retried.delivered).toHaveLength(1);
+    expect(findMembership(b.rows, bob, 'invite').event_id).toBe(invite.event_id);
+    void room;
+  });
+
   it('refuses an unserved destination, an unknown signer and a body that is not JSON', async () => {
     const { a, b } = twoDeployments();
     const bob = (await b.store.getAccount(b.context)).userId;
@@ -303,7 +332,7 @@ describe('two deployments federating one room', () => {
     await expect(b.handle(mismatched)).resolves.toMatchObject({ status: 401 });
   });
 
-  it('reports a PDU it cannot authorise, and the sender drops the transaction', async () => {
+  it('reports a PDU it cannot authorise, and the sender keeps it for retry', async () => {
     const { a, b } = twoDeployments();
     const bob = (await b.store.getAccount(b.context)).userId;
     const room = await a.store.createRoom({}, a.context);
@@ -316,10 +345,12 @@ describe('two deployments federating one room', () => {
     expect(Object.values(result.body.pdus as Record<string, { error?: string }>)[0]?.error).toBeTruthy();
     expect(pdusOf(b.rows)).toEqual([]);
 
-    // Known gap: a 200 counts as delivered for the sender, so a PDU the peer refused for
-    // missing dependencies is not retried. Recording it is this round's finding.
+    // A 200 answers the transaction, not the PDU: the refused invite stays queued under a
+    // new transaction id, so it can go out again once its dependencies are there.
     const flush = await a.outbox.flush({ scope: a.context.podUrl! });
     expect(flush.rejected).toEqual([]);
-    expect(await a.outbox.flush({ scope: a.context.podUrl! })).toMatchObject({ delivered: [], deferred: [] });
+    expect(flush.deferred).toHaveLength(1);
+    expect(flush.deferred[0].reason).toMatch(/v11/u);
+    expect(flush.abandoned).toEqual([]);
   });
 });

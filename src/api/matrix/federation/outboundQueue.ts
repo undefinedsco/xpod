@@ -24,6 +24,16 @@
  *   so they would be silently dropped forever.
  * - **A refusal unblocks the queue, a failure does not.** A 4xx means the peer decided
  *   about that transaction; treating it as retryable would wedge the destination.
+ * - **A 200 is not the same as "every PDU was taken".** The peer answers 200 with a
+ *   per-PDU result, and a PDU it refused (most often because it lacks the events that
+ *   authorise it) is retried — under a **new transaction id**, because the peer stores its
+ *   answer for the old one and would replay it (see `inboundTransaction.ts`). Retries are
+ *   bounded and backed off, and a batch that runs out of attempts is reported as abandoned
+ *   rather than retried forever.
+ *
+ * A transaction's PDUs are ordered so that an event never travels before the events it
+ * names in `prev_events`/`auth_events` when both are in the same batch: the receiver checks
+ * authorisation as it processes them, and a dependent that arrives first can only be refused.
  *
  * The store is scope-sharded and whole-record keyed, so the durable (control Pod) carrier
  * can replace the in-memory one without touching this logic.
@@ -42,8 +52,10 @@ export interface MatrixOutboundBatch {
   pdus: unknown[];
   edus: unknown[];
   createdAt: number;
-  /** How many times this batch (under this id) has been attempted. */
+  /** How many times this batch's PDUs have been attempted, across transaction ids. */
   attempts: number;
+  /** Not before this moment, so a retry cannot become a hot loop. */
+  notBefore?: number;
   /** Why the last attempt did not deliver it, for logs and operators. */
   lastReason?: string;
 }
@@ -60,9 +72,14 @@ export interface MatrixOutboundStore {
 export interface MatrixOutboxReport {
   delivered: string[];
   rejected: { txnId: string; destination: string; reason: string }[];
+  /** Batches that were attempted and are waiting to be retried, under a new transaction id. */
   deferred: { txnId: string; destination: string; reason: string }[];
-  /** Batches left alone because an earlier transaction to that destination is pending. */
+  /** Batches left alone because an earlier transaction in the same queue is not settled. */
   blocked: { txnId: string; destination: string }[];
+  /** Batches whose backoff has not elapsed, so this flush did not touch them. */
+  waiting: { txnId: string; destination: string }[];
+  /** Batches that used up their attempts and were dropped, with the last reason. */
+  abandoned: { txnId: string; destination: string; reason: string }[];
 }
 
 export interface MatrixOutboxOptions {
@@ -78,6 +95,13 @@ export interface MatrixOutboxOptions {
   newTransactionId?: () => string;
   maxPdusPerTransaction?: number;
   maxEdusPerTransaction?: number;
+  /** How a PDU the peer refused inside a delivered transaction is retried. */
+  retryRefused?: {
+    /** Attempts per batch, including the first one. Defaults to 5. */
+    maxAttempts?: number;
+    initialBackoffMs?: number;
+    maxBackoffMs?: number;
+  };
 }
 
 export interface EnqueueInput {
@@ -96,6 +120,7 @@ export class MatrixOutbox {
   private readonly newTransactionId: () => string;
   private readonly maxPdus: number;
   private readonly maxEdus: number;
+  private readonly retryRefused: Required<NonNullable<MatrixOutboxOptions['retryRefused']>>;
 
   public constructor(options: MatrixOutboxOptions) {
     this.store = options.store;
@@ -104,6 +129,11 @@ export class MatrixOutbox {
     this.newTransactionId = options.newTransactionId ?? (() => randomBytes(18).toString('base64url'));
     this.maxPdus = options.maxPdusPerTransaction ?? MAX_PDUS_PER_TRANSACTION;
     this.maxEdus = options.maxEdusPerTransaction ?? MAX_EDUS_PER_TRANSACTION;
+    this.retryRefused = {
+      maxAttempts: options.retryRefused?.maxAttempts ?? 5,
+      initialBackoffMs: options.retryRefused?.initialBackoffMs ?? 1_000,
+      maxBackoffMs: options.retryRefused?.maxBackoffMs ?? 60_000,
+    };
   }
 
   /**
@@ -129,7 +159,11 @@ export class MatrixOutbox {
     let restPdus = fresh;
     let restEdus = edus;
     if (open && open.pdus.length + fresh.length <= this.maxPdus && open.edus.length + edus.length <= this.maxEdus) {
-      const extended: MatrixOutboundBatch = { ...open, pdus: [ ...open.pdus, ...fresh ], edus: [ ...open.edus, ...edus ] };
+      const extended: MatrixOutboundBatch = {
+        ...open,
+        pdus: orderByDependencies([ ...open.pdus, ...fresh ]),
+        edus: [ ...open.edus, ...edus ],
+      };
       await this.store.put(input.scope, extended);
       batches.push(extended);
       return batches;
@@ -140,7 +174,7 @@ export class MatrixOutbox {
         txnId: this.newTransactionId(),
         origin: input.origin,
         destination: input.destination,
-        pdus: restPdus.slice(0, this.maxPdus),
+        pdus: orderByDependencies(restPdus.slice(0, this.maxPdus)),
         edus: restEdus.slice(0, this.maxEdus),
         createdAt: this.now(),
         attempts: 0,
@@ -158,7 +192,7 @@ export class MatrixOutbox {
    * A transaction that defers stops its own queue there, as the specification requires.
    */
   public async flush(input: { scope: string; origin?: string; destination?: string }): Promise<MatrixOutboxReport> {
-    const report: MatrixOutboxReport = { delivered: [], rejected: [], deferred: [], blocked: [] };
+    const report: MatrixOutboxReport = { delivered: [], rejected: [], deferred: [], blocked: [], waiting: [], abandoned: [] };
     const pending = await this.store.pending(input.scope, {
       ...(input.origin === undefined ? {} : { origin: input.origin }),
       ...(input.destination === undefined ? {} : { destination: input.destination }),
@@ -176,6 +210,13 @@ export class MatrixOutbox {
     for (const batches of byPair.values()) {
       const { origin, destination } = batches[0];
       for (const [ index, batch ] of batches.entries()) {
+        // A batch that is backing off is skipped, but it does **not** hold the queue: it is
+        // usually waiting for events that are queued behind it (a PDU the peer refused for
+        // missing dependencies), and blocking those would deadlock the queue.
+        if (batch.notBefore !== undefined && batch.notBefore > this.now()) {
+          report.waiting.push({ txnId: batch.txnId, destination });
+          continue;
+        }
         const outcome = await this.send({
           origin,
           destination,
@@ -183,32 +224,141 @@ export class MatrixOutbox {
           pdus: batch.pdus,
           ...(batch.edus.length === 0 ? {} : { edus: batch.edus }),
         });
-        if (outcome.status === 'delivered') {
-          await this.store.remove(input.scope, batch.txnId);
-          report.delivered.push(batch.txnId);
-          continue;
-        }
         if (outcome.status === 'rejected') {
           // The peer decided; the queue is free to move on to the next transaction.
           await this.store.remove(input.scope, batch.txnId);
           report.rejected.push({ txnId: batch.txnId, destination, reason: outcome.reason });
           continue;
         }
+        if (outcome.status === 'delivered') {
+          await this.store.remove(input.scope, batch.txnId);
+          const refused = refusedPdus(batch.pdus, outcome.pdus);
+          if (refused.length === 0) {
+            report.delivered.push(batch.txnId);
+            continue;
+          }
+          // A 200 answers the transaction, not every PDU in it. The refused ones are retried
+          // under a new id — the peer would replay its stored answer for this one.
+          const attempts = batch.attempts + 1;
+          const reason = refusedReason(batch.pdus, outcome.pdus);
+          if (attempts >= this.retryRefused.maxAttempts) {
+            report.abandoned.push({ txnId: batch.txnId, destination, reason });
+            continue;
+          }
+          const retry: MatrixOutboundBatch = {
+            txnId: this.newTransactionId(),
+            origin,
+            destination,
+            pdus: refused,
+            edus: batch.edus,
+            createdAt: this.now(),
+            attempts,
+            notBefore: this.now() + this.backoffMs(attempts),
+            lastReason: reason,
+          };
+          await this.store.put(input.scope, retry);
+          report.deferred.push({ txnId: retry.txnId, destination, reason });
+          // Later batches keep their turn: the dependencies this one is missing may well be
+          // among them, and holding them back would be a deadlock.
+          continue;
+        }
+        // A transaction the peer never answered is retried under the *same* id, and the
+        // queue behind it waits: those events may depend on this one, and the peer has not
+        // seen any of it yet.
         await this.store.put(input.scope, {
           ...batch,
           attempts: batch.attempts + 1,
           lastReason: outcome.reason,
         });
         report.deferred.push({ txnId: batch.txnId, destination, reason: outcome.reason });
-        // Anything behind this batch would be a different txnId to the same server.
-        for (const behind of batches.slice(index + 1)) {
-          report.blocked.push({ txnId: behind.txnId, destination });
-        }
+        blockBehind(report, batches.slice(index + 1), destination);
         break;
       }
     }
     return report;
   }
+
+  /** Exponential backoff for a batch that keeps being refused, bounded. */
+  private backoffMs(attempts: number): number {
+    return Math.min(this.retryRefused.initialBackoffMs * 2 ** Math.max(0, attempts - 1), this.retryRefused.maxBackoffMs);
+  }
+}
+
+function blockBehind(report: MatrixOutboxReport, behind: readonly MatrixOutboundBatch[], destination: string): void {
+  for (const batch of behind) report.blocked.push({ txnId: batch.txnId, destination });
+}
+
+/**
+ * The PDUs the peer did not take. A transaction answered 200 without any per-PDU results is
+ * taken as delivered wholesale — there is nothing to act on — but once the peer reports
+ * results, an entry it did not name is *not* evidence that it accepted the PDU, so that PDU
+ * is kept and retried rather than silently dropped.
+ */
+function refusedPdus(pdus: readonly unknown[], results: Record<string, { error?: string }> | undefined): unknown[] {
+  if (!results) return [];
+  return pdus.filter(pdu => {
+    const id = eventIdOf(pdu);
+    if (id === undefined) return true;
+    const result = results[id];
+    return result === undefined || result.error !== undefined;
+  });
+}
+
+function refusedReason(pdus: readonly unknown[], results: Record<string, { error?: string }> | undefined): string {
+  const reasons = pdus
+    .map(pdu => (eventIdOf(pdu) === undefined ? 'a PDU without an event id' : results?.[eventIdOf(pdu)!]?.error))
+    .filter((reason): reason is string => typeof reason === 'string' && reason.length > 0);
+  return reasons.length > 0 ? reasons.join('; ') : 'the peer did not report these PDUs as handled';
+}
+
+/**
+ * Order a batch so an event never precedes the events it names in `prev_events` or
+ * `auth_events` when they are in the same batch. Dependencies outside the batch are ignored
+ * (they are the peer's problem, and it fetches them); a cycle keeps the input order, which
+ * is the best a single pass can honestly do.
+ */
+export function orderByDependencies(pdus: readonly unknown[]): unknown[] {
+  const byId = new Map<string, unknown>();
+  for (const pdu of pdus) {
+    const id = eventIdOf(pdu);
+    if (id !== undefined && !byId.has(id)) byId.set(id, pdu);
+  }
+  const dependencies = new Map<string, string[]>();
+  for (const [ id, pdu ] of byId) {
+    dependencies.set(id, referencedIds(pdu).filter(reference => byId.has(reference)));
+  }
+
+  const ordered: unknown[] = [];
+  const emitted = new Set<string>();
+  let remaining = [ ...byId.keys() ];
+  while (remaining.length > 0) {
+    const ready = remaining.filter(id => (dependencies.get(id) ?? []).every(dep => emitted.has(dep)));
+    // Nothing is ready: a cycle (or a self reference), so keep the remaining input order.
+    const batch = ready.length > 0 ? ready : remaining;
+    for (const id of batch) {
+      ordered.push(byId.get(id));
+      emitted.add(id);
+    }
+    remaining = remaining.filter(id => !emitted.has(id));
+  }
+  // PDUs without an event id cannot be ordered; they keep their place at the end.
+  return [ ...ordered, ...pdus.filter(pdu => eventIdOf(pdu) === undefined) ];
+}
+
+/** The event ids a PDU names as parents or authorisers, in either list form. */
+function referencedIds(pdu: unknown): string[] {
+  if (typeof pdu !== 'object' || pdu === null || Array.isArray(pdu)) return [];
+  const record = pdu as Record<string, unknown>;
+  const ids: string[] = [];
+  for (const field of [ 'prev_events', 'auth_events' ]) {
+    const list = record[field];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (typeof entry === 'string') ids.push(entry);
+      else if (Array.isArray(entry) && typeof entry[0] === 'string') ids.push(entry[0]);
+    }
+  }
+  return ids;
 }
 
 /** The `event_id` a PDU carries, when it has one; PDUs without one cannot be deduped. */
