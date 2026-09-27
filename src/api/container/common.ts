@@ -103,6 +103,7 @@ import { matrixSigningIdentityRegistry } from '../matrix/identityRegistry';
 import { matrixSigningIdentityForPod } from '../matrix/identityProvisioning';
 import { createPodParticipantIdentityProvider } from '../matrix/podParticipantIdentity';
 import { createMatrixOutboundDelivery, nodeSrvRecords } from '../matrix/federation/outboundDelivery';
+import { MatrixOutboxScheduler } from '../matrix/federation/outboxScheduler';
 import { promises as dns } from 'node:dns';
 import { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
@@ -720,6 +721,13 @@ export function registerCommonServices(
         // `.well-known` is preferred; SRV is the fallback the specification still allows.
         resolveSrv: async name => nodeSrvRecords(await dns.resolveSrv(name)),
       });
+    }).singleton(),
+
+    // What actually drives delivery: a signal (a write, later a notification) plus a periodic
+    // pass, serialized so two writers cannot drain the same queue at once.
+    matrixOutboxScheduler: asFunction(({ matrixOutboundDelivery }: ApiContainerCradle) => {
+      if (!matrixOutboundDelivery) return undefined;
+      return new MatrixOutboxScheduler({ outbox: matrixOutboundDelivery.outbox });
     }).singleton(),
 
     matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService, matrixSigningIdentities, matrixParticipantIdentity, matrixOutboundDelivery }: ApiContainerCradle) => {

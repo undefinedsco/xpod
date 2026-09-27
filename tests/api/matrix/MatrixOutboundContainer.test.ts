@@ -31,7 +31,7 @@ function container(matrixServiceIdentity: MatrixServiceIdentity | undefined) {
 }
 
 describe('outbound federation registration', () => {
-  it('builds a delivery from the deployment identity and hands its queue to the store', () => {
+  it('builds a delivery from the deployment identity and hands its queue to the store', async () => {
     const instance = container(identity('pod.example'));
     const delivery = instance.resolve('matrixOutboundDelivery');
     expect(delivery).toBeDefined();
@@ -41,6 +41,10 @@ describe('outbound federation registration', () => {
     // The store the routes use is the one holding that queue: this is the link between the
     // write path and federation, and it is easy to lose in a refactor.
     expect(instance.resolve('matrixStore').getOutbox()).toBe(delivery!.outbox);
+    // And something drives that queue in production.
+    const scheduler = instance.resolve('matrixOutboxScheduler');
+    expect(scheduler).toBeDefined();
+    await expect(scheduler!.flushOnce()).resolves.toMatchObject({ scopes: 0, failed: 0 });
     // The same registry the store signs with is the one the sender picks origins from.
     expect(instance.resolve('matrixSigningIdentities').serverNames()).toEqual([ 'pod.example' ]);
   });
@@ -49,5 +53,6 @@ describe('outbound federation registration', () => {
     const instance = container(undefined);
     expect(instance.resolve('matrixOutboundDelivery')).toBeUndefined();
     expect(instance.resolve('matrixStore').getOutbox()).toBeUndefined();
+    expect(instance.resolve('matrixOutboxScheduler')).toBeUndefined();
   });
 });

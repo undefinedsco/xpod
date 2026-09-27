@@ -325,6 +325,8 @@ export interface ApiContainerCradle {
   matrixParticipantIdentity: import('../matrix/PodMatrixStore').MatrixParticipantIdentityProvider | undefined;
   /** Resolves, signs and queues outbound federation traffic; absent disables it. */
   matrixOutboundDelivery: import('../matrix/federation/outboundDelivery').MatrixOutboundDelivery | undefined;
+  /** Drives the outbound queue; absent when there is nothing to drive. */
+  matrixOutboxScheduler: import('../matrix/federation/outboxScheduler').MatrixOutboxScheduler | undefined;
   matrixStore: PodMatrixStore;
   clientReconcilerCoordinator: ClientReconcilerCoordinator;
   serverGroupReconcilerService: ServerGroupReconcilerService;

@@ -604,9 +604,21 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   直接拒绝、SRV 兜底、dns 答案改名）与 `MatrixOutboundContainer.test.ts` 2 项（有身份时
   `matrixStore.getOutbox()` 就是交付对象的队列——**这条链接最容易在重构里丢掉**；无身份时两者都是
   undefined）。
+- **已落地**（2026-09-27）：**出站队列的驱动**（`federation/outboxScheduler.ts` + 容器 + 运行时）。
+  此前队列接进了 store 但**没有任何东西推它**，所以生产里投递仍然不会发生。现在：
+  **信号可插拔**（`schedule()` 就是写入/通知/运维调用的入口）+ **周期兜底**（默认 30s，`intervalMs: 0`
+  只用于测试），**串行**（一趟在跑就不会有第二趟，两个写入者不会各自把同一队列抽干）与**合并**
+  （一趟进行中到达的信号只换来"恰好再来一趟"）；单个 scope 失败**不中断**其余 scope 并把错误上报；
+  scope 列表来自队列自身（`MatrixOutboundStore.scopes()`，控制 Pod 实现同样能回答），所以调度器不需要
+  知道"本部署服务哪些 Pod"。调度器**构造即 armed**（纯信号驱动也能工作），`start()` 只加周期定时器，
+  `stop()` 才彻底停止；作为后台服务由 `BackgroundServiceSupervisor` 随 API server 启停（含存活复查）。
+  测试 `federation/outboxScheduler.test.ts` 8 项（按 scope 汇总一趟并上报、纯信号驱动、串行与合并为
+  恰好一趟、单 scope 失败继续、注册并清除定时器/启停幂等、stop 后不再排、scope 列表读失败只上报、
+  无工作时不调用），`MatrixOutboundContainer.test.ts` 追加断言（有身份时调度器存在且能跑空趟、无身份时
+  两者都 undefined）。
 - **待建**：`PUT /_matrix/federation/v1/send/{txnId}`、`GET /event_auth/...`、`POST /get_missing_events/...`
   三个端点的 **HTTP 外壳与 Pod 归属解析**（三个服务侧都已实现为纯函数/处理体；**剩下的阻塞点仍是路由
-  归属**——见下方"待细化的实现事项"）、**谁触发 flush**（队列已经接好，只差触发器）、
+  归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、
   投递记录与控制 Pod 承载（去 SQL）、状态与历史获取。
 - **已落地**（2026-09-27）：**逐条拒绝不再等于已投递**（缺口 2 的修复）。事务返回 200 只回答"这笔
   事务收到了"，不回答"每条 PDU 都被接受了"，所以发送方现在按 per-PDU 结果拆分：被接受的落地即完成，

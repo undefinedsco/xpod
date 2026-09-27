@@ -515,6 +515,26 @@ async function startBackgroundServices(
   } catch (error) {
     logger.error(`Failed to start local tunnel provider: ${error}`);
   }
+
+  try {
+    // Federation delivery is a background job by nature: a local write must not wait for a
+    // peer, and a peer that is down is absorbed by the queue. The supervisor keeps the
+    // scheduler alive; the scheduler keeps the queue moving.
+    const scheduler = container.resolve('matrixOutboxScheduler', { allowUnregistered: true });
+    if (scheduler) {
+      const supervisor = new BackgroundServiceSupervisor({
+        name: 'matrix-outbox',
+        start: () => { scheduler.start(); },
+        stop: () => { scheduler.stop(); },
+        isRunning: () => scheduler.isRunning(),
+        logger,
+      });
+      backgroundSupervisors.push(supervisor);
+      supervisor.start();
+    }
+  } catch (error) {
+    logger.error(`Failed to start the Matrix outbox scheduler: ${error}`);
+  }
 }
 
 async function stopBackgroundServices(container: AwilixContainer<ApiContainerCradle>): Promise<void> {

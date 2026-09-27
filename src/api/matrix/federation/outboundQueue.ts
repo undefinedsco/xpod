@@ -62,6 +62,8 @@ export interface MatrixOutboundBatch {
 }
 
 export interface MatrixOutboundStore {
+  /** The scopes holding work, so a scheduler can flush without being told which Pods exist. */
+  scopes(): Promise<readonly string[]>;
   /** Batches still to send, oldest first. */
   pending(scope: string, filter?: { origin?: string; destination?: string }): Promise<MatrixOutboundBatch[]>;
   /** Insert or replace one batch, keyed by transaction id. */
@@ -192,6 +194,11 @@ export class MatrixOutbox {
    * Try to send what is pending, oldest first, one transaction at a time per destination.
    * A transaction that defers stops its own queue there, as the specification requires.
    */
+  /** The scopes with work queued, for whoever drives delivery. */
+  public async scopes(): Promise<readonly string[]> {
+    return await this.store.scopes();
+  }
+
   public async flush(input: { scope: string; origin?: string; destination?: string }): Promise<MatrixOutboxReport> {
     const report: MatrixOutboxReport = { delivered: [], rejected: [], deferred: [], blocked: [], waiting: [], abandoned: [] };
     const pending = await this.store.pending(input.scope, {
@@ -359,6 +366,10 @@ function eventIdOf(pdu: unknown): string | undefined {
 /** The in-memory carrier; the control Pod implementation replaces it behind the same port. */
 export class InMemoryMatrixOutboundStore implements MatrixOutboundStore {
   private readonly batches = new Map<string, MatrixOutboundBatch[]>();
+
+  public async scopes(): Promise<readonly string[]> {
+    return [ ...this.batches.keys() ].filter(scope => (this.batches.get(scope) ?? []).length > 0).sort();
+  }
 
   public async pending(scope: string, filter?: { origin?: string; destination?: string }): Promise<MatrixOutboundBatch[]> {
     const all = this.batches.get(scope) ?? [];
