@@ -1,5 +1,7 @@
 # Xpod Dashboard 与 Settings 分离设计
 
+> **历史方案，已替代（2026-09-27 标注）**：下文记录 8/2 的双产品导航与统一 Solid 门禁方案，不再作为当前规范。完整产品按[8/9 Shell](2026-08-09-xpod-shell-information-architecture-design.md)的五工作区组织；认证按[9/19 canonical](2026-09-19-xpod-login-and-host-design.md)及其指明的[8/30 边界](2026-08-30-xpod-auth-authority-boundaries.md)；尺寸和历史路由迁移按[9/27 产品体验 spec §3、§8](2026-09-27-xpod-product-experience-spec.md)。静态构建入口可以因实现需要分开，但不能据此保留两套一级产品导航。下文旧尺寸、重定向保留全部 query、未知路由静默跳首页等亦不再生效。
+
 ## 目标
 
 Xpod 提供两个语义明确、视觉一致的产品入口：

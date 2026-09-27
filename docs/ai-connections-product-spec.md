@@ -2,33 +2,48 @@
 
 > Status: Canonical product specification
 >
-> Date: 2026-08-24
+> Date: 2026-08-24; design alignment: 2026-09-27 R2
 >
 > Scope: Xpod AI Connections product behavior, data ownership, package
 > boundaries, and acceptance order.
 >
-> Authentication authority is defined by
+> Login and Pod creation follow
+> [Login And Host Design](superpowers/specs/2026-09-19-xpod-login-and-host-design.md).
+> Non-login authentication authority remains defined by
 > [Xpod Auth Authority Boundaries](superpowers/specs/2026-08-30-xpod-auth-authority-boundaries.md):
 > AI Connections is a static WebID/Pod capability consumer and must not import
 > or present CSS Account authentication.
+>
+> Cross-module experience requirements follow the
+> [Product And Experience Spec](superpowers/specs/2026-09-27-xpod-product-experience-spec.md).
+> This revision aligns design documents only; it does not verify a release or
+> claim that the target behavior is implemented.
+> R2 changes the AI workspace's task flow and model-selection behavior as product
+> targets. Runtime compliance has not been inspected; the responsible domain
+> owners must implement and verify those changes separately from UI copy.
 
-This document is the current authority for AI Connections. Older specs,
-implementation plans, audits, and acceptance matrices are evidence only. When
-they conflict with this file, this file wins.
+This document is the authority for AI Connections within its product scope.
+It does not override the login, authorization, Pod lifecycle, or shared security
+contracts above. Implementation plans, audits, and acceptance matrices describe
+their dated scope; they are not proof of current release behavior.
 
-AI Connections is the user-facing control panel for connecting AI providers,
-selecting usable models, issuing Xpod API Keys, and configuring local AI
-clients. Xpod Gateway is the data plane exposed to clients.
+The AI workspace brings provider connections, client setup, and Xpod processing
+uses into one navigation area. AI Connections owns connections, allowed models,
+and Xpod API Keys; AI Config owns per-use model assignments. Xpod Gateway remains
+the data plane exposed to clients. Shared navigation does not merge domain owners,
+credentials, permissions, or persistence contracts.
 
 ## Product Principles
 
-- One visible Xpod login path. Xpod uses WebID login as the product entry.
+- AI Connections uses the host's WebID login entry. Account management keeps
+  its separate authority; AI Connections must not introduce another login form.
 - Users should not need to understand WebID, Pod routing, Offering, Gateway, or
   service tokens to complete routine work.
 - Provider setup and client setup are one product area, not two disconnected
   pages.
-- AI Config is a separate top-level entry. It chooses which connected model is
-  used by Xpod workloads such as chat, OCR, embedding, reader, and indexer.
+- AI Config is a responsibility within the same top-level AI workspace, not a
+  second top-level destination. It assigns models to actual Xpod consumers and
+  preserves their separate configuration and runtime authority.
 - Web validation comes before desktop validation. Desktop shell behavior must
   not hide bugs in WebID login, Pod binding, provider persistence, or Gateway
   chat.
@@ -42,8 +57,9 @@ AI Connections must optimize these tasks:
 | Job | User-facing outcome |
 | --- | --- |
 | Connect a provider | Save provider credentials in the user's Pod and verify the connection. |
-| See available models | Refresh models from the connected provider and select models exposed through Xpod. |
-| Use an AI client | Create an Xpod API Key and either apply a native client config or copy the correct config for that client. |
+| See available models | Distinguish discovered models, the user's allowed models, and the model actually assigned to each use. |
+| Use an AI client | Select the client/model, explicitly reuse or create a key, preview the target configuration, then apply or copy it. |
+| Choose AI for personal materials | Select models for supported uses such as text recognition, document understanding, and semantic search, with consequences shown in the same flow. |
 | Track usage | See usage grouped by Xpod API Key, with provider/model detail when available. |
 | Disable access | Temporarily stop an API Key or provider credential without deleting history. |
 | Delete stale records | Remove deleted API Keys from the visible list after successful deletion. |
@@ -51,30 +67,41 @@ AI Connections must optimize these tasks:
 
 ## Information Architecture
 
-AI Connections is a top-level product entry. It is separate from AI Config,
-Status, Network, and Settings.
+R2 replaces the separate AI Connections and AI Config top-level entries with one
+`AI` workspace. It keeps provider management, API Key management, and per-use
+configuration as distinct responsibilities inside that workspace.
 
 ```text
 Rail
-  AI Connections
-    List
+  AI
+    First-use tasks
+      Connect a client
+      Choose AI for materials
+    Daily summary
+      Connected services
+      Known client status
+      Processing-use summary
+    Task detail
+      Connection / client / processing use
+    Add a connection
+      Supported provider catalog
+    Advanced management
       API Keys
-      Provider
-        OpenAI
-        Anthropic
-        Kimi
-        Bailian
-        DeepSeek
-        Zhipu AI
-        Ollama
-        Custom
-    Content
-      API Keys
-      Provider detail
 ```
 
-The list must not include a vague `All` item. The content title for the API Key
-page is `API Keys`; the list row can also be `API Keys`.
+This is a task map, not a requirement to render all sections as a permanent list
+or add another navigation rail. First use presents `连接客户端` and
+`为资料处理选择 AI`. Daily use prioritizes existing connections, known client
+status, and configured uses. The complete provider catalog appears only when
+adding a connection; it is not an always-visible directory of unconfigured
+services. API Keys remain directly manageable through a stable professional
+entry but are not the new user's first required selection.
+
+Summary statuses must state their evidence: a saved configuration, a Gateway
+check, and a verified client run are different facts. Missing client observation
+is `not checked` or `unknown`, not `disconnected`. Routes may deep-link to the
+existing domain detail without requiring the user to visit four separate pages
+to finish one task.
 
 Provider detail contains:
 
@@ -83,7 +110,36 @@ Provider detail contains:
 - OAuth/browser import only when the provider supports it;
 - API key entry when the provider supports it;
 - quota and usage only when supported or already observed;
-- available models and selected models.
+- discovered models, the allowed-model list, and links to affected processing
+  uses, without treating discovery or list order as a runtime default.
+
+### Processing Uses In The AI Workspace
+
+Organize user-facing choices as `识别文字`, `理解文档`, and `按意思搜索` where a
+real consumer exists. These labels map to the existing OCR, reader/indexer, and
+embedding responsibilities; they do not create a new configuration schema or
+invent a consumer. Show additional uses only when the product actually has them.
+
+Within a use's task detail, show the current effective model, any saved-but-not-
+effective choice, its provider connection, and the action needed next. Adding or
+repairing that connection returns to the same use with its pending choice intact;
+the user need not reconstruct the task from a provider directory.
+
+Before changing a model, show the consequences in that same context:
+
+- which material will be sent to which provider/endpoint, within the existing
+  deployment policy; do not equate saved-in-Pod with local inference;
+- known charging information, or explicitly `cost unknown` when unavailable;
+- affected uses and the known source/index scope that needs rebuilding; do not
+  claim a complete count when the system cannot determine it;
+- what continues before rebuilding, what changes after it, and the available
+  start/defer choices. For a changed embedding scope without reusable vectors,
+  delaying the rebuild leaves text/FTS retrieval only for that scope; do not show
+  semantic search as ready or silently search vectors from another model.
+
+Saving the model assignment, activating it, and starting/finishing an index rebuild
+are separate outcomes. Queue a rebuild only after the user's explicit choice;
+do not present a configuration save or a connection check as a completed rebuild.
 
 ## Concept Boundaries
 
@@ -94,7 +150,7 @@ Provider detail contains:
 | Credential | A provider login, OAuth token, API Key, or local endpoint configuration. | Yes, as connection cards. | User Pod. |
 | Model | A provider model resource. `ChatModel`, `EmbeddingModel`, and similar classes inherit from `AIModel`. | Yes | `@undefineds.co/models` for shared model semantics. |
 | Capability | What a model can do, such as vision, OCR, tools, or structured output. | Only as eligibility/filtering hints. | `@undefineds.co/models`. |
-| Product role | How Xpod uses a model, such as OCR, embedding, reader, indexer, or default chat. | Yes in AI Config, not AI Connections. | Xpod-owned config schema. |
+| Product role | How Xpod uses a model, such as OCR, embedding, reader, indexer, or default chat. | Yes, as supported processing uses in the AI workspace; owned by AI Config. | Xpod-owned config schema. |
 | Xpod API Key | A key accepted by Xpod Gateway for local clients. It is not a provider key. | Yes | Xpod-owned Pod resource. |
 | Client target | A local client config target, such as Codex, Claude Code, Pi, or CodeBuddy. | Yes | Local host adapter plus Xpod API Key metadata. |
 
@@ -193,17 +249,40 @@ bare `apiKey` property:
   skipped, and a Pod holding credentials for several deployments prefers the
   running deployment's own.
 
-Model selection doubles as the embedding allowlist. Discovery keeps embedding
-models (`text-embedding-*`, `embedding-*`, ...) selectable, and once a provider has
-active embedding-typed selections only those models may embed: the first selected
-one becomes the default when the Pod names no model, and a Pod-configured model
-outside the selection is refused. A provider without any embedding selection keeps
-the configured or provider-default model, so a Pod that only picked chat models
-does not silently lose indexing.
+### Discovered, Allowed, And Effective Models
+
+R2 replaces the earlier rule that silently made the first selected embedding
+model the default. This is a product behavior target, not a claim about the current
+resolver. AI Config and the runtime model-selection owner must implement it; a
+frontend label alone cannot establish compliance.
+
+| Fact | Meaning | Must not imply |
+| --- | --- | --- |
+| Discovered model | The provider/catalog reports this model under the current deployment's rules. | The user has allowed it or selected it for a use. |
+| Allowed model | The user permits this model within the applicable provider/deployment policy. | Its position or selection time makes it the embedding default. |
+| Effective assignment | A specific use resolves to an explicit Pod assignment or a valid, trusted deployment default. | Merely saving a list has changed the running model or rebuilt its index. |
+
+Discovery keeps permitted embedding models selectable. An active embedding
+allowlist continues to constrain embedding: a Pod assignment outside that list
+must not execute. Cloud catalog, provider, endpoint, and allowlist restrictions
+above remain mandatory; the workspace cannot offer a way around them.
+
+An existing explicit Pod assignment or trusted deployment default may continue
+when it remains valid under these rules. A Pod that selected only chat models
+does not lose a valid embedding assignment merely because it has no new embedding
+selection. Neither selecting the first model, deselecting a model, sorting a list,
+nor refreshing discovery chooses a replacement execution model. When the current
+assignment becomes invalid, explain the affected use and require a valid choice;
+do not fall back silently. If no lawful, deterministic default exists, the user
+must choose a model in that use before it can run. Display the effective model
+and its source so the user can distinguish a personal assignment from a deployment
+default.
 
 ## Login And Session Model
 
-The product has one visible login path: WebID login through the current Xpod.
+AI Connections has one login entry: the host-owned WebID login through the
+current Xpod. This does not replace the Account-only entry for account, machine,
+and Pod management.
 
 Internally, Xpod may use two independent sessions:
 
@@ -247,26 +326,39 @@ login:
 
 1. The login starts from the current Xpod origin.
 2. CSS may ask the user to create or verify an account.
-3. On first activation, provisioning creates the account's Local Pod and saves
-   its WebID-to-storage binding. Later logins only read the saved binding.
-4. The final WebID and storage URL must bind to the local Xpod service
-   provider, not to an arbitrary Cloud Pod.
+3. Registration creates only the Account. When the authoritative inventory
+   confirms there is no bound Pod, the host offers `Go to Pod management` and
+   cancellation. An inventory read failure or an inaccessible existing Pod is a
+   recovery state, not permission to create. Login, registration,
+   authorization, page entry, and refresh must not prepare or create a Pod.
+4. In Pod management, the user explicitly selects an available Cloud or machine
+   target they can manage and confirms creation. For a Local Pod, provisioning persists
+   the exact WebID-to-storage binding to that selected Local service provider.
+   It must not silently substitute an arbitrary Cloud Pod.
+5. After creation, the host re-reads authoritative bindings and service health,
+   resumes the still-valid authorization transaction, and returns to the original
+   AI Connections task. AI Connections consumes the resulting WebID/Pod
+   capability; it does not perform Account management or grant itself access.
 
-Node registration at Xpod startup and per-account Pod activation are distinct:
-startup registers the Local SP with Cloud; it cannot bind an account before a
-WebID is known. The creation/binding operation is one-time, but the resulting
-binding is durable. An expired provisioning handoff is not an expired login
-session and must not invalidate an already-established binding.
+Managed machine registration and explicit per-account Pod creation are distinct.
+Neither machine registration nor service startup grants Pod ownership or triggers
+creation; Standalone must not require Cloud registration. The resulting binding
+is durable. An expired provisioning handoff is not an expired login session and
+must not invalidate an already-established binding.
 
-If first activation reports success without saving this binding, that is a
+If explicit creation reports success without saving this binding, that is a
 provisioning bug. The UI may offer repair as an exceptional recovery action,
 but ordinary login, refresh, and navigation must not create another Pod or make
 manual repair a required step.
 
-The local first-storage page is an automatic preparation state. It must not ask
-for a Pod name, expose the generic CSS create-Pod form, or render a second card
-inside the login surface. If preparation fails, show one concise recovery state
-with Retry and keep technical details out of the default view.
+Pod management owns the creation form, target selection, and explicit submit.
+The login and authorization surfaces must not embed a second creation form or
+auto-submit one. Preserve a bounded continuation tied to the current Account and
+interaction, not provider secrets. Account switching or interaction expiry starts
+a new authorization; cancelling authorization does not revoke a submitted
+creation task. A timeout must recover the original task and authoritative Pod
+inventory before any new creation attempt. Missing task-recovery support must be
+reported as unavailable, not replaced by automatic resubmission.
 
 The generated WebID and storage URL shown during local login should not surprise
 the user with `localhost` when Cloud has assigned a service provider domain. The
@@ -275,13 +367,18 @@ identity.
 
 ### Cloud-managed Local provision contract
 
+The following transport and binding invariants apply to an explicitly requested
+Managed Local creation or an existing binding's recovery. They do not authorize
+automatic creation during login. The login/host canonical governs entry points,
+machine choice, and task orchestration.
+
 A Cloud-managed Local Xpod is valid only when all of these facts are true:
 
 - `/provision/status` on the Local Gateway reports `managed: true`,
   `registered: true`, the Cloud `oidcIssuer`, and the canonical managed `publicUrl`.
-  A fresh `provisionCode` is required for first activation, not for restoring an
+  A fresh `provisionCode` is required for explicit first creation, not for restoring an
   already-bound identity.
-- For first activation, the `provisionCode` includes the short-lived SP callback credential
+- For explicit first creation, the `provisionCode` includes the short-lived SP callback credential
   (`serviceAccessToken` plus `serviceAccessTokenExp`) and, when the canonical
   managed URL is not directly reachable from Cloud, managed-route credentials
   (`signalApiUrl`, `routeAccessToken`, `routeAccessTokenExp`, and `nodeId`).
@@ -296,13 +393,15 @@ A Cloud-managed Local Xpod is valid only when all of these facts are true:
   `publicUrl=https://id.undefineds.co/`, and
   `cloudApiEndpoint=https://api.undefineds.co`. Do not require a duplicate
   product-facing env var just so provision codes can contain `signalApiUrl`.
-- Cloud account pages use that provision scope when creating or looking up
-  storage. They do not fall back to a generic localhost Pod and do not ask the
-  user to choose a storage location in the Xpod product flow.
+- Pod management uses the verified provision scope for the explicitly selected
+  machine when creating or looking up storage. It must not fall back to a generic
+  localhost Pod or silently replace the user's selected storage target.
 - The OIDC authorization parser must retain `provisionCode`, and the Account
-  page must receive the current interaction's scope before registration or Pod
+  continuation must retain the current interaction's verified scope through
+  Account registration and Pod management. Retaining scope does not trigger
   preparation. A direct API test that supplies the code itself does not cover
-  this Web handoff; fresh Web registration must also be tested end to end.
+  this Web handoff; registration with zero Pods and subsequent explicit creation
+  must also be tested end to end.
 - The resulting WebID is Cloud-issued, while its `solid:storage` points at the
   complete canonical Local Xpod Pod URL (including its Pod path), not just the
   SP origin. The SDK may rewrite network traffic to the
@@ -341,43 +440,90 @@ Xpod has not finished connecting to Cloud, not show raw errors such as
 Xpod API Keys are created for Xpod Gateway. They are reusable across clients
 unless the user chooses to label or apply them to a specific client.
 
-The creation form has:
+### Client Setup Task
 
-- name, required; prefill a sensible editable default so creation never depends
-  on placeholder-only identity;
-- apply-to target, optional;
-- one primary button:
-  - no target: `Create and copy config`;
-  - with target: `Create and apply config`.
+1. Select the client and a permitted model. Keep the selected client, model,
+   connection, and return target throughout the task.
+2. Explicitly choose an existing Xpod API Key or create a key for this client.
+   For a new key, require a name with a sensible editable default. A client label
+   does not itself enforce client-exclusive use or introduce new permissions.
+3. Preview the exact client configuration target, endpoint/model, chosen key
+   identity with a redacted value, and any known overwrite or replacement. Show
+   what the host can inspect and what remains unknown; missing read capability
+   must not be presented as proof that no configuration exists.
+4. Ask for the explicit apply action after that preview. Apply writes the selected
+   client's configuration only through the authorized native capability. If the
+   environment cannot write it, explain that before key creation and offer the
+   client-specific copy path. A successful native apply does not also require
+   manual pasting.
+5. Show the completed stage and the next supported verification action. Return to
+   the client summary without losing partial results.
 
-Selecting a client target changes the action semantics. It must not also require
-the user to paste the same config manually. If the environment cannot write the
-client config, the UI must say that before creation or fall back to copy mode.
+Reusing a key must identify known assigned clients and explain that disabling or
+deleting that key can affect them together. Assignment metadata and observed use
+are not an inventory of every copied key: if other clients or devices may use it,
+state that the complete impact is unknown. Creating a dedicated key can separate
+management, but a label alone must not promise an enforced security boundary.
+
+Key creation and writing a client file are separate operations. If creation
+succeeds and the file write fails, retain the created key's identity and the
+configuration plan. `Retry apply` retries only the write using that same key; it
+must not create another key. Reopen/retry resolves the existing operation result
+and key before proceeding. If recoverable key material is unavailable, explain
+the missing material and offer an explicit alternative rather than silently
+creating a replacement. Cancelling file setup does not delete an already-created
+key; show its retained state and a separate management action.
+
+| Result | What it proves | What it does not prove |
+| --- | --- | --- |
+| Configuration copied or written | The intended configuration was copied, or the host confirmed the target write. | The client has loaded it or can complete a request. |
+| Gateway check passed | The stated Gateway endpoint/key/model check succeeded at the recorded time and scope. | The actual client is configured correctly or running. |
+| Client verified | A supported verification completed through the selected client, with its scope and time shown. | Every later request or every client feature will succeed. |
+| Client verification unsupported / not run | No client-level evidence is available. | The client is ready or disconnected. |
+
+The setup completion view must preserve these distinctions. Do not replace an
+unsupported client test with a green `client ready` label after a Gateway check.
+
+### Professional Key Management
+
+The API Keys entry remains available for creating, listing, copying, enabling,
+disabling, and deleting keys independently of a client setup task. Its creation
+form requires a name and may accept an optional client target; choosing a target
+enters the preview/apply flow above, not an immediate unreviewed configuration
+write. Without a target, copy uses the explicitly selected generic Gateway format.
 
 Copy behavior must be client-specific. Codex, Claude Code, Pi, and CodeBuddy do
 not share one universal environment variable block. The copy action should use
 the selected client format or a clear generic Gateway format when no client is
 selected.
 
-Existing API Key rows are single-line, aligned rows:
+An ordinary API Key row contains its name, one primary description, a meaningful
+status, and at most one direct action. Use the description for the most useful
+identifying fact, such as a redacted suffix or intended purpose; do not pack usage
+statistics, client icons, and multiple action icons into the same row. Detailed
+usage and known client associations belong in the key's detail view.
 
-- key name;
-- redacted suffix;
-- status chip;
-- usage summary;
-- applied client icons;
-- action icons with tooltips.
+Use a clearly named `Key actions` menu for additional actions, with a key-specific
+accessible name. Menu items use accurate text, not ambiguous Stop/Play symbols:
 
-Actions:
-
-| State | Primary status style | Action |
+| State | Visible status | Named action and scope |
 | --- | --- | --- |
-| Active | Active background | Stop icon disables the key. |
-| Disabled | Disabled background | Play icon enables the key. |
-| Deleted | Not shown after refresh | No row remains. |
+| Active | Active | `Disable key` stops access through this key for all its users, including other clients/devices. It does not stop only the currently displayed client or its process. |
+| Disabled | Disabled | `Enable key` restores the key's eligibility for access; it does not prove any client has reconnected or passed verification. |
+| Active or disabled | Current state remains visible until deletion succeeds | `Delete key` removes this key and affects all clients using it; state that impact before submission. |
+| Deleted | Removed after confirmed deletion | No row remains after refresh. |
 
 Disable and enable are a pair. Delete is separate and removes the row after the
-server confirms deletion.
+server confirms deletion. State meaning must remain readable without colored
+backgrounds, and an action menu must not replace visible status text.
+
+Before disabling or deleting a key or provider connection, show known affected
+clients and processing uses in the same action context. Name the source/limits of
+that knowledge; no recorded assignment does not prove there are no consumers.
+If relationships cannot be enumerated, say so without inventing a complete impact
+list. After success, the affected summaries must distinguish unavailable or
+unverified uses from unrelated healthy connections; do not silently move them to
+another key, provider, or model.
 
 ## Secret Handling
 
@@ -397,6 +543,15 @@ record. Recoverable Xpod API Key material is an Xpod product concern and is
 stored in a separate Xpod-owned Pod companion resource; it must not weaken or
 duplicate the shared model's `secretHash` contract. Provider credential records
 are also separate and must never be reused as Gateway client keys.
+
+These rules are object-specific:
+
+| Object | Display and recovery boundary |
+| --- | --- |
+| Xpod API Key | Owner-authorized creation and, when recoverable companion material exists, reveal/copy for cross-device client setup. Existing hash-only records cannot be reversed; missing material must be explained. |
+| Shared `gatewayAccessKeyResource` | Hash-only verification record. Never add plaintext to this shared resource or derive a reveal capability from `secretHash`. |
+| Provider Credential | Separate credential storage and protection contract. Xpod API Key reveal does not authorize provider-secret reveal, copying it into clients, or weakening encryption. |
+| Runtime configuration secret | Keeps its own write-only or redacted configuration contract. Product API Key recovery does not create a runtime-secret reveal operation. |
 
 ### Web Management Contract
 
@@ -426,6 +581,9 @@ Provider setup must reflect real capability:
 - API Key setup stays available for providers that support API keys.
 - Unsupported quota, OAuth, or subscription import must be explicit and quiet,
   not a broken button.
+- The full catalog is an add-connection chooser; ordinary navigation shows the
+  user's connected services. Editing a connection exposes known affected uses
+  and client relationships with the same uncertainty rules as key management.
 
 OpenAI subscription, OpenAI API Platform, provider API Keys, and Xpod API Keys
 are different things. Labels must make that clear.
@@ -436,22 +594,24 @@ Errors should be written for users, with technical detail one click away.
 
 Rules:
 
-- Never mount the product shell behind the login gate.
-- Never show two login cards for one login path.
-- Account initialization uses the same compact `AuthSurface` dimensions as
-  sign-in. Xpod passes its host mode explicitly: a browser shows one card,
-  while the desktop login window is the surface itself. Loading must not fall
-  back to the generic wide card or add its own size rules.
-- Never leave `/auth/callback` or `/.account/*` as a blank page after failure.
-- Never show raw stack traces in the list pane.
-- Loading must have a timeout, a retry action, and the current authority it is
-  waiting for.
-- Stale OIDC client metadata should be cleared and re-registered automatically
-  when the identity provider reports `unknown client`.
-- A failed WebID restore should land on the remembered identity card with a
-  reconnect action.
-- A failed provider/API Key read should preserve the page and show a scoped
-  inline error, not block unrelated providers.
+- Required-session routes show the appropriate authentication scene, without
+  protected content behind it. They do not gate unrelated authorized local or
+  Account tasks or create a second Account form inside AI Connections.
+- Scene and sizing follow the September 6 Account/WebID contract and R2 spec
+  section 5: compact applies only to short authentication; Account documents
+  retain their full layout. Business bodies do not choose window geometry.
+- Never leave callbacks or Account pages blank after failure. Use the shared
+  phase feedback; 300ms/10s presentation thresholds are not authentication
+  timeouts and cannot reset authority or start another transaction.
+- Retry/reconnect follows the current canonical failure classification. An
+  error is not anonymous; remembered identity is only a display hint. Do not
+  clear/re-register OIDC metadata or exchange an old code in a module-local
+  recovery path; protocol recovery belongs to the existing authority owner.
+- Provider/API Key read failures stay scoped, retain safe inputs/known progress,
+  and do not block unrelated providers. A completed key creation is never
+  repeated just because client configuration failed.
+- Main feedback names the failed step and its task impact; technical details
+  are available on demand, never raw stack traces in the object list.
 
 ## Package Responsibilities
 
@@ -472,7 +632,7 @@ Rules:
 Durable user AI data is stored in the user's Pod:
 
 - provider credentials;
-- selected models;
+- allowed models and separately owned per-use model assignments;
 - Xpod API Keys;
 - API Key client assignments;
 - usage summaries when persisted;
@@ -490,25 +650,45 @@ Local-only data is limited to:
 Web acceptance is first:
 
 1. Fresh profile shows one WebID login path.
-2. Account verification and Pod creation complete without blank pages.
-3. Exact local Pod binding is automatic after provisioning.
+2. Account registration/verification completes with zero Pods and no preparation
+   or creation side effect. A Pod-dependent task offers Pod management and cancel.
+3. Pod management creates only after explicit confirmation, persists the exact
+   chosen binding, and safely resumes the original task. Refresh, timeout, failed
+   inventory reads, account switching, and expired continuations do not create
+   duplicates or resume under the wrong identity.
 4. Cloud-managed Local uses a provision code with route credentials when direct
    public access is unavailable; no `localhost` WebID/storage fallback appears.
 5. AI Connections loads from the optimal reachable Pod path while preserving the
    canonical Cloud WebID and Local SP storage identity.
 6. Provider API Key can be saved to the Pod and reloaded.
-7. Models can be refreshed and selected.
-8. Xpod API Key can be created, listed, disabled, enabled, deleted, and copied
-   or applied according to the selected client target.
+7. Discovery, allowed models, and effective use assignments remain distinct.
+   Reordering or changing the list does not silently select an embedding default;
+   invalid or missing assignments require an explicit valid choice. Cloud policy
+   restrictions still apply at the runtime boundary.
+8. Xpod API Key management remains available. Client setup supports explicit
+   reuse/new-key choice and a configuration preview before applying or copying.
+   A failed write after key creation retries with the same key. Configuration,
+   Gateway checks, and actual client verification have separate results, including
+   unsupported verification.
 9. `/v1/models` returns the selected model projection through Xpod Gateway.
 10. `/v1/chat/completions` returns a real chat response through Xpod Gateway.
+11. The first-use AI workspace offers the two task entries; daily use shows
+    connected services, known client states, and actual processing uses. A use's
+    model change presents data destination, known/unknown cost, affected scope,
+    and rebuild/defer consequences without a forced tour of separate pages.
+12. Disabling/deleting a connection or key presents known dependencies and
+    unknown impact boundaries; it does not silently substitute another model or
+    credential.
 
 Desktop acceptance follows after the Web chain passes:
 
 1. Red close hides the window and keeps tray plus owned services alive.
 2. Reopen does not flash a login card while sessions are still valid.
 3. Quit is explicit and does not masquerade as sign-out.
-4. Tray icon is the shield mark with state overlay, not a blank square.
+4. Tray identity follows the selected Xpod folded-corner brand assets and the
+   shared platform-specific tray specification. Preserve legibility and semantic
+   state indicators; do not retain the old shield as a new design requirement or
+   invent page-specific tray variants.
 5. Native client apply works for supported clients and clearly falls back to
    copy for unsupported environments.
 
@@ -517,11 +697,13 @@ Desktop acceptance follows after the Web chain passes:
 P0:
 
 - one WebID login path;
-- automatic local Pod binding;
+- exact local Pod binding after explicit creation, plus safe task continuation;
 - AI Connections reads and writes Pod data;
 - provider credential save and reload;
 - Xpod API Key CRUD;
-- client-specific copy/apply semantics;
+- continuous client setup, explicit key reuse, preview, and partial-failure recovery;
+- discovered/allowed/effective model separation without order-based defaults;
+- processing-use configuration with data/cost/rebuild consequences;
 - `/v1/models` and real chat through Gateway.
 
 P1:
@@ -540,13 +722,19 @@ P2:
 
 ## Documentation Authority
 
-Use this order when documents disagree:
+Resolve conflicts by responsibility, as defined in the
+[Product Design Charter](product-design-charter.md):
 
-1. This file.
-2. Current implementation evidence from the running Xpod stack.
-3. Current package READMEs and API docs.
-4. Acceptance evidence.
-5. Historical specs, plans, audits, and screenshots.
+1. Login, identity, Pod creation, and host lifecycle follow the September 19
+   canonical; non-login authentication follows the August 30 authority boundaries.
+2. This file governs AI Connections behavior, provider/client responsibilities,
+   and Xpod API Key product semantics within those boundaries.
+3. Cross-module interaction and selected branding follow the product experience
+   spec and its cited Shell/brand authorities.
+4. Package contracts remain authoritative for their shared models and APIs;
+   product convenience cannot weaken the hash-only key contract.
+5. Implementation, acceptance reports, and screenshots are dated evidence of
+   observed behavior. A mismatch is a deviation to resolve, not a new design rule.
 
-Any old document that describes another login path, another API Key model, or
-another product IA must be treated as historical until updated.
+Implementation acceptance above requires runtime evidence. A document-only design
+alignment does not run that acceptance or claim implementation completion.

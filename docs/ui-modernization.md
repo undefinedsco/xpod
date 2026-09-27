@@ -1,16 +1,29 @@
 # Xpod 前端设计原则与参考系
 
-> 本文是当前前端设计权威说明。旧版内容描述的 EJS/Vanilla 实施路线、Neo-Brutalism + Glassmorphism 视觉方向、默认 Dark Mode 已废止；现行实现以 React/Vite、`@undefineds.co/shared-ui` 和 `@undefineds.co/extension-sdk/react` 为准。
+> **R2 修订（2026-09-27）**：本轮重新判断导航和密度，采用「概览、存储空间、AI、服务与访问」四入口与按需对象列，替代旧五工作区和强制三栏。这是本轮设计结论，不是追认用户过去锁定的决定。业务权威、权限和数据归属不随导航合并。
 
-## 1. 当前形态
+> **跨模块自查入口（2026-09-27）**：[产品与体验纲领](product-design-charter.md)统一产品职责、交互判断、品牌映射与规范裁决；[AI 自查模板](product-design-self-review-template.md)统一交付方式。本文继续负责前端组件、布局协议和实现归属。实施时同时遵循[2026-09-27 产品体验 spec](superpowers/specs/2026-09-27-xpod-product-experience-spec.md)的主题映射、密度、状态与验收契约；本文只同步主 spec 的布局和密度契约，不制定独立尺寸或颜色。旧视觉描述不能覆盖新选定品牌；`success / warning / destructive` 的语义继续保留，具体配色由公共主题统一映射，不由页面自行添加。主站未覆盖的深色主题不等于取消产品已有系统主题要求。
 
-Xpod 前端由多个 surface 组成：`status`、`network`、`ai-connections`、`ai-config`、`settings` 与遗留 `dashboard` 入口。各 surface 可以独立加载，但必须共享同一套设计系统和交互协议。
+> 本文规定前端的组件与归属边界，不证明当前发布包已完成迁移。旧版内容描述的 EJS/Vanilla 实施路线、Neo-Brutalism + Glassmorphism 视觉方向、默认 Dark Mode 已废止；前端方案以 React/Vite、`@undefineds.co/shared-ui` 和 `@undefineds.co/extension-sdk/react` 为基线。认证展示的具体范围以[9 月 6 日前端重设计](superpowers/specs/2026-09-06-auth-frontend-redesign.md)为准，认证与 Pod 生命周期以[9 月 19 日 canonical](superpowers/specs/2026-09-19-xpod-login-and-host-design.md)为准。
 
-当前分层：
+## 1. R2 产品组织
+
+完整 Shell 采用四个带文字的任务入口：**概览、存储空间、AI、服务与访问**；默认进入概览。旧的 `status`、`network`、`ai-connections`、`ai-config`、`settings` 是路由或业务模块，不再逐一决定顶层导航。遗留 `dashboard` 作为兼容入口处理，不新增第二套导航。
+
+| 入口 | 内容组织 | 保留的业务边界 |
+| --- | --- | --- |
+| 概览 | 先可用结论、范围、推荐地址、空间；正常服务一行摘要，异常按影响前置 | 摘要消费各领域事实，不制造合成健康/认证状态；未配置可选 AI 不报警 |
+| 存储空间 | 复用 `/settings/pod`；位置、访问、用量、搜索与索引按选中空间组织 | Account 管理准入；Pod 内容/授权按各自权限；状态、策略、重建各保留原 owner |
+| AI | 连接提供方、可用模型、用途选择、客户端接入连续导航 | AI Connections 与 AI Config 业务、凭据和权限分开 |
+| 服务与访问 | 本机服务/运行设置；访问与连接、对外访问设置、诊断 | 本机权限、网络观测、服务生命周期不合并；高级端点进开发者连接信息 |
+
+取消 Status 常驻技术列表；服务、用量、索引保留稳定详情链接。RDF、FTS、Vector、cache、slow queries、benchmark 等留在专业详情，不能占据普通概览或常驻第二列。只展示实际支持的网络接入方法，不把规划能力做成空页面。
+
+前端分层：
 
 ```text
 @undefineds.co/shared-ui
-  纯展示组件、token、基础交互、认证展示
+  纯展示组件、语义 token、基础交互、通用 WebID 展示
 
 @undefineds.co/extension-sdk/react
   状态/能力/布局协议适配，不拥有视觉系统
@@ -26,14 +39,15 @@ ui app / applet
 `shared-ui` 只负责：
 
 - Button、Card、Input、Badge、Dialog、Switch、Toast 等 primitives
-- `AuthSurface`、登录、注册、OIDC consent、Storage bootstrap 等公共展示视图
+- `AuthSurface` 等无业务展示容器，以及 WebID 登录、恢复、跳转、回调等待和协议错误的通用视图
+- 通用 WebID 资源选择/发现的纯展示；不得拥有 Xpod Account 的注册、CSS consent 或 Pod 创建业务
 - Tailwind semantic token、focus 样式、`cn()` 合并规则
 - 可通过 props/copy 注入的展示状态和文案
 
 `shared-ui` 不负责：
 
 - 网络请求、路由、Solid、Pod、账户业务
-- 具体产品文案
+- 具体产品文案、Xpod Account 表单和业务步骤
 - 页面级布局协议
 - 与宿主能力耦合的状态机
 
@@ -41,19 +55,20 @@ ui app / applet
 
 `extension-sdk/react` 只负责：
 
-- `AppLayout`、`TwoPaneLayout` 等布局协议
+- `AppLayout`、`TwoPaneLayout` 等布局协议：默认带文字导航 + 内容；仅真实对象集合使用可选对象列，响应式共享一次实现
 - Solid/auth boundary 的状态到视图适配
 - 宿主能力注入和回调接线
 
-它不应重新实现 shared-ui 已有视图，也不应烘焙不可覆盖的用户可见文案。
+它不应重新实现 shared-ui 已有视图，也不应烘焙不可覆盖的用户可见文案。适配只消费既有 authority；不能新增 Account + WebID + Pod 组合会话，也不能因为安装了 provider 就让所有路由启动 WebID 恢复。
 
 ### 2.3 ui app / applet
 
 应用层负责：
 
 - 业务数据加载与状态映射
-- 中文产品文案
-- 路由和页面组合
+- 产品文案与国际化输入（包括中文文案）
+- Xpod Account 登录、注册、找回/重设、CSS consent，以及 Pod 管理的表单与业务步骤；复用基础 primitives，不把业务下沉 shared-ui
+- 路由和页面组合；由应用宿主按显式场景选择窗口几何与恢复焦点，layout 或表单不操作宿主窗口
 - 通过 shared-ui primitives 搭建页面
 
 应用层不得复制 Button、Card、Input 等基础组件，不得绕过 package exports 引用内部文件。
@@ -63,25 +78,42 @@ ui app / applet
 1. **Token 先行**：颜色、圆角、阴影、间距均来自 `shared-ui/theme.css` 的语义 token；禁止字面色值和页面级私有主题。
 2. **Primitive 唯一**：同一语义的 Button、Card、Input、Badge、Select 只有一份实现；差异通过 variant 或 `className` 表达。
 3. **同类交互同构**：primary/secondary/destructive/ghost、hover/focus/disabled/selected 在所有 surface 一致。
-4. **一个场景一个外壳**：认证用 `AuthSurface`，产品用 `AppLayout`，双栏工作区用 `TwoPaneLayout`。
-5. **桌面优先，移动适配**：默认按桌面 App Shell 设计；窄屏使用共享 stack/pane 行为，不各页面自写移动逻辑。
-6. **视觉克制**：以浅色中性背景、紫色 primary、清晰边框和轻量阴影为现行语言；不恢复旧版 Neo-Brutalism/Glassmorphism 方向。
+4. **一个场景一个外壳**：WebID 短流程复用通用认证容器；Xpod Account Web 使用自有 WebAccount 文档布局，不能统一挤进 compact 小窗。产品用 `AppLayout`；`TwoPaneLayout` 只服务真实对象集合的列表/详情，不要求每个页面都三栏。业务 body 不叠第二层外框或固定高度滚动。
+5. **文字导航，按需分栏**：默认 184 px 带文字导航 + 内容；达到 1100 px 且有真实对象集合时，才加 224 px 对象列。窄屏使用下述统一行为，不各页面自写移动逻辑，也不以图标 rail 节省标签。
+6. **品牌映射统一**：浅色主题采用已选定的纸色画布、墨紫操作和深色文字，通过 shared-ui 语义 token 统一落地；使用选定 Xpod 留缝折角 Logo 与对应尺寸资产，保留旧资产。具体值与浅/深色、状态、托盘资产映射入口见产品体验 spec。不恢复旧版 Neo-Brutalism/Glassmorphism 方向，也不把紫色用作全部状态色。
+7. **密度属于产品**：功能界面使用无衬线、清晰行组和稳定控件密度。官网 Hero、书信排版、section 大留白不进入常规工作区；窄窗、放大文字和长错误的完整可达性优先于固定高度。
+8. **跟随系统主题**：公共主题、页面首帧和宿主窗口背景共同响应系统；深色主题由公共设计一次定义，不由模块私配，也不因官网只有浅色就取消现有深色能力。
+
+### 3.1 布局与密度契约
+
+以下同步产品体验 spec R2，不能由模块分别解释：
+
+| 场景 | 要求 |
+| --- | --- |
+| ≥ 1100 px | 184 px 文字导航 + 内容；仅真实对象集合可加 224 px 对象列，概览与单表单不留空列表栏 |
+| 768–1099 px | 文字导航 + 对象列表或详情；详情返回恢复选中、位置与焦点 |
+| < 768 px | 48 px 顶部任务栏 + 带标签导航抽屉，保留任务标题/返回；不使用五个底部 Tab |
+| 桌面精确指针 | 普通控件/可操作行最小 36 px；只读诊断行 28–32 px；双行对象最小 56 px |
+| 粗指针 | 可操作目标最小 44 px，双行对象最小 60 px |
+| 认证 | 主操作最小 44 px；Web Account 与短 WebID 窗口继续按各自场景布局 |
+
+密度通过分组、层级与有意义的行距控制，不通过缩小字体实现。高度是下限；长文案、错误和字体放大允许增高。诊断的只读密度不授权缩小按钮/复制等操作命中区。窗口变化保留选中目标、安全输入和深链上下文。
 
 ## 4. 交互原则
 
 1. **可访问性默认完成**：语义 HTML、正确 `aria-*`、键盘可达、modal focus trap、Escape 关闭、错误 `role="alert"`。
 2. **Focus 只有一种语言**：使用 shared-ui 的 `controlFocusClass` / `interactiveFocusClass`；不叠加 ring，不画双层框。
-3. **状态机显式化**：loading、anonymous、authenticated、error、pending、empty 都有明确 UI；异步操作期间禁止重复提交。
-4. **文案注入**：shared-ui 提供中性默认值，宿主/产品注入中文文案；SDK 不新增不可覆盖的用户可见文案。
+3. **状态如实投影**：分别消费 Account、WebID、Pod、表单及资源的领域状态；loading、错误、空数据等有对应 UI，但不把这些词拼成新全局状态机。等待反馈时机采用产品体验 spec；展示计时不改变认证事实。异步提交期间防重复，重试保持原操作范围。
+4. **文案注入**：shared-ui 的无业务视图可提供中性默认值，宿主/产品注入具体文案与国际化输入；SDK 不新增不可覆盖的用户可见文案。
 5. **反馈统一**：成功、警告、失败、进行中使用统一 Badge/Toast/alert 语义；通知位置和 z-index 不散落。
-6. **导航克制**：同 surface 内使用客户端路由；跨 surface 允许整页跳转，但必须恢复用户原始 deep link。
-7. **危险操作显式确认**：destructive 操作需要明确确认路径，不能只靠颜色暗示。
+6. **任务连续，深链稳定**：按四入口组织页面；同 surface 内使用客户端路由，跨 surface 可整页跳转但恢复安全的任务/目标 deep link。AI 的连接与用途、空间的搜索状态与策略可以同处任务流，不能因此复制业务逻辑或扩大权限。
+7. **后果与确认相称**：删除资料、扩大访问或停止服务等有实际后果的操作明确对象、范围和恢复能力，按领域契约确认；普通可逆保存不统一增加确认弹窗。不能只靠颜色表达风险。
 
 ## 5. 参考系
 
 ### 5.1 产品参考：Agent OS / Desktop App Shell
 
-Xpod 的前端不是营销网站，而是 Agent OS 的桌面式控制面。设计目标是轻量、沉浸、可键盘操作、可迁移 Electron。
+Xpod 的前端是管理本机服务、网络、AI 接入和配置的桌面式控制面。Agent OS 是技术定位，不要求用户先学习架构；设计目标是状态看得懂、操作可控、诊断可达、键盘可用。它不复制 LinX 工作流，也不因资料归属叙事改成网盘首页。
 
 ### 5.2 桌面参考：Apple HIG
 
@@ -112,32 +144,44 @@ Consent 页面参考 GitHub OAuth 与标准 OIDC 授权体验：明确 client、
 
 WeChat 只作为移动端和对话场景参考：
 
-- 列表密度、Action Sheet、Tab 导航
+- 列表密度、Action Sheet、触摸操作反馈（不据此为 Xpod 引入底部 Tab）
 - 二维码/授权确认路径
 - 聊天消息流与窄屏操作
 
 不把 WeChat 的品牌色、组件皮肤或小程序限制搬进 Xpod。
 
-## 6. 当前必须收敛的分叉
+## 6. 收敛规则与历史债务
 
-以下事项是已确认的设计系统债务，新增代码不得继续扩大：
+以下是归属规则。旧稿点名的文件和组件是历史待核对项，不能据此宣称当前版本仍有重复实现，也不能跳过消费者核对直接删除共享导出。
 
-1. `ui/src/components/ui/` 下的本地 Button/Card/Input 是 shared-ui fork，应删除或迁移。
-2. `shared-ui/src/workspace.tsx` 与 extension-sdk 的 `TwoPaneLayout` 重复，workspace 协议只保留 SDK 一份。
-3. SDK 内的 `StorageSelectionView` 应下沉为 shared-ui 展示组件。
-4. `LoginCardShell` 与 `AuthSurface` 重叠，认证外壳只保留 `AuthSurface`。
-5. Account/About/Chat 等页面不得继续手写平行按钮、输入框和页面壳。
-6. 用户可见文案必须由 app 注入；SDK/shared-ui 的默认值只做中性兜底。
-7. 成功、警告、失败颜色必须走 `--success`、`--warning`、`--destructive` token。
+1. 应用层已有 primitive 若确为 shared-ui 的重复副本，应收敛到公开出口；先区分业务组合与真正 fork，不删除必要业务视图。
+2. workspace 布局协议归 extension-sdk，shared-ui 提供其所需视觉 primitives；收敛为 R2 的文字导航、按需对象列及共享窄窗行为。复用布局能力不等于保留旧强制三栏；迁移时保留宿主、applet 的必要权限与任务契约。
+3. `StorageSelectionView` 只有无业务资源选择展示可以进入 shared-ui；绑定发现由 SDK 消费权威，Xpod Account 的 Pod 清单、显式创建及恢复编排归 Xpod，不能因视图名称相似一并下沉。
+4. WebID 的 `LoginCardShell`、`AuthSurface` 等容器按 9 月 6 日契约收敛；Xpod Account body 与 WebAccount layout 保留自身职责。历史导出有其他产品消费者时先安排兼容迁移，不能用“一种外壳”强制删掉所有 Account 页面布局。
+5. Account/About/Chat 等页面复用公共按钮、输入框和焦点规则，业务表单及页面组合仍由各自应用拥有。
+6. 用户可见文案由 app 注入；SDK/shared-ui 的默认值仅为中性兜底。共享视图不得携带具体产品的 Account、授权或创建流程。
+7. 成功、警告、失败保留 `--success`、`--warning`、`--destructive` 语义；主题色值、前景/背景组合、焦点与选中反馈由公共主题统一，页面不复制。
+
+任何清理必须先核对实际前端引用和兼容消费者，独立记录“目标归属 / 当前表达 / 待迁移项”。本文本轮仅修正规范，不执行代码删除。
 
 ## 7. 新代码检查清单
 
 提交前端代码前，逐项确认：
 
 - [ ] 是否只从 `@undefineds.co/shared-ui` 或 `@undefineds.co/extension-sdk/react` 的公开出口导入？
-- [ ] 是否没有复制 shared-ui 已有 primitive 或布局协议？
+- [ ] 是否没有复制 shared-ui 已有 primitive 或布局协议，且没有以复用为理由强制所有页三栏？
 - [ ] 是否没有字面色值、私有 focus、私有 z-index、私有页面壳？
 - [ ] 是否所有用户可见文案都可由宿主/产品注入？
 - [ ] 是否键盘可达、focus 正确、错误状态可感知？
 - [ ] 是否同 surface 内使用客户端路由，跨 surface 能恢复 deep link？
 - [ ] 是否没有为了当前页面引入“以后再说”的第二份实现？
+- [ ] Account、WebID、Pod 是否沿用领域权威，局部资源失败不会全局锁住无关路由？
+- [ ] Web Account 文档、WebID 短流程、宿主窗口是否各按场景使用一个容器，未互相套用尺寸？
+- [ ] 等待、错误、空态、禁用、焦点、选中以及系统浅/深色是否采用统一主题与反馈契约？
+- [ ] 是否区分设计要求、前端表达和发布验证，未把历史文档标签当成当前版本通过？
+- [ ] 是否只有概览、存储空间、AI、服务与访问四个带文字入口，旧路由被映射而未恢复旧五工作区？
+- [ ] 概览是否先可用结论/范围/地址/空间，服务正常时一行摘要，且可选 AI 未配置不报警？
+- [ ] 对象列是否来自真实集合，空态和单表单没有多余列表栏，窄窗是否按列表/详情及任务栏/抽屉过渡？
+- [ ] 精确指针、粗指针和认证操作是否按统一密度区分，字体未被缩小，长文案仍完整可达？
+- [ ] 服务/用量/索引专业详情是否有稳定入口，网络设置是否仅呈现实际支持方法，旧深链是否落在正确任务与对象？
+- [ ] AI 导航合并、空间搜索状态/策略/重建聚合后，是否仍使用原业务 owner 与权限，未创造第二份配置事实？

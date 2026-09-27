@@ -1,5 +1,7 @@
 # Xpod 轻量设置界面设计
 
+> 适用范围校正（2026-09-27）：本文保留 7 月的轻量设置设计及模块边界依据，不再作为完整桌面的导航或登录规范。当前信息架构由 [Shell 规范](2026-08-09-xpod-shell-information-architecture-design.md) 决定；登录与显式 Pod 创建由 [9 月 canonical](2026-09-19-xpod-login-and-host-design.md) 决定；AI 接入与客户端密钥由 [AI Connections 产品规范](../../ai-connections-product-spec.md) 决定。跨模块实施遵循 [产品体验 spec](2026-09-27-xpod-product-experience-spec.md)。下文的四入口、issuer 输入和阶段验收保留为历史设计，不得用其覆盖上述规范；安全与共享数据契约仍须按对象保持。
+
 ## 决策
 
 Xpod 不再被定义为“完全无界面的 Gateway 后端”。Xpod 仍以后台服务为主体，但安装后提供一个可从托盘或本地入口打开的轻量设置界面。它与 Linx 使用同一套 Applet SDK、布局、认证展示和业务 applet；区别只在 host 入口和 host capability。
@@ -96,10 +98,12 @@ Models 还提供：
 - 默认模型和模型目录。
 - Credential 健康状态、重新授权和删除。
 - Provider 官方支持的余额/额度窗口；不支持时显示 `unsupported`。
-- Gateway Key 的创建、撤销和一次性明文展示。
+- Xpod API Key（本稿旧称 Gateway Key）的创建、禁用/启用、删除，以及当前所有者授权的展示/复制。创建时返回明文；跨设备重新配置时，仅可从 Xpod 专属 companion resource 恢复已有材料，不能从 hash 反推。旧记录没有可恢复材料时，明确说明缺失，不继续用“一律只展示一次”作为产品规则。具体契约以 AI Connections 规范为准。
 - Codex、Claude Code、Pi、CodeBuddy 的检测、预览、应用、验证与恢复。
 
 编码客户端只获得 Gateway Key，不获得 Provider Credential。
+
+上述展示规则只针对 Xpod 客户端密钥：共享 `gatewayAccessKeyResource` 仍仅保存 hash；Provider Credential 继续遵守下文的独立保护要求；运行配置密钥继续遵守只写/脱敏要求。不得把客户端密钥的恢复能力推广为所有 secret 的通用展示操作。
 
 ### Pod
 
@@ -202,7 +206,7 @@ Capability 返回 `supported`/`unsupported` 和原因，避免 applet 猜测部�
 
 - Solid OIDC redirect/session 恢复。
 - drizzle-solid 对 Provider/Credential/Gateway Key/Quota Snapshot 的 CRUD。
-- Pod 中无明文，跨 WebID 不可读。
+- Provider Credential 按本节 envelope encryption 要求保护，跨 WebID 不可读；共享 Gateway Key 记录保持 hash-only。Xpod 客户端密钥的可恢复材料单独按 AI Connections companion resource 契约验证，不将“Pod 中无明文”泛化为覆盖该产品契约。
 - Connect callback/device flow 与过期处理。
 - Network/Services 管理 API。
 - 四个编码客户端的 plan/apply/verify/restore。
