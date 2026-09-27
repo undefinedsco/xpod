@@ -25,9 +25,10 @@ function installDom(url = 'https://pod.example/dashboard/network', compact = fal
   globalThis.Event = dom.window.Event;
   globalThis.MouseEvent = dom.window.MouseEvent;
   window.open = mock(() => null) as unknown as typeof window.open;
-  window.matchMedia = mock(() => ({
-    matches: compact,
-    media: '(max-width: 767px)',
+  // 按查询回答：布局现在分别问"是否窄窗"（767）与"是否够放对象列"（1100 内容 + 184 导航列）
+  window.matchMedia = mock((query: string) => ({
+    matches: /max-width/u.test(query) ? compact : false,
+    media: query,
     addEventListener: mock(() => undefined),
     removeEventListener: mock(() => undefined),
   })) as unknown as typeof window.matchMedia;

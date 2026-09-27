@@ -104,7 +104,8 @@ describe('dashboard runtime console routes', () => {
     expect(productLayout).toContain('ProductNavLinks');
     expect(productLayout).toContain('globalNavigationItems');
     expect(productLayout).toContain('getRailNavItemClass');
-    expect(productLayout).toContain('sr-only');
+    // §3.1/§8.3：宽窗是 184px 文字导航，标签直接可见，不再用 sr-only 图标栏
+    expect(productLayout).toContain('<span className="truncate md:inline">{item.label}</span>');
     expect(adminLayout).toContain('Outlet');
     expect(adminLayout).not.toContain('useState<AdminPage>');
     expect(sidebar).toContain('NavLink');
@@ -121,7 +122,9 @@ describe('upgraded dashboard pages', () => {
     const indexCss = await readRepoFile('ui/src/styles/global.css');
     const button = await readRepoFile('ui/src/components/ui/Button.tsx');
 
-    expect(indexCss).toContain('Flat taro');
+    // W1：颜色只在 @undefineds.co/shared-ui 的单一映射里，产品 CSS 不再自带调色板
+    expect(indexCss).toContain("@import '@undefineds.co/shared-ui/theme.css';");
+    expect(indexCss).not.toContain('Flat taro');
     expect(indexCss).not.toContain('Primary: Violet (#7C3AED / #8B5CF6)');
     expect(indexCss).not.toContain('--primary: 262.1 83.3% 57.8%;');
     expect(indexCss).not.toContain('--primary: 263.4 70% 50.4%;');
@@ -134,13 +137,13 @@ describe('upgraded dashboard pages', () => {
 
     expect(productLayout).toContain("import { AppLayout }");
     expect(productLayout).toContain('flex h-full w-full flex-row items-center');
-    expect(productLayout).toContain('sm:min-h-full sm:flex-col');
-    // The icon-only rail sizing lives in the shared nav-item style helper,
-    // applied to every ProductNavLinks entry.
+    expect(productLayout).toContain('md:min-h-full md:flex-col');
+    // §8.3：宽窗是带文字的 184px 导航行，不是图标按钮
     expect(productLayout).toContain('getRailNavItemClass(active)');
-    expect(productLayout).toContain("'text-sm'");
-    expect(navItemStyle).toContain('h-9 w-9');
-    expect(navItemStyle).toContain('flex items-center justify-center');
+    expect(productLayout).toContain('truncate md:inline');
+    expect(navItemStyle).toContain('h-9 items-center gap-3');
+    expect(navItemStyle).toContain('px-3');
+    expect(navItemStyle).not.toContain('justify-center');
     expect(productLayout).toContain('ProductNavLinks');
     expect(productLayout).not.toContain('min-height: 11.75rem;');
   });

@@ -7,17 +7,16 @@
 //   - 登录成功不依赖 Pod 就绪；
 //   - 已登录但无 Pod 的用户落到 Account 管理，而不是 create-pod。
 //
-// 这些断言在当前实现下**预期失败**：先补失败回归，再按 §8 第 2 步拆分创建入口。
+// W3 回归：注册只创建 Account，不创建 Pod；已登录但无 Pod 的用户落到 Account 管理。
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import { WelcomePage } from './WelcomePage';
 
-const flow = vi.hoisted(() => ({ complete: vi.fn(), retry: vi.fn(), login: vi.fn(), bootstrap: vi.fn() }));
+const flow = vi.hoisted(() => ({ retry: vi.fn(), login: vi.fn(), bootstrap: vi.fn() }));
 vi.mock('../utils/registration-flow', async (importOriginal) => ({
   ...await importOriginal<typeof import('../utils/registration-flow')>(),
-  completeRegistrationProvisioning: flow.complete,
   retryRegistrationReadiness: flow.retry,
   loginAccountPassword: flow.login,
   bootstrapAccountPasswordLogin: flow.bootstrap,
@@ -82,7 +81,6 @@ it('注册成功后不再自动创建 Pod，也不进入存储确认状态', asy
   await waitFor(() => expect(flow.login).toHaveBeenCalledTimes(1));
 
   // 注册不得触发 provisioning（prepare / 创建 / 就绪重试都不得发生）。
-  expect(flow.complete).not.toHaveBeenCalled();
   expect(flow.retry).not.toHaveBeenCalled();
 
   // 也不得进入"正在确认存储空间"这一建 Pod 专属状态。

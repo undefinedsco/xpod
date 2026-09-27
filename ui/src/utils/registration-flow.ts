@@ -1,11 +1,10 @@
 import { scopeAccountUrl } from './account-interaction-url';
 import { xpodRegistrationCopy } from '../auth/xpod-account-copy';
-import { buildPodCreatePayload, resolveCurrentProvisionTarget, resolveProvisionCodeForPodCreate } from './pod';
+import { resolveCurrentProvisionTarget, resolveProvisionCodeForPodCreate } from './pod';
 import { accountTokenHeaders } from './account-session';
 import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 import {
   lookupProvisionScopedWebIds,
-  prepareProvisionedPod,
   storageUrlBelongsToRoot,
 } from './provision-scope';
 import { isRecord, readResponseMessage } from './errors';
@@ -121,28 +120,6 @@ interface ConsentCheckResponse {
   client?: unknown;
 }
 
-function extractConflictResourceUrl(message: string): string | undefined {
-  return message.match(/There already is a resource at\s+(\S+)/iu)?.[1];
-}
-
-function isUsernameConflict(message: string | undefined, username: string): boolean {
-  if (!message) {
-    return false;
-  }
-
-  const resourceUrl = extractConflictResourceUrl(message);
-  if (resourceUrl) {
-    return podUrlMatchesUsername(resourceUrl, username);
-  }
-
-  const podName = message.match(/Pod name "([^"]+)" is already taken/iu)?.[1];
-  if (podName) {
-    return podName === username;
-  }
-
-  return /Username already taken/i.test(message);
-}
-
 function isDuplicateEmail(message: string | undefined): boolean {
   if (!message) {
     return false;
@@ -201,58 +178,6 @@ async function readAccountWebIdResponse(response: Response): Promise<AccountWebI
   return {
     webIdLinks: value.webIdLinks,
   };
-}
-
-async function hasExistingPod(
-  fetchImpl: typeof fetch,
-  accountPodUrl: string,
-  accountWebIdUrl: string | undefined,
-  username: string,
-  accountToken: string,
-  provisionCode?: string,
-): Promise<boolean> {
-  if (provisionCode) {
-    return hasExistingProvisionScopedPod(fetchImpl, accountWebIdUrl, username, accountToken, provisionCode);
-  }
-
-  const res = await fetchImpl(scopeAccountUrl(accountPodUrl), {
-    headers: accountTokenHeaders(accountToken),
-    credentials: 'include',
-  } as RequestInit);
-  if (!res.ok) {
-    throw new Error(await readErrorMessage(res) || `Account pod query failed (${res.status})`);
-  }
-
-  const data = await readAccountPodResponse(res);
-  return Object.keys(data.pods ?? {}).some((podUrl) => podUrlMatchesUsername(podUrl, username));
-}
-
-async function hasExistingProvisionScopedPod(
-  fetchImpl: typeof fetch,
-  accountWebIdUrl: string | undefined,
-  username: string,
-  accountToken: string,
-  provisionCode: string,
-): Promise<boolean> {
-  if (!accountWebIdUrl) {
-    throw new Error('WebID listing endpoint not found. The account API did not expose controls.account.webId.');
-  }
-
-  const res = await fetchImpl(scopeAccountUrl(accountWebIdUrl), {
-    headers: accountTokenHeaders(accountToken),
-    credentials: 'include',
-  } as RequestInit);
-  if (!res.ok) {
-    throw new Error(await readErrorMessage(res) || `Account WebID query failed (${res.status})`);
-  }
-
-  const data = await readAccountWebIdResponse(res);
-  const webIds = Object.keys(data.webIdLinks ?? {}).filter((webId) =>
-    webIdUrlMatchesUsername(webId, username));
-  const entries = await lookupProvisionScopedWebIds(fetchImpl, webIds, provisionCode);
-  return (entries ?? []).some((entry) =>
-    webIdUrlMatchesUsername(entry.webId, username) &&
-    podUrlMatchesUsername(entry.storageUrl, username));
 }
 
 export async function bootstrapAccountPasswordLogin(
@@ -556,79 +481,6 @@ export async function retryRegistrationReadiness(
     provisionTarget?.storageRoot,
   );
   if (!ready) {
-    throw new RegistrationProvisioningNotReadyError();
-  }
-
-  return { createdPod: true, redirectedToConsent: await hasPendingConsent(fetchImpl, accountToken) };
-}
-
-export async function completeRegistrationProvisioning(
-  options: RegistrationFlowOptions,
-): Promise<RegistrationFlowResult> {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const { accountIndexUrl, accountToken, username } = options;
-  const endpoints = await loadRegistrationAccountEndpoints(fetchImpl, accountIndexUrl, accountToken);
-  const createPodUrl = endpoints.pod;
-  const webIdUrl = endpoints.webId;
-  if (!createPodUrl) {
-    throw new Error('Pod creation endpoint not found. The account API did not expose controls.account.pod.');
-  }
-
-  const provisionTarget = await resolveCurrentProvisionTarget(options.provisionCode);
-  const durableReady = await hasDurableExactBinding(
-    fetchImpl,
-    accountIndexUrl,
-    endpoints,
-    accountToken,
-    username,
-    provisionTarget?.storageRoot,
-  );
-  if (durableReady) {
-    return { createdPod: true, redirectedToConsent: await hasPendingConsent(fetchImpl, accountToken) };
-  }
-
-  const provisionCode = provisionTarget.activeProvisionCode ?? await resolveProvisionCodeForPodCreate(
-    options.provisionCode,
-  );
-
-  if (await hasExistingPod(fetchImpl, createPodUrl, webIdUrl, username, accountToken, provisionCode)) {
-    if (!await defaultWaitForWebIdReady(fetchImpl, accountIndexUrl, endpoints, accountToken, 15_000, provisionCode, username)) {
-      throw new RegistrationProvisioningNotReadyError();
-    }
-    return { createdPod: true, redirectedToConsent: await hasPendingConsent(fetchImpl, accountToken) };
-  }
-
-  const preparedProvision = provisionCode
-    ? await prepareProvisionedPod(fetchImpl, username, provisionCode)
-    : undefined;
-
-  const res = await fetchImpl(scopeAccountUrl(createPodUrl), {
-    method: 'POST',
-    headers: {
-      ...accountTokenHeaders(accountToken),
-      'Content-Type': 'application/json',
-    },
-    credentials: 'include',
-    body: JSON.stringify(buildPodCreatePayload(
-      username,
-      preparedProvision?.provisionCode ?? provisionCode,
-      preparedProvision?.provisionReceipt,
-    )),
-  });
-  if (!res.ok) {
-    const message = await readErrorMessage(res);
-    if (isUsernameConflict(message, username)) {
-      throw new RegistrationError(
-        xpodRegistrationCopy.usernameAlreadyTaken,
-        'USERNAME_ALREADY_TAKEN',
-      );
-    }
-    throw new Error(message || 'Failed to create pod');
-  }
-  const podCreateResult = await res.json().catch(() => ({})) as unknown;
-  void podCreateResult;
-
-  if (!await defaultWaitForWebIdReady(fetchImpl, accountIndexUrl, endpoints, accountToken, 15_000, provisionCode, username)) {
     throw new RegistrationProvisioningNotReadyError();
   }
 
