@@ -29,6 +29,36 @@ describe('consent first Pod helpers', () => {
     ])).toBe('glocal');
   });
 
+  it('reports the §5.2 creation stages in order and confirms the binding', async () => {
+    document.cookie = 'css-account=token; Path=/';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(emptyAccountInventory())
+      .mockResolvedValueOnce(jsonResponse(201, { podUrl: 'https://node.example/glocal/' }))
+      .mockResolvedValueOnce(jsonResponse(200, { entries: [] }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        entries: [{
+          webId: 'https://id.undefineds.co/glocal/profile/card#me',
+          storageUrl: 'https://node.example/glocal/',
+        }],
+      }));
+    const stages: string[] = [];
+
+    await createFirstPodAndWaitForBinding({
+      createPodUrl: '/.account/account/pod',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      headers: { Authorization: 'CSS-Account-Token token' },
+      maxAttempts: 2,
+      pickWebIdUrl: '/.account/oidc/pick-webid/',
+      pollIntervalMs: 0,
+      provisionCode: 'provision-code',
+      username: 'GLOCAL',
+      onStage: (stage) => stages.push(stage),
+    });
+
+    // §5.2 第 6 步：提交、创建、绑定确认分别发生；"已就绪"需要额外鉴权读写证据，不由本 helper 宣称
+    expect(stages).toEqual([ 'submitting', 'submitted', 'binding-confirmed' ]);
+  });
+
   it('creates a Pod with provision code and waits for consent WebIDs', async () => {
     document.cookie = 'css-account=token; Path=/';
     const fetchMock = vi.fn()

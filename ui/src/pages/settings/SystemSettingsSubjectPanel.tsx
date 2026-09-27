@@ -6,7 +6,11 @@ import { getAdminConfig, getAdminStatus, getDdnsStatus, getProvisionStatus, getP
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 import { useAuth } from '../../context/AuthContextValue';
 import { fetchAccountStorageBindings } from '../../auth/account-storage-bindings';
-import { createFirstPodAndWaitForBinding, deriveFirstPodNameCandidate } from '../../utils/consent-first-pod';
+import {
+  createFirstPodAndWaitForBinding,
+  deriveFirstPodNameCandidate,
+  type FirstPodCreationStage,
+} from '../../utils/consent-first-pod';
 import { storedAccountTokenHeaders } from '../../utils/account-session';
 import { resolveProvisionCodeForCurrentScope } from '../../utils/pod';
 import { projectStorageBackends, type SettingsEvidenceRow } from './settings-projection';
@@ -16,6 +20,17 @@ import { createServiceAccessPermissionCapability } from '../../api/service-acces
 import { parseAiConnectionsServiceAccess } from '@undefineds.co/ai-connections';
 
 export type SystemSettingsSubjectKind = 'pod' | 'identity-access' | 'storage' | 'runtime' | 'cloud' | 'advanced';
+
+const CREATE_STAGE_COPY: Record<FirstPodCreationStage, string> = {
+  submitting: '正在提交创建请求…',
+  submitted: '请求已提交，正在读取结果…',
+  'binding-confirmed': '身份绑定已确认…',
+};
+
+/** 阶段文案：没有阶段的旧调用回退为"正在创建…"。 */
+function createStageLabel(stage: FirstPodCreationStage | null): string {
+  return stage ? CREATE_STAGE_COPY[stage] : '正在创建…';
+}
 
 export function PodSettingsSubjectPanel({ kind }: { kind: SystemSettingsSubjectKind }) {
   const runtime = useXpodSolidRuntime();
@@ -76,6 +91,8 @@ function PodManagementContent({ runtime, publicRoute }: { runtime: ReturnType<ty
   const [listError, setListError] = useState('');
   const [podName, setPodName] = useState('');
   const [creating, setCreating] = useState(false);
+  // §5.2 第 6 步：创建过程如实分阶段显示，不合并成一个模糊的"进行中"
+  const [createStage, setCreateStage] = useState<FirstPodCreationStage | null>(null);
   const [createError, setCreateError] = useState('');
   const [createNotice, setCreateNotice] = useState('');
 
@@ -112,7 +129,7 @@ function PodManagementContent({ runtime, publicRoute }: { runtime: ReturnType<ty
     if (creating) return;
     if (!createPodUrl) { setCreateError('当前部署没有公布创建存储空间的入口。'); return; }
     if (!username) { setCreateError('无法从当前账号推断 Pod 名称，请手动填写。'); return; }
-    setCreating(true); setCreateError(''); setCreateNotice('');
+    setCreating(true); setCreateStage(null); setCreateError(''); setCreateNotice('');
     try {
       await createFirstPodAndWaitForBinding({
         assertCurrentAccount: account.bindAccountCapability?.(),
@@ -121,6 +138,7 @@ function PodManagementContent({ runtime, publicRoute }: { runtime: ReturnType<ty
         provisionCode: await resolveProvisionCodeForCurrentScope(),
         trustedAccountIndex: idpIndex,
         username,
+        onStage: setCreateStage,
       });
       setPodName('');
       setCreateNotice('存储空间已创建。');
@@ -129,6 +147,7 @@ function PodManagementContent({ runtime, publicRoute }: { runtime: ReturnType<ty
       setCreateError(error instanceof Error ? error.message : '无法创建存储空间，请重试。');
     } finally {
       setCreating(false);
+      setCreateStage(null);
     }
   };
 
@@ -177,7 +196,9 @@ function PodManagementContent({ runtime, publicRoute }: { runtime: ReturnType<ty
           disabled={creating}
           onChange={(event) => setPodName(event.currentTarget.value)}
         />
-        <Button type="submit" disabled={creating}>{creating ? '正在创建…' : '创建'}</Button>
+        <Button type="submit" disabled={creating}>
+          {creating ? createStageLabel(createStage) : '创建'}
+        </Button>
       </div>
       {createError ? <div role="alert" className="text-sm text-destructive">{createError}</div> : null}
       {createNotice ? <div role="status" className="text-sm text-muted-foreground">{createNotice}</div> : null}

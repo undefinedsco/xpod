@@ -88,8 +88,17 @@ async function assertFirstPodCreationIsNew(
   }
 }
 
+/**
+ * §5.2 第 6 步要求分开表达"创建请求已提交""Pod 已创建""绑定已确认""Pod 已就绪"。
+ * 本 helper 给出提交、创建与绑定确认三段；"已就绪"还需要一次鉴权读写命中该 Pod 的证据，
+ * 不由本 helper 宣称（见 docs/superpowers/audits/2026-09-27-w3-account-pod-self-review.md）。
+ */
+export type FirstPodCreationStage = 'submitting' | 'submitted' | 'binding-confirmed';
+
 export interface ConsentFirstPodOptions {
   assertCurrentAccount?: () => void;
+  /** 阶段回调：把创建过程如实显示成阶段，而不是一个模糊的"进行中"。 */
+  onStage?: (stage: FirstPodCreationStage) => void;
   createPodUrl: string;
   fetchImpl?: typeof fetch;
   headers?: Record<string, string>;
@@ -288,6 +297,7 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
   );
 
   guard.assertCurrentAccount();
+  options.onStage?.('submitting');
   const response = await fetchImpl(scopeAccountUrl(createPodUrl), {
     method: 'POST',
     headers: {
@@ -314,6 +324,7 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
 
   const createBody = await response.json().catch(preserveAccountFailure) as PodCreateResponse | undefined;
   guard.assertCurrentAccount();
+  options.onStage?.('submitted');
   const createdBindings = extractCreatedBindings(createBody);
   if (!options.pickWebIdUrl) {
     return createdBindings;
@@ -327,7 +338,11 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
     pollIntervalMs: options.pollIntervalMs,
   });
   guard.assertCurrentAccount();
-  return pickedBindings.length > 0 ? pickedBindings : createdBindings;
+  if (pickedBindings.length > 0) {
+    options.onStage?.('binding-confirmed');
+    return pickedBindings;
+  }
+  return createdBindings;
 }
 
 export interface WaitForConsentWebIdsOptions {

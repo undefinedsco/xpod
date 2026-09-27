@@ -147,7 +147,9 @@ Pod，且 `tests/ui/registration-flow.test.ts` 把"注册时创建"固化成用�
 |---|---|---|
 | W3-DESIGN-01 注册不再隐式创建 | 已实施 | 删除 `completeRegistrationProvisioning` 及其专用 helper（共 117 行）与两个"注册时创建"用例；`tests/ui/registration-flow.test.ts` 改为契约断言：模块不导出创建入口、源码不含 `prepareProvisionedPod`/`createPodUrl`/`hasExistingPod` |
 | `WelcomeNoPod` 回归 | 已在旧轮修好，本轮刷新注释 | 两条用例（注册不 provisioning、无 Pod 落 Account 管理）均通过；测试头注释改为陈述契约 |
-| W3-DESIGN-02 续接核对 | 未开始 | —— |
+| W3-DESIGN-02 创建阶段与续接 | 阶段已实施；续接核对部分完成 | 核对结论：零 Pod 可进入并见空态、创建走被守卫的唯一事务（`ui/src/pages/settings/PodManagementPanel.test.tsx` 断言）。创建过程原本只有「进行中」一个状态，现按 §5.2 第 6 步补齐阶段：`createFirstPodAndWaitForBinding` 新增 `onStage('submitting'|'submitted'|'binding-confirmed')`，`PodSettingsSubjectPanel` 显示对应阶段文案，`tests/ui/consent-first-pod.test.ts` 断言三段顺序。未完成：「已就绪」需要一次鉴权读写命中该 Pod 的证据，本 helper 不宣称，待 W4 用真实读写补证；超时/刷新/重复进入三种恢复仍未逐条取证。 |
 | W3-DESIGN-03 容器/窗口核对 | 未开始 | —— |
+
+实现状态补充（第二轮）：确认 `PodManagementPanel.test.tsx` 已锁「零 Pod 可进入 + 显式创建走唯一被守卫事务」；为创建过程补阶段回调与阶段文案，并加阶段顺序用例。「已就绪」与三种恢复仍缺证据（见上表）。
 
 验证记录：`tests/ui` 16 文件 / 136 测试；`ui/src` + `tests/ui` + `packages/extension-sdk/test` 合计 1103 通过；`bun run build:components`、`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。附带修正：`tests/ui` 中 4 处按旧设计写的契约断言（taro 调色板、`sr-only` 图标栏、默认断点）已更新为 R2 契约，`NetworkPage` 的媒体桩改为按查询回答。
