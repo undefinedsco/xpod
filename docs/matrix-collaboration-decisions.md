@@ -1152,3 +1152,12 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   测试：`twoDeployment.test.ts` 新增 1 项（经 HTTP 的握手加入：断言 make_join/send_join 真的被请求过、两侧 join 同 id、
      B 的 Pod 因常驻方随加入送来的状态而持有 create 与 join_rules、事件上同时有双方签名、随后 Alice 的消息仍能到达 B），
      并因第 1 条带来的"房间现在真的有 join_rules"更新了 4 处既有夹具（bootstrap 要多交一个状态事件、depth 与状态槽各 +1）。
+- **已落地（证据，2026-09-27）**：**五个读取端点经 HTTP 对着真实 store 走通**（`twoDeployment.test.ts` 新增一项）。
+  此前的读取端点测试是"真 HTTP + 假 store"；这一项让 Bob 加入后用自己的客户端向 Alice 的部署（真 socket、真 Pod 行）
+  提问并逐条核对：`/state` 与 `/state_ids` 是同一答案的两种形式（**第二个消息之前**的状态 = create + Alice 的 join +
+  join rules；两个消息写在 Bob 加入之前，所以状态里**没有** Bob 的 join——这正是"事件之前的状态"的意思）、
+  `/backfill` 含点名事件且从新到旧、`/get_missing_events` 从父事件起走并**停在请求方已有处**（含 first、不含 create）、
+  `/event_auth` 含被问事件本身，并断言这五条请求**都真的发生过**。这一轮**没有**发现新缺陷（上一轮的三处是端到端才
+  显形的，这一批路径本来就是对的）。
+  - **顺带**：把"取一个以某 origin 签名的客户端"收成一个公开方法 `sender.clientFor(origin)`（此前叫
+    `membershipClientFor` 且只暴露握手两半）——需要目录查询、状态读取、缺失事件的调用方要的是同一个东西。

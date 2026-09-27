@@ -203,6 +203,10 @@ HTTP 跳转；**唯一的测试替身是"缺依赖事件如何送到对端"**—
 落地（`/send`、读取端点、握手、查询、版本）；"部署写目标 Pod 用的服务授权"也已落地为 `service` 上下文（参与者任务层
 grant，缺 grant 即 403 点名 Pod），**仍未做**的是 grant 的**签发流程**（索取时机与界面）。
 
+**读取端点的端到端闭环（已取得证据）**：`twoDeployment.test.ts` 新增一项——Bob 加入后向 Alice 的部署经 HTTP 问
+`/state`、`/state_ids`、`/backfill`、`/get_missing_events`、`/event_auth`，逐条与 Alice 真实持有的行核对（含"状态里没有
+Bob 的 join，因为两条消息写在它加入之前"这条语义），并断言五条请求都真的发生过。
+
 **远端加入的端到端闭环（已取得证据）**：`twoDeployment.test.ts` 新增一项——Bob 加入只有 Alice 的部署托管的房间，
 **经 HTTP 走完 `make_join` → 签名 → `send_join`**；断言请求确实发生过、两侧 join 同 id、Bob 的 Pod 因常驻方随加入送来的
 状态而持有 create 与 join_rules、事件上同时有双方签名、随后 Alice 的消息仍能到达 Bob。这一项当场暴露并修掉了三个真实缺陷

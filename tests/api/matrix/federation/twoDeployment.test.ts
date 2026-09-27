@@ -176,12 +176,12 @@ function deployment(input: {
     // The same wiring the container does: ask the room's server, sign as this participant.
     ...(input.federationJoin ? {
       directoryQuery: async ({ roomAlias, destination }: { roomAlias: string; destination: string }) => {
-        const client = await sender.membershipClientFor(input.participant);
+        const client = await sender.clientFor(input.participant);
         const answer = await client?.queryDirectory({ destination, roomAlias });
         return answer?.status === 'ok' ? answer.roomId : undefined;
       },
       remoteJoin: async ({ roomId, userId, destination }: { roomId: string; userId: string; destination: string }) => {
-        const client = await sender.membershipClientFor(input.participant);
+        const client = await sender.clientFor(input.participant);
         const participantIdentity = await registry.identityFor(input.participant).catch(() => undefined);
         if (!client || !participantIdentity) return undefined;
         return await joinRoomOverFederation({
@@ -819,6 +819,72 @@ describe('two deployments federating over real HTTP', () => {
       const sent = await a.store.sendEvent(room.roomId, 'm.room.message', 'txn-after-join', { body: 'after the handshake' }, a.context);
       expect(await a.outbox.flush({ scope: a.context.podUrl! })).toMatchObject({ rejected: [], abandoned: [] });
       expect(findPdu(b.rows, 'm.room.message').event_id).toBe(sent.eventId);
+    } finally {
+      await stop();
+    }
+  }, 180_000);
+
+  it('answers the read endpoints from the room it actually holds', async () => {
+    const { a, b, requestsToA, stop } = await httpPair({ federationJoin: true });
+    try {
+      const bob = (await b.store.getAccount(b.context)).userId;
+      const room = await a.store.createRoom({ visibility: 'public' }, a.context);
+      const first = await a.store.sendEvent(room.roomId, 'm.room.message', 'txn-read-1', { body: 'first' }, a.context);
+      const second = await a.store.sendEvent(room.roomId, 'm.room.message', 'txn-read-2', { body: 'second' }, a.context);
+      // Bob joins through the handshake, so both deployments hold the same room.
+      await b.store.joinRoom(room.roomId, b.context);
+      const bobJoin = findMembership(a.rows, bob, 'join');
+      const ids = (events: readonly Record<string, unknown>[]) => events.map(event => String(event.event_id)).sort();
+      // The state before the *second message*: both messages were written before Bob joined, so the
+      // room's state at that point is the create event, Alice's join and the join rules.
+      const alice = (await a.store.getAccount(a.context)).userId;
+      const roomState = [
+        findPdu(a.rows, 'm.room.create').event_id,
+        findMembership(a.rows, alice, 'join').event_id,
+        findPdu(a.rows, 'm.room.join_rules').event_id,
+      ];
+      expect(bobJoin.event_id).toBeDefined();
+
+      const client = await b.sender.clientFor('bob.example');
+      expect(client).toBeDefined();
+
+      // `/state` and `/state_ids` are the same answer twice: the state before the second message.
+      const state = await client!.getState({ destination: 'alice.example', roomId: room.roomId, eventId: second.eventId });
+      expect(state.status).toBe('ok');
+      expect(ids(state.events!)).toEqual(ids(roomState.map(id => ({ event_id: id }))));
+      const stateIds = await client!.getStateIds({ destination: 'alice.example', roomId: room.roomId, eventId: second.eventId });
+      expect(stateIds.status).toBe('ok');
+      expect([ ...stateIds.pduIds! ].sort()).toEqual(ids(roomState.map(id => ({ event_id: id }))));
+
+      // `/backfill` includes the named event and walks back, newest first.
+      const backfill = await client!.backfill({ destination: 'alice.example', roomId: room.roomId, from: [ second.eventId ], limit: 2 });
+      expect(backfill.status).toBe('ok');
+      expect(backfill.events!.map(event => String(event.event_id))).toEqual([ second.eventId, first.eventId ]);
+
+      // `/get_missing_events` walks the parents a requester says it lacks, oldest first.
+      const missing = await client!.getMissingEvents({
+        destination: 'alice.example', roomId: room.roomId,
+        earliestEvents: [ findPdu(a.rows, 'm.room.create').event_id as string ],
+        latestEvents: [ second.eventId ],
+        limit: 10,
+      });
+      expect(missing.status).toBe('ok');
+      const missingIds = missing.events!.map(event => String(event.event_id));
+      // The walk starts at the second message's parents and stops at what the requester says it has.
+      expect(missingIds).toContain(first.eventId);
+      expect(missingIds).not.toContain(findPdu(a.rows, 'm.room.create').event_id);
+
+      // `/event_auth` answers with the chain that authorises the event, including it.
+      const chain = await client!.getAuthChain({ destination: 'alice.example', roomId: room.roomId, eventId: second.eventId });
+      expect(chain.status).toBe('ok');
+      expect(chain.events!.map(event => String(event.event_id))).toContain(second.eventId);
+
+      // Every one of those really was a signed request to Alice's deployment.
+      for (const path of [ '/_matrix/federation/v1/state/', '/_matrix/federation/v1/state_ids/',
+        '/_matrix/federation/v1/backfill/', '/_matrix/federation/v1/get_missing_events/',
+        '/_matrix/federation/v1/event_auth/' ]) {
+        expect(requestsToA.some(request => request.path.startsWith(path)), path).toBe(true);
+      }
     } finally {
       await stop();
     }

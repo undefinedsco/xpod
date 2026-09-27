@@ -21,7 +21,6 @@ import {
 } from './outboundTransaction';
 import type { MatrixSigningIdentitySource } from '../identityRegistry';
 import type { FederationFetchTarget } from './federationFetch';
-import type { OriginFederationClient } from './remoteJoin';
 import type { MatrixResolvedServer } from './serverNameResolution';
 
 export interface MatrixOutboundSenderOptions {
@@ -87,14 +86,6 @@ export class MatrixOutboundSender {
    * Ask a peer for the auth chain of one event, as `origin`. Used by a receiver that has to
    * authorise an event whose auth events it does not have.
    */
-  /**
-   * The federation client that signs as `origin`, for callers that need the membership handshake
-   * endpoints. `undefined` when this deployment holds no identity for that server name.
-   */
-  public async membershipClientFor(origin: string): Promise<OriginFederationClient | undefined> {
-    return await this.clientFor(origin);
-  }
-
   public async requestAuthChain(input: {
     origin: string;
     destination: string;
@@ -109,7 +100,12 @@ export class MatrixOutboundSender {
   }
 
   /** The client that signs as `origin`, or `undefined` when this deployment cannot. */
-  private async clientFor(origin: string): Promise<MatrixFederationClient | undefined> {
+  /**
+   * The federation client that signs as `origin`, for callers that need more than sending a
+   * transaction: the membership handshake, a directory query, a state read. `undefined` when this
+   * deployment holds no identity for that server name.
+   */
+  public async clientFor(origin: string): Promise<MatrixFederationClient | undefined> {
     const cached = this.clients.get(origin);
     if (cached) return cached;
     // A registry answers for the names it holds; anything else is not ours to sign.

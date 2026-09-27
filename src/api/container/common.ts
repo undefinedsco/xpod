@@ -839,7 +839,7 @@ export function registerCommonServices(
         ...(matrixOutboundDelivery ? {
           directoryQuery: async ({ roomAlias, destination, context }) => {
             const serverName = webIdServerName(context.webId);
-            const client = serverName ? await matrixOutboundDelivery.sender.membershipClientFor(serverName) : undefined;
+            const client = serverName ? await matrixOutboundDelivery.sender.clientFor(serverName) : undefined;
             if (!client) return undefined;
             const answer = await client.queryDirectory({ destination, roomAlias });
             return answer.status === 'ok' ? answer.roomId : undefined;
@@ -847,7 +847,7 @@ export function registerCommonServices(
           remoteJoin: async ({ roomId, userId, destination, context }) => {
             const serverName = webIdServerName(context.webId);
             if (!serverName) return undefined;
-            const client = await matrixOutboundDelivery.sender.membershipClientFor(serverName);
+            const client = await matrixOutboundDelivery.sender.clientFor(serverName);
             const identity = client ? await matrixSigningIdentities.identityFor(serverName).catch(() => undefined) : undefined;
             if (!client || !identity) return undefined;
             return await joinRoomOverFederation({
