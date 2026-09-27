@@ -27,6 +27,7 @@ import { storedGraphEvent, storedProtocolEvent } from './storedEvent';
 import { MatrixRoomState, MatrixRoomStateReplay, resolveRoomState } from './roomState';
 import { serverNameOf, SUPPORTED_ROOM_VERSION } from './protocol/authRules';
 import { eventDestinations } from './federation/destinations';
+import type { RemoteJoinOutcome } from './federation/remoteJoin';
 import { webIdServerName } from './protocol/serverName';
 import {
   roomChatIri,
@@ -155,6 +156,19 @@ export interface PodMatrixStoreOptions {
   /** Tells `sync` which rooms changed; absent means every room is read every pass. */
   roomChanges?: MatrixRoomChangeSource;
   /**
+   * How to join a room another deployment hosts: the specification's handshake, ending with the
+   * room's state and auth chain for the caller to store. Absent means this deployment cannot ask a
+   * resident server, and a remote join falls back to writing the membership event locally and
+   * letting delivery carry it.
+   */
+  remoteJoin?: (request: {
+    roomId: string;
+    userId: string;
+    /** The server named by the room id: the resident to ask. */
+    destination: string;
+    context: MatrixStoreContext;
+  }) => Promise<RemoteJoinOutcome | undefined>;
+  /**
    * How often every room is read anyway, so a change the source missed is picked up. Defaults
    * to five minutes; `0` makes every pass a full one, i.e. the source is never trusted.
    */
@@ -219,6 +233,7 @@ export class PodMatrixStore {
   private readonly participantIdentity?: MatrixParticipantIdentityProvider;
   private readonly outbound?: MatrixFederationOutbox;
   private readonly roomChanges?: MatrixRoomChangeSource;
+  private readonly remoteJoin?: PodMatrixStoreOptions['remoteJoin'];
   private readonly roomChangeFullPassMs: number;
   /** The watermark the last pass indexed: a caller at or above it is caught up. */
   private readonly indexedAt = new Map<string, number>();
@@ -237,6 +252,7 @@ export class PodMatrixStore {
     this.participantIdentity = options.participantIdentity;
     this.outbound = options.outbound;
     this.roomChanges = options.roomChanges;
+    this.remoteJoin = options.remoteJoin;
     this.roomChangeFullPassMs = options.roomChangeFullPassMs ?? 5 * 60 * 1000;
     this.stateCacheLimit = options.stateCacheLimit ?? STATE_CACHE_LIMIT;
     if (!Number.isSafeInteger(this.stateCacheLimit) || this.stateCacheLimit < 0) {
@@ -390,7 +406,6 @@ export class PodMatrixStore {
   public async joinRoom(roomIdOrAlias: string, context: MatrixStoreContext): Promise<{ roomId: string }> {
     const db = await this.getDb(context);
     const roomId = await this.resolveRoomId(db, roomIdOrAlias);
-    const room = await this.roomSource(db, roomId, context);
     const before = this.getMatrixUserId(context);
     let existing = await this.findLatestStateEvent(db, roomId, 'm.room.member', before, context);
     if (existing?.content.membership === 'join') return { roomId };
@@ -404,13 +419,74 @@ export class PodMatrixStore {
     const banned = existing?.content.membership === 'ban';
     if (sender !== before) existing = await this.findLatestStateEvent(db, roomId, 'm.room.member', sender, context);
     if (existing?.content.membership === 'join') return { roomId };
+    // A ban under either identity still blocks: provisioning must not be a way around one.
+    if (banned || existing?.content.membership === 'ban') throw new MatrixError(403, 'M_FORBIDDEN', 'Banned from room');
+
+    // A room this deployment does not host is joined the way the specification says: ask a
+    // resident for a template, sign it, submit it, and take the room's state with it. This runs
+    // before the local room record is required, because a room we have never heard of has none —
+    // the resident's answer is what creates it here. Without a way to ask (no federation client),
+    // the local path below still applies: the membership event is written here and delivery carries
+    // it to the room's servers.
+    const destination = serverNameOf(roomId);
+    if (destination !== undefined && destination !== this.getServerName(context)) {
+      if (await this.joinRemoteRoom(db, roomId, sender, destination, context)) return { roomId };
+    }
+
+    const room = await this.roomSource(db, roomId, context);
     if (existing?.content.membership !== 'invite' && room.author !== context.webId) {
       throw new MatrixError(403, 'M_FORBIDDEN', 'An invitation is required');
     }
-    // A ban under either identity still blocks: provisioning must not be a way around one.
-    if (banned || existing?.content.membership === 'ban') throw new MatrixError(403, 'M_FORBIDDEN', 'Banned from room');
     await this.appendMembershipEvent(db, roomId, sender, 'join', context);
     return { roomId };
+  }
+
+  /**
+   * Join a room a resident server holds, and keep what the resident sends back.
+   *
+   * The state and auth chain that come with the join are stored the way any received event is —
+   * verbatim, marked as received — because they are copies of somebody else's events, and they are
+   * what lets this Pod authorise the room's later events. Our own join is not a copy: it is written
+   * through the local path with the event we actually submitted (the resident's signature included),
+   * so the row belongs to this participant rather than looking like a stranger's event.
+   *
+   * `false` means this deployment cannot do the handshake at all, and the caller falls back.
+   */
+  private async joinRemoteRoom(
+    db: Db,
+    roomId: string,
+    userId: string,
+    destination: string,
+    context: MatrixStoreContext,
+  ): Promise<boolean> {
+    const remoteJoin = this.remoteJoin;
+    if (!remoteJoin) return false;
+    const existing = await this.findLatestStateEvent(db, roomId, 'm.room.member', userId, context);
+    if (existing?.content.membership === 'join') return true;
+    if (existing?.content.membership === 'ban') throw new MatrixError(403, 'M_FORBIDDEN', 'Banned from room');
+
+    const outcome = await remoteJoin({ roomId, userId, destination, context });
+    if (!outcome) return false;
+    if (outcome.status !== 'joined') {
+      throw outcome.status === 'rejected'
+        ? new MatrixError(403, 'M_FORBIDDEN', outcome.reason)
+        : new MatrixError(503, 'M_UNKNOWN', outcome.reason);
+    }
+
+    // Oldest first, so the create event exists before anything that authorises against it.
+    for (const event of [ ...outcome.authChain, ...outcome.state ]) {
+      await this.acceptReceivedEvent({ event, context });
+    }
+    await this.appendEvent(db, {
+      roomId,
+      type: 'm.room.member',
+      sender: userId,
+      originServerTs: Number(outcome.event.origin_server_ts ?? Date.now()),
+      stateKey: userId,
+      content: (isRecord(outcome.event.content) ? outcome.event.content : { membership: 'join' }),
+      event: outcome.event as PersistedMatrixEvent,
+    }, context);
+    return true;
   }
 
   public async inviteUser(roomId: string, userId: string, context: MatrixStoreContext): Promise<void> {

@@ -13,6 +13,8 @@ export function matrixHarness(
     roomChanges?: import('../../src/api/matrix/PodMatrixStore').MatrixRoomChangeSource;
     /** How often every room is read anyway, so a missed change is still picked up. */
     roomChangeFullPassMs?: number;
+    /** How a room another deployment hosts is joined, when a test provides the handshake. */
+    remoteJoin?: import('../../src/api/matrix/PodMatrixStore').PodMatrixStoreOptions['remoteJoin'];
   },
 ) {
   const rows = new Map<any, any[]>();
@@ -44,6 +46,7 @@ export function matrixHarness(
     ...(options?.outbound ? { outbound: options.outbound } : {}),
     ...(options?.roomChanges ? { roomChanges: options.roomChanges } : {}),
     ...(options?.roomChangeFullPassMs === undefined ? {} : { roomChangeFullPassMs: options.roomChangeFullPassMs }),
+    ...(options?.remoteJoin ? { remoteJoin: options.remoteJoin } : {}),
     ...(options?.identities
       ? { identities: options.identities }
       : options?.serviceIdentity

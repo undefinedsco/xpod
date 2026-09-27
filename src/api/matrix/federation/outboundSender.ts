@@ -21,6 +21,7 @@ import {
 } from './outboundTransaction';
 import type { MatrixSigningIdentitySource } from '../identityRegistry';
 import type { FederationFetchTarget } from './federationFetch';
+import type { MembershipHandshakeClient } from './remoteJoin';
 import type { MatrixResolvedServer } from './serverNameResolution';
 
 export interface MatrixOutboundSenderOptions {
@@ -86,6 +87,14 @@ export class MatrixOutboundSender {
    * Ask a peer for the auth chain of one event, as `origin`. Used by a receiver that has to
    * authorise an event whose auth events it does not have.
    */
+  /**
+   * The federation client that signs as `origin`, for callers that need the membership handshake
+   * endpoints. `undefined` when this deployment holds no identity for that server name.
+   */
+  public async membershipClientFor(origin: string): Promise<MembershipHandshakeClient | undefined> {
+    return await this.clientFor(origin);
+  }
+
   public async requestAuthChain(input: {
     origin: string;
     destination: string;

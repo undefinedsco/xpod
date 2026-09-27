@@ -104,6 +104,8 @@ import { MatrixServerKeyFetcher } from '../matrix/federation/serverKeys';
 import { InMemoryMatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
 import { MatrixServerNameResolver } from '../matrix/federation/serverNameResolution';
 import { createNodeFederationFetch } from '../matrix/federation/federationFetch';
+import { joinRoomOverFederation } from '../matrix/federation/remoteJoin';
+import { webIdServerName } from '../matrix/protocol/serverName';
 import { createMatrixRoomWatchService } from '../matrix/notifications/roomWatchService';
 import { MatrixRoomChangeTracker } from '../matrix/notifications/roomChangeTracker';
 import type { NotificationSocket } from '../matrix/notifications/roomChangeSubscription';
@@ -831,6 +833,26 @@ export function registerCommonServices(
         // What tells a sync which rooms changed, so an idle caller reads nothing. Absent means
         // every sync reads every room, which is the behaviour without a watch service.
         ...(matrixRoomWatchService ? { roomChanges: matrixRoomWatchService } : {}),
+        // Joining a room another deployment hosts: the specification's handshake, signed as the
+        // participant whose Pod is being written. Without a delivery there is no client to ask with,
+        // and the join falls back to the local event plus delivery.
+        ...(matrixOutboundDelivery ? {
+          remoteJoin: async ({ roomId, userId, destination, context }) => {
+            const serverName = webIdServerName(context.webId);
+            if (!serverName) return undefined;
+            const client = await matrixOutboundDelivery.sender.membershipClientFor(serverName);
+            const identity = client ? await matrixSigningIdentities.identityFor(serverName).catch(() => undefined) : undefined;
+            if (!client || !identity) return undefined;
+            return await joinRoomOverFederation({
+              client,
+              roomId,
+              userId,
+              destination,
+              serverName,
+              sign: event => identity.signEvent(event),
+            });
+          },
+        } : {}),
         journal: new SqlMatrixEventJournal(db),
         serverName: (() => {
           try {
