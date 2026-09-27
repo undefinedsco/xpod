@@ -10,7 +10,8 @@ import { InMemoryMatrixOutboundStore, MatrixOutbox } from '../../../../src/api/m
 import { MatrixOutboundSender } from '../../../../src/api/matrix/federation/outboundSender';
 import { InMemoryMatrixInboundTransactionStore } from '../../../../src/api/matrix/federation/inboundTransaction';
 import { handleFederationSend, type FederationSendTarget } from '../../../../src/api/matrix/federation/inboundRoute';
-import { buildXMatrixAuthorization } from '../../../../src/api/matrix/federation/requestAuth';
+import { authenticateXMatrixRequest, buildXMatrixAuthorization } from '../../../../src/api/matrix/federation/requestAuth';
+import { selectAuthChain } from '../../../../src/api/matrix/federation/authChain';
 import { parseServerKeyResponse, type MatrixServerKeySource } from '../../../../src/api/matrix/federation/serverKeys';
 import type { AuthEvent } from '../../../../src/api/matrix/protocol/authRules';
 
@@ -95,6 +96,8 @@ function deployment(input: {
   participantIdentity: MatrixServiceIdentity;
   /** Identities of the other deployment, so this one can verify its requests. */
   peers: readonly MatrixServiceIdentity[];
+  /** Whether this deployment fetches auth chains it is missing. Defaults to yes. */
+  canFetchAuthChain?: boolean;
 }) {
   const deploymentIdentity = identity(input.deploymentName);
   const registry = matrixSigningIdentityRegistry({
@@ -110,13 +113,16 @@ function deployment(input: {
     fetch: (async (url: URL | RequestInfo, init?: RequestInit) => {
       if (!peer) throw new Error('no peer connected');
       const target = new URL(String(url));
-      const result = await peer.handle({
+      const request = {
         authorization: (init?.headers as Record<string, string>).authorization,
         method: String(init?.method),
         uri: `${target.pathname}${target.search}`,
         body: String(init?.body ?? ''),
         serverName: target.hostname,
-      });
+      };
+      const result = target.pathname.includes('/event_auth/')
+        ? await peer.handleAuthChain(request)
+        : await peer.handle(request);
       return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
     }) as unknown as typeof fetch,
     now: () => NOW,
@@ -150,21 +156,44 @@ function deployment(input: {
             scope: input.podUrl,
             acceptEvent: async event => { await harness.store.acceptReceivedEvent({ event, context }); },
             resolveAuthEvents: authEventResolver(harness.rows),
+            // The receiver cannot authorise an event whose auth events it lacks, so it asks
+            // the sender for the chain — the same hop, in the other direction.
+            ...(input.canFetchAuthChain === false ? {} : {
+              fetchAuthChain: async ({ eventId, pdu, origin }: { eventId: string; pdu: Record<string, unknown>; origin: string }) => {
+                const outcome = await sender.requestAuthChain({
+                  origin: input.participant, destination: origin, roomId: String(pdu.room_id ?? ''), eventId,
+                });
+                return outcome.status === 'ok' ? outcome.events : undefined;
+              },
+            }),
           } satisfies FederationSendTarget
           : undefined,
         transactions,
         now: () => NOW,
       });
     },
+    /** The serving side of `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}`. */
+    async handleAuthChain(request: { authorization: string | undefined; method: string; uri: string; serverName: string }) {
+      const authentication = await authenticateXMatrixRequest({
+        authorization: request.authorization, method: request.method, uri: request.uri,
+        keys: keySourceFor(input.peers), serverName: request.serverName,
+      });
+      if (!authentication.valid) return { status: 401, body: { errcode: 'M_UNAUTHORIZED', error: authentication.reason } };
+      const eventId = decodeURIComponent(request.uri.split('/').at(-1) ?? '');
+      const { chain } = selectAuthChain(pdusOf(harness.rows), eventId);
+      if (chain.length === 0) return { status: 404, body: { errcode: 'M_NOT_FOUND', error: `No auth chain for ${eventId}` } };
+      return { status: 200, body: { auth_chain: chain } };
+    },
   };
 }
 
-/** What one deployment needs of another: its inbound transaction handler. */
+/** What one deployment needs of another: its inbound handlers. */
 interface FederationPeer {
   handle(request: { authorization: string | undefined; method: string; uri: string; body: string; serverName: string }): Promise<{ status: number; body: Record<string, unknown> }>;
+  handleAuthChain(request: { authorization: string | undefined; method: string; uri: string; serverName: string }): Promise<{ status: number; body: Record<string, unknown> }>;
 }
 
-function twoDeployments() {
+function twoDeployments(options: { fetchAuthChain?: boolean } = {}) {
   const aliceIdentity = identity('alice.example');
   const bobIdentity = identity('bob.example');
   const a = deployment({
@@ -174,6 +203,7 @@ function twoDeployments() {
   const b = deployment({
     deploymentName: 'b.example', participant: 'bob.example', participantWebId: 'https://bob.example/profile/card#me',
     podUrl: 'https://pod-b.example/bob/', participantIdentity: bobIdentity, peers: [ aliceIdentity ],
+    ...(options.fetchAuthChain === false ? { canFetchAuthChain: false } : {}),
   });
   a.connect(b);
   b.connect(a);
@@ -215,8 +245,8 @@ describe('two deployments federating one room', () => {
     expect(await a.outbox.flush({ scope: a.context.podUrl! })).toMatchObject({ delivered: [] });
 
     // Bob's deployment cannot know the room, so the state an invite depends on is handed
-    // over first — this is the `/get_missing_events` job the receiving server would do,
-    // played here by the test. The two events travel in one transaction, in order.
+    // over first. (The receiver can also fetch it itself — see the auth-chain test below —
+    // but this test is about a multi-event transaction keeping its order.)
     for (const pdu of [ findPdu(a.rows, 'm.room.create'), findPdu(a.rows, 'm.room.member', alice) ]) {
       await a.outbox.enqueue({ scope: a.context.podUrl!, origin: 'alice.example', destination: 'bob.example', pdus: [ pdu ] });
     }
@@ -284,7 +314,8 @@ describe('two deployments federating one room', () => {
   });
 
   it('retries an invite the peer refused for missing dependencies, once they arrive', async () => {
-    const { a, b } = twoDeployments();
+    // A receiver that cannot fetch is what makes the sender's retry the only way through.
+    const { a, b } = twoDeployments({ fetchAuthChain: false });
     const alice = (await a.store.getAccount(a.context)).userId;
     const bob = (await b.store.getAccount(b.context)).userId;
 
@@ -310,6 +341,26 @@ describe('two deployments federating one room', () => {
     void room;
   });
 
+  it('accepts an invite by fetching its auth chain from the sending deployment', async () => {
+    const { a, b } = twoDeployments();
+    const bob = (await b.store.getAccount(b.context)).userId;
+
+    // Alice invites Bob into a room his deployment has never seen. Nothing is handed over:
+    // Bob's deployment receives the invite, finds it cannot authorise it, and asks Alice's
+    // deployment for the chain.
+    const room = await a.store.createRoom({ invite: [ bob ] }, a.context);
+    const invite = findMembership(a.rows, bob, 'invite');
+    const flush = await a.outbox.flush({ scope: a.context.podUrl! });
+    expect(flush.deferred).toEqual([]);
+    expect(flush.delivered).toHaveLength(1);
+
+    // The chain arrived with the invite and was stored before it, so the invite is accepted
+    // with the id the sender gave it.
+    expect(pdusOf(b.rows).map(event => event.type)).toEqual([ 'm.room.create', 'm.room.member', 'm.room.member' ]);
+    expect(findMembership(b.rows, bob, 'invite').event_id).toBe(invite.event_id);
+    expect(pdusOf(b.rows).every(event => String(event.room_id) === room.roomId)).toBe(true);
+  });
+
   it('refuses an unserved destination, an unknown signer and a body that is not JSON', async () => {
     const { a, b } = twoDeployments();
     const bob = (await b.store.getAccount(b.context)).userId;
@@ -333,7 +384,7 @@ describe('two deployments federating one room', () => {
   });
 
   it('reports a PDU it cannot authorise, and the sender keeps it for retry', async () => {
-    const { a, b } = twoDeployments();
+    const { a, b } = twoDeployments({ fetchAuthChain: false });
     const bob = (await b.store.getAccount(b.context)).userId;
     const room = await a.store.createRoom({}, a.context);
     await a.store.inviteUser(room.roomId, bob, a.context);

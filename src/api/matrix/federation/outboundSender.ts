@@ -13,7 +13,12 @@
  * outcome — never retried, and never signed with somebody else's key, because a verifier
  * could not tell that apart from a forgery.
  */
-import { MatrixFederationClient, type MatrixDeliveryOutcome, type MatrixDeliveryPolicy } from './outboundTransaction';
+import {
+  MatrixFederationClient,
+  type FederationEventsOutcome,
+  type MatrixDeliveryOutcome,
+  type MatrixDeliveryPolicy,
+} from './outboundTransaction';
 import type { MatrixSigningIdentitySource } from '../identityRegistry';
 import type { MatrixResolvedServer } from './serverNameResolution';
 
@@ -72,6 +77,23 @@ export class MatrixOutboundSender {
       ...(this.options.sleep === undefined ? {} : { sleep: this.options.sleep }),
     });
     return result.outcome;
+  }
+
+  /**
+   * Ask a peer for the auth chain of one event, as `origin`. Used by a receiver that has to
+   * authorise an event whose auth events it does not have.
+   */
+  public async requestAuthChain(input: {
+    origin: string;
+    destination: string;
+    roomId: string;
+    eventId: string;
+  }): Promise<FederationEventsOutcome> {
+    const client = await this.clientFor(input.origin);
+    if (!client) {
+      return { status: 'rejected', reason: `this deployment holds no signing identity for ${input.origin}` };
+    }
+    return await client.getAuthChain({ destination: input.destination, roomId: input.roomId, eventId: input.eventId });
   }
 
   /** The client that signs as `origin`, or `undefined` when this deployment cannot. */

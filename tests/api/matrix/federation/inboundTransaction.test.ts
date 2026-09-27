@@ -38,15 +38,28 @@ function roomPrefix(server: ReturnType<typeof remoteServer>) {
     type: 'm.room.member', room_id: ROOM, sender: ALICE, state_key: ALICE, origin_server_ts: NOW - 9_000,
     content: { membership: 'join' }, prev_events: [ create.event_id ], auth_events: [ create.event_id ],
   }));
-  const asAuth = (event: Record<string, unknown>): AuthEvent => ({
+  return { create, join, auth: [ asAuth(create), asAuth(join) ] };
+}
+
+function asAuth(event: Record<string, unknown>): AuthEvent {
+  return {
     event_id: event.event_id as string,
     type: event.type as string,
     sender: event.sender as string,
     room_id: event.room_id as string,
     content: event.content as Record<string, unknown>,
     ...(event.state_key === undefined ? {} : { state_key: event.state_key as string }),
+  };
+}
+
+/** An invite from the joined member, whose auth events are the create and their own join. */
+function invite(server: ReturnType<typeof remoteServer>, prefix: ReturnType<typeof roomPrefix>) {
+  return server.sign({
+    type: 'm.room.member', room_id: ROOM, sender: ALICE, state_key: BOB, origin_server_ts: NOW - 500,
+    content: { membership: 'invite' },
+    prev_events: [ prefix.join.event_id as string ],
+    auth_events: [ prefix.create.event_id as string, prefix.join.event_id as string ],
   });
-  return { create, join, auth: [ asAuth(create), asAuth(join) ] };
 }
 
 function message(server: ReturnType<typeof remoteServer>, prefix: ReturnType<typeof roomPrefix>, body: string) {
@@ -118,6 +131,93 @@ describe('inbound transactions', () => {
     const record = await store.find('scope', { origin: REMOTE, transactionId: 'txn-conflict' });
     expect(record?.payloadFingerprint).toBe(fingerprintPdus([ first ]));
     expect(record?.conflictAt).toBeDefined();
+  });
+
+  it('fetches the auth chain from the sender and accepts what it could not authorise', async () => {
+    const server = remoteServer();
+    const prefix = roomPrefix(server);
+    const pdu = invite(server, prefix);
+    const store = new InMemoryMatrixInboundTransactionStore();
+    // The receiver only knows what it has stored, so the first look finds nothing.
+    const accepted: Record<string, unknown>[] = [];
+    const fetchAuthChain = vi.fn(async () => [ prefix.create, prefix.join ]);
+
+    const response = await handleInboundTransaction({
+      scope: 'scope', origin: REMOTE, transactionId: 'txn-fetch', pdus: [ pdu ], store, keys: server.source,
+      resolveAuthEvents: async (ids: readonly string[]) => accepted.filter(event => ids.includes(String(event.event_id))).map(asAuth),
+      acceptEvent: async event => { accepted.push(event); },
+      fetchAuthChain,
+      now: () => NOW,
+    });
+
+    expect(response.pdus).toEqual({ [ computeEventId(pdu as Record<string, unknown>) ]: {} });
+    // The chain arrived oldest-first and was stored before the event that depends on it.
+    expect(accepted.map(event => event.type)).toEqual([ 'm.room.create', 'm.room.member', 'm.room.member' ]);
+    // The chain events keep the ids they arrived with; the invite is stored as received and
+    // the receiver derives its id from the content.
+    expect(accepted.slice(0, 2).map(event => event.event_id)).toEqual([ prefix.create.event_id, prefix.join.event_id ]);
+    expect(accepted[2]).toMatchObject({ type: 'm.room.member', state_key: BOB, content: { membership: 'invite' } });
+    expect(fetchAuthChain).toHaveBeenCalledWith({
+      eventId: computeEventId(pdu as Record<string, unknown>), pdu, origin: REMOTE,
+    });
+  });
+
+  it('reports a PDU whose auth events are missing when it cannot fetch them', async () => {
+    const server = remoteServer();
+    const prefix = roomPrefix(server);
+    const pdu = invite(server, prefix);
+    const store = new InMemoryMatrixInboundTransactionStore();
+    const acceptEvent = vi.fn(async (_event: Record<string, unknown>) => undefined);
+
+    const response = await handleInboundTransaction({
+      scope: 'scope', origin: REMOTE, transactionId: 'txn-no-fetch', pdus: [ pdu ], store, keys: server.source,
+      resolveAuthEvents: async () => [],
+      acceptEvent,
+      now: () => NOW,
+    });
+
+    // Deferred is reported, not silently accepted, and nothing was written.
+    expect(String(Object.values(response.pdus)[0].error)).toMatch(/v11-4/u);
+    expect(acceptEvent).not.toHaveBeenCalled();
+  });
+
+  it('keeps the PDU deferred when the fetched chain does not authorise it', async () => {
+    const server = remoteServer();
+    const prefix = roomPrefix(server);
+    const pdu = invite(server, prefix);
+    const store = new InMemoryMatrixInboundTransactionStore();
+    const accepted: Record<string, unknown>[] = [];
+
+    const response = await handleInboundTransaction({
+      scope: 'scope', origin: REMOTE, transactionId: 'txn-bad-chain', pdus: [ pdu ], store, keys: server.source,
+      // The peer answers with an event that has nothing to do with this room.
+      resolveAuthEvents: async (ids: readonly string[]) => accepted.filter(event => ids.includes(String(event.event_id))).map(asAuth),
+      acceptEvent: async event => { accepted.push(event); },
+      fetchAuthChain: async () => [ server.sign({ type: 'm.room.create', room_id: '!other:remote.example', sender: ALICE, state_key: '', origin_server_ts: NOW - 9_000, content: { room_version: '11' }, prev_events: [], auth_events: [] }) ],
+      now: () => NOW,
+    });
+
+    expect(String(Object.values(response.pdus)[0].error)).toMatch(/v11-4/u);
+    // The unrelated event was stored (it is a valid event of another room) but proved nothing.
+    expect(accepted.map(event => event.type)).toEqual([ 'm.room.create' ]);
+  });
+
+  it('keeps the PDU deferred when the sender cannot be reached for the chain', async () => {
+    const server = remoteServer();
+    const prefix = roomPrefix(server);
+    const pdu = invite(server, prefix);
+    const store = new InMemoryMatrixInboundTransactionStore();
+
+    const response = await handleInboundTransaction({
+      scope: 'scope', origin: REMOTE, transactionId: 'txn-unreachable', pdus: [ pdu ], store, keys: server.source,
+      resolveAuthEvents: async () => [],
+      acceptEvent: async () => undefined,
+      fetchAuthChain: async () => { throw new Error('connect ECONNREFUSED'); },
+      now: () => NOW,
+    });
+
+    // An unreachable peer leaves the event deferred so the sender can retry the transaction.
+    expect(String(Object.values(response.pdus)[0].error)).toMatch(/v11-4/u);
   });
 
   it('reports a PDU that cannot be verified or authorised as an error entry', async () => {

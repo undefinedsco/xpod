@@ -21,7 +21,7 @@ import { eventReferenceIds } from '../protocol/eventReferences';
 import { encodeCanonicalJson } from '../protocol/canonicalJson';
 import { encodeUnpaddedBase64, sha256 } from '../protocol/eventIntegrity';
 import type { AuthEvent } from '../protocol/authRules';
-import { validateInboundPdu } from './inboundPdu';
+import { validateInboundPdu, type InboundPduResult } from './inboundPdu';
 import type { MatrixServerKeySource } from './serverKeys';
 
 /** The `/_matrix/federation/v1/send` response body: one entry per PDU. */
@@ -123,6 +123,19 @@ export interface HandleInboundTransactionInput {
   resolveAuthEvents: (eventIds: readonly string[], pdu: unknown) => Promise<readonly AuthEvent[]>;
   /** Persist an accepted event; the caller owns the Pod write. */
   acceptEvent: (event: Record<string, unknown>) => Promise<void>;
+  /**
+   * Ask the server that sent this PDU for the events that authorise it, when the receiver
+   * does not have them (the specification's `/event_auth`). Returns the chain oldest-first,
+   * or `undefined` when the peer could not be reached.
+   *
+   * Absent means "this receiver cannot fetch", and a PDU whose auth events are missing is
+   * then reported as an error, exactly as before.
+   */
+  fetchAuthChain?: (input: {
+    eventId: string;
+    pdu: Record<string, unknown>;
+    origin: string;
+  }) => Promise<readonly Record<string, unknown>[] | undefined>;
   now?: () => number;
 }
 
@@ -156,7 +169,13 @@ export async function handleInboundTransaction(input: HandleInboundTransactionIn
   for (const [ index, pdu ] of input.pdus.entries()) {
     const authEventIds = referencedAuthEventIds(pdu);
     const authEvents = authEventIds.length > 0 ? await input.resolveAuthEvents(authEventIds, pdu) : [];
-    const result = await validateInboundPdu(pdu, { keys: input.keys, authEvents, now });
+    let result = await validateInboundPdu(pdu, { keys: input.keys, authEvents, now });
+    if (result.outcome === 'deferred' && input.fetchAuthChain && result.eventId) {
+      // The events that authorise this one are not here. Asking the sender is the
+      // specification's answer, and it is the only way a PDU that arrives before its
+      // dependencies can ever be accepted instead of merely reported.
+      result = await fetchAndRetry(input, pdu, result, authEventIds, now);
+    }
     if (result.outcome === 'accepted' && result.event && result.eventId) {
       await input.acceptEvent(result.event);
       pdus[result.eventId] = {};
@@ -168,6 +187,45 @@ export async function handleInboundTransaction(input: HandleInboundTransactionIn
   await input.store.complete(input.scope, { origin: input.origin, transactionId: input.transactionId },
     response, new Date(now()).toISOString());
   return response;
+}
+
+/**
+ * Fetch the auth chain of a deferred PDU, store what it proves, and check the PDU again.
+ *
+ * One round, deliberately: the chain arrives oldest-first, so each event can be validated
+ * against what is already there, and anything the chain itself still cannot authorise is
+ * skipped rather than chased further. A receiver that kept fetching recursively could be
+ * walked around a room by a peer that never sends the events it promised.
+ */
+async function fetchAndRetry(
+  input: HandleInboundTransactionInput,
+  pdu: unknown,
+  deferred: InboundPduResult,
+  authEventIds: readonly string[],
+  now: () => number,
+): Promise<InboundPduResult> {
+  const eventId = deferred.eventId!;
+  let chain: readonly Record<string, unknown>[] | undefined;
+  try {
+    chain = await input.fetchAuthChain!({ eventId, pdu: asRecord(pdu), origin: input.origin });
+  } catch {
+    // An unreachable peer leaves the PDU deferred, not rejected: the sender can retry.
+    return deferred;
+  }
+  if (!chain || chain.length === 0) return deferred;
+
+  for (const chained of chain) {
+    const ids = referencedAuthEventIds(chained);
+    const authEvents = ids.length > 0 ? await input.resolveAuthEvents(ids, chained) : [];
+    const stored = await validateInboundPdu(chained, { keys: input.keys, authEvents, now });
+    if (stored.outcome === 'accepted' && stored.event) await input.acceptEvent(stored.event);
+  }
+  const resolved = authEventIds.length > 0 ? await input.resolveAuthEvents(authEventIds, pdu) : [];
+  return await validateInboundPdu(pdu, { keys: input.keys, authEvents: resolved, now });
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
 }
 
 /** A stable identity for the PDUs of one attempt, so a retry can be compared with it. */

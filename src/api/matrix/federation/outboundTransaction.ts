@@ -52,8 +52,8 @@ type MatrixRequestOutcome =
   | { status: 'retry'; reason: string; retryAfterMs?: number }
   | { status: 'rejected'; reason: string };
 
-/** What a missing-events request produced. */
-export interface MissingEventsOutcome {
+/** What a request for events produced: the peer's answer, or why there is none. */
+export interface FederationEventsOutcome {
   status: 'ok' | 'retry' | 'rejected';
   /** The peer's answer, when it was readable. */
   events?: Record<string, unknown>[];
@@ -182,7 +182,7 @@ export class MatrixFederationClient {
     latestEvents: readonly string[];
     limit?: number;
     minDepth?: number;
-  }): Promise<MissingEventsOutcome> {
+  }): Promise<FederationEventsOutcome> {
     const content: Record<string, unknown> = {
       earliest_events: [ ...input.earliestEvents ],
       latest_events: [ ...input.latestEvents ],
@@ -198,6 +198,26 @@ export class MatrixFederationClient {
   }
 
   /**
+   * Ask a peer for the events that authorise one event.
+   *
+   * This is the endpoint for authorisation, not for history: an event's auth events are
+   * usually its ancestors, but state resolution can pick one that is not on the
+   * `prev_events` walk, so `/get_missing_events` would never reach it.
+   */
+  public async getAuthChain(input: {
+    destination: string;
+    roomId: string;
+    eventId: string;
+  }): Promise<FederationEventsOutcome> {
+    const uri = `/_matrix/federation/v1/event_auth/${encodeURIComponent(input.roomId)}/${encodeURIComponent(input.eventId)}`;
+    const result = await this.execute({ destination: input.destination, method: 'GET', uri });
+    if (result.status !== 'ok') return result;
+    const authChain = isRecord(result.body) ? result.body.auth_chain : undefined;
+    if (!Array.isArray(authChain)) return { status: 'retry', reason: 'destination answered 200 without an auth_chain array' };
+    return { status: 'ok', events: authChain as Record<string, unknown>[], reason: 'ok' };
+  }
+
+  /**
    * Sign and send one request, then classify the answer. The signature covers the request
    * that is actually sent — method, target and body — so the peer needs to trust nothing
    * inside the body.
@@ -206,7 +226,8 @@ export class MatrixFederationClient {
     destination: string;
     method: string;
     uri: string;
-    content: Record<string, unknown>;
+    /** Absent for a request with no body, e.g. `GET /event_auth`; then no `content` is signed. */
+    content?: Record<string, unknown>;
   }): Promise<MatrixRequestOutcome> {
     const target = await this.resolve(request.destination);
     if (!target) return { status: 'rejected', reason: `cannot resolve ${request.destination}` };
@@ -216,15 +237,18 @@ export class MatrixFederationClient {
       destination: request.destination,
       method: request.method,
       uri: request.uri,
-      content: request.content,
+      ...(request.content === undefined ? {} : { content: request.content }),
     }, this.identity);
 
     let response: Response;
     try {
       response = await this.fetch(`${target.baseUrl}${request.uri}`, {
         method: request.method,
-        headers: { 'content-type': 'application/json', authorization },
-        body: JSON.stringify(request.content),
+        headers: {
+          ...(request.content === undefined ? {} : { 'content-type': 'application/json' }),
+          authorization,
+        },
+        ...(request.content === undefined ? {} : { body: JSON.stringify(request.content) }),
       });
     } catch (error) {
       // Unreachable is "the peer has not decided", never "the peer refused".

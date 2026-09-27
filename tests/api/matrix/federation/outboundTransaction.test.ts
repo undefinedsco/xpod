@@ -237,6 +237,40 @@ describe('asking a peer for missing events', () => {
   });
 });
 
+describe('asking a peer for an auth chain', () => {
+  it('signs a GET with no body and reads the chain back', async () => {
+    const identity = ourIdentity();
+    const { client: instance, captured } = client({
+      identity,
+      respond: () => new Response(JSON.stringify({ auth_chain: [ { event_id: '$create' }, { event_id: '$join' } ] }), { status: 200 }),
+    });
+    const outcome = await instance.getAuthChain({ destination: THEM, roomId: '!room:remote.example', eventId: '$invite' });
+
+    expect(outcome).toMatchObject({ status: 'ok' });
+    expect(outcome.events?.map(event => event.event_id)).toEqual([ '$create', '$join' ]);
+    const [ sent ] = captured;
+    expect(sent.method).toBe('GET');
+    expect(sent.url).toBe(`https://${THEM}:8448/_matrix/federation/v1/event_auth/${encodeURIComponent('!room:remote.example')}/${encodeURIComponent('$invite')}`);
+    // No body means no `content` in the signed object and no content-type header.
+    expect(sent.body).toEqual({});
+    expect(sent.headers['content-type']).toBeUndefined();
+    await expect(authenticateXMatrixRequest({
+      authorization: sent.headers.authorization, method: 'GET',
+      uri: `/_matrix/federation/v1/event_auth/${encodeURIComponent('!room:remote.example')}/${encodeURIComponent('$invite')}`,
+      keys: peerKeySource(identity), serverName: THEM,
+    })).resolves.toMatchObject({ valid: true, origin: US });
+  });
+
+  it('retries an unreadable answer and refuses a 404', async () => {
+    const unreadable = client({ respond: () => new Response(JSON.stringify({}), { status: 200 }) });
+    await expect(unreadable.client.getAuthChain({ destination: THEM, roomId: '!r:x', eventId: '$e' }))
+      .resolves.toMatchObject({ status: 'retry', reason: expect.stringContaining('auth_chain') });
+    const missing = client({ respond: () => new Response('', { status: 404 }) });
+    await expect(missing.client.getAuthChain({ destination: THEM, roomId: '!r:x', eventId: '$e' }))
+      .resolves.toMatchObject({ status: 'rejected' });
+  });
+});
+
 describe('delivering a transaction', () => {
   const retryPolicy = { initialBackoffMs: 100, maxBackoffMs: 10_000, jitter: 0 };
 

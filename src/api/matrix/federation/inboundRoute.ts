@@ -37,6 +37,15 @@ export interface FederationSendTarget {
   acceptEvent(event: Record<string, unknown>): Promise<void>;
   /** Resolve the events a PDU's `auth_events` name, within that scope. */
   resolveAuthEvents(eventIds: readonly string[], pdu: unknown): Promise<readonly AuthEvent[]>;
+  /**
+   * Fetch the auth chain of a deferred event from the server that sent it, when this
+   * deployment can. Absent means a PDU whose dependencies are missing is reported instead.
+   */
+  fetchAuthChain?(input: {
+    eventId: string;
+    pdu: Record<string, unknown>;
+    origin: string;
+  }): Promise<readonly Record<string, unknown>[] | undefined>;
 }
 
 export interface HandleFederationSendInput {
@@ -112,6 +121,7 @@ export async function handleFederationSend(input: HandleFederationSendInput): Pr
       keys: input.keys,
       resolveAuthEvents: target.resolveAuthEvents,
       acceptEvent: target.acceptEvent,
+      ...(target.fetchAuthChain === undefined ? {} : { fetchAuthChain: target.fetchAuthChain }),
       ...(input.now === undefined ? {} : { now: input.now }),
     });
     return { status: 200, body: response as unknown as Record<string, unknown> };

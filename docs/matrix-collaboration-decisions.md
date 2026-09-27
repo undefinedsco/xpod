@@ -542,11 +542,27 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   测试：`missingEvents.test.ts` 7 项（回溯与排序、earliest 截断、limit 与默认值、min_depth、本机没有的
   事件记 unavailable、分叉合并、二元组形态与缺 id），`outboundTransaction.test.ts` 新增 4 项
   （签名往返、省略可选字段、不可读/限流/5xx 可重试、4xx 与不可达的分类）。
-- **仍待建**：**接收方在遇到 deferred PDU 时真的去补取**。两半已经就位（能选、能要），缺的是把
-  `handleInboundTransaction` 里"缺依赖 → 报 error"改成"缺依赖 → 用 `getMissingEvents` 向 **origin**
-  要（destination 就是发送方，不需要 Pod 归属解析）→ 校验并接受取回的事件 → 重新校验原 PDU"，
-  并按深度/次数设界避免来回拉取。发送侧的排序与重试只能处理"依赖也在我们队列里"的情况，跨事务/跨部署
-  的缺口必须靠这一步；HTTP 外壳与 Pod 归属解析仍是那一格待定项。
+- **已落地**（2026-09-27）：**接收方遇到 deferred PDU 会自己去补取**（缺口 1 的接收侧闭环）。
+  规范里"授权缺件"用的是**另一个端点**：`GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}`
+  —— 授权事件通常是祖先，但状态解析可能选中一个不在 `prev_events` 回溯路径上的事件，
+  `/get_missing_events` 永远走不到它。因此补齐了它的两半：`federation/authChain.ts` 的
+  `selectAuthChain`（沿 `auth_events` 传递闭包、**不含事件本身**、本机没有的记 `unavailable`、
+  **按 depth 从旧到新**返回，理由同前）与客户端 `getAuthChain`（GET、**无 body 因此不签 `content`**，
+  复用同一条 `execute`）。接线在 `handleInboundTransaction`：PDU 被判定 `deferred` 时，若调用方提供了
+  `fetchAuthChain`，就**向发送它的那个 server（origin）要链**（destination 就是发送方，**不需要 Pod
+  归属解析**）→ 按旧到新逐条校验并接受（每条都用本机已有的授权事件校验）→ **重新解析并重新校验原 PDU
+  一次**。**刻意只做一轮**：链本身仍无法授权的事件跳过而不继续追（否则对端可以靠"永远不给我承诺的
+  事件"把我们牵着在房间里绕）。取不到（对端不可达）则保持 deferred 而不判死，让发送方重试。
+  `FederationSendTarget` 也把 `fetchAuthChain` 透传给处理体，所以 HTTP 外壳接上后不需要再改逻辑。
+  测试：`authChain.test.ts` 5 项、客户端 2 项、`inboundTransaction.test.ts` 新增 4 项（补取后接受、
+  不能补取时报 v11-4、链帮不上忙仍 deferred、对端不可达仍 deferred），并在
+  `twoDeployment.test.ts` 里**端到端证明**：B 收到一个它无法授权的邀请 → 自己向 A 要 auth chain →
+  A 用 `selectAuthChain` 应答 → B 接受 create/join/invite，**邀请的 event_id 与 A 完全一致**，
+  全程没有测试手工递状态。
+- **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
+  纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
+  Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，
+  接收侧补取处理"对端还持有依赖"的情况；两者都不覆盖"对端也没有"的缺口（那需要更远的 backfill）。
 
 ## 已撤销或否决的前提
 
