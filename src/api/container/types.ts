@@ -332,6 +332,8 @@ export interface ApiContainerCradle {
   matrixServerNameResolver: import('../matrix/federation/serverNameResolution').MatrixServerNameResolver;
   /** Verifying what peers send us: their published keys. */
   matrixServerKeyFetcher: import('../matrix/federation/serverKeys').MatrixServerKeyFetcher;
+  /** Watches the rooms of every served Pod, so an idle sync reads nothing. */
+  matrixRoomWatchService: import('../matrix/notifications/roomWatchService').MatrixRoomWatchService | undefined;
   /** Transaction ids we have already processed, for inbound federation. */
   matrixInboundTransactions: import('../matrix/federation/inboundTransaction').InMemoryMatrixInboundTransactionStore;
   /** Resolves, signs and queues outbound federation traffic; absent disables it. */

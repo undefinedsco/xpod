@@ -517,6 +517,25 @@ async function startBackgroundServices(
   }
 
   try {
+    // Room watching is a background job too: subscriptions outlive a request, and the set of Pods
+    // served changes while the process runs. Without it a sync reads every room of every Pod.
+    const roomWatch = container.resolve('matrixRoomWatchService', { allowUnregistered: true });
+    if (roomWatch) {
+      const supervisor = new BackgroundServiceSupervisor({
+        name: 'matrix-room-watch',
+        start: async () => { await roomWatch.start(); },
+        stop: () => { roomWatch.stop(); },
+        isRunning: () => roomWatch.isRunning,
+        logger,
+      });
+      backgroundSupervisors.push(supervisor);
+      supervisor.start();
+    }
+  } catch (error) {
+    logger.error(`Failed to start the Matrix room watch service: ${error}`);
+  }
+
+  try {
     // Federation delivery is a background job by nature: a local write must not wait for a
     // peer, and a peer that is down is absorbed by the queue. The supervisor keeps the
     // scheduler alive; the scheduler keeps the queue moving.

@@ -305,8 +305,25 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   `sync` 行为与之前完全一致。测试 `tests/api/matrix/notifications/roomChangeTracker.test.ts` 7 项
   （按房间订当天文档、只报变化的房间、目录内其它资源的变更也归属到该房间、无法归属则降级、
   订不上则降级、跨天续订并停掉旧 topic、断开降级与重连恢复、stop 后清空）。
-- **仍未接**：把 tracker 挂到**具体哪些 Pod**（本部署服务哪些参与者）—— 这正是"参与者 ↔ Pod 归属"那条
-  待定项；以及把同一套订阅用于**对端**（对端订阅房间目录 → 收到通知来取增量）。
+- **已落地**（2026-09-27）：**把 tracker 挂到"本部署服务的每个 Pod"**（`notifications/roomWatchService.ts`
+  + 容器 + 运行时后台服务）。此前 tracker 已经能按房间订阅当天消息文档，但**没人告诉它有哪些 Pod/房间**：
+  - Pod 集合**派生**自 `participantRoutes.routes()`，不再需要配置；每个 Pod 一个 watcher，房间列表来自 store 的
+    `listJoinedRooms(context)`（部署侧 `service` 上下文，与入站写入同一份授权策略）。
+  - 这个服务**本身就是** store 的 `MatrixRoomChangeSource`：`pending({scope})` 按 Pod 根路由到该 Pod 的 watcher；
+    **没被 watch 的 scope 一律回 `trust: 'all'`**（"读遍所有房间"）——静默回"没有变化"是唯一错误的答案，
+    会永久丢事件。
+  - **周期对账**（默认 30s，`intervalMs: 0` 关掉定时器供测试）：参与者出现/离开/换 Pod 由下一趟接住，与出站
+    队列的周期兜底同一个理由；单个 Pod 订阅失败**只上报**，其余 Pod 照常 watch，失败的那个继续 `trust: 'all'`；
+    stop 停掉全部 watcher 并拒绝之后再新建。store 与 watcher 的循环依赖**靠惰性**打破：watcher 只在启动时才向
+    store 要房间列表，而那是容器构建之后的事。
+  - 按仓库既有做法加了 `PodMatrixStore.getRoomChanges()`——"store 有没有真的拿到这个 source"是最容易在重构里
+    丢掉的一环（与 `getQueue()`/`getOutbox()` 同一理由），容器测试直接断言两者是同一个对象。
+  测试：`roomWatchService.test.ts` 8 项（watch 每个服务中的 Pod 且端点由 Pod 根推导、按 scope 路由与"未 watch →
+  trust: all"、Pod 出现/消失时新建与停止、单个 Pod 失败不影响其他且它保持 trust: all、stop 后不再新建、没有
+  watcher 时什么都不 watch、定时器对账与 stop 清理、端点推导含无尾斜杠的 Pod 根），
+  `MatrixOutboundContainer.test.ts` 新增 1 项（服务存在且**就是** store 的变更来源、未启动时回 trust: all、
+  无 Pod 注册表时为 undefined）。
+- **仍未接**：把同一套订阅用于**对端**（对端订阅房间目录 → 收到通知来取增量）。
 
 ## 去重与可恢复提交
 
@@ -929,6 +946,12 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
     与"这是它的密钥"区分开。
   测试：`MatrixHandler.test.ts` 原有 2 项更新为带 `Host` 请求，新增 1 项（`Host: alice.example:8448` 得到
   **alice 的** `server_name` 与她的 key id；`bob.example` 得到 404 而不是部署密钥）。
+- **已落地**（2026-09-27）：**房间变更订阅挂到"本部署服务的每个 Pod"**（`notifications/roomWatchService.ts`）。
+  此前 tracker 能按房间订阅当天消息文档，但没人告诉它有哪些 Pod/房间；现在 Pod 集合由 `participantRoutes.routes()`
+  派生，每 Pod 一个 watcher，房间列表来自 `listJoinedRooms`，服务本身作为 `MatrixRoomChangeSource` 按 scope 路由，
+  **未 watch 的 scope 回 `trust: 'all'`**（静默说"没变化"会永久丢事件），周期对账 + 单 Pod 失败只上报。测试 8 项
+  + 容器 1 项（含"store 拿到的就是同一个 source"）。**仍有界同步的实测数字未在真实部署上重取**（现有证据是
+  20 房间的内存 harness）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

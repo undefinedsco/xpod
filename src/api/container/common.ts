@@ -103,6 +103,9 @@ import { createParticipantRoutes } from '../matrix/participantRoutes';
 import { MatrixServerKeyFetcher } from '../matrix/federation/serverKeys';
 import { InMemoryMatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
 import { MatrixServerNameResolver } from '../matrix/federation/serverNameResolution';
+import { createMatrixRoomWatchService } from '../matrix/notifications/roomWatchService';
+import { MatrixRoomChangeTracker } from '../matrix/notifications/roomChangeTracker';
+import type { NotificationSocket } from '../matrix/notifications/roomChangeSubscription';
 import { matrixSigningIdentityRegistry } from '../matrix/identityRegistry';
 import { matrixSigningIdentityForPod } from '../matrix/identityProvisioning';
 import { createPodParticipantIdentityProvider } from '../matrix/podParticipantIdentity';
@@ -746,6 +749,35 @@ export function registerCommonServices(
     matrixInboundTransactions: asFunction((_cradle: ApiContainerCradle) =>
       new InMemoryMatrixInboundTransactionStore()).singleton(),
 
+    // Bounded sync in production: every Pod this deployment serves has its rooms watched, so a
+    // sync with nothing to catch up on reads nothing. The room list comes from the store, resolved
+    // lazily — the store is built *with* this source, and the cycle is broken by asking for the
+    // store only when a watcher starts, which happens after the container is built.
+    matrixRoomWatchService: asFunction((cradle: ApiContainerCradle) => {
+      const routes = cradle.matrixParticipantRoutes;
+      if (!routes || !cradle.config.matrixServiceIdentity) return undefined;
+      const logger = getLoggerFor('MatrixRoomWatch');
+      return createMatrixRoomWatchService({
+        routes: async () => [ ...(await routes.routes()).served.values() ],
+        rooms: async route => await cradle.matrixStore.listJoinedRooms({
+          webId: route.webId, podUrl: route.podUrl, service: {},
+        }),
+        watch: async ({ route, endpoint, rooms }) => {
+          const tracker = new MatrixRoomChangeTracker({
+            scope: route.podUrl,
+            endpoint,
+            fetch: globalThis.fetch,
+            openSocket: url => new WebSocket(url) as unknown as NotificationSocket,
+            rooms,
+            onError: error => { logger.warn(`Watching ${route.podUrl} failed: ${error.message}`); },
+          });
+          await tracker.start();
+          return tracker;
+        },
+        onError: error => { logger.warn(`Room watch reconciliation failed: ${error.message}`); },
+      });
+    }).singleton(),
+
     // The outbound path: where a server name is reached, which identity signs as the origin,
     // and what is still owed. Absent without an identity of our own: a queue whose every
     // batch would be abandoned is worse than no queue.
@@ -774,7 +806,7 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService, matrixSigningIdentities, matrixParticipantIdentity, matrixOutboundDelivery, matrixOutboxScheduler }: ApiContainerCradle) => {
+    matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService, matrixSigningIdentities, matrixParticipantIdentity, matrixOutboundDelivery, matrixOutboxScheduler, matrixRoomWatchService }: ApiContainerCradle) => {
       return new PodMatrixStore({
         serverGroupReconcilerService,
         podAccess: ownerPodAccess,
@@ -789,6 +821,9 @@ export function registerCommonServices(
         outbound: matrixOutboundDelivery && matrixOutboxScheduler
           ? createSchedulingOutbox({ outbox: matrixOutboundDelivery.outbox, schedule: () => { matrixOutboxScheduler.schedule(); } })
           : undefined,
+        // What tells a sync which rooms changed, so an idle caller reads nothing. Absent means
+        // every sync reads every room, which is the behaviour without a watch service.
+        ...(matrixRoomWatchService ? { roomChanges: matrixRoomWatchService } : {}),
         journal: new SqlMatrixEventJournal(db),
         serverName: (() => {
           try {

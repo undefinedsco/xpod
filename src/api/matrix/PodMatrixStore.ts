@@ -791,6 +791,14 @@ export class PodMatrixStore {
     return this.outbound;
   }
 
+  /**
+   * What tells a sync which rooms changed. Exposed for the same reason the queue is: a source the
+   * store was never given makes every sync read every room, and nothing else would notice.
+   */
+  public getRoomChanges(): MatrixRoomChangeSource | undefined {
+    return this.roomChanges;
+  }
+
   private async getDb(context: MatrixStoreContext): Promise<Db> {
     if ((context as any)._matrixDb) {
       return (context as any)._matrixDb;

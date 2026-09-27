@@ -53,6 +53,33 @@ describe('inbound routing registration', () => {
   });
 });
 
+describe('room watching registration', () => {
+  it('watches the served Pods when there is a Pod registry and an identity', async () => {
+    const withoutRegistry = container(identity('pod.example'));
+    // No Pod registry means no served names, so there is nothing to watch — and sync reads
+    // everything, which is the behaviour without a source.
+    expect(withoutRegistry.resolve('matrixRoomWatchService')).toBeUndefined();
+
+    const instance = container(identity('pod.example'));
+    instance.register({
+      podLookupRepo: asValue({
+        listAllPods: async () => [
+          { podId: 'pod-1', accountId: 'a-1', baseUrl: 'https://pod.example/alice', webId: 'https://alice.example/card#me' },
+        ],
+      } as unknown as ApiContainerCradle['podLookupRepo']),
+    });
+    const watch = instance.resolve('matrixRoomWatchService');
+    expect(watch).toBeDefined();
+    // The store syncs through that same source: this is the link between the watcher and the
+    // bounded read path, and it is easy to lose in a refactor.
+    expect(instance.resolve('matrixStore').getRoomChanges()).toBe(watch);
+    // Started by the runtime, not by construction: an unwatched scope answers "read everything".
+    await expect(watch!.pending({ scope: 'https://pod.example/alice/' }))
+      .resolves.toEqual({ trust: 'all', rooms: [] });
+    expect(watch!.isRunning).toBe(false);
+  });
+});
+
 describe('outbound federation registration', () => {
   it('builds a delivery from the deployment identity and hands its queue to the store', async () => {
     const instance = container(identity('pod.example'));
