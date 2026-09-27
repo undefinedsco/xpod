@@ -1,5 +1,5 @@
 /**
- * The stripped state a server sends with an invite (and, later, with a knock).
+ * The stripped state a server sends with an invite or a knock.
  *
  * A server that is not in the room still has to let its user see what they are being invited to,
  * and the only state it can show is what the inviting server chose to send. The shape is the
@@ -11,9 +11,10 @@
  * Which events: `m.room.create` is required (Matrix 1.16: the receiver needs the room's version
  * and its creator) and the display events are the ones the specification names — "if they are set
  * on the room, at least the state for `m.room.avatar`, `m.room.canonical_alias`,
- * `m.room.join_rules`, and `m.room.name` SHOULD be included". The topic is included too: it is the
- * other thing a client shows when identifying a room. The list stays closed, so a room cannot push
- * arbitrary state at a server that does not have the room.
+ * `m.room.join_rules`, and `m.room.name` SHOULD be included". Two more are included because they
+ * are the other things that decide whether the receiver's user wants in: the topic, and whether the
+ * room is encrypted (named for `knock_room_state`, and just as relevant to an invite). The list
+ * stays closed, so a room cannot push arbitrary state at a server that does not have the room.
  *
  * Validation is reported, not enforced: for room versions 1–11 the specification says a server
  * SHOULD warn about invites whose `invite_room_state` fails these rules rather than error, and this
@@ -31,6 +32,7 @@ export const STRIPPED_STATE_TYPES = [
   'm.room.canonical_alias',
   'm.room.join_rules',
   'm.room.topic',
+  'm.room.encryption',
 ] as const;
 
 /** The room's current state, stripped to the four fields a receiver may rely on. */

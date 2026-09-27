@@ -647,3 +647,59 @@ describe('asking a peer to sign an invite', () => {
       .resolves.toMatchObject({ status: 'rejected' });
   });
 });
+
+describe('knocking on a room', () => {
+  const ROOM = '!r:remote.example';
+  const KNOCKER = `@u_us:${US}`;
+  const template = {
+    room_version: '11',
+    event: {
+      room_id: ROOM, type: 'm.room.member', sender: KNOCKER, state_key: KNOCKER,
+      content: { membership: 'knock' }, depth: 4, prev_events: [ '$prev' ], auth_events: [ '$rules' ],
+    },
+  };
+  const knockEvent = () => ({
+    room_id: ROOM, type: 'm.room.member', sender: KNOCKER, state_key: KNOCKER, origin: US, origin_server_ts: NOW,
+    content: { membership: 'knock' }, depth: 4, prev_events: [ '$prev' ], auth_events: [ '$rules' ],
+  });
+  const knockId = () => computeEventId(knockEvent());
+
+  it('asks for a knock template, always naming the versions it supports', async () => {
+    const { client: instance, captured, identity } = client({ respond: () => new Response(JSON.stringify(template), { status: 200 }) });
+    const outcome = await instance.makeKnock({ destination: THEM, roomId: ROOM, userId: KNOCKER });
+
+    expect(outcome).toMatchObject({ status: 'ok', roomVersion: '11' });
+    expect(outcome.event).toMatchObject({ content: { membership: 'knock' } });
+    const uri = `/_matrix/federation/v1/make_knock/${encodeURIComponent(ROOM)}/${encodeURIComponent(KNOCKER)}?ver=11`;
+    expect(captured[0].method).toBe('GET');
+    expect(captured[0].url).toBe(`https://${THEM}:8448${uri}`);
+    await expect(authenticateXMatrixRequest({
+      authorization: captured[0].headers.authorization, method: 'GET', uri, keys: peerKeySource(identity), serverName: THEM,
+    })).resolves.toMatchObject({ valid: true, origin: US });
+  });
+
+  it('submits the knock event itself and reads the stripped state back', async () => {
+    const state = [ { type: 'm.room.create', state_key: '', sender: `@u_alice:${THEM}`, content: { room_version: '11' } } ];
+    const { client: instance, captured, identity } = client({ respond: () => new Response(JSON.stringify({ knock_room_state: state }), { status: 200 }) });
+    const outcome = await instance.sendKnock({ destination: THEM, roomId: ROOM, eventId: knockId(), event: knockEvent() });
+
+    expect(outcome).toMatchObject({ status: 'ok', knockRoomState: state });
+    const uri = `/_matrix/federation/v1/send_knock/${encodeURIComponent(ROOM)}/${encodeURIComponent(knockId())}`;
+    expect(captured[0].method).toBe('PUT');
+    // The body is the event, as for joins and leaves.
+    expect(captured[0].body).toEqual(knockEvent());
+    await expect(authenticateXMatrixRequest({
+      authorization: captured[0].headers.authorization, method: 'PUT', uri, content: captured[0].body, keys: peerKeySource(identity), serverName: THEM,
+    })).resolves.toMatchObject({ valid: true });
+  });
+
+  it('retries an answer without the room state, and treats a refusal as final', async () => {
+    const unreadable = client({ respond: () => new Response('{}', { status: 200 }) });
+    await expect(unreadable.client.sendKnock({ destination: THEM, roomId: ROOM, eventId: knockId(), event: knockEvent() }))
+      .resolves.toMatchObject({ status: 'retry', reason: expect.stringMatching(/knock_room_state/u) });
+
+    const refused = client({ respond: () => new Response(JSON.stringify({ errcode: 'M_FORBIDDEN' }), { status: 403 }) });
+    await expect(refused.client.sendKnock({ destination: THEM, roomId: ROOM, eventId: knockId(), event: knockEvent() }))
+      .resolves.toMatchObject({ status: 'rejected' });
+  });
+});

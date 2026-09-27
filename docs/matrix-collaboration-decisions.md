@@ -643,14 +643,12 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   （query 与签名一致、多起点、state/state_ids 解析、缺字段重试、拒绝/不可达分类），`authChain.test.ts`
   相应更新为"含被问事件"。
 - **待建**：`PUT /_matrix/federation/v1/send/{txnId}`、`GET /event_auth/...`、`POST /get_missing_events/...`
-  以及握手的 `GET /make_join`、`PUT /send_join`、`GET /make_leave`、`PUT /send_leave`、`PUT /invite`
-  八个端点的 **HTTP 外壳与 Pod 归属解析**（八个服务侧都已实现为纯函数/处理体；**剩下的阻塞点仍是路由
-  归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、投递记录与控制 Pod 承载
+  以及成员资格握手的 `GET /make_join`、`PUT /send_join`、`GET /make_leave`、`PUT /send_leave`、`PUT /invite`、
+  `GET /make_knock`、`PUT /send_knock` 十个端点的 **HTTP 外壳与 Pod 归属解析**（十个服务侧都已实现为纯函数/
+  处理体；**剩下的阻塞点仍是路由归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、投递记录与控制 Pod 承载
   （去 SQL）、状态与历史获取。互通面上还没动的：`GET /_matrix/federation/v1/version`、
   `GET /_matrix/federation/v1/query/{directory,profile}`、由本部署提供 `.well-known/matrix/server`
-  与 `/_matrix/key/v2/server`（密钥响应已能生成，只差路由）、敲门的 `make_knock`/`send_knock`
-  （Xpod 自己建的房间不会把 `join_rule` 设成 knock，受限加入按"失败即拒绝"处理，所以这只是与允许敲门的
-  房间互通时才需要）。
+  与 `/_matrix/key/v2/server`（密钥响应已能生成，只差路由；后者还要先定"以谁的名义发布"）。
 - **已落地**（2026-09-27）：**逐条拒绝不再等于已投递**（缺口 2 的修复）。事务返回 200 只回答"这笔
   事务收到了"，不回答"每条 PDU 都被接受了"，所以发送方现在按 per-PDU 结果拆分：被接受的落地即完成，
   被拒的**换一个新 txnId** 重新入队（对端会重放旧 txnId 的存档应答，所以必须换 id），带**有界退避**
@@ -768,6 +766,29 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   签名、版本不符、无签名身份 500、`invite_room_state` 告警四态），`strippedState.test.ts` 3 项（只含四个字段
   与必需 create、取当前解析状态而非每个历史状态、告警逐条），客户端 3 项（容器 body 与签名往返、空展示状态
   省略且版本可指定、缺签名/不可读/换事件/4xx 四类分类）。
+- **已落地**（2026-09-27）：**敲门的握手两半**（`buildMembershipTemplate` 支持 `knock`、
+  `handleMembershipSubmission` 的 knock 分支、`federation/strippedState.ts` 的 `strippedRoomState`、客户端的
+  `makeKnock`/`sendKnock`）。
+  - **敲门就是换了个 membership 的加入握手**：模板同样由常驻方给图位置（`roomGraphPosition` 对
+    `join`/`invite`/`knock` 都选 `m.room.join_rules`，所以"这个房间收不收敲门"正是授权判定会看的那一条），
+    `state_key === sender`，提交的事件走**同一条入站 PDU 流水线**。规范里敲门的 403 原文就是"房间没开敲门
+    或被封禁"，与授权规则的 `v11-4.7.1` 判定天然对齐。
+  - **唯一的请求形状差异**：`make_knock` 的 `ver` 是**必填**（敲门到 room version 7 才有），所以缺它回 400
+    `M_MISSING_PARAM`；`make_join`/`make_leave` 缺省仍按规范的 `['1']` 处理。我们自己的客户端因此总是带上
+    `ver`（默认就是本部署实现的版本）。
+  - **应答是房间的 stripped state**：`send_knock` 回 `{knock_room_state}`（规范要求字段，回的是敲门方客户端
+    用来"看清自己在申请加入什么"的展示状态），不像 join 那样回状态快照、也不回事件本身。取的就是邀请那一轮
+    落地的 `strippedRoomState`（四字段 + 必需 create），并因此把 **`m.room.encryption` 也纳入展示集合**——
+    规范在 `knock_room_state` 里点名了它，而"房间是否加密"对收邀请的人同样关键。
+  - **依赖缺口没有"换一台 server"的码**：`M_UNABLE_TO_GRANT_JOIN` 是 join 专属的名字，敲门遇到 auth events
+    取不齐时保留规范点名的 400 `M_INVALID_PARAM`，把真正的缺失写进 reason（不借用 join 的码去表达"换个常驻
+    方"）。
+  - **敲门不是本部署房间的常态**：Xpod 自己建的房间不会把 `join_rule` 设成 `knock`，所以这一条与本轮之前的
+    握手一样，价值在互通（对端房间允许敲门时我们敲得进去，或对端用户敲我们的房间时我们答得对）。
+  测试：`membershipHandshake.test.ts` 新增 4 项（可敲门房间给模板且 auth events 含 join_rules、不收敲门的房间
+  403、缺 `ver` 400 `M_MISSING_PARAM`、接受敲门并回四字段 stripped state 且不回事件/状态、不许敲门 403 与
+  auth events 缺失 400），客户端 3 项（`make_knock` 必带 `ver` 与签名往返、`send_knock` 裸事件 body 与
+  `knock_room_state` 解析、缺字段重试与 4xx 分类）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

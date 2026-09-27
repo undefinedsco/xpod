@@ -50,13 +50,16 @@ import { eventReferenceIds } from '../protocol/eventReferences';
 import { roomGraphPosition } from '../protocol/roomGraph';
 import { storedGraphEvent, storedProtocolEvent } from '../storedEvent';
 import { stateSnapshotBeforeParents } from './roomStateSnapshot';
-import { strippedStateWarnings } from './strippedState';
+import { strippedRoomState, strippedStateWarnings } from './strippedState';
 import { normalizeInboundPdu, validateInboundPdu, verifyInboundPdu, type InboundPduResult } from './inboundPdu';
 import type { MatrixServerKeySource } from './serverKeys';
 import type { MatrixEventRecord } from '../types';
 
-/** The two membership events that have a handshake. */
-export type MembershipKind = 'join' | 'leave';
+/** The membership events with a template-and-submit handshake. */
+export type MembershipKind = 'join' | 'leave' | 'knock';
+
+/** What a submission may claim to be: the three above, plus an invite (which has no template). */
+export type MembershipSubmissionKind = MembershipKind | 'invite';
 
 export interface MembershipTemplateInput {
   roomId: string;
@@ -69,7 +72,9 @@ export interface MembershipTemplateInput {
   records: readonly MatrixEventRecord[];
   /**
    * The room versions the asking server said it supports, from the `ver` query parameter.
-   * Absent means the specification's default, `['1']` — not "everything".
+   * Absent means the specification's default, `['1']` — not "everything". `make_knock` is the
+   * exception: there the parameter is required (knocking arrived in room version 7), so a request
+   * without it is invalid rather than version 1.
    */
   versions?: readonly string[];
   now?: () => number;
@@ -110,6 +115,9 @@ export function buildMembershipTemplate(input: MembershipTemplateInput): Members
     return { status: 404, body: { errcode: 'M_NOT_FOUND', error: `This server does not know ${input.roomId}` } };
   }
   const roomVersion = roomVersionOf(input.records);
+  if (input.versions === undefined && input.membership === 'knock') {
+    return { status: 400, body: { errcode: 'M_MISSING_PARAM', error: 'make_knock requires the ver parameter' } };
+  }
   const versions = input.versions ?? [ '1' ];
   if (!versions.includes(roomVersion)) {
     return {
@@ -215,7 +223,7 @@ interface MembershipSubmissionBase {
   now?: () => number;
 }
 
-/** A `/send_join` or `/send_leave` submission: this server knows the room, so it judges the event. */
+/** A `/send_join`, `/send_leave` or `/send_knock`: this server knows the room, so it judges the event. */
 export interface RoomMembershipSubmission extends MembershipSubmissionBase {
   membership: MembershipKind;
   /** The room as this server sees it; the caller resolved the auth events from it already. */
@@ -256,6 +264,10 @@ export type MembershipSubmissionInput = RoomMembershipSubmission | InviteMembers
  * a transaction are held to exactly the same standard; `refusal` maps its outcome onto the answer
  * the submitting server needs to see. An invite is the exception (see the module note): it is
  * verified, not authorised, and answered with the signed event alone.
+ *
+ * The three room-side answers differ only in what the submitting server needs back: the resolved
+ * state prior to a join, nothing at all for a leave, and the stripped state that lets a knocking
+ * server's client show what it is knocking on.
  */
 export async function handleMembershipSubmission(
   input: MembershipSubmissionInput,
@@ -272,12 +284,17 @@ export async function handleMembershipSubmission(
     authEvents: input.authEvents,
     ...(input.now === undefined ? {} : { now: input.now }),
   });
-  if (result.outcome !== 'accepted' || !result.event) return refusal(result);
+  if (result.outcome !== 'accepted' || !result.event) return refusal(result, input.membership);
 
   // The resident's own signature goes on before anything else reads the event, and covers the
   // event as accepted, including a redaction the content hash required.
   const accepted = input.counterSign ? input.counterSign.signEvent(result.event) : result.event;
   if (input.membership === 'leave') return { status: 200, body: {} };
+  // A knock asks to be let in; the answer is what the knocking user's client needs to show them
+  // what they are asking to join. The event itself is not handed back, per the endpoint's shape.
+  if (input.membership === 'knock') {
+    return { status: 200, body: { knock_room_state: strippedRoomState(input.records) } };
+  }
 
   // `state` is the resolved state *prior to* the join event, so it is taken from the parents the
   // event names — the join itself is not in the room yet, and must not be part of its own answer.
@@ -328,7 +345,7 @@ async function handleInvite(input: InviteMembershipSubmission): Promise<Membersh
     keys: input.keys,
     ...(input.now === undefined ? {} : { now: input.now }),
   });
-  if (verified.outcome !== 'accepted' || !verified.event) return refusal(verified);
+  if (verified.outcome !== 'accepted' || !verified.event) return refusal(verified, 'invite');
 
   const warnings = strippedStateWarnings(input.inviteRoomState);
   return {
@@ -391,10 +408,19 @@ function normalizeSubmission(
  * server simply cannot decide, so it answers with the errcode the specification gives for "ask a
  * different server" — the joining server's next resident may hold the auth chain.
  */
-function refusal(result: InboundPduResult): MembershipHandshakeResponse {
+function refusal(result: InboundPduResult, membership: MembershipSubmissionKind): MembershipHandshakeResponse {
   if (result.stage === 'authorisation') return forbidden(result.reason);
   if (result.stage === 'dependencies') {
-    return { status: 400, body: { errcode: 'M_UNABLE_TO_GRANT_JOIN', error: result.reason } };
+    // `M_UNABLE_TO_GRANT_JOIN` is the specification's code for "ask a different server", and it is
+    // named for joining; knocking has no such code, so it keeps the mandated `M_INVALID_PARAM` and
+    // says in the reason what is actually missing.
+    return {
+      status: 400,
+      body: {
+        errcode: membership === 'join' ? 'M_UNABLE_TO_GRANT_JOIN' : 'M_INVALID_PARAM',
+        error: result.reason,
+      },
+    };
   }
   return invalid(result.reason);
 }

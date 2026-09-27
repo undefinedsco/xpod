@@ -58,7 +58,7 @@ const auth = (events: readonly MatrixEventRecord[]): AuthEvent[] => events.map(r
  * rules, then optionally Bob's invite or ban. Every event names its parents and its auth events the
  * way `roomGraphPosition` selects them, so it is a room the auth rules actually accept.
  */
-function residentRoom(options: { joinRule?: 'public' | 'invite'; bob?: 'invite' | 'ban' } = {}) {
+function residentRoom(options: { joinRule?: 'public' | 'invite' | 'knock'; bob?: 'invite' | 'ban' } = {}) {
   const alice = deployment(ALICE_SERVER);
   const joinRule = options.joinRule ?? 'public';
   const create = row(alice.sign({
@@ -460,5 +460,101 @@ describe('accepting a submitted invite', () => {
     const notAList = await submitInvite({ inviteRoomState: { type: 'm.room.create' } });
     expect(notAList.status).toBe(200);
     expect(notAList.warnings).toEqual([ expect.stringMatching(/not an array/u) ]);
+  });
+});
+
+describe('answering make_knock and accepting a knock', () => {
+  const KNOCKER = BOB;
+
+  it('answers a room that takes knocks with a template, and one that does not with a refusal', () => {
+    const knockable = residentRoom({ joinRule: 'knock' });
+    const answer = buildMembershipTemplate({
+      roomId: ROOM, userId: KNOCKER, membership: 'knock', serverName: ALICE_SERVER,
+      records: knockable.events, versions: [ '11' ], now: () => NOW,
+    });
+    expect(answer.status).toBe(200);
+    expect(answer.body.event).toMatchObject({
+      type: 'm.room.member', sender: KNOCKER, state_key: KNOCKER, content: { membership: 'knock' }, depth: 5,
+    });
+    // The join rules decide whether knocking is even possible, so they are among the auth events.
+    expect((answer.body.event as any).auth_events).toContain(knockable.events[3].eventId);
+
+    const publicRoom = residentRoom({ joinRule: 'public' });
+    const refused = buildMembershipTemplate({
+      roomId: ROOM, userId: KNOCKER, membership: 'knock', serverName: ALICE_SERVER,
+      records: publicRoom.events, versions: [ '11' ], now: () => NOW,
+    });
+    expect(refused.status).toBe(403);
+    expect(String(refused.body.error)).toMatch(/v11-4\.7\.1/u);
+  });
+
+  it('requires the version list, which make_join only defaults', () => {
+    const { events } = residentRoom({ joinRule: 'knock' });
+    const answer = buildMembershipTemplate({
+      roomId: ROOM, userId: KNOCKER, membership: 'knock', serverName: ALICE_SERVER, records: events,
+    });
+    expect(answer.status).toBe(400);
+    expect(answer.body.errcode).toBe('M_MISSING_PARAM');
+  });
+
+  it('accepts a signed knock and answers with the room\'s stripped state', async () => {
+    const room = residentRoom({ joinRule: 'knock' });
+    const remote = deployment(REMOTE);
+    const template = buildMembershipTemplate({
+      roomId: ROOM, userId: KNOCKER, membership: 'knock', serverName: ALICE_SERVER,
+      records: room.events, versions: [ '11' ], now: () => NOW,
+    });
+    const event = signedJoin(template.body.event as Record<string, unknown>, remote);
+    const answer = await handleMembershipSubmission({
+      membership: 'knock',
+      roomId: ROOM, eventId: computeEventId(event), event, origin: REMOTE,
+      keys: remote.source, authEvents: auth(room.events), records: room.events,
+      counterSign: room.alice.identity, now: () => NOW,
+    });
+
+    expect(answer.status).toBe(200);
+    const state = answer.body.knock_room_state as Record<string, unknown>[];
+    // The display state, in the four fields a receiver can rely on, with the create event first.
+    expect(state.map(entry => entry.type)).toEqual([ 'm.room.create', 'm.room.join_rules' ]);
+    expect(Object.keys(state[0]).sort()).toEqual([ 'content', 'sender', 'state_key', 'type' ]);
+    // The knock itself is not handed back, and there is no state snapshot to authorise against.
+    expect('event' in answer.body).toBe(false);
+    expect('state' in answer.body).toBe(false);
+  });
+
+  it('refuses a knock the room does not permit, and one it cannot judge', async () => {
+    // A knock against a room whose join rules never allowed knocking: built by hand, because
+    // `make_knock` would have refused to hand out a template for it.
+    const room = residentRoom({ joinRule: 'public' });
+    const remote = deployment(REMOTE);
+    const [ create, aliceJoin, power, rules ] = room.events;
+    const event = remote.sign({
+      room_id: ROOM, type: 'm.room.member', sender: KNOCKER, state_key: KNOCKER, origin: REMOTE,
+      origin_server_ts: NOW - 1_000, content: { membership: 'knock' }, depth: 5,
+      prev_events: [ rules.eventId ], auth_events: [ create.eventId, power.eventId, rules.eventId ],
+    });
+    const denied = await handleMembershipSubmission({
+      membership: 'knock', roomId: ROOM, eventId: computeEventId(event), event, origin: REMOTE,
+      keys: remote.source, authEvents: auth(room.events), records: room.events, now: () => NOW,
+    });
+    expect(denied.status).toBe(403);
+    expect(String(denied.body.error)).toMatch(/v11-4\.7\.1/u);
+    expect(aliceJoin).toBeDefined();
+
+    // Nothing to judge the knock against: the specification has no "ask another server" code for
+    // knocking, so the reason carries the explanation.
+    const knockable = residentRoom({ joinRule: 'knock' });
+    const template = buildMembershipTemplate({
+      roomId: ROOM, userId: KNOCKER, membership: 'knock', serverName: ALICE_SERVER,
+      records: knockable.events, versions: [ '11' ], now: () => NOW,
+    });
+    const signed = signedJoin(template.body.event as Record<string, unknown>, remote);
+    const deferred = await handleMembershipSubmission({
+      membership: 'knock', roomId: ROOM, eventId: computeEventId(signed), event: signed, origin: REMOTE,
+      keys: remote.source, authEvents: [], records: knockable.events, now: () => NOW,
+    });
+    expect(deferred.status).toBe(400);
+    expect(deferred.body).toMatchObject({ errcode: 'M_INVALID_PARAM' });
+    expect(String(deferred.body.error)).toMatch(/auth event/u);
   });
 });

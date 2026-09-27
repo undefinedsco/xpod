@@ -192,13 +192,13 @@ HTTP 跳转；**唯一的测试替身是"缺依赖事件如何送到对端"**—
 Pod 归属解析。
 
 **成员资格握手（同样只差 HTTP 外壳）**：`GET /make_join`、`PUT /send_join`、`GET /make_leave`、
-`PUT /send_leave`、`PUT /invite` 五个端点的服务侧已实现（`federation/membershipHandshake.ts`，邀请的展示状态
-在 `federation/strippedState.ts`）并有 25 项测试，客户端的 `makeJoin`/`sendJoin`/`makeLeave`/`sendLeave`/
-`sendInvite` 也已就位（13 项）。已写死的语义：模板由常驻方用
+`PUT /send_leave`、`PUT /invite`、`GET /make_knock`、`PUT /send_knock` 七个端点的服务侧已实现
+（`federation/membershipHandshake.ts`，展示状态在 `federation/strippedState.ts`）并有 29 项测试，客户端的
+`makeJoin`/`sendJoin`/`makeLeave`/`sendLeave`/`sendInvite`/`makeKnock`/`sendKnock` 也已就位（16 项）。已写死的语义：模板由常驻方用
 `roomGraphPosition` 给图位置（与本地写入同一函数）、加入方丢弃不符的模板、常驻方复用入站 PDU 流水线校验
 提交、加入方拿到的是**加入之前**的解析状态与带常驻方签名的加入事件、`omit_members` 只当提示（本部署永不
 声称省略）、房间版本按 `ver` 协商（缺省为 `['1']`）；`/invite` 是唯一只校验不授权的一个（被邀请方通常不认识
-房间），只回带自己签名的那个事件。**未验证的部分**仍是跨部署真实 HTTP 跳转：现有证据是两侧纯函数 + 客户端签名
+房间），只回带自己签名的那个事件；敲门回的是房间的 stripped state（敲门方客户端拿它显示"在申请加入什么"）。**未验证的部分**仍是跨部署真实 HTTP 跳转：现有证据是两侧纯函数 + 客户端签名
 往返，不是两个部署之间真的跑了这几步。
 
 测试：`tests/api/matrix/scaleOperations.test.ts` 4 项（写/状态/分页在 10 与 200 房间下逐项相同且为小常数、

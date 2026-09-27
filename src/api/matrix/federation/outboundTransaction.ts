@@ -26,7 +26,7 @@
  * receiver can verify it without trusting anything in the body.
  */
 import { buildXMatrixAuthorization, type XMatrixSigner } from './requestAuth';
-import { checkMembershipTemplate } from './membershipHandshake';
+import { checkMembershipTemplate, type MembershipKind } from './membershipHandshake';
 import { computeEventId } from '../protocol/eventIntegrity';
 import { SUPPORTED_ROOM_VERSION } from '../protocol/authRules';
 import type { MatrixResolvedServer } from './serverNameResolution';
@@ -83,6 +83,11 @@ export interface MembershipTemplateOutcome extends FederationCallOutcome {
   roomVersion?: string;
   /** The template to fill in and sign; checked against the request before it is returned. */
   event?: Record<string, unknown>;
+}
+
+/** What a `/send_knock` request produced: the stripped state to show the knocking user. */
+export interface SendKnockOutcome extends FederationCallOutcome {
+  knockRoomState?: Record<string, unknown>[];
 }
 
 /** What an `/invite` request produced: the invite event with the invited server's signature. */
@@ -411,6 +416,48 @@ export class MatrixFederationClient {
   }
 
   /**
+   * Ask a resident server for a knock template (`GET /make_knock`).
+   *
+   * Knocking is the join handshake with a different membership and a different answer, and the one
+   * request-shape difference is that `ver` is required: knocking arrived in room version 7, so a
+   * knocking server always has to say what it supports.
+   */
+  public async makeKnock(input: {
+    destination: string;
+    roomId: string;
+    userId: string;
+    versions?: readonly string[];
+  }): Promise<MembershipTemplateOutcome> {
+    const versions = input.versions ?? [ SUPPORTED_ROOM_VERSION ];
+    return await this.membershipTemplate({
+      destination: input.destination,
+      membership: 'knock',
+      uri: `/_matrix/federation/v1/make_knock/${encodeURIComponent(input.roomId)}/${encodeURIComponent(input.userId)}${versionsQuery(versions)}`,
+      expected: { roomId: input.roomId, userId: input.userId, membership: 'knock', ...(versions.length === 0 ? {} : { versions }) },
+    });
+  }
+
+  /**
+   * Submit a signed knock event to a resident server (`PUT /send_knock`).
+   *
+   * The answer is the room's stripped state — what the knocking user's client shows while they wait
+   * to be let in — and nothing about the knock itself.
+   */
+  public async sendKnock(input: {
+    destination: string;
+    roomId: string;
+    eventId: string;
+    event: Record<string, unknown>;
+  }): Promise<SendKnockOutcome> {
+    const uri = `/_matrix/federation/v1/send_knock/${encodeURIComponent(input.roomId)}/${encodeURIComponent(input.eventId)}`;
+    const result = await this.execute({ destination: input.destination, method: 'PUT', uri, content: input.event });
+    if (result.status !== 'ok') return result;
+    const state = isRecord(result.body) ? result.body.knock_room_state : undefined;
+    if (!Array.isArray(state)) return { status: 'retry', reason: 'destination answered 200 without knock_room_state' };
+    return { status: 'ok', knockRoomState: state as Record<string, unknown>[], reason: 'ok' };
+  }
+
+  /**
    * Submit a signed leave event to a resident server (`PUT /send_leave`, v2).
    *
    * There is nothing to read back: the resident accepts the event, relays it, and answers with an
@@ -471,12 +518,12 @@ export class MatrixFederationClient {
     return { status: 'ok', event, reason: 'ok' };
   }
 
-  /** Both templates are the same request shape with a different endpoint and expected membership. */
+  /** All three templates are the same request shape with a different endpoint and membership. */
   private async membershipTemplate(input: {
     destination: string;
-    membership: 'join' | 'leave';
+    membership: MembershipKind;
     uri: string;
-    expected: { roomId: string; userId: string; membership: 'join' | 'leave'; versions?: readonly string[] };
+    expected: { roomId: string; userId: string; membership: MembershipKind; versions?: readonly string[] };
   }): Promise<MembershipTemplateOutcome> {
     const result = await this.execute({ destination: input.destination, method: 'GET', uri: input.uri });
     if (result.status !== 'ok') return result;
