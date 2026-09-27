@@ -13,9 +13,9 @@ const room = [
 ];
 
 describe('selecting an event\'s auth chain', () => {
-  it('returns the events that authorise it, oldest first, without the event itself', () => {
+  it('returns the event asked about and what authorises it, oldest first', () => {
     const selection = selectAuthChain(room, '$invite');
-    expect(selection.chain.map(event => event.event_id)).toEqual([ '$create', '$alice' ]);
+    expect(selection.chain.map(event => event.event_id)).toEqual([ '$create', '$alice', '$invite' ]);
     expect(selection.unavailable).toEqual([]);
   });
 
@@ -26,13 +26,13 @@ describe('selecting an event\'s auth chain', () => {
       pdu('$alice', 3, [ '$create', '$power' ]),
       pdu('$message', 4, [ '$create', '$alice' ]),
     ];
-    expect(selectAuthChain(deep, '$message').chain.map(event => event.event_id)).toEqual([ '$create', '$power', '$alice' ]);
+    expect(selectAuthChain(deep, '$message').chain.map(event => event.event_id)).toEqual([ '$create', '$power', '$alice', '$message' ]);
   });
 
   it('reports the ids it needed but does not hold', () => {
     const partial = [ pdu('$create', 1), pdu('$invite', 2, [ '$create', '$missing' ]) ];
     const selection = selectAuthChain(partial, '$invite');
-    expect(selection.chain.map(event => event.event_id)).toEqual([ '$create' ]);
+    expect(selection.chain.map(event => event.event_id)).toEqual([ '$create', '$invite' ]);
     expect(selection.unavailable).toEqual([ '$missing' ]);
   });
 
@@ -42,6 +42,6 @@ describe('selecting an event\'s auth chain', () => {
 
   it('reads the auth list in either form', () => {
     const mixed = [ pdu('$create', 1), { event_id: '$join', depth: 2, auth_events: [ [ '$create', { sha256: 'x' } ] ] } ];
-    expect(selectAuthChain(mixed, '$join').chain.map(event => event.event_id)).toEqual([ '$create' ]);
+    expect(selectAuthChain(mixed, '$join').chain.map(event => event.event_id)).toEqual([ '$create', '$join' ]);
   });
 });

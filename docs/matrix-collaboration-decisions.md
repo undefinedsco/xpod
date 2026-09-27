@@ -623,6 +623,25 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   方式接线（store → 调度包装 → 调度器 → 队列 → 按 origin 签名 → 对端处理体），**除了最开始的房间引导
   之外不再有任何手工 flush**：Bob 的 join 靠写入自己走到 Alice，Alice 的一条消息靠写入自己走到 Bob 的
   Pod，两侧都断言了 scheduler 没有报错。
+- **已落地**（2026-09-27）：**历史与状态读取端点的两半**（`federation/roomHistory.ts` 的
+  `selectBackfill`、`federation/roomStateSnapshot.ts` 的 `stateSnapshotBefore`/`stateIdsBefore`、
+  `MatrixRoomStateReplay.stateBefore`，以及客户端的 `backfill`/`getState`/`getStateIds`）。
+  - **`/backfill`**：`GET /_matrix/federation/v1/backfill/{roomId}?v=…&limit=…`（**GET + query**，`v` 可重复，
+    `limit` 必填、按规范上限收敛到 100）。语义与其它回溯**相反的两点**：**包含**点名的事件本身
+    （请求方正是因为没有才来要），并**从新到旧**返回（请求方向后翻页，最新的一条是它的锚点，
+    拿回的最旧一条是它下次的起点）。
+  - **`/state` 与 `/state_ids`**：`?event_id=…` 返回该事件**之前**的房间状态（规范原文"prior to
+    considering any state changes induced by the requested event"）与它所依赖的 auth chain。实现是
+    `MatrixRoomStateReplay.stateBefore`：状态 = 该事件各父事件之后的状态的解析，**按需从祖先集合算**，
+    而不是给每个事件都留一份（replay 只保留极值点状态以保持有界）；`/state_ids` 是同一答案的 id 形式。
+  - **顺带更正**：`selectAuthChain` 现在**包含被问的事件本身**（`selectAuthChainFor` 支持一次问多个，
+    `/state` 就是用整份状态作为起点）。理由：规范自己的实现这么返回，且调用方要授权"这一组"事件时，
+    整组都在链里才自洽；`/event_auth` 因此也把请求的事件带回（对端本来就有，重复无害）。
+  测试：`roomHistory.test.ts` 6 项（含点名事件、limit 截断与上下限、多起点合并且不重复、缺件记
+  `unavailable`、两种 prev 形态）、`roomStateSnapshot.test.ts` 7 项（状态不含时间线事件、不算被问事件
+  自身的状态变化、id 形式、缺 auth 事件如实上报、未知事件无答案、分叉按解析收敛）、客户端 5 项
+  （query 与签名一致、多起点、state/state_ids 解析、缺字段重试、拒绝/不可达分类），`authChain.test.ts`
+  相应更新为"含被问事件"。
 - **待建**：`PUT /_matrix/federation/v1/send/{txnId}`、`GET /event_auth/...`、`POST /get_missing_events/...`
   三个端点的 **HTTP 外壳与 Pod 归属解析**（三个服务侧都已实现为纯函数/处理体；**剩下的阻塞点仍是路由
   归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、
@@ -659,8 +678,9 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   规范里"授权缺件"用的是**另一个端点**：`GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}`
   —— 授权事件通常是祖先，但状态解析可能选中一个不在 `prev_events` 回溯路径上的事件，
   `/get_missing_events` 永远走不到它。因此补齐了它的两半：`federation/authChain.ts` 的
-  `selectAuthChain`（沿 `auth_events` 传递闭包、**不含事件本身**、本机没有的记 `unavailable`、
-  **按 depth 从旧到新**返回，理由同前）与客户端 `getAuthChain`（GET、**无 body 因此不签 `content`**，
+  `selectAuthChain`（沿 `auth_events` 传递闭包、本机没有的记 `unavailable`、
+  **按 depth 从旧到新**返回，理由同前；**【2026-09-27 更正】：链现在**包含**被问的那个事件** ——
+  见下方 `/state` 一条，规范自己的实现也是这么返回的）与客户端 `getAuthChain`（GET、**无 body 因此不签 `content`**，
   复用同一条 `execute`）。接线在 `handleInboundTransaction`：PDU 被判定 `deferred` 时，若调用方提供了
   `fetchAuthChain`，就**向发送它的那个 server（origin）要链**（destination 就是发送方，**不需要 Pod
   归属解析**）→ 按旧到新逐条校验并接受（每条都用本机已有的授权事件校验）→ **重新解析并重新校验原 PDU

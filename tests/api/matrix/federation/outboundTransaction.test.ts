@@ -271,6 +271,71 @@ describe('asking a peer for an auth chain', () => {
   });
 });
 
+describe('asking a peer for history and state', () => {
+  it('asks for a backfill window with the events in the query string', async () => {
+    const identity = ourIdentity();
+    const { client: instance, captured } = client({
+      identity,
+      respond: () => new Response(JSON.stringify({ origin: US, origin_server_ts: NOW, pdus: [ { event_id: '$b' }, { event_id: '$a' } ] }), { status: 200 }),
+    });
+    const outcome = await instance.backfill({ destination: THEM, roomId: '!r:remote.example', from: [ '$b' ], limit: 2 });
+
+    expect(outcome).toMatchObject({ status: 'ok' });
+    expect(outcome.events?.map(event => event.event_id)).toEqual([ '$b', '$a' ]);
+    const [ sent ] = captured;
+    const uri = sent.url.slice(sent.url.indexOf('/_matrix'));
+    expect(uri).toBe(`/_matrix/federation/v1/backfill/${encodeURIComponent('!r:remote.example')}?v=%24b&limit=2`);
+    // The query string is part of the signed target, so the receiver reconstructs the same one.
+    await expect(authenticateXMatrixRequest({
+      authorization: sent.headers.authorization, method: 'GET', uri,
+      keys: peerKeySource(identity), serverName: THEM,
+    })).resolves.toMatchObject({ valid: true });
+    expect(sent.headers['content-type']).toBeUndefined();
+  });
+
+  it('sends every named event when several are given', async () => {
+    const { client: instance, captured } = client();
+    await instance.backfill({ destination: THEM, roomId: '!r:x', from: [ '$a', '$b' ], limit: 10 });
+    expect(captured[0].url).toContain('v=%24a&v=%24b&limit=10');
+  });
+
+  it('reads a state snapshot and its auth chain', async () => {
+    const { client: instance, captured } = client({
+      respond: () => new Response(JSON.stringify({ pdus: [ { event_id: '$create' } ], auth_chain: [ { event_id: '$power' } ] }), { status: 200 }),
+    });
+    const outcome = await instance.getState({ destination: THEM, roomId: '!r:remote.example', eventId: '$e' });
+    expect(outcome).toMatchObject({ status: 'ok' });
+    expect(outcome.events?.map(event => event.event_id)).toEqual([ '$create' ]);
+    expect(outcome.authChain?.map(event => event.event_id)).toEqual([ '$power' ]);
+    expect(captured[0].url).toBe(`https://${THEM}:8448/_matrix/federation/v1/state/${encodeURIComponent('!r:remote.example')}?event_id=%24e`);
+  });
+
+  it('reads state ids, and retries an answer that is missing either list', async () => {
+    const ids = client({ respond: () => new Response(JSON.stringify({ pdu_ids: [ '$a' ], auth_chain_ids: [ '$b', '$c' ] }), { status: 200 }) });
+    await expect(ids.client.getStateIds({ destination: THEM, roomId: '!r:x', eventId: '$e' }))
+      .resolves.toMatchObject({ status: 'ok', pduIds: [ '$a' ], authChainIds: [ '$b', '$c' ] });
+
+    const partial = client({ respond: () => new Response(JSON.stringify({ pdu_ids: [ '$a' ] }), { status: 200 }) });
+    await expect(partial.client.getStateIds({ destination: THEM, roomId: '!r:x', eventId: '$e' }))
+      .resolves.toMatchObject({ status: 'retry', reason: expect.stringContaining('auth_chain_ids') });
+    const empty = client({ respond: () => new Response(JSON.stringify({}), { status: 200 }) });
+    await expect(empty.client.getState({ destination: THEM, roomId: '!r:x', eventId: '$e' }))
+      .resolves.toMatchObject({ status: 'retry', reason: expect.stringContaining('auth_chain') });
+  });
+
+  it('classifies refusals and unreachable peers for these requests too', async () => {
+    const refused = client({ respond: () => new Response('', { status: 404 }) });
+    await expect(refused.client.backfill({ destination: THEM, roomId: '!r:x', from: [ '$a' ], limit: 1 }))
+      .resolves.toMatchObject({ status: 'rejected' });
+    const down = client({ respond: () => new Response('', { status: 503 }) });
+    await expect(down.client.getStateIds({ destination: THEM, roomId: '!r:x', eventId: '$e' }))
+      .resolves.toMatchObject({ status: 'retry' });
+    const offline = client({ respond: () => { throw new Error('connect ECONNREFUSED'); } });
+    await expect(offline.client.getState({ destination: THEM, roomId: '!r:x', eventId: '$e' }))
+      .resolves.toMatchObject({ status: 'retry', reason: expect.stringContaining('ECONNREFUSED') });
+  });
+});
+
 describe('delivering a transaction', () => {
   const retryPolicy = { initialBackoffMs: 100, maxBackoffMs: 10_000, jitter: 0 };
 

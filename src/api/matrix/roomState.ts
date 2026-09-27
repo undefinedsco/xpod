@@ -63,17 +63,22 @@ export class MatrixRoomState {
  * so the caller replays in full instead of quietly computing a wrong state.
  */
 export class MatrixRoomStateReplay {
+  /** Answers already computed, so a repeated question does not walk the room again. */
+  private readonly stateBeforeCache = new Map<string, MatrixRoomState>();
+
   private constructor(
     private readonly protocolById: Map<string, StateResolutionEvent>,
     private readonly knownIds: Set<string>,
     private readonly extremityStates: Map<string, StateMap>,
     public readonly state: MatrixRoomState,
+    /** The records behind the graph, so the state *at* an event can be resolved on demand. */
+    private readonly recordsById: Map<string, MatrixEventRecord> = new Map(),
   ) {}
 
   /** Replay the whole list. */
   public static from(events: readonly MatrixEventRecord[]): MatrixRoomStateReplay {
     if (events.length === 0) {
-      return new MatrixRoomStateReplay(new Map(), new Set(), new Map(), new MatrixRoomState(new Map()));
+      return new MatrixRoomStateReplay(new Map(), new Set(), new Map(), new MatrixRoomState(new Map()), new Map());
     }
     const recordsById = new Map(events.map(event => [ event.eventId, event ]));
     // Rows written before the graph was recorded carry no parents, so every one of them
@@ -81,7 +86,7 @@ export class MatrixRoomStateReplay {
     // previous rule for such a room; migration is tracked separately (D5).
     if (events.every(event => event.event === undefined)) {
       return new MatrixRoomStateReplay(new Map(), new Set(events.map(event => event.eventId)), new Map(),
-        latestStatePerSlot(events));
+        latestStatePerSlot(events), recordsById);
     }
 
     const protocolById = new Map<string, StateResolutionEvent>();
@@ -108,7 +113,39 @@ export class MatrixRoomStateReplay {
       if (state) extremityStates.set(eventId, state);
     }
     return new MatrixRoomStateReplay(protocolById, new Set(events.map(event => event.eventId)), extremityStates,
-      materialize(resolveState([ ...extremityStates.values() ], store), recordsById));
+      materialize(resolveState([ ...extremityStates.values() ], store), recordsById), recordsById);
+  }
+
+  /**
+   * The room's state *before* `eventId`, which is what `/state` answers with: the resolution of
+   * the states after the event's parents, so the event's own state changes are not considered.
+   *
+   * Resolved from the event's ancestors on demand rather than kept for every event, because a
+   * replay only retains its extremities' states to stay bounded.
+   */
+  public stateBefore(eventId: string): MatrixRoomState | undefined {
+    const target = this.recordsById.get(eventId);
+    if (!target) return undefined;
+    const cached = this.stateBeforeCache.get(eventId);
+    if (cached) return cached;
+    const state = MatrixRoomStateReplay.from(this.ancestors(parentIdsOf(target))).state;
+    this.stateBeforeCache.set(eventId, state);
+    return state;
+  }
+
+  /** Every event reachable by walking `prev_events` from these ids, excluding the ids themselves. */
+  private ancestors(parentIds: readonly string[]): MatrixEventRecord[] {
+    const collected = new Map<string, MatrixEventRecord>();
+    const queue = [ ...parentIds ];
+    while (queue.length > 0) {
+      const eventId = queue.shift()!;
+      if (collected.has(eventId)) continue;
+      const record = this.recordsById.get(eventId);
+      if (!record) continue;
+      collected.set(eventId, record);
+      queue.push(...parentIdsOf(record));
+    }
+    return [ ...collected.values() ];
   }
 
   /**
@@ -164,7 +201,7 @@ export class MatrixRoomStateReplay {
     const knownIds = new Set(this.knownIds);
     for (const record of added) knownIds.add(record.eventId);
     return new MatrixRoomStateReplay(protocolById, knownIds, nextExtremities,
-      materialize(resolveState([ ...nextExtremities.values() ], store), recordsById));
+      materialize(resolveState([ ...nextExtremities.values() ], store), recordsById), recordsById);
   }
 }
 

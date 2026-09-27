@@ -57,6 +57,17 @@ export interface FederationEventsOutcome {
   status: 'ok' | 'retry' | 'rejected';
   /** The peer's answer, when it was readable. */
   events?: Record<string, unknown>[];
+  /** `/state` answers with a state and the auth chain it rests on. */
+  authChain?: Record<string, unknown>[];
+  reason: string;
+  retryAfterMs?: number;
+}
+
+/** What a request for a room's state ids produced. */
+export interface StateIdsOutcome {
+  status: 'ok' | 'retry' | 'rejected';
+  pduIds?: string[];
+  authChainIds?: string[];
   reason: string;
   retryAfterMs?: number;
 }
@@ -215,6 +226,68 @@ export class MatrixFederationClient {
     const authChain = isRecord(result.body) ? result.body.auth_chain : undefined;
     if (!Array.isArray(authChain)) return { status: 'retry', reason: 'destination answered 200 without an auth_chain array' };
     return { status: 'ok', events: authChain as Record<string, unknown>[], reason: 'ok' };
+  }
+
+  /**
+   * Ask a peer for history before the events we name.
+   *
+   * `/backfill` is the endpoint for a sliding window of the past: the events we name and what
+   * preceded them, newest first, which is the direction a server paging backwards wants.
+   */
+  public async backfill(input: {
+    destination: string;
+    roomId: string;
+    from: readonly string[];
+    limit: number;
+  }): Promise<FederationEventsOutcome> {
+    const query = new URLSearchParams();
+    for (const eventId of input.from) query.append('v', eventId);
+    query.set('limit', String(input.limit));
+    const uri = `/_matrix/federation/v1/backfill/${encodeURIComponent(input.roomId)}?${query.toString()}`;
+    const result = await this.execute({ destination: input.destination, method: 'GET', uri });
+    if (result.status !== 'ok') return result;
+    const pdus = isRecord(result.body) ? result.body.pdus : undefined;
+    if (!Array.isArray(pdus)) return { status: 'retry', reason: 'destination answered 200 without a pdus array' };
+    return { status: 'ok', events: pdus as Record<string, unknown>[], reason: 'ok' };
+  }
+
+  /** The room's state before an event, as ids: `auth_chain_ids` and `pdu_ids`. */
+  public async getStateIds(input: {
+    destination: string;
+    roomId: string;
+    eventId: string;
+  }): Promise<StateIdsOutcome> {
+    const uri = `/_matrix/federation/v1/state_ids/${encodeURIComponent(input.roomId)}?${new URLSearchParams({ event_id: input.eventId }).toString()}`;
+    const result = await this.execute({ destination: input.destination, method: 'GET', uri });
+    if (result.status !== 'ok') return result;
+    const pduIds = isRecord(result.body) ? result.body.pdu_ids : undefined;
+    const authChainIds = isRecord(result.body) ? result.body.auth_chain_ids : undefined;
+    if (!Array.isArray(pduIds) || !Array.isArray(authChainIds)) {
+      return { status: 'retry', reason: 'destination answered 200 without pdu_ids and auth_chain_ids' };
+    }
+    return {
+      status: 'ok',
+      pduIds: pduIds.map(String),
+      authChainIds: authChainIds.map(String),
+      reason: 'ok',
+    };
+  }
+
+  /** The room's state before an event, as PDUs, with the auth chain it rests on. */
+  public async getState(input: {
+    destination: string;
+    roomId: string;
+    eventId: string;
+  }): Promise<FederationEventsOutcome> {
+    const uri = `/_matrix/federation/v1/state/${encodeURIComponent(input.roomId)}?${new URLSearchParams({ event_id: input.eventId }).toString()}`;
+    const result = await this.execute({ destination: input.destination, method: 'GET', uri });
+    if (result.status !== 'ok') return result;
+    const pdus = isRecord(result.body) ? result.body.pdus : undefined;
+    const authChain = isRecord(result.body) ? result.body.auth_chain : undefined;
+    if (!Array.isArray(pdus) || !Array.isArray(authChain)) {
+      return { status: 'retry', reason: 'destination answered 200 without pdus and auth_chain' };
+    }
+    return { status: 'ok', events: pdus as Record<string, unknown>[], authChain: authChain as Record<string, unknown>[], reason: 'ok' };
   }
 
   /**
