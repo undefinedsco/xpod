@@ -161,8 +161,10 @@
 | 项 | 状态 | 证据 |
 |---|---|---|
 | W4-DESIGN-03 语义色回到公共映射 | 已实施 | `ui/tailwind.config.js` 新增 `success`/`warning`（含 foreground），映射 W1 在 `theme.css` 发布的同名 token；`ui/src/**/*.tsx` 中 14 个文件的 17 处调色板字面量（amber/green/emerald/red/blue 等）改为语义类（`text-success`、`border-warning/40`、`bg-destructive/10` …）；新增 `tests/ui/semantic-colour-contract.test.ts` 断言产品页面不再出现语义性调色板类，并核对 theme.css 与 Tailwind 映射同时存在。未完成：中性调色板（slate/zinc/stone/gray）仍有使用，属结构化中性色，列入下一轮收敛 |
-验证记录：`ui/src` + `tests/ui` + `packages/shared-ui/test` + `packages/extension-sdk/test` 137 文件 / 1155 测试；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
+验证记录（第二轮）：`ui/src` + `tests/ui` + `packages/shared-ui/test` + `packages/extension-sdk/test` 137 文件 / 1157 测试；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
 
-| W4-DESIGN-01 概览重排 | 未开始 | —— |
+第一轮验证记录：137 文件 / 1155 测试；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
+
+| W4-DESIGN-01 概览重排 | 第一屏结构已实施；多问题计数与空间摘要待做 | `StatusPage.tsx` 现在先给一个结论（`data-testid="overview-conclusion"`，tone 取 normal/attention/unknown，五种情况折叠为正常／服务未就绪／对外访问有问题／读取失败／状态未知），再一次 ≤4 组事实（实例、核心服务 N/M、推荐访问、上次检查；服务未知显示「状态无法确认」而非 0，符合 AC-09），服务明细、访问路径、Cloud 与配置摘要收进默认收起的 `<details>`（`overview-details`/`overview-access-details`/`overview-runtime-details`）。`StatusPage.test.tsx` 新增两条用例：正常态恰一个结论、事实 ≤4、无强调动作、details 均收起；服务未知时 tone=unknown 且不出现 `0/`。未完成：多个独立问题时的「其余 N 项」计数仍只有一个 ActionNeededCard；空间与 AI 摘要未接入（依赖 W4-DESIGN-02 与 W5） |
 | W4-DESIGN-02 用量域 | 未开始 | —— |
 | W4-DESIGN-04 服务与访问分区 | 未开始 | —— |

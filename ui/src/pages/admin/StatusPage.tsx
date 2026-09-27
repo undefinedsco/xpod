@@ -368,6 +368,7 @@ export function StatusPage() {
         ? 'degraded'
         : 'healthy';
   const recommendedRoute = selectRecommendedRoute(routes);
+
   const runtimeServices: RuntimeServiceRow[] = [
     {
       name: 'Gateway',
@@ -387,6 +388,45 @@ export function StatusPage() {
       detail: apiService?.pid ? `PID ${apiService.pid}` : '管理 API 与本机控制能力',
       uptime: formatUptime(apiService?.uptime),
     },
+  ];
+
+  // §7.1：正常首屏先给一个结论，再一次事实，专业细节收进可展开入口
+  const runningServiceCount = runtimeServices.filter((service) => service.state === 'healthy').length;
+  const servicesUnknown = !services;
+  const conclusion = servicesUnknown && !loadError
+    ? {
+        tone: 'unknown' as const,
+        headline: '状态无法确认',
+        detail: '还没有读到本机服务状态；下面是上次可信结果，不当作当前结论。',
+      }
+    : loadError || !allServicesRunning
+      ? {
+          tone: 'attention' as const,
+          headline: allServicesRunning ? '部分信息读取失败' : '核心服务未全部运行',
+          detail: loadError ?? '本机服务未就绪，先按需处理事项恢复。',
+        }
+      : publicAccessProblem
+        ? {
+            tone: 'attention' as const,
+            headline: '本机可用，对外访问需要检查',
+            detail: '核心服务正常；对外访问方式有问题时会先影响外部设备。',
+          }
+        : {
+            tone: 'normal' as const,
+            headline: '当前可用',
+            detail: recommendedRoute
+              ? `${recommendedRoute.label}：${recommendedRoute.detail}`
+              : '核心服务正常，可以继续使用。',
+          };
+  const overviewFacts = [
+    { label: '实例', value: baseUrl || '等待稳定入口' },
+    {
+      label: '核心服务',
+      // AC-09：未知不显示成 0
+      value: servicesUnknown ? '状态无法确认' : `${runningServiceCount}/${runtimeServices.length} 正常`,
+    },
+    { label: '推荐访问', value: recommendedRoute?.label ?? '正在检查' },
+    { label: '上次检查', value: lastCheckedAt ? lastCheckedAt.toLocaleString() : '尚未检查' },
   ];
 
   const copyStatus = async () => {
@@ -457,6 +497,27 @@ export function StatusPage() {
         </div>
       ) : null}
 
+      <section data-testid="overview-conclusion" data-conclusion-tone={conclusion.tone} className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusBadge state={overallState}>{healthLabel(overallState)}</StatusBadge>
+          <h2 className="text-2xl font-semibold">{conclusion.headline}</h2>
+        </div>
+        <p className="max-w-[65ch] text-sm text-muted-foreground">{conclusion.detail}</p>
+        <div data-testid="overview-facts" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {overviewFacts.map((fact) => (
+            <div
+              key={fact.label}
+              data-testid="overview-fact"
+              data-fact-label={fact.label}
+              className="rounded-lg border border-border bg-card p-3"
+            >
+              <div className="text-xs text-muted-foreground">{fact.label}</div>
+              <div className="mt-1 break-all text-sm">{fact.value}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       <Card variant="bordered">
         <CardContent className="pt-5">
           <div className="space-y-5">
@@ -508,7 +569,9 @@ export function StatusPage() {
                 </p>
               </div>
             </div>
-            <div className="border-t border-border pt-5">
+            <details data-testid="overview-details" className="border-t border-border pt-5">
+              <summary className="cursor-pointer text-sm font-medium">专业详情（服务、路径、Cloud 与配置）</summary>
+            <div className="pt-5">
               <div className="mb-3">
                 <div className="text-base font-semibold">Services</div>
                 <p className="mt-1 text-sm text-muted-foreground">核心运行服务，不包含访问路径或隧道。</p>
@@ -536,16 +599,25 @@ export function StatusPage() {
                 ))}
               </div>
             </div>
+            </details>
           </div>
         </CardContent>
       </Card>
 
       <ActionNeededCard servicesKnown={Boolean(services)} servicesHealthy={allServicesRunning} publicAccessProblem={publicAccessProblem} />
-      <div data-testid="runtime-access-paths">
-        <RouteSummaryList routes={routes} />
-      </div>
-      <RouteTable routes={routes} />
+      <details data-testid="overview-access-details">
+        <summary className="cursor-pointer text-sm font-medium">专业详情：访问路径</summary>
+        <div className="mt-4 space-y-6">
+          <div data-testid="runtime-access-paths">
+            <RouteSummaryList routes={routes} />
+          </div>
+          <RouteTable routes={routes} />
+        </div>
+      </details>
 
+      <details data-testid="overview-runtime-details">
+        <summary className="cursor-pointer text-sm font-medium">专业详情：Cloud 与配置</summary>
+        <div className="mt-4 space-y-6">
       <Card variant="bordered">
         <CardHeader><CardTitle>Cloud 协调</CardTitle></CardHeader>
         <CardContent className="space-y-2 text-sm">
@@ -573,6 +645,8 @@ export function StatusPage() {
       <div className="text-sm text-muted-foreground">
         修改运行方式时，请进入 <Link className="text-primary underline-offset-4 hover:underline" to="/services/configuration">配置</Link>。
       </div>
+        </div>
+      </details>
     </div>
   );
 }

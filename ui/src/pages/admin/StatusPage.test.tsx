@@ -166,6 +166,48 @@ describe('StatusPage overview runtime layout', () => {
     await unmount(root);
   });
 
+  test('answers the first screen with one conclusion, at most four facts and no emphasized action', async () => {
+    const { container, root } = await renderStatusPage();
+
+    // §7.1：一个结论 + ≤4 组事实 + 0–1 强调动作，专业细节收在可展开入口里
+    const conclusions = container.querySelectorAll('[data-testid="overview-conclusion"]');
+    expect(conclusions).toHaveLength(1);
+    expect(conclusions[0]?.getAttribute('data-conclusion-tone')).toBe('normal');
+
+    const facts = container.querySelectorAll('[data-testid="overview-fact"]');
+    expect(facts.length).toBeGreaterThan(0);
+    expect(facts.length).toBeLessThanOrEqual(4);
+
+    // 正常态不出现"需要处理"卡片，也不出现日志动作
+    expect(container.textContent).not.toContain('需要处理');
+    expect(container.textContent).not.toContain('打开日志');
+
+    // 专业详情是收起的分组，不是平行卡片
+    const details = container.querySelectorAll('details[data-testid^="overview-"]');
+    expect(details.length).toBeGreaterThan(0);
+    for (const item of details) {
+      expect((item as HTMLDetailsElement).open).toBe(false);
+    }
+
+    await unmount(root);
+  });
+
+  test('says the state is unknown instead of showing zero services', async () => {
+    const snapshot = createSnapshot();
+    const { container, root } = await renderStatusPage({
+      ...snapshot,
+      servicesData: null,
+    } as unknown as ServicesStatusSnapshot);
+
+    const conclusion = container.querySelector('[data-testid="overview-conclusion"]');
+    expect(conclusion?.getAttribute('data-conclusion-tone')).toBe('unknown');
+    // AC-09：未知不得回落成 0
+    expect(container.textContent).toContain('状态无法确认');
+    expect(container.textContent).not.toContain('0/');
+
+    await unmount(root);
+  });
+
   test('explains a configured external route failure and sends the user to Network settings', async () => {
     const { container, root } = await renderStatusPage(createExternalFailureSnapshot());
 
