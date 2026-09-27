@@ -23,6 +23,7 @@ import { handleFederationSend, type FederationSendTarget } from '../../../../src
 import { authenticateXMatrixRequest, buildXMatrixAuthorization } from '../../../../src/api/matrix/federation/requestAuth';
 import { selectAuthChain } from '../../../../src/api/matrix/federation/authChain';
 import { joinRoomOverFederation } from '../../../../src/api/matrix/federation/remoteJoin';
+import { computeEventId } from '../../../../src/api/matrix/protocol/eventIntegrity';
 import { parseServerKeyResponse, type MatrixServerKeySource } from '../../../../src/api/matrix/federation/serverKeys';
 import type { AuthEvent } from '../../../../src/api/matrix/protocol/authRules';
 
@@ -832,6 +833,38 @@ describe('two deployments federating over real HTTP', () => {
       const sent = await a.store.sendEvent(room.roomId, 'm.room.message', 'txn-after-join', { body: 'after the handshake' }, a.context);
       expect(await a.outbox.flush({ scope: a.context.podUrl! })).toMatchObject({ rejected: [], abandoned: [] });
       expect(findPdu(b.rows, 'm.room.message').event_id).toBe(sent.eventId);
+    } finally {
+      await stop();
+    }
+  }, 180_000);
+
+  it('gets an invite countersigned by the invited server, over the wire', async () => {
+    const { a, b, requestsToB, stop } = await httpPair();
+    try {
+      const bob = (await b.store.getAccount(b.context)).userId;
+      const room = await a.store.createRoom({ visibility: 'public' }, a.context);
+      await a.store.inviteUser(room.roomId, bob, a.context);
+      const invite = findPdu(a.rows, 'm.room.member', bob);
+
+      // The inviting deployment asks the invited one to sign, because a remote invite is only
+      // complete once both servers have: the invited server is what makes it attributable to Bob.
+      const client = await a.sender.clientFor('alice.example');
+      expect(client).toBeDefined();
+      const outcome = await client!.sendInvite({
+        destination: 'bob.example',
+        roomId: room.roomId,
+        eventId: String(invite.event_id),
+        event: invite,
+      });
+
+      expect(outcome.status).toBe('ok');
+      const signed = outcome.event!;
+      // Both signatures, and the same event: the invited server adds to it, it does not replace it.
+      expect(computeEventId(signed)).toBe(invite.event_id);
+      expect(Object.keys(signed.signatures as Record<string, unknown>).sort()).toEqual([ 'alice.example', 'bob.example' ]);
+      expect(requestsToB.some(request => request.path.startsWith('/_matrix/federation/v2/invite/'))).toBe(true);
+      // Nothing was written to Bob's Pod by the invite: he has not accepted anything yet.
+      expect(pdusOf(b.rows)).toEqual([]);
     } finally {
       await stop();
     }
