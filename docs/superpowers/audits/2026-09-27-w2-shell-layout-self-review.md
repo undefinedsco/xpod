@@ -167,8 +167,8 @@
 | 项 | 状态 | 证据 |
 |---|---|---|
 | W2-DESIGN-01 四入口 + 身份入口 | 已实施 | `global-navigation.ts` 四入口与 §2 标签；`XpodProductLayout` 单组渲染；`global-navigation.test.ts` 锁定顺序/标签/归属/唯一命中；旧五入口测试已改为新契约 |
-| W2-DESIGN-02 页型与条件对象列 | 未开始 | 协议仍为 `single-pane/two-pane/three-pane` |
-| W2-DESIGN-03 §8.3 断点 | 未开始 | `sm:`/`lg:` 仍散落 |
+| W2-DESIGN-02 页型与条件对象列 | 协议已实施，Shell 采用待做 | `packages/extension-sdk/src/layout.ts` 新增 `AppletPageType` 与 `resolveAppletPanePlan`（经 `src/index.ts` 导出）；既有 pane 描述符保留，未破坏 applet 消费者 |
+| W2-DESIGN-03 §8.3 断点 | 单一来源已建立，页面采用待做 | `XPOD_LAYOUT_BREAKPOINTS = { narrow: 768, wideObjects: 1100 }`；`sm:`/`lg:` 仍散落在页面 |
 | W2-DESIGN-04 §3.3 历史映射核对 | 未开始 | 映射表已存在，未逐行核对目标与查询保留 |
 
-验证记录：`ui/src` 96 文件 / 881 测试全过（含新增导航契约）；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run build:ts` 与 `bun run typecheck:test` 均通过。未做：真实点击与窄窗走查。
+验证记录：`ui/src` 96 文件 / 881 测试全过（含新增导航契约）；`packages/extension-sdk/test` 12 文件 / 79 测试全过（含新增页型契约 `layout-pages.test.ts`，覆盖"概览/固定配置/诊断在任意宽度都不出现对象列"、"只有真正集合在 ≥1100px 才出现对象列"、768–1099 堆叠、<768 任务栏单面板与非法宽度）；`bun run build:packages`、`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run build:ts` 与 `bun run typecheck:test` 均通过。未做：真实点击与窄窗走查、Shell 对页型与断点的实际采用。
