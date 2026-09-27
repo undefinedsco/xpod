@@ -11,9 +11,15 @@
 
 实现面已走完，下面四项**不是实现困难，而是需要你选一个方向**；每项都写明了选项与后果：
 
-1. **models 侧那张 keyed 控制记录表**（契约 §5.1，[控制记录契约](matrix-control-records-contract.md)）。选项：
-   ① 接受"一张按 `(owner, kind, key)` 唯一索引的通用控制记录表"（我随后就能把**入站事务存档**与**出站投递批次**落
-   Pod，"仅凭 Pod 恢复"门禁随之可测）；② 每类记录各建一张表；③ 先不做（投递/事务继续留在内存，重启即丢）。
+1. ~~models 侧那张 keyed 控制记录表~~ **已解决：不用新建表**（用户 2026-09-27："要记录啥呢，任务不是有建模吗"）。
+   models 里已有 `taskResource`（`src/task.schema.ts`）：**keyed**（`id: 'index.ttl#{key}'`，点查）、有 `status`
+   （open/ready/active/blocked/completed/failed/cancelled）、有不透明 `metadata`、有 `createdAt`/`updatedAt`——正是
+   契约 §2 要求的那张表，而且它的语义就是"**持久化的可执行工作单元**"。据此：**出站投递批次**直接就是一条 task
+   （要做什么：把这批 PDU 发给那个 server；`metadata` 带 origin/destination/txnId/pdus；status 走 open→completed/
+   failed/cancelled），**入站事务存档**是一条已完成的 task（回执：`metadata` 带 origin/txnId/fingerprint/首次应答）。
+   **唯一剩下的技术问题**：`reserve` 要"只有一个赢家"，而 Pod 写入是整份 `index.ttl` 的读-改-写，**需要条件写
+   （ETag/If-Match）**——这与之前记录的"Pod 条件写"缺口是同一件事；没有条件写时并发重试可能各自处理一次（接受事件按
+   event id 幂等，所以不会写出重复事件，但"首次应答"可能不是同一个）。
 2. **grant 的索取流程**（契约 §5.4）。机制已存在（`TaskCredentialStore.grant`，用户把 Pod interface key 交给部署），
    缺的是**时机与界面**：在参与者第一次被 provision 时问？第一次进房间时问？界面上怎么表达"让这个部署替你写收到的
    消息"？在此之前，收到的事件会以 403 明确失败（不静默、不写别人的 Pod）。
@@ -1137,7 +1143,7 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
 | 完整事件与 Solid Chat 表示 | 原始事件验证材料、图关系与 room version 已落地（见[房间事件图](reference/matrix-room-event-graph.md)）；剩余：状态解析与事件授权规则、索引与旧房间迁移；共享 schema 归 models |
 | 传输与落 Pod | 接收持久化、去重、确认、部分投递失败、补发与恢复各自的责任和进度 |
 | 客户端增量 | 有界发现/分页、晚到事件、授权状态变化、token 版本与重建 |
-| 可恢复事务 | 记录寻址、首次结果、载荷保留、发布、回收及未知结果处理。**判据已明确**（用户 2026-09-27 的 metadata 澄清）：随实体而生的控制事实（事件本体、投递进度）放进该实体的 `metadata.protocols.matrix` 即可，**不需要 models 声明**；而**自由存在**的控制记录（按 `(origin, txnId)` 归档的事务、出站批次）需要一个可寻址的资源去承载。**契约草案已写出**：[控制记录契约](matrix-control-records-contract.md)（点查/原子预留/唯一索引/回收不得把"未知结果"变成"可重放"/批次必须留载荷/授权用任务层 grant）；**待拍的点**：models 是否提供"一张按 `(owner, kind, key)` 唯一索引的通用控制记录表"、回收期与墓碑、同步游标是否纳入 |
+| 可恢复事务 | 记录寻址、首次结果、载荷保留、发布、回收及未知结果处理。**承载已定**（用户 2026-09-27）：用 models 已有的 **`taskResource`**（keyed `index.ttl#{key}`、`status`、不透明 `metadata`、两个时间戳）——出站批次是"要做的工作"，入站事务是"已完成的回执"；**不需要新建表**。契约草案见[控制记录契约](matrix-control-records-contract.md)（点查/原子预留/回收不得把"未知结果"变成"可重放"/批次必须留载荷/授权用任务层 grant）。**剩下的**：`reserve` 的原子性依赖 **Pod 条件写（ETag/If-Match）**；回收期与墓碑、同步游标是否纳入仍未定 |
 | Agent 执行 | 唯一逻辑触发、执行归属、接替、撤权、工具幂等与分区处理 |
 | 验收 | 两个独立部署/身份/Pod 的真实互通和故障注入，见主设计；原单 Pod 测试只作回归基线 |
 
@@ -1187,3 +1193,8 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   发 `/query/directory` → 用返回的房间 id 走**同一条远端加入握手**。测试断言三步请求（directory、make_join、send_join）
   **都真的发生过**，且两侧的 create 与 Bob 的 join **event id 一致**——这是真实客户端加入远端房间的路径，此前只在
   单元层（假 store / 假 port）验证过。
+- **已落地（证据，2026-09-27）**：**邀请握手经 HTTP 走通**（`twoDeployment.test.ts` 新增一项）。Alice 的部署邀请 Bob
+  （远端用户）时，**向 Bob 的部署请求 `/invite`** 请它加签：测试断言结果 `ok`、**事件 id 不变**、事件上**同时有
+  `alice.example` 与 `bob.example` 两个签名**（被邀请方是**添加**签名而不是替换事件），并断言请求确实打到
+  `/_matrix/federation/v2/invite/`；同时断言 **Bob 的 Pod 此时仍是空的**——`/invite` 只回答"我签了"，让 Bob 看见邀请
+  仍然要靠随后的事务送达（这是规范的分工，不是遗漏）。
