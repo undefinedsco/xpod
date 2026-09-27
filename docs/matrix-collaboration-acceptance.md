@@ -179,7 +179,11 @@ HTTP 跳转；**唯一的测试替身是"缺依赖事件如何送到对端"**—
 订阅侧本身（`notifications/roomChangeSubscription.ts`，7 项测试）：按 topic 建 WebSocketChannel2023
 通道、连接 `receiveFrom`、解析通知体、断线后**重新建通道**（通道在最后一个 socket 关闭时会被回收，
 所以不能复用旧 URL）、失败上报且持续重试直到 stop、`start` 幂等。
-**仍未接的**：把订阅真正挂到"每个房间的当天消息文件"上（房间列表 + 跨天续订），即下一轮的接线。
+**接线已落地**（`notifications/roomChangeTracker.ts`，7 项测试）：每个房间订阅**当天消息文档**（真正被
+改写的资源；容器看不到"已存在资源被更新"），跨天 `refresh()` 续订并停掉旧 topic；`trust` 只有在每个
+想要的 topic 都订上时才是 `changed`，**订阅失败 / socket 断开（含干净 close）/ 无法归属的变更**一律降级为
+`all`（读遍所有房间）。代价明确：R 房间的 Pod 需要 R 条通道 / R 个 socket。**仍未接的**：挂到"本部署服务
+哪些参与者"（即参与者 ↔ Pod 归属那条待定项），以及对端方向。
 
 测试：`tests/api/matrix/scaleOperations.test.ts` 4 项（写/状态/分页在 10 与 200 房间下逐项相同且为小常数、
 增量 sync 的往返与行数性质、空闲等待循环零读取、1000 房间的堆增量与单房间读取仍为常数）。

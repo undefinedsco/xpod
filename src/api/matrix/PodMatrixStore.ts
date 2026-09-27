@@ -27,6 +27,12 @@ import { MatrixRoomState, MatrixRoomStateReplay, resolveRoomState } from './room
 import { serverNameOf, SUPPORTED_ROOM_VERSION } from './protocol/authRules';
 import { eventDestinations } from './federation/destinations';
 import { webIdServerName } from './protocol/serverName';
+import {
+  roomChatIri,
+  roomMessagesDocumentIri,
+  roomSurfaceId,
+  roomThreadIri,
+} from './roomResources';
 import type { MatrixSigningIdentitySource } from './identityRegistry';
 import { computeEventId, EventIntegrityError } from './protocol/eventIntegrity';
 import type { MatrixServiceIdentity } from './protocol/serviceIdentity';
@@ -1260,11 +1266,11 @@ export class PodMatrixStore {
   }
 
   private chatIri(roomId: string, context: MatrixStoreContext): string {
-    return chatResource.buildIri(this.scope(context), {id:this.surfaceIdFromRoomId(roomId)});
+    return roomChatIri(this.scope(context), roomId);
   }
 
   private threadIri(roomId: string, context: MatrixStoreContext): string {
-    return threadResource.buildIri(this.scope(context), {id:'thread',parent:this.chatIri(roomId,context)});
+    return roomThreadIri(this.scope(context), roomId);
   }
 
   /**
@@ -1830,7 +1836,7 @@ export class PodMatrixStore {
   }
 
   private surfaceIdFromRoomId(roomId: string): string {
-    return `matrix-${createHash('sha256').update(roomId).digest('hex').slice(0, 16)}`;
+    return roomSurfaceId(roomId);
   }
 
   private chatResourceIdFromRoomId(roomId: string): string {

@@ -47,6 +47,16 @@ export interface SolidNotificationSubscriptionOptions {
   onChange: (notification: SolidChangeNotification) => void;
   /** Reported when the channel could not be created, or the socket failed. */
   onError?: (error: Error) => void;
+  /**
+   * Reported every time a channel is established — including after a reconnect. A caller that
+   * decides whether it can account for every change needs to know when it is watching again.
+   */
+  onReady?: () => void;
+  /**
+   * Reported when a socket goes away, before the reconnect. A clean close is not an error, but
+   * changes during the gap are missed, so a caller that trusts this signal has to stop.
+   */
+  onDisconnect?: () => void;
   /** How long to wait before re-subscribing after a drop. Defaults to 1s, doubling to 30s. */
   initialRetryDelayMs?: number;
   maxRetryDelayMs?: number;
@@ -120,6 +130,7 @@ export class SolidNotificationSubscription {
       throw new Error(`Could not subscribe to ${this.options.topic}: the channel has no receiveFrom URL`);
     }
     if (typeof body.id === 'string') this.channelId = body.id;
+    this.options.onReady?.();
     return receiveFrom;
   }
 
@@ -136,6 +147,7 @@ export class SolidNotificationSubscription {
         this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
       }
       if (this.stopped) return;
+      this.options.onDisconnect?.();
       // A dropped socket means the channel may be gone (it is reclaimed when its last socket
       // closes), so the next attempt creates a fresh channel rather than reusing this URL.
       await (this.options.sleep ?? defaultSleep)(this.retryDelayMs);
