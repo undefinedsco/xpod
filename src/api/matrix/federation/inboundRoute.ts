@@ -14,7 +14,10 @@
  *
  * - **which Pod** a transaction is written to. The handler asks for a target by the server
  *   name the request was addressed to; a deployment that cannot serve that name refuses
- *   with `403` instead of writing somebody else's room into an arbitrary Pod.
+ *   with `403` instead of writing somebody else's room into an arbitrary Pod. That answer is
+ *   derived rather than recorded (`participantRoutes.ts`): a participant's server name comes from
+ *   their WebID, and the Pod is the one already registered to it — a name more than one
+ *   participant claims is refused, because the choice could not be undone.
  * - **who may read and write that Pod.** `acceptEvent` and `resolveAuthEvents` are the
  *   caller's, so the Pod authority stays where it is decided rather than being assumed
  *   from an unauthenticated HTTP request.

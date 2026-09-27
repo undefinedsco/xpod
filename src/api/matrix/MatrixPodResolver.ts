@@ -23,15 +23,15 @@ export function createMatrixPodResolver(
       if (pods.length !== 1) {
         throw new MatrixError(400, 'M_INVALID_PARAM', 'Multiple Pods are registered; select one with X-Xpod-Pod-Url');
       }
-      return normalizeRoot(pods[0].baseUrl);
+      return normalizePodRoot(pods[0].baseUrl);
     }
 
-    const requested = normalizeRoot(requestedPodUrl);
+    const requested = normalizePodRoot(requestedPodUrl);
     const pod = await repository.findByResourceIdentifier(requested);
-    if (!pod || ![pod.baseUrl, pod.storageUrl].some(root => root !== undefined && normalizeRoot(root) === requested)) {
+    if (!pod || ![pod.baseUrl, pod.storageUrl].some(root => root !== undefined && normalizePodRoot(root) === requested)) {
       throw new MatrixError(403, 'M_FORBIDDEN', 'Selected URL is not a registered Pod root');
     }
-    return normalizeRoot(pod.baseUrl);
+    return normalizePodRoot(pod.baseUrl);
   };
 }
 
@@ -52,7 +52,13 @@ export async function resolveMatrixContext(
   return { webId, auth, podUrl: await resolver(webId, selection) };
 }
 
-function normalizeRoot(value: string): string {
+/**
+ * A Pod root as a caller should join resource paths onto: absolute HTTP(S), no credentials, query
+ * or fragment, and always ending in `/`. Exported because anything that resolves a Pod — the
+ * request-scoped selection above and the participant routing in `participantRoutes.ts` — has to
+ * agree on what a root looks like, or the same Pod gets two spellings.
+ */
+export function normalizePodRoot(value: string): string {
   let parsed: URL;
   try {
     parsed = new URL(value);

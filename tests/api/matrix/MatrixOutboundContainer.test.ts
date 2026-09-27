@@ -30,6 +30,29 @@ function container(matrixServiceIdentity: MatrixServiceIdentity | undefined) {
   return instance;
 }
 
+describe('inbound routing registration', () => {
+  it('derives the routes from the Pod registrations the deployment already keeps', async () => {
+    const instance = container(identity('pod.example'));
+    // Without a Pod registry there is nothing to derive, so routing is off rather than wrong.
+    expect(instance.resolve('matrixParticipantRoutes')).toBeUndefined();
+
+    const withPods = container(identity('pod.example'));
+    withPods.register({
+      podLookupRepo: asValue({
+        listAllPods: async () => [
+          { podId: 'pod-1', accountId: 'a-1', baseUrl: 'https://pod.example/alice', webId: 'https://alice.example/card#me' },
+        ],
+      } as unknown as ApiContainerCradle['podLookupRepo']),
+    });
+    const routes = withPods.resolve('matrixParticipantRoutes');
+    expect(routes).toBeDefined();
+    await expect(routes!.route('alice.example')).resolves.toMatchObject({
+      kind: 'served',
+      route: { podUrl: 'https://pod.example/alice/' },
+    });
+  });
+});
+
 describe('outbound federation registration', () => {
   it('builds a delivery from the deployment identity and hands its queue to the store', async () => {
     const instance = container(identity('pod.example'));

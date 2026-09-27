@@ -798,6 +798,26 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   （`deferred` 只提队首、`blockBehind` 生效），恢复后仍按写入顺序到达——这条序列正是接收端能按序授权的前提。
   **仍未证**：真实 HTTP/TLS 跳转、**对端进程重启后的恢复**（接收侧事务存档与投递进度目前是内存实现，落控制
   Pod 是待办）与部署级 Pod 授权；本证据因此只对"网络中断"这一故障成立，不对"对端丢状态"成立。
+- **已落地**（2026-09-27）：**server name → Pod 的归属改为派生，不新增绑定记录**
+  （`src/api/matrix/participantRoutes.ts`，容器里是 `matrixParticipantRoutes`）。
+  - **为什么不记录**（用户质疑"server name 跟 webid 本来不就是一一对应了，为什么还要记录"）：参与者的 server
+    name 由 WebID **推导**（`webIdServerName` = WebID 的 host，已有模块），Pod 则是部署**已经**为该 WebID 登记的
+    那个（`pod_lookup`，部署本来就要为共享 Pod/配额/迁移维护它）。所以"这条请求该写哪个 Pod"是**算出来的**：
+    注册表 → WebID → host，而不是第二份 Matrix 专用的绑定记录；参与者换 Pod 只需改登记本身，不需要同步一份
+    Matrix 副本。
+  - **歧义一律拒绝，不猜**：既有的"一个参与者几个 Pod 不猜"策略（`podParticipantIdentity.ts` 里铸钥匙时的同一
+    条）扩展到路由——① 同一个 server name 被多个已登记 WebID 认领（同一 host 上两个账号）；② 同一个 WebID 登记
+    了多个 Pod。两种情况都返回 `ambiguous` 并说明原因，因为把房间事件写进"猜出来的" Pod 是读者无法撤销的；
+    未知名字返回 `unknown`（HTTP 外壳据此回 403，与既有行为一致）。同一 Pod 被登记两次不算歧义（答案相同）。
+  - **一次读取给出全集**：`routes()` 从 `listAllPods()` 一次读取推导出全部 (server name → WebID → Pod)，供需要
+    整集的调用方（例如"本部署服务哪些参与者"的订阅接线）使用；`route(name)` 是单点问题。WebID 没有可用 host
+    的登记被跳过——它不可能是任何人的 server，编一个名字只会得到谁也签不了的归属。
+  - **仍未接线**：HTTP 外壳本身还没接（`handleFederationSend` 需要 `resolveTarget`），以及**用谁的凭据写目标
+    Pod**（部署对参与者 Pod 的服务 grant）——后者是下一格待细化项，不是这一格。
+  测试：`participantRoutes.test.ts` 7 项（两个参与者各自解析、未知名字与带端口的名字不猜、同一名字两个 WebID
+  歧义、同一 WebID 两个 Pod 歧义、多 WebID 登记逐个服务且跳过不可用 WebID、同一个 Pod 登记两次不算歧义、没有
+  登记时没有路由），`MatrixOutboundContainer.test.ts` 新增 1 项（有 Pod 注册表时容器里的路由能解析出归一化的
+  Pod 根；没有注册表时为 undefined 而不是猜）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，
@@ -814,12 +834,13 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
 | SQL journal 保留为长期权威；用行锁优化代替迁出 | 已确定 Pod 存储归属；SQL 仅在有界迁移阶段存在 |
 | 给 claim/complete 加 fresh 标记就算授权缓存问题已解决 | 当前代码覆盖 agent-wakes 路由，但普通 Matrix 路径仍有旧判定窗口 |
 | 签名身份由部署单一持有（现状实现） | 数据与控制记录都已按 Pod/房间归属，部署不再是 homeserver；部署级身份仅作旧房间兼容边界 |
+| 参与者 ↔ Pod 归属需要一条 Matrix 自己的绑定记录（`identityBinding.ts` 的方向） | 用户 2026-09-27 质疑"server name 跟 webid 本来不就是一一对应，为什么还要记录"；改为派生（`participantRoutes.ts`），该模块已无消费者，建议连同其 7 项测试删除（**待用户确认**；其中的 Pod 迁移版本/状态机语义仍作为待细化项保留在册） |
 
 ## 待细化的实现事项
 
 | 事项 | 必须产出的契约 |
 | --- | --- |
-| 协议服务身份与 Pod 归属 | MXID/WebID、server name、服务签名身份、参与者 Pod、执行 Agent 的关系及授权；草案见 [服务身份契约](matrix-service-identity-contract.md) |
+| 协议服务身份与 Pod 归属 | MXID/WebID、server name、服务签名身份、参与者 Pod、执行 Agent 的关系及授权；草案见 [服务身份契约](matrix-service-identity-contract.md)。**归属已定并落地**：不记录绑定，server name 由 WebID 推导、Pod 取既有登记，歧义即拒绝（`participantRoutes.ts`）；**剩余**：部署写参与者 Pod 用哪份授权（服务 grant）与迁移时的切换语义 |
 | 完整事件与 Solid Chat 表示 | 原始事件验证材料、图关系与 room version 已落地（见[房间事件图](reference/matrix-room-event-graph.md)）；剩余：状态解析与事件授权规则、索引与旧房间迁移；共享 schema 归 models |
 | 传输与落 Pod | 接收持久化、去重、确认、部分投递失败、补发与恢复各自的责任和进度 |
 | 客户端增量 | 有界发现/分页、晚到事件、授权状态变化、token 版本与重建 |

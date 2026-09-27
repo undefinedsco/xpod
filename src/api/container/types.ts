@@ -323,6 +323,11 @@ export interface ApiContainerCradle {
   matrixSigningIdentities: import('../matrix/identityRegistry').MatrixSigningIdentityRegistry;
   /** Supplies a participant's own identity from their own Pod; absent disables it. */
   matrixParticipantIdentity: import('../matrix/PodMatrixStore').MatrixParticipantIdentityProvider | undefined;
+  /**
+   * Which Pod serves a Matrix server name, derived from the Pod registrations. Absent when the
+   * deployment has no Pod registry to derive it from.
+   */
+  matrixParticipantRoutes: import('../matrix/participantRoutes').MatrixParticipantRoutes | undefined;
   /** Resolves, signs and queues outbound federation traffic; absent disables it. */
   matrixOutboundDelivery: import('../matrix/federation/outboundDelivery').MatrixOutboundDelivery | undefined;
   /** Drives the outbound queue; absent when there is nothing to drive. */

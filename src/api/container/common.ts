@@ -99,6 +99,7 @@ import { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliatio
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 import { PodMatrixStore } from '../matrix';
+import { createParticipantRoutes } from '../matrix/participantRoutes';
 import { matrixSigningIdentityRegistry } from '../matrix/identityRegistry';
 import { matrixSigningIdentityForPod } from '../matrix/identityProvisioning';
 import { createPodParticipantIdentityProvider } from '../matrix/podParticipantIdentity';
@@ -708,6 +709,15 @@ export function registerCommonServices(
           },
         }),
       });
+    }).singleton(),
+
+    // Inbound routing needs the reverse of "which Pod does this WebID write to": a request names
+    // a server, and the answer has to come from the registrations the deployment already keeps —
+    // a participant's server name is derived from their WebID, so there is no binding to record.
+    matrixParticipantRoutes: asFunction((cradle: ApiContainerCradle) => {
+      const pods = cradle.podLookupRepo;
+      if (!pods) return undefined;
+      return createParticipantRoutes({ pods });
     }).singleton(),
 
     // The outbound path: where a server name is reached, which identity signs as the origin,

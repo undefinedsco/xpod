@@ -186,11 +186,17 @@ HTTP 跳转；**唯一的测试替身是"缺依赖事件如何送到对端"**—
 `all`（读遍所有房间）。代价明确：R 房间的 Pod 需要 R 条通道 / R 个 socket。**仍未接的**：挂到"本部署服务
 哪些参与者"（即参与者 ↔ Pod 归属那条待定项），以及对端方向。
 
+**Pod 归属解析（已落地）**：入站请求按"被寻址的 server name"找 Pod 这一层现在是**派生**的
+（`src/api/matrix/participantRoutes.ts`，7 项测试 + 容器 1 项）：server name = WebID 的 host，Pod = 该 WebID
+已登记的 Pod（`pod_lookup`），因此不需要第二份 Matrix 绑定记录；同一名字被多个参与者认领、或一个参与者登记了
+多个 Pod 时**拒绝**而不是猜（写错 Pod 无法撤销），未登记的名字报 unknown 由外壳回 403。**仍未接**：外壳本身，
+以及部署写目标 Pod 用的服务授权。
+
 **联邦读取端点（服务侧算法已就绪，等 HTTP 外壳）**：`/event_auth`、`/get_missing_events`、`/backfill`、
 `/state`、`/state_ids` 五个端点的服务侧都已实现为纯函数/处理体并各有测试（回溯方向与语义按规范：
 `/backfill` 含点名事件且从新到旧，`/state` 返回事件**之前**的状态），客户端调用也已就位；
 **只差"从请求取 roomId/eventId → 从某个 Pod 取房间事件 → 应答"这一层**，它与入站 `/send` 共用同一个
-Pod 归属解析。
+Pod 归属解析（已落地，见上）。
 
 **成员资格握手（同样只差 HTTP 外壳）**：`GET /make_join`、`PUT /send_join`、`GET /make_leave`、
 `PUT /send_leave`、`PUT /invite`、`GET /make_knock`、`PUT /send_knock` 七个端点的服务侧已实现
