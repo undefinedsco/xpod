@@ -29,7 +29,7 @@
 | AC-03 键盘/焦点/200% 文字/长内容 | 🟡 | 上述单元/样例证据；e2e `account-web-layout.spec.ts`（768/390 边界）；**真实浏览器** `accept-r2-workspace.ts` 覆盖窄窗（700）任务栏+抽屉与宽窗导航 | 200% 字体缩放与长错误的键盘走查未做 |
 | AC-04 四入口、集合才用对象列、旧深链映射 | ✅ | **真实浏览器**（`accept-r2-workspace.ts`：四个任务入口可见、窄窗抽屉复用同一树）+ **真实运行时**（`accept-r2-route-map.ts`：§3.1 七路径 200）；`ui/src/layout/global-navigation.test.ts`（四入口顺序/标签/归属/唯一命中）、`packages/extension-sdk/test/layout-pages.test.ts`（非集合页任何宽度不出对象列）、`packages/extension-sdk/test/workspace-layout.test.tsx`（≥1284 视口才并排、否则堆叠）、`ui/src/routes/canonical-routes.test.ts`（§3.3 各行） | 已关闭：`/network/overview` 为显式路由，`/dashboard/network`、`/settings/network` 按 §3.3 指向它（第六轮） |
 | AC-05 三种 authority 各守边界、失败隔离 | 🔵 | 既有覆盖：`ui/src/auth/AccountAuthBoundary.test.tsx`、`ui/src/auth/WebAccountViews.test.tsx`、`ui/src/auth/XpodAuthSurface.test.tsx`、e2e `account-webid-isolation.spec.ts`、`consent-cross-origin-resume.spec.ts` | 本轮未改动认证权威层；最终安全行为按领域真实验证 |
-| AC-06 每场景唯一容器与窗口 owner | ✅ | `packages/shared-ui/test/auth-surface.test.tsx`（compact 画布铺满 + 16px + 无内嵌白卡）、`ui/src/auth/WebAccountLayout.tsx`（≥900 断点）、`desktop/src/window-mode.ts`（工作区 1180×800/最小 640×560） | Account 文档窗口的 1040×760 与可缩放性待宿主决定（已在 W3 审计记录） |
+| AC-06 每场景唯一容器与窗口 owner | ✅ | `packages/shared-ui/test/auth-surface.test.tsx`（compact 画布铺满 + 16px + 无内嵌白卡）、`ui/src/auth/WebAccountLayout.tsx`（≥900 断点）、`desktop/src/window-mode.ts`（工作区 1180×800/最小 640×560） | 已关闭：Account 文档窗口为 1040×760 / 最小 640×560 且可缩放（`desktop/src/window-mode.ts`，桌面 141 用例覆盖） |
 | AC-07 注册仅建 Account、零 Pod 可达管理、显式创建 | ✅ | `ui/src/pages/WelcomeNoPod.test.tsx`（注册不 provisioning、无 Pod 落账号管理）、`tests/ui/registration-flow.test.ts`（注册模块不含创建入口）、`ui/src/pages/settings/PodManagementPanel.test.tsx`（零 Pod 可进入 + 唯一被守卫事务）、`ui/src/pages/ConsentPage.tsx:517` | 创建协议本身（Account controls/幂等/健康检查）按 §11 |
 | AC-08 无/多 Pod、缺 owner、过期 interaction、切号安全出口 | 🔵 | 既有覆盖：`ui/src/pages/ConsentNoPod.test.tsx`、`ConsentResume.test.tsx`、`ConsentRetry.test.tsx`、e2e `consent-recovery.spec.ts` | 本轮未逐条重验；绑定已有 Pod 的证明协议仍由 9/19 §4.2 待定（入口保持禁用） |
 | AC-09 三服务/网络/机器/Pod 访问互不冒充、用量未知非零、刷新保留快照 | ✅ | `ui/src/pages/admin/StatusPage.test.tsx`（结论优先、≤4 事实、服务未知写「状态无法确认」且不出现 `0/`、多问题只铺一张卡 + 「还有 N 项」）、`ui/src/pages/admin/UsagePage.test.tsx`（有值/真 0/不支持/失败四态） | 用量记录时间与来源在部分部署可能缺失，显示「未标注」 |
@@ -80,11 +80,10 @@ gh run download <rc-run-id> -n release-acceptance-d8f2578675b8c3bcb08d5822f8f2b5
 
 三项外部依赖的责任方、所需证据与验收口径见 [`2026-09-27-external-dependencies-handoff.md`](2026-09-27-external-dependencies-handoff.md)。
 
-1. **真机走查**：菜单栏可辨性、Dock 图标、200% 字体、窄窗首屏 —— 清单见 [`2026-09-27-r2-walkthrough-checklist.md`](2026-09-27-r2-walkthrough-checklist.md)；
+1. **真机走查**：菜单栏可辨性、Dock 图标、200% 字体（窄窗首屏已由 `accept-r2-workspace.ts` 覆盖）—— 清单见 [`2026-09-27-r2-walkthrough-checklist.md`](2026-09-27-r2-walkthrough-checklist.md)；
 2. **未定语义**：9/19 D-14（退出/重试关系）与 D-18（放弃退出）——认证 owner 决定后才补动作；
 3. **运行侧依赖**：模型解析与"排序不改默认"、允许列表限制（AI 领域 owner，§11）；Key ↔ 客户端关联数据（同上）；
 4. **未做前端项**：无（中性调色板经实测为 0 处，已由色板契约测试守住；`/network/overview` 已建立）；
-5. **Account 文档窗口**的 1040×760 与可缩放性（需宿主侧一起决定）。
 
 ## 结论
 

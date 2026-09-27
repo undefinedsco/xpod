@@ -150,7 +150,7 @@ Pod，且 `tests/ui/registration-flow.test.ts` 把"注册时创建"固化成用�
 | Xpod Web Account：≥900px 左说明右表单、表单 ≤448px；<900 单列 | `ui/src/auth/WebAccountLayout.tsx` | **本轮修正**：断点是 Tailwind `lg`（1024）而非 §5.1 的 900；已改为 `min-[900px]:`。表单 `max-w-md`（448px）本就正确 |
 | 注册、完整 consent、独立 Account 入口的首次 Pod/管理：Account 文档流程，单一纵向滚动，不套 Card/ScrollArea | `ui/src/pages/ConsentPage.tsx`、`ui/src/pages/AuthPages.test.tsx`、`tests/ui` 相关用例 | 文档流容器由既有测试覆盖（consent 不代建 Pod、注册不 provisioning）；本轮未做逐字节的 Card/ScrollArea 检查，保留为未验证边界 |
 | 工作区内 /settings/pod：存储空间 Content 承载同一 Pod 管理 body，保留 Shell，不嵌套 Account 文档外框 | `ui/src/settings-routes.tsx:63`（`path: 'pod'` → `PodSettingsSubjectPanel`）、`ui/src/pages/settings/PodManagementPanel.test.tsx` | 符合：面板在 settings 产品的 Shell 内渲染，创建入口唯一 |
-| App 承载 Account 文档：首次 1040×760，最小 640×560，受系统空间夹限 | `desktop/src/window-mode.ts` `ACCOUNT_WINDOW_MODE_SIZE` 480×640，且 `applyMode('account')` 设为不可缩放；`desktop/test/window-mode.test.ts` 固化 | **待宿主决定**：当前 account 模式是固定的 480×640 恢复视口，与 §5.1 的 1040×760 文档窗口不一致。已在常量处注明；统一属桌面壳的场景改造，不在本轮改（避免出现"大窗口却不可缩放"的中间态） |
+| App 承载 Account 文档：首次 1040×760，最小 640×560，受系统空间夹限 | `desktop/src/window-mode.ts` `ACCOUNT_WINDOW_MODE_SIZE` = 1040×760/最小 640×560，`applyMode('account')` 可缩放可最大化；`desktop/test/window-mode.test.ts` | **已完成**：Account 文档是文档窗口（用户调整过的尺寸被保留）；280×400 的不可缩放紧凑对话框只留给登录/恢复/回调（`auth` 模式） |
 | 工作区窗口首次 1180×800、最小 640×560 | `desktop/src/window-mode.ts` `WORKSPACE_WINDOW_MODE_SIZE`、`desktop/src/main.ts` 的 `createWindow` | **本轮修正**：原为 1080×760 / 最小 420×520；已按 §5.1 改为 1180×800 / 最小 640×560，并让主窗口默认尺寸引用同一常量。桌面测试按常量断言，141 全过 |
 | 正常短表单 / 长错误 / 200% 字体：无需额外内滚动，一个宿主内容滚动区，错误、主动作、返回都可达 | `tests/e2e/account-web-layout.spec.ts`（12 用例，含 768/390 的失败存储态） | 符合：e2e 覆盖窄窗与失败态边界；200% 字体缩放仍未实测，保留为未验证边界 |
 
@@ -163,7 +163,7 @@ Pod，且 `tests/ui/registration-flow.test.ts` 把"注册时创建"固化成用�
 | W3-DESIGN-01 注册不再隐式创建 | 已实施 | 删除 `completeRegistrationProvisioning` 及其专用 helper（共 117 行）与两个"注册时创建"用例；`tests/ui/registration-flow.test.ts` 改为契约断言：模块不导出创建入口、源码不含 `prepareProvisionedPod`/`createPodUrl`/`hasExistingPod` |
 | `WelcomeNoPod` 回归 | 已在旧轮修好，本轮刷新注释 | 两条用例（注册不 provisioning、无 Pod 落 Account 管理）均通过；测试头注释改为陈述契约 |
 | W3-DESIGN-02 创建阶段与续接 | 阶段已实施；续接核对部分完成 | 核对结论：零 Pod 可进入并见空态、创建走被守卫的唯一事务（`ui/src/pages/settings/PodManagementPanel.test.tsx` 断言）。创建过程原本只有「进行中」一个状态，现按 §5.2 第 6 步补齐阶段：`createFirstPodAndWaitForBinding` 新增 `onStage('submitting'|'submitted'|'binding-confirmed')`，`PodSettingsSubjectPanel` 显示对应阶段文案，`tests/ui/consent-first-pod.test.ts` 断言三段顺序。未完成：「已就绪」需要一次鉴权读写命中该 Pod 的证据，本 helper 不宣称，待 W4 用真实读写补证；超时/刷新/重复进入三种恢复仍未逐条取证。 |
-| W3-DESIGN-03 容器/窗口核对 | 逐行核对完成，3 处偏差已修，1 处待宿主决定 | 见下表 |
+| W3-DESIGN-03 容器/窗口核对 | 逐行核对完成，4 处偏差全部已修 | 见下表 |
 
 实现状态补充（第二轮）：确认 `PodManagementPanel.test.tsx` 已锁「零 Pod 可进入 + 显式创建走唯一被守卫事务」；为创建过程补阶段回调与阶段文案，并加阶段顺序用例。「已就绪」与三种恢复仍缺证据（见上表）。
 
