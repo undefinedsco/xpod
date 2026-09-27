@@ -163,6 +163,12 @@ export interface MatrixAgentGrant {
   handoffTo: string[];
 }
 
+/** Whether a sync result carries anything a client has to be told about. */
+function hasSyncNews(result: MatrixSyncResponse): boolean {
+  return Object.values(result.rooms.join).some(room => room.timeline.events.length)
+    || Object.keys(result.rooms.invite ?? {}).length > 0;
+}
+
 /** How many rooms keep a replay to answer repeat reads and extend on append. */
 const STATE_CACHE_LIMIT = 64;
 
@@ -527,26 +533,38 @@ export class PodMatrixStore {
 
   public async sync(context: MatrixStoreContext, options: { since?: string; limit?: number; timeout?: number; signal?: AbortSignal } = {}): Promise<MatrixSyncResponse> {
     const deadline = Date.now() + Math.min(Math.max(options.timeout ?? 0, 0), 30_000);
-    let result: MatrixSyncResponse;
-    // First pass indexes native Pod writes; the second reads a committed journal watermark.
+    // The first pass is what indexes rows written straight into the Pod: a native write has
+    // no journal sequence until a read registers it, and the snapshot taken *before* that
+    // read cannot include the sequences it just assigned — which is why this pass always
+    // reads and its result is deliberately discarded.
     await this.syncOnce(context, options);
-    do {
-      result = await this.syncOnce(context, options);
-      if (Object.values(result.rooms.join).some(room => room.timeline.events.length)
-        || Object.keys(result.rooms.invite ?? {}).length || Date.now() >= deadline || options.signal?.aborted) return result;
+    let result = await this.syncOnce(context, options);
+    while (!hasSyncNews(result) && !options.signal?.aborted && Date.now() < deadline) {
       await new Promise<void>((resolve) => {
         const done = (): void => { clearTimeout(timer); options.signal?.removeEventListener('abort', done); resolve(); };
         const timer = setTimeout(done, Math.min(500, Math.max(0, deadline - Date.now())));
         options.signal?.addEventListener('abort', done, { once: true });
       });
-    } while (!options.signal?.aborted);
+      // Everything the Pod holds has been indexed above, so an unchanged scope watermark
+      // means no room can have anything new and the per-room reads can be skipped.
+      result = await this.syncOnce(context, options, { indexed: true });
+    }
     return result;
   }
 
-  private async syncOnce(context: MatrixStoreContext, options: { since?: string; limit?: number }): Promise<MatrixSyncResponse> {
+  private async syncOnce(
+    context: MatrixStoreContext,
+    options: { since?: string; limit?: number },
+    state: { indexed?: boolean } = {},
+  ): Promise<MatrixSyncResponse> {
     const db = await this.getDb(context);
     const since = this.parseSyncToken(options.since);
     const snapshot = await this.journal.getHighWatermark(this.scope(context));
+    // Every event that could be reported has a sequence at or below the watermark, and
+    // everything above `since` has already been read and indexed by an earlier pass.
+    if (state.indexed && since >= snapshot) {
+      return { next_batch: this.encodeSyncToken(since), rooms: { join: {}, invite: {}, leave: {} } };
+    }
     const limit = Math.min(Math.max(options.limit ?? 50, 1), 1000);
     const join: MatrixSyncResponse['rooms']['join'] = {};
     const invite: NonNullable<MatrixSyncResponse['rooms']['invite']> = {};
@@ -611,7 +629,6 @@ export class PodMatrixStore {
     options: { limit?: number; dir?: 'b' | 'f'; from?: string } = {}): Promise<{chunk: MatrixClientEvent[];start?:string;end:string}> {
     const db = await this.getDb(context);
     await this.requireJoined(db, roomId, context);
-    await this.listEvents(db, roomId, context);
     const snapshot = await this.journal.getHighWatermark(this.scope(context));
     const all = (await this.listEvents(db, roomId, context)).filter(e=>e.depth! <= snapshot);
     const forward = options.dir === 'f';
@@ -972,12 +989,7 @@ export class PodMatrixStore {
     db: Db,
     roomId: string,
     context: MatrixStoreContext,
-    options: {
-      sinceTs?: number;
-      beforeOrAtTs?: number;
-      limit?: number;
-      newestFirst?: boolean;
-    } = {},
+    options: { newestFirst?: boolean } = {},
   ): Promise<MatrixEventRecord[]> {
     const sources = await db.select().from(messageResource)
       .where(eq(messageResource.thread, this.threadIri(roomId, context))) as MatrixEventSource[];
