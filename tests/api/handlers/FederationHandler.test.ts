@@ -54,9 +54,6 @@ function podStore(
   const store: FederationPodStore = {
     // The MXID derivation the store owns, so the query recognises a user the same way it names one.
     matrixUserIdFor: (webId, serverName) => `@u_${webId.includes('alice') ? 'alice' : 'other'}:${serverName}`,
-    async getAccount() {
-      return { displayName: 'Alice', avatarUrl: 'https://pod.example/alice/avatar.png' };
-    },
     async findRoomByAlias(alias) {
       const roomId = directory.aliases?.[alias];
       return roomId === undefined ? undefined : { roomId };

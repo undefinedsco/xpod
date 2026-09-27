@@ -1033,6 +1033,16 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   测试：`FederationHandler.test.ts` 新增 1 项（同一个读取问题：store 抛 403 时回 403 并带原因、抛普通错误时回 500
   `M_UNKNOWN`、store 正常时回 200），`outboundTransaction.test.ts` 新增 2 项（读回实现名与版本且只签请求目标、
   缺字段重试与 4xx 最终拒绝）。
+- **已落地**（2026-09-27）：**读路径不写、失败不刷屏**（两处小修，都属于"别让对端的一次询问变成我们的写操作"
+  这一类）。
+  - **`/query/profile` 的端口里删掉了 `getAccount`**：它在 store 里会先 `ensureParticipantIdentity`——**那是一次
+    provision（往参与者的 Pod 里写密钥）**。虽然外壳从没调用它，但把它留在端口上等于给读路径备了一把会写 Pod 的
+    钥匙，下一个人接上就会让"对端问一句资料"变成"部署替这个参与者铸了一把钥匙"。契约（§4）要求部署的写必须由
+    grant 明确授权，读不该有副作用。
+  - **watch 服务对同一个 Pod 的失败只报一次**：此前每趟对账（默认 30s）都会把同一条失败再记一次，把日志里其它
+    信息淹掉；现在按 scope 去重，Pod 不再被服务时忘记该失败（将来重新出现算新消息），成功 watch 时也清掉标记。
+  测试：`roomWatchService.test.ts` 新增 1 项（连续对账只报一次、Pod 消失后忘记、重现时再报一次），
+  `FederationHandler.test.ts` 26 项在端口收窄后不变。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

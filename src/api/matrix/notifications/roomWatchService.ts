@@ -56,6 +56,8 @@ export function notificationEndpointOf(podUrl: string): string {
 export class MatrixRoomWatchService implements MatrixRoomChangeSource {
   private readonly options: MatrixRoomWatchServiceOptions;
   private readonly watches = new Map<string, MatrixRoomWatch>();
+  /** Pods whose last watch attempt failed, so the same failure is reported once. */
+  private readonly failing = new Set<string>();
   private timer?: ReturnType<typeof setInterval>;
   private pass?: Promise<void>;
   private stopped = true;
@@ -108,6 +110,9 @@ export class MatrixRoomWatchService implements MatrixRoomChangeSource {
         watch.stop();
         this.watches.delete(scope);
       }
+      for (const scope of [ ...this.failing ]) {
+        if (!served.has(scope)) this.failing.delete(scope);
+      }
       if (!this.options.watch) return;
       for (const [ scope, route ] of served) {
         if (this.watches.has(scope)) continue;
@@ -123,10 +128,15 @@ export class MatrixRoomWatchService implements MatrixRoomChangeSource {
             return;
           }
           this.watches.set(scope, watch);
+          this.failing.delete(scope);
         } catch (error) {
           // One Pod that cannot be watched leaves the others watched; it keeps answering
-          // `trust: 'all'` until a later pass gets it.
-          this.report(error);
+          // `trust: 'all'` until a later pass gets it. A Pod that keeps failing is reported once
+          // rather than on every pass — a log that repeats itself every 30 seconds hides the rest.
+          if (!this.failing.has(scope)) {
+            this.failing.add(scope);
+            this.report(error);
+          }
         }
       }
     }).catch(error => { this.report(error); });

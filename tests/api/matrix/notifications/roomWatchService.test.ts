@@ -151,3 +151,30 @@ describe('watching the Pods this deployment serves', () => {
       .toBe('https://pod.example/.notifications/WebSocketChannel2023/');
   });
 });
+
+describe('reporting a Pod that cannot be watched', () => {
+  it('reports the same failure once, and forgets it when the Pod goes away', async () => {
+    let routes = [ route('alice.example') ];
+    const errors: Error[] = [];
+    const instance = createMatrixRoomWatchService({
+      routes: async () => routes,
+      rooms: async () => [],
+      intervalMs: 0,
+      watch: async () => { throw new Error('the Pod refused a subscription'); },
+      onError: error => { errors.push(error); },
+    });
+
+    await instance.start();
+    await instance.reconcile();
+    await instance.reconcile();
+    // A log that repeats every pass hides everything else; one report per failure is enough.
+    expect(errors.map(error => error.message)).toEqual([ 'the Pod refused a subscription' ]);
+
+    // Once the Pod is no longer served the failure is forgotten, so a later re-appearance is news.
+    routes = [];
+    await instance.reconcile();
+    routes = [ route('alice.example') ];
+    await instance.reconcile();
+    expect(errors).toHaveLength(2);
+  });
+});

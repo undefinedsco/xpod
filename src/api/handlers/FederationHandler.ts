@@ -76,8 +76,6 @@ export interface FederationPodStore {
   roomServers(roomId: string, context: MatrixStoreContext): Promise<string[]>;
   /** The MXID a WebID has under a server name, so a query about a user can be recognised. */
   matrixUserIdFor(webId: string, serverName: string): string;
-  /** The account behind a context, for the profile query. */
-  getAccount(context: MatrixStoreContext): Promise<{ displayName?: string; avatarUrl?: string }>;
 }
 
 /** Fetching the auth chain of a deferred event from the server that sent it. */
