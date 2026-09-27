@@ -78,6 +78,16 @@ export interface XpodSolidRuntimeCore {
    */
   setLocalPodRoutes(routes: readonly AccessRoute[] | undefined): void;
   /**
+   * Register how the transport re-discovers routes after the one it was using
+   * stops working, so a path that comes back — a tunnel the user just started, a
+   * LAN address that changed — is picked up without reloading the app.
+   *
+   * The owner of route discovery (`XpodSolidRuntimeProvider`) registers this;
+   * the runtime itself has no way to ask a node for its current access points.
+   * Optional so a value that only serves tests or another host need not have one.
+   */
+  setLocalPodRoutesRefresh?(refresh: (() => Promise<void>) | undefined): void;
+  /**
    * Rewrites a canonical Xpod URL to the equivalent URL exposed by the best route
    * `setLocalPodRoutes` stored. A URL no route covers is returned unchanged, and
    * an already-local URL stays local, so a caller that cannot tell the two apart
@@ -158,9 +168,15 @@ export function createXpodSolidRuntimeValue(
 ): XpodSolidRuntimeCore {
   const storage = createXpodSolidRuntimeStoragePolicy(options.storage);
   let localRoutes: readonly AccessRoute[] = [];
+  // Route discovery belongs to whoever knows how to ask this node for its access
+  // points; the transport only calls it when the path it was using stops working.
+  let refreshLocalPodRoutes: (() => Promise<void>) | undefined;
   const transport = createSolidAccessRouteFetch({
     fetch: globalThis.fetch,
     routes: () => localRoutes,
+    refreshRoutes: async () => {
+      await refreshLocalPodRoutes?.();
+    },
     // This page runs on the runtime's own host whenever it can use a loopback
     // route; the routes themselves say so, and a remote page has none.
     allowLocalOnlyRoutes: true,
@@ -212,6 +228,9 @@ export function createXpodSolidRuntimeValue(
       // The routes were built for this Pod by a caller that knows it is hosted by
       // the current Xpod; service API prefixes and other Pods stay untouched.
       localRoutes = routes ? [...routes] : [];
+    },
+    setLocalPodRoutesRefresh: (refresh) => {
+      refreshLocalPodRoutes = refresh;
     },
     resolveLocalUrl: (url) => resolveSolidLocalRouteUrl(url, localRoutes.map(toLocalRoute))?.href ?? url,
   };

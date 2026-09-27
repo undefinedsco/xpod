@@ -1,4 +1,4 @@
-import { createSolidLocalRouteFetch, type SolidLocalRoute } from './local-route-fetch'
+import { createSolidLocalRouteFetch, resolveSolidLocalRouteUrl, type SolidLocalRoute } from './local-route-fetch'
 
 /**
  * Access routes for a node whose canonical URL never changes.
@@ -57,9 +57,20 @@ export interface ChooseAccessRouteOptions {
 }
 
 /**
- * Pick the best route that actually answers: candidates are ordered by priority
- * and probed in parallel, so a same-machine client lands on loopback while a
- * remote one skips it without waiting for it to time out.
+ * Pick the best route that is known to work: candidates are ordered by priority,
+ * and only the ones this client cannot vouch for are probed.
+ *
+ * A route the client already knows is up is never probed. The current origin
+ * served this very document, and the node's own runtime reports the health of
+ * the routes beside it, so a probe could only replace a known fact with a guess.
+ * That guess is what made local login fail: the local gateway answers the probe
+ * path with 405 (CSS does not implement the optional `/.well-known/solid`), the
+ * probe called the one reachable route dead, and the client fell back to a
+ * canonical URL it could not reach.
+ *
+ * Probes remain for candidates whose health is unknown, and are run in parallel
+ * so a same-machine client still lands on loopback without waiting for a remote
+ * one to time out.
  */
 export async function chooseAccessRoute(
   routeSet: AccessRouteSet,
@@ -74,14 +85,28 @@ export async function chooseAccessRoute(
     return null
   }
 
+  const best = candidates[0]!
+  if (isSelfProvenRoute(best)) {
+    return best
+  }
+
   const probe = options.probe ?? defaultProbe
   const timeoutMs = options.probeTimeoutMs ?? 1_000
   const results = await Promise.all(candidates.map(async (route) => ({
     route,
-    ok: await probeWithTimeout(route, probe, timeoutMs),
+    ok: isSelfProvenRoute(route) || await probeWithTimeout(route, probe, timeoutMs),
   })))
 
   return results.find((result) => result.ok)?.route ?? null
+}
+
+/**
+ * A route this client can vouch for without asking: `healthy` is the runtime's
+ * own report about its own node, and the current-origin route is the document
+ * this client is already running in. `unknown` and `degraded` still get probed.
+ */
+function isSelfProvenRoute(route: AccessRoute): boolean {
+  return route.health === 'healthy'
 }
 
 export function usableRoutes(
@@ -127,11 +152,17 @@ export function createSolidAccessRouteFetch(
 ): typeof globalThis.fetch {
   const managedClient = options.managedClient ?? true
   let selected: AccessRoute | undefined
+  // A route that just failed the request itself is the one route we must not
+  // pick again for the retry: a trusted route that turns out to be down has to
+  // be able to fail over to a probed one. Cleared by the next success.
+  let failed: string | undefined
 
   const selectRoute = async (): Promise<AccessRoute | null> => {
+    const all = options.routes()
+    const routes = failed === undefined ? all : all.filter((route) => routeKey(route) !== failed)
     const routeSet: AccessRouteSet = {
-      canonicalUrl: options.routes()[0]?.canonicalUrl ?? '',
-      routes: options.routes(),
+      canonicalUrl: routes[0]?.canonicalUrl ?? '',
+      routes,
     }
     const candidate = await chooseAccessRoute(routeSet, {
       managedClient,
@@ -161,27 +192,133 @@ export function createSolidAccessRouteFetch(
       }],
     })
 
+  /**
+   * Whether this client knows a route for the URL: the URLs it may rewrite and
+   * therefore the only ones it is entitled to judge. Everything else — the IdP,
+   * another Pod — is sent unchanged, whatever the routes are doing.
+   */
+  const routeCovers = (url: URL): boolean =>
+    Boolean(resolveSolidLocalRouteUrl(url, options.routes().map(toLocalRoute)))
+
+  /**
+   * The URL a request would have to reach if it is sent unchanged, when sending
+   * it unchanged is *not* the path this client meant to take.
+   *
+   * A URL no route covers is none of our business — the IdP, another Pod — and is
+   * passed through as before. A URL whose origin is where the best route would
+   * have sent it is already its own physical address, so passing it through is
+   * exactly what that route would have done. Anything else means the client
+   * knows a shorter path and has none usable: sending the request to the
+   * canonical URL anyway would leave over a path this client cannot reach, and
+   * that has to be reported (with the candidates) instead of quietly attempted.
+   */
+  const unreachablePassThrough = (input: RequestInfo | URL): URL | undefined => {
+    const url = requestUrl(input)
+    if (!url || !routeCovers(url)) {
+      return undefined
+    }
+    const routes = options.routes()
+    const preferred = usableRoutes(
+      { canonicalUrl: routes[0]?.canonicalUrl ?? '', routes },
+      managedClient,
+      options.allowLocalOnlyRoutes ?? false,
+    )[0]
+    if (!preferred || sameOrigin(preferred.targetUrl, url)) {
+      return undefined
+    }
+    return url
+  }
+
   return async (input, init) => {
     const route = await routeFor()
     if (!route) {
+      const unreachable = unreachablePassThrough(input)
+      if (unreachable) {
+        throw new NoUsableAccessRouteError(unreachable.href, options.routes())
+      }
       return init === undefined
         ? options.fetch.call(globalThis, input)
         : options.fetch.call(globalThis, input, init)
     }
 
     try {
-      return await routedFetchFor(route)(input, init)
+      const response = await routedFetchFor(route)(input, init)
+      failed = undefined
+      return response
     } catch (error) {
-      // The route went away (laptop moved networks, tunnel restarted). Ask for
-      // the current set once and retry against whatever is best now.
+      // The route went away (laptop moved networks, tunnel restarted, or the
+      // runtime reported a health it cannot back up). Ask for the current set
+      // once and retry against whatever is best now, without this one.
+      failed = routeKey(route)
       selected = undefined
       await options.refreshRoutes?.()
       const retryRoute = await selectRoute()
-      if (!retryRoute || retryRoute.id === route.id) {
-        throw error
+      if (retryRoute && routeKey(retryRoute) !== routeKey(route)) {
+        return routedFetchFor(retryRoute)(input, init)
       }
-      return routedFetchFor(retryRoute)(input, init)
+      // Nothing else can serve this request. When the URL was one this client
+      // only reaches through a route, the failure *is* "no usable route" — say
+      // so, with the transport failure kept as the reason, instead of letting
+      // the caller report whatever the canonical URL would have answered. A URL
+      // no route covers (the IdP, another Pod) keeps its own error.
+      const url = requestUrl(input)
+      if (url && routeCovers(url)) {
+        throw new NoUsableAccessRouteError(url.href, options.routes(), error)
+      }
+      throw error
     }
+  }
+}
+
+/** Identity of one physical path: the same route id can point at a new target. */
+function routeKey(route: Pick<AccessRoute, 'id' | 'targetUrl'>): string {
+  return `${route.id}|${route.targetUrl}`
+}
+
+/**
+ * A URL this client can only reach through a route, with no route usable.
+ *
+ * Thrown instead of sending the request to its canonical address, because that
+ * address is not the path this client meant to take: something is wrong with the
+ * routes themselves (the node's own gateway is down, a tunnel is gone), and the
+ * caller has to say so rather than report whatever the canonical URL answers.
+ */
+export class NoUsableAccessRouteError extends Error {
+  constructor(
+    readonly url: string,
+    readonly routes: readonly AccessRoute[],
+    /** The transport failure that left no route usable, when there was one. */
+    readonly reason?: unknown,
+  ) {
+    super(`No usable access route can reach ${url}`)
+    this.name = 'NoUsableAccessRouteError'
+  }
+}
+
+function toLocalRoute(route: AccessRoute): SolidLocalRoute {
+  return { canonicalBaseUrl: route.canonicalUrl, localBaseUrl: route.targetUrl }
+}
+
+function sameOrigin(value: string, url: URL): boolean {
+  try {
+    return new URL(value).origin === url.origin
+  } catch {
+    return false
+  }
+}
+
+function requestUrl(input: RequestInfo | URL): URL | undefined {
+  if (input instanceof Request) {
+    try {
+      return new URL(input.url)
+    } catch {
+      return undefined
+    }
+  }
+  try {
+    return new URL(String(input))
+  } catch {
+    return undefined
   }
 }
 
@@ -201,6 +338,23 @@ async function probeWithTimeout(
   }
 }
 
+/**
+ * Whether a route's host answered at all.
+ *
+ * The probe asks the target host for one small document; what it measures is
+ * reachability, not whether that host implements this optional discovery path.
+ * A Pod server that answers `HEAD /.well-known/solid` with 404/405/501 (CSS does:
+ * 405 for `HEAD`, 501 for `GET`) is up and serving this route, and the request
+ * that follows carries the canonical URL plus its own authorization. Rejecting
+ * those answers leaves a same-machine client with no route whenever the public
+ * one is down — the one case local login has to survive
+ * (`docs/multi-channel-access.md`). A failing host (5xx, or a closed socket,
+ * which throws) still reports no route.
+ */
+function answersAccessRoute(response: Response): boolean {
+  return response.status < 500
+}
+
 async function defaultProbe(route: AccessRoute, signal: AbortSignal): Promise<boolean> {
   if (!route.targetUrl.startsWith('http://') && !route.targetUrl.startsWith('https://')) {
     // Non-HTTP routes (p2p sockets) report their own readiness.
@@ -210,5 +364,5 @@ async function defaultProbe(route: AccessRoute, signal: AbortSignal): Promise<bo
     method: 'HEAD',
     signal,
   })
-  return response.ok || response.status === 401 || response.status === 403
+  return answersAccessRoute(response)
 }

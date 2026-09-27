@@ -8,6 +8,7 @@ import type {
   WebIdLoginTransaction,
 } from '@undefineds.co/solid-sdk';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
+import { NoUsableAccessRouteError } from '@undefineds.co/solid-sdk/access-route';
 import { Button } from '@undefineds.co/shared-ui';
 import { AlertCircle, ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -46,6 +47,7 @@ export type XpodOidcStorageCallbackFailure =
   | 'webid-mismatch'
   | 'binding-mismatch'
   | 'profile-read-failed'
+  | 'no-usable-access-route'
   | 'pod-open-failed'
   | 'storage-unavailable';
 
@@ -71,7 +73,7 @@ export type XpodOidcCallbackResult = XpodOidcCallbackFailure | XpodOidcCallbackS
 
 const CALLBACK_IDENTITY_PREFIX = 'xpod.auth.callback.identity.v1.';
 const RETRYABLE_STORAGE_FAILURE_CODES = new Set<XpodOidcCallbackFailureCode>([
-  'provision-status-unavailable', 'profile-read-failed', 'pod-open-failed',
+  'provision-status-unavailable', 'profile-read-failed', 'no-usable-access-route', 'pod-open-failed',
 ]);
 const CALLBACK_COMPLETION_PREFIX = 'xpod.auth.callback.completed.v1.';
 const CALLBACK_COMPLETION_TTL_MS = 10 * 60 * 1_000;
@@ -186,6 +188,11 @@ const FAILURE_MESSAGES: Record<XpodOidcCallbackFailureCode, {
   'profile-read-failed': {
     title: '暂时无法读取身份资料',
     message: '未能读取你的 WebID 资料，暂时无法确认 Pod 地址。请稍后重试，不需要重新创建 Pod。',
+    action: '重试连接',
+  },
+  'no-usable-access-route': {
+    title: '暂时无法连接本机 Pod',
+    message: 'Xpod 找不到可用的访问通道，请确认本机服务正在运行后重试。你的资料没有丢失。',
     action: '重试连接',
   },
   'pod-open-failed': {
@@ -364,7 +371,13 @@ export async function completeXpodOidcCallback(
     try {
       requestedStorage = transaction.selectedStorage
         ?? await discoverCurrentXpodStorage(authenticatedFetch, authenticatedWebId, localStorageRoot);
-    } catch {
+    } catch (error) {
+      // A Pod this client can only reach through a route, with no route usable:
+      // the profile itself is fine, the path to it is not. Reporting "资料读不到"
+      // would send the user looking in the wrong place.
+      if (error instanceof NoUsableAccessRouteError) {
+        return failure('no-usable-access-route');
+      }
       return failure('profile-read-failed');
     }
     if (sessionChanged) return failure('pod-open-failed');
@@ -1125,9 +1138,17 @@ async function discoverCurrentXpodStorage(
   localStorageRoot: string,
 ): Promise<StorageBinding | undefined> {
   let profileReadFailed = false;
+  // Why the read failed matters to the caller: a Pod this client can only reach
+  // through a route, with no route usable, is a connectivity fault rather than
+  // an unreadable profile. Keep the cause instead of flattening every failure
+  // into "the profile could not be read".
+  let profileReadError: unknown;
   const observedFetch: typeof fetch = async (input, init) => {
     const response = await fetchImpl(input, init).catch((error) => {
-      if (String(input) === webId) profileReadFailed = true;
+      if (String(input) === webId) {
+        profileReadFailed = true;
+        profileReadError = error;
+      }
       throw error;
     });
     if (String(input) === webId && !response.ok) {
@@ -1136,6 +1157,9 @@ async function discoverCurrentXpodStorage(
     return response;
   };
   const bindings = await filterWebIdsByStorageRoot(observedFetch, [webId], localStorageRoot);
+  if (profileReadError instanceof NoUsableAccessRouteError) {
+    throw profileReadError;
+  }
   if (profileReadFailed) {
     throw new Error('Unable to read WebID profile storage bindings');
   }

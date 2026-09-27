@@ -352,6 +352,36 @@ describe('Xpod Solid runtime', () => {
     network.mockRestore();
   });
 
+  test('routes a signed request over loopback without probing the origin that served this app', async () => {
+    // The real Local gateway answers HEAD /.well-known/solid with 405 and GET
+    // with 501 (CSS does not implement that optional document), and the node's
+    // canonical domain is unreachable while its tunnel is down. The route this
+    // app is standing on is not a guess — it served this document — so the
+    // transport has to use it without asking, and never fall back to canonical.
+    installDom('http://127.0.0.1:3000/settings');
+    const session = new FakeSession();
+    const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => (
+      String(input).includes('/.well-known/solid') ? new Response(null, { status: 405 }) : new Response('ok')
+    ));
+    const runtime = createXpodSolidRuntimeValue({ sessionFactory: ({ fetch: transport }) => {
+      session.fetch.mockImplementation((input, init) => transport(input, init));
+      return session;
+    } });
+    runtime.setLocalPodRoutes(provisionLocalPodRoutes(
+      'https://node.example/test/',
+      { managed: true, storageRoot: 'https://node.example/' },
+      'http://127.0.0.1:3000/settings',
+    ));
+
+    await runtime.session.fetch('https://node.example/test/settings/credentials.ttl');
+
+    expect(network.mock.calls.map(([input]) => String(input)))
+      .not.toContain('http://127.0.0.1:3000/.well-known/solid');
+    const [routedUrl] = signedCalls(network)[0]!;
+    expect(String(routedUrl)).toBe('http://127.0.0.1:3000/test/settings/credentials.ttl');
+    network.mockRestore();
+  });
+
   test('routes the hosted Pod service APIs locally without rerouting other Pods or the Cloud issuer', async () => {
     installDom('http://127.0.0.1:5173/settings/');
     const session = new FakeSession();

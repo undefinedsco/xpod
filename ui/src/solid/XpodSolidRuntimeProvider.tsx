@@ -137,6 +137,7 @@ export function XpodSolidRuntimeProvider({
       setIssuer(nextIssuer);
       if (nextSnapshot.status !== 'authenticated') {
         runtime.setLocalPodRoutes?.(undefined);
+        runtime.setLocalPodRoutesRefresh?.(undefined);
         setCurrentPod(undefined);
         if (nextSnapshot.status !== 'expired') setSelectedStorage(undefined);
         setPodError(undefined);
@@ -186,6 +187,14 @@ export function XpodSolidRuntimeProvider({
         const localRoutes = await currentHostLocalPodRoutes(opened.podUrl, fetch);
         if (cancelled) return;
         runtime.setLocalPodRoutes?.(localRoutes);
+        // The transport asks for this when the route it used stops answering: a
+        // tunnel the user just started, or a LAN address that changed, is picked
+        // up without reloading the app.
+        runtime.setLocalPodRoutesRefresh?.(async () => {
+          const refreshed = await currentHostLocalPodRoutes(opened.podUrl, fetch);
+          if (cancelled) return;
+          runtime.setLocalPodRoutes?.(refreshed);
+        });
         if (!cancelled) {
           if (rememberedBinding && (
             opened.webId !== rememberedBinding.webId
@@ -213,6 +222,9 @@ export function XpodSolidRuntimeProvider({
 
     return () => {
       cancelled = true;
+      // The routes and the way to re-discover them belong to one open Pod; a
+      // later session must not refresh through this one's registration.
+      runtime.setLocalPodRoutesRefresh?.(undefined);
     };
   }, [authenticatedFetch, podOpenAttempt, runtime, runtimeStorage.selectedStorage, snapshot]);
 

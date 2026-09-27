@@ -45,6 +45,13 @@ async function probeWithTimeout(
   }
 }
 
+/**
+ * Same rule as the client transport's probe (`@undefineds.co/solid-sdk/access-route`):
+ * a route answers when its host completed the HTTP exchange without failing. A
+ * host that returns 404/405/501 for `/.well-known/solid` does not implement that
+ * optional discovery path and is still serving the route; only a failing host
+ * (5xx, closed socket) reports no route.
+ */
 async function defaultProbe(route: AccessRoute, signal: AbortSignal): Promise<boolean> {
   if (!route.targetUrl.startsWith('http://') && !route.targetUrl.startsWith('https://')) {
     return route.health === 'healthy';
@@ -53,5 +60,5 @@ async function defaultProbe(route: AccessRoute, signal: AbortSignal): Promise<bo
     method: 'HEAD',
     signal,
   });
-  return response.ok || response.status === 401 || response.status === 403;
+  return response.status < 500;
 }
