@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { InMemoryMatrixOutboundStore, MatrixOutbox } from '../../../../src/api/matrix/federation/outboundQueue';
-import { MatrixOutboxScheduler, type SchedulerTimer } from '../../../../src/api/matrix/federation/outboxScheduler';
+import { createSchedulingOutbox, MatrixOutboxScheduler, type SchedulerTimer } from '../../../../src/api/matrix/federation/outboxScheduler';
 import type { MatrixDeliveryOutcome } from '../../../../src/api/matrix/federation/outboundTransaction';
 
 const SCOPE_A = 'https://pod-a.example/alice/';
@@ -160,5 +160,33 @@ describe('driving the outbound queue', () => {
     });
     await expect(instance.flushOnce()).resolves.toMatchObject({ scopes: 0 });
     expect(flush).not.toHaveBeenCalled();
+  });
+});
+
+describe('signalling delivery from a write', () => {
+  it('asks for a pass as soon as something is queued, and returns what was queued', async () => {
+    const batches = [ { txnId: 'txn-1', origin: 'alice.example', destination: 'remote.example', pdus: [], edus: [], createdAt: 0, attempts: 0 } ];
+    const enqueue = vi.fn(async () => batches);
+    const schedule = vi.fn();
+    const outbound = createSchedulingOutbox({ outbox: { enqueue }, schedule });
+
+    await expect(outbound.enqueue({ scope: SCOPE_A, origin: 'alice.example', destination: 'remote.example', pdus: [] })).resolves.toBe(batches);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(schedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ask for a pass when the queue already had the event', async () => {
+    const schedule = vi.fn();
+    const outbound = createSchedulingOutbox({ outbox: { enqueue: async () => [] }, schedule });
+    await expect(outbound.enqueue({ scope: SCOPE_A, origin: 'alice.example', destination: 'remote.example', pdus: [] })).resolves.toEqual([]);
+    expect(schedule).not.toHaveBeenCalled();
+  });
+
+  it('reports a queueing failure instead of starting a pass for nothing', async () => {
+    const schedule = vi.fn();
+    const outbound = createSchedulingOutbox({ outbox: { enqueue: async () => { throw new Error('queue unavailable'); } }, schedule });
+    await expect(outbound.enqueue({ scope: SCOPE_A, origin: 'alice.example', destination: 'remote.example', pdus: [] }))
+      .rejects.toThrow(/queue unavailable/u);
+    expect(schedule).not.toHaveBeenCalled();
   });
 });

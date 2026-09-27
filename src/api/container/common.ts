@@ -103,7 +103,7 @@ import { matrixSigningIdentityRegistry } from '../matrix/identityRegistry';
 import { matrixSigningIdentityForPod } from '../matrix/identityProvisioning';
 import { createPodParticipantIdentityProvider } from '../matrix/podParticipantIdentity';
 import { createMatrixOutboundDelivery, nodeSrvRecords } from '../matrix/federation/outboundDelivery';
-import { MatrixOutboxScheduler } from '../matrix/federation/outboxScheduler';
+import { createSchedulingOutbox, MatrixOutboxScheduler } from '../matrix/federation/outboxScheduler';
 import { promises as dns } from 'node:dns';
 import { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
@@ -727,10 +727,19 @@ export function registerCommonServices(
     // pass, serialized so two writers cannot drain the same queue at once.
     matrixOutboxScheduler: asFunction(({ matrixOutboundDelivery }: ApiContainerCradle) => {
       if (!matrixOutboundDelivery) return undefined;
-      return new MatrixOutboxScheduler({ outbox: matrixOutboundDelivery.outbox });
+      const logger = getLoggerFor('MatrixOutbox');
+      return new MatrixOutboxScheduler({
+        outbox: matrixOutboundDelivery.outbox,
+        onPass: pass => {
+          if (pass.delivered + pass.deferred + pass.rejected + pass.abandoned + pass.failed > 0) {
+            logger.info(`Federation delivery pass: ${JSON.stringify(pass)}`);
+          }
+        },
+        onError: error => { logger.warn(`Federation delivery failed: ${error.message}`); },
+      });
     }).singleton(),
 
-    matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService, matrixSigningIdentities, matrixParticipantIdentity, matrixOutboundDelivery }: ApiContainerCradle) => {
+    matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService, matrixSigningIdentities, matrixParticipantIdentity, matrixOutboundDelivery, matrixOutboxScheduler }: ApiContainerCradle) => {
       return new PodMatrixStore({
         serverGroupReconcilerService,
         podAccess: ownerPodAccess,
@@ -739,7 +748,12 @@ export function registerCommonServices(
         // without that identity would refuse their writes instead of signing nothing.
         identities: config.matrixServiceIdentity ? matrixSigningIdentities : undefined,
         participantIdentity: config.matrixServiceIdentity ? matrixParticipantIdentity : undefined,
-        outbound: matrixOutboundDelivery?.outbox,
+        // A write is the first signal: delivery starts as soon as something is queued, without
+        // the write waiting for it. The scheduler serializes and coalesces, so a burst of writes
+        // costs one pass.
+        outbound: matrixOutboundDelivery && matrixOutboxScheduler
+          ? createSchedulingOutbox({ outbox: matrixOutboundDelivery.outbox, schedule: () => { matrixOutboxScheduler.schedule(); } })
+          : undefined,
         journal: new SqlMatrixEventJournal(db),
         serverName: (() => {
           try {

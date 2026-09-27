@@ -616,6 +616,13 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   恰好一趟、单 scope 失败继续、注册并清除定时器/启停幂等、stop 后不再排、scope 列表读失败只上报、
   无工作时不调用），`MatrixOutboundContainer.test.ts` 追加断言（有身份时调度器存在且能跑空趟、无身份时
   两者都 undefined）。
+- **已落地**（2026-09-27）：**写入即信号**（`createSchedulingOutbox` + 容器组合）。store 拿到的
+  `outbound` 现在是一层薄包装：`enqueue` 成功且有新批次就调用 `scheduler.schedule()`，所以**一次写入
+  之后立刻会有一趟投递**，而不是等最多 30s 的兜底；本地写入**不等待**它（不 await），重复事件（入队返回
+  空批次）不触发，入队失败也不触发。**端到端证据**：`twoDeployment.test.ts` 新增一项 —— 两侧都按生产
+  方式接线（store → 调度包装 → 调度器 → 队列 → 按 origin 签名 → 对端处理体），**除了最开始的房间引导
+  之外不再有任何手工 flush**：Bob 的 join 靠写入自己走到 Alice，Alice 的一条消息靠写入自己走到 Bob 的
+  Pod，两侧都断言了 scheduler 没有报错。
 - **待建**：`PUT /_matrix/federation/v1/send/{txnId}`、`GET /event_auth/...`、`POST /get_missing_events/...`
   三个端点的 **HTTP 外壳与 Pod 归属解析**（三个服务侧都已实现为纯函数/处理体；**剩下的阻塞点仍是路由
   归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、

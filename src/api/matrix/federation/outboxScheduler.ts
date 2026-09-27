@@ -15,7 +15,8 @@
  * A signal is deliberately pluggable: `schedule()` is what a write, a notification, or an
  * operator calls. The timer is only the fallback.
  */
-import { MatrixOutbox, type MatrixOutboxReport } from './outboundQueue';
+import { MatrixOutbox, type EnqueueInput, type MatrixOutboxReport } from './outboundQueue';
+import type { MatrixFederationOutbox } from '../PodMatrixStore';
 
 /** A timer handle, so tests can drive the clock. */
 export type SchedulerTimer = ReturnType<typeof setInterval>;
@@ -141,4 +142,26 @@ export class MatrixOutboxScheduler {
       }
     }
   }
+}
+
+/**
+ * A queue that asks for a pass as soon as it has something to send.
+ *
+ * This is what a write uses: the store hands the event over, the queue records it, and delivery
+ * starts immediately instead of waiting for the periodic pass. Nothing is awaited — the local
+ * write must not wait for a peer — and nothing is duplicated, because the scheduler serializes
+ * and coalesces: a burst of writes costs one pass, not one per write.
+ */
+export function createSchedulingOutbox(input: {
+  outbox: Pick<MatrixOutbox, 'enqueue'>;
+  schedule: () => void;
+}): MatrixFederationOutbox {
+  return {
+    async enqueue(enqueueInput: EnqueueInput): Promise<unknown> {
+      const batches = await input.outbox.enqueue(enqueueInput);
+      // Nothing new was queued (a duplicate event, say), so there is nothing to deliver.
+      if (batches.length > 0) input.schedule();
+      return batches;
+    },
+  };
 }

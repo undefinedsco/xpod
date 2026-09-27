@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { messageResource } from '@undefineds.co/models';
 import { matrixHarness } from '../../../helpers/MatrixMemoryDatabase';
 import { matrixSigningIdentityRegistry } from '../../../../src/api/matrix/identityRegistry';
@@ -7,6 +7,7 @@ import { InMemoryMatrixSigningKeyStore, MatrixSigningIdentityProvider } from '..
 import { MatrixServiceIdentity } from '../../../../src/api/matrix/protocol/serviceIdentity';
 import { getProtocolMetadata } from '../../../../src/api/protocol-metadata';
 import { InMemoryMatrixOutboundStore, MatrixOutbox } from '../../../../src/api/matrix/federation/outboundQueue';
+import { createSchedulingOutbox, MatrixOutboxScheduler } from '../../../../src/api/matrix/federation/outboxScheduler';
 import { MatrixOutboundSender } from '../../../../src/api/matrix/federation/outboundSender';
 import { InMemoryMatrixInboundTransactionStore } from '../../../../src/api/matrix/federation/inboundTransaction';
 import { handleFederationSend, type FederationSendTarget } from '../../../../src/api/matrix/federation/inboundRoute';
@@ -98,6 +99,8 @@ function deployment(input: {
   peers: readonly MatrixServiceIdentity[];
   /** Whether this deployment fetches auth chains it is missing. Defaults to yes. */
   canFetchAuthChain?: boolean;
+  /** Whether the store's writes drive delivery themselves, as they do in production. */
+  schedulerDriven?: boolean;
 }) {
   const deploymentIdentity = identity(input.deploymentName);
   const registry = matrixSigningIdentityRegistry({
@@ -135,8 +138,22 @@ function deployment(input: {
     // Retry a refused PDU on the next flush rather than after a real backoff.
     retryRefused: { initialBackoffMs: 0, maxBackoffMs: 0, maxAttempts: 4 },
   });
+  // In production a write signals the scheduler, which owns when a pass runs.
+  const schedulerErrors: Error[] = [];
+  const schedulerPasses: unknown[] = [];
+  const scheduler = input.schedulerDriven
+    ? new MatrixOutboxScheduler({
+      outbox,
+      intervalMs: 0,
+      onError: error => { schedulerErrors.push(error); },
+      onPass: pass => { schedulerPasses.push(pass); },
+    })
+    : undefined;
+  const outbound = scheduler
+    ? createSchedulingOutbox({ outbox, schedule: () => { scheduler.schedule(); } })
+    : outbox;
   // The store queues what it writes, so the queue has to exist before it.
-  const harness = matrixHarness({ identities: registry, outbound: outbox });
+  const harness = matrixHarness({ identities: registry, outbound });
   const context = { ...harness.context, webId: input.participantWebId, podUrl: input.podUrl };
 
   return {
@@ -146,6 +163,9 @@ function deployment(input: {
     identities: [ deploymentIdentity, input.participantIdentity ],
     outbox,
     transactions,
+    scheduler,
+    schedulerErrors,
+    schedulerPasses,
     connect(other: FederationPeer) { peer = other; },
     async handle(request: { authorization: string | undefined; method: string; uri: string; body: string; serverName: string }) {
       return await handleFederationSend({
@@ -193,17 +213,19 @@ interface FederationPeer {
   handleAuthChain(request: { authorization: string | undefined; method: string; uri: string; serverName: string }): Promise<{ status: number; body: Record<string, unknown> }>;
 }
 
-function twoDeployments(options: { fetchAuthChain?: boolean } = {}) {
+function twoDeployments(options: { fetchAuthChain?: boolean; schedulerDriven?: boolean } = {}) {
   const aliceIdentity = identity('alice.example');
   const bobIdentity = identity('bob.example');
   const a = deployment({
     deploymentName: 'a.example', participant: 'alice.example', participantWebId: 'https://alice.example/profile/card#me',
     podUrl: 'https://pod-a.example/alice/', participantIdentity: aliceIdentity, peers: [ bobIdentity ],
+    ...(options.schedulerDriven ? { schedulerDriven: true } : {}),
   });
   const b = deployment({
     deploymentName: 'b.example', participant: 'bob.example', participantWebId: 'https://bob.example/profile/card#me',
     podUrl: 'https://pod-b.example/bob/', participantIdentity: bobIdentity, peers: [ aliceIdentity ],
     ...(options.fetchAuthChain === false ? { canFetchAuthChain: false } : {}),
+    ...(options.schedulerDriven ? { schedulerDriven: true } : {}),
   });
   a.connect(b);
   b.connect(a);
@@ -359,6 +381,39 @@ describe('two deployments federating one room', () => {
     expect(pdusOf(b.rows).map(event => event.type)).toEqual([ 'm.room.create', 'm.room.member', 'm.room.member' ]);
     expect(findMembership(b.rows, bob, 'invite').event_id).toBe(invite.event_id);
     expect(pdusOf(b.rows).every(event => String(event.room_id) === room.roomId)).toBe(true);
+  });
+
+  it('delivers what a write queues, with nothing driving it but the write itself', async () => {
+    const { a, b } = twoDeployments({ schedulerDriven: true });
+    const alice = (await a.store.getAccount(a.context)).userId;
+    const bob = (await b.store.getAccount(b.context)).userId;
+
+    // The room exists on both sides (the bootstrap is the `/get_missing_events` job the test
+    // still plays; everything after this point is driven by the writes themselves).
+    const room = await a.store.createRoom({}, a.context);
+    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findMembership(a.rows, alice, 'join') ]) {
+      await a.outbox.enqueue({ scope: a.context.podUrl!, origin: 'alice.example', destination: 'bob.example', pdus: [ pdu ] });
+    }
+    await a.outbox.flush({ scope: a.context.podUrl! });
+    await a.store.inviteUser(room.roomId, bob, a.context);
+    await a.outbox.flush({ scope: a.context.podUrl! });
+    expect(findMembership(b.rows, bob, 'invite')).toBeDefined();
+
+    // Bob joins: nothing flushes this by hand, so his join reaching Alice is the signal path.
+    await b.store.joinRoom(room.roomId, b.context);
+    await vi.waitFor(() => { expect(findMembership(a.rows, bob, 'join')).toBeDefined(); }, { timeout: 5_000 });
+    expect(b.schedulerErrors).toEqual([]);
+
+    // One write. The store hands it to the queue, the queue asks for a pass, the pass sends it.
+    const sent = await a.store.sendEvent(room.roomId, 'm.room.message', 'txn-live', { body: 'live' }, a.context);
+    await vi.waitFor(() => {
+      expect(pdusOf(b.rows).map(event => event.event_id)).toContain(sent.eventId);
+    }, { timeout: 5_000 });
+    expect(a.schedulerErrors).toEqual([]);
+    expect((findPdu(b.rows, 'm.room.message').content as Record<string, unknown>).body).toBe('live');
+    expect(a.scheduler?.isRunning()).toBe(true);
+    a.scheduler?.stop();
+    b.scheduler?.stop();
   });
 
   it('refuses an unserved destination, an unknown signer and a body that is not JSON', async () => {
