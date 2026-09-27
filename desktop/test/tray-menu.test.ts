@@ -45,46 +45,47 @@ describe('buildTrayMenuModel', () => {
     });
     const labels = model.items.flatMap((item) => item.label ? [item.label] : []);
 
-    expect(model.tooltip).toBe('Xpod · 3/3 services running');
+    expect(model.tooltip).toBe('Xpod · 3/3 个服务在运行');
     expect(labels).toEqual(expect.arrayContaining([
-      '● Xpod healthy',
+      '● Xpod 运行正常',
       '● Gateway — Running',
       '● Solid Server — Running',
       '● API Server — Running',
-      'Open Xpod',
-      'Open Pod',
-      'Status',
-      'Network',
-      'AI Config',
-      'Settings',
-      'Check Status Again',
-      'Restart Xpod…',
-      'Signed in as Alice',
-      'Account…',
-      'Launch at Login',
-      'About Xpod',
-      'Quit Xpod',
+      '打开 Xpod',
+      '打开存储空间',
+      '概览',
+      '访问与连接',
+      'AI 用途与模型',
+      '存储空间',
+      '重新检查状态',
+      '重启 Xpod…',
+      '已登录：Alice',
+      '账号…',
+      '开机启动',
+      '关于 Xpod',
+      '关闭窗口后服务继续运行；退出 Xpod 才会停止服务',
+      '退出 Xpod',
     ]));
-    expect(model.items.find((item) => item.label === 'Launch at Login')?.checked).toBe(true);
-    expect(model.items.find((item) => item.label === 'Signed in as Alice')?.enabled).toBe(false);
+    expect(model.items.find((item) => item.label === '开机启动')?.checked).toBe(true);
+    expect(model.items.find((item) => item.label === '已登录：Alice')?.enabled).toBe(false);
     expect(model.items.find((item) => item.label === '● Gateway — Running')?.action).toEqual({
       type: 'open-route',
       route: '/status/services/gateway',
     });
-    expect(model.items.find((item) => item.label === 'Status')?.action).toEqual({
+    expect(model.items.find((item) => item.label === '概览')?.action).toEqual({
       type: 'open-route',
       route: '/status/overview',
     });
-    expect(model.items.find((item) => item.label === 'Account…')?.action).toEqual({
+    expect(model.items.find((item) => item.label === '账号…')?.action).toEqual({
       type: 'open-route',
       route: '/status/overview?account=open',
     });
     expect(model.items.some((item) => item.action?.type === 'open-route' && item.action.route.startsWith('/.account'))).toBe(false);
   });
 
-  test('offers Start Xpod when all services are stopped', () => {
+  test('offers 启动 Xpod when all services are stopped', () => {
     const model = buildTrayMenuModel({ services: [], launchAtLogin: false });
-    expect(model.items.find((item) => item.label === 'Start Xpod')?.action).toEqual({ type: 'start' });
+    expect(model.items.find((item) => item.label === '启动 Xpod')?.action).toEqual({ type: 'start' });
   });
 
   test('shows update sensing and install actions when an update feed is configured', () => {
@@ -136,12 +137,12 @@ describe('buildTrayMenuModel', () => {
   test('keeps the in-shell Account entry available while anonymous', () => {
     const model = buildTrayMenuModel({ services: healthy, launchAtLogin: false });
 
-    expect(model.items.find((item) => item.label === 'Account…')?.action).toEqual({
+    expect(model.items.find((item) => item.label === '账号…')?.action).toEqual({
       type: 'open-route',
       route: '/status/overview?account=open',
     });
-    expect(model.items.some((item) => item.label?.startsWith('Signed in as '))).toBe(false);
-    expect(model.items.some((item) => item.label === 'Open Pod')).toBe(false);
+    expect(model.items.some((item) => item.label?.startsWith('已登录：'))).toBe(false);
+    expect(model.items.some((item) => item.label === '打开存储空间')).toBe(false);
   });
 
   test('adds a contextual log action for a crashed service', () => {
@@ -150,7 +151,7 @@ describe('buildTrayMenuModel', () => {
       launchAtLogin: false,
     });
 
-    expect(model.items.map((item) => item.label)).toContain('Open API Server Logs');
+    expect(model.items.map((item) => item.label)).toContain('查看 API Server 日志');
   });
 });
 

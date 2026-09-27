@@ -532,11 +532,11 @@ async function runTrayAction(action: TrayMenuAction): Promise<void> {
       if (runtimeManager.snapshot().ownership === 'desktop') {
         const result = await dialog.showMessageBox({
           type: 'question',
-          buttons: ['Quit and stop Xpod', 'Cancel'],
+          buttons: ['退出并停止 Xpod', '取消'],
           defaultId: 0,
           cancelId: 1,
-          message: 'Quit Xpod?',
-          detail: 'This Xpod runtime was started by the desktop app and will be stopped.',
+          message: '退出 Xpod？',
+          detail: '这个 Xpod 运行时由桌面应用启动，退出时会一并停止。关闭窗口不会停止服务。',
         })
         if (result.response !== 0) return
       }

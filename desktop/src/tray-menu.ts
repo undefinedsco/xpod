@@ -136,7 +136,7 @@ export function buildTrayMenuModel({
   const aggregate = aggregateTrayStatus(normalized)
   const items: TrayMenuItemModel[] = [
     { label: aggregateLabel(aggregate.state), enabled: false },
-    { label: `${aggregate.running}/${aggregate.total} services running`, enabled: false },
+    { label: `${aggregate.running}/${aggregate.total} 个服务在运行`, enabled: false },
     separator(),
     ...normalized.map(serviceMenuItem),
   ]
@@ -145,49 +145,52 @@ export function buildTrayMenuModel({
   if (crashed) {
     const presentation = servicePresentation[crashed.name]
     items.push({
-      label: `Open ${presentation.label} Logs`,
+      label: `查看 ${presentation.label} 日志`,
       action: { type: 'open-route', route: `/status/logs?source=${encodeURIComponent(crashed.name)}` },
     })
   }
 
   items.push(
     separator(),
-    { label: 'Open Xpod', action: { type: 'open-xpod' } },
+    { label: '打开 Xpod', action: { type: 'open-xpod' } },
   )
   if (identity?.podUrl) {
-    items.push({ label: 'Open Pod', action: { type: 'open-pod' } })
+    items.push({ label: '打开存储空间', action: { type: 'open-pod' } })
   }
   items.push(
     separator(),
-    { label: 'Status', action: { type: 'open-route', route: '/status/overview' } },
-    { label: 'Network', action: { type: 'open-route', route: '/network' } },
-    { label: 'AI Config', action: { type: 'open-route', route: '/ai-config/model-assignments' } },
-    { label: 'Settings', action: { type: 'open-route', route: '/settings/pod' } },
+    { label: '概览', action: { type: 'open-route', route: '/status/overview' } },
+    { label: '访问与连接', action: { type: 'open-route', route: '/network' } },
+    { label: 'AI 用途与模型', action: { type: 'open-route', route: '/ai-config/model-assignments' } },
+    { label: '存储空间', action: { type: 'open-route', route: '/settings/pod' } },
     separator(),
-    { label: 'Check Status Again', action: { type: 'refresh' } },
+    { label: '重新检查状态', action: { type: 'refresh' } },
     {
-      label: aggregate.state === 'stopped' ? 'Start Xpod' : 'Restart Xpod…',
+      label: aggregate.state === 'stopped' ? '启动 Xpod' : '重启 Xpod…',
       action: { type: aggregate.state === 'stopped' ? 'start' : 'restart' },
     },
   )
 
   items.push(separator())
   if (identity) {
-    items.push({ label: `Signed in as ${identity.label}`, enabled: false })
+    items.push({ label: `已登录：${identity.label}`, enabled: false })
   }
-  items.push({ label: 'Account…', action: { type: 'open-route', route: '/status/overview?account=open' } })
+  items.push({ label: '账号…', action: { type: 'open-route', route: '/status/overview?account=open' } })
 
   items.push(
     separator(),
-    { label: 'Launch at Login', checked: launchAtLogin, action: { type: 'toggle-launch-at-login' } },
+    { label: '开机启动', checked: launchAtLogin, action: { type: 'toggle-launch-at-login' } },
     ...updateMenuItems(update),
-    { label: 'About Xpod', action: { type: 'about' } },
-    { label: 'Quit Xpod', action: { type: 'quit' } },
+    { label: '关于 Xpod', action: { type: 'about' } },
+    separator(),
+    // §9.3：把"关闭窗口"与"退出"的真实后果写在动作旁边，不新增第二个退出动作
+    { label: '关闭窗口后服务继续运行；退出 Xpod 才会停止服务', enabled: false },
+    { label: '退出 Xpod', action: { type: 'quit' } },
   )
 
   return {
     aggregate,
-    tooltip: `Xpod · ${aggregate.running}/${aggregate.total} services running`,
+    tooltip: `Xpod · ${aggregate.running}/${aggregate.total} 个服务在运行`,
     items,
   }
 }
@@ -209,11 +212,11 @@ function serviceMenuItem(service: { name: TrayServiceName; status: TrayServiceSt
 
 function aggregateLabel(state: TrayAggregateState): string {
   switch (state) {
-    case 'healthy': return '● Xpod healthy'
-    case 'starting': return '◌ Xpod starting…'
-    case 'degraded': return '▲ Xpod degraded'
-    case 'failed': return '▲ Xpod failed'
-    case 'stopped': return '○ Xpod stopped'
+    case 'healthy': return '● Xpod 运行正常'
+    case 'starting': return '◌ Xpod 正在启动…'
+    case 'degraded': return '▲ Xpod 部分服务未运行'
+    case 'failed': return '▲ Xpod 服务异常'
+    case 'stopped': return '○ Xpod 已停止'
   }
 }
 
