@@ -744,9 +744,9 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
     `M_UNABLE_TO_GRANT_JOIN`（规范给"应换一台 server 再试"的码），而不是 `M_INVALID_PARAM`（那会说事件格式
     有问题）或 `M_FORBIDDEN`（那会说房间拒绝）。为此 `InboundPduResult` 增加了机器可读的 `stage`
     （structure/signature/authorisation/dependencies）：拒绝原因不再靠解析 `reason` 字符串分类。
-  - **尚未接线**：四个端点都还没有 HTTP 外壳（与 `/send` 等一样卡在 Pod 归属解析），本机 `joinRoom`
-    也还没有"房间在别的部署上"这条分支——加入远端房间要走这套握手，而它需要先知道该向谁要模板、把接受到的
-    状态写进哪个 Pod（同一条待定项）。
+  - **尚未接线**（历史记录，已过时）：当时四个端点还没有 HTTP 外壳、本机 `joinRoom` 也还没有"房间在别的部署上"这条
+    分支。**现状**：外壳已全部落地（见 D4 各条），远端加入的编排也已落地（`federation/remoteJoin.ts`），
+    剩下的只是 store 里那条分支的接线。
   - **顺带消除重复**：三个地方各写了一遍"行 → 协议事件 / 事件图事实"的读取（`roomState`、`PodMatrixStore`、
     `roomStateSnapshot`），现统一到 `src/api/matrix/storedEvent.ts` 的 `storedProtocolEvent` /
     `storedGraphEvent`；`prev_events`/`auth_events` 一律走 `eventReferenceIds`，因此 `[id, {sha256}]` 二元组在
@@ -1059,6 +1059,18 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   - 生产默认**不传 `ca`、也不关校验**（走系统信任库）；`rejectUnauthorized: false` 只是留给"决定与无法验证的
     对端通信"的部署的开关，默认不接。
   **仍未证**：与公网上真实委派对端的一次握手（需要真实证书/CA 与一个真实对端）。
+- **已落地**（2026-09-27）：**加入"别的部署托管的房间"的编排**（`federation/remoteJoin.ts`）。三块零件早就有了
+  （客户端的 `makeJoin`/`sendJoin`、丢弃不符模板的校验、把模板变成事件的签名身份），这一轮把它们按规范要求的顺序
+  收进**一个地方**，免得每个调用方各自再推一遍加入规则：
+  1. 向常驻服务器要模板；2. **只补发送方自己才知道的东西**——规范说加入方增改 `origin`/`origin_server_ts`/`event_id`，
+     其余（`prev_events`/`auth_events`/`depth`）是常驻方的，因为只有它看得见房间的图；3. 以本部署的 server name 签名；
+  4. 提交并取回**加入之前**的房间状态、它所依赖的 auth chain、以及被常驻方加签后的那个事件。
+  - **它刻意不持久化任何东西**：返回的状态与 auth chain 是调用方要写进"加入者自己的 Pod"的内容，而写不进去就等于
+    没加入——所以这个决定留在 Pod 写入那一侧，而不是藏进编排里。
+  - **仍未接线**：store 的 `joinRoom` 还没有"房间在别的部署上"这条分支（要按房间 id 里的 server 选目的地、调这个
+    编排、把状态/auth chain 通过接收路径写进本地 Pod、再返回）；本机加入仍然只走本地写入。
+  测试：`remoteJoin.test.ts` 4 项（只补自己的事实、提交的 id 由签名后的事件推导、模板不符则不提交任何东西、
+  可重试/最终拒绝原样传递、**签名能用该身份公布的密钥验过、且用别人的密钥验不过**）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，
