@@ -149,9 +149,11 @@
 | W5-DESIGN-03 用途为主语 | 第一轮已实施；概要三列拆分待做 | `ModelAssignmentsPanel.tsx` 的六行改为真实用途命名（对话与通用文本 / 识别图片文字 / 理解文档内容 / 按意思搜索 / 准备与摘要索引 / 搜索结果重排），专业角色名（General / Chat、OCR、Document Reader、Embedding、Indexer / Summarizer、Reranker）改为行内 `role` 副文本（`data-testid="model-assignment-role"`）；表单说明改为「按真实用途选择模型；未指定的用途使用系统默认。每行的专业角色名只作说明，不改变运行语义。」；flow 测试的选择器同步更新。仍未做：把「概要（用途 / 当前模型 / 可用性）」与「编辑（兼容选项、恢复默认、有边界测试）」真正分成两段视图 |
 | W5-DESIGN-01 目录只在添加时出现 | 第一轮已实施；任务优先的头部文案待做 | `AiConnectionsList.tsx` 按 provider 状态区分已配置（`configured`/`connected`）与目录：已有配置时首屏只列已连接对象，目录由「添加连接」按钮展开（`data-testid="ai-add-connection"`，`aria-expanded`），什么都没配置时目录仍是连接任务的入口直接出现；`packages/ai-connections/test/catalog-gate.test.ts` 锁住结构契约（渲染的是 `shownProviders` 而非全量 `providers`）。未完成：首屏头部尚未显式写出「连接客户端 / 为资料处理选择 AI」两条任务与已配置对象计数（现仍以固定 section + 已连接列表呈现） |
 | W5-DESIGN-02 客户端接入连续任务 | 未开始 | —— |
-| W5-DESIGN-04 Key 的「正在用于」 | 未开始 | —— |
+| W5-DESIGN-04 Key 的停用影响 | 第一轮已实施（影响与局限说明）；「正在用于」清单仍缺关联数据 | 销毁 Key 改为两步：第一次点击只展开说明——「删除后，正在使用这个 Key 的客户端会立即失效。Xpod 目前不记录 Key 与客户端/用途的关联，因此无法列出受影响的对象；请先确认没有客户端在用。更稳妥的做法是给新客户端单独建一个 Key。」（`data-testid="gateway-key-destroy-confirm"`），确认或取消后才继续；`gateway-keys.test.tsx` 分别覆盖「先说明再删除」「取消不删除」与失败路径。未完成：真正的「正在用于」清单需要 Key↔客户端关联数据，目前运行侧没有记录该关联（按 §11 由 AI 领域 owner 决定是否补） |
 
-验证记录（第二轮）：同范围 167 文件 / 1582 测试；`bun run build:packages` 与 `bun run build:ui` 均成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
+验证记录（第三轮）：同范围 167 文件 / 1583 测试；`packages/ai-connections/test` 420 全过；`bun run build:packages` 与 `bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
+
+第二轮验证记录：同范围 167 文件 / 1582 测试；`bun run build:packages` 与 `bun run build:ui` 均成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
 
 第一轮验证记录：166 文件 / 1581 测试；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
 

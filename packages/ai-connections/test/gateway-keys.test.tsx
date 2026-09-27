@@ -214,10 +214,27 @@ describe('Xpod API Keys', () => {
     expect(screen.queryByRole('button', { name: /刷新 Work laptop 的/ })).toBeNull()
   })
 
+  it('explains the impact before destroying a shared key', async () => {
+    const current = client()
+    render(<AiGatewayKeysSection client={current} />)
+    fireEvent.click(await screen.findByRole('button', { name: '销毁 Work laptop' }))
+
+    // §7.3：第一次点击只说明影响与"未记录关联"的局限，不直接删除
+    expect(current.deleteGatewayKey).not.toHaveBeenCalled()
+    const notice = screen.getByTestId('gateway-key-destroy-confirm')
+    expect(notice.textContent).toContain('正在使用这个 Key 的客户端会立即失效')
+    expect(notice.textContent).toContain('无法列出受影响的对象')
+
+    fireEvent.click(screen.getByRole('button', { name: '取消删除 Work laptop' }))
+    expect(screen.queryByTestId('gateway-key-destroy-confirm')).toBeNull()
+    expect(current.deleteGatewayKey).not.toHaveBeenCalled()
+  })
+
   it('destroys a key from its row and drops it from the list', async () => {
     const current = client()
     render(<AiGatewayKeysSection client={current} />)
     fireEvent.click(await screen.findByRole('button', { name: '销毁 Work laptop' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认删除 Work laptop' }))
     await waitFor(() => expect(current.deleteGatewayKey).toHaveBeenCalledWith('applied-key'))
     await waitFor(() => expect(screen.queryByText('Work laptop', { exact: true })).toBeNull())
     expect(screen.getByText('Spare', { exact: true })).toBeTruthy()
@@ -241,6 +258,7 @@ describe('Xpod API Keys', () => {
     const section = screen.getByRole('region', { name: '当前连接' })
     const originalChildren = Array.from(section.children)
     fireEvent.click(screen.getByRole('button', { name: '销毁 Work laptop' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认删除 Work laptop' }))
     const notification = await screen.findByText('无法连接配置服务，请检查连接后重试。')
     expect(notification.closest('[role="status"]')).not.toBeNull()
     expect(section.contains(notification)).toBe(false)

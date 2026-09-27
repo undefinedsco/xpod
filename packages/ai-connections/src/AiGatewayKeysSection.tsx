@@ -73,6 +73,7 @@ export function AiGatewayKeysSection({
   liveRevision?: number
 }) {
   const [keys, setKeys] = useState<GatewayKeyRecord[]>([])
+  const [confirmingKeyId, setConfirmingKeyId] = useState<string | undefined>(undefined)
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState(DEFAULT_KEY_NAME)
@@ -302,7 +303,13 @@ export function AiGatewayKeysSection({
                   key={record.id}
                   record={record}
                   busy={Boolean(busyKeyId)}
-                  onDestroy={() => void destroy(record)}
+                  confirming={confirmingKeyId === record.id}
+                  onRequestDestroy={() => setConfirmingKeyId(record.id)}
+                  onCancelDestroy={() => setConfirmingKeyId((current) => (current === record.id ? undefined : current))}
+                  onDestroy={() => {
+                    setConfirmingKeyId(undefined)
+                    void destroy(record)
+                  }}
                 />
               ))}
             </ul>
