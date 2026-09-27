@@ -920,6 +920,39 @@ function createOwnerCredentialFetch(account: { clientId: string; clientSecret: s
   };
 }
 
+/**
+ * Wait until the issuer accepts a freshly created credential.
+ *
+ * The account service answers with the credential before every reader is guaranteed to see it, and
+ * Xpod validates the wrapper the moment it is registered. Prove the exchange first so a failure
+ * here is reported as what it is instead of surfacing as a registration error.
+ */
+async function waitForCredentialExchange(
+  credential: { id: string; secret: string },
+  webId: string,
+  deadlineMs = 15_000,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  let lastError = 'unknown';
+  while (Date.now() - startedAt < deadlineMs) {
+    try {
+      await loginWithClientCredentials({
+        clientId: credential.id,
+        clientSecret: credential.secret,
+        webId,
+        podUrl: '',
+        issuer: CLOUD_IDP,
+      });
+      return true;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+    }
+  }
+  log('gatewayAuth', { phase: 'credential-not-exchangeable', detail: redact(lastError) });
+  return false;
+}
+
 async function verifyGatewayKeyLifecycle(
   client: ReturnType<typeof createXpodAiConnectionsClient>,
   account: Omit<Parameters<typeof createCloudClientCredentials>[0], 'name'>,
@@ -938,9 +971,21 @@ async function verifyGatewayKeyLifecycle(
     phase = 'create CSS client credential';
     // Keep this credential separate from the Solid management session so
     // revocation does not prevent subsequent Pod companion cleanup.
-    const credentials = await createCloudClientCredentials({
+    let credentials = await createCloudClientCredentials({
       ...account, name: `accept-key-${ACCEPT_ID}`,
     });
+    phase = 'confirm the new CSS credential is exchangeable';
+    if (!(await waitForCredentialExchange(credentials, account.webId))) {
+      // The RC deployment answered a create before its own readers saw the credential; ask once for
+      // a replacement instead of reporting a registration failure for a credential the issuer has
+      // not published yet.
+      credentials = await createCloudClientCredentials({
+        ...account, name: `accept-key-${ACCEPT_ID}-again`,
+      });
+      if (!(await waitForCredentialExchange(credentials, account.webId))) {
+        throw new Error('The Cloud issuer never accepted the freshly created CSS credential');
+      }
+    }
     const gatewayKey = `sk-${Buffer.from(`${credentials.id}:${credentials.secret}`, 'utf8').toString('base64')}`;
     gatewayKeyCleanup = {
       client, plaintext: gatewayKey, credentialResource: credentials.resource,
