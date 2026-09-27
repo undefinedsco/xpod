@@ -20,7 +20,7 @@ import {
 } from './native-theme.js'
 import { WindowLifecycle } from './window-lifecycle.js'
 import { DesktopWindowRecovery } from './window-recovery.js'
-import { DesktopWindowModeController, bindDesktopWindowModeNavigation } from './window-mode.js'
+import { DesktopWindowModeController, WORKSPACE_WINDOW_MODE_SIZE, bindDesktopWindowModeNavigation } from './window-mode.js'
 import {
   DesktopUpdateManager,
   resolveDesktopUpdateConfig,
@@ -171,10 +171,11 @@ const productWebPreferences = {
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1080,
-    height: 760,
-    minWidth: 420,
-    minHeight: 520,
+    // §5.1：工作区首次 1180×800，最小 640×560
+    width: WORKSPACE_WINDOW_MODE_SIZE.width,
+    height: WORKSPACE_WINDOW_MODE_SIZE.height,
+    minWidth: WORKSPACE_WINDOW_MODE_SIZE.minWidth,
+    minHeight: WORKSPACE_WINDOW_MODE_SIZE.minHeight,
     show: false,
     title: 'Xpod',
     backgroundColor: desktopWindowBackgroundColor(nativeTheme),

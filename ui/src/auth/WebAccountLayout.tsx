@@ -57,7 +57,7 @@ export function WebAccountLayout({ title, description, children, presentation = 
   }
   return (
     <main data-testid="web-account-page" className="flex min-h-dvh items-center justify-center bg-muted/30 p-4 text-foreground sm:p-8">
-      <div className="grid w-full max-w-6xl items-center gap-8 lg:grid-cols-2 lg:gap-16">
+      <div className="grid w-full max-w-6xl items-center gap-8 min-[900px]:grid-cols-2 min-[900px]:gap-16">
         <aside data-testid="web-account-introduction" aria-label="关于 Xpod" className="hidden px-8 lg:block">
           <Brand />
           <h1 className="mb-4 mt-8 text-3xl font-bold leading-tight">
@@ -83,7 +83,7 @@ export function WebAccountLayout({ title, description, children, presentation = 
             Powered by <a href="https://solidproject.org" target="_blank" rel="noopener noreferrer" className="text-primary underline-offset-4 hover:underline">Solid Protocol</a>
           </p>
         </aside>
-        <section role="region" aria-labelledby={titleId} data-testid="web-account-panel" data-web-account-layout="standard" className="mx-auto w-full min-w-0 max-w-md rounded-3xl border bg-card p-6 shadow-lg shadow-black/5 sm:p-8 lg:mx-0">
+        <section role="region" aria-labelledby={titleId} data-testid="web-account-panel" data-web-account-layout="standard" className="mx-auto w-full min-w-0 max-w-md rounded-3xl border bg-card p-6 shadow-lg shadow-black/5 sm:p-8 min-[900px]:mx-0">
           <div className="mb-8 lg:hidden"><Brand /></div>
           <header className="mb-6">
             <h2 id={titleId} className="text-2xl font-bold tracking-tight">{title}</h2>

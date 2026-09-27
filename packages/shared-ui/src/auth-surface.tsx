@@ -213,7 +213,8 @@ export function AuthSurface({
           : mode === 'modal'
           ? cn(
               'fixed inset-0 z-[var(--layer-modal)] flex items-center justify-center p-4',
-              isCompact ? 'xpod-overlay-scrim' : 'bg-background',
+              // §5.1：compact 用主题画布铺满，不铺遮罩
+              'bg-background',
             )
           : mode === 'page'
             ? 'flex min-h-[100dvh] w-full items-center justify-center bg-background p-4'
@@ -231,6 +232,17 @@ export function AuthSurface({
         >
           {surfaceContent}
         </div>
+      ) : isCompact ? (
+        <div
+          ref={surfaceRef}
+          {...dialogProps}
+          data-auth-surface-frame="compact"
+          tabIndex={-1}
+          style={{ outline: 'none' }}
+          className="flex h-[400px] w-[280px] max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] min-w-0 flex-col overflow-y-auto overscroll-contain focus:outline-none"
+        >
+          {surfaceContent}
+        </div>
       ) : (
         <Card
           ref={surfaceRef}
@@ -239,9 +251,7 @@ export function AuthSurface({
           style={{ outline: 'none' }}
           className={cn(
             'relative flex min-h-0 w-full flex-col border-border bg-card text-card-foreground focus:outline-none',
-            isCompact
-              ? 'h-[400px] w-[280px] max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border-border/50 shadow-lg shadow-black/5'
-              : mode === 'embedded' ? 'max-w-none shadow-none' : 'max-w-lg',
+            mode === 'embedded' ? 'max-w-none shadow-none' : 'max-w-lg',
           )}
         >
           {surfaceContent}

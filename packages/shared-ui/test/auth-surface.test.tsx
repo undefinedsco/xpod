@@ -119,16 +119,19 @@ describe('AuthSurface', () => {
     const title = screen.getByRole('heading', { name: 'Compact sign in' })
 
     expect(overlay.getAttribute('data-auth-surface-presentation')).toBe('compact')
-    // 遮罩颜色与层级来自公共主题，页面不再自带字面量
-    expect(overlay.classList.contains('xpod-overlay-scrim')).toBe(true)
+    // §5.1：compact 用主题画布铺满 + 16px 内边距，不铺遮罩
     expect(overlay.className).toContain('z-[var(--layer-modal)]')
-    expect(overlay.classList.contains('bg-background')).toBe(false)
+    expect(overlay.classList.contains('bg-background')).toBe(true)
+    expect(overlay.classList.contains('p-4')).toBe(true)
+    expect(overlay.classList.contains('xpod-overlay-scrim')).toBe(false)
+    // 一份 body：没有内嵌白卡（无卡片底色/圆角/边框/阴影），只有 280×400 的滚动区
     expect(dialog.classList.contains('w-[280px]')).toBe(true)
     expect(dialog.classList.contains('h-[400px]')).toBe(true)
-    expect(dialog.classList.contains('rounded-xl')).toBe(true)
-    expect(dialog.classList.contains('overflow-hidden')).toBe(true)
-    expect(dialog.classList.contains('bg-card')).toBe(true)
-    expect(dialog.classList.contains('text-card-foreground')).toBe(true)
+    expect(dialog.classList.contains('overflow-y-auto')).toBe(true)
+    expect(dialog.classList.contains('bg-card')).toBe(false)
+    expect(dialog.classList.contains('rounded-xl')).toBe(false)
+    expect(dialog.classList.contains('shadow-lg')).toBe(false)
+    expect(dialog.getAttribute('data-auth-surface-frame')).toBe('compact')
     expect(dialog.style.outline).toBe('none')
     expect(dialog.className).not.toContain('bg-stone')
     expect(dialog.className).not.toContain('text-stone')

@@ -33,6 +33,9 @@ export const AUTH_WINDOW_MODE_SIZE = {
   minHeight: 400,
 } as const
 
+// §5.1：工作区窗口首次 1180×800、最小 640×560。
+// App 承载 Account 文档的 1040×760 目标尚未落地：当前 account 模式仍是固定的 480×640
+// 恢复视口（不可缩放），与 §5.1 的文档窗口不同；待宿主侧决定后统一，见 W3 审计。
 export const ACCOUNT_WINDOW_MODE_SIZE = {
   width: 480,
   height: 640,
@@ -41,10 +44,10 @@ export const ACCOUNT_WINDOW_MODE_SIZE = {
 } as const
 
 export const WORKSPACE_WINDOW_MODE_SIZE = {
-  width: 1080,
-  height: 760,
-  minWidth: 420,
-  minHeight: 520,
+  width: 1180,
+  height: 800,
+  minWidth: 640,
+  minHeight: 560,
 } as const
 
 const DEFAULT_FIRST_MODE_FALLBACK_MS = 700
