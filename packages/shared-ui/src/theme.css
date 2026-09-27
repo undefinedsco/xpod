@@ -51,6 +51,14 @@
     --tint-canvas: 0 10.2% 90.4%;
     --tint-sunken: 18 15.6% 87.5%;
     --tint-badge: 324 7.5% 86.9%;
+    /* 公共叠层：§8.2 层级表的唯一来源，页面不得自带数值 */
+    --layer-base: 0;
+    --layer-sticky: 10;
+    --layer-popover: 20;
+    --layer-backdrop: 30;
+    --layer-modal: 40;
+    --layer-toast: 50;
+    --scrim: 30 13.8% 11.4%;
   }
 
   .dark {
@@ -96,6 +104,14 @@
     --tint-badge: 276.9 11.7% 21.8%;
     --purple-medium: 270 16.7% 71.8%;
     --purple-deep: 264.4 18.8% 66.7%;
+    /* 公共叠层：§8.2 层级表的唯一来源，页面不得自带数值 */
+    --layer-base: 0;
+    --layer-sticky: 10;
+    --layer-popover: 20;
+    --layer-backdrop: 30;
+    --layer-modal: 40;
+    --layer-toast: 50;
+    --scrim: 30 13.8% 11.4%;
   }
 
   .light {
@@ -142,6 +158,14 @@
     --tint-canvas: 0 10.2% 90.4%;
     --tint-sunken: 18 15.6% 87.5%;
     --tint-badge: 324 7.5% 86.9%;
+    /* 公共叠层：§8.2 层级表的唯一来源，页面不得自带数值 */
+    --layer-base: 0;
+    --layer-sticky: 10;
+    --layer-popover: 20;
+    --layer-backdrop: 30;
+    --layer-modal: 40;
+    --layer-toast: 50;
+    --scrim: 30 13.8% 11.4%;
   }
 
   html,
@@ -236,6 +260,11 @@
 }
 
 @layer components {
+  /* 弹层遮罩的唯一实现：颜色来自 --scrim，透明度不散落在页面 */
+  .xpod-overlay-scrim {
+    background-color: hsl(var(--scrim) / 0.45);
+  }
+
   .warm-card {
     border: 1px solid hsl(var(--border) / 0.5);
     border-radius: var(--radius-xl);

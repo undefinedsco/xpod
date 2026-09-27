@@ -66,7 +66,7 @@ export function LoginCardShell({
     <div
       data-testid={surfaceTestId}
       data-auth-surface-host={surfaceHost}
-      className={cn('fixed inset-0 z-[999] flex items-center justify-center bg-black/50', overlayClassName)}
+      className={cn('fixed inset-0 z-[var(--layer-backdrop)] flex items-center justify-center xpod-overlay-scrim', overlayClassName)}
     >
       <div
         role="dialog"

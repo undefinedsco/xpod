@@ -122,6 +122,11 @@
 主责模块 / 关联模块：shared-ui / extension-sdk
 完成条件：弹层与 toast 的层级来自公共命名层，页面不再自带数值
 未验证边界：未做跨浏览器叠层实测
+
+处置（2026-09-27，已实施）：`theme.css` 发布 `--layer-base/sticky/popover/backdrop/modal/toast`
+与 `--scrim`，并新增 `.xpod-overlay-scrim`；`dialog`、`tooltip`、`toast`、`login`、`auth-surface`
+改为 `z-[var(--layer-…)]` 与 scrim 类，`packages/shared-ui/src/*.tsx` 中不再有字面量层级或
+`bg-black/NN`（`packages/shared-ui/test/overlay-layers.test.ts` 以此为契约）。
 ```
 
 ```text
@@ -138,6 +143,12 @@
 主责模块 / 关联模块：共享 UI / AI Connections
 完成条件：语义色不再以字面量出现；品牌色有出处说明
 未验证边界：未逐处确认视觉等价
+
+处置（2026-09-27，已实施）：产品可达页 `ui/src/inrupt-smoke.ts` 改为导入公共主题并全部使用
+`hsl(var(--…))`，文件内颜色字面量为 0；`ui/src` 其余匹配均为"不得使用旧 zinc/白/旧紫"的
+反向断言（`AboutPage.test.tsx`、`AccountPage.test.tsx`），不属私有调色板。
+`packages/ai-connections/src/provider-visuals.ts` 为 provider 品牌色，按 §8.1 末段与操作色分开，
+保留并在此登记为允许项。
 ```
 
 ### 跨模块事项与交接
@@ -170,3 +181,15 @@
 | 依赖 | 无外部依赖；先核对公开出口与其他消费者（`ui/src` 全部入口、`packages/*/src`），不删除 LinX/extension 仍在使用的导出 |
 | 验收证据分层 | 前端：token 单源检查、字面量检查、§8.4 比值复算；运行：实施后按 AC-01–03 分别取证 |
 | 其他模块需接入的公共接口 | 命名层级（z-index 命名层）、`control-strong`/action 三态/tint 三档 token 名；W2 布局协议按 §8.3 复用之 |
+
+## 实施状态（2026-09-27 第一轮）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| W1-DESIGN-01 单一来源 | 已实施 | `ui/src/styles/global.css` 删除 76 个同名 token；`ui/src/theme/system-theme.test.ts` 断言不再重定义 |
+| W1-DESIGN-02 R2 主题 | 已实施 | `theme.css` 三块（`:root`/`.dark`/`.light`）按 §8.1 重写，一位小数 HSL 可精确回到原 hex；§8.4 全部 18 组比值由提交后 CSS 复算一致（0 处不符） |
+| W1-DESIGN-03 命名层级 | 已实施 | `--layer-*` 六档 + `--scrim` + `.xpod-overlay-scrim`；`theme-states` 样例含遮罩块；契约测试见 `overlay-layers.test.ts` |
+| W1-DESIGN-04 颜色字面量 | 已实施 | `inrupt-smoke.ts` 字面量 0；provider 品牌色登记为允许项 |
+| 双主题全状态样例 | 已交付 | `packages/shared-ui/samples/theme-states.html`（浅/深并排、19 个状态）+ `test/theme-states.test.ts` 核对覆盖度与"不只靠颜色" |
+
+验证记录：`packages/shared-ui/test` 55/55；`ui/src` 95 文件 / 877 测试全过；`bun run build:ui` 成功（含 smoke 入口）；`bun run test:account-layout` 12/12。未做：真机/跨浏览器视觉回归与系统图标打包（仍属未覆盖范围）。

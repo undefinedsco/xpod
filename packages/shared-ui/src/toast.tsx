@@ -99,7 +99,7 @@ export function Toaster({ className }: { className?: string }) {
       aria-live="polite"
       role="status"
       className={cn(
-        'pointer-events-none fixed bottom-4 right-4 z-[100] flex w-full max-w-sm flex-col gap-2',
+        'pointer-events-none fixed bottom-4 right-4 z-[var(--layer-toast)] flex w-full max-w-sm flex-col gap-2',
         className,
       )}
     >

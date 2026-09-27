@@ -1,5 +1,9 @@
 import { Session } from '@inrupt/solid-client-authn-browser';
 
+// 诊断页也是产品表面：颜色与控件基线来自公共主题，不自建调色板
+// （docs/superpowers/specs/2026-09-27-xpod-product-experience-spec.md §8.1、AC-01）。
+import './styles/global.css';
+
 const session = new Session();
 
 const SOLID_STORAGE = 'http://www.w3.org/ns/solid/terms#storage';
@@ -64,23 +68,24 @@ function currentXpodIssuerValue(): string {
 function render(): void {
   document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <style>
-      :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #020617; color: #e5e7eb; }
-      * { box-sizing: border-box; }
-      body { margin: 0; min-height: 100vh; padding: 20px; background: radial-gradient(circle at top, rgba(59,130,246,.32), transparent 36%), #020617; }
-      section, header { width: min(900px, 100%); margin: 0 auto 16px; padding: 18px; border: 1px solid rgba(148,163,184,.28); border-radius: 18px; background: rgba(15,23,42,.9); box-shadow: 0 18px 60px rgba(0,0,0,.28); }
+      :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { margin: 0; min-height: 100vh; padding: 20px; background: hsl(var(--background)); color: hsl(var(--foreground)); }
+      section, header { width: min(900px, 100%); margin: 0 auto 16px; padding: 18px; border: 1px solid hsl(var(--border)); border-radius: 12px; background: hsl(var(--card)); }
       h1 { margin: 0 0 8px; font-size: clamp(26px, 6vw, 42px); }
       h2 { margin: 0 0 12px; font-size: 20px; }
-      p { color: #cbd5e1; line-height: 1.62; }
-      code { color: #93c5fd; }
+      p { color: hsl(var(--muted-foreground)); line-height: 1.62; }
+      code { color: hsl(var(--primary)); }
       label { display: block; margin: 12px 0 7px; font-weight: 800; }
-      input, textarea { width: 100%; min-height: 42px; padding: 10px 12px; border: 1px solid #475569; border-radius: 12px; background: #020617; color: #f8fafc; font: inherit; }
-      textarea { min-height: 260px; font: 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; resize: vertical; }
-      button { min-height: 42px; margin: 7px 7px 7px 0; padding: 10px 14px; border: 0; border-radius: 999px; background: #38bdf8; color: #082f49; font-weight: 900; cursor: pointer; }
-      button.secondary { background: #334155; color: #e2e8f0; }
-      button.danger { background: #fb7185; color: #450a0a; }
-      dl { display: grid; grid-template-columns: minmax(120px, auto) 1fr; gap: 8px 12px; padding: 12px; border-radius: 14px; background: rgba(2,6,23,.62); }
-      dt { color: #94a3b8; } dd { margin: 0; overflow-wrap: anywhere; }
-      .ok { color: #86efac; } .fail { color: #fca5a5; } .warn { color: #fde68a; } .small { font-size: 13px; color: #94a3b8; }
+      input, textarea { width: 100%; min-height: 36px; padding: 8px 12px; border: 1px solid hsl(var(--input)); border-radius: 8px; background: hsl(var(--background)); color: hsl(var(--foreground)); font: inherit; }
+      textarea { min-height: 260px; font: 13px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; resize: vertical; }
+      button { min-height: 36px; margin: 7px 7px 7px 0; padding: 8px 14px; border: 1px solid transparent; border-radius: 8px; background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); font-weight: 700; cursor: pointer; }
+      button.secondary { background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); border-color: hsl(var(--border)); }
+      button.danger { background: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
+      dl { display: grid; grid-template-columns: minmax(120px, auto) 1fr; gap: 8px 12px; padding: 12px; border-radius: 8px; background: hsl(var(--muted)); }
+      dt { color: hsl(var(--muted-foreground)); } dd { margin: 0; overflow-wrap: anywhere; }
+      .ok { color: hsl(var(--success)); } .fail { color: hsl(var(--destructive)); } .warn { color: hsl(var(--warning)); }
+      .small { font-size: 13px; color: hsl(var(--muted-foreground)); }
+      button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
     </style>
     <header>
       <h1>Inrupt Solid Smoke</h1>

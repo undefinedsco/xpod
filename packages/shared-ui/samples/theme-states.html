@@ -1,0 +1,105 @@
+<!doctype html>
+<!--
+  W1 公共视觉样例：双主题全状态。
+
+  用途：实施与评审时并排检查浅色/深色下的 primitive 状态，确认状态不只靠颜色表达
+  （docs/superpowers/specs/2026-09-27-xpod-product-experience-spec.md §6.1、§8.1、AC-02）。
+
+  说明：
+  - 颜色来自 @undefineds.co/shared-ui 的单一映射（../dist/theme.css 或 src/theme.css）；
+  - 两个主题通过 .light / .dark 容器并排出现，不依赖系统偏好；
+  - 每个状态块带 data-state，`packages/shared-ui/test/theme-states.test.ts` 用它核对覆盖度，
+    新增状态时必须同时更新样例与测试，否则测试失败。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Xpod 公共视觉状态样例</title>
+<link rel="stylesheet" href="../src/theme.css" />
+<style>
+  body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .pane { padding: 24px; }
+  .pane.light { color-scheme: light; background: hsl(var(--background)); color: hsl(var(--foreground)); }
+  .pane.dark { color-scheme: dark; background: hsl(var(--background)); color: hsl(var(--foreground)); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-top: 12px; }
+  .tile { border: 1px solid hsl(var(--border)); border-radius: 8px; padding: 12px; background: hsl(var(--card)); }
+  .tile h3 { margin: 0 0 8px; font-size: 13px; color: hsl(var(--muted-foreground)); font-weight: 600; }
+  h2 { margin: 0 0 4px; font-size: 16px; }
+  button { min-height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid transparent; font: inherit; cursor: pointer; }
+  .b-default { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+  .b-secondary { background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); border-color: hsl(var(--border)); }
+  .b-danger { background: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
+  .b-outline { background: transparent; color: hsl(var(--foreground)); border-color: hsl(var(--input)); }
+  .b-ghost { background: transparent; color: hsl(var(--foreground)); }
+  .b-disabled { background: hsl(var(--secondary)); color: hsl(var(--muted-foreground)); cursor: not-allowed; }
+  .b-focus { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+  input { min-height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid hsl(var(--input)); background: hsl(var(--background)); color: hsl(var(--foreground)); font: inherit; width: 100%; box-sizing: border-box; }
+  input[aria-invalid="true"] { border-color: hsl(var(--destructive)); }
+  input:disabled { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid hsl(var(--border)); background: hsl(var(--tint-badge)); }
+  .status { display: flex; align-items: center; gap: 6px; }
+  .state-waiting { color: hsl(var(--muted-foreground)); }
+  .state-degraded { color: hsl(var(--warning)); }
+  .state-failed { color: hsl(var(--destructive)); }
+  .state-stopped { color: hsl(var(--muted-foreground)); }
+  .state-unknown { color: hsl(var(--muted-foreground)); }
+  .line { color: hsl(var(--muted-foreground)); }
+  .skeleton { height: 12px; border-radius: 4px; background: hsl(var(--muted)); }
+  .scrim { position: relative; height: 72px; border-radius: 8px; overflow: hidden; border: 1px solid hsl(var(--border)); }
+  .scrim .xpod-overlay-scrim { position: absolute; inset: 0; }
+</style>
+</head>
+<body>
+<div class="pane light" data-theme="light">
+  <h2>浅色主题</h2>
+  <p class="line">每个 tile 一个状态；状态必须同时有文字或图形，不能只靠颜色。</p>
+  <div class="grid" id="light-grid"></div>
+</div>
+<div class="pane dark" data-theme="dark">
+  <h2>深色主题</h2>
+  <p class="line">同一组状态在深色下重放，用于对照 §8.4 的对比度结论。</p>
+  <div class="grid" id="dark-grid"></div>
+</div>
+<template id="state-tile">
+  <div class="tile" data-state="">
+    <h3></h3>
+    <div class="body"></div>
+  </div>
+</template>
+<script>
+  // 状态清单与各状态的可见表达。改这里就必须同步测试，否则 theme-states.test.ts 失败。
+  const STATES = [
+    ['button-default', '按钮 · 默认', '<button class="b-default">保存</button>'],
+    ['button-secondary', '按钮 · 次要', '<button class="b-secondary">取消</button>'],
+    ['button-destructive', '按钮 · 危险（准确动词）', '<button class="b-danger">删除空间</button>'],
+    ['button-outline', '按钮 · 描边', '<button class="b-outline">查看详情</button>'],
+    ['button-ghost', '按钮 · 幽灵', '<button class="b-ghost">复制</button>'],
+    ['button-disabled', '按钮 · 禁用', '<button class="b-disabled" disabled>保存</button>'],
+    ['button-focus', '按钮 · 焦点', '<button class="b-focus">保存</button>'],
+    ['input-default', '输入 · 默认', '<input aria-label="默认输入" value="a-local-40296d6e" />'],
+    ['input-invalid', '输入 · 校验失败', '<input aria-label="错误输入" aria-invalid="true" value="缺名称" /><p class="state-failed">✕ 名称不能为空</p>'],
+    ['input-disabled', '输入 · 禁用', '<input aria-label="禁用输入" disabled value="不可编辑" />'],
+    ['badge', '徽章', '<span class="badge">文本检索</span>'],
+    ['state-waiting', '状态 · 等待（阶段动词）', '<span class="status state-waiting">◌ 正在读取存储占用…</span>'],
+    ['state-normal', '状态 · 正常（勾与文字）', '<span class="status">✓ 运行正常</span>'],
+    ['state-degraded', '状态 · 降级（三角与影响）', '<span class="status state-degraded">△ 语义检索暂不可用，文本检索正常</span>'],
+    ['state-failed', '状态 · 失败（错误图形与恢复）', '<span class="status state-failed">✕ 读取失败，重试</span>'],
+    ['state-stopped', '状态 · 停止', '<span class="status state-stopped">■ Xpod 已停止</span>'],
+    ['state-unknown', '状态 · 未知', '<span class="status state-unknown">? 状态无法确认，上次确认 10:24</span>'],
+    ['skeleton', '等待 · 骨架', '<div class="skeleton"></div>'],
+    ['overlay-scrim', '弹层遮罩', '<div class="scrim"><div class="xpod-overlay-scrim"></div></div>'],
+  ];
+  for (const theme of ['light', 'dark']) {
+    const grid = document.getElementById(`${theme}-grid`);
+    for (const [id, label, markup] of STATES) {
+      const node = document.getElementById('state-tile').content.cloneNode(true);
+      const tile = node.querySelector('.tile');
+      tile.dataset.state = `${theme}:${id}`;
+      node.querySelector('h3').textContent = label;
+      node.querySelector('.body').innerHTML = markup;
+      grid.appendChild(node);
+    }
+  }
+</script>
+</body>
+</html>

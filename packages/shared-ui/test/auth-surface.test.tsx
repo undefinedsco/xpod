@@ -119,7 +119,9 @@ describe('AuthSurface', () => {
     const title = screen.getByRole('heading', { name: 'Compact sign in' })
 
     expect(overlay.getAttribute('data-auth-surface-presentation')).toBe('compact')
-    expect(overlay.classList.contains('bg-black/50')).toBe(true)
+    // 遮罩颜色与层级来自公共主题，页面不再自带字面量
+    expect(overlay.classList.contains('xpod-overlay-scrim')).toBe(true)
+    expect(overlay.className).toContain('z-[var(--layer-modal)]')
     expect(overlay.classList.contains('bg-background')).toBe(false)
     expect(dialog.classList.contains('w-[280px]')).toBe(true)
     expect(dialog.classList.contains('h-[400px]')).toBe(true)
@@ -163,7 +165,7 @@ describe('AuthSurface', () => {
     expect(windowSurface.querySelector('[data-slot="card"]')).toBeNull()
     expect(windowSurface.classList.contains('bg-card')).toBe(true)
     expect(windowSurface.classList.contains('p-0')).toBe(true)
-    expect(windowSurface.classList.contains('bg-black/50')).toBe(false)
+    expect(windowSurface.classList.contains('xpod-overlay-scrim')).toBe(false)
     expect(dialog.classList.contains('h-full')).toBe(true)
     expect(dialog.classList.contains('w-full')).toBe(true)
     expect(dialog.className).not.toContain('rounded-')

@@ -156,7 +156,7 @@ export function AuthSurface({
               size="icon"
               onClick={onClose}
               aria-label={closeLabel}
-              className="absolute right-2 top-2 z-10"
+              className="absolute right-2 top-2 z-[var(--layer-sticky)]"
             >
               <span aria-hidden="true">×</span>
             </Button>
@@ -209,11 +209,11 @@ export function AuthSurface({
       data-auth-surface-host={isWindowHost ? 'window' : undefined}
       className={cn(
         isWindowHost
-          ? 'fixed inset-0 z-50 flex items-stretch justify-stretch overflow-hidden bg-card p-0'
+          ? 'fixed inset-0 z-[var(--layer-modal)] flex items-stretch justify-stretch overflow-hidden bg-card p-0'
           : mode === 'modal'
           ? cn(
-              'fixed inset-0 z-50 flex items-center justify-center p-4',
-              isCompact ? 'bg-black/50' : 'bg-background',
+              'fixed inset-0 z-[var(--layer-modal)] flex items-center justify-center p-4',
+              isCompact ? 'xpod-overlay-scrim' : 'bg-background',
             )
           : mode === 'page'
             ? 'flex min-h-[100dvh] w-full items-center justify-center bg-background p-4'
