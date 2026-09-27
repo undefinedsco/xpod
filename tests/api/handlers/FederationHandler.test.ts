@@ -199,6 +199,7 @@ async function harness(options: {
     store: store.store,
     keys: keySourceFor(peer),
     transactions: new InMemoryMatrixInboundTransactionStore(),
+    implementation: { name: 'xpod-test', version: '9.9.9' },
     ...(options.contextFor === undefined ? {} : { contextFor: options.contextFor }),
     signerFor: async serverName => (served.includes(serverName) ? ours.instance : undefined),
     fetchAuthChain: async ({ eventId }) => {
@@ -845,6 +846,50 @@ describe('the directory query', () => {
       expect(noAlias.body.errcode).toBe('M_MISSING_PARAM');
     } finally {
       await running.server.stop();
+    }
+  });
+});
+
+describe('saying who is answering', () => {
+  it('answers /version with the implementation, without requiring a signature', async () => {
+    const running = await harness();
+    try {
+      const answer = await send({
+        port: running.port, method: 'GET', path: '/_matrix/federation/v1/version', host: SERVED,
+      });
+
+      expect(answer.status).toBe(200);
+      expect(answer.body).toEqual({ server: { name: 'xpod-test', version: '9.9.9' } });
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('reports the deployment\'s own version by default, from the one place that reads it', async () => {
+    // An embedding that says nothing still identifies itself truthfully rather than as `unknown`.
+    const server = new ApiServer({
+      port: 0,
+      authMiddleware: new AuthMiddleware({
+        authenticator: { canAuthenticate: () => false, authenticate: async () => ({ success: false, error: 'unused' }) },
+      }),
+    });
+    registerFederationRoutes(server, {
+      routes: { route: async () => ({ kind: 'unknown' as const }) },
+      store: podStore().store,
+      keys: keySourceFor(identity(PEER)),
+      transactions: new InMemoryMatrixInboundTransactionStore(),
+    });
+    await server.start();
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('ApiServer did not bind a TCP port');
+      const answer = await send({ port: address.port, method: 'GET', path: '/_matrix/federation/v1/version', host: SERVED });
+      expect(answer.status).toBe(200);
+      const server_ = answer.body.server as { name: string; version: string };
+      expect(server_.name).toBe('xpod');
+      expect(server_.version).not.toBe('unknown');
+    } finally {
+      await server.stop();
     }
   });
 });

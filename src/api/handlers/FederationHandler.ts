@@ -46,6 +46,7 @@ import {
   type MembershipKind,
 } from '../matrix/federation/membershipHandshake';
 import { eventReferenceIds } from '../matrix/protocol/eventReferences';
+import { deploymentVersion, IMPLEMENTATION_NAME } from '../../runtime/deploymentVersion';
 import type { FederationSendTarget } from '../matrix/federation/inboundRoute';
 import type { InMemoryMatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
 import type { MatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
@@ -107,6 +108,11 @@ export interface FederationHandlerOptions {
    */
   contextFor?: (route: MatrixServerRoute) => MatrixStoreContext | Promise<MatrixStoreContext>;
   /**
+   * What `/version` reports. Defaults to this deployment's own name and version; a test or an
+   * embedding passes its own so the answer does not depend on the build it happens to run in.
+   */
+  implementation?: { name: string; version: string };
+  /**
    * The identity that countersigns what this deployment accepts under a server name. A join
    * accepted into a participant's Pod is signed by *that participant*, not by the deployment, so
    * the signer is looked up per name; absent means accepted events are stored unsigned by us.
@@ -139,6 +145,25 @@ export function registerFederationRoutes(server: ApiServer, options: FederationH
   // What a peer asks before it can join anything: which room an alias of ours names, and who else
   // is in it.
   server.get('/_matrix/federation/v1/query/directory', createDirectoryQueryHandler(options), publicRoute);
+
+  // The first thing a peer may ask, and the only endpoint here that is deliberately unsigned: it
+  // says which implementation is answering, not anything that needs authenticating.
+  server.get('/_matrix/federation/v1/version', createVersionHandler(options), publicRoute);
+}
+
+/**
+ * `GET /version`: the implementation name and version, which is how a peer identifies who it is
+ * talking to before it trusts anything else.
+ */
+export function createVersionHandler(options: FederationHandlerOptions): RouteHandler {
+  return async (_request, response) => {
+    sendJson(response, 200, {
+      server: {
+        name: options.implementation?.name ?? IMPLEMENTATION_NAME,
+        version: options.implementation?.version ?? deploymentVersion(),
+      },
+    });
+  };
 }
 
 /**

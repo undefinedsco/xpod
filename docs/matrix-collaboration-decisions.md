@@ -663,10 +663,9 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   以及成员资格握手的 `GET /make_join`、`PUT /send_join`、`GET /make_leave`、`PUT /send_leave`、`PUT /invite`、
   `GET /make_knock`、`PUT /send_knock` 十个端点的 **HTTP 外壳与 Pod 归属解析**（十个服务侧都已实现为纯函数/
   处理体；**剩下的阻塞点仍是路由归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、投递记录与控制 Pod 承载
-  （去 SQL）、状态与历史获取。互通面上还没动的：`GET /_matrix/federation/v1/version`（**需要一个版本来源**：目前只有 CLI 里一个未导出的
-  `getVersion()`，把它接进 handler 前应先把"部署版本从哪来"收成一个共享入口，否则只能报 `unknown`）、
-  `GET /_matrix/federation/v1/query/profile`（可做：枚举本部署服务的参与者、按 `@u_<sha256(webId)>:<serverName>`
-  算出 MXID 与之比对即可，无需反推哈希；展示名/头像取该参与者账户）、`.well-known/matrix/server` 的**服务侧**
+  （去 SQL）、状态与历史获取。互通面上还没动的：`GET /_matrix/federation/v1/query/profile`（可做：枚举本部署服务的参与者、按
+  `@u_<sha256(webId)>:<serverName>` 算出 MXID 与之比对即可，无需反推哈希；展示名/头像取该参与者账户——需要把
+  store 里那套 MXID 推导暴露成公开方法，避免在外壳里复制一份哈希规则）、`.well-known/matrix/server` 的**服务侧**
   （属于部署拓扑：联邦端点是否在隐式 8448 之外，需要部署级配置，不是协议决定）。
 - **已落地**（2026-09-27）：**逐条拒绝不再等于已投递**（缺口 2 的修复）。事务返回 200 只回答"这笔
   事务收到了"，不回答"每条 PDU 都被接受了"，所以发送方现在按 per-PDU 结果拆分：被接受的落地即完成，
@@ -967,6 +966,14 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   测试：`FederationHandler.test.ts` 新增 2 项（签名查询回 `{room_id, servers}`；未知 alias 404、非本部署服务的
   alias 404、未签名 401、缺 `room_alias` 400），`outboundTransaction.test.ts` 新增 2 项（query 与签名往返、
   缺字段重试与 4xx 分类），`destinations.test.ts` 6 项在新签名下不变。
+- **已落地**（2026-09-27）：**`GET /_matrix/federation/v1/version`** + **版本来源收敛成一处**
+  （`src/runtime/deploymentVersion.ts`；`main.ts` 的 `getVersion()` 改为委托它，不再各自读 package.json）。
+  - **这是唯一一个刻意不验签的联邦端点**：它回答的是"是谁在应答"，不是任何需要认证的事实；对端拿它做连通性与
+    实现识别，然后才谈别的。
+  - **默认如实自报**：没有额外配置时回 `{server: {name: 'xpod', version: <package 版本>}}`；读不到就回
+    `unknown` 而不是编一个。嵌入方（或测试）可以用 `implementation` 覆盖，让答案不依赖它恰好在哪个构建里跑。
+  测试：`FederationHandler.test.ts` 新增 2 项（`/version` 无需签名即回实现名与版本；未配置 `implementation` 时
+  回部署自己的名字与**非 `unknown`** 的版本），全部经真实 HTTP。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

@@ -7,7 +7,7 @@ import path from 'path';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { createGatewayAdminProxyAuthSecret, ensureTrailingSlash, GatewayProxy, getEphemeralLoopbackPort, getFreePortForWildcard, INVALID_CONFIGURATION_PREFIX, PACKAGE_ROOT, validateBaseUrl } from './runtime';
+import { createGatewayAdminProxyAuthSecret, deploymentVersion, ensureTrailingSlash, GatewayProxy, getEphemeralLoopbackPort, getFreePortForWildcard, INVALID_CONFIGURATION_PREFIX, PACKAGE_ROOT, validateBaseUrl } from './runtime';
 import {
   buildApiChildEnv,
   buildCssArgs,
@@ -149,13 +149,9 @@ function isProcessRunning(pid?: number): boolean {
   }
 }
 
+/** The deployment's own version, from the one place that reads it. */
 function getVersion(): string {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf-8')) as { version?: string };
-    return pkg.version ?? 'unknown';
-  } catch {
-    return 'unknown';
-  }
+  return deploymentVersion();
 }
 
 async function checkGateway(baseUrl: string): Promise<boolean> {

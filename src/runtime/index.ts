@@ -1,5 +1,6 @@
 import './configure-drizzle-solid';
 export { PACKAGE_ROOT, findPackageRoot } from './package-root';
+export { deploymentVersion, IMPLEMENTATION_NAME } from './deploymentVersion';
 export { ensureBunUndiciCompat } from './compat/ensureBunUndiciCompat';
 export {
   buildRuntimeEnv,

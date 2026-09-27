@@ -220,6 +220,10 @@ store 拒绝"既是会话又是部署干活"的上下文，拿不到 grant 就 4
 `/state_ids` 五个端点现在都有 HTTP 外壳（`FederationHandler.ts`，与 `/send` 共用"认定被寻址名字 → X-Matrix 验签 →
 按名字派生 Pod → 读协议事件"的前奏；房间为空回 404、缺参数回 400）并有 6 项真实 HTTP 测试；`twoDeployment` 里
 "接收方补取 auth chain"也已改成**经 HTTP 调真路由**（断言请求过 `/event_auth` 且 `event_id` 与发送方一致）。
+**版本与自报（已落地）**：`GET /_matrix/federation/v1/version` 回 `{server: {name: 'xpod', version}}`，刻意不验签
+（它只回答"是谁在应答"）；版本来源收敛到 `src/runtime/deploymentVersion.ts` 一处（CLI 与联邦端点共用）。2 项真实
+HTTP 测试。
+
 **目录查询（已落地）**：`GET /_matrix/federation/v1/query/directory` 按 alias 回答 `{room_id, servers}`——alias 是
 房间记录上的字段，所以答案来自 alias 里那个 server 的 Pod，不搜索其它 Pod；`servers` 用与出站投递同一套
 "joined member → 其 server"选择。2 项真实 HTTP 测试 + 客户端 2 项。
