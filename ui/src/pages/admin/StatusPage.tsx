@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Copy, ExternalLink, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { fetchPodSettingsStatus, type PodStorageStatus } from '../../api/pod-settings';
+import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
+import { describeStorageUsage } from './usage-format';
 import { Button } from '@/components/ui/Button';
 import { StatusBadge, type HealthState } from '@/components/admin/StatusBadge';
 import {
@@ -184,37 +187,44 @@ function RouteTable(props: { routes: RouteRow[] }) {
   );
 }
 
-function ActionNeededCard(props: {
-  servicesKnown: boolean;
-  servicesHealthy: boolean;
-  publicAccessProblem: boolean;
-}) {
-  if (!props.servicesKnown || (props.servicesHealthy && !props.publicAccessProblem)) {
+interface OverviewProblem {
+  id: string;
+  title: string;
+  message: string;
+  actionLabel: string;
+  href: string;
+}
+
+function ActionNeededCard(props: { problems: OverviewProblem[] }) {
+  const [primary, ...rest] = props.problems;
+  if (!primary) {
     return null;
   }
-
-  const servicesFailed = !props.servicesHealthy;
-  const title = servicesFailed ? '服务异常' : '外部访问异常';
-  const message = servicesFailed
-    ? 'Solid Server 或 API Server 未运行，当前无法正常使用 Xpod。请先查看日志。'
-    : 'Xpod 在本机运行正常，但从外网暂时无法访问。请检查公网域名、端口映射或用户隧道。';
 
   return (
     <Card variant="bordered" className="border-warning/40 bg-warning/60 dark:border-warning/40 dark:bg-warning/20">
       <CardHeader>
-        <CardTitle>{title}</CardTitle>
+        <CardTitle>{primary.title}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-sm text-warning dark:text-warning">{message}</p>
-        {servicesFailed ? (
-          <Button variant="secondary" onClick={() => window.location.assign('/status/logs')}>
-            查看日志
-          </Button>
-        ) : (
-          <Button variant="secondary" onClick={() => window.location.assign('/network')}>
-            打开网络设置
-          </Button>
-        )}
+        <p className="text-sm text-warning dark:text-warning">{primary.message}</p>
+        <Button variant="secondary" onClick={() => window.location.assign(primary.href)}>
+          {primary.actionLabel}
+        </Button>
+        {/* §7.1：多个独立问题时显示最高影响项与其余数量，不铺开成多张同权卡片 */}
+        {rest.length > 0 ? (
+          <div data-testid="overview-more-problems" className="text-sm text-muted-foreground">
+            还有 {rest.length} 项：
+            {rest.map((problem, index) => (
+              <span key={problem.id}>
+                {index > 0 ? '、' : ''}
+                <a className="text-primary underline-offset-4 hover:underline" href={problem.href}>
+                  {problem.title}
+                </a>
+              </span>
+            ))}
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -231,6 +241,8 @@ export function StatusPage() {
   const [copyMessage, setCopyMessage] = useState('');
   const [localLoadError, setLocalLoadError] = useState('');
   const [localLastCheckedAt, setLocalLastCheckedAt] = useState<Date | null>(null);
+  const runtime = useXpodSolidRuntime();
+  const [storageUsage, setStorageUsage] = useState<PodStorageStatus | null>(null);
 
   const applySnapshot = useCallback((snapshot: ServicesStatusSnapshot) => {
     setLocalServices(snapshot.servicesData);
@@ -369,6 +381,26 @@ export function StatusPage() {
         : 'healthy';
   const recommendedRoute = selectRecommendedRoute(routes);
 
+  useEffect(() => {
+    // §7.1 的"访问与空间摘要"：空间用量按既有客户端读取，读不到就说未知，不显示 0
+    if (!runtime.webId || !runtime.podUrl) return;
+    let cancelled = false;
+    void fetchPodSettingsStatus({
+      webId: runtime.webId,
+      podUrl: runtime.podUrl,
+      authenticatedFetch: runtime.fetch,
+    })
+      .then((status) => {
+        if (!cancelled) setStorageUsage(status.storage);
+      })
+      .catch(() => {
+        if (!cancelled) setStorageUsage({ status: 'error' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runtime.webId, runtime.podUrl, runtime.fetch]);
+
   const runtimeServices: RuntimeServiceRow[] = [
     {
       name: 'Gateway',
@@ -418,6 +450,39 @@ export function StatusPage() {
               ? `${recommendedRoute.label}：${recommendedRoute.detail}`
               : '核心服务正常，可以继续使用。',
           };
+  const overviewProblems: OverviewProblem[] = [
+    ...servicesUnknown
+      ? []
+      : [
+          ...(!allServicesRunning
+            ? [{
+                id: 'services',
+                title: '服务异常',
+                message: 'Solid Server 或 API Server 未运行，当前无法正常使用 Xpod。请先查看日志。',
+                actionLabel: '查看日志',
+                href: '/status/logs',
+              }]
+            : []),
+          ...(publicAccessProblem
+            ? [{
+                id: 'public-access',
+                title: '外部访问异常',
+                message: 'Xpod 在本机运行正常，但从外网暂时无法访问。请检查公网域名、端口映射或用户隧道。',
+                actionLabel: '打开网络设置',
+                href: '/network',
+              }]
+            : []),
+        ],
+    ...(loadError
+      ? [{
+          id: 'load',
+          title: '部分信息读取失败',
+          message: loadError,
+          actionLabel: '重新检查',
+          href: '/status/overview',
+        }]
+      : []),
+  ];
   const overviewFacts = [
     { label: '实例', value: baseUrl || '等待稳定入口' },
     {
@@ -425,7 +490,7 @@ export function StatusPage() {
       // AC-09：未知不显示成 0
       value: servicesUnknown ? '状态无法确认' : `${runningServiceCount}/${runtimeServices.length} 正常`,
     },
-    { label: '推荐访问', value: recommendedRoute?.label ?? '正在检查' },
+    { label: '访问与空间', value: `${recommendedRoute?.label ?? '正在检查'} · ${describeStorageUsage(storageUsage)}` },
     { label: '上次检查', value: lastCheckedAt ? lastCheckedAt.toLocaleString() : '尚未检查' },
   ];
 
@@ -604,7 +669,7 @@ export function StatusPage() {
         </CardContent>
       </Card>
 
-      <ActionNeededCard servicesKnown={Boolean(services)} servicesHealthy={allServicesRunning} publicAccessProblem={publicAccessProblem} />
+      <ActionNeededCard problems={overviewProblems} />
       <details data-testid="overview-access-details">
         <summary className="cursor-pointer text-sm font-medium">专业详情：访问路径</summary>
         <div className="mt-4 space-y-6">

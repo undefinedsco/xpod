@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { fetchPodSettingsStatus, type PodStorageStatus } from '../../api/pod-settings';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
+import { formatBytes, formatLimit, formatSeconds } from './usage-format';
 
 /**
  * 用量页（spec §3.1 的 `/status/usage/*`、§7.2、AC-09）。
@@ -19,29 +20,6 @@ const KIND_TITLES: Record<UsageKind, string> = {
   ai: 'AI 用量',
   'index-storage': '索引占用',
 };
-
-function formatBytes(value: number): string {
-  if (!Number.isFinite(value) || value < 0) return '未知';
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  let size = value;
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  return `${unit === 0 ? size : size.toFixed(1)} ${units[unit]}`;
-}
-
-function formatSeconds(value: number): string {
-  if (!Number.isFinite(value) || value < 0) return '未知';
-  if (value < 60) return `${value} 秒`;
-  if (value < 3600) return `${(value / 60).toFixed(1)} 分钟`;
-  return `${(value / 3600).toFixed(1)} 小时`;
-}
-
-function formatLimit(value: number | null, render: (limit: number) => string): string {
-  return value === null ? '不限' : render(value);
-}
 
 function Fact({ label, value }: { label: string; value: string }) {
   return (

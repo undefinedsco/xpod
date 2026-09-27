@@ -11,6 +11,20 @@ import { StatusPage } from './StatusPage';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+// 概览现在读取空间用量（§7.1 的访问与空间摘要）；测试里给出固定的运行时与用量来源
+const runtime = vi.hoisted(() => ({
+  webId: 'https://id.example/alice/profile/card#me',
+  podUrl: 'https://pod.example/alice/',
+  fetch: vi.fn(),
+}));
+vi.mock('../../solid/useXpodSolidRuntime', () => ({ useXpodSolidRuntime: () => runtime }));
+
+const usage = vi.hoisted(() => ({ fetch: vi.fn() }));
+vi.mock('../../api/pod-settings', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../api/pod-settings')>(),
+  fetchPodSettingsStatus: usage.fetch,
+}));
+
 function installDom() {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'https://pod.example/services/runtime',
@@ -120,6 +134,15 @@ function createServiceFailureSnapshot(): ServicesStatusSnapshot {
 
 async function renderStatusPage(snapshot = createSnapshot()) {
   installDom();
+  usage.fetch.mockResolvedValue({
+    identity: { webId: runtime.webId, podUrl: runtime.podUrl },
+    storage: {
+      status: 'available',
+      usage: { storageBytes: 1024, ingressBytes: 0, egressBytes: 0, computeSeconds: 0, tokensUsed: 0 },
+      limits: { storageLimitBytes: 1024, bandwidthLimitBps: null, computeLimitSeconds: null, tokenLimitMonthly: null },
+    },
+    aiConnection: { status: 'unsupported' },
+  });
   const context: ServicesStatusContextValue = {
     snapshot,
     loading: false,
@@ -188,6 +211,26 @@ describe('StatusPage overview runtime layout', () => {
     for (const item of details) {
       expect((item as HTMLDetailsElement).open).toBe(false);
     }
+
+    await unmount(root);
+  });
+
+  test('shows the highest-impact problem first and counts the rest', async () => {
+    const failing = createServiceFailureSnapshot();
+    const external = createExternalFailureSnapshot();
+    // 服务异常 + 外部访问异常是两个独立问题：只铺一张卡，其余计数
+    const { container, root } = await renderStatusPage({
+      ...failing,
+      publicCheck: external.publicCheck,
+      publicIpCheck: external.publicIpCheck,
+    } as ServicesStatusSnapshot);
+
+    expect(container.textContent).toContain('服务异常');
+    const more = container.querySelector('[data-testid="overview-more-problems"]');
+    expect(more?.textContent).toContain('还有 1 项');
+    expect(more?.textContent).toContain('外部访问异常');
+    // 只有一张需处理卡片
+    expect(container.textContent?.match(/服务异常/gu)?.length).toBe(1);
 
     await unmount(root);
   });
