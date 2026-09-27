@@ -45,7 +45,7 @@ describe('AI Connection two-pane contribution', () => {
     ])
   })
 
-  it('pins one API Keys workspace above Providers', () => {
+  it('pins the connect-client workspace above API Keys and Providers', () => {
     const mounted = mountTwoPaneApplet(
       aiConnectionApplet,
       createMockWebExtensionHost({
@@ -57,8 +57,13 @@ describe('AI Connection two-pane contribution', () => {
 
     expect(screen.getByRole('searchbox', { name: '搜索 Provider' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '添加 AI Connection' })).toBeTruthy()
-    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'API KEYS' })).toBeTruthy()
+    // §7.3：入口以连接客户端开场，API KEYS 紧随其后
+    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'CONNECT CLIENT' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '连接客户端' })).toBeTruthy()
+    expect(screen.getByRole('tablist', { name: '选择客户端' })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'AI Connection' })).toBeNull()
+    // 切到 API KEYS 分组后，它仍是唯一的已签发凭据表面
+    fireEvent.click(screen.getByRole('option', { name: 'Xpod' }))
     const pinned = screen.getByRole('option', { name: 'Xpod' })
     expect(pinned.getAttribute('aria-selected')).toBe('true')
     // The pinned issued-credential surface carries the Xpod provider mark; jsdom

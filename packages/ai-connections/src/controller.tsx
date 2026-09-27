@@ -83,6 +83,8 @@ export type ProviderProductState =
   | 'attention'
 
 export const AI_CONNECTIONS_PINNED_SECTIONS = [
+  // §7.3：入口以"把客户端接上"的任务开场，密钥管理紧随其后
+  { id: 'clients', label: '连接客户端', title: 'CONNECT CLIENT' },
   { id: 'keys', label: 'Xpod', title: 'API KEYS' },
 ] as const
 
@@ -253,7 +255,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
       beginProviderLoad,
     )
     : null
-  let selectedSection: AiConnectionsWorkspaceSection = 'keys'
+  let selectedSection: AiConnectionsWorkspaceSection = 'clients'
   let selectedProvider: AiConnectionsProvider = 'openai'
   let selectedCredentialId: string | undefined
   let searchQuery = ''

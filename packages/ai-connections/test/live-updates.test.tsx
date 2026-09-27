@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import './setup-jsdom'
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockWebExtensionHost } from '@undefineds.co/extension-sdk/testing'
 import { mountTwoPaneApplet } from '@undefineds.co/extension-sdk/web'
@@ -150,8 +150,10 @@ describe('AI Connection live Pod updates', () => {
     await waitFor(() => expect(
       header.querySelector('[data-live-updates]')?.getAttribute('data-live-updates'),
     ).toBe('unavailable'))
-    expect(within(header).getByRole('heading', { name: 'API KEYS' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '新建 API Key' })).toBeTruthy()
+    // 默认停在「连接客户端」（§7.3）
+    expect(within(header).getByRole('heading', { name: 'CONNECT CLIENT' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('option', { name: 'Xpod' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '新建 API Key' })).toBeTruthy())
 
     // Leaving the page leaves no subscription behind.
     view.unmount()
