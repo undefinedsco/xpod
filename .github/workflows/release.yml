@@ -488,6 +488,9 @@ jobs:
           bun run dist
           test -d release/mac-arm64/Xpod.app
           find release -maxdepth 1 -type f -name '*-mac.zip' -print -quit | grep -q .
+          # The in-app updater reads this feed, so a release without it cannot be offered as an
+          # update (update.electronjs.org looks for latest-mac.yml among the release assets).
+          test -s release/latest-mac.yml
 
       - name: Verify packaged version and native runtime payload
         run: |
@@ -506,6 +509,7 @@ jobs:
             desktop/release/*.dmg
             desktop/release/*.zip
             desktop/release/*.blockmap
+            desktop/release/latest-mac.yml
           if-no-files-found: error
           retention-days: 14
 
@@ -551,9 +555,18 @@ jobs:
           fi
 
           mapfile -t desktop_assets < <(find "$RUNNER_TEMP/desktop-release" -type f \
-            \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' \) -print)
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' -o -name 'latest-mac.yml' \) -print)
           if [[ "${#desktop_assets[@]}" -eq 0 ]]; then
             echo "::error::desktop release assets are missing"
+            exit 1
+          fi
+          for asset in "${desktop_assets[@]}"; do
+            if [[ "$(basename "$asset")" == 'latest-mac.yml' ]]; then
+              have_feed=1
+            fi
+          done
+          if [[ "${have_feed:-0}" -ne 1 ]]; then
+            echo "::error::desktop release is missing latest-mac.yml, so the in-app updater cannot see it"
             exit 1
           fi
           gh release upload "$TAG_NAME" "${desktop_assets[@]}" --clobber

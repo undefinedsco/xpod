@@ -179,11 +179,34 @@ class SharedLoginHarness {
   }
 }
 
+/**
+ * A product entry's module graph, as one string.
+ *
+ * The shared account card lives in a shared chunk after code splitting, so reading only the entry
+ * file says nothing about whether the product uses it - follow the static imports instead.
+ */
+async function readModuleGraph(entryPath: string, baseUrl: URL, seen = new Set<string>()): Promise<string> {
+  if (seen.has(entryPath)) return '';
+  seen.add(entryPath);
+  const source = await fetch(new URL(entryPath, baseUrl), {
+    cache: 'no-store',
+    headers: { 'Cache-Control': 'no-cache' },
+  }).then((response) => response.text());
+  let combined = source;
+  for (const match of source.matchAll(/from\s*"([^"]+\.js)"/gu)) {
+    const imported = new URL(match[1]!, new URL(entryPath, baseUrl)).pathname;
+    combined += await readModuleGraph(imported, baseUrl, seen);
+  }
+  return combined;
+}
+
 async function assertFixtureUsesCurrentProducts(fixture: SharedLoginFixture): Promise<void> {
   const entries = [
     { path: '/status/overview', asset: /src="([^"]*\/dashboard\/assets\/dashboard-[^"]+\.js)"/u },
     { path: '/ai-connections', asset: /src="([^"]*\/settings\/assets\/settings-[^"]+\.js)"/u },
-    { path: '/auth/callback', asset: /src="([^"]*\/auth\/callback\/assets\/auth-callback-[^"]+\.js)"/u },
+    // The callback entry is built with the settings product, so its bundle is served from the
+    // settings assets path rather than an auth-callback specific one.
+    { path: '/auth/callback', asset: /src="([^"]*\/auth-callback-[^"]+\.js)"/u },
   ] as const;
 
   for (const entry of entries) {
@@ -193,10 +216,7 @@ async function assertFixtureUsesCurrentProducts(fixture: SharedLoginFixture): Pr
     }).then((response) => response.text());
     const assetPath = html.match(entry.asset)?.[1];
     if (!assetPath) throw new Error(`Fixture entry ${entry.path} does not reference its product bundle`);
-    const bundle = await fetch(new URL(assetPath, fixture.baseUrl), {
-      cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache' },
-    }).then((response) => response.text());
+    const bundle = await readModuleGraph(assetPath, new URL(fixture.baseUrl));
     expect(bundle, `${entry.path} must use the current shared account card`).toContain('data-selected-pod-url');
     expect(bundle, `${entry.path} must use the current shared account card`).toContain('Xpod ID');
   }
