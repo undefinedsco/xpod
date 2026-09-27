@@ -797,19 +797,36 @@ export class PodMatrixStore {
     }
 
     const auth = context.auth as AuthContext | undefined;
-    if (!auth || !isSolidAuth(auth) || !auth.webId) {
+    const service = context.service;
+    // A context is either a caller's session or the deployment working on its own behalf. Neither
+    // is a fallback for the other: "who is writing" has to have exactly one answer, or a grant
+    // check becomes indistinguishable from a borrowed session.
+    if (service && auth) {
+      throw new MatrixError(400, 'M_INVALID_PARAM', 'A Matrix context cannot be both a caller session and deployment work');
+    }
+    if (!service && (!auth || !isSolidAuth(auth) || !auth.webId)) {
       throw new MatrixError(401, 'M_UNKNOWN_TOKEN', 'Solid authentication is required');
     }
 
     const podFetch = this.podAccess
-      ? await this.podAccess.getPodFetch(context.webId, {auth, podBaseUrl: context.podUrl})
+      ? await this.podAccess.getPodFetch(context.webId, {
+          ...(auth ? { auth } : {}),
+          // Work without a caller carries the participant's task-layer grant, and nothing else: an
+          // unusable grant fails here rather than reaching for a deployment-held key.
+          ...(service ? { taskCredential: service.taskCredential ?? {} } : {}),
+          podBaseUrl: context.podUrl,
+        })
       : undefined;
-    if (!podFetch) throw new MatrixError(403, 'M_FORBIDDEN', 'Grant Pod interface access before using Matrix');
+    if (!podFetch) {
+      throw new MatrixError(403, 'M_FORBIDDEN', service
+        ? `This deployment holds no grant for ${context.webId}'s Pod`
+        : 'Grant Pod interface access before using Matrix');
+    }
     const db: Db = drizzle(
       {
         fetch: podFetch,
         info: {
-          webId: auth.webId,
+          webId: auth && isSolidAuth(auth) ? auth.webId : context.webId,
           isLoggedIn: true,
           podUrl: context.podUrl,
         },

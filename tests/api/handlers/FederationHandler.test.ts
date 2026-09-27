@@ -10,7 +10,8 @@ import { parseServerKeyResponse, type MatrixServerKeySource } from '../../../src
 import { MatrixServiceIdentity } from '../../../src/api/matrix/protocol/serviceIdentity';
 import { computeEventId, signEvent } from '../../../src/api/matrix/protocol/eventIntegrity';
 import type { FederationPodStore } from '../../../src/api/handlers/FederationHandler';
-import type { MatrixEventRecord } from '../../../src/api/matrix/types';
+import type { MatrixServerRoute } from '../../../src/api/matrix/participantRoutes';
+import type { MatrixEventRecord, MatrixStoreContext } from '../../../src/api/matrix/types';
 
 const SERVED = 'alice.example';
 const PEER = 'peer.example';
@@ -44,11 +45,13 @@ function podStore(initial: readonly Record<string, unknown>[] = []) {
     rooms.set(roomId, [ ...(rooms.get(roomId) ?? []), event ]);
   }
   const accepted: Record<string, unknown>[] = [];
+  const contexts: MatrixStoreContext[] = [];
   const store: FederationPodStore = {
     async protocolEvents(roomId) {
       return [ ...(rooms.get(roomId) ?? []) ];
     },
-    async acceptReceivedEvent({ event }) {
+    async acceptReceivedEvent({ event, context }) {
+      contexts.push(context);
       const eventId = computeEventId(event);
       const stored = { ...event, event_id: eventId };
       rooms.set(String(event.room_id), [ ...(rooms.get(String(event.room_id)) ?? []), stored ]);
@@ -64,7 +67,7 @@ function podStore(initial: readonly Record<string, unknown>[] = []) {
       } satisfies MatrixEventRecord;
     },
   };
-  return { store, accepted, rooms };
+  return { store, accepted, rooms, contexts };
 }
 
 /**
@@ -151,7 +154,12 @@ interface Harness {
   sent: string[];
 }
 
-async function harness(options: { events?: readonly Record<string, unknown>[]; served?: string[] } = {}): Promise<Harness> {
+async function harness(options: {
+  events?: readonly Record<string, unknown>[];
+  served?: string[];
+  /** The deployment's answer to "who is this written as"; recorded so the test can see it used. */
+  contextFor?: (route: MatrixServerRoute) => MatrixStoreContext;
+} = {}): Promise<Harness> {
   const store = podStore(options.events ?? []);
   const peer = identity(PEER);
   const server = new ApiServer({
@@ -173,6 +181,7 @@ async function harness(options: { events?: readonly Record<string, unknown>[]; s
     store: store.store,
     keys: keySourceFor(peer),
     transactions: new InMemoryMatrixInboundTransactionStore(),
+    ...(options.contextFor === undefined ? {} : { contextFor: options.contextFor }),
     fetchAuthChain: async ({ eventId }) => {
       sent.push(eventId);
       return undefined;
@@ -368,5 +377,34 @@ describe('the inbound /send route', () => {
     // The chain is asked for by the *event* that could not be authorised.
     expect(h.sent).toEqual([ String(orphan.event_id) ]);
     expect(h.store.accepted).toEqual([]);
+  });
+});
+
+describe('the context the deployment writes with', () => {
+  it('hands the store what contextFor answers for the routed participant', async () => {
+    const room = heldRoom();
+    const seen: { webId: string; podUrl: string }[] = [];
+    const running = await harness({
+      events: [ room.create, room.join, room.rules ],
+      contextFor: route => {
+        seen.push(route);
+        // What a deployment that writes with the participant's grant answers; the store is the
+        // one that decides whether that grant exists.
+        return { webId: route.webId, podUrl: route.podUrl, service: {} };
+      },
+    });
+    try {
+      const membership = peerJoin({ room, peer: running.peer });
+      const request = transaction({ peer: running.peer, destination: SERVED, txnId: 'txn-ctx', pdus: [ membership ] });
+      const answer = await send({
+        port: running.port, method: 'PUT', path: '/_matrix/federation/v1/send/txn-ctx',
+        host: SERVED, authorization: request.authorization, body: request.body,
+      });
+      expect(answer.status).toBe(200);
+      expect(seen).toEqual([ { webId: 'https://alice.example/card#me', podUrl: POD } ]);
+      expect(running.store.contexts).toEqual([ { webId: 'https://alice.example/card#me', podUrl: POD, service: {} } ]);
+    } finally {
+      await running.server.stop();
+    }
   });
 });

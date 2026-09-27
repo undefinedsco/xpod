@@ -7,6 +7,16 @@ export interface MatrixStoreContext {
   /** Storage Pod selected by the current SP/gateway, not necessarily the WebID issuer origin. */
   podUrl?: string;
   auth?: AuthContext;
+  /**
+   * Work the deployment does on its own behalf rather than for a caller: an inbound federation
+   * transaction is written into the participant's Pod by the deployment, which presents that
+   * participant's task-layer grant instead of a session.
+   *
+   * There is no ambient authority here. Without a grant for the Pod the write fails, and the store
+   * never borrows a session or a deployment-held key to make it succeed — "this deployment was
+   * authorized to write" has to stay distinguishable from "somebody registered once".
+   */
+  service?: { taskCredential?: { credentialRef?: string; version?: number } };
 }
 
 export interface MatrixRoomRecord {

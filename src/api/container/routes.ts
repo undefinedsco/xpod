@@ -209,6 +209,10 @@ function registerSharedRoutes(
       store: matrixStore,
       keys: federationKeys,
       transactions: container.resolve('matrixInboundTransactions'),
+      // What a peer's event is written with: the routed participant's task-layer grant, presented
+      // as deployment work. No session is borrowed and no deployment-held key is used — a
+      // participant who has granted nothing gets a refusal rather than a silent write.
+      contextFor: route => ({ webId: route.webId, podUrl: route.podUrl, service: {} }),
       // A PDU we cannot authorise yet is asked about — the sender holds the chain, and the name we
       // answer as is the one we were addressed as.
       ...(delivery ? {

@@ -192,12 +192,20 @@ HTTP 跳转；**唯一的测试替身是"缺依赖事件如何送到对端"**—
 多个 Pod 时**拒绝**而不是猜（写错 Pod 无法撤销），未登记的名字报 unknown 由外壳回 403。**仍未接**：外壳本身，
 以及部署写目标 Pod 用的服务授权。
 
+**两个部署经真实 HTTP 的闭环（已取得证据）**：`twoDeployment.test.ts` 新增一项——两侧各自把入站路由跑在真
+socket 上（随机端口 + `registerFederationRoutes` + 真实的 Pod 路由派生），出站传输把 `https://<name>:8448/…`
+改写到回环端口但**保留 `Host: <name>:8448` 与路径/查询**。房间引导、邀请、Bob 的 join（B→A）与 Alice 的消息
+（A→B）全部经 HTTP，两侧 `event_id` 集合一致、两个队列清空，并断言请求次数与每次的 `Host` 都是被寻址的 server
+name。**写入用的授权**：外壳新增 `contextFor`，容器接的是"以该参与者的任务层 grant 落库"（`service` 上下文）；
+store 拒绝"既是会话又是部署干活"的上下文，拿不到 grant 就 403 并点名 Pod（`storePodAccess.test.ts` 4 项）。
+**仍未证**：真实 TLS/SNI、grant 的签发与撤销流程。
+
 **入站 `/send` 的 HTTP 外壳（已落地，真实 HTTP 证据）**：`PUT /_matrix/federation/v1/send/{txnId}` 现在有真正的
 路由与外壳（`src/api/handlers/FederationHandler.ts`，容器在有 Pod 注册表与验签密钥时注册）。测试
 `tests/api/handlers/FederationHandler.test.ts` 6 项**全部经真实 HTTP 套接字**（随机端口 + `node:http` 以便设置
 `Host`）：签名事务被接受并写进被路由的 Pod、重放同一 txnId 只写一次、同一事务内"后一条依赖刚接受的那条"可解析、
 不服务的名字 403、伪造签名与 `destination` 不符 401、`Host: <name>:8448` 与 `<name>` 视为同一个名字。
-**仍未证**：两个部署之间真的经 HTTP 跑完整闭环（本轮对端是假 store）、写入被路由 Pod 的授权（任务层 grant）。
+**并且两个部署之间已经真的经 HTTP 跑过完整闭环**（见下）……
 
 **联邦读取端点（服务侧算法已就绪，等 HTTP 外壳）**：`/event_auth`、`/get_missing_events`、`/backfill`、
 `/state`、`/state_ids` 五个端点的服务侧都已实现为纯函数/处理体并各有测试（回溯方向与语义按规范：

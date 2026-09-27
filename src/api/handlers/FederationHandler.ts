@@ -20,6 +20,11 @@
  *   event accepted earlier in the same transaction still resolves — without a second read.
  * - **The body bound.** A transaction carries at most 50 PDUs, but nothing stops a peer from
  *   sending a gigabyte; the body is read with a limit and a `413` rather than buffered.
+ *
+ * The credentials the store is read and written with are the deployment's decision, not this
+ * module's: `contextFor` turns a routed participant into a context, and the deployment says whether
+ * it acts with that participant's task-layer grant, with a service session, or not at all. A shell
+ * that invented a context would be deciding who the deployment is allowed to be.
  */
 import { readBoundedRequestBody } from './readBoundedRequestBody';
 import { handleFederationSend, type FederationSendResult } from '../matrix/federation/inboundRoute';
@@ -27,7 +32,7 @@ import type { FederationSendTarget } from '../matrix/federation/inboundRoute';
 import type { InMemoryMatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
 import type { MatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
 import type { MatrixServerKeySource } from '../matrix/federation/serverKeys';
-import type { MatrixParticipantRoutes } from '../matrix/participantRoutes';
+import type { MatrixParticipantRoutes, MatrixServerRoute } from '../matrix/participantRoutes';
 import type { AuthEvent } from '../matrix/protocol/authRules';
 import type { MatrixEventRecord, MatrixStoreContext } from '../matrix/types';
 import type { ApiServer, RouteHandler } from '../ApiServer';
@@ -65,6 +70,15 @@ export interface FederationHandlerOptions {
    * PDU with a dependency gap is reported as deferred rather than fetched.
    */
   fetchAuthChain?: FederationAuthChainFetcher;
+  /**
+   * The context the store is read and written with for a routed participant.
+   *
+   * Deployment policy, and the only place it is decided: a deployment writes into a participant's
+   * Pod with that participant's grant (`{ webId, podUrl, service: {} }`), and the store refuses if
+   * there is none. The default carries no authority at all, which a real Pod refuses — that is the
+   * honest default for a caller that has not said who it is.
+   */
+  contextFor?: (route: MatrixServerRoute) => MatrixStoreContext | Promise<MatrixStoreContext>;
   now?: () => number;
 }
 
@@ -129,7 +143,10 @@ export function createFederationSendHandler(options: FederationHandlerOptions): 
 async function targetFor(destination: string, options: FederationHandlerOptions): Promise<FederationSendTarget | undefined> {
   const answer = await options.routes.route(destination);
   if (answer.kind !== 'served') return undefined;
-  const context: MatrixStoreContext = { webId: answer.route.webId, podUrl: answer.route.podUrl };
+  const route = answer.route;
+  const context: MatrixStoreContext = options.contextFor
+    ? await options.contextFor(route)
+    : { webId: route.webId, podUrl: route.podUrl };
   const rooms = new Map<string, Map<string, Record<string, unknown>>>();
 
   /** The room's events by id, read once and then kept as this transaction writes into it. */

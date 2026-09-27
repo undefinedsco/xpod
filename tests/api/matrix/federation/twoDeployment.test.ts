@@ -1,5 +1,10 @@
 import { generateKeyPairSync } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
+import { ApiServer } from '../../../../src/api/ApiServer';
+import { AuthMiddleware } from '../../../../src/api/middleware/AuthMiddleware';
+import { registerFederationRoutes } from '../../../../src/api/handlers/FederationHandler';
+import { createParticipantRoutes } from '../../../../src/api/matrix/participantRoutes';
 import { messageResource } from '@undefineds.co/models';
 import { matrixHarness } from '../../../helpers/MatrixMemoryDatabase';
 import { matrixSigningIdentityRegistry } from '../../../../src/api/matrix/identityRegistry';
@@ -101,6 +106,11 @@ function deployment(input: {
   canFetchAuthChain?: boolean;
   /** Whether the store's writes drive delivery themselves, as they do in production. */
   schedulerDriven?: boolean;
+  /**
+   * How this deployment reaches a peer. Defaults to handing the request straight to the peer's
+   * handler; a test that wants a real socket passes an HTTP transport instead.
+   */
+  fetch?: typeof fetch;
 }) {
   const deploymentIdentity = identity(input.deploymentName);
   const registry = matrixSigningIdentityRegistry({
@@ -113,7 +123,7 @@ function deployment(input: {
   const sender = new MatrixOutboundSender({
     identities: registry,
     resolve: async name => ({ baseUrl: `https://${name}:8448`, hostHeader: name, via: 'implicit-port' }),
-    fetch: (async (url: URL | RequestInfo, init?: RequestInit) => {
+    fetch: input.fetch ?? (async (url: URL | RequestInfo, init?: RequestInit) => {
       if (!peer) throw new Error('no peer connected');
       const target = new URL(String(url));
       const request = {
@@ -164,6 +174,7 @@ function deployment(input: {
     identities: [ deploymentIdentity, input.participantIdentity ],
     outbox,
     outboundStore,
+    sender,
     transactions,
     scheduler,
     schedulerErrors,
@@ -215,19 +226,27 @@ interface FederationPeer {
   handleAuthChain(request: { authorization: string | undefined; method: string; uri: string; serverName: string }): Promise<{ status: number; body: Record<string, unknown> }>;
 }
 
-function twoDeployments(options: { fetchAuthChain?: boolean; schedulerDriven?: boolean } = {}) {
+function twoDeployments(options: {
+  fetchAuthChain?: boolean;
+  schedulerDriven?: boolean;
+  /** Transports for each deployment, when a test wants real HTTP instead of the in-process hop. */
+  fetchA?: typeof fetch;
+  fetchB?: typeof fetch;
+} = {}) {
   const aliceIdentity = identity('alice.example');
   const bobIdentity = identity('bob.example');
   const a = deployment({
     deploymentName: 'a.example', participant: 'alice.example', participantWebId: 'https://alice.example/profile/card#me',
     podUrl: 'https://pod-a.example/alice/', participantIdentity: aliceIdentity, peers: [ bobIdentity ],
     ...(options.schedulerDriven ? { schedulerDriven: true } : {}),
+    ...(options.fetchA === undefined ? {} : { fetch: options.fetchA }),
   });
   const b = deployment({
     deploymentName: 'b.example', participant: 'bob.example', participantWebId: 'https://bob.example/profile/card#me',
     podUrl: 'https://pod-b.example/bob/', participantIdentity: bobIdentity, peers: [ aliceIdentity ],
     ...(options.fetchAuthChain === false ? { canFetchAuthChain: false } : {}),
     ...(options.schedulerDriven ? { schedulerDriven: true } : {}),
+    ...(options.fetchB === undefined ? {} : { fetch: options.fetchB }),
   });
   a.connect(b);
   b.connect(a);
@@ -573,4 +592,160 @@ describe('when the other deployment cannot be reached', () => {
     expect(pdusOf(b.rows).filter(event => event.type === 'm.room.message')
       .map(event => String((event.content as Record<string, unknown>).body))).toEqual([ 'first', 'second', 'third' ]);
   }, 120_000);
+});
+
+/** Where a transport reaches its peer, which is only known once that peer's server is listening. */
+interface Endpoint {
+  port: number;
+}
+
+/**
+ * A peer's transport, over a real socket.
+ *
+ * The sender builds `https://<server name>:8448/...` from the resolution it was given; this rewrites
+ * that to the loopback port the test listens on while keeping everything the protocol uses — path,
+ * query, method, headers and the `Host` header carrying the *server name*. Federation peers address
+ * each other by name, so a test that let `Host` default to `127.0.0.1:port` would not be testing the
+ * same thing.
+ */
+function httpTransport(endpoint: () => Endpoint | undefined, sent: { host?: string; path: string }[] = []): typeof fetch {
+  return (async (url: URL | RequestInfo, init?: RequestInit) => {
+    const target = endpoint();
+    if (!target) throw new Error('the peer is not listening');
+    const address = new URL(String(url));
+    const headers: Record<string, string> = {
+      ...(init?.headers as Record<string, string> ?? {}),
+      // The implicit federation port, exactly as a peer that resolved nothing would send it.
+      host: `${address.hostname}:8448`,
+    };
+    sent.push({ host: headers.host, path: `${address.pathname}${address.search}` });
+    const answer = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const request = httpRequest({
+        host: '127.0.0.1',
+        port: target.port,
+        method: String(init?.method ?? 'GET'),
+        path: `${address.pathname}${address.search}`,
+        headers,
+      }, response => {
+        const chunks: Buffer[] = [];
+        response.on('data', chunk => chunks.push(Buffer.from(chunk)));
+        response.on('end', () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+      });
+      request.on('error', reject);
+      if (init?.body !== undefined) request.write(String(init.body));
+      request.end();
+    });
+    return new Response(answer.body, { status: answer.status, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+}
+
+/** Serve one deployment's inbound federation route on a real socket, routed by its Pod registry. */
+async function serveFederation(input: {
+  deployment: ReturnType<typeof deployment>;
+  serverName: string;
+  keys: readonly MatrixServiceIdentity[];
+}) {
+  const server = new ApiServer({
+    port: 0,
+    authMiddleware: new AuthMiddleware({
+      authenticator: { canAuthenticate: () => false, authenticate: async () => ({ success: false, error: 'unused' }) },
+    }),
+  });
+  const { context, store, sender, transactions } = input.deployment;
+  registerFederationRoutes(server, {
+    // The real derivation, over a registry holding exactly this participant's Pod.
+    routes: createParticipantRoutes({
+      pods: {
+        listAllPods: async () => [ {
+          podId: 'pod-1',
+          accountId: 'account-1',
+          baseUrl: context.podUrl!,
+          webId: context.webId,
+        } ],
+      },
+    }),
+    store,
+    keys: keySourceFor([ ...input.keys ]),
+    transactions,
+    // What the test deployment can present for the routed participant. In production this is the
+    // participant's task-layer grant; here it is the harness session the store already writes with.
+    contextFor: route => ({ ...context, webId: route.webId, podUrl: route.podUrl }),
+    // A PDU we cannot authorise is asked about — over the same transport, in the other direction.
+    fetchAuthChain: async ({ roomId, eventId, sender: from, servedName }) => {
+      const outcome = await sender.requestAuthChain({ origin: servedName, destination: from, roomId, eventId });
+      return outcome.status === 'ok' ? outcome.events : undefined;
+    },
+  });
+  await server.start();
+  const bound = server.address();
+  if (!bound || typeof bound === 'string') throw new Error('ApiServer did not bind a TCP port');
+  expect(input.serverName).toBeTruthy();
+  return { server, endpoint: () => ({ port: bound.port }) };
+}
+
+describe('two deployments federating over real HTTP', () => {
+  it('carries the room, the invite, the join and a message across sockets', async () => {
+    let endpointA: Endpoint | undefined;
+    let endpointB: Endpoint | undefined;
+    const requestsToB: { host?: string; path: string }[] = [];
+    const requestsToA: { host?: string; path: string }[] = [];
+    const { a, b } = twoDeployments({
+      fetchA: httpTransport(() => endpointB, requestsToB),
+      fetchB: httpTransport(() => endpointA, requestsToA),
+    });
+    const aliceIdentity = a.identities[1];
+    const bobIdentity = b.identities[1];
+    const keys = [ aliceIdentity, bobIdentity ];
+    const served = await serveFederation({ deployment: a, serverName: 'alice.example', keys });
+    const servedB = await serveFederation({ deployment: b, serverName: 'bob.example', keys });
+    endpointA = served.endpoint();
+    endpointB = servedB.endpoint();
+
+    try {
+      const alice = (await a.store.getAccount(a.context)).userId;
+      const bob = (await b.store.getAccount(b.context)).userId;
+      const room = await a.store.createRoom({}, a.context);
+
+      // The room's first events go to Bob's deployment over the socket, because it cannot know the
+      // room they belong to. Nothing is handed over in process: this is the peer's HTTP route.
+      for (const pdu of [ findPdu(a.rows, 'm.room.create'), findPdu(a.rows, 'm.room.member', alice) ]) {
+        await a.outbox.enqueue({ scope: a.context.podUrl!, origin: 'alice.example', destination: 'bob.example', pdus: [ pdu ] });
+      }
+      expect(await a.outbox.flush({ scope: a.context.podUrl! })).toMatchObject({ delivered: expect.any(Array), rejected: [], abandoned: [] });
+      expect(pdusOf(b.rows).map(event => event.type)).toEqual([ 'm.room.create', 'm.room.member' ]);
+
+      // The invite is authorised on the receiving side against exactly that state.
+      await a.store.inviteUser(room.roomId, bob, a.context);
+      expect(await a.outbox.flush({ scope: a.context.podUrl! })).toMatchObject({ rejected: [], abandoned: [] });
+      expect(findPdu(b.rows, 'm.room.member', bob).event_id).toBe(findPdu(a.rows, 'm.room.member', bob).event_id);
+
+      // Bob joins on his own deployment, which queues his join back over the socket to Alice's.
+      await b.store.joinRoom(room.roomId, b.context);
+      const bobJoin = findMembership(b.rows, bob, 'join');
+      expect(await b.outbox.flush({ scope: b.context.podUrl! })).toMatchObject({ delivered: expect.any(Array), rejected: [], abandoned: [] });
+      expect(findMembership(a.rows, bob, 'join')).toEqual(bobJoin);
+
+      // And a message from Alice reaches Bob's Pod with the same id on both sides.
+      const sent = await a.store.sendEvent(room.roomId, 'm.room.message', 'txn-http', { body: 'over http' }, a.context);
+      expect(await a.outbox.flush({ scope: a.context.podUrl! })).toMatchObject({ delivered: expect.any(Array), rejected: [], abandoned: [] });
+      expect(findPdu(b.rows, 'm.room.message').event_id).toBe(sent.eventId);
+      expect((findPdu(b.rows, 'm.room.message').content as Record<string, unknown>).body).toBe('over http');
+
+      // Both Pods hold the same events, by the same ids, with nothing left owed in either queue.
+      const idsIn = (rows: Map<unknown, any[]>) => pdusOf(rows).map(event => String(event.event_id)).sort();
+      expect(idsIn(b.rows)).toEqual(idsIn(a.rows));
+      expect(await a.outboundStore.pending(a.context.podUrl!)).toEqual([]);
+      expect(await b.outboundStore.pending(b.context.podUrl!)).toEqual([]);
+
+      // And it all really went over the sockets, addressed by server name rather than by address.
+      expect(requestsToB.length).toBeGreaterThanOrEqual(3);
+      expect(requestsToA.length).toBeGreaterThanOrEqual(1);
+      expect(requestsToB.map(request => request.host)).toEqual(requestsToB.map(() => 'bob.example:8448'));
+      expect(requestsToA.map(request => request.host)).toEqual(requestsToA.map(() => 'alice.example:8448'));
+      expect(requestsToB.every(request => request.path.startsWith('/_matrix/federation/v1/send/'))).toBe(true);
+    } finally {
+      await served.server.stop();
+      await servedB.server.stop();
+    }
+  }, 180_000);
 });

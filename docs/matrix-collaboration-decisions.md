@@ -846,6 +846,31 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   `node:http` 请求，因此能设置 `Host`）：签名事务被接受并写进被路由的 Pod、重放同一 txnId 只写一次、同一事务里
   "后一条依赖刚接受的那条"能解析、不服务的名字 403、伪造签名 401 与 `destination` 不符 401、隐式端口 `:8448` 被认作
   同一个名字且 deferred 时向发送方索链（只按"无法授权的那条事件"的 id 索要）。
+- **已落地**（2026-09-27）：**两个部署真的经 HTTP 跑完整闭环** + **部署侧写 Pod 的授权路径**
+  （`twoDeployment.test.ts` 新增 1 项；`FederationHandler` 增加 `contextFor` 接缝；`MatrixStoreContext` 增加
+  `service` 上下文；`PodMatrixStore.getDb` 区分"调用者会话"与"部署自己干活"）。
+  - **上下文只有一个答案**：一次读写的"我是谁"不允许含糊。`PodMatrixStore` 现在**拒绝**
+    `auth` 与 `service` 同时出现的上下文（400），没有会话又没有 `service` 时仍然是 401
+    "Solid authentication is required"（老行为不变）。
+  - **部署干活时用参与者的任务层 grant，不借任何东西**：`service` 上下文把
+    `taskCredential`（默认 `{}` = 该所有者当前生效的 grant，也接受 `credentialRef`/`version` 冻结版本）
+    交给 Pod 访问器；访问器拿不到可用 credential 就**失败**，既不会退回用户会话，也不会退回部署自持的 key——
+    "这次写入被授权了"必须始终能与"某人曾经注册过"区分开。失败时回 403 并**点名是哪个参与者的 Pod**。
+  - **凭据是部署的决定，不是外壳的**：`registerFederationRoutes` 新增 `contextFor(route)`，由部署回答"以谁的名义
+    读写被路由到的那个 Pod"；默认只给 `{webId, podUrl}`（**不含任何权限**，真 Pod 会拒绝——这是"没说清自己是谁"
+    时最诚实的默认）。容器里接的是 `{webId, podUrl, service: {}}`，也就是"以该参与者的任务层 grant 落库"。
+  - **真实 HTTP 证据**：两个部署各自把入站路由跑在**真 socket** 上（`ApiServer` 随机端口 + `registerFederationRoutes`
+    + 真实 `participantRoutes` 派生），出站侧用一个把 `https://<name>:8448/...` 改写到回环端口、但**保留
+    `Host: <name>:8448` 与完整路径/查询**的传输。于是房间引导（create + Alice 的 join）、邀请、Bob 的 join（B→A）
+    与 Alice 的一条消息（A→B）**全部经 HTTP**，两侧 `event_id` 集合一致、两个队列都清空；测试还断言"确实发生了
+    至少 3 次 A→B 与 1 次 B→A 请求，每次的 `Host` 都是被寻址的 server name"——**这是验收文档里"唯一的测试替身是
+    网络这一跳"被去掉的那一步**。
+  - **仍未证**：真实 TLS/SNI（`fetch` 改不了 SNI/Host 的缺口依旧）、grant 的**签发流程**（本轮用的是测试部署
+    已有的会话上下文；生产里要靠参与者给部署的任务层 grant，签发与撤销仍未做）、以及另外九个端点的外壳。
+  测试：`twoDeployment.test.ts` 新增 1 项（上述跨 socket 闭环，180s 预算）；`FederationHandler.test.ts` 新增 1 项
+  （`contextFor` 的答案就是 store 收到的上下文）；`tests/api/matrix/storePodAccess.test.ts` 4 项（无会话无 service
+  仍然 401 且**不问** Pod 访问器、`service` 以 `taskCredential` 提问且无 grant 时 403 并点名 Pod、
+  `credentialRef`/`version` 原样透传、同时给 `auth` 与 `service` 400）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，
