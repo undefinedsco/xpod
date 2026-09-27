@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import {
+  Button,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -44,6 +45,8 @@ export function ModelAssignmentsPanel() {
     switch: EmbeddingModelSwitch
   }>();
   const [rebuildNotice, setRebuildNotice] = useState<string>();
+  // §7.4：概要只放用途/当前模型/可用性三列，编辑时才展开兼容选项、恢复默认与测试
+  const [editing, setEditing] = useState(false);
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
@@ -97,6 +100,71 @@ export function ModelAssignmentsPanel() {
     await saveAndRebuild({ models: change.models }, target);
     setRebuildNotice(undefined);
   };
+
+  const modelLabel = (name: AiConfigModelAssignment): string => {
+    const assigned = values[name]
+    if (!assigned) return '系统默认'
+    return models.find((model) => model.id === assigned)?.displayName
+      ?? models.find((model) => model.id === assigned)?.ref
+      ?? assigned
+  }
+  const availability = (name: AiConfigModelAssignment): string => {
+    const result = testResults[name]
+    if (result === 'ready') return '已验证可用'
+    if (result === 'failed') return '验证失败'
+    return '未验证'
+  }
+
+  const summary = (
+    <section data-testid="ai-purpose-summary" className="overflow-hidden rounded-xl border border-border">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+        <div>
+          <div className="text-sm font-medium">用途与模型</div>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            概要只列用途、当前模型与可用性；点「编辑」才展开兼容选项、恢复默认与有边界的测试。
+          </p>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={() => setEditing(true)}>
+          编辑
+        </Button>
+      </div>
+      <div className="divide-y divide-border">
+        <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,0.8fr)] gap-2 px-4 py-2 text-xs text-muted-foreground">
+          <span>用途</span><span>当前模型</span><span>可用性</span>
+        </div>
+        {assignments.map((assignment) => (
+          <div
+            key={assignment.name}
+            data-testid="ai-purpose-row"
+            data-purpose={assignment.name}
+            className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,0.8fr)] gap-2 px-4 py-2 text-sm"
+          >
+            <span className="min-w-0">
+              <span className="block truncate">{assignment.label}</span>
+              <span data-testid="model-assignment-role" className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{assignment.role}</span>
+            </span>
+            <span className="min-w-0">
+              <span className="block break-all">{modelLabel(assignment.name)}</span>
+              <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                {values[assignment.name] ? '显式指定' : '系统默认'}
+              </span>
+            </span>
+            <span className="text-muted-foreground">{availability(assignment.name)}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+
+  if (!editing) {
+    return (
+      <>
+        {summary}
+        <RebuildStatusLine lifecycle={lifecycle} fallbackNotice={rebuildNotice} />
+        <BackgroundPodAccess />
+      </>
+    )
+  }
 
   return (
     <>

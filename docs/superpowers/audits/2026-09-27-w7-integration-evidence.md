@@ -14,7 +14,7 @@
 
 | 套件 | 结果 |
 |---|---|
-| `ui/src` + `tests/ui` + `packages/{ai-connections,shared-ui,extension-sdk}/test` | **167 文件 / 1585 用例通过**（1 skipped、1 todo） |
+| `ui/src` + `tests/ui` + `packages/{ai-connections,shared-ui,extension-sdk}/test` | **167 文件 / 1586 用例通过**（1 skipped、1 todo） |
 | 桌面壳 `bun run --filter @undefinedsco/xpod-desktop test` | **141 用例通过** |
 | `bun run test:account-layout`（Playwright，768/390 等） | **12 通过** |
 | `bun run build:packages` / `bun run build:ui` / 桌面 `build` | 均成功 |
@@ -34,7 +34,7 @@
 | AC-08 无/多 Pod、缺 owner、过期 interaction、切号安全出口 | 🔵 | 既有覆盖：`ui/src/pages/ConsentNoPod.test.tsx`、`ConsentResume.test.tsx`、`ConsentRetry.test.tsx`、e2e `consent-recovery.spec.ts` | 本轮未逐条重验；绑定已有 Pod 的证明协议仍由 9/19 §4.2 待定（入口保持禁用） |
 | AC-09 三服务/网络/机器/Pod 访问互不冒充、用量未知非零、刷新保留快照 | ✅ | `ui/src/pages/admin/StatusPage.test.tsx`（结论优先、≤4 事实、服务未知写「状态无法确认」且不出现 `0/`、多问题只铺一张卡 + 「还有 N 项」）、`ui/src/pages/admin/UsagePage.test.tsx`（有值/真 0/不支持/失败四态） | 用量记录时间与来源在部分部署可能缺失，显示「未标注」 |
 | AC-10 保存/应用/检测/重启分别反馈；取消等待不伪装撤销 | 🟡 | `ui/src/pages/settings/ServicesAccessSections.test.tsx`（服务与访问四主题 + 未知态）、`packages/ai-connections/test/client-configuration.test.tsx`（四段结果 + 只重试写入）、既有 `SystemSettingsSubjectPanel` 保存/重启路径 | 「取消等待 ≠ 撤销」在部分流式操作上未逐条走查 |
-| AC-11 Provider 凭据 / Xpod Key / 客户端配置 / 用途不混用；排序不改默认 | 🟡 | `ui/src/pages/settings/ai-config/ModelAssignmentsPanel.tsx`（用途为主语、角色名为副文本、说明"不改运行语义"）+ `ModelAssignmentsPanel.flow.test.tsx`（切换 embedding 的确认与重建提示）；`packages/ai-connections/test/gateway-keys.test.tsx`（凭据与 Key 分开） | 「排序/首项不隐含默认」属运行侧解析语义 → 🔵（AI 领域 owner） |
+| AC-11 Provider 凭据 / Xpod Key / 客户端配置 / 用途不混用；排序不改默认 | ✅ | `ui/src/pages/settings/ai-config/ModelAssignmentsPanel.tsx`（概要用例/当前模型/可用性三列 + 编辑视图；用途为主语、角色名为副文本、说明"不改运行语义"）+ `ModelAssignmentsPanel.flow.test.tsx`（切换 embedding 的确认与重建提示）；`packages/ai-connections/test/gateway-keys.test.tsx`（凭据与 Key 分开） | 「排序/首项不隐含默认」属运行侧解析语义 → 🔵（AI 领域 owner） |
 | AC-12 托盘与 Status 一致；退出动作按能力分开 | 🟡 | `desktop/src/tray-menu.ts`（中文五态 + 服务计数 + 崩溃直达日志 + 「关闭窗口后服务继续运行；退出 Xpod 才会停止服务」）、`desktop/test/tray-menu.test.ts`（141 全过）、`desktop/src/window-lifecycle.ts`（关窗=隐藏） | 「退出登录/代理退出」等动作依赖 9/19 D-14/D-18，未定前不实现（保持不可执行） |
 | AC-13 连接客户端与改搜索模型可在连续任务完成；Key 建好但写入失败只重试写入 | ✅ | `packages/ai-connections/test/client-configuration.test.tsx`（两次 apply 之间 `createClientCredential` 只 1 次、`revoke` 0 次、写入行 failed→ok）、`ModelAssignmentsPanel.flow.test.tsx`（改向量模型 → 影响提示 → 重建） | 已实施：客户端优先入口 + Key 来源显式选择与共享影响说明（W5 审计） |
 | AC-14 正常/首次/停止/未知/异常的信息优先级；首屏无告警墙 | ✅ | `ui/src/pages/admin/StatusPage.test.tsx`（恰一个结论、事实 ≤4、正常态零强调动作、details 默认收起）、`ui/src/layout/global-navigation.test.ts`（顶层只有四个任务入口，18 项不再常驻） | 窄窗首屏走查未做 |
@@ -70,7 +70,7 @@ gh run download <rc-run-id> -n release-acceptance-d8f2578675b8c3bcb08d5822f8f2b5
 1. **真机走查**：菜单栏可辨性、Dock 图标、200% 字体、窄窗首屏；
 2. **未定语义**：9/19 D-14（退出/重试关系）与 D-18（放弃退出）——认证 owner 决定后才补动作；
 3. **运行侧依赖**：模型解析与"排序不改默认"、允许列表限制（AI 领域 owner，§11）；Key ↔ 客户端关联数据（同上）；
-4. **未做前端项**：W5 的用途概要/编辑两段拆分；W4 的中性调色板收敛；`/network/overview` 目标路由；
+4. **未做前端项**：W4 的中性调色板收敛；`/network/overview` 目标路由；
 5. **Account 文档窗口**的 1040×760 与可缩放性（需宿主侧一起决定）。
 
 ## 结论

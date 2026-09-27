@@ -2,6 +2,16 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AiConfigLifecycleSnapshot } from '../../../api/ai-config';
 
+/** §7.4：概要默认展示，表单在「编辑」之后出现。 */
+async function openAssignmentsEditor(): Promise<void> {
+  const edit = screen.queryByRole('button', { name: '编辑' });
+  if (edit) {
+    fireEvent.click(edit);
+    await screen.findAllByTestId('model-assignment-row');
+  }
+}
+
+
 /**
  * The flow the product asks for: switching the embedding model must announce the
  * rebuild, wait for a second confirmation, and only then save and queue the
@@ -73,6 +83,7 @@ afterEach(() => {
 describe('embedding model switch flow', () => {
   it('announces the rebuild and waits for confirmation before saving anything', async () => {
     render(<ModelAssignmentsPanel />);
+      await openAssignmentsEditor();
 
     expect(screen.queryByText(/切换向量模型会重建索引/u)).toBeNull();
     fireEvent.change(embeddingSelect(), { target: { value: EMBEDDING_LARGE } });
@@ -98,6 +109,7 @@ describe('embedding model switch flow', () => {
 
   it('saves and queues the vector rebuild only after the confirmation', async () => {
     render(<ModelAssignmentsPanel />);
+      await openAssignmentsEditor();
     fireEvent.change(embeddingSelect(), { target: { value: EMBEDDING_LARGE } });
     fireEvent.click(saveButton());
 
@@ -113,16 +125,19 @@ describe('embedding model switch flow', () => {
 
   it('saves a chat-only change without asking about a rebuild', async () => {
     render(<ModelAssignmentsPanel />);
-    fireEvent.change(screen.getByLabelText('对话与通用文本 model'), { target: { value: CHAT } });
+      await openAssignmentsEditor();
+    // 清空对话模型也是"只改对话用途"：不得触发重建确认
+    fireEvent.change(screen.getByLabelText('对话与通用文本 model'), { target: { value: '' } });
     fireEvent.click(saveButton());
 
     expect(screen.queryByText(dialogTitle)).toBeNull();
     expect(saveAndRebuild).not.toHaveBeenCalled();
-    expect(save).toHaveBeenCalledWith({ models: expect.objectContaining({ chatModel: CHAT }) });
+    expect(save).toHaveBeenCalledWith({ models: expect.objectContaining({ chatModel: null }) });
   });
 
   it('asks for the same confirmation when the defaults clear the embedding model', async () => {
     render(<ModelAssignmentsPanel />);
+      await openAssignmentsEditor();
 
     fireEvent.click(screen.getByRole('button', { name: 'Restore defaults' }));
     expect(save).not.toHaveBeenCalled();
@@ -144,6 +159,7 @@ describe('embedding model switch flow', () => {
       recent: [{ id: 'job-1', target: 'vector', status: 'running', progress: 30, createdAt: '2026-09-19T00:00:00.000Z' }],
     } as unknown as AiConfigLifecycleSnapshot;
     render(<ModelAssignmentsPanel />);
+      await openAssignmentsEditor();
 
     expect(embeddingSelect().disabled).toBe(true);
     expect(screen.getByText(/索引重建进行中，完成后才能再次切换向量模型/u)).toBeTruthy();
@@ -162,8 +178,29 @@ describe('embedding model switch flow', () => {
       recent: [{ id: 'job-1', target: 'vector', status: 'succeeded', progress: 100, createdAt: '2026-09-19T00:00:00.000Z' }],
     } as unknown as AiConfigLifecycleSnapshot;
     render(<ModelAssignmentsPanel />);
+      await openAssignmentsEditor();
 
     expect(embeddingSelect().disabled).toBe(false);
     expect(screen.getByText(/索引重建完成 · 100%/u)).toBeTruthy();
   });
+});
+
+it('shows the purpose summary first and only opens the editor on request', async () => {
+  render(<ModelAssignmentsPanel />);
+
+  // §7.4：概要只放用途/当前模型/可用性三列
+  const summary = await screen.findByTestId('ai-purpose-summary');
+  expect(within(summary).getByText('用途')).toBeTruthy();
+  expect(within(summary).getByText('当前模型')).toBeTruthy();
+  expect(within(summary).getByText('可用性')).toBeTruthy();
+  const rows = within(summary).getAllByTestId('ai-purpose-row');
+  expect(rows).toHaveLength(6);
+  expect(rows[0]?.getAttribute('data-purpose')).toBe('chatModel');
+  // 角色名作为副文本保留
+  expect(within(summary).getAllByTestId('model-assignment-role')).toHaveLength(6);
+  // 概要里没有编辑控件
+  expect(screen.queryByLabelText('按意思搜索 model')).toBeNull();
+
+  await openAssignmentsEditor();
+  expect(screen.getAllByTestId('model-assignment-row')).toHaveLength(6);
 });
