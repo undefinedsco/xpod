@@ -95,6 +95,27 @@ export interface MatrixParticipantIdentityProvider {
  */
 
 /**
+ * What changed in a Pod since the last indexing pass, when the deployment can tell.
+ *
+ * `sync` reads every room because a row written straight into the Pod has no journal sequence
+ * until a read registers it, and a room's own watermark cannot say whether that happened. A
+ * deployment that watches the Pod's resources (Solid notifications) *can* say, and then only
+ * the rooms that changed have to be read. Absent means "cannot tell", and every room is read.
+ */
+export interface MatrixRoomChangeSource {
+  /**
+   * The rooms with a change to pick up. `trust: 'all'` means the source cannot account for
+   * everything (not watching, just started, dropped) and every room has to be read.
+   */
+  pending(input: { scope: string }): Promise<{ trust: 'all' | 'changed'; rooms: readonly string[] }>;
+  /**
+   * The pass has read those rooms. A source keeps reporting a change until this is called, so
+   * a change that arrives while a pass runs is not forgotten.
+   */
+  settle(input: { scope: string; rooms: readonly string[] }): Promise<void>;
+}
+
+/**
  * Where a locally written event goes so the other servers in the room learn about it.
  *
  * A port rather than the concrete queue: the store decides *what* the room's other servers
@@ -124,6 +145,13 @@ export interface PodMatrixStoreOptions {
   participantIdentity?: MatrixParticipantIdentityProvider;
   /** Queues a written event for the other servers in the room; absent means local only. */
   outbound?: MatrixFederationOutbox;
+  /** Tells `sync` which rooms changed; absent means every room is read every pass. */
+  roomChanges?: MatrixRoomChangeSource;
+  /**
+   * How often every room is read anyway, so a change the source missed is picked up. Defaults
+   * to five minutes; `0` makes every pass a full one, i.e. the source is never trusted.
+   */
+  roomChangeFullPassMs?: number;
 }
 
 type Db = any;
@@ -188,6 +216,11 @@ export class PodMatrixStore {
   private readonly identities?: MatrixSigningIdentitySource;
   private readonly participantIdentity?: MatrixParticipantIdentityProvider;
   private readonly outbound?: MatrixFederationOutbox;
+  private readonly roomChanges?: MatrixRoomChangeSource;
+  private readonly roomChangeFullPassMs: number;
+  /** The watermark the last pass indexed: a caller at or above it is caught up. */
+  private readonly indexedAt = new Map<string, number>();
+  private readonly lastFullPassAt = new Map<string, number>();
   private readonly stateCache = new Map<string, MatrixRoomStateReplay>();
   private readonly stateCacheLimit: number;
   private readonly logger = getLoggerFor(this);
@@ -201,6 +234,8 @@ export class PodMatrixStore {
     this.identities = options.identities;
     this.participantIdentity = options.participantIdentity;
     this.outbound = options.outbound;
+    this.roomChanges = options.roomChanges;
+    this.roomChangeFullPassMs = options.roomChangeFullPassMs ?? 5 * 60 * 1000;
     this.stateCacheLimit = options.stateCacheLimit ?? STATE_CACHE_LIMIT;
     if (!Number.isSafeInteger(this.stateCacheLimit) || this.stateCacheLimit < 0) {
       throw new MatrixError(500, 'M_UNKNOWN', 'stateCacheLimit must be a non-negative integer');
@@ -533,33 +568,80 @@ export class PodMatrixStore {
 
   public async sync(context: MatrixStoreContext, options: { since?: string; limit?: number; timeout?: number; signal?: AbortSignal } = {}): Promise<MatrixSyncResponse> {
     const deadline = Date.now() + Math.min(Math.max(options.timeout ?? 0, 0), 30_000);
+    const scope = this.scope(context);
+    const read = new Set<string>();
+    const since = this.parseSyncToken(options.since);
+    const decide = async (): Promise<readonly string[] | undefined> => {
+      if (!this.roomChanges) return undefined;
+      // A change source speaks for changes since the last pass, which only helps a caller that
+      // already has what that pass indexed. A caller that is behind needs its rooms' events.
+      const indexed = this.indexedAt.get(scope);
+      if (indexed === undefined || since < indexed) {
+        // The caller is behind (or has never synced), so every room is read.
+        this.lastFullPassAt.set(scope, Date.now());
+        return undefined;
+      }
+      // The safety net: a source can miss a change (a dropped socket, a restart), so every
+      // room is read again eventually whatever the source says. A source that has never been
+      // trusted yet starts its clock with this pass.
+      const lastFull = this.lastFullPassAt.get(scope);
+      if (lastFull === undefined) {
+        this.lastFullPassAt.set(scope, Date.now());
+        return undefined;
+      }
+      if (Date.now() - lastFull >= this.roomChangeFullPassMs) {
+        this.lastFullPassAt.set(scope, Date.now());
+        return undefined;
+      }
+      const pending = await this.roomChanges.pending({ scope });
+      // A source that cannot account for everything sends the pass back to reading every room.
+      if (pending.trust === 'all') return undefined;
+      for (const roomId of pending.rooms) read.add(roomId);
+      return pending.rooms;
+    };
+
     // The first pass is what indexes rows written straight into the Pod: a native write has
     // no journal sequence until a read registers it, and the snapshot taken *before* that
     // read cannot include the sequences it just assigned — which is why this pass always
-    // reads and its result is deliberately discarded.
-    await this.syncOnce(context, options);
-    let result = await this.syncOnce(context, options);
+    // reads and its result is deliberately discarded. A change source can say which rooms
+    // that could concern, and then only those are read.
+    let rooms = await decide();
+    await this.syncOnce(context, options, { rooms });
+    let result = await this.syncOnce(context, options, { rooms });
     while (!hasSyncNews(result) && !options.signal?.aborted && Date.now() < deadline) {
       await new Promise<void>((resolve) => {
         const done = (): void => { clearTimeout(timer); options.signal?.removeEventListener('abort', done); resolve(); };
         const timer = setTimeout(done, Math.min(500, Math.max(0, deadline - Date.now())));
         options.signal?.addEventListener('abort', done, { once: true });
       });
+      // Ask again: a change that arrived while we waited is the news the caller is waiting for.
+      rooms = await decide();
       // Everything the Pod holds has been indexed above, so an unchanged scope watermark
       // means no room can have anything new and the per-room reads can be skipped.
-      result = await this.syncOnce(context, options, { indexed: true });
+      result = await this.syncOnce(context, options, { indexed: true, rooms });
     }
+    // Only now are the rooms we read allowed to leave the source: a change that arrived
+    // during this call has to survive for the next one.
+    await this.roomChanges?.settle({ scope, rooms: [ ...read ] });
     return result;
   }
 
   private async syncOnce(
     context: MatrixStoreContext,
     options: { since?: string; limit?: number },
-    state: { indexed?: boolean } = {},
+    state: { indexed?: boolean; rooms?: readonly string[] } = {},
   ): Promise<MatrixSyncResponse> {
     const db = await this.getDb(context);
     const since = this.parseSyncToken(options.since);
     const snapshot = await this.journal.getHighWatermark(this.scope(context));
+    // `state.rooms` is the caller's decision, already made against what the last pass indexed:
+    // an empty list means nothing changed anywhere, and a list means only those rooms can hold
+    // anything the caller does not have.
+    const restricted = state.rooms;
+    if (restricted && restricted.length === 0) {
+      // Nothing changed anywhere, so no room needs reading at all.
+      return { next_batch: this.encodeSyncToken(since), rooms: { join: {}, invite: {}, leave: {} } };
+    }
     // Every event that could be reported has a sequence at or below the watermark, and
     // everything above `since` has already been read and indexed by an earlier pass.
     if (state.indexed && since >= snapshot) {
@@ -570,7 +652,10 @@ export class PodMatrixStore {
     const invite: NonNullable<MatrixSyncResponse['rooms']['invite']> = {};
     const leave: NonNullable<MatrixSyncResponse['rooms']['leave']> = {};
     const batches: Array<{room: MatrixRoomRecord; events: MatrixEventRecord[]}> = [];
-    for (const room of await this.listRooms(db)) {
+    const roomsToRead = restricted === undefined
+      ? await this.listRooms(db)
+      : (await this.listRooms(db)).filter(room => restricted.includes(room.roomId));
+    for (const room of roomsToRead) {
       const events = (await this.listEvents(db, room.roomId, context)).filter(e=>e.depth! <= snapshot);
       const membership = this.resolvedState(room.roomId, context, events).get('m.room.member', this.getMatrixUserId(context));
       if (membership?.content.membership === 'invite') {
@@ -603,6 +688,9 @@ export class PodMatrixStore {
           ...(page.length ? {prev_batch: this.encodeSyncToken((page[0].depth ?? 1) - 1)} : {})},
         'co.undefineds.coordination': {reconcilerOwner: room.reconcilerOwner}};
     }
+    // The pass has indexed everything the Pod held at this watermark, so a caller at or above
+    // it is caught up and the change source can be trusted for the next one.
+    this.indexedAt.set(this.scope(context), snapshot);
     const transitionPositions = [...Object.values(invite).flatMap(r=>r.invite_state.events), ...Object.values(leave).flatMap(r=>r.timeline.events)];
     // When a joined timeline has backlog, do not advance past its last delivered event.
     const next = selected.length ? selected[selected.length-1].depth! : since;

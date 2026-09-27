@@ -9,6 +9,10 @@ export function matrixHarness(
     participantIdentity?: import('../../src/api/matrix/PodMatrixStore').MatrixParticipantIdentityProvider;
     /** Queues written events for other servers in the room. */
     outbound?: import('../../src/api/matrix/PodMatrixStore').MatrixFederationOutbox;
+    /** Tells `sync` which rooms changed, standing in for a notification subscription. */
+    roomChanges?: import('../../src/api/matrix/PodMatrixStore').MatrixRoomChangeSource;
+    /** How often every room is read anyway, so a missed change is still picked up. */
+    roomChangeFullPassMs?: number;
   },
 ) {
   const rows = new Map<any, any[]>();
@@ -38,6 +42,8 @@ export function matrixHarness(
     serverName: 'example.test',
     ...(options?.participantIdentity ? { participantIdentity: options.participantIdentity } : {}),
     ...(options?.outbound ? { outbound: options.outbound } : {}),
+    ...(options?.roomChanges ? { roomChanges: options.roomChanges } : {}),
+    ...(options?.roomChangeFullPassMs === undefined ? {} : { roomChangeFullPassMs: options.roomChangeFullPassMs }),
     ...(options?.identities
       ? { identities: options.identities }
       : options?.serviceIdentity
