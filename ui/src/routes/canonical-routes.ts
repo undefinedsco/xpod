@@ -19,21 +19,36 @@ export const canonicalRoutes = {
   settings: '/settings/pod',
 } as const;
 
+/**
+ * §3.3 的历史入口映射。兼容期从采用本 spec 的稳定版起保留至少两个稳定版且不少于 90 天。
+ *
+ * 两点与 §3.3 的差异是当前实现的现实，不是口径变化：
+ * - `/network/overview`、`/network/domain-dns` 是本轮目标路径，尚未建立，先落 `/network`；
+ * - `/status/usage/*` 目前没有页面，`/dashboard/usage` 先落概览，待 W4 建立用量页后改回
+ *   `/status/usage/overview`。
+ * 记录见 docs/superpowers/audits/2026-09-27-w2-shell-layout-self-review.md（W2-DESIGN-04）。
+ */
 export const legacyProductRedirects: Readonly<Record<string, string>> = {
   '/dashboard': canonicalRoutes.status,
   [LEGACY_DEFAULT_RETURN_PATH]: canonicalRoutes.status,
+  '/dashboard/status': canonicalRoutes.status,
+  '/dashboard/runtime': canonicalRoutes.status,
+  '/dashboard/logs': '/status/logs',
+  '/dashboard/rdf': '/status/index/rdf',
   '/dashboard/network': canonicalRoutes.network,
+  '/dashboard/usage': canonicalRoutes.status,
   '/dashboard/models': canonicalRoutes.aiConnections,
   '/dashboard/pod': canonicalRoutes.settings,
-  '/dashboard/services': canonicalRoutes.status,
-  '/dashboard/settings': canonicalRoutes.settings,
+  // §3.3：服务与启动归「服务与访问」，不再落 Pod 页面
+  '/dashboard/services': '/settings/runtime',
+  '/dashboard/settings': '/settings/runtime',
   '/settings/models': canonicalRoutes.aiConnections,
   '/settings/ai-connections': canonicalRoutes.aiConnections,
   '/settings/ai-config': canonicalRoutes.aiConfig,
   '/settings/pod': canonicalRoutes.settings,
   '/settings/network': canonicalRoutes.network,
-  '/settings/services': canonicalRoutes.status,
-  '/settings/system': canonicalRoutes.settings,
+  '/settings/services': '/settings/runtime',
+  '/settings/system': '/settings/runtime',
 } as const;
 
 export type ProductSurface = {

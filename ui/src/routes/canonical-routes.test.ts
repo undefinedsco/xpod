@@ -39,7 +39,25 @@ describe('canonical product routes', () => {
     expect(legacyProductRedirects['/settings/models']).toBe('/ai-connections');
     expect(legacyProductRedirects['/settings/ai-connections']).toBe('/ai-connections');
     expect(legacyProductRedirects['/settings/ai-config']).toBe('/ai-config/model-assignments');
-    expect(legacyProductRedirects['/settings/system']).toBe('/settings/pod');
+    expect(legacyProductRedirects['/settings/system']).toBe('/settings/runtime');
+  });
+
+  it('covers every §3.3 row whose target page exists today', () => {
+    // spec §3.3 的表：设置类入口归「服务与访问」，日志与索引诊断各有自己的目标
+    expect(legacyProductRedirects['/dashboard/status']).toBe('/status/overview');
+    expect(legacyProductRedirects['/dashboard/runtime']).toBe('/status/overview');
+    expect(legacyProductRedirects['/dashboard/logs']).toBe('/status/logs');
+    expect(legacyProductRedirects['/dashboard/rdf']).toBe('/status/index/rdf');
+    expect(legacyProductRedirects['/dashboard/services']).toBe('/settings/runtime');
+    expect(legacyProductRedirects['/dashboard/settings']).toBe('/settings/runtime');
+    expect(legacyProductRedirects['/settings/services']).toBe('/settings/runtime');
+  });
+
+  it('sends every legacy target to a route family the shell actually owns', () => {
+    const roots = ['/status', '/network', '/settings', '/ai-connections', '/ai-config'];
+    for (const [from, to] of Object.entries(legacyProductRedirects)) {
+      expect(roots.some((root) => to === root || to.startsWith(`${root}/`)), `${from} -> ${to}`).toBe(true);
+    }
   });
 
   it('selects the correct SPA surface from the canonical pathname', () => {

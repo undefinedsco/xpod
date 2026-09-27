@@ -28,7 +28,7 @@ export function ProductNavLinks({ items, label }: { items: readonly NavigationLi
   const location = useLocation();
   const currentPathname = location.pathname;
   return (
-    <nav aria-label={label} className="flex flex-row items-center gap-3 sm:flex-col sm:gap-4">
+    <nav aria-label={label} className="flex flex-row items-center gap-3 md:w-full md:flex-col md:items-stretch md:gap-1">
       {items.map((item) => {
         const Icon = item.icon;
         const href = item.href ?? item.path ?? '/';
@@ -46,8 +46,8 @@ export function ProductNavLinks({ items, label }: { items: readonly NavigationLi
             onKeyDown={handleListNavigationKeyDown}
             className={clsx(getRailNavItemClass(active), 'text-sm')}
           >
-            <Icon className="h-6 w-6" aria-hidden="true" />
-            <span className="sr-only">{item.label}</span>
+            <Icon className="h-5 w-5 shrink-0" aria-hidden="true" />
+            <span className="truncate md:inline">{item.label}</span>
           </Link>
         );
       })}
@@ -62,11 +62,11 @@ export function XpodProductLayout({ product }: XpodProductLayoutProps) {
     <AppLayout
       className={`xpod-${product}-shell`}
       navigation={
-        <div className="flex h-full w-full flex-row items-center px-2 sm:min-h-full sm:flex-col sm:px-0 sm:py-4" data-list-navigation>
-          <div className="mr-1 shrink-0 sm:mr-0 sm:ml-2 sm:mb-2">
+        <div className="flex h-full w-full flex-row items-center px-2 md:min-h-full md:flex-col md:px-0 md:py-4" data-list-navigation>
+          <div className="mr-1 shrink-0 md:mb-2 md:ml-2 md:mr-0">
             <XpodUserCard />
           </div>
-          <div className="flex min-w-0 flex-1 flex-row items-center justify-center sm:mt-5 sm:flex-none sm:flex-col sm:justify-start">
+          <div className="flex min-w-0 flex-1 flex-row items-center justify-center md:mt-5 md:w-full md:flex-none md:flex-col md:justify-start">
             <ProductNavLinks items={navigationItems} label="Xpod workspaces" />
           </div>
         </div>

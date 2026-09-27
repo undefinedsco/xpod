@@ -57,7 +57,7 @@ describe('settings navigation metadata', () => {
 });
 
 describe('XpodSettingsLayout', () => {
-  test('renders an icon-only Linx-sized host rail without a global settings header', () => {
+  test('renders the 184px text rail without a global settings header', () => {
     const html = renderLayout('/models');
 
     expect(html).toContain('data-app-layout="workspace"');
