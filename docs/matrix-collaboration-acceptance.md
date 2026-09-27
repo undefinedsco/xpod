@@ -203,6 +203,9 @@ HTTP 跳转；**唯一的测试替身是"缺依赖事件如何送到对端"**—
 落地（`/send`、读取端点、握手、查询、版本）；"部署写目标 Pod 用的服务授权"也已落地为 `service` 上下文（参与者任务层
 grant，缺 grant 即 403 点名 Pod），**仍未做**的是 grant 的**签发流程**（索取时机与界面）。
 
+**密钥闭环（已取得证据）**：Bob 的部署向 Alice 的部署**真的请求** `/_matrix/key/v2/server`（携带 `Host: alice.example`），
+用取回的密钥验过 Alice 签名的事件；不发布的名字取不到密钥（而不是别人的密钥）。
+
 **读取端点的端到端闭环（已取得证据）**：`twoDeployment.test.ts` 新增一项——Bob 加入后向 Alice 的部署经 HTTP 问
 `/state`、`/state_ids`、`/backfill`、`/get_missing_events`、`/event_auth`，逐条与 Alice 真实持有的行核对（含"状态里没有
 Bob 的 join，因为两条消息写在它加入之前"这条语义），并断言五条请求都真的发生过。

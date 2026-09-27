@@ -1161,3 +1161,8 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   显形的，这一批路径本来就是对的）。
   - **顺带**：把"取一个以某 origin 签名的客户端"收成一个公开方法 `sender.clientFor(origin)`（此前叫
     `membershipClientFor` 且只暴露握手两半）——需要目录查询、状态读取、缺失事件的调用方要的是同一个东西。
+- **已落地（证据，2026-09-27）**：**密钥发布与获取的闭环经 HTTP 走通**（`twoDeployment.test.ts` 新增一项）。
+  此前两个部署之间是**注入**密钥（`keySourceFor`），从不真的去取；这一项让 Bob 的部署用 `MatrixServerKeyFetcher`
+  （配 `createNodeFederationFetch` 以携带 `Host`）**向 Alice 的部署请求 `/_matrix/key/v2/server`**，用取回的密钥
+  `validateInboundPdu` 验过 Alice 签名的消息（`outcome: accepted`、`eventId` 一致），并断言**本部署不发布的名字取不到
+  密钥**（`undefined`，而不是别人的密钥）。这条正好把第 42 轮那个修复（按被寻址名字发布）钉在真实链路上。

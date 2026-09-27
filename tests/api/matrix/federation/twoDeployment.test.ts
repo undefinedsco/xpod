@@ -5,6 +5,10 @@ import { ApiServer } from '../../../../src/api/ApiServer';
 import { AuthMiddleware } from '../../../../src/api/middleware/AuthMiddleware';
 import { registerFederationRoutes } from '../../../../src/api/handlers/FederationHandler';
 import { createParticipantRoutes } from '../../../../src/api/matrix/participantRoutes';
+import { registerMatrixRoutes } from '../../../../src/api/handlers/MatrixHandler';
+import { MatrixServerKeyFetcher } from '../../../../src/api/matrix/federation/serverKeys';
+import { createNodeFederationFetch } from '../../../../src/api/matrix/federation/federationFetch';
+import { validateInboundPdu } from '../../../../src/api/matrix/federation/inboundPdu';
 import { messageResource } from '@undefineds.co/models';
 import { matrixHarness } from '../../../helpers/MatrixMemoryDatabase';
 import { matrixSigningIdentityRegistry } from '../../../../src/api/matrix/identityRegistry';
@@ -683,6 +687,13 @@ async function serveFederation(input: {
     }),
   });
   const { context, store, sender, transactions } = input.deployment;
+  // The client-facing Matrix routes too, so a peer can fetch this deployment's published keys the
+  // way a real one does — by asking for a server name and getting the keys for that name.
+  registerMatrixRoutes(server, {
+    store,
+    serviceIdentity: input.deployment.identities[0],
+    identities: input.deployment.registry,
+  });
   registerFederationRoutes(server, {
     // The real derivation, over a registry holding exactly this participant's Pod.
     routes: createParticipantRoutes({
@@ -733,6 +744,8 @@ async function httpPair(options: { federationJoin?: boolean } = {}) {
   endpointB = servedB.endpoint();
   return {
     a, b, requestsToA, requestsToB,
+    portA: served.endpoint().port,
+    portB: servedB.endpoint().port,
     async stop() {
       await served.server.stop();
       await servedB.server.stop();
@@ -819,6 +832,51 @@ describe('two deployments federating over real HTTP', () => {
       const sent = await a.store.sendEvent(room.roomId, 'm.room.message', 'txn-after-join', { body: 'after the handshake' }, a.context);
       expect(await a.outbox.flush({ scope: a.context.podUrl! })).toMatchObject({ rejected: [], abandoned: [] });
       expect(findPdu(b.rows, 'm.room.message').event_id).toBe(sent.eventId);
+    } finally {
+      await stop();
+    }
+  }, 180_000);
+
+  it('verifies a peer\'s event with the keys that peer publishes for its own name', async () => {
+    const { a, b, portA, stop } = await httpPair();
+    try {
+      const alice = (await a.store.getAccount(a.context)).userId;
+      const room = await a.store.createRoom({ visibility: 'public' }, a.context);
+      const message = await a.store.sendEvent(room.roomId, 'm.room.message', 'txn-keys', { body: 'signed by alice' }, a.context);
+      const create = findPdu(a.rows, 'm.room.create');
+      const aliceJoin = findMembership(a.rows, alice, 'join');
+      const pdu = findPdu(a.rows, 'm.room.message');
+
+      // Bob's deployment fetches the keys of the *server name* it is verifying — over a socket, from
+      // the route that publishes them — instead of being handed a key set.
+      const fetcher = new MatrixServerKeyFetcher({
+        fetch: globalThis.fetch,
+        fetchTarget: createNodeFederationFetch(),
+        resolveKeyEndpoint: () => `http://127.0.0.1:${portA}/_matrix/key/v2/server`,
+      });
+      const keys = await fetcher.keysFor('alice.example');
+      expect(keys?.verifyKeys['ed25519:1']).toBeDefined();
+
+      const asAuth = (event: Record<string, unknown>) => ({
+        event_id: String(event.event_id),
+        type: String(event.type),
+        sender: String(event.sender),
+        room_id: String(event.room_id),
+        content: event.content as Record<string, unknown>,
+        ...(event.state_key === undefined ? {} : { state_key: String(event.state_key) }),
+      });
+      const verified = await validateInboundPdu(pdu, {
+        keys: fetcher,
+        authEvents: [ asAuth(create), asAuth(aliceJoin) ],
+        now: () => Date.now(),
+      });
+      expect(verified.outcome).toBe('accepted');
+      expect(verified.eventId).toBe(message.eventId);
+
+      // A name this deployment publishes nothing for is "no keys", not somebody else's keys.
+      const stranger = await fetcher.keysFor('bob.example');
+      expect(stranger).toBeUndefined();
+      expect(b.store).toBeDefined();
     } finally {
       await stop();
     }
