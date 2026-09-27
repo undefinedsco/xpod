@@ -29,6 +29,7 @@ import { buildXMatrixAuthorization, type XMatrixSigner } from './requestAuth';
 import { checkMembershipTemplate, type MembershipKind } from './membershipHandshake';
 import { computeEventId } from '../protocol/eventIntegrity';
 import { SUPPORTED_ROOM_VERSION } from '../protocol/authRules';
+import type { FederationFetchTarget } from './federationFetch';
 import type { MatrixResolvedServer } from './serverNameResolution';
 
 /** The specification's per-transaction limits. */
@@ -126,6 +127,11 @@ export interface MatrixFederationClientOptions {
   /** Where a destination server name is reached, and under which `Host`. */
   resolve: (serverName: string) => Promise<MatrixResolvedServer | undefined>;
   fetch: typeof fetch;
+  /**
+   * A transport that can present the server name a delegated endpoint must prove (SNI and `Host`).
+   * Absent means `fetch`, which is fine for a deployment whose peers are reached at their own name.
+   */
+  fetchTarget?: FederationFetchTarget;
   now?: () => number;
 }
 
@@ -171,6 +177,7 @@ export class MatrixFederationClient {
   private readonly identity: XMatrixSigner & { serverName: string };
   private readonly resolve: (serverName: string) => Promise<MatrixResolvedServer | undefined>;
   private readonly fetch: typeof fetch;
+  private readonly fetchTarget?: FederationFetchTarget;
   private readonly now: () => number;
   private readonly random: () => number;
 
@@ -178,6 +185,7 @@ export class MatrixFederationClient {
     this.identity = options.identity;
     this.resolve = options.resolve;
     this.fetch = options.fetch;
+    this.fetchTarget = options.fetchTarget;
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
   }
@@ -608,16 +616,22 @@ export class MatrixFederationClient {
       ...(request.content === undefined ? {} : { content: request.content }),
     }, this.identity);
 
+    const url = `${target.baseUrl}${request.uri}`;
+    const init: RequestInit = {
+      method: request.method,
+      headers: {
+        ...(request.content === undefined ? {} : { 'content-type': 'application/json' }),
+        authorization,
+      },
+      ...(request.content === undefined ? {} : { body: JSON.stringify(request.content) }),
+    };
     let response: Response;
     try {
-      response = await this.fetch(`${target.baseUrl}${request.uri}`, {
-        method: request.method,
-        headers: {
-          ...(request.content === undefined ? {} : { 'content-type': 'application/json' }),
-          authorization,
-        },
-        ...(request.content === undefined ? {} : { body: JSON.stringify(request.content) }),
-      });
+      // A resolved target carries both the address and the name it must prove; only a transport
+      // that can set both is able to present them, which is what delegation requires.
+      response = this.fetchTarget
+        ? await this.fetchTarget({ url, init, target })
+        : await this.fetch(url, init);
     } catch (error) {
       // Unreachable is "the peer has not decided", never "the peer refused".
       return { status: 'retry', reason: `could not reach ${request.destination}: ${describeError(error)}` };

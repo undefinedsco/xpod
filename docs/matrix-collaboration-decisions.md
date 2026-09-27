@@ -534,9 +534,10 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   限流把我们无限期挂住。测试 `tests/api/matrix/federation/outboundTransaction.test.ts` 16 项，含
   **收发闭环**：我们发出的请求直接交给 `authenticateXMatrixRequest` 用本部署公钥验签通过，包括
   txnId 含 `/` 与空格时路径编码与签名仍然一致。
-  已知传输层缺口（未做，不是遗漏）：`.well-known`/SRV 委派时规范要求 TLS 证书覆盖**原 server name**、
-  `Host` 也是原 server name，而 `fetch` 既不能改 SNI 也（在多数运行时）不能改 `Host`；解析结果已经
-  同时给出 `baseUrl` 与 `hostHeader`，接一块能设 SNI/Host 的 dispatcher 是后续传输层工作。
+  已知传输层缺口（**2026-09-27 已补**）：`.well-known`/SRV 委派时规范要求 TLS 证书覆盖**原 server name**、`Host`
+  也是原 server name，而 `fetch` 既不能改 SNI 也（在多数运行时）不能改 `Host`。现在由
+  `federation/federationFetch.ts` 承担：连接地址与 server name 分离、SNI/`Host` 取 server name，出站投递与密钥
+  获取共用同一个实例（见下文该条）。**仍未证**：与真实委派对端的一次真实 TLS 握手（需要真实证书/CA）。
 - **已落地**（2026-09-27）：**出站队列**（`federation/outboundQueue.ts`）。客户端知道"一次事务怎么发、
   什么时候值得重试"，队列决定"发什么、按什么顺序"——规范的另一条硬规则在这里：**必须等一个事务拿到
   200 才能换 `txnId`**，所以**每个 (origin, destination) 对是一条严格有序的队列**：队首未送达就绝不
@@ -1005,6 +1006,20 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   测试：`inboundTransaction.test.ts` 新增 3 项（写失败后释放并可重试、已完成的重放仍不重复处理、记录响应本身失败也
   释放、真正在处理中的并发重放仍回 503），`FederationHandler.test.ts` 新增 1 项（Pod 无授权时 HTTP 回 403
   `M_FORBIDDEN` 并带上"哪个 Pod"的原因，而不是 500）。
+- **已落地**（2026-09-27）：**能证明"被寻址 server name"的传输层**（`federation/federationFetch.ts`；容器里是
+  `matrixFederationFetch`，出站投递与密钥获取**共用同一个实例**）。
+  - **补上的是登记册里一直挂着的那条传输缺口**：`.well-known`/SRV 委派之后端点在别的 host:port，而规范要求**连接
+    证明的是 server name**（证书覆盖它、`Host` 带它），否则被委派的 host 就能替一个它并不拥有的名字作答。`fetch`
+    两样都做不到：两者都从 URL 推导，且 fetch 规范禁止设置 `Host`。
+  - **做法**：先把请求算成值（`federationRequestOptions`）——连接地址取解析结果（hostname/port），**SNI 与 `Host`
+    取 server name**（SNI 只取 host，端口只出现在 `Host` 里，因为 SNI 没有端口概念）——再由 `node:http(s)` 的薄适配
+    器发出。非 2xx **返回 Response 而不是抛错**（"对端拒绝"必须与"对端不可达"区分开，这正是调用方分类的依据），
+    只有传输失败才抛。
+  - **接线**：`MatrixFederationClient` / `MatrixOutboundSender` / `MatrixServerKeyFetcher` 都接受可选的
+    `fetchTarget`，容器给的是同一个实例；不传就退回 `fetch`（对端就在自己名字上的部署不需要它）。
+  测试：`federationFetch.test.ts` 5 项（连接地址与 server name 分离、带端口的 server name 只把端口放进 `Host`、
+  非 HTTP(S) 直接拒绝、真实回环往返且**对端看到的 `Host` 就是 server name**、403 作为 Response 返回而端口无人监听
+  时抛错）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

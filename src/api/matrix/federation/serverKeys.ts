@@ -23,6 +23,7 @@
  */
 import { decodeVerifyKey, redactEvent, verifyJson } from '../protocol/eventIntegrity';
 import { isMatrixServerName } from '../protocol/serverName';
+import type { FederationFetchTarget } from './federationFetch';
 
 /** Servers must use the lesser of the published validity and seven days. */
 export const MAX_SERVER_KEY_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
@@ -53,6 +54,11 @@ export interface MatrixServerKeyFetcherOptions {
    * delegation; it may answer asynchronously, because discovery is a request of its own.
    */
   resolveKeyEndpoint?: (serverName: string) => string | Promise<string>;
+  /**
+   * A transport that can present the server name a delegated key endpoint must prove (SNI and
+   * `Host`). Absent means `fetch`, which is fine when a peer's keys are served at its own name.
+   */
+  fetchTarget?: FederationFetchTarget;
 }
 
 /**
@@ -69,6 +75,7 @@ export class MatrixServerKeyFetcher implements MatrixServerKeySource {
   private readonly now: () => number;
   private readonly maxValidityMs: number;
   private readonly resolveKeyEndpoint: (serverName: string) => string | Promise<string>;
+  private readonly fetchTarget?: FederationFetchTarget;
 
   public constructor(options: MatrixServerKeyFetcherOptions) {
     this.fetch = options.fetch;
@@ -76,6 +83,7 @@ export class MatrixServerKeyFetcher implements MatrixServerKeySource {
     this.maxValidityMs = options.maxValidityMs ?? MAX_SERVER_KEY_VALIDITY_MS;
     const endpoint = options.resolveKeyEndpoint;
     this.resolveKeyEndpoint = endpoint ?? ((serverName: string) => `https://${serverName}/_matrix/key/v2/server`);
+    this.fetchTarget = options.fetchTarget;
   }
 
   /** The keys to verify `serverName`'s signatures with, or `undefined` when unavailable. */
@@ -99,9 +107,15 @@ export class MatrixServerKeyFetcher implements MatrixServerKeySource {
     // origin) and is pasted into a URL here, so refuse anything that is not host[:port]
     // before it can steer the request at another host or path.
     if (!isMatrixServerName(serverName)) return undefined;
+    const url = await this.resolveKeyEndpoint(serverName);
+    const init: RequestInit = { headers: { accept: 'application/json' } };
     let response: Response;
     try {
-      response = await this.fetch(await this.resolveKeyEndpoint(serverName), { headers: { accept: 'application/json' } });
+      // A key endpoint that was delegated lives at another address, but the keys it hands back must
+      // still be for the name being asked about — so the name is what the connection presents.
+      response = this.fetchTarget
+        ? await this.fetchTarget({ url, init, target: { baseUrl: url, hostHeader: serverName } })
+        : await this.fetch(url, init);
     } catch {
       // Unreachable keys are "cannot verify", not "verified": the caller rejects.
       return undefined;

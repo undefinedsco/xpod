@@ -20,6 +20,7 @@ import {
   type MatrixDeliveryPolicy,
 } from './outboundTransaction';
 import type { MatrixSigningIdentitySource } from '../identityRegistry';
+import type { FederationFetchTarget } from './federationFetch';
 import type { MatrixResolvedServer } from './serverNameResolution';
 
 export interface MatrixOutboundSenderOptions {
@@ -27,6 +28,8 @@ export interface MatrixOutboundSenderOptions {
   identities: MatrixSigningIdentitySource;
   resolve: (serverName: string) => Promise<MatrixResolvedServer | undefined>;
   fetch: typeof fetch;
+  /** Transport that can present a delegated server name; see `federationFetch.ts`. */
+  fetchTarget?: FederationFetchTarget;
   now?: () => number;
   random?: () => number;
   /** How hard one attempt tries before the transaction is handed back to the queue. */
@@ -115,6 +118,7 @@ export class MatrixOutboundSender {
       identity,
       resolve: this.options.resolve,
       fetch: this.options.fetch,
+      ...(this.options.fetchTarget === undefined ? {} : { fetchTarget: this.options.fetchTarget }),
       ...(this.options.now === undefined ? {} : { now: this.options.now }),
       ...(this.options.random === undefined ? {} : { random: this.options.random }),
     });

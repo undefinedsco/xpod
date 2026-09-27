@@ -103,6 +103,7 @@ import { createParticipantRoutes } from '../matrix/participantRoutes';
 import { MatrixServerKeyFetcher } from '../matrix/federation/serverKeys';
 import { InMemoryMatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
 import { MatrixServerNameResolver } from '../matrix/federation/serverNameResolution';
+import { createNodeFederationFetch } from '../matrix/federation/federationFetch';
 import { createMatrixRoomWatchService } from '../matrix/notifications/roomWatchService';
 import { MatrixRoomChangeTracker } from '../matrix/notifications/roomChangeTracker';
 import type { NotificationSocket } from '../matrix/notifications/roomChangeSubscription';
@@ -729,6 +730,10 @@ export function registerCommonServices(
     // Where a server name is reached: `.well-known` is preferred, SRV is the fallback the
     // specification still allows, and answers are cached. One resolver for the deployment, so
     // delivery and key fetching cannot disagree — or ask twice.
+    // Delegated endpoints are reached by address but must prove the server name; `fetch` can set
+    // neither SNI nor `Host`, so every federation request in production goes through this.
+    matrixFederationFetch: asFunction((_cradle: ApiContainerCradle) => createNodeFederationFetch()).singleton(),
+
     matrixServerNameResolver: asFunction((_cradle: ApiContainerCradle) => new MatrixServerNameResolver({
       fetch: globalThis.fetch,
       resolveSrv: async name => nodeSrvRecords(await dns.resolveSrv(name)),
@@ -736,8 +741,9 @@ export function registerCommonServices(
 
     // Verifying what peers send us: their published keys, fetched from a key endpoint that may
     // itself be delegated.
-    matrixServerKeyFetcher: asFunction(({ matrixServerNameResolver }: ApiContainerCradle) => new MatrixServerKeyFetcher({
+    matrixServerKeyFetcher: asFunction(({ matrixServerNameResolver, matrixFederationFetch }: ApiContainerCradle) => new MatrixServerKeyFetcher({
       fetch: globalThis.fetch,
+      fetchTarget: matrixFederationFetch,
       resolveKeyEndpoint: async serverName => {
         const target = await matrixServerNameResolver.resolve(serverName);
         return `${target?.baseUrl ?? `https://${serverName}`}/_matrix/key/v2/server`;
@@ -781,11 +787,12 @@ export function registerCommonServices(
     // The outbound path: where a server name is reached, which identity signs as the origin,
     // and what is still owed. Absent without an identity of our own: a queue whose every
     // batch would be abandoned is worse than no queue.
-    matrixOutboundDelivery: asFunction(({ config, matrixSigningIdentities, matrixServerNameResolver }: ApiContainerCradle) => {
+    matrixOutboundDelivery: asFunction(({ config, matrixSigningIdentities, matrixServerNameResolver, matrixFederationFetch }: ApiContainerCradle) => {
       if (!config.matrixServiceIdentity) return undefined;
       return createMatrixOutboundDelivery({
         identities: matrixSigningIdentities,
         fetch: globalThis.fetch,
+        fetchTarget: matrixFederationFetch,
         resolver: matrixServerNameResolver,
       });
     }).singleton(),

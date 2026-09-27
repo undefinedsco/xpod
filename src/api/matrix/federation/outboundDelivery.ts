@@ -14,6 +14,7 @@
 import { MatrixOutbox, InMemoryMatrixOutboundStore, type MatrixOutboxOptions } from './outboundQueue';
 import { MatrixOutboundSender } from './outboundSender';
 import { MatrixServerNameResolver, type MatrixSrvRecord } from './serverNameResolution';
+import type { FederationFetchTarget } from './federationFetch';
 import type { MatrixSigningIdentitySource } from '../identityRegistry';
 
 export interface MatrixOutboundDelivery {
@@ -25,6 +26,8 @@ export interface MatrixOutboundDelivery {
 export interface MatrixOutboundDeliveryOptions {
   identities: MatrixSigningIdentitySource;
   fetch: typeof fetch;
+  /** Transport that can present a delegated server name (SNI and `Host`); see `federationFetch.ts`. */
+  fetchTarget?: FederationFetchTarget;
   /**
    * A resolver the deployment already built. Sharing one keeps its cache warm across everything
    * that reaches a peer — delivery and key fetching resolve the same names — instead of each
@@ -50,6 +53,7 @@ export function createMatrixOutboundDelivery(options: MatrixOutboundDeliveryOpti
     identities: options.identities,
     resolve: async serverName => await resolver.resolve(serverName),
     fetch: options.fetch,
+    ...(options.fetchTarget === undefined ? {} : { fetchTarget: options.fetchTarget }),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.random === undefined ? {} : { random: options.random }),
   });

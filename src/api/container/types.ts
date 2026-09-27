@@ -330,6 +330,8 @@ export interface ApiContainerCradle {
   matrixParticipantRoutes: import('../matrix/participantRoutes').MatrixParticipantRoutes | undefined;
   /** Where a server name is reached (delegation and SRV, cached). */
   matrixServerNameResolver: import('../matrix/federation/serverNameResolution').MatrixServerNameResolver;
+  /** The transport federation requests are actually sent with (SNI and `Host` under delegation). */
+  matrixFederationFetch: import('../matrix/federation/federationFetch').FederationFetchTarget;
   /** Verifying what peers send us: their published keys. */
   matrixServerKeyFetcher: import('../matrix/federation/serverKeys').MatrixServerKeyFetcher;
   /** Watches the rooms of every served Pod, so an idle sync reads nothing. */
