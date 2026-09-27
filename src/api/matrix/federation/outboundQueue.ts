@@ -8,9 +8,11 @@
  * > the sending server must wait and retry for a 200 OK response before sending a
  * > transaction with a different `txnId` to the receiving server
  *
- * So a destination is a strictly ordered queue: while one transaction is undelivered,
- * nothing behind it is attempted (it would be a different txnId), and a destination that
- * is stuck does not hold up any other destination. A batch therefore owns its
+ * So a *(origin, destination)* pair is a strictly ordered queue: while one transaction is
+ * undelivered, nothing behind it is attempted (it would be a different txnId), and a queue
+ * that is stuck does not hold up any other. The origin is part of the pair because each
+ * participant is their own server and the peer's dedup key is (origin, txnId): two
+ * origins this deployment hosts are two independent senders. A batch therefore owns its
  * transaction id from the moment it is created until it is delivered or refused — the id
  * is the peer's dedup key, so re-minting one mid-flight is exactly the bug this prevents.
  *
@@ -31,6 +33,11 @@ import { MAX_EDUS_PER_TRANSACTION, MAX_PDUS_PER_TRANSACTION, type MatrixDelivery
 
 export interface MatrixOutboundBatch {
   txnId: string;
+  /**
+   * The server this transaction is sent *as*. Each participant is their own server, so a
+   * batch belongs to one origin, and the peer's dedup key is (origin, txnId).
+   */
+  origin: string;
   destination: string;
   pdus: unknown[];
   edus: unknown[];
@@ -43,7 +50,7 @@ export interface MatrixOutboundBatch {
 
 export interface MatrixOutboundStore {
   /** Batches still to send, oldest first. */
-  pending(scope: string, destination?: string): Promise<MatrixOutboundBatch[]>;
+  pending(scope: string, filter?: { origin?: string; destination?: string }): Promise<MatrixOutboundBatch[]>;
   /** Insert or replace one batch, keyed by transaction id. */
   put(scope: string, batch: MatrixOutboundBatch): Promise<void>;
   /** Drop a batch that has settled: delivered, or refused by the destination. */
@@ -65,7 +72,7 @@ export interface MatrixOutboxOptions {
    * which already spends a bounded number of retries with backoff; a batch that is still
    * undelivered after that stays queued here, so this queue absorbs longer outages.
    */
-  send(input: { destination: string; txnId: string; pdus: readonly unknown[]; edus?: readonly unknown[] }): Promise<MatrixDeliveryOutcome>;
+  send(input: { origin: string; destination: string; txnId: string; pdus: readonly unknown[]; edus?: readonly unknown[] }): Promise<MatrixDeliveryOutcome>;
   now?: () => number;
   /** Transaction ids are opaque; this is injectable so tests are deterministic. */
   newTransactionId?: () => string;
@@ -75,6 +82,8 @@ export interface MatrixOutboxOptions {
 
 export interface EnqueueInput {
   scope: string;
+  /** The server the PDUs are from; it signs the transaction. */
+  origin: string;
   destination: string;
   pdus?: readonly unknown[];
   edus?: readonly unknown[];
@@ -102,7 +111,7 @@ export class MatrixOutbox {
    * extended, so a caller can flush immediately instead of reading the queue back.
    */
   public async enqueue(input: EnqueueInput): Promise<MatrixOutboundBatch[]> {
-    const pending = await this.store.pending(input.scope, input.destination);
+    const pending = await this.store.pending(input.scope, { origin: input.origin, destination: input.destination });
     const queued = new Set(pending.flatMap(batch => batch.pdus.map(eventIdOf).filter((id): id is string => id !== undefined)));
     const pdus = [ ...(input.pdus ?? []) ];
     const edus = [ ...(input.edus ?? []) ];
@@ -129,6 +138,7 @@ export class MatrixOutbox {
     while (restPdus.length > 0 || restEdus.length > 0) {
       const batch: MatrixOutboundBatch = {
         txnId: this.newTransactionId(),
+        origin: input.origin,
         destination: input.destination,
         pdus: restPdus.slice(0, this.maxPdus),
         edus: restEdus.slice(0, this.maxEdus),
@@ -145,21 +155,29 @@ export class MatrixOutbox {
 
   /**
    * Try to send what is pending, oldest first, one transaction at a time per destination.
-   * A destination that defers stops there, exactly as the specification requires.
+   * A transaction that defers stops its own queue there, as the specification requires.
    */
-  public async flush(input: { scope: string; destination?: string }): Promise<MatrixOutboxReport> {
+  public async flush(input: { scope: string; origin?: string; destination?: string }): Promise<MatrixOutboxReport> {
     const report: MatrixOutboxReport = { delivered: [], rejected: [], deferred: [], blocked: [] };
-    const pending = await this.store.pending(input.scope, input.destination);
-    const byDestination = new Map<string, MatrixOutboundBatch[]>();
+    const pending = await this.store.pending(input.scope, {
+      ...(input.origin === undefined ? {} : { origin: input.origin }),
+      ...(input.destination === undefined ? {} : { destination: input.destination }),
+    });
+    // A transaction is a pair: the peer dedups on (origin, txnId), so two origins this
+    // deployment hosts are two independent queues even towards the same destination.
+    const byPair = new Map<string, MatrixOutboundBatch[]>();
     for (const batch of pending) {
-      const list = byDestination.get(batch.destination);
+      const key = `${batch.origin}\u0000${batch.destination}`;
+      const list = byPair.get(key);
       if (list) list.push(batch);
-      else byDestination.set(batch.destination, [ batch ]);
+      else byPair.set(key, [ batch ]);
     }
 
-    for (const [ destination, batches ] of byDestination) {
+    for (const batches of byPair.values()) {
+      const { origin, destination } = batches[0];
       for (const [ index, batch ] of batches.entries()) {
         const outcome = await this.send({
+          origin,
           destination,
           txnId: batch.txnId,
           pdus: batch.pdus,
@@ -204,10 +222,11 @@ function eventIdOf(pdu: unknown): string | undefined {
 export class InMemoryMatrixOutboundStore implements MatrixOutboundStore {
   private readonly batches = new Map<string, MatrixOutboundBatch[]>();
 
-  public async pending(scope: string, destination?: string): Promise<MatrixOutboundBatch[]> {
+  public async pending(scope: string, filter?: { origin?: string; destination?: string }): Promise<MatrixOutboundBatch[]> {
     const all = this.batches.get(scope) ?? [];
     return all
-      .filter(batch => destination === undefined || batch.destination === destination)
+      .filter(batch => (filter?.origin === undefined || batch.origin === filter.origin)
+        && (filter?.destination === undefined || batch.destination === filter.destination))
       .map(batch => structuredClone(batch))
       .sort((left, right) => left.createdAt - right.createdAt);
   }
