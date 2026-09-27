@@ -1166,3 +1166,8 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   （配 `createNodeFederationFetch` 以携带 `Host`）**向 Alice 的部署请求 `/_matrix/key/v2/server`**，用取回的密钥
   `validateInboundPdu` 验过 Alice 签名的消息（`outcome: accepted`、`eventId` 一致），并断言**本部署不发布的名字取不到
   密钥**（`undefined`，而不是别人的密钥）。这条正好把第 42 轮那个修复（按被寻址名字发布）钉在真实链路上。
+- **已落地（证据，2026-09-27）**：**按 alias 加入的完整链路经 HTTP 走通**（`twoDeployment.test.ts` 新增一项）。
+  Bob 用 `joinRoom('#lobby:alice.example')` 加入 Alice 的公开房间：本地查不到这个 alias → 向 **alias 命名的 server**
+  发 `/query/directory` → 用返回的房间 id 走**同一条远端加入握手**。测试断言三步请求（directory、make_join、send_join）
+  **都真的发生过**，且两侧的 create 与 Bob 的 join **event id 一致**——这是真实客户端加入远端房间的路径，此前只在
+  单元层（假 store / 假 port）验证过。

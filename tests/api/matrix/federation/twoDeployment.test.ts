@@ -837,6 +837,31 @@ describe('two deployments federating over real HTTP', () => {
     }
   }, 180_000);
 
+  it('joins by an alias the other deployment holds, querying then handshaking', async () => {
+    const { a, b, requestsToA, stop } = await httpPair({ federationJoin: true });
+    try {
+      const bob = (await b.store.getAccount(b.context)).userId;
+      // A public room with an alias, which is how a client asks for a room it does not hold.
+      const room = await a.store.createRoom({ visibility: 'public', room_alias_name: 'lobby' }, a.context);
+      const alias = `#lobby:alice.example`;
+
+      await b.store.joinRoom(alias, b.context);
+
+      // The alias names the server that can resolve it, and both steps really went over the socket:
+      // the directory query, then the handshake for the room it named.
+      expect(requestsToA.some(request => request.path.startsWith('/_matrix/federation/v1/query/directory'))).toBe(true);
+      expect(requestsToA.some(request => request.path.startsWith('/_matrix/federation/v1/make_join/'))).toBe(true);
+      expect(requestsToA.some(request => request.path.startsWith('/_matrix/federation/v2/send_join/'))).toBe(true);
+
+      // And both deployments ended up with the same room and the same membership.
+      expect(findPdu(b.rows, 'm.room.create').event_id).toBe(findPdu(a.rows, 'm.room.create').event_id);
+      expect(findMembership(b.rows, bob, 'join').event_id).toBe(findMembership(a.rows, bob, 'join').event_id);
+      expect(room.roomId).toBeDefined();
+    } finally {
+      await stop();
+    }
+  }, 180_000);
+
   it('verifies a peer\'s event with the keys that peer publishes for its own name', async () => {
     const { a, b, portA, stop } = await httpPair();
     try {
