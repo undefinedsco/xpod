@@ -391,10 +391,26 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
   13 项（IP 字面量、显式端口不发请求、合法委派、委派端口/SRV、`.well-known` 缺失与坏 JSON 与 404、
   隐式 8448、24h/max-age/48h 上限/no-store 缓存、失败 1h 与指数退避、并发共请求、非法名、
   `m.server` 解析、server name 拆分、SRV 选择）。
-- **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 HTTP 路由（认证件、事务件与域名解析件都已
-  就位；**剩下的阻塞点是路由归属**——见下方"待细化的实现事项"）、事务记录与控制 Pod 承载（去 SQL）、
-  `/get_missing_events` 补依赖、状态与历史获取、以及**出站**投递（用 `buildXMatrixAuthorization`
-  + `MatrixServerNameResolver` 组装）。
+- **已落地**（2026-09-27）：**出站事务发送**（`federation/outboundTransaction.ts`）。规范在这里有一条
+  容易忽略的硬规则：**「必须先等到 200 才能换 `txnId`」**——txnId 正是对端做去重的键（`inboundTransaction.ts`
+  就是按它去重的），每次重试都换一个新 id 会让对端把同一批 PDU 处理两遍。所以 `deliverTransaction`
+  **从调用方拿 txnId 并全程复用**，自己永不生成；`sendTransaction` 只做**一次**尝试。
+  一次尝试的结论分三类：`delivered`（200 且能读出 per-PDU 结果）、`rejected`（4xx 非限流：对端已经
+  就这次请求做了决定，重试没有意义）、`retry`（5xx、网络不可达、429 限流、以及"200 但读不出结果"——
+  对端尚未就绪，重试是安全的，因为对端按 txnId 去重）。**签名覆盖的是实际发出的请求**（含编码后的
+  txnId 路径），所以对端不必相信 body 里的任何声称；`content-type` 与 50 PDU / 100 EDU 上限也在
+  客户端强制。退避：指数增长 + 抖动（默认 20%，避免多发送方同步重试），对端给的
+  `retry_after_ms` / `Retry-After`（秒或 HTTP 日期）优先，但**不得超过退避上限**，否则对端可以借
+  限流把我们无限期挂住。测试 `tests/api/matrix/federation/outboundTransaction.test.ts` 16 项，含
+  **收发闭环**：我们发出的请求直接交给 `authenticateXMatrixRequest` 用本部署公钥验签通过，包括
+  txnId 含 `/` 与空格时路径编码与签名仍然一致。
+  已知传输层缺口（未做，不是遗漏）：`.well-known`/SRV 委派时规范要求 TLS 证书覆盖**原 server name**、
+  `Host` 也是原 server name，而 `fetch` 既不能改 SNI 也（在多数运行时）不能改 `Host`；解析结果已经
+  同时给出 `baseUrl` 与 `hostHeader`，接一块能设 SNI/Host 的 dispatcher 是后续传输层工作。
+- **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 **HTTP 路由**（认证件、事务件与域名解析件都已
+  就位；**剩下的阻塞点是路由归属**——见下方"待细化的实现事项"）、**出站 outbox**（谁持有 txnId、
+  投递记录与控制 Pod 承载、失败重发；客户端已就位）、事务记录与控制 Pod 承载（去 SQL）、
+  `/get_missing_events` 补依赖、状态与历史获取。
 
 ## 已撤销或否决的前提
 

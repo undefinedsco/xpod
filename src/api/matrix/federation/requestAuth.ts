@@ -28,7 +28,7 @@
  * clamps responses to seven days and re-fetches); there is no event timestamp on a
  * request to compare against, so no second window is applied here.
  */
-import { signJson, verifyJson, decodeVerifyKey } from '../protocol/eventIntegrity';
+import { signJson, verifyJson, decodeVerifyKey, type SigningKeyPair } from '../protocol/eventIntegrity';
 import { isMatrixServerName } from '../protocol/serverName';
 import type { MatrixServerKeySource } from './serverKeys';
 
@@ -59,6 +59,16 @@ export interface XMatrixRequestDescription {
 
 export interface XMatrixOutboundRequest extends XMatrixRequestDescription {
   destination: string;
+}
+
+/**
+ * What signing a request needs: which key signs, and a signature over the JSON. A
+ * `MatrixServiceIdentity` satisfies this, which lets a caller sign as a participant
+ * without ever holding the private key itself.
+ */
+export interface XMatrixSigner {
+  keyId: string;
+  signJson(value: Record<string, unknown>): string;
 }
 
 export interface XMatrixAuthentication {
@@ -116,10 +126,15 @@ export function xMatrixSignedObject(description: XMatrixRequestDescription): Rec
  */
 export function buildXMatrixAuthorization(
   description: XMatrixOutboundRequest,
-  key: { keyId: string; privateKeyPem: string },
+  signer: XMatrixSigner,
 ): string {
-  const signature = signJson(xMatrixSignedObject(description), key);
-  return `X-Matrix origin="${escapeAuthValue(description.origin)}",destination="${escapeAuthValue(description.destination)}",key="${escapeAuthValue(key.keyId)}",sig="${escapeAuthValue(signature)}"`;
+  const signature = signer.signJson(xMatrixSignedObject(description));
+  return `X-Matrix origin="${escapeAuthValue(description.origin)}",destination="${escapeAuthValue(description.destination)}",key="${escapeAuthValue(signer.keyId)}",sig="${escapeAuthValue(signature)}"`;
+}
+
+/** A signer backed by a raw key pair, for callers that hold one directly. */
+export function keyPairSigner(key: SigningKeyPair): XMatrixSigner {
+  return { keyId: key.keyId, signJson: value => signJson(value, key) };
 }
 
 export interface AuthenticateXMatrixRequestInput {

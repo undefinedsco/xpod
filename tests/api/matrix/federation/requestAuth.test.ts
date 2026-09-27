@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   authenticateXMatrixRequest,
   buildXMatrixAuthorization,
+  keyPairSigner,
   parseXMatrixAuthorization,
   xMatrixSignedObject,
 } from '../../../../src/api/matrix/federation/requestAuth';
@@ -33,7 +34,7 @@ const request = { method: 'PUT', uri: '/_matrix/federation/v1/send/txn-1?x=1', c
 describe('X-Matrix request authentication', () => {
   it('round-trips a signed request and exposes exactly the signed fields', () => {
     const them = serverName(THEM);
-    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, { keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem });
+    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, keyPairSigner({ keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem }));
 
     expect(authorization.startsWith('X-Matrix origin="remote.example",destination="pod.example",key="ed25519:1",sig="')).toBe(true);
     const parsed = parseXMatrixAuthorization(authorization);
@@ -44,7 +45,7 @@ describe('X-Matrix request authentication', () => {
 
   it('accepts a request that verifies against the origin key', async () => {
     const them = serverName(THEM);
-    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, { keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem });
+    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, keyPairSigner({ keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem }));
 
     await expect(authenticateXMatrixRequest({
       authorization, ...request, keys: keySource({ [THEM]: them.keys }), serverName: US,
@@ -53,7 +54,7 @@ describe('X-Matrix request authentication', () => {
 
   it('refuses a request addressed to a different server', async () => {
     const them = serverName(THEM);
-    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: 'other.example' }, { keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem });
+    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: 'other.example' }, keyPairSigner({ keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem }));
 
     const result = await authenticateXMatrixRequest({
       authorization, ...request, keys: keySource({ [THEM]: them.keys }), serverName: US,
@@ -79,7 +80,7 @@ describe('X-Matrix request authentication', () => {
 
   it('binds the method, the target including its query, and the body', async () => {
     const them = serverName(THEM);
-    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, { keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem });
+    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, keyPairSigner({ keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem }));
     const keys = keySource({ [THEM]: them.keys });
 
     await expect(authenticateXMatrixRequest({ authorization, method: 'GET', uri: request.uri, content: request.content, keys, serverName: US })).resolves.toMatchObject({ valid: false });
@@ -90,7 +91,7 @@ describe('X-Matrix request authentication', () => {
   it('rejects a signature from a key the origin does not publish', async () => {
     const them = serverName(THEM);
     const other = serverName(THEM);
-    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, { keyId: 'ed25519:1', privateKeyPem: other.privateKeyPem });
+    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, keyPairSigner({ keyId: 'ed25519:1', privateKeyPem: other.privateKeyPem }));
 
     const result = await authenticateXMatrixRequest({
       authorization, ...request, keys: keySource({ [THEM]: them.keys }), serverName: US,
@@ -101,7 +102,7 @@ describe('X-Matrix request authentication', () => {
 
   it('never lets a retired key authenticate a request', async () => {
     const them = serverName(THEM);
-    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, { keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem });
+    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, keyPairSigner({ keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem }));
     const retired = { ...them.keys, verifyKeys: {}, oldVerifyKeys: { 'ed25519:1': { verifyKey: them.keys.verifyKeys['ed25519:1'], expiredTs: NOW + 1 } } };
 
     const result = await authenticateXMatrixRequest({
@@ -113,7 +114,7 @@ describe('X-Matrix request authentication', () => {
 
   it('reports an unknown origin as unverifiable rather than unsigned', async () => {
     const them = serverName(THEM);
-    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, { keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem });
+    const authorization = buildXMatrixAuthorization({ ...request, origin: THEM, destination: US }, keyPairSigner({ keyId: 'ed25519:1', privateKeyPem: them.privateKeyPem }));
 
     const result = await authenticateXMatrixRequest({ authorization, ...request, keys: keySource({}), serverName: US });
     expect(result).toEqual({ valid: false, origin: THEM, reason: `no verify keys available for ${THEM}` });

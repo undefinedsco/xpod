@@ -180,6 +180,14 @@ export class MatrixServiceIdentity {
   }
 
   /**
+   * Sign an arbitrary JSON object (the specification's `sign_json`), returning the
+   * unpadded base64 signature. Request signing uses this; the private key stays here.
+   */
+  public signJson(value: Record<string, unknown>): string {
+    return signJson(value, this.activeKey);
+  }
+
+  /**
    * The `/_matrix/key/v2/server` response: the active key, any old keys, and a
    * signature over the payload itself. `valid_until_ts` is what other servers
    * must treat as the refresh deadline (bounded to 7 days by the specification).
