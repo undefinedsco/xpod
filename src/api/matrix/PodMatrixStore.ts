@@ -79,6 +79,19 @@ export interface MatrixParticipantIdentityProvider {
   ensureParticipantIdentity(input: MatrixParticipantIdentityRequest): Promise<void>;
 }
 
+/**
+ * Provisioning must not come later than the first time this deployment *names* the
+ * participant. A Matrix user id is `@localpart:server`, and only the server half depends
+ * on provisioning (the localpart is a hash of the WebID), so a participant named before
+ * their key exists is named under the deployment's server — and an invite addressed to
+ * that name would no longer match once they are provisioned. Provisioning therefore runs
+ * before `getAccount` reports an MXID and before any event of theirs is written.
+ *
+ * Rooms recorded under an earlier name are history: their membership state keeps the
+ * MXID it was written with. Serving those rooms again needs a per-room identity choice,
+ * which is the legacy boundary rather than something provisioning can undo.
+ */
+
 export interface PodMatrixStoreOptions {
   podAccess?: PodAccessFetchProvider;
   journal?: MatrixEventJournal;
@@ -182,6 +195,9 @@ export class PodMatrixStore {
   }
 
   public async getAccount(context: MatrixStoreContext): Promise<MatrixAccountInfo> {
+    // The MXID reported here is the one others will invite, so it has to be final before
+    // it is handed out — never the deployment-name fallback that provisioning would move.
+    await this.ensureParticipantIdentity(context);
     const matrixUserId = this.getMatrixUserId(context);
     return {
       userId: matrixUserId,

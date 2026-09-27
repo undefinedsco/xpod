@@ -58,6 +58,32 @@ describe('provisioning a participant when they enter a room', () => {
     )).toBe(true);
   });
 
+  it('provisions before reporting an MXID, so an invite can never name a stale server', async () => {
+    const deployment = identityFor('example.test', 'ed25519:deployment');
+    const { source, add } = growingIdentitySource([ deployment ]);
+    const participantIdentity: MatrixParticipantIdentityProvider = {
+      ensureParticipantIdentity: async input => { add(identityFor(new URL(input.webId).host)); },
+    };
+    const { store, context } = matrixHarness({ identities: source, participantIdentity });
+
+    // Without the hook this would be `@u_hash:example.test`; the reported id must already
+    // be the participant's own server, because this is the id others invite.
+    const account = await store.getAccount(context);
+    expect(account.userId).toMatch(/:alice\.example$/u);
+    expect(await source.identityFor('alice.example')).toBeDefined();
+  });
+
+  it('keeps the deployment name for a participant this deployment does not serve', async () => {
+    const deployment = identityFor('example.test', 'ed25519:deployment');
+    const { source } = growingIdentitySource([ deployment ]);
+    const participantIdentity: MatrixParticipantIdentityProvider = {
+      ensureParticipantIdentity: async () => undefined,
+    };
+    const { store, context } = matrixHarness({ identities: source, participantIdentity });
+
+    expect((await store.getAccount(context)).userId).toMatch(/:example\.test$/u);
+  });
+
   it('provisions before a join event and hands over the Pod this write targets', async () => {
     const deployment = identityFor('example.test', 'ed25519:deployment');
     const { source, add } = growingIdentitySource([ deployment ]);
@@ -71,10 +97,8 @@ describe('provisioning a participant when they enter a room', () => {
     const { store, context, rows } = matrixHarness({ identities: source, participantIdentity });
     const bobContext: MatrixStoreContext = { ...context, webId: 'https://bob.example/profile/card#me' };
 
-    // Bob is provisioned before he can be invited at all: until then his MXID is the
-    // deployment-name one, and an invite has to name the identity he will join under.
-    await participantIdentity.ensureParticipantIdentity({ webId: bobContext.webId, context: bobContext });
-    seen.length = 0;
+    // Bob is provisioned before he can be invited at all: asking who he is gives the
+    // identity he will join under, and that is the MXID the invite has to name.
     const bob = (await store.getAccount(bobContext)).userId;
     expect(bob).toMatch(/:bob\.example$/u);
 
@@ -82,6 +106,7 @@ describe('provisioning a participant when they enter a room', () => {
     await store.joinRoom(room.roomId, bobContext);
 
     expect(seen).toEqual([
+      { webId: 'https://bob.example/profile/card#me', targetPodUrl: 'https://pod.example/alice/' },
       { webId: 'https://alice.example/profile/card#me', targetPodUrl: 'https://pod.example/alice/' },
       { webId: 'https://bob.example/profile/card#me', targetPodUrl: 'https://pod.example/alice/' },
     ]);
@@ -98,17 +123,21 @@ describe('provisioning a participant when they enter a room', () => {
     const ensureParticipantIdentity = vi.fn(async () => undefined);
     const { store, context, rows } = matrixHarness({ identities: source, participantIdentity: { ensureParticipantIdentity } });
 
+    const account = await store.getAccount(context);
+    expect(ensureParticipantIdentity).toHaveBeenCalledTimes(1);
+    expect(account.userId).toMatch(/:example\.test$/u);
     const room = await store.createRoom({}, context);
-    expect(ensureParticipantIdentity).toHaveBeenCalledTimes(1);
+    // Still one: createRoom's call is the same idempotent check, and the stub is a no-op.
+    expect(ensureParticipantIdentity).toHaveBeenCalledTimes(2);
     const afterCreate = storedEvents(rows).length;
-    // Already joined: the join is a no-op and nothing is re-provisioned.
+    // Already joined: the join is a no-op and writes no second membership event.
     await store.joinRoom(room.roomId, context);
-    expect(ensureParticipantIdentity).toHaveBeenCalledTimes(1);
     expect(storedEvents(rows)).toHaveLength(afterCreate);
-    // Sending, leaving and inviting are not "entering the room" either.
+    // Sending and leaving never provision: an identity that a room already recorded must
+    // not be moved underneath it.
     await store.sendEvent(room.roomId, 'm.room.message', 'txn-1', { body: 'hi' }, context);
     await store.leaveRoom(room.roomId, context);
-    expect(ensureParticipantIdentity).toHaveBeenCalledTimes(1);
+    expect(ensureParticipantIdentity).toHaveBeenCalledTimes(2);
   });
 
   it('writes nothing when provisioning fails', async () => {

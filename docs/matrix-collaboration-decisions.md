@@ -114,21 +114,29 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   依赖它，Pod 迁移的版本/确认也由房间成员记录 + WebID→Pod 查询覆盖。按"同一事实不留第二份副本"
   应当删除；若你认为它另有用途（例如跨设备读取"我选了哪个 Pod"），请指出唯一消费方，否则它只是
   第二份事实。**在确认前保留，不接任何存储。**
-- **已定（2026-09-27，用户答复"进 room 的时候给"）：供给时机是"进入房间时"**，落地为
-  `PodMatrixStoreOptions.participantIdentity` 钩子：`createRoom`（创建者即参与者）与 `joinRoom`
-  在**写入该参与者自己的成员事件之前**调用 `ensureParticipantIdentity({webId, targetPodUrl, context})`；
-  钩子正常返回即表示本部署替该身份签名（能力判定随之生效），未供给则参与者继续落在部署身份上。
-  实现细节与理由：
+- **已定（2026-09-27，用户答复"进 room 的时候给"，并按 MXID 的性质收口为"不得晚于第一次命名"）**：
+  **供给必须发生在本部署第一次"命名"该参与者之前**。原因不是策略偏好而是协议事实：MXID 是
+  Matrix 里唯一的用户标识（事件的 `sender`、成员 state_key、power level、invite 都只能写 MXID），
+  它的 localpart 由 WebID 唯一决定（`u_<sha256(webId)>`，与本仓库既有实现一致），**只有 server 段
+  取决于供给**；一个参与者在拿到密钥前被命名，就会被命名在**部署名**下，而这条 invite 在他被供给后
+  再也匹配不上——新参与者第一步就死锁，且跨部署时对方部署无法替他兜底。
+  因此钩子从"进 room 时"上移到**所有会命名他的路径**：`getAccount`（`whoami`/账号信息，客户端据此
+  得知自己的 MXID 并对外告知）在返回 MXID 之前调用，`createRoom`/`joinRoom` 在写入该参与者的成员
+  事件之前调用。落地为 `PodMatrixStoreOptions.participantIdentity`：钩子正常返回即表示本部署替该身份
+  签名（能力判定随之生效），未供给（本部署不服务他）则继续落在部署身份上；**没有钩子的单身份部署
+  行为完全不变**。实现细节与理由：
   - **必须在成员事件之前供给**：join 事件的 `sender` 与签名取决于身份，先写后换会让同一个人在一个
-    房间里出现两个 MXID，正是登记册要避免的"新老 MXID 互认"；
+    房间里出现两个 MXID；
   - **供给会改变 MXID，所以 join 时按供给后的身份重新查成员**：invite 必须指向该参与者加入时
-    使用的身份（老 MXID 的 invite 不自动认账，符合"老 MXID 保持历史原样"）；**但任一身份下的
-    ban 都继续生效**，供给不能成为绕过封禁的路径；
-  - 钩子抛错则**整个写入失败**（房间与成员事件都不落），不留半状态；
-  - 没有钩子时行为与之前完全一致（单身份部署不变），容器仍只注册部署级身份。
-  测试 `tests/api/matrix/participantProvisioning.test.ts` 5 项（create 前供给使 room id 与 create
-  事件由参与者自己的 server 命名并验签、join 前供给并传 target Pod、已加入/发送/离开不触发、
-  供给失败不落任何事件、无钩子行为不变）。
+    使用的身份；**但任一身份下的 ban 都继续生效**，供给不能成为绕过封禁的路径；
+  - **`sendEvent`/`leaveRoom` 绝不供给**：房间里已经记下了他的身份，写入时必须继续用同一个身份，
+    否则旧房间会被供給"搬走"MXID（这正是需要 per-room 身份选择的地方，属旧房间兼容边界）；
+  - 钩子抛错则**整个写入失败**（房间与成员事件都不落），不留半状态；`getAccount` 也因此可能失败——
+    宁可响亮失败，也不发出一个随后会变的 MXID。
+  测试 `tests/api/matrix/participantProvisioning.test.ts` 7 项（getAccount 前供给使报出的 MXID 属于
+  参与者自己的 server、不服务他时保持部署名、create 前供给使 room id 与 create 事件由该 server 命名
+  并验签、join 前供给并传 target Pod、已加入/发送/离开不写第二份成员事件、供给失败不落任何事件、
+  无钩子行为不变）。
 - **待建（阻塞已解除）**：**入站 federation 的路由归属**。`PUT /_matrix/federation/v1/send/{txnId}`
   没有 Pod 路径段，而按"数据在各自 Pod"，收到的事件写进**目标 server name 对应参与者自己的 Pod**。
   按上面第 1 条，`destination name → 参与者`不再需要绑定记录：用 PDU 的 `room_id` 找到房间，
