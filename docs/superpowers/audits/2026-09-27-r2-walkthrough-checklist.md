@@ -11,6 +11,7 @@
 ```bash
 bun scripts/accept-r2-route-map.ts      # §3.1 七个路径在真实运行时可用（HTTP 200 + SPA 外壳）
 bun scripts/accept-r2-login-surface.ts  # 真实 Chromium：浅/深色画布与正文色 = §8.1；Account 页铺满画布、无内嵌卡片
+bun scripts/accept-r2-workspace.ts      # 真实登录后的工作区：首屏预算、184px 宽窗导航、窄窗任务栏+抽屉
 ```
 
 ```bash
@@ -23,7 +24,9 @@ bun scripts/accept-r2-route-map.ts
 bun run --filter @undefinedsco/xpod-desktop start
 ```
 
-## A. 首屏信息优先级（AC-14）
+## A. 首屏信息优先级（AC-14）—— 已由 `accept-r2-workspace.ts` 覆盖首屏三条，人工只需复核异常态
+
+> 自动化已核对：正常态恰一个结论、事实 4 组、专业详情默认收起。下面的人工步骤用于**异常/首次/停止**态的复核。
 
 | 步骤 | 期望 |
 |---|---|
@@ -35,7 +38,7 @@ bun run --filter @undefinedsco/xpod-desktop start
 
 | 步骤 | 期望 |
 |---|---|
-| 窗口缩到 <768px | 顶部 48px 任务栏（返回/标题/有名称的导航按钮）；点导航按钮出现抽屉，抽屉里是同一棵导航树；**没有**底部 Tab |
+| 窗口缩到 <768px | 顶部 48px 任务栏（返回/标题/有名称的导航按钮）；点导航按钮出现抽屉，抽屉里是同一棵导航树；**没有**底部 Tab（已由 `accept-r2-workspace.ts` 在 700px 视口覆盖，人工可复核 640/390 等更窄档） |
 | 浏览器 200% 缩放 | 正文不截断；错误、主动作、返回都在一个宿主滚动区内可达 |
 | 认证短流程 280×400 | 主题画布铺满、16px 内边距、**无内嵌白卡与遮罩**（画布/正文色与"无卡片"已由 `accept-r2-login-surface.ts` 覆盖；280×400 的窗口形态仍需真机确认） |
 | Web Account ≥900px / 更窄 | 宽时左说明右表单（表单 ≤448px）；窄时单列 |
