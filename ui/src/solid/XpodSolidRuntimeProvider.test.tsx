@@ -801,6 +801,63 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
+  test('registers the node routes before discovering a Pod from the canonical WebID', async () => {
+    // The reported failure: a restored session with no valid remembered binding
+    // makes `pod.open` discover the Pod by reading the canonical WebID. With no
+    // route registered at that moment the read leaves for a public address the
+    // node has no ingress on, and the shell shows "暂时无法打开 Pod".
+    installDom('http://127.0.0.1:5173/settings/pod');
+    const webId = 'https://acceptance-local.nodes.acceptance.test/alice/profile/card#me';
+    const session = new FakeSession();
+    session.authenticate(webId, 'https://id.undefineds.co/');
+    const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    runtime.setIssuer('https://id.undefineds.co/');
+    let resolvedAtOpen: string | undefined;
+    const open = mock(async (args: { webId: string; podUrl?: string }) => {
+      // Exactly what the transport does with the canonical WebID while opening.
+      resolvedAtOpen = runtime.resolveLocalUrl(webId);
+      return {
+        webId: args.webId,
+        podUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
+        database: {},
+        collections: 'ready' as const,
+      };
+    });
+    runtime.pod.open = open as typeof runtime.pod.open;
+    const provisionFetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (new URL(String(input), window.location.origin).pathname === '/provision/status') {
+        return new Response(JSON.stringify({
+          registered: true,
+          managed: true,
+          publicUrl: 'https://acceptance-local.nodes.acceptance.test/',
+          oidcIssuer: 'https://id.undefineds.co/',
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = provisionFetch as typeof fetch;
+
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <XpodSolidRuntimeProvider value={runtime}>
+          <InitializeOnLoadingProbe />
+          <IdentityPairProbe />
+        </XpodSolidRuntimeProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(open).toHaveBeenCalled();
+    expect(resolvedAtOpen).toBe('http://127.0.0.1:5173/alice/profile/card#me');
+    globalThis.fetch = originalFetch;
+    await unmount(root);
+  });
+
   test('keeps nested managed public URL paths scoped when discovering a Web local route', async () => {
     installDom('http://127.0.0.1:5173/settings/pod');
     const selectedStorage = {
