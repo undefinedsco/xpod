@@ -407,9 +407,27 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
   已知传输层缺口（未做，不是遗漏）：`.well-known`/SRV 委派时规范要求 TLS 证书覆盖**原 server name**、
   `Host` 也是原 server name，而 `fetch` 既不能改 SNI 也（在多数运行时）不能改 `Host`；解析结果已经
   同时给出 `baseUrl` 与 `hostHeader`，接一块能设 SNI/Host 的 dispatcher 是后续传输层工作。
+- **已落地**（2026-09-27）：**出站队列**（`federation/outboundQueue.ts`）。客户端知道"一次事务怎么发、
+  什么时候值得重试"，队列决定"发什么、按什么顺序"——规范的另一条硬规则在这里：**必须等一个事务拿到
+  200 才能换 `txnId`**，所以**每个目的 server 是一条严格有序的队列**：队首未送达就绝不尝试后面的
+  （那是另一个 txnId），而一个卡住的目的地不影响其他目的地。由此推出两条容易做错、已写死的行为：
+  ① **只能往「从未尝试过」的批次追加 PDU**——往对端可能已经处理过的批次里追加，会让新 PDU 藏在一个
+  对端会重放其**存档应答**的 txnId 后面（见 `inboundTransaction.ts`），等于永久静默丢失；
+  ② **4xx 解锁队列、失败不解锁**——拒绝是对端已就这次事务做了决定，把它当可重试会把目的地卡死。
+  另外：txnId 由批次从创建起一直持有到送达或被拒（绝不中途换）；同一个 `event_id` 重复入队会被去掉
+  （对端本来也会按 event id 去重，只是省一趟）；超过 50 PDU / 100 EDU 自动切分成多个批次，各自一个
+  txnId；store 按 scope 分片、整条记录读写，控制 Pod 实现可以等位替换内存实现。测试
+  `tests/api/matrix/federation/outboundQueue.test.ts` 15 项（建批次与 txnId、按 50 切分保序、按 event_id
+  去重、无 id 不去重、空入队无操作、**不往已尝试批次追加**、scope 隔离、EDU 与纯 EDU 事务、
+  送达即清空、**失败即止步并计 blocked**、跨 flush 保持同一 txnId、拒绝后继续、健康目的地不受影响、
+  单目的地 flush、无待办即无调用、默认 id 互不相同）。
+- **已落地**（2026-09-27）：**收件人集合**（`federation/destinations.ts`）。事件发给**房间里参与者的
+  服务器**（有 joined 成员的 server），membership 事件额外发给该事件**所涉及成员**的 server（邀请、
+  踢出、退出时对方未必是 joined），**绝不发给自己**（本地已有，发给自己是永远清不空的收件箱）。
+  结果去重并稳定排序，供 outbox 直接入队。测试 `tests/api/matrix/federation/destinations.test.ts` 6 项。
 - **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 **HTTP 路由**（认证件、事务件与域名解析件都已
-  就位；**剩下的阻塞点是路由归属**——见下方"待细化的实现事项"）、**出站 outbox**（谁持有 txnId、
-  投递记录与控制 Pod 承载、失败重发；客户端已就位）、事务记录与控制 Pod 承载（去 SQL）、
+  就位；**剩下的阻塞点是路由归属**——见下方"待细化的实现事项"）、**出站队列的调用点**（写入后把事件
+  入队、谁触发 flush、投递记录与控制 Pod 承载；队列与客户端都已就位）、事务记录与控制 Pod 承载（去 SQL）、
   `/get_missing_events` 补依赖、状态与历史获取。
 
 ## 已撤销或否决的前提
