@@ -31,11 +31,9 @@ function renderProduct(product: 'dashboard' | 'settings') {
 }
 
 describe('XpodProductLayout', () => {
-  test('keeps global navigation order stable', () => {
-    expect(globalNavigationItems.filter((item) => item.placement === 'primary').map((item) => item.id))
-      .toEqual(['ai-connections', 'ai-config']);
-    expect(globalNavigationItems.filter((item) => item.placement === 'bottom').map((item) => item.id))
-      .toEqual(['network', 'status', 'settings']);
+  test('keeps the four task entries in spec order', () => {
+    // §3.1：概览、存储空间、AI、服务与访问；身份入口由用户卡承担
+    expect(globalNavigationItems.map((item) => item.id)).toEqual(['overview', 'storage', 'ai', 'services']);
   });
 
   test.each(['settings', 'dashboard'] as const)('renders the native Account avatar in %s', (product) => {
@@ -43,6 +41,7 @@ describe('XpodProductLayout', () => {
     expect(html).toContain('data-app-layout="workspace"');
     expect(html).toContain('aria-label="Open account menu for Alice"');
     expect(html).toContain('href="/ai-connections"');
-    expect(html).toContain('aria-label="Network"');
+    expect(html).toContain('aria-label="服务与访问"');
+    expect(html).not.toContain('aria-label="Status"');
   });
 });

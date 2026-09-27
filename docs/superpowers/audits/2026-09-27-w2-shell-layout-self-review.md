@@ -73,6 +73,14 @@
 主责模块 / 关联模块：Xpod Shell（主）/ AI Connections、Settings、Status（被并入口）
 完成条件：顶层只有四个任务入口与一个身份入口；旧五个入口路径全部落到映射表目标
 未验证边界：未做真实点击走查
+
+处置（2026-09-27，已实施）：`ui/src/layout/global-navigation.ts` 改为四个任务入口
+（概览 /status/overview、存储空间 /settings/pod、AI /ai-connections、服务与访问 /settings/runtime），
+带 §2 中英文名；`activePaths` 只放规范路径，其中 `search-indexing`/`index-lifecycle` 归存储空间、
+`model-assignments`/`document-processing` 归 AI（§3.1）。身份入口不再作为工作区入口，由既有的
+`XpodUserCard` 承担。`XpodProductLayout` 的 primary/bottom 两组并为单一导航组，旧路径仍由
+`canonicalProductPathname` 重定向。新增 `ui/src/layout/global-navigation.test.ts` 锁定四入口顺序、
+标签、归属与"同一路径不被两个入口同时命中"。
 ```
 
 ```text
@@ -153,3 +161,14 @@
 | 依赖 | W1 公共接口（已完成：`--layer-*`、§8.1 token、primitive）；先核对公开出口与 LinX/extension 消费者，不删除仍在使用的导出 |
 | 验收证据分层 | 前端：协议与路由单测、迁移表用例、断点命名层检查；运行：实施后按 AC-04/05/06/14 分别取证 |
 | 其他模块需接入的公共接口 | 页型与断点来源、`section` 枚举、导航上下文（当前机器/空间/连接）；W4/W5 按此声明各自页型 |
+
+## 实施状态（2026-09-27 第一轮）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| W2-DESIGN-01 四入口 + 身份入口 | 已实施 | `global-navigation.ts` 四入口与 §2 标签；`XpodProductLayout` 单组渲染；`global-navigation.test.ts` 锁定顺序/标签/归属/唯一命中；旧五入口测试已改为新契约 |
+| W2-DESIGN-02 页型与条件对象列 | 未开始 | 协议仍为 `single-pane/two-pane/three-pane` |
+| W2-DESIGN-03 §8.3 断点 | 未开始 | `sm:`/`lg:` 仍散落 |
+| W2-DESIGN-04 §3.3 历史映射核对 | 未开始 | 映射表已存在，未逐行核对目标与查询保留 |
+
+验证记录：`ui/src` 96 文件 / 881 测试全过（含新增导航契约）；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run build:ts` 与 `bun run typecheck:test` 均通过。未做：真实点击与窄窗走查。

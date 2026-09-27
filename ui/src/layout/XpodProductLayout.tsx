@@ -56,8 +56,8 @@ export function ProductNavLinks({ items, label }: { items: readonly NavigationLi
 }
 
 export function XpodProductLayout({ product }: XpodProductLayoutProps) {
-  const primaryItems = globalNavigationItems.filter((item) => item.placement === 'primary');
-  const bottomItems = globalNavigationItems.filter((item) => item.placement === 'bottom');
+  // 四个任务入口同属一组；身份入口是用户卡，不再是工作区入口（spec §3.1）
+  const navigationItems = globalNavigationItems;
   return (
     <AppLayout
       className={`xpod-${product}-shell`}
@@ -67,10 +67,7 @@ export function XpodProductLayout({ product }: XpodProductLayoutProps) {
             <XpodUserCard />
           </div>
           <div className="flex min-w-0 flex-1 flex-row items-center justify-center sm:mt-5 sm:flex-none sm:flex-col sm:justify-start">
-            <ProductNavLinks items={primaryItems} label="Primary Xpod workspaces" />
-          </div>
-          <div className="flex shrink-0 flex-row items-center gap-3 sm:mt-auto sm:flex-col sm:gap-0">
-            <ProductNavLinks items={bottomItems} label="Xpod settings" />
+            <ProductNavLinks items={navigationItems} label="Xpod workspaces" />
           </div>
         </div>
       }

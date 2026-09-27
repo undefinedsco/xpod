@@ -23,9 +23,9 @@ describe('Xpod product rail navigation', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByLabelText('AI Config'));
+    fireEvent.click(screen.getByLabelText('存储空间'));
 
-    expect(screen.getByLabelText('Current route').textContent).toBe('/ai-config/model-assignments');
+    expect(screen.getByLabelText('Current route').textContent).toBe('/settings/pod');
   });
 
   test('handles Dashboard-to-Settings entry switches without replacing the document', () => {
@@ -36,7 +36,7 @@ describe('Xpod product rail navigation', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByLabelText('AI Connections'));
+    fireEvent.click(screen.getByLabelText('AI'));
 
     expect(screen.getByLabelText('Current route').textContent).toBe('/ai-connections');
   });

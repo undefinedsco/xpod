@@ -61,11 +61,13 @@ describe('XpodSettingsLayout', () => {
     const html = renderLayout('/models');
 
     expect(html).toContain('data-app-layout="workspace"');
-    expect(html).toContain('aria-label="Status"');
-    expect(html).toContain('aria-label="Network"');
-    expect(html).toContain('aria-label="AI Connections"');
-    expect(html).toContain('aria-label="AI Config"');
-    expect(html).toContain('aria-label="Settings"');
+    // 顶层只剩四个任务入口（spec §3.1）
+    expect(html).toContain('aria-label="概览"');
+    expect(html).toContain('aria-label="存储空间"');
+    expect(html).toContain('aria-label="AI"');
+    expect(html).toContain('aria-label="服务与访问"');
+    expect(html).not.toContain('aria-label="Status"');
+    expect(html).not.toContain('aria-label="Network"');
     expect(html).not.toContain('aria-label="Search settings"');
     expect(html).not.toContain('Xpod Settings');
     expect(html).not.toContain('Runtime workspace');
