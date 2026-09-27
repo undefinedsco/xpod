@@ -38,7 +38,11 @@ function keySourceFor(peer: ReturnType<typeof identity>): MatrixServerKeySource 
  * A Pod as the inbound path uses it: a room's events, plus what has been accepted into it. The
  * read is the whole room, because that is what the shell is allowed to ask for.
  */
-function podStore(initial: readonly Record<string, unknown>[] = []) {
+function podStore(
+  initial: readonly Record<string, unknown>[] = [],
+  /** Room aliases this Pod holds, and the servers resident in each room. */
+  directory: { aliases?: Record<string, string>; servers?: Record<string, string[]> } = {},
+) {
   const rooms = new Map<string, Record<string, unknown>[]>();
   for (const event of initial) {
     const roomId = String(event.room_id);
@@ -47,6 +51,13 @@ function podStore(initial: readonly Record<string, unknown>[] = []) {
   const accepted: Record<string, unknown>[] = [];
   const contexts: MatrixStoreContext[] = [];
   const store: FederationPodStore = {
+    async findRoomByAlias(alias) {
+      const roomId = directory.aliases?.[alias];
+      return roomId === undefined ? undefined : { roomId };
+    },
+    async roomServers(roomId) {
+      return directory.servers?.[roomId] ?? [];
+    },
     async protocolEvents(roomId) {
       return [ ...(rooms.get(roomId) ?? []) ];
     },
@@ -159,10 +170,12 @@ interface Harness {
 async function harness(options: {
   events?: readonly Record<string, unknown>[];
   served?: string[];
+  /** Room aliases and resident servers, for the directory query. */
+  directory?: { aliases?: Record<string, string>; servers?: Record<string, string[]> };
   /** The deployment's answer to "who is this written as"; recorded so the test can see it used. */
   contextFor?: (route: MatrixServerRoute) => MatrixStoreContext;
 } = {}): Promise<Harness> {
-  const store = podStore(options.events ?? []);
+  const store = podStore(options.events ?? [], options.directory ?? {});
   const peer = identity(PEER);
   const server = new ApiServer({
     port: 0,
@@ -772,6 +785,64 @@ describe('the membership handshake endpoints', () => {
       });
       expect(refused.status).toBe(400);
       expect(refused.body.errcode).toBe('M_INVALID_PARAM');
+    } finally {
+      await running.server.stop();
+    }
+  });
+});
+
+describe('the directory query', () => {
+  it('answers which room an alias names, and who else is in it', async () => {
+    const room = heldRoom();
+    const alias = `#lobby:${SERVED}`;
+    const running = await harness({
+      events: [ room.create, room.join, room.rules ],
+      directory: { aliases: { [alias]: ROOM }, servers: { [ROOM]: [ SERVED, PEER ] } },
+    });
+    try {
+      const uri = `/_matrix/federation/v1/query/directory?${new URLSearchParams({ room_alias: alias }).toString()}`;
+      const answer = await send({
+        port: running.port, method: 'GET', path: uri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri }),
+      });
+
+      expect(answer.status).toBe(200);
+      expect(answer.body).toEqual({ room_id: ROOM, servers: [ SERVED, PEER ] });
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('answers 404 for an alias nobody holds, and requires the signature and the parameter', async () => {
+    const running = await harness({ directory: { aliases: {} } });
+    try {
+      const unknownAlias = `#nope:${SERVED}`;
+      const unknownUri = `/_matrix/federation/v1/query/directory?${new URLSearchParams({ room_alias: unknownAlias }).toString()}`;
+      const missing = await send({
+        port: running.port, method: 'GET', path: unknownUri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri: unknownUri }),
+      });
+      expect(missing.status).toBe(404);
+      expect(missing.body.errcode).toBe('M_NOT_FOUND');
+
+      // An alias of a server this deployment does not serve is not ours to answer at all.
+      const elsewhereAlias = '#lobby:other.example';
+      const elsewhereUri = `/_matrix/federation/v1/query/directory?${new URLSearchParams({ room_alias: elsewhereAlias }).toString()}`;
+      const elsewhere = await send({
+        port: running.port, method: 'GET', path: elsewhereUri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: 'other.example', uri: elsewhereUri }),
+      });
+      expect(elsewhere.status).toBe(404);
+
+      const unsigned = await send({ port: running.port, method: 'GET', path: unknownUri, host: SERVED });
+      expect(unsigned.status).toBe(401);
+
+      const noAlias = await send({
+        port: running.port, method: 'GET', path: '/_matrix/federation/v1/query/directory', host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri: '/_matrix/federation/v1/query/directory' }),
+      });
+      expect(noAlias.status).toBe(400);
+      expect(noAlias.body.errcode).toBe('M_MISSING_PARAM');
     } finally {
       await running.server.stop();
     }

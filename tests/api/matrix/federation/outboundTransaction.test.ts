@@ -703,3 +703,33 @@ describe('knocking on a room', () => {
       .resolves.toMatchObject({ status: 'rejected' });
   });
 });
+
+describe('asking which room an alias names', () => {
+  const ALIAS = '#lobby:remote.example';
+
+  it('signs a query for the alias and reads the room and its servers back', async () => {
+    const { client: instance, captured, identity } = client({
+      respond: () => new Response(JSON.stringify({ room_id: '!r:remote.example', servers: [ 'remote.example', 'pod.example' ] }), { status: 200 }),
+    });
+    const outcome = await instance.queryDirectory({ destination: THEM, roomAlias: ALIAS });
+
+    expect(outcome).toMatchObject({ status: 'ok', roomId: '!r:remote.example', servers: [ 'remote.example', 'pod.example' ] });
+    const [ sent ] = captured;
+    const uri = `/_matrix/federation/v1/query/directory?${new URLSearchParams({ room_alias: ALIAS }).toString()}`;
+    expect(sent.method).toBe('GET');
+    expect(sent.url).toBe(`https://${THEM}:8448${uri}`);
+    await expect(authenticateXMatrixRequest({
+      authorization: sent.headers.authorization, method: 'GET', uri, keys: peerKeySource(identity), serverName: THEM,
+    })).resolves.toMatchObject({ valid: true, origin: US });
+  });
+
+  it('retries an answer it cannot read, and treats a refusal as final', async () => {
+    const unreadable = client({ respond: () => new Response(JSON.stringify({ room_id: '!r:x' }), { status: 200 }) });
+    await expect(unreadable.client.queryDirectory({ destination: THEM, roomAlias: ALIAS }))
+      .resolves.toMatchObject({ status: 'retry', reason: expect.stringMatching(/room_id and servers/u) });
+
+    const refused = client({ respond: () => new Response(JSON.stringify({ errcode: 'M_NOT_FOUND' }), { status: 404 }) });
+    await expect(refused.client.queryDirectory({ destination: THEM, roomAlias: ALIAS }))
+      .resolves.toMatchObject({ status: 'rejected' });
+  });
+});

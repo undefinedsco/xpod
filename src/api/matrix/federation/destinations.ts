@@ -15,8 +15,12 @@ import type { MatrixRoomState } from '../roomState';
 
 export interface EventDestinationInput {
   state: MatrixRoomState;
-  /** The server the event is coming from. */
-  ourServerName: string;
+  /**
+   * The server the event is coming from, which is never a destination — the event is already
+   * there. Absent asks the other question the same selection answers: *who is in this room*,
+   * which is what a peer asking about an alias wants to know.
+   */
+  ourServerName?: string;
   /** The event about to be sent, when the caller knows it. */
   event?: { type: string; stateKey?: string };
 }
@@ -29,14 +33,13 @@ export function eventDestinations(input: EventDestinationInput): string[] {
     // Only a joined member makes their server a participant in the room.
     if (stateEvent.content?.membership !== 'join') continue;
     const server = serverNameOf(stateEvent.stateKey);
-    if (server) servers.add(server);
+    if (server && server !== input.ourServerName) servers.add(server);
   }
   if (input.event?.type === 'm.room.member') {
     // The member this event is about may be joining, invited, leaving or banned, so their
     // server hears about it even though they are not (or no longer) joined.
     const target = serverNameOf(input.event.stateKey);
-    if (target) servers.add(target);
+    if (target && target !== input.ourServerName) servers.add(target);
   }
-  servers.delete(input.ourServerName);
   return [ ...servers ].sort();
 }

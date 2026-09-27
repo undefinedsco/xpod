@@ -665,9 +665,9 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   处理体；**剩下的阻塞点仍是路由归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、投递记录与控制 Pod 承载
   （去 SQL）、状态与历史获取。互通面上还没动的：`GET /_matrix/federation/v1/version`（**需要一个版本来源**：目前只有 CLI 里一个未导出的
   `getVersion()`，把它接进 handler 前应先把"部署版本从哪来"收成一个共享入口，否则只能报 `unknown`）、
-  `GET /_matrix/federation/v1/query/{directory,profile}`（前者要先能按 alias 找到房间所在 Pod，与"房间就是索引"
-  那条同源）、`.well-known/matrix/server` 的**服务侧**（属于部署拓扑：联邦端点是否在隐式 8448 之外，需要部署级
-  配置，不是协议决定）。
+  `GET /_matrix/federation/v1/query/profile`（可做：枚举本部署服务的参与者、按 `@u_<sha256(webId)>:<serverName>`
+  算出 MXID 与之比对即可，无需反推哈希；展示名/头像取该参与者账户）、`.well-known/matrix/server` 的**服务侧**
+  （属于部署拓扑：联邦端点是否在隐式 8448 之外，需要部署级配置，不是协议决定）。
 - **已落地**（2026-09-27）：**逐条拒绝不再等于已投递**（缺口 2 的修复）。事务返回 200 只回答"这笔
   事务收到了"，不回答"每条 PDU 都被接受了"，所以发送方现在按 per-PDU 结果拆分：被接受的落地即完成，
   被拒的**换一个新 txnId** 重新入队（对端会重放旧 txnId 的存档应答，所以必须换 id），带**有界退避**
@@ -952,6 +952,21 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   **未 watch 的 scope 回 `trust: 'all'`**（静默说"没变化"会永久丢事件），周期对账 + 单 Pod 失败只上报。测试 8 项
   + 容器 1 项（含"store 拿到的就是同一个 source"）。**仍有界同步的实测数字未在真实部署上重取**（现有证据是
   20 房间的内存 harness）。
+- **已落地**（2026-09-27）：**`GET /_matrix/federation/v1/query/directory` 的两半**（外壳 + 客户端
+  `queryDirectory`）与支撑它的两个读接口（`PodMatrixStore.findRoomByAlias` / `roomServers`）。
+  - **alias 的答案来自房间自己的记录**：alias 是房间记录上的一个字段（`canonicalAlias`），所以不需要目录服务，也
+    **不搜索被寻址 Pod 之外的 Pod**——alias 自带它属于哪个 server，那个 server 就是答案所在的 Pod。这正是
+    "房间就是索引"在互通面上的体现。
+  - **被寻址的名字取 alias 里的那个，而不是 `Host`**：这是唯一一个"被问的是另一台服务器"的端点，对端签进
+    `destination` 的也正是它正在问的 server；对端若寻址了别人，验签直接失败——本就不该由我们代答。
+  - **resident servers 用与出站投递同一套选择**：复用 `eventDestinations` 的"joined member → 其 server"选择
+    （把 `ourServerName` 改成可选：不传就是"这房间里都有谁"，不过滤自己）；因此"告诉对端谁会收到事件"与
+    "我们真的把事件发给谁"不可能不一致。
+  - **客户端**：`queryDirectory({destination, roomAlias})` 走同一条 `execute`（签名覆盖含 query 的目标），200 缺
+    `room_id`/`servers` 视为可重试，4xx 视为最终拒绝。
+  测试：`FederationHandler.test.ts` 新增 2 项（签名查询回 `{room_id, servers}`；未知 alias 404、非本部署服务的
+  alias 404、未签名 401、缺 `room_alias` 400），`outboundTransaction.test.ts` 新增 2 项（query 与签名往返、
+  缺字段重试与 4xx 分类），`destinations.test.ts` 6 项在新签名下不变。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

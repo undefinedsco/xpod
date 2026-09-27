@@ -85,6 +85,12 @@ export interface MembershipTemplateOutcome extends FederationCallOutcome {
   event?: Record<string, unknown>;
 }
 
+/** What a `/query/directory` request produced: the room an alias names, and its servers. */
+export interface DirectoryQueryOutcome extends FederationCallOutcome {
+  roomId?: string;
+  servers?: string[];
+}
+
 /** What a `/send_knock` request produced: the stripped state to show the knocking user. */
 export interface SendKnockOutcome extends FederationCallOutcome {
   knockRoomState?: Record<string, unknown>[];
@@ -516,6 +522,27 @@ export class MatrixFederationClient {
       return { status: 'retry', reason: `destination answered 200 without its own signature on the invite` };
     }
     return { status: 'ok', event, reason: 'ok' };
+  }
+
+  /**
+   * Ask a server which room one of its aliases names (`GET /query/directory`).
+   *
+   * The alias has to belong to the server being asked; a peer that asks elsewhere is asking a
+   * server that cannot know, and the answer is a 404 rather than a guess.
+   */
+  public async queryDirectory(input: {
+    destination: string;
+    roomAlias: string;
+  }): Promise<DirectoryQueryOutcome> {
+    const uri = `/_matrix/federation/v1/query/directory?${new URLSearchParams({ room_alias: input.roomAlias }).toString()}`;
+    const result = await this.execute({ destination: input.destination, method: 'GET', uri });
+    if (result.status !== 'ok') return result;
+    const roomId = isRecord(result.body) ? result.body.room_id : undefined;
+    const servers = isRecord(result.body) ? result.body.servers : undefined;
+    if (typeof roomId !== 'string' || !Array.isArray(servers)) {
+      return { status: 'retry', reason: 'destination answered 200 without a room_id and servers' };
+    }
+    return { status: 'ok', roomId, servers: servers.map(String), reason: 'ok' };
   }
 
   /** All three templates are the same request shape with a different endpoint and membership. */

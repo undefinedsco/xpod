@@ -67,6 +67,10 @@ export const MAX_FEDERATION_BODY_BYTES = 4 * 1024 * 1024;
 export interface FederationPodStore {
   acceptReceivedEvent(input: { event: Record<string, unknown>; context: MatrixStoreContext }): Promise<MatrixEventRecord>;
   protocolEvents(roomId: string, context: MatrixStoreContext): Promise<Record<string, unknown>[]>;
+  /** The room a Pod holds under a room alias, for `/query/directory`. */
+  findRoomByAlias(alias: string, context: MatrixStoreContext): Promise<{ roomId: string } | undefined>;
+  /** The servers with a joined member in a room, for `/query/directory`'s answer. */
+  roomServers(roomId: string, context: MatrixStoreContext): Promise<string[]>;
 }
 
 /** Fetching the auth chain of a deferred event from the server that sent it. */
@@ -131,6 +135,54 @@ export function registerFederationRoutes(server: ApiServer, options: FederationH
   server.put('/_matrix/federation/v2/send_leave/:roomId/:eventId', createSubmissionHandler(options, 'leave'), publicRoute);
   server.put('/_matrix/federation/v1/send_knock/:roomId/:eventId', createSubmissionHandler(options, 'knock'), publicRoute);
   server.put('/_matrix/federation/v2/invite/:roomId/:eventId', createInviteHandler(options), publicRoute);
+
+  // What a peer asks before it can join anything: which room an alias of ours names, and who else
+  // is in it.
+  server.get('/_matrix/federation/v1/query/directory', createDirectoryQueryHandler(options), publicRoute);
+}
+
+/**
+ * `GET /query/directory?room_alias=…`: the room an alias names, and the servers holding it.
+ *
+ * The alias carries the server it belongs to, and that is the Pod the answer comes from — an alias
+ * is a field on the room's own record, so no directory service is involved and no Pod is searched
+ * beyond the one the alias names. A peer is told which servers are in the room from the room's
+ * resolved state, which is the same selection the outbound path delivers to.
+ *
+ * The addressed name is the one in the alias, not `Host`: this is the one endpoint whose subject is
+ * a *server other than the one being talked to* in general, and the signed `destination` a peer
+ * writes is the server it is asking about. A peer that addressed somebody else fails the check,
+ * which is what a query about another server's alias should do.
+ */
+export function createDirectoryQueryHandler(options: FederationHandlerOptions): RouteHandler {
+  return async (request, response) => {
+    const alias = queryOf(request).get('room_alias');
+    if (!alias) return void fail(response, 400, 'M_MISSING_PARAM', 'room_alias is required');
+    const match = /^#(?<localpart>[^:]+):(?<serverName>.+)$/u.exec(alias);
+    if (!match?.groups) return void fail(response, 400, 'M_INVALID_PARAM', `${alias} is not a room alias`);
+
+    // The query is addressed to the alias's own server, which is where the room's record lives.
+    const serverName = match.groups.serverName;
+    const context = await contextForName(serverName, options);
+    if (!context) return void fail(response, 404, 'M_NOT_FOUND', `This deployment does not serve ${serverName}`);
+    const authentication = await authenticateXMatrixRequest({
+      authorization: headerValue(request.headers.authorization),
+      method: 'GET',
+      uri: requestTarget(request),
+      keys: options.keys,
+      serverName,
+    });
+    if (!authentication.valid || !authentication.origin) {
+      return void fail(response, 401, 'M_UNAUTHORIZED', authentication.reason);
+    }
+
+    const room = await options.store.findRoomByAlias(alias, context);
+    if (!room) return void fail(response, 404, 'M_NOT_FOUND', `No room is aliased ${alias}`);
+    sendJson(response, 200, {
+      room_id: room.roomId,
+      servers: await options.store.roomServers(room.roomId, context),
+    });
+  };
 }
 
 /**

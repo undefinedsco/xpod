@@ -757,6 +757,28 @@ export class PodMatrixStore {
   }
 
   /**
+   * The room a Pod holds under a room alias.
+   *
+   * This is what makes an alias answerable without a directory service: the room's own record is
+   * the index and the alias is a field on it. No membership check, because the caller is a peer
+   * asking which room an alias names — not a user reading a room they are not in.
+   */
+  public async findRoomByAlias(alias: string, context: MatrixStoreContext): Promise<MatrixRoomRecord | undefined> {
+    const db = await this.getDb(context);
+    return (await this.listRooms(db)).find(room => room.canonicalAlias === alias);
+  }
+
+  /**
+   * The servers with a joined member in a room: who a peer should talk to about it.
+   *
+   * Derived from the room's resolved state by the same selection the outbound path uses, so an
+   * answer about a room and a delivery to that room cannot disagree about who is in it.
+   */
+  public async roomServers(roomId: string, context: MatrixStoreContext): Promise<string[]> {
+    return eventDestinations({ state: await this.currentState(roomId, context) });
+  }
+
+  /**
    * The room's events as protocol PDUs.
    *
    * This is the read federation answers are built from: an inbound transaction resolves the
