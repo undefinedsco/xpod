@@ -323,6 +323,8 @@ export interface ApiContainerCradle {
   matrixSigningIdentities: import('../matrix/identityRegistry').MatrixSigningIdentityRegistry;
   /** Supplies a participant's own identity from their own Pod; absent disables it. */
   matrixParticipantIdentity: import('../matrix/PodMatrixStore').MatrixParticipantIdentityProvider | undefined;
+  /** Resolves, signs and queues outbound federation traffic; absent disables it. */
+  matrixOutboundDelivery: import('../matrix/federation/outboundDelivery').MatrixOutboundDelivery | undefined;
   matrixStore: PodMatrixStore;
   clientReconcilerCoordinator: ClientReconcilerCoordinator;
   serverGroupReconcilerService: ServerGroupReconcilerService;

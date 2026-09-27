@@ -674,6 +674,14 @@ export class PodMatrixStore {
     return this.serverGroupReconcilerService?.getQueue();
   }
 
+  /**
+   * The queue written events are handed to, for whoever drives delivery (a notification, a
+   * worker, an operator). Absent when this deployment does not federate.
+   */
+  public getOutbox(): MatrixFederationOutbox | undefined {
+    return this.outbound;
+  }
+
   private async getDb(context: MatrixStoreContext): Promise<Db> {
     if ((context as any)._matrixDb) {
       return (context as any)._matrixDb;

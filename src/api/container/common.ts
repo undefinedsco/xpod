@@ -102,6 +102,8 @@ import { PodMatrixStore } from '../matrix';
 import { matrixSigningIdentityRegistry } from '../matrix/identityRegistry';
 import { matrixSigningIdentityForPod } from '../matrix/identityProvisioning';
 import { createPodParticipantIdentityProvider } from '../matrix/podParticipantIdentity';
+import { createMatrixOutboundDelivery, nodeSrvRecords } from '../matrix/federation/outboundDelivery';
+import { promises as dns } from 'node:dns';
 import { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
@@ -707,7 +709,20 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService, matrixSigningIdentities, matrixParticipantIdentity }: ApiContainerCradle) => {
+    // The outbound path: where a server name is reached, which identity signs as the origin,
+    // and what is still owed. Absent without an identity of our own: a queue whose every
+    // batch would be abandoned is worse than no queue.
+    matrixOutboundDelivery: asFunction(({ config, matrixSigningIdentities }: ApiContainerCradle) => {
+      if (!config.matrixServiceIdentity) return undefined;
+      return createMatrixOutboundDelivery({
+        identities: matrixSigningIdentities,
+        fetch: globalThis.fetch,
+        // `.well-known` is preferred; SRV is the fallback the specification still allows.
+        resolveSrv: async name => nodeSrvRecords(await dns.resolveSrv(name)),
+      });
+    }).singleton(),
+
+    matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService, matrixSigningIdentities, matrixParticipantIdentity, matrixOutboundDelivery }: ApiContainerCradle) => {
       return new PodMatrixStore({
         serverGroupReconcilerService,
         podAccess: ownerPodAccess,
@@ -716,6 +731,7 @@ export function registerCommonServices(
         // without that identity would refuse their writes instead of signing nothing.
         identities: config.matrixServiceIdentity ? matrixSigningIdentities : undefined,
         participantIdentity: config.matrixServiceIdentity ? matrixParticipantIdentity : undefined,
+        outbound: matrixOutboundDelivery?.outbox,
         journal: new SqlMatrixEventJournal(db),
         serverName: (() => {
           try {

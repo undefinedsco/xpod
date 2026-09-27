@@ -510,10 +510,20 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   处理体（等价真实 HTTP 跳转）；房间状态与邀请跨 Pod 送达并被授权、Bob 的加入事件由 `bob.example`
   签名且 A 原样保存、Alice 的消息以相同 event_id 落到 B、**重放事务返回首次响应且不写第二次**。
   证据与门禁现状见[验收记录](matrix-collaboration-acceptance.md)的"跨部署闭环证据"。
-- **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 **HTTP 外壳与 Pod 归属解析**（处理体、
-  认证件、事务件、域名解析件都已就位；**剩下的阻塞点仍是路由归属**——见下方"待细化的实现事项"）、
-  **出站队列的调用点**（谁触发 flush、投递记录与控制 Pod 承载）、事务记录与控制 Pod 承载（去 SQL）、
-  状态与历史获取。
+- **已落地**（2026-09-27）：**出站路径接进了运行部署**（`federation/outboundDelivery.ts` + 容器）。
+  此前 `matrixStore` 在容器里**没有拿到 `outbound`**，整个出站实现只有测试在用（"生产里是死的"）。
+  现在容器注册 `matrixOutboundDelivery`：把**域名解析**（`.well-known` 优先、SRV 兜底，`node:dns` 的
+  答案用 `nodeSrvRecords` 改名成规范里的 target）、**按 origin 选身份签名**、**出站队列**装配成一件东西，
+  再把它的 `outbox` 交给 store；store 另加 `getOutbox()` 供触发器取用（与已有的 `getQueue()` 同一形状）。
+  **没有自己的身份就不装配**：一个每批都会被放弃的队列比没有队列更糟。测试
+  `outboundDelivery.test.ts` 5 项（入队→签名→按解析结果发出、`.well-known` 委派、无法签名的 origin
+  直接拒绝、SRV 兜底、dns 答案改名）与 `MatrixOutboundContainer.test.ts` 2 项（有身份时
+  `matrixStore.getOutbox()` 就是交付对象的队列——**这条链接最容易在重构里丢掉**；无身份时两者都是
+  undefined）。
+- **待建**：`PUT /_matrix/federation/v1/send/{txnId}`、`GET /event_auth/...`、`POST /get_missing_events/...`
+  三个端点的 **HTTP 外壳与 Pod 归属解析**（三个服务侧都已实现为纯函数/处理体；**剩下的阻塞点仍是路由
+  归属**——见下方"待细化的实现事项"）、**谁触发 flush**（队列已经接好，只差触发器）、
+  投递记录与控制 Pod 承载（去 SQL）、状态与历史获取。
 - **已落地**（2026-09-27）：**逐条拒绝不再等于已投递**（缺口 2 的修复）。事务返回 200 只回答"这笔
   事务收到了"，不回答"每条 PDU 都被接受了"，所以发送方现在按 per-PDU 结果拆分：被接受的落地即完成，
   被拒的**换一个新 txnId** 重新入队（对端会重放旧 txnId 的存档应答，所以必须换 id），带**有界退避**
