@@ -322,3 +322,29 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
 ① 用户同意后用本分支重启 3000；② 用独立 env（另一些端口 + 独立数据目录 + 独立凭据，参照
 `SOLID_ENV_FILE=.test-data/integration/lite.env`）起第二个栈，再按上表逐条探测（`/version`、`/key/v2/server` 按名字发布、
 `/send` 无签名 401、`/query/directory` 无签名 401、`/state` 404/401 等）。
+
+## 实现对照表（登记册 → 代码 → 证据）
+
+用途：把登记册里每条**已定**的事落到文件与测试上，便于逐条审计"目标是否达成"；**未达成**的四项单列在末尾。
+
+| 登记册条目 | 实现 | 证据 |
+| --- | --- | --- |
+| 事件格式、ID、内容哈希、reference hash、签名与验签 | `src/api/matrix/protocol/eventIntegrity.ts`、`persistedEvent.ts` | `protocol/eventIntegrity`/`persistedEvent` 测试；`serverKeys.test.ts` 9 项（含篡改、过期密钥窗口） |
+| v11 事件授权规则 | `src/api/matrix/protocol/authRules.ts` | `protocol/authRules.test.ts`；`federation/inboundPdu.test.ts` 7 项 |
+| v2 状态解析（分叉收敛） | `src/api/matrix/protocol/stateResolution.ts`、`roomState.ts` | `protocol/stateResolution.test.ts`、`roomState.test.ts`（含分叉） |
+| 房间事件图（`prev_events`/`auth_events`/`depth`） | `src/api/matrix/protocol/roomGraph.ts`、`storedEvent.ts` | `protocol/roomGraph.test.ts` 11 项 |
+| 参与者身份与密钥归属（MXID 派生、Pod 内封存） | `protocol/serverName.ts`、`identityRegistry.ts`、`signingKeyStore.ts`、`identityProvisioning.ts`、`podParticipantIdentity.ts` | `participantProvisioning` 7 项、`podParticipantIdentity` 7 项、`serverName` 4 项 |
+| server name → Pod 归属（派生、歧义即拒绝） | `src/api/matrix/participantRoutes.ts` | `participantRoutes.test.ts` 7 项 + 容器 1 项 |
+| 密钥发布（按被寻址名字）与获取（含委派） | `handlers/MatrixHandler.ts`、`federation/serverKeys.ts` | `MatrixHandler.test.ts`（alice 的名字得 alice 的密钥、未知名字 404）；`twoDeployment` 端到端取密钥验事件 |
+| 出站事务（签名、txnId 语义、退避、拒绝重试） | `federation/outboundTransaction.ts`、`outboundQueue.ts`、`outboundSender.ts` | 三个文件各 45/24/7 项；`twoDeployment` 断网恢复 2 项 |
+| 入站事务（去重、首次应答、释放未完成预留） | `federation/inboundTransaction.ts`、`inboundRoute.ts` | `inboundTransaction` 15 项（含并发预留唯一赢家）、`inboundRoute` 8 项 |
+| 缺失事件、历史、状态读取 | `federation/missingEvents.ts`、`roomHistory.ts`、`roomStateSnapshot.ts`、`authChain.ts` | 各 7/6/7/5 项；`twoDeployment` 端到端（读取端点 + 经 HTTP 补取链） |
+| 加入/离开/敲门/邀请握手（服务侧 + 客户端） | `federation/membershipHandshake.ts`、`strippedState.ts`、`remoteJoin.ts` | `membershipHandshake` 26 项、`strippedState` 3 项、`remoteJoin` 4 项；`twoDeployment` 端到端加入（含 alias） |
+| 目录、资料、版本查询 | `FederationHandler.ts`（+ `outboundTransaction.queryDirectory/queryProfile/getVersion`） | `FederationHandler` 29 项、`outboundTransaction` 49 项 |
+| 传输层（委派下的 SNI/Host、真实 TLS） | `federation/federationFetch.ts` | `federationFetch` 5 项 + `federationTls` 2 项 |
+| 有界同步的变更信号（订阅 → sync） | `notifications/roomChangeSubscription.ts`、`roomChangeTracker.ts`、`roomWatchService.ts` | 各 7/7/9 项；`syncChangeSource` 6 项、`syncBoundedReads` 5 项、`scaleOperations` 4 项 |
+| 远端加入接线（按 id 与 alias） | `PodMatrixStore.joinRoom/joinRemoteRoom/resolveRoomId` | `remoteJoinStore.test.ts` 4 项；`twoDeployment` 端到端两项 |
+| 授权判定不跨请求复用 | `PodMatrixStore.agentGrants/authorize` | `agentGrantFreshness.test.ts` 2 项 |
+
+**未达成（等拍板，见登记册开头）**：models 侧 keyed 控制记录表（→ 事务存档与投递批次落 Pod、"仅凭 Pod 恢复"）、
+grant 索取流程、D6 Agent 归属、真实实例验收（另起栈或重启 3000）。另：`full` 门禁因本机 Docker Desktop 无响应未能运行。
