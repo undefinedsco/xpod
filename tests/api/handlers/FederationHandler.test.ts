@@ -1,9 +1,10 @@
 import { request as httpRequest } from 'node:http';
 import { generateKeyPairSync } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiServer } from '../../../src/api/ApiServer';
 import { AuthMiddleware } from '../../../src/api/middleware/AuthMiddleware';
 import { registerFederationRoutes } from '../../../src/api/handlers/FederationHandler';
+import { MatrixError } from '../../../src/api/matrix/MatrixError';
 import { InMemoryMatrixInboundTransactionStore } from '../../../src/api/matrix/federation/inboundTransaction';
 import { buildXMatrixAuthorization } from '../../../src/api/matrix/federation/requestAuth';
 import { parseServerKeyResponse, type MatrixServerKeySource } from '../../../src/api/matrix/federation/serverKeys';
@@ -947,6 +948,34 @@ describe('the profile query', () => {
       });
       expect(noUser.status).toBe(400);
       expect(noUser.body.errcode).toBe('M_MISSING_PARAM');
+    } finally {
+      await running.server.stop();
+    }
+  });
+});
+
+describe('a transaction this deployment cannot write', () => {
+  it('reports the Pod\'s refusal as a decision, not as an unknown failure', async () => {
+    const room = heldRoom();
+    const running = await harness({ events: [ room.create, room.join, room.rules ] });
+    // Signed by the identity the shell verifies with, which is the one the harness minted.
+    const membership = peerJoin({ room, peer: running.peer });
+    try {
+      // What the store throws when the routed participant has granted this deployment nothing:
+      // the event cannot be written, and saying "unknown error" would invite the peer to retry
+      // something that will never succeed.
+      vi.spyOn(running.store.store, 'acceptReceivedEvent').mockRejectedValue(
+        new MatrixError(403, 'M_FORBIDDEN', `This deployment holds no grant for ${POD}`),
+      );
+      const request = transaction({ peer: running.peer, destination: SERVED, txnId: 'txn-grant', pdus: [ membership ] });
+      const answer = await send({
+        port: running.port, method: 'PUT', path: '/_matrix/federation/v1/send/txn-grant',
+        host: SERVED, authorization: request.authorization, body: request.body,
+      });
+
+      expect(answer.status).toBe(403);
+      expect(answer.body).toMatchObject({ errcode: 'M_FORBIDDEN' });
+      expect(String(answer.body.error)).toMatch(/holds no grant/u);
     } finally {
       await running.server.stop();
     }

@@ -988,6 +988,23 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
     `M_MISSING_PARAM`；未验签 → 401。
   测试：`FederationHandler.test.ts` 新增 2 项（认领自己的用户并回空资料；非本部署用户 404、未签名 401、缺参数 400），
   `outboundTransaction.test.ts` 新增 2 项（query 与签名往返、空资料视为成功与 403 视为最终拒绝）。
+- **已落地**（2026-09-27）：**未完成的事务不再永久占位**（`handleInboundTransaction` +
+  `MatrixInboundTransactionStore.release`）。
+  - **缺陷**：处理过程中任何一步抛错（最典型的是"这条 Pod 没有授权"——store 会抛 403）都会让预留停在"处理中"，于是
+    对端的每次重试都拿到 503 "Transaction is still being processed"，**永远拿不到真正的原因**，也永远不会成功。
+  - **处置**：处理体整体包在 try/catch 里，失败就 `release` 掉这次预留并把错误继续抛出。释放是安全的：重试会重跑整条
+    流水线，而**接受一条事件按 event id 幂等**，所以上一次已经写进去的事件不会被写第二遍。真正"正在处理中"的并发
+    重放仍然回 503（那条路径在预留阶段，不受影响）。
+  - **失败原因如实上报**：Pod 写不进去时 store 抛 `MatrixError(403, …)`，`handleFederationSend` 按它的
+    status/errcode 回答（外壳不会把它变成 500）——对端看到的是"这个部署写不进这个 Pod"（4xx，不再重试），而不是一个
+    可以无限重试的未知错误。
+  - **grant 的现状（记录，不是实现缺口）**：授权机制已经存在——用户可以通过 `TaskCredentialHandler` 把自己的 Pod
+    interface key 交给部署（`TaskCredentialStore.grant`，按 `(owner, issuer)` 幂等）。缺的是**在参与者开始用 Matrix
+    时向他索取这份授权的产品流程**（什么时机问、界面上怎么表达"让这个部署替你写收到的消息"）。在那之前，收到的事件
+    会以 403 明确失败，而不是悄悄写进别人的 Pod。
+  测试：`inboundTransaction.test.ts` 新增 3 项（写失败后释放并可重试、已完成的重放仍不重复处理、记录响应本身失败也
+  释放、真正在处理中的并发重放仍回 503），`FederationHandler.test.ts` 新增 1 项（Pod 无授权时 HTTP 回 403
+  `M_FORBIDDEN` 并带上"哪个 Pod"的原因，而不是 500）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

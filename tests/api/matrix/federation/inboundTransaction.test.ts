@@ -270,3 +270,68 @@ describe('inbound transactions', () => {
     expect(await store.find('scope', { origin: 'other.example', transactionId: 'txn' })).toBeUndefined();
   });
 });
+
+describe('a transaction that did not finish', () => {
+  it('releases the reservation, so a retry tries again instead of meeting an unfinished transaction', async () => {
+    const server = remoteServer();
+    const prefix = roomPrefix(server);
+    const store = new InMemoryMatrixInboundTransactionStore();
+    const pdu = message(server, prefix, 'first attempt');
+    let failing = true;
+    const acceptEvent = vi.fn(async () => {
+      if (failing) throw new Error('the Pod refused the write');
+    });
+    const run = () => handleInboundTransaction({
+      scope: 'https://pod.example/alice/', origin: REMOTE, transactionId: 'txn-1', pdus: [ pdu ],
+      store, keys: server.source, resolveAuthEvents: async () => prefix.auth, acceptEvent, now: () => NOW,
+    });
+
+    await expect(run()).rejects.toThrow(/refused the write/u);
+    // The reservation is gone, so the retry is processed rather than answered as "still being
+    // processed" — which is what a sender would otherwise meet for ever.
+    failing = false;
+    await expect(run()).resolves.toMatchObject({ pdus: { [String(computeEventId(pdu))]: {} } });
+    expect(acceptEvent).toHaveBeenCalledTimes(2);
+
+    // And a later replay is answered from the record the successful attempt left.
+    await expect(run()).resolves.toMatchObject({ pdus: { [String(computeEventId(pdu))]: {} } });
+    expect(acceptEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases the reservation when the response could not be recorded either', async () => {
+    const server = remoteServer();
+    const prefix = roomPrefix(server);
+    const store = new InMemoryMatrixInboundTransactionStore();
+    const complete = vi.spyOn(store, 'complete').mockRejectedValueOnce(new Error('the record store is down'));
+    const pdu = message(server, prefix, 'unrecordable');
+
+    await expect(handleInboundTransaction({
+      scope: 'https://pod.example/alice/', origin: REMOTE, transactionId: 'txn-2', pdus: [ pdu ],
+      store, keys: server.source, resolveAuthEvents: async () => prefix.auth, acceptEvent: async () => undefined, now: () => NOW,
+    })).rejects.toThrow(/record store is down/u);
+
+    // Nothing is left behind, so the retry completes normally.
+    complete.mockRestore();
+    await expect(handleInboundTransaction({
+      scope: 'https://pod.example/alice/', origin: REMOTE, transactionId: 'txn-2', pdus: [ pdu ],
+      store, keys: server.source, resolveAuthEvents: async () => prefix.auth, acceptEvent: async () => undefined, now: () => NOW,
+    })).resolves.toMatchObject({ pdus: { [String(computeEventId(pdu))]: {} } });
+  });
+
+  it('still answers a transaction that is genuinely in progress with "retry"', async () => {
+    const server = remoteServer();
+    const prefix = roomPrefix(server);
+    const store = new InMemoryMatrixInboundTransactionStore();
+    const pdu = message(server, prefix, 'in flight');
+    // A first attempt that has reserved but not finished: nothing releases it here, which is the
+    // state a concurrent duplicate sees.
+    await store.reserve('https://pod.example/alice/', {
+      origin: REMOTE, transactionId: 'txn-3', payloadFingerprint: fingerprintPdus([ pdu ]), receivedAt: new Date(NOW).toISOString(),
+    });
+
+    await expect(handleInboundTransaction({
+      scope: 'https://pod.example/alice/', origin: REMOTE, transactionId: 'txn-3', pdus: [ pdu ],
+      store, keys: server.source, resolveAuthEvents: async () => prefix.auth, acceptEvent: async () => undefined, now: () => NOW,
+    })).rejects.toThrow(/still being processed/u);
+  });
+});

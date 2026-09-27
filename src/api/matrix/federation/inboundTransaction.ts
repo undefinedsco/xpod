@@ -56,6 +56,15 @@ export interface MatrixInboundTransactionStore {
   ): Promise<{ record: MatrixInboundTransactionRecord; created: boolean }>;
   /** Attach the response the first attempt produced. */
   complete(scope: string, key: { origin: string; transactionId: string }, response: MatrixSendResponse, completedAt: string): Promise<void>;
+  /**
+   * Forget a first attempt that did not finish, so the sender's retry may try again.
+   *
+   * A reservation whose processing threw would otherwise answer "still being processed" for ever,
+   * and the sender would retry into a transaction nobody is working on. Releasing is safe because
+   * the retry re-runs the whole pipeline and accepting an event is idempotent by event id: what the
+   * failed attempt already wrote stays as it is, and is not written twice.
+   */
+  release(scope: string, key: { origin: string; transactionId: string }): Promise<void>;
   find(scope: string, key: { origin: string; transactionId: string }): Promise<MatrixInboundTransactionRecord | undefined>;
 }
 
@@ -97,6 +106,10 @@ export class InMemoryMatrixInboundTransactionStore implements MatrixInboundTrans
     if (!stored) throw new MatrixError(500, 'M_UNKNOWN', 'Matrix inbound transaction disappeared');
     stored.response = response;
     stored.completedAt = completedAt;
+  }
+
+  public async release(scope: string, key: { origin: string; transactionId: string }): Promise<void> {
+    this.records.delete(transactionKey(scope, key.origin, key.transactionId));
   }
 
   public async find(
@@ -166,27 +179,36 @@ export async function handleInboundTransaction(input: HandleInboundTransactionIn
   }
 
   const pdus: Record<string, Record<string, unknown>> = {};
-  for (const [ index, pdu ] of input.pdus.entries()) {
-    const authEventIds = referencedAuthEventIds(pdu);
-    const authEvents = authEventIds.length > 0 ? await input.resolveAuthEvents(authEventIds, pdu) : [];
-    let result = await validateInboundPdu(pdu, { keys: input.keys, authEvents, now });
-    if (result.outcome === 'deferred' && input.fetchAuthChain && result.eventId) {
-      // The events that authorise this one are not here. Asking the sender is the
-      // specification's answer, and it is the only way a PDU that arrives before its
-      // dependencies can ever be accepted instead of merely reported.
-      result = await fetchAndRetry(input, pdu, result, authEventIds, now);
+  try {
+    for (const [ index, pdu ] of input.pdus.entries()) {
+      const authEventIds = referencedAuthEventIds(pdu);
+      const authEvents = authEventIds.length > 0 ? await input.resolveAuthEvents(authEventIds, pdu) : [];
+      let result = await validateInboundPdu(pdu, { keys: input.keys, authEvents, now });
+      if (result.outcome === 'deferred' && input.fetchAuthChain && result.eventId) {
+        // The events that authorise this one are not here. Asking the sender is the
+        // specification's answer, and it is the only way a PDU that arrives before its
+        // dependencies can ever be accepted instead of merely reported.
+        result = await fetchAndRetry(input, pdu, result, authEventIds, now);
+      }
+      if (result.outcome === 'accepted' && result.event && result.eventId) {
+        await input.acceptEvent(result.event);
+        pdus[result.eventId] = {};
+        continue;
+      }
+      pdus[result.eventId ?? `unknown-${index}`] = { error: result.reason };
     }
-    if (result.outcome === 'accepted' && result.event && result.eventId) {
-      await input.acceptEvent(result.event);
-      pdus[result.eventId] = {};
-      continue;
-    }
-    pdus[result.eventId ?? `unknown-${index}`] = { error: result.reason };
+    const response: MatrixSendResponse = { pdus };
+    await input.store.complete(input.scope, { origin: input.origin, transactionId: input.transactionId },
+      response, new Date(now()).toISOString());
+    return response;
+  } catch (error) {
+    // Nothing here is worth keeping: the attempt did not finish, so the reservation goes and the
+    // sender's retry gets to try again instead of meeting its own unfinished transaction. Releasing
+    // is safe because the retry re-runs the whole pipeline and accepting an event is idempotent by
+    // event id — what the failed attempt already wrote stays as it is, and is not written twice.
+    await input.store.release(input.scope, { origin: input.origin, transactionId: input.transactionId });
+    throw error;
   }
-  const response: MatrixSendResponse = { pdus };
-  await input.store.complete(input.scope, { origin: input.origin, transactionId: input.transactionId },
-    response, new Date(now()).toISOString());
-  return response;
 }
 
 /**
