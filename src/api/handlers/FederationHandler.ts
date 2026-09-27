@@ -46,6 +46,7 @@ import {
   type MembershipKind,
 } from '../matrix/federation/membershipHandshake';
 import { eventReferenceIds } from '../matrix/protocol/eventReferences';
+import { serverNameOf } from '../matrix/protocol/authRules';
 import { deploymentVersion, IMPLEMENTATION_NAME } from '../../runtime/deploymentVersion';
 import type { FederationSendTarget } from '../matrix/federation/inboundRoute';
 import type { InMemoryMatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
@@ -72,6 +73,10 @@ export interface FederationPodStore {
   findRoomByAlias(alias: string, context: MatrixStoreContext): Promise<{ roomId: string } | undefined>;
   /** The servers with a joined member in a room, for `/query/directory`'s answer. */
   roomServers(roomId: string, context: MatrixStoreContext): Promise<string[]>;
+  /** The MXID a WebID has under a server name, so a query about a user can be recognised. */
+  matrixUserIdFor(webId: string, serverName: string): string;
+  /** The account behind a context, for the profile query. */
+  getAccount(context: MatrixStoreContext): Promise<{ displayName?: string; avatarUrl?: string }>;
 }
 
 /** Fetching the auth chain of a deferred event from the server that sent it. */
@@ -149,6 +154,50 @@ export function registerFederationRoutes(server: ApiServer, options: FederationH
   // The first thing a peer may ask, and the only endpoint here that is deliberately unsigned: it
   // says which implementation is answering, not anything that needs authenticating.
   server.get('/_matrix/federation/v1/version', createVersionHandler(options), publicRoute);
+  server.get('/_matrix/federation/v1/query/profile', createProfileQueryHandler(options), publicRoute);
+}
+
+/**
+ * `GET /query/profile?user_id=…&field=…`: what this deployment publishes about one of its users.
+ *
+ * The user has to be ours, and "ours" is computed rather than looked up: an MXID here is derived
+ * from the participant's WebID (`@u_<sha256(webId)>:<server name>`), so recognising one is a
+ * comparison against each served participant — the same rule the store uses when it names a sender.
+ *
+ * **The answer is deliberately empty today.** Xpod has no federated profile: a display name would
+ * have to come from the participant's Solid profile, and publishing that to any peer that asks is a
+ * decision about the person's data, not a formatting choice — while an avatar would have to be an
+ * `mxc://` URI and this deployment has no media repository (it is on the register's "not doing"
+ * list). The endpoint still answers instead of refusing, with the fields left out, which is what
+ * the specification allows for a field a user has not set; when a profile source is decided, this
+ * is where it is published.
+ */
+export function createProfileQueryHandler(options: FederationHandlerOptions): RouteHandler {
+  return async (request, response) => {
+    const userId = queryOf(request).get('user_id');
+    if (!userId) return void fail(response, 400, 'M_MISSING_PARAM', 'user_id is required');
+    const serverName = serverNameOf(userId);
+    if (!serverName) return void fail(response, 400, 'M_INVALID_PARAM', `${userId} is not a user id`);
+    const context = await contextForName(serverName, options);
+    if (!context) return void fail(response, 404, 'M_NOT_FOUND', `This deployment does not serve ${serverName}`);
+    const authentication = await authenticateXMatrixRequest({
+      authorization: headerValue(request.headers.authorization),
+      method: 'GET',
+      uri: requestTarget(request),
+      keys: options.keys,
+      serverName,
+    });
+    if (!authentication.valid || !authentication.origin) {
+      return void fail(response, 401, 'M_UNAUTHORIZED', authentication.reason);
+    }
+    if (options.store.matrixUserIdFor(context.webId, serverName) !== userId) {
+      return void fail(response, 404, 'M_NOT_FOUND', `${userId} is not a user of ${serverName}`);
+    }
+
+    // Nothing is published, so the answer is the empty profile whether a peer asked for one field
+    // or for everything public: an unset field is omitted, which is what the specification allows.
+    sendJson(response, 200, {});
+  };
 }
 
 /**

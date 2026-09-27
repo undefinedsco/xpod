@@ -1840,9 +1840,17 @@ export class PodMatrixStore {
   }
 
   private getMatrixUserId(context: MatrixStoreContext): string {
-    const serverName = this.getServerName(context);
-    const localpart = `u_${this.hash(context.webId)}`;
-    return `@${localpart}:${serverName}`;
+    return this.matrixUserIdFor(context.webId, this.getServerName(context));
+  }
+
+  /**
+   * The MXID a WebID has under a server name: the derivation itself, so a reader that has to
+   * recognise one of our users (a peer asking about a profile, say) compares against the same rule
+   * instead of keeping a second copy of it. There is no table of MXIDs anywhere, which is why the
+   * question "is this user ours" is answered by computing, not by looking up.
+   */
+  public matrixUserIdFor(webId: string, serverName: string): string {
+    return `@u_${this.hash(webId)}:${serverName}`;
   }
 
   /**

@@ -85,6 +85,11 @@ export interface MembershipTemplateOutcome extends FederationCallOutcome {
   event?: Record<string, unknown>;
 }
 
+/** What a `/query/profile` request produced: the fields the queried server publishes. */
+export interface ProfileQueryOutcome extends FederationCallOutcome {
+  profile?: Record<string, unknown>;
+}
+
 /** What a `/query/directory` request produced: the room an alias names, and its servers. */
 export interface DirectoryQueryOutcome extends FederationCallOutcome {
   roomId?: string;
@@ -543,6 +548,26 @@ export class MatrixFederationClient {
       return { status: 'retry', reason: 'destination answered 200 without a room_id and servers' };
     }
     return { status: 'ok', roomId, servers: servers.map(String), reason: 'ok' };
+  }
+
+  /**
+   * Ask a server what it publishes about one of its users (`GET /query/profile`).
+   *
+   * The user has to belong to the server being asked; the answer may legitimately be empty, because
+   * a field a user has not set is omitted rather than invented.
+   */
+  public async queryProfile(input: {
+    destination: string;
+    userId: string;
+    field?: 'displayname' | 'avatar_url';
+  }): Promise<ProfileQueryOutcome> {
+    const query = new URLSearchParams({ user_id: input.userId });
+    if (input.field !== undefined) query.set('field', input.field);
+    const uri = `/_matrix/federation/v1/query/profile?${query.toString()}`;
+    const result = await this.execute({ destination: input.destination, method: 'GET', uri });
+    if (result.status !== 'ok') return result;
+    if (!isRecord(result.body)) return { status: 'retry', reason: 'destination answered 200 without a profile' };
+    return { status: 'ok', profile: result.body, reason: 'ok' };
   }
 
   /** All three templates are the same request shape with a different endpoint and membership. */

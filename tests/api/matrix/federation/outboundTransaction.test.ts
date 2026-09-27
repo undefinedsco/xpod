@@ -733,3 +733,30 @@ describe('asking which room an alias names', () => {
       .resolves.toMatchObject({ status: 'rejected' });
   });
 });
+
+describe('asking about a user\'s profile', () => {
+  it('signs the query and reads back whatever the server publishes', async () => {
+    const { client: instance, captured, identity } = client({
+      respond: () => new Response(JSON.stringify({ displayname: 'Alice' }), { status: 200 }),
+    });
+    const outcome = await instance.queryProfile({ destination: THEM, userId: `@u_x:${THEM}`, field: 'displayname' });
+
+    expect(outcome).toMatchObject({ status: 'ok', profile: { displayname: 'Alice' } });
+    const [ sent ] = captured;
+    const uri = `/_matrix/federation/v1/query/profile?${new URLSearchParams({ user_id: `@u_x:${THEM}`, field: 'displayname' }).toString()}`;
+    expect(sent.url).toBe(`https://${THEM}:8448${uri}`);
+    await expect(authenticateXMatrixRequest({
+      authorization: sent.headers.authorization, method: 'GET', uri, keys: peerKeySource(identity), serverName: THEM,
+    })).resolves.toMatchObject({ valid: true, origin: US });
+  });
+
+  it('takes an empty profile as an answer, and a refusal as final', async () => {
+    const empty = client({ respond: () => new Response('{}', { status: 200 }) });
+    await expect(empty.client.queryProfile({ destination: THEM, userId: `@u_x:${THEM}` }))
+      .resolves.toMatchObject({ status: 'ok', profile: {} });
+
+    const refused = client({ respond: () => new Response(JSON.stringify({ errcode: 'M_FORBIDDEN' }), { status: 403 }) });
+    await expect(refused.client.queryProfile({ destination: THEM, userId: `@u_x:${THEM}` }))
+      .resolves.toMatchObject({ status: 'rejected' });
+  });
+});

@@ -51,6 +51,11 @@ function podStore(
   const accepted: Record<string, unknown>[] = [];
   const contexts: MatrixStoreContext[] = [];
   const store: FederationPodStore = {
+    // The MXID derivation the store owns, so the query recognises a user the same way it names one.
+    matrixUserIdFor: (webId, serverName) => `@u_${webId.includes('alice') ? 'alice' : 'other'}:${serverName}`,
+    async getAccount() {
+      return { displayName: 'Alice', avatarUrl: 'https://pod.example/alice/avatar.png' };
+    },
     async findRoomByAlias(alias) {
       const roomId = directory.aliases?.[alias];
       return roomId === undefined ? undefined : { roomId };
@@ -890,6 +895,60 @@ describe('saying who is answering', () => {
       expect(server_.version).not.toBe('unknown');
     } finally {
       await server.stop();
+    }
+  });
+});
+
+describe('the profile query', () => {
+  it('recognises one of its own users, and publishes nothing about them yet', async () => {
+    const running = await harness();
+    try {
+      const uri = `/_matrix/federation/v1/query/profile?${new URLSearchParams({ user_id: `@u_alice:${SERVED}` }).toString()}`;
+      const answer = await send({
+        port: running.port, method: 'GET', path: uri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri }),
+      });
+
+      // A well-formed answer with the fields left out: Xpod has no federated profile, and an
+      // unset field is omitted rather than invented (the specification allows exactly this).
+      expect(answer.status).toBe(200);
+      expect(answer.body).toEqual({});
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('refuses a user that is not one of its own, and requires the parameter and a signature', async () => {
+    const running = await harness();
+    try {
+      const stranger = `@u_somebody:${SERVED}`;
+      const uri = `/_matrix/federation/v1/query/profile?${new URLSearchParams({ user_id: stranger }).toString()}`;
+      const unknown = await send({
+        port: running.port, method: 'GET', path: uri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri }),
+      });
+      expect(unknown.status).toBe(404);
+      expect(unknown.body.errcode).toBe('M_NOT_FOUND');
+
+      // A user of another server is not this deployment's to answer about.
+      const elsewhereUri = `/_matrix/federation/v1/query/profile?${new URLSearchParams({ user_id: `@u_x:${PEER}` }).toString()}`;
+      const elsewhere = await send({
+        port: running.port, method: 'GET', path: elsewhereUri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: PEER, uri: elsewhereUri }),
+      });
+      expect(elsewhere.status).toBe(404);
+
+      const unsigned = await send({ port: running.port, method: 'GET', path: uri, host: SERVED });
+      expect(unsigned.status).toBe(401);
+
+      const noUser = await send({
+        port: running.port, method: 'GET', path: '/_matrix/federation/v1/query/profile', host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri: '/_matrix/federation/v1/query/profile' }),
+      });
+      expect(noUser.status).toBe(400);
+      expect(noUser.body.errcode).toBe('M_MISSING_PARAM');
+    } finally {
+      await running.server.stop();
     }
   });
 });
