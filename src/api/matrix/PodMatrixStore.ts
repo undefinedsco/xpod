@@ -52,6 +52,33 @@ const schema = {
   delivery: deliveryResource,
 };
 
+/**
+ * Provisioning a participant's own signing identity when they enter a room.
+ *
+ * Which participants a deployment serves as their own server is a deployment policy;
+ * *when* it happens follows from the data: a participant becomes part of a room's
+ * history with their join event, and that event is signed by the server in their
+ * `sender`. Provisioning after the fact would leave the same person with two MXIDs in
+ * one room, so this runs before their first membership event is written.
+ */
+export interface MatrixParticipantIdentityRequest {
+  /** The participant about to enter the room. */
+  webId: string;
+  /** The Pod this write targets; their own Pod may differ when a shared room Pod is selected. */
+  targetPodUrl?: string;
+  context: MatrixStoreContext;
+}
+
+export interface MatrixParticipantIdentityProvider {
+  /**
+   * Make sure the participant has a signing identity this deployment may use, or return
+   * without one when this deployment does not serve them (they stay on the deployment's
+   * own server name). Throwing aborts the write: a join recorded under one identity and
+   * later moved to another is worse than a refused join.
+   */
+  ensureParticipantIdentity(input: MatrixParticipantIdentityRequest): Promise<void>;
+}
+
 export interface PodMatrixStoreOptions {
   podAccess?: PodAccessFetchProvider;
   journal?: MatrixEventJournal;
@@ -67,6 +94,8 @@ export interface PodMatrixStoreOptions {
    * trades repeat replays for memory; the default bounds it at 64 rooms.
    */
   stateCacheLimit?: number;
+  /** Supplies a participant's own signing identity as they enter a room. */
+  participantIdentity?: MatrixParticipantIdentityProvider;
 }
 
 type Db = any;
@@ -132,6 +161,7 @@ export class PodMatrixStore {
   private readonly podAccess?: PodAccessFetchProvider;
   private readonly journal: MatrixEventJournal;
   private readonly identities?: MatrixSigningIdentitySource;
+  private readonly participantIdentity?: MatrixParticipantIdentityProvider;
   private readonly stateCache = new Map<string, MatrixRoomStateReplay>();
   private readonly stateCacheLimit: number;
   private readonly logger = getLoggerFor(this);
@@ -143,6 +173,7 @@ export class PodMatrixStore {
     this.podAccess = options.podAccess;
     this.journal = options.journal ?? new InMemoryMatrixEventJournal();
     this.identities = options.identities;
+    this.participantIdentity = options.participantIdentity;
     this.stateCacheLimit = options.stateCacheLimit ?? STATE_CACHE_LIMIT;
     if (!Number.isSafeInteger(this.stateCacheLimit) || this.stateCacheLimit < 0) {
       throw new MatrixError(500, 'M_UNKNOWN', 'stateCacheLimit must be a non-negative integer');
@@ -174,6 +205,7 @@ export class PodMatrixStore {
     // room whose participants are on different servers (the distributed target) must
     // not opt out, so only an explicit `false` is written.
     const federate = input.creation_content?.['m.federate'] !== false;
+    await this.ensureParticipantIdentity(context);
     const sender = this.getMatrixUserId(context);
     const now = Date.now();
     const roomId = this.generateRoomId(context);
@@ -292,13 +324,24 @@ export class PodMatrixStore {
     const db = await this.getDb(context);
     const roomId = await this.resolveRoomId(db, roomIdOrAlias);
     const room = await this.roomSource(db, roomId, context);
+    const before = this.getMatrixUserId(context);
+    let existing = await this.findLatestStateEvent(db, roomId, 'm.room.member', before, context);
+    if (existing?.content.membership === 'join') return { roomId };
+
+    // Entering the room is what makes the participant part of its history, so their own
+    // signing identity has to exist before the join event names them — and provisioning
+    // can *change* the MXID they are known by, so membership is looked up again under the
+    // identity the event will actually carry.
+    await this.ensureParticipantIdentity(context);
     const sender = this.getMatrixUserId(context);
-    const existing = await this.findLatestStateEvent(db, roomId, 'm.room.member', sender, context);
+    const banned = existing?.content.membership === 'ban';
+    if (sender !== before) existing = await this.findLatestStateEvent(db, roomId, 'm.room.member', sender, context);
     if (existing?.content.membership === 'join') return { roomId };
     if (existing?.content.membership !== 'invite' && room.author !== context.webId) {
       throw new MatrixError(403, 'M_FORBIDDEN', 'An invitation is required');
     }
-    if (existing?.content.membership === 'ban') throw new MatrixError(403, 'M_FORBIDDEN', 'Banned from room');
+    // A ban under either identity still blocks: provisioning must not be a way around one.
+    if (banned || existing?.content.membership === 'ban') throw new MatrixError(403, 'M_FORBIDDEN', 'Banned from room');
     await this.appendMembershipEvent(db, roomId, sender, 'join', context);
     return { roomId };
   }
@@ -1501,6 +1544,20 @@ export class PodMatrixStore {
     return this.stringValue(content.routeTargetAgent)
       ?? this.stringValue(content['co.undefineds.routeTargetAgent'])
       ?? this.stringValue(content['co.undefineds.route_target_agent']);
+  }
+
+  /**
+   * Let the deployment supply this participant's own signing identity before any event
+   * of theirs is written. Absent hook means "the deployment serves nobody individually",
+   * which keeps single-identity deployments exactly as they were.
+   */
+  private async ensureParticipantIdentity(context: MatrixStoreContext): Promise<void> {
+    if (!this.participantIdentity) return;
+    await this.participantIdentity.ensureParticipantIdentity({
+      webId: context.webId,
+      targetPodUrl: context.podUrl,
+      context,
+    });
   }
 
   private getMatrixUserId(context: MatrixStoreContext): string {

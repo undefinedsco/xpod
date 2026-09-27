@@ -97,42 +97,50 @@ Matrix 原生按参与房间的 homeserver 复制事件，一个 homeserver 可�
   供审计与轮换；`MatrixSigningIdentityRegistry.register` 让运行中的部署能把新身份挂上，
   能力判定随之生效。测试 `identityProvisioning.test.ts` 含端到端闭环：供给 → 注册 → Alice 的
   MXID/room_id 变为 `alice.example` → 事件由该身份签名 → 用其发布公钥验签通过。
-- **仍待定/待建**：
-  1. **供给策略**——哪些参与者由本部署作为其自身 server 提供服务、在什么时机供给（首次写入时
-     惰性供给、管理端显式供给、还是配置白名单）。这决定"本部署可以替谁签名"，属于部署决策，
-     代码只提供幂等入口，不替用户猜；
-  2. **绑定持久化**（服务身份契约 §2.2 第 4 步）：WebID ↔ MXID ↔ 选定 Pod ↔ server name 的
-     绑定及其版本、服务授权引用，需落到用户选定的 Pod。**承载位置查证结果（2026-09-27）：
-     models 目前没有一个「每用户 + 带不透明 metadata」的文档可装**——
-     `solidProfileResource` 无 `metadata` 且 base 是 `idp:///profile/card`（IdP 内部存储，不是
-     用户 Pod 文档）；`aiConfigResource` 是 `/settings/ai/` 下的 `UDFS.AIConfig` 类型化设置，
-     把 Matrix 绑定塞进 AI 配置语义不对；`credentialResource`（密钥行已在此）字段全是凭据语义，
-     用 `scopes`/`keyVersion` 硬塞等于用类型字段冒充维度；带 `metadata` 的 15 个资源
-     （chat/thread/message/task/run/delivery/agent/skill 等）都按房间或工作项划分，没有每用户
-     一份的通用文档。因此需要一处最小 models 改动，三选一（推荐 1）：
-     1. 在 models 新增一个小实体 `matrixIdentityBinding`（一 WebID 一行，字段即绑定那 8 项）：
-        语义最干净，代价是新表；
-     2. 把 `/settings/` 下某个文档定为**通用用户设置载体**并给它加 `metadata` 列，绑定写进
-        `metadata.protocols.matrix.binding`：贴合"Matrix 事实放 metadata"的既有取向，但需要先
-        确认哪个文档是通用设置（现在只有 ai 与 credentials 两个类型化文档）；
-     3. 继续用 `credentialResource` 的同一文档再加一行、以 `service: 'matrix-binding'` 判别：
-        不动表结构，但该判别取值仍需在 models 声明，否则就是 adapter 自己造维度。
-- **已落地（不依赖承载）**：`identityBinding.ts` 的编解码与迁移状态机——幂等绑定（同 Pod 同
-  server 不churn 版本）、Pod 迁移 `version+1` 且 `pending`、由新 Pod 内容确认后转 `active`、
-  陈旧判定（版本落后或指向别的 Pod 的写入者必须刷新）、跨 Pod 取最高版本；测试
-  `identityBinding.test.ts` 7 项。承载一定，接存储即可。
-  在这两条落地前，容器仍只注册部署级身份；每参与者身份已经可以端到端工作，但由谁供给仍是
-  部署的操作决定。
-  3. **入站 federation 的路由归属**（2026-09-27 发现，被上面第 2 条阻塞）：`PUT
-     /_matrix/federation/v1/send/{txnId}` 没有 Pod 路径段，而按本决策"数据在各自 Pod"，
-     收到的事件应当写进**目标 server name 对应参与者自己的 Pod**（接收方服务器存自己房间里的事件，
-     与 Matrix 语义一致）。因此路由需要 `destination server name → 该参与者的 WebID → Pod`，
-     而这正是上面第 2 条要落的绑定；当前 `MatrixSigningIdentitySource` 只回答"这个 server name
-     我能不能签"，不带 WebID，所以路由还拼不起来。绑定承载一定，这一步就是"查绑定 + 选 Pod +
-     落 `acceptReceivedEvent`"，不需要新增机制；destination 的判定同时复用同一个能力口径
-     （只接受本部署持有密钥的 server name，否则 401）。
-     备选（不推荐）：把 Pod 放进路径前缀（协议插件式前缀入口），能立刻绕开绑定，但偏离 Matrix
-     标准路由形状，会让现有 SDK/对端按标准地址打过来时直接 404。
+- **已定（2026-09-27，用户复核后收口）：绑定不需要独立承载**——此前"新增 `matrixIdentityBinding`
+  实体 / 通用设置文档加 metadata / credential 再加一行"的三选一**全部撤销**。理由是那条绑定里其实
+  没有新事实，三件事分开就各有着落：
+  1. **server name 由 WebID 的 host 推导**（边界 1），不需要记；
+  2. **WebID 本来就跟着事件走**：`senderWebId` 是事件字段，成员事件的写入者就是该参与者本人，
+     所以"这个房间里的这个 MXID 是谁"由**房间自己的成员记录**回答，不需要一张全局每用户表；
+  3. **Pod 由既有 WebID → Pod 查询回答**（`PodLookupRepository`），密钥行的位置更是由能力决定
+     （`matrix-signing-<serverName>` 就在该 Pod 的 credentials 文档里），不需要额外索引。
+  结论：**房间就是索引**。部署要重建"本部署替谁签名"，扫自己服务的房间的成员记录即可
+  （`senderWebId` 的 host → server name），既不用动 models，也不用给设置文档加列。
+  仍然缺的只有一件，且它本来就是另一个问题：**远端成员的 WebID**——收到的事件 `senderWebId`
+  必须为空，因为 MXID 的 localpart 是 `u_sha256(WebID)`，不可反推；它的承载位置同样是房间成员记录
+  （由对方的可验证绑定提供），不是全局用户表。
+- **待确认**：`identityBinding.ts`（含 7 项测试）在"房间就是索引"下**已无消费方**——路由与签名都不
+  依赖它，Pod 迁移的版本/确认也由房间成员记录 + WebID→Pod 查询覆盖。按"同一事实不留第二份副本"
+  应当删除；若你认为它另有用途（例如跨设备读取"我选了哪个 Pod"），请指出唯一消费方，否则它只是
+  第二份事实。**在确认前保留，不接任何存储。**
+- **已定（2026-09-27，用户答复"进 room 的时候给"）：供给时机是"进入房间时"**，落地为
+  `PodMatrixStoreOptions.participantIdentity` 钩子：`createRoom`（创建者即参与者）与 `joinRoom`
+  在**写入该参与者自己的成员事件之前**调用 `ensureParticipantIdentity({webId, targetPodUrl, context})`；
+  钩子正常返回即表示本部署替该身份签名（能力判定随之生效），未供给则参与者继续落在部署身份上。
+  实现细节与理由：
+  - **必须在成员事件之前供给**：join 事件的 `sender` 与签名取决于身份，先写后换会让同一个人在一个
+    房间里出现两个 MXID，正是登记册要避免的"新老 MXID 互认"；
+  - **供给会改变 MXID，所以 join 时按供给后的身份重新查成员**：invite 必须指向该参与者加入时
+    使用的身份（老 MXID 的 invite 不自动认账，符合"老 MXID 保持历史原样"）；**但任一身份下的
+    ban 都继续生效**，供给不能成为绕过封禁的路径；
+  - 钩子抛错则**整个写入失败**（房间与成员事件都不落），不留半状态；
+  - 没有钩子时行为与之前完全一致（单身份部署不变），容器仍只注册部署级身份。
+  测试 `tests/api/matrix/participantProvisioning.test.ts` 5 项（create 前供给使 room id 与 create
+  事件由参与者自己的 server 命名并验签、join 前供给并传 target Pod、已加入/发送/离开不触发、
+  供给失败不落任何事件、无钩子行为不变）。
+- **待建（阻塞已解除）**：**入站 federation 的路由归属**。`PUT /_matrix/federation/v1/send/{txnId}`
+  没有 Pod 路径段，而按"数据在各自 Pod"，收到的事件写进**目标 server name 对应参与者自己的 Pod**。
+  按上面第 1 条，`destination name → 参与者`不再需要绑定记录：用 PDU 的 `room_id` 找到房间，
+  在房间成员记录里找 `senderWebId` 的 host 等于 destination 的那个成员，再用既有 WebID → Pod
+  查询得到 Pod，然后 `acceptReceivedEvent`。destination 的判定复用同一能力口径（只接受本部署持有
+  密钥的 server name，否则 401）；能力判定顺手也就拒绝了"替别人收事件"。
+  剩余的真实开放点有两个：① 房间成员记录里**远端成员的 WebID 必须可验证**（对方 join 时带来自证，
+  否则只能按 MXID 记账，路由就退化成"按 MXID 找 Pod"）；② destination 落到**部署名**（旧房间兼容
+  边界）时，一个 server name 下有多位参与者，PDU 该写进哪个 Pod 需要部署级存储策略——这是兼容
+  边界的代价，不阻塞每参与者身份。
+  备选（不推荐）：把 Pod 放进路径前缀（协议插件式前缀入口），能立刻绕开这些，但偏离 Matrix 标准
+  路由形状，现有 SDK/对端按标准地址打过来会直接 404。
 
 ## 消息身份与表示
 

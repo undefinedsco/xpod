@@ -5,6 +5,8 @@ export function matrixHarness(
     serviceIdentity?: import('../../src/api/matrix/protocol/serviceIdentity').MatrixServiceIdentity;
     /** A full identity source, for tests that run more than one server identity. */
     identities?: import('../../src/api/matrix/identityRegistry').MatrixSigningIdentitySource;
+    /** Supplies a participant's own signing identity as they enter a room. */
+    participantIdentity?: import('../../src/api/matrix/PodMatrixStore').MatrixParticipantIdentityProvider;
   },
 ) {
   const rows = new Map<any, any[]>();
@@ -32,6 +34,7 @@ export function matrixHarness(
     auth: {type:'solid', webId:'https://alice.example/profile/card#me', clientId:'device-a'}, _matrixDb: db };
   const store = new PodMatrixStore({
     serverName: 'example.test',
+    ...(options?.participantIdentity ? { participantIdentity: options.participantIdentity } : {}),
     ...(options?.identities
       ? { identities: options.identities }
       : options?.serviceIdentity
