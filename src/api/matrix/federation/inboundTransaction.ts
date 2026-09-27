@@ -17,6 +17,7 @@
  * the caller is told to retry, because the first attempt may still be writing.
  */
 import { MatrixError } from '../MatrixError';
+import { eventReferenceIds } from '../protocol/eventReferences';
 import { encodeCanonicalJson } from '../protocol/canonicalJson';
 import { encodeUnpaddedBase64, sha256 } from '../protocol/eventIntegrity';
 import type { AuthEvent } from '../protocol/authRules';
@@ -184,13 +185,7 @@ export function fingerprintPdus(pdus: readonly unknown[]): string {
 
 /** The `auth_events` ids a raw PDU names, for the caller's resolver. */
 export function referencedAuthEventIds(pdu: unknown): string[] {
-  if (!isRecord(pdu) || !Array.isArray(pdu.auth_events)) return [];
-  const ids: string[] = [];
-  for (const entry of pdu.auth_events) {
-    if (typeof entry === 'string') ids.push(entry);
-    else if (Array.isArray(entry) && typeof entry[0] === 'string') ids.push(entry[0]);
-  }
-  return ids;
+  return eventReferenceIds(pdu, 'auth_events');
 }
 
 function transactionKey(scope: string, origin: string, transactionId: string): string {

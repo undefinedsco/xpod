@@ -39,6 +39,7 @@
  * can replace the in-memory one without touching this logic.
  */
 import { randomBytes } from 'node:crypto';
+import { eventReferenceIds } from '../protocol/eventReferences';
 import { MAX_EDUS_PER_TRANSACTION, MAX_PDUS_PER_TRANSACTION, type MatrixDeliveryOutcome } from './outboundTransaction';
 
 export interface MatrixOutboundBatch {
@@ -325,7 +326,10 @@ export function orderByDependencies(pdus: readonly unknown[]): unknown[] {
   }
   const dependencies = new Map<string, string[]>();
   for (const [ id, pdu ] of byId) {
-    dependencies.set(id, referencedIds(pdu).filter(reference => byId.has(reference)));
+    dependencies.set(id, [
+      ...eventReferenceIds(pdu, 'prev_events'),
+      ...eventReferenceIds(pdu, 'auth_events'),
+    ].filter(reference => byId.has(reference)));
   }
 
   const ordered: unknown[] = [];
@@ -343,22 +347,6 @@ export function orderByDependencies(pdus: readonly unknown[]): unknown[] {
   }
   // PDUs without an event id cannot be ordered; they keep their place at the end.
   return [ ...ordered, ...pdus.filter(pdu => eventIdOf(pdu) === undefined) ];
-}
-
-/** The event ids a PDU names as parents or authorisers, in either list form. */
-function referencedIds(pdu: unknown): string[] {
-  if (typeof pdu !== 'object' || pdu === null || Array.isArray(pdu)) return [];
-  const record = pdu as Record<string, unknown>;
-  const ids: string[] = [];
-  for (const field of [ 'prev_events', 'auth_events' ]) {
-    const list = record[field];
-    if (!Array.isArray(list)) continue;
-    for (const entry of list) {
-      if (typeof entry === 'string') ids.push(entry);
-      else if (Array.isArray(entry) && typeof entry[0] === 'string') ids.push(entry[0]);
-    }
-  }
-  return ids;
 }
 
 /** The `event_id` a PDU carries, when it has one; PDUs without one cannot be deduped. */

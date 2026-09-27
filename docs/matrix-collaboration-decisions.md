@@ -527,9 +527,26 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
 - **已落地**（2026-09-27）：**同一事务内按依赖排序**（缺口 1 的发送侧缓解）。批次里的 PDU 会按
   `prev_events`/`auth_events` 做拓扑排序，让被依赖的事件先发；批次外的依赖忽略（那是对端的事），
   成环时保留输入顺序。测试 3 项。
-- **仍待建**：**接收方主动补取**（`/get_missing_events`）。发送侧排序与重试只能处理"依赖也在我们队列里"
-  的情况；跨事务、跨部署的依赖缺口必须由接收方主动向发送方索取，这正是规范的做法，也是入站路由那一格
-  的一部分（需要 Pod 归属解析）。
+- **已落地**（2026-09-27）：**`/get_missing_events` 的两半**（`federation/missingEvents.ts` 的
+  `selectMissingEvents` + 客户端的 `MatrixFederationClient.getMissingEvents`）。
+  - **服务侧（纯函数）**：按规范做 `prev_events` 的**广度优先回溯** —— 从 `latest_events` 的**父事件**
+    开始（请求方已有 latest 本身，它要的是更早的），**不返回也不穿过** `earliest_events`（对方说它有，
+    再往前的历史是它自己的事），尊重 `limit`（默认 10）与 `min_depth`（浅于它的连父都不必走），
+    走到本机没有的事件就记进 `unavailable` 且不继续穿。**返回按 `depth` 从旧到新排序** —— 请求方要按
+    顺序给这些事件做授权，而被依赖的事件排在依赖它的事件之后是无法授权的（与批次内排序同一条理由）。
+  - **客户端**：`POST /_matrix/federation/v1/get_missing_events/{roomId}`，签名覆盖实际请求（方法、目标
+    含编码后的 roomId、body），错误分类与事务一致（4xx 拒绝、429/5xx/不可达可重试、读不出的 200 也可
+    重试）。与事务共用同一条 `execute`（抽出来消除重复），所以"签名 + 解析目标 + 分类"只有一份实现。
+  - 顺带把 `prev_events`/`auth_events` 两种列表形态的解析抽成 `protocol/eventReferences.ts`，三个调用点
+    共用一份（此前 `inboundTransaction` 与 `outboundQueue` 各写了一遍）。
+  测试：`missingEvents.test.ts` 7 项（回溯与排序、earliest 截断、limit 与默认值、min_depth、本机没有的
+  事件记 unavailable、分叉合并、二元组形态与缺 id），`outboundTransaction.test.ts` 新增 4 项
+  （签名往返、省略可选字段、不可读/限流/5xx 可重试、4xx 与不可达的分类）。
+- **仍待建**：**接收方在遇到 deferred PDU 时真的去补取**。两半已经就位（能选、能要），缺的是把
+  `handleInboundTransaction` 里"缺依赖 → 报 error"改成"缺依赖 → 用 `getMissingEvents` 向 **origin**
+  要（destination 就是发送方，不需要 Pod 归属解析）→ 校验并接受取回的事件 → 重新校验原 PDU"，
+  并按深度/次数设界避免来回拉取。发送侧的排序与重试只能处理"依赖也在我们队列里"的情况，跨事务/跨部署
+  的缺口必须靠这一步；HTTP 外壳与 Pod 归属解析仍是那一格待定项。
 
 ## 已撤销或否决的前提
 

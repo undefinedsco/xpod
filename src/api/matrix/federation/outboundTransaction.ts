@@ -1,5 +1,9 @@
 /**
- * Sending transactions to another server.
+ * Making signed federation requests to another server.
+ *
+ * `sendTransaction` is the one this module is named for; `getMissingEvents` asks a peer for
+ * the events a received PDU depends on. Both go through the same execution: resolve the
+ * destination, sign the request that is actually sent, and classify the answer.
  *
  * `PUT /_matrix/federation/v1/send/{txnId}` is how live room activity leaves this
  * deployment. The specification attaches two rules that shape this module:
@@ -40,6 +44,21 @@ export interface MatrixDeliveryOutcome {
   /** How long the peer asked us to wait before retrying, when it said so. */
   retryAfterMs?: number;
   reason: string;
+}
+
+/** The outcome of one signed request, before a caller interprets the body. */
+type MatrixRequestOutcome =
+  | { status: 'ok'; body: unknown; reason: string }
+  | { status: 'retry'; reason: string; retryAfterMs?: number }
+  | { status: 'rejected'; reason: string };
+
+/** What a missing-events request produced. */
+export interface MissingEventsOutcome {
+  status: 'ok' | 'retry' | 'rejected';
+  /** The peer's answer, when it was readable. */
+  events?: Record<string, unknown>[];
+  reason: string;
+  retryAfterMs?: number;
 }
 
 export interface MatrixFederationClientOptions {
@@ -123,9 +142,6 @@ export class MatrixFederationClient {
       throw new Error(`A transaction carries at most ${MAX_EDUS_PER_TRANSACTION} EDUs`);
     }
 
-    const target = await this.resolve(destination);
-    if (!target) return { ...base, status: 'rejected', reason: `cannot resolve ${destination}` };
-
     const content: Record<string, unknown> = {
       origin: this.identity.serverName,
       origin_server_ts: this.now(),
@@ -137,46 +153,95 @@ export class MatrixFederationClient {
     // The signed URI must be exactly the request target the peer will reconstruct,
     // including the encoded transaction id, so the signature covers the endpoint too.
     const uri = `/_matrix/federation/v1/send/${encodeURIComponent(txnId)}`;
+    const result = await this.execute({ destination, method: 'PUT', uri, content });
+    if (result.status === 'retry') {
+      return { ...base, status: 'retry', ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }), reason: result.reason };
+    }
+    if (result.status === 'rejected') return { ...base, status: 'rejected', reason: result.reason };
+
+    const pdus = isRecord(result.body) ? result.body.pdus : undefined;
+    if (!isRecord(pdus)) {
+      // A 200 we cannot read leaves us unable to say which PDUs were handled; retrying
+      // is safe because the peer keys its own dedup on the transaction id.
+      return { ...base, status: 'retry', reason: 'destination answered 200 without PDU results' };
+    }
+    return { ...base, status: 'delivered', pdus: pdus as Record<string, { error?: string }>, reason: 'delivered' };
+  }
+
+  /**
+   * Ask a peer for the events a received PDU depends on.
+   *
+   * `earliest_events` are the events we already have, `latest_events` the ones whose parents
+   * we are missing; the peer walks back from there. A 200 we cannot read is worth retrying
+   * for the same reason as a transaction: the peer has not told us anything we can act on.
+   */
+  public async getMissingEvents(input: {
+    destination: string;
+    roomId: string;
+    earliestEvents: readonly string[];
+    latestEvents: readonly string[];
+    limit?: number;
+    minDepth?: number;
+  }): Promise<MissingEventsOutcome> {
+    const content: Record<string, unknown> = {
+      earliest_events: [ ...input.earliestEvents ],
+      latest_events: [ ...input.latestEvents ],
+    };
+    if (input.limit !== undefined) content.limit = input.limit;
+    if (input.minDepth !== undefined) content.min_depth = input.minDepth;
+    const uri = `/_matrix/federation/v1/get_missing_events/${encodeURIComponent(input.roomId)}`;
+    const result = await this.execute({ destination: input.destination, method: 'POST', uri, content });
+    if (result.status !== 'ok') return result;
+    const events = isRecord(result.body) ? result.body.events : undefined;
+    if (!Array.isArray(events)) return { status: 'retry', reason: 'destination answered 200 without an events array' };
+    return { status: 'ok', events: events as Record<string, unknown>[], reason: 'ok' };
+  }
+
+  /**
+   * Sign and send one request, then classify the answer. The signature covers the request
+   * that is actually sent — method, target and body — so the peer needs to trust nothing
+   * inside the body.
+   */
+  private async execute(request: {
+    destination: string;
+    method: string;
+    uri: string;
+    content: Record<string, unknown>;
+  }): Promise<MatrixRequestOutcome> {
+    const target = await this.resolve(request.destination);
+    if (!target) return { status: 'rejected', reason: `cannot resolve ${request.destination}` };
+
     const authorization = buildXMatrixAuthorization({
       origin: this.identity.serverName,
-      destination,
-      method: 'PUT',
-      uri,
-      content,
+      destination: request.destination,
+      method: request.method,
+      uri: request.uri,
+      content: request.content,
     }, this.identity);
 
     let response: Response;
     try {
-      response = await this.fetch(`${target.baseUrl}${uri}`, {
-        method: 'PUT',
+      response = await this.fetch(`${target.baseUrl}${request.uri}`, {
+        method: request.method,
         headers: { 'content-type': 'application/json', authorization },
-        body: JSON.stringify(content),
+        body: JSON.stringify(request.content),
       });
     } catch (error) {
       // Unreachable is "the peer has not decided", never "the peer refused".
-      return { ...base, status: 'retry', reason: `could not reach ${destination}: ${describeError(error)}` };
+      return { status: 'retry', reason: `could not reach ${request.destination}: ${describeError(error)}` };
     }
 
     const text = await response.text().catch(() => '');
-    if (response.status === 200) {
-      const parsed = parseJson(text);
-      const pdus = isRecord(parsed) ? parsed.pdus : undefined;
-      if (!isRecord(pdus)) {
-        // A 200 we cannot read leaves us unable to say which PDUs were handled; retrying
-        // is safe because the peer keys its own dedup on the transaction id.
-        return { ...base, status: 'retry', reason: 'destination answered 200 without PDU results' };
-      }
-      return { ...base, status: 'delivered', pdus: pdus as Record<string, { error?: string }>, reason: 'delivered' };
-    }
+    if (response.status === 200) return { status: 'ok', body: parseJson(text), reason: 'ok' };
 
     const retryAfterMs = readRetryAfter(text, response.headers.get('retry-after'), this.now());
     if (response.status === 429) {
-      return { ...base, status: 'retry', ...(retryAfterMs === undefined ? {} : { retryAfterMs }), reason: 'destination rate limited the transaction' };
+      return { status: 'retry', ...(retryAfterMs === undefined ? {} : { retryAfterMs }), reason: 'destination rate limited the request' };
     }
     if (response.status >= 500) {
-      return { ...base, status: 'retry', ...(retryAfterMs === undefined ? {} : { retryAfterMs }), reason: `destination answered ${response.status}` };
+      return { status: 'retry', ...(retryAfterMs === undefined ? {} : { retryAfterMs }), reason: `destination answered ${response.status}` };
     }
-    return { ...base, status: 'rejected', reason: `destination refused the transaction with ${response.status}` };
+    return { status: 'rejected', reason: `destination refused the request with ${response.status}` };
   }
 
   /**

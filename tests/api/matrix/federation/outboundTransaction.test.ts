@@ -177,6 +177,66 @@ describe('sending a federation transaction', () => {
   });
 });
 
+describe('asking a peer for missing events', () => {
+  it('posts a signed request for the room, and reads the events back', async () => {
+    const identity = ourIdentity();
+    const { client: instance, captured } = client({
+      identity,
+      respond: () => new Response(JSON.stringify({ events: [ { event_id: '$a' }, { event_id: '$b' } ] }), { status: 200 }),
+    });
+    const outcome = await instance.getMissingEvents({
+      destination: THEM, roomId: '!room:remote.example', earliestEvents: [ '$known' ], latestEvents: [ '$latest' ], limit: 25, minDepth: 3,
+    });
+
+    expect(outcome).toMatchObject({ status: 'ok' });
+    expect(outcome.events?.map(event => event.event_id)).toEqual([ '$a', '$b' ]);
+    const [ sent ] = captured;
+    expect(sent.method).toBe('POST');
+    expect(sent.url).toBe(`https://${THEM}:8448/_matrix/federation/v1/get_missing_events/${encodeURIComponent('!room:remote.example')}`);
+    expect(sent.body).toEqual({ earliest_events: [ '$known' ], latest_events: [ '$latest' ], limit: 25, min_depth: 3 });
+
+    // The peer verifies the same signed object, so the signature covers this endpoint too.
+    await expect(authenticateXMatrixRequest({
+      authorization: sent.headers.authorization, method: 'POST',
+      uri: `/_matrix/federation/v1/get_missing_events/${encodeURIComponent('!room:remote.example')}`,
+      content: sent.body, keys: peerKeySource(identity), serverName: THEM,
+    })).resolves.toMatchObject({ valid: true, origin: US });
+  });
+
+  it('omits limit and min_depth when the caller did not ask for them', async () => {
+    const { client: instance, captured } = client();
+    await instance.getMissingEvents({ destination: THEM, roomId: '!r:remote.example', earliestEvents: [], latestEvents: [ '$x' ] });
+    expect(captured[0].body).toEqual({ earliest_events: [], latest_events: [ '$x' ] });
+  });
+
+  it('retries an answer it cannot read, and a rate limit or server error', async () => {
+    const unreadable = client({ respond: () => new Response('not json', { status: 200 }) });
+    await expect(unreadable.client.getMissingEvents({ destination: THEM, roomId: '!r:x', earliestEvents: [], latestEvents: [] }))
+      .resolves.toMatchObject({ status: 'retry', reason: expect.stringContaining('events array') });
+    const empty = client({ respond: () => new Response(JSON.stringify({}), { status: 200 }) });
+    await expect(empty.client.getMissingEvents({ destination: THEM, roomId: '!r:x', earliestEvents: [], latestEvents: [] }))
+      .resolves.toMatchObject({ status: 'retry' });
+    const limited = client({ respond: () => new Response(JSON.stringify({ retry_after_ms: 750 }), { status: 429 }) });
+    await expect(limited.client.getMissingEvents({ destination: THEM, roomId: '!r:x', earliestEvents: [], latestEvents: [] }))
+      .resolves.toMatchObject({ status: 'retry', retryAfterMs: 750 });
+    const down = client({ respond: () => new Response('', { status: 502 }) });
+    await expect(down.client.getMissingEvents({ destination: THEM, roomId: '!r:x', earliestEvents: [], latestEvents: [] }))
+      .resolves.toMatchObject({ status: 'retry', reason: expect.stringContaining('502') });
+  });
+
+  it('treats a refusal and an unreachable peer differently', async () => {
+    const refused = client({ respond: () => new Response('', { status: 403 }) });
+    await expect(refused.client.getMissingEvents({ destination: THEM, roomId: '!r:x', earliestEvents: [], latestEvents: [] }))
+      .resolves.toMatchObject({ status: 'rejected' });
+    const offline = client({ respond: () => { throw new Error('connect ECONNREFUSED'); } });
+    await expect(offline.client.getMissingEvents({ destination: THEM, roomId: '!r:x', earliestEvents: [], latestEvents: [] }))
+      .resolves.toMatchObject({ status: 'retry', reason: expect.stringContaining('ECONNREFUSED') });
+    const unresolved = client({ resolved: null });
+    await expect(unresolved.client.getMissingEvents({ destination: THEM, roomId: '!r:x', earliestEvents: [], latestEvents: [] }))
+      .resolves.toMatchObject({ status: 'rejected' });
+  });
+});
+
 describe('delivering a transaction', () => {
   const retryPolicy = { initialBackoffMs: 100, maxBackoffMs: 10_000, jitter: 0 };
 
