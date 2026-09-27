@@ -249,8 +249,8 @@ HTTP 测试。
 **远端加入的编排（已落地）**：`federation/remoteJoin.ts` 把"要模板 → 只补自己的事实 → 签名 → 提交 → 取回加入前的
 状态与 auth chain"收在一处，并且**刻意不持久化**（写进加入者 Pod 是调用方的事）。4 项测试含真实验签（自己的密钥过、
 别人的密钥不过）。**已接线**：`joinRoom` 在房间不属于本部署时走这套编排——向房间 id 里的 server 提问、把回来的状态/auth chain 以
-"收到的事件"落库、我们自己的 join 用提交的那个事件经本地写入落库（`remoteJoinStore.test.ts` 2 项）。**仍未做**：
-按 alias 加入远端房间（需先 `/query/directory`）。
+"收到的事件"落库、我们自己的 join 用提交的那个事件经本地写入落库（`remoteJoinStore.test.ts` 2 项）。**按 alias 加入也已落地**：`resolveRoomId` 先查本地、再向 alias 命名的 server 发 `/query/directory`，解析出房间 id 后走
+同一条远端加入路径（`remoteJoinStore.test.ts` 4 项）。
 
 **成员资格握手端点也已落地外壳**：`make_join`/`send_join`(v2)/`make_leave`/`send_leave`(v2)/`invite`(v2)/
 `make_knock`/`send_knock` 七个端点现在都能应答（同一份 `FederationHandler.ts`，5 项真实 HTTP 测试：模板带图位置、

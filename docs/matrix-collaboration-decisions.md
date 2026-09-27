@@ -1082,7 +1082,18 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   - **失败按状态回答**：`rejected` → 403 `M_FORBIDDEN`（带原因），`retry` → 503 `M_UNKNOWN`；已经加入则**不再发问**。
   测试：`remoteJoinStore.test.ts` 2 项（向常驻方提问且只问一次、房间状态以"收到"落库、我们的 join 是自己的行且 id 等于
   提交的那个事件、再次加入不再提问；拒绝→403、可重试→503），`MatrixMemoryDatabase` 的 harness 增加 `remoteJoin` 透传。
-  **仍未做**：按 **alias** 加入远端房间（需要先 `/query/directory` 解析出房间 id，客户端方法已就位）。
+  **按 alias 加入也已落地**（见 D4 中"按 alias 加入远端房间"一条）。
+- **已落地**（2026-09-27）：**按 alias 加入远端房间**（`resolveRoomId` + 新端口 `directoryQuery` + 容器接线
+  `sender.membershipClientFor(serverName)` → `client.queryDirectory`）。
+  - **alias 属于一个 server，也只有那个 server 能说它指哪个房间**：所以先查本地房间记录（本部署持有的房间零成本命中），
+    查不到再向 **alias 冒号后面那个 server** 发 `/query/directory`（该端点的两半此前都已落地）；两者都没有才 404
+    `M_NOT_FOUND`。
+  - 解析出房间 id 之后就走**普通远端加入**那条路（房间 id 里的 server 当目的地、握手、把状态/auth chain 落库），
+    所以"按 alias 加入"没有第二条实现路径。
+  - 顺带把"按 origin 签名的客户端"类型收成一个（`OriginFederationClient`：握手两半 + 目录查询），因为**一个客户端
+    只以一个 server 签名**，需要其中任何一个的调用方要的都是同一个东西。
+  测试：`remoteJoinStore.test.ts` 新增 2 项（alias 只向它命名的 server 提问、随后按房间 id 完成远端加入并落库；
+  两边都不认识时 404 `alias not found`），共 4 项。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

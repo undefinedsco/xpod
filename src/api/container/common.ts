@@ -837,6 +837,13 @@ export function registerCommonServices(
         // participant whose Pod is being written. Without a delivery there is no client to ask with,
         // and the join falls back to the local event plus delivery.
         ...(matrixOutboundDelivery ? {
+          directoryQuery: async ({ roomAlias, destination, context }) => {
+            const serverName = webIdServerName(context.webId);
+            const client = serverName ? await matrixOutboundDelivery.sender.membershipClientFor(serverName) : undefined;
+            if (!client) return undefined;
+            const answer = await client.queryDirectory({ destination, roomAlias });
+            return answer.status === 'ok' ? answer.roomId : undefined;
+          },
           remoteJoin: async ({ roomId, userId, destination, context }) => {
             const serverName = webIdServerName(context.webId);
             if (!serverName) return undefined;

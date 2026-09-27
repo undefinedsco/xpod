@@ -109,3 +109,47 @@ describe('joining a room another deployment hosts', () => {
       .rejects.toThrow(/cannot resolve peer\.example/u);
   });
 });
+
+describe('joining by an alias another deployment holds', () => {
+  it('asks the server the alias names for the room, then joins that room', async () => {
+    const ours = identity('alice.example');
+    const registry = matrixSigningIdentityRegistry({ providers: [
+      { serverName: 'alice.example', provider: { identity: async () => ours } as never },
+    ] });
+    const alias = '#lobby:peer.example';
+    const directoryQuery = vi.fn(async (_request: { roomAlias: string; destination: string }) => REMOTE_ROOM);
+    const answers: { create: Record<string, unknown>; join: Record<string, unknown> }[] = [];
+    const remoteJoin = vi.fn(async (request: { userId: string }): Promise<RemoteJoinOutcome> => {
+      const answer = residentAnswer(request.userId);
+      answers.push(answer);
+      return {
+        status: 'joined',
+        event: answer.join,
+        eventId: String(answer.join.event_id),
+        state: [ answer.create ],
+        authChain: [ answer.create ],
+      };
+    });
+    const harness = matrixHarness({ identities: registry, directoryQuery, remoteJoin });
+    const context = { ...harness.context, webId: WEB_ID };
+
+    await expect(harness.store.joinRoom(alias, context)).resolves.toEqual({ roomId: REMOTE_ROOM });
+
+    // The alias names the server that can answer it, and only that server was asked.
+    expect(directoryQuery).toHaveBeenCalledTimes(1);
+    expect(directoryQuery.mock.calls[0][0]).toMatchObject({ roomAlias: alias, destination: 'peer.example' });
+    // Then the room it named is joined the way any remote room is.
+    expect(remoteJoin).toHaveBeenCalledTimes(1);
+    expect(pdus(harness.rows).some((entry: any) => entry.event?.event_id === answers[0].join.event_id)).toBe(true);
+  });
+
+  it('answers not found when neither this deployment nor the alias\'s server knows it', async () => {
+    const ours = identity('alice.example');
+    const registry = matrixSigningIdentityRegistry({ providers: [
+      { serverName: 'alice.example', provider: { identity: async () => ours } as never },
+    ] });
+    const harness = matrixHarness({ identities: registry, directoryQuery: async () => undefined });
+    await expect(harness.store.joinRoom('#nowhere:peer.example', { ...harness.context, webId: WEB_ID }))
+      .rejects.toThrow(/alias not found/u);
+  });
+});

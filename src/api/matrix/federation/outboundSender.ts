@@ -21,7 +21,7 @@ import {
 } from './outboundTransaction';
 import type { MatrixSigningIdentitySource } from '../identityRegistry';
 import type { FederationFetchTarget } from './federationFetch';
-import type { MembershipHandshakeClient } from './remoteJoin';
+import type { OriginFederationClient } from './remoteJoin';
 import type { MatrixResolvedServer } from './serverNameResolution';
 
 export interface MatrixOutboundSenderOptions {
@@ -91,7 +91,7 @@ export class MatrixOutboundSender {
    * The federation client that signs as `origin`, for callers that need the membership handshake
    * endpoints. `undefined` when this deployment holds no identity for that server name.
    */
-  public async membershipClientFor(origin: string): Promise<MembershipHandshakeClient | undefined> {
+  public async membershipClientFor(origin: string): Promise<OriginFederationClient | undefined> {
     return await this.clientFor(origin);
   }
 

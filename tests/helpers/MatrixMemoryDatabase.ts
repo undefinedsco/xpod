@@ -15,6 +15,8 @@ export function matrixHarness(
     roomChangeFullPassMs?: number;
     /** How a room another deployment hosts is joined, when a test provides the handshake. */
     remoteJoin?: import('../../src/api/matrix/PodMatrixStore').PodMatrixStoreOptions['remoteJoin'];
+    /** How an alias this deployment does not hold is resolved, when a test provides the query. */
+    directoryQuery?: import('../../src/api/matrix/PodMatrixStore').PodMatrixStoreOptions['directoryQuery'];
   },
 ) {
   const rows = new Map<any, any[]>();
@@ -47,6 +49,7 @@ export function matrixHarness(
     ...(options?.roomChanges ? { roomChanges: options.roomChanges } : {}),
     ...(options?.roomChangeFullPassMs === undefined ? {} : { roomChangeFullPassMs: options.roomChangeFullPassMs }),
     ...(options?.remoteJoin ? { remoteJoin: options.remoteJoin } : {}),
+    ...(options?.directoryQuery ? { directoryQuery: options.directoryQuery } : {}),
     ...(options?.identities
       ? { identities: options.identities }
       : options?.serviceIdentity

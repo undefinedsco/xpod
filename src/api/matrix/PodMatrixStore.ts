@@ -169,6 +169,16 @@ export interface PodMatrixStoreOptions {
     context: MatrixStoreContext;
   }) => Promise<RemoteJoinOutcome | undefined>;
   /**
+   * Resolving a room alias this deployment does not hold, by asking the server the alias names
+   * (the specification's `/query/directory`). Absent means a remote alias is simply unknown here.
+   */
+  directoryQuery?: (request: {
+    roomAlias: string;
+    /** The server named by the alias: the one that can answer. */
+    destination: string;
+    context: MatrixStoreContext;
+  }) => Promise<string | undefined>;
+  /**
    * How often every room is read anyway, so a change the source missed is picked up. Defaults
    * to five minutes; `0` makes every pass a full one, i.e. the source is never trusted.
    */
@@ -234,6 +244,7 @@ export class PodMatrixStore {
   private readonly outbound?: MatrixFederationOutbox;
   private readonly roomChanges?: MatrixRoomChangeSource;
   private readonly remoteJoin?: PodMatrixStoreOptions['remoteJoin'];
+  private readonly directoryQuery?: PodMatrixStoreOptions['directoryQuery'];
   private readonly roomChangeFullPassMs: number;
   /** The watermark the last pass indexed: a caller at or above it is caught up. */
   private readonly indexedAt = new Map<string, number>();
@@ -253,6 +264,7 @@ export class PodMatrixStore {
     this.outbound = options.outbound;
     this.roomChanges = options.roomChanges;
     this.remoteJoin = options.remoteJoin;
+    this.directoryQuery = options.directoryQuery;
     this.roomChangeFullPassMs = options.roomChangeFullPassMs ?? 5 * 60 * 1000;
     this.stateCacheLimit = options.stateCacheLimit ?? STATE_CACHE_LIMIT;
     if (!Number.isSafeInteger(this.stateCacheLimit) || this.stateCacheLimit < 0) {
@@ -405,7 +417,7 @@ export class PodMatrixStore {
 
   public async joinRoom(roomIdOrAlias: string, context: MatrixStoreContext): Promise<{ roomId: string }> {
     const db = await this.getDb(context);
-    const roomId = await this.resolveRoomId(db, roomIdOrAlias);
+    const roomId = await this.resolveRoomId(db, roomIdOrAlias, context);
     const before = this.getMatrixUserId(context);
     let existing = await this.findLatestStateEvent(db, roomId, 'm.room.member', before, context);
     if (existing?.content.membership === 'join') return { roomId };
@@ -1257,16 +1269,27 @@ export class PodMatrixStore {
     return joined;
   }
 
-  private async resolveRoomId(db: Db, roomIdOrAlias: string): Promise<string> {
+  /**
+   * A room id, resolving an alias locally first and then at the server the alias names.
+   *
+   * An alias belongs to one server — the one after the colon — and that server is the only one that
+   * can say which room it names. Local rooms are still looked up first, because that costs nothing
+   * and is what a room this deployment holds is reached by.
+   */
+  private async resolveRoomId(db: Db, roomIdOrAlias: string, context: MatrixStoreContext): Promise<string> {
     if (!roomIdOrAlias.startsWith('#')) {
       return roomIdOrAlias;
     }
     const rooms = await this.listRooms(db);
     const room = rooms.find((candidate) => candidate.canonicalAlias === roomIdOrAlias);
-    if (!room) {
-      throw new MatrixError(404, 'M_NOT_FOUND', 'Room alias not found');
+    if (room) return room.roomId;
+
+    const destination = serverNameOf(roomIdOrAlias);
+    if (destination !== undefined && this.directoryQuery) {
+      const resolved = await this.directoryQuery({ roomAlias: roomIdOrAlias, destination, context });
+      if (resolved) return resolved;
     }
-    return room.roomId;
+    throw new MatrixError(404, 'M_NOT_FOUND', 'Room alias not found');
   }
 
   private async listEvents(

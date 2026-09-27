@@ -25,6 +25,13 @@ import type { MatrixFederationClient } from './outboundTransaction';
 /** The two client calls this needs, so a test can answer them without a peer. */
 export type MembershipHandshakeClient = Pick<MatrixFederationClient, 'makeJoin' | 'sendJoin'>;
 
+/**
+ * The federation calls that have to be signed as a particular origin: the membership handshake,
+ * and the directory query a remote alias is resolved with. One client signs as one server, so a
+ * caller that needs either gets the same thing.
+ */
+export type OriginFederationClient = Pick<MatrixFederationClient, 'makeJoin' | 'sendJoin' | 'queryDirectory'>;
+
 export interface RemoteJoinInput {
   client: MembershipHandshakeClient;
   /** The room to join. */
