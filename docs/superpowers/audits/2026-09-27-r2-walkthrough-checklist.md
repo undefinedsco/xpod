@@ -6,6 +6,13 @@
 
 ## 准备
 
+已经脚本化、无需人工重复的部分（跑这两条即可）：
+
+```bash
+bun scripts/accept-r2-route-map.ts      # §3.1 七个路径在真实运行时可用（HTTP 200 + SPA 外壳）
+bun scripts/accept-r2-login-surface.ts  # 真实 Chromium：浅/深色画布与正文色 = §8.1；Account 页铺满画布、无内嵌卡片
+```
+
 ```bash
 # 1) 真实实例（任选其一）
 bun run local            # 本地+云身份
@@ -30,7 +37,7 @@ bun run --filter @undefinedsco/xpod-desktop start
 |---|---|
 | 窗口缩到 <768px | 顶部 48px 任务栏（返回/标题/有名称的导航按钮）；点导航按钮出现抽屉，抽屉里是同一棵导航树；**没有**底部 Tab |
 | 浏览器 200% 缩放 | 正文不截断；错误、主动作、返回都在一个宿主滚动区内可达 |
-| 认证短流程 280×400 | 主题画布铺满、16px 内边距、**无内嵌白卡与遮罩** |
+| 认证短流程 280×400 | 主题画布铺满、16px 内边距、**无内嵌白卡与遮罩**（画布/正文色与"无卡片"已由 `accept-r2-login-surface.ts` 覆盖；280×400 的窗口形态仍需真机确认） |
 | Web Account ≥900px / 更窄 | 宽时左说明右表单（表单 ≤448px）；窄时单列 |
 
 ## C. 菜单栏与 Dock（AC-02/AC-12）

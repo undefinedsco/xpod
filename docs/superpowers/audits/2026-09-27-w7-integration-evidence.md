@@ -45,7 +45,9 @@
 |---|---|
 | 路由冒烟 | `bun scripts/accept-r2-route-map.ts`：在从源码启动的 standalone 运行时上逐一访问 §3.1 的七个目标路径（`/status/overview`、`/status/usage/overview`、`/settings/pod`、`/settings/runtime`、`/ai-connections`、`/network/overview`、`/network/domain-dns`），全部 **HTTP 200 + SPA 外壳**，输出 `ROUTE SMOKE OK` |
 | 覆盖的 AC | AC-04 的路径可用性（真实运行时），以及 §3.3 映射目标确实存在 |
-| 不覆盖 | 浏览器内的布局/交互走查（见走查清单）、登录后的页面内容 |
+| 浏览器检查 | `bun scripts/accept-r2-login-surface.ts`：真实 Chromium（浅色/深色 × 1000/800 视口）打开未登录的 `/status/overview`，读取**计算后**的画布与正文色：浅色 `rgb(247,244,237)` / `rgb(43,38,33)`，深色 `rgb(33,29,25)` / `rgb(247,244,237)`，与 §8.1 一致；Account 页面铺满画布、无内嵌卡片，输出 `LOGIN SURFACE OK` |
+| 覆盖的 AC（浏览器侧） | AC-01/AC-02：公共主题在真实浏览器里的计算值就是 §8.1 的角色值（两套主题）；§5.1 第 1 行的"画布铺满、无内嵌白卡"在登录/恢复路由上成立 |
+| 不覆盖 | 登录后的工作区页面、窄窗任务栏与抽屉的真实浏览器行为、200% 缩放、系统图标（见走查清单） |
 
 ## 发布侧证据（已发生的实机验收）
 
