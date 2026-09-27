@@ -164,7 +164,13 @@ function PodManagementContent({ runtime, publicRoute }: { runtime: ReturnType<ty
     <Button type="button" variant="outline" disabled={!podUrl} onClick={() => podUrl && window.open(podUrl, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-2 h-4 w-4" />Open Pod</Button>
 
     <div className="space-y-2">
-      <div className="text-sm font-medium">属于当前账号的存储空间</div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-medium">属于当前账号的存储空间</div>
+        {/* §7.2：空间详情聚合用量入口 */}
+        <a className="text-sm text-primary underline-offset-4 hover:underline" href="/status/usage/storage">
+          查看用量
+        </a>
+      </div>
       {listError ? <div role="alert" className="rounded-md border border-destructive/30 p-3 text-sm text-destructive">{listError}</div> : null}
       {bindings === null && !listError ? <div role="status" className="text-sm text-muted-foreground">正在读取…</div> : null}
       {bindings?.length === 0 ? (

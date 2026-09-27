@@ -7,6 +7,7 @@ import { RouteLoadingBoundary } from './layout/RouteLoadingBoundary';
 const LogsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.LogsPage })));
 const RdfPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.RdfPage })));
 const StatusPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.StatusPage })));
+const UsagePage = lazy(() => import('./pages/admin').then((module) => ({ default: module.UsagePage })));
 const NetworkPage = lazy(() => import('./pages/settings/NetworkPage'));
 const StatusWorkspace = lazy(() => import('./pages/status/StatusWorkspace'));
 const ServiceStatusPanel = lazy(() => import('./pages/status/StatusSubjectPanel').then((module) => ({ default: module.ServiceStatusPanel })));
@@ -22,6 +23,12 @@ const statusContentRoutes: RouteObject[] = [
   { path: 'services/solid-server', element: lazyRoute(<ServiceStatusPanel serviceId="css" title="Solid Server" />) },
   { path: 'services/api-server', element: lazyRoute(<ServiceStatusPanel serviceId="api" title="API Server" />) },
   { path: 'logs', element: lazyRoute(<LogsPage />) },
+  // §3.1 的用量深链
+  { path: 'usage/overview', element: lazyRoute(<UsagePage kind="overview" />) },
+  { path: 'usage/storage', element: lazyRoute(<UsagePage kind="storage" />) },
+  { path: 'usage/bandwidth', element: lazyRoute(<UsagePage kind="bandwidth" />) },
+  { path: 'usage/ai', element: lazyRoute(<UsagePage kind="ai" />) },
+  { path: 'usage/index-storage', element: lazyRoute(<UsagePage kind="index-storage" />) },
   { path: 'index', element: lazyRoute(<IndexSubjectPanel kind="overview" />) },
   { path: 'index/rdf', element: lazyRoute(<RdfPage />) },
   { path: 'index/fts', element: lazyRoute(<IndexSubjectPanel kind="fts" />) },

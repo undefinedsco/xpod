@@ -24,7 +24,7 @@ export const canonicalRoutes = {
  *
  * 两点与 §3.3 的差异是当前实现的现实，不是口径变化：
  * - `/network/overview`、`/network/domain-dns` 是本轮目标路径，尚未建立，先落 `/network`；
- * - `/status/usage/*` 目前没有页面，`/dashboard/usage` 先落概览，待 W4 建立用量页后改回
+ * - `/status/usage/*` 已由 W4 建立（`ui/src/pages/admin/UsagePage.tsx`），`/dashboard/usage` 按 §3.3 落
  *   `/status/usage/overview`。
  * 记录见 docs/superpowers/audits/2026-09-27-w2-shell-layout-self-review.md（W2-DESIGN-04）。
  */
@@ -36,7 +36,7 @@ export const legacyProductRedirects: Readonly<Record<string, string>> = {
   '/dashboard/logs': '/status/logs',
   '/dashboard/rdf': '/status/index/rdf',
   '/dashboard/network': canonicalRoutes.network,
-  '/dashboard/usage': canonicalRoutes.status,
+  '/dashboard/usage': '/status/usage/overview',
   '/dashboard/models': canonicalRoutes.aiConnections,
   '/dashboard/pod': canonicalRoutes.settings,
   // §3.3：服务与启动归「服务与访问」，不再落 Pod 页面

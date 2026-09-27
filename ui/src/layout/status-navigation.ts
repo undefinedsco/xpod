@@ -1,7 +1,7 @@
 import { Activity, Boxes, Braces, Database, Gauge, HardDrive, Network, ScrollText, Server, Sparkles, Timer, Waypoints } from 'lucide-react';
 import type { ComponentType } from 'react';
 
-export type StatusNavigationGroup = 'Overview' | 'Services' | 'Diagnostics' | 'Index';
+export type StatusNavigationGroup = 'Overview' | 'Services' | 'Usage' | 'Diagnostics' | 'Index';
 
 export interface StatusNavigationItem {
   id: string;
@@ -28,6 +28,11 @@ export const statusNavigationItems: StatusNavigationItem[] = [
   statusItem('gateway', 'Gateway', 'services/gateway', 'Services', Waypoints),
   statusItem('solid-server', 'Solid Server', 'services/solid-server', 'Services', Database),
   statusItem('api-server', 'API Server', 'services/api-server', 'Services', Server),
+  statusItem('usage-overview', 'Usage', 'usage/overview', 'Usage', Activity),
+  statusItem('usage-storage', 'Storage', 'usage/storage', 'Usage', HardDrive),
+  statusItem('usage-bandwidth', 'Bandwidth', 'usage/bandwidth', 'Usage', Waypoints),
+  statusItem('usage-ai', 'AI usage', 'usage/ai', 'Usage', Sparkles),
+  statusItem('usage-index-storage', 'Index storage', 'usage/index-storage', 'Usage', Boxes),
   statusItem('logs', 'Logs', 'logs', 'Diagnostics', ScrollText),
   statusItem('index-overview', 'Index Overview', 'index', 'Index', Boxes),
   statusItem('rdf', 'RDF', 'index/rdf', 'Index', Braces),

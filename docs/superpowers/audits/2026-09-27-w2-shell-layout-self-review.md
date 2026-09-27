@@ -175,6 +175,6 @@
 
 实现状态补充（第三轮）：`AppLayout` 的窄窗分支从 64px 底部栏改为 §8.3 的 48px 顶部任务栏（返回按钮可选、标题、有名称的导航按钮）+ 导航抽屉；抽屉用 shared-ui 的 `DialogContent variant="sheet-left"`，导航树是同一个节点，不复制第二套导航，`XpodProductLayout` 传入抽屉名「Xpod 工作区导航」。对象列（真正集合在 ≥1100px 才出现）仍需由工作区接入 `resolveAppletPanePlan`，属下一轮。
 
-实现状态补充（第二轮）：`AppLayout` 与产品导航按 §8.3 改为 ≥768px 的 184px 文字导航（标签由 `sr-only` 改为可见），紧凑窗口仍保留原任务栏（抽屉待做）；§3.3 映射逐行核对并补齐，`/status/usage/*` 与 `/network/overview` 当前尚无页面，前者暂落概览、后者暂落 `/network`，已在映射表注释与本报告记录，待 W4/W2 建立后再改回。
+实现状态补充（第二轮）：`AppLayout` 与产品导航按 §8.3 改为 ≥768px 的 184px 文字导航（标签由 `sr-only` 改为可见），紧凑窗口仍保留原任务栏（抽屉待做）；§3.3 映射逐行核对并补齐，`/status/usage/*` 与 `/network/overview` 当前尚无页面，前者已由 W4 建立 `/status/usage/*` 并按 §3.3 指向目标路由、后者暂落 `/network`，已在映射表注释与本报告记录，待 W4/W2 建立后再改回。
 
 验证记录：`ui/src` 96 文件 / 883 测试全过（含新增导航契约与 §3.3 映射契约）；`packages/extension-sdk/test` 12 文件 / 79 测试全过（含新增页型契约 `layout-pages.test.ts`，覆盖"概览/固定配置/诊断在任意宽度都不出现对象列"、"只有真正集合在 ≥1100px 才出现对象列"、768–1099 堆叠、<768 任务栏单面板与非法宽度）；`bun run build:packages`、`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run build:ts` 与 `bun run typecheck:test` 均通过。未做：真实点击与窄窗走查、Shell 对页型与断点的实际采用。

@@ -19,11 +19,14 @@ describe('dashboard runtime console routes', () => {
 
   it.todo('defines Account Usage authorization after CSS exposes a native Account-scoped contract');
 
-  it('keeps deferred Account usage out of the shipped route graph', async () => {
+  it('ships the §3.1 usage deep links through the status surface without a second page', async () => {
+    // R2 决策：用量是空间任务的一部分（§3.1/§3.3），不再"推迟交付"
     const dashboardRoutes = await readRepoFile('ui/src/dashboard-routes.tsx');
 
-    expect(dashboardRoutes).not.toContain("import('./pages/dashboard/UsagePage')");
-    expect(dashboardRoutes).not.toContain("path: 'usage");
+    for (const path of ['usage/overview', 'usage/storage', 'usage/bandwidth', 'usage/ai', 'usage/index-storage']) {
+      expect(dashboardRoutes, `missing ${path}`).toContain(`path: '${path}'`);
+    }
+    // 仍然只有一份用量页，不新建平行的 Account 用量页面
     expect(existsSync(path.join(root, 'ui/src/pages/dashboard/UsagePage.tsx'))).toBe(false);
     expect(existsSync(path.join(root, 'ui/src/pages/status/UsageStatusPanel.tsx'))).toBe(false);
   });
