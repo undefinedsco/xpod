@@ -92,9 +92,14 @@ cancelled）、不透明 `metadata`、`createdAt`/`updatedAt`；它自己的注�
 WebID 构造）。**推荐 ①**：外壳已经为这次请求解过一次上下文，再解一次等于把同一份授权决定做两遍，而且 ② 需要一个
 "scope → 参与者"的全局映射——那正是我们**刻意不记录**的东西（见 `participantRoutes.ts`）。
 
-**唯一未决的能力点**：`reserve` 要"并发只有一个赢家"，而 Pod 写入是整份 `index.ttl` 的读-改-写，因此需要**条件写
-（ETag/If-Match）**。没有条件写时：并发重试可能各自处理一次（接受事件按 event id 幂等，不会写出重复事件，但"首次
-应答"可能不是同一个）——这一点必须写进实现与文档，不能假装原子。
+**原子性所需的"条件写"已确认存在**（2026-09-27 查证，不再是待定项）：
+- `@inrupt/solid-client` 的 `saveSolidDatasetAt` **自动带上 ETag / If-Match**；版本不符时服务端回 **412 Precondition
+  Failed**——这就是 compare-and-swap 的原语。
+- 因此 `reserve` 可以做到严格"只有一个赢家"：读 `index.ttl`（带 ETag）→ 键不存在则加行 → 条件保存；**412 即"别人先赢
+  了"**，此时重读并回答 `created: false`（对端重试拿到的是赢家的记录，而不是自己再处理一遍）。
+- **注意不要误用**：`drizzle-solid` 的 `ConflictResolver`/`saveWithConflictResolution` 是**冲突后重试并合并**
+  （`last-write-wins`/`field-level-merge`/…）——那对普通数据是便利，对"预留"是错的（合并会让两个赢家都存在）。控制
+  记录的写入必须走**条件保存并显式处理 412**，不能走这个便利封装。这一点要写进实现与测试。
 
 ## 6. 与已落地实现的关系
 

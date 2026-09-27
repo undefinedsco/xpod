@@ -35,9 +35,11 @@
    契约 §2 要求的那张表，而且它的语义就是"**持久化的可执行工作单元**"。据此：**出站投递批次**直接就是一条 task
    （要做什么：把这批 PDU 发给那个 server；`metadata` 带 origin/destination/txnId/pdus；status 走 open→completed/
    failed/cancelled），**入站事务存档**是一条已完成的 task（回执：`metadata` 带 origin/txnId/fingerprint/首次应答）。
-   **唯一剩下的技术问题**：`reserve` 要"只有一个赢家"，而 Pod 写入是整份 `index.ttl` 的读-改-写，**需要条件写
-   （ETag/If-Match）**——这与之前记录的"Pod 条件写"缺口是同一件事；没有条件写时并发重试可能各自处理一次（接受事件按
-   event id 幂等，所以不会写出重复事件，但"首次应答"可能不是同一个）。
+   **剩下的技术问题已查证解决**（2026-09-27）：Pod 的**条件写存在**——`@inrupt/solid-client` 的
+   `saveSolidDatasetAt` 自动带 ETag/If-Match，冲突时回 **412 Precondition Failed**，这正是 `reserve` 需要的
+   compare-and-swap（412 即"别人先赢了"，重读并回答 `created: false`）。**唯一的坑**：`drizzle-solid` 的
+   `ConflictResolver` 是"412 后重试并合并"，对预留是错的（合并会造出两个赢家）——控制记录必须走条件保存并显式处理
+   412，不能走那个便利封装。细节见[控制记录契约](matrix-control-records-contract.md) §6.5。
 2. **grant 的索取流程**（契约 §5.4）。机制已存在（`TaskCredentialStore.grant`，用户把 Pod interface key 交给部署），
    缺的是**时机与界面**：在参与者第一次被 provision 时问？第一次进房间时问？界面上怎么表达"让这个部署替你写收到的
    消息"？在此之前，收到的事件会以 403 明确失败（不静默、不写别人的 Pod）。
