@@ -1,4 +1,4 @@
-import { useContext, useRef, type KeyboardEvent, type MutableRefObject, type ReactNode } from 'react'
+import { useContext, useRef, useState, type KeyboardEvent, type MutableRefObject, type ReactNode } from 'react'
 import { Avatar, AvatarFallback, AvatarImage, cn } from '@undefineds.co/shared-ui'
 import { WorkspaceLayoutContext } from '@undefineds.co/extension-sdk/react'
 import { XPOD_AVATAR, getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
@@ -38,9 +38,20 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
   const providers = searchQuery
     ? providerItems.filter((provider) => providerDisplayName(provider, providerProducts).toLocaleLowerCase().includes(searchQuery))
     : providerItems
+  // §7.3：已有配置时先呈现已连接对象，全量 Provider 目录只在"添加连接"时出现；
+  // 什么都没配置时，目录本身就是连接任务的入口，直接出现。
+  const [adding, setAdding] = useState(false)
+  const configured = (provider: ProviderListItem): boolean => {
+    const state = providerStates[provider.id]
+    return state === 'configured' || state === 'connected'
+  }
+  const configuredProviders = providers.filter(configured)
+  const catalogProviders = providers.filter((provider) => !configured(provider))
+  const showCatalog = adding || configuredProviders.length === 0
+  const shownProviders = showCatalog ? providers : configuredProviders
   const items: WorkspaceListItem[] = [
     ...AI_CONNECTIONS_PINNED_SECTIONS.map((section) => ({ kind: 'section' as const, id: section.id, label: section.label })),
-    ...providers.map((provider) => ({ kind: 'provider' as const, provider })),
+    ...shownProviders.map((provider) => ({ kind: 'provider' as const, provider })),
   ]
 
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
@@ -78,9 +89,24 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
           )
         })}
       </section>
-      <section>
-        <h2 className="px-5 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Provider</h2>
-        {providers.map((provider) => {
+      <section data-testid="ai-provider-section">
+        <div className="flex items-center justify-between gap-2 px-5 py-1">
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {configuredProviders.length > 0 && !showCatalog ? '已连接' : 'Provider'}
+          </h2>
+          {configuredProviders.length > 0 ? (
+            <button
+              type="button"
+              data-testid="ai-add-connection"
+              className="text-[11px] text-primary underline-offset-4 hover:underline"
+              aria-expanded={showCatalog}
+              onClick={() => setAdding((value) => !value)}
+            >
+              {showCatalog ? '收起目录' : '添加连接'}
+            </button>
+          ) : null}
+        </div>
+        {shownProviders.map((provider) => {
           const index = items.findIndex((item) => item.kind === 'provider'
             && item.provider.id === provider.id
             && item.provider.credentialId === provider.credentialId)
@@ -114,7 +140,7 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
             </WorkspaceOption>
           )
         })}
-        {providers.length === 0 ? (
+        {shownProviders.length === 0 ? (
           <p className="p-8 text-center text-xs text-muted-foreground">无结果</p>
         ) : null}
       </section>
