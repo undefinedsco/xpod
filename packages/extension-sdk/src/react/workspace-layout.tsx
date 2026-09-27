@@ -11,6 +11,12 @@ import {
 } from 'react'
 import { cn } from '@undefineds.co/shared-ui'
 import {
+  resolveAppletPanePlan,
+  XPOD_LAYOUT_BREAKPOINTS,
+  XPOD_LAYOUT_RAIL_WIDTH,
+  type AppletPageType,
+} from '../layout'
+import {
   WorkspaceLayoutContext,
   type WorkspaceLayoutMode,
   type WorkspaceLayoutNavigation,
@@ -19,7 +25,16 @@ import {
 
 export type TwoPaneLayoutMode = 'auto' | WorkspaceLayoutMode
 
-export interface TwoPaneLayoutProps {
+export interface WorkspacePageTypeProps {
+  /**
+   * §8.3 页型。概览、固定配置、诊断不会渲染对象列；只有 `collection` 且确有集合才在宽断点出现。
+   * 默认保持旧行为（集合页 + 有集合），新页面应显式声明。
+   */
+  pageType?: AppletPageType
+  hasObjectCollection?: boolean
+}
+
+export interface TwoPaneLayoutProps extends WorkspacePageTypeProps {
   listHeader: ReactNode
   list: ReactNode
   mainHeader: ReactNode
@@ -40,7 +55,7 @@ export interface ThreePaneLayoutContextConfig {
   initiallyCollapsed?: boolean
 }
 
-export interface ThreePaneLayoutProps {
+export interface ThreePaneLayoutProps extends WorkspacePageTypeProps {
   header?: ReactNode
   list: ReactNode
   main: ReactNode
@@ -98,6 +113,69 @@ function useResolvedMode(mode: TwoPaneLayoutMode): WorkspaceLayoutMode {
   )
 
   return mode === 'auto' ? autoMode : mode
+}
+
+/**
+ * 对象列的可用宽度媒体查询：§8.3 的 1100px 是**内容**宽度，宽窗口还有一个 184px 导航列，
+ * 所以视口阈值要加上它。
+ */
+const objectColumnMediaQuery = `(min-width: ${XPOD_LAYOUT_BREAKPOINTS.wideObjects + XPOD_LAYOUT_RAIL_WIDTH}px)`
+
+/**
+ * 是否够放对象列。
+ *
+ * 没有 `matchMedia` 的环境（服务端渲染、旧测试环境）按宽窗口处理——与 `getServerAutoModeSnapshot`
+ * 的既有默认一致：产品主要跑在桌面壳里，未知环境不应把已有的两栏布局变成堆叠。
+ */
+function useRoomForObjectColumn(): boolean {
+  return useSyncExternalStore(
+    (onStoreChange) => {
+      if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+        return () => undefined
+      }
+      const media = window.matchMedia(objectColumnMediaQuery)
+      media.addEventListener('change', onStoreChange)
+      return () => media.removeEventListener('change', onStoreChange)
+    },
+    () => (typeof window === 'undefined' || typeof window.matchMedia !== 'function'
+      ? true
+      : window.matchMedia(objectColumnMediaQuery).matches),
+    () => true,
+  )
+}
+
+/**
+ * 把 §8.3 的页型、宽度与集合事实落到布局上：复用 `resolveAppletPanePlan` 作为唯一判断处，
+ * 概览/固定配置/诊断在任何宽度都不出现对象列，集合页在 1100px 以下改为堆叠。
+ */
+function useObjectColumn(input: {
+  mode: TwoPaneLayoutMode
+  pageType: AppletPageType
+  hasObjectCollection: boolean
+}): { resolvedMode: WorkspaceLayoutMode; showObjectColumn: boolean } {
+  const narrow = useSyncExternalStore(
+    subscribeToStackModeChange,
+    getAutoModeSnapshot,
+    getServerAutoModeSnapshot,
+  ) === 'stack'
+  const roomForObjects = useRoomForObjectColumn()
+  // 只需要区分三个区间，因此给 plan 一个能代表当前区间的宽度
+  const contentWidth = roomForObjects
+    ? XPOD_LAYOUT_BREAKPOINTS.wideObjects
+    : narrow
+      ? XPOD_LAYOUT_BREAKPOINTS.narrow - 1
+      : XPOD_LAYOUT_BREAKPOINTS.narrow
+  const plan = resolveAppletPanePlan({
+    pageType: input.pageType,
+    contentWidth,
+    hasObjectCollection: input.hasObjectCollection,
+  })
+  // §8.3：只有真正的集合列出现时才是并排；其余（含窄窗的集合页）都走 list→detail 的堆叠
+  const autoMode: WorkspaceLayoutMode = plan.panes === 'list-detail' ? 'split' : 'stack'
+  return {
+    resolvedMode: input.mode === 'auto' ? autoMode : input.mode,
+    showObjectColumn: plan.showObjectColumn,
+  }
 }
 
 function useStackNavigation({
@@ -177,8 +255,13 @@ export function TwoPaneLayout({
   mode = 'auto',
   history,
   className,
+  pageType = 'collection',
+  hasObjectCollection = true,
 }: TwoPaneLayoutProps) {
-  const resolvedMode = useResolvedMode(mode)
+  const { resolvedMode } = useObjectColumn({ mode, pageType, hasObjectCollection })
+  // §8.3：非集合页不渲染对象列；集合页只有宽断点才显示
+  // §8.3：只有集合页才有对象列表；宽度决定它是并排的对象列还是堆叠的第一屏
+  const showList = pageType === 'collection' && hasObjectCollection
   const {
     activePane,
     paneRefs,
@@ -198,8 +281,9 @@ export function TwoPaneLayout({
     openContext,
   }), [activePane, openContext, openList, openMain, resolvedMode])
   const isStack = resolvedMode === 'stack'
-  const listHidden = isStack && activePane !== 'list'
-  const mainHidden = isStack && activePane !== 'main'
+  const stacked = showList && isStack
+  const listHidden = !showList || (stacked && activePane !== 'list')
+  const mainHidden = stacked && activePane !== 'main'
 
   return (
     <WorkspaceLayoutContext.Provider value={navigation}>
@@ -211,10 +295,11 @@ export function TwoPaneLayout({
         <div
           className={cn(
             'grid min-h-0 flex-1',
-            isStack ? 'grid-cols-1' : null,
+            stacked || !showList ? 'grid-cols-1' : null,
           )}
-          style={isStack ? undefined : twoPaneGridStyle}
+          style={stacked || !showList ? undefined : twoPaneGridStyle}
           data-workspace-layout-mode={mode}
+          data-workspace-object-column={showList && resolvedMode === 'split' ? 'shown' : 'hidden'}
           data-workspace-active-pane={activePane}
         >
           <aside
@@ -222,12 +307,12 @@ export function TwoPaneLayout({
             className={cn(
               'min-h-0 flex-col overflow-hidden bg-layout-list-item @container',
               listHidden ? 'hidden' : 'flex',
-              isStack ? 'border-r-0' : 'border-r border-border',
+              stacked ? 'border-r-0' : 'border-r border-border',
             )}
             data-testid="workspace-list-pane"
             data-workspace-pane="list"
             hidden={listHidden}
-            tabIndex={isStack ? -1 : undefined}
+            tabIndex={stacked ? -1 : undefined}
           >
             <header
               className="h-12 shrink-0 border-b border-border bg-layout-list-header"
@@ -248,7 +333,7 @@ export function TwoPaneLayout({
             data-testid="workspace-main-pane"
             data-workspace-pane="main"
             hidden={mainHidden}
-            tabIndex={isStack ? -1 : undefined}
+            tabIndex={stacked ? -1 : undefined}
           >
             <header
               className="h-12 shrink-0 border-b border-border bg-layout-content"
@@ -257,7 +342,7 @@ export function TwoPaneLayout({
               {mainHeader}
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {isStack ? (
+              {stacked ? (
                 <button
                   type="button"
                   className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
@@ -310,8 +395,13 @@ export function ThreePaneLayout({
   history,
   contextConfig,
   className,
+  pageType = 'collection',
+  hasObjectCollection = true,
 }: ThreePaneLayoutProps) {
-  const resolvedMode = useResolvedMode(mode)
+  const { resolvedMode } = useObjectColumn({ mode, pageType, hasObjectCollection })
+  // §8.3：非集合页不渲染对象列
+  // §8.3：只有集合页才有对象列表；宽度决定它是并排的对象列还是堆叠的第一屏
+  const showList = pageType === 'collection' && hasObjectCollection
   const [contextCollapsed, setContextCollapsed] = useState(
     contextConfig?.initiallyCollapsed ?? false,
   )
@@ -333,9 +423,10 @@ export function ThreePaneLayout({
     openContext,
   }), [activePane, openContext, openList, openMain, resolvedMode])
   const isStack = resolvedMode === 'stack'
-  const listHidden = isStack && activePane !== 'list'
-  const mainHidden = isStack && activePane !== 'main'
-  const contextHidden = isStack
+  const stacked = showList && isStack
+  const listHidden = !showList || (stacked && activePane !== 'list')
+  const mainHidden = stacked && activePane !== 'main'
+  const contextHidden = stacked
     ? activePane !== 'context'
     : Boolean(contextConfig?.collapsible && contextCollapsed)
 
@@ -351,7 +442,7 @@ export function ThreePaneLayout({
             {header}
           </header>
         ) : null}
-        {contextConfig?.collapsible && !isStack ? (
+        {contextConfig?.collapsible && !stacked ? (
           <div className="shrink-0 border-b border-border bg-layout-content px-3 py-2">
             <button
               type="button"
@@ -366,9 +457,9 @@ export function ThreePaneLayout({
         <div
           className={cn(
             'grid min-h-0 flex-1',
-            isStack ? 'grid-cols-1' : null,
+            stacked ? 'grid-cols-1' : null,
           )}
-          style={isStack ? undefined : threePaneGridStyle}
+          style={stacked || !showList ? undefined : threePaneGridStyle}
           data-workspace-layout-mode={mode}
           data-workspace-active-pane={activePane}
         >
@@ -377,12 +468,12 @@ export function ThreePaneLayout({
             className={cn(
               'min-h-0 overflow-y-auto bg-layout-list-item @container',
               listHidden ? 'hidden' : null,
-              isStack ? 'border-r-0' : 'border-r border-border',
+              stacked ? 'border-r-0' : 'border-r border-border',
             )}
             data-testid="workspace-list-pane"
             data-workspace-pane="list"
             hidden={listHidden}
-            tabIndex={isStack ? -1 : undefined}
+            tabIndex={stacked ? -1 : undefined}
           >
             {list}
           </aside>
@@ -395,9 +486,9 @@ export function ThreePaneLayout({
             data-testid="workspace-main-pane"
             data-workspace-pane="main"
             hidden={mainHidden}
-            tabIndex={isStack ? -1 : undefined}
+            tabIndex={stacked ? -1 : undefined}
           >
-            {isStack ? (
+            {stacked ? (
               <button
                 type="button"
                 className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
@@ -413,14 +504,14 @@ export function ThreePaneLayout({
             className={cn(
               'min-h-0 overflow-y-auto bg-layout-content @container',
               contextHidden ? 'hidden' : null,
-              isStack ? 'border-l-0' : 'border-l border-border',
+              stacked ? 'border-l-0' : 'border-l border-border',
             )}
             data-testid="workspace-context-pane"
             data-workspace-pane="context"
             hidden={contextHidden}
-            tabIndex={isStack ? -1 : undefined}
+            tabIndex={stacked ? -1 : undefined}
           >
-            {isStack ? (
+            {stacked ? (
               <button
                 type="button"
                 className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"

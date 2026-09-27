@@ -71,6 +71,12 @@ export type AppletPageType = 'overview' | 'collection' | 'configuration' | 'diag
 /**
  * §8.3 断点的唯一来源，单位是内容视口 CSS px。页面不得自选断点。
  */
+/**
+ * 宽窗口导航列宽度（§8.3）。`AppLayout` 的 Tailwind 类必须与它一致
+ * （`md:grid-cols-[184px_minmax(0,1fr)]`），`packages/extension-sdk/test/app-layout.test.tsx` 两边都断言。
+ */
+export const XPOD_LAYOUT_RAIL_WIDTH = 184;
+
 export const XPOD_LAYOUT_BREAKPOINTS = {
   /** 低于此宽度使用任务栏 + 导航抽屉，不强制底部 Tab。 */
   narrow: 768,

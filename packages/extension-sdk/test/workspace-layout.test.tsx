@@ -454,60 +454,146 @@ describe('TwoPaneLayout', () => {
   })
 })
 
+/**
+ * 模拟视口宽度。
+ *
+ * 过去用一个布尔表示"是否窄窗"。布局现在按 §8.3 分别查询 767px（堆叠）与 1284px
+ * （1100 内容 + 184 导航列，够放对象列），所以这里模拟的是宽度：
+ * `setMatches(true)` 等价于窄窗 640px，`setMatches(false)` 等价于宽窗 1440px。
+ */
 function mockWorkspaceMedia(initialMatches: boolean) {
-  let matches = initialMatches
-  const listeners = new Set<EventListenerOrEventListenerObject>()
-  const legacyListeners = new Set<(this: MediaQueryList, event: MediaQueryListEvent) => void>()
-  const media = {
-    get matches() {
-      return matches
-    },
-    media: '(max-width: 767px)',
-    onchange: null,
-    addEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
-      if (listener) {
-        listeners.add(listener)
-      }
-    },
-    removeEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
-      if (listener) {
-        listeners.delete(listener)
-      }
-    },
-    addListener: (listener: ((this: MediaQueryList, event: MediaQueryListEvent) => void) | null) => {
-      if (listener) {
-        legacyListeners.add(listener)
-      }
-    },
-    removeListener: (listener: ((this: MediaQueryList, event: MediaQueryListEvent) => void) | null) => {
-      if (listener) {
-        legacyListeners.delete(listener)
-      }
-    },
-    dispatchEvent: (event: Event) => {
-      for (const listener of listeners) {
-        if (typeof listener === 'function') {
-          listener.call(media, event)
-        } else {
-          listener.handleEvent(event)
-        }
-      }
-      for (const listener of legacyListeners) {
-        listener.call(media, event as MediaQueryListEvent)
-      }
-      return true
-    },
-    setMatches: (nextMatches: boolean) => {
-      matches = nextMatches
-      const event = new Event('change') as MediaQueryListEvent
-      Object.defineProperties(event, {
-        matches: { value: matches },
-        media: { value: '(max-width: 767px)' },
-      })
-      media.dispatchEvent(event)
-    },
-  } as MediaQueryList & { setMatches(nextMatches: boolean): void }
+  let viewportWidth = initialMatches ? 640 : 1440
+  const lists = new Set<{ query: string; listeners: Set<EventListenerOrEventListenerObject>; legacy: Set<(this: MediaQueryList, event: MediaQueryListEvent) => void>; emit(): void }>()
 
-  window.matchMedia = () => media
-  return media
+  const evaluate = (query: string): boolean => {
+    const max = /max-width:\s*(\d+)px/u.exec(query)
+    if (max) return viewportWidth <= Number(max[1])
+    const min = /min-width:\s*(\d+)px/u.exec(query)
+    if (min) return viewportWidth >= Number(min[1])
+    return false
+  }
+
+  const emitAll = (): void => {
+    for (const list of lists) list.emit()
+  }
+
+  window.matchMedia = ((query: string) => {
+    const entry = {
+      query,
+      listeners: new Set<EventListenerOrEventListenerObject>(),
+      legacy: new Set<(this: MediaQueryList, event: MediaQueryListEvent) => void>(),
+      emit: () => undefined,
+    }
+    const media = {
+      get matches() {
+        return evaluate(query)
+      },
+      media: query,
+      onchange: null,
+      addEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
+        if (listener) entry.listeners.add(listener)
+      },
+      removeEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
+        if (listener) entry.listeners.delete(listener)
+      },
+      addListener: (listener: ((this: MediaQueryList, event: MediaQueryListEvent) => void) | null) => {
+        if (listener) entry.legacy.add(listener)
+      },
+      removeListener: (listener: ((this: MediaQueryList, event: MediaQueryListEvent) => void) | null) => {
+        if (listener) entry.legacy.delete(listener)
+      },
+      dispatchEvent: () => true,
+    } as MediaQueryList
+    entry.emit = () => {
+      if (typeof media.onchange === 'function') {
+        media.onchange.call(media, new Event('change') as MediaQueryListEvent)
+      }
+      for (const listener of entry.listeners) {
+        if (typeof listener === 'function') listener.call(media, new Event('change'))
+        else listener.handleEvent(new Event('change'))
+      }
+      for (const listener of entry.legacy) {
+        listener.call(media, new Event('change') as MediaQueryListEvent)
+      }
+    }
+    lists.add(entry)
+    return media
+  }) as typeof window.matchMedia
+
+  return {
+    setMatches: (nextMatches: boolean) => {
+      viewportWidth = nextMatches ? 640 : 1440
+      emitAll()
+    },
+    setWidth: (nextWidth: number) => {
+      viewportWidth = nextWidth
+      emitAll()
+    },
+  }
 }
+
+describe('workspace object column follows the §8.3 page plan', () => {
+  const originalMatchMedia = window.matchMedia
+
+  afterEach(() => {
+    cleanup()
+    window.matchMedia = originalMatchMedia
+  })
+
+  it('never renders an object column for overview, configuration or diagnostics', () => {
+    const media = mockWorkspaceMedia(false)
+    for (const pageType of ['overview', 'configuration', 'diagnostics'] as const) {
+      cleanup()
+      render(
+        <TwoPaneLayout
+          pageType={pageType}
+          listHeader={<span>列表</span>}
+          list={<span>对象</span>}
+          mainHeader={<span>详情</span>}
+          main={<span>内容</span>}
+        />,
+      )
+      const listPane = screen.getByTestId('workspace-list-pane')
+      expect(listPane.hidden, pageType).toBe(true)
+      expect(document.querySelector('[data-workspace-object-column]')?.getAttribute('data-workspace-object-column'))
+        .toBe('hidden')
+    }
+    media.setWidth(1600)
+  })
+
+  it('stacks a real collection below the §8.3 wide breakpoint and splits above it', () => {
+    const media = mockWorkspaceMedia(false)
+    render(
+      <TwoPaneLayout
+        pageType="collection"
+        hasObjectCollection
+        listHeader={<span>列表</span>}
+        list={<span>对象</span>}
+        mainHeader={<span>详情</span>}
+        main={<span>内容</span>}
+      />,
+    )
+    expect(document.querySelector('[data-workspace-mode]')?.getAttribute('data-workspace-mode')).toBe('split')
+
+    act(() => media.setWidth(1024))
+    expect(document.querySelector('[data-workspace-mode]')?.getAttribute('data-workspace-mode')).toBe('stack')
+
+    act(() => media.setWidth(1440))
+    expect(document.querySelector('[data-workspace-mode]')?.getAttribute('data-workspace-mode')).toBe('split')
+  })
+
+  it('drops the object column when the view has no real collection', () => {
+    mockWorkspaceMedia(false)
+    render(
+      <TwoPaneLayout
+        pageType="collection"
+        hasObjectCollection={false}
+        listHeader={<span>列表</span>}
+        list={<span>对象</span>}
+        mainHeader={<span>详情</span>}
+        main={<span>内容</span>}
+      />,
+    )
+    expect(screen.getByTestId('workspace-list-pane').hidden).toBe(true)
+  })
+})
