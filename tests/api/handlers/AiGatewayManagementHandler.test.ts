@@ -1768,6 +1768,37 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.stringify(connectService.updateCredential.mock.calls[0][0])).not.toContain('must-be-ignored');
   });
 
+  it('forgets the issuer session when an API Key record is deleted', async () => {
+    const invalidateClientCredential = vi.fn();
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      gatewayAccessKeyRepository: {
+        findById: async () => ({
+          id: 'key-1',
+          kind: 'client-credentials' as const,
+          owner: WEB_ID,
+          secretHash: '',
+          deployment: 'cloud' as const,
+          scopes: [],
+          createdAt: new Date(0),
+          name: 'Codex',
+          clientCredentialId: 'the-client',
+        }),
+        delete: async () => true,
+      } as unknown as GatewayAccessKeyRepository,
+      invalidateClientCredential,
+    });
+    const res = response();
+
+    await routes['DELETE /api/ai/gateway/keys/:keyId'](request(callerOwnedAuth()), res, { keyId: 'key-1' });
+
+    expect(res.statusCode).toBe(200);
+    // Revocation happens at the issuer; the record is how this process learns to stop accepting the
+    // cached token, so the API Key stops working now rather than at token expiry.
+    expect(invalidateClientCredential).toHaveBeenCalledWith('the-client');
+  });
+
   it('deletes one credential by id', async () => {
     const connectService = {
       revokeCredential: vi.fn(async (input: any) => ({

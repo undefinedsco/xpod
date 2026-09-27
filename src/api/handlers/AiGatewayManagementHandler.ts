@@ -57,6 +57,12 @@ export interface AiGatewayManagementHandlerOptions {
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   /** Reuses the configured CSS authenticator; never trusts the claimed registration owner. */
   validateClientCredential?: (apiKey: string) => Promise<AuthResult>;
+  /**
+   * Forget sessions cached for a client whose registration is gone. Revocation happens at the
+   * issuer, so deleting the record is the moment this process learns the credential must stop
+   * being accepted - without it a revoked API Key keeps working until its token expires.
+   */
+  invalidateClientCredential?: (clientId: string) => void;
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue' | 'issueClientConfiguration'>;
   jsonBodyLimitBytes?: number;
@@ -262,6 +268,9 @@ export function registerAiGatewayManagementRoutes(
       // This removes the saved client configuration only. The Account host
       // revokes CSS credentials before requesting this companion cleanup.
       await repository.delete(record.id, { auth: request.auth });
+      if (record.clientCredentialId) {
+        options.invalidateClientCredential?.(record.clientCredentialId);
+      }
       sendJson(response, 200, {
         deleted: true,
         record: publicGatewayAccessKeyRecord(record, false),
