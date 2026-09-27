@@ -435,9 +435,26 @@ Matrix 的协议签名/事件验证与 Agent 的执行授权分别成立。执�
   服务器**（有 joined 成员的 server），membership 事件额外发给该事件**所涉及成员**的 server（邀请、
   踢出、退出时对方未必是 joined），**绝不发给自己**（本地已有，发给自己是永远清不空的收件箱）。
   结果去重并稳定排序，供 outbox 直接入队。测试 `tests/api/matrix/federation/destinations.test.ts` 6 项。
+- **已落地**（2026-09-27）：**写入后入队**（`PodMatrixStoreOptions.outbound` +
+  `queueFederationDelivery`）。写入路径只做"该告诉谁"：**origin 取事件 `sender` 的 server**（不是部署，
+  所以事务由事件所属身份签名），**destination 取解析后状态里房间参与者的 server**（membership 事件
+  额外带上该事件所涉及成员的 server），**PDU 就是持久化的协议事件**——带 `hashes` 与签名、`event_id`
+  由内容推导（测试直接断言 `computeEventId(pdu) === pdu.event_id`），正是对端要验的东西。
+  **投递不在写入延迟内**：联邦往返不塞进本地写入，对端不可用由队列吸收；没有配置队列时行为与之前
+  完全一致（单部署房间 `eventDestinations` 返回空，一个事务都不入队）。测试
+  `tests/api/matrix/outboundDelivery.test.ts` 6 项（消息以 sender 的 server 发给对方 server 且 PDU 可验、
+  邀请送达被邀请者 server、全本地房间不入队、只邀请未加入的成员不算参与 server、收到的事件**不转发**、
+  无队列时写入不变）。
+- **待定（需要拍）**：**谁触发 flush**。现在队列能入队但**没有触发器**，所以生产接线刻意没做——
+  接上而没有触发点会让事务静默堆积。三个选项：① 写入后内联 flush（最简单，但把联邦往返加进写入
+  延迟，且对端慢会拖住调用方）；② 周期后台 worker（写入零影响，需要一个进程内定时器/队列消费者与
+  "谁来跑"的部署决定，多副本要互斥）；③ 只暴露按需入口（管理/运维触发，最可控但需要有人真的调用）。
+  与它一起待定的是**投递记录落在哪**（内存 store 已就位，控制 Pod 承载去 SQL 仍是待办）。
+- **待定（需要拍）**：**收到的事件是否转发给房间里其他 server**。当前 `acceptReceivedEvent` 只落库、
+  不转发。规范说 resident server "必须把事件发给房间里其他 server"，同时也讨论了"服务器可以选择不
+  转发那些绕过 ban 的事件"；转发会引入放大与滥用面，所以不擅自实现。
 - **待建**：`PUT /_matrix/federation/v1/send/{txnId}` 的 **HTTP 路由**（认证件、事务件与域名解析件都已
-  就位；**剩下的阻塞点是路由归属**——见下方"待细化的实现事项"）、**出站队列的调用点**（写入后把事件
-  入队、谁触发 flush、投递记录与控制 Pod 承载；队列与客户端都已就位）、事务记录与控制 Pod 承载（去 SQL）、
+  就位；**剩下的阻塞点是路由归属**——见下方"待细化的实现事项"）、事务记录与控制 Pod 承载（去 SQL）、
   `/get_missing_events` 补依赖、状态与历史获取。
 
 ## 已撤销或否决的前提

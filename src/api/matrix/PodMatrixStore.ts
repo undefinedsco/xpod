@@ -24,7 +24,8 @@ import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransac
 import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type PersistedMatrixEvent } from './persistedEvent';
 import { roomGraphPosition, type RoomGraphEvent } from './protocol/roomGraph';
 import { MatrixRoomState, MatrixRoomStateReplay, resolveRoomState } from './roomState';
-import { SUPPORTED_ROOM_VERSION } from './protocol/authRules';
+import { serverNameOf, SUPPORTED_ROOM_VERSION } from './protocol/authRules';
+import { eventDestinations } from './federation/destinations';
 import { webIdServerName } from './protocol/serverName';
 import type { MatrixSigningIdentitySource } from './identityRegistry';
 import { computeEventId, EventIntegrityError } from './protocol/eventIntegrity';
@@ -93,6 +94,17 @@ export interface MatrixParticipantIdentityProvider {
  * which is the legacy boundary rather than something provisioning can undo.
  */
 
+/**
+ * Where a locally written event goes so the other servers in the room learn about it.
+ *
+ * A port rather than the concrete queue: the store decides *what* the room's other servers
+ * are, and the federation layer decides how a transaction reaches them. `MatrixOutbox`
+ * satisfies this.
+ */
+export interface MatrixFederationOutbox {
+  enqueue(input: { scope: string; origin: string; destination: string; pdus: readonly unknown[] }): Promise<unknown>;
+}
+
 export interface PodMatrixStoreOptions {
   podAccess?: PodAccessFetchProvider;
   journal?: MatrixEventJournal;
@@ -110,6 +122,8 @@ export interface PodMatrixStoreOptions {
   stateCacheLimit?: number;
   /** Supplies a participant's own signing identity as they enter a room. */
   participantIdentity?: MatrixParticipantIdentityProvider;
+  /** Queues a written event for the other servers in the room; absent means local only. */
+  outbound?: MatrixFederationOutbox;
 }
 
 type Db = any;
@@ -167,6 +181,7 @@ export class PodMatrixStore {
   private readonly journal: MatrixEventJournal;
   private readonly identities?: MatrixSigningIdentitySource;
   private readonly participantIdentity?: MatrixParticipantIdentityProvider;
+  private readonly outbound?: MatrixFederationOutbox;
   private readonly stateCache = new Map<string, MatrixRoomStateReplay>();
   private readonly stateCacheLimit: number;
   private readonly logger = getLoggerFor(this);
@@ -179,6 +194,7 @@ export class PodMatrixStore {
     this.journal = options.journal ?? new InMemoryMatrixEventJournal();
     this.identities = options.identities;
     this.participantIdentity = options.participantIdentity;
+    this.outbound = options.outbound;
     this.stateCacheLimit = options.stateCacheLimit ?? STATE_CACHE_LIMIT;
     if (!Number.isSafeInteger(this.stateCacheLimit) || this.stateCacheLimit < 0) {
       throw new MatrixError(500, 'M_UNKNOWN', 'stateCacheLimit must be a non-negative integer');
@@ -730,6 +746,9 @@ export class PodMatrixStore {
     observed?: readonly MatrixEventRecord[],
   ): Promise<MatrixEventRecord> {
     const depth = 0;
+    // One read answers the graph position and, when federation is on, who the room's other
+    // servers are; both need the same timeline and neither may see a stale one.
+    const timeline = observed ?? await this.listEvents(db, input.roomId, context);
     // The protocol event is built first: its content-derived id is the event's
     // identity, and the stored copy carries the hashes and signature that make
     // the event verifiable from the Pod alone.
@@ -741,7 +760,7 @@ export class PodMatrixStore {
       content: input.content,
       ...(input.stateKey === undefined ? {} : { stateKey: input.stateKey }),
       ...(input.eventId === undefined ? {} : { eventId: input.eventId }),
-      ...this.graphPosition(observed ?? await this.listEvents(db, input.roomId, context), input),
+      ...this.graphPosition(timeline, input),
     }, await this.signingIdentity(context));
     const eventId = persistedEvent.event_id ?? this.generateEventId(context);
     const originIso = new Date(input.originServerTs).toISOString();
@@ -804,6 +823,7 @@ export class PodMatrixStore {
 
     record.depth = await this.journal.registerEvent(this.scope(context), input.roomId, eventId);
     if (record.role === MessageRole.USER) await this.reconcileEvent(db, record, context);
+    await this.queueFederationDelivery(input.roomId, context, timeline, persistedEvent);
 
     return record;
   }
@@ -1566,6 +1586,37 @@ export class PodMatrixStore {
       targetPodUrl: context.podUrl,
       context,
     });
+  }
+
+  /**
+   * Hand a written event to the servers that have a member in the room.
+   *
+   * Deliberately outside the write's cost: a federation round trip must not sit inside a
+   * local write, and a peer that is down is absorbed by the queue instead of the caller.
+   * The PDU is the *persisted protocol event* — with its hashes and signature — because
+   * that is what a peer verifies, and the origin is the sender's own server, so the
+   * transaction is signed by the identity whose event it is.
+   */
+  private async queueFederationDelivery(
+    roomId: string,
+    context: MatrixStoreContext,
+    timeline: readonly MatrixEventRecord[],
+    event: PersistedMatrixEvent,
+  ): Promise<void> {
+    if (!this.outbound) return;
+    const origin = serverNameOf(typeof event.sender === 'string' ? event.sender : undefined);
+    if (!origin) return;
+    const destinations = eventDestinations({
+      state: this.resolvedState(roomId, context, timeline),
+      ourServerName: origin,
+      event: {
+        type: typeof event.type === 'string' ? event.type : '',
+        ...(typeof event.state_key === 'string' ? { stateKey: event.state_key } : {}),
+      },
+    });
+    for (const destination of destinations) {
+      await this.outbound.enqueue({ scope: this.scope(context), origin, destination, pdus: [ event ] });
+    }
   }
 
   private getMatrixUserId(context: MatrixStoreContext): string {

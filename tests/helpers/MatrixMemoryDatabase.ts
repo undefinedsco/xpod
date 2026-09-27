@@ -7,6 +7,8 @@ export function matrixHarness(
     identities?: import('../../src/api/matrix/identityRegistry').MatrixSigningIdentitySource;
     /** Supplies a participant's own signing identity as they enter a room. */
     participantIdentity?: import('../../src/api/matrix/PodMatrixStore').MatrixParticipantIdentityProvider;
+    /** Queues written events for other servers in the room. */
+    outbound?: import('../../src/api/matrix/PodMatrixStore').MatrixFederationOutbox;
   },
 ) {
   const rows = new Map<any, any[]>();
@@ -35,6 +37,7 @@ export function matrixHarness(
   const store = new PodMatrixStore({
     serverName: 'example.test',
     ...(options?.participantIdentity ? { participantIdentity: options.participantIdentity } : {}),
+    ...(options?.outbound ? { outbound: options.outbound } : {}),
     ...(options?.identities
       ? { identities: options.identities }
       : options?.serviceIdentity
