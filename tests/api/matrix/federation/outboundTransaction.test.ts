@@ -760,3 +760,28 @@ describe('asking about a user\'s profile', () => {
       .resolves.toMatchObject({ status: 'rejected' });
   });
 });
+
+describe('asking a peer who it is', () => {
+  it('reads the implementation back, without a signature', async () => {
+    const { client: instance, captured } = client({
+      respond: () => new Response(JSON.stringify({ server: { name: 'synapse', version: '1.100.0' } }), { status: 200 }),
+    });
+    const outcome = await instance.getVersion({ destination: THEM });
+
+    expect(outcome).toMatchObject({ status: 'ok', server: { name: 'synapse', version: '1.100.0' } });
+    const [ sent ] = captured;
+    expect(sent.method).toBe('GET');
+    expect(sent.url).toBe(`https://${THEM}:8448/_matrix/federation/v1/version`);
+    // Nothing is signed beyond the request target, because nothing has to be trusted yet.
+    expect(sent.headers.authorization).toMatch(/^X-Matrix origin="pod\.example"/u);
+  });
+
+  it('retries an answer it cannot read, and takes a refusal as final', async () => {
+    const unreadable = client({ respond: () => new Response(JSON.stringify({ name: 'x' }), { status: 200 }) });
+    await expect(unreadable.client.getVersion({ destination: THEM }))
+      .resolves.toMatchObject({ status: 'retry', reason: expect.stringMatching(/without a server object/u) });
+
+    const refused = client({ respond: () => new Response('{}', { status: 404 }) });
+    await expect(refused.client.getVersion({ destination: THEM })).resolves.toMatchObject({ status: 'rejected' });
+  });
+});

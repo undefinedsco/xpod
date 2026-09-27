@@ -220,6 +220,10 @@ store 拒绝"既是会话又是部署干活"的上下文，拿不到 grant 就 4
 `/state_ids` 五个端点现在都有 HTTP 外壳（`FederationHandler.ts`，与 `/send` 共用"认定被寻址名字 → X-Matrix 验签 →
 按名字派生 Pod → 读协议事件"的前奏；房间为空回 404、缺参数回 400）并有 6 项真实 HTTP 测试；`twoDeployment` 里
 "接收方补取 auth chain"也已改成**经 HTTP 调真路由**（断言请求过 `/event_auth` 且 `event_id` 与发送方一致）。
+**失败按真实状态回答（已落地）**：读取端点此前会把 store 的 `MatrixError`（例如"没有这条 Pod 的授权"）冒成
+**500**，对端会当成未知故障一直重试；现在统一按它的 status/errcode 回答，其它错误才是 500。`/version` 的客户端
+一半也已就位。测试：`FederationHandler.test.ts` 26 项、`outboundTransaction.test.ts` 49 项。
+
 **传输层（已落地，SNI/Host 缺口补上）**：`federation/federationFetch.ts` 把"连到解析出的地址、但以**被寻址的
 server name** 作 SNI 与 `Host`"做成真正的传输（`fetch` 两者都改不了），出站投递与密钥获取共用同一实例；非 2xx 返回
 Response 而非抛错，只有传输失败才抛。5 项测试（含真实回环往返断言对端看到的 `Host` 就是 server name）。**仍未证**：

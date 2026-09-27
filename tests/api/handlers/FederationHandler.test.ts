@@ -981,3 +981,40 @@ describe('a transaction this deployment cannot write', () => {
     }
   });
 });
+
+describe('a failure while answering a read', () => {
+  it('answers with the status the failure actually has', async () => {
+    const room = heldRoom();
+    const running = await harness({ events: [ room.create, room.join, room.rules ] });
+    try {
+      const uri = `/_matrix/federation/v1/event_auth/${encodeURIComponent(ROOM)}/${encodeURIComponent(String(room.join.event_id))}`;
+      const ask = async () => await send({
+        port: running.port, method: 'GET', path: uri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri }),
+      });
+
+      // What the store throws when this deployment holds no grant for the Pod the room is in: a
+      // decision the peer should not retry, not an unknown failure it should.
+      const denied = vi.spyOn(running.store.store, 'protocolEvents')
+        .mockRejectedValueOnce(new MatrixError(403, 'M_FORBIDDEN', `This deployment holds no grant for ${POD}`));
+      const refused = await ask();
+      expect(refused.status).toBe(403);
+      expect(refused.body).toMatchObject({ errcode: 'M_FORBIDDEN' });
+      expect(String(refused.body.error)).toMatch(/holds no grant/u);
+      denied.mockRestore();
+
+      // A backend failure is ours, and a peer is right to retry it.
+      const broken = vi.spyOn(running.store.store, 'protocolEvents')
+        .mockRejectedValueOnce(new Error('the Pod is on fire'));
+      const failed = await ask();
+      expect(failed.status).toBe(500);
+      expect(failed.body).toMatchObject({ errcode: 'M_UNKNOWN' });
+      broken.mockRestore();
+
+      // And with the store healthy the same question is answered.
+      expect((await ask()).status).toBe(200);
+    } finally {
+      await running.server.stop();
+    }
+  });
+});

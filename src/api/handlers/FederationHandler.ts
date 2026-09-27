@@ -54,6 +54,7 @@ import type { MatrixInboundTransactionStore } from '../matrix/federation/inbound
 import type { MatrixServerKeySource } from '../matrix/federation/serverKeys';
 import type { MatrixParticipantRoutes, MatrixServerRoute } from '../matrix/participantRoutes';
 import { getLoggerFor } from 'global-logger-factory';
+import { MatrixError } from '../matrix/MatrixError';
 import type { AuthEvent } from '../matrix/protocol/authRules';
 import type { MatrixEventRecord, MatrixStoreContext } from '../matrix/types';
 import type { ApiServer, RouteHandler } from '../ApiServer';
@@ -173,7 +174,7 @@ export function registerFederationRoutes(server: ApiServer, options: FederationH
  * is where it is published.
  */
 export function createProfileQueryHandler(options: FederationHandlerOptions): RouteHandler {
-  return async (request, response) => {
+  return safely(async (request, response) => {
     const userId = queryOf(request).get('user_id');
     if (!userId) return void fail(response, 400, 'M_MISSING_PARAM', 'user_id is required');
     const serverName = serverNameOf(userId);
@@ -197,7 +198,7 @@ export function createProfileQueryHandler(options: FederationHandlerOptions): Ro
     // Nothing is published, so the answer is the empty profile whether a peer asked for one field
     // or for everything public: an unset field is omitted, which is what the specification allows.
     sendJson(response, 200, {});
-  };
+  });
 }
 
 /**
@@ -229,7 +230,7 @@ export function createVersionHandler(options: FederationHandlerOptions): RouteHa
  * which is what a query about another server's alias should do.
  */
 export function createDirectoryQueryHandler(options: FederationHandlerOptions): RouteHandler {
-  return async (request, response) => {
+  return safely(async (request, response) => {
     const alias = queryOf(request).get('room_alias');
     if (!alias) return void fail(response, 400, 'M_MISSING_PARAM', 'room_alias is required');
     const match = /^#(?<localpart>[^:]+):(?<serverName>.+)$/u.exec(alias);
@@ -256,7 +257,7 @@ export function createDirectoryQueryHandler(options: FederationHandlerOptions): 
       room_id: room.roomId,
       servers: await options.store.roomServers(room.roomId, context),
     });
-  };
+  });
 }
 
 /**
@@ -406,17 +407,17 @@ function reportWarnings(answer: { warnings?: string[] }, subject: string): void 
  * one event, including itself, oldest first.
  */
 export function createEventAuthHandler(options: FederationHandlerOptions): RouteHandler {
-  return async (request, response, params) => {
+  return safely(async (request, response, params) => {
     const room = await readRoom({ request, response, options, roomId: decode(params.roomId) });
     if (!room) return;
     const { chain } = selectAuthChain(room.events, decode(params.eventId));
     sendJson(response, 200, { auth_chain: chain });
-  };
+  });
 }
 
 /** `GET /state/{roomId}?event_id=…`: the resolved state before an event, and its auth chain. */
 export function createStateHandler(options: FederationHandlerOptions): RouteHandler {
-  return async (request, response, params) => {
+  return safely(async (request, response, params) => {
     const room = await readRoom({ request, response, options, roomId: decode(params.roomId) });
     if (!room) return;
     const eventId = queryOf(request).get('event_id');
@@ -424,12 +425,12 @@ export function createStateHandler(options: FederationHandlerOptions): RouteHand
     const snapshot = stateSnapshotBefore(room.events.map(recordOfProtocolEvent), eventId);
     if (!snapshot) return void fail(response, 404, 'M_NOT_FOUND', `This server does not know ${eventId}`);
     sendJson(response, 200, { pdus: snapshot.pdus, auth_chain: snapshot.authChain });
-  };
+  });
 }
 
 /** The same answer as ids, which is all a server that already has the events needs. */
 export function createStateIdsHandler(options: FederationHandlerOptions): RouteHandler {
-  return async (request, response, params) => {
+  return safely(async (request, response, params) => {
     const roomId = decode(params.roomId);
     const room = await readRoom({ request, response, options, roomId });
     if (!room) return;
@@ -438,12 +439,12 @@ export function createStateIdsHandler(options: FederationHandlerOptions): RouteH
     const snapshot = stateIdsBefore(room.events.map(recordOfProtocolEvent), eventId);
     if (!snapshot) return void fail(response, 404, 'M_NOT_FOUND', `This server does not know ${eventId}`);
     sendJson(response, 200, { pdu_ids: snapshot.pduIds, auth_chain_ids: snapshot.authChainIds });
-  };
+  });
 }
 
 /** `GET /backfill/{roomId}?v=…&limit=…`: a window of history, newest first, named events included. */
 export function createBackfillHandler(options: FederationHandlerOptions): RouteHandler {
-  return async (request, response, params) => {
+  return safely(async (request, response, params) => {
     const room = await readRoom({ request, response, options, roomId: decode(params.roomId) });
     if (!room) return;
     const query = queryOf(request);
@@ -459,7 +460,7 @@ export function createBackfillHandler(options: FederationHandlerOptions): RouteH
       origin_server_ts: (options.now ?? Date.now)(),
       pdus: window.pdus,
     });
-  };
+  });
 }
 
 /**
@@ -469,7 +470,7 @@ export function createBackfillHandler(options: FederationHandlerOptions): RouteH
  * signature covers it, and a body this server cannot read has no content to verify.
  */
 export function createMissingEventsHandler(options: FederationHandlerOptions): RouteHandler {
-  return async (request, response, params) => {
+  return safely(async (request, response, params) => {
     const body = await readJsonBody(request);
     if (!body.ok) return void fail(response, body.status, body.errcode, body.error);
     const content = body.body;
@@ -487,7 +488,7 @@ export function createMissingEventsHandler(options: FederationHandlerOptions): R
       ...(Number.isSafeInteger(content.min_depth) ? { minDepth: Number(content.min_depth) } : {}),
     });
     sendJson(response, 200, { events: selection.events });
-  };
+  });
 }
 
 /**
@@ -723,6 +724,29 @@ function sendJson(response: { statusCode: number; setHeader(name: string, value:
   response.statusCode = status;
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(body));
+}
+
+/**
+ * Run a federation handler, and answer with the status a failure actually has.
+ *
+ * A `MatrixError` is a *decision* — "this deployment holds no grant for that Pod", "the room is not
+ * here" — and the peer has to see it as one (a 4xx it should not retry), not as an unknown failure.
+ * Anything else is ours: it is logged as an internal error and answered as `500`, which a peer is
+ * right to retry.
+ */
+function safely(run: RouteHandler): RouteHandler {
+  return async (request, response, params) => {
+    try {
+      await run(request, response, params);
+    } catch (error) {
+      if (error instanceof MatrixError) {
+        if (!response.headersSent) fail(response, error.status, error.errcode, error.message);
+        return;
+      }
+      logger.error(`Federation route failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (!response.headersSent) fail(response, 500, 'M_UNKNOWN', 'Failed to answer the request');
+    }
+  };
 }
 
 /** Answer with a Matrix error and report that nothing more should be written. */

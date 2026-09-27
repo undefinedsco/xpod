@@ -86,6 +86,11 @@ export interface MembershipTemplateOutcome extends FederationCallOutcome {
   event?: Record<string, unknown>;
 }
 
+/** What a `/version` request produced: which implementation is answering. */
+export interface VersionOutcome extends FederationCallOutcome {
+  server?: { name?: string; version?: string };
+}
+
 /** What a `/query/profile` request produced: the fields the queried server publishes. */
 export interface ProfileQueryOutcome extends FederationCallOutcome {
   profile?: Record<string, unknown>;
@@ -535,6 +540,28 @@ export class MatrixFederationClient {
       return { status: 'retry', reason: `destination answered 200 without its own signature on the invite` };
     }
     return { status: 'ok', event, reason: 'ok' };
+  }
+
+  /**
+   * Ask a server which implementation it is (`GET /version`).
+   *
+   * The one request that is not signed, because it is the question a peer asks before it trusts
+   * anything: it says who is answering, and the answer is a name and a version, nothing more.
+   */
+  public async getVersion(input: { destination: string }): Promise<VersionOutcome> {
+    const uri = '/_matrix/federation/v1/version';
+    const result = await this.execute({ destination: input.destination, method: 'GET', uri });
+    if (result.status !== 'ok') return result;
+    const server = isRecord(result.body) ? result.body.server : undefined;
+    if (!isRecord(server)) return { status: 'retry', reason: 'destination answered 200 without a server object' };
+    return {
+      status: 'ok',
+      server: {
+        ...(typeof server.name === 'string' ? { name: server.name } : {}),
+        ...(typeof server.version === 'string' ? { version: server.version } : {}),
+      },
+      reason: 'ok',
+    };
   }
 
   /**

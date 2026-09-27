@@ -1020,6 +1020,19 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   测试：`federationFetch.test.ts` 5 项（连接地址与 server name 分离、带端口的 server name 只把端口放进 `Host`、
   非 HTTP(S) 直接拒绝、真实回环往返且**对端看到的 `Host` 就是 server name**、403 作为 Response 返回而端口无人监听
   时抛错）。
+- **已落地**（2026-09-27）：**失败按它真正的状态回答**（`FederationHandler` 的 `safely` 包装）+ **客户端
+  `getVersion`**（`/version` 的另一半）。
+  - **缺陷**：读取端点（`/event_auth`、`/state`、`/state_ids`、`/backfill`、`/get_missing_events`、`/query/*`）里
+    store 抛出的 `MatrixError` 会一路冒到 API server 的兜底 catch，于是"这个部署没有那条 Pod 的授权"被答成
+    **500**——对端会当成未知故障一直重试，而它其实是一个**决定**（4xx，不该重试）。`/send` 早就是对的（
+    `handleFederationSend` 会映射），只有读取侧漏了。
+  - **处置**：所有会读 Pod 的处理体统一经过 `safely()`：`MatrixError` 按它的 status/errcode 回答；其它错误记日志
+    后回 500 `M_UNKNOWN`（那确实是我们的事，对端重试是对的）；响应已发出时不再二次写。
+  - **客户端 `getVersion`**：`/version` 现在两半齐全（GET、无需签名、只签请求目标），200 缺 `server` 对象视为可
+    重试、4xx 视为最终拒绝——与其它客户端方法同一套分类。
+  测试：`FederationHandler.test.ts` 新增 1 项（同一个读取问题：store 抛 403 时回 403 并带原因、抛普通错误时回 500
+  `M_UNKNOWN`、store 正常时回 200），`outboundTransaction.test.ts` 新增 2 项（读回实现名与版本且只签请求目标、
+  缺字段重试与 4xx 最终拒绝）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，
