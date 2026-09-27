@@ -109,7 +109,7 @@ describe('DesktopWindowModeController', () => {
     expect(desktopWindowModeForUrl(`${base}login/password/register/`)).toBe('account')
   })
 
-  it('shrinks an already shown workspace window after an Account SPA route event', () => {
+  it('resizes an already shown workspace window after an Account SPA route event', () => {
     const window = new FakeWindow()
     const controller = new DesktopWindowModeController(window, new FakeTimers())
     const navigation = new FakeNavigationSource()
@@ -122,7 +122,8 @@ describe('DesktopWindowModeController', () => {
     navigation.emit('did-navigate-in-page', 'https://id.undefineds.co/.account/oidc/consent')
 
     expect(controller.currentMode()).toBe('account')
-    expect(window.resizable).toBe(false)
+    // §5.1：Account 文档窗口可缩放
+    expect(window.resizable).toBe(true)
     expect(window.contentSize).toEqual([ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height])
   })
 
@@ -218,7 +219,8 @@ describe('DesktopWindowModeController', () => {
     expect(window.showCalls).toBe(1)
   })
 
-  it('keeps WebID compact while Account recovery controls have a larger viewport', () => {
+  it('keeps WebID compact while the Account document is a 1040x760 window', () => {
+    // §5.1：登录/恢复/回调是 280×400 紧凑对话框；App 承载的 Account 文档是 1040×760 文档窗口
     expect(AUTH_WINDOW_MODE_SIZE).toEqual({
       width: 280,
       height: 400,
@@ -226,21 +228,22 @@ describe('DesktopWindowModeController', () => {
       minHeight: 400,
     })
     expect(ACCOUNT_WINDOW_MODE_SIZE).toEqual({
-      width: 480,
-      height: 640,
-      minWidth: 480,
-      minHeight: 640,
+      width: 1040,
+      height: 760,
+      minWidth: 640,
+      minHeight: 560,
     })
   })
 
-  it('uses the compact Account viewport without enabling resize controls', () => {
+  it('opens the Account document as a resizable window', () => {
     const window = new FakeWindow()
     const controller = new DesktopWindowModeController(window, new FakeTimers())
 
     controller.applyMode('account')
 
-    expect(window.resizable).toBe(false)
-    expect(window.maximizable).toBe(false)
+    // §5.1：文档窗口允许用户调整尺寸，且保留用户尺寸（不反复重置）
+    expect(window.resizable).toBe(true)
+    expect(window.maximizable).toBe(true)
     expect(window.minimumSize).toEqual([ACCOUNT_WINDOW_MODE_SIZE.minWidth, ACCOUNT_WINDOW_MODE_SIZE.minHeight])
     expect(window.contentSize).toEqual([ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height])
     expect(window.title).toBe('Xpod')

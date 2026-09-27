@@ -33,14 +33,13 @@ export const AUTH_WINDOW_MODE_SIZE = {
   minHeight: 400,
 } as const
 
-// §5.1：工作区窗口首次 1180×800、最小 640×560。
-// App 承载 Account 文档的 1040×760 目标尚未落地：当前 account 模式仍是固定的 480×640
-// 恢复视口（不可缩放），与 §5.1 的文档窗口不同；待宿主侧决定后统一，见 W3 审计。
+// §5.1：App 承载 Account 文档首次 1040×760，最小 640×560，并允许用户调整尺寸；
+// 工作区窗口首次 1180×800、最小 640×560。
 export const ACCOUNT_WINDOW_MODE_SIZE = {
-  width: 480,
-  height: 640,
-  minWidth: 480,
-  minHeight: 640,
+  width: 1040,
+  height: 760,
+  minWidth: 640,
+  minHeight: 560,
 } as const
 
 export const WORKSPACE_WINDOW_MODE_SIZE = {
@@ -196,12 +195,19 @@ export class DesktopWindowModeController {
       this.fallbackTimer = undefined
     }
 
-    if (mode === 'auth' || mode === 'account') {
-      const size = mode === 'account' ? ACCOUNT_WINDOW_MODE_SIZE : AUTH_WINDOW_MODE_SIZE
+    if (mode === 'auth') {
+      // §5.1 第 1 行：WebID/短 Account 登录、恢复、回调是 280×400 的紧凑对话框
       this.target.setResizable(false)
       this.target.setMaximizable(false)
-      this.target.setMinimumSize(size.minWidth, size.minHeight)
-      this.target.setContentSize(size.width, size.height)
+      this.target.setMinimumSize(AUTH_WINDOW_MODE_SIZE.minWidth, AUTH_WINDOW_MODE_SIZE.minHeight)
+      this.target.setContentSize(AUTH_WINDOW_MODE_SIZE.width, AUTH_WINDOW_MODE_SIZE.height)
+      this.target.setTitle('Xpod')
+    } else if (mode === 'account') {
+      // §5.1 第 5 行：App 承载 Account 文档是文档窗口，可缩放并保留用户调整过的尺寸
+      this.target.setResizable(true)
+      this.target.setMaximizable(true)
+      this.target.setMinimumSize(ACCOUNT_WINDOW_MODE_SIZE.minWidth, ACCOUNT_WINDOW_MODE_SIZE.minHeight)
+      this.target.setContentSize(ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height)
       this.target.setTitle('Xpod')
     } else {
       this.target.setResizable(true)
