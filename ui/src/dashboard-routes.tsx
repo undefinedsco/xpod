@@ -82,6 +82,8 @@ export const networkSurfaceRoutes: RouteObject[] = [{
   element: <XpodDashboardLayout />,
   children: [
     { index: true, element: lazyRoute(<NetworkPage />) },
+    // §3.1 的目标路径：/network/overview 与 index 渲染同一页面
+    { path: 'overview', element: lazyRoute(<NetworkPage />) },
     { path: '*', element: lazyRoute(<NetworkPage />) },
   ],
 }];

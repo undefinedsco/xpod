@@ -9,6 +9,8 @@ import { describe, expect, it } from 'vitest';
 
 const UI_SRC = join(process.cwd(), 'ui/src');
 const PALETTE_SEMANTICS = /\b(?:bg|text|border|ring|from|to|via|fill|stroke)-(?:amber|yellow|red|rose|green|emerald|blue|indigo)-\d{2,3}/gu;
+/** 结构化中性色同样必须来自公共 token（W4 审计的 P3 项）。 */
+const PALETTE_NEUTRALS = /\b(?:bg|text|border|ring|divide|from|to|via)-(?:slate|zinc|stone|gray|neutral)-\d{2,3}/gu;
 
 function collectTsx(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -24,7 +26,10 @@ describe('semantic colour contract', () => {
     const offenders = collectTsx(UI_SRC)
       .flatMap((file) => {
         const source = readFileSync(file, 'utf8');
-        return [...source.matchAll(PALETTE_SEMANTICS)].map((match) => `${file.replace(process.cwd() + '/', '')}: ${match[0]}`);
+        return [
+          ...[...source.matchAll(PALETTE_SEMANTICS)].map((match) => `${file.replace(process.cwd() + '/', '')}: ${match[0]}`),
+          ...[...source.matchAll(PALETTE_NEUTRALS)].map((match) => `${file.replace(process.cwd() + '/', '')}: ${match[0]}`),
+        ];
       });
     expect(offenders).toEqual([]);
   });

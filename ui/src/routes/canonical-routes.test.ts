@@ -29,13 +29,13 @@ describe('canonical product routes', () => {
   it('canonicalizes exact legacy paths without rewriting unknown descendants', () => {
     expect(canonicalProductPathname('/settings/models')).toBe('/ai-connections');
     expect(canonicalProductPathname('/settings/ai-connections')).toBe('/ai-connections');
-    expect(canonicalProductPathname('/dashboard/network')).toBe('/network');
+    expect(canonicalProductPathname('/dashboard/network')).toBe('/network/overview');
     expect(canonicalProductPathname('/dashboard/custom')).toBe('/dashboard/custom');
   });
 
   it('maps legacy product entry points to canonical workspaces', () => {
     expect(legacyProductRedirects['/dashboard/overview']).toBe('/status/overview');
-    expect(legacyProductRedirects['/dashboard/network']).toBe('/network');
+    expect(legacyProductRedirects['/dashboard/network']).toBe('/network/overview');
     expect(legacyProductRedirects['/settings/models']).toBe('/ai-connections');
     expect(legacyProductRedirects['/settings/ai-connections']).toBe('/ai-connections');
     expect(legacyProductRedirects['/settings/ai-config']).toBe('/ai-config/model-assignments');

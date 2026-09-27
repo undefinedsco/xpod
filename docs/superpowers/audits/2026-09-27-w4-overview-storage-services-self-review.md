@@ -160,7 +160,7 @@
 
 | 项 | 状态 | 证据 |
 |---|---|---|
-| W4-DESIGN-03 语义色回到公共映射 | 已实施 | `ui/tailwind.config.js` 新增 `success`/`warning`（含 foreground），映射 W1 在 `theme.css` 发布的同名 token；`ui/src/**/*.tsx` 中 14 个文件的 17 处调色板字面量（amber/green/emerald/red/blue 等）改为语义类（`text-success`、`border-warning/40`、`bg-destructive/10` …）；新增 `tests/ui/semantic-colour-contract.test.ts` 断言产品页面不再出现语义性调色板类，并核对 theme.css 与 Tailwind 映射同时存在。未完成：中性调色板（slate/zinc/stone/gray）仍有使用，属结构化中性色，列入下一轮收敛 |
+| W4-DESIGN-03 语义色（含中性色）回到公共映射 | 已实施 | `ui/tailwind.config.js` 新增 `success`/`warning`（含 foreground），映射 W1 在 `theme.css` 发布的同名 token；`ui/src/**/*.tsx` 中 14 个文件的 17 处调色板字面量（amber/green/emerald/red/blue 等）改为语义类（`text-success`、`border-warning/40`、`bg-destructive/10` …）；新增 `tests/ui/semantic-colour-contract.test.ts` 断言产品页面不再出现语义性调色板类，并核对 theme.css 与 Tailwind 映射同时存在。更正（2026-09-27 第六轮）：审计当时写"中性调色板仍有使用"并未实测；实测 `ui/src/**/*.tsx` 中 slate/zinc/stone/gray/neutral 调色板类为 **0 处**。为防止回退，`tests/ui/semantic-colour-contract.test.ts` 现在同时禁止语义色与中性色调色板类。
 验证记录（第五轮）：`ui/src` + `tests/ui` + `packages/shared-ui/test` + `packages/extension-sdk/test` 139 文件 / 1163 测试；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
 
 第四轮验证记录：`ui/src` + `tests/ui` + `packages/shared-ui/test` + `packages/extension-sdk/test` 138 文件 / 1162 测试；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。

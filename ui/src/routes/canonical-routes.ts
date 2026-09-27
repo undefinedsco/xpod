@@ -23,7 +23,7 @@ export const canonicalRoutes = {
  * §3.3 的历史入口映射。兼容期从采用本 spec 的稳定版起保留至少两个稳定版且不少于 90 天。
  *
  * 两点与 §3.3 的差异是当前实现的现实，不是口径变化：
- * - `/network/overview`、`/network/domain-dns` 是本轮目标路径，尚未建立，先落 `/network`；
+ * - `/network/overview`、`/network/domain-dns` 均已可用（前者为显式路由，后者由网络页的子路径提供）；
  * - `/status/usage/*` 已由 W4 建立（`ui/src/pages/admin/UsagePage.tsx`），`/dashboard/usage` 按 §3.3 落
  *   `/status/usage/overview`。
  * 记录见 docs/superpowers/audits/2026-09-27-w2-shell-layout-self-review.md（W2-DESIGN-04）。
@@ -35,7 +35,7 @@ export const legacyProductRedirects: Readonly<Record<string, string>> = {
   '/dashboard/runtime': canonicalRoutes.status,
   '/dashboard/logs': '/status/logs',
   '/dashboard/rdf': '/status/index/rdf',
-  '/dashboard/network': canonicalRoutes.network,
+  '/dashboard/network': '/network/overview',
   '/dashboard/usage': '/status/usage/overview',
   '/dashboard/models': canonicalRoutes.aiConnections,
   '/dashboard/pod': canonicalRoutes.settings,
@@ -46,7 +46,7 @@ export const legacyProductRedirects: Readonly<Record<string, string>> = {
   '/settings/ai-connections': canonicalRoutes.aiConnections,
   '/settings/ai-config': canonicalRoutes.aiConfig,
   '/settings/pod': canonicalRoutes.settings,
-  '/settings/network': canonicalRoutes.network,
+  '/settings/network': '/network/overview',
   '/settings/services': '/settings/runtime',
   '/settings/system': '/settings/runtime',
 } as const;
