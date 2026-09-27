@@ -85,6 +85,13 @@ export interface ManagedClientCredentialLease {
   revoke(): Promise<void>
 }
 
+type ClientSetupStage = {
+  id: 'key' | 'write' | 'gateway' | 'client'
+  label: string
+  state: 'ok' | 'failed' | 'unknown'
+  detail: string
+}
+
 export function AiClientConfigurationSection({
   bridge,
   endpoint,
@@ -105,10 +112,14 @@ export function AiClientConfigurationSection({
   onComplete?: () => void
 }) {
   const [status, setStatus] = useState<AiClientConfigurationStatus>({ status: 'notConfigured' })
+  // §7.3 第 5–6 步：密钥结果、配置写入、Gateway 检查、客户端验证分开呈现
+  const [stages, setStages] = useState<ClientSetupStage[]>([])
   const [dryRun, setDryRun] = useState<AiClientConfigurationDryRun>()
   const [confirmationValue, setConfirmationValue] = useState('')
   const [busy, setBusy] = useState(false)
   const autoApplyStarted = useRef(false)
+  /** 写入失败后保留的凭据：重试只重写配置，不再新建 Key（§7.3）。 */
+  const leaseRef = useRef<ManagedClientCredentialLease | undefined>(undefined)
 
   useEffect(() => {
     setDryRun(undefined)
@@ -139,7 +150,23 @@ export function AiClientConfigurationSection({
     let lease: ManagedClientCredentialLease | undefined
     let applied = false
     try {
-      lease = await createClientCredential(client)
+      // 已经有上次失败留下的凭据就沿用，只有第一次才申请
+      lease = leaseRef.current
+      if (!lease) {
+        lease = await createClientCredential(client)
+        leaseRef.current = lease
+      }
+      setStages([
+        {
+          id: 'key',
+          label: '密钥',
+          state: 'ok',
+          detail: '本次使用这个 Xpod Key；重试不会新建 Key。',
+        },
+        { id: 'write', label: '配置写入', state: 'unknown', detail: '正在写入配置…' },
+        { id: 'gateway', label: 'Gateway 检查', state: 'unknown', detail: '本步骤未检查 Xpod 网关。' },
+        { id: 'client', label: '客户端验证', state: 'unknown', detail: '配置已写入，尚未验证客户端。' },
+      ])
       await bridge.apply({
         client,
         planId: plan.planId,
@@ -152,6 +179,12 @@ export function AiClientConfigurationSection({
         } : {}),
       })
       applied = true
+      leaseRef.current = undefined
+      setStages((current) => current.map((stage) => (
+        stage.id === 'write'
+          ? { ...stage, state: 'ok' as const, detail: '配置已写入；客户端是否已采用仍未验证。' }
+          : stage
+      )))
       setStatus({ status: 'configured' })
       setDryRun(undefined)
       onComplete?.()
@@ -161,12 +194,15 @@ export function AiClientConfigurationSection({
         recoveryMessage = `${AI_CLIENT_LABELS[client]} 配置失败。请重试。`
       }
       if (lease && !applied) {
-        try {
-          await lease.revoke()
-        } catch (revokeError) {
-          recoveryMessage = `${recoveryMessage}；自动撤销 API Key 失败：${errorMessage(revokeError)}。请在“API KEYS”中手动撤销。`
-        }
+        // §7.3：写入失败时保留这个 Key 和原任务，重试只重写配置，不重复建 Key；
+        // 用户仍可在 API KEYS 里手动撤销。
+        recoveryMessage = `${recoveryMessage}；已保留本次使用的 Xpod Key，重试只会重新写入配置。`
       }
+      setStages((current) => current.map((stage) => (
+        stage.id === 'write'
+          ? { ...stage, state: 'failed' as const, detail: recoveryMessage }
+          : stage
+      )))
       setStatus(failedAndRestoredError(error)
         ? { status: 'failedAndRestored', message: '配置写入失败，已自动恢复原配置。' }
         : { status: 'unavailable', message: recoveryMessage })
@@ -281,6 +317,17 @@ export function AiClientConfigurationSection({
             重试应用配置
           </Button>
         </div>
+      ) : null}
+      {stages.length > 0 ? (
+        <ul data-testid="client-setup-stages" className="space-y-1 border-t border-border/60 px-4 py-3 text-xs">
+          {stages.map((stage) => (
+            <li key={stage.id} data-testid="client-setup-stage" data-stage={stage.id} data-stage-state={stage.state} className="flex gap-2">
+              <span aria-hidden="true">{stage.state === 'ok' ? '✓' : stage.state === 'failed' ? '✕' : '?'}</span>
+              <span className="font-medium">{stage.label}</span>
+              <span className="min-w-0 flex-1 text-muted-foreground">{stage.detail}</span>
+            </li>
+          ))}
+        </ul>
       ) : null}
       {dryRun ? (
         <div className="space-y-3 border-t border-border/60 bg-muted/20 px-4 py-3">
