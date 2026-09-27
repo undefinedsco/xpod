@@ -935,6 +935,7 @@ export function createOwnerCredentialFetch(
 async function waitForCredentialExchange(
   credential: { id: string; secret: string },
   webId: string,
+  issuer: string,
   deadlineMs = 15_000,
 ): Promise<boolean> {
   const startedAt = Date.now();
@@ -946,7 +947,9 @@ async function waitForCredentialExchange(
         clientSecret: credential.secret,
         webId,
         podUrl: '',
-        issuer: CLOUD_IDP,
+        // The credential belongs to the account host that issued it: Cloud in local+Cloud mode, the
+        // runtime's own IdP in standalone.
+        issuer,
       });
       return true;
     } catch (error) {
@@ -980,15 +983,15 @@ async function verifyGatewayKeyLifecycle(
       ...account, name: `accept-key-${ACCEPT_ID}`,
     });
     phase = 'confirm the new CSS credential is exchangeable';
-    if (!(await waitForCredentialExchange(credentials, account.webId))) {
-      // The RC deployment answered a create before its own readers saw the credential; ask once for
+    if (!(await waitForCredentialExchange(credentials, account.webId, account.baseUrl))) {
+      // The account service answered a create before its own readers saw the credential; ask once for
       // a replacement instead of reporting a registration failure for a credential the issuer has
       // not published yet.
       credentials = await createCloudClientCredentials({
         ...account, name: `accept-key-${ACCEPT_ID}-again`,
       });
-      if (!(await waitForCredentialExchange(credentials, account.webId))) {
-        throw new Error('The Cloud issuer never accepted the freshly created CSS credential');
+      if (!(await waitForCredentialExchange(credentials, account.webId, account.baseUrl))) {
+        throw new Error('The account issuer never accepted the freshly created CSS credential');
       }
     }
     const gatewayKey = `sk-${Buffer.from(`${credentials.id}:${credentials.secret}`, 'utf8').toString('base64')}`;
