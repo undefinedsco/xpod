@@ -55,7 +55,8 @@ vi.mock('../../../solid/useXpodSolidRuntime', () => ({
 
 const { ModelAssignmentsPanel } = await import('./ModelAssignmentsPanel');
 
-const embeddingSelect = () => screen.getByLabelText('Embedding model') as HTMLSelectElement;
+// §7.4：条目以真实用途命名，专业角色名（Embedding 等）只作副文本
+const embeddingSelect = () => screen.getByLabelText('按意思搜索 model') as HTMLSelectElement;
 const saveButton = () => screen.getByRole('button', { name: /Save configuration|Saving/u });
 const dialogTitle = '切换向量模型并重建索引？';
 
@@ -112,7 +113,7 @@ describe('embedding model switch flow', () => {
 
   it('saves a chat-only change without asking about a rebuild', async () => {
     render(<ModelAssignmentsPanel />);
-    fireEvent.change(screen.getByLabelText('General / Chat model'), { target: { value: CHAT } });
+    fireEvent.change(screen.getByLabelText('对话与通用文本 model'), { target: { value: CHAT } });
     fireEvent.click(saveButton());
 
     expect(screen.queryByText(dialogTitle)).toBeNull();

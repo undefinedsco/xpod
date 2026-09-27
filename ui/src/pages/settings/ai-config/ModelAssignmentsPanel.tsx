@@ -20,13 +20,17 @@ import { isPolicyValueDirty } from './form-state';
 import { testAiConfigModel } from '../../../api/ai-config';
 import { useXpodSolidRuntime } from '../../../solid/useXpodSolidRuntime';
 
+/**
+ * §7.4：条目以**真实用途**为主语，专业角色名作为副文本保留在详情里。
+ * schema 里有某个角色不代表它要单独占一行，所以技术名不再充当唯一标识。
+ */
 const assignments = [
-  { label: 'General / Chat', name: 'chatModel', description: 'Used for assistant conversations and general text tasks.' },
-  { label: 'OCR', name: 'ocrModel', description: 'Reads text from images and scanned pages.' },
-  { label: 'Document Reader', name: 'readerModel', description: 'Extracts structure and content from documents.' },
-  { label: 'Embedding', name: 'embeddingModel', description: 'Creates vectors for semantic search.' },
-  { label: 'Indexer / Summarizer', name: 'indexerModel', description: 'Prepares and summarizes content for indexes.' },
-  { label: 'Reranker', name: 'rerankerModel', description: 'Reorders search results by relevance.' },
+  { label: '对话与通用文本', role: 'General / Chat', name: 'chatModel', description: '用于助手对话与一般文本任务。' },
+  { label: '识别图片文字', role: 'OCR', name: 'ocrModel', description: '从图片与扫描页里读出文字。' },
+  { label: '理解文档内容', role: 'Document Reader', name: 'readerModel', description: '提取文档的结构与内容。' },
+  { label: '按意思搜索', role: 'Embedding', name: 'embeddingModel', description: '为语义搜索生成向量。' },
+  { label: '准备与摘要索引', role: 'Indexer / Summarizer', name: 'indexerModel', description: '为索引准备并摘要内容。' },
+  { label: '搜索结果重排', role: 'Reranker', name: 'rerankerModel', description: '按相关性重排搜索结果。' },
 ] as const;
 
 export function ModelAssignmentsPanel() {
@@ -96,7 +100,7 @@ export function ModelAssignmentsPanel() {
 
   return (
     <>
-      <AiConfigForm title="Model Assignments" description="Choose a connected model for each Xpod capability. Unassigned capabilities use the system default." onSubmit={submit} onRestore={() => void restoreDefaults()} saving={saving || rebuilding} dirty={dirty}>
+      <AiConfigForm title="用途与模型" description="按真实用途选择模型；未指定的用途使用系统默认。每行的专业角色名只作说明，不改变运行语义。" onSubmit={submit} onRestore={() => void restoreDefaults()} saving={saving || rebuilding} dirty={dirty}>
         <div className="divide-y divide-border rounded-xl border border-border">
           {assignments.map((assignment) => (
             <ModelAssignmentRow
@@ -323,6 +327,7 @@ function EmbeddingSwitchDialog({
 
 export function ModelAssignmentRow({
   label,
+  role,
   name,
   description,
   models,
@@ -335,6 +340,8 @@ export function ModelAssignmentRow({
   onTest,
 }: {
   label: string;
+  /** 专业角色名（§7.4：放在详情里，不作唯一标识）。 */
+  role?: string;
   name: AiConfigModelAssignment;
   description: string;
   models: AiConfigModelOption[];
@@ -371,6 +378,11 @@ export function ModelAssignmentRow({
     >
       <div className="min-w-0 pt-1">
         <span className="block text-sm font-medium text-foreground">{label}</span>
+        {role ? (
+          <span data-testid="model-assignment-role" className="mt-0.5 block font-mono text-xs text-muted-foreground">
+            {role}
+          </span>
+        ) : null}
         <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">{description}</span>
       </div>
       <div data-testid="model-assignment-controls" className="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_4.5rem] sm:items-start">

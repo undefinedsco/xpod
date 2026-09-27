@@ -142,6 +142,17 @@
 - 本次仍缺少的设计或前端材料：客户端接入四段结果的用例、用途概要的窄窗走查。
 - 本轮结论范围：文档 + 前端表达审查；未运行应用。
 
+## 实施状态（2026-09-27 第一轮）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| W5-DESIGN-03 用途为主语 | 第一轮已实施；概要三列拆分待做 | `ModelAssignmentsPanel.tsx` 的六行改为真实用途命名（对话与通用文本 / 识别图片文字 / 理解文档内容 / 按意思搜索 / 准备与摘要索引 / 搜索结果重排），专业角色名（General / Chat、OCR、Document Reader、Embedding、Indexer / Summarizer、Reranker）改为行内 `role` 副文本（`data-testid="model-assignment-role"`）；表单说明改为「按真实用途选择模型；未指定的用途使用系统默认。每行的专业角色名只作说明，不改变运行语义。」；flow 测试的选择器同步更新。仍未做：把「概要（用途 / 当前模型 / 可用性）」与「编辑（兼容选项、恢复默认、有边界测试）」真正分成两段视图 |
+| W5-DESIGN-01 入口重排 | 未开始 | —— |
+| W5-DESIGN-02 客户端接入连续任务 | 未开始 | —— |
+| W5-DESIGN-04 Key 的「正在用于」 | 未开始 | —— |
+
+验证记录：`ui/src` + `tests/ui` + `packages/ai-connections/test` + `packages/shared-ui/test` + `packages/extension-sdk/test` 166 文件 / 1581 测试；`bun run build:ui` 成功；`bun run test:account-layout` 12/12；`bun run typecheck:test` 无错误。
+
 ## 实施范围与依赖清单（§12 W5 要求）
 
 | 项 | 内容 |
