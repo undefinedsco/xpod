@@ -59,7 +59,7 @@ async function main() {
           'tests/integration',
           'tests/http/ServerLogin.integration.test.ts',
           'tests/http/ServerApiAuth.integration.test.ts',
-          '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken}*',
+          '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken,CloudClientCredentialVisibility}*',
         ], sharedEnv);
     }
   } finally {
