@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createSolidSessionRuntime, createPodRuntime, type WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
+import { NoUsableAccessRouteError } from '@undefineds.co/solid-sdk/access-route';
 import {
   createXpodLoginTransactionStore,
   type XpodLoginTransactionStore,
@@ -266,6 +267,45 @@ describe('Xpod OIDC callback transaction ordering', () => {
       podUrl: selectedStorage.storageUrl,
     }));
     expect(setLocalPodRoutes.mock.invocationCallOrder[0]).toBeLessThan(open.mock.invocationCallOrder[0]);
+  });
+
+  test('reports an unusable access route as a connectivity fault, not an unreadable profile', async () => {
+    const transactionId = 'callback-no-usable-route-123456';
+    const href = `http://127.0.0.1:5173/auth/callback?transaction=${transactionId}&code=code&state=state`;
+    installDom(href);
+    const store = createXpodLoginTransactionStore({ origin: window.location.origin, storage: window.sessionStorage });
+    store.begin(transaction(transactionId));
+    const webId = 'https://acceptance-local.nodes.acceptance.test/alice/profile/card#me';
+    const open = vi.fn();
+    const callbackRuntime = runtime(webId, open);
+    // The transport refuses to send this anywhere: the only path this client
+    // knows is a route, and none is usable.
+    callbackRuntime.session.fetch = vi.fn(async () => {
+      throw new NoUsableAccessRouteError(webId, [{
+        id: 'loopback-current-origin',
+        kind: 'loopback',
+        canonicalUrl: 'https://acceptance-local.nodes.acceptance.test/',
+        targetUrl: 'http://127.0.0.1:5173/',
+        priority: 10,
+        health: 'unknown',
+      }]);
+    });
+
+    await expect(completeXpodOidcCallback({
+      href,
+      runtime: callbackRuntime,
+      transactionStore: store,
+      storage: window.sessionStorage,
+      fetch: vi.fn(async () => new Response(JSON.stringify({
+        managed: true,
+        provisionUrl: 'https://id.undefineds.co/.account/?provisionCode=signed-code',
+        publicUrl: 'https://acceptance-local.nodes.acceptance.test/',
+      }), { status: 200, headers: { 'content-type': 'application/json' } })),
+    })).resolves.toMatchObject({
+      status: 'failure',
+      code: 'no-usable-access-route',
+    });
+    expect(open).not.toHaveBeenCalled();
   });
 
   test('distinguishes temporary WebID profile read failure from missing binding or Pod failure', async () => {

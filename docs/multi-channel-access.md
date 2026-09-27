@@ -230,7 +230,12 @@ async function chooseRoute(routes: AccessRoute[]): Promise<AccessRoute | null> {
         method: 'HEAD',
         signal: controller.signal,
       });
-      if (res.ok || res.status === 401) return route;
+      // 探测的是“这条 route 通不通”，不是“这个 host 有没有实现这份可选文档”。
+      // CSS 8 对 `/.well-known/solid` 的 `HEAD` 答 405、`GET` 答 501：它在正常
+      // 提供服务。把这类应答判成不可达，本机客户端就会在公网 route 断掉（本机
+      // 首启、隧道未起）时一条 route 都不剩，请求退回不可达的 canonical URL，
+      // 表现为本机登录报“暂时无法读取身份资料”。只有 5xx 或连接失败才是真不通。
+      if (res.status < 500) return route;
       throw new Error(`Route ${route.id} returned ${res.status}`);
     } finally {
       clearTimeout(timeout);
