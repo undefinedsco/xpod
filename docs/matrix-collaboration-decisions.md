@@ -871,6 +871,29 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   （`contextFor` 的答案就是 store 收到的上下文）；`tests/api/matrix/storePodAccess.test.ts` 4 项（无会话无 service
   仍然 401 且**不问** Pod 访问器、`service` 以 `taskCredential` 提问且无 grant 时 403 并点名 Pod、
   `credentialRef`/`version` 原样透传、同时给 `auth` 与 `service` 400）。
+- **已落地**（2026-09-27）：**五个联邦读取端点的 HTTP 外壳**（`FederationHandler.ts`：`/event_auth`、`/state`、
+  `/state_ids`、`/backfill`、`/get_missing_events`）+ **接收方补取链现在走真路由**。
+  - **同一条前奏，四种答案**：五个端点共用一个 `readRoom` 前奏——认定被寻址的名字（同 `/send` 的 `Host` 规则）
+    → 用 X-Matrix 验签 → 按名字派生 Pod 与上下文（`contextFor`）→ 读该房间的协议事件；**房间一条都没有就 404**
+    （"我不认识这个房间"必须能与"我知道但没有"区分开）。之后各自只做自己那道题：`selectAuthChain`、
+    `stateSnapshotBefore`/`stateIdsBefore`、`selectBackfill`、`selectMissingEvents`。
+  - **响应形状按规范各自的定义**：`/event_auth` 只回 `{auth_chain}`；`/state` 回 `{pdus, auth_chain}`；
+    `/state_ids` 回 `{pdu_ids, auth_chain_ids}`；`/backfill` 回**事务形状** `{origin, origin_server_ts, pdus}`
+    （`origin` 就是被寻址的名字）；`/get_missing_events` 回 `{events}`。缺参数一律 400 `M_MISSING_PARAM`
+    （`event_id` / `v` / `limit`），不猜默认值。
+  - **`/get_missing_events` 的请求体先读后验**：签名覆盖 body，所以先按 4 MiB 上限读完并解析，再交给
+    `authenticateXMatrixRequest` 验证；读不出来就是 400，而不是拿一个空 body 去验签。
+  - **顺带补上的一个投影**：读取端点从 Pod 拿到的是**协议事件**，而状态解析写在"行"上，于是
+    `storedEvent.ts` 增加 `recordOfProtocolEvent`（PDU → 行；没有 id 的事件按内容推导 id，而不是留空身份）——
+    两个方向现在各只有一份实现。
+  - **端到端证据升级**：`twoDeployment.test.ts` 新增一项——B 收到一个它无法授权的**邀请**，于是**经 HTTP** 向 A
+    请求 `GET /_matrix/federation/v1/event_auth/...`（断言请求真的发生过、路径就是该端点），用取回的链接受房间状态
+    与邀请，`event_id` 与 A 完全一致。也就是说，此前"接收方主动补取"的证据里那台**在测试内直接调用的**
+    `handleAuthChain` 已被真路由取代。
+  测试：`FederationHandler.test.ts` 新增 6 项（`/event_auth` 回闭包且最旧在前、`/state` 与 `/state_ids` 回同一份
+  状态的两种形式、`/backfill` 含点名事件且从新到旧且带 `origin`/`origin_server_ts`、`/get_missing_events` 从父事件
+  起走且停在请求方已有处、缺签名 401/不服务的名字 403/未知房间 404、缺参数 400），`twoDeployment.test.ts` 新增
+  1 项（上述经 HTTP 的链补取）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

@@ -408,3 +408,171 @@ describe('the context the deployment writes with', () => {
     }
   });
 });
+
+/** A signed federation GET: no body, so nothing is signed beyond method, target and origin. */
+function signedGet(input: { peer: ReturnType<typeof identity>; destination: string; uri: string }): string {
+  return buildXMatrixAuthorization({
+    origin: PEER, destination: input.destination, method: 'GET', uri: input.uri,
+  }, input.peer.instance);
+}
+
+describe('the federation read endpoints', () => {
+  const ROOM_PATH = encodeURIComponent(ROOM);
+
+  /** A room this deployment holds: create, the joins, the rules, and one message on top. */
+  async function heldWithMessage() {
+    const room = heldRoom();
+    const peer = identity(PEER);
+    const membership = peerJoin({ room, peer });
+    const message = peerMessage({ room, peer, body: 'stored', membership });
+    const running = await harness({ events: [ room.create, room.join, room.rules, membership, message ] });
+    return { room, membership, message, running };
+  }
+
+  it('answers /event_auth with the chain that authorises the event, including it', async () => {
+    const { running, room, membership, message } = await heldWithMessage();
+    try {
+      const uri = `/_matrix/federation/v1/event_auth/${ROOM_PATH}/${encodeURIComponent(String(message.event_id))}`;
+      const answer = await send({
+        port: running.port, method: 'GET', path: uri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri }),
+      });
+
+      expect(answer.status).toBe(200);
+      const chain = (answer.body.auth_chain as Record<string, unknown>[]).map(event => String(event.event_id));
+      // The transitive closure, oldest first: the message is authorised by the create event and the
+      // sender's membership, and that membership by the join rules and Alice's own join.
+      expect(chain).toEqual([
+        room.create.event_id, room.join.event_id, room.rules.event_id, membership.event_id, message.event_id,
+      ]);
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('answers /state and /state_ids with the state before the event', async () => {
+    const { running, room, membership, message } = await heldWithMessage();
+    try {
+      const query = `?event_id=${encodeURIComponent(String(message.event_id))}`;
+      const stateUri = `/_matrix/federation/v1/state/${ROOM_PATH}${query}`;
+      const state = await send({
+        port: running.port, method: 'GET', path: stateUri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri: stateUri }),
+      });
+      expect(state.status).toBe(200);
+      expect((state.body.pdus as Record<string, unknown>[]).map(event => String(event.event_id)).sort())
+        .toEqual([ room.create.event_id, room.join.event_id, room.rules.event_id, membership.event_id ].sort());
+      expect((state.body.auth_chain as Record<string, unknown>[]).length).toBeGreaterThan(0);
+
+      const idsUri = `/_matrix/federation/v1/state_ids/${ROOM_PATH}${query}`;
+      const ids = await send({
+        port: running.port, method: 'GET', path: idsUri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri: idsUri }),
+      });
+      expect(ids.status).toBe(200);
+      expect((ids.body.pdu_ids as string[]).sort()).toEqual((state.body.pdus as Record<string, unknown>[])
+        .map(event => String(event.event_id)).sort());
+      expect((ids.body.auth_chain_ids as string[]).length).toBeGreaterThan(0);
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('answers /backfill with the named event and what preceded it, newest first', async () => {
+    const { running, room, membership, message } = await heldWithMessage();
+    try {
+      const uri = `/_matrix/federation/v1/backfill/${ROOM_PATH}?v=${encodeURIComponent(String(message.event_id))}&limit=3`;
+      const answer = await send({
+        port: running.port, method: 'GET', path: uri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri }),
+      });
+
+      expect(answer.status).toBe(200);
+      // A transaction: who answered, when, and the window itself (the named event included).
+      expect(answer.body.origin).toBe(SERVED);
+      expect(typeof answer.body.origin_server_ts).toBe('number');
+      expect((answer.body.pdus as Record<string, unknown>[]).map(event => String(event.event_id)))
+        .toEqual([ message.event_id, membership.event_id, room.rules.event_id ]);
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('answers /get_missing_events with the parents the requester lacks, oldest first', async () => {
+    const { running, room, membership, message } = await heldWithMessage();
+    try {
+      const uri = `/_matrix/federation/v1/get_missing_events/${ROOM_PATH}`;
+      const body = JSON.stringify({
+        earliest_events: [ room.create.event_id ],
+        latest_events: [ message.event_id ],
+      });
+      const answer = await send({
+        port: running.port, method: 'POST', path: uri, host: SERVED, body,
+        authorization: buildXMatrixAuthorization({
+          origin: PEER, destination: SERVED, method: 'POST', uri, content: JSON.parse(body),
+        }, running.peer.instance),
+      });
+
+      expect(answer.status).toBe(200);
+      const events = (answer.body.events as Record<string, unknown>[]).map(event => String(event.event_id));
+      // The walk starts at the message's parents and stops at what the requester says it has.
+      expect(events).toEqual([ room.join.event_id, room.rules.event_id, membership.event_id ]);
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('requires a signature, a name it serves, and a room it knows', async () => {
+    const { running, message } = await heldWithMessage();
+    try {
+      const uri = `/_matrix/federation/v1/event_auth/${ROOM_PATH}/${encodeURIComponent(String(message.event_id))}`;
+      const unsigned = await send({ port: running.port, method: 'GET', path: uri, host: SERVED });
+      expect(unsigned.status).toBe(401);
+
+      const elsewhere = await send({
+        port: running.port, method: 'GET', path: uri, host: 'other.example',
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri }),
+      });
+      expect(elsewhere.status).toBe(403);
+
+      const unknownRoom = `/_matrix/federation/v1/event_auth/${encodeURIComponent('!other:alice.example')}/${encodeURIComponent(String(message.event_id))}`;
+      const missing = await send({
+        port: running.port, method: 'GET', path: unknownRoom, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri: unknownRoom }),
+      });
+      expect(missing.status).toBe(404);
+      expect(missing.body.errcode).toBe('M_NOT_FOUND');
+    } finally {
+      await running.server.stop();
+    }
+  });
+
+  it('refuses a read whose parameters are missing rather than guessing them', async () => {
+    const { running, message } = await heldWithMessage();
+    try {
+      const stateUri = `/_matrix/federation/v1/state/${ROOM_PATH}`;
+      const noEvent = await send({
+        port: running.port, method: 'GET', path: stateUri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri: stateUri }),
+      });
+      expect(noEvent.status).toBe(400);
+      expect(noEvent.body.errcode).toBe('M_MISSING_PARAM');
+
+      const backfillUri = `/_matrix/federation/v1/backfill/${ROOM_PATH}?limit=5`;
+      const noFrom = await send({
+        port: running.port, method: 'GET', path: backfillUri, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri: backfillUri }),
+      });
+      expect(noFrom.status).toBe(400);
+
+      const ids = await send({
+        port: running.port, method: 'GET', path: `/_matrix/federation/v1/state/${ROOM_PATH}?event_id=%24nope`, host: SERVED,
+        authorization: signedGet({ peer: running.peer, destination: SERVED, uri: `/_matrix/federation/v1/state/${ROOM_PATH}?event_id=%24nope` }),
+      });
+      expect(ids.status).toBe(404);
+      expect(message.event_id).toBeTruthy();
+    } finally {
+      await running.server.stop();
+    }
+  });
+});

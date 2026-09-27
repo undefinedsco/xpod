@@ -12,6 +12,7 @@
  * handshake, the write path's graph position), so they live here instead of being spelled out
  * again in each of them.
  */
+import { computeEventId } from './protocol/eventIntegrity';
 import { eventReferenceIds } from './protocol/eventReferences';
 import type { RoomGraphEvent } from './protocol/roomGraph';
 import type { MatrixEventRecord } from './types';
@@ -55,5 +56,29 @@ export function storedGraphEvent(record: MatrixEventRecord): RoomGraphEvent {
     sequence: record.depth ?? 0,
     prevEvents: eventReferenceIds(stored, 'prev_events'),
     depth: typeof stored?.depth === 'number' ? stored.depth : undefined,
+  };
+}
+
+/**
+ * The row a protocol event stands for.
+ *
+ * The other direction, for readers that work on rows but were handed PDUs: the federation read
+ * endpoints read a room from the Pod as protocol events and then need the state replay, which is
+ * written in terms of rows. The event itself is kept as the row's `event`, so the replay sees the
+ * graph exactly as a stored row would show it — and an event that arrived without an id gets the
+ * one its content implies rather than an empty identity.
+ */
+export function recordOfProtocolEvent(pdu: Record<string, unknown>): MatrixEventRecord {
+  const eventId = typeof pdu.event_id === 'string' && pdu.event_id ? pdu.event_id : computeEventId(pdu);
+  return {
+    eventId,
+    roomId: String(pdu.room_id ?? ''),
+    type: String(pdu.type ?? ''),
+    sender: String(pdu.sender ?? ''),
+    originServerTs: Number(pdu.origin_server_ts ?? 0),
+    ...(typeof pdu.depth === 'number' ? { depth: pdu.depth } : {}),
+    content: (pdu.content ?? {}) as Record<string, unknown>,
+    ...(pdu.state_key === undefined ? {} : { stateKey: String(pdu.state_key) }),
+    event: pdu,
   };
 }

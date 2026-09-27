@@ -207,11 +207,12 @@ store 拒绝"既是会话又是部署干活"的上下文，拿不到 grant 就 4
 不服务的名字 403、伪造签名与 `destination` 不符 401、`Host: <name>:8448` 与 `<name>` 视为同一个名字。
 **并且两个部署之间已经真的经 HTTP 跑过完整闭环**（见下）……
 
-**联邦读取端点（服务侧算法已就绪，等 HTTP 外壳）**：`/event_auth`、`/get_missing_events`、`/backfill`、
-`/state`、`/state_ids` 五个端点的服务侧都已实现为纯函数/处理体并各有测试（回溯方向与语义按规范：
-`/backfill` 含点名事件且从新到旧，`/state` 返回事件**之前**的状态），客户端调用也已就位；
-**只差"从请求取 roomId/eventId → 从某个 Pod 取房间事件 → 应答"这一层**，它与入站 `/send` 共用同一个
-Pod 归属解析（已落地，见上），外壳的写法也可照 `/send` 那一份（`FederationHandler.ts`）。
+**联邦读取端点（服务侧与外壳都已落地）**：`/event_auth`、`/get_missing_events`、`/backfill`、`/state`、
+`/state_ids` 五个端点现在都有 HTTP 外壳（`FederationHandler.ts`，与 `/send` 共用"认定被寻址名字 → X-Matrix 验签 →
+按名字派生 Pod → 读协议事件"的前奏；房间为空回 404、缺参数回 400）并有 6 项真实 HTTP 测试；`twoDeployment` 里
+"接收方补取 auth chain"也已改成**经 HTTP 调真路由**（断言请求过 `/event_auth` 且 `event_id` 与发送方一致）。
+剩下的只有**七个成员资格握手端点**（`make_join`/`send_join`/`make_leave`/`send_leave`/`invite`/`make_knock`/
+`send_knock`）的外壳，写法可直接照 `FederationHandler.ts`。
 
 **成员资格握手（同样只差 HTTP 外壳）**：`GET /make_join`、`PUT /send_join`、`GET /make_leave`、
 `PUT /send_leave`、`PUT /invite`、`GET /make_knock`、`PUT /send_knock` 七个端点的服务侧已实现

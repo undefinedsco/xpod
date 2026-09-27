@@ -6,6 +6,11 @@
  * over, and write the answer back. Keeping that split is what lets the whole inbound path be
  * tested without a socket, and this file stays small enough to read in one sitting.
  *
+ * The read endpoints (`/event_auth`, `/state`, `/state_ids`, `/backfill`, `/get_missing_events`) share
+ * the same three steps — who is asking, which Pod the room is in, and which pure function answers —
+ * so they share one preamble here and differ only in the question they ask and the shape they
+ * answer with.
+ *
  * Three things are decided here rather than in the handler:
  *
  * - **Which name was addressed.** A federation request is addressed to a server name, and the
@@ -28,6 +33,12 @@
  */
 import { readBoundedRequestBody } from './readBoundedRequestBody';
 import { handleFederationSend, type FederationSendResult } from '../matrix/federation/inboundRoute';
+import { selectAuthChain } from '../matrix/federation/authChain';
+import { selectBackfill } from '../matrix/federation/roomHistory';
+import { selectMissingEvents } from '../matrix/federation/missingEvents';
+import { stateIdsBefore, stateSnapshotBefore } from '../matrix/federation/roomStateSnapshot';
+import { recordOfProtocolEvent } from '../matrix/storedEvent';
+import { authenticateXMatrixRequest } from '../matrix/federation/requestAuth';
 import type { FederationSendTarget } from '../matrix/federation/inboundRoute';
 import type { InMemoryMatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
 import type { MatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
@@ -36,6 +47,8 @@ import type { MatrixParticipantRoutes, MatrixServerRoute } from '../matrix/parti
 import type { AuthEvent } from '../matrix/protocol/authRules';
 import type { MatrixEventRecord, MatrixStoreContext } from '../matrix/types';
 import type { ApiServer, RouteHandler } from '../ApiServer';
+import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
+import type { ServerResponse } from 'node:http';
 
 /** How much of a request body this server will read: 50 PDUs with room to spare. */
 export const MAX_FEDERATION_BODY_BYTES = 4 * 1024 * 1024;
@@ -84,8 +97,142 @@ export interface FederationHandlerOptions {
 
 export function registerFederationRoutes(server: ApiServer, options: FederationHandlerOptions): void {
   // `public: true` because federation requests are authenticated by their `X-Matrix` signature,
-  // not by a Solid/OIDC session: this route never sees a user's credentials.
-  server.put('/_matrix/federation/v1/send/:txnId', createFederationSendHandler(options), { public: true });
+  // not by a Solid/OIDC session: these routes never see a user's credentials.
+  const publicRoute = { public: true } as const;
+  server.put('/_matrix/federation/v1/send/:txnId', createFederationSendHandler(options), publicRoute);
+  server.get('/_matrix/federation/v1/event_auth/:roomId/:eventId', createEventAuthHandler(options), publicRoute);
+  server.get('/_matrix/federation/v1/state/:roomId', createStateHandler(options), publicRoute);
+  server.get('/_matrix/federation/v1/state_ids/:roomId', createStateIdsHandler(options), publicRoute);
+  server.get('/_matrix/federation/v1/backfill/:roomId', createBackfillHandler(options), publicRoute);
+  server.post('/_matrix/federation/v1/get_missing_events/:roomId', createMissingEventsHandler(options), publicRoute);
+}
+
+/**
+ * The `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}` handler: the events that authorise
+ * one event, including itself, oldest first.
+ */
+export function createEventAuthHandler(options: FederationHandlerOptions): RouteHandler {
+  return async (request, response, params) => {
+    const room = await readRoom({ request, response, options, roomId: decode(params.roomId) });
+    if (!room) return;
+    const { chain } = selectAuthChain(room.events, decode(params.eventId));
+    sendJson(response, 200, { auth_chain: chain });
+  };
+}
+
+/** `GET /state/{roomId}?event_id=…`: the resolved state before an event, and its auth chain. */
+export function createStateHandler(options: FederationHandlerOptions): RouteHandler {
+  return async (request, response, params) => {
+    const room = await readRoom({ request, response, options, roomId: decode(params.roomId) });
+    if (!room) return;
+    const eventId = queryOf(request).get('event_id');
+    if (!eventId) return void fail(response, 400, 'M_MISSING_PARAM', 'event_id is required');
+    const snapshot = stateSnapshotBefore(room.events.map(recordOfProtocolEvent), eventId);
+    if (!snapshot) return void fail(response, 404, 'M_NOT_FOUND', `This server does not know ${eventId}`);
+    sendJson(response, 200, { pdus: snapshot.pdus, auth_chain: snapshot.authChain });
+  };
+}
+
+/** The same answer as ids, which is all a server that already has the events needs. */
+export function createStateIdsHandler(options: FederationHandlerOptions): RouteHandler {
+  return async (request, response, params) => {
+    const roomId = decode(params.roomId);
+    const room = await readRoom({ request, response, options, roomId });
+    if (!room) return;
+    const eventId = queryOf(request).get('event_id');
+    if (!eventId) return void fail(response, 400, 'M_MISSING_PARAM', 'event_id is required');
+    const snapshot = stateIdsBefore(room.events.map(recordOfProtocolEvent), eventId);
+    if (!snapshot) return void fail(response, 404, 'M_NOT_FOUND', `This server does not know ${eventId}`);
+    sendJson(response, 200, { pdu_ids: snapshot.pduIds, auth_chain_ids: snapshot.authChainIds });
+  };
+}
+
+/** `GET /backfill/{roomId}?v=…&limit=…`: a window of history, newest first, named events included. */
+export function createBackfillHandler(options: FederationHandlerOptions): RouteHandler {
+  return async (request, response, params) => {
+    const room = await readRoom({ request, response, options, roomId: decode(params.roomId) });
+    if (!room) return;
+    const query = queryOf(request);
+    const from = query.getAll('v');
+    const limit = Number(query.get('limit'));
+    if (from.length === 0) return void fail(response, 400, 'M_MISSING_PARAM', 'at least one v is required');
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      return void fail(response, 400, 'M_MISSING_PARAM', 'limit must be a non-negative integer');
+    }
+    const window = selectBackfill(room.events, { from, limit });
+    sendJson(response, 200, {
+      origin: room.serverName,
+      origin_server_ts: (options.now ?? Date.now)(),
+      pdus: window.pdus,
+    });
+  };
+}
+
+/**
+ * `POST /get_missing_events/{roomId}`: the parents a requester is missing, oldest first.
+ *
+ * Its request is a body, so the body is read (bounded) and parsed before authentication — the
+ * signature covers it, and a body this server cannot read has no content to verify.
+ */
+export function createMissingEventsHandler(options: FederationHandlerOptions): RouteHandler {
+  return async (request, response, params) => {
+    let content: Record<string, unknown>;
+    try {
+      const raw = Buffer.concat(await readBoundedRequestBody(request, MAX_FEDERATION_BODY_BYTES,
+        'The request body is larger than this server accepts')).toString('utf8');
+      const parsed: unknown = raw ? JSON.parse(raw) : {};
+      if (!isRecord(parsed)) return void fail(response, 400, 'M_BAD_JSON', 'Request body is not a JSON object');
+      content = parsed;
+    } catch (error) {
+      return void fail(response, 400, 'M_BAD_JSON',
+        error instanceof Error ? error.message : 'The request body could not be read');
+    }
+    const room = await readRoom({ request, response, options, roomId: decode(params.roomId), content });
+    if (!room) return;
+    const earliest = stringList(content.earliest_events);
+    const latest = stringList(content.latest_events);
+    if (earliest === undefined || latest === undefined) {
+      return void fail(response, 400, 'M_MISSING_PARAM', 'earliest_events and latest_events must be arrays of ids');
+    }
+    const selection = selectMissingEvents(room.events, {
+      earliestEvents: earliest,
+      latestEvents: latest,
+      ...(Number.isSafeInteger(content.limit) ? { limit: Number(content.limit) } : {}),
+      ...(Number.isSafeInteger(content.min_depth) ? { minDepth: Number(content.min_depth) } : {}),
+    });
+    sendJson(response, 200, { events: selection.events });
+  };
+}
+
+/** The room a read endpoint was asked about, or why the answer is an error instead. */
+async function readRoom(input: {
+  request: AuthenticatedRequest;
+  response: ServerResponse;
+  options: FederationHandlerOptions;
+  roomId: string;
+  content?: unknown;
+}): Promise<{ origin: string; serverName: string; events: Record<string, unknown>[] } | undefined> {
+  const { options, request, response, roomId } = input;
+  const serverName = await addressedServerName(request, options);
+  if (!serverName) {
+    return fail(response, 403, 'M_FORBIDDEN', `This deployment does not serve ${hostOf(request)}`);
+  }
+  const authentication = await authenticateXMatrixRequest({
+    authorization: headerValue(request.headers.authorization),
+    method: (request.method ?? 'GET').toUpperCase(),
+    uri: requestTarget(request),
+    ...(input.content === undefined ? {} : { content: input.content }),
+    keys: options.keys,
+    serverName,
+  });
+  if (!authentication.valid || !authentication.origin) {
+    return fail(response, 401, 'M_UNAUTHORIZED', authentication.reason);
+  }
+  const context = await contextForName(serverName, options);
+  if (!context) return fail(response, 403, 'M_FORBIDDEN', `This deployment does not serve ${serverName}`);
+  const events = await options.store.protocolEvents(roomId, context);
+  if (events.length === 0) return fail(response, 404, 'M_NOT_FOUND', `This server does not know ${roomId}`);
+  return { origin: authentication.origin, serverName, events };
 }
 
 /**
@@ -141,12 +288,8 @@ export function createFederationSendHandler(options: FederationHandlerOptions): 
  * events go, and how to answer what they depend on.
  */
 async function targetFor(destination: string, options: FederationHandlerOptions): Promise<FederationSendTarget | undefined> {
-  const answer = await options.routes.route(destination);
-  if (answer.kind !== 'served') return undefined;
-  const route = answer.route;
-  const context: MatrixStoreContext = options.contextFor
-    ? await options.contextFor(route)
-    : { webId: route.webId, podUrl: route.podUrl };
+  const context = await contextForName(destination, options);
+  if (!context) return undefined;
   const rooms = new Map<string, Map<string, Record<string, unknown>>>();
 
   /** The room's events by id, read once and then kept as this transaction writes into it. */
@@ -163,7 +306,7 @@ async function targetFor(destination: string, options: FederationHandlerOptions)
   };
 
   return {
-    scope: answer.route.podUrl,
+    scope: context.podUrl ?? '',
     async acceptEvent(event) {
       const record = await options.store.acceptReceivedEvent({ event, context });
       // A later PDU in the same transaction may name this one as an auth event, and the read that
@@ -192,6 +335,21 @@ async function targetFor(destination: string, options: FederationHandlerOptions)
         }),
     }),
   };
+}
+
+/**
+ * The context a server name's Pod is read and written with.
+ *
+ * `contextFor` is the deployment's answer to "who is this, then" (see the module note); without it
+ * the context carries no authority at all, which is the honest default for a caller that has not
+ * said who it is.
+ */
+async function contextForName(serverName: string, options: FederationHandlerOptions): Promise<MatrixStoreContext | undefined> {
+  const answer = await options.routes.route(serverName);
+  if (answer.kind !== 'served') return undefined;
+  return options.contextFor
+    ? await options.contextFor(answer.route)
+    : { webId: answer.route.webId, podUrl: answer.route.podUrl };
 }
 
 /**
@@ -250,4 +408,34 @@ function sendJson(response: { statusCode: number; setHeader(name: string, value:
   response.statusCode = status;
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(body));
+}
+
+/** Answer with a Matrix error and report that nothing more should be written. */
+function fail(response: { statusCode: number; setHeader(name: string, value: string): void; end(body?: string): void },
+  status: number, errcode: string, error: string): undefined {
+  sendJson(response, status, { errcode, error });
+  return undefined;
+}
+
+/** A path parameter, decoded; a malformed escape is the value as sent rather than a crash. */
+function decode(value: string | undefined): string {
+  try {
+    return decodeURIComponent(value ?? '');
+  } catch {
+    return value ?? '';
+  }
+}
+
+function queryOf(request: { url?: string | undefined }): URLSearchParams {
+  const index = (request.url ?? '').indexOf('?');
+  return new URLSearchParams(index < 0 ? '' : (request.url ?? '').slice(index + 1));
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((entry): entry is string => typeof entry === 'string');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

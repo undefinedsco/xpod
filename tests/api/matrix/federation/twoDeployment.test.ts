@@ -683,23 +683,33 @@ async function serveFederation(input: {
   return { server, endpoint: () => ({ port: bound.port }) };
 }
 
+/** Two deployments whose only way to each other is a socket, with both routes listening. */
+async function httpPair() {
+  let endpointA: Endpoint | undefined;
+  let endpointB: Endpoint | undefined;
+  const requestsToB: { host?: string; path: string }[] = [];
+  const requestsToA: { host?: string; path: string }[] = [];
+  const { a, b } = twoDeployments({
+    fetchA: httpTransport(() => endpointB, requestsToB),
+    fetchB: httpTransport(() => endpointA, requestsToA),
+  });
+  const keys = [ a.identities[1], b.identities[1] ];
+  const served = await serveFederation({ deployment: a, serverName: 'alice.example', keys });
+  const servedB = await serveFederation({ deployment: b, serverName: 'bob.example', keys });
+  endpointA = served.endpoint();
+  endpointB = servedB.endpoint();
+  return {
+    a, b, requestsToA, requestsToB,
+    async stop() {
+      await served.server.stop();
+      await servedB.server.stop();
+    },
+  };
+}
+
 describe('two deployments federating over real HTTP', () => {
   it('carries the room, the invite, the join and a message across sockets', async () => {
-    let endpointA: Endpoint | undefined;
-    let endpointB: Endpoint | undefined;
-    const requestsToB: { host?: string; path: string }[] = [];
-    const requestsToA: { host?: string; path: string }[] = [];
-    const { a, b } = twoDeployments({
-      fetchA: httpTransport(() => endpointB, requestsToB),
-      fetchB: httpTransport(() => endpointA, requestsToA),
-    });
-    const aliceIdentity = a.identities[1];
-    const bobIdentity = b.identities[1];
-    const keys = [ aliceIdentity, bobIdentity ];
-    const served = await serveFederation({ deployment: a, serverName: 'alice.example', keys });
-    const servedB = await serveFederation({ deployment: b, serverName: 'bob.example', keys });
-    endpointA = served.endpoint();
-    endpointB = servedB.endpoint();
+    const { a, b, requestsToA, requestsToB, stop } = await httpPair();
 
     try {
       const alice = (await a.store.getAccount(a.context)).userId;
@@ -744,8 +754,33 @@ describe('two deployments federating over real HTTP', () => {
       expect(requestsToA.map(request => request.host)).toEqual(requestsToA.map(() => 'alice.example:8448'));
       expect(requestsToB.every(request => request.path.startsWith('/_matrix/federation/v1/send/'))).toBe(true);
     } finally {
-      await served.server.stop();
-      await servedB.server.stop();
+      await stop();
+    }
+  }, 180_000);
+
+  it('fetches an auth chain over HTTP when it cannot authorise an event', async () => {
+    const { a, b, requestsToA, requestsToB, stop } = await httpPair();
+    try {
+      const bob = (await b.store.getAccount(b.context)).userId;
+      const room = await a.store.createRoom({}, a.context);
+      // An invite names the invitee's server, so it is delivered to a deployment that does not
+      // know the room yet — the case the chain fetch exists for.
+      await a.store.inviteUser(room.roomId, bob, a.context);
+      const invite = findPdu(a.rows, 'm.room.member', bob);
+      expect(await a.outbox.flush({ scope: a.context.podUrl! })).toMatchObject({ rejected: [], abandoned: [] });
+
+      // Bob's deployment cannot authorise the invite from what it holds, so it asks Alice's
+      // deployment for the chain — over HTTP, through the route that answers `/event_auth` — and
+      // accepts the room's state and the invite with the ids Alice has.
+      expect(await b.outbox.flush({ scope: b.context.podUrl! })).toMatchObject({ rejected: [], abandoned: [] });
+      expect(requestsToA.some(request => request.path.startsWith('/_matrix/federation/v1/event_auth/'))).toBe(true);
+
+      const idsIn = (rows: Map<unknown, any[]>) => pdusOf(rows).map(event => String(event.event_id)).sort();
+      expect(idsIn(b.rows)).toEqual(idsIn(a.rows));
+      expect(findPdu(b.rows, 'm.room.member', bob).event_id).toBe(invite.event_id);
+      expect(requestsToB.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await stop();
     }
   }, 180_000);
 });
