@@ -127,6 +127,19 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('出口');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('客户端接入');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('虚拟密钥');
+    // §7.3：入口默认停在「连接客户端」
+    expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('CONNECT CLIENT');
+    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('连接客户端');
+    expect(container.querySelector('[data-testid="workspace-main-pane"] [role="tablist"][aria-label="选择客户端"]')).toBeTruthy();
+
+    // 切到 API KEYS 分组后仍是原来的 Xpod 接入信息
+    const keysOption = Array.from(container.querySelectorAll('[role="option"]'))
+      .find((option) => option.getAttribute('aria-label') === 'Xpod');
+    expect(keysOption).toBeTruthy();
+    await act(async () => {
+      keysOption!.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('Xpod 接入信息');
     expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('API Key 是签发给客户端应用的 CSS 客户端凭据');
     expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('API KEYS');

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import './setup-jsdom'
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { AiClientConfigurationSection, type AiClientConfigurationBridge } from '../src/AiClientConfigurationSection'
 
@@ -60,4 +60,28 @@ it('keeps the created key when the write fails, then retries only the write', as
   await waitFor(() => expect(
     document.querySelector('[data-stage="write"]')?.getAttribute('data-stage-state'),
   ).toBe('ok'))
+})
+
+it('lets the user choose an existing key without minting a new one', async () => {
+  const createClientCredential = vi.fn(async () => ({ apiKey: 'private-key', revoke: vi.fn(async () => undefined) }))
+  const bridge: AiClientConfigurationBridge = {
+    inspect: vi.fn(async () => ({ status: 'notConfigured' as const })),
+    plan: vi.fn(async () => ({ client: 'codex' as const, planId: 'plan', changes: [] })),
+    apply: vi.fn(async () => ({ applied: true as const })),
+    verify: vi.fn(() => new Promise(() => undefined)),
+    restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
+  }
+  render(<AiClientConfigurationSection bridge={bridge} client="codex" endpoint="https://pod.example"
+    createClientCredential={createClientCredential} />)
+
+  // §7.3 第 3 步：明确选择 Key 来源，并说明共用影响
+  const chooser = await screen.findByRole('tablist', { name: 'Codex 的 Key 来源' })
+  const existing = within(chooser).getByTestId('client-key-source-existing')
+  existing.click()
+  await waitFor(() => expect(existing.getAttribute('aria-selected')).toBe('true'))
+  expect(screen.getByText(/停用它会影响所有使用它的客户端/u)).toBeTruthy()
+
+  // 选择已有 Key 后不再申请新凭据
+  expect(createClientCredential).not.toHaveBeenCalled()
+  expect(bridge.apply).not.toHaveBeenCalled()
 })

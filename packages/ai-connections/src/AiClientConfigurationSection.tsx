@@ -118,6 +118,8 @@ export function AiClientConfigurationSection({
   const [confirmationValue, setConfirmationValue] = useState('')
   const [busy, setBusy] = useState(false)
   const autoApplyStarted = useRef(false)
+  /** §7.3 第 3 步：明确选择为这个客户端新建 Key，还是使用用户已有的 Key。 */
+  const [keySource, setKeySource] = useState<'create' | 'existing'>('create')
   /** 写入失败后保留的凭据：重试只重写配置，不再新建 Key（§7.3）。 */
   const leaseRef = useRef<ManagedClientCredentialLease | undefined>(undefined)
 
@@ -258,11 +260,43 @@ export function AiClientConfigurationSection({
   const confirmation = dryRun?.confirmation
   const confirmationSatisfied = !confirmation?.required || confirmationValue === confirmation.token
   const clientLabel = AI_CLIENT_LABELS[client]
-  const manual = !bridge
+  // 选择「使用已有 Key」时走手动配置路径：本页不申请新凭据，只给可复制的配置
+  const manual = !bridge || keySource === 'existing'
   const manualConfig = manualConfigurationText(client, endpoint, manualApiKey)
 
   return (
     <div className={compact ? '' : 'overflow-hidden rounded-md border border-border/60'}>
+      {bridge && createClientCredential ? (
+        <div className="border-b border-border/60 px-3 py-2">
+          <div role="tablist" aria-label={`${clientLabel} 的 Key 来源`} className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={keySource === 'create'}
+              data-testid="client-key-source-create"
+              className={`rounded-lg border px-3 py-1 text-xs ${keySource === 'create' ? 'border-primary bg-accent text-accent-foreground' : 'border-border text-foreground hover:bg-accent/60'}`}
+              onClick={() => setKeySource('create')}
+            >
+              为这个客户端新建 Key
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={keySource === 'existing'}
+              data-testid="client-key-source-existing"
+              className={`rounded-lg border px-3 py-1 text-xs ${keySource === 'existing' ? 'border-primary bg-accent text-accent-foreground' : 'border-border text-foreground hover:bg-accent/60'}`}
+              onClick={() => setKeySource('existing')}
+            >
+              使用我已经有的 Key
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {keySource === 'existing'
+              ? '本页不会新建 Key：请把已有 Key 粘进客户端配置。共用一个 Key 时，停用它会影响所有使用它的客户端。'
+              : '会为这个客户端单独创建一个 Key；停用只影响它自己。'}
+          </p>
+        </div>
+      ) : null}
       {!compact ? <div className="flex flex-wrap items-center gap-2 px-3 py-2">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
           <AiClientIcon client={client} />
