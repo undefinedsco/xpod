@@ -317,6 +317,13 @@ export function createSubmissionHandler(
       ...(options.now === undefined ? {} : { now: options.now }),
     });
     reportWarnings(answer, roomId);
+    // A resident that accepts a membership event accepts it into the room's graph: validating and
+    // countersigning is not the same as keeping it, and a join the resident only *answered* would
+    // exist solely in the joining server's Pod. Stored the way any received event is — verbatim and
+    // marked as somebody else's — because that is what it is here.
+    if (answer.status === 200 && isRecord(answer.body.event)) {
+      await options.store.acceptReceivedEvent({ event: answer.body.event, context: room.context });
+    }
     sendJson(response, answer.status, answer.body);
   };
 }
@@ -525,7 +532,7 @@ async function readRoom(input: {
   options: FederationHandlerOptions;
   roomId: string;
   content?: unknown;
-}): Promise<{ origin: string; serverName: string; events: Record<string, unknown>[] } | undefined> {
+}): Promise<{ origin: string; serverName: string; events: Record<string, unknown>[]; context: MatrixStoreContext } | undefined> {
   const { options, request, response, roomId } = input;
   const serverName = await addressedServerName(request, options);
   if (!serverName) {
@@ -546,7 +553,7 @@ async function readRoom(input: {
   if (!context) return fail(response, 403, 'M_FORBIDDEN', `This deployment does not serve ${serverName}`);
   const events = await options.store.protocolEvents(roomId, context);
   if (events.length === 0) return fail(response, 404, 'M_NOT_FOUND', `This server does not know ${roomId}`);
-  return { origin: authentication.origin, serverName, events };
+  return { origin: authentication.origin, serverName, events, context };
 }
 
 /**

@@ -85,7 +85,7 @@ describe('resolved room state', () => {
     expect(state.membership('@nobody:example.test')).toBeUndefined();
     // A linearly written room resolves to the same slots the old rule would pick.
     expect([ ...state.entries() ].map(([ key ]) => key).sort())
-      .toEqual([ 'm.room.create|', `m.room.member|${alice}`, `m.room.member|${bob}` ].sort());
+      .toEqual([ 'm.room.create|', 'm.room.join_rules|', `m.room.member|${alice}`, `m.room.member|${bob}` ].sort());
   });
 
   it('keeps a member slot for someone who was invited and never joined', async () => {

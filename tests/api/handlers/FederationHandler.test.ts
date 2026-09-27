@@ -694,7 +694,9 @@ describe('the membership handshake endpoints', () => {
       const accepted = answer.body.event as Record<string, unknown>;
       expect(computeEventId(accepted)).toBe(join.event_id);
       expect(Object.keys(accepted.signatures as Record<string, unknown>).sort()).toEqual([ PEER, SERVED ].sort());
-      expect(running.store.accepted).toEqual([]);
+      // Accepting a join is accepting it into the room's graph: the resident keeps the event it
+      // countersigned, not just the answer it sent back.
+      expect(running.store.accepted.map(event => event.event_id)).toEqual([ join.event_id ]);
     } finally {
       await running.server.stop();
     }

@@ -18,6 +18,7 @@ import { InMemoryMatrixInboundTransactionStore } from '../../../../src/api/matri
 import { handleFederationSend, type FederationSendTarget } from '../../../../src/api/matrix/federation/inboundRoute';
 import { authenticateXMatrixRequest, buildXMatrixAuthorization } from '../../../../src/api/matrix/federation/requestAuth';
 import { selectAuthChain } from '../../../../src/api/matrix/federation/authChain';
+import { joinRoomOverFederation } from '../../../../src/api/matrix/federation/remoteJoin';
 import { parseServerKeyResponse, type MatrixServerKeySource } from '../../../../src/api/matrix/federation/serverKeys';
 import type { AuthEvent } from '../../../../src/api/matrix/protocol/authRules';
 
@@ -111,6 +112,11 @@ function deployment(input: {
    * handler; a test that wants a real socket passes an HTTP transport instead.
    */
   fetch?: typeof fetch;
+  /**
+   * Wire the remote-join ports the way the container does, so `joinRoom` on a room this deployment
+   * does not host goes through the membership handshake instead of a local write.
+   */
+  federationJoin?: boolean;
 }) {
   const deploymentIdentity = identity(input.deploymentName);
   const registry = matrixSigningIdentityRegistry({
@@ -164,7 +170,28 @@ function deployment(input: {
     ? createSchedulingOutbox({ outbox, schedule: () => { scheduler.schedule(); } })
     : outbox;
   // The store queues what it writes, so the queue has to exist before it.
-  const harness = matrixHarness({ identities: registry, outbound });
+  const harness = matrixHarness({
+    identities: registry,
+    outbound,
+    // The same wiring the container does: ask the room's server, sign as this participant.
+    ...(input.federationJoin ? {
+      directoryQuery: async ({ roomAlias, destination }: { roomAlias: string; destination: string }) => {
+        const client = await sender.membershipClientFor(input.participant);
+        const answer = await client?.queryDirectory({ destination, roomAlias });
+        return answer?.status === 'ok' ? answer.roomId : undefined;
+      },
+      remoteJoin: async ({ roomId, userId, destination }: { roomId: string; userId: string; destination: string }) => {
+        const client = await sender.membershipClientFor(input.participant);
+        const participantIdentity = await registry.identityFor(input.participant).catch(() => undefined);
+        if (!client || !participantIdentity) return undefined;
+        return await joinRoomOverFederation({
+          client, roomId, userId, destination,
+          serverName: input.participant,
+          sign: event => participantIdentity.signEvent(event),
+        });
+      },
+    } : {}),
+  });
   const context = { ...harness.context, webId: input.participantWebId, podUrl: input.podUrl };
 
   return {
@@ -232,6 +259,8 @@ function twoDeployments(options: {
   /** Transports for each deployment, when a test wants real HTTP instead of the in-process hop. */
   fetchA?: typeof fetch;
   fetchB?: typeof fetch;
+  /** Join remote rooms through the membership handshake, as production does. */
+  federationJoin?: boolean;
 } = {}) {
   const aliceIdentity = identity('alice.example');
   const bobIdentity = identity('bob.example');
@@ -240,6 +269,7 @@ function twoDeployments(options: {
     podUrl: 'https://pod-a.example/alice/', participantIdentity: aliceIdentity, peers: [ bobIdentity ],
     ...(options.schedulerDriven ? { schedulerDriven: true } : {}),
     ...(options.fetchA === undefined ? {} : { fetch: options.fetchA }),
+    ...(options.federationJoin ? { federationJoin: true } : {}),
   });
   const b = deployment({
     deploymentName: 'b.example', participant: 'bob.example', participantWebId: 'https://bob.example/profile/card#me',
@@ -247,6 +277,7 @@ function twoDeployments(options: {
     ...(options.fetchAuthChain === false ? { canFetchAuthChain: false } : {}),
     ...(options.schedulerDriven ? { schedulerDriven: true } : {}),
     ...(options.fetchB === undefined ? {} : { fetch: options.fetchB }),
+    ...(options.federationJoin ? { federationJoin: true } : {}),
   });
   a.connect(b);
   b.connect(a);
@@ -290,12 +321,12 @@ describe('two deployments federating one room', () => {
     // Bob's deployment cannot know the room, so the state an invite depends on is handed
     // over first. (The receiver can also fetch it itself — see the auth-chain test below —
     // but this test is about a multi-event transaction keeping its order.)
-    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findPdu(a.rows, 'm.room.member', alice) ]) {
+    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findPdu(a.rows, 'm.room.member', alice), findPdu(a.rows, 'm.room.join_rules') ]) {
       await a.outbox.enqueue({ scope: a.context.podUrl!, origin: 'alice.example', destination: 'bob.example', pdus: [ pdu ] });
     }
     const bootstrap = await a.outbox.flush({ scope: a.context.podUrl! });
     expect(bootstrap.delivered).toHaveLength(1);
-    expect(pdusOf(b.rows).map(event => event.type)).toEqual([ 'm.room.create', 'm.room.member' ]);
+    expect(pdusOf(b.rows).map(event => event.type)).toEqual([ 'm.room.create', 'm.room.member', 'm.room.join_rules' ]);
 
     // The invite itself is a transaction of its own, and Bob's deployment can authorise it
     // because the state it names is there.
@@ -338,7 +369,7 @@ describe('two deployments federating one room', () => {
     const alice = (await a.store.getAccount(a.context)).userId;
     const bob = (await b.store.getAccount(b.context)).userId;
     const room = await a.store.createRoom({}, a.context);
-    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findPdu(a.rows, 'm.room.member', alice) ]) {
+    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findPdu(a.rows, 'm.room.member', alice), findPdu(a.rows, 'm.room.join_rules') ]) {
       await a.outbox.enqueue({ scope: a.context.podUrl!, origin: 'alice.example', destination: 'bob.example', pdus: [ pdu ] });
     }
     await a.outbox.flush({ scope: a.context.podUrl! });
@@ -372,7 +403,7 @@ describe('two deployments federating one room', () => {
 
     // The state it depends on arrives afterwards — the `/get_missing_events` job, played by
     // the test. The refused invite is *not* dropped, so it goes out again on its own.
-    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findMembership(a.rows, alice, 'join') ]) {
+    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findMembership(a.rows, alice, 'join'), findPdu(a.rows, 'm.room.join_rules') ]) {
       await a.outbox.enqueue({ scope: a.context.podUrl!, origin: 'alice.example', destination: 'bob.example', pdus: [ pdu ] });
     }
     await a.outbox.flush({ scope: a.context.podUrl! });
@@ -399,7 +430,7 @@ describe('two deployments federating one room', () => {
 
     // The chain arrived with the invite and was stored before it, so the invite is accepted
     // with the id the sender gave it.
-    expect(pdusOf(b.rows).map(event => event.type)).toEqual([ 'm.room.create', 'm.room.member', 'm.room.member' ]);
+    expect(pdusOf(b.rows).map(event => event.type)).toEqual([ 'm.room.create', 'm.room.member', 'm.room.join_rules', 'm.room.member' ]);
     expect(findMembership(b.rows, bob, 'invite').event_id).toBe(invite.event_id);
     expect(pdusOf(b.rows).every(event => String(event.room_id) === room.roomId)).toBe(true);
   });
@@ -412,7 +443,7 @@ describe('two deployments federating one room', () => {
     // The room exists on both sides (the bootstrap is the `/get_missing_events` job the test
     // still plays; everything after this point is driven by the writes themselves).
     const room = await a.store.createRoom({}, a.context);
-    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findMembership(a.rows, alice, 'join') ]) {
+    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findMembership(a.rows, alice, 'join'), findPdu(a.rows, 'm.room.join_rules') ]) {
       await a.outbox.enqueue({ scope: a.context.podUrl!, origin: 'alice.example', destination: 'bob.example', pdus: [ pdu ] });
     }
     await a.outbox.flush({ scope: a.context.podUrl! });
@@ -490,7 +521,7 @@ describe('when the other deployment cannot be reached', () => {
     const alice = (await a.store.getAccount(a.context)).userId;
     const bob = (await b.store.getAccount(b.context)).userId;
     const room = await a.store.createRoom({}, a.context);
-    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findPdu(a.rows, 'm.room.member', alice) ]) {
+    for (const pdu of [ findPdu(a.rows, 'm.room.create'), findPdu(a.rows, 'm.room.member', alice), findPdu(a.rows, 'm.room.join_rules') ]) {
       await a.outbox.enqueue({ scope: a.context.podUrl!, origin: 'alice.example', destination: 'bob.example', pdus: [ pdu ] });
     }
     await a.outbox.flush({ scope: a.context.podUrl! });
@@ -667,6 +698,7 @@ async function serveFederation(input: {
     store,
     keys: keySourceFor([ ...input.keys ]),
     transactions,
+    signerFor: async name => await input.deployment.registry.identityFor(name).catch(() => undefined),
     // What the test deployment can present for the routed participant. In production this is the
     // participant's task-layer grant; here it is the harness session the store already writes with.
     contextFor: route => ({ ...context, webId: route.webId, podUrl: route.podUrl }),
@@ -684,7 +716,7 @@ async function serveFederation(input: {
 }
 
 /** Two deployments whose only way to each other is a socket, with both routes listening. */
-async function httpPair() {
+async function httpPair(options: { federationJoin?: boolean } = {}) {
   let endpointA: Endpoint | undefined;
   let endpointB: Endpoint | undefined;
   const requestsToB: { host?: string; path: string }[] = [];
@@ -692,6 +724,7 @@ async function httpPair() {
   const { a, b } = twoDeployments({
     fetchA: httpTransport(() => endpointB, requestsToB),
     fetchB: httpTransport(() => endpointA, requestsToA),
+    ...(options.federationJoin ? { federationJoin: true } : {}),
   });
   const keys = [ a.identities[1], b.identities[1] ];
   const served = await serveFederation({ deployment: a, serverName: 'alice.example', keys });
@@ -718,11 +751,11 @@ describe('two deployments federating over real HTTP', () => {
 
       // The room's first events go to Bob's deployment over the socket, because it cannot know the
       // room they belong to. Nothing is handed over in process: this is the peer's HTTP route.
-      for (const pdu of [ findPdu(a.rows, 'm.room.create'), findPdu(a.rows, 'm.room.member', alice) ]) {
+      for (const pdu of [ findPdu(a.rows, 'm.room.create'), findPdu(a.rows, 'm.room.member', alice), findPdu(a.rows, 'm.room.join_rules') ]) {
         await a.outbox.enqueue({ scope: a.context.podUrl!, origin: 'alice.example', destination: 'bob.example', pdus: [ pdu ] });
       }
       expect(await a.outbox.flush({ scope: a.context.podUrl! })).toMatchObject({ delivered: expect.any(Array), rejected: [], abandoned: [] });
-      expect(pdusOf(b.rows).map(event => event.type)).toEqual([ 'm.room.create', 'm.room.member' ]);
+      expect(pdusOf(b.rows).map(event => event.type)).toEqual([ 'm.room.create', 'm.room.member', 'm.room.join_rules' ]);
 
       // The invite is authorised on the receiving side against exactly that state.
       await a.store.inviteUser(room.roomId, bob, a.context);
@@ -753,6 +786,39 @@ describe('two deployments federating over real HTTP', () => {
       expect(requestsToB.map(request => request.host)).toEqual(requestsToB.map(() => 'bob.example:8448'));
       expect(requestsToA.map(request => request.host)).toEqual(requestsToA.map(() => 'alice.example:8448'));
       expect(requestsToB.every(request => request.path.startsWith('/_matrix/federation/v1/send/'))).toBe(true);
+    } finally {
+      await stop();
+    }
+  }, 180_000);
+
+  it('joins a room through the handshake over HTTP, and keeps what the resident sent back', async () => {
+    const { a, b, requestsToA, stop } = await httpPair({ federationJoin: true });
+    try {
+      const bob = (await b.store.getAccount(b.context)).userId;
+      // A public room, so joining needs no invitation: this test is about the handshake, not about
+      // who may join.
+      const room = await a.store.createRoom({ visibility: 'public' }, a.context);
+
+      // Bob joins a room only Alice's deployment hosts: not a local write, but the handshake —
+      // template, signature, submission — over the socket.
+      await b.store.joinRoom(room.roomId, b.context);
+      expect(requestsToA.some(request => request.path.startsWith('/_matrix/federation/v1/make_join/'))).toBe(true);
+      expect(requestsToA.some(request => request.path.startsWith('/_matrix/federation/v2/send_join/'))).toBe(true);
+
+      // Both deployments hold Bob's join under the same id, and Bob's Pod holds the room's state
+      // because the resident sent it with the join.
+      const joinAtA = findMembership(a.rows, bob, 'join');
+      const joinAtB = findMembership(b.rows, bob, 'join');
+      expect(joinAtB.event_id).toBe(joinAtA.event_id);
+      expect(findPdu(b.rows, 'm.room.create').event_id).toBe(findPdu(a.rows, 'm.room.create').event_id);
+      expect(findPdu(b.rows, 'm.room.join_rules').event_id).toBe(findPdu(a.rows, 'm.room.join_rules').event_id);
+      // The resident's signature is on the event Bob kept, next to Bob's own.
+      expect(Object.keys(joinAtB.signatures as Record<string, unknown>).sort()).toEqual([ 'alice.example', 'bob.example' ]);
+
+      // And the room works from there: Alice's next message reaches Bob's Pod.
+      const sent = await a.store.sendEvent(room.roomId, 'm.room.message', 'txn-after-join', { body: 'after the handshake' }, a.context);
+      expect(await a.outbox.flush({ scope: a.context.podUrl! })).toMatchObject({ rejected: [], abandoned: [] });
+      expect(findPdu(b.rows, 'm.room.message').event_id).toBe(sent.eventId);
     } finally {
       await stop();
     }

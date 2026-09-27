@@ -674,7 +674,13 @@ export class MatrixFederationClient {
     if (response.status >= 500) {
       return { status: 'retry', ...(retryAfterMs === undefined ? {} : { retryAfterMs }), reason: `destination answered ${response.status}` };
     }
-    return { status: 'rejected', reason: `destination refused the request with ${response.status}` };
+    // A refusal is a decision, and the peer's own words are what an operator needs to act on it:
+    // "refused with 403" alone sends them to a log they do not have.
+    const refusal = parseJson(text);
+    const detail = isRecord(refusal) && typeof refusal.error === 'string'
+      ? ` (${String(refusal.errcode ?? 'M_UNKNOWN')}: ${refusal.error})`
+      : '';
+    return { status: 'rejected', reason: `destination refused the request with ${response.status}${detail}` };
   }
 
   /**

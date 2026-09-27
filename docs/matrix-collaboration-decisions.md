@@ -1133,3 +1133,22 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   - **"第一个事件之前的状态是空的"不等于"房间未知"**：`/state?event_id=<create>` 回 **200 `{pdus: [], auth_chain: []}`**，
     而不是 404——房间存在、事件已知，只是它前面什么都没有。这条区分是"未知房间 404"与"空状态 200"的边界，容易在
     重构里被合并成一个。
+- **已落地**（2026-09-27）：**远端加入的端到端测试暴露并修掉了三个真实缺陷**（`twoDeployment.test.ts` 新增
+  "经 HTTP 走完握手加入"一项；`createRoom`/`createSubmissionHandler`/`appendEvent` 各修一处）。
+  1. **"公开房间"此前根本不是公开的**：`createRoom({visibility:'public'})` 只把 `visibility` 写进 Solid 侧房间元数据，
+     **从不写 `m.room.join_rules`**，而房间版本的默认是 `invite`——于是对端来加入时被 `v11-4.3.4: join_rule requires an
+     invite` 拒绝，**没人能加入一个"公开"房间**。现在按 CS API 的语义派生：`preset === 'public_chat'`，或未给 preset 时
+     `visibility === 'public'` → 写 `join_rule: public`；调用方自己在 `initial_state` 里声明了 join rules 时不覆盖。
+  2. **常驻方"接受"了加入却不保存它**：`send_join` 的外壳校验、加签、把状态回给加入方，**但从不把这条成员事件写进房间的
+     事件图**——规范原文是"resident homeserver then adds its signature to this event and **accepts it into the room's
+     event graph**"。结果这条 join 只存在于加入方的 Pod 里，靠加入方随后经 `/send` 再送一遍才到常驻方（而且只有它自己
+     那一路）。现在接受成功即按"收到的事件"落库（原样、标 `received`、按 event id 幂等）。
+  3. **由调用方提供的事件被存成了"没有 id 的事件"**：`appendEvent` 在 `input.event` 存在时直接使用它，而常驻方回给加入方
+     的那份事件**不带 `event_id`**（加入方是另算的），于是 B 的 Pod 里那条 join 的 `metadata.protocols.matrix.event`
+     没有 id——同一行与其它读者对"这个事件是谁"不再一致。现在**一律推导并校验**：缺 id 就补上，给了 id 但与内容不符就
+     报 `EventIntegrityError`（reference hash 不含 `signatures`/`unsigned`，所以常驻方加签不会改变它）。
+  - **顺带**：出站客户端拒绝请求时**带上对端的 errcode 与 error 原文**（`destination refused the request with 403
+    (M_FORBIDDEN: v11-4.3.4: …)`）——上面第 1 条正是靠这句才一眼定位；此前只有一个状态码，运维得去翻对端日志。
+  测试：`twoDeployment.test.ts` 新增 1 项（经 HTTP 的握手加入：断言 make_join/send_join 真的被请求过、两侧 join 同 id、
+     B 的 Pod 因常驻方随加入送来的状态而持有 create 与 join_rules、事件上同时有双方签名、随后 Alice 的消息仍能到达 B），
+     并因第 1 条带来的"房间现在真的有 join_rules"更新了 4 处既有夹具（bootstrap 要多交一个状态事件、depth 与状态槽各 +1）。

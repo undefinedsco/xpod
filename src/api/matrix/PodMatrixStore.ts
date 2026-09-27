@@ -389,6 +389,21 @@ export class PodMatrixStore {
     if (input.topic) {
       await append({ type: 'm.room.topic', originServerTs: now + 3, stateKey: '', content: { topic: input.topic } });
     }
+    // Who may join is a Matrix state fact, not a directory setting: without a join rule a room is
+    // invite-only (the room version's default), so a "public" room that never says so is one nobody
+    // can join — including a peer asking over federation. The preset decides it, and — as the
+    // client-server API defines it — visibility decides the preset when the caller gave none.
+    const declaredJoinRules = (input.initial_state ?? []).some(state => state.type === 'm.room.join_rules');
+    if (!declaredJoinRules) {
+      const isPublic = input.preset === 'public_chat'
+        || (input.preset === undefined && input.visibility === 'public');
+      await append({
+        type: 'm.room.join_rules',
+        originServerTs: now + 4,
+        stateKey: '',
+        content: { join_rule: isPublic ? 'public' : 'invite' },
+      });
+    }
     for (const state of input.initial_state ?? []) {
       await append({
         type: state.type,
@@ -1006,7 +1021,7 @@ export class PodMatrixStore {
     // The protocol event is built first: its content-derived id is the event's
     // identity, and the stored copy carries the hashes and signature that make
     // the event verifiable from the Pod alone.
-    const persistedEvent = input.event ?? buildPersistedEvent({
+    const built = input.event ?? buildPersistedEvent({
       roomId: input.roomId,
       type: input.type,
       sender: input.sender,
@@ -1016,7 +1031,17 @@ export class PodMatrixStore {
       ...(input.eventId === undefined ? {} : { eventId: input.eventId }),
       ...this.graphPosition(timeline, input),
     }, await this.signingIdentity(context));
-    const eventId = persistedEvent.event_id ?? this.generateEventId(context);
+    // A caller-provided event can come from a peer — a resident's copy of our join — and carries no
+    // id of its own. The id is derived here, and an event whose stated id disagrees with its content
+    // is refused rather than stored under two identities.
+    const derivedId = computeEventId(built);
+    if (built.event_id !== undefined && built.event_id !== derivedId) {
+      throw new EventIntegrityError(
+        `The provided event id ${String(built.event_id)} does not match the event content (${derivedId})`,
+      );
+    }
+    const persistedEvent = built.event_id === derivedId ? built : { ...built, event_id: derivedId };
+    const eventId = derivedId;
     const originIso = new Date(input.originServerTs).toISOString();
     const needsRoomMetadata = input.reconcilerOwner === undefined
       || (input.type === 'm.room.message' && this.serverGroupReconcilerService !== undefined);

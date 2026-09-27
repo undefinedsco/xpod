@@ -203,7 +203,7 @@ describe('persisted protocol events', () => {
     const stored = rows.get(messageResource as never)!.filter((row: any) => row.content === 'after a move');
     expect(stored).toHaveLength(1);
     // One event, at the position the retry actually saw, verified from the Pod.
-    expect(storedEvent(rows, retried.eventId).event).toMatchObject({ depth: 4 });
+    expect(storedEvent(rows, retried.eventId).event).toMatchObject({ depth: 5 });
     expect(verifyPersistedEvent(storedEvent(rows, retried.eventId).event))
       .toEqual({ eventIdMatches: true, contentHashMatches: true, signed: true });
   });
