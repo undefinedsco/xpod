@@ -39,6 +39,14 @@
 | AC-13 连接客户端与改搜索模型可在连续任务完成；Key 建好但写入失败只重试写入 | ✅ | `packages/ai-connections/test/client-configuration.test.tsx`（两次 apply 之间 `createClientCredential` 只 1 次、`revoke` 0 次、写入行 failed→ok）、`ModelAssignmentsPanel.flow.test.tsx`（改向量模型 → 影响提示 → 重建） | 已实施：客户端优先入口 + Key 来源显式选择与共享影响说明（W5 审计） |
 | AC-14 正常/首次/停止/未知/异常的信息优先级；首屏无告警墙 | ✅ | `ui/src/pages/admin/StatusPage.test.tsx`（恰一个结论、事实 ≤4、正常态零强调动作、details 默认收起）、`ui/src/layout/global-navigation.test.ts`（顶层只有四个任务入口，18 项不再常驻） | 窄窗首屏走查未做 |
 
+## 真实实例证据（本轮补）
+
+| 项 | 内容 |
+|---|---|
+| 路由冒烟 | `bun scripts/accept-r2-route-map.ts`：在从源码启动的 standalone 运行时上逐一访问 §3.1 的七个目标路径（`/status/overview`、`/status/usage/overview`、`/settings/pod`、`/settings/runtime`、`/ai-connections`、`/network/overview`、`/network/domain-dns`），全部 **HTTP 200 + SPA 外壳**，输出 `ROUTE SMOKE OK` |
+| 覆盖的 AC | AC-04 的路径可用性（真实运行时），以及 §3.3 映射目标确实存在 |
+| 不覆盖 | 浏览器内的布局/交互走查（见走查清单）、登录后的页面内容 |
+
 ## 发布侧证据（已发生的实机验收）
 
 | 项 | 内容 |
@@ -67,7 +75,9 @@ gh run download <rc-run-id> -n release-acceptance-d8f2578675b8c3bcb08d5822f8f2b5
 
 ## 未覆盖与交接（明确不假装完成的部分）
 
-1. **真机走查**：菜单栏可辨性、Dock 图标、200% 字体、窄窗首屏；
+三项外部依赖的责任方、所需证据与验收口径见 [`2026-09-27-external-dependencies-handoff.md`](2026-09-27-external-dependencies-handoff.md)。
+
+1. **真机走查**：菜单栏可辨性、Dock 图标、200% 字体、窄窗首屏 —— 清单见 [`2026-09-27-r2-walkthrough-checklist.md`](2026-09-27-r2-walkthrough-checklist.md)；
 2. **未定语义**：9/19 D-14（退出/重试关系）与 D-18（放弃退出）——认证 owner 决定后才补动作；
 3. **运行侧依赖**：模型解析与"排序不改默认"、允许列表限制（AI 领域 owner，§11）；Key ↔ 客户端关联数据（同上）；
 4. **未做前端项**：无（中性调色板经实测为 0 处，已由色板契约测试守住；`/network/overview` 已建立）；
