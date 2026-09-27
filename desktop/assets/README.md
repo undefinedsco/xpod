@@ -1,7 +1,14 @@
 # 桌面产品资产清单（§9.1 资产合同）
 
 本清单记录每个产品资产的来源与校验值，便于判断权威源与是否被就地修改。
-品牌源资产在相邻的 homepage 检出（`homepage/public/brand/`），产品侧只做导入与生成，不复制几何。
+品牌源资产在相邻的 homepage 检出，产品侧只做导入与生成，不复制几何：
+
+- 应用图标派生自选定的 Xpod 标识：`homepage/public/brand/xpod-app.svg`（另有 `xpod-app-light.svg`、16/24 尺寸切片）；
+- 托盘 template 由单色符号派生：`homepage/public/brand/xpod-symbol.svg`；
+- 选定记录与来源校验值：`homepage/public/brand/manifest.json`（`selectedAt: 2026-09-26`，`xpod: B · 留缝折角`，含 `sourceSha256`）；
+- 选定前的旧资产保留在 `homepage/docs/reference/archive/2026-09-26-before-selection/`（D-05「保留旧 Logo」）。
+
+本清单的 sha256 用于判断产品侧是否被就地修改；派生过程（svg → png/icns/template）未逐像素核对。
 
 生成/更新后请同步本清单（`shasum -a 256 <file>`）。
 

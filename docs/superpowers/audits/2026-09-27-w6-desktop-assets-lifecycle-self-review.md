@@ -147,9 +147,11 @@
 | W6-DESIGN-03 资产来源与校验值 | 已实施 | 新增 `desktop/assets/README.md`：34 个资产逐项列出用途、sha256 与字节数，并写明品牌源在 `homepage/public/brand/`、生成后需同步清单 |
 | W6-DESIGN-01 托盘文案本地化 | 已实施 | 托盘菜单、tooltip 与状态标签改为中文（`● Xpod 运行正常`、`3/3 个服务在运行`、`查看 API Server 日志`、`概览`/`访问与连接`/`AI 用途与模型`/`存储空间`、`开机启动`、`退出 Xpod` 等），退出确认改为「退出 Xpod？」/「退出并停止 Xpod」/「取消」；`desktop/test/tray-menu.test.ts` 同步更新，141 用例全过 |
 | W6-DESIGN-02 生命周期动作分层 | 部分实施 | 托盘在「退出 Xpod」上方新增**不可点击的真实后果说明**：「关闭窗口后服务继续运行；退出 Xpod 才会停止服务」（与 `window-lifecycle.ts` 的隐藏行为一致），退出确认 detail 也写明「关闭窗口不会停止服务」；仍不做新动作——D-14/D-18 的退出/切号语义由认证 owner 决定后再补 |
-| W6-DESIGN-04 Dock/旧 Logo 对应关系 | 未开始 | —— |
+| W6-DESIGN-04 Dock/旧 Logo 对应关系 | 已核对并登记 | 桌面图标派生自选定标识 `homepage/public/brand/xpod-app.svg`（含 light/16/24 切片），托盘 template 由 `xpod-symbol.svg` 派生；选定记录与来源校验值在 `homepage/public/brand/manifest.json`（`selectedAt: 2026-09-26`、`xpod: B · 留缝折角`）；选定前的旧资产保留在 `homepage/docs/reference/archive/2026-09-26-before-selection/`，满足 D-05「保留旧 Logo」与 AC-02「旧资产仍在」。上述来源已写进 `desktop/assets/README.md`；派生过程未逐像素核对（记为未验证边界） |
 
-验证记录（第二轮）：`bun run --filter @undefineds.co/xpod-desktop test` 141 用例全过（文案与断言同步更新）；本轮只改桌面壳文案与菜单模型，未触及 Web 侧。
+验证记录（第三轮）：`bun run --filter @undefineds.co/xpod-desktop test` 141 用例全过；资产来源通过与本机 homepage 检出逐文件比对得出（品牌仓 28 个文件含 `xpod-*`，归档目录存在）。
+
+第二轮验证记录：`bun run --filter @undefineds.co/xpod-desktop test` 141 用例全过（文案与断言同步更新）；本轮只改桌面壳文案与菜单模型，未触及 Web 侧。
 
 ## 实施范围与依赖清单（§12 W6 要求）
 
