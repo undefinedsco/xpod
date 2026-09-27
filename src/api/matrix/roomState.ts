@@ -14,7 +14,9 @@
  * compute it once per operation instead of per event.
  */
 import { resolveState, stateAfter, type StateKey, type StateMap, type StateResolutionEvent, type StateResolutionStore } from './protocol/stateResolution';
-import { forwardExtremityIds, type RoomGraphEvent } from './protocol/roomGraph';
+import { eventReferenceIds } from './protocol/eventReferences';
+import { forwardExtremityIds } from './protocol/roomGraph';
+import { storedGraphEvent } from './storedEvent';
 import type { MatrixEventRecord } from './types';
 
 /** State slots the room currently has, by `type|state_key`. */
@@ -106,7 +108,7 @@ export class MatrixRoomStateReplay {
         : resolveState(dedupeStates(parentStates), store)));
     }
 
-    const extremities = forwardExtremityIds(events.map(graphEventOf));
+    const extremities = forwardExtremityIds(events.map(storedGraphEvent));
     const extremityStates = new Map<StateKey, StateMap>();
     for (const eventId of extremities) {
       const state = afterById.get(eventId);
@@ -128,9 +130,18 @@ export class MatrixRoomStateReplay {
     if (!target) return undefined;
     const cached = this.stateBeforeCache.get(eventId);
     if (cached) return cached;
-    const state = MatrixRoomStateReplay.from(this.ancestors(parentIdsOf(target))).state;
+    const state = this.stateBeforeParents(parentIdsOf(target));
     this.stateBeforeCache.set(eventId, state);
     return state;
+  }
+
+  /**
+   * The state before an event this replay does not hold: the resolution of the states after
+   * the parents it names. `/send_join` needs exactly this — the state the joining server gets
+   * is the state *prior to* the join event, and the resident answers before storing it.
+   */
+  public stateBeforeParents(parentIds: readonly string[]): MatrixRoomState {
+    return MatrixRoomStateReplay.from(this.ancestors(parentIds)).state;
   }
 
   /** Every event reachable by walking `prev_events` from these ids, excluding the ids themselves. */
@@ -275,21 +286,8 @@ function sameState(left: StateMap, right: StateMap): boolean {
   return true;
 }
 
-function graphEventOf(event: MatrixEventRecord): RoomGraphEvent {
-  return {
-    eventId: event.eventId,
-    type: event.type,
-    sender: event.sender,
-    stateKey: event.stateKey,
-    content: event.content,
-    sequence: event.depth ?? 0,
-    prevEvents: parentIdsOf(event),
-    depth: numberOrUndefined(persistedEventOf(event)?.depth),
-  };
-}
-
 function parentIdsOf(event: MatrixEventRecord): string[] {
-  return stringList(persistedEventOf(event)?.prev_events);
+  return eventReferenceIds(event.event, 'prev_events');
 }
 
 function protocolEventOf(event: MatrixEventRecord): StateResolutionEvent {
@@ -301,8 +299,8 @@ function protocolEventOf(event: MatrixEventRecord): StateResolutionEvent {
     sender: event.sender,
     content: event.content,
     origin_server_ts: event.originServerTs,
-    auth_events: stringList(stored?.auth_events),
-    prev_events: stringList(stored?.prev_events),
+    auth_events: eventReferenceIds(stored, 'auth_events'),
+    prev_events: eventReferenceIds(stored, 'prev_events'),
     ...(event.stateKey === undefined ? {} : { state_key: event.stateKey }),
   };
 }
@@ -310,12 +308,4 @@ function protocolEventOf(event: MatrixEventRecord): StateResolutionEvent {
 function persistedEventOf(event: MatrixEventRecord): Record<string, unknown> | undefined {
   const stored = event.event;
   return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : undefined;
-}
-
-function numberOrUndefined(value: unknown): number | undefined {
-  return typeof value === 'number' ? value : undefined;
-}
-
-function stringList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 }

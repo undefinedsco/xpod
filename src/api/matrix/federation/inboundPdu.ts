@@ -30,10 +30,22 @@ import { verifyRemoteEventSignature, type MatrixServerKeySource } from './server
 
 export type InboundPduOutcome = 'accepted' | 'rejected' | 'deferred';
 
+/**
+ * The step that decided the outcome, in the specification's order above.
+ *
+ * A caller that has to answer differently depending on *why* an event was refused — the join
+ * handshake must, because the specification nominates `M_INVALID_PARAM` for a bad signature but
+ * `M_FORBIDDEN` for a refused authorisation — reads this instead of parsing `reason`. The content
+ * hash is not a stage: a mismatch redacts the event and processing continues, so it never decides
+ * an outcome.
+ */
+export type InboundPduStage = 'structure' | 'signature' | 'authorisation' | 'dependencies';
+
 export interface InboundPduResult {
   /** Derived from the received event, absent only when the event is not usable at all. */
   eventId?: string;
   outcome: InboundPduOutcome;
+  stage: InboundPduStage;
   /** The rule or reason that decided the outcome. */
   reason: string;
   /** True when the content hash failed and the event was redacted before acceptance. */
@@ -59,7 +71,8 @@ export async function validateInboundPdu(pdu: unknown, options: InboundPduOption
   if (!shape.event) return reject('v11-1: malformed event', shape.reason);
   const event = shape.event;
   const eventId = computeEventId(event);
-  const rejectWithId = (reason: string): InboundPduResult => ({ eventId, outcome: 'rejected', reason, redacted: false });
+  const rejectWithId = (reason: string): InboundPduResult =>
+    ({ eventId, outcome: 'rejected', stage: 'signature', reason, redacted: false });
 
   // 2. Signature by the server named in `sender`.
   const senderServer = serverNameOf(String(event.sender));
@@ -86,13 +99,16 @@ export async function validateInboundPdu(pdu: unknown, options: InboundPduOption
     return {
       eventId,
       outcome: 'deferred',
+      stage: 'dependencies',
       reason: `v11-4: ${missing.length} auth event(s) are not available yet`,
       redacted,
     };
   }
   const decision = authorizeEvent(asAuthorizable(stored), selected.filter((entry): entry is AuthEvent => entry !== undefined));
-  if (!decision.allowed) return { eventId, outcome: 'rejected', reason: `v11-4: ${decision.reason}`, redacted };
-  return { eventId, outcome: 'accepted', reason: decision.reason, redacted, event: stored };
+  if (!decision.allowed) {
+    return { eventId, outcome: 'rejected', stage: 'authorisation', reason: `v11-4: ${decision.reason}`, redacted };
+  }
+  return { eventId, outcome: 'accepted', stage: 'authorisation', reason: decision.reason, redacted, event: stored };
 }
 
 interface NormalizedPdu {
@@ -162,7 +178,7 @@ function asAuthorizable(event: Record<string, unknown>): Parameters<typeof autho
 }
 
 function reject(reason: string, detail: string): InboundPduResult {
-  return { outcome: 'rejected', reason: `${reason}: ${detail}`, redacted: false };
+  return { outcome: 'rejected', stage: 'structure', reason: `${reason}: ${detail}`, redacted: false };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,9 +1,10 @@
 /**
  * Making signed federation requests to another server.
  *
- * `sendTransaction` is the one this module is named for; `getMissingEvents` asks a peer for
- * the events a received PDU depends on. Both go through the same execution: resolve the
- * destination, sign the request that is actually sent, and classify the answer.
+ * `sendTransaction` is the one this module is named for: the other methods ask a peer for
+ * something — missing events, an auth chain, history, state, a membership template — or submit a
+ * membership event to it. All of them go through the same execution: resolve the destination,
+ * sign the request that is actually sent, and classify the answer.
  *
  * `PUT /_matrix/federation/v1/send/{txnId}` is how live room activity leaves this
  * deployment. The specification attaches two rules that shape this module:
@@ -25,6 +26,9 @@
  * receiver can verify it without trusting anything in the body.
  */
 import { buildXMatrixAuthorization, type XMatrixSigner } from './requestAuth';
+import { checkMembershipTemplate } from './membershipHandshake';
+import { computeEventId } from '../protocol/eventIntegrity';
+import { SUPPORTED_ROOM_VERSION } from '../protocol/authRules';
 import type { MatrixResolvedServer } from './serverNameResolution';
 
 /** The specification's per-transaction limits. */
@@ -52,24 +56,47 @@ type MatrixRequestOutcome =
   | { status: 'retry'; reason: string; retryAfterMs?: number }
   | { status: 'rejected'; reason: string };
 
-/** What a request for events produced: the peer's answer, or why there is none. */
-export interface FederationEventsOutcome {
+/** What any signed request produced, before a caller interprets the body. */
+export interface FederationCallOutcome {
   status: 'ok' | 'retry' | 'rejected';
-  /** The peer's answer, when it was readable. */
-  events?: Record<string, unknown>[];
-  /** `/state` answers with a state and the auth chain it rests on. */
-  authChain?: Record<string, unknown>[];
   reason: string;
   retryAfterMs?: number;
 }
 
+/** What a request for events produced: the peer's answer, or why there is none. */
+export interface FederationEventsOutcome extends FederationCallOutcome {
+  /** The peer's answer, when it was readable. */
+  events?: Record<string, unknown>[];
+  /** `/state` answers with a state and the auth chain it rests on. */
+  authChain?: Record<string, unknown>[];
+}
+
 /** What a request for a room's state ids produced. */
-export interface StateIdsOutcome {
-  status: 'ok' | 'retry' | 'rejected';
+export interface StateIdsOutcome extends FederationCallOutcome {
   pduIds?: string[];
   authChainIds?: string[];
-  reason: string;
-  retryAfterMs?: number;
+}
+
+/** What a `/make_join` or `/make_leave` request produced. */
+export interface MembershipTemplateOutcome extends FederationCallOutcome {
+  /** The room's version, as the resident server named it. */
+  roomVersion?: string;
+  /** The template to fill in and sign; checked against the request before it is returned. */
+  event?: Record<string, unknown>;
+}
+
+/** What a `/send_join` request produced: the room, and the join event as it was accepted. */
+export interface SendJoinOutcome extends FederationCallOutcome {
+  /** The room's resolved state *before* the join. */
+  state?: Record<string, unknown>[];
+  /** The auth chain that state rests on. */
+  authChain?: Record<string, unknown>[];
+  /** The join event as the resident accepted it, with the resident's own signature. */
+  event?: Record<string, unknown>;
+  /** Set by resident servers that omitted membership events; this deployment never does. */
+  membersOmitted?: boolean;
+  /** The servers with joined members before the join, when the resident sent the list. */
+  serversInRoom?: string[];
 }
 
 export interface MatrixFederationClientOptions {
@@ -291,6 +318,127 @@ export class MatrixFederationClient {
   }
 
   /**
+   * Ask a resident server for a join template (`GET /make_join`).
+   *
+   * The answer is checked against the request before it is returned, because the template is what
+   * this server is about to sign: the specification requires discarding one that names another
+   * room, user, event type or membership, and a signature on it would attribute somebody else's
+   * event to our user.
+   *
+   * `versions` is what this server offers to support. Absent means the room version this
+   * deployment implements; an empty list sends no `ver` parameter at all, which the specification
+   * defines as `['1']` — worth doing deliberately, not by accident.
+   */
+  public async makeJoin(input: {
+    destination: string;
+    roomId: string;
+    userId: string;
+    versions?: readonly string[];
+  }): Promise<MembershipTemplateOutcome> {
+    const versions = input.versions ?? [ SUPPORTED_ROOM_VERSION ];
+    return await this.membershipTemplate({
+      destination: input.destination,
+      membership: 'join',
+      uri: `/_matrix/federation/v1/make_join/${encodeURIComponent(input.roomId)}/${encodeURIComponent(input.userId)}${versionsQuery(versions)}`,
+      expected: { roomId: input.roomId, userId: input.userId, membership: 'join', ...(versions.length === 0 ? {} : { versions }) },
+    });
+  }
+
+  /** Ask a resident server for a leave template (`GET /make_leave`), for leaving or rejecting. */
+  public async makeLeave(input: {
+    destination: string;
+    roomId: string;
+    userId: string;
+  }): Promise<MembershipTemplateOutcome> {
+    return await this.membershipTemplate({
+      destination: input.destination,
+      membership: 'leave',
+      uri: `/_matrix/federation/v1/make_leave/${encodeURIComponent(input.roomId)}/${encodeURIComponent(input.userId)}`,
+      expected: { roomId: input.roomId, userId: input.userId, membership: 'leave' },
+    });
+  }
+
+  /**
+   * Submit a signed join event to a resident server (`PUT /send_join`, v2).
+   *
+   * The answer carries the room's state before the join and the auth chain it rests on, which is
+   * what lets the joining server authorise the room's later events, plus the join event as the
+   * resident accepted it. An event that is not the one submitted — judged by its own derived id,
+   * which redaction preserves — is refused rather than returned: this server hands that event to
+   * its own clients as the membership everyone agrees on.
+   */
+  public async sendJoin(input: {
+    destination: string;
+    roomId: string;
+    eventId: string;
+    event: Record<string, unknown>;
+    /** Ask the resident to leave membership events out of `state`; only a hint. */
+    omitMembers?: boolean;
+  }): Promise<SendJoinOutcome> {
+    const query = input.omitMembers ? '?omit_members=true' : '';
+    const uri = `/_matrix/federation/v2/send_join/${encodeURIComponent(input.roomId)}/${encodeURIComponent(input.eventId)}${query}`;
+    const result = await this.execute({ destination: input.destination, method: 'PUT', uri, content: input.event });
+    if (result.status !== 'ok') return result;
+
+    const body = isRecord(result.body) ? result.body : undefined;
+    const state = body?.state;
+    const authChain = body?.auth_chain;
+    if (!Array.isArray(state) || !Array.isArray(authChain)) {
+      return { status: 'retry', reason: 'destination answered 200 without state and auth_chain' };
+    }
+    const event = body?.event;
+    if (event !== undefined) {
+      const id = derivedEventId(event);
+      if (id !== input.eventId) {
+        return { status: 'rejected', reason: `destination answered with ${id ?? 'an unusable'} join event, not ${input.eventId}` };
+      }
+    }
+    const serversInRoom = Array.isArray(body?.servers_in_room) ? body.servers_in_room.map(String) : undefined;
+    return {
+      status: 'ok',
+      state: state as Record<string, unknown>[],
+      authChain: authChain as Record<string, unknown>[],
+      ...(isRecord(event) ? { event } : {}),
+      ...(body?.members_omitted === true ? { membersOmitted: true } : {}),
+      ...(serversInRoom === undefined ? {} : { serversInRoom }),
+      reason: 'ok',
+    };
+  }
+
+  /**
+   * Submit a signed leave event to a resident server (`PUT /send_leave`, v2).
+   *
+   * There is nothing to read back: the resident accepts the event, relays it, and answers with an
+   * empty object.
+   */
+  public async sendLeave(input: {
+    destination: string;
+    roomId: string;
+    eventId: string;
+    event: Record<string, unknown>;
+  }): Promise<FederationCallOutcome> {
+    const uri = `/_matrix/federation/v2/send_leave/${encodeURIComponent(input.roomId)}/${encodeURIComponent(input.eventId)}`;
+    const result = await this.execute({ destination: input.destination, method: 'PUT', uri, content: input.event });
+    if (result.status !== 'ok') return result;
+    return { status: 'ok', reason: 'ok' };
+  }
+
+  /** Both templates are the same request shape with a different endpoint and expected membership. */
+  private async membershipTemplate(input: {
+    destination: string;
+    membership: 'join' | 'leave';
+    uri: string;
+    expected: { roomId: string; userId: string; membership: 'join' | 'leave'; versions?: readonly string[] };
+  }): Promise<MembershipTemplateOutcome> {
+    const result = await this.execute({ destination: input.destination, method: 'GET', uri: input.uri });
+    if (result.status !== 'ok') return result;
+    const check = checkMembershipTemplate(result.body, input.expected);
+    if (!check.ok) return { status: 'rejected', reason: check.reason };
+    const body = result.body as Record<string, unknown>;
+    return { status: 'ok', roomVersion: String(body.room_version), event: body.event as Record<string, unknown>, reason: 'ok' };
+  }
+
+  /**
    * Sign and send one request, then classify the answer. The signature covers the request
    * that is actually sent — method, target and body — so the peer needs to trust nothing
    * inside the body.
@@ -376,6 +524,25 @@ export class MatrixFederationClient {
     // Centred on `base`: the peer's other senders are not on our clock.
     const spread = (this.random() * 2 - 1) * policy.jitter;
     return Math.max(0, Math.round(base * (1 + spread)));
+  }
+}
+
+/** `?ver=…` repeated, as the specification's array parameter is encoded; an empty list sends none. */
+function versionsQuery(versions: readonly string[]): string {
+  if (versions.length === 0) return '';
+  const query = new URLSearchParams();
+  for (const version of versions) query.append('ver', version);
+  return `?${query.toString()}`;
+}
+
+/** The id an event has by its own content, or `undefined` when it cannot be one of ours. */
+function derivedEventId(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  try {
+    return computeEventId(value);
+  } catch {
+    // Values canonical JSON refuses cannot be an event this server submitted.
+    return undefined;
   }
 }
 

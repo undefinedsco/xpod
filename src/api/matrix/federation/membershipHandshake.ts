@@ -1,0 +1,338 @@
+/**
+ * The join and leave handshake, minus the HTTP transport.
+ *
+ * `GET /make_join` + `PUT /send_join` (v2) and `GET /make_leave` + `PUT /send_leave` (v2) are one
+ * protocol: a server that wants a membership event asks a server already in the room for a
+ * *template*, fills in what only the sender can know, signs it, and submits it back.
+ *
+ * Why the template comes from the resident server at all: `prev_events`, `auth_events` and
+ * `depth` are part of the event, are covered by its hash and signature, and only a server that
+ * can see the room's graph can choose them. The specification says the joining server adds or
+ * replaces `origin`, `origin_server_ts` and `event_id` — everything else is used as received,
+ * which is why the template is built with `roomGraphPosition`, the same selection the local write
+ * path uses: a member who joins through this handshake and one who joins locally attach to the
+ * room by the same rules.
+ *
+ * Neither half trusts the other for anything it can derive:
+ *
+ * - the joining server checks that the template is about the room and the user it asked for (the
+ *   specification requires discarding a mismatched template rather than joining with it);
+ * - the resident server checks that the submission is a `m.room.member` event for a user on the
+ *   server that signed the request, that the path's event id is the event's own derived id, and
+ *   then runs the ordinary inbound PDU pipeline — signature, content hash, auth rules
+ *   (`validateInboundPdu`) — instead of a second, weaker path.
+ *
+ * The resident adds its own signature to an accepted event before the joining server sees it,
+ * which is what the joining server hands to its clients as the one event everyone agrees on.
+ *
+ * Two deliberate gaps, both recorded in `docs/matrix-collaboration-decisions.md`:
+ *
+ * - **which Pod** the room lives in, and who may write it, stay with the caller (`acceptEvent` in
+ *   `inboundRoute.ts` is the same boundary): this module decides the protocol, not the deployment.
+ * - **`omit_members` is a hint we do not take.** The specification *permits* omitting membership
+ *   events from the answer when asked, and never requires it, so this server always answers with
+ *   the resolved state and never sets `members_omitted` — the flag would claim an omission that
+ *   did not happen. (Answering with a partial state and claiming the omission would be worse:
+ *   the joining server would have to go and fetch what it was not told.)
+ */
+import { authorizeEvent, serverNameOf, SUPPORTED_ROOM_VERSION, type AuthEvent } from '../protocol/authRules';
+import { computeEventId } from '../protocol/eventIntegrity';
+import { eventReferenceIds } from '../protocol/eventReferences';
+import { roomGraphPosition } from '../protocol/roomGraph';
+import { storedGraphEvent, storedProtocolEvent } from '../storedEvent';
+import { stateSnapshotBeforeParents } from './roomStateSnapshot';
+import { normalizeInboundPdu, validateInboundPdu, type InboundPduResult } from './inboundPdu';
+import type { MatrixServerKeySource } from './serverKeys';
+import type { MatrixEventRecord } from '../types';
+
+/** The two membership events that have a handshake. */
+export type MembershipKind = 'join' | 'leave';
+
+export interface MembershipTemplateInput {
+  roomId: string;
+  /** The user the membership event is for; the joining or leaving server's own user. */
+  userId: string;
+  membership: MembershipKind;
+  /** The name of the server answering: it signs nothing yet, but it names the template's origin. */
+  serverName: string;
+  /** The room as this server sees it. */
+  records: readonly MatrixEventRecord[];
+  /**
+   * The room versions the asking server said it supports, from the `ver` query parameter.
+   * Absent means the specification's default, `['1']` — not "everything".
+   */
+  versions?: readonly string[];
+  now?: () => number;
+}
+
+export interface MembershipHandshakeResponse {
+  status: number;
+  body: Record<string, unknown>;
+}
+
+/** A server that can add its own signature to an event it accepts. */
+export interface MatrixEventSigner {
+  signEvent(event: Record<string, unknown>): Record<string, unknown>;
+}
+
+/**
+ * The template for `/make_join` or `/make_leave`.
+ *
+ * The room's version is checked against what the asking server supports *before* anything else:
+ * a template the asker cannot build an event for is useless, and the specification makes this the
+ * one error that carries `room_version` so the asker can report it.
+ *
+ * The user's own permission is decided here, on the template, with the same auth rules the write
+ * path will apply to the finished event: the resident is the only side that can see the room, and
+ * a `403` now is better than a round trip that ends in a rejected event. Missing auth events mean
+ * this server's copy of the room is incomplete — it cannot authorise anything, and says so rather
+ * than handing out a template whose event the room would refuse.
+ */
+export function buildMembershipTemplate(input: MembershipTemplateInput): MembershipHandshakeResponse {
+  // An unknown room is not a room this server can hand out a template for, and saying so is not
+  // the same as refusing the user: `403` would claim we know the room and the room says no.
+  if (!input.records.some(record => record.type === 'm.room.create')) {
+    return { status: 404, body: { errcode: 'M_NOT_FOUND', error: `This server does not know ${input.roomId}` } };
+  }
+  const roomVersion = roomVersionOf(input.records);
+  const versions = input.versions ?? [ '1' ];
+  if (!versions.includes(roomVersion)) {
+    return {
+      status: 400,
+      body: {
+        errcode: 'M_INCOMPATIBLE_ROOM_VERSION',
+        error: `This room is version ${roomVersion}, which the requesting server did not offer to support`,
+        room_version: roomVersion,
+      },
+    };
+  }
+
+  const position = roomGraphPosition(input.records.map(storedGraphEvent), {
+    type: 'm.room.member',
+    sender: input.userId,
+    stateKey: input.userId,
+    content: { membership: input.membership },
+  });
+  const authEvents = resolveAuthEvents(input.records, position.authEvents);
+  if (!authEvents) {
+    return forbidden(`This server cannot authorise an event in ${input.roomId}: its auth events are not all available here`);
+  }
+  const decision = authorizeEvent({
+    type: 'm.room.member',
+    sender: input.userId,
+    room_id: input.roomId,
+    state_key: input.userId,
+    content: { membership: input.membership },
+    prev_events: position.prevEvents,
+  }, authEvents);
+  if (!decision.allowed) return forbidden(decision.reason);
+
+  return {
+    status: 200,
+    body: {
+      room_version: roomVersion,
+      event: {
+        room_id: input.roomId,
+        type: 'm.room.member',
+        sender: input.userId,
+        state_key: input.userId,
+        origin: input.serverName,
+        origin_server_ts: (input.now ?? Date.now)(),
+        content: { membership: input.membership },
+        depth: position.depth,
+        prev_events: position.prevEvents,
+        auth_events: position.authEvents,
+      },
+    },
+  };
+}
+
+export interface MembershipTemplateCheck {
+  ok: boolean;
+  reason: string;
+}
+
+/**
+ * What the asking server must check about a template before signing it.
+ *
+ * A template that names another room, another user, another event type or another membership is
+ * not a template for the event that was asked for, and the specification says to discard it: it
+ * would be signed by this server and attributed to its user. The room version is held to the list
+ * this server offered to support for the same reason — a version it does not implement is not an
+ * event it can build or hash.
+ */
+export function checkMembershipTemplate(
+  body: unknown,
+  expected: { roomId: string; userId: string; membership: MembershipKind; versions?: readonly string[] },
+): MembershipTemplateCheck {
+  if (!isRecord(body)) return { ok: false, reason: 'the answer is not a JSON object' };
+  const event = body.event;
+  if (!isRecord(event)) return { ok: false, reason: 'the answer carries no event template' };
+  if (event.room_id !== expected.roomId) return { ok: false, reason: `the template is for room ${String(event.room_id)}` };
+  if (event.sender !== expected.userId) return { ok: false, reason: `the template is sent by ${String(event.sender)}` };
+  if (event.state_key !== expected.userId) return { ok: false, reason: `the template sets the membership of ${String(event.state_key)}` };
+  if (event.type !== 'm.room.member') return { ok: false, reason: `the template is a ${String(event.type)} event` };
+  const content = isRecord(event.content) ? event.content : undefined;
+  if (content?.membership !== expected.membership) {
+    return { ok: false, reason: `the template's membership is ${String(content?.membership)}` };
+  }
+  if (typeof body.room_version !== 'string') return { ok: false, reason: 'the answer names no room version' };
+  // The version has to be one we offered to support: a template for another room version is not
+  // an event this server can build, hash or sign.
+  if (expected.versions && !expected.versions.includes(body.room_version)) {
+    return { ok: false, reason: `the template is for room version ${body.room_version}` };
+  }
+  return { ok: true, reason: 'the template matches the request' };
+}
+
+export interface MembershipSubmissionInput {
+  /** `join` for `/send_join`, `leave` for `/send_leave`. */
+  membership: MembershipKind;
+  roomId: string;
+  /** The event id from the request path; it must be the id the event itself has. */
+  eventId: string;
+  /** The submitted event, parsed from the request body. */
+  event: unknown;
+  /** The server name that signed the request, from `authenticateXMatrixRequest`. */
+  origin: string;
+  /** Verify keys of the servers involved; typically `MatrixServerKeyFetcher`. */
+  keys: MatrixServerKeySource;
+  /** The events the submitted event's `auth_events` name, resolved by the caller. */
+  authEvents: readonly AuthEvent[];
+  /** The room as this server sees it; the caller resolved the auth events from it already. */
+  records: readonly MatrixEventRecord[];
+  /** Adds this server's signature to an accepted event, as `/send_join` requires. */
+  counterSign?: MatrixEventSigner;
+  now?: () => number;
+}
+
+/**
+ * The decision a resident server makes about a submitted join or leave event, and the answer.
+ *
+ * The membership-specific checks come first because the specification names them (`M_INVALID_PARAM`
+ * for a wrong type, membership, sender server or `state_key`), and they are cheap: they reject a
+ * body that is not the event the endpoint is for before any key is fetched. The id check is the
+ * same idea one step further: room v11 derives the event id from the event, so an event whose
+ * derived id is not the id in the path is not the event the sender thinks it sent — accepting it
+ * under either id would break the sender's own de-duplication.
+ *
+ * What remains is the ordinary inbound PDU pipeline, so a join accepted here and a join received in
+ * a transaction are held to exactly the same standard; `refusal` maps its outcome onto the answer
+ * the submitting server needs to see.
+ */
+export async function handleMembershipSubmission(
+  input: MembershipSubmissionInput,
+): Promise<MembershipHandshakeResponse> {
+  const submitted = normalizeSubmission(input);
+  if (!submitted.event) return invalid(submitted.reason);
+  const { event, eventId } = submitted;
+
+  if (eventId !== input.eventId) {
+    return invalid(`The event's own id ${eventId} is not the ${input.eventId} in the request path`);
+  }
+
+  const result = await validateInboundPdu(event, {
+    keys: input.keys,
+    authEvents: input.authEvents,
+    ...(input.now === undefined ? {} : { now: input.now }),
+  });
+  if (result.outcome !== 'accepted' || !result.event) return refusal(result);
+
+  // The resident's own signature goes on before anything else reads the event, and covers the
+  // event as accepted, including a redaction the content hash required.
+  const accepted = input.counterSign ? input.counterSign.signEvent(result.event) : result.event;
+  if (input.membership === 'leave') return { status: 200, body: {} };
+
+  // `state` is the resolved state *prior to* the join event, so it is taken from the parents the
+  // event names — the join itself is not in the room yet, and must not be part of its own answer.
+  const snapshot = stateSnapshotBeforeParents(input.records, eventReferenceIds(accepted, 'prev_events'));
+  return {
+    status: 200,
+    body: {
+      state: snapshot.pdus,
+      auth_chain: snapshot.authChain,
+      event: accepted,
+    },
+  };
+}
+
+interface NormalizedSubmission {
+  event?: Record<string, unknown>;
+  eventId: string;
+  reason: string;
+}
+
+/**
+ * The membership-specific preconditions, then the event as it should be judged.
+ *
+ * The id is derived here rather than read from the body: room v11 computes it from the event, and
+ * a body cannot be trusted to carry its own identity. `validateInboundPdu` normalizes the event-id
+ * lists of `prev_events`/`auth_events`, so the two agree on what the event is.
+ */
+function normalizeSubmission(input: MembershipSubmissionInput): NormalizedSubmission {
+  const shape = normalizeInboundPdu(input.event);
+  if (!shape.event) return { eventId: '', reason: shape.reason };
+  const event = shape.event;
+  if (event.type !== 'm.room.member') return { eventId: '', reason: `a ${input.membership} submission must be an m.room.member event` };
+  const content = isRecord(event.content) ? event.content : undefined;
+  if (content?.membership !== input.membership) {
+    return { eventId: '', reason: `the event's membership is ${String(content?.membership)}, not ${input.membership}` };
+  }
+  if (event.state_key !== event.sender) return { eventId: '', reason: 'the event changes somebody else\'s membership' };
+  if (serverNameOf(String(event.sender)) !== input.origin) {
+    return { eventId: '', reason: `the event's sender ${String(event.sender)} is not a user of ${input.origin}` };
+  }
+  if (event.room_id !== input.roomId) return { eventId: '', reason: `the event is for room ${String(event.room_id)}` };
+  return { event, eventId: computeEventId(event), reason: 'a membership event for a user of the requesting server' };
+}
+
+/**
+ * How a refused event is reported to the server that submitted it.
+ *
+ * The specification nominates `M_INVALID_PARAM` for a failed signature check and for a body that
+ * is not the membership event the endpoint is for, and `M_FORBIDDEN` for an authorisation the room
+ * refuses. A dependency gap is neither: the event is well formed and may well be allowed, this
+ * server simply cannot decide, so it answers with the errcode the specification gives for "ask a
+ * different server" — the joining server's next resident may hold the auth chain.
+ */
+function refusal(result: InboundPduResult): MembershipHandshakeResponse {
+  if (result.stage === 'authorisation') return forbidden(result.reason);
+  if (result.stage === 'dependencies') {
+    return { status: 400, body: { errcode: 'M_UNABLE_TO_GRANT_JOIN', error: result.reason } };
+  }
+  return invalid(result.reason);
+}
+
+/** The room's version, from the create event. Rooms without one are the version this server serves. */
+function roomVersionOf(records: readonly MatrixEventRecord[]): string {
+  for (const record of records) {
+    if (record.type !== 'm.room.create') continue;
+    const version = record.content.room_version;
+    if (typeof version === 'string' && version) return version;
+  }
+  return SUPPORTED_ROOM_VERSION;
+}
+
+/** The events named by `ids`, or `undefined` when any of them is not in the room's copy. */
+function resolveAuthEvents(records: readonly MatrixEventRecord[], ids: readonly string[]): AuthEvent[] | undefined {
+  const byId = new Map(records.map(record => [ record.eventId, record ]));
+  const resolved: AuthEvent[] = [];
+  for (const id of ids) {
+    const record = byId.get(id);
+    if (!record) return undefined;
+    resolved.push(storedProtocolEvent(record) as AuthEvent);
+  }
+  return resolved;
+}
+
+function forbidden(reason: string): MembershipHandshakeResponse {
+  return { status: 403, body: { errcode: 'M_FORBIDDEN', error: reason } };
+}
+
+function invalid(reason: string): MembershipHandshakeResponse {
+  return { status: 400, body: { errcode: 'M_INVALID_PARAM', error: reason } };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}

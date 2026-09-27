@@ -22,7 +22,8 @@ import { getProtocolMetadata, withProtocolMetadata, type ProtocolMetadata } from
 import { MatrixError } from './MatrixError';
 import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
 import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type PersistedMatrixEvent } from './persistedEvent';
-import { roomGraphPosition, type RoomGraphEvent } from './protocol/roomGraph';
+import { roomGraphPosition } from './protocol/roomGraph';
+import { storedGraphEvent } from './storedEvent';
 import { MatrixRoomState, MatrixRoomStateReplay, resolveRoomState } from './roomState';
 import { serverNameOf, SUPPORTED_ROOM_VERSION } from './protocol/authRules';
 import { eventDestinations } from './federation/destinations';
@@ -209,11 +210,6 @@ const STATE_CACHE_LIMIT = 64;
 /** A plain object, as JSON fields must be. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-/** An event-id list read back from stored JSON, ignoring anything malformed. */
-function stringList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 }
 
 export class PodMatrixStore {
@@ -825,22 +821,7 @@ export class PodMatrixStore {
     events: readonly MatrixEventRecord[],
     input: { type: string; sender: string; stateKey?: string; content: Record<string, unknown> },
   ): { prevEvents: string[]; authEvents: string[]; depth: number } {
-    return roomGraphPosition(events.map(event => this.graphEvent(event)), input);
-  }
-
-  /** The graph facts a stored event carries; absent on rows written before they were recorded. */
-  private graphEvent(event: MatrixEventRecord): RoomGraphEvent {
-    const stored = event.event as PersistedMatrixEvent | undefined;
-    return {
-      eventId: event.eventId,
-      type: event.type,
-      sender: event.sender,
-      stateKey: event.stateKey,
-      content: event.content,
-      sequence: event.depth ?? 0,
-      prevEvents: stringList(stored?.prev_events),
-      depth: stored?.depth,
-    };
+    return roomGraphPosition(events.map(storedGraphEvent), input);
   }
 
   private async appendEvent(

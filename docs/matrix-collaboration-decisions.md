@@ -643,9 +643,14 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   （query 与签名一致、多起点、state/state_ids 解析、缺字段重试、拒绝/不可达分类），`authChain.test.ts`
   相应更新为"含被问事件"。
 - **待建**：`PUT /_matrix/federation/v1/send/{txnId}`、`GET /event_auth/...`、`POST /get_missing_events/...`
-  三个端点的 **HTTP 外壳与 Pod 归属解析**（三个服务侧都已实现为纯函数/处理体；**剩下的阻塞点仍是路由
-  归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、
-  投递记录与控制 Pod 承载（去 SQL）、状态与历史获取。
+  以及握手的 `GET /make_join`、`PUT /send_join`、`GET /make_leave`、`PUT /send_leave` 七个端点的
+  **HTTP 外壳与 Pod 归属解析**（七个服务侧都已实现为纯函数/处理体；**剩下的阻塞点仍是路由归属**——
+  见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、投递记录与控制 Pod 承载
+  （去 SQL）、状态与历史获取。互通面上还没动的：`GET /_matrix/federation/v1/version`、
+  `GET /_matrix/federation/v1/query/{directory,profile}`、由本部署提供 `.well-known/matrix/server`
+  与 `/_matrix/key/v2/server`（密钥响应已能生成，只差路由）、敲门的 `make_knock`/`send_knock`
+  （Xpod 自己建的房间不会把 `join_rule` 设成 knock，受限加入按"失败即拒绝"处理，所以这只是与允许敲门的
+  房间互通时才需要）。
 - **已落地**（2026-09-27）：**逐条拒绝不再等于已投递**（缺口 2 的修复）。事务返回 200 只回答"这笔
   事务收到了"，不回答"每条 PDU 都被接受了"，所以发送方现在按 per-PDU 结果拆分：被接受的落地即完成，
   被拒的**换一个新 txnId** 重新入队（对端会重放旧 txnId 的存档应答，所以必须换 id），带**有界退避**
@@ -692,6 +697,47 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   `twoDeployment.test.ts` 里**端到端证明**：B 收到一个它无法授权的邀请 → 自己向 A 要 auth chain →
   A 用 `selectAuthChain` 应答 → B 接受 create/join/invite，**邀请的 event_id 与 A 完全一致**，
   全程没有测试手工递状态。
+- **已落地**（2026-09-27）：**加入/离开握手的三个函数与四个客户端方法**（`federation/membershipHandshake.ts`
+  的 `buildMembershipTemplate` / `checkMembershipTemplate` / `handleMembershipSubmission`，客户端的
+  `makeJoin`/`sendJoin`/`makeLeave`/`sendLeave`）。
+  - **模板为什么由常驻方给**：`prev_events`/`auth_events`/`depth` 是事件的一部分、被哈希和签名覆盖，只有能
+    看见房间事件图的一方才选得出来；规范要求加入方只增改 `origin`/`origin_server_ts`/`event_id`。所以模板用
+    `roomGraphPosition` 生成——**与本地写入路径同一个选择函数**，握手进来的成员与本地加入的成员按同一套规则
+    挂到房间上。
+  - **两侧各自校验推得出来的东西**：加入方在签名前**丢弃**房间/用户/事件类型/成员资格/room version 不符的
+    模板（签下去就等于把别人的事件记在自己用户名下）；常驻方先查"是不是本端点要的成员事件、`sender` 是否属于
+    签请求的那个 server、路径里的 `event_id` 是否等于事件自己推出的 id"，**然后走同一条入站 PDU 流水线**
+    （签名→内容哈希→授权规则），不另开一条更弱的路。路径 id 必须等于推导 id：v11 的 id 由内容决定，在别的
+    id 下接受它会让发送方自己的去重失效。
+  - **房间版本协商**：`ver` 可重复，**缺省按规范是 `['1']`**（因此 v11 房间会明确回 400
+    `M_INCOMPATIBLE_ROOM_VERSION` 并带上 `room_version`），不在清单里一律拒绝；加入方也检查应答里的版本是它
+    自己声明支持的版本之一。
+  - **授权判定在 make_join 就做**：用**同一批 auth_events**（正是模板会写进事件的那些）跑 `authorizeEvent`，
+    所以"make_join 批准"与"send_join 接受"是同一个判定；不通过是 403 `M_FORBIDDEN`（不得加入 / 不在房间），
+    未知房间是 404 `M_NOT_FOUND`——把"不认识这个房间"说成 403 等于假装我们知道它。
+  - **应答形状**：`/send_join` v2 回 `{state, auth_chain, event}`，其中 `state` 是**加入事件之前**的解析状态，
+    实现取该事件各父事件解析后的状态（`stateBeforeParents`，从 `stateBefore` 抽出的同一段逻辑），因此**不必先
+    把加入事件写进 Pod**；`event` 带上常驻方加的那个签名（规范原文"resident homeserver then adds its
+    signature to this event and accepts it"）。`/send_leave` v2 回空对象 `{}`。
+  - **`omit_members` 只当提示**：规范**允许**在请求方要求时省略成员事件、**从不要求**省略，所以本部署一律回
+    全量状态，并且**永不设置 `members_omitted`**——那个标记会声称一次没发生的省略。
+  - **依赖缺口回"换一台常驻方"的码**：提交事件的 `auth_events` 在本机取不齐时回 400
+    `M_UNABLE_TO_GRANT_JOIN`（规范给"应换一台 server 再试"的码），而不是 `M_INVALID_PARAM`（那会说事件格式
+    有问题）或 `M_FORBIDDEN`（那会说房间拒绝）。为此 `InboundPduResult` 增加了机器可读的 `stage`
+    （structure/signature/authorisation/dependencies）：拒绝原因不再靠解析 `reason` 字符串分类。
+  - **尚未接线**：四个端点都还没有 HTTP 外壳（与 `/send` 等一样卡在 Pod 归属解析），本机 `joinRoom`
+    也还没有"房间在别的部署上"这条分支——加入远端房间要走这套握手，而它需要先知道该向谁要模板、把接受到的
+    状态写进哪个 Pod（同一条待定项）。
+  - **顺带消除重复**：三个地方各写了一遍"行 → 协议事件 / 事件图事实"的读取（`roomState`、`PodMatrixStore`、
+    `roomStateSnapshot`），现统一到 `src/api/matrix/storedEvent.ts` 的 `storedProtocolEvent` /
+    `storedGraphEvent`；`prev_events`/`auth_events` 一律走 `eventReferenceIds`，因此 `[id, {sha256}]` 二元组在
+    状态解析与图位置里也被正确读取（此前 `roomState` 会把它当坏数据丢掉）。
+  测试：`membershipHandshake.test.ts` 16 项（公开房间模板带图位置、版本协商三态、未知房间 404、未受邀与被封禁
+  的 403、leave 模板与陌生用户 403、模板校验的四种不符、接受加入并回"加入前的状态 + 双方签名都在的事件"、
+  路径 id 不符、四种非成员事件体、伪造签名、房间不允许→403、auth events 缺失→M_UNABLE_TO_GRANT_JOIN、leave
+  空应答），`outboundTransaction.test.ts` 新增 10 项（GET/PUT 目标与签名往返、`ver` 三态、模板不符与版本不符
+  被丢弃、send_join 读回 state/auth_chain/event/omit_members、应答事件 id 不符被拒、缺字段重试与 4xx/5xx
+  分类、send_leave 空应答）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

@@ -9,6 +9,7 @@ import {
 import { authenticateXMatrixRequest } from '../../../../src/api/matrix/federation/requestAuth';
 import { parseServerKeyResponse, type MatrixServerKeySource } from '../../../../src/api/matrix/federation/serverKeys';
 import { MatrixServiceIdentity } from '../../../../src/api/matrix/protocol/serviceIdentity';
+import { computeEventId } from '../../../../src/api/matrix/protocol/eventIntegrity';
 import type { MatrixResolvedServer } from '../../../../src/api/matrix/federation/serverNameResolution';
 
 const US = 'pod.example';
@@ -435,5 +436,147 @@ describe('retry hints', () => {
     expect(readRetryAfter('', 'soon', NOW)).toBeUndefined();
     expect(readRetryAfter('', null, NOW)).toBeUndefined();
     expect(readRetryAfter(JSON.stringify({ retry_after_ms: -1 }), null, NOW)).toBeUndefined();
+  });
+});
+
+describe('the join and leave handshake', () => {
+  const ROOM = '!r:remote.example';
+  const USER = `@u_us:${US}`;
+  const template = (membership: 'join' | 'leave') => ({
+    room_version: '11',
+    event: {
+      room_id: ROOM, type: 'm.room.member', sender: USER, state_key: USER,
+      content: { membership }, depth: 4, prev_events: [ '$prev' ], auth_events: [ '$create' ],
+    },
+  });
+  /** The join event this server would sign and submit, with its own derived id. */
+  const joinEvent = () => ({
+    room_id: ROOM, type: 'm.room.member', sender: USER, state_key: USER, origin: US, origin_server_ts: NOW,
+    content: { membership: 'join' }, depth: 4, prev_events: [ '$prev' ], auth_events: [ '$create' ],
+  });
+  const joinId = () => computeEventId(joinEvent());
+
+  it('asks for a join template, offering the room version it implements', async () => {
+    const { client: instance, captured, identity } = client({
+      respond: () => new Response(JSON.stringify(template('join')), { status: 200 }),
+    });
+    const outcome = await instance.makeJoin({ destination: THEM, roomId: ROOM, userId: USER });
+
+    expect(outcome).toMatchObject({ status: 'ok', roomVersion: '11' });
+    expect(outcome.event).toMatchObject({ type: 'm.room.member', state_key: USER, content: { membership: 'join' } });
+    const [ sent ] = captured;
+    expect(sent.method).toBe('GET');
+    const uri = `/_matrix/federation/v1/make_join/${encodeURIComponent(ROOM)}/${encodeURIComponent(USER)}?ver=11`;
+    expect(sent.url).toBe(`https://${THEM}:8448${uri}`);
+    // A GET has no body, so the signed object carries no `content` at all.
+    await expect(authenticateXMatrixRequest({
+      authorization: sent.headers.authorization, method: 'GET', uri, keys: peerKeySource(identity), serverName: THEM,
+    })).resolves.toMatchObject({ valid: true, origin: US });
+  });
+
+  it('sends every version the caller offers, and none when the caller offers none', async () => {
+    const { client: instance, captured } = client({ respond: () => new Response(JSON.stringify(template('join')), { status: 200 }) });
+    await instance.makeJoin({ destination: THEM, roomId: ROOM, userId: USER, versions: [ '11', '12' ] });
+    expect(captured[0].url).toContain('?ver=11&ver=12');
+    await instance.makeJoin({ destination: THEM, roomId: ROOM, userId: USER, versions: [] });
+    // An empty list means the specification's default, `['1']`, so no parameter is sent.
+    expect(captured[1].url.endsWith(encodeURIComponent(USER))).toBe(true);
+  });
+
+  it('discards a template that is not for the request that was made', async () => {
+    const elsewhere = { ...template('join'), event: { ...template('join').event, room_id: '!other:x.example' } };
+    const { client: instance } = client({ respond: () => new Response(JSON.stringify(elsewhere), { status: 200 }) });
+    const outcome = await instance.makeJoin({ destination: THEM, roomId: ROOM, userId: USER });
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.reason).toMatch(/!other:x\.example/u);
+    expect(outcome.event).toBeUndefined();
+  });
+
+  it('discards a template for a room version it did not offer', async () => {
+    const { client: instance } = client({
+      respond: () => new Response(JSON.stringify({ ...template('join'), room_version: '10' }), { status: 200 }),
+    });
+    await expect(instance.makeJoin({ destination: THEM, roomId: ROOM, userId: USER }))
+      .resolves.toMatchObject({ status: 'rejected', reason: expect.stringMatching(/room version 10/u) });
+  });
+
+  it('asks for a leave template and checks its membership', async () => {
+    const { client: instance, captured } = client({ respond: () => new Response(JSON.stringify(template('leave')), { status: 200 }) });
+    const outcome = await instance.makeLeave({ destination: THEM, roomId: ROOM, userId: USER });
+    expect(outcome).toMatchObject({ status: 'ok', roomVersion: '11' });
+    expect(captured[0].url).toBe(`https://${THEM}:8448/_matrix/federation/v1/make_leave/${encodeURIComponent(ROOM)}/${encodeURIComponent(USER)}`);
+  });
+
+  it('submits a signed join and reads the state, auth chain and accepted event back', async () => {
+    const accepted = { ...joinEvent(), event_id: joinId(), signatures: { [THEM]: { 'ed25519:1': 'sig' } } };
+    const { client: instance, captured, identity } = client({
+      respond: () => new Response(JSON.stringify({
+        state: [ { event_id: '$create' } ], auth_chain: [ { event_id: '$create' } ], event: accepted,
+      }), { status: 200 }),
+    });
+    const outcome = await instance.sendJoin({ destination: THEM, roomId: ROOM, eventId: joinId(), event: joinEvent() });
+
+    expect(outcome.status).toBe('ok');
+    expect(outcome.state).toEqual([ { event_id: '$create' } ]);
+    expect(outcome.authChain).toEqual([ { event_id: '$create' } ]);
+    expect(outcome.event).toMatchObject({ event_id: joinId() });
+    expect(outcome.membersOmitted).toBeUndefined();
+
+    const [ sent ] = captured;
+    const uri = `/_matrix/federation/v2/send_join/${encodeURIComponent(ROOM)}/${encodeURIComponent(joinId())}`;
+    expect(sent.method).toBe('PUT');
+    expect(sent.url).toBe(`https://${THEM}:8448${uri}`);
+    expect(sent.body).toEqual(joinEvent());
+    // The body *is* the event, so the signature covers the event itself.
+    await expect(authenticateXMatrixRequest({
+      authorization: sent.headers.authorization, method: 'PUT', uri, content: sent.body, keys: peerKeySource(identity), serverName: THEM,
+    })).resolves.toMatchObject({ valid: true, origin: US });
+  });
+
+  it('asks for membership events to be left out, and reads back what the resident omitted', async () => {
+    const { client: instance, captured } = client({
+      respond: () => new Response(JSON.stringify({
+        state: [], auth_chain: [], members_omitted: true, servers_in_room: [ THEM ],
+      }), { status: 200 }),
+    });
+    const outcome = await instance.sendJoin({
+      destination: THEM, roomId: ROOM, eventId: joinId(), event: joinEvent(), omitMembers: true,
+    });
+    expect(captured[0].url).toContain('?omit_members=true');
+    expect(outcome).toMatchObject({ status: 'ok', membersOmitted: true, serversInRoom: [ THEM ] });
+    // Our own resident never omits anything, so the flag is absent from our answers.
+    expect(outcome.event).toBeUndefined();
+  });
+
+  it('refuses an event the resident answered with, when it is not the one submitted', async () => {
+    const other = { ...joinEvent(), depth: 9, event_id: computeEventId({ ...joinEvent(), depth: 9 }) };
+    const { client: instance } = client({
+      respond: () => new Response(JSON.stringify({ state: [], auth_chain: [], event: other }), { status: 200 }),
+    });
+    await expect(instance.sendJoin({ destination: THEM, roomId: ROOM, eventId: joinId(), event: joinEvent() }))
+      .resolves.toMatchObject({ status: 'rejected', reason: expect.stringMatching(/not \$/u) });
+  });
+
+  it('retries an answer that is missing the state, and classifies refusals as final', async () => {
+    const { client: unreadable } = client({ respond: () => new Response(JSON.stringify({ state: [] }), { status: 200 }) });
+    await expect(unreadable.sendJoin({ destination: THEM, roomId: ROOM, eventId: joinId(), event: joinEvent() }))
+      .resolves.toMatchObject({ status: 'retry' });
+
+    const { client: refused } = client({ respond: () => new Response('{}', { status: 403 }) });
+    await expect(refused.sendJoin({ destination: THEM, roomId: ROOM, eventId: joinId(), event: joinEvent() }))
+      .resolves.toMatchObject({ status: 'rejected' });
+
+    const { client: failing } = client({ respond: () => new Response('{}', { status: 500 }) });
+    await expect(failing.sendJoin({ destination: THEM, roomId: ROOM, eventId: joinId(), event: joinEvent() }))
+      .resolves.toMatchObject({ status: 'retry' });
+  });
+
+  it('submits a leave, which v2 answers with an empty object', async () => {
+    const { client: instance, captured } = client({ respond: () => new Response('{}', { status: 200 }) });
+    const leave = { ...joinEvent(), content: { membership: 'leave' } };
+    const outcome = await instance.sendLeave({ destination: THEM, roomId: ROOM, eventId: joinId(), event: leave });
+    expect(outcome).toEqual({ status: 'ok', reason: 'ok' });
+    expect(captured[0].url).toBe(`https://${THEM}:8448/_matrix/federation/v2/send_leave/${encodeURIComponent(ROOM)}/${encodeURIComponent(joinId())}`);
+    expect(captured[0].body).toEqual(leave);
   });
 });

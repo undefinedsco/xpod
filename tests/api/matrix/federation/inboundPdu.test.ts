@@ -81,7 +81,12 @@ describe('inbound PDU checks', () => {
     const prefix = roomPrefix(server);
     const missingSender = await validateInboundPdu({ type: 'm.room.message', room_id: ROOM, content: {} },
       { keys: server.source, authEvents: prefix.auth });
-    expect(missingSender).toEqual({ outcome: 'rejected', reason: expect.stringContaining('no usable sender'), redacted: false });
+    expect(missingSender).toEqual({
+      outcome: 'rejected',
+      stage: 'structure',
+      reason: expect.stringContaining('no usable sender'),
+      redacted: false,
+    });
     const badEvents = await validateInboundPdu({
       type: 'm.room.message', room_id: ROOM, sender: ALICE, content: {}, origin_server_ts: NOW,
       auth_events: 'nope', prev_events: [],

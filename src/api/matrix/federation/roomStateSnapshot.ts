@@ -8,9 +8,12 @@
  * already has the events does not download them again.
  *
  * The state at an event is the resolution of the states after its parents, which is what
- * `MatrixRoomStateReplay.stateBefore` computes; nothing here re-implements resolution.
+ * `MatrixRoomStateReplay.stateBefore` computes; nothing here re-implements resolution. The same
+ * answer, taken from the parents directly, is what `/send_join` returns — there the event is the
+ * joining server's, and it is answered before this server stores it.
  */
-import { MatrixRoomStateReplay } from '../roomState';
+import { MatrixRoomStateReplay, type MatrixRoomState } from '../roomState';
+import { storedProtocolEvent } from '../storedEvent';
 import { selectAuthChainFor } from './authChain';
 import type { MatrixEventRecord } from '../types';
 
@@ -36,9 +39,25 @@ export function stateSnapshotBefore(
 ): StateSnapshot | undefined {
   const state = MatrixRoomStateReplay.from(records).stateBefore(eventId);
   if (!state) return undefined;
+  return snapshotOf(state, records);
+}
+
+/**
+ * The state before an event this server has not stored: the resolution of the states after the
+ * parents it names. `/send_join` answers with this — the state prior to the join — before the
+ * join event exists in the Pod.
+ */
+export function stateSnapshotBeforeParents(
+  records: readonly MatrixEventRecord[],
+  parentIds: readonly string[],
+): StateSnapshot {
+  return snapshotOf(MatrixRoomStateReplay.from(records).stateBeforeParents(parentIds), records);
+}
+
+function snapshotOf(state: MatrixRoomState, records: readonly MatrixEventRecord[]): StateSnapshot {
   const stateEvents = state.events().filter(record => record.stateKey !== undefined);
-  const { chain, unavailable } = selectAuthChainFor(records.map(pduOf), stateEvents.map(record => record.eventId));
-  return { pdus: stateEvents.map(pduOf), authChain: chain, unavailable };
+  const { chain, unavailable } = selectAuthChainFor(records.map(storedProtocolEvent), stateEvents.map(record => record.eventId));
+  return { pdus: stateEvents.map(storedProtocolEvent), authChain: chain, unavailable };
 }
 
 /** The same answer in ids, which is all a server that has the events needs. */
@@ -52,24 +71,5 @@ export function stateIdsBefore(
     pduIds: snapshot.pdus.map(event => String(event.event_id)).sort(),
     authChainIds: snapshot.authChain.map(event => String(event.event_id)).sort(),
     unavailable: snapshot.unavailable,
-  };
-}
-
-/**
- * The protocol event behind a record. Rows written before the graph existed carry no stored
- * event; they are reconstructed from the columns, which is enough for the auth walk to see
- * that they name no auth events.
- */
-function pduOf(record: MatrixEventRecord): Record<string, unknown> {
-  const stored = record.event;
-  if (stored !== undefined) return stored;
-  return {
-    event_id: record.eventId,
-    room_id: record.roomId,
-    type: record.type,
-    sender: record.sender,
-    origin_server_ts: record.originServerTs,
-    content: record.content,
-    ...(record.stateKey === undefined ? {} : { state_key: record.stateKey }),
   };
 }
