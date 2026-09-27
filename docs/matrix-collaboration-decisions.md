@@ -646,10 +646,11 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   以及成员资格握手的 `GET /make_join`、`PUT /send_join`、`GET /make_leave`、`PUT /send_leave`、`PUT /invite`、
   `GET /make_knock`、`PUT /send_knock` 十个端点的 **HTTP 外壳与 Pod 归属解析**（十个服务侧都已实现为纯函数/
   处理体；**剩下的阻塞点仍是路由归属**——见下方"待细化的实现事项"）、**把通知接成调度器的第二个信号**（通道已具备）、投递记录与控制 Pod 承载
-  （去 SQL）、状态与历史获取。互通面上还没动的：`GET /_matrix/federation/v1/version`、
-  `GET /_matrix/federation/v1/query/{directory,profile}`、`.well-known/matrix/server` 的**服务侧**，以及
-  `/_matrix/key/v2/server` **以参与者名义**发布（部署自己名义的那条早已在 `MatrixHandler` 里路由；参与者名义
-  需要先定"密钥以谁的名义发布/如何路由"，与前一条同源）。
+  （去 SQL）、状态与历史获取。互通面上还没动的：`GET /_matrix/federation/v1/version`（**需要一个版本来源**：目前只有 CLI 里一个未导出的
+  `getVersion()`，把它接进 handler 前应先把"部署版本从哪来"收成一个共享入口，否则只能报 `unknown`）、
+  `GET /_matrix/federation/v1/query/{directory,profile}`（前者要先能按 alias 找到房间所在 Pod，与"房间就是索引"
+  那条同源）、`.well-known/matrix/server` 的**服务侧**（属于部署拓扑：联邦端点是否在隐式 8448 之外，需要部署级
+  配置，不是协议决定）。
 - **已落地**（2026-09-27）：**逐条拒绝不再等于已投递**（缺口 2 的修复）。事务返回 200 只回答"这笔
   事务收到了"，不回答"每条 PDU 都被接受了"，所以发送方现在按 per-PDU 结果拆分：被接受的落地即完成，
   被拒的**换一个新 txnId** 重新入队（对端会重放旧 txnId 的存档应答，所以必须换 id），带**有界退避**
@@ -916,6 +917,18 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   `send_join` 回"加入前的状态 + 双方签名的事件"且不写 Pod；会员 `make_leave` + `send_leave` 回空对象；
   可敲门房间的 `make_knock` + `send_knock` 回四字段 stripped state；`/invite` 为我们的用户加签且不读 Pod、
   为他人的用户回 400 `M_INVALID_PARAM`），全部经真实 HTTP。
+- **已落地**（2026-09-27）：**密钥按"被寻址的 server name"发布**（`MatrixHandler` 的 `GET /_matrix/key/v2/server`
+  改为按 `Host` 认定名字，新增 `identities` 选项，容器接 `matrixSigningIdentities`）。
+  - **修掉的是一个真实的互通阻断**：此前这条路由**不看 Host**，对任何名字都回**部署身份**的密钥响应。而本部署里
+    参与者是自己的 server（事件以 `alice.example` 签名），对端拿到"声称是 alice.example、实际是部署密钥"的响应会
+    被 `parseServerKeyResponse` 按 `expected_server_name` 判为**不是这个服务器的密钥**——于是**参与者签名的事件
+    在对端永远验不过**。
+  - **现在的规则**：用与联邦路由同一条"被寻址名字"规则（`Host`，容忍隐式端口 `:8448`/`:443`）取候选名字，**本
+    部署持有哪个名字的密钥就发哪个**：部署自己的名字发部署身份，参与者的名字发该参与者的身份（注册表 provision
+    出来的）；都不持有就 **404 `M_NOT_FOUND`**，而不是发别人的密钥——"这个部署不为这个名字发布任何东西"必须能
+    与"这是它的密钥"区分开。
+  测试：`MatrixHandler.test.ts` 原有 2 项更新为带 `Host` 请求，新增 1 项（`Host: alice.example:8448` 得到
+  **alice 的** `server_name` 与她的 key id；`bob.example` 得到 404 而不是部署密钥）。
 - **仍待建**：`/event_auth` 与 `/get_missing_events` 的 **HTTP 外壳**（两个端点各自的服务侧都已实现为
   纯函数，缺的只是"从请求取 roomId/eventId → 从 Pod 取房间事件 → 应答"这一层），以及入站路由的
   Pod 归属解析 —— 同属下方那一格待定项。发送侧排序与重试处理"依赖也在我们队列里"的情况，

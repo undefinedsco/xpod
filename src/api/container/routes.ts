@@ -194,7 +194,10 @@ function registerSharedRoutes(
   registerRunRoutes(server, { runStore: chatKitStore });
   const matrixPodResolver = createMatrixPodResolver(podLookupRepository);
   registerMatrixRoutes(server, { store: matrixStore, resolvePodUrl:matrixPodResolver, baseUrl:process.env.CSS_BASE_URL,
-    serviceIdentity: container.resolve('matrixServiceIdentity') });
+    serviceIdentity: container.resolve('matrixServiceIdentity'),
+    // Keys are published per server name: a participant is her own server, so a peer asking about
+    // her must get her keys rather than the deployment's.
+    identities: container.resolve('matrixSigningIdentities', { allowUnregistered: true }) });
 
   // Federation is authenticated by the peer's `X-Matrix` signature rather than by a session, and
   // it needs three things this deployment may not have: a Pod registry to route a name to, keys to

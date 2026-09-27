@@ -567,7 +567,7 @@ describe('Matrix server key publication', () => {
     expect(route.path.startsWith('/_matrix/')).toBe(true);
 
     const mock = createResponse();
-    await route.handler(createRequest('/_matrix/key/v2/server'), mock.response);
+    await route.handler(createRequest('/_matrix/key/v2/server', undefined, { host: 'chat.example.com' }), mock.response);
     const body = mock.body();
     expect(body.server_name).toBe('chat.example.com');
     expect(Object.keys(body.verify_keys)).toEqual([ 'ed25519:1' ]);
@@ -584,8 +584,46 @@ describe('Matrix server key publication', () => {
       resolvePodUrl: async () => 'https://pods.example/alice/',
     });
     const mock = createResponse();
-    await routes['GET /_matrix/key/v2/server'].handler(createRequest('/_matrix/key/v2/server'), mock.response);
+    await routes['GET /_matrix/key/v2/server']
+      .handler(createRequest('/_matrix/key/v2/server', undefined, { host: 'chat.example.com' }), mock.response);
     expect(mock.response.statusCode).toBe(404);
     expect(mock.body()).toMatchObject({ errcode: 'M_NOT_FOUND' });
+  });
+
+  it('publishes the keys of the server name the request was addressed to', async () => {
+    const { server, routes } = createMockServer();
+    const deployment = new MatrixServiceIdentity({
+      serverName: 'chat.example.com',
+      activeKey: (() => {
+        const { privateKey } = generateKeyPairSync('ed25519');
+        return { keyId: 'ed25519:1', privateKeyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString() };
+      })(),
+    });
+    const alice = new MatrixServiceIdentity({
+      serverName: 'alice.example',
+      activeKey: (() => {
+        const { privateKey } = generateKeyPairSync('ed25519');
+        return { keyId: 'ed25519:7', privateKeyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString() };
+      })(),
+    });
+    registerMatrixRoutes(server, {
+      store: createStore(),
+      resolvePodUrl: async () => 'https://pods.example/alice/',
+      serviceIdentity: deployment,
+      identities: { identityFor: async name => (name === 'alice.example' ? alice : undefined) },
+    });
+
+    const route = routes['GET /_matrix/key/v2/server'];
+    // A participant is her own server: the peer asking about her gets her keys, not the deployment's.
+    const hers = createResponse();
+    await route.handler(createRequest('/_matrix/key/v2/server', undefined, { host: 'alice.example:8448' }), hers.response);
+    expect(hers.body().server_name).toBe('alice.example');
+    expect(Object.keys(hers.body().verify_keys)).toEqual([ 'ed25519:7' ]);
+
+    // A name this deployment publishes nothing for is a 404 rather than somebody else's keys.
+    const stranger = createResponse();
+    await route.handler(createRequest('/_matrix/key/v2/server', undefined, { host: 'bob.example' }), stranger.response);
+    expect(stranger.response.statusCode).toBe(404);
+    expect(stranger.body()).toMatchObject({ errcode: 'M_NOT_FOUND' });
   });
 });

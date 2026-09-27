@@ -1,4 +1,5 @@
 import { readBoundedRequestBody } from './readBoundedRequestBody';
+import { addressedNames } from './FederationHandler';
 import { resolveMatrixContext } from '../matrix/MatrixPodResolver';
 import { MatrixError } from '../matrix/MatrixError';
 import type { ServerResponse } from 'node:http';
@@ -6,6 +7,7 @@ import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { MatrixCreateRoomRequest, MatrixStore, MatrixStoreContext } from '../matrix/types';
 import type { MatrixServiceIdentity } from '../matrix/protocol/serviceIdentity';
+import type { MatrixSigningIdentitySource } from '../matrix/identityRegistry';
 
 export interface MatrixHandlerOptions {
   store: MatrixStore;
@@ -14,6 +16,14 @@ export interface MatrixHandlerOptions {
   resolvePodUrl?: (webId: string, requestedPodUrl?: string) => Promise<string>;
   /** Deployment signing identity; absent means this deployment cannot sign protocol facts. */
   serviceIdentity?: MatrixServiceIdentity;
+  /**
+   * Signing identities by server name, for the names this deployment holds keys for beyond its own
+   * (participants are their own servers here). `/key/v2/server` answers for whichever name was
+   * addressed, so a peer verifying an event signed as `alice.example` can fetch *her* keys rather
+   * than being handed the deployment's — which would not verify, and would be a lie about who
+   * signed.
+   */
+  identities?: MatrixSigningIdentitySource;
 }
 
 /**
@@ -30,14 +40,19 @@ export interface MatrixHandlerOptions {
 export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOptions): void {
   const { store } = options;
 
-  // Federation dependency: other servers fetch this to verify our signatures.
-  // Public by design, like the discovery documents below.
-  server.get('/_matrix/key/v2/server', async (_request, response) => {
-    if (!options.serviceIdentity) {
-      sendJson(response, 404, { errcode: 'M_NOT_FOUND', error: 'This deployment has no Matrix signing identity' });
+  // Federation dependency: other servers fetch this to verify our signatures. Public by design,
+  // like the discovery documents below. The answer is for the name the request was *addressed to*:
+  // a name this deployment publishes nothing for is a 404, not somebody else's keys.
+  server.get('/_matrix/key/v2/server', async (request, response) => {
+    const identity = await keyIdentityFor(request.headers.host, options);
+    if (!identity) {
+      sendJson(response, 404, {
+        errcode: 'M_NOT_FOUND',
+        error: 'This deployment publishes no keys for that server name',
+      });
       return;
     }
-    sendJson(response, 200, options.serviceIdentity.serverKeyResponse());
+    sendJson(response, 200, identity.serverKeyResponse());
   }, { public: true });
 
   server.get('/.well-known/matrix/client', async (request, response) => {
@@ -338,6 +353,30 @@ function requestBaseUrl(request: AuthenticatedRequest): string {
 
 function headerValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+/**
+ * The identity whose keys answer a request addressed to `host`, if any.
+ *
+ * The same rule the federation routes use: a peer that reached the implicit federation port sends
+ * `alice.example:8448` while the server name it is asking about is `alice.example`, so both
+ * spellings are candidates and the first one this deployment holds keys for wins.
+ */
+async function keyIdentityFor(
+  host: string | undefined,
+  options: MatrixHandlerOptions,
+): Promise<MatrixServiceIdentity | undefined> {
+  for (const name of addressedNames(host)) {
+    if (options.serviceIdentity?.serverName === name) return options.serviceIdentity;
+    if (!options.identities) continue;
+    try {
+      const identity = await options.identities.identityFor(name);
+      if (identity) return identity;
+    } catch {
+      // A name this deployment holds no identity for is simply not ours to publish.
+    }
+  }
+  return undefined;
 }
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {

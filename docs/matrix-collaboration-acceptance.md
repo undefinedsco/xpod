@@ -186,6 +186,11 @@ HTTP 跳转；**唯一的测试替身是"缺依赖事件如何送到对端"**—
 `all`（读遍所有房间）。代价明确：R 房间的 Pod 需要 R 条通道 / R 个 socket。**仍未接的**：挂到"本部署服务
 哪些参与者"（即参与者 ↔ Pod 归属那条待定项），以及对端方向。
 
+**密钥按名字发布（已落地）**：`GET /_matrix/key/v2/server` 现在按 `Host` 认定名字并只发**该名字**的密钥
+（参与者是自己的 server，所以对端要的是她的密钥）；不持有的名字回 404 而不是发部署密钥——此前那条路由不看
+`Host`，等于让对端永远验不过参与者签名的事件。测试见 `MatrixHandler.test.ts`（含 `Host: alice.example:8448`
+得到 alice 的密钥、`bob.example` 得到 404）。
+
 **Pod 归属解析（已落地）**：入站请求按"被寻址的 server name"找 Pod 这一层现在是**派生**的
 （`src/api/matrix/participantRoutes.ts`，7 项测试 + 容器 1 项）：server name = WebID 的 host，Pod = 该 WebID
 已登记的 Pod（`pod_lookup`），因此不需要第二份 Matrix 绑定记录；同一名字被多个参与者认领、或一个参与者登记了
