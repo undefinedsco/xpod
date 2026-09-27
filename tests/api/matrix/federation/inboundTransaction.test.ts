@@ -335,3 +335,27 @@ describe('a transaction that did not finish', () => {
     })).rejects.toThrow(/still being processed/u);
   });
 });
+
+describe('the reservation the contract promises', () => {
+  it('has exactly one winner when two senders reserve the same transaction at once', async () => {
+    // docs/matrix-control-records-contract.md §2.2: a Pod-backed implementation has to make this
+    // atomic, so the test that pins it must run against whichever implementation is in use.
+    const store = new InMemoryMatrixInboundTransactionStore();
+    const input = {
+      origin: REMOTE,
+      transactionId: 'txn-race',
+      payloadFingerprint: 'fingerprint',
+      receivedAt: new Date(NOW).toISOString(),
+    };
+
+    const [ first, second ] = await Promise.all([ store.reserve('scope-a', input), store.reserve('scope-a', input) ]);
+    expect([ first.created, second.created ].filter(Boolean)).toHaveLength(1);
+    expect(first.record.origin).toBe(second.record.origin);
+    expect(first.record.transactionId).toBe(second.record.transactionId);
+    expect(await store.find('scope-a', { origin: REMOTE, transactionId: 'txn-race' })).toBeDefined();
+
+    // A different scope is a different transaction: the key is (scope, origin, txnId).
+    const elsewhere = await store.reserve('scope-b', input);
+    expect(elsewhere.created).toBe(true);
+  });
+});

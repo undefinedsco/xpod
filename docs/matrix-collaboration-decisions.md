@@ -1056,11 +1056,11 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
 
 | 事项 | 必须产出的契约 |
 | --- | --- |
-| 协议服务身份与 Pod 归属 | MXID/WebID、server name、服务签名身份、参与者 Pod、执行 Agent 的关系及授权；草案见 [服务身份契约](matrix-service-identity-contract.md)。**归属已定并落地**：不记录绑定，server name 由 WebID 推导、Pod 取既有登记，歧义即拒绝（`participantRoutes.ts`）；**剩余**：部署写参与者 Pod 用哪份授权（服务 grant）与迁移时的切换语义 |
+| 协议服务身份与 Pod 归属 | MXID/WebID、server name、服务签名身份、参与者 Pod、执行 Agent 的关系及授权；草案见 [服务身份契约](matrix-service-identity-contract.md)。**归属已定并落地**：不记录绑定，server name 由 WebID 推导、Pod 取既有登记，歧义即拒绝（`participantRoutes.ts`）；**剩余**：部署写参与者 Pod 用哪份授权（服务 grant，契约草案见[控制记录契约](matrix-control-records-contract.md) §4/§5.4）与迁移时的切换语义 |
 | 完整事件与 Solid Chat 表示 | 原始事件验证材料、图关系与 room version 已落地（见[房间事件图](reference/matrix-room-event-graph.md)）；剩余：状态解析与事件授权规则、索引与旧房间迁移；共享 schema 归 models |
 | 传输与落 Pod | 接收持久化、去重、确认、部分投递失败、补发与恢复各自的责任和进度 |
 | 客户端增量 | 有界发现/分页、晚到事件、授权状态变化、token 版本与重建 |
-| 可恢复事务 | 记录寻址、首次结果、载荷保留、发布、回收及未知结果处理。**判据已明确**（用户 2026-09-27 的 metadata 澄清）：随实体而生的控制事实（事件本体、投递进度）放进该实体的 `metadata.protocols.matrix` 即可，**不需要 models 声明**；而**自由存在**的控制记录（按 `(origin, txnId)` 归档的事务）需要一个可寻址的资源去承载——那一步才是 models 的 schema 决定，不是"声明 metadata 键" |
+| 可恢复事务 | 记录寻址、首次结果、载荷保留、发布、回收及未知结果处理。**判据已明确**（用户 2026-09-27 的 metadata 澄清）：随实体而生的控制事实（事件本体、投递进度）放进该实体的 `metadata.protocols.matrix` 即可，**不需要 models 声明**；而**自由存在**的控制记录（按 `(origin, txnId)` 归档的事务、出站批次）需要一个可寻址的资源去承载。**契约草案已写出**：[控制记录契约](matrix-control-records-contract.md)（点查/原子预留/唯一索引/回收不得把"未知结果"变成"可重放"/批次必须留载荷/授权用任务层 grant）；**待拍的点**：models 是否提供"一张按 `(owner, kind, key)` 唯一索引的通用控制记录表"、回收期与墓碑、同步游标是否纳入 |
 | Agent 执行 | 唯一逻辑触发、执行归属、接替、撤权、工具幂等与分区处理 |
 | 验收 | 两个独立部署/身份/Pod 的真实互通和故障注入，见主设计；原单 Pod 测试只作回归基线 |
 
