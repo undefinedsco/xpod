@@ -74,6 +74,28 @@
 4. **grant 索取流程**：在什么时机问参与者（第一次 provision 时 / 第一次进房间时）、界面上如何表达
    "让这个部署替你写收到的消息"、撤销后是否立即失效（当前行为：立即失效，写失败即 403）。
 
+## 6.5 承载已定：用 `taskResource`（2026-09-27，用户提问"任务不是有建模吗"）
+
+models 里已经有那张表，**不需要新建**：`taskResource`（`src/task.schema.ts`，已从 index 导出）是
+`id: 'index.ttl#{key}'` 的 **keyed** 资源（点查），带 `status`（open/ready/active/blocked/completed/failed/
+cancelled）、不透明 `metadata`、`createdAt`/`updatedAt`；它自己的注释就是"**durable executable work unit**：说该做什么，
+不管调度/runner/执行尝试"。映射：
+
+| 控制记录 | 承载 | 说明 |
+| --- | --- | --- |
+| 出站投递批次 | 一条 `taskResource` | 要做什么 = 把这批 PDU 发给那个 server；`metadata` 带 origin/destination/txnId/pdus/attempts/lastReason；status 走 open→completed/failed/cancelled |
+| 入站事务存档 | 一条已完成的 `taskResource` | 回执：`metadata` 带 origin/txnId/fingerprint/首次应答；status=completed |
+
+**`scope → Db` 怎么解**（实现前必须定的一件事）：接口按 `scope`（Pod 根）分片，而 Pod 写入需要一个带授权的上下文。
+可选：① 由调用方（外壳）把**已经解好的上下文/Db 句柄**传进来（外壳本来就有 `contextFor(route)` 的结果），接口保留
+`scope` 仅作分片键与隔离校验；② store 自己持有 `dbFor(scope)` 提供者（容器用 `ownerPodAccess` + 该 Pod 参与者的
+WebID 构造）。**推荐 ①**：外壳已经为这次请求解过一次上下文，再解一次等于把同一份授权决定做两遍，而且 ② 需要一个
+"scope → 参与者"的全局映射——那正是我们**刻意不记录**的东西（见 `participantRoutes.ts`）。
+
+**唯一未决的能力点**：`reserve` 要"并发只有一个赢家"，而 Pod 写入是整份 `index.ttl` 的读-改-写，因此需要**条件写
+（ETag/If-Match）**。没有条件写时：并发重试可能各自处理一次（接受事件按 event id 幂等，不会写出重复事件，但"首次
+应答"可能不是同一个）——这一点必须写进实现与文档，不能假装原子。
+
 ## 6. 与已落地实现的关系
 
 - 内存实现（`InMemoryMatrixInboundTransactionStore`、`InMemoryMatrixOutboundStore`）是**当前承载**，接口已按
