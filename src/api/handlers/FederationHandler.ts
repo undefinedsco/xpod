@@ -141,6 +141,10 @@ export function registerFederationRoutes(server: ApiServer, options: FederationH
   // not by a Solid/OIDC session: these routes never see a user's credentials.
   const publicRoute = { public: true } as const;
   server.put('/_matrix/federation/v1/send/:txnId', createFederationSendHandler(options), publicRoute);
+  // The same inbound work, reached the way two Xpod deployments talk to each other: an ordinary
+  // signed API call to the peer's own server name, with no Matrix federation semantics in the
+  // transport. Matrix-facing peers keep using `/send`, which is why this is additive.
+  server.post('/_xpod/matrix/inbound/:txnId', createNativeInboundHandler(options), publicRoute);
   server.get('/_matrix/federation/v1/event_auth/:roomId/:eventId', createEventAuthHandler(options), publicRoute);
   server.get('/_matrix/federation/v1/state/:roomId', createStateHandler(options), publicRoute);
   server.get('/_matrix/federation/v1/state_ids/:roomId', createStateIdsHandler(options), publicRoute);
@@ -613,6 +617,72 @@ export function createFederationSendHandler(options: FederationHandlerOptions): 
     }
     sendJson(response, result.status, result.body);
   };
+}
+
+/**
+ * `POST /_xpod/matrix/inbound/:txnId`: what one Xpod deployment sends another.
+ *
+ * The register's write-side decision (③): the sending deployment calls the peer's own API server and
+ * the peer writes its Pod — its own authority, its own validation, its own records. So this is not a
+ * second protocol. It carries exactly what a Matrix transaction carries (signed PDUs and the origin
+ * that signed them) and reaches exactly the same decision code (`handleFederationSend`); what it
+ * drops is the *federation transport*: no `:8448`, no SNI/Host gymnastics, no `.well-known`
+ * discovery — just a signed request to the server name's ordinary HTTPS endpoint. `/send` stays for
+ * peers that only speak Matrix.
+ *
+ * The response names results per event (`events`, not `pdus`) because this endpoint is ours; the
+ * error codes are the same ones, so one core answers both and neither drifts from the other.
+ */
+export function createNativeInboundHandler(options: FederationHandlerOptions): RouteHandler {
+  return async (request, response, params) => {
+    const addressed = await addressedServerName(request, options);
+    if (!addressed) {
+      sendJson(response, 403, { errcode: 'M_FORBIDDEN', error: `This deployment does not serve ${hostOf(request)}` });
+      return;
+    }
+
+    let body: string;
+    try {
+      body = Buffer.concat(await readBoundedRequestBody(request, MAX_FEDERATION_BODY_BYTES,
+        'The request body is larger than this server accepts for a transaction')).toString('utf8');
+    } catch (error) {
+      sendJson(response, 413, { errcode: 'M_TOO_LARGE', error: error instanceof Error ? error.message : 'Unreadable request body' });
+      return;
+    }
+
+    const transactionId = decode(params.txnId);
+    let result: FederationSendResult;
+    try {
+      result = await handleFederationSend({
+        authorization: headerValue(request.headers.authorization),
+        method: 'POST',
+        // The signature covers the request target the sender used, query string included.
+        uri: requestTarget(request),
+        // The native path names the transaction in its own segment; the transaction layer is told
+        // rather than made to parse a Matrix route it never saw.
+        transactionId,
+        body,
+        serverName: addressed,
+        keys: options.keys,
+        resolveTarget: async destination => await targetFor(destination, options),
+        transactions: options.transactions,
+        ...(options.now === undefined ? {} : { now: options.now }),
+      });
+    } catch (error) {
+      sendJson(response, 500, {
+        errcode: 'M_UNKNOWN',
+        error: error instanceof Error ? error.message : 'Failed to process the transaction',
+      });
+      return;
+    }
+    sendJson(response, result.status, nativeAnswer(result.body));
+  };
+}
+
+/** The same answer, under the names this endpoint uses: per-event results, errors unchanged. */
+function nativeAnswer(body: Record<string, unknown>): Record<string, unknown> {
+  const { pdus, ...rest } = body;
+  return pdus === undefined ? rest : { events: pdus, ...rest };
 }
 
 /**

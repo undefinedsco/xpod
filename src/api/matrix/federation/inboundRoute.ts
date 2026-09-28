@@ -4,7 +4,10 @@
  * Everything a receiving server has to decide lives here, in the order the specification
  * puts it: the body must be JSON, the request must carry a valid `X-Matrix` signature over
  * *this* request (see `requestAuth.ts`), the transaction must name the same origin that
- * signed it, and the PDUs must fit a transaction. Then the transaction layer takes over —
+ * signed it, and the PDUs must fit a transaction. The same body and the same checks serve both
+ * transports a deployment speaks — the Matrix federation path, and the native Xpod path between
+ * two Xpod deployments — because the decision is the protocol's, not the transport's. Then the
+ * transaction layer takes over —
  * which is what makes a retry safe: the peer's id is reserved before anything is written,
  * an unfinished transaction answers "retry", and a replay is answered from the first
  * attempt instead of processing the PDUs twice.
@@ -64,6 +67,14 @@ export interface HandleFederationSendInput {
   method: string;
   /** Request target including the query string, exactly as signed. */
   uri: string;
+  /**
+   * The transaction id, when the transport names it somewhere this module does not parse.
+   *
+   * `/send` puts it in the path, which is what `transactionIdFromUri` reads; a native endpoint
+   * that reaches the same work over its own path passes it here instead, so the two transports
+   * share one transaction layer rather than one of them re-implementing reservation and replay.
+   */
+  transactionId?: string;
   /** Raw request body. */
   body: string;
   /** The server name this request is addressed to. */
@@ -103,7 +114,7 @@ export async function handleFederationSend(input: HandleFederationSendInput): Pr
   }
   const origin = authentication.origin;
 
-  const transactionId = transactionIdFromUri(input.uri);
+  const transactionId = input.transactionId ?? transactionIdFromUri(input.uri);
   if (!transactionId) return failure(404, 'M_UNRECOGNIZED', 'Not a federation transaction endpoint');
 
   // A transaction that claims a different origin than the one that signed it would be

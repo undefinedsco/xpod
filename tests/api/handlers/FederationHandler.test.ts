@@ -403,6 +403,122 @@ describe('the inbound /send route', () => {
   });
 });
 
+describe('the native inbound route two Xpod deployments use', () => {
+  let running: Harness | undefined;
+  afterEach(async () => {
+    await running?.server.stop();
+    running = undefined;
+  });
+
+  /** What the peer's deployment sends: the same content, signed for its own POST. */
+  function nativeTransaction(input: {
+    peer: ReturnType<typeof identity>;
+    destination: string;
+    txnId: string;
+    pdus: readonly Record<string, unknown>[];
+    method?: string;
+  }) {
+    const uri = `/_xpod/matrix/inbound/${input.txnId}`;
+    const content = { origin: PEER, origin_server_ts: NOW, pdus: [ ...input.pdus ] };
+    return {
+      body: JSON.stringify(content),
+      authorization: buildXMatrixAuthorization({
+        origin: PEER, destination: input.destination, method: input.method ?? 'POST', uri, content,
+      }, input.peer.instance),
+    };
+  }
+
+  it('writes what a peer sends over its own endpoint, and names results per event', async () => {
+    const room = heldRoom();
+    const h = await harness({ events: [ room.create, room.join, room.rules ] });
+    running = h;
+    const membership = peerJoin({ room, peer: h.peer });
+    const message = peerMessage({ room, peer: h.peer, body: 'native hello', membership });
+    const request = nativeTransaction({ peer: h.peer, destination: SERVED, txnId: 'native-1', pdus: [ membership, message ] });
+
+    const answer = await send({
+      port: h.port, method: 'POST', path: '/_xpod/matrix/inbound/native-1',
+      host: SERVED, authorization: request.authorization, body: request.body,
+    });
+
+    expect(answer.status).toBe(200);
+    // The native shape: per-event results, and no Matrix jargon in the key.
+    expect(answer.body.events).toEqual({ [String(membership.event_id)]: {}, [String(message.event_id)]: {} });
+    expect(answer.body.pdus).toBeUndefined();
+    expect(h.store.accepted.map(event => event.type)).toEqual([ 'm.room.member', 'm.room.message' ]);
+  });
+
+  it('answers a retry from the record the first attempt produced', async () => {
+    const room = heldRoom();
+    const h = await harness({ events: [ room.create, room.join, room.rules ] });
+    running = h;
+    const membership = peerJoin({ room, peer: h.peer });
+    const request = nativeTransaction({ peer: h.peer, destination: SERVED, txnId: 'native-2', pdus: [ membership ] });
+
+    const first = await send({
+      port: h.port, method: 'POST', path: '/_xpod/matrix/inbound/native-2',
+      host: SERVED, authorization: request.authorization, body: request.body,
+    });
+    const replay = await send({
+      port: h.port, method: 'POST', path: '/_xpod/matrix/inbound/native-2',
+      host: SERVED, authorization: request.authorization, body: request.body,
+    });
+
+    expect(replay.body).toEqual(first.body);
+    expect(h.store.accepted).toHaveLength(1);
+  });
+
+  it('requires the same signature, origin and served name the Matrix path requires', async () => {
+    const room = heldRoom();
+    const h = await harness({ events: [ room.create, room.join, room.rules ] });
+    running = h;
+    const membership = peerJoin({ room, peer: h.peer });
+
+    // A transaction that claims an origin other than the one that signed it: the signature is
+    // valid, the attribution is not — and a peer dedups on (origin, txnId), so this has to fail.
+    const uri = '/_xpod/matrix/inbound/native-3';
+    const claimed = { origin: 'somebody.example', origin_server_ts: NOW, pdus: [ membership ] };
+    const wrongOrigin = await send({
+      port: h.port, method: 'POST', path: uri, host: SERVED,
+      authorization: buildXMatrixAuthorization({
+        origin: PEER, destination: SERVED, method: 'POST', uri, content: claimed,
+      }, h.peer.instance),
+      body: JSON.stringify(claimed),
+    });
+    expect(wrongOrigin.status).toBe(400);
+    expect(wrongOrigin.body.errcode).toBe('M_BAD_JSON');
+
+    // A name this deployment does not serve.
+    const elsewhere = nativeTransaction({ peer: h.peer, destination: 'other.example', txnId: 'native-3', pdus: [ membership ] });
+    const notServed = await send({
+      port: h.port, method: 'POST', path: '/_xpod/matrix/inbound/native-3', host: 'other.example',
+      authorization: elsewhere.authorization, body: elsewhere.body,
+    });
+    expect(notServed.status).toBe(403);
+    expect(h.store.accepted).toEqual([]);
+  });
+
+  it('refuses a native request that is not JSON, and one that is too large', async () => {
+    const room = heldRoom();
+    const h = await harness({ events: [ room.create, room.join, room.rules ] });
+    running = h;
+
+    const notJson = await send({
+      port: h.port, method: 'POST', path: '/_xpod/matrix/inbound/native-4', host: SERVED, body: 'not json',
+    });
+    expect(notJson.status).toBe(400);
+    expect(notJson.body.errcode).toBe('M_NOT_JSON');
+
+    const oversized = await send({
+      port: h.port, method: 'POST', path: '/_xpod/matrix/inbound/native-5', host: SERVED,
+      body: JSON.stringify({ origin: PEER, pdus: [ 'x'.repeat(5 * 1024 * 1024) ] }),
+    });
+    expect(oversized.status).toBe(413);
+    expect(oversized.body.errcode).toBe('M_TOO_LARGE');
+    expect(h.store.accepted).toEqual([]);
+  });
+});
+
 describe('the context the deployment writes with', () => {
   it('hands the store what contextFor answers for the routed participant', async () => {
     const room = heldRoom();

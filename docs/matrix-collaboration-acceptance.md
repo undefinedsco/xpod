@@ -381,6 +381,15 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   注入的 db 没有 fetch 时拒绝（不给半个授权）；部署自持工作时**不借**调用方会话；
   `controlRecordHandleFor` 把"哪个 Pod"和"以谁的身份"一起解析；context 不含 Pod 时拒绝而不是默认成空 scope。
 
+### 原生入站端点（2026-09-27，③ 的第一步）
+
+- `POST /_xpod/matrix/inbound/:txnId`：两个 Xpod 部署之间的写入路径，复用 `/send` 的全部判定
+  （签名认证、origin 一致、体积上限、事务预占/重放、Pod 回执），只去掉联邦传输（`:8448`/SNI/`.well-known`）。
+  响应按事件命名（`events`），错误码与 `/send` 同一套。
+- 证据：`tests/api/handlers/FederationHandler.test.ts` 新增 4 项（经真实 HTTP 写入并逐事件应答、
+  重放取首次记录不写第二遍、签名/origin/被寻址名字同样被校验、非 JSON `400 M_NOT_JSON` 与超限 `413 M_TOO_LARGE`），
+  该文件 33 项全过。**未做**：部署间的客户端与出站选传输（下一步）。
+
 ### 出站批次载荷（2026-09-27，同一分支）
 
 - `federation/outboundBatches.ts`：一条批次 ↔ 一条 `taskResource` 的映射（`metadata` 原样保存
@@ -391,7 +400,8 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   容器 `ldp:contains` **只列出 4 个文档中的 1 个** → 对 PATCH 建出的文档不可信。
   结论与三个选项见[控制记录契约](matrix-control-records-contract.md) §9.2；**Pod 版出站 store 在定案前不实现**。
 
-门禁（提交前在冻结代码上复跑）：`typecheck:test` 通过；`tests/api/matrix` **558 passed / 3 skipped**；
-`tests/api tests/http` **2011 passed / 67 skipped**；`test:integration:lite` **156 passed / 6 skipped（31 文件通过 / 3 跳过）**，
+门禁（提交前在冻结代码上复跑）：`typecheck:test` 通过；`tests/api/matrix` **560 passed / 3 skipped**
+（其中 `handlers/FederationHandler.test.ts` 33 项）；`tests/api tests/http` **2015 passed / 67 skipped**；
+`test:integration:lite` **156 passed / 6 skipped（31 文件通过 / 3 跳过）**，
 含上面 3 项真实 Pod 用例与 `MatrixCollaboration` 的真实运行时夹具。
 **未做**：真实实例（本机 3000 是别的构建）、`full`（Docker 无响应）、自动回收（保留期未定）。
