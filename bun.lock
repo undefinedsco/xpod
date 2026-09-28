@@ -103,9 +103,11 @@
     "desktop": {
       "name": "@undefineds.co/xpod-desktop",
       "version": "0.4.18",
+      "dependencies": {
+        "@undefineds.co/solid-sdk": "workspace:*",
+      },
       "devDependencies": {
         "@types/node": "^22.10.0",
-        "@undefineds.co/solid-sdk": "workspace:*",
         "electron": "33.4.11",
         "electron-builder": "^25.1.8",
         "typescript": "^6.0.3",
@@ -1956,8 +1958,6 @@
     "@undefineds.co/shared-ui": ["@undefineds.co/shared-ui@workspace:packages/shared-ui"],
 
     "@undefineds.co/solid-sdk": ["@undefineds.co/solid-sdk@workspace:packages/solid-sdk"],
-
-    "@undefineds.co/xpod-darwin-arm64": ["@undefineds.co/xpod-darwin-arm64@0.4.18", "", { "os": "darwin", "cpu": "arm64" }, "sha512-SbMxXkosgV24ZhfnSvH2D/Za8Qy+UAYqbO0JmeG9UtIpl2pKkkvSpa5I9g+7ItP2V9qC5PrfCLpxZ7B0OJXSRw=="],
 
     "@undefineds.co/xpod-desktop": ["@undefineds.co/xpod-desktop@workspace:desktop"],
 
