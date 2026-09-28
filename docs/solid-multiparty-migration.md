@@ -72,3 +72,35 @@
 
 **不在本刀**：不删签名与密钥（第 2 刀）、不删预留（第 3 刀）、不动房间权威（第 4 刀）、
 不降授权规则与事件图字段（第 5 刀）、不改投递与路径（第 6–7 刀）。
+
+### 试行结果（2026-09-28）：本刀**不独立**，先补一步 1.0
+
+按上面的边界真的改了一遍（`getMatrixUserId` 返回 WebID、agent 用自身 URI、`serverNameOf` 认得 URL、
+删掉 MXID 派生与 `matrixUserIdFor`），`typecheck` 与 `typecheck:test` 都过，但 `tests/api/matrix`
+**89 项失败**，且失败集中在同一条：
+
+> `v11-1.2: room_id domain does not match the sender domain`
+
+原因不是实现错，而是**暴露了一个一直存在的分歧**：`sender` 现在是 WebID，`serverNameOf(sender)` 得到的是
+**WebID 的 host**（`alice.example`）；而 `room_id` 仍是 `!xxx:<部署配置的 server name>`（`example.test`）。
+`PodMatrixStore.getServerName` 只有在"该 host 在本部署注册的身份名里"时才用 WebID host，否则退回部署名——
+所以两者不一致，规则 1.2 判死**每一次写入**。
+
+**结论**：身份切换必须先定一件事——**参与者的 server name 就是其 WebID 的 host**（设计文档已经这么写：
+"每个参与者自己就是一台 server"），并把四处一起对齐，否则 sender 与 room 的域永远对不上：
+
+| # | 要一起改的 | 现在 |
+| --- | --- | --- |
+| 1.0a | `getServerName` | 先看部署注册的身份名、再退回部署名 → 改为**以 WebID host 为准** |
+| 1.0b | 房间 id 的域 | 由 1.0a 生成，随之统一 |
+| 1.0c | 签名身份的解析（按 server name 取密钥） | 注册表以**部署名**为键 → 改为以 **WebID host** 为键（或随第 2 刀一起删） |
+| 1.0d | 身份注册表与夹具 | 测试夹具注册的是部署名 → 随之改成 WebID host |
+
+另外：规则 1.2 之所以此刻"咬人"，是因为**写路径的 v11 强制**（第 5 刀才降）还在生效。
+所以第 1 刀有两条可行路径，二选一后再动手：
+
+- **路径 A（推荐）**：先做 1.0a–1.0d（把 server name 统一到 WebID host），再切身份——语义上最干净，
+  因为"参与者即自己的 server"本来就是这个协议的前提；
+- **路径 B**：先把第 5 刀（降授权规则、去事件图字段）提前做掉，再切身份——改动面小，但会先失去一层校验。
+
+已回退，树保持绿色（`tests/api/matrix` 恢复到 587 通过）。
