@@ -7,11 +7,20 @@
  * is already keyed, has a status, an opaque `metadata` column and two timestamps.
  *
  * **Where they live follows the models convention for records that accumulate** — the one messages
- * and deliveries already use: inside a parent directory, split by day, one document per day holding
- * that day's records as fragments (`src/message.schema.ts`: `{parent.dir}/{yyyy}/{MM}/{dd}/
- * messages.ttl#{key}`). Control records are the same kind of thing, so they are
- * `<pod>/.data/task/{yyyy}/{MM}/{dd}/transactions.ttl#<key>`: the models task base, the models date
- * buckets, and one subject per record.
+ * and deliveries already use: inside a parent directory, split by day (`src/message.schema.ts`:
+ * `{parent.dir}/{yyyy}/{MM}/{dd}/messages.ttl#{key}`). Control records are the same kind of thing,
+ * so they live in `<pod>/.data/task/{yyyy}/{MM}/{dd}/`, the models task base under the models date
+ * buckets — **one document per record** (`<sha256(key)>.ttl#self`), and the day directory is a real
+ * container listing them.
+ *
+ * The document granularity is not cosmetic. A day document holding several *rows* was measured to
+ * lose data on a real Pod (2026-09-27): drizzle-solid writes an `object` column's value as its own
+ * subject, and that subject is derived from the row's position rather than from the row's identity
+ * (`<document>#metadata-1`), so two rows in one document write their `metadata` to the *same*
+ * subject and the triples merge. Two records — an inbound receipt and a delivery batch — came back
+ * as one record whose `kind` was `["inbound-transaction","outbound-batch"]`. One record per document
+ * keeps every nested subject its own. The day directory still gives what the layout was for: a
+ * client that owns its own sync state can list (and subscribe to) a day and see its records.
  *
  * **What that costs, measured earlier and accepted deliberately** (2026-09-27, contract §6.3): a
  * shared document cannot be *created once per key*, and `If-Match` is not a version check on this
@@ -33,6 +42,14 @@
  *
  * Replacing a record (attaching a response, marking that a sender reused a transaction id for a
  * different payload) and deleting one need no condition: they are ordinary writes on one subject.
+ *
+ * **The day directories are created as containers before anything is written into them**, and that
+ * is not cosmetic: a document written into a path whose containers do not exist is invisible to the
+ * Solid ways of finding it — the container answers 404, so nothing lists it and nothing can
+ * subscribe to it. Measured on a real Pod (2026-09-27): a document written into
+ * `.data/task/2026/09/28/` read back by URL, while `GET` of `2026/` and `2026/09/28/` both answered
+ * 404. A client that owns its own sync state discovers records by listing them; without the
+ * containers there is nothing to list.
  */
 import { createHash } from 'node:crypto';
 import { buildPodResourceIriForResource } from '@undefineds.co/drizzle-solid';
@@ -95,8 +112,16 @@ export interface MatrixControlRecordTarget {
  */
 export const CONTROL_RECORD_LOOKBACK_DAYS = 2;
 
-/** The document name a day's records share, under the models task base. */
-const CONTROL_RECORD_DOCUMENT = 'transactions.ttl';
+/** The subject every record document describes: one record, one document, one subject. */
+const CONTROL_RECORD_SUBJECT = 'self';
+
+/**
+ * Day directories this process has already prepared.
+ *
+ * A local accelerator, rebuilt on restart: the write that prepares a container is conditional, so
+ * forgetting only costs a request, and remembering cannot make a wrong one.
+ */
+const preparedContainers = new Set<string>();
 
 /** The day bucket a moment belongs to, in the models spelling (`yyyy/MM/dd`). */
 export function controlRecordBucket(at: Date | string | number): string {
@@ -118,17 +143,17 @@ export function controlRecordBuckets(at: Date | string | number, days = CONTROL_
 /**
  * The document and subject a key maps to in one bucket.
  *
- * The key is hashed for the fragment: half of it is chosen by a peer (a transaction id is an
- * arbitrary string), and a fragment has to survive whatever arrives. What the record is *about*
- * stays in its metadata, where it can be read.
+ * The key is hashed for the document name: half of it is chosen by a peer (a transaction id is an
+ * arbitrary string), and a document name has to be one path segment whatever arrives. Hashing also
+ * keeps two keys apart in the same day. What the record is *about* stays in its metadata.
  */
 export function controlRecordAddress(podUrl: string, key: string, bucket: string): {
   id: string;
   resource: string;
   subject: string;
 } {
-  const fragment = `t_${createHash('sha256').update(key).digest('hex')}`;
-  const id = `${bucket}/${CONTROL_RECORD_DOCUMENT}#${fragment}`;
+  const name = createHash('sha256').update(key).digest('hex');
+  const id = `${bucket}/${name}.ttl#${CONTROL_RECORD_SUBJECT}`;
   const subject = buildPodResourceIriForResource(podUrl, taskResource, id);
   return { id, resource: subject.split('#')[0], subject };
 }
@@ -149,6 +174,7 @@ export async function writeControlRecord(
 
   const bucket = controlRecordBucket(input.at);
   const { id, resource, subject } = controlRecordAddress(target.scope, input.key, bucket);
+  await ensureDayContainers(target, resource, bucket);
   await target.write.db.insert(taskResource).values({
     id,
     instruction: input.instruction,
@@ -240,6 +266,41 @@ function decodeControlRecord(
     ...(typeof row.createdAt === 'string' ? { createdAt: row.createdAt } : {}),
     ...(typeof row.updatedAt === 'string' ? { updatedAt: row.updatedAt } : {}),
   };
+}
+
+/**
+ * Make the containers a record's document lives in exist, outermost first.
+ *
+ * The chain starts at the models task base and ends at the day itself; nothing above the base is
+ * touched. Each step is a conditional `PUT` of a `BasicContainer`, and "it is already there" is the
+ * expected answer on every call after the first, which is why this needs no authority of its own.
+ */
+async function ensureDayContainers(
+  target: MatrixControlRecordTarget,
+  resource: string,
+  bucket: string,
+): Promise<void> {
+  const base = resource.slice(0, resource.lastIndexOf(bucket));
+  const chain = [ base ];
+  for (const part of bucket.split('/')) chain.push(`${chain[chain.length - 1]}${part}/`);
+  for (const current of chain) {
+    if (preparedContainers.has(current)) continue;
+    const response = await target.write.fetch(current, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'text/turtle',
+        'Link': '<http://www.w3.org/ns/ldp#BasicContainer>; rel="type"',
+        'If-None-Match': '*',
+      },
+      body: '',
+    });
+    // 201 created it; 409/412 means somebody (or an earlier call) already had.
+    if (response.status >= 300 && response.status !== 409 && response.status !== 412) {
+      throw new MatrixError(502, 'M_UNKNOWN',
+        `Could not prepare ${current} for control records: ${response.status} ${response.statusText}`);
+    }
+    preparedContainers.add(current);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

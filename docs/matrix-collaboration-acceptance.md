@@ -383,8 +383,16 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
 
 ### 控制记录改按 models 的按天累积布局（2026-09-27，回应"为什么要判赢家"）
 
-- **布局**：`<pod>/.data/task/{yyyy}/{MM}/{dd}/transactions.ttl#<key 的 sha256>`——与 `message.schema.ts`
-  的 `{parent}/{yyyy}/{MM}/{dd}/messages.ttl#{key}` 同一约定；查找窗口 2 天（`CONTROL_RECORD_LOOKBACK_DAYS`）。
+- **布局**：`<pod>/.data/task/{yyyy}/{MM}/{dd}/<key 的 sha256>.ttl#self`——与 `message.schema.ts`
+  的 `{parent}/{yyyy}/{MM}/{dd}/messages.ttl#{key}` 同一约定（日期目录 + 目录内一条记录一个文档）；
+  查找窗口 2 天（`CONTROL_RECORD_LOOKBACK_DAYS`）。
+- **一天一个文档（多条记录）被实测否决**：drizzle-solid 把 `object` 列写成按行位置命名的嵌套主体
+  （`<文档>#metadata-1`），同文档两行的 `metadata` 因此合并——实测把一条回执与一条批次读成同一条记录
+  （`kind` 变成两个值的数组）。改为一条记录一个文档后消失；这条缺口记在契约 §6.1/§8。
+- **日期目录必须由我们创建成容器**：实测文档写进 `.data/task/2026/09/28/` 后按 URL 读得到，但
+  `GET 2026/` 与 `2026/09/28/` 都是 **404**——没有容器就列不到、也订阅不到。现在逐层条件 PUT。
+- **更正一条早先的测量**："容器 `ldp:contains` 只列出 4 个中的 1 个"是**解析错误**（Turtle 逗号列表），
+  容器列成员本来就可用于 PUT 与 PATCH 建出的文档。这条更正重新打开了"客户端按目录列举记录"的路径。
 - **语义**：`writeControlRecord` 从"create-once + CAS"改为"**幂等插入 + 记录优先**"。`reserve` 的保证从
   "恰好一个赢家"改为"Pod 里只有一条记录、重放从记录回答"——这是这次实测 + 用户提问共同得出的结论
   （契约 §6.2/§6.3）。

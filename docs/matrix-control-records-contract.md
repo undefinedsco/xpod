@@ -100,17 +100,30 @@ cancelled）、不透明 `metadata`、`createdAt`/`updatedAt`；它自己的注�
 
 用户 2026-09-27："先进房间，房间里面再安装时间分 message 吧"——即 **models 已有的约定**：
 `src/message.schema.ts` 的 `{parent.dir}/{yyyy}/{MM}/{dd}/messages.ttl#{key}`（deliveries 同形）。
-控制记录是同一类东西，于是落在：
+控制记录是同一类东西，于是落在 models 的 task base + models 的日期分桶里：
 
 ```
-<pod>/.data/task/{yyyy}/{MM}/{dd}/transactions.ttl#<key 的 sha256>
+<pod>/.data/task/{yyyy}/{MM}/{dd}/<key 的 sha256>.ttl#self
 ```
 
-——models 的 task base + models 的日期分桶 + 一条记录一个主体。实现见 `controlRecords.ts`
-（`controlRecordBucket` / `controlRecordAddress`），键的片段用哈希是因为一半的键由对端给（事务 id 是任意字符串）。
+**一天一个目录，一条记录一个文档**。文档名用哈希是因为一半的键由对端给（事务 id 是任意字符串），
+且同一天里两个键必须分得开。
+
+**为什么不是"一天一个文档、多条记录"（2026-09-27 真实 Pod 实测）**：drizzle-solid 把 `object` 列
+（这里就是 `metadata`）写成**自己的主体**，而这个主体是按行在文档里的位置推出的（`<文档>#metadata-1`），
+不是按行的身份推的。于是同一文档里的两行会把 `metadata` 写到**同一个主体**上、三元组合并——
+实测把一条入站回执和一条出站批次读成了**同一条记录**，`kind` 变成
+`["inbound-transaction","outbound-batch"]`。一条记录一个文档让每个嵌套主体都是自己的。
+日期目录仍然是这个布局要的东西：**目录是真容器**，客户端可以列它（并订阅它）来发现当天有哪些记录
+（见下条）。
 
 查找是**有界的**：从今天往回最多 `CONTROL_RECORD_LOOKBACK_DAYS`（2）天，最多三次文档读；
 **这个窗口就是保留期**——超窗的重放会被当成新事务（安全：接受事件按 event id 幂等；代价：回执重写一份）。
+
+**日期目录必须真的存在**（`ensureDayContainers`，逐层条件 `PUT` BasicContainer，201/409 都算成功）：
+实测把一个文档写进 `.data/task/2026/09/28/` 后，文档本身按 URL 读得到，但 `GET 2026/` 与
+`GET 2026/09/28/` 都回 **404**——因为**没有任何东西创建过这些容器**。没有容器就没有 `ldp:contains`，
+客户端既列不到、也订阅不到（这正是用户口径"客户端自己负责同步"所依赖的能力）。
 
 ### 6.2 实测记录：为什么这里没有 compare-and-swap
 
@@ -123,9 +136,10 @@ cancelled）、不透明 `metadata`、`createdAt`/`updatedAt`；它自己的注�
 | `PATCH` 建出的文档在容器不存在时 `DELETE` | 404，文档仍在 | 只在"要删文档"的方案里才是问题 |
 | `db.deleteByResource` 之后 | 行没了、文档仍在 | 同上 |
 
-create-once 要"一条记录一个文档"才能按 key 守门——那正是用户否决的布局。因此这里**不做 CAS**，
-按天共享文档，接受"预留是尽力而为"（见 §6.3）。上面两条"删文档"的坑因此不再适用：这个方案
-**从不删文档**（`deleteControlRecord` 只删记录自己的三元组，文档是同一天其他记录的共享文件）。
+create-once 需要"一个 key 一个文档 + `If-None-Match: *`"才能按 key 守门；这里**不做 CAS**，
+因为入站回执不需要唯一赢家（§6.3）。布局上仍然是"一条记录一个文档"，但理由不是 create-once，
+而是 §6.1 实测的嵌套主体合并。上面两条"删文档"的坑因此也不适用：这个方案**从不删文档**，
+释放只删记录自己的三元组（留下一个空文档，见 §8 第 2 条）。
 
 ### 6.3 "判赢家"到底为了什么，以及这里为什么不要它（2026-09-27）
 
@@ -162,19 +176,29 @@ create-once 要"一条记录一个文档"才能按 key 守门——那正是用�
 - 服务身份与 Pod 归属（server name 派生、歧义即拒绝）见[服务身份契约](matrix-service-identity-contract.md)与
   `participantRoutes.ts`；本文只覆盖其中"写 Pod 用哪份授权"的部分。
 
-## 8. 记录在案的 drizzle-solid 缺口（2026-09-27）
+## 8. 记录在案的 drizzle-solid / Pod 缺口（2026-09-27）
 
-按仓库规则"绕过前先报告"。**当前实现不再绕过**——控制记录的读写全部走 drizzle-solid
+按仓库规则"绕过前先报告"。**当前实现不绕过 drizzle-solid**——控制记录的读写全部走 ORM
 （`insert(...).values(...).execute()` / `findByResource` / `updateByResource` / `deleteByResource`），
-所以下面两条从"绕过理由"变成"设计时排除的方案以及原因"：
+加上一次显式的容器 `PUT`（Solid 协议操作，不是绕过）。三条按严重程度排：
 
-1. **无法表达"只在不存在时创建"**：`insert` 走 `INSERT DATA`（集合语义，重复写不报错），
+1. **同一个文档里的两行会合并 `object` 列（最严重，实测）**：`object` 列（这里是 `metadata`）被写成
+   自己的主体，主体名按行在文档中的位置推出（`<文档>#metadata-1`）而不是按行身份。于是同文档两行的
+   `metadata` 写进**同一个主体**、三元组合并——实测把一条入站回执与一条出站批次读成了同一条记录
+   （`kind` 成了 `["inbound-transaction","outbound-batch"]`）。**规避**：一条记录一个文档（§6.1）。
+   期望的修法是嵌套主体按行身份命名（例如 `<行主体>-metadata`）。
+2. **`deleteByResource` 只删行、留下（可能为空的）文档**：文档是"一条记录一个文档"时，释放会留下一个
+   空文档；它仍出现在日期目录的 `ldp:contains` 里，读它得到空表示。**暂时接受**：不影响正确性
+   （再写同一个 key 会重新长出记录）。`deleteResourceWithDocument` 是现成的"连文档一起删"的 ORM 入口，
+   需要时改用它。
+3. **无法表达"只在不存在时创建"**：`insert` 走 `INSERT DATA`（集合语义，重复写不报错），
    `insertExactRecordOnce` 是"先查再写"（TOCTOU），SPARQL executor 在 412 之后还会
    `refreshed-etag` → `no-etag` 逐级重试（等于 last-write-wins）。**曾经**因此用原生条件 `PATCH`
-   （`If-None-Match: *`）做严格预留；现在不需要严格预留（§6.3），于是回到 ORM，只把这条留作能力缺口的记录。
-2. **`deleteByResource` 只删行、留下文档**（§6.2 实测）：当文档是"一条记录一个文件"时，这个行为会让
-   create-once 永久 412，因此当时改用文档级 `DELETE`。现在的布局是**按天共享文档**，删的本来就该是记录
-   自己的三元组，`deleteByResource` 正好是想要的语义。
+   （`If-None-Match: *`）做严格预留；现在不需要严格预留（§6.3），只把这条留作能力缺口的记录。
+
+另一条是 **Pod 侧**的（不是 drizzle-solid）：**任何写入者都必须自己创建容器**。SPARQL `PATCH` 可以把
+文档写进一个不存在的路径并让它按 URL 可读，但 `GET` 那个路径上的目录会回 404——没有容器就没有
+`ldp:contains`，客户端列不到也订阅不到（§6.1 的 `ensureDayContainers` 就是为此）。
 
 ## 9. 出站批次的承载：载荷已定并落地，枚举未定（2026-09-27 实测）
 
@@ -205,7 +229,7 @@ create-once 要"一条记录一个文档"才能按 key 守门——那正是用�
 | --- | --- | --- |
 | `select().from(taskResource)` 全表 | **1 次 SPARQL 查询 + 每行 1 次文档 GET**（共 5 次请求） | 成本随**表**增长——任务系统的任务、入站回执都在这张表里 → 违反 §2.1 |
 | 带过滤的 `select`（生成的查询里有 `FILTER(?status = "active")`） | 同样 1 次查询，但**只 GET 命中的行** | 过滤确实下推，成本随**命中行**增长 → 需要一个**可查询的判别列** |
-| `GET <container>`（LDP `ldp:contains`） | **不可信**：4 个文档只列出 1 个 | 对 SPARQL `PATCH` 建出的文档，容器成员关系不完整 → 不能用它枚举 |
+| `GET <container>`（LDP `ldp:contains`） | 列得出全部成员（PUT 与 PATCH 建的都在） | **更正**：早先"只列出 1 个"的结论是**读法错了**——Turtle 会把同一谓词的多个宾语写成逗号列表（`ldp:contains <a>, <b>`），按语句切分的朴素解析只看到第一个。容器列成员是**可用**的，也是客户端发现记录的标准方式 |
 
 于是卡在 models 上。按 AGENTS.md「需要新维度时先在 models 补属性再在 adapter 写值；用文件名/路径段
 区分类型的写法一律视为建模缺口，**先报再动**」：控制记录现在**只有一个可查询列**（`status`），而

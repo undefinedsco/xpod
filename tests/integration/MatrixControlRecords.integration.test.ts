@@ -16,6 +16,7 @@
  * and the ETag did not move). `controlRecords.ts` carries that measurement as its design note.
  */
 import { describe, expect, it } from 'vitest';
+import { Parser } from 'n3';
 import type { OwnerPodAccess } from '../../src/api/ai-gateway/pod/OwnerPodAccess';
 import { PodMatrixInboundTransactionStore } from '../../src/api/matrix/federation/podInboundTransaction';
 import { handleInboundTransaction } from '../../src/api/matrix/federation/inboundTransaction';
@@ -88,7 +89,8 @@ suite('Matrix control records in a real Pod', () => {
     // the task base, one subject per record.
     const bucket = controlRecordBucket(reservation.receivedAt);
     const { resource, subject } = controlRecordAddress(scope, JSON.stringify([ ORIGIN, transactionId ]), bucket);
-    expect(resource).toBe(`${scope}.data/task/${bucket}/transactions.ttl`);
+    expect(resource).toBe(`${scope}.data/task/${bucket}/${resource.split('/').pop()}`);
+    expect(resource.startsWith(`${scope}.data/task/${bucket}/`)).toBe(true);
     const head = await write.fetch(subject.split('#')[0], { method: 'HEAD' });
     expect(head.status).toBe(200);
     expect(CONTROL_RECORD_LOOKBACK_DAYS).toBeGreaterThanOrEqual(2);
@@ -140,6 +142,55 @@ suite('Matrix control records in a real Pod', () => {
     const replay = await run();
     expect(replay).toEqual(first);
     await store.release(scope, { origin: ORIGIN, transactionId }, handle);
+  }, 120_000);
+
+  it('makes the day a real container, so a client can find the records by listing', async() => {
+    const { podUrl, write } = await podHandle();
+    const handle = { scope: podUrl, write };
+    const at = new Date();
+    const bucket = controlRecordBucket(at);
+    const key = `txn-listable-${Date.now()}`;
+    await writeControlRecord(handle, {
+      key,
+      at,
+      instruction: 'Record a transaction that a client should be able to find',
+      status: 'active',
+      metadata: { protocol: 'matrix', kind: 'inbound-transaction', origin: ORIGIN, transactionId: key },
+    });
+
+    // The record's document, its day, its month and its year are all real resources: a client that
+    // owns its own sync state discovers records by listing (the standard Solid way) and can
+    // subscribe to the container, instead of scanning the task table or knowing the keys.
+    const { resource } = controlRecordAddress(podUrl, key, bucket);
+    const [ year, month, day ] = bucket.split('/');
+    const listing = async(target: string): Promise<{ status: number; members: string[] }> => {
+      const response = await write.fetch(target, { method: 'GET', headers: { Accept: 'text/turtle' }});
+      const body = await response.text();
+      // Parsed as Turtle, not by pattern: one statement may list several members after a comma, and
+      // a naive statement-splitting read misses every member but the first — a mistake an earlier
+      // measurement of this Pod made, and the reason the contract once called container listings
+      // unreliable.
+      const quads = new Parser({ baseIRI: target }).parse(body);
+      const members = quads
+        .filter(quad => quad.predicate.value === 'http://www.w3.org/ns/ldp#contains')
+        .map(quad => quad.object.value);
+      return { status: response.status, members };
+    };
+
+    const dayListing = await listing(`${podUrl}.data/task/${bucket}/`);
+    expect(dayListing.status).toBe(200);
+    expect(dayListing.members.map(iri => iri.replace(`${podUrl}.data/task/${bucket}/`, '')))
+      .toContain(resource.split('/').pop());
+
+    const monthListing = await listing(`${podUrl}.data/task/${year}/${month}/`);
+    expect(monthListing.status).toBe(200);
+    expect(monthListing.members.some(iri => iri.replace(/\/$/u, '').endsWith(`/${day}`))).toBe(true);
+
+    const yearListing = await listing(`${podUrl}.data/task/${year}/`);
+    expect(yearListing.status).toBe(200);
+    expect(yearListing.members.some(iri => iri.replace(/\/$/u, '').endsWith(`/${month}`))).toBe(true);
+
+    await deleteControlRecord(handle, (await readControlRecord(handle, key))!);
   }, 120_000);
 
   it('keeps a delivery batch sendable: the payload survives the Pod intact', async() => {

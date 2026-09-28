@@ -70,13 +70,20 @@ function scriptedPod() {
     },
   };
 
-  // The carrier is database-only on purpose: nothing in it needs the raw fetch any more.
-  const fetch = async(): Promise<Response> => {
-    throw new Error('the control-record carrier must not need a raw Pod fetch');
+  // The carrier writes records through the database and prepares containers through the Pod: a
+  // document in a directory that is not a container can be read by URL but never listed.
+  const containers = new Set<string>();
+  const fetch = async(input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if ((init?.method ?? 'GET') !== 'PUT') throw new Error(`the carrier only PUTs containers, not ${init?.method}`);
+    if (containers.has(url)) return new Response('exists', { status: 409 });
+    containers.add(url);
+    return new Response(null, { status: 201 });
   };
 
   return {
     documents,
+    containers,
     /** Every record in the Pod, keyed by its subject. */
     records: (): Record<string, unknown>[] => [ ...documents.values() ].flatMap(rows => [ ...rows.values() ]),
     handle: { scope: SCOPE, write: { db, fetch } } as never,
@@ -106,7 +113,16 @@ describe('a Pod-backed transaction store', () => {
     const bucket = controlRecordBucket('2026-09-28T10:00:00.000Z');
     expect(bucket).toBe('2026/09/28');
     const { resource } = controlRecordAddress(POD, JSON.stringify([ ORIGIN, 'txn-1' ]), bucket);
-    expect(resource).toBe(`${POD}.data/task/2026/09/28/transactions.ttl`);
+    // One record, one document, inside the day directory the models buckets name.
+    expect(resource.startsWith(`${POD}.data/task/2026/09/28/`)).toBe(true);
+    expect(resource.endsWith('.ttl')).toBe(true);
+    // The day directory is a real container, so a client can list the records in it.
+    expect([ ...pod.containers ].sort()).toEqual([
+      `${POD}.data/task/`,
+      `${POD}.data/task/2026/`,
+      `${POD}.data/task/2026/09/`,
+      `${POD}.data/task/2026/09/28/`,
+    ]);
     const stored = pod.documents.get(resource);
     expect(stored?.size).toBe(1);
     expect([ ...(stored?.values() ?? []) ][0]).toMatchObject({
