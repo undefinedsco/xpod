@@ -62,6 +62,14 @@ suite('the running instance answers peers and strangers the way the ledger says'
     });
     expect(native.status).toBe(401);
     expect(native.body).toMatchObject({ errcode: 'M_UNAUTHORIZED' });
+
+    // Reads are signed too — asked about a name this deployment *serves*. A query about somebody
+    // else's name is a 404 before any signature is checked (the handler resolves the addressed name
+    // first, which is also how a peer learns whether this deployment serves it at all).
+    const served = new URL(baseUrl).host;
+    const directory = await probe(`/_matrix/federation/v1/query/directory?room_alias=${encodeURIComponent(`#nobody:${served}`)}`);
+    expect(directory.status).toBe(401);
+    expect(directory.body).toMatchObject({ errcode: 'M_UNAUTHORIZED' });
   });
 
   it('tells a peer which implementation is answering, without asking who it is', async() => {

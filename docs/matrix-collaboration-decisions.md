@@ -216,9 +216,12 @@
    `Proxy.shouldRouteToApi` 只认 `/_matrix`，`/_xpod` 被当成 CSS 路径 → 404。补上 `/_xpod` 前缀后，
    同一探测现在回 **401 `M_UNAUTHORIZED`**（已写进门禁断言）。**这条曾经意味着 ③ 在真实部署里没有真正生效**
    （客户端会一直 404 回退到 `/send`），所以是必须修的实质缺口，不是测试细节。
-2. **`GET /_matrix/federation/v1/query/directory?room_alias=…` 无签名回 404**（预期"未签名一律 401"）。
-   可能是"先按 Host 找被寻址名字、找不到即 404"——那是**顺序**问题（应先认证再定位），也可能是路由未匹配。
-   仍未查。
+2. ~~**`GET /_matrix/federation/v1/query/directory?room_alias=…` 无签名回 404**~~ **已查清：不是缺陷，是探测问错了名字
+   （2026-09-28）**。处理器**先解析被寻址的 server name**（`contextForName(serverName)`），本部署不服务该名字就回
+   404 `M_NOT_FOUND`，之后才验签；探测当时问的是 `#nobody:stranger.example`（本部署不服务）→ 404 合理。
+   改问**本部署服务的名字**后，同一探测回 **401 `M_UNAUTHORIZED`**，已写成断言。
+   **顺带明确一条设计取舍**：这个顺序让未签名调用者能问出"你服务这个名字吗"（信息量极小：服务与否本就可以由
+   能否解析出来推断），换来的是一条更清楚的回答——"不是我服务的名字"与"你没签名"是两回事，对端与运维都能立刻看懂。
 
 不带 Docker 也能取得"真实实例"证据：lite 门禁跑的就是本分支的**真实栈**（Gateway + CSS + API + 真实 Pod），
 于是把验收表里的探测直接打在它上面，并加进门禁（`tests/integration/MatrixInstanceProbe.integration.test.ts`）。
