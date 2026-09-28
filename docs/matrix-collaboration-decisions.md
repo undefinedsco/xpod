@@ -255,8 +255,26 @@ grant（房间级授权＝成员资格）、**D6 完整落地**（授权即成�
 - **迁移的安全网**：接受事件按 event id 幂等，预留只是"这笔客户端事务对应哪个事件身份"；迁出期间两版并存时，
   以 Pod 版为权威（SQL 版保留为回退读取，一个发布周期后删除）。
 
+**剩下的两步（照此实现即可）**：
+
+1. **`PodMatrixEventJournal`**（新类，实现 `MatrixEventJournal`）：
+   - 构造：`{ sequences: MatrixEventJournal; handleFor: (scope) => Promise<MatrixControlRecordTarget | undefined>; now? }`
+     —— 序列三法（`registerEvent`/`registerEvents`/`getHighWatermark`）**原样委托**给 `sequences`（今天的
+     `SqlMatrixEventJournal(db)`）；
+   - 预留四法走控制记录（`kind: 'txn'`，**key = 事务 key 本身**；记录已按 Pod 分片，不必再把 scope 编进 key）：
+     `reserveTransaction` = 读、无则插、返回记录（记 `eventId`/`createdAt`/`contentHash` 到 `metadata`，
+     `at = candidate.createdAt`，这样重试落在同一天；跨午夜由 2 天查找窗口覆盖）；
+     `replaceReservation` = 找到记录后 `updateControlRecord`；`findReservation`/`findReservations` =
+     用 `reservationKeyForEvent(event)` 算 key 后点查（没有 key 的事件返回 undefined）；
+   - **没有 handle 就报错**（403，点名哪个 Pod），与其它承载一致：不静默、不退回部署自持 key。
+2. **容器装配**：`journal: new PodMatrixEventJournal({ sequences: new SqlMatrixEventJournal(db), handleFor })`，
+   `handleFor` 复用出站 store 那条"已服务路由 → 参与者 → 服务 grant"的解析，并且**必须在调用时解析**
+   （构造期解析会与 store 成环——store 需要 journal）。**这里就是"仅凭 Pod 恢复"这条门禁的最后一里**：
+   装配完成并跑过全量门禁后，本地事件预留就真正落在各参与者的 Pod 里，SQL 只留可重建的顺序。
+
 **为什么现在没做**：它改的是本地写入的**身份钉住**路径（重放必须落在同一个事件上），需要
 "实现 → 全量门禁 → 处理回退"的完整迭代余量；本会话上下文已不足以安全完成，因此按惯例停在此处并写下设计。
+前置已全部就位并有测试：事件行带 `txnDevice`、key 重建与写入/读取等价性、接口已按事件查。
 
 ## 状态规则
 
