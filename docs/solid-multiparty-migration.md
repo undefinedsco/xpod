@@ -16,7 +16,7 @@
 | 6 | 房间权威（**C2**）：成员与元数据只在房主 Pod | 新增/改 | 房间记录读写、成员事件写入路径、`resolvedState` 的用途 | 房主 Pod 是唯一权威；其他 Pod 的房间记录标注为**本地镜像**；镜像冲突不得放行写入 |
 | 7 | 投递：推 + 批次 → **拉为主** | 改 | `outboundDelivery`/`outboundSender`/`PodMatrixOutboundStore`/`outboundBatches` | 新增"订阅 + 拉增量"的验收；不再有"欠账批次" |
 | 8 | 入站回执（`txn` 控制记录）与出站批次控制记录 | **删候选** | `controlRecords.ts`、`PodMatrixInboundTransactionStore`、控制记录契约文档 | 不再断言"重放答回首次应答"；幂等写入即验收点 |
-| 9 | API 形状：**一套**（对端 api-server POST 批量事件 + 事务 id + 逐条应答），前缀 `/_matrix/*` | 留形、换认证、收敛路径 | `FederationHandler`、`inboundRoute`、`federation/*`、`/_xpod/matrix/inbound` | **路径与命名空间都不改名**；认证从 `X-Matrix` 换为 Solid；两条投递路径（原生 + 联邦）收敛成一条 |
+| 9 | API 形状：**一套**（对端 api-server POST 批量事件 + 事务 id + 逐条应答），前缀 `/_matrix/*` | 留形、换认证、收敛路径（**路径已收敛**；认证见下） | `FederationHandler`、`inboundRoute`、`federation/*`、`/_xpod/matrix/inbound` | **路径与命名空间都不改名**；认证从 `X-Matrix` 换为 Solid；两条投递路径（原生 + 联邦）收敛成一条 |
 | 10 | 事件存进 Pod 的形状 | 改 | `metadata.protocols.matrix.event`（完整 PDU） | 存"事件本身 + 内容哈希"即可（不再需要 hashes/signatures/auth_events）；**命名空间仍是 `matrix`，不改名** |
 | 11 | models 布局（房间 chat/thread、事件按天 message 行）与"先建父容器" | **留** | — | 不变（已在 models 契约与测试里） |
 | 12 | Pod 写授权（任务层 grant） | **留** | `matrixPodWriteFor` | 不变：没有 grant 就 403 |
@@ -66,6 +66,15 @@
 的收尾行是 `  | { transport: 'native'; … };`（不是 `};`），按"找下一个 `};`"扫描会一路吃掉紧随其后的
 `DEFAULT_POLICY` 常量——恢复它，并把这条写进规程：**删除块的收尾行必须按该块的语法形态判断，不能统一
 找 `};`**。
+
+**认证适配的进展（2026-09-28）**：`ApiServer` 已有 `optionalAuth`（接受匿名调用者，但有凭据时
+仍填充 `request.auth`），所以"同一路由既收 Solid 会话、也收 `X-Matrix` 签名"是现成的机制。
+判定这一层先落地为可测的组合件：`src/api/matrix/solidPeerBatch.ts` 的 `solidPeerMayDeliver`
+（把 `writerMayClaim` 应用到整批事件上；**身份按批次声明的 `origin` 拼写**——对端是在它自己的名字下
+派生 sender 的，用我们的名字去比会拒掉每一批诚实的投递）。四种拒绝分开报：`no-session` /
+`no-origin` / `empty`（空批次不放过）/ `impersonation`。单元 4 项。
+**尚未接线**：把 `/send` 注册为 `optionalAuth`、在处理器里按"有会话就走 Solid 判定、否则走
+`X-Matrix`"分支，需要夹具能注入会话（否则新分支没有测试覆盖）——这是下一刀。
 
 **服务端也已摘下（2026-09-28）**：`NATIVE_INBOUND_PATH`、`FederationHandler` 的原生路由与
 `createNativeInboundHandler`（含 `nativeAnswer`）、`MatrixServerNameResolver.resolveNative` 与
