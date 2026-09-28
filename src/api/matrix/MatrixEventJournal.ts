@@ -12,6 +12,29 @@ export interface MatrixTransactionReservation {
   contentHash: string;
 }
 
+/**
+ * The transaction key a stored event belongs to, rebuilt from the event itself.
+ *
+ * A reservation is addressed by this key, and the key names the device that sent it — the one part
+ * of it an event does not otherwise carry, which is why the row stores `txnDevice`. Rebuilding it
+ * here is what lets a carrier that keeps reservations per key (rather than an id index) answer
+ * "which reservation does this event belong to" with one point lookup: the four lookups in
+ * `PodMatrixStore` all hold the whole event.
+ *
+ * Returns `undefined` for an event that never came from a reserved transaction (a received event, a
+ * state event written outside one), which is not an error: it simply has no receipt.
+ */
+export function reservationKeyForEvent(event: {
+  roomId?: string;
+  type?: string;
+  txnId?: string;
+  txnDevice?: string;
+}): string | undefined {
+  const { roomId, type, txnId, txnDevice } = event;
+  if (!roomId || !type || !txnId || !txnDevice) return undefined;
+  return JSON.stringify([ txnDevice, roomId, type, txnId ]);
+}
+
 /** Operational references only: event bodies and room state remain authoritative in the Pod. */
 export interface MatrixEventJournal {
   reserveTransaction(scope: string, key: string, candidate: MatrixTransactionReservation): Promise<MatrixTransactionReservation>;

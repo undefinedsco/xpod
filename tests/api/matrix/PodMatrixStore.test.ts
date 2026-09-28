@@ -3,7 +3,7 @@ import { drizzle } from '@undefineds.co/drizzle-solid';
 import { chatResource, messageResource, threadResource } from '@undefineds.co/models';
 import { PodMatrixStore } from '../../../src/api/matrix';
 import { matrixHarness } from '../../helpers/MatrixMemoryDatabase';
-import { InMemoryMatrixEventJournal } from '../../../src/api/matrix/MatrixEventJournal';
+import { InMemoryMatrixEventJournal, reservationKeyForEvent } from '../../../src/api/matrix/MatrixEventJournal';
 
 vi.mock('@undefineds.co/drizzle-solid', async () => {
   const actual = await vi.importActual<typeof import('@undefineds.co/drizzle-solid')>('@undefineds.co/drizzle-solid');
@@ -13,6 +13,39 @@ vi.mock('@undefineds.co/drizzle-solid', async () => {
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe('PodMatrixStore shared Pod contract', () => {
+  it('rebuilds a reservation key from the stored event, so a lookup needs no index', async () => {
+    const { context, db, rows } = matrixHarness();
+    // A journal that records the key it was asked to reserve under — the same key a Pod carrier
+    // would address the record by. A subclass, because spreading an instance copies no methods.
+    class SpyJournal extends InMemoryMatrixEventJournal {
+      public readonly keys: string[] = [];
+      public override async reserveTransaction(
+        scope: string,
+        key: string,
+        candidate: Parameters<InMemoryMatrixEventJournal['reserveTransaction']>[2],
+      ): Promise<Parameters<InMemoryMatrixEventJournal['reserveTransaction']>[2]> {
+        this.keys.push(key);
+        return await super.reserveTransaction(scope, key, candidate);
+      }
+    }
+    const journal = new SpyJournal();
+    const keys = journal.keys;
+    const store = new PodMatrixStore({ journal });
+    const reader = { ...context, _matrixDb: db } as never;
+    const room = await store.createRoom({}, context);
+    const sent = await store.sendEvent(room.roomId, 'm.room.message', 'txn-key', { body: 'hi' }, reader);
+
+    // What a later reader has: the stored row, nothing else.
+    const stored = rows.get(messageResource)!
+      .map((entry: any) => entry.metadata.protocols.matrix)
+      .find((matrix: any) => matrix.event?.event_id === sent.eventId);
+    expect(stored.txnId).toBe('txn-key');
+    expect(reservationKeyForEvent({ roomId: room.roomId, type: stored.event.type, txnId: stored.txnId, txnDevice: stored.txnDevice }))
+      .toBe(keys[0]);
+    // An event with no reservation has no key rather than a wrong one.
+    expect(reservationKeyForEvent({ roomId: room.roomId, type: 'm.room.message' })).toBeUndefined();
+  });
+
   it('rebuilds a deterministic local order from the Pod alone', async () => {
     const { store, context, db } = matrixHarness();
     const room = await store.createRoom({}, context);

@@ -239,8 +239,12 @@ grant（房间级授权＝成员资格）、**D6 完整落地**（授权即成�
 `xpod_matrix_transactions`。迁出所需的一切都已就位，且**只需要一处接口改动**：
 
 - **四个反查点都手里有完整事件**（`PodMatrixStore.ts:1679/1802/1861/1886`，形如
-  `findReservation(scope, event.eventId)`），而事件行现在带 `txnDevice`（本轮之前落地），于是
+  `findReservation(scope, event.eventId)`），而事件行现在带 `txnDevice`，于是
   `[txnDevice, roomId, type, txnId]` 这个 key 可以**算出来**——不需要按 event id 建索引，更不需要扫描。
+  **已落地（2026-09-28）**：`MatrixEventJournal.reservationKeyForEvent(event)` 就是这个重建，
+  并有测试**把写入侧与读取侧钉在一起**——用 spy journal 记下 `reserveTransaction` 实际收到的 key，
+  再从**存下来的那一行**（只有 `metadata.protocols.matrix`）重建，断言两者相等；没有预留的事件返回
+  `undefined` 而不是一个错的 key。
 - **接口因此从"按 id 查"改成"按事件查"**：`findReservation(scope, event)` /
   `findReservations(scope, events)`（事件含 `eventId`、`roomId`、`type`、`txnId`、`txnDevice`）。
   Pod 版实现 = 控制记录的点查（kind `txn`）；SQL 版实现顺带受益（少一次 id→行的间接）。
