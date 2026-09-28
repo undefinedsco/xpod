@@ -271,10 +271,17 @@ grant（房间级授权＝成员资格）、**D6 完整落地**（授权即成�
      `replaceReservation` = 找到记录后 `updateControlRecord`；`findReservation`/`findReservations` =
      用 `reservationKeyForEvent(event)` 算 key 后点查（没有 key 的事件返回 undefined）；
    - **没有 handle 就报错**（403，点名哪个 Pod），与其它承载一致：不静默、不退回部署自持 key。
-2. **容器装配**：`journal: new PodMatrixEventJournal({ sequences: new SqlMatrixEventJournal(db), handleFor })`，
-   `handleFor` 复用出站 store 那条"已服务路由 → 参与者 → 服务 grant"的解析，并且**必须在调用时解析**
-   （构造期解析会与 store 成环——store 需要 journal）。**这里就是"仅凭 Pod 恢复"这条门禁的最后一里**：
-   装配完成并跑过全量门禁后，本地事件预留就真正落在各参与者的 Pod 里，SQL 只留可重建的顺序。
+2. **容器装配：试过一版、被真实门禁否决，形状因此改了（2026-09-28）**。第一版按"scope → 已服务路由 →
+   参与者服务 grant"解析 handle（复用出站 store 那条），装配后 `tests/api/matrix` 仍绿，但 **lite 真实门禁红了**
+   ——`MatrixCollaboration` 验收夹具失败。原因清楚：**预留写的是调用方路径**（客户端会话写入自己的 Pod），
+   而那个 handle 是**部署自持的 service 句柄**（需要参与者交出 Pod interface key），于是调用方写入统统 403。
+   已回退，lite 恢复 162 passed / 6 skipped。
+   **修正后的形状**：journal 的预留调用必须带上**调用方的授权**，而不是按 scope 猜一个部署句柄——
+   `PodMatrixEventJournal` 的 `handleFor` 应改成 `handleFor(context)`（store 在每个调用点都手里有 context：
+   `reserveEventTransaction(context, …)` 与四个反查点），由它去拿**该上下文的** Pod 句柄
+   （`PodMatrixStore.podWriteFor(context)` 正是这个），于是"会话写就用会话的授权、服务写就用服务 grant"
+   与其它承载完全一致。接口因此再加一个可选 authority 参数（或让 journal 的读写都接收 context）。
+   **这一步做完，"仅凭 Pod 恢复"就能转 ✅**（SQL 只留可重建的顺序）。
 
 **为什么现在没做**：它改的是本地写入的**身份钉住**路径（重放必须落在同一个事件上），需要
 "实现 → 全量门禁 → 处理回退"的完整迭代余量；本会话上下文已不足以安全完成，因此按惯例停在此处并写下设计。
