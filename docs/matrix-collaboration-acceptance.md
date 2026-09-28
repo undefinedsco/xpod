@@ -494,6 +494,10 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
 | `docker context ls` | **秒回**（这是客户端本地信息） |
 | `docker info` / `docker ps` | **挂住**，45 秒与 90 秒两次都被 SIGTERM 杀掉 |
 
-结论：**客户端在、daemon 不答**（引擎卡死，不是没启动）。所以 `full` 门禁与任何 Docker 起的真实实例
-都不能跑；需要**重启 Docker Desktop 的引擎**（UI 里 Quit/Restart，或 `docker context use colima` 换到 colima
-并确保它在跑）。恢复后第一件事：`docker ps` 能秒回 → 跑 `bun run test:integration:full` → 再补真实实例证据。
+**colima 这条路也断了**（2026-09-28 复核）：`~/.colima/default/docker.sock` **不存在**（colima 没在跑）——
+直接 `DOCKER_HOST=unix://…/colima/default/docker.sock docker ps` 立刻回 "no such file or directory"，
+所以不是"换个 context 就好"，必须先把某个引擎启动起来。
+
+结论：**客户端在、daemon 不答**（Docker Desktop 引擎卡死，不是没启动；colima 未运行）。
+所以 `full` 门禁与任何 Docker 起的真实实例都不能跑；需要**重启 Docker Desktop 的引擎**（UI 里 Quit/Restart），
+或 `colima start` 后再试。恢复后第一件事：`docker ps` 能秒回 → 跑 `bun run test:integration:full` → 再补真实实例证据。
