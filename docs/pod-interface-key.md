@@ -60,8 +60,8 @@ Pod 即静态秘密的信任边界；因此不为 Pod 内数据再引入一层�
 
 | 当前实现 | 行为 | 待修正 |
 | --- | --- | --- |
-| `OwnerPodAccess.getPodFetch` | 优先交换调用方 CSS credential，再尝试 caller Bearer，最后读取 owner 存储密钥 | 去掉缺少出站能力时的通用 owner 密钥回退；任务应自行恢复授权 |
-| `CallerPodAccess` | Bearer 除身份/token 检查外还要求 `viaApiKey` | 有效且适用的直接 Bearer 不应因不是 sk 来源被排除 |
+| `OwnerPodAccess.getPodFetch` | **已改**：调用方 sk 与 owner 存储密钥都走共享 `SolidSessionFactory`（同一凭证只交换一次，DPoP key 由 factory 持有）；再尝试 caller Bearer；最后读取 owner 存储密钥 | 去掉缺少出站能力时的通用 owner 密钥回退；任务应自行恢复授权 |
+| `CallerPodAccess` | **已改**：`isCallerOwnPodBearer` 接受任何已通过 issuer 校验、owner 匹配的直接 Bearer，只排除网关 API key / 运行态 invocation 主体与 DPoP | 保持；后续按决策 4 拆分 `caller_outbound_capability_missing` |
 | `PodInterfaceKeyStore` + `identity_pod_interface_key` | 用 `CredentialVault` 长期封存 owner 的 CSS secret | 这是 API 部署凭证库，即使按用户隔离，也不符合任务层持久化归属 |
 | `credentialVaultForConfig`（`src/api/container/common.ts`） | 写入路径一律是 `PlaintextCredentialVault`（base64，非加密）；`SecretCellCredentialVault` 只作为 `legacyVault` 参与**解密** | 第 1.1/3.3 节要求"加密保存、解密 key 与密文分离"，与现状不符；新凭证存储须明确走 `SecretCellCredentialVault`（依赖 `XPOD_SECRET_CELL_KEY_ID` / `XPOD_SECRET_CELL_KEY`），否则改口径（见第 9 节决策 1） |
 | 本轮已上线的 `identity_pod_interface_key` | 行数据存在 API 的 identity DB；API 通过 `storedKeyFetch` 机会式使用 | **迁出后删除**：把行数据迁入任务层凭据存储（第 7.4 节），随后删除该表与 API 侧读路径（`PodInterfaceKeyStore`、`storedKeyFetch`、注册时 `saveKey`）。表归任务层，API 不保留访问；过渡期只读、不再新增写入 |
@@ -89,6 +89,31 @@ Bearer 与 DPoP 都支持，分开入口认证与出站能力：
 - 浏览器入站 DPoP 只证明当前 API 请求；API 不持有浏览器私钥，不能重放到 Pod，也不能将 DPoP 改名为 Bearer。
 - token 缓存按 issuer、完整凭证的安全指纹及凭证版本隔离，与 DPoP key 配对；不只按 owner/clientId 缓存。日志和 cache key 不含明文秘密。
 - 401 失效缓存并按操作幂等性决定是否受控重试；403 不更换身份重试。不得回退全局服务身份或 owner 存储密钥。
+
+**本轮落地（§7.1 第 1 步）**：`src/api/auth/SolidSessionFactory.ts` 是唯一的 token exchange 实现，`ClientCredentialsAuthenticator`（入站）与 `OwnerPodAccess`（出站）在容器里共用一个实例（`src/api/container/common.ts` 的 `solidSessions`）。缓存 key = issuer + 完整凭证 SHA-256 指纹 + 凭证版本，会话与 DPoP key 同存；过期留 30s 余量，401 触发 `invalidate` 后按下一次请求重新交换。`buildAuthenticatedFetch` 用 factory 交回的 key 为每个规范 URL/方法现算 proof。
+
+**已验证（2026-09-24，`scripts/accept-solid-bearer-pod-access.ts`，临时本地栈 10/10）**：CSS 对不带 DPoP proof 的请求签发**真 Bearer** access token；该 token 可直接读写 Pod（`PUT` 201）并访问 `/-/sparql`（200）；**API 接受它并用调用方自己的 token 读 Pod**（`GET /api/ai/gateway/keys` 经网关与直达 API 均 200，同 token 下 SPARQL 面 200）；同一用户的 **DPoP** token 在同一接口上 403 `service_access_missing`（API 不重放 DPoP）；无凭据 401。也就是说"API 用调用方自己的 Bearer 打开用户 Pod"这条链路**当前代码已支持，不需要改后端**。
+
+同时发现两件必须记住的事：
+- **浏览器会话目前是 DPoP**：`ui/src/solid/XpodSolidRuntimeProvider.tsx` 的 `session.login(...)` 没有传 `tokenType`，走 inrupt 默认 `DPoP`。所以"浏览器拿自己的凭据直调 chatkit/API 读 Pod"今天还不成立——要么登录时改 `tokenType: 'Bearer'`（前端一行，安全姿态变化：Bearer 无持有证明，API 在有效期内可重放），要么浏览器侧持有 sk（`ui/src/auth/account-client-credentials.ts` 已有创建/撤销能力）。**已选第二条**，其缺失的前置环节见 §3.1.1。
+- **chatkit 曾掩盖 Pod 不可达（已修）**：`PodChatKitStore.getDb` 原来在拿不到 Pod 凭据时返回 `null`，26 个调用点据此返回空列表/空值，因此没有可用 Pod 凭据的调用方拿到 `200 {"data":[]}` 而不是原因码。现在 `getDb` 直接抛出原因码（无身份 → `caller_pod_access_unavailable`，不可用 → `podAccessError(...)`），`/v1/chatkit` 与 `/v1/chatkit/threads*` 通过 `src/api/handlers/PodAccessFailureResponse.ts` 映射为 401 `authentication_required` / 403 `service_access_missing` / 403 `pod_owner_mismatch`。验收脚本对应断言为 `chatkit-reports-dpop-caller`。
+
+### 3.1.1 浏览器如何取得自己的 sk（会话代持）
+
+sk 由 CSS Account API 的 client-credentials 控件创建，而 Account Cookie 只下发在 Account authority 自己的 origin。Gateway 服务的页面（`http://127.0.0.1:3000`）永远看不到它，于是 WebID 登录后 `controls.account.clientCredentials` 缺失，浏览器没有可交给 API 的凭据——这正是本机/本部 WebID 登录后 `/api/ai/gateway/keys`、`/v1/models` 403 的原因。
+
+补齐的环节在 authority 一侧：`ValidatingIdentityProviderHttpHandler` 在 Cookie 之外接受**宿主自己的 Solid 会话**作为 Account 来源（详见 [`docs/COMPONENTS.md`](COMPONENTS.md) 的 OIDC 交互路径隔离一节）。浏览器用同一个 Session.fetch 读 Account index，拿到 `clientCredentials` 后照常创建 sk，因此：
+
+- 不需要第二个登录表单、不需要密码、不引入部署级服务身份；
+- 会话只能触达它自己 WebID 已链接的那个 Account，第三方 Solid 客户端（`client_id` 不在 `hostClientIds` 内）即使持有同一 WebID 的 token 也拿不到 Account；
+- Cloud 与 Local 同一套处理：authority 是部署自己的 Account authority（Cloud 为 IdP，Local/Standalone 为本地 runtime），页面侧只看它广告的 `clientCredentials`，不区分部署形态；
+- 该能力落在 Xpod 服务镜像内，**Cloud 侧需要 IdP 部署同一版本**才生效；未部署时浏览器读不到 `clientCredentials`，行为回退为今天的 403，不会静默降级成别的身份。
+
+凭据生命周期不变：内存持有、会话结束即撤销（`ui/src/auth/session-request-credential.ts`），台账见 `docs/pod-interface-key.md` §4。重放请求必须走不带会话凭据的 transport：inrupt 的 authenticated fetch 会**覆盖**调用方设置的 `Authorization`（"Any pre-existing Authorization header should be overriden"），经它重放会把 sk 换回会话自己的 token，等于没带凭据。
+
+仍存在两处非本路径的交换，**未收敛，已记录原因**：
+- `src/solidfs/PodSolidFsHttpClient.ts`：只产出 headers（`createAuthHeaders`），拿不到目标 URL/方法就无法生成 DPoP proof，因此仍以 body 传递 `client_id/client_secret` 换取 Bearer；随 §7.1 第 5 步（后台入口迁移到 Runtime 任务）改为 fetch 形态后并入 factory。
+- `src/cli/lib/solid-auth.ts` 的 `getAccessToken`（已标 `@deprecated`）：CLI/桌面向 CSS 走 discovery 后自行交换并返回可重放的 Bearer，不在 API runtime 内；待其调用方迁移到 `authenticate()`/`Session.fetch` 后删除。
 
 ### 3.2 普通浏览器交互
 
@@ -218,11 +243,20 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 
 外部 CSS 走标准 URL，不依赖本地 Gateway、identity 账户记录或 Xpod 专用头。issuer、WebID、Pod root、API URL 不应从彼此的字符串路径猜测；复用规范配置和 discovery，避免重复配置。数据层优先 drizzle-solid，验证标准资源与集合访问，不假定外部 CSS 提供 Xpod SPARQL/vector 扩展；库能力缺口先记录 issue。
 
+**支持范围（2026-09-24 确认）：只支持 CSS——随部署 CSS 与外部 CSS。** ESS/Inrupt PodSpaces、NSS 等不在范围内：它们没有 CSS 的 Account `client-credentials` 能力，"静默准备一把 API 可花的凭据"和 Xpod 扩展都无从谈起，浏览器直读之外的能力无法按同一口径验收。
+
+由此得到两类 CSS 的分工（这一条决定第 2 步的实现范围）：
+
+- **随部署 CSS（自家 Pod）**：浏览器与 Account API 同源，可以**静默**为当前 WebID 创建/持有一把 client credential，请求级携带给 API；API 代读、内部 transport、索引扩展都可用。
+- **外部 CSS**：机制上是通的——`resolveHostedAccountControlUrl` 已支持"控制 URL 与**受信任账户索引**同源且都在 `/.account/` 下"的第三方 authority 分支（`ui/src/utils/account-control-url.ts`），CSS 默认中间件也带 CORS（`CorsHandler`，origin 反射 + `options_credentials: true`，作用于所有入站请求），所以浏览器可以跨源携带 `CSS-Account-Token` 调外部 CSS 的账户接口。**当前限制在"账户索引的来源"**：`resolveXpodAccountIndex()` 只认当前 Xpod 的 authority（公网用 `window.__XPOD__.idpIndex`，local 用 `/provision/status`），因此凭据总是创建在当前 Xpod 自己的 CSS 上。要把静默创建扩到外部 CSS，需要三件事：(1) 由用户的 WebID/issuer 解析**其 Pod authority** 的账户索引并按 issuer 校验；(2) 按 authority 保存/使用账户会话（现为单 authority：`xpod.cssAccountToken` + `xpod.cssAccountAuthority`）；(3) API 侧按 issuer 解析 token endpoint 才能用这把凭据代读（今天是单一 `config.cssTokenEndpoint`）。在三件事完成前，外部 CSS 的前台按"host 用当前会话直读 Pod、API 只做推理"工作，后台任务由用户显式导入一把该 issuer 的凭据存任务层（决策 5/7）。
+
 外部 CSS 上的能力边界（实施与验收都以此为准，缺能力要显式报缺口而不是静默降级）：
 
 | 能力 | 随部署 CSS | 外部 CSS |
 | --- | --- | --- |
 | 标准 LDP/RDF 读写（drizzle-solid，资源与集合） | 支持 | 支持 |
+| 浏览器静默准备请求级 client credential（Account API） | 支持 | 机制可行（CORS 默认允许、`trustedAccountIndex` 分支存在），但需补"按 Pod authority 解析账户索引 + 多 authority 会话"；未补前改由 host 直读或用户显式导入 |
+| API 用调用方凭据代读 Pod | 支持 | 需按 issuer 解析 token endpoint（待补），且 loopback transport 不适用 |
 | 模型/凭证文档（由 host 写 Pod，路径来自 models） | 支持 | 支持（标准资源写入） |
 | 内部 transport（`HostedPodRoute` + canonical 头） | 支持 | 不适用（直接用标准 URL） |
 | FTS / VEC 索引与检索（`rdfEngine`、`rdfSearchIndexingService` 扩展） | 支持 | **不支持**：不得用 embeddings 成功掩盖索引缺失 |
@@ -234,22 +268,35 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 
 ## 7. 实施清单
 
-所有条目为未来实施，本次仅更新文档。
+第 1 步已实施（2026-09-24），实现与验收见 §3.1、§8；其余条目为未来实施。
 
 ### 7.1 迁移顺序（每步都可运行，且不先删回退）
 
-现状：0.4.15 上线的 9 个 Pod 访问入口**全部**依赖 legacy owner vault。因此在替代能力通过验收前，任何一步都不得删除该回退，否则前台或后台能力立刻退化。顺序与"每步的验收证据"绑定：
+原则（2026-09-24 确认）：**API 只在用户在场的同步路径上工作——凭据随请求而来，API 不持久化 owner 凭据；异步任务自己管理凭据。**
+
+现状：0.4.15 上线的 9 个 Pod 访问入口**全部**依赖 legacy owner vault（`identity_pod_interface_key` + `storedKeyFetch`）。因此在替代能力通过验收前，任何一步都不得删除该回退，否则前台或后台能力立刻退化。顺序与"每步的验收证据"绑定：
 
 | 步 | 做什么 | 完成判据（验收） | 此时 legacy 状态 |
 | --- | --- | --- | --- |
-| 1 | 收敛 token exchange / session factory；修直接 Bearer 的来源限制、DPoP key 生命周期、缓存隔离（§3.1） | 机器认证行（§8）：sk、直接 Bearer、服务器自持 key 的 DPoP 各自成功；错误 owner/proof/过期/缓存串用被拒 | 保留（唯一路径） |
-| 2 | 新增 host 交互适配器，迁移**前台** Chat、模型测试与交互 embedding（§3.2） | 普通浏览器行：已登录 + 已配置模型 + **无 sk、无 task binding** 的真实 Chat 与 embedding 成功 | 保留（后台仍用） |
-| 3 | `POST /api/ai/gateway/keys` 改为请求级 Pod fetch，不再持久化部署 owner 密钥（§4） | 登记成功、Pod 记录写入成功、`identity_pod_interface_key` 不再新增；旧记录仍可读 | 保留（迁移期只读） |
-| 4 | Runtime 侧凭证存储 + Agent 授权 + 任务绑定（pending/active、幂等投递、崩溃恢复，§4） | 授权状态行 + 任务执行行：pending 不执行、失败不留 active、重试/并发/轮换/撤销符合版本语义 | 保留 |
-| 5 | 后台入口逐个迁移：配额定时刷新、索引重建、chatkit 后台 run、Matrix/Reconciler（§3.3、7.2） | 每迁一个：该入口在无 API vault 的情况下完成一次真实执行；对应 legacy 调用点在同一提交内摘除 | 逐步缩小 |
-| 6 | 把 `identity_pod_interface_key` 的行**迁出**到任务层凭据存储（§7.4），验证后**删除 API 侧的表**，并移除 `storedKeyFetch` 与注册时 `saveKey` | 迁移逐行核对（owner/issuer/credential_id 一一对应）+ 旁路退场行 + 全量 §8 通过；迁移失败时保持只读可回滚 | 移除（API 侧不再持有任何 owner 长期凭据） |
+| 1 | **已完成**：收敛 token exchange / session factory；修直接 Bearer 的来源限制、DPoP key 生命周期、缓存隔离（§3.1） | 机器认证行（§8）：sk、直接 Bearer、服务器自持 key 的 DPoP 各自成功；错误 owner/proof/过期/缓存串用被拒 | 保留（唯一路径） |
+| 2 | **前台改为请求级凭据**：前台的 Pod 访问由调用方在请求里带凭据（浏览器为当前 WebID 准备并持有自己的 client credential；Pod 直读仍走 Session，§3.2 的 host 适配器是这条路的实现形态之一），API 不再用存储的 owner 密钥给前台兜底 | 普通浏览器行：登录 + 模型已配置的真实 Chat 与 embedding 成功，且全程 `identity_pod_interface_key` 不新增；无凭据的调用方拿到 `service_access_missing` 而不是空结果 | 前台已不依赖；后台仍用 |
+| 3 | **任务层凭据存储 + 显式授权**：Runtime 侧凭证表（§7.4，`sealed_secret` 按决策 6 加密）+ Agent 授权 + 任务绑定（pending/active、幂等投递、崩溃恢复，§4） | 授权状态行 + 任务执行行：pending 不执行、失败不留 active、重试/并发/轮换/撤销符合版本语义 | 保留（后台仍用） |
+| 4 | **后台入口逐个迁移**：配额定时刷新、索引重建、chatkit 后台 run、Matrix/Reconciler（§3.3、7.2） | 每迁一个：该入口在无 API vault 的情况下完成一次真实执行；对应 legacy 调用点在同一提交内摘除 | 逐步缩小 |
+| 5 | **已落地（2026-09-26）**：注册不再 `saveKey`；`storedKeyFetch`（连同 `keys` 依赖与 `PodInterfaceKeyGrant` 实现）已移除；存量行由 API 启动时一次性迁出（§7.4 注）。**未做**：`identity_pod_interface_key` 表的 drop 留作显式运维动作 | 迁移幂等（逐行核对 owner/issuer/credential_id）+ 旁路退场（`OwnerPodAccess`、`PodGatewayAccessKeyRepository`、`AiGatewayManagementHandler`、`container/config` 单测）+ 集成"凭据随请求"（`chatkit-pod-store` 22/22）；待做：删表后复跑 §8 全量 | 请求与后台都不再读；表仍可读（回滚窗口） |
 
-约束：第 2、3 步完成前不得删除 legacy；第 5 步每个入口必须"先有替代验收、再摘调用点"；第 6 步前 `pod_interface_key_*` 诊断码仍需保留，因为迁移期它们仍是有效状态。
+约束：第 2 步只改前台，不动后台（后台此时仍靠存储的密钥）；第 3 步必须先于第 5 步，否则新用户的**后台**任务会没有密钥；第 4 步每个入口必须"先有替代验收、再摘调用点"；第 5 步前 `pod_interface_key_*` 诊断码仍需保留，因为迁移期它们仍是有效状态。
+
+**本阶段范围（2026-09-24 确认）**：第 2 步只做**随部署 CSS**。浏览器侧的静默凭据与请求级携带按"自家 Pod"实现。
+
+**待办（不在本阶段）——外部 CSS 的静默凭据**：
+1. 由用户的 WebID/issuer 解析**其 Pod authority** 的账户索引，并按 issuer 校验（不能采信 Pod 页面上任意 URL）；
+2. 多 authority 的账户会话（现为单份 `xpod.cssAccountToken` + `xpod.cssAccountAuthority`，需按 authority 分别保存与失效）；
+3. API 侧按 issuer 解析 token endpoint（现为单一 `config.cssTokenEndpoint`），否则该凭据换不到 token。
+在此之前，外部 CSS 的前台按"host 用当前会话直读 Pod、API 只做推理"工作；需要后台能力时由用户显式导入一把该 issuer 的凭据，存任务层。
+
+**前台请求级凭据的生命周期（第 2 步采用）**：登录后静默创建、**仅保存在内存**、登出即撤销。需要跨会话/跨设备复用时再改为存进用户自己的 Pod（那时浏览器用会话读取，凭据不进 API 侧存储）。
+
+**前台凭据的携带方式（第 2 步实现）**：由**服务端**决定哪些调用需要 Pod 凭据——调用方自己的 context 打不开 Pod 时，API 返回 403 `service_access_missing`；host 的会话 fetch 捕获这一响应后准备本会话凭据并**重试一次**（`withRequestPodAuthorization`，`ui/src/auth/session-request-credential.ts`）。这样客户端不需要维护"哪些路由读 Pod"的名单：Pod 直读、capability 调用（`/api/applets/...` 需要交互式主体）与其他 origin 都不受影响；重试只发生在请求被拒绝、尚未产生副作用时。
 
 ### 7.2 现有入口的目标归属
 
@@ -278,7 +325,7 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 - **明确不做**：把 secret 放进 Inngest 的 event payload、`step.run` 返回值或 function state。这些是会被 Inngest 持久化并在其 UI/dev-server 调试面暴露的运行数据，且结构随 Inngest 版本演进；载荷里只允许出现引用（`credentialRef`、`credentialVersion`、`ownerWebId` 这类非秘密值）。
 - **可靠性取舍**：Pod 内状态流与 Inngest 投递之间没有跨系统事务，因此 §4 的幂等 `executionKey`、pending→active 状态机与崩溃恢复必须建立在"Pod 为权威、Inngest 可重放"之上：先写 Pod 的 pending，再投递；恢复时以 Pod 状态为准补投或终止。
 
-- [ ] 收敛 token exchange/session factory；修复直接 Bearer 的来源限制、DPoP key 生命周期及缓存隔离。
+- [x] 收敛 token exchange/session factory；修复直接 Bearer 的来源限制、DPoP key 生命周期及缓存隔离。（2026-09-24：`SolidSessionFactory` + `isCallerOwnPodBearer`；`src/solidfs`、CLI 两处遗留交换已记录，见 §3.1）
 - [ ] 新增 host 交互适配器，迁移模型测试与普通 Chat；拆开前台推理与持久 run/step。
 - [ ] 将客户端配置登记改为请求级 Pod fetch；删除注册时自动保存部署 owner 密钥的行为。
 - [ ] 分开用户凭证记录、Agent 授权和任务绑定；Runtime 恢复可信 owner/Agent 上下文，拒绝事件或参数伪造身份。
@@ -300,14 +347,35 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | `issuer` | 签发该 credential 的 CSS issuer；换 issuer 不覆盖旧行，避免同名串用 |
 | `credential_id` | 稳定引用 id，任务绑定只引用它，不引用明文 |
 | `client_id` | CSS client id（非秘密） |
-| `sealed_secret` | 信封；**是否再加密见决策 6** |
+| `sealed_secret` | 信封；**按决策 6 用部署侧密钥（env/KMS）加密，只加密这一列** |
+| `sealed_secret_key_id` | 加密该行所用的部署密钥标识；轮换时旧行仍可解，新行用新 key |
 | `credential_version` | 轮换版本；绑定记录引用版本，版本不匹配即拒绝（§4） |
 | `status` | `active` / `revoked` / `expired`；撤销只改状态，不删行 |
 | `created_at` / `rotated_at` / `last_used_at` / `expires_at` | 轮换与审计 |
 
+**落地（第 5 步，2026-09-26）**：API 侧不再持有 owner 凭据。① 注册（`POST /api/ai/gateway/keys`）**不再写 `identity_pod_interface_key`**，只写管理记录（应用端归属：`name`/`appliedTo`/`appliedOn`/`clientCredentialId`）；后台授权是设置页里的独立显式动作（见下文"显式授权入口"），登记不碰任务层；② `OwnerPodAccess` 删除 `storedKeyFetch`（连同 `keys` 依赖与 `PodInterfaceKeyGrant` 实现），请求只能用调用方自己的凭据，后台只能用任务层授权；③ 存量行由 `src/api/tasks/PodInterfaceKeyMigration.ts` 在 **API 启动时一次性迁入任务层**（幂等：同 owner+issuer 是同一条授权、同密钥不涨版本；打不开的行只报告不删除，旧表保持可读 → 可回滚）；④ 旧表与 `identity_pod_interface_key` 的**删除留作显式运维动作**，不在启动时自动 drop（迁移窗口仍可回退）。
+
+**已验证（第 5 步，2026-09-26）**：单测覆盖"没有部署侧密钥就没有 fetch"（`OwnerPodAccess` 14 项、`PodGatewayAccessKeyRepository`、`AiGatewayManagementHandler`、`container/config`、`PodInterfaceKeyMigration` 幂等与打不开的行），集成测试改成**凭据随请求携带**：`tests/integration/chatkit-pod-store.integration.test.ts` 用 `viaApiKey` + owner 自己的 interface key 走真实换取（22/22 通过，不再依赖内存 key store），`localQleverCredentialRepository` 断言"没带凭据就拿不到 fetch"。
+
+**已验证（第 4 步验收，2026-09-24，`scripts/accept-solid-bearer-pod-access.ts`，临时本地栈 15/15）**：脚本现在跑通"**没有 API 侧 owner 密钥也能执行后台任务**"这条链：`POST /api/ai/task-credentials` 只写任务层授权（201）→ 列表里是 `active` → `POST /api/ai/config/rebuild` 排队的 FTS 重建任务**执行成功**（`lifecycle.recent` 里 `succeeded`）→ `identity_pod_interface_key` **0 行**（API 侧从未存过 owner 密钥）→ 任务层凭据落在**独立文件** `tasks.sqlite`（1 行 `active`）。也就是说索引重建入口已经"在没有 API vault 的情况下完成一次真实执行"。
+
+**落地（第 4 步第 3 片，2026-09-24）**：无人执行的 run 也改从任务层取凭据。`TaskAuthBindingService.resolveRunContext` 先看 binding id 是否**命名了一条任务层授权**（前缀 `taskcred_`，常量 `TASK_CREDENTIAL_REF_PREFIX`）：是则从任务层 `forRef` 取用，**完全不读 Pod**；不是则走原有的 Pod 内 `task-auth` 凭据（迁移期回退），无需改 models schema。两条规则保证不倒退：**形如授权的 id 解析失败即失败**（撤销/过期/版本不符不会退回 Pod 里那份旧凭据，否则等于让撤销失效）；**没有 owner 时不解析**（owner 来自运行恢复的上下文，不来自 binding id）。容器把 `createTaskCredentialSource` 注入绑定服务。
+
+**落地（第 4 步第 2 片，2026-09-24）**：授权入口做成**用户可见的动作**，放在**维护索引 / 选择 embedding 的地方**（`ui/src/pages/settings/ai-config/`），不进 AI Connections applet。后端新增 `POST /api/ai/task-credentials`（body：用户的 `sk-` wrapper + 可选 name）：复用配置好的 CSS 认证器校验凭据、拒绝"凭据属于别的 WebID"、校验通过即写成 `active` 授权（**用户刚点的按钮就是显式授权**；程序发起、等用户确认的场景走 `pending`）。前端新增 `ui/src/api/task-credentials.ts`（列表/授权/撤销，响应不含秘密）+ `BackgroundPodAccess` 面板与 `useBackgroundPodAccess`：显示"已授权 · vN · 最近使用/到期"或"未授权"，一键授权（用本会话凭据）/撤销；索引重建按钮被 `service_access_missing` 拒绝时就地显示"需要后台 Pod 访问"，授权成功后**自动重试原操作**。会话凭据为此多暴露一个 `requestPodApiKey()`（只在这一次授权请求里离开浏览器）。
+
+**落地（第 4 步第 1 片，2026-09-24）**：后台执行开始使用任务层授权。`PodAccessRequestContext.taskCredential`（`{ ownerGrant: true }` 或 `{ credentialRef, version }`）表示"这次读取必须用任务层授权"——**不设回退**：没有可用授权就直接失败，避免把"某次登记过"当成"这个任务被授权"。`OwnerPodAccess` 通过 `TaskCredentialSource` 取用（`activeFor(owner)` 取该 owner 在本部署 issuer 下的 active 授权、`forRef` 校验 owner 与冻结版本），适配器 `createTaskCredentialSource` 在 tasks 层实现，容器把二者接起来。首批迁移的入口是**索引重建**（`rebuildFts`/`rebuildVector`，`src/api/container/routes.ts`）——它们已经在用任务层授权取 Pod fetch。剩余入口（向量重建内部的 Provider 凭据读取、配额定时刷新、chatkit 后台 run、Matrix/Reconciler）仍需逐个迁移，判据仍是"在没有 API vault 的情况下完成一次真实执行"。
+
+**落地（第 3 步第 2 片，2026-09-24）**：容器注册 `taskCredentialStore`（`src/api/container/common.ts`），只在部署配置了根密钥时存在——**无法加密就不保存**；任务库地址由 `CSS_TASK_DB_URL` 覆盖、否则按上面的派生规则。根密钥解析抽成 `loadDeploymentRootKeyProvider`（`src/api/container/index.ts`），与 API 侧的凭证 vault 共用同一份部署材料。`grant` 的 `credentialRef` 改为**按 owner+issuer 派生**（一个 owner 一个 issuer 一行，重复登记落在同一行）。
+
+**显式授权入口**（`src/api/handlers/TaskCredentialHandler.ts`）：`GET /api/ai/task-credentials`（只回元数据，无秘密）、`POST /api/ai/task-credentials/:ref/activate`、`DELETE /api/ai/task-credentials/:ref`；全部按调用方 WebID 归属校验，别人的 ref 表现为 404。**后台授权只走这一个入口**：用户在哪里维护索引/选择 embedding，就在哪里点这次授权（第 4 步第 2 片的前端面板）。AI Connections 的登记（`POST /api/ai/gateway/keys`）**不写任务层**——它管的是"某个应用端拿到并应用了哪把凭据"，与"用户是否允许无人执行的后台任务"是两件事（2026-09-26 定）；早先版本曾在这里双写一份授权，已移除。
+
+**落地（第 3 步第 1 片，2026-09-24）**：`src/api/tasks/TaskCredentialStore.ts` 按上表实现，`src/api/tasks/TaskCredentialSchema.ts` 定义 `task_credential` 表（sqlite 与 pg 两套），`src/api/tasks/TaskCredentialDatabase.ts` 负责归属：显式 `CSS_TASK_DB_URL` 优先；SQLite 部署默认落在 identity 库**同目录的 `tasks.sqlite`**（独立文件，泄露其一不牵连另一）；PostgreSQL 目前仍复用同一 server 的独立连接，**独立 role/schema 属部署待办**（不在代码里猜）。
+
+语义要点：`grant` 默认 `pending`（不执行），`activate` 后才可用；`rotate` 递增 `credential_version`，旧绑定版本不匹配即拒绝；`revoke` 只改状态留行；过期在 `lease` 时判定并落 `expired`；同一 `credentialRef` + 同密钥的重复 `grant` 视为幂等（不涨版本），换 owner/issuer 直接拒绝。`lease` 校验 owner、状态、版本与有效期，并按需记录 `last_used_at`。
+
 约束与归属：
 
-- 表在 Pod 之外，因此它的访问控制就是"能开多少个 Pod"的边界——这决定了它是否需要独立加密（决策 6）；`Agent` 授权范围**不放这张表**，按决策 2 写在用户 Pod 里。
+- 表在 Pod 之外，因此它的访问控制就是"能开多少个 Pod"的边界。决策 6 已定：`sealed_secret` **必须**再用部署侧密钥（env/KMS）加密，且只加密这一列——这样"读到表"与"能开 Pod"是两件事，DB 泄露或只读副本外流不再直接等于拿到所有用户 Pod 的钥匙。加密材料与密文分离（密钥在 env/KMS，密文在库），行内记 `sealed_secret_key_id` 以支持轮换与旧行回退解密。`Agent` 授权范围**不放这张表**，按决策 2 写在用户 Pod 里。
 - **这张表归任务层，API 不共用**。共用一张表（哪怕约定"只有任务层引用"）等于 API 依然持有打开 Pod 的凭据，与第 1 节"API sidecar 不建通用长期 CSS credential vault"直接冲突。
 - 因此边界必须是**强制**的，而不是命名约定：任务层使用独立 schema/表 + 独立 DB role（或独立逻辑库；RC overlay 已有"独立 logical database/schema"的先例），local 模式给任务层单独的 SQLite 文件，不复用 identity 库。
 - 唯一消费者是后台执行；前台交互走 host Session，不读这份存储。API 需要触发后台工作时只传非秘密引用（`taskId` / `credentialRef` / `credentialVersion`），解析发生在任务层。
@@ -324,7 +392,7 @@ Inngest **原生不是密钥保管方**：它只持有自己的传输/信任密�
 | 通用 middleware 接口（本仓库已装 SDK 4.14.0 带 `middleware/dependencyInjection`、`middleware/logger`、`components/middleware`） | 可自定义序列化/加解密/依赖注入 | 需要自定义封装密钥解析时使用；不改变"只传引用"的默认设计 |
 | 自托管存储插件（Postgres/Redis/SQLite 目录，我们已在配置） | Inngest server 自己的数据存哪 | 只是"它自己的数据放哪"，不是应用秘密保管；与任务层凭据表并列但互不读写 |
 
-结论：**当前设计不需要这些口子**——事件只带 `credentialRef`/`credentialVersion`，密钥在任务层自有表、执行时解析（官方推荐模式）。若未来启用加密中间件，它的加密密钥与决策 6 的那把部署密钥可以是**同一份部署材料、两处用途**（启用前须单独验证：Inngest 侧仅存密文、本地可正确解密、fallback 密钥轮换可用；`@inngest/middleware-encryption` 目前**未安装**在本仓库，也未针对自托管 server 验证过）。
+结论：**当前设计不需要这些口子**——事件只带 `credentialRef`/`credentialVersion`，密钥在任务层自有表、执行时解析（官方推荐模式）。若未来启用加密中间件，它的加密密钥**就是**决策 6 那把部署密钥：同一份部署材料、两处用途（启用前须单独验证：Inngest 侧仅存密文、本地可正确解密、fallback 密钥轮换可用；`@inngest/middleware-encryption` 目前**未安装**在本仓库，也未针对自托管 server 验证过）。
 
 ## 8. 验收要求与证据
 
@@ -344,6 +412,8 @@ Inngest **原生不是密钥保管方**：它只持有自己的传输/信任密�
 
 现有测试文件可作为迁移入口：`OwnerPodAccess.test.ts`、`PodInterfaceKeyStore.test.ts`、`HostedPodRoute.test.ts`、`AiGatewayManagementHandler.test.ts`，以及 `localQleverCredentialRepository.test.ts`、`chatkit-pod-store.integration.test.ts`、`AiGatewayPodIsolation.integration.test.ts`。现有 vault 测试通过不代表目标设计通过。
 
+**机器认证行的当前证据**（§7.1 第 1 步）：`tests/api/SolidSessionFactory.test.ts`（一次交换、DPoP key 保留、按 secret/version/issuer 隔离、过期与 401 后重换、缓存上限、loopback 下 proof 仍用规范 URL）、`tests/api/ClientCredentialsAuthenticator.test.ts`（sk 成功、拒绝与不可用分类、无 owner 的响应被拒）、`tests/api/ai-gateway/SolidCredentialSessionSharing.test.ts`（同一次交换同时服务入站认证与出站 Pod 读，Pod 收到 DPoP 证明）、`tests/api/ai-gateway/CallerPodAccess.test.ts`（直接 Bearer 可用；网关 key/invocation 主体、错误 owner、DPoP、空 token 被拒）。真实实例的六层验收（Pod CRUD、API 认证、`/v1/models`、Chat、embedding、任务恢复）尚未在本步执行。
+
 实现后运行适用单元/集成检查、typecheck 和完整 `bun run test:integration`。按 [真实实例指南](cli-dev-testing.md) 分别记录 Pod CRUD、API 认证、模型列表、真实 Chat、真实 embedding 和任务恢复；`listed>=1` 或旧 `pod-interface-key-granted` 阶段不能代替推理结果。外部 CSS 单独验收，缺少专用索引能力不能用 embeddings 成功掩盖。
 
 ## 9. 决策记录
@@ -359,6 +429,8 @@ Inngest **原生不是密钥保管方**：它只持有自己的传输/信任密�
 | 3 | 任务权威存储 | **已定：Pod 资源为权威，Inngest 只承载引用与运行状态**（理由见 §7.3） | pending/active 与版本字段加在 Pod 任务资源上；Inngest 侧靠幂等 `executionKey` 重放 |
 | 4 | `caller_pod_access_unavailable` 是否拆分 | 一个 reason 承载"未认证"与"已认证但无出站能力" | 拆出 `caller_outbound_capability_missing`，兼容期保留旧码 + `details.capability` |
 | 5 | Runtime 打开 Pod 的运行态钥匙放哪 | **已定：放任务层自己的表**（`identity_task_credential` 草案见 §7.4），与 Inngest server 的表并列在同一套基础设施（cloud 同 Postgres、local 同 SQLite 目录），Inngest 只带引用与版本。密钥不进 Pod（自锁）、不进事件/step 数据（会进调试面） | 表结构按 §7.4 落库；`Agent` 授权仍写用户 Pod（决策 2）。**归属**：该存储只归任务层，API 不共用、不读；API 只传非秘密引用。边界靠独立 schema/表 + 独立 DB role（或独立库）强制，见 §7.4。这把钥匙是 Pod 之外唯一能开 Pod 的东西，因此存储访问控制即权限边界——见决策 6 |
-| 6 | §7.4 的 `sealed_secret` 是否再用部署密钥加密 | 按决策 1，Pod 内数据不再加密；但本表在 Pod 之外，DB 泄露即等于"可打开所有已登记的 Pod" | (a) 不加密：实现最简，靠独立 DB role 与网络隔离，风险写进威胁模型；(b) 用部署侧密钥（env/KMS）加密该列：多一个部署配置项，但把"读到表"与"能开 Pod"分开。**建议 (b)**，且只加密这一列；若将来启用 §7.5 的 Inngest 加密中间件，同一份部署密钥可复用于两处 |
+| 8 | Pod provider 支持范围 | **已定：只支持 CSS（随部署 CSS 与外部 CSS）。** ESS/NSS 不在范围内 | 第 2 步按"自家=静默请求级凭据 / 外部=host 直读 + 显式导入"分别落地；外部 CSS 的 API 代读需补按 issuer 解析 token endpoint |
+| 7 | API 是否持久化 owner 凭据 | **已定：不持久化。** API 只在用户在场的同步路径工作，凭据随请求而来（浏览器持有自己的 client credential，或调用方带 sk/适用 Bearer）；异步任务自己管理凭据（决策 5 的任务层表）。现状的 `identity_pod_interface_key` + `storedKeyFetch` 是"能力新、归属旧"的过渡物 | 按 §7.1 新顺序执行：前台先去依赖（第 2 步）→ 任务层存储（第 3 步）→ 后台入口迁移（第 4 步）→ 停写、迁行、删表（第 5 步） |
+| 6 | §7.4 的 `sealed_secret` 是否再用部署密钥加密 | **已定：(b) 加密，且只加密这一列。** 本表在 Pod 之外，按决策 1 的"Pod 是 Pod 内秘密的信任边界"并不覆盖它；DB 泄露或只读副本外流否则等于"可打开所有已登记的 Pod" | 第 4 步落表时实现：部署侧密钥来自 env/KMS（与密文分离），行内记 `sealed_secret_key_id`，支持轮换与旧行回退解密；密钥名与派生方式在该步定，并与 §7.5 的 Inngest 加密中间件共用同一份部署材料 |
 
-本次为文档修订，未修改运行代码、未执行运行验收。
+本文档修订本身未修改运行代码；其后 §7.1 第 1 步的实现在独立提交中落地（`SolidSessionFactory` 等，见 §3.1）。上述机器认证行证据为单元级；按本节的真实实例要求，`bun run test:integration` 与六层真实验收仍须在第 2 步之前补齐。

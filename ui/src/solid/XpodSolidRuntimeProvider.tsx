@@ -6,7 +6,7 @@ import {
   type StorageBinding,
 } from '@undefineds.co/solid-sdk';
 import { type SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
 import type { WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import {
@@ -31,6 +31,17 @@ import {
   fetchCurrentProvisionRouteStatus,
   provisionLocalPodRoutes,
 } from './xpod-local-route';
+import { createAccountClientCredentialsCapability } from '../auth/account-client-credentials';
+import {
+  readSessionAccountControls,
+  type SessionAccountControls,
+} from '../auth/session-account-controls';
+import {
+  createSessionRequestCredential,
+  withRequestPodAuthorization,
+  type SessionRequestCredential,
+} from '../auth/session-request-credential';
+import { AuthContext } from '../context/AuthContextValue';
 
 export function XpodSolidRuntimeProvider({
   children,
@@ -114,11 +125,110 @@ export function XpodSolidRuntimeProvider({
     return reset;
   }, [runtime, runtimeStorage.issuer, runtimeStorage.selectedStorage]);
 
+  // API calls that open the user's Pod retry with this session's request credential; Pod traffic,
+  // capability calls and other origins keep using the session itself. The retry leaves the session
+  // transport behind, because that transport would replace the credential with the session's own
+  // token - the very token the server just refused.
+  const podAuthorizedFetch = useCallback<typeof fetch>(
+    (input, init) => withRequestPodAuthorization(
+      authenticatedFetch,
+      () => requestCredentialRef.current?.authorization() ?? Promise.resolve(undefined),
+      plainFetch,
+    )(input, init),
+    [authenticatedFetch],
+  );
   const exposedSession = useMemo(() => ({
     ...runtime.session,
-    fetch: exposedFetch,
+    fetch: withRequestPodAuthorization(
+      exposedFetch,
+      () => requestCredentialRef.current?.authorization() ?? Promise.resolve(undefined),
+      plainFetch,
+    ),
     getSnapshot: () => snapshotRef.current,
   }), [exposedFetch, runtime.session]);
+
+  // The Account session is what may create a client credential for this WebID, so the holder is
+  // rebuilt whenever the Account binding changes and released when it goes away.
+  const account = useContext(AuthContext);
+  const accountIndex = account?.idpIndex;
+  const accountCollection = account?.controls?.account?.clientCredentials;
+  const accountWebId = account?.identity?.webId;
+  const accountBind = account?.bindAccountCapability;
+  const boundWebId = snapshot.status === 'authenticated' ? snapshot.webId : undefined;
+
+  // A page served by the Gateway holds the WebID session but never the Account cookie, so the
+  // Account's client-credential control has to be read with that session instead. The cookie path
+  // stays first: when the Account already advertised the control, nothing is read twice.
+  const [sessionAccount, setSessionAccount] = useState<SessionAccountControls>();
+  useEffect(() => {
+    if (accountCollection || !accountIndex || !boundFetch || !boundWebId) {
+      setSessionAccount(undefined);
+      return;
+    }
+    let active = true;
+    void readSessionAccountControls({ accountIndex, webId: boundWebId, fetch: boundFetch })
+      .then((controls) => {
+        if (active) setSessionAccount(controls);
+      })
+      .catch(() => {
+        if (active) setSessionAccount(undefined);
+      });
+    return () => {
+      active = false;
+    };
+  }, [accountCollection, accountIndex, boundFetch, boundWebId]);
+
+  const accountBinding = useMemo(() => {
+    if (accountCollection && accountBind && accountWebId) {
+      return {
+        collection: accountCollection,
+        webId: accountWebId,
+        assertCurrent: accountBind(),
+        fetch: undefined,
+      };
+    }
+    if (sessionAccount) {
+      return {
+        collection: sessionAccount.collection,
+        webId: sessionAccount.webId,
+        // The session-bound fetch refuses work once the session moves on; this only
+        // keeps a capability call that never reaches the network from outliving it.
+        assertCurrent: () => {
+          if (runtime.session.getSnapshot().webId !== sessionAccount.webId) {
+            throw new Error('Solid 会话已改变，请重新打开客户端凭据操作。');
+          }
+        },
+        fetch: boundFetch,
+      };
+    }
+    return undefined;
+  }, [accountBind, accountCollection, accountWebId, boundFetch, runtime.session, sessionAccount]);
+
+  const requestCredentialRef = useRef<SessionRequestCredential | undefined>(undefined);
+  if (!requestCredentialRef.current) {
+    requestCredentialRef.current = createSessionRequestCredential({});
+  }
+  useEffect(() => {
+    const previous = requestCredentialRef.current;
+    const capability = accountBinding
+      ? createAccountClientCredentialsCapability({
+        collection: accountBinding.collection,
+        assertCurrent: accountBinding.assertCurrent,
+        accountIndex: accountIndex ?? window.location.origin,
+        ...(accountBinding.fetch ? { fetch: accountBinding.fetch } : {}),
+      })
+      : undefined;
+    const next = createSessionRequestCredential({
+      ...(capability ? { capability } : {}),
+      ...(accountBinding ? { webId: accountBinding.webId } : {}),
+    });
+    requestCredentialRef.current = next;
+    return () => {
+      requestCredentialRef.current = createSessionRequestCredential({});
+      void previous?.release().catch(() => undefined);
+      void next.release().catch(() => undefined);
+    };
+  }, [accountBinding, accountIndex]);
 
   useEffect(() => {
     const projectSnapshot = (nextSnapshot: SolidSessionSnapshot) => {
@@ -183,7 +293,7 @@ export function XpodSolidRuntimeProvider({
     const openArgs = {
       webId: snapshot.webId,
       ...(rememberedBinding ? { podUrl: rememberedBinding.storageUrl } : {}),
-      fetch: authenticatedFetch,
+      fetch: podAuthorizedFetch,
     };
     void (async () => {
       try {
@@ -294,6 +404,8 @@ export function XpodSolidRuntimeProvider({
       // Bound here rather than passed by reference: the value is handed to
       // callers that do not share the core object.
       resolveLocalUrl: (url: string) => runtime.resolveLocalUrl(url),
+      requestPodAuthorization: () => requestCredentialRef.current?.authorization() ?? Promise.resolve(undefined),
+      requestPodApiKey: () => requestCredentialRef.current?.apiKey() ?? Promise.resolve(undefined),
       login: async (transaction: WebIdLoginTransaction) => {
         const validated = normalizeXpodLoginTransaction(transaction);
         const loginContext = await resolveXpodLoginContext(
@@ -340,6 +452,7 @@ export function XpodSolidRuntimeProvider({
         }
       },
       logout: async () => {
+        await requestCredentialRef.current?.release().catch(() => undefined);
         await runtime.session.logout();
         runtime.pod.clear();
         clearXpodSelectedStorage({ storage: runtimeStorage.selectedStorage });
@@ -362,6 +475,12 @@ export function XpodSolidRuntimeProvider({
 
 const ANONYMOUS_SNAPSHOT = { status: 'anonymous' } as const satisfies SolidSessionSnapshot;
 const REJECTED_SESSION_FETCH_ERROR = new Error('Xpod session is unavailable');
+
+/**
+ * A transport that attaches no credential of its own, for the one retry that carries a request
+ * credential the caller was handed. A session-bound transport would overwrite that header.
+ */
+const plainFetch: typeof fetch = (input, init) => globalThis.fetch(input, init);
 
 function currentProviderSession(runtime: XpodSolidRuntimeCore): {
   snapshot: SolidSessionSnapshot;

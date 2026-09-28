@@ -179,6 +179,9 @@
         "accountStorage": {
           "@id": "urn:solid-server:default:AccountStorage"
         },
+        "sessionExtractor": {
+          "@id": "urn:solid-server:default:CredentialsExtractor"
+        },
         "ValidatingIdentityProviderHttpHandler:_args_externalAccountIssuer": {
           "@id": "urn:solid-server:default:variable:oidcIssuer"
         }
