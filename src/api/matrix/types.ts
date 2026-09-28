@@ -130,6 +130,8 @@ export interface MatrixStore {
     txnId: string,
     content: MatrixSendEventRequest,
     context: MatrixStoreContext,
+    /** The id the writer chose for this event; the deployment names it when absent. */
+    options?: { msgid?: string },
   ): Promise<MatrixEventRecord>;
   setState(
     roomId: string,

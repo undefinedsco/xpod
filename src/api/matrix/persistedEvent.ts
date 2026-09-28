@@ -81,11 +81,10 @@ export function buildPersistedEvent(
     auth_events: input.authEvents,
     unsigned: input.unsigned,
   });
-  // `event_id` is derived from the event and never taken from the caller, so it is
-  // attached only once it can be computed. A caller that already holds an
-  // operational reference to this event (the journal's reservation) passes it in
-  // for one purpose: to prove the two agree. A divergence is then a loud failure
-  // rather than a second identity for the same event.
+  // The id is the writer's: a caller that named this event keeps that name, and one that did not
+  // gets the reference hash it has always been given. A caller-supplied id is therefore *not* an
+  // assertion about the content — the two are independent now, and comparing them would refuse the
+  // ids clients choose.
   let built: PersistedMatrixEvent;
   if (identity) {
     // Keep the full content beside the signed (redacted) event: the signature and
@@ -96,12 +95,7 @@ export function buildPersistedEvent(
   } else {
     built = { ...base, hashes: { sha256: encodeUnpaddedBase64(computeContentHash(base)) } };
   }
-  const eventId = computeEventId(built);
-  if (input.eventId !== undefined && input.eventId !== eventId) {
-    throw new EventIntegrityError(
-      `The recorded event id ${input.eventId} does not match the event content (${eventId})`,
-    );
-  }
+  const eventId = input.eventId ?? computeEventId(built);
   return { ...built, event_id: eventId };
 }
 
@@ -128,8 +122,8 @@ function dropUndefined<T>(value: unknown): T {
 }
 
 export interface PersistedEventCheck {
-  /** The stored event still hashes to the id stored beside it (redacted form). */
-  eventIdMatches: boolean;
+  /** The stored event carries an id of its own. It is the writer's name for it, not a claim to check. */
+  hasEventId: boolean;
   /**
    * The stored content hash still covers the stored event.
    *
@@ -148,7 +142,7 @@ export interface PersistedEventCheck {
 export function verifyPersistedEvent(event: PersistedMatrixEvent): PersistedEventCheck {
   const storedHash = typeof event.hashes?.sha256 === 'string' ? event.hashes.sha256 : undefined;
   return {
-    eventIdMatches: typeof event.event_id === 'string' && computeEventId(event) === event.event_id,
+    hasEventId: typeof event.event_id === 'string' && event.event_id.length > 0,
     contentHashMatches: storedHash !== undefined && storedHash === encodeUnpaddedBase64(computeContentHash(event)),
     signed: Boolean(event.signatures && Object.keys(event.signatures).length > 0),
   };

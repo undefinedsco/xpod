@@ -113,12 +113,16 @@ export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOp
   server.put('/_matrix/client/v3/rooms/:roomId/send/:eventType/:txnId', async (request, response, params) => {
     try {
       const content = await readJson<Record<string, unknown>>(request);
+      // `msgid` names the event the client is writing; it is not part of the event's content, so it
+      // is taken out of the body before the content is stored.
+      const { msgid, ...eventContent } = content ?? {};
       const event = await store.sendEvent(
         decodeURIComponent(params.roomId),
         decodeURIComponent(params.eventType),
         decodeURIComponent(params.txnId),
-        content ?? {},
+        eventContent,
         await buildContext(request, options),
+        typeof msgid === 'string' ? { msgid } : undefined,
       );
       sendJson(response, 200, { event_id: event.eventId });
     } catch (error) {

@@ -108,6 +108,23 @@ describe('PodMatrixStore shared Pod contract', () => {
     expect(members(agentUserId).map((event: any) => event.content.membership)).toEqual([ 'invite', 'join' ]);
   });
 
+  it('names the event after the id its writer chose, and a replay lands on it', async () => {
+    const { store, context } = matrixHarness();
+    const room = await store.createRoom({}, context);
+
+    // The writer names its own event. A retry carries the same name, so it is the same event — which
+    // is what lets the reservation table go: the id, not a record, is what a replay matches on.
+    const first = await store.sendEvent(room.roomId, 'm.room.message', 'txn-1', { body: 'hi' }, context, { msgid: '$writer-chosen' });
+    const again = await store.sendEvent(room.roomId, 'm.room.message', 'txn-1', { body: 'hi' }, context, { msgid: '$writer-chosen' });
+    expect(first.eventId).toBe('$writer-chosen');
+    expect(again.eventId).toBe('$writer-chosen');
+
+    // Without one, the deployment names it — and two sends are two events.
+    const one = await store.sendEvent(room.roomId, 'm.room.message', 'txn-2', { body: 'a' }, context);
+    const two = await store.sendEvent(room.roomId, 'm.room.message', 'txn-3', { body: 'b' }, context);
+    expect(one.eventId).not.toBe(two.eventId);
+  });
+
   it('writes the sending device onto the event, so the event alone names its reservation', async () => {
     const { store, context, rows } = matrixHarness();
     const room = await store.createRoom({}, context);

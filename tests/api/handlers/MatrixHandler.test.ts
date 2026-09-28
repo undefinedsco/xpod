@@ -306,8 +306,10 @@ describe('MatrixHandler', () => {
       '!room:example.com',
       'm.room.message',
       'txn/1',
+      // `msgid` is taken out of the body: it names the event, it is not part of its content.
       { msgtype: 'm.text', body: 'hello' },
       expect.objectContaining({ webId: 'https://alice.example/profile/card#me' }),
+      undefined,
     );
   });
 

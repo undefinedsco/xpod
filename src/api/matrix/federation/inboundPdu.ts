@@ -126,11 +126,12 @@ export async function verifyInboundPdu(
   const shape = normalizeInboundPdu(pdu);
   if (!shape.event) return reject('v11-1: malformed event', shape.reason);
   const event = shape.event;
-  // Whose id is it? A writer-chosen id is the event's own identity and has to be kept, or the same
-  // event would be known by two names in two Pods. With no writer vouching for it, the id is
-  // re-derived as it always was — that is what makes an unauthenticated copy self-checking.
+  // Whose id is it? The writer's. An event's id is its own identity and is kept as sent, or the same
+  // event would be known by two names in two Pods; only an event that arrives without one is named
+  // here. The old rule re-derived it as a self-check, which is exactly the property this protocol
+  // stops relying on: what a copy is worth comes from who wrote it, not from its id.
   const statedId = typeof event.event_id === 'string' && event.event_id.length > 0 ? event.event_id : undefined;
-  const eventId = options.writerVerified && statedId ? statedId : computeEventId(event);
+  const eventId = statedId ?? computeEventId(event);
   const rejectWithId = (reason: string): InboundPduResult =>
     ({ eventId, outcome: 'rejected', stage: 'signature', reason, redacted: false });
 

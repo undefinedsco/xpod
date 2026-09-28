@@ -288,7 +288,7 @@ describe('Matrix collaboration contract (in-memory persistence; no LLM)', () => 
     // event the journal now names; an id that no row carries would strand the result.
     const stored = readPersistedEvent(getProtocolMetadata(assistants[0].metadata, 'matrix')!)!;
     expect(stored.event_id).toBe(result.eventId);
-    expect(verifyPersistedEvent(stored)).toEqual({ eventIdMatches: true, contentHashMatches: true, signed: false });
+    expect(verifyPersistedEvent(stored)).toEqual({ hasEventId: true, contentHashMatches: true, signed: false });
   });
 
   it('starts a fresh execution chain for user input despite supplied execution metadata', async () => {

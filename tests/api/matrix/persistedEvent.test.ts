@@ -53,10 +53,11 @@ describe('persisted protocol events', () => {
     expect(event.signatures).toHaveProperty('example.test');
     expect(event.hashes).toHaveProperty('sha256');
 
-    // Self-check: the id and the content hash are re-derived from the event.
+    // Self-check: the content hash is re-derived from the event, and the id is the writer's name for
+    // it — present, and deliberately not something the content has to agree with.
     const check = verifyPersistedEvent(event);
-    expect(check).toEqual({ eventIdMatches: true, contentHashMatches: true, signed: true });
-    expect(computeEventId(event)).toBe(sent.eventId);
+    expect(check).toEqual({ hasEventId: true, contentHashMatches: true, signed: true });
+    expect(event.event_id).toBe(sent.eventId);
     expect(encodeUnpaddedBase64(computeContentHash(event))).toBe(event.hashes!.sha256);
 
     // And the signature verifies against the key the deployment publishes.
@@ -78,13 +79,15 @@ describe('persisted protocol events', () => {
     // that is precisely why it exists: without it the edit would be invisible.
     const editedContent = { ...event, content: { msgtype: 'm.text', body: 'edited' } };
     expect(verifyPersistedEvent(editedContent).contentHashMatches).toBe(false);
-    expect(verifyPersistedEvent(editedContent).eventIdMatches).toBe(true);
+    expect(verifyPersistedEvent(editedContent).hasEventId).toBe(true);
     expect(verifyPersistedEventSignature(editedContent, 'example.test', 'ed25519:1', verifyKey)).toBe(true);
 
-    // A field that survives redaction is covered by all three checks instead.
+    // A field that survives redaction is caught by the content hash and the signature. The id is
+    // not part of that: it is the writer's name for the event, so an edit leaves it in place — which
+    // is exactly why the id is no longer what makes a copy trustworthy.
     const editedSender = { ...event, sender: '@mallory:example.test' };
     const senderCheck = verifyPersistedEvent(editedSender);
-    expect(senderCheck.eventIdMatches).toBe(false);
+    expect(senderCheck.hasEventId).toBe(true);
     expect(senderCheck.contentHashMatches).toBe(false);
     expect(verifyPersistedEventSignature(editedSender, 'example.test', 'ed25519:1', verifyKey)).toBe(false);
   });
@@ -97,7 +100,7 @@ describe('persisted protocol events', () => {
 
     // Without a signing identity the event is still self-consistent and
     // identifiable; it simply carries no signature, which the check reports.
-    expect(verifyPersistedEvent(event)).toEqual({ eventIdMatches: true, contentHashMatches: true, signed: false });
+    expect(verifyPersistedEvent(event)).toEqual({ hasEventId: true, contentHashMatches: true, signed: false });
     expect(event.signatures).toBeUndefined();
   });
 
@@ -205,7 +208,7 @@ describe('persisted protocol events', () => {
     // One event, at the position the retry actually saw, verified from the Pod.
     expect(storedEvent(rows, retried.eventId).event).toMatchObject({ depth: 5 });
     expect(verifyPersistedEvent(storedEvent(rows, retried.eventId).event))
-      .toEqual({ eventIdMatches: true, contentHashMatches: true, signed: true });
+      .toEqual({ hasEventId: true, contentHashMatches: true, signed: true });
   });
 
   it('keeps application bookkeeping outside the signed event', async () => {

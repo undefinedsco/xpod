@@ -4,7 +4,7 @@ import { matrixHarness } from '../../helpers/MatrixMemoryDatabase';
 import { matrixSigningIdentityRegistry } from '../../../src/api/matrix/identityRegistry';
 import { InMemoryMatrixSigningKeyStore, MatrixSigningIdentityProvider } from '../../../src/api/matrix/signingKeyStore';
 import { MatrixServiceIdentity } from '../../../src/api/matrix/protocol/serviceIdentity';
-import { computeEventId } from '../../../src/api/matrix/protocol/eventIntegrity';
+import { computeContentHash, encodeUnpaddedBase64 } from '../../../src/api/matrix/protocol/eventIntegrity';
 import type { MatrixFederationOutbox } from '../../../src/api/matrix/PodMatrixStore';
 
 function identity(serverName: string): MatrixServiceIdentity {
@@ -70,7 +70,10 @@ describe('handing written events to the other servers in the room', () => {
     // id derived from it, not the Solid row that references it.
     const pdu = enqueued[0].pdus[0] as Record<string, unknown>;
     expect(pdu.event_id).toBe(sent.eventId);
-    expect(computeEventId(pdu)).toBe(pdu.event_id);
+    // The id is the writer's name for the event, carried through to the wire unchanged; the content
+    // hash is what a reader can still re-derive.
+    expect(typeof pdu.event_id).toBe('string');
+    expect(encodeUnpaddedBase64(computeContentHash(pdu))).toBe((pdu.hashes as { sha256: string }).sha256);
     expect(pdu).toMatchObject({ type: 'm.room.message', room_id: room.roomId, sender: sent.sender, content: { body: 'hi' } });
     expect(Object.keys(pdu.signatures as Record<string, unknown>)).toEqual([ 'alice.example' ]);
     expect(typeof (pdu.hashes as Record<string, unknown>).sha256).toBe('string');

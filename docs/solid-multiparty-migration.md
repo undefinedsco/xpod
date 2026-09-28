@@ -132,6 +132,11 @@
    **这一步不依赖 E**：会话投递里"作者"就是会话本身，不需要作者正本比对；正本比对是为**从别处读来的
    副本**准备的（拉取模型，那才需要 E）。
    测试：`FederationHandler.test.ts` 新增"会话投递一批无签名、自带 id 的事件 → 200 且回执里就是那个 id"。
+   **写侧也接上了（2026-09-28）**：发送请求可带 `msgid`（`MatrixHandler` 把它**从内容里取出**，不当事件内容存），
+   `sendEvent` 用 `eventIdForWrite(msgid)` 给事件命名；**没带就由部署生成**。同时删掉两处"id 必须等于内容哈希"
+   的断言（`persistedEvent.buildPersistedEvent` 与 `PodMatrixStore.appendEvent`）——那是自证模型，本协议不再依赖它。
+   `verifyPersistedEvent` 的 `eventIdMatches` 因此改名为 **`hasEventId`**（id 是写入方给的名字，不是待校验的声明），
+   接收侧则**一律保留事件自带的 id**（原来只在会话投递时保留）。
    **进度（2026-09-28）**：规则先落地并有测试——`src/api/matrix/eventIdentity.ts`（`generateEventId`
    / `isEventId` / `eventIdForWrite`，单元 4 项）。三条语义写进了代码注释与测试：id 由写入方决定、
    重试复用同一个 id（**幂等由 id 承担，这正是预留表能删掉的原因**）、以及 **id 本身不证明任何事**

@@ -21,6 +21,7 @@ import {
 import { getProtocolMetadata, withProtocolMetadata, type ProtocolMetadata } from '../protocol-metadata';
 import { MatrixError } from './MatrixError';
 import { inboundWriteAuthority } from './inboundAuthority';
+import { eventIdForWrite } from './eventIdentity';
 import { matrixPodWriteFor, type MatrixPodWrite } from './podAccess';
 import type { MatrixControlRecordTarget } from './controlRecords';
 import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
@@ -542,7 +543,7 @@ export class PodMatrixStore {
   }
 
   public async sendEvent(roomId: string, eventType: string, txnId: string, content: MatrixSendEventRequest,
-    context: MatrixStoreContext): Promise<MatrixEventRecord> {
+    context: MatrixStoreContext, options: { msgid?: string } = {}): Promise<MatrixEventRecord> {
     const db = await this.getDb(context);
     // Membership and grant checks share one timeline read; each extra read is a
     // full Pod document fetch with its own authorization cost.
@@ -557,6 +558,10 @@ export class PodMatrixStore {
     // place as the first attempt rather than to whatever the room looks like now.
     const eventInput = {
       roomId, type: eventType, sender, content,
+      // The writer names its own event: a client picks an id (random is fine) and reuses it on every
+      // retry, which is what makes a replay land on the first attempt's event without a reservation
+      // having to remember it. Without one the deployment names the event itself.
+      eventId: eventIdForWrite(options.msgid),
       ...this.graphPosition(events, { type: eventType, sender, content }),
     };
     const transactionKey = JSON.stringify([this.deviceId(context), roomId, eventType, txnId]);
@@ -1088,12 +1093,11 @@ export class PodMatrixStore {
     // A caller-provided event can come from a peer — a resident's copy of our join — and carries no
     // id of its own. The id is derived here, and an event whose stated id disagrees with its content
     // is refused rather than stored under two identities.
-    const derivedId = computeEventId(built);
-    if (built.event_id !== undefined && built.event_id !== derivedId) {
-      throw new EventIntegrityError(
-        `The provided event id ${String(built.event_id)} does not match the event content (${derivedId})`,
-      );
-    }
+    // An event's id is its writer's to choose — a client's `msgid`, or one the deployment generated
+    // for an event it initiates. It is *not* derived from the content any more, so there is nothing
+    // to compare it against here; what a copy is worth is decided by who wrote it and, for copies
+    // read from elsewhere, by comparing with the author's own Pod.
+    const derivedId = built.event_id ?? computeEventId(built);
     const persistedEvent = built.event_id === derivedId ? built : { ...built, event_id: derivedId };
     const eventId = derivedId;
     // The room's own rules decide whether this event may exist at all. Everything else on this path
