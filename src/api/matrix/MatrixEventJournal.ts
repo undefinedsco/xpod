@@ -36,6 +36,22 @@ export function reservationKeyForEvent(event: {
 }
 
 /** Operational references only: event bodies and room state remain authoritative in the Pod. */
+/**
+ * What a caller has when it asks "which reservation produced this event".
+ *
+ * The whole event, not just its id: a reservation is addressed by
+ * `[txnDevice, roomId, type, txnId]` (`reservationKeyForEvent`), and the id alone cannot rebuild
+ * that. A carrier that keeps records by key can then answer with one point lookup, while one that
+ * keeps an id index (the identity database today) reads `eventId` and ignores the rest.
+ */
+export interface MatrixReservationLookup {
+  eventId: string;
+  roomId?: string;
+  type?: string;
+  txnId?: string;
+  txnDevice?: string;
+}
+
 export interface MatrixEventJournal {
   reserveTransaction(scope: string, key: string, candidate: MatrixTransactionReservation): Promise<MatrixTransactionReservation>;
   /**
@@ -54,9 +70,9 @@ export interface MatrixEventJournal {
    */
   registerEvents(scope: string, roomId: string, eventIds: readonly string[]): Promise<number[]>;
   /** Look up several receipts at once: recovery needs one per scanned event. */
-  findReservations(scope: string, eventIds: readonly string[]): Promise<Map<string, MatrixTransactionReservation>>;
+  findReservations(scope: string, events: readonly MatrixReservationLookup[]): Promise<Map<string, MatrixTransactionReservation>>;
   getHighWatermark(scope: string): Promise<number>;
-  findReservation(scope: string, eventId: string): Promise<MatrixTransactionReservation | undefined>;
+  findReservation(scope: string, event: MatrixReservationLookup): Promise<MatrixTransactionReservation | undefined>;
 }
 
 /** Isolated tests only. Production cursors and reservations must survive process restarts. */
@@ -73,8 +89,13 @@ export class InMemoryMatrixEventJournal implements MatrixEventJournal {
     return { ...reservation };
   }
 
-  public async findReservation(scope: string, eventId: string): Promise<MatrixTransactionReservation | undefined> {
-    for (const [key,value] of this.transactions) if (JSON.parse(key)[0] === scope && value.eventId === eventId) return {...value};
+  public async findReservation(scope: string, event: MatrixReservationLookup): Promise<MatrixTransactionReservation | undefined> {
+    const key = reservationKeyForEvent(event);
+    if (key) {
+      const exact = this.transactions.get(JSON.stringify([ scope, key ]));
+      if (exact) return { ...exact };
+    }
+    for (const [stored,value] of this.transactions) if (JSON.parse(stored)[0] === scope && value.eventId === event.eventId) return {...value};
     return undefined;
   }
 
@@ -102,8 +123,8 @@ export class InMemoryMatrixEventJournal implements MatrixEventJournal {
     return sequences;
   }
 
-  public async findReservations(scope: string, eventIds: readonly string[]): Promise<Map<string, MatrixTransactionReservation>> {
-    const wanted = new Set(eventIds);
+  public async findReservations(scope: string, events: readonly MatrixReservationLookup[]): Promise<Map<string, MatrixTransactionReservation>> {
+    const wanted = new Set(events.map(event => event.eventId));
     const found = new Map<string, MatrixTransactionReservation>();
     for (const [ key, value ] of this.transactions) {
       if (JSON.parse(key)[0] === scope && wanted.has(value.eventId)) found.set(value.eventId, { ...value });
@@ -148,10 +169,10 @@ export class SqlMatrixEventJournal implements MatrixEventJournal {
     `);
   }
 
-  public async findReservation(scope: string, eventId: string): Promise<MatrixTransactionReservation | undefined> {
+  public async findReservation(scope: string, event: MatrixReservationLookup): Promise<MatrixTransactionReservation | undefined> {
     await this.ensureInitialized();
     const result = await executeQuery<{event_id:string;created_at:number|string;content_hash:string}>(this.db,sql`
-      SELECT event_id,created_at,content_hash FROM xpod_matrix_transactions WHERE scope=${scope} AND event_id=${eventId}
+      SELECT event_id,created_at,content_hash FROM xpod_matrix_transactions WHERE scope=${scope} AND event_id=${event.eventId}
     `);
     const row=result.rows[0];
     return row ? {eventId:row.event_id,createdAt:Number(row.created_at),contentHash:row.content_hash} : undefined;
@@ -204,9 +225,10 @@ export class SqlMatrixEventJournal implements MatrixEventJournal {
     });
   }
 
-  public async findReservations(scope: string, eventIds: readonly string[]): Promise<Map<string, MatrixTransactionReservation>> {
+  public async findReservations(scope: string, events: readonly MatrixReservationLookup[]): Promise<Map<string, MatrixTransactionReservation>> {
     await this.ensureInitialized();
     const found = new Map<string, MatrixTransactionReservation>();
+    const eventIds = events.map(event => event.eventId);
     if (eventIds.length === 0) return found;
     const result = await executeQuery<{ event_id: string; created_at: number | string; content_hash: string }>(this.db, sql`
       SELECT event_id, created_at, content_hash FROM xpod_matrix_transactions

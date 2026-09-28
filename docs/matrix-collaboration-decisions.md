@@ -245,9 +245,11 @@ grant（房间级授权＝成员资格）、**D6 完整落地**（授权即成�
   并有测试**把写入侧与读取侧钉在一起**——用 spy journal 记下 `reserveTransaction` 实际收到的 key，
   再从**存下来的那一行**（只有 `metadata.protocols.matrix`）重建，断言两者相等；没有预留的事件返回
   `undefined` 而不是一个错的 key。
-- **接口因此从"按 id 查"改成"按事件查"**：`findReservation(scope, event)` /
-  `findReservations(scope, events)`（事件含 `eventId`、`roomId`、`type`、`txnId`、`txnDevice`）。
-  Pod 版实现 = 控制记录的点查（kind `txn`）；SQL 版实现顺带受益（少一次 id→行的间接）。
+- **接口已改成"按事件查"（2026-09-28 落地）**：`MatrixReservationLookup`（`eventId` + 可选的
+  `roomId`/`type`/`txnId`/`txnDevice`），`findReservation(scope, event)` / `findReservations(scope, events)`；
+  四个反查点改为把**整个事件**传进去。SQL 版仍按 `event_id` 索引回答（它本来就该那样），
+  **内存版先用 key 点查、拿不到再退回原来的扫描**——这正是 Pod 版将采用的路子，先在一个实现里跑通。
+  这一步**不改行为**（`tests/api/matrix tests/api` **1898 passed / 7 skipped**、`typecheck:test` 通过）。
 - **序号三法留在 SQL**（`registerEvent`/`registerEvents`/`getHighWatermark`）：它们是**部署本地、可从 Pod 重建**的
   顺序（测试已钉住"两次独立重建一致"），不属于"事务记录落 Pod"这条目标。
 - **迁移的安全网**：接受事件按 event id 幂等，预留只是"这笔客户端事务对应哪个事件身份"；迁出期间两版并存时，

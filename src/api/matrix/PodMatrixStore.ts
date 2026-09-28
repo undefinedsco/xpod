@@ -1676,7 +1676,7 @@ export class PodMatrixStore {
     if (!this.serverGroupReconcilerService || event.type !== 'm.room.message' || event.role !== MessageRole.USER) return;
     const actor = event.senderWebId;
     if (!actor) return;
-    const receipt = knownReceipt ?? await this.journal.findReservation(this.scope(context),event.eventId);
+    const receipt = knownReceipt ?? await this.journal.findReservation(this.scope(context),event);
     if (!receipt || receipt.contentHash !== this.hash(this.canonicalJson(['user',actor,event.type,event.content]))) return;
     const targets = await this.authorizeTargets(db,event.roomId,event.content,{...context,webId:actor},events);
     const pending: string[] = [];
@@ -1706,7 +1706,7 @@ export class PodMatrixStore {
     const events = await this.listEvents(db,roomId,context);
     await this.requireJoined(db,roomId,context,events);
     // Recovery asks for one receipt per scanned event; fetch them as a page.
-    const receipts = await this.journal.findReservations(this.scope(context), events.map(event => event.eventId));
+    const receipts = await this.journal.findReservations(this.scope(context), events);
     for (const event of events) {
       if (event.role === MessageRole.USER) {
         try { await this.reconcileEvent(db,event,context,events,receipts.get(event.eventId)); }
@@ -1799,7 +1799,7 @@ export class PodMatrixStore {
   }
 
   private async validateTrigger(db: Db, event: MatrixEventRecord, job: SharedWakeAgentJob, context: MatrixStoreContext, events: MatrixEventRecord[]): Promise<void> {
-    const receipt = await this.journal.findReservation(this.scope(context),event.eventId);
+    const receipt = await this.journal.findReservation(this.scope(context),event);
     let valid = false;
     if (event.role === MessageRole.USER && event.senderWebId) {
       valid = receipt?.contentHash === this.hash(this.canonicalJson(['user',event.senderWebId,event.type,event.content]));
@@ -1858,7 +1858,7 @@ export class PodMatrixStore {
     const execution = this.parseJsonObject(event.content['co.undefineds.execution'] as JsonObjectSource);
     if (!execution?.handoffTo || typeof execution.agent!=='string' || typeof execution.handoffTo!=='string'
       || typeof execution.hops!=='number' || execution.hops>=8 || !this.serverGroupReconcilerService) return;
-    const receipt = await this.journal.findReservation(this.scope(context),event.eventId);
+    const receipt = await this.journal.findReservation(this.scope(context),event);
     if (!receipt || receipt.contentHash !== this.hash(this.canonicalJson(['assistant',execution.agent,event.type,event.content]))) return;
     const grants = await this.agentGrants(db,event.roomId,context,events);
     if (!grants.some(g=>g.agent===execution.agent && g.handoffTo.includes(execution.handoffTo as string))) return;
@@ -1883,7 +1883,7 @@ export class PodMatrixStore {
     const records = await this.listEvents(db, event.roomId, context);
     const stored = records.find(record => record.role === MessageRole.ASSISTANT &&
       this.parseJsonObject(record.content['co.undefineds.execution'] as JsonObjectSource)?.jobId === jobId);
-    const receipt = stored === undefined ? undefined : await this.journal.findReservation(this.scope(context), stored.eventId);
+    const receipt = stored === undefined ? undefined : await this.journal.findReservation(this.scope(context), stored);
     const resultEventId = stored?.eventId;
     if (receipt && resultEventId) {
       const source = await db.findById(messageResource,this.messageResourceIdFromEvent(event.roomId,resultEventId,receipt.createdAt));

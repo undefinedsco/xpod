@@ -54,7 +54,7 @@ describe.skipIf(!postgresUrl)('Matrix journal real PostgreSQL', () => {
     expect(new Set(reservations.map((reservation) => JSON.stringify(reservation))).size).toBe(1);
     const sequences = await Promise.all(journals.map((journal) => journal.registerEvent(scope, '!room', reservations[0].eventId)));
     expect(new Set(sequences).size).toBe(1);
-    expect(await journals[0].findReservation(scope, reservations[0].eventId)).toEqual(reservations[0]);
+    expect(await journals[0].findReservation(scope, { eventId: reservations[0].eventId })).toEqual(reservations[0]);
   });
 
   it('does not advance the cursor past an earlier uncommitted event', async () => {
