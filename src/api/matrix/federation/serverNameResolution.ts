@@ -62,7 +62,7 @@ export interface MatrixResolvedServer {
      * deployment serves the server name itself, on the ordinary port, so nothing has to be
      * discovered. `.well-known` delegation is a Matrix transport concern and stays there.
      */
-    | 'native-endpoint';
+;
   /** The `m.server` value when a `.well-known` delegation was used. */
   delegatedTo?: string;
 }
@@ -131,21 +131,6 @@ export class MatrixServerNameResolver {
     const srv = await this.srvTarget([ `_matrix-fed._tcp.${host}`, `_matrix._tcp.${host}` ]);
     if (srv) return { baseUrl: `https://${srv.host}:${srv.port}`, hostHeader: host, via: srv.via };
     return { baseUrl: `https://${host}:${DEFAULT_FEDERATION_PORT}`, hostHeader: host, via: 'implicit-port' };
-  }
-
-  /**
-   * Where the native Xpod endpoint for `serverName` is: the name itself, ordinary HTTPS.
-   *
-   * Deliberately *not* the federation resolution: no `:8448` fallback, no `.well-known`, no SRV.
-   * Those exist so a Matrix server name can delegate its federation traffic; an Xpod deployment
-   * that speaks its own endpoint does not delegate anything, and asking for a delegation would
-   * send native traffic to a host that only speaks federation.
-   */
-  public resolveNative(serverName: string): MatrixResolvedServer | undefined {
-    if (!isMatrixServerName(serverName)) return undefined;
-    const { host, port } = splitServerName(serverName);
-    const authority = port === undefined ? wrapIpLiteral(host) : `${wrapIpLiteral(host)}:${port}`;
-    return { baseUrl: `https://${authority}`, hostHeader: serverName, via: 'native-endpoint' };
   }
 
   /** Forget cached discovery for a hostname, so the next resolve refetches it. */

@@ -67,6 +67,13 @@
 `DEFAULT_POLICY` 常量——恢复它，并把这条写进规程：**删除块的收尾行必须按该块的语法形态判断，不能统一
 找 `};`**。
 
+**服务端也已摘下（2026-09-28）**：`NATIVE_INBOUND_PATH`、`FederationHandler` 的原生路由与
+`createNativeInboundHandler`（含 `nativeAnswer`）、`MatrixServerNameResolver.resolveNative` 与
+`via: 'native-endpoint'` 变体全部删除；`outboundTransaction` 里残留的常量 import 一并清掉。
+测试删除原生端点 4 项与探针里的原生用例，并把探针的断言改成"**未签名一律被拒**"而不是钉死 401——
+整套 lite 跑起来时 `/send` 会先判"是否服务被寻址的名字"（403）再验签（401），钉死状态码会让探针
+依赖"这套栈恰好服务哪些名字"。
+
 **这一刀完成的部分**：客户端一侧已停用原生传输（`outboundTransaction` 的 4 个导出类型、3 个方法、
 1 个注入选项与 `nativeTargetOf`；`outboundSender` 的原生优先 + TTL 记忆）。测试随之更新：
 删掉原生客户端与"两部署选传输"的用例（约 10 项），并把两部署用例的断言从"走原生、`/send` 未用"

@@ -31,7 +31,6 @@ import { computeEventId } from '../protocol/eventIntegrity';
 import { SUPPORTED_ROOM_VERSION } from '../protocol/authRules';
 import type { FederationFetchTarget } from './federationFetch';
 import type { MatrixResolvedServer } from './serverNameResolution';
-import { NATIVE_INBOUND_PATH } from './inboundRoute';
 import { isMatrixServerName, splitServerName } from '../protocol/serverName';
 
 /** The specification's per-transaction limits. */
