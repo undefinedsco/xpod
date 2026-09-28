@@ -26,6 +26,7 @@ import {
   controlRecordAddress,
   controlRecordBucket,
   deleteControlRecord,
+  pruneControlRecords,
   readControlRecord,
   writeControlRecord,
 } from '../../src/api/matrix/controlRecords';
@@ -226,6 +227,36 @@ suite('Matrix control records in a real Pod', () => {
     expect(await restarted.pending(podUrl)).toEqual([ second ]);
     await restarted.remove(podUrl, second);
     expect(await restarted.pending(podUrl)).toEqual([]);
+  }, 120_000);
+
+  it('physically forgets a day it is told to prune, and only that day', async() => {
+    const { podUrl, write } = await podHandle();
+    const handle = { scope: podUrl, write };
+    const oldDay = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const bucket = controlRecordBucket(oldDay);
+    const oldKey = `txn-pruned-${Date.now()}`;
+    const keptKey = `txn-kept-${Date.now()}`;
+    await writeControlRecord(handle, {
+      kind: 'txn', key: oldKey, at: oldDay, instruction: 'a receipt past the retention window',
+      status: 'completed', metadata: { protocol: 'matrix', kind: 'inbound-transaction' },
+    });
+    await writeControlRecord(handle, {
+      kind: 'txn', key: keptKey, at: new Date(), instruction: 'a receipt inside the window',
+      status: 'active', metadata: { protocol: 'matrix', kind: 'inbound-transaction' },
+    });
+    // The old one is there when asked for by its own day — it is only the lookup *window* that hides
+    // it, which is the logical half of retention.
+    expect(await readControlRecord(handle, 'txn', oldKey, { at: oldDay })).toBeDefined();
+    const { resource } = controlRecordAddress(podUrl, 'txn', oldKey, bucket);
+    expect((await write.fetch(resource, { method: 'HEAD' })).status).toBe(200);
+
+    // Physical retention is the operator's call: name the day, and its records go — document and
+    // all, so nothing is left behind for a client listing that day to find.
+    await expect(pruneControlRecords(handle, 'txn', [ bucket ])).resolves.toBe(1);
+    expect((await write.fetch(resource, { method: 'HEAD' })).status).toBe(404);
+    expect(await readControlRecord(handle, 'txn', oldKey, { at: oldDay })).toBeUndefined();
+    expect(await readControlRecord(handle, 'txn', keptKey, { at: new Date() })).toBeDefined();
+    await deleteControlRecord(handle, (await readControlRecord(handle, 'txn', keptKey, { at: new Date() }))!);
   }, 120_000);
 
   it('keeps a delivery batch sendable: the payload survives the Pod intact', async() => {
