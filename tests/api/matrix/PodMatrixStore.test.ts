@@ -42,6 +42,32 @@ describe('PodMatrixStore shared Pod contract', () => {
     // business (2026-09-27).
   });
 
+  it('makes a newly granted agent a member, and does not re-write an existing one', async () => {
+    const { store, context, rows } = matrixHarness();
+    const room = await store.createRoom({}, context);
+    const grant = (agent: string) => ({
+      agent, executor: 'https://alice.example/card#me', workspace: 'https://pod.example/alice/',
+      allowedActors: [ 'https://alice.example/card#me' ], handoffTo: [],
+    });
+    const members = (userId: string): Record<string, unknown>[] => rows.get(messageResource)!
+      .map((row: any) => row.metadata.protocols.matrix.event)
+      .filter((event: any) => event.type === 'm.room.member' && event.state_key === userId);
+
+    const agent = 'https://pod.example/alice/.data/agents/scribe.ttl#this';
+    const agentUserId = store.matrixUserIdFor(agent, context.podUrl ? 'example.test' : 'example.test');
+    await store.setState(room.roomId, 'co.undefineds.agents', '', { agents: [ grant(agent) ] }, context);
+
+    // Granting is what makes it a member: an invite by the granter, then the agent's own join.
+    const events = members(agentUserId);
+    expect(events.map((event: any) => event.content.membership)).toEqual([ 'invite', 'join' ]);
+    expect(events[1].sender).toBe(agentUserId);
+    expect(events[1].state_key).toBe(agentUserId);
+
+    // Writing the same grant again appends no history: it was already a member.
+    await store.setState(room.roomId, 'co.undefineds.agents', '', { agents: [ grant(agent) ] }, context);
+    expect(members(agentUserId)).toHaveLength(2);
+  });
+
   it('writes the sending device onto the event, so the event alone names its reservation', async () => {
     const { store, context, rows } = matrixHarness();
     const room = await store.createRoom({}, context);

@@ -673,8 +673,53 @@ export class PodMatrixStore {
       throw new MatrixError(403, 'M_FORBIDDEN', 'Use membership operations; immutable/encrypted state is unsupported');
     }
     if (eventType === 'co.undefineds.agents') this.validateAgentGrants(content);
-    return this.appendEvent(db, {roomId, type: eventType, sender: this.getMatrixUserId(context), stateKey,
+    // The grant state as it was *before* this write: the diff has to be against the previous
+    // version, which is why it is read here and not after the new state exists.
+    const previousGrants = eventType === 'co.undefineds.agents' && stateKey === ''
+      ? await this.findLatestStateEvent(db, roomId, eventType, '', context)
+      : undefined;
+    const alreadyGranted = eventType === 'co.undefineds.agents' && stateKey === ''
+      ? (previousGrants ? this.validateAgentGrants(previousGrants.content ?? {}) : []).map(grant => grant.agent)
+      : undefined;
+    const record = await this.appendEvent(db, {roomId, type: eventType, sender: this.getMatrixUserId(context), stateKey,
       originServerTs: Date.now(), content}, context);
+    // Granting an agent is what makes it a member: the grant state is set through an ordinary state
+    // write, and an agent with execution rights but no membership would be an agent the write path
+    // has to special-case for ever. The two events are the ordinary membership pair — an invite by
+    // the member who granted it, and the agent's own join — signed by this deployment because the
+    // agent's MXID lives under its server name (`matrixUserIdFor`).
+    if (alreadyGranted !== undefined) {
+      await this.admitGrantedAgents(db, roomId, content, context, alreadyGranted);
+    }
+    return record;
+  }
+
+  /**
+   * The membership events that make a newly granted agent a room member.
+   *
+   * Diffed against the previous grant state rather than re-deriving every time: an agent that was
+   * already granted is already a member, and writing its membership again would append room history
+   * for nothing. Agents that *lost* their grant keep it simple here — the grant state is what
+   * authorises execution, and a member without a grant cannot execute; revoking membership as well
+   * is a separate decision (recorded in the register) rather than something to guess at here.
+   */
+  private async admitGrantedAgents(
+    db: Db,
+    roomId: string,
+    content: Record<string, unknown>,
+    context: MatrixStoreContext,
+    knownAgents: readonly string[],
+  ): Promise<void> {
+    const known = new Set(knownAgents);
+    const granted = this.validateAgentGrants(content).map(grant => grant.agent);
+    const serverName = this.getServerName(context);
+    const granter = this.getMatrixUserId(context);
+    for (const agent of granted) {
+      if (known.has(agent)) continue;
+      const agentUserId = matrixUserIdFor(agent, serverName);
+      await this.appendMembershipEvent(db, roomId, agentUserId, 'invite', context, { sender: granter });
+      await this.appendMembershipEvent(db, roomId, agentUserId, 'join', context, { sender: agentUserId });
+    }
   }
 
   public async sync(context: MatrixStoreContext, options: { since?: string; limit?: number; timeout?: number; signal?: AbortSignal } = {}): Promise<MatrixSyncResponse> {

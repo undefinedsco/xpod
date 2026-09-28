@@ -129,12 +129,14 @@
      `membership: invite`），再由 Agent 发 `join`（`sender == state_key == Agent 的 MXID`，授权规则 5.2.2
      允许被邀请者加入）；两步都由该部署现有的 server name 密钥签名，经现有写入路径与其预占/投递，不新增端点、
      不新增密钥。
-   - **落点已查清（2026-09-28）**：授权经**普通状态写入**进入房间——`setState(roomId, 'co.undefineds.agents', '', content, context)`
-     → `PodMatrixStore.ts:675` 的 `validateAgentGrants`。所以"授权即成员"的接线点就是那里：把这次 `co.undefineds.agents`
-     与**上一版**比对，新增被授权的 Agent 时补写两条成员事件（邀请 + Agent 自签 join）；**撤销**授权时按"离开即撤销"
-     同一口径让该 Agent 退出（或踢出），而不是留着一个已无权却仍在房间里的成员。两条都要走现有
-     `appendMembershipEvent`/写入路径（不新增端点），且**必须与 v11 规则强制同一轮上线**——否则要么规则拒掉 Agent 消息，
-     要么成员事件白写。
+   - **已落地（2026-09-28）：授权即成员**。`setState('co.undefineds.agents')` 现在先读**上一版**授权
+     （diff 必须在写入之前读，否则读到的是刚写进去的那份），写入新状态后为**新增**的 Agent 补两条成员事件：
+     邀请（sender = 授权人）+ Agent 的 join（`sender == state_key == Agent 的 MXID`，由本部署的 server name
+     密钥签名——Agent 的 MXID 就在这个 server name 下）。已授权过的 Agent 不再重写（不无谓地追加房间历史）。
+     测试：`PodMatrixStore.test.ts` 新增 1 项（两条事件、join 的 sender/state_key 都是 Agent、重复写同一条授权
+     不追加历史）；`tests/api/matrix` 588 passed / 3 skipped，`test:integration:lite` 159 passed / 6 skipped。
+     **仍未做**：撤销授权时让 Agent 退出/被踢（登记册按"离开即撤销"的口径记为待办，避免在没定的地方猜）；
+     以及 **v11 规则强制**——它必须与成员事件配合上线（成员事件先落是安全的，规则先落会拒掉 Agent 的消息）。
    - **只有到这一步之后**，写路径才可以按 v11 规则强制（rule 5 要求 sender 已 join）——这正是登记册
      "授权与执行"一节把规则只当纯校验器的原因；强制与 Agent 成员事件要在同一轮落地，否则 Agent 的消息会被拒。
    - **restricted join 的附加签名**（`join_authorised_via_users_server`）先不做：它是"房间在别的 server 上、

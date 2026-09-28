@@ -381,6 +381,15 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   注入的 db 没有 fetch 时拒绝（不给半个授权）；部署自持工作时**不借**调用方会话；
   `controlRecordHandleFor` 把"哪个 Pod"和"以谁的身份"一起解析；context 不含 Pod 时拒绝而不是默认成空 scope。
 
+### Agent 授权即成员（2026-09-28，D6 第二步）
+
+- `setState('co.undefineds.agents')` 现在把**新增**的被授权 Agent 变成房间成员：先读上一版授权做 diff
+  （必须在写入前读），写入新状态后补**邀请**（sender = 授权人）与 **Agent 自己的 join**
+  （`sender == state_key == Agent 的 MXID`，由该 server name 现有密钥签名）。已授权的不重写。
+- 证据：`PodMatrixStore.test.ts` 新增 1 项；`tests/api/matrix` **588 passed / 3 skipped**；
+  `test:integration:lite` **159 passed / 6 skipped**。
+- **仍未做**：撤销授权时的退出/踢出；v11 规则强制（须与成员事件配合，规则先落会拒掉 Agent 消息）。
+
 ### 入站写入的成员资格判定已接线（2026-09-28）
 
 - `inboundAuthority.ts` 的纯函数（三态：join 放行 / 状态明确说 invite·leave·ban·knock 则拒 / **未知放行**）
