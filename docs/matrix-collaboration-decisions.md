@@ -150,6 +150,10 @@
      - **真正缺的**：本地写入没有跑 `authorizeEvent` 本身，所以**power level 的细粒度**没有逐条执行——
        谁能改 `m.room.power_levels`、谁能 ban/kick、`join_rules` 允许哪种加入、`@` 开头的 state_key 限制等；
        `requireRoomOwner` 只是粗粒度替代（"是不是房主"≠"power level 够不够"）。
+     - **前置已落地（2026-09-28）**：event → `AuthEvent` 的投影收进一处——`protocol/authRules.ts` 的
+       `toAuthEvent(event)`（`AuthEvent` 就定义在那个模块），`FederationHandler` 里原先的私有副本改为委托它。
+       理由与规则本身一样：同一事件被两处投影会变成"一个事件两种判法"。这一步**不改任何行为**
+       （`tests/api/matrix tests/api/handlers` **1032 passed / 3 skipped**）。
      - **启用方式（下一步，钩子点已定位）**：**唯一的构建点**是 `PodMatrixStore.appendEvent` 里的
        `buildPersistedEvent`（`PodMatrixStore.ts:1060`）——本地事件只在那里成形，所以规则强制就落在
        **成形之后、落库之前**：把刚构建的事件（`type`/`sender`/`state_key`/`content`/`prev_events`/`auth_events`）

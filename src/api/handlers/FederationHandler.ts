@@ -46,7 +46,7 @@ import {
   type MembershipKind,
 } from '../matrix/federation/membershipHandshake';
 import { eventReferenceIds } from '../matrix/protocol/eventReferences';
-import { serverNameOf } from '../matrix/protocol/authRules';
+import { serverNameOf, toAuthEvent } from '../matrix/protocol/authRules';
 import { deploymentVersion, IMPLEMENTATION_NAME } from '../../runtime/deploymentVersion';
 import { NATIVE_INBOUND_PATH, type FederationSendTarget } from '../matrix/federation/inboundRoute';
 import type {
@@ -784,17 +784,7 @@ async function addressedServerName(
 }
 
 /** A protocol event as the auth rules read it. */
-function asAuthEvent(event: Record<string, unknown>): AuthEvent {
-  return {
-    event_id: typeof event.event_id === 'string' ? event.event_id : undefined,
-    type: String(event.type ?? ''),
-    sender: String(event.sender ?? ''),
-    room_id: String(event.room_id ?? ''),
-    content: (event.content ?? {}) as Record<string, unknown>,
-    ...(event.state_key === undefined ? {} : { state_key: String(event.state_key) }),
-    prev_events: [],
-  };
-}
+const asAuthEvent = toAuthEvent;
 
 function hostOf(request: { headers: { host?: string | undefined } }): string {
   return (request.headers.host ?? '').trim();

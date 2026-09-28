@@ -63,6 +63,26 @@ const DEFAULT_POWER_LEVELS = {
 
 const INVITE_LEVEL_KEYS = [ 'users_default', 'events_default', 'state_default', 'ban', 'redact', 'kick', 'invite' ] as const;
 
+/**
+ * A stored or received event as the auth rules want to see it.
+ *
+ * Lives here because `AuthEvent` does: every caller that has to authorise an event — a receiver
+ * judging a PDU, a handler resolving a chain, and (next) the write path before it stores what it
+ * built — needs the same projection, and two of them drifting apart would mean one event judged
+ * two ways.
+ */
+export function toAuthEvent(event: Record<string, unknown>): AuthEvent {
+  return {
+    event_id: typeof event.event_id === 'string' ? event.event_id : undefined,
+    type: String(event.type ?? ''),
+    sender: String(event.sender ?? ''),
+    room_id: String(event.room_id ?? ''),
+    content: (event.content ?? {}) as Record<string, unknown>,
+    ...(event.state_key === undefined ? {} : { state_key: String(event.state_key) }),
+    prev_events: [],
+  };
+}
+
 export function authorizeEvent(event: AuthorizableEvent, authEvents: readonly AuthEvent[]): EventAuthDecision {
   const roomVersion = typeof event.content.room_version === 'string' ? event.content.room_version : undefined;
 
