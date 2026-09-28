@@ -381,6 +381,14 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   注入的 db 没有 fetch 时拒绝（不给半个授权）；部署自持工作时**不借**调用方会话；
   `controlRecordHandleFor` 把"哪个 Pod"和"以谁的身份"一起解析；context 不含 Pod 时拒绝而不是默认成空 scope。
 
+### 真实实例探测（2026-09-28，lite 真实栈，不需要 Docker）
+
+- 门禁测试 `tests/integration/MatrixInstanceProbe.integration.test.ts`（3 项，全过）：客户端发现 200、
+  版本列表 200、**联邦 `/send` 无签名 401**、**原生 `/_xpod/matrix/inbound` 无签名 401**、`/version` 200。
+- **它修掉了一个实质缺口**：网关 `Proxy.shouldRouteToApi` 原先只认 `/_matrix`，`/_xpod` 会被当成 CSS 路径 → 404，
+  即 ③ 的原生传输在真实部署里到不了对端（客户端会一直回退 `/send`）；补上前缀后探测回 401，已写成断言。
+- **仍开**：`/query/directory` 无签名回 404（预期 401），可能是"先定位名字再认证"的顺序问题。
+
 ### Agent 授权即成员（2026-09-28，D6 第二步）
 
 - `setState('co.undefineds.agents')` 现在把**新增**的被授权 Agent 变成房间成员：先读上一版授权做 diff

@@ -53,6 +53,15 @@ suite('the running instance answers peers and strangers the way the ledger says'
     });
     expect(send.status).toBe(401);
     expect(send.body).toMatchObject({ errcode: 'M_UNAUTHORIZED' });
+
+    // The native transport between two Xpod deployments: registered, forwarded, and just as closed.
+    const native = await probe('/_xpod/matrix/inbound/unsigned-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin: 'stranger.example', pdus: [] }),
+    });
+    expect(native.status).toBe(401);
+    expect(native.body).toMatchObject({ errcode: 'M_UNAUTHORIZED' });
   });
 
   it('tells a peer which implementation is answering, without asking who it is', async() => {

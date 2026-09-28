@@ -210,24 +210,21 @@
 `PUT /_matrix/federation/v1/send/...` 无签名 **401 `M_UNAUTHORIZED`**；`GET /_matrix/federation/v1/version` 200
 且带 `server.name`/`server.version`。
 
-**探测出来的两个缺陷**（都已在探测里复现，因此不写进断言、只记在这里）：
+**探测出来的问题：一条已修、一条仍开**
 
-1. **原生端点 `POST /_xpod/matrix/inbound/:txnId` 在真实部署上回 404**，而 `/_matrix/...` 回 401。
-   处理器里**确实注册了**（`FederationHandler.ts:147`），网关也只按前缀转发（`src/runtime/Proxy.ts` 的
-   `shouldRouteToApi` 已补 `/_xpod`）。所以要么这条路径没走到注册（例如 `registerFederationRoutes` 的
-   前置条件在真实栈上不同），要么网关/API 之间还有一处只认 `/_matrix` 的判断。**影响**：③ 的原生传输在
-   真实部署里根本到不了对端，客户端会一直 404 回退到 `/send`——功能没坏，但"Xpod↔Xpod 不走 Matrix 传输"
-   这条目标没有真正生效。
-2. **`GET /_matrix/federation/v1/query/directory?room_alias=…` 无签名回 404**，而预期是"未签名一律 401"。
-   需要确认它是"先按 Host 找被寻址名字、找不到即 404"（那么这是**顺序**问题：应当先认证再定位），
-   还是路由本身没被匹配。
+1. ~~**原生端点 `POST /_xpod/matrix/inbound/:txnId` 在真实部署上回 404**~~ **已修（2026-09-28）**：网关的
+   `Proxy.shouldRouteToApi` 只认 `/_matrix`，`/_xpod` 被当成 CSS 路径 → 404。补上 `/_xpod` 前缀后，
+   同一探测现在回 **401 `M_UNAUTHORIZED`**（已写进门禁断言）。**这条曾经意味着 ③ 在真实部署里没有真正生效**
+   （客户端会一直 404 回退到 `/send`），所以是必须修的实质缺口，不是测试细节。
+2. **`GET /_matrix/federation/v1/query/directory?room_alias=…` 无签名回 404**（预期"未签名一律 401"）。
+   可能是"先按 Host 找被寻址名字、找不到即 404"——那是**顺序**问题（应先认证再定位），也可能是路由未匹配。
+   仍未查。
 
-两条都要在下一轮查清并修掉；`/send` 与 `/version` 的行为说明联邦路由整体是活的，所以问题范围不大。
-**已排除的一项（2026-09-28）**：原生路由的注册是**无条件**的——它紧挨着 `/send` 那一行
-（`FederationHandler.ts:147`），不在任何 `if` 里。所以 404 不来自处理器，而在**网关→API 之间**：
-要么网关对 `/_xpod/*` 的转发还有第二处判断（本轮只改到 `Proxy.shouldRouteToApi`），要么 API 侧对非
-`/_matrix` 前缀另有处理。**二分办法**：在真实栈上对 **API 端口**（绕过网关）打同一个 POST——
-一次就能判定是哪一侧回的 404。
+不带 Docker 也能取得"真实实例"证据：lite 门禁跑的就是本分支的**真实栈**（Gateway + CSS + API + 真实 Pod），
+于是把验收表里的探测直接打在它上面，并加进门禁（`tests/integration/MatrixInstanceProbe.integration.test.ts`）。
+**通过的**：`/.well-known/matrix/client` 200 且带 `m.homeserver.base_url`；`/_matrix/client/versions` 200 且版本非空；
+`PUT /_matrix/federation/v1/send/...` 无签名 **401 `M_UNAUTHORIZED`**；`POST /_xpod/matrix/inbound/...` 无签名
+**401 `M_UNAUTHORIZED`**；`GET /_matrix/federation/v1/version` 200 且带 `server.name`/`server.version`。
 
 ## 状态规则
 
