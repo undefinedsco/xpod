@@ -276,6 +276,14 @@ grant（房间级授权＝成员资格）、**D6 完整落地**（授权即成�
    ——`MatrixCollaboration` 验收夹具失败。原因清楚：**预留写的是调用方路径**（客户端会话写入自己的 Pod），
    而那个 handle 是**部署自持的 service 句柄**（需要参与者交出 Pod interface key），于是调用方写入统统 403。
    已回退，lite 恢复 162 passed / 6 skipped。
+   **第二次尝试（2026-09-28，带上了调用方授权）仍然失败，但失败的样子变了**：不再是 403，而是
+   `Matrix acceptance failed: agent 2 has a fenced lease`——即**协调/租约**出错，而不是授权被拒。
+   两次失败形态的差别本身就是线索：授权那条已修好（句柄现在来自调用方 context），剩下的是**时序**问题——
+   每次预留现在要往 Pod 读写（读一次 + 写一次 + 建容器），63 个事件的验收夹具在慢下来的写入下，
+   两个运行时的 agent 租约发生了 fencing。**下一次要查的是**：① 预留是否真的只需要一次 Pod 往返
+   （`writeControlRecord` 的"先读再插"能否只在首次预留时读）；② 容器链能否只建一次（现在每次写都走
+   `ensureDayContainers`，虽然有进程内记忆）；③ 夹具的租约超时是否本就贴着边。**在查清之前不接线**——
+   两次都是真实门禁（而不是单元测试）拦下来的，这个信号不能忽略。
    **修正后的形状（第一步已落地 2026-09-28）**：journal 的预留调用带上**调用方的授权**，而不是按 scope 猜一个部署句柄——
    `MatrixEventJournal` 的四个预留方法新增可选 `authority`（即控制记录的 `MatrixControlRecordTarget`），
    `PodMatrixEventJournal` **要求**它（缺失就 403 并说明"不会替你猜一个"），单元测试已按此更新（5 项仍全过）。
