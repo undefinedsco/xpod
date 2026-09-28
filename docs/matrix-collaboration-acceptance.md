@@ -392,7 +392,11 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   跨天可枚举与超窗不可见、**一天只列举一次而不是每条一次**、`scopes()` 两种来源、无授权即 403）；
   真实 Pod 新增 1 项——写入两条批次后，**换一个 store 实例（模拟重启）靠列目录把欠的批次找回来**，
   删一条后只剩另一条。真实 Pod 用例现共 5 项。
-- **仍未接线**：容器里装的还是内存队列（接线需要 scope→句柄的来源并避开构造期循环，见契约 §6.4）。
+- **已接线**（2026-09-27）：`createMatrixOutboundDelivery` 接受 store，容器装的是 `PodMatrixOutboundStore`；
+  `handleFor`（scope → 该 Pod 的句柄）由**已服务的路由**派生、写入时才解析（构造期解析会与它服务的 store 成环），
+  `scopes()` 同样来自路由。证据：`MatrixOutboundContainer.test.ts` 新增 2 项——交付对象带的 store 是
+  `PodMatrixOutboundStore` 且 `scopes()` 等于已服务的 Pod 根；对**本部署不服务**的 scope 入队被拒
+  （`holds no grant`），不会写到不确定的地方；整轮 lite 门禁在该接线生效的情况下通过（容器能起、路由能注册）。
 
 ### 控制记录改按 models 的按天累积布局（2026-09-27，回应"为什么要判赢家"）
 

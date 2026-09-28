@@ -113,6 +113,8 @@ import { matrixSigningIdentityRegistry } from '../matrix/identityRegistry';
 import { matrixSigningIdentityForPod } from '../matrix/identityProvisioning';
 import { createPodParticipantIdentityProvider } from '../matrix/podParticipantIdentity';
 import { createMatrixOutboundDelivery, nodeSrvRecords } from '../matrix/federation/outboundDelivery';
+import { PodMatrixOutboundStore } from '../matrix/federation/podOutboundStore';
+import type { MatrixControlRecordTarget } from '../matrix/controlRecords';
 import { createSchedulingOutbox, MatrixOutboxScheduler } from '../matrix/federation/outboxScheduler';
 import { promises as dns } from 'node:dns';
 import { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
@@ -173,6 +175,27 @@ function podBaseUrlResolver(cradle: ApiContainerCradle) {
 /**
  * 注册共享服务到容器
  */
+/**
+ * The Pod handle an outbound scope's batches are written with.
+ *
+ * A scope is a Pod root, and the served routes are what say which participant it belongs to: the
+ * deployment writes on its own behalf with that participant's task-layer grant, exactly as it does
+ * for an inbound transaction. Resolved when a batch is written rather than when the container is
+ * built, because the store this needs is the one being assembled.
+ */
+async function outboundHandleFor(
+  cradle: ApiContainerCradle,
+  scope: string,
+): Promise<MatrixControlRecordTarget | undefined> {
+  const routes = cradle.matrixParticipantRoutes;
+  if (!routes) return undefined;
+  for (const route of (await routes.routes()).served.values()) {
+    if (route.podUrl !== scope) continue;
+    return await cradle.matrixStore.controlRecordHandleFor({ webId: route.webId, podUrl: route.podUrl, service: {} });
+  }
+  return undefined;
+}
+
 export function registerCommonServices(
   container: AwilixContainer<ApiContainerCradle>,
 ): void {
@@ -792,13 +815,26 @@ export function registerCommonServices(
     // The outbound path: where a server name is reached, which identity signs as the origin,
     // and what is still owed. Absent without an identity of our own: a queue whose every
     // batch would be abandoned is worse than no queue.
-    matrixOutboundDelivery: asFunction(({ config, matrixSigningIdentities, matrixServerNameResolver, matrixFederationFetch }: ApiContainerCradle) => {
+    matrixOutboundDelivery: asFunction((cradle: ApiContainerCradle) => {
+      const { config, matrixSigningIdentities, matrixServerNameResolver, matrixFederationFetch } = cradle;
       if (!config.matrixServiceIdentity) return undefined;
       return createMatrixOutboundDelivery({
         identities: matrixSigningIdentities,
         fetch: globalThis.fetch,
         fetchTarget: matrixFederationFetch,
         resolver: matrixServerNameResolver,
+        // The queue lives in the Pods this deployment serves, so what is owed survives a restart.
+        // Both halves resolve lazily: the routes are what a scope means, and the store is the
+        // authority to write it — asking for either *now* would close a cycle with the store this
+        // delivery is being built for.
+        store: new PodMatrixOutboundStore({
+          handleFor: async(scope: string) => await outboundHandleFor(cradle, scope),
+          scopes: async () => {
+            const routes = cradle.matrixParticipantRoutes;
+            if (!routes) return [];
+            return [ ...(await routes.routes()).served.values() ].map(route => route.podUrl);
+          },
+        }),
       });
     }).singleton(),
 

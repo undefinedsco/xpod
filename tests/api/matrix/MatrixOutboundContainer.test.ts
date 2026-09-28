@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { registerCommonServices } from '../../../src/api/container/common';
 import type { ApiContainerCradle } from '../../../src/api/container/types';
 import { MatrixServiceIdentity } from '../../../src/api/matrix/protocol/serviceIdentity';
+import { PodMatrixOutboundStore } from '../../../src/api/matrix/federation/podOutboundStore';
 
 function identity(serverName: string): MatrixServiceIdentity {
   const { privateKey } = generateKeyPairSync('ed25519');
@@ -99,6 +100,33 @@ describe('outbound federation registration', () => {
     await expect(scheduler!.flushOnce()).resolves.toMatchObject({ scopes: 0, failed: 0 });
     // The same registry the store signs with is the one the sender picks origins from.
     expect(instance.resolve('matrixSigningIdentities').serverNames()).toEqual([ 'pod.example' ]);
+  });
+
+  it('keeps the queue in the Pods it serves, and says which those are', async () => {
+    const instance = container(identity('pod.example'));
+    instance.register({
+      podLookupRepo: asValue({
+        listAllPods: async () => [
+          { podId: 'pod-1', accountId: 'a-1', baseUrl: 'https://pod.example/alice', webId: 'https://alice.example/card#me' },
+        ],
+      } as unknown as ApiContainerCradle['podLookupRepo']),
+    });
+
+    const delivery = instance.resolve('matrixOutboundDelivery');
+    // The carrier, not just the interface: a memory queue would lose what is owed on restart.
+    expect(delivery!.store).toBeInstanceOf(PodMatrixOutboundStore);
+    // The scopes come from the served routes, which are derived rather than recorded.
+    await expect(delivery!.store.scopes()).resolves.toEqual([ 'https://pod.example/alice/' ]);
+  });
+
+  it('refuses to queue work for a Pod the deployment does not serve', async () => {
+    const instance = container(identity('pod.example'));
+    const delivery = instance.resolve('matrixOutboundDelivery');
+    // No routes at all, so there is nothing that could say which Pod this scope is.
+    await expect(delivery!.store.put('https://pod.example/nobody/', {
+      txnId: 'txn-1', origin: 'pod.example', destination: 'peer.example', pdus: [], edus: [],
+      createdAt: Date.now(), attempts: 0,
+    })).rejects.toThrow(/holds no grant/u);
   });
 
   it('registers no delivery, and no queue, without an identity of its own', () => {

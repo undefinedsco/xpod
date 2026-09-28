@@ -161,9 +161,6 @@ create-once 需要"一个 key 一个文档 + `If-None-Match: *`"才能按 key �
 ### 6.4 仍未定
 
 - **物理回收**：超窗的天文档仍在 Pod 里，删旧文档/条数上限未定（逻辑保留期见 §6.1）。
-- **出站 store 的接线**：承载与枚举都已落地并有测试（§9），但容器仍装的是内存队列——接线需要
-  "scope → 该 Pod 的句柄"的来源（已服务的路由能给），而它同时需要 `matrixStore`，容器里要避免
-  构造期循环。这一步是纯接线，逻辑已验证。
 - **grant 的时机与界面**（§5.4）：未定；现在没有 grant 就是 403。
 
 ## 7. 与已落地实现的关系
@@ -171,7 +168,8 @@ create-once 需要"一个 key 一个文档 + `If-None-Match: *`"才能按 key �
 - **入站**：`PodMatrixInboundTransactionStore`（`src/api/matrix/federation/podInboundTransaction.ts`）是**生产承载**，
   容器已按它装配；`InMemoryMatrixInboundTransactionStore` 保留给测试与"没有 Pod 的嵌入方"。
   两者实现同一接口，`reserve/complete/release/find` 都接受同一个可选句柄，内存实现忽略它。
-- **出站**：仍是 `InMemoryMatrixOutboundStore`；载荷映射已落地（§9.1），Pod 版等 §9.2 的枚举问题定案。
+- **出站**：`PodMatrixOutboundStore` 是生产承载（容器已装配，§9.2）；`InMemoryMatrixOutboundStore` 保留给
+  测试与"没有 Pod 的嵌入方"`。
 - `release`（未完成即释放）与"失败按真实状态回答"已落地，是本文 §3.1 的直接实现。
 - 服务身份与 Pod 归属（server name 派生、歧义即拒绝）见[服务身份契约](matrix-service-identity-contract.md)与
   `participantRoutes.ts`；本文只覆盖其中"写 Pod 用哪份授权"的部分。
@@ -200,7 +198,7 @@ create-once 需要"一个 key 一个文档 + `If-None-Match: *`"才能按 key �
 文档写进一个不存在的路径并让它按 URL 可读，但 `GET` 那个路径上的目录会回 404——没有容器就没有
 `ldp:contains`，客户端列不到也订阅不到（§6.1 的 `ensureDayContainers` 就是为此）。
 
-## 9. 出站批次的承载：载荷已定并落地，枚举未定（2026-09-27 实测）
+## 9. 出站批次的承载（2026-09-27）
 
 ### 9.1 已落地：一条批次 = 一条 `taskResource`
 
@@ -217,7 +215,7 @@ create-once 需要"一个 key 一个文档 + `If-None-Match: *`"才能按 key �
 证据：单元 6 项（含可选字段不臆造默认值、按队列而非仅按 txnId 分键、非批次记录返回 `undefined`、
 载荷缺失即报错）；真实 Pod 1 项（带签名的 PDU 与 EDU **原样往返**，换读者读回同一批）。
 
-### 9.2 枚举已定：列目录（并已落地）
+### 9.2 枚举已定：列目录（并已落地、已接线）
 
 **用户 2026-09-27 的口径**（"client 端自己负责，服务端不用帮他记那些同步"）把这条从"要不要给 models 加列"
 改成了"用 Solid 本来就有的能力回答"。落地形态：
@@ -230,11 +228,20 @@ create-once 需要"一个 key 一个文档 + `If-None-Match: *`"才能按 key �
   对端下线一周后回来仍应拿到；代价只是每天一次列举。
 - `scopes()` 由**部署**回答（已服务的路由派生，不记录）：没有提供者时，store 只回答"被问到过的 scope"，
   这是诚实的答案，而不是假装知道全部。
-- `remove` 现在接收**整条批次**而不是 txnId：载体按文档寻址，必须知道这个 id 属于哪个队列
+- `remove` 接收**整条批次**而不是 txnId：载体按文档寻址，必须知道这个 id 属于哪个队列
   （txnId 只在 `(origin, destination)` 内唯一）。
 
 实现：`federation/podOutboundStore.ts`（`PodMatrixOutboundStore`）、`federation/outboundBatches.ts`（载荷映射）、
-`controlRecords.ts` 的 `listControlRecords`。**仍未接进容器**（见 §6.4）。
+`controlRecords.ts` 的 `listControlRecords`。**已接进容器**：`createMatrixOutboundDelivery` 接受一个 store，
+容器装的就是 Pod 版；`handleFor`（scope → 句柄）由**已服务的路由**派生，并在写入时才解析
+（构造期解析会与它服务的 store 成环），`scopes()` 同样来自路由。没有身份、或没有 Pod 登记时 `scopes()` 是空的
+——队列空转，而不是写到不确定的地方。
+
+证据：`podOutboundStore.test.ts` 7 项（当天文档与它需要的容器链、按队列过滤与排序、重复忘掉、
+跨天可枚举与超窗不可见、**一天只列举一次而不是每条一次**、`scopes()` 两种来源、无授权即 403）；
+真实 Pod 1 项（换一个 store 实例靠列目录把欠的批次找回来，删一条后只剩另一条）；
+`MatrixOutboundContainer.test.ts` 2 项（容器装的 store 是 Pod 版且 `scopes()` 等于已服务的 Pod 根；
+对本部署不服务的 scope 入队被拒）。
 
 ### 9.3 曾经走过的弯路（留作记录）
 
@@ -244,93 +251,3 @@ create-once 需要"一个 key 一个文档 + `If-None-Match: *`"才能按 key �
 2. **带过滤的 `select`**：过滤能下推、只读命中行，但需要一个**可查询的判别列**——`kind` 藏在 `metadata`
    对象列里查不到，`status='open'` 又不具选择性。这条引出了"要不要让 models 加列"的问题，用户否掉了这个方向。
 3. **容器列成员**：曾被判"不可信"，实际是**测量写错了**（Turtle 逗号列表）；更正后它正是这里的答案。
-
-## 8. 记录在案的 drizzle-solid / Pod 缺口（2026-09-27）
-
-按仓库规则"绕过前先报告"。**当前实现不绕过 drizzle-solid**——控制记录的读写全部走 ORM
-（`insert(...).values(...).execute()` / `findByResource` / `updateByResource` / `deleteByResource`），
-加上一次显式的容器 `PUT`（Solid 协议操作，不是绕过）。三条按严重程度排：
-
-1. **同一个文档里的两行会合并 `object` 列（最严重，实测）**：`object` 列（这里是 `metadata`）被写成
-   自己的主体，主体名按行在文档中的位置推出（`<文档>#metadata-1`）而不是按行身份。于是同文档两行的
-   `metadata` 写进**同一个主体**、三元组合并——实测把一条入站回执与一条出站批次读成了同一条记录
-   （`kind` 成了 `["inbound-transaction","outbound-batch"]`）。**规避**：一条记录一个文档（§6.1）。
-   期望的修法是嵌套主体按行身份命名（例如 `<行主体>-metadata`）。
-2. **`deleteByResource` 只删行、留下（可能为空的）文档**：文档是"一条记录一个文档"时，释放会留下一个
-   空文档；它仍出现在日期目录的 `ldp:contains` 里，读它得到空表示。**暂时接受**：不影响正确性
-   （再写同一个 key 会重新长出记录）。`deleteResourceWithDocument` 是现成的"连文档一起删"的 ORM 入口，
-   需要时改用它。
-3. **无法表达"只在不存在时创建"**：`insert` 走 `INSERT DATA`（集合语义，重复写不报错），
-   `insertExactRecordOnce` 是"先查再写"（TOCTOU），SPARQL executor 在 412 之后还会
-   `refreshed-etag` → `no-etag` 逐级重试（等于 last-write-wins）。**曾经**因此用原生条件 `PATCH`
-   （`If-None-Match: *`）做严格预留；现在不需要严格预留（§6.3），只把这条留作能力缺口的记录。
-
-另一条是 **Pod 侧**的（不是 drizzle-solid）：**任何写入者都必须自己创建容器**。SPARQL `PATCH` 可以把
-文档写进一个不存在的路径并让它按 URL 可读，但 `GET` 那个路径上的目录会回 404——没有容器就没有
-`ldp:contains`，客户端列不到也订阅不到（§6.1 的 `ensureDayContainers` 就是为此）。
-
-## 9. 出站批次的承载：载荷已定并落地，枚举未定（2026-09-27 实测）
-
-### 9.1 已落地：一条批次 = 一条 `taskResource`
-
-`federation/outboundBatches.ts` 是载荷那一半的映射：
-
-- `metadata` 原样保存 `pdus`/`edus`（**签名覆盖内容，重编码就不是同一个事件了**）、`origin`、
-  `destination`、`txnId`、`createdAt`、`attempts`、`notBefore`、`lastReason`；`kind: 'outbound-batch'`。
-- `status` 一律 `open`：**批次存在就等于"这笔事务还欠着"**。进度（attempts/notBefore/lastReason）不进
-  status，因为每次重试都要改 status，而"改"正是两个写入者互相覆盖的来源。
-- key = `[origin, destination, txnId]`：txnId 是对端的去重键、队列中途绝不重铸，但同一个 txnId 在
-  两个目的 server（或本部署的两个 origin）下不是同一批。
-- 解码失败**不跳过**：那是本部署欠对端的事件，队列没有第二份副本，宁可报错（`MatrixError`）。
-
-证据：单元 6 项（含可选字段不臆造默认值、按队列而非仅按 txnId 分键、非批次记录返回 `undefined`、
-载荷缺失即报错）；真实 Pod 1 项（带签名的 PDU 与 EDU **原样往返**，换读者读回同一批）。
-
-### 9.2 枚举已定：列目录（并已落地）
-
-**用户 2026-09-27 的口径**（"client 端自己负责，服务端不用帮他记那些同步"）把这条从"要不要给 models 加列"
-改成了"用 Solid 本来就有的能力回答"。落地形态：
-
-- 批次落在同一套日期布局里，**用 kind 前缀与回执分开**：`<day>/outbound-<sha256(key)>.ttl#self`
-  （回执是 `<day>/txn-…`）。前缀是**文档名**的一部分，所以列举者拿到容器响应就能筛出要读的那些，
-  不必先读一遍再判断。
-- `pending(scope)` = 窗口内每天**一次容器列举**（`ldp:contains`，一个请求就拿到全部成员）+ **每条批次一次读**。
-  成本随"欠多少"增长，不随 Pod 有多大增长。窗口 7 天（`OUTBOUND_BATCH_LOOKBACK_DAYS`）：批次是对对端的承诺，
-  对端下线一周后回来仍应拿到；代价只是每天一次列举。
-- `scopes()` 由**部署**回答（已服务的路由派生，不记录）：没有提供者时，store 只回答"被问到过的 scope"，
-  这是诚实的答案，而不是假装知道全部。
-- `remove` 现在接收**整条批次**而不是 txnId：载体按文档寻址，必须知道这个 id 属于哪个队列
-  （txnId 只在 `(origin, destination)` 内唯一）。
-
-实现：`federation/podOutboundStore.ts`（`PodMatrixOutboundStore`）、`federation/outboundBatches.ts`（载荷映射）、
-`controlRecords.ts` 的 `listControlRecords`。**仍未接进容器**（见 §6.4）。
-
-### 9.3 曾经的未定：怎么枚举"这个 Pod 还欠哪些批次"
-
-队列接口要回答两件事：`scopes()`（哪些 Pod 有工作）与 `pending(scope)`（这个 Pod 里有哪些批次）。
-**前半件不是问题**：`scopes()` 可以由**已服务的路由**回答（`participantRoutes` 从 Pod 登记派生，不是
-另记一份映射），这正是契约 §6.3 要的那个"不依赖 scope→参与者映射的来源"。
-
-**后半件卡在枚举**。在真实 Pod 上把三条路都量了：
-
-| 枚举方式 | 实测（该 Pod 的 `.data/task/` 里 4 行） | 结论 |
-| --- | --- | --- |
-| `select().from(taskResource)` 全表 | **1 次 SPARQL 查询 + 每行 1 次文档 GET**（共 5 次请求） | 成本随**表**增长——任务系统的任务、入站回执都在这张表里 → 违反 §2.1 |
-| 带过滤的 `select`（生成的查询里有 `FILTER(?status = "active")`） | 同样 1 次查询，但**只 GET 命中的行** | 过滤确实下推，成本随**命中行**增长 → 需要一个**可查询的判别列** |
-| `GET <container>`（LDP `ldp:contains`） | 列得出全部成员（PUT 与 PATCH 建的都在） | **更正**：早先"只列出 1 个"的结论是**读法错了**——Turtle 会把同一谓词的多个宾语写成逗号列表（`ldp:contains <a>, <b>`），按语句切分的朴素解析只看到第一个。容器列成员是**可用**的，也是客户端发现记录的标准方式 |
-
-于是卡在 models 上。按 AGENTS.md「需要新维度时先在 models 补属性再在 adapter 写值；用文件名/路径段
-区分类型的写法一律视为建模缺口，**先报再动**」：控制记录现在**只有一个可查询列**（`status`），而
-`status = 'open'` 不具选择性（任务系统也用 `open`），`kind` 藏在 `metadata`（对象列）里查询不到。
-三条出路：
-
-1. **models 给 `taskResource` 加一个可查询的判别列**（例如 `kind`），adapter 写值。枚举 =
-   `select where kind = 'outbound-batch'`（需要时再按 destination 过滤），成本随**待发批次**。
-   **推荐**：不动布局、不需要两阶段、也不新增表。
-2. **控制记录改用独立容器**（布局决定），用容器列成员枚举。但上表第三条说明**当前容器成员关系对
-   PATCH 建出的文档不可信**，所以这条路要先改 Pod 侧（或改成 `PUT` 建文档——那又要求先有 Turtle 序列化）。
-3. **每 Pod 一张队列索引记录**（点查）：写入用 SPARQL 增量（`INSERT DATA` / `DELETE DATA`，没有读改写，
-   所以并发追加不会互相覆盖）。代价是索引与批次文档之间变成两阶段，需要崩溃窗口与修复逻辑，而且
-   "多值 key 列表"在 models 里只能落进 `metadata` 对象——**更新它又是读改写**，绕回原问题。
-
-载荷映射（§9.1）、枚举与 store（§9.2）都已落地，剩下的是把它接进容器。

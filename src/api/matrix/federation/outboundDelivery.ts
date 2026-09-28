@@ -11,7 +11,7 @@
  * sign anything, so the caller gets `undefined` rather than a queue whose every batch would
  * be abandoned.
  */
-import { MatrixOutbox, InMemoryMatrixOutboundStore, type MatrixOutboxOptions } from './outboundQueue';
+import { MatrixOutbox, InMemoryMatrixOutboundStore, type MatrixOutboundStore, type MatrixOutboxOptions } from './outboundQueue';
 import { MatrixOutboundSender } from './outboundSender';
 import { MatrixServerNameResolver, type MatrixSrvRecord } from './serverNameResolution';
 import type { FederationFetchTarget } from './federationFetch';
@@ -21,6 +21,8 @@ export interface MatrixOutboundDelivery {
   resolver: MatrixServerNameResolver;
   sender: MatrixOutboundSender;
   outbox: MatrixOutbox;
+  /** Where the queue is kept. Exposed so a deployment can say which carrier it is running. */
+  store: MatrixOutboundStore;
 }
 
 export interface MatrixOutboundDeliveryOptions {
@@ -38,6 +40,11 @@ export interface MatrixOutboundDeliveryOptions {
   resolveSrv?: (name: string) => Promise<readonly MatrixSrvRecord[] | undefined>;
   now?: () => number;
   random?: () => number;
+  /**
+   * Where the queue is kept. Defaults to memory, which loses what is owed on restart; a deployment
+   * that can reach its participants' Pods passes the Pod carrier instead.
+   */
+  store?: MatrixOutboundStore;
   /** Passed through to the queue, mostly so tests can retry without waiting. */
   retryRefused?: MatrixOutboxOptions['retryRefused'];
 }
@@ -57,13 +64,14 @@ export function createMatrixOutboundDelivery(options: MatrixOutboundDeliveryOpti
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.random === undefined ? {} : { random: options.random }),
   });
+  const store = options.store ?? new InMemoryMatrixOutboundStore();
   const outbox = new MatrixOutbox({
-    store: new InMemoryMatrixOutboundStore(),
+    store,
     send: async input => await sender.send(input),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.retryRefused === undefined ? {} : { retryRefused: options.retryRefused }),
   });
-  return { resolver, sender, outbox };
+  return { resolver, sender, outbox, store };
 }
 
 /**
