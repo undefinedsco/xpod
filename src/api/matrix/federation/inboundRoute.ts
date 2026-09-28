@@ -28,6 +28,7 @@
 import { MatrixError } from '../MatrixError';
 import { MAX_PDUS_PER_TRANSACTION } from './outboundTransaction';
 import { authenticateXMatrixRequest } from './requestAuth';
+import { solidPeerMayDeliver } from '../solidPeerBatch';
 import {
   handleInboundTransaction,
   type MatrixInboundRecordHandle,
@@ -69,6 +70,13 @@ export interface FederationSendTarget {
 }
 
 export interface HandleFederationSendInput {
+  /**
+   * The Solid session that delivered this batch, when there is one.
+   *
+   * Present means the hop already established who is writing, so the per-request signature is not
+   * checked: the batch is judged by whether every event in it is one that identity may claim.
+   */
+  solidSession?: { webId: string; identityOf: (webId: string, serverName: string) => string };
   /** Raw `Authorization` header value. */
   authorization: string | undefined;
   method: string;
@@ -106,20 +114,43 @@ export async function handleFederationSend(input: HandleFederationSendInput): Pr
   const content = parseJsonObject(input.body);
   if (!content) return failure(400, 'M_NOT_JSON', 'Request body is not a JSON object');
 
-  // The signature is what makes the header's claims usable, so nothing else is read
-  // before it verifies — including the transaction id, which is part of the signed URI.
-  const authentication = await authenticateXMatrixRequest({
-    authorization: input.authorization,
-    method: input.method,
-    uri: input.uri,
-    content,
-    keys: input.keys,
-    serverName: input.serverName,
-  });
-  if (!authentication.valid || !authentication.origin) {
-    return failure(401, 'M_UNAUTHORIZED', authentication.reason);
+  // Who wrote this batch: a Solid session, or a signed request. The session says *who* is writing;
+  // the signature says it too, for peers that only speak the Matrix shape. Either way the origin is
+  // established before anything is read, because it is what the rest of the decision hangs on.
+  let origin: string;
+  if (input.solidSession) {
+    const verdict = solidPeerMayDeliver({
+      sessionWebId: input.solidSession.webId,
+      declaredOrigin: typeof content.origin === 'string' ? content.origin : undefined,
+      senders: Array.isArray(content.pdus)
+        ? content.pdus.map(pdu => String((pdu as Record<string, unknown> | undefined)?.sender ?? ''))
+        : [],
+      identityOf: input.solidSession.identityOf,
+    });
+    if (!verdict.allowed) {
+      // Impersonation is a refusal about the request; the other three are refusals about the
+      // delivery being unjudgeable. Both stop here, before any event is looked at.
+      return verdict.reason === 'impersonation'
+        ? failure(403, 'M_FORBIDDEN', verdict.detail)
+        : failure(401, 'M_UNAUTHORIZED', verdict.detail);
+    }
+    origin = verdict.origin;
+  } else {
+    // The signature is what makes the header's claims usable, so nothing else is read
+    // before it verifies — including the transaction id, which is part of the signed URI.
+    const authentication = await authenticateXMatrixRequest({
+      authorization: input.authorization,
+      method: input.method,
+      uri: input.uri,
+      content,
+      keys: input.keys,
+      serverName: input.serverName,
+    });
+    if (!authentication.valid || !authentication.origin) {
+      return failure(401, 'M_UNAUTHORIZED', authentication.reason);
+    }
+    origin = authentication.origin;
   }
-  const origin = authentication.origin;
 
   const transactionId = input.transactionId ?? transactionIdFromUri(input.uri);
   if (!transactionId) return failure(404, 'M_UNRECOGNIZED', 'Not a federation transaction endpoint');

@@ -228,7 +228,14 @@ export class ApiServer {
 
     // Run auth middleware unless route is public. Optional-auth routes accept
     // anonymous callers but still hydrate request.auth when credentials exist.
-    if (route.optionalAuth && request.headers.authorization) {
+    //
+    // Not for a peer-signature header: federation and this protocol's delivery both carry their
+    // signature in `Authorization` under the `X-Matrix` scheme, which no Solid authenticator can
+    // read. Handing it to the middleware would answer 401 before the route that understands it
+    // ever runs.
+    const authorization = request.headers.authorization;
+    const isPeerSignature = typeof authorization === 'string' && /^X-Matrix\s/u.test(authorization);
+    if (route.optionalAuth && authorization && !isPeerSignature) {
       const authOk = await this.authMiddleware.process(authRequest, response);
       if (!authOk) {
         return;

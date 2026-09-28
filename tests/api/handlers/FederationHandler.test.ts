@@ -177,13 +177,18 @@ async function harness(options: {
   directory?: { aliases?: Record<string, string>; servers?: Record<string, string[]> };
   /** The deployment's answer to "who is this written as"; recorded so the test can see it used. */
   contextFor?: (route: MatrixServerRoute) => MatrixStoreContext;
+  /** An authenticator that recognises a Solid session, for the delivery path that accepts one. */
+  auth?: { canAuthenticate(request: unknown): boolean; authenticate(request: any): Promise<any> };
 } = {}): Promise<Harness> {
   const store = podStore(options.events ?? [], options.directory ?? {});
   const peer = identity(PEER);
   const server = new ApiServer({
     port: 0,
     authMiddleware: new AuthMiddleware({
-      authenticator: { canAuthenticate: () => false, authenticate: async () => ({ success: false, error: 'unused' }) },
+      authenticator: options.auth ?? {
+        canAuthenticate: () => false,
+        authenticate: async () => ({ success: false, error: 'unused' }),
+      },
     }),
   });
   const served = options.served ?? [ SERVED ];
@@ -270,6 +275,42 @@ function transaction(input: {
 }
 
 describe('the inbound /send route', () => {
+  it('judges a batch delivered with a Solid session by the session identity', async() => {
+    const webId = 'https://alice.example/card#me';
+    const room = heldRoom();
+    const h = await harness({
+      events: [ room.create, room.join, room.rules ],
+      auth: {
+        canAuthenticate: () => true,
+        authenticate: async request => request.headers.authorization === `Solid ${webId}`
+          ? { success: true, context: { webId, podUrl: POD, auth: { type: 'solid', webId } } }
+          : { success: false, error: 'not this scheme' },
+      },
+    });
+    try {
+      // The batch declares Alice's origin but carries an event written as somebody else: the session
+      // may write Alice's events and nobody else's, and this is refused before any event is read.
+      const answer = await send({
+        port: h.port, method: 'PUT', path: '/_matrix/federation/v1/send/solid-1', host: SERVED,
+        authorization: `Solid ${webId}`,
+        body: JSON.stringify({ origin: SERVED, pdus: [ { ...room.join, sender: '@u_other:alice.example' } ] }),
+      });
+      expect(answer.status).toBe(403);
+      expect(answer.body.errcode).toBe('M_FORBIDDEN');
+
+      // A session the authenticator does not recognise is not a session: the signature path refuses
+      // it, exactly as it refuses an anonymous caller.
+      const unknown = await send({
+        port: h.port, method: 'PUT', path: '/_matrix/federation/v1/send/solid-2', host: SERVED,
+        authorization: 'Solid https://stranger.example/card#me',
+        body: JSON.stringify({ origin: SERVED, pdus: [ room.join ] }),
+      });
+      expect(unknown.status).toBe(401);
+    } finally {
+      await h.server.stop();
+    }
+  }, 30_000);
+
   let running: Harness | undefined;
   afterEach(async () => {
     await running?.server.stop();

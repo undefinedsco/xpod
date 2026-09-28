@@ -140,7 +140,11 @@ export function registerFederationRoutes(server: ApiServer, options: FederationH
   // `public: true` because federation requests are authenticated by their `X-Matrix` signature,
   // not by a Solid/OIDC session: these routes never see a user's credentials.
   const publicRoute = { public: true } as const;
-  server.put('/_matrix/federation/v1/send/:txnId', createFederationSendHandler(options), publicRoute);
+  // `optionalAuth`: a peer may arrive with a Solid session (the identity model this protocol is
+  // moving to) or with the Matrix-shaped signature it has always used. Anonymous callers still get
+  // through to the signature check, which is what refuses them.
+  server.put('/_matrix/federation/v1/send/:txnId', createFederationSendHandler(options),
+    { ...publicRoute, optionalAuth: true });
   server.get('/_matrix/federation/v1/event_auth/:roomId/:eventId', createEventAuthHandler(options), publicRoute);
   server.get('/_matrix/federation/v1/state/:roomId', createStateHandler(options), publicRoute);
   server.get('/_matrix/federation/v1/state_ids/:roomId', createStateIdsHandler(options), publicRoute);
@@ -589,9 +593,18 @@ export function createFederationSendHandler(options: FederationHandlerOptions): 
       return;
     }
 
+    // A session, when the caller presented one: `optionalAuth` hydrated it, and the core judges the
+    // batch by it instead of by a signature.
+    const session = (request as { auth?: { webId?: string } }).auth;
     let result: FederationSendResult;
     try {
       result = await handleFederationSend({
+        ...(session?.webId === undefined ? {} : {
+          solidSession: {
+            webId: session.webId,
+            identityOf: (webId: string, serverName: string) => options.store.matrixUserIdFor(webId, serverName),
+          },
+        }),
         authorization: headerValue(request.headers.authorization),
         method: 'PUT',
         // The signature covers the request target the peer sent, query string included.

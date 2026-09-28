@@ -73,8 +73,13 @@
 （把 `writerMayClaim` 应用到整批事件上；**身份按批次声明的 `origin` 拼写**——对端是在它自己的名字下
 派生 sender 的，用我们的名字去比会拒掉每一批诚实的投递）。四种拒绝分开报：`no-session` /
 `no-origin` / `empty`（空批次不放过）/ `impersonation`。单元 4 项。
-**尚未接线**：把 `/send` 注册为 `optionalAuth`、在处理器里按"有会话就走 Solid 判定、否则走
-`X-Matrix`"分支，需要夹具能注入会话（否则新分支没有测试覆盖）——这是下一刀。
+**已接线（2026-09-28）**：`/send` 注册为 `optionalAuth`；处理器把 `request.auth` 交给
+`handleFederationSend` 的 `solidSession`，核心在**读任何事件之前**先判这批投递——
+`impersonation` → 403，其余三种 → 401。**踩到并修掉一个真问题**：`optionalAuth` 与 `X-Matrix`
+**共用 `Authorization` 头**，中间件会抢先把同行签名当会话验，于是所有联邦请求在处理器之前就 401；
+修法是 `ApiServer` 只对**非 `X-Matrix` 方案**的 `Authorization` 触发可选认证（签名方案由认识它的
+路由自己处理）。测试：夹具新增可注入认证器；新增用例覆盖"会话冒名 → 403（在任何事件被读之前）"
+与"认证器不认的会话 → 401（回落签名路径）"。
 
 **服务端也已摘下（2026-09-28）**：`NATIVE_INBOUND_PATH`、`FederationHandler` 的原生路由与
 `createNativeInboundHandler`（含 `nativeAnswer`）、`MatrixServerNameResolver.resolveNative` 与
