@@ -20,6 +20,7 @@ import {
 } from '../reconciler';
 import { getProtocolMetadata, withProtocolMetadata, type ProtocolMetadata } from '../protocol-metadata';
 import { MatrixError } from './MatrixError';
+import { inboundWriteAuthority } from './inboundAuthority';
 import { matrixPodWriteFor, type MatrixPodWrite } from './podAccess';
 import type { MatrixControlRecordTarget } from './controlRecords';
 import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
@@ -1171,6 +1172,33 @@ export class PodMatrixStore {
    * Idempotent by event id: accepting the same event again returns the stored record
    * without a second write, which is what a peer's transaction replay needs.
    */
+  /**
+   * Whether an inbound event may be written for this Pod's participant.
+   *
+   * The grant is already proven by the time anything is written (the Pod handle was built with it,
+   * and `getDb` refuses without one), so what is left is membership. Resolved state answers it,
+   * rather than a latest-slot lookup: under a fork the slot can say something the room has already
+   * resolved against, and being wrong here means either writing into a room the participant left or
+   * refusing one they are in. `inboundAuthority.ts` says why membership *changes* and a membership
+   * this Pod has not established yet are not refusals.
+   */
+  private async requireInboundAuthority(
+    db: Db,
+    roomId: string,
+    type: string,
+    context: MatrixStoreContext,
+  ): Promise<void> {
+    let membership: 'join' | 'invite' | 'leave' | 'ban' | 'knock' | undefined;
+    if (type !== 'm.room.member') {
+      const events = await this.listEvents(db, roomId, context);
+      const own = this.resolvedState(roomId, context, events).get('m.room.member', this.getMatrixUserId(context));
+      const value = own?.content.membership;
+      membership = typeof value === 'string' ? value as typeof membership : undefined;
+    }
+    const authority = inboundWriteAuthority({ grant: true, type, ...(membership === undefined ? {} : { membership }) });
+    if (!authority.allowed) throw new MatrixError(403, 'M_FORBIDDEN', authority.reason);
+  }
+
   public async acceptReceivedEvent(input: {
     event: Record<string, unknown>;
     context: MatrixStoreContext;
@@ -1194,6 +1222,9 @@ export class PodMatrixStore {
     const existing = await db.findById(messageResource, messageResourceId);
     if (existing) return this.eventSourceToRecord(existing, roomId, input.context);
     await this.materializeReceivedRoom(db, roomId, input.context);
+    // The room exists here now, so "is our participant in it" is answerable — and that is what
+    // decides whether this event belongs in their Pod at all.
+    await this.requireInboundAuthority(db, roomId, type, input.context);
 
     const originIso = new Date(originServerTs).toISOString();
     const role = type === 'm.room.message' ? MessageRole.USER : MessageRole.SYSTEM;

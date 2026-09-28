@@ -84,11 +84,11 @@
    （`inboundWriteAuthority({grant, type, membership})` → `{allowed, reason}`），单元 4 项覆盖：
    无 grant 一律拒（连 `m.room.member` 也拒）、成员可写消息、非成员（invite/leave/ban/knock/未知）拒且理由点名状态、
    `m.room.member` 在房间未知时也允许（这正是邀请能送达的原因）、**状态未知（正在建立成员身份）也允许**。**尚未接线**，接线点已查清（下一轮从这里开始）见下。
-   - **接线点**（2026-09-28 查清）：入站落库入口 `PodMatrixStore.acceptReceivedEvent({event, context})`
+   - **接线点**：入站落库入口 `PodMatrixStore.acceptReceivedEvent({event, context})`
      （`PodMatrixStore.ts:1174`）已经拿到 `event.type`、`room_id` 与 `context`，判定所需三样都在手边——grant 的
      有无（没有时 `matrixPodWriteFor` 会先抛 403，判定只是把"为什么"说清楚）、事件类型、该参与者在**解析状态**里的
      membership（同一处已在用的 `resolvedState(roomId, context, events)`，取 `m.room.member` 且 `state_key` 是本人）。
-   - **接线时必须一起验证的三件事**（第三条是本轮把规则往代码里放时才发现的分叉）：
+   - **接线时一起验证的三件事（已全部验证通过）**：
      ① **邀请仍能送达**（房间未知时 `m.room.member` 必须放行——这正是它豁免的理由）；
      ② 已落地的"收到未知房间的事件要补出房间记录"不能回归（`materializeReceivedRoom` 必须在判定**之前**跑，
      否则"房间未知"会把该补的房间连同邀请一起拒掉）；

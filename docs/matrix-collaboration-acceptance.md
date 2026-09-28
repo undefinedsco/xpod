@@ -381,6 +381,17 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   注入的 db 没有 fetch 时拒绝（不给半个授权）；部署自持工作时**不借**调用方会话；
   `controlRecordHandleFor` 把"哪个 Pod"和"以谁的身份"一起解析；context 不含 Pod 时拒绝而不是默认成空 scope。
 
+### 入站写入的成员资格判定已接线（2026-09-28）
+
+- `inboundAuthority.ts` 的纯函数（三态：join 放行 / 状态明确说 invite·leave·ban·knock 则拒 / **未知放行**）
+  已接进 `PodMatrixStore.acceptReceivedEvent`：在 `materializeReceivedRoom` 之后、写入之前判定，
+  membership 取自**解析状态**（不是单槽位读），grant 由 `getDb` 先证。
+- **三条回归全部验证通过**：① 邀请仍能送达；② 补房间记录（`materializeReceivedRoom`）先于判定；
+  ③ 加入握手带来的"加入之前的状态"（create/join_rules/power_levels，此时本人 membership 未知）不被判死。
+- 证据：单元 5 项（判定函数本身）+ `tests/api/matrix` **586 passed / 3 skipped** +
+  `test:integration:lite` **159 passed / 6 skipped**（含真实 HTTP 的加入/邀请/消息链路与 `MatrixCollaboration`
+  真实运行时夹具，即 ①②③ 都在真实链路上跑过）。
+
 ### 本地顺序可从 Pod 重建（2026-09-27，回应"序号为什么要进 Pod"）
 
 - 结论：**序号不进 Pod**。它是部署本地加速器：事件按 `(createdAt, id)` 读、按该顺序发号，
