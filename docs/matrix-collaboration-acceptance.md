@@ -518,8 +518,8 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
 
 门禁（在 `cf5ff73a` 上复跑，全文以这一处为准；上面各节里的数字是当时那一轮的）：
 `typecheck:test` 通过；`tests/api/matrix` **581 passed / 3 skipped**（删除 `identityBinding.ts` 的 7 项测试后）；
-`tests/api tests/http` **2045 passed / 67 skipped**；`test:integration:lite` **159 passed / 6 skipped（31 文件通过 / 3 跳过）**，
-含 6 项真实 Pod 用例与 `MatrixCollaboration` 的真实运行时夹具。
+`tests/api tests/http` **2045 passed / 67 skipped**；`test:integration:lite` **162 passed / 6 skipped（32 文件通过 / 3 跳过）**，
+含 6 项真实 Pod 用例、真实栈端点探测（3 项）与 `MatrixCollaboration` 的真实运行时夹具。
 **未做**：真实实例（本机 3000 是别的构建；Docker 见下）、`full` 门禁（需要 Docker）、控制记录天文档的物理回收。
 
 ### Docker 引擎仍然卡住（2026-09-28 复核，逐项测出来的）
