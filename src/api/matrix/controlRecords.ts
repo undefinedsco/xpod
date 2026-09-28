@@ -339,6 +339,50 @@ function isRecordDocument(iri: string, kind: MatrixControlRecordKind): boolean {
 }
 
 /**
+ * Forget whole days of records, outermost policy left to the caller.
+ *
+ * The lookup window (see `CONTROL_RECORD_LOOKBACK_DAYS`) is the *logical* retention: a record older
+ * than it is not found, so a retry that late is treated as new. This is the *physical* half — the
+ * documents themselves — and it is deliberately not scheduled here: how long an operator keeps
+ * receipts for is their decision, so they name the days, and this deletes what those days hold.
+ *
+ * The document goes with the record: a day directory listing is how a client finds records, and an
+ * empty document left behind would keep appearing in it. `deleteResourceWithDocument` is the
+ * database's own "delete the row and its file" operation, so nothing here bypasses drizzle-solid.
+ */
+export async function pruneControlRecords(
+  target: MatrixControlRecordTarget,
+  kind: MatrixControlRecordKind,
+  buckets: readonly string[],
+): Promise<number> {
+  let pruned = 0;
+  for (const bucket of buckets) {
+    const { resource, subject } = controlRecordAddress(target.scope, kind, '', bucket);
+    const container = resource.slice(0, resource.lastIndexOf(bucket)) + `${bucket}/`;
+    const response = await target.write.fetch(container, { method: 'GET', headers: { Accept: 'text/turtle' }});
+    // A day with nothing in it is not an error: it is a day with nothing in it.
+    if (response.status === 404) continue;
+    if (!response.ok) {
+      throw new MatrixError(502, 'M_UNKNOWN',
+        `Could not list ${container} to prune it: ${response.status} ${response.statusText}`);
+    }
+    const base = resource.slice(0, resource.lastIndexOf(bucket));
+    for (const member of await containedDocuments(await response.text(), container)) {
+      if (!isRecordDocument(member, kind)) continue;
+      const subject = `${member}#${CONTROL_RECORD_SUBJECT}`;
+      const row: Record<string, unknown> | null = await target.write.db.findByResource(taskResource, subject);
+      if (!row) continue;
+      await target.write.db.deleteResourceWithDocument(taskResource, {
+        id: `${member.slice(base.length)}#${CONTROL_RECORD_SUBJECT}`,
+        url: member,
+      });
+      pruned += 1;
+    }
+  }
+  return pruned;
+}
+
+/**
  * Make the containers a record's document lives in exist, outermost first.
  *
  * The chain starts at the models task base and ends at the day itself; nothing above the base is

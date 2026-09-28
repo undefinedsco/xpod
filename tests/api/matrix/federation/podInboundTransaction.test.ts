@@ -16,7 +16,7 @@
 import { describe, expect, it } from 'vitest';
 import { drizzle } from '@undefineds.co/drizzle-solid';
 import { PodMatrixInboundTransactionStore } from '../../../../src/api/matrix/federation/podInboundTransaction';
-import { controlRecordAddress, controlRecordBucket } from '../../../../src/api/matrix/controlRecords';
+import { controlRecordAddress, controlRecordBucket, pruneControlRecords, readControlRecord, writeControlRecord } from '../../../../src/api/matrix/controlRecords';
 import { MatrixError } from '../../../../src/api/matrix/MatrixError';
 
 const POD = 'https://pod.example/alice/';
@@ -68,6 +68,12 @@ function scriptedPod() {
     deleteByResource: async(_table: never, subject: string) => {
       documents.get(subject.split('#')[0])?.delete(subject);
     },
+    // "Delete the row and its file": this Pod keeps one record per document, so the document is the
+    // record's whole file and goes with it.
+    deleteResourceWithDocument: async(_table: never, input: { id: string; url?: string }) => {
+      const document = input.url ?? `${POD}.data/task/${String(input.id).split('#')[0]}`;
+      return { deleted: documents.delete(document), fileUrl: document };
+    },
   };
 
   // The carrier writes records through the database and prepares containers through the Pod: a
@@ -75,7 +81,16 @@ function scriptedPod() {
   const containers = new Set<string>();
   const fetch = async(input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    if ((init?.method ?? 'GET') !== 'PUT') throw new Error(`the carrier only PUTs containers, not ${init?.method}`);
+    const method = init?.method ?? 'GET';
+    if (method === 'GET') {
+      // A container listing: one statement, several members after a comma.
+      const members = [ ...documents.keys() ].filter(subject => subject.split('#')[0].startsWith(url));
+      if (members.length === 0) return new Response('missing', { status: 404 });
+      const list = members.map(subject => `<${subject.split('#')[0]}>`).join(', ');
+      return new Response(`@prefix ldp: <http://www.w3.org/ns/ldp#>. <> ldp:contains ${list}.`,
+        { status: 200, headers: { 'Content-Type': 'text/turtle' } });
+    }
+    if (method !== 'PUT') throw new Error(`the carrier only PUTs containers, not ${method}`);
     if (containers.has(url)) return new Response('exists', { status: 409 });
     containers.add(url);
     return new Response(null, { status: 201 });
@@ -200,6 +215,28 @@ describe('a Pod-backed transaction store', () => {
     expect(pod.records()).toHaveLength(0);
     const retry = await store().reserve(SCOPE, reservation(), pod.handle);
     expect(retry.created).toBe(true);
+  });
+
+  it('forgets the days an operator names, and leaves the others alone', async() => {
+    const pod = scriptedPod();
+    const target = { scope: SCOPE, write: (pod.handle as unknown as { write: unknown }).write } as never;
+    const oldDay = '2026-09-19T10:00:00.000Z';
+    const recent = '2026-09-28T10:00:00.000Z';
+    await writeControlRecord(target, {
+      kind: 'txn', key: 'old', at: oldDay, instruction: 'old receipt', status: 'completed', metadata: { origin: ORIGIN },
+    });
+    await writeControlRecord(target, {
+      kind: 'txn', key: 'recent', at: recent, instruction: 'recent receipt', status: 'completed', metadata: { origin: ORIGIN },
+    });
+    expect(pod.records()).toHaveLength(2);
+
+    // Physical retention is the operator's call: they name the days, this deletes what they hold.
+    // The lookup window is the logical half and does not touch the documents.
+    await expect(pruneControlRecords(target, 'txn', [ controlRecordBucket(oldDay) ])).resolves.toBe(1);
+    expect(pod.records()).toHaveLength(1);
+    expect(await readControlRecord(target, 'txn', 'recent', { at: recent })).toBeDefined();
+    // Pruning a day that holds nothing is not an error.
+    await expect(pruneControlRecords(target, 'txn', [ '2020/01/01' ])).resolves.toBe(0);
   });
 
   it('refuses to guess which Pod a record belongs to', async() => {
