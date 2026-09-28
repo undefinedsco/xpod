@@ -161,8 +161,21 @@
        交给 `authorizeEvent(event, authEvents)`，`decision.allowed === false` 就 403 并把 `v11-x.y.z` 原因原样带上。
        **不要在这里判入站事件**：收到的 PDU 走 `acceptReceivedEvent`，且已经在 `validateInboundPdu` 里判过一次
        （重复判定会让同一事件在两处解释，且这里的 auth events 是本地状态、语义不同）。
-       上线前先把四条本地路径逐一过规则确认不误伤——`createRoom`、`joinRoom`（含远端加入）、`inviteUser`、
-       以及 D6 新增的 **Agent 成员事件**（邀请 + 自签 join，规则 5.2.2 应放行），然后跑全量门禁。
+       **试行结果（2026-09-28，已按此回退，树保持绿色）**：按上面的做法真的接上跑了一轮
+       `tests/api/matrix`（584 passed / **4 failed**），失败**不是误判，而是暴露出两条真实缺口**——
+       正是"先过规则"这一步要发现的：
+
+       1. **Agent 重新授权时不能重发成员事件**：`v11-4.4.3: target is already joined or banned`。
+          `admitGrantedAgents` 只跳过"当前已授权"的 Agent；**撤销后再次授权**时该 Agent 仍是房间成员，
+          于是又写了一条 invite → 规则正确地拒了。修法：授权前先看**当前成员身份**，只补缺的那一步
+          （已是成员就什么都不写、是 leave/invite 才补 join）。
+       2. **远端加入不能只按本地状态判**：`v11-4.3.4: join_rule requires an invite`（`remoteJoinStore` 两项）。
+          房间在**别的部署**上时，邀请（或公开 join_rules）只存在于常驻方；本地 `send_join` 回来的状态是
+          **加入之前**的，可能既没有邀请也没有 join_rules 的最终形态，于是本地规则把一次**已经被常驻方接受**
+          的加入判死。这正是前述"入站 auth events 来源语义不同"的同一条：这类 join 的权威是**常驻方的接受**，
+          不是本地重放；强制时必须为"握手产出的 join"留一条**明确的**通道（例如带上常驻方的签名状态作为
+          auth events，或对该路径豁免并注明理由），而不是把规则放宽。
+       两条修好后重跑全量门禁再上线。
    - **只有到这一步之后**，写路径才可以按 v11 规则强制（rule 5 要求 sender 已 join）——这正是登记册
      "授权与执行"一节把规则只当纯校验器的原因；强制与 Agent 成员事件要在同一轮落地，否则 Agent 的消息会被拒。
    - **restricted join 的附加签名**（`join_authorised_via_users_server`）先不做：它是"房间在别的 server 上、
