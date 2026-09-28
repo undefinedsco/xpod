@@ -276,7 +276,9 @@ grant（房间级授权＝成员资格）、**D6 完整落地**（授权即成�
    ——`MatrixCollaboration` 验收夹具失败。原因清楚：**预留写的是调用方路径**（客户端会话写入自己的 Pod），
    而那个 handle 是**部署自持的 service 句柄**（需要参与者交出 Pod interface key），于是调用方写入统统 403。
    已回退，lite 恢复 162 passed / 6 skipped。
-   **修正后的形状**：journal 的预留调用必须带上**调用方的授权**，而不是按 scope 猜一个部署句柄——
+   **修正后的形状（第一步已落地 2026-09-28）**：journal 的预留调用带上**调用方的授权**，而不是按 scope 猜一个部署句柄——
+   `MatrixEventJournal` 的四个预留方法新增可选 `authority`（即控制记录的 `MatrixControlRecordTarget`），
+   `PodMatrixEventJournal` **要求**它（缺失就 403 并说明"不会替你猜一个"），单元测试已按此更新（5 项仍全过）。
    `PodMatrixEventJournal` 的 `handleFor` 应改成 `handleFor(context)`（store 在每个调用点都手里有 context：
    `reserveEventTransaction(context, …)` 与四个反查点），由它去拿**该上下文的** Pod 句柄
    （`PodMatrixStore.podWriteFor(context)` 正是这个），于是"会话写就用会话的授权、服务写就用服务 grant"

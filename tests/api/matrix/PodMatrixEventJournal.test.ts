@@ -54,64 +54,61 @@ function scriptedPod(): { handle: MatrixControlRecordTarget; documents: Map<stri
   return { handle: { scope: SCOPE, write: { db, fetch } } as never, documents };
 }
 
-function journal(handle?: MatrixControlRecordTarget) {
-  const sequences = new InMemoryMatrixEventJournal();
-  return new PodMatrixEventJournal({
-    sequences,
-    handleFor: async scope => (scope === SCOPE ? handle : undefined),
-  });
+function journal() {
+  return new PodMatrixEventJournal({ sequences: new InMemoryMatrixEventJournal() });
 }
 
+const HANDLE = (scope: string, write: unknown): MatrixControlRecordTarget => ({ scope, write }) as never;
 const CANDIDATE = { eventId: '$reserved', createdAt: Date.parse('2026-09-28T10:00:00.000Z'), contentHash: 'hash-a' };
 const LOOKUP = { eventId: '$reserved', roomId: '!room:pod.example', type: 'm.room.message', txnId: 'txn-1', txnDevice: 'XPODDEVICE' };
 
 describe('a Pod-backed event journal', () => {
   it('keeps a reservation in the Pod and returns the same one to a retry', async() => {
     const pod = scriptedPod();
-    const first = await journal(pod.handle).reserveTransaction(SCOPE, KEY, CANDIDATE);
+    const first = await journal().reserveTransaction(SCOPE, KEY, CANDIDATE, pod.handle);
     expect(first).toEqual(CANDIDATE);
 
     // A second instance, as a restarted process would be: the Pod is the authority, and a retry
     // carrying a later proposal still adopts the reservation it finds.
-    const retried = await journal(pod.handle).reserveTransaction(SCOPE, KEY, { ...CANDIDATE, createdAt: CANDIDATE.createdAt + 5_000 });
+    const retried = await journal().reserveTransaction(SCOPE, KEY, { ...CANDIDATE, createdAt: CANDIDATE.createdAt + 5_000 }, pod.handle);
     expect(retried).toEqual(CANDIDATE);
     expect(pod.documents.size).toBe(1);
   });
 
   it('finds the reservation from the event alone, and only for the transaction that owns it', async() => {
     const pod = scriptedPod();
-    await journal(pod.handle).reserveTransaction(SCOPE, KEY, CANDIDATE);
+    await journal().reserveTransaction(SCOPE, KEY, CANDIDATE, pod.handle);
 
-    expect(await journal(pod.handle).findReservation(SCOPE, LOOKUP)).toEqual(CANDIDATE);
+    expect(await journal().findReservation(SCOPE, LOOKUP, pod.handle)).toEqual(CANDIDATE);
     // A different transaction id, or an event that never came from one, has no receipt — which must
     // stay distinguishable from "somebody else's receipt".
-    expect(await journal(pod.handle).findReservation(SCOPE, { ...LOOKUP, txnId: 'other' })).toBeUndefined();
-    expect(await journal(pod.handle).findReservation(SCOPE, { eventId: '$peer' })).toBeUndefined();
-    expect((await journal(pod.handle).findReservations(SCOPE, [ LOOKUP, { eventId: '$peer' } ])).size).toBe(1);
+    expect(await journal().findReservation(SCOPE, { ...LOOKUP, txnId: 'other' }, pod.handle)).toBeUndefined();
+    expect(await journal().findReservation(SCOPE, { eventId: '$peer' }, pod.handle)).toBeUndefined();
+    expect((await journal().findReservations(SCOPE, [ LOOKUP, { eventId: '$peer' } ], pod.handle)).size).toBe(1);
   });
 
   it('replaces a reservation whose output was never written', async() => {
     const pod = scriptedPod();
-    await journal(pod.handle).reserveTransaction(SCOPE, KEY, CANDIDATE);
-    await journal(pod.handle).replaceReservation(SCOPE, KEY, { ...CANDIDATE, eventId: '$replacement', contentHash: 'hash-b' });
-    expect(await journal(pod.handle).findReservation(SCOPE, LOOKUP)).toEqual({ ...CANDIDATE, eventId: '$replacement', contentHash: 'hash-b' });
-    await expect(journal(pod.handle).replaceReservation(SCOPE, 'no-such-key', CANDIDATE)).rejects.toThrow(/No reservation/u);
+    await journal().reserveTransaction(SCOPE, KEY, CANDIDATE, pod.handle);
+    await journal().replaceReservation(SCOPE, KEY, { ...CANDIDATE, eventId: '$replacement', contentHash: 'hash-b' }, pod.handle);
+    expect(await journal().findReservation(SCOPE, LOOKUP, pod.handle)).toEqual({ ...CANDIDATE, eventId: '$replacement', contentHash: 'hash-b' });
+    await expect(journal().replaceReservation(SCOPE, 'no-such-key', CANDIDATE, pod.handle)).rejects.toThrow(/No reservation/u);
   });
 
   it('leaves ordering with the deployment, where it can be rebuilt from the Pod', async() => {
     const pod = scriptedPod();
-    const instance = journal(pod.handle);
+    const instance = journal();
     expect(await instance.registerEvent(SCOPE, '!room:pod.example', '$one')).toBe(1);
     expect(await instance.registerEvents(SCOPE, '!room:pod.example', [ '$one', '$two' ])).toEqual([ 1, 2 ]);
     expect(await instance.getHighWatermark(SCOPE)).toBe(2);
   });
 
   it('refuses a scope it holds no grant for, and a record it cannot read', async() => {
-    await expect(journal(undefined).reserveTransaction(SCOPE, KEY, CANDIDATE)).rejects.toThrow(/holds no grant/u);
+    await expect(journal().reserveTransaction(SCOPE, KEY, CANDIDATE)).rejects.toThrow(/needs the caller's authority/u);
     const pod = scriptedPod();
     // A row under the record's subject that is not a reservation: loud, not a plausible answer.
-    await journal(pod.handle).reserveTransaction(SCOPE, KEY, CANDIDATE);
+    await journal().reserveTransaction(SCOPE, KEY, CANDIDATE, pod.handle);
     for (const [ subject, row ] of pod.documents) pod.documents.set(subject, { ...row, metadata: { unrelated: true } });
-    await expect(journal(pod.handle).findReservation(SCOPE, LOOKUP)).rejects.toThrow(/no usable receipt/u);
+    await expect(journal().findReservation(SCOPE, LOOKUP, pod.handle)).rejects.toThrow(/no usable receipt/u);
   });
 });

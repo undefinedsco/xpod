@@ -36,8 +36,6 @@ import { reservationKeyForEvent } from './MatrixEventJournal';
 export interface PodMatrixEventJournalOptions {
   /** Where sequence registration stays: the deployment's own, rebuildable ordering. */
   sequences: MatrixEventJournal;
-  /** The Pod handle a scope's records are written with; `undefined` refuses rather than guesses. */
-  handleFor: (scope: string) => Promise<MatrixControlRecordTarget | undefined>;
 }
 
 export class PodMatrixEventJournal implements MatrixEventJournal {
@@ -54,8 +52,9 @@ export class PodMatrixEventJournal implements MatrixEventJournal {
     scope: string,
     key: string,
     candidate: MatrixTransactionReservation,
+    authority?: MatrixControlRecordTarget,
   ): Promise<MatrixTransactionReservation> {
-    const target = await this.requireHandle(scope);
+    const target = this.requireHandle(scope, authority);
     const { record } = await writeControlRecord(target, {
       kind: 'txn',
       key,
@@ -68,8 +67,13 @@ export class PodMatrixEventJournal implements MatrixEventJournal {
   }
 
   /** Replace a reservation whose output was never written; see the interface's note. */
-  public async replaceReservation(scope: string, key: string, candidate: MatrixTransactionReservation): Promise<void> {
-    const target = await this.requireHandle(scope);
+  public async replaceReservation(
+    scope: string,
+    key: string,
+    candidate: MatrixTransactionReservation,
+    authority?: MatrixControlRecordTarget,
+  ): Promise<void> {
+    const target = this.requireHandle(scope, authority);
     const record = await readControlRecord(target, 'txn', key, { at: candidate.createdAt });
     if (!record) throw new MatrixError(500, 'M_UNKNOWN', `No reservation ${key} to replace`);
     await updateControlRecord(target, record, {
@@ -82,10 +86,11 @@ export class PodMatrixEventJournal implements MatrixEventJournal {
   public async findReservation(
     scope: string,
     event: MatrixReservationLookup,
+    authority?: MatrixControlRecordTarget,
   ): Promise<MatrixTransactionReservation | undefined> {
     const key = reservationKeyForEvent(event);
     if (!key) return undefined;
-    const target = await this.requireHandle(scope);
+    const target = this.requireHandle(scope, authority);
     const record = await readControlRecord(target, 'txn', key);
     return record ? decodeReservation(record) : undefined;
   }
@@ -94,10 +99,11 @@ export class PodMatrixEventJournal implements MatrixEventJournal {
   public async findReservations(
     scope: string,
     events: readonly MatrixReservationLookup[],
+    authority?: MatrixControlRecordTarget,
   ): Promise<Map<string, MatrixTransactionReservation>> {
     const found = new Map<string, MatrixTransactionReservation>();
     for (const event of events) {
-      const reservation = await this.findReservation(scope, event);
+      const reservation = await this.findReservation(scope, event, authority);
       if (reservation) found.set(event.eventId, reservation);
     }
     return found;
@@ -116,10 +122,16 @@ export class PodMatrixEventJournal implements MatrixEventJournal {
     return await this.options.sequences.getHighWatermark(scope);
   }
 
-  private async requireHandle(scope: string): Promise<MatrixControlRecordTarget> {
-    const handle = await this.options.handleFor(scope);
+  /**
+   * The handle the caller supplied, checked against the scope it claims.
+   *
+   * Required, not guessed: a reservation written under the wrong authority would either fail (the
+   * measured case) or, worse, succeed with authority the caller does not have.
+   */
+  private requireHandle(scope: string, handle: MatrixControlRecordTarget | undefined): MatrixControlRecordTarget {
     if (!handle) {
-      throw new MatrixError(403, 'M_FORBIDDEN', `This deployment holds no grant for ${scope}`);
+      throw new MatrixError(403, 'M_FORBIDDEN',
+        `A reservation for ${scope} needs the caller's authority; this deployment will not guess one`);
     }
     if (handle.scope !== scope) {
       throw new MatrixError(500, 'M_UNKNOWN', `Reservation scope ${scope} does not match the resolved Pod ${handle.scope}`);

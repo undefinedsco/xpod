@@ -52,8 +52,24 @@ export interface MatrixReservationLookup {
   txnDevice?: string;
 }
 
+/**
+ * The Pod a reservation is written to, when the carrier needs one.
+ *
+ * Passed per call rather than resolved from the scope, because a reservation is written on the
+ * **caller's** path: a client session writing its own Pod must carry the session's authority, and a
+ * deployment writing for a participant must carry that participant's grant. Guessing one from the
+ * scope gets the first case wrong — measured: wiring the service handle in made every caller write
+ * fail with 403 on a real stack.
+ */
+export type MatrixReservationAuthority = import('./controlRecords').MatrixControlRecordTarget;
+
 export interface MatrixEventJournal {
-  reserveTransaction(scope: string, key: string, candidate: MatrixTransactionReservation): Promise<MatrixTransactionReservation>;
+  reserveTransaction(
+    scope: string,
+    key: string,
+    candidate: MatrixTransactionReservation,
+    authority?: MatrixReservationAuthority,
+  ): Promise<MatrixTransactionReservation>;
   /**
    * Replace an existing reservation entirely. Only valid for a reservation whose
    * output was never written, which callers must verify before taking one over:
@@ -61,7 +77,12 @@ export interface MatrixEventJournal {
    * content derives a different id and the reservation has to name the event
    * that will actually exist.
    */
-  replaceReservation(scope: string, key: string, candidate: MatrixTransactionReservation): Promise<void>;
+  replaceReservation(
+    scope: string,
+    key: string,
+    candidate: MatrixTransactionReservation,
+    authority?: MatrixReservationAuthority,
+  ): Promise<void>;
   registerEvent(scope: string, roomId: string, eventId: string): Promise<number>;
   /**
    * Register a page of events in one pass. Sequences are assigned in input
@@ -70,9 +91,17 @@ export interface MatrixEventJournal {
    */
   registerEvents(scope: string, roomId: string, eventIds: readonly string[]): Promise<number[]>;
   /** Look up several receipts at once: recovery needs one per scanned event. */
-  findReservations(scope: string, events: readonly MatrixReservationLookup[]): Promise<Map<string, MatrixTransactionReservation>>;
+  findReservations(
+    scope: string,
+    events: readonly MatrixReservationLookup[],
+    authority?: MatrixReservationAuthority,
+  ): Promise<Map<string, MatrixTransactionReservation>>;
   getHighWatermark(scope: string): Promise<number>;
-  findReservation(scope: string, event: MatrixReservationLookup): Promise<MatrixTransactionReservation | undefined>;
+  findReservation(
+    scope: string,
+    event: MatrixReservationLookup,
+    authority?: MatrixReservationAuthority,
+  ): Promise<MatrixTransactionReservation | undefined>;
 }
 
 /** Isolated tests only. Production cursors and reservations must survive process restarts. */
