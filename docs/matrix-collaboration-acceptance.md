@@ -389,7 +389,11 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
 - 证据：`PodMatrixStore.test.ts` 新增 1 项；`tests/api/matrix` **588 passed / 3 skipped**；
   `test:integration:lite` **159 passed / 6 skipped**。
 - **撤销授权**：已按登记册既有原则收口——**撤销停执行、不停成员身份**（执行授权与协议成员身份是两件事，
-  当前行为已经如此，无需改代码）；**仍未做**：v11 规则强制（成员事件已落，规则可以启用了）。
+  当前行为已经如此，无需改代码）。
+- **v11 规则强制的缺口已查清**（2026-09-28）：**入站已强制**（`validateInboundPdu` → `authorizeEvent`）；
+  本地写入是**等价但更粗**的门（`requireJoined`/`requireRoomOwner`/`authorizeTargets`）。真正缺的是本地写入
+  不跑 `authorizeEvent` 本身 → **power level 细粒度**（改 power_levels、ban/kick、join_rules、`@` state_key）
+  没有逐条执行。启用方式与需要先过规则的四条路径见登记册。
 
 ### 入站写入的成员资格判定已接线（2026-09-28）
 
