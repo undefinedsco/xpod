@@ -483,4 +483,17 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
 `typecheck:test` 通过；`tests/api/matrix` **580 passed / 3 skipped**；
 `tests/api tests/http` **2037 passed / 67 skipped**；`test:integration:lite` **158 passed / 6 skipped（31 文件通过 / 3 跳过）**，
 含 5 项真实 Pod 用例与 `MatrixCollaboration` 的真实运行时夹具。
-**未做**：真实实例（本机 3000 是别的构建；Docker 无响应，见下）、`full` 门禁（需要 Docker）、控制记录天文档的物理回收。
+**未做**：真实实例（本机 3000 是别的构建；Docker 见下）、`full` 门禁（需要 Docker）、控制记录天文档的物理回收。
+
+### Docker 引擎仍然卡住（2026-09-28 复核，逐项测出来的）
+
+| 探测 | 结果 |
+| --- | --- |
+| `/var/run/docker.sock` → `~/.docker/run/docker.sock` | 存在（symlink 与 socket 都在） |
+| Docker Desktop 进程 | 在跑（`Docker Desktop`、Helper GPU/Network 等） |
+| `docker context ls` | **秒回**（这是客户端本地信息） |
+| `docker info` / `docker ps` | **挂住**，45 秒与 90 秒两次都被 SIGTERM 杀掉 |
+
+结论：**客户端在、daemon 不答**（引擎卡死，不是没启动）。所以 `full` 门禁与任何 Docker 起的真实实例
+都不能跑；需要**重启 Docker Desktop 的引擎**（UI 里 Quit/Restart，或 `docker context use colima` 换到 colima
+并确保它在跑）。恢复后第一件事：`docker ps` 能秒回 → 跑 `bun run test:integration:full` → 再补真实实例证据。
