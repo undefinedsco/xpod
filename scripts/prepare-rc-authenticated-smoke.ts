@@ -199,7 +199,11 @@ async function completeSolidOidcLogin(
     const current = new URL(page.url());
     if (
       isCanonicalAiConnectionsUrl(current, baseUrl)
-      && await page.locator('[data-testid="ai-connections-panel"]').isVisible({ timeout: 300 }).catch(() => false)
+      // Readiness is the panel being mounted, not measured: the applet renders as a
+      // two-pane workspace, so at narrow widths the detail pane is hidden until an
+      // object is selected and the panel has no box even though the page is ready.
+      // The same rule as the post-login wait below, which the acceptance relies on.
+      && await page.locator('[data-testid="ai-connections-panel"]').count() > 0
       && !await page.locator('[data-auth-surface-mode="page"]').isVisible({ timeout: 300 }).catch(() => false)
     ) {
       return;
