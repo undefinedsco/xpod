@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { messageResource } from '@undefineds.co/models';
-import { matrixHarness } from '../../helpers/MatrixMemoryDatabase';
+import { MATRIX_TEST_SERVER_NAME, matrixHarness } from '../../helpers/MatrixMemoryDatabase';
 import { MatrixServiceIdentity } from '../../../src/api/matrix/protocol/serviceIdentity';
 import { decodeVerifyKey } from '../../../src/api/matrix/protocol/eventIntegrity';
 import { getProtocolMetadata } from '../../../src/api/protocol-metadata';
@@ -36,7 +36,7 @@ function storedEvents(rows: Map<unknown, any[]>) {
 
 describe('provisioning a participant when they enter a room', () => {
   it('provisions before the create event, so the room is named and signed by the participant', async () => {
-    const deployment = identityFor('example.test', 'ed25519:deployment');
+    const deployment = identityFor(MATRIX_TEST_SERVER_NAME, 'ed25519:deployment');
     const { source, add } = growingIdentitySource([ deployment ]);
     const alice = identityFor('alice.example');
     const ensureParticipantIdentity = vi.fn(async (input: { webId: string }) => {
@@ -59,7 +59,7 @@ describe('provisioning a participant when they enter a room', () => {
   });
 
   it('provisions before reporting an MXID, so an invite can never name a stale server', async () => {
-    const deployment = identityFor('example.test', 'ed25519:deployment');
+    const deployment = identityFor(MATRIX_TEST_SERVER_NAME, 'ed25519:deployment');
     const { source, add } = growingIdentitySource([ deployment ]);
     const participantIdentity: MatrixParticipantIdentityProvider = {
       ensureParticipantIdentity: async input => { add(identityFor(new URL(input.webId).host)); },
@@ -74,7 +74,7 @@ describe('provisioning a participant when they enter a room', () => {
   });
 
   it('keeps the deployment name for a participant this deployment does not serve', async () => {
-    const deployment = identityFor('example.test', 'ed25519:deployment');
+    const deployment = identityFor(MATRIX_TEST_SERVER_NAME, 'ed25519:deployment');
     const { source } = growingIdentitySource([ deployment ]);
     const participantIdentity: MatrixParticipantIdentityProvider = {
       ensureParticipantIdentity: async () => undefined,
@@ -85,7 +85,7 @@ describe('provisioning a participant when they enter a room', () => {
   });
 
   it('provisions before a join event and hands over the Pod this write targets', async () => {
-    const deployment = identityFor('example.test', 'ed25519:deployment');
+    const deployment = identityFor(MATRIX_TEST_SERVER_NAME, 'ed25519:deployment');
     const { source, add } = growingIdentitySource([ deployment ]);
     const seen: { webId: string; targetPodUrl?: string }[] = [];
     const participantIdentity: MatrixParticipantIdentityProvider = {
@@ -118,7 +118,7 @@ describe('provisioning a participant when they enter a room', () => {
   });
 
   it('does not provision on paths that write nothing of the participant\'s own', async () => {
-    const deployment = identityFor('example.test', 'ed25519:deployment');
+    const deployment = identityFor(MATRIX_TEST_SERVER_NAME, 'ed25519:deployment');
     const { source } = growingIdentitySource([ deployment ]);
     const ensureParticipantIdentity = vi.fn(async () => undefined);
     const { store, context, rows } = matrixHarness({ identities: source, participantIdentity: { ensureParticipantIdentity } });
@@ -141,7 +141,7 @@ describe('provisioning a participant when they enter a room', () => {
   });
 
   it('writes nothing when provisioning fails', async () => {
-    const deployment = identityFor('example.test', 'ed25519:deployment');
+    const deployment = identityFor(MATRIX_TEST_SERVER_NAME, 'ed25519:deployment');
     const { source } = growingIdentitySource([ deployment ]);
     const participantIdentity: MatrixParticipantIdentityProvider = {
       ensureParticipantIdentity: async (input: { webId: string }) => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { deliveryResource, messageResource, MessageRole, runResource, runStepResource } from '@undefineds.co/models';
-import { matrixHarness } from '../../helpers/MatrixMemoryDatabase';
+import { MATRIX_TEST_SERVER_NAME, matrixHarness } from '../../helpers/MatrixMemoryDatabase';
 import { PodMatrixStore } from '../../../src/api/matrix/PodMatrixStore';
 import { InMemoryMatrixEventJournal } from '../../../src/api/matrix/MatrixEventJournal';
 import { InMemoryWakeAgentQueue } from '../../../src/api/reconciler/WakeAgentQueue';
@@ -16,7 +16,7 @@ async function fixture() {
   const { context, rows, db } = matrixHarness();
   const queue = new InMemoryWakeAgentQueue();
   const journal = new InMemoryMatrixEventJournal();
-  const makeStore = (wakeQueue = queue) => new PodMatrixStore({ serverName: 'example.test', journal,
+  const makeStore = (wakeQueue = queue) => new PodMatrixStore({ serverName: MATRIX_TEST_SERVER_NAME, journal,
     serverGroupReconcilerService: new ServerGroupReconcilerService({ wakeQueue }) });
   const store = makeStore();
   const runtime = new AgentWakeRuntimeService(queue, store);

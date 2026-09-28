@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { messageResource } from '@undefineds.co/models';
-import { matrixHarness } from '../../helpers/MatrixMemoryDatabase';
+import { MATRIX_TEST_SERVER_NAME, matrixHarness } from '../../helpers/MatrixMemoryDatabase';
 import { matrixSigningIdentityRegistry } from '../../../src/api/matrix/identityRegistry';
 import { InMemoryMatrixSigningKeyStore, MatrixSigningIdentityProvider } from '../../../src/api/matrix/signingKeyStore';
 import { MatrixServiceIdentity } from '../../../src/api/matrix/protocol/serviceIdentity';
@@ -31,7 +31,7 @@ function providerFor(serverName: string) {
 /** A registry holding one identity per participant plus the deployment's own identity. */
 function participantRegistry() {
   return matrixSigningIdentityRegistry({
-    identity: deploymentIdentity('example.test'),
+    identity: deploymentIdentity(MATRIX_TEST_SERVER_NAME),
     providers: [ providerFor('alice.example'), providerFor('bob.example') ],
   });
 }
@@ -103,12 +103,12 @@ describe('participant signing identities', () => {
     const sent = await store.sendEvent(room.roomId, 'm.room.message', 'from-carol', { body: 'hi' }, carolContext);
     const event = storedEvent(rows, sent.eventId);
     expect(event.sender).toBe(carol);
-    expect(Object.keys(event.signatures ?? {})).toEqual([ 'example.test' ]);
+    expect(Object.keys(event.signatures ?? {})).toEqual([ MATRIX_TEST_SERVER_NAME ]);
   });
 
   it('keeps one deployment identity working when no participant identity is registered', async () => {
     const { store, context } = matrixHarness({
-      identities: matrixSigningIdentityRegistry({ identity: deploymentIdentity('example.test') }),
+      identities: matrixSigningIdentityRegistry({ identity: deploymentIdentity(MATRIX_TEST_SERVER_NAME) }),
     });
     const alice = (await store.getAccount(context)).userId;
     // The harness WebID is alice.example, but nothing signs for that name, so the
