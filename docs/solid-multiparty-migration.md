@@ -104,3 +104,29 @@
 - **路径 B**：先把第 5 刀（降授权规则、去事件图字段）提前做掉，再切身份——改动面小，但会先失去一层校验。
 
 已回退，树保持绿色（`tests/api/matrix` 恢复到 587 通过）。
+
+### 1.0a 试行结果（2026-09-28）：动的是**寻址语义**，不是命名，先拍一个问题
+
+把 `getServerName` 改成"以 WebID host 为准"后：`tests/api/matrix` **25 项失败**（远少于切身份的 89），
+失败形态两类：
+
+- **期望值跟着部署名走**（机械）：如 `participantIdentity` 断言 MXID 以 `:example.test` 结尾、
+  别名查找按部署名匹配——这些是 1.0d 的活；
+- **一条语义分叉**：`falls back to the deployment identity for a WebID whose server it does not sign for`
+  ——这条测试**专门记录**了"本部署不为该 WebID 的 server 签名时回退到部署身份"。也就是说，把 server name
+  换成 WebID host 会连带改变**签名身份的解析**（1.0c）与**对端端点的解析**。
+
+**必须先拍的问题：对端端点按什么解析？** 三条候选：
+
+| 候选 | 怎么解析 | 代价 |
+| --- | --- | --- |
+| **E1** WebID host | 对 `alice.example` 做 `/.well-known` 发现，再打它的 `/_matrix/*` | 要求每个人的 WebID host 都真的提供这个协议（或至少提供 well-known 指向） |
+| **E2** Pod 注册里的 host | 用参与者登记的 Pod URL 的 host 作为端点 | 端点不依赖 WebID host，但"server name"就变成登记事实，而不是身份的事实 |
+| **E3** 两者都支持：**标识用 WebID，端点用登记信息** | 身份/事件里写 WebID；投递时按登记信息找端点（找不到再试 WebID host 的 well-known） | 概念上最清楚（身份与寻址分离），但要多一处登记解析 |
+
+我倾向 **E3**：它把"身份"和"往哪送"彻底分开——身份永远是 WebID（事件里可读、可校验），
+而端点是可以随部署迁移的登记事实（Pod 搬家不该改身份）。E1 太依赖"人人的 WebID host 都跑这个协议"，
+E2 会把 server name 变成登记事实、与"参与者即自己的 server"这句话打架。
+
+**E 定了再回到 1.0a**：`getServerName` 的语义取决于它——如果采用 E3，"server name"只用于**标识**
+（房间 id 的域、事件的域），而 `signingIdentity`/`nativeTargetOf` 这类**寻址**改走登记信息（或随第 2 刀删掉签名）。
