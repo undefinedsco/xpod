@@ -27,8 +27,6 @@ import type { MatrixControlRecordTarget } from './controlRecords';
 import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
 import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type PersistedMatrixEvent } from './persistedEvent';
 import { roomGraphPosition } from './protocol/roomGraph';
-import { authorizeEvent, toAuthEvent, type AuthEvent, type AuthorizableEvent } from './protocol/authRules';
-import { eventReferenceIds } from './protocol/eventReferences';
 import { storedGraphEvent, storedProtocolEvent } from './storedEvent';
 import { MatrixRoomState, MatrixRoomStateReplay, resolveRoomState } from './roomState';
 import { serverNameOf, SUPPORTED_ROOM_VERSION } from './protocol/authRules';
@@ -1100,14 +1098,11 @@ export class PodMatrixStore {
     const derivedId = built.event_id ?? computeEventId(built);
     const persistedEvent = built.event_id === derivedId ? built : { ...built, event_id: derivedId };
     const eventId = derivedId;
-    // The room's own rules decide whether this event may exist at all. Everything else on this path
-    // — membership, room ownership, execution grants — is a coarser stand-in for the rule it
-    // approximates; here the rule itself is applied, against the auth events this event names.
-    const denial = authorizeEvent(
-      persistedEvent as unknown as AuthorizableEvent,
-      this.authEventsFor(persistedEvent, timeline),
-    );
-    if (!denial.allowed) throw new MatrixError(403, 'M_FORBIDDEN', denial.reason);
+    // What this protocol asks of a local write is membership and role, and both were checked by the
+    // caller before it got here (`requireJoined`, `requireRoomOwner`, `authorizeTargets`). The room
+    // version's rule set — power levels, auth-event chains, state resolution — is deliberately not
+    // applied here: it belongs to the Matrix-shaped surface a peer may still speak, and enforcing it
+    // on our own writes was the last thing making those rules load-bearing for this protocol.
     const originIso = new Date(input.originServerTs).toISOString();
     const needsRoomMetadata = input.reconcilerOwner === undefined
       || (input.type === 'm.room.message' && this.serverGroupReconcilerService !== undefined);
@@ -1579,14 +1574,7 @@ export class PodMatrixStore {
    * Missing ones are simply absent: the rules decide what that means, rather than this guessing on
    * their behalf.
    */
-  private authEventsFor(event: Record<string, unknown>, timeline: readonly MatrixEventRecord[]): AuthEvent[] {
-    const named = new Set(eventReferenceIds(event, 'auth_events'));
-    return timeline
-      .filter(candidate => named.has(candidate.eventId))
-      .map(candidate => toAuthEvent(candidate.event ?? { type: candidate.type, sender: candidate.sender,
-        room_id: candidate.roomId, content: candidate.content, event_id: candidate.eventId,
-        ...(candidate.stateKey === undefined ? {} : { state_key: candidate.stateKey }) }));
-  }
+
 
   /**
    * The authority a reservation is written with: the caller's own.
