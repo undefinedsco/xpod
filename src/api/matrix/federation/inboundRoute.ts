@@ -174,6 +174,9 @@ export async function handleFederationSend(input: HandleFederationSendInput): Pr
     const response = await handleInboundTransaction({
       scope: target.scope,
       origin,
+      // A session-delivered batch: the writer is known, so no per-event signature is checked and
+      // the ids the writer chose are the ids kept.
+      ...(input.solidSession === undefined ? {} : { writerVerified: true }),
       transactionId,
       pdus,
       store: input.transactions,

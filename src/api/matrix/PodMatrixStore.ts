@@ -1284,10 +1284,14 @@ export class PodMatrixStore {
     if (!roomId || !type || !sender || !Number.isSafeInteger(originServerTs)) {
       throw new MatrixError(400, 'M_BAD_JSON', 'A received event needs room_id, type, sender and origin_server_ts');
     }
-    const eventId = computeEventId(event);
-    // The identity is derived here, not sent; attaching it is what every reader agrees
-    // on, and it is safe because neither the content hash, the reference hash nor the
-    // signature covers `event_id`.
+    // The writer's own id when the event carries one: this protocol lets whoever writes an event
+    // name it, and keeping that name is what makes the same event recognisable in every Pod it
+    // reaches. An event without one (a Matrix-shaped peer's, whose id *is* the reference hash) is
+    // named here as it always was.
+    const statedId = typeof event.event_id === 'string' && event.event_id.length > 0 ? event.event_id : undefined;
+    const eventId = statedId ?? computeEventId(event);
+    // The identity is attached here when it was not sent; it is safe because neither the content
+    // hash, the reference hash nor the signature covers `event_id`.
     const storedEvent: Record<string, unknown> = { ...event, event_id: eventId };
     const messageResourceId = this.messageResourceIdFromEvent(roomId, eventId, originServerTs);
     const existing = await db.findById(messageResource, messageResourceId);

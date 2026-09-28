@@ -70,6 +70,11 @@ export interface InboundPduOptions {
    */
   authEvents: readonly AuthEvent[];
   now?: () => number;
+  /**
+   * The transport established who wrote this event (a Solid session delivered the batch), so its
+   * signature is not checked and its own id is kept. See `verifyInboundPdu`.
+   */
+  writerVerified?: boolean;
 }
 
 export async function validateInboundPdu(pdu: unknown, options: InboundPduOptions): Promise<InboundPduResult> {
@@ -115,22 +120,30 @@ export async function validateInboundPdu(pdu: unknown, options: InboundPduOption
  */
 export async function verifyInboundPdu(
   pdu: unknown,
-  options: { keys: MatrixServerKeySource; now?: () => number },
+  options: { keys: MatrixServerKeySource; now?: () => number; writerVerified?: boolean },
 ): Promise<InboundPduResult> {
   // 1. Structure.
   const shape = normalizeInboundPdu(pdu);
   if (!shape.event) return reject('v11-1: malformed event', shape.reason);
   const event = shape.event;
-  const eventId = computeEventId(event);
+  // Whose id is it? A writer-chosen id is the event's own identity and has to be kept, or the same
+  // event would be known by two names in two Pods. With no writer vouching for it, the id is
+  // re-derived as it always was — that is what makes an unauthenticated copy self-checking.
+  const statedId = typeof event.event_id === 'string' && event.event_id.length > 0 ? event.event_id : undefined;
+  const eventId = options.writerVerified && statedId ? statedId : computeEventId(event);
   const rejectWithId = (reason: string): InboundPduResult =>
     ({ eventId, outcome: 'rejected', stage: 'signature', reason, redacted: false });
 
-  // 2. Signature by the server named in `sender`.
+  // 2. Signature by the server named in `sender` — unless the transport already established who
+  //    wrote this. A batch delivered under a Solid session carries the writer's identity, and the
+  //    session is what vouches for it; there is no per-event signature to check and no key to fetch.
   const senderServer = serverNameOf(String(event.sender));
   if (!senderServer) return rejectWithId('v11-2: sender has no server name');
-  const keys = await options.keys.keysFor(senderServer);
-  const signature = verifyRemoteEventSignature(event, keys, (options.now ?? Date.now)());
-  if (!signature.valid) return rejectWithId(`v11-2: ${signature.reason}`);
+  if (!options.writerVerified) {
+    const keys = await options.keys.keysFor(senderServer);
+    const signature = verifyRemoteEventSignature(event, keys, (options.now ?? Date.now)());
+    if (!signature.valid) return rejectWithId(`v11-2: ${signature.reason}`);
+  }
 
   // 3. Content hash: a mismatch redacts the event and processing continues.
   let stored = event;

@@ -153,6 +153,11 @@ export interface HandleInboundTransactionInput {
   origin: string;
   transactionId: string;
   pdus: readonly unknown[];
+  /**
+   * The transport vouched for the writer (a Solid session), so each event's signature is not
+   * checked and each event keeps the id its writer gave it.
+   */
+  writerVerified?: boolean;
   store: MatrixInboundTransactionStore;
   /**
    * The resolved Pod a Pod-backed store writes its records to. The caller resolved it for this
@@ -215,7 +220,7 @@ export async function handleInboundTransaction(input: HandleInboundTransactionIn
     for (const [ index, pdu ] of input.pdus.entries()) {
       const authEventIds = referencedAuthEventIds(pdu);
       const authEvents = authEventIds.length > 0 ? await input.resolveAuthEvents(authEventIds, pdu) : [];
-      let result = await validateInboundPdu(pdu, { keys: input.keys, authEvents, now });
+      let result = await validateInboundPdu(pdu, { keys: input.keys, authEvents, now, ...(input.writerVerified === undefined ? {} : { writerVerified: input.writerVerified }) });
       if (result.outcome === 'deferred' && input.fetchAuthChain && result.eventId) {
         // The events that authorise this one are not here. Asking the sender is the
         // specification's answer, and it is the only way a PDU that arrives before its
@@ -271,11 +276,11 @@ async function fetchAndRetry(
   for (const chained of chain) {
     const ids = referencedAuthEventIds(chained);
     const authEvents = ids.length > 0 ? await input.resolveAuthEvents(ids, chained) : [];
-    const stored = await validateInboundPdu(chained, { keys: input.keys, authEvents, now });
+    const stored = await validateInboundPdu(chained, { keys: input.keys, authEvents, now, ...(input.writerVerified === undefined ? {} : { writerVerified: input.writerVerified }) });
     if (stored.outcome === 'accepted' && stored.event) await input.acceptEvent(stored.event);
   }
   const resolved = authEventIds.length > 0 ? await input.resolveAuthEvents(authEventIds, pdu) : [];
-  return await validateInboundPdu(pdu, { keys: input.keys, authEvents: resolved, now });
+  return await validateInboundPdu(pdu, { keys: input.keys, authEvents: resolved, now, ...(input.writerVerified === undefined ? {} : { writerVerified: input.writerVerified }) });
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

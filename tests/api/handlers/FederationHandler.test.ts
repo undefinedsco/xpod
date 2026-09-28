@@ -298,6 +298,29 @@ describe('the inbound /send route', () => {
       expect(answer.status).toBe(403);
       expect(answer.body.errcode).toBe('M_FORBIDDEN');
 
+      // The accept path: a session-delivered batch needs no per-event signature, and the id the
+      // writer chose is the id the event keeps — otherwise the same event would be known by two
+      // names in two Pods.
+      const chosen = {
+        ...room.join,
+        event_id: '$writer-chosen',
+        sender: ALICE,
+        type: 'm.room.message',
+        state_key: undefined,
+        content: { body: 'written under a session' },
+        auth_events: [ room.create.event_id as string, room.join.event_id as string ],
+        prev_events: [ room.join.event_id as string ],
+        signatures: undefined,
+        hashes: undefined,
+      };
+      const accepted = await send({
+        port: h.port, method: 'PUT', path: '/_matrix/federation/v1/send/solid-3', host: SERVED,
+        authorization: `Solid ${webId}`,
+        body: JSON.stringify({ origin: SERVED, pdus: [ chosen ] }),
+      });
+      expect(accepted.status).toBe(200);
+      expect(Object.keys(accepted.body.pdus as Record<string, unknown>)).toContain('$writer-chosen');
+
       // A session the authenticator does not recognise is not a session: the signature path refuses
       // it, exactly as it refuses an anonymous caller.
       const unknown = await send({
