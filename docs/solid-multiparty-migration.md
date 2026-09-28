@@ -39,3 +39,36 @@
    `protocols.matrix`——**一律不改名**；将来要互通就在同一前缀上加认证/字段适配。
    同时把两条投递路径（`/_xpod/matrix/inbound` 与 `/_matrix/federation/v1/send`）收敛成一条。
 3. **本地镜像存 `members` 副本**（离线可读、UI 直接用），但标注为镜像，判定一律回房主 Pod 读。
+
+## 第 1 刀边界：身份 WebID + 事件 id 由写入方生成（开工中）
+
+**为什么这两项同一刀**：事件 id 里含 `sender`，身份换了 id 的来源也换——分开做会有一刀处于"半新半旧"。
+
+**改动点**
+
+1. **身份**：事件的 `sender`、`state_key`、成员/角色键、`inboundAuthority` 的判定入参，一律换成 **WebID**；
+   停用身份路径上的 `matrixUserIdFor` / `webIdServerName`（**函数先留着**，第 2 刀再看是否还有互通用途）。
+2. **事件 id**：`buildPersistedEvent` 不再 `computeEventId`，改为**取写入方给的 id**：客户端请求里带 `msgid`，
+   服务端自发起的事件（join/invite/改成员）自己生成一个（随机、足够长）。
+3. **落库规则**：同一 id **只读回、不覆盖**（把"存在即返回"做实；不得走 update 路径）。
+4. **校验口径**：`readPersistedEvent` 的 `eventIdMatches`（`computeEventId(event) === event.event_id`）
+   不再成立，替换为"**内容哈希与存储时记录的一致**"；`appendEvent` 里"提供的 id 与内容推导不一致就报错"
+   这条断言删除。
+5. **接收路径**：`acceptReceivedEvent` 用事件自带的 id 做幂等键（已经是按 id 查重，改用自带 id 后语义不变）。
+
+**关键耦合点（已查清）**：`buildPersistedEvent` 先 `signEvent(base)`、**再**算 id 并附上
+（`persistedEvent.ts:94-105`）——**签名不覆盖 `event_id`**。所以本刀换成随机 id **不会破坏签名验签**，
+第 2 刀（删签名）可以按原顺序独立进行；只需要改上面第 4 条的**校验**。
+
+**验收口径**
+
+- 新断言：写入的事件 `sender` 是 WebID；同一 `msgid` 重发**只产生一行且内容不被覆盖**；
+  同一事件在两个 Pod 里的 id 相同。
+- 反向断言：新写入的事件里不再出现 `@u_<hash>:host`。
+- 历史数据不追溯（已有 `@u_…` 的旧事件保持原样）。
+
+**门禁**：`typecheck:test`、`tests/api/matrix`、`tests/api tests/http`、`test:integration:lite`
+（上一刀基线：587 / 2044 / 162）。
+
+**不在本刀**：不删签名与密钥（第 2 刀）、不删预留（第 3 刀）、不动房间权威（第 4 刀）、
+不降授权规则与事件图字段（第 5 刀）、不改投递与路径（第 6–7 刀）。
