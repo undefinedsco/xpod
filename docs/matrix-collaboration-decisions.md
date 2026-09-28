@@ -1212,7 +1212,7 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
 | 给 claim/complete 加 fresh 标记就算授权缓存问题已解决 | 当前代码覆盖 agent-wakes 路由，但普通 Matrix 路径仍有旧判定窗口 |
 | 签名身份由部署单一持有（现状实现） | 数据与控制记录都已按 Pod/房间归属，部署不再是 homeserver；部署级身份仅作旧房间兼容边界 |
 | 为每个 server name 发布 `.well-known/matrix/server` 做联邦委派 | 用户 2026-09-27：**Pod 很稀疏，不需要按 host 做联邦发现；拓扑来自房间成员关系网**（成员列表就是"要跟谁说话"的来源）。因此不实现该文档，本部署的联邦端点仍按 server name 自身的主机可达（部署名义的 `/.well-known/matrix/client` 与 `/_matrix/key/v2/server` 已有）。**前提**：WebID 的 host 与承载其 Pod 的部署 host 是同一个；一旦两者分离，"这条 name 由谁承载"会重新成为问题（与房间关系网是两件事） |
-| 参与者 ↔ Pod 归属需要一条 Matrix 自己的绑定记录（`identityBinding.ts` 的方向） | 用户 2026-09-27 质疑"server name 跟 webid 本来不就是一一对应，为什么还要记录"；改为派生（`participantRoutes.ts`），该模块已无消费者，建议连同其 7 项测试删除（**待用户确认**；其中的 Pod 迁移版本/状态机语义仍作为待细化项保留在册） |
+| 参与者 ↔ Pod 归属需要一条 Matrix 自己的绑定记录（`identityBinding.ts` 的方向） | 用户 2026-09-27 质疑"server name 跟 webid 本来不就是一一对应，为什么还要记录"；改为派生（`participantRoutes.ts`）。**"已无消费者"已核实（2026-09-28）**：全仓 `grep -rn identityBinding src tests` 只有它自己的测试文件命中——**零生产引用**（`src/api/matrix/identityBinding.ts` 191 行 + `tests/api/matrix/identityBinding.test.ts` 7 项）。因此删除是纯机械动作，**待你确认**（其中"Pod 迁移版本/状态机"的语义仍作为待细化项保留在册，不随代码删除） |
 
 ## 待细化的实现事项
 
