@@ -60,7 +60,10 @@ describe('Inrupt Solid verifier app', () => {
 
   it('keeps the generated verifier bundles available despite static asset ignores', async () => {
     const bundle = await readRepoFile('static/app/assets/inrupt-smoke.js');
-    const helper = await readFirstAsset('preload-helper-', '_commonjsHelpers-');
+    // The preload helper is a shared chunk, so its name follows whichever entry the
+    // bundler groups it with: `global` since the callback/settings build was merged
+    // into the app target, `_commonjsHelpers`/`preload-helper` before that.
+    const helper = await readFirstAsset('global-', 'preload-helper-', '_commonjsHelpers-');
     const assets = await listAssets();
 
     expect(bundle).toContain('solid-client-authn-browser');
