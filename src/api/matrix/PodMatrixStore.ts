@@ -31,7 +31,7 @@ import { MatrixRoomState, MatrixRoomStateReplay, resolveRoomState } from './room
 import { serverNameOf, SUPPORTED_ROOM_VERSION } from './protocol/authRules';
 import { eventDestinations } from './federation/destinations';
 import type { RemoteJoinOutcome } from './federation/remoteJoin';
-import { webIdServerName } from './protocol/serverName';
+import { matrixUserIdFor, webIdServerName } from './protocol/serverName';
 import {
   roomChatIri,
   roomMessagesDocumentIri,
@@ -2002,7 +2002,7 @@ export class PodMatrixStore {
    * question "is this user ours" is answered by computing, not by looking up.
    */
   public matrixUserIdFor(webId: string, serverName: string): string {
-    return `@u_${this.hash(webId)}:${serverName}`;
+    return matrixUserIdFor(webId, serverName);
   }
 
   /**

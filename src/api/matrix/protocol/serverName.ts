@@ -11,6 +11,8 @@
  * `origin`) and get resolved to endpoints, so anything that could point somewhere else
  * (`/`, `@`, whitespace, credentials, fragments) is refused before use.
  */
+
+import { createHash } from 'node:crypto';
 export function isMatrixServerName(value: string): boolean {
   const match = /^(?<host>\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*)(?::(?<port>\d{1,5}))?$/u.exec(value);
   if (!match?.groups) return false;
@@ -43,4 +45,17 @@ export function webIdServerName(webId: string): string | undefined {
 
 function stripBrackets(host: string): string {
   return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+}
+
+/**
+ * The MXID an identity has under a server name.
+ *
+ * One derivation for every identity this deployment speaks for — a participant's WebID, and an
+ * agent's own URI. It is *derived*, never recorded: "is this MXID ours" is answered by computing it,
+ * and nothing has to be migrated when a Pod moves. Agents use the same rule as participants because
+ * an agent is a room member with its own identity (decided 2026-09-27), so the two must not drift
+ * into two spellings of the same fact.
+ */
+export function matrixUserIdFor(subject: string, serverName: string): string {
+  return `@u_${createHash('sha256').update(subject).digest('hex')}:${serverName}`;
 }

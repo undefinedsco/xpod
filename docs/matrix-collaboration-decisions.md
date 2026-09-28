@@ -113,6 +113,10 @@
 3. **D6 Agent 归属**——**已定（2026-09-27）：Agent 作为房间成员（有自己的 MXID）**。写路径因此可以强制 v11 授权规则。
    实现路径（本轮细化，按"复用已有机制、不新增协议路径"排序）：
 
+   - **已落地（2026-09-28，第一步）**：**MXID 推导收进一处并覆盖 Agent**——`protocol/serverName.ts` 的
+     `matrixUserIdFor(subject, serverName)`（参与者传 WebID，Agent 传它自己的 URI），`PodMatrixStore` 改为委托它。
+     "这个 MXID 是不是我们的"仍然靠**计算**而不是查表；参与者与 Agent 不会长出两种拼法。测试：`serverName.test.ts`
+     新增 1 项（同一身份稳定、不同身份/不同 server 不同、Agent URI 与 WebID 共用同一条规则）。
    - **Agent 的身份走参与者那一套**：给 Agent 铸造一把签名身份（`signingKeyStore` + 根密钥封存），私钥落在
      **运行它的那个部署所属的参与者 Pod**（与 per-participant 身份同一份托管规则，`podParticipantIdentity.ts`
      的选择规则直接复用：只认该 WebID 名下登记的 Pod、多 Pod 拒绝猜）。Agent 的 MXID 由该身份派生

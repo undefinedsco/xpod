@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { isMatrixServerName, splitServerName, webIdServerName } from '../../../../src/api/matrix/protocol/serverName';
+import { createHash } from 'node:crypto';
+import { isMatrixServerName, splitServerName, webIdServerName, matrixUserIdFor } from '../../../../src/api/matrix/protocol/serverName';
 
 describe('server name grammar', () => {
   it('accepts hostnames, IP literals and ports', () => {
@@ -28,5 +29,21 @@ describe('server name grammar', () => {
     expect(webIdServerName('not a url')).toBeUndefined();
     expect(webIdServerName('mailto:alice@example.com')).toBeUndefined();
     expect(webIdServerName('')).toBeUndefined();
+  });
+});
+
+describe('the MXID an identity has under a server name', () => {
+  it('derives it from the identity itself, so nothing has to be recorded or migrated', () => {
+    const expected = `@u_${createHash('sha256').update('https://alice.example/card#me').digest('hex')}:alice.example`;
+    expect(matrixUserIdFor('https://alice.example/card#me', 'alice.example')).toBe(expected);
+    // The same rule serves an agent's own URI: an agent is a room member with its own identity, so
+    // participants and agents must not end up with two spellings of the same derivation.
+    const agent = matrixUserIdFor('https://pod.example/alice/.data/agents/scribe.ttl#this', 'alice.example');
+    expect(agent.startsWith('@u_')).toBe(true);
+    expect(agent.endsWith(':alice.example')).toBe(true);
+    expect(agent).toBe(matrixUserIdFor('https://pod.example/alice/.data/agents/scribe.ttl#this', 'alice.example'));
+    // Different identity, different MXID; different server, different MXID.
+    expect(agent).not.toBe(matrixUserIdFor('https://pod.example/alice/.data/agents/other.ttl#this', 'alice.example'));
+    expect(agent).not.toBe(matrixUserIdFor('https://pod.example/alice/.data/agents/scribe.ttl#this', 'bob.example'));
   });
 });
