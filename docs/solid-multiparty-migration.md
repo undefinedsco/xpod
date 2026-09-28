@@ -122,6 +122,11 @@
    断言回退到部署身份、`participantProvisioning` 断言"保留部署名"、`PodMatrixStore` 的 Agent 与别名用例）。
    **这意味着第 1 项的真实工作量是"把身份注册到 WebID host 下 + 更新这些期望值"**，源码侧只剩
    1.0d 的字段替换。
+   **已开始去硬编码（2026-09-28）**：夹具导出 `MATRIX_TEST_SERVER_NAME`，测试引用它而不是自己写
+   `'example.test'`——这样夹具切到 WebID host 时这些文件**自动跟随**。已改完 4 个文件
+   （`persistedEvent`、`PodMatrixStore`、`receivedEvent`、`roomStateCache`，矩阵 600 项仍全过）；
+   **还剩 4 个**：`MatrixCollaboration`(1)、`participantIdentity`(3)、`participantProvisioning`(6)、
+   `authRules`/`signingKeys`（后两个用的是任意 server name，**不需要跟随**）。
 2. **1.0b 房间 id 的域**：随 1.0a 自动统一（`!xxx:<WebID host>`）。
 3. **1.0c 签名**：**不动**——请求签名（`X-Matrix`）与事件签名仍用部署密钥，键名与参与者标识无关；
    删签名是第 3 项的事，等 O。**这一条正是第 1 轮 89 项失败的主因**（当时把标识与签名键混在一起改）。

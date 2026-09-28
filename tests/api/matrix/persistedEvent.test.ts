@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { chatResource, messageResource } from '@undefineds.co/models';
-import { matrixHarness } from '../../helpers/MatrixMemoryDatabase';
+import { MATRIX_TEST_SERVER_NAME, matrixHarness } from '../../helpers/MatrixMemoryDatabase';
 import { getProtocolMetadata, withProtocolMetadata } from '../../../src/api/protocol-metadata';
 import { computeContentHash, computeEventId, decodeVerifyKey, encodeUnpaddedBase64 } from '../../../src/api/matrix/protocol/eventIntegrity';
 import { MatrixServiceIdentity } from '../../../src/api/matrix/protocol/serviceIdentity';
@@ -16,7 +16,7 @@ function identity() {
   const { privateKey } = generateKeyPairSync('ed25519');
   return {
     service: new MatrixServiceIdentity({
-      serverName: 'example.test',
+      serverName: MATRIX_TEST_SERVER_NAME,
       activeKey: { keyId: 'ed25519:1', privateKeyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString() },
     }),
     ...(() => {
@@ -50,7 +50,7 @@ describe('persisted protocol events', () => {
     const { event } = storedEvent(rows, sent.eventId);
     // The event carries the protocol facts the Solid Chat view cannot express.
     expect(event).toMatchObject({ room_id: room.roomId, type: 'm.room.message', content: { body: 'verifiable' } });
-    expect(event.signatures).toHaveProperty('example.test');
+    expect(event.signatures).toHaveProperty(MATRIX_TEST_SERVER_NAME);
     expect(event.hashes).toHaveProperty('sha256');
 
     // Self-check: the content hash is re-derived from the event, and the id is the writer's name for
@@ -62,7 +62,7 @@ describe('persisted protocol events', () => {
 
     // And the signature verifies against the key the deployment publishes.
     const published = service.serverKeyResponse();
-    expect(verifyPersistedEventSignature(event, 'example.test', 'ed25519:1',
+    expect(verifyPersistedEventSignature(event, MATRIX_TEST_SERVER_NAME, 'ed25519:1',
       decodeVerifyKey(published.verify_keys['ed25519:1'].key))).toBe(true);
   });
 
@@ -80,16 +80,16 @@ describe('persisted protocol events', () => {
     const editedContent = { ...event, content: { msgtype: 'm.text', body: 'edited' } };
     expect(verifyPersistedEvent(editedContent).contentHashMatches).toBe(false);
     expect(verifyPersistedEvent(editedContent).hasEventId).toBe(true);
-    expect(verifyPersistedEventSignature(editedContent, 'example.test', 'ed25519:1', verifyKey)).toBe(true);
+    expect(verifyPersistedEventSignature(editedContent, MATRIX_TEST_SERVER_NAME, 'ed25519:1', verifyKey)).toBe(true);
 
     // A field that survives redaction is caught by the content hash and the signature. The id is
     // not part of that: it is the writer's name for the event, so an edit leaves it in place — which
     // is exactly why the id is no longer what makes a copy trustworthy.
-    const editedSender = { ...event, sender: '@mallory:example.test' };
+    const editedSender = { ...event, sender: `@mallory:${MATRIX_TEST_SERVER_NAME}` };
     const senderCheck = verifyPersistedEvent(editedSender);
     expect(senderCheck.hasEventId).toBe(true);
     expect(senderCheck.contentHashMatches).toBe(false);
-    expect(verifyPersistedEventSignature(editedSender, 'example.test', 'ed25519:1', verifyKey)).toBe(false);
+    expect(verifyPersistedEventSignature(editedSender, MATRIX_TEST_SERVER_NAME, 'ed25519:1', verifyKey)).toBe(false);
   });
 
   it('still stores a content-derived identity when the deployment cannot sign', async () => {

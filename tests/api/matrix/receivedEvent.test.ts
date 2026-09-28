@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { messageResource } from '@undefineds.co/models';
-import { matrixHarness } from '../../helpers/MatrixMemoryDatabase';
+import { MATRIX_TEST_SERVER_NAME, matrixHarness } from '../../helpers/MatrixMemoryDatabase';
 import { MatrixServiceIdentity } from '../../../src/api/matrix/protocol/serviceIdentity';
 import { computeEventId, signEvent } from '../../../src/api/matrix/protocol/eventIntegrity';
 import { parseServerKeyResponse, type MatrixServerKeySource } from '../../../src/api/matrix/federation/serverKeys';
@@ -17,7 +17,7 @@ const NOW = 2_000_000;
 function localIdentity() {
   const { privateKey } = generateKeyPairSync('ed25519');
   return new MatrixServiceIdentity({
-    serverName: 'example.test',
+    serverName: MATRIX_TEST_SERVER_NAME,
     activeKey: { keyId: 'ed25519:local', privateKeyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString() },
     now: () => NOW,
   });

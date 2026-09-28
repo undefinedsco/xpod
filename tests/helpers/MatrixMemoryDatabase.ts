@@ -1,5 +1,14 @@
 import { PodMatrixStore } from '../../src/api/matrix/PodMatrixStore';
 import { matrixSigningIdentityRegistry } from '../../src/api/matrix/identityRegistry';
+/**
+ * The server name the harness deployment signs as.
+ *
+ * Exported so tests do not spell it out: the migration moves this to the participant's WebID host
+ * (each deployment serves its own participant), and a test that hardcodes the name would have to be
+ * found and changed one by one when it does.
+ */
+export const MATRIX_TEST_SERVER_NAME = 'example.test';
+
 export function matrixHarness(
   options?: {
     serviceIdentity?: import('../../src/api/matrix/protocol/serviceIdentity').MatrixServiceIdentity;
@@ -51,7 +60,7 @@ export function matrixHarness(
     auth: {type:'solid', webId:'https://alice.example/profile/card#me', clientId:'device-a'}, _matrixDb: db,
     _matrixPodFetch: podFetch };
   const store = new PodMatrixStore({
-    serverName: 'example.test',
+    serverName: MATRIX_TEST_SERVER_NAME,
     ...(options?.participantIdentity ? { participantIdentity: options.participantIdentity } : {}),
     ...(options?.outbound ? { outbound: options.outbound } : {}),
     ...(options?.roomChanges ? { roomChanges: options.roomChanges } : {}),

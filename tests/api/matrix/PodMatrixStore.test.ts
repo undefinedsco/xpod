@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { drizzle } from '@undefineds.co/drizzle-solid';
 import { chatResource, messageResource, threadResource } from '@undefineds.co/models';
 import { PodMatrixStore } from '../../../src/api/matrix';
-import { matrixHarness } from '../../helpers/MatrixMemoryDatabase';
+import { MATRIX_TEST_SERVER_NAME, matrixHarness } from '../../helpers/MatrixMemoryDatabase';
 import { InMemoryMatrixEventJournal, reservationKeyForEvent } from '../../../src/api/matrix/MatrixEventJournal';
 
 vi.mock('@undefineds.co/drizzle-solid', async () => {
@@ -87,7 +87,7 @@ describe('PodMatrixStore shared Pod contract', () => {
       .filter((event: any) => event.type === 'm.room.member' && event.state_key === userId);
 
     const agent = 'https://pod.example/alice/.data/agents/scribe.ttl#this';
-    const agentUserId = store.matrixUserIdFor(agent, context.podUrl ? 'example.test' : 'example.test');
+    const agentUserId = store.matrixUserIdFor(agent, MATRIX_TEST_SERVER_NAME);
     await store.setState(room.roomId, 'co.undefineds.agents', '', { agents: [ grant(agent) ] }, context);
 
     // Granting is what makes it a member: an invite by the granter, then the agent's own join.
@@ -247,7 +247,7 @@ describe('PodMatrixStore owner Pod access', () => {
     const podFetch = vi.fn(async () => new Response());
     const getPodFetch = vi.fn(async () => podFetch);
     vi.mocked(drizzle).mockReturnValue(db);
-    const store = new PodMatrixStore({ serverName: 'example.test', podAccess: { getPodFetch } });
+    const store = new PodMatrixStore({ serverName: MATRIX_TEST_SERVER_NAME, podAccess: { getPodFetch } });
     await store.createRoom({ name: 'Delegated room' }, context);
     expect(getPodFetch).toHaveBeenCalledWith(context.webId, { auth: context.auth, podBaseUrl: context.podUrl });
     expect(drizzle).toHaveBeenCalledWith(
