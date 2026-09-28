@@ -16,7 +16,7 @@
 | 6 | 房间权威（**C2**）：成员与元数据只在房主 Pod | 新增/改 | 房间记录读写、成员事件写入路径、`resolvedState` 的用途 | 房主 Pod 是唯一权威；其他 Pod 的房间记录标注为**本地镜像**；镜像冲突不得放行写入 |
 | 7 | 投递：推 + 批次 → **拉为主** | 改 | `outboundDelivery`/`outboundSender`/`PodMatrixOutboundStore`/`outboundBatches` | 新增"订阅 + 拉增量"的验收；不再有"欠账批次" |
 | 8 | 入站回执（`txn` 控制记录）与出站批次控制记录 | **删候选** | `controlRecords.ts`、`PodMatrixInboundTransactionStore`、控制记录契约文档 | 不再断言"重放答回首次应答"；幂等写入即验收点 |
-| 9 | API 形状：**一套**（对端 api-server POST 批量事件 + 事务 id + 逐条应答） | 留形、换认证与前缀 | `FederationHandler`、`inboundRoute`、`federation/*` | 我们的前缀 **`/matrix/*`**；认证从 `X-Matrix` 换为 Solid；`/_matrix/*` 降级为延后适配面 |
+| 9 | API 形状：**一套**（对端 api-server POST 批量事件 + 事务 id + 逐条应答），前缀 `/_matrix/*` | 留形、换认证、收敛路径 | `FederationHandler`、`inboundRoute`、`federation/*`、`/_xpod/matrix/inbound` | **路径与命名空间都不改名**；认证从 `X-Matrix` 换为 Solid；两条投递路径（原生 + 联邦）收敛成一条 |
 | 10 | 事件存进 Pod 的形状 | 改 | `metadata.protocols.matrix.event`（完整 PDU） | 存"事件本身 + 内容哈希"即可（不再需要 hashes/signatures/auth_events）；**命名空间仍是 `matrix`，不改名** |
 | 11 | models 布局（房间 chat/thread、事件按天 message 行）与"先建父容器" | **留** | — | 不变（已在 models 契约与测试里） |
 | 12 | Pod 写授权（任务层 grant） | **留** | `matrixPodWriteFor` | 不变：没有 grant 就 403 |
@@ -35,6 +35,7 @@
 
 1. **事件 id 由写入方生成**，随机即可：客户端给 `msgid`，服务端为自己发起的事件（join/invite/改成员）自己生成。
    id 随事件传播；接收方**同 id 只读回、不覆盖**——幂等由这条写入规则保证，而不是由 id 的不可伪造保证。
-2. **协议前缀 `/matrix/*`**，命名空间继续用 `protocols.matrix`（协议叫 matrix：参考 Matrix，不兼容 Matrix）；
-   `/_matrix/*` 留作延后互通面。
+2. **路径前缀就是 `/_matrix/*`**（协议叫 matrix：参考 Matrix，不承诺兼容），Pod 命名空间继续用
+   `protocols.matrix`——**一律不改名**；将来要互通就在同一前缀上加认证/字段适配。
+   同时把两条投递路径（`/_xpod/matrix/inbound` 与 `/_matrix/federation/v1/send`）收敛成一条。
 3. **本地镜像存 `members` 副本**（离线可读、UI 直接用），但标注为镜像，判定一律回房主 Pod 读。
