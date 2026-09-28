@@ -381,6 +381,21 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   注入的 db 没有 fetch 时拒绝（不给半个授权）；部署自持工作时**不借**调用方会话；
   `controlRecordHandleFor` 把"哪个 Pod"和"以谁的身份"一起解析；context 不含 Pod 时拒绝而不是默认成空 scope。
 
+### 控制记录改按 models 的按天累积布局（2026-09-27，回应"为什么要判赢家"）
+
+- **布局**：`<pod>/.data/task/{yyyy}/{MM}/{dd}/transactions.ttl#<key 的 sha256>`——与 `message.schema.ts`
+  的 `{parent}/{yyyy}/{MM}/{dd}/messages.ttl#{key}` 同一约定；查找窗口 2 天（`CONTROL_RECORD_LOOKBACK_DAYS`）。
+- **语义**：`writeControlRecord` 从"create-once + CAS"改为"**幂等插入 + 记录优先**"。`reserve` 的保证从
+  "恰好一个赢家"改为"Pod 里只有一条记录、重放从记录回答"——这是这次实测 + 用户提问共同得出的结论
+  （契约 §6.2/§6.3）。
+- **顺带消掉两处复杂度**：不再需要"写前先条件 PUT 容器"与"释放要删文档"（从不删文档，
+  `deleteControlRecord` 只删记录自己的三元组）；`controlRecords.ts` 现在**全部走 drizzle-solid**，
+  没有任何绕过。
+- 证据：单元 9 项（含"并发只为同一 id 留下一条记录"、跨天查找与超窗当新事务、释放后可再预留、
+  句柄缺失/scope 不符即拒绝、Pod 拒绝写入不假装成功）；真实 Pod 3 项——**断言记录真的落在
+  `.data/task/<yyyy>/<MM>/<dd>/transactions.ttl`**（HEAD 200）、重启后仍可读、重放取首次应答并标
+  `conflictAt`、释放后可重预留、批次载荷原样往返。
+
 ### 原生入站端点（2026-09-27，③ 的第一步）
 
 - `POST /_xpod/matrix/inbound/:txnId`：两个 Xpod 部署之间的写入路径，复用 `/send` 的全部判定

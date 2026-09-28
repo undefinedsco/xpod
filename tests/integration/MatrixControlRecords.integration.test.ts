@@ -20,7 +20,14 @@ import type { OwnerPodAccess } from '../../src/api/ai-gateway/pod/OwnerPodAccess
 import { PodMatrixInboundTransactionStore } from '../../src/api/matrix/federation/podInboundTransaction';
 import { handleInboundTransaction } from '../../src/api/matrix/federation/inboundTransaction';
 import { matrixPodWriteFor, type MatrixPodWrite } from '../../src/api/matrix/podAccess';
-import { createControlRecord, deleteControlRecord, readControlRecord } from '../../src/api/matrix/controlRecords';
+import {
+  CONTROL_RECORD_LOOKBACK_DAYS,
+  controlRecordAddress,
+  controlRecordBucket,
+  deleteControlRecord,
+  readControlRecord,
+  writeControlRecord,
+} from '../../src/api/matrix/controlRecords';
 import {
   decodeOutboundBatch,
   encodeOutboundBatch,
@@ -54,7 +61,7 @@ async function podHandle(): Promise<{ podUrl: string; write: MatrixPodWrite }> {
 }
 
 suite('Matrix control records in a real Pod', () => {
-  it('gives a reservation exactly one winner and keeps the receipt after a restart', async() => {
+  it('writes one receipt, answers replays from it, and keeps it across a restart', async() => {
     const { podUrl, write } = await podHandle();
     const scope = podUrl;
     const store = new PodMatrixInboundTransactionStore();
@@ -68,21 +75,30 @@ suite('Matrix control records in a real Pod', () => {
     };
 
     const outcomes = await Promise.all([ 1, 2, 3 ].map(async() => await store.reserve(scope, reservation, handle)));
-    expect(outcomes.filter(outcome => outcome.created)).toHaveLength(1);
-    expect(outcomes.filter(outcome => !outcome.created)).toHaveLength(2);
-    // Every caller sees the same record: the winner's, not their own attempt.
-    const winner = outcomes.find(outcome => outcome.created)!;
-    for (const loser of outcomes.filter(outcome => !outcome.created)) {
-      expect(loser.record.receivedAt).toBe(winner.record.receivedAt);
-      expect(loser.record.payloadFingerprint).toBe('fingerprint-a');
-    }
+    // Claiming is best effort on a shared day document, so more than one caller may be told it
+    // claimed the id; what the Pod guarantees is *one* record, and that every caller can answer
+    // from it. Two processors of one transaction write the same events (accepting is idempotent by
+    // event id), so the cost of a lost race is a second validation pass.
+    expect(outcomes.filter(outcome => outcome.created).length).toBeGreaterThanOrEqual(1);
+    const stored = await store.find(scope, { origin: ORIGIN, transactionId }, handle);
+    expect(stored).toBeDefined();
+    for (const outcome of outcomes) expect(outcome.record.payloadFingerprint).toBe('fingerprint-a');
+
+    // The receipt lives where the models layout puts records that accumulate: a day document under
+    // the task base, one subject per record.
+    const bucket = controlRecordBucket(reservation.receivedAt);
+    const { resource, subject } = controlRecordAddress(scope, JSON.stringify([ ORIGIN, transactionId ]), bucket);
+    expect(resource).toBe(`${scope}.data/task/${bucket}/transactions.ttl`);
+    const head = await write.fetch(subject.split('#')[0], { method: 'HEAD' });
+    expect(head.status).toBe(200);
+    expect(CONTROL_RECORD_LOOKBACK_DAYS).toBeGreaterThanOrEqual(2);
 
     // A second store instance stands in for a restarted process: the Pod is the authority.
     const restarted = new PodMatrixInboundTransactionStore();
     const response = { pdus: { '$event-1': {}}};
     await restarted.complete(scope, { origin: ORIGIN, transactionId }, response, new Date().toISOString(), handle);
     const replay = await new PodMatrixInboundTransactionStore()
-      .reserve(scope, { ...reservation, payloadFingerprint: 'fingerprint-b' }, handle);
+      .reserve(scope, { ...reservation, payloadFingerprint: 'fingerprint-b', receivedAt: new Date().toISOString() }, handle);
     expect(replay.created).toBe(false);
     expect(replay.record.response).toEqual(response);
     expect(replay.record.payloadFingerprint).toBe('fingerprint-a');
@@ -150,8 +166,9 @@ suite('Matrix control records in a real Pod', () => {
     };
 
     const key = outboundBatchKey(batch);
-    const created = await createControlRecord(handle, { key, ...encodeOutboundBatch(batch) });
+    const created = await writeControlRecord(handle, { key, at: batch.createdAt, ...encodeOutboundBatch(batch) });
     expect(created.created).toBe(true);
+    expect(created.record.bucket).toBe(controlRecordBucket(batch.createdAt));
 
     // A different reader, as a restarted process would be: the Pod is the authority.
     const stored = await readControlRecord(handle, key);
@@ -161,7 +178,7 @@ suite('Matrix control records in a real Pod', () => {
     expect(decoded!.pdus).toEqual(batch.pdus);
     expect(decoded!.edus).toEqual(batch.edus);
 
-    await deleteControlRecord(handle, key);
+    await deleteControlRecord(handle, stored!);
     expect(await readControlRecord(handle, key)).toBeUndefined();
   }, 120_000);
 });

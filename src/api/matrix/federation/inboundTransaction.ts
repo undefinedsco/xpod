@@ -49,6 +49,11 @@ export interface MatrixInboundTransactionRecord {
  * the request, and that resolution *is* the decision about which Pod and with whose authority. An
  * in-memory store ignores it, which is why it is optional here rather than part of the store's
  * construction.
+ *
+ * What an implementation must guarantee differs by carrier, and the difference is deliberate: the
+ * in-memory map has exactly one winner because it is one map, while the Pod carrier is best effort
+ * (records share a day document — see `controlRecords.ts`). What both guarantee is what the
+ * protocol needs: the record is written, and a replay is answered from it.
  */
 export type MatrixInboundRecordHandle = MatrixControlRecordTarget;
 
@@ -56,9 +61,10 @@ export interface MatrixInboundTransactionStore {
   /**
    * Record a first attempt, or return the record already stored under this key.
    *
-   * `created` distinguishes the caller that may process the PDUs from the one that must
-   * answer from the record. A Pod-backed implementation has to make this atomic; an
-   * in-memory one is atomic by construction.
+   * `created` distinguishes the caller that may process the PDUs from the one that must answer
+   * from the record. An in-memory store is atomic by construction; a Pod-backed one is best effort
+   * (two racing callers may both be told `true`), which is safe because accepting an event is
+   * idempotent by event id — the cost is a second validation pass, not a second event.
    */
   reserve(
     scope: string,

@@ -5,10 +5,13 @@
  * process lives; this one answers it after a restart too, which is the whole reason the contract
  * puts the record in the Pod. Both implement the same port, so nothing above changes.
  *
- * The atomicity the port demands comes from create-once, not from a read-then-write: the record is
- * its own document and `reserve` creates it with `If-None-Match: *`, so the server decides the
- * single winner (measured: two concurrent attempts answer 201 and 412). `controlRecords.ts` says
- * why `If-Match` cannot do this job on this storage.
+ * Reserving is **best effort, not a compare-and-swap**: records share a day document (the models
+ * layout for records that accumulate), and a shared document cannot be created once per key. Two
+ * callers racing for one transaction id can both be told they claimed it; what holds instead is
+ * that the record is written once and a replay is answered from it. `controlRecords.ts` carries the
+ * measurement and the reasoning, and the contract's §6.3 says what was traded away and why it is
+ * safe here: accepting an event is idempotent by event id, so two processors write the same events
+ * and only the stored response can differ.
  *
  * The resolved Pod arrives per call rather than in the constructor. The transaction layer already
  * resolved it once for this request — that is where "which Pod, and with whose authority" is
@@ -19,10 +22,10 @@
  */
 import { MatrixError } from '../MatrixError';
 import {
-  createControlRecord,
   deleteControlRecord,
   readControlRecord,
   updateControlRecord,
+  writeControlRecord,
   type MatrixControlRecord,
   type MatrixControlRecordTarget,
 } from '../controlRecords';
@@ -60,6 +63,10 @@ export class PodMatrixInboundTransactionStore implements MatrixInboundTransactio
    * A record that exists but is not complete is *not* answered from here: the caller is told to
    * retry, because the first attempt may still be writing. A record whose payload differs is
    * marked, never replaced — the first attempt's answer is the one the peer must get back.
+   *
+   * Claiming is best effort (see the module note): a caller told `created: true` may have a
+   * concurrent twin. Everything downstream is idempotent by event id, so the cost is a second
+   * validation pass, not a second event.
    */
   public async reserve(
     scope: string,
@@ -68,8 +75,9 @@ export class PodMatrixInboundTransactionStore implements MatrixInboundTransactio
   ): Promise<{ record: MatrixInboundTransactionRecord; created: boolean }> {
     const target = requireHandle(scope, handle);
     const key = transactionKey(input.origin, input.transactionId);
-    const { record, created } = await createControlRecord(target, {
+    const { record, created } = await writeControlRecord(target, {
       key,
+      at: input.receivedAt,
       instruction: `Record the inbound Matrix transaction ${input.origin}/${input.transactionId}`,
       status: STATUS_RESERVED,
       metadata: {
@@ -86,7 +94,7 @@ export class PodMatrixInboundTransactionStore implements MatrixInboundTransactio
       // The first record stands. The conflict is written down so an operator can see that a sender
       // reused a transaction id for a different payload, and so a later retry does not re-mark it.
       decoded.conflictAt = input.receivedAt;
-      await updateControlRecord(target, key, {
+      await updateControlRecord(target, record, {
         status: record.status,
         metadata: { ...record.metadata, conflictAt: decoded.conflictAt },
       });
@@ -106,7 +114,7 @@ export class PodMatrixInboundTransactionStore implements MatrixInboundTransactio
     const recordKey = transactionKey(key.origin, key.transactionId);
     const existing = await readControlRecord(target, recordKey);
     if (!existing) throw new MatrixError(500, 'M_UNKNOWN', 'Matrix inbound transaction disappeared');
-    await updateControlRecord(target, recordKey, {
+    await updateControlRecord(target, existing, {
       status: STATUS_COMPLETED,
       metadata: { ...existing.metadata, response, completedAt },
     });
@@ -124,7 +132,9 @@ export class PodMatrixInboundTransactionStore implements MatrixInboundTransactio
     handle?: MatrixControlRecordHandle,
   ): Promise<void> {
     const target = requireHandle(scope, handle);
-    await deleteControlRecord(target, transactionKey(key.origin, key.transactionId));
+    const recordKey = transactionKey(key.origin, key.transactionId);
+    const existing = await readControlRecord(target, recordKey);
+    if (existing) await deleteControlRecord(target, existing);
   }
 
   public async find(
