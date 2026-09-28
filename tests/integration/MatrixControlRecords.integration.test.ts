@@ -20,6 +20,13 @@ import type { OwnerPodAccess } from '../../src/api/ai-gateway/pod/OwnerPodAccess
 import { PodMatrixInboundTransactionStore } from '../../src/api/matrix/federation/podInboundTransaction';
 import { handleInboundTransaction } from '../../src/api/matrix/federation/inboundTransaction';
 import { matrixPodWriteFor, type MatrixPodWrite } from '../../src/api/matrix/podAccess';
+import { createControlRecord, deleteControlRecord, readControlRecord } from '../../src/api/matrix/controlRecords';
+import {
+  decodeOutboundBatch,
+  encodeOutboundBatch,
+  outboundBatchKey,
+} from '../../src/api/matrix/federation/outboundBatches';
+import type { MatrixOutboundBatch } from '../../src/api/matrix/federation/outboundQueue';
 import { createInterfaceKeyPodAccess, type OwnerInterfaceKeyAuth } from '../helpers/podInterfaceKeyAccess';
 import { getConfiguredAccount } from './helpers/solidAccount';
 
@@ -117,5 +124,44 @@ suite('Matrix control records in a real Pod', () => {
     const replay = await run();
     expect(replay).toEqual(first);
     await store.release(scope, { origin: ORIGIN, transactionId }, handle);
+  }, 120_000);
+
+  it('keeps a delivery batch sendable: the payload survives the Pod intact', async() => {
+    const { podUrl, write } = await podHandle();
+    const handle = { scope: podUrl, write };
+    // A batch is what the deployment still owes a peer, and a PDU is signed over its content — so
+    // the test asserts the payload comes back *identical*, not merely equivalent.
+    const batch: MatrixOutboundBatch = {
+      txnId: `txn-batch-${Date.now()}`,
+      origin: ORIGIN,
+      destination: 'other.example',
+      pdus: [
+        { type: 'm.room.message', room_id: '!room:other.example', sender: '@u_peer:other.example',
+          content: { body: 'signed content', 'm.mentions': { user_ids: [ '@u_peer:other.example' ] } },
+          event_id: '$event-one', signatures: { 'other.example': { 'ed25519:1': 'c2lnbmF0dXJl' } } },
+        { type: 'm.room.member', room_id: '!room:other.example', sender: '@u_peer:other.example',
+          state_key: '@u_bob:other.example', content: { membership: 'invite' }, event_id: '$event-two' },
+      ],
+      edus: [ { edu_type: 'm.typing', content: { user_ids: [ '@u_peer:other.example' ] } } ],
+      createdAt: Date.now(),
+      attempts: 3,
+      notBefore: Date.now() + 30_000,
+      lastReason: 'destination refused the request with 403 (M_FORBIDDEN: not joined)',
+    };
+
+    const key = outboundBatchKey(batch);
+    const created = await createControlRecord(handle, { key, ...encodeOutboundBatch(batch) });
+    expect(created.created).toBe(true);
+
+    // A different reader, as a restarted process would be: the Pod is the authority.
+    const stored = await readControlRecord(handle, key);
+    expect(stored).toBeDefined();
+    const decoded = decodeOutboundBatch(stored!);
+    expect(decoded).toEqual(batch);
+    expect(decoded!.pdus).toEqual(batch.pdus);
+    expect(decoded!.edus).toEqual(batch.edus);
+
+    await deleteControlRecord(handle, key);
+    expect(await readControlRecord(handle, key)).toBeUndefined();
   }, 120_000);
 });

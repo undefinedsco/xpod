@@ -381,7 +381,17 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   注入的 db 没有 fetch 时拒绝（不给半个授权）；部署自持工作时**不借**调用方会话；
   `controlRecordHandleFor` 把"哪个 Pod"和"以谁的身份"一起解析；context 不含 Pod 时拒绝而不是默认成空 scope。
 
-门禁（提交前在冻结代码上复跑）：`typecheck:test` 通过；`tests/api/matrix` **552 passed / 3 skipped**；
-`tests/api tests/http` **2005 passed / 67 skipped**；`test:integration:lite` **155 passed / 6 skipped（31 文件通过 / 3 跳过）**，
-含上面 2 项真实 Pod 用例与 `MatrixCollaboration` 的真实运行时夹具。
+### 出站批次载荷（2026-09-27，同一分支）
+
+- `federation/outboundBatches.ts`：一条批次 ↔ 一条 `taskResource` 的映射（`metadata` 原样保存
+  pdus/edus/attempts/notBefore/lastReason，`status` 一律 `open`，key = `[origin, destination, txnId]`）。
+  证据：单元 6 项 + 真实 Pod 1 项（带签名的 PDU 与 EDU **原样往返**，换读者读回同一批）。
+- **枚举实测**（同一轮，真实 Pod 的 `.data/task/` 4 行）：全表 `select` = **1 次 SPARQL 查询 + 每行 1 次文档 GET**；
+  带 `FILTER(?status=…)` 的 select 只 GET 命中行（过滤可下推，但 `status='open'` 不具选择性）；
+  容器 `ldp:contains` **只列出 4 个文档中的 1 个** → 对 PATCH 建出的文档不可信。
+  结论与三个选项见[控制记录契约](matrix-control-records-contract.md) §9.2；**Pod 版出站 store 在定案前不实现**。
+
+门禁（提交前在冻结代码上复跑）：`typecheck:test` 通过；`tests/api/matrix` **558 passed / 3 skipped**；
+`tests/api tests/http` **2011 passed / 67 skipped**；`test:integration:lite` **156 passed / 6 skipped（31 文件通过 / 3 跳过）**，
+含上面 3 项真实 Pod 用例与 `MatrixCollaboration` 的真实运行时夹具。
 **未做**：真实实例（本机 3000 是别的构建）、`full`（Docker 无响应）、自动回收（保留期未定）。

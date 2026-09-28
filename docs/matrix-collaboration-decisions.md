@@ -53,8 +53,15 @@
    - **需要你确认的一处**：记录 `id` 用每记录一文档，偏离了 `taskResource` 的默认模板 `index.ttl#{key}`。
      备选是保留默认模板并接受"预留只是尽力而为"（同一毫秒两个赢家，靠 event id 幂等兜底，回执可能被覆盖）。
      契约 §6.1 写了两者的后果；改动收敛在 `controlRecordAddress` 一个函数。
-   - **仍未定**：回收期与墓碑（现在不自动回收）；出站批次（同一承载，但队列的 `scopes()` 需要"哪些 Pod 还有待发批次"
-     的来源，而 scope→参与者正是刻意不记录的映射）；grant 索取流程。细节见[控制记录契约](matrix-control-records-contract.md) §5/§6.3。
+   - **仍未定**：回收期与墓碑（现在不自动回收）；grant 索取流程。细节见[控制记录契约](matrix-control-records-contract.md) §5/§6.3。
+   - **出站批次：载荷已落地，枚举卡在 models**（2026-09-27 实测，契约 §9）。一条批次 = 一条 `taskResource` 的
+     映射已实现并有真实 Pod 证据（签名 PDU 原样往返）；但"这个 Pod 还欠哪些批次"要能**查询**才能枚举，
+     实测三条路：全表 `select` = 1 次 SPARQL 查询 + **每行 1 次文档 GET**（成本随表增长）；带 `FILTER(?status=…)`
+     的 select 只 GET 命中行（过滤能下推，但 `status='open'` 不具选择性，任务系统也用 open，`kind` 又藏在
+     `metadata` 对象列里查不到）；容器 `ldp:contains` **不可信**（4 个文档只列出 1 个）。
+     **需要你/models 拍一个**：① 给 `taskResource` 加一个可查询的判别列（如 `kind`）——**推荐**；
+     ② 控制记录改用独立容器（还要先修容器成员关系或改成 PUT 建文档）；③ 每 Pod 一张队列索引记录（增量写、
+     但引入两阶段与崩溃窗口）。确认前不实现 Pod 版出站 store。
 2. **grant 的索取流程**（契约 §5.4）。机制已存在（`TaskCredentialStore.grant`，用户把 Pod interface key 交给部署），
    缺的是**时机与界面**：在参与者第一次被 provision 时问？第一次进房间时问？界面上怎么表达"让这个部署替你写收到的
    消息"？在此之前，收到的事件会以 403 明确失败（不静默、不写别人的 Pod）。
@@ -722,7 +729,8 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
   （`make_join`/`send_join`/`make_leave`/`send_leave`/`invite`/`make_knock`/`send_knock`）、`GET /query/directory`、
   `GET /query/profile`、`GET /version` 的 **HTTP 外壳都已落地**（`FederationHandler.ts`），Pod 归属由
   `participantRoutes.ts` 派生；**仍未接的**只有：**通知接成调度器的第二个信号**（后已判定**作废**：收到的事件不转发，
-  Pod 变更不产生出站工作）、**投递记录与控制 Pod 承载**（去 SQL；契约已写出，等 models 侧那张 keyed 记录表）、
+  Pod 变更不产生出站工作）、**出站投递记录的 Pod 承载**（入站承载与出站载荷映射均已落地；出站的**枚举**等
+  models 补一个可查询的判别列，实测与选项见[控制记录契约](matrix-control-records-contract.md) §9.2）、
   以及**联邦可发布的资料内容**（个人数据决定，端点已就位）。互通面上还没动的只剩**联邦可发布的资料内容**（展示名/头像要不要发、依据什么词表、是否需要参与者同意——这是个人
   数据决定，端点已经就位等它）。`.well-known/matrix/server` 已按用户 2026-09-27 的判断**否决**（见"已撤销或否决的
   前提"：Pod 稀疏，拓扑来自房间成员关系网，不做按 host 的联邦发现）。
@@ -1178,7 +1186,7 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
 | 完整事件与 Solid Chat 表示 | 原始事件验证材料、图关系与 room version 已落地（见[房间事件图](reference/matrix-room-event-graph.md)）；剩余：状态解析与事件授权规则、索引与旧房间迁移；共享 schema 归 models |
 | 传输与落 Pod | 接收持久化、去重、确认、部分投递失败、补发与恢复各自的责任和进度 |
 | 客户端增量 | 有界发现/分页、晚到事件、授权状态变化、token 版本与重建 |
-| 可恢复事务 | 记录寻址、首次结果、载荷保留、发布、回收及未知结果处理。**承载已定并已实现**（用户 2026-09-27）：用 models 已有的 **`taskResource`**（`status`、不透明 `metadata`、两个时间戳）——出站批次是"要做的工作"，入站回执是"已完成的工作"；**不需要新建表**。契约见[控制记录契约](matrix-control-records-contract.md)（点查/原子预留/回收不得把"未知结果"变成"可重放"/批次必须留载荷/授权用任务层 grant）。**原子性已实测**：只有 create-once（`If-None-Match: *`，文档级）可靠，`If-Match` 因 ETag 是毫秒时间戳而不可用 → **一条记录一个文档**（偏离默认 `index.ttl#{key}`，待确认）；写前需条件 PUT 容器、释放需删文档。**剩下的**：回收期与墓碑、同步游标是否纳入、出站批次的 `scopes()` 来源 |
+| 可恢复事务 | 记录寻址、首次结果、载荷保留、发布、回收及未知结果处理。**入站承载已定并已实现**（用户 2026-09-27）：用 models 已有的 **`taskResource`**（`status`、不透明 `metadata`、两个时间戳）——出站批次是"要做的工作"，入站回执是"已完成的工作"；**不需要新建表**。契约见[控制记录契约](matrix-control-records-contract.md)（点查/原子预留/回收不得把"未知结果"变成"可重放"/批次必须留载荷/授权用任务层 grant）。**原子性已实测**：只有 create-once（`If-None-Match: *`，文档级）可靠，`If-Match` 因 ETag 是毫秒时间戳而不可用 → **一条记录一个文档**（偏离默认 `index.ttl#{key}`，待确认）；写前需条件 PUT 容器、释放需删文档。**出站载荷映射已落地**（`outboundBatches.ts` + 真实 Pod 往返证据），**枚举待 models 补可查询判别列**（§9.2）。**剩下的**：回收期与墓碑、同步游标是否纳入 |
 | Agent 执行 | 唯一逻辑触发、执行归属、接替、撤权、工具幂等与分区处理 |
 | 验收 | 两个独立部署/身份/Pod 的真实互通和故障注入，见主设计；原单 Pod 测试只作回归基线 |
 
