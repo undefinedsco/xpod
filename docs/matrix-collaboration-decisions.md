@@ -117,13 +117,18 @@
      `matrixUserIdFor(subject, serverName)`（参与者传 WebID，Agent 传它自己的 URI），`PodMatrixStore` 改为委托它。
      "这个 MXID 是不是我们的"仍然靠**计算**而不是查表；参与者与 Agent 不会长出两种拼法。测试：`serverName.test.ts`
      新增 1 项（同一身份稳定、不同身份/不同 server 不同、Agent URI 与 WebID 共用同一条规则）。
-   - **Agent 的身份走参与者那一套**：给 Agent 铸造一把签名身份（`signingKeyStore` + 根密钥封存），私钥落在
-     **运行它的那个部署所属的参与者 Pod**（与 per-participant 身份同一份托管规则，`podParticipantIdentity.ts`
-     的选择规则直接复用：只认该 WebID 名下登记的 Pod、多 Pod 拒绝猜）。Agent 的 MXID 由该身份派生
-     （`@u_<hash>:<serverName>`）。这样**不需要"服务身份代签"这条特殊路径**——Agent 自己就能签。
+   - **Agent 的身份就是它的 MXID，不需要第二把密钥（2026-09-28 更正上一版）**：Matrix 的密钥是**按 server name**
+     的，不是按用户——一个 homeserver 用一把密钥服务它名下所有用户，协议里没有"每用户一把密钥"这回事。
+     所以 Agent 的 MXID 取**运行它的那个部署所属参与者的 server name**（`@u_<sha256(agentUri)>:<ownerServerName>`，
+     推导已落地），事件由**该 server name 现有的那把身份**签名——这不是"服务身份代签"，就是普通签名：
+     sender 的域属于它，签名就该由它出。
+     上一版写的"给 Agent 单独铸造一把签名身份、私钥封存在 Pod"会**在同一 server name 下造出第二把身份**，
+     与登记册自己的边界第 2 条（"一个 server name 一把签名身份"）冲突，故撤销。
+     于是这条路径少一整块：**没有新的密钥托管要做**。
    - **成员事件走正常通道**（两步，都是普通已签名事件）：先由房间里有权的人**邀请** Agent（`m.room.member`
-     `membership: invite`），再由 Agent 用**自己的身份**发 `join`（`sender == state_key`，授权规则 5.2.2
-     允许被邀请者加入）。两步都经现有写入路径与其预占/签名/投递，不新增端点。
+     `membership: invite`），再由 Agent 发 `join`（`sender == state_key == Agent 的 MXID`，授权规则 5.2.2
+     允许被邀请者加入）；两步都由该部署现有的 server name 密钥签名，经现有写入路径与其预占/投递，不新增端点、
+     不新增密钥。
    - **只有到这一步之后**，写路径才可以按 v11 规则强制（rule 5 要求 sender 已 join）——这正是登记册
      "授权与执行"一节把规则只当纯校验器的原因；强制与 Agent 成员事件要在同一轮落地，否则 Agent 的消息会被拒。
    - **restricted join 的附加签名**（`join_authorised_via_users_server`）先不做：它是"房间在别的 server 上、
