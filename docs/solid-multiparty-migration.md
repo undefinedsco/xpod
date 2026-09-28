@@ -115,7 +115,13 @@
 
 第 1、2 轮各试过一次（89 / 25 项失败），失败原因已全部查清；下面是把它们一次做完的清单：
 
-1. **1.0a 标识**：`getServerName(context)` 以 **WebID 的 host** 为准（E3 下它只服务标识，不再兼任端点解析）。
+1. **1.0a 标识**：`getServerName(context)` **本来就优先 WebID 的 host，只要该名字已在部署注册**——
+   所以 1.0a 基本不是源码改动，而是**夹具与期望值的事**：实测把测试夹具的部署名从 `example.test`
+   换成 `alice.example`（参与者 WebID 的 host），`tests/api/matrix` 出现 **18 项失败**，且全部集中在
+   "期望值里写死了部署名"的文件（`persistedEvent` 用 `'example.test'` 验签、`participantIdentity`
+   断言回退到部署身份、`participantProvisioning` 断言"保留部署名"、`PodMatrixStore` 的 Agent 与别名用例）。
+   **这意味着第 1 项的真实工作量是"把身份注册到 WebID host 下 + 更新这些期望值"**，源码侧只剩
+   1.0d 的字段替换。
 2. **1.0b 房间 id 的域**：随 1.0a 自动统一（`!xxx:<WebID host>`）。
 3. **1.0c 签名**：**不动**——请求签名（`X-Matrix`）与事件签名仍用部署密钥，键名与参与者标识无关；
    删签名是第 3 项的事，等 O。**这一条正是第 1 轮 89 项失败的主因**（当时把标识与签名键混在一起改）。
