@@ -257,7 +257,11 @@ grant（房间级授权＝成员资格）、**D6 完整落地**（授权即成�
 
 **剩下的两步（照此实现即可）**：
 
-1. **`PodMatrixEventJournal`**（新类，实现 `MatrixEventJournal`）：
+1. ~~**`PodMatrixEventJournal`**~~ **已落地（2026-09-28）**：`src/api/matrix/PodMatrixEventJournal.ts`
+   + 单元 5 项（当天文档与容器链、重试采纳既有预留且重放不变、**从事件本身点查**且"没有回执"与
+   "别人的回执"分得清、替换未写出的预留、无授权即 403、读不出回执就响亮报错）。
+   序列三法**原样委托**给注入的 journal（今天的 SQL 版），顺序仍留在部署侧、可从 Pod 重建。
+   **仍未做：容器装配**（下一步）。原设计：
    - 构造：`{ sequences: MatrixEventJournal; handleFor: (scope) => Promise<MatrixControlRecordTarget | undefined>; now? }`
      —— 序列三法（`registerEvent`/`registerEvents`/`getHighWatermark`）**原样委托**给 `sequences`（今天的
      `SqlMatrixEventJournal(db)`）；
