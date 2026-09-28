@@ -40,6 +40,19 @@ export interface MatrixEventRecord {
   role?: string;
   resourceId?: string;
   txnId?: string;
+  /**
+   * The device that wrote this event from a reserved transaction.
+   *
+   * Persisted with the event because the reservation that pins an event's identity lives in its own
+   * record, addressed by a key that includes this device: recovering "which reservation does this
+   * event belong to" from the event alone is what lets the receipt live in the Pod instead of a
+   * deployment database. The room, type and transaction id are already on the event; the device is
+   * the one part of the key it does not otherwise carry.
+   *
+   * The device id rather than the whole key, deliberately: it is a quote-free token, and a metadata
+   * string containing quotes is corrupted by this storage (contract §8).
+   */
+  txnDevice?: string;
   content: Record<string, unknown>;
   stateKey?: string;
   unsigned?: Record<string, unknown>;

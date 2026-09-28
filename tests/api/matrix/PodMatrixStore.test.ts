@@ -12,6 +12,24 @@ vi.mock('@undefineds.co/drizzle-solid', async () => {
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe('PodMatrixStore shared Pod contract', () => {
+  it('writes the sending device onto the event, so the event alone names its reservation', async () => {
+    const { store, context, rows } = matrixHarness();
+    const room = await store.createRoom({}, context);
+    const sent = await store.sendEvent(room.roomId, 'm.room.message', 'txn-42', { body: 'hi' }, context);
+
+    const row = rows.get(messageResource)!
+      .find((entry: any) => entry.metadata.protocols.matrix.event.event_id === sent.eventId);
+    const matrix = row.metadata.protocols.matrix;
+    expect(matrix.txnId).toBe('txn-42');
+    // The reservation key is [device, roomId, type, txnId]; the event carries everything but the
+    // device, so the device is what has to be stored. A quote-free token on purpose: this storage
+    // corrupts a metadata string that contains quotes (contract §8).
+    expect(matrix.txnDevice).toMatch(/^XPOD[0-9A-F]+$/u);
+    expect(matrix.txnDevice).not.toContain('"');
+    // It is bookkeeping, not protocol: the canonical event must not gain a field.
+    expect(matrix.event.txnDevice).toBeUndefined();
+  });
+
   it('creates federated rooms by default and records an explicit opt-out', async () => {
     const { store, context, rows } = matrixHarness();
     const createContent = async (creation_content?: Record<string, unknown>) => {

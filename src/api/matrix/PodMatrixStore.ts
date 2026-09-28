@@ -570,7 +570,7 @@ export class PodMatrixStore {
       return existing;
     }
     const active = await this.reservationInForce(context, transactionKey, reservation, proposal, eventInput, contentHash);
-    return this.appendEvent(db, { roomId, type: eventType, sender, txnId,
+    return this.appendEvent(db, { roomId, type: eventType, sender, txnId, txnDevice: this.deviceId(context),
       eventId: active.reservation.eventId, originServerTs: active.reservation.createdAt, content, event: active.event },
     context, events);
   }
@@ -991,6 +991,8 @@ export class PodMatrixStore {
       content: Record<string, unknown>;
       stateKey?: string;
       txnId?: string;
+      /** The device whose reservation produced this event; see `MatrixEventRecord`. */
+      txnDevice?: string;
       reconcilerOwner?: ReconcilerOwner;
       eventId?: string;
       role?: string;
@@ -1053,6 +1055,7 @@ export class PodMatrixStore {
       role: input.role ?? (input.type === 'm.room.message' ? MessageRole.USER : MessageRole.SYSTEM),
       resourceId: messageResourceId,
       txnId: input.txnId ?? undefined,
+      txnDevice: input.txnDevice ?? undefined,
       stateKey: input.stateKey ?? undefined,
       content: input.content,
       createdAt: originIso,
@@ -1083,6 +1086,8 @@ export class PodMatrixStore {
         // putting it inside would change the canonical form and the event id.
         senderWebId: input.maker ?? context.webId,
         txnId: input.txnId ?? null,
+        // The device whose reservation produced this event, so the event alone can lead back to it.
+        txnDevice: input.txnDevice ?? null,
       }),
       createdAt: originIso,
       updatedAt: originIso,
@@ -1353,6 +1358,9 @@ export class PodMatrixStore {
       ?? this.parseJsonObject(metadata.unsigned as JsonObjectSource);
     const stateKey = this.stringValue(stored?.state_key ?? matrix.stateKey ?? matrix.state_key ?? metadata.stateKey);
     const txnId = this.stringValue(matrix.txnId ?? matrix.txn_id ?? metadata.txnId);
+    // The device whose reservation produced this event: stored on the row so the event alone leads
+    // back to it, which is what a Pod-side reservation record needs (its key names the device).
+    const txnDevice = this.stringValue(matrix.txnDevice ?? metadata.txnDevice);
     return {
       eventId: this.stringValue(stored?.event_id ?? matrix.eventId ?? matrix.event_id ?? metadata.eventId) ?? `$${this.hash(source.id)}:${this.getServerName(context)}`,
       roomId: this.stringValue(stored?.room_id ?? matrix.roomId ?? matrix.room_id ?? metadata.roomId) ?? roomId,
@@ -1368,6 +1376,7 @@ export class PodMatrixStore {
       role: source.role,
       resourceId: source.id,
       txnId: txnId ?? undefined,
+      txnDevice: txnDevice ?? undefined,
       content,
       stateKey: stateKey ?? undefined,
       unsigned,

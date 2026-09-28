@@ -381,6 +381,19 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   注入的 db 没有 fetch 时拒绝（不给半个授权）；部署自持工作时**不借**调用方会话；
   `controlRecordHandleFor` 把"哪个 Pod"和"以谁的身份"一起解析；context 不含 Pod 时拒绝而不是默认成空 scope。
 
+### 事件预留迁往 Pod 的前置一步（2026-09-27）
+
+- 事件行现在记下**写它的设备**：`metadata.protocols.matrix.txnDevice`（`MatrixEventRecord.txnDevice`）。
+  预留记录的 key 是 `[设备, roomId, type, txnId]`，只有设备不在事件上；记下它之后，
+  "这个事件属于哪条预留"从事件本身就能回答（两次点查），这是预留记录能搬进 Pod 的前提。
+  测试：`PodMatrixStore.test.ts` 新增 1 项（形状 `XPOD…`、不含引号、`event.txnDevice` 不存在——
+  它是记账不是协议字段）。
+- **为什么是设备而不是整个 key（实测教训）**：key 是 JSON 数组字符串、含引号，而这个存储会把
+  `metadata` 里带引号的字符串写坏——整轮 `MatrixCollaboration` 验收因此从 200 变成 **409**
+  （`JSON Parse error: Expected '}'`）。改用无引号的设备 token 后恢复。这条缺口记在契约 §8 第 3 条。
+- **序号那一半仍未定**：三个选项见契约 §10.2（留 SQL / Pod 计数器 / 取消序号改用
+  `(origin_server_ts, event_id)` 游标，推荐第三条——它同时让"有界读取"成为可能）。
+
 ### 出站队列的 Pod 承载（2026-09-27）
 
 - `federation/podOutboundStore.ts`：`PodMatrixOutboundStore` 实现队列的四个操作，批次落
