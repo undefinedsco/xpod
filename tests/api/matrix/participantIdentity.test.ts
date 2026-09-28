@@ -8,6 +8,7 @@ import { MatrixServiceIdentity } from '../../../src/api/matrix/protocol/serviceI
 import { decodeVerifyKey } from '../../../src/api/matrix/protocol/eventIntegrity';
 import { getProtocolMetadata } from '../../../src/api/protocol-metadata';
 import { readPersistedEvent, verifyPersistedEventSignature } from '../../../src/api/matrix/persistedEvent';
+import { serverNameOf } from '../../../src/api/matrix/protocol/authRules';
 
 function deploymentIdentity(serverName: string): MatrixServiceIdentity {
   const { privateKey } = generateKeyPairSync('ed25519');
@@ -96,10 +97,10 @@ describe('participant signing identities', () => {
     const carol = (await store.getAccount(carolContext)).userId;
     // No key for carol.example, so she is served under the deployment's own name — and
     // the event is signed by that name, so sender and signature agree.
-    expect(carol).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
+    expect(serverNameOf(carol)).toBe(MATRIX_TEST_SERVER_NAME);
 
     const room = await store.createRoom({}, carolContext);
-    expect(room.roomId).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
+    expect(serverNameOf(room.roomId)).toBe(MATRIX_TEST_SERVER_NAME);
     const sent = await store.sendEvent(room.roomId, 'm.room.message', 'from-carol', { body: 'hi' }, carolContext);
     const event = storedEvent(rows, sent.eventId);
     expect(event.sender).toBe(carol);
@@ -113,9 +114,9 @@ describe('participant signing identities', () => {
     const alice = (await store.getAccount(context)).userId;
     // The harness WebID is alice.example, but nothing signs for that name, so the
     // deployment name is used exactly as before.
-    expect(alice).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
+    expect(serverNameOf(alice)).toBe(MATRIX_TEST_SERVER_NAME);
     const room = await store.createRoom({}, context);
-    expect(room.roomId).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
+    expect(serverNameOf(room.roomId)).toBe(MATRIX_TEST_SERVER_NAME);
   });
 
   it('reports members with the server each of them belongs to', async () => {

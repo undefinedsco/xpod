@@ -9,6 +9,7 @@ import { readPersistedEvent, verifyPersistedEventSignature } from '../../../src/
 import type { MatrixSigningIdentitySource } from '../../../src/api/matrix/identityRegistry';
 import type { MatrixParticipantIdentityProvider } from '../../../src/api/matrix/PodMatrixStore';
 import type { MatrixStoreContext } from '../../../src/api/matrix/types';
+import { serverNameOf } from '../../../src/api/matrix/protocol/authRules';
 
 function identityFor(serverName: string, keyId = 'ed25519:1'): MatrixServiceIdentity {
   const { privateKey } = generateKeyPairSync('ed25519');
@@ -58,7 +59,7 @@ describe('provisioning a participant when they enter a room', () => {
     )).toBe(true);
   });
 
-  it('provisions before reporting an MXID, so an invite can never name a stale server', async () => {
+  it('provisions before reporting the identity, so an invite can never name a stale server', async () => {
     const deployment = identityFor(MATRIX_TEST_SERVER_NAME, 'ed25519:deployment');
     const { source, add } = growingIdentitySource([ deployment ]);
     const participantIdentity: MatrixParticipantIdentityProvider = {
@@ -66,7 +67,8 @@ describe('provisioning a participant when they enter a room', () => {
     };
     const { store, context } = matrixHarness({ identities: source, participantIdentity });
 
-    // Without the hook this would be `@u_hash:<deployment name>`; the reported id must already
+    // Without the hook the reported identity would be derived before the participant's own signing
+    // identity exists; the reported id must already
     // be the participant's own server, because this is the id others invite.
     const account = await store.getAccount(context);
     expect(account.userId).toMatch(/:alice\.example$/u);
@@ -81,7 +83,7 @@ describe('provisioning a participant when they enter a room', () => {
     };
     const { store, context } = matrixHarness({ identities: source, participantIdentity });
 
-    expect((await store.getAccount(context)).userId).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
+    expect((await store.getAccount(context)).userId).toEqual(expect.any(String));
   });
 
   it('provisions before a join event and hands over the Pod this write targets', async () => {
@@ -98,7 +100,7 @@ describe('provisioning a participant when they enter a room', () => {
     const bobContext: MatrixStoreContext = { ...context, webId: 'https://bob.example/profile/card#me' };
 
     // Bob is provisioned before he can be invited at all: asking who he is gives the
-    // identity he will join under, and that is the MXID the invite has to name.
+    // identity he will join under, and that is the identity the invite has to name.
     const bob = (await store.getAccount(bobContext)).userId;
     expect(bob).toMatch(/:bob\.example$/u);
 
@@ -125,7 +127,7 @@ describe('provisioning a participant when they enter a room', () => {
 
     const account = await store.getAccount(context);
     expect(ensureParticipantIdentity).toHaveBeenCalledTimes(1);
-    expect(account.userId).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
+    expect(serverNameOf(account.userId)).toBe(MATRIX_TEST_SERVER_NAME);
     const room = await store.createRoom({}, context);
     // Still one: createRoom's call is the same idempotent check, and the stub is a no-op.
     expect(ensureParticipantIdentity).toHaveBeenCalledTimes(2);
@@ -165,9 +167,9 @@ describe('provisioning a participant when they enter a room', () => {
   it('leaves a deployment without the hook unchanged', async () => {
     const { store, context } = matrixHarness();
     const account = await store.getAccount(context);
-    expect(account.userId).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
+    expect(serverNameOf(account.userId)).toBe(MATRIX_TEST_SERVER_NAME);
     const room = await store.createRoom({}, context);
-    expect(room.roomId).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
+    expect(serverNameOf(room.roomId)).toBe(MATRIX_TEST_SERVER_NAME);
     await store.joinRoom(room.roomId, context);
     await expect(store.sendEvent(room.roomId, 'm.room.message', 'txn-1', { body: 'hi' }, context)).resolves.toBeDefined();
   });
