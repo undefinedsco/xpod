@@ -165,10 +165,11 @@
        `tests/api/matrix`（584 passed / **4 failed**），失败**不是误判，而是暴露出两条真实缺口**——
        正是"先过规则"这一步要发现的：
 
-       1. **Agent 重新授权时不能重发成员事件**：`v11-4.4.3: target is already joined or banned`。
-          `admitGrantedAgents` 只跳过"当前已授权"的 Agent；**撤销后再次授权**时该 Agent 仍是房间成员，
-          于是又写了一条 invite → 规则正确地拒了。修法：授权前先看**当前成员身份**，只补缺的那一步
-          （已是成员就什么都不写、是 leave/invite 才补 join）。
+       1. ~~**Agent 重新授权时不能重发成员事件**~~ **已修（2026-09-28）**：`admitGrantedAgents` 现在先读
+          房间**解析状态**里该 Agent 的成员身份，**只补缺的那一步**——已是成员就什么都不写、是 invite 就只补 join、
+          是 leave/knock 才重发邀请；**被封禁的不自动恢复**（撤销封禁是房主的决定，不该是"发执行授权"的副作用）。
+          测试：`PodMatrixStore.test.ts` 那项扩到"撤销授权 → 再次授权"后成员事件仍是 `invite, join` 两条
+          （此前会写第二条 invite，正是 `v11-4.4.3` 拒掉的那个）。
        2. **远端加入不能只按本地状态判**：`v11-4.3.4: join_rule requires an invite`（`remoteJoinStore` 两项）。
           房间在**别的部署**上时，邀请（或公开 join_rules）只存在于常驻方；本地 `send_join` 回来的状态是
           **加入之前**的，可能既没有邀请也没有 join_rules 的最终形态，于是本地规则把一次**已经被常驻方接受**

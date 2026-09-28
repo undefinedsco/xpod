@@ -711,13 +711,24 @@ export class PodMatrixStore {
     knownAgents: readonly string[],
   ): Promise<void> {
     const known = new Set(knownAgents);
-    const granted = this.validateAgentGrants(content).map(grant => grant.agent);
+    const pending = this.validateAgentGrants(content).map(grant => grant.agent).filter(agent => !known.has(agent));
+    if (pending.length === 0) return;
     const serverName = this.getServerName(context);
     const granter = this.getMatrixUserId(context);
-    for (const agent of granted) {
-      if (known.has(agent)) continue;
+    const state = this.resolvedState(roomId, context, await this.listEvents(db, roomId, context));
+    for (const agent of pending) {
       const agentUserId = matrixUserIdFor(agent, serverName);
-      await this.appendMembershipEvent(db, roomId, agentUserId, 'invite', context, { sender: granter });
+      const membership = state.get('m.room.member', agentUserId)?.content.membership;
+      // Write only the step that is missing. A re-grant after a revocation leaves an agent that is
+      // still a member, and a second invite would be history for nothing — the room's own rules
+      // refuse it (v11-4.4.3), which is how this was found.
+      //
+      // A banned agent is not restored here: undoing a ban is the room owner's decision, not a side
+      // effect of handing out execution rights. Granting it stops at the grant.
+      if (membership === 'join' || membership === 'ban') continue;
+      if (membership !== 'invite') {
+        await this.appendMembershipEvent(db, roomId, agentUserId, 'invite', context, { sender: granter });
+      }
       await this.appendMembershipEvent(db, roomId, agentUserId, 'join', context, { sender: agentUserId });
     }
   }

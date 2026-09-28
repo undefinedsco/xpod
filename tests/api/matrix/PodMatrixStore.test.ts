@@ -66,6 +66,13 @@ describe('PodMatrixStore shared Pod contract', () => {
     // Writing the same grant again appends no history: it was already a member.
     await store.setState(room.roomId, 'co.undefineds.agents', '', { agents: [ grant(agent) ] }, context);
     expect(members(agentUserId)).toHaveLength(2);
+
+    // Revoking the grant does not remove the member (execution authority and protocol membership are
+    // separate facts), so re-granting later must not invite somebody who is already in the room: the
+    // room's own rules refuse that (v11-4.4.3), which is how this case was found.
+    await store.setState(room.roomId, 'co.undefineds.agents', '', { agents: [] }, context);
+    await store.setState(room.roomId, 'co.undefineds.agents', '', { agents: [ grant(agent) ] }, context);
+    expect(members(agentUserId).map((event: any) => event.content.membership)).toEqual([ 'invite', 'join' ]);
   });
 
   it('writes the sending device onto the event, so the event alone names its reservation', async () => {
