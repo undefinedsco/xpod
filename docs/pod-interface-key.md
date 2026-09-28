@@ -95,8 +95,21 @@ Bearer 与 DPoP 都支持，分开入口认证与出站能力：
 **已验证（2026-09-24，`scripts/accept-solid-bearer-pod-access.ts`，临时本地栈 10/10）**：CSS 对不带 DPoP proof 的请求签发**真 Bearer** access token；该 token 可直接读写 Pod（`PUT` 201）并访问 `/-/sparql`（200）；**API 接受它并用调用方自己的 token 读 Pod**（`GET /api/ai/gateway/keys` 经网关与直达 API 均 200，同 token 下 SPARQL 面 200）；同一用户的 **DPoP** token 在同一接口上 403 `service_access_missing`（API 不重放 DPoP）；无凭据 401。也就是说"API 用调用方自己的 Bearer 打开用户 Pod"这条链路**当前代码已支持，不需要改后端**。
 
 同时发现两件必须记住的事：
-- **浏览器会话目前是 DPoP**：`ui/src/solid/XpodSolidRuntimeProvider.tsx` 的 `session.login(...)` 没有传 `tokenType`，走 inrupt 默认 `DPoP`。所以"浏览器拿自己的凭据直调 chatkit/API 读 Pod"今天还不成立——要么登录时改 `tokenType: 'Bearer'`（前端一行，安全姿态变化：Bearer 无持有证明，API 在有效期内可重放），要么浏览器侧持有 sk（`ui/src/auth/account-client-credentials.ts` 已有创建/撤销能力）。
+- **浏览器会话目前是 DPoP**：`ui/src/solid/XpodSolidRuntimeProvider.tsx` 的 `session.login(...)` 没有传 `tokenType`，走 inrupt 默认 `DPoP`。所以"浏览器拿自己的凭据直调 chatkit/API 读 Pod"今天还不成立——要么登录时改 `tokenType: 'Bearer'`（前端一行，安全姿态变化：Bearer 无持有证明，API 在有效期内可重放），要么浏览器侧持有 sk（`ui/src/auth/account-client-credentials.ts` 已有创建/撤销能力）。**已选第二条**，其缺失的前置环节见 §3.1.1。
 - **chatkit 曾掩盖 Pod 不可达（已修）**：`PodChatKitStore.getDb` 原来在拿不到 Pod 凭据时返回 `null`，26 个调用点据此返回空列表/空值，因此没有可用 Pod 凭据的调用方拿到 `200 {"data":[]}` 而不是原因码。现在 `getDb` 直接抛出原因码（无身份 → `caller_pod_access_unavailable`，不可用 → `podAccessError(...)`），`/v1/chatkit` 与 `/v1/chatkit/threads*` 通过 `src/api/handlers/PodAccessFailureResponse.ts` 映射为 401 `authentication_required` / 403 `service_access_missing` / 403 `pod_owner_mismatch`。验收脚本对应断言为 `chatkit-reports-dpop-caller`。
+
+### 3.1.1 浏览器如何取得自己的 sk（会话代持）
+
+sk 由 CSS Account API 的 client-credentials 控件创建，而 Account Cookie 只下发在 Account authority 自己的 origin。Gateway 服务的页面（`http://127.0.0.1:3000`）永远看不到它，于是 WebID 登录后 `controls.account.clientCredentials` 缺失，浏览器没有可交给 API 的凭据——这正是本机/本部 WebID 登录后 `/api/ai/gateway/keys`、`/v1/models` 403 的原因。
+
+补齐的环节在 authority 一侧：`ValidatingIdentityProviderHttpHandler` 在 Cookie 之外接受**宿主自己的 Solid 会话**作为 Account 来源（详见 [`docs/COMPONENTS.md`](COMPONENTS.md) 的 OIDC 交互路径隔离一节）。浏览器用同一个 Session.fetch 读 Account index，拿到 `clientCredentials` 后照常创建 sk，因此：
+
+- 不需要第二个登录表单、不需要密码、不引入部署级服务身份；
+- 会话只能触达它自己 WebID 已链接的那个 Account，第三方 Solid 客户端（`client_id` 不在 `hostClientIds` 内）即使持有同一 WebID 的 token 也拿不到 Account；
+- Cloud 与 Local 同一套处理：authority 是部署自己的 Account authority（Cloud 为 IdP，Local/Standalone 为本地 runtime），页面侧只看它广告的 `clientCredentials`，不区分部署形态；
+- 该能力落在 Xpod 服务镜像内，**Cloud 侧需要 IdP 部署同一版本**才生效；未部署时浏览器读不到 `clientCredentials`，行为回退为今天的 403，不会静默降级成别的身份。
+
+凭据生命周期不变：内存持有、会话结束即撤销（`ui/src/auth/session-request-credential.ts`），台账见 `docs/pod-interface-key.md` §4。重放请求必须走不带会话凭据的 transport：inrupt 的 authenticated fetch 会**覆盖**调用方设置的 `Authorization`（"Any pre-existing Authorization header should be overriden"），经它重放会把 sk 换回会话自己的 token，等于没带凭据。
 
 仍存在两处非本路径的交换，**未收敛，已记录原因**：
 - `src/solidfs/PodSolidFsHttpClient.ts`：只产出 headers（`createAuthHeaders`），拿不到目标 URL/方法就无法生成 DPoP proof，因此仍以 body 传递 `client_id/client_secret` 换取 Bearer；随 §7.1 第 5 步（后台入口迁移到 Runtime 任务）改为 fetch 形态后并入 factory。

@@ -5,13 +5,15 @@ import {
   OperationHttpHandler,
   RepresentationMetadata,
   SOLID_HTTP,
+  WEBID_STORAGE_TYPE,
   createErrorMessage,
   type InteractionHandler,
   type OperationHttpHandlerInput,
   type ProviderFactory,
   type ResponseDescription,
 } from '@solid/community-server';
-import type { CookieStore } from '@solid/community-server';
+import type { CookieStore, Credentials, CredentialsExtractor } from '@solid/community-server';
+import { XPOD_DESKTOP_CLIENT_ID } from './oidc/RememberedClientGrantStore';
 
 const ACCOUNT_TYPE = 'account';
 const ACCOUNT_COOKIE_NAME = 'css-account';
@@ -19,6 +21,7 @@ const ACCOUNT_TOKEN_AUTHORIZATION_SCHEME = 'CSS-Account-Token ';
 
 interface AccountExistenceStorage {
   has: (type: string, id: string) => Promise<boolean>;
+  find: (type: string, query: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
 }
 
 export interface ValidatingIdentityProviderHttpHandlerArgs {
@@ -44,6 +47,24 @@ export interface ValidatingIdentityProviderHttpHandlerArgs {
    * the local cookie store must be left untouched instead of expired.
    */
   externalAccountIssuer?: string;
+  /**
+   * Reads the caller's own already-verified credentials.
+   *
+   * The Account cookie is issued on the account authority's own origin, so a page the Xpod
+   * Gateway serves cannot present it. What that page does hold is the WebID session Xpod signed
+   * it in with, which names the same Account whenever the WebID is one the Account already linked.
+   *
+   * This is CSS's own request-scoped extractor, so that session's DPoP proof is verified once for
+   * the whole request. Verifying the same proof again would be a replay and always fail, which is
+   * exactly what the `jti` guard is for - including when this handler asks.
+   */
+  sessionExtractor?: CredentialsExtractor;
+  /**
+   * OIDC clients whose Solid session may name its own Account. Defaults to the
+   * client the Xpod host itself logs in with, so a third-party Solid app holding a
+   * token for the same WebID can never turn it into Account authority.
+   */
+  hostClientIds?: string[];
 }
 
 /**
@@ -60,6 +81,8 @@ export class ValidatingIdentityProviderHttpHandler extends OperationHttpHandler 
   private readonly handler: InteractionHandler;
   private readonly accountStorage: AccountExistenceStorage;
   private readonly externalAccountIssuer?: string;
+  private readonly sessionExtractor?: CredentialsExtractor;
+  private readonly hostClientIds: readonly string[];
 
   public constructor(args: ValidatingIdentityProviderHttpHandlerArgs) {
     super();
@@ -68,6 +91,8 @@ export class ValidatingIdentityProviderHttpHandler extends OperationHttpHandler 
     this.handler = args.handler;
     this.accountStorage = args.accountStorage;
     this.externalAccountIssuer = args.externalAccountIssuer;
+    this.sessionExtractor = args.sessionExtractor;
+    this.hostClientIds = args.hostClientIds ?? [XPOD_DESKTOP_CLIENT_ID];
   }
 
   public override async handle({ operation, request, response }: OperationHttpHandlerInput): Promise<ResponseDescription> {
@@ -102,8 +127,15 @@ export class ValidatingIdentityProviderHttpHandler extends OperationHttpHandler 
     const authorizationCookie = this.findAuthorizationAccountCookie(request);
     const cookies = this.findAccountCookies(operation, authorizationCookie, browserCookie);
     const { accountId, selectedCookie, expiredCookie } = await this.findValidAccount(cookies, browserCookie);
+    // An Account cookie stays authoritative; the host's own Solid session is the
+    // second source, for pages that hold a WebID but never saw the account origin.
+    const sessionAccountId = accountId ?? await this.findSessionAccount(request);
     const normalizedOperation = this.normalizeAccountCookie(operation, selectedCookie);
-    const representation = await this.handler.handleSafe({ operation: normalizedOperation, oidcInteraction, accountId });
+    const representation = await this.handler.handleSafe({
+      operation: normalizedOperation,
+      oidcInteraction,
+      accountId: sessionAccountId,
+    });
 
     if (expiredCookie && !representation.metadata?.has(SOLID_HTTP.terms.accountCookie)) {
       const metadata = new RepresentationMetadata(representation.metadata);
@@ -227,5 +259,52 @@ export class ValidatingIdentityProviderHttpHandler extends OperationHttpHandler 
     }
 
     return { accountId: selectedAccountId, selectedCookie, expiredCookie };
+  }
+
+  /**
+   * Names the Account that owns the WebID of the caller's own Solid session.
+   *
+   * The session is only accepted when its DPoP proof verifies and its client is one
+   * the Xpod host itself logs in with, so holding somebody's token is not enough and
+   * a third-party app cannot spend its own token here. The Account is then read from
+   * CSS's own WebID links: a session can only ever reach the Account it already
+   * belongs to, never another one.
+   */
+  private async findSessionAccount(request: OperationHttpHandlerInput['request']): Promise<string | undefined> {
+    if (!this.sessionExtractor) {
+      return undefined;
+    }
+
+    // Only a DPoP-bound session may name an Account. A Bearer token is replayable, so accepting
+    // one here would let anybody who copied it mint Account authority from a Pod credential.
+    if (!/^DPoP /iu.test(request.headers.authorization ?? '')) {
+      return undefined;
+    }
+
+    let credentials: Credentials;
+    try {
+      credentials = await this.sessionExtractor.handleSafe(request);
+    } catch (error: unknown) {
+      // No session at all, or one this deployment does not accept: stay anonymous.
+      this.logger.debug(`No host session credentials: ${createErrorMessage(error)}`);
+      return undefined;
+    }
+
+    const webId = credentials.agent?.webId;
+    const clientId = credentials.client?.clientId;
+    if (!webId || !clientId || !this.hostClientIds.includes(clientId)) {
+      return undefined;
+    }
+
+    const links = await this.accountStorage.find(WEBID_STORAGE_TYPE, { webId });
+    const accountId = links
+      .map((link) => link.accountId)
+      .find((value): value is string => typeof value === 'string' && value !== '');
+    if (!accountId) {
+      this.logger.debug(`WebID ${webId} is not linked to an Account.`);
+      return undefined;
+    }
+
+    return accountId;
   }
 }

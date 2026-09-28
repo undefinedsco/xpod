@@ -127,10 +127,15 @@ function clientIdFromApiKey(apiKey: string): string {
  * `service_access_missing` when the caller's own context has none. That is the moment to prepare
  * the session credential and retry once, which keeps this wrapper out of the business of knowing
  * which routes read a Pod - and keeps Pod traffic, capability calls and other origins untouched.
+ *
+ * The retry deliberately does not reuse the session transport: a session transport exists to
+ * attach the session's own token and overwrites any Authorization header it finds, which would
+ * replace the credential with exactly the token the server just said it cannot use.
  */
 export function withRequestPodAuthorization(
   fetchImpl: typeof fetch,
   authorization: (() => Promise<string | undefined>) | undefined,
+  retryFetch: typeof fetch = fetchImpl,
 ): typeof fetch {
   if (!authorization) {
     return fetchImpl;
@@ -149,7 +154,7 @@ export function withRequestPodAuthorization(
     }
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
     headers.set('authorization', value);
-    return fetchImpl(replay, { ...init, headers });
+    return retryFetch(replay, { ...init, headers });
   };
 }
 

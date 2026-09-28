@@ -196,6 +196,26 @@ describe('withRequestPodAuthorization', () => {
     expect(seen).toEqual({ authorization: 'Bearer sk-session', accept: 'application/json' });
   });
 
+  it('sends the retry over the transport that keeps the credential', async() => {
+    // A session transport owns the Authorization header and overwrites whatever a caller set, so
+    // replaying the request through it would replace the credential with the session's own token.
+    const sessionTransport = (async () => missing()) as typeof fetch;
+    const retries: Array<string | null> = [];
+    const credentialTransport = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      retries.push(new Headers(init?.headers).get('authorization'));
+      return Response.json({ ok: true });
+    }) as typeof fetch;
+
+    const wrapped = withRequestPodAuthorization(
+      sessionTransport,
+      async() => 'Bearer sk-session',
+      credentialTransport,
+    );
+
+    await expect(wrapped('https://xpod.example/api/ai/gateway/keys')).resolves.toMatchObject({ status: 200 });
+    expect(retries).toEqual(['Bearer sk-session']);
+  });
+
   it('is a no-op without an authorization provider', () => {
     const fetchImpl = (async() => new Response('ok')) as typeof fetch;
     expect(withRequestPodAuthorization(fetchImpl, undefined)).toBe(fetchImpl);

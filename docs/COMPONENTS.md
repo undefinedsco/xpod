@@ -61,6 +61,8 @@ Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁
 
 `ValidatingIdentityProviderHttpHandler` 必须先调用 `provider.interactionDetails` 并检查返回 UID 与路径一致，才把内部 operation target 规范化到原有 `/.account/` 路由。缺失/无效 Cookie、失效 interaction、UID 不符必须拒绝，不能降级成普通 Account 写操作，也不能通过 `Interaction.find(客户端 UID)` 绕过原生校验。不要恢复跨页面登录锁。
 
+Account Cookie 之外，该组件还接受**宿主自己的 Solid 会话**作为 Account 来源：只有当 CSS 的 `DPoPWebIdExtractor` 校验通过（签名、有效期、`cnf.jkt` 与 DPoP proof 配对、`htu/htm` 匹配）、token 的 `client_id` 属于 `hostClientIds`（默认 `XPOD_DESKTOP_CLIENT_ID`），且该 WebID 确实已链到某个 Account 时才生效。Cookie 优先，会话只做补充；未链接的 WebID、第三方客户端与不可校验的会话一律保持匿名，不得报错或猜测 Account。
+
 ## Table of Contents
 
 - [Storage Components](#storage-components)

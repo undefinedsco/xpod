@@ -8,6 +8,7 @@ import {
   type Operation,
 } from '@solid/community-server';
 import { ValidatingIdentityProviderHttpHandler } from '../../src/identity/ValidatingIdentityProviderHttpHandler';
+import { XPOD_DESKTOP_CLIENT_ID } from '../../src/identity/oidc/RememberedClientGrantStore';
 
 const createOperation = (...cookies: string[]): Operation => {
   const bodyMetadata = new RepresentationMetadata({ path: 'http://example.test/.account/' });
@@ -40,12 +41,23 @@ const createHandler = ({
   accountExists = false,
   existingAccounts,
   externalAccountIssuer,
+  sessionCredentials,
+  sessionError,
+  webIdLinks,
+  hostClientIds,
 }: {
   cookieAccountId?: string;
   cookieAccountIds?: Record<string, string | undefined>;
   accountExists?: boolean;
   existingAccounts?: Set<string>;
   externalAccountIssuer?: string;
+  /** What the host's own Solid session verifies to, when one is presented. */
+  sessionCredentials?: { agent?: { webId: string }; client?: { clientId: string } };
+  /** Makes the session extractor refuse the request instead of returning credentials. */
+  sessionError?: string;
+  /** WebID to Account links the account storage knows. */
+  webIdLinks?: Record<string, string>;
+  hostClientIds?: readonly string[];
 } = {}) => {
   const providerFactory = {
     getProvider: vi.fn(async () => ({
@@ -62,11 +74,25 @@ const createHandler = ({
   };
   const accountStorage = {
     has: vi.fn(async (_type: string, id: string) => existingAccounts?.has(id) ?? accountExists),
+    find: vi.fn(async (_type: string, query: Record<string, unknown>) => {
+      const accountId = webIdLinks?.[String(query.webId)];
+      return accountId ? [{ id: 'link-1', webId: String(query.webId), accountId }] : [];
+    }),
   };
   const interactionHandler = {
     handleSafe: vi.fn(async (_input: { operation: Operation }) =>
       new BasicRepresentation('', new RepresentationMetadata({ path: 'http://example.test/.account/' }))),
   };
+  const sessionExtractor = sessionCredentials || sessionError
+    ? {
+      handleSafe: vi.fn(async () => {
+        if (sessionError) {
+          throw new Error(sessionError);
+        }
+        return sessionCredentials;
+      }),
+    }
+    : undefined;
 
   const handler = new ValidatingIdentityProviderHttpHandler({
     providerFactory: providerFactory as any,
@@ -74,6 +100,8 @@ const createHandler = ({
     handler: interactionHandler as any,
     accountStorage: accountStorage as any,
     externalAccountIssuer,
+    ...(sessionExtractor ? { sessionExtractor: sessionExtractor as any } : {}),
+    ...(hostClientIds ? { hostClientIds } : {}),
   });
 
   return {
@@ -82,6 +110,7 @@ const createHandler = ({
     cookieStore,
     accountStorage,
     interactionHandler,
+    sessionExtractor,
   };
 };
 
@@ -306,5 +335,119 @@ describe('ValidatingIdentityProviderHttpHandler', () => {
     expect(accountStorage.has).toHaveBeenCalledWith('account', 'missing-account');
     expect(cookieStore.delete).toHaveBeenCalledWith('stale-cookie');
     expect(response.metadata?.get(SOLID_HTTP.terms.accountCookieExpiration)?.value).toBe(new Date(0).toISOString());
+  });
+
+  describe('host session', () => {
+    const WEB_ID = 'https://id.example/ada/profile/card#me';
+    const sessionRequest = { headers: { authorization: 'DPoP token', dpop: 'proof' } } as any;
+
+    it('names the Account that owns the session WebID without an Account cookie', async () => {
+      const { handler, accountStorage, interactionHandler, sessionExtractor } = createHandler({
+        sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: XPOD_DESKTOP_CLIENT_ID } },
+        webIdLinks: { [WEB_ID]: 'account-7' },
+      });
+
+      const response = await handler.handle({
+        operation: createOperation(),
+        request: sessionRequest,
+        response: {} as any,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(sessionExtractor?.handleSafe).toHaveBeenCalledWith(sessionRequest);
+      expect(accountStorage.find).toHaveBeenCalledWith('webIdLink', { webId: WEB_ID });
+      expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'account-7' }));
+    });
+
+    it('keeps a client the host does not ship from naming an Account', async () => {
+      const { handler, accountStorage, interactionHandler } = createHandler({
+        sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: 'https://app.example/client.json' } },
+        webIdLinks: { [WEB_ID]: 'account-7' },
+      });
+
+      await handler.handle({ operation: createOperation(), request: sessionRequest, response: {} as any });
+
+      expect(accountStorage.find).not.toHaveBeenCalled();
+      expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: undefined }));
+    });
+
+    it('keeps a WebID no Account linked anonymous instead of failing the request', async () => {
+      const { handler, interactionHandler } = createHandler({
+        sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: XPOD_DESKTOP_CLIENT_ID } },
+      });
+
+      const response = await handler.handle({
+        operation: createOperation(),
+        request: sessionRequest,
+        response: {} as any,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: undefined }));
+    });
+
+    it('stays anonymous when the session itself does not verify', async () => {
+      const { handler, accountStorage, interactionHandler } = createHandler({
+        sessionError: 'Error verifying WebID via DPoP-bound access token: invalid proof',
+        webIdLinks: { [WEB_ID]: 'account-7' },
+      });
+
+      const response = await handler.handle({
+        operation: createOperation(),
+        request: sessionRequest,
+        response: {} as any,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(accountStorage.find).not.toHaveBeenCalled();
+      expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: undefined }));
+    });
+
+    it('never turns a replayable bearer credential into Account authority', async () => {
+      const { handler, accountStorage, sessionExtractor, interactionHandler } = createHandler({
+        sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: XPOD_DESKTOP_CLIENT_ID } },
+        webIdLinks: { [WEB_ID]: 'account-7' },
+      });
+
+      await handler.handle({
+        operation: createOperation(),
+        request: { headers: { authorization: 'Bearer token' } } as any,
+        response: {} as any,
+      });
+
+      expect(sessionExtractor?.handleSafe).not.toHaveBeenCalled();
+      expect(accountStorage.find).not.toHaveBeenCalled();
+      expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: undefined }));
+    });
+
+    it('prefers the Account cookie over the session', async () => {
+      const { handler, accountStorage, interactionHandler } = createHandler({
+        cookieAccountId: 'account-cookie',
+        accountExists: true,
+        sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: XPOD_DESKTOP_CLIENT_ID } },
+        webIdLinks: { [WEB_ID]: 'account-7' },
+      });
+
+      await handler.handle({
+        operation: createOperation('cookie-1'),
+        request: { headers: { cookie: 'css-account=cookie-1' } } as any,
+        response: {} as any,
+      });
+
+      expect(accountStorage.find).not.toHaveBeenCalled();
+      expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'account-cookie' }));
+    });
+
+    it('accepts an extra configured host client', async () => {
+      const { handler, interactionHandler } = createHandler({
+        sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: 'https://host.example/client.json' } },
+        webIdLinks: { [WEB_ID]: 'account-7' },
+        hostClientIds: ['https://host.example/client.json'],
+      });
+
+      await handler.handle({ operation: createOperation(), request: sessionRequest, response: {} as any });
+
+      expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'account-7' }));
+    });
   });
 });
