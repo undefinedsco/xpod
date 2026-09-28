@@ -27,11 +27,6 @@ export interface MatrixOutboundSenderOptions {
   /** Signing identities by server name; the origin's identity signs its transactions. */
   identities: MatrixSigningIdentitySource;
   resolve: (serverName: string) => Promise<MatrixResolvedServer | undefined>;
-  /**
-   * Where a destination's native endpoint is. Defaults to the name itself on ordinary HTTPS;
-   * a test injects its own address.
-   */
-  resolveNative?: (serverName: string) => Promise<MatrixResolvedServer | undefined>;
   fetch: typeof fetch;
   /** Transport that can present a delegated server name; see `federationFetch.ts`. */
   fetchTarget?: FederationFetchTarget;
@@ -51,20 +46,9 @@ export interface SendAsInput {
   edus?: readonly unknown[];
 }
 
-/** How long a destination's answer about the native transport is trusted before asking again. */
-export const NATIVE_SUPPORT_TTL_MS = 10 * 60_000;
-
 export class MatrixOutboundSender {
   private readonly identities: MatrixSigningIdentitySource;
   private readonly clients = new Map<string, MatrixFederationClient>();
-  /**
-   * Whether a destination speaks the native transport, and when that was learned.
-   *
-   * A local accelerator, rebuilt on restart: a peer that has no native endpoint would otherwise
-   * pay a 404 on every batch, and a peer that gains one would never be noticed. Neither answer is
-   * authority for anything — it only chooses which request to send first.
-   */
-  private readonly nativeSupport = new Map<string, { speaks: boolean; checkedAt: number }>();
   private readonly options: MatrixOutboundSenderOptions;
 
   public constructor(options: MatrixOutboundSenderOptions) {
@@ -96,37 +80,11 @@ export class MatrixOutboundSender {
       ...(this.options.sleep === undefined ? {} : { sleep: this.options.sleep }),
     };
 
-    if (this.speaksNative(input.destination)) {
-      const native = await client.deliverNativeTransaction(delivery);
-      if (native.transport === 'native') {
-        this.rememberNative(input.destination, true);
-        return native.outcome;
-      }
-      // The peer answered "no such route": remember that, and reach for the transport it does
-      // speak. The same batch, under the same transaction id — a peer that never saw it dedups
-      // nothing, and a peer that did see it answers from the record it already wrote.
-      this.rememberNative(input.destination, false);
-    }
+    // One transport: the batch goes to the peer's federation endpoint under the transaction id.
+    // The native endpoint this used to try first is gone with the two-path design — one shape,
+    // reached the same way for every peer.
     const result = await client.deliverTransaction(delivery);
     return result.outcome;
-  }
-
-  /**
-   * Whether to try the native transport first.
-   *
-   * Unknown destinations try it: Xpod-to-Xpod is the case this exists for, and one 404 is a cheap
-   * way to find out. A destination that answered "no" is believed for a while, so Matrix-only peers
-   * are not asked again on every batch.
-   */
-  private speaksNative(destination: string): boolean {
-    const remembered = this.nativeSupport.get(destination);
-    if (!remembered) return true;
-    if (remembered.checkedAt + NATIVE_SUPPORT_TTL_MS <= this.now()) return true;
-    return remembered.speaks;
-  }
-
-  private rememberNative(destination: string, speaks: boolean): void {
-    this.nativeSupport.set(destination, { speaks, checkedAt: this.now() });
   }
 
   private now(): number {
@@ -173,7 +131,6 @@ export class MatrixOutboundSender {
     const client = new MatrixFederationClient({
       identity,
       resolve: this.options.resolve,
-      ...(this.options.resolveNative === undefined ? {} : { resolveNative: this.options.resolveNative }),
       fetch: this.options.fetch,
       ...(this.options.fetchTarget === undefined ? {} : { fetchTarget: this.options.fetchTarget }),
       ...(this.options.now === undefined ? {} : { now: this.options.now }),

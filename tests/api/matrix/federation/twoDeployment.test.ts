@@ -799,12 +799,12 @@ describe('two deployments federating over real HTTP', () => {
       expect(requestsToA.length).toBeGreaterThanOrEqual(1);
       expect(requestsToB.map(request => request.host)).toEqual(requestsToB.map(() => 'bob.example:8448'));
       expect(requestsToA.map(request => request.host)).toEqual(requestsToA.map(() => 'alice.example:8448'));
-      // Write side ③: transactions between two Xpod deployments travel to each deployment's own
-      // endpoint, addressed by server name, and the Matrix transaction route is not used at all —
-      // it stays for peers that only speak federation.
-      expect(requestsToB.filter(request => request.path.startsWith('/_xpod/matrix/inbound/')).length).toBeGreaterThanOrEqual(3);
-      expect(requestsToA.filter(request => request.path.startsWith('/_xpod/matrix/inbound/')).length).toBeGreaterThanOrEqual(1);
-      expect(requestsToB.some(request => request.path.startsWith('/_matrix/federation/v1/send/'))).toBe(false);
+      // One transport now: transactions between two Xpod deployments go to the peer's federation
+      // endpoint under the transaction id. The second path (`/_xpod/matrix/inbound`) is being
+      // retired — its client side is already gone, so nothing should be sent there any more.
+      expect(requestsToB.filter(request => request.path.startsWith('/_matrix/federation/v1/send/')).length).toBeGreaterThanOrEqual(3);
+      expect(requestsToA.filter(request => request.path.startsWith('/_matrix/federation/v1/send/')).length).toBeGreaterThanOrEqual(1);
+      expect(requestsToB.some(request => request.path.startsWith('/_xpod/matrix/inbound/'))).toBe(false);
     } finally {
       await stop();
     }

@@ -85,7 +85,6 @@ function harness(options: {
     identities: source,
     resolve: async serverName => ({ baseUrl: `https://${serverName}:8448`, hostHeader: serverName, via: 'implicit-port' }),
     // Native requests go to the name itself, as they do in production.
-    resolveNative: async serverName => ({ baseUrl: `https://${serverName}`, hostHeader: serverName, via: 'native-endpoint' }),
     fetch: fetch as unknown as typeof fetch,
     now: options.now ?? (() => NOW),
     policy: { maxAttempts: 3, initialBackoffMs: 0, jitter: 0 },
@@ -168,7 +167,6 @@ describe('sending as a participant server', () => {
       identities: identities([ alice ]).source,
       resolve: async () => undefined,
       // Native-first: the native address is the one that has to be unresolvable here.
-      resolveNative: async () => undefined,
       fetch: (async () => { throw new Error('should not be called'); }) as unknown as typeof fetch,
     });
     await expect(sender.send({ origin: ALICE, destination: 'nope', txnId: TXN, pdus: [] })).resolves.toMatchObject({ status: 'rejected' });
@@ -182,88 +180,3 @@ describe('sending as a participant server', () => {
   });
 });
 
-describe('choosing a transport between two Xpod deployments', () => {
-  const nativeUrl = `https://${THEM}/_xpod/matrix/inbound/${TXN}`;
-  const matrixUrl = `https://${THEM}:8448/_matrix/federation/v1/send/${TXN}`;
-  const deliveredNatively = (): Response => new Response(JSON.stringify({ events: { $e: {} } }), { status: 200 });
-
-  it('tries the peer\'s own endpoint first, and does not also federate', async () => {
-    const alice = identity(ALICE);
-    const { sender, captured, nativeAttempts } = harness({
-      known: [ alice ],
-      native: deliveredNatively,
-    });
-
-    const outcome = await sender.send({ origin: ALICE, destination: THEM, txnId: TXN, pdus: [ { type: 'm.room.message' } ] });
-    expect(outcome).toMatchObject({ status: 'delivered' });
-    expect(nativeAttempts.map(entry => entry.url)).toEqual([ nativeUrl ]);
-    // Nothing was federated: the peer already answered over its own endpoint.
-    expect(captured).toEqual([]);
-    // The native request is signed the same way, over the path it actually uses.
-    await expect(authenticateXMatrixRequest({
-      authorization: nativeAttempts[0].headers.authorization, method: 'POST', uri: `/_xpod/matrix/inbound/${TXN}`,
-      content: nativeAttempts[0].body, keys: keySource([ alice ]), serverName: THEM,
-    })).resolves.toMatchObject({ valid: true, origin: ALICE });
-  });
-
-  it('falls back to Matrix when the peer has no native endpoint, and remembers that', async () => {
-    const alice = identity(ALICE);
-    const { sender, captured, nativeAttempts } = harness({ known: [ alice ] });
-
-    const first = await sender.send({ origin: ALICE, destination: THEM, txnId: TXN, pdus: [] });
-    expect(first).toMatchObject({ status: 'delivered' });
-    expect(nativeAttempts).toHaveLength(1);
-    expect(captured.map(entry => entry.url)).toEqual([ matrixUrl ]);
-
-    // A later batch goes straight to the transport the peer does speak.
-    const second = await sender.send({ origin: ALICE, destination: THEM, txnId: 'txn-2', pdus: [] });
-    expect(second).toMatchObject({ status: 'delivered' });
-    expect(nativeAttempts).toHaveLength(1);
-    expect(captured.map(entry => entry.url)).toEqual([ matrixUrl, `https://${THEM}:8448/_matrix/federation/v1/send/txn-2` ]);
-  });
-
-  it('asks again once the remembered answer is stale', async () => {
-    const alice = identity(ALICE);
-    let clock = NOW;
-    const { sender, nativeAttempts } = harness({ known: [ alice ], now: () => clock });
-
-    await sender.send({ origin: ALICE, destination: THEM, txnId: TXN, pdus: [] });
-    await sender.send({ origin: ALICE, destination: THEM, txnId: 'txn-2', pdus: [] });
-    expect(nativeAttempts).toHaveLength(1);
-
-    // A peer that gains a native endpoint is noticed; one that never had it costs one 404 per window.
-    clock += 10 * 60_000 + 1;
-    await sender.send({ origin: ALICE, destination: THEM, txnId: 'txn-3', pdus: [] });
-    expect(nativeAttempts).toHaveLength(2);
-  });
-
-  it('does not fall back when the peer decided about the events', async () => {
-    const alice = identity(ALICE);
-    const { sender, captured, nativeAttempts } = harness({
-      known: [ alice ],
-      native: () => new Response(JSON.stringify({ errcode: 'M_FORBIDDEN', error: 'not joined' }), { status: 403 }),
-    });
-
-    const outcome = await sender.send({ origin: ALICE, destination: THEM, txnId: TXN, pdus: [] });
-    expect(outcome).toMatchObject({ status: 'rejected' });
-    expect(outcome.reason).toContain('M_FORBIDDEN');
-    // A refusal is an answer: re-sending the same batch over Matrix would ask the peer to decide twice.
-    expect(nativeAttempts).toHaveLength(1);
-    expect(captured).toEqual([]);
-  });
-
-  it('keeps trying the native transport when the peer is simply unreachable', async () => {
-    const alice = identity(ALICE);
-    // Unreachable is "the peer has not decided", so the batch stays owed under the same id and is
-    // not re-sent over Matrix — where the peer might have received it after all.
-    const { sender, captured, nativeAttempts } = harness({
-      known: [ alice ],
-      native: () => { throw new Error('connect ECONNREFUSED'); },
-    });
-
-    const outcome = await sender.send({ origin: ALICE, destination: THEM, txnId: TXN, pdus: [] });
-    expect(outcome.status).toBe('retry');
-    expect(nativeAttempts).toHaveLength(3);
-    expect(captured).toEqual([]);
-  });
-});

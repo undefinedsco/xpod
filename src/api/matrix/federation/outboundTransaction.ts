@@ -59,14 +59,6 @@ type MatrixRequestOutcome =
   | { status: 'retry'; reason: string; retryAfterMs?: number }
   | { status: 'rejected'; reason: string };
 
-/**
- * The same, plus the one answer only the native transport can get: the peer has no such route.
- *
- * It is a separate type so that every other caller keeps the three-answer outcome it has always
- * had — a Matrix request has nowhere to "not exist".
- */
-type NativeRequestOutcome = MatrixRequestOutcome | { status: 'unsupported'; reason: string };
-
 /** What any signed request produced, before a caller interprets the body. */
 export interface FederationCallOutcome {
   status: 'ok' | 'retry' | 'rejected';
@@ -187,28 +179,7 @@ export interface MatrixDeliveryResult {
   waitedMs: number;
 }
 
-/**
- * What the native transport produced.
- *
- * `unsupported` is not a delivery outcome: a 404 on the native path means the peer never saw this
- * transaction, and the same batch may be sent again over `/send`. Keeping it out of
- * `MatrixDeliveryOutcome` is what stops the queue from treating "this peer is not an Xpod" as
- * "this peer refused the events".
- */
-export type NativeDeliveryResult =
-  | { transport: 'unsupported'; reason: string }
-  | { transport: 'native'; outcome: MatrixDeliveryOutcome; attempts: number; waitedMs: number };
-
-/**
- * The native outcome of one attempt, before the retry loop folds it into a delivery result.
- *
- * It exists so "the peer does not speak this transport" and "the peer refused these events" stay
- * different answers: only the first one may be retried over `/send`.
- */
-export type NativeDeliveryOutcome =
-  | { transport: 'unsupported'; reason: string }
-  | { transport: 'native'; outcome: MatrixDeliveryOutcome };
-
+/** Delivery policy before a caller overrides any part of it. */
 const DEFAULT_POLICY: Required<MatrixDeliveryPolicy> = {
   maxAttempts: 5,
   initialBackoffMs: 1_000,
@@ -219,7 +190,6 @@ const DEFAULT_POLICY: Required<MatrixDeliveryPolicy> = {
 export class MatrixFederationClient {
   private readonly identity: XMatrixSigner & { serverName: string };
   private readonly resolve: (serverName: string) => Promise<MatrixResolvedServer | undefined>;
-  private readonly resolveNative: (serverName: string) => Promise<MatrixResolvedServer | undefined>;
   private readonly fetch: typeof fetch;
   private readonly fetchTarget?: FederationFetchTarget;
   private readonly now: () => number;
@@ -228,7 +198,6 @@ export class MatrixFederationClient {
   public constructor(options: MatrixFederationClientOptions & { random?: () => number }) {
     this.identity = options.identity;
     this.resolve = options.resolve;
-    this.resolveNative = options.resolveNative ?? (async serverName => nativeTargetOf(serverName));
     this.fetch = options.fetch;
     this.fetchTarget = options.fetchTarget;
     this.now = options.now ?? Date.now;
@@ -278,80 +247,6 @@ export class MatrixFederationClient {
       return { ...base, status: 'retry', reason: 'destination answered 200 without PDU results' };
     }
     return { ...base, status: 'delivered', pdus: pdus as Record<string, { error?: string }>, reason: 'delivered' };
-  }
-
-  /**
-   * One attempt over the native transport: the peer's own endpoint, ordinary resources.
-   *
-   * Same content and same signature scheme as `/send`, because the receiver runs the same
-   * decision (`inboundRoute.ts`); what differs is the request target. `404` is reported as
-   * `unsupported` rather than as a refusal: a peer that has no such route has not decided anything
-   * about these events, and the caller may legitimately try the Matrix transport instead.
-   */
-  public async sendNativeTransaction(input: SendTransactionInput): Promise<NativeDeliveryOutcome> {
-    const { destination, txnId } = input;
-    const base: Pick<MatrixDeliveryOutcome, 'origin' | 'destination' | 'txnId'> = {
-      origin: this.identity.serverName,
-      destination,
-      txnId,
-    };
-    if (!txnId.trim()) return { transport: 'native', outcome: { ...base, status: 'rejected', reason: 'a transaction needs an id' } };
-    if (input.pdus.length > MAX_PDUS_PER_TRANSACTION) {
-      throw new Error(`A transaction carries at most ${MAX_PDUS_PER_TRANSACTION} PDUs`);
-    }
-    if ((input.edus?.length ?? 0) > MAX_EDUS_PER_TRANSACTION) {
-      throw new Error(`A transaction carries at most ${MAX_EDUS_PER_TRANSACTION} EDUs`);
-    }
-
-    const content: Record<string, unknown> = {
-      origin: this.identity.serverName,
-      origin_server_ts: this.now(),
-      pdus: [ ...input.pdus ],
-    };
-    if (input.edus && input.edus.length > 0) content.edus = [ ...input.edus ];
-
-    const uri = `${NATIVE_INBOUND_PATH}/${encodeURIComponent(txnId)}`;
-    const result = await this.executeNative({ destination, method: 'POST', uri, content });
-    if (result.status === 'unsupported') return { transport: 'unsupported', reason: result.reason };
-    if (result.status === 'retry') {
-      return { transport: 'native', outcome: { ...base, status: 'retry',
-        ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }), reason: result.reason } };
-    }
-    if (result.status === 'rejected') return { transport: 'native', outcome: { ...base, status: 'rejected', reason: result.reason } };
-
-    // The native answer names results per event; the delivery outcome keeps the transport-neutral
-    // name so the queue reads one shape whichever transport ran.
-    const events = isRecord(result.body) ? result.body.events : undefined;
-    if (!isRecord(events)) {
-      return { transport: 'native', outcome: { ...base, status: 'retry', reason: 'destination answered 200 without event results' } };
-    }
-    return { transport: 'native', outcome: { ...base, status: 'delivered', pdus: events as Record<string, { error?: string }>, reason: 'delivered' } };
-  }
-
-  /**
-   * Keep trying the native transport until it delivers, refuses, or turns out to be absent.
-   *
-   * Retries mirror `deliverTransaction`: the same transaction id, backing off. A peer that answers
-   * 404 stops the loop immediately — there is nothing to retry, and the caller decides whether to
-   * reach for the other transport.
-   */
-  public async deliverNativeTransaction(input: DeliverTransactionInput): Promise<NativeDeliveryResult> {
-    const policy = { ...DEFAULT_POLICY, ...input.policy };
-    if (!Number.isSafeInteger(policy.maxAttempts) || policy.maxAttempts < 1) {
-      throw new Error('maxAttempts must be a positive integer');
-    }
-    const sleep = input.sleep ?? (async (ms: number) => { await new Promise(resolve => setTimeout(resolve, ms)); });
-    let waitedMs = 0;
-    let attempt = await this.sendNativeTransaction(input);
-    let attempts = 1;
-    while (attempt.transport === 'native' && attempt.outcome.status === 'retry' && attempts < policy.maxAttempts) {
-      const delay = this.retryDelay(attempt.outcome, attempts, policy);
-      await sleep(delay);
-      waitedMs += delay;
-      attempts += 1;
-      attempt = await this.sendNativeTransaction(input);
-    }
-    return attempt.transport === 'unsupported' ? attempt : { ...attempt, attempts, waitedMs };
   }
 
   /**
@@ -751,35 +646,14 @@ export class MatrixFederationClient {
     return await this.classify(sent.response, sent.text, request.destination);
   }
 
-  /**
-   * The native transport's one request: the same signing, the peer's ordinary address, and a 404
-   * that means "no such route" instead of "I decided about these events".
-   */
-  private async executeNative(request: {
-    destination: string;
-    method: string;
-    uri: string;
-    content?: Record<string, unknown>;
-  }): Promise<NativeRequestOutcome> {
-    const sent = await this.sendSigned({ ...request, native: true });
-    if ('failure' in sent) return sent.failure;
-    if (sent.response.status === 404) {
-      return { status: 'unsupported', reason: `${request.destination} has no native inbound endpoint` };
-    }
-    return await this.classify(sent.response, sent.text, request.destination);
-  }
-
   /** Resolve, sign and send one request; the answer is unread, because callers read it differently. */
   private async sendSigned(request: {
     destination: string;
     method: string;
     uri: string;
     content?: Record<string, unknown>;
-    native?: boolean;
   }): Promise<{ response: Response; text: string } | { failure: MatrixRequestOutcome }> {
-    const target = request.native
-      ? await this.resolveNative(request.destination)
-      : await this.resolve(request.destination);
+    const target = await this.resolve(request.destination);
     if (!target) return { failure: { status: 'rejected', reason: `cannot resolve ${request.destination}` } };
 
     const authorization = buildXMatrixAuthorization({
@@ -910,23 +784,6 @@ function parseJson(text: string): unknown {
   } catch {
     return undefined;
   }
-}
-
-/**
- * Where a server name's native endpoint is, without asking anybody.
- *
- * The name itself on ordinary HTTPS. The federation resolver's `.well-known`/SRV/`:8448` branches
- * exist so a Matrix server name can delegate its federation traffic; the native endpoint is served
- * by the deployment that owns the name, so there is nothing to delegate and nothing to discover.
- */
-export function nativeTargetOf(serverName: string): MatrixResolvedServer | undefined {
-  if (!isMatrixServerName(serverName)) return undefined;
-  const { host, port } = splitServerName(serverName);
-  return {
-    baseUrl: `https://${port === undefined ? host : `${host}:${port}`}`,
-    hostHeader: serverName,
-    via: 'native-endpoint',
-  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
