@@ -132,6 +132,13 @@
    ——部署以**参与者自己的 host** 签名，房间 id 与别名也按它寻址。切换后只剩 **6 项**失败（去硬编码前是 18 项），
    且全是"期望值跟着名字走"：5 处 MXID 后缀断言改为按常量构造正则、1 处别名按常量拼；
    `tests/api/matrix` **600 passed / 3 skipped**、`tests/api tests/http` 2054、lite 162。
+   **1.0d 试行（2026-09-28，已回退）**：把 `getMatrixUserId` 改成返回 WebID（`sender`/`state_key`/成员键
+   随之全部就位），失败 **16 项**。与前面几次不同，这次失败**不是期望值问题，而是概念消失**：
+   `participantIdentity`（4 项）与 `participantProvisioning`（6 项）里有十项**专门验证 MXID 派生**
+   （"以持有密钥的 server 命名并签名每位参与者"、"报告每位成员所属的 server"、"在报告 MXID 之前先
+   provision"）——MXID 不存在了，这些测试要**重写**成"身份是 WebID、`serverNameOf(webId)` 给出所属 server"，
+   而不是改几个字。另外要记得保留 `matrixUserIdFor`（测试仍用它构造历史形状的期望值）。
+   **结论：1.0d 要一整轮**（改字段 + 重写这十项 + 跑四道门禁），与第 4 项同级的预算。
 2. **1.0b 房间 id 的域**：随 1.0a 自动统一（`!xxx:<WebID host>`）。
 3. **1.0c 签名**：**不动**——请求签名（`X-Matrix`）与事件签名仍用部署密钥，键名与参与者标识无关；
    删签名是第 3 项的事，等 O。**这一条正是第 1 轮 89 项失败的主因**（当时把标识与签名键混在一起改）。
