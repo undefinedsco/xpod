@@ -40,6 +40,8 @@ describe('assembling the outbound path', () => {
       const target = String(url);
       // No delegation for this destination; the resolver falls back to the implicit port.
       if (target.includes('/.well-known/')) return new Response('', { status: 404 });
+      // A peer that speaks Matrix only: the native attempt gets a 404 and delivery falls back.
+      if (target.includes('/_xpod/matrix/inbound/')) return new Response('not found', { status: 404 });
       captured.push({ url: target, authorization: String((init?.headers as Record<string, string>).authorization) });
       return new Response(JSON.stringify({ pdus: { $e: {} } }), { status: 200 });
     });
@@ -61,6 +63,7 @@ describe('assembling the outbound path', () => {
     const fetch = vi.fn(async (url: URL | RequestInfo) => {
       const target = String(url);
       if (target.includes('/.well-known/')) return new Response(JSON.stringify({ 'm.server': 'matrix.remote.example:9443' }), { status: 200 });
+      if (target.includes('/_xpod/matrix/inbound/')) return new Response('not found', { status: 404 });
       captured.push(target);
       return new Response(JSON.stringify({ pdus: {} }), { status: 200 });
     });
@@ -89,6 +92,7 @@ describe('assembling the outbound path', () => {
     const fetch = vi.fn(async (url: URL | RequestInfo) => {
       const target = String(url);
       if (target.includes('/.well-known/')) return new Response('', { status: 404 });
+      if (target.includes('/_xpod/matrix/inbound/')) return new Response('not found', { status: 404 });
       captured.push(target);
       return new Response(JSON.stringify({ pdus: {} }), { status: 200 });
     });

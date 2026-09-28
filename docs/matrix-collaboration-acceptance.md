@@ -390,6 +390,24 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   重放取首次记录不写第二遍、签名/origin/被寻址名字同样被校验、非 JSON `400 M_NOT_JSON` 与超限 `413 M_TOO_LARGE`），
   该文件 33 项全过。**未做**：部署间的客户端与出站选传输（下一步）。
 
+### 原生传输的客户端与选择（2026-09-27，③ 的第二、三步）
+
+- **客户端**（`federation/outboundTransaction.ts`）：`sendNativeTransaction` / `deliverNativeTransaction`
+  把同一份已签名内容 POST 到 `<server name>/_xpod/matrix/inbound/<txnId>`；应答里的 `events` 折成与 `/send`
+  同一个 `pdus` 结果图，所以队列只认一种形状。**404 读作"对方没有这条路由"（`unsupported`），不是拒绝**；
+  其它 4xx 仍是对方的决定。地址规则是**名字本身 + 普通 HTTPS**（`nativeTargetOf`，`via: 'native-endpoint'`）：
+  没有 `:8448`、没有 `.well-known`、没有 SRV——原生调用不是联邦流量，没有可委派的东西。
+- **选择**（`federation/outboundSender.ts`）：**原生优先**；对方 404 就回退 `/send`（**同一个 txnId**——
+  两条路共用同一份回执记录，所以"对方其实收到了"时它会直接重放首次应答）；**拒绝不回退**（那是对事件的
+  决定，换个传输再问一次等于让它决定两遍）；**不可达只重试原生**（"对方还没决定"，换传输可能重复投递）。
+  每个目的地记住一次答案，TTL 10 分钟（本地加速器，重启即丢，只影响先发哪个请求）。
+- 证据：`outboundTransaction.test.ts` 49 → **54 项**（真实签名可被对端认证、原生路径与 POST、`events`→`pdus`、
+  404=unsupported 与 403=rejected 的区别、同 txnId 重试、默认地址规则）；`outboundSender.test.ts` 7 → **12 项**
+  （原生优先且不再联邦、404 回退并记住、TTL 过后重探、拒绝不回退、不可达保持重试）；
+  `twoDeployment.test.ts` 的真实 HTTP 一项改为断言**事务走原生路径**（到 B ≥3 次、到 A ≥1 次，
+  且 `/_matrix/federation/v1/send/` **一次都没有**），握手/读取端点仍是 Matrix；
+  `outboundDelivery.test.ts` 的夹具明确扮演"只会 Matrix 的对端"，把回退路径也覆盖到。
+
 ### 出站批次载荷（2026-09-27，同一分支）
 
 - `federation/outboundBatches.ts`：一条批次 ↔ 一条 `taskResource` 的映射（`metadata` 原样保存

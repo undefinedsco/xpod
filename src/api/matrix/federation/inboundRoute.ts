@@ -36,6 +36,14 @@ import {
 import type { AuthEvent } from '../protocol/authRules';
 import type { MatrixServerKeySource } from './serverKeys';
 
+/**
+ * Where the native inbound endpoint lives, defined once for both sides of it.
+ *
+ * The route and the client that calls it are the same contract; two spellings of this string
+ * would be a transport that silently stops matching its own sender.
+ */
+export const NATIVE_INBOUND_PATH = '/_xpod/matrix/inbound';
+
 /** The Pod a transaction belongs to, and how to reach it. */
 export interface FederationSendTarget {
   /** Pod scope the accepted events belong to. */
