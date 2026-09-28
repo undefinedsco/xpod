@@ -129,6 +129,12 @@
      `membership: invite`），再由 Agent 发 `join`（`sender == state_key == Agent 的 MXID`，授权规则 5.2.2
      允许被邀请者加入）；两步都由该部署现有的 server name 密钥签名，经现有写入路径与其预占/投递，不新增端点、
      不新增密钥。
+   - **落点已查清（2026-09-28）**：授权经**普通状态写入**进入房间——`setState(roomId, 'co.undefineds.agents', '', content, context)`
+     → `PodMatrixStore.ts:675` 的 `validateAgentGrants`。所以"授权即成员"的接线点就是那里：把这次 `co.undefineds.agents`
+     与**上一版**比对，新增被授权的 Agent 时补写两条成员事件（邀请 + Agent 自签 join）；**撤销**授权时按"离开即撤销"
+     同一口径让该 Agent 退出（或踢出），而不是留着一个已无权却仍在房间里的成员。两条都要走现有
+     `appendMembershipEvent`/写入路径（不新增端点），且**必须与 v11 规则强制同一轮上线**——否则要么规则拒掉 Agent 消息，
+     要么成员事件白写。
    - **只有到这一步之后**，写路径才可以按 v11 规则强制（rule 5 要求 sender 已 join）——这正是登记册
      "授权与执行"一节把规则只当纯校验器的原因；强制与 Agent 成员事件要在同一轮落地，否则 Agent 的消息会被拒。
    - **restricted join 的附加签名**（`join_authorised_via_users_server`）先不做：它是"房间在别的 server 上、
