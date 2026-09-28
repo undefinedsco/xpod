@@ -390,10 +390,12 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   `test:integration:lite` **159 passed / 6 skipped**。
 - **撤销授权**：已按登记册既有原则收口——**撤销停执行、不停成员身份**（执行授权与协议成员身份是两件事，
   当前行为已经如此，无需改代码）。
-- **v11 规则强制的缺口已查清**（2026-09-28）：**入站已强制**（`validateInboundPdu` → `authorizeEvent`）；
-  本地写入是**等价但更粗**的门（`requireJoined`/`requireRoomOwner`/`authorizeTargets`）。真正缺的是本地写入
-  不跑 `authorizeEvent` 本身 → **power level 细粒度**（改 power_levels、ban/kick、join_rules、`@` state_key）
-  没有逐条执行。启用方式与需要先过规则的四条路径见登记册。
+- **v11 规则强制：已上线**（2026-09-28）。本地事件在唯一成形点（`appendEvent` 的 `buildPersistedEvent` 之后、
+  落库之前）按房间解析出的 auth events 过 `authorizeEvent`，拒绝即 403 带 `v11-x.y.z` 原因；入站 PDU 仍只判一次。
+  试用一轮暴露并修掉两条缺口：**Agent 重新授权只补缺的成员步骤**、**握手 join 用本地 timeline 解自己声明的
+  auth events**（不是把常驻方整个状态当 auth events——那是 rule 2.2 拒的做法）；并把 `remoteJoinStore` 的夹具
+  补成"常驻方随状态送回 join_rules"的真实形状（没有 join_rules 的房间默认 invite-only，没人邀请的加入本就该被拒）。
+  证据：`tests/api/matrix` **588 passed / 3 skipped**、`test:integration:lite` **159 passed / 6 skipped**。
 
 ### 入站写入的成员资格判定已接线（2026-09-28）
 

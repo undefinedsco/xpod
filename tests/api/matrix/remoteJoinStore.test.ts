@@ -19,7 +19,11 @@ function identity(serverName: string) {
 }
 
 /** What a resident server answers a join with: the room's state, and the event as it accepted it. */
-function residentAnswer(userId: string): { create: Record<string, unknown>; join: Record<string, unknown> } {
+function residentAnswer(userId: string): {
+  create: Record<string, unknown>;
+  rules: Record<string, unknown>;
+  join: Record<string, unknown>;
+} {
   // Really signed by the resident, so the events the store keeps are the ones a peer would send.
   const { privateKey } = generateKeyPairSync('ed25519');
   const key = {
@@ -31,12 +35,20 @@ function residentAnswer(userId: string): { create: Record<string, unknown>; join
     type: 'm.room.create', room_id: REMOTE_ROOM, sender: '@u_peer:peer.example', state_key: '',
     origin_server_ts: NOW - 1_000, content: { room_version: '11' }, prev_events: [], auth_events: [],
   }, key, 'peer.example'));
+  // A resident sends the room's join rules with the state a join is authorised against: without
+  // them the room defaults to invite-only, and a join nobody invited would be refused by the very
+  // rules the receiving side applies.
+  const rules = stored(signEvent({
+    type: 'm.room.join_rules', room_id: REMOTE_ROOM, sender: '@u_peer:peer.example', state_key: '',
+    origin_server_ts: NOW - 900, content: { join_rule: 'public' },
+    prev_events: [ create.event_id ], auth_events: [ create.event_id ],
+  }, key, 'peer.example'));
   const join = stored(signEvent({
     type: 'm.room.member', room_id: REMOTE_ROOM, sender: userId, state_key: userId,
     origin_server_ts: NOW, content: { membership: 'join' },
-    prev_events: [ create.event_id ], auth_events: [ create.event_id ],
+    prev_events: [ rules.event_id ], auth_events: [ create.event_id, rules.event_id ],
   }, key, 'peer.example'));
-  return { create, join };
+  return { create, rules, join };
 }
 
 function pdus(rows: Map<unknown, any[]>): any[] {
@@ -61,8 +73,8 @@ describe('joining a room another deployment hosts', () => {
         status: 'joined',
         event: { ...answer.join, signatures: { 'peer.example': { 'ed25519:1': 'theirs' } } },
         eventId: String(answer.join.event_id),
-        state: [ answer.create ],
-        authChain: [ answer.create ],
+        state: [ answer.create, answer.rules ],
+        authChain: [ answer.create, answer.rules ],
       };
     });
     const harness = matrixHarness({ identities: registry, remoteJoin });
@@ -126,8 +138,8 @@ describe('joining by an alias another deployment holds', () => {
         status: 'joined',
         event: answer.join,
         eventId: String(answer.join.event_id),
-        state: [ answer.create ],
-        authChain: [ answer.create ],
+        state: [ answer.create, answer.rules ],
+        authChain: [ answer.create, answer.rules ],
       };
     });
     const harness = matrixHarness({ identities: registry, directoryQuery, remoteJoin });
