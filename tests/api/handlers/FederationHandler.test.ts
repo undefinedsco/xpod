@@ -321,6 +321,25 @@ describe('the inbound /send route', () => {
       expect(accepted.status).toBe(200);
       expect(Object.keys(accepted.body.pdus as Record<string, unknown>)).toContain('$writer-chosen');
 
+      // Membership is the room's rule for a session-delivered event: an event that does not name a
+      // joined membership for its sender is refused, and the refusal says which of the two it was.
+      // The session's own event, but one that does not name a joined membership for its sender: the
+      // claim check passes (it is Alice writing as Alice) and the room's rule is what refuses it.
+      const stranger = {
+        ...chosen,
+        event_id: '$not-a-member',
+        sender: ALICE,
+        auth_events: [ room.create.event_id as string ],
+      };
+      const refused = await send({
+        port: h.port, method: 'PUT', path: '/_matrix/federation/v1/send/solid-4', host: SERVED,
+        authorization: `Solid ${webId}`,
+        body: JSON.stringify({ origin: SERVED, pdus: [ stranger ] }),
+      });
+      expect(refused.status).toBe(200);
+      const entry = (refused.body.pdus as Record<string, { error?: string }>)[ '$not-a-member' ];
+      expect(entry?.error ?? '').toMatch(/membership/u);
+
       // A session the authenticator does not recognise is not a session: the signature path refuses
       // it, exactly as it refuses an anonymous caller.
       const unknown = await send({

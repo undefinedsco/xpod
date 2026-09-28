@@ -12,7 +12,7 @@
 | 2 | 事件 id：reference hash → **写入方生成的随机 `msgid`** | 改 | `computeEventId`、写入路径、`eventIntegrity`、去重 | 同一 id 重发**只产生一行**（**同 id 不覆盖**）；id 随事件传播、跨 Pod 相同；时间是行自己的 `createdAt` |
 | 3 | 每事件签名 + 密钥托管 + 公钥发布 | **删候选** | `identityProvisioning`、`signingKeyStore`、`credential` 私密封存、`/_matrix/key/v2/server` | 不再需要"验签通过"这类断言；改为"写入这一跳的身份 + 作者 Pod 正本比对" |
 | 4 | 事务预留（`xpod_matrix_transactions`、`MatrixEventJournal` reserve 半、`PodMatrixEventJournal`） | **删候选** | 发送路径、`PodMatrixStore` 五个反查点 | 幂等由确定性 id 保证，不再有预留表；**sequence 保留**（sync 增量本地加速，可重建） |
-| 5 | 事件图字段（`prev_events`/`auth_events`/`depth`）与 v11 规则强制 | **本地一侧已完成**；接收侧与事件图字段待办 | `roomState` 回放、`protocol/authRules`、`appendEvent` 的 `authorizeEvent` | 本地写入只剩成员/角色判定（`requireJoined`/`requireRoomOwner`/`authorizeTargets`）；**v11 只留给 Matrix 形状的对端** |
+| 5 | 事件图字段（`prev_events`/`auth_events`/`depth`）与 v11 规则强制 | **本地与接收（会话路径）已完成**；签名路径与事件图字段待办 | `roomState` 回放、`protocol/authRules`、`appendEvent`、`inboundPdu` 第 4 步 | 本地写入只剩成员/角色判定；**会话投递的批次**只剩"发送者是 join 成员"（判断用事件自己声明的成员事件，无需 E）；v11 只留给 Matrix 形状的对端 |
 | 6 | 房间权威（**C2**）：成员与元数据只在房主 Pod | 新增/改 | 房间记录读写、成员事件写入路径、`resolvedState` 的用途 | 房主 Pod 是唯一权威；其他 Pod 的房间记录标注为**本地镜像**；镜像冲突不得放行写入 |
 | 7 | 投递：推 + 批次 → **拉为主** | 改 | `outboundDelivery`/`outboundSender`/`PodMatrixOutboundStore`/`outboundBatches` | 新增"订阅 + 拉增量"的验收；不再有"欠账批次" |
 | 8 | 入站回执（`txn` 控制记录）与出站批次控制记录 | **删候选** | `controlRecords.ts`、`PodMatrixInboundTransactionStore`、控制记录契约文档 | 不再断言"重放答回首次应答"；幂等写入即验收点 |
@@ -172,6 +172,12 @@
    现在只剩前者（那三项检查本来就在调用方做过）。`protocol/authRules` 与状态解析**保留**：它们仍服务
    接收侧（对端可能只说 Matrix 形状）。**接收侧与事件图字段（`prev_events`/`auth_events`/`depth`）
    仍待办**，且与"对端模型"（E/O）相关。
+   **接收侧（会话路径）也已完成（2026-09-28）**：`validateInboundPdu` 第 4 步对 `writerVerified` 的批次
+   不再跑 `authorizeEvent`，改为**成员判定**——用事件自己声明的成员事件（`auth_events` 里的
+   `m.room.member`，`state_key === sender`）判断 `membership === 'join'`；**没声明成员身份的事件直接拒**
+   （"成员才能发言"，而不是"看不见就当通过"）。这一步不需要 E：它只读事件自己带来的授权事件，
+   与"房间权威在哪"无关（C2 落地后，成员事件的来源会变，判定不变）。
+   测试：会话投递一批"发送者是本人、但没声明 join 成员身份"的事件 → 该条被拒且理由含 `membership`。
 8. 拉为主，删回执/批次/控制记录（第 7、8 项）。
 9. 收敛路径与存储形状（第 9、10 项）+ 文档与验收口径收尾。
 

@@ -97,6 +97,40 @@ export async function validateInboundPdu(pdu: unknown, options: InboundPduOption
       redacted: verified.redacted,
     };
   }
+  // A session-delivered batch already established who wrote this, so what the room asks of it is
+  // membership — not the room version's rule set. That is the whole of the protocol-layer rule here:
+  // a member may write, a non-member may not, and an event that does not even name the membership it
+  // claims is refused rather than waved through.
+  if (options.writerVerified) {
+    const sender = String(event.sender);
+    const member = selected.find(entry => entry?.type === 'm.room.member' && entry.state_key === sender);
+    if (!member) {
+      return {
+        eventId: verified.eventId,
+        outcome: 'rejected',
+        stage: 'authorisation',
+        reason: `membership: ${sender} is not named as a member by this event`,
+        redacted: verified.redacted,
+      };
+    }
+    if (member.content?.membership !== 'join') {
+      return {
+        eventId: verified.eventId,
+        outcome: 'rejected',
+        stage: 'authorisation',
+        reason: `membership: ${sender} is ${String(member.content?.membership ?? 'not joined')} in this room`,
+        redacted: verified.redacted,
+      };
+    }
+    return {
+      eventId: verified.eventId,
+      outcome: 'accepted',
+      stage: 'authorisation',
+      reason: 'membership: the writer is a joined member of this room',
+      event: verified.event,
+      redacted: verified.redacted,
+    };
+  }
   const decision = authorizeEvent(
     asAuthorizable(event),
     selected.filter((entry): entry is AuthEvent => entry !== undefined),
