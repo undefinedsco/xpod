@@ -388,6 +388,8 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   membership 取自**解析状态**（不是单槽位读），grant 由 `getDb` 先证。
 - **三条回归全部验证通过**：① 邀请仍能送达；② 补房间记录（`materializeReceivedRoom`）先于判定；
   ③ 加入握手带来的"加入之前的状态"（create/join_rules/power_levels，此时本人 membership 未知）不被判死。
+- **它同时就是"加入房间拿授权、出房间取消授权"这条口径的实现**：房间级授权＝成员资格本身，
+  加入即允许、退出/被踢/被封即 403，不需要第二套凭证生命周期。
 - 证据：单元 5 项（判定函数本身）+ `tests/api/matrix` **586 passed / 3 skipped** +
   `test:integration:lite` **159 passed / 6 skipped**（含真实 HTTP 的加入/邀请/消息链路与 `MatrixCollaboration`
   真实运行时夹具，即 ①②③ 都在真实链路上跑过）。
