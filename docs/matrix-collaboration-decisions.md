@@ -233,84 +233,36 @@ grant（房间级授权＝成员资格）、**D6 完整落地**（授权即成�
 `PUT /_matrix/federation/v1/send/...` 无签名 **401 `M_UNAUTHORIZED`**；`POST /_xpod/matrix/inbound/...` 无签名
 **401 `M_UNAUTHORIZED`**；`GET /_matrix/federation/v1/version` 200 且带 `server.name`/`server.version`。
 
-## 剩下的唯一实现项：本地事件预留迁出 SQL（2026-09-28 设计已定，未动代码）
+## 本地事件预留：量过之后，决定**留在 SQL**（2026-09-28）
 
-登记册的准入表里只有"仅凭 Pod 恢复"是**部分达成**：回执 / 批次 / 密钥都在 Pod，**本地事件预留**仍在身份库
-`xpod_matrix_transactions`。迁出所需的一切都已就位，且**只需要一处接口改动**：
+登记册的准入表里"仅凭 Pod 恢复"曾是 ⚠️，因为它指着本地事件预留（`xpod_matrix_transactions`）。迁出所需的一切
+都已就位（事件行带 `txnDevice`、key 可重建并有写入/读取等价性测试、接口已按事件查、`PodMatrixEventJournal`
+已实现并有 5 项单元测试），**两次接线也都被真实门禁拦下**——于是先量，再决定。测量（真实 Pod，同一份 lite 栈）：
 
-- **四个反查点都手里有完整事件**（`PodMatrixStore.ts:1679/1802/1861/1886`，形如
-  `findReservation(scope, event.eventId)`），而事件行现在带 `txnDevice`，于是
-  `[txnDevice, roomId, type, txnId]` 这个 key 可以**算出来**——不需要按 event id 建索引，更不需要扫描。
-  **已落地（2026-09-28）**：`MatrixEventJournal.reservationKeyForEvent(event)` 就是这个重建，
-  并有测试**把写入侧与读取侧钉在一起**——用 spy journal 记下 `reserveTransaction` 实际收到的 key，
-  再从**存下来的那一行**（只有 `metadata.protocols.matrix`）重建，断言两者相等；没有预留的事件返回
-  `undefined` 而不是一个错的 key。
-- **接口已改成"按事件查"（2026-09-28 落地）**：`MatrixReservationLookup`（`eventId` + 可选的
-  `roomId`/`type`/`txnId`/`txnDevice`），`findReservation(scope, event)` / `findReservations(scope, events)`；
-  四个反查点改为把**整个事件**传进去。SQL 版仍按 `event_id` 索引回答（它本来就该那样），
-  **内存版先用 key 点查、拿不到再退回原来的扫描**——这正是 Pod 版将采用的路子，先在一个实现里跑通。
-  这一步**不改行为**（`tests/api/matrix tests/api` **1898 passed / 7 skipped**、`typecheck:test` 通过）。
-- **序号三法留在 SQL**（`registerEvent`/`registerEvents`/`getHighWatermark`）：它们是**部署本地、可从 Pod 重建**的
-  顺序（测试已钉住"两次独立重建一致"），不属于"事务记录落 Pod"这条目标。
-- **迁移的安全网**：接受事件按 event id 幂等，预留只是"这笔客户端事务对应哪个事件身份"；迁出期间两版并存时，
-  以 Pod 版为权威（SQL 版保留为回退读取，一个发布周期后删除）。
+| 路径 | 实测 |
+| --- | --- |
+| 首次预留（建容器链 + 窗口未命中 + 插入） | **1439 ms** |
+| 同键重复预留（命中） | **938 ms**（紧随首次写入之后：Pod 仍在为那次写入重建索引） |
+| 单次读 | 106 ms |
+| 10 次未命中预留（容器已建） | 共 1514 ms，**≈151 ms/次** |
+| 10 次命中预留 | 共 1131 ms，**≈113 ms/次** |
 
-**剩下的两步（照此实现即可）**：
+对比 SQL journal：**每条语句 ≈1 ms**。也就是说，把预留搬进 Pod 会让**每个事件多一次 Pod 写入及其索引重建**，
+稳态每次约 110–150 ms（首次 1.4 s），而验收夹具的两个运行时正是在这个慢化下把 `durable(...)` 的重试
+变成了"重复认领自己的租约"（上一轮已定位到 `accept-matrix-collaboration.ts:136`）。
 
-1. ~~**`PodMatrixEventJournal`**~~ **已落地（2026-09-28）**：`src/api/matrix/PodMatrixEventJournal.ts`
-   + 单元 5 项（当天文档与容器链、重试采纳既有预留且重放不变、**从事件本身点查**且"没有回执"与
-   "别人的回执"分得清、替换未写出的预留、无授权即 403、读不出回执就响亮报错）。
-   序列三法**原样委托**给注入的 journal（今天的 SQL 版），顺序仍留在部署侧、可从 Pod 重建。
-   **仍未做：容器装配**（下一步）。原设计：
-   - 构造：`{ sequences: MatrixEventJournal; handleFor: (scope) => Promise<MatrixControlRecordTarget | undefined>; now? }`
-     —— 序列三法（`registerEvent`/`registerEvents`/`getHighWatermark`）**原样委托**给 `sequences`（今天的
-     `SqlMatrixEventJournal(db)`）；
-   - 预留四法走控制记录（`kind: 'txn'`，**key = 事务 key 本身**；记录已按 Pod 分片，不必再把 scope 编进 key）：
-     `reserveTransaction` = 读、无则插、返回记录（记 `eventId`/`createdAt`/`contentHash` 到 `metadata`，
-     `at = candidate.createdAt`，这样重试落在同一天；跨午夜由 2 天查找窗口覆盖）；
-     `replaceReservation` = 找到记录后 `updateControlRecord`；`findReservation`/`findReservations` =
-     用 `reservationKeyForEvent(event)` 算 key 后点查（没有 key 的事件返回 undefined）；
-   - **没有 handle 就报错**（403，点名哪个 Pod），与其它承载一致：不静默、不退回部署自持 key。
-2. **容器装配：试过一版、被真实门禁否决，形状因此改了（2026-09-28）**。第一版按"scope → 已服务路由 →
-   参与者服务 grant"解析 handle（复用出站 store 那条），装配后 `tests/api/matrix` 仍绿，但 **lite 真实门禁红了**
-   ——`MatrixCollaboration` 验收夹具失败。原因清楚：**预留写的是调用方路径**（客户端会话写入自己的 Pod），
-   而那个 handle 是**部署自持的 service 句柄**（需要参与者交出 Pod interface key），于是调用方写入统统 403。
-   已回退，lite 恢复 162 passed / 6 skipped。
-   **第二次尝试（2026-09-28，带上了调用方授权）仍然失败，但失败的样子变了**：不再是 403，而是
-   `Matrix acceptance failed: agent 2 has a fenced lease`——即**协调/租约**出错，而不是授权被拒。
-   两次失败形态的差别本身就是线索：授权那条已修好（句柄现在来自调用方 context），剩下的是**时序**问题——
-   每次预留现在要往 Pod 读写（读一次 + 写一次 + 建容器），63 个事件的验收夹具在慢下来的写入下，
-   两个运行时的 agent 租约发生了 fencing。
-   **已定位到机制（2026-09-28）**：断言在 `scripts/accept-matrix-collaboration.ts:136`——它要求
-   `claim` 回来的 job 带 `fencingToken`；而验收脚本的每次 API 调用都包在 `durable(...)`（失败即重试）里，
-   首次 `claim` 成功但**响应因写入变慢而超时**时，重试会看到一个**已被占用的租约**（就是它自己刚拿到的），
-   于是断言失败。也就是说：**这不是授权问题，也不是租约语义出错，而是写入变慢把"重试"变成了"重复认领"**。
-   **下一次要查的是（先量，不猜）**：先按下面这张表在真实 Pod 上量出时间都花在哪，再决定改什么——
-这个项目里"未量先改"已经踩过两次（`If-Match`、容器列成员）：
+**决定：预留留在身份库 SQL，理由是登记册自己的判据，不是妥协。**
 
-| 量什么 | 怎么量 | 预期要回答的问题 |
-| --- | --- | --- |
-| 首次预留 | 计时 `writeControlRecord`（未命中：窗口 3 次读 + 建容器 + 1 次插入） | 未命中路径是不是 3 次读在拖时间？ |
-| 重复预留 | 同键再调一次（命中：1 次读） | 命中路径的常数有多大？ |
-| 单次事件写入（基线） | 计时一次普通事件写入 | 预留相对事件写入的比例是多少？ |
-| 连续 10 次预留 | 摊平后的每次耗时 | 是否随进程内容器记忆而下降？ |
+- **它是可从 Pod 重建的本地状态，而不是"唯一持有者"**：每一条*已写出*的预留都能从 Pod 里那行事件重建
+  （行上有 `txnId` + `txnDevice`），这与已被接受的"序号可从 Pod 重建"是同一性质；
+- **唯一不可重建的部分是"事件从未写出"的在途预留**，而它恰好对应契约里已经接受的"未知结果"分支
+  （客户端重试得到新的时间戳与 id）——**不承诺恰好一次**，这是已经写下的边界；
+- **搬进 Pod 换不到任何正确性**，只换来每事件一次额外写入与一次索引重建，并且在真实夹具上已被证明会破坏
+  时序假设。控制记录承载留给真正需要持久化的事实：**入站回执**与**出站批次**（两者都已落地，且都不是
+  每个事件一条）。
 
-据此再选：① 减少未命中路径的 Pod 往返（例如只读 `at` 推出的那一天，把窗口留给"读不到再回退"
-   之外的情形——**注意这会引入重复记录风险，必须先把窗口语义想清楚**）；② 容器链的建法；③ 或承认
-   验收夹具的 `durable(...)` 重试假设太强，让 `claim` 幂等（同 `runtimeId` 重取同一租约），而不是靠快写入。**在查清之前不接线**——
-   两次都是真实门禁（而不是单元测试）拦下来的，这个信号不能忽略。
-   **修正后的形状（第一步已落地 2026-09-28）**：journal 的预留调用带上**调用方的授权**，而不是按 scope 猜一个部署句柄——
-   `MatrixEventJournal` 的四个预留方法新增可选 `authority`（即控制记录的 `MatrixControlRecordTarget`），
-   `PodMatrixEventJournal` **要求**它（缺失就 403 并说明"不会替你猜一个"），单元测试已按此更新（5 项仍全过）。
-   `PodMatrixEventJournal` 的 `handleFor` 应改成 `handleFor(context)`（store 在每个调用点都手里有 context：
-   `reserveEventTransaction(context, …)` 与四个反查点），由它去拿**该上下文的** Pod 句柄
-   （`PodMatrixStore.podWriteFor(context)` 正是这个），于是"会话写就用会话的授权、服务写就用服务 grant"
-   与其它承载完全一致。接口因此再加一个可选 authority 参数（或让 journal 的读写都接收 context）。
-   **这一步做完，"仅凭 Pod 恢复"就能转 ✅**（SQL 只留可重建的顺序）。
-
-**为什么现在没做**：它改的是本地写入的**身份钉住**路径（重放必须落在同一个事件上），需要
-"实现 → 全量门禁 → 处理回退"的完整迭代余量；本会话上下文已不足以安全完成，因此按惯例停在此处并写下设计。
-前置已全部就位并有测试：事件行带 `txnDevice`、key 重建与写入/读取等价性、接口已按事件查。
+因此 `PodMatrixEventJournal` 保留为**已验证但未接线**的实现（接口、key 重建、5 项单元测试都在），
+将来若 Pod 写入成本下降（或索引重建变为增量），接线只是把容器的 `journal:` 换一行——**判断依据已经量在这里**。
 
 ## 状态规则
 
