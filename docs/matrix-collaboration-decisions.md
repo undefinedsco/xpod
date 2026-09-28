@@ -150,9 +150,15 @@
      - **真正缺的**：本地写入没有跑 `authorizeEvent` 本身，所以**power level 的细粒度**没有逐条执行——
        谁能改 `m.room.power_levels`、谁能 ban/kick、`join_rules` 允许哪种加入、`@` 开头的 state_key 限制等；
        `requireRoomOwner` 只是粗粒度替代（"是不是房主"≠"power level 够不够"）。
-     - **启用方式（下一步）**：`appendEvent` 之前，用房间的**解析状态**取 auth events 调 `authorizeEvent`，
-       不通过就 403；上线前先把四条本地路径逐一过规则确认不误伤——`createRoom`、`joinRoom`（含远端加入）、
-       `inviteUser`、以及 D6 新增的 **Agent 成员事件**，然后跑全量门禁。
+     - **启用方式（下一步，钩子点已定位）**：**唯一的构建点**是 `PodMatrixStore.appendEvent` 里的
+       `buildPersistedEvent`（`PodMatrixStore.ts:1060`）——本地事件只在那里成形，所以规则强制就落在
+       **成形之后、落库之前**：把刚构建的事件（`type`/`sender`/`state_key`/`content`/`prev_events`/`auth_events`）
+       连同它的 `auth_events` 从房间**解析状态**里解出的 `AuthEvent[]`（`timeline` 多数调用方已经读过）
+       交给 `authorizeEvent(event, authEvents)`，`decision.allowed === false` 就 403 并把 `v11-x.y.z` 原因原样带上。
+       **不要在这里判入站事件**：收到的 PDU 走 `acceptReceivedEvent`，且已经在 `validateInboundPdu` 里判过一次
+       （重复判定会让同一事件在两处解释，且这里的 auth events 是本地状态、语义不同）。
+       上线前先把四条本地路径逐一过规则确认不误伤——`createRoom`、`joinRoom`（含远端加入）、`inviteUser`、
+       以及 D6 新增的 **Agent 成员事件**（邀请 + 自签 join，规则 5.2.2 应放行），然后跑全量门禁。
    - **只有到这一步之后**，写路径才可以按 v11 规则强制（rule 5 要求 sender 已 join）——这正是登记册
      "授权与执行"一节把规则只当纯校验器的原因；强制与 Agent 成员事件要在同一轮落地，否则 Agent 的消息会被拒。
    - **restricted join 的附加签名**（`join_authorised_via_users_server`）先不做：它是"房间在别的 server 上、
