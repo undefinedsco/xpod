@@ -348,7 +348,7 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
 | 有界同步的变更信号（订阅 → sync） | `notifications/roomChangeSubscription.ts`、`roomChangeTracker.ts`、`roomWatchService.ts` | 各 7/7/9 项；`syncChangeSource` 6 项、`syncBoundedReads` 5 项、`scaleOperations` 4 项 |
 | 远端加入接线（按 id 与 alias） | `PodMatrixStore.joinRoom/joinRemoteRoom/resolveRoomId` | `remoteJoinStore.test.ts` 4 项；`twoDeployment` 端到端两项 |
 | 授权判定不跨请求复用 | `PodMatrixStore.agentGrants/authorize` | `agentGrantFreshness.test.ts` 2 项 |
-| 入站事务回执落 Pod（控制记录承载） | `matrix/controlRecords.ts`（create-once 文档）、`federation/podInboundTransaction.ts`、`matrix/podAccess.ts`（写入身份唯一解析点）、容器装配 + `FederationHandler.recordsFor` | 单元 8 项 + 句柄透传 1 项 + 写入身份 3 项；**真实 Pod 2 项**（见下） |
+| 入站事务回执与出站批次落 Pod（控制记录承载） | `matrix/controlRecords.ts`（models 日期布局：一天一目录、一条记录一文档；幂等插入而非 create-once）、`federation/podInboundTransaction.ts`、`federation/podOutboundStore.ts`、`matrix/podAccess.ts`（**store 与控制记录**的写入身份解析点；密钥托管那条路另在 `identityProvisioning.matrixSigningIdentityForPod`，两处必须同答）、容器装配 + `FederationHandler.recordsFor` | 单元 9 + 句柄透传 1 + 写入身份 5 + 出站 store 7 项；**真实 Pod 5 项**（见下） |
 
 **未达成（等拍板，见登记册开头）**：写入侧 ①②③、控制记录的**每记录一文档布局**确认、出站批次的 Pod 承载
 （等 `scopes()` 来源）、grant 索取流程、D6 Agent 归属、真实实例验收（另起栈或重启 3000）。
