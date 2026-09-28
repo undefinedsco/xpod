@@ -119,8 +119,11 @@
 2. **1.0b 房间 id 的域**：随 1.0a 自动统一（`!xxx:<WebID host>`）。
 3. **1.0c 签名**：**不动**——请求签名（`X-Matrix`）与事件签名仍用部署密钥，键名与参与者标识无关；
    删签名是第 3 项的事，等 O。**这一条正是第 1 轮 89 项失败的主因**（当时把标识与签名键混在一起改）。
-4. **1.0d 身份字段**：`sender` / `state_key` / 成员键 / `inboundAuthority` 入参 → WebID；Agent 用自身 URI；
-   `matrixUserIdFor` 与 `serverNameOf` 的 MXID 分支**保留**（历史数据与签名路径仍要认），新增 URL 分支（已落地）。
+4. **1.0d 身份字段**：`sender` / `state_key` / 成员键 / `inboundAuthority` 入参 → WebID；Agent 用自身 URI。
+   **前置已落地（2026-09-28）**：`serverNameOf` 现在**认 URL 身份**（WebID 或 Agent URI → 其 host），
+   MXID 分支保留给历史数据与签名路径；`isUserIdentity` 同时认两种形态。这一步是纯加法（MXID 行为不变），
+   单元 5 项（含"与 `webIdServerName` 同一条规则，不是第二套"）。**没有它，sender 一变成 WebID，
+   路由与密钥解析就会读到 `//alice.example/card#me` 这种半截字符串。**
 5. **夹具与期望值**：`participantIdentity.test.ts` 断言 MXID 以 `:example.test` 结尾、别名按部署名匹配等，
    按 WebID host 更新（约 25 项，属机械改动）。
 6. **验收**：事件里 `sender` 是 WebID；跨 Pod 同一事件 id 相同；不再出现 `@u_<hash>:host`（历史不追溯）；

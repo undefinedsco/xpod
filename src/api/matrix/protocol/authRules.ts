@@ -22,6 +22,8 @@
  * `sender` (v11 preamble: "Events must be signed by the server denoted by the
  * `sender` property").
  */
+import { webIdServerName } from './serverName';
+
 export interface AuthEvent {
   event_id?: string;
   type?: string;
@@ -447,9 +449,18 @@ function slotOf(type: string, stateKey: string): string {
   return `${type}|${stateKey}`;
 }
 
-/** The server name half of `@user:server` or `!room:server`. */
+/**
+ * The server a `@user:server`, `!room:server` or URL identity belongs to.
+ *
+ * Identities in this protocol are WebIDs (and agents are their own URIs), so the answer for
+ * `https://alice.example/card#me` is the URL's host — the same rule `webIdServerName` already
+ * applies. The `@local:server` form stays understood because stored history and the Matrix-shaped
+ * surface a peer may still speak both carry it.
+ */
 export function serverNameOf(id: string | undefined): string | undefined {
   if (typeof id !== 'string') return undefined;
+  const fromUrl = webIdServerName(id);
+  if (fromUrl) return fromUrl;
   const separator = id.indexOf(':');
   if (separator <= 0 || separator === id.length - 1) return undefined;
   return id.slice(separator + 1);

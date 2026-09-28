@@ -59,3 +59,17 @@ function stripBrackets(host: string): string {
 export function matrixUserIdFor(subject: string, serverName: string): string {
   return `@u_${createHash('sha256').update(subject).digest('hex')}:${serverName}`;
 }
+
+/**
+ * Is this a user identity this protocol speaks for?
+ *
+ * Two forms are understood: a URL identity — a WebID, or an agent's own URI — whose host is a usable
+ * server name, and the `@localpart:server` form stored history carries. Anything else is refused
+ * rather than stored as a member nobody can address.
+ */
+export function isUserIdentity(value: string): boolean {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  if (!value.startsWith('@')) return webIdServerName(value) !== undefined;
+  const separator = value.indexOf(':');
+  return separator > 1 && separator < value.length - 1;
+}
