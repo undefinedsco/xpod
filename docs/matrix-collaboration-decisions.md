@@ -80,6 +80,10 @@
    - **`m.room.member` 事件**：只要授权（grant）在，就允许写入——它们是成员身份的**变更手段**，不是成员身份的**结果**；
    - **其它事件**（消息、状态等）：要求该参与者**此刻在该房间里**（解析状态里的 membership = join）。
    两类都不放松"没有 grant 就 403"这条底线。
+   **已落地（2026-09-28）**：判定写成纯函数 `src/api/matrix/inboundAuthority.ts`
+   （`inboundWriteAuthority({grant, type, membership})` → `{allowed, reason}`），单元 4 项覆盖：
+   无 grant 一律拒（连 `m.room.member` 也拒）、成员可写消息、非成员（invite/leave/ban/knock/未知）拒且理由点名状态、
+   `m.room.member` 在房间未知时也允许（这正是邀请能送达的原因）。**尚未接线**：入站写入路径还没调用它。
 3. **D6 Agent 归属**——**已定（2026-09-27）：Agent 作为房间成员（有自己的 MXID）**。写路径因此可以强制 v11 授权规则。
    实现路径（本轮细化，按"复用已有机制、不新增协议路径"排序）：
 
