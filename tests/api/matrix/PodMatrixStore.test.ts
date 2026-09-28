@@ -3,6 +3,7 @@ import { drizzle } from '@undefineds.co/drizzle-solid';
 import { chatResource, messageResource, threadResource } from '@undefineds.co/models';
 import { PodMatrixStore } from '../../../src/api/matrix';
 import { matrixHarness } from '../../helpers/MatrixMemoryDatabase';
+import { InMemoryMatrixEventJournal } from '../../../src/api/matrix/MatrixEventJournal';
 
 vi.mock('@undefineds.co/drizzle-solid', async () => {
   const actual = await vi.importActual<typeof import('@undefineds.co/drizzle-solid')>('@undefineds.co/drizzle-solid');
@@ -12,6 +13,35 @@ vi.mock('@undefineds.co/drizzle-solid', async () => {
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe('PodMatrixStore shared Pod contract', () => {
+  it('rebuilds a deterministic local order from the Pod alone', async () => {
+    const { store, context, db } = matrixHarness();
+    const room = await store.createRoom({}, context);
+    for (const body of [ 'one', 'two', 'three' ]) {
+      await store.sendEvent(room.roomId, 'm.room.message', `txn-${body}`, { body }, context);
+    }
+    const ordered = async(instance: PodMatrixStore, reader: typeof context): Promise<string[]> =>
+      (await instance.sync(reader)).rooms.join[room.roomId].timeline.events.map(event => event.event_id);
+    const first = await ordered(store, context);
+    const bodies = (await store.sync(context)).rooms.join[room.roomId].timeline.events
+      .map(event => (event.content as Record<string, unknown>).body)
+      .filter((body): body is string => typeof body === 'string');
+    expect(bodies).toEqual([ 'one', 'two', 'three' ]);
+
+    // A deployment that lost its local journal (a wipe, a fresh node) reads the same Pod with a new
+    // one. Two independent rebuilds have to agree: sequences are assigned in the order the Pod is
+    // read — createdAt, then id — which is a function of the Pod and not of the table that was lost.
+    const rebuilt = async(): Promise<string[]> => await ordered(
+      new PodMatrixStore({ journal: new InMemoryMatrixEventJournal() }),
+      { ...context, _matrixDb: db } as never,
+    );
+    expect(await rebuilt()).toEqual(await rebuilt());
+    expect(new Set(await rebuilt())).toEqual(new Set(first));
+    // What a rebuild cannot promise is the *arrival* order between events written in the same
+    // millisecond: the tie is broken by id, which need not be the order they arrived in. That is
+    // exactly why this sequence is a local accelerator and the client's cursor is the client's own
+    // business (2026-09-27).
+  });
+
   it('writes the sending device onto the event, so the event alone names its reservation', async () => {
     const { store, context, rows } = matrixHarness();
     const room = await store.createRoom({}, context);
