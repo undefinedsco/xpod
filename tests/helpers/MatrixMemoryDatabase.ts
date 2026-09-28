@@ -3,11 +3,11 @@ import { matrixSigningIdentityRegistry } from '../../src/api/matrix/identityRegi
 /**
  * The server name the harness deployment signs as.
  *
- * Exported so tests do not spell it out: the migration moves this to the participant's WebID host
- * (each deployment serves its own participant), and a test that hardcodes the name would have to be
- * found and changed one by one when it does.
+ * The participant's WebID host, which is what a deployment signs as: each deployment serves its own
+ * participant, so the identity a room and an event are addressed by is the host of that WebID.
+ * Exported so tests do not spell it out — one line moves every test that follows it.
  */
-export const MATRIX_TEST_SERVER_NAME = 'example.test';
+export const MATRIX_TEST_SERVER_NAME = 'alice.example';
 
 export function matrixHarness(
   options?: {

@@ -66,7 +66,7 @@ describe('provisioning a participant when they enter a room', () => {
     };
     const { store, context } = matrixHarness({ identities: source, participantIdentity });
 
-    // Without the hook this would be `@u_hash:example.test`; the reported id must already
+    // Without the hook this would be `@u_hash:<deployment name>`; the reported id must already
     // be the participant's own server, because this is the id others invite.
     const account = await store.getAccount(context);
     expect(account.userId).toMatch(/:alice\.example$/u);
@@ -81,7 +81,7 @@ describe('provisioning a participant when they enter a room', () => {
     };
     const { store, context } = matrixHarness({ identities: source, participantIdentity });
 
-    expect((await store.getAccount(context)).userId).toMatch(/:example\.test$/u);
+    expect((await store.getAccount(context)).userId).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
   });
 
   it('provisions before a join event and hands over the Pod this write targets', async () => {
@@ -125,7 +125,7 @@ describe('provisioning a participant when they enter a room', () => {
 
     const account = await store.getAccount(context);
     expect(ensureParticipantIdentity).toHaveBeenCalledTimes(1);
-    expect(account.userId).toMatch(/:example\.test$/u);
+    expect(account.userId).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
     const room = await store.createRoom({}, context);
     // Still one: createRoom's call is the same idempotent check, and the stub is a no-op.
     expect(ensureParticipantIdentity).toHaveBeenCalledTimes(2);
@@ -165,9 +165,9 @@ describe('provisioning a participant when they enter a room', () => {
   it('leaves a deployment without the hook unchanged', async () => {
     const { store, context } = matrixHarness();
     const account = await store.getAccount(context);
-    expect(account.userId).toMatch(/:example\.test$/u);
+    expect(account.userId).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
     const room = await store.createRoom({}, context);
-    expect(room.roomId).toMatch(/:example\.test$/u);
+    expect(room.roomId).toMatch(new RegExp(`:${MATRIX_TEST_SERVER_NAME}$`, 'u'));
     await store.joinRoom(room.roomId, context);
     await expect(store.sendEvent(room.roomId, 'm.room.message', 'txn-1', { body: 'hi' }, context)).resolves.toBeDefined();
   });

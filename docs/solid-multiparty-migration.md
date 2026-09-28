@@ -128,6 +128,10 @@
    **已全部改完（2026-09-28）**：`participantProvisioning`、`participantIdentity`、`MatrixCollaboration`
    也改为引用常量；`authRules`/`signingKeys` 用的是任意 server name，**不需要跟随**。
    现在**切换夹具名只需改 `MATRIX_TEST_SERVER_NAME` 一行**，1.0a 的成本从"18 处同时红"降到一行。
+   **1.0a 已落地（2026-09-28）**：`MATRIX_TEST_SERVER_NAME` 改为 **`alice.example`**（参与者 WebID 的 host）
+   ——部署以**参与者自己的 host** 签名，房间 id 与别名也按它寻址。切换后只剩 **6 项**失败（去硬编码前是 18 项），
+   且全是"期望值跟着名字走"：5 处 MXID 后缀断言改为按常量构造正则、1 处别名按常量拼；
+   `tests/api/matrix` **600 passed / 3 skipped**、`tests/api tests/http` 2054、lite 162。
 2. **1.0b 房间 id 的域**：随 1.0a 自动统一（`!xxx:<WebID host>`）。
 3. **1.0c 签名**：**不动**——请求签名（`X-Matrix`）与事件签名仍用部署密钥，键名与参与者标识无关；
    删签名是第 3 项的事，等 O。**这一条正是第 1 轮 89 项失败的主因**（当时把标识与签名键混在一起改）。

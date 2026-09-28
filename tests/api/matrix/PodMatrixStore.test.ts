@@ -227,10 +227,10 @@ describe('PodMatrixStore shared Pod contract', () => {
     const bob = { ...context, webId: 'https://bob.example/profile/card#me' };
     const bobId = (await store.getAccount(bob)).userId;
     const room = await store.createRoom({ room_alias_name: 'team', invite: [bobId] }, context);
-    expect(await store.joinRoom('#team:example.test', bob)).toEqual({ roomId: room.roomId });
+    expect(await store.joinRoom(`#team:${MATRIX_TEST_SERVER_NAME}`, bob)).toEqual({ roomId: room.roomId });
     expect(await store.getState(room.roomId, 'm.room.member', bobId, bob)).toMatchObject({ membership: 'join' });
     expect(await store.listJoinedRooms(bob)).toContain(room.roomId);
-    await expect(store.joinRoom('#missing:example.test', context)).rejects.toMatchObject({ errcode: 'M_NOT_FOUND' });
+    await expect(store.joinRoom(`#missing:${MATRIX_TEST_SERVER_NAME}`, context)).rejects.toMatchObject({ errcode: 'M_NOT_FOUND' });
   });
 
   it.each(['m.room.create', 'm.room.member', 'm.room.encryption'])('rejects unsupported initial %s state without writing a partial room', async (type) => {
