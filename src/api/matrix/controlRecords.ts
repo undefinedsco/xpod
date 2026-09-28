@@ -52,10 +52,21 @@
  * containers there is nothing to list.
  */
 import { createHash } from 'node:crypto';
+import { Parser } from 'n3';
 import { buildPodResourceIriForResource } from '@undefineds.co/drizzle-solid';
 import { dateParts, taskResource, TaskStatus, type TaskStatusType } from '@undefineds.co/models';
 import { MatrixError } from './MatrixError';
 import type { MatrixPodWrite } from './podAccess';
+
+/**
+ * What a record is for.
+ *
+ * The kind is part of the document name (`txn-…` / `outbound-…`) inside the day directory. One
+ * directory per day keeps the models convention; the prefix lets a lister pick the records it wants
+ * from the container listing it already has, without reading the ones it does not — which is what
+ * keeps enumerating a queue bounded by the queue rather than by everything the day holds.
+ */
+export type MatrixControlRecordKind = 'txn' | 'outbound';
 
 /** A control record's payload, as it is kept in the row's opaque `metadata`. */
 export type MatrixControlRecordMetadata = Record<string, unknown>;
@@ -73,6 +84,8 @@ export interface MatrixControlRecordWrite {
 /** One keyed control record, decoded from its row. */
 export interface MatrixControlRecord {
   key: string;
+  /** What the record is for; see `MatrixControlRecordKind`. */
+  kind: MatrixControlRecordKind;
   /** The day bucket the record lives in, as `yyyy/MM/dd`. */
   bucket: string;
   /** The document that holds it. */
@@ -86,6 +99,7 @@ export interface MatrixControlRecord {
 }
 
 export interface WriteControlRecordInput {
+  kind: MatrixControlRecordKind;
   key: string;
   /** When the record is about: its day bucket follows from this. */
   at: Date | string | number;
@@ -114,6 +128,9 @@ export const CONTROL_RECORD_LOOKBACK_DAYS = 2;
 
 /** The subject every record document describes: one record, one document, one subject. */
 const CONTROL_RECORD_SUBJECT = 'self';
+
+/** `ldp:contains`, which is how a container answers "what is in me". */
+const LDP_CONTAINS = 'http://www.w3.org/ns/ldp#contains';
 
 /**
  * Day directories this process has already prepared.
@@ -145,15 +162,17 @@ export function controlRecordBuckets(at: Date | string | number, days = CONTROL_
  *
  * The key is hashed for the document name: half of it is chosen by a peer (a transaction id is an
  * arbitrary string), and a document name has to be one path segment whatever arrives. Hashing also
- * keeps two keys apart in the same day. What the record is *about* stays in its metadata.
+ * keeps two keys apart in the same day, and the kind prefix keeps the two kinds of record apart.
+ * What the record is *about* stays in its metadata.
  */
-export function controlRecordAddress(podUrl: string, key: string, bucket: string): {
-  id: string;
-  resource: string;
-  subject: string;
-} {
+export function controlRecordAddress(
+  podUrl: string,
+  kind: MatrixControlRecordKind,
+  key: string,
+  bucket: string,
+): { id: string; resource: string; subject: string } {
   const name = createHash('sha256').update(key).digest('hex');
-  const id = `${bucket}/${name}.ttl#${CONTROL_RECORD_SUBJECT}`;
+  const id = `${bucket}/${kind}-${name}.ttl#${CONTROL_RECORD_SUBJECT}`;
   const subject = buildPodResourceIriForResource(podUrl, taskResource, id);
   return { id, resource: subject.split('#')[0], subject };
 }
@@ -169,11 +188,11 @@ export async function writeControlRecord(
   target: MatrixControlRecordTarget,
   input: WriteControlRecordInput,
 ): Promise<MatrixControlRecordWrite> {
-  const existing = await readControlRecord(target, input.key, { at: input.at });
+  const existing = await readControlRecord(target, input.kind, input.key, { at: input.at });
   if (existing) return { record: existing, created: false };
 
   const bucket = controlRecordBucket(input.at);
-  const { id, resource, subject } = controlRecordAddress(target.scope, input.key, bucket);
+  const { id, resource, subject } = controlRecordAddress(target.scope, input.kind, input.key, bucket);
   await ensureDayContainers(target, resource, bucket);
   await target.write.db.insert(taskResource).values({
     id,
@@ -183,7 +202,7 @@ export async function writeControlRecord(
     metadata: input.metadata,
   } as never).execute();
   return {
-    record: { key: input.key, bucket, resource, subject, status: input.status, metadata: input.metadata },
+    record: { key: input.key, kind: input.kind, bucket, resource, subject, status: input.status, metadata: input.metadata },
     created: true,
   };
 }
@@ -191,15 +210,51 @@ export async function writeControlRecord(
 /** Read the record under a key, or `undefined` when there is none in the retention window. */
 export async function readControlRecord(
   target: MatrixControlRecordTarget,
+  kind: MatrixControlRecordKind,
   key: string,
   options: { at?: Date | string | number; days?: number } = {},
 ): Promise<MatrixControlRecord | undefined> {
   for (const bucket of controlRecordBuckets(options.at ?? Date.now(), options.days)) {
-    const { resource, subject } = controlRecordAddress(target.scope, key, bucket);
+    const { resource, subject } = controlRecordAddress(target.scope, kind, key, bucket);
     const row = await target.write.db.findByResource(taskResource, subject) as Record<string, unknown> | null;
-    if (row) return decodeControlRecord(key, bucket, resource, subject, row);
+    if (row) return decodeControlRecord(key, kind, bucket, resource, subject, row);
   }
   return undefined;
+}
+
+/**
+ * Every record of one kind in the window, read from the day directories that hold them.
+ *
+ * This is the enumeration a client (or a deployment's own queue) needs after a restart. It is
+ * bounded by what it enumerates: one container listing per day in the window — a single request,
+ * because a container answers with all its members at once — and one document read per *matching*
+ * member, picked by the name prefix the kind gives it.
+ */
+export async function listControlRecords(
+  target: MatrixControlRecordTarget,
+  kind: MatrixControlRecordKind,
+  options: { at?: Date | string | number; days?: number } = {},
+): Promise<MatrixControlRecord[]> {
+  const records: MatrixControlRecord[] = [];
+  for (const bucket of controlRecordBuckets(options.at ?? Date.now(), options.days)) {
+    const { resource, subject } = controlRecordAddress(target.scope, kind, '', bucket);
+    const container = resource.slice(0, resource.lastIndexOf(bucket)) + `${bucket}/`;
+    const response = await target.write.fetch(container, { method: 'GET', headers: { Accept: 'text/turtle' }});
+    // A day with nothing in it is not an error: it is a day with nothing in it.
+    if (response.status === 404) continue;
+    if (!response.ok) {
+      throw new MatrixError(502, 'M_UNKNOWN',
+        `Could not list ${container}: ${response.status} ${response.statusText}`);
+    }
+    for (const member of await containedDocuments(await response.text(), container)) {
+      if (!isRecordDocument(member, kind)) continue;
+      const subject = `${member}#${CONTROL_RECORD_SUBJECT}`;
+      const row: Record<string, unknown> | null = await target.write.db.findByResource(taskResource, subject);
+      if (!row) continue;
+      records.push(decodeControlRecord('', kind, bucket, member, subject, row));
+    }
+  }
+  return records;
 }
 
 /**
@@ -248,6 +303,7 @@ export async function deleteControlRecord(
  */
 function decodeControlRecord(
   key: string,
+  kind: MatrixControlRecordKind,
   bucket: string,
   resource: string,
   subject: string,
@@ -258,6 +314,7 @@ function decodeControlRecord(
   delete metadata.id;
   return {
     key,
+    kind,
     bucket,
     resource,
     subject,
@@ -266,6 +323,19 @@ function decodeControlRecord(
     ...(typeof row.createdAt === 'string' ? { createdAt: row.createdAt } : {}),
     ...(typeof row.updatedAt === 'string' ? { updatedAt: row.updatedAt } : {}),
   };
+}
+
+/** The members a container says it holds, parsed as Turtle. */
+async function containedDocuments(body: string, container: string): Promise<string[]> {
+  return new Parser({ baseIRI: container }).parse(body)
+    .filter(quad => quad.predicate.value === LDP_CONTAINS)
+    .map(quad => quad.object.value);
+}
+
+/** Whether a container member is a record document of this kind. */
+function isRecordDocument(iri: string, kind: MatrixControlRecordKind): boolean {
+  const name = iri.split('/').pop() ?? '';
+  return name.startsWith(`${kind}-`) && name.endsWith('.ttl');
 }
 
 /**

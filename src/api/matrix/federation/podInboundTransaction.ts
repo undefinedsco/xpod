@@ -76,6 +76,7 @@ export class PodMatrixInboundTransactionStore implements MatrixInboundTransactio
     const target = requireHandle(scope, handle);
     const key = transactionKey(input.origin, input.transactionId);
     const { record, created } = await writeControlRecord(target, {
+      kind: 'txn',
       key,
       at: input.receivedAt,
       instruction: `Record the inbound Matrix transaction ${input.origin}/${input.transactionId}`,
@@ -112,7 +113,7 @@ export class PodMatrixInboundTransactionStore implements MatrixInboundTransactio
   ): Promise<void> {
     const target = requireHandle(scope, handle);
     const recordKey = transactionKey(key.origin, key.transactionId);
-    const existing = await readControlRecord(target, recordKey);
+    const existing = await readControlRecord(target, 'txn', recordKey);
     if (!existing) throw new MatrixError(500, 'M_UNKNOWN', 'Matrix inbound transaction disappeared');
     await updateControlRecord(target, existing, {
       status: STATUS_COMPLETED,
@@ -133,7 +134,7 @@ export class PodMatrixInboundTransactionStore implements MatrixInboundTransactio
   ): Promise<void> {
     const target = requireHandle(scope, handle);
     const recordKey = transactionKey(key.origin, key.transactionId);
-    const existing = await readControlRecord(target, recordKey);
+    const existing = await readControlRecord(target, 'txn', recordKey);
     if (existing) await deleteControlRecord(target, existing);
   }
 
@@ -143,7 +144,7 @@ export class PodMatrixInboundTransactionStore implements MatrixInboundTransactio
     handle?: MatrixControlRecordHandle,
   ): Promise<MatrixInboundTransactionRecord | undefined> {
     const target = requireHandle(scope, handle);
-    const record = await readControlRecord(target, transactionKey(key.origin, key.transactionId));
+    const record = await readControlRecord(target, 'txn', transactionKey(key.origin, key.transactionId));
     return record ? decode(record) : undefined;
   }
 }

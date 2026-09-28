@@ -30,6 +30,7 @@ function recordOf(batch: MatrixOutboundBatch): MatrixControlRecord {
   const encoded = encodeOutboundBatch(batch);
   return {
     key: outboundBatchKey(batch),
+    kind: 'outbound',
     bucket: '2026/09/28',
     resource: 'https://pod.example/alice/.data/task/2026/09/28/transactions.ttl',
     subject: 'https://pod.example/alice/.data/task/abc.ttl#self',

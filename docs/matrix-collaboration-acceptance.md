@@ -381,6 +381,19 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   注入的 db 没有 fetch 时拒绝（不给半个授权）；部署自持工作时**不借**调用方会话；
   `controlRecordHandleFor` 把"哪个 Pod"和"以谁的身份"一起解析；context 不含 Pod 时拒绝而不是默认成空 scope。
 
+### 出站队列的 Pod 承载（2026-09-27）
+
+- `federation/podOutboundStore.ts`：`PodMatrixOutboundStore` 实现队列的四个操作，批次落
+  `<day>/outbound-<sha256(key)>.ttl#self`（与回执同一套日期布局，靠文档名的 kind 前缀分开）。
+- **枚举靠列目录**：`pending(scope)` = 窗口（7 天）内每天一次容器列举 + 每条批次一次文档读；成本随"欠多少"增长，
+  不随 Pod 有多大增长。`scopes()` 由部署回答（已服务的路由派生）；没有提供者时只回答被问到过的 scope。
+- `remove` 改为接收整条批次（txnId 只在 `(origin, destination)` 内唯一），队列接口与内存实现同步调整。
+- 证据：`podOutboundStore.test.ts` **7 项**（当天文档与容器、按队列过滤与排序、忘掉后可重复忘掉、
+  跨天可枚举与超窗不可见、**一天只列举一次而不是每条一次**、`scopes()` 两种来源、无授权即 403）；
+  真实 Pod 新增 1 项——写入两条批次后，**换一个 store 实例（模拟重启）靠列目录把欠的批次找回来**，
+  删一条后只剩另一条。真实 Pod 用例现共 5 项。
+- **仍未接线**：容器里装的还是内存队列（接线需要 scope→句柄的来源并避开构造期循环，见契约 §6.4）。
+
 ### 控制记录改按 models 的按天累积布局（2026-09-27，回应"为什么要判赢家"）
 
 - **布局**：`<pod>/.data/task/{yyyy}/{MM}/{dd}/<key 的 sha256>.ttl#self`——与 `message.schema.ts`

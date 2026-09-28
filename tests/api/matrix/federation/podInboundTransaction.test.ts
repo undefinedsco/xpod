@@ -112,7 +112,7 @@ describe('a Pod-backed transaction store', () => {
 
     const bucket = controlRecordBucket('2026-09-28T10:00:00.000Z');
     expect(bucket).toBe('2026/09/28');
-    const { resource } = controlRecordAddress(POD, JSON.stringify([ ORIGIN, 'txn-1' ]), bucket);
+    const { resource } = controlRecordAddress(POD, 'txn', JSON.stringify([ ORIGIN, 'txn-1' ]), bucket);
     // One record, one document, inside the day directory the models buckets name.
     expect(resource.startsWith(`${POD}.data/task/2026/09/28/`)).toBe(true);
     expect(resource.endsWith('.ttl')).toBe(true);

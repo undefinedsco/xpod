@@ -69,7 +69,12 @@ export interface MatrixOutboundStore {
   /** Insert or replace one batch, keyed by transaction id. */
   put(scope: string, batch: MatrixOutboundBatch): Promise<void>;
   /** Drop a batch that has settled: delivered, or refused by the destination. */
-  remove(scope: string, txnId: string): Promise<void>;
+  /**
+   * Forget a batch. The whole batch rather than its id, because a carrier that addresses batches by
+   * document needs to know which queue the id belonged to — a transaction id is only unique within
+   * one (origin, destination).
+   */
+  remove(scope: string, batch: Pick<MatrixOutboundBatch, 'origin' | 'destination' | 'txnId'>): Promise<void>;
 }
 
 export interface MatrixOutboxReport {
@@ -234,12 +239,12 @@ export class MatrixOutbox {
         });
         if (outcome.status === 'rejected') {
           // The peer decided; the queue is free to move on to the next transaction.
-          await this.store.remove(input.scope, batch.txnId);
+          await this.store.remove(input.scope, batch);
           report.rejected.push({ txnId: batch.txnId, destination, reason: outcome.reason });
           continue;
         }
         if (outcome.status === 'delivered') {
-          await this.store.remove(input.scope, batch.txnId);
+          await this.store.remove(input.scope, batch);
           const refused = refusedPdus(batch.pdus, outcome.pdus);
           if (refused.length === 0) {
             report.delivered.push(batch.txnId);
@@ -389,9 +394,9 @@ export class InMemoryMatrixOutboundStore implements MatrixOutboundStore {
     this.batches.set(scope, all);
   }
 
-  public async remove(scope: string, txnId: string): Promise<void> {
+  public async remove(scope: string, batch: Pick<MatrixOutboundBatch, 'origin' | 'destination' | 'txnId'>): Promise<void> {
     const all = this.batches.get(scope);
     if (!all) return;
-    this.batches.set(scope, all.filter(batch => batch.txnId !== txnId));
+    this.batches.set(scope, all.filter(existing => existing.txnId !== batch.txnId));
   }
 }

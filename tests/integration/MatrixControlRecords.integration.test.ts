@@ -35,6 +35,7 @@ import {
   outboundBatchKey,
 } from '../../src/api/matrix/federation/outboundBatches';
 import type { MatrixOutboundBatch } from '../../src/api/matrix/federation/outboundQueue';
+import { PodMatrixOutboundStore } from '../../src/api/matrix/federation/podOutboundStore';
 import { createInterfaceKeyPodAccess, type OwnerInterfaceKeyAuth } from '../helpers/podInterfaceKeyAccess';
 import { getConfiguredAccount } from './helpers/solidAccount';
 
@@ -88,7 +89,7 @@ suite('Matrix control records in a real Pod', () => {
     // The receipt lives where the models layout puts records that accumulate: a day document under
     // the task base, one subject per record.
     const bucket = controlRecordBucket(reservation.receivedAt);
-    const { resource, subject } = controlRecordAddress(scope, JSON.stringify([ ORIGIN, transactionId ]), bucket);
+    const { resource, subject } = controlRecordAddress(scope, 'txn', JSON.stringify([ ORIGIN, transactionId ]), bucket);
     expect(resource).toBe(`${scope}.data/task/${bucket}/${resource.split('/').pop()}`);
     expect(resource.startsWith(`${scope}.data/task/${bucket}/`)).toBe(true);
     const head = await write.fetch(subject.split('#')[0], { method: 'HEAD' });
@@ -151,6 +152,7 @@ suite('Matrix control records in a real Pod', () => {
     const bucket = controlRecordBucket(at);
     const key = `txn-listable-${Date.now()}`;
     await writeControlRecord(handle, {
+      kind: 'txn',
       key,
       at,
       instruction: 'Record a transaction that a client should be able to find',
@@ -161,7 +163,7 @@ suite('Matrix control records in a real Pod', () => {
     // The record's document, its day, its month and its year are all real resources: a client that
     // owns its own sync state discovers records by listing (the standard Solid way) and can
     // subscribe to the container, instead of scanning the task table or knowing the keys.
-    const { resource } = controlRecordAddress(podUrl, key, bucket);
+    const { resource } = controlRecordAddress(podUrl, 'txn', key, bucket);
     const [ year, month, day ] = bucket.split('/');
     const listing = async(target: string): Promise<{ status: number; members: string[] }> => {
       const response = await write.fetch(target, { method: 'GET', headers: { Accept: 'text/turtle' }});
@@ -190,7 +192,40 @@ suite('Matrix control records in a real Pod', () => {
     expect(yearListing.status).toBe(200);
     expect(yearListing.members.some(iri => iri.replace(/\/$/u, '').endsWith(`/${month}`))).toBe(true);
 
-    await deleteControlRecord(handle, (await readControlRecord(handle, key))!);
+    await deleteControlRecord(handle, (await readControlRecord(handle, 'txn', key))!);
+  }, 120_000);
+
+  it('finds what the deployment still owes after a restart, by listing the day', async() => {
+    const { podUrl, write } = await podHandle();
+    const handle = { scope: podUrl, write };
+    // The outbound queue's carrier: a batch lives in the sender's Pod until it is delivered, and a
+    // restarted deployment enumerates it through the day container the models layout gives it.
+    const queue = new PodMatrixOutboundStore({ handleFor: async scope => (scope === podUrl ? handle : undefined) });
+    const first: MatrixOutboundBatch = {
+      txnId: `txn-owed-${Date.now()}`,
+      origin: ORIGIN,
+      destination: 'other.example',
+      pdus: [ { event_id: '$owed-one', content: { body: 'not sent yet' } } ],
+      edus: [],
+      createdAt: Date.now(),
+      attempts: 1,
+      lastReason: 'destination answered 503',
+    };
+    const second: MatrixOutboundBatch = { ...first, txnId: `${first.txnId}-b`, destination: 'third.example', createdAt: first.createdAt + 1 };
+
+    await queue.put(podUrl, first);
+    await queue.put(podUrl, second);
+
+    // A different instance, as a restarted process would be: the Pod is the only authority.
+    const restarted = new PodMatrixOutboundStore({ handleFor: async scope => (scope === podUrl ? handle : undefined) });
+    const pending = await restarted.pending(podUrl, { destination: 'other.example' });
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toEqual(first);
+
+    await restarted.remove(podUrl, first);
+    expect(await restarted.pending(podUrl)).toEqual([ second ]);
+    await restarted.remove(podUrl, second);
+    expect(await restarted.pending(podUrl)).toEqual([]);
   }, 120_000);
 
   it('keeps a delivery batch sendable: the payload survives the Pod intact', async() => {
@@ -217,12 +252,12 @@ suite('Matrix control records in a real Pod', () => {
     };
 
     const key = outboundBatchKey(batch);
-    const created = await writeControlRecord(handle, { key, at: batch.createdAt, ...encodeOutboundBatch(batch) });
+    const created = await writeControlRecord(handle, { kind: 'outbound', key, at: batch.createdAt, ...encodeOutboundBatch(batch) });
     expect(created.created).toBe(true);
     expect(created.record.bucket).toBe(controlRecordBucket(batch.createdAt));
 
     // A different reader, as a restarted process would be: the Pod is the authority.
-    const stored = await readControlRecord(handle, key);
+    const stored = await readControlRecord(handle, 'outbound', key);
     expect(stored).toBeDefined();
     const decoded = decodeOutboundBatch(stored!);
     expect(decoded).toEqual(batch);
@@ -230,6 +265,6 @@ suite('Matrix control records in a real Pod', () => {
     expect(decoded!.edus).toEqual(batch.edus);
 
     await deleteControlRecord(handle, stored!);
-    expect(await readControlRecord(handle, key)).toBeUndefined();
+    expect(await readControlRecord(handle, 'outbound', key)).toBeUndefined();
   }, 120_000);
 });
