@@ -233,6 +233,25 @@ grant（房间级授权＝成员资格）、**D6 完整落地**（授权即成�
 `PUT /_matrix/federation/v1/send/...` 无签名 **401 `M_UNAUTHORIZED`**；`POST /_xpod/matrix/inbound/...` 无签名
 **401 `M_UNAUTHORIZED`**；`GET /_matrix/federation/v1/version` 200 且带 `server.name`/`server.version`。
 
+## 剩下的唯一实现项：本地事件预留迁出 SQL（2026-09-28 设计已定，未动代码）
+
+登记册的准入表里只有"仅凭 Pod 恢复"是**部分达成**：回执 / 批次 / 密钥都在 Pod，**本地事件预留**仍在身份库
+`xpod_matrix_transactions`。迁出所需的一切都已就位，且**只需要一处接口改动**：
+
+- **四个反查点都手里有完整事件**（`PodMatrixStore.ts:1679/1802/1861/1886`，形如
+  `findReservation(scope, event.eventId)`），而事件行现在带 `txnDevice`（本轮之前落地），于是
+  `[txnDevice, roomId, type, txnId]` 这个 key 可以**算出来**——不需要按 event id 建索引，更不需要扫描。
+- **接口因此从"按 id 查"改成"按事件查"**：`findReservation(scope, event)` /
+  `findReservations(scope, events)`（事件含 `eventId`、`roomId`、`type`、`txnId`、`txnDevice`）。
+  Pod 版实现 = 控制记录的点查（kind `txn`）；SQL 版实现顺带受益（少一次 id→行的间接）。
+- **序号三法留在 SQL**（`registerEvent`/`registerEvents`/`getHighWatermark`）：它们是**部署本地、可从 Pod 重建**的
+  顺序（测试已钉住"两次独立重建一致"），不属于"事务记录落 Pod"这条目标。
+- **迁移的安全网**：接受事件按 event id 幂等，预留只是"这笔客户端事务对应哪个事件身份"；迁出期间两版并存时，
+  以 Pod 版为权威（SQL 版保留为回退读取，一个发布周期后删除）。
+
+**为什么现在没做**：它改的是本地写入的**身份钉住**路径（重放必须落在同一个事件上），需要
+"实现 → 全量门禁 → 处理回退"的完整迭代余量；本会话上下文已不足以安全完成，因此按惯例停在此处并写下设计。
+
 ## 状态规则
 
 - **已定**：用户已明确或既有项目规则确定的目标；实现尚缺不构成重新打开目标的理由。
