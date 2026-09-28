@@ -48,7 +48,7 @@ import {
 import { eventReferenceIds } from '../matrix/protocol/eventReferences';
 import { serverNameOf } from '../matrix/protocol/authRules';
 import { deploymentVersion, IMPLEMENTATION_NAME } from '../../runtime/deploymentVersion';
-import type { FederationSendTarget } from '../matrix/federation/inboundRoute';
+import { NATIVE_INBOUND_PATH, type FederationSendTarget } from '../matrix/federation/inboundRoute';
 import type {
   InMemoryMatrixInboundTransactionStore,
   MatrixInboundRecordHandle,
@@ -144,7 +144,7 @@ export function registerFederationRoutes(server: ApiServer, options: FederationH
   // The same inbound work, reached the way two Xpod deployments talk to each other: an ordinary
   // signed API call to the peer's own server name, with no Matrix federation semantics in the
   // transport. Matrix-facing peers keep using `/send`, which is why this is additive.
-  server.post('/_xpod/matrix/inbound/:txnId', createNativeInboundHandler(options), publicRoute);
+  server.post(`${NATIVE_INBOUND_PATH}/:txnId`, createNativeInboundHandler(options), publicRoute);
   server.get('/_matrix/federation/v1/event_auth/:roomId/:eventId', createEventAuthHandler(options), publicRoute);
   server.get('/_matrix/federation/v1/state/:roomId', createStateHandler(options), publicRoute);
   server.get('/_matrix/federation/v1/state_ids/:roomId', createStateIdsHandler(options), publicRoute);
