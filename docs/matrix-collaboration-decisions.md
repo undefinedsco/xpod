@@ -83,7 +83,7 @@
    **已落地（2026-09-28）**：判定写成纯函数 `src/api/matrix/inboundAuthority.ts`
    （`inboundWriteAuthority({grant, type, membership})` → `{allowed, reason}`），单元 4 项覆盖：
    无 grant 一律拒（连 `m.room.member` 也拒）、成员可写消息、非成员（invite/leave/ban/knock/未知）拒且理由点名状态、
-   `m.room.member` 在房间未知时也允许（这正是邀请能送达的原因）。**尚未接线**，接线点已查清（下一轮从这里开始）见下。
+   `m.room.member` 在房间未知时也允许（这正是邀请能送达的原因）、**状态未知（正在建立成员身份）也允许**。**尚未接线**，接线点已查清（下一轮从这里开始）见下。
    - **接线点**（2026-09-28 查清）：入站落库入口 `PodMatrixStore.acceptReceivedEvent({event, context})`
      （`PodMatrixStore.ts:1174`）已经拿到 `event.type`、`room_id` 与 `context`，判定所需三样都在手边——grant 的
      有无（没有时 `matrixPodWriteFor` 会先抛 403，判定只是把"为什么"说清楚）、事件类型、该参与者在**解析状态**里的
@@ -99,7 +99,8 @@
      - `membership` 为 invite/leave/ban/knock（状态**明确说**他不在房间里）→ 拒绝；
      - `membership === undefined`（这个 Pod 还不知道他的成员身份，正在建立）→ **放行**，由后续的 `m.room.member`
        事件把状态补齐；这条也是纯函数里 `m.room.member` 豁免之外必须保留的"未知即放行"。
-     换句话说：**拒绝的依据是"状态明确说他不在这房间"，不是"我还不知道"**。
+     换句话说：**拒绝的依据是"状态明确说他不在这房间"，不是"我还不知道"**——纯函数已按三态实现（单元第 5 项
+     专门覆盖 create/join_rules/未知 membership 放行）。
 3. **D6 Agent 归属**——**已定（2026-09-27）：Agent 作为房间成员（有自己的 MXID）**。写路径因此可以强制 v11 授权规则。
    实现路径（本轮细化，按"复用已有机制、不新增协议路径"排序）：
 

@@ -17,15 +17,22 @@ describe('who may write an inbound event for a participant', () => {
       .toEqual({ allowed: true, reason: 'member' });
   });
 
-  it('refuses a message for somebody who is not in the room', () => {
+  it('refuses a message the resolved state says its owner is out of the room for', () => {
     for (const membership of [ 'invite', 'leave', 'ban', 'knock' ] as const) {
       const answer = inboundWriteAuthority({ grant: true, type: 'm.room.message', membership });
       expect(answer.allowed).toBe(false);
       expect(answer.allowed === false ? answer.reason : '').toContain(membership);
     }
-    const unknown = inboundWriteAuthority({ grant: true, type: 'm.room.message' });
-    expect(unknown.allowed).toBe(false);
-    expect(unknown.allowed === false ? unknown.reason : '').toMatch(/not known to be in this room/u);
+  });
+
+  it('allows the events that establish a membership this Pod does not know yet', () => {
+    // A remote join delivers the room as it was *before* the join — create, join rules, power levels
+    // — while this Pod has no membership for the participant. Refusing "unknown" would refuse the
+    // handshake's own first step, so unknown is not a refusal.
+    expect(inboundWriteAuthority({ grant: true, type: 'm.room.create' }))
+      .toEqual({ allowed: true, reason: 'membership not established yet' });
+    expect(inboundWriteAuthority({ grant: true, type: 'm.room.join_rules' }).allowed).toBe(true);
+    expect(inboundWriteAuthority({ grant: true, type: 'm.room.message' }).allowed).toBe(true);
   });
 
   it('writes the events that change membership, which is how anyone gets in', () => {

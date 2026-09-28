@@ -6,12 +6,19 @@
  * - **No grant, no write.** The deployment writes into a participant's Pod on its own behalf, with
  *   that participant's task-layer grant. Without one the answer is a refusal that names the Pod —
  *   never a borrowed session and never a silent skip.
- * - **Authority follows room membership, with one exception.** A message or a state event belongs in
- *   a Pod because its owner is in that room right now; an `m.room.member` event does not, because it
- *   is the *means* by which membership changes. An invite is the clearest case: its whole job is to
- *   tell somebody about a room they are not in yet, and gating it on membership would refuse the one
- *   event that could ever make them a member. That is not hypothetical — receiving an unknown room's
- *   events has to materialise the room first, or the invite is invisible and cannot be accepted.
+ * - **Authority follows room membership, judged on what the state says.** A message or a state event
+ *   belongs in a Pod because its owner is in that room; one that arrives while the state says they are
+ *   invited, left, banned or knocking does not belong there. Two things are deliberately *not*
+ *   refusals:
+ *   - an `m.room.member` event, because it is the *means* by which membership changes (an invite's
+ *     whole job is to tell somebody about a room they are not in yet);
+ *   - an event for a room whose membership this Pod does not know yet, because the membership is
+ *     still being established. A remote join handshake delivers the room's state as it was *before*
+ *     the join — create, join rules, power levels — and refusing those would refuse the handshake's
+ *     own first step.
+ *
+ *   So the rule is "refuse when the state says they are not in the room", never "refuse because we do
+ *   not know yet".
  *
  * The judgement is a pure function so it can be tested against the cases that matter and then wired
  * into the inbound path in one place, rather than re-derived wherever a write happens.
@@ -24,14 +31,15 @@ export interface InboundWriteRequest {
   /** The event type being written. */
   type: string;
   /**
-   * The participant's membership in the room's *resolved* state. Absent means the room is unknown
-   * here (a first invite, an event for a room this Pod has not materialised yet).
+   * The participant's membership in the room's *resolved* state. Absent means this Pod does not know
+   * it yet — a first invite, or the state a join handshake delivers, which is the room as it was
+   * before the join. That is a state of "still being established", not of "not a member".
    */
   membership?: 'join' | 'invite' | 'leave' | 'ban' | 'knock';
 }
 
 export type InboundWriteAuthority =
-  | { allowed: true; reason: 'membership change' | 'member' }
+  | { allowed: true; reason: 'membership change' | 'member' | 'membership not established yet' }
   | { allowed: false; reason: string };
 
 /** May this deployment write this event into this participant's Pod? */
@@ -43,10 +51,8 @@ export function inboundWriteAuthority(request: InboundWriteRequest): InboundWrit
   // already being in it. Nothing else gets this exemption.
   if (request.type === 'm.room.member') return { allowed: true, reason: 'membership change' };
   if (request.membership === 'join') return { allowed: true, reason: 'member' };
-  return {
-    allowed: false,
-    reason: request.membership === undefined
-      ? 'The participant is not known to be in this room'
-      : `The participant is ${request.membership} in this room`,
-  };
+  // Unknown is not a refusal: this is a room the participant is being brought into, and the events
+  // that bring them in are the ones being written. Only a state that *says* they are out refuses.
+  if (request.membership === undefined) return { allowed: true, reason: 'membership not established yet' };
+  return { allowed: false, reason: `The participant is ${request.membership} in this room` };
 }
