@@ -217,6 +217,9 @@ function registerSharedRoutes(
       // as deployment work. No session is borrowed and no deployment-held key is used — a
       // participant who has granted nothing gets a refusal rather than a silent write.
       contextFor: route => ({ webId: route.webId, podUrl: route.podUrl, service: {} }),
+      // The receipt for a transaction is written with the same authority the events are: the
+      // routed participant's task-layer grant, resolved once here rather than inside the store.
+      recordsFor: async context => await matrixStore.controlRecordHandleFor(context),
       // A membership event accepted into a participant's Pod is signed by *that participant*, so
       // the signer is looked up by the name the request was addressed to — never by the deployment.
       signerFor: async serverName => {

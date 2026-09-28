@@ -337,7 +337,7 @@ export interface ApiContainerCradle {
   /** Watches the rooms of every served Pod, so an idle sync reads nothing. */
   matrixRoomWatchService: import('../matrix/notifications/roomWatchService').MatrixRoomWatchService | undefined;
   /** Transaction ids we have already processed, for inbound federation. */
-  matrixInboundTransactions: import('../matrix/federation/inboundTransaction').InMemoryMatrixInboundTransactionStore;
+  matrixInboundTransactions: import('../matrix/federation/podInboundTransaction').PodMatrixInboundTransactionStore;
   /** Resolves, signs and queues outbound federation traffic; absent disables it. */
   matrixOutboundDelivery: import('../matrix/federation/outboundDelivery').MatrixOutboundDelivery | undefined;
   /** Drives the outbound queue; absent when there is nothing to drive. */

@@ -49,8 +49,11 @@ import { eventReferenceIds } from '../matrix/protocol/eventReferences';
 import { serverNameOf } from '../matrix/protocol/authRules';
 import { deploymentVersion, IMPLEMENTATION_NAME } from '../../runtime/deploymentVersion';
 import type { FederationSendTarget } from '../matrix/federation/inboundRoute';
-import type { InMemoryMatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
-import type { MatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
+import type {
+  InMemoryMatrixInboundTransactionStore,
+  MatrixInboundRecordHandle,
+  MatrixInboundTransactionStore,
+} from '../matrix/federation/inboundTransaction';
 import type { MatrixServerKeySource } from '../matrix/federation/serverKeys';
 import type { MatrixParticipantRoutes, MatrixServerRoute } from '../matrix/participantRoutes';
 import { getLoggerFor } from 'global-logger-factory';
@@ -111,6 +114,14 @@ export interface FederationHandlerOptions {
    * honest default for a caller that has not said who it is.
    */
   contextFor?: (route: MatrixServerRoute) => MatrixStoreContext | Promise<MatrixStoreContext>;
+  /**
+   * The resolved Pod handle a Pod-backed transaction store writes its receipts to.
+   *
+   * Built from the same context the events are written with, so "where the record goes" and "who
+   * may write it" stay one decision. Absent means the transaction store is not Pod-backed (or
+   * refuses); the in-memory store ignores it.
+   */
+  recordsFor?: (context: MatrixStoreContext) => Promise<MatrixInboundRecordHandle>;
   /**
    * What `/version` reports. Defaults to this deployment's own name and version; a test or an
    * embedding passes its own so the answer does not depend on the build it happens to run in.
@@ -628,6 +639,9 @@ async function targetFor(destination: string, options: FederationHandlerOptions)
 
   return {
     scope: context.podUrl ?? '',
+    ...(options.recordsFor === undefined || context.podUrl === undefined
+      ? {}
+      : { records: await options.recordsFor(context) }),
     async acceptEvent(event) {
       const record = await options.store.acceptReceivedEvent({ event, context });
       // A later PDU in the same transaction may name this one as an auth event, and the read that

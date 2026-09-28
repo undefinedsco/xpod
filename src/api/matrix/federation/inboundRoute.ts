@@ -27,6 +27,7 @@ import { MAX_PDUS_PER_TRANSACTION } from './outboundTransaction';
 import { authenticateXMatrixRequest } from './requestAuth';
 import {
   handleInboundTransaction,
+  type MatrixInboundRecordHandle,
   type MatrixInboundTransactionStore,
 } from './inboundTransaction';
 import type { AuthEvent } from '../protocol/authRules';
@@ -40,6 +41,12 @@ export interface FederationSendTarget {
   acceptEvent(event: Record<string, unknown>): Promise<void>;
   /** Resolve the events a PDU's `auth_events` name, within that scope. */
   resolveAuthEvents(eventIds: readonly string[], pdu: unknown): Promise<readonly AuthEvent[]>;
+  /**
+   * Where a Pod-backed transaction store keeps its receipt for this Pod. Resolved by the same
+   * caller that resolved the Pod itself, so the record is written with exactly the authority the
+   * events are written with. Absent means an in-memory store, or a store that refuses.
+   */
+  records?: MatrixInboundRecordHandle;
   /**
    * Fetch the auth chain of a deferred event from the server that sent it, when this
    * deployment can. Absent means a PDU whose dependencies are missing is reported instead.
@@ -121,6 +128,7 @@ export async function handleFederationSend(input: HandleFederationSendInput): Pr
       transactionId,
       pdus,
       store: input.transactions,
+      ...(target.records === undefined ? {} : { records: target.records }),
       keys: input.keys,
       resolveAuthEvents: target.resolveAuthEvents,
       acceptEvent: target.acceptEvent,

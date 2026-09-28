@@ -1,15 +1,18 @@
 # Matrix 协作：决策登记册
 
-更新：2026-09-27。状态：**目标已确定；登记册里列出的联邦实现面已全部落地，剩余四项在等拍板**。
+更新：2026-09-27。状态：**目标已确定；登记册里列出的联邦实现面已全部落地；控制记录的 Pod 承载已实现并实测；
+剩余四项在等拍板，另有本轮实测出的一处布局偏离需要你确认**。
 
 本文登记目标决定、实现状态与尚需细化的机制。不能从当前单 Pod adapter 的局限反推产品边界。
 实现契约见 [协作设计](matrix-collaboration-design.md) 与
 [Pod 存储契约](matrix-pod-storage-portability.md)，历史证据见
 [验收记录](matrix-collaboration-acceptance.md)。
 
-## 需要拍板的四件事（2026-09-27）
+## 需要拍板的事项（2026-09-27）
 
-实现面已走完，下面几项**不是实现困难，而是需要你选一个方向**；每项都写明了选项与后果：
+实现面已走完，下面几项**不是实现困难，而是需要你选一个方向**；每项都写明了选项与后果。
+其中第 1 项已经落地（承载与原子性都在真实部署上实测过），只剩**一处布局偏离**要你确认；
+第 0、2、3、4 项仍是方向选择。
 
 0. **写入侧三选一**（用户 2026-09-27 先问"直接写对方 Pod"，再补："如果写入比较复杂，调用对方的 api-server 咯？
    api-server 负责写"）：
@@ -28,17 +31,30 @@
      用于批内顺序与重放应答）。
    - **请确认走 ③**（或说明要 ①/②）；确认后我按"原生端点 → 客户端 → 队列选传输"的顺序实现，`/send` 保持不动。
 
-1. ~~models 侧那张 keyed 控制记录表~~ **已解决：不用新建表**（用户 2026-09-27："要记录啥呢，任务不是有建模吗"）。
+1. ~~models 侧那张 keyed 控制记录表~~ **已解决并已实现**（用户 2026-09-27："要记录啥呢，任务不是有建模吗"）。
    models 里已有 `taskResource`（`src/task.schema.ts`）：**keyed**（`id: 'index.ttl#{key}'`，点查）、有 `status`
    （open/ready/active/blocked/completed/failed/cancelled）、有不透明 `metadata`、有 `createdAt`/`updatedAt`——正是
    契约 §2 要求的那张表，而且它的语义就是"**持久化的可执行工作单元**"。据此：**出站投递批次**直接就是一条 task
    （要做什么：把这批 PDU 发给那个 server；`metadata` 带 origin/destination/txnId/pdus；status 走 open→completed/
    failed/cancelled），**入站事务存档**是一条已完成的 task（回执：`metadata` 带 origin/txnId/fingerprint/首次应答）。
-   **剩下的技术问题已查证解决**（2026-09-27）：Pod 的**条件写存在**——`@inrupt/solid-client` 的
-   `saveSolidDatasetAt` 自动带 ETag/If-Match，冲突时回 **412 Precondition Failed**，这正是 `reserve` 需要的
-   compare-and-swap（412 即"别人先赢了"，重读并回答 `created: false`）。**唯一的坑**：`drizzle-solid` 的
-   `ConflictResolver` 是"412 后重试并合并"，对预留是错的（合并会造出两个赢家）——控制记录必须走条件保存并显式处理
-   412，不能走那个便利封装。细节见[控制记录契约](matrix-control-records-contract.md) §6.5。
+   **技术问题已在真实部署上实测并实现**（2026-09-27，结论与原判断有一处重要修正）：
+   - **`If-Match` 不是版本检查，不能用**：Pod 的 ETag 是 `"<DC.modified 毫秒>-<content type>"`（CSS
+     `BasicETagHandler`），不是内容哈希；同一毫秒内的两次写入 ETag 相同，实测两个并发条件写**都返回 205**、
+     ETag 不变。原记录的"条件写存在 → 412 即别人先赢"只对 `saveSolidDatasetAt` 成立，对实际写入路径不成立。
+   - **真正可靠的是 create-once**：`PATCH` + `If-None-Match: *` 到不存在的文档 → 201；两个并发 → **201 + 412**，
+     唯一赢家由服务端在同一把资源锁内裁决。它是**文档级**的，所以**一条记录一个文档**
+     （`id: '<sha256(key)>.ttl#self'`，仍在 models 任务 base 下）。
+   - **两处必须做的配套**：SPARQL `PATCH` 建出的文档在**容器不存在时无法 DELETE**（404 且文档仍在）→ 写前先条件
+     PUT 容器；`db.deleteByResource` 只删行、留下空文档 → 释放必须删**文档**，否则该 key 永远 412。
+   - **已落地**：`PodMatrixInboundTransactionStore`（容器已装配，`/send` 路径的入站回执现在写进参与者自己的 Pod）、
+     每调用传入的已解析句柄（契约 §6 方案 ①）、`matrixPodWriteFor` 作为"这次写入以谁的身份"的唯一解析点。
+     证据：单元 14 项（store 8 + 事务层句柄透传 1 + 写入身份 5）+ 真实 Pod 2 项
+     （并发三选一、重启后仍可读、重放取首次应答、释放后可重预留；`/send` 路径的回执落 Pod）。
+   - **需要你确认的一处**：记录 `id` 用每记录一文档，偏离了 `taskResource` 的默认模板 `index.ttl#{key}`。
+     备选是保留默认模板并接受"预留只是尽力而为"（同一毫秒两个赢家，靠 event id 幂等兜底，回执可能被覆盖）。
+     契约 §6.1 写了两者的后果；改动收敛在 `controlRecordAddress` 一个函数。
+   - **仍未定**：回收期与墓碑（现在不自动回收）；出站批次（同一承载，但队列的 `scopes()` 需要"哪些 Pod 还有待发批次"
+     的来源，而 scope→参与者正是刻意不记录的映射）；grant 索取流程。细节见[控制记录契约](matrix-control-records-contract.md) §5/§6.3。
 2. **grant 的索取流程**（契约 §5.4）。机制已存在（`TaskCredentialStore.grant`，用户把 Pod interface key 交给部署），
    缺的是**时机与界面**：在参与者第一次被 provision 时问？第一次进房间时问？界面上怎么表达"让这个部署替你写收到的
    消息"？在此之前，收到的事件会以 403 明确失败（不静默、不写别人的 Pod）。
@@ -1162,7 +1178,7 @@ Synapse 等价的 homeserver，而是实现 **Matrix 的分布式房间与事件
 | 完整事件与 Solid Chat 表示 | 原始事件验证材料、图关系与 room version 已落地（见[房间事件图](reference/matrix-room-event-graph.md)）；剩余：状态解析与事件授权规则、索引与旧房间迁移；共享 schema 归 models |
 | 传输与落 Pod | 接收持久化、去重、确认、部分投递失败、补发与恢复各自的责任和进度 |
 | 客户端增量 | 有界发现/分页、晚到事件、授权状态变化、token 版本与重建 |
-| 可恢复事务 | 记录寻址、首次结果、载荷保留、发布、回收及未知结果处理。**承载已定**（用户 2026-09-27）：用 models 已有的 **`taskResource`**（keyed `index.ttl#{key}`、`status`、不透明 `metadata`、两个时间戳）——出站批次是"要做的工作"，入站事务是"已完成的回执"；**不需要新建表**。契约草案见[控制记录契约](matrix-control-records-contract.md)（点查/原子预留/回收不得把"未知结果"变成"可重放"/批次必须留载荷/授权用任务层 grant）。**剩下的**：`reserve` 的原子性依赖 **Pod 条件写（ETag/If-Match）**；回收期与墓碑、同步游标是否纳入仍未定 |
+| 可恢复事务 | 记录寻址、首次结果、载荷保留、发布、回收及未知结果处理。**承载已定并已实现**（用户 2026-09-27）：用 models 已有的 **`taskResource`**（`status`、不透明 `metadata`、两个时间戳）——出站批次是"要做的工作"，入站回执是"已完成的工作"；**不需要新建表**。契约见[控制记录契约](matrix-control-records-contract.md)（点查/原子预留/回收不得把"未知结果"变成"可重放"/批次必须留载荷/授权用任务层 grant）。**原子性已实测**：只有 create-once（`If-None-Match: *`，文档级）可靠，`If-Match` 因 ETag 是毫秒时间戳而不可用 → **一条记录一个文档**（偏离默认 `index.ttl#{key}`，待确认）；写前需条件 PUT 容器、释放需删文档。**剩下的**：回收期与墓碑、同步游标是否纳入、出站批次的 `scopes()` 来源 |
 | Agent 执行 | 唯一逻辑触发、执行归属、接替、撤权、工具幂等与分区处理 |
 | 验收 | 两个独立部署/身份/Pod 的真实互通和故障注入，见主设计；原单 Pod 测试只作回归基线 |
 

@@ -20,6 +20,8 @@ import {
 } from '../reconciler';
 import { getProtocolMetadata, withProtocolMetadata, type ProtocolMetadata } from '../protocol-metadata';
 import { MatrixError } from './MatrixError';
+import { matrixPodWriteFor, type MatrixPodWrite } from './podAccess';
+import type { MatrixControlRecordTarget } from './controlRecords';
 import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
 import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type PersistedMatrixEvent } from './persistedEvent';
 import { roomGraphPosition } from './protocol/roomGraph';
@@ -61,6 +63,9 @@ const schema = {
   runStep: runStepResource,
   delivery: deliveryResource,
 };
+
+/** The tables a Matrix Pod handle registers, in one place for the store and its callers. */
+const MATRIX_TABLES = [ chatResource, threadResource, runResource, runStepResource, deliveryResource, messageResource ];
 
 /**
  * Provisioning a participant's own signing identity when they enter a room.
@@ -924,61 +929,44 @@ export class PodMatrixStore {
     return this.roomChanges;
   }
 
+  /**
+   * The database this store writes through, resolved by the one module that decides who a Matrix
+   * write is done as (`podAccess.ts`). Everything that writes to a Pod in this subsystem goes
+   * through that decision, including the control records, which need the same authority plus the
+   * fetch underneath it.
+   */
   private async getDb(context: MatrixStoreContext): Promise<Db> {
-    if ((context as any)._matrixDb) {
-      return (context as any)._matrixDb;
-    }
-
-    const auth = context.auth as AuthContext | undefined;
-    const service = context.service;
-    // A context is either a caller's session or the deployment working on its own behalf. Neither
-    // is a fallback for the other: "who is writing" has to have exactly one answer, or a grant
-    // check becomes indistinguishable from a borrowed session.
-    if (service && auth) {
-      throw new MatrixError(400, 'M_INVALID_PARAM', 'A Matrix context cannot be both a caller session and deployment work');
-    }
-    if (!service && (!auth || !isSolidAuth(auth) || !auth.webId)) {
-      throw new MatrixError(401, 'M_UNKNOWN_TOKEN', 'Solid authentication is required');
-    }
-
-    const podFetch = this.podAccess
-      ? await this.podAccess.getPodFetch(context.webId, {
-          ...(auth ? { auth } : {}),
-          // Work without a caller carries the participant's task-layer grant, and nothing else: an
-          // unusable grant fails here rather than reaching for a deployment-held key.
-          ...(service ? { taskCredential: service.taskCredential ?? {} } : {}),
-          podBaseUrl: context.podUrl,
-        })
-      : undefined;
-    if (!podFetch) {
-      throw new MatrixError(403, 'M_FORBIDDEN', service
-        ? `This deployment holds no grant for ${context.webId}'s Pod`
-        : 'Grant Pod interface access before using Matrix');
-    }
-    const db: Db = drizzle(
-      {
-        fetch: podFetch,
-        info: {
-          webId: auth && isSolidAuth(auth) ? auth.webId : context.webId,
-          isLoggedIn: true,
-          podUrl: context.podUrl,
-        },
-      } as any,
-      {
-        schema,
-        podUrl: context.podUrl,
-      },
-    );
-    await db.init(
-      chatResource,
-      threadResource,
-      runResource,
-      runStepResource,
-      deliveryResource,
-      messageResource,
-    );
-    (context as any)._matrixDb = db;
+    const { db } = await matrixPodWriteFor(context, this.podAccess, {
+      schema,
+      tables: MATRIX_TABLES,
+    });
     return db;
+  }
+
+  /**
+   * The authorized Pod handle itself, for a caller that has to make its own HTTP write.
+   *
+   * A control-record reservation is a conditional request (`If-None-Match: *`), which is the one
+   * write drizzle-solid cannot express — see `controlRecords.ts`. Handing out the fetch the
+   * database was built over keeps that write under exactly the authority a store write has.
+   */
+  public async podWriteFor(context: MatrixStoreContext): Promise<MatrixPodWrite> {
+    return await matrixPodWriteFor(context, this.podAccess, { schema, tables: MATRIX_TABLES });
+  }
+
+  /**
+   * The handle a Pod-backed control-record store writes with: which Pod, and with whose authority.
+   *
+   * The two halves are resolved together on purpose. A record with a scope but no authority, or
+   * authority for a different Pod, is the kind of mismatch that would put one participant's receipt
+   * in another's Pod, so a context that does not name a Pod is refused here rather than defaulted.
+   */
+  public async controlRecordHandleFor(context: MatrixStoreContext): Promise<MatrixControlRecordTarget> {
+    const scope = context.podUrl;
+    if (!scope) {
+      throw new MatrixError(400, 'M_INVALID_PARAM', 'A Matrix control record needs the Pod it belongs to');
+    }
+    return { scope, write: await this.podWriteFor(context) };
   }
 
   /**

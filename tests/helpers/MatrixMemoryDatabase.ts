@@ -40,8 +40,16 @@ export function matrixHarness(
       }; return q;
     },
   };
+  // The database is injected, so the fetch it stands for has to be injected with it: a Matrix Pod
+  // handle is a database *and* the fetch underneath it, because a control-record reservation is a
+  // conditional HTTP write. This harness has no Pod behind it, so a test that reaches for one is
+  // told rather than handed a silent no-op.
+  const podFetch = async(): Promise<Response> => {
+    throw new Error('The Matrix test harness has no Pod fetch; use a real Pod for Pod-backed stores');
+  };
   const context: any = { webId: 'https://alice.example/profile/card#me', podUrl: 'https://pod.example/alice/',
-    auth: {type:'solid', webId:'https://alice.example/profile/card#me', clientId:'device-a'}, _matrixDb: db };
+    auth: {type:'solid', webId:'https://alice.example/profile/card#me', clientId:'device-a'}, _matrixDb: db,
+    _matrixPodFetch: podFetch };
   const store = new PodMatrixStore({
     serverName: 'example.test',
     ...(options?.participantIdentity ? { participantIdentity: options.participantIdentity } : {}),

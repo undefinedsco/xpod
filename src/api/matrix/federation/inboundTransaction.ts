@@ -6,12 +6,11 @@
  * id): a replay returns the response the first attempt produced, and a retry that
  * carries *different* PDUs under the same id must not overwrite the first record.
  *
- * The record is kept behind `MatrixInboundTransactionStore` on purpose. The decision
- * this belongs to — a control-Pod record with a recoverable payload, per the service
- * contract — is not made yet, and the one property a Pod implementation needs is the
- * one an in-memory map cannot prove: reserving must be atomic, which depends on
- * conditional writes being atomic in this storage (an open experiment). Until then the
- * interface is what the endpoint talks to, and the in-memory store is what tests use.
+ * The record is kept behind `MatrixInboundTransactionStore` on purpose: the in-memory map is what
+ * tests use, and `PodMatrixInboundTransactionStore` is the durable carrier (the register settled
+ * on the models `taskResource` for it). Reserving atomically is the property an in-memory map
+ * cannot prove and a Pod must earn; `controlRecords.ts` records what was measured about that, and
+ * `podInboundTransaction.ts` is the implementation built on it.
  *
  * A transaction that exists but is not yet complete is not answered from its record:
  * the caller is told to retry, because the first attempt may still be writing.
@@ -23,6 +22,7 @@ import { encodeUnpaddedBase64, sha256 } from '../protocol/eventIntegrity';
 import type { AuthEvent } from '../protocol/authRules';
 import { validateInboundPdu, type InboundPduResult } from './inboundPdu';
 import type { MatrixServerKeySource } from './serverKeys';
+import type { MatrixControlRecordTarget } from '../controlRecords';
 
 /** The `/_matrix/federation/v1/send` response body: one entry per PDU. */
 export interface MatrixSendResponse {
@@ -42,6 +42,16 @@ export interface MatrixInboundTransactionRecord {
   conflictAt?: string;
 }
 
+/**
+ * The resolved Pod a Pod-backed store writes its records to, with the authority to do it.
+ *
+ * Passed per call rather than held by the store: the transaction layer resolved this Pod once for
+ * the request, and that resolution *is* the decision about which Pod and with whose authority. An
+ * in-memory store ignores it, which is why it is optional here rather than part of the store's
+ * construction.
+ */
+export type MatrixInboundRecordHandle = MatrixControlRecordTarget;
+
 export interface MatrixInboundTransactionStore {
   /**
    * Record a first attempt, or return the record already stored under this key.
@@ -53,9 +63,16 @@ export interface MatrixInboundTransactionStore {
   reserve(
     scope: string,
     input: { origin: string; transactionId: string; payloadFingerprint: string; receivedAt: string },
+    handle?: MatrixInboundRecordHandle,
   ): Promise<{ record: MatrixInboundTransactionRecord; created: boolean }>;
   /** Attach the response the first attempt produced. */
-  complete(scope: string, key: { origin: string; transactionId: string }, response: MatrixSendResponse, completedAt: string): Promise<void>;
+  complete(
+    scope: string,
+    key: { origin: string; transactionId: string },
+    response: MatrixSendResponse,
+    completedAt: string,
+    handle?: MatrixInboundRecordHandle,
+  ): Promise<void>;
   /**
    * Forget a first attempt that did not finish, so the sender's retry may try again.
    *
@@ -64,8 +81,12 @@ export interface MatrixInboundTransactionStore {
    * the retry re-runs the whole pipeline and accepting an event is idempotent by event id: what the
    * failed attempt already wrote stays as it is, and is not written twice.
    */
-  release(scope: string, key: { origin: string; transactionId: string }): Promise<void>;
-  find(scope: string, key: { origin: string; transactionId: string }): Promise<MatrixInboundTransactionRecord | undefined>;
+  release(scope: string, key: { origin: string; transactionId: string }, handle?: MatrixInboundRecordHandle): Promise<void>;
+  find(
+    scope: string,
+    key: { origin: string; transactionId: string },
+    handle?: MatrixInboundRecordHandle,
+  ): Promise<MatrixInboundTransactionRecord | undefined>;
 }
 
 export class InMemoryMatrixInboundTransactionStore implements MatrixInboundTransactionStore {
@@ -127,6 +148,11 @@ export interface HandleInboundTransactionInput {
   transactionId: string;
   pdus: readonly unknown[];
   store: MatrixInboundTransactionStore;
+  /**
+   * The resolved Pod a Pod-backed store writes its records to. The caller resolved it for this
+   * request; an in-memory store ignores it.
+   */
+  records?: MatrixInboundRecordHandle;
   keys: MatrixServerKeySource;
   /**
    * The receiver resolves the events a PDU's `auth_events` name. The PDU comes along
@@ -168,7 +194,7 @@ export async function handleInboundTransaction(input: HandleInboundTransactionIn
     transactionId: input.transactionId,
     payloadFingerprint: fingerprint,
     receivedAt: new Date(now()).toISOString(),
-  });
+  }, input.records);
   if (!created) {
     // A replay is answered from the first attempt — including one that presents a
     // different payload, which must not replace what was already recorded.
@@ -199,14 +225,14 @@ export async function handleInboundTransaction(input: HandleInboundTransactionIn
     }
     const response: MatrixSendResponse = { pdus };
     await input.store.complete(input.scope, { origin: input.origin, transactionId: input.transactionId },
-      response, new Date(now()).toISOString());
+      response, new Date(now()).toISOString(), input.records);
     return response;
   } catch (error) {
     // Nothing here is worth keeping: the attempt did not finish, so the reservation goes and the
     // sender's retry gets to try again instead of meeting its own unfinished transaction. Releasing
     // is safe because the retry re-runs the whole pipeline and accepting an event is idempotent by
     // event id — what the failed attempt already wrote stays as it is, and is not written twice.
-    await input.store.release(input.scope, { origin: input.origin, transactionId: input.transactionId });
+    await input.store.release(input.scope, { origin: input.origin, transactionId: input.transactionId }, input.records);
     throw error;
   }
 }

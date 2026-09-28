@@ -348,6 +348,40 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
 | 有界同步的变更信号（订阅 → sync） | `notifications/roomChangeSubscription.ts`、`roomChangeTracker.ts`、`roomWatchService.ts` | 各 7/7/9 项；`syncChangeSource` 6 项、`syncBoundedReads` 5 项、`scaleOperations` 4 项 |
 | 远端加入接线（按 id 与 alias） | `PodMatrixStore.joinRoom/joinRemoteRoom/resolveRoomId` | `remoteJoinStore.test.ts` 4 项；`twoDeployment` 端到端两项 |
 | 授权判定不跨请求复用 | `PodMatrixStore.agentGrants/authorize` | `agentGrantFreshness.test.ts` 2 项 |
+| 入站事务回执落 Pod（控制记录承载） | `matrix/controlRecords.ts`（create-once 文档）、`federation/podInboundTransaction.ts`、`matrix/podAccess.ts`（写入身份唯一解析点）、容器装配 + `FederationHandler.recordsFor` | 单元 8 项 + 句柄透传 1 项 + 写入身份 3 项；**真实 Pod 2 项**（见下） |
 
-**未达成（等拍板，见登记册开头）**：models 侧 keyed 控制记录表（→ 事务存档与投递批次落 Pod、"仅凭 Pod 恢复"）、
-grant 索取流程、D6 Agent 归属、真实实例验收（另起栈或重启 3000）。另：`full` 门禁因本机 Docker Desktop 无响应未能运行。
+**未达成（等拍板，见登记册开头）**：写入侧 ①②③、控制记录的**每记录一文档布局**确认、出站批次的 Pod 承载
+（等 `scopes()` 来源）、grant 索取流程、D6 Agent 归属、真实实例验收（另起栈或重启 3000）。
+另：`full` 门禁因本机 Docker Desktop 无响应未能运行。
+
+## 控制记录的 Pod 承载（2026-09-27，分支 `codex/matrix-event-primitives`）
+
+这一轮把"事务回执只活在进程内存里"换成了 Pod 里的记录，并在**真实 Pod** 上先把存储语义量出来再写实现。
+量出来的三条（探针输出记录在提交信息与契约 §6.1/§6.2）：
+
+| 探测 | 结果 | 后果 |
+| --- | --- | --- |
+| `PATCH` + `If-None-Match: *`（文档不存在） | **201** | create-once 可用 |
+| 两个并发 `If-None-Match: *` | **201 + 412** | 唯一赢家由服务端在同一把资源锁内裁决 |
+| 两个并发 `If-Match: <同一 ETag>` | **205 + 205**，ETag 未变 | **`If-Match` 不是版本检查**（ETag = `DC.modified` 毫秒 + content type）→ 不能做预留 |
+| `PATCH` 建出的文档 + `DELETE`（容器不存在） | **404**，文档仍在 | 写记录前必须先建容器，否则释放会永久卡住该 key |
+| `db.deleteByResource` 后 `findByResource` | 行没了、文档仍在 → 再 `If-None-Match: *` 仍 **412** | 释放必须删**文档** |
+
+证据（可复跑）：
+
+- `tests/integration/MatrixControlRecords.integration.test.ts`（2 项，lite 门禁内、真实栈 + 真实 Pod）：
+  三个并发 `reserve` **恰好一个** `created: true` 且失败方读到赢家记录；换一个 store 实例（模拟重启）仍能读到回执、
+  重放（载荷不同）取**首次应答**并标记 `conflictAt`；`release` 后同一 key 可再次预留；
+  以及 `handleInboundTransaction` 真的把回执写进参与者 Pod 并从记录回答重放。
+- `tests/api/matrix/federation/podInboundTransaction.test.ts`（8 项，脚本化 Pod 模型同一套语义）：
+  首次创建即写入 Pod、重放取赢家记录、并发唯一赢家、冲突标记不覆盖、完成后重放取首次应答、
+  释放后可重试、句柄缺失/scope 不符即拒绝、Pod 拒绝写入时不假装成功。
+- `tests/api/matrix/federation/inboundTransaction.test.ts` 新增 1 项：事务层把已解析句柄传给 store 的**每一次**调用。
+- `tests/api/matrix/storePodAccess.test.ts` 新增 5 项：`podWriteFor` 每个 context 只解析一次并复用同一 fetch；
+  注入的 db 没有 fetch 时拒绝（不给半个授权）；部署自持工作时**不借**调用方会话；
+  `controlRecordHandleFor` 把"哪个 Pod"和"以谁的身份"一起解析；context 不含 Pod 时拒绝而不是默认成空 scope。
+
+门禁（提交前在冻结代码上复跑）：`typecheck:test` 通过；`tests/api/matrix` **552 passed / 3 skipped**；
+`tests/api tests/http` **2005 passed / 67 skipped**；`test:integration:lite` **155 passed / 6 skipped（31 文件通过 / 3 跳过）**，
+含上面 2 项真实 Pod 用例与 `MatrixCollaboration` 的真实运行时夹具。
+**未做**：真实实例（本机 3000 是别的构建）、`full`（Docker 无响应）、自动回收（保留期未定）。

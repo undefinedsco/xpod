@@ -101,7 +101,7 @@ import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 import { PodMatrixStore } from '../matrix';
 import { createParticipantRoutes } from '../matrix/participantRoutes';
 import { MatrixServerKeyFetcher } from '../matrix/federation/serverKeys';
-import { InMemoryMatrixInboundTransactionStore } from '../matrix/federation/inboundTransaction';
+import { PodMatrixInboundTransactionStore } from '../matrix/federation/podInboundTransaction';
 import { MatrixServerNameResolver } from '../matrix/federation/serverNameResolution';
 import { createNodeFederationFetch } from '../matrix/federation/federationFetch';
 import { joinRoomOverFederation } from '../matrix/federation/remoteJoin';
@@ -753,9 +753,12 @@ export function registerCommonServices(
     })).singleton(),
 
     // A peer's retry must be answered, not processed twice: the record of what a transaction id
-    // already produced. In memory for now — the Pod carrier is a tracked item in the register.
+    // already produced. The record lives in the Pod the transaction is written to (models
+    // `taskResource`, one document per key), so it survives a restart and is the deployment's own
+    // fact rather than a process's. The handle it writes through is resolved per request by the
+    // store, which is the one place that decides who a Matrix write is done as.
     matrixInboundTransactions: asFunction((_cradle: ApiContainerCradle) =>
-      new InMemoryMatrixInboundTransactionStore()).singleton(),
+      new PodMatrixInboundTransactionStore()).singleton(),
 
     // Bounded sync in production: every Pod this deployment serves has its rooms watched, so a
     // sync with nothing to catch up on reads nothing. The room list comes from the store, resolved

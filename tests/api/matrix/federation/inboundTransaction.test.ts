@@ -5,6 +5,7 @@ import {
   fingerprintPdus,
   handleInboundTransaction,
   referencedAuthEventIds,
+  type MatrixInboundTransactionStore,
 } from '../../../../src/api/matrix/federation/inboundTransaction';
 import { parseServerKeyResponse, type MatrixServerKeySource } from '../../../../src/api/matrix/federation/serverKeys';
 import { MatrixServiceIdentity } from '../../../../src/api/matrix/protocol/serviceIdentity';
@@ -357,5 +358,42 @@ describe('the reservation the contract promises', () => {
     // A different scope is a different transaction: the key is (scope, origin, txnId).
     const elsewhere = await store.reserve('scope-b', input);
     expect(elsewhere.created).toBe(true);
+  });
+});
+
+describe('where a Pod-backed store writes', () => {
+  it('hands the resolved Pod to the store on every call, not just the first', async () => {
+    // The transaction layer resolved this Pod once for the request; a store that had to resolve it
+    // itself would be a second decision about the same thing (control-records contract §6.5).
+    const server = remoteServer();
+    const prefix = roomPrefix(server);
+    const pdu = message(server, prefix, 'hello');
+    const calls: unknown[] = [];
+    const store: MatrixInboundTransactionStore = {
+      reserve: async (scope, input, handle) => {
+        calls.push([ 'reserve', scope, handle ]);
+        return {
+          created: true,
+          record: { ...input, response: { pdus: {}}, receivedAt: input.receivedAt },
+        };
+      },
+      complete: async (scope, key, response, completedAt, handle) => { calls.push([ 'complete', scope, handle ]); },
+      release: async (scope, key, handle) => { calls.push([ 'release', scope, handle ]); },
+      find: async () => undefined,
+    };
+    const records = {
+      scope: 'https://pod.example/alice/',
+      write: { db: {} as never, fetch: async() => new Response() },
+    };
+
+    await handleInboundTransaction({
+      scope: records.scope, origin: REMOTE, transactionId: 'txn-handle', pdus: [ pdu ], store, records,
+      keys: server.source, resolveAuthEvents: async () => prefix.auth, acceptEvent: async () => undefined, now: () => NOW,
+    });
+
+    expect(calls).toEqual([
+      [ 'reserve', records.scope, records ],
+      [ 'complete', records.scope, records ],
+    ]);
   });
 });

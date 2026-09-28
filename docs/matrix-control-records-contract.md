@@ -20,11 +20,13 @@
 ## 2. 共同要求
 
 1. **点查，不扫描**：按 `(scope, key)` 取一条，读成本与记录总数无关。扫描会随房间数/历史增长，等于把
-   "有界"这条验收门禁作废。
-2. **原子预留**：`reserve` 必须只有一个赢家（接口已写明"Pod 实现必须让这一步原子"）。因此承载表必须有
-   **`(owner/scope, kind, key)` 唯一索引**；仅靠"先查再写"在并发重试下会让同一笔事务被处理两次。
-3. **不透明 metadata**：记录自身的字段放进 metadata，不要求 models 为每个 Matrix 字段建列；models 只需保证
-   key 的唯一性与 `createdAt`/`updatedAt` 两个时间戳（回收要用）。
+   "有界"这条验收门禁作废。落地形态是"一个 key 一个文档"，点查就是按 URL 读那个文档（`controlRecordAddress`）。
+2. **原子预留**：`reserve` 必须只有一个赢家（接口已写明"Pod 实现必须让这一步原子"）。仅靠"先查再写"在并发重试下
+   会让同一笔事务被处理两次。**机制在 §6.1 定了**：唯一赢家由服务端对 create-once（`If-None-Match: *`）裁决，
+   因此一条记录一个文档，而不是"一张表 + 唯一索引"（这个存储上 `If-Match` 不是版本检查，唯一索引也表达不出来）。
+3. **不透明 metadata**：记录自身的字段放进 metadata，不要求 models 为每个 Matrix 字段建列；models 只需提供
+   keyed 资源与 `createdAt`/`updatedAt` 两个时间戳（回收要用）。**key 的唯一性不靠 models**：它由"文档名 = key 的
+   哈希 + create-once"保证（§6.1）。
 4. **保留与回收**：事务存档必须回收，但**回收不得把"未知结果"变成"可重放"**——回收后同一 `txnId` 会被当成新事务
    重新处理。因此回收期必须**长于对端的最长重试窗口**，或在回收时留一条**墓碑**（只留 key 与"已处理过"）。
    取值待定（见 §5）。
@@ -37,7 +39,8 @@
 ### 3.1 入站事务存档
 
 字段：`origin`、`transactionId`、`payloadFingerprint`（规范化 JSON 的指纹，键序无关）、`receivedAt`、
-`completedAt?`、`response?`（每条 PDU 的应答原样保留）、`conflictAt?`、`status`（`reserved`/`completed`）。
+`completedAt?`、`response?`（每条 PDU 的应答原样保留）、`conflictAt?`、`status`
+（用 `taskResource` 的取值：`active` = 已预留未回执，`completed` = 已回执）。
 
 - `reserve`：不存在则写入 `reserved` 并返回 `created: true`；已存在则返回既有记录、`created: false`，且**载荷指纹
   不同**时只打 `conflictAt` 标记，**不覆盖**首次记录。
@@ -67,14 +70,15 @@
 
 ## 5. 待定项（需要决定后才动 models）
 
-1. **models 提供什么**：一张按 `(owner, kind, key)` 唯一索引的 keyed 记录表 + 不透明 metadata + 两个时间戳；
-   表名/列名与是否复用现有表由 models 决定。**是否接受"一张通用控制记录表"**是第一个要拍的点。
+1. ~~**models 提供什么**~~ **已解决**：不新建表，用已有的 `taskResource`（见 §6）。
 2. **回收策略**：保留期（建议长于对端最长重试窗口，例如 24h）与条数上限；是否需要墓碑。
+   现在每条记录是一个独立文档，回收就是删文档；**但墓碑问题仍在**：删掉回执后同一 `txnId` 会被当成新事务重跑
+   （按 event id 幂等，所以不会写第二遍，但会重新处理并可能给出不同应答）。在定之前**不做任何自动回收**。
 3. **同步游标**是否也纳入控制记录（当前游标是编码在 token 里的，可重建）。
 4. **grant 索取流程**：在什么时机问参与者（第一次 provision 时 / 第一次进房间时）、界面上如何表达
    "让这个部署替你写收到的消息"、撤销后是否立即失效（当前行为：立即失效，写失败即 403）。
 
-## 6.5 承载已定：用 `taskResource`（2026-09-27，用户提问"任务不是有建模吗"）
+## 6. 承载已定：用 `taskResource`，原子性已实测（2026-09-27 更新）
 
 models 里已经有那张表，**不需要新建**：`taskResource`（`src/task.schema.ts`，已从 index 导出）是
 `id: 'index.ttl#{key}'` 的 **keyed** 资源（点查），带 `status`（open/ready/active/blocked/completed/failed/
@@ -84,27 +88,75 @@ cancelled）、不透明 `metadata`、`createdAt`/`updatedAt`；它自己的注�
 | 控制记录 | 承载 | 说明 |
 | --- | --- | --- |
 | 出站投递批次 | 一条 `taskResource` | 要做什么 = 把这批 PDU 发给那个 server；`metadata` 带 origin/destination/txnId/pdus/attempts/lastReason；status 走 open→completed/failed/cancelled |
-| 入站事务存档 | 一条已完成的 `taskResource` | 回执：`metadata` 带 origin/txnId/fingerprint/首次应答；status=completed |
+| 入站事务存档 | 一条 `taskResource` | 回执：`metadata` 带 origin/txnId/fingerprint/首次应答；status 走 active（已预留）→ completed（已回执） |
 
-**`scope → Db` 怎么解**（实现前必须定的一件事）：接口按 `scope`（Pod 根）分片，而 Pod 写入需要一个带授权的上下文。
-可选：① 由调用方（外壳）把**已经解好的上下文/Db 句柄**传进来（外壳本来就有 `contextFor(route)` 的结果），接口保留
-`scope` 仅作分片键与隔离校验；② store 自己持有 `dbFor(scope)` 提供者（容器用 `ownerPodAccess` + 该 Pod 参与者的
-WebID 构造）。**推荐 ①**：外壳已经为这次请求解过一次上下文，再解一次等于把同一份授权决定做两遍，而且 ② 需要一个
-"scope → 参与者"的全局映射——那正是我们**刻意不记录**的东西（见 `participantRoutes.ts`）。
+**`scope → Db` 怎么解**（原"实现前必须定的一件事"）：采用**方案 ①**，已落地。外壳（`FederationHandler.targetFor`）
+把**已经解好的句柄**（`{ scope, write: { db, fetch } }`，由 `PodMatrixStore.podWriteFor` → `matrixPodWriteFor`
+解析一次并记忆在 context 上）随调用传给 store；接口保留 `scope` 仅作分片键与隔离校验
+（`PodMatrixInboundTransactionStore.requireHandle`：句柄缺失或 scope 不符即报错，不猜哪个 Pod）。
+解析授权这件事只有一处（`src/api/matrix/podAccess.ts`）：调用方会话，或部署以参与者任务层 grant 行事，二者互不兜底。
 
-**原子性所需的"条件写"已确认存在**（2026-09-27 查证，不再是待定项）：
-- `@inrupt/solid-client` 的 `saveSolidDatasetAt` **自动带上 ETag / If-Match**；版本不符时服务端回 **412 Precondition
-  Failed**——这就是 compare-and-swap 的原语。
-- 因此 `reserve` 可以做到严格"只有一个赢家"：读 `index.ttl`（带 ETag）→ 键不存在则加行 → 条件保存；**412 即"别人先赢
-  了"**，此时重读并回答 `created: false`（对端重试拿到的是赢家的记录，而不是自己再处理一遍）。
-- **注意不要误用**：`drizzle-solid` 的 `ConflictResolver`/`saveWithConflictResolution` 是**冲突后重试并合并**
-  （`last-write-wins`/`field-level-merge`/…）——那对普通数据是便利，对"预留"是错的（合并会让两个赢家都存在）。控制
-  记录的写入必须走**条件保存并显式处理 412**，不能走这个便利封装。这一点要写进实现与测试。
+### 6.1 原子预留：实测推翻了"If-Match 就是 CAS"
 
-## 6. 与已落地实现的关系
+在真实部署上实测（`tests/integration/MatrixControlRecords.integration.test.ts` 与当轮探针）：
 
-- 内存实现（`InMemoryMatrixInboundTransactionStore`、`InMemoryMatrixOutboundStore`）是**当前承载**，接口已按
-  `scope` 分片、`reserve` 已按原子语义定义，替换实现不需要改调用方。
+| 条件 | 结果 | 结论 |
+| --- | --- | --- |
+| `PATCH` + `If-None-Match: *`，文档不存在 | **201**，文档建立 | create-once 可用 |
+| 两个并发 `If-None-Match: *`，同一文档 | **201 + 412** | 唯一赢家由**服务端**裁决（条件与写入在同一把资源锁内） |
+| 两个并发 `If-Match: <同一 ETag>` | **205 + 205**，且 ETag 未变 | **`If-Match` 不是版本检查** |
+
+原因在 Pod 的 ETag：CSS `BasicETagHandler` 用 `"<DC.modified 毫秒>-<content type>"`，不是内容哈希。
+同一毫秒内的两次写入 ETag 相同，于是过期的条件照样通过——而竞争恰恰发生在同一毫秒。
+**因此 `If-Match` 不能承载预留**，`reserve` 的原子性只能来自 create-once。
+
+create-once 是**文档级**的，于是：**一条记录一个文档**。记录 `id` 用 `<sha256(key)>.ttl#self`，
+而不是 schema 默认的 `index.ttl#{key}`——一个共享文档只能守住它的第一个 key。
+行仍然是 models 任务 base（`/.data/task/`）下的 `taskResource`，**只有布局（`id`）由调用方给**。
+
+> **这一处偏离 schema 默认模板，需要确认。** 备选是保留 `index.ttl`（全部 key 一个文档）并接受
+> "预留只是尽力而为"：同一毫秒内的两个赢家都会处理，靠"接受事件按 event id 幂等"兜底，回执可能被后者覆盖。
+> 契约 §2.2 要求唯一赢家，因此当前实现选了每记录一文档；若 models 要求统一走默认模板，请指出，改动收敛在
+> `controlRecords.ts` 的 `controlRecordAddress` 一个函数里。
+
+### 6.2 同一轮实测出的另外两条（实现必须做，否则释放会永久卡住）
+
+- **SPARQL `PATCH` 建出来的文档，在容器不存在时无法 `DELETE`**：文档能读（HEAD 200），但 `DELETE` 回 **404**
+  且文档仍在。于是"释放预留"会让该 key 永远拿不回来。修法：写记录前先条件 `PUT` 容器
+  （BasicContainer，`If-None-Match: *`；201 或"已存在"的 409 都算成功）。这一步不做记忆，每次写记录前做一次，
+  因为重复 PUT 的代价是一个请求，而记错的代价是一个永久卡住的 key。
+- **`db.deleteByResource` 不是"忘掉这条记录"**：它删掉行、留下文档，而下一个 `If-None-Match: *` 仍回 412。
+  释放必须删**文档**（与预留同一个单位）。这两条都属于 drizzle-solid 侧的可用性缺口，已记录（见 §7）。
+
+另外：412 之后失败方的第一次读**可能早于赢家写入可见**（实测），因此 412 后做**有界重试**（5 次 × 25ms），
+仍读不到就报 500——不假装预留成功，也不把可重试的瞬时状态说成永久损坏。
+
+### 6.3 仍未定
+
+- **回收与墓碑**（§5.2）：现在不自动回收。
+- **出站批次**：承载相同（一条 task = 一批 PDU），但队列接口的 `scopes()` 要回答"哪些 Pod 还有待发批次"，
+  而"scope → 参与者"正是我们**刻意不记录**的映射；需要一个不依赖该映射的来源（例如由已服务的路由枚举，
+  或由房间成员关系推导）。定之前不实现 Pod 版出站 store。
+- **grant 的时机与界面**（§5.4）：未定；现在没有 grant 就是 403。
+
+## 7. 与已落地实现的关系
+
+- **入站**：`PodMatrixInboundTransactionStore`（`src/api/matrix/federation/podInboundTransaction.ts`）是**生产承载**，
+  容器已按它装配；`InMemoryMatrixInboundTransactionStore` 保留给测试与"没有 Pod 的嵌入方"。
+  两者实现同一接口，`reserve/complete/release/find` 都接受同一个可选句柄，内存实现忽略它。
+- **出站**：仍是 `InMemoryMatrixOutboundStore`；Pod 版等 §6.3 的 `scopes()` 来源定案。
 - `release`（未完成即释放）与"失败按真实状态回答"已落地，是本文 §3.1 的直接实现。
 - 服务身份与 Pod 归属（server name 派生、歧义即拒绝）见[服务身份契约](matrix-service-identity-contract.md)与
   `participantRoutes.ts`；本文只覆盖其中"写 Pod 用哪份授权"的部分。
+
+## 8. 记录在案的 drizzle-solid 缺口（2026-09-27）
+
+按仓库规则"绕过前先报告"，本契约用到的两处绕过都记在这里：
+
+1. **无法表达"只在不存在时创建"**：`insert` 走 `INSERT DATA`（集合语义，重复写不报错），
+   `insertExactRecordOnce` 是"先查再写"（TOCTOU），SPARQL executor 在 412 之后还会
+   `refreshed-etag` → `no-etag` 逐级重试（等于 last-write-wins）。**结果**：控制记录的创建走
+   原生条件 `PATCH`（`If-None-Match: *`），SPARQL 文本仍由 drizzle-solid 的 `toSPARQL()` 生成，
+   所以 schema 与布局知识仍在 models/drizzle-solid 一侧，绕过的只是"执行器不暴露 412"。
+2. **`deleteByResource` 留下空文档**（§6.2）：对"删掉这条记录"的语义来说不够，
+   且留下的文档会让 create-once 永远 412。**结果**：释放走文档级 `DELETE`。
