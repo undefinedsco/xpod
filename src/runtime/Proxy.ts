@@ -442,7 +442,12 @@ export class GatewayProxy {
       || pathname.startsWith('/api/')
       || pathname.startsWith('/provision/')
       || pathname === '/.well-known/matrix/client'
-      || pathname.startsWith('/_matrix/');
+      // The Matrix surface a peer speaks, and the native surface two Xpod deployments speak to each
+      // other (write side ③). The second one has to be forwarded too, or the native-first delivery
+      // would 404 at our own gateway and silently fall back to Matrix for every peer.
+      || pathname.startsWith('/_matrix/')
+      || pathname === '/_xpod'
+      || pathname.startsWith('/_xpod/');
   }
 
   private pathnameFromRequestUrl(url: string): string {
