@@ -400,8 +400,9 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   容器 `ldp:contains` **只列出 4 个文档中的 1 个** → 对 PATCH 建出的文档不可信。
   结论与三个选项见[控制记录契约](matrix-control-records-contract.md) §9.2；**Pod 版出站 store 在定案前不实现**。
 
-门禁（提交前在冻结代码上复跑）：`typecheck:test` 通过；`tests/api/matrix` **560 passed / 3 skipped**
-（其中 `handlers/FederationHandler.test.ts` 33 项）；`tests/api tests/http` **2015 passed / 67 skipped**；
+门禁（提交前在冻结代码上复跑）：`typecheck:test` 通过；`tests/api/matrix tests/api/handlers`
+**1002 passed / 3 skipped**（其中 `handlers/FederationHandler.test.ts` 33 项，含新增 4 项）；
+`tests/api tests/http` **2015 passed / 67 skipped**；
 `test:integration:lite` **156 passed / 6 skipped（31 文件通过 / 3 跳过）**，
 含上面 3 项真实 Pod 用例与 `MatrixCollaboration` 的真实运行时夹具。
 **未做**：真实实例（本机 3000 是别的构建）、`full`（Docker 无响应）、自动回收（保留期未定）。
