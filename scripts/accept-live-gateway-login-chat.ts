@@ -753,6 +753,9 @@ async function main(): Promise<void> {
         ? await podCredential.authorization().catch(() => undefined)
         : undefined;
     },
+    // The retry must not go back through the session transport: it exists to attach the
+    // session's own token and would overwrite the credential this retry is carrying.
+    fetch,
   );
   const probePath = `acceptance/${ACCEPT_ID}.ttl`;
   const probeUrl = new URL(probePath, account.podUrl).toString();
