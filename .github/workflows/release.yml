@@ -508,6 +508,7 @@ jobs:
             desktop/release/*.dmg
             desktop/release/*.zip
             desktop/release/*.blockmap
+            desktop/release/latest-mac.yml
           if-no-files-found: error
           retention-days: 14
 
@@ -553,7 +554,7 @@ jobs:
           fi
 
           mapfile -t desktop_assets < <(find "$RUNNER_TEMP/desktop-release" -type f \
-            \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' \) -print)
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' -o -name 'latest-mac.yml' \) -print)
           if [[ "${#desktop_assets[@]}" -eq 0 ]]; then
             echo "::error::desktop release assets are missing"
             exit 1

@@ -63,6 +63,10 @@ describe('stable release promotion workflow', () => {
     expect(upload?.with?.path).toContain('desktop/release/*.dmg');
     expect(upload?.with?.path).toContain('desktop/release/*.zip');
     expect(upload?.with?.path).toContain('desktop/release/*.blockmap');
+    // The desktop reads its update feed from the release assets; a release without this manifest
+    // ships an app that can never find an update.
+    expect(upload?.with?.path).toContain('desktop/release/latest-mac.yml');
+    expect(jobRunText(workflow, 'create_github_release')).toContain("latest-mac.yml");
     expect(upload?.with?.['if-no-files-found']).toBe('error');
 
     const download = publish.steps.find((step: any) => step.uses === 'actions/download-artifact@v4');
