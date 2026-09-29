@@ -1,13 +1,14 @@
 import path from 'node:path'
 import { writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { app, autoUpdater, BrowserWindow, dialog, ipcMain, Menu, MenuItem, Tray, nativeImage, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, Tray, nativeImage, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
 import {
   buildTrayMenuModel,
   normalizeTrayIdentity,
   type TrayMenuAction,
   type TrayMenuItemModel,
   type TrayServiceSnapshot,
+  type TrayUpdateState,
 } from './tray-menu.js'
 import { trayIconAssetName, XPOD_TRAY_GUID } from './tray-icon.js'
 import { RuntimeManager } from './runtime-manager.js'
@@ -27,6 +28,7 @@ import {
   withDefaultDesktopUpdateFeed,
   type DesktopUpdateState,
 } from './update-manager.js'
+import { DesktopSelfUpdater, UPDATE_RELAUNCH_ENV } from './self-updater.js'
 import { loadDesktopUrlWithoutStaleCache } from './navigation-cache.js'
 import { canCancelDesktopLogin, cancelDesktopLogin, shouldCancelDesktopLoginOnClose } from './login-recovery.js'
 import { navigateDesktopProduct } from './product-navigation.js'
@@ -97,16 +99,38 @@ const updateAcceptanceLog = process.env.XPOD_DESKTOP_UPDATE_ACCEPTANCE_LOG
 const updateAcceptanceInstallMarker = process.env.XPOD_DESKTOP_UPDATE_ACCEPTANCE_INSTALL_MARKER
   ? path.resolve(process.env.XPOD_DESKTOP_UPDATE_ACCEPTANCE_INSTALL_MARKER)
   : undefined
-let trayUpdate: DesktopUpdateState = { status: updateConfig.feedUrl ? 'idle' : 'disabled' }
+let trayUpdate: TrayUpdateState = { status: updateConfig.feedUrl ? 'idle' : 'disabled' }
 let quitCleanupStarted = false
 type DesktopQuitReason = 'explicit' | 'update-install'
 let quitReason: DesktopQuitReason = 'explicit'
 const runtimeManager = new RuntimeManager({ targetOrigin })
+/**
+ * Xpod cannot use Electron's built-in macOS updater: Squirrel validates the new
+ * bundle against this build's designated requirement, which for an ad-hoc
+ * signature is a bare `cdhash` that no later release can satisfy. The desktop
+ * therefore owns the download, verification and bundle swap itself.
+ */
+const selfUpdater = new DesktopSelfUpdater({
+  version: app.getVersion(),
+  appPath: path.resolve(process.execPath, '..', '..', '..'),
+  updatesDir: path.join(desktopDataRoot, 'updates'),
+  ...(updateConfig.feedUrl ? { manifestUrl: updateConfig.feedUrl } : {}),
+  relaunch: process.env[UPDATE_RELAUNCH_ENV] === 'direct' || acceptanceMode ? 'direct' : 'open',
+  requestQuit: () => {
+    quitReason = 'update-install'
+    windowLifecycle.markQuitting()
+    app.quit()
+  },
+  onLifecycleEvent: (event, detail) => {
+    if (updateAcceptanceLog) writeFileSync(updateAcceptanceLog, `${event}${detail ? `: ${detail}` : ''}\n`, { flag: 'a' })
+  },
+})
 const updateManager = new DesktopUpdateManager({
-  updater: autoUpdater,
+  updater: selfUpdater,
   ...updateConfig,
   onUpdateDownloaded: (state, install) => {
     const version = state.version ? ` ${state.version}` : ''
+    const staged = selfUpdater.snapshot()
     void dialog.showMessageBox({
       type: 'info',
       buttons: ['Restart and install', 'Later'],
@@ -115,7 +139,9 @@ const updateManager = new DesktopUpdateManager({
       noLink: true,
       title: 'Xpod update ready',
       message: `Xpod${version} is ready`,
-      detail: 'Restart Xpod to finish installing the update. Your signed-in session will be preserved.',
+      detail: staged
+        ? `Restart Xpod to finish installing the update. Your signed-in session will be preserved.\n\nDownloaded package: ${staged.archivePath}`
+        : 'Restart Xpod to finish installing the update. Your signed-in session will be preserved.',
     }).then((result) => {
       if (result.response !== 0 || updateManager.snapshot().status !== 'downloaded') return
       quitReason = 'update-install'
@@ -137,7 +163,8 @@ const updateManager = new DesktopUpdateManager({
     if (updateAcceptanceLog) writeFileSync(updateAcceptanceLog, `${event}${detail ? `: ${detail}` : ''}\n`, { flag: 'a' })
   },
   onStateChange: (state) => {
-    trayUpdate = state
+    const staged = selfUpdater.snapshot()
+    trayUpdate = staged ? { ...state, downloadPath: staged.appPath } : state
     if (tray) updateTray(tray)
   },
 })
@@ -524,6 +551,18 @@ async function runTrayAction(action: TrayMenuAction): Promise<void> {
     case 'open-release-download':
       await shell.openExternal(xpodLatestReleaseUrl)
       return
+    case 'reveal-update': {
+      // The staged bundle is what a user needs when this machine cannot replace
+      // /Applications by itself: Finder lets them drag it across by hand.
+      const staged = selfUpdater.snapshot()
+      const target = staged?.appPath ?? staged?.archivePath
+      if (!target) {
+        await shell.openExternal(xpodLatestReleaseUrl)
+        return
+      }
+      shell.showItemInFolder(target)
+      return
+    }
     case 'about':
       app.showAboutPanel()
       return
@@ -661,10 +700,6 @@ if (acceptanceMode) {
   })
 }
 
-autoUpdater.on('before-quit-for-update', () => {
-  quitReason = 'update-install'
-})
-
 const allowParallelAcceptanceInstance = acceptanceMode
   && process.env.XPOD_DESKTOP_ALLOW_PARALLEL_ACCEPTANCE === '1'
 const hasSingleInstanceLock = allowParallelAcceptanceInstance || app.requestSingleInstanceLock()
@@ -692,6 +727,14 @@ if (!hasSingleInstanceLock) {
       }),
     })
     installDesktopLoginRecoveryMenu()
+    // The About panel is reachable from the tray before any sign-in, so it must
+    // describe this build instead of Electron's defaults.
+    app.setAboutPanelOptions({
+      applicationName: 'Xpod',
+      applicationVersion: app.getVersion(),
+      version: `Electron ${process.versions.electron}`,
+      copyright: `© ${new Date().getFullYear()} Xpod`,
+    })
     tray = createTray()
     updateManager.start()
     await runtimeManager.ensureRunning().catch(() => undefined)
@@ -708,12 +751,17 @@ if (!hasSingleInstanceLock) {
 app.on('before-quit', (event) => {
   windowLifecycle.markQuitting()
   if (trayPoll) clearInterval(trayPoll)
-  // Squirrel owns the update installation lifecycle after quitAndInstall().
-  // Do not defer this event: preventing it, even for runtime cleanup, causes
-  // Electron's built-in updater to finish downloading but never relaunch.
+  // The detached installer waits for this pid and then replaces the bundle, so
+  // the quit may be deferred long enough to stop the owned runtime. Leaving it
+  // running would let the relaunched app start a second runtime next to an
+  // orphaned one.
   if (quitReason === 'update-install') {
-    updateManager.dispose()
-    void runtimeManager.stopOwned().catch(() => undefined)
+    if (!quitCleanupStarted) {
+      quitCleanupStarted = true
+      event.preventDefault()
+      updateManager.dispose()
+      void runtimeManager.stopOwned().catch(() => undefined).finally(() => app.exit(0))
+    }
     return
   }
   if (!quitCleanupStarted) {

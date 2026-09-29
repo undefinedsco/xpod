@@ -21,7 +21,7 @@ describe('desktop user env', () => {
     expect(envPath).toBe(path.join(root, '.env'))
     expect(statSync(envPath).mode & 0o777).toBe(0o600)
     expect(content).toContain('XPOD_AI_CLIENT_CONFIGURATION_ENABLED=true')
-    expect(content).toContain('oidcIssuer=https://id.undefineds.co/')
+    expect(content).toContain('SOLID_OIDC_ISSUER=https://id.undefineds.co/')
     expect(content).not.toContain('CSS_BASE_URL=')
     expect(content).not.toContain('CSS_PORT=')
     expect(content).not.toContain('API_PORT=')
@@ -58,10 +58,30 @@ describe('desktop user env', () => {
     expect(readFileSync(envPath, 'utf8')).toBe([
       '# Xpod local runtime configuration',
       'XPOD_EDITION=local',
-      'oidcIssuer=https://id.undefineds.co/',
+      'SOLID_OIDC_ISSUER=https://id.undefineds.co/',
       'XPOD_PORT=4567',
       '',
     ].join('\n'))
+  })
+
+  it('migrates the internal shorthand to the key the runtime reads', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'xpod-desktop-env-'))
+    roots.push(root)
+    const envPath = path.join(root, '.env')
+    writeFileSync(envPath, [
+      '# Xpod local runtime configuration',
+      'XPOD_EDITION=local',
+      'oidcIssuer=https://custom-id.example/',
+      'XPOD_PORT=4567',
+      '',
+    ].join('\n'))
+
+    ensureDesktopEnvFile(root)
+
+    const migrated = readFileSync(envPath, 'utf8')
+    expect(migrated).toContain('SOLID_OIDC_ISSUER=https://custom-id.example/')
+    expect(migrated).not.toContain('oidcIssuer=')
+    expect(migrated).toContain('XPOD_PORT=4567')
   })
 
   it('loads file values without replacing explicit environment overrides', () => {

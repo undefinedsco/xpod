@@ -1,3 +1,6 @@
+import { createMatrixPodResolver, resolveMatrixContext } from '../matrix/MatrixPodResolver';
+import { AgentWakeRuntimeService } from '../reconciler/AgentWakeRuntimeService';
+import { registerAgentWakeRoutes } from '../handlers/AgentWakeHandler';
 /**
  * 路由注册
  *
@@ -53,6 +56,7 @@ import { registerQuotaRoutes } from '../handlers/QuotaHandler';
 import { createPodLookupUsageOwnershipResolver, registerUsageRoutes } from '../handlers/UsageHandler';
 import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
 import { registerAiGatewayManagementRoutes } from '../handlers/AiGatewayManagementHandler';
+import { registerTaskCredentialRoutes } from '../handlers/TaskCredentialHandler';
 import { registerAiClientConfigurationRoutes } from '../handlers/AiClientConfigurationHandler';
 import { registerDeviceNotificationRuntime, type DeviceNotificationRuntimeOptions } from '../handlers/DeviceNotificationRuntime';
 import { AiClientConfigurationService } from '../service/AiClientConfigurationService';
@@ -111,8 +115,9 @@ function registerHealthRoutes(server: ApiServer): void {
   registerDashboardRoutes(server, { staticDir });
   const settingsStaticDir = path.resolve(PACKAGE_ROOT, 'static/settings');
   registerSettingsRoutes(server, { staticDir: settingsStaticDir });
-  const authCallbackStaticDir = path.resolve(PACKAGE_ROOT, 'static/auth-callback');
-  registerAuthCallbackRoutes(server, { staticDir: authCallbackStaticDir });
+  // The callback entry is part of the settings build (one browser engine, one asset set), so its
+  // HTML and theme bootstrap are served from the settings directory.
+  registerAuthCallbackRoutes(server, { staticDir: settingsStaticDir });
 }
 
 /**
@@ -186,7 +191,12 @@ function registerSharedRoutes(
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });
-  registerMatrixRoutes(server, { store: matrixStore });
+  const matrixPodResolver = createMatrixPodResolver(podLookupRepository);
+  registerMatrixRoutes(server, { store: matrixStore, resolvePodUrl:matrixPodResolver, baseUrl:process.env.CSS_BASE_URL });
+  registerAgentWakeRoutes(server, {
+    service:new AgentWakeRuntimeService(container.resolve('serverGroupReconcilerService').getQueue(),matrixStore),
+    resolveContext:request=>resolveMatrixContext(request,matrixPodResolver),
+  });
   registerCoordinationRoutes(server, { clientReconcilerCoordinator });
   registerInngestRoutes(server, {
     backend: runExecutionBackend,
@@ -204,7 +214,7 @@ function registerSharedRoutes(
     providerModelSelectionService,
     customModelsService: providerCustomModelsService,
     gatewayAccessKeyRepository,
-    podInterfaceKeys: ownerPodAccess,
+    invalidateClientCredential: (clientId) => container.resolve('solidSessions').invalidateClientCredential(clientId),
     validateClientCredential: (apiKey) => container.resolve('authenticator').authenticate({
       headers: { authorization: `Bearer ${apiKey}` },
       method: 'POST',
@@ -215,6 +225,15 @@ function registerSharedRoutes(
   });
   registerAiClientConfigurationRoutes(server, {
     service: aiClientConfigurationService,
+  });
+  registerTaskCredentialRoutes(server, {
+    taskCredentials: container.resolve('taskCredentialStore', { allowUnregistered: true }),
+    clientCredentialIssuer: config.solidBaseUrl ?? config.publicUrl,
+    validateClientCredential: (apiKey) => container.resolve('authenticator').authenticate({
+      headers: { authorization: `Bearer ${apiKey}` },
+      method: 'POST',
+      url: '/api/ai/task-credentials',
+    } as IncomingMessage),
   });
   const notificationOrigin = config.publicUrl ?? config.solidBaseUrl ?? process.env.CSS_BASE_URL ?? `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`;
   registerDeviceNotificationRuntime(server, {
@@ -232,7 +251,12 @@ function registerSharedRoutes(
   const ftsRebuildAvailable = Boolean(ownerPodAccess && rdfEngine?.indexTextSource);
   const vectorRebuildAvailable = Boolean(ownerPodAccess && rdfSearchIndexingService && chatKitStore.createTrustedContext);
   const rebuildFts = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await ownerPodAccess.getPodFetch(owner.webId, { podBaseUrl: owner.podUrl });
+    // Background work uses the owner's task-layer grant: the rebuild is exactly the kind of run
+    // that happens while nobody is watching.
+    const trustedFetch = await ownerPodAccess.getPodFetch(owner.webId, {
+      podBaseUrl: owner.podUrl,
+      taskCredential: { ownerGrant: true },
+    });
     if (!trustedFetch || !rdfEngine?.indexTextSource) throw new Error('fts_rebuild_unavailable');
     const result = await new PodSearchIndexRebuilder({
       trustedFetch,
@@ -243,7 +267,10 @@ function registerSharedRoutes(
     if (result.failed > 0) throw new Error('fts_rebuild_incomplete');
   };
   const rebuildVector = async (owner: { webId: string; podUrl: string }) => {
-    const trustedFetch = await ownerPodAccess.getPodFetch(owner.webId, { podBaseUrl: owner.podUrl });
+    const trustedFetch = await ownerPodAccess.getPodFetch(owner.webId, {
+      podBaseUrl: owner.podUrl,
+      taskCredential: { ownerGrant: true },
+    });
     if (!trustedFetch || !rdfSearchIndexingService) throw new Error('vector_rebuild_unavailable');
     const context = await chatKitStore.createTrustedContext({ ...owner, fetch: trustedFetch });
     const result = await new PodSearchIndexRebuilder({

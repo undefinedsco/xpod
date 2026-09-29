@@ -95,10 +95,12 @@ export const xpodConsentCopy = {
   continueLabel: '继续',
   retryLabel: '重试',
   cancelLabel: '取消',
-  // 授权页缺 Pod 的出口（设计第二部分 §4.1 / U06）：授权流程不代用户创建，
-  // 只说明原因并给出明确去向。
+  // 授权页缺 Pod 的出口（设计第二部分 §4.1 / U06）：授权流程仍然不代用户创建，
+  // 创建只在用户显式点击主操作后发生；说明原因，并给出创建、管理与拒绝三个出口。
   missingPodTitle: '还没有可用的存储空间',
   missingPodDescription: '批准访问前需要一个属于当前身份的存储空间。请先在 Pod 管理中创建或绑定，再回到这里继续授权。',
+  missingPodCreateHint: '也可以在这里直接创建：填写 Pod 名称后点击创建，成功后回到本次授权继续，不会丢失当前请求。',
+  createPodAndContinueLabel: '创建存储空间并继续授权',
   goToPodManagementLabel: '前往 Pod 管理',
 } as const;
 
@@ -128,6 +130,8 @@ export const xpodRegistrationCopy = {
   usernameCharset: 'Pod 名称只能包含小写字母、数字和连字符',
   usernameHyphen: 'Pod 名称不能以连字符开头或结尾',
   usernameUnavailable: '暂时无法检查 Pod 名称，请重试。',
+  usernameChecking: '正在检查 Pod 名称…',
+  usernameAvailable: 'Pod 名称可用，可以创建。',
   emailAlreadyRegistered: '该邮箱已注册，请登录或重置密码。',
   emailAlreadyRegisteredPasswordMismatch: '该邮箱已注册，但密码不正确，请登录或重置密码。',
   usernameAlreadyTaken: 'Pod 名称已被占用。账号已创建，请登录后换一个名称。',

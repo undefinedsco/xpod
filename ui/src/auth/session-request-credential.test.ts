@@ -115,6 +115,26 @@ describe('createSessionRequestCredential', () => {
 
 describe('withRequestPodAuthorization', () => {
   const missing = () => Response.json({ error: 'service_access_missing' }, { status: 403 });
+  // Model discovery reports the same stable code nested under `error.code`.
+  const missingNested = () => Response.json(
+    { error: { code: 'service_access_missing', message: 'Pod service access is missing or has been revoked' } },
+    { status: 403 },
+  );
+
+  it('retries when the stable code arrives nested under error.code', async() => {
+    const attempts: Array<string | null> = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get('authorization');
+      attempts.push(authorization);
+      return authorization ? Response.json({ ok: true }) : missingNested();
+    }) as typeof fetch;
+    const wrapped = withRequestPodAuthorization(fetchImpl, async() => 'Bearer sk-session');
+
+    const response = await wrapped('https://xpod.example/v1/models');
+
+    expect(response.status).toBe(200);
+    expect(attempts).toEqual([ null, 'Bearer sk-session' ]);
+  });
 
   it('retries once with the session credential when the API reports missing Pod access', async() => {
     const attempts: Array<string | null> = [];

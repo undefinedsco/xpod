@@ -5,6 +5,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import { xpodConsentErrors } from '../auth/xpod-account-copy';
 import { storageBindingKey } from '../auth/xpod-storage-selection';
+import { FIRST_POD_BINDING_MISSING } from '../utils/consent-first-pod';
 import { ConsentPage } from './ConsentPage';
 
 function resetConsentRetryTestState(): void {
@@ -93,7 +94,7 @@ describe('ConsentPage storage retry routing', () => {
     )).toBe(false);
   });
 
-  it('does not create storage from the authorization page', async () => {
+  it('does not create storage from the authorization page without an explicit click', async () => {
     const createPod = vi.fn(async () => new Response(JSON.stringify({ pods: {} }), { status: 200 }));
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(input);
@@ -115,7 +116,9 @@ describe('ConsentPage storage retry routing', () => {
       controls: { account: { username: 'alice', pod: '/.account/account/pod/' } },
     });
 
-    // 缺存储时授权页只说明原因并给出"前往 Pod 管理"，不得代用户创建任何资源。
+    // 缺存储时授权页说明原因并给出"创建 / 前往 Pod 管理 / 拒绝"三个出口；
+    // 加载本身不创建任何资源，创建只发生在用户显式点击之后。
+    await screen.findByRole('button', { name: '创建存储空间并继续授权' });
     await screen.findByRole('button', { name: '前往 Pod 管理' });
     expect(createPod).not.toHaveBeenCalled();
     expect(fetchMock.mock.calls.some(([input, init]) =>
@@ -258,10 +261,18 @@ it('does not create a replacement for ownerless existing storage', async () => {
   vi.stubGlobal('fetch', fetchMock);
   renderConsentPage({ controls: { account: { username: 'different-name', pod: '/.account/account/pod/' } } });
 
-  // 授权页不得推断归属、不得新建替代品，只给出去向与拒绝。
-  await screen.findByRole('button', { name: '前往 Pod 管理' });
+  // 授权页不得推断归属：缺 Pod 时给出创建/管理/拒绝三个出口，加载阶段无写操作。
+  await screen.findByRole('button', { name: '创建存储空间并继续授权' });
   expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
+
+  // 用户显式点击创建时，权威清单守卫必须挡下"账号已有 Pod 却无绑定"的替代创建，
+  // 并把页面交回权威绑定重读出口（重试 / 换账号 / Pod 管理）。
+  fireEvent.click(screen.getByRole('button', { name: '创建存储空间并继续授权' }));
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(FIRST_POD_BINDING_MISSING));
+  expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  expect(screen.getByRole('button', { name: '重试' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '前往 Pod 管理' })).toBeTruthy();
 
   // 绑定就绪后重新进入该 interaction 才能继续批准（权威绑定与 owner 由 Pod 管理侧修复）。
   cleanup();

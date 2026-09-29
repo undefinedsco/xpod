@@ -7,7 +7,7 @@ import {
   systemSettingsSurfaceRoutes,
 } from './settings-routes';
 import { xpodShellRoutes } from './xpod-shell-routes';
-import { AccountAuthBoundary, AccountWorkspaceBoundary } from './auth/AccountAuthBoundary';
+import { AccountAuthBoundary, AccountWorkspaceBoundary, LocalServiceSurfaceBoundary } from './auth/AccountAuthBoundary';
 import { XpodSettingsLayout } from './layout/XpodSettingsLayout';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 
@@ -78,7 +78,10 @@ describe('settings surface routes', () => {
   });
 
   test('wires shell boundaries per route instead of one shell-wide gate', () => {
-    expect(containsElementType(shellRouteFor('status')?.element, AccountWorkspaceBoundary)).toBe(true);
+    // Status is the local service surface: anonymous visitors keep it, so it is
+    // admitted by the local boundary instead of the Account workspace gate.
+    expect(containsElementType(shellRouteFor('status')?.element, LocalServiceSurfaceBoundary)).toBe(true);
+    expect(containsElementType(shellRouteFor('status')?.element, AccountWorkspaceBoundary)).toBe(false);
     expect(containsElementType(shellRouteFor('dashboard')?.element, AccountWorkspaceBoundary)).toBe(true);
     expect(containsElementType(shellRouteFor('ai-connections')?.element, WebIdAuthBoundary)).toBe(true);
     expect(containsElementType(shellRouteFor('ai-config')?.element, WebIdAuthBoundary)).toBe(true);

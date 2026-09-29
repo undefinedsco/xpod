@@ -44,11 +44,11 @@ describe('Account credentials presentation', () => {
     expect(screen.getByText(credentialsCopy.mismatchError)).toBeTruthy()
   })
 
-  it('keeps every credential field inside the same native form', () => {
+  it('keeps every required credential field inside the same native form', () => {
     render(
       <AccountCredentialsView
         mode="register"
-        values={{ username: 'north', email: 'person@example.test', password: 'secret', confirmation: 'secret' }}
+        values={{ email: 'person@example.test', password: 'secret', confirmation: 'secret' }}
         onChange={() => undefined}
         onSubmit={() => undefined}
         copy={credentialsCopy}
@@ -57,7 +57,8 @@ describe('Account credentials presentation', () => {
 
     const form = screen.getByLabelText('Email').closest('form')
     expect(form).toBeTruthy()
-    expect(form?.contains(screen.getByLabelText('Username'))).toBe(true)
+    // Registration asks for the Account's own fields only; a Pod name is not one.
+    expect(screen.queryByLabelText('Username')).toBeNull()
     expect(form?.contains(screen.getByLabelText('Password'))).toBe(true)
     expect(form?.contains(screen.getByLabelText('Confirm password'))).toBe(true)
     expect(form?.contains(screen.getByRole('button', { name: 'Create account' }))).toBe(true)
@@ -117,25 +118,22 @@ describe('Account credentials presentation', () => {
     render(
       <AccountCredentialsView
         mode="register"
-        values={{ username: 'north', email: 'person@example.test', password: 'secret', confirmation: 'different' }}
+        values={{ email: 'person@example.test', password: 'secret', confirmation: 'different' }}
         onChange={onChange}
         onSubmit={onSubmit}
-        usernameAvailability="unavailable"
-        usernameSuggestions={['northstar-user']}
-        errors={{ username: 'Username is unavailable' }}
+        errors={{ email: 'Email is already registered' }}
         copy={credentialsCopy}
       />,
     )
 
-    expect(screen.getByLabelText('Username').getAttribute('autocomplete')).toBe('username')
     expect(screen.getByLabelText('Email').getAttribute('autocomplete')).toBe('email')
     expect(screen.getByLabelText('Password').getAttribute('autocomplete')).toBe('new-password')
     expect(screen.getByLabelText('Confirm password').getAttribute('autocomplete')).toBe('new-password')
-    expect(screen.getByText('Username is unavailable').getAttribute('aria-live')).toBe('polite')
-    expect(screen.getByText('Suggestions')).toBeTruthy()
+    expect(screen.getByText('Email is already registered').getAttribute('aria-live')).toBe('polite')
+    expect(screen.queryByLabelText('Username')).toBeNull()
 
-    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'northstar' } })
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ username: 'northstar' }))
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'other@example.test' } })
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ email: 'other@example.test' }))
 
     const form = screen.getByLabelText('Confirm password').closest('form')
     expect(form).toBeTruthy()
@@ -144,23 +142,25 @@ describe('Account credentials presentation', () => {
     expect(screen.getByText('Passwords do not match')).toBeTruthy()
   })
 
-  it('hides suggestion chips on compact registration so the 280x400 card stays one screen', () => {
+  it('drops the removed Pod-name field and its suggestions from compact registration', () => {
     render(
       <AccountCredentialsView
         mode="register"
         presentation="compact"
-        values={{ username: 'north', email: '', password: '', confirmation: '' }}
+        values={{ email: '', password: '', confirmation: '' }}
         onChange={() => undefined}
         onSubmit={() => undefined}
-        usernameAvailability="unavailable"
-        usernameSuggestions={['northstar-user']}
         copy={credentialsCopy}
       />,
     )
 
+    expect(screen.queryByLabelText('Username')).toBeNull()
     expect(screen.queryByText('Suggestions')).toBeNull()
     expect(screen.queryByRole('button', { name: 'northstar-user' })).toBeNull()
-    expect(screen.getByText('Username is unavailable')).toBeTruthy()
+    // Email, password and confirmation are what the compact card must fit.
+    expect(screen.getByLabelText('Email')).toBeTruthy()
+    expect(screen.getByLabelText('Password')).toBeTruthy()
+    expect(screen.getByLabelText('Confirm password')).toBeTruthy()
   })
 
   it('disables every submit action while pending', () => {

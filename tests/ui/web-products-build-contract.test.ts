@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '../..');
@@ -11,16 +11,19 @@ describe('Xpod web product build contract', () => {
     expect(viteConfig).toContain("settings: {");
     expect(viteConfig).toContain("base: '/settings/'");
     expect(viteConfig).toContain("outDir: '../static/settings'");
-    expect(viteConfig).toContain("input: 'settings.html'");
+    expect(viteConfig).toContain("settings: 'settings.html'");
   });
 
-  it('declares the isolated same-origin auth callback target', () => {
+  it('builds the auth callback into the settings target instead of a second copy', () => {
     const viteConfig = readFileSync(path.join(root, 'ui/vite.config.ts'), 'utf8');
 
-    expect(viteConfig).toContain("authCallback: {");
-    expect(viteConfig).toContain("base: '/auth/callback/'");
-    expect(viteConfig).toContain("outDir: '../static/auth-callback'");
-    expect(viteConfig).toContain("input: 'auth-callback.html'");
+    // The callback imports the same session and app chunks as settings; a separate target shipped
+    // a near-identical copy of the browser engine.
+    expect(viteConfig).toContain("settings: {");
+    expect(viteConfig).toContain("'auth-callback': 'auth-callback.html'");
+    expect(viteConfig).not.toContain("authCallback: {");
+    expect(viteConfig).not.toContain("outDir: '../static/auth-callback'");
+    expect(existsSync(path.join(root, 'static/auth-callback'))).toBe(false);
   });
 
   it('keeps the Inrupt verifier on the current Xpod instead of exposing a provider chooser', () => {
@@ -41,8 +44,7 @@ describe('Xpod web product build contract', () => {
     const rootPackage = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 
     expect(uiPackage.scripts['build:settings']).toBe('tsc -b && BUILD_TARGET=settings vite build');
-    expect(uiPackage.scripts['build:callback']).toBe('tsc -b && BUILD_TARGET=authCallback vite build');
-    expect(uiPackage.scripts['build:all']).toBe('bun run build:app && bun run build:dashboard && bun run build:settings && bun run build:callback');
+    expect(uiPackage.scripts['build:all']).toBe('bun run build:app && bun run build:dashboard && bun run build:settings');
     expect(rootPackage.scripts['build:ui']).toBe('bun run --filter ui build:all');
   });
 

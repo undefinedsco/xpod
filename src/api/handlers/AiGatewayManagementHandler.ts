@@ -10,7 +10,7 @@ import {
   isGatewayApiKeyPrincipal,
   ownerWebIdForGatewayKeyManagement,
 } from '../ai-gateway/auth/GatewayPrincipal';
-import { hasSolidClientCredentialsAuthority, type SolidAuthContext } from '../auth/AuthContext';
+import type { SolidAuthContext } from '../auth/AuthContext';
 import type { AuthResult } from '../auth/Authenticator';
 import type { GatewayDeployment } from '../ai-gateway/auth/GatewayApiKey';
 import {
@@ -26,7 +26,6 @@ import type { ProviderModelSelectionService } from '../ai-gateway/models/Provide
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { ProviderModelsFetchError, ProviderModelsResponseError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
 import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
-import type { PodInterfaceKeyGrant } from '../ai-gateway/pod/PodInterfaceKeyStore';
 import { isPodAccessFailure } from '../ai-gateway/pod/OwnerPodAccess';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
@@ -59,10 +58,11 @@ export interface AiGatewayManagementHandlerOptions {
   /** Reuses the configured CSS authenticator; never trusts the claimed registration owner. */
   validateClientCredential?: (apiKey: string) => Promise<AuthResult>;
   /**
-   * Server-side Pod access for the owner. The wrapper being registered is the owner's own
-   * interface key, so registering it is also the moment Xpod is granted its use.
+   * Forget sessions cached for a client whose registration is gone. Revocation happens at the
+   * issuer, so deleting the record is the moment this process learns the credential must stop
+   * being accepted - without it a revoked API Key keeps working until its token expires.
    */
-  podInterfaceKeys?: PodInterfaceKeyGrant;
+  invalidateClientCredential?: (clientId: string) => void;
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue' | 'issueClientConfiguration'>;
   jsonBodyLimitBytes?: number;
@@ -179,15 +179,10 @@ export function registerAiGatewayManagementRoutes(
         sendJson(response, 403, { error: 'CSS client credential belongs to another WebID' });
         return;
       }
-      if (hasSolidClientCredentialsAuthority(verified.context)) {
-        // Sealed before the record is written, because writing the record is the first thing
-        // that needs it: background components reach this Pod through the standard interface
-        // as the owner, never through the caller's network position.
-        await options.podInterfaceKeys?.saveKey(owner, {
-          clientId: verified.context.clientId,
-          clientSecret: verified.context.clientSecret,
-        });
-      }
+      // Registering an application is about that application's own credential - where it is in
+      // effect, and how to revoke it. Background Pod access is a separate, explicit grant the user
+      // makes where they manage index/embedding work (`POST /api/ai/task-credentials`), so nothing
+      // about it is written here.
       const name = normalizeOptionalString(body.name) ?? 'Xpod API Key';
       const keyId = repository.createKeyId(owner, options.deployment);
       const createdAt = new Date();
@@ -273,6 +268,9 @@ export function registerAiGatewayManagementRoutes(
       // This removes the saved client configuration only. The Account host
       // revokes CSS credentials before requesting this companion cleanup.
       await repository.delete(record.id, { auth: request.auth });
+      if (record.clientCredentialId) {
+        options.invalidateClientCredential?.(record.clientCredentialId);
+      }
       sendJson(response, 200, {
         deleted: true,
         record: publicGatewayAccessKeyRecord(record, false),
@@ -1509,6 +1507,7 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
 function sendGatewayAccessKeyError(response: ServerResponse, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   if (isPodAccessFailure(message)) {
+    logger.warn(`Gateway API Key operation refused: ${redactSecretText(message)}`);
     sendJson(response, 403, { error: 'service_access_missing' });
     return;
   }

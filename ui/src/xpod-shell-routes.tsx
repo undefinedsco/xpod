@@ -5,7 +5,7 @@ import {
   aiConnectionsSurfaceRoutes,
   systemSettingsSurfaceRoutes,
 } from './settings-routes';
-import { AccountWorkspaceBoundary } from './auth/AccountAuthBoundary';
+import { AccountWorkspaceBoundary, LocalServiceSurfaceBoundary } from './auth/AccountAuthBoundary';
 import { XPOD_DEFAULT_RETURN_PATH } from './routes/canonical-routes';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 
@@ -17,7 +17,12 @@ import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
  * the same React tree, Account session, and WebID session alive.
  */
 export const xpodShellRoutes: RouteObject[] = [
-  { path: 'status', element: <AccountWorkspaceBoundary><Outlet /></AccountWorkspaceBoundary>, children: statusSurfaceRoutes },
+  // `/status` is the local service/diagnostics surface. Its panels read
+  // loopback-only runtime evidence (`/service/status`, `/api/admin/*`), so an
+  // anonymous visitor keeps the whole surface instead of being asked to sign in.
+  // The desktop tray's explicit `?account=open` entry still reaches the Account
+  // surface through LocalServiceSurfaceBoundary.
+  { path: 'status', element: <LocalServiceSurfaceBoundary><Outlet /></LocalServiceSurfaceBoundary>, children: statusSurfaceRoutes },
   { path: 'network', children: networkSurfaceRoutes },
   { path: 'ai-connections', element: <WebIdAuthBoundary autoStart><Outlet /></WebIdAuthBoundary>, children: aiConnectionsSurfaceRoutes },
   { path: 'ai-config', element: <WebIdAuthBoundary autoStart><Outlet /></WebIdAuthBoundary>, children: aiConfigSurfaceRoutes },
@@ -28,7 +33,8 @@ export const xpodShellRoutes: RouteObject[] = [
   { path: 'dashboard', element: <AccountWorkspaceBoundary><Outlet /></AccountWorkspaceBoundary>, children: dashboardRoutes },
 
   // Opening the product starts the WebID workspace, not the Account-protected
-  // one: `/status` and `/dashboard` ask for an Account only once visited.
+  // one: the legacy `/dashboard` tree asks for an Account only once visited,
+  // while `/status` stays a local surface.
   { index: true, element: <Navigate to={XPOD_DEFAULT_RETURN_PATH} replace /> },
   { path: '*', element: <Navigate to={XPOD_DEFAULT_RETURN_PATH} replace /> },
 ];

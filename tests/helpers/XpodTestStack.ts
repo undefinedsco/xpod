@@ -3,11 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { getFreePort } from '../../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle, type XpodRuntimeOptions } from '../../src/runtime/XpodRuntime';
 import { resolveTestRuntimeTransport } from './runtimeTransport';
+import { isPortConflict, withRuntimeStartLock } from './testRuntime';
 import { FAKE_QLEVER_LOCAL_RUNTIME_COMMAND } from './qleverRuntime';
 
 export class XpodTestStack {
   public port = 0;
   public baseUrl = '';
+  /** API port of the running runtime, for tests that must bypass the gateway. */
+  public apiPort = 0;
   public socketPath?: string;
   private runtime: XpodRuntimeHandle | null = null;
   private runtimeGatewayAdminProxyAuthSecret?: string;
@@ -39,18 +42,22 @@ export class XpodTestStack {
       || options.cssPort !== undefined
       || options.apiPort !== undefined;
     const attempts = pinned ? 1 : 3;
-    for (let attempt = 1; ; attempt += 1) {
-      const portOptions = transport === 'port' ? await this.resolvePortOptions(options) : {};
-      try {
-        await this.startOnce(mode, options, transport, runtimeRoot, rootFilePath, portOptions);
-        return;
-      } catch (error) {
-        if (attempt >= attempts || !isPortConflict(error)) {
-          throw error;
+    // Probing ports and binding them is not atomic, so the whole start is serialised against
+    // other test processes in this workspace; the retry below covers everyone else.
+    await withRuntimeStartLock(async() => {
+      for (let attempt = 1; ; attempt += 1) {
+        const portOptions = transport === 'port' ? await this.resolvePortOptions(options) : {};
+        try {
+          await this.startOnce(mode, options, transport, runtimeRoot, rootFilePath, portOptions);
+          return;
+        } catch (error) {
+          if (attempt >= attempts || !isPortConflict(error)) {
+            throw error;
+          }
+          await this.stop().catch(() => undefined);
         }
-        await this.stop().catch(() => undefined);
       }
-    }
+    });
   }
 
   private async startOnce(
@@ -112,6 +119,7 @@ export class XpodTestStack {
 
     this.port = this.runtime.ports.gateway ?? 0;
     this.baseUrl = this.runtime.baseUrl;
+    this.apiPort = this.runtime.ports.api ?? 0;
     this.socketPath = this.runtime.sockets.gateway;
 
     await this.waitReady();
@@ -162,10 +170,4 @@ export class XpodTestStack {
     }
     throw new Error(`XpodTestStack: timed out waiting for ${url}`);
   }
-}
-
-/** Whether a start failure is a port that someone else took first. */
-function isPortConflict(error: unknown): boolean {
-  const message = error instanceof Error ? `${error.message}${error.cause ? ` ${String(error.cause)}` : ''}` : String(error);
-  return /EADDRINUSE|address already in use/iu.test(message);
 }

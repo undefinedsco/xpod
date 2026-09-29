@@ -1,7 +1,8 @@
 /**
  * Where the product lands when no safe `returnTo` is available: the workspace
- * that only needs a WebID/Pod session. Account-protected workspaces
- * (`/status`, `/dashboard`) are something the user navigates to, not the entry.
+ * that only needs a WebID/Pod session. Surfaces the user navigates to instead
+ * (`/status`, `/dashboard`) are never the entry; `/status` is local runtime
+ * evidence and `/dashboard` is the Account-protected legacy tree.
  */
 export const XPOD_DEFAULT_RETURN_PATH = '/ai-connections';
 

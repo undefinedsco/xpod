@@ -9,9 +9,6 @@ import {
 import { useAuth } from '../context/AuthContextValue';
 import { persistReturnTo, consumeReturnTo, getReturnToFromLocation, consumeAccountContinuation } from '../utils/returnTo';
 import {
-  checkRegistrationUsernameAvailability,
-  getRegistrationUsernameError,
-  normalizeRegistrationUsername,
 } from '../utils/registration';
 import {
   RegistrationError,
@@ -45,7 +42,6 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const location = useLocation();
   const isRegister = initialIsRegister;
   const [values, setValues] = useState<AccountCredentialsValues>({
-    username: '',
     email: readPendingXpodAccountEmail(undefined, idpIndex) ?? '',
     password: '',
     confirmation: '',
@@ -53,62 +49,13 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [rememberAccount, setRememberAccount] = useState(true);
   const [isCancelling, setIsCancelling] = useState(false);
-  const [isCheckingUsername, setIsCheckingUsername] = useState(false);
-  const [isUsernameAvailable, setIsUsernameAvailable] = useState<boolean | null>(null);
-  const [usernameSuggestions, setUsernameSuggestions] = useState<string[]>([]);
-  const [usernameAvailabilityError, setUsernameAvailabilityError] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-
-  const normalizedUsername = normalizeRegistrationUsername(values.username ?? '');
-  const usernameError = isRegister ? getRegistrationUsernameError(normalizedUsername) : undefined;
 
   useEffect(() => {
     const returnTo = getReturnToFromLocation();
     if (returnTo) persistReturnTo(returnTo);
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!isRegister || !normalizedUsername) {
-      queueMicrotask(() => {
-        if (cancelled) return;
-        setIsCheckingUsername(false);
-        setIsUsernameAvailable(null);
-        setUsernameSuggestions([]);
-        setUsernameAvailabilityError(null);
-      });
-      return () => { cancelled = true; };
-    }
-
-    if (usernameError) {
-      queueMicrotask(() => {
-        if (cancelled) return;
-        setIsCheckingUsername(false);
-        setIsUsernameAvailable(false);
-        setUsernameSuggestions([]);
-        setUsernameAvailabilityError(usernameError);
-      });
-      return () => { cancelled = true; };
-    }
-
-    queueMicrotask(() => {
-      if (!cancelled) setIsCheckingUsername(true);
-    });
-    const timer = window.setTimeout(async () => {
-      const result = await checkRegistrationUsernameAvailability(normalizedUsername, idpIndex);
-      if (cancelled) return;
-      setIsCheckingUsername(false);
-      setIsUsernameAvailable(result.available);
-      setUsernameSuggestions(result.suggestions);
-      setUsernameAvailabilityError(result.error ?? null);
-    }, 300);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [idpIndex, isRegister, normalizedUsername, usernameError]);
 
   if (isLoggedIn) {
     // 账号已登录不等于 Pod 就绪（设计 §4.1）：落到 Account 管理，由用户显式建 Pod。
@@ -123,7 +70,6 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
   const handleFieldChange = (field: AccountCredentialField, value: string) => {
     if (field === 'email') setEmailError(null);
-    if (field === 'username') setUsernameAvailabilityError(null);
     setFormError(null);
     setValues((current) => ({ ...current, [field]: value }));
   };
@@ -145,15 +91,8 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
     try {
       if (isRegister) {
-        const username = normalizeRegistrationUsername(submitted.username ?? '');
-        const normalizedUsernameError = getRegistrationUsernameError(username);
-        if (normalizedUsernameError) {
-          setIsUsernameAvailable(false);
-          setUsernameAvailabilityError(normalizedUsernameError);
-          return;
-        }
-
-        const availability = await checkRegistrationUsernameAvailability(username, idpIndex);
+        // Registration completes the Account only (email + password). Pod name,
+        // machine and storage belong to the Pod flow, never to this form.
         const fallbackLoginUrl = await resolveHostedAccountControlUrl(controls?.password?.login, fetch, idpIndex)
           ?? scopeAccountUrl('/.account/login/password/');
         const recoverExistingAccount = async (duplicateEmailRecovery = false): Promise<string> => {
@@ -168,30 +107,6 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           storeAccountSessionToken(login.accountToken);
           return login.accountToken;
         };
-
-        if (!availability.available) {
-          let recoveredAccountToken: string | undefined;
-          try {
-            recoveredAccountToken = await recoverExistingAccount();
-          } catch {
-            // An unavailable Pod name may still be independent from this account.
-          }
-
-          if (recoveredAccountToken) {
-            finishRegistration();
-            return;
-          }
-
-          setIsUsernameAvailable(false);
-          setUsernameSuggestions(availability.suggestions);
-          setUsernameAvailabilityError(availability.error ?? 'Pod 名称已被占用。');
-          return;
-        }
-        if (availability.error) {
-          setIsUsernameAvailable(false);
-          setUsernameAvailabilityError(availability.error);
-          return;
-        }
 
         let accountToken: string;
         const recoveredAccountToken = await recoverExistingAccount().catch(() => undefined);
@@ -270,9 +185,6 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     } catch (error: unknown) {
       if (error instanceof RegistrationError && error.code === 'EMAIL_ALREADY_REGISTERED') {
         setEmailError(error.message);
-      } else if (error instanceof RegistrationError && error.code === 'USERNAME_ALREADY_TAKEN') {
-        setIsUsernameAvailable(false);
-        setUsernameAvailabilityError(error.message);
       } else if (isRegister) {
         setFormError(safeRegistrationMessage(error));
       } else {
@@ -288,11 +200,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       pathname: mode === 'register' ? scopeAccountUrl('/.account/login/password/register/') : scopeAccountUrl('/.account/login/password/'),
       search: location.search,
     });
-    setValues({ username: '', email: '', password: '', confirmation: '' });
-    setIsCheckingUsername(false);
-    setIsUsernameAvailable(null);
-    setUsernameSuggestions([]);
-    setUsernameAvailabilityError(null);
+    setValues({ email: '', password: '', confirmation: '' });
     setEmailError(null);
     setFormError(null);
   };
@@ -337,16 +245,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       errors={{
         ...(emailError ? { email: emailError } : {}),
         ...(formError ? { form: formError } : {}),
-        ...(isRegister && usernameAvailabilityError && !isCheckingUsername ? { username: usernameAvailabilityError } : {}),
       }}
-      usernameAvailability={isCheckingUsername
-        ? 'checking'
-        : isUsernameAvailable === true
-          ? 'available'
-          : isUsernameAvailable === false
-            ? { status: 'unavailable', message: usernameAvailabilityError ?? undefined }
-            : 'idle'}
-      usernameSuggestions={usernameSuggestions}
       copy={xpodAccountCredentialsCopy}
       footer={!isRegister ? (
         <>

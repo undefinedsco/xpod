@@ -103,8 +103,31 @@ describe('buildTrayMenuModel', () => {
     expect(buildTrayMenuModel({
       services: healthy,
       launchAtLogin: false,
+      update: { status: 'available', version: '0.1.1' },
+    }).items.find((item) => item.label === 'Preparing Xpod 0.1.1…')?.enabled).toBe(false);
+
+    expect(buildTrayMenuModel({
+      services: healthy,
+      launchAtLogin: false,
       update: { status: 'downloading', version: '0.1.1' },
-    }).items.find((item) => item.label === 'Downloading Xpod 0.1.1…')?.enabled).toBe(false);
+    }).items.find((item) => item.label === 'Downloading Xpod 0.1.1… starting…')?.enabled).toBe(false);
+
+    // A slow transfer must stay legible instead of hanging on "Downloading…".
+    expect(buildTrayMenuModel({
+      services: healthy,
+      launchAtLogin: false,
+      update: {
+        status: 'downloading',
+        version: '0.1.1',
+        progress: { transferred: 78_000_000, total: 186_000_000, percent: 42, bytesPerSecond: 1_200_000 },
+      },
+    }).items.find((item) => item.label?.startsWith('Downloading Xpod 0.1.1… 42% of 177 MB'))?.enabled).toBe(false);
+
+    expect(buildTrayMenuModel({
+      services: healthy,
+      launchAtLogin: false,
+      update: { status: 'downloaded', version: '0.1.1', downloadPath: '/tmp/staged/Xpod.app' },
+    }).items.find((item) => item.label === 'Show Update Package…')?.action).toEqual({ type: 'reveal-update' });
 
     expect(buildTrayMenuModel({
       services: healthy,

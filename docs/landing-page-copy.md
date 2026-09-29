@@ -1,6 +1,8 @@
 # Xpod Landing Page Copy
 
-## 定稿内容
+> **历史文案，已替代（2026-09-27 标注）**：以下是旧 Personal Messages Platform / AI Secretary 方向的定稿快照，保留用于追溯，不再供主站或产品 UI 复制。当前产品关系与承诺边界见[故事与风格](../../homepage/docs/story-and-style.md)，上线文案输入见[中文主站](../../homepage/docs/specs/site-copy.zh-CN.md)与[英文主站](../../homepage/docs/specs/site-copy.en.md)，产品体验见[实施 spec](superpowers/specs/2026-09-27-xpod-product-experience-spec.md)。旧稿中的全天在线、了解全部人生、自动归集和替用户表达，不构成当前产品承诺。
+
+## 历史定稿内容（已替代）
 
 ### Page Title
 Xpod - Personal Messages Platform

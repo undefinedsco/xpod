@@ -273,6 +273,27 @@ describe('DesktopUpdateManager', () => {
     ])
   })
 
+  it('keeps download progress visible in the downloading state', () => {
+    const updater = new FakeAutoUpdater()
+    const states: Array<{ status: string; version?: string; progress?: unknown }> = []
+    const manager = new DesktopUpdateManager({
+      updater,
+      feedUrl: 'https://updates.example/xpod',
+      onStateChange: (state) => states.push(state),
+    })
+
+    manager.start()
+    updater.emit('update-available', { version: '0.4.19' })
+    updater.emit('download-progress', { transferred: 40, total: 100, percent: 40, bytesPerSecond: 2_048 })
+
+    expect(manager.snapshot()).toEqual({
+      status: 'downloading',
+      version: '0.4.19',
+      progress: { transferred: 40, total: 100, percent: 40, bytesPerSecond: 2_048 },
+    })
+    expect(states.at(-1)?.status).toBe('downloading')
+  })
+
   it('does not describe TLS certificate failures as downloaded update verification', () => {
     const updater = new FakeAutoUpdater()
     updater.checkForUpdates = () => {
@@ -324,14 +345,14 @@ describe('resolveDesktopUpdateConfig', () => {
     })
   })
 
-  it('enables the official feed for packaged macOS builds without overriding an explicit feed', () => {
+  it('enables the release manifest feed for packaged macOS builds without overriding an explicit feed', () => {
     const base = resolveDesktopUpdateConfig({})
     expect(withDefaultDesktopUpdateFeed(base, {
       isPackaged: true,
       version: '0.3.71',
       platform: 'darwin',
       arch: 'arm64',
-    }).feedUrl).toBe('https://update.electronjs.org/undefinedsco/xpod/darwin-arm64/0.3.71')
+    }).feedUrl).toBe('https://github.com/undefinedsco/xpod/releases/latest/download/latest-mac.yml')
     expect(defaultDesktopUpdateFeedUrl({
       isPackaged: false,
       version: '0.3.71',

@@ -84,6 +84,36 @@ describe('Web account native presentation', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps recovery exits reachable while the primary action carries its own control', () => {
+    const onPrimary = vi.fn()
+    const onSecondary = vi.fn()
+    const onTertiary = vi.fn()
+    render(
+      <WebAccountFailureView
+        title="No storage yet"
+        description="Create storage before authorizing."
+        primaryLabel="Create storage and continue"
+        onPrimary={onPrimary}
+        primaryDisabled
+        secondaryLabel="Open Pod management"
+        onSecondary={onSecondary}
+        tertiaryLabel="Deny"
+        onTertiary={onTertiary}
+      >
+        <label htmlFor="view-pod-name">Pod name</label>
+        <input id="view-pod-name" defaultValue="alice" />
+      </WebAccountFailureView>,
+    )
+
+    expect((screen.getByRole('button', { name: 'Create storage and continue' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Pod management' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }))
+    expect(onPrimary).not.toHaveBeenCalled()
+    expect(onSecondary).toHaveBeenCalledTimes(1)
+    expect(onTertiary).toHaveBeenCalledTimes(1)
+    expect((screen.getByLabelText('Pod name') as HTMLInputElement).value).toBe('alice')
+  })
+
   it('renders consent as concise native controls and reports selected ids', () => {
     const onWebIdChange = vi.fn()
     const onRememberClientChange = vi.fn()
@@ -145,7 +175,9 @@ describe('Web account native presentation', () => {
 
     expect(screen.queryByLabelText('Identity')).toBeNull()
     expect(screen.getByText('Ari')).toBeTruthy()
-    expect(screen.getByText('https://pod.example.test/ari/')).toBeTruthy()
+    // The storage line shows the Pod path; the full URL stays as the tooltip.
+    const storage = screen.getByText('/ari/')
+    expect(storage.getAttribute('title')).toBe('https://pod.example.test/ari/')
   })
 
   it('keeps pending consent controls disabled', () => {

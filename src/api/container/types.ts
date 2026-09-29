@@ -7,6 +7,10 @@
 import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
+import type { SolidSessionFactory } from '../auth/SolidSessionFactory';
+import type { SecretCellVault } from '../../security/secret-cell';
+import type { TaskCredentialStore } from '../tasks/TaskCredentialStore';
+import type { PodInterfaceKeyMigrationResult } from '../tasks/PodInterfaceKeyMigration';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { VercelChatService } from '../service/VercelChatService';
@@ -88,6 +92,19 @@ export interface ApiContainerConfig {
 
   /** RDF/SPARQL facts database connection URL. */
   sparqlEndpoint?: string;
+
+  /**
+   * Where the task layer keeps its own credentials. Defaults to a sibling of the identity
+   * database, so the two stores are separate files in local mode.
+   */
+  taskDatabaseUrl?: string;
+
+  /**
+   * Deployment root key material for secrets that must be encrypted at rest (task credentials).
+   * Absent means the deployment configured no key, and those features report themselves unconfigured
+   * instead of falling back to plaintext.
+   */
+  secretCellVaultFactory?: () => SecretCellVault;
 
   /** Route SPARQL reads through an installed native SPARQL provider. */
   rdfNativeSparqlEnabled?: boolean;
@@ -245,7 +262,24 @@ export interface ApiContainerCradle {
   // 仓库
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
+  /**
+   * Exchanges Solid client credentials for tokens, once per credential.
+   *
+   * Shared by inbound authentication and outbound Pod access so one credential yields one
+   * exchange and keeps the key its token is bound to.
+   */
+  solidSessions: SolidSessionFactory;
   ownerPodAccess: OwnerPodAccess;
+  /**
+   * The task layer's credential store. Present only when the deployment has root key material:
+   * a credential that cannot be encrypted is not stored at all.
+   */
+  taskCredentialStore?: TaskCredentialStore;
+  /**
+   * Moves rows out of the API-side owner-key table into the task layer. Defined only when the task
+   * layer can store them; safe to call on every boot.
+   */
+  legacyPodKeyMigration?: () => Promise<PodInterfaceKeyMigrationResult>;
   invocationTokenCodec?: InvocationTokenCodec;
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   aiConnectionInvocationKeyIssuer?: AiConnectionsInvocationKeyIssuer;

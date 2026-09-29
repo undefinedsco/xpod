@@ -27,6 +27,8 @@ export interface MatrixEventRecord {
   senderWebId?: string;
   originServerTs: number;
   depth?: number;
+  role?: string;
+  resourceId?: string;
   txnId?: string;
   content: Record<string, unknown>;
   stateKey?: string;
@@ -57,6 +59,8 @@ export interface MatrixSendEventRequest {
 export interface MatrixSyncResponse {
   next_batch: string;
   rooms: {
+    invite?: Record<string, {invite_state: {events: MatrixClientEvent[]}}>;
+    leave?: Record<string, {timeline: {events: MatrixClientEvent[]; limited: boolean}}>;
     join: Record<string, {
       state: { events: MatrixClientEvent[] };
       timeline: {
@@ -109,7 +113,7 @@ export interface MatrixStore {
     content: Record<string, unknown>,
     context: MatrixStoreContext,
   ): Promise<MatrixEventRecord>;
-  sync(context: MatrixStoreContext, options?: { since?: string; limit?: number }): Promise<MatrixSyncResponse>;
+  sync(context: MatrixStoreContext, options?: { since?: string; limit?: number; timeout?: number; signal?: AbortSignal }): Promise<MatrixSyncResponse>;
   listJoinedRooms(context: MatrixStoreContext): Promise<string[]>;
   getMembers(roomId: string, context: MatrixStoreContext): Promise<MatrixClientEvent[]>;
   listMessages(

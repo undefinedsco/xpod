@@ -119,6 +119,13 @@ runtime artifact，并验证版本、nested runtime 可执行文件和 manifest�
 macOS 可能显示未识别开发者提示。未来启用 Apple Developer Program 时，应直接恢复
 签名与 notarization 作为新版本门禁，不在本次流程中保留双路径或 fallback。
 
+无证书前提下的**自助更新**由桌面自行实现，不使用 Electron 内置更新器：Squirrel 要求
+新 bundle 满足当前构建的 designated requirement，而 ad-hoc 签名的 requirement 就是
+一条 `cdhash`，任何其它版本都无法满足。因此发布产物必须经
+`desktop/scripts/after-pack-adhoc-sign.cjs` 封成合法 ad-hoc 签名，并用
+`desktop/scripts/packaged-update-acceptance.mjs` 跑通“旧包 → 新包自动安装并重启”。
+链路、配置与验收证据见 [`docs/desktop-self-update.md`](desktop-self-update.md)。
+
 Linux QLever SDK/runtime 镜像先加载到 CI runner 执行真实冒烟，再由同一个
 BuildKit builder 复用热缓存直接推 registry；不要再用 `docker push` 转发 daemon
 本地镜像。上传后必须从 immutable registry digest 解析实际 `linux/amd64` manifest，

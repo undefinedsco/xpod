@@ -167,10 +167,22 @@ function cloneRequest(request: Request): Request | undefined {
   }
 }
 
+/**
+ * The API answers the stable code either as `{ error: 'service_access_missing' }`
+ * or, for model discovery, as `{ error: { code: 'service_access_missing' } }`.
+ * Missing the nested shape left callers holding a refusal they could have fixed
+ * with one credential retry, which reads as "AI is broken".
+ */
 async function isMissingPodAccess(response: Response): Promise<boolean> {
   try {
     const body = await response.clone().json() as { error?: unknown };
-    return body?.error === 'service_access_missing';
+    const error = body?.error;
+    if (error === 'service_access_missing') return true;
+    if (error && typeof error === 'object') {
+      const code = (error as { code?: unknown }).code;
+      return code === 'service_access_missing';
+    }
+    return false;
   } catch {
     return false;
   }

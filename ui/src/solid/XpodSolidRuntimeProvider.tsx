@@ -32,6 +32,7 @@ import {
   provisionLocalPodRoutes,
 } from './xpod-local-route';
 import { createAccountClientCredentialsCapability } from '../auth/account-client-credentials';
+import { resolveOnDemandSessionCredential } from '../auth/ondemand-session-credential';
 import {
   readSessionAccountControls,
   type SessionAccountControls,
@@ -125,28 +126,6 @@ export function XpodSolidRuntimeProvider({
     return reset;
   }, [runtime, runtimeStorage.issuer, runtimeStorage.selectedStorage]);
 
-  // API calls that open the user's Pod retry with this session's request credential; Pod traffic,
-  // capability calls and other origins keep using the session itself. The retry leaves the session
-  // transport behind, because that transport would replace the credential with the session's own
-  // token - the very token the server just refused.
-  const podAuthorizedFetch = useCallback<typeof fetch>(
-    (input, init) => withRequestPodAuthorization(
-      authenticatedFetch,
-      () => requestCredentialRef.current?.authorization() ?? Promise.resolve(undefined),
-      plainFetch,
-    )(input, init),
-    [authenticatedFetch],
-  );
-  const exposedSession = useMemo(() => ({
-    ...runtime.session,
-    fetch: withRequestPodAuthorization(
-      exposedFetch,
-      () => requestCredentialRef.current?.authorization() ?? Promise.resolve(undefined),
-      plainFetch,
-    ),
-    getSnapshot: () => snapshotRef.current,
-  }), [exposedFetch, runtime.session]);
-
   // The Account session is what may create a client credential for this WebID, so the holder is
   // rebuilt whenever the Account binding changes and released when it goes away.
   const account = useContext(AuthContext);
@@ -229,6 +208,50 @@ export function XpodSolidRuntimeProvider({
       void next.release().catch(() => undefined);
     };
   }, [accountBinding, accountIndex]);
+
+  // API calls that open the user's Pod retry with this session's request credential; Pod traffic,
+  // capability calls and other origins keep using the session itself. The retry leaves the session
+  // transport behind, because that transport would replace the credential with the session's own
+  // token - the very token the server just refused.
+  //
+  // The Account binding can still be loading when the first Pod-backed request comes back refused,
+  // so a missing credential is resolved on demand for this WebID instead of silently giving up.
+  const authorizePodRequest = useCallback(async (): Promise<string | undefined> => {
+    const direct = await requestCredentialRef.current?.authorization().catch(() => undefined);
+    if (direct) return direct;
+    const holder = await resolveOnDemandSessionCredential({
+      ...(accountIndex ? { accountIndex } : {}),
+      ...(boundWebId ? { webId: boundWebId } : {}),
+      ...(accountBinding ? { binding: accountBinding } : {}),
+      accountFetch: plainFetch,
+      ...(boundFetch ? { sessionFetch: boundFetch } : {}),
+      assertCurrent: (webId) => {
+        if (runtime.session.getSnapshot().webId !== webId) {
+          throw new Error('Solid 会话已改变，请重新打开客户端凭据操作。');
+        }
+      },
+    }).catch(() => undefined);
+    if (!holder) return undefined;
+    requestCredentialRef.current = holder;
+    return await holder.authorization().catch(() => undefined);
+  }, [accountBinding, accountIndex, boundFetch, boundWebId, runtime.session]);
+  const podAuthorizedFetch = useCallback<typeof fetch>(
+    (input, init) => withRequestPodAuthorization(
+      authenticatedFetch,
+      authorizePodRequest,
+      plainFetch,
+    )(input, init),
+    [authenticatedFetch, authorizePodRequest],
+  );
+  const exposedSession = useMemo(() => ({
+    ...runtime.session,
+    fetch: withRequestPodAuthorization(
+      exposedFetch,
+      authorizePodRequest,
+      plainFetch,
+    ),
+    getSnapshot: () => snapshotRef.current,
+  }), [exposedFetch, runtime.session]);
 
   useEffect(() => {
     const projectSnapshot = (nextSnapshot: SolidSessionSnapshot) => {
@@ -391,7 +414,11 @@ export function XpodSolidRuntimeProvider({
     return {
       session: exposedSession,
       pod: runtime.pod,
-      fetch: authenticatedFetch,
+      // Applets (AI Connections, Pod-backed tables) read the Pod through this
+      // value. Handing them the raw session transport left the API's
+      // `service_access_missing` refusal with no credential retry, so the page
+      // reported a failure the session could have fixed by itself.
+      fetch: podAuthorizedFetch,
       state: state.status === 'error' ? { ...state, error: safeAuthError(state.error) } : state,
       webId: state.webId,
       podUrl: state.podUrl,
@@ -404,7 +431,7 @@ export function XpodSolidRuntimeProvider({
       // Bound here rather than passed by reference: the value is handed to
       // callers that do not share the core object.
       resolveLocalUrl: (url: string) => runtime.resolveLocalUrl(url),
-      requestPodAuthorization: () => requestCredentialRef.current?.authorization() ?? Promise.resolve(undefined),
+      requestPodAuthorization: authorizePodRequest,
       requestPodApiKey: () => requestCredentialRef.current?.apiKey() ?? Promise.resolve(undefined),
       login: async (transaction: WebIdLoginTransaction) => {
         const validated = normalizeXpodLoginTransaction(transaction);

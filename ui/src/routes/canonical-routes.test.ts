@@ -9,8 +9,8 @@ import {
 
 describe('canonical product routes', () => {
   it('lands the product in the WebID-authorized workspace', () => {
-    // The Account-protected Status overview is a destination the user picks,
-    // not where an unauthenticated entry starts.
+    // The Status overview is a destination the user picks, not where an
+    // unauthenticated entry starts.
     expect(XPOD_DEFAULT_RETURN_PATH).toBe(canonicalRoutes.aiConnections);
     expect(canonicalProductPathname(XPOD_DEFAULT_RETURN_PATH)).toBe('/ai-connections');
   });

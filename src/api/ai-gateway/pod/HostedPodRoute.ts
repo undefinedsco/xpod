@@ -1,3 +1,6 @@
+import { readdirSync, statSync } from 'node:fs';
+import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { localServiceUrl } from '../../../runtime/bootstrap';
 
 export interface HostedPodRoute {
@@ -64,5 +67,40 @@ async function importSolidLocalRouteFetch(): Promise<{
   const dynamicImport = new Function('specifier', 'return import(specifier)') as (
     specifier: string,
   ) => Promise<{ createSolidLocalRouteFetch: CreateSolidLocalRouteFetch }>;
-  return dynamicImport('@undefineds.co/solid-sdk/local-route-fetch');
+  const specifier = '@undefineds.co/solid-sdk/local-route-fetch';
+  try {
+    return await dynamicImport(specifier);
+  } catch (error) {
+    const staged = resolveStagedLocalRouteFetch();
+    if (!staged) throw error;
+    return dynamicImport(staged);
+  }
+}
+
+/**
+ * Compiled single-file runtimes unpack their packages into a cache directory and resolve that
+ * archive themselves, so a bare specifier is not part of their module map: the import fails with
+ * `Cannot find module` and the AI gateway answers 500. The extracted package is a real file, so
+ * load it through its own URL when the specifier cannot be resolved.
+ */
+export function resolveStagedLocalRouteFetch(): string | undefined {
+  const cacheRoot = process.env.XPOD_BUN_SINGLE_CACHE_DIR?.trim();
+  if (!cacheRoot) return undefined;
+  const relative = path.join('node_modules', '@undefineds.co', 'solid-sdk', 'dist', 'local-route-fetch.js');
+  const candidates = [ path.join(cacheRoot, relative) ];
+  try {
+    for (const entry of readdirSync(cacheRoot)) {
+      candidates.push(path.join(cacheRoot, entry, relative));
+    }
+  } catch {
+    // A missing or unreadable cache root just means there is nothing to fall back to.
+  }
+  for (const candidate of candidates) {
+    try {
+      if (statSync(candidate).isFile()) return pathToFileURL(candidate).href;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
 }

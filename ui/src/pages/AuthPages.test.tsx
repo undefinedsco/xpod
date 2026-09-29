@@ -182,7 +182,10 @@ describe('CSS identity page controllers', () => {
 
     cleanup();
     renderWithAuth(<WelcomePage initialIsRegister />);
-    await waitFor(() => expect(screen.getByLabelText('Pod 名称')).toBeTruthy());
+    // 注册只收 Account 必填项：Pod 名称不属于注册字段（设计 §4.1 / U01）。
+    await waitFor(() => expect(screen.getByLabelText('邮箱')).toBeTruthy());
+    expect(screen.queryByLabelText('Pod 名称')).toBeNull();
+    expect(screen.getByLabelText('确认密码')).toBeTruthy();
   });
 
   it('prefills the CSS Account step from the remembered WebID identity hint', () => {
@@ -374,7 +377,6 @@ describe('CSS identity page controllers', () => {
       hasOidcPending: true,
       idpIndex: cloudAccountIndex,
     });
-    fireEvent.change(await screen.findByLabelText('Pod 名称'), { target: { value: 'alice' } });
     fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'alice@example.test' } });
     fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'secret' } });
     fireEvent.change(screen.getByLabelText('确认密码'), { target: { value: 'secret' } });
@@ -1045,11 +1047,13 @@ describe('CSS identity page controllers', () => {
       },
     );
 
-    // 授权页不再以 Account username 自动建 Pod（设计第二部分 §4.1 / U06）：
-    // 只说明缺少可用存储并给出"前往 Pod 管理"。
-    await screen.findByRole('button', { name: '前往 Pod 管理' });
+    // 授权页不以 Account username 自动建 Pod（设计第二部分 §4.1 / U06）：
+    // 加载只读，创建必须由用户点击"创建存储空间并继续授权"显式触发。
+    await screen.findByRole('button', { name: '创建存储空间并继续授权' });
     expect(podCreate).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: '创建存储空间' })).toBeNull();
+    expect(screen.getByRole('button', { name: '前往 Pod 管理' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 
   it('switches account through the native CSS Account session', async () => {

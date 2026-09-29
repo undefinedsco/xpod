@@ -31,6 +31,21 @@ export function WebAccountLayout({ title, description, children, presentation = 
   const titleId = useId();
   const windowFrame = host === 'window' && presentation === 'compact';
   if (presentation === 'compact') {
+    // The native window's title bar already names the product, so repeating the
+    // brand block above the page title reads as two headings in one small frame.
+    const header = (
+      <header className="mb-4 shrink-0 text-center">
+        <h1 id={titleId} className="text-lg font-semibold tracking-tight">{title}</h1>
+        {description ? <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
+      </header>
+    );
+    const body = (
+      <>
+        {windowFrame ? null : <div className="mb-4 shrink-0"><Brand compact /></div>}
+        {header}
+        <div className="min-w-0 shrink-0">{children}</div>
+      </>
+    );
     return (
       <main data-testid="web-account-page" className={windowFrame
         ? 'flex h-dvh w-full items-center justify-center overflow-hidden bg-background text-foreground'
@@ -45,12 +60,11 @@ export function WebAccountLayout({ title, description, children, presentation = 
             ? 'flex h-full w-full min-w-0 flex-col overflow-y-auto overscroll-contain px-5 py-5'
             : 'mx-auto flex h-[400px] w-[280px] max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] min-w-0 flex-col overflow-y-auto overscroll-contain rounded-xl border bg-card px-5 py-5 shadow-lg shadow-black/5'}
         >
-          <div className="mb-4 shrink-0"><Brand compact /></div>
-          <header className="mb-4 shrink-0 text-center">
-            <h1 id={titleId} className="text-xl font-semibold tracking-tight">{title}</h1>
-            {description ? <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
-          </header>
-          <div className="min-w-0 shrink-0">{children}</div>
+          {/* The native window is a fixed 280-480px frame: centre the column and cap
+              its width so the form reads as one card instead of stretched full-bleed. */}
+          {windowFrame
+            ? <div data-testid="web-account-column" className="m-auto flex w-full max-w-[20rem] min-w-0 flex-col">{body}</div>
+            : body}
         </section>
       </main>
     );

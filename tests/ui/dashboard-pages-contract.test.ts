@@ -36,11 +36,12 @@ describe('dashboard runtime console routes', () => {
     expect(app).toContain('AuthProvider');
     expect(app).toContain('XpodSolidRuntimeProvider');
     expect(app).not.toContain('XpodAuthProvider');
-    // Regression guard: /status and /dashboard are protected by the
-    // route-level AccountAuthBoundary, not by a shell-wide login gate.
+    // Regression guard: /dashboard keeps the route-level AccountAuthBoundary,
+    // while /status is the local service surface admitted by
+    // LocalServiceSurfaceBoundary (loopback-only runtime evidence, no session).
     expect(app).not.toContain('XpodProductAuthGate');
     expect(app.indexOf('<BrowserRouter')).toBeLessThan(app.indexOf('<XpodShellRoutes />'));
-    expect(shellRoutes).toContain("path: 'status', element: <AccountWorkspaceBoundary>");
+    expect(shellRoutes).toContain("path: 'status', element: <LocalServiceSurfaceBoundary>");
     expect(shellRoutes).toContain("path: 'dashboard', element: <AccountWorkspaceBoundary>");
     for (const path of ["path: 'overview'", "path: 'runtime'", "path: 'logs'", "path: 'rdf'", "path: 'network/*'"]) {
       expect(routes).toContain(path);

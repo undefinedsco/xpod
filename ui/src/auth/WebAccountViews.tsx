@@ -1,4 +1,4 @@
-import { useId } from 'react'
+import { useId, type ReactNode } from 'react'
 import { AlertCircle, Loader2 } from 'lucide-react'
 
 export interface WebAccountRestoringViewProps {
@@ -24,9 +24,15 @@ export interface WebAccountFailureViewProps {
   description?: string | null
   primaryLabel?: string
   onPrimary: () => void
+  /** Disables only the primary action; the recovery exits stay reachable. */
+  primaryDisabled?: boolean
   secondaryLabel?: string
   onSecondary?: () => void
+  tertiaryLabel?: string
+  onTertiary?: () => void
   pending?: boolean
+  /** Recovery controls that belong to the failure itself (for example a name field). */
+  children?: ReactNode
 }
 
 export function WebAccountFailureView({
@@ -34,9 +40,13 @@ export function WebAccountFailureView({
   description,
   primaryLabel = '重试',
   onPrimary,
+  primaryDisabled = false,
   secondaryLabel = '返回',
   onSecondary,
+  tertiaryLabel,
+  onTertiary,
   pending = false,
+  children,
 }: WebAccountFailureViewProps) {
   return (
     <div className="flex min-h-44 flex-col items-center justify-center gap-4 px-5 py-8 text-center">
@@ -47,10 +57,11 @@ export function WebAccountFailureView({
         <p className="text-base font-semibold text-foreground">{title}</p>
         {description ? <p role="alert" className="text-sm leading-6 text-muted-foreground">{description}</p> : null}
       </div>
+      {children ? <div className="w-full space-y-2 text-left sm:max-w-xs">{children}</div> : null}
       <div className="flex w-full flex-col gap-2 sm:max-w-xs">
         <button
           type="button"
-          disabled={pending}
+          disabled={pending || primaryDisabled}
           onClick={onPrimary}
           className="h-10 rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus:outline-none focus-visible:bg-primary/80 disabled:cursor-not-allowed disabled:opacity-50"
         >
@@ -61,9 +72,19 @@ export function WebAccountFailureView({
             type="button"
             disabled={pending}
             onClick={onSecondary}
-            className="h-9 rounded-lg border border-border bg-background px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted/50 focus:outline-none focus-visible:border-ring"
+            className="h-9 rounded-lg border border-border bg-background px-4 text-sm font-medium text-foreground transition-colors hover:bg-muted/50 focus:outline-none focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-50"
           >
             {secondaryLabel}
+          </button>
+        ) : null}
+        {onTertiary && tertiaryLabel ? (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={onTertiary}
+            className="h-9 rounded-lg px-4 text-sm text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus:outline-none focus-visible:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {tertiaryLabel}
           </button>
         ) : null}
       </div>
@@ -191,11 +212,42 @@ function WebAccountSelectedOption({
   return (
     <div className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2">
       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="mt-1 break-all text-sm font-medium text-foreground">{option.webId ?? option.label}</p>
+      <p
+        className="mt-1 break-all text-sm font-medium text-foreground"
+        title={option.webId ?? option.label}
+      >{option.webId ? compactConsentOrigin(option.webId) : option.label}</p>
       {option.description ? <p className="mt-1 break-words text-sm text-muted-foreground">{option.description}</p> : null}
-      {option.storageUrl ? <p className="mt-1 break-all text-xs text-muted-foreground">{option.storageUrl}</p> : null}
+      {option.storageUrl ? (
+        <p className="mt-1 break-all text-xs text-muted-foreground" title={option.storageUrl}>
+          {compactConsentStorage(option.storageUrl)}
+        </p>
+      ) : null}
     </div>
   )
+}
+
+/**
+ * A WebID is `<origin>/<pod>/profile/card#me`; the consent decision only needs
+ * the origin and the Pod, and the full value stays available as a tooltip.
+ */
+export function compactConsentOrigin(webId: string): string {
+  try {
+    const url = new URL(webId)
+    const pod = url.pathname.split('/').filter(Boolean)[0]
+    return pod ? `${url.host}/${pod}` : url.host
+  } catch {
+    return webId
+  }
+}
+
+/** The storage line repeats the same Pod; show its path instead of the whole URL. */
+export function compactConsentStorage(storageUrl: string): string {
+  try {
+    const url = new URL(storageUrl)
+    return url.pathname === '/' ? url.host : url.pathname
+  } catch {
+    return storageUrl
+  }
 }
 
 export function WebAccountConsentView({

@@ -16,6 +16,10 @@ class FakeRepository implements PodInterfaceKeyRepositoryPort {
     return this.record?.ownerWebId === ownerWebId ? this.record : undefined;
   }
 
+  public async list(): Promise<PodInterfaceKeyRecord[]> {
+    return this.record ? [ this.record ] : [];
+  }
+
   public async write(record: Omit<PodInterfaceKeyRecord, 'createdAt' | 'updatedAt'>): Promise<void> {
     this.record = { ...record, createdAt: new Date(0), updatedAt: new Date(0) };
   }
@@ -68,6 +72,16 @@ describe('PodInterfaceKeyStore', () => {
     expect(await store.read(OWNER)).toEqual(CREDENTIAL);
     expect(await store.hasKey(OWNER)).toBe(true);
     expect(await store.read('https://pod.example/bob/profile/card#me')).toBeUndefined();
+  });
+
+  it('lists the owners it holds a key for, for the move into the task layer', async () => {
+    const { store } = createStore();
+
+    await store.saveKey(OWNER, CREDENTIAL);
+    expect(await store.listOwners()).toEqual([ OWNER ]);
+
+    await store.forgetKey(OWNER);
+    expect(await store.listOwners()).toEqual([]);
   });
 
   it('rotates the stored key in place', async () => {

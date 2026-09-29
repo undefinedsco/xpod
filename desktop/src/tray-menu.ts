@@ -1,5 +1,7 @@
-export const XPOD_TRAY_SERVICES = ['gateway', 'css', 'api'] as const
+import { formatUpdateProgress } from './self-updater.js'
+import type { DesktopUpdateProgress } from './update-manager.js'
 
+export const XPOD_TRAY_SERVICES = ['gateway', 'css', 'api'] as const
 export type TrayServiceName = (typeof XPOD_TRAY_SERVICES)[number]
 export type TrayServiceStatus = 'stopped' | 'starting' | 'running' | 'crashed'
 export type TrayAggregateState = 'healthy' | 'starting' | 'degraded' | 'failed' | 'stopped'
@@ -19,6 +21,9 @@ export interface TrayUpdateState {
   status: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'downloaded' | 'error'
   version?: string
   message?: string
+  progress?: DesktopUpdateProgress
+  /** Local archive or staging directory worth revealing to the user. */
+  downloadPath?: string
 }
 
 export type TrayMenuAction =
@@ -31,6 +36,7 @@ export type TrayMenuAction =
   | { type: 'toggle-launch-at-login' }
   | { type: 'check-update' }
   | { type: 'install-update' }
+  | { type: 'reveal-update' }
   | { type: 'open-release-download' }
   | { type: 'about' }
   | { type: 'quit' }
@@ -241,6 +247,9 @@ function separator(): TrayMenuItemModel {
 
 function updateMenuItems(update: TrayUpdateState | undefined): TrayMenuItemModel[] {
   if (!update || update.status === 'disabled') return []
+  const reveal: TrayMenuItemModel[] = update.downloadPath
+    ? [{ label: 'Show Update Package…', action: { type: 'reveal-update' } }]
+    : []
   switch (update.status) {
     case 'idle':
       return [{ label: 'Check for Updates…', action: { type: 'check-update' } }]
@@ -248,12 +257,14 @@ function updateMenuItems(update: TrayUpdateState | undefined): TrayMenuItemModel
       return [{ label: 'Checking for Updates…', enabled: false }]
     case 'available':
       return [{
-        label: update.version ? `Downloading Xpod ${update.version}…` : 'Downloading Update…',
+        label: update.version ? `Preparing Xpod ${update.version}…` : 'Preparing Update…',
         enabled: false,
       }]
     case 'downloading':
       return [{
-        label: update.version ? `Downloading Xpod ${update.version}…` : 'Downloading Update…',
+        label: update.version
+          ? `Downloading Xpod ${update.version}… ${downloadDetail(update)}`
+          : `Downloading Update… ${downloadDetail(update)}`,
         enabled: false,
       }]
     case 'not-available':
@@ -262,18 +273,26 @@ function updateMenuItems(update: TrayUpdateState | undefined): TrayMenuItemModel
         { label: 'Check for Updates Again', action: { type: 'check-update' } },
       ]
     case 'downloaded':
-      return [{
-        label: update.version ? `Restart to Install Xpod ${update.version}` : 'Restart to Install Update',
-        action: { type: 'install-update' },
-      }]
+      return [
+        {
+          label: update.version ? `Restart to Install Xpod ${update.version}` : 'Restart to Install Update',
+          action: { type: 'install-update' },
+        },
+        ...reveal,
+      ]
     case 'error':
       return [
         {
           label: update.message ? `Update Failed: ${update.message}` : 'Update Failed',
           enabled: false,
         },
+        ...reveal,
         { label: 'Download Latest Xpod…', action: { type: 'open-release-download' } },
         { label: 'Check for Updates Again', action: { type: 'check-update' } },
       ]
   }
+}
+
+function downloadDetail(update: TrayUpdateState): string {
+  return update.progress ? formatUpdateProgress(update.progress) : 'starting…'
 }

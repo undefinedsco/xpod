@@ -157,23 +157,17 @@ describe('AiGatewayManagementHandler', () => {
     expect(res.body.split(apiKey)).toHaveLength(2);
   });
 
-  it('stores the owner interface key before the first Pod record write when registering a CSS credential', async () => {
+  it('writes the Pod record without keeping a deployment copy of the key', async () => {
     const apiKey = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
     const verifiedContext: SolidAuthContext = {
       ...callerOwnedAuth(), type: 'solid', webId: WEB_ID,
       clientId: 'client-id', clientSecret: 'client-secret',
     };
-    const order: string[] = [];
-    const saveKey = vi.fn(async () => { order.push('saveKey'); });
-    const create = vi.fn(async (record: GatewayAccessKeyRecord) => {
-      order.push('create');
-      return record;
-    });
+    const create = vi.fn(async (record: GatewayAccessKeyRecord) => record);
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
       validateClientCredential: async () => ({ success: true, context: verifiedContext }),
-      podInterfaceKeys: { saveKey, forgetKey: vi.fn(), hasKey: vi.fn(async () => true) },
       gatewayAccessKeyRepository: { createKeyId: () => 'registered-id', create } as unknown as GatewayAccessKeyRepository,
     });
     const res = response();
@@ -183,11 +177,36 @@ describe('AiGatewayManagementHandler', () => {
     }), res, {});
 
     expect(res.statusCode).toBe(201);
-    // Registering the wrapper is also the moment Xpod is granted the owner's key, and the grant
-    // lands before the record write because writing that record is the first thing needing it.
-    expect(saveKey).toHaveBeenCalledWith(WEB_ID, { clientId: 'client-id', clientSecret: 'client-secret' });
     expect(create).toHaveBeenCalledTimes(1);
-    expect(order).toEqual(['saveKey', 'create']);
+    // The API keeps the management record only: no endpoint of its own opens a Pod with a stored
+    // key, so registering does not leave one behind.
+    expect(JSON.parse(res.body)).toMatchObject({ record: { owner: WEB_ID } });
+  });
+
+  it('registers the application without touching background task access', async () => {
+    const apiKey = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
+    const verifiedContext: SolidAuthContext = {
+      ...callerOwnedAuth(), type: 'solid', webId: WEB_ID,
+      clientId: 'client-id', clientSecret: 'client-secret',
+    };
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      validateClientCredential: async () => ({ success: true, context: verifiedContext }),
+      gatewayAccessKeyRepository: {
+        createKeyId: () => 'registered-id',
+        create: (async (record: GatewayAccessKeyRecord) => record) as unknown as GatewayAccessKeyRepository['create'],
+      } as unknown as GatewayAccessKeyRepository,
+    });
+    const res = response();
+    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), { name: 'Codex', apiKey }), res, {});
+
+    // An application keeps its own credential: where it is in effect, and how to revoke it.
+    // Background Pod access is granted separately, where the user manages index/embedding work.
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body)).toMatchObject({
+      record: { id: 'registered-id', owner: WEB_ID, clientCredentialId: 'client-id' },
+    });
   });
 
   it.each<[string, SolidAuthContext]>([
@@ -197,7 +216,6 @@ describe('AiGatewayManagementHandler', () => {
     }],
   ])('does not store an owner interface key when the validated context has %s', async (_case, verifiedContext) => {
     const apiKey = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
-    const saveKey = vi.fn();
     const create = vi.fn(async (record: GatewayAccessKeyRecord) => record);
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
@@ -206,7 +224,6 @@ describe('AiGatewayManagementHandler', () => {
         success: true,
         context: verifiedContext,
       }),
-      podInterfaceKeys: { saveKey, forgetKey: vi.fn(), hasKey: vi.fn(async () => false) },
       gatewayAccessKeyRepository: { createKeyId: () => 'registered-id', create } as unknown as GatewayAccessKeyRepository,
     });
     const res = response();
@@ -217,7 +234,6 @@ describe('AiGatewayManagementHandler', () => {
 
     expect(res.statusCode).toBe(201);
     expect(create).toHaveBeenCalledTimes(1);
-    expect(saveKey).not.toHaveBeenCalled();
   });
 
   it.each(['xpod_gw_v1_cloud_id_secret', 'sk-aWQ6c2VjcmV0!!!', 'sk-aWQ6', 'sk-OnNlY3JldA=='])('rejects malformed CSS wrappers before validation: %s', async (apiKey) => {
@@ -243,12 +259,10 @@ describe('AiGatewayManagementHandler', () => {
       clientId: 'bob-client-id', clientSecret: 'bob-client-secret',
     };
     const create = vi.fn();
-    const saveKey = vi.fn();
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
       validateClientCredential: async () => ({ success: true, context: verifiedContext }),
-      podInterfaceKeys: { saveKey, forgetKey: vi.fn(), hasKey: vi.fn(async () => false) },
       gatewayAccessKeyRepository: { createKeyId: () => 'id', create } as unknown as GatewayAccessKeyRepository,
     });
     const res = response();
@@ -258,8 +272,6 @@ describe('AiGatewayManagementHandler', () => {
     }), res, {});
     expect(res.statusCode).toBe(403);
     expect(create).not.toHaveBeenCalled();
-    // Another WebID's interface key is never stored as the caller's own.
-    expect(saveKey).not.toHaveBeenCalled();
   });
 
   it.each([

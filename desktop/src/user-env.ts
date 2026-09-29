@@ -25,8 +25,16 @@ function removeLegacyInternalPortDefaults(envPath: string): void {
     .filter((line) => line !== 'CSS_PORT=3001'
       && line !== 'API_PORT=3002'
       && line !== 'CSS_BASE_URL=http://127.0.0.1:3000/')
-  if (isGeneratedLegacyDesktopConfig(content) && !migrated.some((line) => line.trim().startsWith('oidcIssuer='))) {
-    migrated.splice(2, 0, 'oidcIssuer=https://id.undefineds.co/')
+  // The runtime reads the process-level `SOLID_OIDC_ISSUER`; `oidcIssuer` is only the internal
+  // Components.js shorthand, so writing it here left the configured identity silently unused.
+  for (let index = 0; index < migrated.length; index += 1) {
+    const line = migrated[index]!.trim()
+    if (!line.startsWith('oidcIssuer=')) continue
+    migrated[index] = `SOLID_OIDC_ISSUER=${line.slice('oidcIssuer='.length)}`
+  }
+  if (isGeneratedLegacyDesktopConfig(content)
+    && !migrated.some((line) => line.trim().startsWith('SOLID_OIDC_ISSUER='))) {
+    migrated.splice(2, 0, 'SOLID_OIDC_ISSUER=https://id.undefineds.co/')
   }
   const nextContent = migrated.join('\n')
   if (nextContent === content) return
@@ -62,7 +70,9 @@ function defaultDesktopEnv(userDataDir: string): string {
     '# Xpod local runtime configuration',
     'XPOD_EDITION=local',
     'XPOD_AI_CLIENT_CONFIGURATION_ENABLED=true',
-    'oidcIssuer=https://id.undefineds.co/',
+    // The process-level contract key: the runtime reads this exact name, and `oidcIssuer` is only
+    // the internal Components.js shorthand it derives afterwards.
+    'SOLID_OIDC_ISSUER=https://id.undefineds.co/',
     `CSS_IDENTITY_DB_URL=sqlite:${path.join(userDataDir, 'identity.sqlite')}`,
     `CSS_SPARQL_ENDPOINT=sqlite:${path.join(userDataDir, 'quadstore.sqlite')}`,
     `CSS_RDF_INDEX_PATH=${path.join(userDataDir, 'rdf-index.sqlite')}`,

@@ -9,6 +9,10 @@ const esbuild = require('esbuild');
 
 const repoRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(repoRoot, 'dist');
+// Packages a built runtime loads by bare specifier at request time.
+const RUNTIME_WORKSPACE_PACKAGES = [
+  '@undefineds.co/solid-sdk',
+];
 const COMMON_BUNDLE_EXTERNALS = [
   'bun:sqlite',
   'mysql',
@@ -386,6 +390,42 @@ async function main() {
     }
 
     visited.add(packageName);
+  }
+
+  // Runtime-only workspace packages.
+  //
+  // Components.js references pull in every *declared* dependency, but code paths
+  // that load a package by specifier at request time (the AI gateway's
+  // `@undefineds.co/solid-sdk/local-route-fetch` import) never appear there. The
+  // compiled binary then resolved that specifier against the extracted runtime and
+  // failed with `Cannot find module`, which surfaced as HTTP 500 from the AI
+  // gateway. Stage them explicitly, keeping their ESM entry points intact.
+  for (const packageName of RUNTIME_WORKSPACE_PACKAGES) {
+    const packageDir = resolvePackageDir(packageName);
+    const packageJsonPath = path.join(packageDir, 'package.json');
+    if (!fs.existsSync(packageJsonPath)) {
+      throw new Error(`Runtime workspace package is missing: ${packageName}`);
+    }
+    const packageJson = readJson(packageJsonPath);
+    const stageDir = resolveStageDir(packageName);
+    for (const root of [ 'dist', 'src' ]) {
+      const absoluteRoot = path.join(packageDir, root);
+      for (const sourcePath of iterFiles(absoluteRoot)) {
+        if (sourcePath.endsWith('.d.ts') || sourcePath.endsWith('.map') || sourcePath.endsWith('.ts')) {
+          continue;
+        }
+        const relativePath = path.relative(packageDir, sourcePath).split(path.sep).join(path.posix.sep);
+        copyIfNeeded(sourcePath, path.join(stageDir, relativePath));
+      }
+    }
+    writeJson(path.join(stageDir, 'package.json'), {
+      name: packageJson.name,
+      version: packageJson.version,
+      type: packageJson.type,
+      main: packageJson.main,
+      module: packageJson.module,
+      exports: packageJson.exports,
+    });
   }
 
   const cliOutputPath = path.join(stageRoot, 'dist', '__cli__.cjs');

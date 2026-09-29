@@ -12,12 +12,25 @@ vi.mock('./layout/XpodDashboardLayout', () => ({
   XpodDashboardLayout: () => <><nav aria-label="Host navigation" /><Outlet /></>,
 }));
 vi.mock('./pages/status/StatusWorkspace', () => ({ default: () => <Outlet /> }));
-vi.mock('./pages/admin', () => ({ StatusPage: () => <div>Protected service status</div> }));
+vi.mock('./pages/admin', () => ({
+  StatusPage: () => <div>Protected service status</div>,
+  LogsPage: () => <div>Service logs</div>,
+  RdfPage: () => <div>RDF evidence</div>,
+}));
+vi.mock('./pages/status/StatusSubjectPanel', () => ({
+  ServiceStatusPanel: ({ serviceId }: { serviceId: string }) => <div>Service status {serviceId}</div>,
+}));
+vi.mock('./pages/status/IndexSubjectPanel', () => ({
+  default: ({ kind }: { kind: string }) => <div>Index evidence {kind}</div>,
+}));
+vi.mock('./pages/settings/NetworkPage', () => ({ default: () => <div>Network settings</div> }));
 
 afterEach(() => {
   cleanup();
   webId.status = 'anonymous';
   window.xpodDesktop = undefined;
+  // Keep the shared jsdom document URL neutral for the next test file.
+  window.history.replaceState(null, '', '/');
 });
 
 function renderRoute(path: string, accountAuthenticated = false) {
@@ -42,7 +55,9 @@ function renderRoute(path: string, accountAuthenticated = false) {
   </AuthContext.Provider>);
 }
 
-describe.each(['/status/overview', '/dashboard/overview'])('Account route %s', (path) => {
+describe('legacy Account-gated dashboard route /dashboard/overview', () => {
+  const path = '/dashboard/overview';
+
   it('retains the host navigation for a WebID session but still requires Account authorization', async () => {
     webId.status = 'authenticated';
     const setWindowMode = vi.fn();
@@ -69,6 +84,53 @@ describe.each(['/status/overview', '/dashboard/overview'])('Account route %s', (
     renderRoute(path, true);
     expect(await screen.findByText('Protected service status')).toBeTruthy();
     expect(screen.getByRole('navigation', { name: 'Host navigation' })).toBeTruthy();
+    expect(screen.queryByLabelText('邮箱')).toBeNull();
+  });
+});
+
+describe('local /status service surface', () => {
+  it('renders the Gateway service status for an anonymous visitor instead of the login form', async () => {
+    renderRoute('/status/services/gateway');
+
+    expect(await screen.findByText('Service status gateway')).toBeTruthy();
+    expect(screen.getByRole('navigation', { name: 'Host navigation' })).toBeTruthy();
+    expect(screen.queryByLabelText('邮箱')).toBeNull();
+    expect(screen.queryByText('Protected service status')).toBeNull();
+  });
+
+  it.each([
+    ['/status/overview', 'Protected service status'],
+    ['/status/logs', 'Service logs'],
+    ['/status/index', 'Index evidence overview'],
+    ['/status/index/rdf', 'RDF evidence'],
+    ['/status/services/solid-server', 'Service status css'],
+    ['/status/services/api-server', 'Service status api'],
+  ])('keeps the anonymous %s diagnostics panel reachable', async (path, evidence) => {
+    renderRoute(path);
+
+    expect(await screen.findByText(evidence)).toBeTruthy();
+    expect(screen.queryByLabelText('邮箱')).toBeNull();
+  });
+
+  it('keeps the local surface for a WebID session that has no Account session', async () => {
+    webId.status = 'authenticated';
+    renderRoute('/status/overview');
+
+    expect(await screen.findByText('Protected service status')).toBeTruthy();
+    expect(screen.queryByLabelText('邮箱')).toBeNull();
+  });
+
+  it('still opens the Account sign-in when the host explicitly asks for the account card', async () => {
+    renderRoute('/status/overview?account=open');
+
+    expect(await screen.findByLabelText('邮箱')).toBeTruthy();
+    expect(screen.queryByText('Protected service status')).toBeNull();
+  });
+
+  it('shows the status surface again once an Account session exists', async () => {
+    renderRoute('/status/overview?account=open', true);
+
+    expect(await screen.findByText('Protected service status')).toBeTruthy();
     expect(screen.queryByLabelText('邮箱')).toBeNull();
   });
 });

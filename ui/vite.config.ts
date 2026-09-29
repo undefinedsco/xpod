@@ -196,12 +196,12 @@ export default defineConfig(({ command }) => {
     settings: {
       base: '/settings/',
       outDir: '../static/settings',
-      input: 'settings.html',
-    },
-    authCallback: {
-      base: '/auth/callback/',
-      outDir: '../static/auth-callback',
-      input: 'auth-callback.html',
+      // The callback entry shares this build: it imports the same session and app chunks, so a
+      // second build would ship a near-identical copy of the whole browser engine.
+      input: {
+        settings: 'settings.html',
+        'auth-callback': 'auth-callback.html',
+      },
     },
   };
 
@@ -244,7 +244,7 @@ export default defineConfig(({ command }) => {
         // The lightweight auth/smoke app only uses exact LDP operations. Settings,
         // however, hydrates Provider collections and therefore must bundle the
         // browser SPARQL engine instead of leaving an unresolvable bare import.
-        external: buildTarget === 'settings' || buildTarget === 'authCallback'
+        external: buildTarget === 'settings'
           ? ['node:module']
           : ['@comunica/query-sparql-solid', 'node:module'],
         input: typeof config.input === 'string'
@@ -254,7 +254,20 @@ export default defineConfig(({ command }) => {
           // app 使用固定文件名（auth.html 模板需要），dashboard 使用 hash
           entryFileNames: buildTarget === 'app' ? 'assets/[name].js' : 'assets/[name]-[hash].js',
           chunkFileNames: 'assets/[name]-[hash].js',
-          assetFileNames: buildTarget === 'app' ? 'assets/[name].[ext]' : 'assets/[name]-[hash].[ext]'
+          // The Account document (ui/public/auth.html) links `assets/main.css` by
+          // name. Vite names a stylesheet after its owning chunk or its source
+          // file, depending on how the module graph chunks, so the same tree has
+          // emitted both `main.css` and `global.css` - and a deployment that
+          // shipped the latter served the login page with no styles at all.
+          // Pin the app stylesheet so the template can never drift from it.
+          assetFileNames: buildTarget === 'app'
+            ? (assetInfo: { names?: readonly string[]; name?: string }) => {
+              const names = assetInfo.names ?? (assetInfo.name ? [assetInfo.name] : []);
+              return names.some((name) => name.endsWith('.css'))
+                ? 'assets/main.css'
+                : 'assets/[name].[ext]';
+            }
+            : 'assets/[name]-[hash].[ext]'
         }
       }
     }

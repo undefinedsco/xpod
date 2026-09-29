@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { StoreContext } from '../chatkit/store';
+import type { TaskCredentialSource } from '../ai-gateway/pod/OwnerPodAccess';
+import { TASK_CREDENTIAL_REF_PREFIX } from './TaskCredentialStore';
 import type { SolidAuthContext } from '../auth/AuthContext';
 import { isSolidAuth } from '../auth/AuthContext';
 
@@ -61,15 +63,22 @@ export interface TaskAuthBindingRepository<TContext extends StoreContext = Store
 export interface TaskAuthBindingServiceOptions<TContext extends StoreContext = StoreContext> {
   repository: TaskAuthBindingRepository<TContext>;
   buildContext?: (binding: TaskAuthBindingSnapshot, clientSecret: string, context: TContext) => TContext;
+  /**
+   * The task layer's own credentials. A binding that names one of these grants resolves without
+   * reading a secret out of the Pod at all, which is what unattended work should use.
+   */
+  taskCredentials?: Pick<TaskCredentialSource, 'forRef'>;
 }
 
 export class TaskAuthBindingService<TContext extends StoreContext = StoreContext> {
   private readonly repository: TaskAuthBindingRepository<TContext>;
   private readonly buildContext: (binding: TaskAuthBindingSnapshot, clientSecret: string, context: TContext) => TContext;
+  private readonly taskCredentials?: Pick<TaskCredentialSource, 'forRef'>;
 
   public constructor(options: TaskAuthBindingServiceOptions<TContext>) {
     this.repository = options.repository;
     this.buildContext = options.buildContext ?? this.defaultBuildContext;
+    this.taskCredentials = options.taskCredentials;
   }
 
   public async createBinding(input: CreateTaskAuthBindingInput, context: TContext): Promise<TaskAuthBindingSnapshot> {
@@ -106,7 +115,24 @@ export class TaskAuthBindingService<TContext extends StoreContext = StoreContext
     return this.snapshotFromCredential(credential, context);
   }
 
+  /**
+   * Restore Pod access for an unattended run.
+   *
+   * A binding id that names a task-layer grant is resolved from there, so the Pod never has to
+   * hold the secret; anything else falls back to the stored credential for the migration period.
+   * Either way the run keeps the owner the binding names, not whoever happened to trigger it.
+   */
   public async resolveRunContext(bindingId: string, context: TContext): Promise<TContext | undefined> {
+    const granted = await this.resolveTaskGrant(bindingId, context);
+    if (granted.outcome === 'resolved') {
+      return this.buildContext(granted.binding, granted.clientSecret, context);
+    }
+    if (granted.outcome === 'unusable') {
+      // The binding names a task-layer grant that no longer applies. Falling back to a stored
+      // credential here would resurrect access the user revoked.
+      return undefined;
+    }
+
     const credential = await this.repository.loadTaskAuthCredential(bindingId, context);
     if (!credential) {
       return undefined;
@@ -123,6 +149,54 @@ export class TaskAuthBindingService<TContext extends StoreContext = StoreContext
       return undefined;
     }
     return this.buildContext(snapshot, parsed.clientSecret, context);
+  }
+
+  /**
+   * A task-layer grant whose reference is the binding id, when this deployment has one.
+   *
+   * The owner comes from the context the caller restored, never from the binding id, so a forged
+   * id cannot point somebody else's grant at this run.
+   */
+  private async resolveTaskGrant(
+    bindingId: string,
+    context: TContext,
+  ): Promise<
+    | { outcome: 'resolved'; binding: TaskAuthBindingSnapshot; clientSecret: string }
+    | { outcome: 'unusable' }
+    | { outcome: 'not-a-grant' }
+  > {
+    if (!this.taskCredentials || !bindingId.startsWith(TASK_CREDENTIAL_REF_PREFIX)) {
+      return { outcome: 'not-a-grant' };
+    }
+    const webId = this.ownerFromContext(context);
+    if (!webId) {
+      return { outcome: 'unusable' };
+    }
+    const credential = await this.taskCredentials.forRef({ credentialRef: bindingId, ownerWebId: webId });
+    if (!credential) {
+      return { outcome: 'unusable' };
+    }
+    return {
+      outcome: 'resolved',
+      clientSecret: credential.clientSecret,
+      binding: {
+        id: bindingId,
+        kind: TaskAuthBindingKind.SOLID_CLIENT_CREDENTIALS,
+        webId,
+        clientId: credential.clientId,
+        status: TaskAuthBindingStatus.ACTIVE,
+        createdAt: nowTimestamp(),
+      },
+    };
+  }
+
+  private ownerFromContext(context: TContext): string | undefined {
+    const auth = this.solidAuthFromContext(context);
+    if (auth?.webId) {
+      return auth.webId;
+    }
+    const userId = (context as { userId?: unknown }).userId;
+    return typeof userId === 'string' && userId.length > 0 ? userId : undefined;
   }
 
   private snapshotFromCredential(

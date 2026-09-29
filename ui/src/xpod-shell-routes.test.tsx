@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { matchRoutes, Navigate } from 'react-router-dom';
 import { xpodShellRoutes } from './xpod-shell-routes';
-import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
+import { AccountAuthBoundary, AccountWorkspaceBoundary, LocalServiceSurfaceBoundary } from './auth/AccountAuthBoundary';
 import { XPOD_DEFAULT_RETURN_PATH } from './routes/canonical-routes';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 
@@ -33,7 +33,6 @@ describe('xpodShellRoutes', () => {
   );
 
   it.each([
-    ['/status/overview', AccountAuthBoundary],
     ['/dashboard/overview', AccountAuthBoundary],
     ['/ai-connections', WebIdAuthBoundary],
     ['/ai-config/model-assignments', WebIdAuthBoundary],
@@ -45,6 +44,36 @@ describe('xpodShellRoutes', () => {
   });
 
   it.each([
+    '/status/overview',
+    '/status/services/gateway',
+    '/status/services/solid-server',
+    '/status/services/api-server',
+    '/status/logs',
+    '/status/index',
+    '/status/index/rdf',
+    '/status/index/fts',
+    '/status/index/vector',
+    '/status/index/retrieval-points',
+    '/status/index/cache',
+    '/status/index/slow-queries',
+    '/status/index/benchmark',
+  ])('admits the local service surface %s without an Account or WebID gate', (pathname) => {
+    const matches = matchRoutes(xpodShellRoutes, pathname);
+
+    expect(matches?.some(({ route }) => route.element?.type === LocalServiceSurfaceBoundary)).toBe(true);
+    expect(matches?.some(({ route }) => route.element?.type === AccountAuthBoundary)).toBe(false);
+    expect(matches?.some(({ route }) => route.element?.type === AccountWorkspaceBoundary)).toBe(false);
+    expect(matches?.some(({ route }) => route.element?.type === WebIdAuthBoundary)).toBe(false);
+  });
+
+  it('keeps the legacy /dashboard tree behind the Account workspace boundary', () => {
+    const matches = matchRoutes(xpodShellRoutes, '/dashboard/overview');
+
+    expect(matches?.some(({ route }) => route.element?.type === AccountWorkspaceBoundary)).toBe(true);
+    expect(matches?.some(({ route }) => route.element?.type === LocalServiceSurfaceBoundary)).toBe(false);
+  });
+
+  it.each([
     '/network',
     '/settings/storage',
     '/settings/runtime',
@@ -52,7 +81,9 @@ describe('xpodShellRoutes', () => {
   ])('keeps local service route %s outside account and WebID boundaries', (pathname) => {
     const matches = matchRoutes(xpodShellRoutes, pathname);
     expect(matches?.some(({ route }) => (
-      route.element?.type === AccountAuthBoundary || route.element?.type === WebIdAuthBoundary
+      route.element?.type === AccountAuthBoundary
+      || route.element?.type === AccountWorkspaceBoundary
+      || route.element?.type === WebIdAuthBoundary
     ))).toBe(false);
   });
 });

@@ -708,6 +708,20 @@ jobs:
       - name: Build desktop with the accepted native runtime
         working-directory: desktop
         run: bun run dist
+      # The Account document links `/app/assets/main.css` by name. A build that
+      # emits the stylesheet under another name (or not at all) ships a login page
+      # with no styles, which already happened once in production.
+      - name: Verify the Account document's assets were built
+        run: |
+          set -euo pipefail
+          test -s static/app/auth.html
+          grep -oE '/app/assets/[A-Za-z0-9._-]+' static/app/auth.html | sort -u | while read -r asset; do
+            if [[ ! -s "static${asset}" ]]; then
+              echo "::error::static${asset} is referenced by static/app/auth.html but was not built"
+              exit 1
+            fi
+          done
+          echo "Account document assets verified"
       - name: Verify root npm package boundary
         env:
           XPOD_INCLUDE_PLATFORM_PACKAGES: 'true'
@@ -735,16 +749,40 @@ jobs:
           [[ "$(defaults read "$PWD/$app/Contents/Info" CFBundleShortVersionString)" == "$CANDIDATE_VERSION" ]]
           test -x "$runtime"
           test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
-          path: |
-            desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/*.blockmap
-          if-no-files-found: error
-          retention-days: 30
+      # The desktop updates itself by verifying the downloaded bundle, so the
+      # archive must ship a valid ad-hoc signature (after-pack hook) rather than
+      # the linker's unsealed one.
 
+      - name: Create the unified acceptance manifest
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const checksPath = path.join(process.env.RUNNER_TEMP, 'service-acceptance', 'checks.json');
+          const checks = {
+            ...JSON.parse(fs.readFileSync(checksPath, 'utf8')),
+            'qlever-local': 'passed',
+            'desktop': 'passed',
+            'package-consumers': 'passed',
+          };
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
+          NODE
+          node scripts/release-acceptance-manifest.cjs create \
+            --target-version "${{ needs.metadata.outputs.target }}" \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
+            --source-branch "$REF_NAME" \
+            --image-digest "${{ needs.build_image.outputs.digest }}" \
+            --endpoint "https://id-rc.undefineds.co" \
+            --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
+      - name: Upload the only stable-promotion evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/release-acceptance.json
+          if-no-files-found: error
   finalize_acceptance:
     name: Finalize RC acceptance
     needs:

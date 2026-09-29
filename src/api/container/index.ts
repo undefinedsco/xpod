@@ -14,7 +14,7 @@ import { registerCommonServices } from './common';
 import { registerCloudServices } from './cloud';
 import { registerLocalServices } from './local';
 import { registerBusinessToken } from './business-token';
-import { cloudApiEndpointFromIssuer, oidcTokenEndpoint, resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
+import { cloudApiEndpointFromIssuer, isLoopbackIssuer, oidcTokenEndpoint, resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
 import { resolveAuthModeFromEnv } from '../../authorization/AuthMode';
 import { readLocalProvisionState, resolveLocalSetupPath, resolveLocalSetupProviderId } from '../../provision/LocalProvisionState';
 import { resolveTunnelProfileState } from '../../tunnel/TunnelProfiles';
@@ -119,8 +119,15 @@ export function loadConfigFromEnv(): ApiContainerConfig {
   const nodeToken = process.env.XPOD_NODE_TOKEN ?? localSetupState?.nodeToken;
   const serviceToken = process.env.XPOD_SERVICE_TOKEN ?? localSetupState?.serviceToken;
   const solidBaseUrl = normalizeOptionalUrl(process.env.CSS_BASE_URL);
+  // A remembered issuer that only loopback can serve is residue: nothing in this process listens
+  // there, so adopting it would point every login (and token exchange) at a dead port. Explicit
+  // configuration still wins, including an intentional loopback one.
+  const rememberedIssuer = localSetupState?.cloudIdentityUrl;
+  if (rememberedIssuer && isLoopbackIssuer(rememberedIssuer)) {
+    console.warn(`[Local] Ignoring the remembered identity issuer ${rememberedIssuer}: nothing serves it on this machine`);
+  }
   const oidcIssuer = resolveExternalOidcIssuer(process.env)
-    ?? localSetupState?.cloudIdentityUrl
+    ?? (rememberedIssuer && !isLoopbackIssuer(rememberedIssuer) ? rememberedIssuer : undefined)
     ?? (
       edition === 'cloud'
         ? solidBaseUrl
@@ -148,6 +155,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     }
     : undefined;
   const secretCellCredentialVaultFactory = loadSecretCellCredentialVaultFactory(process.env);
+  const deploymentRootKeys = loadDeploymentRootKeyProvider(process.env);
   const openAiGatewayBaseUrl = normalizeOptionalBaseUrl(process.env.XPOD_AI_GATEWAY_OPENAI_BASE_URL);
   const aiClientConfiguration = edition === 'local'
     ? loadAiClientConfiguration(process.env)
@@ -176,6 +184,8 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     aiGatewaySessionAffinitySecret: process.env.XPOD_AI_GATEWAY_SESSION_AFFINITY_SECRET,
     gatewayAdminProxyAuthSecret: process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET,
     secretCellCredentialVaultFactory,
+    secretCellVaultFactory: deploymentRootKeys ? () => new SecretCellVault({ rootKeys: deploymentRootKeys }) : undefined,
+    taskDatabaseUrl: process.env.CSS_TASK_DB_URL,
     aiGatewayConnectSigningSecret: process.env.XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET,
     aiGatewayKimiOAuthIntegrationId: process.env.XPOD_AI_GATEWAY_KIMI_OAUTH_INTEGRATION_ID,
     aiGatewayKimiOAuthClientId: process.env.XPOD_AI_GATEWAY_KIMI_OAUTH_CLIENT_ID,
@@ -268,6 +278,17 @@ function nonEmptyEnv(value: string | undefined): string | undefined {
 }
 
 function loadSecretCellCredentialVaultFactory(env: NodeJS.ProcessEnv): (() => CredentialVault) | undefined {
+  const rootKeys = loadDeploymentRootKeyProvider(env);
+  return rootKeys ? () => new SecretCellCredentialVault({ vault: new SecretCellVault({ rootKeys }) }) : undefined;
+}
+
+/**
+ * The deployment's root key material, shared by every component that seals secrets at rest.
+ *
+ * Configuration is all-or-nothing: a key id without a key (or the reverse) is a deployment mistake
+ * rather than a reason to fall back to plaintext.
+ */
+export function loadDeploymentRootKeyProvider(env: NodeJS.ProcessEnv): DeploymentRootKeyProvider | undefined {
   const activeKeyId = env.XPOD_SECRET_CELL_KEY_ID?.trim();
   const activeKey = env.XPOD_SECRET_CELL_KEY;
   const previousKeysJson = env.XPOD_SECRET_CELL_PREVIOUS_KEYS;
@@ -303,11 +324,7 @@ function loadSecretCellCredentialVaultFactory(env: NodeJS.ProcessEnv): (() => Cr
     }
   }
 
-  return () => new SecretCellCredentialVault({
-    vault: new SecretCellVault({
-      rootKeys: new DeploymentRootKeyProvider({ activeKeyId, keys }),
-    }),
-  });
+  return new DeploymentRootKeyProvider({ activeKeyId, keys });
 }
 
 function assertSecretCellKeyId(value: string, variable: string): void {

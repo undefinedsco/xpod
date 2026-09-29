@@ -75,6 +75,7 @@ import {
   type TaskAuthBindingSnapshot,
 } from '../tasks/TaskAuthBinding';
 import type { AuthContext } from '../auth/AuthContext';
+import { CALLER_POD_ACCESS_UNAVAILABLE } from '../ai-gateway/auth/CallerPodAccess';
 import { podAccessError, type PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import { isSolidAuth } from '../auth/AuthContext';
 import { Provider } from '../../ai/schema/provider';
@@ -211,6 +212,9 @@ type ThreadParentResolution = CommandSurface & {
 type RunRecordSource = {
   id: string;
   task?: string | null;
+  delivery?: string | null;
+  trigger?: string | null;
+  input?: string | null;
   thread?: string | null;
   workspace?: string | null;
   status?: string | null;
@@ -310,8 +314,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   /**
    * 获取认证后的 drizzle 实例 (缓存到 context 中)
+   *
+   * The Pod holds the only copy of this data, so a caller without a usable Pod credential is
+   * told why instead of being handed an empty result: a chat screen that answers "no threads"
+   * for a Pod it could not open reports a state the user cannot act on.
    */
-  private async getDb(context: StoreContext): Promise<any | null> {
+  private async getDb(context: StoreContext): Promise<any> {
     // Check if we already have a cached db in context
     if ((context as any)._cachedDb) {
       this.logger.debug('Using cached db from context');
@@ -322,7 +330,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     if (!auth || !isSolidAuth(auth) || !auth.webId) {
       this.logger.warn('No valid solid auth in context, cannot access Pod');
-      return null;
+      throw new Error(CALLER_POD_ACCESS_UNAVAILABLE);
     }
 
     // One credential path for every caller: the owner's own Pod key, exchanged for a
@@ -332,11 +340,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       podFetch = await this.podAccess?.getPodFetch(auth.webId, { auth });
     } catch (error) {
       this.logger.error(`Failed to obtain Pod access for ${auth.webId}: ${error}`);
-      return null;
+      throw error;
     }
     if (!podFetch) {
-      this.logger.warn(`No usable Pod credential for ${auth.webId}: ${podAccessError(auth.webId, auth)}`);
-      return null;
+      const reason = podAccessError(auth.webId, auth);
+      this.logger.warn(`No usable Pod credential for ${auth.webId}: ${reason}`);
+      throw new Error(reason);
     }
 
     const db: any = drizzle(
@@ -765,10 +774,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
    */
   private async ensureChat(chatId: string, context: StoreContext): Promise<void> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     const webId = this.getWebId(context);
     const chatResourceId = this.buildChatResourceId(chatId);
     const surfaceId = this.chatSurfaceIdFromResourceId(chatResourceId) ?? chatId;
@@ -1060,6 +1065,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return {
       id: record.id || '',
       task: record.task || undefined,
+      delivery: record.delivery || undefined,
+      trigger: record.trigger || undefined,
+      input: record.input || undefined,
       thread: record.thread || '',
       workspace: record.workspace || '',
       status: (record.status || 'queued') as RunRecordData['status'],
@@ -1294,10 +1302,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     context: StoreContext,
   ): Promise<QueriedMessageRecord[]> {
     const db = await this.getDb(context);
-    if (!db) {
-      return [];
-    }
-
     const resolvedThread = await this.resolveThreadRef(thread, context);
 
     const records = await db.select()
@@ -1379,10 +1383,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     }
 
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     const resolvedThread = await this.resolveThreadRef(thread, context);
     const threadRecord = await db.findByIri(Thread, resolvedThread.thread) as ThreadRecord | null;
 
@@ -1402,10 +1402,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   async saveThread(thread: ThreadMetadata, context: StoreContext): Promise<void> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     const now = new Date().toISOString();
 
     const parent = this.resolveThreadParent(thread, context);
@@ -1482,10 +1478,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     context: StoreContext,
   ): Promise<Page<ThreadMetadata>> {
     const db = await this.getDb(context);
-    if (!db) {
-      return { data: [], has_more: false };
-    }
-
     try {
       const threads = await threadRepository.list(db) as ThreadRecord[];
       const metadataById = new Map<string, ThreadMetadata>();
@@ -1532,10 +1524,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   async deleteThread(thread: ThreadRef, context: StoreContext): Promise<void> {
     const resolvedThread = await this.resolveThreadRef(thread, context);
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     // 删除关联到此 Thread 的消息
     try {
       await db.delete(Message).where(eq(Message.thread, resolvedThread.thread));
@@ -1610,10 +1598,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   async addThreadItem(thread: ThreadRef, item: ThreadItem, context: StoreContext): Promise<void> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     const resolvedThread = await this.resolveThreadRef(thread, context);
     const itemResourceId = this.buildMessageResourceId({
       id: item.id,
@@ -1711,6 +1695,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     await db.insert(Message).values(messageRecord);
 
+    // Chat membership is the authoritative wake roster. Task surfaces have no Chat
+    // roster and fail closed; message mentions and request metadata cannot grant it.
+    const chat = this.serverGroupReconcilerService && role === MessageRole.USER && reconcilerOwner === 'server'
+      && resolvedThread.commandKind === 'chat'
+      ? await db.findById(Chat, this.buildChatResourceId(resolvedThread.surfaceId))
+      : undefined;
     await this.reconcileGroupUserMessage({
       thread: resolvedThread.thread,
       triggerMessage: this.resolveDataResource(itemResourceId, context),
@@ -1719,6 +1709,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       content,
       reconcilerOwner,
       mentions,
+      participants: normalizeAgentUris(chat?.participants),
     });
 
     // Track this ID to avoid cache timing issues in saveItem
@@ -1733,6 +1724,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     content: string;
     reconcilerOwner: ReconcilerOwner;
     mentions?: string[];
+    participants?: string[];
   }): Promise<void> {
     if (!this.serverGroupReconcilerService || input.role !== MessageRole.USER) {
       return;
@@ -1746,6 +1738,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         content: input.content,
         reconcilerOwner: input.reconcilerOwner,
         mentions: input.mentions,
+        participants: input.participants,
       });
     } catch (error) {
       this.logger.warn(`Failed to enqueue ChatKit group Reconciler wake: ${error}`);
@@ -1757,10 +1750,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   async saveItem(thread: ThreadRef, item: ThreadItem, context: StoreContext): Promise<void> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     const resolvedThread = await this.resolveThreadRef(thread, context);
 
     // 准备更新数据
@@ -1936,10 +1925,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
   async loadItem(thread: ThreadRef, itemId: string, context: StoreContext): Promise<ThreadItem> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     const resolvedThread = await this.resolveThreadRef(thread, context);
     const messages = (await this.selectMessagesForThread(thread, context))
       .filter((message) => message.id === itemId);
@@ -1983,14 +1968,13 @@ WHERE { ${deletePatterns.join(' ')} }
 
   async saveRun(run: RunRecordData, context: StoreContext): Promise<void> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     run.id = buildRunResourceId(run);
     const existing = await db.findById(Run, run.id) as RunRecord | null;
     const values = {
       task: run.task || null,
+      delivery: run.delivery || null,
+      trigger: run.trigger || null,
+      input: run.input || null,
       thread: run.thread,
       workspace: run.workspace,
       status: run.status,
@@ -2022,9 +2006,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
   async loadRun(id: string, context: StoreContext): Promise<RunRecordData> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
     const record = await db.findById(Run, id) as RunRecord | null;
     if (!record) {
       throw new Error(`Run not found: ${id}`);
@@ -2034,10 +2015,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
   async listRuns(options: RunListOptions, context: StoreContext): Promise<RunRecordData[]> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     const conditions = [];
     if (options.task) {
       conditions.push(eq(Run.task, options.task));
@@ -2066,10 +2043,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
   async appendRunStep(event: RunStepRecordData, context: StoreContext): Promise<void> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     if (!isRunResourceId(event.runId)) {
       throw new Error(`RunStep runId must be a complete Run resource id: ${event.runId}`);
     }
@@ -2088,10 +2061,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
   async loadRunSteps(runId: string, context: StoreContext): Promise<RunStepRecordData[]> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     if (!isRunResourceId(runId)) {
       throw new Error(`loadRunSteps requires a base-relative Run id: ${runId}`);
     }
@@ -2152,9 +2121,6 @@ WHERE { ${deletePatterns.join(' ')} }
       return undefined;
     }
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
     const updatedAt = this.timestampToIso(input.now)!;
     const expectedLease = run.leaseOwner
       ? eq(Run.leaseOwner, run.leaseOwner)
@@ -2191,9 +2157,6 @@ WHERE { ${deletePatterns.join(' ')} }
     context: StoreContext,
   ): Promise<boolean> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
     const released = await db.update(Run)
       .set({
         status: RunStatus.WAITING_INPUT,
@@ -2228,10 +2191,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
   async saveTask(task: TaskRecordData, context: StoreContext): Promise<void> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     task.id = buildTaskResourceId(task.id);
     const existing = await db.findById(Task, task.id) as TaskRecord | null;
     const metadata = this.withXpodMetadata(
@@ -2270,9 +2229,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
   async loadTask(taskId: string, context: StoreContext): Promise<TaskRecordData> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
     const record = await db.findById(Task, taskId) as TaskRecord | null;
     if (!record) {
       throw new Error(`Task not found: ${taskId}`);
@@ -2282,10 +2238,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
   async listTasks(options: TaskListOptions, context: StoreContext): Promise<TaskRecordData[]> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     const records = await db.select().from(Task) as TaskRecord[];
     const dueAt = options.dueAt ?? nowTimestamp();
     let tasks = records.map((record) => this.taskRecordToData(record));
@@ -2322,10 +2274,6 @@ WHERE { ${deletePatterns.join(' ')} }
     createdAt?: string | Date | null;
   }> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     const values = {
       service: TASK_AUTH_CREDENTIAL_SERVICE,
       status: CredentialStatus.ACTIVE,
@@ -2364,10 +2312,6 @@ WHERE { ${deletePatterns.join(' ')} }
     createdAt?: string | Date | null;
   } | undefined> {
     const db = await this.getDb(context);
-    if (!db) {
-      throw new Error('Cannot access Pod: invalid credentials');
-    }
-
     const credential = await db.findById(Credential, id);
     if (!credential || credential.service !== TASK_AUTH_CREDENTIAL_SERVICE) {
       return undefined;
@@ -2813,9 +2757,6 @@ WHERE { ${deletePatterns.join(' ')} }
     credentialId: string;
   } | undefined> {
     const db = await this.getDb(context);
-    if (!db) {
-      return undefined;
-    }
     this.ensurePodBaseUrlCache(context, db);
 
     try {
@@ -2884,10 +2825,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
   async getReaderConfig(context: StoreContext, preferredProviderId = 'paddleocr'): Promise<ReaderAiConfig | undefined> {
     const db = await this.getDb(context);
-    if (!db) {
-      return undefined;
-    }
-
     try {
       const [providers, models, credentials] = await Promise.all([
         db.select().from(Provider),
@@ -2912,10 +2849,6 @@ WHERE { ${deletePatterns.join(' ')} }
 
   async listAvailableModels(context: StoreContext): Promise<any[]> {
     const db = await this.getDb(context);
-    if (!db) {
-      return [];
-    }
-
     const config = await this.getAiConfig(context);
     if (!config) {
       return [];
@@ -2998,11 +2931,6 @@ WHERE { ${deletePatterns.join(' ')} }
     options?: { rateLimitResetAt?: Date; incrementFailCount?: boolean },
   ): Promise<void> {
     const db = await this.getDb(context);
-    if (!db) {
-      this.logger.debug('Cannot update credential status: no db available');
-      return;
-    }
-
     try {
       const updateData: Record<string, any> = { status };
 
@@ -3031,10 +2959,6 @@ WHERE { ${deletePatterns.join(' ')} }
    */
   async recordCredentialSuccess(context: StoreContext, credentialId: string): Promise<void> {
     const db = await this.getDb(context);
-    if (!db) {
-      return;
-    }
-
     try {
       await db.updateById(Credential, credentialId, {
         lastUsedAt: new Date(),

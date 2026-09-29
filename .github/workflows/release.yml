@@ -499,16 +499,36 @@ jobs:
           test -x "$runtime"
           test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
-          path: |
-            desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/*.blockmap
-          if-no-files-found: error
-          retention-days: 14
+      # The desktop updates itself by verifying the downloaded bundle, so the
+      # archive must ship a valid ad-hoc signature (after-pack hook) rather than
+      # the linker's unsealed one.
 
+      - name: Create release after production deploy
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          {
+            printf 'Promoted accepted release candidate `%s`.\n\n' "$CANDIDATE_VERSION"
+            printf 'Container digest: `%s`\n' "$ACCEPTED_IMAGE_DIGEST"
+          } > "$notes_file"
+          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            gh release edit "$TAG_NAME" \
+              --title "Xpod ${RELEASE_VERSION}" \
+              --notes-file "$notes_file"
+          else
+            gh release create "$TAG_NAME" \
+              --verify-tag \
+              --title "Xpod ${RELEASE_VERSION}" \
+              --notes-file "$notes_file"
+          fi
+
+          mapfile -t desktop_assets < <(find "$RUNNER_TEMP/desktop-release" -type f \
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' \) -print)
+          if [[ "${#desktop_assets[@]}" -eq 0 ]]; then
+            echo "::error::desktop release assets are missing"
+            exit 1
+          fi
+          gh release upload "$TAG_NAME" "${desktop_assets[@]}" --clobber
   create_github_release:
     name: Create GitHub Release
     needs:

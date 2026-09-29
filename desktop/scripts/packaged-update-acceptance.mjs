@@ -3,10 +3,11 @@
 /**
  * Start a packaged old Xpod build against a local newer-version feed.
  *
- * macOS's built-in autoUpdater requires a signed, packaged app and must be
- * observed in the real Electron process. The script gives that process an
- * isolated userData folder and fails unless the installed build relaunches
- * with the expected newer version.
+ * Xpod cannot use Electron's built-in macOS updater: Squirrel validates the new
+ * bundle against the ad-hoc `cdhash` requirement of the running build, which no
+ * later release can satisfy. The desktop updates itself instead, so this script
+ * observes the real Electron process end to end: check -> download -> verify ->
+ * stage -> swap the bundle -> relaunch as the newer version.
  *
  * Build two versions first (from desktop/):
  *   electron-builder --mac zip --config.extraMetadata.version=0.1.0
@@ -16,17 +17,20 @@
  *   node scripts/packaged-update-acceptance.mjs \
  *     --old release/mac-arm64/Xpod.app \
  *     --new-zip release/Xpod-0.1.1-mac.zip
+ *
+ * `--new-app <Xpod.app>` signs and zips a freshly built bundle instead, which is
+ * the shape a release ships.
  */
 
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 if (process.platform !== 'darwin') {
-  console.error('Packaged auto-update acceptance requires macOS (Electron Squirrel.Mac).')
+  console.error('Packaged update acceptance requires macOS.')
   process.exit(2)
 }
 
@@ -34,7 +38,7 @@ const options = parseArgs(process.argv.slice(2))
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url))
 const desktopDir = path.resolve(scriptsDir, '..')
 const oldApp = path.resolve(desktopDir, String(options.old ?? 'release/mac-arm64/Xpod.app'))
-const newZip = options['new-zip'] ? path.resolve(desktopDir, options['new-zip']) : undefined
+const newZip = resolveNewZip()
 const oldBinary = path.join(oldApp, 'Contents', 'MacOS', 'Xpod')
 const newVersion = String(options.version ?? inferVersion(newZip) ?? '0.1.1')
 const userData = userDataPath(options)
@@ -48,7 +52,7 @@ if (!fs.existsSync(oldBinary)) {
   throw new Error(`Old packaged app binary not found: ${oldBinary}`)
 }
 if (!newZip) {
-  throw new Error('--new-zip is required for packaged update acceptance')
+  throw new Error('--new-zip or --new-app is required for packaged update acceptance')
 }
 if (!fs.statSync(newZip).isFile()) {
   throw new Error(`New packaged zip not found: ${newZip}`)
@@ -90,8 +94,8 @@ fixture.stdout.on('data', (chunk) => {
   const feedUrl = match[1]
   console.log(`Update feed: ${feedUrl}`)
   console.log(`Isolated userData: ${userData}`)
-  console.log('Expected path: old app checks -> newer JSON -> download -> restart/install -> new app version.')
-  if (!newZip) console.warn('No --new-zip supplied; the feed response is valid but the download will fail.')
+  console.log('Expected path: old app checks -> newer manifest -> download -> verify -> swap bundle -> new app version.')
+  if (!newZip) console.warn('No archive supplied; the feed response is valid but the download will fail.')
 
   appProcess = spawn(oldBinary, [], {
     cwd: desktopDir,
@@ -99,6 +103,9 @@ fixture.stdout.on('data', (chunk) => {
       ...process.env,
       XPOD_DESKTOP_UPDATE_FEED_URL: feedUrl,
       XPOD_DESKTOP_AUTO_INSTALL_UPDATES: String(options['auto-install'] ?? '1'),
+      // The helper reopens the replaced bundle directly so this process'
+      // acceptance environment (version file, lifecycle log) survives.
+      XPOD_DESKTOP_UPDATE_RELAUNCH: String(options.relaunch ?? 'direct'),
       XPOD_DESKTOP_USER_DATA_DIR: userData,
       XPOD_DESKTOP_UPDATE_ACCEPTANCE_VERSION_FILE: expectedVersionFile,
       XPOD_DESKTOP_UPDATE_ACCEPTANCE_LOG: lifecycleLog,
@@ -151,6 +158,29 @@ function parseArgs(args) {
   return parsed
 }
 
+/**
+ * Turn a built bundle into the archive a release would ship: ad-hoc signed with
+ * the bundle's resources sealed, then zipped the way electron-builder does.
+ */
+function resolveNewZip() {
+  if (options['new-zip']) return path.resolve(desktopDir, options['new-zip'])
+  if (!options['new-app']) return undefined
+
+  const appPath = path.resolve(desktopDir, options['new-app'])
+  if (!fs.existsSync(path.join(appPath, 'Contents', 'Info.plist'))) {
+    throw new Error(`--new-app is not an application bundle: ${appPath}`)
+  }
+  execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' })
+  execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', appPath], { stdio: 'inherit' })
+
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-update-zip-'))
+  const name = path.basename(appPath).replace(/\.app$/, '')
+  const zipPath = path.join(outputDir, `${name}-update.zip`)
+  execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath], { stdio: 'inherit' })
+  console.log(`Signed update archive: ${zipPath}`)
+  return zipPath
+}
+
 function inferVersion(zipPath) {
   const match = zipPath?.match(/(?:^|[-_])v?(\d+\.\d+(?:\.\d+){0,2})(?:[-_.]|$)/)
   return match?.[1]
@@ -179,6 +209,7 @@ async function waitForAcceptanceEvidence({
       && installed === expectedVersion
       && events.includes('checking-for-update')
       && events.includes('update-available')
+      && events.includes('download-verified')
       && events.includes('update-downloaded')
       && events.includes('auto-install-ready')
     ) return

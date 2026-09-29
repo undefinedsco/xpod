@@ -21,6 +21,7 @@ import { InMemorySessionAffinityStore } from '../src/api/ai-gateway/routing/InMe
 import { ModelRouter } from '../src/api/ai-gateway/routing/ModelRouter';
 import type { Authenticator, AuthResult } from '../src/api/auth/Authenticator';
 import { ClientCredentialsAuthenticator } from '../src/api/auth/ClientCredentialsAuthenticator';
+import { SolidSessionFactory } from '../src/api/auth/SolidSessionFactory';
 import { ProviderHttpTransport } from '../src/api/service/provider-http-transport';
 import { AiGatewayHandler } from '../src/api/handlers/AiGatewayHandler';
 import { AuthMiddleware, type AuthenticatedRequest } from '../src/api/middleware/AuthMiddleware';
@@ -846,7 +847,9 @@ async function startFixtureXpodGateway(options: { upstreamBaseUrl: string }): Pr
     },
   });
   const authenticator = new TouchTrackingAuthenticator(
-    new ClientCredentialsAuthenticator({ tokenEndpoint: `${baseUrl}${FIXTURE_TOKEN_PATH}` }),
+    new ClientCredentialsAuthenticator({
+      sessions: new SolidSessionFactory({ tokenEndpoint: `${baseUrl}${FIXTURE_TOKEN_PATH}` }),
+    }),
   );
   auth = new AuthMiddleware({ authenticator });
   return {

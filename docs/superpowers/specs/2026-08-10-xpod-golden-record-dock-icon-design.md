@@ -1,5 +1,7 @@
 # Xpod Golden Record Dock Icon Design
 
+> **Historical exploration — superseded 2026-09-26; marked 2026-09-27.** The selected Xpod mark is the open folded corner, with an ink-purple app background. This golden-record direction is retained as history, not an implementation target. Follow the [selected brand](../../../../homepage/DESIGN.md) and [product experience spec §9](2026-09-27-xpod-product-experience-spec.md). Keep existing assets and switch references; do not delete or overwrite the historical logo.
+
 ## Goal
 
 Create a recognizable macOS Dock icon for Xpod that evokes a golden record as a durable vessel for personal data, memory, and knowledge. It must read as Xpod rather than as a music player.

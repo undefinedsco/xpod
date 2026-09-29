@@ -76,6 +76,9 @@ test('Account login document uses the compact narrow card', () => {
   expect(panel.getAttribute('data-web-account-host')).toBe('window');
   expect(panel.className).not.toMatch(/rounded-|border|shadow/);
   expect(screen.getByTestId('web-account-page').className).toContain('bg-background');
+  // The window title bar already names the product: no second brand heading.
+  expect(screen.queryByText('Personal Messages Platform')).toBeNull();
+  expect(screen.getByTestId('web-account-column')).toBeTruthy();
 });
 
 test('compact Account documents retain their card even inside a desktop workspace', () => {
