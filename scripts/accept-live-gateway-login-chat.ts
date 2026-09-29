@@ -718,6 +718,10 @@ async function main(): Promise<void> {
   // The applet answers that refusal by exchanging the session's Account binding for a Pod
   // credential and retrying once, so the acceptance drives exactly that path instead of
   // reporting a refusal the product is designed to fix.
+  // The controls live under the Account API root (`/.account/`), which is what the page
+  // resolves as its Account index; resolving relative control URLs against the bare origin
+  // would produce paths the client-credential guard refuses.
+  const accountIndex = new URL('/.account/', identityBaseUrl).href;
   const accountFetch: typeof fetch = (input, init) => fetch(input, {
     ...init,
     headers: {
@@ -737,7 +741,7 @@ async function main(): Promise<void> {
     session.fetch,
     async () => {
       podCredential ??= await resolveOnDemandSessionCredential({
-        accountIndex: identityBaseUrl,
+        accountIndex,
         webId: account.webId,
         binding: {
           collection: credentialCollection,
@@ -977,17 +981,6 @@ async function verifyGatewayKeyLifecycle(
       client, plaintext: gatewayKey, credentialResource: credentials.resource,
       clientId: credentials.id, webId: account.webId, accountAuthorization: account.authorization,
     };
-    {
-      // Temporary diagnostic: does this caller's own credential reach the same route the
-      // management client calls?
-      const probeUrl = new URL('/api/ai/gateway/keys', GATEWAY);
-      const probe = await fetch(probeUrl, { headers: { accept: 'application/json', authorization: `Bearer ${gatewayKey}` } })
-        .catch((error: unknown) => { log('gatewayAuth', { phase: 'probe-credential-failed', detail: redact(String(error)) }); return undefined; });
-      if (probe) {
-        await probe.arrayBuffer();
-        log('gatewayAuth', { phase: 'probe-credential', status: probe.status });
-      }
-    }
     phase = 'register CSS credential in Pod';
     const issuedGatewayKey = await client.createGatewayKey({
       name: `Login-to-chat acceptance ${ACCEPT_ID}`,
