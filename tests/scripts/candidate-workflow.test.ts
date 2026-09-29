@@ -380,6 +380,11 @@ describe('release candidate workflow', () => {
     const finalUpload = finalize.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
 
     expect(serviceText).not.toContain('release-acceptance-manifest.cjs create');
+    // The desktop job builds the app; it cannot see the service acceptance artifact or the
+    // image digest, so only the job that downloads them may freeze the manifest.
+    expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('release-acceptance-manifest.cjs create');
+    expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('release-acceptance-${{ github.sha }}');
+
     expect(serviceUpload.with.name).toBe('release-service-acceptance-${{ github.sha }}');
     expect(serviceUpload.with.path).toBe('${{ runner.temp }}/checks.json');
     expect(finalize.needs).toEqual([

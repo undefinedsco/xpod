@@ -753,36 +753,6 @@ jobs:
       # archive must ship a valid ad-hoc signature (after-pack hook) rather than
       # the linker's unsealed one.
 
-      - name: Create the unified acceptance manifest
-        run: |
-          set -euo pipefail
-          node - <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const checksPath = path.join(process.env.RUNNER_TEMP, 'service-acceptance', 'checks.json');
-          const checks = {
-            ...JSON.parse(fs.readFileSync(checksPath, 'utf8')),
-            'qlever-local': 'passed',
-            'desktop': 'passed',
-            'package-consumers': 'passed',
-          };
-          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
-          NODE
-          node scripts/release-acceptance-manifest.cjs create \
-            --target-version "${{ needs.metadata.outputs.target }}" \
-            --candidate-version "$CANDIDATE_VERSION" \
-            --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
-            --source-branch "$REF_NAME" \
-            --image-digest "${{ needs.build_image.outputs.digest }}" \
-            --endpoint "https://id-rc.undefineds.co" \
-            --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
-            --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
-      - name: Upload the only stable-promotion evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-acceptance-${{ github.sha }}
-          path: ${{ runner.temp }}/release-acceptance.json
-          if-no-files-found: error
   finalize_acceptance:
     name: Finalize RC acceptance
     needs:

@@ -52,6 +52,29 @@ describe('stable release promotion workflow', () => {
     expect(step.if).toBeUndefined();
   });
 
+  it('hands the packaged desktop to the release job and creates the release in exactly one place', async () => {
+    const workflow = await loadWorkflow();
+    const build = workflow.jobs.build_desktop_macos;
+    const publish = workflow.jobs.create_github_release;
+    const artifactName = 'xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}';
+
+    const upload = build.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
+    expect(upload?.with?.name).toBe(artifactName);
+    expect(upload?.with?.path).toContain('desktop/release/*.dmg');
+    expect(upload?.with?.path).toContain('desktop/release/*.zip');
+    expect(upload?.with?.path).toContain('desktop/release/*.blockmap');
+    expect(upload?.with?.['if-no-files-found']).toBe('error');
+
+    const download = publish.steps.find((step: any) => step.uses === 'actions/download-artifact@v4');
+    expect(download?.with?.name).toBe(artifactName);
+    expect(download?.with?.path).toBe('${{ runner.temp }}/desktop-release');
+
+    // The builder only produces the bytes; publishing them belongs to the job that runs
+    // after production deploys, so a release is never created twice or from an empty tree.
+    expect(jobRunText(workflow, 'build_desktop_macos')).not.toContain('gh release create');
+    expect(jobRunText(workflow, 'create_github_release')).toContain('gh release upload');
+  });
+
   it('checks the same package boundary in the required RC desktop job after the full runtime build', async () => {
     const candidate = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/candidate.yml'), 'utf8')).toJSON() as Workflow;
     const job = candidate.jobs.build_desktop_rc;
