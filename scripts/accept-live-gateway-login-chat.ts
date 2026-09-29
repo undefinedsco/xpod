@@ -802,15 +802,35 @@ async function main(): Promise<void> {
   ) {
     fail('aiConnections', 'The Pod store does not expose the required credential and model persistence operations');
   }
+  // Temporary diagnostic: which Gateway call the AI Connections client makes, and what it
+  // answers. Paths only - never headers or bodies.
+  const traced = (label: string, impl: typeof fetch): typeof fetch => async (input, init) => {
+    const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+    const route = (() => {
+      try {
+        return new URL(inputUrl(input)).pathname;
+      } catch {
+        return inputUrl(input);
+      }
+    })();
+    try {
+      const response = await impl(input, init);
+      log('aiConnections', { phase: label, method, route, status: response.status });
+      return response;
+    } catch (error) {
+      log('aiConnections', { phase: `${label}-threw`, method, route, detail: redact(String(error)) });
+      throw error;
+    }
+  };
   const client = createXpodAiConnectionsClient({
     webId: account.webId,
     podUrl: account.podUrl,
-    authenticatedFetch,
+    authenticatedFetch: traced('management', authenticatedFetch),
     // The service-access ticket is presented to the Gateway by the client itself. It must leave
     // through a plain transport, exactly as the applet does with `window.fetch`: the session
     // transport would replace that ticket with the session's own token and the Gateway would
     // read a session call where it has to read an applet invocation.
-    invocationFetch: localSolidTransport,
+    invocationFetch: traced('invocation', localSolidTransport),
   });
 
   const { gatewayKey, initialModelIds } = await verifyGatewayKeyLifecycle(client, {
