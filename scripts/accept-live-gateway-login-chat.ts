@@ -719,12 +719,22 @@ async function main(): Promise<void> {
     `${account.clientId}:${account.clientSecret}`,
     'utf8',
   ).toString('base64')}`;
+  // The retried request leaves through the route-aware plain transport, never the session
+  // transport: the session transport attaches the session's own token and would overwrite the
+  // credential the retry is carrying. A pooled connection the ingress already closed surfaces as
+  // a socket error on that fresh request, so one transport-level retry keeps a credential that
+  // the Gateway accepts from being reported as a credential failure.
+  const credentialTransport: typeof fetch = async (input, init) => {
+    try {
+      return await localSolidTransport(input, init);
+    } catch {
+      return await localSolidTransport(input, init);
+    }
+  };
   const authenticatedFetch = withRequestPodAuthorization(
     session.fetch,
     async () => `Bearer ${sessionCredential}`,
-    // The retry must not go back through the session transport: it exists to attach the
-    // session's own token and would overwrite the credential this retry is carrying.
-    fetch,
+    credentialTransport,
   );
 
   const probePath = `acceptance/${ACCEPT_ID}.ttl`;
