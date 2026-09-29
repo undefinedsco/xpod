@@ -806,6 +806,11 @@ async function main(): Promise<void> {
     webId: account.webId,
     podUrl: account.podUrl,
     authenticatedFetch,
+    // The service-access ticket is presented to the Gateway by the client itself. It must leave
+    // through a plain transport, exactly as the applet does with `window.fetch`: the session
+    // transport would replace that ticket with the session's own token and the Gateway would
+    // read a session call where it has to read an applet invocation.
+    invocationFetch: localSolidTransport,
   });
 
   const { gatewayKey, initialModelIds } = await verifyGatewayKeyLifecycle(client, {
