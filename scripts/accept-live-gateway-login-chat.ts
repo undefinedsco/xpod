@@ -749,9 +749,16 @@ async function main(): Promise<void> {
         sessionFetch: session.fetch,
         assertCurrent: () => undefined,
       }).catch(() => undefined);
-      return podCredential
-        ? await podCredential.authorization().catch(() => undefined)
-        : undefined;
+      if (!podCredential) {
+        log('gatewayAuth', { phase: 'on-demand-credential-missing' });
+        return undefined;
+      }
+      const value = await podCredential.authorization().catch((error: unknown) => {
+        log('gatewayAuth', { phase: 'on-demand-credential-unusable', detail: redact(String(error)) });
+        return undefined;
+      });
+      log('gatewayAuth', { phase: 'on-demand-credential', ok: Boolean(value) });
+      return value;
     },
     // The retry must not go back through the session transport: it exists to attach the
     // session's own token and would overwrite the credential this retry is carrying.
@@ -970,6 +977,17 @@ async function verifyGatewayKeyLifecycle(
       client, plaintext: gatewayKey, credentialResource: credentials.resource,
       clientId: credentials.id, webId: account.webId, accountAuthorization: account.authorization,
     };
+    {
+      // Temporary diagnostic: does this caller's own credential reach the same route the
+      // management client calls?
+      const probeUrl = new URL('/api/ai/gateway/keys', GATEWAY);
+      const probe = await fetch(probeUrl, { headers: { accept: 'application/json', authorization: `Bearer ${gatewayKey}` } })
+        .catch((error: unknown) => { log('gatewayAuth', { phase: 'probe-credential-failed', detail: redact(String(error)) }); return undefined; });
+      if (probe) {
+        await probe.arrayBuffer();
+        log('gatewayAuth', { phase: 'probe-credential', status: probe.status });
+      }
+    }
     phase = 'register CSS credential in Pod';
     const issuedGatewayKey = await client.createGatewayKey({
       name: `Login-to-chat acceptance ${ACCEPT_ID}`,
