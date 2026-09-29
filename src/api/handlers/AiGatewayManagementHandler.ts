@@ -27,6 +27,7 @@ import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { ProviderModelsFetchError, ProviderModelsResponseError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
 import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
 import { isPodAccessFailure } from '../ai-gateway/pod/OwnerPodAccess';
+import { sendPodAccessFailure } from './PodAccessFailureResponse';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
   type AiClientConfigurationCapabilityDescriptor,
@@ -1415,6 +1416,12 @@ function normalizeStringList(value: unknown): string[] | null {
 }
 
 function sendCustomModelsError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (message === 'provider_not_available_in_deployment') {
     sendJson(response, 403, {
@@ -1460,6 +1467,12 @@ function sendCustomModelsError(response: ServerResponse, error: unknown): void {
 }
 
 function sendCredentialPoolError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   if (error instanceof GatewayProtocolError) {
     const normalized = normalizeGatewayError(error);
     sendJson(response, normalized.error.status, normalized);
@@ -1528,6 +1541,12 @@ function sendGatewayAccessKeyError(response: ServerResponse, error: unknown): vo
 }
 
 function sendLegacyProviderConnectError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   if (error instanceof GatewayProtocolError) {
     const normalized = normalizeGatewayError(error);
     sendJson(response, normalized.error.status, normalized);
@@ -1582,6 +1601,12 @@ function sendLegacyProviderConnectError(response: ServerResponse, error: unknown
 }
 
 function sendModelsError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   if (error instanceof ProviderModelsResponseError) {
     sendJson(response, 502, {
       error: 'provider_models_response_error',
@@ -1627,6 +1652,12 @@ function sendModelsError(response: ServerResponse, error: unknown): void {
 }
 
 function sendModelSelectionError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   if (error instanceof GatewayProtocolError) {
     const normalized = normalizeGatewayError(error);
     const details = safeModelSelectionErrorDetails(error.details);
@@ -1693,6 +1724,12 @@ function safeModelSelectionErrorDetails(details: unknown): Record<string, unknow
 }
 
 function sendQuotaError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (message === 'quota_credential_not_found') {
     sendJson(response, 404, { error: 'Provider credential not found for current identity' });
@@ -1896,6 +1933,12 @@ function publicConnectResult(value: unknown): unknown {
 }
 
 function sendAiConnectionsServiceAccessError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   if (error instanceof GatewayProtocolError && error.status >= 400 && error.status < 500) {
     sendJson(response, error.status, {
       error: error.code,
