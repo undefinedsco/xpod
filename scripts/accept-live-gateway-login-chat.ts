@@ -20,11 +20,7 @@ import { aiModelResource, aiProviderResource, credentialResource } from '@undefi
 import { createSolidLocalRouteFetch, discoverSolidLocalRoute } from '../packages/solid-sdk/src/local-route-fetch';
 import { createXpodAiConnectionsClient } from '../ui/src/api/ai-connections';
 import { createXpodAiConnectionsPodStore } from '../ui/src/extensions/XpodAiConnectionsPodStore';
-import { resolveOnDemandSessionCredential } from '../ui/src/auth/ondemand-session-credential';
-import {
-  withRequestPodAuthorization,
-  type SessionRequestCredential,
-} from '../ui/src/auth/session-request-credential';
+import { withRequestPodAuthorization } from '../ui/src/auth/session-request-credential';
 import { checkServer } from '../src/cli/lib/css-account';
 import { ProvisionCodeCodec } from '../src/provision/ProvisionCodeCodec';
 import {
@@ -715,59 +711,22 @@ async function main(): Promise<void> {
   layer('identity', true, `mode=${MODE} issuer=${account.issuer} webId=${account.webId} pod=${account.podUrl}`);
   // The Gateway refuses a DPoP-bound session for Pod-backed work
   // (`caller_dpop_replay_unsupported`): the proof belongs to the caller and cannot be replayed.
-  // The applet answers that refusal by exchanging the session's Account binding for a Pod
-  // credential and retrying once, so the acceptance drives exactly that path instead of
-  // reporting a refusal the product is designed to fix.
-  // The controls live under the Account API root (`/.account/`), which is what the page
-  // resolves as its Account index; resolving relative control URLs against the bare origin
-  // would produce paths the client-credential guard refuses.
-  const accountIndex = new URL('/.account/', identityBaseUrl).href;
-  const accountFetch: typeof fetch = (input, init) => fetch(input, {
-    ...init,
-    headers: {
-      ...Object.fromEntries(new Headers(init?.headers).entries()),
-      ...accountTokenHeaders(cloudAccount.authorization),
-    },
-  });
-  // The binding is already known here - the same Account control that minted this caller's CSS
-  // client credential - so the retry does not have to rediscover it.
-  const credentialCollection = requiredAccountControl(
-    cloudAccount.controls.account?.clientCredentials,
-    identityBaseUrl,
-    'controls.account.clientCredentials',
-  );
-  let podCredential: SessionRequestCredential | undefined;
+  // The applet answers that refusal with the caller's own Pod credential and retries once; the
+  // acceptance does the same with the credential this session already logged in with. It does not
+  // go through the page's on-demand capability: those helpers resolve controls against
+  // `window`, which a server-side acceptance does not have.
+  const sessionCredential = `sk-${Buffer.from(
+    `${account.clientId}:${account.clientSecret}`,
+    'utf8',
+  ).toString('base64')}`;
   const authenticatedFetch = withRequestPodAuthorization(
     session.fetch,
-    async () => {
-      podCredential ??= await resolveOnDemandSessionCredential({
-        accountIndex,
-        webId: account.webId,
-        binding: {
-          collection: credentialCollection,
-          webId: account.webId,
-          assertCurrent: () => undefined,
-          fetch: accountFetch,
-        },
-        accountFetch,
-        sessionFetch: session.fetch,
-        assertCurrent: () => undefined,
-      }).catch(() => undefined);
-      if (!podCredential) {
-        log('gatewayAuth', { phase: 'on-demand-credential-missing' });
-        return undefined;
-      }
-      const value = await podCredential.authorization().catch((error: unknown) => {
-        log('gatewayAuth', { phase: 'on-demand-credential-unusable', detail: redact(String(error)) });
-        return undefined;
-      });
-      log('gatewayAuth', { phase: 'on-demand-credential', ok: Boolean(value) });
-      return value;
-    },
+    async () => `Bearer ${sessionCredential}`,
     // The retry must not go back through the session transport: it exists to attach the
     // session's own token and would overwrite the credential this retry is carrying.
     fetch,
   );
+
   const probePath = `acceptance/${ACCEPT_ID}.ttl`;
   const probeUrl = new URL(probePath, account.podUrl).toString();
   const probeBody = [
