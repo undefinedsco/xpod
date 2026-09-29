@@ -20,6 +20,11 @@ import { aiModelResource, aiProviderResource, credentialResource } from '@undefi
 import { createSolidLocalRouteFetch, discoverSolidLocalRoute } from '../packages/solid-sdk/src/local-route-fetch';
 import { createXpodAiConnectionsClient } from '../ui/src/api/ai-connections';
 import { createXpodAiConnectionsPodStore } from '../ui/src/extensions/XpodAiConnectionsPodStore';
+import { resolveOnDemandSessionCredential } from '../ui/src/auth/ondemand-session-credential';
+import {
+  withRequestPodAuthorization,
+  type SessionRequestCredential,
+} from '../ui/src/auth/session-request-credential';
 import { checkServer } from '../src/cli/lib/css-account';
 import { ProvisionCodeCodec } from '../src/provision/ProvisionCodeCodec';
 import {
@@ -708,7 +713,47 @@ async function main(): Promise<void> {
     fail('identity', redact(message));
   }
   layer('identity', true, `mode=${MODE} issuer=${account.issuer} webId=${account.webId} pod=${account.podUrl}`);
-  const authenticatedFetch = session.fetch;
+  // The Gateway refuses a DPoP-bound session for Pod-backed work
+  // (`caller_dpop_replay_unsupported`): the proof belongs to the caller and cannot be replayed.
+  // The applet answers that refusal by exchanging the session's Account binding for a Pod
+  // credential and retrying once, so the acceptance drives exactly that path instead of
+  // reporting a refusal the product is designed to fix.
+  const accountFetch: typeof fetch = (input, init) => fetch(input, {
+    ...init,
+    headers: {
+      ...Object.fromEntries(new Headers(init?.headers).entries()),
+      ...accountTokenHeaders(cloudAccount.authorization),
+    },
+  });
+  // The binding is already known here - the same Account control that minted this caller's CSS
+  // client credential - so the retry does not have to rediscover it.
+  const credentialCollection = requiredAccountControl(
+    cloudAccount.controls.account?.clientCredentials,
+    identityBaseUrl,
+    'controls.account.clientCredentials',
+  );
+  let podCredential: SessionRequestCredential | undefined;
+  const authenticatedFetch = withRequestPodAuthorization(
+    session.fetch,
+    async () => {
+      podCredential ??= await resolveOnDemandSessionCredential({
+        accountIndex: identityBaseUrl,
+        webId: account.webId,
+        binding: {
+          collection: credentialCollection,
+          webId: account.webId,
+          assertCurrent: () => undefined,
+          fetch: accountFetch,
+        },
+        accountFetch,
+        sessionFetch: session.fetch,
+        assertCurrent: () => undefined,
+      }).catch(() => undefined);
+      return podCredential
+        ? await podCredential.authorization().catch(() => undefined)
+        : undefined;
+    },
+  );
   const probePath = `acceptance/${ACCEPT_ID}.ttl`;
   const probeUrl = new URL(probePath, account.podUrl).toString();
   const probeBody = [
