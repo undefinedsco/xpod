@@ -165,11 +165,10 @@ function WebIdAuthBoundaryContent({
     return <>{children}</>;
   }
 
-  if (preflight) return <XpodLocalLoginPreflight onReady={continueLogin} />;
 
   const remembered = 'remembered' in state ? state.remembered : undefined;
   const restoring = state.status === 'restoring';
-  const connecting = pending || (autoStart && !loginCancelled && !automaticLoginBlocked && state.status === 'anonymous' && !actionError);
+  const connecting = pending || Boolean(preflight) || (autoStart && !loginCancelled && !automaticLoginBlocked && state.status === 'anonymous' && !actionError);
   // A cancelled or switching login returns to the first-visit screen, not to the remembered one.
   const identity = remembered && !loginCancelled ? presentedIdentity(remembered) : undefined;
   const idle = (busy = false): PodSignInState => identity
@@ -243,6 +242,7 @@ function WebIdAuthBoundaryContent({
 
   return (
     <XpodSignInFrame ariaLabel="登录 Xpod">
+      {preflight ? <XpodLocalLoginPreflight onReady={continueLogin} /> : null}
       <PodSignIn
         app={XPOD_APP}
         state={podState}

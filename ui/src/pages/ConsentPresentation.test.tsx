@@ -106,4 +106,46 @@ describe('ConsentPage presentation', () => {
     // Nothing is created until the user asks.
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
+
+  it('names an application without client_name by its host, then by its client_id host, then generically', async () => {
+    stubConsent([cloud], { client_id: 'https://id.example/client', client_uri: 'https://app.example/' });
+    const first = renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: '授权 app.example' })).toBeTruthy();
+    first.unmount();
+
+    stubConsent([cloud], { client_id: 'https://id.example/client' });
+    const second = renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: '授权 id.example' })).toBeTruthy();
+    second.unmount();
+
+    stubConsent([cloud], { client_id: 'opaque-client' });
+    renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: '授权 这个应用' })).toBeTruthy();
+    expect(screen.getByText(/这个应用 将以这个身份读写你的数据/)).toBeTruthy();
+  });
+
+  it('describes each identity by its short name, keeping the full WebID inside the request details only', async () => {
+    const local = {
+      webId: 'http://localhost:39991/acceptml1/profile/card#me',
+      storageUrl: 'http://localhost:39991/acceptml1/',
+    };
+    stubConsent([local]);
+    renderPage();
+    await screen.findByRole('button', { name: '允许' });
+    const row = document.querySelector('[data-pod-sign-in="webid-row"]') as HTMLElement;
+    expect(row.textContent).toContain('acceptml1');
+    expect(row.textContent).not.toContain('localhost');
+    const details = screen.getByText('请求详情').closest('details')!;
+    expect(within(details).getByText(local.webId)).toBeTruthy();
+  });
+
+  it('checks the WebID name in WebID wording and offers no Pod-management shortcut', async () => {
+    stubConsent([]);
+    renderPage({ controls: { account: { username: 'alice', pod: '/.account/account/pod/' } } });
+    await screen.findByRole('heading', { level: 1, name: '还没有 WebID' });
+    expect(screen.queryByText(/也可以在这里直接创建/)).toBeNull();
+    expect(screen.queryByRole('button', { name: '前往 Pod 管理' })).toBeNull();
+    expect(screen.queryByText(/Pod 名称可用/)).toBeNull();
+  });
 });
+

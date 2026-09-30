@@ -5,6 +5,7 @@ import { AuthContext, type AuthContextType, type Controls } from '../context/Aut
 import { createXpodLoginRoute } from '../auth/xpod-login-route';
 import { createXpodLoginTransactionStore } from '../auth/xpod-login-transaction';
 import { LoginSelectPage } from './LoginSelectPage';
+import { AppRoutes } from '../App';
 import { WelcomePage } from './WelcomePage';
 import { ForgotPasswordPage } from './ForgotPasswordPage';
 import { ResetPasswordPage } from './ResetPasswordPage';
@@ -93,6 +94,33 @@ describe('CSS identity page controllers', () => {
     fireEvent.click(screen.getByRole('button', { name: '已有账号？登录' }));
     expect(screen.getByTestId('mode-location').textContent).toBe('/.account/login/password/?returnTo=%2Fsettings%2F');
     expect(screen.getByRole('heading', { level: 1, name: '登录 Xpod' })).toBeTruthy();
+  });
+
+  it('shows the registration form as soon as the register entry is clicked, without submitting anything', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    // No route ever renders the register element here: the switch must not wait for the router.
+    renderWithAuth(<WelcomePage />, {}, ['/.account/login/password/']);
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'typed-before@example.test' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
+    expect(screen.getByRole('heading', { level: 1, name: '注册 Xpod' })).toBeTruthy();
+    // The next field belongs to the registration form, which starts empty.
+    expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps what is typed into the registration form across the index-to-register route change', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    // The real app routes: the interaction index and the register route share one page instance.
+    renderWithAuth(<AppRoutes />, {}, ['/.account/']);
+    fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'typed@example.test' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'typed-secret' } });
+    // Let the router finish its transition to the register route.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByRole('heading', { level: 1, name: '注册 Xpod' })).toBeTruthy();
+    expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('typed@example.test');
+    expect((screen.getByLabelText('密码') as HTMLInputElement).value).toBe('typed-secret');
   });
 
   it.each([401, 404, 500])('does not create a Pod after a scoped binding query fails with %s, including retry', async (status) => {
@@ -1047,7 +1075,7 @@ describe('CSS identity page controllers', () => {
     // 加载只读，创建必须由用户点击"创建并继续"显式触发。
     await screen.findByRole('button', { name: '创建并继续' });
     expect(podCreate).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: '前往 Pod 管理' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '存到边缘设备（打开账号页）' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });

@@ -164,13 +164,3 @@ function normalizeConsentBinding(webId: string, storageUrl: string, label?: stri
   }
 }
 import { isRecord, readResponseMessage } from '../utils/errors';
-
-/** Short address of a WebID for the consent list: host and path without the `/profile/card` document. */
-export function consentWebIdAddress(webId: string): string {
-  try {
-    const url = new URL(webId);
-    return `${url.host}${url.pathname.replace(/\/?profile\/card$/u, '').replace(/\/$/u, '')}`;
-  } catch {
-    return webId;
-  }
-}

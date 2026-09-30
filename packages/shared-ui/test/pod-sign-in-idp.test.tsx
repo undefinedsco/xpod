@@ -372,3 +372,68 @@ describe('screen layout', () => {
     expect(bar.className).toContain('px-4')
   })
 })
+
+describe('secondary actions never submit the form', () => {
+  it('B1: register, forgot and other-Solid do not call onSubmit', () => {
+    const onSubmit = vi.fn()
+    render(
+      <IdpSignInView {...service} remember={false} onSubmit={onSubmit} onRegister={() => undefined}
+        onForgot={() => undefined} onUseOtherSolid={() => undefined} onRememberChange={() => undefined} />,
+    )
+    for (const name of ['注册', '忘记密码？', '使用其他 Solid 账号']) {
+      const button = screen.getByRole('button', { name }) as HTMLButtonElement
+      expect(button.type).toBe('button')
+      fireEvent.click(button)
+    }
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('B2 and B3: secondary actions are plain buttons and do not submit', () => {
+    const onSubmit = vi.fn()
+    const onCreate = vi.fn()
+    const { unmount } = render(<IdpRegisterView {...service} requireUsername={false} onSubmit={onSubmit} onSignIn={() => undefined} />)
+    const signIn = screen.getByRole('button', { name: '已有账号？登录' }) as HTMLButtonElement
+    expect(signIn.type).toBe('button')
+    fireEvent.click(signIn)
+    expect(onSubmit).not.toHaveBeenCalled()
+    unmount()
+    render(<IdpNoWebIdView {...service} appName="Northstar" defaultName="ari" onCreate={onCreate} onChooseOtherLocation={() => undefined} />)
+    const other = screen.getByRole('button', { name: '存到边缘设备（打开账号页）' }) as HTMLButtonElement
+    expect(other.type).toBe('button')
+    fireEvent.click(other)
+    expect(onCreate).not.toHaveBeenCalled()
+  })
+
+  it('B4: manage, switch and deny do not approve', () => {
+    const onApprove = vi.fn()
+    render(
+      <ConsentView {...service} app={{ name: 'Northstar', host: 'n.example', verified: true }}
+        webIds={[{ id: 'a', displayName: 'Ari', shortName: 'x', storage: { kind: 'cloud', label: 'c' } }]}
+        selectedWebId="a" scopes={[]} rememberChoice onSelectWebId={() => undefined} onRememberChange={() => undefined}
+        onApprove={onApprove} onDeny={() => undefined} onManageAccount={() => undefined} onSwitchAccount={() => undefined} />,
+    )
+    for (const name of ['拒绝', '管理账号', '换一个账号']) {
+      const button = screen.getByRole('button', { name }) as HTMLButtonElement
+      expect(button.type).toBe('button')
+      fireEvent.click(button)
+    }
+    expect(onApprove).not.toHaveBeenCalled()
+  })
+})
+
+describe('ConsentView identity rows', () => {
+  it('shows a short name, hides a duplicate of the name, and keeps the full WebID in the request details', () => {
+    render(
+      <ConsentView {...service} app={{ name: 'Northstar', host: 'n.example', verified: true }}
+        webIds={[{ id: 'a', displayName: 'acceptml1', shortName: 'acceptml1', webId: 'https://node-1.nodes.example/acceptml1/profile/card#me',
+          storage: { kind: 'edge', label: 'e' } }]}
+        selectedWebId="a" scopes={[]} rememberChoice onSelectWebId={() => undefined} onRememberChange={() => undefined}
+        onApprove={() => undefined} onDeny={() => undefined} />,
+    )
+    const row = document.querySelector('[data-pod-sign-in="webid-row"]') as HTMLElement
+    expect(row.querySelectorAll('.font-mono')).toHaveLength(0)
+    expect(row.textContent).not.toContain('nodes.example')
+    const details = screen.getByText('请求详情').closest('details')!
+    expect(within(details).getByText('https://node-1.nodes.example/acceptml1/profile/card#me')).toBeTruthy()
+  })
+})

@@ -4,7 +4,7 @@
 //
 // 目标契约：
 //   授权页只读绑定、选择、批准/拒绝；没有可用 Pod 时说明原因，并给出
-//   "创建并继续 / 前往 Pod 管理 / 拒绝"三个出口。
+//   "创建并继续 / 存到边缘设备 / 拒绝"三个出口。
 //   创建只在用户显式点击主操作后发生，且必须复用全仓唯一的受守卫创建事务
 //   （createFirstPodAndWaitForBinding），成功后重新读取权威绑定并回到同一个
 //   interaction 继续授权。
@@ -113,7 +113,7 @@ it('无绑定加载完成后不自动创建，只提供创建、管理与拒绝�
   // 给名称可用性检查（防抖 + 异步结论）稳定下来的时间，再断言没有写操作。
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
   expect(anyPosts(fetchMock)).toEqual([]);
-  expect(screen.getByRole('button', { name: '前往 Pod 管理' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '存到边缘设备（打开账号页）' })).toBeTruthy();
   expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
   // 名称来自当前身份的可见候选，但始终显示在输入框里由用户确认后再创建。
   expect((screen.getByLabelText('WebID 名称') as HTMLInputElement).value).toBe('alice');
@@ -195,7 +195,7 @@ it('创建失败时显示可重试的本地化错误，且不锁死页面', asyn
   expect(screen.queryByText(/Internal Server Error/u)).toBeNull();
   // 重试与离开都还在：重试会再次发起同一条受守卫的创建请求。
   expect(createButton().disabled).toBe(false);
-  expect(screen.getByRole('button', { name: '前往 Pod 管理' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '存到边缘设备（打开账号页）' })).toBeTruthy();
   expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
   expect(posts(fetchMock, podControlUrl)).toHaveLength(1);
 
@@ -246,7 +246,7 @@ it('按 checkFirstPodNameAvailability 的结论给出本地化名称提示并阻
 
   renderConsent({ controls: { account: { username: 'alice', pod: podControlUrl } } });
 
-  await waitFor(() => expect(screen.getByText(xpodRegistrationCopy.podNameTaken)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText('这个名称已被占用')).toBeTruthy());
   expect(createButton().disabled).toBe(true);
   expect(anyPosts(fetchMock)).toEqual([]);
 });

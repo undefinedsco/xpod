@@ -1,6 +1,6 @@
 import { scopeAccountUrl } from './utils/account-interaction-url';
 import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/AuthContextValue';
 import { LoadingScreen } from './components/LoadingScreen';
@@ -25,12 +25,12 @@ export function AppRoutes() {
           failed, and it must never be redirected into a login flow. */}
       <Route path={scopeAccountUrl("/.account/about/")} element={<AboutPage />} />
       <Route element={<AccountBootstrapGate />}>
-        <Route path={scopeAccountUrl("/.account/")} element={<IndexPage />} />
+        <Route path={scopeAccountUrl("/.account/")} />
         <Route path={scopeAccountUrl("/.account/account/")} element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
         <Route path={scopeAccountUrl("/.account/create-pod/")} element={<ProtectedRoute allowOidcPending><FirstPodPage /></ProtectedRoute>} />
         <Route path={scopeAccountUrl("/.account/login/")} element={<LoginSelectPage />} />
-        <Route path={scopeAccountUrl("/.account/login/password/")} element={<WelcomePage key="login" initialIsRegister={false} />} />
-        <Route path={scopeAccountUrl("/.account/login/password/register/")} element={<WelcomePage key="register" initialIsRegister={true} />} />
+        <Route path={scopeAccountUrl("/.account/login/password/")} />
+        <Route path={scopeAccountUrl("/.account/login/password/register/")} />
         <Route path={scopeAccountUrl("/.account/login/password/forgot/")} element={<ForgotPasswordPage />} />
         <Route path={scopeAccountUrl("/.account/login/password/reset/")} element={<ResetPasswordPage />} />
         <Route path={scopeAccountUrl("/.account/oidc/consent/")} element={<ConsentPage />} />
@@ -40,13 +40,33 @@ export function AppRoutes() {
   );
 }
 
+const trimSlashes = (value: string) => value.replace(/\/+$/u, '');
+
+/**
+ * The account index (where an OIDC interaction lands), sign in and register are one
+ * page instance, mounted here rather than inside their routes. Switching between them
+ * changes what the form shows; it never re-creates the page, so nothing typed is lost
+ * to a route change. Their routes below only claim the paths.
+ */
+function PasswordEntryHost() {
+  const { pathname } = useLocation();
+  const { isLoggedIn } = useAuth();
+  const path = trimSlashes(pathname);
+  const login = trimSlashes(scopeAccountUrl("/.account/login/password/"));
+  const atIndex = path === trimSlashes(scopeAccountUrl("/.account/"));
+  if (!atIndex && path !== login && path !== `${login}/register`) return null;
+  // Signed in at the index: its redirect rules (consent or Account management) apply.
+  if (atIndex && isLoggedIn) return <IndexPage />;
+  return <WelcomePage initialIsRegister={path === `${login}/register`} />;
+}
+
 /** Account documents wait for the CSS Account bootstrap; About does not. */
 function AccountBootstrapGate() {
   const { isInitializing, initError, retry } = useAuth();
 
   if (isInitializing) return <LoadingScreen />;
   if (initError) return <ErrorScreen message={initError} retry={retry} />;
-  return <Outlet />;
+  return <><PasswordEntryHost /><Outlet /></>;
 }
 
 export default function App() {

@@ -37,7 +37,6 @@ import {
 import { xpodStorageLocationKind } from '../auth/xpod-storage-location';
 import {
   consentResponseError,
-  consentWebIdAddress,
   fetchOidcCancelRedirectLocation,
   resolveConsentDisplayWebIds,
   resolveConsentStorageBindings,
@@ -691,23 +690,21 @@ export function ConsentPage() {
   }, [isCreatingFirstPod, normalizedPodName, podNameError, provisionCode, showNoPodStorage]);
 
   const podNameHint = (() => {
-    if (!normalizedPodName) {
-      return { message: xpodConsentCopy.missingPodCreateHint, tone: 'muted' as ConsentPodNameHintTone };
-    }
+    if (!normalizedPodName) return undefined;
     if (podNameError) {
       return { message: podNameError, tone: 'error' as ConsentPodNameHintTone };
     }
     if (!podNameChecked) {
-      return { message: xpodRegistrationCopy.usernameChecking, tone: 'muted' as ConsentPodNameHintTone };
+      return { message: xpodConsentCopy.webIdNameChecking, tone: 'muted' as ConsentPodNameHintTone };
     }
     if (podNameChecked.status === 'taken') {
-      return { message: xpodRegistrationCopy.podNameTaken, tone: 'error' as ConsentPodNameHintTone };
+      return { message: xpodConsentCopy.webIdNameTaken, tone: 'error' as ConsentPodNameHintTone };
     }
     if (podNameChecked.status === 'invalid') {
       return { message: podNameChecked.message ?? xpodRegistrationCopy.usernameCharset, tone: 'error' as ConsentPodNameHintTone };
     }
     if (podNameChecked.status === 'available') {
-      return { message: xpodRegistrationCopy.usernameAvailable, tone: 'ok' as ConsentPodNameHintTone };
+      return { message: xpodConsentCopy.webIdNameAvailable, tone: 'ok' as ConsentPodNameHintTone };
     }
     // 'unknown'：当前部署没有可查的作用域（例如 Cloud 直连），创建时由服务端校验。
     return undefined;
@@ -725,7 +722,7 @@ export function ConsentPage() {
     }
     if (podNameTaken || podNameChecked?.status === 'invalid') {
       setFirstPodError(podNameTaken
-        ? xpodRegistrationCopy.podNameTaken
+        ? xpodConsentCopy.webIdNameTaken
         : podNameChecked?.message ?? xpodRegistrationCopy.usernameCharset);
       return;
     }
@@ -751,7 +748,7 @@ export function ConsentPage() {
       if (ids.length === 0) throw new FirstPodReadinessError('binding-missing');
     } catch (err: unknown) {
       const message = safeConsentError(err, created ? xpodConsentErrors.bindingsFailed : xpodConsentErrors.storageCreateFailed);
-      setFirstPodError(message);
+      setFirstPodError(message === xpodRegistrationCopy.podNameTaken ? xpodConsentCopy.webIdNameTaken : message);
       if (err instanceof FirstPodReadinessError && err.code === 'binding-missing') {
         // 账号清单里已经有 Pod：不得再造替代品。交回权威绑定重读出口
         // （重试读取 / 换一个账号 / 前往 Pod 管理），由 Pod 管理侧修复绑定。
@@ -809,7 +806,7 @@ export function ConsentPage() {
   const contentAvailable = !needsSignIn && !interactionExpired && !waiting;
   const noPodVisible = contentAvailable && showNoPodStorage;
   const consentVisible = contentAvailable && !showNoPodStorage && !showFailure && !showStorageBootstrap;
-  const clientName = clientInfo?.client_name || xpodConsentCopy.applicationFallback;
+  const clientName = clientInfo?.client_name || consentClientHost(clientInfo) || xpodConsentCopy.applicationFallback;
   const wording = resolvePodSignInCopy('zh-CN');
   const serviceHost = window.location.host;
   const consentWebIds = displayOptions.map((option) => {
@@ -818,7 +815,8 @@ export function ConsentPage() {
     return {
       id: option.id,
       displayName: binding?.label ?? webIdShortName(option.webId ?? option.id),
-      shortName: consentWebIdAddress(option.webId ?? option.id),
+      shortName: webIdShortName(option.webId ?? option.id),
+      webId: option.webId,
       storage: { kind, label: kind === 'cloud' ? wording.storageCloud : wording.storageEdge },
     };
   });
@@ -896,10 +894,6 @@ export function ConsentPage() {
             onChooseOtherLocation={handleManageAccount}
           />
           <div className="flex flex-wrap justify-center gap-2">
-            <Button type="button" variant="ghost" className="h-9 rounded-lg px-2"
-              disabled={isSubmitting} onClick={handleGoToPodManagement}>
-              {xpodConsentCopy.goToPodManagementLabel}
-            </Button>
             <Button type="button" variant="ghost" className="h-9 rounded-lg px-2"
               disabled={isSubmitting} onClick={() => void handleCancelConsent()}>
               {xpodConsentCopy.denyLabel}

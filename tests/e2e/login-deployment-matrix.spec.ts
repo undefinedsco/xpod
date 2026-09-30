@@ -182,12 +182,16 @@ async function registerFromProduct(page: Page, deployment: Deployment, startUrl:
   await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForURL(url => url.origin === new URL(deployment.issuer).origin && url.pathname.startsWith('/.account/'), { timeout: 60_000 });
   await page.getByRole('button', { name: '创建账号', exact: true }).click();
-  await page.locator('input[name="username"]').fill(deployment.account.username);
-  await page.locator('input[name="email"]').fill(deployment.account.email);
-  await page.locator('input[name="password"]').fill(deployment.account.password);
-  await page.locator('input[name="confirmation"]').fill(deployment.account.password);
+  await page.getByLabel('邮箱', { exact: true }).fill(deployment.account.email);
+  await page.getByLabel('密码', { exact: true }).fill(deployment.account.password);
   await page.getByRole('button', { name: '创建账号', exact: true }).click();
   await page.waitForURL(url => !url.pathname.includes('/register/'), { timeout: 120_000, waitUntil: 'domcontentloaded' });
+  // Registration creates the Account only; the WebID and its Pod are created on the
+  // consent's "no WebID yet" screen, named explicitly by the user.
+  const webIdName = page.getByLabel('WebID 名称', { exact: true });
+  await webIdName.waitFor({ timeout: 120_000 });
+  await webIdName.fill(deployment.account.username);
+  await page.getByRole('button', { name: '创建并继续', exact: true }).click();
 }
 
 type ProbeRequest = { operation: 'identity' | 'write-read' | 'read'; url?: string; body?: string };

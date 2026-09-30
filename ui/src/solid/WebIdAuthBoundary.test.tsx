@@ -196,6 +196,22 @@ describe('WebIdAuthBoundary', () => {
     expect(document.querySelector('[data-pod-sign-in-state="choose-service"]')).toBeNull();
   });
 
+  test('waits for account discovery inside the busy A1, never on a separate preparing screen', async () => {
+    window.localStorage.setItem(XPOD_REMEMBERED_LOGIN_KEY, JSON.stringify({
+      account: { displayName: 'Alice' }, webId, storageBinding: { webId, storageUrl: podUrl }, routeId: 'xpod-current-origin',
+    }));
+    const login = vi.fn(async () => new Promise<void>(() => undefined));
+    const account = { isInitializing: true, logout: vi.fn(), isAnonymous: () => true } as unknown as AuthContextType;
+    renderBoundary(runtime({ login }), {}, account);
+    fireEvent.click(screen.getByRole('button', { name: '进入 Xpod' }));
+    // Discovery still running: same screen, busy button, no "正在准备登录…" page.
+    const busy = await screen.findByRole('button', { name: '进入 Xpod' }) as HTMLButtonElement;
+    await waitFor(() => expect(busy.disabled).toBe(true));
+    expect(screen.queryByText('正在准备登录…')).toBeNull();
+    expect(screen.getByRole('heading', { level: 1, name: 'Alice' })).toBeTruthy();
+    expect(login).not.toHaveBeenCalled();
+  });
+
   test('shows the remembered identity with an avatar badge for where its Pod lives', () => {
     window.localStorage.setItem(XPOD_REMEMBERED_LOGIN_KEY, JSON.stringify({
       account: { displayName: 'Alice' }, webId, storageBinding: { webId, storageUrl: podUrl }, routeId: 'xpod-current-origin',

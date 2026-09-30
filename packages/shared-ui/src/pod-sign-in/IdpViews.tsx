@@ -66,6 +66,7 @@ export interface IdpSignInViewProps extends IdpViewCommonProps {
   remember: boolean
   /** Uncontrolled initial values (a previously used email, for instance). */
   defaultEmail?: string
+  defaultPassword?: string
   /** Fires on every edit so a host can clear its own error state. */
   onFieldChange?(field: 'email' | 'password', value: string): void
   /** Shown only when the host offers a remember choice; omit to hide the checkbox. */
@@ -83,12 +84,12 @@ export interface IdpSignInViewProps extends IdpViewCommonProps {
 /** B1: sign in to the sign-in service. Email and password only ever appear here. */
 export function IdpSignInView(props: IdpSignInViewProps) {
   const {
-    serviceName, returnToAppName, error, fieldErrors, pending = false, remember, defaultEmail = '',
+    serviceName, returnToAppName, error, fieldErrors, pending = false, remember, defaultEmail = '', defaultPassword = '',
     onFieldChange, onRememberChange, onSubmit, onForgot, forgotHref, onRegister, registerHref, onUseOtherSolid,
   } = props
   const copy = resolveIdpCopy(props)
   const [email, setEmail] = useState(defaultEmail)
-  const [password, setPassword] = useState('')
+  const [password, setPassword] = useState(defaultPassword)
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (!pending) onSubmit({ email: email.trim(), password })
@@ -185,6 +186,7 @@ export interface IdpRegisterViewProps extends IdpViewCommonProps {
   error?: string
   pending?: boolean
   defaultEmail?: string
+  defaultPassword?: string
   defaultUsername?: string
   /** Fires on every edit so a host can check the name and clear its own errors. */
   onFieldChange?(field: 'username' | 'email' | 'password', value: string): void
@@ -197,12 +199,12 @@ export interface IdpRegisterViewProps extends IdpViewCommonProps {
 export function IdpRegisterView(props: IdpRegisterViewProps) {
   const {
     serviceName, returnToAppName, usernamePreview, requireUsername, fieldErrors, error, pending = false,
-    defaultEmail = '', defaultUsername = '', onFieldChange, onSubmit, onSignIn,
+    defaultEmail = '', defaultPassword = '', defaultUsername = '', onFieldChange, onSubmit, onSignIn,
   } = props
   const copy = resolveIdpCopy(props)
   const [username, setUsername] = useState(defaultUsername)
   const [email, setEmail] = useState(defaultEmail)
-  const [password, setPassword] = useState('')
+  const [password, setPassword] = useState(defaultPassword)
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (pending) return

@@ -10,6 +10,8 @@ export interface ConsentWebId {
   id: string
   displayName: string
   shortName: string
+  /** Full WebID; shown only in the folded request details. */
+  webId?: string
   avatarUrl?: string
   /** Where the data of this WebID lives; expressed only as the avatar badge. */
   storage: StorageLocation
@@ -55,6 +57,7 @@ export function ConsentView(props: ConsentViewProps) {
   const labelId = useId()
   const busy = pending !== undefined || disabled
   const single = webIds.length === 1
+  const selectedFullWebId = (webIds.find((webId) => webId.id === selectedWebId) ?? webIds[0])?.webId
 
   const actions = (
     <>
@@ -160,6 +163,12 @@ export function ConsentView(props: ConsentViewProps) {
               </ul>
             </div>
           ) : null}
+          {selectedFullWebId ? (
+            <p>
+              <span className="font-medium text-foreground">{copy.webIdFull}</span>{' '}
+              <Hostname className="break-all">{selectedFullWebId}</Hostname>
+            </p>
+          ) : null}
           {app.clientId ? (
             <p>
               <span className="font-medium text-foreground">{copy.clientId}</span>{' '}
@@ -182,7 +191,9 @@ function WebIdRow({ webId }: { webId: ConsentWebId }) {
       <PodAvatar name={webId.displayName} avatarUrl={webId.avatarUrl} storage={webId.storage} size={40} />
       <span className="flex min-w-0 flex-col">
         <span className="truncate text-sm font-medium text-foreground">{webId.displayName}</span>
-        <span className="truncate font-mono text-xs text-muted-foreground">{webId.shortName}</span>
+        {webId.shortName !== webId.displayName ? (
+          <span className="truncate font-mono text-xs text-muted-foreground">{webId.shortName}</span>
+        ) : null}
       </span>
     </span>
   )

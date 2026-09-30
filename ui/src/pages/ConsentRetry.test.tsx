@@ -119,7 +119,7 @@ describe('ConsentPage storage retry routing', () => {
     // 缺存储时授权页说明原因并给出"创建 / 前往 Pod 管理 / 拒绝"三个出口；
     // 加载本身不创建任何资源，创建只发生在用户显式点击之后。
     await screen.findByRole('button', { name: '创建并继续' });
-    await screen.findByRole('button', { name: '前往 Pod 管理' });
+    await screen.findByRole('button', { name: '存到边缘设备（打开账号页）' });
     expect(createPod).not.toHaveBeenCalled();
     expect(fetchMock.mock.calls.some(([input, init]) =>
       requestPath(input) === '/.account/account/pod/' && init?.method === 'POST',

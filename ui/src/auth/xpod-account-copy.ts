@@ -70,7 +70,7 @@ export const xpodConsentCopy = {
   tryAgain: '重试',
   dismiss: '关闭',
   restoring: '正在恢复授权…',
-  applicationFallback: '应用',
+  applicationFallback: '这个应用',
   title: '批准访问',
   description: (clientName: string) => `${clientName} 请求访问你的账号数据。`,
   webIdLabel: 'WebID',
@@ -99,9 +99,12 @@ export const xpodConsentCopy = {
   // 创建只在用户显式点击主操作后发生；说明原因，并给出创建、管理与拒绝三个出口。
   missingPodTitle: '还没有可用的存储空间',
   missingPodDescription: '批准访问前需要一个属于当前身份的存储空间。请先在 Pod 管理中创建或绑定，再回到这里继续授权。',
-  missingPodCreateHint: '也可以在这里直接创建：填写 Pod 名称后点击创建，成功后回到本次授权继续，不会丢失当前请求。',
   createPodAndContinueLabel: '创建存储空间并继续授权',
   goToPodManagementLabel: '前往 Pod 管理',
+  // WebID 名称的可用性提示（授权页“还没有 WebID”）：只说名称，不说 Pod。
+  webIdNameChecking: '正在检查名称…',
+  webIdNameAvailable: '可以使用',
+  webIdNameTaken: '这个名称已被占用',
 } as const;
 
 export const xpodFirstPodCopy = {

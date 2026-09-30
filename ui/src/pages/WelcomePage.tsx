@@ -40,7 +40,11 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const { controls, idpIndex, isLoggedIn, hasOidcPending } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const isRegister = initialIsRegister;
+  // The route decides the mode, but a router transition can land a frame after the click.
+  // The switch is shown at once so the next field the user (or automation) touches already
+  // belongs to the new form; the override lapses as soon as the route prop catches up.
+  const [modeSwitch, setModeSwitch] = useState<{ from: boolean; register: boolean }>();
+  const isRegister = modeSwitch && modeSwitch.from === initialIsRegister ? modeSwitch.register : initialIsRegister;
   const [values, setValues] = useState<AccountCredentialsValues>({
     email: readPendingXpodAccountEmail(undefined, idpIndex) ?? '',
     password: '',
@@ -196,6 +200,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   };
 
   const toggleMode = (mode: 'login' | 'register') => {
+    setModeSwitch({ from: initialIsRegister, register: mode === 'register' });
     navigate({
       pathname: mode === 'register' ? scopeAccountUrl('/.account/login/password/register/') : scopeAccountUrl('/.account/login/password/'),
       search: location.search,

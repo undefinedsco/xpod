@@ -79,6 +79,7 @@ export interface PodSignInCopy {
   requestDetails: string
   scopes: string
   clientId: string
+  webIdFull: string
   rememberChoice: string
   manageAccount: string
   switchAccount: string
@@ -222,6 +223,7 @@ const zhCN: PodSignInCopy = {
   requestDetails: '请求详情',
   scopes: '权限范围',
   clientId: '应用标识',
+  webIdFull: 'WebID',
   rememberChoice: '以后不再询问',
   manageAccount: '管理账号',
   switchAccount: '换一个账号',
@@ -364,6 +366,7 @@ const en: PodSignInCopy = {
   requestDetails: 'Request details',
   scopes: 'Permissions',
   clientId: 'Application ID',
+  webIdFull: 'WebID',
   rememberChoice: 'Do not ask again',
   manageAccount: 'Manage account',
   switchAccount: 'Switch account',

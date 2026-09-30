@@ -115,6 +115,7 @@ export function XpodBlockingAccountCredentialsSurface(
           requireUsername={false}
           pending={pending}
           defaultEmail={values.email}
+          defaultPassword={values.password}
           error={errors?.form}
           fieldErrors={{ email: errors?.email, password: errors?.password }}
           onFieldChange={changeField}
@@ -127,6 +128,7 @@ export function XpodBlockingAccountCredentialsSurface(
           pending={pending}
           remember={rememberAccount}
           defaultEmail={values.email}
+          defaultPassword={values.password}
           error={errors?.form}
           fieldErrors={{ email: errors?.email, password: errors?.password }}
           onFieldChange={changeField}
