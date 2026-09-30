@@ -34,6 +34,6 @@ describe('public Solid authentication boundary', () => {
   it('supports WebID-only consumers with a SolidSessionRuntime and no Account controller', () => {
     const session = createSolidSessionRuntime()
     render(<WebIdOnlyProfile session={session} />)
-    expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Sign in with Identity only' })).toBeTruthy()
   })
 })

@@ -4,7 +4,7 @@
 //
 // 目标契约：
 //   授权页只读绑定、选择、批准/拒绝；没有可用 Pod 时说明原因，并给出
-//   "创建存储空间并继续授权 / 前往 Pod 管理 / 拒绝"三个出口。
+//   "创建并继续 / 前往 Pod 管理 / 拒绝"三个出口。
 //   创建只在用户显式点击主操作后发生，且必须复用全仓唯一的受守卫创建事务
 //   （createFirstPodAndWaitForBinding），成功后重新读取权威绑定并回到同一个
 //   interaction 继续授权。
@@ -78,7 +78,7 @@ function anyPosts(fetchMock: ReturnType<typeof vi.fn>) {
 }
 
 function createButton(): HTMLButtonElement {
-  return screen.getByRole('button', { name: '创建存储空间并继续授权' }) as HTMLButtonElement;
+  return screen.getByRole('button', { name: '创建并继续' }) as HTMLButtonElement;
 }
 
 function makeProvisionCode(payload: Record<string, unknown>): string {
@@ -109,14 +109,14 @@ it('无绑定加载完成后不自动创建，只提供创建、管理与拒绝�
   renderConsent({ controls: { account: { username: 'alice', pod: podControlUrl } } });
 
   // 页面读到绑定后停在显式创建入口，而不是发起任何自动写操作。
-  await screen.findByRole('button', { name: '创建存储空间并继续授权' });
+  await screen.findByRole('button', { name: '创建并继续' });
   // 给名称可用性检查（防抖 + 异步结论）稳定下来的时间，再断言没有写操作。
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
   expect(anyPosts(fetchMock)).toEqual([]);
   expect(screen.getByRole('button', { name: '前往 Pod 管理' })).toBeTruthy();
   expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
   // 名称来自当前身份的可见候选，但始终显示在输入框里由用户确认后再创建。
-  expect((screen.getByLabelText('Pod 名称') as HTMLInputElement).value).toBe('alice');
+  expect((screen.getByLabelText('WebID 名称') as HTMLInputElement).value).toBe('alice');
 });
 
 it('点击创建后只发一次受守卫的创建请求，拿到绑定后回到同一 interaction 继续授权', async () => {
@@ -159,10 +159,10 @@ it('点击创建后只发一次受守卫的创建请求，拿到绑定后回到�
   renderConsent({ controls: { account: { username: 'alice', pod: podControlUrl } } });
 
   const pickReadsBefore = fetchMock.mock.calls.filter(([input, init]) => requestPath(input) === pickUrl && !init?.method).length;
-  fireEvent.click(await screen.findByRole('button', { name: '创建存储空间并继续授权' }));
+  fireEvent.click(await screen.findByRole('button', { name: '创建并继续' }));
 
   // 创建成功后重新读取权威绑定，并回到同一 interaction 的批准表单。
-  await waitFor(() => expect(screen.getByRole('button', { name: '批准', exact: true })).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole('button', { name: '允许', exact: true })).toBeTruthy());
   expect(posts(fetchMock, podControlUrl)).toHaveLength(1);
   expect(JSON.parse(String(posts(fetchMock, podControlUrl)[0][1]?.body))).toEqual({ name: 'alice' });
   const pickReadsAfter = fetchMock.mock.calls.filter(([input, init]) => requestPath(input) === pickUrl && !init?.method).length;
@@ -188,7 +188,7 @@ it('创建失败时显示可重试的本地化错误，且不锁死页面', asyn
   vi.stubGlobal('fetch', fetchMock);
 
   renderConsent({ controls: { account: { username: 'alice', pod: podControlUrl } } });
-  fireEvent.click(await screen.findByRole('button', { name: '创建存储空间并继续授权' }));
+  fireEvent.click(await screen.findByRole('button', { name: '创建并继续' }));
 
   await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodConsentErrors.storageCreateFailed));
   // 不泄漏服务端的英文原始错误。
@@ -216,7 +216,7 @@ it('账号清单里已有 Pod 时，点击创建不会新建替代品，而是�
   vi.stubGlobal('fetch', fetchMock);
 
   renderConsent({ controls: { account: { username: 'another-name', pod: podControlUrl } } });
-  fireEvent.click(await screen.findByRole('button', { name: '创建存储空间并继续授权' }));
+  fireEvent.click(await screen.findByRole('button', { name: '创建并继续' }));
 
   await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(FIRST_POD_BINDING_MISSING));
   expect(anyPosts(fetchMock)).toEqual([]);

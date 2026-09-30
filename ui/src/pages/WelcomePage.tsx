@@ -247,37 +247,12 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
         ...(formError ? { form: formError } : {}),
       }}
       copy={xpodAccountCredentialsCopy}
-      footer={!isRegister ? (
-        <>
-          {!isRegister && hasOidcPending && controls?.oidc?.cancel ? (
-            <Button type="button" variant="outline" className="w-full" disabled={isSubmitting || isCancelling} onClick={handleCancel}>
-              {isCancelling ? xpodAccountPageCopy.cancellingAuthorization : xpodAccountPageCopy.cancelAuthorization}
-            </Button>
-          ) : null}
-          {!isRegister ? (
-            <div className="flex items-center justify-center gap-3 text-xs text-muted-foreground">
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
-                disabled={isSubmitting}
-                onClick={() => toggleMode('register')}
-              >
-                创建账号
-              </Button>
-              <span aria-hidden="true" className="text-border">·</span>
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
-                disabled={isSubmitting}
-                onClick={() => navigate({ pathname: scopeAccountUrl('/.account/login/password/forgot/'), search: location.search })}
-              >
-                {xpodAccountPageCopy.forgotPassword}
-              </Button>
-            </div>
-          ) : null}
-        </>
+      onRegister={() => toggleMode('register')}
+      onForgot={() => navigate({ pathname: scopeAccountUrl('/.account/login/password/forgot/'), search: location.search })}
+      footer={!isRegister && hasOidcPending && controls?.oidc?.cancel ? (
+        <Button type="button" variant="outline" className="h-11 w-full rounded-lg" disabled={isSubmitting || isCancelling} onClick={handleCancel}>
+          {isCancelling ? xpodAccountPageCopy.cancellingAuthorization : xpodAccountPageCopy.cancelAuthorization}
+        </Button>
       ) : undefined}
     />
   );

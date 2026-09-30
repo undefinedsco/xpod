@@ -16,8 +16,8 @@ describe('LoadingScreen', () => {
     const frame = screen.getByRole('region', { name: '正在加载 Xpod' });
     expect(screen.queryByTestId('auth-surface-page')).toBeNull();
     expect(screen.queryByTestId('web-account-introduction')).toBeNull();
-    expect(frame.getAttribute('data-web-account-layout')).toBe('compact');
-    expect(frame.getAttribute('data-web-account-host')).toBe('document');
+    expect(frame.getAttribute('data-pod-sign-in-frame')).toBe('page');
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-host')).toBe('document');
     expect(screen.getByRole('heading', { name: '正在加载 Xpod' }).classList.contains('sr-only')).toBe(false);
     expect(screen.getByRole('status').textContent).toContain('正在加载…');
     expect(screen.getByRole('status').getAttribute('aria-live')).toBe('polite');
@@ -32,8 +32,8 @@ describe('LoadingScreen', () => {
     const page = screen.getByTestId('web-account-page');
     const frame = screen.getByRole('region', { name: '正在加载 Xpod' });
     expect(screen.queryByTestId('auth-surface-page')).toBeNull();
-    expect(frame.getAttribute('data-web-account-layout')).toBe('compact');
-    expect(frame.getAttribute('data-web-account-host')).toBe('window');
+    expect(frame.getAttribute('data-pod-sign-in-frame')).toBe('window');
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-host')).toBe('window');
     expect(setWindowMode).toHaveBeenCalledWith('account');
     expect(setWindowMode).not.toHaveBeenCalledWith('auth');
     expect(page.querySelector('input')).toBeNull();

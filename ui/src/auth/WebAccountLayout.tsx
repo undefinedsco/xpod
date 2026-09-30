@@ -1,111 +1,43 @@
 import { useId, type ReactNode } from 'react';
-import { Clock, Layers, Shield } from 'lucide-react';
-import xpodIconUrl from '../assets/xpod-shield.svg';
+import { IdpChrome, PodSignInFrame, ScreenLayout } from '@undefineds.co/shared-ui';
 
-const features = [
-  { icon: Clock, title: 'Your AI Secretary Never Stops', description: 'Runs 24/7, even when you are not talking to it' },
-  { icon: Layers, title: 'All Your Pieces, In One Place', description: 'Data, memory, and context come back into one system' },
-  { icon: Shield, title: 'One Secretary, Many Agents', description: 'One aligned layer that can direct many agents while keeping privacy and control inside your boundary.' },
-];
-
-function Brand({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className="flex items-center gap-3">
-      <img src={xpodIconUrl} alt="" className={compact ? 'h-9 w-9' : 'h-12 w-12'} />
-      <div>
-        <p className={`${compact ? 'text-xl' : 'text-2xl'} font-bold leading-tight`}>Xpod</p>
-        <p className="text-xs text-muted-foreground">Personal Messages Platform</p>
-      </div>
-    </div>
-  );
-}
-
-/** CSS Account owns its frame; only blocking surfaces opt into the native window. */
-export function WebAccountLayout({ title, description, children, presentation = 'standard', host = 'document' }: {
+/**
+ * CSS Account documents share the Pod sign-in frame and tokens. The sign-in
+ * service bar names Xpod and its host (the anti-phishing row); the title is the
+ * screen's only heading. `bare` lets a body that brings its own bar and heading
+ * (the B-group views) use just the frame.
+ */
+export function WebAccountLayout({ title, description, children, host = 'document', bare = false }: {
   title: string;
   description?: string;
   children: ReactNode;
+  /** Kept for source compatibility: every presentation now shares one layout. */
   presentation?: 'standard' | 'compact';
   host?: 'document' | 'window';
+  bare?: boolean;
 }) {
   const titleId = useId();
-  const windowFrame = host === 'window' && presentation === 'compact';
-  if (presentation === 'compact') {
-    // The native window's title bar already names the product, so repeating the
-    // brand block above the page title reads as two headings in one small frame.
-    const header = (
-      <header className="mb-4 shrink-0 text-center">
-        <h1 id={titleId} className="text-lg font-semibold tracking-tight">{title}</h1>
-        {description ? <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
-      </header>
-    );
-    const body = (
-      <>
-        {windowFrame ? null : <div className="mb-4 shrink-0"><Brand compact /></div>}
-        {header}
-        <div className="min-w-0 shrink-0">{children}</div>
-      </>
-    );
-    return (
-      <main data-testid="web-account-page" className={windowFrame
-        ? 'flex h-dvh w-full items-center justify-center overflow-hidden bg-background text-foreground'
-        : 'flex min-h-dvh items-center justify-center bg-muted/30 p-4 text-foreground sm:p-6'}>
-        <section
-          role="region"
-          aria-labelledby={titleId}
+  const windowFrame = host === 'window';
+  return (
+    <main data-testid="web-account-page" className={windowFrame ? 'h-dvh w-full overflow-hidden' : undefined}>
+      <PodSignInFrame presentation={windowFrame ? 'window' : 'page'} ariaLabel={title}>
+        <div
           data-testid="web-account-panel"
           data-web-account-layout="compact"
           data-web-account-host={windowFrame ? 'window' : 'document'}
-          className={windowFrame
-            ? 'flex h-full w-full min-w-0 flex-col overflow-y-auto overscroll-contain px-5 py-5'
-            : 'mx-auto flex h-[400px] w-[280px] max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] min-w-0 flex-col overflow-y-auto overscroll-contain rounded-xl border bg-card px-5 py-5 shadow-lg shadow-black/5'}
+          className="flex min-h-0 min-w-0 flex-1 flex-col"
         >
-          {/* The native window is a fixed 280-480px frame: centre the column and cap
-              its width so the form reads as one card instead of stretched full-bleed. */}
-          {windowFrame
-            ? <div data-testid="web-account-column" className="m-auto flex w-full max-w-[20rem] min-w-0 flex-col">{body}</div>
-            : body}
-        </section>
-      </main>
-    );
-  }
-  return (
-    <main data-testid="web-account-page" className="flex min-h-dvh items-center justify-center bg-muted/30 p-4 text-foreground sm:p-8">
-      <div className="grid w-full max-w-6xl items-center gap-8 lg:grid-cols-2 lg:gap-16">
-        <aside data-testid="web-account-introduction" aria-label="关于 Xpod" className="hidden px-8 lg:block">
-          <Brand />
-          <h1 className="mb-4 mt-8 text-3xl font-bold leading-tight">
-            Simplify Life with <span className="text-primary">Your AI Secretary</span>
-          </h1>
-          <p className="mb-10 text-sm leading-relaxed text-muted-foreground">
-            An AI that never stops, knows your whole life, works for you—while guarding your privacy.
-          </p>
-          <div className="space-y-5">
-            {features.map(({ icon: Icon, title: featureTitle, description: featureDescription }) => (
-              <div key={featureTitle} className="flex gap-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-card">
-                  <Icon aria-hidden="true" className="h-4 w-4 text-primary" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-medium">{featureTitle}</h2>
-                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{featureDescription}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-          <p className="mt-12 text-xs text-muted-foreground">
-            Powered by <a href="https://solidproject.org" target="_blank" rel="noopener noreferrer" className="text-primary underline-offset-4 hover:underline">Solid Protocol</a>
-          </p>
-        </aside>
-        <section role="region" aria-labelledby={titleId} data-testid="web-account-panel" data-web-account-layout="standard" className="mx-auto w-full min-w-0 max-w-md rounded-3xl border bg-card p-6 shadow-lg shadow-black/5 sm:p-8 lg:mx-0">
-          <div className="mb-8 lg:hidden"><Brand /></div>
-          <header className="mb-6">
-            <h2 id={titleId} className="text-2xl font-bold tracking-tight">{title}</h2>
-            {description ? <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{description}</p> : null}
-          </header>
-          {children}
-        </section>
-      </div>
+          {bare ? children : (
+            <ScreenLayout chrome={<IdpChrome serviceName="Xpod" serviceHost={window.location.host} />}>
+              <header className="flex flex-col gap-1">
+                <h1 id={titleId} className="text-xl font-semibold text-foreground">{title}</h1>
+                {description ? <p className="text-sm leading-[22px] text-muted-foreground">{description}</p> : null}
+              </header>
+              {children}
+            </ScreenLayout>
+          )}
+        </div>
+      </PodSignInFrame>
     </main>
   );
 }

@@ -118,7 +118,7 @@ describe('ConsentPage storage retry routing', () => {
 
     // 缺存储时授权页说明原因并给出"创建 / 前往 Pod 管理 / 拒绝"三个出口；
     // 加载本身不创建任何资源，创建只发生在用户显式点击之后。
-    await screen.findByRole('button', { name: '创建存储空间并继续授权' });
+    await screen.findByRole('button', { name: '创建并继续' });
     await screen.findByRole('button', { name: '前往 Pod 管理' });
     expect(createPod).not.toHaveBeenCalled();
     expect(fetchMock.mock.calls.some(([input, init]) =>
@@ -160,10 +160,10 @@ describe('ConsentPage storage retry routing', () => {
 
     renderConsentPage();
 
-    fireEvent.change(await screen.findByLabelText('身份与存储空间'), {
+    fireEvent.change(await screen.findByLabelText('用哪个 WebID 登录？', { selector: 'select' }), {
       target: { value: storageBindingKey(selectedBinding) },
     });
-    fireEvent.click(screen.getByRole('button', { name: '批准' }));
+    fireEvent.click(screen.getByRole('button', { name: '允许' }));
 
     await waitFor(() => expect(pickWebId).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodConsentErrors.webIdSelectionFailed));
@@ -193,25 +193,25 @@ function mutationCount(fetchMock: ReturnType<typeof mockFailedConsent>, pathname
 it('returns from failed consent to the editable form with remember disabled without submitting again', async () => {
   const fetchMock = mockFailedConsent();
   renderConsentPage();
-  fireEvent.click(await screen.findByRole('checkbox', { name: '记住这个应用' }));
-  fireEvent.click(screen.getByRole('button', { name: '批准' }));
+  fireEvent.click(await screen.findByRole('checkbox', { name: '以后不再询问' }));
+  fireEvent.click(screen.getByRole('button', { name: '允许' }));
   fireEvent.click(await screen.findByRole('button', { name: '返回授权' }));
-  expect((await screen.findByRole('checkbox', { name: '记住这个应用' }) as HTMLInputElement).checked).toBe(false);
-  expect(screen.getByRole('button', { name: '批准' })).toBeTruthy();
+  expect((await screen.findByRole('checkbox', { name: '以后不再询问' }) as HTMLInputElement).checked).toBe(false);
+  expect(screen.getByRole('button', { name: '允许' })).toBeTruthy();
   expect(mutationCount(fetchMock, '/.account/oidc/consent/')).toBe(1);
 });
 
 it('retries a failed manual approval by refreshing interaction state before a new explicit approval', async () => {
   const fetchMock = mockFailedConsent();
   renderConsentPage();
-  fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+  fireEvent.click(await screen.findByRole('button', { name: '允许' }));
   const retry = await screen.findByRole('button', { name: '重试' });
   const before = fetchMock.mock.calls.filter(([input, init]) => requestPath(input) === '/.account/oidc/consent/' && !init?.method).length;
   fireEvent.click(retry);
-  await screen.findByRole('button', { name: '批准' });
+  await screen.findByRole('button', { name: '允许' });
   expect(fetchMock.mock.calls.filter(([input, init]) => requestPath(input) === '/.account/oidc/consent/' && !init?.method)).toHaveLength(before + 1);
   expect(mutationCount(fetchMock, '/.account/oidc/consent/')).toBe(1);
-  fireEvent.click(screen.getByRole('button', { name: '批准' }));
+  fireEvent.click(screen.getByRole('button', { name: '允许' }));
   await waitFor(() => expect(mutationCount(fetchMock, '/.account/oidc/consent/')).toBe(2));
 });
 
@@ -242,7 +242,7 @@ it('refreshes expired Account controls and preserves the interaction when going 
     fireEvent.click(await screen.findByRole('button', { name: '去登录' }));
     expect(refetchControls).toHaveBeenCalled();
     expect(screen.getByTestId('route').textContent).toBe('/.account/interaction/recover-session/login/password/');
-    expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
   } finally { window.history.replaceState({}, '', '/'); }
 });
 
@@ -262,13 +262,13 @@ it('does not create a replacement for ownerless existing storage', async () => {
   renderConsentPage({ controls: { account: { username: 'different-name', pod: '/.account/account/pod/' } } });
 
   // 授权页不得推断归属：缺 Pod 时给出创建/管理/拒绝三个出口，加载阶段无写操作。
-  await screen.findByRole('button', { name: '创建存储空间并继续授权' });
+  await screen.findByRole('button', { name: '创建并继续' });
   expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
 
   // 用户显式点击创建时，权威清单守卫必须挡下"账号已有 Pod 却无绑定"的替代创建，
   // 并把页面交回权威绑定重读出口（重试 / 换账号 / Pod 管理）。
-  fireEvent.click(screen.getByRole('button', { name: '创建存储空间并继续授权' }));
+  fireEvent.click(screen.getByRole('button', { name: '创建并继续' }));
   await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(FIRST_POD_BINDING_MISSING));
   expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   expect(screen.getByRole('button', { name: '重试' })).toBeTruthy();
@@ -285,6 +285,6 @@ it('does not create a replacement for ownerless existing storage', async () => {
   });
   vi.stubGlobal('fetch', readyFetch);
   renderConsentPage({ controls: { account: { username: 'different-name', pod: '/.account/account/pod/' } } });
-  await waitFor(() => expect((screen.getByRole('button', { name: '批准', exact: true }) as HTMLButtonElement).disabled).toBe(false));
+  await waitFor(() => expect((screen.getByRole('button', { name: '允许', exact: true }) as HTMLButtonElement).disabled).toBe(false));
   expect(readyFetch.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
 });

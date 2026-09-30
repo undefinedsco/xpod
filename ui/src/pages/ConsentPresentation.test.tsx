@@ -1,0 +1,109 @@
+// @vitest-environment jsdom
+//
+// The consent page renders the shared Pod sign-in views. Requests and state
+// stay the page's own; this file locks what the user sees.
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
+import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
+import { storageBindingKey } from '../auth/xpod-storage-selection';
+import { ConsentPage } from './ConsentPage';
+
+function reset(): void {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  window.sessionStorage.clear();
+  window.localStorage.clear();
+  window.xpodDesktop = undefined;
+}
+
+beforeEach(reset);
+afterEach(reset);
+
+function authValue(overrides: Partial<AuthContextType> = {}): AuthContextType {
+  return {
+    controls: {},
+    isInitializing: false,
+    initError: null,
+    idpIndex: '/.account/',
+    isLoggedIn: true,
+    authenticating: false,
+    hasOidcPending: false,
+    refetchControls: vi.fn(async () => undefined),
+    retry: vi.fn(async () => undefined),
+    logout: vi.fn(async () => undefined),
+    accountState: { status: 'authenticated' },
+    ...overrides,
+  };
+}
+
+function stubConsent(entries: unknown[], client: Record<string, unknown> = { client_id: 'https://app.example/id', client_name: 'Northstar', client_uri: 'https://app.example/' }) {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const path = new URL(String(input), window.location.origin).pathname;
+    if (path === '/.account/oidc/consent/') return new Response(JSON.stringify({ client }), { status: 200 });
+    if (path === '/.account/oidc/pick-webid/') return new Response(JSON.stringify({ entries }), { status: 200 });
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+function renderPage(overrides: Partial<AuthContextType> = {}) {
+  return render(
+    <AuthContext.Provider value={authValue(overrides)}>
+      <MemoryRouter initialEntries={['/.account/oidc/consent/']}><ConsentPage /></MemoryRouter>
+    </AuthContext.Provider>,
+  );
+}
+
+const cloud = { webId: 'https://pod.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/', label: 'Alice' };
+const edge = { webId: 'http://127.0.0.1:3000/alice/profile/card#me', storageUrl: 'http://127.0.0.1:3000/alice/', label: 'Alice Home' };
+
+describe('ConsentPage presentation', () => {
+  it('renders the authorization as the shared consent view: service bar, app title and host, one heading', async () => {
+    stubConsent([cloud]);
+    renderPage();
+    await screen.findByRole('button', { name: '允许' });
+
+    expect(screen.getByText(/Xpod · 账号服务/)).toBeTruthy();
+    expect(screen.getAllByRole('heading')).toHaveLength(1);
+    expect(screen.getByRole('heading', { level: 1, name: '授权 Northstar' })).toBeTruthy();
+    expect(screen.getByText('app.example')).toBeTruthy();
+    // One WebID: a single row, no choice, and the location is only a badge.
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    expect(screen.getByRole('img', { name: '数据存在 Xpod 云端' })).toBeTruthy();
+    expect(screen.queryByText('Personal Messages Platform')).toBeNull();
+  });
+
+  it('offers a radio group for several WebIDs and keeps the native select id automation drives', async () => {
+    stubConsent([cloud, edge]);
+    renderPage();
+    const group = await screen.findByRole('radiogroup', { name: '用哪个 WebID 登录？' });
+    expect(within(group).getAllByRole('radio')).toHaveLength(2);
+    expect(within(group).getByRole('img', { name: '数据存在边缘设备上' })).toBeTruthy();
+
+    const select = document.getElementById('oidc-consent-webid') as HTMLSelectElement;
+    expect(select.tagName).toBe('SELECT');
+    expect(Array.from(select.options).map((option) => option.value)).toContain(storageBindingKey(edge));
+
+    // Allow stays disabled until a WebID is chosen, then enables.
+    expect((screen.getByRole('button', { name: '允许' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(group).getByRole('radio', { name: /Alice Home/ }));
+    await waitFor(() => expect((screen.getByRole('button', { name: '允许' }) as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('shows a missing Pod as the no-WebID view: name, create and continue, account page, deny', async () => {
+    const fetchMock = stubConsent([]);
+    renderPage({ controls: { account: { username: 'alice', pod: '/.account/account/pod/' } } });
+    expect(await screen.findByRole('heading', { level: 1, name: '还没有 WebID' })).toBeTruthy();
+    expect(screen.getAllByRole('heading')).toHaveLength(1);
+    expect(screen.getByText(/Xpod · 账号服务/)).toBeTruthy();
+    expect((screen.getByLabelText('WebID 名称') as HTMLInputElement).value).toBe('alice');
+    expect(screen.getByRole('button', { name: '创建并继续' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '存到边缘设备（打开账号页）' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '拒绝' })).toBeTruthy();
+    // Nothing is created until the user asks.
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+});

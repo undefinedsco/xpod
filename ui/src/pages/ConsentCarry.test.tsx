@@ -76,7 +76,7 @@ describe('ConsentPage approval carry', () => {
     // 1. the unbound interaction: the user approves once
     mockConsent({ client: { client_id: 'desktop', client_name: 'Xpod Desktop' } });
     renderConsent();
-    fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+    fireEvent.click(await screen.findByRole('button', { name: '允许' }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith(boundLocation));
     expect(window.sessionStorage.getItem('xpod.consent.carry.v1')).toBeTruthy();
 
@@ -100,7 +100,7 @@ describe('ConsentPage approval carry', () => {
   it('ignores a carried decision for a different client', async () => {
     mockConsent({ client: { client_id: 'desktop', client_name: 'Xpod Desktop' } });
     renderConsent();
-    fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+    fireEvent.click(await screen.findByRole('button', { name: '允许' }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith(boundLocation));
 
     cleanup();
@@ -111,7 +111,7 @@ describe('ConsentPage approval carry', () => {
     });
     renderConsent();
 
-    await screen.findByRole('button', { name: '批准' });
+    await screen.findByRole('button', { name: '允许' });
     expect(fetchMock.mock.calls.filter(([input, init]) => String(input) === consentUrl && init?.method === 'POST')).toHaveLength(0);
     expect(assign).not.toHaveBeenCalled();
   });

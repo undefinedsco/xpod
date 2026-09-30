@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { XpodAccountPageSurface, XpodAuthSurface, XpodBlockingAccountCredentialsSurface } from './XpodAuthSurface';
 import { xpodAccountCredentialsCopy } from './xpod-account-copy';
@@ -61,7 +61,7 @@ test('generic WebID auth preserves its lead without becoming a CSS Account docum
   expect(screen.getByText('Login action')).toBeTruthy();
 });
 
-test('Account login document uses the compact narrow card', () => {
+test('Account login document uses the Pod sign-in window frame in the desktop shell', () => {
   const setWindowMode = vi.fn();
   vi.stubGlobal('xpodDesktop', { setWindowMode });
   render(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode="login"
@@ -74,35 +74,72 @@ test('Account login document uses the compact narrow card', () => {
   expect(setWindowMode).toHaveBeenCalledWith('account');
   const panel = screen.getByTestId('web-account-panel');
   expect(panel.getAttribute('data-web-account-host')).toBe('window');
+  const frame = screen.getByRole('region', { name: '账号' });
+  expect(frame.getAttribute('data-pod-sign-in-frame')).toBe('window');
+  expect(frame.className).toContain('bg-background');
   expect(panel.className).not.toMatch(/rounded-|border|shadow/);
-  expect(screen.getByTestId('web-account-page').className).toContain('bg-background');
-  // The window title bar already names the product: no second brand heading.
-  expect(screen.queryByText('Personal Messages Platform')).toBeNull();
-  expect(screen.getByTestId('web-account-column')).toBeTruthy();
+  // Service bar and the single heading come from the shared sign-in view.
+  expect(screen.getByText(/Xpod · 账号服务/)).toBeTruthy();
+  expect(screen.getAllByRole('heading')).toHaveLength(1);
+  expect(screen.getByRole('heading', { level: 1, name: '登录 Xpod' })).toBeTruthy();
 });
 
-test('compact Account documents retain their card even inside a desktop workspace', () => {
+test('Account documents embedded in a desktop workspace stay a page frame and keep the sign-in service bar', () => {
   const setWindowMode = vi.fn();
   vi.stubGlobal('xpodDesktop', { setWindowMode });
   render(<WebAccountLayout title="账号" presentation="compact">Embedded controls</WebAccountLayout>);
   const panel = screen.getByTestId('web-account-panel');
   expect(panel.getAttribute('data-web-account-host')).toBe('document');
-  expect(panel.className).toContain('rounded-xl');
-  expect(panel.className).toContain('border');
+  expect(screen.getByRole('region', { name: '账号' }).getAttribute('data-pod-sign-in-frame')).toBe('page');
+  expect(screen.getByText(/Xpod · 账号服务/)).toBeTruthy();
+  expect(screen.getByRole('heading', { level: 1, name: '账号' })).toBeTruthy();
+  // The retired tagline is gone.
+  expect(screen.queryByText('Personal Messages Platform')).toBeNull();
   expect(setWindowMode).not.toHaveBeenCalled();
 });
 
-test('blocking Account login in a browser retains the document card', () => {
+test('blocking Account login in a browser uses the page frame', () => {
   vi.stubGlobal('xpodDesktop', undefined);
   render(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode="login"
     values={{ password: '' }} onChange={() => undefined} onSubmit={() => undefined} copy={xpodAccountCredentialsCopy} />);
   const panel = screen.getByTestId('web-account-panel');
   expect(panel.getAttribute('data-web-account-host')).toBe('document');
-  expect(panel.className).toContain('rounded-xl');
-  expect(panel.className).toContain('border');
+  expect(screen.getByRole('region', { name: '账号' }).getAttribute('data-pod-sign-in-frame')).toBe('page');
 });
 
-test('Account registration shares the compact Account frame', () => {
+test('Account login and registration are the shared sign-in and register views, presentation only', () => {
+  vi.stubGlobal('xpodDesktop', undefined);
+  const onSubmit = vi.fn();
+  const onChange = vi.fn();
+  const onFieldChange = vi.fn();
+  const onModeChange = vi.fn();
+  const onRegister = vi.fn();
+  const { rerender } = render(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode="login"
+    values={{ email: 'a@example.test', password: '' }} onChange={onChange} onFieldChange={onFieldChange}
+    onSubmit={onSubmit} onModeChange={onModeChange} onRegister={onRegister}
+    rememberAccount onRememberAccountChange={() => undefined} copy={xpodAccountCredentialsCopy} />);
+  expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('a@example.test');
+  fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'pw' } });
+  expect(onChange).toHaveBeenCalledWith({ email: 'a@example.test', password: 'pw' });
+  expect(onFieldChange).toHaveBeenCalledWith('password', 'pw');
+  fireEvent.click(screen.getByRole('button', { name: '登录' }));
+  expect(onSubmit).toHaveBeenCalledWith({ email: 'a@example.test', password: 'pw' });
+  fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
+  expect(onRegister).toHaveBeenCalledTimes(1);
+
+  rerender(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode="register"
+    values={{ email: '', password: '' }} onChange={onChange}
+    onSubmit={onSubmit} onModeChange={onModeChange} copy={xpodAccountCredentialsCopy}
+    />);
+  expect(screen.getByRole('heading', { level: 1, name: '注册 Xpod' })).toBeTruthy();
+  // Registration only collects Account fields; the Pod name is asked for at consent.
+  expect(screen.queryByLabelText('Pod 名称')).toBeNull();
+  expect(screen.getByLabelText('邮箱')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '已有账号？登录' }));
+  expect(onModeChange).toHaveBeenCalledWith('login');
+});
+
+test('Account registration shares the Account frame', () => {
   const setWindowMode = vi.fn();
   vi.stubGlobal('xpodDesktop', { setWindowMode });
   render(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode="register"

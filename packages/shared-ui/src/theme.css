@@ -1,27 +1,27 @@
 @layer base {
   :root {
     color-scheme: light;
-    --background: 0 0% 98%;
-    --foreground: 0 0% 12%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 12%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 12%;
-    --primary: 252 46% 57%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 0 0% 96%;
-    --secondary-foreground: 0 0% 12%;
-    --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 43%;
-    --accent: 0 0% 96%;
-    --accent-foreground: 0 0% 12%;
+    --background: 42 38.5% 94.9%;
+    --foreground: 30 13.2% 14.9%;
+    --card: 45 33.3% 97.6%;
+    --card-foreground: 30 13.2% 14.9%;
+    --popover: 45 33.3% 97.6%;
+    --popover-foreground: 30 13.2% 14.9%;
+    --primary: 260.6 36.1% 38%;
+    --primary-foreground: 42 38.5% 94.9%;
+    --secondary: 0 10.2% 90.4%;
+    --secondary-foreground: 30 13.2% 14.9%;
+    --muted: 18 15.6% 87.5%;
+    --muted-foreground: 33.3 9.8% 36.1%;
+    --accent: 0 10.2% 90.4%;
+    --accent-foreground: 30 13.2% 14.9%;
     --destructive: 352 43% 49%;
     --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 88%;
-    --input: 0 0% 88%;
-    --ring: 252 46% 57%;
-    --lineage: 252 46% 57%;
-    --lineage-foreground: 0 0% 100%;
+    --border: 36 13.5% 85.5%;
+    --input: 36 4% 51%;
+    --ring: 260.6 36.1% 38%;
+    --lineage: 260.6 36.1% 38%;
+    --lineage-foreground: 42 38.5% 94.9%;
     --boundary: 202 34% 37%;
     --boundary-foreground: 0 0% 100%;
     --success: 160 48% 30%;
@@ -36,92 +36,95 @@
     --radius-2xl: 16px;
     --radius-3xl: 16px;
     --radius: 0.5rem;
-    --layout-sidebar: 0 0% 96%;
-    --layout-list-header: 0 0% 100%;
-    --layout-list-hover: 0 0% 96%;
-    --layout-list-item: 0 0% 100%;
-    --layout-list-selected: 252 24% 94%;
-    --layout-content: 0 0% 100%;
-    --purple-medium: 252 46% 57%;
-    --purple-deep: 252 40% 46%;
+    --layout-sidebar: 41.3 38.1% 91.8%;
+    --layout-list-header: 42 38.5% 94.9%;
+    --layout-list-hover: 0 10.2% 90.4%;
+    --layout-list-item: 45 33.3% 97.6%;
+    --layout-list-selected: 0 10.2% 90.4%;
+    --layout-content: 42 38.5% 94.9%;
+    --purple-medium: 260.6 36.1% 38%;
+    --purple-deep: 261.2 35.7% 28%;
     --purple-light: 258 48% 84%;
+    --sunken: 41 27% 91%;
   }
 
   .dark {
     color-scheme: dark;
-    --background: 0 0% 8%;
-    --foreground: 0 0% 96%;
-    --card: 0 0% 10%;
-    --card-foreground: 0 0% 96%;
-    --popover: 0 0% 10%;
-    --popover-foreground: 0 0% 96%;
-    --primary: 252 48% 65%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 0 0% 15%;
-    --secondary-foreground: 0 0% 96%;
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 68%;
-    --accent: 0 0% 15%;
-    --accent-foreground: 0 0% 96%;
+    --background: 36 9.8% 10%;
+    --foreground: 40 31.6% 92.5%;
+    --card: 34.3 10.8% 12.7%;
+    --card-foreground: 40 31.6% 92.5%;
+    --popover: 34.3 10.8% 12.7%;
+    --popover-foreground: 40 31.6% 92.5%;
+    --primary: 258.9 40.7% 66.3%;
+    --primary-foreground: 36 9.8% 10%;
+    --secondary: 276.9 11.7% 21.8%;
+    --secondary-foreground: 42 38.5% 94.9%;
+    --muted: 276.9 11.7% 21.8%;
+    --muted-foreground: 34.3 12.1% 66.1%;
+    --accent: 266.7 9.7% 18.2%;
+    --accent-foreground: 40 31.6% 92.5%;
     --destructive: 352 43% 49%;
     --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 21%;
-    --input: 0 0% 21%;
-    --ring: 252 48% 65%;
-    --lineage: 252 48% 65%;
-    --lineage-foreground: 0 0% 100%;
+    --border: 36 9.4% 20.8%;
+    --input: 36 7.3% 40.2%;
+    --ring: 258.9 40.7% 66.3%;
+    --lineage: 258.9 40.7% 66.3%;
+    --lineage-foreground: 36 9.8% 10%;
     --boundary: 202 34% 48%;
     --boundary-foreground: 0 0% 100%;
     --success: 160 48% 42%;
     --success-foreground: 0 0% 100%;
     --warning: 44 72% 48%;
     --warning-foreground: 0 0% 100%;
-    --layout-sidebar: 0 0% 15%;
-    --layout-list-header: 0 0% 8%;
-    --layout-list-hover: 0 0% 15%;
-    --layout-list-item: 0 0% 8%;
-    --layout-list-selected: 252 14% 18%;
-    --layout-content: 0 0% 8%;
+    --layout-sidebar: 30 13.6% 8.6%;
+    --layout-list-header: 36 9.8% 10%;
+    --layout-list-hover: 276.9 11.7% 21.8%;
+    --layout-list-item: 34.3 10.8% 12.7%;
+    --layout-list-selected: 266.7 9.7% 18.2%;
+    --layout-content: 36 9.8% 10%;
+    --sunken: 34.3 10.8% 15.5%;
   }
 
   .light {
     color-scheme: light;
-    --background: 0 0% 98%;
-    --foreground: 0 0% 12%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 12%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 12%;
-    --primary: 252 46% 57%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 0 0% 96%;
-    --secondary-foreground: 0 0% 12%;
-    --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 43%;
-    --accent: 0 0% 96%;
-    --accent-foreground: 0 0% 12%;
+    --background: 42 38.5% 94.9%;
+    --foreground: 30 13.2% 14.9%;
+    --card: 45 33.3% 97.6%;
+    --card-foreground: 30 13.2% 14.9%;
+    --popover: 45 33.3% 97.6%;
+    --popover-foreground: 30 13.2% 14.9%;
+    --primary: 260.6 36.1% 38%;
+    --primary-foreground: 42 38.5% 94.9%;
+    --secondary: 0 10.2% 90.4%;
+    --secondary-foreground: 30 13.2% 14.9%;
+    --muted: 18 15.6% 87.5%;
+    --muted-foreground: 33.3 9.8% 36.1%;
+    --accent: 0 10.2% 90.4%;
+    --accent-foreground: 30 13.2% 14.9%;
     --destructive: 352 43% 49%;
     --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 88%;
-    --input: 0 0% 88%;
-    --ring: 252 46% 57%;
-    --lineage: 252 46% 57%;
-    --lineage-foreground: 0 0% 100%;
+    --border: 36 13.5% 85.5%;
+    --input: 36 4% 51%;
+    --ring: 260.6 36.1% 38%;
+    --lineage: 260.6 36.1% 38%;
+    --lineage-foreground: 42 38.5% 94.9%;
     --boundary: 202 34% 37%;
     --boundary-foreground: 0 0% 100%;
     --success: 160 48% 30%;
     --success-foreground: 0 0% 100%;
     --warning: 44 72% 36%;
     --warning-foreground: 0 0% 100%;
-    --layout-sidebar: 0 0% 96%;
-    --layout-list-header: 0 0% 100%;
-    --layout-list-hover: 0 0% 96%;
-    --layout-list-item: 0 0% 100%;
-    --layout-list-selected: 252 24% 94%;
-    --layout-content: 0 0% 100%;
-    --purple-medium: 252 46% 57%;
-    --purple-deep: 252 40% 46%;
+    --layout-sidebar: 41.3 38.1% 91.8%;
+    --layout-list-header: 42 38.5% 94.9%;
+    --layout-list-hover: 0 10.2% 90.4%;
+    --layout-list-item: 45 33.3% 97.6%;
+    --layout-list-selected: 0 10.2% 90.4%;
+    --layout-content: 42 38.5% 94.9%;
+    --purple-medium: 260.6 36.1% 38%;
+    --purple-deep: 261.2 35.7% 28%;
     --purple-light: 258 48% 84%;
+    --sunken: 41 27% 91%;
   }
 
   html,
@@ -216,6 +219,29 @@
 }
 
 @layer components {
+  /*
+   * Pod sign-in front door (spec §5): system sans stack, 14/22 body, and one
+   * focus treatment (2px primary outline, 3px offset). No web fonts.
+   */
+  .pod-sign-in {
+    font-family: 'PingFang SC', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14px;
+    line-height: 22px;
+  }
+
+  .pod-sign-in :focus-visible {
+    outline: 2px solid hsl(var(--primary));
+    outline-offset: 3px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pod-sign-in,
+    .pod-sign-in * {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+
   .warm-card {
     border: 1px solid hsl(var(--border) / 0.5);
     border-radius: var(--radius-xl);
