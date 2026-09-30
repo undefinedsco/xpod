@@ -160,3 +160,12 @@ test('CSS consent documents use Account window geometry', () => {
   expect(screen.queryByTestId('web-account-introduction')).toBeNull();
   expect(setWindowMode).toHaveBeenCalledWith('account');
 });
+
+test.each([['window', 'window'], ['document', 'page']] as const)('WebAccountLayout puts its layout and host attributes on the region element (%s host)', (host, frame) => {
+  vi.stubGlobal('xpodDesktop', undefined);
+  render(<WebAccountLayout title="账号" host={host}>content</WebAccountLayout>);
+  const region = screen.getByRole('region', { name: '账号' });
+  expect(region.getAttribute('data-web-account-layout')).toBe('compact');
+  expect(region.getAttribute('data-web-account-host')).toBe(host);
+  expect(region.getAttribute('data-pod-sign-in-frame')).toBe(frame);
+});

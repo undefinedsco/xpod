@@ -20,7 +20,11 @@ export function WebAccountLayout({ title, description, children, host = 'documen
   const windowFrame = host === 'window';
   return (
     <main data-testid="web-account-page" className={windowFrame ? 'h-dvh w-full overflow-hidden' : undefined}>
-      <PodSignInFrame presentation={windowFrame ? 'window' : 'page'} ariaLabel={title}>
+      <PodSignInFrame
+        presentation={windowFrame ? 'window' : 'page'}
+        ariaLabel={title}
+        dataAttributes={{ 'data-web-account-layout': 'compact', 'data-web-account-host': windowFrame ? 'window' : 'document' }}
+      >
         <div
           data-testid="web-account-panel"
           data-web-account-layout="compact"

@@ -18,6 +18,8 @@ export interface PodSignInFrameProps {
   onClose?: () => void
   /** With `onClose`, draws a close button in the corner of a modal dialog. */
   closeLabel?: string
+  /** `data-*` attributes placed on the frame element that carries the region / dialog role. */
+  dataAttributes?: Record<`data-${string}`, string | undefined>
 }
 
 const FOCUSABLE = [
@@ -91,6 +93,7 @@ export function PodSignInFrame({
   modal = true,
   onClose,
   closeLabel,
+  dataAttributes,
 }: PodSignInFrameProps) {
   const isModal = presentation === 'dialog' && modal
   const dialogRef = useModalFocus(isModal, onClose)
@@ -101,6 +104,7 @@ export function PodSignInFrame({
         role="region"
         aria-label={ariaLabel}
         data-pod-sign-in-frame="window"
+        {...dataAttributes}
         className="pod-sign-in flex h-full min-h-[480px] w-full min-w-[320px] justify-center overflow-hidden bg-background text-foreground"
       >
         <div className={bodyClass}>{children}</div>
@@ -114,6 +118,7 @@ export function PodSignInFrame({
         role="region"
         aria-label={ariaLabel}
         data-pod-sign-in-frame="page"
+        {...dataAttributes}
         className="pod-sign-in grid min-h-[100dvh] w-full bg-background text-foreground md:grid-cols-2"
       >
         {appIntro ? (
@@ -136,6 +141,7 @@ export function PodSignInFrame({
       aria-label={ariaLabel}
       tabIndex={-1}
       data-pod-sign-in-frame="dialog"
+      {...dataAttributes}
       className={cn(
         'pod-sign-in relative flex max-h-[90dvh] w-[min(400px,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-lg focus:outline-none motion-safe:animate-in motion-safe:fade-in-0',
       )}

@@ -26,19 +26,21 @@ export interface DesktopWindowModeNavigationSource {
   ): unknown
 }
 
-export const AUTH_WINDOW_MODE_SIZE = {
-  width: 280,
-  height: 400,
-  minWidth: 280,
-  minHeight: 400,
+/**
+ * The sign-in window: application-side WebID sign-in (A group) and the account
+ * service pages (B group) share one 360 x 540 small window, so moving between
+ * them does not resize it. The minimum is 320 x 480.
+ */
+const SIGN_IN_WINDOW_SIZE = {
+  width: 360,
+  height: 540,
+  minWidth: 320,
+  minHeight: 480,
 } as const
 
-export const ACCOUNT_WINDOW_MODE_SIZE = {
-  width: 480,
-  height: 640,
-  minWidth: 480,
-  minHeight: 640,
-} as const
+export const AUTH_WINDOW_MODE_SIZE = SIGN_IN_WINDOW_SIZE
+
+export const ACCOUNT_WINDOW_MODE_SIZE = SIGN_IN_WINDOW_SIZE
 
 export const WORKSPACE_WINDOW_MODE_SIZE = {
   width: 1080,
@@ -127,7 +129,7 @@ export function isDesktopWindowMode(value: unknown): value is DesktopWindowMode 
  * Keeps the native shell visually aligned with the renderer's current surface.
  *
  * The first BrowserWindow is created hidden. Shared WebID authentication owns
- * the 280 × 400 native window and renders edge-to-edge inside it. Product
+ * the 360 × 540 native window and renders edge-to-edge inside it. Product
  * workspaces use the resizable workspace frame; CSS identity-provider
  * documents can request compact Account mode when hosted by Electron.
  */

@@ -218,18 +218,18 @@ describe('DesktopWindowModeController', () => {
     expect(window.showCalls).toBe(1)
   })
 
-  it('keeps WebID compact while Account recovery controls have a larger viewport', () => {
+  it('gives WebID sign-in and the account service pages the same 360 x 540 window', () => {
     expect(AUTH_WINDOW_MODE_SIZE).toEqual({
-      width: 280,
-      height: 400,
-      minWidth: 280,
-      minHeight: 400,
+      width: 360,
+      height: 540,
+      minWidth: 320,
+      minHeight: 480,
     })
     expect(ACCOUNT_WINDOW_MODE_SIZE).toEqual({
-      width: 480,
-      height: 640,
-      minWidth: 480,
-      minHeight: 640,
+      width: 360,
+      height: 540,
+      minWidth: 320,
+      minHeight: 480,
     })
   })
 

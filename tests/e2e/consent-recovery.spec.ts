@@ -48,9 +48,9 @@ test.afterAll(async () => {
   await exited;
 });
 
-// Compact Chromium validates the 480x640 content layout. The separate Electron
+// Compact Chromium validates the 360x540 content layout. The separate Electron
 // IPC acceptance proves native cancellation; these cases do not impersonate it.
-for (const viewport of [{ width: 1280, height: 800 }, { width: 480, height: 640 }]) {
+for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 540 }]) {
   for (const action of ['retry', 'return', 'cancel'] as const) {
     test(`${viewport.width}x${viewport.height}: failed WebID selection can ${action}`, async ({ browser }, testInfo) => {
       test.setTimeout(120_000);
@@ -93,8 +93,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 480, height: 640 
           requireCallbackEvidence: false,
         });
         const selection = await chooseBinding(page, first.podUrl);
-        await page.getByRole('checkbox', { name: '记住这个应用', exact: true }).check();
-        await page.getByRole('button', { name: '批准', exact: true }).click();
+        await page.getByRole('checkbox', { name: '以后不再询问', exact: true }).check();
+        await page.getByRole('button', { name: '允许', exact: true }).click();
         await expect(page.getByRole('button', { name: '返回授权', exact: true })).toBeVisible();
         expect(failedPosts).toBe(1);
         expect(tokenPosts).toBe(0);
@@ -118,7 +118,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 480, height: 640 
           expect(pickPosts).toBe(beforePosts);
           if (action === 'retry') expect(pickGets).toBeGreaterThan(beforeGets);
           await expect(selector).toHaveValue(selection);
-          await expect(page.getByRole('checkbox', { name: '记住这个应用', exact: true })).toBeChecked();
+          await expect(page.getByRole('checkbox', { name: '以后不再询问', exact: true })).toBeChecked();
           const target = action === 'return' ? second : first;
           await chooseBinding(page, target.podUrl);
           await completeOidcLogin(page, { ...account, ...target }, {
@@ -171,7 +171,7 @@ test('Electron failed consent returns through the trusted native cancellation br
       ready: current => current.getByRole('combobox', { name: /身份与存储空间|identity.*storage/i }).isVisible(),
     });
     await chooseBinding(page, fixture.accounts.bob.podBindings[0].podUrl);
-    await page.getByRole('button', { name: '批准', exact: true }).click();
+    await page.getByRole('button', { name: '允许', exact: true }).click();
     await expect(page.getByRole('button', { name: '返回应用', exact: true })).toBeEnabled();
     await page.screenshot({ path: testInfo.outputPath('electron-consent-failed.png') });
     await expect(page.getByRole('button', { name: '返回应用', exact: true })).toBeInViewport();
@@ -187,7 +187,7 @@ test('Electron failed consent returns through the trusted native cancellation br
     expect(tokenPosts).toBe(0);
     expect(cancelPosts).toBe(0);
     expect(app.windows()).toHaveLength(1);
-    await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual({ width: 280, height: 400 });
+    await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual({ width: 360, height: 540 });
     await page.screenshot({ path: testInfo.outputPath('electron-returned-app.png') });
     await testInfo.attach('electron-native-recovery', { contentType: 'application/json', body: JSON.stringify({
       before, after: { path: new URL(page.url()).pathname, text: await page.locator('body').innerText(),
