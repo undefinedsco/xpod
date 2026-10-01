@@ -6382,5 +6382,125 @@
         }
       ]
     }
-  ]
+  ],
+  "runtimeNotices": {
+    "toolchain": "nightly-2026-09-30",
+    "compilerCommit": "5c543b0b8c73c7b72bc8284ced4fb22ead15734d",
+    "rustcRelease": "1.101.0-nightly",
+    "compilerBuiltinsVersion": "0.1.160",
+    "compilerBuiltinsLicense": "MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)",
+    "scope": "Original sysroot runtime attribution collection for the fixed compiler. Defined helper symbols confirm std/core/alloc/compiler_builtins and core Unicode; the conservative collection is not an exact linker map or whole-artifact clearance. Compiler/toolchain and implementation sources remain external.",
+    "files": [
+      {
+        "sourcePath": "upstream/LICENSE-MIT",
+        "object": "objects/b71bd43a069ca0641a9ecfe585ca7b3c53b5cc1608f8b68321168698e28b5ea1.txt",
+        "sha256": "b71bd43a069ca0641a9ecfe585ca7b3c53b5cc1608f8b68321168698e28b5ea1",
+        "source": "https://raw.githubusercontent.com/rust-lang/rust/5c543b0b8c73c7b72bc8284ced4fb22ead15734d/LICENSE-MIT",
+        "scope": "Unmodified source notice or provenance reference at exact rustc commit; source reference is not proof of every file linked"
+      },
+      {
+        "sourcePath": "upstream/LICENSE-APACHE",
+        "object": "objects/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt",
+        "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+        "source": "https://raw.githubusercontent.com/rust-lang/rust/5c543b0b8c73c7b72bc8284ced4fb22ead15734d/LICENSE-APACHE",
+        "scope": "Unmodified source notice or provenance reference at exact rustc commit; source reference is not proof of every file linked"
+      },
+      {
+        "sourcePath": "upstream/library/compiler-builtins/LICENSE.txt",
+        "object": "objects/ab6eec6caf0fa5775e411c7a8bc6a45c4ef2956b0980b157ab74fc5cd62a928b.txt",
+        "sha256": "ab6eec6caf0fa5775e411c7a8bc6a45c4ef2956b0980b157ab74fc5cd62a928b",
+        "source": "https://raw.githubusercontent.com/rust-lang/rust/5c543b0b8c73c7b72bc8284ced4fb22ead15734d/library/compiler-builtins/LICENSE.txt",
+        "scope": "Unmodified source notice or provenance reference at exact rustc commit; source reference is not proof of every file linked"
+      },
+      {
+        "sourcePath": "upstream/library/compiler-builtins/libm/LICENSE.txt",
+        "object": "objects/3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7.txt",
+        "sha256": "3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7",
+        "source": "https://raw.githubusercontent.com/rust-lang/rust/5c543b0b8c73c7b72bc8284ced4fb22ead15734d/library/compiler-builtins/libm/LICENSE.txt",
+        "scope": "Unmodified source notice or provenance reference at exact rustc commit; source reference is not proof of every file linked"
+      },
+      {
+        "sourcePath": "upstream/compiler-rt-CREDITS.TXT",
+        "object": "objects/a9901f47a089da41e4690682d00ce4cedaa2baf41fedbe79beee366d43ac2461.txt",
+        "sha256": "a9901f47a089da41e4690682d00ce4cedaa2baf41fedbe79beee366d43ac2461",
+        "source": "https://raw.githubusercontent.com/rust-lang/llvm-project/1b9c0d5ff9bbe7634aead059efe6b11a7eeba145/compiler-rt/CREDITS.TXT",
+        "scope": "Supplemental compiler-rt credits referenced by compiler-builtins license; pinned Rust LLVM submodule commit, not claim that all LLVM code is shipped"
+      },
+      {
+        "sourcePath": "notices/COPYRIGHT-library.html",
+        "object": "objects/626556344c12679d7cab2c1aa2ce80de01937b62c2c88c62f0650a469be18799.txt",
+        "sha256": "626556344c12679d7cab2c1aa2ce80de01937b62c2c88c62f0650a469be18799",
+        "source": {
+          "kind": "installed-sysroot",
+          "relativePath": "share/doc/rust/COPYRIGHT-library.html",
+          "targets": [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu"
+          ],
+          "verification": "Originals are byte-identical across the fixed toolchains; compiler identity is recorded above."
+        },
+        "scope": "Official installed standard-library notices, byte-identical across both recorded toolchains; conservative standard-library scope, not exact link map"
+      },
+      {
+        "sourcePath": "notices/licenses/MIT.txt",
+        "object": "objects/b85dcd3e453d05982552c52b5fc9e0bdd6d23c6f8e844b984a88af32570b0cc0.txt",
+        "sha256": "b85dcd3e453d05982552c52b5fc9e0bdd6d23c6f8e844b984a88af32570b0cc0",
+        "source": {
+          "kind": "installed-sysroot",
+          "relativePath": "share/doc/rust/licenses/MIT.txt",
+          "targets": [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu"
+          ],
+          "verification": "Originals are byte-identical across the fixed toolchains; compiler identity is recorded above."
+        },
+        "scope": "Official installed standard-library notices, byte-identical across both recorded toolchains; conservative standard-library scope, not exact link map"
+      },
+      {
+        "sourcePath": "notices/licenses/Apache-2.0.txt",
+        "object": "objects/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt",
+        "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "source": {
+          "kind": "installed-sysroot",
+          "relativePath": "share/doc/rust/licenses/Apache-2.0.txt",
+          "targets": [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu"
+          ],
+          "verification": "Originals are byte-identical across the fixed toolchains; compiler identity is recorded above."
+        },
+        "scope": "Official installed standard-library notices, byte-identical across both recorded toolchains; conservative standard-library scope, not exact link map"
+      },
+      {
+        "sourcePath": "notices/licenses/LLVM-exception.txt",
+        "object": "objects/e34c58338bd89d43e709e226610d8f32b3e3c47f4ad9a99a8dc1d4ac7842488e.txt",
+        "sha256": "e34c58338bd89d43e709e226610d8f32b3e3c47f4ad9a99a8dc1d4ac7842488e",
+        "source": {
+          "kind": "installed-sysroot",
+          "relativePath": "share/doc/rust/licenses/LLVM-exception.txt",
+          "targets": [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu"
+          ],
+          "verification": "Originals are byte-identical across the fixed toolchains; compiler identity is recorded above."
+        },
+        "scope": "Official installed standard-library notices, byte-identical across both recorded toolchains; conservative standard-library scope, not exact link map"
+      },
+      {
+        "sourcePath": "notices/licenses/Unicode-3.0.txt",
+        "object": "objects/f5062c9a188d81dfe66b56db4182dcf9e4b17c0d9b0d311a8e20b3a1b075c443.txt",
+        "sha256": "f5062c9a188d81dfe66b56db4182dcf9e4b17c0d9b0d311a8e20b3a1b075c443",
+        "source": {
+          "kind": "installed-sysroot",
+          "relativePath": "share/doc/rust/licenses/Unicode-3.0.txt",
+          "targets": [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu"
+          ],
+          "verification": "Originals are byte-identical across the fixed toolchains; compiler identity is recorded above."
+        },
+        "scope": "Official installed standard-library notices, byte-identical across both recorded toolchains; conservative standard-library scope, not exact link map"
+      }
+    ]
+  }
 }

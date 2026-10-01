@@ -21,7 +21,18 @@ candidate here does not mean an undeclared license. First-party helper and
 whole-artifact release review remain separate. The collection excludes the
 compiled CLI's Bun/TypeScript dependencies and external OS shared libraries.
 
-Regenerate with `scripts/collect-native-notices.ts <target> <audited inventory>`.
+`runtimeNotices` separately preserves ten original sysroot notice texts for
+`nightly-2026-09-30`, compiler commit `5c543b0b8c73c7b72bc8284ced4fb22ead15734d`.
+The standard-library attribution collection includes unrelated build/target
+materials and is not the helper's exact link graph. Original Unicode and composite
+compiler-builtins/libm/LLVM notices remain intact. Builds with a native receipt
+require its actual compiler commit/toolchain to match this provenance; missing,
+changed or unsafe runtime notice material fails before copying.
+
+Regenerate Cargo candidates with `scripts/collect-native-notices.ts <target> <audited inventory>`.
+The collector preserves and checks separately audited sysroot material; it does
+not derive that material from a Cargo dependency tree. A compiler change requires
+new runtime evidence before either inventory can be published.
 The inventory must match the target and every original hash must match. The
 build copies only that target's referenced objects, verifies all hashes before
 copying, and records each output hash in the install manifest. Missing or

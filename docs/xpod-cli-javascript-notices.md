@@ -29,6 +29,8 @@ node 的已安装 `dist/index.mjs` 与下载归档字节相同；core 则包含�
 
 ## 验证与限制
 
+生成的 JS 前导现在单独绑定构建工具版本：Bun 1.3.8 对应固定提交 `b64edcb490b486fb8af90cb2cb2dc51590453064`、1127 bytes；CI 使用的 Bun 1.3.12 对应 `700fc117a2fd01ac0201deaa6fa69c5557acb04f`、1639 bytes。原始 `runtime.js`、`ParseTask.zig`、根 LICENSE、前导本身及保守 esbuild 原文进入同一 content-addressed notice 索引。1.3.12 增加缓存/setter helper，未套用 1.3.8 的代码或行号。未知编译器版本、不同前导、通知 hash 或对象路径漂移都会使打包失败；安装包并不包含 Bun/Node/JSC 可执行文件。esbuild 的原始 MIT 文本用于保守归属保留，固定 Bun 源码中的 esbuild 引用不能证明 runtime 移植的精确基线，索引明确保留此限制。客户端运行时的最低版本要求与构建工具的已核对版本是两个不同边界。
+
 包装回归覆盖嵌套不同版本、scope 包、type-only 子 manifest、node_modules 符号链接、CRLF 原文、未知许可／缺原文保留，以及作用域外输入和 external 绝对路径拒绝。真实两平台打包会核对索引与 CLI 哈希、原文对象与安装 manifest；macOS 执行解包后的 CLI，Linux 的跨编译安装校验仍不能替代目标 OS 执行。
 
 这是 root/明确许可目录的候选收集，不覆盖所有模块的文件级版权、README 内嵌许可、源代码片段出处或 Bun 内置 polyfills。external imports 如实保留；metafile 中 external 标记也不是“运行时一定缺模块”的证明。安装流程没有因此移除任何现有发布门禁，候选和未知来源均保持 pending。

@@ -199,3 +199,19 @@ Linux ARM64 独立源码包包含2,017个文件；在 `--network none` 的 Debia
 发行材料复核发现自有 Xpod 根 `LICENSE` 未随旧预览附带；现复制原文到 `licenses/xpod/LICENSE` 并绑定 manifest/application source kit，不改版权占位符或扩大为整个混合产物准入。剩余范围具体为 Bun bundler 生成 JS helper 的来源通知、链接的 Rust std/core/alloc 通知，以及 JS/native/source-kit 的逐项覆盖核对；不恢复 Bun/JSC 内嵌重链接门槛。
 
 自有通知补齐后的回归：包内30项／205断言及 package 类型检查通过；再次完整集成退出0（lite160 passed／15 skipped、full60 passed／0 skipped），日志为 `external-runtime/{package-tests-final-complete,package-types-project-notice-final,integration-project-notice}.log`。
+
+## Runtime notices 来源绑定增量（2026-10-02）
+
+在不内嵌 Bun/JSC、使用外部运行时（Bun >=1.3.8 或 Node >=22）的前提下，补齐并强制绑定两类生成/链接材料的原始来源，使打包在来源漂移时失败关闭：
+
+- JS 前导：构建工具 Bun 1.3.8 绑定固定提交 `b64edcb490b486fb8af90cb2cb2dc51590453064`（前导1127 bytes），CI Bun 1.3.12 绑定 `700fc117a2fd01ac0201deaa6fa69c5557acb04f`（1639 bytes）。`collectJavascriptNotices` 现在核对 `licenses/javascript/generated/<bun>/index.json` 的 schema、bunVersion、前导字节数与 SHA-256，以及每个原文对象的路径与哈希；未知编译器版本、前导变化或对象漂移一律抛错且不写输出。安装包本身不包含 Bun/Node/JSC 可执行文件。
+- Rust 运行时：两平台 `runtimeNotices` 保存 `nightly-2026-09-30`、compiler commit `5c543b0b8c73c7b72bc8284ced4fb22ead15734d` 的十份原始 sysroot 通知（`COPYRIGHT-library.html`、Unicode、fixed Rust MIT/Apache、compiler-builtins/libm/LLVM）。`copyNativeNotices` 校验 toolchain/commit/对象哈希，`build.ts` 要求完整 helper 打包必须提供 `--native-sources` 与 `--native-receipt`，并从 receipt 抽取实际 `commit-hash` 与索引比对；不匹配或缺失直接失败。该集合是保守通知，不是精确 linker map，也不含编译器/标准库实现源码。
+
+当前 fresh 验证（`.test-data/agent-directory-workers/` 忽略目录）：
+
+- Native source kit `5ca743db625f9d3732bbad2decd1441b1953d734b5e1e374c466c028a0940976`（21279文件/340 crates，中立 cwd、无 `--source`）。两平台 copied-source `rebuild-native.ts --test` 各 22 passed / 0 failed / 0 ignored，`testsPassed=true`：macOS helper `2e6fc596a4a360c3a9826548ca98238f4eaf93f6e347f113141c261792033883`，Linux helper `bbee0ac4e87e3bd14a303781377344b5c860aa7482f83afb5b27c0f4ff20c381`。
+- 匹配 receipt 重新打包的预览：macOS archive `f28a4536ed3e704844b2e310c309d98c8314c0cbdc35bea3db4ef6fd0f34588c`（69294060 bytes，`validationState=install-verified`），Linux archive `d915a65c0e000bf35d534e8d2cbfc5237fd8eb4c7b96919f7e51e245c710f46a`（69887449 bytes，跨编译保持 `unverified`）。JS CLI 742979 bytes、launcher 642 bytes；core 约7.38/8.79 MiB，完整 archive 约66.08/66.65 MiB。两者 `publicReleaseReady=false`，未改 public gate。
+- 真实安装/挂载：macOS 安装包内 CLI/helper 真实 NFS 内核挂载、auth 代理、重启、冲突、rg 为 13 passed / 1 skipped（`accept-darwin-final.log`）。该 skip 是 `nativeOverlayScenario.test.ts` 中禁用模式的 informational 断言；`runOverlay` 开启时两项真实挂载场景实际通过，不得把此 skip 说成缺内核挂载。Linux 安装包在明确无 Bun 的 node:22-bookworm-slim 中真实 FUSE 挂载、CLI 生命周期、dirty rg、commit/recover、冲突与卸载 PASS（`accept-linux-final.log`、`agentfs-linux-report.json`，installedCli=true／dirtyRg=true），测试容器已清理。
+- 包内回归：`packages/xpod-cli` 32 passed / 0 failed / 250 assertions；源码、测试与包类型检查均退出0。完整 `bun run test:integration` 退出0：lite 160 passed / 15 skipped、full 60 passed / 0 skipped，`AgentDirectoryProtocol` local 10项（lite 5 skip）与 cloud 10项均通过；owned Docker 栈/卷/网络已清理。
+
+这些是 HTTP/auth 夹具上的真实 OS 挂载与 source-bound native 测试，**不是**当前已部署 Gateway、实际用户账号/Pod 或物理 NAS 硬件的验收。此前内嵌 Bun/JSC 候选、对应材料清单与日志仍为历史证据，不适用于当前外部运行时产物；公开准入、发布渠道与 clean-commit 安装仍保持未完成。

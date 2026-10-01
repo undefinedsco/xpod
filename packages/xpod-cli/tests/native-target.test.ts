@@ -1,11 +1,29 @@
 import { test, expect } from 'bun:test';
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertNativeTarget, bunBundleArguments, bunBundleEnvironment, bunCompileTarget } from '../src/native-target';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
+
+test('refuses an unbound helper before compiling or publishing an install manifest', () => {
+  const parent = path.join(repo, '.test-data/xpod-cli/native-target');
+  mkdirSync(parent, { recursive: true });
+  const directory = mkdtempSync(path.join(parent, 'unbound-'));
+  try {
+    // Header-only negative fixture; never executed or presented as a usable helper.
+    const header = Buffer.alloc(32);
+    header.writeUInt32LE(0xfeedfacf, 0); header.writeUInt32LE(0x0100000c, 4);
+    const helper = path.join(directory, 'helper'); writeFileSync(helper, header);
+    const result = spawnSync(process.execPath, [path.join(repo, 'packages/xpod-cli/scripts/build.ts'),
+      '--target', 'darwin-arm64', '--helper', helper, '--out', directory], { encoding: 'utf8', timeout: 30_000 });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('requires --native-sources and --native-receipt');
+    expect(existsSync(path.join(directory, 'darwin-arm64/install/lib/xpodcli.mjs'))).toBe(false);
+    expect(existsSync(path.join(directory, 'darwin-arm64/install/manifest.json'))).toBe(false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 test('bundles portable ESM without embedding or downloading a platform runtime', () => {
   const options = { target: 'darwin-arm64', hostTarget: 'darwin-arm64', entry: 'main.ts', outfile: 'cli', metafile: 'meta.json' };

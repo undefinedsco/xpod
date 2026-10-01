@@ -28,10 +28,14 @@ and Git-version fallback. No outer checkout Git metadata is used.
 The toolchain, target standard libraries, C compiler/linker, SDK/sysroot and
 system dependencies are external prerequisites. macOS needs its compiler/SDK;
 Linux needs pkg-config, OpenSSL development materials, liblzma and gcc_s.
-The kit does not include those system sources or runtime shared libraries.
+The kit does not include those system implementation sources or runtime shared libraries.
+It retains conservative original Rust sysroot notices, including Unicode and the
+composite compiler-builtins terms. These notices are not an exact linker map or
+the Rust implementation source. The standard-library/compiler build stays external.
 Cargo's offline flag does not sandbox build-script networking; a separately
 recorded network-disabled container run is needed for that stronger claim.
 
 Bundled component licenses govern modification/use. Hashes identify the snapshot
-and are not additional license restrictions. This kit does not cover Bun/JSC or
-clear the complete CLI/helper distribution for public release.
+and are not additional license restrictions. Some notice objects preserve original
+generated-JavaScript source excerpts; they do not provide a Bun/Node/JSC executable
+or compiler build, or clear the complete CLI/helper distribution for public release.

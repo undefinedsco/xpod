@@ -8,21 +8,32 @@ export interface NativeNoticeIndex {
   target: string;
   status: string;
   packages: { name: string; version: string; files: { object: string; sha256: string }[] }[];
+  runtimeNotices?: {
+    toolchain: string;
+    compilerCommit: string;
+    scope: string;
+    files: { object: string; sha256: string }[];
+  };
 }
 
 /** A partial collection stays partial; copying originals does not grant release clearance. */
-export function copyNativeNotices(collection: string, destination: string, target: string): string[] {
+export function copyNativeNotices(collection: string, destination: string, target: string, compiler?: { toolchain: string; commit: string }): string[] {
   bunCompileTarget(target);
   const filename = `${target}.json`;
   const index = JSON.parse(readFileSync(path.join(collection, filename), 'utf8')) as NativeNoticeIndex;
   if (index.schemaVersion !== 1 || index.target !== target || !Array.isArray(index.packages)) {
     throw new Error('Invalid native notice index');
   }
+  if (!index.runtimeNotices || !/^nightly-\d{4}-\d{2}-\d{2}$/.test(index.runtimeNotices.toolchain) ||
+    !/^[a-f0-9]{40}$/.test(index.runtimeNotices.compilerCommit) || !Array.isArray(index.runtimeNotices.files) || !index.runtimeNotices.files.length ||
+    (compiler !== undefined && (index.runtimeNotices.toolchain !== compiler.toolchain || index.runtimeNotices.compilerCommit !== compiler.commit))) {
+    throw new Error('Invalid native runtime notice provenance');
+  }
   const objects = new Map<string, string>();
-  for (const entry of index.packages) {
-    for (const file of entry.files) {
+  for (const files of [...index.packages.map((entry) => entry.files), index.runtimeNotices.files]) {
+    for (const file of files) {
       if (!/^[a-f0-9]{64}$/.test(file.sha256) || file.object !== `objects/${file.sha256}.txt`) {
-        throw new Error(`Unsafe notice object: ${entry.name}`);
+        throw new Error('Unsafe notice object');
       }
       objects.set(file.object, file.sha256);
     }
