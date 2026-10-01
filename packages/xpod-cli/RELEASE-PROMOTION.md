@@ -12,24 +12,34 @@ notice/source byte are preserved untouched.
 
 ```sh
 bun packages/xpod-cli/scripts/promote.ts \
-  --candidate <install dir | xpod-cli-<version>-<target>.tar.gz> \
-  --evidence  <promotion-evidence.json> \
-  --out       <output root> \
+  --candidate        <install dir | xpod-cli-<version>-<target>.tar.gz> \
+  --evidence         <promotion-evidence.json> \
+  --installed-report <installed-acceptance.json> \
+  --gateway-report   <gateway-acceptance.json> \
+  --out              <output root> \
   [--skip-exec]                     # foreign target: cannot execute here
 ```
 
-The command:
+A single real report file that contains both sections may be passed to both
+report flags. The command:
 
-1. runs the shared post-install verification (`scripts/verify-install.ts`)
+1. refuses any `--out`/`--target` that overlaps the candidate/install/archive
+   (symlink-aware) and refuses an already-existing output target instead of
+   deleting it;
+2. runs the shared post-install verification (`scripts/verify-install.ts`)
    against the candidate (with `--skip-exec` for a non-host target);
-2. validates the evidence purely against the candidate manifest
+3. validates the evidence purely against the candidate manifest
    (`validatePromotionEvidence`);
-3. re-verifies the application source kit, native source kit and the **actual
+4. reads the explicit sanitized report files, hashes their raw bytes, binds
+   them to the evidence `reportSha256` values and re-checks the required
+   identity/lifecycle/live facts from those bytes
+   (`validateAcceptanceReports`);
+5. re-verifies the application source kit, native source kit and the **actual
    tested native build receipt** on disk, including `testsPassed === true` and
    the compiler identities named by the evidence;
-4. derives the promoted manifest only from complete reviews, then computes
+6. derives the promoted manifest only from complete reviews, then computes
    readiness from `publicGateProblems`;
-5. writes `<out>/<platform>/{install, xpod-cli-<version>-<platform>-promoted.tar.gz,
+7. writes `<out>/<platform>/{install, xpod-cli-<version>-<platform>-promoted.tar.gz,
    promotion-summary.json}`.
 
 Missing/invalid evidence fails closed **before any output**: the candidate is
@@ -113,7 +123,52 @@ Rules enforced by the pure validator and the script:
   proof, a missing report hash, wrong target/source provenance, or an
   unsanitized record cannot produce a public candidate. Root collects this via
   the configured RC route; do not search personal credentials or fabricate
-  success.
+  success. When the report records the deployed Gateway `url`/`serverIdentity`,
+  it is copied into `promotion-record.json` as a separate identity and is never
+  required to equal the client source SHA.
+
+## Acceptance report contract (schemaVersion 1)
+
+The `reportSha256` fields in the evidence bind the raw bytes of explicit report
+files. One real run may emit a single file with both sections; separate files
+with one section each are also accepted. Reports carry sanitized facts only.
+
+```json
+{
+  "schemaVersion": 1,
+  "sourceSHA": "<exact candidate client source commit>",
+  "installedAcceptance": {
+    "target": "darwin-arm64", "backend": "nfs", "executedOnTarget": true,
+    "client": { "cliSha256": "<hash>", "launcherSha256": "<hash>", "helperSha256": "<hash>" },
+    "lifecycle": { "realMountScenariosPassed": 2, "mountScenariosFailed": 0,
+      "informationalSkips": 1, "lifecycleProven": true, "cleanedOwnedResources": true }
+  },
+  "gatewayAcceptance": {
+    "target": "darwin-arm64", "proofKind": "live-gateway",
+    "sourceSHA": "<exact candidate client source commit>",
+    "canonicalPodWrite": true, "storageBindingValidated": true,
+    "success": true, "sanitized": true,
+    "gateway": { "url": "<actual deployed Gateway URL>",
+      "serverIdentity": "<actual server identity when available>" }
+  }
+}
+```
+
+Rules enforced from the report bytes:
+
+- The raw report bytes must hash to the matching evidence `reportSha256`; a
+  missing, stale or mismatched file is rejected before any output.
+- `sourceSHA` binds the candidate client source; both sections must carry the
+  candidate `sourceSHA`.
+- Installed facts must match the candidate platform and the reviewed
+  CLI/launcher/helper hashes, prove `executedOnTarget`, at least one passing
+  real mount scenario and zero failures, the same informational skip count, and
+  both proven lifecycle and cleaned owned resources.
+- Gateway facts must be `proofKind="live-gateway"` (fixtures/recordings are
+  rejected) with canonical Pod write + storage-binding validation + success +
+  sanitized. The independently deployed Gateway `url`/`serverIdentity` is
+  recorded when available and is **never** required to equal the client source
+  SHA.
 
 ## Tests
 
