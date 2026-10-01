@@ -26,6 +26,7 @@ import {
   type XpodCliManifest,
 } from '../src/manifest';
 import { validateNativeDeclarations } from '../src/native-declarations';
+import { verifyApplicationSourceArchive } from '../src/application-sources';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, '..');
@@ -180,6 +181,22 @@ function main(): void {
         if (sha256File(path.join(installDir, evidence.path)) !== evidence.sha256) { throw new Error('License evidence hash mismatch'); }
         add('selected engine license evidence', true, 'pinned declarations, standard terms and all material hashes verified');
       } catch (error) { add('selected engine license evidence', false, (error as Error).message); }
+    }
+
+    const sourceArtifacts = manifest.artifacts.filter((entry) => entry.kind === 'source');
+    if (sourceArtifacts.length) {
+      try {
+        const index = sourceArtifacts.find((entry) => entry.path === 'sources/application-source.json' && entry.included);
+        const archive = sourceArtifacts.find((entry) => entry.path === 'sources/application-source.tar.gz' && entry.included);
+        if (!index || !archive) { throw new Error('Application source index/archive pair missing'); }
+        const kit = verifyApplicationSourceArchive(path.join(installDir, archive.path!), readFileSync(path.join(installDir, index.path!)));
+        const cli = manifest.artifacts.find((entry) => entry.name === 'xpodcli' && entry.included);
+        if (kit.target !== manifest.platform || kit.cliSha256 !== cli?.sha256 ||
+          kit.source.commit !== manifest.sourceSHA || kit.source.dirtyTreeHash !== manifest.dirtyTreeHash) {
+          throw new Error('Application source kit differs from CLI/source identity');
+        }
+        add('application source kit binding', true, 'CLI/source identity, target and all regular archive members/byte hashes match');
+      } catch (error) { add('application source kit binding', false, (error as Error).message); }
     }
 
     // 2. no placeholder / check masquerade

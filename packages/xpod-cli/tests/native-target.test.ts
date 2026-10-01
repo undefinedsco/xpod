@@ -3,9 +3,21 @@ import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertNativeTarget, bunCompileTarget } from '../src/native-target';
+import { assertNativeTarget, bunCompileArguments, bunCompileEnvironment, bunCompileTarget } from '../src/native-target';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
+
+test('same-platform compilation keeps the invoked runtime; cross compilation declares its runtime target', () => {
+  const options = { target: 'darwin-arm64', hostTarget: 'darwin-arm64', entry: 'main.ts', outfile: 'cli', metafile: 'meta.json' };
+  expect(bunCompileArguments(options)).toEqual(['build', '--compile', '--outfile', 'cli', '--metafile=meta.json', 'main.ts']);
+  expect(bunCompileArguments({ ...options, target: 'linux-arm64' })).toContain('--target=bun-linux-arm64');
+  expect(() => bunCompileArguments({ ...options, target: '../../escape' })).toThrow('Unsupported');
+  const environment = bunCompileEnvironment({ PATH: '/bin', NODE_ENV: 'production', BUN_OPTIONS: '--conditions=private', NODE_OPTIONS: '--loader=custom' });
+  expect(environment.PATH).toBe('/bin');
+  expect(environment.NODE_ENV).toBeUndefined();
+  expect(environment.BUN_OPTIONS).toBeUndefined();
+  expect(environment.NODE_OPTIONS).toBeUndefined();
+});
 
 test('checks binary architecture and OS even when a cross artifact cannot run', () => {
   const root = path.join(repo, '.test-data/xpod-cli/native-target');

@@ -69,6 +69,8 @@ install/
   licenses/native/     pinned Turso/SimSIMD texts; Linux also libaegis
   licenses/native/collection/  target-specific audited notice originals + hashes
   licenses/javascript/  exact compile input index + original package notice candidates
+  sources/application-source.json  source-kit inventory bound to CLI/source identity
+  sources/application-source.tar.gz  application/dependency bytes, notices and rebuild recipe
   manifest.json        source/engine/hash/validation identity
   manifest.local.json  present for dirty local previews
 xpod-cli-<version>-<target>.tar.gz
@@ -93,6 +95,39 @@ embedded runtime. The current ARM64 builds identify 15 package instances and
 name/version to the publisher metadata gitHead, original notice SHA-256 and
 archive integrity. Broader source/runtime audit gaps remain pending, including
 in CLI-only builds. Details: [JavaScript notice evidence](../../docs/xpod-cli-javascript-notices.md).
+
+## Application rebuild materials
+
+Every build, including CLI-only builds, includes the actual staged application
+source and selected installed dependency trees. Nested versions, package
+resolution metadata and local patched bytes are preserved, with the lockfile,
+original notices and rebuild script. This avoids substituting unpatched upstream
+packages for the inputs that produced the CLI. The inventory records every file's
+size/hash, exact compile inputs, target, original compiler and source identity.
+
+Extract `sources/application-source.tar.gz` into an independent directory and run:
+
+```sh
+cd application-source
+/path/to/compatible-bun packages/xpod-cli/scripts/rebuild-application.ts --verify-only
+/path/to/compatible-bun packages/xpod-cli/scripts/rebuild-application.ts
+```
+
+Rebuild on the kit's target platform. The script stages only verified files,
+does not install dependencies, and embeds the invoked Bun executable. The original
+compiler hash is provenance, not a restriction against using a compatible modified
+runtime. Compile options/environment handling are shared with the package builder;
+the receipt records actual rebuilt input hashes and compiler/output identities.
+The temporary staging directory is removed to prevent checkout helper discovery.
+
+Installation verification rejects missing sources or notices, duplicate archive
+members, links, changed bytes and mismatched CLI/source/target binding. An outer
+archive hash alone does not prove the source material is complete.
+
+This kit covers the application side. Bun/JSC/toolchain and native helper source
+and build closure remain separate. A successful application rebuild does not
+claim a modified LGPL library has been rebuilt/relinked or clear public release.
+See [the kit instructions](APPLICATION-SOURCE-README.md).
 
 ## Manifest and public gate
 
@@ -132,7 +167,8 @@ bun scripts/verify-install.ts --archive <tar.gz> --public   # release gate
 
 It extracts the archive into a fresh temp dir, runs the extracted binary from a
 neutral cwd and re-checks manifest hashes, source-bound engine declaration
-material and complete object coverage, `--version`, `--help`,
+material and complete object coverage, application source archive bodies and
+CLI/source identity binding, `--version`, `--help`,
 `agent-fs status`, placeholder/check-masquerade and (optionally) the public
 gate. A bundled helper must actually run `--version` and `--help`; file presence
 alone is insufficient. Source-TS resolution is not accepted as install proof.

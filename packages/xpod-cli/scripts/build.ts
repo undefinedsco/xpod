@@ -30,10 +30,11 @@ import {
   type SelectedEnginePin,
   type XpodCliManifest,
 } from '../src/manifest';
-import { assertNativeTarget, bunCompileTarget } from '../src/native-target';
+import { assertNativeTarget, bunCompileArguments, bunCompileEnvironment, bunCompileTarget } from '../src/native-target';
 import { copyNativeNotices } from '../src/native-notices';
 import { copyNativeDeclarations } from '../src/native-declarations';
 import { collectJavascriptNotices } from '../src/javascript-notices';
+import { exportApplicationSources } from '../src/application-sources';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, '..');
@@ -294,7 +295,7 @@ This notice concerns that covered source; it does not assign MPL to the whole CL
 
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
-  const bunTarget = bunCompileTarget(args.target);
+  bunCompileTarget(args.target);
   rmSync(path.join(args.outDir, args.target), { recursive: true, force: true });
   const buildRoot = path.join(args.outDir, args.target);
   const installDir = path.join(buildRoot, 'install');
@@ -315,6 +316,7 @@ function main(): void {
     process.exit(3);
   }
   if (helper) { assertNativeTarget(helper, args.target); }
+  const vendoredNotices = writeNotices(installDir, args.target, !args.cliOnly, pin);
 
   // Build the CLI binary from a hermetic staging tree. Bun bakes the compiled
   // module's `__dirname` into the binary; building directly from the checkout
@@ -325,6 +327,7 @@ function main(): void {
   const stageDir = mkdtempSync(path.join(tmpdir(), 'xpod-cli-stage-'));
   const cliOut = path.join(binDir, 'xpodcli');
   const javascriptNotices: ManifestArtifact[] = [];
+  const applicationSources: ManifestArtifact[] = [];
   try {
     mkdirSync(path.join(stageDir, 'packages/xpod-cli'), { recursive: true });
     cpSync(path.join(repoRoot, 'src'), path.join(stageDir, 'src'), { recursive: true });
@@ -333,12 +336,9 @@ function main(): void {
     symlinkSync(path.join(repoRoot, 'node_modules'), path.join(stageDir, 'node_modules'));
 
     const entry = path.join(stageDir, 'packages/xpod-cli/src/main.ts');
-    const buildArgs = [ 'build', '--compile', '--outfile', cliOut ];
     const metafile = path.join(buildRoot, 'javascript-metafile.json');
-    buildArgs.push(`--metafile=${metafile}`);
-    buildArgs.push(`--target=${bunTarget}`);
-    buildArgs.push(entry);
-    run(process.execPath, buildArgs, { cwd: stageDir });
+    const buildArgs = bunCompileArguments({ target: args.target, hostTarget: defaultTarget(), entry, outfile: cliOut, metafile });
+    run(process.execPath, buildArgs, { cwd: stageDir, env: bunCompileEnvironment() });
     const collectionOutput = path.join(installDir, 'licenses/javascript');
     for (const name of collectJavascriptNotices({
       metafile, stageRoot: stageDir, repoRoot, destination: collectionOutput,
@@ -349,6 +349,23 @@ function main(): void {
       javascriptNotices.push(artifact(`javascript-notice:${name}`, 'notice', true, {
         relPath: `licenses/javascript/${name}`, sha: sha256File(file), size: statSync(file).size,
         license: { spdx: null, status: 'pending', source: 'Exact compile inputs and original notice candidates; runtime and full audit pending' },
+      }));
+    }
+    const sourceDirectory = path.join(buildRoot, 'application-source');
+    exportApplicationSources({
+      stageRoot: stageDir, repoRoot, packageRoot, notices: path.join(installDir, 'licenses'), destination: sourceDirectory,
+      target: args.target, cli: cliOut, compiler: process.execPath, compilerVersion: process.versions.bun ?? 'unknown', hostTarget: defaultTarget(),
+      source: { commit: source.commit, dirtyTreeHash: source.dirtyTreeHash },
+    });
+    const sources = path.join(installDir, 'sources');
+    mkdirSync(sources, { recursive: true });
+    cpSync(path.join(sourceDirectory, 'source-kit.json'), path.join(sources, 'application-source.json'));
+    run('tar', ['-czf', path.join(sources, 'application-source.tar.gz'), '-C', buildRoot, 'application-source']);
+    for (const name of ['application-source.json', 'application-source.tar.gz']) {
+      const file = path.join(sources, name);
+      applicationSources.push(artifact(name, 'source', true, {
+        relPath: `sources/${name}`, sha: sha256File(file), size: statSync(file).size,
+        license: { spdx: null, status: 'pending', source: 'Application bytes and installed dependencies; Bun/native-helper source and full release obligations remain separate' },
       }));
     }
   } finally {
@@ -409,7 +426,6 @@ function main(): void {
     version: XPOD_CLI_VERSION,
     enginePin: { engine: pin.engine, repository: pin.repository, commit: pin.commit },
   }, null, 2) + '\n', 'utf8');
-  const vendoredNotices = writeNotices(installDir, args.target, !args.cliOnly, pin);
 
   const noticeArtifact = artifact('NOTICES.md', 'notice', true, {
     relPath: 'NOTICES.md',
@@ -433,7 +449,7 @@ function main(): void {
       dirty: source.dirty,
     },
     selectedEnginePin: pin,
-    artifacts: [ cliArtifact, helperArtifact, noticeArtifact, ...vendoredNotices, ...javascriptNotices ],
+    artifacts: [ cliArtifact, helperArtifact, noticeArtifact, ...vendoredNotices, ...javascriptNotices, ...applicationSources ],
     // A helper-present build can reach install-verified after the extraction
     // check; full-verified additionally requires verified licenses. A
     // cross-target build cannot be executed on this host and stays unverified.
