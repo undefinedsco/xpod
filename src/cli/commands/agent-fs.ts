@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Argv, CommandModule } from 'yargs';
@@ -52,6 +52,10 @@ function agentFsOptions<T>(yargs: Argv): Argv<T> {
     .option('backend', {
       type: 'string',
       description: 'Mount backend: nfs (macOS, userspace) or fuse (Linux)',
+    })
+    .option('mountpoint', {
+      type: 'string',
+      description: 'Mountpoint directory (defaults to <session-dir>/mnt)',
     })
     .option('json', {
       type: 'boolean',
@@ -232,6 +236,27 @@ function readFirstJsonLine(stream: NodeJS.ReadableStream): Promise<string> {
   });
 }
 
+/**
+ * Start the loopback auth proxy as a child process. Its stderr is redirected to a
+ * private session log instead of inheriting the caller's stdio: a long-lived
+ * proxy must never retain a caller's capture pipe (which would delay the
+ * caller's stdout/stderr EOF until the proxy is unmounted). The capability is
+ * only ever written to the proxy's stdout startup line, which is read and
+ * discarded by the parent, never logged.
+ */
+function spawnAuthProxyDaemon(podRoot: string, sessionDir: string): ReturnType<typeof spawn> {
+  mkdirSync(sessionDir, { recursive: true });
+  const [ cliExecutable, ...cliArgs ] = cliLauncher();
+  const logFd = openSync(path.join(sessionDir, 'proxy.log'), 'a', 0o600);
+  try {
+    return spawn(cliExecutable, [ ...cliArgs, 'agent-fs', 'proxy', '--pod-root', podRoot ], {
+      stdio: [ 'ignore', 'pipe', logFd ],
+    });
+  } finally {
+    closeSync(logFd);
+  }
+}
+
 const proxyCommand: CommandModule<object, AgentFsArgs> = {
   command: 'proxy',
   describe: 'Run a loopback auth proxy restricted to one Pod (internal mount bridge)',
@@ -270,15 +295,12 @@ const mountCommand: CommandModule<object, AgentFsArgs> = {
       const sessionDir = argv['session-dir'] ? path.resolve(argv['session-dir']) : defaultSessionDir();
       const podRoot = resolvePodRoot(argv);
       const mountpoint = path.resolve(argv.mountpoint ?? path.join(sessionDir, 'mnt'));
-      const [ cliExecutable, ...cliArgs ] = cliLauncher();
       mkdirSync(mountpoint, { recursive: true });
       mkdirSync(sessionDir, { recursive: true });
 
       // Start the loopback auth proxy so the Rust helper never owns credentials
       // and every Pod request flows through the CLI auth lifecycle.
-      proxy = spawn(cliExecutable, [ ...cliArgs, 'agent-fs', 'proxy', '--pod-root', podRoot ], {
-        stdio: [ 'ignore', 'pipe', 'inherit' ],
-      });
+      proxy = spawnAuthProxyDaemon(podRoot, sessionDir);
       const line = await readFirstJsonLine(proxy.stdout as NodeJS.ReadableStream);
       const { origin, capability, identity } = JSON.parse(line) as { origin: string; capability: string; identity: string };
       const podPath = new URL(podRoot.endsWith('/') ? podRoot : `${podRoot}/`).pathname;
@@ -434,10 +456,7 @@ function sessionCommand(action: 'commit' | 'recover'): CommandModule<object, Age
         if (!prerequisites.helperPresent) {
           throw new Error(`AgentFS Pod helper not built; cannot ${action}`);
         }
-        const [ cliExecutable, ...cliArgs ] = cliLauncher();
-        proxy = spawn(cliExecutable, [ ...cliArgs, 'agent-fs', 'proxy', '--pod-root', podRoot ], {
-          stdio: [ 'ignore', 'pipe', 'inherit' ],
-        });
+        proxy = spawnAuthProxyDaemon(podRoot, sessionDir);
         const line = await readFirstJsonLine(proxy.stdout as NodeJS.ReadableStream);
         const { origin, capability, identity } = JSON.parse(line) as { origin: string; capability: string; identity: string };
         const podPath = new URL(podRoot.endsWith('/') ? podRoot : `${podRoot}/`).pathname;

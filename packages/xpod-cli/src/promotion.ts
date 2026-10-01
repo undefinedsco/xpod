@@ -14,9 +14,11 @@
  * `scripts/promote.ts` owns the filesystem orchestration and reuses the
  * existing post-install/source/hash and native-receipt validators.
  */
+import path from 'node:path';
 import { sha256Hex, validateManifest, type ArtifactKind, type XpodCliManifest } from './manifest';
 
 export const PROMOTION_EVIDENCE_SCHEMA_VERSION = 1;
+export const ACCEPTANCE_REPORT_SCHEMA_VERSION = 1;
 
 /** Explicit review of one actual artifact's bytes and recorded provenance. */
 export interface ArtifactReview {
@@ -72,6 +74,56 @@ export interface GatewayAcceptanceProof {
   reportSha256: string;
 }
 
+/**
+ * Sanitized facts a real installed-target acceptance run must report. These are
+ * the report bytes whose hash the evidence binds; the validator re-checks the
+ * facts here so a stale or fabricated file cannot stand in for a real run.
+ */
+export interface InstalledAcceptanceReport {
+  target: string;
+  backend: 'fuse' | 'nfs';
+  executedOnTarget: boolean;
+  client: { cliSha256: string; launcherSha256: string; helperSha256: string };
+  lifecycle: {
+    realMountScenariosPassed: number;
+    mountScenariosFailed: number;
+    informationalSkips: number;
+    lifecycleProven: boolean;
+    cleanedOwnedResources: boolean;
+  };
+}
+
+/**
+ * Sanitized facts a live Gateway/canonical-Pod run must report.
+ *
+ * `sourceSHA` is the *client* candidate source that produced the acceptance and
+ * is bound to the candidate. The independently deployed Gateway identity is
+ * recorded under `gateway` when available and is deliberately never required to
+ * equal the client source SHA.
+ */
+export interface GatewayAcceptanceReport {
+  target: string;
+  proofKind: 'live-gateway';
+  sourceSHA: string;
+  canonicalPodWrite: boolean;
+  storageBindingValidated: boolean;
+  success: boolean;
+  sanitized: boolean;
+  gateway?: { url?: string; serverIdentity?: string };
+}
+
+/**
+ * The single small acceptance-report contract. One real run may emit one file
+ * containing both sections; separate files with one section each are also
+ * accepted. Fixtures are rejected by the `live-gateway` proof kind.
+ */
+export interface AcceptanceReportDocument {
+  schemaVersion: number;
+  sourceSHA: string;
+  installedAcceptance?: InstalledAcceptanceReport;
+  gatewayAcceptance?: GatewayAcceptanceReport;
+}
+
 export interface PromotionEvidence {
   schemaVersion: number;
   candidate: {
@@ -111,6 +163,8 @@ export interface PromotionRecord {
   gatewayAcceptance: {
     target: string; sourceSHA: string; proofKind: string; reportSha256: string;
     canonicalPodWrite: boolean; storageBindingValidated: boolean;
+    /** Actual deployed Gateway identity when available; never the client SHA. */
+    gateway?: { url?: string; serverIdentity?: string };
   };
   sanitized: true;
   notes: string[];
@@ -388,6 +442,231 @@ export function validatePromotionEvidence(input: {
 }
 
 /**
+ * Validate the explicit sanitized acceptance report files against the candidate
+ * manifest and the evidence that binds their bytes.
+ *
+ * The caller supplies the parsed report documents plus the sha256 of their raw
+ * bytes. This function only checks the facts: report bytes -> evidence hash ->
+ * candidate manifest identity/artifacts. A stale file (hash mismatch), an
+ * absent section, a fabricated identity, a fixture proof kind or a non-passing
+ * lifecycle/Gateway fact is rejected.
+ */
+export function validateAcceptanceReports(input: {
+  manifest: XpodCliManifest;
+  evidence: PromotionEvidence;
+  installedReport: unknown;
+  installedReportSha256: string;
+  gatewayReport: unknown;
+  gatewayReportSha256: string;
+}): string[] {
+  const problems: string[] = [];
+  const { manifest, evidence } = input;
+
+  if (!isSha256(input.installedReportSha256)) {
+    problems.push('installed acceptance report bytes must be 64-hex hashed');
+  } else if (input.installedReportSha256 !== evidence.installedAcceptance.reportSha256) {
+    problems.push('installed acceptance report bytes do not match evidence.installedAcceptance.reportSha256 (stale or wrong file)');
+  }
+  if (!isSha256(input.gatewayReportSha256)) {
+    problems.push('gateway acceptance report bytes must be 64-hex hashed');
+  } else if (input.gatewayReportSha256 !== evidence.gatewayAcceptance.reportSha256) {
+    problems.push('gateway acceptance report bytes do not match evidence.gatewayAcceptance.reportSha256 (stale or wrong file)');
+  }
+
+  const installedDoc = acceptanceReportDocument(input.installedReport, 'installed', problems);
+  if (installedDoc) {
+    checkReportSource(installedDoc, manifest, 'installed', problems);
+    const section = installedDoc.installedAcceptance;
+    if (typeof section !== 'object' || section === null) {
+      problems.push('installed acceptance report lacks its installedAcceptance facts');
+    } else {
+      checkInstalledReportFacts(section, manifest, evidence, problems);
+    }
+  }
+
+  const gatewayDoc = acceptanceReportDocument(input.gatewayReport, 'gateway', problems);
+  if (gatewayDoc) {
+    checkReportSource(gatewayDoc, manifest, 'gateway', problems);
+    const section = gatewayDoc.gatewayAcceptance;
+    if (typeof section !== 'object' || section === null) {
+      problems.push('gateway acceptance report lacks its gatewayAcceptance facts');
+    } else {
+      checkGatewayReportFacts(section, manifest, evidence, problems);
+    }
+  }
+
+  return [ ...new Set(problems) ];
+}
+
+function acceptanceReportDocument(raw: unknown, label: string, problems: string[]): AcceptanceReportDocument | null {
+  if (typeof raw !== 'object' || raw === null) {
+    problems.push(`${label} acceptance report is not an object`);
+    return null;
+  }
+  const document = raw as Partial<AcceptanceReportDocument>;
+  if (document.schemaVersion !== ACCEPTANCE_REPORT_SCHEMA_VERSION) {
+    problems.push(`${label} acceptance report schemaVersion must be ${ACCEPTANCE_REPORT_SCHEMA_VERSION}`);
+  }
+  return document as AcceptanceReportDocument;
+}
+
+function checkReportSource(document: AcceptanceReportDocument, manifest: XpodCliManifest, label: string, problems: string[]): void {
+  if (!isCommit(document.sourceSHA) || document.sourceSHA !== manifest.sourceSHA) {
+    problems.push(`${label} acceptance report sourceSHA does not bind the candidate client source`);
+  }
+}
+
+function checkInstalledReportFacts(
+  section: InstalledAcceptanceReport,
+  manifest: XpodCliManifest,
+  evidence: PromotionEvidence,
+  problems: string[],
+): void {
+  const installed = evidence.installedAcceptance;
+  if (section.target !== manifest.platform) {
+    problems.push('installed acceptance report target does not match the candidate platform');
+  }
+  if (section.backend !== 'fuse' && section.backend !== 'nfs') {
+    problems.push('installed acceptance report backend must be fuse or nfs');
+  }
+  if (section.executedOnTarget !== true) {
+    problems.push('installed acceptance report does not prove target execution');
+  }
+  const client = section.client;
+  if (typeof client !== 'object' || client === null) {
+    problems.push('installed acceptance report lacks its client identity');
+  } else {
+    for (const [ field, expected ] of [
+      [ 'cliSha256', installed.cliSha256 ],
+      [ 'launcherSha256', installed.launcherSha256 ],
+      [ 'helperSha256', installed.helperSha256 ],
+    ] as const) {
+      if (!isSha256(client[field]) || client[field] !== expected) {
+        problems.push(`installed acceptance report ${field} does not match the reviewed artifact identity`);
+      }
+    }
+  }
+  const lifecycle = section.lifecycle;
+  if (typeof lifecycle !== 'object' || lifecycle === null) {
+    problems.push('installed acceptance report lacks its lifecycle facts');
+    return;
+  }
+  if (!Number.isSafeInteger(lifecycle.realMountScenariosPassed) || lifecycle.realMountScenariosPassed < 1 ||
+    lifecycle.realMountScenariosPassed !== installed.realMountScenariosPassed) {
+    problems.push('installed acceptance report does not record passing real mount scenarios');
+  }
+  if (lifecycle.mountScenariosFailed !== 0) {
+    problems.push('installed acceptance report records failed mount scenarios');
+  }
+  if (!Number.isSafeInteger(lifecycle.informationalSkips) || lifecycle.informationalSkips < 0 ||
+    lifecycle.informationalSkips !== installed.informationalSkips) {
+    problems.push('installed acceptance report informationalSkips does not match the evidence');
+  }
+  if (lifecycle.lifecycleProven !== true) {
+    problems.push('installed acceptance report does not prove real mounting/lifecycle');
+  }
+  if (lifecycle.cleanedOwnedResources !== true) {
+    problems.push('installed acceptance report does not prove cleaned owned resources');
+  }
+}
+
+function checkGatewayReportFacts(
+  section: GatewayAcceptanceReport,
+  manifest: XpodCliManifest,
+  evidence: PromotionEvidence,
+  problems: string[],
+): void {
+  const gateway = evidence.gatewayAcceptance;
+  if (section.target !== manifest.platform) {
+    problems.push('gateway acceptance report target does not match the candidate platform');
+  }
+  if (!isCommit(section.sourceSHA) || section.sourceSHA !== manifest.sourceSHA) {
+    problems.push('gateway acceptance report sourceSHA does not bind the candidate client source');
+  }
+  if (section.proofKind !== 'live-gateway') {
+    problems.push('gateway acceptance report is not a live-gateway proof (fixtures are rejected)');
+  }
+  if (section.canonicalPodWrite !== true || gateway.canonicalPodWrite !== true) {
+    problems.push('gateway acceptance report does not prove a canonical Pod write');
+  }
+  if (section.storageBindingValidated !== true || gateway.storageBindingValidated !== true) {
+    problems.push('gateway acceptance report does not validate canonical storage binding');
+  }
+  if (section.success !== true || gateway.success !== true) {
+    problems.push('gateway acceptance report did not succeed');
+  }
+  if (section.sanitized !== true || gateway.sanitized !== true) {
+    problems.push('gateway acceptance report is not sanitized (secrets/raw logs)');
+  }
+  if (section.gateway !== undefined) {
+    const identity = section.gateway;
+    if (typeof identity !== 'object' || identity === null) {
+      problems.push('gateway acceptance report gateway identity must be an object when present');
+    } else {
+      for (const value of [ identity.url, identity.serverIdentity ]) {
+        if (value !== undefined && !isNonEmptyString(value)) {
+          problems.push('gateway acceptance report gateway identity fields must be non-empty strings');
+        }
+      }
+    }
+  }
+}
+
+/** True when `child` is `parent` itself or nested within it. */
+export function isPathWithin(child: string, parent: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+export interface PromotionPathPlan {
+  candidate: string;
+  installDir: string;
+  archive?: string;
+  out: string;
+  targetRoot: string;
+  targetRootExists: boolean;
+}
+
+/**
+ * Reject candidate/install/archive versus output overlap (including symlink
+ * aliases, via the injected `realpath`) before any output mutation, and refuse
+ * an already-existing output target instead of silently deleting it.
+ */
+export function promotionPathOverlapProblems(
+  plan: PromotionPathPlan,
+  realpath: (target: string) => string | null = () => null,
+): string[] {
+  const problems: string[] = [];
+  const resolve = (target: string): string => path.resolve(realpath(target) ?? target);
+  const candidate = resolve(plan.candidate);
+  const installDir = resolve(plan.installDir);
+  const archive = plan.archive ? resolve(plan.archive) : undefined;
+  const out = resolve(plan.out);
+  const targetRoot = resolve(plan.targetRoot);
+  const overlaps = (a: string, b: string): boolean => isPathWithin(a, b) || isPathWithin(b, a);
+
+  if (plan.targetRootExists) {
+    problems.push(`refusing to overwrite existing output target ${plan.targetRoot}`);
+  }
+
+  const inputs: { label: string; value: string }[] = [
+    { label: 'candidate', value: candidate },
+    ...(installDir === candidate ? [] : [ { label: 'candidate install dir', value: installDir } ]),
+    ...(archive ? [ { label: 'candidate archive', value: archive } ] : []),
+  ];
+  for (const inputPath of inputs) {
+    if (overlaps(targetRoot, inputPath.value)) {
+      problems.push(`output target ${plan.targetRoot} overlaps the ${inputPath.label}`);
+    }
+    if (overlaps(out, inputPath.value)) {
+      problems.push(`--out ${plan.out} overlaps the ${inputPath.label}`);
+    }
+  }
+
+  return [ ...new Set(problems) ];
+}
+
+/**
  * Derive the promoted manifest from a validated candidate + evidence. Only
  * explicit per-artifact reviews and a successful gateway acceptance can raise
  * license statuses and reach full-verified; readiness is then computed by
@@ -432,6 +711,7 @@ export function buildPromotionRecord(input: {
   evidence: PromotionEvidence;
   evidenceSha256: string;
   publicGateProblems: string[];
+  gatewayIdentity?: { url?: string; serverIdentity?: string };
   promotedAt?: string;
 }): PromotionRecord {
   const { evidence } = input;
@@ -472,6 +752,7 @@ export function buildPromotionRecord(input: {
       reportSha256: evidence.gatewayAcceptance.reportSha256,
       canonicalPodWrite: evidence.gatewayAcceptance.canonicalPodWrite,
       storageBindingValidated: evidence.gatewayAcceptance.storageBindingValidated,
+      ...(input.gatewayIdentity ? { gateway: { ...input.gatewayIdentity } } : {}),
     },
     sanitized: true,
     notes: [ ...evidence.notes ],

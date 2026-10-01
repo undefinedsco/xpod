@@ -212,10 +212,12 @@ It binds the candidate manifest hash and every reviewed artifact hash, requires
 the actual tested native receipt, installed target acceptance and live
 Xpod Gateway/canonical Pod acceptance, reuses post-install/source/hash
 verification, then derives license statuses and `full-verified` only from
-complete evidence and computes readiness from `publicGateProblems`. The original
-candidate and its bytes are never modified; invalid evidence fails closed before
-output. It does not make ordinary builds release-ready and no flag is
-hand-edited. See [RELEASE-PROMOTION.md](RELEASE-PROMOTION.md).
+complete evidence and computes readiness from `publicGateProblems`. The
+explicit `--installed-report`/`--gateway-report` files are hashed and their
+required facts re-checked; a missing/stale file or any output overlapping the
+candidate is rejected. The original candidate and its bytes are never modified;
+invalid evidence fails closed before output. It does not make ordinary builds
+release-ready and no flag is hand-edited. See [RELEASE-PROMOTION.md](RELEASE-PROMOTION.md).
 
 ## License status (actual, unverified)
 

@@ -15,21 +15,31 @@
  *
  * Usage:
  *   bun scripts/promote.ts --candidate <install dir | candidate archive> \
- *     --evidence <promotion-evidence.json> --out <output root> [--skip-exec]
+ *     --evidence <promotion-evidence.json> \
+ *     --installed-report <installed-acceptance.json> \
+ *     --gateway-report <gateway-acceptance.json> \
+ *     --out <output root> [--skip-exec]
+ *
+ * A single real report file containing both sections may be passed to both
+ * report flags. The run refuses to overwrite an existing output target and
+ * rejects any output overlapping the candidate/install/archive.
  */
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   publicGateProblems,
   sha256File,
+  sha256Hex,
   type XpodCliManifest,
 } from '../src/manifest';
 import {
   buildPromotionRecord,
   derivePromotedManifest,
+  promotionPathOverlapProblems,
+  validateAcceptanceReports,
   validatePromotionEvidence,
   type PromotionEvidence,
 } from '../src/promotion';
@@ -42,6 +52,8 @@ const packageRoot = path.resolve(here, '..');
 interface Args {
   candidate: string;
   evidence: string;
+  installedReport: string;
+  gatewayReport: string;
   out: string;
   skipExec: boolean;
 }
@@ -49,12 +61,16 @@ interface Args {
 function parseArgs(argv: string[]): Args {
   let candidate: string | undefined;
   let evidence: string | undefined;
+  let installedReport: string | undefined;
+  let gatewayReport: string | undefined;
   let out = path.join(packageRoot, '.test-data/promotion');
   let skipExec = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--candidate') { candidate = path.resolve(argv[++i]); }
     else if (arg === '--evidence') { evidence = path.resolve(argv[++i]); }
+    else if (arg === '--installed-report') { installedReport = path.resolve(argv[++i]); }
+    else if (arg === '--gateway-report') { gatewayReport = path.resolve(argv[++i]); }
     else if (arg === '--out') { out = path.resolve(argv[++i]); }
     else if (arg === '--skip-exec') { skipExec = true; }
     else { throw new Error(`Unknown argument: ${arg}`); }
@@ -62,7 +78,10 @@ function parseArgs(argv: string[]): Args {
   if (!candidate || !evidence) {
     throw new Error('Provide --candidate <install dir | archive> and --evidence <promotion-evidence.json>');
   }
-  return { candidate, evidence, out, skipExec };
+  if (!installedReport || !gatewayReport) {
+    throw new Error('Provide --installed-report <file> and --gateway-report <file> (a single real report with both sections may serve both)');
+  }
+  return { candidate, evidence, installedReport, gatewayReport, out, skipExec };
 }
 
 function run(command: string, args: string[]): void {
@@ -83,6 +102,24 @@ function requiredArtifact(manifest: XpodCliManifest, relative: string): { path: 
     throw new Error(`Candidate is missing included artifact ${relative}`);
   }
   return { path: artifact.path, sha256: artifact.sha256 };
+}
+
+/** Real path of `target`, or of its nearest existing ancestor (symlink-aware). */
+function realpathNearest(target: string): string {
+  let current = path.resolve(target);
+  const suffix: string[] = [];
+  for (;;) {
+    try {
+      return path.join(realpathSync(current), ...suffix.reverse());
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return path.resolve(target);
+      }
+      suffix.push(path.basename(current));
+      current = parent;
+    }
+  }
 }
 
 function main(): void {
@@ -109,6 +146,23 @@ function main(): void {
     const candidateManifestSha256 = sha256File(manifestPath);
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as XpodCliManifest;
 
+    // 0. Refuse any output that could erase the candidate/install/archive
+    //    (including a symlink alias) and never silently delete an existing
+    //    output target. No output is written until every check passes.
+    const targetRoot = path.join(args.out, manifest.platform);
+    const candidateArchive = args.candidate.endsWith('.tar.gz') ? args.candidate : undefined;
+    const overlapProblems = promotionPathOverlapProblems({
+      candidate: args.candidate,
+      installDir,
+      ...(candidateArchive ? { archive: candidateArchive } : {}),
+      out: args.out,
+      targetRoot,
+      targetRootExists: existsSync(targetRoot),
+    }, realpathNearest);
+    if (overlapProblems.length > 0) {
+      return fail({ ok: false, stage: 'output-overlap', problems: overlapProblems }, 1);
+    }
+
     // 1. Reuse the same post-install verification used by the build hook. A
     //    foreign-target candidate cannot be executed here; its installed
     //    acceptance evidence must have been produced on the actual target.
@@ -127,6 +181,42 @@ function main(): void {
     if (problems.length > 0) {
       return fail({ ok: false, stage: 'evidence', problems }, 1);
     }
+
+    // 2b. The explicit sanitized acceptance report files are the source of the
+    //     installed/Gateway facts. Hash their raw bytes, bind them to the
+    //     evidence, and re-check identity/lifecycle/live facts from the bytes.
+    //     A missing or stale/fabricated file is rejected before any output.
+    const readReport = (label: string, file: string): Buffer => {
+      if (!existsSync(file)) {
+        return fail({ ok: false, stage: 'acceptance-report', error: `${label} acceptance report not found: ${file}` }, 1);
+      }
+      return readFileSync(file);
+    };
+    const parseReport = (label: string, bytes: Buffer): unknown => {
+      try {
+        return JSON.parse(bytes.toString('utf8'));
+      } catch {
+        return fail({ ok: false, stage: 'acceptance-report', error: `${label} acceptance report is not valid JSON` }, 1);
+      }
+    };
+    const installedReportBytes = readReport('installed', args.installedReport);
+    const gatewayReportBytes = readReport('gateway', args.gatewayReport);
+    const installedReportJson = parseReport('installed', installedReportBytes);
+    const gatewayReportJson = parseReport('gateway', gatewayReportBytes);
+    const reportProblems = validateAcceptanceReports({
+      manifest,
+      evidence,
+      installedReport: installedReportJson,
+      installedReportSha256: sha256Hex(installedReportBytes),
+      gatewayReport: gatewayReportJson,
+      gatewayReportSha256: sha256Hex(gatewayReportBytes),
+    });
+    if (reportProblems.length > 0) {
+      return fail({ ok: false, stage: 'acceptance-report', problems: reportProblems }, 1);
+    }
+    const gatewayIdentity = (gatewayReportJson as {
+      gatewayAcceptance?: { gateway?: { url?: string; serverIdentity?: string } };
+    }).gatewayAcceptance?.gateway;
 
     // 3. Re-verify source material and the actual tested native receipt on disk.
     const app = requiredArtifact(manifest, 'sources/application-source.json');
@@ -173,8 +263,7 @@ function main(): void {
     }
 
     // 5. Write a separate promoted install/archive. Never touch the candidate.
-    const targetRoot = path.join(args.out, manifest.platform);
-    rmSync(targetRoot, { recursive: true, force: true });
+    mkdirSync(targetRoot, { recursive: true });
     const promotedInstall = path.join(targetRoot, 'install');
     cpSync(installDir, promotedInstall, { recursive: true });
     rmSync(path.join(promotedInstall, 'manifest.local.json'), { force: true });
@@ -185,6 +274,7 @@ function main(): void {
       evidence,
       evidenceSha256: sha256File(args.evidence),
       publicGateProblems: gate,
+      ...(gatewayIdentity ? { gatewayIdentity } : {}),
     });
     writeFileSync(path.join(promotedInstall, 'promotion-record.json'), JSON.stringify(record, null, 2) + '\n');
 
