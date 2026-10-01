@@ -23,10 +23,10 @@
 | --- | --- | --- |
 | Native session/恢复回归 | 最终 22 passed；此前21项连续20轮共420次通过 | `nfs-cookie-native-tests.log`；新增删掉前页 cookie 后继续分页的确定性回归 |
 | 目录/CLI 专项 | 166 passed，5 skipped | `nfs-cookie-focused-final.log`；skip 包含真实挂载 opt-in，实际挂载另有独立证据 |
-| 代理真实 native/HTTP 桥 | 11 passed（含断流、真实 native 桥和 lost receipt recovery） | `nfs-cookie-macos-acceptance.log`：真实 OS 挂载通过 loopback proxy 读写/commit/recover，CLI auth 使用 fixture，不是真实账号 |
-| macOS 安装产物 | archive 解包 hash/version/help/status 与 helper 实际启动通过 | `nfs-cookie-macos-package.log`，从中立 cwd 执行真实编译 CLI |
-| macOS NFS 重启/冲突/rg | 2 passed，1 gating skip；与代理11项合计13 passed / 1 skip | `nfs-cookie-macos-acceptance.log`：安装包内 CLI/helper；新增 rapid remount 的 daemon 数量检查、180文件分页递归删除 |
-| Linux ARM64 FUSE 与安装 CLI | 真实挂载和完整 CLI 生命周期已通过 | `nfs-cookie-linux-acceptance.log`、`agentfs-linux-report.json` 的 installedCli=true；基础读取/Range/编辑/替换、默认 mount/unmount、重挂、commit、lost receipt recover、412、proxy 清理和 daemon 数量检查 |
+| 代理真实 native/HTTP 桥 | 11 passed（含断流、真实 native 桥和 lost receipt recovery） | `clean-macos-acceptance.log`：真实 OS 挂载通过 loopback proxy 读写/commit/recover，CLI auth 使用 fixture，不是真实账号 |
+| macOS 安装产物 | archive 解包 hash/version/help/status 与 helper 实际启动通过 | `clean-macos-package.log`，从中立 cwd 执行真实编译 CLI |
+| macOS NFS 重启/冲突/rg | 2 passed，1 gating skip；与代理11项合计13 passed / 1 skip | `clean-macos-acceptance.log`：安装包内 CLI/helper；新增 rapid remount 的 daemon 数量检查、180文件分页递归删除 |
+| Linux ARM64 FUSE 与安装 CLI | 真实挂载、完整 CLI 生命周期和 dirty rg 已通过 | `linux-dirty-rg-acceptance-final.log`、`agentfs-linux-report.json` 的 installedCli=true / dirtyRg=true；基础读取/Range/编辑/替换、重挂、commit/recover、412、native rg、proxy 清理和 daemon 数量检查；报告绑定实际 CLI/helper hashes |
 | 完整集成 | 155 passed，6 skipped；四种服务运行配置 46 passed | 最终 NFS 修复后再次运行 `nfs-cookie-integration-final.log`，exit 0，隔离 Docker 栈已清理 |
 | TS 类型/组件定义 | build:ts、typecheck:test、build:components、独立包类型检查已通过 | `lifecycle-ts-final.log`、`nfs-cookie-test-types.log`、`lifecycle-components-final.log`、`nfs-cookie-package-types.log` |
 | Rust 静态检查 | clippy exit 0，11 warnings | `nfs-cookie-clippy-final.log`；使用匹配 nightly 编译器和 clippy，独立 target。未将 warnings 描述为零告警 |
@@ -36,14 +36,41 @@
 
 ## 已知限制和发布门槛
 
-1. 这是本地可安装预览，macOS manifest 为 `install-verified`，Linux 跨编译 manifest 保守保留 `unverified`，实际目标平台验收另存证据；`publicReleaseReady=false`。已附四/五份可核实原文；AgentFS 自身完整版权/许可通知、其余第三方 notices、Bun/TS runtime notices、clean exact commit 与发布渠道仍未完成，不执行 npm latest 或生产发布。
-2. 当前公共 Gateway `https://id.undefineds.co/` 可达，但已有 CLI OAuth 刷新失败，且新增目录接口未部署。没有本任务真实用户 Pod 写入证据；Docker/fixture 不等同当前 Gateway。真实认证、目录权限与实际 Pod mutation 需部署候选后独立验收。
-3. macOS ARM64 和 Linux ARM64 容器已验证对应路径及安装 CLI 生命周期；NAS 实机、x64、Windows 仍未验收。Linux dirty rg 的 native fallback 未在容器验证。Linux release helper约8.1MiB，依赖 glibc/OpenSSL3；纯 Node Debian slim 缺 libssl3 时不能启动，安装验证已实际捕获该错误，补系统依赖后验证通过。
+1. 这是未公开发布的可安装候选，代码已提交并从 clean exact commit 构建。macOS manifest 为 `install-verified`，Linux 跨编译 manifest 保守保留 `unverified`，实际目标平台验收另存证据；`publicReleaseReady=false`。已附四/五份可核实原文；AgentFS 自身完整版权/许可通知、其余第三方 notices、Bun/TS runtime notices 与发布渠道仍未完成，不执行 npm latest 或生产发布。
+2. 当前公共 Gateway `https://id.undefineds.co/` 可达，但已有 CLI OAuth 刷新失败，尚无它运行本次目录候选接口的验收证据。没有本任务真实用户 Pod 写入证据；Docker/fixture 不等同当前 Gateway。真实认证、目录权限与实际 Pod mutation 需在已部署候选上独立验收。
+3. macOS ARM64 和 Linux ARM64 容器已验证对应路径及安装 CLI 生命周期；NAS 实机、x64、Windows AgentFS 挂载仍未验收。Linux dirty rg 的 native fallback 已在真实 FUSE 挂载上验证；服务安装 CI 的 Windows 通过不等于 Windows AgentFS 挂载通过。Linux release helper约8.1MiB，依赖 glibc/OpenSSL3；纯 Node Debian slim 缺 libssl3 时不能启动，安装验证已实际捕获该错误，补系统依赖后验证通过。
 4. 未知写回结果会保留 journal/blob 并拒绝盲重试；现已提供 `agent-fs recover`，仅读取远端，区分 confirmed/retryable/conflicts/errors。内容、媒体类型、LDP 类型与 strong ETag 对应才确认；首次基线仍在才允许按原条件重试。冲突、弱/畸形 ETag、读取中断及缺 blob 保留数据和 in-flight。不会自动合并冲突，不会刷新基线。
 5. HTTP rename 不是远端原子操作；目录 rename、symlink/hardlink 不支持。commit 在整个 HTTP 请求期间持锁，可能等待每请求最多 60 秒；不是高并发提交设计。
 6. 远程有界 clean cache 尚未实现；旧 dirty revision 的 blob 到 commit GC 才回收。未验证超大文件内存峰值/崩溃全矩阵/并发远端 rename，也没有“99% 原生性能”的证据。
 7. 上游 Linux FUSE 补丁只有三处缓存设置；其性能代价仍需代表性负载评估。研究性能文档不能替代本产品最终实现 benchmark。
 8. 一次 macOS 单文件目录删除出现 ENOTEMPTY，后续单独诊断与10轮重复通过，尚无该次失败的明确根因。另发现并确定性复现了 NFS 分页 cookie 删除后错误 EOF 的独立问题，已补丁修复并通过180文件挂载删除；不能将此当作原单文件偶发失败已解释的证据。
+
+## 安装包 dirty rg 目标平台增量
+
+安装包源码提交 `6df51382c026ff92410c0a2137544e2e91b2a77a` 的 [CI](https://github.com/undefinedsco/xpod/actions/runs/36824285492) 全部22项通过：主单元6,471 passed / 283 skipped / 1 todo，Bun32 passed，独立客户端12 passed，浏览器12 passed，以及服务集成和18个跨系统服务安装任务。跳过和 todo 不计入通过；服务安装矩阵不证明 AgentFS 在所有系统上均可挂载。
+
+`scripts/accept-agentfs-pod.linux.mjs` 使用独立记录请求的 HTTP/auth fixture、真实 Linux ARM64 FUSE 以及上述安装包，新增三次 dirty rg 比较：未提交新增、卸载重挂恢复、以及存在412冲突时的覆盖/删除/文件重命名。wrapper 使用安装 CLI 生成，执行记录工具仅转交到真实 `/usr/bin/rg`（本次13.0.0），输出与直接 native rg 的 stdout/stderr 比较；三个调用均被记录，HTTP search 次数为0，明确拒绝用远端旧内容代表本地未提交视图。rg 只安装于本次临时测试容器，没有加入发行包或修改宿主机。
+
+最终 `linux-dirty-rg-acceptance-final.log` 和 `agentfs-linux-report.json` 为 pass / installedCli=true / dirtyRg=true。实际执行 helper SHA-256 为 `12b827b932a4fbd600dec891d7c9c5000cdd1e9bc9fe51bba481d0d1852a071e`，CLI 为 `a95b80e0db6c2a2e501352315984f6abe56b82a9718f9f0043d53d230ee1b0cf`，执行前均与 manifest 核对。挂载/commit/recover/冲突与 owned-process 清理仍执行，测试容器和网络已清理。此次改动只扩大测试覆盖，未改动安装包 runtime；仍不是真实公共 Gateway、NAS 实机或公开发行的验收。
+
+`linux-artifact-drift.log` 还验证了 CLI hash 不符的反例：在创建挂载之前退出1，报告 fail，不作为环境 unavailable 跳过。脚本语法、源码/测试类型检查及提交前完整集成通过；`linux-dirty-rg-integration-final.log` 为155 passed / 6 skipped，加46项运行配置通过，隔离栈已清理。
+
+macOS 原单文件 ENOTEMPTY 的只读审计确认：日志仅保存最终 rmdir 失败及下一测试的 rg ENOENT，没有失败当刻的 NFS READDIR/REMOVE/RMDIR 顺序、目录 entries 或 journal。两例复用会话，后一例可能受到前例残余状态影响。后续诊断和10轮重复通过不能补回这些缺失证据，因此继续保留未定位限制；若再次复现，需先保存请求顺序和 NotEmpty 当刻的目录视图，不能直接套用独立 cookie 回归的结论。
+
+## 已部署 Gateway 的独立 HTTP 验收入口
+
+`scripts/accept-live-agent-directory.ts` 连接指定的实际 Gateway，复用当前 CLI 登录，不启动服务、创建账号或改写凭据。必须显式提供 canonical Pod storage URL；不从 WebID 推导 Pod，不接受带 userinfo/query/fragment 的目标。当前登录的 Gateway 必须与参数一致，不将已有凭据用于另一部署。
+
+```sh
+# 只读 preflight：OIDC discovery、CLI 登录、Pod HEAD、目录 API
+bun scripts/accept-live-agent-directory.ts --gateway https://gateway.example/ --pod-root https://pod.example/alice/
+# 明确启动写入验收；仅操作随机 xpod-cli-acceptance-UUID/ 子目录
+bun scripts/accept-live-agent-directory.ts --gateway https://gateway.example/ --pod-root https://pod.example/alice/ --write
+```
+
+写入模式检查条件创建/同名冲突、准确 Range 正文及版本、完整目录枚举和 literal search、另一次写入后的旧版本 PUT/DELETE 冲突及新正文保留。清理仅对已确认回执使用 If-Match，删除后 HEAD 确认404；目录使用空枚举之前的版本，避免将旧的空目录观察绑定到后来新增子项的版本。未知写入结果、并发变化、缺 strong ETag 或非空目录保留，并在报告中列出路径及失败状态，不无条件删除或盲重试。报告默认保存在 `.test-data/agent-directory-workers/live-directory/`，记录阶段、固定错误码、目标 URL、遗留路径和 checker 的源码 hash/Git SHA/dirty 状态，不包含 token、正文或服务器错误响应；缺 Git 的源码归档标记身份未知，不伪称 clean commit。
+
+`phase=preflight` 只证明只读前置；`phase=pod-http-contract` 才执行上述 Pod HTTP 场景。两种模式都明确 `mount=not-run`，不能据此声明实际账号的 OS 挂载已通过。9项 injected-transport 回归只证明该验收入口的保护与判定行为，不是已部署 Gateway 证据。临时取消删除确认、将目录 HEAD 移到枚举之后的反例变体在当时8项测试中恰好失败2项；恢复保护后全部通过。后续新增丢失 conflict 回执的回归，确保每次 mutation 发送之前统一撤回旧的清理依据。日志为 `live-directory-cleanup-counterexamples.log` / `live-directory-utility-tests-final.log`。本轮只读检查 Gateway 的 discovery 为200且具备 issuer/token endpoint，OPTIONS 为204；OPTIONS 成功不证明本次目录接口已部署。现有 CLI 登录当前仍不可用，没有实际 Pod mutation；需要可用登录、canonical Pod URL 与已部署候选才能运行后续验收。
 
 ## 最小用法
 
@@ -62,7 +89,9 @@ xpodcli agent-fs unmount --session-dir ~/.xpod/alice
 
 ## 本地候选产物
 
-候选 `0.1.0-preview.1` 位于 `.test-data/agent-directory-workers/xpod-cli-package/nfs-cookie-final/<target>/`。macOS ARM64 归档 SHA-256 为 `7e843bf42f34d50fc70400cdee0eb0e6f1de42b110dc3f7b6752e923fcf23122`；CLI约57.8MiB、helper约6.4MiB。Linux ARM64 归档 SHA-256 为 `899a4ebb87340916f2d52c4f85684de367e0573312c0f82f2048aa7216519d05`；CLI约92.6MiB、release helper约8.1MiB。两者均为 local preview，不能作为公开发行版。此前 recovery/lifecycle 产物为历史候选；证据文档的收尾编辑晚于候选构建，不伪称 clean commit 产物。
+候选 `0.1.0-preview.1` 位于 `.test-data/agent-directory-workers/xpod-cli-package/release-candidate-f0452849/<target>/`，sourceSHA 为代码提交 `f04528496127ded20fb74cf36e369ce92da77f50`，source.dirty=false、dirtyTreeHash=null。这份文档的后续证据编辑不属于该构建源提交。
+
+macOS ARM64 归档 SHA-256 为 `90dd2ee25e06a8b4b505d8915766f978775ba0ac5ffdc77e2fb5d33f49ef2a96`；CLI约57.8MiB、helper约6.4MiB。Linux ARM64 归档 SHA-256 为 `9b30c4146199898407cd6b3d20d94a2925e0076ec2f29c944e0416074a1d81f0`；CLI约92.6MiB、release helper约8.1MiB。两者均未公开发布，publicReleaseReady=false。此前 recovery/lifecycle/nfs-cookie-final 的 dirty 候选留作历史反例与回归证据。
 
 ## 安装生命周期增量
 
