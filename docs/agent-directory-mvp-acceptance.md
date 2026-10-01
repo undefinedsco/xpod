@@ -19,6 +19,20 @@
 
 所有日志位于 ignored `.test-data/agent-directory-workers/`；以下区分已运行和未运行，不将 skip 当作通过。
 
+### 真实候选协议增量：存储版本与互斥
+
+新增 `AgentDirectoryProtocol.integration.test.ts` 启动生产 CSS/API/Gateway，建立隔离账号、Pod、client credentials 和 DPoP session，使用默认 ACP 的 `.acr` 限定私有目录。Local 与 Cloud 共10项通过，覆盖匿名/另一账号拒绝、Range/list/search、条件创建与安全清理、快速外部更新后的旧 If-Match 412、目录 membership 的版本变化，以及协作者按实际 ACP 授权完成 SPARQL UPDATE。Local 的 QLever 进程为测试夹具，不能把此项描述成完整 native RDF 验收或当前公共 Gateway 验收。
+
+这些测试先复现了旧秒级 ETag 导致快速更新仍被旧条件覆盖、目录成员变化版本不变，以及 PUT 缺少自身回执。当前服务改用现有服务器 metadata 中的独立 revision；PUT 仅返回本次持久化回执，RDF 转换后不误发 validator。全部祖先按固定顺序写锁、取得锁后的 metadata cache 刷新，以及 GET 至正文结束的祖先读锁，使普通文件、递归祖先创建和 sidecar SPARQL 使用同一个互斥边界。授权读取在 mutation 锁外完成，避免非重入锁自锁。详见 [版本与锁](agent-directory-storage-versions.md)。
+
+真实 Redis 的4项回归通过：另一实例初始化/关闭不清活动锁，旧 owner 不删除替换 owner，读写获取/释放的相同 owner 重放幂等。重放在 client 边界注入且每次 EVAL 都实际执行，不作为完整 TCP 故障或 Redis failover 证明。Local 长写、迟到获取、预锁旧 cache 与 GET 流并发都有独立 barrier/虚拟时钟回归。专项共102 passed（78项存储/HTTP加24项 Mix/DI），源码/测试类型与组件生成通过。
+
+再次完整执行 `bun run test:integration`：lite 为160 passed / 15 skipped，full 为60 passed / 0 skipped，exit 0；`candidate-directory-integration-third.log` 保存结果，任务拥有的 Docker 容器、卷和网络已清理。lite 的 opt-in Cloud/Redis 跳过由 full 的显式隔离端点实际补测，不把跳过计入通过。专项日志为 `candidate-directory-focused-sixth.log` 和 `candidate-directory-di-sixth.log`，反例为 `candidate-directory-protocol-regression-before.log`。
+
+本地全仓单元运行 `candidate-directory-unit-full.log` 为6,492 passed / 296 skipped / 1 todo，并有1项生成资源前置条件失败：此 worktree 尚未构建 UI 的共享 helper chunk。按现有 CI 顺序执行 `bun run build:ui` 后，该文件3项全部通过（`candidate-directory-static-retest.log`）；没有改动测试断言或页面源码。生成资源已保留于任务测试目录，不纳入本次存储提交；这不是一次从头全绿的本地单元日志，完整 clean-build 单元结果以新提交 CI 为准。
+
+服务端修改尚不改变已验收安装包的源提交身份；旧安装包仍绑定 `6df51382c`。新存储 revision 不自动迁移旧资源，旧资源缺少 revision 时读取可用但无安全强 ETag，目录客户端须保留未提交修改并拒绝不安全写回。同一 identifier root 的写入保守串行，还需等待正在流式读取的 GET。Cloud 无 fencing 时不自动过期锁，崩溃可能留下阻塞锁；升级必须停止全部旧写入者，禁止混用旧新 locker 滚动发布。公开 Gateway 部署、实际用户 Pod 与发行材料门槛仍未完成。
+
 | 层级 | 结果 | 证据 |
 | --- | --- | --- |
 | Native session/恢复回归 | 最终 22 passed；此前21项连续20轮共420次通过 | `nfs-cookie-native-tests.log`；新增删掉前页 cookie 后继续分页的确定性回归 |
