@@ -203,6 +203,20 @@ do not raise the public release status. See [native kit instructions](NATIVE-SOU
   `validationState` below `full-verified`. It never auto-assigns MIT to an
   unknown license.
 
+## Evidence-bound promotion
+
+Builds stop at a pending candidate; publication is a separate, explicit step.
+`scripts/promote.ts` takes an existing candidate plus structured
+acceptance/review evidence and writes a **separate** promoted install/archive.
+It binds the candidate manifest hash and every reviewed artifact hash, requires
+the actual tested native receipt, installed target acceptance and live
+Xpod Gateway/canonical Pod acceptance, reuses post-install/source/hash
+verification, then derives license statuses and `full-verified` only from
+complete evidence and computes readiness from `publicGateProblems`. The original
+candidate and its bytes are never modified; invalid evidence fails closed before
+output. It does not make ordinary builds release-ready and no flag is
+hand-edited. See [RELEASE-PROMOTION.md](RELEASE-PROMOTION.md).
+
 ## License status (actual, unverified)
 
 - Xpod-owned code: root MIT `LICENSE` copied verbatim to `licenses/xpod/LICENSE`, hash-bound by the manifest and preserved in application source material.
