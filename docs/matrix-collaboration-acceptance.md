@@ -525,10 +525,13 @@ LLM/工具质量、跨身份隔离、容量与长期故障测试仍须另取证�
   容器 `ldp:contains` **只列出 4 个文档中的 1 个** → 对 PATCH 建出的文档不可信。
   结论与三个选项见[控制记录契约](matrix-control-records-contract.md) §9.2；**Pod 版出站 store 在定案前不实现**。
 
-门禁（在 `cf5ff73a` 上复跑，全文以这一处为准；上面各节里的数字是当时那一轮的）：
-`typecheck:test` 通过；`tests/api/matrix` **581 passed / 3 skipped**（删除 `identityBinding.ts` 的 7 项测试后）；
-`tests/api tests/http` **2044 passed / 67 skipped**；`test:integration:lite` **162 passed / 6 skipped（32 文件通过 / 3 跳过）**，
+门禁（在 `f6705734` 上复跑，全文以这一处为准；上面各节里的数字是当时那一轮的）：
+`typecheck:test` 通过；`tests/api/matrix` **600 passed / 3 skipped**；
+`tests/api tests/http` **2054 passed / 67 skipped**；`test:integration:lite` **162 passed / 6 skipped（32 文件通过 / 3 跳过）**，
 含 6 项真实 Pod 用例、真实栈端点探测（3 项）与 `MatrixCollaboration` 的真实运行时夹具。
+**注意**：这里的数字是**当前分支**的门禁，不改变本文件的时代边界——上面各节验收的是 **Matrix 形状那一版**，
+当前协议方向与逐项进度见 [Solid 多方通信协议](solid-multiparty-protocol.md) 与
+[改造清单的「进度总览」](solid-multiparty-migration.md)。
 **未做**：真实实例（本机 3000 是别的构建；Docker 见下）、`full` 门禁（需要 Docker）、控制记录天文档的物理回收。
 
 ### Docker 引擎仍然卡住（2026-09-28 复核，逐项测出来的）
