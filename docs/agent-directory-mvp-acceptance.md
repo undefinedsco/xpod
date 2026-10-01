@@ -37,7 +37,7 @@
 ## 已知限制和发布门槛
 
 1. 这是未公开发布的可安装候选，代码已提交并从 clean exact commit 构建。macOS manifest 为 `install-verified`，Linux 跨编译 manifest 保守保留 `unverified`，实际目标平台验收另存证据；`publicReleaseReady=false`。已附四/五份可核实原文；AgentFS 自身完整版权/许可通知、其余第三方 notices、Bun/TS runtime notices 与发布渠道仍未完成，不执行 npm latest 或生产发布。
-2. 当前公共 Gateway `https://id.undefineds.co/` 可达，但已有 CLI OAuth 刷新失败，且新增目录接口未部署。没有本任务真实用户 Pod 写入证据；Docker/fixture 不等同当前 Gateway。真实认证、目录权限与实际 Pod mutation 需部署候选后独立验收。
+2. 当前公共 Gateway `https://id.undefineds.co/` 可达，但已有 CLI OAuth 刷新失败，尚无它运行本次目录候选接口的验收证据。没有本任务真实用户 Pod 写入证据；Docker/fixture 不等同当前 Gateway。真实认证、目录权限与实际 Pod mutation 需在已部署候选上独立验收。
 3. macOS ARM64 和 Linux ARM64 容器已验证对应路径及安装 CLI 生命周期；NAS 实机、x64、Windows AgentFS 挂载仍未验收。Linux dirty rg 的 native fallback 已在真实 FUSE 挂载上验证；服务安装 CI 的 Windows 通过不等于 Windows AgentFS 挂载通过。Linux release helper约8.1MiB，依赖 glibc/OpenSSL3；纯 Node Debian slim 缺 libssl3 时不能启动，安装验证已实际捕获该错误，补系统依赖后验证通过。
 4. 未知写回结果会保留 journal/blob 并拒绝盲重试；现已提供 `agent-fs recover`，仅读取远端，区分 confirmed/retryable/conflicts/errors。内容、媒体类型、LDP 类型与 strong ETag 对应才确认；首次基线仍在才允许按原条件重试。冲突、弱/畸形 ETag、读取中断及缺 blob 保留数据和 in-flight。不会自动合并冲突，不会刷新基线。
 5. HTTP rename 不是远端原子操作；目录 rename、symlink/hardlink 不支持。commit 在整个 HTTP 请求期间持锁，可能等待每请求最多 60 秒；不是高并发提交设计。
@@ -56,6 +56,21 @@
 `linux-artifact-drift.log` 还验证了 CLI hash 不符的反例：在创建挂载之前退出1，报告 fail，不作为环境 unavailable 跳过。脚本语法、源码/测试类型检查及提交前完整集成通过；`linux-dirty-rg-integration-final.log` 为155 passed / 6 skipped，加46项运行配置通过，隔离栈已清理。
 
 macOS 原单文件 ENOTEMPTY 的只读审计确认：日志仅保存最终 rmdir 失败及下一测试的 rg ENOENT，没有失败当刻的 NFS READDIR/REMOVE/RMDIR 顺序、目录 entries 或 journal。两例复用会话，后一例可能受到前例残余状态影响。后续诊断和10轮重复通过不能补回这些缺失证据，因此继续保留未定位限制；若再次复现，需先保存请求顺序和 NotEmpty 当刻的目录视图，不能直接套用独立 cookie 回归的结论。
+
+## 已部署 Gateway 的独立 HTTP 验收入口
+
+`scripts/accept-live-agent-directory.ts` 连接指定的实际 Gateway，复用当前 CLI 登录，不启动服务、创建账号或改写凭据。必须显式提供 canonical Pod storage URL；不从 WebID 推导 Pod，不接受带 userinfo/query/fragment 的目标。当前登录的 Gateway 必须与参数一致，不将已有凭据用于另一部署。
+
+```sh
+# 只读 preflight：OIDC discovery、CLI 登录、Pod HEAD、目录 API
+bun scripts/accept-live-agent-directory.ts --gateway https://gateway.example/ --pod-root https://pod.example/alice/
+# 明确启动写入验收；仅操作随机 xpod-cli-acceptance-UUID/ 子目录
+bun scripts/accept-live-agent-directory.ts --gateway https://gateway.example/ --pod-root https://pod.example/alice/ --write
+```
+
+写入模式检查条件创建/同名冲突、准确 Range 正文及版本、完整目录枚举和 literal search、另一次写入后的旧版本 PUT/DELETE 冲突及新正文保留。清理仅对已确认回执使用 If-Match，删除后 HEAD 确认404；目录使用空枚举之前的版本，避免将旧的空目录观察绑定到后来新增子项的版本。未知写入结果、并发变化、缺 strong ETag 或非空目录保留，并在报告中列出路径及失败状态，不无条件删除或盲重试。报告默认保存在 `.test-data/agent-directory-workers/live-directory/`，记录阶段、固定错误码、目标 URL、遗留路径和 checker 的源码 hash/Git SHA/dirty 状态，不包含 token、正文或服务器错误响应；缺 Git 的源码归档标记身份未知，不伪称 clean commit。
+
+`phase=preflight` 只证明只读前置；`phase=pod-http-contract` 才执行上述 Pod HTTP 场景。两种模式都明确 `mount=not-run`，不能据此声明实际账号的 OS 挂载已通过。9项 injected-transport 回归只证明该验收入口的保护与判定行为，不是已部署 Gateway 证据。临时取消删除确认、将目录 HEAD 移到枚举之后的反例变体在当时8项测试中恰好失败2项；恢复保护后全部通过。后续新增丢失 conflict 回执的回归，确保每次 mutation 发送之前统一撤回旧的清理依据。日志为 `live-directory-cleanup-counterexamples.log` / `live-directory-utility-tests-final.log`。本轮只读检查 Gateway 的 discovery 为200且具备 issuer/token endpoint，OPTIONS 为204；OPTIONS 成功不证明本次目录接口已部署。现有 CLI 登录当前仍不可用，没有实际 Pod mutation；需要可用登录、canonical Pod URL 与已部署候选才能运行后续验收。
 
 ## 最小用法
 
