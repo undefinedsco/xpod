@@ -23,10 +23,10 @@
 | --- | --- | --- |
 | Native session/恢复回归 | 最终 22 passed；此前21项连续20轮共420次通过 | `nfs-cookie-native-tests.log`；新增删掉前页 cookie 后继续分页的确定性回归 |
 | 目录/CLI 专项 | 166 passed，5 skipped | `nfs-cookie-focused-final.log`；skip 包含真实挂载 opt-in，实际挂载另有独立证据 |
-| 代理真实 native/HTTP 桥 | 11 passed（含断流、真实 native 桥和 lost receipt recovery） | `nfs-cookie-macos-acceptance.log`：真实 OS 挂载通过 loopback proxy 读写/commit/recover，CLI auth 使用 fixture，不是真实账号 |
-| macOS 安装产物 | archive 解包 hash/version/help/status 与 helper 实际启动通过 | `nfs-cookie-macos-package.log`，从中立 cwd 执行真实编译 CLI |
-| macOS NFS 重启/冲突/rg | 2 passed，1 gating skip；与代理11项合计13 passed / 1 skip | `nfs-cookie-macos-acceptance.log`：安装包内 CLI/helper；新增 rapid remount 的 daemon 数量检查、180文件分页递归删除 |
-| Linux ARM64 FUSE 与安装 CLI | 真实挂载和完整 CLI 生命周期已通过 | `nfs-cookie-linux-acceptance.log`、`agentfs-linux-report.json` 的 installedCli=true；基础读取/Range/编辑/替换、默认 mount/unmount、重挂、commit、lost receipt recover、412、proxy 清理和 daemon 数量检查 |
+| 代理真实 native/HTTP 桥 | 11 passed（含断流、真实 native 桥和 lost receipt recovery） | `clean-macos-acceptance.log`：真实 OS 挂载通过 loopback proxy 读写/commit/recover，CLI auth 使用 fixture，不是真实账号 |
+| macOS 安装产物 | archive 解包 hash/version/help/status 与 helper 实际启动通过 | `clean-macos-package.log`，从中立 cwd 执行真实编译 CLI |
+| macOS NFS 重启/冲突/rg | 2 passed，1 gating skip；与代理11项合计13 passed / 1 skip | `clean-macos-acceptance.log`：安装包内 CLI/helper；新增 rapid remount 的 daemon 数量检查、180文件分页递归删除 |
+| Linux ARM64 FUSE 与安装 CLI | 真实挂载和完整 CLI 生命周期已通过 | `clean-linux-acceptance.log`、`agentfs-linux-report.json` 的 installedCli=true；基础读取/Range/编辑/替换、默认 mount/unmount、重挂、commit、lost receipt recover、412、proxy 清理和 daemon 数量检查 |
 | 完整集成 | 155 passed，6 skipped；四种服务运行配置 46 passed | 最终 NFS 修复后再次运行 `nfs-cookie-integration-final.log`，exit 0，隔离 Docker 栈已清理 |
 | TS 类型/组件定义 | build:ts、typecheck:test、build:components、独立包类型检查已通过 | `lifecycle-ts-final.log`、`nfs-cookie-test-types.log`、`lifecycle-components-final.log`、`nfs-cookie-package-types.log` |
 | Rust 静态检查 | clippy exit 0，11 warnings | `nfs-cookie-clippy-final.log`；使用匹配 nightly 编译器和 clippy，独立 target。未将 warnings 描述为零告警 |
@@ -36,7 +36,7 @@
 
 ## 已知限制和发布门槛
 
-1. 这是本地可安装预览，macOS manifest 为 `install-verified`，Linux 跨编译 manifest 保守保留 `unverified`，实际目标平台验收另存证据；`publicReleaseReady=false`。已附四/五份可核实原文；AgentFS 自身完整版权/许可通知、其余第三方 notices、Bun/TS runtime notices、clean exact commit 与发布渠道仍未完成，不执行 npm latest 或生产发布。
+1. 这是未公开发布的可安装候选，代码已提交并从 clean exact commit 构建。macOS manifest 为 `install-verified`，Linux 跨编译 manifest 保守保留 `unverified`，实际目标平台验收另存证据；`publicReleaseReady=false`。已附四/五份可核实原文；AgentFS 自身完整版权/许可通知、其余第三方 notices、Bun/TS runtime notices 与发布渠道仍未完成，不执行 npm latest 或生产发布。
 2. 当前公共 Gateway `https://id.undefineds.co/` 可达，但已有 CLI OAuth 刷新失败，且新增目录接口未部署。没有本任务真实用户 Pod 写入证据；Docker/fixture 不等同当前 Gateway。真实认证、目录权限与实际 Pod mutation 需部署候选后独立验收。
 3. macOS ARM64 和 Linux ARM64 容器已验证对应路径及安装 CLI 生命周期；NAS 实机、x64、Windows 仍未验收。Linux dirty rg 的 native fallback 未在容器验证。Linux release helper约8.1MiB，依赖 glibc/OpenSSL3；纯 Node Debian slim 缺 libssl3 时不能启动，安装验证已实际捕获该错误，补系统依赖后验证通过。
 4. 未知写回结果会保留 journal/blob 并拒绝盲重试；现已提供 `agent-fs recover`，仅读取远端，区分 confirmed/retryable/conflicts/errors。内容、媒体类型、LDP 类型与 strong ETag 对应才确认；首次基线仍在才允许按原条件重试。冲突、弱/畸形 ETag、读取中断及缺 blob 保留数据和 in-flight。不会自动合并冲突，不会刷新基线。
@@ -62,7 +62,9 @@ xpodcli agent-fs unmount --session-dir ~/.xpod/alice
 
 ## 本地候选产物
 
-候选 `0.1.0-preview.1` 位于 `.test-data/agent-directory-workers/xpod-cli-package/nfs-cookie-final/<target>/`。macOS ARM64 归档 SHA-256 为 `7e843bf42f34d50fc70400cdee0eb0e6f1de42b110dc3f7b6752e923fcf23122`；CLI约57.8MiB、helper约6.4MiB。Linux ARM64 归档 SHA-256 为 `899a4ebb87340916f2d52c4f85684de367e0573312c0f82f2048aa7216519d05`；CLI约92.6MiB、release helper约8.1MiB。两者均为 local preview，不能作为公开发行版。此前 recovery/lifecycle 产物为历史候选；证据文档的收尾编辑晚于候选构建，不伪称 clean commit 产物。
+候选 `0.1.0-preview.1` 位于 `.test-data/agent-directory-workers/xpod-cli-package/release-candidate-f0452849/<target>/`，sourceSHA 为代码提交 `f04528496127ded20fb74cf36e369ce92da77f50`，source.dirty=false、dirtyTreeHash=null。这份文档的后续证据编辑不属于该构建源提交。
+
+macOS ARM64 归档 SHA-256 为 `90dd2ee25e06a8b4b505d8915766f978775ba0ac5ffdc77e2fb5d33f49ef2a96`；CLI约57.8MiB、helper约6.4MiB。Linux ARM64 归档 SHA-256 为 `9b30c4146199898407cd6b3d20d94a2925e0076ec2f29c944e0416074a1d81f0`；CLI约92.6MiB、release helper约8.1MiB。两者均未公开发布，publicReleaseReady=false。此前 recovery/lifecycle/nfs-cookie-final 的 dirty 候选留作历史反例与回归证据。
 
 ## 安装生命周期增量
 
