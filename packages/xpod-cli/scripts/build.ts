@@ -325,6 +325,7 @@ function main(): void {
     for (const name of collectJavascriptNotices({
       metafile, stageRoot: stageDir, repoRoot, destination: collectionOutput,
       target: args.target, cli: cliOut, bunVersion: process.versions.bun ?? 'unknown',
+      supplements: path.join(packageRoot, 'licenses/javascript'),
     })) {
       const file = path.join(collectionOutput, name);
       javascriptNotices.push(artifact(`javascript-notice:${name}`, 'notice', true, {

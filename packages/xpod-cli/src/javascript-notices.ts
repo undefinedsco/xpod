@@ -16,7 +16,39 @@ interface PackageNotice {
   declaredLicense: unknown;
   inputCount: number;
   noticeStatus: 'collected-candidates' | 'missing-original';
-  files: { sourcePath: string; object: string; sha256: string }[];
+  files: NoticeFile[];
+}
+
+interface NoticeFile {
+  sourcePath: string;
+  object: string;
+  sha256: string;
+  provenance?: unknown;
+}
+
+interface NoticeSupplement {
+  name: string;
+  version: string;
+  provenance: unknown;
+  files: NoticeFile[];
+}
+
+function supplements(directory?: string): Map<string, NoticeSupplement> {
+  const entries = new Map<string, NoticeSupplement>();
+  if (!directory) { return entries; }
+  const index = JSON.parse(readFileSync(path.join(directory, 'index.json'), 'utf8')) as { schemaVersion: number; entries: NoticeSupplement[] };
+  if (index.schemaVersion !== 1 || !Array.isArray(index.entries)) { throw new Error('Invalid JavaScript notice supplements'); }
+  for (const entry of index.entries) {
+    const key = JSON.stringify([entry.name, entry.version]);
+    if (typeof entry.name !== 'string' || !entry.name || typeof entry.version !== 'string' || !entry.version || !Array.isArray(entry.files) || entries.has(key)) {
+      throw new Error('Invalid or duplicate JavaScript notice supplement');
+    }
+    for (const file of entry.files) {
+      if (!/^[a-f0-9]{64}$/.test(file.sha256) || file.object !== `objects/${file.sha256}.txt`) { throw new Error('Unsafe JavaScript supplement object'); }
+    }
+    entries.set(key, entry);
+  }
+  return entries;
 }
 
 function within(root: string, file: string): boolean {
@@ -67,6 +99,7 @@ export function collectJavascriptNotices(options: {
   target: string;
   cli: string;
   bunVersion: string;
+  supplements?: string;
 }): string[] {
   bunCompileTarget(options.target);
   const stageRoot = realpathSync(options.stageRoot);
@@ -76,6 +109,7 @@ export function collectJavascriptNotices(options: {
     throw new Error('Invalid JavaScript build metafile');
   }
   const packages = new Map<string, PackageNotice>();
+  const supplementIndex = supplements(options.supplements);
   const objects = new Map<string, string>();
   const externalImports = new Set<string>();
   const inputs: { path: string; sha256: string; bytes: number; bytesInOutput: number; packageRoot?: string }[] = [];
@@ -92,12 +126,19 @@ export function collectJavascriptNotices(options: {
       packageRoot = `node_modules/${slash(path.relative(dependencyRoot, owner.root))}`;
       let entry = packages.get(packageRoot);
       if (!entry) {
-        const notices = noticeCandidates(owner.root).map((file) => {
+        const notices: NoticeFile[] = noticeCandidates(owner.root).map((file) => {
           const sha256 = sha256File(file);
           const object = `objects/${sha256}.txt`;
           objects.set(object, file);
           return { sourcePath: slash(path.relative(owner.root, file)), object, sha256 };
         });
+        const supplemental = supplementIndex.get(JSON.stringify([owner.info.name, owner.info.version]));
+        for (const file of supplemental?.files ?? []) {
+          const source = path.join(options.supplements!, file.object);
+          if (sha256File(source) !== file.sha256) { throw new Error(`JavaScript supplement hash mismatch: ${file.object}`); }
+          objects.set(file.object, source);
+          notices.push({ ...file, provenance: supplemental!.provenance });
+        }
         entry = {
           name: owner.info.name as string, version: owner.info.version as string, root: packageRoot,
           packageJsonSha256: sha256File(path.join(owner.root, 'package.json')),
