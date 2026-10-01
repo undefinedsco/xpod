@@ -57,7 +57,7 @@ const createHandler = ({
   sessionError?: string;
   /** WebID to Account links the account storage knows. */
   webIdLinks?: Record<string, string>;
-  hostClientIds?: readonly string[];
+  hostClientIds?: string[];
 } = {}) => {
   const providerFactory = {
     getProvider: vi.fn(async () => ({

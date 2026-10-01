@@ -65,6 +65,9 @@ describe('legacy Account-gated dashboard route /dashboard/overview', () => {
     renderRoute(path);
     expect(await screen.findByRole('navigation', { name: 'Host navigation' })).toBeTruthy();
     expect(await screen.findByLabelText('邮箱')).toBeTruthy();
+    // The legacy /dashboard gate renders the embedded Account credentials view,
+    // whose secondary entries stay "创建账号 · 忘记密码？" (the shared IdP footer
+    // on the page surface is the one that reads "没有账号？ 注册账号").
     for (const name of ['创建账号', '忘记密码？']) {
       const href = screen.getByRole('link', { name }).getAttribute('href');
       expect(new URL(href!, window.location.origin).searchParams.get('returnTo')).toBe(path);

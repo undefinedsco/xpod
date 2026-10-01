@@ -15,7 +15,13 @@ describe('bundled desktop client document', () => {
     const plugin = xpodDesktopClientDocumentPlugin();
     const emitted: unknown[] = [];
     if (typeof plugin.generateBundle !== 'function') throw new Error('Expected bundle hook');
-    plugin.generateBundle.call({ emitFile: (asset: unknown) => emitted.push(asset) } as any, {} as any, {}, false);
+    const emitFile = (asset: unknown) => { emitted.push(asset); };
+    plugin.generateBundle.call(
+      { emitFile } as unknown as ThisParameterType<typeof plugin.generateBundle>,
+      {} as unknown as Parameters<typeof plugin.generateBundle>[0],
+      {} as unknown as Parameters<typeof plugin.generateBundle>[1],
+      false,
+    );
     expect(emitted).toEqual([{ type: 'asset', fileName: 'xpod-desktop-client.json',
       source: `${JSON.stringify(desktopClient, null, 2)}\n` }]);
     expect(existsSync(new URL('./public/xpod-desktop-client.json', import.meta.url))).toBe(false);

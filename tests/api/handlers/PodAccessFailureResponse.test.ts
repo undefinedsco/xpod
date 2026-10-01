@@ -1,4 +1,7 @@
+import type { ServerResponse } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
+
+import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 
 import {
   guardPodAccessRoute,
@@ -38,11 +41,15 @@ describe('guardPodAccessRoute', () => {
 
   it('answers the mapped status for a Pod access failure', async () => {
     const res = response();
-    const handler = guardPodAccessRoute(async() => {
+    const handler = guardPodAccessRoute(async(
+      _request: AuthenticatedRequest,
+      _response: ServerResponse,
+      _params: Record<string, unknown>,
+    ) => {
       throw new Error(POD_INTERFACE_KEY_MISSING);
     });
 
-    await handler({}, res, {});
+    await handler({} as unknown as AuthenticatedRequest, res as unknown as ServerResponse, {});
 
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({ error: 'service_access_missing' });
@@ -50,22 +57,32 @@ describe('guardPodAccessRoute', () => {
 
   it('propagates anything that is not a Pod access failure', async () => {
     const res = response();
-    const handler = guardPodAccessRoute(async() => {
+    const handler = guardPodAccessRoute(async(
+      _request: AuthenticatedRequest,
+      _response: ServerResponse,
+      _params: Record<string, unknown>,
+    ) => {
       throw new Error('database is down');
     });
 
-    await expect(handler({}, res, {})).rejects.toThrow('database is down');
+    await expect(handler({} as unknown as AuthenticatedRequest, res as unknown as ServerResponse, {}))
+      .rejects.toThrow('database is down');
     expect(res.statusCode).toBe(0);
   });
 
   it('passes the request through to the route', async () => {
     const res = response();
-    const inner = vi.fn(async() => undefined);
+    const inner = vi.fn(async(
+      _request: AuthenticatedRequest,
+      _response: ServerResponse,
+      _params: Record<string, unknown>,
+    ) => undefined);
     const handler = guardPodAccessRoute(inner);
 
-    await handler({ url: '/v1/chatkit/threads' }, res, { thread_id: 'thread-1' });
+    const request = { url: '/v1/chatkit/threads' } as unknown as AuthenticatedRequest;
+    await handler(request, res as unknown as ServerResponse, { thread_id: 'thread-1' });
 
-    expect(inner).toHaveBeenCalledWith({ url: '/v1/chatkit/threads' }, res, { thread_id: 'thread-1' });
+    expect(inner).toHaveBeenCalledWith(request, res, { thread_id: 'thread-1' });
     expect(res.statusCode).toBe(0);
   });
 });

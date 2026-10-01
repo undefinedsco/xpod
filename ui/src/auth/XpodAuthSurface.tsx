@@ -13,6 +13,7 @@ import {
 } from './XpodAccountViews';
 import { getXpodAuthSurfaceHost, useXpodAuthWindowSurface } from './xpod-auth-surface-host';
 import { WebAccountLayout } from './WebAccountLayout';
+import { XpodAccountServiceIntro } from './XpodAccountServiceIntro';
 
 export type XpodAuthSurfaceProps = Omit<
   AuthSurfaceProps,
@@ -66,13 +67,24 @@ export function XpodSignInFrame({ ariaLabel, children }: { ariaLabel: string; ch
  * Explicit CSS Account document boundary; never used by WebID/App auth gates.
  * `bare` is for bodies that bring their own service bar and heading.
  */
-export function XpodAccountPageSurface({ title, children, presentation = 'compact', bare = false }: Pick<XpodAuthSurfaceProps, 'title' | 'children'> & {
+export function XpodAccountPageSurface({ title, children, bare = false, intro }: Pick<XpodAuthSurfaceProps, 'title' | 'children'> & {
   presentation?: 'standard' | 'compact';
   bare?: boolean;
+  /** Overrides the account-service introduction column of a browser page frame. */
+  intro?: ReactNode;
 }) {
   const host = getXpodAuthSurfaceHost();
   useXpodAuthWindowSurface(host === 'window', 'account');
-  return <WebAccountLayout title={title} presentation={presentation} host={host} bare={bare}>{children}</WebAccountLayout>;
+  return (
+    <WebAccountLayout
+      title={title}
+      host={host}
+      bare={bare}
+      intro={intro ?? <XpodAccountServiceIntro serviceHost={window.location.host} />}
+    >
+      {children}
+    </WebAccountLayout>
+  );
 }
 
 /** Wording of the shared views is carried over from the account copy, so labels keep their accessible names. */
@@ -83,8 +95,9 @@ function credentialViewCopy(copy: AccountCredentialsViewProps['copy']): Partial<
     username: copy.usernameLabel,
     signIn: copy.loginAction,
     registerSubmit: copy.registerAction,
-    // The account app names its registration entry "创建账号" everywhere.
-    registerLink: copy.registerAction,
+    // The registration *entry* stays the shared navigation label ("注册账号");
+    // only the submit action says "创建账号". Binding both to registerAction made
+    // the sign-in footer read "没有账号？ 创建账号".
     // Same wording as the embedded credentials form, which keeps the older view.
     rememberDevice: '记住账号',
   };
@@ -108,7 +121,12 @@ export function XpodBlockingAccountCredentialsSurface(
 
 
   return (
-    <WebAccountLayout title={surfaceTitle} host={host} bare>
+    <WebAccountLayout
+      title={surfaceTitle}
+      host={host}
+      bare
+      intro={<XpodAccountServiceIntro serviceHost={window.location.host} />}
+    >
       {mode === 'register' ? (
         <IdpRegisterView
           {...service}

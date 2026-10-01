@@ -15,7 +15,7 @@ describe('LoadingScreen', () => {
     const page = screen.getByTestId('web-account-page');
     const frame = screen.getByRole('region', { name: '正在加载 Xpod' });
     expect(screen.queryByTestId('auth-surface-page')).toBeNull();
-    expect(screen.queryByTestId('web-account-introduction')).toBeNull();
+    expect(screen.getByTestId('web-account-introduction')).toBeTruthy();
     expect(frame.getAttribute('data-pod-sign-in-frame')).toBe('page');
     expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-host')).toBe('document');
     expect(screen.getByRole('heading', { name: '正在加载 Xpod' }).classList.contains('sr-only')).toBe(false);

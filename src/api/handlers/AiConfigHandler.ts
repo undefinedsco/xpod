@@ -5,6 +5,7 @@ import type { SolidAuthContext } from '../auth/AuthContext';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import { isGatewayApiKeyPrincipal } from '../ai-gateway/auth/GatewayPrincipal';
+import { sendPodAccessFailure } from './PodAccessFailureResponse';
 import {
   EMBEDDING_MODEL_NOT_ALLOWED,
   EmbeddingModelPolicy,
@@ -122,7 +123,11 @@ export function registerAiConfigRoutes(server: ApiServer, options: AiConfigHandl
         capabilities: resolveCapabilities(options),
         lifecycle: options.lifecycle ? await options.lifecycle.status(owner) : emptyLifecycle(config.updatedAt),
       });
-    } catch {
+    } catch (error) {
+      // A caller whose Pod credential cannot be replayed (a DPoP session) is refused, not
+      // broken: the session retries with its own client credential only when it sees this
+      // stable 403, so reporting it as an internal error would strand the read.
+      if (sendPodAccessFailure(response, error)) return;
       sendJson(response, 500, { error: 'Failed to read AI Config' });
     }
   });
@@ -156,7 +161,8 @@ export function registerAiConfigRoutes(server: ApiServer, options: AiConfigHandl
         capabilities: resolveCapabilities(options),
         lifecycle: options.lifecycle ? await options.lifecycle.status(owner) : emptyLifecycle(config.updatedAt),
       });
-    } catch {
+    } catch (error) {
+      if (sendPodAccessFailure(response, error)) return;
       sendJson(response, 500, { error: 'Failed to update AI Config' });
     }
   });

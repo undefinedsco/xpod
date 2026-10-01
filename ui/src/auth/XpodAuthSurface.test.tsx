@@ -70,7 +70,7 @@ test('Account login document uses the Pod sign-in window frame in the desktop sh
   expect(screen.queryByTestId('auth-surface-page')).toBeNull();
   expect(screen.getByLabelText('邮箱')).toBeTruthy();
   expect(screen.queryByTestId('web-account-introduction')).toBeNull();
-  expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+  expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('window');
   expect(setWindowMode).toHaveBeenCalledWith('account');
   const panel = screen.getByTestId('web-account-panel');
   expect(panel.getAttribute('data-web-account-host')).toBe('window');
@@ -87,9 +87,11 @@ test('Account login document uses the Pod sign-in window frame in the desktop sh
 test('Account documents embedded in a desktop workspace stay a page frame and keep the sign-in service bar', () => {
   const setWindowMode = vi.fn();
   vi.stubGlobal('xpodDesktop', { setWindowMode });
-  render(<WebAccountLayout title="账号" presentation="compact">Embedded controls</WebAccountLayout>);
+  render(<WebAccountLayout title="账号">Embedded controls</WebAccountLayout>);
   const panel = screen.getByTestId('web-account-panel');
   expect(panel.getAttribute('data-web-account-host')).toBe('document');
+  expect(panel.getAttribute('data-web-account-layout')).toBe('page');
+  expect(screen.getByRole('heading', { level: 1, name: '账号' }).className).toContain('text-[17px]');
   expect(screen.getByRole('region', { name: '账号' }).getAttribute('data-pod-sign-in-frame')).toBe('page');
   expect(screen.getByText(/Xpod · 账号服务/)).toBeTruthy();
   expect(screen.getByRole('heading', { level: 1, name: '账号' })).toBeTruthy();
@@ -124,7 +126,7 @@ test('Account login and registration are the shared sign-in and register views, 
   expect(onFieldChange).toHaveBeenCalledWith('password', 'pw');
   fireEvent.click(screen.getByRole('button', { name: '登录' }));
   expect(onSubmit).toHaveBeenCalledWith({ email: 'a@example.test', password: 'pw' });
-  fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
+  fireEvent.click(screen.getByRole('button', { name: '注册账号' }));
   expect(onRegister).toHaveBeenCalledTimes(1);
 
   rerender(<XpodBlockingAccountCredentialsSurface surface="page" surfaceTitle="账号" mode="register"
@@ -148,24 +150,33 @@ test('Account registration shares the Account frame', () => {
   expect(screen.queryByTestId('auth-surface-page')).toBeNull();
   expect(screen.getByLabelText('邮箱')).toBeTruthy();
   expect(screen.queryByTestId('web-account-introduction')).toBeNull();
-  expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+  expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('window');
   expect(setWindowMode).toHaveBeenCalledWith('account');
 });
 
 test('CSS consent documents use Account window geometry', () => {
   const setWindowMode = vi.fn();
   vi.stubGlobal('xpodDesktop', { setWindowMode });
-  render(<XpodAccountPageSurface title="授权" presentation="compact"><p>Consent</p></XpodAccountPageSurface>);
-  expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+  render(<XpodAccountPageSurface title="授权"><p>Consent</p></XpodAccountPageSurface>);
+  expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('window');
   expect(screen.queryByTestId('web-account-introduction')).toBeNull();
   expect(setWindowMode).toHaveBeenCalledWith('account');
+});
+
+test('a browser page frame shows the account-service introduction the host supplies', () => {
+  vi.stubGlobal('xpodDesktop', undefined);
+  render(<WebAccountLayout title="登录 Xpod" intro={<p>账号服务介绍</p>}>content</WebAccountLayout>);
+  const intro = screen.getByText('账号服务介绍');
+  expect(intro.closest('[data-pod-sign-in="intro"]')).toBeTruthy();
 });
 
 test.each([['window', 'window'], ['document', 'page']] as const)('WebAccountLayout puts its layout and host attributes on the region element (%s host)', (host, frame) => {
   vi.stubGlobal('xpodDesktop', undefined);
   render(<WebAccountLayout title="账号" host={host}>content</WebAccountLayout>);
   const region = screen.getByRole('region', { name: '账号' });
-  expect(region.getAttribute('data-web-account-layout')).toBe('compact');
+  expect(region.getAttribute('data-web-account-layout')).toBe(host === 'window' ? 'window' : 'page');
   expect(region.getAttribute('data-web-account-host')).toBe(host);
+  // Without an intro the body keeps the full width; the intro column is host-supplied.
+  expect(region.querySelector('[data-pod-sign-in="intro"]')).toBeNull();
   expect(region.getAttribute('data-pod-sign-in-frame')).toBe(frame);
 });

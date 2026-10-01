@@ -43,7 +43,7 @@ describe('MatrixPodResolver', () => {
   it('allows a known shared Pod without substituting the caller identity', async () => {
     const resolver = createMatrixPodResolver(repository());
     const auth = { type: 'solid' as const, webId: 'https://agents.example/bob#me', accessToken: 'caller-token' };
-    const context = await resolveMatrixContext({ auth, headers: { 'x-xpod-pod-url': pod.baseUrl } } as AuthenticatedRequest, resolver);
+    const context = await resolveMatrixContext({ auth, headers: { 'x-xpod-pod-url': pod.baseUrl } } as unknown as AuthenticatedRequest, resolver);
     expect(context).toEqual({ webId: auth.webId, auth, podUrl: pod.baseUrl });
     expect(context.auth).toBe(auth);
   });
@@ -79,7 +79,7 @@ describe('MatrixPodResolver', () => {
 
   it('rejects ambiguous repeated Pod selectors', async () => {
     const resolver = vi.fn();
-    await expect(resolveMatrixContext({ auth: { type: 'solid', webId }, headers: { 'x-xpod-pod-url': [pod.baseUrl, 'https://other.example/'] } } as AuthenticatedRequest, resolver)).rejects.toMatchObject({ status: 400 });
+    await expect(resolveMatrixContext({ auth: { type: 'solid', webId }, headers: { 'x-xpod-pod-url': [pod.baseUrl, 'https://other.example/'] } } as unknown as AuthenticatedRequest, resolver)).rejects.toMatchObject({ status: 400 });
     expect(resolver).not.toHaveBeenCalled();
   });
 });

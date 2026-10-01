@@ -68,7 +68,9 @@ describe('deferred pod collections host capability', () => {
   it('forwards sync state, including transitions that start before the engine lands', async () => {
     const collections = capability()
     const seen: Array<string | undefined> = []
-    let collection: PodCollection<{ id: string }> | undefined
+    // Assigned after the subscription, which the loader drives synchronously
+    // before the engine lands: the read really does precede the write.
+    let collection: PodCollection<{ id: string }> | undefined = undefined
     // Subscribed before the engine exists: the first transition must not be lost.
     collections.subscribeSyncState(() => {
       seen.push(collection ? collections.syncState(collection) : undefined)

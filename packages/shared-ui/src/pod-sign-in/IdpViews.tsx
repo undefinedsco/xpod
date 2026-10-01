@@ -12,6 +12,7 @@ import {
   primaryButtonClass,
   textButtonClass,
 } from './parts'
+import { Input } from '../input'
 import { cn } from '../utils'
 
 /** Shared by every B-group view: which service's page this is, and the wording. */
@@ -106,7 +107,10 @@ export function IdpSignInView(props: IdpSignInViewProps) {
         <ActionButton type="submit" className={primaryButtonClass} busy={pending}>{copy.signIn}</ActionButton>
       <div className="flex items-center justify-between gap-2">
         {onRegister || registerHref ? (
-          <TextAction href={registerHref} disabled={pending} onClick={onRegister}>{copy.registerLink}</TextAction>
+          <span className="flex items-center gap-1">
+            <span className="text-xs text-muted-foreground">{copy.noAccount}</span>
+            <TextAction href={registerHref} disabled={pending} onClick={onRegister}>{copy.registerLink}</TextAction>
+          </span>
         ) : <span />}
         {onUseOtherSolid ? (
           <button type="button" className={cn(textButtonClass, 'text-primary hover:underline')} disabled={pending} onClick={onUseOtherSolid}>
@@ -118,7 +122,7 @@ export function IdpSignInView(props: IdpSignInViewProps) {
       )}
     >
       <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold text-foreground">{formatCopy(copy.signInTitle, { service: serviceName })}</h1>
+        <h1 className="text-[17px] font-semibold text-foreground">{formatCopy(copy.signInTitle, { service: serviceName })}</h1>
         {returnToAppName ? (
           <p className="text-sm text-muted-foreground">{formatCopy(copy.returnToApp, { app: returnToAppName })}</p>
         ) : null}
@@ -126,7 +130,7 @@ export function IdpSignInView(props: IdpSignInViewProps) {
       <div className="flex flex-col gap-4">
         <Field label={copy.email} error={fieldErrors?.email}>
           {(fieldProps) => (
-            <input
+            <Input
               {...fieldProps}
               name="email"
               type="email"
@@ -151,7 +155,7 @@ export function IdpSignInView(props: IdpSignInViewProps) {
           ) : undefined}
         >
           {(fieldProps) => (
-            <input
+            <Input
               {...fieldProps}
               name="password"
               type="password"
@@ -233,7 +237,7 @@ export function IdpRegisterView(props: IdpRegisterViewProps) {
       )}
     >
       <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold text-foreground">{formatCopy(copy.registerTitle, { service: serviceName })}</h1>
+        <h1 className="text-[17px] font-semibold text-foreground">{formatCopy(copy.registerTitle, { service: serviceName })}</h1>
         {returnToAppName ? (
           <p className="text-sm text-muted-foreground">{formatCopy(copy.returnToApp, { app: returnToAppName })}</p>
         ) : null}
@@ -246,7 +250,7 @@ export function IdpRegisterView(props: IdpRegisterViewProps) {
             hint={usernamePreview ? <span role="status" className="font-mono text-xs">{usernamePreview}</span> : undefined}
           >
             {(fieldProps) => (
-              <input
+              <Input
                 {...fieldProps}
                 name="username"
                 type="text"
@@ -266,7 +270,7 @@ export function IdpRegisterView(props: IdpRegisterViewProps) {
         ) : null}
         <Field label={copy.email} error={fieldErrors?.email}>
           {(fieldProps) => (
-            <input
+            <Input
               {...fieldProps}
               name="email"
               type="email"
@@ -285,7 +289,7 @@ export function IdpRegisterView(props: IdpRegisterViewProps) {
         </Field>
         <Field label={copy.password} error={fieldErrors?.password}>
           {(fieldProps) => (
-            <input
+            <Input
               {...fieldProps}
               name="password"
               type="password"
@@ -358,7 +362,7 @@ export function IdpNoWebIdView(props: IdpNoWebIdViewProps) {
       )}
     >
       <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold text-foreground">{copy.noWebIdTitle}</h1>
+        <h1 className="text-[17px] font-semibold text-foreground">{copy.noWebIdTitle}</h1>
         <p className="text-sm leading-[22px] text-muted-foreground">{formatCopy(copy.noWebIdLead, { app: appName })}</p>
       </div>
       <div className="flex flex-col gap-4">
@@ -371,7 +375,7 @@ export function IdpNoWebIdView(props: IdpNoWebIdViewProps) {
               : <span>{copy.noWebIdLocation}</span>}
           >
             {(fieldProps) => (
-              <input
+              <Input
                 {...fieldProps}
                 name="webIdName"
                 type="text"

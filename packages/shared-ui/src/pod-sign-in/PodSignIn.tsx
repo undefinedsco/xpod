@@ -224,7 +224,7 @@ export function PodSignIn({
         actions={(
           <>
             {noticeNode}
-            <ActionButton className={primaryButtonClass} busy={busy} onClick={onPrimary}>
+            <ActionButton className={primaryButtonClass} busy={busy} data-pod-sign-in-primary="true" onClick={onPrimary}>
               {primaryLabel}
             </ActionButton>
             {onUseAnother ? (
@@ -261,7 +261,7 @@ export function PodSignIn({
       actions={(
         <>
         {noticeNode}
-        <ActionButton className={primaryButtonClass} busy={busy} onClick={onPrimary}>
+        <ActionButton className={primaryButtonClass} busy={busy} data-pod-sign-in-primary="true" onClick={onPrimary}>
           {!notice?.primaryLabel && primaryIcon !== null ? <span aria-hidden="true" className="mr-2 flex">{primaryIcon ?? <XpodMark size={20} />}</span> : null}
           {primaryLabel}
         </ActionButton>
@@ -299,7 +299,7 @@ export function PodSignIn({
     >
       {source}
       <div className="flex flex-col gap-2">
-        <h1 className="text-xl font-semibold text-foreground">{copy.chooseTitle}</h1>
+        <h1 className="text-[17px] font-semibold text-foreground">{copy.chooseTitle}</h1>
         <p className="text-sm leading-[22px] text-muted-foreground">{copy.chooseLead}</p>
         <div className="flex flex-col">
           <Disclosure summary={copy.whatIsWebId}>{copy.whatIsWebIdBody}</Disclosure>

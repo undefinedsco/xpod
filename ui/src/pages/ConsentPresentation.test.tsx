@@ -61,14 +61,21 @@ const cloud = { webId: 'https://pod.example/alice/profile/card#me', storageUrl: 
 const edge = { webId: 'http://127.0.0.1:3000/alice/profile/card#me', storageUrl: 'http://127.0.0.1:3000/alice/', label: 'Alice Home' };
 
 describe('ConsentPage presentation', () => {
-  it('renders the authorization as the shared consent view: service bar, app title and host, one heading', async () => {
+  it('renders the authorization as the shared consent view: service bar, app title and host, one level-1 heading', async () => {
     stubConsent([cloud]);
     renderPage();
     await screen.findByRole('button', { name: '允许' });
 
     expect(screen.getByText(/Xpod · 账号服务/)).toBeTruthy();
-    expect(screen.getAllByRole('heading')).toHaveLength(1);
-    expect(screen.getByRole('heading', { level: 1, name: '授权 Northstar' })).toBeTruthy();
+    // The browser page frame's account-service introduction carries an h2; the
+    // view itself keeps the single level-1 heading.
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(screen.getByTestId('web-account-introduction')).toBeTruthy();
+    const authorizeHeading = screen.getByRole('heading', { level: 1, name: '授权 Northstar' });
+    // §3/§5 title spec: the consent heading shares the sign-in/register scale —
+    // 17px at weight 600 (font-semibold), not the default 20px `text-xl`.
+    expect(authorizeHeading.className).toContain('text-[17px]');
+    expect(authorizeHeading.className).toContain('font-semibold');
     expect(screen.getByText('app.example')).toBeTruthy();
     // One WebID: a single row, no choice, and the location is only a badge.
     expect(screen.queryByRole('radiogroup')).toBeNull();
@@ -93,13 +100,16 @@ describe('ConsentPage presentation', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: '允许' }) as HTMLButtonElement).disabled).toBe(false));
   });
 
-  it('shows a missing Pod as the no-WebID view: name, create and continue, account page, deny', async () => {
+  it('shows a missing Pod as the no-WebID view: create and continue, account page, deny', async () => {
     const fetchMock = stubConsent([]);
-    renderPage({ controls: { account: { username: 'alice', pod: '/.account/account/pod/' } } });
+    renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: '还没有 WebID' })).toBeTruthy();
-    expect(screen.getAllByRole('heading')).toHaveLength(1);
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(screen.getByTestId('web-account-introduction')).toBeTruthy();
     expect(screen.getByText(/Xpod · 账号服务/)).toBeTruthy();
-    expect((screen.getByLabelText('WebID 名称') as HTMLInputElement).value).toBe('alice');
+    // The no-Pod consent view keeps no name field: naming happens only after the
+    // user moves into the scoped lightweight create page.
+    expect(screen.queryByLabelText('WebID 名称')).toBeNull();
     expect(screen.getByRole('button', { name: '创建并继续' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '存到边缘设备（打开账号页）' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '拒绝' })).toBeTruthy();
@@ -148,4 +158,3 @@ describe('ConsentPage presentation', () => {
     expect(screen.queryByText(/Pod 名称可用/)).toBeNull();
   });
 });
-

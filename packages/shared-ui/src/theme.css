@@ -1,25 +1,28 @@
 @layer base {
   :root {
     color-scheme: light;
-    --background: 42 38.5% 94.9%;
-    --foreground: 30 13.2% 14.9%;
-    --card: 45 33.3% 97.6%;
+    --background: 42 38.5% 94.9%; /* canvas #F7F4ED */
+    --foreground: 30 13.2% 14.9%; /* text #2B2621 */
+    --card: 45 33.3% 97.6%; /* raised #FBFAF7 */
     --card-foreground: 30 13.2% 14.9%;
     --popover: 45 33.3% 97.6%;
     --popover-foreground: 30 13.2% 14.9%;
-    --primary: 260.6 36.1% 38%;
-    --primary-foreground: 42 38.5% 94.9%;
-    --secondary: 0 10.2% 90.4%;
+    --primary: 260.6 36.1% 38%; /* action #563E84 */
+    --primary-foreground: 42 38.5% 94.9%; /* on-action #F7F4ED */
+    --primary-hover: 261 35.7% 32.9%; /* action hover #4B3672 */
+    --primary-pressed: 261.2 35.7% 28%; /* action pressed #402E61 */
+    --secondary: 0 10.2% 90.4%; /* tint canvas #E9E4E4 */
     --secondary-foreground: 30 13.2% 14.9%;
-    --muted: 18 15.6% 87.5%;
-    --muted-foreground: 33.3 9.8% 36.1%;
-    --accent: 0 10.2% 90.4%;
+    --muted: 18 15.6% 87.5%; /* tint sunken #E4DDDA */
+    --muted-foreground: 33.3 9.8% 36.1%; /* muted #655D53 */
+    --accent: 0 10.2% 90.4%; /* tint #E9E4E4 */
     --accent-foreground: 30 13.2% 14.9%;
     --destructive: 352 43% 49%;
     --destructive-foreground: 0 0% 100%;
-    --border: 36 13.5% 85.5%;
-    --input: 36 4% 51%;
-    --ring: 260.6 36.1% 38%;
+    --border: 36 13.5% 85.5%; /* line #DFDBD5 */
+    --input: 36 4% 51%; /* control #87837D */
+    --control-strong: 33.3 9.8% 36.1%; /* control-strong on tint #655D53 */
+    --ring: 260.6 36.1% 38%; /* focus = action #563E84 */
     --lineage: 260.6 36.1% 38%;
     --lineage-foreground: 42 38.5% 94.9%;
     --boundary: 202 34% 37%;
@@ -36,54 +39,59 @@
     --radius-2xl: 16px;
     --radius-3xl: 16px;
     --radius: 0.5rem;
-    --layout-sidebar: 41.3 38.1% 91.8%;
-    --layout-list-header: 42 38.5% 94.9%;
-    --layout-list-hover: 0 10.2% 90.4%;
-    --layout-list-item: 45 33.3% 97.6%;
-    --layout-list-selected: 0 10.2% 90.4%;
-    --layout-content: 42 38.5% 94.9%;
+    --layout-sidebar: 41.3 38.1% 91.8%; /* sunken #F2EDE2 */
+    --layout-list-header: 42 38.5% 94.9%; /* canvas #F7F4ED */
+    --layout-list-hover: 0 10.2% 90.4%; /* tint #E9E4E4 */
+    --layout-list-item: 45 33.3% 97.6%; /* raised #FBFAF7 */
+    --layout-list-selected: 0 10.2% 90.4%; /* tint #E9E4E4 */
+    --layout-content: 42 38.5% 94.9%; /* canvas #F7F4ED */
     --purple-medium: 260.6 36.1% 38%;
     --purple-deep: 261.2 35.7% 28%;
     --purple-light: 258 48% 84%;
-    --sunken: 41 27% 91%;
+    --sunken: 41.3 38.1% 91.8%; /* sunken #F2EDE2 */
   }
 
   .dark {
     color-scheme: dark;
-    --background: 36 9.8% 10%;
-    --foreground: 40 31.6% 92.5%;
-    --card: 34.3 10.8% 12.7%;
-    --card-foreground: 40 31.6% 92.5%;
-    --popover: 34.3 10.8% 12.7%;
-    --popover-foreground: 40 31.6% 92.5%;
-    --primary: 258.9 40.7% 66.3%;
-    --primary-foreground: 36 9.8% 10%;
-    --secondary: 276.9 11.7% 21.8%;
+    --background: 30 13.8% 11.4%; /* canvas #211D19 */
+    --foreground: 42 38.5% 94.9%; /* text #F7F4ED */
+    --card: 30 13.2% 14.9%; /* raised #2B2621 */
+    --card-foreground: 42 38.5% 94.9%;
+    --popover: 30 13.2% 14.9%;
+    --popover-foreground: 42 38.5% 94.9%;
+    /* R2 §8.4: the fixed brand violet is 1.93:1 on dark canvas, so the dark
+       action role is the lightened mapping, never #563E84 itself. */
+    --primary: 270 16.7% 71.8%; /* action #B7ABC3 */
+    --primary-foreground: 30 13.8% 11.4%; /* on-action #211D19 */
+    --primary-hover: 271.6 16.8% 77.8%; /* action hover #C7BDD0 */
+    --primary-pressed: 264.4 18.8% 66.7%; /* action pressed #A79ABA */
+    --secondary: 276.9 11.7% 21.8%; /* tint #39313E */
     --secondary-foreground: 42 38.5% 94.9%;
-    --muted: 276.9 11.7% 21.8%;
-    --muted-foreground: 34.3 12.1% 66.1%;
-    --accent: 266.7 9.7% 18.2%;
-    --accent-foreground: 40 31.6% 92.5%;
+    --muted: 276.9 11.7% 21.8%; /* tint #39313E */
+    --muted-foreground: 34.3 15.8% 73.9%; /* muted #C7BEB2 */
+    --accent: 276.9 11.7% 21.8%; /* tint #39313E */
+    --accent-foreground: 42 38.5% 94.9%;
     --destructive: 352 43% 49%;
     --destructive-foreground: 0 0% 100%;
-    --border: 36 9.4% 20.8%;
-    --input: 36 7.3% 40.2%;
-    --ring: 258.9 40.7% 66.3%;
-    --lineage: 258.9 40.7% 66.3%;
-    --lineage-foreground: 36 9.8% 10%;
+    --border: 30 12.3% 25.5%; /* line #494139 */
+    --input: 32.7 9.2% 53.3%; /* control #93897D */
+    --control-strong: 33.9 13.6% 66.9%; /* control-strong on tint #B6AC9F */
+    --ring: 270 16.7% 71.8%; /* focus = action #B7ABC3 */
+    --lineage: 270 16.7% 71.8%;
+    --lineage-foreground: 30 13.8% 11.4%;
     --boundary: 202 34% 48%;
     --boundary-foreground: 0 0% 100%;
     --success: 160 48% 42%;
     --success-foreground: 0 0% 100%;
     --warning: 44 72% 48%;
     --warning-foreground: 0 0% 100%;
-    --layout-sidebar: 30 13.6% 8.6%;
-    --layout-list-header: 36 9.8% 10%;
-    --layout-list-hover: 276.9 11.7% 21.8%;
-    --layout-list-item: 34.3 10.8% 12.7%;
-    --layout-list-selected: 266.7 9.7% 18.2%;
-    --layout-content: 36 9.8% 10%;
-    --sunken: 34.3 10.8% 15.5%;
+    --layout-sidebar: 30 13.6% 8.6%; /* sunken #191613 */
+    --layout-list-header: 30 13.8% 11.4%; /* canvas #211D19 */
+    --layout-list-hover: 276.9 11.7% 21.8%; /* tint #39313E */
+    --layout-list-item: 30 13.2% 14.9%; /* raised #2B2621 */
+    --layout-list-selected: 276.9 11.7% 21.8%; /* tint #39313E */
+    --layout-content: 30 13.8% 11.4%; /* canvas #211D19 */
+    --sunken: 30 13.6% 8.6%; /* sunken #191613 */
   }
 
   .light {
@@ -96,6 +104,8 @@
     --popover-foreground: 30 13.2% 14.9%;
     --primary: 260.6 36.1% 38%;
     --primary-foreground: 42 38.5% 94.9%;
+    --primary-hover: 261 35.7% 32.9%;
+    --primary-pressed: 261.2 35.7% 28%;
     --secondary: 0 10.2% 90.4%;
     --secondary-foreground: 30 13.2% 14.9%;
     --muted: 18 15.6% 87.5%;
@@ -106,6 +116,7 @@
     --destructive-foreground: 0 0% 100%;
     --border: 36 13.5% 85.5%;
     --input: 36 4% 51%;
+    --control-strong: 33.3 9.8% 36.1%;
     --ring: 260.6 36.1% 38%;
     --lineage: 260.6 36.1% 38%;
     --lineage-foreground: 42 38.5% 94.9%;
@@ -124,7 +135,7 @@
     --purple-medium: 260.6 36.1% 38%;
     --purple-deep: 261.2 35.7% 28%;
     --purple-light: 258 48% 84%;
-    --sunken: 41 27% 91%;
+    --sunken: 41.3 38.1% 91.8%;
   }
 
   html,
@@ -134,10 +145,11 @@
   }
 
   /*
-   * Shared native-control baseline. The `html` prefix intentionally gives
-   * these semantic colors precedence over @tailwindcss/forms' fixed white
-   * defaults, even when a consumer imports this theme before Tailwind's base
-   * layer. Product components remain free to override the rest of the shape.
+   * Shared native-control baseline. The `html` prefix gives these rules more
+   * specificity than @tailwindcss/forms' `input:where([type='text'])` base
+   * (0,0,1) so the semantic colours stay in charge, while `:where()` keeps the
+   * added specificity at zero. The control's focus outline lives in one place
+   * (the shared `controlFocusClass`), so nothing here may outrank a utility.
    */
   html input:where(:not([type]), [type='text'], [type='email'], [type='password'], [type='number'], [type='date'], [type='datetime-local'], [type='month'], [type='search'], [type='tel'], [type='time'], [type='url'], [type='week']),
   html textarea,
@@ -164,6 +176,28 @@
     --tw-ring-offset-color: hsl(var(--background));
   }
 
+  /*
+   * Clear @tailwindcss/forms' fixed blue focus colour (border + ring box-shadow)
+   * so it cannot stack with the shared outline into the double frame the design
+   * forbids. Every native control is covered — text inputs, textarea, select and
+   * also checkbox/radio, whose plugin rule is `input:where([type=...]):focus`
+   * (0,1,1) like the text fields and would otherwise keep its blue 2px/4px ring.
+   * This selector is deliberately (0,1,2): it outranks every plugin base
+   * (0,1,1) but loses to the shared `focus-visible:outline-*` utility (0,2,0),
+   * which stays the single owner of the visible control focus boundary. The
+   * checked/hover state selectors (0,2,1) still win, so a checked box keeps its
+   * filled appearance.
+   */
+  html input:focus,
+  html textarea:focus,
+  html select:focus {
+    border-color: hsl(var(--input));
+    outline: none;
+    box-shadow: none;
+    --tw-ring-shadow: 0 0 #0000;
+    --tw-ring-offset-shadow: 0 0 #0000;
+  }
+
   html button,
   html input,
   html textarea,
@@ -177,6 +211,22 @@
   html select:focus,
   html [role='button']:focus {
     outline: none;
+  }
+
+  /*
+   * Keyboard-focus fallback for legacy native controls that never adopted the
+   * shared `controlFocusClass` (settings pages, document panels, plain
+   * selects). The blanket `:focus { outline: none }` above must not erase the
+   * keyboard affordance, so this rule wins on source order at the same
+   * specificity and restores the one ink-violet outline. Shared controls keep
+   * the utility as the single owner: `focus-visible:outline-*` is (0,2,0) and
+   * outranks this (0,1,2) fallback, so no second boundary appears.
+   */
+  html input:focus-visible,
+  html textarea:focus-visible,
+  html select:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 3px;
   }
 
   html input:-webkit-autofill,
@@ -197,6 +247,8 @@
   --color-card-foreground: hsl(var(--card-foreground));
   --color-primary: hsl(var(--primary));
   --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-primary-hover: hsl(var(--primary-hover));
+  --color-primary-pressed: hsl(var(--primary-pressed));
   --color-secondary: hsl(var(--secondary));
   --color-secondary-foreground: hsl(var(--secondary-foreground));
   --color-muted: hsl(var(--muted));
@@ -207,7 +259,9 @@
   --color-destructive-foreground: hsl(var(--destructive-foreground));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
+  --color-control-strong: hsl(var(--control-strong));
   --color-ring: hsl(var(--ring));
+  --color-sunken: hsl(var(--sunken));
   --color-success: hsl(var(--success));
   --color-warning: hsl(var(--warning));
   --color-layout-sidebar: hsl(var(--layout-sidebar));
@@ -229,8 +283,13 @@
     line-height: 22px;
   }
 
-  .pod-sign-in :focus-visible {
-    outline: 2px solid hsl(var(--primary));
+  /*
+   * Front-door focus for links, buttons and summary. Form controls are excluded:
+   * the shared control primitive owns their focus outline, so a control never
+   * draws this outline and its own at once.
+   */
+  .pod-sign-in :focus-visible:not(input):not(textarea):not(select) {
+    outline: 2px solid hsl(var(--ring));
     outline-offset: 3px;
   }
 

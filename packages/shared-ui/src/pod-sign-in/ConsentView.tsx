@@ -92,7 +92,7 @@ export function ConsentView(props: ConsentViewProps) {
         {app.icon ? (
           <span aria-hidden="true" className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl">{app.icon}</span>
         ) : null}
-        <h1 className="text-xl font-semibold text-foreground">{formatCopy(copy.consentTitle, { app: app.name })}</h1>
+        <h1 className="text-[17px] font-semibold text-foreground">{formatCopy(copy.consentTitle, { app: app.name })}</h1>
         {app.host ? <Hostname>{app.host}</Hostname> : null}
         {!app.verified ? (
           <p role="alert" className="flex items-start gap-1.5 text-left text-[13px] text-warning">

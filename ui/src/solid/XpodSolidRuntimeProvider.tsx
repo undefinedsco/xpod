@@ -6,7 +6,7 @@ import {
   type StorageBinding,
 } from '@undefineds.co/solid-sdk';
 import { type SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
 import type { WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import {
@@ -139,11 +139,13 @@ export function XpodSolidRuntimeProvider({
   // Account's client-credential control has to be read with that session instead. The cookie path
   // stays first: when the Account already advertised the control, nothing is read twice.
   const [sessionAccount, setSessionAccount] = useState<SessionAccountControls>();
+  // A binding that no longer qualifies has no session Account. Clear it in the render that drops
+  // the binding, rather than writing the same value back through the effect.
+  if ((accountCollection || !accountIndex || !boundFetch || !boundWebId) && sessionAccount !== undefined) {
+    setSessionAccount(undefined);
+  }
   useEffect(() => {
-    if (accountCollection || !accountIndex || !boundFetch || !boundWebId) {
-      setSessionAccount(undefined);
-      return;
-    }
+    if (accountCollection || !accountIndex || !boundFetch || !boundWebId) return;
     let active = true;
     void readSessionAccountControls({ accountIndex, webId: boundWebId, fetch: boundFetch })
       .then((controls) => {
@@ -184,7 +186,7 @@ export function XpodSolidRuntimeProvider({
   }, [accountBind, accountCollection, accountWebId, boundFetch, runtime.session, sessionAccount]);
 
   const requestCredentialRef = useRef<SessionRequestCredential | undefined>(undefined);
-  if (!requestCredentialRef.current) {
+  if (requestCredentialRef.current == null) {
     requestCredentialRef.current = createSessionRequestCredential({});
   }
   useEffect(() => {
@@ -243,15 +245,21 @@ export function XpodSolidRuntimeProvider({
     )(input, init),
     [authenticatedFetch, authorizePodRequest],
   );
-  const exposedSession = useMemo(() => ({
-    ...runtime.session,
-    fetch: withRequestPodAuthorization(
+  // The session the applets receive keeps the same request-credential retry as the Pod-open
+  // transport, composed through a callback so the ref read stays out of render.
+  const exposedPodAuthorizedFetch = useCallback<typeof fetch>(
+    (input, init) => withRequestPodAuthorization(
       exposedFetch,
       authorizePodRequest,
       plainFetch,
-    ),
+    )(input, init),
+    [authorizePodRequest, exposedFetch],
+  );
+  const exposedSession = useMemo(() => ({
+    ...runtime.session,
+    fetch: exposedPodAuthorizedFetch,
     getSnapshot: () => snapshotRef.current,
-  }), [exposedFetch, runtime.session]);
+  }), [exposedPodAuthorizedFetch, runtime.session]);
 
   useEffect(() => {
     const projectSnapshot = (nextSnapshot: SolidSessionSnapshot) => {
@@ -302,6 +310,10 @@ export function XpodSolidRuntimeProvider({
     if (rejectedSessionRef.current) void clearRejectedSession();
   }, [clearRejectedSession]);
 
+  // Re-running this effect would reopen the Pod, so it reads the current authorized transport
+  // instead of subscribing to it: a refreshed Account credential must not restart the open.
+  const latestPodAuthorizedFetch = useEffectEvent(() => podAuthorizedFetch);
+
   useEffect(() => {
     if (snapshot.status !== 'authenticated') {
       return;
@@ -316,7 +328,7 @@ export function XpodSolidRuntimeProvider({
     const openArgs = {
       webId: snapshot.webId,
       ...(rememberedBinding ? { podUrl: rememberedBinding.storageUrl } : {}),
-      fetch: podAuthorizedFetch,
+      fetch: latestPodAuthorizedFetch(),
     };
     void (async () => {
       try {
@@ -489,7 +501,7 @@ export function XpodSolidRuntimeProvider({
         setAiClientConfiguration(undefined);
       },
     };
-  }, [aiClientConfiguration, authenticatedFetch, currentPod, exposedSession, issuer, podError, retryPodOpen, runtime, runtimeStorage, selectedStorage, snapshot]);
+  }, [aiClientConfiguration, authorizePodRequest, currentPod, exposedSession, issuer, podAuthorizedFetch, podError, retryPodOpen, runtime, runtimeStorage, selectedStorage, snapshot]);
 
   return (
     <SolidRuntimeProvider value={{ session: exposedSession, pod: runtime.pod, currentPod }}>

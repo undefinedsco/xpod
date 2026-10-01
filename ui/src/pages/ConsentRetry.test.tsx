@@ -6,7 +6,9 @@ import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import { xpodConsentErrors } from '../auth/xpod-account-copy';
 import { storageBindingKey } from '../auth/xpod-storage-selection';
 import { FIRST_POD_BINDING_MISSING } from '../utils/consent-first-pod';
+import { peekConsentContinuation } from '../utils/safe-continuation';
 import { ConsentPage } from './ConsentPage';
+import { FirstPodPage } from './FirstPodPage';
 
 function resetConsentRetryTestState(): void {
   cleanup();
@@ -58,6 +60,36 @@ function renderConsentPage(overrides: Partial<AuthContextType> = {}) {
 
 function requestPath(input: RequestInfo | URL): string {
   return new URL(String(input), window.location.origin).pathname;
+}
+
+/** jsdom's location is read-only; swap in a facade the page reads and navigates. */
+function installLocation(pathname: string) {
+  const browserWindow = window;
+  const navigation = {
+    href: `${browserWindow.location.origin}${pathname}`,
+    origin: browserWindow.location.origin,
+    pathname,
+    assign: vi.fn(),
+  };
+  const facade = Object.create(browserWindow);
+  Object.defineProperty(facade, 'location', { value: navigation });
+  vi.stubGlobal('window', facade);
+  return navigation;
+}
+
+function LocationProbe() {
+  return <span data-testid="location">{useLocation().pathname}</span>;
+}
+
+function renderAt(path: string, page: 'consent' | 'create-pod', overrides: Partial<AuthContextType> = {}) {
+  return render(
+    <AuthContext.Provider value={authValue(overrides)}>
+      <MemoryRouter initialEntries={[path]}>
+        <LocationProbe />
+        {page === 'consent' ? <ConsentPage /> : <FirstPodPage />}
+      </MemoryRouter>
+    </AuthContext.Provider>,
+  );
 }
 
 describe('ConsentPage storage retry routing', () => {
@@ -247,44 +279,86 @@ it('refreshes expired Account controls and preserves the interaction when going 
 });
 
 it('does not create a replacement for ownerless existing storage', async () => {
-  const binding = { webId: `${window.location.origin}/old-name/profile/card#me`, storageUrl: `${window.location.origin}/old-name/` };
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const uid = 'ownerless-retry';
+  const interaction = `/.account/interaction/${uid}`;
+  const consentPath = `${interaction}/oidc/consent/`;
+  const pickPath = `${interaction}/oidc/pick-webid/`;
+  const createPath = `${interaction}/create-pod/`;
+  const accountId = 'alice';
+  const accountBase = `https://id.example/.account/account/${accountId}/`;
+  // 权威 Account 控制：id 与所有 account-scoped 路由都指向同一个真实 Account。
+  const accountControls = {
+    account: {
+      id: accountId,
+      username: 'different-name',
+      pod: `${accountBase}pod/`,
+      bindings: `${accountBase}bindings/`,
+    },
+  };
+  // 账号权威清单里已有 Pod，但该 WebID 没有可用绑定。
+  const ownerlessInventory = { pods: { 'https://storage.example/old-name/': '/.account/pod/id' } };
+  const binding = { webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://storage.example/alice/' };
+
+  // 1) 缺 Pod 的授权页本身只读：点击只把"真实 Account id + 精确 UID + 同源原
+  //    ConsentURL"的一次性任务交给同 UID 轻量创建页，不在 Consent 内 prepare/POST。
+  const consentNavigation = installLocation(consentPath);
+  const consentFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = requestPath(input);
     if (init?.method === 'POST') throw new Error('Unexpected mutation');
-    if (path === '/.account/oidc/consent/') return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }));
-    if (path === '/.account/oidc/pick-webid/') return new Response(JSON.stringify({ entries: [] }));
-    // 账号权威清单里已有 Pod，但该 WebID 没有可用绑定。
-    if (path === '/.account/account/pod/') return new Response(JSON.stringify({ pods: { 'https://storage.example/old-name/': '/.account/pod/id' } }));
-    if (path === '/provision/status') return new Response(JSON.stringify({ registered: false }));
+    if (path === consentPath) return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }));
+    if (path === pickPath) return new Response(JSON.stringify({ entries: [] }));
+    if (path.endsWith('/pod/')) return new Response(JSON.stringify(ownerlessInventory));
+    if (path.endsWith('/bindings/')) return new Response(JSON.stringify({ bindings: [] }));
     return new Response('{}', { status: 404 });
   });
-  vi.stubGlobal('fetch', fetchMock);
-  renderConsentPage({ controls: { account: { username: 'different-name', pod: '/.account/account/pod/' } } });
+  vi.stubGlobal('fetch', consentFetch);
 
-  // 授权页不得推断归属：缺 Pod 时给出创建/管理/拒绝三个出口，加载阶段无写操作。
-  await screen.findByRole('button', { name: '创建并继续' });
-  expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
-  expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
+  renderAt(consentPath, 'consent', { controls: accountControls });
 
-  // 用户显式点击创建时，权威清单守卫必须挡下"账号已有 Pod 却无绑定"的替代创建，
-  // 并把页面交回权威绑定重读出口（重试 / 换账号 / Pod 管理）。
-  fireEvent.click(screen.getByRole('button', { name: '创建并继续' }));
-  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(FIRST_POD_BINDING_MISSING));
-  expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
-  expect(screen.getByRole('button', { name: '重试' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: '前往 Pod 管理' })).toBeTruthy();
+  fireEvent.click(await screen.findByRole('button', { name: '创建并继续' }));
+  await waitFor(() => expect(screen.getByTestId('location').textContent).toBe(createPath));
+  const task = peekConsentContinuation({ accountId });
+  expect(task?.kind).toBe('consent');
+  expect(task?.interaction).toBe(interaction);
+  expect(task?.returnTo).toBe(consentPath);
+  expect(consentFetch.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  expect(consentNavigation.assign).not.toHaveBeenCalled();
 
-  // 绑定就绪后重新进入该 interaction 才能继续批准（权威绑定与 owner 由 Pod 管理侧修复）。
+  // 2) 轻量创建页显式 submit 时，共享守卫必须挡下"账号已有 Pod 却无绑定"的替代
+  //    创建：只读清单、无 POST，把用户交回权威绑定重读出口。
   cleanup();
+  vi.unstubAllGlobals();
+  installLocation(createPath);
+  const createFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = requestPath(input);
+    if (init?.method === 'POST') throw new Error('Unexpected mutation');
+    if (path === consentPath) return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }));
+    if (path.endsWith('/pod/')) return new Response(JSON.stringify(ownerlessInventory));
+    if (path.endsWith('/bindings/')) return new Response(JSON.stringify({ bindings: [] }));
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', createFetch);
+
+  renderAt(createPath, 'create-pod', { controls: accountControls, idpIndex: 'https://id.example/.account/' });
+
+  fireEvent.click(await screen.findByRole('button', { name: '创建 Pod 并继续授权' }));
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(FIRST_POD_BINDING_MISSING));
+  expect(createFetch.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  expect(screen.getByTestId('location').textContent).toBe(createPath);
+
+  // 3) 绑定就绪后重新进入该 interaction 才能继续批准（权威绑定与 owner 由 Pod 管理侧修复）。
+  cleanup();
+  vi.unstubAllGlobals();
+  installLocation(consentPath);
   const readyFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = requestPath(input);
     if (init?.method === 'POST') throw new Error('Unexpected mutation');
-    if (path === '/.account/oidc/consent/') return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }));
-    if (path === '/.account/oidc/pick-webid/') return new Response(JSON.stringify({ entries: [binding] }));
+    if (path === consentPath) return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }));
+    if (path === pickPath) return new Response(JSON.stringify({ entries: [binding] }));
     return new Response('{}', { status: 404 });
   });
   vi.stubGlobal('fetch', readyFetch);
-  renderConsentPage({ controls: { account: { username: 'different-name', pod: '/.account/account/pod/' } } });
+  renderAt(consentPath, 'consent', { controls: accountControls });
   await waitFor(() => expect((screen.getByRole('button', { name: '允许', exact: true }) as HTMLButtonElement).disabled).toBe(false));
   expect(readyFetch.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
 });

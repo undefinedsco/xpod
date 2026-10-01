@@ -36,6 +36,7 @@ export {
   type CredentialEntry,
   type CredentialSectionProps,
   type DeviceSectionProps,
+  type UnlinkedPodEntry,
   type WebIdEntry,
   type WebIdSectionProps,
 } from './AccountSections'

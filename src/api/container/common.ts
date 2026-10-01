@@ -230,7 +230,8 @@ export function registerCommonServices(
     solidSessions: asFunction(({ config }: ApiContainerCradle) => {
       return new SolidSessionFactory({
         tokenEndpoint: config.cssTokenEndpoint,
-        publicBaseUrl: config.solidBaseUrl,
+        // Managed Local's Pod origin differs from the issuer of its client credentials.
+        publicBaseUrl: config.oidcIssuer ?? config.solidBaseUrl,
       });
     }).singleton(),
 

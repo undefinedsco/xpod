@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createSessionRequestCredential,
-  needsPodAuthorization,
   withRequestPodAuthorization,
 } from './session-request-credential';
 import type { AiClientCredentialsCapability } from '@undefineds.co/extension-sdk/web';
@@ -185,6 +184,17 @@ describe('withRequestPodAuthorization', () => {
     const notJson = (async () => new Response('nope', { status: 403 })) as typeof fetch;
     await expect(withRequestPodAuthorization(notJson, async() => 'Bearer sk-session')('https://xpod.example/v1/models'))
       .resolves.toMatchObject({ status: 403 });
+
+    // The AI Config route used to report a Pod-access failure as an internal 500. A 500 is not
+    // the refusal contract, so the session credential is never offered and the page stays broken;
+    // the pairing is locked here so the server keeps answering the mapped 403 instead.
+    const internalFailure = (async () => {
+      attempts.push(1);
+      return Response.json({ error: 'Failed to read AI Config' }, { status: 500 });
+    }) as typeof fetch;
+    const internalWrapped = withRequestPodAuthorization(internalFailure, async() => 'Bearer sk-session');
+    await expect(internalWrapped('https://xpod.example/api/ai/config')).resolves.toMatchObject({ status: 500 });
+    expect(attempts).toHaveLength(2);
   });
 
   it('returns the original refusal when no credential can be prepared or the retry still fails', async() => {

@@ -118,11 +118,14 @@ describe('dashboard runtime console routes', () => {
 });
 
 describe('upgraded dashboard pages', () => {
-  it('uses the flat taro runtime palette and tactile buttons instead of default high-saturation purple', async () => {
+  it('consumes the shared product palette and keeps tactile buttons instead of a second local theme', async () => {
     const indexCss = await readRepoFile('ui/src/styles/global.css');
     const button = await readRepoFile('ui/src/components/ui/Button.tsx');
 
-    expect(indexCss).toContain('Flat taro');
+    // shared-ui/theme.css is the single source of the colour roles (R2 §8.1);
+    // global.css only keeps the product radius and chart scales.
+    expect(indexCss).toContain("@import '@undefineds.co/shared-ui/theme.css';");
+    expect(indexCss).not.toMatch(/--primary:/);
     expect(indexCss).not.toContain('Primary: Violet (#7C3AED / #8B5CF6)');
     expect(indexCss).not.toContain('--primary: 262.1 83.3% 57.8%;');
     expect(indexCss).not.toContain('--primary: 263.4 70% 50.4%;');

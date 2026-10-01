@@ -307,7 +307,7 @@ async function assertDesktopIdentity(page: Page, account: FixtureReady['accounts
   expect(state.controls.account?.webId).toBeTruthy();
   const ownsWebId = await page.evaluate(async ({ control, webId }) => {
     const response = await fetch(control, { credentials: 'include', headers: { Accept: 'application/json' } });
-    return response.ok && Object.hasOwn((await response.json()).webIdLinks ?? {}, webId);
+    return response.ok && Object.prototype.hasOwnProperty.call((await response.json()).webIdLinks ?? {}, webId);
   }, { control: state.controls.account!.webId!, webId: account.webId });
   expect(ownsWebId).toBe(true);
 }
@@ -378,10 +378,11 @@ async function assertDesktopAccountDocument(page: Page): Promise<void> {
   expect(geometry).not.toBeNull();
   if (!geometry) throw new Error('Desktop Xpod Account document did not become stable');
 
-  // Account pages now intentionally retain their compact document card in
-  // the dedicated Account window. Vertical scrolling is allowed; controls must
+  // The dedicated desktop Account window intentionally fills the 360x540 host
+  // window with the presentation frame (no card); only the application WebID
+  // gate keeps the compact card. Vertical scrolling is allowed; controls must
   // remain usable without horizontal overflow.
-  expect(geometry.layout).toBe('compact');
+  expect(geometry.layout).toBe('window');
   expect(geometry.viewport).toEqual({ width: 360, height: 540 });
   expect(geometry.dialog.x).toBeGreaterThanOrEqual(0);
   expect(geometry.dialog.width).toBeGreaterThan(0);

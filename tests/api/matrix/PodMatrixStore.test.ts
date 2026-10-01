@@ -9,7 +9,7 @@ vi.mock('@undefineds.co/drizzle-solid', async () => {
   return { ...actual, drizzle: vi.fn() };
 });
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); });
 
 describe('PodMatrixStore shared Pod contract', () => {
   it('stores room, thread and event relationships using the shared models resources', async () => {

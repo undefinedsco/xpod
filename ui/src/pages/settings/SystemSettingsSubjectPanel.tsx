@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Skeleton } from '@undefineds.co/shared-ui';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Skeleton } from '@undefineds.co/shared-ui';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
 import { ExternalLink, RefreshCw, RotateCcw } from 'lucide-react';
 import { getAdminConfig, getAdminStatus, getDdnsStatus, getProvisionStatus, getPublicIpCheck, resolveAdminAccessBaseUrl, triggerRestart, updateAdminConfig, type AdminConfig, type AdminStatus, type ProvisionStatus, type PublicIpCheckResult } from '../../api/admin';
@@ -14,6 +14,43 @@ import { reachablePodUrl } from './pod-url';
 import { createXpodAiConnectionsClient } from '../../api/ai-connections';
 import { createServiceAccessPermissionCapability } from '../../api/service-access-acp';
 import { parseAiConnectionsServiceAccess } from '@undefineds.co/ai-connections';
+import {
+  clearConsentContinuation,
+  confirmConsentInteractionAtAuthority,
+  consumeConfirmedConsentContinuation,
+  consumeManagementContinuation,
+  isAccountReturnTo,
+  readConfirmedConsentContinuation,
+  readManagementContinuation,
+  resolveAuthoritativeAccountId,
+  type ConsentContinuation,
+  type ManagementContinuation,
+} from '../../utils/safe-continuation';
+import { fetchOidcCancelRedirectLocation, resolveOidcCancelUrl } from '../ConsentPage.utils';
+
+/**
+ * Rebuild a cancel target for one interaction on a page whose own URL carries no
+ * interaction scope (`/settings/pod`). `scopeAccountUrl` cannot help here: it
+ * only rewrites when the current location already has the scope, so it would
+ * fall back to the unscoped `/.account/oidc/cancel/` and cancel the wrong (or no)
+ * interaction.
+ */
+function interactionScopedCancelUrl(
+  interaction: string,
+  controls: Parameters<typeof resolveOidcCancelUrl>[0],
+  idpIndex: string,
+): string {
+  const resolved = resolveOidcCancelUrl(controls, idpIndex);
+  let suffix = '/oidc/cancel/';
+  try {
+    const url = new URL(resolved, window.location.origin);
+    if (url.origin === window.location.origin) {
+      const stripped = url.pathname.replace(/^\/\.account/u, '');
+      if (stripped.startsWith('/')) suffix = stripped.endsWith('/') ? stripped : `${stripped}/`;
+    }
+  } catch { /* keep the canonical suffix */ }
+  return `${interaction}${suffix}`;
+}
 
 export type SystemSettingsSubjectKind = 'pod' | 'identity-access' | 'storage' | 'runtime' | 'cloud' | 'advanced';
 
@@ -78,9 +115,17 @@ function PodManagementContent({ runtime, publicRoute }: { runtime: ReturnType<ty
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
   const [createNotice, setCreateNotice] = useState('');
+  const [consentResume, setConsentResume] = useState<ConsentContinuation | null>(null);
+  const [managementResume, setManagementResume] = useState<ManagementContinuation | null>(null);
+  const [resumeError, setResumeError] = useState('');
+  const [resuming, setResuming] = useState(false);
+  const consentCapabilityRef = useRef<(() => void) | undefined>(undefined);
+  const managementCapabilityRef = useRef<(() => void) | undefined>(undefined);
 
   const controls = account.controls;
   const idpIndex = account.idpIndex;
+  const accountId = resolveAuthoritativeAccountId(controls, account.identity);
+  const bindAccountCapability = account.bindAccountCapability;
   const loadBindings = useCallback(async () => {
     setListError('');
     try {
@@ -98,6 +143,142 @@ function PodManagementContent({ runtime, publicRoute }: { runtime: ReturnType<ty
     queueMicrotask(() => { if (!cancelled) void loadBindings(); });
     return () => { cancelled = true; };
   }, [loadBindings]);
+
+  // Resume context: only a genuinely pending authorization — confirmed against
+  // the server for this Account — continues that exact task. A daily visit only
+  // offers the Account return address; a stale consent task is never resumed.
+  //
+  // The Account-capability closure is captured together with the confirmed
+  // record: a later click must prove the *same* session is still current, not
+  // re-bind whatever session happens to be active when the user clicks.
+  useEffect(() => {
+    // Without a current authoritative Account no continuation can be resumed.
+    // The captured capabilities are dropped here, and the banners are derived
+    // from `accountId` in render, so a missing or switched Account hides them
+    // immediately without a synchronous setState inside the effect body.
+    consentCapabilityRef.current = undefined;
+    managementCapabilityRef.current = undefined;
+    if (!accountId) return;
+    let cancelled = false;
+    const assertAccount = bindAccountCapability?.();
+    void (async () => {
+      let confirmed: ConsentContinuation | null = null;
+      try {
+        confirmed = await readConfirmedConsentContinuation(
+          { accountId },
+          { assertCurrent: assertAccount },
+        );
+      } catch {
+        confirmed = null;
+      }
+      if (cancelled) return;
+      consentCapabilityRef.current = confirmed ? assertAccount : undefined;
+      const management = confirmed ? null : readManagementContinuation({ accountId });
+      managementCapabilityRef.current = management ? assertAccount : undefined;
+      setConsentResume(confirmed);
+      setManagementResume(management);
+    })();
+    return () => { cancelled = true; };
+  }, [accountId, bindAccountCapability]);
+
+  /**
+   * Drop the resume banner when the captured session is no longer the current
+   * one. Returns the captured capability so the async step can re-assert it after
+   * every await.
+   */
+  const assertResumeSession = useCallback((
+    expectedAccountId: string,
+    assertAccount: (() => void) | undefined,
+  ): (() => void) | null => {
+    const currentAccountId = resolveAuthoritativeAccountId(controls, account.identity);
+    if (!assertAccount || currentAccountId !== expectedAccountId) return null;
+    try {
+      assertAccount();
+    } catch {
+      return null;
+    }
+    return assertAccount;
+  }, [account.identity, controls]);
+
+  const resumeAuthorization = useCallback(async () => {
+    if (!consentResume || resuming) return;
+    const assertAccount = assertResumeSession(consentResume.accountId, consentCapabilityRef.current);
+    if (!assertAccount) {
+      setConsentResume(null);
+      setResumeError('这个授权任务已失效，请回到应用重新发起。');
+      return;
+    }
+    setResuming(true);
+    setResumeError('');
+    try {
+      // Re-confirm with the server at click time: the interaction may have been
+      // cancelled since the banner was confirmed on load.
+      const confirmed = await confirmConsentInteractionAtAuthority(consentResume, {
+        headers: storedAccountTokenHeaders({ Accept: 'application/json' }),
+        assertCurrent: assertAccount,
+      });
+      const consumed = confirmed
+        ? consumeConfirmedConsentContinuation(consentResume, { accountId: consentResume.accountId }, { assertCurrent: assertAccount })
+        : null;
+      if (!consumed) {
+        clearConsentContinuation();
+        setConsentResume(null);
+        setResumeError('这个授权任务已失效，请回到应用重新发起。');
+        setResuming(false);
+        return;
+      }
+      window.location.assign(consumed.returnTo);
+    } catch {
+      setConsentResume(null);
+      setResumeError('这个授权任务已失效，请回到应用重新发起。');
+      setResuming(false);
+    }
+  }, [assertResumeSession, consentResume, resuming]);
+
+  const cancelAuthorization = useCallback(async () => {
+    if (!consentResume || resuming) return;
+    const assertAccount = assertResumeSession(consentResume.accountId, consentCapabilityRef.current);
+    if (!assertAccount) {
+      setConsentResume(null);
+      setResumeError('这个授权任务已失效，请回到应用重新发起。');
+      return;
+    }
+    setResuming(true);
+    setResumeError('');
+    try {
+      const redirect = await fetchOidcCancelRedirectLocation({
+        // The heavy page has no interaction scope in its URL, so the cancel
+        // target must be rebuilt from the confirmed interaction; otherwise the
+        // request would fall back to the unscoped `/.account/oidc/cancel/`.
+        cancelUrl: interactionScopedCancelUrl(consentResume.interaction, controls, idpIndex),
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
+      });
+      assertAccount();
+      clearConsentContinuation();
+      window.location.assign(redirect);
+    } catch (error: unknown) {
+      // Server messages can be raw English; keep the safe localised copy and
+      // leave the diagnostic to tests/logs.
+      void error;
+      setResumeError('取消授权失败，请重试。');
+      setResuming(false);
+    }
+  }, [assertResumeSession, consentResume, controls, idpIndex, resuming]);
+
+  const returnToAccount = useCallback(() => {
+    if (!managementResume || resuming) return;
+    const assertAccount = assertResumeSession(managementResume.accountId, managementCapabilityRef.current);
+    if (!assertAccount) {
+      setManagementResume(null);
+      return;
+    }
+    const consumed = consumeManagementContinuation({ accountId: managementResume.accountId });
+    if (!consumed || !isAccountReturnTo(consumed.returnTo)) {
+      setManagementResume(null);
+      return;
+    }
+    window.location.assign(consumed.returnTo);
+  }, [assertResumeSession, managementResume, resuming]);
 
   const suggestedName = useMemo(() => deriveFirstPodNameCandidate([
     runtime.webId,
@@ -140,7 +321,31 @@ function PodManagementContent({ runtime, publicRoute }: { runtime: ReturnType<ty
     { label: 'Session', value: runtime.state.status },
   ];
 
+  // A continuation belongs only to the Account that confirmed it. Deriving the
+  // visible banner from the current authoritative Account id makes a switched or
+  // absent Account hide the task immediately, without clearing state in an effect.
+  const activeConsentResume = consentResume && consentResume.accountId === accountId ? consentResume : null;
+  const activeManagementResume = managementResume && managementResume.accountId === accountId ? managementResume : null;
+
   return <>
+    {activeConsentResume ? (
+      <div role="status" data-testid="consent-resume-banner" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/10 p-3">
+        <div className="text-sm">
+          <div className="font-medium text-foreground">有应用正在等待你的授权</div>
+          <div className="text-xs text-muted-foreground">完成这里的操作后可以回到原来的授权继续。</div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" disabled={resuming} onClick={resumeAuthorization}>回到授权</Button>
+          <Button type="button" variant="outline" disabled={resuming} onClick={() => void cancelAuthorization()}>取消授权</Button>
+        </div>
+      </div>
+    ) : activeManagementResume ? (
+      <div role="status" data-testid="management-resume-banner" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 p-3">
+        <div className="text-sm font-medium text-foreground">完成管理后可以回到账号页。</div>
+        <Button type="button" variant="outline" onClick={returnToAccount}>返回账号</Button>
+      </div>
+    ) : null}
+    {resumeError ? <div role="alert" className="rounded-md border border-destructive/30 p-3 text-sm text-destructive">{resumeError}</div> : null}
     <EvidenceGrid rows={rows} />
     <Button type="button" variant="outline" disabled={!podUrl} onClick={() => podUrl && window.open(podUrl, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-2 h-4 w-4" />Open Pod</Button>
 
@@ -169,9 +374,9 @@ function PodManagementContent({ runtime, publicRoute }: { runtime: ReturnType<ty
       <label className="block text-sm font-medium" htmlFor="pod-management-name">创建存储空间</label>
       <p className="text-xs text-muted-foreground">创建是一次显式操作：不会因为登录或授权而自动发生。</p>
       <div className="flex flex-wrap gap-2">
-        <input
+        <Input
           id="pod-management-name"
-          className="h-10 min-w-48 flex-1 rounded-md border border-input bg-background px-3"
+          className="h-10 min-w-48 flex-1"
           value={podName}
           placeholder={suggestedName || 'my-pod'}
           disabled={creating}
@@ -297,7 +502,7 @@ function AdvancedForm({ env, save }: { env: Record<string, string>; save(patch: 
 }
 
 function EvidenceGrid({ rows }: { rows: SettingsEvidenceRow[] }) { return <div className="grid gap-3 sm:grid-cols-2">{rows.map((row) => <div key={row.label} className="rounded-lg border border-border p-3"><div className="text-xs text-muted-foreground">{row.label}</div><div className="mt-1 break-all text-sm font-medium">{row.value}</div>{row.detail ? <div className="mt-1 text-xs text-muted-foreground">{row.detail}</div> : null}</div>)}</div>; }
-function TextInput({ label, value, onChange }: { label: string; value: string; onChange(value: string): void }) { return <label className="block space-y-2 text-sm font-medium">{label}<input value={value} onChange={(event) => onChange(event.target.value)} className="block h-10 w-full rounded-md border border-input bg-background px-3" /></label>; }
+function TextInput({ label, value, onChange }: { label: string; value: string; onChange(value: string): void }) { return <label className="block space-y-2 text-sm font-medium">{label}<Input value={value} onChange={(event) => onChange(event.target.value)} /></label>; }
 function SaveButton({ onClick }: { onClick(): void }) { return <div className="flex justify-end"><Button type="button" onClick={onClick}>Save configuration</Button></div>; }
 function podNameLabel(value: string | undefined): string { if (!value) return 'Not discovered'; try { return new URL(value).pathname.split('/').filter(Boolean).at(-1) || new URL(value).hostname; } catch { return value; } }
 

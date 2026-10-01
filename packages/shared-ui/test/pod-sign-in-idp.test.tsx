@@ -43,7 +43,7 @@ describe('IdpSignInView (B1)', () => {
     expect(handlers.onSubmit).toHaveBeenCalledWith({ email: 'ari@example.com', password: 'hunter2!' })
 
     fireEvent.click(screen.getByRole('button', { name: '忘记密码？' }))
-    fireEvent.click(screen.getByRole('button', { name: '注册' }))
+    fireEvent.click(screen.getByRole('button', { name: '注册账号' }))
     fireEvent.click(screen.getByRole('button', { name: '使用其他 Solid 账号' }))
     fireEvent.click(screen.getByRole('checkbox', { name: '在这台设备上保持登录' }))
     expect(handlers.onForgot).toHaveBeenCalledTimes(1)
@@ -113,7 +113,7 @@ describe('IdpRegisterView (B2)', () => {
     expect(screen.getByRole('heading', { level: 1, name: '注册 Xpod' })).toBeTruthy()
     expect(screen.getByText(/pod\.undefineds\.co\/xiaolin\//)).toBeTruthy()
     // The Pod-on-my-computer explanation is folded.
-    expect(screen.getByText('想把 Pod 放在自己的电脑上？').closest('details')).not.toBeNull()
+    expect(screen.getByText('想用你自己的独立部署存放 Pod？').closest('details')).not.toBeNull()
 
     fireEvent.change(screen.getByLabelText('用户名'), { target: { value: 'xiaolin' } })
     expect(onFieldChange).toHaveBeenCalledWith('username', 'xiaolin')
@@ -380,7 +380,7 @@ describe('secondary actions never submit the form', () => {
       <IdpSignInView {...service} remember={false} onSubmit={onSubmit} onRegister={() => undefined}
         onForgot={() => undefined} onUseOtherSolid={() => undefined} onRememberChange={() => undefined} />,
     )
-    for (const name of ['注册', '忘记密码？', '使用其他 Solid 账号']) {
+    for (const name of ['注册账号', '忘记密码？', '使用其他 Solid 账号']) {
       const button = screen.getByRole('button', { name }) as HTMLButtonElement
       expect(button.type).toBe('button')
       fireEvent.click(button)

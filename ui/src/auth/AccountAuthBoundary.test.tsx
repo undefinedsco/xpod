@@ -71,7 +71,7 @@ describe('AccountAuthBoundary', () => {
     expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
     // The auth redesign spec pairs the sign-in action with the register and
     // password-recovery entries, so the Dashboard gate must offer both.
-    expect(screen.getByRole('link', { name: '创建账号' }).getAttribute('href'))
+    expect(screen.getByRole('link', { name: '注册账号' }).getAttribute('href'))
       .toBe('/.account/login/password/register/');
     expect(screen.getByRole('link', { name: '忘记密码？' }).getAttribute('href'))
       .toBe('/.account/login/password/forgot/');
@@ -82,7 +82,7 @@ describe('AccountAuthBoundary', () => {
     const setWindowMode = vi.fn();
     window.xpodDesktop = desktop ? { platform: 'darwin', setIdentity: vi.fn(), setWindowMode } : undefined;
     renderBoundary();
-    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe(desktop ? 'window' : 'page');
     expect(screen.queryByTestId('auth-surface-modal')).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
     if (desktop) expect(setWindowMode).toHaveBeenCalledWith('account');
@@ -96,7 +96,7 @@ describe('AccountAuthBoundary', () => {
   ])('keeps the %s state in the CSS Account layout', (_name, accountState, copy) => {
     window.xpodDesktop = { platform: 'darwin', setIdentity: vi.fn(), setWindowMode: vi.fn() };
     renderBoundary(account({ accountState }));
-    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('window');
     expect(screen.queryByTestId('auth-surface-modal')).toBeNull();
     expect(screen.getByText(copy)).toBeTruthy();
     expect(window.xpodDesktop.setWindowMode).toHaveBeenCalledWith('account');

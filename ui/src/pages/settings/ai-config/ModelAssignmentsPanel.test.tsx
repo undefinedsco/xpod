@@ -3,11 +3,13 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   ModelAssignmentRow,
   RebuildStatusLine,
+} from './ModelAssignmentsPanel';
+import {
   embeddingModelSwitch,
   rebuildInFlight,
   rebuildStatusFrom,
   rebuildTargetForCapabilities,
-} from './ModelAssignmentsPanel';
+} from './model-assignment-state';
 import type { AiConfigLifecycleSnapshot, AiConfigPolicy } from '../../../api/ai-config';
 
 const policy = (embeddingModel?: string): AiConfigPolicy => ({

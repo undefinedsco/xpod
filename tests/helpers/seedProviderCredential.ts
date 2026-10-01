@@ -9,6 +9,7 @@
  */
 import { drizzle, type SolidAuthSession } from '@undefineds.co/drizzle-solid';
 import { aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
+import { text } from 'node:stream/consumers';
 import { createXpodAiConnectionsPodStore } from '../../ui/src/extensions/XpodAiConnectionsPodStore';
 import { loginWithClientCredentials, type AccountSetup } from '../integration/helpers/solidAccount';
 
@@ -20,7 +21,7 @@ type SeedInput = {
   label: string;
 };
 
-const input = JSON.parse(await new Response(Bun.stdin.stream()).text()) as SeedInput;
+const input = JSON.parse(await text(process.stdin)) as SeedInput;
 const session = await loginWithClientCredentials(input.account);
 const authSession: SolidAuthSession = { info: session.info, fetch: session.fetch };
 const database = drizzle(authSession, {
@@ -41,9 +42,13 @@ const credential = await store.createApiKeyCredential!(input.provider as never, 
   label: input.label,
 });
 const providers = await store.listProviders();
-const provider = providers.find((item) => item.id === input.provider);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+const provider = providers.find((item) => isRecord(item) && item.id === input.provider);
 console.log(JSON.stringify({
   ok: true,
-  credentialId: credential?.id ?? null,
-  credentialsForProvider: provider?.credentials?.length ?? 0,
+  credentialId: isRecord(credential) && typeof credential.id === 'string' ? credential.id : null,
+  credentialsForProvider: isRecord(provider) && Array.isArray(provider.credentials)
+    ? provider.credentials.length
+    : 0,
 }));

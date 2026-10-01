@@ -1116,7 +1116,6 @@ describe('XpodAiConnectionsPodStore', () => {
 
   it('keeps the discovered model type so an embedding model is listed as one', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(null, { status: 204 }));
-    const providerId = aiProviderResource.buildId({ id: 'openai' });
     const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
       [credentialResource, new Map()],
       [aiProviderResource, new Map()],

@@ -6,7 +6,7 @@
  * package intentionally avoids.
  */
 export const controlFocusClass =
-  'focus:outline-none focus:ring-0 focus-visible:border-ring'
+  'focus:outline-none focus:ring-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-ring'
 
 export const interactiveFocusClass =
   'focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring'

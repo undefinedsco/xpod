@@ -5,48 +5,20 @@
 @tailwind utilities;
 
 /**
- * Xpod global product styles - aligned with LinX's Flat taro runtime theme.
+ * Xpod global product styles.
  *
- * 核心色值：
- * - Primary: Flat taro (#7561AE light / #B8A9DE dark)
- * - Gray: Zinc / Slate
- * - Radius: 0.5rem (8px)
+ * 色值单一来源：`@undefineds.co/shared-ui/theme.css`（R2 §8.1 的语义角色）。
+ * 本文件只保留产品自己的圆角与图表标尺，不再维护第二套主题 token。
  */
 
 @layer base {
+  /*
+   * shared-ui owns every colour role (R2 §8.1). This file deliberately keeps
+   * no second palette: a duplicated :root/.dark block here used to win the
+   * cascade and paint the product with the retired violet-on-white theme.
+   * Only the product-specific radius and chart scales live here.
+   */
   :root {
-    /* ============================================== */
-    /* Flat taro Runtime Theme (Light)                */
-    /* ============================================== */
-    --background: 0 0% 100%;
-    --foreground: 224 71.4% 4.1%;
-
-    --card: 0 0% 100%;
-    --card-foreground: 224 71.4% 4.1%;
-
-    --popover: 0 0% 100%;
-    --popover-foreground: 224 71.4% 4.1%;
-
-    --primary: 255.6 32.2% 53.1%;
-    --primary-foreground: 210 20% 98%;
-
-    --secondary: 220 14.3% 95.9%;
-    --secondary-foreground: 220.9 39.3% 11%;
-
-    --muted: 220 14.3% 95.9%;
-    --muted-foreground: 220 8.9% 46.1%;
-
-    --accent: 220 14.3% 95.9%;
-    --accent-foreground: 220.9 39.3% 11%;
-
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 20% 98%;
-
-    --border: 220 13% 91%;
-    --input: 220 13% 91%;
-    --ring: 255.6 32.2% 53.1%;
-
-    /* 圆角系统 */
     --radius-xs: 2px;
     --radius-sm: 4px;
     --radius-md: 8px;
@@ -61,51 +33,9 @@
     --chart-3: 197 37% 24%;
     --chart-4: 43 74% 66%;
     --chart-5: 27 87% 67%;
-
-    /* ============================================== */
-    /* Layout Mappings (Derived from Standard)        */
-    /* ============================================== */
-    --layout-sidebar: 220 14.3% 95.9%;
-    --layout-list-header: 0 0% 100%;
-    --layout-list-hover: 220 14.3% 95.9%;
-    --layout-list-item: 0 0% 100%;
-    --layout-list-selected: 220 13% 91%;
-    --layout-content: 0 0% 100%;
   }
 
   .dark {
-    /* ============================================== */
-    /* Flat taro Runtime Theme (Dark)                 */
-    /* ============================================== */
-    --background: 224 71.4% 4.1%;
-    --foreground: 210 20% 98%;
-
-    --card: 224 71.4% 4.1%;
-    --card-foreground: 210 20% 98%;
-
-    --popover: 224 71.4% 4.1%;
-    --popover-foreground: 210 20% 98%;
-
-    --primary: 255.8 38% 76.7%;
-    --primary-foreground: 224 71.4% 4.1%;
-
-    --secondary: 215 27.9% 16.9%;
-    --secondary-foreground: 210 20% 98%;
-
-    --muted: 215 27.9% 16.9%;
-    --muted-foreground: 217.9 10.6% 64.9%;
-
-    --accent: 215 27.9% 16.9%;
-    --accent-foreground: 210 20% 98%;
-
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 20% 98%;
-
-    --border: 215 27.9% 16.9%;
-    --input: 215 27.9% 16.9%;
-    --ring: 255.8 38% 76.7%;
-
-    /* 圆角系统 */
     --radius-xs: 2px;
     --radius-sm: 4px;
     --radius-md: 8px;
@@ -120,14 +50,6 @@
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
-
-    /* Layout Mappings */
-    --layout-sidebar: 215 27.9% 16.9%;
-    --layout-list-header: 224 71.4% 4.1%;
-    --layout-list-hover: 215 27.9% 16.9%;
-    --layout-list-item: 224 71.4% 4.1%;
-    --layout-list-selected: 215 27.9% 16.9%;
-    --layout-content: 224 71.4% 4.1%;
   }
 }
 

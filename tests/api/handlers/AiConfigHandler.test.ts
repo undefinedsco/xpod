@@ -296,6 +296,66 @@ describe('AiConfigHandler', () => {
     await routes['POST /api/ai/config/rebuild'](request('POST', { type: 'solid', webId: WEB_ID }, { target: 'vector' }), unsupported);
     expect(unsupported.statusCode).toBe(409);
   });
+
+  // The browser session hands the API a credential of its own only when the API answers the
+  // stable 403 refusal; a 500 is read as "internal error" and retried with nothing. Reporting a
+  // Pod-access failure as an internal error therefore strands the AI Config page on a session
+  // whose DPoP token the API deliberately cannot replay.
+  it('answers a Pod access failure with the mapped refusal so the session can retry with its own credential', async () => {
+    const { server, routes } = createServer();
+    const store = {
+      read: vi.fn(async () => { throw new Error('service_access_missing'); }),
+      update: vi.fn(async () => { throw new Error('caller_dpop_replay_unsupported'); }),
+    };
+    registerAiConfigRoutes(server, {
+      podLookupRepository: { findByWebId: vi.fn(async () => ({
+        podId: 'pod-alice',
+        accountId: 'account-alice',
+        baseUrl: 'https://storage.example/alice/',
+      })) },
+      store,
+    });
+
+    const read = response();
+    await routes['GET /api/ai/config'](request('GET', { type: 'solid', webId: WEB_ID }), read, {});
+    expect(read.statusCode).toBe(403);
+    expect(JSON.parse(read.body)).toEqual({ error: 'service_access_missing' });
+
+    const update = response();
+    await routes['PATCH /api/ai/config'](request('PATCH', { type: 'solid', webId: WEB_ID }, {
+      searchIndexing: { ftsEnabled: true },
+    }), update, {});
+    expect(update.statusCode).toBe(403);
+    expect(JSON.parse(update.body)).toEqual({ error: 'service_access_missing' });
+  });
+
+  it('keeps a store failure that is not a Pod access failure as an internal error', async () => {
+    const { server, routes } = createServer();
+    const store = {
+      read: vi.fn(async () => { throw new Error('database is down'); }),
+      update: vi.fn(async () => { throw new Error('disk full'); }),
+    };
+    registerAiConfigRoutes(server, {
+      podLookupRepository: { findByWebId: vi.fn(async () => ({
+        podId: 'pod-alice',
+        accountId: 'account-alice',
+        baseUrl: 'https://storage.example/alice/',
+      })) },
+      store,
+    });
+
+    const read = response();
+    await routes['GET /api/ai/config'](request('GET', { type: 'solid', webId: WEB_ID }), read, {});
+    expect(read.statusCode).toBe(500);
+    expect(JSON.parse(read.body)).toEqual({ error: 'Failed to read AI Config' });
+
+    const update = response();
+    await routes['PATCH /api/ai/config'](request('PATCH', { type: 'solid', webId: WEB_ID }, {
+      searchIndexing: { ftsEnabled: true },
+    }), update, {});
+    expect(update.statusCode).toBe(500);
+    expect(JSON.parse(update.body)).toEqual({ error: 'Failed to update AI Config' });
+  });
 });
 
 describe('AiConfigHandler embedding model policy', () => {

@@ -18,8 +18,13 @@ describe('shared control focus presentation', () => {
       expect(control.className).not.toContain('focus-visible:ring-2')
       expect(control.className).not.toContain('ring-offset')
     }
-    expect(screen.getByLabelText('Name').className).toContain('focus-visible:border-ring')
-    expect(screen.getByLabelText('Name').className).not.toContain('focus-visible:outline-2')
+    // The control primitive owns exactly one focus boundary: the 2px ink-violet
+    // outline at a 3px offset. No border-ring, no second frame.
+    const input = screen.getByLabelText('Name')
+    expect(input.className).not.toContain('focus-visible:border-ring')
+    expect(input.className).toContain('focus-visible:outline-2')
+    expect(input.className).toContain('focus-visible:outline-offset-[3px]')
+    expect(input.className).toContain('focus-visible:outline-ring')
     expect(screen.getByRole('button', { name: 'Continue' }).className)
       .toContain('focus-visible:outline-none')
     expect(screen.getByRole('button', { name: 'Continue' }).className)

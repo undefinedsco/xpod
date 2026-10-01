@@ -432,6 +432,63 @@ describe('WebIdSection', () => {
     expect(screen.getByRole('form', { name: '新建 WebID' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '取消' })).toBeNull()
   })
+
+  it('links the display name to the full WebID and keeps the raw WebID visible', () => {
+    render(<WebIdSection webIds={[entry]} />)
+    const link = screen.getByRole('link', { name: 'Ari' })
+    expect(link.getAttribute('href')).toBe(entry.webId)
+    // The full WebID stays a readable monospace line, not only an href.
+    expect(screen.getByText(entry.webId)).toBeTruthy()
+  })
+
+  it('offers the host external-create entry instead of an inline form', () => {
+    const onCreateExternal = vi.fn()
+    render(
+      <WebIdSection
+        webIds={[entry]}
+        onCreateExternal={onCreateExternal}
+        createExternalLabel="管理 Pod"
+      />,
+    )
+    expect(screen.queryByRole('form')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '管理 Pod' }))
+    expect(onCreateExternal).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps unlinked Pods visible as storage rows and offers their advertised action', () => {
+    const onRemoveUnlinkedPod = vi.fn()
+    render(
+      <WebIdSection
+        webIds={[entry]}
+        unlinkedPods={[
+          { id: 'orphan', storageUrl: 'https://node-7f3a.undefineds.co/backup/', displayName: 'backup', removable: true },
+          { id: 'orphan-locked', storageUrl: 'https://node-7f3a.undefineds.co/locked/', displayName: 'locked' },
+        ]}
+        onRemoveUnlinkedPod={onRemoveUnlinkedPod}
+        removeStorageLabel="删除 Pod"
+      />,
+    )
+    // A real Pod with no WebID relationship is shown by its storage address,
+    // never dressed up as an identity.
+    expect(screen.getByRole('link', { name: 'https://node-7f3a.undefineds.co/backup/' }).getAttribute('href'))
+      .toBe('https://node-7f3a.undefineds.co/backup/')
+    // Only the Pod the host flagged removable offers the action.
+    const removeButtons = screen.getAllByRole('button', { name: /删除 Pod/ })
+    expect(removeButtons).toHaveLength(1)
+    fireEvent.click(removeButtons[0])
+    expect(onRemoveUnlinkedPod).toHaveBeenCalledWith(expect.objectContaining({ id: 'orphan' }))
+  })
+
+  it('offers remove only for entries the host flags removable', () => {
+    const onRemoveStorage = vi.fn()
+    const removable = { ...entry, id: 'ari-pod', removable: true, podUrl: 'https://node-7f3a.undefineds.co/ari/' }
+    render(<WebIdSection webIds={[entry, removable]} onRemoveStorage={onRemoveStorage} removeStorageLabel="删除 Pod" />)
+    const removeButtons = screen.getAllByRole('button', { name: /删除 Pod/ })
+    expect(removeButtons).toHaveLength(1)
+    fireEvent.click(removeButtons[0])
+    expect(onRemoveStorage).toHaveBeenCalledWith(expect.objectContaining({ id: 'ari-pod' }))
+    expect(screen.getByRole('link', { name: removable.podUrl }).getAttribute('href')).toBe(removable.podUrl)
+  })
 })
 
 describe('CredentialSection', () => {

@@ -17,14 +17,11 @@ import { consumeReturnTo, persistReturnTo } from '../utils/returnTo';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
 import {
-  checkFirstPodNameAvailability,
-  createFirstPodAndWaitForBinding,
-  deriveFirstPodNameCandidate,
-  FirstPodReadinessError,
-  type FirstPodNameAvailabilityStatus,
-} from '../utils/consent-first-pod';
-import { getRegistrationUsernameError, normalizeRegistrationUsername } from '../utils/registration';
-import { readPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
+  clearConsentContinuation,
+  currentInteractionScope,
+  resolveAuthoritativeAccountId,
+  saveConsentContinuation,
+} from '../utils/safe-continuation';
 import {
   createXpodLoginTransactionStore,
   type XpodLoginTransactionStore,
@@ -48,13 +45,6 @@ import {
   xpodFirstPodErrors,
   xpodRegistrationCopy,
 } from '../auth/xpod-account-copy';
-
-const POD_NAME_CHECK_DEBOUNCE_MS = 300;
-
-type ConsentPodNameCheck = { status: FirstPodNameAvailabilityStatus; message?: string; username: string };
-
-type ConsentPodNameHintTone = 'error' | 'muted' | 'ok';
-
 
 const CONSENT_CARRY_KEY = 'xpod.consent.carry.v1';
 const CONSENT_CARRY_WINDOW_MS = 120_000;
@@ -144,7 +134,6 @@ function consentClientHost(client: ConsentClientInfo | null): string {
 }
 
 function safeConsentError(value: unknown, fallback: string): string {
-  if (value instanceof FirstPodReadinessError) return value.message;
   const message = value instanceof Error ? value.message : '';
   if (message === 'Invalid OIDC interaction'
     || message === 'This action can only be performed as part of an OIDC authentication flow.'
@@ -197,7 +186,7 @@ function parsePickWebIdResponse(data: PickWebIdResponse): ParsedPickWebIdRespons
 }
 
 export function ConsentPage() {
-  const { bindAccountCapability, idpIndex, identity, isLoggedIn, isAnonymous, controls, logout: accountLogout, refetchControls } = useAuth();
+  const { idpIndex, identity, isLoggedIn, isAnonymous, controls, logout: accountLogout, refetchControls } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(true);
   const [clientInfo, setClientInfo] = useState<ConsentClientInfo | null>(null);
@@ -217,9 +206,6 @@ export function ConsentPage() {
   const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
   const [isReturning, setIsReturning] = useState(false);
   const [firstPodError, setFirstPodError] = useState<string | null>(null);
-  const [isCreatingFirstPod, setIsCreatingFirstPod] = useState(false);
-  const [podNameInput, setPodNameInput] = useState<string>();
-  const [podNameCheck, setPodNameCheck] = useState<ConsentPodNameCheck>();
   const missingOwnerBinding = useRef<string | undefined>(undefined);
   const resumeAttemptedRef = useRef(false);
   const entryBindingScope = useRef<{ transactionId?: string; binding?: StorageBinding } | undefined>(undefined);
@@ -453,6 +439,8 @@ export function ConsentPage() {
   // Account switching is owned by CSS. WebID logout is a separate Solid action.
   const handleSwitchAccount = async () => {
     setIsSwitchingAccount(true);
+    // A switched Account must never resume the previous Account's task.
+    clearConsentContinuation();
     try {
       await accountLogout();
       // `logout()` reports a failed CSS revocation by settling with an error
@@ -502,6 +490,8 @@ export function ConsentPage() {
   };
 
   const handleCancelConsent = useCallback(async () => {
+    // Cancelling the authorization invalidates any quick-create task bound to it.
+    clearConsentContinuation();
     try {
       setIsCancelling(true);
       const redirectUrl = await fetchOidcCancelRedirectLocation({
@@ -601,9 +591,9 @@ export function ConsentPage() {
       setIsAuthorizing(false);
     }
   }, [
+    clientInfo,
     completeConsent,
     consentBindings,
-    consentUrl,
     currentWebId,
     handleCancelConsent,
     pendingTransaction,
@@ -631,7 +621,7 @@ export function ConsentPage() {
     && displayBindings.length === 0
     && storageSelection.status === 'empty',
   );
-  const isSubmitting = isAuthorizing || isCancelling || isSwitchingAccount || isReturning || isCreatingFirstPod;
+  const isSubmitting = isAuthorizing || isCancelling || isSwitchingAccount || isReturning;
   const hasStorageConflict = storageSelection.status === 'conflict';
 
   const displayOptions: WebAccountConsentOption[] = displayBindings.length > 0
@@ -654,131 +644,30 @@ export function ConsentPage() {
   const showStorageBootstrap = hasStorageConflict
     || (displayBindings.length === 0 && storageSelection.status === 'error');
 
-  // 缺 Pod 的主操作：名称来自当前身份的可推导候选，但始终显示在输入框里由用户确认，
-  // 不做静默默认；可用性检查复用 checkFirstPodNameAvailability（U04 / U11）。
-  const suggestedPodName = useMemo(() => deriveFirstPodNameCandidate([
-    currentWebId,
-    controls?.account?.username,
-    identity?.username,
-    readPendingXpodAccountEmail(undefined, idpIndex),
-  ]), [controls?.account?.username, currentWebId, idpIndex, identity?.username]);
-  // undefined 表示用户还没有改写名称，此时才使用候选值。
-  const podName = podNameInput ?? suggestedPodName;
-  const normalizedPodName = normalizeRegistrationUsername(podName);
-  const podNameError = normalizedPodName ? getRegistrationUsernameError(normalizedPodName) : undefined;
-  const podNameChecked = podNameCheck?.username === normalizedPodName ? podNameCheck : undefined;
-  const podNameTaken = podNameChecked?.status === 'taken';
 
-  useEffect(() => {
-    if (!showNoPodStorage || !normalizedPodName || podNameError || isCreatingFirstPod) return;
-    let cancelled = false;
-    // 防抖后再读可用性；结论只在异步回调里落状态，避免 effect 体内的级联渲染。
-    const timeout = setTimeout(() => {
-      void checkFirstPodNameAvailability({ provisionCode, username: normalizedPodName })
-        .then((result) => {
-          if (!cancelled) setPodNameCheck({ status: result.status, message: result.message, username: normalizedPodName });
-        })
-        .catch(() => {
-          // 名称可用性读不到不是创建失败：交给创建请求的守卫与错误出口处理。
-          if (!cancelled) setPodNameCheck({ status: 'unknown', username: normalizedPodName });
-        });
-    }, POD_NAME_CHECK_DEBOUNCE_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(timeout);
-    };
-  }, [isCreatingFirstPod, normalizedPodName, podNameError, provisionCode, showNoPodStorage]);
-
-  const podNameHint = (() => {
-    if (!normalizedPodName) return undefined;
-    if (podNameError) {
-      return { message: podNameError, tone: 'error' as ConsentPodNameHintTone };
-    }
-    if (!podNameChecked) {
-      return { message: xpodConsentCopy.webIdNameChecking, tone: 'muted' as ConsentPodNameHintTone };
-    }
-    if (podNameChecked.status === 'taken') {
-      return { message: xpodConsentCopy.webIdNameTaken, tone: 'error' as ConsentPodNameHintTone };
-    }
-    if (podNameChecked.status === 'invalid') {
-      return { message: podNameChecked.message ?? xpodRegistrationCopy.usernameCharset, tone: 'error' as ConsentPodNameHintTone };
-    }
-    if (podNameChecked.status === 'available') {
-      return { message: xpodConsentCopy.webIdNameAvailable, tone: 'ok' as ConsentPodNameHintTone };
-    }
-    // 'unknown'：当前部署没有可查的作用域（例如 Cloud 直连），创建时由服务端校验。
-    return undefined;
-  })();
-
-  const handleCreateFirstPodAndContinue = useCallback(async () => {
-    const createPodUrl = controls?.account?.pod;
-    if (!createPodUrl) {
-      setFirstPodError(xpodFirstPodErrors.createEndpointMissing);
+  // 缺 Pod 的主操作进入 Consent 专用的轻量快速创建页（`/.account/create-pod/`），
+  // 并把当前 Account + 原 interaction + 校验过的回程地址 + TTL 一次性续接一起带过去。
+  // 轻页只提交本次创建所需字段，创建事务仍由全仓唯一的受守卫 prepare+POST 负责。
+  const handleGoToCreatePod = useCallback(() => {
+    const accountId = resolveAuthoritativeAccountId(controls, identity);
+    const interaction = currentInteractionScope();
+    if (!accountId || !interaction
+      || !saveConsentContinuation({ accountId, interaction, returnTo: `${interaction}/oidc/consent/` })) {
+      setFirstPodError(xpodFirstPodErrors.accountIdentityMissing);
       return;
     }
-    if (!normalizedPodName || podNameError) {
-      setFirstPodError(podNameError ?? xpodRegistrationCopy.choosePodName);
-      return;
-    }
-    if (podNameTaken || podNameChecked?.status === 'invalid') {
-      setFirstPodError(podNameTaken
-        ? xpodConsentCopy.webIdNameTaken
-        : podNameChecked?.message ?? xpodRegistrationCopy.usernameCharset);
-      return;
-    }
+    navigate(scopeAccountUrl('/.account/create-pod/'));
+  }, [controls, identity, navigate]);
 
-    let created = false;
-    setIsCreatingFirstPod(true);
-    setFirstPodError(null);
-    try {
-      await createFirstPodAndWaitForBinding({
-        assertCurrentAccount: bindAccountCapability?.(),
-        createPodUrl,
-        headers: storedAccountTokenHeaders(),
-        pickWebIdUrl,
-        provisionCode: await resolveProvisionCodeForCurrentScope(provisionCode),
-        trustedAccountIndex: idpIndex,
-        username: normalizedPodName,
-      });
-      created = true;
-      // 绑定已就绪：重新读取权威绑定并回到同一个 interaction 的授权表单；
-      // 服务端提供 remembered-login 恢复线索时，refreshConsentState 的既有
-      // resumeWebId 路径会自行接管，interaction 与 returnTo 都不丢。
-      const ids = await refreshConsentState();
-      if (ids.length === 0) throw new FirstPodReadinessError('binding-missing');
-    } catch (err: unknown) {
-      const message = safeConsentError(err, created ? xpodConsentErrors.bindingsFailed : xpodConsentErrors.storageCreateFailed);
-      setFirstPodError(message === xpodRegistrationCopy.podNameTaken ? xpodConsentCopy.webIdNameTaken : message);
-      if (err instanceof FirstPodReadinessError && err.code === 'binding-missing') {
-        // 账号清单里已经有 Pod：不得再造替代品。交回权威绑定重读出口
-        // （重试读取 / 换一个账号 / 前往 Pod 管理），由 Pod 管理侧修复绑定。
-        missingOwnerBinding.current = message;
-        retryConsentLoad(false);
-      }
-    } finally {
-      setIsCreatingFirstPod(false);
-    }
-  }, [
-    bindAccountCapability,
-    controls?.account?.pod,
-    idpIndex,
-    normalizedPodName,
-    pickWebIdUrl,
-    podNameChecked?.message,
-    podNameChecked?.status,
-    podNameError,
-    podNameTaken,
-    provisionCode,
-    refreshConsentState,
-    retryConsentLoad,
-  ]);
-
-  // 保留原 interaction 与返回地址：建好 Pod 回到这里后会重新读取权威绑定与服务健康。
-  // 目标是统一的 Pod 管理页（设计第二部分 §4.1 / U08+U09）；该页由 Account 边界准入，
-  // 零 Pod 时也可达，因此不再回退到 Account 页。
+  // 完整管理是明确的次要出口：保留当前 Account + 原 interaction + 回程地址 + TTL，
+  // 由重管理页展示"回到授权/取消"横条后回到同一个 Consent；旧式裸 returnTo 已弃用。
   const handleGoToPodManagement = () => {
-    persistReturnTo(window.location.href);
-    navigate('/settings/pod');
+    const accountId = resolveAuthoritativeAccountId(controls, identity);
+    const interaction = currentInteractionScope();
+    if (accountId && interaction) {
+      saveConsentContinuation({ accountId, interaction, returnTo: `${interaction}/oidc/consent/` });
+    }
+    window.location.assign('/settings/pod');
   };
 
   // Manage the account elsewhere and come back: the interaction and its return address are kept.
@@ -801,7 +690,6 @@ export function ConsentPage() {
     else retryConsentLoad(failedAction !== 'authorize');
   };
 
-  const noWebIdNameHint = podNameHint ? { tone: podNameHint.tone, text: podNameHint.message } : undefined;
   const waiting = isLoading || resumeState === 'pending';
   const contentAvailable = !needsSignIn && !interactionExpired && !waiting;
   const noPodVisible = contentAvailable && showNoPodStorage;
@@ -876,21 +764,15 @@ export function ConsentPage() {
         <WebAccountRestoringView label={xpodConsentCopy.restoring} />
       ) : showNoPodStorage ? (
         // WebID 和 Pod 绑定：授权页"缺 Pod"就是账号还没有任何 WebID。这里可以起名并创建，
-        // 创建走受守卫的 handleCreateFirstPodAndContinue；也可去账号页存到边缘设备，或拒绝。
+        // 创建走轻量快速创建页（受守卫的一次性续接）；也可去账号页存到边缘设备，或拒绝。
         <>
           <IdpNoWebIdView
             serviceName="Xpod"
             serviceHost={serviceHost}
             appName={clientName}
-            defaultName={podName}
-            nameHint={noWebIdNameHint}
-            error={controls?.account?.pod ? firstPodError ?? undefined : xpodFirstPodErrors.createEndpointMissing}
+            error={firstPodError ?? undefined}
             pending={isSubmitting}
-            onNameChange={(value) => {
-              setPodNameInput(normalizeRegistrationUsername(value));
-              setFirstPodError(null);
-            }}
-            onCreate={() => void handleCreateFirstPodAndContinue()}
+            onCreate={handleGoToCreatePod}
             onChooseOtherLocation={handleManageAccount}
           />
           <div className="flex flex-wrap justify-center gap-2">

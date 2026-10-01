@@ -5,7 +5,11 @@ import type { SignInPresentation } from './types'
 export interface PodSignInFrameProps {
   presentation: SignInPresentation
   ariaLabel: string
-  /** `page` only: the left column, provided by the application. */
+  /**
+   * `page` only: the left introduction column. The host supplies it (the
+   * application/service adapter), so the shared frame never hardcodes a
+   * service name.
+   */
   appIntro?: ReactNode
   /** The 360px wide body. */
   children: ReactNode
@@ -32,6 +36,27 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
+/** Marks the screen's single primary action so the first Tab can reach it. */
+const PRIMARY_SELECTOR = '[data-pod-sign-in-primary]'
+
+/**
+ * A candidate only counts if a user can actually reach it: hidden, disabled,
+ * unrendered and collapsed-detail content must be skipped, or `focus()` on it
+ * silently fails and the Tab index never advances (keyboard dead end).
+ */
+function isReachable(el: HTMLElement): boolean {
+  if (el.hidden || el.closest('[hidden]')) return false
+  if (el.matches(':disabled')) return false
+  const style = el.ownerDocument.defaultView?.getComputedStyle(el)
+  if (style && (style.display === 'none' || style.visibility === 'hidden')) return false
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    if (node.tagName !== 'DETAILS' || (node as HTMLDetailsElement).open) continue
+    const summary = Array.from(node.children).find((child) => child.tagName === 'SUMMARY')
+    if (!summary || !(summary === el || summary.contains(el))) return false
+  }
+  return true
+}
+
 /**
  * Focus lands on the dialog itself when it opens (one Tab reaches the primary
  * action), Tab is kept inside, Escape closes, and focus returns to the opener.
@@ -55,13 +80,24 @@ function useModalFocus(active: boolean, onClose?: () => void) {
       if (event.key !== 'Tab') return
       const root = ref.current
       if (!root) return
-      const items = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE))
+      const items = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(isReachable)
       if (items.length === 0) {
         event.preventDefault()
         root.focus()
         return
       }
       const index = items.indexOf(document.activeElement as HTMLElement)
+      // Spec §5.1: focus starts on the dialog itself, so the first forward Tab
+      // goes to the screen's primary action instead of whatever happens to be
+      // first in DOM order (the close button, or a disclosure summary).
+      if (!event.shiftKey && document.activeElement === root) {
+        const primary = items.find((item) => item.matches(PRIMARY_SELECTOR))
+        if (primary) {
+          event.preventDefault()
+          primary.focus()
+          return
+        }
+      }
       const next = event.shiftKey
         ? (index <= 0 ? items.length - 1 : index - 1)
         : (index === items.length - 1 ? 0 : index + 1)
@@ -97,6 +133,7 @@ export function PodSignInFrame({
 }: PodSignInFrameProps) {
   const isModal = presentation === 'dialog' && modal
   const dialogRef = useModalFocus(isModal, onClose)
+  const intro = appIntro
 
   if (presentation === 'window') {
     return (
@@ -121,12 +158,15 @@ export function PodSignInFrame({
         {...dataAttributes}
         className="pod-sign-in grid min-h-[100dvh] w-full bg-background text-foreground md:grid-cols-2"
       >
-        {appIntro ? (
-          <aside data-pod-sign-in="intro" className="hidden flex-col justify-center bg-muted px-12 py-10 md:flex">
-            {appIntro}
+        {intro ? (
+          <aside
+            data-pod-sign-in="intro"
+            className="hidden flex-col justify-center gap-6 bg-[hsl(var(--sunken))] px-12 py-10 md:flex"
+          >
+            {intro}
           </aside>
         ) : null}
-        <div className={cn('flex items-center justify-center px-4 py-8', appIntro ? '' : 'md:col-span-2')}>
+        <div className={cn('flex min-w-0 items-center justify-center px-4 py-8', intro ? '' : 'md:col-span-2')}>
           <div className={bodyClass}>{children}</div>
         </div>
       </div>

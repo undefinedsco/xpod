@@ -825,12 +825,10 @@ async function main(): Promise<void> {
   const client = createXpodAiConnectionsClient({
     webId: account.webId,
     podUrl: account.podUrl,
+    // The client now presents the applet invocation and the management session through the one
+    // fetch it is given, matching the shipped applet (`runtime.fetch`); there is no separate
+    // invocation transport to wire here anymore.
     authenticatedFetch: traced('management', authenticatedFetch),
-    // The service-access ticket is presented to the Gateway by the client itself. It must leave
-    // through a plain transport, exactly as the applet does with `window.fetch`: the session
-    // transport would replace that ticket with the session's own token and the Gateway would
-    // read a session call where it has to read an applet invocation.
-    invocationFetch: traced('invocation', localSolidTransport),
   });
 
   const { gatewayKey, initialModelIds } = await verifyGatewayKeyLifecycle(client, {

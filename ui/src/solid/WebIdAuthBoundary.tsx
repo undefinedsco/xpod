@@ -57,11 +57,19 @@ function WebIdAuthBoundaryContent({
     try { loginController.cancelLogin(); } catch { /* Expired records are cleared by the store. */ }
   }, [loginCancelled, loginController]);
   const state = runtimeState(runtime.state);
+  const storageState = storageSelectionState(runtime, state);
   // The screen a login was started from: while connecting, the remembered identity stays
   // on screen with its button busy instead of falling back to the first-visit screen.
-  const lastRemembered = useRef<RememberedWebIdLogin | undefined>(undefined);
-  if ('remembered' in state) lastRemembered.current = state.remembered;
-  const storageState = storageSelectionState(runtime, state);
+  // The runtime rebuilds `state.remembered` on every render, so a content signature stands in for
+  // the object identity React's store-previous-render pattern compares against.
+  const rememberedNow = 'remembered' in state ? state.remembered : undefined;
+  const rememberedSignature = rememberedNow ? rememberedSignatureOf(rememberedNow) : undefined;
+  const [lastRemembered, setLastRemembered] = useState<{ signature: string; identity: RememberedWebIdLogin } | undefined>(
+    rememberedNow && rememberedSignature ? { signature: rememberedSignature, identity: rememberedNow } : undefined,
+  );
+  if (rememberedSignature !== undefined && rememberedSignature !== lastRemembered?.signature) {
+    setLastRemembered({ signature: rememberedSignature, identity: rememberedNow! });
+  }
   const contentReady = state.status === 'authenticated' && storageState?.status === 'ready';
   // Login/switch failures must surface here: the boundary fires the async
   // auth actions, so an unobserved rejection would otherwise dead-end the UI.
@@ -166,7 +174,7 @@ function WebIdAuthBoundaryContent({
   }
 
 
-  const remembered = 'remembered' in state ? state.remembered : undefined;
+  const remembered = rememberedNow;
   const restoring = state.status === 'restoring';
   const connecting = pending || Boolean(preflight) || (autoStart && !loginCancelled && !automaticLoginBlocked && state.status === 'anonymous' && !actionError);
   // A cancelled or switching login returns to the first-visit screen, not to the remembered one.
@@ -197,7 +205,7 @@ function WebIdAuthBoundaryContent({
   } else if (restoring) {
     podState = { kind: 'restoring', ...(remembered ? { identity: presentedIdentity(remembered) } : {}) };
   } else if (connecting) {
-    const from = identity ?? (!loginCancelled && lastRemembered.current ? presentedIdentity(lastRemembered.current) : undefined);
+    const from = identity ?? (!loginCancelled && lastRemembered ? presentedIdentity(lastRemembered.identity) : undefined);
     podState = from ? { kind: 'remembered', identity: from, busy: true } : { kind: 'choose-service', busy: true };
     onPrimary = () => undefined;
     cancellable = !switchRequested;
@@ -274,6 +282,11 @@ function presentedIdentity(remembered: { displayName: string; avatarUrl?: string
     ...(remembered.avatarUrl ? { avatarUrl: remembered.avatarUrl } : {}),
     ...(storageUrl ? { storage: { kind, label: kind === 'cloud' ? copy.storageCloud : copy.storageEdge } } : {}),
   };
+}
+
+/** A stable content key for a remembered login, whose object identity the runtime does not preserve. */
+function rememberedSignatureOf(remembered: RememberedWebIdLogin): string {
+  return [remembered.routeId, remembered.webId ?? '', remembered.displayName, remembered.avatarUrl ?? ''].join('\u0000');
 }
 
 function storageSelectionState(

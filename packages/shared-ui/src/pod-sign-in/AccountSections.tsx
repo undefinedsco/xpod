@@ -16,11 +16,11 @@ import {
   Hostname,
   PodAvatar,
   Spinner,
-  fieldClass,
   outlineButtonClass,
   primaryButtonClass,
   textButtonClass,
 } from './parts'
+import { Input } from '../input'
 import type { AppIdentity, StorageLocation } from './types'
 import { cn } from '../utils'
 
@@ -41,11 +41,28 @@ export interface WebIdEntry {
   /** WebID URL; shown in monospace. */
   webId: string
   avatarUrl?: string
-  storage: StorageLocation
+  /** Omitted when the host cannot classify the storage location; never guessed. */
+  storage?: StorageLocation
+  /** The Pod URL this WebID's data lives in; omitted when the host does not know it. */
+  podUrl?: string
   /** The device holding this WebID's Pod. */
   deviceId?: string
   deviceName?: string
   authorizedAppCount?: number
+  /** True when the host can delete this WebID's Pod; only then is the action offered. */
+  removable?: boolean
+}
+
+/** A Pod the host knows about but cannot associate with any WebID. */
+export interface UnlinkedPodEntry {
+  id: string
+  /** Storage URL of the Pod; shown in monospace. Never a WebID. */
+  storageUrl: string
+  displayName: string
+  /** Omitted when the host cannot classify the storage location; never guessed. */
+  storage?: StorageLocation
+  /** True when the host can delete this Pod; only then is the action offered. */
+  removable?: boolean
 }
 
 export interface CreateWebIdFormProps extends LocalizedProps {
@@ -121,14 +138,13 @@ export function CreateWebIdForm({
           : addressPreview ? <span><span className="sr-only">{copy.createNameHint}: </span><Hostname>{addressPreview}</Hostname></span> : undefined}
       >
         {(fieldProps) => (
-          <input
+          <Input
             {...fieldProps}
             name="webIdName"
             type="text"
             autoComplete="off"
             autoCapitalize="none"
             spellCheck={false}
-            className={fieldClass}
             value={name}
             disabled={busy}
             onChange={(event) => onNameChange(event.target.value)}
@@ -194,23 +210,49 @@ export function CreateWebIdForm({
 
 export interface WebIdSectionProps extends LocalizedProps {
   webIds: WebIdEntry[]
+  /**
+   * Pods that exist but cannot be linked to any WebID. Shown as their own
+   * storage rows so real Pods never disappear just because the account has no
+   * matching identity binding. No WebID relationship is implied.
+   */
+  unlinkedPods?: UnlinkedPodEntry[]
+  /**
+   * Inline create form. Omitted by hosts that create WebIDs elsewhere (e.g. the
+   * read-only Account overview); `onCreateExternal` then provides the entry.
+   */
+  createForm?: CreateWebIdFormProps
   /** Open when arriving from authorization with no WebID; collapsed on a plain visit. */
-  createOpen: boolean
-  onCreateOpenChange(open: boolean): void
-  createForm: CreateWebIdFormProps
+  createOpen?: boolean
+  onCreateOpenChange?(open: boolean): void
+  /** Shown instead of the inline form when the host creates WebIDs elsewhere. */
+  onCreateExternal?(): void
+  /** Overrides the external-create button label; defaults to `createWebId`. */
+  createExternalLabel?: string
   onLinkExisting?(): void
   /** Jump to the device that holds a WebID's Pod. */
   onGoToDevice?(deviceId: string): void
+  /** Offered only for entries flagged `removable`. */
+  onRemoveStorage?(entry: WebIdEntry): void
+  /** Overrides the remove action label; defaults to `revokeCredential` ("删除"). */
+  removeStorageLabel?: string
+  /** Offered only for unlinked Pods flagged `removable`. */
+  onRemoveUnlinkedPod?(entry: UnlinkedPodEntry): void
 }
 
 /** The identities of the account, one row per WebID with its Pod, plus the create form. */
 export function WebIdSection({
   webIds,
-  createOpen,
+  createOpen = false,
   onCreateOpenChange,
   createForm,
+  onCreateExternal,
+  createExternalLabel,
   onLinkExisting,
   onGoToDevice,
+  onRemoveStorage,
+  removeStorageLabel,
+  unlinkedPods,
+  onRemoveUnlinkedPod,
   locale,
   copy: overrides,
 }: WebIdSectionProps) {
@@ -228,8 +270,11 @@ export function WebIdSection({
           {onLinkExisting ? (
             <ActionButton variant="ghost" className={smallButtonClass} onClick={onLinkExisting}>{copy.linkExistingWebId}</ActionButton>
           ) : null}
-          {!createOpen ? (
-            <ActionButton variant="outline" className={smallButtonClass} onClick={() => onCreateOpenChange(true)}>{copy.createWebId}</ActionButton>
+          {createForm && !createOpen ? (
+            <ActionButton variant="outline" className={smallButtonClass} onClick={() => onCreateOpenChange?.(true)}>{copy.createWebId}</ActionButton>
+          ) : null}
+          {!createForm && onCreateExternal ? (
+            <ActionButton variant="outline" className={smallButtonClass} onClick={onCreateExternal}>{createExternalLabel ?? copy.createWebId}</ActionButton>
           ) : null}
         </div>
         )}
@@ -243,8 +288,15 @@ export function WebIdSection({
             <li key={entry.id} className={listRowClass} data-webid-id={entry.id}>
               <PodAvatar name={entry.displayName} avatarUrl={entry.avatarUrl} storage={entry.storage} size={40} />
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-sm font-medium text-foreground">{entry.displayName}</span>
+                <a className="truncate text-sm font-medium text-primary hover:underline" href={entry.webId} target="_blank" rel="noopener noreferrer">
+                  {entry.displayName}
+                </a>
                 <Hostname className="truncate">{entry.webId}</Hostname>
+                {entry.podUrl ? (
+                  <a className="truncate text-xs text-primary hover:underline" href={entry.podUrl} target="_blank" rel="noopener noreferrer">
+                    <Hostname>{entry.podUrl}</Hostname>
+                  </a>
+                ) : null}
                 <span className="flex flex-wrap items-center gap-x-3 text-xs text-muted-foreground">
                   {entry.deviceName ? (
                     entry.deviceId && onGoToDevice ? (
@@ -262,17 +314,53 @@ export function WebIdSection({
                   ) : null}
                 </span>
               </span>
+              {entry.removable && onRemoveStorage ? (
+                <button
+                  type="button"
+                  aria-label={`${removeStorageLabel ?? copy.revokeCredential} ${entry.displayName}`}
+                  className={cn(textButtonClass, 'shrink-0 text-destructive hover:underline')}
+                  onClick={() => onRemoveStorage(entry)}
+                >
+                  {removeStorageLabel ?? copy.revokeCredential}
+                </button>
+              ) : null}
             </li>
           ))}
         </ul>
       )}
 
-      {createOpen ? (
+      {unlinkedPods && unlinkedPods.length > 0 ? (
+        <ul className="flex flex-col gap-2" data-pod-sign-in="unlinked-pods">
+          {unlinkedPods.map((pod) => (
+            <li key={pod.id} className={listRowClass} data-unlinked-pod-id={pod.id}>
+              <PodAvatar name={pod.displayName} storage={pod.storage} size={40} />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-sm font-medium text-foreground">{pod.displayName}</span>
+                <a className="truncate text-xs text-primary hover:underline" href={pod.storageUrl} target="_blank" rel="noopener noreferrer">
+                  <Hostname>{pod.storageUrl}</Hostname>
+                </a>
+              </span>
+              {pod.removable && onRemoveUnlinkedPod ? (
+                <button
+                  type="button"
+                  aria-label={`${removeStorageLabel ?? copy.revokeCredential} ${pod.displayName}`}
+                  className={cn(textButtonClass, 'shrink-0 text-destructive hover:underline')}
+                  onClick={() => onRemoveUnlinkedPod(pod)}
+                >
+                  {removeStorageLabel ?? copy.revokeCredential}
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {createForm && createOpen ? (
         <CreateWebIdForm
           {...createForm}
           locale={createForm.locale ?? locale}
           copy={createForm.copy ?? overrides}
-          onCancel={createForm.onCancel ?? (webIds.length > 0 ? () => onCreateOpenChange(false) : undefined)}
+          onCancel={createForm.onCancel ?? (webIds.length > 0 ? () => onCreateOpenChange?.(false) : undefined)}
         />
       ) : null}
     </section>

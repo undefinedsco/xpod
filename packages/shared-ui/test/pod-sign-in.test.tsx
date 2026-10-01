@@ -45,6 +45,36 @@ describe('PodSignInFrame', () => {
     expect(screen.getByText('body')).toBeTruthy()
   })
 
+  it('keeps the account-service introduction in the page frame, and drops the second column without one', () => {
+    const { rerender } = render(
+      <PodSignInFrame presentation="page" ariaLabel="登录" appIntro={<p>账号服务介绍</p>}>
+        <p>body</p>
+      </PodSignInFrame>,
+    )
+    const frame = screen.getByRole('region', { name: '登录' })
+    // Wide screens: two columns, intro on a sunken panel.
+    expect(frame.className).toContain('md:grid-cols-2')
+    const intro = frame.querySelector('[data-pod-sign-in="intro"]') as HTMLElement
+    expect(intro).toBeTruthy()
+    expect(intro.className).toContain('bg-[hsl(var(--sunken))]')
+    expect(frame.querySelector('[data-pod-sign-in="intro"]')?.textContent).toContain('账号服务介绍')
+    // Narrow screens: the intro column collapses, the body stays a single 360 column.
+    expect(intro.className).toContain('hidden')
+    expect(frame.querySelector('.md\\:col-span-2')).toBeNull()
+    rerender(<PodSignInFrame presentation="page" ariaLabel="登录"><p>body</p></PodSignInFrame>)
+    expect(screen.queryByText('账号服务介绍')).toBeNull()
+    expect(screen.getByText('body').parentElement?.parentElement?.className).toContain('md:col-span-2')
+  })
+
+  it('fills the host window instead of drawing a compact card', () => {
+    render(<PodSignInFrame presentation="window" ariaLabel="登录 Xpod"><p>body</p></PodSignInFrame>)
+    const frame = screen.getByRole('region', { name: '登录 Xpod' })
+    expect(frame.className).toContain('h-full')
+    expect(frame.className).toContain('w-full')
+    expect(frame.className).not.toMatch(/w-\[280px\]|h-\[400px\]/)
+    expect(screen.getByText('body').parentElement?.className).toContain('max-w-[360px]')
+  })
+
   it('makes the modal dialog own focus, close on Escape and trap Tab', () => {
     const onClose = vi.fn()
     render(
@@ -68,6 +98,189 @@ describe('PodSignInFrame', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('PodSignIn dialog focus (spec §5.1)', () => {
+  function renderDialog(
+    opts: { close?: boolean; state?: PodSignInProps['state']; onPrimary?: () => void } = {},
+  ) {
+    const onPrimary = opts.onPrimary ?? vi.fn()
+    const onClose = vi.fn()
+    const withClose = opts.close !== false
+    const utils = render(
+      <>
+        <button type="button">opener</button>
+        <PodSignInFrame
+          presentation="dialog"
+          ariaLabel="登录"
+          onClose={withClose ? onClose : undefined}
+          closeLabel={withClose ? '关闭登录' : undefined}
+        >
+          <PodSignIn app={app} state={opts.state ?? { kind: 'choose-service' }} onPrimary={onPrimary} />
+        </PodSignInFrame>
+      </>,
+    )
+    return { onPrimary, onClose, ...utils }
+  }
+
+  it('sends the first Tab to the enabled primary action, not the close button', () => {
+    renderDialog()
+    const dialog = screen.getByRole('dialog', { name: '登录' })
+    expect(document.activeElement).toBe(dialog)
+
+    fireEvent.keyDown(document, { key: 'Tab' })
+    const primary = screen.getByRole('button', { name: '使用 Xpod 账号登录' }) as HTMLButtonElement
+    expect(document.activeElement).toBe(primary)
+    expect(primary.disabled).toBe(false)
+    expect(document.activeElement).not.toBe(screen.getByRole('button', { name: '关闭登录' }))
+  })
+
+  it('still reaches the primary action first when the dialog has no close button', () => {
+    renderDialog({ close: false })
+    expect(document.activeElement).toBe(screen.getByRole('dialog', { name: '登录' }))
+
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '使用 Xpod 账号登录' }))
+    // The content disclosures stay keyboard reachable but are no longer the entry point.
+    expect(document.activeElement).not.toBe(screen.getByText('什么是 WebID？'))
+  })
+
+  it('falls back inside the dialog when the primary is disabled, without trapping on it', () => {
+    renderDialog({ state: { kind: 'choose-service', busy: true } })
+    const dialog = screen.getByRole('dialog', { name: '登录' })
+    const primary = screen.getByRole('button', { name: '使用 Xpod 账号登录' }) as HTMLButtonElement
+    expect(primary.disabled).toBe(true)
+
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).not.toBe(primary)
+    expect(dialog.contains(document.activeElement)).toBe(true)
+
+    // Repeated Tab keeps cycling through real controls instead of dead-ending.
+    fireEvent.keyDown(document, { key: 'Tab' })
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    expect(document.activeElement).not.toBe(primary)
+  })
+
+  it('keeps the rest of the trap intact: cycle, disclosures, Escape and opener restore', () => {
+    const { onClose, unmount } = renderDialog()
+    const dialog = screen.getByRole('dialog', { name: '登录' })
+    const primary = screen.getByRole('button', { name: '使用 Xpod 账号登录' })
+
+    fireEvent.keyDown(document, { key: 'Tab' })
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '使用其他 Solid 账号' }))
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(primary)
+
+    // Disclosures remain in the keyboard order, ahead of the primary action.
+    screen.getByText('什么是 WebID？').focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(screen.getByText('什么是 Pod？'))
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    unmount()
+  })
+
+  it('returns focus to the opener when the dialog unmounts', () => {
+    const { rerender } = render(<button type="button">opener</button>)
+    const opener = screen.getByRole('button', { name: 'opener' })
+    opener.focus()
+    rerender(
+      <>
+        <button type="button">opener</button>
+        <PodSignInFrame presentation="dialog" ariaLabel="登录"><p>body</p></PodSignInFrame>
+      </>,
+    )
+    expect(document.activeElement).toBe(screen.getByRole('dialog', { name: '登录' }))
+    rerender(<button type="button">opener</button>)
+    expect(document.activeElement).toBe(opener)
+  })
+})
+
+describe('PodSignIn dialog focus with a collapsed developer detail (spec §10)', () => {
+  const notice = {
+    tone: 'warning' as const,
+    text: '暂时无法连接，请重试',
+    primaryLabel: '重试',
+    developerDetail: 'phase=callback code=state_mismatch',
+  }
+
+  function renderDeveloperDialog() {
+    const onClose = vi.fn()
+    const onPrimary = vi.fn()
+    render(
+      <PodSignInFrame presentation="dialog" ariaLabel="登录" onClose={onClose} closeLabel="关闭登录">
+        <PodSignIn
+          app={app}
+          state={{ kind: 'choose-service' }}
+          notice={notice}
+          developerMode
+          onPrimary={onPrimary}
+          onRegister={vi.fn()}
+        />
+      </PodSignInFrame>,
+    )
+    return { onClose, onPrimary }
+  }
+
+  const tab = () => fireEvent.keyDown(document, { key: 'Tab' })
+  const shiftTab = () => fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+
+  it('skips the collapsed detail instead of dead-ending on its hidden copy button', () => {
+    renderDeveloperDialog()
+    const primary = screen.getByRole('button', { name: '重试' })
+    const noticeSummary = screen.getByText('暂时无法连接，请重试').closest('summary') as HTMLElement
+    // The copy action is in the DOM, but hidden while the detail is collapsed.
+    expect(screen.getByRole('button', { name: '复制' })).toBeTruthy()
+
+    tab()
+    expect(document.activeElement).toBe(primary)
+
+    // The whole cycle stays reachable and returns to the primary action.
+    const order = [
+      screen.getByRole('button', { name: '使用其他 Solid 账号' }),
+      screen.getByRole('button', { name: '注册 Xpod' }),
+      screen.getByRole('button', { name: '关闭登录' }),
+      screen.getByText('什么是 WebID？'),
+      screen.getByText('什么是 Pod？'),
+      noticeSummary,
+      primary,
+    ]
+    for (const expected of order) {
+      tab()
+      expect(document.activeElement).toBe(expected)
+    }
+
+    shiftTab()
+    expect(document.activeElement).toBe(noticeSummary)
+  })
+
+  it('reaches the copy button only while the detail is expanded, then keeps cycling after it collapses', () => {
+    renderDeveloperDialog()
+    const primary = screen.getByRole('button', { name: '重试' })
+    const noticeSummary = screen.getByText('暂时无法连接，请重试').closest('summary') as HTMLElement
+    const copy = screen.getByRole('button', { name: '复制' })
+    const details = noticeSummary.closest('details') as HTMLDetailsElement
+
+    tab()
+    expect(document.activeElement).toBe(primary)
+
+    fireEvent.click(noticeSummary)
+    expect(details.open).toBe(true)
+    noticeSummary.focus()
+    tab()
+    expect(document.activeElement).toBe(copy)
+
+    fireEvent.click(noticeSummary)
+    expect(details.open).toBe(false)
+    noticeSummary.focus()
+    tab()
+    expect(document.activeElement).toBe(primary)
   })
 })
 

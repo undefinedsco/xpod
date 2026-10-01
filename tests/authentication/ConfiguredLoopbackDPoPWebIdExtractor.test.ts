@@ -233,12 +233,12 @@ describe('ConfiguredLoopbackDPoPWebIdExtractor', () => {
     await expect(extractor.handleSafe(createUnixSocketRequest(accessToken, dpopProof, {
       'x-xpod-canonical-url': canonicalUrl,
       'x-xpod-local-route-url': localRouteUrl,
-      ...createGatewayAdminProxyHeaders({
+      ...(createGatewayAdminProxyHeaders({
         secret: 'wrong-secret',
         method: 'POST',
         url: requestPath(),
         originalClientLoopback: true,
-      }),
+      }) as Record<string, string>),
     }))).rejects.toMatchObject({ statusCode: 400 });
   });
 
