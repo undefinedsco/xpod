@@ -1,5 +1,7 @@
 # Xpod CLI 目录 MVP 实现与验收记录
 
+最新分发方向：用户明确“不内嵌 Bun”，当前客户端使用外部运行时。后文旧内嵌候选和 Bun/JSC 记录是历史证据；本次变更和验收状态见末尾“当前客户端分发变更”。
+
 日期：2026-10-01。分支：`codex/virtual-folder-design`，工作区：`/Users/ganlu/develop/.worktrees/xpod-virtual-folder-design`。用户授权负责人直接实现；原型 worker 已结束。AgentFS 是唯一产品主线，rclone 保留研究证据。选型理由见 [引擎选型](xpod-cli-engine-selection.md)，历史调查见 [技术研究](agent-filesystem-research.md)。
 
 ## 声明发行材料增量
@@ -186,3 +188,10 @@ Linux ARM64 独立源码包包含2,017个文件；在 `--network none` 的 Debia
 源码kit和回执没有改写发行准入：macOS `--public` 反例仍仅公开门槛失败，安装校验通过。Bun/JSC修改重建/重链接、外部系统材料及整体文件级发行审核仍未闭合；真实公共Gateway候选和可用登录/Pod URL、NAS硬件也没有新增证据。
 
 本轮源码、测试、独立包三项类型检查退出0；完整 `bun run test:integration` 为lite160 passed/15 skipped、full60 passed/0 skipped，无测试失败，owned Docker栈/volumes/network清理完成。证据为 `native-source-kit/{source-types-final,test-types-final,package-types-final,integration-final}.log`。
+## 当前客户端分发变更：外部运行时（2026-10-01）
+
+用户明确“不内嵌 Bun”。当前开发主线改为 Node-compatible ESM + 外部 Bun/Node + 原 AgentFS helper；旧内嵌候选、Bun/JSC 材料与对应日志均为历史证据，不扩大到新产物。启动器优先使用设备上的 Bun >=1.3.8，没有 Bun 时使用 Node >=22；执行失败不会换运行时重试。JS payload 与启动脚本分别 hash 绑定，schema 2 强制两者都存在且路径唯一；任一完整性失败后不执行入口。支持外部绝对／相对／链式符号链接。没有新增 Xpod 依赖。
+
+实际外部运行时验收：macOS Node23.6.0 从中立 cwd 安装验证通过并自动发现 helper；实际 NFS overlay 与认证回归 13 passed／1 gated skipped。Linux ARM64 Node22（容器明确无 Bun）实际 FUSE + 安装 CLI 的代理生命周期、dirty rg、conditional commit、断回执恢复与 unmount 通过；测试容器中的 Node/ripgrep/curl 不进入安装包。第一轮 apt HTTP500、第二轮 slim 镜像缺 CA 使环境不可用，复用 Debian helper 测试基座后通过，保留原始失败日志。
+
+包内29项测试／200断言、三组类型检查通过；对应应用 source kit 在仅核验材料的 staging 下独立重建229个输入，生成 JS 分别在 Bun/Node 运行 --version 通过。候选 payload742,610字节（0.71MiB），helper Mac6.67MiB／Linux8.09MiB。包含完整源码材料的候选压缩包仍约65.85MiB／66.42MiB，源码未拆出。当前工作树候选证据位于 `.test-data/agent-directory-workers/external-runtime/{candidate-evidence.json,node-macos-install.json,node-macos-overlay.log,node-linux-report.json,detached-rebuild.log}`；不扩大到 clean commit、公共 Gateway、NAS 或公开发布。首次完整回归因磁盘 ENOSPC，lite159 passed／1 failed／15 skipped，登录测试无法创建目录，未进入 full。保留日志后清理已停止的旧 Bun/JSC 构建缓存约4GiB，再重跑；不改变产品或测试预期。空间恢复后的完整 `bun run test:integration` 退出0：lite160 passed／15 skipped，full60 passed／0 skipped；owned Docker容器、卷和网络清理完成，日志为 `external-runtime/integration-after-space-recovery.log`。CLI-only 安装包在 Node 下也验证无 checkout helper 泄漏（`node-macos-cli-only.json`）。

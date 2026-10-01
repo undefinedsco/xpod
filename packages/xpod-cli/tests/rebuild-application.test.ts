@@ -17,17 +17,17 @@ test('detached recipe stages only verified files and permits a different compile
       mkdirSync(path.dirname(path.join(kitRoot, file)), { recursive: true });
       cpSync(path.join(sourceRoot, file), path.join(kitRoot, file));
     }
-    const entry = 'packages/xpod-cli/src/main.ts';
+    const entry = 'packages/xpod-cli/src/entry.ts';
     writeFileSync(path.join(kitRoot, entry), 'console.log("detached-rebuild-fixture");');
     writeFileSync(path.join(kitRoot, 'package.json'), '{"name":"source-kit-fixture","type":"module"}');
     files.push(entry, 'package.json');
     const kit: ApplicationSourceKit = {
-      schemaVersion: 1, status: 'application-materials', scope: 'test fixture', target: `${process.platform}-${process.arch}`,
+      schemaVersion: 2, distribution: 'external-runtime', status: 'application-materials', scope: 'test fixture', target: `${process.platform}-${process.arch}`,
       cliSha256: 'a'.repeat(64), source: { commit: 'b'.repeat(40), dirtyTreeHash: null },
       // Provenance deliberately differs from the invoked executable. It must
       // not prevent a recipient from choosing a compatible modified runtime.
       compiler: { version: 'different-original-compiler', executableSha256: 'c'.repeat(64), hostTarget: `${process.platform}-${process.arch}` },
-      recipe: { entry, workingDirectory: '.', defines: [], removedEnvironmentOptions: ['NODE_ENV', 'NODE_OPTIONS', 'BUN_OPTIONS'], samePlatformUsesInvokedRuntime: true },
+      recipe: { entry, workingDirectory: '.', defines: [], removedEnvironmentOptions: ['NODE_ENV', 'NODE_OPTIONS', 'BUN_OPTIONS'], usesInvokedBundler: true },
       inputs: [{ path: entry, sha256: sha256File(path.join(kitRoot, entry)) }], externalImports: [],
       files: files.map((file) => ({ path: file, sha256: sha256File(path.join(kitRoot, file)), sizeBytes: statSync(path.join(kitRoot, file)).size })),
     };
@@ -40,9 +40,10 @@ test('detached recipe stages only verified files and permits a different compile
     const receipt = JSON.parse(readFileSync(path.join(kitRoot, '.test-data/rebuild/receipt.json'), 'utf8'));
     expect(receipt.compiler.executableSha256).toBe(sha256File(process.execPath));
     expect(receipt.originalCompiler.executableSha256).toBe('c'.repeat(64));
-    expect(receipt.arguments.some((arg: string) => arg.startsWith('--target='))).toBe(false);
+    expect(receipt.arguments).toContain('--target=node');
+    expect(receipt.arguments).not.toContain('--compile');
     expect(receipt.rebuiltInputs).toEqual(kit.inputs);
-    const binary = spawnSync(path.join(kitRoot, '.test-data/rebuild/xpodcli'), [], { cwd: work, encoding: 'utf8' });
+    const binary = spawnSync(process.execPath, [path.join(kitRoot, '.test-data/rebuild/xpodcli.mjs')], { cwd: work, encoding: 'utf8' });
     expect(binary.status).toBe(0);
     expect(binary.stdout.trim()).toBe('detached-rebuild-fixture');
     writeFileSync(path.join(kitRoot, entry), 'console.log("unverified changed source");');

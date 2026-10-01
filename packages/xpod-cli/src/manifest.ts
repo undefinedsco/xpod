@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
-export const MANIFEST_SCHEMA_VERSION = 1;
+export const MANIFEST_SCHEMA_VERSION = 2;
 export const XPOD_CLI_PACKAGE = '@undefineds.co/xpod-cli';
 export const XPOD_CLI_VERSION = '0.1.0-preview.1';
 
@@ -57,6 +57,7 @@ export interface XpodCliManifest {
   version: string;
   channel: 'local-preview' | 'preview';
   platform: string;
+  distribution: 'external-runtime';
   /** Exact source commit when known; null only for a dirty local preview. */
   sourceSHA: string | null;
   /** Hash over the dirty working tree, set only for local previews. */
@@ -91,6 +92,7 @@ export function validateManifest(manifest: unknown): string[] {
     return [ 'manifest is not an object' ];
   }
   const m = manifest as Partial<XpodCliManifest>;
+  if (m.distribution !== 'external-runtime') { problems.push('distribution must be external-runtime'); }
   if (m.schemaVersion !== MANIFEST_SCHEMA_VERSION) {
     problems.push(`schemaVersion must be ${MANIFEST_SCHEMA_VERSION}, got ${String(m.schemaVersion)}`);
   }
@@ -144,6 +146,12 @@ export function validateManifest(manifest: unknown): string[] {
   if (!Array.isArray(m.artifacts) || m.artifacts.length === 0) {
     problems.push('artifacts must be a non-empty array');
   } else {
+    for (const [name, expectedPath] of [['xpodcli', 'lib/xpodcli.mjs'], ['xpodcli-launcher', 'bin/xpodcli']]) {
+      const entries = m.artifacts.filter((artifact) => artifact?.name === name);
+      if (entries.length !== 1 || entries[0].kind !== 'cli' || entries[0].included !== true || entries[0].path !== expectedPath) {
+        problems.push(`artifact ${name}: exactly one included cli at ${expectedPath} is required`);
+      }
+    }
     for (const artifact of m.artifacts) {
       if (!artifact || typeof artifact !== 'object') {
         problems.push('artifact entry is not an object');

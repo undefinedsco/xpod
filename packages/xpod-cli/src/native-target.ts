@@ -7,17 +7,17 @@ export function bunCompileTarget(target: string): string {
   return `bun-${target}`;
 }
 
-/** Explicit --target selects a distributable runtime; keep custom runtimes on their own platform. */
-export function bunCompileArguments(options: {
+/** JavaScript is portable; the native helper alone uses the platform target. */
+export function bunBundleArguments(options: {
   target: string; hostTarget: string; entry: string; outfile: string; metafile: string;
 }): string[] {
-  const target = bunCompileTarget(options.target);
-  return ['build', '--compile', '--outfile', options.outfile, `--metafile=${options.metafile}`,
-    ...(options.target === options.hostTarget ? [] : [`--target=${target}`]), options.entry];
+  bunCompileTarget(options.target);
+  return ['build', '--target=node', '--format=esm', '--outfile', options.outfile,
+    `--metafile=${options.metafile}`, options.entry];
 }
 
 /** The recipe has no environment defines/options; don't inherit caller-specific ones. */
-export function bunCompileEnvironment(environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function bunBundleEnvironment(environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return { ...environment, NODE_ENV: undefined, NODE_OPTIONS: undefined, BUN_OPTIONS: undefined };
 }
 

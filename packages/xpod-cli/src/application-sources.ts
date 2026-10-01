@@ -12,14 +12,15 @@ interface JavascriptIndex {
 }
 
 export interface ApplicationSourceKit {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  distribution: 'external-runtime';
   status: 'application-materials';
   scope: string;
   target: string;
   cliSha256: string;
   source: { commit: string | null; dirtyTreeHash: string | null };
   compiler: { version: string; executableSha256: string; hostTarget: string };
-  recipe: { entry: string; workingDirectory: '.'; defines: []; removedEnvironmentOptions: string[]; samePlatformUsesInvokedRuntime: true };
+  recipe: { entry: string; workingDirectory: '.'; defines: []; removedEnvironmentOptions: string[]; usesInvokedBundler: true };
   inputs: JavascriptIndex['inputs'];
   externalImports: string[];
   files: SourceFile[];
@@ -109,11 +110,11 @@ export function exportApplicationSources(options: {
     if (files.get(input.path)?.record.sha256 !== input.sha256) { throw new Error(`Input missing from application material: ${input.path}`); }
   }
   const kit: ApplicationSourceKit = {
-    schemaVersion: 1, status: 'application-materials',
+    schemaVersion: 2, distribution: 'external-runtime', status: 'application-materials',
     scope: 'Actual application source, installed dependency bytes, notices and compile recipe. Excludes Bun/JSC/toolchain and native helper source/build closure; not whole-artifact release clearance.',
     target: options.target, cliSha256, source: options.source,
     compiler: { version: options.compilerVersion, executableSha256: sha256File(options.compiler), hostTarget: options.hostTarget },
-    recipe: { entry: 'packages/xpod-cli/src/main.ts', workingDirectory: '.', defines: [], removedEnvironmentOptions: ['NODE_ENV', 'NODE_OPTIONS', 'BUN_OPTIONS'], samePlatformUsesInvokedRuntime: true },
+    recipe: { entry: 'packages/xpod-cli/src/entry.ts', workingDirectory: '.', defines: [], removedEnvironmentOptions: ['NODE_ENV', 'NODE_OPTIONS', 'BUN_OPTIONS'], usesInvokedBundler: true },
     inputs: index.inputs, externalImports: index.externalImports,
     files: [...files.values()].map((entry) => entry.record).sort((a, b) => a.path.localeCompare(b.path)),
   };
@@ -129,9 +130,9 @@ export function exportApplicationSources(options: {
 
 export function validateApplicationSourceIndex(value: unknown): ApplicationSourceKit {
   const kit = value as ApplicationSourceKit;
-  if (kit.schemaVersion !== 1 || kit.status !== 'application-materials' || !Array.isArray(kit.files) || !kit.files.length ||
-    !Array.isArray(kit.inputs) || !kit.inputs.length || kit.recipe?.entry !== 'packages/xpod-cli/src/main.ts' ||
-    kit.recipe.samePlatformUsesInvokedRuntime !== true || kit.recipe.workingDirectory !== '.' ||
+  if (kit.schemaVersion !== 2 || kit.distribution !== 'external-runtime' || kit.status !== 'application-materials' || !Array.isArray(kit.files) || !kit.files.length ||
+    !Array.isArray(kit.inputs) || !kit.inputs.length || kit.recipe?.entry !== 'packages/xpod-cli/src/entry.ts' ||
+    kit.recipe.usesInvokedBundler !== true || kit.recipe.workingDirectory !== '.' ||
     !Array.isArray(kit.recipe.defines) || kit.recipe.defines.length !== 0 ||
     JSON.stringify(kit.recipe.removedEnvironmentOptions) !== JSON.stringify(['NODE_ENV', 'NODE_OPTIONS', 'BUN_OPTIONS']) || !/^[a-f0-9]{64}$/.test(kit.cliSha256)) {
     throw new Error('Invalid application source kit');

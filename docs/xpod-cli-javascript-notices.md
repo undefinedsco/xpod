@@ -1,6 +1,6 @@
 # Xpod CLI JavaScript 通知收集
 
-目录客户端的独立产物包含应用 JavaScript、Bun runtime 和 AgentFS native helper。三者需要分别核查；本文件只记录应用 JavaScript 的打包输入和通知候选，不解除 [Bun runtime 发行缺口](bun-runtime-distribution.md) 或 [native 通知缺口](agentfs-license-evidence.md)。
+2026-10-01 用户选择不内嵌 Bun。当前目录客户端包含应用 JavaScript 和 AgentFS native helper，使用设备上已安装的 Bun/Node；本文件保留旧产物的输入统计，并记录同次 bundle 输入和通知候选的收集方式。当前包不分发 Bun runtime，[旧方案发行调查](bun-runtime-distribution.md) 留作追踪；[native 通知审查](agentfs-license-evidence.md) 仍需单独完成。
 
 ## 同一次编译的输入证据
 

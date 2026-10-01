@@ -15,7 +15,7 @@
  *   - optional --public public-gate check
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -145,6 +145,7 @@ function main(): void {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as XpodCliManifest;
     const schemaProblems = validateManifest(manifest);
     add('manifest schema valid', schemaProblems.length === 0, schemaProblems.join('; ') || 'ok');
+    if (schemaProblems.length) { report(checks, manifest); process.exitCode = 1; return; }
     for (const artifact of manifest.artifacts) {
       if (!artifact.included) {
         if (artifact.kind === 'native-helper') {
@@ -224,6 +225,8 @@ function main(): void {
     add('no .placeholder files', allFiles.every((f) => !f.endsWith('.placeholder')), allFiles.filter((f) => f.endsWith('.placeholder')).join(','));
     add('no check-binary masquerade', allFiles.every((f) => !path.basename(f).includes('agentfs-pod-check')), '');
 
+    // Do not execute an entry point after any integrity/material check fails.
+    if (checks.some((check) => !check.ok)) { report(checks, manifest); process.exitCode = 1; return; }
     const bin = path.join(installDir, 'bin/xpodcli');
     if (args.skipExec) {
       // Foreign target: cannot execute on this host. Packaging interface only.
@@ -259,13 +262,15 @@ function main(): void {
       }
       const status = runBinary(bin, [ 'agent-fs', 'status', '--json' ], {
         cwd: neutralCwd,
-        ...(helperBundled ? { env: { XPOD_AGENTFS_HELPER: helperPath } } : {}),
       });
       add('agent-fs status exit 0', status.status === 0, status.stderr.trim());
       try {
         const payload = unwrap(status.stdout);
         const helperPresent = payload.helperPresent;
         add('status helperPresent matches bundle', helperPresent === helperBundled, `helperPresent=${String(helperPresent)} bundle=${helperBundled}`);
+        if (helperBundled) {
+          add('status discovers installed helper', realpathSync(String(payload.helperPath)) === realpathSync(helperPath), String(payload.helperPath));
+        }
         if (!helperBundled) {
           add('status reports no repo-local helper leak', helperPresent === false, `helperPath=${String(payload.helperPath)}`);
         }
@@ -288,7 +293,7 @@ function main(): void {
 
     const ok = checks.every((c) => c.ok);
     report(checks, manifest);
-    process.exit(ok ? 0 : 1);
+    process.exitCode = ok ? 0 : 1;
   } finally {
     if (temp) {
       rmSync(temp, { recursive: true, force: true });

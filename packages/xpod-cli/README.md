@@ -8,6 +8,12 @@ implemented feature. Command display name **Xpod CLI**, binary
 `xpodcli`, candidate package `@undefineds.co/xpod-cli`, candidate version
 `0.1.0-preview.1`.
 
+Current delivery uses an external runtime: installed **Bun >=1.3.8**, or
+**Node.js >=22** when Bun is absent. It bundles Node-compatible ESM and the
+native AgentFS helper, with no Bun/Node executable or JavaScriptCore libraries.
+The launcher selects once; a failing command is never retried under another
+runtime. Older embedded-runtime previews are historical artifacts.
+
 This package currently builds **reviewable preview artifacts**. Public release
 is a separate gated step, pending complete notices, clean source identity and
 real Gateway acceptance. It does not include the Xpod server runtime, UI,
@@ -45,8 +51,8 @@ auto-discovery so the fail-closed path can be exercised without touching
 another worker's build output.
 
 Cross targets (e.g. `--target linux-arm64`) are marked `unverified` by the
-packaging script until tested on the target OS. Both CLI and helper binary
-headers must match the requested OS/architecture; an explicit missing helper
+packaging script until tested on the target OS. The helper binary header
+must match the requested OS/architecture; an explicit missing helper
 cannot fall back to a host binary. The separately run Linux ARM64 container
 harness tests the installed CLI, real FUSE mounts, auth proxy, dirty restart,
 commit, lost receipt recovery and conflicts. NAS hardware and x64 remain unverified.
@@ -64,8 +70,9 @@ Output under `.test-data/agent-directory-workers/xpod-cli-package/out/<target>/`
 
 ```
 install/
-  bin/xpodcli          compiled standalone CLI
-  bin/xpodcli-env      launcher; sets the EXISTING XPOD_AGENTFS_HELPER key only
+  bin/xpodcli          external-runtime launcher
+  bin/xpodcli-env      link to the same launcher
+  lib/xpodcli.mjs      Node-compatible ESM client payload
   helper/agentfs-pod   native helper (separate artifact; when available)
   config/minimal.json  minimal install config
   NOTICES.md           license status incl. pending entries
@@ -81,10 +88,12 @@ xpod-cli-<version>-<target>.tar.gz
 build-summary.json
 ```
 
-The CLI and native helper are separate artifacts; they are not fused into one
-executable.
+The installed entry is `bin/xpodcli` (a shell launcher), with portable code at
+`lib/xpodcli.mjs` and the native helper at `helper/agentfs-pod`. The JavaScript
+payload is architecture independent; only the helper needs native header checks.
+The runtime must already be installed; the launcher does not install software.
 
-Each compile writes a Bun metafile outside the install archive and derives
+Each bundle writes a Bun metafile outside the install archive and derives
 `licenses/javascript/index.json` before deleting the staging tree. The index
 records input hashes, nested package versions, declared licenses, missing
 originals and external import names, bound to the compiled CLI's SHA-256.
@@ -93,8 +102,9 @@ content-addressed objects and included in the install manifest. Zero-output
 inputs remain visible as conservative candidates. No build-machine absolute
 paths are included in the installed index.
 
-This collection is not a complete file-level license audit and excludes Bun's
-embedded runtime. The current ARM64 builds identify 15 package instances and
+This collection is not a complete file-level license audit. External Bun/Node
+are prerequisites rather than distributed executable contents. Historical embedded
+ARM64 builds identified 15 package instances and
 12 unique original notice candidates. Inrupt 3.1.1 supplements are bound by
 name/version to the publisher metadata gitHead, original notice SHA-256 and
 archive integrity. Broader source/runtime audit gaps remain pending, including
@@ -117,10 +127,9 @@ cd application-source
 /path/to/compatible-bun packages/xpod-cli/scripts/rebuild-application.ts
 ```
 
-Rebuild on the kit's target platform. The script stages only verified files,
-does not install dependencies, and embeds the invoked Bun executable. The original
-compiler hash is provenance, not a restriction against using a compatible modified
-runtime. Compile options/environment handling are shared with the package builder;
+The script stages only verified files and does not install dependencies. Bun
+is used as a bundler; its executable is not embedded. The original bundler hash
+is provenance. Bundle options/environment handling are shared with the package builder;
 the receipt records actual rebuilt input hashes and compiler/output identities.
 The temporary staging directory is removed to prevent checkout helper discovery.
 
@@ -128,9 +137,10 @@ Installation verification rejects missing sources or notices, duplicate archive
 members, links, changed bytes and mismatched CLI/source/target binding. An outer
 archive hash alone does not prove the source material is complete.
 
-This kit covers the application side. Bun/JSC/toolchain and native helper source
-and build closure remain separate. A successful application rebuild does not
-claim a modified LGPL library has been rebuilt/relinked or clear public release.
+This kit covers the application side. Native helper source/build material remains
+separate. Old Bun/JSC research applies to historical embedded previews; it is
+not evidence that a runtime is bundled by the current profile. A successful
+application rebuild does not clear native/JavaScript release review.
 See [the kit instructions](APPLICATION-SOURCE-README.md).
 
 ## Native helper rebuild materials
@@ -191,8 +201,8 @@ do not raise the public release status. See [native kit instructions](NATIVE-SOU
 - rclone (MIT) is a research backend only and is **not** bundled.
 
 The preview manifest therefore stays below `full-verified` and the public gate
-blocks while whole-artifact obligations, particularly the embedded Bun runtime
-and corresponding rebuild material, remain pending.
+blocks while whole-artifact obligations for the JavaScript bundle and native helper
+remain pending. Installed Bun/Node runtimes are not distributed in this package.
 
 ## Installed acceptance
 

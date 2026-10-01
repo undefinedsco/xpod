@@ -41,7 +41,9 @@ Linux helper 实际动态链接系统 OpenSSL 3；Rust openssl-sys 的 MIT 仅�
 
 安装包 NOTICES 现在明确指出 option-ext 0.2.0 的 MPL-2.0 源码、原文许可位置及 [对应 crate 源归档](https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate)。实际下载归档的 SHA-256 为 `04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d`，与 Cargo.lock 一致；两平台 source cache 中的归档文件也逐份与下载内容一致，没有修改。按 [MPL 2.0 第3.2节](https://www.mozilla.org/en-US/MPL/2.0/) 提供源码取得方式，不把该文件级许可推成整个 helper 的许可。这个告知只处理对应组件，不解除其他发行缺口。
 
-## Bun runtime 发行范围
+## Bun runtime 发行范围（历史内嵌方案）
+
+2026-10-01 用户明确选择不内嵌 Bun。当前 CLI 是使用设备上已安装 Bun/Node 的 JS bundle，包内不分发运行时；下段记录旧产物的调查。当前准入仍需完成 JS/native 产物审查，历史 Bun/JSC 重链接未完成不再是新分发方案的阻断项。
 
 `bun --compile` 的独立 CLI 包含 Bun runtime，不能仅用 TypeScript 依赖或 Cargo 清单覆盖。固定 Bun 1.3.8 的静态库、源码取得与重链接材料调查已保存为 [Bun runtime 发行记录](bun-runtime-distribution.md)。目前只是固定版本证据，尚未验证修改 LGPL 库后重建当前 CLI；public gate 继续阻止。
 

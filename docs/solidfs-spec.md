@@ -27,6 +27,7 @@ Xpod 是总产品，CLI 和 App 是使用入口；CSS、API、AFS 是可选功�
 - 客户端不直连 Pod 的 SQL/RDF/对象存储内部表，不要求外部 Solid Server 采用 Xpod 存储布局。普通 RDF 资源的读写仍经过服务端协议验证；业务实体投影另有契约。
 - Pod 目录 MVP 继续统一授权 HTTP，同机关闭持久正文读缓存，远端按需缓存，pending 修改独立恢复。外部 Git/worktree 属于设备上的项目，Pod 至多保存 Link。
 - 安装体验目标是用户不装 Rust/Go 编译工具，由发布流程构建并分发 helper。OS 挂载驱动、权限及签名要求需真实平台验收；不承诺当前已做到一键安装。
+- 用户明确 CLI 不内嵌 Bun：客户端构建输出 JavaScript + native helper，使用设备已有 Bun，未安装 Bun 时使用受支持的 Node。Bun 仅为构建工具和可选外部运行时，不把重建编译库当作用户安装内容。运行失败不能更换运行时重放命令。
 
 ### 设备服务与远程聊天
 

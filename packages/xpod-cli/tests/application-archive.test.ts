@@ -14,7 +14,7 @@ test('verifies archive bodies and rejects missing sources/notices, duplicates, l
   const work = mkdtempSync(path.join(parent, 'archive-'));
   const root = path.join(work, 'application-source');
   const contents = {
-    'packages/xpod-cli/src/main.ts': 'console.log("fixture");',
+    'packages/xpod-cli/src/entry.ts': 'console.log("fixture");',
     'packages/xpod-cli/scripts/rebuild-application.ts': '// recipe fixture',
     'licenses/NOTICE': 'Original license notice\r\n',
   };
@@ -29,11 +29,11 @@ test('verifies archive bodies and rejects missing sources/notices, duplicates, l
     }
     const files = Object.keys(contents).map((relative) => ({ path: relative, sha256: sha256File(path.join(root, relative)), sizeBytes: statSync(path.join(root, relative)).size }));
     const kit: ApplicationSourceKit = {
-      schemaVersion: 1, status: 'application-materials', scope: 'Test fixture application only',
+      schemaVersion: 2, distribution: 'external-runtime', status: 'application-materials', scope: 'Test fixture application only',
       target: `${process.platform}-${process.arch}`, cliSha256: 'a'.repeat(64),
       source: { commit: 'b'.repeat(40), dirtyTreeHash: null },
       compiler: { version: 'fixture', executableSha256: 'c'.repeat(64), hostTarget: `${process.platform}-${process.arch}` },
-      recipe: { entry: files[0].path, workingDirectory: '.', defines: [], removedEnvironmentOptions: ['NODE_ENV', 'NODE_OPTIONS', 'BUN_OPTIONS'], samePlatformUsesInvokedRuntime: true },
+      recipe: { entry: files[0].path, workingDirectory: '.', defines: [], removedEnvironmentOptions: ['NODE_ENV', 'NODE_OPTIONS', 'BUN_OPTIONS'], usesInvokedBundler: true },
       inputs: [{ path: files[0].path, sha256: files[0].sha256 }], externalImports: [], files,
     };
     const index = Buffer.from(JSON.stringify(kit));
@@ -67,7 +67,7 @@ test('verifies archive bodies and rejects missing sources/notices, duplicates, l
     writeFileSync(path.join(install, 'sources/application-source.json'), index);
     const installedArchive = path.join(install, 'sources/application-source.tar.gz');
     const manifest: XpodCliManifest = {
-      schemaVersion: MANIFEST_SCHEMA_VERSION, package: XPOD_CLI_PACKAGE, version: XPOD_CLI_VERSION,
+      schemaVersion: MANIFEST_SCHEMA_VERSION, distribution: 'external-runtime', package: XPOD_CLI_PACKAGE, version: XPOD_CLI_VERSION,
       platform: kit.target, channel: 'local-preview', sourceSHA: kit.source.commit, dirtyTreeHash: null,
       source: { mode: 'local-preview', commit: kit.source.commit, dirty: false },
       selectedEnginePin: { engine: 'agentfs', repository: 'https://github.com/tursodatabase/agentfs', commit: 'd'.repeat(40), sdkLicenseStatus: 'verified', cliLicenseStatus: 'pending', rootLicensePresent: false },
@@ -76,7 +76,8 @@ test('verifies archive bodies and rejects missing sources/notices, duplicates, l
     const verify = (): { ok: boolean; detail: string } => {
       tar(['-czf', installedArchive, 'application-source']);
       manifest.artifacts = [
-        { name: 'xpodcli', kind: 'cli', path: 'bin/xpodcli', included: true, sha256: kit.cliSha256, sizeBytes: 1, license: { spdx: null, status: 'pending', source: 'fixture' } },
+        { name: 'xpodcli', kind: 'cli', path: 'lib/xpodcli.mjs', included: true, sha256: kit.cliSha256, sizeBytes: 1, license: { spdx: null, status: 'pending', source: 'fixture' } },
+        { name: 'xpodcli-launcher', kind: 'cli', path: 'bin/xpodcli', included: true, sha256: 'f'.repeat(64), sizeBytes: 1, license: { spdx: 'MIT', status: 'pending', source: 'fixture' } },
         ...['json', 'tar.gz'].map((extension) => {
           const relative = `sources/application-source.${extension}`;
           return { name: `application-source.${extension}`, kind: 'source' as const, path: relative, included: true,
