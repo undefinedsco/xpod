@@ -15,7 +15,7 @@ test('preserves patched/nested package layout and rejects input drift or escaped
     const notices = path.join(work, 'install/licenses');
     const files: Record<string, string> = {
       'stage/src/client.ts': 'export const source = 1;',
-      'stage/packages/xpod-cli/src/main.ts': 'import "nested";',
+      'stage/packages/xpod-cli/src/entry.ts': 'import "nested";',
       'stage/packages/xpod-cli/scripts/rebuild-application.ts': '// fixture recipe',
       'stage/packages/xpod-cli/package.json': '{"name":"xpod-cli","version":"1"}',
       'stage/packages/xpod-cli/APPLICATION-SOURCE-README.md': 'Scope: application materials only.',
@@ -33,7 +33,7 @@ test('preserves patched/nested package layout and rejects input drift or escaped
     for (const [relative, data] of Object.entries(files)) {
       const file = path.join(work, relative); mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, data);
     }
-    const inputs = ['src/client.ts', 'packages/xpod-cli/src/main.ts', 'node_modules/nested/dist/index.js', 'node_modules/nested/node_modules/nested/index.js']
+    const inputs = ['src/client.ts', 'packages/xpod-cli/src/entry.ts', 'node_modules/nested/dist/index.js', 'node_modules/nested/node_modules/nested/index.js']
       .map((name) => ({ path: name, sha256: sha256File(path.join(name.startsWith('node_modules/') ? repo : stage, name)) }));
     const packages = ['node_modules/nested', 'node_modules/nested/node_modules/nested'].map((name) => {
       const file = path.join(repo, name, 'package.json'); const info = JSON.parse(readFileSync(file, 'utf8'));

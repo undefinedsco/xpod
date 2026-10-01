@@ -3,16 +3,16 @@ import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertNativeTarget, bunCompileArguments, bunCompileEnvironment, bunCompileTarget } from '../src/native-target';
+import { assertNativeTarget, bunBundleArguments, bunBundleEnvironment, bunCompileTarget } from '../src/native-target';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 
-test('same-platform compilation keeps the invoked runtime; cross compilation declares its runtime target', () => {
+test('bundles portable ESM without embedding or downloading a platform runtime', () => {
   const options = { target: 'darwin-arm64', hostTarget: 'darwin-arm64', entry: 'main.ts', outfile: 'cli', metafile: 'meta.json' };
-  expect(bunCompileArguments(options)).toEqual(['build', '--compile', '--outfile', 'cli', '--metafile=meta.json', 'main.ts']);
-  expect(bunCompileArguments({ ...options, target: 'linux-arm64' })).toContain('--target=bun-linux-arm64');
-  expect(() => bunCompileArguments({ ...options, target: '../../escape' })).toThrow('Unsupported');
-  const environment = bunCompileEnvironment({ PATH: '/bin', NODE_ENV: 'production', BUN_OPTIONS: '--conditions=private', NODE_OPTIONS: '--loader=custom' });
+  expect(bunBundleArguments(options)).toEqual(['build', '--target=node', '--format=esm', '--outfile', 'cli', '--metafile=meta.json', 'main.ts']);
+  expect(bunBundleArguments({ ...options, target: 'linux-arm64' })).toEqual(bunBundleArguments(options));
+  expect(() => bunBundleArguments({ ...options, target: '../../escape' })).toThrow('Unsupported');
+  const environment = bunBundleEnvironment({ PATH: '/bin', NODE_ENV: 'production', BUN_OPTIONS: '--conditions=private', NODE_OPTIONS: '--loader=custom' });
   expect(environment.PATH).toBe('/bin');
   expect(environment.NODE_ENV).toBeUndefined();
   expect(environment.BUN_OPTIONS).toBeUndefined();

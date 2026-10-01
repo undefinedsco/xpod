@@ -15,6 +15,7 @@ function baseManifest(overrides: Partial<XpodCliManifest> = {}): XpodCliManifest
     version: '0.1.0-preview.1',
     channel: 'preview',
     platform: 'darwin-arm64',
+    distribution: 'external-runtime',
     sourceSHA: 'a'.repeat(40),
     dirtyTreeHash: null,
     source: { mode: 'release', commit: 'a'.repeat(40), dirty: false },
@@ -27,10 +28,12 @@ function baseManifest(overrides: Partial<XpodCliManifest> = {}): XpodCliManifest
       rootLicensePresent: false,
     },
     artifacts: [
+      { name: 'xpodcli-launcher', kind: 'cli', path: 'bin/xpodcli', sha256: 'f'.repeat(64), sizeBytes: 321,
+        included: true, license: { spdx: 'MIT', status: 'verified', source: 'reviewed' } },
       {
         name: 'xpodcli',
         kind: 'cli',
-        path: 'bin/xpodcli',
+        path: 'lib/xpodcli.mjs',
         sha256: 'c'.repeat(64),
         sizeBytes: 123,
         included: true,
@@ -59,6 +62,20 @@ describe('validateManifest', () => {
     expect(validateManifest(baseManifest())).toEqual([]);
   });
 
+  test('requires both CLI artifacts exactly once with their executable paths', () => {
+    for (const name of ['xpodcli', 'xpodcli-launcher']) {
+      for (const mutation of ['remove', 'duplicate', 'path', 'omitted']) {
+        const manifest = baseManifest();
+        const entry = manifest.artifacts.find((artifact) => artifact.name === name)!;
+        if (mutation === 'remove') manifest.artifacts = manifest.artifacts.filter((artifact) => artifact !== entry);
+        if (mutation === 'duplicate') manifest.artifacts.push({ ...entry });
+        if (mutation === 'path') entry.path = 'other/file';
+        if (mutation === 'omitted') { entry.included = false; entry.unavailableReason = 'test'; }
+        expect(validateManifest(manifest).some((problem) => problem.includes(`artifact ${name}: exactly one`))).toBe(true);
+      }
+    }
+  });
+
   test('rejects a bad platform', () => {
     const problems = validateManifest(baseManifest({ platform: 'darwin' }));
     expect(problems.some((p) => p.includes('platform'))).toBe(true);
@@ -73,7 +90,7 @@ describe('validateManifest', () => {
 
   test('requires unavailableReason for omitted artifacts', () => {
     const manifest = baseManifest();
-    delete manifest.artifacts[1].unavailableReason;
+    delete manifest.artifacts[2].unavailableReason;
     const problems = validateManifest(manifest);
     expect(problems.some((p) => p.includes('unavailableReason'))).toBe(true);
   });
@@ -125,7 +142,7 @@ describe('public gate', () => {
         {
           name: 'xpodcli',
           kind: 'cli',
-          path: 'bin/xpodcli',
+          path: 'lib/xpodcli.mjs',
           sha256: 'c'.repeat(64),
           sizeBytes: 123,
           included: true,
@@ -140,12 +157,14 @@ describe('public gate', () => {
       ],
       validationState: 'full-verified',
     });
+    manifest.artifacts.push({ name: 'xpodcli-launcher', kind: 'cli', path: 'bin/xpodcli', sha256: 'f'.repeat(64),
+      sizeBytes: 321, included: true, license: { spdx: 'MIT', status: 'verified', source: 'reviewed' } });
     expect(publicGateProblems(manifest)).toEqual([]);
     manifest.selectedEnginePin.rootLicensePresent = false;
     expect(publicGateProblems(manifest)).toEqual([]);
     manifest.artifacts[1].sha256 = 'e'.repeat(64);
     expect(publicGateProblems(manifest).some((p) => p.includes('license evidence'))).toBe(true);
-    manifest.artifacts.pop();
+    manifest.artifacts.splice(1, 1);
     expect(publicGateProblems(manifest).some((p) => p.includes('license evidence'))).toBe(true);
   });
 });

@@ -9,33 +9,10 @@
  * Agent SDK.
  */
 import yargs from 'yargs';
-import { hideBin } from 'yargs/helpers';
 
 export const XPOD_CLI_VERSION = '0.1.0-preview.1';
 
-/** Commands exposed by the standalone client. Control-server commands are absent. */
-const CLIENT_COMMANDS = new Set([ 'auth', 'login', 'agent-fs' ]);
-const PSEUDO = new Set([ 'help', 'version', '--help', '-h', '--version', '-v' ]);
-
-/**
- * Bun compiled binaries expose `process.argv = [ "bun", "/$bunfs/root/<bin>", ...userArgs ]`.
- * Existing helper code (see `src/cli/agent-fs/mount.ts`) re-invokes the CLI as
- * `<execPath> <resolved argv[1]> agent-fs proxy ...`, and the wrapper launcher
- * does the same. Normalize by dropping a single leading non-command path so the
- * compiled binary behaves like the source entry for nested invocations.
- */
-function normalizedArgs(): string[] {
-  const raw = process.argv.slice(2);
-  if (raw.length > 0 && !CLIENT_COMMANDS.has(raw[0]) && !PSEUDO.has(raw[0]) && looksLikePath(raw[0])) {
-    return raw.slice(1);
-  }
-  return raw;
-}
-
-function looksLikePath(value: string): boolean {
-  return value.includes('/') || value.startsWith('.') || value.endsWith('.js') || value.endsWith('.ts');
-}
-
+/** Client commands; server/control commands are not registered here. */
 export async function createClientParser() {
   const [ { authCommand }, { loginCommandModule }, { agentFsCommand } ] = await Promise.all([
     import('../../../src/cli/commands/auth'),
@@ -55,7 +32,7 @@ export async function createClientParser() {
     .version(XPOD_CLI_VERSION);
 }
 
-export async function main(argv: string[] = normalizedArgs()): Promise<void> {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   if (argv[0] === 'agent-fs' && argv[1] === 'rg') {
     const { runRgWrapperMain } = await import('../../../src/cli/agent-fs/rg-entry');
     await runRgWrapperMain(argv.slice(2));
@@ -71,11 +48,4 @@ export async function main(argv: string[] = normalizedArgs()): Promise<void> {
     return;
   }
   parser.parse(wantsHelp ? [ '--help' ] : argv);
-}
-
-if (import.meta.main) {
-  main().catch((error: unknown) => {
-    console.error('Fatal error:', error);
-    process.exit(1);
-  });
 }

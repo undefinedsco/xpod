@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyApplicationSources } from '../src/application-sources';
-import { assertNativeTarget, bunCompileArguments, bunCompileEnvironment } from '../src/native-target';
+import { bunBundleArguments, bunBundleEnvironment } from '../src/native-target';
 import { sha256File } from '../src/manifest';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -15,13 +15,12 @@ if (process.argv.includes('--verify-only')) {
   console.log(JSON.stringify({ verified: true, target: kit.target, originalCliSha256: kit.cliSha256 }));
 } else {
   const hostTarget = `${process.platform}-${process.arch}`;
-  if (hostTarget !== kit.target) { throw new Error(`Rebuild on ${kit.target} with the compatible modified Bun; refusing cross-runtime download`); }
   const out = path.join(root, '.test-data/rebuild');
   mkdirSync(out, { recursive: true });
-  const outfile = path.join(out, 'xpodcli');
+  const outfile = path.join(out, 'xpodcli.mjs');
   const stage = mkdtempSync(path.join(tmpdir(), 'xpod-cli-source-rebuild-'));
   const metafile = path.join(out, 'metafile.json');
-  const args = bunCompileArguments({ target: kit.target, hostTarget, entry: kit.recipe.entry, outfile, metafile });
+  const args = bunBundleArguments({ target: kit.target, hostTarget, entry: kit.recipe.entry, outfile, metafile });
   let rebuiltInputs: { path: string; sha256: string }[];
   try {
     for (const file of kit.files) {
@@ -30,7 +29,7 @@ if (process.argv.includes('--verify-only')) {
       cpSync(path.join(root, file.path), destination);
       if (sha256File(destination) !== file.sha256) { throw new Error(`Source changed during staging: ${file.path}`); }
     }
-    const result = spawnSync(process.execPath, args, { cwd: stage, env: bunCompileEnvironment(), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const result = spawnSync(process.execPath, args, { cwd: stage, env: bunBundleEnvironment(), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     if (result.status !== 0) { throw new Error(`Application rebuild failed: ${result.stderr}`); }
     const metadata = JSON.parse(readFileSync(metafile, 'utf8')) as { inputs: Record<string, unknown> };
     const files = new Map(kit.files.map((file) => [file.path, file.sha256]));
@@ -42,13 +41,13 @@ if (process.argv.includes('--verify-only')) {
       return { path: relative, sha256 };
     });
   } finally { rmSync(stage, { recursive: true, force: true }); }
-  assertNativeTarget(outfile, kit.target);
   const receipt = {
     target: kit.target, originalCliSha256: kit.cliSha256, cliSha256: sha256File(outfile),
     originalCompiler: kit.compiler,
     compiler: { version: process.versions.bun, executableSha256: sha256File(process.execPath) },
-    arguments: args, rebuiltInputs, samePlatformUsesInvokedRuntime: true,
-    scope: 'Application rebuild only; not modified JSC/library rebuild or whole-artifact clearance',
+    arguments: args, rebuiltInputs, usesInvokedBundler: true,
+    distribution: 'external-runtime',
+    scope: 'Portable JavaScript rebuild only; no runtime embedded or whole-artifact clearance',
   };
   writeFileSync(path.join(out, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
   console.log(JSON.stringify({ target: kit.target, cliSha256: receipt.cliSha256, compiler: receipt.compiler, verifiedInputs: rebuiltInputs.length, receipt: path.join(out, 'receipt.json') }));

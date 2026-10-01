@@ -90,7 +90,7 @@ function noticeCandidates(root: string): string[] {
   return files.sort();
 }
 
-/** Use the same --compile invocation's inputs; this does not inventory the embedded Bun runtime. */
+/** Inventory the exact portable JS bundle inputs; externally installed runtimes are not shipped. */
 export function collectJavascriptNotices(options: {
   metafile: string;
   stageRoot: string;
@@ -183,7 +183,7 @@ export function collectJavascriptNotices(options: {
   writeFileSync(path.join(options.destination, 'index.json'), JSON.stringify({
     schemaVersion: 1, status: 'partial-collection', target: options.target, bunVersion: options.bunVersion,
     cliSha256,
-    scope: 'All inputs of this compile invocation, including zero output contributions; not the embedded Bun runtime or a complete file-level license audit.',
+    scope: 'All inputs of this portable JS bundle invocation, including zero output contributions; no Bun/Node runtime is shipped. This is not a complete file-level license audit.',
     packages: [...packages.values()].sort((a, b) => a.root.localeCompare(b.root)),
     inputs: inputs.sort((a, b) => a.path.localeCompare(b.path)),
     externalImports: [...externalImports].sort(),

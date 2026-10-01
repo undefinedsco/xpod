@@ -30,6 +30,7 @@ const FIXTURE = `${RUN}-fixture`;
 const HELPER = `${RUN}-helper`;
 const BACKEND = process.env.XPOD_AGENTFS_BACKEND ?? 'fuse';
 const WORK = path.join(REPO_ROOT, '.test-data', 'agent-directory-workers', 'agentfs-test', 'linux');
+const externalNode = path.join(WORK, `node-${pid}`);
 const REPORT = path.join(REPO_ROOT, '.test-data', 'agent-directory-workers', 'agentfs-linux-report.json');
 
 function docker(args, options = {}) {
@@ -46,6 +47,7 @@ function cleanup() {
   docker([ 'rm', '-f', FIXTURE ], { timeoutMs: 30_000 });
   docker([ 'rm', '-f', HELPER ], { timeoutMs: 30_000 });
   docker([ 'network', 'rm', NET ], { timeoutMs: 30_000 });
+  rmSync(externalNode, { force: true });
 }
 process.on('exit', cleanup);
 process.on('SIGINT', () => { cleanup(); process.exit(EXIT.unavailable); });
@@ -102,9 +104,10 @@ if (!binOk) {
 const testedArtifacts = { helperSHA256: createHash('sha256').update(readFileSync(linuxBin)).digest('hex') };
 if (linuxInstall) {
   const manifest = JSON.parse(readFileSync(path.join(linuxInstall, 'manifest.json'), 'utf8'));
-  testedArtifacts.cliSHA256 = createHash('sha256').update(readFileSync(path.join(linuxInstall, 'bin/xpodcli'))).digest('hex');
+  testedArtifacts.cliSHA256 = createHash('sha256').update(readFileSync(path.join(linuxInstall, 'lib/xpodcli.mjs'))).digest('hex');
+  testedArtifacts.launcherSHA256 = createHash('sha256').update(readFileSync(path.join(linuxInstall, 'bin/xpodcli'))).digest('hex');
   testedArtifacts.sourceSHA = manifest.sourceSHA;
-  for (const [name, hash] of [ ['agentfs-pod', testedArtifacts.helperSHA256], ['xpodcli', testedArtifacts.cliSHA256] ]) {
+  for (const [name, hash] of [ ['agentfs-pod', testedArtifacts.helperSHA256], ['xpodcli', testedArtifacts.cliSHA256], ['xpodcli-launcher', testedArtifacts.launcherSHA256] ]) {
     if (manifest.artifacts.find((artifact) => artifact.name === name)?.sha256 !== hash) {
       const reason = `installed artifact hash differs from manifest: ${name}`;
       console.log(`STATUS: FAIL - ${reason}`);
@@ -207,8 +210,16 @@ if (fixtureRun.status !== 0) {
   unavailable(`fixture container failed: ${fixtureRun.stderr.trim().slice(0, 160)}`);
 }
 
+// Reuse the Debian helper prerequisites, with a test-only external Node binary
+// from the actual fixture image. Neither runtime nor test tools enter the package.
+if (linuxInstall) {
+  const copied = docker(['cp', `${FIXTURE}:/usr/local/bin/node`, externalNode], { timeoutMs: 30_000 });
+  if (copied.status !== 0) unavailable('Node runtime unavailable in fixture image');
+  testedArtifacts.nodeRuntimeSHA256 = createHash('sha256').update(readFileSync(externalNode)).digest('hex');
+  testedArtifacts.nodeRuntimeImage = image;
+}
 const helperImage = 'rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e';
-const helperRun = docker([ 'run', '-d', '--name', HELPER, '--network', NET, '--device', '/dev/fuse', '--cap-add', 'SYS_ADMIN', '--security-opt', 'apparmor:unconfined', '-v', `${linuxBin}:/usr/local/bin/agentfs-pod:ro`, ...(linuxInstall ? [ '-v', `${linuxInstall}:/candidate:ro` ] : []), helperImage, 'sleep', '3600' ], { timeoutMs: 120_000 });
+const helperRun = docker([ 'run', '-d', '--name', HELPER, '--network', NET, '--device', '/dev/fuse', '--cap-add', 'SYS_ADMIN', '--security-opt', 'apparmor:unconfined', '-v', `${linuxBin}:/usr/local/bin/agentfs-pod:ro`, ...(linuxInstall ? [ '-v', `${linuxInstall}:/candidate:ro`, '-v', `${externalNode}:/usr/local/bin/node:ro` ] : []), helperImage, 'sleep', '3600' ], { timeoutMs: 120_000 });
 if (helperRun.status !== 0) {
   unavailable(`helper container failed: ${helperRun.stderr.trim().slice(0, 160)}`);
 }
@@ -216,7 +227,7 @@ if (helperRun.status !== 0) {
 if (linuxInstall) {
   // Test prerequisite only: never add the oracle to the shipping artifact or
   // install it on the host. Dirty searches must execute this real native tool.
-  const oracle = docker([ 'exec', HELPER, 'sh', '-c', 'test -x /usr/bin/rg || (apt-get update && apt-get install -y --no-install-recommends ripgrep)' ], { timeoutMs: 120_000 });
+  const oracle = docker([ 'exec', HELPER, 'sh', '-c', "test -x /usr/bin/rg || (sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ripgrep curl fuse3 procps)" ], { timeoutMs: 120_000 });
   if (oracle.status !== 0) {
     unavailable(`native ripgrep oracle unavailable in test container: ${oracle.stderr.trim().slice(0, 160)}`);
   }
@@ -254,6 +265,8 @@ const ops = [
     'chmod 600 "$SOLID_HOME/auth/credentials.json"',
     'export PATH=/candidate/bin:$PATH',
     '/usr/bin/rg --version',
+    'node --version',
+    '! command -v bun',
     'unset XPOD_AGENTFS_TOKEN XPOD_AGENTFS_HELPER',
     'test "$(xpodcli --version)" = 0.1.0-preview.1',
     'xpodcli agent-fs mount --pod-root "$POD_ROOT" --session-dir /cli-session --backend fuse',

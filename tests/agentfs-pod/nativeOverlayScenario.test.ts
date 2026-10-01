@@ -154,7 +154,7 @@ describe.runIf(runOverlay)('native session overlay: dirty before commit, restart
     expect(server.readBody('alpha.txt')).toBe('REMOTE_MOVED_ON\n');
     expect(await readFile(path.join(mnt, 'alpha.txt'), 'utf8')).toBe('LOCAL_EDIT\n');
     const installedCli = process.env.XPOD_AGENTFS_TEST_CLI;
-    const launcher = installedCli ? [ installedCli ] : [ 'bun', path.resolve('packages/xpod-cli/src/main.ts') ];
+    const launcher = installedCli ? [ installedCli ] : [ 'bun', path.resolve('packages/xpod-cli/src/entry.ts') ];
     const rgEnv = {
       XPOD_AGENTFS_SESSION: session,
       XPOD_AGENT_FS_ROOTS: JSON.stringify([ { localPath: mnt, podRoot: server.podRoot } ]),

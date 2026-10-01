@@ -30,13 +30,14 @@ import {
   type SelectedEnginePin,
   type XpodCliManifest,
 } from '../src/manifest';
-import { assertNativeTarget, bunCompileArguments, bunCompileEnvironment, bunCompileTarget } from '../src/native-target';
+import { assertNativeTarget, bunBundleArguments, bunBundleEnvironment, bunCompileTarget } from '../src/native-target';
 import { copyNativeNotices } from '../src/native-notices';
 import { copyNativeDeclarations } from '../src/native-declarations';
 import { collectJavascriptNotices } from '../src/javascript-notices';
 import { exportApplicationSources } from '../src/application-sources';
 import { validateNativeBuildReceipt, verifyNativeSources } from '../src/native-sources';
 import { verifySourceFiles } from '../src/source-materials';
+import { externalRuntimeLauncher } from '../src/launcher';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, '..');
@@ -177,7 +178,7 @@ function notes(target: string, args: Args, helper?: string): string[] {
     'Preview artifact only; not published. Channel selection awaits user reply.',
     'CLI bundles the auth and agent-fs command registrations; control-server commands are not registered.',
     `Target platform: ${target}.`,
-    'Pinned AgentFS and crate declarations plus selected standard MIT terms are bundled; full helper and Bun runtime release review remains pending.',
+    'CLI uses an installed Bun >=1.3.8 or Node.js >=22; no runtime executable is included. Native/JavaScript release review remains pending.',
     'rclone (MIT) is a research backend only and is NOT part of this artifact.',
   ];
   if (!target.startsWith('darwin-arm64')) {
@@ -236,10 +237,10 @@ Pinned Turso and SimSIMD original texts are bundled under licenses/native/.
 Linux additionally includes the separately vendored libaegis C-backend notice.
 The Cargo target/features inventories include build dependencies and remain
 research evidence; these supplements are not a complete release clearance.
-CLI/Bun runtime notices and remaining whole-artifact obligations still need review.
+Native/JavaScript notices and remaining whole-artifact obligations still need review.
 The JavaScript inputs and available package notice originals from this exact
-compile are included under licenses/javascript/. Missing originals and external
-imports remain visible in index.json. This excludes the embedded Bun runtime.
+bundle are included under licenses/javascript/. Missing originals and external
+imports remain visible in index.json. No Bun or Node runtime is bundled.
 ${includeNative ? `The target's audited Cargo notice candidates are included under
 licenses/native/collection/ with original paths and content hashes. This is
 a partial collection, including build dependencies, not a legal clearance.`
@@ -335,14 +336,16 @@ function main(): void {
   }
   const vendoredNotices = writeNotices(installDir, args.target, !args.cliOnly, pin);
 
-  // Build the CLI binary from a hermetic staging tree. Bun bakes the compiled
-  // module's `__dirname` into the binary; building directly from the checkout
+  // Bundle the CLI from a hermetic staging tree. Bun resolves original module
+  // `__dirname` values during bundling; building directly from the checkout
   // would bake the build-machine repo path into PACKAGE_ROOT and let a
   // builder-local tools/agentfs-pod helper leak into an artifact that does not
   // bundle one. The staging tree is deleted after the build, so the baked path
   // is guaranteed to be absent at verify/install time.
   const stageDir = mkdtempSync(path.join(tmpdir(), 'xpod-cli-stage-'));
-  const cliOut = path.join(binDir, 'xpodcli');
+  const libDir = path.join(installDir, 'lib');
+  mkdirSync(libDir, { recursive: true });
+  const cliOut = path.join(libDir, 'xpodcli.mjs');
   const javascriptNotices: ManifestArtifact[] = [];
   const applicationSources: ManifestArtifact[] = [];
   try {
@@ -352,10 +355,10 @@ function main(): void {
     cpSync(path.join(repoRoot, 'package.json'), path.join(stageDir, 'package.json'));
     symlinkSync(path.join(repoRoot, 'node_modules'), path.join(stageDir, 'node_modules'));
 
-    const entry = path.join(stageDir, 'packages/xpod-cli/src/main.ts');
+    const entry = path.join(stageDir, 'packages/xpod-cli/src/entry.ts');
     const metafile = path.join(buildRoot, 'javascript-metafile.json');
-    const buildArgs = bunCompileArguments({ target: args.target, hostTarget: defaultTarget(), entry, outfile: cliOut, metafile });
-    run(process.execPath, buildArgs, { cwd: stageDir, env: bunCompileEnvironment() });
+    const buildArgs = bunBundleArguments({ target: args.target, hostTarget: defaultTarget(), entry, outfile: cliOut, metafile });
+    run(process.execPath, buildArgs, { cwd: stageDir, env: bunBundleEnvironment() });
     const collectionOutput = path.join(installDir, 'licenses/javascript');
     for (const name of collectJavascriptNotices({
       metafile, stageRoot: stageDir, repoRoot, destination: collectionOutput,
@@ -414,10 +417,9 @@ function main(): void {
   }
 
   const cliSha = sha256File(cliOut);
-  assertNativeTarget(cliOut, args.target);
   const cliSize = statSync(cliOut).size;
   const cliArtifact = artifact('xpodcli', 'cli', true, {
-    relPath: 'bin/xpodcli',
+    relPath: 'lib/xpodcli.mjs',
     sha: cliSha,
     size: cliSize,
     // Root package.json declares MIT but no root LICENSE file is present.
@@ -446,20 +448,14 @@ function main(): void {
     });
   }
 
-  // Launcher: sets the EXISTING authoritative helper env key; no duplicate keys.
-  const launcher = [
-    '#!/bin/sh',
-    '# Xpod CLI launcher: points the existing XPOD_AGENTFS_HELPER key at the bundled helper.',
-    'DIR="$(cd "$(dirname "$0")/.." && pwd)"',
-    'if [ -x "$DIR/helper/agentfs-pod" ]; then',
-    '  XPOD_AGENTFS_HELPER="$DIR/helper/agentfs-pod"',
-    '  export XPOD_AGENTFS_HELPER',
-    'fi',
-    'exec "$DIR/bin/xpodcli" "$@"',
-    '',
-  ].join('\n');
-  const launcherPath = path.join(binDir, 'xpodcli-env');
-  writeFileSync(launcherPath, launcher, { mode: 0o755 });
+  const launcherPath = path.join(binDir, 'xpodcli');
+  writeFileSync(launcherPath, externalRuntimeLauncher(), { mode: 0o755 });
+  // Retain the existing launcher name as a link to the single executable entry.
+  symlinkSync('xpodcli', path.join(binDir, 'xpodcli-env'));
+  const launcherArtifact = artifact('xpodcli-launcher', 'cli', true, {
+    relPath: 'bin/xpodcli', sha: sha256File(launcherPath), size: statSync(launcherPath).size,
+    license: { spdx: 'MIT', status: 'pending', source: 'Xpod launcher source; release notice review pending' },
+  });
 
   writeFileSync(path.join(installDir, 'VERSION'), `${XPOD_CLI_VERSION}\n`, 'utf8');
   writeFileSync(path.join(installDir, 'config/minimal.json'), JSON.stringify({
@@ -482,6 +478,7 @@ function main(): void {
     version: XPOD_CLI_VERSION,
     channel: source.dirty || !source.commit ? 'local-preview' : 'preview',
     platform: args.target,
+    distribution: 'external-runtime',
     sourceSHA: source.commit,
     dirtyTreeHash: source.dirtyTreeHash,
     source: {
@@ -490,7 +487,7 @@ function main(): void {
       dirty: source.dirty,
     },
     selectedEnginePin: pin,
-    artifacts: [ cliArtifact, helperArtifact, noticeArtifact, ...vendoredNotices, ...javascriptNotices, ...applicationSources ],
+    artifacts: [ cliArtifact, launcherArtifact, helperArtifact, noticeArtifact, ...vendoredNotices, ...javascriptNotices, ...applicationSources ],
     // A helper-present build can reach install-verified after the extraction
     // check; full-verified additionally requires verified licenses. A
     // cross-target build cannot be executed on this host and stays unverified.

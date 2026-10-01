@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MANIFEST_SCHEMA_VERSION, XPOD_CLI_PACKAGE, XPOD_CLI_VERSION, sha256File, type XpodCliManifest } from '../src/manifest';
@@ -16,6 +16,8 @@ test('rejects a bundled helper whose dynamic runtime is unavailable', () => {
   const install = path.join(work, 'install');
   mkdirSync(path.join(install, 'bin'), { recursive: true });
   mkdirSync(path.join(install, 'helper'), { recursive: true });
+  mkdirSync(path.join(install, 'lib'), { recursive: true });
+  writeFileSync(path.join(install, 'lib/xpodcli.mjs'), '// fixture payload\n');
   writeFileSync(path.join(install, 'bin/xpodcli'), `#!/bin/sh
 case "$1" in
   --version) echo '${XPOD_CLI_VERSION}';;
@@ -30,7 +32,7 @@ echo 'error while loading shared libraries: libssl.so.3: cannot open shared obje
 exit 127
 `, { mode: 0o755 });
   const manifest: XpodCliManifest = {
-    schemaVersion: MANIFEST_SCHEMA_VERSION,
+    schemaVersion: MANIFEST_SCHEMA_VERSION, distribution: 'external-runtime',
     package: XPOD_CLI_PACKAGE,
     version: XPOD_CLI_VERSION,
     platform: `${process.platform}-${process.arch}`,
@@ -42,7 +44,7 @@ exit 127
       engine: 'agentfs', repository: 'https://github.com/tursodatabase/agentfs', commit: 'c'.repeat(40),
       sdkLicenseStatus: 'verified', cliLicenseStatus: 'pending', rootLicensePresent: false,
     },
-    artifacts: [ ['xpodcli', 'cli', 'bin/xpodcli'], ['agentfs-pod', 'native-helper', 'helper/agentfs-pod'] ].map(([name, kind, rel]) => ({
+    artifacts: [ ['xpodcli', 'cli', 'lib/xpodcli.mjs'], ['xpodcli-launcher', 'cli', 'bin/xpodcli'], ['agentfs-pod', 'native-helper', 'helper/agentfs-pod'] ].map(([name, kind, rel]) => ({
       name, kind: kind as 'cli' | 'native-helper', path: rel, included: true,
       sha256: sha256File(path.join(install, rel)), sizeBytes: statSync(path.join(install, rel)).size,
       license: { spdx: null, status: 'pending' as const, source: 'test fixture' },
@@ -60,6 +62,24 @@ exit 127
   const execution = report.checks.find((check) => check.name === 'native helper executes');
   expect(execution?.ok).toBe(false);
   expect(execution?.detail).toContain('libssl.so.3');
+  const marker = path.join(work, 'must-not-execute');
+  writeFileSync(path.join(install, 'bin/xpodcli'), `#!/bin/sh\nprintf executed > '${marker}'\n`, { mode: 0o755 });
+  const launcher = manifest.artifacts.find((entry) => entry.name === 'xpodcli-launcher')!;
+  launcher.sha256 = sha256File(path.join(install, 'bin/xpodcli'));
+  launcher.sizeBytes = statSync(path.join(install, 'bin/xpodcli')).size;
+  const valid = JSON.parse(JSON.stringify(manifest)) as XpodCliManifest;
+  for (const fault of ['missing-launcher', 'payload-hash', 'launcher-hash']) {
+    const invalid = JSON.parse(JSON.stringify(valid)) as XpodCliManifest;
+    if (fault === 'missing-launcher') invalid.artifacts = invalid.artifacts.filter((entry) => entry.name !== 'xpodcli-launcher');
+    else invalid.artifacts.find((entry) => entry.name === (fault === 'payload-hash' ? 'xpodcli' : 'xpodcli-launcher'))!.sha256 = '0'.repeat(64);
+    writeFileSync(path.join(install, 'manifest.json'), JSON.stringify(invalid));
+    const rejected = spawnSync(process.execPath, [path.join(repo, 'packages/xpod-cli/scripts/verify-install.ts'), '--dir', install], {
+      encoding: 'utf8', timeout: 10_000,
+    });
+    expect(rejected.status).toBe(1);
+    expect(JSON.parse(rejected.stdout).checks.some((check: { name: string }) => check.name === 'xpodcli --version exit 0')).toBe(false);
+    expect(existsSync(marker)).toBe(false);
+  }
 });
 
 test('checks source-bound engine material and refuses unmanifested objects despite a valid index hash', () => {
@@ -69,7 +89,7 @@ test('checks source-bound engine material and refuses unmanifested objects despi
   const index = JSON.parse(readFileSync(path.join(source, 'index.json'), 'utf8'));
   const files = copyNativeDeclarations(source, destination, index.engine);
   const manifest: XpodCliManifest = {
-    schemaVersion: MANIFEST_SCHEMA_VERSION, package: XPOD_CLI_PACKAGE, version: XPOD_CLI_VERSION,
+    schemaVersion: MANIFEST_SCHEMA_VERSION, distribution: 'external-runtime', package: XPOD_CLI_PACKAGE, version: XPOD_CLI_VERSION,
     platform: 'darwin-arm64', channel: 'local-preview', sourceSHA: 'a'.repeat(40), dirtyTreeHash: null,
     source: { mode: 'local-preview', commit: 'a'.repeat(40), dirty: false },
     selectedEnginePin: { ...index.engine, sdkLicenseStatus: 'verified', cliLicenseStatus: 'verified', rootLicensePresent: false,
@@ -81,6 +101,14 @@ test('checks source-bound engine material and refuses unmanifested objects despi
     })),
     validationState: 'unverified', generatedAt: new Date().toISOString(), notes: [],
   };
+  mkdirSync(path.join(install, 'bin'), { recursive: true });
+  mkdirSync(path.join(install, 'lib'), { recursive: true });
+  for (const [name, relative] of [['xpodcli', 'lib/xpodcli.mjs'], ['xpodcli-launcher', 'bin/xpodcli']]) {
+    writeFileSync(path.join(install, relative), '// not executed in material-only validation\n');
+    manifest.artifacts.unshift({ name, kind: 'cli', path: relative, included: true,
+      sha256: sha256File(path.join(install, relative)), sizeBytes: statSync(path.join(install, relative)).size,
+      license: { spdx: 'MIT', status: 'verified', source: 'test fixture' } });
+  }
   const verifyEvidence = (): { status: number | null; ok: boolean; detail: string } => {
     writeFileSync(path.join(install, 'manifest.json'), JSON.stringify(manifest));
     const result = spawnSync(process.execPath, [path.join(repo, 'packages/xpod-cli/scripts/verify-install.ts'), '--dir', install, '--skip-exec'], {
