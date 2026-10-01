@@ -46,3 +46,11 @@ Linux helper 实际动态链接系统 OpenSSL 3；Rust openssl-sys 的 MIT 仅�
 `bun --compile` 的独立 CLI 包含 Bun runtime，不能仅用 TypeScript 依赖或 Cargo 清单覆盖。固定 Bun 1.3.8 的静态库、源码取得与重链接材料调查已保存为 [Bun runtime 发行记录](bun-runtime-distribution.md)。目前只是固定版本证据，尚未验证修改 LGPL 库后重建当前 CLI；public gate 继续阻止。
 
 应用 JavaScript 已接入 [同次编译输入与通知收集](xpod-cli-javascript-notices.md)：两平台各15个 package instances、12份去重原文；两个 Inrupt 3.1.1 包的独立原文已从固定源码补充，其他审查范围仍保留。该清单绑定实际 CLI 哈希，不是整个 Bun runtime 的清单，也不是完整文件级版权审计。
+
+## 三个 registry crate 的固定源码复核
+
+`genawaiter@0.99.1`、`genawaiter-macro@0.99.1`、`pack1@1.1.0` 的实际下载归档 SHA-256 与 Cargo.lock 一致。发布归档中的 `.cargo_vcs_info.json` 分别指向 `b7e93c2d444a5c63e94e14f6809c8dc27785c1c7`、`f48046a9f66fbd2e535d5614fa7fe0d0b1a6a046`、`fb975e9d592d94fe4624908ebfae3a71c984d3ff`。逐文件比较 macOS/Linux 构建缓存与归档，分别31/4/20个文件全部字节一致。
+
+已读取三个固定 commit 的完整、未截断文件树和 README。树中没有名称匹配 LICENSE/NOTICE/COPYING/COPYRIGHT 的独立文件，发行归档中的检索只找到 Cargo 许可声明。这不能推成上游没有许可，或上游所有文件均无版权通知。[Cargo 文档](https://doc.rust-lang.org/cargo/reference/manifest.html#the-license-and-license-file-fields)明确区分发行许可表达式和许可文件。
+
+声明分别保留为 `MIT`、`MIT/Apache-2.0`、`Zlib OR Apache-2.0 OR MIT`；不将作者字段改写成版权人／年份，也不替上游生成一份声称是原文的 LICENSE。版本、声明、归档 hash、源码 commit、树 hash 与比较结果见 [固定来源证据](native-missing-notice-source-evidence.json)。完整通知缺口仍保留；后续处理需要明确通知／归属策略，不能用文件数量充当整体准入。

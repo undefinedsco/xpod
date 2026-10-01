@@ -1,0 +1,72 @@
+{
+  "scope": "Three fixed crate release declarations and unsuccessful standalone-notice retrieval; not full license clearance or proof of no per-file notices anywhere.",
+  "packages": [
+    {
+      "name": "genawaiter",
+      "version": "0.99.1",
+      "declaredLicense": "MIT",
+      "authorsDeclared": [
+        "John Simon <john@whatisaph.one>"
+      ],
+      "archiveUrl": "https://static.crates.io/crates/genawaiter/genawaiter-0.99.1.crate",
+      "archiveSha256": "c86bd0361bcbde39b13475e6e36cb24c329964aa2611be285289d1e4b751c1a0",
+      "archiveChecksumVerified": true,
+      "gitCommit": "b7e93c2d444a5c63e94e14f6809c8dc27785c1c7",
+      "repository": "https://github.com/whatisaphone/genawaiter",
+      "publisherVcsInfoSha256": "d7dc303cd6463a5e910b5f6723613dcb543e89b4b10f680d32c443a217b2ae5d",
+      "originalManifestSha256": "976e626e7931f71616d71a9affc97b297a1d55171e7c33bc5028b41c1726a6e4",
+      "upstreamTreeSha": "b7e93c2d444a5c63e94e14f6809c8dc27785c1c7",
+      "treeTruncated": false,
+      "licenseNamedFiles": [],
+      "cacheComparison": {
+        "darwinArm64FilesByteExact": 31,
+        "linuxArm64FilesByteExact": 31
+      },
+      "status": "Release license declaration verified; no standalone original notice found in inspected release/source filenames. Author fields are not invented copyright lines."
+    },
+    {
+      "name": "genawaiter-macro",
+      "version": "0.99.1",
+      "declaredLicense": "MIT/Apache-2.0",
+      "authorsDeclared": [
+        "Devin R <devin.ragotzy@gmail.com>"
+      ],
+      "archiveUrl": "https://static.crates.io/crates/genawaiter-macro/genawaiter-macro-0.99.1.crate",
+      "archiveSha256": "0b32dfe1fdfc0bbde1f22a5da25355514b5e450c33a6af6770884c8750aedfbc",
+      "archiveChecksumVerified": true,
+      "gitCommit": "f48046a9f66fbd2e535d5614fa7fe0d0b1a6a046",
+      "repository": "https://github.com/whatisaphone/genawaiter",
+      "publisherVcsInfoSha256": "b2bc595035ac43300b0bddfaaede077837f7c4d2e6c4ac2a36bab431a22526cd",
+      "originalManifestSha256": "a1c63a093f4df6472cb3fd912e5e94c22b13632963b95d444ecf491572be2c5b",
+      "upstreamTreeSha": "f48046a9f66fbd2e535d5614fa7fe0d0b1a6a046",
+      "treeTruncated": false,
+      "licenseNamedFiles": [],
+      "cacheComparison": {
+        "darwinArm64FilesByteExact": 4,
+        "linuxArm64FilesByteExact": 4
+      },
+      "status": "Release license declaration verified; no standalone original notice found in inspected release/source filenames. Author fields are not invented copyright lines."
+    },
+    {
+      "name": "pack1",
+      "version": "1.1.0",
+      "declaredLicense": "Zlib OR Apache-2.0 OR MIT",
+      "authorsDeclared": [],
+      "archiveUrl": "https://static.crates.io/crates/pack1/pack1-1.1.0.crate",
+      "archiveSha256": "e3b7bb0ecf2e447b1f20ee94ee79ef6eed1e9d4b3c36ce1903b9dea3bf205523",
+      "archiveChecksumVerified": true,
+      "gitCommit": "fb975e9d592d94fe4624908ebfae3a71c984d3ff",
+      "repository": "https://github.com/Lokathor/pack1",
+      "publisherVcsInfoSha256": "001dd72339d898b7411efeb4fd62420a6fa67aaa79d78bd7ae2c22e780662ac5",
+      "originalManifestSha256": "b6e9eae213907cbd6b06be7c7393e18b122c2a454143aaffea0e88def1aa93f9",
+      "upstreamTreeSha": "fb975e9d592d94fe4624908ebfae3a71c984d3ff",
+      "treeTruncated": false,
+      "licenseNamedFiles": [],
+      "cacheComparison": {
+        "darwinArm64FilesByteExact": 20,
+        "linuxArm64FilesByteExact": 20
+      },
+      "status": "Release license declaration verified; no standalone original notice found in inspected release/source filenames. Author fields are not invented copyright lines."
+    }
+  ]
+}
