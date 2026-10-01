@@ -45,6 +45,45 @@ operations belong under `rdf`.
 xpod server start --foreground
 ```
 
+## Workspace Directories (Proposed)
+
+Status: proposed independent directory surface; these commands are not currently
+registered. This explicit-sync surface is a fallback candidate, not a settled
+first-release decision; on-demand access including AgentFS is being evaluated.
+Agent search adapters may use server-side content FTS/VEC and metadata-backed
+file discovery independently of native shell directory access. Exact path globs
+and approximate semantic search must retain distinct result contracts.
+The access, persistence, and acceptance draft is defined in
+[SolidFS Spec](solidfs-spec.md#独立目录入口2026-09-30-设计尚未实现).
+
+```text
+xpod workspace open <pod-container-url-or-local-directory> [--at <directory>]
+xpod workspace status <directory>
+xpod workspace pull <directory>
+xpod workspace push <directory>
+xpod workspace close <directory>
+```
+
+`open` returns a real local `cwd` and readiness/mode information. For a Pod
+Container it materializes the selected subtree using the existing authenticated
+Gateway resource boundary; for a local external directory it returns the
+existing path in direct mode. `--at` selects a new materialized data directory;
+an existing non-empty destination must not be overwritten. No deployment-mode
+flag is required: a Pod URL uses the same protocol whether hosted locally or in
+Cloud. Cross-device `file://` targets must not resolve against the wrong device.
+
+`status` is local-only. `pull` checks remote changes without discarding dirty
+files. `push` applies conditional per-resource writes and reports partial
+completion/conflicts; it is distinct from Git push. Direct external directories
+require no Pod pull/push. `close` detaches the binding while preserving files
+and pending recovery information. Auth and control state stay outside `cwd`.
+
+This candidate uses a prepared ordinary directory with explicit synchronization,
+not an OS mount or automatic background sync. It manages neither Agent sessions
+nor Git/worktree state. An external project can be referenced by a Pod Link, but
+the target workspace tool owns its repository lifecycle. An arbitrary HTTP URL
+must not be guessed to be a Solid Container or Git repository.
+
 ## Boundary With `udfs` And Models
 
 `@undefineds.co/models` owns durable shared model semantics. `udfs` may expose

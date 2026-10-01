@@ -1,0 +1,592 @@
+{
+  "description": "Direct Bun FS / SQLite baseline, not an OS mount benchmark",
+  "host": {
+    "macOS": "26.3",
+    "filesystem": "APFS",
+    "solidState": true
+  },
+  "runs": [
+    {
+      "timestamp": "2026-09-30T11:35:44.686Z",
+      "environment": {
+        "platform": "darwin",
+        "kernel": "25.3.0",
+        "cpu": "Apple M1 Pro",
+        "arch": "arm64",
+        "bun": "1.3.8",
+        "sqlite": {
+          "version": "3.51.0"
+        }
+      },
+      "protocol": {
+        "rounds": 7,
+        "warmupRounds": 1,
+        "concurrency": 1,
+        "groups": [
+          {
+            "name": "1KiB",
+            "size": 1024,
+            "count": 2000
+          },
+          {
+            "name": "10KiB",
+            "size": 10240,
+            "count": 2000
+          },
+          {
+            "name": "128KiB",
+            "size": 131072,
+            "count": 2000
+          }
+        ],
+        "scope": "Direct synchronous Bun node:fs and bun:sqlite APIs; no mount, Pod or network.",
+        "cache": "Warm OS cache; no forced eviction. SQLite connection reused, default page cache.",
+        "schema": "One row per whole file BLOB, not AgentFS inode/chunk schema.",
+        "order": "Deterministic shuffle; backend measurement order rotated per round.",
+        "writes": "Existing-file overwrites; first byte changes every invocation, including warmup. SQLite WAL checkpoint excluded. Batch is one transaction per 200 files; per-file FULL is 200 transactions. FS fsync is not macOS F_FULLFSYNC. Different durability/atomicity semantics must not be conflated.",
+        "fixtures": "6000 files, 2000 per size; same random payload within each size group, no application compression; full-byte samples and final writes checked.",
+        "statistic": "Median of 7 whole-workload durations; per-op values are amortized averages, not operation latency quantiles."
+      },
+      "measurements": [
+        {
+          "workload": "random whole-file read 1KiB",
+          "operations": 2000,
+          "samplesMs": {
+            "filesystem": [
+              50.34983300000022,
+              47.112082999999984,
+              46.97279200000003,
+              48.91487499999994,
+              51.30116699999962,
+              48.307374999999865,
+              46.414458000000195
+            ],
+            "sqlite": [
+              12.571583000000373,
+              12.541083999999955,
+              13.095124999999825,
+              12.564832999999908,
+              12.242749999999887,
+              14.207291000000168,
+              14.51616600000034
+            ]
+          },
+          "medianMs": {
+            "filesystem": 48.307374999999865,
+            "sqlite": 12.571583000000373
+          },
+          "averageUsPerOperation": {
+            "filesystem": 24.153687499999936,
+            "sqlite": 6.285791500000187
+          }
+        },
+        {
+          "workload": "random whole-file read 10KiB",
+          "operations": 2000,
+          "samplesMs": {
+            "filesystem": [
+              57.213042000000314,
+              50.433500000000095,
+              55.427208000000064,
+              56.535249999999905,
+              58.86449999999968,
+              49.665250000000015,
+              54.47187500000018
+            ],
+            "sqlite": [
+              24.76104100000066,
+              20.795208000000457,
+              30.32733300000018,
+              28.08100000000013,
+              20.980082999999468,
+              17.90216700000019,
+              23.794083000000683
+            ]
+          },
+          "medianMs": {
+            "filesystem": 55.427208000000064,
+            "sqlite": 23.794083000000683
+          },
+          "averageUsPerOperation": {
+            "filesystem": 27.713604000000032,
+            "sqlite": 11.897041500000341
+          }
+        },
+        {
+          "workload": "random whole-file read 128KiB",
+          "operations": 2000,
+          "samplesMs": {
+            "filesystem": [
+              588.8821250000001,
+              581.3742079999993,
+              547.9108750000014,
+              280.51737500000127,
+              90.76824999999917,
+              89.81945799999994,
+              84.390707999999
+            ],
+            "sqlite": [
+              365.4356250000001,
+              95.92537500000071,
+              94.96008299999994,
+              89.953042000001,
+              102.33879200000047,
+              98.81645799999933,
+              87.42545800000153
+            ]
+          },
+          "medianMs": {
+            "filesystem": 280.51737500000127,
+            "sqlite": 95.92537500000071
+          },
+          "averageUsPerOperation": {
+            "filesystem": 140.25868750000063,
+            "sqlite": 47.96268750000036
+          }
+        },
+        {
+          "workload": "metadata lookup 2000 files",
+          "operations": 2000,
+          "samplesMs": {
+            "filesystem": [
+              6.21245799999997,
+              5.9404169999997976,
+              5.700915999999779,
+              6.431541999998444,
+              5.7821660000008706,
+              7.667250000000422,
+              5.752791999999317
+            ],
+            "sqlite": [
+              15.437167000000045,
+              15.269000000000233,
+              16.2415830000009,
+              13.828999999999724,
+              16.824209000000337,
+              14.918374999999287,
+              16.475291999999172
+            ]
+          },
+          "medianMs": {
+            "filesystem": 5.9404169999997976,
+            "sqlite": 15.437167000000045
+          },
+          "averageUsPerOperation": {
+            "filesystem": 2.9702084999998988,
+            "sqlite": 7.7185835000000225
+          }
+        },
+        {
+          "workload": "directory listing repeated 100 times",
+          "operations": 100,
+          "samplesMs": {
+            "filesystem": [
+              112.12037500000042,
+              117.20204199999898,
+              119.37704200000007,
+              118.2450829999998,
+              112.72895900000003,
+              110.32174999999916,
+              109.93279199999961
+            ],
+            "sqlite": [
+              26.598167000000103,
+              25.69237500000054,
+              26.000583999999435,
+              28.26812499999869,
+              24.564540999999736,
+              23.377583999999842,
+              24.049166999999215
+            ]
+          },
+          "medianMs": {
+            "filesystem": 112.72895900000003,
+            "sqlite": 25.69237500000054
+          },
+          "averageUsPerOperation": {
+            "filesystem": 1127.2895900000003,
+            "sqlite": 256.9237500000054
+          }
+        },
+        {
+          "workload": "overwrite 200 files 10KiB, buffered/NORMAL, checkpoint excluded",
+          "operations": 200,
+          "samplesMs": {
+            "filesystem_no_fsync": [
+              7.455832999999984,
+              7.943957999999839,
+              9.4375,
+              7.886707999999999,
+              7.013499999999112,
+              7.703333999999813,
+              7.909125000000131
+            ],
+            "sqlite_individual_NORMAL": [
+              5.4259579999998095,
+              3.071665999999823,
+              7.407999999999447,
+              5.7072079999998095,
+              4.517249999998967,
+              3.0808749999996508,
+              5.82183299999997
+            ],
+            "sqlite_batch_NORMAL": [
+              1.8697919999995065,
+              1.527416999999332,
+              2.08324999999968,
+              1.811874999999418,
+              2.3672090000000026,
+              1.6897500000013679,
+              2.061290999999983
+            ]
+          },
+          "medianMs": {
+            "filesystem_no_fsync": 7.886707999999999,
+            "sqlite_individual_NORMAL": 5.4259579999998095,
+            "sqlite_batch_NORMAL": 1.8697919999995065
+          },
+          "averageUsPerOperation": {
+            "filesystem_no_fsync": 39.433539999999994,
+            "sqlite_individual_NORMAL": 27.129789999999048,
+            "sqlite_batch_NORMAL": 9.348959999997533
+          }
+        },
+        {
+          "workload": "overwrite 200 files 10KiB, per-file fsync / per-transaction FULL",
+          "operations": 200,
+          "samplesMs": {
+            "filesystem_fsync": [
+              30.930833000000348,
+              33.8939160000009,
+              33.99987500000134,
+              35.05766600000061,
+              42.336083000000144,
+              41.676291999998284,
+              44.59320900000057
+            ],
+            "sqlite_individual_FULL": [
+              12.380457999999635,
+              14.51520900000105,
+              15.566208999998707,
+              12.728624999999738,
+              20.20008400000006,
+              11.39679199999955,
+              15.218458000001192
+            ],
+            "sqlite_batch_FULL": [
+              1.8387080000011338,
+              3.1945829999986017,
+              1.9686250000013388,
+              4.107332999999926,
+              1.980833999999959,
+              2.18370799999866,
+              2.5731250000008004
+            ]
+          },
+          "medianMs": {
+            "filesystem_fsync": 35.05766600000061,
+            "sqlite_individual_FULL": 14.51520900000105,
+            "sqlite_batch_FULL": 2.18370799999866
+          },
+          "averageUsPerOperation": {
+            "filesystem_fsync": 175.28833000000304,
+            "sqlite_individual_FULL": 72.57604500000525,
+            "sqlite_batch_FULL": 10.9185399999933
+          }
+        }
+      ],
+      "sink": 4903392000
+    },
+    {
+      "timestamp": "2026-09-30T11:36:43.593Z",
+      "environment": {
+        "platform": "darwin",
+        "kernel": "25.3.0",
+        "cpu": "Apple M1 Pro",
+        "arch": "arm64",
+        "bun": "1.3.8",
+        "sqlite": {
+          "version": "3.51.0"
+        }
+      },
+      "protocol": {
+        "rounds": 7,
+        "warmupRounds": 1,
+        "concurrency": 1,
+        "groups": [
+          {
+            "name": "1KiB",
+            "size": 1024,
+            "count": 2000
+          },
+          {
+            "name": "10KiB",
+            "size": 10240,
+            "count": 2000
+          },
+          {
+            "name": "128KiB",
+            "size": 131072,
+            "count": 2000
+          }
+        ],
+        "scope": "Direct synchronous Bun node:fs and bun:sqlite APIs; no mount, Pod or network.",
+        "cache": "Warm OS cache; no forced eviction. SQLite connection reused, default page cache.",
+        "schema": "One row per whole file BLOB, not AgentFS inode/chunk schema.",
+        "order": "Deterministic shuffle; backend measurement order rotated per round.",
+        "writes": "Existing-file overwrites; first byte changes every invocation, including warmup. SQLite WAL checkpoint excluded. Batch is one transaction per 200 files; per-file FULL is 200 transactions. FS fsync is not macOS F_FULLFSYNC. Different durability/atomicity semantics must not be conflated.",
+        "fixtures": "6000 files, 2000 per size; same random payload within each size group, no application compression; full-byte samples and final writes checked.",
+        "statistic": "Median of 7 whole-workload durations; per-op values are amortized averages, not operation latency quantiles."
+      },
+      "measurements": [
+        {
+          "workload": "random whole-file read 1KiB",
+          "operations": 2000,
+          "samplesMs": {
+            "filesystem": [
+              47.20354199999974,
+              46.38054199999988,
+              46.94425000000001,
+              47.27212499999996,
+              48.37787500000013,
+              50.53600000000006,
+              44.71445799999992
+            ],
+            "sqlite": [
+              12.900125000000116,
+              12.577375000000302,
+              12.121375000000171,
+              12.280875000000378,
+              12.525499999999738,
+              15.740124999999807,
+              12.591333999999733
+            ]
+          },
+          "medianMs": {
+            "filesystem": 47.20354199999974,
+            "sqlite": 12.577375000000302
+          },
+          "averageUsPerOperation": {
+            "filesystem": 23.601770999999868,
+            "sqlite": 6.288687500000151
+          }
+        },
+        {
+          "workload": "random whole-file read 10KiB",
+          "operations": 2000,
+          "samplesMs": {
+            "filesystem": [
+              55.861917000000176,
+              58.51233300000058,
+              55.63704199999938,
+              54.186916000000565,
+              57.97620900000038,
+              49.16175000000021,
+              49.74137499999961
+            ],
+            "sqlite": [
+              25.224874999999884,
+              22.481665999999677,
+              24.543749999999818,
+              20.207792000000154,
+              33.52112500000021,
+              19.86541699999998,
+              24.184416999999485
+            ]
+          },
+          "medianMs": {
+            "filesystem": 55.63704199999938,
+            "sqlite": 24.184416999999485
+          },
+          "averageUsPerOperation": {
+            "filesystem": 27.81852099999969,
+            "sqlite": 12.092208499999742
+          }
+        },
+        {
+          "workload": "random whole-file read 128KiB",
+          "operations": 2000,
+          "samplesMs": {
+            "filesystem": [
+              469.13404100000025,
+              439.1102499999997,
+              86.52616699999999,
+              85.58583400000134,
+              88.06237499999952,
+              85.8450840000005,
+              84.09658299999865
+            ],
+            "sqlite": [
+              294.4445829999995,
+              90.21991600000001,
+              95.09391599999981,
+              91.28370900000118,
+              101.3997500000005,
+              91.70308299999851,
+              100.96049999999923
+            ]
+          },
+          "medianMs": {
+            "filesystem": 86.52616699999999,
+            "sqlite": 95.09391599999981
+          },
+          "averageUsPerOperation": {
+            "filesystem": 43.26308349999999,
+            "sqlite": 47.546957999999904
+          }
+        },
+        {
+          "workload": "metadata lookup 2000 files",
+          "operations": 2000,
+          "samplesMs": {
+            "filesystem": [
+              5.840167000000292,
+              6.213999999999942,
+              5.660125000000335,
+              6.057208999998693,
+              4.671625000000859,
+              6.0712080000012065,
+              5.826500000001033
+            ],
+            "sqlite": [
+              24.750207999999475,
+              16.49437500000022,
+              15.911749999999302,
+              16.502832999998645,
+              15.858041999999841,
+              27.96308300000055,
+              15.043500000001586
+            ]
+          },
+          "medianMs": {
+            "filesystem": 5.840167000000292,
+            "sqlite": 16.49437500000022
+          },
+          "averageUsPerOperation": {
+            "filesystem": 2.920083500000146,
+            "sqlite": 8.24718750000011
+          }
+        },
+        {
+          "workload": "directory listing repeated 100 times",
+          "operations": 100,
+          "samplesMs": {
+            "filesystem": [
+              125.11737499999981,
+              120.07279200000085,
+              115.4510420000006,
+              110.80795899999976,
+              113.73725000000013,
+              110.33870800000113,
+              111.88266699999986
+            ],
+            "sqlite": [
+              27.681916999999885,
+              25.810292000000118,
+              25.038666999998895,
+              23.509083999999348,
+              26.158916000000318,
+              24.996666000000914,
+              25.27154100000007
+            ]
+          },
+          "medianMs": {
+            "filesystem": 113.73725000000013,
+            "sqlite": 25.27154100000007
+          },
+          "averageUsPerOperation": {
+            "filesystem": 1137.3725000000013,
+            "sqlite": 252.7154100000007
+          }
+        },
+        {
+          "workload": "overwrite 200 files 10KiB, buffered/NORMAL, checkpoint excluded",
+          "operations": 200,
+          "samplesMs": {
+            "filesystem_no_fsync": [
+              7.450624999999491,
+              7.9137919999993755,
+              7.533625000000029,
+              7.920959000000948,
+              10.745333000000755,
+              9.659958000000188,
+              7.710124999999607
+            ],
+            "sqlite_individual_NORMAL": [
+              3.094375000000582,
+              2.792166000001089,
+              3.170458000000508,
+              5.6912499999998545,
+              2.934208000000581,
+              2.9538749999992433,
+              2.9784579999995913
+            ],
+            "sqlite_batch_NORMAL": [
+              1.361457999999402,
+              1.2846249999984138,
+              1.5042909999992844,
+              1.5978750000012951,
+              1.3784579999992275,
+              1.895791000000827,
+              1.3666659999998956
+            ]
+          },
+          "medianMs": {
+            "filesystem_no_fsync": 7.9137919999993755,
+            "sqlite_individual_NORMAL": 2.9784579999995913,
+            "sqlite_batch_NORMAL": 1.3784579999992275
+          },
+          "averageUsPerOperation": {
+            "filesystem_no_fsync": 39.56895999999688,
+            "sqlite_individual_NORMAL": 14.892289999997956,
+            "sqlite_batch_NORMAL": 6.892289999996137
+          }
+        },
+        {
+          "workload": "overwrite 200 files 10KiB, per-file fsync / per-transaction FULL",
+          "operations": 200,
+          "samplesMs": {
+            "filesystem_fsync": [
+              33.057458000001134,
+              31.6909169999999,
+              33.676124999999956,
+              35.74604100000033,
+              35.2060419999998,
+              21.78820900000028,
+              24.102833000000828
+            ],
+            "sqlite_individual_FULL": [
+              12.196375000001353,
+              11.209624999999505,
+              15.062582999998995,
+              14.715707999999722,
+              13.215125000000626,
+              11.198082999999315,
+              12.886083000001236
+            ],
+            "sqlite_batch_FULL": [
+              1.7130829999987327,
+              4.473541999999725,
+              1.8637500000004366,
+              1.9888749999990978,
+              3.272084000000177,
+              4.280791999999565,
+              1.7244580000005953
+            ]
+          },
+          "medianMs": {
+            "filesystem_fsync": 33.057458000001134,
+            "sqlite_individual_FULL": 12.886083000001236,
+            "sqlite_batch_FULL": 1.9888749999990978
+          },
+          "averageUsPerOperation": {
+            "filesystem_fsync": 165.28729000000567,
+            "sqlite_individual_FULL": 64.43041500000618,
+            "sqlite_batch_FULL": 9.944374999995489
+          }
+        }
+      ],
+      "sink": 4896224000
+    }
+  ]
+}

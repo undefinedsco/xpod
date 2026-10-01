@@ -331,6 +331,15 @@ Account Cookie 之外，该组件还接受**宿主自己的 Solid 会话**作为
 - **Configuration**: `routes` + `fallback`
 - **Deployment**: All modes (when routing multiple internal handlers)
 
+### AgentDirectoryHttpHandler
+- **Path**: `src/http/agent-directory/AgentDirectoryHttpHandler.ts`
+- **Purpose**: 在 CSS 授权和存储链内提供 `/-/agent-directory` 的目录元数据、按范围读取与精确内容搜索。
+- **Functionality**: 逐资源执行 CredentialsExtractor、PermissionReader 与 Authorizer；权限拒绝不得泄漏文件名、正文或计数。索引不完整时明确报告未扫描范围。
+- **Configuration**: `config/xpod.base.json` 声明组件，`config/local.json` 和 `config/cloud.json` 的 BaseHttpHandler waterfall 注册。
+- **Deployment**: Local / Cloud（需发布包含此组件的新服务版本）。
+- **Override target**: 不替换 CSS 的文件协议；作为现有 HTTP 链的附加 handler，普通 LDP 请求继续由 CSS 处理。
+- **Documentation**: [Agent 目录 MVP](agent-directory-mvp-implementation.md)。
+
 ### RequestIdHttpHandler (TracingMiddleware)
 - **Path**: `src/http/RequestIdHttpHandler.ts`
 - **Purpose**: 请求追踪中间件，为每个请求分配唯一 ID

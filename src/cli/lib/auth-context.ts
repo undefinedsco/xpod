@@ -65,6 +65,12 @@ export function getStoredAuthStatus(urlOverride?: string): AuthStatus {
 export async function requireAuthContext(options: {
   url?: string;
   json?: boolean;
+  /**
+   * Force a token refresh instead of reusing a still-valid cached OIDC token.
+   * Used by the loopback bridge after an upstream 401; never on 403 (a 403 is
+   * an authorization decision, not an expired session).
+   */
+  forceRefresh?: boolean;
 } = {}): Promise<CliAuthContext> {
   const credentials = loadCredentials();
   if (!credentials) {
@@ -85,7 +91,7 @@ export async function requireAuthContext(options: {
       baseUrl,
     ))?.accessToken
     : oauthCredentials
-      ? await getOidcAccessToken(credentials)
+      ? await getOidcAccessToken(credentials, { forceRefresh: options.forceRefresh })
       : null;
 
   if (!accessToken) {
