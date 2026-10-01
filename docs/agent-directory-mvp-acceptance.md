@@ -84,6 +84,14 @@ NFS 固定上游以当前目录中能找到前页 inode 为续读条件；删除
 
 ## 传递通知收集增量
 
-后续收集已将 macOS 481/Linux 502 个原始通知文件引用实物化，分别去重为200/209份（并集211份），逐目标加入安装 manifest。仍保持 partial-collection：不是将扫描候选当作完整法律许可证明。Turso/SimSIMD 单独补充；五个包（含AgentFS和SDK）的完整通知来源、first-party 通知、Bun/TS runtime、MPL 对应源码告知等缺口仍由许可记录追踪。
+后续收集已将 macOS 481/Linux 502 个原始通知文件引用实物化，分别去重为200/209份（并集211份），逐目标加入安装 manifest。仍保持 partial-collection：不是将扫描候选当作完整法律许可证明。Turso/SimSIMD 单独补充；五个包（含AgentFS和SDK）的完整通知来源、first-party 通知、Bun/TS runtime 等缺口仍由许可记录追踪；option-ext 的 MPL 对应源码告知已补充。
 
 包装回归现为11 passed，新增复制字节一致、重复对象去重、漂移/越界/目标错配拒绝，日志 `notice-collection-tests-final.log`。两目标重新构建成功，macOS archive 解包校验通过；`notice-collection-integration.log` 再次155 passed/6 skipped、运行配置46 passed，根源码/测试和独立包类型检查通过。没有改动 native helper 或重新宣称当前 Gateway 已验收；本轮认证复查 `notice-collection-gateway-recheck.log` 仍为 invalid_client。
+
+## 源码取得告知与 runtime 发行记录
+
+安装包 NOTICES 已加入 option-ext 0.2.0 的源码 URL、Cargo.lock archive hash 和所附 MPL 原文路径。归档实际下载并与两平台缓存中的 8 个文件逐份比对一致。两目标重新打包通过，macOS 解包安装校验通过；Linux 跨编译 manifest 仍为 unverified。此轮仅修改通知文本，没有重新执行 native 挂载测试，挂载结论继续绑定此前已测候选。
+
+Bun 1.3.8 调查已保存为 [runtime 发行记录](bun-runtime-distribution.md)。官方 ARM64 ZIP 已校验 digest；固定源码有 LGPL 静态库说明与重建入口，但当前 CLI 的完整 notices、对应源码和修改库后重建／重链接验收尚未完成。未发布、未部署，也没有把材料存在等同于完成发行准入。
+
+本轮提交前再次执行完整集成，`mpl-final-integration.log` 为155 passed/6 skipped，加46项运行配置通过，测试 Docker 栈清理完成。`mpl-final-package-tests.log` 为11 passed/0 failed；源码、测试和独立包类型检查均退出0。

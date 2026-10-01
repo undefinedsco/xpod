@@ -223,6 +223,17 @@ ${includeNative ? `The target's audited Cargo notice candidates are included und
 licenses/native/collection/ with original paths and content hashes. This is
 a partial collection, including build dependencies, not a legal clearance.`
   : 'CLI-only build: native dependency notice collection is not included.'}
+${includeNative ? `
+## MPL-covered source: option-ext 0.2.0
+The native dependency graph includes unmodified option-ext 0.2.0 (MPL-2.0).
+Corresponding source is available at:
+https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate
+Archive SHA-256: 04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d
+The original MPL text is included at:
+licenses/native/collection/objects/66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172.txt
+License terms: https://www.mozilla.org/en-US/MPL/2.0/
+This notice concerns that covered source; it does not assign MPL to the whole CLI.
+` : ''}
 
 ## Not included
 - rclone (MIT): research backend only, not part of this artifact.
