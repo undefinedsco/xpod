@@ -5,6 +5,8 @@ Cargo inventories. They map package/version, original package-relative notice
 path and SHA-256 to `objects/<sha>.txt`. Object bytes are copied unmodified;
 identical text is stored once, without combining licenses or rewriting authors.
 The two inventories have 481 and 502 notice-file references respectively.
+The objects' Git attributes disable line-ending conversion and whitespace
+cleanup so checkout preserves their audited byte hashes.
 
 This is a collection of original candidates, not release clearance or proof
 that every listed dependency is linked at runtime. Build-only packages can
