@@ -84,6 +84,46 @@ for (const mode of ['local', 'cloud'] as const) {
       await expect(client.list({ root: privateRoot })).resolves.toMatchObject({ root: privateRoot, complete: true });
     }, 120_000);
 
+    it('selects the directory handler when the Gateway appends to a forwarded proto chain', async () => {
+      const forwardedProto = new URL(baseUrl).protocol.replace(':', '');
+      const withForwarded = (init?: RequestInit): RequestInit => {
+        const headers = new Headers(init?.headers);
+        // An upstream client/edge already supplied the authoritative scheme; the
+        // Gateway's xfwd:true proxy then appends the downstream scheme, so CSS
+        // observes "<proto>,<proto>" instead of a single value.
+        headers.set('x-forwarded-proto', forwardedProto);
+        return { ...init, headers };
+      };
+      const fileName = `forwarded-proto-${randomUUID()}.txt`;
+      const file = new URL(fileName, privateRoot).href;
+      expect((await session.fetch(file, {
+        method: 'PUT', headers: { 'If-None-Match': '*', 'Content-Type': 'text/plain' },
+        body: 'forwarded-probe-content',
+      })).ok).toBe(true);
+
+      const client = new AgentDirectoryClient({
+        baseUrl,
+        request: (target, init) => session.fetch(target, withForwarded(init)),
+      });
+      const listed = await client.list({ root: privateRoot });
+      expect(listed.entries.map((entry) => entry.path)).toContain(fileName);
+      expect(listed.complete).toBe(true);
+      const searched = await client.search({ root: privateRoot, query: 'forwarded-probe-content' });
+      expect(searched.matches.some((match) => match.path === fileName)).toBe(true);
+
+      // Authentication/authorization boundaries must not be relaxed by the
+      // forwarded header: anonymous and another account stay rejected.
+      const listUrl = new URL('/-/agent-directory/list', baseUrl);
+      listUrl.searchParams.set('root', privateRoot);
+      const anonymous = await fetch(listUrl, { headers: { 'x-forwarded-proto': forwardedProto } });
+      expect([401, 403]).toContain(anonymous.status);
+      const other = await setupAccount(baseUrl, `directory-forwarded-other-${mode}`);
+      expect(other).not.toBeNull();
+      const otherSession = await loginWithClientCredentials(other!);
+      const denied = await otherSession.fetch(listUrl, withForwarded());
+      expect([401, 403]).toContain(denied.status);
+    }, 120_000);
+
     it('runs Range, metadata/search and conditional file writes through production components', async () => {
       const report = await acceptLiveDirectory({
         gateway: baseUrl, podRoot: privateRoot, write: true,

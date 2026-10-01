@@ -822,9 +822,24 @@ export class AgentDirectoryHttpHandler extends HttpHandler {
   // ============================================
 
   private parseUrl(request: HttpRequest): URL {
-    const protocol = request.headers['x-forwarded-proto'] ?? 'http';
-    const host = request.headers['x-forwarded-host'] ?? request.headers.host ?? 'localhost';
-    return new URL(request.url!, `${protocol}://${host}`);
+    // Gateway xfwd appends each hop; use the first forwarded origin value.
+    const protocol = this.firstForwardedValue(request.headers['x-forwarded-proto'])
+      ?? this.firstForwardedValue(request.headers['X-Forwarded-Proto'])
+      ?? 'http';
+    const host = this.firstForwardedValue(request.headers['x-forwarded-host'])
+      ?? this.firstForwardedValue(request.headers['X-Forwarded-Host'])
+      ?? this.firstForwardedValue(request.headers.host)
+      ?? this.firstForwardedValue(request.headers.Host)
+      ?? 'localhost';
+    return new URL(request.url ?? '/', `${protocol}://${host}`);
+  }
+
+  private firstForwardedValue(value: string | string[] | undefined): string | undefined {
+    const first = Array.isArray(value) ? value[0] : value;
+    if (typeof first !== 'string') {
+      return undefined;
+    }
+    return first.split(',')[0]?.trim() || undefined;
   }
 
   private sendJsonResponse(response: HttpResponse, data: unknown, status = 200): void {
