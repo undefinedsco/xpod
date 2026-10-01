@@ -2,6 +2,14 @@
 
 日期：2026-10-01。分支：`codex/virtual-folder-design`，工作区：`/Users/ganlu/develop/.worktrees/xpod-virtual-folder-design`。用户授权负责人直接实现；原型 worker 已结束。AgentFS 是唯一产品主线，rclone 保留研究证据。选型理由见 [引擎选型](xpod-cli-engine-selection.md)，历史调查见 [技术研究](agent-filesystem-research.md)。
 
+## 声明发行材料增量
+
+五项固定发行声明及所选标准 MIT 条款已进入安装包，来源和限制见 [许可证据](agentfs-license-evidence.md)。公开门槛从“根目录必须有 LICENSE”改为固定 engine commit 的索引与全部对象 hash 绑定；旧 preview 可读取，但缺材料不能通过 public gate。Cargo 声明的包名／版本必须匹配原文，SDK／registry 不能冒充 README。原始 native notices 保持不变，未将声明核验扩大为整个 helper／Bun 的许可完成结论。
+
+本次独立 CLI 包回归为15 passed / 0 failed、106 assertions；源码、测试和包类型检查通过。macOS ARM64 安装归档在中立 cwd 解包执行 version/help/status/helper，通过新增 engine 材料校验；Linux ARM64 跨编译通过材料／哈希校验，仍标为 unverified，不声称本轮重复了目标平台挂载验收。提交前完整集成为 lite 160 passed / 15 skipped、full 60 passed / 0 skipped，exit 0，owned Docker 栈已清理；日志 `native-declaration-integration-submit.log` 另存忽略目录。`--public` 确实退出1：整包/Bun 等 pending、local-preview 和非 full-verified 条件仍阻止发布。
+
+这些包装验证沿用前一安装候选的 native helper，未修改挂载运行代码。最终 clean commit 的重打包结果独立记录，不把开发中的 dirty preview 冒称正式发行。公共 Gateway 登录／部署候选／实际 Pod 验收和发布渠道仍未就绪。
+
 ## 当前实现
 
 - 服务端 `src/http/agent-directory/`：已授权 Pod 上的目录元数据、精确 glob、内容搜索和范围读取。Local/Cloud 配置注册同一入口；外部项目的 Git/worktree 不写进 Pod。

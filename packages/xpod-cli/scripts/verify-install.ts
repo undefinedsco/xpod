@@ -25,6 +25,7 @@ import {
   sha256File,
   type XpodCliManifest,
 } from '../src/manifest';
+import { validateNativeDeclarations } from '../src/native-declarations';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, '..');
@@ -160,6 +161,25 @@ function main(): void {
         add(`artifact sha256: ${artifact.name}`, sha256File(file) === artifact.sha256, artifact.sha256 ?? '');
         add(`artifact size: ${artifact.name}`, statSync(file).size === artifact.sizeBytes, String(artifact.sizeBytes));
       }
+    }
+
+    // Old previews remain readable. New evidence must retain its complete
+    // source-bound material, not just a boolean declaration status.
+    const evidence = manifest.selectedEnginePin.licenseEvidence;
+    if (evidence) {
+      try {
+        if (schemaProblems.length) { throw new Error('Invalid manifest schema'); }
+        const files = validateNativeDeclarations(path.dirname(path.join(installDir, evidence.path)), manifest.selectedEnginePin);
+        for (const file of files) {
+          const relative = path.posix.join(path.posix.dirname(evidence.path), file);
+          const sha = sha256File(path.join(installDir, relative));
+          if (!manifest.artifacts.some((entry) => entry.included && entry.kind === 'notice' && entry.path === relative && entry.sha256 === sha)) {
+            throw new Error(`Declaration material missing from manifest: ${relative}`);
+          }
+        }
+        if (sha256File(path.join(installDir, evidence.path)) !== evidence.sha256) { throw new Error('License evidence hash mismatch'); }
+        add('selected engine license evidence', true, 'pinned declarations, standard terms and all material hashes verified');
+      } catch (error) { add('selected engine license evidence', false, (error as Error).message); }
     }
 
     // 2. no placeholder / check masquerade

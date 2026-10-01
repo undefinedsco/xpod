@@ -77,6 +77,14 @@ describe('validateManifest', () => {
     const problems = validateManifest(manifest);
     expect(problems.some((p) => p.includes('unavailableReason'))).toBe(true);
   });
+
+  test('rejects malformed or escaping license evidence paths', () => {
+    const manifest = baseManifest();
+    for (const value of [null, 123, 'licenses/../../outside', 'licenses//index.json']) {
+      manifest.selectedEnginePin.licenseEvidence = { path: value as string, sha256: 'd'.repeat(64) };
+      expect(validateManifest(manifest).some((problem) => problem.includes('licenseEvidence'))).toBe(true);
+    }
+  });
 });
 
 describe('public gate', () => {
@@ -94,10 +102,10 @@ describe('public gate', () => {
     expect(isPublicReleaseReady(manifest)).toBe(false);
   });
 
-  test('blocks missing root LICENSE and pending CLI license even when clean', () => {
+  test('blocks missing material evidence and pending CLI license even when clean', () => {
     const problems = publicGateProblems(baseManifest());
     expect(problems.some((p) => p.includes('CLI license'))).toBe(true);
-    expect(problems.some((p) => p.includes('root LICENSE'))).toBe(true);
+    expect(problems.some((p) => p.includes('license evidence'))).toBe(true);
     expect(problems.some((p) => p.includes('license is pending'))).toBe(true);
     expect(problems.some((p) => p.includes('full-verified'))).toBe(true);
   });
@@ -111,6 +119,7 @@ describe('public gate', () => {
         sdkLicenseStatus: 'verified',
         cliLicenseStatus: 'verified',
         rootLicensePresent: true,
+        licenseEvidence: { path: 'licenses/native/declarations/index.json', sha256: 'd'.repeat(64) },
       },
       artifacts: [
         {
@@ -122,9 +131,21 @@ describe('public gate', () => {
           included: true,
           license: { spdx: null, status: 'verified', source: 'reviewed' },
         },
+        {
+          name: 'engine-license-evidence', kind: 'notice',
+          path: 'licenses/native/declarations/index.json', sha256: 'd'.repeat(64),
+          sizeBytes: 123, included: true,
+          license: { spdx: null, status: 'verified', source: 'pinned declarations and standard terms' },
+        },
       ],
       validationState: 'full-verified',
     });
     expect(publicGateProblems(manifest)).toEqual([]);
+    manifest.selectedEnginePin.rootLicensePresent = false;
+    expect(publicGateProblems(manifest)).toEqual([]);
+    manifest.artifacts[1].sha256 = 'e'.repeat(64);
+    expect(publicGateProblems(manifest).some((p) => p.includes('license evidence'))).toBe(true);
+    manifest.artifacts.pop();
+    expect(publicGateProblems(manifest).some((p) => p.includes('license evidence'))).toBe(true);
   });
 });
