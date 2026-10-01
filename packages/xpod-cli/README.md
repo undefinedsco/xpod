@@ -67,6 +67,7 @@ install/
   NOTICES.md           license status incl. pending entries
   licenses/agentfs/    unmodified fuser/nfsserve license texts (manifest hashes)
   licenses/native/     pinned Turso/SimSIMD texts; Linux also libaegis
+  licenses/native/collection/  target-specific audited notice originals + hashes
   manifest.json        source/engine/hash/validation identity
   manifest.local.json  present for dirty local previews
 xpod-cli-<version>-<target>.tar.gz

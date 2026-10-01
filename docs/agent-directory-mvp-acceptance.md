@@ -83,3 +83,9 @@ NFS 固定上游以当前目录中能找到前页 inode 为续读条件；删除
 许可调查证据见 [固定版许可记录](agentfs-license-evidence.md)。发行包现在实际附带两份 vendored 原文和 manifest hashes；不再将 CLI 缺 Cargo license 字段描述为全项目未声明许可。AgentFS 自身完整版权/许可通知与 transitive notices 仍未解决，不绕过 public gate。
 
 最终重复运行定位了两项独立问题。macOS 夹具的 accepted socket 继承 listener 的非阻塞模式，分段请求导致 WouldBlock 后提前关闭；现在在每连接处理前显式改回阻塞模式，并有强制非阻塞 socket + 分段请求回归。提交报告原先通过错误文本包含 `409`/`412`/`conflict` 判断冲突，可能误中 URL 端口或文件名；现在仅 `CommitFailure::Conflict` 进入冲突分类，transport/未知结果保留 in-flight 并进入 errors。lost receipt 回归使用包含这些文本的资源路径，防止再次退回文本匹配。修复前诊断见 `recovery-native-cause.log`；修复后 21 项连续 20 轮全部通过。Linux 构建脚本已显式解除仓库 `*.sh` 忽略，确保检出后可复现。
+
+## 传递通知收集增量
+
+后续收集已将 macOS 481/Linux 502 个原始通知文件引用实物化，分别去重为200/209份（并集211份），逐目标加入安装 manifest。仍保持 partial-collection：不是将扫描候选当作完整法律许可证明。Turso/SimSIMD 单独补充；五个包（含AgentFS和SDK）的完整通知来源、first-party 通知、Bun/TS runtime、MPL 对应源码告知等缺口仍由许可记录追踪。
+
+包装回归现为11 passed，新增复制字节一致、重复对象去重、漂移/越界/目标错配拒绝，日志 `notice-collection-tests-final.log`。两目标重新构建成功，macOS archive 解包校验通过；`notice-collection-integration.log` 再次155 passed/6 skipped、运行配置46 passed，根源码/测试和独立包类型检查通过。没有改动 native helper 或重新宣称当前 Gateway 已验收；本轮认证复查 `notice-collection-gateway-recheck.log` 仍为 invalid_client。
