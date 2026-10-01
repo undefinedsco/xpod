@@ -85,7 +85,7 @@
         "vitest": "^1.4.0",
       },
       "optionalDependencies": {
-        "@undefineds.co/xpod-darwin-arm64": "0.4.20",
+        "@undefineds.co/xpod-darwin-arm64": "0.4.21",
       },
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.39",
@@ -102,12 +102,10 @@
     },
     "desktop": {
       "name": "@undefineds.co/xpod-desktop",
-      "version": "0.4.20",
-      "dependencies": {
-        "@undefineds.co/solid-sdk": "workspace:*",
-      },
+      "version": "0.4.21",
       "devDependencies": {
         "@types/node": "^22.10.0",
+        "@undefineds.co/solid-sdk": "workspace:*",
         "electron": "33.4.11",
         "electron-builder": "^25.1.8",
         "typescript": "^6.0.3",

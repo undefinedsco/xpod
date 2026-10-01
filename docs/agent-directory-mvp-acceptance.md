@@ -1,8 +1,10 @@
 # Xpod CLI 目录 MVP 实现与验收记录
 
-最新分发方向：用户明确“不内嵌 Bun”，当前客户端使用外部运行时。后文旧内嵌候选和 Bun/JSC 记录是历史证据；本次变更和验收状态见末尾“当前客户端分发变更”。
+当前状态（2026-10-02）：AgentFS 是 AFS 内部引擎，Xpod 提供 CLI/App 入口及可选 CSS/API/AFS 模块；模块统一启停和远程 Agent 控制仍是后续设计。客户端采用外部 Bun/Node，不内嵌 Bun。
 
-日期：2026-10-01。分支：`codex/virtual-folder-design`，工作区：`/Users/ganlu/develop/.worktrees/xpod-virtual-folder-design`。用户授权负责人直接实现；原型 worker 已结束。AgentFS 是唯一产品主线，rclone 保留研究证据。选型理由见 [引擎选型](xpod-cli-engine-selection.md)，历史调查见 [技术研究](agent-filesystem-research.md)。
+发布整合分支 `release/0.4.21` 位于 `/Users/ganlu/.codex/worktrees/directory-release-integration/xpod`，基于已验收 0.4.20 保留既有发布修复，只接入目录相关提交。新 worktree 的 frozen install、工作区构建、源码/测试/客户端类型检查、依赖状态、组件生成和 42 项客户端包装回归均通过。原开发 worktree 的 account B/DeepSeek v4.1 Flash 正完成最终修复及串行集成测试；此处尚无带最终修复的完整回归或新 RC 的真实挂载通过记录。
+
+现有 0.4.20 RC 的实际临时账号已验证 Profile canonical storage 绑定、Pod PUT/GET 与 Gateway 客户端认证，但目录 list/search 返回403，服务也缺少目录新 revision 逻辑。因此必须部署新候选再验收，不能将旧 RC 的基础成功当成完整目录通过。公开发行尚未完成。选型理由见 [引擎选型](xpod-cli-engine-selection.md)。以下不同提交、旧内嵌产物和早期测试结果保留为历史证据，不能替代最终 exact candidate 验收。
 
 ## 声明发行材料增量
 

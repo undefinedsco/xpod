@@ -1,6 +1,6 @@
 # Xpod CLI 挂载引擎选型与交付计划
 
-状态：2026-10-01，完成源码、测试资产及真实挂载原型比较，本次选择 AgentFS 作为唯一产品开发主线；macOS 安装产物验收和 Linux ARM64 容器 FUSE 基础路径已通过；当前真实 Gateway、NAS 实机和公开发布仍未完成。此文档承接 `agent-filesystem-research.md`，记录当前决策和验收门槛，不替代历史研究。
+状态：2026-10-02。AgentFS 已选为目录 MVP 引擎，rclone 保留对比证据；当前客户端使用设备已有的 Bun 或 Node，不内嵌 Bun。新的 `release/0.4.21` 从已验收服务 0.4.20 基线整合目录功能，原开发分支继续完成最后修复。新 worktree 的源码、测试及客户端类型、依赖状态、组件生成与 42 项客户端回归通过；完整回归、部署后的真实 Gateway/安装包挂载验收及公开发布尚待完成。后文原型、内嵌候选和旧 source SHA 均为历史记录。
 
 ## 目标与范围
 
@@ -8,7 +8,7 @@
 
 产品归属按最新决定：Xpod 是总产品，CLI/App 是入口，CSS/API/AFS 是可选模块。AgentFS 是 AFS 内部引擎；客户端预览是 Xpod 的能力裁剪构建，不是平行产品。模块依赖与当前尚未可选启动的边界见 [产品设计](solidfs-spec.md#产品入口与可选模块2026-10-01最新设计方向)。此调整不改变选型准入、目录协议或当前产物名称。
 
-继续使用 `codex/virtual-folder-design` 和 `/Users/ganlu/develop/.worktrees/xpod-virtual-folder-design`，不操作其他 checkout。早期实现与测试由用户指定的 `opencode-go/deepseek-v4.1-flash` 执行；用户随后明确“好，你先自己来实现吧”，当前由负责人直接实现并验证，早期 worker 已结束。
+开发分支为 `codex/virtual-folder-design`；发布整合分支为 `release/0.4.21`，工作区为 `/Users/ganlu/.codex/worktrees/directory-release-integration/xpod`。用户指定 account B 的 DeepSeek v4.1 Flash 负责开发和测试，负责人进行整合、验收与发布；实际 API429 时由负责人接手未完成工作。
 
 ## 不可折价的准入条件
 
