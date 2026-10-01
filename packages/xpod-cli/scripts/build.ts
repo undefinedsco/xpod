@@ -31,6 +31,7 @@ import {
   type XpodCliManifest,
 } from '../src/manifest';
 import { assertNativeTarget, bunCompileTarget } from '../src/native-target';
+import { copyNativeNotices } from '../src/native-notices';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, '..');
@@ -191,7 +192,7 @@ function artifact(name: string, kind: ManifestArtifact['kind'], included: boolea
   };
 }
 
-function writeNotices(dir: string, target: string): ManifestArtifact[] {
+function writeNotices(dir: string, target: string, includeNative: boolean): ManifestArtifact[] {
   const text = `# Xpod CLI NOTICES (preview)
 
 This preview artifact bundles the Xpod CLI (auth + agent-fs client commands).
@@ -218,12 +219,16 @@ Linux additionally includes the separately vendored libaegis C-backend notice.
 The Cargo target/features inventories include build dependencies and remain
 research evidence; these supplements are not a complete release clearance.
 CLI/Bun runtime notices and remaining missing native originals still need review.
+${includeNative ? `The target's audited Cargo notice candidates are included under
+licenses/native/collection/ with original paths and content hashes. This is
+a partial collection, including build dependencies, not a legal clearance.`
+  : 'CLI-only build: native dependency notice collection is not included.'}
 
 ## Not included
 - rclone (MIT): research backend only, not part of this artifact.
 `;
   writeFileSync(path.join(dir, 'NOTICES.md'), text, 'utf8');
-  return [
+  const supplements = [
     [ 'agentfs', 'LICENSE-fuser.md', 'MIT', 'e5de4041803ce3d7b1b269165677baabbeb9e43252ad176a877bd544ca04d748', 'Pinned AgentFS licenses/LICENSE-fuser.md' ],
     [ 'agentfs', 'LICENSE-nfsserve.md', 'BSD-3-Clause', '99cbb513e18ecf180a25f5c2e8f2980a91ead909c191fd4c34323497d13a3c74', 'Pinned AgentFS licenses/LICENSE-nfsserve.md' ],
     [ 'native', 'LICENSE-turso.md', 'MIT', 'b646f9ee8bcaf87e8de75153b9df7a2861c7ac445c87e741768b3c2bccf47bc5', 'https://github.com/tursodatabase/turso/blob/dc7781a52b888e323bb12e76c2793d3bab5f9106/LICENSE.md' ],
@@ -241,6 +246,17 @@ CLI/Bun runtime notices and remaining missing native originals still need review
       license: { spdx, status: 'verified', source: `${origin}; unmodified` },
     });
   });
+  if (!includeNative) { return supplements; }
+  const collection = path.join(packageRoot, 'licenses/native/collection');
+  const collectionOutput = path.join(dir, 'licenses/native/collection');
+  const collected = copyNativeNotices(collection, collectionOutput, target).map((name) => {
+    const file = path.join(collectionOutput, name);
+    return artifact(`native-notice:${name}`, 'notice', true, {
+      relPath: `licenses/native/collection/${name}`, sha: sha256File(file), size: statSync(file).size,
+      license: { spdx: null, status: 'pending', source: 'Audited normal/build notice candidates, original bytes; complete release clearance pending' },
+    });
+  });
+  return [...supplements, ...collected];
 }
 
 function main(): void {
@@ -345,7 +361,7 @@ function main(): void {
     version: XPOD_CLI_VERSION,
     enginePin: { engine: pin.engine, repository: pin.repository, commit: pin.commit },
   }, null, 2) + '\n', 'utf8');
-  const vendoredNotices = writeNotices(installDir, args.target);
+  const vendoredNotices = writeNotices(installDir, args.target, !args.cliOnly);
 
   const noticeArtifact = artifact('NOTICES.md', 'notice', true, {
     relPath: 'NOTICES.md',

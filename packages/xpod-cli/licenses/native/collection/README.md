@@ -1,0 +1,24 @@
+# Partial native notice collection
+
+`darwin-arm64.json` and `linux-arm64.json` preserve the audited normal/build
+Cargo inventories. They map package/version, original package-relative notice
+path and SHA-256 to `objects/<sha>.txt`. Object bytes are copied unmodified;
+identical text is stored once, without combining licenses or rewriting authors.
+The two inventories have 481 and 502 notice-file references respectively.
+
+This is a collection of original candidates, not release clearance or proof
+that every listed dependency is linked at runtime. Build-only packages can
+include notices for other operating systems. Do not infer the whole helper's
+license from those notices.
+
+Zero files means the audited source package had no candidate notice text.
+Turso and SimSIMD originals are supplemented separately in `licenses/native/`.
+AgentFS, agentfs-sdk, genawaiter, genawaiter-macro, pack1 and the first-party
+helper still require source/notice resolution. The collection excludes the
+compiled CLI's Bun/TypeScript dependencies and external OS shared libraries.
+
+Regenerate with `scripts/collect-native-notices.ts <target> <audited inventory>`.
+The inventory must match the target and every original hash must match. The
+build copies only that target's referenced objects, verifies all hashes before
+copying, and records each output hash in the install manifest. Missing or
+changed objects fail the build. The public release gate remains blocked.

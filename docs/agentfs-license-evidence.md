@@ -27,6 +27,12 @@
 
 另保存三份固定来源原文，完整来源、hash 和归属见 [native notices](../packages/xpod-cli/licenses/native/README.md)：Turso（MIT）、SimSIMD（Apache-2.0）及 Linux C-backend libaegis（MIT）。包装脚本逐份核对 hash 后复制；libaegis 仅进入 Linux 目标包。
 
-尚缺 AgentFS、agentfs-sdk、genawaiter 0.99.1、genawaiter-macro 0.99.1、pack1 1.1.0 的原始完整通知来源。这不表示它们没有声明许可。还需收集其余实际依赖原文与嵌套通知，例如 ring 的 Apache-2.0 与 ISC、option-ext 的 MPL-2.0、Unicode 与 vendored C 代码。cfgblock 的 license_file 是 Apache 版权通知，需保留完整条款。上述清单不覆盖编译 CLI 中的 Bun runtime 和 TypeScript 依赖，不能作为整个发行包的许可完成证明。
+尚缺 AgentFS、agentfs-sdk、genawaiter 0.99.1、genawaiter-macro 0.99.1、pack1 1.1.0 的原始完整通知来源。这不表示它们没有声明许可。其余已扫描候选原文与嵌套通知现已收集，例如 ring 的 Apache-2.0 与 ISC、option-ext 的 MPL-2.0、Unicode 与 vendored C 代码；仍需审查实际发行义务和源码告知。cfgblock 的 license_file 是 Apache 版权通知，需保留完整条款。上述清单不覆盖编译 CLI 中的 Bun runtime 和 TypeScript 依赖，不能作为整个发行包的许可完成证明。
 
 Linux helper 实际动态链接系统 OpenSSL 3；Rust openssl-sys 的 MIT 仅属于 wrapper。外部系统库需求已记录，若以后同时分发 `.so` 或系统镜像，必须按该产物版本附系统许可原文。清单、三份补充原文与运行依赖证据均未解除 public gate。
+
+## 原文收集进入安装包
+
+`packages/xpod-cli/licenses/native/collection/` 已实际收集原始 Cargo 通知候选：macOS 481、Linux 502 个文件引用，按 SHA-256 去重保存原文，并保留 package/version、原始相对路径、source archive 与构建角色。包括 ring 的嵌套通知、Unicode、mimalloc 和 MPL 原文；不改作者、不合并许可表达式。构建按目标选取文件，先核对所有原文 hash，再复制，并将输出 hash 写入安装 manifest。缺文件或内容漂移会使构建失败。
+
+收集过程仍不是许可完成证明：扫描候选可能包含 build-only 的其他平台代码，Turso/SimSIMD 补充原文独立保存，尚缺的包通知、Bun/TS runtime、外部系统库与 MPL 对应源码告知仍需落实。public gate 保持阻止。完整来源索引见 [collection README](../packages/xpod-cli/licenses/native/collection/README.md)。
