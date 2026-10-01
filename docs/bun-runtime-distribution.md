@@ -23,6 +23,16 @@
 
 这些 pin 是固定源码的默认构建配置，不是发布二进制完整依赖闭包的证明。`process.versions` 中部分哈希来自硬编码旧值或 fallback，WebKit 显示值与 SetupWebKit 的 pin 不同，不能把版本字符串当作精确来源证明，也不能据此认定官方二进制被修改。[版本生成器](https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/cmake/tools/GenerateDependencyVersions.cmake)
 
+## 应用侧重建材料
+
+Xpod CLI 构建现在随包保存实际 staging 源码、选中依赖的已安装字节与嵌套目录、lockfile、原始 notices 和重建脚本。源码清单绑定 CLI hash、目标与 source identity，安装检查逐个验证归档成员、大小和 hash，不以一个清单文件代表其余材料已存在。详见 [源码包说明](../packages/xpod-cli/APPLICATION-SOURCE-README.md)。
+
+macOS ARM64 独立重建已使用 Bun 1.3.8 跑通：2,007 个文件、228 个实际编译输入；重建输入的路径/hash 集合与原始编译一致，生成二进制的 version/help/status 可执行。脚本允许不同的兼容 Bun；同平台不传会选择另一 runtime 的 cross-target 参数，原始 compiler hash 只用于溯源。源码或 notice 漂移会拒绝重建/安装。
+
+Linux ARM64 也在断网 Debian 容器中使用独立源码包和已校验的官方 Bun1.3.8 成功重建：GNU tar 检查2,017个文件，228个编译输入的路径/hash集合同样一致，CLI version/help/status通过。容器只挂载源码归档、Bun可执行文件和本次证据输出目录，不挂载仓库或依赖缓存。此检查不使用FUSE，不代表重新验收Linux挂载。
+
+这是应用侧的验证。此次实际执行仍使用原版 Bun，没有构建修改后的 JSC、重新链接 Bun，或补齐 runtime/toolchain/native helper 的对应源码闭包。因此 public gate 保持阻止，不能把应用源码包或一次成功编译视为完整发行准入。
+
 ## 发行前尚需完成
 
 - 当前 CLI 的平台依赖闭包与完整 notices，包括 WebKit 文件级通知、内置 JS 和 Zig runtime 范围。

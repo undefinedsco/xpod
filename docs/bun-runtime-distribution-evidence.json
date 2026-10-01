@@ -39,7 +39,7 @@
     "A complete platform-specific runtime SBOM, including all WebKit/WTF per-file notices, built-in JS/polyfill versions, Zig standard-library/compiler-runtime portions, and other nested components.",
     "Complete license-text collection: fetched root component texts are candidates, not proof that all nested or per-file notices are included. webkit-nested-license-paths.json records additional located texts not fetched in the bounded final pass.",
     "That every official binary uses precisely the default source-script pins without release-time overrides; no complete official build attestation/link map was inspected.",
-    "An object-file/relinkable package for the current compiled CLI. The inspected official Bun ARM64 ZIPs contain only the executable. WebKit release assets exist, but their static library archives were not downloaded or inspected.",
+    "A complete runtime/object/relink package for the current compiled CLI. The official Bun ARM64 ZIPs inspected contain only the executable; the separately checked macOS WebKit static archive and application source kit do not establish the whole runtime build closure.",
     "A tested recipe that rebuilds or relinks the current compiled CLI against a modified LGPL library; no Bun/WebKit build or relink test was performed.",
     "That upstream source URLs alone satisfy all corresponding-source/object/relink requirements for this downstream distribution. No legal conclusion on readiness was made.",
     "A Bun-runtime-specific complete MIT copyright/permission text; fixed root LICENSE.md is a declaration/overview. No copyright owner was invented."
@@ -54,6 +54,33 @@
   "runtimeBinarySha256": {
     "darwin-arm64": "308ed847a45d87086b86c82d033867d9798ffb757ac73695980d502559ba7a73",
     "linux-arm64": "5f7fc46872d7f40a2de54091203266cc07cecf4cac5a4e311c8ad2fad20d714d"
+  },
+  "applicationSourceKit": {
+    "instructions": "../packages/xpod-cli/APPLICATION-SOURCE-README.md",
+    "scope": "Actual staged application and installed dependency bytes, original notices, lockfile and compile recipe; excludes Bun/JSC/toolchain/native helper source/build closure.",
+    "verifiedTargets": ["darwin-arm64", "linux-arm64"],
+    "originalAndRebuiltInputs": 228,
+    "pathAndHashSetsMatch": true,
+    "linuxRebuildNetworkDisabled": true,
+    "linuxGnuTarArchiveVerified": true,
+    "samePlatformUsesInvokedRuntime": true,
+    "originalCompilerHashIsProvenanceOnly": true,
+    "modifiedLgplLibraryRebuildOrRelink": "not performed",
+    "wholeArtifactClearance": false
+  },
+  "webkitStaticArchiveInspection": {
+    "target": "darwin-arm64",
+    "commit": "9a2cc42ae1bf693a0fd0ceb9b1d7d965d9cfd3ea",
+    "release": "https://github.com/oven-sh/WebKit/releases/tag/autobuild-9a2cc42ae1bf693a0fd0ceb9b1d7d965d9cfd3ea",
+    "sha256": "c35435fd11a4efc2aa55a7d7f921beffe440a1d657a16e839cc13f1ba1daafa2",
+    "digestMatches": true,
+    "packageCommitMatches": true,
+    "streamedLibraryInventory": {
+      "libJavaScriptCore.a": 2468720824,
+      "libWTF.a": 62477776,
+      "libbmalloc.a": 8044160
+    },
+    "scope": "Prebuilt library material only; not an official Bun link-input attestation or completed modified-library relink."
   },
   "componentNoticeCandidates": [
     {

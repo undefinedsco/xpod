@@ -160,3 +160,15 @@ Bun 1.3.8 调查已保存为 [runtime 发行记录](bun-runtime-distribution.md)
 两个 Inrupt 3.1.1 归档的 registry SHA-512 integrity 已核对，发布元数据共用 gitHead `94e54693a4fabf67c331c7b9af2bdb5e9d390992`，固定源码 LICENSE 原文已取得并保留。构建通过声明式 name/version supplement 索引加入现有 JS packages/files 及安装 manifest；不会套用到其他版本，重复声明、越界 object 和原文漂移会失败。两平台现在各15个包、12份去重原文，不再存在这两个独立原文缺口。来源与实际已安装 core 现有补丁的哈希差异见 [来源证据](inrupt-notice-source-evidence.json)。
 
 `inrupt-notice-tests.log` 为12 passed/0 failed，覆盖 version 隔离、去重、补充原文漂移/越界/重复声明拒绝；依赖状态自检、源码/测试/包类型检查通过。`inrupt-notice-integration.log` 再次155 passed/6 skipped，加46项运行配置通过，Docker 栈清理完成。两平台打包及原文/CLI 绑定检查通过，没有改动认证补丁或挂载 runtime。public gate 保持阻止。
+
+## 应用源码包与独立重建增量
+
+独立客户端的每次编译现生成 `sources/application-source.json` 和 `sources/application-source.tar.gz`，绑定本次 CLI/source/target，保存实际 staging 的第一方源码、选中的已安装依赖树（含 nested 版本及现有补丁）、lockfile、原始通知和重建脚本。安装检查先验证归档路径、重复项及 regular-file 类型，随后逐文件检查实际大小/hash，缺源码或 notice 的归档即使更新外层 manifest hash 也会失败。
+
+同平台编译与重建共用参数和环境处理，不传选择另一 runtime 的 cross-target 参数；原 compiler hash 只用于 provenance，允许兼容的修改版 Bun。重建在独立临时目录只使用清单内已验证字节，不安装依赖，执行完删除 staging，避免原仓库 helper 漏入产物。完整用法见 [源码包说明](../packages/xpod-cli/APPLICATION-SOURCE-README.md)。
+
+本轮 macOS ARM64 候选源码包包含2,007个文件；在 `/tmp` 的仓库外目录成功重建，228个实际输入的路径/hash集合与原编译一致，编译后的 CLI version/help/status 退出0、helperPresent=false。`source-kit-outside-checkout-rebuild.json` 与完整 receipt 保存目标、compiler/CLI hashes 和输入集合；没有声称二进制逐字节可复现。实际仍使用原版 Bun1.3.8，不是修改JSC后的重链接验收。
+
+Linux ARM64 独立源码包包含2,017个文件；在 `--network none` 的 Debian 容器中逐个通过GNU tar归档成员/字节校验并重建，228个实际输入的路径/hash集合一致，CLI version/help/status退出0且helperPresent=false。仅挂载源码归档、已校验的官方Bun1.3.8和本次输出目录，未挂载仓库或node_modules；`source-kit-linux-detached/evidence.json`、receipt和原始日志记录结果。此项不启动FUSE或目录服务，不能扩大此前native挂载验收范围。
+
+`source-kit-package-tests-final.log` 为19 passed/0 failed、147 assertions；覆盖 input drift/escape、patched/nested 目录保留、脱离仓库重建、归档漏源/漏 notice/重复项/symlink/hardlink/body漂移/index不符与错误CLI绑定。源码、测试和独立包类型检查通过。`source-kit-integration-final.log` 为 lite160 passed/15 skipped，加 full60 passed，无失败，隔离 Docker 栈已清理。两平台预览包生成与安装材料验证通过；Linux 跨编译 manifest 仍保留 unverified。本轮未修改 Pod 挂载 runtime，没有新增公共 Gateway、NAS 实机或公开发行证据。

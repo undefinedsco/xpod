@@ -15,7 +15,7 @@ export const XPOD_CLI_VERSION = '0.1.0-preview.1';
 
 export type ValidationState = 'unverified' | 'cli-only' | 'install-verified' | 'full-verified';
 export type LicenseStatus = 'verified' | 'pending';
-export type ArtifactKind = 'cli' | 'native-helper' | 'notice' | 'config';
+export type ArtifactKind = 'cli' | 'native-helper' | 'notice' | 'config' | 'source';
 export type SourceMode = 'local-preview' | 'release';
 
 export interface ArtifactLicense {
