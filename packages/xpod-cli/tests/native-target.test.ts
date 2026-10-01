@@ -2,10 +2,13 @@ import { test, expect } from 'bun:test';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { assertNativeTarget, bunCompileTarget } from '../src/native-target';
 
+const repo = fileURLToPath(new URL('../../../', import.meta.url));
+
 test('checks binary architecture and OS even when a cross artifact cannot run', () => {
-  const root = path.resolve('.test-data/xpod-cli/native-target');
+  const root = path.join(repo, '.test-data/xpod-cli/native-target');
   mkdirSync(root, { recursive: true });
   const directory = mkdtempSync(path.join(root, 'headers-'));
   const file = path.join(directory, 'helper');
@@ -31,12 +34,12 @@ test('checks binary architecture and OS even when a cross artifact cannot run', 
 });
 
 test('an explicit missing helper fails instead of falling back to a checkout helper', () => {
-  const root = path.resolve('.test-data/xpod-cli/native-target');
+  const root = path.join(repo, '.test-data/xpod-cli/native-target');
   mkdirSync(root, { recursive: true });
   const directory = mkdtempSync(path.join(root, 'missing-'));
   try {
     const result = spawnSync(process.execPath, [
-      path.resolve('packages/xpod-cli/scripts/build.ts'), '--target', `${process.platform}-${process.arch}`,
+      path.join(repo, 'packages/xpod-cli/scripts/build.ts'), '--target', `${process.platform}-${process.arch}`,
       '--helper', path.join(directory, 'missing-helper'), '--out', directory,
     ], { encoding: 'utf8' });
     expect(result.status).toBe(3);
