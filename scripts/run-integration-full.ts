@@ -5,6 +5,13 @@ import { spawn } from 'node:child_process';
 import { getFreePort } from '../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
+import {
+  hasObjectStore,
+  OBJECT_STORE_ACCESS_KEY,
+  OBJECT_STORE_BUCKET,
+  OBJECT_STORE_PORT,
+  OBJECT_STORE_SECRET_KEY,
+} from '../tests/helpers/dockerObjectStore';
 
 const DEFAULT_CLOUD_PORT = Number(process.env.CLOUD_PORT || '6300');
 const DEFAULT_CLOUD_B_PORT = Number(process.env.CLOUD_B_PORT || '6400');
@@ -154,14 +161,10 @@ async function hasWritableRedis(port = 6379, host = '127.0.0.1', timeoutMs = 150
 }
 
 async function hasMinio(): Promise<boolean> {
-  try {
-    const response = await fetch('http://localhost:9000/minio/health/live', {
-      signal: AbortSignal.timeout(1500),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
+  // The Compose service is still named `minio`, but it is VersityGW now, so the
+  // MinIO-only /minio/health/live path is gone. Probe what the tests actually
+  // need instead: an authenticated request for the test bucket.
+  return await hasObjectStore(OBJECT_STORE_PORT, OBJECT_STORE_BUCKET);
 }
 
 async function hasHealthyComposeInfra(): Promise<boolean> {
@@ -280,10 +283,10 @@ async function startFullRuntimes(
     CSS_REDIS_CLIENT: 'localhost:6379',
     CSS_REDIS_USERNAME: '',
     CSS_REDIS_PASSWORD: '',
-    CSS_MINIO_ENDPOINT: 'http://localhost:9000',
-    CSS_MINIO_ACCESS_KEY: 'minioadmin',
-    CSS_MINIO_SECRET_KEY: 'minioadmin',
-    CSS_MINIO_BUCKET_NAME: 'xpod',
+    CSS_MINIO_ENDPOINT: `http://localhost:${OBJECT_STORE_PORT}`,
+    CSS_MINIO_ACCESS_KEY: OBJECT_STORE_ACCESS_KEY,
+    CSS_MINIO_SECRET_KEY: OBJECT_STORE_SECRET_KEY,
+    CSS_MINIO_BUCKET_NAME: OBJECT_STORE_BUCKET,
     CSS_EMAIL_CONFIG_HOST: '',
     CSS_EMAIL_CONFIG_PORT: '587',
     CSS_EMAIL_CONFIG_AUTH_USER: '',

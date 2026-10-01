@@ -116,9 +116,27 @@ async function verifyVectorRuntime(): Promise<void> {
   }
 }
 
+/**
+ * Run the allocator's native Bun regression here as well as via `bun test`, because this
+ * smoke is the Bun job CI runs. vitest only ever runs on Node, so without this step the
+ * `Bun.listen` probe path - the one the CLI runtime uses - would stay uncovered.
+ */
+async function verifyBunPortFinderRegression(): Promise<void> {
+  const testFile = `${import.meta.dir}/../tests/bun/port-finder.test.ts`;
+  const child = Bun.spawn([ 'bun', 'test', testFile ], {
+    stdout: 'inherit',
+    stderr: 'inherit',
+  });
+  const exitCode = await child.exited;
+  if (exitCode !== 0) {
+    throw new Error(`bun test ${testFile} failed with exit ${exitCode}`);
+  }
+}
+
 async function main(): Promise<void> {
   process.env.XPOD_TEST_TRANSPORT = process.env.XPOD_TEST_TRANSPORT || 'port';
 
+  await verifyBunPortFinderRegression();
   await verifyOpenRuntime();
   await verifyVectorRuntime();
 

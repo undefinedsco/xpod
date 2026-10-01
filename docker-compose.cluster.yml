@@ -6,7 +6,7 @@
 # 架构:
 #   - postgres: PostgreSQL 数据库
 #   - redis: Redis 缓存/锁
-#   - minio: MinIO 对象存储
+#   - minio: S3 对象存储（VersityGW，测试专用；见 docker-compose.cluster.integration.yml）
 #   - cloud: Cloud 节点 (6300) - IdP + API Server + Pod 存储
 #   - local: Local 节点 (5737) - 托管式，使用 Cloud IdP，SQLite 存储
 #   - standalone: Standalone 节点 (5739) - 自带 IdP，SQLite 存储
@@ -14,7 +14,7 @@
 # 测试覆盖:
 #   ✅ 统一 Docker 测试: XPOD_RUN_INTEGRATION_TESTS=true yarn test:docker
 #     包含以下场景的测试:
-#     - Cloud 模式 (6300): PostgreSQL + MinIO + IdP + API Server
+#     - Cloud 模式 (6300): PostgreSQL + S3 (VersityGW) + IdP + API Server
 #     - Local 模式 (5737): SQLite 存储，使用 Cloud IdP
 #     - Standalone 模式 (5739): SQLite 存储，自带 IdP
 #
@@ -63,19 +63,30 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    # Test-only S3 endpoint. Tests need nothing more than a path-style S3 API on
+    # the port and credentials the tests already use, and the official MinIO
+    # images are no longer anonymously pullable (quay.io/minio/minio answers 401
+    # and minio/minio was removed from Docker Hub), so this runs VersityGW
+    # instead. See docker-compose.cluster.integration.yml for the full rationale.
+    image: ghcr.io/versity/versitygw@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      ROOT_ACCESS_KEY: minioadmin
+      ROOT_SECRET_KEY: minioadmin
+      VGW_BACKEND: posix
+      VGW_BACKEND_ARG: /data
+      VGW_ARGS: --port :9000
     ports:
+      # No 9001 console mapping: VersityGW serves S3 only.
       - "9000:9000"
-      - "9001:9001"
     volumes:
       - minio_data:/data
-    command: server /data --console-address ":9001"
-    entrypoint: sh -c "mkdir -p /data/xpod && exec minio $$@" --
+    # The posix backend treats every directory below its root as a bucket and no
+    # code in Xpod creates buckets, so create the test bucket before serving.
+    entrypoint: sh -c "mkdir -p /data/xpod && exec /usr/local/bin/docker-entrypoint.sh"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # VersityGW answers S3 requests only, so probe the listener instead of the
+      # MinIO-specific /minio/health/live path.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "9000"]
       interval: 5s
       timeout: 5s
       retries: 5

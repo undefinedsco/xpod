@@ -24,13 +24,24 @@ services:
       timeout: 3s
       retries: 30
   minio:
-    image: minio/minio:latest
+    # Test-only S3 endpoint. The official MinIO images are no longer anonymously
+    # pullable (quay.io/minio/minio answers 401 and minio/minio was removed from
+    # Docker Hub), so this runs VersityGW, which serves the same path-style S3
+    # API on the same port. See docker-compose.cluster.integration.yml.
+    image: ghcr.io/versity/versitygw@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499
     environment:
-      MINIO_ROOT_USER: acceptance
-      MINIO_ROOT_PASSWORD: acceptance-only
-    entrypoint: [sh, -c, 'mkdir -p /data/xpod && exec minio server /data']
+      ROOT_ACCESS_KEY: acceptance
+      ROOT_SECRET_KEY: acceptance-only
+      VGW_BACKEND: posix
+      VGW_BACKEND_ARG: /data
+      VGW_ARGS: --port :9000
+    # The posix backend treats every directory below its root as a bucket and no
+    # code in Xpod creates buckets, so create the test bucket before serving.
+    entrypoint: [sh, -c, 'mkdir -p /data/xpod && exec /usr/local/bin/docker-entrypoint.sh']
     healthcheck:
-      test: [CMD, curl, --fail, --silent, http://localhost:9000/minio/health/live]
+      # VersityGW answers S3 requests only, so probe the listener instead of the
+      # MinIO-specific /minio/health/live path.
+      test: [CMD, nc, -z, 127.0.0.1, '9000']
       interval: 3s
       timeout: 3s
       retries: 30

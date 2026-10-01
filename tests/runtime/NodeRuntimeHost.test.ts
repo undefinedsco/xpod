@@ -9,6 +9,30 @@ function listenOn(server: net.Server, port: number): Promise<void> {
   });
 }
 
+/** A real process holding the port on `[::]` only, the way a competing runtime can. */
+function listenIpv6Only(server: net.Server): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: '::', port: 0, ipv6Only: true }, () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('listener did not report a port'));
+        return;
+      }
+      resolve(address.port);
+    });
+  });
+}
+
+/** Binds and releases a port, rejecting with the real bind error when it is taken. */
+function bindAndRelease(port: number, host: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(port, host, () => server.close((error) => (error ? reject(error) : resolve())));
+  });
+}
+
 describe('NodeRuntimeHost', () => {
   const host = new NodeRuntimeHost();
 
@@ -46,6 +70,27 @@ describe('NodeRuntimeHost', () => {
     // the Gateway can tell apart from a genuine local client.
     expect(ports.ingress).toBeGreaterThan(0);
     expect([ ports.gateway, ports.css, ports.api ]).not.toContain(ports.ingress);
+  });
+
+  it('should not plan the default gateway on a port a process owns on the IPv6 wildcard', async() => {
+    // `bootstrap` maps the default `bindHost` 127.0.0.1 to the public host `localhost`, which
+    // on this host dials `::1`, so a competing `[::]`-only listener takes the runtime's own
+    // traffic. Concrete 127.0.0.1 is still bindable here, so an IPv4-only probe reports the
+    // port as free and the default plan collides with the competitor.
+    const competitor = net.createServer();
+    const occupied = await listenIpv6Only(competitor);
+
+    try {
+      await expect(bindAndRelease(occupied, '127.0.0.1')).resolves.toBeUndefined();
+
+      const plan = await host.allocatePorts({ basePort: occupied });
+
+      expect(plan.gateway).not.toBe(occupied);
+      expect(plan.gateway).toBeGreaterThan(occupied);
+      await expect(bindAndRelease(plan.gateway, '127.0.0.1')).resolves.toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => competitor.close(() => resolve()));
+    }
   });
 
   it('should not claim a port another runtime has already planned', async() => {

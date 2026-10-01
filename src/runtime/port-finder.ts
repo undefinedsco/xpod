@@ -181,10 +181,28 @@ function hasIpv6Address(): boolean {
 }
 
 /**
- * Allocates a port for child services that bind wildcard addresses.
- * CSS may bind `::` while the API binds `0.0.0.0`, so probing only localhost
- * can miss an occupied port on the other address family.
+ * Addresses this allocator clears before handing out a port: the wildcard addresses plus the
+ * loopback addresses child services use by default (`bindHost` defaults to `127.0.0.1`).
+ * Platforms may allow a wildcard bind and a specific-address bind on the same port (this macOS
+ * host does, under Node and Bun), so probing one category can report an unusable port as free.
+ * A port held on a non-loopback specific address is outside this guarantee: it is not probed.
  */
+function serviceProbeHosts(probeIpv6: boolean): string[] {
+  return probeIpv6
+    ? [ '0.0.0.0', '::', '127.0.0.1', '::1' ]
+    : [ '0.0.0.0', '127.0.0.1' ];
+}
+
+/** The first address a service may bind that is already taken, if any. */
+async function firstOccupiedServiceAddress(port: number, timeoutMs: number, probeIpv6: boolean): Promise<string | undefined> {
+  for (const host of serviceProbeHosts(probeIpv6)) {
+    if (!await canListen(port, host, timeoutMs)) {
+      return host;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Takes exactly this port or fails.
  *
@@ -195,11 +213,10 @@ export async function requireFreePortForWildcard(port: number, timeoutMs = PORT_
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error(`ingress port ${port} is not a valid port number`);
   }
-  if (!await canListen(port, '0.0.0.0', timeoutMs)) {
-    throw new Error(`ingress port ${port} is already in use; free it or point the tunnel at another port`);
-  }
-  if (hasIpv6Address() && !await canListen(port, '::', timeoutMs)) {
-    throw new Error(`ingress port ${port} is already in use on IPv6; free it or point the tunnel at another port`);
+  const occupied = await firstOccupiedServiceAddress(port, timeoutMs, hasIpv6Address());
+  if (occupied) {
+    const family = occupied.includes(':') ? ' on IPv6' : '';
+    throw new Error(`ingress port ${port} is already in use${family}; free it or point the tunnel at another port`);
   }
   return port;
 }
@@ -207,10 +224,7 @@ export async function requireFreePortForWildcard(port: number, timeoutMs = PORT_
 export async function getFreePortForWildcard(basePort: number, timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<number> {
   const probeIpv6 = hasIpv6Address();
   for (let port = basePort; port <= HIGHEST_PORT; port++) {
-    if (!await canListen(port, '0.0.0.0', timeoutMs)) {
-      continue;
-    }
-    if (probeIpv6 && !await canListen(port, '::', timeoutMs)) {
+    if (await firstOccupiedServiceAddress(port, timeoutMs, probeIpv6)) {
       continue;
     }
     return port;

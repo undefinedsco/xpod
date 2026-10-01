@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { findGatewayIngressPort, getFreePort } from '../../port-finder';
+import { findGatewayIngressPort, getFreePortForWildcard } from '../../port-finder';
 import { registerSocketFetchOrigin } from '../../socket-fetch';
 import { registerSocketHttpOrigin } from '../../socket-http';
 import { prepareSocketPath, removeSocketPath } from '../../socket-utils';
@@ -26,9 +26,13 @@ export class NodeRuntimeHost implements RuntimeHost {
   }
 
   public async allocatePorts(options: RuntimePortAllocationOptions = {}): Promise<RuntimePorts> {
-    const gateway = options.gatewayPort ?? await getFreePort(options.basePort ?? 5600);
-    const css = options.cssPort ?? await getFreePort(gateway + 1);
-    const api = options.apiPort ?? await getFreePort(css + 1);
+    // Defaults have to clear every address a service may bind: `bootstrap` publishes the
+    // gateway as `localhost`, which can resolve to `::1`, while CSS/API bind the default
+    // `bindHost` 127.0.0.1. An IPv4-only probe reports a port held on `[::]` as free, and the
+    // runtime then serves its own localhost traffic to the competitor.
+    const gateway = options.gatewayPort ?? await getFreePortForWildcard(options.basePort ?? 5600);
+    const css = options.cssPort ?? await getFreePortForWildcard(gateway + 1);
+    const api = options.apiPort ?? await getFreePortForWildcard(css + 1);
     // Tunnels (and the P2P data plane) terminate here, and this listener never treats a
     // caller as local whatever headers it carries - that is the gate. Its port is the one
     // number the user copies into a provider console, so it is predictable rather than
