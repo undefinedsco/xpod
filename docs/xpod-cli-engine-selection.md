@@ -6,6 +6,8 @@
 
 完成 AgentFS 与 rclone 的对比，选择满足目录 MVP 的引擎，交付可安装的 Xpod CLI，并完成开发、独立测试、负责人验收和发布。设备范围 PC + NAS；远程 Agent 聊天与设备控制保留接口边界，本次先完成目录。
 
+产品归属按最新决定：Xpod 是总产品，CLI/App 是入口，CSS/API/AFS 是可选模块。AgentFS 是 AFS 内部引擎；客户端预览是 Xpod 的能力裁剪构建，不是平行产品。模块依赖与当前尚未可选启动的边界见 [产品设计](solidfs-spec.md#产品入口与可选模块2026-10-01最新设计方向)。此调整不改变选型准入、目录协议或当前产物名称。
+
 继续使用 `codex/virtual-folder-design` 和 `/Users/ganlu/develop/.worktrees/xpod-virtual-folder-design`，不操作其他 checkout。早期实现与测试由用户指定的 `opencode-go/deepseek-v4.1-flash` 执行；用户随后明确“好，你先自己来实现吧”，当前由负责人直接实现并验证，早期 worker 已结束。
 
 ## 不可折价的准入条件

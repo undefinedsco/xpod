@@ -12,6 +12,8 @@
 
 ## 固定源码与重建入口
 
+固定 Bun commit 的完整源码归档现已下载，SHA-256 为 `bf521d29d939085f1645a914ff48bb1ac19818682133fc8c1dde1b1012dfa38e`。对未截断的 GitHub Git tree 逐项核对 Git blob hash，12,458 个普通文件和 9 个内部符号链接均与固定版本一致；归档和验证结果保存在调查材料的 `rebuild/` 下。这补齐了 Bun 源码树，尚未构建 Bun，也不代表 WebKit、工具链和其他链接输入的闭包已齐备。
+
 | 组件 | 同一 Bun commit 构建脚本中的 pin |
 | --- | --- |
 | WebKit | `9a2cc42ae1bf693a0fd0ceb9b1d7d965d9cfd3ea` |

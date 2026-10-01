@@ -3,6 +3,17 @@
   "tag": "bun-v1.3.8",
   "commit": "b64edcb490b486fb8af90cb2cb2dc51590453064",
   "officialRelease": "https://github.com/oven-sh/bun/releases/tag/bun-v1.3.8",
+  "fullBunSourceArchive": {
+    "url": "https://codeload.github.com/oven-sh/bun/tar.gz/b64edcb490b486fb8af90cb2cb2dc51590453064",
+    "sha256": "bf521d29d939085f1645a914ff48bb1ac19818682133fc8c1dde1b1012dfa38e",
+    "treeQueryRef": "b64edcb490b486fb8af90cb2cb2dc51590453064",
+    "treeTruncated": false,
+    "regularFiles": 12458,
+    "symlinks": 9,
+    "allGitBlobHashesMatch": true,
+    "bunBuildExecuted": false,
+    "scope": "Complete fixed Bun source tree verified against Git blob identities; does not complete WebKit/toolchain/component source or link closure."
+  },
   "officialZipInspection": [
     {
       "name": "bun-darwin-aarch64.zip",

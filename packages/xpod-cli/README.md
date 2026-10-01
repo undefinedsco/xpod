@@ -1,6 +1,10 @@
 # @undefineds.co/xpod-cli (preview packaging)
 
-Standalone, client-only Xpod CLI. Command display name **Xpod CLI**, binary
+Client-only build profile of Xpod. Xpod is the overall product; CLI and App are
+its user surfaces, with CSS, API and AFS as optional capability modules. This
+preview packages auth and AFS client capabilities; AgentFS is the internal AFS
+engine. Unified optional server-module startup is still a design, not an
+implemented feature. Command display name **Xpod CLI**, binary
 `xpodcli`, candidate package `@undefineds.co/xpod-cli`, candidate version
 `0.1.0-preview.1`.
 
