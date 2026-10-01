@@ -12,14 +12,18 @@
 
 ## 目前两平台候选
 
-macOS ARM64 和 Linux ARM64 各有 228 个输入、15 个 package instances、11 份按内容去重的原始通知候选。包括 `jose` 5.10.0 和 4.15.9 两个版本。可取得的 package 根通知及显式 licenses/notices 目录内容均保留原始字节，没有改作者、换行或合并声明。
+macOS ARM64 和 Linux ARM64 各有 228 个输入、15 个 package instances、12 份按内容去重的原始通知候选。包括 `jose` 5.10.0 和 4.15.9 两个版本。可取得的 package 根通知及显式 licenses/notices 目录内容均保留原始字节，没有改作者、换行或合并声明。
 
-以下包在当前安装依赖中没有独立通知原文，索引明确标为 `missing-original`：
+以下包在 npm 发行归档中没有独立通知文件；现在按 name/version 补充固定源码中的原文：
 
 - `@inrupt/solid-client-authn-node@3.1.1`
 - `@inrupt/solid-client-authn-core@3.1.1`
 
-它们的 package.json 声明 MIT，不能据此生成或推断缺失的版权原文。后续应从这两个固定版本的权威源码／发行归档取得并核对原文来源。
+两个归档实际下载且 SHA-512 与 registry integrity 一致，发布元数据的 gitHead 均为 `94e54693a4fabf67c331c7b9af2bdb5e9d390992`。该提交的 [LICENSE](https://github.com/inrupt/solid-client-authn-js/blob/94e54693a4fabf67c331c7b9af2bdb5e9d390992/LICENSE) 包含 Inrupt Inc. 的版权与完整许可；原始字节已收集，SHA-256 为 `844fb3d1fcba1b7b2c04887fa108174167fe4ba40e5a4c6e67490c3b71731b49`。两个包共享同一原文对象，没有生成版权人或年份。
+
+`supplements` 使用声明式 name/version 索引，校验原文对象路径与 hash，版本不匹配不套用；索引漂移、重复注册或越界对象会使构建失败。补充通知进入同一 packages/files 索引与安装 manifest，整体仍为 partial-collection。来源证据见 [固定版本记录](inrupt-notice-source-evidence.json)。
+
+node 的已安装 `dist/index.mjs` 与下载归档字节相同；core 则包含本仓库已有的 `scripts/patch-inrupt-authn-refresh.js` 修改，依赖状态自检通过。索引保留的是实际编译输入哈希，不把 core 描述为未经修改的官方代码。MIT 原文保留，未变更原有认证代码或补丁。
 
 ## 验证与限制
 

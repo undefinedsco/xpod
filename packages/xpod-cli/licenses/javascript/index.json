@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "name": "@inrupt/solid-client-authn-node",
+      "version": "3.1.1",
+      "provenance": {
+        "registryUrl": "https://registry.npmjs.org/@inrupt/solid-client-authn-node/3.1.1",
+        "archiveUrl": "https://registry.npmjs.org/@inrupt/solid-client-authn-node/-/solid-client-authn-node-3.1.1.tgz",
+        "archiveIntegrity": "sha512-Xv+xFA2SG/wx2Yok4wmnwq2aIXjdE1pPc6Vx5JtucIm4sbqoxeXAf6xHW0vrxvILBETLMQzxNP+sLZtL/gfjQw==",
+        "gitHead": "94e54693a4fabf67c331c7b9af2bdb5e9d390992",
+        "noticeUrl": "https://raw.githubusercontent.com/inrupt/solid-client-authn-js/94e54693a4fabf67c331c7b9af2bdb5e9d390992/LICENSE"
+      },
+      "files": [
+        {
+          "sourcePath": "repository LICENSE",
+          "object": "objects/844fb3d1fcba1b7b2c04887fa108174167fe4ba40e5a4c6e67490c3b71731b49.txt",
+          "sha256": "844fb3d1fcba1b7b2c04887fa108174167fe4ba40e5a4c6e67490c3b71731b49"
+        }
+      ]
+    },
+    {
+      "name": "@inrupt/solid-client-authn-core",
+      "version": "3.1.1",
+      "provenance": {
+        "registryUrl": "https://registry.npmjs.org/@inrupt/solid-client-authn-core/3.1.1",
+        "archiveUrl": "https://registry.npmjs.org/@inrupt/solid-client-authn-core/-/solid-client-authn-core-3.1.1.tgz",
+        "archiveIntegrity": "sha512-1oDSQCh/pVtPlTyvLQ2uwHo+hpLJF7izg82tjB+Ge8jqGYwkQyId0BrfncpCk//uJXxgRIcfAQp2MhXYbZo80Q==",
+        "gitHead": "94e54693a4fabf67c331c7b9af2bdb5e9d390992",
+        "noticeUrl": "https://raw.githubusercontent.com/inrupt/solid-client-authn-js/94e54693a4fabf67c331c7b9af2bdb5e9d390992/LICENSE"
+      },
+      "files": [
+        {
+          "sourcePath": "repository LICENSE",
+          "object": "objects/844fb3d1fcba1b7b2c04887fa108174167fe4ba40e5a4c6e67490c3b71731b49.txt",
+          "sha256": "844fb3d1fcba1b7b2c04887fa108174167fe4ba40e5a4c6e67490c3b71731b49"
+        }
+      ]
+    }
+  ]
+}

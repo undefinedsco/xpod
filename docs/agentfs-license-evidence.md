@@ -45,4 +45,4 @@ Linux helper 实际动态链接系统 OpenSSL 3；Rust openssl-sys 的 MIT 仅�
 
 `bun --compile` 的独立 CLI 包含 Bun runtime，不能仅用 TypeScript 依赖或 Cargo 清单覆盖。固定 Bun 1.3.8 的静态库、源码取得与重链接材料调查已保存为 [Bun runtime 发行记录](bun-runtime-distribution.md)。目前只是固定版本证据，尚未验证修改 LGPL 库后重建当前 CLI；public gate 继续阻止。
 
-应用 JavaScript 已接入 [同次编译输入与通知收集](xpod-cli-javascript-notices.md)：两平台各15个 package instances、11份去重原文，缺失项保留。该清单绑定实际 CLI 哈希，不是整个 Bun runtime 的清单，也不是完整文件级版权审计。
+应用 JavaScript 已接入 [同次编译输入与通知收集](xpod-cli-javascript-notices.md)：两平台各15个 package instances、12份去重原文；两个 Inrupt 3.1.1 包的独立原文已从固定源码补充，其他审查范围仍保留。该清单绑定实际 CLI 哈希，不是整个 Bun runtime 的清单，也不是完整文件级版权审计。

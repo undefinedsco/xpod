@@ -103,3 +103,9 @@ Bun 1.3.8 调查已保存为 [runtime 发行记录](bun-runtime-distribution.md)
 本轮 `javascript-notice-tests-final.log` 为12 passed/0 failed；独立包、源码、测试类型检查退出0；`javascript-notice-integration-final.log` 再次155 passed/6 skipped，加46项运行配置通过，Docker 栈清理完成。两目标打包与全部新增 objects/索引/CLI 哈希一致性核对通过，macOS 安装 CLI 执行通过；Linux 跨编译仍标记 unverified。没有修改挂载 runtime，也没有新增真实 Gateway 或 NAS 验收证据。
 
 `javascript-notice-cli-only.log` 也通过：CLI-only 仍收集应用 JS 通知，native helper 和 native collection 均不存在，validationState 保持 cli-only。
+
+## Inrupt 固定源码通知补充
+
+两个 Inrupt 3.1.1 归档的 registry SHA-512 integrity 已核对，发布元数据共用 gitHead `94e54693a4fabf67c331c7b9af2bdb5e9d390992`，固定源码 LICENSE 原文已取得并保留。构建通过声明式 name/version supplement 索引加入现有 JS packages/files 及安装 manifest；不会套用到其他版本，重复声明、越界 object 和原文漂移会失败。两平台现在各15个包、12份去重原文，不再存在这两个独立原文缺口。来源与实际已安装 core 现有补丁的哈希差异见 [来源证据](inrupt-notice-source-evidence.json)。
+
+`inrupt-notice-tests.log` 为12 passed/0 failed，覆盖 version 隔离、去重、补充原文漂移/越界/重复声明拒绝；依赖状态自检、源码/测试/包类型检查通过。`inrupt-notice-integration.log` 再次155 passed/6 skipped，加46项运行配置通过，Docker 栈清理完成。两平台打包及原文/CLI 绑定检查通过，没有改动认证补丁或挂载 runtime。public gate 保持阻止。

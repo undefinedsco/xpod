@@ -89,9 +89,10 @@ paths are included in the installed index.
 
 This collection is not a complete file-level license audit and excludes Bun's
 embedded runtime. The current ARM64 builds identify 15 package instances and
-11 unique original notice candidates; two Inrupt 3.1.1 packages lack originals
-in the installed dependency tree. These gaps remain pending, including in
-CLI-only builds. Details: [JavaScript notice evidence](../../docs/xpod-cli-javascript-notices.md).
+12 unique original notice candidates. Inrupt 3.1.1 supplements are bound by
+name/version to the publisher metadata gitHead, original notice SHA-256 and
+archive integrity. Broader source/runtime audit gaps remain pending, including
+in CLI-only builds. Details: [JavaScript notice evidence](../../docs/xpod-cli-javascript-notices.md).
 
 ## Manifest and public gate
 
