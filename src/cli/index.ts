@@ -11,7 +11,7 @@ const KNOWN_COMMANDS = [
   'get', 'put', 'patch', 'delete', 'head', 'list',
   'rdf', 'obj', 'secret', 'server', 'start', 'stop', 'status', 'logs',
   'auth', 'login', 'import', 'pod',
-  'account', 'backup', 'restore', 'doctor',
+  'account', 'backup', 'restore', 'doctor', 'agent-fs',
 ];
 
 function createRootParser() {
@@ -41,6 +41,7 @@ async function createCommandParser() {
     { accountCommand },
     { backupCommand, restoreCommand },
     { doctorCommand },
+    { agentFsCommand },
   ] = await Promise.all([
     import('./commands/start'),
     import('./commands/stop'),
@@ -58,6 +59,7 @@ async function createCommandParser() {
     import('./commands/account'),
     import('./commands/backup'),
     import('./commands/doctor'),
+    import('./commands/agent-fs'),
   ]);
 
   return createRootParser()
@@ -83,6 +85,7 @@ async function createCommandParser() {
     .command(backupCommand)
     .command(restoreCommand)
     .command(doctorCommand)
+    .command(agentFsCommand)
     .strict()
     .help()
     .version();
@@ -90,6 +93,11 @@ async function createCommandParser() {
 
 async function main() {
   const argv = process.argv.slice(2);
+  if (argv[0] === 'agent-fs' && argv[1] === 'rg') {
+    const { runRgWrapperMain } = await import('./agent-fs/rg-entry');
+    await runRgWrapperMain(argv.slice(2));
+    return;
+  }
   if (argv[0] === '__internal-api') {
     await import('../api/main');
     return;

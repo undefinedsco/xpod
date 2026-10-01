@@ -365,6 +365,29 @@
       }
     },
     {
+      "comment": "Agent directory HTTP handler: authenticated enumeration + exact literal search for agent shell adapters. Defined once for all editions; each edition references it from its HTTP pipeline.",
+      "@id": "urn:undefineds:xpod:AgentDirectoryHttpHandler",
+      "@type": "AgentDirectoryHttpHandler",
+      "accessor": {
+        "@id": "urn:undefineds:xpod:MixDataAccessor"
+      },
+      "credentialsExtractor": {
+        "@id": "urn:solid-server:default:CredentialsExtractor"
+      },
+      "permissionReader": {
+        "@id": "urn:solid-server:default:PermissionReader"
+      },
+      "authorizer": {
+        "@id": "urn:solid-server:default:Authorizer"
+      },
+      "auxiliaryStrategy": {
+        "@id": "urn:solid-server:default:AuxiliaryStrategy"
+      },
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
+      }
+    },
+    {
       "comment": "Subgraph query engine wrapping default SPARQL engine (DefaultSparqlEngine defined in profile)",
       "@type": "SubgraphQueryEngine",
       "@id": "urn:undefineds:xpod:SubgraphQueryEngine",
