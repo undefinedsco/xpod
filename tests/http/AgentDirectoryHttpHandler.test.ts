@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { AgentDirectoryHttpHandler } from '../../src/http/agent-directory/AgentDirectoryHttpHandler';
 import { startFixtureServer, type FixtureServer } from '../helpers/agent-directory/fixtureServer';
 
 const TEST_DATA_ROOT = path.resolve('.test-data/agent-directory-workers');
@@ -202,5 +203,57 @@ describe('AgentDirectoryHttpHandler', () => {
     } while (cursor && pages < 10);
     expect(collected).toEqual([ 1, 2, 3, 4 ]);
     expect(complete).toBe(true);
+  });
+
+  describe('forwarded proxy headers', () => {
+    // GatewayProxy runs with xfwd:true; http-proxy appends the incoming scheme
+    // to an already-present x-forwarded-proto, so CSS sees "https,http". Before
+    // the fix AgentDirectory.parseUrl interpolated that raw into the URL base and
+    // `new URL` threw, making canHandle fall through to the LDP handler (403/404)
+    // instead of selecting the directory handler.
+    it('accepts a multi-hop x-forwarded-proto and x-forwarded-host chain', async () => {
+      const forwardedHost = new URL(server.origin).host;
+      const root = `https://${forwardedHost}/pod/`;
+      const response = await fetch(
+        new URL(`/-/agent-directory/list?root=${encodeURIComponent(root)}`, server.origin),
+        { headers: { 'x-forwarded-proto': 'https,http', 'x-forwarded-host': `${forwardedHost}, internal` } },
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as ListResponse;
+      expect(body.entries.map((entry) => entry.path)).toContain('a.txt');
+      expect(body.complete).toBe(true);
+    });
+
+    it('honors a single-valued x-forwarded-proto and x-forwarded-host pair', async () => {
+      const forwardedHost = new URL(server.origin).host;
+      const root = `https://${forwardedHost}/pod/`;
+      const response = await fetch(
+        new URL(`/-/agent-directory/list?root=${encodeURIComponent(root)}`, server.origin),
+        { headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': forwardedHost } },
+      );
+      expect(response.status).toBe(200);
+    });
+
+    it('still rejects a root outside the forwarded origin', async () => {
+      const response = await fetch(
+        new URL(`/-/agent-directory/list?root=${encodeURIComponent('https://evil.example/pod/')}`, server.origin),
+        { headers: { 'x-forwarded-proto': 'https,http', 'x-forwarded-host': 'public.example, internal' } },
+      );
+      expect(response.status).toBe(403);
+    });
+
+    it('normalizes array-valued forwarded headers to their first entry', async () => {
+      const handler = new AgentDirectoryHttpHandler(
+        {} as never, {} as never, {} as never, {} as never, {} as never, {} as never,
+      );
+      const request = {
+        url: '/-/agent-directory/list?root=https%3A%2F%2Fpublic.example%2Fpod%2F',
+        headers: {
+          'x-forwarded-proto': [ 'https', 'http' ],
+          'x-forwarded-host': [ 'public.example', 'internal' ],
+        },
+      } as never;
+      await expect(handler.canHandle({ request, response: {} as never })).resolves.toBeUndefined();
+    });
   });
 });
