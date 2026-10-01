@@ -97,3 +97,11 @@ NFS 固定上游以当前目录中能找到前页 inode 为续读条件；删除
 Bun 1.3.8 调查已保存为 [runtime 发行记录](bun-runtime-distribution.md)。官方 ARM64 ZIP 已校验 digest；固定源码有 LGPL 静态库说明与重建入口，但当前 CLI 的完整 notices、对应源码和修改库后重建／重链接验收尚未完成。未发布、未部署，也没有把材料存在等同于完成发行准入。
 
 本轮提交前再次执行完整集成，`mpl-final-integration.log` 为155 passed/6 skipped，加46项运行配置通过，测试 Docker 栈清理完成。`mpl-final-package-tests.log` 为11 passed/0 failed；源码、测试和独立包类型检查均退出0。
+
+## 应用 JavaScript 通知增量
+
+`packages/xpod-cli/src/javascript-notices.ts` 已接入同一次 `bun --compile --metafile` 的打包输入。两平台各228个输入、15个 package instances、11份去重原文随包保存；索引绑定 CLI hash，安装 manifest 绑定索引及所有原文。覆盖 nested 版本、type-only package.json 与 staging node_modules 符号链接，拒绝作用域外输入和无法规范化的绝对 external import；不将缺原文许可声明推成准入。详细范围及两个 Inrupt 原文缺口见 [JavaScript 发行记录](xpod-cli-javascript-notices.md)。
+
+本轮 `javascript-notice-tests-final.log` 为12 passed/0 failed；独立包、源码、测试类型检查退出0；`javascript-notice-integration-final.log` 再次155 passed/6 skipped，加46项运行配置通过，Docker 栈清理完成。两目标打包与全部新增 objects/索引/CLI 哈希一致性核对通过，macOS 安装 CLI 执行通过；Linux 跨编译仍标记 unverified。没有修改挂载 runtime，也没有新增真实 Gateway 或 NAS 验收证据。
+
+`javascript-notice-cli-only.log` 也通过：CLI-only 仍收集应用 JS 通知，native helper 和 native collection 均不存在，validationState 保持 cli-only。

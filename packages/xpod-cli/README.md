@@ -68,6 +68,7 @@ install/
   licenses/agentfs/    unmodified fuser/nfsserve license texts (manifest hashes)
   licenses/native/     pinned Turso/SimSIMD texts; Linux also libaegis
   licenses/native/collection/  target-specific audited notice originals + hashes
+  licenses/javascript/  exact compile input index + original package notice candidates
   manifest.json        source/engine/hash/validation identity
   manifest.local.json  present for dirty local previews
 xpod-cli-<version>-<target>.tar.gz
@@ -76,6 +77,21 @@ build-summary.json
 
 The CLI and native helper are separate artifacts; they are not fused into one
 executable.
+
+Each compile writes a Bun metafile outside the install archive and derives
+`licenses/javascript/index.json` before deleting the staging tree. The index
+records input hashes, nested package versions, declared licenses, missing
+originals and external import names, bound to the compiled CLI's SHA-256.
+Available root/explicit license-directory texts are copied byte-for-byte into
+content-addressed objects and included in the install manifest. Zero-output
+inputs remain visible as conservative candidates. No build-machine absolute
+paths are included in the installed index.
+
+This collection is not a complete file-level license audit and excludes Bun's
+embedded runtime. The current ARM64 builds identify 15 package instances and
+11 unique original notice candidates; two Inrupt 3.1.1 packages lack originals
+in the installed dependency tree. These gaps remain pending, including in
+CLI-only builds. Details: [JavaScript notice evidence](../../docs/xpod-cli-javascript-notices.md).
 
 ## Manifest and public gate
 

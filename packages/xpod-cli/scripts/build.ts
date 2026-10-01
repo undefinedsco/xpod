@@ -32,6 +32,7 @@ import {
 } from '../src/manifest';
 import { assertNativeTarget, bunCompileTarget } from '../src/native-target';
 import { copyNativeNotices } from '../src/native-notices';
+import { collectJavascriptNotices } from '../src/javascript-notices';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, '..');
@@ -219,6 +220,9 @@ Linux additionally includes the separately vendored libaegis C-backend notice.
 The Cargo target/features inventories include build dependencies and remain
 research evidence; these supplements are not a complete release clearance.
 CLI/Bun runtime notices and remaining missing native originals still need review.
+The JavaScript inputs and available package notice originals from this exact
+compile are included under licenses/javascript/. Missing originals and external
+imports remain visible in index.json. This excludes the embedded Bun runtime.
 ${includeNative ? `The target's audited Cargo notice candidates are included under
 licenses/native/collection/ with original paths and content hashes. This is
 a partial collection, including build dependencies, not a legal clearance.`
@@ -302,6 +306,7 @@ function main(): void {
   // is guaranteed to be absent at verify/install time.
   const stageDir = mkdtempSync(path.join(tmpdir(), 'xpod-cli-stage-'));
   const cliOut = path.join(binDir, 'xpodcli');
+  const javascriptNotices: ManifestArtifact[] = [];
   try {
     mkdirSync(path.join(stageDir, 'packages/xpod-cli'), { recursive: true });
     cpSync(path.join(repoRoot, 'src'), path.join(stageDir, 'src'), { recursive: true });
@@ -311,9 +316,22 @@ function main(): void {
 
     const entry = path.join(stageDir, 'packages/xpod-cli/src/main.ts');
     const buildArgs = [ 'build', '--compile', '--outfile', cliOut ];
+    const metafile = path.join(buildRoot, 'javascript-metafile.json');
+    buildArgs.push(`--metafile=${metafile}`);
     buildArgs.push(`--target=${bunTarget}`);
     buildArgs.push(entry);
     run(process.execPath, buildArgs, { cwd: stageDir });
+    const collectionOutput = path.join(installDir, 'licenses/javascript');
+    for (const name of collectJavascriptNotices({
+      metafile, stageRoot: stageDir, repoRoot, destination: collectionOutput,
+      target: args.target, cli: cliOut, bunVersion: process.versions.bun ?? 'unknown',
+    })) {
+      const file = path.join(collectionOutput, name);
+      javascriptNotices.push(artifact(`javascript-notice:${name}`, 'notice', true, {
+        relPath: `licenses/javascript/${name}`, sha: sha256File(file), size: statSync(file).size,
+        license: { spdx: null, status: 'pending', source: 'Exact compile inputs and original notice candidates; runtime and full audit pending' },
+      }));
+    }
   } finally {
     rmSync(stageDir, { recursive: true, force: true });
   }
@@ -396,7 +414,7 @@ function main(): void {
       dirty: source.dirty,
     },
     selectedEnginePin: pin,
-    artifacts: [ cliArtifact, helperArtifact, noticeArtifact, ...vendoredNotices ],
+    artifacts: [ cliArtifact, helperArtifact, noticeArtifact, ...vendoredNotices, ...javascriptNotices ],
     // A helper-present build can reach install-verified after the extraction
     // check; full-verified additionally requires verified licenses. A
     // cross-target build cannot be executed on this host and stays unverified.
