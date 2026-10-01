@@ -16,7 +16,8 @@
 // Exit: 0 pass, 1 fail, 3 unavailable.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -98,12 +99,28 @@ if (!binOk) {
   unavailable('no linux agentfs-pod binary; set XPOD_AGENTFS_LINUX_BIN or XPOD_AGENTFS_BUILD_LINUX=1 (Linux FUSE product build pending)');
 }
 
+const testedArtifacts = { helperSHA256: createHash('sha256').update(readFileSync(linuxBin)).digest('hex') };
+if (linuxInstall) {
+  const manifest = JSON.parse(readFileSync(path.join(linuxInstall, 'manifest.json'), 'utf8'));
+  testedArtifacts.cliSHA256 = createHash('sha256').update(readFileSync(path.join(linuxInstall, 'bin/xpodcli'))).digest('hex');
+  testedArtifacts.sourceSHA = manifest.sourceSHA;
+  for (const [name, hash] of [ ['agentfs-pod', testedArtifacts.helperSHA256], ['xpodcli', testedArtifacts.cliSHA256] ]) {
+    if (manifest.artifacts.find((artifact) => artifact.name === name)?.sha256 !== hash) {
+      const reason = `installed artifact hash differs from manifest: ${name}`;
+      console.log(`STATUS: FAIL - ${reason}`);
+      writeReport({ status: 'fail', reason, backend: BACKEND, testedArtifacts });
+      process.exit(EXIT.fail);
+    }
+  }
+}
+
 const FIXTURE_JS = `import { createServer } from 'node:http';
 const TOKEN = 'linux-token';
 const files = new Map([['alpha.txt', Buffer.from('ALPHA_BODY_0123456789\\n')], ['big.txt', Buffer.from('x'.repeat(200000) + '\\nBIG_END\\n')]]);
 const versions = new Map([...files.keys()].map((k) => [k, 1]));
 const media = new Map([...files.keys()].map((k) => [k, 'text/plain']));
 let dropNextPutReceipt = false;
+let searchRequests = 0;
 const putCounts = new Map();
 const etag = (v) => '"v' + v + '"';
 createServer((req, res) => {
@@ -129,7 +146,8 @@ createServer((req, res) => {
   if (raw === '/pod/') { send(auth ? 200 : 401, auth ? '' : '{}', { etag: '"dir"' }); return; }
   console.log(JSON.stringify({ method: req.method, path: url.pathname, query: url.search, range: req.headers.range || null }));
   if (!auth) { send(401, '{}'); return; }
-  if (raw === '/__stats') { send(200, JSON.stringify(Object.fromEntries(putCounts))); return; }
+  if (raw === '/__stats') { send(200, JSON.stringify({ ...Object.fromEntries(putCounts), searchRequests })); return; }
+  if (raw === '/-/agent-directory/search') { searchRequests++; send(500, '{"error":"dirty searches must use the mounted view"}'); return; }
   if (raw === '/__fault/drop-next-put-receipt' && req.method === 'POST') { dropNextPutReceipt = true; send(204, ''); return; }
   if (raw === '/__mutate' && req.method === 'POST') {
     const rel = url.searchParams.get('path'); const chunks = [];
@@ -195,8 +213,18 @@ if (helperRun.status !== 0) {
   unavailable(`helper container failed: ${helperRun.stderr.trim().slice(0, 160)}`);
 }
 
+if (linuxInstall) {
+  // Test prerequisite only: never add the oracle to the shipping artifact or
+  // install it on the host. Dirty searches must execute this real native tool.
+  const oracle = docker([ 'exec', HELPER, 'sh', '-c', 'test -x /usr/bin/rg || (apt-get update && apt-get install -y --no-install-recommends ripgrep)' ], { timeoutMs: 120_000 });
+  if (oracle.status !== 0) {
+    unavailable(`native ripgrep oracle unavailable in test container: ${oracle.stderr.trim().slice(0, 160)}`);
+  }
+}
+
 const ops = [
   'set -e',
+  'uname -m',
   'mkdir -p /mnt',
   'export XPOD_AGENTFS_TOKEN=linux-token',
   `export POD_ROOT=http://${FIXTURE}:8080/pod/`,
@@ -225,17 +253,32 @@ const ops = [
     `printf '%s' '{"url":"http://${FIXTURE}:8080/","webId":"http://${FIXTURE}:8080/pod/profile/card#me","authType":"client_credentials","secrets":{"clientId":"linux-client","clientSecret":"linux-secret"}}' > "$SOLID_HOME/auth/credentials.json"`,
     'chmod 600 "$SOLID_HOME/auth/credentials.json"',
     'export PATH=/candidate/bin:$PATH',
+    '/usr/bin/rg --version',
     'unset XPOD_AGENTFS_TOKEN XPOD_AGENTFS_HELPER',
     'test "$(xpodcli --version)" = 0.1.0-preview.1',
     'xpodcli agent-fs mount --pod-root "$POD_ROOT" --session-dir /cli-session --backend fuse',
     'grep -q " /cli-session/mnt " /proc/mounts',
     'printf "CLI_DIRTY\\n" > /cli-session/mnt/cli.txt',
     'test "$(curl -s -H "Authorization: Bearer linux-token" -o /dev/null -w "%{http_code}" "${POD_ROOT}cli.txt")" = 404',
+    'mkdir -p /oracle',
+    'printf \'#!/bin/sh\\necho called >> /tmp/native-rg-invocations\\nexec /usr/bin/rg "$@"\\n\' > /oracle/rg',
+    'chmod 755 /oracle/rg',
+    'xpodcli agent-fs install --dir /rg-wrapper --root "/cli-session/mnt=$POD_ROOT" --session-dir /cli-session --native-rg /oracle/rg',
+    'compare_dirty_rg() {',
+    '  (cd /cli-session/mnt && /rg-wrapper/rg -F -n --no-ignore --sort path "$1" .) > /tmp/managed-rg.txt 2>/tmp/managed-rg.err',
+    '  (cd /cli-session/mnt && /usr/bin/rg -F -n --no-ignore --sort path "$1" .) > /tmp/native-rg.txt 2>/tmp/native-rg.err',
+    '  cmp /tmp/managed-rg.txt /tmp/native-rg.txt',
+    '  cmp /tmp/managed-rg.err /tmp/native-rg.err',
+    '  test -s /tmp/managed-rg.txt',
+    '}',
+    'compare_dirty_rg CLI_DIRTY',
+    'grep -Fq "./cli.txt:1:CLI_DIRTY" /tmp/managed-rg.txt',
     'xpodcli agent-fs unmount --session-dir /cli-session',
     'test ! -e /cli-session/proxy.json',
     '! grep -q " /cli-session/mnt " /proc/mounts',
     'xpodcli agent-fs mount --pod-root "$POD_ROOT" --session-dir /cli-session --backend fuse',
     'test "$(cat /cli-session/mnt/cli.txt)" = CLI_DIRTY',
+    'compare_dirty_rg CLI_DIRTY',
     'sleep 2',
     'test "$(ps -eo comm,args | awk \'$1 == "agentfs-pod" && index($0, "--mountpoint /cli-session/mnt ") && index($0, "--foreground") { count++ } END { print count+0 }\')" = 1',
     'xpodcli agent-fs commit --pod-root "$POD_ROOT" --session-dir /cli-session',
@@ -253,6 +296,17 @@ const ops = [
     'grep -q "conflict kept for alpha.txt" /tmp/conflict.log',
     'test "$(cat /cli-session/mnt/alpha.txt)" = CLI_LOCAL',
     'test "$(curl -fsS -H "Authorization: Bearer linux-token" "${POD_ROOT}alpha.txt")" = CLI_REMOTE',
+    'rm /cli-session/mnt/cli.txt',
+    'mv /cli-session/mnt/lost.txt /cli-session/mnt/renamed.txt',
+    'compare_dirty_rg CLI_',
+    'grep -Fq "./alpha.txt:1:CLI_LOCAL" /tmp/managed-rg.txt',
+    'grep -Fq "./renamed.txt:1:CLI_LOST" /tmp/managed-rg.txt',
+    '! grep -Fq "./cli.txt:" /tmp/managed-rg.txt',
+    '! grep -Fq "./lost.txt:" /tmp/managed-rg.txt',
+    '! grep -Fq "CLI_REMOTE" /tmp/managed-rg.txt',
+    'test "$(wc -l < /tmp/native-rg-invocations)" -eq 3',
+    `curl -fsS -H 'Authorization: Bearer linux-token' http://${FIXTURE}:8080/__stats | grep -Fq '"searchRequests":0'`,
+    'echo XPOD_LINUX_DIRTY_RG_OPS_PASSED',
     'xpodcli agent-fs unmount --session-dir /cli-session',
     'test ! -e /cli-session/proxy.json',
     '! grep -q " /cli-session/mnt " /proc/mounts',
@@ -274,9 +328,9 @@ console.log(opsLog);
 console.log('=== fixture request log (tail) ===');
 console.log(fixtureLog.stdout.split('\n').slice(-40).join('\n'));
 
-if (exec.status === 0 && opsLog.includes('XPOD_LINUX_REQUIRED_OPS_PASSED') && (!linuxInstall || opsLog.includes('XPOD_LINUX_INSTALLED_CLI_OPS_PASSED'))) {
+if (exec.status === 0 && opsLog.includes('XPOD_LINUX_REQUIRED_OPS_PASSED') && (!linuxInstall || (opsLog.includes('XPOD_LINUX_INSTALLED_CLI_OPS_PASSED') && opsLog.includes('XPOD_LINUX_DIRTY_RG_OPS_PASSED')))) {
   console.log(`STATUS: PASS (linux ${BACKEND} mount performed real file ops against the external fixture)`);
-  writeReport({ status: 'pass', backend: BACKEND, work: WORK, installedCli: Boolean(linuxInstall) });
+  writeReport({ status: 'pass', backend: BACKEND, work: WORK, installedCli: Boolean(linuxInstall), dirtyRg: Boolean(linuxInstall), testedArtifacts });
   process.exit(EXIT.ok);
 }
 console.log(`STATUS: FAIL (linux ${BACKEND} mount did not complete the required file operations)`);
