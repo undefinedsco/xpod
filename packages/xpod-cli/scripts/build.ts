@@ -208,10 +208,18 @@ function artifact(name: string, kind: ManifestArtifact['kind'], included: boolea
 }
 
 function writeNotices(dir: string, target: string, includeNative: boolean, pin: SelectedEnginePin): ManifestArtifact[] {
+  const projectLicense = path.join(dir, 'licenses/xpod/LICENSE');
+  mkdirSync(path.dirname(projectLicense), { recursive: true });
+  cpSync(path.join(repoRoot, 'LICENSE'), projectLicense);
+  const projectNotice = artifact('xpod-license', 'notice', true, {
+    relPath: 'licenses/xpod/LICENSE', sha: sha256File(projectLicense), size: statSync(projectLicense).size,
+    license: { spdx: 'MIT', status: 'verified', source: 'Xpod root LICENSE, preserved verbatim; covers Xpod-owned code only' },
+  });
   const text = `# Xpod CLI NOTICES (preview)
 
 This preview artifact bundles the Xpod CLI (auth + agent-fs client commands).
 It does NOT bundle the Xpod server runtime.
+Xpod-owned code is covered by the original project MIT text at licenses/xpod/LICENSE.
 
 ## Selected engine dependency: AgentFS
 - Repository: https://github.com/tursodatabase/agentfs
@@ -293,7 +301,7 @@ This notice concerns that covered source; it does not assign MPL to the whole CL
   pin.licenseEvidence = { path: 'licenses/native/declarations/index.json', sha256: sha256File(path.join(declarationsOutput, 'index.json')) };
   pin.sdkLicenseStatus = 'verified';
   pin.cliLicenseStatus = 'verified';
-  if (!includeNative) { return [...supplements, ...declarations]; }
+  if (!includeNative) { return [projectNotice, ...supplements, ...declarations]; }
   const collectionOutput = path.join(dir, 'licenses/native/collection');
   const collected = copyNativeNotices(collection, collectionOutput, target).map((name) => {
     const file = path.join(collectionOutput, name);
@@ -302,7 +310,7 @@ This notice concerns that covered source; it does not assign MPL to the whole CL
       license: { spdx: null, status: 'pending', source: 'Audited normal/build notice candidates, original bytes; complete release clearance pending' },
     });
   });
-  return [...supplements, ...declarations, ...collected];
+  return [projectNotice, ...supplements, ...declarations, ...collected];
 }
 
 function main(): void {
@@ -422,8 +430,8 @@ function main(): void {
     relPath: 'lib/xpodcli.mjs',
     sha: cliSha,
     size: cliSize,
-    // Root package.json declares MIT but no root LICENSE file is present.
-    license: { spdx: null, status: 'pending', source: 'root package.json declares MIT; no root LICENSE file present' },
+    // Project MIT text is bundled; generated code and dependency scope still need review.
+    license: { spdx: null, status: 'pending', source: 'Xpod MIT text bundled; generated JavaScript and dependency release review pending' },
   });
 
   // Native helper (separate artifact, never fused into the CLI executable).
