@@ -331,7 +331,7 @@ describe('AI Connection Pod isolation integration', () => {
       auth: expect.objectContaining({ webId: BOB_WEB_ID }),
     }));
     for (const [owner, context] of pod.getPodFetch.mock.calls) {
-      expect(context?.auth?.webId).toBe(owner);
+      expect(context?.auth).toMatchObject({ webId: owner });
     }
     backing.pods.get(BOB_WEB_ID)?.set(aiProviderResource.buildId({ id: 'deepseek' }), {
       id: aiProviderResource.buildId({ id: 'deepseek' }),

@@ -40,6 +40,20 @@ class RecordingCredentialRepository implements PodCredentialRepository {
     return this.rows.map((row) => structuredClone(row));
   }
 
+  public async getActiveCredential(input: {
+    webId: string;
+    provider: string;
+    deployment: 'local' | 'cloud';
+  }): Promise<ConnectCredentialRecord | undefined> {
+    const row = this.rows.find((candidate) =>
+      candidate.webId === input.webId
+      && candidate.provider === input.provider
+      && candidate.deployment === input.deployment
+      && candidate.status === 'active'
+      && candidate.reauthRequired !== true);
+    return row ? structuredClone(row) : undefined;
+  }
+
   public async getCredentialById(input: { credentialId: string }): Promise<ConnectCredentialRecord | undefined> {
     const row = this.rows.find((candidate) => candidate.id === input.credentialId);
     return row ? structuredClone(row) : undefined;

@@ -17,7 +17,12 @@ describe('OIDC provisioning context', () => {
   let server: Server;
   let origin: string;
   let interactionParams: Record<string, unknown> | undefined;
-  let serverError: Error | undefined;
+  // A holder, not a bare `let`: the assignment happens inside an event listener, which control
+  // flow analysis cannot see from the test body.
+  const serverError: { current?: Error } = {};
+  // Read through a call: the assignment happens in an event listener, which the flow analysis of
+  // the test body cannot see.
+  const serverErrorText = (): string | undefined => serverError.current?.message;
 
   beforeAll(async () => {
     server = createServer();
@@ -40,7 +45,7 @@ describe('OIDC provisioning context', () => {
         },
       },
     });
-    provider.on('server_error', (error: Error) => { serverError = error; });
+    provider.on('server_error', (_context, error) => { serverError.current = error; });
     server.on('request', provider.callback());
   });
 
@@ -51,7 +56,7 @@ describe('OIDC provisioning context', () => {
 
   async function authorize(extra: Record<string, string> = {}): Promise<Record<string, unknown> | undefined> {
     interactionParams = undefined;
-    serverError = undefined;
+    serverError.current = undefined;
     const url = new URL('/auth', origin);
     url.search = new URLSearchParams({
       client_id: 'local-settings',
@@ -63,7 +68,7 @@ describe('OIDC provisioning context', () => {
       ...extra,
     }).toString();
     const response = await fetch(url, { redirect: 'manual' });
-    expect(response.status, serverError?.message).toBe(303);
+    expect(response.status, serverErrorText()).toBe(303);
     expect(response.headers.get('location')).toBe('/interaction');
     await response.body?.cancel();
     return interactionParams;

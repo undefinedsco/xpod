@@ -177,7 +177,7 @@ describe('ClientCredentialsAuthenticator', () => {
     // A DPoP header means a Solid token, which the Solid verifier owns.
     expect(authenticator.canAuthenticate({
       headers: { authorization: `Bearer ${VALID_SK_KEY}`, dpop: 'proof' },
-    } as IncomingMessage)).toBe(false);
+    } as unknown as IncomingMessage)).toBe(false);
   });
 
   it('reports malformed wrappers instead of exchanging them', async () => {

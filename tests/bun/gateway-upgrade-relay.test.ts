@@ -35,7 +35,8 @@ afterAll(async() => {
 interface EchoUpstream {
   port: number;
   socketPath?: string;
-  requests: Array<Record<string, string | undefined>>;
+  /** Node repeats a header as an array when a request carries it twice. */
+  requests: Array<Record<string, string | string[] | undefined>>;
   closes: number[];
   server: http.Server;
 }
@@ -47,7 +48,7 @@ interface PushPlan {
 }
 
 async function startEchoUpstream(options: { socketPath?: string; push?: PushPlan } = {}): Promise<EchoUpstream> {
-  const requests: Array<Record<string, string | undefined>> = [];
+  const requests: Array<Record<string, string | string[] | undefined>> = [];
   const closes: number[] = [];
   const server = http.createServer((_req, res) => {
     res.writeHead(404);

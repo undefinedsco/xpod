@@ -118,7 +118,7 @@ test.describe('external applet host login through Xpod', () => {
     expect(tokenSucceeded && authenticatedPodRead).toBe(true);
     expect(authorizationStates.size).toBe(1);
     expect(tokenExchanges).toBe(1);
-    await expect(page.getByTestId('external-applet-ready')).toHaveAttribute('data-webid', account.webId);
+    await expect(page.getByTestId('external-applet-ready')).toHaveAttribute('data-webid', account.webId!);
     await expect(page.getByTestId('external-applet-ready')).toHaveAttribute('data-pod-status', '200');
   });
 

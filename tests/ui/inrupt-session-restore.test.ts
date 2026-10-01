@@ -177,7 +177,7 @@ async function withOidcFixture(run: (fixture: {
     document.body.append(container);
     const root = createRoot(container);
     await act(async () => {
-      root.render(createElement(XpodSolidRuntimeProvider, { value: runtime }, createElement(CaptureRuntime)));
+      root.render(createElement(XpodSolidRuntimeProvider, { value: runtime, children: createElement(CaptureRuntime) }));
     });
     authorizationUrl = undefined;
     try {
@@ -223,6 +223,9 @@ async function withOidcFixture(run: (fixture: {
   }
 }
 
+/** A JWK as `KeyObject.export({ format: 'jwk' })` produces it: the DOM's `JsonWebKey` has no `kid`. */
+type SigningJwk = JsonWebKey & { kid?: string };
+
 async function startOidcStubServer({
   clientId,
   clientSecret,
@@ -231,7 +234,7 @@ async function startOidcStubServer({
 }: {
   clientId: string;
   clientSecret: string;
-  publicJwk: JsonWebKey;
+  publicJwk: SigningJwk;
   privateKey: KeyObject;
 }): Promise<{
   issuer: string;
@@ -431,7 +434,9 @@ function sessionIdForAuthorization(authorization: URL): string {
 async function completeAuthorization(authorization: URL, webId: string) {
   const runtime = createXpodSolidRuntimeValue();
   const state = authorization.searchParams.get('state');
-  const snapshot = await withTimeout(runtime.session.handleIncomingRedirect(
+  const handleIncomingRedirect = runtime.session.handleIncomingRedirect;
+  expect(handleIncomingRedirect).toBeTypeOf('function');
+  const snapshot = await withTimeout(handleIncomingRedirect!(
     `https://app.example/auth/callback?code=code-${state}&state=${state}`,
   ), 'callback redirect handling');
   if (snapshot.status === 'error') throw snapshot.error;
