@@ -129,6 +129,41 @@ and build closure remain separate. A successful application rebuild does not
 claim a modified LGPL library has been rebuilt/relinked or clear public release.
 See [the kit instructions](APPLICATION-SOURCE-README.md).
 
+## Native helper rebuild materials
+
+The optional native kit preserves the fixed upstream Git archive, full patched
+AgentFS tree, both patches, original helper manifest/lock, working path-dependency
+manifest/lock, all locked Cargo crate trees/checksums and original notices. Only
+the two AgentFS Git source identities are replaced; registry versions/checksums
+stay unchanged. C/assembly source subdirectories are included.
+
+Export from an existing upstream Git checkout, using an installed recorded
+nightly toolchain, then rebuild on the target platform:
+
+```sh
+bun packages/xpod-cli/scripts/export-native.ts --upstream /path/to/agentfs-git --out /path/to/native-source --offline
+cd /path/to/native-source
+bun packages/xpod-cli/scripts/rebuild-native.ts --out /path/to/native-build --test
+```
+
+Package from the Xpod checkout with the rebuilt helper and its matching receipt:
+
+```sh
+bun packages/xpod-cli/scripts/build.ts --helper /path/to/native-build/agentfs-pod --native-sources /path/to/native-source --native-receipt /path/to/native-build/receipt.json
+```
+
+The source/receipt arguments must be supplied together. Installation verifies
+every native archive member, applied patches, the exact lock transformation,
+complete vendor checksum coverage and receipt binding to helper/engine/target.
+Rebuild stages only verified files, uses an empty Cargo home and frozen offline
+resolution, clears external Git overrides and selects explicit installed
+cargo/rustc binaries. It neither installs dependencies nor uses a parent checkout.
+
+The kit excludes compiler/SDK/sysroot/system libraries and Bun/JSC. Cargo's
+offline mode does not sandbox arbitrary build-script networking; that requires
+a separately verified network-disabled build. A source kit and build receipt
+do not raise the public release status. See [native kit instructions](NATIVE-SOURCE-README.md).
+
 ## Manifest and public gate
 
 `src/manifest.ts` defines the schema:

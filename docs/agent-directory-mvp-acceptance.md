@@ -172,3 +172,17 @@ Bun 1.3.8 调查已保存为 [runtime 发行记录](bun-runtime-distribution.md)
 Linux ARM64 独立源码包包含2,017个文件；在 `--network none` 的 Debian 容器中逐个通过GNU tar归档成员/字节校验并重建，228个实际输入的路径/hash集合一致，CLI version/help/status退出0且helperPresent=false。仅挂载源码归档、已校验的官方Bun1.3.8和本次输出目录，未挂载仓库或node_modules；`source-kit-linux-detached/evidence.json`、receipt和原始日志记录结果。此项不启动FUSE或目录服务，不能扩大此前native挂载验收范围。
 
 `source-kit-package-tests-final.log` 为19 passed/0 failed、147 assertions；覆盖 input drift/escape、patched/nested 目录保留、脱离仓库重建、归档漏源/漏 notice/重复项/symlink/hardlink/body漂移/index不符与错误CLI绑定。源码、测试和独立包类型检查通过。`source-kit-integration-final.log` 为 lite160 passed/15 skipped，加 full60 passed，无失败，隔离 Docker 栈已清理。两平台预览包生成与安装材料验证通过；Linux 跨编译 manifest 仍保留 unverified。本轮未修改 Pod 挂载 runtime，没有新增公共 Gateway、NAS 实机或公开发行证据。
+
+## Native source kit 与重建验收（2026-10-01）
+
+新增导出与独立重建入口，保存固定 AgentFS Git 原始归档、完整打补丁源码、原始/working helper manifest 与 lock、340个 registry packages 的完整 vendor 源码及原始通知。21,254个文件均按路径/hash/size保存。working lock 只移除两个 AgentFS Git identity；逐 crate archive checksum 和全部 vendor file checksum 验证防止遗漏 C/ASM 源文件。安装包新增 native archive/index/build receipt，绑定实际 helper hash、engine和target。应用/native复用同一套归档预检与字节校验，拒绝缺项、链接、重复成员和越界路径。
+
+独立包当前27 passed/0 failed、172 assertions，其中8项native材料回归覆盖母 Git 仓库静默跳过补丁、显式 `GIT_DIR` 污染、必需归档/重建 imports缺失、lock版本漂移、vendor C文件遗漏、错误helper/target/kit回执。此前错误隔离边界确实使native删页cookie回归失败21/22；改成上级ceiling并清全部Git环境后，两平台均22/22通过，不使用失败构建回执。
+
+同一源码kit hash `4c657c29d9d0c4a7d5b240be335b57836ab075d6d7c91954162bed68b4320fec` 在macOS ARM64和Linux ARM64分别通过空Cargo home的 `build/test --release --frozen`。Linux容器禁用网络，只挂载kit、已安装nightly、官方Bun和输出目录，未挂载Xpod仓库、Cargo cache或node_modules。工具链/SDK/sysroot/system library仍是外部前置，不宣称已交付其对应源码或逐字节可复现。
+
+此次重建helper hashes：macOS `467455ed027cf63db8fb49dedaae3b9ff5b7ce83a4cedd2c93ffc5dfaed71779`，Linux `40e29c32cf2fdf9e865857659db02670c1ac79da76d3251038835d041e4062a6`。两平台预览安装包完整归档校验均通过。包内macOS NFS/auth proxy/重启恢复/冲突/rg为13 passed、1 gating skip；包内Linux真实FUSE/external fixture/dirty rg/lifecycle为pass，含仅1个重挂daemon、卸载0个和owned容器清理。原始receipt/logs/报告保存在 `.test-data/agent-directory-workers/native-source-kit/`。这些是HTTP/auth夹具上的真实OS挂载；仍不能称为公共Gateway实际账号/Pod或NAS硬件通过。
+
+源码kit和回执没有改写发行准入：macOS `--public` 反例仍仅公开门槛失败，安装校验通过。Bun/JSC修改重建/重链接、外部系统材料及整体文件级发行审核仍未闭合；真实公共Gateway候选和可用登录/Pod URL、NAS硬件也没有新增证据。
+
+本轮源码、测试、独立包三项类型检查退出0；完整 `bun run test:integration` 为lite160 passed/15 skipped、full60 passed/0 skipped，无测试失败，owned Docker栈/volumes/network清理完成。证据为 `native-source-kit/{source-types-final,test-types-final,package-types-final,integration-final}.log`。

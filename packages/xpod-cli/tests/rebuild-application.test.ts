@@ -11,7 +11,7 @@ test('detached recipe stages only verified files and permits a different compile
   const work = mkdtempSync(path.join(parent, 'detached-'));
   try {
     const kitRoot = path.join(work, 'kit');
-    const files = ['packages/xpod-cli/scripts/rebuild-application.ts', 'packages/xpod-cli/src/application-sources.ts', 'packages/xpod-cli/src/native-target.ts', 'packages/xpod-cli/src/manifest.ts'];
+    const files = ['packages/xpod-cli/scripts/rebuild-application.ts', 'packages/xpod-cli/src/application-sources.ts', 'packages/xpod-cli/src/source-materials.ts', 'packages/xpod-cli/src/native-target.ts', 'packages/xpod-cli/src/manifest.ts'];
     const sourceRoot = path.resolve(import.meta.dir, '../../..');
     for (const file of files) {
       mkdirSync(path.dirname(path.join(kitRoot, file)), { recursive: true });
@@ -48,6 +48,6 @@ test('detached recipe stages only verified files and permits a different compile
     writeFileSync(path.join(kitRoot, entry), 'console.log("unverified changed source");');
     const refused = run();
     expect(refused.status).not.toBe(0);
-    expect(String(refused.stderr)).toContain('source kit drift');
+    expect(String(refused.stderr)).toContain('Source kit drift');
   } finally { rmSync(work, { recursive: true, force: true }); }
 }, 40_000);

@@ -60,3 +60,11 @@ Linux helper 实际动态链接系统 OpenSSL 3；Rust openssl-sys 的 MIT 仅�
 [单一补充索引](../packages/xpod-cli/licenses/native/declarations/index.json) 保存五项声明的原文、版本和来源；三个 registry 包明确选择 MIT 分支。标准正文来自 [SPDX v3.27.0](https://github.com/spdx/license-list-data/blob/v3.27.0/text/MIT.txt)，原样保存，包括字面占位符；它被标成标准模板，不冒充上游版权通知。已有原始 notices 继续随包，不替换、不猜作者／年份。依 [Cargo 字段定义](https://doc.rust-lang.org/cargo/reference/manifest.html#the-license-and-license-file-fields)，许可声明和特定文件名是不同事实。
 
 构建验证声明文本、所选 alternative、固定 engine commit、目标包版本和全部对象 hash 后才复制。安装 manifest 的 `selectedEnginePin.licenseEvidence` 绑定索引 hash，安装校验检查其内容、全部对象及 manifest 覆盖。旧 preview 仍可读取；公开门槛要求材料匹配，根 LICENSE 是否存在只作信息记录。`sdkLicenseStatus` / `cliLicenseStatus` 的 verified 仅描述这份固定声明材料，不表示整个 helper 或 Bun 已完成发行审核。
+
+## Native 对应源码与离线构建材料
+
+[native kit 指引](../packages/xpod-cli/NATIVE-SOURCE-README.md) 和导出脚本保存固定 AgentFS 原始 Git 归档、完整打补丁源码、两份补丁、原始 helper manifest/lock、仅移除两个 Git source identity 的 working manifest/lock，以及完整 Cargo vendor 源码。340 个 registry packages 的版本与 archive checksums 保持原 lock；校验同时覆盖每个 crate 的 `.cargo-checksum.json` 与全部源文件，C/ASM 子目录也保留，不能只交 Rust 文件。
+
+此材料不改写缺失的上游版权声明，也不以 vendor 文件数量代替完整许可审查。现有固定原文与补充声明一起保存。安装包可以通过成对的 `--native-sources` / `--native-receipt` 参数携带源码归档、索引和实际构建回执；验证源码每个成员、补丁已应用、lock 转换、helper/engine/target 哈希绑定。原始归档及重建脚本的所有本地导入都属于必需材料。
+
+重建仅复制已验证文件到临时目录，使用空 Cargo home、显式已安装 cargo/rustc 和 `--release --frozen`。外部 `GIT_*` 环境被清除，Git ceiling 位于上级目录，避免母仓库导致 `git apply` 静默跳过或 `git describe` 嵌入母仓库版本。nightly、标准库、编译器/SDK/sysroot、OpenSSL/liblzma/gcc_s 等仍是外部前置；本材料不包括其对应源码，不包括 Bun/JSC。Cargo offline 不隔离任意 build script 网络，需要实际断网构建作为独立证据。源码、构建回执或 native 回归成功均不解除整体公开发行门槛。

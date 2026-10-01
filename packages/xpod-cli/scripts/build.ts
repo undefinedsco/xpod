@@ -35,6 +35,8 @@ import { copyNativeNotices } from '../src/native-notices';
 import { copyNativeDeclarations } from '../src/native-declarations';
 import { collectJavascriptNotices } from '../src/javascript-notices';
 import { exportApplicationSources } from '../src/application-sources';
+import { validateNativeBuildReceipt, verifyNativeSources } from '../src/native-sources';
+import { verifySourceFiles } from '../src/source-materials';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, '..');
@@ -44,6 +46,8 @@ interface Args {
   target: string;
   cliOnly: boolean;
   helper?: string;
+  nativeSources?: string;
+  nativeReceipt?: string;
   outDir: string;
 }
 
@@ -61,11 +65,18 @@ function parseArgs(argv: string[]): Args {
       args.target = argv[++i];
     } else if (arg === '--helper') {
       args.helper = path.resolve(argv[++i]);
+    } else if (arg === '--native-sources') {
+      args.nativeSources = path.resolve(argv[++i]);
+    } else if (arg === '--native-receipt') {
+      args.nativeReceipt = path.resolve(argv[++i]);
     } else if (arg === '--out') {
       args.outDir = path.resolve(argv[++i]);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
+  }
+  if (Boolean(args.nativeSources) !== Boolean(args.nativeReceipt) || (args.cliOnly && args.nativeSources)) {
+    throw new Error('Native sources/receipt must be provided together for a helper build');
   }
   return args;
 }
@@ -316,6 +327,12 @@ function main(): void {
     process.exit(3);
   }
   if (helper) { assertNativeTarget(helper, args.target); }
+  const nativeKit = args.nativeSources ? verifyNativeSources(args.nativeSources) : undefined;
+  if (nativeKit) {
+    if (nativeKit.engine.repository !== pin.repository || nativeKit.engine.commit !== pin.commit) { throw new Error('Native source kit differs from selected engine'); }
+    validateNativeBuildReceipt(JSON.parse(readFileSync(args.nativeReceipt!, 'utf8')), nativeKit,
+      sha256File(path.join(args.nativeSources!, 'source-kit.json')), sha256File(helper!), args.target);
+  }
   const vendoredNotices = writeNotices(installDir, args.target, !args.cliOnly, pin);
 
   // Build the CLI binary from a hermetic staging tree. Bun bakes the compiled
@@ -370,6 +387,30 @@ function main(): void {
     }
   } finally {
     rmSync(stageDir, { recursive: true, force: true });
+  }
+
+  if (nativeKit) {
+    const temporary = mkdtempSync(path.join(tmpdir(), 'xpod-native-source-package-'));
+    const nativeRoot = path.join(temporary, 'native-source');
+    const sources = path.join(installDir, 'sources');
+    try {
+      for (const file of nativeKit.files) {
+        const destination = path.join(nativeRoot, file.path); mkdirSync(path.dirname(destination), { recursive: true });
+        cpSync(path.join(args.nativeSources!, file.path), destination);
+      }
+      verifySourceFiles(nativeRoot, nativeKit.files);
+      cpSync(path.join(args.nativeSources!, 'source-kit.json'), path.join(nativeRoot, 'source-kit.json'));
+      cpSync(path.join(nativeRoot, 'source-kit.json'), path.join(sources, 'native-source.json'));
+      cpSync(args.nativeReceipt!, path.join(sources, 'native-source-build.json'));
+      run('tar', ['-czf', path.join(sources, 'native-source.tar.gz'), '-C', temporary, 'native-source']);
+    } finally { rmSync(temporary, { recursive: true, force: true }); }
+    for (const name of ['native-source.json', 'native-source-build.json', 'native-source.tar.gz']) {
+      const file = path.join(sources, name);
+      applicationSources.push(artifact(name, 'source', true, {
+        relPath: `sources/${name}`, sha: sha256File(file), size: statSync(file).size,
+        license: { spdx: null, status: 'pending', source: 'Native source/build material, excluding toolchain/system sources and whole-artifact clearance' },
+      }));
+    }
   }
 
   const cliSha = sha256File(cliOut);
