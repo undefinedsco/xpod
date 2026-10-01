@@ -195,6 +195,7 @@ do not raise the public release status. See [native kit instructions](NATIVE-SOU
 
 ## License status (actual, unverified)
 
+- Xpod-owned code: root MIT `LICENSE` copied verbatim to `licenses/xpod/LICENSE`, hash-bound by the manifest and preserved in application source material.
 - AgentFS SDK (`sdk/rust/Cargo.toml`): `license = "MIT"` (verified field).
 - AgentFS whole-project pinned README declares MIT; CLI Cargo.toml lacks its own field. The README and SDK manifest are bundled verbatim with selected standard MIT terms and source hashes.
 - AgentFS repository root has no LICENSE/COPYING text. This is informational, not a filename-based release requirement. [Declaration supplements](licenses/native/declarations/README.md) also cover three pinned registry crates; literal standard-template placeholders are not invented copyright claims. Vendored original notices remain bundled and individually hashed.
