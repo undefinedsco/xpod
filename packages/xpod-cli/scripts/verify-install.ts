@@ -27,6 +27,7 @@ import {
 } from '../src/manifest';
 import { validateNativeDeclarations } from '../src/native-declarations';
 import { verifyApplicationSourceArchive } from '../src/application-sources';
+import { validateNativeBuildReceipt, verifyNativeSourceArchive } from '../src/native-sources';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, '..');
@@ -197,6 +198,25 @@ function main(): void {
         }
         add('application source kit binding', true, 'CLI/source identity, target and all regular archive members/byte hashes match');
       } catch (error) { add('application source kit binding', false, (error as Error).message); }
+    }
+
+    if (sourceArtifacts.some((entry) => entry.path?.startsWith('sources/native-source'))) {
+      try {
+        const requireArtifact = (relative: string): string => {
+          if (!sourceArtifacts.some((entry) => entry.path === relative && entry.included)) { throw new Error(`Native source artifact missing: ${relative}`); }
+          return path.join(installDir, relative);
+        };
+        const index = requireArtifact('sources/native-source.json');
+        const receipt = requireArtifact('sources/native-source-build.json');
+        const archive = requireArtifact('sources/native-source.tar.gz');
+        const kit = verifyNativeSourceArchive(archive, readFileSync(index));
+        const helper = manifest.artifacts.find((entry) => entry.kind === 'native-helper' && entry.included);
+        if (!helper || kit.engine.repository !== manifest.selectedEnginePin.repository || kit.engine.commit !== manifest.selectedEnginePin.commit) {
+          throw new Error('Native source engine/helper differs from manifest');
+        }
+        validateNativeBuildReceipt(JSON.parse(readFileSync(receipt, 'utf8')), kit, sha256File(index), helper.sha256!, manifest.platform);
+        add('native source kit binding', true, 'locked vendor bytes, upstream/patch material and build receipt match helper/engine/target');
+      } catch (error) { add('native source kit binding', false, (error as Error).message); }
     }
 
     // 2. no placeholder / check masquerade

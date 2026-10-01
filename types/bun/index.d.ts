@@ -49,3 +49,8 @@ interface ImportMeta {
   /** Whether this module is the process entry point (Bun). */
   readonly main: boolean;
 }
+
+/** Built-in TOML parsing used by Bun-only source-material scripts; no global Bun types. */
+declare module 'bun' {
+  export const TOML: { parse(input: string): unknown };
+}

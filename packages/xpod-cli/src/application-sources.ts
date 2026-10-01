@@ -1,11 +1,9 @@
-import { spawnSync } from 'node:child_process';
-import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { sha256File, sha256Hex } from './manifest';
+import { sha256File } from './manifest';
+import { safeMaterialPath as safeRelative, sourceFileIndex, verifySourceArchive, verifySourceFiles, type SourceFile } from './source-materials';
 import { bunCompileTarget } from './native-target';
 
-interface SourceFile { path: string; sha256: string; sizeBytes: number }
 interface JavascriptIndex {
   schemaVersion: number; target: string; cliSha256: string;
   inputs: { path: string; sha256: string }[];
@@ -25,11 +23,6 @@ export interface ApplicationSourceKit {
   inputs: JavascriptIndex['inputs'];
   externalImports: string[];
   files: SourceFile[];
-}
-
-function safeRelative(file: string): boolean {
-  return typeof file === 'string' && file.length > 0 && !path.isAbsolute(file) && !file.includes('\\') && !/[\x00-\x1f\x7f]/.test(file) &&
-    file.split('/').every((part) => part !== '' && part !== '.' && part !== '..');
 }
 
 function within(root: string, file: string): boolean {
@@ -144,13 +137,7 @@ export function validateApplicationSourceIndex(value: unknown): ApplicationSourc
     throw new Error('Invalid application source kit');
   }
   bunCompileTarget(kit.target);
-  const files = new Map<string, string>();
-  for (const file of kit.files) {
-    if (!safeRelative(file.path) || files.has(file.path) || !/^[a-f0-9]{64}$/.test(file.sha256) || !Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 0) {
-      throw new Error('Unsafe application source kit file');
-    }
-    files.set(file.path, file.sha256);
-  }
+  const files = sourceFileIndex(kit.files);
   const inputs = new Set<string>();
   for (const input of kit.inputs) {
     if (!safeRelative(input.path) || inputs.has(input.path) || !/^[a-f0-9]{64}$/.test(input.sha256) || files.get(input.path) !== input.sha256) {
@@ -164,51 +151,12 @@ export function validateApplicationSourceIndex(value: unknown): ApplicationSourc
 
 export function verifyApplicationSources(root: string): ApplicationSourceKit {
   const kit = validateApplicationSourceIndex(JSON.parse(readFileSync(path.join(root, 'source-kit.json'), 'utf8')));
-  const boundary = realpathSync(root);
-  for (const file of kit.files) {
-    const candidate = path.join(root, file.path);
-    const original = realpathSync(candidate);
-    if (lstatSync(candidate).isSymbolicLink() || !within(boundary, original) ||
-      sha256File(original) !== file.sha256 || statSync(original).size !== file.sizeBytes) {
-      throw new Error(`Application source kit drift: ${file.path}`);
-    }
-  }
+  verifySourceFiles(root, kit.files);
   return kit;
 }
 
-/** Preflight every archive member before extraction, then verify every declared byte. */
 export function verifyApplicationSourceArchive(archive: string, expectedIndex: Buffer): ApplicationSourceKit {
   const kit = validateApplicationSourceIndex(JSON.parse(expectedIndex.toString('utf8')));
-  const expectedFiles = new Set(['application-source/source-kit.json', ...kit.files.map((file) => `application-source/${file.path}`)]);
-  const expectedDirectories = new Set<string>();
-  for (const file of expectedFiles) {
-    for (let directory = path.posix.dirname(file); directory !== '.'; directory = path.posix.dirname(directory)) { expectedDirectories.add(directory); }
-  }
-  const list = (verbose: boolean): string[] => {
-    const result = spawnSync('tar', [verbose ? '-tvf' : '-tf', archive], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-    if (result.status !== 0) { throw new Error('Cannot inspect application source archive'); }
-    return result.stdout.trimEnd().split('\n');
-  };
-  const names = list(false);
-  const types = list(true);
-  if (names.length !== types.length) { throw new Error('Ambiguous application source archive listing'); }
-  const seen = new Set<string>();
-  for (let i = 0; i < names.length; i += 1) {
-    const name = names[i].replace(/\/$/, '');
-    const type = types[i][0];
-    if (!safeRelative(name) || seen.has(name) ||
-      (type === '-' ? !expectedFiles.has(name) : type === 'd' ? !expectedDirectories.has(name) : true)) {
-      throw new Error(`Unsafe, duplicate or unlisted application archive member: ${name}`);
-    }
-    seen.add(name);
-  }
-  for (const file of expectedFiles) { if (!seen.has(file)) { throw new Error(`Application archive material missing: ${file}`); } }
-  const temporary = mkdtempSync(path.join(tmpdir(), 'xpod-cli-source-verify-'));
-  try {
-    const result = spawnSync('tar', ['--no-same-owner', '-xf', archive, '-C', temporary], { encoding: 'utf8' });
-    if (result.status !== 0) { throw new Error('Cannot extract application source archive'); }
-    const root = path.join(temporary, 'application-source');
-    if (sha256File(path.join(root, 'source-kit.json')) !== sha256Hex(expectedIndex)) { throw new Error('Application source archive index mismatch'); }
-    return verifyApplicationSources(root);
-  } finally { rmSync(temporary, { recursive: true, force: true }); }
+  verifySourceArchive(archive, expectedIndex, 'application-source', kit.files);
+  return kit;
 }
