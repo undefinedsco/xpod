@@ -194,7 +194,7 @@ export function exportNativeSources(options: { repoRoot: string; upstream: strin
   visit(root);
   const kit: NativeSourceKit = {
     schemaVersion: 1, status: 'native-source-materials',
-    scope: 'Locked dependency/helper source, original upstream and patches, notices and offline Cargo recipe; excludes Bun/JSC, toolchain, SDK/sysroot and system library source; not whole-artifact clearance.',
+    scope: 'Locked dependency/helper source, original upstream and patches, notices with source excerpts and offline Cargo recipe; no Bun/Node/JSC executable or compiler build; external toolchain, SDK/sysroot and system implementation sources excluded; not whole-artifact clearance.',
     engine, toolchain: toolchains[0], registryPackages: readdirSync(path.join(root, 'vendor')).length,
     files: files.sort((a, b) => a.path.localeCompare(b.path)),
   };

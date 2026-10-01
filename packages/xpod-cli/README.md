@@ -39,12 +39,15 @@ check asserts this from `--help`.
 bun scripts/build.ts --cli-only --target darwin-arm64
 
 # Full candidate: requires a REAL AgentFS helper
-bun scripts/build.ts --target darwin-arm64 --helper /path/to/agentfs-pod
-# or: XPOD_AGENTFS_HELPER=/path/to/agentfs-pod bun scripts/build.ts --target darwin-arm64
+bun scripts/build.ts --target darwin-arm64 --helper /path/to/agentfs-pod \
+  --native-sources /path/to/native-source --native-receipt /path/to/receipt.json
 ```
 
 If no real helper is available, full mode **fails closed** (exit 3). A
 diagnostic check binary, an empty file or a script is never substituted.
+Full packaging also requires a verified source kit and matching receipt; a
+same-architecture helper with unknown compiler provenance cannot inherit the
+fixed Rust runtime attribution.
 
 `XPOD_CLI_DISABLE_REPO_HELPER=1` disables the `tools/agentfs-pod/target/*`
 auto-discovery so the fail-closed path can be exercised without touching
@@ -65,6 +68,13 @@ Linux FUSE also requires `/dev/fuse` and mount permission. macOS uses its system
 NFS client and does not require an additional FUSE driver.
 
 ## Artifacts
+
+Packaging is currently audited for the installed Bun 1.3.8 or CI's Bun 1.3.12.
+Each compiler has its own hash-bound generated JavaScript prefix/source notices;
+an unknown compiler version or changed prefix fails the build. This restriction
+is on artifact production, not the installed CLI's external runtime requirements.
+Native source receipts additionally bind the fixed Rust compiler/sysroot notice
+provenance. Neither compiler executable is included in the installed client.
 
 Output under `.test-data/agent-directory-workers/xpod-cli-package/out/<target>/`:
 

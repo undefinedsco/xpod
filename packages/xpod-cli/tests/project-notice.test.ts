@@ -31,6 +31,13 @@ test('portable package preserves the original project notice in install and appl
     expect(kit.files.find((file) => file.path === relative)?.sha256).toBe(sha256File(original));
     expect(readFileSync(path.join(work, target, 'application-source', relative))).toEqual(readFileSync(original));
     const notices = JSON.parse(readFileSync(path.join(install, 'licenses/javascript/index.json'), 'utf8'));
+    expect(notices.generated.bunVersion).toBe(process.versions.bun);
+    const prefixNotice = notices.generated.files.find((file: { sha256: string }) => file.sha256 === notices.generated.prefixSha256);
+    expect(readFileSync(path.join(install, 'lib/xpodcli.mjs')).subarray(0, notices.generated.prefixBytes)).toEqual(readFileSync(path.join(install, 'licenses/javascript', prefixNotice.object)));
+    for (const file of notices.generated.files) {
+      expect(sha256File(path.join(install, 'licenses/javascript', file.object))).toBe(file.sha256);
+      expect(kit.files.find((item) => item.path === `licenses/javascript/${file.object}`)?.sha256).toBe(file.sha256);
+    }
     const cliui = notices.packages.find((entry: { name: string }) => entry.name === 'cliui');
     expect(cliui.declaredLicense).toBe('ISC');
     const fileNotices = cliui.files.filter((file: { provenance?: { fileDeclaredLicense?: string } }) => file.provenance?.fileDeclaredLicense === 'Artistic-2.0');

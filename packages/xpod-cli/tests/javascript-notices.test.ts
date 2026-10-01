@@ -4,6 +4,52 @@ import path from 'node:path';
 import { collectJavascriptNotices } from '../src/javascript-notices';
 import { sha256File } from '../src/manifest';
 
+test('binds generated source notices to the compiler and exact emitted prefix before writing', () => {
+  const parent = path.resolve('.test-data/xpod-cli/generated-notices');
+  mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const stage = path.join(work, 'stage');
+    const repo = path.join(work, 'repo');
+    const generated = path.join(work, 'generated');
+    mkdirSync(stage); mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+    mkdirSync(path.join(generated, 'objects'), { recursive: true });
+    writeFileSync(path.join(stage, 'main.ts'), 'export const value = 1;');
+    const prefix = 'var __fixture = 1;';
+    const cli = path.join(work, 'cli.mjs');
+    writeFileSync(cli, `${prefix}\n// main.ts\nexport const value = 1;`);
+    const original = path.join(work, 'original');
+    writeFileSync(original, prefix);
+    const sha = sha256File(original);
+    const object = `objects/${sha}.txt`;
+    cpSync(original, path.join(generated, object));
+    const record = { schemaVersion: 1, bunVersion: '1.3.8', prefixSha256: sha, prefixBytes: Buffer.byteLength(prefix), provenance: { source: 'fixture' }, files: [{ sourcePath: 'original.js', object, sha256: sha }] };
+    const recordPath = path.join(generated, 'index.json');
+    writeFileSync(recordPath, JSON.stringify(record));
+    const metafile = path.join(work, 'metafile.json');
+    writeFileSync(metafile, JSON.stringify({ inputs: { 'main.ts': { bytes: 23, imports: [] } }, outputs: { 'cli.mjs': { inputs: { 'main.ts': { bytesInOutput: 23 } } } } }));
+    const options = { metafile, stageRoot: stage, repoRoot: repo, destination: path.join(work, 'output'), target: 'darwin-arm64', cli, bunVersion: '1.3.8', generated };
+    expect(collectJavascriptNotices(options)).toEqual(['index.json', object]);
+    const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+    expect(index.generated).toEqual(record);
+    expect(index.cliSha256).toBe(sha256File(cli));
+    expect(readFileSync(path.join(options.destination, object))).toEqual(readFileSync(original));
+    const refused = path.join(work, 'refused');
+    expect(() => collectJavascriptNotices({ ...options, bunVersion: '1.3.9', destination: refused })).toThrow('Unsupported generated');
+    expect(existsSync(refused)).toBe(false);
+    writeFileSync(cli, 'var __different = 1;\n// main.ts\n');
+    expect(() => collectJavascriptNotices({ ...options, destination: refused })).toThrow('prefix differs');
+    writeFileSync(cli, `${prefix}\n// main.ts\n`);
+    writeFileSync(path.join(generated, object), 'changed');
+    expect(() => collectJavascriptNotices({ ...options, destination: refused })).toThrow('notice hash mismatch');
+    cpSync(original, path.join(generated, object));
+    record.files[0].object = '../outside';
+    writeFileSync(recordPath, JSON.stringify(record));
+    expect(() => collectJavascriptNotices({ ...options, destination: refused })).toThrow('Unsafe generated');
+    expect(existsSync(refused)).toBe(false);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
 test('inventories scoped/nested versions, skips type-only manifests and preserves originals without granting clearance', () => {
   const testRoot = path.resolve('.test-data/xpod-cli/javascript-notices');
   mkdirSync(testRoot, { recursive: true });

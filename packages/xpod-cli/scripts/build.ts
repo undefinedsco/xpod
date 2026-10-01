@@ -207,7 +207,7 @@ function artifact(name: string, kind: ManifestArtifact['kind'], included: boolea
   };
 }
 
-function writeNotices(dir: string, target: string, includeNative: boolean, pin: SelectedEnginePin): ManifestArtifact[] {
+function writeNotices(dir: string, target: string, includeNative: boolean, pin: SelectedEnginePin, compiler?: { toolchain: string; commit: string }): ManifestArtifact[] {
   const projectLicense = path.join(dir, 'licenses/xpod/LICENSE');
   mkdirSync(path.dirname(projectLicense), { recursive: true });
   cpSync(path.join(repoRoot, 'LICENSE'), projectLicense);
@@ -303,7 +303,7 @@ This notice concerns that covered source; it does not assign MPL to the whole CL
   pin.cliLicenseStatus = 'verified';
   if (!includeNative) { return [projectNotice, ...supplements, ...declarations]; }
   const collectionOutput = path.join(dir, 'licenses/native/collection');
-  const collected = copyNativeNotices(collection, collectionOutput, target).map((name) => {
+  const collected = copyNativeNotices(collection, collectionOutput, target, compiler).map((name) => {
     const file = path.join(collectionOutput, name);
     return artifact(`native-notice:${name}`, 'notice', true, {
       relPath: `licenses/native/collection/${name}`, sha: sha256File(file), size: statSync(file).size,
@@ -336,13 +336,21 @@ function main(): void {
     process.exit(3);
   }
   if (helper) { assertNativeTarget(helper, args.target); }
+  if (!args.cliOnly && (!args.nativeSources || !args.nativeReceipt)) {
+    throw new Error('Native helper packaging requires --native-sources and --native-receipt to bind compiler notices');
+  }
   const nativeKit = args.nativeSources ? verifyNativeSources(args.nativeSources) : undefined;
+  let nativeCompiler: { toolchain: string; commit: string } | undefined;
   if (nativeKit) {
     if (nativeKit.engine.repository !== pin.repository || nativeKit.engine.commit !== pin.commit) { throw new Error('Native source kit differs from selected engine'); }
-    validateNativeBuildReceipt(JSON.parse(readFileSync(args.nativeReceipt!, 'utf8')), nativeKit,
+    const receipt = JSON.parse(readFileSync(args.nativeReceipt!, 'utf8'));
+    validateNativeBuildReceipt(receipt, nativeKit,
       sha256File(path.join(args.nativeSources!, 'source-kit.json')), sha256File(helper!), args.target);
+    const commit = typeof receipt.compiler.rustcVersion === 'string' ? receipt.compiler.rustcVersion.match(/^commit-hash: ([a-f0-9]{40})$/m)?.[1] : undefined;
+    if (!commit) { throw new Error('Native receipt lacks the actual Rust compiler commit'); }
+    nativeCompiler = { toolchain: nativeKit.toolchain, commit };
   }
-  const vendoredNotices = writeNotices(installDir, args.target, !args.cliOnly, pin);
+  const vendoredNotices = writeNotices(installDir, args.target, !args.cliOnly, pin, nativeCompiler);
 
   // Bundle the CLI from a hermetic staging tree. Bun resolves original module
   // `__dirname` values during bundling; building directly from the checkout
@@ -372,6 +380,7 @@ function main(): void {
       metafile, stageRoot: stageDir, repoRoot, destination: collectionOutput,
       target: args.target, cli: cliOut, bunVersion: process.versions.bun ?? 'unknown',
       supplements: path.join(packageRoot, 'licenses/javascript'),
+      generated: path.join(packageRoot, 'licenses/javascript/generated', process.versions.bun ?? 'unknown'),
     })) {
       const file = path.join(collectionOutput, name);
       javascriptNotices.push(artifact(`javascript-notice:${name}`, 'notice', true, {

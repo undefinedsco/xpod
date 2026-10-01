@@ -1,5 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { bunCompileTarget } from './native-target';
 import { sha256File } from './manifest';
 
@@ -29,6 +30,15 @@ interface NoticeFile {
 interface NoticeSupplement {
   name: string;
   version: string;
+  provenance: unknown;
+  files: NoticeFile[];
+}
+
+interface GeneratedNoticeIndex {
+  schemaVersion: number;
+  bunVersion: string;
+  prefixSha256: string;
+  prefixBytes: number;
   provenance: unknown;
   files: NoticeFile[];
 }
@@ -100,6 +110,7 @@ export function collectJavascriptNotices(options: {
   cli: string;
   bunVersion: string;
   supplements?: string;
+  generated?: string;
 }): string[] {
   bunCompileTarget(options.target);
   const stageRoot = realpathSync(options.stageRoot);
@@ -111,6 +122,27 @@ export function collectJavascriptNotices(options: {
   const packages = new Map<string, PackageNotice>();
   const supplementIndex = supplements(options.supplements);
   const objects = new Map<string, string>();
+  let generated: GeneratedNoticeIndex | undefined;
+  if (options.generated) {
+    generated = JSON.parse(readFileSync(path.join(options.generated, 'index.json'), 'utf8')) as GeneratedNoticeIndex;
+    if (generated.schemaVersion !== 1 || generated.bunVersion !== options.bunVersion ||
+      !/^[a-f0-9]{64}$/.test(generated.prefixSha256) || !Number.isSafeInteger(generated.prefixBytes) || generated.prefixBytes < 1 ||
+      !Array.isArray(generated.files) || !generated.files.length) {
+      throw new Error('Unsupported generated JavaScript notice provenance');
+    }
+    const bytes = readFileSync(options.cli);
+    const boundary = bytes.indexOf('\n// ');
+    const prefix = bytes.subarray(0, boundary);
+    if (boundary < 0 || prefix.length !== generated.prefixBytes || createHash('sha256').update(prefix).digest('hex') !== generated.prefixSha256) {
+      throw new Error('Generated JavaScript prefix differs from audited sources');
+    }
+    for (const file of generated.files) {
+      if (!/^[a-f0-9]{64}$/.test(file.sha256) || file.object !== `objects/${file.sha256}.txt`) { throw new Error('Unsafe generated JavaScript notice object'); }
+      const source = path.join(options.generated, file.object);
+      if (sha256File(source) !== file.sha256) { throw new Error(`Generated JavaScript notice hash mismatch: ${file.object}`); }
+      objects.set(file.object, source);
+    }
+  }
   const externalImports = new Set<string>();
   const inputs: { path: string; sha256: string; bytes: number; bytesInOutput: number; packageRoot?: string }[] = [];
   for (const [raw, input] of Object.entries(metadata.inputs)) {
@@ -183,6 +215,7 @@ export function collectJavascriptNotices(options: {
   writeFileSync(path.join(options.destination, 'index.json'), JSON.stringify({
     schemaVersion: 1, status: 'partial-collection', target: options.target, bunVersion: options.bunVersion,
     cliSha256,
+    ...(generated ? { generated } : {}),
     scope: 'All inputs of this portable JS bundle invocation, including zero output contributions; no Bun/Node runtime is shipped. This is not a complete file-level license audit.',
     packages: [...packages.values()].sort((a, b) => a.root.localeCompare(b.root)),
     inputs: inputs.sort((a, b) => a.path.localeCompare(b.path)),

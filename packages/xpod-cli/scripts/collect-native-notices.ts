@@ -22,6 +22,15 @@ const inventory = JSON.parse(readFileSync(process.argv[3], 'utf8')) as Inventory
 const expected = target === 'darwin-arm64' ? 'macos-arm64' : 'linux-arm64';
 if (inventory.target !== expected) { throw new Error(`Inventory target mismatch: ${inventory.target}`); }
 const root = fileURLToPath(new URL('../licenses/native/collection/', import.meta.url));
+// Cargo inventory regeneration must not discard separately audited sysroot material.
+const { runtimeNotices } = JSON.parse(readFileSync(path.join(root, `${target}.json`), 'utf8'));
+if (!runtimeNotices || !Array.isArray(runtimeNotices.files) || !runtimeNotices.files.length) {
+  throw new Error('Audit fixed-toolchain runtime notices before regenerating Cargo candidates');
+}
+for (const file of runtimeNotices.files) {
+  if (!/^[a-f0-9]{64}$/.test(file.sha256) || file.object !== `objects/${file.sha256}.txt` ||
+    sha256File(path.join(root, file.object)) !== file.sha256) { throw new Error('Runtime notice drift'); }
+}
 mkdirSync(path.join(root, 'objects'), { recursive: true });
 function sourceOrigin(entry: Inventory['packages'][number]): string {
   if (entry.source?.startsWith('registry+')) {
@@ -49,7 +58,7 @@ const packages = inventory.packages.map((entry) => ({
 writeFileSync(path.join(root, `${target}.json`), `${JSON.stringify({
   schemaVersion: 1, target, status: 'partial-collection; not release clearance',
   scope: 'normal/build dependencies, not proof that every package is linked at runtime',
-  packages,
+  packages, runtimeNotices,
 }, null, 2)}\n`);
 console.log(JSON.stringify({ target, packages: packages.length, files: packages.reduce((sum, entry) => sum + entry.files.length, 0),
   missingPackageOriginals: packages.filter((entry) => entry.files.length === 0).map((entry) => `${entry.name}@${entry.version}`) }));

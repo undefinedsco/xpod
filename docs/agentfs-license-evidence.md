@@ -1,12 +1,12 @@
 # AgentFS 固定版本许可证据
 
-2026-10-01。仅记录发行工程证据，不替权利人补写版权声明。
+2026-10-02。仅记录发行工程证据，不替权利人补写版权声明。当前分发采用外部 Bun/Node 运行时；下文早期内嵌方案的 Bun/JSC 待办是历史记录。
 
 2026-10-02 源码分发核对增量：独立 native source kit 现在原样复制根 `LICENSE` 至 `licenses/xpod/LICENSE`，并将它列为必需材料。完整 Cargo vendor 树含 340 个 registry 包，不能把某目标的 275/284 项通知候选清单当作该源码树的范围或最终二进制链接图。原有 libgit2、ring、其他平台代码的原始许可文件仍在 vendor 树中。
 
 源码树中的 `valuable@0.1.1` 发行归档缺少 README 引用的 LICENSE。依据 `.cargo_vcs_info.json` 固定提交 `9efc29b6e58cef28f6566a47aa7e142a55fead77`，已补入 [原始 LICENSE](https://github.com/tokio-rs/valuable/blob/9efc29b6e58cef28f6566a47aa7e142a55fead77/LICENSE) 和来源/hash 记录，位于 `licenses/native/valuable-0.1.1/`。该补充只陈述源码分发范围，不证明它链接进 helper。旧源码包没有这些新增材料，需要重新导出；旧 receipt 的 source-kit hash 不能改写为新索引。
 
-外部运行时方案仍需补齐生成的 JavaScript 前导 helper 和 Rust 标准库的分发材料。两平台现有 helper 的已定义符号确认 `std/core/alloc/compiler_builtins`，工具链固定为 `nightly-2026-09-30`、Rust commit `5c543b0b8c73c7b72bc8284ced4fb22ead15734d`。已收集该工具链的 `COPYRIGHT-library.html`、Unicode 原文及固定 [Rust MIT](https://github.com/rust-lang/rust/blob/5c543b0b8c73c7b72bc8284ced4fb22ead15734d/LICENSE-MIT)/Apache/compiler-builtins 通知，尚未接入分发构建；保守通知集合不是精确 linker map。公开发行门禁保持 pending。
+两平台现有 helper 的已定义符号确认 `std/core/alloc/compiler_builtins`，工具链固定为 `nightly-2026-09-30`、Rust commit `5c543b0b8c73c7b72bc8284ced4fb22ead15734d`。该工具链的 `COPYRIGHT-library.html`、Unicode 原文及固定 [Rust MIT](https://github.com/rust-lang/rust/blob/5c543b0b8c73c7b72bc8284ced4fb22ead15734d/LICENSE-MIT)/Apache/compiler-builtins/libm/LLVM 通知共十份，现已接入 `runtimeNotices` 分发索引。所有原文先核对 hash，再进入安装 manifest 和源码包。完整 helper 打包必须提供源码包和匹配 native receipt，并核对实际 compiler commit/toolchain，不能把不同编译器的通知套用过去。保守通知集合不是精确 linker map，源码包不包含整个 Rust 编译器或标准库实现；公开发行门禁保持 pending。
 
 固定版本 `0a014ebd4918615baff589ed17486e557e7c6a23` 的 [README](https://github.com/tursodatabase/agentfs/blob/0a014ebd4918615baff589ed17486e557e7c6a23/README.md#L209) 明确声明整个项目为 MIT；Rust [SDK Cargo.toml](https://github.com/tursodatabase/agentfs/blob/0a014ebd4918615baff589ed17486e557e7c6a23/sdk/rust/Cargo.toml#L6) 也声明 MIT。CLI Cargo.toml 缺少字段属于元数据缺口，不能据此将全项目声明说成“没有许可”。
 
@@ -25,7 +25,7 @@
 
 ## 剩余发行门槛
 
-许可声明已有证据；未决项按具体发行材料记录，而非断言 CLI 未获许可。现已将根 LICENSE 文件名门槛替换为绑定固定 commit 的声明／条款索引和文件 hash 校验，见下方增量；没有通用 bypass。实际 target/features 的整体 obligations、Bun 对应源码／重建材料和 Xpod 自身通知仍需落实。
+许可声明已有证据；未决项按具体发行材料记录，而非断言 CLI 未获许可。现已将根 LICENSE 文件名门槛替换为绑定固定 commit 的声明／条款索引和文件 hash 校验，见下方增量；没有通用 bypass。当前包不含 Bun/Node/JSC 可执行文件，其历史重链接待办不适用于当前分发。Xpod 原始 LICENSE、目标通知、声明、JS 生成前缀与 native 源码材料已随包核对；公开准入仍需当前产物审查、clean commit 安装／挂载和实际 Gateway 验收，不以本页材料清单自动解除。
 
 ## Target/features 依赖清单增量
 
@@ -73,6 +73,6 @@ Linux helper 实际动态链接系统 OpenSSL 3；Rust openssl-sys 的 MIT 仅�
 
 [native kit 指引](../packages/xpod-cli/NATIVE-SOURCE-README.md) 和导出脚本保存固定 AgentFS 原始 Git 归档、完整打补丁源码、两份补丁、原始 helper manifest/lock、仅移除两个 Git source identity 的 working manifest/lock，以及完整 Cargo vendor 源码。340 个 registry packages 的版本与 archive checksums 保持原 lock；校验同时覆盖每个 crate 的 `.cargo-checksum.json` 与全部源文件，C/ASM 子目录也保留，不能只交 Rust 文件。
 
-此材料不改写缺失的上游版权声明，也不以 vendor 文件数量代替完整许可审查。现有固定原文与补充声明一起保存。安装包可以通过成对的 `--native-sources` / `--native-receipt` 参数携带源码归档、索引和实际构建回执；验证源码每个成员、补丁已应用、lock 转换、helper/engine/target 哈希绑定。原始归档及重建脚本的所有本地导入都属于必需材料。
+此材料不改写缺失的上游版权声明，也不以 vendor 文件数量代替完整许可审查。现有固定原文与补充声明一起保存。完整 helper 安装包必须通过成对的 `--native-sources` / `--native-receipt` 参数携带源码归档、索引和实际构建回执；验证源码每个成员、补丁已应用、lock 转换、helper/engine/target 哈希绑定。原始归档及重建脚本的所有本地导入都属于必需材料。
 
 重建仅复制已验证文件到临时目录，使用空 Cargo home、显式已安装 cargo/rustc 和 `--release --frozen`。外部 `GIT_*` 环境被清除，Git ceiling 位于上级目录，避免母仓库导致 `git apply` 静默跳过或 `git describe` 嵌入母仓库版本。nightly、标准库、编译器/SDK/sysroot、OpenSSL/liblzma/gcc_s 等仍是外部前置；本材料不包括其对应源码，不包括 Bun/JSC。Cargo offline 不隔离任意 build script 网络，需要实际断网构建作为独立证据。源码、构建回执或 native 回归成功均不解除整体公开发行门槛。
