@@ -26,6 +26,8 @@ function fixture(run: (root: string, kit: NativeSourceKit, refresh: () => void) 
     'original-upstream.tar': 'fixture archive\n',
     'packages/xpod-cli/src/native-sources.ts': '// fixture\n', 'packages/xpod-cli/src/source-materials.ts': '// fixture\n',
     'packages/xpod-cli/src/manifest.ts': '// fixture\n', 'packages/xpod-cli/src/native-target.ts': '// fixture\n',
+    'licenses/xpod/LICENSE': 'project notice\n',
+    'licenses/native/valuable-0.1.1/LICENSE': 'fixture notice\n', 'licenses/native/valuable-0.1.1/provenance.json': '{}\n',
     'licenses/native/LICENSE-turso.md': 'notice\n', 'licenses/native/LICENSE-simsimd.txt': 'notice\n', 'licenses/native/LICENSE-libaegis.txt': 'notice\n',
     'vendor/native-fixture-1.0.0/native/source.c': 'int fixture;\n',
   };
@@ -85,7 +87,7 @@ test('native build environment clears explicit Git overrides as well as parent d
 test('native source archive requires its original archive and every rebuild import', () => {
   fixture((root, kit) => {
     const archive = path.join(path.dirname(root), 'source.tar.gz');
-    for (const required of ['original-upstream.tar', 'packages/xpod-cli/src/native-sources.ts', 'packages/xpod-cli/src/source-materials.ts', 'packages/xpod-cli/src/manifest.ts', 'packages/xpod-cli/src/native-target.ts']) {
+    for (const required of ['licenses/xpod/LICENSE', 'licenses/native/valuable-0.1.1/LICENSE', 'licenses/native/valuable-0.1.1/provenance.json', 'original-upstream.tar', 'packages/xpod-cli/src/native-sources.ts', 'packages/xpod-cli/src/source-materials.ts', 'packages/xpod-cli/src/manifest.ts', 'packages/xpod-cli/src/native-target.ts']) {
       const incomplete = { ...kit, files: kit.files.filter((file) => file.path !== required) };
       writeFileSync(path.join(root, 'source-kit.json'), JSON.stringify(incomplete));
       runSourceCommand('tar', ['-czf', archive, '-C', path.dirname(root), 'native-source'], root);

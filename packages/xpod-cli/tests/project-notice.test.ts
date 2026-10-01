@@ -30,5 +30,16 @@ test('portable package preserves the original project notice in install and appl
     const kit: ApplicationSourceKit = JSON.parse(readFileSync(path.join(install, 'sources/application-source.json'), 'utf8'));
     expect(kit.files.find((file) => file.path === relative)?.sha256).toBe(sha256File(original));
     expect(readFileSync(path.join(work, target, 'application-source', relative))).toEqual(readFileSync(original));
+    const notices = JSON.parse(readFileSync(path.join(install, 'licenses/javascript/index.json'), 'utf8'));
+    const cliui = notices.packages.find((entry: { name: string }) => entry.name === 'cliui');
+    expect(cliui.declaredLicense).toBe('ISC');
+    const fileNotices = cliui.files.filter((file: { provenance?: { fileDeclaredLicense?: string } }) => file.provenance?.fileDeclaredLicense === 'Artistic-2.0');
+    expect(fileNotices).toHaveLength(2);
+    for (const file of fileNotices) {
+      expect(sha256File(path.join(install, 'licenses/javascript', file.object))).toBe(file.sha256);
+      expect(kit.files.find((item) => item.path === `licenses/javascript/${file.object}`)?.sha256).toBe(file.sha256);
+    }
+    expect(readFileSync(path.join(install, 'licenses/javascript', fileNotices[0].object), 'utf8')).toContain('Copyright (c) npm, Inc. and Contributors');
+    expect(readFileSync(path.join(install, 'licenses/javascript', fileNotices[1].object), 'utf8')).toContain('The Artistic License 2.0');
   } finally { rmSync(work, { recursive: true, force: true }); }
 }, 90_000);

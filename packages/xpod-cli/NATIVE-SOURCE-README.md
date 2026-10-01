@@ -3,7 +3,7 @@
 This kit includes the original fixed AgentFS Git archive, its full patched
 source tree, both tracked patches, original helper manifest/lock, transformed
 working manifest/lock, full Cargo-vendored dependency trees and checksums,
-original notices and a rebuild script. Source replacement is for unchanged
+original notices (including Xpod's `licenses/xpod/LICENSE`) and a rebuild script. Source replacement is for unchanged
 registry bytes; our two AgentFS patches use separate local path dependencies.
 The working lock removes only those two Git source identities. Registry package
 versions and checksums are preserved. Full crates include their C/assembly trees;

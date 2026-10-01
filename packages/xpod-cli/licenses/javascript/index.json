@@ -36,6 +36,30 @@
           "sha256": "844fb3d1fcba1b7b2c04887fa108174167fe4ba40e5a4c6e67490c3b71731b49"
         }
       ]
+    },
+    {
+      "name": "cliui",
+      "version": "8.0.1",
+      "provenance": {
+        "coveredSourcePath": "build/lib/string-utils.js",
+        "coveredSourceSha256": "b3eb9d2e054a43a3064af17332fb1839a7dadb205c5371af4789616afb1a117f",
+        "fileDeclaredLicense": "Artistic-2.0",
+        "citationUrl": "https://github.com/npm/cli/blob/4c65cd952bc8627811735bea76b9b110cc4fc80e/lib/utils/ansi-trim.js",
+        "noticeUrl": "https://raw.githubusercontent.com/npm/cli/4c65cd952bc8627811735bea76b9b110cc4fc80e/LICENSE",
+        "scope": "File-level declaration preserved alongside the package ISC notice; not a package-wide license replacement."
+      },
+      "files": [
+        {
+          "sourcePath": "build/lib/string-utils.js (original file-level notice)",
+          "object": "objects/b3eb9d2e054a43a3064af17332fb1839a7dadb205c5371af4789616afb1a117f.txt",
+          "sha256": "b3eb9d2e054a43a3064af17332fb1839a7dadb205c5371af4789616afb1a117f"
+        },
+        {
+          "sourcePath": "npm fixed upstream LICENSE",
+          "object": "objects/7610d223851f421d315df5e77974f1c68a04b97e02060e5bbbcf13d95e3ca257.txt",
+          "sha256": "7610d223851f421d315df5e77974f1c68a04b97e02060e5bbbcf13d95e3ca257"
+        }
+      ]
     }
   ]
 }

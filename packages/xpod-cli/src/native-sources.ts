@@ -89,6 +89,7 @@ export function validateNativeSourceIndex(value: unknown): NativeSourceKit {
     'original-upstream.tar', 'packages/xpod-cli/scripts/rebuild-native.ts',
     'packages/xpod-cli/src/native-sources.ts', 'packages/xpod-cli/src/source-materials.ts',
     'packages/xpod-cli/src/manifest.ts', 'packages/xpod-cli/src/native-target.ts',
+    'licenses/xpod/LICENSE', 'licenses/native/valuable-0.1.1/LICENSE', 'licenses/native/valuable-0.1.1/provenance.json',
     'licenses/native/LICENSE-turso.md', 'licenses/native/LICENSE-simsimd.txt', 'licenses/native/LICENSE-libaegis.txt']) {
     if (!files.has(name)) { throw new Error(`Native source material missing: ${name}`); }
   }
@@ -169,6 +170,8 @@ export function exportNativeSources(options: { repoRoot: string; upstream: strin
   const config = runSourceCommand(cargo, ['vendor', '--locked', '--versioned-dirs', ...(options.offline ? ['--offline'] : []), '../vendor'], helper);
   writeFileSync(path.join(helper, '.cargo/config.toml'), config);
   cpSync(path.join(options.repoRoot, 'packages/xpod-cli/licenses'), path.join(root, 'licenses'), { recursive: true });
+  mkdirSync(path.join(root, 'licenses/xpod'), { recursive: true });
+  cpSync(path.join(options.repoRoot, 'LICENSE'), path.join(root, 'licenses/xpod/LICENSE'));
   for (const name of ['native-sources.ts', 'source-materials.ts', 'manifest.ts', 'native-target.ts']) {
     const directory = path.join(root, 'packages/xpod-cli/src'); mkdirSync(directory, { recursive: true });
     cpSync(path.join(options.repoRoot, 'packages/xpod-cli/src', name), path.join(directory, name));
