@@ -12,7 +12,7 @@
 
 ## 目前两平台候选
 
-macOS ARM64 和 Linux ARM64 各有 228 个输入、15 个 package instances、12 份按内容去重的原始通知候选。包括 `jose` 5.10.0 和 4.15.9 两个版本。可取得的 package 根通知及显式 licenses/notices 目录内容均保留原始字节，没有改作者、换行或合并声明。
+旧的内嵌运行时产物在 macOS ARM64 和 Linux ARM64 各有 228 个输入、15 个 package instances、12 份按内容去重的原始通知候选。当前外部运行时产物有 229 个输入；实际数量以对应产物索引为准。包括 `jose` 5.10.0 和 4.15.9 两个版本。可取得的 package 根通知及显式 licenses/notices 目录内容均保留原始字节，没有改作者、换行或合并声明。
 
 以下包在 npm 发行归档中没有独立通知文件；现在按 name/version 补充固定源码中的原文：
 
@@ -24,6 +24,8 @@ macOS ARM64 和 Linux ARM64 各有 228 个输入、15 个 package instances、12
 `supplements` 使用声明式 name/version 索引，校验原文对象路径与 hash，版本不匹配不套用；索引漂移、重复注册或越界对象会使构建失败。补充通知进入同一 packages/files 索引与安装 manifest，整体仍为 partial-collection。来源证据见 [固定版本记录](inrupt-notice-source-evidence.json)。
 
 node 的已安装 `dist/index.mjs` 与下载归档字节相同；core 则包含本仓库已有的 `scripts/patch-inrupt-authn-refresh.js` 修改，依赖状态自检通过。索引保留的是实际编译输入哈希，不把 core 描述为未经修改的官方代码。MIT 原文保留，未变更原有认证代码或补丁。
+
+2026-10-02 补充 `cliui@8.0.1/build/lib/string-utils.js` 的文件级声明。该文件实际进入 bundle，原文声明 npm, Inc. and Contributors / Artistic-2.0，包级 ISC 声明不能代替此声明。同一 supplements 索引保存未修改的原始文件、文件 SHA-256，以及其头部引用的固定 npm 提交 `4c65cd952bc8627811735bea76b9b110cc4fc80e` 的 [完整 LICENSE](https://github.com/npm/cli/blob/4c65cd952bc8627811735bea76b9b110cc4fc80e/LICENSE)。包级 ISC 与文件级来源并存；安装包及 application source kit 都包含这些原文对象。该补充没有更换依赖或增加依赖。
 
 ## 验证与限制
 

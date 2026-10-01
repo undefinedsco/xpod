@@ -2,6 +2,12 @@
 
 2026-10-01。仅记录发行工程证据，不替权利人补写版权声明。
 
+2026-10-02 源码分发核对增量：独立 native source kit 现在原样复制根 `LICENSE` 至 `licenses/xpod/LICENSE`，并将它列为必需材料。完整 Cargo vendor 树含 340 个 registry 包，不能把某目标的 275/284 项通知候选清单当作该源码树的范围或最终二进制链接图。原有 libgit2、ring、其他平台代码的原始许可文件仍在 vendor 树中。
+
+源码树中的 `valuable@0.1.1` 发行归档缺少 README 引用的 LICENSE。依据 `.cargo_vcs_info.json` 固定提交 `9efc29b6e58cef28f6566a47aa7e142a55fead77`，已补入 [原始 LICENSE](https://github.com/tokio-rs/valuable/blob/9efc29b6e58cef28f6566a47aa7e142a55fead77/LICENSE) 和来源/hash 记录，位于 `licenses/native/valuable-0.1.1/`。该补充只陈述源码分发范围，不证明它链接进 helper。旧源码包没有这些新增材料，需要重新导出；旧 receipt 的 source-kit hash 不能改写为新索引。
+
+外部运行时方案仍需补齐生成的 JavaScript 前导 helper 和 Rust 标准库的分发材料。两平台现有 helper 的已定义符号确认 `std/core/alloc/compiler_builtins`，工具链固定为 `nightly-2026-09-30`、Rust commit `5c543b0b8c73c7b72bc8284ced4fb22ead15734d`。已收集该工具链的 `COPYRIGHT-library.html`、Unicode 原文及固定 [Rust MIT](https://github.com/rust-lang/rust/blob/5c543b0b8c73c7b72bc8284ced4fb22ead15734d/LICENSE-MIT)/Apache/compiler-builtins 通知，尚未接入分发构建；保守通知集合不是精确 linker map。公开发行门禁保持 pending。
+
 固定版本 `0a014ebd4918615baff589ed17486e557e7c6a23` 的 [README](https://github.com/tursodatabase/agentfs/blob/0a014ebd4918615baff589ed17486e557e7c6a23/README.md#L209) 明确声明整个项目为 MIT；Rust [SDK Cargo.toml](https://github.com/tursodatabase/agentfs/blob/0a014ebd4918615baff589ed17486e557e7c6a23/sdk/rust/Cargo.toml#L6) 也声明 MIT。CLI Cargo.toml 缺少字段属于元数据缺口，不能据此将全项目声明说成“没有许可”。
 
 固定 [完整树](https://api.github.com/repos/tursodatabase/agentfs/git/trees/0a014ebd4918615baff589ed17486e557e7c6a23?recursive=1) 未包含根 LICENSE/COPYING；README 链接的 LICENSE.md 缺失。[固定提交祖先的 LICENSE.md 历史查询](https://api.github.com/repos/tursodatabase/agentfs/commits?sha=0a014ebd4918615baff589ed17486e557e7c6a23&path=LICENSE.md&per_page=100) 为空。标准 MIT 条款可由 [SPDX](https://spdx.org/licenses/MIT.html) 提供，但不是上游 AgentFS 自身的版权声明来源；不能把第三方文件中的作者改成 Turso 或猜年份。
