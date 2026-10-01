@@ -45,6 +45,9 @@ import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { AgentDirectoryHttpHandler } from './http/agent-directory/AgentDirectoryHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
+import { HierarchyLockingResourceStore } from './storage/HierarchyLockingResourceStore';
+import { StorageETagHandler } from './storage/conditions/StorageETagHandler';
+import { StoragePutOperationHandler } from './http/StoragePutOperationHandler';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
 import { ClusterWebSocketConfigurator } from './http/ClusterWebSocketConfigurator';
 import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHandler';
@@ -199,6 +202,9 @@ export {
   resolveCurrentLogFile,
   LOG_FILE_PATTERN,
   SparqlUpdateResourceStore,
+  HierarchyLockingResourceStore,
+  StorageETagHandler,
+  StoragePutOperationHandler,
   SubgraphQueryEngine,
   SubgraphSparqlHttpHandler,
   AgentDirectoryHttpHandler,

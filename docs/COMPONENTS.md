@@ -9,6 +9,10 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | CSS 默认组件 | Xpod 替换组件 | 功能区别 |
 |-------------|--------------|----------|
 | `DataAccessorBasedStore` | `SparqlUpdateResourceStore` | 拦截 PATCH 操作，能处理的直接执行 SPARQL UPDATE，不能处理的抛出 `NotImplementedHttpError` 让 CSS 回落到 get-patch-set |
+| `BasicETagHandler` | `StorageETagHandler` | 读、条件请求、通知共享持久 HTTP metadata revision；不以截秒修改时间充当强版本 |
+| `PutOperationHandler` | `StoragePutOperationHandler` | 保留 CSS PUT 路径；只返回该次成功写入捕获的版本回执，不用后来 HEAD 的版本 |
+| `LockingResourceStore` | `HierarchyLockingResourceStore` | 按根到目标取得祖先写锁，保护递归创建与空容器删除；锁内重新建立 metadata cache，SPARQL sidecar UPDATE 复用同一边界 |
+| Cloud `WrappedExpiringReadWriteLocker` + `RedisLocker` | `UrlAwareRedisLocker` | Redis owner 校验释放；实例启停不清其他锁；缺 storage fencing 时不自动让活动写入失锁，崩溃残留需停写后人工恢复 |
 | `RepresentationConvertingStore` | `RepresentationPartialConvertingStore` | **能转尽量转，不能转保留原始**。CSS 默认遇到不能转换的会报错；我们的实现让 JSON、二进制等非 RDF 内容直接通过 |
 | `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 Quadstore/SPARQL 索引；非结构化文件走 FileSystem/MinIO |
 | RDF `DataAccessor` (Local/Standalone) | `SolidRdfDataAccessor` | 从主 RDF 引擎读写；首次启用空索引时先完成旧 quints 数据迁移，再允许 CSS 读取资源及 ACR 元数据 |
@@ -39,6 +43,8 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 桌面客户端的唯一程序声明位于 `src/identity/oidc/xpod-desktop-client.json`。`SessionBoundIdentityProviderFactory` 使用同一声明注册内置 client；Vite 从该源生成 `/app/xpod-desktop-client.json`，UI 也从声明读取固定 client ID。已有显式客户端配置保留，其他 client 继续走原 CSS adapter。这样 Standalone 本地登录不必为读取已知桌面客户端元数据访问公网；对外文档仍供外部 IdP 使用。固定 ID 不随账户、节点或版本变化。详见 [登录与应用授权记忆](consent-session-reuse.md)。
 
 ### Store 调用链对照
+
+目录版本、回执、锁的并发及部署限制详见 [HTTP 条件写边界](agent-directory-storage-versions.md)。
 
 ```
 CSS 默认链:
