@@ -32,6 +32,7 @@ import {
 } from '../src/manifest';
 import { assertNativeTarget, bunCompileTarget } from '../src/native-target';
 import { copyNativeNotices } from '../src/native-notices';
+import { copyNativeDeclarations } from '../src/native-declarations';
 import { collectJavascriptNotices } from '../src/javascript-notices';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -152,9 +153,9 @@ function selectedEnginePin(): SelectedEnginePin {
     commit: '0a014ebd4918615baff589ed17486e557e7c6a23',
     // Verified: sdk/rust/Cargo.toml declares license = "MIT".
     sdkLicenseStatus: 'verified',
-    // Project README declares MIT; full copyright/notice provenance is pending.
+    // Upgraded only after the pinned declaration/terms material is verified and bundled.
     cliLicenseStatus: 'pending',
-    // Actual problem: no LICENSE/COPYING at the repository root.
+    // Informational source layout; not an independent release requirement.
     rootLicensePresent: false,
   };
 }
@@ -164,7 +165,7 @@ function notes(target: string, args: Args, helper?: string): string[] {
     'Preview artifact only; not published. Channel selection awaits user reply.',
     'CLI bundles the auth and agent-fs command registrations; control-server commands are not registered.',
     `Target platform: ${target}.`,
-    'Pinned AgentFS README declares the whole project MIT; its own full copyright/license notice and transitive notice inventory remain pending.',
+    'Pinned AgentFS and crate declarations plus selected standard MIT terms are bundled; full helper and Bun runtime release review remains pending.',
     'rclone (MIT) is a research backend only and is NOT part of this artifact.',
   ];
   if (!target.startsWith('darwin-arm64')) {
@@ -193,7 +194,7 @@ function artifact(name: string, kind: ManifestArtifact['kind'], included: boolea
   };
 }
 
-function writeNotices(dir: string, target: string, includeNative: boolean): ManifestArtifact[] {
+function writeNotices(dir: string, target: string, includeNative: boolean, pin: SelectedEnginePin): ManifestArtifact[] {
   const text = `# Xpod CLI NOTICES (preview)
 
 This preview artifact bundles the Xpod CLI (auth + agent-fs client commands).
@@ -207,9 +208,13 @@ It does NOT bundle the Xpod server runtime.
 - Repository root: NO LICENSE/COPYING file found; only third-party licenses
   under licenses/ (fuser, nfsserve).
 
-Status: project MIT declaration verified; complete AgentFS copyright/notice
-provenance and complete transitive notice collection remain pending. No copyright holder/year
-is invented. Public release remains blocked.
+Pinned release declarations and selected MIT terms are bundled under
+licenses/native/declarations/. The standard SPDX template retains its literal
+placeholders: it is standard license text, not an invented upstream copyright
+notice. AgentFS README, SDK Cargo manifest and three registry crate manifests
+are preserved unmodified with their source identities and hashes. No holder or
+year is invented. Original notices remain in their existing collections.
+Whole-artifact release review remains pending; public release remains blocked.
 
 Unmodified vendored fuser (MIT) and nfsserve (BSD-3-Clause) notices are bundled
 under licenses/agentfs/. Their hashes are included in manifest.json. These
@@ -219,7 +224,7 @@ Pinned Turso and SimSIMD original texts are bundled under licenses/native/.
 Linux additionally includes the separately vendored libaegis C-backend notice.
 The Cargo target/features inventories include build dependencies and remain
 research evidence; these supplements are not a complete release clearance.
-CLI/Bun runtime notices and remaining missing native originals still need review.
+CLI/Bun runtime notices and remaining whole-artifact obligations still need review.
 The JavaScript inputs and available package notice originals from this exact
 compile are included under licenses/javascript/. Missing originals and external
 imports remain visible in index.json. This excludes the embedded Bun runtime.
@@ -261,8 +266,21 @@ This notice concerns that covered source; it does not assign MPL to the whole CL
       license: { spdx, status: 'verified', source: `${origin}; unmodified` },
     });
   });
-  if (!includeNative) { return supplements; }
   const collection = path.join(packageRoot, 'licenses/native/collection');
+  const declarationsOutput = path.join(dir, 'licenses/native/declarations');
+  const inventory = includeNative ? JSON.parse(readFileSync(path.join(collection, `${target}.json`), 'utf8')) : undefined;
+  const declarations = copyNativeDeclarations(path.join(packageRoot, 'licenses/native/declarations'), declarationsOutput, pin, inventory)
+    .map((name) => {
+      const file = path.join(declarationsOutput, name);
+      return artifact(`native-declaration:${name}`, 'notice', true, {
+        relPath: `licenses/native/declarations/${name}`, sha: sha256File(file), size: statSync(file).size,
+        license: { spdx: null, status: 'verified', source: 'Pinned release declarations and selected standard terms; not whole-artifact clearance' },
+      });
+    });
+  pin.licenseEvidence = { path: 'licenses/native/declarations/index.json', sha256: sha256File(path.join(declarationsOutput, 'index.json')) };
+  pin.sdkLicenseStatus = 'verified';
+  pin.cliLicenseStatus = 'verified';
+  if (!includeNative) { return [...supplements, ...declarations]; }
   const collectionOutput = path.join(dir, 'licenses/native/collection');
   const collected = copyNativeNotices(collection, collectionOutput, target).map((name) => {
     const file = path.join(collectionOutput, name);
@@ -271,7 +289,7 @@ This notice concerns that covered source; it does not assign MPL to the whole CL
       license: { spdx: null, status: 'pending', source: 'Audited normal/build notice candidates, original bytes; complete release clearance pending' },
     });
   });
-  return [...supplements, ...collected];
+  return [...supplements, ...declarations, ...collected];
 }
 
 function main(): void {
@@ -359,11 +377,11 @@ function main(): void {
       relPath: 'helper/agentfs-pod',
       sha: helperSha,
       size: statSync(helperOut).size,
-      license: { spdx: 'MIT', status: 'pending', source: 'Pinned README declares MIT; AgentFS copyright/notice provenance and transitive inventory pending' },
+      license: { spdx: 'MIT', status: 'pending', source: 'Pinned declarations and terms bundled; whole native helper release review pending' },
     });
   } else {
     helperArtifact = artifact('agentfs-pod', 'native-helper', false, {
-      license: { spdx: 'MIT', status: 'pending', source: 'Pinned README declares MIT; AgentFS copyright/notice provenance and transitive inventory pending' },
+      license: { spdx: 'MIT', status: 'pending', source: 'Pinned declarations and terms bundled; whole native helper release review pending' },
       unavailableReason: args.cliOnly
         ? 'cli-only build: helper intentionally omitted'
         : 'no real AgentFS helper found (check binary/empty/script not accepted)',
@@ -391,7 +409,7 @@ function main(): void {
     version: XPOD_CLI_VERSION,
     enginePin: { engine: pin.engine, repository: pin.repository, commit: pin.commit },
   }, null, 2) + '\n', 'utf8');
-  const vendoredNotices = writeNotices(installDir, args.target, !args.cliOnly);
+  const vendoredNotices = writeNotices(installDir, args.target, !args.cliOnly, pin);
 
   const noticeArtifact = artifact('NOTICES.md', 'notice', true, {
     relPath: 'NOTICES.md',

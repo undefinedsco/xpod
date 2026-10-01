@@ -19,14 +19,14 @@
 | mimalloc | `ffa38ab8ac914f9eb7af75c1f8ad457643dc14f2` |
 | tinycc | `12882eee073cfe5c7621bcfadf679e1372d4537b` |
 
-固定版 [贡献文档](https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/docs/project/contributing.mdx) 有 checkout 指定 WebKit commit、构建 JSC、再执行 `bun run build:local` 的步骤。[WebKit 固定源码](https://github.com/oven-sh/WebKit/tree/9a2cc42ae1bf693a0fd0ceb9b1d7d965d9cfd3ea) 与对应预构建 release 可访问，尚未执行该重建流程或检查其静态库归档。
+固定版 [贡献文档](https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/docs/project/contributing.mdx) 有 checkout 指定 WebKit commit、构建 JSC、再执行 `bun run build:local` 的步骤。[WebKit 固定源码](https://github.com/oven-sh/WebKit/tree/9a2cc42ae1bf693a0fd0ceb9b1d7d965d9cfd3ea) 与对应预构建 release 可访问。macOS ARM64 默认静态库归档现已下载并逐流检查：SHA-256 `c35435fd11a4efc2aa55a7d7f921beffe440a1d657a16e839cc13f1ba1daafa2` 与 [release asset](https://github.com/oven-sh/WebKit/releases/tag/autobuild-9a2cc42ae1bf693a0fd0ceb9b1d7d965d9cfd3ea) 的 digest 一致，package.json 标明同一 WebKit commit；包含 libJavaScriptCore.a（2,468,720,824 bytes）、libWTF.a（62,477,776 bytes）和 libbmalloc.a（8,044,160 bytes）。这是预构建库的材料证据，尚未执行修改库后的重建／重链接，也不证明它们与官方 Bun 二进制的链接输入逐项一致。
 
 这些 pin 是固定源码的默认构建配置，不是发布二进制完整依赖闭包的证明。`process.versions` 中部分哈希来自硬编码旧值或 fallback，WebKit 显示值与 SetupWebKit 的 pin 不同，不能把版本字符串当作精确来源证明，也不能据此认定官方二进制被修改。[版本生成器](https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/cmake/tools/GenerateDependencyVersions.cmake)
 
 ## 发行前尚需完成
 
 - 当前 CLI 的平台依赖闭包与完整 notices，包括 WebKit 文件级通知、内置 JS 和 Zig runtime 范围。
-- 下游编译 CLI 对应的源码／对象／构建操作材料，以及修改 LGPL 库后实际重建或重链接验证。
+- 下游编译 CLI 对应的完整源码／对象、接口、修改及构建操作材料；修改 LGPL 库后的重建或重链接试验是验收这些材料可用性的方式，不把某一次试验本身说成许可证指定的唯一形式。[WebKit 所附 LGPL 第6节](https://github.com/oven-sh/WebKit/blob/9a2cc42ae1bf693a0fd0ceb9b1d7d965d9cfd3ea/Source/JavaScriptCore/COPYING.LIB)允许应用对象代码和／或源码方案；仅保存几个 URL／构建命令仍不足。
 - Bun 自身完整版权通知来源，以及应用 TypeScript 依赖的独立通知清单。
 
 原始调查材料保存在忽略目录 `.test-data/agent-directory-workers/bun-runtime-notices/`，包含 140 项材料的 hashes 与 28 份组件许可原文。仓库内索引保留固定 URL 和内容哈希，便于后续复核，不将这些候选直接标成整个 runtime 已清理完成。public gate 继续阻止。

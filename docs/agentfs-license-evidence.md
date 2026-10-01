@@ -19,7 +19,7 @@
 
 ## 剩余发行门槛
 
-许可声明已有证据；未决项应记录为具体的正文/版权来源和发行 notices 完整性，而非断言 CLI 未获许可。仍需补齐 AgentFS 自身应保留的完整通知来源，以及实际 target/features 的 transitive notices。现有根 LICENSE 文件检查仍保守阻止公开发行，不能用通用 bypass 解除；未来应改为绑定固定 commit 的来源记录和文件 hash 校验。Xpod 根包也仅有 MIT 元数据，自己的完整许可文件另需落实。
+许可声明已有证据；未决项按具体发行材料记录，而非断言 CLI 未获许可。现已将根 LICENSE 文件名门槛替换为绑定固定 commit 的声明／条款索引和文件 hash 校验，见下方增量；没有通用 bypass。实际 target/features 的整体 obligations、Bun 对应源码／重建材料和 Xpod 自身通知仍需落实。
 
 ## Target/features 依赖清单增量
 
@@ -27,7 +27,7 @@
 
 另保存三份固定来源原文，完整来源、hash 和归属见 [native notices](../packages/xpod-cli/licenses/native/README.md)：Turso（MIT）、SimSIMD（Apache-2.0）及 Linux C-backend libaegis（MIT）。包装脚本逐份核对 hash 后复制；libaegis 仅进入 Linux 目标包。
 
-尚缺 AgentFS、agentfs-sdk、genawaiter 0.99.1、genawaiter-macro 0.99.1、pack1 1.1.0 的原始完整通知来源。这不表示它们没有声明许可。其余已扫描候选原文与嵌套通知现已收集，例如 ring 的 Apache-2.0 与 ISC、option-ext 的 MPL-2.0、Unicode 与 vendored C 代码；仍需审查实际发行义务和源码告知。cfgblock 的 license_file 是 Apache 版权通知，需保留完整条款。上述清单不覆盖编译 CLI 中的 Bun runtime 和 TypeScript 依赖，不能作为整个发行包的许可完成证明。
+最初收集未找到 AgentFS、agentfs-sdk、genawaiter 0.99.1、genawaiter-macro 0.99.1、pack1 1.1.0 的独立 LICENSE；现以原始发行声明加标准条款补充，见下方增量。其余已扫描候选原文与嵌套通知保持原样，例如 ring 的 Apache-2.0 与 ISC、option-ext 的 MPL-2.0、Unicode 与 vendored C 代码；仍需审查整体发行义务。cfgblock 的 license_file 是 Apache 版权通知，需保留完整条款。上述清单不覆盖编译 CLI 中的 Bun runtime 和 TypeScript 依赖，不能作为整个发行包的许可完成证明。
 
 Linux helper 实际动态链接系统 OpenSSL 3；Rust openssl-sys 的 MIT 仅属于 wrapper。外部系统库需求已记录，若以后同时分发 `.so` 或系统镜像，必须按该产物版本附系统许可原文。清单、三份补充原文与运行依赖证据均未解除 public gate。
 
@@ -46,3 +46,17 @@ Linux helper 实际动态链接系统 OpenSSL 3；Rust openssl-sys 的 MIT 仅�
 `bun --compile` 的独立 CLI 包含 Bun runtime，不能仅用 TypeScript 依赖或 Cargo 清单覆盖。固定 Bun 1.3.8 的静态库、源码取得与重链接材料调查已保存为 [Bun runtime 发行记录](bun-runtime-distribution.md)。目前只是固定版本证据，尚未验证修改 LGPL 库后重建当前 CLI；public gate 继续阻止。
 
 应用 JavaScript 已接入 [同次编译输入与通知收集](xpod-cli-javascript-notices.md)：两平台各15个 package instances、12份去重原文；两个 Inrupt 3.1.1 包的独立原文已从固定源码补充，其他审查范围仍保留。该清单绑定实际 CLI 哈希，不是整个 Bun runtime 的清单，也不是完整文件级版权审计。
+
+## 三个 registry crate 的固定源码复核
+
+`genawaiter@0.99.1`、`genawaiter-macro@0.99.1`、`pack1@1.1.0` 的实际下载归档 SHA-256 与 Cargo.lock 一致。发布归档中的 `.cargo_vcs_info.json` 分别指向 `b7e93c2d444a5c63e94e14f6809c8dc27785c1c7`、`f48046a9f66fbd2e535d5614fa7fe0d0b1a6a046`、`fb975e9d592d94fe4624908ebfae3a71c984d3ff`。逐文件比较 macOS/Linux 构建缓存与归档，分别31/4/20个文件全部字节一致。
+
+已读取三个固定 commit 的完整、未截断文件树和 README。树中没有名称匹配 LICENSE/NOTICE/COPYING/COPYRIGHT 的独立文件，发行归档中的检索只找到 Cargo 许可声明。这不能推成上游没有许可，或上游所有文件均无版权通知。[Cargo 文档](https://doc.rust-lang.org/cargo/reference/manifest.html#the-license-and-license-file-fields)明确区分发行许可表达式和许可文件。
+
+声明分别保留为 `MIT`、`MIT/Apache-2.0`、`Zlib OR Apache-2.0 OR MIT`；不将作者字段改写成版权人／年份，也不替上游生成一份声称是原文的 LICENSE。版本、声明、归档 hash、源码 commit、树 hash 与比较结果见 [固定来源证据](native-missing-notice-source-evidence.json)。不能用文件数量充当整体准入。
+
+## 声明材料随包增量
+
+[单一补充索引](../packages/xpod-cli/licenses/native/declarations/index.json) 保存五项声明的原文、版本和来源；三个 registry 包明确选择 MIT 分支。标准正文来自 [SPDX v3.27.0](https://github.com/spdx/license-list-data/blob/v3.27.0/text/MIT.txt)，原样保存，包括字面占位符；它被标成标准模板，不冒充上游版权通知。已有原始 notices 继续随包，不替换、不猜作者／年份。依 [Cargo 字段定义](https://doc.rust-lang.org/cargo/reference/manifest.html#the-license-and-license-file-fields)，许可声明和特定文件名是不同事实。
+
+构建验证声明文本、所选 alternative、固定 engine commit、目标包版本和全部对象 hash 后才复制。安装 manifest 的 `selectedEnginePin.licenseEvidence` 绑定索引 hash，安装校验检查其内容、全部对象及 manifest 覆盖。旧 preview 仍可读取；公开门槛要求材料匹配，根 LICENSE 是否存在只作信息记录。`sdkLicenseStatus` / `cliLicenseStatus` 的 verified 仅描述这份固定声明材料，不表示整个 helper 或 Bun 已完成发行审核。

@@ -1,9 +1,10 @@
 import { afterAll, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MANIFEST_SCHEMA_VERSION, XPOD_CLI_PACKAGE, XPOD_CLI_VERSION, sha256File, type XpodCliManifest } from '../src/manifest';
+import { copyNativeDeclarations } from '../src/native-declarations';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const tempRoot = path.join(repo, '.test-data', 'xpod-cli-verifier');
@@ -59,4 +60,42 @@ exit 127
   const execution = report.checks.find((check) => check.name === 'native helper executes');
   expect(execution?.ok).toBe(false);
   expect(execution?.detail).toContain('libssl.so.3');
+});
+
+test('checks source-bound engine material and refuses unmanifested objects despite a valid index hash', () => {
+  const install = path.join(work, 'evidence-install');
+  const destination = path.join(install, 'licenses/native/declarations');
+  const source = path.join(repo, 'packages/xpod-cli/licenses/native/declarations');
+  const index = JSON.parse(readFileSync(path.join(source, 'index.json'), 'utf8'));
+  const files = copyNativeDeclarations(source, destination, index.engine);
+  const manifest: XpodCliManifest = {
+    schemaVersion: MANIFEST_SCHEMA_VERSION, package: XPOD_CLI_PACKAGE, version: XPOD_CLI_VERSION,
+    platform: 'darwin-arm64', channel: 'local-preview', sourceSHA: 'a'.repeat(40), dirtyTreeHash: null,
+    source: { mode: 'local-preview', commit: 'a'.repeat(40), dirty: false },
+    selectedEnginePin: { ...index.engine, sdkLicenseStatus: 'verified', cliLicenseStatus: 'verified', rootLicensePresent: false,
+      licenseEvidence: { path: 'licenses/native/declarations/index.json', sha256: sha256File(path.join(destination, 'index.json')) } },
+    artifacts: files.map((file) => ({
+      name: file, kind: 'notice', path: `licenses/native/declarations/${file}`, included: true,
+      sha256: sha256File(path.join(destination, file)), sizeBytes: statSync(path.join(destination, file)).size,
+      license: { spdx: null, status: 'verified', source: 'test declarations' },
+    })),
+    validationState: 'unverified', generatedAt: new Date().toISOString(), notes: [],
+  };
+  const verifyEvidence = (): { status: number | null; ok: boolean; detail: string } => {
+    writeFileSync(path.join(install, 'manifest.json'), JSON.stringify(manifest));
+    const result = spawnSync(process.execPath, [path.join(repo, 'packages/xpod-cli/scripts/verify-install.ts'), '--dir', install, '--skip-exec'], {
+      encoding: 'utf8', timeout: 10_000,
+    });
+    const report = JSON.parse(result.stdout) as { checks: { name: string; ok: boolean; detail: string }[] };
+    const check = report.checks.find((entry) => entry.name === 'selected engine license evidence');
+    return { status: result.status, ok: check?.ok ?? false, detail: check?.detail ?? '' };
+  };
+  expect(verifyEvidence().ok).toBe(true);
+  manifest.artifacts.pop();
+  const absent = verifyEvidence();
+  expect(absent.ok).toBe(false);
+  expect(absent.status).toBe(1);
+  expect(absent.detail).toContain('missing from manifest');
+  manifest.selectedEnginePin.commit = 'b'.repeat(40);
+  expect(verifyEvidence().detail).toContain('engine pin');
 });

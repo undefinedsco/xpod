@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "status": "declarations-verified",
+  "scope": "Pinned release declarations and selected license terms. Original notices remain in the target collection; this is not whole-artifact release clearance. Standard templates are not upstream copyright notices. No holder or year is invented.",
+  "engine": {
+    "engine": "agentfs",
+    "repository": "https://github.com/tursodatabase/agentfs",
+    "commit": "0a014ebd4918615baff589ed17486e557e7c6a23"
+  },
+  "licenses": [
+    {
+      "spdx": "MIT",
+      "sourceUrl": "https://github.com/spdx/license-list-data/blob/v3.27.0/text/MIT.txt",
+      "kind": "standard-template",
+      "object": "objects/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    }
+  ],
+  "packages": [
+    {
+      "name": "agentfs",
+      "version": "0.6.4",
+      "declaredLicense": "MIT",
+      "chosenLicense": "MIT",
+      "declarationKind": "project-readme",
+      "source": {
+        "url": "https://github.com/tursodatabase/agentfs/blob/0a014ebd4918615baff589ed17486e557e7c6a23/README.md",
+        "commit": "0a014ebd4918615baff589ed17486e557e7c6a23"
+      },
+      "declaration": {
+        "object": "objects/4614b1d285011a38382cf9d5bcbf5d826e175748000a14ec7eb939e1cbc62f1c.txt",
+        "sha256": "4614b1d285011a38382cf9d5bcbf5d826e175748000a14ec7eb939e1cbc62f1c"
+      }
+    },
+    {
+      "name": "agentfs-sdk",
+      "version": "0.6.4",
+      "declaredLicense": "MIT",
+      "chosenLicense": "MIT",
+      "declarationKind": "cargo-manifest",
+      "source": {
+        "url": "https://github.com/tursodatabase/agentfs/blob/0a014ebd4918615baff589ed17486e557e7c6a23/sdk/rust/Cargo.toml",
+        "commit": "0a014ebd4918615baff589ed17486e557e7c6a23"
+      },
+      "declaration": {
+        "object": "objects/b78746bcb5b51911fe26245cf00e453250d987f746d0b5b06b61463d004e1bac.txt",
+        "sha256": "b78746bcb5b51911fe26245cf00e453250d987f746d0b5b06b61463d004e1bac"
+      }
+    },
+    {
+      "name": "genawaiter",
+      "version": "0.99.1",
+      "declaredLicense": "MIT",
+      "chosenLicense": "MIT",
+      "declarationKind": "cargo-manifest",
+      "source": {
+        "url": "https://static.crates.io/crates/genawaiter/genawaiter-0.99.1.crate",
+        "commit": "b7e93c2d444a5c63e94e14f6809c8dc27785c1c7",
+        "archiveSha256": "c86bd0361bcbde39b13475e6e36cb24c329964aa2611be285289d1e4b751c1a0"
+      },
+      "declaration": {
+        "object": "objects/976e626e7931f71616d71a9affc97b297a1d55171e7c33bc5028b41c1726a6e4.txt",
+        "sha256": "976e626e7931f71616d71a9affc97b297a1d55171e7c33bc5028b41c1726a6e4"
+      }
+    },
+    {
+      "name": "genawaiter-macro",
+      "version": "0.99.1",
+      "declaredLicense": "MIT/Apache-2.0",
+      "chosenLicense": "MIT",
+      "declarationKind": "cargo-manifest",
+      "source": {
+        "url": "https://static.crates.io/crates/genawaiter-macro/genawaiter-macro-0.99.1.crate",
+        "commit": "f48046a9f66fbd2e535d5614fa7fe0d0b1a6a046",
+        "archiveSha256": "0b32dfe1fdfc0bbde1f22a5da25355514b5e450c33a6af6770884c8750aedfbc"
+      },
+      "declaration": {
+        "object": "objects/a1c63a093f4df6472cb3fd912e5e94c22b13632963b95d444ecf491572be2c5b.txt",
+        "sha256": "a1c63a093f4df6472cb3fd912e5e94c22b13632963b95d444ecf491572be2c5b"
+      }
+    },
+    {
+      "name": "pack1",
+      "version": "1.1.0",
+      "declaredLicense": "Zlib OR Apache-2.0 OR MIT",
+      "chosenLicense": "MIT",
+      "declarationKind": "cargo-manifest",
+      "source": {
+        "url": "https://static.crates.io/crates/pack1/pack1-1.1.0.crate",
+        "commit": "fb975e9d592d94fe4624908ebfae3a71c984d3ff",
+        "archiveSha256": "e3b7bb0ecf2e447b1f20ee94ee79ef6eed1e9d4b3c36ce1903b9dea3bf205523"
+      },
+      "declaration": {
+        "object": "objects/b6e9eae213907cbd6b06be7c7393e18b122c2a454143aaffea0e88def1aa93f9.txt",
+        "sha256": "b6e9eae213907cbd6b06be7c7393e18b122c2a454143aaffea0e88def1aa93f9"
+      }
+    }
+  ]
+}

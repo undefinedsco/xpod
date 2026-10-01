@@ -15,8 +15,10 @@ license from those notices.
 
 Zero files means the audited source package had no candidate notice text.
 Turso and SimSIMD originals are supplemented separately in `licenses/native/`.
-AgentFS, agentfs-sdk, genawaiter, genawaiter-macro, pack1 and the first-party
-helper still require source/notice resolution. The collection excludes the
+AgentFS, agentfs-sdk, genawaiter, genawaiter-macro and pack1 now have pinned
+declaration and standard-term supplements in `../declarations/`; a zero-file
+candidate here does not mean an undeclared license. First-party helper and
+whole-artifact release review remain separate. The collection excludes the
 compiled CLI's Bun/TypeScript dependencies and external OS shared libraries.
 
 Regenerate with `scripts/collect-native-notices.ts <target> <audited inventory>`.

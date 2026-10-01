@@ -45,7 +45,10 @@ export interface SelectedEnginePin {
   commit: string;
   sdkLicenseStatus: LicenseStatus;
   cliLicenseStatus: LicenseStatus;
+  /** Informational upstream layout; a particular filename is not a release obligation. */
   rootLicensePresent: boolean;
+  /** Included, hash-bound declaration/terms index; absent in older local previews. */
+  licenseEvidence?: { path: string; sha256: string };
 }
 
 export interface XpodCliManifest {
@@ -132,6 +135,11 @@ export function validateManifest(manifest: unknown): string[] {
     if (pin.commit && !COMMIT_RE.test(String(pin.commit))) {
       problems.push('selectedEnginePin.commit must be 40-hex');
     }
+    if (pin.licenseEvidence && (typeof pin.licenseEvidence.sha256 !== 'string' || !SHA256_RE.test(pin.licenseEvidence.sha256) ||
+      typeof pin.licenseEvidence.path !== 'string' || !/^licenses\/[a-zA-Z0-9_./-]+$/.test(pin.licenseEvidence.path) ||
+      pin.licenseEvidence.path.split('/').some((part) => !part || part === '..' || part === '.'))) {
+      problems.push('selectedEnginePin.licenseEvidence must have a safe relative license path and 64-hex sha256');
+    }
   }
   if (!Array.isArray(m.artifacts) || m.artifacts.length === 0) {
     problems.push('artifacts must be a non-empty array');
@@ -188,14 +196,16 @@ export function publicGateProblems(manifest: XpodCliManifest): string[] {
     problems.push('public gate: source.commit must equal sourceSHA');
   }
   const pin = manifest.selectedEnginePin;
-  if (pin.sdkLicenseStatus === 'pending') {
+  if (pin.sdkLicenseStatus !== 'verified') {
     problems.push('public gate: selected engine SDK license is pending verification');
   }
-  if (pin.cliLicenseStatus === 'pending') {
+  if (pin.cliLicenseStatus !== 'verified') {
     problems.push('public gate: selected engine CLI license is pending verification');
   }
-  if (!pin.rootLicensePresent) {
-    problems.push('public gate: selected engine root LICENSE file is absent');
+  const evidence = pin.licenseEvidence;
+  if (!evidence || !manifest.artifacts.some((entry) => entry.kind === 'notice' && entry.included &&
+    entry.path === evidence.path && entry.sha256 === evidence.sha256 && entry.license.status === 'verified')) {
+    problems.push('public gate: selected engine license evidence must match an included verified notice artifact');
   }
   for (const artifact of manifest.artifacts) {
     if (!artifact.included) {

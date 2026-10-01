@@ -104,20 +104,21 @@ in CLI-only builds. Details: [JavaScript notice evidence](../../docs/xpod-cli-ja
   (`channel: local-preview`, `source.mode: local-preview`, `dirtyTreeHash` set)
   that identifies the source content.
 - A public release requires an exact commit and a clean tree.
-- `publicGateProblems()` explicitly blocks: local/dirty source, missing root
-  LICENSE, pending SDK/CLI/artifact licenses, omitted artifacts, and any
+- `publicGateProblems()` explicitly blocks: local/dirty source, absent or
+  mismatched hash-bound engine license evidence, pending SDK/CLI/artifact licenses, omitted artifacts, and any
   `validationState` below `full-verified`. It never auto-assigns MIT to an
   unknown license.
 
 ## License status (actual, unverified)
 
 - AgentFS SDK (`sdk/rust/Cargo.toml`): `license = "MIT"` (verified field).
-- AgentFS whole-project pinned README: declares MIT; CLI Cargo.toml lacks its own field. The remaining pending item is full copyright/notice provenance, not absence of a project declaration.
-- AgentFS repository root: no LICENSE/COPYING text; own notice provenance remains pending. The pinned vendored fuser MIT and nfsserve BSD-3-Clause texts are bundled unmodified and individually hashed.
+- AgentFS whole-project pinned README declares MIT; CLI Cargo.toml lacks its own field. The README and SDK manifest are bundled verbatim with selected standard MIT terms and source hashes.
+- AgentFS repository root has no LICENSE/COPYING text. This is informational, not a filename-based release requirement. [Declaration supplements](licenses/native/declarations/README.md) also cover three pinned registry crates; literal standard-template placeholders are not invented copyright claims. Vendored original notices remain bundled and individually hashed.
 - rclone (MIT) is a research backend only and is **not** bundled.
 
 The preview manifest therefore stays below `full-verified` and the public gate
-blocks. This is intentional until the license question is resolved explicitly.
+blocks while whole-artifact obligations, particularly the embedded Bun runtime
+and corresponding rebuild material, remain pending.
 
 ## Installed acceptance
 
@@ -130,7 +131,8 @@ bun scripts/verify-install.ts --archive <tar.gz> --public   # release gate
 ```
 
 It extracts the archive into a fresh temp dir, runs the extracted binary from a
-neutral cwd and re-checks manifest hashes, `--version`, `--help`,
+neutral cwd and re-checks manifest hashes, source-bound engine declaration
+material and complete object coverage, `--version`, `--help`,
 `agent-fs status`, placeholder/check-masquerade and (optionally) the public
 gate. A bundled helper must actually run `--version` and `--help`; file presence
 alone is insufficient. Source-TS resolution is not accepted as install proof.
