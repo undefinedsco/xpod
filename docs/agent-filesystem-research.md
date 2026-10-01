@@ -1,6 +1,6 @@
 # Agent 文件系统与按需目录调研
 
-首次记录：2026-09-30；最近核对：2026-10-01（Asia/Shanghai）。状态：调研记录，尚未完成选型。
+首次记录：2026-09-30；最近核对：2026-10-01（Asia/Shanghai）。状态：保留各阶段调研证据；后续比较已选择 AgentFS，最新依据见 [选型记录](xpod-cli-engine-selection.md)，实际通过范围见 [MVP 验收](agent-directory-mvp-acceptance.md)。以下“尚未选型／验收”描述对应调查阶段，不代表当前进度。
 
 本文件集中维护本轮调研的官方来源、核实范围、性能宣传和待验证事项。[SolidFS Spec](solidfs-spec.md#独立目录入口2026-09-30-设计尚未实现) 维护 Xpod 目录产品设计，[生态关注清单](ecosystem-watchlist.md#agent-文件系统与按需目录) 提供入口。
 
