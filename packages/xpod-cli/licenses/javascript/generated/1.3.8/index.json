@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "bunVersion": "1.3.8",
+  "prefixSha256": "f9bf78f4572236274f48a844600d1a219cc5723f721c3886ad5ed7d695a1dc27",
+  "prefixBytes": 1127,
+  "provenance": {
+    "bunVersion": "1.3.8",
+    "bunCommit": "b64edcb490b486fb8af90cb2cb2dc51590453064",
+    "sourceArchiveSHA256": "bf521d29d939085f1645a914ff48bb1ac19818682133fc8c1dde1b1012dfa38e",
+    "generatedHelpers": {
+      "__toESM": {
+        "source": "runtime.js",
+        "line": 44,
+        "url": "https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/src/runtime.js#L44",
+        "comparison": "Manually inspected equivalent emitted helper; exports/comments/formatting and redundant parentheses removed in generated prefix. No build or semantic test executed."
+      },
+      "__commonJS": {
+        "source": "runtime.js",
+        "line": 86,
+        "url": "https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/src/runtime.js#L86",
+        "comparison": "Manually inspected equivalent emitted helper; exports/comments/formatting and redundant parentheses removed in generated prefix. No build or semantic test executed."
+      },
+      "__export": {
+        "source": "runtime.js",
+        "line": 101,
+        "url": "https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/src/runtime.js#L101",
+        "comparison": "Manually inspected equivalent emitted helper; exports/comments/formatting and redundant parentheses removed in generated prefix. No build or semantic test executed."
+      },
+      "__esm": {
+        "source": "runtime.js",
+        "line": 172,
+        "url": "https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/src/runtime.js#L172",
+        "comparison": "Manually inspected equivalent emitted helper; exports/comments/formatting and redundant parentheses removed in generated prefix. No build or semantic test executed."
+      }
+    },
+    "createRequire": {
+      "source": "src/bundler/ParseTask.zig",
+      "nodeBranchLines": [
+        143,
+        145
+      ],
+      "runtimeConcatenationLine": 245,
+      "explanation": "Node target emits an import from node:module and a createRequire(import.meta.url) call; no Node createRequire implementation is embedded in the inspected prefix. The nearby esbuild copied-runtime comment refers to the else proxy fallback, not this node branch."
+    },
+    "esbuild": {
+      "exactPortBaselineKnown": false,
+      "supplementalNoticeCommit": "cd832972927f1f67b6d2cc895c06a8759c1cf309",
+      "selectionEvidence": "https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/src/bundler/linker_context/computeChunks.zig#L47",
+      "copyrightAsWritten": "Copyright (c) 2020 Evan Wallace",
+      "license": "MIT",
+      "limits": [
+        "Bun root license declares MIT and credits a Zig port; it does not pin one esbuild version for runtime.js.",
+        "Root development esbuild dependency, test-package dependencies and installed esbuild versions are not evidence of the port origin and were not used as such.",
+        "The fixed-source reference to esbuild v0.27.2 in a different linker file is not a runtime origin pin.",
+        "The supplemental LICENSE is a verbatim official upstream document, not a license discovered inside the Bun source archive. It is not proof that cd832972... is the exact runtime port baseline.",
+        "No Bun-specific copyright line or full MIT text was synthesized."
+      ]
+    },
+    "scope": "Only the emitted JavaScript prefix; no Bun/Node/JSC binary is bundled. Original Bun root LICENSE retains unrelated binary sections as source context; they do not establish distribution of those binaries. esbuild notice is conservative attribution with exact port baseline unproven."
+  },
+  "files": [
+    {
+      "sourcePath": "runtime.js",
+      "object": "objects/e5b7b30540056d25e4ab84ef89f8f2d040d62558611bb1d69149e8cca5ffcb72.txt",
+      "sha256": "e5b7b30540056d25e4ab84ef89f8f2d040d62558611bb1d69149e8cca5ffcb72",
+      "provenance": {
+        "url": "https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/src/runtime.js",
+        "role": "Existing original, byte-exact verified against pinned Bun archive"
+      }
+    },
+    {
+      "sourcePath": "LICENSE.md",
+      "object": "objects/7068a9711ef8196d654e143447ed7976b3678ce21145b9da16e1f786528f15bb.txt",
+      "sha256": "7068a9711ef8196d654e143447ed7976b3678ce21145b9da16e1f786528f15bb",
+      "provenance": {
+        "url": "https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/LICENSE.md",
+        "role": "Existing original, byte-exact verified against pinned Bun archive"
+      }
+    },
+    {
+      "sourcePath": "provenance/bun/src/bundler/ParseTask.zig",
+      "object": "objects/4e49784467028f06f42e7bd031d935dfa968cea9343f59d27403ae2f710b21f7.txt",
+      "sha256": "4e49784467028f06f42e7bd031d935dfa968cea9343f59d27403ae2f710b21f7",
+      "provenance": {
+        "url": "https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/src/bundler/ParseTask.zig",
+        "role": "Unmodified source evidence extracted from pinned Bun archive"
+      }
+    },
+    {
+      "sourcePath": "provenance/esbuild/LICENSE.md",
+      "object": "objects/b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681.txt",
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "provenance": {
+        "url": "https://raw.githubusercontent.com/evanw/esbuild/cd832972927f1f67b6d2cc895c06a8759c1cf309/LICENSE.md",
+        "role": "Supplemental official upstream original at commit cited in Bun computeChunks.zig:47; NOT established as the revision from which Bun runtime.js was ported"
+      }
+    },
+    {
+      "sourcePath": "darwin-arm64-preamble.txt",
+      "object": "objects/f9bf78f4572236274f48a844600d1a219cc5723f721c3886ad5ed7d695a1dc27.txt",
+      "sha256": "f9bf78f4572236274f48a844600d1a219cc5723f721c3886ad5ed7d695a1dc27",
+      "provenance": {
+        "role": "Existing generated artifact prefix; comparison evidence, not upstream source"
+      }
+    }
+  ]
+}

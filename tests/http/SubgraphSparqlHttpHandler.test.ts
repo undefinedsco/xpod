@@ -1319,6 +1319,32 @@ describe('SubgraphSparqlHttpHandler', () => {
       // Without an emitter the pre-update existence lookup is not even attempted.
       expect(updateAuthority.getMetadata).not.toHaveBeenCalled();
     });
+
+    it('prepares and executes sidecar updates within the shared mutation-lock scope', async () => {
+      let locked = false;
+      mockPermissionReader.handleSafe.mockImplementation(async () => {
+        expect(locked).toBe(false);
+        return {};
+      });
+      mockAuthorizer.handleSafe.mockImplementation(async () => { expect(locked).toBe(false); });
+      const updateAuthority = {
+        executeSparqlUpdate: vi.fn(async () => { expect(locked).toBe(true); }),
+        getMetadata: vi.fn(async () => { expect(locked).toBe(true); throw new NotFoundHttpError(); }),
+      };
+      const mutationStore = { withMutationLocks: vi.fn(async (_id: ResourceIdentifier, action: () => Promise<void>) => {
+        locked = true;
+        try { return await action(); }
+        finally { locked = false; }
+      }) };
+      handler = new SubgraphSparqlHttpHandler(
+        mockQueryEngine as any, mockCredentialsExtractor as any, mockPermissionReader as any,
+        mockAuthorizer as any, {}, updateAuthority as any, createMockEmitter(), mutationStore as any,
+      );
+      expect((await postUpdate(`INSERT DATA { GRAPH <${docA}> { <#s> <#p> <#o> } }`)).statusCode).toBe(204);
+      expect(updateAuthority.executeSparqlUpdate).toHaveBeenCalledOnce();
+      expect(mutationStore.withMutationLocks).toHaveBeenCalledOnce();
+      expect(locked).toBe(false);
+    });
   });
 
   describe('custom sidecarPath', () => {

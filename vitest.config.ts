@@ -41,9 +41,10 @@ export default defineConfig({
       'tests/e2e/**',
       'tests/package/**',
       // Bun-only tests: the vitest pool always runs on Node, so these run through
-      // `bun run test:bun` (`scripts/run-bun-tests.ts`), which is wired into CI. Every entry
-      // below must be covered by that entry — an exclusion without a runner is how N19 started.
+      // `bun run test:bun` or the standalone CLI's package test entry, both wired into CI.
+      // Every Bun-only exclusion must have a runner — an exclusion without one is how N19 started.
       'tests/bun/**',
+      'packages/xpod-cli/tests/**',
       'tests/terminal/*.integration.test.ts',
       'ui/src/api/ai-config.test.ts',
       'ui/src/api/network-settings.test.ts',

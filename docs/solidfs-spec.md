@@ -1,6 +1,72 @@
-# SolidFS Spec
+# Xpod 产品与 AFS / SolidFS Spec
 
-SolidFS 是 Xpod 给 Agent Runtime 和普通文件工具暴露的 workspace 文件系统抽象。它不等同于 Managed Agents，也不等同于底层对象存储；它负责把 Solid Pod 里的文件、RDF 资源、索引和对象存储组织成一个运行端可访问的真实 `cwd`。
+Xpod 是总产品，CLI 和 App 是使用入口；CSS、API、AFS 是可选功能模块。SolidFS 保留为通用文件访问抽象的名称，AgentFS 是当前 AFS 模块的挂载引擎。设备范围是 PC 与 NAS；Agent 在选定设备上运行。当前开发仍在 Xpod 的独立 worktree 内验证，不代表已拆仓、发布、完成模块可选启动或通用 Solid 兼容。命令布局对照既有 CLI 收敛，不为产品改名另建平行命令入口。
+
+## 产品入口与可选模块（2026-10-01，最新设计方向）
+
+最新用户决定以 Xpod 指总产品，包含 CLI 和 App，CSS/API/AFS 均为可选功能模块。这取代早先“XpodCli 与 Xpod 数据服务是两个产品”的划分；客户端仍可独立安装和连接远端服务。下文“独立目录入口”表示这种运行与交付边界。服务端 workspace、权威存储、projection/journal 章节描述内部设计，不能当作客户端必须复制文件、修改服务端存储或托管 Agent Loop 的要求。
+
+| 层级 | 设计职责 | 当前实现与下一步 |
+| --- | --- | --- |
+| Xpod | 总产品与能力声明 | 复用现有根包和 `xpod` 总入口 |
+| CLI / App | 同一产品的命令行与图形入口 | 根 CLI 和 Electron App 已存在；App 尚无 AFS 管理界面 |
+| CSS | Solid 认证、资源协议与存储 | 现有服务；尚未支持统一模块选择 |
+| API | 管理与业务接口 | 现有服务；尚未支持统一模块选择 |
+| AFS | Pod 目录挂载、搜索、未提交修改与条件提交 | 客户端可独立运行；服务端目录扩展目前随 CSS 配置启用 |
+| AgentFS | AFS 内部文件系统引擎 | 已选主线，复用 NFS/FUSE；用户无需另外部署 AgentFS 服务 |
+
+“可选”需要表达依赖，而不是把所有模块都做成一个独立 HTTP 子进程。AFS 客户端可在没有本机 CSS/API 时连接远端 Xpod；AFS 服务端目录扩展依赖 CSS 的存储和授权链。Gateway 按启用的服务提供路由，仅客户端运行时不必启动本机 Gateway。API 关闭后 App 应仍能提供本地状态与 AFS 入口，不能为了打开 App 自动启动整套服务。
+
+下一步模块化实现应由一个运行计划决定组件、配置、路由和 readiness，供 CLI start、App、自启动入口与库入口共同消费。现有多个入口各自启动 CSS/API，不能只在其中一处加开关。AFS 服务端配置按能力启用，关闭的 API 路径应明确不可用，不能回落到 CSS。此处是设计边界，本次目录 MVP 尚未实现统一模块选择，不扩展到远程会话控制。
+
+### 发布与接口
+
+- Xpod CLI 可交付客户端能力组合，包含认证、AFS 与可选设备常驻服务。现有 `packages/xpod-cli` / `xpodcli` 预览产物是客户端构建配置，不是另一个总产品；本次不自动改包名、二进制名或已生成产物。PC 提供对应 OS 安装包，NAS 的 Linux amd64/arm64 容器形态仍需逐架构验收。
+- 文件访问、挂载引擎、搜索、Agent 会话分别走能力接口和注册机制。当前只维护 AgentFS 产品主线；rclone 保留调研证据，不随产品分发。引擎不写进上层产品契约。
+- 通用 Solid provider 应通过标准 HTTP/LDP、认证与条件请求表达目录和文件能力；Xpod provider 可声明批量 metadata、精确搜索、FTS/VEC 等扩展。当前原型依赖 Xpod 目录接口，通用 provider 尚未实现或验收，不宣称任意 Solid Server 即插即用。
+- 客户端不直连 Pod 的 SQL/RDF/对象存储内部表，不要求外部 Solid Server 采用 Xpod 存储布局。普通 RDF 资源的读写仍经过服务端协议验证；业务实体投影另有契约。
+- Pod 目录 MVP 继续统一授权 HTTP，同机关闭持久正文读缓存，远端按需缓存，pending 修改独立恢复。外部 Git/worktree 属于设备上的项目，Pod 至多保存 Link。
+- 安装体验目标是用户不装 Rust/Go 编译工具，由发布流程构建并分发 helper。OS 挂载驱动、权限及签名要求需真实平台验收；不承诺当前已做到一键安装。
+- 用户明确 CLI 不内嵌 Bun：客户端构建输出 JavaScript + native helper，使用设备已有 Bun，未安装 Bun 时使用受支持的 Node。Bun 仅为构建工具和可选外部运行时，不把重建编译库当作用户安装内容。运行失败不能更换运行时重放命令。
+
+### 设备服务与远程聊天
+
+Xpod CLI 的设备常驻服务独立于 Xpod 服务进程，可与 Local Xpod 同包安装，也可单独部署在第三方 PC/NAS。通过主动连接访问控制入口，不要求每台设备开放公网端口。控制入口可由 Local/Cloud Xpod 提供；ChatKit 等聊天界面只作为入口适配。
+
+首批能力分两组：
+
+1. 挂载：登记/列出、创建、状态、提交、卸载；检查 active session 和 pending 修改后处理卸载。已有目录或挂载仅在明确登记、验证管理权后接入，不能自动接管所有 OS 挂载。
+2. Agent 会话：声明可用 runtime，启动、连接已有受管会话、发送消息、取消及订阅事件。设备将已登记 `workspaceId/mountId` 解析为本机 cwd，第三方 runtime adapter 负责协议与交互差异；不承诺任意进程都可续聊。
+
+设备、Pod、挂载和会话分别定位：同一 Pod 可以被多设备挂载，同一设备可以挂多 Pod，多个 Agent 可使用已授权工作区。设备执行权限与 Pod 数据权限分别验证；连接重试使用请求标识避免重复启动。设备离线返回明确状态，不推断任务已执行。
+
+### PC / NAS 首版部署
+
+- PC：设备服务运行在宿主，Pod 挂载供本机程序使用；Windows/macOS/Linux 的系统前提分别验收。
+- NAS：优先验证设备服务、挂载和 Agent 在同一容器内使用的路径，减少跨命名空间挂载传播。容器仍依赖宿主挂载能力，不能宣称 Docker 消除了 FUSE 前提。
+- NAS 挂载提供给宿主文件管理器/其他容器是独立支持级别，需要 bind propagation 和宿主支持，首版不默认承诺；原生 NAS 服务安装属于后续部署适配。
+- NAS 按架构、容器运行时和挂载能力检测；尚无品牌/型号实机验收，不泛称所有 Synology/QNAP 或旧 ARM32 均支持。
+
+下一步先验收当前目录/backend 与安装产物，再落实可选模块的统一运行计划。产品划分不触发实际发布、自动重命名、拆仓或全面实现远程控制。
+
+### 后台管理接入调研（2026-10-01）
+
+上层收敛为设备服务，下层按能力轴注册实现，避免按 Agent/provider 名称散落分支。以下是设计契约，不是当前已实现 API：
+
+| 能力轴 | 最小职责 | 通用实现与专用适配 |
+| --- | --- | --- |
+| 文件访问 | list/stat/read/条件写/delete、原生版本基线 | 授权 HTTP；标准 Solid provider 与 Xpod 扩展声明能力 |
+| 系统挂载 | probe/mount/status/提交状态/unmount | 注册挂载引擎，复用现有 OS 对接层 |
+| Agent 会话 | probe/start/prompt/events/snapshot/resume/respond/cancel/close | ACP 为通用候选；原生协议 adapter 实现同一接口 |
+| 设备连接 | 身份登记、请求路由、事件转发、断线重连 | 与运行时协议分离，设备主动连接控制入口 |
+
+挂载接口不把“本地保存完成”解释为“远端已提交”；Agent 接口也不把“取消当前 turn”解释为“清空所有排队任务”。能力声明至少区分历史快照/游标、存储会话恢复/活动会话重连、提问/权限决策，以及能否连接已知既有端点。
+
+ACP 会话协议支持 cwd、流式更新和取消，load/resume 为协商能力；其文件回调不产生 OS 挂载，无法替代 shell/Git/编译器使用的真实目录。Codex app-server 可以通过设备内 JSONL 子进程适配；其远端 WebSocket 路线目前标为 experimental，先不把它选作整个设备控制面的协议。OpenCode HTTP/SSE、pi RPC 属于同一 Agent 接口的原生实现候选。具体证据与未验证项见 [研究记录](agent-filesystem-research.md#后台管理与-agent-协议补充2026-10-01)。
+
+首次验收优先选择一个已安装 runtime，覆盖启动、两轮对话、中断、用户提问、前端断线重连和设备服务重启恢复；再增加其他 adapter。已有任意 TUI 进程是否能接入取决于可用端点/协议，不承诺全局劫持或自动接管。
+
+发布形态目标是一个 PC 安装包或 NAS 部署入口，其中可以包含设备服务和独立 native helper；不要求一个二进制囊括所有系统挂载。第三方 Agent 是可选运行能力，不能为单纯挂载 Pod 的用户强制捆绑全部 runtime。Xpod CLI 客户端产物也不应携带 Xpod 服务端存储引擎及构建工具。
 
 ## 目标
 
@@ -25,6 +91,8 @@ SolidFS 是 Xpod 给 Agent Runtime 和普通文件工具暴露的 workspace 文�
 ## 状态最小化原则
 
 SolidFS 不额外维护一套文件状态系统。持久状态只保存恢复和路由必需的信息：
+
+本节关于权威树扫描、journal/checkpoint 丢失后重建的规则适用于服务端权威 workspace。独立目录客户端的远端工作副本不是权威树，其持久同步基线与删除恢复边界见后文“独立目录入口”；不能仅扫描客户端缓存来推断远端删除。
 
 - `storageBackend`: 内容实际在哪里，例如 filesystem、cos。默认 filesystem 文件就是权威源，不再额外保存 authority。
 - `objectKey` / `localPath`: 只有后端无法从 `resource` 稳定推导时才保存。
@@ -53,7 +121,7 @@ SolidFS 不额外维护一套文件状态系统。持久状态只保存恢复和
 - 本地文件版本用 `stat` 或按需 hash 判断。
 - RDF 图版本由 store/revision/hash 能力提供；没有能力时只能用乐观锁外的冲突策略。
 
-Run 需要防止覆盖并发修改时，只在 `Manifest` 中保存短期 `sourceVersion`。`sourceVersion` 是 opaque token，可以来自 HTTP `ETag`、COS object version、本地 `mtime+size` 或 RDF revision；它不是 Pod 业务 metadata。
+Run 需要防止覆盖并发修改时，只在 `Manifest` 中保存短期 `sourceVersion`。`sourceVersion` 是 opaque token，可以来自 HTTP `ETag`、COS object version、本地 `mtime+size` 或 RDF revision；它不是 Pod 业务 metadata。独立目录客户端可以在私有 control 中跨进程保存原生版本基线，但不得把它提升为新的 Pod 业务版本字段；具体 HTTP 条件写必须遵守对应版本类型的协议语义。
 
 ## 接口
 
@@ -414,3 +482,186 @@ Manifest 至少记录：
 - `hydrated-object` 已经具备 Pod HTTP hydrate / commit adapter；尚未做 MinIO/COS SDK 直连 adapter，也没有 FUSE 级裸 bash 自动 hydrate。
 - cloud 持久 workspace 与 COS 冷备的同步策略还没有完整实现。
 - `LocalFirstRdfRepresentationResolver` 目前仍由 `SparqlUpdateResourceStore` 构造和调用；后续如果 GET 链路继续拆分，可以把它挂到更靠近 HTTP 内容读取的 Store/handler 层，但语义已经从 SPARQL PATCH 逻辑中抽离。
+
+## 独立目录入口（2026-09-30 设计，尚未实现）
+
+状态：用户已确认 MVP 路线（2026-09-30）：Pod 目录统一经 HTTP 访问，同机不启用持久正文读缓存，远端按需缓存；先接受本机 HTTP 开销，不实现本机 FS 直连协商。文件视图底座尚未确定，AgentFS 仍为候选。Agent 内容搜索接入 Xpod FTS/VEC，文件发现查询元数据，不默认要求预下载。下面保留显式全量同步路线作为备选，其 CLI、完整物化和验收步骤不是当前 MVP 要求。
+
+### 产品范围与所有权
+
+把 SolidFS 从需要 Agent Runtime 驱动的库扩展成独立目录能力：文件视图供 Agent、编辑器和 shell 使用，搜索通过统一接口接入 Xpod 索引，不启动或管理 Agent 会话。原生目录兼容性与 Agent 搜索适配分别验收；不能因为一个 Agent 的搜索工具可用，就声称任意 shell 命令已透明接入服务端搜索。
+
+Pod 自身的文件通过 Solid 资源接口访问；外部项目只在 Pod 保留 Link。Git 仓库、分支、commit、worktree、草稿保存及恢复均由外部工作空间工具管理，SolidFS 不在 Pod 保存这些细节，也不实现 Git remote。需要解析共享 Link 时消费 `@undefineds.co/models` 的已有契约，不在 Xpod 新建 schema 或从 URL 域名猜测仓库类型。
+
+显式同步备选提供普通本地目录和 `pull/status/push` 生命周期。按需访问路线必须在原生文件调用处完成读取，不能只依赖某个 Agent 的 hydrate hook；挂载、写回缓存和两份目录的双向同步分别选型，不混为一种能力。
+
+### 复用 Cloud 已有的双路径（2026-09-30 补充）
+
+Cloud 并非一律缺少本地文件。前文已有按行处理文件与对象资源的两条策略，独立目录继续复用，不能因为 edition=cloud 就为所有内容再增加 AgentFS/DB 文件副本：
+
+- 按行处理的文本/RDF：规范以服务/运行端可恢复的真实文件为权威，索引为派生视图；这份文件不是可任意淘汰的 cache。同机且获得目录访问授权的 Agent 使用真实目录；对象存储冷备不参与正文读写仲裁。代码已经具备 RDF local-first GET 与真实文件/索引写入路径；不把它表述为所有文本格式及外部写入索引刷新均已完整验收。
+- 对象/特殊格式：权威正文在对象存储或远端源，现有 hydrated-object 模式按需取得真实工作文件，再在 commit 时写回。挂载候选主要补“普通文件 open/read 自动触发 hydrate”的入口，不另建内容权威或同步系统。
+- Agent 位于另一台机器时，服务端的本地文件不等于 Agent 的本地文件。远端访问需要传输/缓存，但客户端副本不因此成为服务端权威文件。
+
+已有 `LocalSolidFS.prepare()` 的 direct / hydrated-object 和 hydrate / commit 路径可复用。当前尚无裸 shell 自动 hydrate；跨 Run Cloud 持久 workspace 与 COS 完整同步仍有前文列出的缺口。新增独立目录应验证这些缺口，而不是另造一套 Cloud cache。
+
+### 已确认 MVP：统一 HTTP 与可选正文缓存（2026-09-30）
+
+Pod 目录的打开、元数据、搜索、正文读写及同步状态统一经认证 HTTP 接口访问；Cloud/Local 不是客户端选择两套产品 API 的开关。第一版接受同机 HTTP 开销，不实现服务端 backing directory 暴露或本机 FS 直连授权协商。
+
+- 同机访问不启用持久正文读缓存；远端访问仅缓存实际读取的内容，干净缓存可以回收。均不要求完整物化所选目录树；元数据缓存、内存缓冲和 OS page cache 与持久正文缓存分别处理。
+- 判断同机只用于选择缓存策略，不授予访问真实目录的权限。localhost/端口转发等线索判断错误至多影响缓存效率；所有内容访问仍走同一认证与授权链。无法确认时沿用通用缓存策略。
+- 编辑允许临时工作文件/缓冲；未保存内容、写回失败和 pending 数据必须保留到成功或显式放弃，不因“禁用读缓存”丢失用户修改。保存完成后释放不再需要的临时副本，不维护整棵目录的长期镜像。
+- 按行处理文件继续沿用 Xpod 服务端现有真实文件权威与索引逻辑，对象沿用 hydrate/commit；客户端缓存不新增内容权威，不另造一套服务端同步系统。
+- 本机 FS 直连是后续性能优化：只有实际测量显示 HTTP 是瓶颈，才评估可信目录绑定、目录授权与外部写入验证/索引更新的成本。
+
+独立 HTTP 目录入口与上述缓存策略尚未实现。现有 Pod HTTP 客户端、hydrator 和 SolidFS 同步能力可作为基础；不等于已具备独立 CLI 完整认证、原生 shell 按需读取或安全的本机 FS 直连。
+
+### 搜索与读取分离（2026-09-30 产品方向）
+
+Agent 的 grep/glob 能力允许由适配器接管：通过远端索引查找，命中后才按需读取具体文件。Local 和 Cloud 共用同一搜索契约；Local 可以调用本机服务，Cloud 调用 Gateway 接口。索引是派生视图，正文与写入权威仍归 Pod 或外部 Link 目标。
+
+| 能力 | 数据与语义 | 是否要求正文先落本地 |
+| --- | --- | --- |
+| 路径 glob/list | 在授权范围内按路径/文件名元数据执行确定性通配符和目录查询 | 否 |
+| 文件发现 | 对文件名、标题、描述等可用元数据做 FTS/VEC 排名 | 否 |
+| 内容搜索 | 对已索引正文做 FTS、VEC 或融合检索，返回资源地址、片段和版本信息 | 否 |
+| 读取/编辑 | 对具体资源按需获取真实内容，编辑前记录对应版本基线 | 是，读取所需文件或范围 |
+
+这些是能力契约，不是新增 Pod 业务 schema 或已实现的 HTTP 路由。元数据字段与资源身份消费已有共享定义；额外搜索索引可重建，不保存第二份业务状态。
+
+- glob 的 `**/*.ts` 等精确模式需要路径索引/匹配算法；FTS/VEC 可以扩展自然语言找文件，但相关度候选不能冒充完整 glob 结果。
+- 内容 FTS 与 regex/substring grep 的匹配语义不同；VEC 用于概念相似度。搜索请求与结果需标明模式，不给向量近似结果承诺精确匹配或完整性。要求精确行号/regex 时对候选原文校验，并明确没有索引保证时需要原文扫描。
+- 检索必须先施加当前身份和所选目录范围的访问过滤；片段、文件名和命中数量都不能泄漏不可访问资源。HTTP 读取仍需重新授权。
+- 结果标明索引对应的 source version/hash 与片段定位；正文已更新、索引缺失或过期时返回可解释状态，零命中不能冒充当前全量文件没有匹配。
+- 尚未写回的本地修改、新增和 whiteout 删除必须合并进搜索视图：本地路径覆盖同路径远端命中，删除屏蔽远端候选。第一版可直接扫描本地 delta，后续再增加本地派生索引；离线时不得声称云端范围完整。
+- 接管可发生在 Agent 搜索工具/MCP/协议 adapter 边界，也可发生在 shell 命令入口；不能假设替换一个 SDK 工具便接管了所有 `bash grep`/`rg`。
+- 原生 shell 的全文搜索仍按文件 API 读取，可能下载搜索范围内全部内容。Xpod 的 FTS/VEC 路线让支持搜索 adapter 的 Agent 避免这类全量读取，不承诺任意原生命令自动变成语义搜索。
+
+本阶段按能力选型；候选证据与持续追踪集中维护在 [Agent 文件系统与按需目录调研](agent-filesystem-research.md)。性能验收分别测量目录枚举、缓存读取、远端冷读取、FTS/VEC 查询和挂载/启动耗时，不把厂商某一项“毫秒级”指标扩大成整个目录产品的性能。
+
+已有检索基础：`src/api/runs/RdfRunContextRetriever.ts` 已组合 text/vector 查询；`src/storage/rdf/types.ts` 提供 source/path prefix 与 allow/deny scope；`src/storage/rdf/RdfAccessScope.ts` 可在检索前收敛权限范围。独立目录搜索不能绑定 Run，也不能假定 graph 权限覆盖普通文件 source。`src/http/search/SearchHttpHandler.ts` 的历史 `/-/search` 方案只检查 base 后执行 vector 查询，且当前配置未发现注册；不能作为权限完整、已上线的目录检索入口复用。新的检索服务需对真实 source URI 授权，并报告覆盖度、新鲜度和分页/截断状态。
+
+#### shell 搜索入口：进程范围的 rg/grep wrapper（2026-09-30 已确认 MVP，尚未实现）
+
+启动 Agent 时在其 `PATH` 前置客户端提供的命令目录，让 `rg`/`grep` wrapper 对受管理的 Pod 路径调用同一 HTTP 搜索服务；普通路径与不支持的调用转交预先解析的原生可执行文件，避免 wrapper 递归调用自身。该环境仅作用于 Agent 及其子进程，无需替换系统二进制。首个原型优先验证 `rg`，再按实际调用增加兼容面。
+
+- `rg --files` 可走精确路径元数据枚举；内容搜索先声明支持的参数组合，在服务端执行兼容的精确匹配，并合并本地 dirty、新增和删除。FTS 可用于有完整性保证的候选筛选，VEC 另设语义搜索入口，不静默替换 regex/substring 语义。
+- 兼容契约包括 cwd/相对路径、ignore/glob、行号与上下文、输出格式、stdout/stderr、退出码和取消。索引缺失、过期或候选覆盖不完整时，对未覆盖范围执行原文扫描，或明确失败；不能把部分结果当作成功的全量搜索。
+- stdin/管道输入、未知参数或不支持的匹配模式回退原生命令；跨 Pod 与普通路径的混合调用在能够正确合并前整体回退。原生命令扫描挂载目录时仍可能按需下载整个搜索范围。
+- 绝对路径执行、Agent 自带的 rg、内部搜索库及重设 PATH 的沙箱可能绕过 wrapper，需逐 Agent 验证并在其工具/执行入口适配。仅有文件系统挂载无法取得搜索表达式，因此不会自动将原生搜索转换为 HTTP 查询。
+
+参考：[ripgrep 官方指南](https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md)。用户已确认先做 `rg` wrapper，按实际调用补充 `grep`；复用统一 HTTP 与可选正文缓存路线，不表示已支持所有 Agent 或完整 rg/grep 参数集。
+
+实现顺序与验收：
+
+| 顺序 | 交付 | 验收条件 |
+| --- | --- | --- |
+| 1 | 明确目标 Agent 的实际调用与首批兼容参数；定义受管理路径到 Pod URI 的映射 | 记录可执行文件来源、cwd、参数和输出需求；未知调用能无损转交原生命令，且不会递归调用 wrapper |
+| 2 | 统一 HTTP 目录枚举与精确搜索服务 | 在当前身份与目录授权范围内检索；缺失/过期索引不产生假阴性，分页或截断不被当作完整结果 |
+| 3 | `rg --files` 与首批内容搜索 wrapper | 同一夹具分别执行原生 rg 与 wrapper，对比路径集合、命中内容、行号、stdout/stderr 与退出码；测量传输字节，证明支持的搜索无需下载目录全部正文 |
+| 4 | 挂载视图与本地 delta 接入 | 新增、修改、删除后搜索反映当前视图；读取按需获取，条件写入拒绝版本冲突；本机不保留持久正文读缓存 |
+| 5 | 第三方 Agent 实际运行验收 | 在实际执行环境验证 PATH 生效与绕过情况；Local/Cloud 复用 HTTP 契约，分别记录冷读取、热读取及搜索耗时，不预设性能比例 |
+
+以上是实现计划与待验证条件；当前没有 wrapper、独立目录搜索路由或挂载 backend 的完成证据。首批参数由调用采样决定，FTS/VEC 扩展与更多命令兼容不得阻塞最小精确搜索链路。
+
+### 按需访问候选：AgentFS
+
+AgentFS 的可替换 lower filesystem 与本地持久 delta 是候选实现；官方能力、源码扩展点、测试套件和当前缺口见 [AgentFS 调研记录](agent-filesystem-research.md#turso-agentfs)。当前 MVP 优先验证统一 Pod HTTP backend，保持 Pod 文件权威及外部 Link 边界；HostFS lower 仅为后续直连优化参考，不是第一版必须实现的另一套路径。
+
+原型需证明：目录枚举不下载正文、原生文件读取按需获取、Agent 搜索使用授权 FTS/VEC、delta 修改可通过条件写入安全回传。Overlay 隔离修改与写回是两个步骤；不能仅因提供 lower 接口就声称已支持 Pod、双向同步或所有原生工具。
+
+以下章节的目录物化、显式 pull/push 和完整下载要求，限定为同步备选。按需路线的 ready 语义、缓存失效和保存确认需要在原型验证后独立确定。
+
+### Local / Cloud 与访问位置
+
+部署模式不能单独决定目录实现；还要判断目标是否属于当前设备，并区分本机目录与 Pod HTTP 资源。
+
+| 场景 | 同步备选行为 | 写入语义 |
+| --- | --- | --- |
+| 本机外部目录或当前设备可解析的目录 Link | 返回已有真实目录，不复制普通文件 | 原生文件系统；Git/worktree 继续由用户工具管理，不上传到 Pod |
+| Local Xpod 的 Pod Container，同机客户端 | 经当前 Gateway 枚举并准备本地工作副本；不暴露 CSS backing directory | `push` 经 Gateway 做认证、授权和资源写入，沿用 CSS 索引更新路径 |
+| Local Xpod 的 Pod Container，异机客户端 | 经可达且已认证的 Gateway 准备工作副本 | 与 Cloud 远端访问使用同一契约 |
+| Cloud Xpod 的 Pod Container，本机或云端客户端 | 在客户端执行环境准备持久工作副本 | Gateway/Pod 是远端权威，工作副本保存尚未写回的修改 |
+
+服务端的持久 by-line 文件仍是服务端权威；远程客户端下载的文件是工作副本，不能把前文的 server-local-first 规则解释成客户端缓存也有权威性。
+
+同机 Pod 直连目录是后续优化，前提是服务提供可信的目录绑定、明确权限边界和任意文件修改后的可靠校验/索引机制。仅发现同机路径或 `edition=local` 不足以允许绕过 Gateway。普通目录不能提前阻止错误 RDF 落盘，文件监听也不能等同于 HTTP 写入授权。
+
+另一台设备的 `file://` Link 不能用当前机器上的同名路径替代。没有目标 adapter 或目标不可达时报告原因；HTTP 页面、Git 地址不能自动当成 Solid Container。第一版目标输入限定为本机目录和已验证的 Pod Container，通用 Link 解析在共享契约核对后接入。
+
+### 目录就绪与完整性
+
+`open` 必须先完成选定子树的枚举和物化，再返回 `ready`：
+
+- 复用 CLI 的 Container 解析，增加递归遍历；只遍历根 URI 边界内且当前身份可访问的资源，不跟随任意 RDF link。
+- 所选范围内的普通文件和 RDF 源文件必须真实存在，包括二进制和空目录。第一版不采用只下载已知路径的懒加载，因为任意 shell 没有 hydrate 钩子。
+- 一次打开只处理用户选择的子树，不要求下载整个 Pod。范围过大、文件下载失败或目标文件系统无法表示资源名时，返回不完整状态和原因，不能静默遗漏后声称完整就绪。
+- 文件内容与资源版本从同一次 GET 获取；URI 相对路径编码/解码有唯一规则，拒绝路径穿越、大小写/归一化碰撞和指向范围外的重定向。路径验证覆盖符号链接父目录，第一版拒绝缓存树中的符号链接。
+- 隐藏用户资源（例如 `.data`）不按“隐藏文件”整体排除。Container listing、内部元数据和 Xpod control state 不伪装成用户文件。
+- `.git` 管理项不参加 Pod 工作副本的同步。用户配置的其他排除项必须体现为明确范围；未知或排除资源不能通过本地缺失推断远端删除。
+- `ready` 表示已取得可用文件和逐资源基线，不表示下载过程中取得跨文件事务快照，也不表示缓存始终最新。
+
+已打开的文件可离线阅读和编辑；断网时 `push` 报告 pending，不声称已写回。权限撤销后拒绝后续远端访问；普通目录中的已下载内容不能被视为可即时远程收回。
+
+### 持久状态和操作语义
+
+独立目录不绑定某次 Run；控制信息必须跨 CLI 进程和重启保存，并位于工作目录之外：
+
+```text
+client-workspace/
+  data/      # 返回给用户的真实 cwd
+  control/   # source URI、映射、同步基线、pending 操作、恢复进度
+```
+
+该布局是示意。路径、基线和同步进度属于本机控制状态，不写进 Pod，也不创建业务文件版本 schema。复用现有 journal/outbox 能力，但需核对其与远端工作副本的权威规则；恢复日志不得通过一次重扫就丢弃未回传的删除意图。凭据由现有 CLI auth store 管理，不放进 `data/`。
+
+客户端 control 丢失后，缓存树无法恢复原始基线或判断哪些缺失是用户删除。保留现有文件，报告恢复所需信息，通过重新读取远端和显式对账建立新基线；不得自动传播删除、覆盖同名远端内容或声称完整恢复。这个边界与服务端权威树重建 journal 不同。
+
+CLI 产品入口见 [CLI Spec 的 Workspace Directories](cli-spec.md#workspace-directories-proposed)。操作契约为：
+
+| 操作 | 行为 |
+| --- | --- |
+| `open` | 验证目标与身份，准备目录、持久基线，返回真实路径与就绪状态；已有非空目标目录不得被覆盖 |
+| `status` | 比较本地树与基线，报告新增/修改/删除和 pending/conflict；不访问网络，不把 local-clean 称为远端最新 |
+| `pull` | 明确从远端检查变化；干净文件可以更新，本地修改与远端变化冲突时保留本地文件并报告，失败 listing 不能解释成删除 |
+| `push` | 从真实目录计算本地变更，以原生条件请求写回；不要求 Agent 使用特定工具，不是 Git commit/push |
+| `close` | 解除客户端工作空间绑定；保留文件及未完成操作的恢复信息，不自动删除目录、未提交修改或 Git 内容 |
+
+本机外部目录使用同一入口返回 `direct` 模式；`pull/push` 明确报告该目录无需 Pod 同步。每个绑定只管理其根目录，外部工具新建的其他 worktree 不会被递归发现或自动同步。
+
+### 写回、并发与恢复
+
+- 创建文件使用 `If-None-Match: *`；更新和删除使用读取时取得的强 ETag 与 `If-Match`。弱 ETag 或 Last-Modified 不得伪装成强 ETag；若服务端没有经过验证的安全条件写能力，第一版仅提供只读目录。
+- 必须在真实 Gateway 验证条件请求不会被忽略，包括文件与 Container 创建/删除；本地预检查不能替代服务端原子条件判断。
+- 删除只针对基线中明确存在且用户在完整本地视图中删除的资源。目录创建按父到子、删除按子到父；对未下载内容、未知子项或未完成 listing 不执行递归删除。
+- 目录含排除项或未知资源时不能删除祖先 Container。即使 listing 完整，远端也可能新增子项而不改变 Container ETag；必须验证服务端拒绝删除非空目录，并仅使用非递归空目录删除，否则第一版保留空 Container 并报告目录删除不受支持。
+- 第一版移动表现为有记录的创建与删除，先完成目标写入再删除源；报告非原子语义，不自动改写 RDF 正文中的链接。
+- 每次成功操作推进该资源基线，失败保留本地内容和 pending 状态。批量写回可以部分完成，必须逐项报告成功/失败/冲突；不宣称跨资源事务。
+- 重启后，pending 操作以本地内容、远端版本和操作记录对账；响应丢失不得直接无条件重试。无法证明原操作已生效时报告冲突，不覆盖别人后续修改。
+- CLI 各操作在同一控制目录互斥。任意外部进程仍可能修改文件，因此 push 先取得内容一致的本地快照并固定上传字节，不能直接流式读取仍被修改的工作文件；无法取得稳定快照时推迟该文件。写回基线绑定已上传快照，完成后与当前工作文件比较，不同则继续标为 dirty，不能误报 clean。
+- `pull` 的本地替换使用逐文件原子写与恢复机制，禁止套用当前 `copy` 模式删除整个 sourceRoot 再复制的算法。发现本地并发修改必须保留可恢复副本，不静默丢失修改。
+- 普通文件通过资源 HTTP 操作，RDF 源文件通过 CSS 的原生资源写入与验证路径刷新索引。共享 Link 模型读写仍优先使用 models/drizzle-solid；二者不是替代关系。
+
+### 现有实现可复用点与缺口
+
+以下是代码审计结论，不代表独立目录已交付或本次已执行测试：
+
+- `src/solidfs/LocalSolidFS.ts`：已有真实 cwd、文件变更检测和显式 commit，但 hydrated manifest 以运行期内存为主，prepare 还要求已存在的本地 sourceRoot。
+- `src/solidfs/PodSolidFsHydrator.ts`：已有单资源 GET/PUT/DELETE 和冲突映射；缺远端树枚举，新增写入缺条件创建，Last-Modified 回退不能直接放进 If-Match。
+- `src/solidfs/LocalSolidFS.ts` 的 hydrated prune 要保留待回传删除；不能先清除 manifest entry 再漏掉删除提交。
+- `src/solidfs/SolidFsSyncJournal.ts`：已有 outbox/checkpoint/replay，可复用恢复思路，不另建内容事实源。
+- `src/cli/lib/auth-context.ts`：复用 CLI 认证生命周期；不能把服务端 ENV token endpoint 推导当独立客户端认证来源。
+- `src/solidfs/PodSolidFsHttpClient.ts`：DPoP 模式需提供有效 proof 并验证刷新/重连，不能只发送 Authorization 字段。
+- `src/cli/commands/resource.ts`：已有 depth=1 的 Container listing，递归能力需要补齐；`src/cli/index.ts` 尚无 workspace 命令。
+
+### 实施顺序与验收
+
+1. **协议与回归基础**：锁定现有行为；补条件创建、版本类型、删除意图保留、真实 Gateway 条件请求与 CLI 认证验证。先确认可安全读写，再实现目录产品。
+2. **独立目录生命周期**：新增持久绑定、递归 listing、完整物化、open/status；覆盖中文/编码文件名、空目录、隐藏资源、路径边界和失败状态。共享 `src/solidfs`，CLI 只负责输入输出，不绑定 Agent。
+3. **显式同步与恢复**：实现 pull/push/close、逐项冲突和失败恢复；普通 shell 编辑、新建、删除均可被识别，不依赖 Pi hydrate hook。
+4. **分别验收 Local 与 Cloud**：连接当前实际 Gateway，用测试账号的独立子目录执行 `ls/cat/rg`、编辑、创建、删除、重新打开，并从 Pod HTTP 校验结果；RDF 修改再校验查询索引。使用另一客户端制造并发覆盖、创建重名和删除冲突，确认条件请求生效。
+
+还必须验证：断网时修改保留、部分 push 后重启恢复、control 丢失不自动删除远端、pull 不覆盖 dirty、上传期间 shell 修改不会产生混合正文或误报 clean、pending 删除不被 prune 丢失、权限错误不触发清空、任意 `.git` 管理项不被上传、排除项或远端并发新增子项阻止祖先目录删除、Git 创建的其他 worktree 不自动归入当前同步根。隔离测试的通过不能表述为真实 Local/Cloud 实例通过。
+
+实现阶段执行相关 SolidFS/CLI 回归、`bun run build:ts`、`bun run typecheck:test` 和完整 `bun run test:integration`，有 lint/static-analysis 门禁时一并执行。本次仅收敛设计，不声称上述验收已通过。后续再评估 watcher、Link adapter 和跨平台挂载，远程 Agent 会话不属于该目录产品的实施范围。

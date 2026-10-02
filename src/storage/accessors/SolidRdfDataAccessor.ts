@@ -47,6 +47,7 @@ import type {
   RdfVectorSourceInput,
 } from '../rdf/types';
 import type { Quint } from '../quint/types';
+import { captureStorageVersion, stampStorageVersion } from '../StorageVersion';
 
 const { defaultGraph, namedNode, quad } = DataFactory;
 export const PREPARED_UPDATE_MEDIA_TYPE = 'application/vnd.xpod.rdf-prepared-delta+json;version=1';
@@ -406,13 +407,7 @@ export class SolidRdfDataAccessor implements DataAccessor {
   public async writeMetadata(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
     await this.initialize();
     const { name, parent } = this.getRelatedNames(identifier);
-    const metaName = this.getMetadataNode(name);
-    await this.rdfEngine.delete({ graph: metaName });
-    const inserts = this.toGraphQuads(metaName, metadata.quads());
-    if (parent) {
-      inserts.push(quad(parent, LDP.terms.contains, name, parent) as Quad);
-    }
-    await this.rdfEngine.put(inserts);
+    await this.replaceMetadata(name, metadata, parent);
   }
 
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
@@ -545,6 +540,7 @@ export class SolidRdfDataAccessor implements DataAccessor {
   }
 
   private async replaceMetadata(name: NamedNode, metadata: RepresentationMetadata, parent?: NamedNode): Promise<void> {
+    stampStorageVersion(metadata);
     const metaName = this.getMetadataNode(name);
     await this.rdfEngine.delete({ graph: metaName });
     const inserts = this.toGraphQuads(metaName, metadata.quads());
@@ -552,6 +548,7 @@ export class SolidRdfDataAccessor implements DataAccessor {
       inserts.push(quad(parent, LDP.terms.contains, name, parent) as Quad);
     }
     await this.rdfEngine.put(inserts);
+    captureStorageVersion(metadata);
   }
 
   private async putGraphQuads(graph: NamedNode, triples: Quad[]): Promise<void> {

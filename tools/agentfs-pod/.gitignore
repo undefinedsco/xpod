@@ -1,0 +1,5 @@
+target/
+!build-linux.sh
+!build-linux-container.sh
+!build-macos.sh
+!prepare-upstream.sh
