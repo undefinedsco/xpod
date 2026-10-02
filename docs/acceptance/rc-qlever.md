@@ -1,6 +1,7 @@
 # RC PostgreSQL / QLever 接入与验收
 
-状态：接入实现与本机完整回归已通过，尚未部署或通过真实 QLever RC 验收。
+状态：接入实现与本机完整回归已通过。首次候选在部署前认证预检失败，尚未部署或
+通过真实 QLever RC 验收；已确认现有拉取凭据缺少目标仓库认证项。
 
 ## 部署边界
 
@@ -63,7 +64,7 @@ RC 显式使用 QLever 配置入口；通用 Cloud 配置的独立运行能力�
 真实 ComponentsManager 配置解析核对了 QLever 引擎引用与其余 PG 参数，
 该检查未启动完整 profile 或数据库，不能当作配置启动验收。
 
-最终完整集成 `bun run test:integration` 的进程实际退出 0：
+接入实现的第一轮完整集成 `bun run test:integration` 的进程实际退出 0：
 
 - Lite：32 文件通过、4 文件跳过；162 测试通过、16 测试跳过。
 - Full：6 文件、61 测试全部通过。
@@ -78,6 +79,33 @@ RC 显式使用 QLever 配置入口；通用 Cloud 配置的独立运行能力�
 同一 PG 中独立临时数据库验收、服务与 PG 的 UID/imageID 不变检查及清理校验。
 这些门禁的真实运行结果仍待新候选提供；上述本机成功不代表 public16、private17、
 真实 Cloud、Gateway 或目录客户端已在新后端通过。
+
+## 首次候选与认证诊断
+
+- [首次候选运行](https://github.com/undefinedsco/xpod/actions/runs/37009354582)
+  绑定源码 `0414446bc0c2ca41e3f8018712db1763df1ee4eb`。服务镜像构建成功，
+  但部署前原生镜像预检在安装授权 registry 配置时退出 1。namespace 拉取门禁、
+  runtime secret 写入、RC 部署和数据库原生验收均被跳过；该失败没有证明
+  QLever 语义不兼容，也不能据此声称新数据库已上线。
+- 诊断补丁 `e209030737e3fd690906f89154bda1d69d5bd024` 为 parser 增加固定
+  stage token，并提供可选 RC 只读结构探测。独立审查、36 项专项回归及源码/测试
+  类型检查通过。补丁不输出凭据值、其他 registry key 或原始解析异常。
+- 补丁的完整集成运行 `root-final-20261002T133857Z-44195` 实际退出 0，
+  测试前后源码一致：Lite 162 通过 / 16 跳过，Full 61 通过；338790 ms。
+  原始日志 SHA256 为
+  `50cc72d3ac628425f5fb5e00fb2af3287d314bf2928eb1b9e0696bb499d78527`。
+- [真实只读 RC 探测](https://github.com/undefinedsco/xpod/actions/runs/37015306441)
+  绑定上述补丁源码并成功完成。`tcr-creds` 的目标字段非空、解码与 JSON 解析成功、
+  `auths` 为对象，但 `ccr.ccs.tencentyun.com` 匹配项数量为 0。Secret 的存在
+  因此不能作为该目标镜像的有效认证证明。匿名请求同一数据库 digest 也返回 401。
+  缺失认证项是已证实的阻断条件，首轮 parser 未提供 stage，不能将其全部失败原因
+  进一步缩窄为已证实的唯一原因。
+- 真实探测日志 SHA256 为
+  `f20cfd0e26e85cce995164b2f50f2aa1ea837baf8876a074f828e9bdfb994f9e`，
+  原始私密日志与安全摘要存放于 ignored
+  `.test-data/agent-directory-workers/rc-qlever-artifact/registry-probe-37015306441/`。
+  下一步先明确已有授权拉取凭据的位置，再运行新候选的精确镜像门禁和真实 RC
+  验收。私有 17 项验收工具仍在修复独立审查发现的问题，尚未进行本轮真实验收。
 
 ## 切换前失败现场
 
