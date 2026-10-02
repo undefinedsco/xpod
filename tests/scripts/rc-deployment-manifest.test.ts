@@ -90,7 +90,8 @@ describe('RC Sealos deployment manifest', () => {
     expect(postgres.spec?.selector?.matchLabels).toEqual({ app: 'xpod-rc-postgres' });
     expect(postgres.spec?.volumeClaimTemplates).toBeUndefined();
     expect(postgres.spec?.template?.spec?.volumes).toEqual([{ name: 'data', emptyDir: {} }]);
-    expect(container?.image).toBe('docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38');
+    expect(container?.image).toBe('ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba');
+    expect(postgres.spec?.template?.spec?.imagePullSecrets).toEqual([{ name: 'tcr-creds' }]);
     expect(container?.volumeMounts).toContainEqual({ name: 'data', mountPath: '/var/lib/postgresql/data' });
     expect(container?.env).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'POSTGRES_DB', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_DB' } } }),
@@ -143,6 +144,11 @@ describe('RC Sealos deployment manifest', () => {
     const xpodContainer = xpodDeployment.spec?.template?.spec?.containers?.find((container: any) => container.name === 'xpod');
     expect(xpodContainer).toBeDefined();
     expect(xpodContainer.image).toBe('ghcr.io/undefinedsco/xpod:replace-me');
+    // The RC profile must explicitly opt into the native QLever query backend rather than
+    // silently inheriting the public Cloud Comunica baseline.
+    expect(xpodContainer.args).toEqual([
+      'node', 'dist/main.js', '-c', 'config/cloud.qlever.json', '-p', '3000',
+    ]);
     expect(envMap(xpodContainer)).toMatchObject({
       NODE_ENV: 'production',
       XPOD_EDITION: 'cloud',

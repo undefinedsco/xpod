@@ -43,4 +43,16 @@ describe('check-qlever-installed-image-conformance', () => {
     expect(runner).toContain('createLocalNativeSearchEngine');
     expect(runner).toContain('runPostgresNativeSearchFusionAcceptance');
   });
+
+  it('runs the installed conformance seam with the container Bun runtime, not Node', () => {
+    const script = readFileSync(scriptPath, 'utf8');
+    const dockerfile = readFileSync(path.join(repoRoot, 'Dockerfile'), 'utf8');
+
+    // The one-line runtime extension: the compiled seam is launched through the
+    // Bun binary shipped in the installed image instead of the Node runtime.
+    expect(script).toContain("'bun', 'dist/acceptance/run-installed-qlever-conformance.js'");
+    expect(script).not.toContain("'node', 'dist/acceptance/run-installed-qlever-conformance.js'");
+    // Keep the chosen runtime honest: the runtime stage must actually provide Bun.
+    expect(dockerfile).toMatch(/COPY --from=bun \/usr\/local\/bin\/bun \/usr\/local\/bin\/bun/);
+  });
 });

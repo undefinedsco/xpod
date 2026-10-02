@@ -143,7 +143,7 @@ function runInstalledProduct(
   }
   dockerArgs.push(
     args.installedImage,
-    'node', 'dist/acceptance/run-installed-qlever-conformance.js',
+    'bun', 'dist/acceptance/run-installed-qlever-conformance.js',
   );
   runStep(`installed Xpod ${backend} conformance`, 'docker', dockerArgs, { timeoutMs: args.timeoutMs });
 }

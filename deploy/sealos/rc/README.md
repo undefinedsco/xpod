@@ -22,16 +22,28 @@ must place the immutable image digest, seed Secret name, seed mount, and
 `kubectl apply`. Do not patch the Deployment, set its image, or restart it in
 separate steps: each pod-template mutation creates another ReplicaSet and can
 interrupt CSS while it is creating the seeded accounts. Every candidate replaces
-`StatefulSet/xpod-rc-postgres` with the pinned PostgreSQL 17 + pgvector image in
-`deploy/sealos/rc-postgres`. Its `emptyDir` and generated password belong only to
-that run, so stale RDF schemas and candidate data cannot cross runs. The shared
-public RC entry points are serialized at the deployment job: release branches may
-build in parallel but cannot mutate the static RC service concurrently. RC reuses
-Redis and Inngest with an isolated nonzero Redis DB and Event Key. Pod blobs are written to the
-dedicated Cloudflare R2 bucket `xpod-rc`; its endpoint and credentials come only
-from `APP_ENV_FILE`. The historical `CSS_MINIO_*` names remain for compatibility
-in this release even though the backend is R2. The Inngest Signing Key is shared
-with the shared Inngest instance. Production object storage is not modified.
+`StatefulSet/xpod-rc-postgres` with the pinned PostgreSQL 17 + pgvector + QLever
+image in `deploy/sealos/rc-postgres`. Its `emptyDir` and generated password belong
+only to that run, so stale RDF schemas and candidate data cannot cross runs. The
+shared public RC entry points are serialized at the deployment job: release
+branches may build in parallel but cannot mutate the static RC service
+concurrently. RC reuses Redis and Inngest with an isolated nonzero Redis DB and
+Event Key. Pod blobs are written to the dedicated Cloudflare R2 bucket
+`xpod-rc`; its endpoint and credentials come only from `APP_ENV_FILE`. The
+historical `CSS_MINIO_*` names remain for compatibility in this release even
+though the backend is R2. The Inngest Signing Key is shared with the shared
+Inngest instance. Production object storage is not modified.
+
+The RC container starts from `config/cloud.qlever.json`, a thin explicit opt-in
+on top of the public `config/cloud.json`. It imports the public Cloud profile
+unchanged and overrides only `urn:undefineds:xpod:SolidRdfEngine` (adding
+`options_nativeSparqlEnabled: true` while preserving the original PostgreSQL
+FTS/VEC indexes, hot-operators profile, maintenance settings, and DSN) and
+`urn:undefineds:xpod:DefaultSparqlEngine` (switching from the Comunica adapter
+to `QleverSparqlEngine`). Missing or failing native SPARQL capability fails
+closed instead of falling back to Comunica, so the public Cloud baseline stays
+independently runnable while RC is the only profile that requires the private
+native extension.
 
 `CSS_BASE_URL`, `CSS_ALLOWED_HOSTS`, `XPOD_PUBLIC_API_URL`, ports, edition, and
 RC source are fixed in the manifest. The managed Gateway block also preserves
@@ -40,3 +52,34 @@ the same origin as the browser. `CSS_IDENTITY_DB_URL` and `CSS_SPARQL_ENDPOINT`
 from `APP_ENV_FILE` are discarded; the workflow injects the ephemeral PostgreSQL
 URLs. Do not place production hosts or unsupported prefix variables in
 `APP_ENV_FILE`.
+
+The native QLever conformance gate runs inside the deployed RC container and
+derives `XPOD_QLEVER_PG_DSN` from that container's own `CSS_SPARQL_ENDPOINT`,
+changing only the URL pathname to a unique owned database created for the run;
+the DSN and all environment values stay inside the container and are never
+printed. That isolated database is dropped even if the gate fails, so the RC
+business database is never used for conformance. The public 16-case semantic
+fixture is copied into `/tmp` only for the duration of the gate; it is never
+added to the runtime service image.
+
+## Predeployment gates
+
+Two gates run before `Create runtime secrets` (which rotates the old PostgreSQL
+password/DSN) and before any RC resource is replaced:
+
+1. The candidate workflow pulls the exact candidate service digest and the exact
+   immutable PostgreSQL digest on the runner and runs the existing
+   `scripts/check-qlever-installed-image-conformance.ts` helper (Bun runtime in
+   the container). The temporary Docker config preserves the existing GHCR login
+   and adds only the `ccr.ccs.tencentyun.com` auth filtered from the namespace's
+   existing `tcr-creds` secret.
+2. The workflow applies `deploy/sealos/rc-postgres/pull-preflight.yaml`, a
+   namespace-local Job that pulls the exact PostgreSQL digest through
+   `tcr-creds` and checks the version and extension files without touching the
+   RC data volume.
+
+Both gates fail closed and clean up their own temporary resources. The promotion
+`checks.json` only ever contains `"passed"` summaries; full native evidence
+(public16 semantics+search report, exact PostgreSQL/service image IDs,
+source/fixture/runner hashes, native ABI capabilities) is uploaded separately as
+`release-native-conformance-<sha>`.

@@ -1,0 +1,51 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
+  ],
+  "import": [
+    "./cloud.json"
+  ],
+  "@graph": [
+    {
+      "comment": "RC explicit native opt-in: PostgreSQL facts engine keeps the original PG FTS/VEC indexes, hot-operators acceleration profile, maintenance and DSN, and additionally enables the database-side native SPARQL ABI. Missing native capability fails closed instead of falling back to Comunica.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:undefineds:xpod:SolidRdfEngine"
+      },
+      "overrideParameters": {
+        "@type": "PostgresRdfEngine",
+        "options_driver": "pg",
+        "options_connectionString": {
+          "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+          "@type": "Variable"
+        },
+        "options_textIndex": {
+          "@id": "urn:undefineds:xpod:PostgresRdfTextIndex"
+        },
+        "options_vectorIndex": {
+          "@id": "urn:undefineds:xpod:PostgresRdfVectorIndex"
+        },
+        "options_rdfAccelerationProfile": "pg-hot-operators",
+        "options_autoOpen": true,
+        "options_maintenanceIntervalMs": 60000,
+        "options_maintenanceSourceBatchSize": 256,
+        "options_nativeSparqlEnabled": true
+      }
+    },
+    {
+      "comment": "RC explicit native opt-in: all server-owned Pod queries are evaluated by the native QLever SQL ABI behind PostgreSQL. There is no Comunica secondary execution path; unavailable or failing native capability surfaces as an error.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:undefineds:xpod:DefaultSparqlEngine"
+      },
+      "overrideParameters": {
+        "@type": "QleverSparqlEngine",
+        "rdfEngine": {
+          "@id": "urn:undefineds:xpod:SolidRdfEngine"
+        }
+      }
+    }
+  ]
+}

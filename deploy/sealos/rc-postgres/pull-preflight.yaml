@@ -1,0 +1,58 @@
+# Namespace-local, non-destructive preflight for the exact RC PostgreSQL image.
+#
+# The RC database runs the private xpod-rdf-postgres image, which lives in the
+# Tencent Container Registry. Before the workflow mutates any existing RC
+# resource it must prove that the assigned namespace kubelet can actually pull
+# that exact immutable digest using the existing tcr-creds imagePullSecret.
+# This Job never mounts the RC data volume and never starts a server on the RC
+# database; it only inspects the pulled image.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: xpod-rc-pg-preflight
+  labels:
+    app: xpod-rc-pg-preflight
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: xpod-rc-pg-preflight
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: tcr-creds
+      containers:
+        - name: postgres-preflight
+          image: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba
+          # Always: a cached IfNotPresent hit would skip the registry auth round
+          # trip, so the kubelet pull credential would never actually be tested.
+          imagePullPolicy: Always
+          command: [sh, -c]
+          args:
+            - |
+              set -eu
+              postgres --version
+              test -f /usr/share/postgresql/17/extension/vector.control
+              test -f /usr/share/postgresql/17/extension/xpod_rdf.control
+              test -f /usr/share/postgresql/17/extension/xpod_qlever.control
+              echo "xpod-rc-pg-preflight: ok"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

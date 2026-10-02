@@ -217,6 +217,11 @@ jobs:
       - name: Verify consent navigation before deployment
         run: |
           bun run build:packages
+          # The candidate native conformance step hashes the compiled
+          # dist/acceptance/run-installed-qlever-conformance.js against the copy
+          # inside the built service image. A clean checkout must therefore emit
+          # the same dist bytes the Dockerfile build stage produces.
+          bun run build:ts
           bunx vitest run ui/src/pages/ConsentResume.test.tsx ui/src/pages/ConsentRetry.test.tsx --maxWorkers=2 --minWorkers=1
           bunx playwright test tests/e2e/consent-cross-origin-resume.spec.ts --workers=1
 
@@ -340,6 +345,143 @@ jobs:
             --suffix "rc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo '{"secret-isolation":"passed"}' > "${RUNNER_TEMP}/secret-isolation-check.json"
 
+      # MANDATORY PREDEPLOYMENT GATE 1. Must run before "Create runtime secrets"
+      # (which rotates the old PostgreSQL password/DSN) and before any RC resource
+      # replacement. It proves the exact candidate service digest and the exact
+      # immutable RC PostgreSQL digest are mutually compatible at the native SQL
+      # ABI level, using only runner-local Docker with the existing GHCR login and
+      # the namespace-owned tcr-creds pull auth for ccr.ccs.tencentyun.com.
+      - name: Preflight immutable native images before any RC mutation
+        run: |
+          set -euo pipefail
+          # Before the first secret read: restrict default file modes, create the
+          # owned DOCKER_CONFIG directory, and register cleanup so any later
+          # fetch/decode/parse/install/image-gate failure removes the auth config
+          # while the existing RC resources stay untouched.
+          umask 077
+          docker_config_dir="${RUNNER_TEMP}/tcr-preflight-docker-config"
+          install -d -m 700 "$docker_config_dir"
+          cleanup_docker_config() {
+            rm -rf "$docker_config_dir"
+          }
+          trap cleanup_docker_config EXIT
+          # Stream the namespace secret through an in-memory parser. No raw auths
+          # JSON and no all-registry docker config is ever written to disk; only
+          # the ccr.ccs.tencentyun.com entry (plus the explicitly authorized
+          # existing ghcr.io login) reaches the 0600 DOCKER_CONFIG file.
+          read -r -d '' tcr_config_parser <<'NODE' || true
+          // Outermost guard: a malformed secret must never print its own bytes.
+          // An uncaught JSON.parse error includes a fragment of the decoded
+          // credential (Node prints e.g. `... "FAKE_TEST_SENTINEL"...`), so every
+          // read/decode/parse/write failure is caught here and replaced with a
+          // fixed, non-sensitive message on stderr.
+          try {
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const source = JSON.parse(fs.readFileSync(0, 'utf8'));
+            const sourceKey = Object.keys(source.auths || {})
+              .find((key) => /(^|\/\/)ccr\.ccs\.tencentyun\.com(\/|$)/.test(key));
+            if (!sourceKey) {
+              throw new Error('missing-authorized-tcr-entry');
+            }
+            const config = { auths: {} };
+            const existingPath = path.join(process.env.HOME || '/root', '.docker', 'config.json');
+            if (fs.existsSync(existingPath)) {
+              const existing = JSON.parse(fs.readFileSync(existingPath, 'utf8'));
+              if (existing.auths && existing.auths['ghcr.io']) {
+                config.auths['ghcr.io'] = existing.auths['ghcr.io'];
+              }
+            }
+            config.auths['ccr.ccs.tencentyun.com'] = source.auths[sourceKey];
+            fs.writeFileSync(process.argv[1], `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+          } catch {
+            process.stderr.write('failed to install authorized registry credentials\n');
+            process.exit(1);
+          }
+          NODE
+          kubectl -n "$SEALOS_NAMESPACE" get secret tcr-creds -o jsonpath='{.data.\.dockerconfigjson}' \
+            | base64 --decode \
+            | node -e "$tcr_config_parser" "$docker_config_dir/config.json"
+          DOCKER_CONFIG="$docker_config_dir" docker pull "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
+          DOCKER_CONFIG="$docker_config_dir" docker pull "ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba"
+          mkdir -p "${RUNNER_TEMP}/immutable-native-conformance"
+          DOCKER_CONFIG="$docker_config_dir" bun scripts/check-qlever-installed-image-conformance.ts \
+            --installed-image "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}" \
+            --pg-image "ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba" \
+            --fixture qlever/tests/fixtures/qlever-semantic-conformance.cjs \
+            --artifact-dir "${RUNNER_TEMP}/immutable-native-conformance"
+          cleanup_docker_config
+          trap - EXIT
+
+      # MANDATORY PREDEPLOYMENT GATE 2. Verifies the assigned namespace kubelet
+      # can pull the exact RC PostgreSQL digest with the existing tcr-creds
+      # imagePullSecret, independently of the runner Docker gate above. It never
+      # touches the existing RC database and cleans up its own Job.
+      - name: Preflight exact PostgreSQL image pull in the assigned namespace
+        run: |
+          set -euo pipefail
+          job_name="xpod-rc-pg-preflight"
+          job_uid=""
+          delete_preflight_job() {
+            kubectl -n "$SEALOS_NAMESPACE" delete job "$job_name" --ignore-not-found --wait=true >/dev/null 2>&1
+          }
+          cleanup_preflight() {
+            local original_status=$?
+            if [ -n "$job_uid" ] && ! delete_preflight_job; then
+              echo "::error::failed to clean up RC PostgreSQL pull preflight job ${job_name}; original exit status ${original_status} preserved"
+            fi
+            return "$original_status"
+          }
+          trap cleanup_preflight EXIT
+          # A leftover Job from an earlier attempt may already be Complete=True.
+          # Reading that stale condition would issue a false PASS for this run,
+          # and a delete failure (e.g. missing RBAC) must hard stop rather than
+          # silently reuse the stale result. --ignore-not-found still reports a
+          # real API/permission error as nonzero.
+          if ! delete_preflight_job; then
+            echo "::error::could not clear a stale RC PostgreSQL pull preflight job; refusing to reuse stale results"
+            exit 1
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" apply -f deploy/sealos/rc-postgres/pull-preflight.yaml
+          job_uid="$(kubectl -n "$SEALOS_NAMESPACE" get job "$job_name" -o jsonpath='{.metadata.uid}')"
+          if [ -z "$job_uid" ]; then
+            echo "::error::applied RC PostgreSQL pull preflight job has no UID"
+            exit 1
+          fi
+          preflight_status="pending"
+          for attempt in $(seq 1 120); do
+            condition="$(kubectl -n "$SEALOS_NAMESPACE" get job "$job_name" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)"
+            if [[ "$condition" == *"Complete=True"* ]]; then
+              preflight_status="complete"
+              break
+            fi
+            if [[ "$condition" == *"Failed=True"* ]]; then
+              preflight_status="failed"
+              break
+            fi
+            sleep 5
+          done
+          if [ "$preflight_status" != "complete" ]; then
+            echo "::error::RC PostgreSQL image pull preflight did not complete; the existing RC database is left untouched"
+            kubectl -n "$SEALOS_NAMESPACE" describe "job/$job_name" || true
+            kubectl -n "$SEALOS_NAMESPACE" logs "job/$job_name" --all-containers=true || true
+            exit 1
+          fi
+          # The job must still be the exact object this run applied; a replaced
+          # same-named Job would invalidate the observed Complete condition.
+          observed_uid="$(kubectl -n "$SEALOS_NAMESPACE" get job "$job_name" -o jsonpath='{.metadata.uid}')"
+          if [ "$observed_uid" != "$job_uid" ]; then
+            echo "::error::RC PostgreSQL pull preflight job was replaced while running; refusing to trust its result"
+            exit 1
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" logs "job/$job_name" --all-containers=true
+          if ! delete_preflight_job; then
+            echo "::error::failed to clean up RC PostgreSQL pull preflight job ${job_name}"
+            exit 1
+          fi
+          job_uid=""
+          trap - EXIT
+
       - name: Create runtime secrets
         run: |
           set -euo pipefail
@@ -386,6 +528,11 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" delete pvc/data-xpod-rc-postgres-0 --ignore-not-found
           kubectl apply -f "$postgres_manifest"
           kubectl rollout status statefulset/xpod-rc-postgres -n "$SEALOS_NAMESPACE" --timeout=600s
+          postgres_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod xpod-rc-postgres-0 -o jsonpath='{.status.containerStatuses[?(@.name=="postgres")].imageID}')"
+          if [[ "$postgres_image_id" != *"de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba"* ]]; then
+            echo "::error::RC PostgreSQL imageID mismatch"
+            exit 1
+          fi
           postgres_version_num="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
             psql -U xpod_rc -d xpod_rc --no-align --tuples-only --command 'SHOW server_version_num' | tr -d '[:space:]')"
           if ! [[ "$postgres_version_num" =~ ^17[0-9]{4}$ ]]; then
@@ -394,6 +541,10 @@ jobs:
           fi
           kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
             psql -v ON_ERROR_STOP=1 -U xpod_rc -d xpod_rc --command 'CREATE EXTENSION IF NOT EXISTS vector'
+          kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
+            psql -v ON_ERROR_STOP=1 -U xpod_rc -d xpod_rc --command 'CREATE EXTENSION IF NOT EXISTS xpod_rdf'
+          kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
+            psql -v ON_ERROR_STOP=1 -U xpod_rc -d xpod_rc --command 'CREATE EXTENSION IF NOT EXISTS xpod_qlever'
           vector_version="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
             psql -U xpod_rc -d xpod_rc --no-align --tuples-only \
               --command "SELECT extversion FROM pg_extension WHERE extname = 'vector'" | tr -d '[:space:]')"
@@ -401,6 +552,10 @@ jobs:
             echo "::error::RC database did not activate the vector extension"
             exit 1
           fi
+          native_capabilities="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
+            psql -U xpod_rc -d xpod_rc --no-align --tuples-only \
+              --command 'SELECT xpod_rdf.native_sparql_capabilities()::text' | tr -d '[:space:]')"
+          printf '%s' "$native_capabilities" | node -e "const input=[];process.stdin.on('data',(chunk)=>input.push(chunk));process.stdin.on('end',()=>{const caps=JSON.parse(Buffer.concat(input).toString());if(caps.abiVersion!==1||caps.ready!==true)throw new Error('RC native SPARQL ABI1 is not ready');});"
           kubectl -n "$SEALOS_NAMESPACE" get configmap gateway -o yaml \
             | node scripts/update-gateway-rc-configmap.cjs --namespace "$SEALOS_NAMESPACE" \
             | kubectl apply -f -
@@ -451,9 +606,218 @@ jobs:
             "direct-pod": "passed",
             "postgres-17": "passed",
             "postgres-ephemeral": "passed",
+            "postgres-image-id": "passed",
+            "service-image-id": "passed",
             "vector": "passed"
           }
           JSON
+
+      - name: Verify native RC database QLever SQL ABI against the exact candidate
+        run: |
+          set -euo pipefail
+          pod_name="$(kubectl -n "$SEALOS_NAMESPACE" get pods -l app=xpod-rc -o json | node -e '
+            const input = [];
+            process.stdin.on("data", (chunk) => input.push(chunk));
+            process.stdin.on("end", () => {
+              const digest = process.argv[1];
+              const pods = JSON.parse(Buffer.concat(input)).items || [];
+              const pod = pods.find(({ metadata, status }) => {
+                const containerStatus = status?.containerStatuses?.find(({ name }) => name === "xpod");
+                return !metadata.deletionTimestamp && status?.phase === "Running" &&
+                  containerStatus?.ready === true && containerStatus.imageID?.includes(digest);
+              });
+              if (!pod) process.exit(1);
+              process.stdout.write(pod.metadata.name);
+            });
+          ' "${{ needs.build_image.outputs.digest }}")"
+          service_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.containerStatuses[?(@.name=="xpod")].imageID}')"
+          service_pod_uid="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$pod_name" -o jsonpath='{.metadata.uid}')"
+          postgres_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod xpod-rc-postgres-0 -o jsonpath='{.status.containerStatuses[?(@.name=="postgres")].imageID}')"
+          postgres_pod_uid="$(kubectl -n "$SEALOS_NAMESPACE" get pod xpod-rc-postgres-0 -o jsonpath='{.metadata.uid}')"
+          if [[ "$postgres_image_id" != *"de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba"* ]]; then
+            echo "::error::native RC acceptance ran against an unexpected PostgreSQL imageID"
+            exit 1
+          fi
+          if [ -z "$service_pod_uid" ] || [ -z "$postgres_pod_uid" ]; then
+            echo "::error::could not read the RC service/PostgreSQL Pod UID for this sample"
+            exit 1
+          fi
+          fixture_hash="$(sha256sum qlever/tests/fixtures/qlever-semantic-conformance.cjs | awk '{print $1}')"
+          if [ "$fixture_hash" != "597dc09c9b252541e35483cf9d34461a410d4a747808f917948671bd81890e6a" ]; then
+            echo "::error::public QLever semantic fixture hash drifted from the pinned RC contract"
+            exit 1
+          fi
+          expected_native="$(sha256sum dist/acceptance/run-installed-qlever-conformance.js | awk '{print $1}')"
+          native_runner_hash="$(kubectl -n "$SEALOS_NAMESPACE" exec "$pod_name" -c xpod -- sha256sum dist/acceptance/run-installed-qlever-conformance.js | awk '{print $1}')"
+          if [ "$native_runner_hash" != "$expected_native" ]; then
+            echo "::error::candidate native conformance runner does not match the source tree"
+            exit 1
+          fi
+          # Isolation: PostgresRdfEngine.initialize runs xpod_rdf.ensure_statistics_triggers(),
+          # which DROP/CREATEs global statistics triggers on public.rdf_quads/rdf_sources.
+          # A per-schema search_path cannot contain that, so the public16 gate runs in a
+          # unique owned database created on the SAME exact PostgreSQL pod and dropped
+          # again even on failure. The RC business database is never used.
+          run_slug="$(printf '%s' "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '_' | sed -E 's/^_+|_+$//g' | cut -c1-40)"
+          native_db="xpod_rc_native_${run_slug}"
+          container_work_dir="/tmp/xpod-rc-native-${run_slug}"
+          if [[ ! "$native_db" =~ ^[a-z][a-z0-9_]{0,62}$ || "$native_db" = "xpod_rc" ]]; then
+            echo "::error::derived native conformance database name is invalid or matches the RC business database"
+            exit 1
+          fi
+          if [[ ! "$container_work_dir" =~ ^/tmp/xpod-rc-native-[a-z0-9_]+$ ]]; then
+            echo "::error::derived native conformance work directory is invalid"
+            exit 1
+          fi
+          # Ownership stays false until CREATE DATABASE succeeds, so a failed
+          # create never triggers a DROP of a database this run did not create.
+          native_db_owned=0
+          container_work_dir_created=0
+          # The DROP must be verified: a silently ignored failure would leave an
+          # owned database behind. The existence probe must also check its own
+          # command exit, because `! command` suppresses errexit and an empty
+          # probe result must never be read as "absent". On the normal path a
+          # failed cleanup fails the step; on the failure path the original exit
+          # status is preserved while the cleanup failure is reported explicitly.
+          drop_native_db() {
+            local drop_status=0
+            if ! kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
+              psql -U xpod_rc -d xpod_rc -v ON_ERROR_STOP=1 \
+                --command "DROP DATABASE IF EXISTS ${native_db} WITH (FORCE)" >/dev/null 2>&1; then
+              drop_status=1
+            fi
+            local probe_output
+            if ! probe_output="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
+              psql -U xpod_rc -d xpod_rc --no-align --tuples-only \
+                --command "SELECT 1 FROM pg_database WHERE datname = '${native_db}'")"; then
+              echo "::error::failed to verify removal of owned native conformance database ${native_db}; the existence probe command failed"
+              return 1
+            fi
+            if [ "$(printf '%s' "$probe_output" | tr -d '[:space:]')" = "1" ]; then
+              drop_status=1
+            fi
+            if [ "$drop_status" -ne 0 ]; then
+              echo "::error::failed to drop owned native conformance database ${native_db}; it must be removed manually"
+              return 1
+            fi
+            return 0
+          }
+          remove_container_work_dir() {
+            if ! kubectl -n "$SEALOS_NAMESPACE" exec "$pod_name" -c xpod -- \
+              rm -rf "$container_work_dir" >/dev/null 2>&1; then
+              echo "::error::failed to remove temporary in-container conformance directory ${container_work_dir}"
+              return 1
+            fi
+            if ! kubectl -n "$SEALOS_NAMESPACE" exec "$pod_name" -c xpod -- \
+              test ! -e "$container_work_dir" >/dev/null 2>&1; then
+              echo "::error::failed to verify removal of temporary in-container conformance directory ${container_work_dir}"
+              return 1
+            fi
+            return 0
+          }
+          assert_rc_identity_unchanged() {
+            local current_service_pod_uid current_service_image_id current_postgres_pod_uid current_postgres_image_id
+            current_service_pod_uid="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$pod_name" -o jsonpath='{.metadata.uid}')"
+            current_service_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.containerStatuses[?(@.name=="xpod")].imageID}')"
+            current_postgres_pod_uid="$(kubectl -n "$SEALOS_NAMESPACE" get pod xpod-rc-postgres-0 -o jsonpath='{.metadata.uid}')"
+            current_postgres_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod xpod-rc-postgres-0 -o jsonpath='{.status.containerStatuses[?(@.name=="postgres")].imageID}')"
+            if [ "$current_service_pod_uid" != "$service_pod_uid" ] \
+              || [ "$current_service_image_id" != "$service_image_id" ] \
+              || [ "$current_postgres_pod_uid" != "$postgres_pod_uid" ] \
+              || [ "$current_postgres_image_id" != "$postgres_image_id" ]; then
+              echo "::error::RC identities changed during native acceptance (PostgreSQL/service Pod replaced); failing the sample"
+              return 1
+            fi
+            return 0
+          }
+          cleanup_native_conformance() {
+            local original_status=$?
+            if [ "$native_db_owned" -eq 1 ] && ! drop_native_db; then
+              echo "::error::native conformance database cleanup failed after an earlier failure; original exit status ${original_status} preserved"
+            fi
+            if [ "$container_work_dir_created" -eq 1 ] && ! remove_container_work_dir; then
+              echo "::error::temporary in-container conformance directory cleanup failed after an earlier failure; original exit status ${original_status} preserved"
+            fi
+            return "$original_status"
+          }
+          trap cleanup_native_conformance EXIT
+          kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
+            psql -U xpod_rc -d xpod_rc -v ON_ERROR_STOP=1 \
+              --command "CREATE DATABASE ${native_db} TEMPLATE template0"
+          native_db_owned=1
+          kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
+            psql -U xpod_rc -d "${native_db}" -v ON_ERROR_STOP=1 \
+              --command 'CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS xpod_rdf; CREATE EXTENSION IF NOT EXISTS xpod_qlever;'
+          # No workflow-side schema DDL: the installed conformance runner's own
+          # PostgresRdfEngine.initialize creates the authority + physical schema.
+          native_capabilities="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
+            psql -U xpod_rc -d "${native_db}" --no-align --tuples-only \
+              --command 'SELECT xpod_rdf.native_sparql_capabilities()::text' | tr -d '[:space:]')"
+          printf '%s' "$native_capabilities" | node -e "const input=[];process.stdin.on('data',(chunk)=>input.push(chunk));process.stdin.on('end',()=>{const caps=JSON.parse(Buffer.concat(input).toString());if(caps.abiVersion!==1||caps.ready!==true)throw new Error('RC native SPARQL ABI1 is not ready');});"
+          kubectl -n "$SEALOS_NAMESPACE" exec "$pod_name" -c xpod -- env XPOD_RC_NATIVE_WORK_DIR="$container_work_dir" bun -e "const fs=require('node:fs');const dir=process.env.XPOD_RC_NATIVE_WORK_DIR;if(!dir)throw new Error('native conformance work directory is required');fs.rmSync(dir,{recursive:true,force:true});fs.mkdirSync(dir,{mode:0o700,recursive:true});fs.chmodSync(dir,0o700);"
+          container_work_dir_created=1
+          kubectl -n "$SEALOS_NAMESPACE" exec -i "$pod_name" -c xpod -- env XPOD_RC_NATIVE_WORK_DIR="$container_work_dir" bun -e "const fs=require('node:fs');const dir=process.env.XPOD_RC_NATIVE_WORK_DIR;const chunks=[];process.stdin.on('data',(chunk)=>chunks.push(chunk));process.stdin.on('end',()=>fs.writeFileSync(dir+'/qlever-semantic-conformance.cjs',Buffer.concat(chunks),{mode:0o600}));" < qlever/tests/fixtures/qlever-semantic-conformance.cjs
+          kubectl -n "$SEALOS_NAMESPACE" exec "$pod_name" -c xpod -- env XPOD_RC_NATIVE_DATABASE="${native_db}" XPOD_RC_NATIVE_WORK_DIR="$container_work_dir" bun -e "if(!process.env.CSS_SPARQL_ENDPOINT)throw new Error('CSS_SPARQL_ENDPOINT must be present in the container');if(!process.env.XPOD_RC_NATIVE_DATABASE)throw new Error('native conformance database is required');if(!process.env.XPOD_RC_NATIVE_WORK_DIR)throw new Error('native conformance work directory is required');const url=new URL(process.env.CSS_SPARQL_ENDPOINT);url.pathname='/'+process.env.XPOD_RC_NATIVE_DATABASE;process.env.XPOD_QLEVER_PG_DSN=url.toString();process.env.XPOD_QLEVER_CONFORMANCE_BACKEND='pg';process.env.XPOD_QLEVER_SEMANTIC_FIXTURE_PATH=process.env.XPOD_RC_NATIVE_WORK_DIR+'/qlever-semantic-conformance.cjs';process.env.XPOD_QLEVER_CONFORMANCE_ARTIFACT_PATH=process.env.XPOD_RC_NATIVE_WORK_DIR+'/pg-installed-conformance.json';process.env.XPOD_QLEVER_CONFORMANCE_TIMEOUT_MS='1200000';require('node:child_process').execFileSync(process.execPath,['dist/acceptance/run-installed-qlever-conformance.js'],{stdio:'inherit'});"
+          kubectl -n "$SEALOS_NAMESPACE" exec "$pod_name" -c xpod -- cat "$container_work_dir/pg-installed-conformance.json" > "${RUNNER_TEMP}/pg-installed-conformance.json"
+          # The performance/acceptance sample is only valid if the exact same
+          # PostgreSQL and service Pod instances produced it.
+          if ! assert_rc_identity_unchanged; then
+            exit 1
+          fi
+          if ! remove_container_work_dir; then
+            exit 1
+          fi
+          container_work_dir_created=0
+          if ! drop_native_db; then
+            exit 1
+          fi
+          native_db_owned=0
+          trap - EXIT
+          node - "${RUNNER_TEMP}/pg-installed-conformance.json" "$fixture_hash" "$native_runner_hash" "$native_capabilities" "$service_image_id" "$postgres_image_id" "$service_pod_uid" "$postgres_pod_uid" <<'NODE'
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const fixtureSha = process.argv[3];
+          const runnerSha = process.argv[4];
+          const capabilities = JSON.parse(process.argv[5]);
+          const serviceImageId = process.argv[6];
+          const postgresImageId = process.argv[7];
+          const servicePodUid = process.argv[8];
+          const postgresPodUid = process.argv[9];
+          if (report.schemaVersion !== 1 || report.status !== 'ok' || report.backend !== 'pg') {
+            throw new Error('native RC QLever conformance did not complete successfully');
+          }
+          if (capabilities.abiVersion !== 1 || capabilities.ready !== true) {
+            throw new Error('RC native SPARQL ABI1 is not ready');
+          }
+          if (!serviceImageId.includes(process.env.EXPECTED_DIGEST)) {
+            throw new Error('native RC acceptance ran against an unexpected service imageID');
+          }
+          if (!postgresImageId.includes('de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba')) {
+            throw new Error('native RC acceptance ran against an unexpected PostgreSQL imageID');
+          }
+          const evidence = {
+            schemaVersion: 1,
+            status: 'ok',
+            sourceSha: process.env.SOURCE_SHA,
+            fixtureSha,
+            runnerSha,
+            nativeCapabilities: capabilities,
+            serviceImageId,
+            postgresImageId,
+            servicePodUid,
+            postgresPodUid,
+            conformance: report,
+          };
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/native-conformance-evidence.json`, `${JSON.stringify(evidence, null, 2)}\n`);
+          const checks = {
+            'native-sql-abi1': 'passed',
+            'native-qlever-pg-conformance': 'passed',
+          };
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/native-conformance-checks.json`, `${JSON.stringify(checks, null, 2)}\n`);
+          NODE
+        env:
+          EXPECTED_DIGEST: ${{ needs.build_image.outputs.digest }}
+          SOURCE_SHA: ${{ needs.metadata.outputs.sourceSha }}
 
       - name: Verify RC TLS certificates
         run: |
@@ -623,6 +987,7 @@ jobs:
             ...JSON.parse(fs.readFileSync(path.join(temp, 'public-checks.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'authenticated-check.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'live-gateway-checks.json'), 'utf8')),
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'native-conformance-checks.json'), 'utf8')),
           };
           fs.writeFileSync(path.join(temp, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
           NODE
@@ -634,6 +999,21 @@ jobs:
           name: release-service-acceptance-${{ github.sha }}
           path: ${{ runner.temp }}/checks.json
           if-no-files-found: error
+
+      # The promotion checks file only ever holds "passed" summaries. The full
+      # native evidence (public16 semantics+search report, exact PG/service image
+      # IDs, source/fixture/runner hashes, native ABI capabilities) is a separate
+      # source-bound artifact.
+      - name: Upload native conformance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-native-conformance-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/native-conformance-evidence.json
+            ${{ runner.temp }}/immutable-native-conformance/installed-image-conformance.json
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Dump diagnostics
         if: failure()

@@ -32,6 +32,12 @@ spec:
         app: xpod-rc-postgres
     spec:
       automountServiceAccountToken: false
+      # The exact private xpod-rdf-postgres digest lives in the Tencent Container
+      # Registry. ROOT confirmed the assigned namespace owns this existing
+      # kubernetes.io/dockerconfigjson secret; static names are not pull proof, so
+      # the candidate workflow must still pass its namespace preflight.
+      imagePullSecrets:
+        - name: tcr-creds
       securityContext:
         runAsNonRoot: true
         runAsUser: 999
@@ -41,7 +47,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: postgres
-          image: docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38
+          image: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba
           imagePullPolicy: IfNotPresent
           ports:
             - name: postgres

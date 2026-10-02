@@ -1,5 +1,9 @@
 import { readFile } from 'node:fs/promises';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import type { SpawnSyncReturns } from 'node:child_process';
 import { parseDocument } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
@@ -31,6 +35,179 @@ function jobRunText(workflow: Workflow, jobName: string): string {
 
 function allRuns(workflow: Workflow): string[] {
   return Object.values(workflow.jobs ?? {}).flatMap((job: any) => stepRuns(job));
+}
+
+/**
+ * Runs an extracted workflow cleanup region against a stubbed kubectl so the
+ * real DROP-verification, ownership, and failure-preservation behavior is
+ * exercised, not merely string-matched.
+ */
+type StubMode =
+  | 'ok'
+  | 'drop-command-fail'
+  | 'drop-not-removed'
+  | 'probe-command-fail'
+  | 'create-fail'
+  | 'workdir-remove-fail'
+  | 'identity-ok';
+
+function runCleanupScript(
+  region: string,
+  body: string,
+  stubMode: StubMode,
+  logPath?: string,
+): SpawnSyncReturns<string> {
+  const temp = mkdtempSync(path.join(os.tmpdir(), 'xpod-native-db-'));
+  const bin = path.join(temp, 'bin');
+  mkdirSync(bin);
+  const kubectlStub = path.join(bin, 'kubectl');
+  writeFileSync(kubectlStub, `#!/usr/bin/env bash
+if [ -n "\${STUB_LOG:-}" ]; then printf '%s\\n' "$*" >> "$STUB_LOG"; fi
+case "\${STUB_MODE:-ok}" in
+  drop-command-fail)
+    if [[ "$*" == *"DROP DATABASE"* ]]; then exit 1; fi
+    exit 0
+    ;;
+  drop-not-removed)
+    if [[ "$*" == *"DROP DATABASE"* ]]; then exit 0; fi
+    if [[ "$*" == *"pg_database"* ]]; then printf '1\\n'; exit 0; fi
+    exit 0
+    ;;
+  probe-command-fail)
+    if [[ "$*" == *"DROP DATABASE"* ]]; then exit 0; fi
+    if [[ "$*" == *"pg_database"* ]]; then exit 3; fi
+    exit 0
+    ;;
+  create-fail)
+    if [[ "$*" == *"CREATE DATABASE"* ]]; then exit 1; fi
+    exit 0
+    ;;
+  workdir-remove-fail)
+    if [[ "$*" == *"rm -rf"* ]]; then exit 1; fi
+    exit 0
+    ;;
+  identity-ok)
+    if [[ "$*" == *"metadata.uid"* ]]; then
+      if [[ "$*" == *"xpod-rc-postgres-0"* ]]; then printf 'uid-db'; else printf 'uid-a'; fi
+      exit 0
+    fi
+    if [[ "$*" == *"imageID"* ]]; then
+      if [[ "$*" == *"xpod-rc-postgres-0"* ]]; then printf 'img-db'; else printf 'img-a'; fi
+      exit 0
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`);
+  chmodSync(kubectlStub, 0o755);
+  const script = `set -euo pipefail
+export SEALOS_NAMESPACE=xpod-rc
+export STUB_MODE=${stubMode}
+export STUB_LOG=${logPath ?? ''}
+pod_name=xpod-rc-test-pod
+container_work_dir=/tmp/xpod-rc-native-probe
+native_db=xpod_rc_native_probe
+${region}
+${body}
+`;
+  try {
+    return spawnSync('bash', ['-c', script], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+}
+
+function nativeCleanupRegion(run: string): string {
+  const start = run.indexOf('native_db_owned=0');
+  const marker = 'trap cleanup_native_conformance EXIT';
+  const end = run.indexOf(marker, start) + marker.length;
+  return run.slice(start, end);
+}
+
+function nativeStepRun(workflow: Workflow): string {
+  return workflow.jobs.deploy_and_accept.steps.find((step: any) =>
+    step.name === 'Verify native RC database QLever SQL ABI against the exact candidate').run;
+}
+
+/**
+ * Runs the real credential-install region of the immutable preflight step with
+ * stubbed kubectl/docker/bun, so fetch/decode/parse/install/image-gate failures
+ * are exercised against the actual workflow shell, not merely string-matched.
+ * Returns whether the owned 0700 credential directory survived the run.
+ */
+function runCredentialGate(
+  gateRun: string,
+  scenario: {
+    secretJson?: string;
+    rawKubectlOutput?: string;
+    dockerExit?: number;
+    bunExit?: number;
+    kubectlExit?: number;
+    existingGhcrConfig?: string;
+    existingGhcrConfigAsDirectory?: boolean;
+  },
+): { result: SpawnSyncReturns<string>; dirExists: boolean } {
+  const temp = mkdtempSync(path.join(os.tmpdir(), 'xpod-tcr-gate-'));
+  const bin = path.join(temp, 'bin');
+  mkdirSync(bin);
+  const home = path.join(temp, 'home');
+  mkdirSync(path.join(home, '.docker'), { recursive: true });
+  const existingConfigPath = path.join(home, '.docker', 'config.json');
+  if (scenario.existingGhcrConfigAsDirectory) {
+    mkdirSync(existingConfigPath, { recursive: true });
+  } else {
+    writeFileSync(existingConfigPath, scenario.existingGhcrConfig ?? JSON.stringify({
+      auths: { 'ghcr.io': { auth: 'ghcr-token' } },
+    }));
+  }
+  const secretJson = scenario.secretJson ?? JSON.stringify({
+    auths: { 'ccr.ccs.tencentyun.com': { auth: 'tcr-token' } },
+  });
+  const payload = scenario.rawKubectlOutput ?? Buffer.from(secretJson, 'utf8').toString('base64');
+  const payloadFile = path.join(temp, 'kubectl.out');
+  writeFileSync(payloadFile, payload);
+  writeFileSync(path.join(bin, 'kubectl'), `#!/usr/bin/env bash
+if [ "\${KUBECTL_EXIT:-0}" != "0" ]; then exit "\${KUBECTL_EXIT}"; fi
+cat "${payloadFile}"
+`);
+  writeFileSync(path.join(bin, 'docker'), '#!/usr/bin/env bash\nexit "${DOCKER_EXIT:-0}"\n');
+  writeFileSync(path.join(bin, 'bun'), '#!/usr/bin/env bash\nexit "${BUN_EXIT:-0}"\n');
+  for (const name of [ 'kubectl', 'docker', 'bun' ]) chmodSync(path.join(bin, name), 0o755);
+  // The workflow text carries ${{ needs.build_image.outputs.digest }}, which is
+  // not valid bash; substitute a literal immutable digest placeholder.
+  const runnable = gateRun.replace(
+    /\$\{\{ needs\.build_image\.outputs\.digest \}\}/g,
+    `sha256:${'0'.repeat(64)}`,
+  );
+  const runnerTemp = path.join(temp, 'runner');
+  mkdirSync(runnerTemp, { recursive: true });
+  const script = `set -euo pipefail
+export SEALOS_NAMESPACE=xpod-rc
+export HOME=${home}
+export RUNNER_TEMP=${runnerTemp}
+${runnable}
+`;
+  const dirPath = path.join(runnerTemp, 'tcr-preflight-docker-config');
+  const result = spawnSync('bash', ['-c', script], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      HOME: home,
+      KUBECTL_EXIT: String(scenario.kubectlExit ?? 0),
+      DOCKER_EXIT: String(scenario.dockerExit ?? 0),
+      BUN_EXIT: String(scenario.bunExit ?? 0),
+    },
+  });
+  const dirExists = existsSync(dirPath);
+  rmSync(temp, { recursive: true, force: true });
+  return { result, dirExists };
 }
 
 describe('release candidate workflow', () => {
@@ -467,5 +644,565 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('containerStatus?.ready');
     expect(runText).toContain('metadata.deletionTimestamp');
     expect(runText).not.toContain("image: 'passed'");
+  });
+
+  it('bootstraps and gates the native RC QLever SQL ABI against the exact candidate', async () => {
+    const workflow = await loadWorkflow();
+    const runText = jobRunText(workflow, 'deploy_and_accept');
+    const nativeStep = workflow.jobs.deploy_and_accept.steps.find((step: any) =>
+      step.name === 'Verify native RC database QLever SQL ABI against the exact candidate');
+
+    expect(nativeStep).toBeDefined();
+    // Bootstrap the same extensions the private RC image provisions, then fail closed on ABI/ready.
+    expect(runText).toContain('CREATE EXTENSION IF NOT EXISTS vector');
+    expect(runText).toContain('CREATE EXTENSION IF NOT EXISTS xpod_rdf');
+    expect(runText).toContain('CREATE EXTENSION IF NOT EXISTS xpod_qlever');
+    expect(runText).toContain('xpod_rdf.native_sparql_capabilities()');
+    expect(runText).toContain('caps.abiVersion!==1||caps.ready!==true');
+    // The authority schema is created by the installed runner's own
+    // PostgresRdfEngine.initialize; the workflow must not copy DDL or probe for
+    // public.rdf_quads before that runner has initialized its own temp database.
+    expect(runText).not.toContain('xpod_qlever_prepare_physical_schema()');
+    expect(runText).not.toContain("to_regclass('public.rdf_quads')");
+    // Bind the gate to the exact candidate image and the pinned public fixture contract.
+    expect(nativeStep.run).toContain('${{ needs.build_image.outputs.digest }}');
+    expect(nativeStep.run).toContain('597dc09c9b252541e35483cf9d34461a410d4a747808f917948671bd81890e6a');
+    expect(nativeStep.run).toContain('sha256sum qlever/tests/fixtures/qlever-semantic-conformance.cjs');
+    expect(nativeStep.run).toContain('native conformance runner does not match the source tree');
+    expect(nativeStep.run).toContain('dist/acceptance/run-installed-qlever-conformance.js');
+    // The fixture is injected temporarily into a unique 0700 in-container
+    // directory, never baked into the image and never at a fixed shared path.
+    expect(nativeStep.run).toContain('fs.chmodSync(dir,0o700)');
+    expect(nativeStep.run).toContain("dir+'/qlever-semantic-conformance.cjs'");
+    expect(nativeStep.run).toContain("XPOD_QLEVER_CONFORMANCE_BACKEND='pg'");
+    expect(nativeStep.run).toContain("+'/pg-installed-conformance.json'");
+    expect(nativeStep.run).toContain('remove_container_work_dir');
+    expect(nativeStep.run).not.toContain('/tmp/qlever-semantic-conformance.cjs');
+    expect(nativeStep.run).not.toMatch(/\bsh\s+-c|\bbash\s+-c/);
+    // The in-container product seam runs on the shipped Bun runtime, not a Node fallback.
+    expect(nativeStep.run).toContain('bun -e');
+    expect(nativeStep.run).toContain('bun -e "if(!process.env.CSS_SPARQL_ENDPOINT)');
+    expect(nativeStep.run).not.toContain('-- node -e');
+    // The DSN is derived inside the container from the authoritative endpoint, never duplicated.
+    expect(nativeStep.run).toContain("url.pathname='/'+process.env.XPOD_RC_NATIVE_DATABASE");
+    expect(runText).not.toMatch(/-e\s+XPOD_QLEVER_PG_DSN=/);
+    expect(runText).not.toContain('--from-literal=XPOD_QLEVER_PG_DSN');
+    // Capabilities and both imageIDs belong to the separate source-bound evidence file.
+    expect(nativeStep.run).toContain('native-conformance-evidence.json');
+    expect(nativeStep.run).toContain('serviceImageId');
+    expect(nativeStep.run).toContain('postgresImageId');
+    expect(runText).toContain('postgres-image-id');
+    expect(runText).toContain('de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba');
+    expect(runText).toContain('native-sql-abi1');
+    // Never print secrets or DSNs.
+    expect(nativeStep.run).not.toContain('::add-mask::');
+    expect(nativeStep.run).not.toMatch(/echo\s+["']?\$?(?:XPOD_QLEVER_PG_DSN|CSS_SPARQL_ENDPOINT)/);
+    expect(nativeStep.run).not.toContain('cat "$CSS_SPARQL_ENDPOINT"');
+  });
+
+  it('isolates the public16 native gate in a unique owned database and drops it even on failure', async () => {
+    const workflow = await loadWorkflow();
+    const run = nativeStepRun(workflow);
+
+    // The RC business database must never be the conformance target.
+    expect(run).toContain('native_db="xpod_rc_native_${run_slug}"');
+    expect(run).toContain('"$native_db" = "xpod_rc"');
+    expect(run).toContain("CREATE DATABASE ${native_db} TEMPLATE template0");
+    expect(run).toContain('CREATE EXTENSION IF NOT EXISTS xpod_rdf');
+    expect(run).toContain('CREATE EXTENSION IF NOT EXISTS xpod_qlever');
+    expect(run).toContain('trap cleanup_native_conformance EXIT');
+    expect(run).toContain("DROP DATABASE IF EXISTS ${native_db} WITH (FORCE)");
+    // The DROP is verified through pg_database, never silently ignored, and the
+    // existence probe checks its own exit so an empty/failed probe is not absent.
+    expect(run).toContain("SELECT 1 FROM pg_database WHERE datname = '${native_db}'");
+    expect(run).toContain('if ! probe_output=');
+    expect(run).toContain('the existence probe command failed');
+    expect(run).toContain('native_db_owned=0');
+    expect(run).toContain('native_db_owned=1');
+    expect(run).toContain('if ! drop_native_db; then');
+    // Ownership must be claimed only after CREATE DATABASE succeeded.
+    expect(run.indexOf("CREATE DATABASE ${native_db} TEMPLATE template0"))
+      .toBeLessThan(run.indexOf('native_db_owned=1'));
+    // The isolation must happen on the same exact StatefulSet, not a second cluster.
+    expect(run).toContain('exec statefulset/xpod-rc-postgres');
+    expect(run).not.toContain('xpod_rc_native_${run_slug} --command');
+    // A unique per-run, per-attempt, 0700 in-container work directory holds the
+    // fixture and report; no fixed shared /tmp path.
+    expect(run).toContain('container_work_dir="/tmp/xpod-rc-native-${run_slug}"');
+    expect(run).toContain('fs.chmodSync(dir,0o700)');
+    expect(run).toContain('remove_container_work_dir');
+    expect(run).not.toContain('/tmp/qlever-semantic-conformance.cjs');
+    expect(run).not.toContain("'/tmp/pg-installed-conformance.json'");
+    // Before/after identity binding for both Pods.
+    expect(run).toContain('service_pod_uid=');
+    expect(run).toContain('postgres_pod_uid=');
+    expect(run).toContain('assert_rc_identity_unchanged');
+    expect(run).toContain('servicePodUid');
+    expect(run).toContain('postgresPodUid');
+  });
+
+  it('fails the step when the normal temp database DROP does not actually remove it', async () => {
+    const workflow = await loadWorkflow();
+    const region = nativeCleanupRegion(nativeStepRun(workflow));
+    const normalCleanup = [
+      'native_db_owned=1',
+      'if ! drop_native_db; then',
+      '  exit 1',
+      'fi',
+      'native_db_owned=0',
+      'trap - EXIT',
+      'echo NORMAL_CLEANUP_OK',
+    ].join('\n');
+
+    // The command succeeded but the database is still present: verification fails the step.
+    const notRemoved = runCleanupScript(region, normalCleanup, 'drop-not-removed');
+    expect(notRemoved.status, notRemoved.stderr).not.toBe(0);
+    expect(notRemoved.stdout).not.toContain('NORMAL_CLEANUP_OK');
+    expect(notRemoved.stdout).toContain('failed to drop owned native conformance database');
+
+    // The DROP command itself failed: the step must also fail.
+    const commandFailed = runCleanupScript(region, normalCleanup, 'drop-command-fail');
+    expect(commandFailed.status, commandFailed.stderr).not.toBe(0);
+    expect(commandFailed.stdout).toContain('failed to drop owned native conformance database');
+
+    // The existence probe command itself failed: empty output must never be
+    // treated as "absent", so the step still fails.
+    const probeFailed = runCleanupScript(region, normalCleanup, 'probe-command-fail');
+    expect(probeFailed.status, probeFailed.stderr).not.toBe(0);
+    expect(probeFailed.stdout).not.toContain('NORMAL_CLEANUP_OK');
+    expect(probeFailed.stdout).toContain('the existence probe command failed');
+
+    // The happy path still succeeds.
+    const ok = runCleanupScript(region, normalCleanup, 'ok');
+    expect(ok.status, ok.stderr).toBe(0);
+    expect(ok.stdout).toContain('NORMAL_CLEANUP_OK');
+  });
+
+  it('never drops a temp database this run did not create', async () => {
+    const workflow = await loadWorkflow();
+    const region = nativeCleanupRegion(nativeStepRun(workflow));
+    const temp = mkdtempSync(path.join(os.tmpdir(), 'xpod-native-create-'));
+    const log = path.join(temp, 'kubectl-argv.log');
+    try {
+      // CREATE DATABASE fails under set -e; ownership stays 0 so the trap must
+      // not attempt a DROP of a same-named database this run never created.
+      const body = [
+        'kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \\',
+        '  psql -U xpod_rc -d xpod_rc -v ON_ERROR_STOP=1 \\',
+        '    --command "CREATE DATABASE ${native_db} TEMPLATE template0"',
+        'echo SHOULD_NOT_REACH',
+      ].join('\n');
+      const result = runCleanupScript(region, body, 'create-fail', log);
+      expect(result.status, result.stderr).not.toBe(0);
+      expect(result.stdout).not.toContain('SHOULD_NOT_REACH');
+      const argv = readFileSync(log, 'utf8');
+      expect(argv).toContain('CREATE DATABASE');
+      expect(argv).not.toContain('DROP DATABASE');
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the original failure exit when temp database cleanup also fails', async () => {
+    const workflow = await loadWorkflow();
+    const region = nativeCleanupRegion(nativeStepRun(workflow));
+    const priorFailure = 'native_db_owned=1\nexit 42';
+
+    const result = runCleanupScript(region, priorFailure, 'drop-command-fail');
+    // The earlier failure status is preserved even though cleanup failed.
+    expect(result.status).toBe(42);
+    expect(result.stdout).toContain('cleanup failed after an earlier failure');
+    expect(result.stdout).toContain('original exit status 42 preserved');
+  });
+
+  it('fails the step when the temporary in-container directory is not verified removed', async () => {
+    const workflow = await loadWorkflow();
+    const region = nativeCleanupRegion(nativeStepRun(workflow));
+    const body = [
+      'container_work_dir_created=1',
+      'if ! remove_container_work_dir; then',
+      '  echo TEMP_CLEANUP_FAILED',
+      '  exit 1',
+      'fi',
+      'echo SHOULD_NOT_REACH',
+    ].join('\n');
+    const result = runCleanupScript(region, body, 'workdir-remove-fail');
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stdout).toContain('TEMP_CLEANUP_FAILED');
+    expect(result.stdout).not.toContain('SHOULD_NOT_REACH');
+    expect(result.stdout).toContain('failed to remove temporary in-container conformance directory');
+  });
+
+  it('fails the native sample when a Pod identity changes', async () => {
+    const workflow = await loadWorkflow();
+    const region = nativeCleanupRegion(nativeStepRun(workflow));
+    const body = [
+      'service_pod_uid=uid-a',
+      'service_image_id=img-a',
+      'postgres_pod_uid=uid-db',
+      'postgres_image_id=img-db',
+      'if ! assert_rc_identity_unchanged; then',
+      '  echo IDENTITY_CHANGED',
+      '  exit 1',
+      'fi',
+      'echo IDENTITY_OK',
+    ].join('\n');
+
+    // Default stub returns empty UID/imageID, so the identity check fails.
+    const changed = runCleanupScript(region, body, 'ok');
+    expect(changed.status, changed.stderr).not.toBe(0);
+    expect(changed.stdout).toContain('IDENTITY_CHANGED');
+    expect(changed.stdout).not.toContain('IDENTITY_OK');
+
+    // Matching identities pass.
+    const unchanged = runCleanupScript(region, body, 'identity-ok');
+    expect(unchanged.status, unchanged.stderr).toBe(0);
+    expect(unchanged.stdout).toContain('IDENTITY_OK');
+  });
+
+  it('keeps the promotion checks schema strict with only "passed" summary values', async () => {
+    const workflow = await loadWorkflow();
+    const runText = jobRunText(workflow, 'deploy_and_accept');
+
+    // Detailed hashes/capabilities/object values must not leak into the promotion checks.
+    expect(runText).not.toContain('"fixture-hash"');
+    expect(runText).not.toContain("'native-capabilities':");
+    expect(runText).not.toContain("'service-image-id':");
+
+    const start = runText.indexOf('deployment-checks.json');
+    const heredocStart = runText.indexOf("<<'JSON'", start);
+    const terminator = runText.indexOf('\nJSON', heredocStart);
+    const deploymentBlock = runText.slice(heredocStart, terminator);
+    const values = [...deploymentBlock.matchAll(/"[^"]+":\s*"([^"]*)"/g)].map((match) => match[1]);
+    expect(values.length).toBeGreaterThan(0);
+    for (const value of values) expect(value).toBe('passed');
+
+    expect(runText).toContain("'native-sql-abi1': 'passed'");
+    expect(runText).toContain("'native-qlever-pg-conformance': 'passed'");
+    expect(runText).toContain('native-conformance-checks.json');
+  });
+
+  it('runs both mandatory predeployment preflights before runtime secrets or RC mutation', async () => {
+    const workflow = await loadWorkflow();
+    const steps = workflow.jobs.deploy_and_accept.steps;
+    const stepNames = steps.map((step: any) => step.name);
+    const immutableGate = steps.find((step: any) => step.name === 'Preflight immutable native images before any RC mutation');
+    const namespaceGate = steps.find((step: any) => step.name === 'Preflight exact PostgreSQL image pull in the assigned namespace');
+    const createSecrets = stepNames.indexOf('Create runtime secrets');
+    const deployImage = stepNames.indexOf('Deploy RC image by digest');
+
+    expect(immutableGate).toBeDefined();
+    expect(namespaceGate).toBeDefined();
+    expect(createSecrets).toBeGreaterThanOrEqual(0);
+    expect(stepNames.indexOf(immutableGate.name)).toBeLessThan(createSecrets);
+    expect(stepNames.indexOf(namespaceGate.name)).toBeLessThan(createSecrets);
+    expect(createSecrets).toBeLessThan(deployImage);
+
+    // Immutable image gate: exact candidate + PG digests, existing GHCR login
+    // preserved, tcr-creds filtered to ccr.ccs.tencentyun.com only.
+    expect(immutableGate.run).toContain('bun scripts/check-qlever-installed-image-conformance.ts');
+    expect(immutableGate.run).toContain('--installed-image "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"');
+    expect(immutableGate.run).toContain('ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba');
+    expect(immutableGate.run).toContain('get secret tcr-creds');
+    expect(immutableGate.run).toContain("config.auths['ccr.ccs.tencentyun.com']");
+    expect(immutableGate.run).toContain("path.join(process.env.HOME || '/root', '.docker', 'config.json')");
+    expect(immutableGate.run).toContain('rm -rf "$docker_config_dir"');
+    expect(immutableGate.run).not.toMatch(/echo\s+["']?\$?(?:TCR_AUTH|dockerconfigjson)/i);
+    // Before the first secret read: umask + owned dir + EXIT cleanup trap.
+    expect(immutableGate.run.indexOf('umask 077')).toBeGreaterThanOrEqual(0);
+    expect(immutableGate.run.indexOf('umask 077'))
+      .toBeLessThan(immutableGate.run.indexOf('get secret tcr-creds'));
+    expect(immutableGate.run.indexOf('trap cleanup_docker_config EXIT'))
+      .toBeLessThan(immutableGate.run.indexOf('get secret tcr-creds'));
+    // No raw secret or all-registry docker config disk intermediate.
+    expect(immutableGate.run).not.toContain('tcr_auth_file');
+    expect(immutableGate.run).not.toContain('base64 --decode >');
+    expect(immutableGate.run).not.toContain('config.auths = config.auths');
+    // The parser consumes the secret from stdin, never from a file argument.
+    expect(immutableGate.run).toContain("fs.readFileSync(0, 'utf8')");
+    expect(immutableGate.run).toContain('node -e "$tcr_config_parser"');
+
+    // Namespace-local gate: exact PG digest via the existing tcr-creds secret,
+    // owned Job applied and cleaned up without touching the RC data volume.
+    expect(namespaceGate.run).toContain('apply -f deploy/sealos/rc-postgres/pull-preflight.yaml');
+    expect(namespaceGate.run).toContain('Complete=True');
+    expect(namespaceGate.run).toContain('Failed=True');
+    // A stale Complete=True Job must never be reused, and a delete failure must
+    // hard stop rather than fall through to a stale result.
+    expect(namespaceGate.run).toContain('delete job "$job_name" --ignore-not-found --wait=true');
+    expect(namespaceGate.run).toContain('refusing to reuse stale results');
+    expect(namespaceGate.run).not.toMatch(/delete job "\$job_name"[^\n]*\|\|\s*true/);
+    expect(namespaceGate.run).toContain('job_uid');
+    expect(namespaceGate.run).toContain('was replaced while running');
+    expect(namespaceGate.run).not.toContain('delete pvc');
+  });
+
+  it('forces a real kubelet auth pull for the exact PostgreSQL preflight image', async () => {
+    const workflow = await loadWorkflow();
+    const namespaceGate = workflow.jobs.deploy_and_accept.steps.find((step: any) =>
+      step.name === 'Preflight exact PostgreSQL image pull in the assigned namespace');
+    expect(namespaceGate.run).toContain('apply -f deploy/sealos/rc-postgres/pull-preflight.yaml');
+
+    const preflight = parseDocument(await readFile(
+      path.join(repoRoot, 'deploy/sealos/rc-postgres/pull-preflight.yaml'), 'utf8',
+    )).toJSON();
+    const podSpec = preflight.spec.template.spec;
+    const container = podSpec.containers.find((entry: any) => entry.name === 'postgres-preflight');
+    // IfNotPresent would let a cached layer satisfy the pull, so the registry
+    // auth round trip would never be exercised. This Job exists to prove the
+    // namespace kubelet can authenticate for the exact immutable digest.
+    expect(container.imagePullPolicy).toBe('Always');
+    expect(podSpec.imagePullSecrets).toEqual([{ name: 'tcr-creds' }]);
+    expect(container.image)
+      .toBe('ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba');
+    // Non-destructive: no RC data volume and the Job is cleaned up by the workflow.
+    expect(podSpec.volumes).toBeUndefined();
+    expect(namespaceGate.run).toContain('delete job "$job_name"');
+    expect(namespaceGate.run).not.toContain('delete pvc');
+  });
+
+  it('rejects stale or replaced PostgreSQL preflight Jobs instead of trusting an old Complete result', () => {
+    // Sanity: the real step contains the hard-stop and UID guards.
+    const workflowText = readFileSync(workflowPath, 'utf8');
+    expect(workflowText).toContain('refusing to reuse stale results');
+    expect(workflowText).toContain('was replaced while running');
+
+    const temp = mkdtempSync(path.join(os.tmpdir(), 'xpod-preflight-job-'));
+    const bin = path.join(temp, 'bin');
+    mkdirSync(bin);
+    const applyLog = path.join(temp, 'apply.log');
+    const deleteCount = path.join(temp, 'delete.count');
+    const uidCount = path.join(temp, 'uid.count');
+    const kubectlStub = path.join(bin, 'kubectl');
+    writeFileSync(kubectlStub, `#!/usr/bin/env bash
+if [[ "$*" == *"apply -f"* ]]; then printf 'APPLY\\n' >> "${applyLog}"; exit 0; fi
+if [[ "$*" == *"delete job"* ]]; then
+  n=$(cat "${deleteCount}" 2>/dev/null || printf '0'); n=$((n + 1)); printf '%s' "$n" > "${deleteCount}"
+  if [ -n "\${FAIL_DELETE_N:-}" ] && [ "$n" = "\${FAIL_DELETE_N}" ]; then exit 1; fi
+  exit 0
+fi
+if [[ "$*" == *"metadata.uid"* ]]; then
+  n=$(cat "${uidCount}" 2>/dev/null || printf '0'); n=$((n + 1)); printf '%s' "$n" > "${uidCount}"
+  if [ "$n" = "1" ]; then printf '%s' "\${JOB_UID:-uid-new}"; else printf '%s' "\${OBSERVED_UID:-\${JOB_UID:-uid-new}}"; fi
+  exit 0
+fi
+if [[ "$*" == *"status.conditions"* ]]; then printf '%s' "\${CONDITION:-Complete=True}"; exit 0; fi
+if [[ "$*" == *"logs"* ]]; then printf 'preflight-logs\\n'; exit 0; fi
+exit 0
+`);
+    chmodSync(kubectlStub, 0o755);
+    const runGate = (env: Record<string, string>): SpawnSyncReturns<string> => {
+      // Each scenario starts from a fresh stub command ledger.
+      rmSync(deleteCount, { force: true });
+      rmSync(uidCount, { force: true });
+      // Isolate just the "Preflight exact PostgreSQL image pull" step run text.
+      const workflow = parseDocument(readFileSync(workflowPath, 'utf8')).toJSON() as Workflow;
+      const step = workflow.jobs.deploy_and_accept.steps.find((entry: any) =>
+        entry.name === 'Preflight exact PostgreSQL image pull in the assigned namespace');
+      const script = `set -euo pipefail\nexport SEALOS_NAMESPACE=xpod-rc\n${step.run}\n`;
+      return spawnSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ...env },
+      });
+    };
+    try {
+      // Stale Job delete fails (e.g. missing RBAC): hard stop before apply.
+      rmSync(applyLog, { force: true });
+      const staleDeleteFailed = runGate({ FAIL_DELETE_N: '1' });
+      expect(staleDeleteFailed.status, staleDeleteFailed.stderr).not.toBe(0);
+      expect(staleDeleteFailed.stdout + staleDeleteFailed.stderr).toContain('refusing to reuse stale results');
+      expect(existsSync(applyLog)).toBe(false);
+
+      // The completed Job object was replaced while running: reject its result.
+      const replaced = runGate({ OBSERVED_UID: 'uid-other' });
+      expect(replaced.status, replaced.stderr).not.toBe(0);
+      expect(replaced.stdout + replaced.stderr).toContain('was replaced while running');
+
+      // Cleanup of the successful Job fails: the step must still fail.
+      const cleanupFailed = runGate({ FAIL_DELETE_N: '2' });
+      expect(cleanupFailed.status, cleanupFailed.stderr).not.toBe(0);
+      expect(cleanupFailed.stdout).toContain('preflight-logs');
+      expect(cleanupFailed.stdout + cleanupFailed.stderr).toContain('failed to clean up RC PostgreSQL pull preflight job');
+
+      // Happy path: stale job cleared, new job completes on its own UID.
+      const ok = runGate({});
+      expect(ok.status, ok.stderr).toBe(0);
+      expect(ok.stdout).toContain('preflight-logs');
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('filters the runner docker config to the authorized registry entries only', async () => {
+    const workflow = await loadWorkflow();
+    const immutableGate = workflow.jobs.deploy_and_accept.steps.find((step: any) =>
+      step.name === 'Preflight immutable native images before any RC mutation');
+    const run: string = immutableGate.run;
+    const marker = "read -r -d '' tcr_config_parser <<'NODE'";
+    const parserStart = run.indexOf('\n', run.indexOf(marker)) + 1;
+    const parserEnd = run.indexOf('\nNODE', parserStart);
+    expect(parserStart).toBeGreaterThan(0);
+    expect(parserEnd).toBeGreaterThan(parserStart);
+    const parser = run.slice(parserStart, parserEnd);
+
+    const temp = mkdtempSync(path.join(os.tmpdir(), 'xpod-tcr-config-'));
+    const home = path.join(temp, 'home');
+    mkdirSync(path.join(home, '.docker'), { recursive: true });
+    writeFileSync(path.join(home, '.docker', 'config.json'), JSON.stringify({
+      auths: {
+        'ghcr.io': { auth: 'ghcr-token' },
+        'docker.io': { auth: 'docker-token' },
+        'quay.io': { auth: 'quay-token' },
+      },
+    }));
+    const outPath = path.join(temp, 'config.json');
+    try {
+      // A secret missing the TCR entry must fail closed and write nothing,
+      // reporting only a fixed, non-sensitive error.
+      const missing = spawnSync('node', [ '-e', parser, outPath ], {
+        encoding: 'utf8',
+        input: JSON.stringify({ auths: { 'docker.io': { auth: 'x' } } }),
+        env: { ...process.env, HOME: home },
+      });
+      expect(missing.status, missing.stderr).not.toBe(0);
+      expect(missing.stderr).toContain('failed to install authorized registry credentials');
+      expect(missing.stderr).not.toContain('docker.io');
+      expect(existsSync(outPath)).toBe(false);
+
+      // A malformed secret must never echo its own bytes: Node would otherwise
+      // include a fragment of the decoded credential in the JSON.parse error.
+      const sentinel = 'FAKE_TEST_SENTINEL_should_never_appear';
+      const malformed = spawnSync('node', [ '-e', parser, outPath ], {
+        encoding: 'utf8',
+        input: `{"auths":{"ccr.ccs.tencentyun.com":{"auth":${sentinel}}}}`,
+        env: { ...process.env, HOME: home },
+      });
+      expect(malformed.status, malformed.stderr).not.toBe(0);
+      expect(malformed.stderr).toContain('failed to install authorized registry credentials');
+      expect(malformed.stderr).not.toContain(sentinel);
+      expect(existsSync(outPath)).toBe(false);
+
+      // A real secret keeps only ccr plus the explicitly authorized ghcr entry.
+      const ok = spawnSync('node', [ '-e', parser, outPath ], {
+        encoding: 'utf8',
+        input: JSON.stringify({ auths: { 'ccr.ccs.tencentyun.com': { auth: 'tcr-token' } } }),
+        env: { ...process.env, HOME: home },
+      });
+      expect(ok.status, ok.stderr).toBe(0);
+      const written = JSON.parse(readFileSync(outPath, 'utf8'));
+      expect(Object.keys(written.auths).sort()).toEqual([ 'ccr.ccs.tencentyun.com', 'ghcr.io' ]);
+      expect(written.auths['ccr.ccs.tencentyun.com']).toEqual({ auth: 'tcr-token' });
+      expect(written.auths['ghcr.io']).toEqual({ auth: 'ghcr-token' });
+      const serialized = JSON.stringify(written);
+      expect(serialized).not.toContain('docker-token');
+      expect(serialized).not.toContain('quay-token');
+      // The written docker config must not be group/world readable.
+      expect(statSync(outPath).mode & 0o077).toBe(0);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('cleans the owned credential directory on every fetch/decode/parse/install/image-gate failure', async () => {
+    const workflow = await loadWorkflow();
+    const immutableGate = workflow.jobs.deploy_and_accept.steps.find((step: any) =>
+      step.name === 'Preflight immutable native images before any RC mutation');
+    const gateRun: string = immutableGate.run;
+
+    const sentinel = 'FAKE_TEST_SENTINEL_should_never_appear';
+    // Malformed secret: JSON.parse fails with the sentinel in the input.
+    const malformed = runCredentialGate(gateRun, {
+      secretJson: `{"auths":{"ccr.ccs.tencentyun.com":{"auth":${sentinel}}}}`,
+    });
+    expect(malformed.result.status, malformed.result.stderr).not.toBe(0);
+    expect(malformed.result.stderr).toContain('failed to install authorized registry credentials');
+    expect(malformed.result.stderr).not.toContain(sentinel);
+    expect(malformed.dirExists).toBe(false);
+
+    // Malformed existing GHCR config must fail closed instead of silently
+    // continuing with a TCR-only config, and must not echo the config bytes.
+    const malformedExisting = runCredentialGate(gateRun, {
+      existingGhcrConfig: `{"auths":{"ghcr.io":{"auth":${sentinel}}}}`,
+    });
+    expect(malformedExisting.result.status, malformedExisting.result.stderr).not.toBe(0);
+    expect(malformedExisting.result.stderr).toContain('failed to install authorized registry credentials');
+    expect(malformedExisting.result.stderr).not.toContain(sentinel);
+    expect(malformedExisting.result.stderr).not.toContain('SyntaxError');
+    expect(malformedExisting.dirExists).toBe(false);
+
+    // Existing GHCR read error (config.json is a directory) must also fail closed
+    // rather than continue with a TCR-only config.
+    const readErrorExisting = runCredentialGate(gateRun, {
+      existingGhcrConfigAsDirectory: true,
+    });
+    expect(readErrorExisting.result.status, readErrorExisting.result.stderr).not.toBe(0);
+    expect(readErrorExisting.result.stderr).toContain('failed to install authorized registry credentials');
+    expect(readErrorExisting.result.stderr).not.toContain('EISDIR');
+    expect(readErrorExisting.result.stderr).not.toContain('Error');
+    expect(readErrorExisting.dirExists).toBe(false);
+
+    // Secret fetch failure (kubectl/nonzero before decode).
+    const fetchFailed = runCredentialGate(gateRun, { kubectlExit: 1 });
+    expect(fetchFailed.result.status, fetchFailed.result.stderr).not.toBe(0);
+    expect(fetchFailed.dirExists).toBe(false);
+
+    // Decode failure (invalid base64 stream).
+    const decodeFailed = runCredentialGate(gateRun, { rawKubectlOutput: '%%%%not base64%%%%' });
+    expect(decodeFailed.result.status, decodeFailed.result.stderr).not.toBe(0);
+    expect(decodeFailed.dirExists).toBe(false);
+
+    // Image gate failure (docker pull).
+    const pullFailed = runCredentialGate(gateRun, { dockerExit: 1 });
+    expect(pullFailed.result.status, pullFailed.result.stderr).not.toBe(0);
+    expect(pullFailed.dirExists).toBe(false);
+
+    // Installed-image conformance failure (bun).
+    const installFailed = runCredentialGate(gateRun, { bunExit: 1 });
+    expect(installFailed.result.status, installFailed.result.stderr).not.toBe(0);
+    expect(installFailed.dirExists).toBe(false);
+
+    // Happy path still succeeds and leaves no owned directory behind.
+    const ok = runCredentialGate(gateRun, {});
+    expect(ok.result.status, ok.result.stderr).toBe(0);
+    expect(ok.dirExists).toBe(false);
+  });
+
+  it('delivers the verified DROP and existence probe to psql without stray literal quotes', async () => {
+    const workflow = await loadWorkflow();
+    const region = nativeCleanupRegion(nativeStepRun(workflow));
+    expect(region).not.toContain('\\"SELECT');
+    expect(region).not.toContain('\\"DROP');
+
+    const temp = mkdtempSync(path.join(os.tmpdir(), 'xpod-native-db-argv-'));
+    const bin = path.join(temp, 'bin');
+    mkdirSync(bin);
+    const argvDump = path.join(temp, 'argv.txt');
+    const kubectlStub = path.join(bin, 'kubectl');
+    writeFileSync(kubectlStub, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" >> "${argvDump}"\nprintf '\\n' >> "${argvDump}"\n`);
+    chmodSync(kubectlStub, 0o755);
+    try {
+      const script = `set -uo pipefail
+export SEALOS_NAMESPACE=xpod-rc
+native_db=xpod_rc_native_probe
+${region}
+native_db_owned=0
+drop_native_db || true
+`;
+      const result = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const argv = readFileSync(argvDump, 'utf8').split('\n').filter((line) => line.length > 0);
+      const commandValues = argv
+        .map((line, index) => (line === '--command' ? argv[index + 1] : undefined))
+        .filter((value): value is string => value !== undefined);
+      expect(commandValues).toContain('DROP DATABASE IF EXISTS xpod_rc_native_probe WITH (FORCE)');
+      expect(commandValues).toContain("SELECT 1 FROM pg_database WHERE datname = 'xpod_rc_native_probe'");
+      for (const value of commandValues) expect(value).not.toContain('\\"');
+      expect(argv).toContain('psql');
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 });

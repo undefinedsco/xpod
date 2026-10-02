@@ -1,10 +1,13 @@
 import { readBoundedRequestBody } from './readBoundedRequestBody';
 import { resolveMatrixContext } from '../matrix/MatrixPodResolver';
 import { MatrixError } from '../matrix/MatrixError';
+import { getLoggerFor } from 'global-logger-factory';
 import type { ServerResponse } from 'node:http';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { MatrixCreateRoomRequest, MatrixStore, MatrixStoreContext } from '../matrix/types';
+
+const logger = getLoggerFor('MatrixHandler');
 
 export interface MatrixHandlerOptions {
   store: MatrixStore;
@@ -337,12 +340,33 @@ function sendMatrixError(response: ServerResponse, status: number, errcode: stri
   sendJson(response, status, { errcode, error });
 }
 
+// Strict allowlist: only short opaque code/name tokens may ever leave the
+// unknown-error path. Never log messages, stacks, URLs, bodies, tokens, or DSNs.
+const SAFE_ERROR_TOKEN = /^[A-Za-z0-9_]{1,64}$/;
+
+function safeErrorToken(value: unknown): string | undefined {
+  return typeof value === 'string' && SAFE_ERROR_TOKEN.test(value) ? value : undefined;
+}
+
+function unknownErrorName(error: unknown): string {
+  if (error instanceof Error && SAFE_ERROR_TOKEN.test(error.name)) {
+    return error.name;
+  }
+  return typeof error;
+}
+
 function sendError(response: ServerResponse, error: unknown): void {
   if (error instanceof MatrixError) {
     sendMatrixError(response, error.status, error.errcode, error.message);
   } else if (error instanceof SyntaxError || error instanceof URIError) {
     sendMatrixError(response, 400, 'M_BAD_JSON', 'Malformed JSON or URL encoding');
   } else {
+    const code = safeErrorToken((error as { code?: unknown } | null | undefined)?.code);
+    const causeCode = safeErrorToken((error as { cause?: { code?: unknown } } | null | undefined)?.cause?.code);
+    const detail: Record<string, string> = { errorName: unknownErrorName(error) };
+    if (code) detail.code = code;
+    if (causeCode) detail.causeCode = causeCode;
+    logger.error(`Matrix handler failed with an unknown error ${JSON.stringify(detail)}`);
     sendMatrixError(response, 500, 'M_UNKNOWN', 'Internal server error');
   }
 }
