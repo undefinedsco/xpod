@@ -36,11 +36,12 @@ describe('device pages', () => {
       },
     };
     await render(<DeviceRuntimePage />);
-    const toggle = container.querySelector<HTMLInputElement>('input[aria-label="意外退出时自动重启"]')!;
-    expect(toggle.checked).toBe(true);
+    const toggle = container.querySelectorAll<HTMLButtonElement>('[role="switch"]')[1];
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector(`label[for="${toggle.id}"]`)?.textContent).toContain('意外退出时自动重启');
     await act(async () => toggle.click());
     expect(setAutoRestart).toHaveBeenCalledWith(false);
-    expect(toggle.checked).toBe(false);
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
   });
   test('exposes all four log filters and keeps log content as text', async () => {
     vi.mocked(getLogs).mockResolvedValue([{ timestamp: new Date().toISOString(), source: 'api', level: 'error', message: '<script>bad()</script>' }]);
@@ -49,6 +50,11 @@ describe('device pages', () => {
     expect(container.querySelector('input[type="search"]')).toBeTruthy();
     expect(container.querySelector('script')).toBeNull();
     expect(container.textContent).toContain('<script>bad()</script>');
+    const [source, level] = container.querySelectorAll('select');
+    await act(async () => { source.value = 'css'; source.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(getLogs).toHaveBeenLastCalledWith({ source: 'css', level: 'all', limit: 500 });
+    await act(async () => { level.value = 'warn'; level.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(getLogs).toHaveBeenLastCalledWith({ source: 'css', level: 'warn', limit: 500 });
   });
   test('network body does not nest shell navigation or assert unprobed public reachability', async () => {
     vi.mocked(fetchNetworkSettingsStatus).mockResolvedValue({ endpoint: 'https://pod.example', addresses: { local: ['http://localhost:4567'], lan: [], public: ['https://pod.example'] }, actions: { diagnose: true, renewCertificate: false }, tls: { supported: false, status: 'unsupported' }, dns: { supported: false, status: 'unsupported' }, tunnel: { supported: false, status: 'unsupported' } });

@@ -4,12 +4,16 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const {
+  EMBEDDED_SOURCE_MANIFEST_RELATIVE_PATH,
+  EMBEDDED_SOURCE_RELATIVE_PATH,
   getCurrentPlatformTarget,
   QLEVER_LOCAL_RUNTIME_RELATIVE_PATH,
   resolvePlatformTarget,
 } = require('./platform-binaries.cjs');
+const { stageEmbeddedNativeSource } = require('./lib/embedded-native-source.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
+const DEFAULT_SOURCE_CACHE_DIR = path.join(repoRoot, 'node_modules', '.cache', 'xpod-embedded-native-source');
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -63,11 +67,13 @@ function createStagePackageJson(rootPackage, target) {
     files: [
       target.binaryName,
       'qlever',
+      EMBEDDED_SOURCE_RELATIVE_PATH,
       'README.md',
       'LICENSE',
     ],
     xpodBinary: `./${target.binaryName}`,
     xpodQleverLocalRuntime: `./${QLEVER_LOCAL_RUNTIME_RELATIVE_PATH}`,
+    xpodEmbeddedSource: `./${EMBEDDED_SOURCE_MANIFEST_RELATIVE_PATH}`,
   };
 
   if (target.libc) {
@@ -110,7 +116,7 @@ function extractQleverRuntimeArtifact(stageDir, artifactPath) {
   return runtimeOutputPath;
 }
 
-function buildPlatformPackage(targetRef, options = {}) {
+async function buildPlatformPackage(targetRef, options = {}) {
   const target = targetRef === 'current'
     ? getCurrentPlatformTarget()
     : resolvePlatformTarget(targetRef);
@@ -135,7 +141,20 @@ function buildPlatformPackage(targetRef, options = {}) {
   ]);
   const qleverRuntimeOutputPath = extractQleverRuntimeArtifact(stageDir, qleverRuntimeArtifactPath);
 
-  writeJson(path.join(stageDir, 'package.json'), createStagePackageJson(rootPackage, target));
+  // Corresponding Source for the embedded native CLI. Ships as a sidecar, never
+  // inside the Bun binary. Drift in the installed package, binary, license,
+  // archive or embedded docs fails the build.
+  const source = await stageEmbeddedNativeSource(stageDir, {
+    target: target.id,
+    nodeModulesRoot: path.join(repoRoot, 'node_modules'),
+    artifactPath: options.sourceArtifactPath,
+    docsRoot: options.sourceDocsRoot,
+    cacheDir: options.sourceCacheDir ?? DEFAULT_SOURCE_CACHE_DIR,
+  });
+
+  const packageJson = createStagePackageJson(rootPackage, target);
+  packageJson.xpodEmbeddedSourceSha256 = source.manifestSha256;
+  writeJson(path.join(stageDir, 'package.json'), packageJson);
   fs.writeFileSync(path.join(stageDir, 'README.md'), createReadme(rootPackage, target));
   fs.copyFileSync(path.join(repoRoot, 'LICENSE'), path.join(stageDir, 'LICENSE'));
 
@@ -148,6 +167,8 @@ function buildPlatformPackage(targetRef, options = {}) {
     stageDir,
     binaryOutputPath,
     qleverRuntimeOutputPath,
+    sourceManifestSha256: source.manifestSha256,
+    sourceFiles: source.files,
   };
 }
 
@@ -182,6 +203,21 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (arg.startsWith('--source-artifact=')) {
+      args.sourceArtifactPath = path.resolve(repoRoot, arg.slice('--source-artifact='.length));
+      continue;
+    }
+
+    if (arg.startsWith('--source-docs=')) {
+      args.sourceDocsRoot = path.resolve(repoRoot, arg.slice('--source-docs='.length));
+      continue;
+    }
+
+    if (arg.startsWith('--source-cache-dir=')) {
+      args.sourceCacheDir = path.resolve(repoRoot, arg.slice('--source-cache-dir='.length));
+      continue;
+    }
+
     if (arg.startsWith('--stage-dir=')) {
       args.stageDir = path.resolve(repoRoot, arg.slice('--stage-dir='.length));
     }
@@ -190,10 +226,13 @@ function parseArgs(argv) {
   return args;
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const result = buildPlatformPackage(args.target ?? 'current', {
+  const result = await buildPlatformPackage(args.target ?? 'current', {
     qleverRuntimeArtifactPath: args.qleverRuntimeArtifactPath,
+    sourceArtifactPath: args.sourceArtifactPath,
+    sourceDocsRoot: args.sourceDocsRoot,
+    sourceCacheDir: args.sourceCacheDir,
     stageDir: args.stageDir,
   });
   if (args.pack) {
@@ -203,12 +242,10 @@ function main() {
 }
 
 if (require.main === module) {
-  try {
-    main();
-  } catch (error) {
+  main().catch((error) => {
     console.error(error);
     process.exit(1);
-  }
+  });
 }
 
 module.exports = {

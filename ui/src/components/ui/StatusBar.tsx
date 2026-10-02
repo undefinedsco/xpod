@@ -1,5 +1,6 @@
 import { clsx } from 'clsx';
 import { ExternalLink, RefreshCw } from 'lucide-react';
+import { StatusLine } from '@undefineds.co/shared-ui';
 import { Button } from './Button';
 import type { ServiceState } from '@/api/admin';
 
@@ -23,10 +24,13 @@ export function StatusBar(props: {
 
   return (
     <header className="h-14 bg-layout-sidebar border-b border-border flex items-center px-4 gap-3 min-w-0">
-      <div className={clsx('flex items-center gap-2 text-sm font-medium shrink-0', ok ? 'text-success dark:text-success' : 'text-destructive')}>
-        <span className={clsx('w-2 h-2 rounded-full shrink-0', ok ? 'bg-success' : 'bg-destructive')} />
-        <span className="hidden sm:inline">{ok ? '运行中' : '服务异常'}</span>
-      </div>
+      <StatusLine
+        tone={ok ? 'success' : 'destructive'}
+        dotSize="md"
+        className={clsx('gap-2 text-sm font-medium shrink-0', ok ? 'text-success' : 'text-destructive')}
+      >
+        <span className="sr-only sm:not-sr-only">{ok ? '运行中' : '服务异常'}</span>
+      </StatusLine>
 
       <div className="hidden md:flex items-center gap-3 text-sm text-muted-foreground">
         <span className={clsx(cssOk ? 'text-foreground' : 'text-destructive')}>CSS: {cssOk ? '正常' : '停止'}</span>

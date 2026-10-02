@@ -31,8 +31,7 @@ import {
   fetchCurrentProvisionRouteStatus,
   provisionLocalPodRoutes,
 } from './xpod-local-route';
-import { createAccountClientCredentialsCapability } from '../auth/account-client-credentials';
-import { readSessionAccountControls } from '../auth/session-account-controls';
+import { resolveOnDemandSessionCapability } from '../auth/ondemand-session-credential';
 import {
   createSessionRequestCredential,
   withRequestPodAuthorization,
@@ -127,24 +126,31 @@ export function XpodSolidRuntimeProvider({
   const account = useContext(AuthContext);
   const accountIndex = account?.idpIndex;
   const boundWebId = snapshot.status === 'authenticated' ? snapshot.webId : undefined;
-  const requestCredential = useMemo(() => createSessionRequestCredential({
-    webId: boundWebId,
-    resolveCapability: async () => {
-      if (!accountIndex || !boundFetch || !boundWebId) return undefined;
-      const controls = await readSessionAccountControls({ accountIndex, webId: boundWebId, fetch: boundFetch });
-      if (!controls) return undefined;
-      return createAccountClientCredentialsCapability({
-        collection: controls.collection,
+  const accountCollection = account?.controls?.account?.clientCredentials;
+  const accountWebId = account?.identity?.webId;
+  const bindAccountCapability = account?.bindAccountCapability;
+  const requestCredential = useMemo(() => {
+    const assertSession = () => {
+      if (runtime.session.getSnapshot() !== snapshot) {
+        throw new Error('Solid 会话已改变，请重新打开客户端凭据操作。');
+      }
+    };
+    // Capture the Account generation before any asynchronous discovery takes place.
+    const binding = accountCollection && accountWebId && accountWebId === boundWebId && bindAccountCapability
+      ? { collection: accountCollection, webId: accountWebId, assertCurrent: bindAccountCapability(), fetch: plainFetch }
+      : undefined;
+    return createSessionRequestCredential({
+      webId: boundWebId,
+      resolveCapability: () => resolveOnDemandSessionCapability({
         accountIndex,
-        fetch: boundFetch,
-        assertCurrent: () => {
-          if (runtime.session.getSnapshot() !== snapshot) {
-            throw new Error('Solid 会话已改变，请重新打开客户端凭据操作。');
-          }
-        },
-      });
-    },
-  }), [accountIndex, boundFetch, boundWebId, runtime.session, snapshot]);
+        webId: boundWebId,
+        binding,
+        accountFetch: plainFetch,
+        sessionFetch: boundFetch,
+        assertCurrent: assertSession,
+      }),
+    });
+  }, [accountCollection, accountIndex, accountWebId, bindAccountCapability, boundFetch, boundWebId, runtime.session, snapshot]);
   // StrictMode replays effects without ending the mounted session. Cancel only that synthetic
   // cleanup; a replaced credential or an actual unmount still releases its own resource.
   const pendingRelease = useRef<{ credential: SessionRequestCredential; cancelled: boolean } | undefined>(undefined);
@@ -239,6 +245,12 @@ export function XpodSolidRuntimeProvider({
     }
 
     let cancelled = false;
+    // One owner for every route probe this session starts: the pre-open
+    // discovery, the routes read for the opened Pod, and the transport's later
+    // refresh. Tearing the session down aborts all of them so a hung
+    // `/provision/status` or a late answer cannot outlive the identity that
+    // asked for it.
+    const routeDiscovery = new AbortController();
     const rememberedBinding = readXpodSelectedStorage({
       storage: runtimeStorage.selectedStorage,
       origin: typeof window === 'undefined' ? undefined : window.location.origin,
@@ -255,9 +267,12 @@ export function XpodSolidRuntimeProvider({
         // the canonical WebID, and this client reaches that canonical origin only
         // through a local route. Register the node's routes first, exactly as the
         // login callback does; with none registered that read leaves for a public
-        // address the node has no ingress on and fails.
+        // address the node has no ingress on and fails. A failed or absent
+        // optional endpoint reports no route and never fabricates one.
         if (!rememberedBinding) {
-          const provisionStatus = await fetchCurrentProvisionRouteStatus(fetch);
+          const provisionStatus = await fetchCurrentProvisionRouteStatus(fetch, {
+            signal: routeDiscovery.signal,
+          });
           if (cancelled) return;
           if (provisionStatus.storageRoot) {
             runtime.setLocalPodRoutes?.(
@@ -266,14 +281,18 @@ export function XpodSolidRuntimeProvider({
           }
         }
         const opened = await runtime.pod.open(openArgs);
-        const localRoutes = await currentHostLocalPodRoutes(opened.podUrl, fetch);
+        const localRoutes = await currentHostLocalPodRoutes(opened.podUrl, fetch, {
+          signal: routeDiscovery.signal,
+        });
         if (cancelled) return;
         runtime.setLocalPodRoutes?.(localRoutes);
         // The transport asks for this when the route it used stops answering: a
         // tunnel the user just started, or a LAN address that changed, is picked
         // up without reloading the app.
         runtime.setLocalPodRoutesRefresh?.(async () => {
-          const refreshed = await currentHostLocalPodRoutes(opened.podUrl, fetch);
+          const refreshed = await currentHostLocalPodRoutes(opened.podUrl, fetch, {
+            signal: routeDiscovery.signal,
+          });
           if (cancelled) return;
           runtime.setLocalPodRoutes?.(refreshed);
         });
@@ -304,6 +323,7 @@ export function XpodSolidRuntimeProvider({
 
     return () => {
       cancelled = true;
+      routeDiscovery.abort();
       // The routes and the way to re-discover them belong to one open Pod; a
       // later session must not refresh through this one's registration.
       runtime.setLocalPodRoutesRefresh?.(undefined);

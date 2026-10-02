@@ -26,7 +26,8 @@
     "vitest": "^4.1.8"
   },
   "dependencies": {
-    "@undefineds.co/extension-sdk": "workspace:*"
+    "@undefineds.co/extension-sdk": "workspace:*",
+    "@undefineds.co/shared-ui": "workspace:*"
   },
   "files": [
     "dist"

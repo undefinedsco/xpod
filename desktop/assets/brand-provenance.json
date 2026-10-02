@@ -1,0 +1,190 @@
+{
+  "selectedAt": "2026-09-26",
+  "selection": "B · 留缝折角",
+  "source": {
+    "directory": "homepage/public/brand",
+    "manifest": "homepage/public/brand/manifest.json",
+    "assets": {
+      "xpod-app.png": {
+        "sha256": "415585c548edc845d4f74bd811b6d4c8516d3c8fa3e0337d8e3e86e5152d2ab8",
+        "role": "App/Dock/installer master raster (1024px, transparent outside rounded tile)",
+        "bytes": 29389
+      },
+      "xpod-app.svg": {
+        "sha256": "a7eacfade11a11252a65c0e7b691b095f06c9b3af749fc68d1fcfb177df7656b",
+        "role": "App tile geometry authority (ink tile + paper fold)",
+        "bytes": 306
+      },
+      "xpod-symbol.svg": {
+        "sha256": "1d6f23f4256fe442bdb22ad34e0edc231896e97d9a29feeafdf897462f898a49",
+        "role": "Single-color symbol geometry authority for menu-bar templates",
+        "bytes": 197
+      }
+    }
+  },
+  "geometry": {
+    "viewBox": "18 18 64 64",
+    "symbolPaths": [
+      "M31 24H52V45H73V73Q73 76 70 76H31Q28 76 28 73V27Q28 24 31 24Z",
+      "M58 24L76 39H58Z"
+    ],
+    "appTile": "xpod-app.svg: rect x=10 y=10 width=80 height=80 rx=18 fill #563E84; paper fold #F7F4ED",
+    "note": "Tray geometry is extracted verbatim from xpod-symbol.svg; state glyphs are product content punched out with evenodd."
+  },
+  "generation": {
+    "script": "desktop/scripts/generate-brand-assets.mjs",
+    "tools": {
+      "magick": "Version: ImageMagick 7.1.1-43 Q16-HDRI aarch64 22550 https://imagemagick.org",
+      "sips": "macOS sips (iconset slices)",
+      "iconutil": "macOS iconutil (icns packaging)"
+    },
+    "steps": [
+      "verify xpod-app.png / xpod-app.svg / xpod-symbol.svg sha256 against pinned selected-source hashes",
+      "copy selected xpod-app.png to icon.png and icon-master.png verbatim",
+      "copy selected xpod-app.svg verbatim to ui/src/assets/xpod-app.svg for XpodLoginBrand",
+      "inline the same selected xpod-app.svg in the existing ai-connections XPOD_AVATAR declaration",
+      "derive icon.iconset slices with sips -z and package icon.icns with iconutil",
+      "compose icon-size-preview.png from icon-master.png on paper background",
+      "extract xpod-symbol.svg path geometry and emit tray template SVGs with evenodd state glyphs",
+      "rasterize tray PNG pairs at 16/32 (and 32/64 color fallbacks) with ImageMagick PNG32"
+    ]
+  },
+  "generated": {
+    "icon.png": {
+      "sha256": "415585c548edc845d4f74bd811b6d4c8516d3c8fa3e0337d8e3e86e5152d2ab8",
+      "bytes": 29389
+    },
+    "icon-master.png": {
+      "sha256": "415585c548edc845d4f74bd811b6d4c8516d3c8fa3e0337d8e3e86e5152d2ab8",
+      "bytes": 29389
+    },
+    "icon.icns": {
+      "sha256": "ad16e4793ab22a9766038033f73b0a89f6c66fec286cd050ef0379158d16a8be",
+      "bytes": 88021
+    },
+    "icon-size-preview.png": {
+      "sha256": "a84ed15c81aa57bdbb3c99c91bbf7e0231de61ea5259e41e91555f450280b04b",
+      "bytes": 15578
+    },
+    "icon.iconset/icon_16x16.png": {
+      "sha256": "de22490a77a60220028025a6e3e29ad1c458b4dc318427b18f3114681e2cc062",
+      "bytes": 695
+    },
+    "icon.iconset/icon_16x16@2x.png": {
+      "sha256": "d7ece8a681f83cdbbb9c99669111b429818be9b7aec6fd82d5ddb25963f0bc84",
+      "bytes": 1079
+    },
+    "icon.iconset/icon_32x32.png": {
+      "sha256": "d7ece8a681f83cdbbb9c99669111b429818be9b7aec6fd82d5ddb25963f0bc84",
+      "bytes": 1079
+    },
+    "icon.iconset/icon_32x32@2x.png": {
+      "sha256": "beaa5db54707ce5c1748792d99c467b2f492a4a7895320bddb7854f9acfcc587",
+      "bytes": 1778
+    },
+    "icon.iconset/icon_128x128.png": {
+      "sha256": "01725c1181d5a2db6af8eff360aa67816c3b58bc30ff656df701541e58bbc554",
+      "bytes": 3344
+    },
+    "icon.iconset/icon_128x128@2x.png": {
+      "sha256": "58a2b1a8f71c00876faee7dc87bef39985b175912c03c2b94dcf14a2fb19bd14",
+      "bytes": 6765
+    },
+    "icon.iconset/icon_256x256.png": {
+      "sha256": "58a2b1a8f71c00876faee7dc87bef39985b175912c03c2b94dcf14a2fb19bd14",
+      "bytes": 6765
+    },
+    "icon.iconset/icon_256x256@2x.png": {
+      "sha256": "690f10aac1aa2d36249f9d501dcaa53a130a5f9f872120a5c16c60809a26351e",
+      "bytes": 15874
+    },
+    "icon.iconset/icon_512x512.png": {
+      "sha256": "690f10aac1aa2d36249f9d501dcaa53a130a5f9f872120a5c16c60809a26351e",
+      "bytes": 15874
+    },
+    "icon.iconset/icon_512x512@2x.png": {
+      "sha256": "415585c548edc845d4f74bd811b6d4c8516d3c8fa3e0337d8e3e86e5152d2ab8",
+      "bytes": 29389
+    },
+    "tray-healthyTemplate.svg": {
+      "sha256": "39fcb17c77a0bae71cd411158647045c16cb03a1614798852a38aa7951e23d70",
+      "bytes": 243
+    },
+    "tray-healthyTemplate.png": {
+      "sha256": "3be87a4e7ac9cd3e63ecd361a728d34912d54ef4c5ecc66cbe10fe9950771e2b",
+      "bytes": 295
+    },
+    "tray-healthyTemplate@2x.png": {
+      "sha256": "fe5323bccbde2ff1c6eba259496c1573c8e89d7ed352b156ee70541b5e88828d",
+      "bytes": 467
+    },
+    "tray-startingTemplate.svg": {
+      "sha256": "4f90afdfc5e2743c4c60bc07d4aa0b2aa47e5e0d2a000c3df4c38b71464a6ec4",
+      "bytes": 262
+    },
+    "tray-startingTemplate.png": {
+      "sha256": "2d37e2b101f3eaa6de4430a84e2d08103f7545a1446a4f65e4b7e848fdd1bac4",
+      "bytes": 330
+    },
+    "tray-startingTemplate@2x.png": {
+      "sha256": "bfe77d3332b1a480936fb4dad74e16fd959636d5399d36fa12f393a472bdaa1d",
+      "bytes": 564
+    },
+    "tray-degradedTemplate.svg": {
+      "sha256": "fbdc202274569575d72ec02462626a9351d957311e8c5bffd25c2fbfd0e6c5df",
+      "bytes": 214
+    },
+    "tray-degradedTemplate.png": {
+      "sha256": "65c656f085d94dee1cdbb7d2db2bc1bf873f5da69c69e2b2e571f52b6dff2c26",
+      "bytes": 289
+    },
+    "tray-degradedTemplate@2x.png": {
+      "sha256": "86c49170c1759c5658fe7479dd3c71387ca030ec9b875fd87e4588b7a9e070d9",
+      "bytes": 418
+    },
+    "tray-failedTemplate.svg": {
+      "sha256": "840bfe09442a1e7bda7cfa292c3442c7d52c8d0f54097c66be5ae127cbd6dbc2",
+      "bytes": 270
+    },
+    "tray-failedTemplate.png": {
+      "sha256": "e8450485dab5498567379a4f8a59622f5b90fa906e6cdee8ae47c30ff7038325",
+      "bytes": 279
+    },
+    "tray-failedTemplate@2x.png": {
+      "sha256": "59533cceb04616ec61768cfe6953a5686c1281b6bd4beadce15977ea32d82d2f",
+      "bytes": 413
+    },
+    "tray-stoppedTemplate.svg": {
+      "sha256": "3d6fc8f42b3f04592c975980702653063829fafbe5f6f939ed2234a805a6f907",
+      "bytes": 220
+    },
+    "tray-stoppedTemplate.png": {
+      "sha256": "166791f236f158e9102ceb6af42eaad8ed43a61b8cf8c31499d5c7c07d72ff0a",
+      "bytes": 295
+    },
+    "tray-stoppedTemplate@2x.png": {
+      "sha256": "f2968d6a03c66afe24e0dc2f8681151f43bc6b19f096cab936cfc45bcfb4b302",
+      "bytes": 441
+    },
+    "trayTemplate.svg": {
+      "sha256": "10b1124998ea85cd400e0630b52838fe4b413f77d2a25f8bdbb933a2a99e5970",
+      "bytes": 193
+    },
+    "trayTemplate.png": {
+      "sha256": "3d29aefdcce3dd84156c07a2dd6ab8e4bd7c80bc87815630179a4739c969fda3",
+      "bytes": 248
+    },
+    "trayTemplate@2x.png": {
+      "sha256": "b2f202ca6ad69d40d15045b6447da3486b16835102eec305f3c321555f021ff4",
+      "bytes": 361
+    },
+    "tray.png": {
+      "sha256": "614fbe4a36c515673baf2285d0b33b17d96edb5242efbe11aac037d314ccd0c4",
+      "bytes": 379
+    },
+    "tray@2x.png": {
+      "sha256": "766663291f3f21e5c8f34a5eb3539fdb88c39070d0e69157bdc10f21862c720f",
+      "bytes": 401
+    }
+  }
+}

@@ -59,8 +59,8 @@ export async function createHostedPodRouteTransport(
 async function importSolidLocalRouteFetch(): Promise<{
   createSolidLocalRouteFetch: CreateSolidLocalRouteFetch;
 }> {
-  // The SDK publishes this transport as both ESM and CommonJS. Use its public
-  // CommonJS entry from the API/runtime rather than an untransformed eval import.
+  // The public CommonJS entry also lets the single-file bundler include this exact SDK
+  // version. Module resolution and initialization failures must retain their original cause.
   return require('@undefineds.co/solid-sdk/local-route-fetch') as {
     createSolidLocalRouteFetch: CreateSolidLocalRouteFetch;
   };

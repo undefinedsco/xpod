@@ -30,6 +30,14 @@ export const WorkspaceDrawerContext = createContext<{ open: boolean; onClose?: (
 
 export type TwoPaneLayoutMode = 'auto' | WorkspaceLayoutMode
 
+/** Host-owned labels; omitted entries retain the existing neutral defaults. */
+export interface WorkspaceLayoutCopy {
+  backToList?: string
+  backToMain?: string
+  expandContext?: string
+  collapseContext?: string
+}
+
 export interface WorkspacePageTypeProps {
   /**
    * §8.3 页型。概览、固定配置、诊断不会渲染对象列；只有 `collection` 且确有集合才在宽断点出现。
@@ -46,6 +54,7 @@ export interface TwoPaneLayoutProps extends WorkspacePageTypeProps {
   main: ReactNode
   mode?: TwoPaneLayoutMode
   history?: WorkspaceLayoutHistoryAdapter
+  copy?: Pick<WorkspaceLayoutCopy, 'backToList'>
   className?: string
 }
 
@@ -68,6 +77,7 @@ export interface ThreePaneLayoutProps extends WorkspacePageTypeProps {
   mode?: TwoPaneLayoutMode
   history?: WorkspaceLayoutHistoryAdapter
   contextConfig?: ThreePaneLayoutContextConfig
+  copy?: WorkspaceLayoutCopy
   className?: string
 }
 
@@ -259,6 +269,7 @@ export function TwoPaneLayout({
   main,
   mode = 'auto',
   history,
+  copy,
   className,
   pageType = 'collection',
   hasObjectCollection = true,
@@ -360,7 +371,7 @@ export function TwoPaneLayout({
                   className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
                   onClick={openList}
                 >
-                  返回列表
+                  {copy?.backToList ?? '返回列表'}
                 </button>
               ) : null}
               {main}
@@ -406,6 +417,7 @@ export function ThreePaneLayout({
   mode = 'auto',
   history,
   contextConfig,
+  copy,
   className,
   pageType = 'collection',
   hasObjectCollection = true,
@@ -462,7 +474,7 @@ export function ThreePaneLayout({
               className="inline-flex items-center rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
               onClick={toggleContextCollapsed}
             >
-              {contextCollapsed ? '展开上下文面板' : '折叠上下文面板'}
+              {contextCollapsed ? (copy?.expandContext ?? '展开上下文面板') : (copy?.collapseContext ?? '折叠上下文面板')}
             </button>
           </div>
         ) : null}
@@ -506,7 +518,7 @@ export function ThreePaneLayout({
                 className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
                 onClick={openList}
               >
-                返回列表
+                {copy?.backToList ?? '返回列表'}
               </button>
             ) : null}
             {main}
@@ -529,7 +541,7 @@ export function ThreePaneLayout({
                 className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
                 onClick={openMain}
               >
-                返回主区域
+                {copy?.backToMain ?? '返回主区域'}
               </button>
             ) : null}
             {context}

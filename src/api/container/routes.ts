@@ -1,3 +1,6 @@
+import { createMatrixPodResolver, resolveMatrixContext } from '../matrix/MatrixPodResolver';
+import { AgentWakeRuntimeService } from '../reconciler/AgentWakeRuntimeService';
+import { registerAgentWakeRoutes } from '../handlers/AgentWakeHandler';
 /**
  * 路由注册
  *
@@ -198,12 +201,18 @@ function registerSharedRoutes(
     ...(taskCredentialStore && taskIssuer ? { resolveAgentBinding: createGrantedTaskAgentResolver(createTaskCredentialSource({ store: taskCredentialStore, issuer: taskIssuer })) } : {}),
     resolveExecutionContext: (task, context) => task.authBinding ? container.resolve('taskAuthBindingService').resolveRunContext(task.authBinding.id, context) : Promise.resolve(undefined),
   });
-  registerMatrixRoutes(server, { store: matrixStore });
+  const matrixPodResolver = createMatrixPodResolver(podLookupRepository);
+  registerMatrixRoutes(server, { store: matrixStore, resolvePodUrl: matrixPodResolver, baseUrl: process.env.CSS_BASE_URL });
+  registerAgentWakeRoutes(server, {
+    service: new AgentWakeRuntimeService(container.resolve('serverGroupReconcilerService').getQueue(), matrixStore),
+    resolveContext: request => resolveMatrixContext(request, matrixPodResolver),
+  });
   registerCoordinationRoutes(server, { clientReconcilerCoordinator });
   registerInngestRoutes(server, {
     backend: runExecutionBackend,
     taskScheduler: inngestTaskScheduler,
     runtimeConfig: inngestRuntimeConfig,
+    gatewayAdminProxyAuthSecret: config.gatewayAdminProxyAuthSecret,
   });
   registerRdfStatsRoutes(server, {
     rdfStorageStatsService,

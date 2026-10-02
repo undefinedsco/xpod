@@ -402,7 +402,7 @@ export class RunStateCenter<TContext = StoreContext> {
     };
     await this.markRunStarted(run, context);
     const continuationPrompt = this.buildContinuationPrompt(updatedItem);
-    const conversation = await this.loadConversation(threadRef, String(run.metadata?.userMessageId ?? updatedItem.id), context);
+    const conversation = await this.loadConversation(threadRef, undefined, context);
     const runtimeConfig = this.resolveRuntimeConfigForContinuation(run, context);
     const retrievedContext = await this.retrieveRunContext({
       runId: run.id,
@@ -969,14 +969,14 @@ export class RunStateCenter<TContext = StoreContext> {
 
   private async loadConversation(
     threadRef: ThreadRef,
-    currentUserMessageId: string,
+    currentUserMessageId: string | undefined,
     context: TContext,
   ): Promise<Array<{ role: 'user' | 'assistant'; text: string; createdAt: number }>> {
     const items = await this.store.loadThreadItems(threadRef, undefined, 1000, 'asc', context);
     const conversation: Array<{ role: 'user' | 'assistant'; text: string; createdAt: number }> = [];
 
     for (const item of items.data) {
-      if (item.id === currentUserMessageId) {
+      if (currentUserMessageId !== undefined && item.id === currentUserMessageId) {
         break;
       }
       if (item.type === 'user_message') {

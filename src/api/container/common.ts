@@ -1,3 +1,4 @@
+import { SqlMatrixEventJournal } from '../matrix/MatrixEventJournal';
 /**
  * 共享服务注册
  *
@@ -114,8 +115,15 @@ function resolveCssServiceBaseUrl(): string {
   return `http://127.0.0.1:${process.env.CSS_PORT ?? '3000'}/`;
 }
 
-function resolveHostedPodCssBaseUrl(): string {
-  return `http://127.0.0.1:${process.env.XPOD_MAIN_PORT ?? '3000'}/`;
+function resolveHostedPodCssBaseUrl(config: ApiContainerCradle['config']): string | undefined {
+  const gatewayPort = process.env.XPOD_MAIN_PORT?.trim();
+  if (gatewayPort) {
+    return `http://127.0.0.1:${gatewayPort}/`;
+  }
+  // Socket transport binds no gateway port. Its canonical origin is the one the runtime maps
+  // onto the owned gateway socket, so internal WebID/JWKS reads resolve through that origin
+  // instead of a foreign loopback port.
+  return config.solidBaseUrl;
 }
 
 function resolveAiConnectionsBaseUrl(config: ApiContainerCradle['config']): string {
@@ -229,7 +237,8 @@ export function registerCommonServices(
     solidSessions: asFunction(({ config }: ApiContainerCradle) => {
       return new SolidSessionFactory({
         tokenEndpoint: config.cssTokenEndpoint,
-        publicBaseUrl: config.solidBaseUrl,
+        // Managed Local's Pod origin differs from the issuer of its client credentials.
+        publicBaseUrl: config.oidcIssuer ?? config.solidBaseUrl,
       });
     }).singleton(),
 
@@ -594,7 +603,7 @@ export function registerCommonServices(
         publicBaseUrl: config.solidBaseUrl,
         // Token discovery is a public OIDC concern. WebID/JWKS verification is
         // an internal service call and must not hairpin through public ingress.
-        internalBaseUrl: resolveHostedPodCssBaseUrl(),
+        internalBaseUrl: resolveHostedPodCssBaseUrl(config),
       });
 
       const clientCredAuthenticator = new ClientCredentialsAuthenticator({
@@ -671,9 +680,11 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    matrixStore: asFunction(({ config, serverGroupReconcilerService }: ApiContainerCradle) => {
+    matrixStore: asFunction(({ db, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
       return new PodMatrixStore({
         serverGroupReconcilerService,
+        podAccess: ownerPodAccess,
+        journal: new SqlMatrixEventJournal(db),
         serverName: (() => {
           try {
             return new URL(process.env.CSS_BASE_URL ?? '').host || undefined;
@@ -755,7 +766,13 @@ export function registerCommonServices(
         baseUrl: inngestRuntimeConfig?.baseUrl,
         eventKey: inngestRuntimeConfig?.eventKey,
         signingKey: inngestRuntimeConfig?.signingKey,
-        isDev: inngestRuntimeConfig?.enabled ? !inngestRuntimeConfig.durableDelivery : true,
+        // Signature protocol follows the executor that actually started
+        // (`EmbeddedInngestRuntimeConfig.mode`): the spawned `inngest dev`
+        // executor never signs its callbacks, a managed Inngest server does.
+        // This is independent of whether delivery is durable; deriving it from
+        // durableDelivery made a durable spawned executor reject every callback
+        // with 401 and stall Task Runs in queued.
+        isDev: inngestRuntimeConfig?.enabled ? inngestRuntimeConfig.mode === 'spawn' : true,
         durableDelivery: inngestRuntimeConfig?.durableDelivery ?? false,
         store: chatKitStore,
         contextRetriever: runContextRetriever,

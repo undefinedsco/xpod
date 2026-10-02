@@ -54,7 +54,11 @@ test('shared publication is reachable only through accepted stable release and b
   assert.ok(release.jobs.promote_npm_latest.needs.includes('shared_packages'));
   const candidate = yaml.load(fs.readFileSync(path.join(__dirname, '../../.github/workflows/candidate.yml'), 'utf8'));
   assert.ok(candidate.jobs.finalize_acceptance.needs.includes('build_desktop_rc'));
-  assert.ok(candidate.jobs.build_desktop_rc.steps.some((step) => step.run === 'node scripts/workspace-package-consumer.cjs --local'));
+  assert.ok(candidate.jobs.build_desktop_rc.steps.some((step) =>
+    typeof step.run === 'string'
+    && step.run.includes('scripts/workspace-package-consumer.cjs --local')
+    && step.run.includes('--archive-dir')
+    && step.run.includes('--evidence')));
 });
 
 test('SDK types become checked consumer imports instead of hidden library declarations', () => fixture((root, directory, manifest) => {

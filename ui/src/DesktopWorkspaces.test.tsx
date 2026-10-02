@@ -1,7 +1,8 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
-import { WorkspacePage } from './DesktopWorkspaces';
+import { AppearancePage, WorkspacePage } from './DesktopWorkspaces';
+import { XpodThemeContext } from './theme/xpod-theme-context';
 import { emptyShellSnapshot } from './shell/shell-state';
 import { ShellContext } from './shell/useShellState';
 
@@ -34,4 +35,11 @@ it('gives a shell page one 48px main header over a scrollable, padded body', () 
   const main = container.querySelector('[data-testid="workspace-main-pane"]');
   expect(main?.textContent).toContain('收件箱内容');
   expect(main?.querySelector('.p-6')).toBeTruthy();
+});
+
+it('passes the native appearance selection to the host theme preference', () => {
+  const setPreference = vi.fn();
+  render(<XpodThemeContext.Provider value={{ preference: 'system', resolvedTheme: 'light', setPreference }}><AppearancePage /></XpodThemeContext.Provider>);
+  fireEvent.change(screen.getByRole('combobox', { name: '主题' }), { target: { value: 'dark' } });
+  expect(setPreference).toHaveBeenCalledWith('dark');
 });

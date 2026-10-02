@@ -3,6 +3,7 @@ export type DesktopWindowMode = 'auth' | 'account' | 'workspace'
 export interface DesktopWindowModeTarget {
   isDestroyed(): boolean
   isVisible(): boolean
+  setSize(width: number, height: number): void
   setContentSize(width: number, height: number): void
   setMinimumSize(width: number, height: number): void
   setResizable(resizable: boolean): void
@@ -26,24 +27,25 @@ export interface DesktopWindowModeNavigationSource {
   ): unknown
 }
 
-export const AUTH_WINDOW_MODE_SIZE = {
+/**
+ * The sign-in window: application-side WebID sign-in (A group) and the account
+ * short sign-in/recovery pages (B group) share 280 x 400 native logical bounds.
+ * The content fills the available viewport after native window chrome.
+ * Registration, full consent and Pod management use the workspace frame.
+ */
+const SIGN_IN_WINDOW_SIZE = {
   width: 280,
   height: 400,
   minWidth: 280,
   minHeight: 400,
 } as const
 
-// §5.1：App 承载 Account 文档首次 1040×760，最小 640×560，并允许用户调整尺寸；
-// 工作区窗口首次 1180×800、最小 640×560。
-export const ACCOUNT_WINDOW_MODE_SIZE = {
-  width: 1040,
-  height: 760,
-  minWidth: 640,
-  minHeight: 560,
-} as const
+export const AUTH_WINDOW_MODE_SIZE = SIGN_IN_WINDOW_SIZE
+
+export const ACCOUNT_WINDOW_MODE_SIZE = SIGN_IN_WINDOW_SIZE
 
 export const WORKSPACE_WINDOW_MODE_SIZE = {
-  width: 1180,
+  width: 1280,
   height: 800,
   minWidth: 640,
   minHeight: 560,
@@ -73,16 +75,13 @@ function normalizeWindowModePathname(pathname: string): string {
 }
 
 function isCompactAccountPathname(pathname: string): boolean {
-  // Account authentication steps share one frame; account management keeps
-  // the workspace window. Long forms scroll inside the Account document.
+  // Only short authentication steps share the compact frame. Long Account
+  // documents need the workspace viewport for readable forms and actions.
   return pathname === '/.account'
     || pathname === '/.account/login'
     || pathname === '/.account/login/password'
-    || pathname === '/.account/login/password/register'
     || pathname === '/.account/login/password/forgot'
     || pathname === '/.account/login/password/reset'
-    || pathname === '/.account/create-pod'
-    || pathname === '/.account/oidc/consent'
 }
 
 export function bindDesktopWindowModeNavigation(
@@ -129,7 +128,7 @@ export function isDesktopWindowMode(value: unknown): value is DesktopWindowMode 
  * Keeps the native shell visually aligned with the renderer's current surface.
  *
  * The first BrowserWindow is created hidden. Shared WebID authentication owns
- * the 280 × 400 native window and renders edge-to-edge inside it. Product
+ * 280 × 400 native logical bounds and renders edge-to-edge inside them. Product
  * workspaces use the resizable workspace frame; CSS identity-provider
  * documents can request compact Account mode when hosted by Electron.
  */
@@ -196,18 +195,18 @@ export class DesktopWindowModeController {
     }
 
     if (mode === 'auth') {
-      // §5.1 第 1 行：WebID/短 Account 登录、恢复、回调是 280×400 的紧凑对话框
+      // WebID sign-in uses the same initial viewport as the Account authentication flow.
       this.target.setResizable(false)
       this.target.setMaximizable(false)
       this.target.setMinimumSize(AUTH_WINDOW_MODE_SIZE.minWidth, AUTH_WINDOW_MODE_SIZE.minHeight)
-      this.target.setContentSize(AUTH_WINDOW_MODE_SIZE.width, AUTH_WINDOW_MODE_SIZE.height)
+      this.target.setSize(AUTH_WINDOW_MODE_SIZE.width, AUTH_WINDOW_MODE_SIZE.height)
       this.target.setTitle('Xpod')
     } else if (mode === 'account') {
-      // §5.1 第 5 行：App 承载 Account 文档是文档窗口，可缩放并保留用户调整过的尺寸
+      // Short Account authentication starts compact and remains user-resizable.
       this.target.setResizable(true)
       this.target.setMaximizable(true)
       this.target.setMinimumSize(ACCOUNT_WINDOW_MODE_SIZE.minWidth, ACCOUNT_WINDOW_MODE_SIZE.minHeight)
-      this.target.setContentSize(ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height)
+      this.target.setSize(ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height)
       this.target.setTitle('Xpod')
     } else {
       this.target.setResizable(true)

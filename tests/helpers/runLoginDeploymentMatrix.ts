@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { getFreePort } from '../../src/runtime/port-finder';
+import { getFreePortForWildcard } from '../../src/runtime/port-finder';
 import { XpodTestStack } from './XpodTestStack';
 import { hasObjectStore, objectStoreContainerArgs, OBJECT_STORE_PORT } from './dockerObjectStore';
 import { fetchJsonWithRetry } from './fetchJson';
@@ -37,9 +37,12 @@ async function waitReady(check: () => Promise<boolean>): Promise<void> {
 }
 
 try {
-  const pgPort = await getFreePort(26988);
-  const minioPort = await getFreePort(pgPort + 1);
-  const redisPort = await getFreePort(minioPort + 1);
+  // These ports are reached through `localhost`, which may resolve to either address family. Probe
+  // the whole address set so a port another workspace already holds is never adopted - otherwise
+  // our readiness gate talks to that other process instead.
+  const pgPort = await getFreePortForWildcard(26988);
+  const minioPort = await getFreePortForWildcard(pgPort + 1);
+  const redisPort = await getFreePortForWildcard(minioPort + 1);
   const pg = startContainer('pg', ['-p', `127.0.0.1:${pgPort}:5432`, '-e', 'POSTGRES_USER=xpod', '-e', 'POSTGRES_PASSWORD=xpod', '-e', 'POSTGRES_DB=login_matrix', 'postgres:16-alpine']);
   startContainer('minio', ['-p', `127.0.0.1:${minioPort}:${OBJECT_STORE_PORT}`, ...objectStoreContainerArgs('login-matrix')]);
   const redis = startContainer('redis', ['-p', `127.0.0.1:${redisPort}:6379`, 'redis:7-alpine', 'redis-server', '--save', '', '--appendonly', 'no']);
@@ -47,7 +50,7 @@ try {
   await waitReady(async () => hasObjectStore(minioPort, 'login-matrix'));
   await waitReady(async () => spawnSync('docker', ['exec', redis, 'redis-cli', 'ping'], { stdio: 'ignore' }).status === 0);
   const pgUrl = `postgres://xpod:xpod@localhost:${pgPort}/login_matrix`;
-  const cloudPort = await getFreePort(39001);
+  const cloudPort = await getFreePortForWildcard(39001);
   await cloud.start('cloud', {
     // Upstream Solid permits HTTP localhost for development issuers. A remote
     // production Cloud uses HTTPS; a different HTTP 127/8 origin is intentionally rejected.
@@ -65,7 +68,7 @@ try {
     },
   });
   for (const [name, stack] of [['managed-local', managed], ['standalone', standalone]] as const) {
-    const port = await getFreePort(name === 'managed-local' ? 39991 : 40991);
+    const port = await getFreePortForWildcard(name === 'managed-local' ? 39991 : 40991);
     const baseUrl = `http://localhost:${port}/`;
     await stack.start('local', {
       transport: 'port', baseUrl, gatewayPort: port, open: false, apiOpen: false,

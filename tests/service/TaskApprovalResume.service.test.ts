@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { approvalResource, sessionResource, type ApprovalRow, type ApprovalInsert, type SessionInsert } from '@undefineds.co/models';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
+import { toThreadRef } from '../../src/api/chatkit/types';
 import { TaskService } from '../../src/api/tasks/TaskService';
 import { ChatKitService } from '../../src/api/chatkit/service';
 import { RunStateCenter } from '../../src/api/runs/RunStateCenter';
@@ -80,6 +81,39 @@ describe('task approval checkpoint continuation', () => {
     expect(app.inputs[1].prompt).toContain('NOT been executed');
     expect(await app.resume()).toMatchObject({ duplicate: true, resumed: false });
     expect(app.inputs).toHaveLength(2); expect(await app.store.listRuns({}, context)).toHaveLength(1);
+  });
+  it('carries the original run instruction into the continuation so exact requirements survive', async () => {
+    const app = await setup();
+    const result = await app.resume();
+    expect(result.run.status).toBe('completed');
+    expect(app.inputs).toHaveLength(2);
+    const continuation = app.inputs[1];
+    const carriedInstruction = [continuation.prompt, ...continuation.conversation.map(message => message.text)].join('\n');
+    expect(carriedInstruction).toContain('Prepare and publish');
+  });
+  it('acknowledges a repeat decision when the completed checkpoint metadata loses runId in the Pod round-trip', async () => {
+    const app = await setup();
+    await app.resume();
+    expect(app.inputs).toHaveLength(2);
+    const threadRef = toThreadRef({ thread_id: app.run.thread });
+    const items = await app.store.loadThreadItems(threadRef, undefined, 1000, 'asc', context);
+    const tool = items.data.find(item => item.type === 'client_tool_call');
+    expect(tool).toBeDefined();
+    // The checkpoint binds to the Run through the durable waitingTool receipt, not the
+    // free-form item metadata, so a store that cannot round-trip metadata still resolves it.
+    delete (tool!.metadata as Record<string, unknown> | undefined)?.runId;
+    expect(await app.resume()).toMatchObject({ duplicate: true, resumed: false, run: { status: 'completed' } });
+    expect(app.inputs).toHaveLength(2);
+  });
+  it('still rejects a repeat decision whose call id no longer matches the run checkpoint', async () => {
+    const app = await setup();
+    await app.resume();
+    const threadRef = toThreadRef({ thread_id: app.run.thread });
+    const items = await app.store.loadThreadItems(threadRef, undefined, 1000, 'asc', context);
+    delete (items.data.find(item => item.type === 'client_tool_call')!.metadata as Record<string, unknown> | undefined)?.runId;
+    app.store.approval!.toolCallId = 'call_other';
+    await expect(app.resume()).rejects.toThrow('checkpoint');
+    expect(app.inputs).toHaveLength(2);
   });
   it('claims simultaneous decisions once', async () => {
     const app = await setup();

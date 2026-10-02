@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { findGatewayIngressPort, getFreePort } from '../../port-finder';
+import { findGatewayIngressPort, getFreePortForWildcard } from '../../port-finder';
 import { registerSocketFetchOrigin } from '../../socket-fetch';
 import { registerSocketHttpOrigin } from '../../socket-http';
 import { prepareSocketPath, removeSocketPath } from '../../socket-utils';
@@ -34,8 +34,9 @@ export class NodeRuntimeHost implements RuntimeHost {
     }
     // Probes release their sockets, so the OS cannot see ports planned for this runtime.
     // Reserve both explicit and newly selected ports locally until allocation finishes.
+    // Probe wildcard and loopback addresses in both families before selecting each port.
     const allocate = async (explicit: number | undefined, base: number): Promise<number> => {
-      const port = explicit ?? await getFreePort(base, '127.0.0.1', undefined, selected);
+      const port = explicit ?? await getFreePortForWildcard(base, undefined, selected);
       selected.add(port);
       return port;
     };

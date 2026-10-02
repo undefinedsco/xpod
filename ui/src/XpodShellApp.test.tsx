@@ -5,7 +5,10 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { XpodShellApp } from './XpodShellApp';
 
-vi.mock('@undefineds.co/shared-ui', () => ({ Toaster: () => null }));
+vi.mock('@undefineds.co/shared-ui', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@undefineds.co/shared-ui')>(),
+  Toaster: () => null,
+}));
 vi.mock('./context/AuthContext', () => ({
   AuthProvider: ({ children }: { children: ReactNode }) => children,
 }));

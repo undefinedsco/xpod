@@ -4,8 +4,8 @@ import { useMemo, useState } from 'react'
 import {
   Badge,
   Button,
+  EmptyState,
   TooltipProvider,
-  cn,
 } from '@undefineds.co/shared-ui'
 import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type {
@@ -21,10 +21,8 @@ import {
   Box,
   Check,
   Loader2,
-  Pencil,
   Plus,
   RotateCw,
-  Trash2,
 } from 'lucide-react'
 import { AiProviderHeader } from './AiProviderHeader'
 import {
@@ -33,9 +31,7 @@ import {
   type AiOfferingQuotaState,
 } from './AiCredentialPoolSection'
 import {
-  AiModelEmptyPanel,
   AiModelSearchInput,
-  AiModelEnableToggle,
   AiModelRow,
   modelIconTokens,
 } from './AiModelCatalog'
@@ -307,11 +303,9 @@ export function AiProviderCard({
 
           {selectedClass ? <AiModelClassTabs classes={modelClasses} selected={selectedClass} onChange={setModelClass} /> : null}
           {models.length === 0 ? (
-            <AiModelEmptyPanel tone={catalogError ? 'destructive' : undefined}>
-              {catalogError ?? '暂无可用模型'}
-            </AiModelEmptyPanel>
+            <EmptyState className={catalogError ? 'text-destructive' : undefined} description={catalogError ?? '暂无可用模型'} />
           ) : visibleModels.length === 0 ? (
-            <AiModelEmptyPanel>未找到匹配的模型</AiModelEmptyPanel>
+            <EmptyState description="未找到匹配的模型" />
           ) : (
             <div className="grid gap-2">
               {visibleModels.map((model) => {

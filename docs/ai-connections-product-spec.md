@@ -2,7 +2,7 @@
 
 > Status: Canonical product specification
 >
-> Date: 2026-08-24; design alignment: 2026-09-27 R2
+> Date: 2026-08-24; design alignment: 2026-10-02, retaining R6 handoff and domain boundaries
 >
 > Scope: Xpod AI Connections product behavior, data ownership, package
 > boundaries, and acceptance order.
@@ -22,7 +22,9 @@
 > targets. Runtime compliance has not been inspected; the responsible domain
 > owners must implement and verify those changes separately from UI copy.
 
-This document is the authority for AI Connections within its product scope.
+**Current desktop overrides:** [October 1 shell/applets](superpowers/specs/2026-10-01-xpod-desktop-shell-and-applets-design.md) §4 and §9 govern this iteration’s AI applet: provider directory stays visible, client configuration belongs to key records rather than a separate client list, and processing settings live under Pod. Xpod keys use the Solid client-credential contract in §4.2; legacy Gateway-key/hash-only rules below apply only to that legacy resource type. They do not redefine Solid credentials or authorize exposing secrets. Shared Tasks may be edited in both hosts under §9; the old R2 four-entry arrangement is historical. See the [design entry](../DESIGN.md) for geometry, WebID admission and pending capabilities.
+
+This document is the authority for AI Connections within its product scope, subject to those explicit overrides.
 It does not override the login, authorization, Pod lifecycle, or shared security
 contracts above. Implementation plans, audits, and acceptance matrices describe
 their dated scope; they are not proof of current release behavior.
@@ -32,6 +34,13 @@ uses into one navigation area. AI Connections owns connections, allowed models,
 and Xpod API Keys; AI Config owns per-use model assignments. Xpod Gateway remains
 the data plane exposed to clients. Shared navigation does not merge domain owners,
 credentials, permissions, or persistence contracts.
+
+The [R6 joint experience](../../homepage/docs/specs/personal-ai-product-experience-r6.md)
+owns cross-product handoff. LinX provides daily work, knowledge and My AI;
+Foundry owns training and release governance. This AI area connects published
+models to purposes/clients and exposes serving evidence. It does not duplicate
+knowledge editing, chat or training submission. The historical R2 controller entries
+do not constrain the October 1 applet navigation or the complete product boundary.
 
 ## Product Principles
 
@@ -59,16 +68,21 @@ AI Connections must optimize these tasks:
 | Connect a provider | Save provider credentials in the user's Pod and verify the connection. |
 | See available models | Distinguish discovered models, the user's allowed models, and the model actually assigned to each use. |
 | Use an AI client | Select the client/model, explicitly reuse or create a key, preview the target configuration, then apply or copy it. |
+| Use a published personal model | Preserve the release and purpose, check supported runtime/client compatibility, and distinguish selection from serving and actual Run use. |
 | Choose AI for personal materials | Select models for supported uses such as text recognition, document understanding, and semantic search, with consequences shown in the same flow. |
 | Track usage | See usage grouped by Xpod API Key, with provider/model detail when available. |
 | Disable access | Temporarily stop an API Key or provider credential without deleting history. |
 | Delete stale records | Remove deleted API Keys from the visible list after successful deletion. |
 | Recover from stale auth | Return to a useful login or reconnect state, never a raw callback or blank page. |
+| Repair a work dependency | Return to the same knowledge resource, model release or Run with permissions and material scope revalidated; do not silently resubmit work or training. |
 
 ## Information Architecture
 
+The following R2 organization is retained as design history where it conflicts
+with the current desktop overrides above; it is not a second implementation target.
+
 R2 replaces the separate AI Connections and AI Config top-level entries with one
-`AI` workspace. It keeps provider management, API Key management, and per-use
+`AI` workspace in the local controller. It keeps provider management, API Key management, and per-use
 configuration as distinct responsibilities inside that workspace.
 
 ```text
@@ -140,6 +154,39 @@ Before changing a model, show the consequences in that same context:
 Saving the model assignment, activating it, and starting/finishing an index rebuild
 are separate outcomes. Queue a rebuild only after the user's explicit choice;
 do not present a configuration save or a connection check as a completed rebuild.
+
+### Published Personal Model Handoff
+
+Model discovery/allowance/assignment remain the rules above. Personal-model use
+adds the following evidence, not a replacement model schema or a new release owner:
+
+| Fact | Authority and UI contract |
+| --- | --- |
+| Desired published release | Foundry release governance and evidence; a training candidate is not automatically published or enabled. |
+| Actually serviceable version | Runtime observation, with scope/time. Desired configuration does not prove this version is loaded or reachable. |
+| Client/purpose selection | The existing assignment or client configuration owner. Apply/copy success does not prove a request used it. |
+| Version actually used by a Run | Task/Run execution evidence. A later rollback does not rewrite historical use. |
+
+An incoming release/purpose/client task preserves those validated references and
+its legal return target. Show compatible choices and execution/data destination,
+known cost or an explicit unknown, then use the existing authorized apply flow.
+Enablement/rollback follow the release and assignment owners; do not bypass Cloud
+catalog/endpoint restrictions, allowed models or capability eligibility because
+the model is personal. If the runtime cannot report the version, say unverified
+rather than copying the desired release into an observed field.
+
+Connection repair returns to the original LinX knowledge/model/Run task, not a
+generic AI home. Revalidate identity, target authority, material version/scope,
+execution destination, cost and enablement scope before resuming consequential
+choices. Read access is not training-use consent. Repair does not submit training,
+expand grants, silently replace a model or recreate a key/Pod. No secret or lost
+permission content is retained in a URL or restored after an identity change.
+
+Foundry, runtime, client and Task owners must supply the version associations and
+safe continuation contract. Missing evidence is a scoped dependency; do not invent
+fields/APIs or claim the handoff is implemented. Training cancellation, retry and
+revocation effects require their domain contract; a Run cancellation API does not
+define them, and revocation does not prove that existing weights have forgotten.
 
 ## Concept Boundaries
 
@@ -437,6 +484,10 @@ Xpod has not finished connecting to Cloud, not show raw errors such as
 
 ## API Keys And Client Configuration
 
+Apply the current Solid client-credential and key-based client-configuration
+overrides above. The older separate client/key organization below must not restore
+a second client list or treat Solid credentials as legacy Gateway keys.
+
 Xpod API Keys are created for Xpod Gateway. They are reusable across clients
 unless the user chooses to label or apply them to a specific client.
 
@@ -457,7 +508,9 @@ unless the user chooses to label or apply them to a specific client.
    client-specific copy path. A successful native apply does not also require
    manual pasting.
 5. Show the completed stage and the next supported verification action. Return to
-   the client summary without losing partial results.
+   the originating task when valid, otherwise the client summary, without losing
+   partial results. A published-model task retains its release/purpose/client and
+   separate serving-version evidence as specified above.
 
 Reusing a key must identify known assigned clients and explain that disabling or
 deleting that key can affect them together. Assignment metadata and observed use
@@ -612,6 +665,17 @@ Rules:
   repeated just because client configuration failed.
 - Main feedback names the failed step and its task impact; technical details
   are available on demand, never raw stack traces in the object list.
+- Distinguish dependency repair, continuation of the same waiting_input Run and
+  retry of a training job. Query the original operation when its result is unknown;
+  preserve completed side effects. A cancellation request or closing the waiting
+  UI is not confirmed stopped execution. Missing training retry/cancel semantics
+  remain with Foundry, not a module-local retry button.
+- Healthy service/connection checks do not mean knowledge coverage, training or
+  a Run is complete. Optional untrained AI is neutral, while a missing dependency
+  required by the current task receives a scoped repair action.
+- Usage/estimates identify object, period, unit, source and time. Provider quota,
+  key consumption, space capacity and training estimates are separate; unknown
+  is not zero. Do not infer training feasibility or local execution from them.
 
 ## Package Responsibilities
 
@@ -679,6 +743,17 @@ Web acceptance is first:
 12. Disabling/deleting a connection or key presents known dependencies and
     unknown impact boundaries; it does not silently substitute another model or
     credential.
+13. Published-model tasks distinguish release target, observed serving version,
+    client selection and actual Run use. Candidate enablement is explicit under
+    the domain owner; rollback preserves historical evidence. Missing version
+    observation is unverified, and Cloud/capability restrictions remain intact.
+14. Repair returns to the same validated resource/release/Run, rechecking authority,
+    version, scope and consequences. A lost response does not repeat completed
+    key/application side effects or resubmit training. Cancel requested is not
+    cancel confirmed; undefined training controls are not executable substitutes.
+15. Saved data, inference/training execution and artifact location remain distinct;
+    usage and estimates expose their source and scope. A working connection alone
+    does not claim a trained model, completed Run or fully local processing.
 
 Desktop acceptance follows after the Web chain passes:
 
@@ -730,7 +805,8 @@ Resolve conflicts by responsibility, as defined in the
 2. This file governs AI Connections behavior, provider/client responsibilities,
    and Xpod API Key product semantics within those boundaries.
 3. Cross-module interaction and selected branding follow the product experience
-   spec and its cited Shell/brand authorities.
+   spec and its cited Shell/brand authorities; cross-product object/task handoff
+   follows R6 except for the explicit October 1 §9 overrides. R2 navigation is historical.
 4. Package contracts remain authoritative for their shared models and APIs;
    product convenience cannot weaken the hash-only key contract.
 5. Implementation, acceptance reports, and screenshots are dated evidence of

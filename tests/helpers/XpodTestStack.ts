@@ -1,6 +1,6 @@
 import path from 'path';
 import { randomUUID } from 'node:crypto';
-import { getFreePort } from '../../src/runtime/port-finder';
+import { getFreePortForWildcard } from '../../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle, type XpodRuntimeOptions } from '../../src/runtime/XpodRuntime';
 import { resolveTestRuntimeTransport } from './runtimeTransport';
 import { isPortConflict, withRuntimeStartLock } from './testRuntime';
@@ -125,12 +125,20 @@ export class XpodTestStack {
     await this.waitReady();
   }
 
-  private async resolvePortOptions(options: Partial<XpodRuntimeOptions>): Promise<Partial<XpodRuntimeOptions>> {
+  /**
+   * Plan the loopback ports this stack will bind.
+   *
+   * Probe both the wildcard and the loopback addresses: platforms may let a wildcard bind and a
+   * specific-address bind sit on the same port, so an IPv4-only probe can adopt a port another
+   * process already holds. Requests to that port - readiness included - would reach the other
+   * process instead. Public so regression tests can drive the real planning boundary.
+   */
+  public async resolvePortOptions(options: Partial<XpodRuntimeOptions>): Promise<Partial<XpodRuntimeOptions>> {
     const basePort = 30_000 + Math.floor(Math.random() * 20_000);
     const bindHost = options.bindHost ?? '127.0.0.1';
-    const gatewayPort = options.gatewayPort ?? await getFreePort(basePort, bindHost);
-    const cssPort = options.cssPort ?? await getFreePort(gatewayPort + 1, bindHost);
-    const apiPort = options.apiPort ?? await getFreePort(cssPort + 1, bindHost);
+    const gatewayPort = options.gatewayPort ?? await getFreePortForWildcard(basePort);
+    const cssPort = options.cssPort ?? await getFreePortForWildcard(gatewayPort + 1);
+    const apiPort = options.apiPort ?? await getFreePortForWildcard(cssPort + 1);
 
     return {
       bindHost,

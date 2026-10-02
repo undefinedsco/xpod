@@ -6,7 +6,7 @@ import { XpodLoginBrand } from './XpodLoginBrand';
 afterEach(() => cleanup());
 
 describe('Xpod login brand', () => {
-  test('renders the standalone shield without a second rounded tile', () => {
+  test('renders the selected product logo without a second surrounding tile', () => {
     const { container } = render(<XpodLoginBrand />);
     const icon = container.querySelector('img');
 

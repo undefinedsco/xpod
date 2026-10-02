@@ -210,6 +210,14 @@ jobs:
             echo "::error::settings did not return HTML"
             exit 1
           fi
+          # Every Account document links this stylesheet by name; a deployment
+          # that cannot serve it renders the login page unstyled.
+          account_css_url="$PUBLIC_BASE_URL/app/assets/main.css"
+          css_status="$(curl --silent --show-error --location --output /dev/null --write-out '%{http_code}' --max-time 15 "$account_css_url")"
+          if [[ "$css_status" != "200" ]]; then
+            echo "::error::$account_css_url returned $css_status, expected 200"
+            exit 1
+          fi
           expected_status "$protected_settings_url" 401
 
           deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
@@ -398,6 +406,14 @@ jobs:
           curl --fail --silent --show-error --location --max-time 15 "$settings_url" --output "$settings_file"
           if ! grep -qi '<!doctype html\|<html' "$settings_file"; then
             echo "::error::settings did not return HTML"
+            exit 1
+          fi
+          # Every Account document links this stylesheet by name; a deployment
+          # that cannot serve it renders the login page unstyled.
+          account_css_url="$PUBLIC_BASE_URL/app/assets/main.css"
+          css_status="$(curl --silent --show-error --location --output /dev/null --write-out '%{http_code}' --max-time 15 "$account_css_url")"
+          if [[ "$css_status" != "200" ]]; then
+            echo "::error::$account_css_url returned $css_status, expected 200"
             exit 1
           fi
           expected_status "$protected_settings_url" 401

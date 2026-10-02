@@ -3,8 +3,8 @@
 // 授权页"缺 Pod"入口的回归（设计第二部分 §4.1 / U06，2026-10-01 新流程）。
 //
 // 目标契约：
-//   * 缺 Pod 的授权页本身只读：没有可用绑定时说明原因，给出"创建 Pod /
-//     管理 Pod/ 拒绝"三个出口，加载时不发生任何写操作；
+//   * 缺 Pod 的授权页本身只读：没有可用绑定时说明原因，给出"创建并继续 /
+//     存到边缘设备（打开账号页）/ 拒绝"三个出口，加载时不发生任何写操作；
 //   * 主操作不再在 Consent 内放名字表单、也不直接 POST，而是把"真实 Account id +
 //     精确 UID + 同源原 ConsentURL + TTL"的一次性任务交给同 UID 的轻量快速创建页
 //     （`/.account/interaction/{UID}/create-pod/`）；
@@ -12,7 +12,7 @@
 //     输入（无 Account id、无 interaction 作用域）都失败退出：不保存可用任务、
 //     也绝不跳进有效创建；
 //   * 读取失败（500 / malformed）保持失败出口，不能因为读失败而误 create；
-//   * 自己部署相关出口打开同 UID 的 Account Pod 管理页，保留安全续接上下文。
+//   * 自己部署相关出口只按真实代码能力走（打开同 UID 账号页），不编造 /settings 直跳。
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -26,7 +26,7 @@ const INTERACTION = `/.account/interaction/${UID}`;
 const CONSENT_PATH = `${INTERACTION}/oidc/consent/`;
 const PICK_PATH = `${INTERACTION}/oidc/pick-webid/`;
 const CREATE_PATH = `${INTERACTION}/create-pod/`;
-const MANAGEMENT_PATH = `${INTERACTION}/manage-pod/`;
+const ACCOUNT_PAGE_PATH = `${INTERACTION}/account/`;
 const ACCOUNT_ID = 'alice';
 const CONTINUATION_KEY = 'xpod.safe-continuation.consent.v2';
 
@@ -142,12 +142,12 @@ describe('ConsentPage no-Pod entry', () => {
 
     renderConsent({ controls: ACCOUNT_CONTROLS, identity: { id: ACCOUNT_ID } });
 
-    await screen.findByRole('button', { name: '创建 Pod' });
+    await screen.findByRole('button', { name: '创建并继续' });
     // 给防抖/异步结论稳定下来的时间，再断言加载阶段没有任何写操作。
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
     expect(anyPosts(fetchMock)).toEqual([]);
-    // 三个显式出口：创建 Pod / 管理 Pod/ 拒绝。
-    expect(screen.getByRole('button', { name: '管理 Pod' })).toBeTruthy();
+    // 三个显式出口：创建并继续 / 存到边缘设备（打开账号页）/ 拒绝。
+    expect(screen.getByRole('button', { name: '存到边缘设备（打开账号页）' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
     // 没有被自动带走，也没有提前写出一次性任务。
     expect(screen.getByTestId('location').textContent).toBe(CONSENT_PATH);
@@ -164,7 +164,7 @@ describe('ConsentPage no-Pod entry', () => {
     renderConsent({ controls: ACCOUNT_CONTROLS, identity: { id: ACCOUNT_ID } });
 
     expect(screen.queryByLabelText('WebID 名称')).toBeNull();
-    fireEvent.click(await screen.findByRole('button', { name: '创建 Pod' }));
+    fireEvent.click(await screen.findByRole('button', { name: '创建并继续' }));
 
     await waitFor(() => expect(screen.getByTestId('location').textContent).toBe(CREATE_PATH));
     // 任务绑定真实 Account id + 精确 UID + 同源原 ConsentURL。
@@ -177,19 +177,19 @@ describe('ConsentPage no-Pod entry', () => {
     expect(navigation.assign).not.toHaveBeenCalled();
   });
 
-  it('"管理 Pod"打开同 UID 管理页并保留续接任务，不创建资源', async () => {
+  it('"存到边缘设备（打开账号页）"按真实代码能力打开同 UID 账号页，不创建也不跳 /settings', async () => {
     const navigation = installLocation(CONSENT_PATH);
     const fetchMock = noPodFetch();
     vi.stubGlobal('fetch', fetchMock);
 
     renderConsent({ controls: ACCOUNT_CONTROLS, identity: { id: ACCOUNT_ID } });
 
-    fireEvent.click(await screen.findByRole('button', { name: '管理 Pod' }));
+    fireEvent.click(await screen.findByRole('button', { name: '存到边缘设备（打开账号页）' }));
 
-    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe(MANAGEMENT_PATH));
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe(ACCOUNT_PAGE_PATH));
     expect(navigation.assign).not.toHaveBeenCalled();
     expect(anyPosts(fetchMock)).toEqual([]);
-    expect(peekConsentContinuation({ accountId: ACCOUNT_ID })?.interaction).toBe(INTERACTION);
+    expect(window.sessionStorage.getItem(CONTINUATION_KEY)).toBeNull();
   });
 
   it('读不到权威 Account id 时不保存任务、也不跳进有效创建，只给失败出口', async () => {
@@ -200,9 +200,9 @@ describe('ConsentPage no-Pod entry', () => {
     // 只有可见用户名，没有任何从真实 Account 路由推导出的权威 id。
     renderConsent({ controls: { account: { username: 'alice' } } });
 
-    fireEvent.click(await screen.findByRole('button', { name: '创建 Pod' }));
+    fireEvent.click(await screen.findByRole('button', { name: '创建并继续' }));
 
-    expect(await screen.findByText(xpodFirstPodErrors.accountIdentityMissing)).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.accountIdentityMissing));
     expect(screen.getByTestId('location').textContent).toBe(CONSENT_PATH);
     expect(window.sessionStorage.getItem(CONTINUATION_KEY)).toBeNull();
     expect(anyPosts(fetchMock)).toEqual([]);
@@ -219,9 +219,9 @@ describe('ConsentPage no-Pod entry', () => {
 
     renderConsent({ controls: ACCOUNT_CONTROLS, identity: { id: ACCOUNT_ID } }, [unscoped]);
 
-    fireEvent.click(await screen.findByRole('button', { name: '创建 Pod' }));
+    fireEvent.click(await screen.findByRole('button', { name: '创建并继续' }));
 
-    expect(await screen.findByText(xpodFirstPodErrors.accountIdentityMissing)).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.accountIdentityMissing));
     expect(screen.getByTestId('location').textContent).toBe(unscoped);
     expect(window.sessionStorage.getItem(CONTINUATION_KEY)).toBeNull();
     expect(anyPosts(fetchMock)).toEqual([]);
@@ -240,7 +240,7 @@ describe('ConsentPage no-Pod entry', () => {
 
     await screen.findByText(xpodConsentErrors.bindingsFailed);
     // 读取失败不能伪造出创建入口，也不能写出可用任务。
-    expect(screen.queryByRole('button', { name: '创建 Pod' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '创建并继续' })).toBeNull();
     expect(window.sessionStorage.getItem(CONTINUATION_KEY)).toBeNull();
     expect(anyPosts(fetchMock)).toEqual([]);
   });

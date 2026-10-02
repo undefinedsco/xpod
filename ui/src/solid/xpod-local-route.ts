@@ -1,3 +1,4 @@
+import { probeSolidLocalRouteStatus } from '@undefineds.co/solid-sdk/local-route-fetch';
 import type {
   AccessRoute,
   AccessRouteHealth,
@@ -39,6 +40,11 @@ export interface XpodProvisionRouteStatus {
   routes?: XpodAdvertisedAccessRoute[];
 }
 
+/** A caller that owns a probe can end it when the session that asked for it ends. */
+export interface ProvisionRouteProbeOptions {
+  signal?: AbortSignal;
+}
+
 const ORIGIN_PRIORITY: Record<'loopback' | 'lan' | 'public-direct', number> = {
   loopback: 10,
   lan: 20,
@@ -48,9 +54,10 @@ const ORIGIN_PRIORITY: Record<'loopback' | 'lan' | 'public-direct', number> = {
 export async function currentHostLocalPodRoutes(
   storageUrl: string,
   fetchImpl: typeof fetch,
+  options: ProvisionRouteProbeOptions = {},
 ): Promise<XpodLocalPodRoute[]> {
   if (typeof window === 'undefined') return [];
-  const status = await fetchCurrentProvisionRouteStatus(fetchImpl);
+  const status = await fetchCurrentProvisionRouteStatus(fetchImpl, options);
   return provisionLocalPodRoutes(storageUrl, status);
 }
 
@@ -185,30 +192,35 @@ function isPrivateNetworkHostname(hostname: string): boolean {
 
 export async function fetchCurrentProvisionRouteStatus(
   fetchImpl: typeof fetch,
+  options: ProvisionRouteProbeOptions = {},
 ): Promise<XpodProvisionRouteStatus> {
-  let response: Response | undefined;
-  try {
-    response = await fetchImpl(new URL('/provision/status', window.location.origin).href, {
-      credentials: 'include',
-      headers: { accept: 'application/json' },
-    });
-  } catch {
-    return {};
-  }
-  if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
-    await response.arrayBuffer().catch(() => undefined);
-    return {};
-  }
-  const status = await response.json().catch(() => undefined) as {
-    managed?: unknown;
-    publicUrl?: unknown;
-    routes?: unknown;
-  } | undefined;
-  return {
-    managed: status?.managed === true,
-    storageRoot: typeof status?.publicUrl === 'string' ? status.publicUrl : undefined,
-    routes: normalizeAdvertisedAccessRoutes(status?.routes),
-  };
+  if (typeof window === 'undefined' || window.location.origin === 'null') return {};
+  // The SDK helper owns the one shared route-probe deadline and the owner
+  // cancellation, so a host that never answers `/provision/status` settles at
+  // that budget and an ended session can cancel it immediately. This caller
+  // keeps the status endpoint's own HTTP/content-type/JSON semantics.
+  const status = await probeSolidLocalRouteStatus({
+    fetch: fetchImpl,
+    url: new URL('/provision/status', window.location.origin).href,
+    signal: options.signal,
+    read: async (response) => {
+      if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
+        await response.arrayBuffer().catch(() => undefined);
+        return undefined;
+      }
+      const body = await response.json().catch(() => undefined) as {
+        managed?: unknown;
+        publicUrl?: unknown;
+        routes?: unknown;
+      } | undefined;
+      return {
+        managed: body?.managed === true,
+        storageRoot: typeof body?.publicUrl === 'string' ? body.publicUrl : undefined,
+        routes: normalizeAdvertisedAccessRoutes(body?.routes),
+      };
+    },
+  });
+  return status ?? {};
 }
 
 export function normalizeAdvertisedAccessRoutes(value: unknown): XpodAdvertisedAccessRoute[] {

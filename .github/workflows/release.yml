@@ -252,7 +252,7 @@ jobs:
         run: node scripts/publish-release.cjs --skip-build
 
       - name: Test npm tarball readiness checks
-        run: node --test tests/scripts/wait-for-npm-package.node-test.cjs tests/scripts/npm-latest-propagation.node-test.cjs
+        run: node --test tests/scripts/wait-for-npm-package.node-test.cjs tests/scripts/npm-latest-propagation.node-test.cjs tests/scripts/desktop-self-update-acceptance.node-test.cjs
 
       - name: Wait for verified root and native tarballs to become publicly installable
         run: |
@@ -512,6 +512,8 @@ jobs:
           test -x "$runtime"
           test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
 
+      # The archive ships an ad-hoc (linker) signature; `create_github_release` publishes
+      # these exact bytes after production deploys, so hand them over as one artifact.
       - uses: actions/upload-artifact@v4
         with:
           name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}

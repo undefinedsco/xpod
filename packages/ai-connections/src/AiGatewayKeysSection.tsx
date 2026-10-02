@@ -7,9 +7,12 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
   Input,
+  NativeSelect,
+  InlineNotice,
+  SectionHeader,
   TooltipProvider,
-  controlFocusClass,
   dismissToast,
   toast,
 } from '@undefineds.co/shared-ui'
@@ -43,11 +46,6 @@ const UNPERSISTED_APPLY_MESSAGE = '这个 Xpod 密钥 只在创建时可见：�
 /** Header tooltip: what Xpod is, then how the Key itself is protected. */
 const XPOD_DESCRIPTION = '把已接入的模型提供给客户端。'
 const XPOD_CREDENTIAL_NOTE = '密钥允许客户端以你的 WebID 访问整个 Pod。'
-const SELECT_CLASS = [
-  'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-[border-color]',
-  'disabled:cursor-not-allowed disabled:opacity-50',
-  controlFocusClass,
-].join(' ')
 
 /**
  * The Xpod provider page. From a coding client's point of view Xpod is just
@@ -303,7 +301,8 @@ export function AiGatewayKeysSection({
 
   return (
     <TooltipProvider>
-      <section className="space-y-8" aria-label="Xpod 密钥">
+      <Dialog open={showCreate} onOpenChange={(open) => { if (!open && (creating || applying)) return; setShowCreate(open) }}>
+        <section className="space-y-8" aria-label="Xpod 密钥">
         <AiProviderHeader
           name="Xpod"
           mark="XP"
@@ -319,23 +318,28 @@ export function AiGatewayKeysSection({
         />
 
         <section className="space-y-3" aria-label="当前连接">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="flex items-center gap-2 text-sm font-medium text-foreground/90">
-              <Settings2 aria-hidden="true" className="h-4 w-4 text-primary" />当前连接
-            </h3>
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 Xpod 密钥"
-                disabled={creating || loading} onClick={openCreate}>
-                <Plus aria-hidden="true" className="h-3.5 w-3.5" />Xpod 密钥
-              </Button>
-            </div>
-          </div>
-          {loadError ? <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
-            <span>{loadError}</span>
-            {serviceAccessMissing && onAuthorizeService ? <Button size="sm" disabled={authorizing} onClick={() => void authorize()}>
+          <SectionHeader
+            level={3}
+            title={<><Settings2 aria-hidden="true" className="h-4 w-4 text-primary" />当前连接</>}
+            titleClassName="flex items-center gap-2 font-medium text-foreground/90"
+            actions={(
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 Xpod 密钥"
+                  disabled={creating || loading} onClick={openCreate}>
+                  <Plus aria-hidden="true" className="h-3.5 w-3.5" />Xpod 密钥
+                </Button>
+              </DialogTrigger>
+            )}
+          />
+          {loadError ? <InlineNotice
+            tone="destructive"
+            role="alert"
+            action={serviceAccessMissing && onAuthorizeService ? <Button size="sm" disabled={authorizing} onClick={() => void authorize()}>
               {authorizing ? '正在授权…' : '允许 Xpod 访问'}
-            </Button> : null}
-          </div> : null}
+            </Button> : undefined}
+          >
+            {loadError}
+          </InlineNotice> : null}
           {loading ? (
             <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
               <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />正在读取 Xpod 密钥
@@ -381,8 +385,7 @@ export function AiGatewayKeysSection({
 
         <AiGatewayModelsSection models={gatewayModels} selection={modelSelection} />
 
-        <Dialog open={showCreate} onOpenChange={(open) => { if (!open && (creating || applying)) return; setShowCreate(open) }}>
-          <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
+        <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
             <DialogHeader>
               <DialogTitle>{issued ? 'Xpod 密钥 已签发' : '新建 Xpod 密钥'}</DialogTitle>
             </DialogHeader>
@@ -458,9 +461,8 @@ export function AiGatewayKeysSection({
                 </label>
                 <label className="block space-y-2">
                   <span className="text-sm font-medium">给哪个客户端用</span>
-                  <select
+                  <NativeSelect
                     aria-label="Xpod 密钥 用途"
-                    className={SELECT_CLASS}
                     value={purpose}
                     disabled={creating}
                     onChange={(event) => setPurpose(event.target.value as AiConnectionsClientId)}
@@ -469,9 +471,9 @@ export function AiGatewayKeysSection({
                     {AI_CONNECTIONS_CLIENTS.map((clientId) => (
                       <option key={clientId} value={clientId}>{AI_CLIENT_LABELS[clientId]}{bridge ? (clientStatuses[clientId]?.status === 'unavailable' ? ' · 未安装' : clientStatuses[clientId] ? ' · 可配置' : ' · 检测中') : ' · 只复制配置'}</option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </label>
-                <p className="text-xs text-muted-foreground">客户端默认跟随 Pod 的智能模型。</p>
+                <p className="text-xs leading-normal text-muted-foreground">客户端默认跟随 Pod 的智能模型。</p>
                 {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
                 <DialogFooter>
                   <Button type="button" variant="outline" disabled={creating} onClick={() => setShowCreate(false)}>取消</Button>
@@ -483,8 +485,8 @@ export function AiGatewayKeysSection({
               </form>
             )}
           </DialogContent>
-        </Dialog>
-      </section>
+        </section>
+      </Dialog>
     </TooltipProvider>
   )
 }

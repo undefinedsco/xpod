@@ -16,9 +16,11 @@ export interface ReconcileGroupThreadMessageInput {
   actor?: string;
   role?: 'user' | 'assistant' | 'system' | string;
   content?: string;
+  createdAt?: string;
   reconcilerOwner?: ReconcilerOwner;
   mentions?: string[];
   routeTargetAgent?: string;
+  /** Authorized wake targets resolved by the caller for this actor and thread. */
   participants?: string[];
 }
 
@@ -59,6 +61,10 @@ export class ServerGroupReconcilerService {
       return { wakeJobs: [], inserted: 0, skippedReason: 'not_user_message' };
     }
 
+    if (!input.actor?.trim()) {
+      return { wakeJobs: [], inserted: 0, skippedReason: 'missing_actor' };
+    }
+
     const targets = selectWakeTargets({
       mentions: input.mentions,
       routeTargetAgent: input.routeTargetAgent,
@@ -68,7 +74,7 @@ export class ServerGroupReconcilerService {
       return { wakeJobs: [], inserted: 0, skippedReason: 'no_agent_selected' };
     }
 
-    const createdAt = this.now().toISOString();
+    const createdAt = input.createdAt ?? this.now().toISOString();
     const jobs = targets.map(({ agent, reason }) => createWakeJob({
       thread: input.thread,
       triggerMessage: input.triggerMessage,
@@ -88,6 +94,10 @@ export class ServerGroupReconcilerService {
     }
 
     return { wakeJobs: enqueued, inserted };
+  }
+
+  public getQueue(): WakeAgentQueue {
+    return this.wakeQueue;
   }
 
   public async listQueued(thread: string, agent?: string): Promise<SharedWakeAgentJob[]> {
@@ -114,13 +124,14 @@ function selectWakeTargets(input: {
   routeTargetAgent?: string;
   participants?: string[];
 }): Array<{ agent: string; reason: WakeAgentReason }> {
-  if (input.routeTargetAgent) {
-    return [{ agent: input.routeTargetAgent, reason: 'manual' }];
-  }
-
   const participants = new Set(normalizeAgentUris(input.participants));
+  if (input.routeTargetAgent) {
+    return participants.has(input.routeTargetAgent)
+      ? [{ agent: input.routeTargetAgent, reason: 'manual' }]
+      : [];
+  }
   return normalizeAgentUris(input.mentions)
-    .filter((agent) => participants.size === 0 || participants.has(agent))
+    .filter((agent) => participants.has(agent))
     .map((agent) => ({ agent, reason: 'mention' }));
 }
 

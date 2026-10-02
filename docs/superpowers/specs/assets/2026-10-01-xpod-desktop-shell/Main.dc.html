@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Xpod 桌面外壳</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;font-family:'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif;color:#2B2621;background:#F7F4ED}
+a{color:#563E84}a:hover{color:#4B3672}
+button:focus-visible,a:focus-visible{outline:2px solid #563E84;outline-offset:2px}
+</style>
+</helmet>
+<div style="position: relative; width: 1280px; height: 800px; display: flex; background: #F7F4ED; font-family: 'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif; color: #2B2621">
+
+<sc-if value="{{signedOut}}" hint-placeholder-val="{{yes}}">
+<div style="display: flex; width: 1280px; height: 800px">
+<dc-import name="Nav" active="none" signed-out="{{yes}}" h="800" hint-size="64px,800px"></dc-import>
+<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center">
+<div style="width: 360px; display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center">
+<span aria-hidden="true" style="width: 56px; height: 56px; border-radius: 14px; background: #563E84; color: #F7F4ED; font-size: 22px; font-weight: 600; display: flex; align-items: center; justify-content: center">林</span>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h1 style="margin: 0; font-size: 20px; font-weight: 600; line-height: 28px">继续为 小林</h1>
+<span style="font-size: 12px; color: #655D53; font-family: ui-monospace, 'SF Mono', Menlo, monospace">账号服务 pod.undefineds.co</span>
+</div>
+<button type="button" style="width: 100%; height: 44px; border: 0; border-radius: 8px; background: #563E84; color: #F7F4ED; font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer">继续</button>
+<button type="button" style="height: 36px; padding: 0 12px; border: 0; background: transparent; color: #563E84; font-size: 14px; font-family: inherit; cursor: pointer">使用其他账号</button>
+<span style="font-size: 13px; color: #655D53; border-top: 1px solid #DFDBD5; padding-top: 14px; width: 100%">左下角的这台设备和设置不用登录也能打开</span>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{overlay}}" hint-placeholder-val="{{no}}">
+<dc-import name="Ai" scenario="openai" hint-size="1280px,800px"></dc-import>
+</sc-if>
+
+<sc-if value="{{card}}" hint-placeholder-val="{{no}}">
+<section role="dialog" aria-label="小林的个人卡片" style="position: absolute; left: 70px; top: 12px; width: 320px; box-sizing: border-box; background: #FBFAF7; border: 1px solid #DFDBD5; border-radius: 12px; box-shadow: 0 10px 32px rgba(43, 38, 33, 0.18); display: flex; flex-direction: column">
+<div style="display: flex; gap: 14px; padding: 20px 20px 16px">
+<span aria-hidden="true" style="width: 64px; height: 64px; border-radius: 14px; background: #563E84; color: #F7F4ED; font-size: 26px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0">林</span>
+<div style="display: flex; flex-direction: column; gap: 4px; min-width: 0">
+<span style="font-size: 18px; font-weight: 600; line-height: 26px">小林</span>
+<span style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #655D53"><span>WebID</span><span style="font-family: ui-monospace, 'SF Mono', Menlo, monospace; color: #2B2621; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">pod.undefineds.co/xiaolin</span><button type="button" aria-label="复制 WebID" style="width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: #655D53; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9h11v11H9zM5 15H4V4h11v1"></path></svg></button></span>
+<span style="font-size: 12px; color: #655D53">地区 上海</span>
+</div>
+</div>
+<span style="font-size: 13px; color: #2B2621; padding: 0 20px 14px">开书店的人，记录每一次取舍</span>
+<a href="Pod.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-top: 1px solid #DFDBD5; text-decoration: none; color: #2B2621">
+<span aria-hidden="true" style="width: 36px; height: 36px; border-radius: 9px; background: #EBE5D8; display: flex; align-items: center; justify-content: center; flex-shrink: 0"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#563E84" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5c0-1.7 4-3 9-3s9 1.3 9 3-4 3-9 3-9-1.3-9-3zM3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5M3 12c0 1.7 4 3 9 3s9-1.3 9-3"></path></svg></span>
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1"><span style="font-size: 14px; font-weight: 600">小林的 Pod</span><span style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #655D53">Xpod 云端 · <span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #2F6B55"></span>已就绪</span></span>
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#87837D" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
+</a>
+<div style="display: flex; flex-direction: column; padding: 6px; border-top: 1px solid #DFDBD5">
+<a href="#" style="height: 40px; display: flex; align-items: center; padding: 0 14px; border-radius: 8px; font-size: 14px; text-decoration: none">管理账号 ↗</a>
+<button type="button" style="height: 40px; display: flex; align-items: center; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; font-size: 14px; font-family: inherit; color: #2B2621; cursor: pointer">切换 WebID</button>
+<button type="button" style="height: 40px; display: flex; align-items: center; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; font-size: 14px; font-family: inherit; color: #A23B2A; cursor: pointer">退出</button>
+</div>
+</section>
+</sc-if>
+
+<sc-if value="{{notices}}" hint-placeholder-val="{{no}}">
+<section role="dialog" aria-labelledby="nt-title" style="position: absolute; right: 12px; top: 52px; width: 380px; box-sizing: border-box; background: #FBFAF7; border: 1px solid #DFDBD5; border-radius: 12px; box-shadow: 0 10px 32px rgba(43, 38, 33, 0.18); display: flex; flex-direction: column">
+<div style="height: 48px; display: flex; align-items: center; padding: 0 8px 0 16px; border-bottom: 1px solid #DFDBD5">
+<h2 id="nt-title" style="margin: 0; font-size: 15px; font-weight: 600; flex-grow: 1">通知</h2>
+<button type="button" style="height: 32px; padding: 0 10px; border: 0; background: transparent; color: #563E84; font-size: 13px; font-family: inherit; cursor: pointer">全部已读</button>
+</div>
+<sc-for list="{{noticeGroups}}" as="g" hint-placeholder-count="2">
+<span style="font-size: 12px; color: #655D53; padding: 10px 16px 2px">{{g.label}}</span>
+<sc-for list="{{g.items}}" as="n" hint-placeholder-count="2">
+<div style="display: flex; gap: 10px; padding: 10px 16px; align-items: flex-start">
+<span aria-hidden="true" style="{{n.dot}}"></span>
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1; min-width: 0">
+<span style="font-size: 14px; line-height: 20px">{{n.text}}</span>
+<span style="font-size: 12px; color: #655D53">{{n.meta}}</span>
+</span>
+<button type="button" style="height: 30px; padding: 0 10px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 12px; font-family: inherit; cursor: pointer; flex-shrink: 0">{{n.action}}</button>
+</div>
+</sc-for>
+</sc-for>
+<a href="#" style="height: 40px; display: flex; align-items: center; justify-content: center; font-size: 13px; text-decoration: none; border-top: 1px solid #DFDBD5">通知设置</a>
+</section>
+</sc-if>
+
+<sc-if value="{{inbox}}" hint-placeholder-val="{{no}}">
+<section role="dialog" aria-labelledby="ib-title" style="position: absolute; right: 12px; top: 52px; width: 400px; box-sizing: border-box; background: #FBFAF7; border: 1px solid #DFDBD5; border-radius: 12px; box-shadow: 0 10px 32px rgba(43, 38, 33, 0.18); display: flex; flex-direction: column">
+<div style="height: 48px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 16px; border-bottom: 1px solid #DFDBD5">
+<h2 id="ib-title" style="margin: 0; font-size: 15px; font-weight: 600">收件箱</h2>
+<span style="font-size: 12px; color: #655D53; flex-grow: 1">别人发到你 Pod 的</span>
+<button type="button" style="height: 32px; padding: 0 10px; border: 0; background: transparent; color: #563E84; font-size: 13px; font-family: inherit; cursor: pointer">全部已读</button>
+</div>
+<sc-for list="{{inboxItems}}" as="m" hint-placeholder-count="3">
+<div style="{{m.rowStyle}}">
+<span aria-hidden="true" style="width: 36px; height: 36px; border-radius: 9px; background: {{m.avatarBg}}; color: #F7F4ED; font-size: 14px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0">{{m.avatar}}</span>
+<span style="display: flex; flex-direction: column; gap: 3px; flex-grow: 1; min-width: 0">
+<span style="font-size: 14px; line-height: 20px"><span style="font-weight: 600">{{m.who}}</span> {{m.what}}</span>
+<span style="font-size: 12px; color: #655D53">{{m.meta}}</span>
+<sc-if value="{{m.isRequest}}" hint-placeholder-val="{{no}}">
+<span style="display: flex; gap: 6px; margin-top: 4px">
+<button type="button" style="height: 32px; padding: 0 14px; border: 0; border-radius: 8px; background: #563E84; color: #F7F4ED; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer">允许读取</button>
+<button type="button" style="height: 32px; padding: 0 12px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 13px; font-family: inherit; cursor: pointer">拒绝</button>
+</span>
+</sc-if>
+</span>
+<sc-if value="{{m.unread}}" hint-placeholder-val="{{no}}"><span aria-label="未读" style="width: 8px; height: 8px; border-radius: 50%; background: #563E84; margin-top: 6px; flex-shrink: 0"></span></sc-if>
+</div>
+</sc-for>
+<a href="#" style="height: 40px; display: flex; align-items: center; justify-content: center; font-size: 13px; text-decoration: none; border-top: 1px solid #DFDBD5">查看全部</a>
+</section>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"scenario":{"editor":"enum","options":["signedOut","card","notices","inbox"],"default":"signedOut"},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const sc = this.props.scenario ?? 'signedOut';
+    const dot = (c) => 'width: 8px; height: 8px; border-radius: 50%; margin-top: 7px; flex-shrink: 0; background: ' + c;
+    return {
+      yes: true, no: false,
+      signedOut: sc === 'signedOut',
+      overlay: sc !== 'signedOut',
+      card: sc === 'card', notices: sc === 'notices', inbox: sc === 'inbox',
+      // A: one notification center, two zones. 需要你处理 = persistent state until resolved (same data as the tray);
+      // 动态 = events, gone once read. Each item is a pointer; the work happens where the object lives.
+      noticeGroups: [
+        { label: '需要你处理 · 5', items: [
+          { text: '阿杰请求读取「书店 / 维护成本」', meta: '收件箱 · 10 分钟前', action: '处理', dot: dot('#563E84') },
+          { text: '每天整理收件箱：等你确认 3 条待办', meta: '任务 · 08:02', action: '去确认', dot: dot('#563E84') },
+          { text: '每周汇总维护成本：运行失败，要修复 OpenAI 连接', meta: '任务 · 周一 09:01', action: '去修复', dot: dot('#8A6A12') },
+          { text: '其他设备暂时访问不到这台设备', meta: '这台设备 · 14:31', action: '去设置', dot: dot('#8A6A12') },
+          { text: 'Pod 空间快满了 · 9.1 / 10 GB', meta: 'Pod · 今天', action: '查看', dot: dot('#8A6A12') }
+        ] },
+        { label: '动态', items: [
+          { text: 'AI 新建了任务「新照片自动整理」', meta: '任务 · 9 月 25 日 · 只动「照片」', action: '查看', dot: dot('#87837D') },
+          { text: '索引重建完成，1,940 个文件都可检索', meta: 'Pod · 你在 10:02 发起 · 10:12 完成', action: '查看', dot: dot('#87837D') }
+        ] }
+      ],
+      inboxItems: [
+        { who: '阿杰', what: '请求读取「书店 / 维护成本」', meta: 'WebID ajie.example.org · 10 分钟前', avatar: '杰', avatarBg: '#2F6B55', isRequest: true, unread: true },
+        { who: '书友会', what: '分享了「9 月活动清单」', meta: '今天 09:40', avatar: '书', avatarBg: '#8A6A12', isRequest: false, unread: true },
+        { who: '阿杰', what: '回复了你的批注', meta: '昨天', avatar: '杰', avatarBg: '#2F6B55', isRequest: false, unread: false }
+      ].map((m, i) => Object.assign(m, { rowStyle: 'display: flex; gap: 12px; padding: 12px 16px; align-items: flex-start; ' + (i ? 'border-top: 1px solid #E9E4E4' : '') }))
+    };
+  }
+}
+</script>
+</body>
+</html>

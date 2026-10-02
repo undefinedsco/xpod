@@ -1,7 +1,7 @@
 import { AI_MODEL_CLASS, type AIModelClass } from '@undefineds.co/models'
 import { type ReactNode } from 'react'
 import {
-  Input,
+  SearchInput,
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -19,7 +19,6 @@ import {
   Pause,
   Pencil,
   Play,
-  Search,
   Trash2,
   Video,
   Zap,
@@ -179,28 +178,16 @@ export function AiModelSearchInput({ value, onChange }: {
 }) {
   return (
     <div className="relative w-full sm:w-auto">
-      <Search aria-hidden="true" className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-      <Input
+      <SearchInput
+        aria-label="搜索模型"
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder="搜索模型..."
-        className="h-8 w-full bg-background pl-8 text-xs sm:w-[232px]"
+        placeholder="搜索模型"
+        className="sm:w-[232px]"
         autoComplete="off"
         data-lpignore="true"
         data-1p-ignore
       />
-    </div>
-  )
-}
-
-/** Inline placeholder used when a model list has nothing to show. */
-export function AiModelEmptyPanel({ tone, children }: {
-  tone?: 'destructive'
-  children: ReactNode
-}) {
-  return (
-    <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-      {tone === 'destructive' ? <p className="text-destructive">{children}</p> : children}
     </div>
   )
 }

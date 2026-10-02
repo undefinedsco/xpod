@@ -1,4 +1,16 @@
-import type { AiConfigCapabilities, AiConfigLifecycleSnapshot, AiConfigModelAssignment, AiConfigPolicy, AiConfigRebuildTarget } from '../../../api/ai-config';
+import type {
+  AiConfigCapabilities,
+  AiConfigLifecycleSnapshot,
+  AiConfigModelAssignment,
+  AiConfigPolicy,
+  AiConfigRebuildTarget,
+} from '../../../api/ai-config';
+
+/**
+ * Model-assignment decisions, kept out of `ModelAssignmentsPanel.tsx` so that
+ * file only exports components: fast refresh cannot preserve state when a module
+ * also exports plain functions.
+ */
 
 export interface EmbeddingModelSwitch {
   from?: string

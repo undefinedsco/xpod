@@ -1,9 +1,8 @@
 import { useMemo, useState } from 'react'
-import { Badge } from '@undefineds.co/shared-ui'
+import { Badge, EmptyState } from '@undefineds.co/shared-ui'
 import { Box } from 'lucide-react'
 import type { AiGatewayModel } from './contract/ai-connections-client'
 import {
-  AiModelEmptyPanel,
   AiModelSearchInput,
   AiModelRow,
   modelIconTokens,
@@ -59,11 +58,11 @@ export function AiGatewayModelsSection({ models, selection }: { models?: AiGatew
       </div>
 
       {models === undefined ? (
-        <AiModelEmptyPanel>Xpod 模型目录尚未就绪</AiModelEmptyPanel>
+        <EmptyState description="Xpod 模型目录尚未就绪" />
       ) : catalog.length === 0 ? (
-        <AiModelEmptyPanel>暂无可用模型</AiModelEmptyPanel>
+        <EmptyState description="暂无可用模型" />
       ) : visibleModels.length === 0 ? (
-        <AiModelEmptyPanel>未找到匹配的模型</AiModelEmptyPanel>
+        <EmptyState description="未找到匹配的模型" />
       ) : (
         <div className="grid gap-2">
           {visibleModels.map((model) => (

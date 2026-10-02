@@ -24,6 +24,11 @@ const port = Number(options.port ?? 0)
 const version = String(options.version ?? '0.1.1')
 const notes = String(options.notes ?? `Xpod ${version} is ready.`)
 const artifact = options.artifact ? path.resolve(options.artifact) : undefined
+// electron-builder publishes a base64 sha512 and a byte size; the released
+// updater only enters its checksum-verify branch when the manifest carries
+// them, so acceptance must serve the same fields it would see in production.
+const sha512 = options.sha512 ? String(options.sha512) : undefined
+const size = options.size !== undefined ? Number(options.size) : undefined
 
 if (!Number.isInteger(port) || port < 0 || port > 65_535) {
   throw new Error('--port must be an integer from 0 to 65535')
@@ -31,6 +36,12 @@ if (!Number.isInteger(port) || port < 0 || port > 65_535) {
 if (!isVersion(version)) throw new Error(`--version is not a semantic version: ${version}`)
 if (artifact && !fs.statSync(artifact, { throwIfNoEntry: false })?.isFile()) {
   throw new Error(`--artifact does not exist: ${artifact}`)
+}
+if (sha512 !== undefined && !/^[A-Za-z0-9+/]{86}==$/.test(sha512)) {
+  throw new Error('--sha512 must be a base64-encoded SHA-512 digest')
+}
+if (size !== undefined && (!Number.isSafeInteger(size) || size <= 0)) {
+  throw new Error('--size must be a positive integer')
 }
 
 const server = http.createServer((request, response) => {
@@ -90,6 +101,8 @@ const server = http.createServer((request, response) => {
     name: version,
     notes,
     pub_date: new Date().toISOString(),
+    ...(sha512 !== undefined ? { sha512 } : {}),
+    ...(size !== undefined ? { size } : {}),
   })
 })
 

@@ -4,6 +4,8 @@ import {
   AvatarImage,
   Button,
   Separator,
+  StatusLine,
+  cn,
 } from '@undefineds.co/shared-ui';
 import { CheckCircle2, ChevronRight, Copy, Database, ExternalLink, Loader2, LogIn, LogOut, RefreshCw } from 'lucide-react';
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
@@ -206,10 +208,16 @@ export function XpodUserCard() {
                   </Button>
                   {copyFeedback ? <span role="status" className="shrink-0 text-xs text-primary">{copyFeedback}</span> : null}
                 </div>
-                <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2 py-1 text-xs font-medium text-success dark:text-success">
-                  <span className={`h-1.5 w-1.5 rounded-full ${podReady ? 'bg-success' : 'bg-muted-foreground/50'}`} aria-hidden="true" />
-                  <span>{podReady ? 'Pod 已就绪' : 'WebID 已登录'}</span>
-                </div>
+                <StatusLine
+                  tone={podReady ? 'success' : 'neutral'}
+                  dotSize="sm"
+                  className={cn(
+                    'mt-2.5 gap-1.5 rounded-full px-2 py-1 text-xs font-medium',
+                    podReady ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground',
+                  )}
+                >
+                  {podReady ? 'Pod 已就绪' : 'WebID 已登录'}
+                </StatusLine>
               </div>
             </div>
 

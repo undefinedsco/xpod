@@ -52,7 +52,45 @@ import { getIdentityDatabase } from '../identity/drizzle/db';
 import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
 import { UsageRepository } from '../storage/quota/UsageRepository';
 import { MixDataAccessor } from '../storage/accessors/MixDataAccessor';
+import type { HierarchyLockingResourceStore } from '../storage/HierarchyLockingResourceStore';
 import { createBandwidthThrottleTransform } from '../util/stream/BandwidthThrottleTransform';
+
+/** Independent authorization reads are latency-bound; bound their in-flight count per request. */
+const GRAPH_AUTHORIZATION_CONCURRENCY = 8;
+
+/**
+ * Runs `worker` over `items` with at most `limit` in flight, preserving input order.
+ *
+ * Contract: `worker` must not reject. This helper intentionally has no cancellation —
+ * it is only used for read-only authorization checks whose call site (`canAuthorizeFor`)
+ * already converts denials into `false`. If a throwing worker is ever wired in, the
+ * first rejection surfaces while sibling runners finish; add an AbortSignal then.
+ */
+async function mapBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) {
+        return;
+      }
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+/**
+ * Authorization checks belong to one request and its credentials. Failed checks are
+ * removed so a retry can re-evaluate permissions; later requests always start fresh.
+ */
+type AuthorizationMemo = Map<string, Promise<void>>;
 
 const ALLOWED_METHODS = [ 'GET', 'POST', 'OPTIONS' ];
 const MODEL_COLLECTION_SUFFIX = '/settings/providers/-/sparql';
@@ -179,6 +217,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     options: SubgraphSparqlHttpHandlerOptions = {},
     updateAuthority?: MixDataAccessor,
     emitter?: ActivityEmitter,
+    private readonly mutationStore?: HierarchyLockingResourceStore,
   ) {
     super();
     this.engine = queryEngine;
@@ -448,14 +487,15 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     if (accessPlan.hasDelete) {
       modes.push(PERMISSIONS.Delete);
     }
-    const credentials = trusted ? undefined : await this.authorizeFor(queryRequest.baseUrl, request, modes);
+    const authMemo: AuthorizationMemo = new Map();
+    const credentials = trusted ? undefined : await this.authorizeFor(queryRequest.baseUrl, request, modes, authMemo);
 
     if (!trusted && credentials) {
       for (const source of accessPlan.readTargets) {
         if (source === queryRequest.baseUrl) {
           continue;
         }
-        await this.authorizeIdentifier(source, credentials, [ PERMISSIONS.Read ]);
+        await this.authorizeIdentifier(source, credentials, [ PERMISSIONS.Read ], authMemo);
       }
 
       for (const [ graph, graphModes ] of accessPlan.writeTargets) {
@@ -463,14 +503,14 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         if (resourceUrl === queryRequest.baseUrl) {
           continue;
         }
-        await this.authorizeIdentifier(resourceUrl, credentials, [...graphModes]);
+        await this.authorizeIdentifier(resourceUrl, credentials, [...graphModes], authMemo);
       }
     }
 
     const readAccessScope = accessPlan.needsReadScope
       ? trusted
         ? this.trustedReadAccessScope(queryRequest.baseUrl)
-        : await this.resolveReadAccessScopeForCredentials(queryRequest.baseUrl, credentials!)
+        : await this.resolveReadAccessScopeForCredentials(queryRequest.baseUrl, credentials!, authMemo)
       : undefined;
 
     const loadDocumentPlan = accessPlan.loadDocuments[0];
@@ -508,21 +548,25 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const emitActivities = Boolean(this.emitter) && !emptyAuthorityLoad;
     // Existence has to be captured before the write because the activity term depends on it
     // (`Create` for a document the update brings into existence, `Update` otherwise).
-    const pendingActivities = emitActivities ? await this.resolvePendingActivities(accessPlan) : [];
-
-    if (!skippedSilentAuthorityLoad) {
-      if (this.updateAuthority) {
-        await this.updateAuthority.executeSparqlUpdate(
-          rewritten,
-          queryRequest.baseUrl,
-          readAccessScope,
-        );
-      } else {
-        await this.engine.queryVoid(rewritten, queryRequest.baseUrl, readAccessScope, nativeOptions);
+    const write = async (): Promise<void> => {
+      const pendingActivities = emitActivities ? await this.resolvePendingActivities(accessPlan) : [];
+      if (!skippedSilentAuthorityLoad) {
+        if (this.updateAuthority) {
+          await this.updateAuthority.executeSparqlUpdate(
+            rewritten,
+            queryRequest.baseUrl,
+            readAccessScope,
+          );
+        } else {
+          await this.engine.queryVoid(rewritten, queryRequest.baseUrl, readAccessScope, nativeOptions);
+        }
+        // Only a successful write notifies; a throwing write skips this line entirely.
+        this.emitActivities(pendingActivities);
       }
-      // Only a successful write notifies; a throwing write skips this line entirely.
-      this.emitActivities(pendingActivities);
-    }
+    };
+    // ACL authorization can read through ResourceStore; complete it before taking non-reentrant write locks.
+    if (this.mutationStore) await this.mutationStore.withMutationLocks({ path: queryRequest.baseUrl }, write);
+    else await write();
     await this.refreshUsage(queryRequest.baseUrl);
 
     response.statusCode = 204;
@@ -740,24 +784,53 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   }
 
   private async resolveReadAccessScope(baseUrl: string, request: HttpRequest): Promise<RdfAccessScope> {
-    const credentials = await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
-    return this.resolveReadAccessScopeForCredentials(baseUrl, credentials);
+    const memo: AuthorizationMemo = new Map();
+    const credentials = await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ], memo);
+    return this.resolveReadAccessScopeForCredentials(baseUrl, credentials, memo);
   }
 
-  private async resolveReadAccessScopeForCredentials(baseUrl: string, credentials: Credentials): Promise<RdfAccessScope> {
+  private async resolveReadAccessScopeForCredentials(
+    baseUrl: string,
+    credentials: Credentials,
+    memo?: AuthorizationMemo,
+  ): Promise<RdfAccessScope> {
+    const listStartedAt = Date.now();
     const graphs = await this.engine.listGraphs(baseUrl);
-    const deniedGraphUrls: string[] = [];
-
+    const listMs = Date.now() - listStartedAt;
+    // Credentials and ACLs are fixed within one request, so several graph IRIs that
+    // resolve to the same resource share one decision (metadata graphs use a scheme
+    // prefix that resourceUrlForGraphValue strips). Authorize each distinct resource
+    // once, then map the decision back to every graph that resolves to it.
+    const graphsByResource = new Map<string, string[]>();
     for (const graph of graphs) {
       const resourceUrl = this.resourceUrlForGraphValue(graph);
       if (!resourceUrl.startsWith(baseUrl)) {
         continue;
       }
-      const allowed = await this.canAuthorizeFor(resourceUrl, credentials, [ PERMISSIONS.Read ]);
-      if (!allowed) {
-        deniedGraphUrls.push(graph);
+      const mapped = graphsByResource.get(resourceUrl);
+      if (mapped) {
+        mapped.push(graph);
+      } else {
+        graphsByResource.set(resourceUrl, [ graph ]);
       }
     }
+    const entries = [ ...graphsByResource.entries() ];
+    // These authorizations are independent and latency-bound; run them concurrently (bounded)
+    // instead of serially so a room's graph count does not multiply each read's latency.
+    const authStartedAt = Date.now();
+    const allowed = await mapBounded(entries, GRAPH_AUTHORIZATION_CONCURRENCY, ([ resourceUrl ]) =>
+      this.canAuthorizeFor(resourceUrl, credentials, [ PERMISSIONS.Read ], memo));
+    // Existing debug logging only: lets an operator attribute a slow read to graph listing vs the
+    // authorization phase without any new config or caller parameter.
+    this.logger.debug(
+      `Subgraph read access scope for ${baseUrl}: graphs=${graphs.size} checked=${entries.length} listMs=${listMs} checkMs=${Date.now() - authStartedAt}`,
+    );
+    const deniedGraphUrls: string[] = [];
+    entries.forEach(([ , resourceGraphs ], index) => {
+      if (!allowed[index]) {
+        deniedGraphUrls.push(...resourceGraphs);
+      }
+    });
     deniedGraphUrls.sort();
 
     return {
@@ -780,18 +853,28 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     };
   }
 
-  private async authorizeFor(basePath: string, request: HttpRequest, modes: string[]): Promise<Credentials> {
+  private async authorizeFor(
+    basePath: string,
+    request: HttpRequest,
+    modes: string[],
+    memo?: AuthorizationMemo,
+  ): Promise<Credentials> {
     if (modes.length === 0) {
       return this.credentialsExtractor.handleSafe(request);
     }
     const credentials = await this.credentialsExtractor.handleSafe(request);
-    await this.authorizeIdentifier(basePath, credentials, modes);
+    await this.authorizeIdentifier(basePath, credentials, modes, memo);
     return credentials;
   }
 
-  private async canAuthorizeFor(basePath: string, credentials: Credentials, modes: string[]): Promise<boolean> {
+  private async canAuthorizeFor(
+    basePath: string,
+    credentials: Credentials,
+    modes: string[],
+    memo?: AuthorizationMemo,
+  ): Promise<boolean> {
     try {
-      await this.authorizeIdentifier(basePath, credentials, modes);
+      await this.authorizeIdentifier(basePath, credentials, modes, memo);
       return true;
     } catch (error) {
       this.logger.debug(`ACL/ACR graph denied for ${basePath}: ${error instanceof Error ? error.message : String(error)}`);
@@ -799,14 +882,34 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
   }
 
-  private async authorizeIdentifier(basePath: string, credentials: Credentials, modes: string[]): Promise<void> {
-    const identifier = { path: basePath } satisfies ResourceIdentifier;
-    const requestedModes = new IdentifierSetMultiMap<string>();
-    for (const mode of modes) {
-      requestedModes.add(identifier, mode);
+  private async authorizeIdentifier(
+    basePath: string,
+    credentials: Credentials,
+    modes: string[],
+    memo?: AuthorizationMemo,
+  ): Promise<void> {
+    const key = JSON.stringify([ basePath, [ ...new Set(modes) ].sort() ]);
+    let pending = memo?.get(key);
+    if (!pending) {
+      pending = (async() => {
+        const identifier = { path: basePath } satisfies ResourceIdentifier;
+        const requestedModes = new IdentifierSetMultiMap<string>();
+        for (const mode of modes) {
+          requestedModes.add(identifier, mode);
+        }
+        const availablePermissions = await this.permissionReader.handleSafe({ credentials, requestedModes });
+        await this.authorizer.handleSafe({ credentials, requestedModes, availablePermissions });
+      })();
+      memo?.set(key, pending);
     }
-    const availablePermissions = await this.permissionReader.handleSafe({ credentials, requestedModes });
-    await this.authorizer.handleSafe({ credentials, requestedModes, availablePermissions });
+    try {
+      await pending;
+    } catch (error) {
+      if (memo?.get(key) === pending) {
+        memo.delete(key);
+      }
+      throw error;
+    }
   }
 
   private inspectUpdateGraphs(update: SparqlUpdate, basePath: string): UpdateAccessPlan {

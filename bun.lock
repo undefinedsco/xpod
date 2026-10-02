@@ -85,7 +85,7 @@
         "vitest": "^1.4.0",
       },
       "optionalDependencies": {
-        "@undefineds.co/xpod-darwin-arm64": "0.4.21",
+        "@undefineds.co/xpod-darwin-arm64": "0.4.22",
       },
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.39",
@@ -102,7 +102,7 @@
     },
     "desktop": {
       "name": "@undefineds.co/xpod-desktop",
-      "version": "0.4.21",
+      "version": "0.4.22",
       "devDependencies": {
         "@types/node": "^22.10.0",
         "@undefineds.co/solid-sdk": "workspace:*",
@@ -180,6 +180,9 @@
     "packages/pod-settings": {
       "name": "@undefineds.co/pod-settings",
       "version": "0.1.0",
+      "dependencies": {
+        "@undefineds.co/shared-ui": "workspace:*",
+      },
       "peerDependencies": {
         "react": "^19.2.0",
       },
@@ -191,6 +194,7 @@
         "@radix-ui/react-avatar": "^1.1.11",
         "@radix-ui/react-dialog": "^1.1.15",
         "@radix-ui/react-scroll-area": "^1.2.10",
+        "@radix-ui/react-select": "^2.2.6",
         "@radix-ui/react-separator": "^1.1.8",
         "@radix-ui/react-slot": "^1.2.4",
         "@radix-ui/react-switch": "^1.2.6",
@@ -233,6 +237,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@undefineds.co/extension-sdk": "workspace:*",
+        "@undefineds.co/shared-ui": "workspace:*",
       },
       "devDependencies": {
         "@types/react": "^19.2.14",
@@ -241,6 +246,13 @@
       },
       "peerDependencies": {
         "react": "^19.2.0",
+      },
+    },
+    "packages/xpod-cli": {
+      "name": "@undefineds.co/xpod-cli",
+      "version": "0.1.0-preview.1",
+      "bin": {
+        "xpodcli": "./dist/bin/xpodcli",
       },
     },
     "ui": {
@@ -252,9 +264,8 @@
         "@comunica/query-sparql-solid": "^4.0.2",
         "@inrupt/solid-client-authn-browser": "^3.1.1",
         "@openai/chatkit-react": "^1.4.1",
-        "@radix-ui/react-select": "^2.2.6",
         "@undefineds.co/ai-connections": "workspace:*",
-        "@undefineds.co/drizzle-solid": "0.3.24",
+        "@undefineds.co/drizzle-solid": "0.3.25",
         "@undefineds.co/extension-sdk": "workspace:*",
         "@undefineds.co/models": "0.2.60",
         "@undefineds.co/pod-settings": "workspace:*",
@@ -291,6 +302,9 @@
       },
     },
   },
+  "trustedDependencies": [
+    "inngest-cli",
+  ],
   "patchedDependencies": {
     "@solid/community-server@8.0.0-alpha.1": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch",
     "@undefineds.co/drizzle-solid@0.3.25": "patches/@undefineds.co%2Fdrizzle-solid@0.3.25.patch",
@@ -1984,6 +1998,8 @@
     "@undefineds.co/solid-sdk": ["@undefineds.co/solid-sdk@workspace:packages/solid-sdk"],
 
     "@undefineds.co/tasks": ["@undefineds.co/tasks@workspace:packages/tasks"],
+
+    "@undefineds.co/xpod-cli": ["@undefineds.co/xpod-cli@workspace:packages/xpod-cli"],
 
     "@undefineds.co/xpod-desktop": ["@undefineds.co/xpod-desktop@workspace:desktop"],
 

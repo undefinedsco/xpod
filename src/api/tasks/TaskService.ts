@@ -205,10 +205,14 @@ export class TaskService<TContext = StoreContext> {
       || approval.thread !== run.thread) throw new Error('Approval does not authorize this run');
     const threadRef = toThreadRef({ thread_id: run.thread });
     const output = JSON.stringify({ kind: 'approval_decision', approval: input.approval, decision: approval.status, actionExecuted: false });
-    const items = await this.store.loadThreadItems(threadRef, undefined, 1000, 'asc', context);
-    const item = items.data.find(item => item.type === 'client_tool_call' && item.call_id === approval.toolCallId && item.metadata?.runId === run.id);
-    if (!item || item.type !== 'client_tool_call' || item.name !== approval.toolName) throw new Error('Approval does not match the pending tool checkpoint');
     const waiting = run.metadata?.waitingTool as { itemId?: string; requestId?: string } | undefined;
+    // Bind the checkpoint to this Run through the durable waiting-tool receipt. The receipt
+    // lives on the Run row, independent of the client_tool_call item's free-form metadata;
+    // `metadata.runId` remains only as a fallback for runs that predate the receipt.
+    const items = await this.store.loadThreadItems(threadRef, undefined, 1000, 'asc', context);
+    const item = items.data.find(item => item.type === 'client_tool_call' && item.call_id === approval.toolCallId
+      && (waiting?.itemId !== undefined ? item.id === waiting.itemId : item.metadata?.runId === run.id));
+    if (!item || item.type !== 'client_tool_call' || item.name !== approval.toolName) throw new Error('Approval does not match the pending tool checkpoint');
     const atCheckpoint = waiting?.itemId === item.id && waiting.requestId === approval.toolCallId;
     if (item.status === 'completed' && item.output === output) {
       if (approval.status === 'rejected' && atCheckpoint && run.status === 'waiting_input') {

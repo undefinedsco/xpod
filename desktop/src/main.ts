@@ -113,7 +113,8 @@ type DesktopQuitReason = 'explicit' | 'update-install'
 let quitReason: DesktopQuitReason = 'explicit'
 const runtimePreferences = new RuntimePreferences(desktopDataRoot)
 const runtimeManager = new RuntimeManager({ targetOrigin, autoRestart: runtimePreferences.read().autoRestart, resolveEnvironment: () => readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE) })
-// The detached installer supports the ad-hoc signature used by released builds.
+// Squirrel pins an ad-hoc build's cdhash and cannot accept the next release.
+// Our detached installer verifies and swaps the bundle while retaining user data.
 const selfUpdater = new DesktopSelfUpdater({
   version: app.getVersion(),
   appPath: path.resolve(process.execPath, '..', '..', '..'),
@@ -198,7 +199,7 @@ const productWebPreferences = {
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    // §5.1：工作区首次 1180×800，最小 640×560
+    // 10/1 设计画板：工作区内容视口 1280×800，响应式最小窗口 640×560
     width: WORKSPACE_WINDOW_MODE_SIZE.width,
     height: WORKSPACE_WINDOW_MODE_SIZE.height,
     minWidth: WORKSPACE_WINDOW_MODE_SIZE.minWidth,

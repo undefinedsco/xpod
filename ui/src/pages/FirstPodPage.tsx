@@ -358,7 +358,7 @@ export function FirstPodPage() {
   const busy = phase.status === 'creating' || cancelling;
 
   return (
-    <XpodAccountPageSurface title="创建 Pod">
+    <XpodAccountPageSurface title="创建 Pod" presentation="standard">
       <div className="flex min-h-0 flex-1 flex-col gap-4">
         {phase.status === 'checking' ? (
           <WebAccountRestoringView label="正在准备创建…" />

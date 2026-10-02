@@ -108,7 +108,7 @@ test.describe('Local product seed consent acceptance', () => {
         contentType: 'image/png',
       });
 
-      await page.getByRole('button', { name: '批准', exact: true }).click();
+      await page.getByRole('button', { name: '允许', exact: true }).click();
       await expect.poll(() => new URL(page.url()).pathname, { timeout: 60_000 }).toMatch(/^\/settings\/(?:auth\/callback|models(?:\/.*)?)$/u);
       // The route-level WebIdAuthBoundary renders its unauthenticated surface
       // as `[data-auth-surface-mode="page"]`; after the consent round-trip the

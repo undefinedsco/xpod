@@ -151,7 +151,7 @@ export function AboutPage() {
                 className="w-full py-3 border border-border hover:bg-muted text-foreground rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors"
               >
                 <ArrowLeft className="w-4 h-4" />
-                {isLoggedIn ? 'Back to Dashboard' : 'Back to Login'}
+                {isLoggedIn ? 'Back to Account' : 'Back to Login'}
               </button>
             </div>
           </div>

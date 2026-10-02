@@ -2,7 +2,12 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
-import { AccountAuthBoundary } from './AccountAuthBoundary';
+import { AccountAuthBoundary, LocalServiceSurfaceBoundary } from './AccountAuthBoundary';
+
+const webId = vi.hoisted(() => ({ status: 'anonymous' }));
+vi.mock('../solid/XpodSolidRuntime', () => ({
+  useXpodSolidRuntimeContext: () => ({ state: webId }),
+}));
 
 function account(overrides: Partial<AuthContextType> = {}): AuthContextType {
   return {
@@ -32,6 +37,10 @@ function renderBoundary(value = account()) {
 afterEach(() => {
   vi.restoreAllMocks();
   window.xpodDesktop = undefined;
+  // jsdom keeps one window per worker, so restore the default document URL: the
+  // Account entry links derive their `returnTo` from it.
+  window.history.replaceState(null, '', '/');
+  webId.status = 'anonymous';
 });
 
 describe('AccountAuthBoundary', () => {
@@ -62,7 +71,7 @@ describe('AccountAuthBoundary', () => {
     expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
     // The auth redesign spec pairs the sign-in action with the register and
     // password-recovery entries, so the Dashboard gate must offer both.
-    expect(screen.getByRole('link', { name: '创建账号' }).getAttribute('href'))
+    expect(screen.getByRole('link', { name: '注册账号' }).getAttribute('href'))
       .toBe('/.account/login/password/register/');
     expect(screen.getByRole('link', { name: '忘记密码？' }).getAttribute('href'))
       .toBe('/.account/login/password/forgot/');
@@ -73,7 +82,7 @@ describe('AccountAuthBoundary', () => {
     const setWindowMode = vi.fn();
     window.xpodDesktop = desktop ? { platform: 'darwin', setIdentity: vi.fn(), setWindowMode } : undefined;
     renderBoundary();
-    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe(desktop ? 'window' : 'page');
     expect(screen.queryByTestId('auth-surface-modal')).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
     if (desktop) expect(setWindowMode).toHaveBeenCalledWith('account');
@@ -87,7 +96,7 @@ describe('AccountAuthBoundary', () => {
   ])('keeps the %s state in the CSS Account layout', (_name, accountState, copy) => {
     window.xpodDesktop = { platform: 'darwin', setIdentity: vi.fn(), setWindowMode: vi.fn() };
     renderBoundary(account({ accountState }));
-    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('window');
     expect(screen.queryByTestId('auth-surface-modal')).toBeNull();
     expect(screen.getByText(copy)).toBeTruthy();
     expect(window.xpodDesktop.setWindowMode).toHaveBeenCalledWith('account');
@@ -112,5 +121,66 @@ describe('AccountAuthBoundary', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '重试' }));
     expect(retry).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('LocalServiceSurfaceBoundary', () => {
+  function renderServiceBoundary(value = account()) {
+    window.history.replaceState(null, '', '/status/services/gateway');
+    return render(
+      <AuthContext.Provider value={value}>
+        <LocalServiceSurfaceBoundary><span data-testid="service-surface">Service status</span></LocalServiceSurfaceBoundary>
+      </AuthContext.Provider>,
+    );
+  }
+
+  test.each([
+    { status: 'anonymous', mode: 'login' } as const,
+    { status: 'initializing' } as const,
+    { status: 'error', mode: 'login', message: 'Account unavailable' } as const,
+  ])('renders the local service surface for $status instead of the Account gate', (accountState) => {
+    renderServiceBoundary(account({ accountState }));
+
+    expect(screen.getByTestId('service-surface').textContent).toBe('Service status');
+    expect(screen.queryByRole('heading', { name: '登录 Xpod' })).toBeNull();
+    expect(screen.queryByLabelText('邮箱')).toBeNull();
+  });
+
+  test('renders the local service surface for an authenticated Account', () => {
+    renderServiceBoundary(account({ isLoggedIn: true, accountState: { status: 'authenticated' } }));
+
+    expect(screen.getByTestId('service-surface')).toBeTruthy();
+  });
+
+  test('renders the local service surface for a WebID session without an Account session', () => {
+    webId.status = 'authenticated';
+    renderServiceBoundary();
+
+    expect(screen.getByTestId('service-surface')).toBeTruthy();
+  });
+
+  test('keeps the Account sign-in for an explicit account card request', () => {
+    window.history.replaceState(null, '', '/status/overview?account=open');
+    render(
+      <AuthContext.Provider value={account()}>
+        <LocalServiceSurfaceBoundary><span data-testid="service-surface">Service status</span></LocalServiceSurfaceBoundary>
+      </AuthContext.Provider>,
+    );
+
+    expect(screen.queryByTestId('service-surface')).toBeNull();
+    expect(screen.getByLabelText('邮箱')).toBeTruthy();
+    expect(screen.getByLabelText('密码')).toBeTruthy();
+  });
+
+  test('ignores the account card request once a session exists', () => {
+    window.history.replaceState(null, '', '/status/overview?account=open');
+    render(
+      <AuthContext.Provider value={account({ isLoggedIn: true, accountState: { status: 'authenticated' } })}>
+        <LocalServiceSurfaceBoundary><span data-testid="service-surface">Service status</span></LocalServiceSurfaceBoundary>
+      </AuthContext.Provider>,
+    );
+
+    expect(screen.getByTestId('service-surface')).toBeTruthy();
+    expect(screen.queryByLabelText('邮箱')).toBeNull();
   });
 });

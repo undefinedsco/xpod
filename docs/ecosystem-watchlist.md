@@ -8,6 +8,13 @@
 - 优先记录“它怎么暴露 API、怎么给 Agent 调用、怎么组织数据边界”，不只记录功能清单。
 - 不因为对方已有能力就直接复制模型；Xpod 的长期边界仍是 Pod 数据主权、Solid/RDF、`@undefineds.co/models`、协议 adapter 和 Agent Runtime。
 
+## Agent 文件系统与按需目录
+
+- 首次记录 / 最近核对：2026-09-30
+- 关注范围：AgentFS、Mesa、Redis AFS、Nexus、Rivet agentOS、OpenViking、rclone VFS，以及平台挂载底座。
+- 调研证据、性能口径和待验证项集中维护在 [Agent 文件系统与按需目录调研](agent-filesystem-research.md)，复查时在该文档更新日期与变更记录。
+- Xpod 产品边界与目录设计维护在 [SolidFS Spec](solidfs-spec.md#独立目录入口2026-09-30-设计尚未实现)。
+
 ## Nubase
 
 - 官网：https://nubase.ai

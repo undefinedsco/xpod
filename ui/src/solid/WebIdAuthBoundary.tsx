@@ -1,9 +1,12 @@
 import {
-  LoginAccountView,
-  LoginConnectingView,
-  LoginFailureView,
-  LoginRestoringView,
-  WebIdLoginEntryView,
+  Button,
+  PodSignIn,
+  XpodMark,
+  resolvePodSignInCopy,
+  webIdShortName,
+  type PodSignInNotice,
+  type PodSignInState,
+  type RememberedIdentity,
 } from '@undefineds.co/shared-ui';
 import type { RememberedWebIdLogin, StorageSelectionState, WebIdAuthState } from '@undefineds.co/solid-sdk';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
@@ -11,38 +14,34 @@ import { XpodProductLogoutBoundary } from '../auth/XpodProductLogoutBoundary';
 import { XpodLocalLoginPreflight } from '../auth/XpodLocalLoginPreflight';
 import { consumeXpodAccountSwitch, readXpodAccountSwitch, readXpodLoginCancelled, setXpodLoginCancelled } from '../auth/xpod-login-recovery';
 import { createXpodLoginController } from '../auth/XpodLoginController';
-import { XpodAuthSurface } from '../auth/XpodAuthSurface';
-import { XpodLoginBrand } from '../auth/XpodLoginBrand';
+import { XpodSignInFrame } from '../auth/XpodAuthSurface';
+import { xpodStorageLocationKind } from '../auth/xpod-storage-location';
 import { AuthContext } from '../context/AuthContextValue';
 import { isXpodAutomaticLoginBlocked, logoutXpodProduct, subscribeXpodProductLogout } from '../auth/xpod-product-logout';
 import { clearRememberedXpodLogin, readRememberedXpodLogin } from '../auth/xpod-remembered-login';
 import { useXpodSolidRuntime } from './useXpodSolidRuntime';
 
-const rememberedCopy = {
-  restoringLabel: '正在恢复 Xpod 会话…',
-  continueLabel: (name: string) => `使用 ${name} 登录`,
-  reauthenticateLabel: (name: string) => `重新登录 ${name}`,
-  switchAccountLabel: '切换账号',
-  expiredTitle: '会话已过期',
-  connectingTitle: '正在登录…',
-  connectingDetail: '请在授权页面完成登录。',
-  cancelLabel: '取消',
-};
+const copy = resolvePodSignInCopy('zh-CN');
+// The Xpod console is a WebID application like any other: it names itself.
+const XPOD_APP = { name: 'Xpod', icon: <XpodMark size={24} /> };
 
 const podFailureMessage = '无法打开选中的 Pod，请重试。';
 const actionFailureMessage = '操作未完成，请重试。';
 
-export function WebIdAuthBoundary(props: { children: ReactNode; autoStart?: boolean }) {
+export function WebIdAuthBoundary(props: { children: ReactNode; autoStart?: boolean; developerMode?: boolean }) {
   return <XpodProductLogoutBoundary><WebIdAuthBoundaryContent {...props} /></XpodProductLogoutBoundary>;
 }
 
 function WebIdAuthBoundaryContent({
   children,
   autoStart = false,
+  developerMode = false,
 }: {
   children: ReactNode;
   /** Xpod product routes continue their single fixed WebID flow without a second click. */
   autoStart?: boolean;
+  /** Technical detail of a failure becomes expandable. Persisting the switch is not this component's job. */
+  developerMode?: boolean;
 }) {
   const runtime = useXpodSolidRuntime();
   const account = useContext(AuthContext);
@@ -59,6 +58,18 @@ function WebIdAuthBoundaryContent({
   }, [loginCancelled, loginController]);
   const state = runtimeState(runtime.state);
   const storageState = storageSelectionState(runtime, state);
+  // The screen a login was started from: while connecting, the remembered identity stays
+  // on screen with its button busy instead of falling back to the first-visit screen.
+  // The runtime rebuilds `state.remembered` on every render, so a content signature stands in for
+  // the object identity React's store-previous-render pattern compares against.
+  const rememberedNow = 'remembered' in state ? state.remembered : undefined;
+  const rememberedSignature = rememberedNow ? rememberedSignatureOf(rememberedNow) : undefined;
+  const [lastRemembered, setLastRemembered] = useState<{ signature: string; identity: RememberedWebIdLogin } | undefined>(
+    rememberedNow && rememberedSignature ? { signature: rememberedSignature, identity: rememberedNow } : undefined,
+  );
+  if (rememberedSignature !== undefined && rememberedSignature !== lastRemembered?.signature) {
+    setLastRemembered({ signature: rememberedSignature, identity: rememberedNow! });
+  }
   const contentReady = state.status === 'authenticated' && storageState?.status === 'ready';
   // Login/switch failures must surface here: the boundary fires the async
   // auth actions, so an unobserved rejection would otherwise dead-end the UI.
@@ -162,118 +173,120 @@ function WebIdAuthBoundaryContent({
     return <>{children}</>;
   }
 
-  if (preflight) return <XpodLocalLoginPreflight onReady={continueLogin} />;
 
-  const remembered = 'remembered' in state ? state.remembered : undefined;
+  const remembered = rememberedNow;
   const restoring = state.status === 'restoring';
-  const connecting = pending || (autoStart && !loginCancelled && !automaticLoginBlocked && state.status === 'anonymous' && !actionError);
-  const brand = <XpodLoginBrand compact showSubtitle />;
-  let content: ReactNode;
-  let lead: ReactNode;
+  const connecting = pending || Boolean(preflight) || (autoStart && !loginCancelled && !automaticLoginBlocked && state.status === 'anonymous' && !actionError);
+  // A cancelled or switching login returns to the first-visit screen, not to the remembered one.
+  const identity = remembered && !loginCancelled ? presentedIdentity(remembered) : undefined;
+  const idle = (busy = false): PodSignInState => identity
+    ? { kind: 'remembered', identity, busy }
+    : { kind: 'choose-service', busy };
+
+  let podState: PodSignInState = idle();
+  let notice: PodSignInNotice | undefined;
+  let onPrimary: () => void = startLogin;
+  let onUseAnother: (() => void) | undefined;
+  let cancellable = false;
 
   if (!loginCancelled && runtime.state.status === 'error'
     && runtime.state.error.name === 'SolidSessionPendingError') {
-    content = (
-      <LoginFailureView
-        title="登录未完成"
-        description="上次登录尚未结束，请刷新页面后重新登录。"
-        primaryLabel="刷新页面"
-        onPrimary={() => window.location.reload()}
-        secondaryLabel="返回登录"
-        onSecondary={cancel}
-      />
-    );
+    notice = {
+      tone: 'warning',
+      text: copy.noticePending,
+      primaryLabel: copy.refreshPage,
+      developerDetail: runtime.state.error.message,
+    };
+    onPrimary = () => window.location.reload();
   } else if (actionError) {
-    content = (
-      <LoginFailureView
-        title="登录未完成"
-        description={actionError}
-        primaryLabel="重试"
-        onPrimary={retry}
-        secondaryLabel={switchRequested ? undefined : '返回登录'}
-        onSecondary={switchRequested ? undefined : cancel}
-      />
-    );
+    notice = { tone: 'warning', text: copy.noticeIncomplete, primaryLabel: copy.retry, developerDetail: actionError };
+    onPrimary = retry;
+    onUseAnother = identity && !switchRequested ? switchAccount : undefined;
   } else if (restoring) {
-    lead = remembered ? undefined : brand;
-    content = (
-      <LoginRestoringView
-        accountName={remembered?.displayName}
-        avatarUrl={remembered?.avatarUrl}
-        label={rememberedCopy.restoringLabel}
-      />
-    );
+    podState = { kind: 'restoring', ...(remembered ? { identity: presentedIdentity(remembered) } : {}) };
   } else if (connecting) {
-    content = switchRequested ? <LoginRestoringView label="正在切换账号…" /> : (
-      <LoginConnectingView
-        title={rememberedCopy.connectingTitle}
-        detail={rememberedCopy.connectingDetail}
-        cancelLabel={rememberedCopy.cancelLabel}
-        onCancel={cancel}
-      />
-    );
+    const from = identity ?? (!loginCancelled && lastRemembered ? presentedIdentity(lastRemembered.identity) : undefined);
+    podState = from ? { kind: 'remembered', identity: from, busy: true } : { kind: 'choose-service', busy: true };
+    onPrimary = () => undefined;
+    cancellable = !switchRequested;
   } else if (state.status === 'authenticated') {
     // Valid WebID sessions stay valid while their Pod opens or retries.
     // Never turn a storage failure into a second login / provider selection.
-    content = storageState?.status === 'conflict' || storageState?.status === 'error' ? (
-      <LoginFailureView
-        title={storageState.status === 'conflict' ? '存储绑定冲突' : '暂时无法打开 Pod'}
-        description={storageState.message}
-        primaryLabel="重试"
-        onPrimary={retry}
-        secondaryLabel="切换账号"
-        onSecondary={switchAccount}
-      />
-    ) : <LoginRestoringView label="正在打开选中的 Pod。" />;
-  } else if (remembered && !loginCancelled) {
-    content = (
-      <>
-        {state.status === 'error' && <p role="alert" className="mb-3 text-center text-xs text-muted-foreground">{state.message}</p>}
-        <LoginAccountView
-          name={remembered.displayName}
-          avatarUrl={remembered.avatarUrl}
-          bindingLabel="Xpod"
-          expired={state.status === 'expired' || state.status === 'error'}
-          expiredTitle={state.status === 'error' ? '会话恢复未完成' : rememberedCopy.expiredTitle}
-          enterLabel={state.status === 'expired' || state.status === 'error'
-            ? rememberedCopy.reauthenticateLabel(remembered.displayName)
-            : rememberedCopy.continueLabel(remembered.displayName)}
-          switchLabel={rememberedCopy.switchAccountLabel}
-          onEnter={startLogin}
-          onReauthenticate={retry}
-          onSwitchAccount={switchAccount}
-        />
-      </>
-    );
+    const active = presentedIdentity(rememberedWebIdLogin(state.webId) ?? {
+      displayName: webIdShortName(state.webId),
+      webId: state.webId,
+    });
+    if (storageState?.status === 'conflict') {
+      podState = { kind: 'remembered', identity: active };
+      notice = { tone: 'warning', text: copy.noticeIncomplete, primaryLabel: copy.useAnother, developerDetail: storageState.message };
+      onPrimary = switchAccount;
+    } else if (storageState?.status === 'error') {
+      podState = { kind: 'remembered', identity: active };
+      notice = { tone: 'warning', text: copy.noticeUnreachable, primaryLabel: copy.retry, developerDetail: storageState.message };
+      onPrimary = retry;
+      onUseAnother = switchAccount;
+    } else {
+      podState = { kind: 'remembered', identity: active, busy: true };
+      onPrimary = () => undefined;
+    }
+  } else if (identity) {
+    onUseAnother = switchAccount;
+    if (state.status === 'expired') {
+      podState = { kind: 'expired', identity };
+      onPrimary = retry;
+    } else if (state.status === 'error') {
+      notice = { tone: 'warning', text: copy.noticeIncomplete, primaryLabel: copy.reauthenticate, developerDetail: state.message };
+      onPrimary = retry;
+    }
   } else if (!loginCancelled && (state.status === 'error' || state.status === 'expired')) {
-    content = (
-      <LoginFailureView
-        title={state.status === 'expired' ? rememberedCopy.expiredTitle : '无法登录 Xpod'}
-        description={state.status === 'error' ? state.message : '请重新登录后继续。'}
-        primaryLabel="重试"
-        onPrimary={retry}
-        secondaryLabel="返回登录"
-        onSecondary={cancel}
-      />
-    );
-  } else {
-    content = (
-      <WebIdLoginEntryView
-        copy={{ title: '', startLabel: '登录', pendingLabel: rememberedCopy.connectingTitle }}
-        logo={brand}
-        onStart={startLogin}
-      />
-    );
+    notice = {
+      tone: 'warning',
+      text: copy.noticeIncomplete,
+      primaryLabel: copy.reauthenticate,
+      developerDetail: state.status === 'error' ? state.message : undefined,
+    };
+    onPrimary = retry;
   }
+
   return (
-    <XpodAuthSurface
-      mode="page"
-      title="登录 Xpod"
-      lead={lead}
-    >
-      {content}
-    </XpodAuthSurface>
+    <XpodSignInFrame ariaLabel="登录 Xpod">
+      {preflight ? <XpodLocalLoginPreflight onReady={continueLogin} /> : null}
+      <PodSignIn
+        app={XPOD_APP}
+        state={podState}
+        notice={notice}
+        locale="zh-CN"
+        developerMode={developerMode}
+        capabilities={{ customService: false, register: false }}
+        onPrimary={onPrimary}
+        onUseAnother={onUseAnother}
+      />
+      {cancellable ? (
+        <Button type="button" variant="ghost" className="mt-2 h-9 w-full rounded-lg px-2" onClick={cancel}>
+          {copy.cancel}
+        </Button>
+      ) : null}
+    </XpodSignInFrame>
   );
+}
+
+/** What the sign-in screen shows for a remembered identity: name, avatar, and where its Pod lives. */
+function presentedIdentity(remembered: { displayName: string; avatarUrl?: string; webId?: string }): RememberedIdentity {
+  const stored = readRememberedXpodLogin();
+  const storageUrl = stored && (!remembered.webId || stored.webId === remembered.webId)
+    ? stored.storageBinding.storageUrl
+    : undefined;
+  const kind = xpodStorageLocationKind(storageUrl);
+  return {
+    displayName: remembered.displayName,
+    ...(remembered.avatarUrl ? { avatarUrl: remembered.avatarUrl } : {}),
+    ...(storageUrl ? { storage: { kind, label: kind === 'cloud' ? copy.storageCloud : copy.storageEdge } } : {}),
+  };
+}
+
+/** A stable content key for a remembered login, whose object identity the runtime does not preserve. */
+function rememberedSignatureOf(remembered: RememberedWebIdLogin): string {
+  return [remembered.routeId, remembered.webId ?? '', remembered.displayName, remembered.avatarUrl ?? ''].join('\u0000');
 }
 
 function storageSelectionState(

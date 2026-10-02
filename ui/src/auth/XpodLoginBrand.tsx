@@ -1,4 +1,4 @@
-import xpodIconUrl from '../assets/xpod-shield.svg';
+import xpodIconUrl from '../assets/xpod-app.svg';
 
 export function XpodLoginBrand({
   compact = false,

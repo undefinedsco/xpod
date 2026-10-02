@@ -11,7 +11,16 @@
       "rememberedConsentSource": "RememberedConsentHandler:_source",
       "rememberedConsentStore": "RememberedConsentHandler:_store",
       "rememberedConsentProvider": "RememberedConsentHandler:_providerFactory",
-      "scopedRememberedGrantStore": "ScopedPickWebIdHandler:_options_rememberedClientGrantStore"
+      "scopedRememberedGrantStore": "ScopedPickWebIdHandler:_options_rememberedClientGrantStore",
+      "hierarchySource": "HierarchyLockingResourceStore:_mutationSource",
+      "hierarchyLocks": "HierarchyLockingResourceStore:_hierarchyLocks",
+      "hierarchyAuxiliaryStrategy": "HierarchyLockingResourceStore:_auxiliaryStrategy",
+      "hierarchyIdentifierStrategy": "HierarchyLockingResourceStore:_identifierStrategy",
+      "versionPutStore": "StoragePutOperationHandler:_store",
+      "versionPutMetadataStrategy": "StoragePutOperationHandler:_metadataStrategy",
+      "versionPutETagHandler": "StoragePutOperationHandler:_eTagHandler",
+      "sparqlMutationStore": "SubgraphSparqlHttpHandler:_mutationStore",
+      "headResponseMetadataWriter": "HeadSafeResponseWriter:_metadataWriter"
     }
   ],
   "import": [
@@ -20,6 +29,50 @@
     "./notifications.json"
   ],
   "@graph": [
+    {
+      "comment": "Preserve CSS response headers and status while suppressing generated HEAD error bodies before the Bun HTTP writer.",
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:solid-server:default:ResponseWriter" },
+      "overrideParameters": {
+        "@type": "HeadSafeResponseWriter",
+        "headResponseMetadataWriter": { "@id": "urn:solid-server:default:MetadataWriter" }
+      }
+    },
+    {
+      "comment": "Use persisted storage revisions for GET/HEAD, conditions and notifications; legacy revisions are initialized under resource write locks before reads.",
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:solid-server:default:ETagHandler" },
+      "overrideParameters": { "@type": "StorageETagHandler" }
+    },
+    {
+      "comment": "Keep the configured local/Redis lock authority and acquire ancestors root-first for every mutation.",
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:solid-server:default:ResourceStore_Locking" },
+      "overrideParameters": {
+        "@type": "HierarchyLockingResourceStore",
+        "hierarchySource": { "@id": "urn:solid-server:default:ResourceStore_Patching" },
+        "hierarchyLocks": { "@id": "urn:solid-server:default:ResourceLocker" },
+        "hierarchyAuxiliaryStrategy": { "@id": "urn:solid-server:default:AuxiliaryStrategy" },
+        "hierarchyIdentifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" }
+      }
+    },
+    {
+      "comment": "Preserve the CSS operation waterfall, replacing PUT with a response bound to its own persisted mutation receipt.",
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:solid-server:default:OperationHandler" },
+      "overrideParameters": {
+        "@type": "StatusWaterfallHandler",
+        "handlers": [
+          { "@type": "GetOperationHandler", "store": { "@id": "urn:solid-server:default:ResourceStore" }, "eTagHandler": { "@id": "urn:solid-server:default:ETagHandler" } },
+          { "@type": "PostOperationHandler", "store": { "@id": "urn:solid-server:default:ResourceStore" } },
+          { "@type": "StoragePutOperationHandler", "versionPutStore": { "@id": "urn:solid-server:default:ResourceStore" }, "versionPutMetadataStrategy": { "@id": "urn:solid-server:default:MetadataStrategy" }, "versionPutETagHandler": { "@id": "urn:solid-server:default:ETagHandler" } },
+          { "@type": "DeleteOperationHandler", "store": { "@id": "urn:solid-server:default:ResourceStore" } },
+          { "@type": "HeadOperationHandler", "store": { "@id": "urn:solid-server:default:ResourceStore" }, "eTagHandler": { "@id": "urn:solid-server:default:ETagHandler" } },
+          { "@type": "PatchOperationHandler", "store": { "@id": "urn:solid-server:default:ResourceStore" } },
+          { "@type": "StaticThrowHandler", "onlyHandle": true, "factory": { "@type": "ClassErrorFactory", "error": { "@type": "MethodNotAllowedHttpError" } } }
+        ]
+      }
+    },
     {
       "@id": "urn:undefineds:xpod:RememberedClientGrantStore",
       "@type": "RememberedClientGrantStore",
@@ -365,6 +418,29 @@
       }
     },
     {
+      "comment": "Agent directory HTTP handler: authenticated enumeration + exact literal search for agent shell adapters. Defined once for all editions; each edition references it from its HTTP pipeline.",
+      "@id": "urn:undefineds:xpod:AgentDirectoryHttpHandler",
+      "@type": "AgentDirectoryHttpHandler",
+      "accessor": {
+        "@id": "urn:undefineds:xpod:MixDataAccessor"
+      },
+      "credentialsExtractor": {
+        "@id": "urn:solid-server:default:CredentialsExtractor"
+      },
+      "permissionReader": {
+        "@id": "urn:solid-server:default:PermissionReader"
+      },
+      "authorizer": {
+        "@id": "urn:solid-server:default:Authorizer"
+      },
+      "auxiliaryStrategy": {
+        "@id": "urn:solid-server:default:AuxiliaryStrategy"
+      },
+      "identifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
+      }
+    },
+    {
       "comment": "Subgraph query engine wrapping default SPARQL engine (DefaultSparqlEngine defined in profile)",
       "@type": "SubgraphQueryEngine",
       "@id": "urn:undefineds:xpod:SubgraphQueryEngine",
@@ -391,6 +467,7 @@
       "updateAuthority": {
         "@id": "urn:undefineds:xpod:MixDataAccessor"
       },
+      "sparqlMutationStore": { "@id": "urn:solid-server:default:ResourceStore_Locking" },
       "emitter": {
         "@id": "urn:solid-server:default:ResourceStore"
       },

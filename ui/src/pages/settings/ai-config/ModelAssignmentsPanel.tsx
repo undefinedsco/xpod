@@ -1,4 +1,3 @@
-import { embeddingModelSwitch, rebuildInFlight, rebuildStatusFrom, rebuildTargetForCapabilities, type EmbeddingModelSwitch, type RebuildStatus } from './model-assignment-state';
 import { useEffect, useState, type FormEvent } from 'react';
 import {
   Button,
@@ -16,6 +15,14 @@ import type {
 import { modelsForAssignment, useAiConfig, type AiConfigModelOption } from './AiConfigContext';
 import { BackgroundPodAccess } from './BackgroundPodAccess';
 import { isPolicyValueDirty } from './form-state';
+import {
+  embeddingModelSwitch,
+  rebuildInFlight,
+  rebuildStatusFrom,
+  rebuildTargetForCapabilities,
+  type EmbeddingModelSwitch,
+  type RebuildStatus,
+} from './model-assignment-state';
 import { testAiConfigModel } from '../../../api/ai-config';
 import { useXpodSolidRuntime } from '../../../solid/useXpodSolidRuntime';
 

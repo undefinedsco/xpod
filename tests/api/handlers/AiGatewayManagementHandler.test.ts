@@ -1551,6 +1551,27 @@ describe('AiGatewayManagementHandler', () => {
     });
   });
 
+  it('answers a Pod this caller cannot open with the code callers retry on', async () => {
+    const connectService = {
+      listProviderCredentialPools: vi.fn(async () => {
+        throw new Error('caller_dpop_replay_unsupported');
+      }),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['GET /api/ai/providers'](request({ type: 'solid', webId: WEB_ID }), res, {});
+
+    // A refused Pod must not read as an internal failure: the caller's remedy is its own Pod
+    // credential, and it learns that from this code.
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'service_access_missing' });
+  });
+
   it('creates API-key credentials in a provider pool without echoing plaintext secrets', async () => {
     const connectService = {
       createApiKeyCredential: vi.fn(async (input: any) => ({

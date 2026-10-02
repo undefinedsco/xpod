@@ -12,6 +12,8 @@ import {
   RepresentationMetadata,
   INTERNAL_QUADS,
   FoundHttpError,
+  HH,
+  DC,
   NotFoundHttpError,
   POSIX,
   SOLID_META,
@@ -51,6 +53,7 @@ import type {
 } from '../rdf/types';
 import { metadataRequestContext } from '../MetadataRequestContext';
 import { isDirectDataRead } from '../ResourceReadContext';
+import { getStorageVersion, storageVersionReadContext } from '../StorageVersion';
 import type { SparqlVoidOptions } from '../sparql/SubgraphQueryEngine';
 import type { SolidFsChange, SolidFsManifest } from '../../solidfs/types';
 import type { RdfSearchReconciliationIntentSink } from '../../search/RdfSearchIntentSink';
@@ -85,6 +88,8 @@ export interface LocalRdfSyncOptions {
   workspace?: string;
   localPath?: string;
   sourceVersion?: string;
+  /** Physical input path, used to avoid copying an authority file onto itself. */
+  sourcePath?: string;
 }
 
 export interface LocalRdfMoveOptions extends LocalRdfSyncOptions {
@@ -110,6 +115,7 @@ export interface SourceScopedStructuredRdfAccessor {
 
 export interface LocalRdfAuthorityJournalOperation {
   id: string;
+  afterHash?: string;
 }
 
 export interface LocalRdfAuthorityJournal {
@@ -137,7 +143,6 @@ interface LocalRdfAuthorityJournalPatch {
 }
 
 interface LocalRdfAuthorityJournalPatchDraft {
-  patch: LocalRdfAuthorityPatch;
   change: SolidFsChange;
   workspace: SolidFsManifest;
   txId?: string;
@@ -234,9 +239,19 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
 
     if (this.isByLineRdfIdentifier(identifier)) {
       try {
+        let sourceMetadata = new RepresentationMetadata(identifier);
+        if (storageVersionReadContext.getStore()) {
+          try {
+            sourceMetadata = await this.getMetadata(identifier);
+          } catch (error) {
+            if (!NotFoundHttpError.isInstance(error)) throw error;
+            // A file awaiting indexing remains readable, but cannot supply a storage revision.
+          }
+        }
+        const metadata = await this.getLocalRdfMetadata(identifier, sourceMetadata);
         return {
           data: await this.rdfFileDataAccessor.getData(identifier),
-          metadata: await this.getExistingLocalRdfMetadata(identifier),
+          metadata,
         };
       } catch (error) {
         if (!NotFoundHttpError.isInstance(error)) {
@@ -558,7 +573,7 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
   }
 
   private async prepareLocalRdfAuthorityJournalPatches(
-    patches: LocalRdfAuthorityPatch[],
+    patches: Pick<LocalRdfAuthorityPatch, 'identifier' | 'previousExists'>[],
   ): Promise<LocalRdfAuthorityJournalPatchDraft[]> {
     if (!this.localRdfAuthorityJournal || !this.rdfFileMapper || patches.length === 0) {
       return [];
@@ -580,7 +595,6 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     })));
 
     return mapped.map(({ patch, link }): LocalRdfAuthorityJournalPatchDraft => ({
-      patch,
       workspace,
       txId,
       change: {
@@ -730,7 +744,11 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     const source = data ?? await this.rdfFileDataAccessor.getData(identifier);
     const localContentType = contentType ?? this.localRdfContentType(identifier);
     const text = await this.readStreamText(source);
-    if (data) {
+    const targetPath = data && options?.sourcePath && this.rdfFileMapper
+      ? (await this.rdfFileMapper.mapUrlToFilePath(identifier, false, localContentType)).filePath
+      : undefined;
+    const readsAuthority = targetPath && path.resolve(targetPath) === path.resolve(options!.sourcePath!);
+    if (data && !readsAuthority) {
       await this.ensureRdfFileParentContainers(identifier);
       const localMetadata = this.createLocalRdfMetadata(identifier, new RepresentationMetadata(identifier));
       localMetadata.contentType = localContentType;
@@ -741,9 +759,20 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
       );
     }
     const quads = await this.parseLocalRdf(identifier, text, localContentType);
-    await this.writeStructuredRdfIndex(identifier, quads, new RepresentationMetadata(identifier), {
+    let metadata: RepresentationMetadata;
+    try {
+      metadata = await this.structuredDataAccessor.getMetadata(identifier);
+    } catch (error) {
+      if (!NotFoundHttpError.isInstance(error)) throw error;
+      metadata = new RepresentationMetadata(identifier);
+    }
+    const fileMetadata = await this.getExistingLocalRdfMetadata(identifier);
+    const modified = fileMetadata.get(DC.terms.modified)?.value;
+    const modifiedAt = modified ? new Date(modified) : undefined;
+    await this.writeStructuredRdfIndex(identifier, quads, metadata, {
       ...options,
       contentType: localContentType,
+      ...(modifiedAt && Number.isFinite(modifiedAt.getTime()) ? { modifiedAt } : {}),
     });
     await this.syncTextSearchIndex(identifier, text, {
       ...options,
@@ -802,6 +831,17 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     updateModifiedDate(structuredMetadata);
     await this.ensureRdfFileParentContainers(identifier);
     const text = await this.serializeQuadsForLocalFile(identifier, quads);
+    let journalDraft: LocalRdfAuthorityJournalPatchDraft | undefined;
+    if (this.localRdfAuthorityJournal && this.rdfFileMapper) {
+      let previousExists = false;
+      try {
+        await this.structuredDataAccessor.getMetadata(identifier);
+        previousExists = true;
+      } catch (error) {
+        if (!NotFoundHttpError.isInstance(error)) throw error;
+      }
+      [journalDraft] = await this.prepareLocalRdfAuthorityJournalPatches([{ identifier, previousExists }]);
+    }
 
     await this.rdfFileDataAccessor.writeDocument(
       identifier,
@@ -809,12 +849,30 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
       this.createLocalRdfMetadata(identifier, metadata),
     );
 
+    let operation: LocalRdfAuthorityJournalOperation | undefined;
     try {
+      operation = await this.recordLocalRdfAuthorityJournalPatch(journalDraft);
+      if (operation && !operation.afterHash?.endsWith(`:${createHash('sha256').update(text).digest('hex')}`)) {
+        throw new Error('Local RDF authority changed before its index write');
+      }
       await this.writeStructuredRdfIndex(identifier, quads, structuredMetadata);
       await this.syncTextSearchIndex(identifier, text, {}, quads);
+      if (operation) await this.localRdfAuthorityJournal!.markDone(operation.id);
     } catch (error) {
-      await this.deleteRdfFileResourceIfPresent(identifier);
-      await this.deleteSearchIndexes(identifier);
+      if (this.localRdfAuthorityJournal) {
+        // The authority is durable even if journal insertion failed. Bootstrap can
+        // discover it without a receipt; never delete committed data in this case.
+        if (operation) {
+          try {
+            await this.localRdfAuthorityJournal.markRetryableFailure(operation.id, error);
+          } catch (journalError) {
+            this.logger.error(`Failed to record RDF authority recovery failure: ${String(journalError)}`);
+          }
+        }
+      } else {
+        await this.deleteRdfFileResourceIfPresent(identifier);
+        await this.deleteSearchIndexes(identifier);
+      }
       throw error;
     }
   }
@@ -823,11 +881,11 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     identifier: ResourceIdentifier,
     quads: Quad[],
     metadata: RepresentationMetadata,
-    options: LocalRdfSyncOptions & { contentType?: string } = {},
+    options: LocalRdfSyncOptions & { contentType?: string; modifiedAt?: Date } = {},
   ): Promise<void> {
     const structuredMetadata = new RepresentationMetadata(metadata);
     addResourceMetadata(structuredMetadata, false);
-    updateModifiedDate(structuredMetadata);
+    updateModifiedDate(structuredMetadata, options.modifiedAt);
     const sourceScopedAccessor = this.sourceScopedStructuredAccessor();
     if (sourceScopedAccessor) {
       await sourceScopedAccessor.writeRdfSourceDocument(
@@ -873,14 +931,21 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     identifier: ResourceIdentifier,
     sourceMetadata: RepresentationMetadata,
   ): Promise<RepresentationMetadata> {
+    let metadata: RepresentationMetadata;
     try {
-      return await this.getExistingLocalRdfMetadata(identifier);
+      metadata = await this.getExistingLocalRdfMetadata(identifier);
     } catch (error) {
       if (!NotFoundHttpError.isInstance(error)) {
         throw error;
       }
-      return this.createLocalRdfMetadata(identifier, sourceMetadata);
+      metadata = this.createLocalRdfMetadata(identifier, sourceMetadata);
     }
+    // File bytes/content type remain file-owned; conditional versions always come from
+    // the structured metadata read under the same resource lock, never a stale sidecar.
+    metadata.removeAll(HH.terms.etag);
+    const revision = getStorageVersion(sourceMetadata);
+    if (revision) metadata.set(HH.terms.etag, DataFactory.literal(revision));
+    return metadata;
   }
 
   private async getExistingLocalRdfMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {

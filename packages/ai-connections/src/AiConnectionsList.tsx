@@ -1,5 +1,5 @@
 import { useContext, useRef, type KeyboardEvent, type MutableRefObject, type ReactNode } from 'react'
-import { Avatar, AvatarFallback, AvatarImage, cn } from '@undefineds.co/shared-ui'
+import { Avatar, AvatarFallback, AvatarImage, InlineNotice, StatusDot, cn } from '@undefineds.co/shared-ui'
 import { WorkspaceLayoutContext } from '@undefineds.co/extension-sdk/react'
 import { XPOD_AVATAR, getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type { AiConnectionsController, AiProviderDefinition } from './controller'
@@ -124,7 +124,11 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
         ) : null}
       </section>
       {providerLoadError ? (
-        <p className="px-4 py-2 text-xs text-destructive">连接状态读取失败：{providerLoadError}</p>
+        <div className="px-4 py-2">
+          <InlineNotice tone="destructive" role="alert" className="text-xs">
+            连接状态读取失败：{providerLoadError}
+          </InlineNotice>
+        </div>
       ) : null}
     </div>
   )
@@ -230,7 +234,7 @@ function ProviderStateIndicator({
   const active = state === 'configured' || state === 'connected'
   return (
     <span id={statusId} role="status" aria-live="polite" className="flex shrink-0 items-center gap-1.5">
-      {active ? <span className="h-2 w-2 rounded-full bg-primary" aria-hidden="true" /> : null}
+      {active ? <StatusDot tone="info" /> : null}
       <span className="text-[11px] font-normal text-muted-foreground">{providerStateLabel(state)}</span>
     </span>
   )

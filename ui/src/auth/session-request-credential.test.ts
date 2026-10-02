@@ -178,7 +178,7 @@ describe('withRequestPodAuthorization', () => {
     } }, { status: 403 }));
     const retry = vi.fn(async () => Response.json({ data: [{ id: 'selected-model' }] }));
     const credential = vi.fn(async () => 'Bearer sk-session');
-    const wrapped = withRequestPodAuthorization(first, credential, retry, 'https://xpod.example');
+    const wrapped = withRequestPodAuthorization(first, credential, retry);
     const response = await wrapped('https://xpod.example/v1/models');
     expect(await response.json()).toEqual({ data: [{ id: 'selected-model' }] });
     expect(credential).toHaveBeenCalledOnce();
@@ -191,7 +191,7 @@ describe('withRequestPodAuthorization', () => {
     } }, { status: 403 }));
     const retry = vi.fn(async () => Response.json({ data: [] }));
     const credential = vi.fn(async () => 'Bearer sk-session');
-    const wrapped = withRequestPodAuthorization(first, credential, retry, 'https://xpod.example');
+    const wrapped = withRequestPodAuthorization(first, credential, retry);
     expect((await wrapped('https://xpod.example/v1/models')).status).toBe(403);
     expect(credential).not.toHaveBeenCalled();
     expect(retry).not.toHaveBeenCalled();

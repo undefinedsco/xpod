@@ -18,5 +18,8 @@
   "peerDependencies": {
     "react": "^19.2.0"
   },
-  "private": false
+  "private": false,
+  "dependencies": {
+    "@undefineds.co/shared-ui": "workspace:*"
+  }
 }

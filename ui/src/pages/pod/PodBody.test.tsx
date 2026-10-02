@@ -53,4 +53,74 @@ describe('shared Pod body', () => {
     expect(screen.getByText('进行中')).toBeTruthy();
     expect(screen.queryByText(/0%/)).toBeNull();
   });
+  it('clears the selected model when its source changes', () => {
+    render(<PodBody {...props({ section: 'search' })} />);
+    fireEvent.click(screen.getByRole('button', { name: '更换' }));
+    fireEvent.change(screen.getByLabelText('来源'), { target: { value: 'own' } });
+    fireEvent.change(screen.getByLabelText('模型'), { target: { value: 'new' } });
+    fireEvent.change(screen.getByLabelText('来源'), { target: { value: 'platform' } });
+    expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe('');
+    expect((screen.getByRole('button', { name: '更换并重建索引' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  it('keeps rebuild availability tied to the selected target', async () => {
+    const value = props({ section: 'search' }); render(<PodBody {...value} />);
+    fireEvent.click(screen.getByRole('button', { name: '重建' }));
+    expect(value.onRebuild).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('重建哪部分'), { target: { value: 'vector' } });
+    fireEvent.click(screen.getByRole('button', { name: '重建' }));
+    expect(value.onRebuild).toHaveBeenCalledWith('vector');
+    await screen.findByText('重建已排队');
+  });
+  it('prevents cancellation and Escape while embedding is being saved', async () => {
+    let finish!: () => void;
+    const value = props({ section: 'search', onEmbedding: vi.fn(() => new Promise<void>(resolve => { finish = resolve; })) });
+    render(<PodBody {...value} />);
+    fireEvent.click(screen.getByRole('button', { name: '更换' }));
+    fireEvent.change(screen.getByLabelText('来源'), { target: { value: 'own' } });
+    fireEvent.change(screen.getByLabelText('模型'), { target: { value: 'new' } });
+    fireEvent.click(screen.getByRole('button', { name: '更换并重建索引' }));
+    expect((screen.getByRole('button', { name: '关闭' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(value.onEmbedding).toHaveBeenCalledOnce();
+    fireEvent.pointerDown(document.body);
+    fireEvent.focusIn(document.body);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect((screen.getByLabelText('来源') as HTMLSelectElement).disabled).toBe(true);
+    finish();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByText('更换已保存，重建已排队')).toBeTruthy();
+  });
+
+  it('closes on Escape and restores focus to the trigger', async () => {
+    render(<PodBody {...props({ section: 'search' })} />);
+    const trigger = screen.getByRole('button', { name: '更换' });
+    trigger.focus(); fireEvent.click(trigger);
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  });
+  it('keeps keyboard focus inside the dialog at both tab boundaries', () => {
+    render(<PodBody {...props({ section: 'search' })} />);
+    fireEvent.click(screen.getByRole('button', { name: '更换' }));
+    const first = screen.getByLabelText('来源');
+    const last = screen.getByRole('button', { name: '关闭' });
+    last.focus(); fireEvent.keyDown(last, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+    first.focus(); fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
+  it('disables submission if the selected model becomes unavailable', () => {
+    const value = props({ section: 'search' });
+    const view = render(<PodBody {...value} />);
+    fireEvent.click(screen.getByRole('button', { name: '更换' }));
+    fireEvent.change(screen.getByLabelText('来源'), { target: { value: 'own' } });
+    fireEvent.change(screen.getByLabelText('模型'), { target: { value: 'new' } });
+    view.rerender(<PodBody {...value} embeddingModels={[]} />);
+    fireEvent.click(screen.getByRole('button', { name: '更换并重建索引' }));
+    expect(value.onEmbedding).not.toHaveBeenCalled();
+  });
+
 });

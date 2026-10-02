@@ -211,6 +211,9 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Verify the desktop self-update verifier
+        run: node --test tests/scripts/desktop-self-update-acceptance.node-test.cjs
+
       - name: Install Chromium for authenticated acceptance
         run: bunx playwright install --with-deps chromium
 
@@ -637,6 +640,57 @@ jobs:
           path: ${{ runner.temp }}/checks.json
           if-no-files-found: error
 
+      - name: Project safe Task approval evidence
+        if: always()
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const input = path.join(process.cwd(), '.test-data', 'acceptance', 'live-gateway-login-chat-local.json');
+          let task;
+          try {
+            task = JSON.parse(fs.readFileSync(input, 'utf8')).taskApproval;
+          } catch {
+            console.log('::warning::Task approval evidence is missing or unreadable');
+            process.exit(0);
+          }
+          if (!task || !Array.isArray(task.cases)) {
+            console.log('::warning::Task approval evidence was not produced');
+            process.exit(0);
+          }
+          const booleanFields = ['ok', 'queuedAck', 'approvalPending', 'sessionPaused', 'sessionCompleted',
+            'sameRun', 'markerMatches', 'markerAbsent', 'duplicateResume', 'stableAfterDuplicateOrStop'];
+          const cases = task.cases.filter(row => row && ['approved', 'rejected', 'stopped'].includes(row.kind)).map(row => {
+            const safe = { kind: row.kind };
+            for (const field of booleanFields) if (typeof row[field] === 'boolean') safe[field] = row[field];
+            if (['approved', 'rejected'].includes(row.decision)) safe.decision = row.decision;
+            if (['completed', 'cancelled', 'failed'].includes(row.terminalStatus)) safe.terminalStatus = row.terminalStatus;
+            return safe;
+          });
+          const cleanup = {};
+          for (const field of ['ok', 'grantRevoked']) {
+            if (typeof task.cleanup?.[field] === 'boolean') cleanup[field] = task.cleanup[field];
+          }
+          for (const field of ['tasksPaused', 'runsStopped', 'sessionsTerminal']) {
+            const value = task.cleanup?.[field];
+            if (Number.isSafeInteger(value) && value >= 0) cleanup[field] = value;
+          }
+          const evidence = {
+            schemaVersion: 1, sourceSha: process.env.GITHUB_SHA,
+            runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ok: task.ok === true, failurePresent: Boolean(task.failure), cases, cleanup,
+          };
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'task-approval-evidence.json'), `${JSON.stringify(evidence, null, 2)}\n`);
+          NODE
+
+      - name: Upload safe Task approval evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-approval-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/task-approval-evidence.json
+          if-no-files-found: warn
+
       - name: Dump diagnostics
         if: failure()
         run: |
@@ -707,6 +761,12 @@ jobs:
             --sha "${{ github.sha }}" \
             --apply-root-version
           node -e 'if (require("./desktop/package.json").version !== process.env.CANDIDATE_VERSION) process.exit(1)'
+      # desktop/test/** is excluded from the root vitest and Bun test runs, so without this the
+      # brand provenance, Dock and updater suites never execute in CI. The desktop `test` script
+      # builds first (`bun run build`), so this also type checks the desktop sources.
+      - name: Run the desktop unit test suite
+        working-directory: desktop
+        run: bun run test
       - name: Build desktop with the accepted native runtime
         working-directory: desktop
         run: bun run dist
@@ -732,12 +792,45 @@ jobs:
           node scripts/run-npm-pack.cjs .test-data/npm-preflight .test-data/npm-preflight-cache
           node scripts/check-pack-json.cjs .test-data/npm-preflight/pack.json
       - name: Verify shared applet tarballs in a clean Bun consumer
-        run: node scripts/workspace-package-consumer.cjs --local
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/workspace-package-consumer.cjs --local \
+            --source-sha "$SOURCE_SHA" \
+            --archive-dir "${RUNNER_TEMP}/package-consumer-archive/workspace" \
+            --evidence "${RUNNER_TEMP}/workspace-consumer-evidence.json"
       - name: Verify packed Node and Bun consumers before publication
         run: |
           set -euo pipefail
           node scripts/check-package-registry-consumer.cjs .test-data/npm-preflight/pack.json "${RUNNER_TEMP}/xpod-packed-node" .test-data/npm-consumer-cache
           node scripts/check-package-registry-consumer.cjs .test-data/npm-preflight/pack.json "${RUNNER_TEMP}/xpod-packed-bun" .test-data/bun-consumer-cache bun
+      # Binds the gate to the exact packed root tarball the Node/Bun consumers
+      # installed and to the workspace applet tarballs for this source SHA. This
+      # is a package/consumer check only; the bundled native runtime is proven by
+      # the separate qlever-local gate.
+      - name: Bind the package-consumers acceptance evidence
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/release-gate-evidence.cjs create-package-consumers \
+            --source-sha "$SOURCE_SHA" \
+            --pack-json .test-data/npm-preflight/pack.json \
+            --node-result "${RUNNER_TEMP}/xpod-packed-node/result.json" \
+            --bun-result "${RUNNER_TEMP}/xpod-packed-bun/result.json" \
+            --workspace-evidence "${RUNNER_TEMP}/workspace-consumer-evidence.json" \
+            --archive-dir "${RUNNER_TEMP}/package-consumer-archive" \
+            --out "${RUNNER_TEMP}/package-consumer-evidence.json"
+      - name: Upload package-consumers acceptance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-consumer-acceptance-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/package-consumer-evidence.json
+            ${{ runner.temp }}/package-consumer-archive
+          if-no-files-found: error
+          retention-days: 30
       - name: Save root package boundary evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -753,6 +846,79 @@ jobs:
           [[ "$(defaults read "$PWD/$app/Contents/Info" CFBundleShortVersionString)" == "$CANDIDATE_VERSION" ]]
           test -x "$runtime"
           test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
+      # The desktop updates itself by verifying the downloaded bundle, so the
+      # archive must ship a valid ad-hoc signature (after-pack hook) rather than
+      # the linker's unsealed one.
+
+      - name: Download the previously released desktop bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          dest="${RUNNER_TEMP}/xpod-old-desktop"
+          mkdir -p "$dest"
+          old_tag="$(gh release list --repo "${{ github.repository }}" --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')"
+          if [ -z "$old_tag" ]; then
+            echo "::error::no stable desktop release is available as the update baseline"
+            exit 1
+          fi
+          gh release download "$old_tag" --repo "${{ github.repository }}" \
+            --pattern '*-arm64-mac.zip' --dir "$dest" --clobber
+          old_zip="$(find "$dest" -maxdepth 1 -type f -name '*-arm64-mac.zip' -print -quit)"
+          if [ -z "$old_zip" ]; then
+            echo "::error::$old_tag does not publish an arm64 desktop zip"
+            exit 1
+          fi
+          unzip -q "$old_zip" -d "$dest/unpacked"
+          old_app="$(find "$dest/unpacked" -type d -name 'Xpod.app' -print -quit)"
+          if [ -z "$old_app" ]; then
+            echo "::error::$old_zip does not contain Xpod.app"
+            exit 1
+          fi
+          echo "XPOD_OLD_DESKTOP_TAG=$old_tag" >> "$GITHUB_ENV"
+          printf 'baseline tag: %s\nbaseline app: %s\n' "$old_tag" "$old_app"
+
+      # The doc-mandated desktop gate: launch the released build, let it detect,
+      # download, checksum-verify, swap the bundle and relaunch as this exact
+      # candidate, then bind the run to the source SHA and both archives.
+      - name: Accept the real desktop self-update (released -> candidate)
+        run: |
+          set -euo pipefail
+          old_app="$(find "${RUNNER_TEMP}/xpod-old-desktop/unpacked" -type d -name 'Xpod.app' -print -quit)"
+          old_zip="$(find "${RUNNER_TEMP}/xpod-old-desktop" -maxdepth 1 -type f -name '*-arm64-mac.zip' -print -quit)"
+          new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          if [ -z "$old_app" ] || [ -z "$old_zip" ]; then
+            echo "::error::the released desktop baseline is missing"
+            exit 1
+          fi
+          if [ -z "$new_zip" ]; then
+            echo "::error::candidate desktop zip is missing"
+            exit 1
+          fi
+          evidence="${RUNNER_TEMP}/desktop-self-update-evidence.json"
+          node desktop/scripts/packaged-update-acceptance.mjs \
+            --old "$old_app" \
+            --old-zip "$old_zip" \
+            --old-release-tag "$XPOD_OLD_DESKTOP_TAG" \
+            --new-zip "$new_zip" \
+            --version "$CANDIDATE_VERSION" \
+            --source-sha "${{ github.sha }}" \
+            --timeout 180000 \
+            --evidence-out "$evidence"
+          node scripts/desktop-self-update-acceptance.cjs verify \
+            --evidence "$evidence" \
+            --source-sha "${{ github.sha }}" \
+            --new-version "$CANDIDATE_VERSION"
+
+      - name: Upload desktop self-update acceptance evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-self-update-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-self-update-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
       - uses: actions/upload-artifact@v4
         with:
           name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
@@ -783,6 +949,61 @@ jobs:
         with:
           name: release-service-acceptance-${{ github.sha }}
           path: ${{ runner.temp }}/service-acceptance
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-self-update-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-self-update
+      - uses: actions/download-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
+          path: ${{ runner.temp }}/xpod-desktop-candidate
+      # The `desktop` check is only accepted from the source-bound evidence the
+      # macOS job produced AND must byte-match the uploaded candidate archive;
+      # bundle presence alone never sets it.
+      - name: Verify the desktop self-update acceptance evidence
+        run: |
+          set -euo pipefail
+          candidate_zip="$(find "${{ runner.temp }}/xpod-desktop-candidate" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          if [ -z "$candidate_zip" ]; then
+            echo "::error::uploaded candidate desktop zip is missing"
+            exit 1
+          fi
+          node scripts/desktop-self-update-acceptance.cjs verify \
+            --evidence "${{ runner.temp }}/desktop-self-update/desktop-self-update-evidence.json" \
+            --source-sha "${{ github.sha }}" \
+            --new-version "$CANDIDATE_VERSION" \
+            --expected-new-zip "$candidate_zip" \
+            --checks-out "${{ runner.temp }}/desktop-check.json"
+      # `qlever-local` and `package-consumers` are only accepted from the
+      # source/artifact-bound evidence the producing jobs uploaded AND must
+      # byte-match the artifacts downloaded here; a missing or mismatched
+      # artifact fails the job before any check is written.
+      - name: Download the accepted qlever-local runtime artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: qlever-local-runtime-darwin-arm64-${{ github.sha }}
+          path: ${{ runner.temp }}/qlever-local-runtime
+      - name: Download the package-consumers acceptance artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: package-consumer-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/package-consumer
+      - name: Verify the qlever-local acceptance evidence
+        run: |
+          set -euo pipefail
+          node scripts/release-gate-evidence.cjs verify-qlever-local \
+            --evidence "${{ runner.temp }}/qlever-local-runtime/qlever-local-acceptance.json" \
+            --source-sha "${{ github.sha }}" \
+            --expected-archive "${{ runner.temp }}/qlever-local-runtime/qlever-local-runtime-darwin-arm64.tar.gz" \
+            --checks-out "${{ runner.temp }}/qlever-local-check.json"
+      - name: Verify the package-consumers acceptance evidence
+        run: |
+          set -euo pipefail
+          node scripts/release-gate-evidence.cjs verify-package-consumers \
+            --evidence "${{ runner.temp }}/package-consumer/package-consumer-evidence.json" \
+            --source-sha "${{ github.sha }}" \
+            --archive-dir "${{ runner.temp }}/package-consumer" \
+            --checks-out "${{ runner.temp }}/package-consumer-check.json"
       - name: Create the unified acceptance manifest
         run: |
           set -euo pipefail
@@ -790,11 +1011,23 @@ jobs:
           const fs = require('node:fs');
           const path = require('node:path');
           const checksPath = path.join(process.env.RUNNER_TEMP, 'service-acceptance', 'checks.json');
+          const desktopChecks = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'desktop-check.json'), 'utf8'));
+          if (desktopChecks.desktop !== 'passed') {
+            throw new Error('desktop self-update acceptance did not verify');
+          }
+          const qleverChecks = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'qlever-local-check.json'), 'utf8'));
+          if (qleverChecks['qlever-local'] !== 'passed') {
+            throw new Error('qlever-local acceptance did not verify');
+          }
+          const packageConsumerChecks = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'package-consumer-check.json'), 'utf8'));
+          if (packageConsumerChecks['package-consumers'] !== 'passed') {
+            throw new Error('package-consumers acceptance did not verify');
+          }
           const checks = {
             ...JSON.parse(fs.readFileSync(checksPath, 'utf8')),
-            'qlever-local': 'passed',
-            'desktop': 'passed',
-            'package-consumers': 'passed',
+            'qlever-local': qleverChecks['qlever-local'],
+            'desktop': desktopChecks.desktop,
+            'package-consumers': packageConsumerChecks['package-consumers'],
           };
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
           NODE

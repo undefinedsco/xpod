@@ -1,6 +1,12 @@
 # Reconciler / Wake / Agent Runtime Boundary
 
-Date: 2026-06-14
+Original decision: 2026-06-14. Implementation update: 2026-09-23.
+
+This document describes shared responsibilities and broader coordination policy.
+The implemented Matrix subset, migrations, consistency limits, and acceptance
+gates are defined in [Matrix collaboration design](matrix-collaboration-design.md).
+Client ownership and fallback policy below must not be read as proof that every
+placement or recovery scenario has been implemented and accepted.
 
 ## Decision
 
@@ -10,7 +16,7 @@ not own multi-agent routing.
 The durable model stays human-transaction oriented:
 
 ```text
-Chat / Thread / Message / Run / RunStep
+Chat / Thread / Message / Delivery / Run / RunStep
 ```
 
 `Session.sessionType` is not part of this model anymore. Treat any existing
@@ -97,14 +103,16 @@ type WakeAgentJob = {
 }
 ```
 
-Optional operational fields may be added when the queue implementation needs
-them:
+The current queue also records these operational fields (the canonical TypeScript
+definition is `SharedWakeAgentJob` in `src/api/reconciler/coordination.ts`):
 
 ```ts
 type WakeAgentJobLeaseFields = {
-  priority?: 'low' | 'normal' | 'high'
+  attempts?: number
   leaseOwner?: string
   leaseExpiresAt?: string
+  fencingToken?: string
+  lastError?: string
 }
 ```
 
@@ -112,7 +120,7 @@ Do not put `agentRole`, model/provider config, workspace path, tool target,
 prompt hints, or protocol event shapes on the wake job. The job names one agent
 and one triggering message in one thread.
 
-Queue key:
+Logical queue partition (the implementation hashes these references):
 
 ```text
 steer_queue:{thread}:{agent}
@@ -120,8 +128,8 @@ steer_queue:{thread}:{agent}
 
 Each coordinated thread and each agent has an independent queue. One agent processes
 one queued wake at a time; excess wake jobs remain in that agent's queue. A
-single message may wake multiple agents concurrently, but each target agent is
-serialized by its own queue.
+single message may wake multiple agents concurrently. Serialization is per
+`(thread, agent)`, not global across all threads of an agent.
 
 ### Agent Runtime
 
@@ -467,7 +475,9 @@ thread + triggerMessage + agent
 
 The expensive traffic remains at the runtime side: LLM request/response, context
 fetching, workspace/tool reads and writes, and optional streaming. Final durable
-assistant output is still appended once as a `Message` and synchronized normally.
+assistant output is persisted as a `Message` and synchronized normally. Stable
+job/result IDs support replay; this is not an exactly-once guarantee for Pod writes
+or external tool side effects.
 
 ### Hidden lease/fallback mechanics
 
@@ -483,8 +493,9 @@ Minimum mechanics:
 - server-side LLM fallback is off unless user/room/agent policy explicitly turns
   it on.
 
-Future distributed group coordination can reuse the same lease/fencing mechanics,
-but it is not part of the MVP rule.
+The current group wake queue has Redis-backed atomic lease transitions. Fencing
+protects queue operations; it does not make the subsequent Pod write atomic with
+the lease check. Broader client-coordinator fallback remains a separate policy.
 
 ### What to reuse from LinX CLI
 
@@ -503,21 +514,37 @@ Do not copy directly into the shared contract:
 
 Those are valid host/product extensions, not the common message-room contract.
 
-## MVP scope
+## Current Matrix implementation
 
-For the current messaging MVP:
+The earlier messaging-only MVP has been extended with an external-runtime
+collaboration path. It now supports:
 
-- no AI execution is required;
-- no central Agent is required;
-- Matrix/ChatKit only need to store and sync human messages;
-- the Reconciler boundary should be documented and kept out of protocol stores
-  until the Agent MVP starts.
+- human messages selecting one or multiple explicitly authorized Agent URIs;
+- room grants binding an Agent to an executor WebID, allowed actors, a workspace
+  reference, and permitted handoff targets;
+- claim, renew, complete, and fail through `/v1/agent-wakes/*`;
+- per-`(thread, agent)` serialized queues, bounded leases and at most three
+  execution attempts, with attempts and terminal failure persisted in Run/Delivery;
+- explicit assistant handoff through the result API, with a matching server-issued
+  receipt and current grant; ordinary assistant messages do not trigger work;
+- chains of at most eight logical execution stages, each still subject to the
+  three-attempt limit, without automatic model/tool selection;
+- durable Message, Delivery, Run and RunStep in the Pod, operational transaction
+  receipts/sequences in SQL, and leases/queues in Redis or a single-process memory
+  implementation.
 
-For the first Agent MVP:
+Recovery runs when an executor calls claim. It validates receipts and current
+permissions and reconstructs unfinished work from Pod facts; there is no autonomous
+global recovery scanner. Direct native Pod messages can be synchronized but cannot
+trigger execution without a matching API receipt.
 
-- one user message may wake multiple agents;
-- execution is one round only;
-- agents cannot trigger other agents;
-- each `(thread, agent)` queue is serialized;
-- Redis can be used as the wake/steer queue state center, while Mongo/Pod stores
-  the durable message/run state.
+The Pod backend currently lives in `PodMatrixStore`, while routing, queue and
+runtime orchestration remain separate services. This implements the shared model
+without introducing a Matrix-specific durable execution schema. It does not imply
+that every ChatKit/native append path already has the same recovery guarantees.
+
+For exact API fields, consistency windows, migrations, and acceptance gates, use
+[the Matrix collaboration contract](matrix-collaboration-design.md). For a real HTTP
+and Pod exercise, use [the deterministic two-agent example](examples/matrix-collaboration.md).
+The example does not call an LLM or prove tool safety, independent executor
+identities, production capacity, or cross-instance fault recovery.

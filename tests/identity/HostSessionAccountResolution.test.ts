@@ -56,7 +56,7 @@ async function runHandler(input: {
   authorization?: string;
 }) {
   const interactionHandler = {
-    handleSafe: vi.fn(async (_input: { operation: Operation }) =>
+    handleSafe: vi.fn(async (_context: { accountId?: string }) =>
       new BasicRepresentation('', new RepresentationMetadata({ path: 'http://example.test/.account/' }))),
   };
   const handler = new ValidatingIdentityProviderHttpHandler({

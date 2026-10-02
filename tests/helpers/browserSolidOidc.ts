@@ -12,20 +12,47 @@ export type BrowserSolidCredentials = Pick<BrowserSolidAccount, 'email' | 'passw
 const OIDC_PRIMARY_ACTION_NAME = /authorize|allow|approve|consent|continue|submit|yes|log in|login|sign in|继续|允许|授权|批准|同意|登录|进入/iu;
 const OIDC_LOGIN_ACTION_NAME = /log in|login|sign in|登录|进入/iu;
 
-/** Password forms belong exclusively to the helper's fill-and-submit branch.
- * A form can mount between its visibility check and generic action discovery.
+/**
+ * Disruptive controls the helper must never activate. The broad discovery
+ * regex above intentionally matches label fragments, so logout
+ * (`退出登录` → `登录`) and cancel-authorization (`取消授权` → `授权`) are
+ * discovered as candidates and must be refused on the exact node that would be
+ * clicked, atomically with the click, so a remount cannot swap it out.
+ * Passed into `evaluate` because Node module scope is not serialized to the page.
+ */
+const OIDC_NEGATIVE_ACTION_SOURCE = '退出登录|退出|注销|登出|取消授权|取消|撤销|拒绝|切换账号|switch\\s*account|switch\\s*user|log\\s*out|sign\\s*out|logout|revoke|cancel|reject|deny|decline';
+
+/** Resolve to `fallback` if `work` outlives `ms`, so no probe can outlive the
+ * live test; the timer is always cleared. */
+export async function boundedProbe<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>(resolve => { timer = setTimeout(() => resolve(fallback), ms); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** The single activation path for every non-password OIDC control (button,
+ * submit input or anchor). Refuses disruptive labels (logout / cancel / revoke /
+ * switch-account) and password forms, then clicks the *same* node inside one
+ * browser task: a later Locator click could resolve to a freshly mounted
+ * password submit or a different control.
  */
 export async function clickNonPasswordOidcAction(candidate: Locator): Promise<boolean> {
-  return candidate.evaluate((element) => {
+  return candidate.evaluate((element, source) => {
     const control = element as HTMLButtonElement | HTMLInputElement;
     if (!control.isConnected || control.matches(':disabled') || control.getAttribute('aria-disabled') === 'true') return false;
+    const name = [control.getAttribute('aria-label') ?? '', control.textContent ?? '', control.value ?? ''].join(' ');
+    if (new RegExp(source, 'iu').test(name)) return false;
     const form = control.form ?? control.closest('form');
     if (form?.querySelector('input[type="password"], input[name="password"], input#password')) return false;
-    // Check and activate the same node in one browser task: a later Locator
-    // click could resolve to a newly mounted password submit instead.
     control.click();
     return true;
-  });
+  }, OIDC_NEGATIVE_ACTION_SOURCE);
 }
 
 export interface BrowserOidcTrace {
@@ -435,7 +462,9 @@ export async function completeOidcLogin(
       for (let index = 0; index < actionLinkCount; index += 1) {
         const candidate = actionLink.nth(index);
         if (!await candidate.isVisible({ timeout: 250 }).catch(() => false)) continue;
-        await candidate.click({ timeout: 2_000, noWaitAfter: true });
+        // Same-node checked activation for anchors too: refusal and click are
+        // evaluated on the exact node that is activated.
+        if (!await clickNonPasswordOidcAction(candidate)) continue;
         clickedActionLink = true;
         break;
       }
@@ -456,8 +485,9 @@ export async function completeOidcLogin(
       await page.waitForTimeout(350);
     }
 
-    // On a stalled document, compare Chromium's pending asset with an
-    // independent HTTP client before fixture teardown removes the evidence.
+    // On the timeout path, compare Chromium's pending asset with an independent
+    // HTTP client before fixture teardown removes the evidence. A pending asset
+    // is a fact to compare, not proof of the cause of the timeout.
     try {
       const asset = new URL('/app/assets/main.js', options.baseUrl);
       const response = await fetch(asset, { signal: AbortSignal.timeout(3_000), cache: 'no-store' });
@@ -469,13 +499,41 @@ export async function completeOidcLogin(
     const visibleText = await page.locator('body').innerText({ timeout: 1_000 })
       .then((value) => value.replace(/\s+/gu, ' ').trim().slice(0, 240))
       .catch(() => '<unavailable>');
-    const callbackDebug = await page.evaluate(() => ({
-      params: [...new URL(window.location.href).searchParams.keys()],
-      storageKeys: Object.keys(window.sessionStorage).filter((key) => key.startsWith('xpod.auth.')),
-      completion: Object.keys(window.sessionStorage)
-        .filter((key) => key.startsWith('xpod.auth.callback.completed.'))
-        .map((key) => window.sessionStorage.getItem(key)),
-    })).catch(() => ({ params: [], storageKeys: [], completion: [] }));
+    // Read-only context for the timeout error: document identity plus the
+    // resource paths the page actually attempted (paths only, no queries). On
+    // its own it neither proves that the document committed nor that any
+    // particular request stalled.
+    type CallbackDebug = {
+      params: string[]; storageKeys: string[]; completion: string[];
+      readyState: string; visibility: string; resources: string[];
+    };
+    const callbackDebugFallback: CallbackDebug = {
+      params: [], storageKeys: [], completion: [],
+      readyState: '<unavailable>', visibility: '<unavailable>', resources: [],
+    };
+    const callbackDebug = await boundedProbe(page.evaluate((): CallbackDebug => {
+      const resources = performance.getEntriesByType('resource').map((entry) => {
+        const timing = entry as PerformanceResourceTiming & { responseStatus?: number };
+        let target = timing.name;
+        try {
+          const url = new URL(timing.name);
+          target = url.origin === window.location.origin ? url.pathname : url.origin;
+        } catch {
+          target = '<invalid>';
+        }
+        return `${timing.initiatorType}:${target}:${Math.round(timing.duration)}ms:${timing.transferSize ?? 0}B:${timing.responseStatus ?? '?'}`;
+      });
+      return {
+        params: [...new URL(window.location.href).searchParams.keys()],
+        storageKeys: Object.keys(window.sessionStorage).filter((key) => key.startsWith('xpod.auth.')),
+        completion: Object.keys(window.sessionStorage)
+          .filter((key) => key.startsWith('xpod.auth.callback.completed.'))
+          .map((key) => window.sessionStorage.getItem(key) ?? ''),
+        readyState: document.readyState,
+        visibility: document.visibilityState,
+        resources,
+      };
+    }).catch(() => callbackDebugFallback), 2_000, callbackDebugFallback);
     throw new Error(
       `Solid OIDC browser login did not finish before timeout; submittedPassword=${submittedPassword}; currentPath=${safePath(page.url())}; trace=${JSON.stringify({
         authorizationRequestSeen: trace.authorizationRequestSeen,
@@ -490,7 +548,7 @@ export async function completeOidcLogin(
         authorizationRedirectUris: trace.authorizationRedirectUris.map((value) => {
           try { return safeNetworkPath(new URL(value)); } catch { return '<invalid>'; }
         }),
-      })}; params=${callbackDebug.params.join(',')}; storageKeys=${callbackDebug.storageKeys.join(',')}; completion=${callbackDebug.completion.join(',')}; browserErrors=${browserErrors.join(' | ')}; network=${networkDiagnostics.join(' || ')}; visibleText=${visibleText}`,
+      })}; params=${callbackDebug.params.join(',')}; storageKeys=${callbackDebug.storageKeys.join(',')}; completion=${callbackDebug.completion.join(',')}; readyState=${callbackDebug.readyState}; visibility=${callbackDebug.visibility}; resources=${callbackDebug.resources.map(entry => entry.replace(/\/\.account\/interaction\/[^/:]+/gu, '/.account')).slice(-24).join(' || ')}; browserErrors=${browserErrors.join(' | ')}; network=${networkDiagnostics.join(' || ')}; visibleText=${visibleText}`,
     );
   } finally {
     page.off('request', observeRequest);

@@ -218,6 +218,9 @@ type ThreadParentResolution = CommandSurface & {
 type RunRecordSource = {
   id: string;
   task?: string | null;
+  delivery?: string | null;
+  trigger?: string | null;
+  input?: string | null;
   thread?: string | null;
   workspace?: string | null;
   status?: string | null;
@@ -336,6 +339,27 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       return (context as any)._cachedDb;
     }
 
+    // A single request fans out with Promise.all (for example `GET /api/tasks`); without an
+    // in-flight guard each concurrent caller would resolve the same credential and open its own
+    // Pod database. The promise is bound to this request's context and cleared once settled, so
+    // it never outlives the request or crosses credentials.
+    const inFlight = (context as any)._cachedDbPromise as Promise<any> | undefined;
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const opening = this.openDb(context);
+    (context as any)._cachedDbPromise = opening;
+    try {
+      return await opening;
+    } finally {
+      if ((context as any)._cachedDbPromise === opening) {
+        delete (context as any)._cachedDbPromise;
+      }
+    }
+  }
+
+  private async openDb(context: StoreContext): Promise<any> {
     const auth = context.auth as AuthContext | undefined;
 
     if (!auth || !isSolidAuth(auth) || !auth.webId) {
@@ -1075,6 +1099,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return {
       id: record.id || '',
       task: record.task || undefined,
+      delivery: record.delivery || undefined,
+      trigger: record.trigger || undefined,
+      input: record.input || undefined,
       thread: record.thread || '',
       workspace: record.workspace || '',
       status: (record.status || 'queued') as RunRecordData['status'],
@@ -1709,6 +1736,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     await db.insert(Message).values(messageRecord);
 
+    // Chat membership is the authoritative wake roster. Task surfaces have no Chat
+    // roster and fail closed; message mentions and request metadata cannot grant it.
+    const chat = this.serverGroupReconcilerService && role === MessageRole.USER && reconcilerOwner === 'server'
+      && resolvedThread.commandKind === 'chat'
+      ? await db.findById(Chat, this.buildChatResourceId(resolvedThread.surfaceId))
+      : undefined;
     await this.reconcileGroupUserMessage({
       thread: resolvedThread.thread,
       triggerMessage: this.resolveDataResource(itemResourceId, context),
@@ -1717,6 +1750,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       content,
       reconcilerOwner,
       mentions,
+      participants: normalizeAgentUris(chat?.participants),
     });
 
     // Track this ID to avoid cache timing issues in saveItem
@@ -1731,6 +1765,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     content: string;
     reconcilerOwner: ReconcilerOwner;
     mentions?: string[];
+    participants?: string[];
   }): Promise<void> {
     if (!this.serverGroupReconcilerService || input.role !== MessageRole.USER) {
       return;
@@ -1744,6 +1779,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         content: input.content,
         reconcilerOwner: input.reconcilerOwner,
         mentions: input.mentions,
+        participants: input.participants,
       });
     } catch (error) {
       this.logger.warn(`Failed to enqueue ChatKit group Reconciler wake: ${error}`);
@@ -1793,13 +1829,17 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       createdAt: item.created_at,
     });
 
-    // 如果是最近创建的消息，使用直接 PATCH 更新（避免 drizzle-solid UPDATE 的 bug）
+    const values: Record<string, unknown> = { content };
+    if (status !== null) values.status = status;
+    if (metadata !== null) values.metadata = metadata;
+
+    // 如果是最近创建的消息，其 RDF 已由 addThreadItem 写入，直接条件更新即可
     const wasRecentlyCreated = this.recentlyCreatedIds.has(itemResourceId);
     if (wasRecentlyCreated) {
       this.recentlyCreatedIds.delete(itemResourceId);
       item.id = itemResourceId;
       item.thread_id = resolvedThread.threadId;
-      await this.directPatchMessage(context, itemResourceId, content, status, metadata);
+      await this.updateConditionalMessage(context, itemResourceId, values);
       return;
     }
 
@@ -1809,10 +1849,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     const existing = existingItems.length > 0 ? existingItems[0] : null;
 
     if (existing) {
-      // 使用直接 PATCH 更新
       item.id = itemResourceId;
       item.thread_id = resolvedThread.threadId;
-      await this.directPatchMessage(context, existing.id, content, status, metadata);
+      await this.updateConditionalMessage(context, existing.id, values);
     } else {
       // Create new record
       await this.addThreadItem(thread, item, context);
@@ -1820,83 +1859,37 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   }
 
   /**
-   * 直接使用 SPARQL UPDATE PATCH 更新消息内容
-   * 避免 drizzle-solid UPDATE 的 bug
+   * Conditionally update a Message through the shared strong-ETag serializer.
+   *
+   * The previous hand-rolled SPARQL UPDATE wrote `metadata` as a flat literal and
+   * never updated the inline child node, so nested metadata (protocols/arguments/
+   * output with quotes) became invalid JSON on the Pod and was lost on reload. See
+   * docs/issues/chatkit-metadata-roundtrip.md. This reuses the ORM INSERT serializer
+   * (which emits the correct nested child triples) inside the existing
+   * `updateConditionalResource` document boundary.
    */
-  private async directPatchMessage(
+  private async updateConditionalMessage(
     context: StoreContext,
     messageResourceId: string,
-    content: string,
-    status: string | null,
-    metadata: Record<string, unknown> | null = null,
+    values: Record<string, unknown>,
   ): Promise<void> {
-    // 使用缓存的 fetch 和 webId（由 getDb 时创建的 session）
-    const cachedFetch = (context as any)._cachedFetch as typeof fetch | undefined;
-
-    if (!cachedFetch) {
-      throw new Error('No cached session for direct PATCH - call getDb first');
-    }
-
-    const messageResource = this.resolveDataResource(messageResourceId, context);
-    const hashIndex = messageResource.lastIndexOf('#');
-    const resourceUrl = hashIndex >= 0 ? messageResource.slice(0, hashIndex) : messageResource;
-
-    // 构建 SPARQL UPDATE：删除旧值，插入新值
-    const deletePatterns: string[] = [];
-    const insertTriples: string[] = [];
-
-    // 转义特殊字符
-    const escapeForSparql = (value: string): string => {
-      const hasQuotes = value.includes('"');
-      const hasNewlines = value.includes('\n') || value.includes('\r');
-
-      if (hasQuotes || hasNewlines) {
-        // 使用三引号
-        let escaped = value;
-        escaped = escaped.replace(/"""/g, '"\\"\\""');
-        if (escaped.endsWith('"')) {
-          const match = escaped.match(/"*$/);
-          const trailingQuotes = match ? match[0].length : 0;
-          if (trailingQuotes > 0) {
-            escaped = escaped.slice(0, -trailingQuotes) + '\\"'.repeat(trailingQuotes);
-          }
+    const db = await this.getDb(context);
+    const iri = this.resolveDataResource(messageResourceId, context);
+    await updateConditionalResource<void>({
+      iri, fetch: this.runDocumentFetch(context), columns: Message.columns,
+      serialize: insert => db.insert(Message).values({ id: messageResourceId, ...insert }).toSPARQL().query,
+      update: quads => {
+        // The ORM serializer applies column defaults (role/createdAt). Carry the existing
+        // values so they are replaced in place rather than appended as a second value.
+        const stable = { ...values };
+        for (const field of ['role', 'createdAt'] as const) {
+          const predicate = Message.columns[field].options.predicate;
+          const current = predicate ? resourceLiteral(quads, iri, predicate) : undefined;
+          if (current !== undefined) stable[field] = current;
         }
-        return `"""${escaped}"""`;
-      }
-      return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-    };
-
-    // Content 更新
-    deletePatterns.push(`<${messageResource}> <http://rdfs.org/sioc/ns#content> ?oldContent .`);
-    insertTriples.push(`<${messageResource}> <http://rdfs.org/sioc/ns#content> ${escapeForSparql(content)} .`);
-
-    // Status 更新
-    if (status) {
-      deletePatterns.push(`<${messageResource}> <https://undefineds.co/ns#messageStatus> ?oldStatus .`);
-      insertTriples.push(`<${messageResource}> <https://undefineds.co/ns#messageStatus> "${status}" .`);
-    }
-
-    if (metadata) {
-      deletePatterns.push(`<${messageResource}> <https://undefineds.co/ns#metadata> ?oldMetadata .`);
-      insertTriples.push(`<${messageResource}> <https://undefineds.co/ns#metadata> ${escapeForSparql(JSON.stringify(metadata))} .`);
-    }
-
-    const sparql = `
-DELETE { ${deletePatterns.join(' ')} }
-INSERT { ${insertTriples.join(' ')} }
-WHERE { ${deletePatterns.join(' ')} }
-    `.trim();
-
-    const response = await cachedFetch(resourceUrl, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/sparql-update' },
-      body: sparql,
+        return { result: undefined, values: stable };
+      },
     });
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`Direct PATCH failed: ${response.status} ${response.statusText} - ${text}`);
-    }
   }
 
   private async directDeleteMessage(
@@ -2021,6 +2014,9 @@ WHERE { ${deletePatterns.join(' ')} }
   private runValues(run: RunRecordData): Record<string, unknown> {
     return {
       task: run.task || null,
+      delivery: run.delivery || null,
+      trigger: run.trigger || null,
+      input: run.input || null,
       thread: run.thread,
       workspace: run.workspace,
       status: run.status,

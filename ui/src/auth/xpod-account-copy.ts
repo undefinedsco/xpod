@@ -70,7 +70,7 @@ export const xpodConsentCopy = {
   tryAgain: '重试',
   dismiss: '关闭',
   restoring: '正在恢复授权…',
-  applicationFallback: '应用',
+  applicationFallback: '这个应用',
   title: '批准访问',
   description: (clientName: string) => `${clientName} 请求访问你的账号数据。`,
   webIdLabel: 'WebID',
@@ -95,11 +95,16 @@ export const xpodConsentCopy = {
   continueLabel: '继续',
   retryLabel: '重试',
   cancelLabel: '取消',
-  // 授权页缺 Pod 的出口（设计第二部分 §4.1 / U06）：授权流程不代用户创建，
-  // 只说明原因并给出明确去向。
+  // 授权页缺 Pod 的出口（设计第二部分 §4.1 / U06）：授权流程仍然不代用户创建，
+  // 创建只在用户显式点击主操作后发生；说明原因，并给出创建、管理与拒绝三个出口。
   missingPodTitle: '还没有可用的存储空间',
   missingPodDescription: '批准访问前需要一个属于当前身份的存储空间。请先在 Pod 管理中创建或绑定，再回到这里继续授权。',
+  createPodAndContinueLabel: '创建存储空间并继续授权',
   goToPodManagementLabel: '前往 Pod 管理',
+  // WebID 名称的可用性提示（授权页“还没有 WebID”）：只说名称，不说 Pod。
+  webIdNameChecking: '正在检查名称…',
+  webIdNameAvailable: '可以使用',
+  webIdNameTaken: '这个名称已被占用',
 } as const;
 
 export const xpodFirstPodCopy = {
@@ -128,6 +133,8 @@ export const xpodRegistrationCopy = {
   usernameCharset: 'Pod 名称只能包含小写字母、数字和连字符',
   usernameHyphen: 'Pod 名称不能以连字符开头或结尾',
   usernameUnavailable: '暂时无法检查 Pod 名称，请重试。',
+  usernameChecking: '正在检查 Pod 名称…',
+  usernameAvailable: 'Pod 名称可用，可以创建。',
   emailAlreadyRegistered: '该邮箱已注册，请登录或重置密码。',
   emailAlreadyRegisteredPasswordMismatch: '该邮箱已注册，但密码不正确，请登录或重置密码。',
   usernameAlreadyTaken: 'Pod 名称已被占用。账号已创建，请登录后换一个名称。',
@@ -176,7 +183,7 @@ export const xpodConsentErrors = {
 
 export const xpodFirstPodErrors = {
   checkFailed: '无法检查存储空间状态，请重试。',
-  accountIdentityMissing: '当前账号信息不完整，无法自动准备本机存储空间。',
+  accountIdentityMissing: '当前账号信息不完整，暂时无法创建 Pod。请刷新后重试。',
   createEndpointMissing: '找不到创建 Pod 的接口，请刷新后重试。',
   cloudRouteUnavailable: '本机 Xpod 还没有和 Cloud 打通，暂时不能准备存储空间。请保持 Xpod 运行，稍后重试。',
   storageCreateFailed: '无法创建存储空间，请重试。',
@@ -192,4 +199,126 @@ export function safeXpodRecoveryMessage(status?: number): string {
 export function safeXpodResetMessage(status?: number): string {
   if (status === 400 || status === 404) return '重置链接无效或已过期。';
   return '无法重设密码，请重试。';
+}
+
+/**
+ * The Account document copy. Xpod ships zh-CN as the default; `en` is only used
+ * when the host explicitly selects it, so the shared sign-in windows and the
+ * Account page stay on one locale policy.
+ */
+export type XpodAccountPageLocale = 'zh-CN' | 'en';
+
+const ACCOUNT_PAGE_LOCALE_KEY = 'xpod.account.locale';
+
+export function resolveXpodAccountPageLocale(explicit?: string | null): XpodAccountPageLocale {
+  if (explicit === 'en' || explicit === 'zh-CN') return explicit;
+  try {
+    if (window.localStorage.getItem(ACCOUNT_PAGE_LOCALE_KEY) === 'en') return 'en';
+  } catch {
+    // Storage unavailable: fall back to the default locale.
+  }
+  return 'zh-CN';
+}
+
+const accountPageCopy = {
+  'zh-CN': {
+    serviceName: '账号服务',
+    brandName: 'Xpod',
+    dashboardTitle: '账号总览',
+    about: '关于',
+    signOut: '退出登录',
+    authorizationPendingTitle: '等待授权',
+    authorizationPendingLead: '有应用正在等待你的授权',
+    continueAuthorization: '继续授权',
+    cancelAuthorization: '取消授权',
+    cancelAuthorizationFailed: '取消授权失败，请重试。',
+    authorizationUnavailable: '当前授权已失效，请回到应用重新发起。',
+    storageTitle: '存储空间',
+    storageLead: '你的个人数据存储（Pod）。这里的数据由你拥有和控制。',
+    managePods: '管理 Pod',
+    noPodOnDevice: '这台设备还没有 Pod。创建一个即可在这里存储数据。',
+    noPodsFound: '还没有 Pod。创建一个即可开始。',
+    podLabel: 'Pod',
+    deletePod: '删除 Pod',
+    identityTitle: '身份',
+    identityLead: '你的去中心化标识（WebID）。这是你在 Solid 网络上的身份。',
+    noWebIds: '还没有 WebID。先创建存储空间即可获得 WebID。',
+    credentialsTitle: 'Solid 客户端凭据',
+    credentialsLead: '供需要直接访问 Pod 的客户端使用的 Solid 凭据。Xpod API Key 在 AI 连接中管理。',
+    newCredential: '新建凭据',
+    credentialEndpointMissing: '尚未配置客户端凭据接口。',
+    credentialName: '凭据名称',
+    selectWebId: '选择 WebID',
+    cancel: '取消',
+    create: '创建',
+    creating: '正在创建…',
+    credentialCreated: '新的 Solid 客户端凭据已创建',
+    credentialCreatedLead: '请立即复制 Client ID 与 Client Secret。Secret 不会再次显示。',
+    clientId: 'Client ID',
+    clientSecret: 'Client Secret',
+    copyClientId: '复制 Client ID',
+    copyClientSecret: '复制 Client Secret',
+    done: '完成',
+    noCredentials: '还没有客户端凭据。',
+    revokeCredential: '吊销凭据',
+    securityTitle: '安全',
+    passwordLabel: '密码',
+    passwordLead: '更新你的账号密码',
+    changePassword: '修改密码',
+    closeError: '关闭错误提示',
+    deletePodConfirm: (pod: string) => `删除 Pod ${pod}？此操作无法撤销。`,
+    deleteCredentialConfirm: '删除这条凭据？此操作无法撤销。',
+  },
+  en: {
+    serviceName: 'Account service',
+    brandName: 'Xpod',
+    dashboardTitle: 'Account Dashboard',
+    about: 'About',
+    signOut: 'Sign out',
+    authorizationPendingTitle: 'Authorization Pending',
+    authorizationPendingLead: 'An application is waiting for your authorization',
+    continueAuthorization: 'Continue',
+    cancelAuthorization: 'Cancel authorization',
+    cancelAuthorizationFailed: 'Could not cancel the authorization. Try again.',
+    authorizationUnavailable: 'This authorization is no longer valid. Start again from the application.',
+    storageTitle: 'Storage',
+    storageLead: 'Your personal data stores (Pods). You own and control all data stored here.',
+    managePods: 'Manage Pods',
+    noPodOnDevice: 'This device has no Pod yet. Create one to store data here.',
+    noPodsFound: 'No Pods found. Create one to get started.',
+    podLabel: 'Pod',
+    deletePod: 'Delete Pod',
+    identityTitle: 'Identity',
+    identityLead: 'Your unique decentralized identifiers (WebIDs). This is your identity on the Solid network.',
+    noWebIds: 'No WebIDs found. Create a Pod first to get a WebID.',
+    credentialsTitle: 'Solid Client Credentials',
+    credentialsLead: 'Solid credentials for clients that need direct Pod access. Xpod API Keys are managed in AI Connections.',
+    newCredential: 'New Credential',
+    credentialEndpointMissing: 'Client credential endpoint not configured.',
+    credentialName: 'Credential Name',
+    selectWebId: 'Select WebID',
+    cancel: 'Cancel',
+    create: 'Create',
+    creating: 'Creating...',
+    credentialCreated: 'New Solid Client Credential Created',
+    credentialCreatedLead: 'Copy the Client ID and Client Secret now. The secret will not be shown again.',
+    clientId: 'Client ID',
+    clientSecret: 'Client Secret',
+    copyClientId: 'Copy Client ID',
+    copyClientSecret: 'Copy Client Secret',
+    done: 'Done',
+    noCredentials: 'No client credentials found.',
+    revokeCredential: 'Revoke Credential',
+    securityTitle: 'Security',
+    passwordLabel: 'Password',
+    passwordLead: 'Update your account password',
+    changePassword: 'Change Password',
+    closeError: 'Dismiss error',
+    deletePodConfirm: (pod: string) => `Delete pod ${pod}? This cannot be undone.`,
+    deleteCredentialConfirm: 'Delete this credential? This cannot be undone.',
+  },
+} as const;
+
+export function xpodAccountDashboardCopy(locale: XpodAccountPageLocale = 'zh-CN') {
+  return accountPageCopy[locale];
 }

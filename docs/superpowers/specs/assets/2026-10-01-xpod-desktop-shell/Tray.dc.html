@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>托盘</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="position: relative; width: 600px; height: 600px; box-sizing: border-box; background: #E6E1D8; font-family: -apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC',sans-serif; color: #1D1B18; overflow: hidden">
+<div style="height: 28px; display: flex; align-items: center; justify-content: flex-end; gap: 14px; padding: 0 14px; background: rgba(251, 250, 247, 0.85); border-bottom: 1px solid #D5CFC4; font-size: 13px">
+<span style="color: #655D53">[其他菜单栏图标]</span>
+<span aria-label="Xpod 托盘图标" style="position: relative; width: 26px; height: 22px; border-radius: 5px; background: {{iconBg}}; display: flex; align-items: center; justify-content: center">
+<svg width="16" height="16" viewBox="0 0 100 100" aria-hidden="true"><g fill="{{iconFill}}"><path d="M31 24H52V45H73V73Q73 76 70 76H31Q28 76 28 73V27Q28 24 31 24Z"></path><path d="M58 24L76 39H58Z"></path></g></svg>
+<sc-if value="{{iconBadge}}" hint-placeholder-val="{{no}}"><span style="position: absolute; right: 2px; bottom: 2px; width: 6px; height: 6px; border-radius: 50%; background: #8A6A12"></span></sc-if>
+</span>
+<span>10:24</span>
+</div>
+
+<sc-if value="{{menu}}" hint-placeholder-val="{{yes}}">
+<div role="menu" aria-label="Xpod" style="position: absolute; right: 40px; top: 32px; width: 280px; box-sizing: border-box; padding: 5px; background: rgba(251, 250, 247, 0.97); border: 1px solid #D5CFC4; border-radius: 10px; box-shadow: 0 10px 30px rgba(43, 38, 33, 0.22); display: flex; flex-direction: column; font-size: 13px">
+<div role="menuitem" aria-label="复制 WebID pod.undefineds.co/xiaolin" style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px">
+<span aria-hidden="true" style="width: 28px; height: 28px; border-radius: 7px; background: #563E84; color: #F7F4ED; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0">林</span>
+<span style="display: flex; flex-direction: column; min-width: 0; flex-grow: 1"><span style="font-weight: 600">小林</span><span style="font-size: 11px; color: #655D53; font-family: ui-monospace, 'SF Mono', Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">pod.undefineds.co/xiaolin</span></span>
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#87837D" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink: 0"><path d="M9 9h11v11H9zM5 15H4V4h11v1"></path></svg>
+</div>
+<div style="display: flex; align-items: center; gap: 6px; padding: 2px 10px 6px 44px; font-size: 12px; color: #655D53"><span aria-hidden="true" style="{{dot}}"></span>{{head}}</div>
+<div style="height: 1px; background: #DFDBD5; margin: 0 8px 4px"></div>
+<sc-for list="{{items}}" as="it" hint-placeholder-count="10">
+<sc-if value="{{it.sep}}" hint-placeholder-val="{{no}}"><div style="height: 1px; background: #DFDBD5; margin: 4px 8px"></div></sc-if>
+<sc-if value="{{it.cap}}" hint-placeholder-val="{{no}}"><div style="display: flex; align-items: center; font-size: 11px; color: #87837D; padding: 4px 10px 2px 26px"><span style="flex-grow: 1">{{it.label}}</span><span style="color: #563E84">{{it.link}}</span></div></sc-if>
+<sc-if value="{{it.row}}" hint-placeholder-val="{{yes}}"><div role="menuitem" style="{{it.style}}"><span style="width: 14px; color: {{it.markColor}}">{{it.mark}}</span><span style="flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{it.label}}</span><span style="color: #87837D">{{it.key}}</span></div></sc-if>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{sub2}}" hint-placeholder-val="{{no}}">
+<div role="menu" aria-label="阿杰的访问请求" style="position: absolute; right: 318px; top: 106px; width: 200px; box-sizing: border-box; padding: 5px; background: rgba(251, 250, 247, 0.97); border: 1px solid #D5CFC4; border-radius: 10px; box-shadow: 0 10px 30px rgba(43, 38, 33, 0.22); display: flex; flex-direction: column; font-size: 13px">
+<div role="menuitem" style="height: 24px; display: flex; align-items: center; padding: 0 10px; border-radius: 5px; background: #563E84; color: #F7F4ED">允许读取</div>
+<div role="menuitem" style="height: 24px; display: flex; align-items: center; padding: 0 10px">拒绝</div>
+<div style="height: 1px; background: #DFDBD5; margin: 4px 8px"></div>
+<div role="menuitem" style="height: 24px; display: flex; align-items: center; padding: 0 10px">在 Xpod 里处理</div>
+</div>
+</sc-if>
+
+<sc-if value="{{quit}}" hint-placeholder-val="{{no}}">
+<div role="alertdialog" aria-labelledby="q-t" style="position: absolute; left: 150px; top: 150px; width: 300px; box-sizing: border-box; padding: 20px; background: #FBFAF7; border-radius: 12px; box-shadow: 0 16px 40px rgba(43, 38, 33, 0.3); display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center">
+<svg width="48" height="48" viewBox="0 0 100 100" aria-hidden="true"><rect x="10" y="10" width="80" height="80" rx="18" fill="#563E84"></rect><g fill="#F7F4ED"><path d="M31 24H52V45H73V73Q73 76 70 76H31Q28 76 28 73V27Q28 24 31 24Z"></path><path d="M58 24L76 39H58Z"></path></g></svg>
+<span id="q-t" style="font-size: 14px; font-weight: 600">退出 Xpod？</span>
+<span style="font-size: 12px; color: #2B2621; line-height: 18px">这台设备上的 Xpod 会一起停止，手机和其他设备暂时访问不到。Xpod 云端上的 Pod 不受影响。</span>
+<div style="display: flex; flex-direction: column; gap: 6px; width: 100%; margin-top: 4px">
+<button type="button" style="height: 30px; border: 0; border-radius: 7px; background: #563E84; color: #F7F4ED; font-size: 13px; font-family: inherit">退出并停止</button>
+<button type="button" style="height: 30px; border: 0; border-radius: 7px; background: #E9E4E4; color: #2B2621; font-size: 13px; font-family: inherit">取消</button>
+</div>
+</div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"scenario":{"editor":"enum","options":["ok","issue","stopped","quit"],"default":"ok"},"$preview":{"width":600,"height":600}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const sc = this.props.scenario ?? 'ok';
+    // Electron tray menus are native: no inline buttons, so an actionable item opens a submenu.
+    const row = (label, o) => Object.assign({ sep: false, cap: false, row: true, label, mark: '', markColor: '#563E84', key: '', strong: false, hl: false, dim: false }, o || {});
+    const cap = (label, link) => ({ sep: false, cap: true, row: false, label, link: link || '' });
+    const sep = { sep: true, cap: false, row: false };
+    const H = {
+      ok: ['运行中', '', '#2F6B55'],
+      issue: ['仅本机可用', '', '#8A6A12'],
+      stopped: ['已停止', '', ''],
+      quit: ['运行中', '', '#2F6B55']
+    }[sc];
+    const tail = (stopped) => [sep, stopped ? row('启动 Xpod', { strong: true }) : row('停止 Xpod'), row('检查更新…'), row('关于 Xpod'), row(stopped ? '退出 Xpod' : '退出 Xpod…', { key: '⌘Q' })];
+    let items;
+    if (sc === 'issue') {
+      items = [
+        cap('需要你处理 · 5', '全部查看 ›'),
+        row('阿杰请求读取「书店 / 维护成本」', { mark: '●', key: '▸', hl: true }),
+        row('每天整理收件箱：等你确认', { mark: '●', key: '去确认 ›' }),
+        row('每周汇总维护成本：运行失败', { mark: '●', markColor: '#8A6A12', key: '去修复 ›' }),
+        row('还有 2 条', { dim: true, key: '全部查看 ›' }),
+        cap('进行中', ''),
+        row('重建索引 · 40%', { dim: true, key: '查看 ›' }),
+        sep,
+        row('打开 Xpod', { key: '⌘O' }),
+        sep,
+        row('重启以安装 Xpod 0.4.20', { strong: true }),
+        row('停止 Xpod'), row('关于 Xpod'), row('退出 Xpod…', { key: '⌘Q' })
+      ];
+    } else {
+      items = sc === 'stopped'
+        ? [row('启动 Xpod', { strong: true }), row('打开 Xpod', { key: '⌘O' }), sep, row('检查更新…'), row('关于 Xpod'), row('退出 Xpod', { key: '⌘Q' })]
+        : [row('打开 Xpod', { key: '⌘O' })].concat(tail(false));
+    }
+    items = items.map((it) => it.row ? Object.assign(it, { style: 'display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px 0 6px; border-radius: 5px; ' + (it.hl ? 'background: #563E84; color: #F7F4ED; ' : '') + (it.strong ? 'font-weight: 600; color: #563E84; ' : '') + (it.dim ? 'color: #655D53; ' : ''), markColor: it.hl ? '#F7F4ED' : it.markColor }) : it);
+    return {
+      yes: true, no: false,
+      head: H[0], sub: H[1], items,
+      dot: 'width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; ' + (H[2] ? 'background: ' + H[2] : 'border: 1.5px solid #87837D; box-sizing: border-box'),
+      menu: sc !== 'quit', quit: sc === 'quit', sub2: sc === 'issue',
+      iconBg: sc === 'quit' ? 'transparent' : 'rgba(43, 38, 33, 0.12)',
+      iconFill: sc === 'stopped' ? '#87837D' : '#1D1B18',
+      iconBadge: sc === 'issue'
+    };
+  }
+}
+</script>
+</body>
+</html>

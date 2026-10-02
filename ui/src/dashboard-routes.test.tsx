@@ -57,7 +57,7 @@ describe('local desktop routes', () => {
   });
   it('keeps device/settings navigation usable while a private applet is gated', async () => {
     renderRoute('/tasks');
-    expect(await screen.findByRole('button', { name: '登录' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '使用 Xpod 账号登录' })).toBeTruthy();
     expect(screen.queryByText('Private task data')).toBeNull();
     fireEvent.click(screen.getByRole('link', { name: '这台设备' }));
     expect(await screen.findByText('Local network controls')).toBeTruthy();
@@ -69,13 +69,13 @@ describe('local desktop routes', () => {
 describe.each([['/tasks', 'Private task data'], ['/ai-connections', 'Private AI connections']])('WebID applet %s', (path, content) => {
   it.each([false, true])('does not admit Account-only access (Account authenticated: %s)', async (accountAuthenticated) => {
     renderRoute(path, accountAuthenticated);
-    expect(await screen.findByRole('button', { name: '登录' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '使用 Xpod 账号登录' })).toBeTruthy();
     expect(screen.queryByText(content)).toBeNull();
     expect(screen.getByRole('link', { name: '这台设备' })).toBeTruthy();
   });
   it('admits a ready WebID and Pod with no Account session', async () => {
     renderRoute(path, false, true);
     expect(await screen.findByText(content)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '登录' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '使用 Xpod 账号登录' })).toBeNull();
   });
 });

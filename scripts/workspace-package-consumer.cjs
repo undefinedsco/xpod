@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { packWorkspacePackages } = require('./workspace-package-pack.cjs');
 
@@ -71,12 +72,81 @@ function consume(root = path.resolve(__dirname, '..'), { tarballs } = {}) {
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }
 module.exports = { PACKAGES, exportEntries, verifyInstalled, consume };
-function consumeLocal(root = path.resolve(__dirname, '..')) {
+
+// The `--local` path packs the workspace tarballs exactly once, consumes those
+// exact files in a clean Bun consumer, and only after every consumption/export/
+// type/CSS check passes copies the still-present tarballs and writes evidence.
+// Default `--local` callers pass no options and keep the previous behaviour.
+function emitWorkspaceConsumerEvidence(tarballs, options) {
+  const packages = Object.entries(tarballs).map(([ packageName, tarballPath ]) => {
+    const bytes = fs.readFileSync(tarballPath);
+    return {
+      packageName,
+      name: path.basename(tarballPath),
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      size: bytes.length,
+    };
+  }).sort((left, right) => left.packageName.localeCompare(right.packageName));
+
+  if (options.archiveDir) {
+    const destination = path.resolve(options.archiveDir);
+    fs.mkdirSync(destination, { recursive: true });
+    for (const entry of packages) {
+      fs.copyFileSync(tarballs[entry.packageName], path.join(destination, entry.name));
+    }
+  }
+
+  if (options.evidencePath) {
+    if (!/^[0-9a-f]{40}$/.test(String(options.sourceSha ?? ''))) {
+      throw new Error('workspace consumer evidence requires a 40-hex source SHA');
+    }
+    const evidencePath = path.resolve(options.evidencePath);
+    fs.mkdirSync(path.dirname(evidencePath), { recursive: true });
+    fs.writeFileSync(evidencePath, `${JSON.stringify({
+      schemaVersion: 1,
+      kind: 'workspace-consumer-acceptance',
+      ok: true,
+      sourceSha: options.sourceSha,
+      packages,
+    }, null, 2)}\n`);
+  }
+
+  return packages;
+}
+
+function consumeLocal(root = path.resolve(__dirname, '..'), options = {}) {
   const parent = path.join(root, '.test-data', 'workspace-package-consumer');
   fs.mkdirSync(parent, { recursive: true });
   const directory = fs.mkdtempSync(path.join(parent, 'pack-'));
-  try { consume(root, { tarballs: packWorkspacePackages(root, PACKAGES, directory) }); }
-  finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  try {
+    const tarballs = packWorkspacePackages(root, PACKAGES, directory);
+    // Throws before evidence if any consumer/export/type/CSS check fails.
+    consume(root, { tarballs });
+    return emitWorkspaceConsumerEvidence(tarballs, options);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 }
 module.exports.consumeLocal = consumeLocal;
-if (require.main === module) process.argv.includes('--local') ? consumeLocal() : consume();
+module.exports.emitWorkspaceConsumerEvidence = emitWorkspaceConsumerEvidence;
+
+function parseLocalOptions(argv) {
+  const options = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--local') continue;
+    const value = argv[index + 1];
+    if (!value || value.startsWith('--')) throw new Error(`${arg} requires a value`);
+    if (arg === '--source-sha') options.sourceSha = value;
+    else if (arg === '--archive-dir') options.archiveDir = value;
+    else if (arg === '--evidence') options.evidencePath = value;
+    else throw new Error(`unknown argument: ${arg}`);
+    index += 1;
+  }
+  return options;
+}
+
+if (require.main === module) {
+  if (process.argv.includes('--local')) consumeLocal(path.resolve(__dirname, '..'), parseLocalOptions(process.argv.slice(2)));
+  else consume();
+}

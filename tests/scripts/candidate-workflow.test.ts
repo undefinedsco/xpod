@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { parseDocument } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -370,6 +371,99 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('allow-incomplete --chat');
   });
 
+  it('uploads diagnostic Task evidence on failure without relaxing the actual acceptance gate', async () => {
+    const workflow = await loadWorkflow();
+    const steps = workflow.jobs.deploy_and_accept.steps;
+    const project = steps.find((step: any) => step.name === 'Project safe Task approval evidence');
+    const upload = steps.find((step: any) => step.name === 'Upload safe Task approval evidence');
+    expect(project).toBeDefined();
+    expect(project.if).toBe('always()');
+    expect(upload.if).toBe('always()');
+    expect(upload.uses).toBe('actions/upload-artifact@v4');
+    expect(upload.with).toMatchObject({
+      name: 'task-approval-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
+      path: '${{ runner.temp }}/task-approval-evidence.json',
+      'if-no-files-found': 'warn',
+    });
+    const live = steps.find((step: any) => step.name === 'Live Gateway login and Chat acceptance');
+    expect(live['continue-on-error']).toBeUndefined();
+    expect(live.run).toContain('XPOD_LIVE_TASK_APPROVAL=1');
+    expect(live.run).toContain("['task-approval', 'taskApproval']");
+    expect(live.run).toContain('layer?.ok !== true');
+  });
+
+  async function projectTaskEvidence(contents?: string) {
+    const workflow = await loadWorkflow();
+    const step = workflow.jobs.deploy_and_accept.steps.find((entry: any) => entry.name === 'Project safe Task approval evidence');
+    expect(step).toBeDefined();
+    const script = step.run.match(/node - <<'NODE'\n([\s\S]*?)\nNODE/)[1];
+    const parent = path.join(repoRoot, '.test-data', 'task-evidence-contract');
+    await mkdir(parent, { recursive: true });
+    const directory = await mkdtemp(path.join(parent, 'case-'));
+    try {
+      const input = path.join(directory, '.test-data', 'acceptance');
+      await mkdir(input, { recursive: true });
+      if (contents !== undefined) await writeFile(path.join(input, 'live-gateway-login-chat-local.json'), contents);
+      const output = execFileSync(process.execPath, ['-e', script], {
+        cwd: directory, encoding: 'utf8',
+        env: { ...process.env, RUNNER_TEMP: directory, GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2' },
+      });
+      const evidence = await readFile(path.join(directory, 'task-approval-evidence.json'), 'utf8').catch(() => undefined);
+      return { output, evidence };
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  it('executes the projection with a strict allowlist, retaining all three Task cases but no identifiers or free text', async () => {
+    const secret = 'synthetic-private-value';
+    const result = await projectTaskEvidence(JSON.stringify({
+      webId: secret, gateway: secret, modelIds: [secret], apiKey: secret,
+      taskApproval: {
+        ok: true, failure: secret,
+        cases: ['approved', 'rejected', 'stopped'].map(kind => ({
+          kind, ok: true, queuedAck: true, approvalPending: true, sessionPaused: true,
+          sessionCompleted: true, sameRun: true, stableAfterDuplicateOrStop: true,
+          decision: kind === 'stopped' ? secret : kind,
+          terminalStatus: kind === 'approved' ? 'completed' : 'cancelled',
+          taskId: secret, runId: secret, error: secret, toolArguments: secret,
+          markerMatches: kind === 'approved', markerAbsent: kind !== 'approved', duplicateResume: kind !== 'stopped',
+        })).concat([{ kind: secret, ok: true }] as any),
+        cleanup: { ok: true, tasksPaused: 3, runsStopped: 0, sessionsTerminal: 3, grantRevoked: true, credential: secret },
+      },
+    }));
+    expect(result.evidence).toBeDefined();
+    expect(result.evidence).not.toContain(secret);
+    expect(result.output).not.toContain(secret);
+    const evidence = JSON.parse(result.evidence!);
+    expect(evidence).toMatchObject({ schemaVersion: 1, sourceSha: 'a'.repeat(40), runId: '123', runAttempt: '2', ok: true, failurePresent: true });
+    expect(evidence.cases.map((row: any) => row.kind)).toEqual(['approved', 'rejected', 'stopped']);
+    expect(evidence.cases[0]).toMatchObject({ terminalStatus: 'completed', markerMatches: true, duplicateResume: true });
+    expect(evidence.cases[2]).toMatchObject({ terminalStatus: 'cancelled', markerAbsent: true, stableAfterDuplicateOrStop: true });
+    expect(evidence.cases[2].decision).toBeUndefined();
+    expect(evidence.cleanup).toEqual({ ok: true, tasksPaused: 3, runsStopped: 0, sessionsTerminal: 3, grantRevoked: true });
+  });
+
+  it('omits invalid field types instead of copying arbitrary payloads into evidence', async () => {
+    const result = await projectTaskEvidence(JSON.stringify({ taskApproval: {
+      ok: 'private payload', failure: false,
+      cases: [{ kind: 'approved', ok: false, queuedAck: 'private payload', decision: 'private payload', terminalStatus: 'private payload' }],
+      cleanup: { ok: false, grantRevoked: 'private payload', tasksPaused: -1, runsStopped: 'private payload', sessionsTerminal: 1.5 },
+    } }));
+    expect(result.evidence).not.toContain('private payload');
+    expect(JSON.parse(result.evidence!)).toMatchObject({
+      ok: false, failurePresent: false, cases: [{ kind: 'approved', ok: false }], cleanup: { ok: false },
+    });
+    expect(JSON.parse(result.evidence!).cleanup).toEqual({ ok: false });
+  });
+
+  it.each([undefined, '{private malformed input'])('warns safely when Task evidence is missing or unreadable (%s)', async contents => {
+    const result = await projectTaskEvidence(contents);
+    expect(result.evidence).toBeUndefined();
+    expect(result.output).toContain('::warning::');
+    expect(result.output).not.toContain('private malformed input');
+  });
+
   it('separates service checks from unified promotion evidence and records every blocking delivery check', async () => {
     const workflow = await loadWorkflow();
     const serviceText = jobRunText(workflow, 'deploy_and_accept');
@@ -380,6 +474,18 @@ describe('release candidate workflow', () => {
     const finalUpload = finalize.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
 
     expect(serviceText).not.toContain('release-acceptance-manifest.cjs create');
+    // The desktop job builds the app; it cannot see the service acceptance artifact or the
+    // image digest, so only the job that downloads them may freeze the manifest.
+    expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('release-acceptance-manifest.cjs create');
+    expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('release-acceptance-${{ github.sha }}');
+
+    const desktopUpload = workflow.jobs.build_desktop_rc.steps.find((step: any) =>
+      step.uses === 'actions/upload-artifact@v4' && step.with?.name?.startsWith('xpod-desktop-macos-'));
+    expect(desktopUpload.with.name).toBe('xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}');
+    expect(desktopUpload.with.path).toContain('desktop/release/*.zip');
+    expect(desktopUpload.with.path).toContain('desktop/release/*.dmg');
+    expect(desktopUpload.with['if-no-files-found']).toBe('error');
+
     expect(serviceUpload.with.name).toBe('release-service-acceptance-${{ github.sha }}');
     expect(serviceUpload.with.path).toBe('${{ runner.temp }}/checks.json');
     expect(finalize.needs).toEqual([
@@ -413,6 +519,27 @@ describe('release candidate workflow', () => {
     ]) {
       expect(`${serviceText}\n${finalizeText}`).toContain(check);
     }
+    // qlever-local and package-consumers must be verified from downloaded,
+    // source-bound evidence, never echoed as literals.
+    expect(finalizeText).toContain('scripts/release-gate-evidence.cjs verify-qlever-local');
+    expect(finalizeText).toContain('scripts/release-gate-evidence.cjs verify-package-consumers');
+    expect(finalizeText).toContain('qlever-local-check.json');
+    expect(finalizeText).toContain('package-consumer-check.json');
+    expect(finalizeText).not.toMatch(/['"]qlever-local['"]\s*:\s*['"]passed['"]/);
+    expect(finalizeText).not.toMatch(/['"]package-consumers['"]\s*:\s*['"]passed['"]/);
+    const finalizeArtifacts = finalize.steps
+      .filter((step: any) => step.uses === 'actions/download-artifact@v4')
+      .map((step: any) => step.with.name);
+    expect(finalizeArtifacts).toEqual(expect.arrayContaining([
+      'qlever-local-runtime-darwin-arm64-${{ github.sha }}',
+      'package-consumer-acceptance-${{ github.sha }}',
+    ]));
+    const desktopRunText = jobRunText(workflow, 'build_desktop_rc');
+    expect(desktopRunText).toContain('scripts/release-gate-evidence.cjs create-package-consumers');
+    const packageUpload = workflow.jobs.build_desktop_rc.steps.find((step: any) =>
+      step.uses === 'actions/upload-artifact@v4' && step.with?.name === 'package-consumer-acceptance-${{ github.sha }}');
+    expect(packageUpload.with['if-no-files-found']).toBe('error');
+    expect(packageUpload.with.path).toContain('package-consumer-evidence.json');
     expect(finalizeText).not.toContain('npm');
     expect(finalUpload.with.name).toBe('release-acceptance-${{ github.sha }}');
     expect(finalUpload.with.path).toBe('${{ runner.temp }}/release-acceptance.json');

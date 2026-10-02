@@ -115,7 +115,7 @@ describe('Xpod Xpod 密钥', () => {
 
     // Second section: the models the Xpod publishes, in the provider model-list anatomy.
     expect(screen.getByRole('heading', { name: '可用模型' })).toBeTruthy()
-    expect(screen.getByPlaceholderText('搜索模型...')).toBeTruthy()
+    expect(screen.getByPlaceholderText('搜索模型')).toBeTruthy()
     expect(screen.getByText('Xpod 模型目录尚未就绪')).toBeTruthy()
   })
 
@@ -198,11 +198,11 @@ describe('Xpod Xpod 密钥', () => {
     render(<AiGatewayKeysSection client={client()} gatewayModels={GATEWAY_MODELS} />)
     await screen.findByText('Work laptop', { exact: true })
 
-    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: 'glm' } })
+    fireEvent.change(screen.getByPlaceholderText('搜索模型'), { target: { value: 'glm' } })
     expect(screen.getByText('GLM 4.6')).toBeTruthy()
     expect(screen.queryByText('Kimi K2.5')).toBeNull()
 
-    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: '没有这个模型' } })
+    fireEvent.change(screen.getByPlaceholderText('搜索模型'), { target: { value: '没有这个模型' } })
     expect(screen.getByText('未找到匹配的模型')).toBeTruthy()
   })
 
@@ -432,6 +432,29 @@ describe('Xpod Xpod 密钥', () => {
     fireEvent.click(screen.getByRole('button', { name: '再建一个' }))
     expect(screen.getByRole('dialog', { name: '新建 Xpod 密钥' })).toBeTruthy()
     expect(screen.getByLabelText('Xpod 密钥 用途')).toHaveProperty('value', '')
+  })
+
+  it('returns focus to the create button after the dialog is cancelled or escaped', async () => {
+    // Real shared-ui Dialog primitive: the invoking control must be the Radix
+    // trigger so its focus is restored on close. A mock would not prove this.
+    render(<AiGatewayKeysSection client={client()} />)
+    await screen.findByText('Work laptop', { exact: true })
+    const trigger = screen.getByRole('button', { name: '新建 Xpod 密钥' })
+    expect(trigger.getAttribute('aria-haspopup')).toBe('dialog')
+
+    fireEvent.click(trigger)
+    expect(screen.getByRole('dialog', { name: '新建 Xpod 密钥' })).toBeTruthy()
+    await waitFor(() => expect(trigger.getAttribute('aria-expanded')).toBe('true'))
+
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+
+    fireEvent.click(trigger)
+    expect(screen.getByRole('dialog', { name: '新建 Xpod 密钥' })).toBeTruthy()
+    fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
 
   it('does not substitute Pod models when the Gateway catalog is unavailable', async () => {

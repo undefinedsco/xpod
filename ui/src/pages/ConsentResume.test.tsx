@@ -72,19 +72,20 @@ describe('ConsentPage remembered identity recovery', () => {
   it('navigates the native resume after manual WebID selection without fetching its code callback', async () => {
     const fetchMock = mockPicker({ entries: [binding] });
     renderConsent();
-    fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+    fireEvent.click(await screen.findByRole('button', { name: '允许' }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith(resumeLocation));
     expect(posts(fetchMock, pickUrl)).toHaveLength(1);
     expect(posts(fetchMock, pickUrl)[0][1]).toMatchObject({ redirect: 'manual' });
     expect(posts(fetchMock, consentUrl)).toHaveLength(0);
     expect(fetchMock.mock.calls.some(([input]) => String(input) === resumeLocation)).toBe(false);
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain('未能验证这个应用的来源');
+    expect(screen.queryByText(xpodConsentErrors.missingRedirect)).toBeNull();
   });
 
   it.each([undefined, '', '   ', 42])('rejects manual pick without a valid resume location: %s', async (location) => {
     const fetchMock = mockPicker({ entries: [binding] }, async () => json({ location }));
     renderConsent();
-    fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+    fireEvent.click(await screen.findByRole('button', { name: '允许' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodConsentErrors.missingRedirect));
     expect(posts(fetchMock, pickUrl)).toHaveLength(1);
     expect(posts(fetchMock, consentUrl)).toHaveLength(0);
@@ -102,7 +103,7 @@ describe('ConsentPage remembered identity recovery', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     renderConsent();
-    fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+    fireEvent.click(await screen.findByRole('button', { name: '允许' }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith(resumeLocation));
     const consentPosts = fetchMock.mock.calls.filter(([input, init]) => String(input) === consentUrl && init?.method === 'POST');
     expect(consentPosts).toHaveLength(1);
@@ -121,7 +122,7 @@ describe('ConsentPage remembered identity recovery', () => {
     });
     expect(posts(fetchMock, consentUrl)).toHaveLength(0);
     expect(fetchMock.mock.calls.some(([input]) => String(input) === resumeLocation)).toBe(false);
-    expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
   });
 
   it.each(['additional scope', 'explicit consent'])('shows real consent after identity recovery redirects for %s', async () => {
@@ -134,7 +135,7 @@ describe('ConsentPage remembered identity recovery', () => {
     // login-only resume hint. A new page load must wait for user approval.
     const consentFetch = mockPicker({ entries: [binding] });
     renderConsent();
-    expect(await screen.findByRole('button', { name: '批准' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '允许' })).toBeTruthy();
     expect(posts(consentFetch, pickUrl)).toHaveLength(0);
     expect(posts(consentFetch, consentUrl)).toHaveLength(0);
     expect(assign).toHaveBeenCalledTimes(1);
@@ -149,7 +150,7 @@ describe('ConsentPage remembered identity recovery', () => {
       });
       const fetchMock = mockPicker({ entries: [localBinding] });
       renderConsent();
-      expect(await screen.findByRole('button', { name: '批准' })).toBeTruthy();
+      expect(await screen.findByRole('button', { name: '允许' })).toBeTruthy();
       expect(posts(fetchMock, pickUrl)).toHaveLength(0);
       expect(posts(fetchMock, consentUrl)).toHaveLength(0);
       expect(assign).not.toHaveBeenCalled();
@@ -184,7 +185,7 @@ describe('ConsentPage remembered identity recovery', () => {
       const retry = await screen.findByRole('button', { name: '重试' });
       expect(posts(fetchMock, pickUrl)).toHaveLength(1);
       expect(posts(fetchMock, consentUrl)).toHaveLength(0);
-      expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
+      expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
       fireEvent.click(retry);
       await waitFor(() => expect(assign).toHaveBeenCalledWith(resumeLocation));
       expect(posts(fetchMock, pickUrl)).toHaveLength(2);
@@ -197,7 +198,7 @@ it('returns from automatic resume failure without automatically resuming the edi
   const fetchMock = mockPicker({ entries: [binding], resumeWebId: binding.webId }, async () => json({ message: 'unavailable' }, 503));
   renderConsent();
   fireEvent.click(await screen.findByRole('button', { name: '返回授权' }));
-  expect(await screen.findByRole('button', { name: '批准' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: '允许' })).toBeTruthy();
   expect(posts(fetchMock, pickUrl)).toHaveLength(1);
   expect(posts(fetchMock, consentUrl)).toHaveLength(0);
   expect(assign).not.toHaveBeenCalled();
@@ -208,7 +209,7 @@ it.each([{ message: 'Invalid OIDC interaction' }, { errorCode: 'E0002' }])('leav
   vi.stubGlobal('fetch', fetchMock);
   renderConsent();
   const safeReturn = await screen.findByRole('button', { name: '返回账号' });
-  expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
   expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
   expect(screen.queryByRole('button', { name: '取消授权' })).toBeNull();
   const requests = fetchMock.mock.calls.length;
@@ -264,7 +265,7 @@ it('treats an E0002-only cancellation response as expired and never replays canc
   fireEvent.click(await screen.findByRole('button', { name: '拒绝' }));
   const safeReturn = await screen.findByRole('button', { name: '返回账号' });
   expect(screen.queryByRole('button', { name: '重试取消' })).toBeNull();
-  expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
   expect(screen.queryByRole('button', { name: '取消授权' })).toBeNull();
   fireEvent.click(safeReturn);
   expect(assign).toHaveBeenCalledWith(new URL('/.account/', window.location.origin).href);
@@ -280,13 +281,13 @@ it('keeps both bindings editable and the manual selection after refreshing a fai
   store.begin({ id: 'editable-consent-retry', route: createXpodLoginRoute(window.location), authorizationSurface: 'redirect', discovery: 'strict' });
   const fetchMock = mockPicker({ entries: [firstBinding, other] }, async () => json({}, 503));
   renderConsent();
-  fireEvent.change(await screen.findByLabelText('身份与存储空间'), { target: { value: storageBindingKey(other) } });
-  fireEvent.click(screen.getByRole('button', { name: '批准' }));
+  fireEvent.change(await screen.findByLabelText('用哪个 WebID 登录？', { selector: 'select' }), { target: { value: storageBindingKey(other) } });
+  fireEvent.click(screen.getByRole('button', { name: '允许' }));
   const retry = await screen.findByRole('button', { name: '重试' });
   expect(posts(fetchMock, pickUrl)).toHaveLength(1);
   const reads = fetchMock.mock.calls.filter(([input, init]) => String(input) === consentUrl && !init?.method).length;
   fireEvent.click(retry);
-  const selector = await screen.findByLabelText('身份与存储空间') as HTMLSelectElement;
+  const selector = await screen.findByLabelText('用哪个 WebID 登录？', { selector: 'select' }) as HTMLSelectElement;
   expect(Array.from(selector.options, (option) => option.value)).toEqual(expect.arrayContaining([storageBindingKey(firstBinding), storageBindingKey(other)]));
   expect(selector.value).toBe(storageBindingKey(other));
   expect(fetchMock.mock.calls.filter(([input, init]) => String(input) === consentUrl && !init?.method)).toHaveLength(reads + 1);
@@ -302,10 +303,10 @@ it('keeps an entry-time selected storage scope fixed when multiple bindings exis
   });
   const fetchMock = mockPicker({ entries: [firstBinding, other] }, async () => json({}, 503));
   renderConsent();
-  fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+  fireEvent.click(await screen.findByRole('button', { name: '允许' }));
   fireEvent.click(await screen.findByRole('button', { name: '重试' }));
-  await screen.findByRole('button', { name: '批准' });
-  expect(screen.queryByLabelText('身份与存储空间')).toBeNull();
+  await screen.findByRole('button', { name: '允许' });
+  expect(screen.queryByLabelText('用哪个 WebID 登录？', { selector: 'select' })).toBeNull();
   expect(posts(fetchMock, pickUrl)).toHaveLength(1);
   expect(JSON.parse(String(posts(fetchMock, pickUrl)[0][1]?.body))).toMatchObject({ webId: firstBinding.webId });
   expect(posts(fetchMock, consentUrl)).toHaveLength(0);
@@ -326,7 +327,7 @@ it('does not create storage or replace a fixed entry binding when only another b
   renderConsent({ controls: { account: { username: 'alice', pod: '/.account/account/pod/' } } });
   await screen.findByRole('button', { name: '重试' });
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
-  expect(screen.queryByRole('button', { name: '批准' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
   expect(store.readSinglePending()?.selectedStorage).toMatchObject(firstBinding);
 });
 

@@ -89,6 +89,8 @@ export function registerTaskRoutes(server: ApiServer, options: TaskHandlerOption
     const task = await options.taskService.loadTask(idOf(request), context);
     const execution = await options.resolveExecutionContext?.(task, context);
     if (!execution) throw new Error('代理执行凭据待接入或已失效');
+    // Re-read under the execution context: resolving the identity above may have changed the Task
+    // (for example a pause), and the run must materialize from the freshest persisted state.
     const result = await options.taskService.runNow(task.id, execution);
     return { task: projectTask(result.task), run: projectRun(result.run) };
   }));

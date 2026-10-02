@@ -1,8 +1,36 @@
 # 桌面外壳与 applet 发布审计（2026-10-02）
 
-依据：`docs/superpowers/specs/2026-10-01-xpod-desktop-shell-and-applets-design.md`、画板归档 README 与 `docs/RELEASE.md`。实施分支 `codex/desktop-shell-applets`，原目标版本 0.4.21；发现并行目录功能已占用该候选分支，桌面发布版本与集成顺序待对齐。本文件记录当前证据，不作为未完成门禁的通过凭证。
+依据：`docs/superpowers/specs/2026-10-01-xpod-desktop-shell-and-applets-design.md`、画板归档 README 与 `docs/RELEASE.md`。实施分支 `codex/desktop-shell-applets`，原目标版本 0.4.21；并行目录功能已占用该候选分支，当前在独立 worktree 集成其 cb0bbb39 候选，桌面按 0.4.22 准备发布，保留 release/0.4.21。本文件记录当前证据，不作为未完成门禁的通过凭证。
 
 ## 功能归位
+
+### 2026-10-03 当前集成检查点
+
+以下为尚未提交的 `codex/desktop-shell-applets` 工作树证据，不代表最终候选 SHA 或发布通过；下文较早轮次保留为历史。
+
+- 当前收尾证据：修复后的全量单测 757 文件/7421 项通过（309 既有跳过、1 todo），退出码 0；完整 lite→full 连续回归 162+62 项通过、退出码 0，基础设施已清理。此前 full 启动曾遇到 CSS 6310 异步端口绑定失败；占用来源未证实，隔离 full 复验 62 项通过，没有为此改写源码。
+- Socket 认证已通过真实验证：API 不再将内部 WebID 读取指向默认 3000；CSS 现让 Bearer 与 DPoP 共用已配置的校验路由，保留 issuer/签名/audience/时间约束，含 cnf 的 Bearer 无 proof 必须拒绝。凭据映射收敛到同一 helper，41 项直接回归、构建与类型检查通过，独立安全复核未发现认证绕过。最终源码下的默认 inline 八层与全部审批案例、清理整轮通过；socket 的批准/重复批准与精确 Pod marker 通过，但第二个拒绝场景在模型调用前 180 秒超时，Stop 未执行。该剩余问题仍待定位，socket 整轮与正式发布未通过。
+- 并行交付安排：当前已通过单元与完整集成的源码可提交为草稿 PR，并启动候选构建以获取真实包与缓存；剩余 socket 问题修复后必须提交新的最终 SHA 并重验候选，当前候选不得据此晋升 stable。
+- 共享组件遵循既定分层：纯展示在 shared-ui，宿主布局与能力协议在 extension-sdk，业务与 Pod 数据在 applet。新组件已有消费方；没有新增无消费方的选择卡、实体标或第二套列表头。
+- 登录窗口保持原生 280×400；内容区 280×372。控件聚焦使用同一边框；已验证浅深主题无第二层外框。密钥弹窗在 1280/390、浅深主题、真实 200% 字号下重新验收，帮助文案使用相对行高，取消与 Escape 恢复触发按钮焦点；旧误放大 harness 结果不计入本次证据。
+- 当前七包构建、三目标 UI 构建、桌面构建、UI lint 均通过。桌面最新 25 文件/182 测试通过；密钥与交互 2 文件/122 测试通过；自更新证据校验 17 项和发布合同 6 文件/76 项通过。
+- 桌面应用与托盘旧图标已替换为选定的「B · 留缝折角」。应用 PNG 逐字节导入 homepage 原稿，ICNS/iconset 和五种状态托盘由同一来源生成；来源与 34 项产物摘要见 `desktop/assets/brand-provenance.json`。登录组件与 AI 连接模块的 Xpod 头像统一使用同一脚本导入的原始 SVG，旧盾牌文件删除；三目标 UI 构建、lint 与登录/能力包品牌回归 4 项通过；桌面品牌与 Dock 17 项复验通过。真实 Electron 暴露了旧动态 Dock 路径遗漏包内 PNG 的问题，解析器现优先使用 `app.asar/assets/icon.png`，回归已先失败后通过。独立测试 `.app` 资源摘要与签名通过，生产 Dock helper 实际加载 1024px PNG 并设置 Dock，托盘 1x/2x 非空。该测试包使用旧运行时作为资源打包载体，不计为新版本后端或自更新验收；当前 `/Applications/Xpod.app` 仍为 0.4.20。
+- 发布预检确认根 Vitest/Bun 扫描未覆盖桌面套件，candidate 桌面 job 已在版本应用后、打包前调用现有 `bun run test`，完整桌面 182 项复验通过；stable 继续消费 candidate 证据。删除只镜像命令字符串的新增断言，保留既有 workflow 回归。重新构建并暂存三目标静态产物后，检查发现 app 的共享 chunk 被旧 ignore 规则遗漏；规则已删除，69 个静态文件与暂存摘要一致，52 个 HTML/JS 文档引用无缺项。
+- 完整集成首次在 lite 阶段失败：30 文件/154 测试通过，2 文件/8 测试请求超时。使用已有 Vitest 控制将 fork 并发限制为 2 后，31 文件/161 测试通过，原八项超时未重现；仅 Matrix backlog 发送超过现有 300 秒预算，full 阶段仍未运行。不能视为发布门禁通过。
+- 最新组合回归：全量单测 756 文件/7398 项通过，1 文件/3 项因缺失 route-discovery fetch 模拟而失败；独立无限等待探针稳定复现同三项，补齐 fixture 后整文件 69 项、相邻 UI 31 文件/450 项通过，lint 与两层类型检查通过。完整集成已执行两个阶段：lite 32 文件/162 项通过、16 项既有跳过；full 7 文件/62 项通过，基础设施已清理。后台外层退出码未单独记录，最终提交前仍要执行前台完整命令并记录退出码；不得将本轮视为 exact-SHA candidate 的证据。
+- 后续将 route-discovery 的超时与取消收敛到 SDK 的同一公开探针：fetch 与正文读取共用既有 1 秒预算，effect 清理中取消失效身份的请求；UI 删除第二套计时器。补充 opaque origin 回归并修正根审查发现的 URL 构造边界后，SDK/UI 三文件 101 项通过，七包、三目标 UI、服务端与测试类型检查及 UI lint 通过。重新暂存后的 69 个静态文件与 Git index 摘要一致，52 个 HTML/JS 引用无缺项。随后全量单测 757 文件/7415 项通过，309 项既有跳过、1 项 todo，实际外层退出码 0；这轮收集早于后续 socket 地址解析修复，后者需独立回归与真实验证。
+- 最新真实 native 隔离 Gateway 的默认 inline 整轮通过：runtime、identity、Pod 读写、Gateway 认证、AI connections、models、有效 Chat、Task approval 共八层全部通过；approve、duplicate、reject、Stop 和任务/授权清理均有实际证据。Unix socket/spawn 整轮仍失败：模型继续运行后，agent Pod 同步返回 401，审批恢复接口返回 400。传输 CLI 回调通过不代表完整任务通过；根因尚待确定性诊断，发布门禁保持未通过。
+- Matrix 发送路径现复用同次操作的 room/timeline，但保留独立的精确 receipt 读取。整合审查通过真实语义回归发现：仅在 timeline 查 receipt 会漏掉已移出时间线的冲突资源；修正后 105 项通过、3 项既有跳过。Task 同次请求的并行 DB 打开可合并；删除执行身份解析后的 Task 再读取会覆盖期间暂停的日程，回归已复现并恢复该边界，轮询 Task 的权限检查也保留。真实 Task 与共同 RDF 读路径的最终验收仍在继续。
+- 共享 SPARQL 权限检查仅在单次请求内按资源和权限模式复用，失败检查移出缓存并原样抛出错误；下次请求重新检查，凭据隔离和授权撤销回归保留。根审查删除多余结果包装与辅助层后，69 项 handler 回归通过；合并源码 `build:ts` 与 `typecheck:test` 均通过。Task 只保留同请求 DB 打开的并发合并，相关 35 文件/245 项通过。完整组合回归仍需以下一轮实际结果为准。
+- 本机原生 RDF 修复产物更新为 `e0e3d9dd70254f7b80a8d60adc8c5efb3bcd034179b4920d1e4221a0011a6a85`，严格查询夹具 12/12 通过。该产物仍链接本机 Homebrew 库，正式发布必须以 candidate 的同源码 bundle 重新验收。
+- SolidFS 非 RDF 文件已进入现有 Pod HTTP 同步路径，二进制使用字节缓冲。同步自身导致的 mtime 变化只在大小与内容摘要一致时重记文件版本；并发不同字节继续进入失败/协调路径。SolidFS 102 项、连同恢复/取消共 119 项通过，控制器实际负例也证明没有错误标记完成。大文件内存占用尚未专项验收。
+- 真实隔离 Standalone 的审批首次恢复及重复恢复均已通过：同一 Run、同一 Session 完成，Pod HTTP 精确回读 marker，重复请求不再执行。消息元数据持久化已切回 ORM 序列化与既有强 ETag 更新边界，删除手写 PATCH；公开 `saveItem` 的两个分支和无 ETag 拒绝回归、连同存储/Run 共 13 文件/64 项通过。后续拒绝检查点发生 Task API 超时，另一确认轮也发生超时；高负载与请求空档是相关观察，尚不能断言原因，仍需诊断并完成 approve/duplicate/reject/Stop 和清理的整轮验收。
+- Unix socket/显式 Inngest spawn 的真实 CLI 回调已到达认证边界，生命周期回归 30 项通过；这项证据只证明传输可达，完整任务链路仍需单独验收。
+- Inngest 原生 CLI 的固定源码、许可证、文档载体与安装消费校验已实现，73 项回归与类型检查通过。最终 registry 消费者及 bundled runtime 要在 exact SHA 候选上再验收。
+- RC 最终清单的 `qlever-local` 与 `package-consumers` 已删除写死通过值：消费者保留实际安装的 tarball；原生 archive、manifest、runtime 摘要与源码权威 ABI/QLever 固定版本一致才可通过。finalize 重新核对下载产物字节。新 verifier 7 项、消费者 Node 9 项、workflow 33 项及其他发布合同 41 项、自更新 17 项通过；类型和 YAML 解析通过。真实 exact-SHA candidate 仍待执行，actionlint 本机不可用。
+- 实际执行者为 OpenCode Go B；此前 Go 额度不足是历史状态，本轮两条 B 任务正在分别执行组合单测/完整集成及只读发布预检。未发布 0.4.22；不得复用其他 `release/0.4.21` 分支的 RC 证据。
+
+剩余顺序：冻结消息修复 → 完整单测与 `bun run test:integration` → 真实默认 inline 与 socket/spawn Task producer → merge commit/PR → exact SHA RC 的 19 项门禁及旧包到新包自更新 → stable 发布与 registry/部署回读。
 
 - 64px rail、270px 对象列与单一 48px 内容头；任务、AI 连接、Pod 使用 WebID，设备和设置保留匿名本机入口。390px 抽屉、焦点恢复和关闭行为复用共享工作区接口。
 - AI 连接提供两步密钥创建、整个 Pod 访问面、复制/配置能力降级、模型类型和真实 dimensions、凭据错误码及时间；schema 属 models，目录与行为属能力模块。
@@ -17,6 +45,8 @@
 对照 stable v0.4.20，选择性保留 DesktopSelfUpdater、ad-hoc afterPack seal 与打包更新验收；Account app 样式固定为 `main.css`，candidate 检查 auth 文档引用资产。账号/Consent 的过期、取消、interaction 与当前 storage 绑定安全逻辑已选择性保留并回归；不通过整笔旧分支合并覆盖新外壳。
 
 ## 已收集证据
+
+以下既有完整验收对应集成前桌面 checkpoint `7df53e1a314063ae37b324ce2aa32a75887d02e2`。目录分支合并与旧数据 ETag 升级后的源码必须重新经过全部门禁；旧结果不证明新 merge SHA 已通过。
 
 | 验证层 | 当前结果 |
 | --- | --- |
@@ -40,6 +70,64 @@
 
 1. AI 四层已通过；真实生产 Task 验收发现 drizzle-solid 嵌套 metadata IRI 未按父资源隔离（两个 Task 均写入 #metadata-1），日程/授权对象合并。问题已记录并正式发布 drizzle-solid 0.3.25（86983384f9ea98f6748631bc859a5fc187e4cd1d），839 unit + 真实两 Task CRUD 通过，Xpod patch 重新精确生成且冻结锁通过。freshTask 日程创建/暂停/执行已成功；随后发现 Run RDF context 缺少显式 accessScope，授权范围 producer 已补齐，每次使用实际 Task 身份重新探测 workspace/source 权限；空授权、隐式根 pattern、OPTIONAL 查询 fail-closed 回归与安全复核通过。真实 Task 已越过该检查，随后进入 waiting_runner：API 的权威目录映射已改为启动时捕获并按实例传给 Pi 与子进程，同时显式传递已有 token endpoint；88 项回归通过。旧 waiting_runner 已通过正式 stop 接口取消并回读确认；build13 fresh Task 已进入 running，实际模型每轮成功但 request_approval 参数为空而循环，runNow 同步等待导致默认约 5 分钟后客户端超时。该运行已正式 stop 并独立回读 cancelled，隔 20 秒步骤数量保持 50 条。manual runNow 已改为持久化后立即 ACK queued（71 项回归通过），真实 SSE 探针已复现空参数，同请求真实上游 73 分片/183 字节参数完整，而 Gateway 仅 1 分片/0 字节，已定位重复 assistant role 被误判新响应、重置工具参数缓存；通用 streaming parser 已修复并以真实 Pi SDK 的重复 role/响应身份回归验证，53 项通过；build14/15 的有界真实探针持续收到 B 上游 HTTP 500 空正文，现有账号 A 独立探针返回 429 GoUsageLimitError，Retry-After 为 259216 秒（约三天）。审批创建→同次运行恢复仍未验收通过；不得用人工 checkpoint、mock 或 HTTP 成功状态代替完整链路。Pod CRUD 和审批 CAS 已通过同系统原生回读。
 2. 切换正式 models 0.2.60，删除过渡补丁，同步冻结 lock；重跑最终 build/typecheck/lint/单测/完整集成/桌面/视觉验收。
-3. 并行目录功能的 `release/0.4.21` 已有成功候选（cb0bbb39abe90e8cf657f10936aba5db7321b826），不覆盖该分支。桌面版本与集成顺序确定后，从经过验收的 source commit 创建对应 release 分支。candidate 从同一 SHA 构建服务、原生 QLever 和桌面，记录 immutable digest 与完整 acceptance artifact。
+3. 并行目录功能的 `release/0.4.21` 已有成功候选（cb0bbb39abe90e8cf657f10936aba5db7321b826），不覆盖该分支。桌面按 0.4.22 准备，从经过验收的集成 source commit 创建 release/0.4.22。candidate 从同一 SHA 构建服务、原生 QLever 和桌面，记录 immutable digest 与完整 acceptance artifact。
 4. 仅在 exact SHA 的 candidate 全部通过后创建对应 stable tag；stable guard 校验 acceptance，staging 发布、独立 Node/Bun 消费验收后提升 latest，再提升同一 digest 并部署。
 5. 共用包通过 stable guard 后按依赖顺序 staging 发布，清洁安装检查 exports/types/CSS 和真实模块导入，再提升 latest。根包 latest 等待此门禁成功，独立 tag/manual workflow 不绕过 RC。
+
+## 集成验证进行中
+
+- 合并保留目录/Matrix/独立 CLI 功能和桌面 Tasks/Pod/Device。按用户 10/2 的最新纠正，微信式短登录恢复为 280×400 原生逻辑 bounds；注册、完整 Consent、Pod 管理使用工作区文档。主工作区对应画板 1280×800；共享 body 填满扣除标题栏后的内容视口，不在内部再套卡片。客户端 Consent carry 自动批准已删除，只有服务端真实已记住的授权决定可自动续接。
+- 旧 timestamp-only ETag 通过既有分布式资源写锁持久化 revision 后重试读取；迁移不得覆盖业务 RDF、修改旧时间戳、重入写锁或制造临时 ETag。
+- 当前上游 B 返回 500、A 返回限额 429；candidate 使用现有 RC provider 凭据运行真实生产 Task 的批准、拒绝、停止三条链路。新增 gate 要求同 Run/Session、真实 Pod marker 与凭据撤销证据，尚未在新候选运行。
+
+## 集成后新增证据与用户纠正
+
+- 目录候选 d938792f 的 HEAD-safe response writer 已整合；发布仍保留独立 release/0.4.21，桌面版本为 0.4.22。
+- 存储重启恢复改为读取 authority 文件，不再重复写回；完成回执绑定 sourcePath、资源 URI 与精确文件版本。旧 checkpoint 可从保留操作安全补齐资源标识，无法证明时重放；跨 workspace 回执保留根目录外部删除检测。
+- 独立审查复现并修复两个故障路径：同毫秒旧操作被迟到失败重新打开、journal INSERT 失败时误删已持久化 authority 文件。专项 17 文件/166 项通过，独立复验 46 项通过。真实 same-OS native HTTP 对照与 legacy 验收证明重启 revision/mtime/body 不变、仅首次旧 ETag 迁移、正式 Stop 200、Run cancelled、Session completed、两文档 stale CAS 412；一次 30 秒超时的失败证据保留，最后请求 6938ms 成功。此层不代表 Task producer 审批通过。
+- 用户指出新建密钥的用途下拉框仍有内灰边框与外紫框：统一焦点改用现有边框，取消控件外侧 outline/shadow，选中 toggle 另验证与填充的对比度。最终共享组件构建后，真实 Electron 登录内容 280×372、form clientHeight=scrollHeight=372；Checkbox 只有一个可见 marker、background-image=none、border=2px、无 outline/shadow；工作区 content 1280×800，浅/深主题公共 NativeSelect 均为 2px 单边框且无水平溢出。证据位于私有 `.test-data/desktop-merge/shared-final-native.json` 与 `shared-final-*.png`。200% 文案的既有 13 项浏览器布局回归已通过，完整合并源码全量门禁仍需完成。
+- RC 新增白名单三分支 Task evidence artifact，仅保留布尔证明、受控状态、清理计数和源码/工作流标识，不上传账号、任务标识、密钥或自由文本；原实际失败门禁保持强制。
+- 按用户“尽量沉淀共享组件”和原分层约定，新增公共 NativeSelect、Textarea、Checkbox、FormField、EmptyState，Radix Select 从应用层移入共享唯一实现；应用层 Button/Input/Label/Select 公开转发，Card 仅兼容参数。Pod 删除手写 modal/focus 循环，任务/设备/AI 删除重复基础控件样式，业务与文案仍由各 applet 提供。SDK 布局补可注入 copy；旧 shared-ui workspace 有真实 LinX 分支消费者，按文档 §6.1 保留弃用兼容出口，不造成反向 SDK 依赖。定向公共 162 项、布局 25 项与最终五文件 30 项通过，包构建、UI 三目标构建、类型与 lint 通过。
+- 最终全量验证由实际本机 OpenCode CLI 的可用 `deepseek/deepseek-flash` 配置执行。桌面原生 DeepSeek 子代理入口不支持该模型；当前 OpenCode Go 最小实际调用返回 `Go usage limit exceeded`，未被记作恢复成功。OpenCode CLI 私有状态与日志放 `.test-data/opencode-shared`；未输出密钥，未改用户全局凭据配置。
+
+## 远端发布状态只读审计（2026-10-02）
+
+详情见 `.test-data/opencode-shared/release-current-audit.json` 与 `release-current-audit.md`；此处只记结论。
+
+- **0.4.22 尚未开始**：远端无 `release/0.4.22` 分支、无 tag、无 RC run；根/原生 npm 无 0.4.22，七包目标版本均未发布，无不可变碰撞。根/桌面/平台包与 models 0.2.60 / drizzle-solid 0.3.25 已对齐。
+- **`release/0.4.21` 参考态**：`d938792f` 有成功 RC（run `36946171908`，`0.4.21-rc.223`，digest `sha256:eddecb89…`），acceptance 仅 21 项且**不含 `task-approval`**；该分支未 tag、未提升 latest，属另一发布线，只观察。当前 0.4.22 guard 要求 19 项，d938 在新 guard 下不可晋升。
+- **门禁真实性**：15 项由 candidate 步骤真实产出；`task-approval` 是真实 producer（`acceptLiveTaskApproval`），但当前被上游阻断（A 429 `GoUsageLimitError`、B 500 空正文）；`qlever-local` / `desktop` / `package-consumers` 在 `finalize_acceptance` 中为硬编码 `'passed'` 断言，各有间接但非证据绑定的检查。
+- **自更新缺口**：`desktop/scripts/packaged-update-acceptance.mjs` 是 `docs/RELEASE.md` 要求的必过门禁，但 candidate/release 均未调用；`desktop` 检查不含“旧包→新包”实测。
+- **合并态**：`cb0bbb39`（3 文件）与 `d938792f`（6 文件）只 staged、未提交，HEAD `7df53e1a` 不含二者；生产全链路集成 Matrix blocker 仍在。
+- **距最终发布前提**：合并落地并集成绿 → 从 exact SHA 建 `release/0.4.22` → 真实 Task 审批链路通过 → 桌面自更新纳入门禁 → 七包（含首次创建）发布 → exact SHA `v0.4.22` 走完 promotion guard / staging / consumer / latest / 同 digest 部署 / 桌面 / GitHub release。本次未改代码、workflow、spec 资产或外来 PR，未跑 build/service/test，未 push/tag/release/publish。
+
+## 自更新发布门禁实施计划（有界，2026-10-02）
+
+目标：让 candidate 的 `desktop` 检查由**同一 source SHA 上真实执行的旧包 → 新包自动下载/校验/替换/重启**证据产出，替代 `finalize_acceptance` 中的字面量 `'passed'`；保留 19 项 required checks 名称、accepted SHA / image digest / native runtime 绑定不变。
+
+授权范围（仅此）：`.github/workflows/candidate.yml`、`.github/workflows/release.yml`、`desktop/scripts/packaged-update-acceptance.mjs`、以及为自更新 provenance 所必需的 release verifier 脚本/测试；本计划文档。不触碰后端 / Matrix / 组件 / release/0.4.21 线。
+
+集成路径（复用既有，不另造更新器、不打补丁旧二进制）：
+1. 扩展 `packaged-update-acceptance.mjs`：新增必填 `--source-sha`、可选 `--old-zip` 与 `--evidence-out`；成功时写机器可读 evidence（`schemaVersion`、`kind`、`sourceSha`、旧/新版本、旧二进制/旧 zip/新 zip 的 sha256、必需生命周期事件、`cleanup.removedUserData`、`ok`）；失败不写 ok 证据并以非零退出。始终保持临时 userData 清理。
+2. 新增 `scripts/desktop-self-update-acceptance.cjs`：校验 evidence 的 schema、`sourceSha` 40 位 hex 精确匹配、`newVersion` 匹配 candidate、`oldVersion < newVersion`、必需事件齐全、`cleanup.removedUserData===true`，并拒绝敏感字段；通过时输出 `{ "desktop": "passed" }`。
+3. `candidate.yml build_desktop_rc`：下载最近一次 stable release 的 `*-arm64-mac.zip`（旧包）→ 解包取 `Xpod.app` → 用 candidate 已构建 zip 与 `--version $CANDIDATE_VERSION --source-sha ${{ github.sha }}` 运行脚本 → verifier 校验 → 上传 artifact `desktop-self-update-acceptance-<sha>`。
+4. `candidate.yml finalize_acceptance`：下载该 artifact，verifier 通过后才写入 `desktop:passed`；缺失/不匹配即失败。`qlever-local`、`package-consumers` 保持现状（其上游 job 真实存在），不在本轮改写。
+5. `release.yml`：无需功能改动（promotion guard 已消费含 `desktop` 的 acceptance manifest）；仅在必要处保留绑定说明。
+
+测试（轻量、无 GUI）：新增 `tests/scripts/desktop-self-update-acceptance.node-test.cjs`，对纯函数 verifier 做接受/拒绝用例（正确、SHA 不符、事件缺失、版本非递增、cleanup 未完成、敏感字段）。GUI 端到端仅在 coordinator 打开自更新构建门禁（或 `matrix-full-verification-done.json` ready=true）后，于 macOS runner 实跑。
+
+具体 blocker 政策：若 macOS runner 无 GUI 登录会话导致真实更新无法执行，不做 mock / 源码契约替代，记录具体失败并把真实替代（专用带 GUI 的 macOS runner 或自托管）写进报告；门禁保持未通过。
+
+门禁开启条件：`.test-data/opencode-shared/matrix-full-verification-done.json` `ready=true`，或 coordinator 显式开放自更新构建门禁。在此之前只交付代码与轻量单测，不跑重 GUI。
+
+## 独立复核整改（F1-F6，2026-10-02）
+
+依据：`.test-data/opencode-shared/self-update-review-report.md`（verdict=changes-required）。在既有授权范围内整改，外加 `desktop/scripts/update-feed-fixture.mjs`、verifier/tests 与 candidate/release workflow 接线；不动后端/Matrix/UI/共用原语。
+
+- **F1 路径**：producer 新增导出纯函数 `resolveCallerPath`，相对路径先按 `desktop`、再按仓库根解析取存在者，保留文档化的 `release/…` 用法；workflow 传 `$PWD/desktop/release/...` 绝对路径。以真实路径行为测试，不用快照。
+- **F2 checksum**：producer 计算新 zip 的 `sha512`(base64) 与 `size` 并传给 fixture；fixture 在 JSON 响应中回传 `sha512`/`size`（v0.4.20 旧包 `self-updater` 已支持该分支）。补 fixture 响应回归；负例坏校验和在重门禁后可选实跑（必须 swap 前拒绝）。
+- **F3 字节绑定**：verifier 新增 `--expected-new-zip`：对 finalize 下载的 `xpod-desktop-macos-<candidate>` 实际 zip 计算 sha256/size 并要求等于 evidence，且文件名包含 candidate 版本；拒绝仅回显通过。
+- **F4 接线**：`deploy_and_accept` preflight 与 `release.yml` 的 `node --test` 列表均加入 `tests/scripts/desktop-self-update-acceptance.node-test.cjs`。
+- **F5 真实清理**：producer 按精确 `oldBinary` 路径跟踪/回收旧进程、重启后的新进程与 fixture，回收后才写证据；`oldAppStopped`/`relaunchedAppStopped`/`fixtureStopped`/`removedUserData` 均为实测布尔；绝不宽泛 pkill，仅限私有临时 bundle 路径；失败路径同样回收。
+- **F6 旧基线 provenance**：launch 前记录旧二进制 sha256；记录官方 stable tag；`oldZip.name` 解析版本与 `oldVersion` 互校；不伪造 Info.plist、不重签旧包、不覆盖原始发布产物。0.4.17→0.4.18 旧生产者结果只作历史，不作为新门禁证明。
+- 重门禁：整改只跑轻量 node/schema/path/workflow 测试；真实 old stable→new packed 同 sourceSHA 的 GUI 执行需 root 提交/候选构建后由 coordinator 打开门禁再进行。

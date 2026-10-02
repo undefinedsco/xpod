@@ -37,6 +37,8 @@ export default defineConfig({
       '**/_deprecated_quadstore/**',
       'qlever/**',
       'desktop/test/**',
+      // bun:test suites are run by the standalone CLI test gate in CI.
+      'packages/xpod-cli/tests/**',
       'scripts/patch-inrupt-authn-refresh.test.js',
       'tests/e2e/**',
       'tests/package/**',

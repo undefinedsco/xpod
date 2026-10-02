@@ -161,7 +161,10 @@ describe('Provider runtime adapters', () => {
     const fixture = fetchFixture(() => new Response(jsonSse(['[DONE]']), { status: 200 }));
     const runtimes = new ProviderRuntimeRegistry({
       registry,
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({
+        fetch: fixture.fetch,
+        resolver: async () => [{ address: '93.184.216.34', family: 4 }],
+      }),
     });
     const adapter = runtimes.get(provider);
     const model = `${provider}-discovered-test`;

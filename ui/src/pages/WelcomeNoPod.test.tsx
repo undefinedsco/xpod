@@ -72,10 +72,8 @@ it('注册成功后不再自动创建 Pod，也不进入存储确认状态', asy
     </AuthContext.Provider>,
   );
 
-  fireEvent.change(screen.getByLabelText('Pod 名称'), { target: { value: 'alice' } });
   fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'alice@example.test' } });
   fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'fixture-password' } });
-  fireEvent.change(screen.getByLabelText('确认密码'), { target: { value: 'fixture-password' } });
   fireEvent.click(screen.getByRole('button', { name: '创建账号', exact: true }));
 
   await waitFor(() => expect(flow.login).toHaveBeenCalledTimes(1));

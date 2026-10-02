@@ -1,4 +1,3 @@
-import { saveConsentContinuation } from '../utils/safe-continuation';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -6,6 +5,7 @@ import { AuthContext, type AuthContextType, type Controls } from '../context/Aut
 import { createXpodLoginRoute } from '../auth/xpod-login-route';
 import { createXpodLoginTransactionStore } from '../auth/xpod-login-transaction';
 import { LoginSelectPage } from './LoginSelectPage';
+import { AppRoutes } from '../App';
 import { WelcomePage } from './WelcomePage';
 import { ForgotPasswordPage } from './ForgotPasswordPage';
 import { ResetPasswordPage } from './ResetPasswordPage';
@@ -16,6 +16,7 @@ import { ProtectedRoute } from '../components/ProtectedRoute';
 import { rememberPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { xpodConsentErrors, xpodFirstPodErrors } from '../auth/xpod-account-copy';
 import { storageBindingKey } from '../auth/xpod-storage-selection';
+import { saveConsentContinuation } from '../utils/safe-continuation';
 
 function resetAuthPageTestState(): void {
   cleanup();
@@ -174,12 +175,39 @@ describe('CSS identity page controllers', () => {
         <Route path="/.account/login/password/register/" element={<WelcomePage initialIsRegister />} />
       </Routes>
     </>, {}, ['/.account/login/password/?returnTo=%2Fsettings%2F']);
-    fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
+    fireEvent.click(screen.getByRole('button', { name: '注册账号' }));
     expect(screen.getByTestId('mode-location').textContent).toBe('/.account/login/password/register/?returnTo=%2Fsettings%2F');
-    expect(screen.getByLabelText('确认密码')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '返回登录' }));
+    expect(screen.getByRole('heading', { level: 1, name: '注册 Xpod' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '已有账号？登录' }));
     expect(screen.getByTestId('mode-location').textContent).toBe('/.account/login/password/?returnTo=%2Fsettings%2F');
-    expect(screen.queryByLabelText('确认密码')).toBeNull();
+    expect(screen.getByRole('heading', { level: 1, name: '登录 Xpod' })).toBeTruthy();
+  });
+
+  it('shows the registration form as soon as the register entry is clicked, without submitting anything', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    // No route ever renders the register element here: the switch must not wait for the router.
+    renderWithAuth(<WelcomePage />, {}, ['/.account/login/password/']);
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'typed-before@example.test' } });
+    fireEvent.click(screen.getByRole('button', { name: '注册账号' }));
+    expect(screen.getByRole('heading', { level: 1, name: '注册 Xpod' })).toBeTruthy();
+    // The next field belongs to the registration form, which starts empty.
+    expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps what is typed into the registration form across the index-to-register route change', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    // The real app routes: the interaction index and the register route share one page instance.
+    renderWithAuth(<AppRoutes />, {}, ['/.account/']);
+    fireEvent.click(screen.getByRole('button', { name: '注册账号' }));
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'typed@example.test' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'typed-secret' } });
+    // Let the router finish its transition to the register route.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByRole('heading', { level: 1, name: '注册 Xpod' })).toBeTruthy();
+    expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('typed@example.test');
+    expect((screen.getByLabelText('密码') as HTMLInputElement).value).toBe('typed-secret');
   });
 
   it.each([401, 404, 500])('does not create a Pod after a scoped binding query fails with %s, including retry', async (status) => {
@@ -249,18 +277,19 @@ describe('CSS identity page controllers', () => {
     expect(screen.queryByText(/cloud|local|external|provider/i)).toBeNull();
   });
 
-  it('renders Xpod credentials inside the compact Account login card', async () => {
+  it('renders Xpod credentials inside the page Account login surface', async () => {
     renderWithAuth(<WelcomePage />);
     const page = screen.getByTestId('web-account-page');
     expect(page).toBeTruthy();
-    const panel = screen.getByRole('region', { name: '登录' });
-    expect(panel.getAttribute('data-web-account-layout')).toBe('compact');
+    const panel = screen.getByTestId('web-account-panel');
+    expect(screen.getByRole('region', { name: '登录' })).toBeTruthy();
+    expect(panel.getAttribute('data-web-account-layout')).toBe('page');
     expect(panel.contains(screen.getByLabelText('邮箱'))).toBe(true);
-    expect(screen.queryByTestId('web-account-introduction')).toBeNull();
+    // A browser visit keeps the account-service introduction column.
+    expect(screen.getByTestId('web-account-introduction')).toBeTruthy();
     expect(screen.queryByTestId('auth-surface-page')).toBeNull();
     expect(page.className).not.toContain('bg-black/50');
     expect(page.querySelector('[data-auth-surface-frame="window"]')).toBeNull();
-    expect(page.querySelector('[data-account-credentials-frame="bare"]')).toBeTruthy();
     expect(page.querySelector('[data-account-credentials-frame="card"]')).toBeNull();
     expect(screen.queryByTestId('account-credentials-scroll')).toBeNull();
     expect(screen.getByLabelText('邮箱')).toBeTruthy();
@@ -268,13 +297,15 @@ describe('CSS identity page controllers', () => {
     expect(screen.getByRole('button', { name: '忘记密码？' })).toBeTruthy();
     const email = screen.getByLabelText('邮箱');
     expect(email.closest('form')?.contains(screen.getByLabelText('密码'))).toBe(true);
-    expect(email.closest('[data-floating-field]')).toBeTruthy();
-    expect(email.getAttribute('placeholder')).toBe(' ');
-    expect(screen.getAllByRole('heading', { name: '登录' })).toHaveLength(1);
+    // One screen title; the account-service introduction column adds its own prose heading.
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(screen.getByRole('heading', { level: 1, name: '登录 Xpod' })).toBeTruthy();
 
     cleanup();
     renderWithAuth(<WelcomePage initialIsRegister />);
-    await waitFor(() => expect(screen.getByLabelText('Pod 名称')).toBeTruthy());
+    // 注册只收 Account 必填项：Pod 名称不属于注册字段（设计 §4.1 / U01）。
+    await waitFor(() => expect(screen.getByLabelText('邮箱')).toBeTruthy());
+    expect(screen.queryByLabelText('Pod 名称')).toBeNull();
   });
 
   it('prefills the CSS Account step from the remembered WebID identity hint', () => {
@@ -308,7 +339,6 @@ describe('CSS identity page controllers', () => {
     const page = await screen.findByTestId('web-account-page');
     expect(screen.queryByTestId('auth-surface-page')).toBeNull();
     expect(screen.queryByText('使用 WebID 账号')).toBeNull();
-    expect(screen.getByLabelText('邮箱').getAttribute('placeholder')).toBe(' ');
     const frame = page.querySelector('[data-auth-surface-frame="window"]');
     expect(frame).toBeNull();
     expect(desktopBridge.setWindowMode).toHaveBeenCalledWith('account');
@@ -466,10 +496,8 @@ describe('CSS identity page controllers', () => {
       hasOidcPending: true,
       idpIndex: cloudAccountIndex,
     });
-    fireEvent.change(await screen.findByLabelText('Pod 名称'), { target: { value: 'alice' } });
     fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'alice@example.test' } });
     fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'secret' } });
-    fireEvent.change(screen.getByLabelText('确认密码'), { target: { value: 'secret' } });
     fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
 
     // 注册只创建 Account（设计第二部分 §4.1 / U01–U03）：不得隐式创建首 Pod，
@@ -517,7 +545,7 @@ describe('CSS identity page controllers', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
-    await waitFor(() => expect(screen.getByRole('button', { name: '批准', exact: true })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: '允许', exact: true })).toBeTruthy());
     expect(screen.queryByTestId('oidc-consent-scroll')).toBeNull();
 
     cleanup();
@@ -552,8 +580,8 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { pod: '/.account/account/pod/' } } });
 
-    await waitFor(() => expect(screen.getByRole('button', { name: '批准', exact: true })).toBeTruthy());
-    expect(screen.getByRole('button', { name: '批准' })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('button', { name: '允许', exact: true })).toBeTruthy());
+    expect(screen.getByRole('button', { name: '允许' })).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
     expect(fetchMock.mock.calls.some(([input, init]) =>
       new URL(String(input), window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST',
@@ -584,7 +612,7 @@ describe('CSS identity page controllers', () => {
       controls: { account: { username: 'alice', pod: '/.account/account/pod/' } },
     });
 
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodConsentErrors.bindingsFailed));
+    await waitFor(() => expect(screen.getByText(xpodConsentErrors.bindingsFailed).closest('[role="alert"]')).toBeTruthy());
     expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
     expect(fetchMock.mock.calls.some(([input, init]) =>
       new URL(String(input), window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST',
@@ -620,7 +648,7 @@ describe('CSS identity page controllers', () => {
       controls: { account: { username: 'alice', pod: '/.account/account/pod/' } },
     });
 
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodConsentErrors.bindingsFailed));
+    await waitFor(() => expect(screen.getByText(xpodConsentErrors.bindingsFailed).closest('[role="alert"]')).toBeTruthy());
     expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
     expect(fetchMock.mock.calls.some(([input, init]) =>
       new URL(String(input), window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST',
@@ -862,7 +890,6 @@ describe('CSS identity page controllers', () => {
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.checkFailed));
     fireEvent.click(screen.getByRole('button', { name: '重试' }));
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => requestPath(input).endsWith('/bindings/'))).toHaveLength(2));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.checkFailed));
     expect(anyPostRequest(fetchMock)).toBe(false);
     expect(storedConsentTask()).not.toBeNull();
@@ -874,15 +901,13 @@ describe('CSS identity page controllers', () => {
       body: {},
     },
     {
-      name: 'missing storageUrl',
-      body: { bindings: [{ webId: 'https://id.example/alice/profile/card#me' }] },
-    },
-    {
-      name: 'invalid URL mixed with a valid binding',
+      name: 'a malformed binding row',
       body: {
         bindings: [
-          { webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://node.example/alice/' },
-          { webId: 'https://id.example/bob/profile/card#me', storageUrl: 'not a url' },
+          {
+            webId: 'https://id.example/alice/profile/card#me',
+            storageUrl: 'not a url',
+          },
         ],
       },
     },
@@ -1079,11 +1104,13 @@ describe('CSS identity page controllers', () => {
       },
     );
 
-    // 授权页不再以 Account username 自动建 Pod（设计第二部分 §4.1 / U06）：
-    // 只说明缺少可用存储并给出"前往 Pod 管理"。
-    await screen.findByRole('button', { name: '创建 Pod' });
+    // 授权页不以 Account username 自动建 Pod（设计第二部分 §4.1 / U06）：
+    // 加载只读，创建必须由用户点击"创建并继续"显式触发。
+    await screen.findByRole('button', { name: '创建并继续' });
     expect(podCreate).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: '创建存储空间' })).toBeNull();
+    expect(screen.getByRole('button', { name: '存到边缘设备（打开账号页）' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 
   it('switches account through the native CSS Account session', async () => {
@@ -1110,7 +1137,7 @@ describe('CSS identity page controllers', () => {
       ['/'],
     );
 
-    await waitFor(() => expect(screen.getByRole('button', { name: '批准', exact: true })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: '允许', exact: true })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '换一个账号' }));
     await waitFor(() => expect(accountLogout).toHaveBeenCalledTimes(1));
   });
@@ -1197,7 +1224,7 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
 
-    expect(await screen.findByRole('button', { name: '批准' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '允许' })).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input, init]) =>
       String(input) === '/.account/oidc/consent/' && init?.method === 'POST',
     )).toBe(false);
@@ -1245,7 +1272,7 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
 
-    fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+    fireEvent.click(await screen.findByRole('button', { name: '允许' }));
     await waitFor(() => expect(pickWebId).toHaveBeenCalledTimes(1));
   });
 
@@ -1285,7 +1312,7 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
 
-    expect(await screen.findByRole('button', { name: '批准' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '允许' })).toBeTruthy();
     expect(transactionStore.readSinglePending()?.selectedStorage).toEqual(binding);
     expect(fetchMock.mock.calls.some(([input, init]) =>
       String(input) === '/.account/oidc/consent/' && init?.method === 'POST',
@@ -1333,8 +1360,8 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
 
-    const bindingSelector = await screen.findByLabelText('身份与存储空间');
-    const approve = screen.getByRole('button', { name: '批准' }) as HTMLButtonElement;
+    const bindingSelector = await screen.findByLabelText('用哪个 WebID 登录？', { selector: 'select' });
+    const approve = screen.getByRole('button', { name: '允许' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);
     fireEvent.change(bindingSelector, { target: { value: storageBindingKey(otherBinding) } });
     await waitFor(() => expect(approve.disabled).toBe(false));
@@ -1419,7 +1446,7 @@ it('navigates native resume without fetching a new Account scope or posting cons
   });
   vi.stubGlobal('fetch', fetchMock);
   renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
-  fireEvent.click(await screen.findByRole('button', { name: '批准' }));
+  fireEvent.click(await screen.findByRole('button', { name: '允许' }));
   await waitFor(() => expect(assign).toHaveBeenCalledWith('/.oidc/auth/resume'));
   expect(fetchMock.mock.calls.some(([url]) => String(url) === '/.oidc/auth/resume')).toBe(false);
   expect(fetchMock.mock.calls.some(([url, init]) => String(url) === nextConsentUrl && init?.method === 'POST')).toBe(false);

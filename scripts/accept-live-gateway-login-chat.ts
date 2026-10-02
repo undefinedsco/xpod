@@ -23,6 +23,7 @@ import { aiModelResource, aiProviderResource, credentialResource } from '@undefi
 import { createSolidLocalRouteFetch, discoverSolidLocalRoute } from '../packages/solid-sdk/src/local-route-fetch';
 import { createXpodAiConnectionsClient } from '../ui/src/api/ai-connections';
 import { createXpodAiConnectionsPodStore } from '../ui/src/extensions/XpodAiConnectionsPodStore';
+import { withRequestPodAuthorization } from '../ui/src/auth/session-request-credential';
 import { checkServer } from '../src/cli/lib/css-account';
 import { ProvisionCodeCodec } from '../src/provision/ProvisionCodeCodec';
 import {
@@ -714,7 +715,34 @@ async function main(): Promise<void> {
     fail('identity', redact(message));
   }
   layer('identity', true, `mode=${MODE} issuer=${account.issuer} webId=${account.webId} pod=${account.podUrl}`);
-  const authenticatedFetch = session.fetch;
+  // The Gateway refuses a DPoP-bound session for Pod-backed work
+  // (`caller_dpop_replay_unsupported`): the proof belongs to the caller and cannot be replayed.
+  // The applet answers that refusal with the caller's own Pod credential and retries once; the
+  // acceptance does the same with the credential this session already logged in with. It does not
+  // go through the page's on-demand capability: those helpers resolve controls against
+  // `window`, which a server-side acceptance does not have.
+  const sessionCredential = `sk-${Buffer.from(
+    `${account.clientId}:${account.clientSecret}`,
+    'utf8',
+  ).toString('base64')}`;
+  // The retried request leaves through the route-aware plain transport, never the session
+  // transport: the session transport attaches the session's own token and would overwrite the
+  // credential the retry is carrying. A pooled connection the ingress already closed surfaces as
+  // a socket error on that fresh request, so one transport-level retry keeps a credential that
+  // the Gateway accepts from being reported as a credential failure.
+  const credentialTransport: typeof fetch = async (input, init) => {
+    try {
+      return await localSolidTransport(input, init);
+    } catch {
+      return await localSolidTransport(input, init);
+    }
+  };
+  const authenticatedFetch = withRequestPodAuthorization(
+    session.fetch,
+    async () => `Bearer ${sessionCredential}`,
+    credentialTransport,
+  );
+
   const probePath = `acceptance/${ACCEPT_ID}.ttl`;
   const probeUrl = new URL(probePath, account.podUrl).toString();
   const probeBody = [

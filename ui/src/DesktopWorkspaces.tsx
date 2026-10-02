@@ -1,7 +1,7 @@
 import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react';
 import { lazy, useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Search } from 'lucide-react';
+import { NativeSelect, SearchInput } from '@undefineds.co/shared-ui';
 import type { PodSection } from '@undefineds.co/pod-settings';
 import { RouteLoadingBoundary } from './layout/RouteLoadingBoundary';
 import { ShellHeaderControls } from './shell/ShellHeaderControls';
@@ -26,7 +26,7 @@ export function SubjectWorkspace({ subject }: { subject: 'device' | 'pod' | 'set
   const [query, setQuery] = useState('');
   const selected = items.find(item => item.path === location.pathname) ?? items[0];
   return <TwoPaneLayout mode="auto"
-    listHeader={<label className="flex h-full items-center gap-2 px-4"><Search size={16} className="shrink-0 text-muted-foreground" aria-hidden="true" /><input aria-label="搜索页面" type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索" className="min-w-0 w-full bg-transparent text-sm leading-normal outline-none" /></label>}
+    listHeader={<div className="flex h-full min-w-0 items-center px-3"><SearchInput aria-label="搜索页面" value={query} onChange={event => setQuery(event.target.value)} /></div>}
     list={<nav aria-label={subject === 'device' ? '这台设备' : subject === 'pod' ? 'Pod' : '设置'} className="p-2">{items.filter(item => item.label.includes(query.trim())).map(item => <NavLink key={item.path} to={item.path} className={({ isActive }) => `flex min-h-11 items-center rounded-lg px-3 text-sm leading-normal ${isActive ? 'bg-accent font-medium text-primary' : 'hover:bg-muted'}`}>{item.label}</NavLink>)}</nav>}
     mainHeader={<WorkspaceHeader title={selected.label} />}
     main={<Outlet />}
@@ -50,5 +50,5 @@ export function PodSectionPage({ section }: { section: PodSection }) {
 }
 export function AppearancePage() {
   const theme = useXpodTheme();
-  return <section className="p-6 text-sm leading-normal"><label className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">主题<select aria-label="主题" className="h-auto min-h-9 rounded-md border bg-background px-3 py-1 leading-normal" value={theme.preference} onChange={event => theme.setPreference(event.target.value as 'system' | 'light' | 'dark')}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label></section>;
+  return <section className="p-6 text-sm leading-normal"><label className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">主题<NativeSelect aria-label="主题" className="w-auto" value={theme.preference} onChange={event => theme.setPreference(event.target.value as 'system' | 'light' | 'dark')}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></NativeSelect></label></section>;
 }

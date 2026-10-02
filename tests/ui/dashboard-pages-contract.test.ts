@@ -122,17 +122,23 @@ describe('dashboard runtime console routes', () => {
 });
 
 describe('upgraded dashboard pages', () => {
-  it('uses the flat taro runtime palette and tactile buttons instead of default high-saturation purple', async () => {
+  it('consumes the shared product palette and keeps tactile buttons instead of a second local theme', async () => {
     const indexCss = await readRepoFile('ui/src/styles/global.css');
-    const button = await readRepoFile('ui/src/components/ui/Button.tsx');
+    const sharedButton = await readRepoFile('packages/shared-ui/src/button.tsx');
+    const uiButton = await readRepoFile('ui/src/components/ui/Button.tsx');
 
-    // W1：颜色只在 @undefineds.co/shared-ui 的单一映射里，产品 CSS 不再自带调色板
+    // shared-ui/theme.css owns the colour roles; product CSS must not duplicate its palette.
     expect(indexCss).toContain("@import '@undefineds.co/shared-ui/theme.css';");
     expect(indexCss).not.toContain('Flat taro');
+    expect(indexCss).not.toMatch(/--primary:/);
     expect(indexCss).not.toContain('Primary: Violet (#7C3AED / #8B5CF6)');
     expect(indexCss).not.toContain('--primary: 262.1 83.3% 57.8%;');
     expect(indexCss).not.toContain('--primary: 263.4 70% 50.4%;');
-    expect(button).toContain('active:translate-y-px');
+    // The tactile press feedback lives in the shared button primitive...
+    expect(sharedButton).toContain('active:translate-y-px');
+    // ...and the product keeps exactly one implementation: the UI copy only re-exports it.
+    expect(uiButton).toContain("export { Button } from '@undefineds.co/shared-ui'");
+    expect(uiButton).not.toContain('function Button(');
   });
 
   it('uses the shared compact icon-only product layout inside the narrow header viewport', async () => {

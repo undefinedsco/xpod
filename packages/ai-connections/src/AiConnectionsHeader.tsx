@@ -1,6 +1,6 @@
-import { Button, Input } from '@undefineds.co/shared-ui'
+import { Button, SearchInput } from '@undefineds.co/shared-ui'
 import type { AppletSlotProps } from '@undefineds.co/extension-sdk/web'
-import { Plus, Search } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { useState } from 'react'
 import { AiCustomProviderDialog, type CustomProviderValue } from './AiCustomProviderDialog'
 import {
@@ -49,17 +49,10 @@ export function AiConnectionsHeader({
     <>
       <div className="flex h-full min-w-0 items-center gap-2 px-3">
         <div className="relative min-w-0 flex-1">
-          <Search
-            aria-hidden="true"
-            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-          />
-          <Input
-            type="search"
+          <SearchInput
             aria-label="搜索服务商"
-            placeholder="搜索服务商"
             value={searchQuery}
             onChange={(event) => controller.setSearchQuery(event.target.value)}
-            className="h-8 border-transparent bg-muted/50 pl-8 text-xs focus-visible:bg-background"
           />
         </div>
         <Button

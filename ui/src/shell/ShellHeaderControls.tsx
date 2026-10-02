@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Bell, Inbox, RefreshCw, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { ShellAttentionItem } from '@undefineds.co/extension-sdk';
+import { InlineNotice } from '@undefineds.co/shared-ui';
 import { useShellState } from './useShellState';
 
 export function ApprovalCard({ item }: { item: ShellAttentionItem }) {
@@ -39,9 +40,9 @@ export function ShellDecisionFeedback({ run, recoveryApproval }: { run?: string;
   if (run && recoveryApproval && !failures.some(item => item.approvalId === recoveryApproval)) {
     failures.push({ approvalId: recoveryApproval, run, message: '审批决定已保存，可以继续处理这次运行。' });
   }
-  return <>{failures.map(item => <div key={item.approvalId} role="alert" className="my-2 rounded-md border border-border p-3 text-sm leading-normal">
-    <p>{item.message}</p><button disabled={item.busy} className="mt-2 underline" onClick={() => void retryResume(item.approvalId, item.run)}>{item.busy ? '正在重试…' : '重试处理运行'}</button>
-  </div>)}</>;
+  return <>{failures.map(item => <InlineNotice key={item.approvalId} tone="neutral" role="alert" className="my-2" action={<button disabled={item.busy} className="underline" onClick={() => void retryResume(item.approvalId, item.run)}>{item.busy ? '正在重试…' : '重试处理运行'}</button>}>
+    {item.message}
+  </InlineNotice>)}</>;
 }
 export function ShellInboxContent() {
   const { snapshot } = useShellState();
@@ -86,7 +87,7 @@ export function ShellHeaderControls() {
     </button>)}
     {open && <div id="shell-popover" ref={panel} tabIndex={-1} role="region" aria-label={open === 'notifications' ? '通知中心' : '收件箱'} className="absolute right-0 top-full z-50 mt-2 max-h-[70vh] w-[360px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-lg">
       <div className="mb-4 flex items-center justify-between"><h2 className="font-medium">{open === 'notifications' ? '通知中心' : '收件箱'}</h2><button aria-label="关闭" onClick={() => { setOpen(null); lastTrigger.current?.focus(); }}><X size={16} /></button></div>
-      {error && <p role="alert" className="mb-3 text-sm leading-normal">{error}<button onClick={refresh} className="ml-2 underline">重试</button></p>}
+      {error && <InlineNotice tone="destructive" role="alert" className="mb-3" action={<button onClick={refresh} className="underline">重试</button>}>{error}</InlineNotice>}
       {open === 'notifications' ? <ShellNotificationsContent close={() => setOpen(null)} /> : <ShellInboxContent />}
     </div>}
   </div>;
