@@ -140,6 +140,9 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
 
   public async *start(input: RunExecutionInput): AsyncIterable<AgentRuntimeEvent> {
     const queue = new AsyncPushQueue<AgentRuntimeEvent>();
+    const onAbort = () => queue.close();
+    if (input.signal?.aborted) return;
+    input.signal?.addEventListener('abort', onAbort, { once: true });
     this.pendingRuns.set(input.runId, { input, queue, started: false });
     const context = (input as RunExecutionInput & { context?: StoreContext }).context;
     this.contextRecorder?.(context);
@@ -190,6 +193,7 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
     } catch (error) {
       yield { type: 'error', message: this.formatError(error) };
     } finally {
+      input.signal?.removeEventListener('abort', onAbort);
       this.pendingRuns.delete(input.runId);
       queue.close();
     }

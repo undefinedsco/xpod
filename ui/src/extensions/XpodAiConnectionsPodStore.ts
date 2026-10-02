@@ -244,6 +244,7 @@ export function createXpodAiConnectionsPodStore(
           scopes: values.scope ? values.scope.split(/\s+/u).filter(Boolean) : undefined,
           keyVersion: String((currentSummary?.version ?? 0) + 1),
           reauthRequired: false,
+          failCount: 0, lastFailureCode: null, lastFailureAt: null, rateLimitResetAt: null,
           encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, {
             type: 'deviceCodeOAuth',
             accessToken: values.accessToken,
@@ -302,6 +303,7 @@ export function createXpodAiConnectionsPodStore(
         scopes: values.scope ? values.scope.split(/\s+/u).filter(Boolean) : undefined,
         keyVersion: String(expectedVersion + 1),
         reauthRequired: false,
+        failCount: 0, lastFailureCode: null, lastFailureAt: null, rateLimitResetAt: null,
         status: 'active',
         encryptedSecret: plaintextEnvelope(input, normalizedProvider, credentialId, {
           type: 'deviceCodeOAuth',
@@ -373,6 +375,7 @@ export function createXpodAiConnectionsPodStore(
       const updated = await input.database.updateById(credentialResource, credentialId, {
         keyVersion: String(summary.version + 1),
         metadata: { ...objectValue(current.metadata), health },
+        ...(health === 'healthy' ? { failCount: 0, lastFailureCode: null, lastFailureAt: null, rateLimitResetAt: null, reauthRequired: false } : {}),
       } as never);
       if (!updated) throw new Error('credential_update_failed');
       const persisted = credentialSummaryFromRow(input, normalizedProvider, updated as Record<string, unknown>);
@@ -670,6 +673,10 @@ function credentialSummaryFromRow(
     enabled: booleanValue(metadata?.enabled) ?? stringValue(row.status) === 'active',
     priority: numberValue(metadata?.priority) ?? 100,
     health: healthValue(metadata?.health) ?? (booleanValue(row.reauthRequired) ? 'expired' : 'healthy'),
+    lastFailureCode: stringValue(row.lastFailureCode),
+    lastFailureAt: isoStringValue(row.lastFailureAt),
+    rateLimitResetAt: isoStringValue(row.rateLimitResetAt),
+    failCount: numberValue(row.failCount),
     maskedHint: maskedHintFromEncryptedSecret(input, provider, id, row.encryptedSecret),
     baseUrl: stringValue(row.baseUrl),
     proxyUrl: redactProxyUrl(stringValue(row.proxyUrl) ?? stringValue(metadata?.proxyUrl)),

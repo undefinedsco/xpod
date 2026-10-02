@@ -1,3 +1,4 @@
+import type { AIModelClass } from '@undefineds.co/models'
 /**
  * Wire and view types of the AI connections API. No behaviour.
  */
@@ -123,12 +124,14 @@ export interface AiGatewayModel extends AiConnectionsModelSelection {
    * Rows read from the Pod carry it as their own column; the settings list shows
    * it as the same capability mark the Gateway projection uses.
    */
-  modelType?: DiscoveredProviderModelType
+  modelType?: AIModelClass
   /** Owning credential for providers that allow multiple independent custom endpoints. */
   credentialId?: string
   displayName?: string
   availability?: 'available' | 'unavailable'
   contextWindow?: number
+  /** Canonical embeddingModelResource.dimension, when supplied by the catalog. */
+  dimension?: number
   protocols?: string[]
   custom?: boolean
   inputModalities?: string[]
@@ -244,6 +247,10 @@ export interface AiProviderCredentialSummary {
   /** Proxy endpoint with credentials removed; the secret value never leaves the Pod. */
   proxyUrl?: string
   compatibility?: 'auto' | 'openai' | 'anthropic'
+  lastFailureCode?: string
+  lastFailureAt?: string
+  rateLimitResetAt?: string
+  failCount?: number
   expiresAt?: string
   version: number
 }

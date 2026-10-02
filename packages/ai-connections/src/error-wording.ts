@@ -149,7 +149,7 @@ function messageForSafeErrorCode(
     case 'caller_dpop_replay_unsupported':
       // Xpod reaches the Pod with the owner's own interface key, never with a
       // deployment identity, so the fix is always on the user's side.
-      return 'Xpod 尚未获得这个 Pod 的接口访问密钥。请在「客户端访问」中创建 API Key 并应用到客户端后重试。'
+      return 'Xpod 尚未获准访问这个 Pod，请到 Pod 的授权应用中允许 Xpod 访问。'
     case 'unauthorized':
       return 'Please sign in again to continue.'
     case 'forbidden':

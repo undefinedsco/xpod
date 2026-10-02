@@ -1,3 +1,4 @@
+import { AI_MODEL_CLASS } from '@undefineds.co/models'
 import type { AiConnectionsOAuthCredential } from '@undefineds.co/extension-sdk/web'
 import { AI_CONNECTIONS_PROVIDERS } from './types'
 import type {
@@ -200,7 +201,9 @@ export function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
     offeringId: stringValue(value.offeringId),
     resourceId: stringValue(value.resourceId),
     displayName: stringValue(value.displayName) ?? stringValue(value.display_name) ?? stringValue(value.name),
+    modelType: typeof value.modelType === 'string' && Object.prototype.hasOwnProperty.call(AI_MODEL_CLASS, value.modelType) ? value.modelType : undefined,
     contextWindow: numberValue(value.contextWindow) ?? numberValue(value.context_window),
+    dimension: typeof value.dimension === 'number' && Number.isInteger(value.dimension) && value.dimension > 0 ? value.dimension : undefined,
     protocols: Array.isArray(value.protocols)
       ? value.protocols.filter((protocol): protocol is string => typeof protocol === 'string')
       : undefined,
@@ -442,6 +445,10 @@ export function parseProviderCredentialSummary(value: unknown): AiProviderCreden
     baseUrl: stringValue(value.baseUrl),
     proxyUrl: stringValue(value.proxyUrl),
     expiresAt: stringValue(value.expiresAt),
+    lastFailureCode: stringValue(value.lastFailureCode),
+    lastFailureAt: stringValue(value.lastFailureAt),
+    rateLimitResetAt: stringValue(value.rateLimitResetAt),
+    failCount: numberValue(value.failCount),
     version: value.version,
   }) as unknown as AiProviderCredentialSummary
 }

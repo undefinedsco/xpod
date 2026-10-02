@@ -4,7 +4,7 @@ import type { RunExecutionInput } from './RunExecutionBackend';
 
 type WorkerPayload = {
   input: RunExecutionInput;
-  options?: Pick<PiAgentRuntimeDriverOptions, 'persistPiSessions' | 'sessionRootDir'>;
+  options?: Pick<PiAgentRuntimeDriverOptions, 'persistPiSessions' | 'sessionRootDir' | 'podWorkspaceMapping' | 'podTokenEndpoint'>;
 };
 
 async function readStdin(): Promise<string> {

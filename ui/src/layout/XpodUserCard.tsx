@@ -5,18 +5,15 @@ import {
   Button,
   Separator,
 } from '@undefineds.co/shared-ui';
-import { CheckCircle2, ChevronRight, Copy, Database, Loader2, LogOut, RefreshCw } from 'lucide-react';
+import { CheckCircle2, ChevronRight, Copy, Database, ExternalLink, Loader2, LogIn, LogOut, RefreshCw } from 'lucide-react';
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '../context/AuthContextValue';
 import { useXpodProfileCardIdentity } from '../profile/useXpodProfileCardIdentity';
 import {
   clearRememberedXpodLogin,
-  readPendingXpodAccountEmail,
-  readRememberedXpodLogin,
 } from '../auth/xpod-remembered-login';
 import { XpodSolidRuntimeContext } from '../solid/XpodSolidRuntime';
-import type { SanitizedAccountIdentity } from '../context/AuthContextValue';
 import { logoutXpodProduct } from '../auth/xpod-product-logout';
 import { XPOD_DEFAULT_RETURN_PATH } from '../routes/canonical-routes';
 import { accountCardPosition } from './account-card-position';
@@ -24,31 +21,23 @@ import { accountCardPosition } from './account-card-position';
 export function XpodUserCard() {
   const account = useAuth();
   const runtime = useContext(XpodSolidRuntimeContext);
-  const accountAuthenticated = account.isLoggedIn && account.accountState.status === 'authenticated';
   const webIdAuthenticated = runtime?.state.status === 'authenticated' && Boolean(runtime.webId ?? runtime.state.webId);
-  const isAuthenticated = accountAuthenticated || webIdAuthenticated;
+  const isAuthenticated = webIdAuthenticated;
   const [open, setOpen] = useState(accountCardRequestedByUrl(isAuthenticated));
   const [busy, setBusy] = useState<'logout' | 'switch' | undefined>();
-  const [copyFeedback, setCopyFeedback] = useState<'Copied' | 'Copy failed'>();
+  const [copyFeedback, setCopyFeedback] = useState<'已复制' | '复制失败'>();
   const [cardStyle, setCardStyle] = useState<CSSProperties>();
   const cardRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const copyFeedbackTimerRef = useRef<number | undefined>(undefined);
   const cardId = useId();
-  const identity = account.identity;
-  const pendingAccountEmail = readPendingXpodAccountEmail();
-  const rememberedAccount = readRememberedXpodLogin()?.account;
-  const accountIdentity = accountAuthenticated
-    ? accountCardIdentityFallback(identity, pendingAccountEmail, rememberedAccount)
-    : undefined;
   const profile = useXpodProfileCardIdentity({
-    accountIdentity,
+    accountIdentity: undefined,
     runtime: webIdAuthenticated ? runtime : undefined,
   });
   const displayName = profile.displayName;
   const initials = initialsFor(profile.displayName);
   const webId = runtime?.webId ?? (runtime?.state.status === 'authenticated' ? runtime.state.webId : undefined);
-  const handle = accountHandle(profile.username, webIdAuthenticated ? undefined : accountIdentity?.id, webId);
   const podUrl = runtime?.selectedStorage?.storageUrl ?? runtime?.podUrl;
   const selectedBinding = runtime?.selectedStorage;
   const currentPod = runtime?.currentPod;
@@ -156,27 +145,26 @@ export function XpodUserCard() {
   };
 
   const copyXpodId = async () => {
-    const value = profile.webId ?? handle;
+    const value = profile.webId ?? webId;
+    if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
-      setCopyFeedback('Copied');
+      setCopyFeedback('已复制');
     } catch {
-      setCopyFeedback('Copy failed');
+      setCopyFeedback('复制失败');
     }
     if (copyFeedbackTimerRef.current !== undefined) window.clearTimeout(copyFeedbackTimerRef.current);
     copyFeedbackTimerRef.current = window.setTimeout(() => setCopyFeedback(undefined), 1_800);
   };
 
-  // The product auth gate owns every anonymous, restoring and failure state.
-  // This rail control only exists inside the authenticated application shell.
-  if (!canOpenAccountCard) return null;
+  if (!canOpenAccountCard) return <a href={XPOD_DEFAULT_RETURN_PATH} aria-label="登录" title="登录" className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent"><LogIn size={20} aria-hidden="true" /></a>;
 
   return (
     <div className="relative">
         <button
         ref={triggerRef}
         type="button"
-        aria-label={isAuthenticated ? `Open account menu for ${displayName}` : 'Open account menu'}
+        aria-label={isAuthenticated ? `打开 ${displayName} 的个人卡片` : '个人卡片'}
         aria-expanded={cardOpen}
         aria-controls={cardOpen ? cardId : undefined}
         data-testid="xpod-user-card-trigger"
@@ -211,16 +199,16 @@ export function XpodUserCard() {
               <div className="min-w-0 flex-1 py-0.5">
                 <h2 className="truncate text-xl font-bold text-foreground">{displayName}</h2>
                 <div className="mt-1 flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
-                  <span className="shrink-0 opacity-70">Xpod ID</span>
-                  <span className="truncate font-mono font-medium">{handle}</span>
-                  <Button type="button" variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground" aria-label="Copy Xpod ID" onClick={() => void copyXpodId()}>
+                  <span className="shrink-0 opacity-70">WebID</span>
+                  <span className="truncate font-mono font-medium">{profile.webId ?? webId}</span>
+                  <Button type="button" variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground" aria-label="复制 WebID" onClick={() => void copyXpodId()}>
                     <Copy className="h-3 w-3" aria-hidden="true" />
                   </Button>
                   {copyFeedback ? <span role="status" className="shrink-0 text-xs text-primary">{copyFeedback}</span> : null}
                 </div>
                 <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2 py-1 text-xs font-medium text-success dark:text-success">
                   <span className={`h-1.5 w-1.5 rounded-full ${podReady ? 'bg-success' : 'bg-muted-foreground/50'}`} aria-hidden="true" />
-                  <span>{podReady ? 'Pod connected' : webIdAuthenticated ? 'WebID connected' : 'Account connected'}</span>
+                  <span>{podReady ? 'Pod 已就绪' : 'WebID 已登录'}</span>
                 </div>
               </div>
             </div>
@@ -234,28 +222,29 @@ export function XpodUserCard() {
 
             <div className="border-t border-border/40 p-2">
               <Button asChild variant="ghost" className="h-auto min-h-14 w-full justify-start gap-3 px-3 py-2.5 font-normal">
-                <a href="/settings/pod" aria-label="Pod settings">
+                <a href="/pod/models" aria-label="Pod">
                   <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
                     <Database className="h-4 w-4" aria-hidden="true" />
                   </span>
                   <span className="min-w-0 flex-1 text-left">
                     <span className="block truncate text-sm font-medium text-foreground">{podDisplayName(podLabel)}</span>
-                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">Personal Pod · {podHost(podUrl)}</span>
+                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">{podHost(podUrl)} · {podReady ? '已就绪' : '尚未就绪'}</span>
                   </span>
-                  {podReady ? <CheckCircle2 className="h-4 w-4 shrink-0 text-success" aria-label="Pod ready" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
+                  {podReady ? <CheckCircle2 className="h-4 w-4 shrink-0 text-success" aria-label="Pod 已就绪" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
                 </a>
               </Button>
             </div>
 
             <Separator />
             <div className="p-2">
+              <Button asChild variant="ghost" className="h-10 w-full justify-start px-3 font-normal"><a href={`${(account.idpIndex ?? '/.account/').replace(/\/$/, '')}/account/`} target="_blank" rel="noopener noreferrer"><ExternalLink className="mr-2 h-4 w-4" aria-hidden="true" />管理账号 ↗</a></Button>
               <Button type="button" variant="ghost" className="h-10 w-full justify-start px-3 font-normal" onClick={() => void runSwitchAccount()} disabled={busy !== undefined}>
                 {busy === 'switch' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />}
-                Switch account
+                切换 WebID
               </Button>
               <Button type="button" variant="ghost" className="h-10 w-full justify-start px-3 font-normal text-destructive hover:text-destructive" onClick={() => void runLogout()} disabled={busy !== undefined}>
                 {busy === 'logout' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />}
-                Sign out
+                退出
               </Button>
             </div>
           </div>
@@ -263,37 +252,6 @@ export function XpodUserCard() {
       ), document.body) : null}
     </div>
   );
-}
-
-function accountCardIdentityFallback(
-  identity: SanitizedAccountIdentity | undefined,
-  pendingEmail: string | undefined,
-  rememberedAccount: (SanitizedAccountIdentity & { email?: string }) | undefined,
-): SanitizedAccountIdentity | undefined {
-  if (identity?.displayName || identity?.username || identity?.id || identity?.webId) return identity;
-  const email = pendingEmail || (rememberedAccount && 'email' in rememberedAccount && typeof rememberedAccount.email === 'string'
-    ? rememberedAccount.email
-    : undefined);
-  if (!email && !rememberedAccount) return identity;
-  const username = rememberedAccount?.username || usernameFromEmail(email);
-  return {
-    ...(rememberedAccount ?? {}),
-    ...(username ? { username } : {}),
-    ...(rememberedAccount?.displayName
-      ? { displayName: rememberedAccount.displayName }
-      : { displayName: username || email || 'Xpod account' }),
-  };
-}
-
-function usernameFromEmail(value?: string): string | undefined {
-  if (!value) return undefined;
-  return value.split('@')[0]?.trim() || undefined;
-}
-
-function accountHandle(username?: string, accountId?: string, webId?: string): string {
-  const value = username || accountId || usernameFromWebId(webId);
-  if (!value) return 'Xpod member';
-  return value.startsWith('@') ? value : `@${value}`;
 }
 
 function initialsFor(value: string): string {
@@ -312,25 +270,15 @@ function podNameFromUrl(value: string): string | undefined {
 }
 
 function podDisplayName(podName?: string): string {
-  return podName ? `${podName} Pod` : 'My Pod';
+  return podName ? `${podName} Pod` : '我的 Pod';
 }
 
 function podHost(value?: string): string {
-  if (!value) return 'No Pod connected';
+  if (!value) return '未连接 Pod';
   try {
     return new URL(value).host;
   } catch {
-    return 'Pod storage';
-  }
-}
-
-function usernameFromWebId(value?: string): string | undefined {
-  if (!value) return undefined;
-  try {
-    const segments = new URL(value).pathname.split('/').filter(Boolean);
-    return segments.at(0);
-  } catch {
-    return undefined;
+    return 'Pod';
   }
 }
 

@@ -3,11 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createSessionRequestCredential,
   needsPodAuthorization,
-  withRequestPodAuthorization,
+  withRequestPodAuthorization as withAuthorization,
 } from './session-request-credential';
 import type { AiClientCredentialsCapability } from '@undefineds.co/extension-sdk/web';
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
+const withRequestPodAuthorization = (transport: typeof fetch, authorization: (() => Promise<string | undefined>) | undefined, retry: typeof fetch = transport) =>
+  withAuthorization(transport, authorization, retry, 'https://xpod.example');
+
 const API_KEY = `sk-${btoa('alice-client-1:secret-value')}`;
 
 function capability(overrides: Partial<AiClientCredentialsCapability> = {}): AiClientCredentialsCapability {
@@ -47,6 +50,59 @@ describe('createSessionRequestCredential', () => {
 
     await expect(Promise.all([ first, second ])).resolves.toEqual([ `Bearer ${API_KEY}`, `Bearer ${API_KEY}` ]);
     expect(credentials.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares lazy capability discovery and issuance across concurrent requests', async () => {
+    const credentials = capability();
+    let resolve!: (value: AiClientCredentialsCapability) => void;
+    const resolveCapability = vi.fn(() => new Promise<AiClientCredentialsCapability>(done => { resolve = done; }));
+    const credential = createSessionRequestCredential({ resolveCapability, webId: WEB_ID });
+    const first = credential.authorization();
+    const second = credential.apiKey();
+    expect(resolveCapability).toHaveBeenCalledTimes(1);
+    expect(credentials.create).not.toHaveBeenCalled();
+    resolve(credentials);
+    await expect(Promise.all([first, second])).resolves.toEqual([`Bearer ${API_KEY}`, API_KEY]);
+    expect(credentials.create).toHaveBeenCalledTimes(1);
+    await credential.release();
+    expect(credentials.revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries unavailable capability discovery on a later request', async () => {
+    const credentials = capability();
+    const resolveCapability = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(credentials);
+    const credential = createSessionRequestCredential({ resolveCapability, webId: WEB_ID });
+    await expect(credential.authorization()).resolves.toBeUndefined();
+    await expect(credential.authorization()).resolves.toBe(`Bearer ${API_KEY}`);
+    expect(resolveCapability).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not issue after the session ends during lazy discovery', async () => {
+    const credentials = capability();
+    let resolve!: (value: AiClientCredentialsCapability) => void;
+    const credential = createSessionRequestCredential({ webId: WEB_ID,
+      resolveCapability: () => new Promise(done => { resolve = done; }),
+    });
+    const pending = credential.authorization();
+    await credential.release();
+    resolve(credentials);
+    await expect(pending).resolves.toBeUndefined();
+    expect(credentials.create).not.toHaveBeenCalled();
+    expect(credentials.revoke).not.toHaveBeenCalled();
+  });
+
+  it('uses the lazily resolved issuer to revoke late issuance after logout', async () => {
+    let resolveCreate!: (value: { apiKey: string; resource: string }) => void;
+    let started!: () => void;
+    const creationStarted = new Promise<void>(resolve => { started = resolve; });
+    const credentials = capability({ create: vi.fn(() => new Promise(resolve => { resolveCreate = resolve; started(); })) });
+    const credential = createSessionRequestCredential({ webId: WEB_ID, resolveCapability: async () => credentials });
+    const pending = credential.authorization();
+    await creationStarted;
+    await credential.release();
+    resolveCreate({ apiKey: API_KEY, resource: 'https://pod.example/.account/credential/1' });
+    await expect(pending).resolves.toBeUndefined();
+    expect(credentials.revoke).toHaveBeenCalledWith(expect.objectContaining({ clientId: 'alice-client-1', webId: WEB_ID }));
   });
 
   it('hands out the raw wrapper only while the session is live', async() => {
@@ -115,6 +171,31 @@ describe('createSessionRequestCredential', () => {
 
 describe('withRequestPodAuthorization', () => {
   const missing = () => Response.json({ error: 'service_access_missing' }, { status: 403 });
+
+  it('retries the Gateway protocol error while preserving its response format', async () => {
+    const first = vi.fn(async () => Response.json({ error: {
+      code: 'service_access_missing', message: 'Pod access is missing',
+    } }, { status: 403 }));
+    const retry = vi.fn(async () => Response.json({ data: [{ id: 'selected-model' }] }));
+    const credential = vi.fn(async () => 'Bearer sk-session');
+    const wrapped = withRequestPodAuthorization(first, credential, retry, 'https://xpod.example');
+    const response = await wrapped('https://xpod.example/v1/models');
+    expect(await response.json()).toEqual({ data: [{ id: 'selected-model' }] });
+    expect(credential).toHaveBeenCalledOnce();
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it('does not treat another Gateway protocol refusal as missing Pod access', async () => {
+    const first = vi.fn(async () => Response.json({ error: {
+      code: 'credential_unavailable', message: 'Upstream access unavailable',
+    } }, { status: 403 }));
+    const retry = vi.fn(async () => Response.json({ data: [] }));
+    const credential = vi.fn(async () => 'Bearer sk-session');
+    const wrapped = withRequestPodAuthorization(first, credential, retry, 'https://xpod.example');
+    expect((await wrapped('https://xpod.example/v1/models')).status).toBe(403);
+    expect(credential).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
+  });
 
   it('retries once with the session credential when the API reports missing Pod access', async() => {
     const attempts: Array<string | null> = [];
@@ -219,5 +300,35 @@ describe('withRequestPodAuthorization', () => {
   it('is a no-op without an authorization provider', () => {
     const fetchImpl = (async() => new Response('ok')) as typeof fetch;
     expect(withRequestPodAuthorization(fetchImpl, undefined)).toBe(fetchImpl);
+  });
+});
+
+describe('Gateway credential boundary', () => {
+  it.each(['https://other.example/api/tasks', 'https://xpod.example/alice/data.ttl', 'https://xpod.example/.account/'])('never forwards a credential to %s', async(url) => {
+    const transport = vi.fn(async() => Response.json({ error: 'service_access_missing' }, { status: 403 }));
+    const credential = vi.fn(async() => 'Bearer secret');
+    expect(needsPodAuthorization(url, 'https://xpod.example')).toBe(false);
+    await withRequestPodAuthorization(transport, credential)(url);
+    expect(credential).not.toHaveBeenCalled();
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes the first token proof when retrying a Request with a different credential', async() => {
+    const first = vi.fn(async() => Response.json({ error: 'service_access_missing' }, { status: 403 }));
+    const retry = vi.fn(async(_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get('dpop')).toBeNull();
+      expect(headers.get('authorization')).toBe('Bearer sk-session');
+      return Response.json({ ok: true });
+    });
+    await withRequestPodAuthorization(first, async() => 'Bearer sk-session', retry)(new Request('https://xpod.example/api/tasks', { headers: { dpop: 'old-proof' } }));
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed without a known Gateway origin', async() => {
+    const transport = vi.fn(async() => Response.json({ error: 'service_access_missing' }, { status: 403 }));
+    const credential = vi.fn(async() => 'Bearer secret');
+    await withAuthorization(transport, credential)('https://xpod.example/api/tasks');
+    expect(credential).not.toHaveBeenCalled();
   });
 });

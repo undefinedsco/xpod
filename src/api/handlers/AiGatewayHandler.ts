@@ -5,6 +5,7 @@ import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
 import type { AiGatewayService } from '../ai-gateway/AiGatewayService';
+import { readGatewayInvocationMetadata } from '../ai-gateway/InvocationMetadata';
 import type { GatewayEvent, GatewayProtocol, GatewayProtocolFrontend, GatewayUsage } from '../ai-gateway/types';
 
 export interface AiGatewayHandlerOptions {
@@ -83,6 +84,7 @@ export class AiGatewayHandler {
     response.once('close', abort);
 
     try {
+      const invocationMetadata = readGatewayInvocationMetadata(request.headers, request.rawHeaders);
       const stream = isStreamRequest(bodyResult.value);
       if (!stream) {
         const result = await this.service.complete({
@@ -90,6 +92,7 @@ export class AiGatewayHandler {
           protocol,
           body: bodyResult.value,
           signal: controller.signal,
+          invocationMetadata,
         });
         sendJson(response, 200, result);
         this.logInference({
@@ -109,6 +112,7 @@ export class AiGatewayHandler {
         protocol,
         body: bodyResult.value,
         signal: controller.signal,
+        invocationMetadata,
       });
       const outcome = await this.sendEventStream(response, execution.frontend, execution.events);
       this.logInference({ protocol, model, stream: true, startedAt, ...outcome });

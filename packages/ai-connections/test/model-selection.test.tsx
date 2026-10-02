@@ -59,6 +59,23 @@ function openAiProduct(selectedModels: AiGatewayModel[]): AiProviderSummary {
 }
 
 describe('AI Connection model selection', () => {
+  it('filters by canonical model class without clearing selected models', async () => {
+    const models: AiGatewayModel[] = [
+      { id: 'chat-test', provider: 'openai', modelType: 'chat' },
+      { id: 'vector-test', provider: 'openai', modelType: 'embedding' },
+    ]
+    const current = client(models)
+    render(<AiConnectionsPanel client={current} selectedProvider="openai" providerProducts={{ openai: openAiProduct(models) }} />)
+    await screen.findByRole('tab', { name: '向量' })
+    expect(screen.getByText('chat-test')).toBeTruthy()
+    expect(screen.queryByText('vector-test')).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: '向量' }))
+    expect(screen.getByRole('button', { name: '停用 vector-test' })).toBeTruthy()
+    expect(screen.queryByText('chat-test')).toBeNull()
+    expect(current.saveModelSelection).not.toHaveBeenCalled()
+    expect(screen.queryByRole('tab', { name: '语音合成' })).toBeNull()
+  })
+
   it('reloads the Gateway projection after a model selection is persisted', async () => {
     const current = client([{ id: 'gpt-5', provider: 'openai', displayName: 'GPT-5' }])
     current.listGatewayModels = vi.fn(async () => [])

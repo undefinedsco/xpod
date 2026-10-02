@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import kill from 'tree-kill';
+import { normalizeLog, type LogLevel } from '../logging/normalize-log';
+import { redactConfiguredLogSecrets } from '../logging/log-secrets';
 import type { ServiceConfig, ServiceState, ServiceStatus, StatusChangeHandler } from './types';
 
 const MAX_RESTARTS = 5;
@@ -35,7 +37,7 @@ function redactSecrets(line: string): string {
 
 export interface SupervisorLog {
   timestamp: string;
-  level: 'info' | 'warn' | 'error';
+  level: LogLevel;
   source: string;
   message: string;
 }
@@ -141,17 +143,20 @@ export class Supervisor {
     });
   }
 
-  public addLog(source: string, level: SupervisorLog['level'], message: string): void {
-    this.logs.push({
+  public addLog(source: string, level: SupervisorLog['level'], message: string): SupervisorLog {
+    const normalized = normalizeLog(message, level);
+    const entry: SupervisorLog = {
       timestamp: new Date().toISOString(),
-      level,
+      level: normalized.level,
       source,
-      message,
-    });
+      message: redactConfiguredLogSecrets(redactSecrets(normalized.message), process.env),
+    };
+    this.logs.push(entry);
 
     if (this.logs.length > MAX_LOGS) {
       this.logs.splice(0, this.logs.length - MAX_LOGS);
     }
+    return entry;
   }
 
   public getLogs(filters?: {
@@ -254,15 +259,13 @@ export class Supervisor {
         // Redact once, at the single point where child output enters supervisor state:
         // the console, the log ring buffer (served by /service/logs) and the retained
         // crash tail must not disagree about what the child printed.
-        const text = redactSecrets(trimmed);
+        const { message: text } = this.addLog(source, isError ? 'error' : 'info', trimmed);
         recordOutput(text);
 
         if (isError) {
           console.error(`[${source}] ${text}`);
-          this.addLog(source, 'error', text);
         } else {
           console.log(`[${source}] ${text}`);
-          this.addLog(source, 'info', text);
         }
       }
     };

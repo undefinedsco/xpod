@@ -2,13 +2,12 @@ import type { ServerResponse } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import { getAccountId, getWebId } from '../auth/AuthContext';
-import { generateId, nowTimestamp } from '../chatkit/types';
+import { cancelRun } from '../runs/RunCancellation';
 import type { StoreContext } from '../chatkit/store';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
-import { RunStatus, RunStepType, type RunStatusType } from '../runs/schema';
+import { RunStatus, type RunStatusType } from '../runs/schema';
 import {
   deriveRunCommandProjection,
-  generateRunStepResourceId,
   resolveDataResource,
   resolveRunUrn,
   type RunCommandKind,
@@ -72,32 +71,10 @@ export function registerRunRoutes(server: ApiServer, options: RunHandlerOptions)
   server.post('/v1/runs/:runId/cancel', async (request, response, params) => {
     try {
       const context = buildStoreContext(request);
-      const run = await runStore.loadRun(decodeURIComponent(params.runId), context);
-      const now = nowTimestamp();
-      run.cancelRequestedAt = run.cancelRequestedAt ?? now;
-      run.updatedAt = now;
-
-      if (run.status === RunStatus.QUEUED) {
-        run.status = RunStatus.CANCELLED;
-        run.completedAt = now;
-        run.leaseOwner = undefined;
-        run.leaseExpiresAt = undefined;
-      }
-
-      await runStore.saveRun(run, context);
-      await runStore.appendRunStep({
-        id: generateRunStepResourceId({
-          key: generateId('run-step'),
-          runId: run.id,
-          createdAt: now,
-        }),
-        runId: run.id,
-        run: resolveRunResource(run, context),
-        type: RunStepType.CANCEL_REQUESTED,
-        message: 'Run cancellation requested',
-        data: { status: run.status },
-        createdAt: now,
-      }, context);
+      const run = await cancelRun({
+        store: runStore, runId: decodeURIComponent(params.runId), context,
+        resourceIri: value => resolveRunResource(value, context),
+      });
 
       sendJson(response, 200, { run: projectRunForApi(run) });
     } catch (error) {

@@ -824,6 +824,7 @@ describe('AiGatewayService', () => {
             captured.push(String(url));
             return new Response(kimiSse(), { status: 200 });
           }) as typeof fetch,
+          resolver: async () => [{ address: '93.184.216.34', family: 4 }],
         }),
       }),
     });
@@ -1066,6 +1067,12 @@ describe('AiGatewayService', () => {
       credentialId: 'primary',
       status: 429,
       errorCode: 'provider_error',
+      failureCode: 'rate_limited',
+      occurredAt: expect.any(Date),
+      rateLimitResetAt: expect.any(Date),
+      auth: AUTH,
     }));
+    const recorded = vi.mocked(fixture.store.recordFailure!).mock.calls[0][0];
+    expect(recorded.rateLimitResetAt!.getTime() - recorded.occurredAt!.getTime()).toBe(60_000);
   });
 });

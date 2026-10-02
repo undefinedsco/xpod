@@ -708,8 +708,10 @@ export function registerCommonServices(
       return createApiRdfEngine(config);
     }).singleton(),
 
-    runContextRetriever: asFunction(({ rdfEngine, chatKitStore, embeddingService }: ApiContainerCradle) => {
-      return createApiRunContextRetriever(rdfEngine, { chatKitStore, embeddingService });
+    runContextRetriever: asFunction((cradle: ApiContainerCradle) => {
+      const { rdfEngine, chatKitStore, embeddingService, ownerPodAccess } = cradle;
+      return createApiRunContextRetriever(rdfEngine, { chatKitStore, embeddingService,
+        podAccess: ownerPodAccess, podBaseUrlResolver: podBaseUrlResolver(cradle) });
     }).singleton(),
 
     rdfSearchIndexingService: asFunction(({ rdfEngine, chatKitStore, embeddingService }: ApiContainerCradle) => {
@@ -767,6 +769,10 @@ export function registerCommonServices(
           return fallback;
         },
         runtimeDriver: new PiAgentRuntimeDriver({
+          podWorkspaceMapping: config.solidBaseUrl && config.solidRootFilePath
+            ? { baseUrl: config.solidBaseUrl, rootFilePath: config.solidRootFilePath }
+            : undefined,
+          podTokenEndpoint: config.cssTokenEndpoint,
           agentLoopIsolation: config.edition === 'cloud' ? 'sandboxed-process' : 'in-process',
           requireSandbox: config.edition === 'cloud',
           rdfSearchIndexingService,

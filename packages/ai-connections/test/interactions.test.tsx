@@ -311,8 +311,8 @@ describe('AI Connection settings', () => {
 
     await waitFor(() => expect(current.listModels).toHaveBeenCalled())
 
-    fireEvent.click(screen.getByText('接入信息'))
-    expect(screen.queryByText('Provider 凭证保存在当前 Pod，由 Pod 权限保护。')).toBeNull()
+    expect(screen.queryByText('接入信息')).toBeNull()
+    expect(screen.queryByText('连接凭据保存在当前 Pod，由 Pod 权限保护。')).toBeNull()
     expect(screen.queryByText(/加密保存在当前 Pod/)).toBeNull()
   })
   it('shows one selected Provider without repeating the Applet header or WebID hero', async () => {
@@ -446,8 +446,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    expect(await screen.findByRole('heading', { name: 'Kimi 账号' })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: 'API Platform' })).toBeTruthy()
+    expect(screen.getByRole('group', { name: 'Kimi 账号快捷接入' })).toBeTruthy()
     expect(screen.queryByRole('tab')).toBeNull()
     expect(screen.getByText('a***e@example.com')).toBeTruthy()
     expect(screen.getByRole('button', { name: '新建 API Key 连接' })).toBeTruthy()
@@ -509,15 +508,9 @@ describe('AI Connection settings', () => {
       },
     }} />)
 
-    fireEvent.click(screen.getByText('接入信息'))
-    expect(await screen.findByRole('heading', { name: 'API Platform' })).toBeTruthy()
-    expect(screen.queryByText('OpenAI Platform')).toBeNull()
-    expect(screen.queryByText(/Responses.*Chat Completions/)).toBeNull()
+    expect(screen.queryByText('接入信息')).toBeNull()
     expect(screen.queryByText('https://api.openai.com/v1')).toBeNull()
-    expect(screen.getByRole('link', { name: '控制台' })).toHaveProperty('href', 'https://platform.openai.com/api-keys')
-    expect(screen.getByRole('link', { name: '订阅与账单' })).toHaveProperty('href', 'https://platform.openai.com/billing')
-    expect(screen.getByRole('link', { name: '额度与用量' })).toHaveProperty('href', 'https://platform.openai.com/usage')
-    expect(screen.getByRole('link', { name: '使用政策' })).toHaveProperty('href', 'https://openai.com/policies/usage-policies/')
+
   })
 
   it('renders an unavailable offering with its own entries disabled, never an invented action', async () => {
@@ -529,8 +522,6 @@ describe('AI Connection settings', () => {
       },
     }} />)
 
-    expect(await screen.findByRole('heading', { name: 'OpenAI Subscription' })).toBeTruthy()
-    expect(screen.getByText('暂不可用：账号订阅需在 Xpod 桌面版中导入本机客户端（如 Codex CLI）的登录态，浏览器中无法完成。')).toBeTruthy()
     // The offering declares oauth + local, so both entries render - disabled,
     // because this deployment cannot run them. Nothing else appears beside them.
     expect(screen.getByRole('button', { name: '设备码登录' })).toHaveProperty('disabled', true)
@@ -1097,8 +1088,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    expect(await screen.findByRole('heading', { name: 'Token Plan Personal' })).toBeTruthy()
-    expect(await screen.findByText('token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1')).toBeTruthy()
+    expect(screen.queryByText('token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1')).toBeNull()
     openCreateConnection()
 
     const keyInput = await screen.findByLabelText('百炼 API Key 输入')
@@ -1331,17 +1321,8 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByText('接入信息'))
-    const official = screen.getByRole('heading', { name: 'Official Subscription' }).closest('section')!
-    const tokenPlan = screen.getByRole('heading', { name: 'Token Plan' }).closest('section')!
-    const apiPlatform = screen.getByRole('heading', { name: 'API Platform' }).closest('section')!
-    expect(within(official).getByText('api.kimi.com/coding/v1')).toBeTruthy()
-    expect(within(official).getByText('api.kimi.com/coding')).toBeTruthy()
-    expect(within(official).getByText('Chat API')).toBeTruthy()
-    expect(within(official).getByText('Anthropic API')).toBeTruthy()
-    expect(within(tokenPlan).getByText('api.kimi.com/coding/v1')).toBeTruthy()
-    expect(within(tokenPlan).getByText('api.kimi.com/coding')).toBeTruthy()
-    expect(within(apiPlatform).getByText('api.moonshot.ai/v1')).toBeTruthy()
+    expect(screen.queryByText('接入信息')).toBeNull()
+    expect(screen.queryByText('api.kimi.com/coding/v1')).toBeNull()
 
     const tokenQuota = screen.getByRole('group', { name: 'API Key · sk-kimi-...plan额度' })
     const apiQuota = screen.getByRole('group', { name: 'API Key · sk-...platform额度' })
@@ -1582,13 +1563,13 @@ describe('AI Connection settings', () => {
     render(<AiConnectionsHeader controller={controller} />)
 
     fireEvent.click(screen.getByRole('button', { name: '添加 AI Connection' }))
-    expect(screen.getByRole('dialog', { name: '添加自定义 Provider' })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: '添加自定义服务商' })).toBeTruthy()
 
     fireEvent.change(screen.getByLabelText('Provider 名称'), { target: { value: 'timicc' } })
     fireEvent.change(screen.getByLabelText('兼容协议'), { target: { value: 'openai' } })
     fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://timicc.com' } })
     fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'sk-custom-secret' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存自定义 Provider' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存自定义服务商' }))
 
     await waitFor(() => expect(current.createApiKeyCredential).toHaveBeenCalledWith('custom', {
       offeringId: 'openai-compatible',
@@ -2340,7 +2321,7 @@ describe('AI Connection settings', () => {
     expect(current.pollDevice).not.toHaveBeenCalled()
   })
 
-  it('opens API Key creation from the list without exposing CSS client credential fields', async () => {
+  it('opens Xpod 密钥 creation from the list without exposing CSS client credential fields', async () => {
     const current = client()
     render(<AiConnectionsPanel client={current} selectedSection="keys" />)
 
@@ -2348,19 +2329,19 @@ describe('AI Connection settings', () => {
     expect(await screen.findByRole('heading', { name: 'Xpod' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Xpod 说明' })).toBeTruthy()
     expect(screen.getByRole('link', { name: /访问 Xpod/ }).getAttribute('href')).toBe(current.apiBase)
-    expect(screen.queryByText(/API Key 用于让客户端把 Xpod 当作 Provider 接入/)).toBeNull()
-    expect(screen.getByRole('button', { name: '新建 API Key' }).textContent).toBe('API Key')
-    expect(screen.queryByLabelText('API Key 名称')).toBeNull()
-    const create = screen.getByRole('button', { name: '新建 API Key' })
+    expect(screen.queryByText(/Xpod 密钥 用于让客户端把 Xpod 当作 Provider 接入/)).toBeNull()
+    expect(screen.getByRole('button', { name: '新建 Xpod 密钥' }).textContent).toBe('Xpod 密钥')
+    expect(screen.queryByLabelText('Xpod 密钥 名称')).toBeNull()
+    const create = screen.getByRole('button', { name: '新建 Xpod 密钥' })
     await waitFor(() => expect(create).toHaveProperty('disabled', false))
     fireEvent.click(create)
-    expect(screen.getByLabelText('API Key 名称')).toHaveProperty('value', '我的 API Key')
+    expect(screen.getByLabelText('Xpod 密钥 名称')).toHaveProperty('value', '我的 Xpod 密钥')
     // The purpose is part of the creation flow: pick a client application, not a CSS client.
-    const purpose = screen.getByLabelText('API Key 用途') as HTMLSelectElement
+    const purpose = screen.getByLabelText('Xpod 密钥 用途') as HTMLSelectElement
     expect([...purpose.options].map((option) => option.textContent)).toEqual([
-      '选择客户端应用', 'Codex', 'Claude Code', 'Pi', 'CodeBuddy',
+      '不写入，只复制', 'Codex · 只复制配置', 'Claude Code · 只复制配置', 'Pi · 只复制配置', 'CodeBuddy · 只复制配置',
     ])
-    expect(screen.getByRole('button', { name: '创建 API Key' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: '创建 Xpod 密钥' })).toHaveProperty('disabled', false)
     expect(screen.queryByLabelText('应用到客户端')).toBeNull()
     expect(screen.queryByLabelText('Client ID')).toBeNull()
     expect(screen.queryByLabelText('Client Secret')).toBeNull()

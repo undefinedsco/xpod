@@ -151,9 +151,9 @@ describe('AI Connection live Pod updates', () => {
       header.querySelector('[data-live-updates]')?.getAttribute('data-live-updates'),
     ).toBe('unavailable'))
     // 默认停在「连接客户端」（§7.3）
-    expect(within(header).getByRole('heading', { name: 'CONNECT CLIENT' })).toBeTruthy()
+    expect(within(header).getByRole('heading', { name: 'Xpod' })).toBeTruthy()
     fireEvent.click(screen.getByRole('option', { name: 'Xpod' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: '新建 API Key' })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('button', { name: '新建 Xpod 密钥' })).toBeTruthy())
 
     // Leaving the page leaves no subscription behind.
     view.unmount()

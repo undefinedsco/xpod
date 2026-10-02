@@ -31,7 +31,7 @@ describe('dashboard runtime console routes', () => {
     expect(existsSync(path.join(root, 'ui/src/pages/status/UsageStatusPanel.tsx'))).toBe(false);
   });
 
-  it('keeps every Dashboard surface behind the route-level Account auth boundary', async () => {
+  it('keeps local host pages outside the route-level WebID boundary', async () => {
     const app = await readRepoFile('ui/src/XpodShellApp.tsx');
     const shellRoutes = await readRepoFile('ui/src/xpod-shell-routes.tsx');
     const routes = await readRepoFile('ui/src/dashboard-routes.tsx');
@@ -39,12 +39,13 @@ describe('dashboard runtime console routes', () => {
     expect(app).toContain('AuthProvider');
     expect(app).toContain('XpodSolidRuntimeProvider');
     expect(app).not.toContain('XpodAuthProvider');
-    // Regression guard: /status and /dashboard are protected by the
-    // route-level AccountAuthBoundary, not by a shell-wide login gate.
+    // Device pages stay available locally; applet data uses WebID authorization.
     expect(app).not.toContain('XpodProductAuthGate');
     expect(app.indexOf('<BrowserRouter')).toBeLessThan(app.indexOf('<XpodShellRoutes />'));
-    expect(shellRoutes).toContain("path: 'status', element: <AccountWorkspaceBoundary>");
-    expect(shellRoutes).toContain("path: 'dashboard', element: <AccountWorkspaceBoundary>");
+    expect(shellRoutes).toContain("path: 'device'");
+    expect(shellRoutes).toContain("path: 'tasks'");
+    expect(shellRoutes).toContain("<WebIdAuthBoundary autoStart>");
+    expect(shellRoutes).not.toContain("AccountWorkspaceBoundary");
     for (const path of ["path: 'overview'", "path: 'runtime'", "path: 'logs'", "path: 'rdf'", "path: 'network/*'"]) {
       expect(routes).toContain(path);
     }
@@ -66,10 +67,10 @@ describe('dashboard runtime console routes', () => {
     expect(dashboardApp).toContain('XpodShellApp');
     expect(shellApp).toContain('<BrowserRouter');
     expect(shellApp).not.toContain('basename=');
-    expect(shellRoutes).toContain("path: 'status'");
+    expect(shellRoutes).toContain("path: 'device'");
     expect(shellRoutes).toContain("path: 'network'");
     expect(shellRoutes).toContain("path: 'ai-connections'");
-    expect(shellRoutes).toContain("path: 'ai-config'");
+    expect(shellRoutes).toContain("path: 'pod'");
     expect(shellRoutes).toContain("path: 'settings'");
     expect(dashboardRoutes).toContain("path: 'overview'");
     expect(dashboardRoutes).toContain("path: 'network/*'");
@@ -91,10 +92,10 @@ describe('dashboard runtime console routes', () => {
     expect(settingsRoutes).toContain('aiConnectionsSurfaceRoutes');
     expect(settingsRoutes).toContain('aiConfigSurfaceRoutes');
     expect(settingsRoutes).toContain('systemSettingsSurfaceRoutes');
-    expect(canonicalRoutes).toContain("status: '/status/overview'");
-    expect(canonicalRoutes).toContain("settings: '/settings/pod'");
+    expect(canonicalRoutes).toContain("status: '/device/services'");
+    expect(canonicalRoutes).toContain("settings: '/settings/appearance'");
     expect(canonicalRoutes).toContain("aiConnections: '/ai-connections'");
-    expect(canonicalRoutes).toContain("aiConfig: '/ai-config/model-assignments'");
+    expect(canonicalRoutes).toContain("aiConfig: '/pod/models'");
     expect(canonicalRoutes).toContain("'/dashboard/models': canonicalRoutes.aiConnections");
     expect(canonicalRoutes).toContain("'/settings/models': canonicalRoutes.aiConnections");
     expect(settingsNavigation).toContain("status: '/services/runtime'");
@@ -107,8 +108,8 @@ describe('dashboard runtime console routes', () => {
     expect(productLayout).toContain('ProductNavLinks');
     expect(productLayout).toContain('globalNavigationItems');
     expect(productLayout).toContain('getRailNavItemClass');
-    // §3.1/§8.3：宽窗是 184px 文字导航，标签直接可见，不再用 sr-only 图标栏
-    expect(productLayout).toContain('<span className="truncate md:inline">{item.label}</span>');
+    // Desktop shell §2: icon-only rail retains accessible labels.
+    expect(productLayout).toContain('<span className="sr-only">{item.label}</span>');
     expect(adminLayout).toContain('Outlet');
     expect(adminLayout).not.toContain('useState<AdminPage>');
     expect(sidebar).toContain('NavLink');
@@ -138,15 +139,14 @@ describe('upgraded dashboard pages', () => {
     const productLayout = await readRepoFile('ui/src/layout/XpodProductLayout.tsx');
     const navItemStyle = await readRepoFile('ui/src/layout/nav-item-style.ts');
 
-    expect(productLayout).toContain("import { AppLayout }");
-    expect(productLayout).toContain('flex h-full w-full flex-row items-center');
-    expect(productLayout).toContain('md:min-h-full md:flex-col');
-    // §8.3：宽窗是带文字的 184px 导航行，不是图标按钮
+    const shellCss = await readRepoFile('ui/src/styles/desktop-shell.css');
+    expect(productLayout).toContain('WorkspaceDrawerContext.Provider');
+    expect(productLayout).toContain('data-drawer-open={drawerOpen}');
     expect(productLayout).toContain('getRailNavItemClass(active)');
-    expect(productLayout).toContain('truncate md:inline');
-    expect(navItemStyle).toContain('h-9 items-center gap-3');
-    expect(navItemStyle).toContain('px-3');
-    expect(navItemStyle).not.toContain('justify-center');
+    expect(productLayout).toContain('className="sr-only"');
+    expect(navItemStyle).toContain('h-10 w-10 items-center justify-center');
+    expect(shellCss).toContain('grid-template-columns:64px minmax(0,1fr)');
+    expect(shellCss).toContain('@media (max-width:767px)');
     expect(productLayout).toContain('ProductNavLinks');
     expect(productLayout).not.toContain('min-height: 11.75rem;');
   });

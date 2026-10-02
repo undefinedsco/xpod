@@ -132,14 +132,14 @@ async function canListen(port: number, host: string, timeoutMs = PORT_PROBE_TIME
  * reservation, and a dynamic entry that took it would break that group's tunnel instead of
  * merely moving its own listener.
  */
-export async function findGatewayIngressPort(gatewayPort: number): Promise<number> {
+export async function findGatewayIngressPort(gatewayPort: number, excluded: ReadonlySet<number> = new Set()): Promise<number> {
   for (let offset = 3; offset < 10; offset += 1) {
     const candidate = gatewayPort + offset;
-    if (await getFreePortForWildcard(candidate) === candidate) {
+    if (await getFreePortForWildcard(candidate, PORT_PROBE_TIMEOUT_MS, excluded) === candidate) {
       return candidate;
     }
   }
-  return await getEphemeralLoopbackPort();
+  return await getFreePortForWildcard(await getEphemeralLoopbackPort(), PORT_PROBE_TIMEOUT_MS, excluded);
 }
 
 /**
@@ -150,10 +150,10 @@ export async function findGatewayIngressPort(gatewayPort: number): Promise<numbe
  * the runtime, the test helpers, the integration runners - goes around it instead of racing for
  * it. That is the difference between "usually fine" and "cannot collide".
  */
-export async function getFreePort(basePort: number, host = '127.0.0.1', timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<number> {
+export async function getFreePort(basePort: number, host = '127.0.0.1', timeoutMs = PORT_PROBE_TIMEOUT_MS, excluded: ReadonlySet<number> = new Set()): Promise<number> {
   const reserved = reservedPorts();
   for (let port = basePort; port <= HIGHEST_PORT; port++) {
-    if (reserved.has(port)) {
+    if (reserved.has(port) || excluded.has(port)) {
       continue;
     }
     if (await canListen(port, host, timeoutMs)) {
@@ -230,11 +230,11 @@ export async function requireFreePortForWildcard(port: number, timeoutMs = PORT_
  * CSS may bind `::` while the API binds `0.0.0.0`, so probing only localhost can miss an
  * occupied port on the other address family - and a reserved port is skipped either way.
  */
-export async function getFreePortForWildcard(basePort: number, timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<number> {
+export async function getFreePortForWildcard(basePort: number, timeoutMs = PORT_PROBE_TIMEOUT_MS, excluded: ReadonlySet<number> = new Set()): Promise<number> {
   const probeIpv6 = hasIpv6Address();
   const reserved = reservedPorts();
   for (let port = basePort; port <= HIGHEST_PORT; port++) {
-    if (reserved.has(port)) {
+    if (reserved.has(port) || excluded.has(port)) {
       continue;
     }
     if (!await canListen(port, '0.0.0.0', timeoutMs)) {

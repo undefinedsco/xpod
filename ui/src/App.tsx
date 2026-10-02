@@ -10,6 +10,7 @@ import { IndexPage } from './pages/IndexPage';
 import { WelcomePage } from './pages/WelcomePage';
 import { AboutPage } from './pages/AboutPage';
 import { AccountPage } from './pages/AccountPage';
+import { AccountPodManagementPage } from './pages/AccountPodManagementPage';
 import { FirstPodPage } from './pages/FirstPodPage';
 import { ConsentPage } from './pages/ConsentPage';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
@@ -27,6 +28,7 @@ function AppRoutes() {
       <Route path={scopeAccountUrl("/.account/")} element={<IndexPage />} />
       <Route path={scopeAccountUrl("/.account/about/")} element={<AboutPage />} />
       <Route path={scopeAccountUrl("/.account/account/")} element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
+      <Route path={scopeAccountUrl("/.account/manage-pod/")} element={<ProtectedRoute allowOidcPending><AccountPodManagementPage /></ProtectedRoute>} />
       <Route path={scopeAccountUrl("/.account/create-pod/")} element={<ProtectedRoute allowOidcPending><FirstPodPage /></ProtectedRoute>} />
       <Route path={scopeAccountUrl("/.account/login/")} element={<LoginSelectPage />} />
       <Route path={scopeAccountUrl("/.account/login/password/")} element={<WelcomePage key="login" initialIsRegister={false} />} />

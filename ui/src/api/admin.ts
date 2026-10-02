@@ -508,7 +508,8 @@ export async function getGatewayStatus(options: AdminFetchOptions = {}): Promise
   try {
     const res = await fetch('/service/status', { signal: options.signal });
     if (res.ok) {
-      return await res.json();
+      const body: unknown = await res.json();
+      if (Array.isArray(body)) return body;
     }
   } catch (e) {
     console.error('Failed to get gateway status:', e);
@@ -563,7 +564,14 @@ export async function getLogs(options?: {
     if (options?.source && options.source !== 'all') params.set('source', options.source);
 
     const qs = params.toString();
-    const res = await fetch(`${API_BASE}/logs${qs ? `?${qs}` : ''}`);
+    // The current Gateway owns service identity, including externally managed runtimes.
+    // Relative URLs keep canonical remote origins and desktop loopback origins on their
+    // existing authorization boundary. Direct API installations have no /service route.
+    const suffix = qs ? `?${qs}` : '';
+    let res = await fetch(`/service/logs${suffix}`);
+    if (res.status === 404 || res.status === 405) {
+      res = await fetch(`${API_BASE}/logs${suffix}`);
+    }
     if (res.ok) {
       const body = await res.json();
       return Array.isArray(body) ? body : body.logs ?? [];

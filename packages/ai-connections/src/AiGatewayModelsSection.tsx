@@ -45,15 +45,15 @@ export function AiGatewayModelsSection({ models, selection }: { models?: AiGatew
         className="flex flex-wrap items-center justify-between gap-2"
       >
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          <h3 className="flex items-center gap-2 text-sm font-medium text-foreground/90">
+          <h3 className="flex items-center gap-2 text-sm font-medium leading-normal text-foreground/90">
             <Box aria-hidden="true" className="h-4 w-4 text-primary" />可用模型
           </h3>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-xs leading-normal text-muted-foreground">
             {selection
               ? `共 ${catalog.length} · 已发布 ${publishedCount} · 已失效 ${unavailableCount}`
               : `共 ${catalog.length} · 已失效 ${unavailableCount}`}
           </span>
-          <span className="text-xs text-muted-foreground">Xpod 当前发布的模型</span>
+          <span className="text-xs leading-normal text-muted-foreground">Xpod 当前发布的模型</span>
         </div>
         <AiModelSearchInput value={search} onChange={setSearch} />
       </div>

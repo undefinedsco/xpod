@@ -38,6 +38,15 @@ function stepIndex(job: any, name: string): number {
 }
 
 describe('stable release promotion workflow', () => {
+  it('requires real Task approval evidence from the live Gateway acceptance', async () => {
+    const candidate = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/candidate.yml'), 'utf8')).toJSON() as Workflow;
+    const live = jobRunText(candidate, 'deploy_and_accept');
+    expect(live).toContain('XPOD_LIVE_TASK_APPROVAL=1');
+    expect(live).toContain("['task-approval', 'taskApproval']");
+    expect(live).toContain('layer?.ok !== true');
+    expect(jobRunText(candidate, 'finalize_acceptance')).not.toMatch(/['"]task-approval['"]\s*:\s*['"]passed['"]/);
+  });
+
   it('checks the complete root tarball before publishing any native package', async () => {
     const workflow = await loadWorkflow();
     const job = workflow.jobs.publish_npm_staging;
@@ -152,6 +161,7 @@ describe('stable release promotion workflow', () => {
       'package-consumers',
       'models',
       'chat',
+      'task-approval',
       'qlever-local',
       'desktop',
     ]) {
@@ -224,6 +234,7 @@ describe('stable release promotion workflow', () => {
     const promote = workflow.jobs.promote_npm_latest;
     const promoteText = jobRunText(workflow, 'promote_npm_latest');
     expect(promote.needs).toEqual([
+      'shared_packages',
       'promotion_guard',
       'verify_npm_consumer_node',
       'verify_npm_consumer_bun',
@@ -234,6 +245,36 @@ describe('stable release promotion workflow', () => {
     expect(promoteText).toContain('packages=(@undefineds.co/xpod @undefineds.co/xpod-darwin-arm64)');
     expect(promoteText).toContain('for package in "${packages[@]}"; do');
     expect(promoteText).toContain('npm dist-tag add "$package@$RELEASE_VERSION" latest');
+  });
+
+  it('gates shared applets on exact accepted SHA before root latest promotion', async () => {
+    const workflow = await loadWorkflow();
+    const shared = workflow.jobs.shared_packages;
+    expect(shared.needs).toBe('promotion_guard');
+    expect(shared.uses).toBe('./.github/workflows/packages-release.yml');
+    expect(shared.with).toEqual({ 'accepted-sha': '${{ github.sha }}' });
+    expect(shared.if).toBeUndefined();
+    expect(shared['continue-on-error']).toBeUndefined();
+    expect(workflow.jobs.promote_npm_latest.needs).toContain('shared_packages');
+    expect(workflow.jobs.promote_npm_latest.if).toBeUndefined();
+
+    const reusable = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/packages-release.yml'), 'utf8')).toJSON() as Workflow;
+    expect(Object.keys(reusable.on)).toEqual([ 'workflow_call' ]);
+    expect(reusable.on.workflow_call.inputs['accepted-sha']).toEqual({ required: true, type: 'string' });
+    const publish = reusable.jobs.publish;
+    const checkout = publish.steps.find((step: any) => step.uses === 'actions/checkout@v4');
+    expect(checkout.with.ref).toBe('${{ inputs.accepted-sha }}');
+    const stageIndex = stepIndex(publish, 'Stage, verify clean consumers, and promote shared packages');
+    const buildIndex = publish.steps.findIndex((step: any) => step.run === 'bun run build:packages');
+    expect(buildIndex).toBeGreaterThanOrEqual(0);
+    expect(stageIndex).toBeGreaterThan(buildIndex);
+    expect(stageIndex).toBeGreaterThan(stepIndex(publish, 'Verify publication contracts'));
+    expect(publish.steps[stageIndex]).toMatchObject({
+      run: 'node scripts/publish-workspace-packages.cjs',
+      env: { XPOD_ACCEPTED_SHA: '${{ inputs.accepted-sha }}' },
+    });
+    expect(publish.steps[stageIndex].if).toBeUndefined();
+    expect(publish['continue-on-error']).toBeUndefined();
   });
 
   it('repackages the accepted desktop without Apple distribution credentials', async () => {

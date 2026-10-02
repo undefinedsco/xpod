@@ -61,7 +61,8 @@ describe('Gateway locator secret persistence', () => {
     const root = testRoot();
     const databaseUrl = `sqlite:${path.join(root, 'identity.sqlite')}`;
 
-    await Promise.all(Array.from({ length: 12 }, async () => runSecretResolverProcess(databaseUrl)));
+    const digests = await Promise.all(Array.from({ length: 12 }, async () => runSecretResolverProcess(databaseUrl)));
+    expect(new Set(digests).size).toBe(1);
     const secretPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
     const secret = fs.readFileSync(secretPath, 'utf8').trim();
     const leftoverTemps = fs.readdirSync(path.dirname(secretPath))
@@ -76,7 +77,7 @@ describe('Gateway locator secret persistence', () => {
     const root = testRoot();
     const databaseUrl = `sqlite:${path.join(root, 'identity.sqlite')}`;
     const secretPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
-    fs.mkdirSync(path.dirname(secretPath), { recursive: true });
+    fs.mkdirSync(path.dirname(secretPath), { recursive: true, mode: 0o700 });
     fs.writeFileSync(secretPath, 'bad\n', { mode: 0o600 });
 
     expect(() => resolvePersistentGatewayLocatorSecret({ databaseUrl, edition: 'local' }))
@@ -88,7 +89,7 @@ describe('Gateway locator secret persistence', () => {
     const root = testRoot();
     const databaseUrl = `sqlite:${path.join(root, 'identity.sqlite')}`;
     const secretPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
-    fs.mkdirSync(path.dirname(secretPath), { recursive: true });
+    fs.mkdirSync(path.dirname(secretPath), { recursive: true, mode: 0o700 });
     fs.writeFileSync(secretPath, '', { mode: 0o600 });
 
     expect(() => resolvePersistentGatewayLocatorSecret({ databaseUrl, edition: 'local' }))
@@ -100,7 +101,7 @@ describe('Gateway locator secret persistence', () => {
     const root = testRoot();
     const databaseUrl = `sqlite:${path.join(root, 'identity.sqlite')}`;
     const secretPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
-    fs.mkdirSync(path.dirname(secretPath), { recursive: true });
+    fs.mkdirSync(path.dirname(secretPath), { recursive: true, mode: 0o700 });
     fs.writeFileSync(secretPath, 'stable-secret-value-1234567890\n', { mode: 0o644 });
     if (process.platform !== 'win32') {
       fs.chmodSync(secretPath, 0o644);
@@ -119,7 +120,7 @@ describe('Gateway locator secret persistence', () => {
     const databaseUrl = `sqlite:${path.join(root, 'identity.sqlite')}`;
     const secretPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
     const publicTarget = path.join(root, 'public-secret-target');
-    fs.mkdirSync(path.dirname(secretPath), { recursive: true });
+    fs.mkdirSync(path.dirname(secretPath), { recursive: true, mode: 0o700 });
     fs.writeFileSync(publicTarget, 'stable-secret-value-1234567890\n', { mode: 0o600 });
     try {
       fs.symlinkSync(publicTarget, secretPath);
@@ -135,7 +136,7 @@ describe('Gateway locator secret persistence', () => {
     const root = testRoot();
     const databaseUrl = `sqlite:${path.join(root, 'identity.sqlite')}`;
     const secretPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
-    fs.mkdirSync(secretPath, { recursive: true });
+    fs.mkdirSync(secretPath, { recursive: true, mode: 0o700 });
 
     expect(() => resolvePersistentGatewayLocatorSecret({ databaseUrl, edition: 'local' }))
       .toThrow(/must be a regular file/u);
@@ -158,6 +159,17 @@ describe('Gateway locator secret persistence', () => {
       edition: 'cloud',
     })).toThrow(/stable shared value across replicas/u);
   });
+
+  it('keeps an existing valid locator value at its original path', () => {
+    const root = testRoot();
+    const databaseUrl = `sqlite:${path.join(root, 'identity.sqlite')}`;
+    const secretPath = path.join(root, '.xpod', 'secrets', 'gateway-locator-secret');
+    fs.mkdirSync(path.dirname(secretPath), { recursive: true, mode: 0o700 });
+    const existing = 'existing-locator-value-12345678901234567890';
+    fs.writeFileSync(secretPath, `${existing}\n`, { mode: 0o600 });
+    expect(secretPathForGatewayLocatorDatabase(databaseUrl)).toBe(secretPath);
+    expect(resolvePersistentGatewayLocatorSecret({ databaseUrl, edition: 'local' })).toBe(existing);
+  });
 });
 
 function testRoot(): string {
@@ -175,24 +187,28 @@ function expectSecretMode(databaseUrl: string): void {
   expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
 }
 
-async function runSecretResolverProcess(databaseUrl: string): Promise<void> {
+async function runSecretResolverProcess(databaseUrl: string): Promise<string> {
   const script = `
+    import { createHash } from 'node:crypto';
     import { resolvePersistentGatewayLocatorSecret } from './src/runtime/gateway-locator-secret.ts';
-    resolvePersistentGatewayLocatorSecret({ databaseUrl: process.env.XPOD_TEST_DATABASE_URL, edition: 'local' });
+    const secret = resolvePersistentGatewayLocatorSecret({ databaseUrl: process.env.XPOD_TEST_DATABASE_URL, edition: 'local' });
+    process.stdout.write(createHash('sha256').update(secret).digest('hex'));
   `;
-  await new Promise<void>((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
+    let digest = '';
     const child = spawn('bun', ['--no-env-file', '-e', script], {
       cwd: process.cwd(),
       env: {
         ...process.env,
         XPOD_TEST_DATABASE_URL: databaseUrl,
       },
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
+    child.stdout.on('data', chunk => { digest += chunk.toString(); });
     child.once('error', reject);
     child.once('exit', (code) => {
       if (code === 0) {
-        resolve();
+        resolve(digest);
       } else {
         reject(new Error(`secret resolver child exited with ${code}`));
       }

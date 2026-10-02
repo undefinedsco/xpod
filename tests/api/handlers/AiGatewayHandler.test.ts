@@ -313,6 +313,52 @@ async function callRoute(routes: Record<string, Function>, methodAndPath: string
 }
 
 describe('AiGatewayHandler', () => {
+  it.each([false, true])('forwards only bounded client invocation metadata (stream=%s)', async stream => {
+    const { routes, runtime } = createFixture();
+    const req = request('/v1/chat/completions', {
+      model: 'gpt-5', stream, messages: [{ role: 'user', content: 'hello' }],
+      invocationMetadata: { sessionId: 'body-must-not-override' },
+    });
+    req.headers = {
+      ...req.headers, 'X-OpenCode-Session': 'conversation-123', 'User-Agent': 'Xpod/0.4.21',
+      authorization: 'Bearer gateway-client-key', cookie: 'private-cookie', dpop: 'private-proof',
+      'x-forwarded-for': 'private-address', 'x-arbitrary': 'private-header',
+    };
+    const res = await callRoute(routes, 'POST /v1/chat/completions', req);
+    expect(res.statusCode).toBe(200);
+    expect(runtime.execute.mock.calls[0][0].invocationMetadata).toEqual({ sessionId: 'conversation-123', userAgent: 'Xpod/0.4.21' });
+    expect(runtime.execute.mock.calls[0][0].apiKey).toBe('sk-primary');
+    expect(JSON.stringify(runtime.execute.mock.calls[0][0])).not.toContain('gateway-client-key');
+  });
+
+  it.each([['one', 'two'], 'a'.repeat(257), 'bad\nvalue', 'first, second', ''].map(value => ({ value })))('rejects invalid session metadata $value', async ({ value }) => {
+    const { routes, runtime } = createFixture();
+    const req = request('/v1/chat/completions', { model: 'gpt-5', messages: [{ role: 'user', content: 'hello' }] });
+    req.headers['x-opencode-session'] = value;
+    const res = await callRoute(routes, 'POST /v1/chat/completions', req);
+    expect(res.statusCode).toBe(400);
+    expect(runtime.execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate wire headers even when the HTTP server collapses them', async () => {
+    const { routes, runtime } = createFixture();
+    const req = request('/v1/chat/completions', { model: 'gpt-5', messages: [{ role: 'user', content: 'hello' }] });
+    req.headers['user-agent'] = 'Xpod/0.4.21';
+    req.rawHeaders = ['User-Agent', 'Xpod/0.4.21', 'user-agent', 'other-client'];
+    const res = await callRoute(routes, 'POST /v1/chat/completions', req);
+    expect(res.statusCode).toBe(400);
+    expect(runtime.execute).not.toHaveBeenCalled();
+  });
+
+  it.each(['x'.repeat(513), 'client\u0000invalid', 'client\u007finvalid'])('rejects invalid user agent metadata', async value => {
+    const { routes, runtime } = createFixture();
+    const req = request('/v1/chat/completions', { model: 'gpt-5', messages: [{ role: 'user', content: 'hello' }] });
+    req.headers['user-agent'] = value;
+    const res = await callRoute(routes, 'POST /v1/chat/completions', req);
+    expect(res.statusCode).toBe(400);
+    expect(runtime.execute).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     resetInternalLoggerFactory();
   });

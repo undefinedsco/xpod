@@ -28,6 +28,7 @@ export interface BackgroundPodAccessState {
  */
 export function useBackgroundPodAccess(): BackgroundPodAccessState {
   const runtime = useXpodSolidRuntime();
+  const requestPodApiKey = runtime.requestPodApiKey;
   const [credential, setCredential] = useState<TaskCredentialSummary>();
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -52,14 +53,16 @@ export function useBackgroundPodAccess(): BackgroundPodAccessState {
   }, [runtime.fetch, runtime.issuer, runtime.webId]);
 
   useEffect(() => {
-    void reload();
+    let cancelled = false;
+    queueMicrotask(() => { if (!cancelled) void reload(); });
+    return () => { cancelled = true; };
   }, [reload]);
 
   const grant = useCallback(async () => {
     setWorking(true);
     setError(undefined);
     try {
-      const apiKey = await runtime.requestPodApiKey?.();
+      const apiKey = await requestPodApiKey?.();
       if (!apiKey) {
         throw new Error('当前会话无法准备凭据');
       }
@@ -71,7 +74,7 @@ export function useBackgroundPodAccess(): BackgroundPodAccessState {
     } finally {
       setWorking(false);
     }
-  }, [runtime.fetch, runtime.requestPodApiKey]);
+  }, [runtime.fetch, requestPodApiKey]);
 
   const revoke = useCallback(async () => {
     if (!credential) {

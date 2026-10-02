@@ -1,3 +1,4 @@
+import { AI_MODEL_CLASS, type AIModelClass } from '@undefineds.co/models'
 import { type ReactNode } from 'react'
 import {
   Input,
@@ -337,4 +338,26 @@ export function AiModelTile({
       {actions}
     </div>
   )
+}
+
+export const MODEL_CLASS_LABELS: Record<AIModelClass, string> = {
+  chat: '对话', embedding: '向量', document_understanding: '文档理解', reranking: '重排',
+  speech_synthesis: '语音合成', speech_recognition: '语音识别', image_generation: '图像生成', video_generation: '视频生成',
+}
+
+export function catalogModelClass(model: { modelType?: string; capabilities?: readonly string[] }): AIModelClass {
+  if (model.modelType && model.modelType in AI_MODEL_CLASS) return model.modelType as AIModelClass
+  return (Object.keys(AI_MODEL_CLASS) as AIModelClass[]).find((kind) => kind !== 'chat' && model.capabilities?.includes(kind)) ?? 'chat'
+}
+
+export function AiModelClassTabs({ classes, selected, onChange }: {
+  classes: AIModelClass[]; selected: AIModelClass; onChange(value: AIModelClass): void
+}) {
+  return <div role="tablist" aria-label="模型类型" className="flex flex-wrap gap-2">
+    {classes.map((kind) => <button key={kind} type="button" role="tab" aria-selected={kind === selected}
+      onClick={() => onChange(kind)} className={cn('rounded-md px-3 py-2 text-sm', kind === selected ? 'bg-accent text-accent-foreground' : 'text-muted-foreground')}>
+      {MODEL_CLASS_LABELS[kind]}
+    </button>)}
+    <span className="px-3 py-2 text-xs text-muted-foreground">决策 · 待接入</span>
+  </div>
 }

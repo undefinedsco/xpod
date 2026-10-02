@@ -1,3 +1,5 @@
+import { AiModelClassTabs, catalogModelClass } from './AiModelCatalog'
+import type { AIModelClass } from '@undefineds.co/models'
 import { useMemo, useState } from 'react'
 import {
   Badge,
@@ -145,15 +147,17 @@ export function AiProviderCard({
     ? error.message
     : undefined
   const [modelSearch, setModelSearch] = useState('')
+  const [modelClass, setModelClass] = useState<AIModelClass>('chat')
   const [localSelectedModelIds, setLocalSelectedModelIds] = useState<string[]>(selectedModelIds ?? [])
   const effectiveSelectedModelIds = selectedModelIds ?? localSelectedModelIds
   const catalog = useMemo(() => aggregateProviderModels(models), [models])
+  const modelClasses = [...new Set(catalog.map(catalogModelClass))]
+  const selectedClass = modelClasses.includes(modelClass) ? modelClass : modelClasses[0]
   const isModelSelected = (model: CatalogModel) => model.selectionIds.some((id) => effectiveSelectedModelIds.includes(id))
   const visibleModels = useMemo(() => {
     const query = modelSearch.trim().toLocaleLowerCase()
-    if (!query) return catalog
-    return catalog.filter((model) => model.searchText.includes(query))
-  }, [catalog, modelSearch])
+    return catalog.filter((model) => catalogModelClass(model) === selectedClass && (!query || model.searchText.includes(query)))
+  }, [catalog, modelSearch, selectedClass])
   const selectedModelCount = catalog.filter(isModelSelected).length
   const unavailableModelCount = catalog.filter((model) => model.availability === 'unavailable').length
 
@@ -178,7 +182,7 @@ export function AiProviderCard({
           avatar={getProviderAvatar(definition.id)}
           avatarBackground={getProviderAvatarBackground(definition.id)}
           infoLabel="提供商说明"
-          infoLines={[definition.description, 'Provider 凭证保存在当前 Pod，由 Pod 权限保护。']}
+          infoLines={[definition.description, '连接凭据保存在当前 Pod，由 Pod 权限保护。']}
           link={{ href: definition.homeUrl, label: '访问官网' }}
           badge={(
             <Badge variant={isConnected || isConfigured ? 'default' : 'secondary'}>
@@ -301,6 +305,7 @@ export function AiProviderCard({
             </div>
           </div>
 
+          {selectedClass ? <AiModelClassTabs classes={modelClasses} selected={selectedClass} onChange={setModelClass} /> : null}
           {models.length === 0 ? (
             <AiModelEmptyPanel tone={catalogError ? 'destructive' : undefined}>
               {catalogError ?? '暂无可用模型'}
@@ -329,6 +334,7 @@ export function AiProviderCard({
                     unavailable={isUnavailable}
                     badges={(
                       <>
+                        {catalogModelClass(model) === 'embedding' && model.dimension ? <span className="text-xs text-muted-foreground">{model.dimension} 维</span> : null}
                         {model.custom ? <Badge variant="outline" className="shrink-0 text-[10px] font-normal">手工</Badge> : null}
                         {isUnavailable ? (
                           <Badge variant="destructive" className="shrink-0 text-[10px] font-normal">

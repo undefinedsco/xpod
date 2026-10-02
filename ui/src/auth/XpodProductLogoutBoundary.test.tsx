@@ -67,7 +67,7 @@ async function renderProduct(route: 'webid' | 'account', failure: 'account' | 's
   </MemoryRouter></XpodSolidRuntimeProvider></AuthProvider>);
   await waitFor(() => expect(screen.getByTestId('provider-states').textContent).toBe('authenticated/authenticated'));
   fireEvent.click(await screen.findByTestId('xpod-user-card-trigger'));
-  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  fireEvent.click(screen.getByRole('button', { name: '退出' }));
   return { accountLogout, solidLogout: vi.mocked(adapter.logout), login: vi.mocked(adapter.login) };
 }
 
@@ -109,7 +109,7 @@ describe('product logout across real auth Provider transitions', () => {
     await screen.findByText('退出未完成');
     expect(accountLogout).not.toHaveBeenCalled();
     expect(screen.getByTestId('provider-states').textContent).toBe('authenticated/error');
-    expect(screen.queryByRole('button', { name: 'Sign out' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '退出' })).toBeNull();
     expect(screen.queryByTestId('protected-content')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '重试退出' }));
     await waitFor(() => expect(screen.getByTestId('provider-states').textContent).toBe('anonymous/anonymous'));

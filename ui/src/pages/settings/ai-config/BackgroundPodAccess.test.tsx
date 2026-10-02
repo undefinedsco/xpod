@@ -11,8 +11,7 @@ const API_ORIGIN = window.location.origin;
 
 function runtimeValue(overrides: Record<string, unknown> = {}) {
   return {
-    fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+    fetch: vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === 'POST') {
         return Response.json({
           credential: {

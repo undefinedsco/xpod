@@ -1,36 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Skeleton } from '@undefineds.co/shared-ui';
-import type { StorageBinding } from '@undefineds.co/solid-sdk';
-import { ExternalLink, RefreshCw, RotateCcw } from 'lucide-react';
+import { RefreshCw, RotateCcw } from 'lucide-react';
 import { getAdminConfig, getAdminStatus, getDdnsStatus, getProvisionStatus, getPublicIpCheck, resolveAdminAccessBaseUrl, triggerRestart, updateAdminConfig, type AdminConfig, type AdminStatus, type ProvisionStatus, type PublicIpCheckResult } from '../../api/admin';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
-import { useAuth } from '../../context/AuthContextValue';
-import { fetchAccountStorageBindings } from '../../auth/account-storage-bindings';
-import {
-  createFirstPodAndWaitForBinding,
-  deriveFirstPodNameCandidate,
-  type FirstPodCreationStage,
-} from '../../utils/consent-first-pod';
-import { storedAccountTokenHeaders } from '../../utils/account-session';
-import { resolveProvisionCodeForCurrentScope } from '../../utils/pod';
+import { AccountPodManagement } from '../../auth/AccountPodManagement';
 import { projectStorageBackends, type SettingsEvidenceRow } from './settings-projection';
-import { reachablePodUrl } from './pod-url';
 import { createXpodAiConnectionsClient } from '../../api/ai-connections';
 import { createServiceAccessPermissionCapability } from '../../api/service-access-acp';
 import { parseAiConnectionsServiceAccess } from '@undefineds.co/ai-connections';
 
 export type SystemSettingsSubjectKind = 'pod' | 'identity-access' | 'storage' | 'runtime' | 'cloud' | 'advanced';
-
-const CREATE_STAGE_COPY: Record<FirstPodCreationStage, string> = {
-  submitting: '正在提交创建请求…',
-  submitted: '请求已提交，正在读取结果…',
-  'binding-confirmed': '身份绑定已确认…',
-};
-
-/** 阶段文案：没有阶段的旧调用回退为"正在创建…"。 */
-function createStageLabel(stage: FirstPodCreationStage | null): string {
-  return stage ? CREATE_STAGE_COPY[stage] : '正在创建…';
-}
 
 export function PodSettingsSubjectPanel({ kind }: { kind: SystemSettingsSubjectKind }) {
   const runtime = useXpodSolidRuntime();
@@ -85,137 +64,11 @@ export function PodSettingsSubjectPanel({ kind }: { kind: SystemSettingsSubjectK
  * `createFirstPodAndWaitForBinding`（权威清单守卫 + 账号代际守卫 + 精确绑定等待），
  * 保证全仓只有一套创建事务（U04 / U11）。
  */
-function PodManagementContent({ runtime, publicRoute }: { runtime: ReturnType<typeof useXpodSolidRuntime>; publicRoute: PublicIpCheckResult | null }) {
-  const account = useAuth();
-  const [bindings, setBindings] = useState<StorageBinding[] | null>(null);
-  const [listError, setListError] = useState('');
-  const [podName, setPodName] = useState('');
-  const [creating, setCreating] = useState(false);
-  // §5.2 第 6 步：创建过程如实分阶段显示，不合并成一个模糊的"进行中"
-  const [createStage, setCreateStage] = useState<FirstPodCreationStage | null>(null);
-  const [createError, setCreateError] = useState('');
-  const [createNotice, setCreateNotice] = useState('');
-
-  const controls = account.controls;
-  const idpIndex = account.idpIndex;
-  const loadBindings = useCallback(async () => {
-    setListError('');
-    try {
-      setBindings(await fetchAccountStorageBindings({
-        controls, origin: window.location.origin, trustedAccountIndex: idpIndex,
-      }));
-    } catch {
-      setBindings(null);
-      setListError('暂时无法读取存储绑定，请重试。');
-    }
-  }, [controls, idpIndex]);
-
-  useEffect(() => {
-    let cancelled = false;
-    queueMicrotask(() => { if (!cancelled) void loadBindings(); });
-    return () => { cancelled = true; };
-  }, [loadBindings]);
-
-  const suggestedName = useMemo(() => deriveFirstPodNameCandidate([
-    runtime.webId,
-    account.identity?.username,
-    controls?.account?.username,
-  ]), [runtime.webId, account.identity?.username, controls?.account?.username]);
-
-  const createPod = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const createPodUrl = controls?.account?.pod;
-    const username = (podName.trim() || suggestedName || '').trim();
-    if (creating) return;
-    if (!createPodUrl) { setCreateError('当前部署没有公布创建存储空间的入口。'); return; }
-    if (!username) { setCreateError('无法从当前账号推断 Pod 名称，请手动填写。'); return; }
-    setCreating(true); setCreateStage(null); setCreateError(''); setCreateNotice('');
-    try {
-      await createFirstPodAndWaitForBinding({
-        assertCurrentAccount: account.bindAccountCapability?.(),
-        createPodUrl,
-        headers: storedAccountTokenHeaders(),
-        provisionCode: await resolveProvisionCodeForCurrentScope(),
-        trustedAccountIndex: idpIndex,
-        username,
-        onStage: setCreateStage,
-      });
-      setPodName('');
-      setCreateNotice('存储空间已创建。');
-      await loadBindings();
-    } catch (error: unknown) {
-      setCreateError(error instanceof Error ? error.message : '无法创建存储空间，请重试。');
-    } finally {
-      setCreating(false);
-      setCreateStage(null);
-    }
-  };
-
-  const podUrl = reachablePodUrl(runtime.podUrl, window.location.origin);
-  const rows: SettingsEvidenceRow[] = [
-    { label: 'Pod name', value: podNameLabel(runtime.podUrl) },
-    { label: 'Pod URL', value: podUrl ?? 'Not discovered' },
-    { label: 'Public route', value: publicRouteLabel(publicRoute), detail: publicRoute?.detail ?? 'Not checked by this runtime' },
-    { label: 'Session', value: runtime.state.status },
-  ];
-
-  return <>
-    <EvidenceGrid rows={rows} />
-    <Button type="button" variant="outline" disabled={!podUrl} onClick={() => podUrl && window.open(podUrl, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-2 h-4 w-4" />Open Pod</Button>
-
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm font-medium">属于当前账号的存储空间</div>
-        {/* §7.2：空间详情聚合用量入口 */}
-        <a className="text-sm text-primary underline-offset-4 hover:underline" href="/status/usage/storage">
-          查看用量
-        </a>
-      </div>
-      {listError ? <div role="alert" className="rounded-md border border-destructive/30 p-3 text-sm text-destructive">{listError}</div> : null}
-      {bindings === null && !listError ? <div role="status" className="text-sm text-muted-foreground">正在读取…</div> : null}
-      {bindings?.length === 0 ? (
-        <div role="status" className="rounded-lg border border-border p-3 text-sm text-muted-foreground">
-          这个账号还没有任何存储空间。创建后即可用它授权应用访问。
-        </div>
-      ) : null}
-      {bindings && bindings.length > 0 ? (
-        <ul className="space-y-2">
-          {bindings.map((binding) => (
-            <li key={`${binding.webId}|${binding.storageUrl}`} className="rounded-lg border border-border p-3 text-sm">
-              <div className="break-all font-medium">{binding.storageUrl}</div>
-              <div className="mt-1 break-all text-xs text-muted-foreground">{binding.webId}</div>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-
-    <form onSubmit={createPod} className="space-y-2 rounded-lg border border-border p-3">
-      <label className="block text-sm font-medium" htmlFor="pod-management-name">创建存储空间</label>
-      <p className="text-xs text-muted-foreground">创建是一次显式操作：不会因为登录或授权而自动发生。</p>
-      <div className="flex flex-wrap gap-2">
-        <input
-          id="pod-management-name"
-          className="h-10 min-w-48 flex-1 rounded-md border border-input bg-background px-3"
-          value={podName}
-          placeholder={suggestedName || 'my-pod'}
-          disabled={creating}
-          onChange={(event) => setPodName(event.currentTarget.value)}
-        />
-        <Button type="submit" disabled={creating}>
-          {creating ? createStageLabel(createStage) : '创建'}
-        </Button>
-      </div>
-      {createError ? <div role="alert" className="text-sm text-destructive">{createError}</div> : null}
-      {createNotice ? <div role="status" className="text-sm text-muted-foreground">{createNotice}</div> : null}
-    </form>
-  </>;
-}
 
 function SubjectContent({ kind, runtime, admin, configuration, provision, publicRoute, save }: { kind: SystemSettingsSubjectKind; runtime: ReturnType<typeof useXpodSolidRuntime>; admin: AdminStatus | null; configuration: AdminConfig | null; provision: ProvisionStatus | null; publicRoute: PublicIpCheckResult | null; save(patch: Record<string, string>): Promise<void> }) {
   const env = configuration?.env ?? {};
   if (kind === 'pod') {
-    return <PodManagementContent runtime={runtime} publicRoute={publicRoute} />;
+    return <AccountPodManagement />;
   }
   if (kind === 'identity-access') return <IdentityAccessContent runtime={runtime} />;
   if (kind === 'storage') return <><EvidenceGrid rows={projectStorageBackends(env, configuration?.secrets)} /><p className="text-xs text-muted-foreground">Measured storage and bandwidth are intentionally shown in Status → Usage, not here. Storage migration is unavailable because this runtime does not report a migration capability.</p></>;
@@ -418,18 +271,6 @@ function EvidenceGrid({ rows }: { rows: SettingsEvidenceRow[] }) { return <div c
 function TextInput({ label, value, onChange }: { label: string; value: string; onChange(value: string): void }) { return <label className="block space-y-2 text-sm font-medium">{label}<input value={value} onChange={(event) => onChange(event.target.value)} className="block h-10 w-full rounded-md border border-input bg-background px-3" /></label>; }
 function SaveButton({ onClick }: { onClick(): void }) { return <div className="flex justify-end"><Button type="button" onClick={onClick}>Save configuration</Button></div>; }
 function podNameLabel(value: string | undefined): string { if (!value) return 'Not discovered'; try { return new URL(value).pathname.split('/').filter(Boolean).at(-1) || new URL(value).hostname; } catch { return value; } }
-
-/**
- * The reachability verdict is the runtime's, and it distinguishes "checked and
- * broken" from "could not be verified" instead of assuming a configured domain
- * works.
- */
-function publicRouteLabel(route: PublicIpCheckResult | null): string {
-  if (!route) return 'Not checked';
-  if (route.status === 'pass') return 'Reachable';
-  if (route.status === 'fail') return 'Not reachable';
-  return 'Not verified';
-}
 
 const titles: Record<SystemSettingsSubjectKind, string> = { pod: 'Pod', 'identity-access': 'Identity & Access', storage: 'Storage', runtime: 'Runtime', cloud: 'Cloud', advanced: 'Advanced' };
 const descriptions: Record<SystemSettingsSubjectKind, string> = { pod: 'Current Pod identity and authority boundary.', 'identity-access': 'Session, account, and app/service access.', storage: 'Authority storage backends and health configuration.', runtime: 'Edition, startup, paths, and restart behavior.', cloud: 'Node registration and cluster coordination.', advanced: 'Bounded logging and runtime compatibility controls.' };

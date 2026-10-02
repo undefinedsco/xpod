@@ -22,8 +22,6 @@ const REQUIRED_CASES = Object.freeze([
 const READ_SCOPE = Object.freeze({
   principal: 'urn:xpod:semantic-reader',
   mode: 'read',
-  allowedGraphs: Object.freeze([]),
-  allowedSources: Object.freeze([]),
   deniedGraphs: Object.freeze([]),
   deniedSources: Object.freeze([]),
 });
@@ -77,11 +75,26 @@ function update(sourceUri, sparql) {
 }
 
 function freshCase(testCase) {
+  const documents = testCase.documents ?? [];
+  const updates = testCase.updates ?? [];
   return {
     isolation: 'fresh-schema',
     documents: Object.freeze([]),
     updates: Object.freeze([]),
     ...testCase,
+    // An empty allow-list denies everything. Grant this fixture's actual
+    // resources explicitly, while preserving case-specific restrictions.
+    accessScope: {
+      allowedGraphs: [...new Set([
+        ...documents.map((entry) => entry.graph === 'default' ? '' : entry.sourceUri),
+        ...updates.map((entry) => entry.sourceUri),
+      ])],
+      allowedSources: [...new Set([
+        ...documents.map((entry) => entry.sourceUri),
+        ...updates.map((entry) => entry.sourceUri),
+      ])],
+      ...testCase.accessScope,
+    },
   };
 }
 

@@ -49,3 +49,26 @@ export function healthTone(health: AiProviderCredentialSummary['health']): { row
   }
   return { row: 'bg-destructive/5', dot: 'bg-destructive' }
 }
+
+export function credentialFailurePresentation(credential: AiProviderCredentialSummary, now = Date.now()): {
+  message: string; action?: 'key' | 'login' | 'charge' | 'reason'
+} | undefined {
+  if (!credential.enabled) return undefined
+  switch (credential.lastFailureCode) {
+    case 'authentication': return { message: '密钥无效或已被撤销，已跳过', action: 'key' }
+    case 'login_expired': return { message: '登录已过期', action: 'login' }
+    case 'quota_exhausted': return { message: '额度用完了', action: 'charge' }
+    case 'authorization': return { message: '没有这个模型或地区的权限', action: 'reason' }
+    case 'rate_limited': {
+      const reset = credential.rateLimitResetAt ? new Date(credential.rateLimitResetAt) : undefined
+      if (reset && reset.getTime() <= now) return undefined
+      return { message: reset && Number.isFinite(reset.getTime())
+        ? `请求太频繁，${reset.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} 后自动恢复；先换用下一条连接`
+        : '请求太频繁，稍后自动恢复；先换用下一条连接' }
+    }
+    case 'upstream_unavailable': return undefined
+  }
+  if (credential.health === 'expired') return { message: '登录已过期', action: 'login' }
+  if (credential.health === 'invalid') return { message: '密钥无效或已被撤销，已跳过', action: credential.authMode === 'apiKey' ? 'key' : 'login' }
+  return undefined
+}

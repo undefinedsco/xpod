@@ -241,3 +241,13 @@ grep -rn "=== '\(openai\|anthropic\|kimi\|bailian\|deepseek\|zhipu\|ollama\|cust
 - 本文是**审计 + 设计**：没有行为改动，没有新增/修改任何生产代码；§3 的 54 个决策点与 §4 的 8 个缺口都只是结论。
 - 迁移是后续任务，按缺口拆开做；每条都要能写成"删掉哪些分支、加了哪行数据/哪条声明"，并配一条机械守卫（如 §3.7 第 10 步的 grep 检查）。
 - 本文与 `catalog-ownership.md`、`ai-connections-storage-model.md` §10/§11 冲突时，以那两份为准并回来修本文。
+
+## 6. 推理调用的会话元数据（2026-10-02 已实现）
+
+`src/api/ai-gateway/InvocationMetadata.ts` 是客户端会话头的唯一声明入口。`GatewayInvocationMetadata` 随一次调用经 Handler、Service、Local→Cloud 转发和 `ProviderRuntimeExecuteInput` 传递；所有运行时协议适配器使用同一转换函数，不按 provider 身份分支。
+
+适应面仅包含 `x-opencode-session`（每段对话稳定的非敏感会话 ID，至多 256 个可见 ASCII 字符，不接受空白或逗号）和 `user-agent`（真实客户端标识，至多 512 个可见 ASCII 字符）。重复头、数组、多值、空值和控制字符返回 400。客户端应使用随机会话 ID 或 thread ID 的散列，避免暴露 Pod URI；Xpod 自身使用真实的 `Xpod/<版本>` 标识。
+
+这些字段只来自当前请求的受限元数据，不存为 Pod schema 或 provider 配置。`authorization`、`cookie`、`dpop`、`host`、`x-forwarded-*` 及任意额外头均不在转发面内；上游认证仍由选中的 provider credential 单独生成，Pod metadata 不能覆盖它。新增会话协议时应扩展此单一声明和对应边界测试，不得新增 provider 分支或任意头透传。
+
+实际用例：[OpenCode Go 的客户端要求](https://opencode.ai/docs/zh-cn/go/#可以在哪里使用)明确要求真实 coding-agent user agent 和每段对话稳定的会话 ID；这不是伪装 OpenCode 客户端的授权。

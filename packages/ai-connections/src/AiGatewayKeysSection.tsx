@@ -25,7 +25,9 @@ import {
   manualConfigurationText,
   type AiClientConfigurationBridge,
   type AiConnectionsClientId,
+  type AiClientConfigurationStatus,
 } from './AiClientConfigurationSection'
+import { aiConnectionsErrorMessage } from './error-wording'
 import { AiCopyButton } from './AiCopyButton'
 import { AiEndpointList } from './AiEndpointList'
 import { AiProviderHeader } from './AiProviderHeader'
@@ -34,13 +36,13 @@ import { XPOD_AVATAR } from './provider-visuals'
 import { AiGatewayKeyRow } from './AiGatewayKeyRow'
 import { AiGatewayModelsSection, type GatewayModelSelection } from './AiGatewayModelsSection'
 
-const DEFAULT_KEY_NAME = '我的 API Key'
-const CREATED_NOTIFICATION = 'API Key 已创建，请复制或应用到客户端。'
-const UNPERSISTED_COPY_MESSAGE = '这个 API Key 只在创建时可见：请销毁它，然后重新创建并立即复制或应用。'
-const UNPERSISTED_APPLY_MESSAGE = '这个 API Key 只在创建时可见：请销毁它，然后重新创建并直接应用到客户端。'
+const DEFAULT_KEY_NAME = '我的 Xpod 密钥'
+const CREATED_NOTIFICATION = 'Xpod 密钥 已创建，请复制或应用到客户端。'
+const UNPERSISTED_COPY_MESSAGE = '这个 Xpod 密钥 只在创建时可见：请销毁它，然后重新创建并立即复制或应用。'
+const UNPERSISTED_APPLY_MESSAGE = '这个 Xpod 密钥 只在创建时可见：请销毁它，然后重新创建并直接应用到客户端。'
 /** Header tooltip: what Xpod is, then how the Key itself is protected. */
-const XPOD_DESCRIPTION = '把已接入的 Provider 模型统一发布给编码客户端，兼容 OpenAI 与 Anthropic 协议。'
-const XPOD_CREDENTIAL_NOTE = 'API Key 保存在当前 Pod，由 Pod 权限保护；Xpod 不保存明文。'
+const XPOD_DESCRIPTION = '把已接入的模型提供给客户端。'
+const XPOD_CREDENTIAL_NOTE = '密钥允许客户端以你的 WebID 访问整个 Pod。'
 const SELECT_CLASS = [
   'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-[border-color]',
   'disabled:cursor-not-allowed disabled:opacity-50',
@@ -56,12 +58,14 @@ const SELECT_CLASS = [
  */
 export function AiGatewayKeysSection({
   client,
+  onAuthorizeService,
   clientConfigurationBridge,
   gatewayModels,
   modelSelection,
   liveRevision = 0,
 }: {
   client: AiConnectionsClient
+  onAuthorizeService?: () => Promise<void>
   clientConfigurationBridge?: AiClientConfigurationBridge
   gatewayModels?: AiGatewayModel[]
   /** Publishes or withdraws models on the models list endpoint, from this page. */
@@ -72,8 +76,25 @@ export function AiGatewayKeysSection({
    */
   liveRevision?: number
 }) {
+  const bridge = clientConfigurationBridge?.available === false ? undefined : clientConfigurationBridge
+  const [clientStatuses, setClientStatuses] = useState<Partial<Record<AiConnectionsClientId, AiClientConfigurationStatus>>>({})
+  useEffect(() => {
+    let active = true
+    setClientStatuses({})
+    if (bridge) {
+      for (const id of AI_CONNECTIONS_CLIENTS) {
+        void bridge.inspect(id).then((status) => {
+          if (active) setClientStatuses((current) => ({ ...current, [id]: status }))
+        }).catch(() => undefined)
+      }
+    }
+    return () => { active = false }
+  }, [bridge])
   const [keys, setKeys] = useState<GatewayKeyRecord[]>([])
   const [confirmingKeyId, setConfirmingKeyId] = useState<string | undefined>(undefined)
+  const [loadError, setLoadError] = useState<string>()
+  const [serviceAccessMissing, setServiceAccessMissing] = useState(false)
+  const [authorizing, setAuthorizing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState(DEFAULT_KEY_NAME)
@@ -103,6 +124,8 @@ export function AiGatewayKeysSection({
   useEffect(() => {
     let active = true
     setLoading(true)
+    setLoadError(undefined)
+    setServiceAccessMissing(false)
     setError(undefined)
     // The wrapper cache belongs to the session that created the keys; a new
     // client means a new session and no copy may survive it.
@@ -112,7 +135,11 @@ export function AiGatewayKeysSection({
         if (active) setKeys(records.filter((record) => !record.revokedAt))
       })
       .catch((cause) => {
-        if (active) notifyError(cause)
+        if (active) {
+          const missing = Boolean(cause && typeof cause === 'object' && 'code' in cause && cause.code === 'service_access_missing')
+          setLoadError(missing ? 'Xpod 尚未获准访问这个 Pod' : aiConnectionsErrorMessage(cause))
+          setServiceAccessMissing(missing)
+        }
       })
       .finally(() => {
         if (active) setLoading(false)
@@ -138,6 +165,22 @@ export function AiGatewayKeysSection({
     }
   }, [client, liveRevision])
 
+  const authorize = async () => {
+    if (!onAuthorizeService || authorizing) return
+    setAuthorizing(true)
+    try {
+      await onAuthorizeService()
+      const records = await client.listGatewayKeys()
+      setKeys(records.filter((record) => !record.revokedAt))
+      setLoadError(undefined)
+      setServiceAccessMissing(false)
+    } catch (cause) {
+      setLoadError(aiConnectionsErrorMessage(cause))
+    } finally {
+      setAuthorizing(false)
+    }
+  }
+
   const openCreate = () => {
     setError(undefined)
     setName(DEFAULT_KEY_NAME)
@@ -159,11 +202,7 @@ export function AiGatewayKeysSection({
   const create = async () => {
     const trimmedName = name.trim()
     if (!trimmedName) {
-      setError('请填写 API Key 名称。')
-      return
-    }
-    if (!purpose) {
-      setError('请选择 API Key 的用途。')
+      setError('请填写 Xpod 密钥 名称。')
       return
     }
     setCreating(true)
@@ -173,12 +212,12 @@ export function AiGatewayKeysSection({
         name: trimmedName,
         // Declared at creation: the key is for this client application, and the
         // record carries where it is in effect.
-        appliedTo: purpose,
+        ...(purpose ? { appliedTo: purpose } : {}),
       })
       plaintexts.current.set(created.record.id, created.plaintext)
       setKeys((current) => [created.record, ...current.filter((record) => record.id !== created.record.id)])
       setIssued(created.record)
-      setIssuedClient(purpose)
+      setIssuedClient(purpose || undefined)
       setAppliedClient(undefined)
       notify({ variant: 'success', description: CREATED_NOTIFICATION })
     } catch (cause) {
@@ -195,7 +234,7 @@ export function AiGatewayKeysSection({
   }
 
   const apply = async () => {
-    if (!issued || !issuedClient || !clientConfigurationBridge) return
+    if (!issued || !issuedClient || !bridge) return
     setError(undefined)
     let plaintext: string
     try {
@@ -206,7 +245,7 @@ export function AiGatewayKeysSection({
     }
     setApplying(true)
     try {
-      const plan = await clientConfigurationBridge.plan({
+      const plan = await bridge.plan({
         client: issuedClient,
         endpoint: client.apiBase,
         ...(issuedClient === 'codex' && gatewayModels !== undefined ? {
@@ -215,7 +254,7 @@ export function AiGatewayKeysSection({
           })),
         } : {}),
       })
-      await clientConfigurationBridge.apply({
+      await bridge.apply({
         client: plan.client,
         planId: plan.planId,
         apiKey: plaintext,
@@ -225,6 +264,7 @@ export function AiGatewayKeysSection({
         } } : {}),
       })
       setAppliedClient(plan.client)
+      setClientStatuses((current) => ({ ...current, [plan.client]: { status: 'unverifiable', appliedKeyFingerprint: issued.fingerprint } }))
       // The record now points at the client the wrapper was written into.
       setKeys((current) => current.map((record) => record.id === issued.id
         ? { ...record, appliedTo: plan.client }
@@ -263,7 +303,7 @@ export function AiGatewayKeysSection({
 
   return (
     <TooltipProvider>
-      <section className="space-y-8" aria-label="API Keys">
+      <section className="space-y-8" aria-label="Xpod 密钥">
         <AiProviderHeader
           name="Xpod"
           mark="XP"
@@ -284,26 +324,48 @@ export function AiGatewayKeysSection({
               <Settings2 aria-hidden="true" className="h-4 w-4 text-primary" />当前连接
             </h3>
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 API Key"
+              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 Xpod 密钥"
                 disabled={creating || loading} onClick={openCreate}>
-                <Plus aria-hidden="true" className="h-3.5 w-3.5" />API Key
+                <Plus aria-hidden="true" className="h-3.5 w-3.5" />Xpod 密钥
               </Button>
             </div>
           </div>
+          {loadError ? <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+            <span>{loadError}</span>
+            {serviceAccessMissing && onAuthorizeService ? <Button size="sm" disabled={authorizing} onClick={() => void authorize()}>
+              {authorizing ? '正在授权…' : '允许 Xpod 访问'}
+            </Button> : null}
+          </div> : null}
           {loading ? (
             <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />正在读取 API Key
+              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />正在读取 Xpod 密钥
             </div>
-          ) : keys.length === 0 ? (
-            <p className="py-2 text-xs text-muted-foreground">尚未签发 API Key</p>
+          ) : loadError ? null : keys.length === 0 ? (
+            <p className="py-2 text-xs text-muted-foreground">尚未签发 Xpod 密钥</p>
           ) : (
-            <ul aria-label="API Key 列表" className="rounded-xl border border-border/70">
+            <ul aria-label="Xpod 密钥 列表" className="rounded-xl border border-border/70">
               {keys.map((record) => (
                 <AiGatewayKeyRow
                   key={record.id}
                   record={record}
                   busy={Boolean(busyKeyId)}
                   confirming={confirmingKeyId === record.id}
+                  configurationStatus={record.appliedTo && AI_CONNECTIONS_CLIENTS.includes(record.appliedTo as AiConnectionsClientId)
+                    ? clientStatuses[record.appliedTo as AiConnectionsClientId] : undefined}
+                  onEnable={() => {
+                    if (operation.current) return
+                    operation.current = true
+                    setBusyKeyId(record.id)
+                    void client.updateGatewayKey(record.id, { enabled: true }).then((updated) => {
+                      setKeys((current) => current.map((item) => item.id === record.id ? updated : item))
+                    }).catch(notifyError).finally(() => { operation.current = false; setBusyKeyId(undefined) })
+                  }}
+                  onReissue={() => {
+                    beginAnother()
+                    setName(record.name ?? DEFAULT_KEY_NAME)
+                    setPurpose(AI_CONNECTIONS_CLIENTS.find((id) => id === record.appliedTo) ?? '')
+                    setShowCreate(true)
+                  }}
                   onRequestDestroy={() => setConfirmingKeyId(record.id)}
                   onCancelDestroy={() => setConfirmingKeyId((current) => (current === record.id ? undefined : current))}
                   onDestroy={() => {
@@ -314,21 +376,7 @@ export function AiGatewayKeysSection({
               ))}
             </ul>
           )}
-          <details className="text-xs text-muted-foreground">
-            <summary className="w-fit cursor-pointer">接入信息</summary>
-            <div className="mt-2 space-y-3">
-              <section className="space-y-2" aria-labelledby="xpod-access-info">
-                <h4 id="xpod-access-info" className="text-sm font-medium text-foreground">Xpod 接入信息</h4>
-                <p className="text-xs text-muted-foreground">
-                  API Key 是签发给客户端应用的 CSS 客户端凭据；Pod 只记录它绑定到哪个客户端，不保存 Key 明文。
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  同一个 API Key 支持以下兼容协议，按客户端选择并复制对应地址：
-                </p>
-                <AiEndpointList endpoints={xpodProtocolEndpoints(client.apiBase)} copy display="protocol" />
-              </section>
-            </div>
-          </details>
+
         </section>
 
         <AiGatewayModelsSection models={gatewayModels} selection={modelSelection} />
@@ -336,16 +384,16 @@ export function AiGatewayKeysSection({
         <Dialog open={showCreate} onOpenChange={(open) => { if (!open && (creating || applying)) return; setShowCreate(open) }}>
           <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
             <DialogHeader>
-              <DialogTitle>{issued ? 'API Key 已签发' : '新建 API Key'}</DialogTitle>
+              <DialogTitle>{issued ? 'Xpod 密钥 已签发' : '新建 Xpod 密钥'}</DialogTitle>
             </DialogHeader>
-            {issued && issuedClient ? (
+            {issued ? (
               <div className="space-y-5">
                 <div className="space-y-1.5">
                   <p className="text-sm">
-                    已签发「{issued.name || '未命名 API Key'}」，用途：{AI_CLIENT_LABELS[issuedClient]}。
+                    已签发「{issued.name || '未命名 Xpod 密钥'}」，用途：{issuedClient ? AI_CLIENT_LABELS[issuedClient] : '只复制'}。
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Xpod 不保存 Key 明文，请立即复制或直接应用到客户端；离开本次会话后无法再次获取。
+                    密钥只显示这一次，请立即复制。范围：整个 Pod。
                   </p>
                 </div>
                 {issued.maskedHint ? (
@@ -353,21 +401,22 @@ export function AiGatewayKeysSection({
                     {issued.maskedHint}
                   </code>
                 ) : null}
-                {!clientConfigurationBridge ? (
+                <AiEndpointList endpoints={xpodProtocolEndpoints(client.apiBase)} copy display="protocol" />
+                {!bridge ? (
                   <p className="text-xs text-muted-foreground">当前 Web 环境无法自动写入客户端配置，请复制后手动粘贴；自动应用需要本机连接。</p>
                 ) : null}
                 {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
                 <div className="flex flex-wrap items-center gap-2">
                   <AiCopyButton
                     value={() => sessionPlaintext(issued, UNPERSISTED_COPY_MESSAGE)}
-                    label="API Key"
-                    text="复制 API Key"
+                    label="Xpod 密钥"
+                    text="复制 Xpod 密钥"
                     disabled={applying}
                     iconClassName="mr-1.5 h-3.5 w-3.5"
                     copiedIconClassName="mr-1.5 h-3.5 w-3.5 text-emerald-600"
                     onError={(cause) => setError(errorMessage(cause))}
                   />
-                  <AiCopyButton
+                  {issuedClient ? <AiCopyButton
                     value={() => manualConfigurationText(
                       issuedClient,
                       client.apiBase,
@@ -379,18 +428,18 @@ export function AiGatewayKeysSection({
                     iconClassName="mr-1.5 h-3.5 w-3.5"
                     copiedIconClassName="mr-1.5 h-3.5 w-3.5 text-emerald-600"
                     onError={(cause) => setError(errorMessage(cause))}
-                  />
-                  {clientConfigurationBridge ? (
+                  /> : null}
+                  {bridge && issuedClient ? (
                     appliedClient ? (
                       <span role="status" className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                         <Check aria-hidden="true" className="h-3.5 w-3.5" />已应用到 {AI_CLIENT_LABELS[appliedClient]}
                       </span>
                     ) : (
-                      <Button type="button" size="sm" disabled={applying}
-                        aria-label={`应用到 ${AI_CLIENT_LABELS[issuedClient]}`}
+                      <Button type="button" size="sm" disabled={applying || clientStatuses[issuedClient]?.status === 'unavailable'}
+                        aria-label={`写入 ${AI_CLIENT_LABELS[issuedClient]}`}
                         onClick={() => void apply()}>
                         {applying ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}
-                        {applying ? '正在应用…' : `应用到 ${AI_CLIENT_LABELS[issuedClient]}`}
+                        {applying ? '正在应用…' : `写入 ${AI_CLIENT_LABELS[issuedClient]}`}
                       </Button>
                     )
                   ) : null}
@@ -404,31 +453,31 @@ export function AiGatewayKeysSection({
               <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); if (!creating) void create() }}>
                 <label className="block space-y-2">
                   <span className="text-sm font-medium">名称</span>
-                  <Input autoFocus aria-label="API Key 名称" value={name} disabled={creating}
+                  <Input autoFocus aria-label="Xpod 密钥 名称" value={name} disabled={creating}
                     onChange={(event) => setName(event.target.value)} />
                 </label>
                 <label className="block space-y-2">
-                  <span className="text-sm font-medium">用途</span>
+                  <span className="text-sm font-medium">给哪个客户端用</span>
                   <select
-                    aria-label="API Key 用途"
+                    aria-label="Xpod 密钥 用途"
                     className={SELECT_CLASS}
                     value={purpose}
                     disabled={creating}
                     onChange={(event) => setPurpose(event.target.value as AiConnectionsClientId)}
                   >
-                    <option value="" disabled>选择客户端应用</option>
+                    <option value="">不写入，只复制</option>
                     {AI_CONNECTIONS_CLIENTS.map((clientId) => (
-                      <option key={clientId} value={clientId}>{AI_CLIENT_LABELS[clientId]}</option>
+                      <option key={clientId} value={clientId}>{AI_CLIENT_LABELS[clientId]}{bridge ? (clientStatuses[clientId]?.status === 'unavailable' ? ' · 未安装' : clientStatuses[clientId] ? ' · 可配置' : ' · 检测中') : ' · 只复制配置'}</option>
                     ))}
                   </select>
                 </label>
-                <p className="text-xs text-muted-foreground">用途在创建时确定，Key 会绑定到该客户端应用。</p>
+                <p className="text-xs text-muted-foreground">客户端默认跟随 Pod 的智能模型。</p>
                 {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
                 <DialogFooter>
                   <Button type="button" variant="outline" disabled={creating} onClick={() => setShowCreate(false)}>取消</Button>
-                  <Button type="submit" aria-label="创建 API Key" disabled={creating || !name.trim() || !purpose}>
+                  <Button type="submit" aria-label="创建 Xpod 密钥" disabled={creating || !name.trim()}>
                     {creating ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}
-                    {creating ? '正在创建…' : '创建 API Key'}
+                    {creating ? '正在创建…' : '创建 Xpod 密钥'}
                   </Button>
                 </DialogFooter>
               </form>
@@ -441,6 +490,7 @@ export function AiGatewayKeysSection({
 }
 
 function errorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error && error.code === 'verification_failed_restored') return '写入失败，原配置已恢复'
   const message = error instanceof Error ? error.message.trim() : ''
   if (/failed to fetch|networkerror|load failed/i.test(message)) {
     return '无法连接配置服务，请检查连接后重试。'
@@ -452,7 +502,7 @@ function errorMessage(error: unknown): string {
     return '配置文件写入后的本地检查未通过，请检查文件内容和权限后重试。'
   }
   if (!message || /^(?:AI Connection |AI client configuration )?request failed(?:\. Please try again\.)?$/i.test(message)) {
-    return 'API Key 操作失败，请重试。'
+    return 'Xpod 密钥 操作失败，请重试。'
   }
   return message
 }

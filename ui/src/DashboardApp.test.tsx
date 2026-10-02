@@ -140,7 +140,7 @@ async function unmount(root: Root) {
 }
 
 describe('dashboard routes', () => {
-  test('reuses a callback-provided runtime without restoring WebID on Account-only dashboard routes', async () => {
+  test('reuses a callback-provided runtime without restoring WebID on local device routes', async () => {
     installDom('/overview');
     let sessionConstructions = 0;
     const session = new FakeSession();
@@ -225,10 +225,12 @@ describe('dashboard routes', () => {
     }
   });
 
-  test('does not mount rail, list or content behind the anonymous account login card', async () => {
+  test('opens legacy dashboard entry as local device controls without an Account session', async () => {
     installDom('/overview');
     globalThis.fetch = mock(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/service/status') return new Response(JSON.stringify([{ name: 'css', status: 'running' }, { name: 'api', status: 'running' }]));
+      if (url.pathname === '/api/network/settings/tunnel-clients') return new Response(JSON.stringify({ clients: [] }));
       if (url.pathname === '/provision/status') {
         return new Response(JSON.stringify({ managed: true, oidcIssuer: 'https://id.example/' }));
       }
@@ -243,20 +245,15 @@ describe('dashboard routes', () => {
       root.render(<DashboardApp runtime={runtime} />);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    // Account-only Dashboard routes retain their Account gate.
-    await waitFor(() => {
-      expect(container.textContent).toContain('登录 Xpod');
-    });
-    expect(container.textContent).toContain('登录 Xpod');
-    expect(container.querySelector('input[type="email"]')).toBeTruthy();
-
+    await waitFor(() => expect(container.textContent).toContain('核心服务'));
+    expect(window.location.pathname).toBe('/device/services');
+    expect(container.querySelector('input[type="email"]')).toBeNull();
+    expect(container.querySelector('[data-testid="web-account-page"]')).toBeNull();
+    expect(container.querySelector('a[aria-label="这台设备"]')).toBeTruthy();
+    expect(container.querySelector('a[aria-label="设置"]')).toBeTruthy();
+    expect(container.textContent).toContain('重启 Xpod');
+    expect(container.textContent).toContain('停止只影响这台设备');
     expect(container.querySelector('[data-testid="xpod-auth-gate-overlay"]')).toBeNull();
-    expect(container.querySelector('[data-testid="auth-surface-page"]')).toBeNull();
-    expect(container.querySelector('[data-testid="auth-surface-modal"]')).toBeNull();
-    expect(container.querySelector('[data-testid="web-account-page"]')).toBeTruthy();
-    expect(container.querySelector('[data-list-navigation]')).toBeNull();
-    expect(container.textContent).not.toContain('Status · Overview');
-    expect(container.textContent).not.toContain('Continue with the current Xpod identity');
 
     await unmount(root);
   });

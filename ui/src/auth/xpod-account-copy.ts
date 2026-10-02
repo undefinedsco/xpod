@@ -180,6 +180,8 @@ export const xpodFirstPodErrors = {
   createEndpointMissing: '找不到创建 Pod 的接口，请刷新后重试。',
   cloudRouteUnavailable: '本机 Xpod 还没有和 Cloud 打通，暂时不能准备存储空间。请保持 Xpod 运行，稍后重试。',
   storageCreateFailed: '无法创建存储空间，请重试。',
+  cancelFailed: '取消授权失败，请重试或直接关闭此页面。',
+  authorizationUnavailable: '原来的授权已经失效，或暂时无法确认它仍然有效。请回到授权页面重试或重新发起。',
 } as const;
 
 export function safeXpodRecoveryMessage(status?: number): string {

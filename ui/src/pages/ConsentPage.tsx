@@ -12,6 +12,7 @@ import { useAuth } from '../context/AuthContextValue';
 import { consumeReturnTo, persistReturnTo } from '../utils/returnTo';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
+import { clearConsentContinuation, clearManagementContinuation, currentInteractionScope, resolveAuthoritativeAccountId, saveConsentContinuation } from '../utils/safe-continuation';
 import { FirstPodReadinessError } from '../utils/consent-first-pod';
 import {
   createXpodLoginTransactionStore,
@@ -116,7 +117,7 @@ function parsePickWebIdResponse(data: PickWebIdResponse): ParsedPickWebIdRespons
 }
 
 export function ConsentPage() {
-  const { idpIndex, isLoggedIn, isAnonymous, controls, logout: accountLogout, refetchControls } = useAuth();
+  const { idpIndex, identity, isLoggedIn, isAnonymous, controls, logout: accountLogout, refetchControls } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(true);
   const [clientInfo, setClientInfo] = useState<ConsentClientInfo | null>(null);
@@ -135,6 +136,7 @@ export function ConsentPage() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
   const [isReturning, setIsReturning] = useState(false);
+  const [firstPodError, setFirstPodError] = useState<string>();
   const missingOwnerBinding = useRef<string | undefined>(undefined);
   const resumeAttemptedRef = useRef(false);
   const entryBindingScope = useRef<{ transactionId?: string; binding?: StorageBinding } | undefined>(undefined);
@@ -329,6 +331,8 @@ export function ConsentPage() {
 
   // Account switching is owned by CSS. WebID logout is a separate Solid action.
   const handleSwitchAccount = async () => {
+    clearConsentContinuation();
+    clearManagementContinuation();
     setIsSwitchingAccount(true);
     try {
       await accountLogout();
@@ -354,6 +358,7 @@ export function ConsentPage() {
   };
 
   const handleReturn = async () => {
+    clearConsentContinuation();
     if (window.xpodDesktop?.cancelLogin) {
       setIsReturning(true);
       try {
@@ -379,6 +384,7 @@ export function ConsentPage() {
   };
 
   const handleCancelConsent = useCallback(async () => {
+    clearConsentContinuation();
     try {
       setIsCancelling(true);
       const redirectUrl = await fetchOidcCancelRedirectLocation({
@@ -546,15 +552,19 @@ export function ConsentPage() {
   const showStorageBootstrap = hasStorageConflict
     || (displayBindings.length === 0 && storageSelection.status === 'error');
 
-  // 保留原 interaction 与返回地址：建好 Pod 回到这里后会重新读取权威绑定与服务健康。
-  // 目标是统一的 Pod 管理页（设计第二部分 §4.1 / U08+U09）；该页由 Account 边界准入，
-  // 零 Pod 时也可达，因此不再回退到 Account 页。
-  const handleGoToPodManagement = () => {
-    persistReturnTo(window.location.href);
-    navigate('/settings/pod');
+  const openPodTask = (destination: 'create-pod' | 'manage-pod') => {
+    const accountId = resolveAuthoritativeAccountId(controls, identity);
+    const interaction = currentInteractionScope();
+    if (!accountId || !interaction || !saveConsentContinuation({ accountId, interaction, returnTo: `${interaction}/oidc/consent/` })) {
+      setFirstPodError(xpodFirstPodErrors.accountIdentityMissing);
+      return;
+    }
+    clearManagementContinuation();
+    navigate(scopeAccountUrl(`/.account/${destination}/`));
   };
 
   const interactionExpired = error === xpodConsentErrors.expiredInteraction;
+  useEffect(() => { if (interactionExpired) clearConsentContinuation(); }, [interactionExpired]);
   const needsSignIn = !isLoggedIn || error === xpodConsentErrors.signInRequired;
   const showFailure = Boolean(error && (
     interactionExpired || failedAction !== 'load' || resumeState === 'failed' || !clientInfo
@@ -621,15 +631,19 @@ export function ConsentPage() {
       {!needsSignIn && !interactionExpired ? (isLoading || resumeState === 'pending' ? (
         <WebAccountRestoringView label={xpodConsentCopy.restoring} />
       ) : showNoPodStorage ? (
+        <>
         <WebAccountFailureView
           title={xpodConsentCopy.missingPodTitle}
           description={xpodConsentCopy.missingPodDescription}
-          primaryLabel={xpodConsentCopy.goToPodManagementLabel}
-          onPrimary={handleGoToPodManagement}
+          primaryLabel="创建 Pod"
+          onPrimary={() => openPodTask('create-pod')}
           secondaryLabel={xpodConsentCopy.denyLabel}
           onSecondary={() => void handleCancelConsent()}
           pending={isSubmitting}
         />
+        {firstPodError ? <p role="alert" className="text-sm text-destructive">{firstPodError}</p> : null}
+        <Button type="button" variant="ghost" disabled={isSubmitting} onClick={() => openPodTask('manage-pod')}>管理 Pod</Button>
+        </>
       ) : showFailure ? null : (
         <div className="space-y-4">
           {!showStorageBootstrap ? (

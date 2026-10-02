@@ -1,4 +1,6 @@
 import {
+  createContext,
+  useContext,
   useCallback,
   useLayoutEffect,
   useMemo,
@@ -22,6 +24,9 @@ import {
   type WorkspaceLayoutNavigation,
   type WorkspaceLayoutPane,
 } from './layout-context'
+
+/** Host-owned navigation drawer; other hosts retain list/detail stack navigation. */
+export const WorkspaceDrawerContext = createContext<{ open: boolean; onClose?: () => void; headerLeading?: ReactNode } | undefined>(undefined)
 
 export type TwoPaneLayoutMode = 'auto' | WorkspaceLayoutMode
 
@@ -258,7 +263,10 @@ export function TwoPaneLayout({
   pageType = 'collection',
   hasObjectCollection = true,
 }: TwoPaneLayoutProps) {
-  const { resolvedMode } = useObjectColumn({ mode, pageType, hasObjectCollection })
+  const drawer = useContext(WorkspaceDrawerContext)
+  const { resolvedMode: objectMode } = useObjectColumn({ mode, pageType, hasObjectCollection })
+  const viewportMode = useResolvedMode(mode)
+  const resolvedMode = drawer ? viewportMode : objectMode
   // §8.3：非集合页不渲染对象列；集合页只有宽断点才显示
   // §8.3：只有集合页才有对象列表；宽度决定它是并排的对象列还是堆叠的第一屏
   const showList = pageType === 'collection' && hasObjectCollection
@@ -266,13 +274,15 @@ export function TwoPaneLayout({
     activePane,
     paneRefs,
     openList,
-    openMain,
+    openMain: navigateMain,
     openContext,
   } = useStackNavigation({
     resolvedMode,
     history,
     resolvePane: mapContextPaneToMain,
   })
+  const closeDrawer = drawer?.onClose
+  const openMain = useCallback(() => { navigateMain(); closeDrawer?.() }, [navigateMain, closeDrawer])
   const navigation = useMemo<WorkspaceLayoutNavigation>(() => ({
     mode: resolvedMode,
     activePane,
@@ -282,8 +292,8 @@ export function TwoPaneLayout({
   }), [activePane, openContext, openList, openMain, resolvedMode])
   const isStack = resolvedMode === 'stack'
   const stacked = showList && isStack
-  const listHidden = !showList || (stacked && activePane !== 'list')
-  const mainHidden = stacked && activePane !== 'main'
+  const listHidden = !showList || (drawer ? resolvedMode === 'stack' && !drawer.open : stacked && activePane !== 'list')
+  const mainHidden = !drawer && stacked && activePane !== 'main'
 
   return (
     <WorkspaceLayoutContext.Provider value={navigation}>
@@ -333,16 +343,18 @@ export function TwoPaneLayout({
             data-testid="workspace-main-pane"
             data-workspace-pane="main"
             hidden={mainHidden}
+            inert={drawer?.open && resolvedMode === 'stack' ? true : undefined}
             tabIndex={stacked ? -1 : undefined}
           >
             <header
-              className="h-12 shrink-0 border-b border-border bg-layout-content"
+              className={cn('h-12 shrink-0 border-b border-border bg-layout-content', drawer?.headerLeading && 'flex min-w-0 items-center')}
               data-workspace-main-header="true"
             >
-              {mainHeader}
+              {drawer?.headerLeading ? <div className="flex h-full shrink-0 items-center md:hidden" data-workspace-header-leading>{drawer.headerLeading}</div> : null}
+              {drawer?.headerLeading ? <div className="h-full min-w-0 flex-1">{mainHeader}</div> : mainHeader}
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {stacked ? (
+              {stacked && !drawer ? (
                 <button
                   type="button"
                   className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"

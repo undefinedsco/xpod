@@ -109,6 +109,7 @@ jobs:
             --required-check ai-connections \
             --required-check models \
             --required-check chat \
+            --required-check task-approval \
             --required-check qlever-local \
             --required-check package-consumers \
             --required-check desktop > "$RUNNER_TEMP/acceptance-validation.json"
@@ -125,6 +126,14 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `candidate_version=${manifest.candidateVersion}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `candidate_run_id=${process.env.CANDIDATE_RUN_ID}\n`);
           NODE
+
+  shared_packages:
+    name: Publish verified shared applets
+    needs: promotion_guard
+    uses: ./.github/workflows/packages-release.yml
+    with:
+      accepted-sha: ${{ github.sha }}
+    secrets: inherit
 
   publish_npm_staging:
     name: Publish npm stable staging packages
@@ -317,6 +326,7 @@ jobs:
   promote_npm_latest:
     name: Promote verified npm packages to latest
     needs:
+      - shared_packages
       - promotion_guard
       - verify_npm_consumer_node
       - verify_npm_consumer_bun

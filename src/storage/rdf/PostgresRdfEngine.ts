@@ -60,6 +60,8 @@ import type {
   RdfTextSearchPattern,
   RdfTextSearchResult,
   RdfTextSourceInput,
+  RdfTextSourceListOptions,
+  RdfTextSourceMetadata,
   RdfQuery,
   RdfQueryCacheExplain,
   RdfQueryMetrics,
@@ -2285,6 +2287,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   public async searchText(options: RdfTextSearchOptions | string): Promise<RdfTextSearchResult[]> {
     return await this.requireTextIndex().search(typeof options === 'string' ? { query: options } : options);
+  }
+
+  public async listTextSources(options?: RdfTextSourceListOptions): Promise<RdfTextSourceMetadata[]> {
+    return await this.requireTextIndex().listSources(options);
   }
 
   public async indexVectorSource(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): Promise<void> {

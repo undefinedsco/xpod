@@ -18,6 +18,7 @@ import {
   type AiProviderCredentialSummary,
   type AiProviderSummary,
 } from './contract/ai-connections-client'
+import { parseAiConnectionsServiceAccess } from './service-access'
 import { aiConnectionsErrorMessage } from './error-wording'
 import type { AiClientConfigurationBridge } from './AiClientConfigurationSection'
 import {
@@ -83,9 +84,7 @@ export type ProviderProductState =
   | 'attention'
 
 export const AI_CONNECTIONS_PINNED_SECTIONS = [
-  // §7.3：入口以"把客户端接上"的任务开场，密钥管理紧随其后
-  { id: 'clients', label: '连接客户端', title: 'CONNECT CLIENT' },
-  { id: 'keys', label: 'Xpod', title: 'API KEYS' },
+  { id: 'keys', label: 'Xpod', title: 'Xpod' },
 ] as const
 
 /**
@@ -108,6 +107,7 @@ export interface AiConnectionsController {
   readonly client: AiConnectionsClient | null
   readonly openExternal: (url: string) => Promise<void>
   readonly clientConfigurationBridge?: AiClientConfigurationBridge
+  readonly authorizeService?: () => Promise<void>
   readonly selectedSection: AiConnectionsWorkspaceSection
   readonly selectedProvider: AiConnectionsProvider
   readonly selectedCredentialId?: string
@@ -255,7 +255,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
       beginProviderLoad,
     )
     : null
-  let selectedSection: AiConnectionsWorkspaceSection = 'clients'
+  let selectedSection: AiConnectionsWorkspaceSection = 'keys'
   let selectedProvider: AiConnectionsProvider = 'openai'
   let selectedCredentialId: string | undefined
   let searchQuery = ''
@@ -415,6 +415,15 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
     client,
     openExternal: host.navigation.openExternal,
     clientConfigurationBridge: host.capabilities.aiClientConfiguration,
+    authorizeService: client && readyPod && host.solid.permissions ? async () => {
+      if (!isCurrentSession()) throw new Error('登录状态已变化，请重新打开 AI 连接。')
+      const descriptor = parseAiConnectionsServiceAccess(await client.getServiceAccess(), readyPod.current.podUrl)
+      if (!isCurrentSession()) throw new Error('登录状态已变化，请重新打开 AI 连接。')
+      const result = await host.solid.permissions!.ensureAgentAccess(descriptor)
+      if (result.status !== 'granted') throw new Error('未能授权 Xpod 访问，请确认你有这个 Pod 的管理权限。')
+      if (!isCurrentSession()) throw new Error('登录状态已变化，请重新打开 AI 连接。')
+      await controller.loadProviders()
+    } : undefined,
     get credentialsCollection() {
       return credentials?.collection
     },

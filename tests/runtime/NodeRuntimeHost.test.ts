@@ -48,6 +48,35 @@ describe('NodeRuntimeHost', () => {
     expect([ ports.gateway, ports.css, ports.api ]).not.toContain(ports.ingress);
   });
 
+  it('keeps ingress distinct when an occupied CSS port shifts API into gateway + 3', async() => {
+    const blocker = net.createServer();
+    await listenOn(blocker, 0);
+    const occupied = (blocker.address() as net.AddressInfo).port;
+    try {
+      const ports = await host.allocatePorts({ gatewayPort: occupied - 1 });
+      expect(ports.css).toBeGreaterThan(occupied);
+      expect(new Set(Object.values(ports)).size).toBe(4);
+    } finally {
+      await new Promise<void>(resolve => blocker.close(() => resolve()));
+    }
+  });
+
+  it('reserves explicitly selected later services before allocating earlier services', async() => {
+    const ports = await host.allocatePorts({
+      gatewayPort: 35400,
+      apiPort: 35401,
+      ingressPort: 35402,
+    });
+    expect(ports.api).toBe(35401);
+    expect(ports.ingress).toBe(35402);
+    expect(new Set(Object.values(ports)).size).toBe(4);
+  });
+
+  it('rejects duplicate explicit ports before services initialize persistent data', async() => {
+    await expect(host.allocatePorts({ gatewayPort: 35400, apiPort: 35400 }))
+      .rejects.toThrow('Runtime service ports must be distinct');
+  });
+
   it('should not claim a port another runtime has already planned', async() => {
     // The full integration harness plans `css = gateway + 10` and `api = gateway + 11` per
     // runtime, so the neighbour of this runtime's api port belongs to the next runtime.

@@ -33,6 +33,9 @@ export interface RuntimeManagerOptions {
   spawnImpl?: (command: string, args: string[], options: { env: NodeJS.ProcessEnv; stdio: 'ignore' }) => RuntimeChild
   pollIntervalMs?: number
   startupTimeoutMs?: number
+  autoRestart?: boolean
+  restartDelayMs?: number
+  resolveEnvironment?: () => NodeJS.ProcessEnv
 }
 
 export class RuntimeManager {
@@ -44,8 +47,12 @@ export class RuntimeManager {
   private current: RuntimeSnapshot = { state: 'stopped', ownership: 'none' }
   private child?: RuntimeChild
   private starting?: Promise<RuntimeSnapshot>
+  private autoRestart: boolean
+  private desiredRunning = false
+  private restartTimer?: ReturnType<typeof setTimeout>
 
   public constructor(private readonly options: RuntimeManagerOptions) {
+    this.autoRestart = options.autoRestart ?? false
     this.fetchImpl = options.fetchImpl ?? fetch
     this.resolveLaunch = options.resolveLaunch ?? (() => resolveRuntimeLaunchCommand({
       env: process.env,
@@ -64,7 +71,13 @@ export class RuntimeManager {
     return { ...this.current }
   }
 
+  public setAutoRestart(enabled: boolean): void {
+    this.autoRestart = enabled
+    if (!enabled && this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = undefined }
+  }
+
   public async ensureRunning(): Promise<RuntimeSnapshot> {
+    this.desiredRunning = true
     if (this.current.state === 'running') return this.snapshot()
     if (this.starting) return this.starting
     if (await this.probe()) {
@@ -72,6 +85,7 @@ export class RuntimeManager {
       return this.snapshot()
     }
 
+    if (!this.desiredRunning) return this.snapshot()
     const launch = this.resolveLaunch()
     if (!launch) {
       const message = 'Xpod runtime is not installed. Install the xpod CLI or set XPOD_RUNTIME_COMMAND.'
@@ -125,8 +139,12 @@ export class RuntimeManager {
   }
 
   public async stopOwned(): Promise<void> {
+    this.desiredRunning = false
+    if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = undefined }
     const child = this.child
-    if (!child || this.current.ownership !== 'desktop') return
+    if (this.current.ownership !== 'desktop') return
+    if (!child) { this.current = { state: 'stopped', ownership: 'none' }; return }
+    this.current = { state: 'stopped', ownership: 'desktop', pid: child.pid }
     await new Promise<void>((resolve) => {
       const timeout = setTimeout(resolve, 5_000)
       child.once('exit', () => {
@@ -148,6 +166,7 @@ export class RuntimeManager {
         env: {
           ...process.env,
           ...launch.env,
+          ...this.options.resolveEnvironment?.(),
           CSS_BASE_URL: runtimeBaseUrl,
           XPOD_PORT: runtimePort,
         },
@@ -161,21 +180,36 @@ export class RuntimeManager {
           reject(error)
         })
         child.once('exit', (code, signal) => {
-          if (this.child === child && this.current.state !== 'stopped') {
+          if (this.child === child) {
+            if (!this.desiredRunning || this.current.state === 'stopped') { reject(new Error('Runtime stopped')); return }
+            const shouldRestart = this.current.state === 'running' && this.desiredRunning && this.autoRestart
             const error = new Error(`Xpod runtime exited (${signal ?? code ?? 'unknown'})`)
             this.markChildFailure(error.message)
+            this.child = undefined
+            if (shouldRestart) this.scheduleRestart()
             reject(error)
           }
         })
       })
       await Promise.race([this.waitUntilReady(), childFailure])
+      if (this.child !== child || !this.desiredRunning) return this.snapshot()
       this.current = { state: 'running', ownership: 'desktop', pid: child.pid }
       return this.snapshot()
     } catch (error) {
+      if (!this.desiredRunning) return this.snapshot()
       const message = error instanceof Error ? error.message : String(error)
       this.current = { state: 'failed', ownership: this.child ? 'desktop' : 'none', pid: this.child?.pid, error: message }
       throw error
     }
+  }
+
+  private scheduleRestart(): void {
+    if (this.restartTimer) return
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = undefined
+      if (this.autoRestart && this.desiredRunning) void this.ensureRunning().catch(() => undefined)
+    }, this.options.restartDelayMs ?? 1_000)
+    this.restartTimer.unref?.()
   }
 
   private markChildFailure(message: string): void {

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { resolveHostedPodRoute } from '../../../src/api/ai-gateway/pod/HostedPodRoute';
+import { describe, expect, it, vi } from 'vitest';
+import { createHostedPodRouteTransport, resolveHostedPodRoute } from '../../../src/api/ai-gateway/pod/HostedPodRoute';
 
 describe('resolveHostedPodRoute', () => {
   it('names the gateway route for a canonical deployment URL', () => {
@@ -34,5 +34,31 @@ describe('resolveHostedPodRoute', () => {
     expect(resolveHostedPodRoute({ canonicalBaseUrl: '  ', gatewayPort: 5737 })).toBeUndefined();
     expect(resolveHostedPodRoute({ canonicalBaseUrl: 'https://node.example/', gatewayPort: 'not-a-port' }))
       .toBeUndefined();
+  });
+
+  it('loads the SDK transport and preserves canonical identity and proof headers over the numeric route', async () => {
+    const wireFetch = vi.fn(async (input: string | URL | Request) => {
+      const response = new Response('ok');
+      Object.defineProperty(response, 'url', { value: input instanceof Request ? input.url : String(input), configurable: true });
+      return response;
+    });
+    const transport = await createHostedPodRouteTransport(wireFetch as typeof fetch, resolveHostedPodRoute({
+      canonicalBaseUrl: 'http://localhost:5737/', gatewayHost: '127.0.0.1', gatewayPort: 5737,
+    }));
+    const canonical = 'http://localhost:5737/pod/resource?view=1';
+    const response = await transport(new Request(canonical, {
+      headers: { authorization: 'DPoP synthetic-token', dpop: 'synthetic-proof' },
+    }));
+    const [request] = wireFetch.mock.calls[0]!;
+    expect(request).toBeInstanceOf(Request);
+    expect((request as Request).url).toBe('http://127.0.0.1:5737/pod/resource?view=1');
+    expect((request as Request).headers.get('x-xpod-canonical-url')).toBe(canonical);
+    expect((request as Request).headers.get('authorization')).toBe('DPoP synthetic-token');
+    expect((request as Request).headers.get('dpop')).toBe('synthetic-proof');
+    expect(response.url).toBe(canonical);
+    expect(response.clone().url).toBe(canonical);
+
+    await transport('https://unrelated.example/resource');
+    expect(wireFetch.mock.calls[1]![0]).toBe('https://unrelated.example/resource');
   });
 });

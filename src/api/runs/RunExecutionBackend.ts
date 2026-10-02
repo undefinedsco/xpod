@@ -44,6 +44,8 @@ export interface RunContextRetriever<TContext = StoreContext> {
 }
 
 export interface RunExecutionInput {
+  /** In-process cancellation only; never serialized into durable queue events. */
+  signal?: AbortSignal;
   runId: string;
   threadId: string;
   prompt: string;

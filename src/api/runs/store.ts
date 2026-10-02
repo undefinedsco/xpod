@@ -51,6 +51,7 @@ export interface RunCommandProjection {
 }
 
 export interface RunStore<TContext> {
+  /** Atomically preserve cancellation and replace the caller's row with the committed state. */
   saveRun(run: RunRecordData, context: TContext): Promise<void>;
   loadRun(id: string, context: TContext): Promise<RunRecordData>;
   listRuns(options: RunListOptions, context: TContext): Promise<RunRecordData[]>;
@@ -76,13 +77,13 @@ export function hasActiveRunLease(
 }
 
 export function canClaimRun(
-  run: Pick<RunRecordData, 'status' | 'leaseOwner' | 'leaseExpiresAt'>,
+  run: Pick<RunRecordData, 'status' | 'leaseOwner' | 'leaseExpiresAt' | 'cancelRequestedAt'>,
   input: {
     leaseOwner: string;
     now: number;
   },
 ): boolean {
-  if (!isClaimableRunStatus(run.status)) {
+  if (run.cancelRequestedAt !== undefined || !isClaimableRunStatus(run.status)) {
     return false;
   }
   return !hasActiveRunLease(run, input.now) || run.leaseOwner === input.leaseOwner;

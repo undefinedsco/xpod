@@ -87,7 +87,7 @@ export function AiCustomProviderDialog({
         aria-describedby="ai-custom-provider-description"
       >
         <DialogHeader>
-          <DialogTitle>添加自定义 Provider</DialogTitle>
+          <DialogTitle>添加自定义服务商</DialogTitle>
         </DialogHeader>
         <p id="ai-custom-provider-description" className="text-sm text-muted-foreground">
           用 OpenAI/Anthropic 兼容协议接入第三方模型服务。Xpod 会把真实 API Key 存进当前 Pod。
@@ -160,7 +160,7 @@ export function AiCustomProviderDialog({
             取消
           </Button>
           <Button type="button" disabled={saving} onClick={submit}>
-            保存自定义 Provider
+            保存自定义服务商
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -38,11 +38,7 @@ import {
 } from './AiModelEditorDialog'
 import { AiGatewayKeysSection } from './AiGatewayKeysSection'
 import {
-  AI_CLIENT_LABELS,
-  AI_CONNECTIONS_CLIENTS,
-  AiClientConfigurationSection,
   type AiClientConfigurationBridge,
-  type AiConnectionsClientId,
 } from './AiClientConfigurationSection'
 import { credentialCarriers, withLiveCredentials, type CredentialRow } from './collections'
 import { modelCatalogId, withCatalogModelId } from './AiModelCatalog'
@@ -58,6 +54,7 @@ interface ModelDiscoveryMergeScope {
 
 export interface AiConnectionsPanelProps {
   client: AiConnectionsClient
+  onAuthorizeService?: () => Promise<void>
   /** Disable when the embedding application already renders shared-ui Toaster. */
   renderToaster?: boolean
   openExternal?: (url: string) => void | Promise<void>
@@ -95,6 +92,7 @@ export interface AiConnectionsPanelProps {
 
 export function AiConnectionsPanel({
   client,
+  onAuthorizeService,
   renderToaster = true,
   openExternal = openExternalUrl,
   clientConfigurationBridge,
@@ -111,7 +109,6 @@ export function AiConnectionsPanel({
   liveCredentialRows,
 }: AiConnectionsPanelProps) {
   const [connectionStates, setConnectionStates] = useState<Record<string, ProviderConnectionState>>({})
-  const [activeClient, setActiveClient] = useState<AiConnectionsClientId>(AI_CONNECTIONS_CLIENTS[0])
   const [models, setModels] = useState<AiGatewayModel[]>([])
   const [gatewayModels, setGatewayModels] = useState<AiGatewayModel[]>()
   const [gatewayCatalogVersion, setGatewayCatalogVersion] = useState(0)
@@ -1002,40 +999,10 @@ export function AiConnectionsPanel({
       </section>
   )
 
-  const clientsContent = (
-    <section data-testid="ai-client-first" className="space-y-4">
-      <div>
-        <h2 className="text-base font-semibold">连接客户端</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          先选要接入的客户端，再决定复用已有 API Key 还是新建一个；配置写入与验证结果会分步显示。
-        </p>
-      </div>
-      <div role="tablist" aria-label="选择客户端" className="flex flex-wrap gap-2">
-        {AI_CONNECTIONS_CLIENTS.map((candidate) => (
-          <button
-            key={candidate}
-            type="button"
-            role="tab"
-            aria-selected={candidate === activeClient}
-            data-testid={`ai-client-choice-${candidate}`}
-            className={`rounded-lg border px-3 py-1.5 text-sm ${candidate === activeClient ? 'border-primary bg-accent text-accent-foreground' : 'border-border text-foreground hover:bg-accent/60'}`}
-            onClick={() => setActiveClient(candidate)}
-          >
-            {AI_CLIENT_LABELS[candidate]}
-          </button>
-        ))}
-      </div>
-      <AiClientConfigurationSection
-        bridge={clientConfigurationBridge}
-        client={activeClient}
-        endpoint={client.apiBase}
-      />
-    </section>
-  )
-
   const keyContent = (
     <AiGatewayKeysSection
       client={client}
+      onAuthorizeService={onAuthorizeService}
       clientConfigurationBridge={clientConfigurationBridge}
       gatewayModels={gatewayModels}
       modelSelection={gatewayModelSelection}
@@ -1049,7 +1016,6 @@ export function AiConnectionsPanel({
       className="mx-auto w-full max-w-5xl space-y-10 px-4 py-6 sm:px-8 sm:py-8"
     >
       {renderToaster ? <Toaster /> : null}
-      {selectedSection === 'clients' ? clientsContent : null}
       {selectedSection === 'keys' ? keyContent : null}
       {selectedSection === 'provider' ? providerContent : null}
       {selectedSection === 'provider' && modelEditor ? (

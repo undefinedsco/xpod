@@ -13,6 +13,8 @@ import { createReadStream, statSync } from 'fs';
 import { createInterface } from 'readline';
 import { PACKAGE_ROOT } from '../../runtime';
 import { resolveCurrentLogFile } from '../../logging/log-file';
+import { normalizeLog, type LogLevel } from '../../logging/normalize-log';
+import { isSecretEnvKey as isAdminSecretEnvKey, redactConfiguredLogSecrets as sanitizeLogMessage } from '../../logging/log-secrets';
 import type { DdnsManager } from '../../edge/DdnsManager';
 import { TUNNEL_PROVIDERS, isTunnelProfileCredentialEnvKey } from '../../tunnel/TunnelProviderCatalog';
 import { resolveTunnelProfileState } from '../../tunnel/TunnelProfiles';
@@ -102,22 +104,7 @@ export const ALLOWED_ADMIN_CONFIG_KEYS = [
 
 const ALLOWED_ADMIN_CONFIG_KEY_SET = new Set<string>(ALLOWED_ADMIN_CONFIG_KEYS);
 
-export function isAdminSecretEnvKey(key: string): boolean {
-  const normalized = key.toUpperCase();
-  if (normalized.endsWith('_KEY_PATH') || normalized.endsWith('_CERT_PATH')) {
-    return false;
-  }
-  return (
-    normalized.includes('AUTHTOKEN') ||
-    normalized.endsWith('_TOKEN') ||
-    normalized.endsWith('_SECRET') ||
-    normalized.endsWith('_API_KEY') ||
-    normalized.includes('PASSWORD') ||
-    normalized.includes('CLIENT_SECRET') ||
-    normalized.endsWith('_DB_URL') ||
-    normalized.includes('DATABASE_URL')
-  );
-}
+export { isSecretEnvKey as isAdminSecretEnvKey } from '../../logging/log-secrets';
 
 export function sanitizeEnvForRead(env: EnvConfig): SanitizedEnvRead {
   const sanitized: EnvConfig = {};
@@ -148,21 +135,7 @@ export function createAllowedAdminConfigPatch(input: EnvConfig): EnvConfig {
   return patch;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-export function sanitizeLogMessage(message: string, env: EnvConfig): string {
-  let sanitized = message;
-  const secretEntries = Object.entries(env)
-    .filter(([key, value]) => isAdminSecretEnvKey(key) && value.length >= 6)
-    .sort((a, b) => b[1].length - a[1].length);
-
-  for (const [key, value] of secretEntries) {
-    sanitized = sanitized.replace(new RegExp(escapeRegExp(value), 'g'), `[redacted:${key}]`);
-  }
-  return sanitized;
-}
+export { redactConfiguredLogSecrets as sanitizeLogMessage } from '../../logging/log-secrets';
 
 function sanitizeLogEntry(entry: LogEntry, env: EnvConfig): LogEntry {
   return {
@@ -615,12 +588,11 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
   const originalStdoutWrite = process.stdout.write.bind(process.stdout);
   const originalStderrWrite = process.stderr.write.bind(process.stderr);
 
-  function addLog(level: string, source: string, message: string): void {
+  function addLog(level: LogLevel, source: string, message: string): void {
     const entry = {
       timestamp: new Date().toISOString(),
-      level,
       source,
-      message: message.trim(),
+      ...normalizeLog(message, level),
     };
     logBuffer.push(entry);
     if (logBuffer.length > MAX_LOG_BUFFER) {
@@ -631,14 +603,18 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
   // Intercept stdout
   process.stdout.write = (chunk: any, ...args: any[]): boolean => {
     const message = chunk.toString();
-    addLog('info', 'xpod', message);
+    for (const line of message.split('\n')) {
+      if (line.trim()) addLog('info', 'api', line);
+    }
     return originalStdoutWrite(chunk, ...args);
   };
 
   // Intercept stderr
   process.stderr.write = (chunk: any, ...args: any[]): boolean => {
     const message = chunk.toString();
-    addLog('error', 'xpod', message);
+    for (const line of message.split('\n')) {
+      if (line.trim()) addLog('error', 'api', line);
+    }
     return originalStderrWrite(chunk, ...args);
   };
 

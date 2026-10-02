@@ -18,16 +18,14 @@ export function getNavItemClass(isActive: boolean, options?: { compact?: boolean
 }
 
 /**
- * 宽窗口的文字导航行（spec §3.1「文字导航 + 内容」、§8.3 的 184px 导航）。
- * 窄窗口下同一棵树横向排列，因此这里只定宽窗口内的行形态。
+ * 64px rail 中的图标入口；窄窗在抽屉里复用同一棵导航树。
  */
 export function getRailNavItemClass(isActive: boolean) {
   return [
     navItemBaseClass,
     navItemFocusClass,
     isActive ? 'bg-accent text-accent-foreground' : `text-foreground ${navItemInteractiveClass}`,
-    'mx-2 flex h-9 items-center gap-3 rounded-lg px-3',
-    'md:w-[calc(100%-1rem)]',
+    'relative flex h-10 w-10 items-center justify-center rounded-lg',
   ].join(' ');
 }
 

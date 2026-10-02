@@ -3,22 +3,14 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   ModelAssignmentRow,
   RebuildStatusLine,
+} from './ModelAssignmentsPanel';
+import {
   embeddingModelSwitch,
   rebuildInFlight,
   rebuildStatusFrom,
   rebuildTargetForCapabilities,
-} from './ModelAssignmentsPanel';
+} from './model-assignment-state';
 import type { AiConfigLifecycleSnapshot, AiConfigPolicy } from '../../../api/ai-config';
-
-/** §7.4：概要默认展示，表单在「编辑」之后出现。 */
-async function openAssignmentsEditor(): Promise<void> {
-  const edit = screen.queryByRole('button', { name: '编辑' });
-  if (edit) {
-    fireEvent.click(edit);
-    await screen.findAllByTestId('model-assignment-row');
-  }
-}
-
 
 const policy = (embeddingModel?: string): AiConfigPolicy => ({
   models: embeddingModel ? { embeddingModel } : {},

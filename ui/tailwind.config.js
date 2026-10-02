@@ -7,6 +7,8 @@ export default {
     "../packages/shared-ui/src/**/*.{ts,tsx}",
     "../packages/extension-sdk/src/**/*.{ts,tsx}",
     "../packages/ai-connections/src/**/*.{ts,tsx}",
+    "../packages/pod-settings/src/**/*.{ts,tsx}",
+    "../packages/tasks/src/**/*.{ts,tsx}",
     "../static/landing/index.html",
     "../templates/**/*.ejs"
   ],

@@ -17,11 +17,21 @@ export type DesktopUpdateStateName =
   | 'not-available'
   | 'error'
 
+export interface DesktopUpdateProgress {
+  transferred: number
+  total?: number
+  percent?: number
+  bytesPerSecond?: number
+  resumed?: boolean
+}
+
 export interface DesktopUpdateState {
   status: DesktopUpdateStateName
   version?: string
   /** A short, user-facing message. Never expose an updater stack trace here. */
   message?: string
+  /** Present while a transfer is in flight; the tray renders it verbatim. */
+  progress?: DesktopUpdateProgress
 }
 
 export interface DesktopAutoUpdater {
@@ -33,6 +43,7 @@ export interface DesktopAutoUpdater {
   on(event: 'update-available', listener: (...args: unknown[]) => void): this
   on(event: 'update-not-available', listener: () => void): this
   on(event: 'update-downloaded', listener: (...args: unknown[]) => void): this
+  on(event: 'download-progress', listener: (progress: DesktopUpdateProgress) => void): this
 }
 
 export interface DesktopUpdateManagerOptions {
@@ -109,17 +120,22 @@ export function resolveDesktopUpdateConfig(
   }
 }
 
-/** Official Electron update service URL used by production packages. */
+/**
+ * Release manifest published with every Xpod desktop release.
+ *
+ * GitHub hosts the only copy of the archive today, so the manifest is also the
+ * integrity source: it carries the archive's sha512 and size. `releases/latest`
+ * is resolved by GitHub itself, which keeps the version out of the URL.
+ */
 export function defaultDesktopUpdateFeedUrl({
   isPackaged,
   version,
   platform = process.platform,
-  arch = process.arch,
   owner = 'undefinedsco',
   repository = 'xpod',
 }: DefaultDesktopUpdateFeedOptions): string | undefined {
   if (!isPackaged || platform !== 'darwin' || !version.trim()) return undefined
-  return `https://update.electronjs.org/${owner}/${repository}/${platform}-${arch}/${encodeURIComponent(version.trim())}`
+  return `https://github.com/${owner}/${repository}/releases/latest/download/latest-mac.yml`
 }
 
 export function withDefaultDesktopUpdateFeed(
@@ -237,6 +253,16 @@ export class DesktopUpdateManager {
     this.options.updater.on('update-not-available', () => {
       this.options.onLifecycleEvent?.('update-not-available')
       this.setState({ status: 'not-available' })
+    })
+    this.options.updater.on('download-progress', (progress) => {
+      // A long download must stay legible in the tray: keep the version from
+      // the available event and replace the progress snapshot in place.
+      const version = this.state.version
+      this.setState({
+        status: 'downloading',
+        ...(version ? { version } : {}),
+        progress,
+      })
     })
     this.options.updater.on('update-downloaded', (...args) => {
       this.options.onLifecycleEvent?.('update-downloaded')

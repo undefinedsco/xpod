@@ -115,8 +115,8 @@ describe('ConsentPage storage retry routing', () => {
       controls: { account: { username: 'alice', pod: '/.account/account/pod/' } },
     });
 
-    // 缺存储时授权页只说明原因并给出"前往 Pod 管理"，不得代用户创建任何资源。
-    await screen.findByRole('button', { name: '前往 Pod 管理' });
+    // 缺存储时授权页只说明原因并给出"管理 Pod"，不得代用户创建任何资源。
+    await screen.findByRole('button', { name: '管理 Pod' });
     expect(createPod).not.toHaveBeenCalled();
     expect(fetchMock.mock.calls.some(([input, init]) =>
       requestPath(input) === '/.account/account/pod/' && init?.method === 'POST',
@@ -259,7 +259,7 @@ it('does not create a replacement for ownerless existing storage', async () => {
   renderConsentPage({ controls: { account: { username: 'different-name', pod: '/.account/account/pod/' } } });
 
   // 授权页不得推断归属、不得新建替代品，只给出去向与拒绝。
-  await screen.findByRole('button', { name: '前往 Pod 管理' });
+  await screen.findByRole('button', { name: '管理 Pod' });
   expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
 

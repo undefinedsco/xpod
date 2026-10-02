@@ -583,6 +583,7 @@ jobs:
           curl --fail --silent --show-error --max-time 5 "${gateway}service/status" > /dev/null
 
           XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
+          XPOD_LIVE_TASK_APPROVAL=1 \
           XPOD_LIVE_GATEWAY_URL="$gateway" \
           XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/" \
           bun run ai-connections:accept:live
@@ -598,6 +599,7 @@ jobs:
             ['ai-connections', 'aiConnections'],
             ['models', 'models'],
             ['chat', 'chat'],
+            ['task-approval', 'taskApproval'],
           ];
           const checks = {};
           for (const [checkName, layerName] of required) {
@@ -708,6 +710,20 @@ jobs:
       - name: Build desktop with the accepted native runtime
         working-directory: desktop
         run: bun run dist
+      # The Account document links `/app/assets/main.css` by name. A build that
+      # emits the stylesheet under another name (or not at all) ships a login page
+      # with no styles, which already happened once in production.
+      - name: Verify the Account document's assets were built
+        run: |
+          set -euo pipefail
+          test -s static/app/auth.html
+          grep -oE '/app/assets/[A-Za-z0-9._-]+' static/app/auth.html | sort -u | while read -r asset; do
+            if [[ ! -s "static${asset}" ]]; then
+              echo "::error::static${asset} is referenced by static/app/auth.html but was not built"
+              exit 1
+            fi
+          done
+          echo "Account document assets verified"
       - name: Verify root npm package boundary
         env:
           XPOD_INCLUDE_PLATFORM_PACKAGES: 'true'
@@ -715,6 +731,8 @@ jobs:
           set -euo pipefail
           node scripts/run-npm-pack.cjs .test-data/npm-preflight .test-data/npm-preflight-cache
           node scripts/check-pack-json.cjs .test-data/npm-preflight/pack.json
+      - name: Verify shared applet tarballs in a clean Bun consumer
+        run: node scripts/workspace-package-consumer.cjs --local
       - name: Verify packed Node and Bun consumers before publication
         run: |
           set -euo pipefail

@@ -1,13 +1,16 @@
 name: Publish Packages
 
+# This workflow can only be called after the root stable promotion guard.
+# Individual package tags and manual dispatch must not bypass candidate acceptance.
 on:
-  push:
-    tags:
-      - 'solid-sdk-v*'
-      - 'shared-ui-v*'
-      - 'extension-sdk-v*'
-      - 'ai-connections-v*'
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      accepted-sha:
+        required: true
+        type: string
+    secrets:
+      NPM_TOKEN:
+        required: true
 
 permissions:
   contents: read
@@ -18,55 +21,21 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          ref: ${{ inputs.accepted-sha }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.12
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-
-      - name: Resolve package from tag
-        id: pkg
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          NAME="${TAG%-v*}"
-          VERSION="${TAG##*-v}"
-          if [ ! -d "packages/${NAME}" ]; then
-            echo "Unknown package tag: ${TAG}"
-            exit 1
-          fi
-          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Verify tag matches package version
-        run: |
-          PACKAGE_VERSION="$(node -p "require('./packages/${{ steps.pkg.outputs.name }}/package.json').version")"
-          if [ "${{ steps.pkg.outputs.version }}" != "$PACKAGE_VERSION" ]; then
-            echo "Tag version (${{ steps.pkg.outputs.version }}) does not match package.json version ($PACKAGE_VERSION)"
-            exit 1
-          fi
-
-      - run: bun install
-
-      - name: Build workspace dependencies
-        # Single source of truth: root `build:packages` lists every workspace
-        # package in dependency order. A hand-maintained copy here drifted once
-        # already - it was missing the package `ai-connections` depends on, so a
-        # standalone release of that package could ship without its dependency.
-        run: bun run build:packages
-
-      - name: Build package
-        working-directory: packages/${{ steps.pkg.outputs.name }}
-        run: bun run build
-
-      - name: Test package
-        if: ${{ !contains(github.ref_name, '-rc') }}
-        run: npx vitest run --config vitest.packages.config.mts --passWithNoTests packages/${{ steps.pkg.outputs.name }}
-
-      - name: Publish to npm
-        run: node scripts/publish-package.cjs packages/${{ steps.pkg.outputs.name }}
+      - run: bun install --frozen-lockfile
+      - run: bun run build:packages
+      - name: Verify publication contracts
+        run: node --test tests/scripts/workspace-package-consumer.node-test.cjs
+      - name: Stage, verify clean consumers, and promote shared packages
+        run: node scripts/publish-workspace-packages.cjs
         env:
+          XPOD_ACCEPTED_SHA: ${{ inputs.accepted-sha }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

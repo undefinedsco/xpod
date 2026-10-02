@@ -1,3 +1,4 @@
+import { clearConsentContinuation, clearManagementContinuation, currentInteractionScope, resolveAuthoritativeAccountId, saveConsentContinuation, saveManagementContinuation } from '../utils/safe-continuation';
 import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
@@ -139,8 +140,21 @@ const copyButtonClass = 'p-1.5 text-muted-foreground hover:text-foreground hover
 const dangerButtonClass = 'p-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors';
 
 export function AccountPage() {
-  const { controls, refetchControls, hasOidcPending, idpIndex } = useAuth();
+  const { controls, identity, refetchControls, hasOidcPending, idpIndex } = useAuth();
   const navigate = useNavigate();
+  const openPodManagement = () => {
+    const accountId = resolveAuthoritativeAccountId(controls, identity);
+    const interaction = currentInteractionScope();
+    clearConsentContinuation();
+    clearManagementContinuation();
+    if (accountId && interaction && hasOidcPending) {
+      saveConsentContinuation({ accountId, interaction, returnTo: `${interaction}/oidc/consent/` });
+    } else if (accountId) {
+      saveManagementContinuation({ accountId, returnTo: scopeAccountUrl('/.account/account/') });
+    }
+    navigate(scopeAccountUrl('/.account/manage-pod/'));
+  };
+
   const [isLoading, setIsLoading] = useState(false);
   const [webIds, setWebIds] = useState<string[]>([]);
   const [pods, setPods] = useState<PodView[]>([]);
@@ -331,6 +345,8 @@ export function AccountPage() {
   }, [fetchData]);
 
   const handleLogout = async () => {
+    clearConsentContinuation();
+    clearManagementContinuation();
     if (!accountLogoutUrl) return;
     setIsLoading(true);
     setAccountError(null);
@@ -511,7 +527,7 @@ export function AccountPage() {
             {accountPodUrl && (
               <button
                 type="button"
-                onClick={() => { window.location.href = '/settings/pod'; }}
+                onClick={openPodManagement}
                 className={`flex items-center gap-1.5 px-3 py-1.5 ${primaryButtonClass} text-xs rounded-lg`}
               >
                 <Plus className="w-3.5 h-3.5" />Manage Pods

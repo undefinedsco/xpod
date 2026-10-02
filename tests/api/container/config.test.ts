@@ -43,6 +43,20 @@ describe('loadConfigFromEnv', () => {
     }
   });
 
+  it('captures each runtime canonical authority and root before startup environment restoration', () => {
+    fs.mkdirSync('.test-data', { recursive: true });
+    const root = fs.mkdtempSync(path.resolve('.test-data/api-runtime-mapping-'));
+    cleanupRoots.push(root);
+    process.env = { XPOD_EDITION: 'local', XPOD_NODE_ID: 'test-node', CSS_ROOT_FILE_PATH: root, CSS_BASE_URL: 'https://node.example/pods/' };
+    const first = loadConfigFromEnv();
+    process.env = { XPOD_EDITION: 'local', XPOD_NODE_ID: 'other-node', CSS_ROOT_FILE_PATH: path.join(root, 'other'), CSS_BASE_URL: 'http://localhost:900/' };
+    const second = loadConfigFromEnv();
+    delete process.env.CSS_ROOT_FILE_PATH;
+    delete process.env.CSS_BASE_URL;
+    expect(first).toMatchObject({ solidRootFilePath: root, solidBaseUrl: 'https://node.example/pods/' });
+    expect(second).toMatchObject({ solidRootFilePath: path.join(root, 'other'), solidBaseUrl: 'http://localhost:900/' });
+  });
+
   it.each([
     { edition: 'local', issuer: 'http://localhost:3000/', expectedCloud: undefined },
     { edition: 'local', issuer: 'http://localhost:3000/identity/', expectedCloud: undefined },

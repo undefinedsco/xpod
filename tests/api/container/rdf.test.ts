@@ -53,6 +53,8 @@ describe('API RDF container services', () => {
   it('wires one PG-backed Run context retriever into Chat, Task, and durable Run workers', async() => {
     const container = createApiContainer(baseConfig({
       sparqlEndpoint: 'postgres://user:pass@localhost:5432/xpod',
+      solidBaseUrl: 'https://pod.example/',
+      solidRootFilePath: '/runtime/pods',
     }));
 
     try {
@@ -78,6 +80,8 @@ describe('API RDF container services', () => {
       expect(backend.managedRunWorker.contextRetriever).toBe(retriever);
       expect(chatKitService.runStateCenter.contextRetriever).toBe(retriever);
       expect(taskService.materializer.contextRetriever).toBe(retriever);
+      expect(backend.runtimeDriver.options.podWorkspaceMapping).toEqual({ baseUrl: 'https://pod.example/', rootFilePath: '/runtime/pods' });
+      expect(backend.runtimeDriver.options.podTokenEndpoint).toBe('http://localhost/.oidc/token');
       expect(backend.runtimeDriver.options.rdfSearchIndexingService).toBe(indexingService);
       expect(backend.runtimeDriver.options.rdfSearchReconciliationRepository).toBe(reconciliationRepository);
     } finally {

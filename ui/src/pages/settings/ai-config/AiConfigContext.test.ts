@@ -3,6 +3,11 @@ import { aiConfigModelRef } from '@undefineds.co/models/ai-config';
 import { mergeModelCatalog, modelsForAssignment, toAiConfigModelOptions } from './AiConfigContext';
 
 describe('AI Config model options', () => {
+  test('derives class capabilities when discovery supplies only the model class', () => {
+    const options = toAiConfigModelOptions([{ id: 'embedding', provider: 'example', modelType: 'embedding' }, { id: 'reader', provider: 'example', modelType: 'document_understanding' }]);
+    expect(options[0].capabilities).toEqual(['embedding']);
+    expect(options[1].capabilities).toEqual(['document_understanding']);
+  });
   test('reuses AI Connections models while persisting canonical Pod model references', () => {
     expect(toAiConfigModelOptions([
       { id: 'text-embedding-3-small', provider: 'openai', displayName: 'Embedding Small', capabilities: ['embedding'] },

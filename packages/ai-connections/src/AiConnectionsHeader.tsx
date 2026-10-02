@@ -18,7 +18,7 @@ export function AiConnectionsHeader({
 
   const saveCustomProvider = async (value: CustomProviderValue) => {
     if (!controller.client) {
-      setCustomProviderError('请先登录后再添加自定义 Provider。')
+      setCustomProviderError('请先登录后再添加自定义服务商。')
       return
     }
     setSavingCustomProvider(true)
@@ -55,8 +55,8 @@ export function AiConnectionsHeader({
           />
           <Input
             type="search"
-            aria-label="搜索 Provider"
-            placeholder="搜索 Provider"
+            aria-label="搜索服务商"
+            placeholder="搜索服务商"
             value={searchQuery}
             onChange={(event) => controller.setSearchQuery(event.target.value)}
             className="h-8 border-transparent bg-muted/50 pl-8 text-xs focus-visible:bg-background"

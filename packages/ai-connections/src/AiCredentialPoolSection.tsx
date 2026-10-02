@@ -29,7 +29,6 @@ import { AiQuotaCard } from './AiQuotaCard'
 import { AiAuthorizationActions } from './AiAuthorizationActions'
 import { AiConnectDialog } from './AiConnectDialog'
 import { AiCredentialRow } from './AiCredentialRow'
-import { AiOfferingDetails } from './AiOfferingDetails'
 import { AiSortableCredentialList } from './AiSortableCredentialList'
 import { useAiConnectDialog } from './useAiConnectDialog'
 
@@ -255,6 +254,9 @@ export function AiCredentialPoolSection({
           })}
           </div>
         </div>
+        {credentials.some((credential) => credential.enabled && (credential.health === 'expired' || credential.health === 'invalid' || credential.lastFailureCode === 'quota_exhausted')) ? <p role="status" className="text-sm text-destructive">{credentials.length} 条里有 {credentials.filter((credential) => credential.enabled && credential.health === 'healthy' && credential.lastFailureCode !== 'quota_exhausted').length} 条已验证可用</p> : null}
+        {credentials.some((credential) => credential.enabled && credential.lastFailureCode === 'upstream_unavailable') ?
+          <p role="status" className="text-sm text-destructive">连接暂时不可用，请检查网络或稍后重试。</p> : null}
         <div aria-label="凭据列表" className="space-y-2">
           <AiSortableCredentialList credentials={orderedCredentials} disabled={busy || disabled}
             onMove={onReorderCredentials ? (from, to) => {
@@ -269,7 +271,9 @@ export function AiCredentialPoolSection({
               const state = quotas[credential.id]
               const quotaState = state?.credentialId === credential.id ? state : undefined
               return <AiCredentialRow credential={credential} label={label} dragHandle={handle}
-                kindLabel={credential.authMode === 'apiKey' ? 'API Key' : offeringTitle(offering)}
+                kindLabel={offeringTitle(offering)}
+                offering={offering}
+                onReconnect={() => { const method = authorizationMethodsForOffering(offering).find((candidate) => candidate.lifecycle === 'active' && candidate.authMode === credential.authMode); if (method) dialog.beginAuthorization(offering, method.connectMode ?? 'connectUnsupported', method) }}
                 busy={busy} disabled={disabled}
                 // A row action is a click, not a call site: the failure is already
                 // reported through `setProviderError`, so it must not also surface
@@ -306,12 +310,7 @@ export function AiCredentialPoolSection({
           onBeginBrowser={onBeginBrowser} onSaveApiKey={onSaveApiKey} onDisconnect={onDisconnect}
           onUpdateCredential={onUpdateCredential} onCreateApiKeyCredential={onCreateApiKeyCredential}
           onBeginOffering={onBeginOffering} onCancelConnect={onCancelConnect} onDismissError={onDismissError} />
-        <details className="text-xs text-muted-foreground">
-          <summary className="w-fit cursor-pointer">接入信息</summary>
-          <div className="mt-2 space-y-3">
-            {offerings.map((offering) => <AiOfferingDetails key={offering.id} offering={offering} />)}
-          </div>
-        </details>
+
         {dialog.error && !dialog.open && dialog.error !== error?.message ? <p role="alert" className="text-sm text-destructive">{dialog.error}</p> : null}
         {error && (error.offeringId ? !dialog.open : !suppressError)
           ? <p role="alert" className="text-sm text-destructive">{error.message}</p> : null}

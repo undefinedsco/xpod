@@ -6,6 +6,7 @@ export interface BrowserXpodRuntimeSnapshot {
   podUrl?: string;
   issuer?: string;
   selectedStorage?: { webId: string; storageUrl: string };
+  aiClientConfigurationAvailable?: boolean;
 }
 
 export interface BrowserXpodAccountSnapshot {
@@ -14,6 +15,9 @@ export interface BrowserXpodAccountSnapshot {
   authority?: string;
   id?: string;
   controls: { account?: { webId?: string } };
+  hasClientCredentialsControl?: boolean;
+  hasIdentityWebId?: boolean;
+  identityMatchesRuntime?: boolean;
 }
 
 export interface BrowserPodRequest {
@@ -26,8 +30,8 @@ export function readBrowserXpodRuntime(page: Page): Promise<BrowserXpodRuntimeSn
   return inspectBrowserHost(page, { kind: 'runtime' });
 }
 
-export function readBrowserXpodAccount(page: Page): Promise<BrowserXpodAccountSnapshot> {
-  return inspectBrowserHost(page, { kind: 'account' });
+export function readBrowserXpodAccount(page: Page, expectedWebId?: string): Promise<BrowserXpodAccountSnapshot> {
+  return inspectBrowserHost(page, { kind: 'account', expectedWebId });
 }
 
 export function refetchBrowserXpodAccount(page: Page): Promise<void> {
@@ -53,7 +57,11 @@ export function fetchBrowserXpodGateway(
   return inspectBrowserHost(page, { kind: 'api-fetch', expectedWebId, gatewayOrigin, resourcePath, init });
 }
 
-type HostOperation = { kind: 'runtime' } | { kind: 'account' } | { kind: 'refetch-account' }
+export function readBrowserSessionAccountControls(page: Page): Promise<{ status: number; hasClientCredentialsControl: boolean; keys: string[] }> {
+  return inspectBrowserHost(page, { kind: 'account-discovery' });
+}
+
+type HostOperation = { kind: 'account-discovery' } | { kind: 'runtime' } | { kind: 'account'; expectedWebId?: string } | { kind: 'refetch-account' }
   | { kind: 'api-fetch'; expectedWebId: string; gatewayOrigin: string; resourcePath: string; init?: BrowserPodRequest }
   | { kind: 'pod-fetch'; resourcePath: string; init?: BrowserPodRequest };
 
@@ -70,11 +78,12 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
       selectedStorage?: { webId: string; storageUrl: string };
       currentPod?: { podUrl: string };
       accountState?: { status: string };
-      identity?: { id?: string };
+      identity?: { id?: string; webId?: string };
       idpIndex?: string;
-      controls?: { account?: { webId?: string } };
+      controls?: { account?: { webId?: string; clientCredentials?: string } };
       isAnonymous?: () => boolean;
       refetchControls?: () => Promise<unknown>;
+      aiClientConfiguration?: { available?: boolean };
     };
     type Fiber = {
       child?: Fiber;
@@ -106,6 +115,9 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
             isAnonymous: value.isAnonymous?.() ?? value.accountState?.status === 'anonymous',
             authority: value.idpIndex,
             id: value.identity?.id,
+            hasClientCredentialsControl: typeof value.controls?.account?.clientCredentials === 'string',
+            hasIdentityWebId: Boolean(value.identity?.webId),
+            identityMatchesRuntime: operation.kind === 'account' && operation.expectedWebId !== undefined ? value.identity?.webId === operation.expectedWebId : undefined,
             controls: {
               account: value.controls?.account ? { webId: value.controls.account.webId } : undefined,
             },
@@ -114,6 +126,11 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
       } else if (value?.session?.getSnapshot && value.fetch && value.state) {
         const snapshot = value.session.getSnapshot();
         const podUrl = value.selectedStorage?.storageUrl ?? value.currentPod?.podUrl ?? value.podUrl;
+        if (operation.kind === 'account-discovery') {
+          const response = await value.fetch(new URL('/.account/', window.location.origin).href, { headers: { Accept: 'application/json' }, redirect: 'error' });
+          const body = await response.json() as { controls?: { account?: { clientCredentials?: string } } };
+          return { status: response.status, keys: Object.keys(body.controls?.account ?? {}), hasClientCredentialsControl: typeof body.controls?.account?.clientCredentials === 'string' };
+        }
         if (operation.kind === 'runtime') {
           return {
             status: snapshot.status,
@@ -121,6 +138,7 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
             issuer: snapshot.issuer ?? value.issuer,
             podUrl,
             selectedStorage: value.selectedStorage,
+            aiClientConfigurationAvailable: value.aiClientConfiguration?.available,
           };
         }
         if (operation.kind === 'api-fetch') {
@@ -131,7 +149,14 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
           const permitted = method === 'GET' && ['/api/ai/providers', '/api/ai/gateway/keys'].includes(url.pathname)
             || method === 'POST' && url.pathname === '/api/ai/gateway/keys'
             || method === 'DELETE' && /^\/api\/ai\/gateway\/keys\/[^/]+$/u.test(url.pathname);
-          if (origin !== window.location.origin || url.origin !== origin || url.username || url.password || url.search || url.hash || !permitted) throw new Error('Gateway acceptance request outside boundary');
+          const taskPath = url.pathname === '/api/tasks';
+          const taskRequest = taskPath && (method === 'GET' || method === 'POST') && !url.search
+            || taskPath && method === 'PATCH' && url.searchParams.has('id')
+            || url.pathname === '/api/tasks/resume' && method === 'POST' && url.searchParams.has('id');
+          const taskQueryAllowed = !url.search || Array.from(url.searchParams.keys()).every(key => key === 'id')
+            && url.searchParams.getAll('id').length === 1 && Boolean(url.searchParams.get('id'));
+          if (origin !== window.location.origin || url.origin !== origin || url.username || url.password || url.hash
+            || !(permitted && !url.search || taskRequest && taskQueryAllowed)) throw new Error('Gateway acceptance request outside boundary');
           const response = await value.fetch(url.href, { ...operation.init, redirect: 'error', signal: AbortSignal.timeout(30_000) });
           return { status: response.status, body: await response.text() };
         }

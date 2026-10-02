@@ -13,6 +13,9 @@ import type { PodChatKitStore } from '../chatkit';
 import type { EmbeddingService } from '../../ai/service';
 import type { AuthContext } from '../auth/AuthContext';
 import { hasSolidClientCredentialsAuthority } from '../auth/AuthContext';
+import { PodRdfAccessScopeResolver } from '../runs/PodRdfAccessScopeResolver';
+import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
+import type { PodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
 import {
   DEFAULT_RDF_VECTOR_PROJECTION_POLICY_VERSION,
   normalizeRdfVectorModelVersion,
@@ -21,6 +24,8 @@ import {
 } from '../service/RdfSearchIndexingService';
 
 export interface ApiRunContextRetrieverDependencies {
+  podAccess?: PodAccessFetchProvider;
+  podBaseUrlResolver?: PodBaseUrlResolver;
   chatKitStore?: Pick<PodChatKitStore, 'getAiConfig'>;
   embeddingService?: Partial<Pick<EmbeddingService, 'embed' | 'embedBatch'>>;
 }
@@ -76,10 +81,13 @@ export function createApiRunContextRetriever(
     return undefined;
   }
 
+  const scopeResolver = dependencies.podAccess ? new PodRdfAccessScopeResolver({
+    rdfEngine, podAccess: dependencies.podAccess, podBaseUrlResolver: dependencies.podBaseUrlResolver,
+  }) : undefined;
   return new RdfRunContextRetriever({
     rdfEngine,
     embedding: createRunContextEmbeddingProvider(dependencies),
-    accessScope: (input) => contextRdfAccessScope(input.context),
+    accessScope: (input) => scopeResolver ? scopeResolver.resolve(input) : contextRdfAccessScope(input.context),
   });
 }
 

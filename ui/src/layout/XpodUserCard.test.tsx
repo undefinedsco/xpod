@@ -32,10 +32,10 @@ function renderCard(accountValue: AuthContextType, runtime: XpodSolidRuntimeValu
 afterEach(() => { cleanup(); profile.mockReset(); });
 
 describe('XpodUserCard', () => {
-  test('stays hidden when neither Account nor WebID is authenticated', () => {
+  test('offers login when no WebID is authenticated', () => {
     profile.mockReturnValue({ displayName: 'Anonymous', loading: false, source: 'account' });
     renderCard(account(false));
-    expect(screen.queryByTestId('xpod-user-card-trigger')).toBeNull();
+    expect(screen.getByRole('link', { name: '登录' })).toBeTruthy();
   });
 
   test.each(['anonymous', 'error'] as const)('keeps WebID-only identity and logout available with Account %s and an unavailable Pod', async (status) => {
@@ -58,11 +58,11 @@ describe('XpodUserCard', () => {
     profile.mockReturnValue({ displayName: 'Bob', webId, loading: false, source: 'webid-profile' });
     renderCard(accountValue, runtime);
     expect(profile).toHaveBeenLastCalledWith({ accountIdentity: undefined, runtime });
-    fireEvent.click(screen.getByLabelText('Open account menu for Bob'));
-    expect(screen.getByText('WebID connected')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('打开 Bob 的个人卡片'));
+    expect(screen.getByText('WebID 已登录')).toBeTruthy();
     expect(screen.queryByText('Account connected')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Switch account' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    expect(screen.getByRole('button', { name: '切换 WebID' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '退出' }));
     await waitFor(() => expect(accountLogout).toHaveBeenCalledTimes(1));
     expect(solidLogout).toHaveBeenCalledTimes(1);
     expect(accountValue.isLoggedIn).toBe(false);
@@ -75,13 +75,13 @@ describe('XpodUserCard', () => {
       webId: 'https://id.example/bob#me',
       state: { status, webId: 'https://id.example/bob#me', error: new Error('expired') },
     } as XpodSolidRuntimeValue);
-    expect(screen.queryByTestId('xpod-user-card-trigger')).toBeNull();
+    expect(screen.getByRole('link', { name: '登录' })).toBeTruthy();
   });
 
-  test('shows Account identity even when no WebID session is open', () => {
+  test('does not treat an Account session as a WebID login', () => {
     profile.mockReturnValue({ displayName: 'Alice', username: 'alice', loading: false, source: 'account' });
     renderCard(account(true));
-    expect(screen.getByLabelText('Open account menu for Alice')).toBeTruthy();
+    expect(screen.getByRole('link', { name: '登录' })).toBeTruthy();
   });
 
   test('does not fall back to Account id for an active WebID handle without a profile nickname', () => {
@@ -89,7 +89,7 @@ describe('XpodUserCard', () => {
     profile.mockReturnValue({ displayName: 'Bob Profile', webId, loading: false, source: 'webid-profile' });
     renderCard(account(true), { state: { status: 'authenticated', webId }, webId } as XpodSolidRuntimeValue);
     fireEvent.click(screen.getByTestId('xpod-user-card-trigger'));
-    expect(screen.getByText('@bob')).toBeTruthy();
+    expect(screen.getByText(webId)).toBeTruthy();
     expect(screen.queryByText('@alice')).toBeNull();
   });
 
@@ -103,7 +103,7 @@ describe('XpodUserCard', () => {
       logout: solidLogout,
     } as XpodSolidRuntimeValue);
     fireEvent.click(screen.getByTestId('xpod-user-card-trigger'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Sign out' }));
+    fireEvent.click(await screen.findByRole('button', { name: '退出' }));
     await waitFor(() => expect(accountLogout).toHaveBeenCalledTimes(1));
     expect(solidLogout).toHaveBeenCalledTimes(1);
     expect(order).toEqual(['solid', 'account']);
@@ -116,10 +116,10 @@ describe('XpodUserCard', () => {
       state: { status: 'authenticated', webId: 'https://id.example/alice#me' }, logout: solidLogout,
     } as XpodSolidRuntimeValue);
     fireEvent.click(screen.getByTestId('xpod-user-card-trigger'));
-    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    fireEvent.click(screen.getByRole('button', { name: '退出' }));
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(accountLogout).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Sign out' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '退出' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '重试退出' }));
     await waitFor(() => expect(accountLogout).toHaveBeenCalledTimes(1));
     expect(solidLogout).toHaveBeenCalledTimes(2);

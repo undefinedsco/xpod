@@ -11,6 +11,7 @@ import {
   type AiConfigRebuildTarget,
 } from '../../../api/ai-config';
 import { useXpodSolidRuntime } from '../../../solid/useXpodSolidRuntime';
+import { AI_MODEL_CLASS_DEFAULT_CAPABILITY, toAIModelClassUri, toAIModelCapabilityUri, toAIModelCapabilityName } from '@undefineds.co/models';
 import { aiConfigModelRef } from '@undefineds.co/models/ai-config';
 import type { AiGatewayModel } from '@undefineds.co/ai-connections/client';
 import { createXpodAiConnectionsPodStore } from '../../../extensions/XpodAiConnectionsPodStore';
@@ -232,13 +233,21 @@ function modelCatalogId(id: string): string {
 
 // eslint-disable-next-line react-refresh/only-export-components -- covered by focused tests and shared with non-component panels.
 export function toAiConfigModelOptions(models: AiGatewayModel[]): AiConfigModelOption[] {
-  return models.map((model) => ({
-    id: model.id,
-    displayName: model.displayName,
-    owner: model.provider,
-    ref: aiConfigModelRef(model.provider, model.id),
-    capabilities: model.capabilities ?? [],
-  }));
+  return models.map((model) => {
+    const capabilities = [...(model.capabilities ?? [])];
+    const modelClass = model.modelType ? toAIModelClassUri(model.modelType) : undefined;
+    const defaultCapability = modelClass ? AI_MODEL_CLASS_DEFAULT_CAPABILITY[modelClass] : undefined;
+    if (defaultCapability && !capabilities.some(value => toAIModelCapabilityUri(value) === defaultCapability)) {
+      capabilities.push(toAIModelCapabilityName(defaultCapability)!);
+    }
+    return {
+      id: model.id,
+      displayName: model.displayName,
+      owner: model.provider,
+      ref: aiConfigModelRef(model.provider, model.id),
+      capabilities,
+    };
+  });
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- pure helper exported for focused tests and model assignment controls.

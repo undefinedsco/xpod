@@ -20,6 +20,7 @@ vi.mock('./auth/XpodRememberedLoginBridge', () => ({ XpodRememberedLoginBridge: 
 vi.mock('./theme/XpodThemeRoot', () => ({
   XpodThemeRoot: ({ children }: { children: ReactNode }) => children,
 }));
+vi.mock('./shell/ShellStateProvider', () => ({ ShellStateProvider: ({ children }: { children: ReactNode }) => children }));
 vi.mock('./xpod-shell-routes', () => ({
   xpodShellRoutes: [
     {

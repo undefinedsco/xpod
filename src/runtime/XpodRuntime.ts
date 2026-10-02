@@ -1,6 +1,7 @@
 import { getLoggerFor } from 'global-logger-factory';
 import { loadConfigFromEnv, type ApiContainerConfig } from '../api/container';
 import { autoProvisionFirstRunLocal } from '../api/runtime';
+import { createHostedPodRouteTransport, resolveHostedPodRoute } from '../api/ai-gateway/pod/HostedPodRoute';
 import { closeAllIdentityConnections } from '../identity/drizzle/db';
 import { Supervisor } from '../supervisor/Supervisor';
 import {
@@ -137,6 +138,12 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
     });
     environment.restore();
 
+    const listenerRoute = state.transport === 'port' ? resolveHostedPodRoute({
+      canonicalBaseUrl: state.baseUrl,
+      gatewayHost: state.bindHost,
+      gatewayPort: state.ports.gateway,
+    }) : undefined;
+
     return {
       id,
       mode: state.mode,
@@ -146,10 +153,19 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
       ports: state.ports,
       sockets: state.sockets,
       fetch: async(input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-        if (typeof input === 'string' || input instanceof URL) {
-          return platform.fetch(new URL(String(input), state.baseUrl), init);
-        }
-        return platform.fetch(input, init);
+        const request = input instanceof Request ? input : new URL(String(input), state.baseUrl);
+        if (!listenerRoute) return platform.fetch(request, init);
+        const requestUrl = request instanceof Request ? new URL(request.url) : request;
+        const headers = new Headers(init?.headers ?? (request instanceof Request ? request.headers : undefined));
+        if (!headers.has('host')) headers.set('host', requestUrl.host);
+        // Only replace the socket destination. Preserve the caller's authority and
+        // headers: adding Pod-route metadata here would override the Gateway's own
+        // canonicalization (or an outer DPoP transport's existing route metadata).
+        const runtimeFetch = await createHostedPodRouteTransport(
+          (wireInput, wireInit) => platform.fetch(wireInput, { ...wireInit, headers }),
+          listenerRoute,
+        );
+        return runtimeFetch(request, init);
       },
       stop,
     };

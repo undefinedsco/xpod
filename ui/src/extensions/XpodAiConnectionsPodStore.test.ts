@@ -44,6 +44,10 @@ describe('XpodAiConnectionsPodStore', () => {
         status: 'active',
         accountLabel: 'Primary',
         keyVersion: '2',
+        lastFailureCode: 'rate_limited',
+        lastFailureAt: new Date('2026-10-02T00:00:00Z'),
+        rateLimitResetAt: new Date('2026-10-02T00:01:00Z'),
+        failCount: 1,
         encryptedSecret: JSON.stringify({
           algorithm: 'PLAINTEXT',
           ciphertext: JSON.stringify({ type: 'apiKey', apiKey: 'sk-primary-secret' }),
@@ -93,7 +97,8 @@ describe('XpodAiConnectionsPodStore', () => {
     expect(providers.find((provider) => provider.id === 'openai')).toMatchObject({
       status: 'available',
       credentials: [
-        { id: 'credentials.ttl#openai-primary', label: 'Primary', enabled: true, priority: 10, maskedHint: 'sk-...cret', version: 2 },
+        { id: 'credentials.ttl#openai-primary', label: 'Primary', enabled: true, priority: 10, maskedHint: 'sk-...cret', version: 2,
+          lastFailureCode: 'rate_limited', lastFailureAt: '2026-10-02T00:00:00.000Z', rateLimitResetAt: '2026-10-02T00:01:00.000Z', failCount: 1 },
         { id: 'credentials.ttl#openai-backup', label: 'Backup', enabled: false, priority: 20, maskedHint: 'sk-...cret', version: 1 },
       ],
     });
@@ -546,10 +551,12 @@ describe('XpodAiConnectionsPodStore', () => {
       apiKey: 'sk-test', label: 'timicc', offeringId: 'openai-compatible', baseUrl: 'https://timicc.com/v1', compatibility: 'openai',
     } as never) as { id: string; version: number };
 
+    Object.assign(rows.get(created.id)!, { lastFailureCode: 'quota_exhausted', lastFailureAt: new Date(), failCount: 2 });
     await store.markCredentialHealth!('custom', created.id, 'healthy', created.version);
 
     expect(rows.get(created.id)?.metadata).toMatchObject({ health: 'healthy' });
     expect(rows.get(created.id)?.keyVersion).toBe('2');
+    expect(rows.get(created.id)).toMatchObject({ lastFailureCode: null, lastFailureAt: null, rateLimitResetAt: null, failCount: 0 });
   });
 
   it('stores an Ollama local credential without an API key', async () => {
@@ -1116,7 +1123,6 @@ describe('XpodAiConnectionsPodStore', () => {
 
   it('keeps the discovered model type so an embedding model is listed as one', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(null, { status: 204 }));
-    const providerId = aiProviderResource.buildId({ id: 'openai' });
     const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
       [credentialResource, new Map()],
       [aiProviderResource, new Map()],

@@ -1,3 +1,4 @@
+import { saveConsentContinuation } from '../utils/safe-continuation';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -74,6 +75,92 @@ function makeProvisionCode(payload: Record<string, unknown>): string {
   return `${encoded}.signature`;
 }
 
+// The quick-create page only resumes a task that is bound to the current
+// authoritative Account id AND its own interaction scope, so these fixtures
+// install a real window.pathname facade plus a matching one-time task.
+const FIRST_POD_ACCOUNT_ID = 'alice';
+const FIRST_POD_INTERACTION = '/.account/interaction/flow-auth';
+const FIRST_POD_CREATE_PATH = `${FIRST_POD_INTERACTION}/create-pod/`;
+const FIRST_POD_CONSENT_RETURN = `${FIRST_POD_INTERACTION}/oidc/consent/`;
+const FIRST_POD_ACCOUNT_INDEX = 'https://id.example/.account/';
+const FIRST_POD_ACCOUNT_BASE = `${FIRST_POD_ACCOUNT_INDEX}account/${FIRST_POD_ACCOUNT_ID}/`;
+
+function futureExpirySeconds(): number {
+  return Math.floor(Date.now() / 1000) + 3600;
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+function requestPath(input: RequestInfo | URL): string {
+  return new URL(String(input), window.location.origin).pathname;
+}
+
+/** jsdom's location is read-only; swap in a facade the page reads and navigates. */
+function installLocation(pathname: string) {
+  const browserWindow = window;
+  const navigation = {
+    href: `${browserWindow.location.origin}${pathname}`,
+    origin: browserWindow.location.origin,
+    pathname,
+    assign: vi.fn(),
+  };
+  const facade = Object.create(browserWindow);
+  Object.defineProperty(facade, 'location', { value: navigation });
+  vi.stubGlobal('window', facade);
+  return navigation;
+}
+
+/** Every advertised Account control agrees on the same authoritative Account id. */
+function firstPodAccountControls(overrides: Record<string, string | undefined> = {}) {
+  return {
+    account: {
+      id: FIRST_POD_ACCOUNT_ID,
+      username: FIRST_POD_ACCOUNT_ID,
+      bindings: `${FIRST_POD_ACCOUNT_BASE}bindings/`,
+      webId: `${FIRST_POD_ACCOUNT_BASE}webid/`,
+      pod: `${FIRST_POD_ACCOUNT_BASE}pod/`,
+      ...overrides,
+    },
+  };
+}
+
+/** Seed the still-valid, once-only consent task the quick-create page resumes. */
+function seedFirstPodTask(accountId = FIRST_POD_ACCOUNT_ID): void {
+  expect(saveConsentContinuation({
+    accountId,
+    interaction: FIRST_POD_INTERACTION,
+    returnTo: FIRST_POD_CONSENT_RETURN,
+  })).toBe(true);
+}
+
+function installLiveFirstPodProvisionContext(): void {
+  window.__XPOD__ = {
+    authenticating: false,
+    provisionCode: makeProvisionCode({ spUrl: 'https://node.example/', serviceToken: 'test-token', exp: futureExpirySeconds() }),
+  };
+}
+
+function renderFirstPodAt(path: string, overrides: Partial<AuthContextType> = {}) {
+  function FirstPodLocationProbe() {
+    return <span data-testid="auth-pages-first-pod-location">{useLocation().pathname}</span>;
+  }
+  return renderWithAuth(
+    <><FirstPodPage /><FirstPodLocationProbe /></>,
+    { idpIndex: FIRST_POD_ACCOUNT_INDEX, isLoggedIn: true, controls: firstPodAccountControls(), ...overrides },
+    [path],
+  );
+}
+
+function storedConsentTask(): unknown {
+  return JSON.parse(window.sessionStorage.getItem('xpod.safe-continuation.consent.v2') ?? 'null');
+}
+
+function anyPostRequest(fetchMock: ReturnType<typeof vi.fn>): boolean {
+  return fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
+}
+
 describe('CSS identity page controllers', () => {
   it('keeps login/register mode aligned with the route and preserves transaction query', () => {
     function LocationProbe() {
@@ -96,32 +183,37 @@ describe('CSS identity page controllers', () => {
   });
 
   it.each([401, 404, 500])('does not create a Pod after a scoped binding query fails with %s, including retry', async (status) => {
-    const accountIndex = 'https://id.example/.account/';
-    const webId = 'https://id.example/alice/profile/card#me';
-    window.__XPOD__ = { authenticating: false, provisionCode: makeProvisionCode({
-      spUrl: 'https://node.example/', serviceToken: 'test-token',
-      exp: Math.floor(Date.now() / 1000) + 3600,
-    }) };
+    installLocation(FIRST_POD_CREATE_PATH);
+    seedFirstPodTask();
+    installLiveFirstPodProvisionContext();
+    const webId = 'https://node.example/alice/profile/card#me';
+    // POST /provision/webids is the read-only scoped lookup, not a create.
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input), window.location.origin);
-      if (url.pathname === '/.account/account/webid/') {
-        return new Response(JSON.stringify({ webIdLinks: { [webId]: '/.account/webid/alice/' } }));
+      const path = requestPath(input);
+      if (path === `/.account/account/${FIRST_POD_ACCOUNT_ID}/bindings/`) return jsonResponse({ bindings: [] });
+      if (path === `/.account/account/${FIRST_POD_ACCOUNT_ID}/webid/`) {
+        return jsonResponse({ webIdLinks: { [webId]: `https://id.example/.account/account/${FIRST_POD_ACCOUNT_ID}/webid/alice/` } });
       }
-      if (url.pathname === '/provision/webids') return new Response('{}', { status });
-      throw new Error(`Unexpected request: ${url.pathname}`);
+      if (path === '/provision/webids') return new Response('{}', { status });
+      throw new Error(`Unexpected request: ${path}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithAuth(<FirstPodPage />, {
-      idpIndex: accountIndex, isLoggedIn: true,
-      controls: { account: {
-        username: 'alice', webId: `${accountIndex}account/webid/`, pod: `${accountIndex}account/pod/`,
-      } },
-    }, ['/.account/create-pod/']);
+
+    renderFirstPodAt(FIRST_POD_CREATE_PATH);
+
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.checkFailed));
     fireEvent.click(screen.getByRole('button', { name: '重试' }));
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/provision/webids'))).toHaveLength(2));
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([input]) => requestPath(input) === '/provision/webids'),
+    ).toHaveLength(2));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.checkFailed));
-    expect(fetchMock.mock.calls.some(([input]) => /\/provision\/status|\/pod\/?$|\/provision\/pods/.test(String(input)))).toBe(false);
+    // The only POSTs are the read-only scoped lookups; nothing was created.
+    const postedPaths = fetchMock.mock.calls
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+      .map(([input]) => requestPath(input as RequestInfo | URL));
+    expect(postedPaths).toEqual(['/provision/webids', '/provision/webids']);
+    expect(fetchMock.mock.calls.some(([input]) => requestPath(input) === '/provision/pods')).toBe(false);
+    expect(storedConsentTask()).not.toBeNull();
   });
 
   it('enters Account management without requiring a Pod', async () => {
@@ -411,7 +503,7 @@ describe('CSS identity page controllers', () => {
     expect(screen.getByText('为你的账号选择一个新密码。')).toBeTruthy();
   });
 
-  it('renders consent through canonical views and keeps first-storage preparation automatic', async () => {
+  it('renders consent through canonical views and keeps first-storage preparation read-only', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/.account/oidc/consent/') {
@@ -432,7 +524,7 @@ describe('CSS identity page controllers', () => {
     const firstPodFetch = vi.fn(async () => new Promise<Response>(() => undefined));
     vi.stubGlobal('fetch', firstPodFetch);
     renderWithAuth(<FirstPodPage />);
-    expect(screen.getByRole('status').textContent).toContain('正在检查存储空间…');
+    expect(screen.getByRole('status').textContent).toContain('正在准备创建…');
     expect(screen.queryByLabelText('Pod 名称')).toBeNull();
     expect(screen.queryByTestId('storage-bootstrap-scroll')).toBeNull();
   });
@@ -593,33 +685,15 @@ describe('CSS identity page controllers', () => {
   it('does not derive storage from the remembered Account email on the legacy route', async () => {
     const cloudAccountIndex = 'https://id.example/.account/';
     rememberPendingXpodAccountEmail('alice@rc.example', window.localStorage, cloudAccountIndex);
-    const podCreate = vi.fn(async () => new Response(JSON.stringify({
-      webId: 'https://id.example/alice/profile/card#me',
-      podUrl: 'https://id.example/alice/',
-    }), { status: 201, headers: { 'content-type': 'application/json' } }));
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && (!init?.method || init.method === 'GET')) {
-        return new Response(JSON.stringify({ pods: {} }), { status: 200 });
-      }
-      if (url === '/provision/status') {
-        return new Response(JSON.stringify({ registered: false }), { status: 200 });
-      }
-      if (new URL(url, window.location.origin).pathname === '/.account/account/bindings') {
-        return new Response(JSON.stringify({ bindings: [] }), { status: 200 });
-      }
-      if (new URL(url, window.location.origin).pathname === '/.account/account/webid/') {
-        return new Response(JSON.stringify({ webIdLinks: {} }), { status: 200 });
-      }
-      if (new URL(url, window.location.origin).pathname === '/.account/account/pod/' && init?.method === 'POST') {
-        return podCreate(input, init);
-      }
-      return new Response(JSON.stringify({}), { status: 404 });
-    });
+    const fetchMock = vi.fn(async () => jsonResponse({}, 404));
     vi.stubGlobal('fetch', fetchMock);
 
+    function LocationProbe() {
+      return <span data-testid="remembered-legacy-location">{useLocation().pathname}</span>;
+    }
+
     renderWithAuth(
-      <FirstPodPage />,
+      <><FirstPodPage /><LocationProbe /></>,
       {
         idpIndex: cloudAccountIndex,
         isLoggedIn: true,
@@ -634,9 +708,10 @@ describe('CSS identity page controllers', () => {
       ['/.account/create-pod/'],
     );
 
-    // 记住的邮箱只是展示记录，不得据此创建存储（设计第一部分 §3.1、第二部分 §4.1）。
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(podCreate).not.toHaveBeenCalled();
+    // 裸 legacy 深链没有 interaction/一次性任务：只把用户送到 Account 管理，
+    // 不读、不 lookup、不创建；记住的邮箱只是展示记录（设计 §3.1 / §4.1）。
+    await waitFor(() => expect(screen.getByTestId('remembered-legacy-location').textContent).toBe('/.account/account/'));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('does not create Local storage from the legacy create-pod route', async () => {
@@ -720,162 +795,121 @@ describe('CSS identity page controllers', () => {
     expect(refetchControls).not.toHaveBeenCalled();
   });
 
-  it('enters consent from existing OIDC picker bindings without refreshing stale first-pod provisioning', async () => {
-    const cloudAccountIndex = 'https://id.example/.account/';
-    const cloudCreatePodUrl = 'https://id.example/.account/account/account-1/pod/';
+  it('enters consent from existing current-target bindings without refreshing stale first-pod provisioning', async () => {
+    installLocation(FIRST_POD_CREATE_PATH);
+    seedFirstPodTask();
     const selectedBinding = {
       webId: 'https://id.example/alice/profile/card#me',
       storageUrl: 'https://acceptance-local.nodes.acceptance.test/accept-web-mtcam75t/',
     };
-    const expiredProvisionCode = makeProvisionCode({
-      spUrl: 'https://acceptance-local.nodes.acceptance.test/',
-      serviceAccessToken: 'expired-service-token',
-      exp: Math.floor(Date.now() / 1000) - 60,
-    });
-    window.__XPOD__ = { authenticating: true, provisionCode: expiredProvisionCode };
+    // The stored provision code is stale, but a durable binding already names the
+    // current target root: resume the authorization without a scoped refresh.
+    window.__XPOD__ = {
+      authenticating: false,
+      provisionCode: makeProvisionCode({
+        spUrl: 'https://acceptance-local.nodes.acceptance.test/',
+        spDomain: 'acceptance-local.nodes.acceptance.test',
+        serviceAccessToken: 'expired-service-token',
+        exp: 1,
+      }),
+    };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === 'https://id.example/.account/oidc/pick-webid/') {
-        return new Response(JSON.stringify({ entries: [selectedBinding] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+      const path = requestPath(input);
+      if (path === `/.account/account/${FIRST_POD_ACCOUNT_ID}/bindings/`) {
+        return jsonResponse({ bindings: [selectedBinding] });
       }
-      if (url === '/provision/status') {
-        throw new Error('FirstPod must not refresh provision code before using picker bindings');
+      if (path === '/provision/status') {
+        throw new Error('FirstPod must not refresh provision code when a current-target binding exists');
       }
-      if (url === cloudCreatePodUrl && init?.method === 'POST') {
-        throw new Error('FirstPod must not create when picker already has an exact binding');
+      if (path === '/provision/webids') {
+        throw new Error('A durable current-target binding must not require a scoped lookup');
       }
-      return new Response(JSON.stringify({}), { status: 404 });
+      if (path.endsWith('/pod/') && init?.method === 'POST') {
+        throw new Error('FirstPod must not create when a current-target binding already exists');
+      }
+      return jsonResponse({}, 404);
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    function LocationProbe() {
-      return <span data-testid="first-pod-existing-binding-location">{useLocation().pathname}</span>;
-    }
+    renderFirstPodAt(FIRST_POD_CREATE_PATH);
 
-    renderWithAuth(
-      <><FirstPodPage /><LocationProbe /></>,
-      {
-        idpIndex: cloudAccountIndex,
-        hasOidcPending: true,
-        isLoggedIn: true,
-        controls: {
-          account: {
-            username: 'alice',
-            pod: cloudCreatePodUrl,
-          },
-        },
-      },
-      ['/.account/create-pod/'],
-    );
-
-    await waitFor(() => expect(screen.getByTestId('first-pod-existing-binding-location').textContent).toBe('/.account/oidc/consent/'));
-    expect(fetchMock).toHaveBeenCalledWith('https://id.example/.account/oidc/pick-webid/', expect.objectContaining({
-      credentials: 'include',
-    }));
-    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
-    expect(fetchMock.mock.calls.some(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST')).toBe(false);
+    await waitFor(() => expect(screen.getByTestId('auth-pages-first-pod-location').textContent).toBe(FIRST_POD_CONSENT_RETURN));
+    expect(fetchMock.mock.calls.some(([input]) => requestPath(input) === '/provision/webids')).toBe(false);
+    expect(anyPostRequest(fetchMock)).toBe(false);
+    expect(storedConsentTask()).toBeNull();
   });
 
-  it('does not create first storage when the OIDC picker cannot be loaded', async () => {
-    const cloudAccountIndex = 'https://id.example/.account/';
-    const cloudCreatePodUrl = 'https://id.example/.account/account/account-1/pod/';
+  it('does not create first storage when the Account bindings read cannot be loaded, including retry', async () => {
+    installLocation(FIRST_POD_CREATE_PATH);
+    seedFirstPodTask();
+    installLiveFirstPodProvisionContext();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === 'https://id.example/.account/oidc/pick-webid/') {
-        return new Response(JSON.stringify({ message: 'unavailable' }), { status: 503 });
+      const path = requestPath(input);
+      if (path === `/.account/account/${FIRST_POD_ACCOUNT_ID}/bindings/`) {
+        return jsonResponse({ message: 'unavailable' }, 503);
       }
-      if (url === '/provision/status') {
-        throw new Error('FirstPod must not refresh provision code when picker failed');
+      if (path === '/provision/webids') {
+        throw new Error('FirstPod must not look up when the bindings read failed');
       }
-      if (url === cloudCreatePodUrl && init?.method === 'POST') {
-        throw new Error('FirstPod must not create when picker failed');
+      if (path.endsWith('/pod/') && init?.method === 'POST') {
+        throw new Error('FirstPod must not create when the bindings read failed');
       }
-      return new Response(JSON.stringify({}), { status: 404 });
+      return jsonResponse({}, 404);
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    renderWithAuth(
-      <FirstPodPage />,
-      {
-        idpIndex: cloudAccountIndex,
-        hasOidcPending: true,
-        isLoggedIn: true,
-        controls: {
-          account: {
-            username: 'alice',
-            pod: cloudCreatePodUrl,
-          },
-        },
-      },
-      ['/.account/create-pod/'],
-    );
+    renderFirstPodAt(FIRST_POD_CREATE_PATH);
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.checkFailed));
-    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
-    expect(fetchMock.mock.calls.some(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => requestPath(input).endsWith('/bindings/'))).toHaveLength(2));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.checkFailed));
+    expect(anyPostRequest(fetchMock)).toBe(false);
+    expect(storedConsentTask()).not.toBeNull();
   });
 
   it.each([
     {
+      name: 'a non-array payload',
+      body: {},
+    },
+    {
       name: 'missing storageUrl',
-      entries: [{ webId: 'https://id.example/alice/profile/card#me' }],
+      body: { bindings: [{ webId: 'https://id.example/alice/profile/card#me' }] },
     },
     {
       name: 'invalid URL mixed with a valid binding',
-      entries: [
-        {
-          webId: 'https://id.example/alice/profile/card#me',
-          storageUrl: 'https://acceptance-local.nodes.acceptance.test/alice/',
-        },
-        {
-          webId: 'https://id.example/bob/profile/card#me',
-          storageUrl: 'not a url',
-        },
-      ],
+      body: {
+        bindings: [
+          { webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://node.example/alice/' },
+          { webId: 'https://id.example/bob/profile/card#me', storageUrl: 'not a url' },
+        ],
+      },
     },
-  ])('does not create first storage when the OIDC picker returns malformed $name entries', async ({ entries }) => {
-    const cloudAccountIndex = 'https://id.example/.account/';
-    const cloudCreatePodUrl = 'https://id.example/.account/account/account-1/pod/';
+  ])('does not create first storage when the Account bindings read returns malformed $name', async ({ body }) => {
+    installLocation(FIRST_POD_CREATE_PATH);
+    seedFirstPodTask();
+    installLiveFirstPodProvisionContext();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === 'https://id.example/.account/oidc/pick-webid/') {
-        return new Response(JSON.stringify({ entries }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+      const path = requestPath(input);
+      if (path === `/.account/account/${FIRST_POD_ACCOUNT_ID}/bindings/`) {
+        return jsonResponse(body);
       }
-      if (url === '/provision/status') {
-        throw new Error('FirstPod must not refresh provision code when picker entries are malformed');
+      if (path === '/provision/webids') {
+        throw new Error('FirstPod must not look up when the bindings response is malformed');
       }
-      if (url === cloudCreatePodUrl && init?.method === 'POST') {
-        throw new Error('FirstPod must not create when picker entries are malformed');
+      if (path.endsWith('/pod/') && init?.method === 'POST') {
+        throw new Error('FirstPod must not create when the bindings response is malformed');
       }
-      return new Response(JSON.stringify({}), { status: 404 });
+      return jsonResponse({}, 404);
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    renderWithAuth(
-      <FirstPodPage />,
-      {
-        idpIndex: cloudAccountIndex,
-        hasOidcPending: true,
-        isLoggedIn: true,
-        controls: {
-          account: {
-            username: 'alice',
-            pod: cloudCreatePodUrl,
-          },
-        },
-      },
-      ['/.account/create-pod/'],
-    );
+    renderFirstPodAt(FIRST_POD_CREATE_PATH);
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.checkFailed));
-    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/provision/status')).toBe(false);
-    expect(fetchMock.mock.calls.some(([input, init]) => String(input) === cloudCreatePodUrl && init?.method === 'POST')).toBe(false);
+    expect(anyPostRequest(fetchMock)).toBe(false);
+    expect(storedConsentTask()).not.toBeNull();
   });
 
   it('does not create storage from OIDC picker on the legacy create-pod route', async () => {
@@ -1047,7 +1081,7 @@ describe('CSS identity page controllers', () => {
 
     // 授权页不再以 Account username 自动建 Pod（设计第二部分 §4.1 / U06）：
     // 只说明缺少可用存储并给出"前往 Pod 管理"。
-    await screen.findByRole('button', { name: '前往 Pod 管理' });
+    await screen.findByRole('button', { name: '创建 Pod' });
     expect(podCreate).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: '创建存储空间' })).toBeNull();
   });
@@ -1318,7 +1352,7 @@ describe('CSS identity page controllers', () => {
 
     cleanup();
     renderWithAuth(<FirstPodPage />);
-    expect(screen.getByRole('status').textContent).toContain('正在检查存储空间…');
+    expect(screen.getByRole('status').textContent).toContain('正在准备创建…');
 
     cleanup();
     vi.stubGlobal('fetch', vi.fn(async () => {

@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { ChatKitService } from '../../src/api/chatkit/service';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
@@ -11,6 +13,7 @@ import {
   XPOD_RUN_REQUESTED_EVENT,
 } from '../../src/api/runs/InngestRunExecutionBackend';
 import { PiAgentRuntimeDriver } from '../../src/api/runs/PiAgentRuntimeDriver';
+import { SandboxFactory } from '../../src/terminal/sandbox';
 import { RunAuthContextRegistry } from '../../src/api/runs/RunAuthContextRegistry';
 import { RunStepType, RunStatus, XpodRunStepType } from '../../src/api/runs/schema';
 import { extractResourceLocalId, generateRunResourceId, generateRunStepResourceId, resolveRunUrn } from '../../src/api/runs/store';
@@ -33,7 +36,9 @@ type TestRuntimeTool = {
 
 interface TestAgentSessionOptions {
   cwd?: string;
+  model?: { headers?: Record<string, string> };
   tools: TestRuntimeTool[];
+  customTools?: import('@mariozechner/pi-coding-agent').ToolDefinition[];
 }
 
 interface TestAgentSessionResult {
@@ -42,6 +47,7 @@ interface TestAgentSessionResult {
     subscribe: typeof subscribeMock;
     prompt: (prompt?: string) => Promise<void>;
     dispose: typeof disposeMock;
+    abort: () => Promise<void>;
   };
 }
 
@@ -94,6 +100,7 @@ const {
         subscribe: subscribeMock,
         prompt: promptMock,
         dispose: disposeMock,
+        abort: vi.fn(async () => undefined),
       },
     }));
   const createCodingToolsMock = vi.fn((_cwd?: string): TestRuntimeTool[] => [
@@ -2463,6 +2470,7 @@ describe('Managed Agents Inngest Chat backend', () => {
               });
             },
             dispose: disposeMock,
+        abort: vi.fn(async () => undefined),
           },
         };
       });
@@ -2548,6 +2556,7 @@ describe('Managed Agents Inngest Chat backend', () => {
               await executeReadTool('tool_read_1', { path: 'objects/report.txt' });
             },
             dispose: disposeMock,
+        abort: vi.fn(async () => undefined),
           },
         };
       });
@@ -2595,6 +2604,75 @@ describe('Managed Agents Inngest Chat backend', () => {
       else process.env.DEFAULT_MODEL = originalModel;
       fs.rmSync(workdir, { recursive: true, force: true });
     }
+  });
+
+  it('registers a real approval tool, yields its exact request and ends the Pi loop without executing the action', async () => {
+    const testRoot = path.join(process.cwd(), '.test-data', 'task-approval-producer');
+    fs.mkdirSync(testRoot, { recursive: true });
+    const workdir = fs.mkdtempSync(path.join(testRoot, 'pi-'));
+    const solidfs = new RecordingSolidFS(workdir);
+    const abort = vi.fn(async () => undefined);
+    let toolSettled = false;
+    const details = { target: 'https://pod.test/work/output.txt', action: 'http://www.w3.org/ns/odrl/2/write', risk: 'low', description: 'Write the approved confirmation file' };
+    createAgentSessionMock.mockImplementationOnce(async (options?: TestAgentSessionOptions) => ({ session: {
+      agent: { replaceMessages: replaceMessagesMock }, subscribe: subscribeMock,
+      prompt: async () => {
+        const tool = options!.customTools!.find(tool => tool.name === 'request_approval')!;
+        expect(tool.parameters.required).toEqual(expect.arrayContaining(['target', 'action', 'risk', 'description']));
+        try { await tool.execute('real-pi-tool-id', details, undefined, undefined, {} as never); }
+        finally { toolSettled = true; }
+      },
+      abort, dispose: disposeMock,
+    } }));
+    try {
+      const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any, solidfs, solidfsProjection: 'copy' });
+      const events: AgentRuntimeEvent[] = [];
+      for await (const event of driver.start({ runId: 'run_approval', threadId: 'thread_approval', prompt: 'Ask first', conversation: [],
+        config: { workspace: workspaceRef, runner: { type: 'pi', protocol: 'pi' }, agentConfig: piAiConnectionsAgentConfig(), aiConnection: piAiConnections() },
+      })) {
+        events.push(event);
+        if (event.type === 'tool_call') break;
+      }
+      expect(events).toEqual([{ type: 'tool_call', requestId: 'real-pi-tool-id', name: 'request_approval', arguments: JSON.stringify(details), approval: details }]);
+      expect(abort).toHaveBeenCalled(); expect(toolSettled).toBe(true); expect(disposeMock).toHaveBeenCalled();
+      expect(solidfs.commits).toBe(1); expect(solidfs.rollbacks).toBe(0);
+      expect(fs.existsSync(path.join(workdir, 'output.txt'))).toBe(false);
+    } finally { fs.rmSync(workdir, { recursive: true, force: true }); }
+  });
+
+  it('aborts an active pi session and rolls back its uncommitted workspace', async () => {
+    const testRoot = path.join(process.cwd(), '.test-data', 'task-runtime-cancellation');
+    fs.mkdirSync(testRoot, { recursive: true });
+    const workdir = fs.mkdtempSync(path.join(testRoot, 'pi-'));
+    const solidfs = new RecordingSolidFS(workdir);
+    const controller = new AbortController();
+    let started!: () => void;
+    const promptStarted = new Promise<void>(resolve => { started = resolve; });
+    let finishPrompt!: () => void;
+    const abort = vi.fn(async () => { finishPrompt(); });
+    createAgentSessionMock.mockImplementationOnce(async () => ({ session: {
+      agent: { replaceMessages: replaceMessagesMock }, subscribe: subscribeMock,
+      prompt: () => { started(); return new Promise<void>(resolve => { finishPrompt = resolve; }); },
+      abort, dispose: disposeMock,
+    } }));
+    try {
+      const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any, solidfs, solidfsProjection: 'copy' });
+      const draining = (async () => {
+        for await (const _event of driver.start({
+          runId: 'run_cancel', threadId: 'thread_cancel', prompt: 'work', conversation: [], signal: controller.signal,
+          config: { workspace: workspaceRef, runner: { type: 'pi', protocol: 'pi' },
+            agentConfig: piAiConnectionsAgentConfig(), aiConnection: piAiConnections(),
+          },
+        })) { /* Drain until cancellation. */ }
+      })();
+      await promptStarted;
+      controller.abort();
+      await draining;
+      expect(abort).toHaveBeenCalled();
+      expect(solidfs.commits).toBe(0);
+      expect(solidfs.rollbacks).toBe(1);
+      expect(disposeMock).toHaveBeenCalled();
+    } finally { fs.rmSync(workdir, { recursive: true, force: true }); }
   });
 
   it('rolls back SolidFS workspace when pi runtime emits an error', async () => {
@@ -2760,6 +2838,12 @@ describe('Managed Agents Inngest Chat backend', () => {
       }
 
       expect(createAgentSessionMock).toHaveBeenCalledTimes(2);
+      const headers = createAgentSessionMock.mock.calls.map(([options]) => options?.model?.headers);
+      expect(headers[0]).toEqual({
+        'user-agent': expect.stringMatching(/^Xpod\/\d/),
+        'x-opencode-session': expect.stringMatching(/^xpod-[a-f0-9]{64}$/),
+      });
+      expect(headers[1]).toEqual(headers[0]);
       expect(sessionManagerInMemoryMock).toHaveBeenCalledTimes(2);
       expect(reloadMock).toHaveBeenCalledTimes(1);
       expect(createCodingToolsMock).toHaveBeenCalledTimes(1);
@@ -2775,7 +2859,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     }
   });
 
-  it('maps a Pod workspace reference to a local cwd and lets the managed agent read and write files there', async () => {
+  it.each(['startup-env', 'instance-config'])('maps a Pod workspace from %s after SDK environment restoration and runs file tools', async mappingSource => {
     const originalCssBaseUrl = process.env.CSS_BASE_URL;
     const originalCssRootFilePath = process.env.CSS_ROOT_FILE_PATH;
     const originalKey = process.env.DEFAULT_API_KEY;
@@ -2840,11 +2924,22 @@ describe('Managed Agents Inngest Chat backend', () => {
               });
             },
             dispose: disposeMock,
+        abort: vi.fn(async () => undefined),
           },
         };
       });
 
-      const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
+      if (mappingSource === 'instance-config') {
+        process.env.CSS_BASE_URL = 'http://localhost:900/';
+        process.env.CSS_ROOT_FILE_PATH = '/another-runtime';
+      }
+      const driver = new PiAgentRuntimeDriver({
+        piSdk: piSdkMock as any,
+        ...(mappingSource === 'instance-config' ? { podWorkspaceMapping: { baseUrl: 'https://pod.example/', rootFilePath: podRoot } } : {}),
+      });
+      // The SDK restores process.env after API startup, before the first run.
+      delete process.env.CSS_BASE_URL;
+      delete process.env.CSS_ROOT_FILE_PATH;
       const backend = new InngestRunExecutionBackend({
         client: new RecordingInngestClient() as any,
         runtimeDriver: driver,
@@ -3134,5 +3229,33 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(events).toEqual([{ type: 'text', text: 'sandboxed:loop' }]);
     expect(createAgentSessionMock).not.toHaveBeenCalled();
     expect(createCodingToolsMock).not.toHaveBeenCalled();
+  });
+
+  it('passes the instance workspace mapping and token endpoint to the child runtime', async () => {
+    fs.mkdirSync('.test-data', { recursive: true });
+    const root = fs.mkdtempSync(path.resolve('.test-data/pi-worker-mapping-'));
+    const stdinEnd = vi.fn((_payload: string) => { queueMicrotask(() => child.emit('close', 0)); });
+    const child = Object.assign(new EventEmitter(), {
+      stdin: { end: stdinEnd }, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const launch = vi.spyOn(SandboxFactory, 'launch').mockReturnValue({ sandboxed: true, process: child } as any);
+    try {
+      const driver = new PiAgentRuntimeDriver({
+        agentLoopIsolation: 'sandboxed-process', requireSandbox: false,
+        podWorkspaceMapping: { baseUrl: 'https://node.example/', rootFilePath: root },
+        podTokenEndpoint: 'https://identity.example/.oidc/token',
+      });
+      for await (const _event of driver.start({
+        runId: 'worker-mapping', threadId: 'thread-worker', prompt: 'hello', conversation: [],
+        config: { workspace: pathToFileURL(root).href, runner: { type: 'pi', protocol: 'pi' } },
+      })) { /* drain */ }
+      expect(JSON.parse(stdinEnd.mock.calls[0][0] as string).options).toMatchObject({
+        podWorkspaceMapping: { baseUrl: 'https://node.example/', rootFilePath: root },
+        podTokenEndpoint: 'https://identity.example/.oidc/token',
+      });
+    } finally {
+      launch.mockRestore(); child.stdout.destroy(); child.stderr.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
