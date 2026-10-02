@@ -48,6 +48,7 @@ import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
 import { HierarchyLockingResourceStore } from './storage/HierarchyLockingResourceStore';
 import { StorageETagHandler } from './storage/conditions/StorageETagHandler';
 import { StoragePutOperationHandler } from './http/StoragePutOperationHandler';
+import { HeadSafeResponseWriter } from './http/HeadSafeResponseWriter';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
 import { ClusterWebSocketConfigurator } from './http/ClusterWebSocketConfigurator';
 import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHandler';
@@ -205,6 +206,7 @@ export {
   HierarchyLockingResourceStore,
   StorageETagHandler,
   StoragePutOperationHandler,
+  HeadSafeResponseWriter,
   SubgraphQueryEngine,
   SubgraphSparqlHttpHandler,
   AgentDirectoryHttpHandler,

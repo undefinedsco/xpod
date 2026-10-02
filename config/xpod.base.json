@@ -19,7 +19,8 @@
       "versionPutStore": "StoragePutOperationHandler:_store",
       "versionPutMetadataStrategy": "StoragePutOperationHandler:_metadataStrategy",
       "versionPutETagHandler": "StoragePutOperationHandler:_eTagHandler",
-      "sparqlMutationStore": "SubgraphSparqlHttpHandler:_mutationStore"
+      "sparqlMutationStore": "SubgraphSparqlHttpHandler:_mutationStore",
+      "headResponseMetadataWriter": "HeadSafeResponseWriter:_metadataWriter"
     }
   ],
   "import": [
@@ -28,6 +29,15 @@
     "./notifications.json"
   ],
   "@graph": [
+    {
+      "comment": "Preserve CSS response headers and status while suppressing generated HEAD error bodies before the Bun HTTP writer.",
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:solid-server:default:ResponseWriter" },
+      "overrideParameters": {
+        "@type": "HeadSafeResponseWriter",
+        "headResponseMetadataWriter": { "@id": "urn:solid-server:default:MetadataWriter" }
+      }
+    },
     {
       "comment": "Use persisted storage revisions for GET/HEAD, conditions and notifications; timestamp-only resources have no safe ETag.",
       "@type": "Override",

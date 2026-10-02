@@ -8,6 +8,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 
 | CSS 默认组件 | Xpod 替换组件 | 功能区别 |
 |-------------|--------------|----------|
+| `BasicResponseWriter` | `HeadSafeResponseWriter` | HEAD 错误响应也不写正文，避免 Bun CSS 子进程向 Node Gateway 输出额外 HTTP 字节；保留原状态、metadata writer 和 GET 流式响应 |
 | `DataAccessorBasedStore` | `SparqlUpdateResourceStore` | 拦截 PATCH 操作，能处理的直接执行 SPARQL UPDATE，不能处理的抛出 `NotImplementedHttpError` 让 CSS 回落到 get-patch-set |
 | `BasicETagHandler` | `StorageETagHandler` | 读、条件请求、通知共享持久 HTTP metadata revision；不以截秒修改时间充当强版本 |
 | `PutOperationHandler` | `StoragePutOperationHandler` | 保留 CSS PUT 路径；只返回该次成功写入捕获的版本回执，不用后来 HEAD 的版本 |
