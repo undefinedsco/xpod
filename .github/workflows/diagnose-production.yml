@@ -20,6 +20,11 @@ on:
         description: Optional SHA256 of the matching owned RC WebID
         type: string
         required: false
+      registry_probe:
+        description: Optional read-only RC tcr-creds registry probe (rc only)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -96,3 +101,100 @@ jobs:
           );
           COMMIT;
           SQL
+
+      - name: Probe RC registry credentials
+        if: inputs.environment == 'rc' && inputs.registry_probe
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SEALOS_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#SEALOS_NAMESPACE} -gt 63 ]]; then
+            echo "::error::SEALOS_NAMESPACE must be a valid Kubernetes name"
+            exit 1
+          fi
+          # Strictly read-only: stream the exact tcr-creds dockerconfigjson field
+          # into an in-memory Node parser. No auth value, no other registry key,
+          # and no raw input/error/stack is written to a file, argv, or the log.
+          read -r -d '' tcr_probe_parser <<'NODE' || true
+          const EXPECTED_AUTHORITY = 'ccr.ccs.tencentyun.com';
+          const summary = {
+            fieldNonempty: false,
+            decodeStatus: 'not-attempted',
+            parseStatus: 'not-attempted',
+            authsIsObject: false,
+            authorityMatchCount: 0,
+            selectedEntryIsObject: false,
+            selectedAuthPresent: false,
+            selectedUsernamePresent: false,
+            selectedPasswordPresent: false,
+            selectedIdentityTokenPresent: false,
+          };
+          const chunks = [];
+          process.stdin.on('data', (chunk) => chunks.push(chunk));
+          process.stdin.on('end', () => {
+            let decoded = '';
+            try {
+              const raw = Buffer.concat(chunks).toString('utf8').trim();
+              summary.fieldNonempty = raw.length > 0;
+              if (summary.fieldNonempty) {
+                decoded = Buffer.from(raw, 'base64').toString('utf8');
+                summary.decodeStatus = 'ok';
+              }
+            } catch {
+              summary.decodeStatus = 'failed';
+            }
+            if (summary.fieldNonempty && summary.decodeStatus === 'ok') {
+              let parsed;
+              try {
+                parsed = JSON.parse(decoded);
+                summary.parseStatus = 'ok';
+              } catch {
+                summary.parseStatus = 'failed';
+              }
+              const auths = parsed && typeof parsed === 'object' ? parsed.auths : undefined;
+              if (auths && typeof auths === 'object' && !Array.isArray(auths)) {
+                summary.authsIsObject = true;
+                let selected;
+                for (const key of Object.keys(auths)) {
+                  const authority = key.replace(/^https?:\/\//, '').split('/')[0];
+                  if (authority === EXPECTED_AUTHORITY) {
+                    summary.authorityMatchCount += 1;
+                    if (selected === undefined) selected = auths[key];
+                  }
+                }
+                if (summary.authorityMatchCount > 0) {
+                  summary.selectedEntryIsObject = !!selected && typeof selected === 'object';
+                  if (summary.selectedEntryIsObject) {
+                    summary.selectedAuthPresent = typeof selected.auth === 'string' && selected.auth.length > 0;
+                    summary.selectedUsernamePresent = typeof selected.username === 'string' && selected.username.length > 0;
+                    summary.selectedPasswordPresent = typeof selected.password === 'string' && selected.password.length > 0;
+                    summary.selectedIdentityTokenPresent =
+                      typeof selected.identitytoken === 'string' && selected.identitytoken.length > 0;
+                  }
+                }
+              }
+            }
+            process.stdout.write(`${JSON.stringify(summary)}\n`);
+            const ok = summary.fieldNonempty
+              && summary.decodeStatus === 'ok'
+              && summary.parseStatus === 'ok'
+              && summary.authsIsObject;
+            process.exit(ok ? 0 : 1);
+          });
+          NODE
+          set +e
+          kubectl -n "$SEALOS_NAMESPACE" get secret tcr-creds \
+            -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null \
+            | node -e "$tcr_probe_parser"
+          probe_statuses=("${PIPESTATUS[@]}")
+          set -e
+          kubectl_status=${probe_statuses[0]:-1}
+          parser_status=${probe_statuses[1]:-1}
+          if [ "$kubectl_status" -ne 0 ]; then
+            echo "::error::RC registry probe could not fetch the tcr-creds secret field"
+            exit 1
+          fi
+          if [ "$parser_status" -ne 0 ]; then
+            echo "::error::RC registry probe could not parse the tcr-creds secret field"
+            exit 1
+          fi

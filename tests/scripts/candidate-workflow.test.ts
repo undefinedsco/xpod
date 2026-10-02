@@ -1103,6 +1103,78 @@ exit 0
     }
   });
 
+  it('reports only a bounded operation stage and never echoes untrusted bytes', async () => {
+    const workflow = await loadWorkflow();
+    const immutableGate = workflow.jobs.deploy_and_accept.steps.find((step: any) =>
+      step.name === 'Preflight immutable native images before any RC mutation');
+    const run: string = immutableGate.run;
+    const marker = "read -r -d '' tcr_config_parser <<'NODE'";
+    const parserStart = run.indexOf('\n', run.indexOf(marker)) + 1;
+    const parserEnd = run.indexOf('\nNODE', parserStart);
+    expect(parserStart).toBeGreaterThan(0);
+    expect(parserEnd).toBeGreaterThan(parserStart);
+    const parser = run.slice(parserStart, parserEnd);
+
+    // The reported stage must come from a fixed allow-list, never from the
+    // secret. A valid config must not attach any stage token to a failure.
+    const allowedStages = [ 'read', 'parse', 'filter', 'existing-ghcr', 'write' ];
+    const sentinel = 'FAKE_TEST_SENTINEL_should_never_appear';
+
+    const temp = mkdtempSync(path.join(os.tmpdir(), 'xpod-tcr-stage-'));
+    const home = path.join(temp, 'home');
+    mkdirSync(path.join(home, '.docker'), { recursive: true });
+    const existingConfigPath = path.join(home, '.docker', 'config.json');
+    const outPath = path.join(temp, 'config.json');
+    const stageOf = (stderr: string): string | undefined => {
+      const match = /\(stage: ([a-z-]+)\)/.exec(stderr);
+      return match?.[1];
+    };
+    try {
+      writeFileSync(existingConfigPath, JSON.stringify({ auths: { 'ghcr.io': { auth: 'ghcr-token' } } }));
+
+      // Malformed source JSON: stage=parse, sentinel never echoed.
+      const malformedSource = spawnSync('node', [ '-e', parser, outPath ], {
+        encoding: 'utf8',
+        input: `{"auths":{"ccr.ccs.tencentyun.com":{"auth":${sentinel}}}}`,
+        env: { ...process.env, HOME: home },
+      });
+      expect(malformedSource.status, malformedSource.stderr).not.toBe(0);
+      expect(malformedSource.stderr).toContain('failed to install authorized registry credentials');
+      expect(malformedSource.stderr).not.toContain(sentinel);
+      expect(stageOf(malformedSource.stderr)).toBe('parse');
+
+      // Missing authorized TCR entry: stage=filter.
+      const missingEntry = spawnSync('node', [ '-e', parser, outPath ], {
+        encoding: 'utf8',
+        input: JSON.stringify({ auths: { 'docker.io': { auth: sentinel } } }),
+        env: { ...process.env, HOME: home },
+      });
+      expect(missingEntry.status, missingEntry.stderr).not.toBe(0);
+      expect(stageOf(missingEntry.stderr)).toBe('filter');
+      expect(missingEntry.stderr).not.toContain(sentinel);
+
+      // Malformed existing GHCR config: stage=existing-ghcr, no raw error bytes.
+      writeFileSync(existingConfigPath, `{"auths":{"ghcr.io":{"auth":${sentinel}}}}`);
+      const malformedExisting = spawnSync('node', [ '-e', parser, outPath ], {
+        encoding: 'utf8',
+        input: JSON.stringify({ auths: { 'ccr.ccs.tencentyun.com': { auth: 'tcr-token' } } }),
+        env: { ...process.env, HOME: home },
+      });
+      expect(malformedExisting.status, malformedExisting.stderr).not.toBe(0);
+      expect(malformedExisting.stderr).not.toContain(sentinel);
+      expect(malformedExisting.stderr).not.toContain('SyntaxError');
+      const reported = stageOf(malformedExisting.stderr);
+      expect(reported).toBe('existing-ghcr');
+      expect(allowedStages).toContain(reported);
+
+      // A sentinel is never allowed to become the stage token.
+      expect(reported).not.toContain(sentinel);
+      expect(malformedExisting.stderr.replace(/\(stage: [a-z-]+\)/, '')).not.toContain(sentinel);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it('cleans the owned credential directory on every fetch/decode/parse/install/image-gate failure', async () => {
     const workflow = await loadWorkflow();
     const immutableGate = workflow.jobs.deploy_and_accept.steps.find((step: any) =>

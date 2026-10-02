@@ -374,17 +374,24 @@ jobs:
           // An uncaught JSON.parse error includes a fragment of the decoded
           // credential (Node prints e.g. `... "FAKE_TEST_SENTINEL"...`), so every
           // read/decode/parse/write failure is caught here and replaced with a
-          // fixed, non-sensitive message on stderr.
+          // fixed, non-sensitive message on stderr. The trailing stage token is
+          // assigned only from this file's literal allow-list, so untrusted
+          // secret bytes can never contribute to the reported stage.
+          let stage = 'read';
           try {
             const fs = require('node:fs');
             const path = require('node:path');
-            const source = JSON.parse(fs.readFileSync(0, 'utf8'));
+            const sourceJson = fs.readFileSync(0, 'utf8');
+            stage = 'parse';
+            const source = JSON.parse(sourceJson);
+            stage = 'filter';
             const sourceKey = Object.keys(source.auths || {})
               .find((key) => /(^|\/\/)ccr\.ccs\.tencentyun\.com(\/|$)/.test(key));
             if (!sourceKey) {
               throw new Error('missing-authorized-tcr-entry');
             }
             const config = { auths: {} };
+            stage = 'existing-ghcr';
             const existingPath = path.join(process.env.HOME || '/root', '.docker', 'config.json');
             if (fs.existsSync(existingPath)) {
               const existing = JSON.parse(fs.readFileSync(existingPath, 'utf8'));
@@ -393,9 +400,10 @@ jobs:
               }
             }
             config.auths['ccr.ccs.tencentyun.com'] = source.auths[sourceKey];
+            stage = 'write';
             fs.writeFileSync(process.argv[1], `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
           } catch {
-            process.stderr.write('failed to install authorized registry credentials\n');
+            process.stderr.write(`failed to install authorized registry credentials (stage: ${stage})\n`);
             process.exit(1);
           }
           NODE
