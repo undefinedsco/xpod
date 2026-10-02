@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -11,12 +12,20 @@ describe.skipIf(!integration)('Matrix authenticated Pod collaboration', () => {
     const evidenceRoot = path.resolve('.test-data/matrix-collaboration-evidence', randomUUID());
     const output = path.join(evidenceRoot, 'result.json');
     await mkdir(evidenceRoot, { recursive: true });
+    let failed = false;
     try {
       await new Promise<void>((resolve, reject) => {
         execFile('bun', ['--no-env-file', path.resolve('tests/helpers/runMatrixCollaborationAcceptance.ts'), '--output', output], {
           cwd: process.cwd(), env: process.env, timeout: 960_000, maxBuffer: 8 * 1024 * 1024,
         }, (error, _stdout, stderr) => {
-          if (error) { reject(new Error(`Matrix fixture failed: ${stderr.slice(-4000)}`)); return; }
+          if (error) {
+            // The helper writes sanitized termination facts (real exitCode/signal/killed, monotonic
+            // timer fire, cause) before this rejects; include them so the cause is never lost.
+            let helperFailure = '';
+            try { helperFailure = readFileSync(`${output}.helper-failure.json`, 'utf8').slice(0, 2000); } catch { /* not written */ }
+            reject(new Error(`Matrix fixture failed: ${helperFailure} ${stderr.slice(-4000)}`));
+            return;
+          }
           resolve();
         });
       });
@@ -24,8 +33,13 @@ describe.skipIf(!integration)('Matrix authenticated Pod collaboration', () => {
       expect(evidence).toMatchObject({ status: 'passed', mode: 'deterministic-runtime', expectedEvents: 63, observedEvents: 63 });
       expect(evidence.results).toHaveLength(2);
       expect(evidence.syncPages).toBeGreaterThan(1);
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      await rm(evidenceRoot, { recursive: true, force: true });
+      // Keep sanitized failure evidence (result.json / diagnostics.json / runtime
+      // SQLite) under .test-data on failure; only a green run is cleaned up.
+      if (!failed) await rm(evidenceRoot, { recursive: true, force: true });
     }
   }, 990_000);
 });
