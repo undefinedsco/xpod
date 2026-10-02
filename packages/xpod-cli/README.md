@@ -14,9 +14,13 @@ native AgentFS helper, with no Bun/Node executable or JavaScriptCore libraries.
 The launcher selects once; a failing command is never retried under another
 runtime. Older embedded-runtime previews are historical artifacts.
 
-This package currently builds **reviewable preview artifacts**. Public release
-is a separate gated step, pending complete notices, clean source identity and
-real Gateway acceptance. It does not include the Xpod server runtime, UI,
+The target-specific [0.1.0-preview.1 prerelease](https://github.com/undefinedsco/xpod/releases/tag/xpodcli-0.1.0-preview.1)
+is public for macOS ARM64 and Linux ARM64. Its clean installed clients passed
+actual Gateway/Pod mounts, and its public archives passed the evidence-bound
+release gate. See the [release record](../../docs/xpod-cli-preview-release.md)
+for hashes, runtime requirements, verification and remaining limits.
+Ordinary builds still produce **reviewable preview artifacts**; public release
+requires a separate evidence-bound promotion. It does not include the Xpod server runtime, UI,
 Agent SDK, control-server commands or a second credential store.
 
 ## Client surface

@@ -1,6 +1,6 @@
 # Xpod CLI 挂载引擎选型与交付计划
 
-状态：2026-10-01，完成源码、测试资产及真实挂载原型比较，本次选择 AgentFS 作为唯一产品开发主线；macOS 安装产物验收和 Linux ARM64 容器 FUSE 基础路径已通过；当前真实 Gateway、NAS 实机和公开发布仍未完成。此文档承接 `agent-filesystem-research.md`，记录当前决策和验收门槛，不替代历史研究。
+状态：2026-10-02。本次选择 AgentFS 作为唯一产品开发主线；macOS/Linux ARM64 已通过当前真实 Gateway、账号/Pod 和系统挂载验收，客户端 `0.1.0-preview.1` 已公开。服务端 `0.4.21` 正式发布仍待完整回归；NAS 实机尚未验收。源码身份、公开包、已通过范围与保留失败统一见 [预览发行记录](xpod-cli-preview-release.md)。此文档保留选型方法及各阶段证据。
 
 ## 目标与范围
 
@@ -8,7 +8,7 @@
 
 产品归属按最新决定：Xpod 是总产品，CLI/App 是入口，CSS/API/AFS 是可选模块。AgentFS 是 AFS 内部引擎；客户端预览是 Xpod 的能力裁剪构建，不是平行产品。模块依赖与当前尚未可选启动的边界见 [产品设计](solidfs-spec.md#产品入口与可选模块2026-10-01最新设计方向)。此调整不改变选型准入、目录协议或当前产物名称。
 
-继续使用 `codex/virtual-folder-design` 和 `/Users/ganlu/develop/.worktrees/xpod-virtual-folder-design`，不操作其他 checkout。早期实现与测试由用户指定的 `opencode-go/deepseek-v4.1-flash` 执行；用户随后明确“好，你先自己来实现吧”，当前由负责人直接实现并验证，早期 worker 已结束。
+客户端开发使用 `codex/virtual-folder-design` 和 `/Users/ganlu/develop/.worktrees/xpod-virtual-folder-design`；服务发布集成使用 `release/0.4.21` 和 `/Users/ganlu/.codex/worktrees/directory-release-integration/xpod`。只操作本任务拥有的 worktree。早期原型 worker 已结束；当前由用户指定的 account B／`opencode-go/deepseek-v4.1-flash` 处理发布分支 Matrix 回归，负责人负责最终验收与发布。
 
 ## 不可折价的准入条件
 

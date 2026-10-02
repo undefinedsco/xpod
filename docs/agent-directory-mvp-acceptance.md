@@ -1,5 +1,7 @@
 # Xpod CLI 目录 MVP 实现与验收记录
 
+当前状态（2026-10-02）：客户端 `0.1.0-preview.1` 已公开，macOS/Linux ARM64 通过实际 RC Gateway、账号/Pod 与系统挂载验收；服务端 `0.4.21` 正式发布仍待完整回归。最新源码身份、公开下载、安装检查和失败证据统一见 [预览发行记录](xpod-cli-preview-release.md)。以下各节保留原阶段的候选状态与测试数量，其中“未公开”“尚未真实验收”不能作为当前状态；skip 与历史失败继续保留。
+
 最新分发方向：用户明确“不内嵌 Bun”，当前客户端使用外部运行时。后文旧内嵌候选和 Bun/JSC 记录是历史证据；本次变更和验收状态见末尾“当前客户端分发变更”。
 
 日期：2026-10-01。分支：`codex/virtual-folder-design`，工作区：`/Users/ganlu/develop/.worktrees/xpod-virtual-folder-design`。用户授权负责人直接实现；原型 worker 已结束。AgentFS 是唯一产品主线，rclone 保留研究证据。选型理由见 [引擎选型](xpod-cli-engine-selection.md)，历史调查见 [技术研究](agent-filesystem-research.md)。

@@ -1,6 +1,6 @@
 # Agent 文件系统性能比较
 
-记录日期：2026-09-30（Asia/Shanghai）。关联：[候选调研](agent-filesystem-research.md)。
+记录日期：2026-09-30（Asia/Shanghai）。关联：[候选调研](agent-filesystem-research.md)。本页保留测量条件；后续真实挂载与公开包状态见 [预览发行记录](xpod-cli-preview-release.md)，挂载验收通过不构成新的性能结论。
 
 结论：直接数据库 API、小文件系统挂载和远端按需读取必须分别比较。本机基线支持“直接 SQLite 对小 BLOB 和批量枚举有优势，原生 FS 的属性查询有优势”；没有测出 AgentFS 的挂载性能，也没有证据支持统一的“原生性能 99%”。
 
