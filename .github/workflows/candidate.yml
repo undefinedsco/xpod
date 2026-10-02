@@ -752,6 +752,10 @@ jobs:
           name: ${{ needs.build_qlever_macos_runtime.outputs.artifact_name }}
           path: ${{ github.workspace }}/.test-data/qlever-runtime
       - run: bun install --frozen-lockfile
+      # Bun skips Electron's postinstall; bootstrap its binary for desktop tests
+      # and packaging on clean runners.
+      - name: Bootstrap the Electron vendor binary
+        run: node node_modules/electron/install.js
       - name: Apply and verify the candidate version
         run: |
           node scripts/release-candidate.cjs \
