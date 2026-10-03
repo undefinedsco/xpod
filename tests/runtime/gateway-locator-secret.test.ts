@@ -1,8 +1,9 @@
-import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import childProcess from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { PassThrough } from 'node:stream';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   resolvePersistentGatewayLocatorSecret,
   secretPathForGatewayLocatorDatabase,
@@ -11,6 +12,7 @@ import {
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -65,12 +67,33 @@ describe('Gateway locator secret persistence', () => {
     expect(new Set(digests).size).toBe(1);
     const secretPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
     const secret = fs.readFileSync(secretPath, 'utf8').trim();
+    const persistedDigest = createHash('sha256').update(secret).digest('hex');
     const leftoverTemps = fs.readdirSync(path.dirname(secretPath))
       .filter((entry) => entry.startsWith('.gateway-locator-secret.'));
 
     expect(secret).toMatch(/^[A-Za-z0-9_-]{32,}$/u);
+    for (const digest of digests) {
+      expect(digest).toMatch(/^[a-f0-9]{64}$/u);
+      expect(digest).toBe(persistedDigest);
+    }
     expect(leftoverTemps).toHaveLength(0);
     expectSecretMode(databaseUrl);
+  });
+
+  it('collects the complete child digest when stdout finishes after exit', async () => {
+    const child = new childProcess.ChildProcess();
+    const stdout = new PassThrough();
+    child.stdout = stdout;
+    vi.spyOn(childProcess, 'spawn').mockReturnValueOnce(child);
+    const expectedDigest = 'a'.repeat(64);
+
+    const digest = runSecretResolverProcess('sqlite:unused-lifecycle-fixture.sqlite');
+    stdout.write(expectedDigest.slice(0, 32));
+    child.emit('exit', 0, null);
+    stdout.end(expectedDigest.slice(32));
+    child.emit('close', 0, null);
+
+    expect(await digest).toBe(expectedDigest);
   });
 
   it('fails clearly on an invalid existing secret file without replacing it', () => {
@@ -196,7 +219,7 @@ async function runSecretResolverProcess(databaseUrl: string): Promise<string> {
   `;
   return new Promise<string>((resolve, reject) => {
     let digest = '';
-    const child = spawn('bun', ['--no-env-file', '-e', script], {
+    const child = childProcess.spawn('bun', ['--no-env-file', '-e', script], {
       cwd: process.cwd(),
       env: {
         ...process.env,
@@ -206,7 +229,8 @@ async function runSecretResolverProcess(databaseUrl: string): Promise<string> {
     });
     child.stdout.on('data', chunk => { digest += chunk.toString(); });
     child.once('error', reject);
-    child.once('exit', (code) => {
+    // close follows stdout drainage; exit can arrive before the digest data.
+    child.once('close', (code) => {
       if (code === 0) {
         resolve(digest);
       } else {

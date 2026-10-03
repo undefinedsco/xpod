@@ -1,3 +1,4 @@
+import { PROVIDER_LABELS } from './contract/provider-catalog'
 import { useSyncExternalStore } from 'react'
 import type {
   AiClientCredentialsCapability,
@@ -66,14 +67,14 @@ export interface AiProviderDefinition {
  * declares.
  */
 export const PROVIDERS: AiProviderDefinition[] = [
-  { id: 'openai', name: 'OpenAI', description: 'OpenAI 官方 GPT 与推理模型，支持 API Key 与订阅导入。', homeUrl: 'https://openai.com', apiKeyUrl: 'https://platform.openai.com/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.openai.com/v1' },
-  { id: 'anthropic', name: 'Anthropic', description: 'Anthropic 官方 Claude 模型，支持 API Key 与订阅导入。', homeUrl: 'https://www.anthropic.com', apiKeyUrl: 'https://console.anthropic.com/settings/keys', apiKeyPlaceholder: 'sk-ant-...', defaultBaseUrl: 'https://api.anthropic.com' },
-  { id: 'kimi', name: 'Kimi', description: '月之暗面 Kimi 模型，支持账号订阅、编码套餐与开放平台。', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
-  { id: 'bailian', name: '百炼', description: '阿里云百炼的通义千问等模型，提供按量与多种套餐。', homeUrl: 'https://www.aliyun.com/product/bailian', apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
-  { id: 'deepseek', name: 'DeepSeek', description: 'DeepSeek 官方模型，API Key 接入，接口兼容 OpenAI。', homeUrl: 'https://www.deepseek.com', apiKeyUrl: 'https://platform.deepseek.com/api_keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.deepseek.com/v1' },
-  { id: 'zhipu', name: '智谱 AI', description: '智谱 GLM 系列模型，支持 API Key 与 GLM 编码套餐。', homeUrl: 'https://open.bigmodel.cn', apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys', apiKeyPlaceholder: 'id.secret-...', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
-  { id: 'ollama', name: 'Ollama', description: '运行在本机的 Ollama 模型，无需 API Key，仅本机可达。', homeUrl: 'https://ollama.com', defaultBaseUrl: 'http://localhost:11434/v1' },
-  { id: 'custom', name: 'Custom', description: '任意 OpenAI 或 Anthropic 兼容服务，自填地址与 API Key。', homeUrl: 'https://undefineds.co', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://example.com/v1' },
+  { id: 'openai', name: PROVIDER_LABELS.openai, description: 'OpenAI 官方 GPT 与推理模型，支持 API Key 与订阅导入。', homeUrl: 'https://openai.com', apiKeyUrl: 'https://platform.openai.com/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.openai.com/v1' },
+  { id: 'anthropic', name: PROVIDER_LABELS.anthropic, description: 'Anthropic 官方 Claude 模型，API Key 接入；Pro/Max 订阅通过 Claude Code 使用。', homeUrl: 'https://www.anthropic.com', apiKeyUrl: 'https://console.anthropic.com/settings/keys', apiKeyPlaceholder: 'sk-ant-...', defaultBaseUrl: 'https://api.anthropic.com' },
+  { id: 'kimi', name: PROVIDER_LABELS.kimi, description: '月之暗面 Kimi 模型，支持账号订阅、编码套餐与开放平台。', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
+  { id: 'bailian', name: PROVIDER_LABELS.bailian, description: '阿里云百炼的通义千问等模型，提供按量与多种套餐。', homeUrl: 'https://www.aliyun.com/product/bailian', apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  { id: 'deepseek', name: PROVIDER_LABELS.deepseek, description: 'DeepSeek 官方模型，API Key 接入，接口兼容 OpenAI。', homeUrl: 'https://www.deepseek.com', apiKeyUrl: 'https://platform.deepseek.com/api_keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.deepseek.com/v1' },
+  { id: 'zhipu', name: PROVIDER_LABELS.zhipu, description: '智谱 GLM 系列模型，支持 API Key 与 GLM 编码套餐。', homeUrl: 'https://open.bigmodel.cn', apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys', apiKeyPlaceholder: 'id.secret-...', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
+  { id: 'ollama', name: PROVIDER_LABELS.ollama, description: '运行在本机的 Ollama 模型，无需 API Key，仅本机可达。', homeUrl: 'https://ollama.com', defaultBaseUrl: 'http://localhost:11434/v1' },
+  { id: 'custom', name: PROVIDER_LABELS.custom, description: '任意 OpenAI 或 Anthropic 兼容服务，自填地址与 API Key。', homeUrl: 'https://undefineds.co', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://example.com/v1' },
 ]
 
 export type ProviderProductState =

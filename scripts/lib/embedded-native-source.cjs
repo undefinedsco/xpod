@@ -27,6 +27,12 @@ const { EMBEDDED_SOURCE_RELATIVE_PATH } = require('../platform-binaries.cjs');
 const ARCHIVE_FETCH_TIMEOUT_MS = 15 * 60 * 1000;
 const DOCS_TREE_FETCH_TIMEOUT_MS = 60 * 1000;
 const DOCS_FILE_FETCH_TIMEOUT_MS = 60 * 1000;
+// The only origin allowed to receive the CI GitHub credential. Anonymous
+// api.github.com calls are capped at 60/hour per IP; shared hosted runners can
+// exhaust that. The standard `github.token` convention raises the limit.
+const GITHUB_API_ORIGIN = 'https://api.github.com';
+const GITHUB_TOKEN_ENV_KEY = 'GH_TOKEN';
+const GITHUB_USER_AGENT = 'xpod-embedded-native-source';
 
 // The single source pin. Bind to the installed package version, the actual
 // binary (sha256 + real Mach-O/ELF target), the license text, the upstream
@@ -206,6 +212,37 @@ function verifyEmbeddedDocsRoot(docsRoot, pin) {
   return { fileCount, aggregate };
 }
 
+function resolveGitHubApiToken(env = process.env) {
+  const value = env?.[GITHUB_TOKEN_ENV_KEY];
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function isGitHubApiOrigin(url) {
+  try {
+    return new URL(url).origin === GITHUB_API_ORIGIN;
+  } catch {
+    return false;
+  }
+}
+
+// Scoped headers: the credential is attached only for the exact
+// https://api.github.com origin, never for plain http, extra ports, foreign
+// hosts, raw files, codeload or redirect targets.
+function githubApiRequestHeaders(url, token = resolveGitHubApiToken()) {
+  if (!isGitHubApiOrigin(url)) {
+    return undefined;
+  }
+  const headers = { accept: 'application/vnd.github+json', 'user-agent': GITHUB_USER_AGENT };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 async function downloadToFile(url, destination, timeoutMs = DOCS_FILE_FETCH_TIMEOUT_MS) {
   const fetchImpl = globalThis.fetch;
   if (typeof fetchImpl !== 'function') {
@@ -268,8 +305,16 @@ async function obtainEmbedDocs(pin, options = {}) {
 
 async function downloadEmbedDocs(pin, destination) {
   const treeUrl = pin.embedDocs.treeApiUrlTemplate.replace('<commit>', pin.embedDocs.commit);
+  const headers = githubApiRequestHeaders(treeUrl);
+  const authenticated = Boolean(headers?.authorization);
   const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(DOCS_TREE_FETCH_TIMEOUT_MS) : undefined;
-  const response = await globalThis.fetch(treeUrl, { redirect: 'follow', signal });
+  // An authenticated tree read must never follow a redirect (the credential
+  // would leave the trusted origin); anonymous reads keep the original follow.
+  const response = await globalThis.fetch(treeUrl, {
+    redirect: authenticated ? 'error' : 'follow',
+    headers,
+    signal,
+  });
   if (!response.ok) {
     throw new Error(`Failed to read embedded docs tree: HTTP ${response.status}`);
   }

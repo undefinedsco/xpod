@@ -67,29 +67,32 @@ test.describe('deployed Xpod settings acceptance', () => {
 
         // At 390 the host keeps only the content column and moves the workspace
         // list into the navigation drawer (design §2.7), so open the drawer
-        // before touching any list item. Selecting one returns to the main pane.
+        // before touching any list item.
         await openNavigationDrawer(alice.page);
 
-        if (module.name === 'ai-connections') {
-          const aiServices = listPane.getByRole('listbox', { name: 'AI 服务' });
-          await expect(aiServices).toBeVisible({ timeout: 45_000 });
-          await aiServices.getByRole('option', { name: 'OpenAI', exact: true }).click();
-        } else {
+        // Each module's list is the product's real one: the AI applet exposes a
+        // Provider listbox, the Pod/device workspaces expose the shared search
+        // list header plus their navigation links. The list is only reachable
+        // once the host drawer owns it at this width, and selecting any entry -
+        // including the one for the current route - hands the workspace to its
+        // main pane and closes the host drawer.
+        for (const control of module.listControls) {
           await expect(
-            listPane.locator('[data-workspace-list-header="true"]')
-              .getByText(module.listHeaderLabel, { exact: true }),
+            listPane.locator(control.selector),
+            `${module.name} list must expose ${control.selector}`,
           ).toBeVisible({ timeout: 45_000 });
-          const compactSelection = listPane
-            .getByRole('link', { name: module.compactSelectionLabel, exact: true }).first();
-          await expect(compactSelection).toBeVisible({ timeout: 45_000 });
-          await compactSelection.click();
         }
+        await listPane.getByRole(module.selection.role, { name: module.selection.name, exact: true })
+          .first().click();
 
         await expect(
           workspaceState,
           `${module.name} must switch from the compact list to its main pane`,
         ).toHaveAttribute('data-workspace-active-pane', 'main', { timeout: 45_000 });
-        await expect(workspace.getByTestId('workspace-main-pane')).toBeVisible({ timeout: 45_000 });
+        await expect(alice.page.locator('[data-drawer-open="false"]')).toBeVisible({ timeout: 45_000 });
+        const mainPane = workspace.getByTestId('workspace-main-pane');
+        await expect(mainPane).toBeVisible({ timeout: 45_000 });
+        await expect(mainPane).not.toHaveAttribute('inert', '');
         await expect(alice.page.locator(module.readySelector).first()).toBeVisible({ timeout: 45_000 });
         expect(await alice.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
         await alice.page.screenshot({
@@ -102,10 +105,34 @@ test.describe('deployed Xpod settings acceptance', () => {
 });
 
 const deployedModules = [
-  { name: 'ai-connections', navigationLabel: 'AI Connections', compactSelectionLabel: '', path: '/ai-connections', readySelector: '[data-testid="ai-connections-panel"]' },
-  { name: 'pod', navigationLabel: 'Settings', listHeaderLabel: 'Settings', compactSelectionLabel: 'Pod', path: '/settings/pod', readySelector: 'main' },
-  { name: 'network', navigationLabel: 'Network', listHeaderLabel: 'Network', compactSelectionLabel: 'Overview', path: '/network', readySelector: 'main' },
-  { name: 'status', navigationLabel: 'Status', listHeaderLabel: 'Status', compactSelectionLabel: 'Overview', path: '/status/overview', readySelector: 'main' },
+  {
+    name: 'ai-connections',
+    path: '/ai-connections',
+    readySelector: '[data-testid="ai-connections-panel"]',
+    listControls: [{ selector: '[role="listbox"][aria-label="AI 服务"]' }],
+    selection: { role: 'option' as const, name: 'OpenAI' },
+  },
+  {
+    name: 'pod',
+    path: '/pod/models',
+    readySelector: 'main',
+    listControls: [{ selector: 'input[aria-label="搜索页面"]' }],
+    selection: { role: 'link' as const, name: '模型设置' },
+  },
+  {
+    name: 'network',
+    path: '/device/network',
+    readySelector: 'main',
+    listControls: [{ selector: 'input[aria-label="搜索页面"]' }],
+    selection: { role: 'link' as const, name: '网络访问' },
+  },
+  {
+    name: 'status',
+    path: '/device/services',
+    readySelector: 'main',
+    listControls: [{ selector: 'input[aria-label="搜索页面"]' }],
+    selection: { role: 'link' as const, name: '服务状态' },
+  },
 ] as const;
 
 async function openAuthenticatedAiConnections(
@@ -127,12 +154,12 @@ async function openAuthenticatedModule(
   const targetUrl = new URL(route, baseUrl);
   const currentUrl = new URL(page.url());
   if (currentUrl.origin !== targetUrl.origin || currentUrl.pathname !== targetUrl.pathname) {
-    const module = deployedModules.find((candidate) => candidate.path === route);
-    const routeLink = module
-      ? page.getByRole('link', { name: module.navigationLabel, exact: true }).first()
-      : undefined;
+    // The host rail links each module by its own href; some modules share a rail
+    // entry (Pod and this device), so navigate through the link whose href is the
+    // route when present and fall back to a direct visit otherwise.
+    const routeLink = page.locator(`a[href="${targetUrl.pathname}"]`).first();
 
-    if (routeLink && await routeLink.isVisible()) {
+    if (await routeLink.isVisible({ timeout: 3_000 }).catch(() => false)) {
       await Promise.all([
         page.waitForURL((url) => url.origin === targetUrl.origin && url.pathname === targetUrl.pathname, {
           timeout: 60_000,

@@ -17,7 +17,7 @@ import type {
 import type { AiProviderDefinition } from './controller'
 import type { ProviderConnectionState } from './AiProviderCard'
 import type { AiOfferingActionError } from './AiCredentialPoolSection'
-import { offeringTitle } from './offering-label'
+import { offeringTitle, offeringUnavailableMessage } from './offering-label'
 import {
   authorizationMethodsForOffering,
   connectModeForMethod,
@@ -131,9 +131,7 @@ export function AiConnectDialog({
             if (offering.lifecycle === 'unavailable' && activeMethods.length === 0) {
               return <fieldset data-create-offering={offering.id} key={offering.id} className="space-y-2 border-t border-border/50 pt-3 first:border-t-0 first:pt-0">
                 <legend className="px-1 text-sm font-medium">{offeringTitle(offering)}</legend>
-                <p className="text-xs text-muted-foreground">{offering.kind === 'oauth-subscription'
-                  ? '暂不可用：账号订阅需在 Xpod 桌面版中导入本机客户端（如 Codex CLI）的登录态，浏览器中无法完成。'
-                  : '暂不可用：该接入方式尚未提供可用的连接流程。'}</p>
+                <p className="text-xs text-muted-foreground">{offeringUnavailableMessage(offering)}</p>
               </fieldset>
             }
             const failedAuthorizationMode = authorizationError?.mode

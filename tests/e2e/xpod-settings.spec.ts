@@ -492,9 +492,9 @@ test.describe('Xpod settings product acceptance', () => {
 
         for (const module of [
           { label: 'AI Connections', path: '/ai-connections', expected: /OpenAI|Anthropic|Kimi|百炼|DeepSeek|API KEYS/i },
-          { label: 'Pod', path: '/settings/pod', expected: /WebID|Pod|Issuer|Storage|AI Connection/i },
-          { label: 'Network', path: '/network', expected: /Network|endpoint|unsupported|supported|连接/i },
-          { label: 'Status', path: '/status/overview', expected: /runtime|Solid Server|Gateway|API Server/i },
+          { label: 'Pod', path: '/pod/models', expected: /模型设置|检索与索引|授权应用|数据管理|Pod/i },
+          { label: 'Network', path: '/device/network', expected: /网络访问|服务状态|运行设置|查看日志|隧道/i },
+          { label: 'Status', path: '/device/services', expected: /服务状态|核心服务|入口网关|Solid 服务|API 服务/i },
         ]) {
           await openModule(page, module.path, module.label);
           await expect(page.locator('main')).toHaveCount(1);
@@ -1040,7 +1040,7 @@ async function assertSdkGeometryContract(page: Page, label: string, requireSplit
       mainHeader: rect(mainHeader),
       main: rect(main),
       listPane: rect(listPane),
-      search: rect(document.querySelector('[data-workspace-list-header="true"] input[aria-label="搜索 Provider"]')),
+      search: rect(document.querySelector('[data-workspace-list-header="true"] input[aria-label="搜索服务商"]')),
       tokens: {
         radius: getComputedStyle(root).getPropertyValue('--radius').trim(),
         background: getComputedStyle(root).getPropertyValue('--background').trim(),

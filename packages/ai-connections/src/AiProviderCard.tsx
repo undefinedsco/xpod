@@ -25,6 +25,7 @@ import {
   RotateCw,
 } from 'lucide-react'
 import { AiProviderHeader } from './AiProviderHeader'
+import { authorizationMethodsForOffering, isBrowserConnectMethod } from './authorization-methods'
 import {
   AiCredentialPoolSection,
   type AiOfferingActionError,
@@ -137,6 +138,8 @@ export function AiProviderCard({
   onModelSelectionChange?: (provider: AiProviderSummary['id'], modelIds: string[]) => void
   onDismissError?: () => void
 }) {
+  const workbench = product?.offerings.find((offering) => offering.consoleUrl
+    && authorizationMethodsForOffering(offering).some(isBrowserConnectMethod))?.consoleUrl
   const isConfigured = status === 'configured'
   const isConnected = status === 'connected'
   const catalogError = models.length === 0 && error?.message && !error.offeringId
@@ -180,6 +183,7 @@ export function AiProviderCard({
           infoLabel="提供商说明"
           infoLines={[definition.description, '连接凭据保存在当前 Pod，由 Pod 权限保护。']}
           link={{ href: definition.homeUrl, label: '访问官网' }}
+          links={workbench ? [{ href: workbench, label: '打开工作台' }] : []}
           badge={(
             <Badge variant={isConnected || isConfigured ? 'default' : 'secondary'}>
               {connectionStatusLabel(status)}

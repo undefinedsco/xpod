@@ -773,6 +773,9 @@ jobs:
         run: bun run test
       - name: Build desktop with the accepted native runtime
         working-directory: desktop
+        env:
+          # Raises the anonymous api.github.com rate limit for the native-source docs tree read.
+          GH_TOKEN: ${{ github.token }}
         run: bun run dist
       # The Account document links `/app/assets/main.css` by name. A build that
       # emits the stylesheet under another name (or not at all) ships a login page

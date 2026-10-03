@@ -10,6 +10,17 @@ import { AI_CONNECTIONS_PROVIDERS } from './client/types'
 // provider or an offering; display layers project from it instead of keeping a
 // second copy, which is how the same offering used to appear under two names.
 
+export const PROVIDER_LABELS: Record<AiConnectionsProvider, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  kimi: 'Kimi',
+  bailian: '百炼',
+  deepseek: 'DeepSeek',
+  zhipu: '智谱 AI',
+  ollama: 'Ollama',
+  custom: 'Custom',
+};
+
 export const DEFAULT_PROVIDER_OFFERINGS: AiProviderOffering[] = [
   { id: 'api-platform', label: 'API Platform', kind: 'api-platform', lifecycle: 'active', authModes: ['apiKey'] },
 ];
@@ -151,15 +162,16 @@ export const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProvide
   anthropic: [
     {
       id: 'official-subscription',
-      label: 'Claude Code Subscription',
+      label: 'Claude Pro / Max',
       kind: 'oauth-subscription',
       lifecycle: 'unavailable',
       authModes: ['oauth'],
-      productLabel: 'Anthropic',
+      authorizationMethods: [],
+      productLabel: 'Claude Code',
       runtimeProviderIds: ['anthropic'],
       credentialPrefixHints: [],
       consoleUrl: 'https://claude.ai/',
-      subscriptionUrl: 'https://claude.ai/settings/billing',
+      subscriptionUrl: 'https://claude.com/pricing',
       endpoints: [],
       modelDiscovery: { strategy: 'unsupported', path: '/models', endpointProtocol: 'anthropic' },
       quota: { strategy: 'subscription', url: 'https://claude.ai/settings/usage' },

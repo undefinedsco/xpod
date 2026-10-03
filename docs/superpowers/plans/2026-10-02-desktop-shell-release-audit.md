@@ -4,6 +4,15 @@
 
 ## 功能归位
 
+### 2026-10-03 候选失败与修复检查点（最终本地回归见文末）
+
+- 本轮修复提交前的 feature HEAD 与远端为 `85684934`；`release/0.4.22` 仍为 `ab583de4`，草稿 PR #28 随 feature 更新。尚无通过的最终候选，stable、npm latest、生产部署与已安装桌面更新均未执行。
+- 真实 Ubuntu CI `37083649836` 已验证 rg 59+7 项及后台授权 14 项通过；lite/full、Bun runtime 和 18 个 package-smoke job 通过。全量 unit 仍有 `gateway-locator-secret` 的真实多进程首次读取断言失败。负载探针复现了一个空 stdout 摘要与完整摘要并存，落盘摘要一致；helper 在 `exit` 上读取尚未排空的 stdout。Sol 已完成确定性 `exit`→stdout→`close` 回归：旧 helper 返回 32/64 字符，修复后完整读取；21 项相邻回归、10 轮共 120 个真实进程、类型与 lint 通过，每个摘要都校验为 64 hex 并与落盘 SHA 一致。没有修改生产密钥逻辑，真实 Ubuntu 重跑待后续提交。
+- 候选 `37081326630`（`0.4.22-rc.228`）的 AI 窄屏已通过，但 Pod/device 的旧路由与列表头断言失败，另有嵌入文档树 HTTP 403 阻止桌面构建。文档下载现只向精确 `https://api.github.com` origin 发送 CI `GH_TOKEN`，带凭据时拒绝重定向；raw/archive 路径、源码 pin 和既有超时预算不变。403 的具体成因没有响应头证据，匿名限流仅为推断。13 项下载、来源与凭据边界回归通过，真实候选构建待复验。
+- 窄屏 SubjectWorkspace 的当前路由链接选择不会触发导航变更，之前会留下打开的抽屉和 inert 主区；列表现通过已有 SDK `openMain` 关闭宿主抽屉。device、Pod、settings 的当前链接回归已先失败后通过，三目标 UI 构建、UI lint 与测试类型检查退出码 0。B 的四个模块 390 宽实际 Chromium 自动关闭合同已通过；用户随后要求切换为 GPT-6.1 Sol，Sol 的 fresh Node/Chromium 四模块 × 1440/390 共八项已通过，含真实 OIDC、当前路线键盘选择、自动关闭、主区非 inert、焦点恢复和无溢出。原本地几何两项也通过，一项焦点测试在 OIDC 阶段超时、另一个 Bun probe 启动超时；单独焦点复验随后通过，未增加时间预算。两个 B 进程已终止于 API 连接失败（不是 429）；不能以测试手动关闭抽屉代替产品行为。
+- 完整回归首次暴露旧静态 harness 仍要求 RC 测试旧分支、标签和路径；Sol 已在实际第 487 行复现 RED，再对齐现有声明式选择和 canonical route，保留会话、认证隔离、无本地 fixture 与严格抽屉合同，整文件 29 项和测试类型检查通过。ChatKit PodStore 的 11 项失败目前均为 15/30 秒超时；成功 Pod 请求中位约 2831ms、最大 38460ms，历史通过轮分别约 126.5/1309ms，超时后操作仍继续执行。没有认证拒绝证据，也未证明 native 或产品回归原因；该轮失败记录保留；最终冻结源码的完整 gate 已按现有单 fork 配置通过，详情见文末，预算保持不变。
+- 已安装 `/Applications/Xpod.app` 仍为 `0.4.20`，其 ICNS 摘要 `26b346ad…` 与新资源 `ad16e479…` 不同。新品牌打包/Dock 证据只证明实现，完成交付仍须最终候选全部 19 门禁、自更新、正式发布与实际桌面更新检查。
+
 ### 2026-10-03 当前集成检查点
 
 集成已提交为 `70a8bf94`，草稿 PR #28 与 release/0.4.22 指向同一提交。候选构建用于取得真实打包证据；以下未完成门禁仍阻止正式发布，下文较早轮次保留为历史。
@@ -134,3 +143,13 @@
 - **F5 真实清理**：producer 按精确 `oldBinary` 路径跟踪/回收旧进程、重启后的新进程与 fixture，回收后才写证据；`oldAppStopped`/`relaunchedAppStopped`/`fixtureStopped`/`removedUserData` 均为实测布尔；绝不宽泛 pkill，仅限私有临时 bundle 路径；失败路径同样回收。
 - **F6 旧基线 provenance**：launch 前记录旧二进制 sha256；记录官方 stable tag；`oldZip.name` 解析版本与 `oldVersion` 互校；不伪造 Info.plist、不重签旧包、不覆盖原始发布产物。0.4.17→0.4.18 旧生产者结果只作历史，不作为新门禁证明。
 - 重门禁：整改只跑轻量 node/schema/path/workflow 测试；真实 old stable→new packed 同 sourceSHA 的 GUI 执行需 root 提交/候选构建后由 coordinator 打开门禁再进行。
+
+## 2026-10-03 用户纠正：官方订阅与工作台链接
+
+- Anthropic 官方订阅显示为 `Claude Pro / Max`，客户端产品为 `Claude Code`，订阅链接指向官方 pricing；其订阅接入仍为 unavailable、授权方法和推理 endpoint 均为空，不把官方订阅存在等同于 Xpod 已实现订阅接入。API Key 接入与计费独立，原有真实 OAuth 和宿主权限限制保留。
+- 共享提供商头部把“访问官网”和声明中的“打开工作台”放在同一组链接；移除凭据工具栏重复的纯工作台按钮。外部工作台导航不启动连接，390 宽度允许自然换行。不可用订阅复用既有 offering 详情组件展示，避免静默隐藏。
+- provider/offering 内容以 `@undefineds.co/ai-connections` 能力目录为唯一来源。删除服务端 models 元数据覆盖、第二份名称映射和订阅硬编码覆写；UI、客户端规范化、服务端产品投影及默认 runtime descriptor 名称均使用同一目录，runtime 插件、协议和授权边界不迁移。
+- 本次新增 UI 定向 22 项、服务端相邻 228 项通过；最终冻结产品源码的完整单元测试 758 个文件、7443 项通过，Bun 专项 36 项通过。七包、UI 三目标及服务端构建、生产/测试类型检查、依赖状态通过。隔离真实 Xpod 的浏览器在 390/1440 两种宽度验证 Anthropic、百炼、Kimi 共六个页面，官网与工作台相邻、键盘焦点与溢出检查通过；挂载浏览器会话实际请求服务端目录返回 200。该隔离验证不代表部署候选或用户当前 Gateway 已验收。
+- 子代理按用户新指令改为 GPT-6.1 Sol；前一组 OpenCode Go B 因 API 连接错误终止，非 429。效果与效率比较基于本任务的交接、返工和验证证据，不作为同任务受控速度或订阅额度对比。
+
+- 完整集成失败证据保留：第一次遇到 macOS 合盖睡眠约 989 秒，Identity 启动 hook 超时并出现原有 autoOpen 未处理拒绝；第二次保持唤醒后 Identity 与原预算 Matrix 长流程通过，ChatKit 两项仍超出既有 15 秒预算。最终按现有单 fork 配置完成完整 lite/full：lite 32 文件、162 项通过（4 文件、16 项跳过）；full 7 文件、62 项通过；完整命令退出 0。未放宽断言或预算；并发配置下的 ChatKit 延迟敏感性仍保留为风险。19 项新候选门禁、正式包自更新及正式发布仍待完成。

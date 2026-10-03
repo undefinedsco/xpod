@@ -1,3 +1,4 @@
+import { PROVIDER_LABELS } from '../provider-catalog'
 import { AI_MODEL_CLASS } from '@undefineds.co/models'
 import type { AiConnectionsOAuthCredential } from '@undefineds.co/extension-sdk/web'
 import { AI_CONNECTIONS_PROVIDERS } from './types'
@@ -614,16 +615,7 @@ function uniqueBy<T>(values: T[], keyFor: (value: T) => string): T[] {
 }
 
 function providerDisplayName(provider: AiConnectionsProvider): string {
-  switch (provider) {
-    case 'openai': return 'OpenAI'
-    case 'anthropic': return 'Anthropic'
-    case 'kimi': return 'Kimi'
-    case 'bailian': return 'Alibaba Bailian'
-    case 'deepseek': return 'DeepSeek'
-    case 'zhipu': return 'Zhipu'
-    case 'ollama': return 'Ollama'
-    case 'custom': return 'Custom'
-  }
+  return PROVIDER_LABELS[provider]
 }
 
 export function parseCredential(value: unknown): AiConnectionsCredential | undefined {

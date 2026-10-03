@@ -1,5 +1,5 @@
 import { Button, TooltipProvider } from '@undefineds.co/shared-ui'
-import { ExternalLink, Plus, Settings2 } from 'lucide-react'
+import { Plus, Settings2 } from 'lucide-react'
 import type {
   AiConnectAttempt,
   AiConnectionsMode,
@@ -26,6 +26,7 @@ import {
 } from './authorization-methods'
 import { credentialDisplayLabel, maskAccountLabel } from './credential-labels'
 import { AiQuotaCard } from './AiQuotaCard'
+import { AiOfferingDetails } from './AiOfferingDetails'
 import { AiAuthorizationActions } from './AiAuthorizationActions'
 import { AiConnectDialog } from './AiConnectDialog'
 import { AiCredentialRow } from './AiCredentialRow'
@@ -45,14 +46,9 @@ export interface AiOfferingQuotaState {
   credentialId?: string
 }
 
-/**
- * One button of the connect toolbar. An authorization entry names the offering
- * it starts on; the console and key entries are the page's own actions, so they
- * carry the method they are rendered from and nothing else.
- */
+/** Authorization entries retain their offering; the shared key entry opens the key form. */
 type ConnectEntry =
   | { key: string; rank: number; authorization: { offering: AiProviderOffering; method: AiProviderAuthorizationMethod } }
-  | { key: string; rank: number; consoleMethod: AiProviderAuthorizationMethod }
   | { key: string; rank: number; apiKeyMethod: AiProviderAuthorizationMethod }
 
 /**
@@ -141,23 +137,9 @@ export function AiCredentialPoolSection({
   }]
   const credentials = product?.credentials ?? []
   const offerings = product?.offerings.length ? product.offerings : fallbackOfferings
-  /**
-   * The connect entries ARE the offerings' authorization methods, rendered as
-   * ONE ordered list.
-   *
-   * Two of them are actions of the page rather than of a single offering: the
-   * key entry (the dialog already lists every offering that accepts a key) and
-   * the console entry (every offering of a provider opens the same console, so
-   * four offerings declaring it stay one button). Everything else keeps its
-   * offering, because the click has to name which authorization it starts.
-   *
-   * The order comes from the method kind alone (`connectEntryRank`), so the
-   * toolbar reads the same on every provider - browser sign-in, device code,
-   * local login state, key - and no provider can reorder it. The console entry
-   * also yields to an entry that already carries its label: an offering's own
-   * browser login names that action, and two buttons with one name would be two
-   * claims about the same click.
-   */
+  // Keep actual authorization and credential creation together. Console
+  // navigation is the provider header's external link, so opening a workbench
+  // does not start a credential attempt or duplicate an OAuth action.
   const offeringMethods = offerings.map((offering) => ({
     offering,
     methods: authorizationMethodsForOffering(offering),
@@ -173,22 +155,12 @@ export function AiCredentialPoolSection({
   const authorizationEntries = offeringMethods.flatMap((entry) => entry.methods
     .filter((method) => method.label && (isOAuthMethod(method) || isLocalMethod(method)))
     .map((method) => ({ offering: entry.offering, method })))
-  const consoleMethod = offeringMethods
-    .flatMap((entry) => entry.methods)
-    .find((method) => isBrowserConnectMethod(method) && method.lifecycle === 'active' && method.label)
-    ?? offeringMethods.flatMap((entry) => entry.methods)
-      .find((method) => isBrowserConnectMethod(method) && method.label)
-  const consoleEntry = consoleMethod?.label
-    && !authorizationEntries.some((entry) => entry.method.label === consoleMethod.label)
-    ? consoleMethod
-    : undefined
   const connectEntries: ConnectEntry[] = [
     ...authorizationEntries.map((entry) => ({
       key: `${entry.offering.id}:${entry.method.id}`,
       rank: connectEntryRank(entry.method),
       authorization: entry,
     })),
-    ...(consoleEntry ? [{ key: 'console-login', rank: connectEntryRank(consoleEntry), consoleMethod: consoleEntry }] : []),
     ...(apiKeyMethod ? [{ key: 'api-key', rank: connectEntryRank(apiKeyMethod), apiKeyMethod }] : []),
   ].sort((left, right) => left.rank - right.rank)
   const authorizationPending = isPendingAttempt(attempt) && isOAuthMode(attempt?.mode)
@@ -234,15 +206,6 @@ export function AiCredentialPoolSection({
                 </fieldset>
               )
             }
-            if ('consoleMethod' in item) {
-              return (
-                <Button key={item.key} variant="outline" size="sm" className="h-8 gap-1.5 text-xs"
-                  title={item.consoleMethod.lifecycle === 'unavailable' ? item.consoleMethod.reason : undefined}
-                  disabled={busy || dialog.saving || disabled || authorizationPending
-                    || item.consoleMethod.lifecycle === 'unavailable'} onClick={dialog.beginBrowser}>
-                  <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />{item.consoleMethod.label}</Button>
-              )
-            }
             return (
               <Button key={item.key} variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 API Key 连接"
                 title={item.apiKeyMethod.lifecycle === 'unavailable' ? item.apiKeyMethod.reason : undefined}
@@ -254,6 +217,10 @@ export function AiCredentialPoolSection({
           })}
           </div>
         </div>
+        {offeringMethods.filter(({ offering, methods }) => offering.lifecycle === 'unavailable'
+          && !methods.some((method) => method.lifecycle === 'active')).map(({ offering, methods }) => (
+          <AiOfferingDetails key={offering.id} offering={offering} methods={methods} />
+        ))}
         {credentials.some((credential) => credential.enabled && (credential.health === 'expired' || credential.health === 'invalid' || credential.lastFailureCode === 'quota_exhausted')) ? <p role="status" className="text-sm text-destructive">{credentials.length} 条里有 {credentials.filter((credential) => credential.enabled && credential.health === 'healthy' && credential.lastFailureCode !== 'quota_exhausted').length} 条已验证可用</p> : null}
         {credentials.some((credential) => credential.enabled && credential.lastFailureCode === 'upstream_unavailable') ?
           <p role="status" className="text-sm text-destructive">连接暂时不可用，请检查网络或稍后重试。</p> : null}
