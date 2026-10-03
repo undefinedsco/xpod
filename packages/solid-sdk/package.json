@@ -11,11 +11,13 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "bun": "./dist/index.bun.js",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
     "./session": {
       "types": "./dist/session.d.ts",
+      "bun": "./dist/session.cjs",
       "import": "./dist/session.js"
     },
     "./pod-runtime": {
@@ -50,7 +52,7 @@
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/index.ts --target=node --format=cjs --packages=external --outfile=dist/index.cjs && bun build src/local-route-fetch.ts --target=node --format=cjs --packages=external --outfile=dist/local-route-fetch.cjs && bun build src/access-route.ts --target=node --format=cjs --packages=external --outfile=dist/access-route.cjs",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/index.ts --target=node --format=cjs --packages=external --outfile=dist/index.cjs && bun build src/local-route-fetch.ts --target=node --format=cjs --packages=external --outfile=dist/local-route-fetch.cjs && bun build src/access-route.ts --target=node --format=cjs --packages=external --outfile=dist/access-route.cjs && bun build src/session.ts --target=node --format=cjs --packages=external --outfile=dist/session.cjs && bun scripts/build-bun-entries.cjs",
     "test": "vitest run test --config ../../vitest.packages.config.mts"
   },
   "dependencies": {

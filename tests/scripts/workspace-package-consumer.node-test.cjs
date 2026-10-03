@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { verifyInstalled, exportEntries } = require('../../scripts/workspace-package-consumer.cjs');
+const { verifyInstalled, verifyRuntimeImports, exportEntries } = require('../../scripts/workspace-package-consumer.cjs');
 const { assertSource, compareStable } = require('../../scripts/publish-workspace-packages.cjs');
 
 function fixture(callback) {
@@ -25,6 +25,38 @@ test('consumer resolves actual exported modules in an isolated install', () => f
   execFileSync('bun', ['imports.mjs'], { cwd: root });
   fs.writeFileSync(path.join(directory, 'dist/index.js'), "import './missing.js';");
   assert.throws(() => execFileSync('bun', ['imports.mjs'], { cwd: root, stdio: 'pipe' }));
+}));
+test('consumer imports every entry in a cold process before any root can prime it', () => fixture((root, directory, manifest) => {
+  manifest.exports['./unprimed'] = { types: './dist/unprimed.d.ts', import: './dist/unprimed.js' };
+  fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify(manifest));
+  fs.writeFileSync(path.join(directory, 'dist/index.js'), 'globalThis.fixturePrimed = true; export const applet = true;');
+  fs.writeFileSync(path.join(directory, 'dist/unprimed.js'), "if (!globalThis.fixturePrimed) throw new Error('entry depended on root preload'); export const value = true;");
+  fs.writeFileSync(path.join(directory, 'dist/unprimed.d.ts'), 'export declare const value: boolean;');
+  verifyInstalled(root, [manifest]);
+  execFileSync('bun', ['imports.mjs'], { cwd: root });
+  assert.throws(() => verifyRuntimeImports(root), /Command failed/);
+}));
+test('cold consumer imports disable the runtime transpiler cache', () => fixture((root, directory, manifest) => {
+  fs.writeFileSync(path.join(directory, 'dist/index.js'), "if (process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH !== '0') throw new Error('cache was not disabled'); export const applet = true;");
+  verifyInstalled(root, [manifest]);
+  verifyRuntimeImports(root);
+}));
+test('consumer rejects split SDK root and subpath identities', () => fixture((root, directory) => {
+  const sdk = path.join(root, 'node_modules/@undefineds.co/solid-sdk');
+  fs.mkdirSync(path.dirname(sdk), { recursive: true });
+  fs.renameSync(directory, sdk);
+  const manifest = { name: '@undefineds.co/solid-sdk', version: '1.0.0', type: 'module', exports: {
+    '.': { types: './dist/index.d.ts', import: './dist/index.js' },
+    './react': { types: './dist/react.d.ts', import: './dist/react.js' },
+  } };
+  fs.writeFileSync(path.join(sdk, 'package.json'), JSON.stringify(manifest));
+  fs.writeFileSync(path.join(sdk, 'dist/react.js'), 'export function Provider() {}');
+  fs.writeFileSync(path.join(sdk, 'dist/react.d.ts'), 'export declare function Provider(): void;');
+  fs.writeFileSync(path.join(sdk, 'dist/index.js'), "export { Provider } from './react.js';");
+  verifyInstalled(root, [manifest]);
+  verifyRuntimeImports(root);
+  fs.writeFileSync(path.join(sdk, 'dist/index.js'), 'export function Provider() {}');
+  assert.throws(() => verifyRuntimeImports(root), /Command failed/);
 }));
 test('consumer rejects wrong versions, missing types and empty CSS', () => fixture((root, directory, manifest) => {
   assert.throws(() => verifyInstalled(root, [{ ...manifest, version: '2.0.0' }]), /version/);
@@ -72,7 +104,7 @@ test('SDK types become checked consumer imports instead of hidden library declar
   fs.writeFileSync(path.join(sdk, 'index.d.ts'), 'export interface ExistingApi {}');
   assert.throws(() => execFileSync('bun', [path.resolve(__dirname, '../../node_modules/typescript/bin/tsc'), '--noEmit', '--skipLibCheck', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'consumer.ts'], { cwd: root, stdio: 'pipe' }), (error) => error.stdout.toString().includes('MissingApi'));
 }));
-test('packing rewrites only the tarball manifest and restores workspace source', () => fixture((root, directory) => {
+test('packing rewrites only the tarball manifest and restores workspace source', () => fixture((root) => {
   const { packWorkspacePackages } = require('../../scripts/workspace-package-pack.cjs');
   const pkg = path.join(root, 'packages/applet');
   fs.mkdirSync(pkg, { recursive: true });

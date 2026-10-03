@@ -419,3 +419,27 @@ Read-only Cookie lifetime review confirmed the current CSS Account TTL is 1,209,
 Precommit cleanup was independently checked: zero owned containers (including exited containers), networks, volumes and run-scoped processes; gate wrapper and child exited; all nineteen allocated ports had no listeners. The frozen infra source hashes remained unchanged. Private cleanup record: candidate-account-closure-precommit-20261003-72aeebf7-safe-cleanup.json (0600).
 
 User clarification: valid Refresh Token renewal is independent of Account login Cookie. An expired Account Cookie alone must not interrupt a still-refreshable SDK/WebID live session or force password entry. Password entry is required only when a new authorization is necessary and the issuer login cannot be reused; fourteen days is not a unified password-login schedule. The spec now states these independent boundaries explicitly. No product source changed in this documentation clarification.
+
+### 2026-10-03 首轮 RC 失败（禁止提升 stable）
+
+候选 commit `cc08174163d71d5bbbb22e13b0b88078d9649e52` 的 [RC run 37128200393](https://github.com/undefinedsco/xpod/actions/runs/37128200393) 返回 failure。macOS 原生 runtime、Linux Local runtime 和服务镜像步骤通过，但桌面 job 的干净 tarball 消费者在 Bun 1.4.2 导入共享 SDK 时失败；部署 job 在临时外部 RP 关闭阶段返回 `Server is not running`。这两项失败均保留，不创建 stable tag，不跳过门禁。
+
+部署日志确认两套 Account 的 token、Account、bindings 和公开 Profile 请求返回 200；这不能替代随后尚未执行的私有 Pod 隔离断言。关闭夹具先调用 `closeAllConnections()`、后调用 `close(callback)`，Bun 1.4.2 的前者已经停止服务，后者因此报错，并可能覆盖主流程异常。修复仅限夹具关闭顺序及必要的错误保留，认证和隔离断言保持严格。
+
+干净消费者错误已在私有复制树打包的真实 tarball 中连续三次复现：Inrupt 的 CommonJS 入口同步加载 jose 的 Bun/browser ESM 入口失败。目录依赖曾通过，不能代替真实 tarball；根工作区 postinstall 补丁也不能代表下游无脚本安装可用。共享包的交付修复与回归仍在定位，此时不声明 RC、部署 Chat/Tasks 或 stable 通过。原始日志保持私有。
+
+随后两树 RP 关闭修复完成因果回归：旧实现 Bun 1.4.2 为 0/3、Node 为 2/3；新实现两者均 3/3。测试通过真实 keep-alive socket、端口重新绑定、并发和重复关闭，核实连接与监听器已释放；注册 transport 的原始 Error 实例与 HTTP 503 诊断保持。默认 Vitest 入口自动运行同一 Bun/Node 回归，候选对应两文件 6 项、根两文件 13 项通过，两树测试类型与针对性 lint 返回 0。这些是夹具本地回归，不替代尚待重跑的部署 Pod smoke。
+
+SDK 交付修复从原 `index.js` 严格单次替换 session 重导出生成 Bun 根入口；Bun 的 session 子入口指向同一 external CJS 构建产物。其余 ESM 模块、浏览器 / Node / 类型入口保留，避免整包 CJS 内联导致 Context、store 或会话工厂重复。无新增依赖、上游预打包或消费者安装补丁。
+
+私有原型的 25 个公开 JS 入口各冷启动三次，共 75/75；公开导出的名称和类型与 Node ESM 对照一致，31 个跨入口导出引用相同。同步默认工厂与受控 adapter 的初始化、登录、fetch、退出和撤销检查通过，后者不冒充真实 OAuth。正式源码构建后，七个真实 tarball 在干净 Bun 1.4.2 消费者中通过各入口独立冷进程、跨 SDK 入口引用身份以及原完整 imports、NodeNext 类型和 CSS 检查；仍使用 `--ignore-scripts`，七份原 manifest 逐字节恢复。
+
+Lead 再运行标准 `bun run test:packages`，gate `candidate-rc-blockers-packages` 于 UTC 14:50:04.302–14:50:28.612 actual exit 0：105 文件、七个有测试脚本的包共 1,061 项通过。完整集成与后续新 RC 尚待实际结果，首轮 RC 的失败不被这些本地通过覆盖。
+
+源码冻结后的 targeted ESLint（Node / TS recommended，零 warning）、两树 `typecheck:test`、两树 SDK build 与服务端 `build:ts` 均 actual 0。独立只读审阅未发现 P1/P2 阻塞，并在 Bun 1.4.2 验证 `require(root)` 与 `require(session)` 的工厂引用相同；认证 Cookie / refresh 语义未改。
+
+候选首轮标准完整集成 `candidate-rc-blockers-integration-first` 于 UTC 14:48:28.085–14:53:12.910 actual exit 0：runtime 30、lite 163（16 个既有 skip）、full 8 文件 63 项通过。自有容器、网络和卷均为零。根工作树标准完整集成 `root-rc-blockers-integration` 于 UTC 14:54:23.992–15:00:39.208 actual exit 0：runtime 30、lite 157（6 个既有 skip）、原有 full 5 文件 46 项全部通过；不把原工作树的旧 target list 冒充候选 63 项。根自有容器、网络、卷为零，四个实际 Gateway 端口已关闭。
+
+候选提交前第二轮标准完整集成已启动，结果另行追加。这些标准套件仍使用协议 QLever 夹具；真实原生 ABI7、已部署 RC 的 Pod / Chat / Tasks 和原安装资料的桌面复验仍各有独立证据边界。下一 RC 尚未触发，stable tag 尚未创建。
+
+提交前第二轮 `candidate-rc-blockers-integration-precommit` 于 UTC 15:02:28.293–15:09:00.176 actual exit 0：runtime 30、lite 163（16 个既有 skip）、full 8 文件 63 项全部通过，full 无 skip / failure。产品与 SDK 分发源码自首轮完整集成起保持冻结；期间仅追加验收文档。最终核实自有容器、网络、卷为零，四个实际 Gateway 端口关闭。发布修复严格选择 9 个源码 / 测试 / 文档文件，未包含环境文件或私有测试数据；新提交和新 RC 的结果须另行记录，不把旧 RC failure 视为已接受。

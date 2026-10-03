@@ -11,10 +11,12 @@ export async function startBrowserExternalRp(issuer: string) {
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const callbackUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/auth/callback`;
-  const close = async () => {
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> => closing ??= new Promise<void>((resolve, reject) => {
+    // Register the close callback first: Bun stops the listener in closeAllConnections.
+    server.close(error => error ? reject(error) : resolve());
     server.closeAllConnections();
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  };
+  });
   try {
     const discovery = await fetch(new URL('/.well-known/openid-configuration', issuer));
     if (!discovery.ok) throw new Error(`External RP discovery failed: ${discovery.status}`);

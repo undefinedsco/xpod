@@ -7,8 +7,8 @@ const { execFileSync } = require('node:child_process');
 const { packWorkspacePackages } = require('./workspace-package-pack.cjs');
 
 const PACKAGES = ['solid-sdk', 'shared-ui', 'pod-collections', 'extension-sdk', 'ai-connections', 'pod-settings', 'tasks'];
-function run(command, args, cwd) {
-  return execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'inherit', 'inherit'] });
+function run(command, args, cwd, options = {}) {
+  return execFileSync(command, args, { cwd, ...options, encoding: 'utf8', stdio: ['ignore', 'inherit', 'inherit'] });
 }
 function exportEntries(manifest) {
   return Object.entries(manifest.exports).map(([key, value]) => {
@@ -56,8 +56,34 @@ function verifyInstalled(directory, expected) {
   }
   const modules = entries.filter((entry) => !entry.target.endsWith('.css'));
   fs.writeFileSync(path.join(directory, 'imports.mjs'), modules.map(({ specifier }) => `await import(${JSON.stringify(specifier)});`).join('\n'));
+  fs.writeFileSync(path.join(directory, 'module-specifiers.json'), JSON.stringify(modules.map(({ specifier }) => specifier)));
+  fs.writeFileSync(path.join(directory, 'isolated-import.mjs'), 'await import(process.argv[2]);\n');
   fs.writeFileSync(path.join(directory, 'consumer.ts'), [...modules.map(({ specifier }, index) => `import * as package${index} from ${JSON.stringify(specifier)}; export type Package${index} = typeof package${index};`), solidSdkTypes.size ? `import type { ${[...solidSdkTypes].sort().join(', ')} } from '@undefineds.co/solid-sdk';` : ''].join('\n'));
   return modules.length;
+}
+function verifyRuntimeImports(directory) {
+  const modules = JSON.parse(fs.readFileSync(path.join(directory, 'module-specifiers.json'), 'utf8'));
+  const options = { env: { ...process.env, BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' }, timeout: 30_000 };
+  // A root import must not prime its subpaths or hide a mixed ESM/CJS failure.
+  for (const specifier of modules) run('bun', ['isolated-import.mjs', specifier], directory, options);
+  const sdk = '@undefineds.co/solid-sdk';
+  if (modules.includes(sdk)) {
+    // This SDK's root reexports every public JS subpath. Its contexts, stores
+    // and session factory must be the same instances through either entry.
+    const subpaths = modules.filter((specifier) => specifier.startsWith(`${sdk}/`));
+    fs.writeFileSync(path.join(directory, 'sdk-identity.mjs'), `
+import assert from 'node:assert/strict';
+const root = await import(${JSON.stringify(sdk)});
+for (const specifier of ${JSON.stringify(subpaths)}) {
+  const entry = await import(specifier);
+  for (const [name, value] of Object.entries(entry)) {
+    if (name === 'default' || name === '__esModule') continue;
+    assert.strictEqual(root[name], value, specifier + ':' + name);
+  }
+}
+`);
+    run('bun', ['sdk-identity.mjs'], directory, options);
+  }
 }
 function consume(root = path.resolve(__dirname, '..'), { tarballs } = {}) {
   const manifests = PACKAGES.map((name) => JSON.parse(fs.readFileSync(path.join(root, 'packages', name, 'package.json'), 'utf8')));
@@ -66,12 +92,13 @@ function consume(root = path.resolve(__dirname, '..'), { tarballs } = {}) {
     fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ private: true, type: 'module', overrides: tarballs || {}, dependencies: Object.fromEntries([...manifests.map((m) => [m.name, tarballs?.[m.name] || m.version]), ['react', '19.2.0'], ['react-dom', '19.2.0'], ['@types/react', '19.2.14'], ['typescript', '6.0.3']]) }));
     run('bun', ['install', '--ignore-scripts'], directory);
     const count = verifyInstalled(directory, manifests);
+    verifyRuntimeImports(directory);
     run('bun', ['imports.mjs'], directory);
     run('bun', [path.join(root, 'scripts/workspace-package-typecheck.cjs'), directory, JSON.stringify(manifests.map((manifest) => manifest.name))], directory);
     console.log(`Verified ${manifests.length} ${tarballs ? 'packed' : 'published'} packages, ${count} module/type exports and CSS in a clean Bun consumer`);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }
-module.exports = { PACKAGES, exportEntries, verifyInstalled, consume };
+module.exports = { PACKAGES, exportEntries, verifyInstalled, verifyRuntimeImports, consume };
 
 // The `--local` path packs the workspace tarballs exactly once, consumes those
 // exact files in a clean Bun consumer, and only after every consumption/export/
