@@ -1,4 +1,4 @@
-import { approvalResource, sessionResource, type ApprovalRow, type ApprovalInsert, type SessionInsert } from '@undefineds.co/models';
+import { approvalResource, sessionResource, deliveryResource, type ApprovalRow, type ApprovalInsert, type SessionInsert } from '@undefineds.co/models';
 import { DEFAULT_TASK_AGENT } from '../tasks/TaskAgentBinding';
 /**
  * Pod-based ChatKit Store
@@ -12,7 +12,7 @@ import { DEFAULT_TASK_AGENT } from '../tasks/TaskAgentBinding';
  *     #{threadId}                     # Thread (sioc:Thread, sioc:has_parent)
  *   {yyyy}/{MM}/{dd}/messages.ttl     # Messages (meeting:Message)
  */
-import { drizzle, eq, and, asc } from '@undefineds.co/drizzle-solid';
+import { drizzle, eq, and, asc, parsePodResourceRef } from '@undefineds.co/drizzle-solid';
 import { getLoggerFor } from 'global-logger-factory';
 import type {
   ChatKitStore,
@@ -80,7 +80,8 @@ import {
 } from '../tasks/TaskAuthBinding';
 import type { AuthContext } from '../auth/AuthContext';
 import { CALLER_POD_ACCESS_UNAVAILABLE } from '../ai-gateway/auth/CallerPodAccess';
-import { podAccessError, type PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
+import { podAccessError, type PodAccessFetchProvider, type PodAccessRequestContext } from '../ai-gateway/pod/OwnerPodAccess';
+import type { PodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
 import { isSolidAuth } from '../auth/AuthContext';
 import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
@@ -128,6 +129,8 @@ const schema = {
 export interface PodChatKitStoreOptions {
   /** Reaches a Pod as its owner over the Pod's standard interface. */
   podAccess?: PodAccessFetchProvider;
+  /** Resolves an owned storage binding, independently of the WebID document location. */
+  podBaseUrlResolver?: PodBaseUrlResolver;
   serverGroupReconcilerService?: ServerGroupReconcilerService;
   /**
    * Reads a Pod credential secret (AI Connections envelope, `plaintext-v1`
@@ -289,6 +292,7 @@ type RunStepRecordSource = {
 export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<StoreContext>, TaskStore<StoreContext>, TaskAuthBindingRepository<StoreContext> {
   private readonly logger = getLoggerFor(this);
   private readonly podAccess?: PodAccessFetchProvider;
+  private readonly podBaseUrlResolver?: PodBaseUrlResolver;
   private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
   private readonly credentialSecretDecoder: AiCredentialSecretDecoder;
   private readonly deployment?: string;
@@ -298,6 +302,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   public constructor(options: PodChatKitStoreOptions) {
     this.podAccess = options.podAccess;
+    this.podBaseUrlResolver = options.podBaseUrlResolver;
     this.credentialSecretDecoder = options.credentialSecretDecoder ?? defaultAiCredentialSecretDecoder;
     this.deployment = options.deployment;
     this.serverGroupReconcilerService = options.serverGroupReconcilerService;
@@ -333,10 +338,23 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
    * for a Pod it could not open reports a state the user cannot act on.
    */
   private async getDb(context: StoreContext): Promise<any> {
-    // Check if we already have a cached db in context
-    if ((context as any)._cachedDb) {
+    // Internal contexts may carry a database opened with an already verified explicit binding
+    // (including Standalone). Never reuse that database after the context selects another root.
+    const cachedDb = (context as any)._cachedDb;
+    if (cachedDb) {
+      const explicitRoot = this.readExplicitPodBaseUrl(context);
+      const boundRoot = this.readPodUrlFromDatabase(cachedDb) ?? this.getCachedPodBaseUrl(context);
+      if (explicitRoot && boundRoot && explicitRoot !== boundRoot) {
+        throw new Error('Authoritative Pod storage binding changed on cached context');
+      }
+      // A cached database/fetch belongs to one credential binding. If the context now selects a
+      // different caller key or task grant, the old connection must not be reused.
+      const expectedAuth = (context as any)._cachedAuth as string | undefined;
+      if (expectedAuth && expectedAuth !== this.podCredentialBinding(context)) {
+        throw new Error('Authoritative Pod credential binding changed on cached context');
+      }
       this.logger.debug('Using cached db from context');
-      return (context as any)._cachedDb;
+      return cachedDb;
     }
 
     // A single request fans out with Promise.all (for example `GET /api/tasks`); without an
@@ -368,10 +386,15 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     }
 
     // One credential path for every caller: the owner's own Pod key, exchanged for a
-    // token this process can prove, or the caller's reusable token.
+    // token this process can prove, or the caller's reusable token. Unattended work carries a
+    // task-layer grant, which is forwarded so the Pod fetch is bound to that exact grant.
+    const taskCredential = (context as { taskCredential?: PodAccessRequestContext['taskCredential'] }).taskCredential;
     let podFetch: typeof fetch | undefined;
     try {
-      podFetch = await this.podAccess?.getPodFetch(auth.webId, { auth });
+      podFetch = await this.podAccess?.getPodFetch(auth.webId, {
+        auth,
+        ...(taskCredential ? { taskCredential } : {}),
+      });
     } catch (error) {
       this.logger.error(`Failed to obtain Pod access for ${auth.webId}: ${error}`);
       throw error;
@@ -382,9 +405,14 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       throw new Error(reason);
     }
 
+    const podBaseUrl = this.readExplicitPodBaseUrl(context)
+      ?? this.normalizePodBaseUrl(await this.podBaseUrlResolver?.(auth.webId));
+    if (!podBaseUrl) {
+      throw new Error('Authoritative Pod storage binding unavailable');
+    }
     const db: any = drizzle(
       { fetch: podFetch, info: { webId: auth.webId, isLoggedIn: true } } as any,
-      { schema },
+      { schema, podUrl: podBaseUrl },
     );
 
     this.logger.info(`Initializing tables for Pod: ${auth.webId}`);
@@ -398,8 +426,22 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     (context as any)._cachedDb = db;
     (context as any)._cachedFetch = podFetch;
     (context as any)._cachedWebId = auth.webId;
-    this.ensurePodBaseUrlCache(context, db, auth.webId);
+    (context as any)._cachedAuth = this.podCredentialBinding(context);
+    this.ensurePodBaseUrlCache(context, db);
     return db;
+  }
+
+  /** Stable identity of the credential binding behind a cached database, without secrets. */
+  private podCredentialBinding(context: StoreContext): string {
+    const auth = context.auth as AuthContext | undefined;
+    const task = (context as { taskCredential?: PodAccessRequestContext['taskCredential'] }).taskCredential;
+    return JSON.stringify({
+      webId: auth && isSolidAuth(auth) ? auth.webId : null,
+      clientId: auth && isSolidAuth(auth) ? auth.clientId ?? null : null,
+      taskCredential: task
+        ? { ref: task.credentialRef ?? null, version: task.version ?? null, ownerGrant: task.ownerGrant ?? null }
+        : null,
+    });
   }
 
   /**
@@ -411,44 +453,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       return auth.webId;
     }
     return undefined;
-  }
-
-  private derivePodBaseUrl(webId: string | undefined): string | undefined {
-    if (!webId) {
-      return undefined;
-    }
-
-    try {
-      const url = new URL(webId);
-      url.hash = '';
-      url.search = '';
-
-      const normalizedPath = url.pathname.replace(/\/+$/, '');
-      if (!normalizedPath.endsWith('/profile/card')) {
-        return undefined;
-      }
-
-      const podPath = normalizedPath.slice(0, -'/profile/card'.length) || '/';
-      if (podPath === '/') {
-        return url.origin;
-      }
-      url.pathname = podPath;
-      return url.toString().replace(/\/$/, '');
-    } catch {
-      const withoutHash = webId.split('#')[0]?.replace(/\/+$/, '');
-      if (!withoutHash?.endsWith('/profile/card')) {
-        return undefined;
-      }
-      const podBase = withoutHash.slice(0, -'/profile/card'.length) || '/';
-      if (podBase === '/') {
-        try {
-          return new URL(webId).origin;
-        } catch {
-          return undefined;
-        }
-      }
-      return podBase.endsWith('/') ? podBase.slice(0, -1) : podBase;
-    }
   }
 
   private normalizePodBaseUrl(value: unknown): string | undefined {
@@ -498,6 +502,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return undefined;
   }
 
+  // Only read databases from trusted internal contexts or openDb, which supplies an owned
+  // explicit podUrl before construction. An unconnected WebID-derived SDK root is not authority.
   private readPodUrlFromDatabase(db: unknown): string | undefined {
     if (!db || typeof db !== 'object') {
       return undefined;
@@ -545,10 +551,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   private ensurePodBaseUrlCache(
     context: StoreContext,
     db?: unknown,
-    fallbackWebId?: string,
   ): string | undefined {
     const authoritativePodBaseUrl = this.readExplicitPodBaseUrl(context)
-      ?? this.readPodUrlFromDatabase(db);
+      ?? this.readPodUrlFromDatabase(db ?? (context as any)._cachedDb);
     if (authoritativePodBaseUrl) {
       (context as any)._cachedPodBaseUrl = authoritativePodBaseUrl;
       return authoritativePodBaseUrl;
@@ -559,12 +564,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       return cached;
     }
 
-    const podBaseUrl = this.derivePodBaseUrl(fallbackWebId ?? this.getWebId(context));
-    if (podBaseUrl) {
-      (context as any)._cachedPodBaseUrl = podBaseUrl;
-    }
-
-    return podBaseUrl;
+    return undefined;
   }
 
   /**
@@ -1075,6 +1075,22 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return resource;
   }
 
+  /**
+   * Report a relation stored in this Pod as the same opaque resource id business code uses.
+   * The ORM's own `parsePodResourceRef` extracts it relative to the relation's resource base
+   * (`/.data/task/`, `/.data/`, ...), so an absolute foreign IRI stays absolute: it belongs to
+   * another Pod and must never be rebound to this one.
+   */
+  private toResourceRelation(resource: unknown, value: string | null | undefined): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+    if (!/^https?:\/\//.test(value)) {
+      return value;
+    }
+    return parsePodResourceRef(resource as never, value)?.resourceId ?? value;
+  }
+
   private baseRelativeIdFromPodPath(resource: string, context: StoreContext, podPath: string): string {
     const normalizedPath = podPath.replace(/^\/+|\/+$/g, '');
     const podBaseUrl = this.ensurePodBaseUrlCache(context);
@@ -1094,15 +1110,15 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return resource;
   }
 
-  private runRecordToData(record: RunRecordSource): RunRecordData {
+  private runRecordToData(record: RunRecordSource, context: StoreContext): RunRecordData {
     const metadata = this.parseJsonObject(record.metadata);
     return {
       id: record.id || '',
-      task: record.task || undefined,
-      delivery: record.delivery || undefined,
+      task: this.toResourceRelation(Task, record.task),
+      delivery: this.toResourceRelation(deliveryResource, record.delivery),
       trigger: record.trigger || undefined,
       input: record.input || undefined,
-      thread: record.thread || '',
+      thread: this.toResourceRelation(Thread, record.thread) ?? '',
       workspace: record.workspace || '',
       status: (record.status || 'queued') as RunRecordData['status'],
       runner: record.runner || '',
@@ -1123,12 +1139,11 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   private runStepRecordToData(record: RunStepRecordSource, context: StoreContext): RunStepRecordData {
     const payload = this.parseJsonObject(record.payload) ?? this.parseJsonObject(record.data);
-    const runId = record.runId
-      || (record.run ? this.baseRelativeIdFromResource(record.run, context) : '');
+    const run = this.toResourceRelation(Run, record.run);
     return {
       id: record.id || '',
-      runId,
-      run: record.run || '',
+      runId: record.runId || run || '',
+      run: run || '',
       type: record.type || record.stepType || 'runtime.event',
       message: record.message || undefined,
       data: this.withoutXpodMetadata(payload),
@@ -1136,7 +1151,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     };
   }
 
-  private taskRecordToData(record: TaskRecordSource): TaskRecordData {
+  private taskRecordToData(record: TaskRecordSource, context: StoreContext): TaskRecordData {
     const metadata = this.parseJsonObject(record.metadata);
     const xpod = this.getXpodMetadata(metadata);
     return {
@@ -1150,7 +1165,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       completedAt: this.isoToTimestamp(record.completedAt),
       notes: record.notes || undefined,
       priority: record.priority || undefined,
-      thread: record.thread || '',
+      thread: this.toResourceRelation(Thread, record.thread) ?? '',
       workspace: record.workspace || '',
       runner: record.runner || (typeof xpod?.runner === 'string' ? xpod.runner : ''),
       status: (record.status || 'active') as TaskRecordData['status'],
@@ -2042,7 +2057,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     if (!record) {
       throw new Error(`Run not found: ${id}`);
     }
-    return this.runRecordToData(record);
+    return this.runRecordToData(record, context);
   }
 
   async listRuns(options: RunListOptions, context: StoreContext): Promise<RunRecordData[]> {
@@ -2066,11 +2081,18 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       ? await query.where(and(...conditions)) as RunRecord[]
       : await query as RunRecord[];
 
-    const runs = records.map((record) => this.runRecordToData(record));
+    const runs = records.map((record) => this.runRecordToData(record, context));
 
     return runs
       .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
       .slice(0, options.limit ?? runs.length);
+  }
+
+  async getPodBaseUrl(context: StoreContext): Promise<string> {
+    const db = await this.getDb(context);
+    const root = this.ensurePodBaseUrlCache(context, db);
+    if (!root) throw new Error('Authoritative Pod storage binding unavailable');
+    return root;
   }
 
   async appendRunStep(event: RunStepRecordData, context: StoreContext): Promise<void> {
@@ -2079,12 +2101,25 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       throw new Error(`RunStep runId must be a complete Run resource id: ${event.runId}`);
     }
     event.id = buildRunStepResourceId(event);
-    const runResource = event.run || this.resolveDataResource(event.runId, context);
+    // Relations are opaque base-relative ids; the ORM resolves them against this Pod's configured
+    // storage when it serializes. An explicit absolute relation is only acceptable when it is the
+    // current Run in this Pod: a relation that points at another Pod is rejected, never rebound.
+    const expectedRunId = event.runId;
+    if (event.run) {
+      const currentRunIri = this.resolveDataResource(expectedRunId, context);
+      const matches = /^https?:\/\//.test(event.run)
+        ? event.run === currentRunIri
+        : event.run === expectedRunId;
+      if (!matches) {
+        throw new Error('RunStep run relation does not match the current Pod Run');
+      }
+    }
+    const run = event.run || expectedRunId;
 
     await db.insert(RunStep).values({
       id: event.id,
       stepType: event.type,
-      run: runResource,
+      run,
       message: event.message || null,
       payload: this.jsonObjectOrNull(event.data),
       createdAt: this.timestampToIso(event.createdAt) ?? new Date().toISOString(),
@@ -2097,8 +2132,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       throw new Error(`loadRunSteps requires a base-relative Run id: ${runId}`);
     }
 
-    const resolvedRun = this.resolveDataResource(runId, context);
-    const records = await db.select().from(RunStep).where(eq(RunStep.run, resolvedRun)) as RunStepRecord[];
+    // Opaque base-relative id; the ORM resolves it against this Pod's configured storage.
+    const records = await db.select().from(RunStep).where(eq(RunStep.run, runId)) as RunStepRecord[];
     return records
       .map((record) => this.runStepRecordToData(record, context))
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
@@ -2288,14 +2323,14 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     if (!record) {
       throw new Error(`Task not found: ${taskId}`);
     }
-    return this.hydrateTaskThread(this.taskRecordToData(record), context);
+    return this.hydrateTaskThread(this.taskRecordToData(record, context), context);
   }
 
   async listTasks(options: TaskListOptions, context: StoreContext): Promise<TaskRecordData[]> {
     const db = await this.getDb(context);
     const records = await db.select().from(Task) as TaskRecord[];
     const dueAt = options.dueAt ?? nowTimestamp();
-    let tasks = records.map((record) => this.taskRecordToData(record));
+    let tasks = records.map((record) => this.taskRecordToData(record, context));
 
     if (options.status) {
       tasks = tasks.filter((task) => task.status === options.status);
@@ -2322,7 +2357,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     const threads = await db.select().from(Thread).where(eq(Thread.parent, parent)) as ThreadRecord[];
     const latest = threads.sort((left, right) =>
       (this.isoToTimestamp(right.updatedAt) ?? 0) - (this.isoToTimestamp(left.updatedAt) ?? 0))[0];
-    return { ...task, thread: latest?.id ? this.resolveDataResource(latest.id, context) : '' };
+    return { ...task, thread: latest?.id ?? '' };
   }
 
   async saveTaskAuthCredential(input: {

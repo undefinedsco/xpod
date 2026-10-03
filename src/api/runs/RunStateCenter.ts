@@ -43,8 +43,6 @@ import { XpodRunStepType as RunStepType, RunStatus } from './schema';
 import {
   generateRunResourceId,
   generateRunStepResourceId,
-  resolveDataResource,
-  resolveRunUrn,
   type RunRecordData,
   type RunStepRecordData,
   type RunStore,
@@ -510,7 +508,7 @@ export class RunStateCenter<TContext = StoreContext> {
         parentKey: parent.parentKey,
         createdAt: now,
       }),
-      thread: this.resolveThreadResource(thread, context),
+      thread: thread.id,
       workspace: runtimeConfig.workspace,
       status: RunStatus.QUEUED,
       runner: `${runtimeConfig.runner.protocol ?? 'pi'}:${runtimeConfig.runner.type}`,
@@ -765,37 +763,12 @@ export class RunStateCenter<TContext = StoreContext> {
         createdAt,
       }),
       runId: run.id,
-      run: this.resolveRunResource(run, context),
+      run: run.id,
       type,
       message: options.message,
       data: options.data,
       createdAt,
     }, context);
-  }
-
-  private resolveThreadResource(thread: ThreadMetadata, context: TContext): string {
-    const threadId = thread.id;
-    if (/^https?:\/\//.test(threadId)) {
-      return threadId;
-    }
-
-    const parent = this.resolveThreadStorageParent(thread);
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl) {
-      if (threadId.includes('#') && !threadId.startsWith('#')) {
-        return resolveDataResource(podBaseUrl, threadId);
-      }
-      return `${podBaseUrl}/.data/${parent.parentKind}/${parent.parentKey}/index.ttl#${threadId}`;
-    }
-    return `urn:xpod:thread:${parent.parentKind}:${encodeURIComponent(parent.parentKey)}:${encodeURIComponent(threadId)}`;
-  }
-
-  private resolveRunResource(run: RunRecordData, context: TContext): string {
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl) {
-      return resolveDataResource(podBaseUrl, run.id);
-    }
-    return resolveRunUrn(run.id);
   }
 
   private async resolveWaitingRunForToolOutput(
@@ -815,7 +788,7 @@ export class RunStateCenter<TContext = StoreContext> {
       return undefined;
     }
 
-    const threadCandidates = this.threadCandidatesForRunLookup(threadRef, context);
+    const threadCandidates = await this.threadCandidatesForRunLookup(threadRef, context);
     for (const thread of threadCandidates) {
       const candidates = await this.runStore.listRuns({
         thread,
@@ -837,7 +810,7 @@ export class RunStateCenter<TContext = StoreContext> {
     return threadRef.thread_id;
   }
 
-  private threadCandidatesForRunLookup(threadRef: ThreadRef, context: TContext): string[] {
+  private async threadCandidatesForRunLookup(threadRef: ThreadRef, context: TContext): Promise<string[]> {
     const candidates: string[] = [];
     const add = (value: string | undefined): void => {
       if (value && !candidates.includes(value)) {
@@ -847,12 +820,7 @@ export class RunStateCenter<TContext = StoreContext> {
 
     const threadId = this.extractThreadIdFromRef(threadRef);
     add(threadId);
-    const relative = this.extractBaseRelativeThreadId(threadId);
-    add(relative);
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl && relative) {
-      add(resolveDataResource(podBaseUrl, relative));
-    }
+    add(this.extractBaseRelativeThreadId(threadId));
     return candidates;
   }
 
@@ -911,28 +879,6 @@ export class RunStateCenter<TContext = StoreContext> {
       parentKind: parent?.kind ?? 'chat',
       parentKey: parent?.key ?? 'default',
     };
-  }
-
-  private resolvePodBaseUrl(context: TContext): string | undefined {
-    const auth = (context as Record<string, unknown>).auth as { webId?: unknown } | undefined;
-    const webId = typeof auth?.webId === 'string' ? auth.webId : undefined;
-    if (!webId) {
-      return undefined;
-    }
-    try {
-      const url = new URL(webId);
-      url.hash = '';
-      url.search = '';
-      const normalizedPath = url.pathname.replace(/\/+$/, '');
-      if (!normalizedPath.endsWith('/profile/card')) {
-        return undefined;
-      }
-      const podPath = normalizedPath.slice(0, -'/profile/card'.length) || '/';
-      url.pathname = podPath;
-      return url.toString().replace(/\/$/, '');
-    } catch {
-      return undefined;
-    }
   }
 
   private async createAssistantMessage(

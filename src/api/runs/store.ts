@@ -55,6 +55,8 @@ export interface RunCommandProjection {
 }
 
 export interface RunStore<TContext> {
+  /** Resolve owned storage before constructing current-Pod relations. */
+  getPodBaseUrl?(context: TContext): Promise<string | undefined>;
   /** Atomically preserve cancellation and replace the caller's row with the committed state. */
   saveRun(run: RunRecordData, context: TContext): Promise<void>;
   loadRun(id: string, context: TContext): Promise<RunRecordData>;
@@ -206,6 +208,25 @@ export function buildRunStepResourceId(input: string | {
     throw new Error(`RunStep id must be a complete RunStep resource id: ${id}`);
   }
   return id;
+}
+
+/** Internal stores/contexts carry selected storage bindings; identity URLs are never storage. */
+export async function resolveBoundPodBaseUrl<TContext>(
+  store: Pick<RunStore<TContext>, 'getPodBaseUrl'> | undefined,
+  context: TContext,
+): Promise<string | undefined> {
+  if (store?.getPodBaseUrl) {
+    const root = await store.getPodBaseUrl(context);
+    if (!root) throw new Error('Authoritative Pod storage binding unavailable');
+    return root.replace(/\/+$/u, '');
+  }
+  // Non-Pod stores retain their URN behavior without an explicit internal binding.
+  const record = context as Record<string, unknown>;
+  for (const key of ['podBaseUrl', 'podUrl', 'storageUrl', 'storageProviderUrl', '_cachedPodBaseUrl']) {
+    const root = record?.[key];
+    if (typeof root === 'string' && root.trim()) return root.trim().replace(/\/+$/u, '');
+  }
+  return undefined;
 }
 
 export function resolveRunUrn(runId: string): string {

@@ -125,7 +125,10 @@ export class TaskAuthBindingService<TContext extends StoreContext = StoreContext
   public async resolveRunContext(bindingId: string, context: TContext): Promise<TContext | undefined> {
     const granted = await this.resolveTaskGrant(bindingId, context);
     if (granted.outcome === 'resolved') {
-      return this.buildContext(granted.binding, granted.clientSecret, context);
+      return {
+        ...this.buildContext(granted.binding, granted.clientSecret, context),
+        taskCredential: { credentialRef: granted.credentialRef, version: granted.version },
+      };
     }
     if (granted.outcome === 'unusable') {
       // The binding names a task-layer grant that no longer applies. Falling back to a stored
@@ -161,7 +164,7 @@ export class TaskAuthBindingService<TContext extends StoreContext = StoreContext
     bindingId: string,
     context: TContext,
   ): Promise<
-    | { outcome: 'resolved'; binding: TaskAuthBindingSnapshot; clientSecret: string }
+    | { outcome: 'resolved'; binding: TaskAuthBindingSnapshot; clientSecret: string; credentialRef: string; version: number }
     | { outcome: 'unusable' }
     | { outcome: 'not-a-grant' }
   > {
@@ -178,6 +181,8 @@ export class TaskAuthBindingService<TContext extends StoreContext = StoreContext
     }
     return {
       outcome: 'resolved',
+      credentialRef: credential.credentialRef,
+      version: credential.version,
       clientSecret: credential.clientSecret,
       binding: {
         id: bindingId,
@@ -253,8 +258,17 @@ export class TaskAuthBindingService<TContext extends StoreContext = StoreContext
   }
 
   private defaultBuildContext(binding: TaskAuthBindingSnapshot, clientSecret: string, context: TContext): TContext {
+    const cleanContext = { ...context };
+    // A task grant replaces the caller's transport authority, even for the same owner. Every
+    // request-scoped cache derived from that authority goes with it: the database and fetch
+    // wrappers, and the thread caches the store fills while reading with them.
+    for (const key of Object.keys(cleanContext)) {
+      if (key.startsWith('_cached') || key.startsWith('_thread') || key === 'taskCredential') {
+        delete cleanContext[key];
+      }
+    }
     return {
-      ...context,
+      ...cleanContext,
       userId: typeof context.userId === 'string' ? context.userId : binding.webId,
       auth: {
         type: 'solid',

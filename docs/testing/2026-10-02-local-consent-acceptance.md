@@ -443,3 +443,56 @@ Lead 再运行标准 `bun run test:packages`，gate `candidate-rc-blockers-packa
 候选提交前第二轮标准完整集成已启动，结果另行追加。这些标准套件仍使用协议 QLever 夹具；真实原生 ABI7、已部署 RC 的 Pod / Chat / Tasks 和原安装资料的桌面复验仍各有独立证据边界。下一 RC 尚未触发，stable tag 尚未创建。
 
 提交前第二轮 `candidate-rc-blockers-integration-precommit` 于 UTC 15:02:28.293–15:09:00.176 actual exit 0：runtime 30、lite 163（16 个既有 skip）、full 8 文件 63 项全部通过，full 无 skip / failure。产品与 SDK 分发源码自首轮完整集成起保持冻结；期间仅追加验收文档。最终核实自有容器、网络、卷为零，四个实际 Gateway 端口关闭。发布修复严格选择 9 个源码 / 测试 / 文档文件，未包含环境文件或私有测试数据；新提交和新 RC 的结果须另行记录，不把旧 RC failure 视为已接受。
+
+
+### Worker 对比的证据边界（2026-10-03）
+
+本轮 GPT-6.1 Sol worker 给出了 RP 关闭次序的 RED/GREEN 复现、真实 tarball 的 Bun 冷启动消费验证，并拒绝了会拆分 root/subpath 共享 Context 的整包 CJS 方案。当前这类跨认证、SDK 分发与发布验收的任务，Lead 倾向继续使用 Sol；Lead 仍负责独立验收和发布门禁。
+
+没有 DeepSeek 与 Sol 在同题、同环境下的耗时、返工次数、token 和费用对照，因此不能据此给出普遍的质量或效率排名。原生编译、镜像构建和远端 CI 等待时间不计作模型工作速度；用户的“若 429 则 Lead 接手”约定也不是实际发生 429 的证据。
+
+模型选择参考官方 [GPT-6.1 Sol 说明](https://developers.openai.com/api/docs/models/gpt-6.1-sol)，仅用于确认其复杂编码定位与需按实际任务评估取舍，不构成与 DeepSeek 的对比证据。
+
+### Account Cookie 与 Refresh Token 独立能力实测（2026-10-03）
+
+候选 b5bce18112eef6e650a70c59cf51c716c975c676 的独立真实 Local 自身 issuer、Bun 1.4.2、native ABI7、Electron SDK 夹具通过（1/1，0 skip/flaky，runner/Electron/fixture 实际 exit 0）。Account Cookie 经真实服务端 logout 200 失效后，Cookie-only Account 控制保持匿名；同一个已挂载 SDK 对象在原 Access Token 的真实 JWT exp 到期 812ms 后取得一次 refresh_token 200，随后原私有 Pod 读取 200。刷新后 Cookie-only 仍匿名，新增授权请求 0，授权码总数 1、密码 POST 总数 1；无 Token 注入、SDK logout/clear。
+
+证据边界是 Account 服务端退出，而非自然 14 天到期；其他 OIDC Cookie 可能仍在。该结果证明 Account Cookie 失效不等于原活 SDK Refresh Token 失效，不证明原安装版、跨文档令牌持久化或六小时真实等待。源码 HEAD/全部 tracked diff/记录的文件哈希保持不变，夹具数据库及桌面 userData 已清理，原用户进程未变。私有证据：候选工作区 .test-data/refresh-without-account-cookie-oe41pii7/safe-result.json。
+
+### 第二 RC 的 Tasks authority 阻断（2026-10-03）
+
+RC 37132403764（source b5bce18112eef6e650a70c59cf51c716c975c676）Authenticated Pod smoke 通过，随后 Live Gateway 步骤的 runtime/identity、canonical Pod PUT/GET、Gateway 认证、AI Connections、Models 200 和真实 Chat 200 均通过；第一失败发生在任务 approved:prepare 的 POST /api/tasks HTTP 400。验收请求 helper 在读取响应体前抛出，因此没有保留下游安全错误码，不凭步骤名将其记作 Chat 失败。
+
+私有 authority 对比发现 Task resource 读取打到了 Cloud card namespace，其 origin 与已经成功读写的独立 storage root 不同。Cloud 403 是正确边界，不能放宽权限来迁就 Tasks。当前修复切片是权威 storage 发现与上下文传递，拒绝以 WebID 路径截取值作为 Pod 写入 root。approved 失败后的清理通过；rejected/Stop 等未执行项不得算通过。该候选不具备 stable promotion 条件，桌面验收仍独立跟踪。
+
+第二 RC 最终 watch 实际 exit 1。桌面共享包的真实 Bun tarball 门禁已通过（7 packages、25 module/type exports 与 CSS）；随后 root 包 Node consumer 及 packaged authentication 通过，但 Bun 1.4.2 consumer 的旧 CJS probe 断言失败。该 probe 要求 require('jose') 解析至 Node ESM，而现有 patch-jose 契约明确是 bun.import→Node ESM、bun.require→Node CJS；实际 require 解析至 Node CJS 与产品配置一致。修复应更新夹具以精确验证两种入口，保留真实认证探针，不能放宽产品模块边界。桌面真实自更新及最终产物验收未执行，不能记作通过。
+
+### 第三候选修复的本地门禁（2026-10-04）
+
+Tasks / ChatKit 的八个 authority/cache 场景两树全部通过（real drizzle + 受控 transport 单元，非真实 Local 服务器）。既有夹具仅补已知显式 root / DB binding，不改断言；候选 RED 22 fail → GREEN 49 pass，root RED 19 fail → GREEN 46 pass，各 22 个需栈的用例交给完整集成门禁。两树完整 test types 与最终 build:ts 均实际 exit 0；新测试 lint 0，产品推荐规则基线 candidate 58/root 53、既有夹具 UI 配置基线各 93 诊断保持，不冒称全量 lint 零错误。
+
+真实 CAND workspace 打包后，Node 22.21.1 与 exact Bun 1.4.2 的完整 clean consumer 均实际 exit 0，日志均确认原 packaged authentication 与 package-only consumer 通过。新 probe 严格检查 require 为 Node CJS、import 为 Node ESM，两个入口均生成 ES256 密钥并导出 JWK；未改 patch-jose 产品行为。候选版本应用/打包期间的 11 个 manifest/lock 文件逐字节恢复，临时 backup 不存在。
+
+此前私有 staging 验证出现 include-platform 准备遗漏、隐式 bin 文件缺失、链接身份导致重复嵌套，以及 Node 目录内旧 Bun 覆盖 PATH；这些诊断轮不计产品失败或完整通过。Lead 收敛到真正 workspace pack、同目录 Node 22/Bun 1.4.2 和宿主代理后得到权威消费结果。这是本轮可观察的环境复现返工，也说明 worker 的效率不能仅按最终通过或 CI 等待时长排名；仍没有与 DeepSeek 同题同条件的对照。
+
+候选修复后第一轮完整 `bun run test:integration` 实际 exit 0（UTC 16:12:31–16:18:00）：runtime 30/5 files，lite 163/33 files 与原有 16 tests/4 files skip，full 63/8 files 全通过。原先单独收集时跳过的 ChatKit 集成用例在标准完整栈执行；自有 Compose containers/networks/volumes 均 0，5737/5739/6300/6400 的 IPv4/IPv6 检查均无监听。标准完整套件的 fake QLever 不能替代真实 ABI7、远端 Chat/Tasks 或原安装桌面。Root 完整回归与候选提交前复跑继续由 Lead 执行，新 RC 尚待创建，不具备 stable promotion 凭证。
+
+### 第三候选独立复核与使用中到期补验（2026-10-04，进行中）
+
+独立只读复核发现一个 P2：真实 storage root 修正后，TaskMaterializer、RunStateCenter 和 ManagedRunWorker 仍用 Cloud WebID 截取 Run/Task/Thread 关联；RunStep 原样保存旧 Cloud run IRI，而读取按 Local storage IRI 查询，导致跨 origin 步骤历史无法返回。此前八项 authority 单元与完整集成通过不覆盖该场景，不能据此发布。修复须统一已验证 storage binding，并补生产者到 RDF 写后读回归；当前尚未记为通过。
+
+用户新增要求持续使用和无人值守跨令牌到期。已有桌面 SDK 短 TTL 与 Account logout 后刷新通过，后台客户端凭据仍须分别验证。只读发现 OwnerPodAccess 的缓存 fetch 固定最初 token，401 后只使工厂缓存失效，原 fetch 不会取新 session；真实短 TTL GET 对照与最小修复正在执行。此处服务端使用 client_credentials，不能记作浏览器 refresh_token。并发续期、撤销、迟到 401 与写请求不盲重放也须独立回归。进行中长流尚无通过证据。
+
+上述追加修复前，Root 标准完整集成于 UTC 17:01:49.781–17:13:51.328 actual exit 0：runtime 30，lite 157 与原有 6 skip，full 5 文件 46 项全通过。自有 Compose containers/networks/volumes 均为零，四个 Gateway 端口 IPv4/IPv6 无监听。此结果只记录当时源码，不覆盖随后 RunStep 或后台续期修复；新源码须重新完成标准完整集成与提交前复跑。
+
+任务授权上下文切换不得继承调用者的 credential-bound DB/fetch 缓存。只验证 OwnerPodAccess 显式 taskCredential 分支，不证明真实 Tasks 链仍保留了 grant ref/version；TaskAuthBinding 的授权传递与缓存边界也纳入修复和回归，暂不记录全任务撤销或无人值守通过。
+
+### ORM 边界修正的本地门禁（2026-10-04）
+
+架构复审要求停止在业务层组装 Cloud/Local 存储 URL。修正后业务服务（TaskService、TaskHandler、TaskMaterializer、RunStateCenter、ManagedRunWorker）只传不透明 base-relative 资源 ID 与关系；`PodChatKitStore` 作为唯一拥有 `podUrl` 的适配器，读回时用 ORM 的 `parsePodResourceRef` 把本 Pod 关系还原成同样 ID，外部绝对 IRI 原样保留；`appendRunStep` 对显式绝对 `run` 仅接受等于本 Pod 当前 Run 的值，否则拒绝。已用真实安装版 drizzle-solid 探针验证：base-relative 关系按 `podUrl` 解析为 `${podUrl}/.data/...`，绝对外来链接不被重绑，`buildPodResourceIriForDatabase` 与 WebID 无关。结论是业务侧地址假设而非 ORM 能力缺口，未新增 issue/绕过/schema 分叉。
+
+候选两树 `typecheck:test` 与源 `build:ts` 实际 exit 0。候选受影响子集（tests/api + tests/service + tests/ai + ChatKit Pod 集成）实际 171 文件通过、1861 通过 / 29 既有 skip；root 受影响子集 6 文件 54 通过、广义子集 149 文件 1654 通过 / 7 skip。跨 origin 场景以 `RunStepStorageAuthority`（3 个真实 RDF 序列化生产者写后读）、`PodChatKitStore.storageAuthority`（真实 drizzle 写 Local、拒绝多 root 与未绑定）、`TaskHandler.service`（opaque ID 的 create→run→selection/list/Stop）、`RunRelations`（外来链接保持）覆盖。修正 `TaskAuthBinding` 在凭据切换时清理真实存在的 `_threadSurfaceIdCache` / `_threadMetadataCache`，并在 `openDb` 转发 `taskCredential` ref/version 且以 `_cachedAuth` 防止跨凭据复用旧 DB/fetch。
+
+候选全量单元 `vitest --run` 实际 8 文件 14 项失败、795 文件 8050 项通过；14 项失败文件均为 UI/runtime/依赖状态/agent-directory/inrupt patch，未 import 本次任何改动模块，属既有环境基线，不计作本次回归、也不能据此宣称全量绿。
+
+标准完整 `bun run test:integration`、真实已部署 RC 的 Tasks approved/rejected/Stop、真实原生 ABI7、已安装桌面与 stable promotion 仍各自独立，尚未在本轮取得通过证据。历史 RC 37128200393 与 37132403764 的失败保持原样，不追认为通过；新 RC 尚未创建。

@@ -740,7 +740,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       workspace: workspaceRef,
       runner: 'pi:codex',
       prompt: 'persist run facts',
-      thread: 'http://localhost/alice/.data/' + (run.metadata?.threadId as string),
+      thread: run.metadata?.threadId as string,
     });
     expect(extractResourceLocalId(run.id)).toMatch(/^run_/);
     expect(invocationKeyIssuer.issue).toHaveBeenCalledWith(expect.objectContaining({

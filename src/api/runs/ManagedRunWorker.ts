@@ -31,8 +31,6 @@ import { RunStatus, XpodRunStepType as RunStepType } from './schema';
 import {
   canClaimRun,
   generateRunStepResourceId,
-  resolveDataResource,
-  resolveRunUrn,
   type RunRecordData,
   type RunStepRecordData,
   type RunStore,
@@ -554,7 +552,7 @@ export class ManagedRunWorker<TContext = StoreContext> {
         createdAt,
       }),
       runId: run.id,
-      run: this.resolveRunResource(run, context),
+      run: run.id,
       type,
       message: options.message,
       data: options.data,
@@ -638,35 +636,5 @@ export class ManagedRunWorker<TContext = StoreContext> {
       return parts.length > 1 ? decodeURIComponent(parts[1]) : decodeURIComponent(parts[0]);
     }
     return thread;
-  }
-
-  private resolveRunResource(run: RunRecordData, context: TContext): string {
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl) {
-      return resolveDataResource(podBaseUrl, run.id);
-    }
-    return resolveRunUrn(run.id);
-  }
-
-  private resolvePodBaseUrl(context: TContext): string | undefined {
-    const auth = (context as Record<string, unknown>).auth as { webId?: unknown } | undefined;
-    const webId = typeof auth?.webId === 'string' ? auth.webId : undefined;
-    if (!webId) {
-      return undefined;
-    }
-    try {
-      const url = new URL(webId);
-      url.hash = '';
-      url.search = '';
-      const normalizedPath = url.pathname.replace(/\/+$/, '');
-      if (!normalizedPath.endsWith('/profile/card')) {
-        return undefined;
-      }
-      const podPath = normalizedPath.slice(0, -'/profile/card'.length) || '/';
-      url.pathname = podPath;
-      return url.toString().replace(/\/$/, '');
-    } catch {
-      return undefined;
-    }
   }
 }

@@ -1,7 +1,7 @@
 import { buildAuthenticatedFetch } from '@inrupt/solid-client-authn-core';
 import { getLoggerFor } from 'global-logger-factory';
 import { hasSolidClientCredentialsAuthority, type AuthContext } from '../../auth/AuthContext';
-import { SolidSessionError, type SolidSession, type SolidSessionFactory } from '../../auth/SolidSessionFactory';
+import { SolidSessionError, type SolidSession, type SolidSessionFactory, type SolidClientCredential } from '../../auth/SolidSessionFactory';
 import {
   CALLER_DPOP_REPLAY_UNSUPPORTED,
   CALLER_OWNER_MISMATCH,
@@ -154,43 +154,84 @@ export class OwnerPodAccess implements PodAccessFetchProvider {
     if (!credential) {
       return undefined;
     }
-    return await this.credentialFetch(owner, credential);
+    const sessionCredential: SolidClientCredential = { ...credential, version: String(credential.version) };
+    return await this.credentialFetch(owner, sessionCredential, async () => {
+      const current = await this.taskCredentials!.forRef({
+        credentialRef: credential.credentialRef,
+        ownerWebId: owner,
+        version: credential.version,
+      });
+      if (!current || current.credentialRef !== credential.credentialRef || current.version !== credential.version
+        || current.clientId !== credential.clientId || current.clientSecret !== credential.clientSecret) {
+        this.sessions.invalidate(sessionCredential);
+        throw new Error(`${POD_INTERFACE_KEY_REJECTED}:task_grant_unusable`);
+      }
+    });
   }
 
   private async credentialFetch(
     owner: string,
-    credential: PodInterfaceCredential,
+    credential: SolidClientCredential,
+    assertAuthorized?: () => Promise<void>,
   ): Promise<typeof fetch> {
-    let session: SolidSession;
-    try {
-      session = await this.sessions.session(credential);
-    } catch (error) {
-      const status = error instanceof SolidSessionError ? error.status : undefined;
-      this.logger.warn(`Pod interface key refused for ${owner}: ${String(error)}`);
-      throw new Error(`${POD_INTERFACE_KEY_REJECTED}:${status ?? 'invalid_response'}`);
-    }
-
+    const currentSession = async (): Promise<SolidSession> => {
+      try {
+        const session = await this.sessions.session(credential);
+        if (!sameWebIdOwner(session.webId, owner)) {
+          this.sessions.invalidate(credential, session);
+          throw new SolidSessionError('token_owner_mismatch');
+        }
+        return session;
+      } catch (error) {
+        const status = error instanceof SolidSessionError ? error.status : undefined;
+        this.logger.warn(`Pod interface key refused for ${owner}: ${String(error)}`);
+        throw new Error(`${POD_INTERFACE_KEY_REJECTED}:${status ?? 'invalid_response'}`);
+      }
+    };
+    // Preserve immediate credential validation at getPodFetch, then check again per request.
+    let session = await currentSession();
     const transport = await (this.transport ??= createHostedPodRouteTransport(this.fetchImpl, this.route));
-    const authenticated = buildAuthenticatedFetch(session.accessToken, {
-      ...(session.dpopKey ? { dpopKey: session.dpopKey } : {}),
+    const authenticatedFor = (value: SolidSession): typeof fetch => buildAuthenticatedFetch(value.accessToken, {
+      ...(value.dpopKey ? { dpopKey: value.dpopKey } : {}),
       fetch: transport,
     });
-    return this.invalidateOnUnauthorized(credential, authenticated);
-  }
-
-  private invalidateOnUnauthorized(
-    credential: PodInterfaceCredential,
-    podFetch: typeof fetch,
-  ): typeof fetch {
+    let authenticated = authenticatedFor(session);
     return async (input, init) => {
-      const response = await podFetch(input, init);
+      await assertAuthorized?.();
+      const requestSession = await currentSession();
+      // Recheck a task grant after a possibly slow exchange, before dispatching its token.
+      await assertAuthorized?.();
+      if (session !== requestSession) {
+        session = requestSession;
+        authenticated = authenticatedFor(session);
+      }
+      const response = await authenticated(input, init);
       if (response.status === 401) {
-        // The token stopped being accepted; the next request exchanges the key again.
-        this.sessions.invalidate(credential);
+        // Return the original rejection; writes are never replayed to try another token.
+        this.sessions.invalidate(credential, requestSession);
       }
       return response;
     };
   }
+}
+
+/**
+ * Whether an exchanged token names the owner it was requested for.
+ *
+ * The issuer and the deployment may spell the same WebID with or without its fragment (`#me`),
+ * so compare the WebID document. Anything that names a different document is a different owner
+ * and is rejected.
+ */
+function sameWebIdOwner(sessionWebId: string | undefined, owner: string): boolean {
+  if (!sessionWebId) {
+    return true;
+  }
+  return stripWebIdFragment(sessionWebId) === stripWebIdFragment(owner);
+}
+
+function stripWebIdFragment(webId: string): string {
+  const hashIndex = webId.indexOf('#');
+  return hashIndex >= 0 ? webId.slice(0, hashIndex) : webId;
 }
 
 /**

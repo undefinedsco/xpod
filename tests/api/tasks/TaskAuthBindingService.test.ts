@@ -137,3 +137,21 @@ describe('TaskAuthBindingService.resolveRunContext', () => {
     expect(TaskAuthBindingStatus.REVOKED).toBe('revoked');
   });
 });
+
+
+describe('TaskAuthBindingService credential-bound context', () => {
+  it('preserves the exact grant and drops the previous caller transport and database caches', async () => {
+    const service = new TaskAuthBindingService({ repository: repository(undefined), taskCredentials: source() });
+    const previous = { ...restoredContext(), _cachedDb: {}, _cachedDbPromise: Promise.resolve({}),
+      _cachedFetch: vi.fn(), _cachedAuth: {}, _cachedWebId: OWNER, _cachedPodBaseUrl: 'https://pod.example/alice/',
+      _threadSurfaceIdCache: new Map(), _threadMetadataCache: new Map(), podBaseUrl: 'https://pod.example/alice/' };
+    const resolved = await service.resolveRunContext(GRANT_ID, previous);
+    expect(resolved?.taskCredential).toEqual({ credentialRef: GRANT_ID, version: 3 });
+    for (const key of ['_cachedDb', '_cachedDbPromise', '_cachedFetch', '_cachedAuth', '_cachedWebId',
+      '_threadSurfaceIdCache', '_threadMetadataCache']) {
+      expect(resolved).not.toHaveProperty(key);
+      expect(previous).toHaveProperty(key);
+    }
+    expect(resolved?.podBaseUrl).toBe(previous.podBaseUrl);
+  });
+});

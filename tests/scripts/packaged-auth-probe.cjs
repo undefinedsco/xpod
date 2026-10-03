@@ -3,6 +3,27 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { createRequire } = require('node:module');
 const { pathToFileURL } = require('node:url');
+const { execFileSync } = require('node:child_process');
+
+async function verifyBunJoseBuilds(caller, packageRoot) {
+  const load = createRequire(caller);
+  // The patched Bun condition selects Node CJS for require and Node ESM for import.
+  assert.match(load.resolve('jose').replace(/\\/gu, '/'), /\/dist\/node\/cjs\/index\.js$/u);
+  const { generateKeyPair, exportJWK } = load('jose');
+  const { privateKey } = await generateKeyPair('ES256');
+  assert.equal((await exportJWK(privateKey)).kty, 'EC');
+  execFileSync(process.execPath, ['--no-install', '--input-type=module', '--eval', `
+    import assert from 'node:assert/strict';
+    import path from 'node:path';
+    import { fileURLToPath } from 'node:url';
+    const resolved = fileURLToPath(import.meta.resolve('jose'));
+    assert(resolved.startsWith(${JSON.stringify(packageRoot)} + path.sep), 'ESM JOSE escaped the installed artifact');
+    assert.match(resolved.split(path.sep).join('/'), /\\/dist\\/node\\/esm\\/index\\.js$/u);
+    const { generateKeyPair, exportJWK } = await import('jose');
+    const { privateKey } = await generateKeyPair('ES256');
+    assert.equal((await exportJWK(privateKey)).kty, 'EC');
+  `], { cwd: path.dirname(caller), env: { ...process.env, NODE_PATH: '' }, timeout: 10_000 });
+}
 
 async function main() {
   const packageRoot = require('node:fs').realpathSync(path.resolve(process.argv[2]));
@@ -47,11 +68,8 @@ async function main() {
   const openidLoad = createRequire(load.resolve('openid-client'));
   assert(openidLoad.resolve('jose').startsWith(`${packageRoot}${path.sep}`), 'openid-client must retain its bundled jose version');
   if (process.versions.bun) {
-    // Bun loads jose's ESM build; compare on one separator so the assertion is about which
-    // build was resolved, not about which OS resolved it.
-    const esmBuild = (resolved) => String(resolved).replace(/\\/gu, '/');
-    assert.match(esmBuild(load.resolve('jose')), /dist\/node\/esm\//);
-    assert.match(esmBuild(openidLoad.resolve('jose')), /dist\/node\/esm\//);
+    await verifyBunJoseBuilds(path.join(packageRoot, 'package.json'), packageRoot);
+    await verifyBunJoseBuilds(load.resolve('openid-client'), packageRoot);
   }
   const { Session } = load('@inrupt/solid-client-authn-browser');
   const { EVENTS } = load('@inrupt/solid-client-authn-core');
@@ -70,11 +88,15 @@ async function main() {
   assert.equal(finished, true);
   console.log('packaged authentication: scoped interaction, refresh hook, remembered cookie, callback cleanup passed');
 }
-const watchdog = setTimeout(() => {
-  console.error('Packaged authentication probe did not complete');
-  process.exit(1);
-}, 30_000);
-main().then(
-  () => clearTimeout(watchdog),
-  (error) => { clearTimeout(watchdog); console.error(error); process.exitCode = 1; },
-);
+if (require.main === module) {
+  const watchdog = setTimeout(() => {
+    console.error('Packaged authentication probe did not complete');
+    process.exit(1);
+  }, 30_000);
+  main().then(
+    () => clearTimeout(watchdog),
+    (error) => { clearTimeout(watchdog); console.error(error); process.exitCode = 1; },
+  );
+}
+
+module.exports = { verifyBunJoseBuilds };

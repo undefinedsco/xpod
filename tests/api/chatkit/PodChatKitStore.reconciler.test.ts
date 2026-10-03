@@ -18,6 +18,7 @@ vi.mock('@undefineds.co/drizzle-solid', async () => {
 
 function createDb(): any {
   return {
+    getDialect: () => ({ getPodUrl: () => 'https://alice.example/' }),
     init: vi.fn(async () => undefined),
     findByIri: vi.fn(async () => undefined),
     findById: vi.fn(async () => undefined),
@@ -63,6 +64,7 @@ describe('PodChatKitStore group Reconciler integration', () => {
       // The store takes every Pod credential from the shared provider; this test only
       // exercises routing, so the provider hands back a stand-in transport.
       podAccess: { getPodFetch: async () => fetch },
+      podBaseUrlResolver: async () => 'https://alice.example/',
       serverGroupReconcilerService: serverGroupReconcilerService as any,
     });
     const context = solidContext() as any;
@@ -118,6 +120,7 @@ describe('PodChatKitStore group Reconciler integration', () => {
       // The store takes every Pod credential from the shared provider; this test only
       // exercises routing, so the provider hands back a stand-in transport.
       podAccess: { getPodFetch: async () => fetch },
+      podBaseUrlResolver: async () => 'https://alice.example/',
       serverGroupReconcilerService: serverGroupReconcilerService as any,
     });
     const context = solidContext() as any;
@@ -164,6 +167,7 @@ describe('PodChatKitStore group Reconciler integration', () => {
     const unregistered = 'https://alice.example/.data/agents/unregistered.ttl#this';
     const queue = new InMemoryWakeAgentQueue();
     const store = new PodChatKitStore({ podAccess: { getPodFetch: async () => fetch },
+      podBaseUrlResolver: async () => 'https://alice.example/',
       serverGroupReconcilerService: new ServerGroupReconcilerService({ wakeQueue: queue }) });
     const context = solidContext() as any;
     const threadId = 'chat/team/index.ttl#thread';
@@ -190,6 +194,7 @@ describe('PodChatKitStore group Reconciler integration', () => {
     const agent = 'https://alice.example/.data/agents/secretary.ttl#this';
     const queue = new InMemoryWakeAgentQueue();
     const store = new PodChatKitStore({ podAccess: { getPodFetch: async () => fetch },
+      podBaseUrlResolver: async () => 'https://alice.example/',
       serverGroupReconcilerService: new ServerGroupReconcilerService({ wakeQueue: queue }) });
     const context = solidContext() as any;
     const threadId = 'chat/team/index.ttl#thread';

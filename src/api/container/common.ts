@@ -154,10 +154,25 @@ function resolveGatewayLocatorSecret(config: ApiContainerCradle['config']): stri
   });
 }
 
-function podBaseUrlResolver(cradle: ApiContainerCradle) {
+function podBaseUrlResolver(cradle: ApiContainerCradle, selection: 'first' | 'unique' = 'first') {
   return async (webId: string): Promise<string | undefined> => {
-    const pod = await cradle.podLookupRepo?.findByWebId(webId);
-    return pod?.storageUrl ?? pod?.baseUrl;
+    const pods = selection === 'unique'
+      ? await cradle.podLookupRepo?.findAllByWebId(webId) ?? []
+      : [await cradle.podLookupRepo?.findByWebId(webId)];
+    const roots = pods.flatMap(pod => {
+      const root = pod?.storageUrl ?? pod?.baseUrl;
+      return root ? [root] : [];
+    });
+    if (selection === 'first') return roots[0];
+    const normalized = new Set(roots.map(root => {
+      const url = new URL(root);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+        throw new Error('Invalid Pod storage binding');
+      }
+      return url.href.replace(/\/+$/u, '');
+    }));
+    if (normalized.size > 1) throw new Error('Authoritative Pod storage binding ambiguous');
+    return normalized.values().next().value;
   };
 }
 
@@ -681,9 +696,11 @@ export function registerCommonServices(
     }).singleton(),
 
     // ChatKit 存储与服务
-    chatKitStore: asFunction(({ config, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
+    chatKitStore: asFunction((cradle: ApiContainerCradle) => {
+      const { config, ownerPodAccess, serverGroupReconcilerService } = cradle;
       return new PodChatKitStore({
         podAccess: ownerPodAccess,
+        podBaseUrlResolver: podBaseUrlResolver(cradle, 'unique'),
         serverGroupReconcilerService,
         deployment: config.edition,
         credentialSecretDecoder: createAiCredentialSecretDecoder({

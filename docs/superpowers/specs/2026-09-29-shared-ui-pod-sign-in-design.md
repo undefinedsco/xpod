@@ -869,3 +869,29 @@ Refresh Token 刷新 Access Token 不依赖 Account 登录 Cookie。即使账号
 只有必须发起新的授权且 issuer 现有登录态也无法复用时，才重新要求账号密码。Access Token 到期、跨文档 SDK 恢复或暂时的探测错误不能单独触发密码重登。用户明确退出某一会话的选择仍须遵守其自身作用域，不得被迟到响应反向恢复。14 天是各自会话的当前配置寿命，不是统一的密码重登周期；账号交互续期也可能延后其 Cookie 到期时间。
 
 邮箱提示仅属于当前浏览器 origin 内、已确认 Account authority origin 的存储范围，不区分该 authority 同源路径。勾选时用持久存储，不勾选时用页面会话存储；提示没有时间 TTL、不保存密码，也不授予登录权限。冷启动通过仅证明当次持久化与恢复，不能替代原安装实例的六小时证据。
+
+### 13.18 Tasks / ChatKit 的数据 Pod 根（2026-10-04）
+
+Cloud 上的独立 WebID card 与数据 Pod 地址分开。Tasks / ChatKit 创建 drizzle 数据库前，必须使用内部已验证的显式 storage root 或 identity DB 的 Pod ownership/storage binding，并将该 root 显式传入 `podUrl`；不能从 WebID、issuer 或 profile 路径截取数据根，也不能把未连接数据库的猜测初值作为权威地址。保留 canonical RDF URL 与既有 OwnerPodAccess 私有 transport，公网入口不可用不改变该地址归属。
+
+ChatKit 没有已验证的选定 root 时，只接受唯一的数据 storage root；重复同 root 绑定去重，无绑定或多个不同 root 明确拒绝。本补充不新增多 Pod 选择 UI，也不改变其他消费者既有选择语义。Cloud card-only provisioning 不登记数据 Pod ownership；Standalone 的显式绑定同样适用。Workspace 字符串不能未经绑定验证成为 storage authority。
+
+已缓存的内部数据库仅复用其原已验证绑定；同一 context 改选不同显式 root 时拒绝复用，不静默切换。正确数据 Pod 的 403 保持错误，不能当作资源不存在，也不能回退写 Cloud card namespace。真实任务审批须另验 approved / rejected / Stop 及清理，局部 drizzle 回归不能代替发布验收。
+
+Run、Task 与 RunStep 的关联 IRI 同样使用该已验证数据 root。写入位置与关联查询必须一致；不能将 Cloud WebID 截出的关联写入 Local 数据库，再按 Local IRI 查询。须覆盖 Cloud card 与 Local storage 不同 origin 的步骤写后读。
+
+#### 修正：存储地址解析归 ORM/适配器，业务层只用不透明 ID（2026-10-04）
+
+上面的“业务层传入 podUrl”实施在复审时被判定越界：TaskService / TaskHandler / TaskMaterializer / RunStateCenter / ManagedRunWorker 不应派生 Cloud/Local 存储 URL，也不应调用 `getPodBaseUrl` / `resolveBoundPodBaseUrl` 组装绝对 IRI。业务层只传不透明的 base-relative 资源 ID 与关系；地址解析由 `PodChatKitStore` 这一处拥有。
+
+已实测的 ORM 契约（`@undefineds.co/drizzle-solid`，配 `{ podUrl }`）：写入时 base-relative 关系解析为 `${podUrl}/.data/...`；已是绝对 http(s) 的外键原样保留，不会静默重绑到本 Pod；查询侧 `eq(Run.thread, <base-relative>)` 同样按 `podUrl` 解析；`buildPodResourceIriForDatabase(db, resource, id)` 取 `db` 的显式 `podUrl`，与 WebID 无关。因此这属于业务层地址假设，不是 ORM 能力缺口，无需 issue/绕过/改 schema。
+
+落地边界：(1) TaskService / TaskMaterializer / RunStateCenter / ManagedRunWorker / TaskHandler 只写 `task.id` / `thread.id` / `run.id` 等不透明 ID；(2) `PodChatKitStore` 读回时用 ORM 的 `parsePodResourceRef` 把本 Pod 关系还原为同样的不透明 ID，外部绝对 IRI 保持原样；(3) 步骤写入若显式给出绝对 `run`，仅当它等于本 Pod 当前 Run 才接受，否则拒绝，绝不重写外来链接。Workspace 等 plain-uri 协作关系保持完整 URI。测试须断言 Local 写后读、外来链接不被改写，以及 InMemoryStore 路径只流转不透明 ID。
+
+### 13.19 使用中到期与无人值守续期（2026-10-04）
+
+有效 Refresh Token 的活 SDK 会话应在持续使用跨 Access Token 到期，以及无人操作、刷新计时器暂停后的首次请求中自动续期，不依赖用户在场、Account Cookie、重新输入密码或新增授权。验收记录真实 JWT 到期时刻、refresh grant、私有读取及密码和授权次数，不能仅凭计时器触发宣称通过。
+
+后台任务使用其已授权客户端凭据交换短期令牌，须分别验证同一个缓存请求对象跨到期后的可用性；该交换不称作浏览器 Refresh Token 刷新。凭据被撤销或身份不匹配时必须拒绝，不借用其他账号或部署持有的权限。并发续期复用同一交换；不能用无界重放非幂等写请求掩盖过期。
+
+进行中长请求或流是否跨到期继续完成须单列证据。已经开始的响应与下一次请求的认证分开判断；短 TTL 私有读取不能代替流式请求、原安装资料或自然 14 天有效期验收。

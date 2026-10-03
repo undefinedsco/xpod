@@ -1,5 +1,4 @@
 import { updateRunApprovalSession } from '../runs/RunApproval';
-import { runResource, taskResource } from '@undefineds.co/models';
 import { cancelRun } from '../runs/RunCancellation';
 import { nextCronOccurrence } from './cron';
 import { DEFAULT_TASK_AGENT } from './TaskAgentBinding';
@@ -11,7 +10,7 @@ import {
   toThreadRef,
 } from '../chatkit/types';
 import type { RunContextRetriever, RunExecutionBackend } from '../runs/RunExecutionBackend';
-import { extractResourceLocalId, resolveDataResource, type RunStore } from '../runs/store';
+import { extractResourceLocalId, type RunStore } from '../runs/store';
 import { isWorkspaceRef, type WorkspaceRef } from '../workspace/types';
 import { TaskMaterializer, type MaterializedTaskRun } from './TaskMaterializer';
 import { TaskStatus, TaskTriggerKind, type TaskTriggerKindType } from './schema';
@@ -97,7 +96,7 @@ export class TaskService<TContext = StoreContext> {
       assignedTo: input.assignedTo ?? DEFAULT_TASK_AGENT.iri,
       source: input.source,
       prompt: input.prompt,
-      thread: this.resolveThreadResource(thread, context),
+      thread: thread.id,
       workspace: input.workspace,
       runner: input.runner ?? DEFAULT_TASK_AGENT.runner,
       status: TaskStatus.ACTIVE,
@@ -216,7 +215,7 @@ export class TaskService<TContext = StoreContext> {
     const atCheckpoint = waiting?.itemId === item.id && waiting.requestId === approval.toolCallId;
     if (item.status === 'completed' && item.output === output) {
       if (approval.status === 'rejected' && atCheckpoint && run.status === 'waiting_input') {
-        const cancelled = await cancelRun({ store: this.store, runId: run.id, context, resourceIri: () => runResource.buildIri(input.owner, { id: run.id }) });
+        const cancelled = await cancelRun({ store: this.store, runId: run.id, context, resourceIri: () => run.id });
         return { run: cancelled, resumed: false, duplicate: true };
       }
       if (run.status === 'cancelled') await updateRunApprovalSession(this.store, run, 'completed', context);
@@ -226,7 +225,7 @@ export class TaskService<TContext = StoreContext> {
     if (run.status !== 'waiting_input' || waiting?.itemId !== item.id || waiting.requestId !== approval.toolCallId) throw new Error('Run is not waiting at this approval checkpoint');
     if (approval.status === 'rejected') {
       await this.store.saveItem(threadRef, { ...item, status: 'completed', output, metadata: { ...item.metadata, approval: input.approval } }, context);
-      const cancelled = await cancelRun({ store: this.store, runId: run.id, context, resourceIri: () => runResource.buildIri(input.owner, { id: run.id }) });
+      const cancelled = await cancelRun({ store: this.store, runId: run.id, context, resourceIri: () => run.id });
       return { run: cancelled, resumed: false };
     }
     // Foreground Chat resumes with the authenticated caller. Scheduled Task runs
@@ -234,7 +233,7 @@ export class TaskService<TContext = StoreContext> {
     let execution = context;
     if (run.task) {
       const tasks = await this.store.listTasks({}, context);
-      const task = tasks.find(task => taskResource.buildIri(input.owner, { id: task.id }) === run.task);
+      const task = tasks.find(task => task.id === run.task);
       if (!task) throw new Error('Task not found for this run');
       const granted = await resolveExecutionContext?.(task, context);
       if (!granted) throw new Error('Agent execution credential is unavailable');
@@ -374,43 +373,5 @@ export class TaskService<TContext = StoreContext> {
       protocol: protocol === 'acp' ? 'acp' : 'pi',
       type: type || 'pi',
     };
-  }
-
-  private resolveThreadResource(thread: ThreadMetadata, context: TContext): string {
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl) {
-      if (thread.id.includes('#') && !thread.id.startsWith('#')) {
-        return resolveDataResource(podBaseUrl, thread.id);
-      }
-      return resolveDataResource(podBaseUrl, `task/${extractResourceLocalId(thread.parent ?? thread.id)}/index.ttl#${thread.id}`);
-    }
-    const parentKey = extractResourceLocalId(thread.parent ?? thread.id);
-    return `urn:xpod:thread:task:${encodeURIComponent(parentKey)}:${encodeURIComponent(thread.id)}`;
-  }
-
-  private resolvePodBaseUrl(context: TContext): string | undefined {
-    const webId = this.resolveWebId(context);
-    if (!webId) {
-      return undefined;
-    }
-    try {
-      const url = new URL(webId);
-      url.hash = '';
-      url.search = '';
-      const normalizedPath = url.pathname.replace(/\/+$/, '');
-      if (!normalizedPath.endsWith('/profile/card')) {
-        return undefined;
-      }
-      const podPath = normalizedPath.slice(0, -'/profile/card'.length) || '/';
-      url.pathname = podPath;
-      return url.toString().replace(/\/$/, '');
-    } catch {
-      return undefined;
-    }
-  }
-
-  private resolveWebId(context: TContext): string | undefined {
-    const auth = (context as Record<string, unknown>).auth as { webId?: unknown } | undefined;
-    return typeof auth?.webId === 'string' ? auth.webId : undefined;
   }
 }

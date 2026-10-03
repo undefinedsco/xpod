@@ -168,3 +168,56 @@ describe('SolidSessionFactory', () => {
     expect(request).toHaveBeenCalledTimes(3);
   });
 });
+
+
+describe('SolidSessionFactory exchange lifecycle', () => {
+  const credential = { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET };
+
+  it('shares one pending exchange between concurrent requests', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const request = vi.fn(async () => { await blocked; return tokenResponse(); });
+    const sessions = createFactory({ fetch: request });
+    const waiting = Array.from({ length: 10 }, () => sessions.session(credential));
+    await vi.waitFor(() => expect(request).toHaveBeenCalled());
+    release();
+    const results = await Promise.all(waiting);
+    expect(request).toHaveBeenCalledOnce();
+    expect(results.every((session) => session === results[0])).toBe(true);
+  });
+
+  it.each(['credential', 'client'] as const)('rejects an exchange invalidated by %s before completion', async (kind) => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const request = vi.fn(async () => { await blocked; return tokenResponse(); });
+    const sessions = createFactory({ fetch: request });
+    const waiting = sessions.session(credential);
+    const rejected = expect(waiting).rejects.toThrow('token_exchange_invalidated');
+    await vi.waitFor(() => expect(request).toHaveBeenCalled());
+    if (kind === 'client') sessions.invalidateClientCredential(CLIENT_ID);
+    else sessions.invalidate(credential);
+    release();
+    await rejected;
+    await sessions.session(credential);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not invalidate a newer session because an older request failed late', async () => {
+    const request = vi.fn(async () => tokenResponse());
+    const sessions = createFactory({ fetch: request });
+    const first = await sessions.session(credential);
+    sessions.invalidate(credential);
+    const second = await sessions.session(credential);
+    sessions.invalidate(credential, first);
+    expect(await sessions.session(credential)).toBe(second);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('permits a new exchange after a pending exchange fails', async () => {
+    const request = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(tokenResponse());
+    const sessions = createFactory({ fetch: request });
+    await expect(sessions.session(credential)).rejects.toThrow('offline');
+    await expect(sessions.session(credential)).resolves.toMatchObject({ accessToken: 'solid-token' });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+});
