@@ -6,7 +6,8 @@
   "sideEffects": false,
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "THIRD-PARTY-NOTICES.txt"
   ],
   "exports": {
     ".": {
@@ -50,7 +51,7 @@
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/index.ts --target=node --format=cjs --packages=external --outfile=dist/index.cjs && bun build src/local-route-fetch.ts --target=node --format=cjs --packages=external --outfile=dist/local-route-fetch.cjs && bun build src/access-route.ts --target=node --format=cjs --packages=external --outfile=dist/access-route.cjs",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/session.ts --target=browser --format=esm --outfile=dist/session.js && bun build src/index.ts --target=node --format=cjs --external=react --external=react/* --external=zustand --external=zustand/* --outfile=dist/index.cjs && bun build src/local-route-fetch.ts --target=node --format=cjs --packages=external --outfile=dist/local-route-fetch.cjs && bun build src/access-route.ts --target=node --format=cjs --packages=external --outfile=dist/access-route.cjs",
     "test": "vitest run test --config ../../vitest.packages.config.mts"
   },
   "dependencies": {

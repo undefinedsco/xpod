@@ -43,8 +43,8 @@ const FORBIDDEN_PRODUCT_LOG = /product[- ]fallback|compatibility.*fallback|rdf3x
 const RUNNER_PATH = 'dist/acceptance/run-installed-qlever-conformance.js';
 
 class StepError extends Error {
-  constructor(readonly stage: string, readonly exitStatus: number, readonly errorClass: string) {
-    super(JSON.stringify({ stage, errorClass }));
+  constructor(readonly stage: string, readonly exitStatus: number, readonly errorClass: string, diagnostic?: string) {
+    super(JSON.stringify({ stage, errorClass, ...(diagnostic ? { diagnostic } : {}) }));
   }
 }
 
@@ -158,20 +158,62 @@ export function validateImageInspection(raw: string, ref: string, source?: { sha
   }
 }
 
+function registryAuth(entry: unknown): string {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error();
+  const value = entry as Record<string, unknown>;
+  if (Object.keys(value).some(key => !['auth', 'username', 'password', 'email'].includes(key))) throw new Error();
+  if (value.email !== undefined && typeof value.email !== 'string') throw new Error();
+  let auth: string | undefined;
+  if (value.auth !== undefined) {
+    if (typeof value.auth !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.auth)) throw new Error();
+    const bytes = Buffer.from(value.auth, 'base64');
+    const decoded = bytes.toString('utf8');
+    const separator = decoded.indexOf(':');
+    if (bytes.toString('base64') !== value.auth || !Buffer.from(decoded).equals(bytes)
+      || separator <= 0) throw new Error();
+    auth = value.auth;
+  }
+  if (value.username !== undefined || value.password !== undefined) {
+    if (typeof value.username !== 'string' || !value.username || value.username.includes(':')
+      || typeof value.password !== 'string') throw new Error();
+    const provided = Buffer.from(`${value.username}:${value.password}`).toString('base64');
+    if (auth !== undefined && auth !== provided) throw new Error('inconsistent-authority-credentials');
+    auth = provided;
+  }
+  if (!auth) throw new Error();
+  return auth;
+}
+
 export function installRegistryConfig(raw: string, existingRaw: string, output: string): void {
   let stage = 'registry-parse';
+  let diagnostic = 'source-json';
   try {
     const source = JSON.parse(raw) as { auths?: Record<string, unknown> };
+    diagnostic = 'existing-json';
     const existing = JSON.parse(existingRaw) as { auths?: Record<string, unknown> };
     stage = 'registry-authority';
-    const entry = source.auths?.['ccr.ccs.tencentyun.com'];
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error();
-    const auths: Record<string, unknown> = { 'ccr.ccs.tencentyun.com': entry };
-    if (existing.auths?.['ghcr.io']) auths['ghcr.io'] = existing.auths['ghcr.io'];
+    diagnostic = 'auths-shape';
+    if (!source?.auths || typeof source.auths !== 'object' || Array.isArray(source.auths)) throw new Error();
+    // Docker accepts legacy scheme-prefixed keys. Admit only this fixed authority;
+    // never execute credential helpers or carry foreign registry credentials forward.
+    const keys = ['ccr.ccs.tencentyun.com', 'https://ccr.ccs.tencentyun.com',
+      'https://ccr.ccs.tencentyun.com/', 'https://ccr.ccs.tencentyun.com/v1/'];
+    const selected = keys.filter(key => Object.prototype.hasOwnProperty.call(source.auths, key));
+    diagnostic = 'missing-authority';
+    if (!selected.length) throw new Error();
+    diagnostic = 'invalid-auth-entry';
+    const entries = selected.map(key => registryAuth(source.auths![key]));
+    diagnostic = 'inconsistent-authority-credentials';
+    if (entries.some(auth => auth !== entries[0])) throw new Error();
+    const auths: Record<string, unknown> = { 'ccr.ccs.tencentyun.com': { auth: entries[0] } };
+    if (existing?.auths?.['ghcr.io']) auths['ghcr.io'] = existing.auths['ghcr.io'];
     stage = 'registry-write';
+    diagnostic = 'exclusive-owned-write';
     writeFileSync(output, `${JSON.stringify({ auths })}\n`, { mode: 0o600, flag: 'wx' });
-  } catch {
-    throw new StepError(stage, 1, 'authorized-config-rejected');
+  } catch (error) {
+    if (diagnostic === 'invalid-auth-entry' && error instanceof Error
+      && error.message === 'inconsistent-authority-credentials') diagnostic = 'inconsistent-authority-credentials';
+    throw new StepError(stage, 1, 'authorized-config-rejected', diagnostic);
   }
 }
 

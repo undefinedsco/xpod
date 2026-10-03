@@ -74,6 +74,10 @@ Linux preview.2 安装验收夹具经过四个 revision 和独立复审。返工
 
 最新 combined 0.4.24 原始完整集成由 Sol 执行，producer 50759 实际 0/null、343.921 秒，前置 30 项、Lite 163 通过/16 跳过、Full 63 全通过。ROOT 独立复验 8,916 项正文、集合、日志及所属资源清理；该工具耗时不代表模型推理速度。Private17 CI 接线门禁为 Python 77+Bun 35，隔离链为 Python 15+Bun 57；Sol 在复审中自行发现并修正 job-env 的 GitHub context 不适用问题。ROOT 最初核对 staged patch 遗漏 --full-index，以及读取快照时把 states 列表当成字典，均纠正后完成真实验证；这些是监督工具错误。真实 RC／SealOS 与最新 Rust 安装仍未通过，不将静态和隔离绿色计为远程交付完成。
 
+RC234 的真实失败随后由两个 Sol lane 修复：registry 地址兼容与安全分类，以及 SDK 干净消费者的 JOSE 加载边界。SDK 原始 consumer RED 为 9.427 秒；修后原七包 consumer 为 14.211 秒，源码和测试类型门禁分别为 10.220 与 15.946 秒，均实际退出0。这是命令时间，不是开发墙钟。SDK 没有通过加安装后补丁降低 clean consumer 契约，压缩包增加约248KB，许可文本随包核对。registry 最终相关5项及 ROOT 独立复验通过；后续真实探测证实 namespace secret 根本缺少 CCR entry，不能将兼容修复冒称远程认证已打通。
+
+私有 Sol lane 增加保密 TLS 诊断，84 Python+35 Bun/type 门禁通过，实际诊断 CI 仍保留 TLS 失败，producer 未启动。随后依据运维文档找到已有可信 CO 配置，实际 TLS/namespace 认证通过，并恢复同一个 CI secret；没有抓取未知 CA 当信任根或绕过验证。新增测试 class 先放在 main guard 后面，ROOT 在提交前要求移至 guard 前；失败私密 artifact 与实际超时边界也补齐。ROOT 另一次复验误用40秒监督已有约72秒的整文件测试，监督器超时且产品退出未知；确认所属进程组消失后，以正确的最终相关测试复验通过。这个监督预算错误不算 Sol 产品失败。此批任务仍没有匹配的 DeepSeek 同任务费用或开发墙钟对照，远程交付尚未完成。
+
 这条 Xpod 主线暂以 Sol 作为实现子代理：已有任务接手、边界修复和完整产物交付的有效样本，新的原生客户端重建、打包与独立安装验证闭合后，Sol 子代理发生 remote compact 连接失败；源绑定 final manifest 与实际回执已落盘，负责人仍能独立验收。该传输故障应计入可靠性，不能写成 Sol 链路从不失败。权限、持久化、错误优先级和部署门禁继续独立复核，不以模型名称替代验收。
 
 DeepSeek 的 24 路径任务表明它能执行批量改动；范围明确、验证自动化充分、服务可用时，仍可作为成本敏感任务的候选。但本轮出现提前结束、缺少收口、工具文本未执行及反复边界修复，负责人监督成本必须计入。Sol 的任务更小且继承既有实现，不能据此宣称它总体编码能力或平均速度胜出。
@@ -83,3 +87,5 @@ DeepSeek 的 24 路径任务表明它能执行批量改动；范围明确、验�
 此评价方法与 [OpenAI 官方按工作负载选择模型的指南](https://developers.openai.com/api/docs/guides/deployment-checklist#choose-a-model-for-the-workload) 一致：用代表性任务比较成功率、延迟和每次成功成本。该来源仅支持方法和 OpenAI 模型定位，不提供 DeepSeek 的效果证据。
 
 原始日志与 producer/哈希回执保存在本次工作区 ignored `.test-data/agent-directory-workers/` 的 `opencode-go-b-current-release-*`、`gpt-6.1-sol-output-boundary`、`root-model-worker-comparison` 目录，均按私密证据管理，不随仓库公开。后续私有 QLever 合同与原生客户端任务完成后，追加样本，不改写已有结果。
+
+最终修复版原始完整集成 producer 实际 0/null、315.520 秒：前置 30、Lite 163 通过／16 跳过、Full 63 全通过。负责人独立验证 8,919 个正文与前后快照、闭合日志及专属进程／容器／卷缺项；这仍是隔离集成证据，不代表新 RC 或 SealOS 已通过。

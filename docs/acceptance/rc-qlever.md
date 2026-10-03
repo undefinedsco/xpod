@@ -156,6 +156,40 @@ Private17 固定夹具 hash 为
 失败 deploy job 原源码 rerun 和变量刷新尚未运行；不能仅设置 vars hash 或创建
 同形 JSON 就称准入通过，更不能将 component 证明称为 RC/replay 验收。
 
+## 0.4.24-rc.234 的真实发布与阻点
+
+公共源码 `440f3be336e685ce944ef0478c8823d0c2375908` 已正常推送到
+`release/0.4.24`。实际 candidate run 为 `37130973254`，版本为
+`0.4.24-rc.234`，服务构建成功，镜像为
+`ghcr.io/undefinedsco/xpod@sha256:5918ffc3d6f3060aa5b8fec994076070fdd600a50fed2da69b2b1293aecaebc1`。
+原始完整集成的 163/16 与 63 全通过证明发布时源码，不能覆盖后续修复。
+该 RC 整体失败，尚未完成 namespace 镜像拉取、部署或真实 Gateway 验收。
+
+公共 deploy 在 registry 配置阶段拒绝；Public16 和 Private17 gate 均未执行。
+随后使用运维文档明确引用的现有 CO 配置只读验证同一 namespace，证实
+`tcr-creds` 不含 CCR authority，其唯一 entry 属于另一个 registry。
+HTTPS registry key 的兼容性修复及固定安全错误分类已完成专项测试，但不能
+把地址规范化称为有效 CCR 凭据的恢复。本机 exact CCR keychain entry 的
+manifest 认证交换也返回 HTTP401，没有可用凭据证明；未修改该 namespace secret。
+
+私有 component-only run `37132221419` 在 CO TLS preflight 失败，producer
+没有启动。私有诊断源码 `854adbe030c92bf4b2f04f6b7a1a690b174720c6` 的
+run `37133379531` 保留原失败，上传了私密证书元数据；未关闭 TLS、替换
+信任根或生成 admission。已有 CO 运维配置以当前 CA 实际通过 namespace
+TLS 和认证，随后仅通过 stdin 恢复已有 `SEALOS_CO_KUBECONFIG`。
+下一次实际 CI 仍需验证恢复结果，并先取得有效的原有 CCR 凭据。
+
+桌面 clean consumer 真实复现了 Inrupt CommonJS 加载 JOSE browser ESM 的
+Bun 错误。后续 SDK 修复在发布边界链接依赖，保持 React/Zustand 外部依赖及
+原有类型接口；未增加 consumer 补丁前置。Bun/Node 的 ESM/CommonJS 消费、
+原七包 tarball 的所有导出、类型和 CSS，以及源码和测试类型门禁通过。
+NOTICE 随 tarball 包含实际六个内嵌依赖，SDK 压缩包增加 247,985 bytes。
+SDK 版本仍为 0.1.1，仅证明 RC 本地 tarball；独立 registry 发布须使用新版本。
+修复后的原始完整集成实际退出 0、signal null，耗时 315.520 秒：前置 30 项、
+Lite 163 项通过／16 项跳过、Full 63 项全部通过。负责人独立核验全部 8,919
+个覆盖路径正文、闭合日志和前后快照，测试进程、专属容器及卷均已退出并清理。
+此结果只证明隔离集成；新 RC 发布、SealOS 与最新 AgentFS 原生验收仍须单独验证。
+
 ## 新 native RC 的发布门槛
 
 以下为待完成门槛，不能把计划、mock 或静态通过写成真实验收通过。

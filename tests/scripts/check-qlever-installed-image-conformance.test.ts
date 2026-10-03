@@ -89,6 +89,65 @@ describe('installed native image report admission', () => {
 
 
 describe('authorized namespace pull admission', () => {
+  it('normalizes exact legacy HTTPS CCR authority and consistent kubectl credentials', () => {
+    const dir = mkdtempSync(path.join(root, '.test-data/registry-normalize-'));
+    try {
+      const auth = Buffer.from('fixture-user:fixture-password').toString('base64');
+      const output = path.join(dir, 'config.json');
+      installRegistryConfig(JSON.stringify({ auths: { 'https://ccr.ccs.tencentyun.com/': {
+        username: 'fixture-user', password: 'fixture-password', email: 'fixture@example.invalid', auth,
+      } } }), '{}', output);
+      expect(JSON.parse(readFileSync(output, 'utf8'))).toEqual({ auths: { 'ccr.ccs.tencentyun.com': { auth } } });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('rejects inconsistent, malformed, helper-only and foreign credentials without overwriting a foreign path', () => {
+    const dir = mkdtempSync(path.join(root, '.test-data/registry-reject-'));
+    const auth = Buffer.from('fixture-user:fixture-password').toString('base64');
+    try {
+      const output = path.join(dir, 'foreign.json');
+      writeFileSync(output, 'foreign-owned', { mode: 0o600 });
+      const entries = [
+        { 'ccr.ccs.tencentyun.com': { auth, username: 'fixture-user', password: 'PRIVATE_SENTINEL' } },
+        { 'ccr.ccs.tencentyun.com': { auth }, 'https://ccr.ccs.tencentyun.com/': { auth: Buffer.from('other:PRIVATE_SENTINEL').toString('base64') } },
+        { 'ccr.ccs.tencentyun.com': { auth: 'PRIVATE_SENTINEL' } },
+        { 'ccr.ccs.tencentyun.com': {} },
+        { 'https://ccr.ccs.tencentyun.com.attacker.example/': { auth } },
+        { 'https://PRIVATE_SENTINEL@ccr.ccs.tencentyun.com/': { auth } },
+        { 'https://ccr.ccs.tencentyun.com:443/': { auth } },
+        { 'https://ccr.ccs.tencentyun.com/project/': { auth } },
+      ];
+      for (const auths of entries) {
+        expect(() => installRegistryConfig(JSON.stringify({ auths, credsStore: 'PRIVATE_SENTINEL' }), '{}', output)).toThrow(/authorized-config-rejected/);
+        try { installRegistryConfig(JSON.stringify({ auths }), '{}', output); }
+        catch (error) { expect(String(error)).not.toContain('PRIVATE_SENTINEL'); }
+        expect(readFileSync(output, 'utf8')).toBe('foreign-owned');
+      }
+      expect(() => installRegistryConfig(JSON.stringify({ auths: { 'ccr.ccs.tencentyun.com': { auth } } }), '{}', output)).toThrow(/registry-write/);
+      expect(readFileSync(output, 'utf8')).toBe('foreign-owned');
+      const link = path.join(dir, 'link.json'); symlinkSync(output, link);
+      expect(() => installRegistryConfig(JSON.stringify({ auths: { 'ccr.ccs.tencentyun.com': { auth } } }), '{}', link)).toThrow(/registry-write/);
+      expect(readFileSync(output, 'utf8')).toBe('foreign-owned');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('classifies only fixed safe registry failure reasons and supports Docker empty password', () => {
+    const dir = mkdtempSync(path.join(root, '.test-data/registry-reasons-'));
+    try {
+      for (const [auths, reason] of [
+        [{}, 'missing-authority'],
+        [{ 'ccr.ccs.tencentyun.com': [] }, 'invalid-auth-entry'],
+        [{ 'ccr.ccs.tencentyun.com': { auth: Buffer.from('user:password').toString('base64'), username: 'user', password: 'PRIVATE_SENTINEL' } }, 'inconsistent-authority-credentials'],
+      ] as const) {
+        try { installRegistryConfig(JSON.stringify({ auths }), '{}', path.join(dir, 'reject.json')); throw new Error('accepted'); }
+        catch (error) { expect(String(error)).toContain(reason); expect(String(error)).toContain('authorized-config-rejected'); expect(String(error)).not.toContain('PRIVATE_SENTINEL'); }
+      }
+      const output = path.join(dir, 'empty-password.json');
+      installRegistryConfig(JSON.stringify({ auths: { 'ccr.ccs.tencentyun.com': { username: 'user', password: '' } } }), '{}', output);
+      expect(JSON.parse(readFileSync(output, 'utf8')).auths['ccr.ccs.tencentyun.com'].auth).toBe(Buffer.from('user:').toString('base64'));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('filters only exact registry authority and never exposes malformed auth bytes', () => {
     const base = path.join(root, '.test-data/installed-native-registry-test');
     mkdirSync(base, { recursive: true, mode: 0o700 });
@@ -97,7 +156,7 @@ describe('authorized namespace pull admission', () => {
     try {
       const output = path.join(dir, 'config.json');
       installRegistryConfig(JSON.stringify({ auths: {
-        'ccr.ccs.tencentyun.com': { auth: 'AUTHORIZED_SENTINEL' },
+        'ccr.ccs.tencentyun.com': { auth: Buffer.from('authorized:fixture').toString('base64') },
         'ccr.ccs.tencentyun.com.attacker.example': { auth: 'FOREIGN_SENTINEL' },
       } }), JSON.stringify({ auths: { 'ghcr.io': { auth: 'GHCR_SENTINEL' }, other: { auth: 'FOREIGN_SENTINEL' } } }), output);
       expect(Object.keys(JSON.parse(readFileSync(output, 'utf8')).auths)).toEqual(['ccr.ccs.tencentyun.com', 'ghcr.io']);
