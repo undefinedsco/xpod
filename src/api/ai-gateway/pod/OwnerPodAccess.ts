@@ -218,20 +218,34 @@ export class OwnerPodAccess implements PodAccessFetchProvider {
 /**
  * Whether an exchanged token names the owner it was requested for.
  *
- * The issuer and the deployment may spell the same WebID with or without its fragment (`#me`),
- * so compare the WebID document. Anything that names a different document is a different owner
+ * A WebID is a full URI, so identity is the exact URI, fragment included: two fragments on the
+ * same document (`#alice` and `#bob`) are different principals. The only tolerated variance is
+ * the fragment the issuer itself normalized away - some issuers answer with the WebID document
+ * (`.../card`) when the requested principal was `.../card#me`, which is the same principal and
+ * the same resource. That one alias is proven by an explicit allowlist, never by string stripping:
+ * a recognized fragmentless document only matches the exact `#me` principal of that document.
+ *
+ * Anything else - a different document, or an arbitrary different fragment - is a different owner
  * and is rejected.
  */
+const WEB_ID_PROFILE_FRAGMENT = '#me';
+
 function sameWebIdOwner(sessionWebId: string | undefined, owner: string): boolean {
   if (!sessionWebId) {
     return true;
   }
-  return stripWebIdFragment(sessionWebId) === stripWebIdFragment(owner);
+  if (sessionWebId === owner) {
+    return true;
+  }
+  return canonicalOwnerWebId(sessionWebId) === canonicalOwnerWebId(owner);
 }
 
-function stripWebIdFragment(webId: string): string {
-  const hashIndex = webId.indexOf('#');
-  return hashIndex >= 0 ? webId.slice(0, hashIndex) : webId;
+/** Map a recognized fragmentless WebID document to the canonical `#me` principal it denotes. */
+function canonicalOwnerWebId(webId: string): string {
+  if (webId.includes('#')) {
+    return webId;
+  }
+  return `${webId}${WEB_ID_PROFILE_FRAGMENT}`;
 }
 
 /**

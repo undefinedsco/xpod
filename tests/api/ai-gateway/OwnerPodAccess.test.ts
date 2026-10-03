@@ -263,6 +263,39 @@ describe('OwnerPodAccess', () => {
     expect(tokenRequests).toHaveLength(0);
     expect(podRequests[0].authorization).toBe('Bearer session-token');
   });
+
+  it('treats a different fragment on the same document as a different owner', async () => {
+    const sameDocument = 'https://pod.example/alice/profile/card#alice';
+    const { access, podRequests } = createHarness({
+      // The issuer bound the token to #alice, but the caller asked for #me on the same document.
+      tokenResponse: () => Response.json({
+        access_token: 'access-token-1',
+        token_type: 'DPoP',
+        expires_in: 300,
+        webid: sameDocument,
+      }),
+    });
+
+    const podFetch = access.getPodFetch(OWNER, { auth: callerAuth() });
+    await expect(podFetch).rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:invalid_response`);
+    expect(podRequests).toHaveLength(0);
+  });
+
+  it('accepts the issuer\'s own fragmentless document for the #me principal it denotes', async () => {
+    const fragmentless = 'https://pod.example/alice/profile/card';
+    const { access, podRequests } = createHarness({
+      tokenResponse: () => Response.json({
+        access_token: 'access-token-1',
+        token_type: 'DPoP',
+        expires_in: 300,
+        webid: fragmentless,
+      }),
+    });
+
+    const podFetch = await access.getPodFetch(OWNER, { auth: callerAuth() });
+    expect((await podFetch!(POD_RESOURCE)).status).toBe(200);
+    expect(podRequests).toHaveLength(1);
+  });
 });
 
 describe('OwnerPodAccess task credentials', () => {

@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { createInterface } from 'node:readline';
+import { getLoggerFor } from 'global-logger-factory';
 import type { WorkspaceRef } from '../workspace/types';
 import { GitWorktreeService } from '../chatkit/runtime/GitWorktreeService';
 import { SandboxFactory } from '../../terminal/sandbox';
@@ -138,6 +139,7 @@ type WarmRuntime = {
 export class PiAgentRuntimeDriver implements RunExecutionBackend {
   private static sdkPromise?: Promise<PiSdk>;
 
+  private readonly logger = getLoggerFor(this);
   private readonly git = new GitWorktreeService();
   private readonly warmRuntimes = new Map<string, Promise<WarmRuntime>>();
   private readonly solidfs: SolidFS;
@@ -317,8 +319,10 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         const lastAssistant = (session?.messages ?? []).slice().reverse().find(message => message.role === 'assistant');
         if (!pausedForApproval && !input.signal?.aborted && lastAssistant?.role === 'assistant' &&
             (lastAssistant.stopReason === 'error' || lastAssistant.stopReason === 'aborted')) {
-          // Provider errorMessage can contain credentials or response bodies; expose only the classification.
-          queue.push({ type: 'error', message: `Pi assistant ended with ${lastAssistant.stopReason}` });
+          // Provider errorMessage can contain credentials or response bodies. Expose only a stable
+          // classification plus allowlisted wire facts (protocol/provider/model), never the body.
+          this.logAssistantFailure(lastAssistant);
+          queue.push({ type: 'error', message: `Pi assistant ended with ${lastAssistant.stopReason}${describeAssistantFailure(lastAssistant)}` });
         } else if (!streamState.assistantTextStreamed && streamState.lastAssistantText.length > 0) {
           queue.push({ type: 'text', text: streamState.lastAssistantText });
         }
@@ -1010,6 +1014,22 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     return error instanceof Error ? error.message : String(error);
   }
 
+  /**
+   * Record a failed assistant turn with allowlisted wire facts only.
+   *
+   * The provider `errorMessage` can contain credentials, prompts, or response bodies, so it never
+   * leaves this method. What is kept is enough to place the failure: the protocol/provider/model
+   * and a stable coarse classification derived from the shape of the message (never its text).
+   */
+  private logAssistantFailure(message: { api?: string; provider?: string; model?: string; errorMessage?: string }): void {
+    this.logger.warn(`Pi assistant turn failed ${JSON.stringify({
+      api: safeLabel(message.api),
+      provider: safeLabel(message.provider),
+      model: safeLabel(message.model),
+      class: classifyAssistantFailure(message.errorMessage),
+    })}`);
+  }
+
   private startupErrorToEvent(error: unknown): AgentRuntimeEvent {
     if (error instanceof WaitingRunnerError) {
       return {
@@ -1048,6 +1068,58 @@ function pushMetadataTag(tags: string[], key: string, value: unknown): void {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A short, non-secret protocol/provider/model label for logs. */
+function safeLabel(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= 64 ? trimmed : undefined;
+}
+
+/**
+ * Coarse classification of a provider failure, derived only from the shape of the message.
+ *
+ * Never returns any part of the message text: it exists so an operator can tell an auth failure
+ * from a rate limit from a transport problem without reading a body that may hold credentials.
+ */
+export function classifyAssistantFailure(errorMessage: unknown): string {
+  if (typeof errorMessage !== 'string' || errorMessage.trim().length === 0) {
+    return 'unclassified';
+  }
+  const text = errorMessage.toLowerCase();
+  const status = text.match(/\b(4\d\d|5\d\d)\b/)?.[1];
+  if (status === '401' || status === '403' || /\bunauthoriz|\bforbidden|invalid[_ ]?api[_ ]?key|\binvalid[_ ]?token\b|\bauthentication\b/.test(text)) {
+    return 'auth';
+  }
+  if (status === '429' || /rate[_ ]?limit|too many requests|\bquota\b/.test(text)) {
+    return 'rate_limited';
+  }
+  if (status === '404' || /model[_ ]?not[_ ]?found|\bdoes not exist\b|unknown[_ ]?model/.test(text)) {
+    return 'model_unavailable';
+  }
+  if (status !== undefined && status.startsWith('4')) {
+    return `client_${status}`;
+  }
+  if (status !== undefined && status.startsWith('5')) {
+    return `server_${status}`;
+  }
+  if (/timeout|timed out|\babort/.test(text)) {
+    return 'timeout';
+  }
+  if (/fetch failed|network|econnrefused|econnreset|socket|dns|enotfound/.test(text)) {
+    return 'transport';
+  }
+  return 'provider_error';
+}
+
+/** Allowlisted wire facts appended to a failed-turn message; never the provider body. */
+function describeAssistantFailure(message: { api?: string; provider?: string; model?: string; errorMessage?: string }): string {
+  const parts = [`class=${classifyAssistantFailure(message.errorMessage)}`];
+  if (safeLabel(message.api)) parts.push(`api=${safeLabel(message.api)}`);
+  if (safeLabel(message.provider)) parts.push(`provider=${safeLabel(message.provider)}`);
+  if (safeLabel(message.model)) parts.push(`model=${safeLabel(message.model)}`);
+  return ` (${parts.join(', ')})`;
 }
 
 export const PI_AGENT_WORKER_EVENT_PREFIX = 'XPOD_AGENT_EVENT ';

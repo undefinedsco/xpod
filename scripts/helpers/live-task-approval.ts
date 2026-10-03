@@ -36,6 +36,11 @@ export interface LiveTaskProducerFailure {
     | 'provider_error' | 'provider_aborted' | 'sandbox_unavailable' | 'worker_start_failed'
     | 'worker_exited' | 'execution_state_error';
   httpStatus?: number;
+  /** Safe coarse provider classification produced by the runner (never upstream text). */
+  providerClass?: string;
+  providerApi?: string;
+  providerName?: string;
+  providerModel?: string;
 }
 
 /** Never copy error text: upstream messages may include credentials, bodies or URLs. */
@@ -56,11 +61,21 @@ function recordProducerFailure(run: LiveTaskRun, evidence?: LiveTaskCaseEvidence
   ];
   const statuses = new Set(Array.from(text.matchAll(/\b(?:HTTP(?: status)?|status(?: code)?)\s*[:=]?\s*([45]\d{2})(?!\d)/giu),
     match => Number(match[1])));
+  // The runner appends allowlisted wire facts as `(class=..., api=..., provider=..., model=...)`.
+  // Only that fixed vocabulary is copied; the provider body is never in these tokens.
+  const token = (key: string): string | undefined => {
+    const match = text.match(new RegExp(`\\b${key}=([A-Za-z0-9_.:\\-]{1,64})`, 'u'));
+    return match?.[1];
+  };
   evidence.producerFailure = {
     status: run.status as LiveTaskProducerFailure['status'], errorPresent,
     errorLength: Math.min(text.length, 1_000_000),
     errorClass: classes.find(([pattern]) => pattern.test(text))?.[1] ?? (errorPresent ? 'unknown' : 'none'),
     ...(statuses.size === 1 ? { httpStatus: [...statuses][0] } : {}),
+    ...(token('class') ? { providerClass: token('class') } : {}),
+    ...(token('api') ? { providerApi: token('api') } : {}),
+    ...(token('provider') ? { providerName: token('provider') } : {}),
+    ...(token('model') ? { providerModel: token('model') } : {}),
   };
 }
 

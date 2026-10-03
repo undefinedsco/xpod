@@ -56,6 +56,18 @@ describe('live Task acceptance evidence gates (unit checks, not live proof)', ()
     expect(evidence.producerFailure).toEqual({ status: 'failed', errorClass, errorPresent, errorLength });
     expect(JSON.stringify(evidence)).not.toContain('SECRET');
   });
+  it('copies the runner\'s allowlisted provider classification without any upstream text', () => {
+    const secret = 'SYNTHETIC_CREDENTIAL_MARKER';
+    const error = `Pi assistant ended with error (class=auth, api=openai-completions, provider=xpod, model=deepseek-v4-pro) body=${secret} key=sk-${secret}`;
+    const evidence: LiveTaskCaseEvidence = { kind: 'approved', ok: false };
+    expect(() => requireLiveTerminal({ ...run, status: 'failed', error }, run.id, 'completed', evidence))
+      .toThrow('expected completed');
+    expect(evidence.producerFailure).toMatchObject({
+      status: 'failed', errorClass: 'provider_error',
+      providerClass: 'auth', providerApi: 'openai-completions', providerName: 'xpod', providerModel: 'deepseek-v4-pro',
+    });
+    expect(JSON.stringify(evidence)).not.toContain(secret);
+  });
   it('rejects ambiguous duplicate approvals', () => {
     expect(() => requireLiveCheckpoint(run, [approval, { ...approval, id: 'other' }], target, owner)).toThrow('Multiple approvals');
   });

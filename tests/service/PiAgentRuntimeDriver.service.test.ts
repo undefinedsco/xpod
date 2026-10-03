@@ -6,7 +6,7 @@ import type { StreamFn } from '@mariozechner/pi-agent-core';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@mariozechner/pi-ai';
 import * as pi from '@mariozechner/pi-coding-agent';
 import { approvalResource, sessionResource, type ApprovalInsert, type SessionInsert } from '@undefineds.co/models';
-import { PiAgentRuntimeDriver } from '../../src/api/runs/PiAgentRuntimeDriver';
+import { PiAgentRuntimeDriver, classifyAssistantFailure } from '../../src/api/runs/PiAgentRuntimeDriver';
 import type { AgentRuntimeEvent } from '../../src/api/runs/AgentRuntimeTypes';
 import type { RunExecutionInput } from '../../src/api/runs/RunExecutionBackend';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
@@ -129,13 +129,31 @@ async function runTask(app: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe('Pi assistant terminal status', () => {
+  describe('provider failure classification', () => {
+    it.each([
+      ['{"error":{"message":"Unauthorized","status":401}}', 'auth'],
+      ['openai-completions 403 Forbidden: invalid api key', 'auth'],
+      ['429 Too Many Requests: rate limit exceeded', 'rate_limited'],
+      ['model_not_found: unknown model xpod-gateway/model', 'model_unavailable'],
+      ['400 Bad Request: malformed tool schema', 'client_400'],
+      ['502 Bad Gateway from upstream', 'server_502'],
+      ['request timed out after 30000ms', 'timeout'],
+      ['fetch failed', 'transport'],
+      ['upstream produced an unexpected stop', 'provider_error'],
+      ['', 'unclassified'],
+      [undefined, 'unclassified'],
+    ])('classifies %j as %s without returning message text', (message, expected) => {
+      expect(classifyAssistantFailure(message)).toBe(expected);
+    });
+  });
+
   it.each(['error', 'aborted'] as const)('fails a resolved SDK prompt with final stopReason %s without exposing upstream prose', async stopReason => {
     const app = await fixture(response(stopReason, '', privateProviderError));
     try {
       const events = await drain(app);
       expect(app.resolvedPrompts()).toBe(1);
       expect(app.lifecycle).toEqual(expect.arrayContaining(['message_end', 'turn_end', 'agent_end']));
-      expect(events).toEqual([{ type: 'error', message: `Pi assistant ended with ${stopReason}` }]);
+      expect(events).toEqual([{ type: 'error', message: expect.stringContaining(`Pi assistant ended with ${stopReason}`) }]);
       expect(JSON.stringify(events)).not.toContain(privateProviderError);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
@@ -149,7 +167,7 @@ describe('Pi assistant terminal status', () => {
       });
     });
     try {
-      expect(await drain(app)).toEqual([{ type: 'error', message: 'Pi assistant ended with error' }]);
+      expect(await drain(app)).toEqual([{ type: 'error', message: expect.stringContaining('Pi assistant ended with error') }]);
       expect(app.resolvedPrompts()).toBe(1);
       expect(app.lifecycle).toContain('agent_end');
       // The user message ends normally; the SDK catch path never emits an assistant message_end.
@@ -178,7 +196,7 @@ describe('Pi assistant terminal status', () => {
   it('reports one safe failure after the real SDK exhausts its internal retry', async () => {
     const app = await fixture(response('error', '', '429 synthetic refusal; credential=fixture-only'));
     try {
-      expect(await drain(app)).toEqual([{ type: 'error', message: 'Pi assistant ended with error' }]);
+      expect(await drain(app)).toEqual([{ type: 'error', message: expect.stringContaining('Pi assistant ended with error') }]);
       expect(app.lifecycle.filter(type => type === 'agent_end')).toHaveLength(2);
       expect(app.lifecycle).toContain('auto_retry_end');
       expect(app.commit).not.toHaveBeenCalled();
@@ -240,7 +258,7 @@ describe('Pi assistant terminal status', () => {
     try {
       const { store, context, run } = await runTask(app);
       await vi.waitFor(async () => expect((await store.loadRun(run.id, context)).status).toBe('failed'));
-      expect(await store.loadRun(run.id, context)).toMatchObject({ status: 'failed', error: 'Pi assistant ended with error' });
+      expect(await store.loadRun(run.id, context)).toMatchObject({ status: 'failed', error: expect.stringContaining('Pi assistant ended with error') });
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
     } finally { await app.cleanup(); }
@@ -287,7 +305,7 @@ describe('Pi assistant terminal status', () => {
       expect(app.sessions[0].isStreaming).toBe(true);
       await finishFinalStream();
       await vi.waitFor(async () => expect((await store.loadRun(run.id, context)).status).toBe('failed'));
-      expect(await store.loadRun(run.id, context)).toMatchObject({ status: 'failed', error: 'Pi assistant ended with error' });
+      expect(await store.loadRun(run.id, context)).toMatchObject({ status: 'failed', error: expect.stringContaining('Pi assistant ended with error') });
       expect(calls).toBe(3);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
@@ -321,7 +339,7 @@ describe('Pi assistant terminal status', () => {
     try {
       const { store, context, run } = await runTask(app);
       await vi.waitFor(async () => expect((await store.loadRun(run.id, context)).status).toBe('failed'));
-      expect((await store.loadRun(run.id, context)).error).toBe('Pi assistant ended with error');
+      expect((await store.loadRun(run.id, context)).error).toContain('Pi assistant ended with error');
       expect(calls).toBe(4);
       expect(app.lifecycle.filter(type => type === 'auto_retry_start')).toHaveLength(2);
       expect(app.commit).not.toHaveBeenCalled();
