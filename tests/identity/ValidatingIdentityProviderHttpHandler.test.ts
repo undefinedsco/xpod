@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BasicRepresentation,
   RepresentationMetadata,
@@ -115,6 +115,7 @@ const createHandler = ({
 };
 
 describe('ValidatingIdentityProviderHttpHandler', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
   it('routes a scoped interaction only after native validation matches its path', async () => {
     const { handler, providerFactory, interactionHandler } = createHandler();
     const interactionDetails = vi.fn().mockResolvedValue({ uid: 'transaction-a' });
@@ -341,11 +342,43 @@ describe('ValidatingIdentityProviderHttpHandler', () => {
     const WEB_ID = 'https://id.example/ada/profile/card#me';
     const sessionRequest = { headers: { authorization: 'DPoP token', dpop: 'proof' } } as any;
 
+    it.each([
+      ['extractor_missing', {}],
+      ['verification_failed', { sessionError: 'private token proof cookie details' }],
+      ['webid_missing', { sessionCredentials: { client: { clientId: XPOD_DESKTOP_CLIENT_ID } } }],
+      ['client_missing', { sessionCredentials: { agent: { webId: WEB_ID } } }],
+      ['client_not_host', { sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: 'https://third-party.example/' } } }],
+      ['webid_not_linked', { sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: XPOD_DESKTOP_CLIENT_ID } } }],
+    ] as const)('reports only the stable %s reason while remaining anonymous', async (reason, options) => {
+      const { handler, interactionHandler } = createHandler(options);
+      const warning = vi.spyOn(handler['logger'], 'warn').mockImplementation(() => handler['logger']);
+      const debug = vi.spyOn(handler['logger'], 'debug').mockImplementation(() => handler['logger']);
+
+      const response = await handler.handle({ operation: createOperation(), request: sessionRequest, response: {} as any });
+
+      expect(response.statusCode).toBe(200);
+      expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: undefined }));
+      expect(warning.mock.calls).toEqual([[`Host session Account authorization rejected: ${reason}`]]);
+      expect(JSON.stringify(debug.mock.calls)).not.toContain('private token proof cookie details');
+      expect(JSON.stringify(debug.mock.calls)).not.toContain(WEB_ID);
+    });
+
+    it.each([{}, { authorization: 'Bearer token' }])('does not log a rejection for non-DPoP requests', async (headers) => {
+      const { handler } = createHandler();
+      const warning = vi.spyOn(handler['logger'], 'warn').mockImplementation(() => handler['logger']);
+
+      await handler.handle({ operation: createOperation(), request: { headers } as any, response: {} as any });
+
+      expect(warning).not.toHaveBeenCalled();
+    });
+
     it('names the Account that owns the session WebID without an Account cookie', async () => {
       const { handler, accountStorage, interactionHandler, sessionExtractor } = createHandler({
         sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: XPOD_DESKTOP_CLIENT_ID } },
         webIdLinks: { [WEB_ID]: 'account-7' },
+        accountExists: true,
       });
+      const warning = vi.spyOn(handler['logger'], 'warn').mockImplementation(() => handler['logger']);
 
       const response = await handler.handle({
         operation: createOperation(),
@@ -354,8 +387,10 @@ describe('ValidatingIdentityProviderHttpHandler', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      expect(warning).not.toHaveBeenCalled();
       expect(sessionExtractor?.handleSafe).toHaveBeenCalledWith(sessionRequest);
       expect(accountStorage.find).toHaveBeenCalledWith('webIdLink', { webId: WEB_ID });
+      expect(accountStorage.has).toHaveBeenCalledWith('account', 'account-7');
       expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'account-7' }));
     });
 
@@ -443,11 +478,50 @@ describe('ValidatingIdentityProviderHttpHandler', () => {
         sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: 'https://host.example/client.json' } },
         webIdLinks: { [WEB_ID]: 'account-7' },
         hostClientIds: ['https://host.example/client.json'],
+        accountExists: true,
       });
 
       await handler.handle({ operation: createOperation(), request: sessionRequest, response: {} as any });
 
       expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'account-7' }));
+    });
+
+    it('keeps a link to a deleted Account anonymous', async () => {
+      const { handler, interactionHandler, accountStorage } = createHandler({
+        sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: XPOD_DESKTOP_CLIENT_ID } },
+        webIdLinks: { [WEB_ID]: 'deleted-account' },
+      });
+      await handler.handle({ operation: createOperation(), request: sessionRequest, response: {} as any });
+      expect(accountStorage.has).toHaveBeenCalledWith('account', 'deleted-account');
+      expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: undefined }));
+    });
+
+    it('rejects a WebID linked to several Accounts instead of selecting the first', async () => {
+      const { handler, interactionHandler, accountStorage } = createHandler({
+        accountExists: true,
+        sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: XPOD_DESKTOP_CLIENT_ID } },
+      });
+      accountStorage.find.mockResolvedValue([
+        { id: 'link-a', webId: WEB_ID, accountId: 'account-a' },
+        { id: 'link-b', webId: WEB_ID, accountId: 'account-b' },
+      ]);
+      await handler.handle({ operation: createOperation(), request: sessionRequest, response: {} as any });
+      expect(accountStorage.has).not.toHaveBeenCalled();
+      expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: undefined }));
+    });
+
+    it('checks the current link and Account existence again on the next request', async () => {
+      const { handler, interactionHandler, accountStorage } = createHandler({
+        accountExists: true,
+        sessionCredentials: { agent: { webId: WEB_ID }, client: { clientId: XPOD_DESKTOP_CLIENT_ID } },
+        webIdLinks: { [WEB_ID]: 'account-7' },
+      });
+      await handler.handle({ operation: createOperation(), request: sessionRequest, response: {} as any });
+      accountStorage.find.mockResolvedValue([]);
+      await handler.handle({ operation: createOperation(), request: sessionRequest, response: {} as any });
+      expect(accountStorage.find).toHaveBeenCalledTimes(2);
+      expect(interactionHandler.handleSafe.mock.calls[0]?.[0]).toMatchObject({ accountId: 'account-7' });
+      expect(interactionHandler.handleSafe.mock.calls[1]?.[0]).toMatchObject({ accountId: undefined });
     });
   });
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Post-install script to patch jose for Bun compatibility.
- * Changes jose's "bun" exports from dist/browser to dist/node/esm
+ * Changes jose's "bun" exports to the matching Node ESM/CJS implementation
  * to avoid the "non-extractable CryptoKey" issue.
  */
 
@@ -66,8 +66,10 @@ try {
       continue;
     }
 
-    // Replace all bun exports from browser to node/esm.
-    content = content.replace(/"bun": "\.\/dist\/browser\//g, '"bun": "./dist/node/esm/');
+    // Preserve Node crypto while letting synchronous Solid dependencies require
+    // CJS. Pointing both loaders at ESM can fail while its import graph is loading.
+    content = content.replace(/"bun": "\.\/dist\/(?:browser|node\/esm)\/([^"\n]+)"/g,
+      (_match, entry) => `"bun": { "import": "./dist/node/esm/${entry}", "require": "./dist/node/cjs/${entry}" }`);
 
     if (content !== original) {
       fs.writeFileSync(josePkgPath, content);
