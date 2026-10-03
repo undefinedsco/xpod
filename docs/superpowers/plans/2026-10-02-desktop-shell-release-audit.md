@@ -153,3 +153,16 @@
 - 子代理按用户新指令改为 GPT-6.1 Sol；前一组 OpenCode Go B 因 API 连接错误终止，非 429。效果与效率比较基于本任务的交接、返工和验证证据，不作为同任务受控速度或订阅额度对比。
 
 - 完整集成失败证据保留：第一次遇到 macOS 合盖睡眠约 989 秒，Identity 启动 hook 超时并出现原有 autoOpen 未处理拒绝；第二次保持唤醒后 Identity 与原预算 Matrix 长流程通过，ChatKit 两项仍超出既有 15 秒预算。最终按现有单 fork 配置完成完整 lite/full：lite 32 文件、162 项通过（4 文件、16 项跳过）；full 7 文件、62 项通过；完整命令退出 0。未放宽断言或预算；并发配置下的 ChatKit 延迟敏感性仍保留为风险。19 项新候选门禁、正式包自更新及正式发布仍待完成。
+
+## rc.229 实际候选证据与剩余阻断
+
+- `3dd77d648b6484382ad877451adb8ffba518e693` 已无 force 原子推进 feature 与 release/0.4.22。Ubuntu CI `37103286195` 的 unit、Bun、lite/full 与 18 个 Node/Bun 消费者 smoke 均通过。RC `37103282424` 原生运行时、桌面构建与消费者构建通过。
+- 同一步内 runtime、identity、真实 Pod 读写、Gateway Key 与鉴权、AI Connections、模型列表（HTTP 200、一项模型）和实际 Chat（HTTP 200、有有效内容）均通过。唯一失败为 Task `approved:checkpoint`：生产者在请求审批前持久化为 completed。不能将步骤名误读成登录或 Chat 故障；最终统一 acceptance manifest 因该失败未生成，不能将 18 项独立通过等同于 19 项候选全部接受。
+- 官方 v0.4.20 到真实打包 0.4.22-rc.229 的自更新实际运行通过；五个生命周期事件、不同新进程 PID、全部自有进程与临时数据清理均有证据。独立下载候选实际 ZIP，sha256、sha512、大小与 sourceSha 均与证据匹配，官方旧 ZIP provenance 匹配。
+- 实际候选 app 的 ICNS 与源资源逐字节一致（sha256 `ad16e479…`）；app.asar 内 Dock PNG 为 1024×1024，摘要 `415585c5…` 与源资源一致。此结论不等于已安装应用或 Dock 缓存已经更新。
+- 只读诊断发现 Pi SDK 可用正常 resolve 的 assistant error 事件表达上游失败；驱动目前丢弃该错误，可能使 TaskMaterializer 将失败记为 completed。该结构缺口可独立验证，但本次 CI 没有原始 stopReason/tool-call 证据，尚不能断言它就是 rc.229 的具体根因。按原断言和预算补回归修复后，仍需新 exact-SHA 真实审批门禁。
+- 正式 tag、npm latest、生产晋级和用户已安装桌面均未修改。
+
+- 独立审查另发现 SDK retry 在 toolUse 的 message_end 即解除 prompt 等待；真实 SDK 复现了“429 → read 工具 → 最终 error”时 prompt 已 resolve、Agent 仍在 streaming，Task 因驱动提前关闭事件流而错记 completed。相同回归的“429 → request_approval”通过，不能把未复现的审批丢失归因当作本次 RC 原因。修复按 SDK 自身运行与 retry promise 等待真实终态，审批和调用方取消仍走原有提前结束路径。根代理主动停止旧冻结版本的完整集成（此前 11 文件通过、无失败），仅向已核对的自有 Vitest PID 发 SIGINT，进程组已清空；新源码冻结后须重新完整验证。
+
+- Pi 最终修复仅使用公开 Agent.waitForIdle 和既有事件订阅中的单个生命周期等待：覆盖 SDK retry 提前返回、工具后错误/再重试耗尽、无 owner abort 的异常中止；正常审批、重试恢复、owner 取消保持。13 项真实 installed Agent/AgentSession 与实际 TaskService 消费回归，以及相邻六文件共 84 项通过；构建和测试类型检查通过，新增测试 lint 为零、生产文件原有六项 lint 未增加。独立只读审查核对 SDK 事件/状态更新顺序、无空转、取消和审批唤醒、监听与夹具清理后通过；最终完整集成已通过：lite 32 文件/162 项、full 7 文件/62 项，完整命令退出 0；使用现有单 fork 配置，断言与预算保持原值。仍须新 exact-SHA 候选真实审批证明。

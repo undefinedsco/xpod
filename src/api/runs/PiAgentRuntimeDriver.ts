@@ -220,8 +220,10 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     let failed = false;
     let releaseApprovalTool: (() => void) | undefined;
     let pausedForApproval = false;
+    let releaseLifecycleWait: (() => void) | undefined;
     const onAbort = () => {
       failed = true;
+      releaseLifecycleWait?.();
       void session?.abort().catch(() => undefined);
       queue.close();
     };
@@ -257,6 +259,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
           await workspace!.commit();
           completed = true;
           pausedForApproval = true;
+          releaseLifecycleWait?.();
           const paused = new Promise<never>((_resolve, reject) => {
             const finish = () => { signal?.removeEventListener('abort', finish); reject(new Error('Run paused for owner approval')); };
             releaseApprovalTool = finish;
@@ -292,10 +295,31 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       };
       const unsubscribe = session.subscribe((event) => {
         this.projectPiEvent(event, queue, streamState);
+        if (event.type === 'agent_start' || event.type === 'auto_retry_end') releaseLifecycleWait?.();
       });
 
-      void session.prompt(input.prompt, { expandPromptTemplates: false, source: 'rpc' }).then(() => {
-        if (!streamState.assistantTextStreamed && streamState.lastAssistantText.length > 0) {
+      void session.prompt(input.prompt, { expandPromptTemplates: false, source: 'rpc' }).then(async () => {
+        // A recovered retry can resolve prompt before its tools and subsequent turns finish.
+        // Wait on SDK lifecycle promises; approval/cancellation closes the queue and aborts the session.
+        while (!pausedForApproval && !input.signal?.aborted && (session?.isStreaming || session?.isRetrying)) {
+          if (session?.isStreaming) {
+            await session.agent.waitForIdle();
+          } else {
+            await new Promise<void>(resolve => {
+              releaseLifecycleWait = resolve;
+              // Register before checking state so an already-started retry cannot lose its wakeup.
+              if (pausedForApproval || input.signal?.aborted || !session?.isRetrying || session.isStreaming) resolve();
+            });
+            releaseLifecycleWait = undefined;
+          }
+        }
+        // Pi also resolves failed prompts, including errors with no message_end.
+        const lastAssistant = (session?.messages ?? []).slice().reverse().find(message => message.role === 'assistant');
+        if (!pausedForApproval && !input.signal?.aborted && lastAssistant?.role === 'assistant' &&
+            (lastAssistant.stopReason === 'error' || lastAssistant.stopReason === 'aborted')) {
+          // Provider errorMessage can contain credentials or response bodies; expose only the classification.
+          queue.push({ type: 'error', message: `Pi assistant ended with ${lastAssistant.stopReason}` });
+        } else if (!streamState.assistantTextStreamed && streamState.lastAssistantText.length > 0) {
           queue.push({ type: 'text', text: streamState.lastAssistantText });
         }
         queue.close();
@@ -320,6 +344,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       yield this.startupErrorToEvent(error);
     } finally {
       input.signal?.removeEventListener('abort', onAbort);
+      releaseLifecycleWait?.();
       releaseApprovalTool?.();
       if (!completed || pausedForApproval) await session?.abort().catch(() => undefined);
       session?.dispose();
