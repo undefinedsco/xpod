@@ -221,3 +221,11 @@ Linux ARM64 独立源码包包含2,017个文件；在 `--network none` 的 Debia
 - 包内回归：`packages/xpod-cli` 32 passed / 0 failed / 250 assertions；源码、测试与包类型检查均退出0。完整 `bun run test:integration` 退出0：lite 160 passed / 15 skipped、full 60 passed / 0 skipped，`AgentDirectoryProtocol` local 10项（lite 5 skip）与 cloud 10项均通过；owned Docker 栈/卷/网络已清理。
 
 这些是 HTTP/auth 夹具上的真实 OS 挂载与 source-bound native 测试，**不是**当前已部署 Gateway、实际用户账号/Pod 或物理 NAS 硬件的验收。此前内嵌 Bun/JSC 候选、对应材料清单与日志仍为历史证据，不适用于当前外部运行时产物；公开准入、发布渠道与 clean-commit 安装仍保持未完成。
+
+## 2026-10-04 状态更新（账号 B / deepseek-v4.1-flash）
+
+- 原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) 在 `darwin-arm64` 与 `linux-arm64` 两个 ARM runner 串行实际成功（事件 push，HEAD `8d4983c96`）：官方在线导出 → `--verify-only` → `--frozen` 离线重建完整 Rust 60（58 通过 / 2 既有 ignore / 0 filtered）→ 新 kit5 helper/源码绑定打包 → 解压安装 `install-verified`。
+- source-kit `84c5d586…`；helper darwin `2d4a7360…` / linux `88c299dd…`；archive darwin `6cdd9535…` / linux `1408ec6b…`；编译器 nightly-2026-09-30（rustc commit `5c543b0b…`）。
+- 原 `bun run test:integration`（固定 Bun 1.4.2，脱离 shell 生命周期）实际 `Popen.wait` exit 0/null、399.152s，preflight 30、Lite 163+16skip、Full 63；8920 正文与外部 native 五文件前后一致，专属进程/容器/卷已清理。
+- 打包消费端：Node 22.21.1/npm 与 Bun 1.4.2 对同一候选 tar（`669222191c…`）实际通过，`passed:true`，7/7 bundle bytesMatched。
+- 仍未验收：真实 OS 挂载（macOS NFS / Linux Node22-without-Bun FUSE）与 64/512/1024MiB admission、SIGKILL 恢复/GC、dirty412 负载；live Gateway、公开发布。CCR authority 缺失使 Private17/SealOS 未运行。本段仅为状态记录，历史失败证据保持不变。

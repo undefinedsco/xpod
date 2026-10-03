@@ -89,3 +89,9 @@ DeepSeek 的 24 路径任务表明它能执行批量改动；范围明确、验�
 原始日志与 producer/哈希回执保存在本次工作区 ignored `.test-data/agent-directory-workers/` 的 `opencode-go-b-current-release-*`、`gpt-6.1-sol-output-boundary`、`root-model-worker-comparison` 目录，均按私密证据管理，不随仓库公开。后续私有 QLever 合同与原生客户端任务完成后，追加样本，不改写已有结果。
 
 最终修复版原始完整集成 producer 实际 0/null、315.520 秒：前置 30、Lite 163 通过／16 跳过、Full 63 全通过。负责人独立验证 8,919 个正文与前后快照、闭合日志及专属进程／容器／卷缺项；这仍是隔离集成证据，不代表新 RC 或 SealOS 已通过。
+
+## 2026-10-04 状态更新（账号 B / deepseek-v4.1-flash）
+
+- 当前源码（HEAD `59224e54` / native `8d4983c96`）的原固定 Bun 1.4.2 完整集成在本机以脱离 shell 生命周期的监督器实际 `Popen.wait` exit 0/null、399.152s：preflight 30、Lite 163+16skip、Full 63；8,920 正文与外部 native 五文件前后一致，专属进程/容器/卷已清理。
+- 原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) 两 ARM runner 串行成功：在线导出 → `--verify-only` → `--frozen` 重建 60（58/2/0）→ kit5 打包 → `install-verified`。
+- 仍未验收：真实 OS 挂载（macOS NFS / Linux FUSE）、live Gateway、发布。历史失败证据与 Sol 记录保持不变。

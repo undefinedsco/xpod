@@ -155,3 +155,10 @@ rclone 为 MIT；AgentFS SDK manifest / README 声明 MIT，但固定树缺 READ
 先形成明确选择与已验收平台清单，再准备独立客户端安装产物和 SHA-256 manifest；安装后以产物执行验收。Xpod 服务端新增接口同样需完整回归及真实 Gateway 认证/Pod 读写证据。真实 Gateway 或目标平台未验证不能标成通过。
 
 独立 CLI 预览已通过 GitHub Release 公开，具体源码、附件和验收见 [发行记录](xpod-cli-preview-release.md)。服务发布继续沿用 `docs/RELEASE.md` 的 RC 与 exact commit/digest 提升流程；新原生后端须完成实际 Gateway/Pod、同轮重启、固定负载及已发布客户端挂载复验后才可晋级。客户端预览公开不等于服务正式发布完成。
+
+## 2026-10-04 状态更新（账号 B / deepseek-v4.1-flash）
+
+- 原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) 在 `darwin-arm64` 与 `linux-arm64` 两 ARM runner 串行实际成功（HEAD `8d4983c96`）：官方在线导出 → `--verify-only` → `--frozen` 离线重建完整 Rust 60（58 通过 / 2 既有 ignore / 0 filtered）→ 新 kit5 helper/源码绑定打包 → 解压安装 `install-verified`。
+- source-kit `84c5d586…`；helper darwin `2d4a7360…` / linux `88c299dd…`；archive darwin `6cdd9535…` / linux `1408ec6b…`。
+- 原固定 Bun 1.4.2 `bun run test:integration` 实际 exit 0/null、399.152s（preflight 30 / Lite 163+16skip / Full 63）；Node 22.21.1 与 Bun 1.4.2 打包消费端实际通过。
+- 未完成：真实 macOS NFS / Linux Node22-without-Bun FUSE 挂载与 64/512/1024MiB、SIGKILL 恢复/GC、dirty412；live Gateway、公开发布。历史失败证据保持不变。

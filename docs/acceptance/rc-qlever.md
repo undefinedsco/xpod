@@ -217,3 +217,9 @@ Lite 163 项通过／16 项跳过、Full 63 项全部通过。负责人独立核
 客户端公开包、已通过平台与代理路径限制见
 [预览发行记录](../xpod-cli-preview-release.md)。NAS 实机、x64 和 Windows 挂载
 尚未验收；不将 Linux ARM64 容器结果泛化为这些设备通过。
+
+## 2026-10-04 状态更新（账号 B / deepseek-v4.1-flash）
+
+- RC237 源码 `157766117` 的服务镜像仍仅完成镜像发布（`ghcr.io/undefinedsco/xpod@sha256:c81f06234344d391f4d3d42921a15c5876bfbb355db1ef3f31f238492c4dd38c`）；部署在 registry authority 首次失败，未进入 Public16/Private17。
+- 原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) 两 ARM runner 串行成功（在线导出 → `--frozen` 重建 60：58/2/0 → kit5 打包 → `install-verified`），仅证明 native build/install，**不代表**挂载、live Gateway 或发布。
+- 固定 PG17 原生 `de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba`；Public16 表示 16 个用例，不是 PostgreSQL 16 主版本替换。CCR authority（`ns-1yl0rye9/tcr-creds` 无条目、本地 keychain 401）未恢复前，Private17 与 SealOS Gateway 四层仍阻塞。历史失败证据保持不变。
