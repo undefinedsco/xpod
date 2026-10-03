@@ -11,7 +11,12 @@
       "rememberedConsentSource": "RememberedConsentHandler:_source",
       "rememberedConsentStore": "RememberedConsentHandler:_store",
       "rememberedConsentProvider": "RememberedConsentHandler:_providerFactory",
-      "scopedRememberedGrantStore": "ScopedPickWebIdHandler:_options_rememberedClientGrantStore"
+      "scopedRememberedGrantStore": "ScopedPickWebIdHandler:_options_rememberedClientGrantStore",
+      "accountHostUrlExtractor": "AccountHostDPoPCredentialsExtractor:_originalUrlExtractor",
+      "accountHostJwkGenerator": "AccountHostDPoPCredentialsExtractor:_jwkGenerator",
+      "accountHostBaseUrl": "AccountHostDPoPCredentialsExtractor:_baseUrl",
+      "accountHostExternalIssuer": "AccountHostDPoPCredentialsExtractor:_externalAccountIssuer",
+      "accountHostExternalExtractor": "AccountHostDPoPCredentialsExtractor:_externalIssuerExtractor"
     }
   ],
   "import": [
@@ -160,6 +165,42 @@
       }
     },
     {
+      "comment": "Cache this issuer's host DPoP verification per HTTP request, without public WebID/profile discovery.",
+      "@id": "urn:undefineds:xpod:AccountHostCredentialsExtractor",
+      "@type": "CachedHandler",
+      "source": {
+        "@type": "AccountHostDPoPCredentialsExtractor",
+        "accountHostUrlExtractor": {
+          "@id": "urn:solid-server:default:DPoPUrlExtractor"
+        },
+        "accountHostJwkGenerator": {
+          "@id": "urn:solid-server:default:JwkGenerator"
+        },
+        "accountHostBaseUrl": {
+          "@id": "urn:solid-server:default:variable:baseUrl"
+        },
+        "accountHostExternalIssuer": {
+          "@id": "urn:solid-server:default:variable:oidcIssuer"
+        },
+        "accountHostExternalExtractor": {
+          "@id": "urn:solid-server:default:CredentialsExtractor"
+        }
+      }
+    },
+    {
+      "comment": "Use the Account-only host extractor before the Account operation handler, preserving resource-server validation separately.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:IdentityProviderAuthorizingHandler"
+      },
+      "overrideParameters": {
+        "@type": "AuthorizingHttpHandler",
+        "credentialsExtractor": {
+          "@id": "urn:undefineds:xpod:AccountHostCredentialsExtractor"
+        }
+      }
+    },
+    {
       "comment": "Validate CSS account cookies against account storage to avoid stale browser sessions after data resets.",
       "@type": "Override",
       "overrideInstance": {
@@ -180,7 +221,7 @@
           "@id": "urn:solid-server:default:AccountStorage"
         },
         "sessionExtractor": {
-          "@id": "urn:solid-server:default:CredentialsExtractor"
+          "@id": "urn:undefineds:xpod:AccountHostCredentialsExtractor"
         },
         "ValidatingIdentityProviderHttpHandler:_args_externalAccountIssuer": {
           "@id": "urn:solid-server:default:variable:oidcIssuer"
