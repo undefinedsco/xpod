@@ -22,6 +22,7 @@ suite('Cloud PG quota regression', () => {
 
   beforeAll(async () => {
     pgClient = new Client({
+      connectionString: process.env.XPOD_FULL_PG_URL,
       user: 'xpod',
       password: 'xpod',
       host: 'localhost',

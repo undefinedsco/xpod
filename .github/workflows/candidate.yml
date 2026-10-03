@@ -4,9 +4,15 @@ on:
   push:
     branches: ['release/**']
   workflow_dispatch:
+    inputs:
+      task_diagnostic_only:
+        description: 'Diagnose Task against the fixed rc230 runtime; never produces release acceptance'
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
-  group: candidate-${{ github.ref }}
+  group: candidate-${{ github.ref }}${{ inputs.task_diagnostic_only && '-task-diagnostic' || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -14,6 +20,7 @@ permissions:
 
 jobs:
   metadata:
+    if: ${{ inputs.task_diagnostic_only != true }}
     runs-on: ubuntu-latest
     outputs:
       target: ${{ steps.candidate.outputs.target }}
@@ -640,47 +647,76 @@ jobs:
           path: ${{ runner.temp }}/checks.json
           if-no-files-found: error
 
-      - name: Project safe Task approval evidence
+      - &task_safe_evidence_projection
+        name: Project safe Task approval evidence
         if: always()
         run: |
           node - <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
           const input = path.join(process.cwd(), '.test-data', 'acceptance', 'live-gateway-login-chat-local.json');
+          const diagnostic = Boolean(process.env.DIAGNOSTIC_RUNTIME_SOURCE_SHA);
           let task;
-          try {
-            task = JSON.parse(fs.readFileSync(input, 'utf8')).taskApproval;
-          } catch {
-            console.log('::warning::Task approval evidence is missing or unreadable');
-            process.exit(0);
-          }
+          try { task = JSON.parse(fs.readFileSync(input, 'utf8')).taskApproval; } catch {}
           if (!task || !Array.isArray(task.cases)) {
-            console.log('::warning::Task approval evidence was not produced');
-            process.exit(0);
+            console.log('::warning::Task approval evidence is missing or unreadable');
+            if (!diagnostic) process.exit(0);
           }
           const booleanFields = ['ok', 'queuedAck', 'approvalPending', 'sessionPaused', 'sessionCompleted',
             'sameRun', 'markerMatches', 'markerAbsent', 'duplicateResume', 'stableAfterDuplicateOrStop'];
-          const cases = task.cases.filter(row => row && ['approved', 'rejected', 'stopped'].includes(row.kind)).map(row => {
+          const cases = (task?.cases ?? []).filter(row => row && ['approved', 'rejected', 'stopped'].includes(row.kind)).map(row => {
             const safe = { kind: row.kind };
             for (const field of booleanFields) if (typeof row[field] === 'boolean') safe[field] = row[field];
             if (['approved', 'rejected'].includes(row.decision)) safe.decision = row.decision;
             if (['completed', 'cancelled', 'failed'].includes(row.terminalStatus)) safe.terminalStatus = row.terminalStatus;
+            if (row.acceptancePhase !== undefined) {
+              if (typeof row.acceptancePhase !== 'string' || !new RegExp(`^${row.kind}:(prepare|queued|checkpoint|decision|terminal|duplicate)$`).test(row.acceptancePhase)) throw new Error('Invalid safe Task phase');
+              safe.acceptancePhase = row.acceptancePhase;
+            }
+            const snapshot = row.terminalSnapshot;
+            if (snapshot !== undefined) {
+              if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)
+                || !['completed', 'cancelled', 'failed'].includes(snapshot.status) || typeof snapshot.errorPresent !== 'boolean'
+                || !['pi_assistant_error', 'pi_assistant_aborted', 'other_error', 'none'].includes(snapshot.errorClassification)
+                || snapshot.modelRequest !== 'unobserved' || typeof snapshot.steps?.available !== 'boolean') throw new Error('Invalid safe Task terminal snapshot');
+              const steps = { available: snapshot.steps.available };
+              if (snapshot.steps.approvalTool !== undefined) {
+                if (typeof snapshot.steps.approvalTool !== 'boolean') throw new Error('Invalid safe approval-tool flag');
+                steps.approvalTool = snapshot.steps.approvalTool;
+              }
+              if (snapshot.steps.counts !== undefined) {
+                const { RunStepType } = require('@undefineds.co/models');
+                const allowed = new Set(Object.values(RunStepType));
+                steps.counts = {};
+                for (const [type, count] of Object.entries(snapshot.steps.counts)) {
+                  if (!allowed.has(type) || !Number.isSafeInteger(count) || count < 0) throw new Error('Invalid safe Task step count');
+                  steps.counts[type] = count;
+                }
+              }
+              safe.terminalSnapshot = { status: snapshot.status, errorPresent: snapshot.errorPresent,
+                errorClassification: snapshot.errorClassification, modelRequest: snapshot.modelRequest, steps };
+            }
             return safe;
           });
           const cleanup = {};
           for (const field of ['ok', 'grantRevoked']) {
-            if (typeof task.cleanup?.[field] === 'boolean') cleanup[field] = task.cleanup[field];
+            if (typeof task?.cleanup?.[field] === 'boolean') cleanup[field] = task.cleanup[field];
           }
           for (const field of ['tasksPaused', 'runsStopped', 'sessionsTerminal']) {
-            const value = task.cleanup?.[field];
+            const value = task?.cleanup?.[field];
             if (Number.isSafeInteger(value) && value >= 0) cleanup[field] = value;
           }
           const evidence = {
             schemaVersion: 1, sourceSha: process.env.GITHUB_SHA,
             runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
-            ok: task.ok === true, failurePresent: Boolean(task.failure), cases, cleanup,
+            ok: task?.ok === true, failurePresent: Boolean(task?.failure), cases, cleanup,
           };
-          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'task-approval-evidence.json'), `${JSON.stringify(evidence, null, 2)}\n`);
+          if (diagnostic) Object.assign(evidence, { purpose: 'task-runtime-diagnostic', accepted: false,
+            diagnosticSourceSha: process.env.GITHUB_SHA, runtimeSourceSha: process.env.DIAGNOSTIC_RUNTIME_SOURCE_SHA,
+            evidencePresent: Boolean(task) });
+          const output = diagnostic ? path.join(process.env.RUNNER_TEMP, 'task-diagnostic-safe') : process.env.RUNNER_TEMP;
+          fs.mkdirSync(output, { recursive: true });
+          fs.writeFileSync(path.join(output, 'task-approval-evidence.json'), `${JSON.stringify(evidence, null, 2)}\n`);
           NODE
 
       - name: Upload safe Task approval evidence
@@ -1053,3 +1089,164 @@ jobs:
           name: release-acceptance-${{ github.sha }}
           path: ${{ runner.temp }}/release-acceptance.json
           if-no-files-found: error
+
+  task_runtime_diagnostic:
+    name: Task runtime diagnostic (not release acceptance)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.task_diagnostic_only == true }}
+    runs-on: ubuntu-latest
+    environment: rc
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # Runtime software stays at rc230; checkout supplies the safe diagnostic helper.
+      DIAGNOSTIC_RUNTIME_SOURCE_SHA: 9460a7e0249af5c58896bd386b5f8372e250ca81
+      DIAGNOSTIC_IMAGE: ghcr.io/undefinedsco/xpod@sha256:8e3b0678a790c6f72b50dee4356b602f93e9c21a9e141851084d37e176c15eb8
+    steps:
+      - name: Restrict diagnostic branch
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/codex/desktop-shell-applets|refs/heads/release/0.4.22) ;;
+            *) echo '::error::Task diagnostic is restricted to the existing desktop feature/release branches'; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.12
+
+      - name: Check the existing RC identity service without credentials
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/task-diagnostic-safe"
+          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/service/status > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/.well-known/openid-configuration > "${RUNNER_TEMP}/task-diagnostic-oidc.json"
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const discovery = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'task-diagnostic-oidc.json'), 'utf8'));
+          if (new URL(discovery.issuer).origin !== 'https://id-rc.undefineds.co') throw new Error('RC identity issuer mismatch');
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'task-diagnostic-safe', 'runtime-binding.json'), JSON.stringify({
+            schemaVersion: 1, purpose: 'task-runtime-diagnostic', accepted: false,
+            diagnosticSourceSha: process.env.GITHUB_SHA, runtimeSourceSha: process.env.DIAGNOSTIC_RUNTIME_SOURCE_SHA,
+            image: process.env.DIAGNOSTIC_IMAGE, identityOrigin: 'https://id-rc.undefineds.co',
+            runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+          }, null, 2) + '\n');
+          NODE
+
+      - name: Login to GHCR for the fixed diagnostic runtime
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run unchanged real live Task acceptance against rc230
+        env:
+          XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
+          XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" ]; then
+            echo '::error::RC live provider configuration is required'
+            exit 1
+          fi
+          provider_file="${RUNNER_TEMP}/task-diagnostic-provider-config"
+          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$provider_file"
+          chmod 600 "$provider_file"
+          local_name="xpod-task-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf '%s\n' "$local_name" > "${RUNNER_TEMP}/task-diagnostic-container-name"
+          docker run --detach --name "$local_name" \
+            --publish 127.0.0.1::5737 \
+            --env XPOD_EDITION=local \
+            --env SOLID_OIDC_ISSUER=https://id-rc.undefineds.co/ \
+            --env CSS_ROOT_FILE_PATH=/app/data \
+            --env CSS_IDENTITY_DB_URL=/app/data/identity.sqlite \
+            --env DATABASE_URL=/app/data/identity.sqlite \
+            --env CSS_SPARQL_ENDPOINT=/app/data/quadstore.sqlite \
+            --env CSS_RDF_INDEX_PATH=/app/data/rdf-index.sqlite \
+            "$DIAGNOSTIC_IMAGE"
+          host_port="$(docker port "$local_name" 5737/tcp | sed -E 's/.*:([0-9]+)$/\1/' | tail -1)"
+          if [[ ! "$host_port" =~ ^[0-9]+$ ]]; then
+            echo '::error::failed to resolve the owned Local Xpod port'
+            exit 1
+          fi
+          gateway="http://127.0.0.1:${host_port}/"
+          for attempt in $(seq 1 120); do
+            if curl --fail --silent --show-error --max-time 2 "${gateway}service/status" > /dev/null; then break; fi
+            if [[ "$(docker inspect --format '{{.State.Running}}' "$local_name" 2>/dev/null || true)" != true ]]; then
+              echo '::error::owned Local Xpod exited before Gateway readiness'
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent --show-error --max-time 5 "${gateway}service/status" > /dev/null
+          XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
+          XPOD_LIVE_TASK_APPROVAL=1 \
+          XPOD_LIVE_GATEWAY_URL="$gateway" \
+          XPOD_LIVE_CLOUD_IDP=https://id-rc.undefineds.co/ \
+          bun run ai-connections:accept:live
+
+      # Reuse the same strict allowlist projection as normal candidate failure evidence.
+      - *task_safe_evidence_projection
+
+      - name: Save controlled diagnostics from only the owned Local container
+        if: always()
+        run: |
+          mkdir -p "${RUNNER_TEMP}/task-diagnostic-safe"
+          local_name="xpod-task-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [ -f "${RUNNER_TEMP}/task-diagnostic-container-name" ] && [ "$(cat "${RUNNER_TEMP}/task-diagnostic-container-name")" = "$local_name" ]; then
+            docker inspect --format '{{json .State}}' "$local_name" > "${RUNNER_TEMP}/task-diagnostic-state.private.json" 2>/dev/null || true
+            docker logs --timestamps "$local_name" > "${RUNNER_TEMP}/task-diagnostic-docker.private.log" 2>&1 || true
+          fi
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const read = name => { try { return fs.readFileSync(path.join(process.env.RUNNER_TEMP, name), 'utf8'); } catch { return ''; } };
+          let state;
+          try { state = JSON.parse(read('task-diagnostic-state.private.json')); } catch {}
+          const logs = read('task-diagnostic-docker.private.log');
+          const fixed = ['Pi assistant ended with error', 'Pi assistant ended with aborted',
+            'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNRESET'];
+          const statuses = {};
+          const unattributedModelHttpCompletions = [];
+          for (const line of logs.split('\n')) {
+            if (line.match(/\[([A-Za-z][A-Za-z0-9]*)\]/)?.[1] !== 'TracingHandler') continue;
+            const match = line.match(/\[TracingHandler\]\s+\{Primary\}\s+(?:info|warn):\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(.+?)\s+->\s+([1-5]\d\d)\s+\((\d+)ms\)/);
+            if (!match) continue;
+            statuses[match[3]] = (statuses[match[3]] ?? 0) + 1;
+            const route = match[2].split('?')[0];
+            const knownPath = ['/v1/chat/completions', '/v1/messages', '/v1/models', '/v1/meta'].find(value => route.endsWith(value));
+            if (knownPath) unattributedModelHttpCompletions.push({ method: match[1], path: knownPath, status: Number(match[3]), durationMs: Number(match[4]) });
+          }
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'task-diagnostic-safe', 'docker-diagnostics.json'), JSON.stringify({
+            schemaVersion: 1, purpose: 'task-runtime-diagnostic', accepted: false, logsPresent: Boolean(logs),
+            statePresent: Boolean(state), running: state?.Running === true, oomKilled: state?.OOMKilled === true,
+            exitCode: Number.isSafeInteger(state?.ExitCode) ? state.ExitCode : null,
+            unattributedFixedLiteralOccurrences: fixed.filter(value => logs.includes(value)), httpStatusCounts: statuses, unattributedModelHttpCompletions,
+            attribution: 'Uncorrelated log literals and HTTP completions; may include ordinary Chat or unrelated requests, never proof of Task upstream traffic',
+            upstreamStreamingEvidence: 'unobserved unless explicitly captured by an existing safe logger',
+          }, null, 2) + '\n');
+          NODE
+
+      - name: Upload diagnostic evidence (never stable-promotion evidence)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-runtime-diagnostic-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/task-diagnostic-safe/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Cleanup only the owned diagnostic container and private files
+        if: always()
+        run: |
+          local_name="xpod-task-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [ -f "${RUNNER_TEMP}/task-diagnostic-container-name" ] && [ "$(cat "${RUNNER_TEMP}/task-diagnostic-container-name")" = "$local_name" ]; then
+            docker rm --force "$local_name" >/dev/null 2>&1 || true
+          fi
+          rm -f "${RUNNER_TEMP}/task-diagnostic-container-name" "${RUNNER_TEMP}/task-diagnostic-provider-config" \
+            "${RUNNER_TEMP}/task-diagnostic-oidc.json" "${RUNNER_TEMP}/task-diagnostic-state.private.json" \
+            "${RUNNER_TEMP}/task-diagnostic-docker.private.log"

@@ -67,6 +67,7 @@ suite('Docker Cluster Integration', () => {
     // 尝试连接 PostgreSQL (Cloud 使用)
     try {
       pgClient = new Client({
+        connectionString: process.env.XPOD_FULL_PG_URL,
         user: 'xpod',
         password: 'xpod',
         host: 'localhost',

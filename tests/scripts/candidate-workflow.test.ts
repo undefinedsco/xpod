@@ -80,7 +80,12 @@ describe('release candidate workflow', () => {
       'publish_qlever_local_runtime',
     ]);
     for (const [ jobName, job ] of Object.entries(workflow.jobs)) {
-      if (!packageJobs.has(jobName)) {
+      if (jobName === 'task_runtime_diagnostic') {
+        expect((job as { permissions?: Record<string, string> }).permissions, jobName).toEqual({
+          contents: 'read',
+          packages: 'read',
+        });
+      } else if (!packageJobs.has(jobName)) {
         expect((job as any).permissions?.packages, jobName).toBeUndefined();
       }
     }

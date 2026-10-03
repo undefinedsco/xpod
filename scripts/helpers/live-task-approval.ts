@@ -1,13 +1,14 @@
 import type { TaskCredentialSummary } from '../../src/api/tasks/TaskCredentialStore';
 import { randomUUID } from 'node:crypto';
 import { drizzle, type SolidAuthSession } from '@undefineds.co/drizzle-solid';
-import { approvalResource, sessionResource, decideApprovalRequest, type ApprovalRow } from '@undefineds.co/models';
+import { approvalResource, sessionResource, decideApprovalRequest, RunStepType, type ApprovalRow } from '@undefineds.co/models';
 
 export interface LiveTaskRun {
   id: string;
   thread: string;
   status: string;
   waitingToolCallId?: string;
+  error?: unknown;
 }
 export interface LiveTaskCaseEvidence {
   kind: 'approved' | 'rejected' | 'stopped';
@@ -24,6 +25,15 @@ export interface LiveTaskCaseEvidence {
   markerAbsent?: boolean;
   duplicateResume?: boolean;
   stableAfterDuplicateOrStop?: boolean;
+  acceptancePhase?: string;
+  terminalSnapshot?: {
+    status: string;
+    errorPresent: boolean;
+    errorClassification: 'pi_assistant_error' | 'pi_assistant_aborted' | 'other_error' | 'none';
+    /** Run milestones do not establish whether an HTTP model request was sent. */
+    modelRequest: 'unobserved';
+    steps: { available: boolean; counts?: Record<string, number>; approvalTool?: boolean };
+  };
   ok: boolean;
 }
 export interface LiveTaskEvidence {
@@ -89,6 +99,7 @@ export async function acceptLiveTaskApproval(options: {
   let grantId: string | undefined;
   let grantAttempted = false;
   let phase = 'grant';
+  let lastObservedRun: LiveTaskRun | undefined;
   // Do not include upstream bodies, model prose, tool arguments or credential material in errors/evidence.
   const request = async <T>(route: string, method = 'GET', body?: unknown, timeout = 20_000): Promise<T> => {
     const response = await options.ownerFetch(new URL(route, options.gateway), {
@@ -116,6 +127,7 @@ export async function acceptLiveTaskApproval(options: {
     requireEvidence(runs.length === 1, 'Expected exactly one manually queued Run per paused Task');
     const run = runs.find(row => row.id === runId);
     requireEvidence(run, 'Original Task Run disappeared');
+    lastObservedRun = run;
     return run;
   };
   const sessionStatus = async (iri: string) => (await db.findByIri(sessionResource, iri))?.status;
@@ -139,6 +151,7 @@ export async function acceptLiveTaskApproval(options: {
     for (const kind of ['approved', 'rejected', 'stopped'] as const) {
       const row: LiveTaskCaseEvidence = { kind, ok: false };
       evidence.cases.push(row);
+      lastObservedRun = undefined;
       phase = `${kind}:prepare`;
       const unique = randomUUID();
       const workspace = new URL(`acceptance/task-${unique}/`, options.podUrl).href;
@@ -234,6 +247,40 @@ export async function acceptLiveTaskApproval(options: {
   } catch (error) {
     // Only our controlled assertion vocabulary is safe; never emit raw upstream exceptions.
     evidence.failure = `Task acceptance failed at ${phase}${error instanceof LiveTaskEvidenceError ? `: ${error.message}` : ''}`;
+    const row = evidence.cases[evidence.cases.length - 1];
+    if (row) {
+      row.acceptancePhase = phase;
+      if (lastObservedRun && terminal.has(lastObservedRun.status)) {
+        const runError = lastObservedRun.error;
+        const errorPresent = typeof runError === 'string' ? runError.length > 0 : runError != null;
+        const snapshot: NonNullable<LiveTaskCaseEvidence['terminalSnapshot']> = {
+          status: lastObservedRun.status,
+          errorPresent,
+          errorClassification: runError === 'Pi assistant ended with error' ? 'pi_assistant_error'
+            : runError === 'Pi assistant ended with aborted' ? 'pi_assistant_aborted'
+              : errorPresent ? 'other_error' : 'none',
+          modelRequest: 'unobserved',
+          steps: { available: false },
+        };
+        row.terminalSnapshot = snapshot;
+        try {
+          // Only failure diagnostics read steps; never expose their free-text messages or arguments.
+          const result = await request<{ steps: Array<{ type: unknown; message: unknown }> }>(
+            `/api/tasks/steps?id=${encodeURIComponent(lastObservedRun.id)}`);
+          requireEvidence(Array.isArray(result.steps), 'Task diagnostic steps missing');
+          const knownTypes = new Set<string>(Object.values(RunStepType));
+          const counts: Record<string, number> = {};
+          let approvalTool = false;
+          for (const step of result.steps) {
+            if (!step || typeof step.type !== 'string' || !knownTypes.has(step.type)) continue;
+            counts[step.type] = (counts[step.type] ?? 0) + 1;
+            if (step.type === RunStepType.TOOL_CALL && step.message === 'request_approval') approvalTool = true;
+          }
+          snapshot.steps = { available: true, counts, approvalTool };
+        } catch { /* Diagnostic failure cannot replace the producer failure or prevent cleanup. */ }
+      }
+    }
+    options.onEvidence(evidence);
   } finally {
     let cleanupOk = true;
     for (const taskId of tasks) {

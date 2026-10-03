@@ -60,20 +60,38 @@ async function main(): Promise<void> {
   async function api(path: string, method = 'GET', body?: unknown, status = 200): Promise<any> {
     const id = ++diagSeq;
     const started = Date.now();
+    const startedMonotonic = DIAG ? performance.now() : 0;
     const route = path.split('?')[0];
     if (DIAG) { inflight.set(id, { method, path: route, start: started }); diagLog('START', { id, method, path: route }); }
     let response: Response;
+    let requestSignal: AbortSignal | undefined;
     try {
       response = await fetch(new URL(path, base), {
         method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         // Generous, but still bounded: the fixture shares a machine with the rest
         // of the integration suite, and a busy host used to trip a tight per-request
         // budget (120s) while the exact same run passed on its own.
-        signal: AbortSignal.timeout(REQUEST_BUDGET_MS),
+        signal: requestSignal = AbortSignal.timeout(REQUEST_BUDGET_MS),
       });
     } catch (error) {
       const kind = error instanceof Error && /^[A-Za-z]+$/.test(error.name) ? error.name : 'Error';
-      if (DIAG) { inflight.delete(id); diagLog('FAIL', { id, method, path: route, kind, durationMs: Date.now() - started }); }
+      if (DIAG) {
+        inflight.delete(id);
+        const reason = requestSignal?.aborted ? requestSignal.reason : undefined;
+        const reasonName = reason && typeof reason === 'object' ? Reflect.get(reason, 'name') : undefined;
+        const cause = error && typeof error === 'object' ? Reflect.get(error, 'cause') : undefined;
+        const causeCode = cause && typeof cause === 'object' ? Reflect.get(cause, 'code') : undefined;
+        diagLog('FAIL', {
+          id, method, path: route, kind, durationMs: Date.now() - started,
+          monotonicDurationMs: performance.now() - startedMonotonic,
+          signalAborted: requestSignal?.aborted ?? null,
+          signalReasonName: reasonName === undefined ? null
+            : ['TimeoutError', 'AbortError'].includes(reasonName) ? reasonName : 'other',
+          causeCode: causeCode === undefined ? null
+            : ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT',
+              'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ABORT_ERR'].includes(causeCode) ? causeCode : 'unknown',
+        });
+      }
       throw new AcceptanceError(`${method} ${route} failed (${kind}; request budget ${REQUEST_BUDGET_MS / 1000}s)`);
     }
     if (DIAG) { inflight.delete(id); diagLog('DONE', { id, method, path: route, status: response.status, durationMs: Date.now() - started }); }
