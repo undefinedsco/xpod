@@ -1,8 +1,13 @@
 # 开发子代理效果与效率记录
 
+> 当前状态（2026-10-04，账号 B / opencode-go/deepseek-v4.1-flash；本页旧段落均为 HISTORICAL）
+> - 当前唯一实现子代理是账号 B（`opencode-go/deepseek-v4.1-flash`）；仅 **CONFIRMED HTTP429** 才转 GPT‑6.1 Sol。旧文“当前主线使用 GPT‑6.1 Sol 子代理”为历史状态。
+> - 当前源码：`codex/agentfs-current-release` HEAD `5ce81c679cf7ba0aab82b277a44b3ea469bcc72d`；native HEAD `8d4983c96e9942b8edeb7912659017d5e98762e4`。原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) 两 ARM runner 串行成功；服务候选 [run 37148085189](https://github.com/undefinedsco/xpod/actions/runs/37148085189) 只发布 exact 镜像 `ghcr.io/undefinedsco/xpod@sha256:fd2ee44323e3412c9b43e4ee31d4d9aeb6b512bb2524e9907c6c66cd50fb8428`，deploy 在 registry-authority 预检前失败。
+> - 实际平台准入（kit5）：macOS NFS 间歇失败（重挂退出 75 `unknown runtime entry retained`），64/512/1024 MiB 与 SIGKILL 崩溃恢复阶段未通过；Linux Docker bookworm FUSE 因 helper 需 `GLIBC_2.39`/`libssl.so.3` 加载失败。远程 bounded clean-body 缓存仍 NOT IMPLEMENTED。下方各模型样本的事实（任务/API 效果）保留。
+
 日期：2026-10-03，Asia/Shanghai。范围为 Xpod 当前开发记录，不是通用模型排行榜。
 
-当前主线使用 GPT‑6.1 Sol 子代理实现和测试，负责人设计、独立验收与发布。DeepSeek v4.1 Flash 已交付的代码保留。没有用不同任务的耗时计算模型速度倍率。
+历史状态（HISTORICAL）：当前主线使用 GPT‑6.1 Sol 子代理实现和测试，负责人设计、独立验收与发布。DeepSeek v4.1 Flash 已交付的代码保留。没有用不同任务的耗时计算模型速度倍率。
 
 ## 实际交付
 
@@ -94,4 +99,5 @@ DeepSeek 的 24 路径任务表明它能执行批量改动；范围明确、验�
 
 - 当前源码（HEAD `59224e54` / native `8d4983c96`）的原固定 Bun 1.4.2 完整集成在本机以脱离 shell 生命周期的监督器实际 `Popen.wait` exit 0/null、399.152s：preflight 30、Lite 163+16skip、Full 63；8,920 正文与外部 native 五文件前后一致，专属进程/容器/卷已清理。
 - 原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) 两 ARM runner 串行成功：在线导出 → `--verify-only` → `--frozen` 重建 60（58/2/0）→ kit5 打包 → `install-verified`。
-- 仍未验收：真实 OS 挂载（macOS NFS / Linux FUSE）、live Gateway、发布。历史失败证据与 Sol 记录保持不变。
+- kit5 实际平台准入（账号 B，本 worktree）：macOS NFS 用 kit5 helper（`2d4a7360…`）跑 tracked `nativeOverlayScenario.test.ts` 间歇失败（重挂退出 75 `unknown runtime entry retained; daemon retained_pid=… pending actual_wait=null`）；64/512/1024 MiB 三项实际 PASS，SIGKILL 崩溃恢复 FAIL（writer `write-completed`）。Linux Docker `node:22-bookworm-slim`（Node22，无 Bun）FUSE 加载失败：helper 需 `GLIBC_2.39` + `libssl.so.3/libcrypto.so.3`，bookworm glibc 2.36。无残留 mount/daemon/owned 容器。
+- 仍未验收：真实 OS 挂载（macOS NFS / Linux bookworm FUSE）、SIGKILL 恢复/GC、dirty412 负载；live Gateway、公开 preview.2。远程 bounded clean-body 缓存仍 NOT IMPLEMENTED。历史失败证据与 Sol 记录保持不变。

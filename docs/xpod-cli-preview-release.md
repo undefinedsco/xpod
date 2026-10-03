@@ -1,6 +1,11 @@
 # Xpod CLI 目录预览发行记录
 
-状态：2026-10-03。此页记录已公开的 preview.1 及其旧 RC223 证据，附件字节没有因后续兼容修复而更新。当前整合与未完成准入见 [选型记录](xpod-cli-engine-selection.md)，新原生服务见 [RC 验收](acceptance/rc-qlever.md)。
+> 当前状态（2026-10-04，账号 B / opencode-go/deepseek-v4.1-flash；本页以下旧段落均为 HISTORICAL）
+> - 当前源码：`codex/agentfs-current-release` HEAD `5ce81c679cf7ba0aab82b277a44b3ea469bcc72d`；native HEAD `8d4983c96e9942b8edeb7912659017d5e98762e4`。原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) darwin+linux 两 ARM runner 串行实际成功；服务候选 [run 37148085189](https://github.com/undefinedsco/xpod/actions/runs/37148085189) 只发布 exact 镜像 `ghcr.io/undefinedsco/xpod@sha256:fd2ee44323e3412c9b43e4ee31d4d9aeb6b512bb2524e9907c6c66cd50fb8428`，deploy 在 registry-authority 预检前失败。
+> - 本地 preview.2（`0.1.0-preview.2`）仍**未公开**：kit5 实际平台准入未通过——macOS NFS 间歇失败（重挂退出 75 `unknown runtime entry retained`），64/512/1024 MiB 通过但 SIGKILL 崩溃恢复阶段失败；Linux Docker `node:22-bookworm-slim`（Node22，无 Bun）FUSE 因 helper 需 `GLIBC_2.39` + `libssl.so.3/libcrypto.so.3` 加载失败（bookworm glibc 2.36）。
+> - 远程 bounded clean-body 缓存仍 NOT IMPLEMENTED（仅 dirty blob）；不主张缓存或 99% native。实现子代理路由：账号 B 是当前唯一实现者；仅 **CONFIRMED HTTP429** 才转 Sol。
+
+历史状态（HISTORICAL，2026-10-03）：此页记录已公开的 preview.1 及其旧 RC223 证据，附件字节没有因后续兼容修复而更新。当前整合与未完成准入见 [选型记录](xpod-cli-engine-selection.md)，新原生服务见 [RC 验收](acceptance/rc-qlever.md)。
 
 - [客户端公开附件](https://github.com/undefinedsco/xpod/releases/tag/xpodcli-0.1.0-preview.1)
 - [客户端源码与全部 22 项 CI](https://github.com/undefinedsco/xpod/actions/runs/36951645641)：`1cb00bdf0a1ad2ff424e4745ecf97b2c9682af57`。

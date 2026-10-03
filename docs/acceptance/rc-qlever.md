@@ -1,6 +1,12 @@
 # RC PostgreSQL / QLever 接入与验收
 
-历史基线记录（2026-10-03）：此前整合基于 `release/0.4.22` 的
+> 当前状态（2026-10-04，账号 B / opencode-go/deepseek-v4.1-flash；本页以下旧段落均为 HISTORICAL）
+> - 当前源码 `5ce81c679cf7ba0aab82b277a44b3ea469bcc72d`；服务候选 [run 37148085189](https://github.com/undefinedsco/xpod/actions/runs/37148085189) 已由 ROOT 只读验收：build service success、Desktop `111279034264` success，deploy `111278306416` 在 registry-authority 预检前失败（Before any RC mutation），finalize skipped。
+> - 唯一已接受的本次 RC 镜像是 `ghcr.io/undefinedsco/xpod@sha256:fd2ee44323e3412c9b43e4ee31d4d9aeb6b512bb2524e9907c6c66cd50fb8428`（source `5ce`，version 0.4.24-rc.239）；取代此前 RC237 引用。
+> - 未取得：Public16/Private17、`SealOS`、new-pair 部署证据。固定 PG17 native `de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba` 仍必需；Public16 是 16 个用例，不是 PG-major-16。缺 CCR existing authority 待 ROOT/human。
+> - 实现子代理路由：账号 B 是当前唯一实现者；仅 **CONFIRMED HTTP429** 才转 Sol。远程 bounded clean-body 缓存仍 NOT IMPLEMENTED。
+
+历史基线记录（HISTORICAL，2026-10-03）：此前整合基于 `release/0.4.22` 的
 `9460a7e0249af5c58896bd386b5f8372e250ca81`，分支为
 `codex/agentfs-current-release`。新增三个 release 提交已纳入基线；六个冲突路径已完成语义整合，相关专项 125 通过、1 跳过，当前已无未合并项；整合后的完整回归仍待执行。此前 `ab583de` 的兼容代码审查完成；历史两轮失败保留如下。修正过时的 RC 静态测试契约后，该旧基线原始完整集成实际退出 0：Lite 162 通过/16 跳过，Full 62 全部通过，8,277 项覆盖路径前后稳定。
 本工作树尚未发布、部署或验收新原生 QLever RC。远端既有 candidate 流水线的实际分层证据见下，不能将 QLever 夹具、旧 RC223 或客户端预览的通过记录算作新后端通过。
