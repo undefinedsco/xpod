@@ -1,5 +1,6 @@
 import { expect, type Browser, type BrowserContext, type Page, test } from '@playwright/test';
 import { fetchProfileStorageUrls } from '../../ui/src/utils/provision-scope';
+import { openNavigationDrawer } from '../helpers/navigationDrawer';
 
 const baseUrl = requiredEnv('XPOD_SETTINGS_E2E_BASE_URL');
 const aliceStatePath = requiredEnv('XPOD_SETTINGS_E2E_ALICE_STATE');
@@ -63,6 +64,11 @@ test.describe('deployed Xpod settings acceptance', () => {
         const listPane = workspace.getByTestId('workspace-list-pane');
         await expect(workspace, `${module.name} must use the compact stack layout`).toBeVisible({ timeout: 45_000 });
         await expect(workspaceState).toHaveAttribute('data-workspace-active-pane', 'list');
+
+        // At 390 the host keeps only the content column and moves the workspace
+        // list into the navigation drawer (design §2.7), so open the drawer
+        // before touching any list item. Selecting one returns to the main pane.
+        await openNavigationDrawer(alice.page);
 
         if (module.name === 'ai-connections') {
           const aiServices = listPane.getByRole('listbox', { name: 'AI 服务' });

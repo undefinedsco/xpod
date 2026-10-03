@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, type Page, type Request, test } from '@playwright/test';
 import { completeOidcLogin, type BrowserOidcTrace, type BrowserSolidAccount } from '../helpers/browserSolidOidc';
+import { openNavigationDrawer } from '../helpers/navigationDrawer';
 
 const screenshotDir = path.resolve('.test-data/acceptance/screenshots');
 const fixtureModelId = 'fixture-gpt-acceptance';
@@ -510,7 +511,7 @@ test.describe('Xpod settings product acceptance', () => {
     });
   }
 
-  test('keeps narrow Models stack detail, focus, and back navigation accessible', async ({ browser }) => {
+  test('keeps narrow Models stack detail, focus, and drawer navigation accessible', async ({ browser }) => {
     test.setTimeout(180_000);
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     try {
@@ -518,7 +519,13 @@ test.describe('Xpod settings product acceptance', () => {
       assertRealOidcTrace(trace);
       await openModule(page, '/ai-connections', 'AI Connections');
 
-      const search = page.locator('[data-workspace-list-header="true"] input[aria-label="搜索 Provider"]');
+      // At 390 the host keeps only the content column and owns the workspace list
+      // through its navigation drawer (design §2.7).
+      await expect(page.locator('[data-testid="workspace-list-pane"]')).toBeHidden();
+      await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeVisible();
+
+      const navigationToggle = await openNavigationDrawer(page);
+      const search = page.getByRole('searchbox', { name: '搜索服务商', exact: true });
       await expect(search).toBeVisible();
       await search.focus();
       await expect(search).toBeFocused();
@@ -528,14 +535,16 @@ test.describe('Xpod settings product acceptance', () => {
       await detailTrigger.focus();
       await expect(detailTrigger).toBeFocused();
       await detailTrigger.press('Enter');
+      // Selecting a Provider switches to the detail and closes the drawer; the
+      // host restores focus to the navigation toggle that opened it.
       await expect(page.locator('[data-testid="workspace-list-pane"]')).toBeHidden();
       await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeVisible();
-      await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeFocused();
+      await expect(navigationToggle).toBeFocused();
       const modelHeaderGeometry = await page.evaluate(() => {
         const header = document.querySelector('[data-testid="provider-models-header"]');
         const heading = header?.querySelector('h3');
         const actions = document.querySelector('[data-testid="provider-models-actions"]');
-        const search = actions?.querySelector('input[placeholder="搜索模型..."]');
+        const search = actions?.querySelector('input[aria-label="搜索模型"]');
         const rect = (element: Element | null | undefined) => {
           const box = element?.getBoundingClientRect();
           return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
@@ -554,11 +563,13 @@ test.describe('Xpod settings product acceptance', () => {
       expect(modelHeaderGeometry.search?.width).toBeGreaterThan(200);
       await page.screenshot({ path: path.join(screenshotDir, 'mobile-models-detail.png'), fullPage: true });
 
-      await page.getByRole('button', { name: '返回列表' }).click();
+      // No standalone back button exists while a host drawer owns the workspace
+      // list; the list is reopened through the same navigation toggle.
+      await openNavigationDrawer(page);
       await expect(page.locator('[data-testid="workspace-list-pane"]')).toBeVisible();
-      await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeHidden();
       await expect(search).toBeVisible();
-      await expect(page.locator('[data-testid="workspace-list-pane"]')).toBeFocused();
+      await search.focus();
+      await expect(search).toBeFocused();
     } finally {
       await page.context().close();
     }
@@ -624,7 +635,14 @@ async function openModule(page: Page, route: string, _label: string): Promise<vo
     await page.goto(destination.toString(), { waitUntil: 'domcontentloaded' });
   }
   const navigationHref = `${destination.pathname}${destination.search}`;
-  await expect(page.locator(`a[href="${navigationHref}"]`).first()).toBeVisible({ timeout: 30_000 });
+  const routeLink = page.locator(`a[href="${navigationHref}"]`).first();
+  // The desktop rail exposes the active module link; at 390 the host keeps it in
+  // the closed navigation drawer, so it exists without being visible.
+  if ((page.viewportSize()?.width ?? 0) >= 768) {
+    await expect(routeLink).toBeVisible({ timeout: 30_000 });
+  } else {
+    await expect(routeLink).toBeAttached({ timeout: 30_000 });
+  }
   await expect(page.locator('[data-workspace-layout]')).toBeAttached({ timeout: 30_000 });
   await expect(page.locator('[data-testid="workspace-list-pane"]')).toBeAttached({ timeout: 30_000 });
   await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeAttached({ timeout: 30_000 });

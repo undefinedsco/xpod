@@ -3,7 +3,7 @@ import './setup-jsdom'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockWebExtensionHost } from '@undefineds.co/extension-sdk/testing'
-import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react'
+import { TwoPaneLayout, WorkspaceDrawerContext } from '@undefineds.co/extension-sdk/react'
 import type { WebExtensionSolidCapability } from '@undefineds.co/extension-sdk/web'
 import { mountTwoPaneApplet } from '@undefineds.co/extension-sdk/web'
 import { aiConnectionApplet } from '../src'
@@ -206,6 +206,40 @@ describe('AI Connection two-pane contribution', () => {
     const mainPane = screen.getByTestId('workspace-main-pane')
     expect(mainPane).not.toHaveProperty('hidden', true)
     expect(document.activeElement).toBe(mainPane)
+  })
+
+  it('gates the provider list through the host drawer in stack mode and opens main on selection', () => {
+    const mounted = mountTwoPaneApplet(
+      aiConnectionApplet,
+      createMockWebExtensionHost({ solid: readySolid() }),
+    )
+
+    const tree = (open: boolean) => (
+      <WorkspaceDrawerContext.Provider value={{ open }}>
+        <TwoPaneLayout
+          mode="stack"
+          listHeader={mounted.listHeader}
+          list={mounted.list}
+          mainHeader={mounted.mainHeader}
+          main={mounted.main}
+        />
+      </WorkspaceDrawerContext.Provider>
+    )
+
+    const { rerender } = render(tree(false))
+
+    // A host drawer owns the workspace list: while it is closed the list pane is
+    // hidden and Playwright's role query cannot reach the AI listbox.
+    expect(screen.getByTestId('workspace-list-pane').hidden).toBe(true)
+    expect(screen.queryByRole('listbox', { name: 'AI 服务' })).toBeNull()
+
+    // The RC narrow acceptance opens the drawer first, then selects a Provider.
+    rerender(tree(true))
+    expect(screen.getByTestId('workspace-list-pane').hidden).toBe(false)
+    fireEvent.click(screen.getByRole('option', { name: 'OpenAI', exact: true }))
+
+    expect(document.querySelector('[data-workspace-active-pane]')?.getAttribute('data-workspace-active-pane')).toBe('main')
+    expect(screen.getByRole('region', { name: 'OpenAI 详情' })).toBeTruthy()
   })
 
   it('uses Add to open the custom Provider form', () => {
