@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StreamFn } from '@mariozechner/pi-agent-core';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@mariozechner/pi-ai';
 import * as pi from '@mariozechner/pi-coding-agent';
@@ -13,6 +14,18 @@ import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
 import { TaskService } from '../../src/api/tasks/TaskService';
 import { cancelRun } from '../../src/api/runs/RunCancellation';
 import type { SolidFS } from '../../src/solidfs';
+
+const diagnosticLogger = vi.hoisted(() => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() }));
+vi.mock('global-logger-factory', async importOriginal => ({
+  ...await importOriginal<typeof import('global-logger-factory')>(),
+  getLoggerFor: () => diagnosticLogger,
+}));
+beforeEach(() => { vi.clearAllMocks(); });
+function receipts() {
+  return diagnosticLogger.error.mock.calls
+    .filter(([line]) => typeof line === 'string' && line.startsWith('{"event":"xpod.task-model-diagnostic"'))
+    .map(([line]) => JSON.parse(line));
+}
 
 const privateProviderError = 'Synthetic upstream refusal; credential=fixture-only';
 const owner = 'https://pod.test/alice/profile/card#me';
@@ -137,6 +150,13 @@ describe('Pi assistant terminal status', () => {
       expect(app.lifecycle).toEqual(expect.arrayContaining(['message_end', 'turn_end', 'agent_end']));
       expect(events).toEqual([{ type: 'error', message: `Pi assistant ended with ${stopReason}` }]);
       expect(JSON.stringify(events)).not.toContain(privateProviderError);
+      const header = `xpod-${createHash('sha256').update(app.input.threadId).digest('hex')}`;
+      expect(receipts()).toEqual([{ event: 'xpod.task-model-diagnostic', schemaVersion: 1,
+        scope: 'session', stage: 'stream_open', api: 'openai-completions', stopReason, retryCount: 0,
+        correlationHash: createHash('sha256').update(header).digest('hex'), httpStatus: null, credentialPresent: true }]);
+      expect(JSON.stringify(diagnosticLogger.error.mock.calls)).not.toContain(privateProviderError);
+      expect(JSON.stringify(receipts())).not.toContain(app.input.config.aiConnection!.apiKey);
+      expect(JSON.stringify(receipts())).not.toContain(app.input.prompt);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
     } finally { await app.cleanup(); }
@@ -155,8 +175,88 @@ describe('Pi assistant terminal status', () => {
       // The user message ends normally; the SDK catch path never emits an assistant message_end.
       expect(app.sessions[0].messages.slice(-1)[0]).toMatchObject({ role: 'assistant', stopReason: 'error' });
       expect(app.lifecycle.filter(type => type === 'message_end')).toHaveLength(1);
+      expect(receipts()).toEqual([expect.objectContaining({ stopReason: 'error', httpStatus: null })]);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
+    } finally { await app.cleanup(); }
+  });
+
+  it('keeps terminal failure and cleanup intact when the diagnostic sink throws', async () => {
+    const app = await fixture(response('error', '', privateProviderError));
+    diagnosticLogger.error.mockImplementationOnce(() => { throw new Error(privateProviderError); });
+    try {
+      expect(await drain(app)).toEqual([{ type: 'error', message: 'Pi assistant ended with error' }]);
+      expect(app.commit).not.toHaveBeenCalled();
+      expect(app.rollback).toHaveBeenCalledOnce();
+    } finally { await app.cleanup(); }
+  });
+
+  it('records existing runtime key validation failure before creating or invoking the SDK', async () => {
+    const streamFn = vi.fn(response('stop'));
+    const app = await fixture(streamFn);
+    app.input.config.aiConnection!.apiKey = '';
+    try {
+      expect(await drain(app)).toEqual([expect.objectContaining({ type: 'error' })]);
+      expect(app.sessions).toHaveLength(0);
+      expect(streamFn).not.toHaveBeenCalled();
+      expect(receipts()).toEqual([expect.objectContaining({ stage: 'not_invoked', api: 'other',
+        stopReason: 'unknown', httpStatus: null, credentialPresent: false })]);
+      expect(JSON.stringify(diagnosticLogger.error.mock.calls)).not.toContain(privateProviderError);
+    } finally { await app.cleanup(); }
+  });
+
+  it('records payload preparation without claiming a request or exposing a synthetic 503 error body', async () => {
+    const app = await fixture((model, _context, options) => {
+      options?.onPayload?.({ model: model.id, secret: privateProviderError });
+      const message: AssistantMessage = { role: 'assistant', content: [], api: model.api,
+        provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+          totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: 'error', errorMessage: `503 ${privateProviderError}`, timestamp: Date.now() };
+      const stream = createAssistantMessageEventStream();
+      stream.push({ type: 'error', reason: 'error', error: message });
+      return stream;
+    }, session => session.setAutoRetryEnabled(false));
+    try {
+      expect(await drain(app)).toEqual([{ type: 'error', message: 'Pi assistant ended with error' }]);
+      expect(receipts()).toEqual([expect.objectContaining({ stage: 'payload_prepared', stopReason: 'error', retryCount: 0, httpStatus: null })]);
+      expect(JSON.stringify(diagnosticLogger.error.mock.calls)).not.toContain(privateProviderError);
+    } finally { await app.cleanup(); }
+  });
+
+  it.each([false, true])('preserves the public SDK stream object, result, payload callback and cancellation signal (async=%s)', async asyncStream => {
+    const streams: ReturnType<typeof createAssistantMessageEventStream>[] = [];
+    const calls: Parameters<StreamFn>[] = [];
+    const payload = Object.freeze({ private: privateProviderError });
+    const app = await fixture((...args) => {
+      calls.push(args);
+      args[2]?.onPayload?.(payload);
+      const stream = response('stop', 'Safe result')(...args) as ReturnType<typeof createAssistantMessageEventStream>;
+      streams.push(stream);
+      return asyncStream ? Promise.resolve(stream) : stream;
+    });
+    try {
+      expect(await drain(app)).toEqual([{ type: 'text', text: 'Safe result' }]);
+      const onPayload = vi.fn();
+      const controller = new AbortController();
+      const [model, context] = calls[0];
+      const options = { apiKey: privateProviderError, onPayload, signal: controller.signal };
+      const responseStream = app.sessions[0].agent.streamFn(model, context, options);
+      expect(responseStream instanceof Promise).toBe(asyncStream);
+      const stream = await responseStream;
+      expect(stream).toBe(streams[1]);
+      expect(calls[1][2]?.signal).toBe(controller.signal);
+      expect(calls[1][2]?.apiKey).toBe(privateProviderError);
+      expect(onPayload).toHaveBeenCalledOnce();
+      expect(onPayload).toHaveBeenCalledWith(payload);
+      const events = [];
+      for await (const event of stream) events.push(event.type);
+      expect(events).toEqual(['start', 'done']);
+      expect(await stream.result()).toBe(await streams[1].result());
+      const callbackError = new Error(privateProviderError);
+      expect(() => app.sessions[0].agent.streamFn(model, context, {
+        ...options, onPayload: () => { throw callbackError; },
+      })).toThrow(callbackError);
+      expect(receipts()).toEqual([]);
     } finally { await app.cleanup(); }
   });
 
@@ -168,6 +268,7 @@ describe('Pi assistant terminal status', () => {
     try {
       expect(await drain(app)).toEqual([{ type: 'text', text: 'Recovered successfully' }]);
       expect(calls).toBe(2);
+      expect(receipts()).toEqual([]);
       expect(app.lifecycle).toEqual(expect.arrayContaining(['auto_retry_start', 'auto_retry_end']));
       expect(app.resolvedPrompts()).toBe(1);
       expect(app.commit).toHaveBeenCalledOnce();
@@ -181,6 +282,7 @@ describe('Pi assistant terminal status', () => {
       expect(await drain(app)).toEqual([{ type: 'error', message: 'Pi assistant ended with error' }]);
       expect(app.lifecycle.filter(type => type === 'agent_end')).toHaveLength(2);
       expect(app.lifecycle).toContain('auto_retry_end');
+      expect(receipts()).toEqual([expect.objectContaining({ stage: 'stream_open', stopReason: 'error', retryCount: 1, httpStatus: null })]);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
     } finally { await app.cleanup(); }
@@ -202,6 +304,7 @@ describe('Pi assistant terminal status', () => {
       expect(app.commit).toHaveBeenCalledOnce();
       expect(app.rollback).not.toHaveBeenCalled();
       expect(fs.existsSync(path.join(new URL(app.input.config.workspace).pathname, 'output.txt'))).toBe(false);
+      expect(receipts()).toEqual([]);
     } finally { await app.cleanup(); }
   });
 
@@ -232,6 +335,7 @@ describe('Pi assistant terminal status', () => {
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
       expect(calls).toBe(3);
+      expect(receipts()).toEqual([]);
     } finally { await app.cleanup(); }
   });
 
@@ -324,6 +428,7 @@ describe('Pi assistant terminal status', () => {
       expect((await store.loadRun(run.id, context)).error).toBe('Pi assistant ended with error');
       expect(calls).toBe(4);
       expect(app.lifecycle.filter(type => type === 'auto_retry_start')).toHaveLength(2);
+      expect(receipts()).toEqual([expect.objectContaining({ retryCount: 2, stopReason: 'error', httpStatus: null })]);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
     } finally { await app.cleanup(); }

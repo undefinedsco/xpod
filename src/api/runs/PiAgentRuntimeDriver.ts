@@ -1,4 +1,6 @@
 import * as fs from 'node:fs';
+import { getLoggerFor } from 'global-logger-factory';
+import { hashTaskModelDiagnosticSession, selectTaskModelDiagnosticReceipt } from '../../util/task-model-diagnostics';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
@@ -138,6 +140,8 @@ type WarmRuntime = {
 export class PiAgentRuntimeDriver implements RunExecutionBackend {
   private static sdkPromise?: Promise<PiSdk>;
 
+  private readonly logger = getLoggerFor(this);
+
   private readonly git = new GitWorktreeService();
   private readonly warmRuntimes = new Map<string, Promise<WarmRuntime>>();
   private readonly solidfs: SolidFS;
@@ -220,6 +224,22 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     let failed = false;
     let releaseApprovalTool: (() => void) | undefined;
     let pausedForApproval = false;
+    const sessionHeader = `xpod-${crypto.createHash('sha256').update(input.threadId).digest('hex')}`;
+    let stage: 'not_invoked' | 'model_invoked' | 'payload_prepared' | 'stream_open' = 'not_invoked';
+    let api: 'openai-completions' | 'openai-responses' | 'other' = 'other';
+    let credentialPresent = false;
+    let retryCount = 0;
+    let failureLogged = false;
+    const logFailure = (stopReason: 'error' | 'aborted' | 'unknown') => {
+      if (failureLogged || pausedForApproval || input.signal?.aborted) return;
+      failureLogged = true;
+      const receipt = selectTaskModelDiagnosticReceipt({ event: 'xpod.task-model-diagnostic', schemaVersion: 1,
+        scope: 'session', stage, api, stopReason, retryCount,
+        correlationHash: hashTaskModelDiagnosticSession(sessionHeader), httpStatus: null, credentialPresent });
+      if (receipt) {
+        try { this.logger.error(JSON.stringify(receipt)); } catch { /* Diagnostics cannot alter run failure semantics. */ }
+      }
+    };
     let releaseLifecycleWait: (() => void) | undefined;
     const onAbort = () => {
       failed = true;
@@ -232,6 +252,9 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     try {
       workspace = await this.prepareWorkspace(input);
       const runtime = await this.getWarmRuntime(input, workspace);
+      api = runtime.piConfig.api === 'openai-completions' || runtime.piConfig.api === 'openai-responses'
+        ? runtime.piConfig.api : 'other';
+      credentialPresent = Boolean(runtime.piConfig.apiKey);
       const sessionManager = this.createSessionManager(runtime.pi, input.runId, runtime.workdir);
       const approvalTool: NonNullable<CreateAgentSessionOptions['customTools']>[number] = {
         name: 'request_approval', label: 'Request approval',
@@ -279,13 +302,35 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         resourceLoader: runtime.resourceLoader,
         model: { ...runtime.piConfig.model, headers: {
           'user-agent': `Xpod/${xpodVersion}`,
-          'x-opencode-session': `xpod-${crypto.createHash('sha256').update(input.threadId).digest('hex')}`,
+          'x-opencode-session': sessionHeader,
         } },
         thinkingLevel: runtime.thinkingLevel,
         tools: runtime.tools,
         customTools: [approvalTool],
       });
       session = result.session;
+      const originalStreamFn = session.agent.streamFn.bind(session.agent);
+      session.agent.streamFn = (model, context, options) => {
+        stage = 'model_invoked';
+        credentialPresent = Boolean(options?.apiKey);
+        const response = originalStreamFn(model, context, { ...options,
+          onPayload: payload => {
+            stage = 'payload_prepared';
+            return options?.onPayload?.(payload);
+          },
+        });
+        const observe = (stream: Awaited<ReturnType<typeof originalStreamFn>>) => {
+          const iterate = stream[Symbol.asyncIterator].bind(stream);
+          stream[Symbol.asyncIterator] = async function* () {
+            for await (const event of { [Symbol.asyncIterator]: iterate }) {
+              if (event.type === 'start') stage = 'stream_open';
+              yield event;
+            }
+          };
+          return stream;
+        };
+        return response instanceof Promise ? response.then(observe) : observe(response);
+      };
       if (input.signal?.aborted) return;
       session.agent.replaceMessages(this.toPiMessages(input, runtime.piConfig));
 
@@ -295,6 +340,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       };
       const unsubscribe = session.subscribe((event) => {
         this.projectPiEvent(event, queue, streamState);
+        if (event.type === 'auto_retry_start') retryCount += 1;
         if (event.type === 'agent_start' || event.type === 'auto_retry_end') releaseLifecycleWait?.();
       });
 
@@ -318,13 +364,17 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         if (!pausedForApproval && !input.signal?.aborted && lastAssistant?.role === 'assistant' &&
             (lastAssistant.stopReason === 'error' || lastAssistant.stopReason === 'aborted')) {
           // Provider errorMessage can contain credentials or response bodies; expose only the classification.
+          logFailure(lastAssistant.stopReason);
           queue.push({ type: 'error', message: `Pi assistant ended with ${lastAssistant.stopReason}` });
         } else if (!streamState.assistantTextStreamed && streamState.lastAssistantText.length > 0) {
           queue.push({ type: 'text', text: streamState.lastAssistantText });
         }
         queue.close();
       }).catch((error) => {
-        if (!pausedForApproval) queue.push({ type: 'error', message: this.formatError(error) });
+        if (!pausedForApproval) {
+          logFailure('unknown');
+          queue.push({ type: 'error', message: this.formatError(error) });
+        }
         queue.close();
       }).finally(() => {
         unsubscribe();
@@ -341,7 +391,9 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         completed = true;
       }
     } catch (error) {
-      yield this.startupErrorToEvent(error);
+      const event = this.startupErrorToEvent(error);
+      if (event.type === 'error') logFailure('unknown');
+      yield event;
     } finally {
       input.signal?.removeEventListener('abort', onAbort);
       releaseLifecycleWait?.();

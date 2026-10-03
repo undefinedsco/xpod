@@ -5,6 +5,11 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { AuthMiddleware, AuthenticatedRequest } from './middleware/AuthMiddleware';
 import { nodeRuntimeHost } from '../runtime/host/node/NodeRuntimeHost';
 import type { RuntimeHost, RuntimeListenEndpoint } from '../runtime/host/types';
+import {
+  hashTaskModelDiagnosticSession,
+  selectTaskModelDiagnosticReceipt,
+  type TaskGatewayHttpDiagnosticReceipt,
+} from '../util/task-model-diagnostics';
 
 /**
  * Route handler function
@@ -199,6 +204,7 @@ export class ApiServer {
     const method = request.method?.toUpperCase() ?? 'GET';
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
     const path = url.pathname;
+    this.observeTaskGatewayResponse(request, response, method, path);
 
     // Handle CORS preflight
     if (method === 'OPTIONS') {
@@ -262,6 +268,40 @@ export class ApiServer {
         response.end(JSON.stringify({ error: 'Internal Server Error' }));
       }
     }
+  }
+
+  private observeTaskGatewayResponse(
+    request: IncomingMessage, response: ServerResponse, method: string, path: string,
+  ): void {
+    if (method !== 'POST') return;
+    const route: TaskGatewayHttpDiagnosticReceipt['route'] | undefined =
+      path === '/v1/chat/completions' ? 'chat_completions' :
+      path === '/v1/responses' ? 'responses' :
+      path === '/v1/messages' ? 'anthropic_messages' : undefined;
+    if (!route) return;
+    const correlationHash = hashTaskModelDiagnosticSession(request.headers['x-opencode-session']);
+    if (!correlationHash) return;
+    const startedAt = Date.now();
+    const observe = (statusSource: TaskGatewayHttpDiagnosticReceipt['statusSource']): void => {
+      response.off('finish', onFinish);
+      response.off('close', onClose);
+      // An unsent close has no actual caller HTTP status, regardless of statusCode.
+      if (statusSource === 'response_closed' && !response.headersSent) return;
+      try {
+        const receipt = selectTaskModelDiagnosticReceipt({
+          event: 'xpod.task-gateway-http-diagnostic', schemaVersion: 1, scope: 'session',
+          correlationHash, route, callerHTTPstatus: response.statusCode, statusSource,
+          durationMs: Math.max(0, Math.min(2147483647, Date.now() - startedAt)),
+        } satisfies TaskGatewayHttpDiagnosticReceipt);
+        if (receipt) this.logger.error(JSON.stringify(receipt));
+      } catch {
+        // Diagnostics are observational; a failing sink must not affect HTTP or cleanup.
+      }
+    };
+    const onFinish = (): void => observe('response_finished');
+    const onClose = (): void => observe('response_closed');
+    response.once('finish', onFinish);
+    response.once('close', onClose);
   }
 
   private findRoute(method: string, path: string): { route: Route; params: Record<string, string> } | undefined {

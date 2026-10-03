@@ -1,4 +1,4 @@
-import { readFile, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, writeFile, rm, chmod } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { parseDocument } from 'yaml';
@@ -35,6 +35,101 @@ function allRuns(workflow: Workflow): string[] {
 }
 
 describe('release candidate workflow', () => {
+  it('proves diagnostic container absence and removes private files even when cleanup fails', async () => {
+    const workflow = await loadWorkflow();
+    const steps = workflow.jobs.task_runtime_diagnostic.steps;
+    const cleanupIndex = steps.findIndex((step: { name?: string }) => step.name === 'Cleanup only the owned diagnostic container and private files');
+    const uploadIndex = steps.findIndex((step: { name?: string }) => step.name === 'Upload diagnostic evidence (never stable-promotion evidence)');
+    const parent = path.join(repoRoot, '.test-data', 'task-cleanup-contract');
+    await mkdir(parent, { recursive: true });
+    for (const mode of ['removed', 'remaining', 'unreachable', 'already-absent', 'foreign-marker']) {
+      const directory = await mkdtemp(path.join(parent, 'case-'));
+      try {
+        const bin = path.join(directory, 'bin');
+        await mkdir(bin);
+        await writeFile(path.join(bin, 'docker'), `#!/bin/bash
+printf '%s\\n' "$1" >> "$RUNNER_TEMP/docker-calls"
+case "$1" in
+  info) [ "$FAKE_DOCKER_MODE" != unreachable ] ;;
+  rm) [ "$FAKE_DOCKER_MODE" = removed ] ;;
+  ps) if [ "$FAKE_DOCKER_MODE" = remaining ]; then printf '%s\\n' xpod-task-diagnostic-123-2; fi ;;
+  *) exit 99 ;;
+esac
+`);
+        await chmod(path.join(bin, 'docker'), 0o700);
+        await writeFile(path.join(directory, 'task-diagnostic-container-name'),
+          mode === 'foreign-marker' ? 'foreign-container' : 'xpod-task-diagnostic-123-2');
+        await writeFile(path.join(directory, 'task-diagnostic-provider-config'), 'private-fixture');
+        let failed = false;
+        try {
+          execFileSync('bash', ['-euo', 'pipefail', '-c', steps[cleanupIndex].run], {
+            encoding: 'utf8', stdio: 'pipe', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+              RUNNER_TEMP: directory, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2', FAKE_DOCKER_MODE: mode },
+          });
+        } catch { failed = true; }
+        expect(failed, mode).toBe(['remaining', 'unreachable', 'foreign-marker'].includes(mode));
+        expect(await readFile(path.join(directory, 'task-diagnostic-provider-config'), 'utf8').catch(() => undefined), mode).toBeUndefined();
+        const calls = await readFile(path.join(directory, 'docker-calls'), 'utf8').catch(() => '');
+        if (mode === 'foreign-marker') expect(calls).not.toContain('rm');
+        if (!failed) {
+          expect(JSON.parse(await readFile(path.join(directory, 'task-diagnostic-safe', 'cleanup.json'), 'utf8')))
+            .toMatchObject({ schemaVersion: 1, ownedContainerAbsent: true, privateFilesRemoved: true, accepted: false });
+        }
+      } finally { await rm(directory, { recursive: true, force: true }); }
+    }
+    expect(uploadIndex).toBeGreaterThan(cleanupIndex);
+  });
+
+  it('builds the current diagnostic runtime locally while preserving independent native provenance', async () => {
+    const workflow = await loadWorkflow();
+    const job = workflow.jobs.task_runtime_diagnostic;
+    expect(job.permissions).toEqual({ contents: 'read', packages: 'read' });
+    expect(job.env.DIAGNOSTIC_RUNTIME_SOURCE_SHA).toBe('${{ github.sha }}');
+    expect(job.env.DIAGNOSTIC_NATIVE_SOURCE_SHA).toBe('35dce6f1fc5f69b189b695d5321d68e9c0df9331');
+    const build = job.steps.find((step: { name?: string }) => step.name === 'Build current source only for local Task diagnostics');
+    expect(build.with).toMatchObject({ context: '.', file: './Dockerfile', target: 'runtime',
+      platforms: 'linux/amd64', load: true, push: false });
+    expect(build.with['cache-to']).toBeUndefined();
+    expect(build.with['build-args']).toContain('XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ steps.native.outputs.image }}');
+    const text = jobRunText(workflow, 'task_runtime_diagnostic');
+    expect(text).toContain('git diff --quiet "$DIAGNOSTIC_NATIVE_SOURCE_SHA" HEAD --');
+    expect(text).toContain('org.opencontainers.image.revision');
+    expect(text).toContain('nativeImageId');
+    expect(text).toContain('runtimeImageId');
+    expect(text).not.toContain('publish-qlever');
+    expect(text).not.toContain('docker push');
+    expect(text).not.toContain('--apply-root-version');
+    const verifyIndex = job.steps.findIndex((step: { name?: string }) => step.name === 'Bind the locally built diagnostic runtime and native input');
+    const liveIndex = job.steps.findIndex((step: { name?: string }) => step.name === 'Run unchanged real live Task acceptance against current source');
+    expect(verifyIndex).toBeGreaterThan(-1);
+    expect(liveIndex).toBeGreaterThan(verifyIndex);
+    expect(jobRunText(workflow, 'task_runtime_diagnostic')).not.toContain('release-acceptance-manifest.cjs');
+  });
+
+  it('projects Task model receipts before owned-container cleanup without uploading raw logs', async () => {
+    const workflow = await loadWorkflow();
+    for (const name of ['deploy_and_accept', 'task_runtime_diagnostic']) {
+      const steps = workflow.jobs[name].steps;
+      const projectIndex = steps.findIndex((step: { name?: string }) => step.name === 'Project safe Task model failure evidence');
+      expect(projectIndex).toBeGreaterThan(-1);
+      const project = steps[projectIndex];
+      expect(project.if).toBe('always()');
+      expect(project.run).toContain('project-task-model-diagnostics.ts');
+      expect(project.run).toContain('docker logs --timestamps "$local_name"');
+      expect(project.run).toContain('trap \'rm -f "$raw_log"\' EXIT');
+      expect(project.run).toContain('"$(cat "$name_file")" = "$local_name"');
+      expect(project.run).toContain('xpod-rc-local-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}');
+      expect(project.run).toContain('xpod-task-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}');
+      const cleanupIndex = steps.findIndex((step: { name?: string }) => /Cleanup.*(?:Local Xpod|owned diagnostic container)/u.test(step.name ?? ''));
+      expect(cleanupIndex).toBeGreaterThan(projectIndex);
+      const upload = steps.find((step: { name?: string }) => step.name === 'Upload safe Task model failure evidence');
+      expect(upload.if).toBe('always()');
+      expect(upload.with.path).toBe('${{ runner.temp }}/task-model-diagnostic-safe/');
+      expect(upload.with.name).toContain('task-model-failure-diagnostic-${{ github.sha }}');
+      expect(upload.with.path).not.toContain('private');
+    }
+  });
+
   it('allows measured cold image pulls without extending application health probes', async () => {
     const workflow = await loadWorkflow();
     const deployment = parseDocument(await readFile(

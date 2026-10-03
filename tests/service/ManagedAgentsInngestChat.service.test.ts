@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
+import type { StreamFn } from '@mariozechner/pi-agent-core';
 import { ChatKitService } from '../../src/api/chatkit/service';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
 import {
@@ -25,6 +26,8 @@ import { TaskAuthBindingService } from '../../src/api/tasks';
 import { LocalSolidFS, type MaterializedWorkspace, type SolidFS, type SolidFsPrepareInput } from '../../src/solidfs';
 
 const workspaceRef = `file://localhost${process.cwd()}`;
+// These fixtures project SDK events through prompt; unexpected provider streaming must fail without HTTP.
+const unusedStreamFn: StreamFn = () => { throw new Error('Legacy Pi fixture must not invoke model streaming'); };
 
 type TestRuntimeTool = {
   name: string;
@@ -43,7 +46,7 @@ interface TestAgentSessionOptions {
 
 interface TestAgentSessionResult {
   session: {
-    agent: { replaceMessages: typeof replaceMessagesMock };
+    agent: { replaceMessages: typeof replaceMessagesMock; streamFn: StreamFn };
     subscribe: typeof subscribeMock;
     prompt: (prompt?: string) => Promise<void>;
     dispose: typeof disposeMock;
@@ -96,7 +99,7 @@ const {
 
   const createAgentSessionMock = vi.fn(async (_options?: TestAgentSessionOptions): Promise<TestAgentSessionResult> => ({
       session: {
-        agent: { replaceMessages: replaceMessagesMock },
+        agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn },
         subscribe: subscribeMock,
         prompt: promptMock,
         dispose: disposeMock,
@@ -2457,7 +2460,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         }
         return {
           session: {
-            agent: { replaceMessages: replaceMessagesMock },
+            agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn },
             subscribe: subscribeMock,
             prompt: async () => {
               const writeTool = options.tools.find((tool) => tool.name === 'write');
@@ -2550,7 +2553,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         const executeReadTool = readTool.execute;
         return {
           session: {
-            agent: { replaceMessages: replaceMessagesMock },
+            agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn },
             subscribe: subscribeMock,
             prompt: async () => {
               await executeReadTool('tool_read_1', { path: 'objects/report.txt' });
@@ -2615,7 +2618,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     let toolSettled = false;
     const details = { target: 'https://pod.test/work/output.txt', action: 'http://www.w3.org/ns/odrl/2/write', risk: 'low', description: 'Write the approved confirmation file' };
     createAgentSessionMock.mockImplementationOnce(async (options?: TestAgentSessionOptions) => ({ session: {
-      agent: { replaceMessages: replaceMessagesMock }, subscribe: subscribeMock,
+      agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn }, subscribe: subscribeMock,
       prompt: async () => {
         const tool = options!.customTools!.find(tool => tool.name === 'request_approval')!;
         expect(tool.parameters.required).toEqual(expect.arrayContaining(['target', 'action', 'risk', 'description']));
@@ -2651,7 +2654,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     let finishPrompt!: () => void;
     const abort = vi.fn(async () => { finishPrompt(); });
     createAgentSessionMock.mockImplementationOnce(async () => ({ session: {
-      agent: { replaceMessages: replaceMessagesMock }, subscribe: subscribeMock,
+      agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn }, subscribe: subscribeMock,
       prompt: () => { started(); return new Promise<void>(resolve => { finishPrompt = resolve; }); },
       abort, dispose: disposeMock,
     } }));
@@ -2904,7 +2907,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         expect(activeWorkdir).toBe(mappedWorkspacePath);
         return {
           session: {
-            agent: { replaceMessages: replaceMessagesMock },
+            agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn },
             subscribe: subscribeMock,
             prompt: async (prompt?: string) => {
               const readmePath = path.join(activeWorkdir, 'README.md');

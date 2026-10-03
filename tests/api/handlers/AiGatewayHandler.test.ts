@@ -1,5 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BaseLogger,
@@ -12,6 +13,7 @@ import {
 import { AiGatewayService, type GatewayCredentialStore } from '../../../src/api/ai-gateway/AiGatewayService';
 import { registerAiGatewayRoutes } from '../../../src/api/handlers/AiGatewayHandler';
 import { ChatCompletionsFrontend } from '../../../src/api/ai-gateway/protocol';
+import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
@@ -311,6 +313,160 @@ async function callRoute(routes: Record<string, Function>, methodAndPath: string
   await routes[methodAndPath](req, res, {});
   return res;
 }
+
+describe('AiGatewayHandler task failure diagnostics', () => {
+  const session = 'controlled-task-correlation';
+  const sessionHeaders = { 'x-opencode-session': session };
+  const hash = createHash('sha256').update(session).digest('hex');
+  const receipts = (logs: CapturedLog[]) => logs.filter(entry => entry.level === 'error')
+    .map(entry => { try { return JSON.parse(entry.message); } catch { return undefined; } })
+    .filter(entry => entry?.event === 'xpod.task-gateway-diagnostic');
+
+  afterEach(() => resetInternalLoggerFactory());
+
+  it.each([
+    ['/v1/chat/completions', 'chat_completions'],
+    ['/v1/responses', 'responses'],
+    ['/v1/messages', 'anthropic_messages'],
+  ])('records actual caller status separately from structured underlying status for %s', async (path, route) => {
+    const logs = captureLogs();
+    const { routes, service } = createFixture();
+    vi.spyOn(service, 'complete').mockRejectedValue(new GatewayProtocolError('private upstream prose sk-do-not-log', {
+      code: 'provider_error', status: 502,
+      cause: Object.assign(new Error('private cause'), { status: 429 }),
+      details: { apiKey: 'private-key', args: 'private-args' },
+    }));
+    const res = await callRoute(routes, `POST ${path}`, request(path, {
+      model: 'private-model', messages: [{ role: 'user', content: 'private prompt' }],
+    }, undefined, { ...sessionHeaders, authorization: 'Bearer private-token' }));
+    expect(res.statusCode).toBe(502);
+    expect(receipts(logs)).toEqual([{
+      event: 'xpod.task-gateway-diagnostic', schemaVersion: 1, scope: 'session', correlationHash: hash, route,
+      callerHTTPstatus: 502, code: 'provider_error', underlyingErrorStatus: 429,
+      streamOpen: false, durationMs: expect.any(Number),
+    }]);
+    const line = JSON.stringify(receipts(logs));
+    for (const privateValue of [session, 'private upstream', 'private cause', 'private-key', 'private-args', 'private-token', 'private-model', 'private prompt']) {
+      expect(line).not.toContain(privateValue);
+    }
+  });
+
+  it('records SSE internal failure as caller HTTP200 without changing the error/DONE response', async () => {
+    const logs = captureLogs();
+    const { routes } = createFixture({ failAfterFirstEvent: true });
+    const res = await callRoute(routes, 'POST /v1/chat/completions', request('/v1/chat/completions', {
+      model: 'gpt-5', stream: true, messages: [{ role: 'user', content: 'hi' }],
+    }, undefined, sessionHeaders));
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('"error"');
+    expect(res.body.trim().endsWith('data: [DONE]')).toBe(true);
+    expect(receipts(logs)).toEqual([{
+      event: 'xpod.task-gateway-diagnostic', schemaVersion: 1, scope: 'session', correlationHash: hash, route: 'chat_completions',
+      callerHTTPstatus: 200, code: 'internal_error', underlyingErrorStatus: 502,
+      streamOpen: true, durationMs: expect.any(Number),
+    }]);
+    expect(res.listenerCount('close')).toBe(0);
+  });
+
+  it('hashes valid session metadata even when body validation fails first', async () => {
+    const logs = captureLogs();
+    const { routes } = createFixture();
+    const res = await callRoute(routes, 'POST /v1/chat/completions', request('/v1/chat/completions', '{bad', undefined, sessionHeaders));
+    expect(res.statusCode).toBe(400);
+    expect(receipts(logs)).toEqual([expect.objectContaining({ correlationHash: hash, callerHTTPstatus: 400, code: 'invalid_request', streamOpen: false })]);
+  });
+
+  it('records a closed stream without retaining lifecycle listeners', async () => {
+    const logs = captureLogs();
+    const { routes } = createFixture();
+    const res = response();
+    const pending = routes['POST /v1/chat/completions'](request('/v1/chat/completions', {
+      model: 'gpt-5', stream: true, messages: [{ role: 'user', content: 'hi' }],
+    }, undefined, sessionHeaders), res, {});
+    await eventually(() => expect(res.writeCount).toBe(1));
+    res.emit('close');
+    await pending;
+    expect(receipts(logs)).toEqual([expect.objectContaining({
+      callerHTTPstatus: 200, code: 'internal_error', streamOpen: true,
+    })]);
+    expect(res.listenerCount('close')).toBe(0);
+    expect(res.listenerCount('drain')).toBe(0);
+  });
+
+  it('bounds diagnostics even for forged structured error fields', async () => {
+    const logs = captureLogs();
+    const { routes, service } = createFixture();
+    const error = new GatewayProtocolError('private message', { status: 500 });
+    Object.assign(error, { code: 'private-code', cause: { status: Infinity, apiKey: 'private-key' } });
+    vi.spyOn(service, 'complete').mockRejectedValue(error);
+    await callRoute(routes, 'POST /v1/chat/completions', request('/v1/chat/completions', { model: 'gpt-5' }, undefined, sessionHeaders));
+    const receipt = receipts(logs)[0];
+    expect(receipt).toMatchObject({ code: 'internal_error', underlyingErrorStatus: 500 });
+    expect(Number.isInteger(receipt.durationMs)).toBe(true);
+    expect(receipt.durationMs).toBeGreaterThanOrEqual(0);
+    expect(receipt.durationMs).toBeLessThanOrEqual(2_147_483_647);
+    expect(JSON.stringify(receipt)).not.toContain('private');
+  });
+
+  it('keeps diagnostic logger failures out of response and cleanup behavior', async () => {
+    class ThrowingDiagnosticLogger extends CapturingLogger {
+      public override log(level: LogLevel, message: string): Logger {
+        if (level === 'error') throw new Error('diagnostic sink unavailable');
+        return super.log(level, message);
+      }
+    }
+    setGlobalLoggerFactory({ createLogger: () => new ThrowingDiagnosticLogger([]) });
+    const { routes, service } = createFixture();
+    vi.spyOn(service, 'complete').mockRejectedValue(Object.assign(new Error('upstream failure'), { status: 503 }));
+    const res = await callRoute(routes, 'POST /v1/chat/completions', request('/v1/chat/completions', { model: 'gpt-5' }, undefined, sessionHeaders));
+    expect(res.statusCode).toBe(503);
+    expect(res.writeCount).toBe(1);
+    expect(JSON.parse(res.body).error.code).toBe('internal_error');
+    expect(res.listenerCount('close')).toBe(0);
+  });
+
+  it.each([false, true])('does not emit a failure receipt on success (stream=%s)', async stream => {
+    const logs = captureLogs();
+    const { routes } = createFixture();
+    const res = await callRoute(routes, 'POST /v1/chat/completions', request('/v1/chat/completions', {
+      model: 'gpt-5', stream, messages: [{ role: 'user', content: 'hi' }],
+    }, undefined, sessionHeaders));
+    expect(res.statusCode).toBe(200);
+    expect(receipts(logs)).toEqual([]);
+  });
+
+  it('does not emit a receipt for ordinary failed Chat without session metadata', async () => {
+    const logs = captureLogs();
+    const { routes, service } = createFixture();
+    vi.spyOn(service, 'complete').mockRejectedValue(Object.assign(new Error('plain failure'), { status: 503 }));
+    const res = await callRoute(routes, 'POST /v1/chat/completions', request('/v1/chat/completions', { model: 'gpt-5' }));
+    expect(res.statusCode).toBe(503);
+    expect(receipts(logs)).toEqual([]);
+  });
+
+  it.each(['a'.repeat(257), 'private\nheader', 'one, two', ''])('does not hash malformed session metadata', async value => {
+    const logs = captureLogs();
+    const { routes } = createFixture();
+    const req = request('/v1/chat/completions', { model: 'gpt-5' }, undefined, { 'x-opencode-session': value });
+    const res = await callRoute(routes, 'POST /v1/chat/completions', req);
+    expect(res.statusCode).toBe(400);
+    expect(receipts(logs)).toEqual([]);
+  });
+
+  it('does not hash duplicate session headers or infer status from free-form prose', async () => {
+    const logs = captureLogs();
+    const { routes, service } = createFixture();
+    const duplicate = request('/v1/chat/completions', { model: 'gpt-5' }, undefined, sessionHeaders);
+    duplicate.rawHeaders = ['x-opencode-session', session, 'X-OpenCode-Session', 'private-other'];
+    expect((await callRoute(routes, 'POST /v1/chat/completions', duplicate)).statusCode).toBe(400);
+    expect(receipts(logs)).toEqual([]);
+    vi.spyOn(service, 'complete').mockRejectedValue(new Error('HTTP 429 apiKey=private-error'));
+    await callRoute(routes, 'POST /v1/chat/completions', request('/v1/chat/completions', { model: 'gpt-5' }, undefined, sessionHeaders));
+    expect(receipts(logs)).toEqual([expect.objectContaining({ callerHTTPstatus: 500, code: 'internal_error' })]);
+    expect(receipts(logs)[0]).not.toHaveProperty('underlyingErrorStatus');
+    expect(JSON.stringify(receipts(logs))).not.toContain('private-error');
+  });
+});
 
 describe('AiGatewayHandler', () => {
   it.each([false, true])('forwards only bounded client invocation metadata (stream=%s)', async stream => {

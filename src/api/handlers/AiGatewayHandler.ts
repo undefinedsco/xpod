@@ -6,6 +6,12 @@ import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
 import type { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import { readGatewayInvocationMetadata } from '../ai-gateway/InvocationMetadata';
+import {
+  hashTaskModelDiagnosticSession,
+  selectTaskModelDiagnosticReceipt,
+  TASK_GATEWAY_DIAGNOSTIC_CODES,
+  type TaskGatewayDiagnosticReceipt,
+} from '../../util/task-model-diagnostics';
 import type { GatewayEvent, GatewayProtocol, GatewayProtocolFrontend, GatewayUsage } from '../ai-gateway/types';
 
 export interface AiGatewayHandlerOptions {
@@ -37,7 +43,11 @@ interface InferenceStreamOutcome {
   outcome: InferenceLogSummary['outcome'];
   finishReason?: string;
   usage?: GatewayUsage;
+  failure?: TaskGatewayFailure;
 }
+
+type TaskGatewayFailure = Pick<TaskGatewayDiagnosticReceipt, 'code' | 'underlyingErrorStatus'>;
+const TASK_GATEWAY_CODES = new Set<TaskGatewayFailure['code']>(TASK_GATEWAY_DIAGNOSTIC_CODES);
 
 export function registerAiGatewayRoutes(
   server: ApiServer,
@@ -69,12 +79,19 @@ export class AiGatewayHandler {
     protocol: GatewayProtocol,
   ): Promise<void> {
     const startedAt = Date.now();
+    // Observation only: preserve the existing body/header validation ordering.
+    let correlationHash: string | undefined;
+    try {
+      correlationHash = hashTaskModelDiagnosticSession(readGatewayInvocationMetadata(request.headers, request.rawHeaders).sessionId);
+    } catch { /* Invalid invocation metadata is rejected by the existing path. */ }
     const bodyResult = await readBoundedJsonBody(request, { limitBytes: this.jsonBodyLimitBytes });
     if (!bodyResult.ok) {
-      this.sendGatewayError(response, new GatewayProtocolError(bodyResult.error, {
+      const error = new GatewayProtocolError(bodyResult.error, {
         code: 'invalid_request',
         status: bodyResult.status,
-      }));
+      });
+      this.sendGatewayError(response, error);
+      this.logTaskGatewayFailure(correlationHash, response, protocol, startedAt, false, taskGatewayFailure(error));
       return;
     }
 
@@ -116,15 +133,23 @@ export class AiGatewayHandler {
       });
       const outcome = await this.sendEventStream(response, execution.frontend, execution.events);
       this.logInference({ protocol, model, stream: true, startedAt, ...outcome });
+      if (outcome.failure) {
+        this.logTaskGatewayFailure(correlationHash, response, protocol, startedAt, true, outcome.failure);
+      }
     } catch (error) {
       if (controller.signal.aborted || response.destroyed) {
         return;
       }
       if (response.headersSent) {
-        await this.writeTerminalStreamError(response, error);
+        try {
+          await this.writeTerminalStreamError(response, error);
+        } finally {
+          this.logTaskGatewayFailure(correlationHash, response, protocol, startedAt, isStreamRequest(bodyResult.value), taskGatewayFailure(error));
+        }
         return;
       }
       this.sendGatewayError(response, error);
+      this.logTaskGatewayFailure(correlationHash, response, protocol, startedAt, false, taskGatewayFailure(error));
     } finally {
       response.off('close', abort);
     }
@@ -230,6 +255,7 @@ export class AiGatewayHandler {
       await writeWithBackpressure(response, 'data: [DONE]\n\n');
     } catch (error) {
       outcome.outcome = disconnected ? 'disconnected' : 'failed';
+      outcome.failure = taskGatewayFailure(error);
       await returnIterator();
       if (!disconnected) {
         await this.writeTerminalStreamError(response, error);
@@ -242,8 +268,30 @@ export class AiGatewayHandler {
     }
     if (disconnected) {
       outcome.outcome = 'disconnected';
+      outcome.failure ??= taskGatewayFailure(undefined);
     }
     return outcome;
+  }
+
+  private logTaskGatewayFailure(
+    correlationHash: string | undefined,
+    response: ServerResponse,
+    protocol: GatewayProtocol,
+    startedAt: number,
+    streamOpen: boolean,
+    failure: TaskGatewayFailure,
+  ): void {
+    if (!correlationHash || !diagnosticHTTPStatus(response.statusCode)) return;
+    const route: TaskGatewayDiagnosticReceipt['route'] = protocol === 'chatCompletions' ? 'chat_completions'
+      : protocol === 'responses' ? 'responses' : 'anthropic_messages';
+    try {
+      const receipt = selectTaskModelDiagnosticReceipt({
+        event: 'xpod.task-gateway-diagnostic', schemaVersion: 1, scope: 'session', correlationHash, route,
+        callerHTTPstatus: response.statusCode, ...failure, streamOpen,
+        durationMs: Math.min(2_147_483_647, Math.max(0, Math.floor(Date.now() - startedAt))),
+      } satisfies TaskGatewayDiagnosticReceipt);
+      if (receipt) this.logger.error(JSON.stringify(receipt));
+    } catch { /* An observational receipt must not alter the response or cleanup. */ }
   }
 
   private logInference(summary: InferenceLogSummary): void {
@@ -287,6 +335,21 @@ export class AiGatewayHandler {
       },
     });
   }
+}
+
+function diagnosticHTTPStatus(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
+}
+
+function taskGatewayFailure(error: unknown): TaskGatewayFailure {
+  const code = normalizeGatewayError(error).error.code;
+  const source = error && typeof error === 'object' ? error as { status?: unknown; cause?: unknown } : undefined;
+  const cause = source?.cause && typeof source.cause === 'object' ? source.cause as { status?: unknown } : undefined;
+  const underlyingErrorStatus = diagnosticHTTPStatus(cause?.status) ?? diagnosticHTTPStatus(source?.status);
+  return {
+    code: TASK_GATEWAY_CODES.has(code) ? code : 'internal_error',
+    ...(underlyingErrorStatus !== undefined ? { underlyingErrorStatus } : {}),
+  };
 }
 
 async function writeSerializedEvents(
