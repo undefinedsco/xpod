@@ -80,6 +80,13 @@ function renderPanel(value: unknown, props: Record<string, unknown> = {}) {
   return render(panel(value, props));
 }
 
+/** Wait for the identity's credential read to enable the grant control. */
+async function clickGrantWhenReady() {
+  const button = await screen.findByRole('button', { name: '授权后台任务访问' });
+  await waitFor(() => { expect((button as HTMLButtonElement).disabled).toBe(false); });
+  fireEvent.click(button);
+}
+
 function panel(value: unknown, props: Record<string, unknown> = {}) {
   return (
     <XpodSolidRuntimeContext.Provider value={value as never}>
@@ -104,7 +111,7 @@ describe('BackgroundPodAccess', () => {
     const value = runtimeValue();
     renderPanel(value);
 
-    fireEvent.click(await screen.findByRole('button', { name: '授权后台任务访问' }));
+    await clickGrantWhenReady();
 
     await waitFor(() => {
       expect(screen.getByText(/已授权 · v1/)).toBeDefined();
@@ -151,7 +158,7 @@ describe('BackgroundPodAccess', () => {
   it('reports a session that cannot prepare a credential', async () => {
     renderPanel(runtimeValue({ requestPodApiKey: vi.fn(async () => undefined) }));
 
-    fireEvent.click(await screen.findByRole('button', { name: '授权后台任务访问' }));
+    await clickGrantWhenReady();
 
     expect(await screen.findByText('当前会话无法准备凭据')).toBeDefined();
   });
@@ -164,7 +171,7 @@ describe('BackgroundPodAccess', () => {
     });
     renderPanel(value);
 
-    fireEvent.click(await screen.findByRole('button', { name: '授权后台任务访问' }));
+    await clickGrantWhenReady();
 
     expect(await screen.findByText('task_credential_storage_unconfigured')).toBeDefined();
     expect(screen.getByRole('button', { name: '授权后台任务访问' })).toBeDefined();
@@ -272,11 +279,13 @@ describe('BackgroundPodAccess', () => {
 
   it('drops a grant whose session ended while the key was being prepared', async () => {
     const key = deferred<string | undefined>();
-    const first = runtimeValue({ requestPodApiKey: vi.fn(() => key.promise) });
+    const requestPodApiKey = vi.fn(() => key.promise);
+    const first = runtimeValue({ requestPodApiKey });
     const view = renderPanel(first);
 
-    fireEvent.click(await screen.findByRole('button', { name: '授权后台任务访问' }));
+    await clickGrantWhenReady();
     expect(await screen.findByRole('button', { name: '正在授权…' })).toBeDefined();
+    expect(requestPodApiKey).toHaveBeenCalledTimes(1);
 
     const second = runtimeValue({ webId: OTHER_WEB_ID });
     view.rerender(panel(second));

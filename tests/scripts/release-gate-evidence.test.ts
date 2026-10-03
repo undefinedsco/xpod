@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 const repoRoot = path.resolve(__dirname, '../..');
 const script = path.join(repoRoot, 'scripts/release-gate-evidence.cjs');
 const { PACKAGES } = require('../../scripts/workspace-package-consumer.cjs') as { PACKAGES: string[] };
-const { loadQleverSourceConformance } = require('../../scripts/release-gate-evidence.cjs') as {
+const { loadQleverSourceConformance, loadWorkspacePackageNames } = require('../../scripts/release-gate-evidence.cjs') as {
   loadQleverSourceConformance: () => {
     repository: string;
     commit: string;
@@ -18,6 +18,7 @@ const { loadQleverSourceConformance } = require('../../scripts/release-gate-evid
     adapterAbiVersion: number;
     physicalBackendAbiVersion: number;
   };
+  loadWorkspacePackageNames: () => string[];
 };
 
 const conformance = loadQleverSourceConformance();
@@ -183,6 +184,7 @@ function makePackageFixture(label: string, options: {
   dropWorkspaceFile?: boolean;
   tamperWorkspaceHash?: boolean;
   packIntegrityMismatch?: boolean;
+  directoryPackageNames?: boolean;
 } = {}): PackageFixture {
   const sourceSha = 'c'.repeat(40);
   const root = mkdtempSync(path.join(tempRoot, `consumer-${label}-`));
@@ -207,7 +209,9 @@ function makePackageFixture(label: string, options: {
   const archiveDir = path.join(root, 'package-consumer-archive');
   const workspaceDir = path.join(archiveDir, 'workspace');
   mkdirSync(workspaceDir, { recursive: true });
-  const packages = PACKAGES.map((packageName) => {
+  // Mirror the real producer: `packageName` is the scoped npm name and `name`
+  // is the tarball basename, not the `packages/<dir>` workspace directory.
+  const packages = (options.directoryPackageNames ? PACKAGES : loadWorkspacePackageNames()).map((packageName) => {
     const name = `${packageName.replace('@', '').replace('/', '-')}-0.1.0.tgz`;
     const bytes = Buffer.from(`workspace-${packageName}`);
     writeFileSync(path.join(workspaceDir, name), bytes);
@@ -248,6 +252,13 @@ describe('package-consumers gate evidence', () => {
     const checks = path.join(tempRoot, 'consumer-valid-checks.json');
     run([ 'verify-package-consumers', '--evidence', fixture.unified, '--source-sha', fixture.sourceSha, '--archive-dir', fixture.archiveDir, '--checks-out', checks ]);
     expect(readChecks(checks)).toEqual({ 'package-consumers': 'passed' });
+  });
+
+  it('requires the scoped package names the producer emits, not workspace directory names', () => {
+    const names = loadWorkspacePackageNames();
+    expect(names).toHaveLength(PACKAGES.length);
+    expect(names).toContain('@undefineds.co/solid-sdk');
+    expectFailure(makePackageFixture('directory-names', { directoryPackageNames: true }).createArgs);
   });
 
   it('refuses to emit evidence when the real workspace consumer failed, is mismatched or lost bytes', () => {

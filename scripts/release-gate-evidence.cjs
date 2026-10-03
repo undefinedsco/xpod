@@ -365,6 +365,25 @@ function verifyQleverLocal(args) {
   process.stdout.write(`${JSON.stringify({ valid: true, 'qlever-local': 'passed' })}\n`);
 }
 
+// The workspace consumer hand-off keys every archive by the real npm package
+// name (e.g. `@undefineds.co/solid-sdk`), not by the `packages/<dir>` workspace
+// directory. Resolve the canonical names from the same checked-out manifests the
+// producer packed so the verifier matches the producer schema instead of a
+// second, divergent name table.
+function loadWorkspacePackageNames() {
+  const repoRoot = path.resolve(__dirname, '..');
+  return PACKAGES.map((directory) => {
+    const manifest = readJsonFile(
+      path.join(repoRoot, 'packages', directory, 'package.json'),
+      `workspace package ${directory}`,
+    );
+    if (!isPlainObject(manifest) || typeof manifest.name !== 'string' || manifest.name.length === 0) {
+      fail(`workspace package ${directory} does not declare a package name`);
+    }
+    return manifest.name;
+  });
+}
+
 function readPackEntry(packJsonPath) {
   const data = readJsonFile(packJsonPath, '--pack-json');
   const pack = Array.isArray(data) ? data[0] : data;
@@ -403,11 +422,12 @@ function validateWorkspaceConsumerEvidence(evidence, expectedSourceSha, archiveD
   if (evidence.sourceSha !== expectedSourceSha) {
     fail('workspace consumer evidence sourceSha does not match the accepted source SHA');
   }
-  if (!Array.isArray(evidence.packages) || evidence.packages.length !== PACKAGES.length) {
+  const packageNames = loadWorkspacePackageNames();
+  if (!Array.isArray(evidence.packages) || evidence.packages.length !== packageNames.length) {
     fail('workspace consumer evidence must cover every consumer package');
   }
   const packages = new Map(evidence.packages.map((entry) => [ entry?.packageName, entry ]));
-  return PACKAGES.map((packageName) => {
+  return packageNames.map((packageName) => {
     const entry = packages.get(packageName);
     if (!entry || typeof entry.name !== 'string' || entry.name.length === 0
       || !SHA256_PATTERN.test(String(entry.sha256 ?? ''))
@@ -519,11 +539,12 @@ function validatePackageConsumersEvidence(evidence) {
     || !SHA256_PATTERN.test(String(evidence.workspaceResult.evidenceSha256 ?? ''))) {
     fail('evidence must record a completed workspace consumer result');
   }
-  if (!Array.isArray(evidence.workspaceArchives) || evidence.workspaceArchives.length !== PACKAGES.length) {
+  const packageNames = loadWorkspacePackageNames();
+  if (!Array.isArray(evidence.workspaceArchives) || evidence.workspaceArchives.length !== packageNames.length) {
     fail('evidence workspaceArchives must cover every consumer package');
   }
   const byPackage = new Map(evidence.workspaceArchives.map((archive) => [ archive?.packageName, archive ]));
-  for (const packageName of PACKAGES) {
+  for (const packageName of packageNames) {
     const archive = byPackage.get(packageName);
     if (!archive || typeof archive.name !== 'string' || archive.name.length === 0
       || !SHA256_PATTERN.test(String(archive.sha256 ?? ''))
@@ -624,6 +645,7 @@ module.exports = {
   createPackageConsumers,
   createQleverLocal,
   loadQleverSourceConformance,
+  loadWorkspacePackageNames,
   main,
   verifyPackageConsumers,
   verifyQleverLocal,

@@ -52,6 +52,13 @@ jobs:
       - name: Build UI artifacts
         run: bun run build:ui
 
+      # Differential CLI tests require the real native ripgrep binary.
+      - name: Install native ripgrep for the differential CLI suites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ripgrep
+          rg --version
+
       - name: Unit tests
         run: bun run test:run
 
