@@ -1,5 +1,4 @@
 name: Diagnose Production
-
 on:
   workflow_dispatch:
     inputs:
@@ -11,10 +10,22 @@ on:
           - co
           - cn
         default: co
-
+      solid_probe:
+        description: Opt-in anonymous profile/discovery/JWKS GETs in one running Xpod container
+        required: false
+        type: boolean
+        default: false
+      solid_webid:
+        description: Public WebID (#me); retained in GitHub run metadata; required only for probe
+        required: false
+        type: string
+      solid_transport_compare:
+        description: Opt-in same anonymous profile GET with Bun and Node in one current container
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
-
 jobs:
   diagnose:
     name: Diagnose .${{ inputs.environment }}
@@ -25,7 +36,6 @@ jobs:
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
-
       - name: Capture Xpod state
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
@@ -35,3 +45,327 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=300 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=300 --prefix=true --max-log-requests=10 || true
+      - name: Check out optional probe
+        if: ${{ inputs.solid_probe || inputs.solid_transport_compare }}
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Probe public Solid discovery in current Xpod runtime
+        if: ${{ inputs.solid_probe }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+          PROBE_ENVIRONMENT: ${{ inputs.environment }}
+          PROBE_WEBID: ${{ inputs.solid_webid }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          probe_dir="$(mktemp -d)"
+          trap 'rm -rf "$probe_dir"' EXIT
+          if ! python3 - "$probe_dir/config.json" <<'PY'
+          import json, os, re, sys
+          from urllib.parse import urlsplit
+          try:
+              webid = os.environ['PROBE_WEBID']
+              environment = os.environ['PROBE_ENVIRONMENT']
+              url = urlsplit(webid)
+              if environment not in ('co', 'cn'):
+                  raise ValueError()
+              host = re.fullmatch(r'[a-f0-9]{32}\.nodes\.undefineds\.' + environment, url.netloc)
+              if not host or url.scheme != 'https' or url.query or url.fragment != 'me':
+                  raise ValueError()
+              if not re.fullmatch(r'/[A-Za-z0-9_-]+/profile/card', url.path):
+                  raise ValueError()
+              with open(sys.argv[1], 'w') as file:
+                  json.dump({'webid': webid, 'issuerOrigin': 'https://id.undefineds.' + environment + '/'}, file)
+          except Exception:
+              print('{"stage":"input","result":"failed","code":"INVALID_PUBLIC_TARGET"}')
+              sys.exit(1)
+          PY
+          then
+            echo 'Solid public probe failed input validation; existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! kubectl -n "$SEALOS_NAMESPACE" get pods -l app=xpod-cloud -o json > "$probe_dir/pods.json" 2> "$probe_dir/transport.err"; then
+            echo '{"stage":"runtime","result":"failed","code":"POD_SELECTION_FAILED"}'
+            echo 'Solid public probe failed pod selection; existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! probe_pod="$(python3 - "$probe_dir/pods.json" <<'PY'
+          import json, sys
+          try:
+              pods = json.load(open(sys.argv[1]))['items']
+              names = sorted(p['metadata']['name'] for p in pods
+                  if not p['metadata'].get('deletionTimestamp') and p.get('status', {}).get('phase') == 'Running'
+                  and any(c.get('name') == 'xpod' and c.get('ready') for c in p.get('status', {}).get('containerStatuses', [])))
+              if not names:
+                  raise ValueError()
+              print(names[0])
+          except Exception:
+              sys.exit(1)
+          PY
+          )"; then
+            echo '{"stage":"runtime","result":"failed","code":"NO_READY_XPOD"}'
+            echo 'Solid public probe found no ready Xpod container; existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          probe_exit=0
+          kubectl -n "$SEALOS_NAMESPACE" exec "$probe_pod" -c xpod -- \
+            bun --no-env-file -e "$(cat scripts/solid-public-network-probe.ts)" -- "$(cat "$probe_dir/config.json")" \
+            > "$probe_dir/result.jsonl" 2> "$probe_dir/transport.err" || probe_exit=$?
+          if [ ! -s "$probe_dir/result.jsonl" ]; then
+            python3 - "$probe_exit" "$probe_dir/transport.err" <<'PY'
+          import json, sys
+          raw = open(sys.argv[2]).read(65536).lower()
+          code = 'MISSING_RUNTIME_OUTPUT'
+          if sys.argv[1] != '0':
+              code = 'EXEC_FAILED'
+              if 'forbidden' in raw:
+                  code = 'EXEC_FORBIDDEN'
+              elif 'unable to upgrade connection' in raw or 'error dialing backend' in raw:
+                  code = 'EXEC_STREAM_ERROR'
+              elif 'bun' in raw and ('executable file not found' in raw or 'command not found' in raw):
+                  code = 'BUN_EXECUTABLE_MISSING'
+              elif '--no-env-file' in raw and ('unknown' in raw or 'invalid' in raw or 'unrecognized' in raw):
+                  code = 'BUN_FLAG_UNSUPPORTED'
+              elif 'syntaxerror' in raw or 'error: expected' in raw or 'error: unexpected' in raw:
+                  code = 'SCRIPT_PARSE_ERROR'
+              elif '/dev/stdin' in raw:
+                  code = 'STDIN_ENTRYPOINT_UNSUPPORTED'
+          print(json.dumps({'stage':'runtime','phase':'setup','bytes':0,'result':'failed','code':code}))
+          PY
+            echo 'Solid public probe produced no runtime records; see safe execution-layer code. Existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! python3 - "$probe_dir/result.jsonl" <<'PY'
+          import json, re, sys
+          from pathlib import Path
+          failure_code = 'UNSAFE_RUNTIME_RECORD'
+          output_bytes = Path(sys.argv[1]).stat().st_size
+          try:
+              lines = open(sys.argv[1]).readlines()
+              if not 1 <= len(lines) <= 32:
+                  failure_code = 'RUNTIME_RECORD_COUNT'
+                  raise ValueError()
+              try:
+                  records = [json.loads(line) for line in lines]
+              except json.JSONDecodeError:
+                  failure_code = 'INVALID_RUNTIME_JSON'
+                  raise
+              codes = {'INVALID_URL', 'UNSAFE_URL', 'ORIGIN_BLOCKED', 'PARSER_UNAVAILABLE', 'INVALID_INPUT',
+                  'INVALID_WEBID_FRAGMENT', 'INVALID_ISSUER_ORIGIN', 'REDIRECT_BLOCKED', 'HTTP_STATUS',
+                  'BODY_TOO_LARGE', 'EMPTY_BODY', 'BODY_TRUNCATED', 'ISSUER_COUNT', 'ISSUER_MISMATCH',
+                  'INVALID_DISCOVERY', 'INVALID_JWKS', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND',
+                  'EAI_AGAIN', 'ConnectionClosed', 'BunFetchSocketClosed', 'ERR_TLS_CERT_ALTNAME_INVALID',
+                  'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'DEPTH_ZERO_SELF_SIGNED_CERT',
+                  'TIMEOUT', 'ABORTED', 'SOCKET_ERROR', 'PARSE_ERROR', 'FETCH_OR_TYPE_ERROR', 'UNCLASSIFIED_ERROR'}
+              allowed = {'originHash', 'stage', 'phase', 'status', 'bytes', 'result', 'code', 'bun', 'node'}
+              for row in records:
+                  if set(row) - allowed or row.get('stage') not in {'runtime','input','profile','discovery','jwks','complete'}:
+                      raise ValueError()
+                  if 'originHash' in row and not re.fullmatch('[a-f0-9]{64}', row['originHash']):
+                      raise ValueError()
+                  if 'phase' in row and row['phase'] not in {'setup','headers','body','parse','complete'}:
+                      raise ValueError()
+                  if 'result' in row and row['result'] not in {'parser-ready','received','parsed','passed','failed'}:
+                      raise ValueError()
+                  if 'code' in row and row['code'] not in codes:
+                      raise ValueError()
+                  for key in ('bun', 'node'):
+                      if key in row and not re.fullmatch(r'[0-9A-Za-z.+-]{1,64}', row[key]):
+                          raise ValueError()
+                  if 'status' in row and (type(row['status']) is not int or not 100 <= row['status'] <= 599):
+                      raise ValueError()
+                  if 'bytes' in row and (type(row['bytes']) is not int or not 0 <= row['bytes'] <= 1048576):
+                      raise ValueError()
+              # Validate every record before releasing any captured output.
+              for row in records:
+                  print(json.dumps(row, separators=(',', ':')))
+              if records[-1].get('stage') != 'complete' or records[-1].get('result') != 'passed':
+                  sys.exit(1)
+          except Exception:
+              print(json.dumps({'stage':'runtime','phase':'setup','bytes':output_bytes,'result':'failed','code':failure_code}))
+              sys.exit(1)
+          PY
+          then
+            echo 'Solid public probe failed. See sanitized stage/phase records; existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$probe_exit" -ne 0 ]; then
+            echo '{"stage":"runtime","result":"failed","code":"EXEC_FAILED"}'
+            echo 'Solid public probe transport failed; existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo 'Solid public profile, issuer discovery, and JWKS GETs passed in one current Xpod container.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Compare public profile GET in Bun and Node
+        if: ${{ inputs.solid_transport_compare }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+          PROBE_ENVIRONMENT: ${{ inputs.environment }}
+          PROBE_WEBID: ${{ inputs.solid_webid }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          probe_dir="$(mktemp -d)"
+          trap 'rm -rf "$probe_dir"' EXIT
+          if ! python3 - "$probe_dir/config.json" <<'PY'
+          import json, os, re, sys
+          from urllib.parse import urlsplit
+          try:
+              webid = os.environ['PROBE_WEBID']
+              environment = os.environ['PROBE_ENVIRONMENT']
+              url = urlsplit(webid)
+              if environment not in ('co', 'cn'):
+                  raise ValueError()
+              host = re.fullmatch(r'[a-f0-9]{32}\.nodes\.undefineds\.' + environment, url.netloc)
+              if not host or url.scheme != 'https' or url.query or url.fragment != 'me':
+                  raise ValueError()
+              if not re.fullmatch(r'/[A-Za-z0-9_-]+/profile/card', url.path):
+                  raise ValueError()
+              with open(sys.argv[1], 'w') as file:
+                  json.dump({'webid': webid, 'issuerOrigin': 'https://id.undefineds.' + environment + '/'}, file)
+          except Exception:
+              print('{"stage":"input","result":"failed","code":"INVALID_PUBLIC_TARGET"}')
+              sys.exit(1)
+          PY
+          then
+            echo 'Solid public probe failed input validation; existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! kubectl -n "$SEALOS_NAMESPACE" get pods -l app=xpod-cloud -o json > "$probe_dir/pods.json" 2> "$probe_dir/transport.err"; then
+            echo '{"stage":"runtime","result":"failed","code":"POD_SELECTION_FAILED"}'
+            echo 'Solid public probe failed pod selection; existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! probe_pod="$(python3 - "$probe_dir/pods.json" <<'PY'
+          import json, sys
+          try:
+              pods = json.load(open(sys.argv[1]))['items']
+              names = sorted(p['metadata']['name'] for p in pods
+                  if not p['metadata'].get('deletionTimestamp') and p.get('status', {}).get('phase') == 'Running'
+                  and any(c.get('name') == 'xpod' and c.get('ready') for c in p.get('status', {}).get('containerStatuses', [])))
+              if not names:
+                  raise ValueError()
+              print(names[0])
+          except Exception:
+              sys.exit(1)
+          PY
+          )"; then
+            echo '{"stage":"runtime","result":"failed","code":"NO_READY_XPOD"}'
+            echo 'Solid public probe found no ready Xpod container; existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          release_transport_output() {
+          if [ ! -s "$probe_dir/result.jsonl" ]; then
+            python3 - "$probe_exit" "$probe_dir/transport.err" "$probe_runtime" <<'PY'
+          import json, sys
+          raw = open(sys.argv[2]).read(65536).lower()
+          code = 'MISSING_RUNTIME_OUTPUT'
+          if sys.argv[1] != '0':
+              code = 'EXEC_FAILED'
+              if 'forbidden' in raw:
+                  code = 'EXEC_FORBIDDEN'
+              elif 'unable to upgrade connection' in raw or 'error dialing backend' in raw:
+                  code = 'EXEC_STREAM_ERROR'
+              elif 'bun' in raw and ('executable file not found' in raw or 'command not found' in raw):
+                  code = 'BUN_EXECUTABLE_MISSING'
+              elif '--no-env-file' in raw and ('unknown' in raw or 'invalid' in raw or 'unrecognized' in raw):
+                  code = 'BUN_FLAG_UNSUPPORTED'
+              elif 'syntaxerror' in raw or 'error: expected' in raw or 'error: unexpected' in raw:
+                  code = 'SCRIPT_PARSE_ERROR'
+              elif '/dev/stdin' in raw:
+                  code = 'STDIN_ENTRYPOINT_UNSUPPORTED'
+          print(json.dumps({'runtime':sys.argv[3],'stage':'runtime','phase':'setup','bytes':0,'result':'failed','code':code}))
+          PY
+            echo 'Solid public probe produced no runtime records; see safe execution-layer code. Existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            return 1
+          fi
+          if ! python3 - "$probe_dir/result.jsonl" "$probe_runtime" <<'PY'
+          import json, re, sys
+          from pathlib import Path
+          failure_code = 'UNSAFE_RUNTIME_RECORD'
+          output_bytes = Path(sys.argv[1]).stat().st_size
+          try:
+              lines = open(sys.argv[1]).readlines()
+              if not 1 <= len(lines) <= 32:
+                  failure_code = 'RUNTIME_RECORD_COUNT'
+                  raise ValueError()
+              try:
+                  records = [json.loads(line) for line in lines]
+              except json.JSONDecodeError:
+                  failure_code = 'INVALID_RUNTIME_JSON'
+                  raise
+              codes = {'INVALID_URL', 'UNSAFE_URL', 'ORIGIN_BLOCKED', 'PARSER_UNAVAILABLE', 'INVALID_INPUT',
+                  'INVALID_WEBID_FRAGMENT', 'INVALID_ISSUER_ORIGIN', 'REDIRECT_BLOCKED', 'HTTP_STATUS',
+                  'BODY_TOO_LARGE', 'EMPTY_BODY', 'BODY_TRUNCATED', 'ISSUER_COUNT', 'ISSUER_MISMATCH',
+                  'INVALID_DISCOVERY', 'INVALID_JWKS', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND',
+                  'EAI_AGAIN', 'ConnectionClosed', 'BunFetchSocketClosed', 'ERR_TLS_CERT_ALTNAME_INVALID',
+                  'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'DEPTH_ZERO_SELF_SIGNED_CERT',
+                  'TIMEOUT', 'ABORTED', 'SOCKET_ERROR', 'PARSE_ERROR', 'FETCH_OR_TYPE_ERROR', 'UNCLASSIFIED_ERROR', 'DNS_NO_ADDRESS', 'DNS_IPV4', 'DNS_IPV6', 'DNS_MIXED', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT'}
+              allowed = {'originHash', 'stage', 'phase', 'status', 'bytes', 'result', 'code', 'bun', 'node', 'runtime'}
+              for row in records:
+                  if row.get('runtime') != sys.argv[2]:
+                      raise ValueError()
+                  if set(row) - allowed or row.get('stage') not in {'runtime','input','profile','discovery','jwks','complete'}:
+                      raise ValueError()
+                  if 'originHash' in row and not re.fullmatch('[a-f0-9]{64}', row['originHash']):
+                      raise ValueError()
+                  if 'phase' in row and row['phase'] not in {'setup','headers','body','parse','complete','dns'}:
+                      raise ValueError()
+                  if 'result' in row and row['result'] not in {'parser-ready','received','parsed','passed','failed','resolved'}:
+                      raise ValueError()
+                  if 'code' in row and row['code'] not in codes:
+                      raise ValueError()
+                  for key in ('bun', 'node'):
+                      if key in row and not re.fullmatch(r'[0-9A-Za-z.+-]{1,64}', row[key]):
+                          raise ValueError()
+                  if 'status' in row and (type(row['status']) is not int or not 100 <= row['status'] <= 599):
+                      raise ValueError()
+                  if 'bytes' in row and (type(row['bytes']) is not int or not 0 <= row['bytes'] <= 1048576):
+                      raise ValueError()
+              # Validate every record before releasing any captured output.
+              for row in records:
+                  print(json.dumps(row, separators=(',', ':')))
+              if records[-1].get('stage') != 'complete' or records[-1].get('result') != 'passed':
+                  sys.exit(1)
+          except Exception:
+              print(json.dumps({'runtime':sys.argv[2],'stage':'runtime','phase':'setup','bytes':output_bytes,'result':'failed','code':failure_code}))
+              sys.exit(1)
+          PY
+          then
+            echo 'Solid public probe failed. See sanitized stage/phase records; existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            return 1
+          fi
+          if [ "$probe_exit" -ne 0 ]; then
+            printf '{"runtime":"%s","stage":"runtime","result":"failed","code":"EXEC_FAILED"}\n' "$probe_runtime"
+            echo 'Solid public probe transport failed; existing diagnostics are unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            return 1
+          fi
+          }
+
+          fixed_source="$(cat scripts/solid-public-profile-transport-probe.mjs)"
+          compare_failed=0
+          for probe_runtime in bun node; do
+            probe_exit=0
+            if [ "$probe_runtime" = bun ]; then
+              kubectl -n "$SEALOS_NAMESPACE" exec "$probe_pod" -c xpod -- \
+                bun --no-env-file -e "$fixed_source" -- --profile-transport-probe "$(cat "$probe_dir/config.json")" \
+                > "$probe_dir/result.jsonl" 2> "$probe_dir/transport.err" || probe_exit=$?
+            else
+              kubectl -n "$SEALOS_NAMESPACE" exec "$probe_pod" -c xpod -- \
+                node --input-type=module -e "$fixed_source" -- --profile-transport-probe "$(cat "$probe_dir/config.json")" \
+                > "$probe_dir/result.jsonl" 2> "$probe_dir/transport.err" || probe_exit=$?
+            fi
+            if release_transport_output; then
+              echo "$probe_runtime anonymous public profile GET passed." >> "$GITHUB_STEP_SUMMARY"
+            else
+              compare_failed=1
+              echo "$probe_runtime anonymous public profile GET failed; see sanitized runtime/stage records." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          exit "$compare_failed"
