@@ -1,20 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
 /** One shell-owned connectivity check; authentication remains owned by the Solid runtime. */
 export function XpodServiceAvailability({ children }: { children: ReactNode }) {
   const [unavailable, setUnavailable] = useState(false);
   const retry = useRef<() => void>(() => {});
-  const retryButton = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!unavailable) return;
-    const previousFocus = document.activeElement;
-    retryButton.current?.focus();
-    return () => {
-      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
-    };
-  }, [unavailable]);
-
   useEffect(() => {
     let disposed = false;
     let pending: AbortController | undefined;
@@ -75,18 +64,17 @@ export function XpodServiceAvailability({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  return <>
-    <div style={{ display: 'contents' }} inert={unavailable || undefined}>{children}</div>
-    {unavailable && <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-background/70 p-6 backdrop-blur-sm">
-      <section role="alertdialog" aria-modal="true" aria-labelledby="xpod-connection-title" aria-describedby="xpod-connection-description"
-        className="w-full max-w-sm rounded-2xl border bg-background p-6 shadow-lg">
-        <h2 id="xpod-connection-title" className="text-lg font-semibold">Xpod 连接中断</h2>
-        <p id="xpod-connection-description" className="mt-3 text-sm text-muted-foreground">暂时无法连接 Xpod，正在自动重连。登录状态和当前页面已保留，恢复后即可继续。</p>
-        <p className="mt-2 text-sm text-muted-foreground">刚才未完成的操作不会自动重试，请在连接恢复后确认结果。</p>
-        <button ref={retryButton} type="button" onKeyDown={(event) => {
-          if (event.key === 'Tab') event.preventDefault();
-        }} onClick={() => retry.current()} className="mt-5 w-full rounded-lg bg-primary px-4 py-2 text-primary-foreground">立即重试</button>
-      </section>
-    </div>}
-  </>;
+  return <div className="flex h-dvh min-h-0 flex-col" style={{ '--xpod-shell-height': '100%' } as CSSProperties}>
+    {unavailable && <section role="alert" aria-label="Xpod 连接中断" className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-background px-4 py-2 text-sm">
+      <div className="min-w-0 flex-1">
+        <span className="font-medium">Xpod 连接中断</span>
+        <span className="ml-2 text-muted-foreground">正在自动重连；你仍可打开这台设备和设置。</span>
+        <details className="text-xs text-muted-foreground"><summary>页面与未完成操作</summary>
+          登录状态和当前页面已保留。未完成的操作不会自动重试，请在连接恢复后确认结果。
+        </details>
+      </div>
+      <button type="button" onClick={() => retry.current()} className="shrink-0 rounded-lg bg-primary px-3 py-2 text-primary-foreground">立即重试</button>
+    </section>}
+    <div className="min-h-0 flex-1">{children}</div>
+  </div>;
 }

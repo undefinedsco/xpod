@@ -336,7 +336,7 @@ async function completeLogin(
       await delay(250);
       continue;
     }
-    const webIdButton = page.getByRole('button', { name: '批准', exact: true });
+    const webIdButton = page.getByRole('button', { name: '允许', exact: true });
     const interactionPath = new URL(page.url()).pathname;
     if (!approvedInteractions.has(interactionPath)
       && normalizeAccountPath(interactionPath) === '/.account/oidc/consent/'
@@ -378,11 +378,12 @@ async function assertDesktopAccountDocument(page: Page): Promise<void> {
   expect(geometry).not.toBeNull();
   if (!geometry) throw new Error('Desktop Xpod Account document did not become stable');
 
-  // Account pages now intentionally retain their compact document card in
-  // the dedicated Account window. Vertical scrolling is allowed; controls must
+  // The dedicated desktop Account window intentionally fills the 360x540 host
+  // window with the presentation frame (no card); only the application WebID
+  // gate keeps the compact card. Vertical scrolling is allowed; controls must
   // remain usable without horizontal overflow.
-  expect(geometry.layout).toBe('compact');
-  expect(geometry.viewport).toEqual({ width: 480, height: 640 });
+  expect(geometry.layout).toBe('window');
+  expect(geometry.viewport).toEqual({ width: 360, height: 540 });
   expect(geometry.dialog.x).toBeGreaterThanOrEqual(0);
   expect(geometry.dialog.width).toBeGreaterThan(0);
   expect(geometry.dialog.x + geometry.dialog.width).toBeLessThanOrEqual(geometry.viewport.width);

@@ -24,6 +24,7 @@ export interface SessionRequestCredential {
 
 export interface CreateSessionRequestCredentialOptions {
   capability?: AiClientCredentialsCapability;
+  resolveCapability?: () => Promise<AiClientCredentialsCapability | undefined>;
   webId?: string;
   /** Label shown in the account's own credential list. */
   name?: string;
@@ -32,7 +33,7 @@ export interface CreateSessionRequestCredentialOptions {
 export function createSessionRequestCredential(
   options: CreateSessionRequestCredentialOptions,
 ): SessionRequestCredential {
-  const capability = options.capability;
+  let issuingCapability: AiClientCredentialsCapability | undefined;
   const webId = options.webId;
   const name = options.name?.trim() || 'Xpod 会话凭据';
   let created: { apiKey: string; clientId: string; resource: string } | undefined;
@@ -40,9 +41,12 @@ export function createSessionRequestCredential(
   let released = false;
 
   const create = async(): Promise<typeof created> => {
-    if (!capability || !webId) {
+    if (!webId || released) {
       return undefined;
     }
+    const capability = options.capability ?? await options.resolveCapability?.();
+    if (!capability || released) return undefined;
+    issuingCapability = capability;
     const result = await capability.create({ name, webId });
     if (released) {
       // The session ended while the credential was being created: do not keep or return it.
@@ -77,7 +81,7 @@ export function createSessionRequestCredential(
         return undefined;
       }
       const credential = await ensure();
-      return credential ? `Bearer ${credential.apiKey}` : undefined;
+      return !released && credential ? `Bearer ${credential.apiKey}` : undefined;
     },
 
     async apiKey() {
@@ -85,7 +89,7 @@ export function createSessionRequestCredential(
         return undefined;
       }
       const credential = await ensure();
-      return credential?.apiKey;
+      return released ? undefined : credential?.apiKey;
     },
 
     clientId() {
@@ -96,6 +100,7 @@ export function createSessionRequestCredential(
       released = true;
       const credential = created;
       created = undefined;
+      const capability = issuingCapability;
       if (!credential || !capability || !webId) {
         return;
       }
@@ -136,6 +141,7 @@ export function withRequestPodAuthorization(
   fetchImpl: typeof fetch,
   authorization: (() => Promise<string | undefined>) | undefined,
   retryFetch: typeof fetch = fetchImpl,
+  gatewayOrigin?: string,
 ): typeof fetch {
   if (!authorization) {
     return fetchImpl;
@@ -145,7 +151,7 @@ export function withRequestPodAuthorization(
     // consumed by the first attempt, so the replay needs its own copy.
     const replay = input instanceof Request ? cloneRequest(input) : input;
     const response = await fetchImpl(input, init);
-    if (!replay || response.status !== 403 || !await isMissingPodAccess(response)) {
+    if (!replay || !needsPodAuthorization(input, gatewayOrigin) || response.status !== 403 || !await isMissingPodAccess(response)) {
       return response;
     }
     const value = await authorization().catch(() => undefined);
@@ -154,6 +160,7 @@ export function withRequestPodAuthorization(
     }
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
     headers.set('authorization', value);
+    headers.delete('dpop');
     return retryFetch(replay, { ...init, headers });
   };
 }
@@ -170,7 +177,21 @@ function cloneRequest(request: Request): Request | undefined {
 async function isMissingPodAccess(response: Response): Promise<boolean> {
   try {
     const body = await response.clone().json() as { error?: unknown };
-    return body?.error === 'service_access_missing';
+    return body?.error === 'service_access_missing'
+      || Boolean(body?.error && typeof body.error === 'object'
+        && 'code' in body.error && body.error.code === 'service_access_missing');
+  } catch {
+    return false;
+  }
+}
+
+/** Credentials may only be replayed to this Gateway's API, never to Pod resources or other hosts. */
+export function needsPodAuthorization(input: RequestInfo | URL, gatewayOrigin?: string): boolean {
+  if (!gatewayOrigin) return false;
+  try {
+    const url = new URL(input instanceof Request ? input.url : String(input), gatewayOrigin);
+    return url.origin === new URL(gatewayOrigin).origin &&
+      (url.pathname.startsWith('/api/') || url.pathname.startsWith('/v1/'));
   } catch {
     return false;
   }

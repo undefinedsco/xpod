@@ -350,6 +350,9 @@
         "@type": "StatusWaterfallHandler",
         "handlers": [
           {
+            "@id": "urn:undefineds:xpod:AgentDirectoryHttpHandler"
+          },
+          {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
           },
           {

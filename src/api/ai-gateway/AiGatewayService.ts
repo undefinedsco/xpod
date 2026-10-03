@@ -1,4 +1,6 @@
+import type { GatewayInvocationMetadata } from './InvocationMetadata';
 import { createHash } from 'node:crypto';
+import { getLoggerFor } from 'global-logger-factory';
 import { GatewayProtocolError, normalizeGatewayError } from './errors';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId } from '../auth/AuthContext';
@@ -6,7 +8,7 @@ import type { CredentialVault } from './credentials/CredentialVault';
 import type { EncryptedCredentialSecret } from './credentials/KeyWrapper';
 import { decodePlaintextCredential } from './credentials/PlaintextCredentialPayload';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from './protocol';
-import type { ProviderRuntimeCredential } from './providers/ProviderRuntimeAdapter';
+import { classifyProviderStatus, type ProviderRuntimeCredential } from './providers/ProviderRuntimeAdapter';
 import type { ProviderDescriptor, ProviderOfferingDescriptor, ProviderRegistry } from './providers/ProviderRegistry';
 import { normalizeProviderId } from './providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from './providers/ProviderRuntimeRegistry';
@@ -58,6 +60,11 @@ export interface GatewayCredentialHealthRecord {
   credentialIri: string;
   status?: number;
   errorCode?: string;
+  failureCode?: string;
+  occurredAt?: Date;
+  rateLimitResetAt?: Date;
+  expectedVersion?: number;
+  auth?: AuthContext;
 }
 
 export interface AiGatewayServiceOptions {
@@ -91,6 +98,7 @@ export interface GatewayExecutionInput {
   protocol: GatewayProtocol;
   body: unknown;
   signal?: AbortSignal;
+  invocationMetadata?: GatewayInvocationMetadata;
 }
 
 export interface GatewayExecution {
@@ -123,6 +131,7 @@ type GatewayKeySolidPrincipal = Extract<AuthContext, { type: 'solid' }> & {
 };
 
 export class AiGatewayService {
+  private readonly logger = getLoggerFor(this);
   private readonly deployment: string;
   private readonly registry: ProviderRegistry;
   private readonly router: ModelRouter;
@@ -195,6 +204,7 @@ export class AiGatewayService {
           protocol: input.protocol,
           body: input.body,
           signal: input.signal,
+          invocationMetadata: input.invocationMetadata,
         }),
       };
     }
@@ -211,6 +221,7 @@ export class AiGatewayService {
         request,
         route,
         signal: input.signal,
+        invocationMetadata: input.invocationMetadata,
       }),
     };
   }
@@ -240,6 +251,7 @@ export class AiGatewayService {
         protocol: input.protocol,
         body: input.body,
         signal: input.signal,
+        invocationMetadata: input.invocationMetadata,
       });
     }
     request.model = route.model;
@@ -251,6 +263,7 @@ export class AiGatewayService {
       request,
       route,
       signal: input.signal,
+      invocationMetadata: input.invocationMetadata,
     })) {
       events.push(event);
     }
@@ -333,6 +346,7 @@ export class AiGatewayService {
     route: ModelRouteResult;
     auth: AuthContext;
     signal?: AbortSignal;
+    invocationMetadata?: GatewayInvocationMetadata;
   }): AsyncIterable<GatewayEvent> {
     let route = input.route;
     let firstClientEventEmitted = false;
@@ -350,6 +364,7 @@ export class AiGatewayService {
           apiKey,
           credential: this.runtimeCredentialFor(route, credential, input.protocol),
           signal: input.signal,
+          invocationMetadata: input.invocationMetadata,
         });
         for await (const event of upstream) {
           if (event.type === 'usage') {
@@ -361,11 +376,13 @@ export class AiGatewayService {
           }
           yield event;
         }
-        await this.credentials.recordSuccess?.(healthRecord(input.principal.webId, this.deployment, route));
+        await this.credentials.recordSuccess?.({
+          ...healthRecord(input.principal.webId, this.deployment, route), auth: input.auth, occurredAt: this.now(),
+        }).catch(() => this.logger.warn('Could not persist credential health after a successful request.'));
         await this.recordUsage(input.principal.webId, input.auth, route, finalUsage);
         return;
       } catch (error) {
-        await this.recordRouteFailure(input.principal.webId, route, error);
+        await this.recordRouteFailure(input.principal.webId, route, error, input.auth);
         if (!firstClientEventEmitted && this.router.canFailOver(route) && isCredentialFailoverError(error)) {
           const nextRoute = await this.findFailoverRoute(input.principal.webId, input.auth, input.request, route, attempted);
           if (nextRoute) {
@@ -574,26 +591,30 @@ export class AiGatewayService {
     };
   }
 
-  private async recordRouteFailure(webId: string, route: ModelRouteResult, error: unknown): Promise<void> {
+  private async recordRouteFailure(webId: string, route: ModelRouteResult, error: unknown, auth: AuthContext): Promise<void> {
     const status = typeof (error as { status?: unknown })?.status === 'number'
       ? (error as { status: number }).status
       : error instanceof GatewayProtocolError
         ? error.status
         : undefined;
-    if (status === 429) {
+    const occurredAt = this.now();
+    const normalized = normalizeGatewayError(error);
+    const failureCode = stringMetadata(normalized.error.details, 'classification') ?? classifyProviderStatus(status ?? 502);
+    const rateLimitResetAt = failureCode === 'rate_limited' ? new Date(occurredAt.getTime() + 60_000) : undefined;
+    if (rateLimitResetAt) {
       await this.router.recordCooldown({
         webId,
         deployment: this.deployment,
         credentialId: route.credential.id,
-        until: new Date(this.now().getTime() + 60_000),
+        until: rateLimitResetAt,
       });
     }
-    const normalized = normalizeGatewayError(error);
     await this.credentials.recordFailure?.({
       ...healthRecord(webId, this.deployment, route),
       status,
       errorCode: normalized.error.code,
-    });
+      failureCode, occurredAt, rateLimitResetAt, auth,
+    }).catch(() => this.logger.warn('Could not persist credential health after a failed request.'));
   }
 
   private canForwardInferenceToCloud(
@@ -764,6 +785,7 @@ function healthRecord(webId: string, deployment: string, route: ModelRouteResult
     provider: route.provider.id,
     credentialId: route.credential.id,
     credentialIri: route.credential.credentialIri,
+    expectedVersion: (route.credential as StoredGatewayCredential).version,
   };
 }
 

@@ -1,0 +1,2 @@
+# Preserve the pinned upstream notice bytes, including original whitespace.
+*.txt -text -whitespace

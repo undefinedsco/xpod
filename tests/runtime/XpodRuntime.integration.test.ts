@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import dns from 'node:dns';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../../src/runtime/XpodRuntime';
+import { localServiceUrl } from '../../src/runtime/bootstrap';
 import { createGatewayAdminProxyHeaders } from '../../src/runtime/GatewayAdminProxyAuth';
 import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
 import { startTestRuntime } from '../helpers/testRuntime';
@@ -120,6 +122,34 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
     await close(cloudServer);
   });
 
+  it('reaches its bound listener when localhost name resolution stalls', async () => {
+    const originalLookup = dns.lookup;
+    const delayed: Array<ReturnType<typeof setTimeout>> = [];
+    let localLookups = 0;
+    const lookup = vi.spyOn(dns, 'lookup').mockImplementation(((hostname: string, options: unknown, callback: unknown) => {
+      const resolve = () => Reflect.apply(originalLookup, dns, [hostname, options, callback]);
+      if (hostname === 'localhost') {
+        localLookups += 1;
+        delayed.push(setTimeout(resolve, 10_000));
+      } else {
+        resolve();
+      }
+    }) as typeof dns.lookup);
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const response = await runtime.fetch(new Request(new URL('/provision/status', runtime.baseUrl)), { signal: controller.signal });
+      expect(response.status).toBe(200);
+      expect(response.url).toBe(new URL('/provision/status', runtime.baseUrl).href);
+      await expect(response.json()).resolves.toMatchObject({ registered: true });
+      expect(localLookups).toBe(0);
+    } finally {
+      clearTimeout(deadline);
+      delayed.forEach(clearTimeout);
+      lookup.mockRestore();
+    }
+  });
+
   it('persists Cloud-issued credentials and enables Local provision routes in the same process', async () => {
     const registration = cloudRequests.find((entry) => entry.method === 'POST' && entry.url === '/provision/nodes');
     expect(registration).toBeTruthy();
@@ -169,7 +199,8 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
 
   it('reads a Cloud-canonical Pod through the local Gateway route', async () => {
     const canonicalPod = new URL('https://auto-node.undefineds.test/autoalice/');
-    const localPod = new URL('/autoalice/', runtime.baseUrl);
+    const listenerUrl = localServiceUrl('127.0.0.1', runtime.ports.gateway!);
+    const localPod = new URL('/autoalice/', listenerUrl);
     const networkTargets: string[] = [];
     const routedFetch = createSolidLocalRouteFetch({
       fetch: async(input, init) => {
@@ -188,8 +219,10 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
     expect(getResponse.status).toBe(200);
     await expect(getResponse.text()).resolves.toContain('https://auto-node.undefineds.test/autoalice/profile/card#me');
     expect(networkTargets).toEqual([ new URL('profile/card', localPod).href ]);
-    expect(new URL(networkTargets[0]!).origin).toBe(new URL(runtime.baseUrl).origin);
+    expect(new URL(networkTargets[0]!).origin).toBe(listenerUrl);
   });
+
+
 });
 
 describe('XpodRuntime', () => {

@@ -1501,7 +1501,7 @@ describe('AI Connection controller host.solid integration', () => {
 
     render(<AiConnectionsMain controller={controller} />)
 
-    expect(screen.getByRole('alert').textContent).toContain('AI Connections 尚未就绪')
+    expect(screen.getByRole('alert').textContent).toContain('AI 连接尚未就绪')
     expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
   })
 
@@ -1517,7 +1517,7 @@ describe('AI Connection controller host.solid integration', () => {
 
     render(<AiConnectionsMain controller={controller} />)
 
-    expect(screen.getByRole('alert').textContent).toContain('AI Connections 尚未就绪')
+    expect(screen.getByRole('alert').textContent).toContain('AI 连接尚未就绪')
     expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
   })
 
@@ -1691,4 +1691,38 @@ describe('AI Connection controller host.solid integration', () => {
     expect(JSON.stringify(controller.providerSummaries.bailian)).not.toMatch(/encryptedSecret|refreshToken|ciphertext|sk-secret|model-secret/)
   })
 
+})
+
+describe('AI service access repair', () => {
+  const descriptor = {
+    appletId: 'co.undefineds.ai-connections',
+    service: { webId: 'https://service.example/profile/card#me', label: 'Xpod' },
+    resources: [{ id: 'providerCredentials', url: `${POD_URL}settings/credentials.ttl`, mediaType: 'text/turtle', access: { read: true, append: true, write: true } }],
+  }
+
+  it('grants only the validated descriptor through the host and then reloads', async () => {
+    const ensureAgentAccess = vi.fn(async () => ({ status: 'granted' as const, resources: [] }))
+    const controller = createAiConnectionsController(hostFromSolid(solidCapability({
+      permissions: { ensureAgentAccess, inspectAgentAccess: vi.fn(), revokeAgentAccess: vi.fn() },
+    })))
+    controller.client!.getServiceAccess = vi.fn(async () => descriptor)
+    const reload = vi.spyOn(controller, 'loadProviders').mockResolvedValue(undefined)
+    await controller.authorizeService!()
+    expect(ensureAgentAccess).toHaveBeenCalledWith(descriptor)
+    expect(reload).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not grant access outside the current Pod or report a denied grant as success', async () => {
+    const ensureAgentAccess = vi.fn(async () => ({ status: 'permissionDenied' as const, resources: [] }))
+    const controller = createAiConnectionsController(hostFromSolid(solidCapability({
+      permissions: { ensureAgentAccess, inspectAgentAccess: vi.fn(), revokeAgentAccess: vi.fn() },
+    })))
+    const reload = vi.spyOn(controller, 'loadProviders').mockResolvedValue(undefined)
+    controller.client!.getServiceAccess = vi.fn(async () => ({ ...descriptor, resources: [{ ...descriptor.resources[0], url: 'https://another.example/settings/credentials.ttl' }] }))
+    await expect(controller.authorizeService!()).rejects.toThrow()
+    expect(ensureAgentAccess).not.toHaveBeenCalled()
+    controller.client!.getServiceAccess = vi.fn(async () => descriptor)
+    await expect(controller.authorizeService!()).rejects.toThrow('未能授权')
+    expect(reload).not.toHaveBeenCalled()
+  })
 })

@@ -437,14 +437,20 @@ describe('GatewayProxy Matrix routing', () => {
   it('routes Matrix discovery and client API paths to the API server', async () => {
     const discovery = await fetch(`http://127.0.0.1:${proxyPort}/.well-known/matrix/client`);
     const versions = await fetch(`http://127.0.0.1:${proxyPort}/_matrix/client/versions`);
+    const whoami = await fetch(`http://127.0.0.1:${proxyPort}/_matrix/client/v3/account/whoami`);
+    const runtime = await fetch(`http://127.0.0.1:${proxyPort}/v1/agent-wakes/claim`, { method: 'POST' });
     const solid = await fetch(`http://127.0.0.1:${proxyPort}/profile/card`);
 
     expect(await discovery.text()).toBe('api:/.well-known/matrix/client');
     expect(await versions.text()).toBe('api:/_matrix/client/versions');
+    expect(await whoami.text()).toBe('api:/_matrix/client/v3/account/whoami');
+    expect(await runtime.text()).toBe('api:/v1/agent-wakes/claim');
     expect(await solid.text()).toBe('css:/profile/card');
     expect(seenByApi).toEqual(expect.arrayContaining([
       'GET /.well-known/matrix/client',
       'GET /_matrix/client/versions',
+      'GET /_matrix/client/v3/account/whoami',
+      'POST /v1/agent-wakes/claim',
     ]));
     expect(seenByCss).toEqual(expect.arrayContaining(['GET /profile/card']));
   });

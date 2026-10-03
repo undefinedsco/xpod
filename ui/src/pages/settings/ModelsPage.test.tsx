@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { XpodSolidRuntimeValue } from '../../solid/XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from '../../solid/XpodSolidRuntime';
 import ModelsPage from './ModelsPage';
+import { ShellContext } from '../../shell/useShellState';
+import { MemoryRouter } from 'react-router-dom';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -41,7 +43,7 @@ async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
   await act(async () => {
     root.render(
       <XpodSolidRuntimeContext.Provider value={runtime}>
-        <ModelsPage />
+        <MemoryRouter><ShellContext.Provider value={{ snapshot: { attention: [], activity: [], inProgress: [], inbox: [] }, loading: false, refresh: mock(), markAllRead: mock(), decide: mock(async () => undefined), resumeFailures: [], retryResume: mock(async () => undefined) }}><ModelsPage /></ShellContext.Provider></MemoryRouter>
       </XpodSolidRuntimeContext.Provider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -116,7 +118,7 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-workspace-layout="two-pane"]')).toBeTruthy();
     expect(container.querySelector('[data-workspace-list-header="true"]')).toBeTruthy();
     expect(container.querySelector('[data-workspace-main-header="true"]')).toBeTruthy();
-    expect(container.querySelector('[data-workspace-list-header="true"] input[aria-label="搜索 Provider"]')).toBeTruthy();
+    expect(container.querySelector('[data-workspace-list-header="true"] input[aria-label="搜索服务商"]')).toBeTruthy();
     expect(container.querySelector('[data-workspace-list-header="true"] button[aria-label="添加 AI Connection"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('OpenAI');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Anthropic');
@@ -127,22 +129,11 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('出口');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('客户端接入');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).not.toContain('虚拟密钥');
-    // §7.3：入口默认停在「连接客户端」
-    expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('CONNECT CLIENT');
-    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('连接客户端');
-    expect(container.querySelector('[data-testid="workspace-main-pane"] [role="tablist"][aria-label="选择客户端"]')).toBeTruthy();
-
-    // 切到 API KEYS 分组后仍是原来的 Xpod 接入信息
-    const keysOption = Array.from(container.querySelectorAll('[role="option"]'))
-      .find((option) => option.getAttribute('aria-label') === 'Xpod');
-    expect(keysOption).toBeTruthy();
-    await act(async () => {
-      keysOption!.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('Xpod 接入信息');
-    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('API Key 是签发给客户端应用的 CSS 客户端凭据');
-    expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('API KEYS');
+    expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('Xpod');
+    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('Xpod 密钥');
+    expect(container.querySelector('[data-testid="workspace-main-pane"] [role="tablist"][aria-label="选择客户端"]')).toBeNull();
+    expect(container.querySelector('[aria-label="通知"]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="收件箱"]')).toBeTruthy();
     expect(serviceAccessCalls).toBe(0);
     await unmount(root);
   });

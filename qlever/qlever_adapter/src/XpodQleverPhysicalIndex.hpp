@@ -2022,6 +2022,16 @@ class XpodQleverPhysicalPermutation {
 
   XpodQleverScanSizeBoundsResult getSizeEstimateForScan(
       const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks) const {
+    // A zero-row count over the external physical store is not a stable proof
+    // of emptiness. The facts SQLite file is shared with writers outside this
+    // process (the host Solid RDF engine), so rows can appear between the time
+    // QLever records `knownEmptyResult()` while building the plan and the time
+    // the scan actually runs. QLever requires `knownEmptyResult()` to hold for
+    // the lifetime of the operation (Operation.cpp enforces the invariant), so
+    // an exact-empty claim here would abort the query instead of returning the
+    // rows that exist by execution time. Keep the same `[0, 0]` size bounds but
+    // report zero-row estimates as non-exact; the planner keeps the bounds and
+    // the scan is evaluated against the current store contents.
     XpodQleverScanSizeBoundsResult result = {};
     result.status = scan_spec_and_blocks.status;
     if (result.status != XPOD_RDF_STATUS_OK) {
@@ -2030,7 +2040,7 @@ class XpodQleverPhysicalPermutation {
     if (scan_spec_and_blocks.always_empty) {
       result.lower = 0;
       result.upper = 0;
-      result.exact = true;
+      result.exact = false;
       result.confidence = XPOD_RDF_ESTIMATE_EXACT;
       return result;
     }
@@ -2050,7 +2060,8 @@ class XpodQleverPhysicalPermutation {
       result.upper = estimate.estimate.rows;
       result.confidence = estimate.estimate.confidence;
       result.exact = estimate.estimate.confidence ==
-                     XPOD_RDF_ESTIMATE_EXACT;
+                         XPOD_RDF_ESTIMATE_EXACT &&
+                     result.upper != 0;
       result.lower = result.exact ? result.upper : 0;
       return result;
     }
@@ -2070,7 +2081,8 @@ class XpodQleverPhysicalPermutation {
     result.upper = estimate_result.estimate.rows;
     result.confidence = estimate_result.estimate.confidence;
     result.exact = estimate_result.estimate.confidence ==
-                   XPOD_RDF_ESTIMATE_EXACT;
+                       XPOD_RDF_ESTIMATE_EXACT &&
+                   result.upper != 0;
     result.lower = result.exact ? result.upper : 0;
     return result;
   }

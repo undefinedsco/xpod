@@ -1,4 +1,6 @@
 import * as fs from 'node:fs';
+import { getLoggerFor } from 'global-logger-factory';
+import { hashTaskModelDiagnosticSession, selectTaskModelDiagnosticReceipt } from '../../util/task-model-diagnostics';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
@@ -7,6 +9,7 @@ import type { WorkspaceRef } from '../workspace/types';
 import { GitWorktreeService } from '../chatkit/runtime/GitWorktreeService';
 import { SandboxFactory } from '../../terminal/sandbox';
 import { requireAiConnectionsRuntimeConfig, sanitizeRuntimeEnv } from '../../runtime/safe-env';
+import { PACKAGE_ROOT } from '../../runtime/package-root';
 import { CompositeSolidFsSyncer, LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, SolidFsNotFoundError, WorkspaceJournaledSolidFsSyncer, type MaterializedWorkspace, type SolidFS, type SolidFsProjection, type SolidFsSyncer } from '../../solidfs';
 import { RdfSearchIndexingSolidFsSyncer } from '../service/RdfSearchIndexingSolidFsSyncer';
 import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
@@ -18,6 +21,7 @@ import type {
 import type { RunExecutionBackend, RunExecutionInput } from './RunExecutionBackend';
 
 type PiSdk = typeof import('@mariozechner/pi-coding-agent');
+const xpodVersion = (JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8')) as { version: string }).version;
 type AgentSessionEvent = import('@mariozechner/pi-coding-agent').AgentSessionEvent;
 type CreateAgentSessionOptions = NonNullable<Parameters<PiSdk['createAgentSession']>[0]>;
 type PiTool = ReturnType<PiSdk['createCodingTools']>[number];
@@ -74,6 +78,10 @@ type PiMessage =
   };
 
 export interface PiAgentRuntimeDriverOptions {
+  /** The runtime's canonical Pod authority and storage root, captured at API startup. */
+  podWorkspaceMapping?: { baseUrl: string; rootFilePath: string };
+  /** Existing runtime token endpoint used by SolidFS hydration and RDF sync. */
+  podTokenEndpoint?: string;
   /**
    * local: run pi's full Agent Loop in the API process.
    * cloud: run the entire pi Agent Loop in a sandboxed worker process.
@@ -132,22 +140,33 @@ type WarmRuntime = {
 export class PiAgentRuntimeDriver implements RunExecutionBackend {
   private static sdkPromise?: Promise<PiSdk>;
 
+  private readonly logger = getLoggerFor(this);
+
   private readonly git = new GitWorktreeService();
   private readonly warmRuntimes = new Map<string, Promise<WarmRuntime>>();
   private readonly solidfs: SolidFS;
+  private readonly podWorkspaceMapping?: { baseUrl: string; rootFilePath: string };
 
   public constructor(private readonly options: PiAgentRuntimeDriverOptions = {}) {
+    const mapping = options.podWorkspaceMapping ?? (
+      process.env.CSS_BASE_URL && process.env.CSS_ROOT_FILE_PATH
+        ? { baseUrl: process.env.CSS_BASE_URL, rootFilePath: process.env.CSS_ROOT_FILE_PATH }
+        : undefined
+    );
+    this.podWorkspaceMapping = mapping
+      ? { baseUrl: mapping.baseUrl, rootFilePath: path.resolve(mapping.rootFilePath) }
+      : undefined;
     this.solidfs = options.solidfs ?? new LocalSolidFS({
       syncer: new WorkspaceJournaledSolidFsSyncer({
         syncer: this.createDefaultSolidFsSyncer(),
         journalRoot: options.solidfsJournalRootDir,
       }),
-      hydrator: new PodSolidFsHydrator(),
+      hydrator: new PodSolidFsHydrator({ tokenEndpoint: options.podTokenEndpoint }),
     });
   }
 
   private createDefaultSolidFsSyncer(): SolidFsSyncer {
-    const syncers: SolidFsSyncer[] = [new PodSolidFsSyncer()];
+    const syncers: SolidFsSyncer[] = [new PodSolidFsSyncer({ tokenEndpoint: this.options.podTokenEndpoint })];
     if (this.options.rdfSearchIndexingService) {
       syncers.push(new RdfSearchIndexingSolidFsSyncer({
         service: this.options.rdfSearchIndexingService,
@@ -160,20 +179,27 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
   }
 
   public async *start(input: RunExecutionInput): AsyncIterable<AgentRuntimeEvent> {
+    if (input.signal?.aborted) return;
     if (this.options.agentLoopIsolation === 'sandboxed-process') {
       let workspace: MaterializedWorkspace | undefined;
       let completed = false;
       try {
         workspace = await this.prepareWorkspace(input);
+        if (input.signal?.aborted) return;
         const runner = this.options.sandboxedLoopRunner
           ?? ((runInput, runWorkdir) => this.startSandboxedAgentLoop(runInput, runWorkdir));
         for await (const event of runner(input, workspace.cwd)) {
+          if (event.type === 'tool_call' && event.approval) {
+            await workspace.commit();
+            completed = true;
+          }
           yield event;
           if (event.type === 'error') {
             return;
           }
         }
-        await workspace.commit();
+        if (input.signal?.aborted) return;
+        if (!completed) await workspace.commit();
         completed = true;
       } catch (error) {
         yield this.startupErrorToEvent(error);
@@ -196,11 +222,77 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     let workspace: MaterializedWorkspace | undefined;
     let completed = false;
     let failed = false;
+    let releaseApprovalTool: (() => void) | undefined;
+    let pausedForApproval = false;
+    const sessionHeader = `xpod-${crypto.createHash('sha256').update(input.threadId).digest('hex')}`;
+    let stage: 'not_invoked' | 'model_invoked' | 'payload_prepared' | 'stream_open' = 'not_invoked';
+    let api: 'openai-completions' | 'openai-responses' | 'other' = 'other';
+    let credentialPresent = false;
+    let retryCount = 0;
+    let failureLogged = false;
+    const logFailure = (stopReason: 'error' | 'aborted' | 'unknown') => {
+      if (failureLogged || pausedForApproval || input.signal?.aborted) return;
+      failureLogged = true;
+      const receipt = selectTaskModelDiagnosticReceipt({ event: 'xpod.task-model-diagnostic', schemaVersion: 1,
+        scope: 'session', stage, api, stopReason, retryCount,
+        correlationHash: hashTaskModelDiagnosticSession(sessionHeader), httpStatus: null, credentialPresent });
+      if (receipt) {
+        try { this.logger.error(JSON.stringify(receipt)); } catch { /* Diagnostics cannot alter run failure semantics. */ }
+      }
+    };
+    let releaseLifecycleWait: (() => void) | undefined;
+    const onAbort = () => {
+      failed = true;
+      releaseLifecycleWait?.();
+      void session?.abort().catch(() => undefined);
+      queue.close();
+    };
+    input.signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
       workspace = await this.prepareWorkspace(input);
       const runtime = await this.getWarmRuntime(input, workspace);
+      api = runtime.piConfig.api === 'openai-completions' || runtime.piConfig.api === 'openai-responses'
+        ? runtime.piConfig.api : 'other';
+      credentialPresent = Boolean(runtime.piConfig.apiKey);
       const sessionManager = this.createSessionManager(runtime.pi, input.runId, runtime.workdir);
+      const approvalTool: NonNullable<CreateAgentSessionOptions['customTools']>[number] = {
+        name: 'request_approval', label: 'Request approval',
+        description: 'Pause this run and ask its owner to approve a specific action before you perform it. This tool does not execute the action. Use only when human approval is needed. After resuming, follow the persisted decision; do not request the same approval again.',
+        // Pi validates tool.parameters with AJV (pi-ai/utils/validation), so plain JSON Schema
+        // is sufficient here and avoids loading a second copy of its TypeBox/provider modules.
+        parameters: {
+          type: 'object', additionalProperties: false,
+          required: ['target', 'action', 'risk', 'description'],
+          properties: {
+            target: { type: 'string', minLength: 1, description: 'Absolute Pod resource URI that the proposed action affects.' },
+            action: { type: 'string', minLength: 1, description: 'Absolute policy action URI, for example http://www.w3.org/ns/odrl/2/write.' },
+            risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+            description: { type: 'string', minLength: 1, description: 'Explain exactly what will happen if the owner approves.' },
+          },
+        } as unknown as NonNullable<CreateAgentSessionOptions['customTools']>[number]['parameters'],
+        execute: async (toolCallId, params, signal) => {
+          if (pausedForApproval || signal?.aborted || input.signal?.aborted) throw new Error('Run is already paused or cancelled');
+          const approval = params as { target: string; action: string; risk: 'low' | 'medium' | 'high'; description: string };
+          for (const uri of [approval.target, approval.action]) {
+            const parsed = new URL(uri);
+            if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('Approval requires absolute Pod and policy URIs');
+          }
+          // Keep work already performed before asking; the requested action itself is untouched.
+          await workspace!.commit();
+          completed = true;
+          pausedForApproval = true;
+          releaseLifecycleWait?.();
+          const paused = new Promise<never>((_resolve, reject) => {
+            const finish = () => { signal?.removeEventListener('abort', finish); reject(new Error('Run paused for owner approval')); };
+            releaseApprovalTool = finish;
+            signal?.addEventListener('abort', finish, { once: true });
+          });
+          queue.push({ type: 'tool_call', requestId: toolCallId, name: 'request_approval', arguments: JSON.stringify(approval), approval });
+          queue.close();
+          return paused;
+        },
+      };
       const result = await runtime.pi.createAgentSession({
         cwd: runtime.workdir,
         authStorage: runtime.authStorage,
@@ -208,11 +300,38 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         settingsManager: runtime.settingsManager,
         sessionManager,
         resourceLoader: runtime.resourceLoader,
-        model: runtime.piConfig.model,
+        model: { ...runtime.piConfig.model, headers: {
+          'user-agent': `Xpod/${xpodVersion}`,
+          'x-opencode-session': sessionHeader,
+        } },
         thinkingLevel: runtime.thinkingLevel,
         tools: runtime.tools,
+        customTools: [approvalTool],
       });
       session = result.session;
+      const originalStreamFn = session.agent.streamFn.bind(session.agent);
+      session.agent.streamFn = (model, context, options) => {
+        stage = 'model_invoked';
+        credentialPresent = Boolean(options?.apiKey);
+        const response = originalStreamFn(model, context, { ...options,
+          onPayload: payload => {
+            stage = 'payload_prepared';
+            return options?.onPayload?.(payload);
+          },
+        });
+        const observe = (stream: Awaited<ReturnType<typeof originalStreamFn>>) => {
+          const iterate = stream[Symbol.asyncIterator].bind(stream);
+          stream[Symbol.asyncIterator] = async function* () {
+            for await (const event of { [Symbol.asyncIterator]: iterate }) {
+              if (event.type === 'start') stage = 'stream_open';
+              yield event;
+            }
+          };
+          return stream;
+        };
+        return response instanceof Promise ? response.then(observe) : observe(response);
+      };
+      if (input.signal?.aborted) return;
       session.agent.replaceMessages(this.toPiMessages(input, runtime.piConfig));
 
       const streamState = {
@@ -221,19 +340,44 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       };
       const unsubscribe = session.subscribe((event) => {
         this.projectPiEvent(event, queue, streamState);
+        if (event.type === 'auto_retry_start') retryCount += 1;
+        if (event.type === 'agent_start' || event.type === 'auto_retry_end') releaseLifecycleWait?.();
       });
 
-      void session.prompt(input.prompt, { expandPromptTemplates: false, source: 'rpc' }).then(() => {
-        if (!streamState.assistantTextStreamed && streamState.lastAssistantText.length > 0) {
+      void session.prompt(input.prompt, { expandPromptTemplates: false, source: 'rpc' }).then(async () => {
+        // A recovered retry can resolve prompt before its tools and subsequent turns finish.
+        // Wait on SDK lifecycle promises; approval/cancellation closes the queue and aborts the session.
+        while (!pausedForApproval && !input.signal?.aborted && (session?.isStreaming || session?.isRetrying)) {
+          if (session?.isStreaming) {
+            await session.agent.waitForIdle();
+          } else {
+            await new Promise<void>(resolve => {
+              releaseLifecycleWait = resolve;
+              // Register before checking state so an already-started retry cannot lose its wakeup.
+              if (pausedForApproval || input.signal?.aborted || !session?.isRetrying || session.isStreaming) resolve();
+            });
+            releaseLifecycleWait = undefined;
+          }
+        }
+        // Pi also resolves failed prompts, including errors with no message_end.
+        const lastAssistant = (session?.messages ?? []).slice().reverse().find(message => message.role === 'assistant');
+        if (!pausedForApproval && !input.signal?.aborted && lastAssistant?.role === 'assistant' &&
+            (lastAssistant.stopReason === 'error' || lastAssistant.stopReason === 'aborted')) {
+          // Provider errorMessage can contain credentials or response bodies; expose only the classification.
+          logFailure(lastAssistant.stopReason);
+          queue.push({ type: 'error', message: `Pi assistant ended with ${lastAssistant.stopReason}` });
+        } else if (!streamState.assistantTextStreamed && streamState.lastAssistantText.length > 0) {
           queue.push({ type: 'text', text: streamState.lastAssistantText });
         }
         queue.close();
       }).catch((error) => {
-        queue.push({ type: 'error', message: this.formatError(error) });
+        if (!pausedForApproval) {
+          logFailure('unknown');
+          queue.push({ type: 'error', message: this.formatError(error) });
+        }
         queue.close();
       }).finally(() => {
         unsubscribe();
-        session?.dispose();
       });
 
       for await (const event of queue.iterate()) {
@@ -242,14 +386,20 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         }
         yield event;
       }
-      if (!failed) {
+      if (!completed && !failed && !input.signal?.aborted) {
         await workspace.commit();
         completed = true;
       }
     } catch (error) {
-      session?.dispose();
-      yield this.startupErrorToEvent(error);
+      const event = this.startupErrorToEvent(error);
+      if (event.type === 'error') logFailure('unknown');
+      yield event;
     } finally {
+      input.signal?.removeEventListener('abort', onAbort);
+      releaseLifecycleWait?.();
+      releaseApprovalTool?.();
+      if (!completed || pausedForApproval) await session?.abort().catch(() => undefined);
+      session?.dispose();
       if (!completed) {
         await workspace?.rollback().catch((error) => {
           this.logWorkspaceRollbackError(error);
@@ -295,11 +445,17 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       queue.close();
     };
 
+    const onAbort = () => { child.process.kill(); };
+    input.signal?.addEventListener('abort', onAbort, { once: true });
+    if (input.signal?.aborted) onAbort();
+    const { signal: _signal, ...serializableInput } = input;
     child.process.stdin?.end(JSON.stringify({
-      input,
+      input: serializableInput,
       options: {
         persistPiSessions: this.options.persistPiSessions === true,
         sessionRootDir: this.options.sessionRootDir,
+        podWorkspaceMapping: this.podWorkspaceMapping,
+        podTokenEndpoint: this.options.podTokenEndpoint,
       },
     }));
 
@@ -328,6 +484,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     });
 
     child.process.on('close', (code, signal) => {
+      input.signal?.removeEventListener('abort', onAbort);
       rl.close();
       if (code !== 0) {
         const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
@@ -832,11 +989,10 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
   }
 
   private mapPodUrlToLocalPath(rootUrl: string): string | undefined {
-    const rootFilePath = process.env.CSS_ROOT_FILE_PATH;
-    const baseUrl = process.env.CSS_BASE_URL;
-    if (!rootFilePath || !baseUrl) {
+    if (!this.podWorkspaceMapping) {
       return undefined;
     }
+    const { rootFilePath, baseUrl } = this.podWorkspaceMapping;
 
     try {
       const base = new URL(baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`);

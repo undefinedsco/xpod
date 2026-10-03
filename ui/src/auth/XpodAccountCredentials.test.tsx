@@ -51,7 +51,7 @@ describe('XpodAccountCredentials', () => {
   it('carries the initiating application through account registration and recovery', () => {
     window.history.replaceState({}, '', '/ai-connections?tab=providers');
     renderCredentials({}, { surface: 'page' });
-    const registration = new URL(screen.getByRole('link', { name: '创建账号' }).getAttribute('href')!, window.location.origin);
+    const registration = new URL(screen.getByRole('link', { name: '注册账号' }).getAttribute('href')!, window.location.origin);
     expect(registration.pathname).toBe('/.account/login/password/register/');
     expect(registration.searchParams.get('returnTo')).toBe('/ai-connections?tab=providers');
     const recovery = new URL(screen.getByRole('link', { name: /忘记密码/ }).getAttribute('href')!, window.location.origin);
@@ -61,7 +61,9 @@ describe('XpodAccountCredentials', () => {
   it('uses the CSS Account page in Electron without a shared WebID card', () => {
     window.xpodDesktop = { platform: 'darwin', setIdentity: vi.fn(), setWindowMode: vi.fn() };
     renderCredentials({}, { surface: 'page' });
-    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+    // The desktop shell is the native 360x540 auth window, not a compact card.
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('window');
+    expect(screen.queryByTestId('web-account-introduction')).toBeNull();
     expect(screen.queryByTestId('auth-surface-modal')).toBeNull();
     expect(window.xpodDesktop.setWindowMode).toHaveBeenCalledWith('account');
     expect(screen.queryByText('使用 WebID 登录')).toBeNull();

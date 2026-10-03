@@ -224,6 +224,31 @@ describe('AI Connection credentials as a live collection', () => {
     expect(fixture.documentRow(CREDENTIAL_KEY)).toBeTruthy()
   })
 
+  it('confirms insert and update provider links through real ORM URI normalization', async () => {
+    const fixture = pilotFixture()
+    const view = renderPilot({ fixture, notifications: fakeNotifications() })
+    await waitFor(() => expect(fixture.collection()).toBeDefined())
+    const collection = fixture.collection()!
+    let persisted: Promise<unknown>
+    act(() => {
+      persisted = collection.insert({ id: 'uri-roundtrip', provider: 'openai.ttl', label: 'URI roundtrip', service: 'ai' }).isPersisted.promise
+    })
+    await act(async () => { await persisted })
+    const first = `${POD_URL}settings/providers/openai.ttl`
+    expect(collection.get('uri-roundtrip')?.provider).toBe(first)
+    expect(fixture.calls.insert.at(-1)?.values?.provider).toBe(first)
+    act(() => {
+      persisted = collection.update('uri-roundtrip', draft => { draft.provider = 'anthropic.ttl' }).isPersisted.promise
+    })
+    await act(async () => { await persisted })
+    const updated = `${POD_URL}settings/providers/anthropic.ttl`
+    expect(collection.get('uri-roundtrip')?.provider).toBe(updated)
+    expect(fixture.calls.updateById.at(-1)?.changes?.provider).toBe(updated)
+    expect(collection.pendingKeys.size).toBe(0)
+    expect(collection.conflicts).toHaveLength(0)
+    view.unmount()
+  })
+
   it('degrades to the store’s own read when the host offers no collection', async () => {
     const notifications = fakeNotifications()
     const fixture = pilotFixture()

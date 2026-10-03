@@ -206,22 +206,20 @@ describe('Local QLever credential repository', () => {
     const legacyCredentials = await repository.listCredentials({
       webId: account!.webId,
       deployment: 'local',
-      // A runtime invocation is a principal Xpod authenticated for itself, so it has to carry the
-      // owner's interface key with it - exactly what AiConnectionsInvocationKeyIssuer puts in the
-      // context it issues. Xpod holds no key of its own to fall back on (decision 7).
-      auth: {
-        type: 'solid',
-        webId: account!.webId,
-        internalInvocation: true,
-        viaApiKey: true,
-        clientId: account!.clientId,
-        clientSecret: account!.clientSecret,
-        tokenType: 'Bearer',
-      },
+      auth: callerAuth,
     });
     expect(legacyCredentials).toHaveLength(1);
     expect(legacyCredentials[0]).toMatchObject({ id: created.id, provider: 'deepseek', enabled: true });
     expect(legacyCredentials[0]?.encryptedSecret).toEqual(credentials[0]?.encryptedSecret);
     expect(await store.readCredentialSecret?.('deepseek', created.id)).toMatchObject({ apiKey: 'qlever-credential-smoke-key' });
+
+    // A runtime invocation token is not a Pod principal: the API keeps no owner key of its own to
+    // fall back on, so the request has to present a Pod credential and the task layer restores its
+    // own authorization through a task binding (`docs/pod-interface-key.md`, decisions 4 and 5).
+    await expect(repository.listCredentials({
+      webId: account!.webId,
+      deployment: 'local',
+      auth: { type: 'solid', webId: account!.webId, internalInvocation: true, tokenType: 'Bearer' },
+    })).rejects.toThrow('pod_interface_key_missing');
   }, 60_000);
 });

@@ -68,13 +68,14 @@ describe('deferred pod collections host capability', () => {
   it('forwards sync state, including transitions that start before the engine lands', async () => {
     const collections = capability()
     const seen: Array<string | undefined> = []
-    let collection: PodCollection<{ id: string }> | undefined
+    const loaded: { collection?: PodCollection<{ id: string }> } = {}
     // Subscribed before the engine exists: the first transition must not be lost.
     collections.subscribeSyncState(() => {
-      seen.push(collection ? collections.syncState(collection) : undefined)
+      seen.push(loaded.collection ? collections.syncState(loaded.collection) : undefined)
     })
 
-    collection = await collections.load(credentialDescriptor, { table: credentialResource })
+    const collection = await collections.load(credentialDescriptor, { table: credentialResource })
+    loaded.collection = collection
     expect(collections.syncState(collection)).toBe('initializing')
     await collection.preload()
     expect(collections.syncState(collection)).toBe('unavailable')

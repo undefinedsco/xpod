@@ -4,6 +4,10 @@ const QLEVER_LOCAL_RUNTIME_BINARY_NAME = 'xpod_qlever_local_runtime';
 const QLEVER_LOCAL_RUNTIME_RELATIVE_PATH = `qlever/bin/${QLEVER_LOCAL_RUNTIME_BINARY_NAME}`;
 const QLEVER_LOCAL_RUNTIME_ENV = 'XPOD_QLEVER_LOCAL_RUNTIME_COMMAND';
 
+// Corresponding-Source sidecar shipped next to the embedded native CLI.
+const EMBEDDED_SOURCE_RELATIVE_PATH = 'SOURCE';
+const EMBEDDED_SOURCE_MANIFEST_RELATIVE_PATH = `${EMBEDDED_SOURCE_RELATIVE_PATH}/SOURCE-MANIFEST.json`;
+
 const PLATFORM_TARGETS = [
   {
     id: 'darwin-arm64',
@@ -83,6 +87,8 @@ function getPlatformDependencyMismatches(packageJson, version) {
 }
 
 module.exports = {
+  EMBEDDED_SOURCE_MANIFEST_RELATIVE_PATH,
+  EMBEDDED_SOURCE_RELATIVE_PATH,
   PLATFORM_PACKAGE_PREFIX,
   PLATFORM_TARGETS,
   QLEVER_LOCAL_RUNTIME_BINARY_NAME,

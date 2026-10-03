@@ -1,3 +1,6 @@
+import { createMatrixPodResolver, resolveMatrixContext } from '../matrix/MatrixPodResolver';
+import { AgentWakeRuntimeService } from '../reconciler/AgentWakeRuntimeService';
+import { registerAgentWakeRoutes } from '../handlers/AgentWakeHandler';
 /**
  * 路由注册
  *
@@ -23,6 +26,9 @@ import { registerDdnsRoutes } from '../handlers/DdnsHandler';
 import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
 import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
 import { registerInngestRoutes } from '../handlers/InngestHandler';
+import { createGrantedTaskAgentResolver } from '../tasks/TaskAgentBinding';
+import { createTaskCredentialSource } from '../tasks/TaskCredentialStore';
+import { registerTaskRoutes } from '../handlers/TaskHandler';
 import { registerRunRoutes } from '../handlers/RunHandler';
 import { registerMatrixRoutes } from '../handlers/MatrixHandler';
 import { registerCoordinationRoutes } from '../handlers/CoordinationHandler';
@@ -188,12 +194,25 @@ function registerSharedRoutes(
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });
-  registerMatrixRoutes(server, { store: matrixStore });
+  const taskCredentialStore = container.resolve('taskCredentialStore', { allowUnregistered: true });
+  const taskIssuer = config.solidBaseUrl ?? config.publicUrl;
+  registerTaskRoutes(server, {
+    taskService: container.resolve('taskService'), runStore: chatKitStore,
+    ...(taskCredentialStore && taskIssuer ? { resolveAgentBinding: createGrantedTaskAgentResolver(createTaskCredentialSource({ store: taskCredentialStore, issuer: taskIssuer })) } : {}),
+    resolveExecutionContext: (task, context) => task.authBinding ? container.resolve('taskAuthBindingService').resolveRunContext(task.authBinding.id, context) : Promise.resolve(undefined),
+  });
+  const matrixPodResolver = createMatrixPodResolver(podLookupRepository);
+  registerMatrixRoutes(server, { store: matrixStore, resolvePodUrl: matrixPodResolver, baseUrl: process.env.CSS_BASE_URL });
+  registerAgentWakeRoutes(server, {
+    service: new AgentWakeRuntimeService(container.resolve('serverGroupReconcilerService').getQueue(), matrixStore),
+    resolveContext: request => resolveMatrixContext(request, matrixPodResolver),
+  });
   registerCoordinationRoutes(server, { clientReconcilerCoordinator });
   registerInngestRoutes(server, {
     backend: runExecutionBackend,
     taskScheduler: inngestTaskScheduler,
     runtimeConfig: inngestRuntimeConfig,
+    gatewayAdminProxyAuthSecret: config.gatewayAdminProxyAuthSecret,
   });
   registerRdfStatsRoutes(server, {
     rdfStorageStatsService,
@@ -287,6 +306,10 @@ function registerSharedRoutes(
     store: aiConfigStore,
     lifecycle: aiConfigLifecycle,
     embeddingModelPolicy: container.resolve('embeddingModelPolicy', { allowUnregistered: true }),
+    embeddingModels: () => {
+      const registry = container.resolve('gatewayProviderRegistry');
+      return registry.listProviders().flatMap(provider => registry.listManagedEmbeddingModels(provider.id).map(model => ({ provider: provider.id, model: model.id })));
+    },
     capabilities: () => ({
       textBackends: config.edition === 'cloud' && config.sparqlEndpoint ? ['postgres-fts'] : [],
       vectorBackends: config.edition === 'cloud' && config.sparqlEndpoint ? ['pgvector'] : ['vec'],

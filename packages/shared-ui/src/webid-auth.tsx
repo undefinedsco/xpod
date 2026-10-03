@@ -90,6 +90,8 @@ export interface WebIdLoginEntryViewProps {
  * Frame-free presentation for hosts that expose exactly one WebID route.
  * Provider discovery, issuer validation, redirects, and session ownership all
  * stay in the host controller; this view only renders the one public action.
+ *
+ * @deprecated Use PodSignIn (state `choose-service`) (see `pod-sign-in/`). Kept for one more version; behavior is unchanged.
  */
 export function WebIdLoginEntryView({
   copy,
@@ -151,6 +153,9 @@ function stateMessage(state: WebIdAuthPresentationState): string | undefined {
   return 'message' in state ? state.message : undefined
 }
 
+/**
+ * @deprecated Use PodSignIn (see `pod-sign-in/`). Kept for one more version; behavior is unchanged.
+ */
 export function WebIdLoginRouteView({
   route,
   state: stateInput,

@@ -75,6 +75,52 @@ const policy: AiConfigPolicy = {
 };
 
 describe('AiConfigHandler', () => {
+  it.each([
+    ['GET /api/ai/config', undefined],
+    ['PATCH /api/ai/config', { searchIndexing: { ftsEnabled: true } }],
+    ['POST /api/ai/config/rebuild', { target: 'fts' }],
+  ])('preserves Pod authorization failures on %s so the session can retry', async (route, body) => {
+    const { server, routes } = createServer();
+    const fail = vi.fn(async () => { throw new Error('caller_dpop_replay_unsupported'); });
+    registerAiConfigRoutes(server, {
+      podLookupRepository: { findByWebId: vi.fn(async () => ({ podId: 'alice', accountId: 'alice', baseUrl: 'https://storage.example/alice/', storageUrl: 'https://storage.example/alice/' })) },
+      store: { read: fail, update: fail },
+      lifecycle: { status: vi.fn(), schedule: fail, supportedTargets: () => ['fts'] },
+    });
+    const res = response();
+    await routes[route!](request(route!.split(' ')[0], { type: 'solid', webId: WEB_ID, tokenType: 'DPoP' }, body), res);
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'service_access_missing' });
+    expect(fail).toHaveBeenCalledOnce();
+  });
+
+  it('keeps unrelated storage errors separate from missing Pod access', async () => {
+    const { server, routes } = createServer();
+    registerAiConfigRoutes(server, {
+      podLookupRepository: { findByWebId: vi.fn(async () => ({ podId: 'alice', accountId: 'alice', baseUrl: 'https://storage.example/alice/', storageUrl: 'https://storage.example/alice/' })) },
+      store: { read: vi.fn(async () => { throw new Error('storage unavailable'); }), update: vi.fn() },
+    });
+    const res = response();
+    await routes['GET /api/ai/config'](request('GET', { type: 'solid', webId: WEB_ID }), res);
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Failed to read AI Config' });
+  });
+
+  it.each(['cloud', 'local'])('projects the authoritative embedding policy for %s', async deployment => {
+    const { server, routes } = createServer();
+    const candidates = [{ provider: 'example', model: 'managed' }, { provider: 'example', model: 'custom' }];
+    registerAiConfigRoutes(server, {
+      podLookupRepository: { findByWebId: vi.fn(async () => ({ podId: 'alice', accountId: 'alice', baseUrl: 'https://storage.example/alice/', storageUrl: 'https://storage.example/alice/', webId: WEB_ID })) },
+      store: { read: vi.fn(async () => policy), update: vi.fn() },
+      embeddingModels: () => candidates,
+      embeddingModelPolicy: createEmbeddingModelPolicy({ deployment, catalog: { isManagedEmbeddingModel: (_provider, model) => model === 'managed', managedEmbeddingBaseUrl: () => 'https://models.example/' } }),
+    });
+    const res = response();
+    await routes['GET /api/ai/config'](request('GET', { type: 'solid', webId: WEB_ID }), res);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).capabilities.embeddingModels).toEqual({ restricted: deployment === 'cloud', allowed: deployment === 'cloud' ? [candidates[0]] : candidates });
+  });
+
   it('requires Solid authentication', async () => {
     const { server, routes } = createServer();
     registerAiConfigRoutes(server, {
@@ -164,7 +210,7 @@ describe('AiConfigHandler', () => {
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({
       config: policy,
-      capabilities: { textBackends: ['fts5'], vectorBackends: ['vec'], rebuildSupported: false, rebuildTargets: [] },
+      capabilities: { textBackends: ['fts5'], vectorBackends: ['vec'], rebuildSupported: false, rebuildTargets: [], embeddingModels: { restricted: false, allowed: [] } },
       lifecycle: { pending: 0, recent: [] },
     });
     expect(res.body).not.toContain('evil.example');
@@ -295,6 +341,66 @@ describe('AiConfigHandler', () => {
     const unsupported = response();
     await routes['POST /api/ai/config/rebuild'](request('POST', { type: 'solid', webId: WEB_ID }, { target: 'vector' }), unsupported);
     expect(unsupported.statusCode).toBe(409);
+  });
+
+  // The browser session hands the API a credential of its own only when the API answers the
+  // stable 403 refusal; a 500 is read as "internal error" and retried with nothing. Reporting a
+  // Pod-access failure as an internal error therefore strands the AI Config page on a session
+  // whose DPoP token the API deliberately cannot replay.
+  it('answers a Pod access failure with the mapped refusal so the session can retry with its own credential', async () => {
+    const { server, routes } = createServer();
+    const store = {
+      read: vi.fn(async () => { throw new Error('service_access_missing'); }),
+      update: vi.fn(async () => { throw new Error('caller_dpop_replay_unsupported'); }),
+    };
+    registerAiConfigRoutes(server, {
+      podLookupRepository: { findByWebId: vi.fn(async () => ({
+        podId: 'pod-alice',
+        accountId: 'account-alice',
+        baseUrl: 'https://storage.example/alice/',
+      })) },
+      store,
+    });
+
+    const read = response();
+    await routes['GET /api/ai/config'](request('GET', { type: 'solid', webId: WEB_ID }), read, {});
+    expect(read.statusCode).toBe(403);
+    expect(JSON.parse(read.body)).toEqual({ error: 'service_access_missing' });
+
+    const update = response();
+    await routes['PATCH /api/ai/config'](request('PATCH', { type: 'solid', webId: WEB_ID }, {
+      searchIndexing: { ftsEnabled: true },
+    }), update, {});
+    expect(update.statusCode).toBe(403);
+    expect(JSON.parse(update.body)).toEqual({ error: 'service_access_missing' });
+  });
+
+  it('keeps a store failure that is not a Pod access failure as an internal error', async () => {
+    const { server, routes } = createServer();
+    const store = {
+      read: vi.fn(async () => { throw new Error('database is down'); }),
+      update: vi.fn(async () => { throw new Error('disk full'); }),
+    };
+    registerAiConfigRoutes(server, {
+      podLookupRepository: { findByWebId: vi.fn(async () => ({
+        podId: 'pod-alice',
+        accountId: 'account-alice',
+        baseUrl: 'https://storage.example/alice/',
+      })) },
+      store,
+    });
+
+    const read = response();
+    await routes['GET /api/ai/config'](request('GET', { type: 'solid', webId: WEB_ID }), read, {});
+    expect(read.statusCode).toBe(500);
+    expect(JSON.parse(read.body)).toEqual({ error: 'Failed to read AI Config' });
+
+    const update = response();
+    await routes['PATCH /api/ai/config'](request('PATCH', { type: 'solid', webId: WEB_ID }, {
+      searchIndexing: { ftsEnabled: true },
+    }), update, {});
+    expect(update.statusCode).toBe(500);
+    expect(JSON.parse(update.body)).toEqual({ error: 'Failed to update AI Config' });
   });
 });
 

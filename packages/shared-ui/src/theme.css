@@ -46,6 +46,9 @@
     --purple-deep: 261.2 35.7% 28%;
     --purple-light: 258 48% 84%;
     --control-strong: 33.3 9.8% 36.1%;
+    --primary-hover: 261 35.7% 32.9%;
+    --primary-pressed: 261.2 35.7% 28%;
+    --sunken: 41.3 38.1% 91.8%;
     --action-hover: 261 35.7% 32.9%;
     --action-pressed: 261.2 35.7% 28%;
     --tint-canvas: 0 10.2% 90.4%;
@@ -97,6 +100,9 @@
     --layout-list-selected: 276.9 11.7% 21.8%;
     --layout-content: 30 13.8% 11.4%;
     --control-strong: 33.9 13.6% 66.9%;
+    --primary-hover: 271.6 16.8% 77.8%;
+    --primary-pressed: 264.4 18.8% 66.7%;
+    --sunken: 30 13.6% 8.6%;
     --action-hover: 271.6 16.8% 77.8%;
     --action-pressed: 264.4 18.8% 66.7%;
     --tint-canvas: 276.9 11.7% 21.8%;
@@ -153,6 +159,9 @@
     --purple-deep: 261.2 35.7% 28%;
     --purple-light: 258 48% 84%;
     --control-strong: 33.3 9.8% 36.1%;
+    --primary-hover: 261 35.7% 32.9%;
+    --primary-pressed: 261.2 35.7% 28%;
+    --sunken: 41.3 38.1% 91.8%;
     --action-hover: 261 35.7% 32.9%;
     --action-pressed: 261.2 35.7% 28%;
     --tint-canvas: 0 10.2% 90.4%;
@@ -175,10 +184,11 @@
   }
 
   /*
-   * Shared native-control baseline. The `html` prefix intentionally gives
-   * these semantic colors precedence over @tailwindcss/forms' fixed white
-   * defaults, even when a consumer imports this theme before Tailwind's base
-   * layer. Product components remain free to override the rest of the shape.
+   * Shared native-control baseline. The `html` prefix gives these rules more
+   * specificity than @tailwindcss/forms' `input:where([type='text'])` base
+   * (0,0,1) so the semantic colours stay in charge, while `:where()` keeps the
+   * added specificity at zero. The control's focus outline lives in one place
+   * (the shared `controlFocusClass`), so nothing here may outrank a utility.
    */
   html input:where(:not([type]), [type='text'], [type='email'], [type='password'], [type='number'], [type='date'], [type='datetime-local'], [type='month'], [type='search'], [type='tel'], [type='time'], [type='url'], [type='week']),
   html textarea,
@@ -205,6 +215,18 @@
     --tw-ring-offset-color: hsl(var(--background));
   }
 
+  /* Replace the forms plugin's blue ring with the control's existing border.
+   * Include checkbox/radio and plain native controls, even without utilities. */
+  html input:focus,
+  html textarea:focus,
+  html select:focus {
+    border-color: hsl(var(--ring));
+    outline: none;
+    box-shadow: none;
+    --tw-ring-shadow: 0 0 #0000;
+    --tw-ring-offset-shadow: 0 0 #0000;
+  }
+
   html button,
   html input,
   html textarea,
@@ -218,6 +240,24 @@
   html select:focus,
   html [role='button']:focus {
     outline: none;
+  }
+
+  /* A stronger existing border preserves visible keyboard focus without a
+   * separate outline or shadow outside the control. */
+  html input:focus-visible,
+  html textarea:focus-visible,
+  html select:focus-visible {
+    border-color: hsl(var(--ring));
+    border-width: 2px;
+    outline: none;
+    box-shadow: none;
+  }
+
+  /* Filled toggles need a contrasting border, and must outrank forms' checked
+   * focus rule which otherwise makes the only keyboard boundary transparent. */
+  html input:where([type='checkbox'], [type='radio']):checked:focus-visible,
+  html input:where([type='checkbox']):indeterminate:focus-visible {
+    border-color: hsl(var(--primary-foreground));
   }
 
   html input:-webkit-autofill,
@@ -238,6 +278,8 @@
   --color-card-foreground: hsl(var(--card-foreground));
   --color-primary: hsl(var(--primary));
   --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-primary-hover: hsl(var(--primary-hover));
+  --color-primary-pressed: hsl(var(--primary-pressed));
   --color-secondary: hsl(var(--secondary));
   --color-secondary-foreground: hsl(var(--secondary-foreground));
   --color-muted: hsl(var(--muted));
@@ -248,7 +290,9 @@
   --color-destructive-foreground: hsl(var(--destructive-foreground));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
+  --color-control-strong: hsl(var(--control-strong));
   --color-ring: hsl(var(--ring));
+  --color-sunken: hsl(var(--sunken));
   --color-success: hsl(var(--success));
   --color-warning: hsl(var(--warning));
   --color-layout-sidebar: hsl(var(--layout-sidebar));
@@ -260,6 +304,64 @@
 }
 
 @layer components {
+  /*
+   * Pod sign-in front door (spec §5): system sans stack, 14/22 body, and one
+   * focus treatment (2px primary outline, 3px offset). No web fonts.
+   */
+  .pod-sign-in {
+    font-family: 'PingFang SC', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14px;
+    line-height: 22px;
+  }
+
+  /*
+   * Front-door focus for links, buttons and summary. Form controls are excluded:
+   * the shared control primitive owns their focus outline, so a control never
+   * draws this outline and its own at once.
+   */
+  .pod-sign-in :focus-visible:not(input):not(textarea):not(select) {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 3px;
+  }
+
+  /* Short native login keeps full-size controls; only surrounding space shrinks.
+   * The form owns overflow so errors and enlarged text use one vertical scroll. */
+  [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] {
+    overflow-y: auto;
+  }
+
+  [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="idp-chrome"] {
+    height: 32px;
+  }
+
+  [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="main"] {
+    flex: 1 0 auto;
+    overflow: visible;
+    gap: 8px;
+    padding: 8px 16px;
+  }
+
+  [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="fields"] {
+    gap: 8px;
+  }
+
+  [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="field"] {
+    gap: 2px;
+  }
+
+  [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="actions"] {
+    gap: 0;
+    padding: 8px 16px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pod-sign-in,
+    .pod-sign-in * {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+
   /* 弹层遮罩的唯一实现：颜色来自 --scrim，透明度不散落在页面 */
   .xpod-overlay-scrim {
     background-color: hsl(var(--scrim) / 0.45);

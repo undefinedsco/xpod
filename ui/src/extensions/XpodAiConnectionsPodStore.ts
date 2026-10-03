@@ -1,6 +1,8 @@
 import {
   configureSparqlEngine,
   type SolidDatabase,
+  type InferInsertData,
+  type PodColumn,
   type SPARQLQueryEngine,
 } from '@undefineds.co/drizzle-solid';
 import { QueryEngine } from '@comunica/query-sparql-solid';
@@ -8,6 +10,11 @@ import { ActionObserverHttp } from '@comunica/actor-query-result-serialize-stats
 import { ActionObserverHttp as JsonActionObserverHttp } from '@comunica/actor-query-result-serialize-sparql-json';
 import {
   aiModelResource,
+  filterAIModelCapabilityUris,
+  toAIModelCapabilityName,
+  toAIModelClassName,
+  toAIModelClassUri,
+  withAIModelClassDefaultCapabilities,
   aiProviderResource,
   credentialDescriptor,
   credentialResource,
@@ -244,6 +251,7 @@ export function createXpodAiConnectionsPodStore(
           scopes: values.scope ? values.scope.split(/\s+/u).filter(Boolean) : undefined,
           keyVersion: String((currentSummary?.version ?? 0) + 1),
           reauthRequired: false,
+          failCount: 0, lastFailureCode: null, lastFailureAt: null, rateLimitResetAt: null,
           encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, {
             type: 'deviceCodeOAuth',
             accessToken: values.accessToken,
@@ -302,6 +310,7 @@ export function createXpodAiConnectionsPodStore(
         scopes: values.scope ? values.scope.split(/\s+/u).filter(Boolean) : undefined,
         keyVersion: String(expectedVersion + 1),
         reauthRequired: false,
+        failCount: 0, lastFailureCode: null, lastFailureAt: null, rateLimitResetAt: null,
         status: 'active',
         encryptedSecret: plaintextEnvelope(input, normalizedProvider, credentialId, {
           type: 'deviceCodeOAuth',
@@ -373,6 +382,7 @@ export function createXpodAiConnectionsPodStore(
       const updated = await input.database.updateById(credentialResource, credentialId, {
         keyVersion: String(summary.version + 1),
         metadata: { ...objectValue(current.metadata), health },
+        ...(health === 'healthy' ? { failCount: 0, lastFailureCode: null, lastFailureAt: null, rateLimitResetAt: null, reauthRequired: false } : {}),
       } as never);
       if (!updated) throw new Error('credential_update_failed');
       const persisted = credentialSummaryFromRow(input, normalizedProvider, updated as Record<string, unknown>);
@@ -424,7 +434,7 @@ export function createXpodAiConnectionsPodStore(
         }
       }
       for (const model of discovered) {
-        await upsertModelRow(input.database, providerId, model, existingIds);
+        await upsertModelRow(input, providerId, model, existingIds);
       }
     },
     async saveModelSelection(provider, selections, credentialId) {
@@ -449,57 +459,59 @@ export function createXpodAiConnectionsPodStore(
         (row) => providerRelationMatches(stringValue(row.id), providerId),
       );
       const persistedProviderId = stringValue(persistedProviderRow?.id) ?? providerId;
-      const previousModelIds = stringListValue(persistedProviderRow?.hasModel);
       const modelRows = await input.database
         .select()
         .from(aiModelResource)
         .execute() as Record<string, unknown>[];
       const hasModel = [...new Set(selections.map((selection) =>
         modelSelectionResourceId(normalizedProvider, selection, modelRows, scopedCredential ? providerId : undefined)))];
-      const updated = await input.database.updateById(
-        aiProviderResource,
-        persistedProviderId,
-        { hasModel } as never,
-      );
-      if (!updated) throw new Error('provider_model_selection_update_failed');
-      if (input.authenticatedFetch) {
-        // drizzle-solid 0.3.18 currently acknowledges link-array updates without
-        // serializing every URI triple. Keep the exact ORM update above as the
-        // primary path, then repair this one RDF relation through authenticated
-        // Solid PATCH until the adapter fix reaches Xpod. Removal criteria and
-        // the upstream reproduction are tracked in docs/drizzle-solid-link-array-update-todo.md.
-        await persistModelSelectionLinks(input, persistedProviderId, previousModelIds, hasModel);
-      }
+      // URI arrays use the authenticated writer as their entire write. Sending
+      // the ORM array update first leaves a literal, even if its row looks right.
+      await persistModelSelectionLinks(input, persistedProviderId, hasModel);
     },
   };
 }
 
-const HAS_MODEL_PREDICATE = 'https://undefineds.co/ns#hasModel';
+async function persistResourceUriArrays(
+  input: CreateXpodAiConnectionsPodStoreInput,
+  resource: typeof aiProviderResource | typeof aiModelResource,
+  resourceId: string,
+  fields: Array<{ column: PodColumn; values: string[] }>,
+): Promise<void> {
+  if (fields.length === 0) return;
+  if (!input.authenticatedFetch) throw new Error('uri_array_authenticated_fetch_required');
+  const subject = absoluteResourceIri(resource, input.podUrl, resourceId);
+  const iriTerm = (value: string) => {
+    if (!/^[a-z][a-z0-9+.-]*:/iu.test(value) || /[\s<>"{}|^`\\]/u.test(value)) throw new Error('uri_array_invalid_iri');
+    return `<${value}>`;
+  };
+  const operations = fields.flatMap(({ column, values }) => {
+    const predicate = column.options.predicate;
+    if (!column.options.isArray || column.options.baseType !== 'uri' || !predicate) throw new Error('uri_array_column_required');
+    const relation = `${iriTerm(subject)} ${iriTerm(predicate)}`;
+    const triples = [...new Set(values)].map(value => `${relation} ${iriTerm(value)} .`).join('\n');
+    // Replace only this declared predicate; deleting all objects also removes
+    // literals left by the documented old ORM array compiler.
+    return [
+      `DELETE WHERE { ${relation} ?previous . }`,
+      ...(triples ? [`INSERT DATA { ${triples} }`] : []),
+    ];
+  });
+  const response = await input.authenticatedFetch(subject.split('#', 1)[0]!, {
+    method: 'PATCH', headers: { 'content-type': 'application/sparql-update' }, body: operations.join(';\n'),
+  });
+  if (!response.ok) throw new Error(`uri_array_persist_failed:${response.status}`);
+}
 
 async function persistModelSelectionLinks(
   input: CreateXpodAiConnectionsPodStoreInput,
   providerId: string,
-  previousModelIds: string[],
   modelIds: string[],
 ): Promise<void> {
-  const providerIri = absoluteResourceIri(aiProviderResource, input.podUrl, providerId);
-  const previousModelIris = previousModelIds
-    .map((id) => absoluteResourceIri(aiModelResource, input.podUrl, id));
-  const modelIris = modelIds.map((id) => absoluteResourceIri(aiModelResource, input.podUrl, id));
-  const triples = (iris: string[]) => iris
-    .map((modelIri) => `<${providerIri}> <${HAS_MODEL_PREDICATE}> <${modelIri}> .`)
-    .join('\n');
-  const operations = [
-    previousModelIris.length > 0 ? `DELETE DATA { ${triples(previousModelIris)} }` : undefined,
-    modelIris.length > 0 ? `INSERT DATA { ${triples(modelIris)} }` : undefined,
-  ].filter((operation): operation is string => Boolean(operation));
-  if (operations.length === 0) return;
-  const response = await input.authenticatedFetch!(providerIri.split('#', 1)[0]!, {
-    method: 'PATCH',
-    headers: { 'content-type': 'application/sparql-update' },
-    body: operations.join(';\n'),
-  });
-  if (!response.ok) throw new Error(`provider_model_selection_persist_failed:${response.status}`);
+  await persistResourceUriArrays(input, aiProviderResource, providerId, [{
+    column: aiProviderResource.columns.hasModel,
+    values: modelIds.map(id => absoluteResourceIri(aiModelResource, input.podUrl, id)),
+  }]);
 }
 
 function absoluteResourceIri(
@@ -670,6 +682,10 @@ function credentialSummaryFromRow(
     enabled: booleanValue(metadata?.enabled) ?? stringValue(row.status) === 'active',
     priority: numberValue(metadata?.priority) ?? 100,
     health: healthValue(metadata?.health) ?? (booleanValue(row.reauthRequired) ? 'expired' : 'healthy'),
+    lastFailureCode: stringValue(row.lastFailureCode),
+    lastFailureAt: isoStringValue(row.lastFailureAt),
+    rateLimitResetAt: isoStringValue(row.rateLimitResetAt),
+    failCount: numberValue(row.failCount),
     maskedHint: maskedHintFromEncryptedSecret(input, provider, id, row.encryptedSecret),
     baseUrl: stringValue(row.baseUrl),
     proxyUrl: redactProxyUrl(stringValue(row.proxyUrl) ?? stringValue(metadata?.proxyUrl)),
@@ -761,18 +777,21 @@ function modelSummaryFromRow(row: Record<string, unknown>): AiGatewayModel | und
 }
 
 
-function discoveredModelValue(
-  value: unknown,
-): { id: string; displayName?: string; modelType?: AiGatewayModel['modelType'] } | undefined {
+type DiscoveredModelValues = Pick<InferInsertData<typeof aiModelResource>, 'id'> & Partial<Pick<InferInsertData<typeof aiModelResource>, 'displayName' | 'rdfType' | 'capabilities'>>;
+
+function discoveredModelValue(value: unknown): DiscoveredModelValues | undefined {
   const row = objectValue(value);
   const id = stringValue(row?.id);
   if (!id) return undefined;
+  // Undefined/null inputs default to chat in the shared compatibility helper;
+  // only an explicit known API class can establish persisted class evidence.
+  const declaredType = stringValue(row?.modelType)?.trim();
+  const modelClass = declaredType ? toAIModelClassUri(declaredType) : undefined;
   return {
     id,
     displayName: stringValue(row?.displayName),
-    // 同步模型的返回值带类型，落库时必须一起带上：Pod 行没有类型，embedding
-    // 模型之后就和普通聊天模型无从区分，也就不会出现在向量模型里。
-    modelType: discoveredRowModelType(row?.modelType),
+    ...(modelClass ? { rdfType: [aiModelResource.getType(), modelClass] } : {}),
+    ...(Array.isArray(row?.capabilities) ? { capabilities: filterAIModelCapabilityUris(row.capabilities) } : {}),
   };
 }
 
@@ -888,49 +907,48 @@ async function ensureProviderResourceRow(
 }
 
 async function upsertModelRow(
-  database: SolidDatabase,
+  input: CreateXpodAiConnectionsPodStoreInput,
   providerId: string,
-  model: { id: string; displayName?: string; modelType?: AiGatewayModel['modelType'] },
+  model: DiscoveredModelValues,
   existingIds: Set<string>,
 ): Promise<void> {
   const id = modelResourceId(providerId, model.id);
-  const patch = {
-    displayName: model.displayName ?? model.id,
-    isProvidedBy: providerId,
-    status: 'active',
-    // Never overwrite a type an earlier sync already established with nothing:
-    // discovery is the only writer of this column, and an embedding model that
-    // loses it is no longer selectable for embedding.
-    ...(model.modelType ? { modelType: model.modelType } : {}),
-  };
-  if (existingIds.has(id)) {
-    await database.updateById(aiModelResource, id, patch as never);
-    return;
+  const exists = existingIds.has(id);
+  const previous = exists ? await input.database.findById(aiModelResource, id) : undefined;
+  const scalarPatch = { displayName: model.displayName ?? model.id, isProvidedBy: providerId, status: 'active' } satisfies Partial<InferInsertData<typeof aiModelResource>>;
+  if (exists) {
+    await input.database.updateById(aiModelResource, id, scalarPatch);
+  } else {
+    // Only this hook-free resource and non-returning insert use the public plan
+    // adapter. Keep the ORM's defaults/layout, omit URI arrays after defaults,
+    // and execute the same plan through its session/converter/subject index.
+    // Removal: docs/drizzle-solid-link-array-update-todo.md.
+    const plan = input.database.insert(aiModelResource).values({ id, ...scalarPatch }).toIR();
+    for (const row of plan.rows) { delete row.rdfType; delete row.capabilities; }
+    await input.database.session.execute({ type: 'insert', table: aiModelResource, values: plan.rows[0], plan });
   }
-  await database.insert(aiModelResource).values({ id, ...patch } as never).execute();
+  const fields: Array<{ column: PodColumn; values: string[] }> = [];
+  if (!exists || model.rdfType) {
+    const previousTypes = stringListValue(previous?.rdfType).filter(value => /^[a-z][a-z0-9+.-]*:/iu.test(value) && toAIModelClassUri(value) !== value);
+    fields.push({ column: aiModelResource.columns.rdfType, values: [...new Set([aiModelResource.getType(), ...previousTypes, ...(model.rdfType ?? [])])] });
+  }
+  if (model.capabilities !== undefined) fields.push({ column: aiModelResource.columns.capabilities, values: model.capabilities });
+  await persistResourceUriArrays(input, aiModelResource, id, fields);
   existingIds.add(id);
 }
 
-/**
- * The model type a Pod row carries, as the list shows it.
- *
- * A row's type is the Pod's own record of what the model is for, and the
- * settings list marks embedding models with the same capability token the
- * Gateway projection uses.
- */
+/** Project actual RDF class/capability evidence to the adapter-facing vocabulary. */
 function modelTypeEvidence(row: Record<string, unknown>): Pick<AiGatewayModel, 'modelType' | 'capabilities'> {
-  const modelType = discoveredRowModelType(row.modelType);
-  if (!modelType) return {};
+  const rdfTypes = Array.isArray(row.rdfType) ? row.rdfType : [row.rdfType];
+  // The shared class-name helper falls back to chat for unknown/base classes.
+  // Guard canonical known classes first so absence never becomes evidence.
+  const modelClass = rdfTypes.find((value): value is string => typeof value === 'string' && toAIModelClassUri(value) === value);
+  const capabilities = withAIModelClassDefaultCapabilities({ rdfType: rdfTypes, capabilities: row.capabilities }).capabilities
+    .map(toAIModelCapabilityName).filter(isDefined);
   return {
-    modelType,
-    ...(modelType === 'embedding' ? { capabilities: ['embedding'] } : {}),
+    ...(modelClass ? { modelType: toAIModelClassName(modelClass) } : {}),
+    ...(capabilities.length > 0 ? { capabilities } : {}),
   };
-}
-
-/** Only the two classes the Pod stores are written or shown. */
-function discoveredRowModelType(value: unknown): AiGatewayModel['modelType'] {
-  const normalized = stringValue(value)?.trim().toLowerCase();
-  return normalized === 'chat' || normalized === 'embedding' ? normalized : undefined;
 }
 
 function modelResourceId(provider: string, modelId: string): string {

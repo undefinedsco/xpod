@@ -1,9 +1,11 @@
+import { AiModelClassTabs, catalogModelClass } from './AiModelCatalog'
+import type { AIModelClass } from '@undefineds.co/models'
 import { useMemo, useState } from 'react'
 import {
   Badge,
   Button,
+  EmptyState,
   TooltipProvider,
-  cn,
 } from '@undefineds.co/shared-ui'
 import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type {
@@ -19,21 +21,18 @@ import {
   Box,
   Check,
   Loader2,
-  Pencil,
   Plus,
   RotateCw,
-  Trash2,
 } from 'lucide-react'
 import { AiProviderHeader } from './AiProviderHeader'
+import { authorizationMethodsForOffering, isBrowserConnectMethod } from './authorization-methods'
 import {
   AiCredentialPoolSection,
   type AiOfferingActionError,
   type AiOfferingQuotaState,
 } from './AiCredentialPoolSection'
 import {
-  AiModelEmptyPanel,
   AiModelSearchInput,
-  AiModelEnableToggle,
   AiModelRow,
   modelIconTokens,
 } from './AiModelCatalog'
@@ -139,21 +138,25 @@ export function AiProviderCard({
   onModelSelectionChange?: (provider: AiProviderSummary['id'], modelIds: string[]) => void
   onDismissError?: () => void
 }) {
+  const workbench = product?.offerings.find((offering) => offering.consoleUrl
+    && authorizationMethodsForOffering(offering).some(isBrowserConnectMethod))?.consoleUrl
   const isConfigured = status === 'configured'
   const isConnected = status === 'connected'
   const catalogError = models.length === 0 && error?.message && !error.offeringId
     ? error.message
     : undefined
   const [modelSearch, setModelSearch] = useState('')
+  const [modelClass, setModelClass] = useState<AIModelClass>('chat')
   const [localSelectedModelIds, setLocalSelectedModelIds] = useState<string[]>(selectedModelIds ?? [])
   const effectiveSelectedModelIds = selectedModelIds ?? localSelectedModelIds
   const catalog = useMemo(() => aggregateProviderModels(models), [models])
+  const modelClasses = [...new Set(catalog.map(catalogModelClass))]
+  const selectedClass = modelClasses.includes(modelClass) ? modelClass : modelClasses[0]
   const isModelSelected = (model: CatalogModel) => model.selectionIds.some((id) => effectiveSelectedModelIds.includes(id))
   const visibleModels = useMemo(() => {
     const query = modelSearch.trim().toLocaleLowerCase()
-    if (!query) return catalog
-    return catalog.filter((model) => model.searchText.includes(query))
-  }, [catalog, modelSearch])
+    return catalog.filter((model) => catalogModelClass(model) === selectedClass && (!query || model.searchText.includes(query)))
+  }, [catalog, modelSearch, selectedClass])
   const selectedModelCount = catalog.filter(isModelSelected).length
   const unavailableModelCount = catalog.filter((model) => model.availability === 'unavailable').length
 
@@ -178,8 +181,9 @@ export function AiProviderCard({
           avatar={getProviderAvatar(definition.id)}
           avatarBackground={getProviderAvatarBackground(definition.id)}
           infoLabel="提供商说明"
-          infoLines={[definition.description, 'Provider 凭证保存在当前 Pod，由 Pod 权限保护。']}
+          infoLines={[definition.description, '连接凭据保存在当前 Pod，由 Pod 权限保护。']}
           link={{ href: definition.homeUrl, label: '访问官网' }}
+          links={workbench ? [{ href: workbench, label: '打开工作台' }] : []}
           badge={(
             <Badge variant={isConnected || isConfigured ? 'default' : 'secondary'}>
               {connectionStatusLabel(status)}
@@ -301,12 +305,11 @@ export function AiProviderCard({
             </div>
           </div>
 
+          {selectedClass ? <AiModelClassTabs classes={modelClasses} selected={selectedClass} onChange={setModelClass} /> : null}
           {models.length === 0 ? (
-            <AiModelEmptyPanel tone={catalogError ? 'destructive' : undefined}>
-              {catalogError ?? '暂无可用模型'}
-            </AiModelEmptyPanel>
+            <EmptyState className={catalogError ? 'text-destructive' : undefined} description={catalogError ?? '暂无可用模型'} />
           ) : visibleModels.length === 0 ? (
-            <AiModelEmptyPanel>未找到匹配的模型</AiModelEmptyPanel>
+            <EmptyState description="未找到匹配的模型" />
           ) : (
             <div className="grid gap-2">
               {visibleModels.map((model) => {
@@ -329,6 +332,7 @@ export function AiProviderCard({
                     unavailable={isUnavailable}
                     badges={(
                       <>
+                        {catalogModelClass(model) === 'embedding' && model.dimension ? <span className="text-xs text-muted-foreground">{model.dimension} 维</span> : null}
                         {model.custom ? <Badge variant="outline" className="shrink-0 text-[10px] font-normal">手工</Badge> : null}
                         {isUnavailable ? (
                           <Badge variant="destructive" className="shrink-0 text-[10px] font-normal">

@@ -66,15 +66,17 @@ export const dashboardRoutes: RouteObject[] = [
 
 export const statusSurfaceRoutes: RouteObject[] = [
   {
+    // `/status` is the local service surface: every panel here reads
+    // loopback-only runtime evidence. The shell route owns its admission
+    // (`LocalServiceSurfaceBoundary`), so no Account gate belongs in this tree -
+    // an anonymous visitor must still see service state, logs, and index
+    // evidence. The legacy `/dashboard` tree keeps its own Account boundary.
     element: <XpodDashboardLayout />,
-    children: [{
-      element: <AccountAuthBoundary surface="embedded"><Outlet /></AccountAuthBoundary>,
-      children: [statusWorkspaceRoute([
-        { index: true, element: <Navigate to="overview" replace /> },
-        ...statusContentRoutes,
-        { path: '*', element: <Navigate to="overview" replace /> },
-      ])],
-    }],
+    children: [statusWorkspaceRoute([
+      { index: true, element: <Navigate to="overview" replace /> },
+      ...statusContentRoutes,
+      { path: '*', element: <Navigate to="overview" replace /> },
+    ])],
   },
 ];
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button, Input, cn } from '@undefineds.co/shared-ui'
+import { Button, Input, NativeSelect, cn } from '@undefineds.co/shared-ui'
 import { ExternalLink, Eye, EyeOff, KeyRound, Loader2, LogOut, Plus, RotateCw } from 'lucide-react'
 import type {
   AiConnectAttempt,
@@ -255,12 +255,12 @@ export function AiApiKeyPool({
           {formMode === 'create' && createOfferings.length > 1 ? (
             <label className="block space-y-1 text-xs text-muted-foreground">
               <span>套餐 / 区域</span>
-              <select aria-label={`${definition.name} 套餐 / 区域`} value={createOfferingId}
+              <NativeSelect aria-label={`${definition.name} 套餐 / 区域`} value={createOfferingId}
                 disabled={busy || disabled || saving}
                 onChange={(event) => { setCreateOfferingId(event.target.value); setPoolFormError(undefined) }}
-                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground">
+                className="h-9">
                 {createOfferings.map((item) => <option key={item.id} value={item.id}>{offeringTitle(item)}</option>)}
-              </select>
+              </NativeSelect>
             </label>
           ) : null}
           {formMode === 'edit' ? (

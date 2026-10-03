@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiConnectionsPanel, PROVIDERS, type AiConnectionsClient, type AiConnectionsProvider } from '../src'
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
-const CREDENTIAL_NOTE = 'Provider 凭证保存在当前 Pod，由 Pod 权限保护。'
+const CREDENTIAL_NOTE = '连接凭据保存在当前 Pod，由 Pod 权限保护。'
 
 afterEach(() => {
   cleanup()

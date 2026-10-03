@@ -1,32 +1,10 @@
-import type { PropsWithChildren } from 'react';
-import { clsx } from 'clsx';
+import { Card as SharedCard } from '@undefineds.co/shared-ui';
+import type { ComponentProps } from 'react';
 
-export function Card(props: PropsWithChildren<{ className?: string; variant?: 'bordered' }>) {
-  const { className, variant, children } = props;
-  return (
-    <div
-      className={clsx(
-        'rounded-xl bg-background',
-        variant === 'bordered' && 'border border-border',
-        className,
-      )}
-    >
-      {children}
-    </div>
-  );
-}
+export { CardHeader, CardTitle, CardContent } from '@undefineds.co/shared-ui';
 
-export function CardHeader(props: PropsWithChildren<{ className?: string }>) {
-  const { className, children } = props;
-  return <div className={clsx('px-5 pt-5', className)}>{children}</div>;
-}
-
-export function CardTitle(props: PropsWithChildren<{ className?: string }>) {
-  const { className, children } = props;
-  return <div className={clsx('text-base font-semibold', className)}>{children}</div>;
-}
-
-export function CardContent(props: PropsWithChildren<{ className?: string }>) {
-  const { className, children } = props;
-  return <div className={clsx('px-5 pb-5 pt-4', className)}>{children}</div>;
+// Legacy callers requested an explicit border; the shared card already owns it.
+export function Card({ variant, ...props }: ComponentProps<typeof SharedCard> & { variant?: 'bordered' }) {
+  void variant;
+  return <SharedCard {...props} />;
 }

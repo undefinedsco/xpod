@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PodChatKitStore, type StoreContext, type UserMessageItem } from '../../../src/api/chatkit';
+import { ServerGroupReconcilerService } from '../../../src/api/reconciler/ServerGroupReconcilerService';
+import { InMemoryWakeAgentQueue } from '../../../src/api/reconciler/WakeAgentQueue';
+import { Chat } from '../../../src/api/chatkit/schema';
 
 const { db } = vi.hoisted(() => ({
   db: createDb(),
@@ -17,6 +20,7 @@ function createDb(): any {
   return {
     init: vi.fn(async () => undefined),
     findByIri: vi.fn(async () => undefined),
+    findById: vi.fn(async () => undefined),
     insert: vi.fn(() => ({
       values: vi.fn(async () => undefined),
     })),
@@ -47,6 +51,7 @@ describe('PodChatKitStore group Reconciler integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db.findByIri.mockResolvedValue(undefined);
+    db.findById.mockResolvedValue(undefined);
     db.select.mockReturnValue(createSelectQuery([]));
   });
 
@@ -152,5 +157,49 @@ describe('PodChatKitStore group Reconciler integration', () => {
       reconcilerOwner: 'server',
       mentions: ['https://alice.example/.data/agents/reviewer.ttl#this'],
     }));
+  });
+
+  it.each(['server', 'client'] as const)('uses the persisted Chat roster for %s-owned messages', async owner => {
+    const registered = 'https://alice.example/.data/agents/registered.ttl#this';
+    const unregistered = 'https://alice.example/.data/agents/unregistered.ttl#this';
+    const queue = new InMemoryWakeAgentQueue();
+    const store = new PodChatKitStore({ podAccess: { getPodFetch: async () => fetch },
+      serverGroupReconcilerService: new ServerGroupReconcilerService({ wakeQueue: queue }) });
+    const context = solidContext() as any;
+    const threadId = 'chat/team/index.ttl#thread';
+    context._threadMetadataCache = new Map([[threadId, {
+      id: threadId, status: { type: 'active' }, reconcilerOwner: owner, created_at: 1, updated_at: 1,
+      metadata: { reconcilerOwner: owner, participants: [unregistered] },
+    }]]);
+    db.findById.mockImplementation(async (table: unknown) => table === Chat ? { participants: [registered] } : undefined);
+    await store.addThreadItem({ thread_id: threadId, chat_id: 'team' }, {
+      id: 'chat/team/2026/06/14/messages.ttl#roster', thread_id: threadId, created_at: 1_781_395_200,
+      type: 'user_message', content: [
+        { type: 'input_text', text: 'Please collaborate' },
+        { type: 'input_tag', tag: registered, label: 'registered' },
+        { type: 'input_tag', tag: unregistered, label: 'unregistered' },
+      ],
+    }, context);
+    const jobs = await queue.listQueued('https://alice.example/.data/chat/team/index.ttl#thread');
+    expect(jobs.map(job => job.agent)).toEqual(owner === 'server' ? [registered] : []);
+    if (owner === 'server') expect(db.findById).toHaveBeenCalledWith(Chat, 'team/index.ttl#this');
+    else expect(db.findById).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the persisted Chat roster is missing', async () => {
+    const agent = 'https://alice.example/.data/agents/secretary.ttl#this';
+    const queue = new InMemoryWakeAgentQueue();
+    const store = new PodChatKitStore({ podAccess: { getPodFetch: async () => fetch },
+      serverGroupReconcilerService: new ServerGroupReconcilerService({ wakeQueue: queue }) });
+    const context = solidContext() as any;
+    const threadId = 'chat/team/index.ttl#thread';
+    context._threadMetadataCache = new Map([[threadId, { id: threadId, status: { type: 'active' },
+      reconcilerOwner: 'server', created_at: 1, updated_at: 1,
+      metadata: { reconcilerOwner: 'server', participants: [agent] } }]]);
+    await store.addThreadItem({ thread_id: threadId, chat_id: 'team' }, {
+      id: 'chat/team/2026/06/14/messages.ttl#missing-roster', thread_id: threadId, created_at: 1_781_395_200,
+      type: 'user_message', content: [{ type: 'input_tag', tag: agent, label: 'secretary' }],
+    }, context);
+    expect(await queue.listQueued('https://alice.example/.data/chat/team/index.ttl#thread')).toEqual([]);
   });
 });

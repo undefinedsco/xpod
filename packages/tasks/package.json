@@ -1,0 +1,35 @@
+{
+  "name": "@undefineds.co/tasks",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./style.css": "./dist/style.css"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && cp src/style.css dist/style.css",
+    "test": "vitest run test --config ../../vitest.packages.config.mts"
+  },
+  "peerDependencies": {
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  },
+  "dependencies": {
+    "@undefineds.co/extension-sdk": "workspace:*",
+    "@undefineds.co/shared-ui": "workspace:*"
+  },
+  "files": [
+    "dist"
+  ]
+}

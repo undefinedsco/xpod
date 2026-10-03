@@ -1,6 +1,6 @@
 {
   "name": "@undefineds.co/extension-sdk",
-  "version": "0.1.1-rc.0",
+  "version": "0.1.1",
   "private": false,
   "type": "module",
   "sideEffects": false,
@@ -36,7 +36,7 @@
   },
   "dependencies": {
     "@inrupt/solid-client": "^3.0.0",
-    "@undefineds.co/models": "0.2.59",
+    "@undefineds.co/models": "0.2.60",
     "@undefineds.co/pod-collections": "workspace:*",
     "@undefineds.co/shared-ui": "workspace:*",
     "@undefineds.co/solid-sdk": "workspace:*"

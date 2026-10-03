@@ -43,6 +43,8 @@ const runtimeRoot = path.resolve('.test-data/full-runtime', process.env.XPOD_FUL
 const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@localhost:5432/xpod';
 const defaultTargets = [
   'tests/integration/CloudClientCredentialVisibility.integration.test.ts',
+  'tests/integration/AgentDirectoryProtocol.integration.test.ts',
+  'tests/integration/RedisLockOwnership.integration.test.ts',
   'tests/integration/DockerCluster.integration.test.ts',
   'tests/integration/MultiNodeCluster.integration.test.ts',
   'tests/integration/DockerClusterProvisionFlow.integration.test.ts',
@@ -281,7 +283,7 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
   throw new Error(`[full] ${name} not ready: ${statusUrl}`);
 }
 
-async function startFullRuntimes(
+export async function startFullRuntimes(
   ports: FullRuntimePorts,
   qleverRuntimeCommand: string,
 ): Promise<XpodRuntimeHandle[]> {
@@ -308,80 +310,87 @@ async function startFullRuntimes(
     XPOD_INNGEST_SIGNING_KEY: 'signkey-test-integration-signing-key',
   };
 
-  runtimes.push(await startXpodRuntime({
-    mode: 'cloud',
-    transport: 'port',
-    gatewayPort: ports.cloud.gateway,
-    cssPort: ports.cloud.css,
-    apiPort: ports.cloud.api,
-    baseUrl: `http://localhost:${ports.cloud.gateway}/`,
-    runtimeRoot: path.join(runtimeRoot, 'cloud'),
-    rootFilePath: path.join(runtimeRoot, 'cloud', 'data'),
-    sparqlEndpoint: cloudDb,
-    identityDbUrl: cloudDb,
-    env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-a' },
-  }));
+  try {
+    runtimes.push(await startXpodRuntime({
+      mode: 'cloud',
+      transport: 'port',
+      gatewayPort: ports.cloud.gateway,
+      cssPort: ports.cloud.css,
+      apiPort: ports.cloud.api,
+      baseUrl: `http://localhost:${ports.cloud.gateway}/`,
+      runtimeRoot: path.join(runtimeRoot, 'cloud'),
+      rootFilePath: path.join(runtimeRoot, 'cloud', 'data'),
+      sparqlEndpoint: cloudDb,
+      identityDbUrl: cloudDb,
+      env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-a' },
+    }));
 
-  runtimes.push(await startXpodRuntime({
-    mode: 'cloud',
-    transport: 'port',
-    gatewayPort: ports.cloudB.gateway,
-    cssPort: ports.cloudB.css,
-    apiPort: ports.cloudB.api,
-    baseUrl: `http://localhost:${ports.cloudB.gateway}/`,
-    runtimeRoot: path.join(runtimeRoot, 'cloud_b'),
-    rootFilePath: path.join(runtimeRoot, 'cloud_b', 'data'),
-    sparqlEndpoint: cloudDb,
-    identityDbUrl: cloudDb,
-    env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-b' },
-  }));
+    runtimes.push(await startXpodRuntime({
+      mode: 'cloud',
+      transport: 'port',
+      gatewayPort: ports.cloudB.gateway,
+      cssPort: ports.cloudB.css,
+      apiPort: ports.cloudB.api,
+      baseUrl: `http://localhost:${ports.cloudB.gateway}/`,
+      runtimeRoot: path.join(runtimeRoot, 'cloud_b'),
+      rootFilePath: path.join(runtimeRoot, 'cloud_b', 'data'),
+      sparqlEndpoint: cloudDb,
+      identityDbUrl: cloudDb,
+      env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-b' },
+    }));
 
-  runtimes.push(await startXpodRuntime({
-    mode: 'local',
-    transport: 'port',
-    gatewayPort: ports.local.gateway,
-    cssPort: ports.local.css,
-    apiPort: ports.local.api,
-    baseUrl: `http://localhost:${ports.local.gateway}/`,
-    runtimeRoot: path.join(runtimeRoot, 'local'),
-    rootFilePath: path.join(runtimeRoot, 'local', 'data'),
-    sparqlEndpoint: path.join(runtimeRoot, 'local', 'local-managed.sqlite'),
-    identityDbUrl: path.join(runtimeRoot, 'local', 'local-managed-identity.sqlite'),
-    env: {
-      ...TEST_GATEWAY_ENV,
-      SOLID_OIDC_ISSUER: `http://localhost:${ports.cloud.gateway}`,
-      XPOD_NODE_ID: 'local-managed-node',
-      XPOD_SERVICE_TOKEN: 'svc-testservicetokenforintegration',
-      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
-      CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
-      CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
-    },
-  }));
+    runtimes.push(await startXpodRuntime({
+      mode: 'local',
+      transport: 'port',
+      gatewayPort: ports.local.gateway,
+      cssPort: ports.local.css,
+      apiPort: ports.local.api,
+      baseUrl: `http://localhost:${ports.local.gateway}/`,
+      runtimeRoot: path.join(runtimeRoot, 'local'),
+      rootFilePath: path.join(runtimeRoot, 'local', 'data'),
+      sparqlEndpoint: path.join(runtimeRoot, 'local', 'local-managed.sqlite'),
+      identityDbUrl: path.join(runtimeRoot, 'local', 'local-managed-identity.sqlite'),
+      env: {
+        ...TEST_GATEWAY_ENV,
+        SOLID_OIDC_ISSUER: `http://localhost:${ports.cloud.gateway}`,
+        XPOD_NODE_ID: 'local-managed-node',
+        XPOD_SERVICE_TOKEN: 'svc-testservicetokenforintegration',
+        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
+        CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
+        CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
+      },
+    }));
 
-  runtimes.push(await startXpodRuntime({
-    mode: 'local',
-    transport: 'port',
-    gatewayPort: ports.standalone.gateway,
-    cssPort: ports.standalone.css,
-    apiPort: ports.standalone.api,
-    baseUrl: `http://localhost:${ports.standalone.gateway}/`,
-    runtimeRoot: path.join(runtimeRoot, 'standalone'),
-    rootFilePath: path.join(runtimeRoot, 'standalone', 'data'),
-    sparqlEndpoint: path.join(runtimeRoot, 'standalone', 'local-standalone.sqlite'),
-    identityDbUrl: path.join(runtimeRoot, 'standalone', 'local-standalone-identity.sqlite'),
-    env: {
-      ...TEST_GATEWAY_ENV,
-      // Standalone 节点自身就是 IdP：显式把 issuer 指向自身 baseUrl，
-      // 退出 XpodRuntime 对 local 模式的默认官方云接管（DEFAULT_LOCAL_OIDC_ISSUER），
-      // 否则测试运行会向真实 id.undefineds.co 注册节点并把 Pod 建到不可解析的 nodes.undefineds.co 域。
-      SOLID_OIDC_ISSUER: `http://localhost:${ports.standalone.gateway}/`,
-      XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
-      CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
-      CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
-    },
-  }));
+    runtimes.push(await startXpodRuntime({
+      mode: 'local',
+      transport: 'port',
+      gatewayPort: ports.standalone.gateway,
+      cssPort: ports.standalone.css,
+      apiPort: ports.standalone.api,
+      baseUrl: `http://localhost:${ports.standalone.gateway}/`,
+      runtimeRoot: path.join(runtimeRoot, 'standalone'),
+      rootFilePath: path.join(runtimeRoot, 'standalone', 'data'),
+      sparqlEndpoint: path.join(runtimeRoot, 'standalone', 'local-standalone.sqlite'),
+      identityDbUrl: path.join(runtimeRoot, 'standalone', 'local-standalone-identity.sqlite'),
+      env: {
+        ...TEST_GATEWAY_ENV,
+        // Standalone 节点自身就是 IdP：显式把 issuer 指向自身 baseUrl，
+        // 退出 XpodRuntime 对 local 模式的默认官方云接管（DEFAULT_LOCAL_OIDC_ISSUER），
+        // 否则测试运行会向真实 id.undefineds.co 注册节点并把 Pod 建到不可解析的 nodes.undefineds.co 域。
+        SOLID_OIDC_ISSUER: `http://localhost:${ports.standalone.gateway}/`,
+        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
+        CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
+        CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
+      },
+    }));
 
-  return runtimes;
+    return runtimes;
+  } catch (error) {
+    // Preserve the startup cause before infra teardown can terminate pending PG work.
+    console.error('[full] Runtime startup failed:', error);
+    await Promise.allSettled(runtimes.map((runtime) => runtime.stop()));
+    throw error;
+  }
 }
 
 async function waitForFullPorts(ports: FullRuntimePorts): Promise<void> {
@@ -398,6 +407,8 @@ async function main(): Promise<void> {
   const testTargets = targets.length > 0 ? targets : defaultTargets;
   const ports = await resolveFullRuntimePorts();
   const sharedEnv = {
+    XPOD_AGENT_DIRECTORY_TEST_CLOUD_URL: `http://localhost:${ports.cloud.gateway}/`,
+    XPOD_AGENT_DIRECTORY_TEST_REDIS_URL: 'redis://localhost:6379',
     CSS_BASE_URL: `http://localhost:${ports.standalone.gateway}`,
     CLOUD_PORT: String(ports.cloud.gateway),
     CLOUD_API_PORT: String(ports.cloud.api),
@@ -464,7 +475,7 @@ async function main(): Promise<void> {
   process.exit(testExitCode);
 }
 
-main().catch((error) => {
+if (import.meta.main) main().catch((error) => {
   console.error(error);
   process.exit(1);
 });

@@ -184,6 +184,9 @@ describe('registerRoutes mode wiring', () => {
       } : undefined,
       subdomainClient: edition === 'local' ? {} : undefined,
       edgeNodeCertificateCapabilityBridge: bridgeId ? getEdgeNodeCertificateCapabilityBridge(bridgeId) : undefined,
+      // Agent-wake routes take the reconciler queue at registration time; wiring only
+      // needs the accessor, not a live reconciler.
+      serverGroupReconcilerService: { getQueue: () => ({}) },
       ...overrides.services,
     };
 

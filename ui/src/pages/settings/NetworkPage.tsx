@@ -23,7 +23,7 @@ import { getListNavItemClass } from '../../layout/nav-item-style';
 import { formatNetworkDiagnosticReport } from './network-diagnostic-report';
 import { handleListNavigationKeyDown } from '../../layout/list-keyboard-navigation';
 
-export default function NetworkPage() {
+export default function NetworkPage({ embedded = false }: { embedded?: boolean }) {
   const location = useLocation();
   const [status, setStatus] = useState<NetworkSettingsStatus>();
   const [diagnostics, setDiagnostics] = useState<NetworkDiagnosticCheckResult[]>([]);
@@ -201,6 +201,15 @@ export default function NetworkPage() {
   const sectionId = location.pathname.split('/').filter(Boolean).at(-1);
   const activeSection = networkNavigationItems.some((item) => item.path === sectionId) ? sectionId : 'overview';
 
+  if (embedded) return <section className="space-y-5 p-6">
+    <div className="flex items-center justify-between gap-3"><p className="text-sm leading-normal text-muted-foreground">这台设备上的所有 Pod 共用</p><Button variant="outline" size="sm" disabled={loading} onClick={loadStatus}>刷新</Button></div>
+    {error && <p role="alert" className="text-sm leading-normal text-destructive">{error}</p>}
+    <div className="divide-y rounded-xl border border-border bg-card">{sections.map(({ key, values }) => <div key={key} className="flex flex-wrap items-center justify-between gap-3 p-4"><div><div className="text-sm leading-normal font-medium">{key === 'local' ? '这台电脑' : key === 'lan' ? '局域网' : '其他网络'}</div><div className="mt-1 break-all text-xs leading-normal text-muted-foreground">{values.join(' · ') || '暂无地址'}</div></div><span className="text-xs leading-normal text-muted-foreground">{key === 'local' && status && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname) ? '可访问' : key === 'public' && diagnostics.some((check) => check.id === 'endpoint-reachability' && check.status === 'ok') ? '本机检测通过' : values.length ? '待检测' : '未配置'}</span></div>)}</div>
+    <TunnelConfigurationCard configuration={status?.configuration} providers={status?.providers ?? []} ingress={status?.ingress} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} />
+    <ActionsCard status={status} endpoint={status?.endpoint} diagnostics={diagnostics} diagnosing={diagnosing} renewing={renewing} onDiagnose={runDiagnose} onRenewCertificate={renewCertificate} />
+    <details><summary className="cursor-pointer text-sm leading-normal text-muted-foreground">开发者模式：网络配置</summary><div className="mt-4 space-y-4"><DnsConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /><HttpsConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /><P2pConfigurationCard configuration={status?.configuration} saving={savingConfiguration} applyState={configurationApplyState} onSave={saveConfiguration} /></div></details>
+  </section>;
+
   return (
     <TwoPaneLayout
       mode="auto"
@@ -210,7 +219,7 @@ export default function NetworkPage() {
       main={
         <section className="flex min-h-full flex-col gap-4 bg-background p-6">
           {error ? (
-            <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm leading-normal text-destructive">
               {error}
             </div>
           ) : null}
@@ -262,8 +271,8 @@ function NetworkHeader({ title, loading, stale, onRefresh }: { title: string; lo
   return (
     <div className="flex h-full min-w-0 items-center justify-between gap-4 px-4">
       <div className="min-w-0">
-        <h1 className="text-sm font-semibold text-foreground">Network · {title}</h1>
-        <div className="truncate text-xs text-muted-foreground" aria-live="polite">
+        <h1 className="text-sm leading-normal font-semibold text-foreground">Network · {title}</h1>
+        <div className="truncate text-xs leading-normal text-muted-foreground" aria-live="polite">
           {stale ? 'Refreshing · showing previous snapshot' : '接入点、DNS、TLS、隧道与连通性诊断'}
         </div>
       </div>
@@ -289,15 +298,15 @@ function NetworkOverviewCard({ status }: { status?: NetworkSettingsStatus }) {
   // A listed address is a configuration, not a probe result: the card must not call it
   // "available", and the tunnel badge is the only observed value here.
   const tunnelObserved = status?.tunnel.supported === true;
-  return <Card><CardHeader><CardTitle className="text-base">Preferred access path</CardTitle><CardDescription>First address this runtime has configured, in public → LAN → local order</CardDescription></CardHeader><CardContent className="space-y-3 text-sm"><div className="break-words font-medium">{recommended ?? 'Not configured'}</div><div className="grid gap-2 sm:grid-cols-4"><Badge variant="outline">Local {status?.addresses.local.length ? 'configured' : 'not configured'}</Badge><Badge variant="outline">LAN {status?.addresses.lan.length ? 'configured' : 'not configured'}</Badge><Badge variant="outline">Public {status?.addresses.public.length ? 'configured' : 'not configured'}</Badge><Badge variant="outline">Tunnel {tunnelObserved ? (status?.tunnel.status ?? 'unknown') : 'not observed'}</Badge></div><div className="mt-1 text-xs text-muted-foreground">Configured addresses are not probe results; reachability is reported per route.</div><div className="rounded-md border border-border bg-muted/30 p-3"><div className="font-medium">Next action</div><div className="mt-1 text-muted-foreground">{nextAction}</div></div></CardContent></Card>;
+  return <Card><CardHeader><CardTitle className="text-base leading-normal">Preferred access path</CardTitle><CardDescription className="leading-normal">First address this runtime has configured, in public → LAN → local order</CardDescription></CardHeader><CardContent className="space-y-3 text-sm leading-normal"><div className="break-words font-medium">{recommended ?? 'Not configured'}</div><div className="grid gap-2 sm:grid-cols-4"><Badge variant="outline">Local {status?.addresses.local.length ? 'configured' : 'not configured'}</Badge><Badge variant="outline">LAN {status?.addresses.lan.length ? 'configured' : 'not configured'}</Badge><Badge variant="outline">Public {status?.addresses.public.length ? 'configured' : 'not configured'}</Badge><Badge variant="outline">Tunnel {tunnelObserved ? (status?.tunnel.status ?? 'unknown') : 'not observed'}</Badge></div><div className="mt-1 text-xs leading-normal text-muted-foreground">Configured addresses are not probe results; reachability is reported per route.</div><div className="rounded-md border border-border bg-muted/30 p-3"><div className="font-medium">Next action</div><div className="mt-1 text-muted-foreground">{nextAction}</div></div></CardContent></Card>;
 }
 
 function SingleCapabilityCard({ title, label, capability, extra }: { title: string; label: string; capability?: { supported: boolean; status: string }; extra?: string }) {
-  return <Card><CardHeader><CardTitle className="text-base">{title}</CardTitle><CardDescription>Observed runtime state</CardDescription></CardHeader><CardContent><CapabilityRow label={label} capability={capability} extra={extra} /></CardContent></Card>;
+  return <Card><CardHeader><CardTitle className="text-base leading-normal">{title}</CardTitle><CardDescription className="leading-normal">Observed runtime state</CardDescription></CardHeader><CardContent><CapabilityRow label={label} capability={capability} extra={extra} /></CardContent></Card>;
 }
 
 function UnavailableConfiguration({ title }: { title: string }) {
-  return <Card><CardHeader><CardTitle className="text-base">{title}</CardTitle><CardDescription>Desired configuration</CardDescription></CardHeader><CardContent className="text-sm text-muted-foreground">This runtime does not report a configurable {title} capability.</CardContent></Card>;
+  return <Card><CardHeader><CardTitle className="text-base leading-normal">{title}</CardTitle><CardDescription className="leading-normal">设备配置</CardDescription></CardHeader><CardContent className="text-sm leading-normal text-muted-foreground">这台设备暂未提供{title}配置。</CardContent></Card>;
 }
 
 function DnsConfigurationCard({ configuration, saving, applyState, onSave }: ConfigurationCardProps) {
@@ -316,7 +325,7 @@ function DnsConfigurationCard({ configuration, saving, applyState, onSave }: Con
       <TextField name="domain" label="Domain" value={value.domain} onChange={(domain) => setValue({ ...value, domain })} />
       <TextField name="provider" label="DNS provider" value={value.provider} onChange={(provider) => setValue({ ...value, provider })} />
       <NumberField name="recordTtl" label="Record TTL (seconds)" value={value.recordTtl} min={30} max={86400} onChange={(recordTtl) => setValue({ ...value, recordTtl })} />
-      <TextField name="dnsCredential" label={value.credentialConfigured ? 'Replace credential (configured)' : 'Credential'} value={credential} type="password" onChange={setCredential} />
+      <TextField name="dnsCredential" label={value.credentialConfigured ? '更换凭据（已配置）' : '凭据'} value={credential} type="password" onChange={setCredential} />
     </div>
     <ToggleField label="Enable DDNS" checked={value.ddnsEnabled} onChange={(ddnsEnabled) => setValue({ ...value, ddnsEnabled })} />
     <SaveConfigurationButton label="Save DNS configuration" saving={saving} onClick={() => onSave({ domainDns: { domain: value.domain, ddnsEnabled: value.ddnsEnabled, provider: value.provider, recordTtl: value.recordTtl, ...(credential ? { credential } : {}) } })} />
@@ -381,16 +390,16 @@ function TunnelClientsCard({ fetchImpl }: { fetchImpl: typeof fetch }) {
     }
   };
 
-  return <Card><CardHeader><CardTitle className="text-base">Tunnel clients</CardTitle><CardDescription>Clients are not bundled with this build: check where one comes from, or download it into the plugin directory.</CardDescription></CardHeader><CardContent className="space-y-3 text-sm">
+  return <Card><CardHeader><CardTitle className="text-base leading-normal">Tunnel clients</CardTitle><CardDescription className="leading-normal">Clients are not bundled with this build: check where one comes from, or download it into the plugin directory.</CardDescription></CardHeader><CardContent className="space-y-3 text-sm leading-normal">
     <Button type="button" size="sm" variant="outline" onClick={inspect} disabled={busy === 'inspect'}>{busy === 'inspect' ? 'Checking…' : 'Check clients'}</Button>
     {error && <div className="text-destructive">{error}</div>}
     {clients && <div className="space-y-2">{clients.map((client) => <div key={client.provider} className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2">
       <Badge variant={client.state === 'ready' ? 'default' : 'outline'}>{client.state === 'ready' ? 'Ready' : 'Missing'}</Badge>
       <span className="font-medium">{client.label}</span>
-      <span className="text-xs text-muted-foreground">{client.path ?? client.binary}{client.version ? ` · ${client.version}` : ''}{client.source === 'bundled' ? ' · plugin directory' : ''}</span>
-      {client.state === 'missing' && <span className="text-xs text-muted-foreground">{client.installHint}</span>}
+      <span className="text-xs leading-normal text-muted-foreground">{client.path ?? client.binary}{client.version ? ` · ${client.version}` : ''}{client.source === 'bundled' ? ' · plugin directory' : ''}</span>
+      {client.state === 'missing' && <span className="text-xs leading-normal text-muted-foreground">{client.installHint}</span>}
       {client.state === 'missing' && client.installable && <Button type="button" size="sm" onClick={() => download(client.provider)} disabled={busy === client.provider}>{busy === client.provider ? 'Downloading…' : 'Download'}</Button>}
-      {client.state === 'missing' && !client.installable && <span className="text-xs text-muted-foreground">（{client.installableReason}）</span>}
+      {client.state === 'missing' && !client.installable && <span className="text-xs leading-normal text-muted-foreground">（{client.installableReason}）</span>}
     </div>)}</div>}
   </CardContent></Card>;
 }
@@ -409,14 +418,14 @@ function TunnelConfigurationCard({ configuration, providers, ingress, saving, ap
     });
     return () => { cancelled = true; };
   }, [configuration]);
-  if (!configuration) return <UnavailableConfiguration title="Tunnel Profiles" />;
+  if (!configuration) return <UnavailableConfiguration title="隧道" />;
   const updateProfile = (id: string, patch: Partial<NetworkDesiredConfiguration['tunnelProfiles']['profiles'][number]>) => setProfiles((current) => current.map((profile) => profile.id === id ? { ...profile, ...patch } : profile));
   const selectableProviders = providers.filter((provider) => provider.runtimeSupported);
   const descriptorFor = (provider: string) => providers.find((entry) => entry.id === provider);
   const addProfile = () => {
     const id = `tunnel-${Date.now()}`;
     const provider = selectableProviders[0]?.id ?? 'ngrok';
-    setProfiles((current) => [...current, { id, provider, label: 'New tunnel', credentialConfigured: false, parameters: {} }]);
+    setProfiles((current) => [...current, { id, provider, label: '新隧道', credentialConfigured: false, parameters: {} }]);
   };
   const removeProfile = (id: string) => {
     setProfiles((current) => current.filter((profile) => profile.id !== id));
@@ -424,23 +433,23 @@ function TunnelConfigurationCard({ configuration, providers, ingress, saving, ap
     // runtime cannot fall back to a legacy provider or a leftover credential.
     if (activeProfileId === id) setActiveProfileId('none');
   };
-  return <ConfigurationCard title="Saved tunnel profiles" applyState={applyState}>
-    <label className="block space-y-2 text-sm font-medium">Active profile<select value={activeProfileId || 'none'} onChange={(event) => setActiveProfileId(event.target.value)} className="block h-10 w-full rounded-md border border-input bg-background px-3 sm:max-w-sm"><option value="none">None</option>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label} · {profile.provider}</option>)}</select></label>
-    <div className="space-y-3">{profiles.map((profile) => <div key={profile.id} className="space-y-3 rounded-md border border-border p-3 text-sm">
+  return <ConfigurationCard title="隧道" applyState={applyState}>
+    <label className="block space-y-2 text-sm leading-normal font-medium">主地址<select value={activeProfileId || 'none'} onChange={(event) => setActiveProfileId(event.target.value)} className="block h-10 w-full rounded-md border border-input bg-background px-3 sm:max-w-sm"><option value="none">停用</option>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label} · {profile.provider}</option>)}</select></label>
+    <div className="space-y-3">{profiles.map((profile) => <div key={profile.id} className="space-y-3 rounded-md border border-border p-3 text-sm leading-normal">
       <div className="grid gap-3 sm:grid-cols-2">
-        <TextField name={`tunnel-label-${profile.id}`} label="Label" value={profile.label} onChange={(label) => updateProfile(profile.id, { label })} />
-        <label className="block space-y-2 text-sm font-medium">Provider<select value={profile.provider} onChange={(event) => updateProfile(profile.id, { provider: event.target.value, parameters: {} })} className="block h-10 w-full rounded-md border border-input bg-background px-3">{selectableProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
+        <TextField name={`tunnel-label-${profile.id}`} label="名称" value={profile.label} onChange={(label) => updateProfile(profile.id, { label })} />
+        <label className="block space-y-2 text-sm leading-normal font-medium">隧道服务商<select value={profile.provider} onChange={(event) => updateProfile(profile.id, { provider: event.target.value, parameters: {} })} className="block h-10 w-full rounded-md border border-input bg-background px-3">{providers.map((provider) => <option key={provider.id} value={provider.id} disabled={!provider.runtimeSupported}>{provider.label}{provider.runtimeSupported ? '' : '（暂不支持）'}</option>)}</select></label>
         {descriptorFor(profile.provider)?.endpointSource === 'declared'
-          ? <TextField name={`tunnel-url-${profile.id}`} label="Public endpoint (declared)" value={profile.publicUrl ?? ''} onChange={(publicUrl) => updateProfile(profile.id, { publicUrl })} />
-          : <p className="text-xs text-muted-foreground">The provider reports its public endpoint; there is nothing to type here.</p>}
-        <TextField name={`tunnel-credential-${profile.id}`} label={profile.credentialConfigured ? 'Replace credential (configured)' : 'Credential'} type="password" value={credentials[profile.id] ?? ''} onChange={(credential) => setCredentials((current) => ({ ...current, [profile.id]: credential }))} />
+          ? <TextField name={`tunnel-url-${profile.id}`} label="公网地址" value={profile.publicUrl ?? ''} onChange={(publicUrl) => updateProfile(profile.id, { publicUrl })} />
+          : <p className="text-xs leading-normal text-muted-foreground">地址由隧道自动提供。</p>}
+        <TextField name={`tunnel-credential-${profile.id}`} label={profile.credentialConfigured ? '更换凭据（已配置）' : '凭据'} type="password" value={credentials[profile.id] ?? ''} onChange={(credential) => setCredentials((current) => ({ ...current, [profile.id]: credential }))} />
       </div>
-      <details><summary className="cursor-pointer font-medium">Provider-specific parameters</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">{(descriptorFor(profile.provider)?.parameterFields ?? []).map(({ key, label }) => <TextField key={key} name={`tunnel-${key}-${profile.id}`} label={label} value={profile.parameters?.[key] ?? ''} onChange={(value) => updateProfile(profile.id, { parameters: { ...profile.parameters, [key]: value } })} />)}</div></details>
-      <div className="flex justify-between"><span className="text-xs text-muted-foreground">{activeProfileId === profile.id ? 'Active after restart' : 'Inactive'} · credential {profile.credentialConfigured ? 'configured' : 'missing'}</span><Button type="button" size="sm" variant="ghost" onClick={() => removeProfile(profile.id)}>Remove</Button></div>
+      <details><summary className="cursor-pointer font-medium">服务商参数</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">{(descriptorFor(profile.provider)?.parameterFields ?? []).map(({ key, label }) => <TextField key={key} name={`tunnel-${key}-${profile.id}`} label={label} value={profile.parameters?.[key] ?? ''} onChange={(value) => updateProfile(profile.id, { parameters: { ...profile.parameters, [key]: value } })} />)}</div></details>
+      <div className="flex justify-between"><span className="text-xs leading-normal text-muted-foreground">{activeProfileId === profile.id ? '重启后启用' : '已停用'} · {profile.credentialConfigured ? '已配置凭据' : '未配置凭据'}</span><Button type="button" size="sm" variant="ghost" onClick={() => removeProfile(profile.id)}>移除</Button></div>
     </div>)}</div>
-    <Button type="button" size="sm" variant="outline" onClick={addProfile}>Add tunnel profile</Button>
+    <Button type="button" size="sm" variant="outline" onClick={addProfile}>添加隧道</Button>
     <IngressOriginRow ingress={ingress} descriptor={descriptorFor(profiles.find((profile) => profile.id === activeProfileId)?.provider ?? '')} />
-    <SaveConfigurationButton label="Save tunnel profiles" saving={saving} onClick={() => onSave({ tunnelProfiles: { activeProfileId, profiles: profiles.map((profile) => ({ id: profile.id, provider: profile.provider, label: profile.label, publicUrl: profile.publicUrl, parameters: profile.parameters, ...(credentials[profile.id] ? { credential: credentials[profile.id] } : {}) })) } })} />
+    <SaveConfigurationButton label="保存隧道" saving={saving} onClick={() => onSave({ tunnelProfiles: { activeProfileId, profiles: profiles.map((profile) => ({ id: profile.id, provider: profile.provider, label: profile.label, publicUrl: profile.publicUrl, parameters: profile.parameters, ...(credentials[profile.id] ? { credential: credentials[profile.id] } : {}) })) } })} />
   </ConfigurationCard>;
 }
 
@@ -459,10 +468,10 @@ function IngressOriginRow({ ingress, descriptor }: { ingress?: { port: number; o
     toast({ description: 'Tunnel origin copied' });
   };
   return <div className="rounded-md border border-border bg-muted/30 p-3" data-testid="ingress-origin">
-    <div className="text-xs font-medium text-muted-foreground">Tunnel origin (paste into the provider console)</div>
+    <div className="text-xs leading-normal font-medium text-muted-foreground">把隧道指向此地址</div>
     <div className="mt-1 flex items-start justify-between gap-3">
-      <div className="min-w-0"><div className="break-all font-mono text-sm">{ingress.originUrl}</div>
-        <div className="mt-1 text-xs text-muted-foreground">Set the tunnel's local port / service to this address, not the Gateway port: this is the entry that never treats a tunnelled caller as local.</div></div>
+      <div className="min-w-0"><div className="break-all font-mono text-sm leading-normal">{ingress.originUrl}</div>
+        <div className="mt-1 text-xs leading-normal text-muted-foreground">在服务商控制台填写此地址。</div></div>
       <div className="flex shrink-0 gap-1">
         <Button type="button" size="icon" variant="ghost" aria-label="Copy tunnel origin" onClick={() => void copy()}><Copy className="h-4 w-4" aria-hidden="true" /></Button>
         {descriptor.consoleUrl ? <Button type="button" size="icon" variant="ghost" aria-label={`Open ${descriptor.label} console`} onClick={() => window.open(descriptor.consoleUrl, '_blank', 'noopener,noreferrer')}><ExternalLink className="h-4 w-4" aria-hidden="true" /></Button> : null}
@@ -484,17 +493,17 @@ function P2pConfigurationCard({ configuration, saving, applyState, onSave }: Con
   return <ConfigurationCard title="Saved P2P configuration" applyState={applyState}>
     <ToggleField label="Enable P2P fallback" checked={value.enabled} onChange={(enabled) => setValue({ ...value, enabled })} />
     <TextField name="signalService" label="Signal service" value={value.signalService} onChange={(signalService) => setValue({ ...value, signalService })} />
-    <label className="block space-y-2 text-sm font-medium">Fallback policy<select value={value.fallbackPolicy} onChange={(event) => setValue({ ...value, fallbackPolicy: event.target.value as typeof value.fallbackPolicy })} className="block h-10 w-full rounded-md border border-input bg-background px-3 sm:max-w-sm"><option value="never">Never</option><option value="when-direct-unavailable">When direct is unavailable</option><option value="prefer-p2p">Prefer P2P</option></select></label>
+    <label className="block space-y-2 text-sm leading-normal font-medium">Fallback policy<select value={value.fallbackPolicy} onChange={(event) => setValue({ ...value, fallbackPolicy: event.target.value as typeof value.fallbackPolicy })} className="block h-10 w-full rounded-md border border-input bg-background px-3 sm:max-w-sm"><option value="never">Never</option><option value="when-direct-unavailable">When direct is unavailable</option><option value="prefer-p2p">Prefer P2P</option></select></label>
     <SaveConfigurationButton label="Save P2P configuration" saving={saving} onClick={() => onSave({ p2p: value })} />
   </ConfigurationCard>;
 }
 
 interface ConfigurationCardProps { configuration?: NetworkDesiredConfiguration; saving: boolean; applyState?: string; onSave(patch: NetworkConfigurationPatch): void }
-function ConfigurationCard({ title, applyState, children }: { title: string; applyState?: string; children: ReactNode }) { return <Card><CardHeader><CardTitle className="text-base">{title}</CardTitle><CardDescription>Desired configuration · not presented as observed until verified</CardDescription></CardHeader><CardContent className="space-y-4">{applyState === 'restart-required' ? <div role="status" className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning dark:bg-warning/20 dark:text-warning">Saved · restart required</div> : null}{children}</CardContent></Card>; }
-function TextField({ name, label, value, type = 'text', onChange }: { name: string; label: string; value: string; type?: string; onChange(value: string): void }) { return <label className="block space-y-2 text-sm font-medium">{label}<input name={name} type={type} value={value} onChange={(event) => onChange(event.target.value)} className="block h-10 w-full rounded-md border border-input bg-background px-3 text-sm" /></label>; }
-function NumberField({ name, label, value, min, max, onChange }: { name: string; label: string; value: number; min: number; max: number; onChange(value: number): void }) { return <label className="block space-y-2 text-sm font-medium">{label}<input name={name} type="number" value={value} min={min} max={max} onChange={(event) => onChange(event.target.valueAsNumber)} className="block h-10 w-full rounded-md border border-input bg-background px-3 text-sm" /></label>; }
-function ToggleField({ label, checked, onChange }: { label: string; checked: boolean; onChange(value: boolean): void }) { return <label className="flex items-center justify-between gap-3 rounded-md border border-border p-3 text-sm font-medium">{label}<input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /></label>; }
-function SaveConfigurationButton({ label, saving, onClick }: { label: string; saving: boolean; onClick(): void }) { return <div className="flex justify-end"><Button type="button" onClick={onClick} disabled={saving}>{saving ? 'Saving…' : label}</Button></div>; }
+function ConfigurationCard({ title, applyState, children }: { title: string; applyState?: string; children: ReactNode }) { return <Card><CardHeader><CardTitle className="text-base leading-normal">{title}</CardTitle><CardDescription className="leading-normal">保存后重启 Xpod 生效</CardDescription></CardHeader><CardContent className="space-y-4">{applyState === 'restart-required' ? <div role="status" className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm leading-normal text-warning dark:bg-warning/20 dark:text-warning">已保存，需要重启</div> : null}{children}</CardContent></Card>; }
+function TextField({ name, label, value, type = 'text', onChange }: { name: string; label: string; value: string; type?: string; onChange(value: string): void }) { return <label className="block space-y-2 text-sm leading-normal font-medium">{label}<input name={name} type={type} value={value} onChange={(event) => onChange(event.target.value)} className="block h-10 w-full rounded-md border border-input bg-background px-3 text-sm leading-normal" /></label>; }
+function NumberField({ name, label, value, min, max, onChange }: { name: string; label: string; value: number; min: number; max: number; onChange(value: number): void }) { return <label className="block space-y-2 text-sm leading-normal font-medium">{label}<input name={name} type="number" value={value} min={min} max={max} onChange={(event) => onChange(event.target.valueAsNumber)} className="block h-10 w-full rounded-md border border-input bg-background px-3 text-sm leading-normal" /></label>; }
+function ToggleField({ label, checked, onChange }: { label: string; checked: boolean; onChange(value: boolean): void }) { return <label className="flex items-center justify-between gap-3 rounded-md border border-border p-3 text-sm leading-normal font-medium">{label}<input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /></label>; }
+function SaveConfigurationButton({ label, saving, onClick }: { label: string; saving: boolean; onClick(): void }) { return <div className="flex justify-end"><Button type="button" onClick={onClick} disabled={saving}>{saving ? '正在保存…' : label}</Button></div>; }
 
 function EndpointCard({ endpoint, loading }: { endpoint?: string; loading: boolean }) {
   const rows = [
@@ -508,15 +517,15 @@ function EndpointCard({ endpoint, loading }: { endpoint?: string; loading: boole
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
+        <CardTitle className="flex items-center gap-2 text-base leading-normal">
           <Globe2 className="h-4 w-4" aria-hidden="true" />
           接入点
         </CardTitle>
-        <CardDescription>{loading ? '正在解析接入点' : 'Observed endpoints · Currently effective route is the canonical URL'}</CardDescription>
+        <CardDescription className="leading-normal">{loading ? '正在解析接入点' : 'Observed endpoints · Currently effective route is the canonical URL'}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         {rows.map(({ label, value }) => <div key={label} className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
-          <div className="min-w-0"><div className="text-xs font-medium text-muted-foreground">{label}</div><div className="mt-1 break-words text-sm text-foreground">{value || 'Unavailable'}</div></div>
+          <div className="min-w-0"><div className="text-xs leading-normal font-medium text-muted-foreground">{label}</div><div className="mt-1 break-words text-sm leading-normal text-foreground">{value || 'Unavailable'}</div></div>
           {value ? <div className="flex shrink-0 gap-1">
             <Button type="button" size="icon" variant="ghost" aria-label={`Copy ${label}`} onClick={() => void copyEndpoint(label, value)}><Copy className="h-4 w-4" aria-hidden="true" /></Button>
             <Button type="button" size="icon" variant="ghost" aria-label={`Open ${label}`} onClick={() => window.open(value, '_blank', 'noopener,noreferrer')}><ExternalLink className="h-4 w-4" aria-hidden="true" /></Button>
@@ -549,22 +558,22 @@ function AddressCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
+        <CardTitle className="flex items-center gap-2 text-base leading-normal">
           <Wifi className="h-4 w-4" aria-hidden="true" />
           网络地址
         </CardTitle>
-        <CardDescription>{loading ? '正在刷新地址' : '由运行时网络能力上报'}</CardDescription>
+        <CardDescription className="leading-normal">{loading ? '正在刷新地址' : '由运行时网络能力上报'}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {sections.map((section) => (
           <div key={section.key}>
-            <div className="text-xs font-medium text-muted-foreground">{section.title}</div>
+            <div className="text-xs leading-normal font-medium text-muted-foreground">{section.title}</div>
             {section.values.length > 0 ? (
               <div className="mt-1 space-y-1">
                 {section.values.map((value) => <AddressEvidence key={value} scope={section.key} value={value} diagnostics={diagnostics} checkedAt={checkedAt} />)}
               </div>
             ) : (
-              <div className="mt-1 text-sm text-muted-foreground">未提供</div>
+              <div className="mt-1 text-sm leading-normal text-muted-foreground">未提供</div>
             )}
           </div>
         ))}
@@ -578,9 +587,9 @@ function AddressEvidence({ scope, value, diagnostics, checkedAt }: { scope: stri
   // Address configuration is not reachability: the check only reports that an address
   // exists, so the block below never claims a probe result.
   const addressConfigurationCheck = diagnostics.find((check) => check.id === 'address-configuration');
-  return <div className="rounded-md border border-border p-3 text-sm">
+  return <div className="rounded-md border border-border p-3 text-sm leading-normal">
     <div className="break-words font-medium text-foreground">{value}</div>
-    <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+    <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs leading-normal sm:grid-cols-2">
       <EvidenceTerm label="Interface" value={scope === 'local' ? 'Loopback' : scope === 'lan' ? 'LAN interface (name not reported)' : 'Public route'} />
       <EvidenceTerm label="IP version" value={parsed.ipVersion} />
       <EvidenceTerm label="Port" value={parsed.port} />
@@ -606,25 +615,25 @@ function parseObservedAddress(value: string): { ipVersion: string; port: string 
 function ObservedDnsCard({ status }: { status?: NetworkSettingsStatus }) {
   const configured = status?.configuration?.domainDns;
   const publicHosts = (status?.addresses.public ?? []).map((value) => { try { return new URL(value).hostname; } catch { return value; } });
-  return <Card><CardHeader><CardTitle className="text-base">Observed DNS</CardTitle><CardDescription>Observed state is kept separate from desired DNS policy.</CardDescription></CardHeader><CardContent className="space-y-3"><CapabilityRow label="Runtime status" capability={status?.dns} /><dl className="grid gap-2 text-sm sm:grid-cols-2"><EvidenceTerm label="Observed hostnames" value={publicHosts.join(', ') || 'Not reported'} /><EvidenceTerm label="Expected domain" value={configured?.domain || 'Not configured'} /><EvidenceTerm label="Expected value" value={status?.addresses.public[0] || 'Not reported'} /><EvidenceTerm label="Provider" value={configured?.provider || 'Not configured'} /></dl></CardContent></Card>;
+  return <Card><CardHeader><CardTitle className="text-base leading-normal">Observed DNS</CardTitle><CardDescription className="leading-normal">Observed state is kept separate from desired DNS policy.</CardDescription></CardHeader><CardContent className="space-y-3"><CapabilityRow label="Runtime status" capability={status?.dns} /><dl className="grid gap-2 text-sm leading-normal sm:grid-cols-2"><EvidenceTerm label="Observed hostnames" value={publicHosts.join(', ') || 'Not reported'} /><EvidenceTerm label="Expected domain" value={configured?.domain || 'Not configured'} /><EvidenceTerm label="Expected value" value={status?.addresses.public[0] || 'Not reported'} /><EvidenceTerm label="Provider" value={configured?.provider || 'Not configured'} /></dl></CardContent></Card>;
 }
 
 function ObservedTlsCard({ status }: { status?: NetworkSettingsStatus }) {
   const desired = status?.configuration?.https;
-  return <Card><CardHeader><CardTitle className="text-base">Observed HTTPS</CardTitle><CardDescription>Certificate evidence reported by the active runtime.</CardDescription></CardHeader><CardContent className="space-y-3"><CapabilityRow label="TLS" capability={status?.tls} extra={status?.tls.expiresAt ? `Expires ${formatDateTime(status.tls.expiresAt)}` : undefined} /><dl className="grid gap-2 text-sm sm:grid-cols-2"><EvidenceTerm label="Certificate domains" value={status?.tls.domains?.join(', ') || desired?.domains.join(', ') || 'Not reported'} /><EvidenceTerm label="Issuer" value={status?.tls.issuer || 'Not reported by runtime'} /><EvidenceTerm label="Validity" value={status?.tls.validFrom ? `${formatDateTime(status.tls.validFrom)} — ${status.tls.expiresAt ? formatDateTime(status.tls.expiresAt) : 'open'}` : status?.tls.status ?? 'Not reported'} /><EvidenceTerm label="Expiry" value={status?.tls.expiresAt ? formatDateTime(status.tls.expiresAt) : 'Not reported'} /><EvidenceTerm label="Renewal status" value={status?.tls.renewalStatus || (status?.actions.renewCertificate ? 'Renewal available' : 'Renewal unavailable')} /><EvidenceTerm label="Renewal policy" value={desired ? `${desired.renewBeforeDays} days before expiry` : 'Not configured'} /></dl></CardContent></Card>;
+  return <Card><CardHeader><CardTitle className="text-base leading-normal">Observed HTTPS</CardTitle><CardDescription className="leading-normal">Certificate evidence reported by the active runtime.</CardDescription></CardHeader><CardContent className="space-y-3"><CapabilityRow label="TLS" capability={status?.tls} extra={status?.tls.expiresAt ? `Expires ${formatDateTime(status.tls.expiresAt)}` : undefined} /><dl className="grid gap-2 text-sm leading-normal sm:grid-cols-2"><EvidenceTerm label="Certificate domains" value={status?.tls.domains?.join(', ') || desired?.domains.join(', ') || 'Not reported'} /><EvidenceTerm label="Issuer" value={status?.tls.issuer || 'Not reported by runtime'} /><EvidenceTerm label="Validity" value={status?.tls.validFrom ? `${formatDateTime(status.tls.validFrom)} — ${status.tls.expiresAt ? formatDateTime(status.tls.expiresAt) : 'open'}` : status?.tls.status ?? 'Not reported'} /><EvidenceTerm label="Expiry" value={status?.tls.expiresAt ? formatDateTime(status.tls.expiresAt) : 'Not reported'} /><EvidenceTerm label="Renewal status" value={status?.tls.renewalStatus || (status?.actions.renewCertificate ? 'Renewal available' : 'Renewal unavailable')} /><EvidenceTerm label="Renewal policy" value={desired ? `${desired.renewBeforeDays} days before expiry` : 'Not configured'} /></dl></CardContent></Card>;
 }
 
 function CapabilityCard({ status }: { status?: NetworkSettingsStatus }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
+        <CardTitle className="flex items-center gap-2 text-base leading-normal">
           <Network className="h-4 w-4" aria-hidden="true" />
           网络能力
         </CardTitle>
-        <CardDescription>服务端声明的网络支持</CardDescription>
+        <CardDescription className="leading-normal">服务端声明的网络支持</CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-3 text-sm">
+      <CardContent className="grid gap-3 text-sm leading-normal">
         <CapabilityRow label="TLS" capability={status?.tls} extra={status?.tls.expiresAt ? `到期时间 ${formatDateTime(status.tls.expiresAt)}` : undefined} />
         <CapabilityRow label="DNS" capability={status?.dns} />
         <CapabilityRow label="Tunnel" capability={status?.tunnel} />
@@ -672,11 +681,11 @@ function ActionsCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
+        <CardTitle className="flex items-center gap-2 text-base leading-normal">
           <Activity className="h-4 w-4" aria-hidden="true" />
           操作
         </CardTitle>
-        <CardDescription>仅显示网络能力允许的操作</CardDescription>
+        <CardDescription className="leading-normal">仅显示网络能力允许的操作</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-2">
@@ -693,10 +702,10 @@ function ActionsCard({
             </Button>
           ) : null}
           <Button type="button" size="sm" variant="outline" onClick={() => void copyDiagnostics()} disabled={!diagnosticReport}>
-            <Copy className="mr-2 h-4 w-4" aria-hidden="true" />Copy diagnostics
+            <Copy className="mr-2 h-4 w-4" aria-hidden="true" />复制诊断
           </Button>
           <Button type="button" size="sm" variant="outline" onClick={exportDiagnostics} disabled={!diagnosticReport}>
-            <Download className="mr-2 h-4 w-4" aria-hidden="true" />Export diagnostics
+            <Download className="mr-2 h-4 w-4" aria-hidden="true" />导出诊断
           </Button>
         </div>
         {diagnostics.length > 0 ? (
@@ -704,15 +713,15 @@ function ActionsCard({
             {diagnostics.map((check) => (
               <div key={check.id} className="rounded-md border border-border bg-muted/30 p-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-sm font-medium text-foreground">{check.label}</div>
+                  <div className="text-sm leading-normal font-medium text-foreground">{check.label}</div>
                   <Badge variant={check.status === 'ok' ? 'secondary' : 'outline'}>{check.status}</Badge>
                 </div>
-                {check.detail ? <div className="mt-1 break-words text-xs text-muted-foreground">{check.detail}</div> : null}
+                {check.detail ? <div className="mt-1 break-words text-xs leading-normal text-muted-foreground">{check.detail}</div> : null}
               </div>
             ))}
           </div>
         ) : (
-          <div className="text-sm text-muted-foreground">尚未运行过诊断。</div>
+          <div className="text-sm leading-normal text-muted-foreground">尚未运行过诊断。</div>
         )}
       </CardContent>
     </Card>
@@ -733,15 +742,15 @@ function CapabilityRow({
     <div className="rounded-md border border-border bg-muted/30 p-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-medium text-foreground">{supported ? label : `${label} 不支持`}</div>
-          <div className="text-xs text-muted-foreground">
+          <div className="text-sm leading-normal font-medium text-foreground">{supported ? label : `${label} 不支持`}</div>
+          <div className="text-xs leading-normal text-muted-foreground">
             {capability?.status ?? '读取中'}
             {capability?.detail ? ` · ${capability.detail}` : ''}
           </div>
         </div>
         <Badge variant={supported ? 'secondary' : 'outline'}>{supported ? '支持' : '不支持'}</Badge>
       </div>
-      {extra ? <div className="mt-2 text-xs text-muted-foreground">{extra}</div> : null}
+      {extra ? <div className="mt-2 text-xs leading-normal text-muted-foreground">{extra}</div> : null}
     </div>
   );
 }

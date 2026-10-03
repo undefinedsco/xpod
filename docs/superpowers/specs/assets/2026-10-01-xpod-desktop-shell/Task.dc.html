@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>任务</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;font-family:'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif;color:#2B2621;background:#F7F4ED}
+a{color:#563E84}a:hover{color:#4B3672}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid #563E84;outline-offset:2px}
+label:focus-within{outline:2px solid #563E84;outline-offset:2px}
+</style>
+</helmet>
+<div style="position: relative; width: 1280px; height: 800px; display: flex; background: #F7F4ED; font-family: 'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif; color: #2B2621">
+<sc-if value="{{inXpod}}" hint-placeholder-val="{{yes}}"><dc-import name="Nav" active="task" h="800" hint-size="64px,800px"></dc-import></sc-if>
+<sc-if value="{{inLinx}}" hint-placeholder-val="{{no}}"><dc-import name="LinxRail" active="task" h="800" hint-size="64px,800px"></dc-import></sc-if>
+
+<aside aria-label="任务列表" style="width: 280px; flex-shrink: 0; box-sizing: border-box; background: #F2EDE2; border-right: 1px solid #DFDBD5; display: flex; flex-direction: column">
+<div style="height: 48px; flex-shrink: 0; box-sizing: border-box; padding: 0 8px 0 12px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid #DFDBD5">
+<label class="sr" for="tk-q">搜索任务</label>
+<input id="tk-q" type="search" placeholder="搜索" style="flex-grow: 1; min-width: 0; height: 32px; box-sizing: border-box; border: 1px solid #DFDBD5; border-radius: 8px; background: #FBFAF7; padding: 0 10px; font-size: 13px; font-family: inherit; color: #2B2621">
+<button type="button" title="新建任务" aria-label="新建任务" onClick="{{openNew}}" style="width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: #2B2621; cursor: pointer; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+</div>
+<div style="display: flex; align-items: center; gap: 6px; padding: 8px 10px 4px">
+<div role="radiogroup" aria-label="交给谁" style="display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: #EBE5D8; flex-grow: 1">
+<sc-for list="{{filters}}" as="f" hint-placeholder-count="3">
+<label style="{{f.style}}"><input class="sr" type="radio" name="who" checked="{{f.on}}" onChange="{{f.pick}}">{{f.label}}</label>
+</sc-for>
+</div>
+<div role="radiogroup" aria-label="视图" style="display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: #EBE5D8">
+<sc-for list="{{views}}" as="v" hint-placeholder-count="2">
+<label title="{{v.label}}" style="{{v.style}}"><input class="sr" type="radio" name="view" checked="{{v.on}}" onChange="{{v.pick}}"><span class="sr">{{v.label}}</span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{v.icon}}"></path></svg></label>
+</sc-for>
+</div>
+</div>
+<sc-if value="{{hasTasks}}" hint-placeholder-val="{{yes}}">
+<nav style="flex-grow: 1; overflow-y: auto; padding: 4px 6px; display: flex; flex-direction: column; gap: 1px">
+<sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+<button type="button" aria-expanded="{{g.expanded}}" onClick="{{g.toggle}}" style="display: flex; align-items: center; gap: 6px; padding: 12px 10px 4px; border: 0; background: transparent; font-family: inherit; font-size: 12px; color: #655D53; cursor: pointer; text-align: left"><span style="{{g.chev}}">›</span><span style="flex-grow: 1">{{g.label}}</span><span>{{g.count}}</span></button>
+<sc-if value="{{g.canAdd}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; align-items: center; gap: 10px; padding: 4px 10px">
+<span aria-hidden="true" style="width: 18px; height: 18px; margin: 2px; flex-shrink: 0; color: #87837D; font-size: 16px; line-height: 18px; text-align: center">＋</span>
+<label class="sr" for="tk-add">添加待办</label>
+<input id="tk-add" type="text" placeholder="添加待办，回车" style="flex-grow: 1; min-width: 0; height: 30px; box-sizing: border-box; border: 0; border-bottom: 1px dashed #87837D; background: transparent; padding: 0 2px; font-size: 14px; font-family: inherit; color: #2B2621">
+</div>
+</sc-if>
+<sc-for list="{{g.items}}" as="t" hint-placeholder-count="2">
+<button type="button" aria-current="{{t.current}}" onClick="{{t.pick}}" style="{{t.style}}">
+<sc-if value="{{t.isAi}}" hint-placeholder-val="{{yes}}"><span role="img" aria-label="{{t.kindLabel}}" title="{{t.kindLabel}}" style="width: 22px; height: 22px; border-radius: 6px; background: {{t.kindBg}}; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="{{t.kindColor}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{t.kindIcon}}"></path></svg></span></sc-if><sc-if value="{{t.isMine}}" hint-placeholder-val="{{no}}"><span role="checkbox" aria-checked="{{t.doneAria}}" aria-label="完成 {{t.name}}" style="{{t.boxStyle}}">{{t.check}}</span></sc-if>
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1; min-width: 0; text-align: left">
+<span style="display: flex; align-items: center; gap: 6px; min-width: 0"><span style="font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{t.name}}</span></span>
+<span style="font-size: 12px; color: {{t.metaColor}}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{t.meta}}</span>
+</span>
+</button>
+</sc-for>
+<sc-if value="{{g.hasMore}}" hint-placeholder-val="{{no}}"><button type="button" onClick="{{g.more}}" style="height: 30px; padding: 0 10px 0 38px; border: 0; background: transparent; font-family: inherit; font-size: 12px; color: #563E84; cursor: pointer; text-align: left">{{g.moreLabel}}</button></sc-if>
+</sc-for>
+</nav>
+</sc-if>
+<sc-if value="{{noTasks}}" hint-placeholder-val="{{no}}">
+<span style="font-size: 13px; color: #655D53; padding: 16px">还没有任务</span>
+</sc-if>
+</aside>
+
+<main style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column">
+<header style="height: 48px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px 0 28px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #DFDBD5">
+<sc-if value="{{inRun}}" hint-placeholder-val="{{no}}"><button type="button" onClick="{{backToTask}}" style="height: 30px; padding: 0 8px; border: 0; background: transparent; color: #563E84; font-size: 13px; font-family: inherit; cursor: pointer">‹ {{task.name}}</button></sc-if>
+<h1 style="margin: 0; font-size: 15px; font-weight: 600; flex-grow: 1">{{headTitle}}</h1>
+<dc-import name="HostBar" sync="实时" tone="ok" notices="0" inbox="2" hint-size="220px,48px"></dc-import>
+</header>
+<div style="flex-grow: 1; overflow-y: auto">
+<div style="max-width: 820px; padding: 20px 28px 40px; display: flex; flex-direction: column; gap: 20px">
+
+<sc-if value="{{vTodo}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column; gap: 18px">
+<div style="display: flex; align-items: center; gap: 10px">
+<button type="button" style="height: 36px; padding: 0 16px; border: 0; border-radius: 8px; background: #563E84; color: #F7F4ED; font-size: 14px; font-weight: 600; font-family: inherit; cursor: pointer">标记完成</button>
+<button type="button" style="height: 36px; padding: 0 14px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 14px; font-family: inherit; cursor: pointer">交给 AI 去做</button>
+<span style="flex-grow: 1"></span>
+<button type="button" aria-label="更多操作：删除" style="width: 34px; height: 34px; border: 0; border-radius: 8px; background: transparent; color: #655D53; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg></button>
+</div>
+<div style="display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px 16px; align-items: center; font-size: 14px; padding: 14px 16px; border: 1px solid #DFDBD5; border-radius: 12px; background: #FBFAF7">
+<label for="td-due" style="color: #655D53">截止</label><select id="td-due" style="height: 34px; width: 200px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; padding: 0 8px; font-size: 14px; font-family: inherit"><option>周五（10 月 3 日）</option></select>
+<label for="td-prio" style="color: #655D53">重要</label><select id="td-prio" style="height: 34px; width: 200px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; padding: 0 8px; font-size: 14px; font-family: inherit"><option>一般</option></select>
+<span style="color: #655D53">怎么来的</span><span>AI 整理收件箱时加的（阿杰的消息）<a href="TaskWaiting.dc.html" style="font-size: 12px; text-decoration: none; margin-left: 6px">查看那次运行</a></span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<label for="td-note" style="font-size: 13px; color: #655D53">备注</label>
+<textarea id="td-note" rows="4" style="box-sizing: border-box; border: 1px solid #DFDBD5; border-radius: 8px; background: #FBFAF7; padding: 8px 10px; font-size: 14px; font-family: inherit; color: #2B2621; resize: vertical">阿杰报了两个价：整修 3,200，只换灯 900。周五前回他。</textarea>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{vAgenda}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column; gap: 18px">
+<sc-for list="{{days}}" as="d" hint-placeholder-count="3">
+<section style="display: flex; flex-direction: column">
+<div style="display: flex; align-items: baseline; gap: 8px; padding-bottom: 6px; border-bottom: 1px solid #DFDBD5"><span style="font-size: 15px; font-weight: 600">{{d.label}}</span><span style="font-size: 12px; color: #655D53">{{d.date}}</span></div>
+<sc-for list="{{d.items}}" as="a" hint-placeholder-count="3">
+<div style="display: flex; align-items: center; gap: 12px; min-height: 44px; border-bottom: 1px solid #E9E4E4">
+<span style="font-size: 12px; color: #655D53; width: 76px; white-space: nowrap; font-family: ui-monospace, 'SF Mono', Menlo, monospace">{{a.time}}</span>
+<span aria-hidden="true" style="{{a.markStyle}}">{{a.mark}}</span>
+<span style="font-size: 14px; flex-grow: 1">{{a.title}}</span>
+<span style="font-size: 12px; color: {{a.metaColor}}">{{a.meta}}</span>
+</div>
+</sc-for>
+</section>
+</sc-for>
+<span style="font-size: 12px; color: #655D53">周期和事件任务没有固定时间，不放进日程；在清单里看</span>
+</div>
+</sc-if>
+
+<sc-if value="{{vEmpty}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding-top: 80px; max-width: 480px">
+<span style="font-size: 20px; font-weight: 600">让 AI 替你定时做事</span>
+<span style="font-size: 14px; color: #655D53; line-height: 22px">比如每天早上整理收件箱、每周汇总书店的维护成本。任务在后台按你给的权限运行，需要你决定的时候会停下来问你。</span>
+<button type="button" onClick="{{openNew}}" style="margin-top: 8px; height: 44px; padding: 0 20px; border: 0; border-radius: 8px; background: #563E84; color: #F7F4ED; font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer">新建任务</button>
+</div>
+</sc-if>
+
+<sc-if value="{{vTask}}" hint-placeholder-val="{{yes}}">
+<div style="display: flex; flex-direction: column; gap: 20px">
+<div style="display: flex; align-items: center; gap: 10px">
+<span style="display: flex; align-items: center; gap: 6px; font-size: 13px"><span aria-hidden="true" style="{{task.dot}}"></span>{{task.statusText}}</span>
+<span style="flex-grow: 1"></span>
+<button type="button" style="height: 34px; padding: 0 14px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 14px; font-family: inherit; cursor: pointer">立即运行一次</button>
+<button type="button" style="height: 34px; padding: 0 14px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 14px; font-family: inherit; cursor: pointer">{{task.pauseLabel}}</button>
+<button type="button" aria-label="更多操作：编辑、删除" style="width: 34px; height: 34px; border: 0; border-radius: 8px; background: transparent; color: #655D53; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg></button>
+</div>
+<div style="display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px 16px; font-size: 14px; padding: 14px 16px; border: 1px solid #DFDBD5; border-radius: 12px; background: #FBFAF7">
+<span style="color: #655D53">要做什么</span><span style="line-height: 22px">{{task.prompt}}</span>
+<span style="color: #655D53">什么时候</span><span><span style="font-size: 12px; color: #563E84; border: 1px solid #C9BEDD; border-radius: 5px; padding: 0 5px; margin-right: 6px">{{task.kindLabel}}</span>{{task.when}} <span style="font-size: 12px; color: #655D53">· 错过的时间怎么补 <span style="border: 1px dashed #87837D; border-radius: 5px; padding: 0 4px">待接入</span></span></span>
+<span style="color: #655D53">下次运行</span><span>{{task.next}}</span>
+<span style="color: #655D53">怎么来的</span><span>{{task.origin}}<sc-if value="{{task.hasThread}}" hint-placeholder-val="{{no}}"><a href="#" style="font-size: 12px; text-decoration: none; margin-left: 6px">查看对话</a></sc-if></span>
+<span style="color: #655D53">能动哪些资料</span><span>{{task.scope}}</span>
+</div>
+<section aria-labelledby="h-runs" style="display: flex; flex-direction: column; gap: 6px">
+<h2 id="h-runs" style="margin: 0 0 4px; font-size: 15px; font-weight: 600">最近运行</h2>
+<sc-for list="{{runs}}" as="r" hint-placeholder-count="4">
+<button type="button" onClick="{{r.open}}" style="display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 12px; border: 0; border-bottom: 1px solid #E9E4E4; background: transparent; font-family: inherit; color: #2B2621; text-align: left; cursor: pointer">
+<span style="font-size: 13px; color: #655D53; min-width: 110px">{{r.when}}</span>
+<span style="display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 120px; color: {{r.color}}"><span aria-hidden="true" style="{{r.dot}}"></span>{{r.state}}</span>
+<span style="font-size: 13px; color: #655D53; flex-grow: 1">{{r.summary}}</span>
+<span style="font-size: 13px; color: #563E84">查看 ›</span>
+</button>
+</sc-for>
+</section>
+</div>
+</sc-if>
+
+<sc-if value="{{inRun}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column; gap: 18px">
+<div style="display: flex; align-items: center; gap: 10px">
+<span style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: {{run.color}}"><span aria-hidden="true" style="{{run.dot}}"></span>{{run.state}}</span>
+<span style="font-size: 12px; color: #655D53">{{run.meta}}</span>
+<span style="flex-grow: 1"></span>
+<sc-if value="{{run.canStop}}" hint-placeholder-val="{{yes}}"><button type="button" style="height: 34px; padding: 0 14px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 14px; font-family: inherit; cursor: pointer">停止这次运行</button></sc-if>
+</div>
+
+<sc-if value="{{run.waiting}}" hint-placeholder-val="{{yes}}">
+<div role="status" style="display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1.5px solid #563E84; border-radius: 12px; background: #FBFAF7">
+<span style="font-size: 15px; font-weight: 600">要把这 3 条加入「书店 / 待办」吗？</span>
+<div style="display: flex; flex-direction: column; gap: 4px; font-size: 13px">
+<span>· 阿杰：周五前确认维护报价</span><span>· 供货商：10 月账单已到</span><span>· 书友会：活动场地改到二楼</span>
+</div>
+<div style="display: flex; gap: 8px; align-items: center">
+<button type="button" style="height: 36px; padding: 0 16px; border: 0; border-radius: 8px; background: #563E84; color: #F7F4ED; font-size: 14px; font-weight: 600; font-family: inherit; cursor: pointer">加入</button>
+<button type="button" style="height: 36px; padding: 0 14px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 14px; font-family: inherit; cursor: pointer">不要</button>
+<span style="font-size: 12px; color: #655D53">只这一次；确认后这次运行接着做</span>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{run.failed}}" hint-placeholder-val="{{no}}">
+<div role="status" style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 10px; background: #F2EDE2; font-size: 14px">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8A6A12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l10 18H2z"></path><path d="M12 10v5"></path><path d="M12 18h.01"></path></svg>
+<span style="flex-grow: 1">第 3 步失败：OpenAI 的 Key 失效了。前两步已经做完，没有写入任何资料。</span>
+<a href="AiCredIssues.dc.html" style="height: 34px; display: flex; align-items: center; padding: 0 14px; border-radius: 8px; background: #563E84; color: #F7F4ED; font-size: 14px; font-weight: 600; text-decoration: none">去修复连接</a>
+</div>
+<span style="font-size: 12px; color: #655D53">修好后可以「从第 3 步继续」<span style="border: 1px dashed #87837D; border-radius: 5px; padding: 0 4px; margin-left: 4px">待接入</span>；不会从头再跑一遍。</span>
+</sc-if>
+
+<section aria-labelledby="h-steps" style="display: flex; flex-direction: column">
+<h2 id="h-steps" style="margin: 0 0 6px; font-size: 15px; font-weight: 600">过程</h2>
+<sc-for list="{{steps}}" as="s" hint-placeholder-count="4">
+<div style="display: flex; gap: 12px; align-items: flex-start; padding: 8px 0">
+<span aria-hidden="true" style="{{s.mark}}">{{s.glyph}}</span>
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1"><span style="font-size: 14px; color: {{s.color}}">{{s.label}}</span><span style="font-size: 12px; color: #655D53">{{s.detail}}</span></span>
+<span style="font-size: 12px; color: #87837D">{{s.time}}</span>
+</div>
+</sc-for>
+<span style="font-size: 12px; color: #655D53; padding-top: 4px">用的模型：gpt-5 · OpenAI（这次运行开始时的设置）· <a href="#" style="text-decoration: none">查看完整记录</a></span>
+</section>
+</div>
+</sc-if>
+
+</div>
+</div>
+</main>
+
+<sc-if value="{{dialog}}" hint-placeholder-val="{{no}}">
+<div style="position: absolute; left: 0; top: 0; width: 1280px; height: 800px; background: rgba(43, 38, 33, 0.36); display: flex; align-items: center; justify-content: center">
+<div role="dialog" aria-modal="true" aria-labelledby="nt-title" style="width: 520px; box-sizing: border-box; background: #FBFAF7; border-radius: 12px; padding: 24px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 12px 40px rgba(43, 38, 33, 0.24)">
+<div style="display: flex; align-items: center">
+<h2 id="nt-title" style="margin: 0; font-size: 20px; font-weight: 600; flex-grow: 1">新建任务</h2>
+<button type="button" aria-label="关闭" onClick="{{close}}" style="width: 36px; height: 36px; border: 0; border-radius: 8px; background: transparent; color: #655D53; cursor: pointer; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<label for="nt-what" style="font-size: 13px">要做什么</label>
+<textarea id="nt-what" rows="3" style="box-sizing: border-box; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; padding: 8px 10px; font-size: 14px; font-family: inherit; resize: vertical">每天早上整理收件箱，把要我处理的事加到「书店 / 待办」</textarea>
+</div>
+<fieldset style="border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px">
+<legend style="font-size: 13px; padding: 0; margin-bottom: 6px">什么时候</legend>
+<div role="radiogroup" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 3px; border-radius: 9px; background: #EBE5D8">
+<sc-for list="{{kinds}}" as="k" hint-placeholder-count="3">
+<label style="{{k.style}}"><input class="sr" type="radio" name="kind" checked="{{k.on}}" onChange="{{k.pick}}">{{k.label}}</label>
+</sc-for>
+</div>
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px">
+<sc-for list="{{kindFields}}" as="f" hint-placeholder-count="2">
+<sc-if value="{{f.isText}}" hint-placeholder-val="{{no}}"><span style="color: #655D53">{{f.text}}</span></sc-if>
+<sc-if value="{{f.isSelect}}" hint-placeholder-val="{{yes}}"><select aria-label="{{f.aria}}" style="height: 36px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; padding: 0 8px; font-size: 14px; font-family: inherit"><option>{{f.value}}</option></select></sc-if>
+</sc-for>
+</div>
+<span style="font-size: 12px; color: #655D53">{{kindHint}}</span>
+</fieldset>
+<span style="font-size: 12px; color: #655D53; line-height: 18px">任务在后台以 小林 的身份运行，只动你允许的资料；需要你决定的时候会停下来问你。名字会从要做的事里自动起。</span>
+<div style="display: flex; justify-content: flex-end; gap: 8px">
+<button type="button" onClick="{{close}}" style="height: 44px; padding: 0 16px; border: 0; background: transparent; color: #563E84; font-size: 15px; font-family: inherit; cursor: pointer">取消</button>
+<button type="button" style="height: 44px; padding: 0 20px; border: 0; border-radius: 8px; background: #563E84; color: #F7F4ED; font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer">创建</button>
+</div>
+</div>
+</div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"scenario":{"editor":"enum","options":["task","event","waiting","failed","empty","create","todo","agenda"],"default":"task"},"host":{"editor":"enum","options":["xpod","linx"],"default":"xpod"},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const sc = props.scenario ?? 'task';
+    // Task = definition; Run = one execution; RunStep = append-only facts (docs/task-system-design.md).
+    this.state = { open: { wait: true, mine: true, ai: sc === 'event', done: false }, showAll: {}, who: 'all', view: sc === 'agenda' ? 'agenda' : 'list', sel: sc === 'failed' ? 'cost' : sc === 'event' ? 'sync' : sc === 'todo' ? 'td1' : 'inbox', run: sc === 'waiting' ? 'r1' : sc === 'failed' ? 'f1' : '', dialog: sc === 'create', kind: 'cron' };
+  }
+  renderVals() {
+    const self = this;
+    const sc = this.props.scenario ?? 'task';
+    const empty = sc === 'empty';
+    const inLinx = (this.props.host ?? 'xpod') === 'linx';
+    const st = this.state;
+    const dotCss = (c, hollow) => 'width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 6px; ' + (hollow ? 'border: 1.5px solid ' + c + '; box-sizing: border-box' : 'background: ' + c);
+    const T = {
+      inbox: { name: '每天整理收件箱', prompt: '每天早上整理收件箱，把要我处理的事加到「书店 / 待办」', when: '每天 08:00（北京时间）', next: '明天 08:00', status: 'waiting', kind: 'cron', scope: '收件箱、书店 / 待办', origin: '你在 LinX 里建的 · 9 月 12 日', byAi: false },
+      cost: { name: '每周汇总维护成本', prompt: '每周一汇总上周书店的维护支出，写进「书店 / 维护成本」', when: '每周一 09:00（北京时间）', next: '下周一 09:00', status: 'failed', kind: 'cron', scope: '书店 / 支出、书店 / 维护成本', origin: 'AI 在和你讨论「维护成本」时建的 · 9 月 22 日', byAi: true, thread: true },
+      sync: { name: '新照片自动整理', prompt: '有新照片进来时按日期和地点归档到「照片 / 年 / 月」', when: '有新照片进入「照片 / 收件」时', next: '有新照片就运行', status: 'active', kind: 'event', scope: '照片', origin: 'AI 在你第三次手动整理照片后建的 · 9 月 25 日', byAi: true, thread: true },
+      price: { name: '同步供应商价格', prompt: '每隔 2 小时检查供应商的新报价，有变化就更新「书店 / 进货价」', when: '每隔 2 小时', next: '10:00', status: 'active', kind: 'interval', scope: '书店 / 进货价', origin: '你在 LinX 里建的 · 9 月 26 日', byAi: false },
+      td1: { mine: true, name: '回复阿杰的维护报价', meta: '周五截止', warn: false, done: false },
+      td2: { mine: true, name: '续订书店域名', meta: '10 月 15 日截止', warn: false, done: false },
+      td3: { mine: true, name: '交 9 月水电费', meta: '已过期 2 天', warn: true, done: false },
+      td5: { mine: true, name: '核对 9 月进货单', meta: '10 月 8 日截止', warn: false, done: false },
+      td6: { mine: true, name: '给老顾客寄新书目', meta: '10 月 10 日截止', warn: false, done: false },
+      td7: { mine: true, name: '整理读书会照片', meta: '10 月 12 日截止', warn: false, done: false },
+      td8: { mine: true, name: '换收银台打印纸', meta: '没有截止', warn: false, done: false },
+      td4: { mine: true, name: '给书友会订场地', meta: '昨天完成', warn: false, done: true },
+      report: { name: '季度书店报告', prompt: '每季度末生成一份书店经营报告', when: '每季度最后一天 20:00', next: '已暂停', status: 'paused', kind: 'cron', scope: '书店', origin: '你在 LinX 里建的 · 7 月 1 日', byAi: false },
+      move: { mine: true, name: '把旧笔记迁到新目录', meta: 'AI 完成 · 9 月 20 日', warn: false, done: true }
+    };
+    const S = {
+      waiting: ['等你确认', '#563E84', false], running: ['运行中', '#563E84', false], failed: ['上次失败', '#8A6A12', false],
+      active: ['按计划运行', '#2F6B55', false], paused: ['已暂停', '#87837D', true], done: ['已完成', '#87837D', true]
+    };
+    const KIND = {"cron": {"label": "定时", "icon": "M4 5h16v15H4zM4 10h16M8 3v4M16 3v4"}, "interval": {"label": "周期", "icon": "M4 12a8 8 0 0 1 14-5l2 2M20 12a8 8 0 0 1-14 5l-2-2M18 3v6h-6M6 21v-6h6"}, "event": {"label": "事件", "icon": "M13 2 4 14h7l-1 8 9-12h-7z"}, "once": {"label": "一次", "icon": "M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"}};
+    const item = (id) => {
+      const t = T[id]; const on = id === st.sel && st.view !== 'agenda';
+      const rowStyle = 'display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; font-family: inherit; color: #2B2621; cursor: pointer; ' + (on ? 'background: #E9E4E4' : 'background: transparent');
+      if (t.mine) return { isAi: false, isMine: true, name: t.name, meta: t.meta, metaColor: t.warn ? '#8A6A12' : '#655D53', current: on ? 'page' : 'false',
+        doneAria: t.done ? 'true' : 'false', check: t.done ? '✓' : '',
+        boxStyle: 'width: 18px; height: 18px; margin: 2px; border-radius: 5px; flex-shrink: 0; box-sizing: border-box; display: flex; align-items: center; justify-content: center; font-size: 12px; ' + (t.done ? 'background: #87837D; color: #FBFAF7' : 'border: 1.5px solid ' + (t.warn ? '#8A6A12' : '#87837D')),
+        pick: () => self.setState({ sel: id, run: '', view: 'list' }), style: rowStyle };
+      const s = S[t.status];
+      return {
+        isAi: true, isMine: false,
+        name: t.name, meta: t.status === 'waiting' ? '等你确认 3 条待办' : t.status === 'failed' ? '运行失败 · 要修复 OpenAI 连接' : t.status === 'active' ? (t.kind === 'interval' ? '每 2 小时 · 下次 10:00' : '有新照片就运行') : t.status === 'paused' ? '已暂停' : '已完成 · 9 月 20 日',
+        byAi: t.byAi, kindLabel: KIND[t.kind].label, kindIcon: KIND[t.kind].icon, kindColor: t.status === 'paused' || t.status === 'done' ? '#87837D' : '#563E84', kindBg: t.status === 'paused' || t.status === 'done' ? '#EBE5D8' : '#E9E4E4',
+        metaColor: t.status === 'waiting' ? '#563E84' : t.status === 'failed' ? '#8A6A12' : '#655D53',
+        current: on ? 'page' : 'false', dot: dotCss(s[1], s[2]),
+        pick: () => self.setState({ sel: id, run: '', view: 'list' }),
+        style: 'display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; font-family: inherit; color: #2B2621; cursor: pointer; ' + (on ? 'background: #E9E4E4' : 'background: transparent')
+      };
+    };
+    // Long lists stay short: waiting always open; my todos show 5 sorted by due date; AI schedules and finished items collapsed with counts.
+    const G = [
+      { key: 'wait', label: '在等你', ids: ['inbox', 'cost', 'td3'], total: 3, limit: 99 },
+      { key: 'mine', label: '我的待办', ids: ['td1', 'td5', 'td6', 'td7', 'td2', 'td8'], total: 12, limit: 5 },
+      { key: 'ai', label: 'AI 按计划在做', ids: ['sync', 'price', 'report'], total: 14, limit: 99 },
+      { key: 'done', label: '已结束 · 最近 7 天', ids: ['move', 'td4'], total: 6, limit: 99 }
+    ];
+    const keep = (id) => st.who === 'all' || (st.who === 'mine' ? !!T[id].mine : !T[id].mine);
+    const groups = G.map((g) => {
+      const open = st.open[g.key];
+      const ids = g.ids.filter(keep);
+      const shown = open ? ids.slice(0, st.showAll[g.key] ? 99 : g.limit) : [];
+      const rest = g.total - Math.min(g.total, shown.length);
+      return {
+        label: g.label, count: String(g.total), expanded: open ? 'true' : 'false', canAdd: open && g.key === 'mine',
+        chev: 'display: inline-block; width: 10px; transition: transform 120ms; transform: rotate(' + (open ? '90' : '0') + 'deg)',
+        toggle: () => self.setState({ open: Object.assign({}, st.open, { [g.key]: !open }) }),
+        items: shown.map(item),
+        hasMore: open && rest > 0, moreLabel: g.key === 'done' ? '查看全部已完成' : '还有 ' + rest + ' 条',
+        more: () => self.setState({ showAll: Object.assign({}, st.showAll, { [g.key]: true }) }),
+        visible: ids.length > 0
+      };
+    }).filter((g) => g.visible);
+    const isTodo = !!T[st.sel].mine;
+    const t = isTodo ? T.inbox : T[st.sel]; const s = S[t.status];
+    const task = { kindLabel: KIND[t.kind].label, scope: t.scope, origin: t.origin, hasThread: !!t.thread, name: t.name, prompt: t.prompt, when: t.when, next: t.next, statusText: s[0], dot: dotCss(s[1], s[2]).replace('margin-top: 6px; ', ''), pauseLabel: t.status === 'paused' ? '恢复后续运行' : '暂停后续运行' };
+    const R = st.sel === 'sync'
+      ? [['e2', '今天 14:20', 'ok', '3 张新照片进来 · 归到 2026 / 09'], ['e1', '昨天 19:05', 'ok', '12 张新照片进来 · 归到 2026 / 09'], ['e0', '9 月 27 日', 'ok', '1 张新照片进来']]
+      : st.sel === 'cost'
+      ? [['f1', '周一 09:00', 'failed', '第 3 步失败：OpenAI 的 Key 失效'], ['f0', '上周一 09:00', 'ok', '写入 1 份汇总']]
+      : [['r1', '今天 08:00', 'waiting', '找到 3 条要你处理的事，等你确认'], ['r0', '昨天 08:00', 'ok', '加入 2 条待办 · 用时 1 分 12 秒'], ['rm', '前天 08:00', 'ok', '没有新的要处理']];
+    const RS = { ok: ['完成', '#2F6B55', false], waiting: ['等你确认', '#563E84', false], failed: ['失败', '#8A6A12', false] };
+    const runs = R.map((r) => ({ when: r[1], state: RS[r[2]][0], color: r[2] === 'ok' ? '#2B2621' : RS[r[2]][1], dot: dotCss(RS[r[2]][1], false).replace('margin-top: 6px; ', ''), summary: r[3], open: () => self.setState({ run: r[0] }) }));
+    const inRun = !!st.run && !empty;
+    const failed = st.run === 'f1';
+    const waiting = st.run === 'r1';
+    const step = (glyph, color, label, detail, time) => ({ glyph, label, detail, time, color: color === 'pending' ? '#87837D' : '#2B2621',
+      mark: 'width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; ' + ({ done: 'background: #E3EDE8; color: #2F6B55', now: 'background: #563E84; color: #F7F4ED', fail: 'background: #F2E6CC; color: #8A6A12', pending: 'border: 1.5px solid #DFDBD5; color: #87837D; box-sizing: border-box' }[color]) });
+    const steps = failed ? [
+      step('✓', 'done', '读取上周的支出记录', '找到 14 条', '09:00'),
+      step('✓', 'done', '按类别归类', '水电、维修、耗材', '09:01'),
+      step('!', 'fail', '生成汇总', 'OpenAI 拒绝了请求（Key 失效）', '09:01'),
+      step('4', 'pending', '写入「书店 / 维护成本」', '没有执行', '')
+    ] : [
+      step('✓', 'done', '读取收件箱', '12 条新消息', '08:00'),
+      step('✓', 'done', '挑出要你处理的事', '找到 3 条', '08:01'),
+      step('?', 'now', '等你确认', '要把 3 条加入「书店 / 待办」吗', '08:02'),
+      step('4', 'pending', '写入待办并标记已读', '确认后继续', '')
+    ];
+    const run = failed
+      ? { state: '失败', color: '#8A6A12', dot: dotCss('#8A6A12', false).replace('margin-top: 6px; ', ''), meta: '周一 09:00 开始 · 用时 1 分钟', canStop: false, waiting: false, failed: true }
+      : { state: '等你确认', color: '#563E84', dot: dotCss('#563E84', false).replace('margin-top: 6px; ', ''), meta: '今天 08:00 开始 · 已等 2 小时', canStop: true, waiting: true, failed: false };
+    return {
+      yes: true, no: false,
+      inXpod: !inLinx, inLinx,
+      hasTasks: !empty, noTasks: empty,
+      groups, task, runs, steps, run,
+      vEmpty: empty && st.view !== 'agenda',
+      vAgenda: st.view === 'agenda',
+      vTodo: !empty && st.view !== 'agenda' && isTodo && !inRun,
+      vTask: !empty && st.view !== 'agenda' && !isTodo && !inRun, inRun: inRun && st.view !== 'agenda',
+      filters: [['all', '全部'], ['mine', '我的'], ['ai', 'AI 的']].map((f) => ({ label: f[1], on: f[0] === st.who, pick: () => self.setState({ who: f[0] }),
+        style: 'position: relative; flex-grow: 1; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 12px; cursor: pointer; ' + (f[0] === st.who ? 'background: #FBFAF7; color: #563E84; font-weight: 600' : 'color: #2B2621') })),
+      views: [['list', '清单', 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01'], ['agenda', '日程', 'M4 5h16v15H4zM4 10h16M8 3v4M16 3v4']].map((v) => ({ label: v[1], icon: v[2], on: v[0] === st.view, pick: () => self.setState({ view: v[0], run: '' }),
+        style: 'position: relative; width: 30px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: pointer; ' + (v[0] === st.view ? 'background: #FBFAF7; color: #563E84' : 'color: #655D53') })),
+      days: (() => {
+        const box = (warn) => 'width: 16px; height: 16px; border-radius: 4px; box-sizing: border-box; flex-shrink: 0; border: 1.5px solid ' + (warn ? '#8A6A12' : '#87837D');
+        const ai = 'width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; background: #E9E4E4; color: #563E84; font-size: 10px; display: flex; align-items: center; justify-content: center';
+        const it = (time, mine, title, meta, warn) => ({ time, title, meta, mark: mine ? '' : 'AI', markStyle: mine ? box(warn) : ai, metaColor: warn ? '#8A6A12' : '#655D53' });
+        return [
+          { label: '今天', date: '10 月 1 日 周三', items: [
+            it('', true, '交 9 月水电费', '已过期 2 天', true),
+            it('08:00', false, '每天整理收件箱', '等你确认 3 条待办', false),
+            it('', false, '每周汇总维护成本', '运行失败 · 要修复连接', true)
+          ] },
+          { label: '明天', date: '10 月 2 日 周四', items: [it('08:00', false, '每天整理收件箱', '', false)] },
+          { label: '本周', date: '10 月 3 日 – 5 日', items: [
+            it('周五', true, '回复阿杰的维护报价', '', false),
+            it('周五 08:00', false, '每天整理收件箱', '', false)
+          ] }
+        ];
+      })(),
+      headTitle: st.view === 'agenda' ? '日程' : isTodo ? T[st.sel].name : empty ? '任务' : inRun ? (failed ? '周一 09:00 的运行' : '今天 08:00 的运行') : t.name,
+      backToTask: () => self.setState({ run: '' }),
+      dialog: st.dialog,
+      openNew: () => self.setState({ dialog: true }),
+      kinds: [['cron', '定时'], ['interval', '周期'], ['event', '事件']].map((k) => ({ label: k[1], on: k[0] === st.kind, pick: () => self.setState({ kind: k[0] }),
+        style: 'position: relative; height: 32px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 13px; cursor: pointer; ' + (k[0] === st.kind ? 'background: #FBFAF7; color: #563E84; font-weight: 600; box-shadow: 0 1px 2px rgba(43,38,33,0.12)' : 'color: #2B2621') })),
+      kindFields: ({
+        once: [{ isSelect: true, isText: false, aria: '什么时候运行', value: '现在' }],
+        cron: [{ isSelect: true, isText: false, aria: '频率', value: '每天' }, { isSelect: true, isText: false, aria: '时刻', value: '08:00' }],
+        interval: [{ isText: true, isSelect: false, text: '每隔' }, { isSelect: true, isText: false, aria: '间隔', value: '2 小时' }],
+        event: [{ isText: true, isSelect: false, text: '当' }, { isSelect: true, isText: false, aria: '事件', value: '有新资料进入某个位置' }, { isSelect: true, isText: false, aria: '位置', value: '照片 / 收件' }]
+      })[st.kind],
+      kindHint: ({ once: '只运行这一次', cron: '按日历时间运行，北京时间；电脑关着时错过的怎么补还没定', interval: '从创建时开始，每隔一段时间运行一次', event: '每次发生都会运行一次' })[st.kind],
+      close: () => self.setState({ dialog: false })
+    };
+  }
+}
+</script>
+</body>
+</html>

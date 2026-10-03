@@ -528,6 +528,7 @@ describe('RdfIndexSolidFsSyncer', () => {
         'application/n-quads',
         {
           source: 'https://pod.example/alice/projects/demo/graph.nq',
+          sourcePath: path.join(workspace.cwd, 'graph.nq'),
           workspace: 'https://pod.example/alice/projects/demo/',
           localPath: 'graph.nq',
           contentType: 'application/n-quads',
@@ -585,6 +586,7 @@ describe('RdfIndexSolidFsSyncer', () => {
         'application/rdf+xml',
         {
           source: 'https://pod.example/alice/projects/demo/ontology.owl',
+          sourcePath: path.join(workspace.cwd, 'ontology.owl'),
           workspace: 'https://pod.example/alice/projects/demo/',
           localPath: 'ontology.owl',
           contentType: 'application/rdf+xml',
@@ -833,6 +835,7 @@ describe('RdfIndexSolidFsSyncer', () => {
       'text/turtle',
       {
         source: 'https://pod.example/alice/projects/demo/new/data.ttl',
+        sourcePath: '/tmp/workspace/new/data.ttl',
         workspace: 'https://pod.example/alice/projects/demo/',
         localPath: 'new/data.ttl',
         contentType: 'text/turtle',
@@ -901,6 +904,7 @@ describe('RdfIndexSolidFsSyncer', () => {
       'text/turtle',
       {
         source: 'https://pod.example/alice/projects/demo/new/data.ttl',
+        sourcePath: '/tmp/workspace/new/data.ttl',
         workspace: 'https://pod.example/alice/projects/demo/',
         localPath: 'new/data.ttl',
         contentType: 'text/turtle',

@@ -1,5 +1,8 @@
+import { PROVIDER_LABELS } from '../provider-catalog'
+import { AI_MODEL_CLASS } from '@undefineds.co/models'
 import type { AiConnectionsOAuthCredential } from '@undefineds.co/extension-sdk/web'
 import { AI_CONNECTIONS_PROVIDERS } from './types'
+import { PLATFORM_MODEL_ROLES, matchesPlatformModelRole } from './gateway-model-roles'
 import type {
   AiConnectAttempt,
   AiConnectionsCredential,
@@ -7,6 +10,7 @@ import type {
   AiConnectionsProvider,
   AiConnectStatus,
   AiGatewayModel,
+  AiGatewayCatalogModel,
   AiProviderAuthorizationMethod,
   AiProviderAuthorizationMethodsSummary,
   AiProviderConnectionSummary,
@@ -200,7 +204,9 @@ export function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
     offeringId: stringValue(value.offeringId),
     resourceId: stringValue(value.resourceId),
     displayName: stringValue(value.displayName) ?? stringValue(value.display_name) ?? stringValue(value.name),
+    modelType: typeof value.modelType === 'string' && Object.prototype.hasOwnProperty.call(AI_MODEL_CLASS, value.modelType) ? value.modelType : undefined,
     contextWindow: numberValue(value.contextWindow) ?? numberValue(value.context_window),
+    dimension: typeof value.dimension === 'number' && Number.isInteger(value.dimension) && value.dimension > 0 ? value.dimension : undefined,
     protocols: Array.isArray(value.protocols)
       ? value.protocols.filter((protocol): protocol is string => typeof protocol === 'string')
       : undefined,
@@ -210,6 +216,15 @@ export function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
     outputModalities: modalitiesFromWire(value.modalities, 'output'),
     capabilities: modelCapabilitiesFromWire(value),
   }) as unknown as AiGatewayModel
+}
+
+export function parseGatewayCatalogModel(value: unknown): AiGatewayCatalogModel | undefined {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id) return undefined
+  return compactObject({
+    id: value.id,
+    displayName: stringValue(value.displayName) ?? stringValue(value.display_name) ?? stringValue(value.name),
+    provider: stringValue(value.provider) ?? stringValue(value.providerId) ?? stringValue(value.owned_by),
+  }) as AiGatewayCatalogModel
 }
 
 function modalitiesFromWire(value: unknown, direction: 'input' | 'output'): string[] | undefined {
@@ -243,11 +258,8 @@ function modelCapabilitiesFromWire(value: Record<string, unknown>): string[] | u
 }
 
 function isPlatformModelId(modelId: string): boolean {
-  const normalized = modelId.toLowerCase()
-  return normalized === 'linx'
-    || normalized === 'linx-lite'
-    || normalized === 'undefineds/linx'
-    || normalized === 'undefineds/linx-lite'
+  return (Object.keys(PLATFORM_MODEL_ROLES) as Array<keyof typeof PLATFORM_MODEL_ROLES>)
+    .some(role => matchesPlatformModelRole(modelId, role))
 }
 
 function providerValue(value: unknown): AiConnectionsProvider | undefined {
@@ -442,6 +454,10 @@ export function parseProviderCredentialSummary(value: unknown): AiProviderCreden
     baseUrl: stringValue(value.baseUrl),
     proxyUrl: stringValue(value.proxyUrl),
     expiresAt: stringValue(value.expiresAt),
+    lastFailureCode: stringValue(value.lastFailureCode),
+    lastFailureAt: stringValue(value.lastFailureAt),
+    rateLimitResetAt: stringValue(value.rateLimitResetAt),
+    failCount: numberValue(value.failCount),
     version: value.version,
   }) as unknown as AiProviderCredentialSummary
 }
@@ -607,16 +623,7 @@ function uniqueBy<T>(values: T[], keyFor: (value: T) => string): T[] {
 }
 
 function providerDisplayName(provider: AiConnectionsProvider): string {
-  switch (provider) {
-    case 'openai': return 'OpenAI'
-    case 'anthropic': return 'Anthropic'
-    case 'kimi': return 'Kimi'
-    case 'bailian': return 'Alibaba Bailian'
-    case 'deepseek': return 'DeepSeek'
-    case 'zhipu': return 'Zhipu'
-    case 'ollama': return 'Ollama'
-    case 'custom': return 'Custom'
-  }
+  return PROVIDER_LABELS[provider]
 }
 
 export function parseCredential(value: unknown): AiConnectionsCredential | undefined {

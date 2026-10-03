@@ -1,0 +1,30 @@
+[package]
+name = "agentfs-pod"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "AgentFS lower filesystem backed by an Xpod Pod over HTTP."
+
+# Reuses the pinned upstream AgentFS SDK trait definitions and the upstream
+# NFS mount/AgentNFS adapters, so the Pod adapter only implements the transport.
+# Pinned by git rev (with a committed Cargo.lock) so the build is reproducible
+# and does not depend on local ignored fixture directories.
+[[bin]]
+name = "agentfs-pod"
+path = "src/main.rs"
+
+[dependencies]
+agentfs-sdk = { git = "https://github.com/tursodatabase/agentfs", rev = "0a014ebd4918615baff589ed17486e557e7c6a23" }
+agentfs = { git = "https://github.com/tursodatabase/agentfs", rev = "0a014ebd4918615baff589ed17486e557e7c6a23", default-features = false }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+url = "2"
+percent-encoding = "2"
+futures-util = "0.3"
+libc = "0.2"
+base64 = "0.22"

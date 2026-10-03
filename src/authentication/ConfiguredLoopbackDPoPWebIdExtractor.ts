@@ -21,8 +21,11 @@ const SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER = 'x-xpod-canonical-url';
 const SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER = 'x-xpod-local-route-url';
 
 /**
- * CSS-compatible DPoP credential extractor that admits one configured HTTP
+ * CSS-compatible Solid credential extractor that admits one configured HTTP
  * loopback IP origin without weakening any access-token or DPoP checks.
+ *
+ * Both schemes use routed caches so issuer, JWKS and WebID reads can reach
+ * the runtime's socket-only canonical origin.
  *
  * HTTPS and localhost deployments keep using the upstream verifier unchanged.
  */
@@ -54,15 +57,20 @@ export class ConfiguredLoopbackDPoPWebIdExtractor extends CredentialsExtractor {
 
   public override async canHandle({ headers }: HttpRequest): Promise<void> {
     const { authorization } = headers;
-    if (typeof authorization !== 'string' || !/^DPoP /iu.test(authorization)) {
-      throw new NotImplementedHttpError('No DPoP-bound Authorization header specified.');
+    if (typeof authorization !== 'string' || !/^(?:DPoP|Bearer) /iu.test(authorization)) {
+      throw new NotImplementedHttpError('No DPoP or Bearer Authorization header specified.');
     }
   }
 
   public override async handle(request: HttpRequest): Promise<Credentials> {
     const { headers: { authorization, dpop }, method } = request;
     if (typeof authorization !== 'string') {
-      throw new BadRequestHttpError('No DPoP-bound Authorization header specified.');
+      throw new BadRequestHttpError('No DPoP or Bearer Authorization header specified.');
+    }
+    // A Bearer token is not bound to the request URL, so it is verified directly
+    // through the routed caches; no DPoP proof or target URL is consulted.
+    if (/^Bearer /iu.test(authorization)) {
+      return await this.handleBearer(authorization);
     }
     if (typeof dpop !== 'string') {
       throw new BadRequestHttpError('No DPoP header specified.');
@@ -89,17 +97,36 @@ export class ConfiguredLoopbackDPoPWebIdExtractor extends CredentialsExtractor {
       this.logger.info(
         `Verified WebID via DPoP-bound access token. WebID: ${webId}, client ID: ${clientId}, issuer: ${issuer}`,
       );
-      const credentials: Credentials = { agent: { webId }, issuer: { url: issuer } };
-      if (clientId) {
-        credentials.client = { clientId };
-      }
-      return credentials;
+      return this.tokenCredentials(webId, clientId, issuer);
     } catch (error: unknown) {
       const reason = error instanceof Error ? error.message : String(error);
       const message = `Error verifying WebID via DPoP-bound access token: ${reason}`;
       this.logger.warn(message);
       throw new BadRequestHttpError(message, { cause: error });
     }
+  }
+
+  private async handleBearer(authorization: string): Promise<Credentials> {
+    try {
+      const { webid: webId, client_id: clientId, iss: issuer } = await this.verify(authorization);
+      this.logger.info(
+        `Verified WebID via Bearer access token. WebID: ${webId}, client ID: ${clientId}, issuer: ${issuer}`,
+      );
+      return this.tokenCredentials(webId, clientId, issuer);
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const message = `Error verifying WebID via Bearer access token: ${reason}`;
+      this.logger.warn(message);
+      throw new BadRequestHttpError(message, { cause: error });
+    }
+  }
+
+  private tokenCredentials(webId: string, clientId: string | undefined, issuer: string): Credentials {
+    return {
+      agent: { webId },
+      issuer: { url: issuer },
+      ...(clientId ? { client: { clientId } } : {}),
+    };
   }
 
   private async verifyWithLocalRouteFallback(

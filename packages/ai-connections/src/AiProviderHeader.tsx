@@ -25,6 +25,7 @@ export function AiProviderHeader({
   infoLabel,
   infoLines,
   link,
+  links = [],
   badge,
 }: {
   name: string
@@ -35,6 +36,7 @@ export function AiProviderHeader({
   infoLabel: string
   infoLines: ReactNode[]
   link: AiProviderHeaderLink
+  links?: AiProviderHeaderLink[]
   badge?: ReactNode
 }) {
   return (
@@ -54,14 +56,19 @@ export function AiProviderHeader({
             <h2 className="text-base font-semibold leading-none tracking-tight text-foreground">{name}</h2>
             <AiInfoTooltip label={infoLabel} lines={infoLines} />
           </div>
-          <a
-            href={link.href}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-0.5 text-[10px] leading-none text-muted-foreground transition-colors hover:text-primary"
-          >
-            {link.label} <ExternalLink aria-hidden="true" className="h-2.5 w-2.5" />
-          </a>
+          <div role="group" aria-label={`${name}官方链接`} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {[link, ...links].map((item) => (
+              <a
+                key={item.href}
+                href={item.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-0.5 text-[10px] leading-none text-muted-foreground transition-colors hover:text-primary"
+              >
+                {item.label} <ExternalLink aria-hidden="true" className="h-2.5 w-2.5" />
+              </a>
+            ))}
+          </div>
         </div>
       </div>
       {badge}

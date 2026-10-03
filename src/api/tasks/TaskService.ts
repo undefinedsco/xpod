@@ -1,8 +1,14 @@
+import { updateRunApprovalSession } from '../runs/RunApproval';
+import { runResource, taskResource } from '@undefineds.co/models';
+import { cancelRun } from '../runs/RunCancellation';
+import { nextCronOccurrence } from './cron';
+import { DEFAULT_TASK_AGENT } from './TaskAgentBinding';
 import type { ChatKitStore, StoreContext } from '../chatkit/store';
 import type { ThreadMetadata } from '../chatkit/types';
 import {
   generateId,
   nowTimestamp,
+  toThreadRef,
 } from '../chatkit/types';
 import type { RunContextRetriever, RunExecutionBackend } from '../runs/RunExecutionBackend';
 import { extractResourceLocalId, resolveDataResource, type RunStore } from '../runs/store';
@@ -15,6 +21,8 @@ import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConn
 
 export interface CreateTaskInput {
   title?: string;
+  assignedTo?: string;
+  source?: string;
   prompt: string;
   workspace: WorkspaceRef;
   runner?: string;
@@ -78,7 +86,7 @@ export class TaskService<TContext = StoreContext> {
       taskId,
       title: input.title,
       workspace: input.workspace,
-      runner: input.runner ?? 'pi:pi',
+      runner: input.runner ?? DEFAULT_TASK_AGENT.runner,
       metadata: input.metadata,
       context,
     });
@@ -86,10 +94,12 @@ export class TaskService<TContext = StoreContext> {
     const task: TaskRecordData = {
       id: taskId,
       title: input.title,
+      assignedTo: input.assignedTo ?? DEFAULT_TASK_AGENT.iri,
+      source: input.source,
       prompt: input.prompt,
       thread: this.resolveThreadResource(thread, context),
       workspace: input.workspace,
-      runner: input.runner ?? 'pi:pi',
+      runner: input.runner ?? DEFAULT_TASK_AGENT.runner,
       status: TaskStatus.ACTIVE,
       triggerKind,
       cron: input.cron,
@@ -128,6 +138,110 @@ export class TaskService<TContext = StoreContext> {
 
   public async listTasks(context: TContext): Promise<TaskRecordData[]> {
     return this.store.listTasks({}, context);
+  }
+
+  public async createTodo(input: {
+    prompt: string; workspace: WorkspaceRef; assignedTo: string; dueAt?: number;
+    notes?: string; priority?: string; source?: string;
+  }, context: TContext): Promise<TaskRecordData> {
+    if (!input.prompt.trim() || !isWorkspaceRef(input.workspace)) {
+      throw new Error('Task instruction and workspace are required');
+    }
+    const now = nowTimestamp();
+    const task: TaskRecordData = {
+      id: generateTaskResourceId(generateId('task')), title: input.prompt.trim(),
+      ...input, prompt: input.prompt.trim(), thread: '', runner: '',
+      triggerKind: TaskTriggerKind.ONCE, status: TaskStatus.OPEN,
+      createdAt: now, updatedAt: now,
+    };
+    await this.store.saveTask(task, context);
+    return task;
+  }
+
+  public async updateTodo(id: string, owner: string, input: {
+    completed?: boolean; dueAt?: number | null; notes?: string; priority?: string;
+  }, context: TContext): Promise<TaskRecordData> {
+    const task = await this.store.loadTask(id, context);
+    if (task.assignedTo !== owner) throw new Error('Only your own todo can be edited here');
+    if (input.completed !== undefined) {
+      task.status = input.completed ? TaskStatus.COMPLETED : TaskStatus.OPEN;
+      task.completedAt = input.completed ? nowTimestamp() : undefined;
+    }
+    if (input.dueAt !== undefined) task.dueAt = input.dueAt ?? undefined;
+    if (input.notes !== undefined) task.notes = input.notes;
+    if (input.priority !== undefined) task.priority = input.priority;
+    task.updatedAt = nowTimestamp();
+    await this.store.saveTask(task, context);
+    return task;
+  }
+
+  public async setSchedulePaused(id: string, paused: boolean, context: TContext): Promise<TaskRecordData> {
+    const task = await this.store.loadTask(id, context);
+    if (!task.authBinding || task.triggerKind === TaskTriggerKind.ONCE) throw new Error('Task has no recurring schedule');
+    if (task.status !== TaskStatus.ACTIVE && task.status !== TaskStatus.BLOCKED) throw new Error('Task has ended');
+    task.status = paused ? TaskStatus.BLOCKED : TaskStatus.ACTIVE;
+    const now = nowTimestamp();
+    if (!paused) {
+      if (task.triggerKind === TaskTriggerKind.CRON) task.nextRunAt = nextCronOccurrence(task.cron ?? '', now);
+      if (task.triggerKind === TaskTriggerKind.INTERVAL) task.nextRunAt = now + (task.intervalSeconds ?? 0);
+    }
+    task.updatedAt = now;
+    await this.store.saveTask(task, context);
+    return task;
+  }
+
+  public async runNow(id: string, context: TContext): Promise<MaterializedTaskRun> {
+    const task = await this.store.loadTask(id, context);
+    if (!task.authBinding || ![TaskStatus.ACTIVE, TaskStatus.BLOCKED].includes(task.status as 'active' | 'blocked')) throw new Error('Only scheduled AI tasks can run');
+    return this.materializer.materialize({ task, context, trigger: { kind: 'manual' }, background: true });
+  }
+
+  public async resumeApprovedRun(input: { runId: string; approval: string; owner: string }, context: TContext,
+    resolveExecutionContext?: (task: TaskRecordData, caller: TContext) => Promise<TContext | undefined>) {
+    const run = await this.store.loadRun(input.runId, context);
+    const approval = await this.store.readTaskApproval?.(input.approval, context);
+    if (!approval || !['approved', 'rejected'].includes(approval.status)
+      || approval.decisionBy !== input.owner || (approval.assignedTo && approval.assignedTo !== input.owner) || !approval.resolvedAt
+      || approval.thread !== run.thread) throw new Error('Approval does not authorize this run');
+    const threadRef = toThreadRef({ thread_id: run.thread });
+    const output = JSON.stringify({ kind: 'approval_decision', approval: input.approval, decision: approval.status, actionExecuted: false });
+    const waiting = run.metadata?.waitingTool as { itemId?: string; requestId?: string } | undefined;
+    // Bind the checkpoint to this Run through the durable waiting-tool receipt. The receipt
+    // lives on the Run row, independent of the client_tool_call item's free-form metadata;
+    // `metadata.runId` remains only as a fallback for runs that predate the receipt.
+    const items = await this.store.loadThreadItems(threadRef, undefined, 1000, 'asc', context);
+    const item = items.data.find(item => item.type === 'client_tool_call' && item.call_id === approval.toolCallId
+      && (waiting?.itemId !== undefined ? item.id === waiting.itemId : item.metadata?.runId === run.id));
+    if (!item || item.type !== 'client_tool_call' || item.name !== approval.toolName) throw new Error('Approval does not match the pending tool checkpoint');
+    const atCheckpoint = waiting?.itemId === item.id && waiting.requestId === approval.toolCallId;
+    if (item.status === 'completed' && item.output === output) {
+      if (approval.status === 'rejected' && atCheckpoint && run.status === 'waiting_input') {
+        const cancelled = await cancelRun({ store: this.store, runId: run.id, context, resourceIri: () => runResource.buildIri(input.owner, { id: run.id }) });
+        return { run: cancelled, resumed: false, duplicate: true };
+      }
+      if (run.status === 'cancelled') await updateRunApprovalSession(this.store, run, 'completed', context);
+      return { run, resumed: false, duplicate: true };
+    }
+    if (approval.expiresAt && new Date(approval.expiresAt).getTime() <= Date.now()) throw new Error('Approval has expired');
+    if (run.status !== 'waiting_input' || waiting?.itemId !== item.id || waiting.requestId !== approval.toolCallId) throw new Error('Run is not waiting at this approval checkpoint');
+    if (approval.status === 'rejected') {
+      await this.store.saveItem(threadRef, { ...item, status: 'completed', output, metadata: { ...item.metadata, approval: input.approval } }, context);
+      const cancelled = await cancelRun({ store: this.store, runId: run.id, context, resourceIri: () => runResource.buildIri(input.owner, { id: run.id }) });
+      return { run: cancelled, resumed: false };
+    }
+    // Foreground Chat resumes with the authenticated caller. Scheduled Task runs
+    // must still restore their separately granted execution credential.
+    let execution = context;
+    if (run.task) {
+      const tasks = await this.store.listTasks({}, context);
+      const task = tasks.find(task => taskResource.buildIri(input.owner, { id: task.id }) === run.task);
+      if (!task) throw new Error('Task not found for this run');
+      const granted = await resolveExecutionContext?.(task, context);
+      if (!granted) throw new Error('Agent execution credential is unavailable');
+      execution = granted;
+    }
+    const resumed = await this.materializer.resumeClientToolOutput(run, item.id, output, input.approval, execution);
+    return { run: await this.store.loadRun(run.id, context), resumed, ...(!resumed ? { duplicate: true } : {}) };
   }
 
   public async materializeDueTasks(
@@ -219,11 +333,12 @@ export class TaskService<TContext = StoreContext> {
     if (!input.authBinding) {
       throw new Error('Task auth binding is required');
     }
-    if (triggerKind === TaskTriggerKind.INTERVAL && (!input.intervalSeconds || input.intervalSeconds <= 0)) {
+    if (triggerKind === TaskTriggerKind.INTERVAL && (!input.intervalSeconds || !Number.isFinite(input.intervalSeconds) || input.intervalSeconds <= 0)) {
       throw new Error('intervalSeconds must be a positive number for interval tasks');
     }
-    if (triggerKind === TaskTriggerKind.CRON && !input.cron?.trim()) {
-      throw new Error('cron is required for cron tasks');
+    if (triggerKind === TaskTriggerKind.CRON) {
+      if (!input.cron?.trim()) throw new Error('cron is required for cron tasks');
+      nextCronOccurrence(input.cron, nowTimestamp());
     }
     if (triggerKind === TaskTriggerKind.EVENT && !input.eventName?.trim()) {
       throw new Error('eventName is required for event tasks');
@@ -245,10 +360,10 @@ export class TaskService<TContext = StoreContext> {
 
   private initialNextRunAt(input: CreateTaskInput, triggerKind: TaskTriggerKindType, now: number): number | undefined {
     if (triggerKind === TaskTriggerKind.INTERVAL) {
-      return input.startAt ?? now;
+      return input.startAt ?? now + input.intervalSeconds!;
     }
     if (triggerKind === TaskTriggerKind.CRON) {
-      return input.startAt ?? now;
+      return input.startAt ?? nextCronOccurrence(input.cron!, now);
     }
     return undefined;
   }

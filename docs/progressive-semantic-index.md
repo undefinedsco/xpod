@@ -5,6 +5,8 @@
 
 ## 核心判断
 
+2026-09-28 产品审查补充：用户侧查找、来源、知识修订与训练边界按 [R6](../../homepage/docs/specs/personal-ai-product-experience-r6.md) §5 F01/F02/F04。本文的 reader/索引状态不是用户确认知识或训练授权；实际权限仍由 Data Capability 与现有授权领域提供，不由页面选中或 provider Key 是否存在决定。
+
 不要默认把所有文件切成原文 chunk 并全量 embedding。Xpod 的检索应该是渐进式的：
 
 ```text
@@ -115,9 +117,9 @@ source + contentHash + reader + readerVersion + readerOptionsHash
 
 ### Free-quota-first reader provider policy
 
-外部 reader 的默认选择必须按“可持续免费量”而不是单纯能力排序。Xpod 不应默认消耗平台公共额度；
+外部 reader 先按具体调用者、Pod、资料范围、用途与获准处理对象筛选，再在获准候选中按能力和可持续额度选择。Key 存在、用户打开资料或服务有免费额度，均不构成任意资料外发授权。Xpod 不应默认消耗平台公共额度；
 reader 的 provider、model、credential 必须复用用户 Pod 里的标准 AI config（Provider / Model / Credential），
-和 chat / embedding 模型走同一套配置、密钥、代理和默认模型语义。系统只负责路由、缓存、失败降级和 coverage 报告。
+和 chat / embedding 模型走同一套配置、密钥、代理和默认模型语义。系统负责授权约束内的路由、缓存、失败降级和 coverage 报告。额度耗尽或失败不得静默换到范围外的处理器；没有适用授权时，在实际外发前说明对象、用途、资料范围和处理位置。已有适用授权的后续自动处理不重复弹确认。
 
 免费额度策略分四类：
 
@@ -128,7 +130,7 @@ reader 的 provider、model、credential 必须复用用户 Pod 里的标准 AI 
 | `rate-limited` | 无明确总量，但受 RPM/IP 限制 | 适合网页、轻量 reader；需要退避重试 |
 | `one-time-trial` | 注册赠送或短期试用，额度用完不恢复 | 只用于 benchmark/onboarding，不作为长期默认 |
 
-按当前调研应采用以下 provider 路由（上线前需重新核对官方页面，因为免费额度会变化）：
+以下是历史研究候选与估算，不是当前服务事实或无条件上线默认；实施前须核对官方能力/额度以及本次获准范围，未知费用不写“免费”：
 
 | Provider | Best for | Free quota shape | Default role |
 | --- | --- | --- | --- |
@@ -145,7 +147,7 @@ reader 的 provider、model、credential 必须复用用户 Pod 里的标准 AI 
 | Azure Document Intelligence | 企业已有 Azure 时 | monthly-recurring but small：约 500 pages/month | `enterpriseOptional` |
 | AWS Textract | 企业 AWS 试用/已有账户 | short trial：新账号约 3 个月免费层 | `enterpriseOptional` |
 
-默认路由：
+候选路由示例（执行时先做上述授权/能力筛选，配置示例不授予外发权限）：
 
 ```yaml
 readerRouter:
@@ -340,14 +342,14 @@ readerPolicy:
 3. 系统给默认建议：首次可读取 20 页，结构探测可到 50 页，后续窗口建议 50 页，单窗口不超过 100 页。
 4. Agent 可以选择更小窗口、更大窗口、指定页段或跳过读取，但必须给出 reason，并受 hard limits 约束。
 5. Agent 判断会超出建议预算但仍值得读取时，应向用户说明预计页数、收益、额度影响，并请求确认；用户拒绝或无响应时降级到已有 coverage / local preview / metadata-only。
-6. 用户打开文档详情并向下翻页、接近未读取页段或在文档内搜索时，由系统做提前解析/预取，不需要 Agent 决策；系统预取只为交互体验服务，仍记录 coverage 并遵守 hard limits。
+6. 用户打开文档详情并向下翻页、接近未读取页段或在文档内搜索时，系统仅在已有适用授权和预算内做提前解析/预取，不需要 Agent 决策；打开/滚动本身不授予外发。没有适用授权时使用获准的已有覆盖/本地路径，或就实际处理请求范围决策；仍记录 coverage 并遵守 hard limits。
 7. 自动reader 单 Run 最多 500 页，单文件每天最多 1000 页。
 8. 自动任务默认最多使用 provider 当日可用预算的 80%。以 20,000 pages/day 估算，自动预算约 16,000 页/天。
 9. 用户显式触发“全文读取/继续读取”可以突破单 Run 限制，但仍应受 daily provider budget 和账号级限额保护。
 
 ### System-driven prefetch
 
-不是所有读取都由 Agent 决策。用户正在 UI 中打开文档详情、翻页、滚动接近未读取页段、或在文档内搜索时，系统可以主动预取解析结果。这类读取属于交互式缓存预热，不需要 Agent 写 reason，但必须记录触发来源和 coverage。
+不是所有读取都由 Agent 决策。用户正在 UI 中打开文档详情、翻页、滚动接近未读取页段、或在文档内搜索时，系统可以在已有适用授权范围内预取解析结果。这类读取属于交互式缓存预热，不需要 Agent 写 reason，但必须记录触发来源和 coverage；不能借缓存预热绕过资料用途、处理位置与提供方范围。新增外发条件由授权 owner 处理。
 
 ```ts
 interface SystemReaderPrefetch {
@@ -1237,6 +1239,8 @@ interface EvaluationResult {
 
 ### Dataset scope and privacy
 
+本节 dataset 是检索评估材料，不自动成为个人模型训练集，也不能以纠正减少或检索命中提高证明个人模型提升。转作训练/其他评估用途须取得适用用途授权并建立独立、可追溯的快照；Foundry 保留训练/开发/保留评估的隔离与污染判定职责。
+
 Dataset 必须跟随 workspace / Pod / team 权限，不默认上传裸原文：
 
 - sample 引用 source id、node id、line range、hash 和摘要；
@@ -1278,6 +1282,8 @@ Successful Evidence Retrieval Rate
 - `Coverage honesty rate`。
 
 ### Product surfaces
+
+用户查找面优先解释范围、来源和不确定性：区分未覆盖、无匹配、读取失败、无权限；摘要命中不表示原文已核实。原始资料保存成功但索引失败显示“资料已保存，搜索尚未更新”。来源以真实身份/版本定位，同路径新内容不能冒充历史证据；撤权不通过摘要或缓存泄露当前无权看到的内容。相关诊断从 LinX 原任务进入 Xpod 空间/搜索详情，并可返回原对象。
 
 Product-generated dataset 应成为用户和团队可观察的产品能力：
 

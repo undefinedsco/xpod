@@ -5,6 +5,10 @@ export interface RunRecordData {
   /** Base-relative Solid resource id, e.g. `chat/default/2026/05/18/runs.ttl#run_x`. */
   id: string;
   task?: string;
+  /** Shared Pod resource URIs linking the Run to its dispatch and input. */
+  delivery?: string;
+  trigger?: string;
+  input?: string;
   thread: string;
   workspace: WorkspaceRef;
   status: RunStatusType;
@@ -51,6 +55,7 @@ export interface RunCommandProjection {
 }
 
 export interface RunStore<TContext> {
+  /** Atomically preserve cancellation and replace the caller's row with the committed state. */
   saveRun(run: RunRecordData, context: TContext): Promise<void>;
   loadRun(id: string, context: TContext): Promise<RunRecordData>;
   listRuns(options: RunListOptions, context: TContext): Promise<RunRecordData[]>;
@@ -76,13 +81,13 @@ export function hasActiveRunLease(
 }
 
 export function canClaimRun(
-  run: Pick<RunRecordData, 'status' | 'leaseOwner' | 'leaseExpiresAt'>,
+  run: Pick<RunRecordData, 'status' | 'leaseOwner' | 'leaseExpiresAt' | 'cancelRequestedAt'>,
   input: {
     leaseOwner: string;
     now: number;
   },
 ): boolean {
-  if (!isClaimableRunStatus(run.status)) {
+  if (run.cancelRequestedAt !== undefined || !isClaimableRunStatus(run.status)) {
     return false;
   }
   return !hasActiveRunLease(run, input.now) || run.leaseOwner === input.leaseOwner;

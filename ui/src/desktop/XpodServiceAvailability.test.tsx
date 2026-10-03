@@ -24,8 +24,9 @@ test('keeps mounted state during an outage and recovers without navigation or re
   fireEvent.change(input, { target: { value: 'unsaved draft' } });
   await act(() => vi.advanceTimersByTimeAsync(10_000));
   expect(screen.getByText('Xpod 连接中断')).toBeTruthy();
-  expect(container.querySelector('[inert]')).toBeTruthy();
-  expect(document.activeElement).toBe(screen.getByRole('button', { name: '立即重试' }));
+  expect(container.querySelector('[inert]')).toBeNull();
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(document.activeElement).toBe(input);
   fireEvent.click(screen.getByRole('button', { name: '立即重试' }));
   await settle();
   expect(screen.queryByText('Xpod 连接中断')).toBeNull();
@@ -72,4 +73,23 @@ test('shows an outage for a stopped child service while the Gateway itself still
   render(<XpodServiceAvailability><Content /></XpodServiceAvailability>);
   await settle();
   expect(screen.getByText('Xpod 连接中断')).toBeTruthy();
+});
+
+
+test('keeps navigation and local service controls usable while unavailable', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('offline')));
+  const start = vi.fn();
+  const { container } = render(<XpodServiceAvailability>
+    <nav><a href="/device/runtime">运行设置</a><a href="/settings/appearance">设置</a></nav>
+    <button onClick={start}>启动 Xpod</button><Content />
+  </XpodServiceAvailability>);
+  await settle();
+  expect(screen.getByRole('alert')).toBeTruthy();
+  expect(container.querySelector('[inert]')).toBeNull();
+  expect(screen.getByRole('link', { name: '运行设置' }).getAttribute('href')).toBe('/device/runtime');
+  fireEvent.click(screen.getByRole('button', { name: '启动 Xpod' }));
+  expect(start).toHaveBeenCalledTimes(1);
+  await act(() => vi.advanceTimersByTimeAsync(2_000));
+  expect(start).toHaveBeenCalledTimes(1);
+  expect(screen.getByText(/未完成的操作不会自动重试/)).toBeTruthy();
 });

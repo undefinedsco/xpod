@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, type Page, type Request, test } from '@playwright/test';
 import { completeOidcLogin, type BrowserOidcTrace, type BrowserSolidAccount } from '../helpers/browserSolidOidc';
+import { openNavigationDrawer } from '../helpers/navigationDrawer';
 
 const screenshotDir = path.resolve('.test-data/acceptance/screenshots');
 const fixtureModelId = 'fixture-gpt-acceptance';
@@ -491,9 +492,9 @@ test.describe('Xpod settings product acceptance', () => {
 
         for (const module of [
           { label: 'AI Connections', path: '/ai-connections', expected: /OpenAI|Anthropic|Kimi|百炼|DeepSeek|API KEYS/i },
-          { label: 'Pod', path: '/settings/pod', expected: /WebID|Pod|Issuer|Storage|AI Connection/i },
-          { label: 'Network', path: '/network', expected: /Network|endpoint|unsupported|supported|连接/i },
-          { label: 'Status', path: '/status/overview', expected: /runtime|Solid Server|Gateway|API Server/i },
+          { label: 'Pod', path: '/pod/models', expected: /模型设置|检索与索引|授权应用|数据管理|Pod/i },
+          { label: 'Network', path: '/device/network', expected: /网络访问|服务状态|运行设置|查看日志|隧道/i },
+          { label: 'Status', path: '/device/services', expected: /服务状态|核心服务|入口网关|Solid 服务|API 服务/i },
         ]) {
           await openModule(page, module.path, module.label);
           await expect(page.locator('main')).toHaveCount(1);
@@ -510,7 +511,7 @@ test.describe('Xpod settings product acceptance', () => {
     });
   }
 
-  test('keeps narrow Models stack detail, focus, and back navigation accessible', async ({ browser }) => {
+  test('keeps narrow Models stack detail, focus, and drawer navigation accessible', async ({ browser }) => {
     test.setTimeout(180_000);
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     try {
@@ -518,7 +519,13 @@ test.describe('Xpod settings product acceptance', () => {
       assertRealOidcTrace(trace);
       await openModule(page, '/ai-connections', 'AI Connections');
 
-      const search = page.locator('[data-workspace-list-header="true"] input[aria-label="搜索 Provider"]');
+      // At 390 the host keeps only the content column and owns the workspace list
+      // through its navigation drawer (design §2.7).
+      await expect(page.locator('[data-testid="workspace-list-pane"]')).toBeHidden();
+      await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeVisible();
+
+      const navigationToggle = await openNavigationDrawer(page);
+      const search = page.getByRole('searchbox', { name: '搜索服务商', exact: true });
       await expect(search).toBeVisible();
       await search.focus();
       await expect(search).toBeFocused();
@@ -528,14 +535,16 @@ test.describe('Xpod settings product acceptance', () => {
       await detailTrigger.focus();
       await expect(detailTrigger).toBeFocused();
       await detailTrigger.press('Enter');
+      // Selecting a Provider switches to the detail and closes the drawer; the
+      // host restores focus to the navigation toggle that opened it.
       await expect(page.locator('[data-testid="workspace-list-pane"]')).toBeHidden();
       await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeVisible();
-      await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeFocused();
+      await expect(navigationToggle).toBeFocused();
       const modelHeaderGeometry = await page.evaluate(() => {
         const header = document.querySelector('[data-testid="provider-models-header"]');
         const heading = header?.querySelector('h3');
         const actions = document.querySelector('[data-testid="provider-models-actions"]');
-        const search = actions?.querySelector('input[placeholder="搜索模型..."]');
+        const search = actions?.querySelector('input[aria-label="搜索模型"]');
         const rect = (element: Element | null | undefined) => {
           const box = element?.getBoundingClientRect();
           return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
@@ -554,11 +563,13 @@ test.describe('Xpod settings product acceptance', () => {
       expect(modelHeaderGeometry.search?.width).toBeGreaterThan(200);
       await page.screenshot({ path: path.join(screenshotDir, 'mobile-models-detail.png'), fullPage: true });
 
-      await page.getByRole('button', { name: '返回列表' }).click();
+      // No standalone back button exists while a host drawer owns the workspace
+      // list; the list is reopened through the same navigation toggle.
+      await openNavigationDrawer(page);
       await expect(page.locator('[data-testid="workspace-list-pane"]')).toBeVisible();
-      await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeHidden();
       await expect(search).toBeVisible();
-      await expect(page.locator('[data-testid="workspace-list-pane"]')).toBeFocused();
+      await search.focus();
+      await expect(search).toBeFocused();
     } finally {
       await page.context().close();
     }
@@ -624,7 +635,14 @@ async function openModule(page: Page, route: string, _label: string): Promise<vo
     await page.goto(destination.toString(), { waitUntil: 'domcontentloaded' });
   }
   const navigationHref = `${destination.pathname}${destination.search}`;
-  await expect(page.locator(`a[href="${navigationHref}"]`).first()).toBeVisible({ timeout: 30_000 });
+  const routeLink = page.locator(`a[href="${navigationHref}"]`).first();
+  // The desktop rail exposes the active module link; at 390 the host keeps it in
+  // the closed navigation drawer, so it exists without being visible.
+  if ((page.viewportSize()?.width ?? 0) >= 768) {
+    await expect(routeLink).toBeVisible({ timeout: 30_000 });
+  } else {
+    await expect(routeLink).toBeAttached({ timeout: 30_000 });
+  }
   await expect(page.locator('[data-workspace-layout]')).toBeAttached({ timeout: 30_000 });
   await expect(page.locator('[data-testid="workspace-list-pane"]')).toBeAttached({ timeout: 30_000 });
   await expect(page.locator('[data-testid="workspace-main-pane"]')).toBeAttached({ timeout: 30_000 });
@@ -1022,7 +1040,7 @@ async function assertSdkGeometryContract(page: Page, label: string, requireSplit
       mainHeader: rect(mainHeader),
       main: rect(main),
       listPane: rect(listPane),
-      search: rect(document.querySelector('[data-workspace-list-header="true"] input[aria-label="搜索 Provider"]')),
+      search: rect(document.querySelector('[data-workspace-list-header="true"] input[aria-label="搜索服务商"]')),
       tokens: {
         radius: getComputedStyle(root).getPropertyValue('--radius').trim(),
         background: getComputedStyle(root).getPropertyValue('--background').trim(),

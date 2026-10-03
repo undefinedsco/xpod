@@ -119,6 +119,38 @@ runtime artifact，并验证版本、nested runtime 可执行文件和 manifest�
 macOS 可能显示未识别开发者提示。未来启用 Apple Developer Program 时，应直接恢复
 签名与 notarization 作为新版本门禁，不在本次流程中保留双路径或 fallback。
 
+### 嵌入式原生 CLI 的 Corresponding Source 与 NOTICE
+
+平台包 `@undefineds.co/xpod-darwin-arm64` 内嵌 `inngest-cli@1.40.0`（SSPL-1.0，附
+Apache-2.0 future 许可，生效日 2029-07-30）。发行必须随包附上**实际对应源码与 NOTICE**，
+不能只留 private review 包或一个 URL/metadata：
+
+- 平台包额外包含 `SOURCE/`：`SOURCE-MANIFEST.json`、`NOTICE`、`inngest-cli` 许可原文、
+  上游源码归档（pin 到 commit `0d75b0b3…`，sha256 `dd6c84ec…`），以及被
+  `internal/embeddocs/docs.go` 的 `//go:embed website/pages/docs/*` 编译进二进制的
+  `inngest/website@159c0ac6…` 174 个 docs 输入。
+- 版本/来源为单一 pin，位于 `scripts/lib/embedded-native-source.cjs`：绑定已安装包版本、
+  二进制 sha256 与真实 Mach-O/ELF target、许可 sha、源码归档 sha/大小/成员数、embed docs
+  子模块 commit/文件数/聚合 sha。任一漂移显式失败，不允许静默降级。
+- 构建期从 public pinned URL 下载或复用固定缓存，并校验同一 hash；源码不嵌入 Bun 二进制。
+- 安装验证：`scripts/package-consumer-smoke.cjs` 在隔离消费者中校验所选平台包的
+  `xpodEmbeddedSource` 路径（必须留在包根内）与存在性，重算 manifest 摘要，并把 archive、
+  license、embed docs、docs sha 清单与 NOTICE 逐项对 pin/manifest 契约复核；不信任自报摘要。
+- 桌面 `desktop/package.json` 的 `extraResources: runtime` 直接携带平台包的 `SOURCE/`。
+- pin 是程序侧构建声明，不引入用户配置；升级 `inngest-cli` 时必须同步 pin 并重新验证。
+
+**§13 网络服务注意**：`EmbeddedInngestService` 默认以 `127.0.0.1` spawn Inngest dev/server，
+但真实拓扑中 Xpod 可能位于反向代理/网关之后，cloud 部署使用集群内 Inngest service。不能因
+默认监听 loopback 就一概判定 SSPL §13 不适用；任何让第三方直接或经代理/间接与 Inngest
+功能交互的部署都需评估提供 Service Source Code。此处只记录事实，不替代当地法律判断。
+
+无证书前提下的**自助更新**由桌面自行实现，不使用 Electron 内置更新器：Squirrel 要求
+新 bundle 满足当前构建的 designated requirement，而 ad-hoc 签名的 requirement 就是
+一条 `cdhash`，任何其它版本都无法满足。因此发布产物必须经
+`desktop/scripts/after-pack-adhoc-sign.cjs` 封成合法 ad-hoc 签名，并用
+`desktop/scripts/packaged-update-acceptance.mjs` 跑通“旧包 → 新包自动安装并重启”。
+链路、配置与验收证据见 [`docs/desktop-self-update.md`](desktop-self-update.md)。
+
 Linux QLever SDK/runtime 镜像先加载到 CI runner 执行真实冒烟，再由同一个
 BuildKit builder 复用热缓存直接推 registry；不要再用 `docker push` 转发 daemon
 本地镜像。上传后必须从 immutable registry digest 解析实际 `linux/amd64` manifest，
@@ -212,7 +244,7 @@ stable promotion 校验以下内容：
   `dashboard`、`protected-route`、
   `deployed-digest`、`direct-pod`、`public-service`、`secret-isolation`、
   `authenticated-pod`、`pod-read-write`、`gateway-key`、`ai-connections`、
-  `models`、`chat`、`qlever-local` 和 `desktop`。
+  `models`、`chat`、`task-approval`、`qlever-local`、`package-consumers` 和 `desktop`。
 
 `deployed-digest` 证明 RC Deployment 运行的是 accepted digest，
 `direct-pod` 证明 ready Pod 的 imageID 包含同一个 digest。stable tag 只做

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import {
   RuntimeManager,
@@ -430,5 +430,55 @@ describe('resolveRuntimeLaunchCommand', () => {
       moduleDir: '/Users/ganlu/develop/xpod/desktop/dist',
       pathExists: () => false,
     })).toEqual({ command: 'xpod', args: ['start', '--foreground'] });
+  });
+});
+
+describe('owned runtime recovery', () => {
+  function fixture(autoRestart: boolean) {
+    const children: FakeChild[] = [];
+    const environments: NodeJS.ProcessEnv[] = [];
+    let ready = false;
+    let directory = '/old/data';
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000', autoRestart, restartDelayMs: 1,
+      resolveLaunch: () => ({ command: 'xpod', args: ['start'], env: { CSS_ROOT_FILE_PATH: '/stale/data' } }),
+      resolveEnvironment: () => ({ CSS_ROOT_FILE_PATH: directory }),
+      fetchImpl: async (input) => String(input).endsWith('/service/status')
+        ? Response.json(ready ? [{ name: 'css', status: 'running' }, { name: 'api', status: 'running' }] : []) : new Response(''),
+      spawnImpl: (_command, _args, options) => {
+        environments.push(options.env);
+        const child = new FakeChild(); children.push(child); ready = true;
+        child.once('exit', () => { ready = false; });
+        return child;
+      }, pollIntervalMs: 1, startupTimeoutMs: 100,
+    });
+    return { manager, children, environments, setDirectory: (value: string) => { directory = value; } };
+  }
+  test('recovers an unexpectedly exited owned process, then respects manual stop', async () => {
+    const { manager, children } = fixture(true);
+    await manager.ensureRunning(); children[0]!.emit('exit', 1, null);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(children).toHaveLength(2);
+    expect(manager.snapshot().state).toBe('running');
+    await manager.stopOwned();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(children).toHaveLength(2); expect(manager.snapshot().state).toBe('stopped');
+  });
+  test('disabled policy and stop during restart delay do not relaunch', async () => {
+    const disabled = fixture(false);
+    await disabled.manager.ensureRunning(); disabled.children[0]!.emit('exit', 1, null);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(disabled.children).toHaveLength(1);
+    const stopped = fixture(true);
+    await stopped.manager.ensureRunning(); stopped.children[0]!.emit('exit', 1, null);
+    await stopped.manager.stopOwned();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(stopped.children).toHaveLength(1);
+  });
+  test('restart uses freshly saved data directory instead of old launch environment', async () => {
+    const { manager, environments, setDirectory } = fixture(false);
+    await manager.ensureRunning(); setDirectory('/new/data'); await manager.restart();
+    expect(environments.map((env) => env.CSS_ROOT_FILE_PATH)).toEqual(['/old/data', '/new/data']);
+    await manager.stopOwned();
   });
 });

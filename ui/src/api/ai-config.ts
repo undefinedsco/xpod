@@ -42,6 +42,8 @@ export type AiConfigPolicyPatch = {
 };
 
 export interface AiConfigCapabilities {
+  /** Deployment policy, projected from the same authority that validates assignments. */
+  embeddingModels?: { restricted: boolean; allowed: Array<{ provider: string; model: string }> };
   textBackends: Array<'fts5' | 'postgres-fts'>;
   vectorBackends: Array<'vec' | 'pgvector'>;
   rebuildSupported: boolean;

@@ -187,6 +187,8 @@ describe('CloudGatewayModelsClient', () => {
       expect(String(url)).toBe('https://id.undefineds.co/v1/chat/completions');
       expect(init?.method).toBe('POST');
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer solid-access-token');
+      expect(new Headers(init?.headers).get('x-opencode-session')).toBe('conversation-cloud');
+      expect(new Headers(init?.headers).get('user-agent')).toBe('Xpod/0.4.21');
       expect(JSON.parse(String(init?.body))).toMatchObject({ ...CHAT_BODY, stream: false });
       return jsonResponse({
         id: 'chatcmpl-cloud',
@@ -200,6 +202,7 @@ describe('CloudGatewayModelsClient', () => {
       auth: AUTH,
       protocol: 'chatCompletions',
       body: CHAT_BODY,
+      invocationMetadata: { sessionId: 'conversation-cloud', userAgent: 'Xpod/0.4.21' },
     });
 
     expect(result).toEqual(expect.objectContaining({
@@ -213,6 +216,8 @@ describe('CloudGatewayModelsClient', () => {
   it('forwards streaming Chat to Cloud SSE without opening a local vault secret', async() => {
     const fetchImpl = vi.fn(async(url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toBe('https://id.undefineds.co/v1/chat/completions');
+      expect(new Headers(init?.headers).get('x-opencode-session')).toBe('conversation-cloud');
+      expect(new Headers(init?.headers).get('user-agent')).toBe('Xpod/0.4.21');
       expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'kimi-k2', stream: true });
       return new Response(
         'data: {"id":"chatcmpl-cloud","choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'
@@ -226,6 +231,7 @@ describe('CloudGatewayModelsClient', () => {
       auth: AUTH,
       protocol: 'chatCompletions',
       body: { ...CHAT_BODY, stream: true },
+      invocationMetadata: { sessionId: 'conversation-cloud', userAgent: 'Xpod/0.4.21' },
     });
 
     expect(execution.route.credential.id).toBe('cloud-identity');

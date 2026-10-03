@@ -1,16 +1,21 @@
 import path from 'node:path'
 import { writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { app, autoUpdater, BrowserWindow, dialog, ipcMain, Menu, MenuItem, Tray, nativeImage, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, MenuItem, Tray, nativeImage, nativeTheme, shell, type MenuItemConstructorOptions } from 'electron'
 import {
   buildTrayMenuModel,
   normalizeTrayIdentity,
+  normalizeTrayAttention,
   type TrayMenuAction,
   type TrayMenuItemModel,
   type TrayServiceSnapshot,
+  type TrayUpdateState,
 } from './tray-menu.js'
 import { trayIconAssetName, XPOD_TRAY_GUID } from './tray-icon.js'
+import { isTrustedDesktopShellSender } from './ipc-policy.js'
+import { DesktopApprovalDelivery } from './approval-delivery.js'
 import { RuntimeManager } from './runtime-manager.js'
+import { RuntimePreferences, readRuntimeDataEnvironment } from './runtime-preferences.js'
 import { resolveDesktopTargetUrl } from './target-url.js'
 import { installDockIcon, resolveDockIconPath } from './dock-icon.js'
 import {
@@ -25,8 +30,8 @@ import {
   DesktopUpdateManager,
   resolveDesktopUpdateConfig,
   withDefaultDesktopUpdateFeed,
-  type DesktopUpdateState,
 } from './update-manager.js'
+import { DesktopSelfUpdater, UPDATE_RELAUNCH_ENV } from './self-updater.js'
 import { loadDesktopUrlWithoutStaleCache } from './navigation-cache.js'
 import { canCancelDesktopLogin, cancelDesktopLogin, shouldCancelDesktopLoginOnClose } from './login-recovery.js'
 import { navigateDesktopProduct } from './product-navigation.js'
@@ -44,6 +49,8 @@ let issuerDiscovery: Promise<string | undefined> | undefined
 const loginNavigationEpoch = new WeakMap<BrowserWindow, number>()
 const cancellingLogin = new WeakSet<BrowserWindow>()
 const navigationReadyContents = new WeakSet<Electron.WebContents>()
+const committedDocumentUrls = new WeakMap<Electron.WebContents, string>()
+const approvalDelivery = new DesktopApprovalDelivery<Electron.WebContents>()
 const xpodLatestReleaseUrl = 'https://github.com/undefinedsco/xpod/releases/latest'
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
@@ -84,6 +91,7 @@ let tray: Tray | null = null
 let trayServices: TrayServiceSnapshot[] = []
 let trayPoll: ReturnType<typeof setInterval> | undefined
 let trayIdentity: { label: string; webId?: string; podUrl?: string } | undefined
+let trayAttention = normalizeTrayAttention(undefined)
 let trayTooltip = ''
 let trayImageEmpty = true
 let trayImageScaleFactors: number[] = []
@@ -97,28 +105,48 @@ const updateAcceptanceLog = process.env.XPOD_DESKTOP_UPDATE_ACCEPTANCE_LOG
 const updateAcceptanceInstallMarker = process.env.XPOD_DESKTOP_UPDATE_ACCEPTANCE_INSTALL_MARKER
   ? path.resolve(process.env.XPOD_DESKTOP_UPDATE_ACCEPTANCE_INSTALL_MARKER)
   : undefined
-let trayUpdate: DesktopUpdateState = { status: updateConfig.feedUrl ? 'idle' : 'disabled' }
+let trayUpdate: TrayUpdateState = { status: updateConfig.feedUrl ? 'idle' : 'disabled' }
 let quitCleanupStarted = false
+let quitConfirmed = false
+let quitConfirmationPending = false
 type DesktopQuitReason = 'explicit' | 'update-install'
 let quitReason: DesktopQuitReason = 'explicit'
-const runtimeManager = new RuntimeManager({ targetOrigin })
+const runtimePreferences = new RuntimePreferences(desktopDataRoot)
+const runtimeManager = new RuntimeManager({ targetOrigin, autoRestart: runtimePreferences.read().autoRestart, resolveEnvironment: () => readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE) })
+// Squirrel pins an ad-hoc build's cdhash and cannot accept the next release.
+// Our detached installer verifies and swaps the bundle while retaining user data.
+const selfUpdater = new DesktopSelfUpdater({
+  version: app.getVersion(),
+  appPath: path.resolve(process.execPath, '..', '..', '..'),
+  updatesDir: path.join(desktopDataRoot, 'updates'),
+  ...(updateConfig.feedUrl ? { manifestUrl: updateConfig.feedUrl } : {}),
+  relaunch: process.env[UPDATE_RELAUNCH_ENV] === 'direct' || acceptanceMode ? 'direct' : 'open',
+  requestQuit: () => {
+    quitReason = 'update-install'
+    windowLifecycle.markQuitting()
+    app.quit()
+  },
+  onLifecycleEvent: (event, detail) => {
+    if (updateAcceptanceLog) writeFileSync(updateAcceptanceLog, `${event}${detail ? `: ${detail}` : ''}\n`, { flag: 'a' })
+  },
+})
 const updateManager = new DesktopUpdateManager({
-  updater: autoUpdater,
+  updater: selfUpdater,
   ...updateConfig,
   onUpdateDownloaded: (state, install) => {
     const version = state.version ? ` ${state.version}` : ''
+    const staged = selfUpdater.snapshot()
     void dialog.showMessageBox({
       type: 'info',
-      buttons: ['Restart and install', 'Later'],
+      buttons: ['重启并安装', '稍后'],
       defaultId: 0,
       cancelId: 1,
       noLink: true,
-      title: 'Xpod update ready',
-      message: `Xpod${version} is ready`,
-      detail: 'Restart Xpod to finish installing the update. Your signed-in session will be preserved.',
+      title: 'Xpod 更新已就绪',
+      message: `Xpod${version} 已准备好安装`,
+      detail: staged ? `重启 Xpod 完成更新，登录状态会保留。\n\n已下载的更新包：${staged.archivePath}` : '重启 Xpod 完成更新，登录状态会保留。',
     }).then((result) => {
       if (result.response !== 0 || updateManager.snapshot().status !== 'downloaded') return
-      quitReason = 'update-install'
       install()
     }).catch(() => undefined)
   },
@@ -130,14 +158,14 @@ const updateManager = new DesktopUpdateManager({
         writeFileSync(updateAcceptanceInstallMarker, availableVersion, { encoding: 'utf8', mode: 0o600 })
       }
     }
-    quitReason = 'update-install'
     install()
   },
   onLifecycleEvent: (event, detail) => {
     if (updateAcceptanceLog) writeFileSync(updateAcceptanceLog, `${event}${detail ? `: ${detail}` : ''}\n`, { flag: 'a' })
   },
   onStateChange: (state) => {
-    trayUpdate = state
+    const staged = selfUpdater.snapshot()
+    trayUpdate = staged ? { ...state, downloadPath: staged.appPath } : state
     if (tray) updateTray(tray)
   },
 })
@@ -171,7 +199,7 @@ const productWebPreferences = {
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    // §5.1：工作区首次 1180×800，最小 640×560
+    // 10/1 设计画板：工作区内容视口 1280×800，响应式最小窗口 640×560
     width: WORKSPACE_WINDOW_MODE_SIZE.width,
     height: WORKSPACE_WINDOW_MODE_SIZE.height,
     minWidth: WORKSPACE_WINDOW_MODE_SIZE.minWidth,
@@ -194,8 +222,9 @@ function createWindow(): BrowserWindow {
 
   window.setMenuBarVisibility(process.platform !== 'darwin')
   window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
-    if (isMainFrame && !isInPlace) navigationReadyContents.delete(window.webContents)
+    if (isMainFrame && !isInPlace) { committedDocumentUrls.delete(window.webContents); navigationReadyContents.delete(window.webContents); approvalDelivery.reload(window.webContents) }
   })
+  window.webContents.on('did-navigate', (_event, url) => { committedDocumentUrls.set(window.webContents, url) })
   window.webContents.setWindowOpenHandler(({ url }) => {
     desktopConsole.info(`[desktop] window-open ${safeNavigationTarget(url)}`)
     if (isTrustedOidcNavigation(url, desktopOidcIssuer)) {
@@ -460,6 +489,7 @@ function updateTray(target: Tray): void {
     launchAtLogin: app.getLoginItemSettings().openAtLogin,
     identity: trayIdentity,
     update: trayUpdate,
+    ...trayAttention,
   })
   const image = trayIcon(model.aggregate.state)
   trayImageEmpty = image.isEmpty()
@@ -477,12 +507,30 @@ function toElectronMenuItem(item: TrayMenuItemModel): MenuItemConstructorOptions
     enabled: item.enabled,
     type: item.checked === undefined ? 'normal' : 'checkbox',
     checked: item.checked,
+    submenu: item.submenu?.map(toElectronMenuItem),
     click: item.action ? () => void runTrayAction(item.action!) : undefined,
   }
 }
 
 async function runTrayAction(action: TrayMenuAction): Promise<void> {
   switch (action.type) {
+    case 'decide-approval': {
+      if (!trayIdentity?.webId || !trayAttention.attention.some((item) => item.approvalId === action.approvalId)) return
+      const window = ensureWindow()
+      const generation = approvalDelivery.generation(window.webContents)
+      await navigateDesktopProduct(window, action.route, targetOrigin, navigationReadyContents.has(window.webContents))
+      if (window.isDestroyed() || windowLifecycle.currentWindow() !== window) return
+      approvalDelivery.enqueue(window.webContents, { approvalId: action.approvalId, decision: action.decision }, generation)
+      return
+    }
+    case 'copy-webid':
+      if (trayIdentity?.webId) clipboard.writeText(trayIdentity.webId)
+      return
+    case 'stop':
+      if (runtimeManager.snapshot().ownership !== 'desktop') { await openRoute('/device/services'); return }
+      await runtimeManager.stopOwned()
+      if (tray) await refreshTrayStatus(tray)
+      return
     case 'open-xpod':
       ensureWindow()
       return
@@ -515,13 +563,15 @@ async function runTrayAction(action: TrayMenuAction): Promise<void> {
       updateManager.checkNow()
       return
     case 'install-update':
-      // autoUpdater.quitAndInstall() emits before-quit-for-update after it
-      // closes windows. Mark the reason before calling it so the normal full
-      // user-quit path does not revoke the two active sessions during an
-      // in-place update/restart.
-      if (updateManager.snapshot().status === 'downloaded') quitReason = 'update-install'
       updateManager.installNow()
       return
+    case 'reveal-update': {
+      const staged = selfUpdater.snapshot()
+      const target = staged?.appPath ?? staged?.archivePath
+      if (target) shell.showItemInFolder(target)
+      else await shell.openExternal(xpodLatestReleaseUrl)
+      return
+    }
     case 'open-release-download':
       await shell.openExternal(xpodLatestReleaseUrl)
       return
@@ -529,20 +579,8 @@ async function runTrayAction(action: TrayMenuAction): Promise<void> {
       app.showAboutPanel()
       return
     case 'quit':
-      if (runtimeManager.snapshot().ownership === 'desktop') {
-        const result = await dialog.showMessageBox({
-          type: 'question',
-          buttons: ['退出并停止 Xpod', '取消'],
-          defaultId: 0,
-          cancelId: 1,
-          message: '退出 Xpod？',
-          detail: '这个 Xpod 运行时由桌面应用启动，退出时会一并停止。关闭窗口不会停止服务。',
-        })
-        if (result.response !== 0) return
-      }
-      quitReason = 'explicit'
-      windowLifecycle.markQuitting()
       app.quit()
+      return
   }
 }
 
@@ -554,6 +592,7 @@ async function openRoute(route: string): Promise<void> {
 async function refreshTrayStatus(target: Tray): Promise<void> {
   try {
     const response = await fetch(new URL('/service/status', targetOrigin))
+    if (!response.ok) throw new Error('Service status unavailable')
     const payload = await response.json() as unknown
     const reported = Array.isArray(payload) ? payload.filter(isTrayServiceSnapshot) : []
     trayServices = [
@@ -607,21 +646,87 @@ ipcMain.handle('xpod:cancel-login', async (event) => {
   await returnFromDesktopLogin(window)
 })
 
-ipcMain.on('xpod:identity', (_event, identity: unknown) => {
-  trayIdentity = normalizeTrayIdentity(identity, targetOrigin)
+function trustedShellSender(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean {
+  const window = windowLifecycle.currentWindow()
+  return isTrustedDesktopShellSender({
+    isCurrentWindow: Boolean(window && !window.isDestroyed() && window.webContents === event.sender),
+    isMainFrame: event.senderFrame === event.sender.mainFrame,
+    frameUrl: event.senderFrame?.url ?? '',
+    committedUrl: committedDocumentUrls.get(event.sender) ?? '',
+    contentsUrl: event.sender.getURL(),
+  }, targetOrigin)
+}
+function assertDeviceSender(event: Electron.IpcMainInvokeEvent): void {
+  if (!trustedShellSender(event)) throw new Error('Device settings require the trusted product shell')
+}
+ipcMain.handle('xpod:get-runtime-settings', (event) => {
+  assertDeviceSender(event)
+  return { ...runtimeManager.snapshot(), launchAtLogin: app.getLoginItemSettings().openAtLogin, autoRestart: runtimePreferences.read().autoRestart, dataDirectory: readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE).CSS_ROOT_FILE_PATH ?? process.env.CSS_ROOT_FILE_PATH }
+})
+ipcMain.handle('xpod:set-auto-restart', (event, enabled: unknown) => {
+  assertDeviceSender(event)
+  if (typeof enabled !== 'boolean') throw new Error('Invalid restart setting')
+  runtimePreferences.setAutoRestart(enabled)
+  runtimeManager.setAutoRestart(enabled)
+})
+ipcMain.handle('xpod:set-launch-at-login', (event, enabled: unknown) => {
+  assertDeviceSender(event)
+  if (typeof enabled !== 'boolean') throw new Error('Invalid launch setting')
+  app.setLoginItemSettings({ openAtLogin: enabled })
+})
+ipcMain.handle('xpod:runtime-action', async (event, action: unknown) => {
+  assertDeviceSender(event)
+  if (action === 'start') await runtimeManager.ensureRunning()
+  else if (action === 'restart') await runtimeManager.restart()
+  else if (action === 'stop' && runtimeManager.snapshot().ownership === 'desktop') await runtimeManager.stopOwned()
+  else throw new Error('Runtime action is not available')
+  if (tray) await refreshTrayStatus(tray)
+})
+ipcMain.handle('xpod:show-data-directory', (event) => {
+  assertDeviceSender(event)
+  const directory = readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE).CSS_ROOT_FILE_PATH ?? process.env.CSS_ROOT_FILE_PATH
+  if (directory) shell.showItemInFolder(directory)
+})
+ipcMain.handle('xpod:select-data-directory', async (event) => {
+  assertDeviceSender(event)
+  const result = await dialog.showOpenDialog({ title: '选择数据位置', properties: ['openDirectory', 'createDirectory'] })
+  return result.canceled ? undefined : result.filePaths[0]
+})
+ipcMain.on('xpod-desktop:attention', (event, snapshot: unknown) => {
+  if (!trustedShellSender(event)) return
+  trayAttention = normalizeTrayAttention(snapshot)
+  if (tray) updateTray(tray)
+})
+
+ipcMain.on('xpod:identity', (event, identity: unknown) => {
+  if (!trustedShellSender(event)) return
+  const nextIdentity = normalizeTrayIdentity(identity, targetOrigin)
+  if (trayIdentity?.webId !== nextIdentity?.webId || trayIdentity?.podUrl !== nextIdentity?.podUrl) {
+    approvalDelivery.clear(event.sender)
+    trayAttention = normalizeTrayAttention(undefined)
+  }
+  trayIdentity = nextIdentity
   if (tray) updateTray(tray)
 })
 
 ipcMain.on('xpod:navigation-ready', (event, ready: unknown) => {
-  if (event.senderFrame !== event.sender.mainFrame) return
-  if (ready === true && isSameOriginProductUrl(event.sender.getURL(), targetOrigin)) {
+  if (!trustedShellSender(event)) return
+  if (ready === true) {
     navigationReadyContents.add(event.sender)
+    approvalDelivery.ready(event.sender, 'navigation', true)
   } else {
     navigationReadyContents.delete(event.sender)
+    approvalDelivery.ready(event.sender, 'navigation', false)
   }
 })
 
+ipcMain.on('xpod:approval-ready', (event, ready: unknown) => {
+  if (!trustedShellSender(event)) return
+  approvalDelivery.ready(event.sender, 'approval', ready === true)
+})
+
 ipcMain.on('xpod:window-mode', (event, mode: unknown) => {
+  if (!trustedShellSender(event)) return
   const window = BrowserWindow.fromWebContents(event.sender)
   if (!window || window.isDestroyed()) return
   const controller = windowModeControllers.get(window)
@@ -662,10 +767,6 @@ if (acceptanceMode) {
   })
 }
 
-autoUpdater.on('before-quit-for-update', () => {
-  quitReason = 'update-install'
-})
-
 const allowParallelAcceptanceInstance = acceptanceMode
   && process.env.XPOD_DESKTOP_ALLOW_PARALLEL_ACCEPTANCE === '1'
 const hasSingleInstanceLock = allowParallelAcceptanceInstance || app.requestSingleInstanceLock()
@@ -693,6 +794,7 @@ if (!hasSingleInstanceLock) {
       }),
     })
     installDesktopLoginRecoveryMenu()
+    app.setAboutPanelOptions({ applicationName: 'Xpod', applicationVersion: app.getVersion(), version: `Electron ${process.versions.electron}`, copyright: `© ${new Date().getFullYear()} Xpod` })
     tray = createTray()
     updateManager.start()
     await runtimeManager.ensureRunning().catch(() => undefined)
@@ -707,20 +809,26 @@ if (!hasSingleInstanceLock) {
 }
 
 app.on('before-quit', (event) => {
-  windowLifecycle.markQuitting()
-  if (trayPoll) clearInterval(trayPoll)
-  // Squirrel owns the update installation lifecycle after quitAndInstall().
-  // Do not defer this event: preventing it, even for runtime cleanup, causes
-  // Electron's built-in updater to finish downloading but never relaunch.
-  if (quitReason === 'update-install') {
-    updateManager.dispose()
-    void runtimeManager.stopOwned().catch(() => undefined)
+  if (quitReason !== 'update-install' && !acceptanceMode && !smokeMode && !quitConfirmed && runtimeManager.snapshot().ownership === 'desktop') {
+    event.preventDefault()
+    if (quitConfirmationPending) return
+    quitConfirmationPending = true
+    void dialog.showMessageBox({
+      type: 'question', buttons: ['退出并停止 Xpod', '取消'], defaultId: 1, cancelId: 1,
+      message: '退出 Xpod？', detail: '退出会停止这台设备上的 Xpod。关闭窗口后 Xpod 会继续运行。',
+    }).then(({ response }) => {
+      if (response === 0) { quitConfirmed = true; app.quit() }
+    }).finally(() => { quitConfirmationPending = false })
     return
   }
+  windowLifecycle.markQuitting()
+  if (trayPoll) clearInterval(trayPoll)
+  // The detached installer waits for this process; stop its owned runtime before exit.
   if (!quitCleanupStarted) {
     event.preventDefault()
     quitCleanupStarted = true
     updateManager.dispose()
+    selfUpdater.dispose()
     // Application quit is not an in-product sign-out. Let CSS/Inrupt retain
     // their own profile-persistent sessions and only stop the runtime owned by
     // this desktop process. The next launch restores if those sessions remain

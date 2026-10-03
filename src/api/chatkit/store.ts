@@ -1,3 +1,4 @@
+import type { RunApprovalStore } from '../runs/RunApproval';
 /**
  * ChatKit Store Interface
  * 
@@ -26,6 +27,7 @@ import {
   type RunStore,
 } from '../runs/store';
 import { RunStatus } from '../runs/schema';
+import { mergeRunCancellation } from '../runs/RunStateMerge';
 import { buildTaskResourceId, type TaskListOptions, type TaskRecordData, type TaskStore } from '../tasks/store';
 import {
   TASK_AUTH_CREDENTIAL_SERVICE,
@@ -48,7 +50,7 @@ export interface ClientToolContinuationClaim {
 /**
  * Abstract Store interface
  */
-export interface ChatKitStore<TContext = StoreContext> extends Partial<RunStore<TContext>> {
+export interface ChatKitStore<TContext = StoreContext> extends Partial<RunStore<TContext>>, RunApprovalStore<TContext> {
   // ID Generation
   generateThreadId(context: TContext): string;
   generateItemId(itemType: StoreItemType, thread: ThreadMetadata, context: TContext): string;
@@ -306,6 +308,7 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     if (
       !run
       || run.status !== RunStatus.WAITING_INPUT
+      || run.cancelRequestedAt !== undefined
       || (run.leaseOwner && run.leaseExpiresAt && run.leaseExpiresAt > input.now)
       || typeof waitingTool !== 'object'
       || (waitingTool as { itemId?: unknown }).itemId !== item.id
@@ -335,7 +338,7 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
   ): Promise<boolean> {
     const key = this.getRunKey(claim.run.id, context);
     const run = this.runs.get(key);
-    if (!run || run.leaseOwner !== claim.claimId) {
+    if (!run || run.cancelRequestedAt !== undefined || run.status === RunStatus.CANCELLED || run.leaseOwner !== claim.claimId) {
       return false;
     }
     this.runs.set(key, {
@@ -373,7 +376,10 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
 
   async saveRun(run: RunRecordData, context: TContext): Promise<void> {
     run.id = buildRunResourceId(run.id);
-    this.runs.set(this.getRunKey(run.id, context), { ...run });
+    const key = this.getRunKey(run.id, context);
+    const merged = mergeRunCancellation(run, this.runs.get(key));
+    this.runs.set(key, merged);
+    Object.assign(run, merged);
   }
 
   async loadRun(runId: string, context: TContext): Promise<RunRecordData> {

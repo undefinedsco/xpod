@@ -4,6 +4,8 @@
  * Targets the currently running Xpod at http://127.0.0.1:3000/. Does not start a
  * substitute stack. Secrets stay process-local and are never printed.
  * XPOD_LIVE_MODE selects local (Cloud-managed), cloud, or standalone.
+ * XPOD_LIVE_TASK_APPROVAL=1 additionally requires real producer approve/reject/Stop
+ * evidence using this same one-time account and its persisted provider configuration.
  *
  * Provider key source (never printed, never reads .env.local):
  * `.test-data/acceptance/provider-api-key` or `XPOD_LIVE_PROVIDER_KEY_FILE`.
@@ -11,6 +13,7 @@
  * last-resort override. XPOD_AI_PROXY_URL is optional; there is no default proxy.
  */
 import '../src/runtime/configure-drizzle-solid';
+import { acceptLiveTaskApproval, type LiveTaskEvidence } from './helpers/live-task-approval';
 import { ensureTrailingSlash } from '../src/runtime/base-url';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -20,6 +23,7 @@ import { aiModelResource, aiProviderResource, credentialResource } from '@undefi
 import { createSolidLocalRouteFetch, discoverSolidLocalRoute } from '../packages/solid-sdk/src/local-route-fetch';
 import { createXpodAiConnectionsClient } from '../ui/src/api/ai-connections';
 import { createXpodAiConnectionsPodStore } from '../ui/src/extensions/XpodAiConnectionsPodStore';
+import { withRequestPodAuthorization } from '../ui/src/auth/session-request-credential';
 import { checkServer } from '../src/cli/lib/css-account';
 import { ProvisionCodeCodec } from '../src/provision/ProvisionCodeCodec';
 import {
@@ -39,11 +43,12 @@ if (!['cloud', 'local', 'standalone'].includes(MODE)) {
 const CLOUD_IDP = process.env.XPOD_LIVE_CLOUD_IDP?.trim() || 'https://id.undefineds.co/';
 const PROVIDER_KEY_FILE = process.env.XPOD_LIVE_PROVIDER_KEY_FILE?.trim()
   || path.join(process.cwd(), '.test-data', 'acceptance', 'provider-api-key');
+const TASK_APPROVAL_ENABLED = process.env.XPOD_LIVE_TASK_APPROVAL === '1';
 const ACCEPT_ID = `login-chat-${Date.now().toString(36)}`;
 const EVIDENCE_DIR = path.join(process.cwd(), '.test-data', 'acceptance');
 const SECRET_PATTERN = /(sk-[A-Za-z0-9+/=_-]{8,}|Bearer\s+\S+|apiKey|client_secret|refresh_token|access_token)/giu;
 
-type Layer = 'runtime' | 'identity' | 'podReadWrite' | 'gatewayAuth' | 'aiConnections' | 'models' | 'chat';
+type Layer = 'runtime' | 'identity' | 'podReadWrite' | 'gatewayAuth' | 'aiConnections' | 'models' | 'chat' | 'taskApproval';
 
 const report: {
   mode: string;
@@ -59,6 +64,7 @@ const report: {
   modelIds?: string[];
   chatModel?: string;
   chatStatus?: number;
+  taskApproval?: LiveTaskEvidence;
   keyCleanup?: { ok: boolean; detail: string };
 } = {
   mode: MODE,
@@ -72,6 +78,7 @@ const report: {
     aiConnections: { ok: false, detail: 'not run' },
     models: { ok: false, detail: 'not run' },
     chat: { ok: false, detail: 'not run' },
+    taskApproval: { ok: false, detail: TASK_APPROVAL_ENABLED ? 'not run' : 'disabled; set XPOD_LIVE_TASK_APPROVAL=1' },
   },
 };
 
@@ -708,7 +715,34 @@ async function main(): Promise<void> {
     fail('identity', redact(message));
   }
   layer('identity', true, `mode=${MODE} issuer=${account.issuer} webId=${account.webId} pod=${account.podUrl}`);
-  const authenticatedFetch = session.fetch;
+  // The Gateway refuses a DPoP-bound session for Pod-backed work
+  // (`caller_dpop_replay_unsupported`): the proof belongs to the caller and cannot be replayed.
+  // The applet answers that refusal with the caller's own Pod credential and retries once; the
+  // acceptance does the same with the credential this session already logged in with. It does not
+  // go through the page's on-demand capability: those helpers resolve controls against
+  // `window`, which a server-side acceptance does not have.
+  const sessionCredential = `sk-${Buffer.from(
+    `${account.clientId}:${account.clientSecret}`,
+    'utf8',
+  ).toString('base64')}`;
+  // The retried request leaves through the route-aware plain transport, never the session
+  // transport: the session transport attaches the session's own token and would overwrite the
+  // credential the retry is carrying. A pooled connection the ingress already closed surfaces as
+  // a socket error on that fresh request, so one transport-level retry keeps a credential that
+  // the Gateway accepts from being reported as a credential failure.
+  const credentialTransport: typeof fetch = async (input, init) => {
+    try {
+      return await localSolidTransport(input, init);
+    } catch {
+      return await localSolidTransport(input, init);
+    }
+  };
+  const authenticatedFetch = withRequestPodAuthorization(
+    session.fetch,
+    async () => `Bearer ${sessionCredential}`,
+    credentialTransport,
+  );
+
   const probePath = `acceptance/${ACCEPT_ID}.ttl`;
   const probeUrl = new URL(probePath, account.podUrl).toString();
   const probeBody = [
@@ -786,6 +820,17 @@ async function main(): Promise<void> {
     authenticatedFetch: ownerCredentialFetch,
   });
 
+  const verifyTaskApproval = async (ownerInterfaceKey: string): Promise<void> => {
+    if (!TASK_APPROVAL_ENABLED) return;
+    const result = await acceptLiveTaskApproval({
+      gateway: GATEWAY, podUrl: account.podUrl, webId: account.webId,
+      ownerInterfaceKey, ownerFetch: ownerCredentialFetch, session: authSession,
+      onEvidence: (evidence) => { report.taskApproval = evidence; writeEvidence(); },
+    });
+    if (!result.ok) fail('taskApproval', result.failure ?? 'Task acceptance cleanup failed');
+    layer('taskApproval', true, 'Real producer approve/reject/Stop; same Run, owner CAS, Session terminal, Pod marker and duplicate stability verified');
+  };
+
   const { gatewayKey, initialModelIds } = await verifyGatewayKeyLifecycle(client, {
     baseUrl: identityBaseUrl,
     authorization: cloudAccount.authorization,
@@ -825,9 +870,11 @@ async function main(): Promise<void> {
         `imported the existing local OpenAI subscription into the Pod; discovered ${discovery.models.length}; selected ${selectedIds.join(', ')}; ${missing}`,
       );
       await projectModelsAndChat(gatewayKey, selectedIds);
+      await verifyTaskApproval(gatewayKey);
       writeEvidence();
       return;
     } catch (error) {
+      if (report.taskApproval) throw error;
       const detail = error instanceof Error ? redact(error.message) : 'unknown local subscription import error';
       layer('aiConnections', false, `${missing}; local OpenAI subscription import failed: ${detail}`);
       layer('models', false, initialModelIds.length === 0
@@ -899,6 +946,7 @@ async function main(): Promise<void> {
   );
 
   await projectModelsAndChat(gatewayKey, selectedIds);
+  await verifyTaskApproval(gatewayKey);
   writeEvidence();
 }
 
@@ -1068,12 +1116,16 @@ async function projectModelsAndChat(gatewayKey: string, selectedIds: string[]): 
 
 async function chatOnce(gatewayKey: string, chatModel: string): Promise<void> {
   report.chatModel = chatModel;
+  const conversationId = randomUUID();
+  const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
   const chatResponse = await fetch(new URL('v1/chat/completions', GATEWAY), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${gatewayKey}`,
       Accept: 'application/json',
       'Content-Type': 'application/json',
+      'x-opencode-session': conversationId,
+      'User-Agent': `Xpod/${version}`,
     },
     body: JSON.stringify({
       model: chatModel,

@@ -10,21 +10,17 @@
   ],
   "@graph": [
     {
-      "comment": "Redis-based locker with expiration wrapper for clustered deployments",
+      "comment": "Owner-checked Redis locks; do not expire in-flight writers without storage fencing.",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:ResourceLocker"
       },
       "overrideParameters": {
-        "@type": "WrappedExpiringReadWriteLocker",
-        "locker": {
-          "@type": "UrlAwareRedisLocker",
-          "redisClient": {
-            "@id": "urn:solid-server:default:variable:redisClient",
-            "@type": "Variable"
-          }
-        },
-        "expiration": 6000
+        "@type": "UrlAwareRedisLocker",
+        "redisClient": {
+          "@id": "urn:solid-server:default:variable:redisClient",
+          "@type": "Variable"
+        }
       }
     },
     {
@@ -508,6 +504,9 @@
       "overrideParameters": {
         "@type": "StatusWaterfallHandler",
         "handlers": [
+          {
+            "@id": "urn:undefineds:xpod:AgentDirectoryHttpHandler"
+          },
           {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
           },

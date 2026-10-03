@@ -52,6 +52,7 @@ async function probeWithTimeout(
   }
 }
 
+/** Require the shared Solid identity probe even when discovery returns an unsupported-method status. */
 async function defaultProbe(route: AccessRoute, signal: AbortSignal): Promise<boolean> {
   if (!isHttpTarget(route.targetUrl)) {
     return route.health === 'healthy';

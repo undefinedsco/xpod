@@ -583,6 +583,11 @@ async function startEmbeddedInngestService(
     signingKey: config.inngest?.signingKey,
     binaryPath: config.inngest?.binaryPath,
     sqliteDir: config.inngest?.sqliteDir,
+    // Unix-socket transport cannot name a TCP callback address; the service
+    // derives a private loopback bridge and signs it with the Gateway marker.
+    socketPath: config.socketPath,
+    gatewayAdminProxyAuthSecret: config.gatewayAdminProxyAuthSecret,
+    runtimeHost: config.runtimeHost,
   });
   const runtimeConfig = await service.start();
   if (runtimeConfig.enabled) {

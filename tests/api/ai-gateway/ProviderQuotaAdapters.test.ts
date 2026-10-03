@@ -811,9 +811,9 @@ describe('ProviderQuotaAdapters', () => {
       'bailian/token-plan-team',
       'bailian/coding-plan',
       'deepseek/api-platform',
-      'ollama/local',
       'zhipu/api-platform',
       'zhipu/coding-plan',
+      'ollama/local',
       'custom/openai-compatible',
       'custom/anthropic-compatible',
     ];

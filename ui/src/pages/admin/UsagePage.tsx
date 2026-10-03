@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { fetchPodSettingsStatus, type PodStorageStatus } from '../../api/pod-settings';
@@ -32,36 +32,41 @@ function Fact({ label, value }: { label: string; value: string }) {
 
 export function UsagePage({ kind = 'overview' }: { kind?: UsageKind }) {
   const runtime = useXpodSolidRuntime();
-  const [storage, setStorage] = useState<PodStorageStatus | null>(null);
-  const [generatedAt, setGeneratedAt] = useState<string | undefined>(undefined);
   const [reloadToken, setReloadToken] = useState(0);
+  const request = useMemo(() => ({
+    webId: runtime.webId,
+    podUrl: runtime.podUrl,
+    authenticatedFetch: runtime.fetch,
+    reloadToken,
+  }), [runtime.webId, runtime.podUrl, runtime.fetch, reloadToken]);
+  const [snapshot, setSnapshot] = useState<{
+    request: typeof request;
+    storage: PodStorageStatus;
+    generatedAt?: string;
+  }>();
+  const storage: PodStorageStatus | null = !request.webId || !request.podUrl
+    ? { status: 'error', reason: '尚未确认当前 WebID 与存储空间。' }
+    : snapshot?.request === request ? snapshot.storage : null;
+  const generatedAt = snapshot?.request === request ? snapshot.generatedAt : undefined;
 
   useEffect(() => {
-    if (!runtime.webId || !runtime.podUrl) {
-      setStorage({ status: 'error', reason: '尚未确认当前 WebID 与存储空间。' });
-      return;
-    }
+    if (!request.webId || !request.podUrl) return;
     let cancelled = false;
-    setStorage(null);
     void fetchPodSettingsStatus({
-      webId: runtime.webId,
-      podUrl: runtime.podUrl,
-      authenticatedFetch: runtime.fetch,
+      webId: request.webId,
+      podUrl: request.podUrl,
+      authenticatedFetch: request.authenticatedFetch,
     })
       .then((status) => {
-        if (cancelled) return;
-        setGeneratedAt(status.generatedAt);
-        setStorage(status.storage);
+        if (!cancelled) setSnapshot({ request, storage: status.storage, generatedAt: status.generatedAt });
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setStorage({ status: 'error', reason: error instanceof Error ? error.message : '读取失败' });
+          setSnapshot({ request, storage: { status: 'error', reason: error instanceof Error ? error.message : '读取失败' } });
         }
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [runtime.webId, runtime.podUrl, runtime.fetch, reloadToken]);
+    return () => { cancelled = true; };
+  }, [request]);
 
   const title = KIND_TITLES[kind];
 

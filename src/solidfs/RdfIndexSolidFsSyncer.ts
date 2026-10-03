@@ -27,6 +27,8 @@ type MaybePromise<T> = T | Promise<T>;
 
 export interface RdfIndexSolidFsSyncerOptions {
   index: LocalRdfIndexAccessor;
+  /** Recovery reads the existing authority; materialized workspaces copy their content back. */
+  rdfSourceMode?: 'copy' | 'authority';
   textIndex?: RdfTextIndexLike;
   vectorIndex?: RdfVectorIndexLike;
   vectorizeText?: (input: RdfIndexSolidFsVectorizeInput) => MaybePromise<RdfVectorChunkInput[]>;
@@ -67,6 +69,7 @@ export interface RdfIndexSolidFsRebuildError {
  */
 export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
   private readonly index: LocalRdfIndexAccessor;
+  private readonly rdfSourceMode: 'copy' | 'authority';
   private readonly textIndex?: RdfTextIndexLike;
   private readonly vectorIndex?: RdfVectorIndexLike;
   private readonly vectorizeText?: NonNullable<RdfIndexSolidFsSyncerOptions['vectorizeText']>;
@@ -77,6 +80,7 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
       throw new Error('RdfIndexSolidFsSyncer vectorIndex requires vectorizeText');
     }
     this.index = options.index;
+    this.rdfSourceMode = options.rdfSourceMode ?? 'copy';
     this.textIndex = options.textIndex;
     this.vectorIndex = options.vectorIndex;
     this.vectorizeText = options.vectorizeText;
@@ -222,9 +226,9 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
     if (options.rdf && identifier && isRdfChange(change)) {
       await this.index.syncLocalRdfDocument(
         identifier,
-        guardStream(createReadStream(change.sourcePath)),
+        this.rdfSourceMode === 'authority' ? undefined : guardStream(createReadStream(change.sourcePath)),
         change.contentType,
-        source,
+        { ...source, sourcePath: change.sourcePath },
       );
     }
 
@@ -300,9 +304,9 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
     if (identifier && isRdfChange(change)) {
       await this.index.syncLocalRdfDocument(
         identifier,
-        guardStream(createReadStream(change.sourcePath)),
+        this.rdfSourceMode === 'authority' ? undefined : guardStream(createReadStream(change.sourcePath)),
         change.contentType,
-        source,
+        { ...source, sourcePath: change.sourcePath },
       );
     }
 
@@ -399,9 +403,9 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
 
     await this.index.syncLocalRdfDocument(
       nextIdentifier,
-      guardStream(createReadStream(change.sourcePath)),
+      this.rdfSourceMode === 'authority' ? undefined : guardStream(createReadStream(change.sourcePath)),
       change.contentType,
-      nextSource,
+      { ...nextSource, sourcePath: change.sourcePath },
     );
     if (previousSource) {
       await this.index.deleteLocalRdfIndex({ path: previousSource });

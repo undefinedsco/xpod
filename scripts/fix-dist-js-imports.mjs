@@ -12,7 +12,7 @@ async function rewriteDirectory(directory) {
       await rewriteDirectory(entryPath)
       continue
     }
-    if (entry.isFile() && entry.name.endsWith('.js')) {
+    if (entry.isFile() && (entry.name.endsWith('.js') || entry.name.endsWith('.d.ts'))) {
       await rewriteFile(entryPath)
     }
   }

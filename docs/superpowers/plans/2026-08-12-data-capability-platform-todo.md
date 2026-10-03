@@ -4,6 +4,20 @@
 **Parent architecture:**
 [Pod-native Applet Platform Architecture](../specs/2026-08-12-pod-native-applet-platform-architecture.md)
 
+**2026-09-28 product-design handoff:** [Joint experience Spec R6](../../../../homepage/docs/specs/personal-ai-product-experience-r6.md) defines the user-facing flows and R6-D/F work packages. The domain design remains deferred where this document says it is unresolved; R6 does not approve a schema, API, training algorithm or production action. LinX hosts daily material selection, human comparison and scope decisions; Foundry governs release decisions; Xpod exposes authorized assets and actual execution/deployment facts.
+
+### Required contracts before enabling product submissions
+
+| R6 dependency | Domain deliverable | UI must not infer |
+| --- | --- | --- |
+| DEP01/02 | Source/version, knowledge confirmation and scoped revisions; purpose authorization, snapshots, retention and revocation propagation | Silence, a favorite, permission to read, or execution approval is permission to train |
+| DEP03 | Dataset/snapshot/recipe manifest; submit/query/cancel/retry contracts, reproducible artifact registration, capability and cost facts | A selected list is a durable grant; submission is completion; fixed 50/200 records justify training |
+| DEP03 evaluation | Train/development/held-out split including same-source derivatives and hindsight; equal-knowledge baseline; privacy/permission/regression gates | Retrieval improvement or answer leakage proves personal-model improvement; positive preference overrides blocking failures |
+| DEP04 | Promotion/delegation, actual served/loaded version, per-Run evidence, partial rollout and rollback eligibility | Saved configuration means all clients use the release; a formerly trusted but revoked artifact is safe to restore |
+| DEP06 | Durable artifact bytes and external store bindings, export/import scope and verification, withdrawal/retirement, in-flight and backup handling | A manifest-only export is a complete model backup; stopping local services stops remote training; deletion guarantees unlearning |
+
+Deliver each contract with an owner, supported/unsupported states, authority-backed outcomes, idempotency/recovery behavior and contract verification. Material preparation, knowledge work and explanatory UI can proceed independently; real training, promotion, cancellation and complete-restoration claims require these contracts. This table prioritizes the existing design gaps rather than supplying substitute interfaces.
+
 ## Why this TODO exists
 
 The Data Capability Platform is a platform mainline alongside the Applet/Agent

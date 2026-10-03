@@ -18,6 +18,7 @@ import {
   parseCustomModelList,
   parseGatewayKeyRecord,
   parseGatewayModel,
+  parseGatewayCatalogModel,
   parseModelDiscovery,
   parseProviderCredentialSummary,
   parseProviderSummaries,
@@ -81,8 +82,9 @@ export function createAiConnectionsClient({
     return parseConnectAttempt(payload, provider)
   }
 
+  const requestGatewayModels = () => request<{ data?: unknown[] }>('/v1/models', 'GET')
   const listGatewayModels = async (): Promise<AiGatewayModel[]> => {
-    const payload = await request<{ data?: unknown[] }>('/v1/models', 'GET')
+    const payload = await requestGatewayModels()
     return Array.isArray(payload.data)
       ? payload.data.map(parseGatewayModel).filter(isDefined)
       : []
@@ -120,6 +122,14 @@ export function createAiConnectionsClient({
 
     listModels: listGatewayModels,
     listGatewayModels,
+
+    async listGatewayCatalogModels() {
+      const payload = await requestGatewayModels()
+      if (!isRecord(payload) || !Array.isArray(payload.data)) {
+        throw new Error('AI Connection returned an invalid Gateway model catalog response')
+      }
+      return payload.data.map(parseGatewayCatalogModel).filter(isDefined)
+    },
 
     async listGatewayKeys() {
       const payload = await request<{ data?: unknown[] }>('/api/ai/gateway/keys', 'GET')

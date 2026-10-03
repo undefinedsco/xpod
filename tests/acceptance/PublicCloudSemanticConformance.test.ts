@@ -29,6 +29,17 @@ describe('PublicCloudSemanticConformance', () => {
     expect(runPostgresPublicSemanticConformance).toBeTypeOf('function');
   });
 
+  it('grants fixture resources explicitly without treating empty allow-lists as unrestricted', () => {
+    for (const testCase of fixtureCases()) {
+      expect(testCase.accessScope.allowedGraphs.length).toBeGreaterThan(0);
+      expect(testCase.accessScope.allowedSources.length).toBeGreaterThan(0);
+    }
+    expect(fixtureCase('scope/graph-denied').accessScope.allowedGraphs)
+      .toEqual(['urn:xpod:semantic:g:allowed']);
+    expect(fixtureCase('scope/source-denied').accessScope.allowedSources)
+      .toEqual(['urn:xpod:semantic:source:allowed']);
+  });
+
   it.each(fixtureCases())('conforms to $id through the public RDF query authority', async (testCase) => {
     await expect(expectPublicCase(testCase.id)).resolves.toMatchObject({
       caseId: testCase.id,

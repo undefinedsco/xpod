@@ -1,3 +1,4 @@
+import type { AIModelClass } from '@undefineds.co/models'
 /**
  * Wire and view types of the AI connections API. No behaviour.
  */
@@ -123,17 +124,26 @@ export interface AiGatewayModel extends AiConnectionsModelSelection {
    * Rows read from the Pod carry it as their own column; the settings list shows
    * it as the same capability mark the Gateway projection uses.
    */
-  modelType?: DiscoveredProviderModelType
+  modelType?: AIModelClass
   /** Owning credential for providers that allow multiple independent custom endpoints. */
   credentialId?: string
   displayName?: string
   availability?: 'available' | 'unavailable'
   contextWindow?: number
+  /** Canonical embeddingModelResource.dimension, when supplied by the catalog. */
+  dimension?: number
   protocols?: string[]
   custom?: boolean
   inputModalities?: string[]
   outputModalities?: string[]
   capabilities?: string[]
+}
+
+/** Public Gateway directory entries can belong to a platform or an unknown provider. */
+export interface AiGatewayCatalogModel {
+  id: string
+  displayName?: string
+  provider?: string
 }
 
 /**
@@ -244,6 +254,10 @@ export interface AiProviderCredentialSummary {
   /** Proxy endpoint with credentials removed; the secret value never leaves the Pod. */
   proxyUrl?: string
   compatibility?: 'auto' | 'openai' | 'anthropic'
+  lastFailureCode?: string
+  lastFailureAt?: string
+  rateLimitResetAt?: string
+  failCount?: number
   expiresAt?: string
   version: number
 }
@@ -313,6 +327,8 @@ export interface AiConnectionsClient {
   listModels(): Promise<AiGatewayModel[]>
   /** Active Gateway routing projection, independent of a host's Pod catalog. */
   listGatewayModels?(): Promise<AiGatewayModel[]>
+  /** Complete Gateway directory, including platform routing roles and unattributed entries. */
+  listGatewayCatalogModels?(): Promise<AiGatewayCatalogModel[]>
   listGatewayKeys(): Promise<GatewayKeyRecord[]>
   createGatewayKey(input: {
     name: string

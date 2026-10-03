@@ -15,6 +15,8 @@ import { LocalReachabilitySummary } from './LocalReachabilitySummary'
 /**
  * Shared login modal. The host supplies the brand and, optionally, the product
  * name that user-facing messages refer to.
+ *
+ * @deprecated Use PodSignIn inside PodSignInFrame (see `pod-sign-in/`). Kept for one more version; behavior is unchanged.
  */
 export function LoginModal(props: LoginModalProps) {
   const { state, storageConflict, view } = props

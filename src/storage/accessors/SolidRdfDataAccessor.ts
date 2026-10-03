@@ -9,6 +9,7 @@ import {
   ConflictHttpError,
   DataAccessor,
   guardStream,
+  HH,
   IdentifierStrategy,
   INTERNAL_QUADS,
   isContainerIdentifier,
@@ -47,6 +48,10 @@ import type {
   RdfVectorSourceInput,
 } from '../rdf/types';
 import type { Quint } from '../quint/types';
+import {
+  captureStorageVersion, getStorageVersion, LegacyStorageVersionError,
+  stampStorageVersion, storageVersionReadContext,
+} from '../StorageVersion';
 
 const { defaultGraph, namedNode, quad } = DataFactory;
 export const PREPARED_UPDATE_MEDIA_TYPE = 'application/vnd.xpod.rdf-prepared-delta+json;version=1';
@@ -253,7 +258,24 @@ export class SolidRdfDataAccessor implements DataAccessor {
     if (!isContainerIdentifier(identifier) && !metadata.contentType) {
       metadata.contentType = INTERNAL_QUADS;
     }
+    if (storageVersionReadContext.getStore() && !getStorageVersion(metadata)) {
+      throw new LegacyStorageVersionError(identifier, () => this.initializeStorageVersion(identifier));
+    }
     return metadata;
+  }
+
+  private async initializeStorageVersion(identifier: ResourceIdentifier): Promise<void> {
+    // Invoked by HierarchyLockingResourceStore under the same write locks as all resource mutations.
+    // Re-read after acquiring the locks: another reader or writer may already have initialized it.
+    const metadata = await this.getMetadata(identifier);
+    if (getStorageVersion(metadata)) return;
+    stampStorageVersion(metadata);
+    const name = namedNode(identifier.path);
+    const graph = this.getMetadataNode(name);
+    // Only the server's operational revision changes; preserve business data and modification time.
+    await this.rdfEngine.delete({ graph, subject: name, predicate: HH.terms.etag });
+    await this.rdfEngine.put([quad(name, HH.terms.etag, DataFactory.literal(metadata.get(HH.terms.etag)!.value), graph) as Quad]);
+    captureStorageVersion(metadata);
   }
 
   public async* getChildren(identifier: ResourceIdentifier): AsyncIterableIterator<RepresentationMetadata> {
@@ -406,13 +428,7 @@ export class SolidRdfDataAccessor implements DataAccessor {
   public async writeMetadata(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
     await this.initialize();
     const { name, parent } = this.getRelatedNames(identifier);
-    const metaName = this.getMetadataNode(name);
-    await this.rdfEngine.delete({ graph: metaName });
-    const inserts = this.toGraphQuads(metaName, metadata.quads());
-    if (parent) {
-      inserts.push(quad(parent, LDP.terms.contains, name, parent) as Quad);
-    }
-    await this.rdfEngine.put(inserts);
+    await this.replaceMetadata(name, metadata, parent);
   }
 
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
@@ -545,6 +561,7 @@ export class SolidRdfDataAccessor implements DataAccessor {
   }
 
   private async replaceMetadata(name: NamedNode, metadata: RepresentationMetadata, parent?: NamedNode): Promise<void> {
+    stampStorageVersion(metadata);
     const metaName = this.getMetadataNode(name);
     await this.rdfEngine.delete({ graph: metaName });
     const inserts = this.toGraphQuads(metaName, metadata.quads());
@@ -552,6 +569,7 @@ export class SolidRdfDataAccessor implements DataAccessor {
       inserts.push(quad(parent, LDP.terms.contains, name, parent) as Quad);
     }
     await this.rdfEngine.put(inserts);
+    captureStorageVersion(metadata);
   }
 
   private async putGraphQuads(graph: NamedNode, triples: Quad[]): Promise<void> {

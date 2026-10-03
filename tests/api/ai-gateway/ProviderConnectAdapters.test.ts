@@ -4,6 +4,7 @@ import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credential
 import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
 import type { ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 import { aiRuntimeRepository } from '@undefineds.co/models';
+import { PROVIDER_LABELS, PROVIDER_OFFERINGS } from '@undefineds.co/ai-connections/provider-catalog';
 import {
   BrowserAssistedApiKeyConnectAdapter,
   DeepSeekConnectAdapter,
@@ -367,20 +368,16 @@ describe('Provider credential pool management', () => {
       deployment: 'cloud',
     });
 
-    for (const provider of ['openai', 'anthropic']) {
+    for (const provider of ['openai', 'anthropic'] as const) {
       const offering = pools
         .find((pool) => pool.id === provider)
         ?.offerings.find((candidate) => candidate.id === 'official-subscription');
-      expect(offering).toMatchObject(provider === 'openai'
-        ? {
-            label: 'OpenAI Subscription',
-            lifecycle: 'unavailable',
-            authModes: ['local'],
-          }
-        : {
-            lifecycle: 'unavailable',
-            authModes: ['oauth'],
-          });
+      const source = PROVIDER_OFFERINGS[provider]!.find((candidate) => candidate.id === 'official-subscription')!;
+      expect(offering).toMatchObject({
+        label: source.label,
+        lifecycle: 'unavailable',
+        authModes: source.authModes,
+      });
     }
     expect(pools.find((pool) => pool.id === 'kimi')?.offerings.find(
       (offering) => offering.id === 'official-subscription',
@@ -430,7 +427,7 @@ describe('Provider credential pool management', () => {
     })).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'kimi',
-        name: 'Moonshot (Kimi)',
+        name: PROVIDER_LABELS.kimi,
         status: 'available',
         offerings: expect.arrayContaining([
           expect.objectContaining({ id: 'subscription-key', lifecycle: 'active' }),

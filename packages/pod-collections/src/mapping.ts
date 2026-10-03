@@ -1,4 +1,4 @@
-import type { AnyPodTable } from '@undefineds.co/drizzle-solid';
+import type { AnyPodTable, SolidDatabase } from '@undefineds.co/drizzle-solid';
 import type { PodModelDescriptor, PodModelFieldDescriptor } from '@undefineds.co/models';
 import { PodCollectionError } from './types.js';
 import type { PodSubjectRow, RowOf } from './types.js';
@@ -24,6 +24,7 @@ import { rowKeyOf, rowKeyVariable } from './layout.js';
  */
 
 const XSD = 'http://www.w3.org/2001/XMLSchema#';
+const ABSOLUTE_URI = /^[a-z][a-z0-9+.-]*:/iu;
 
 /** RDF term（只覆盖本层会产生的两种）。 */
 export interface PodRdfTerm {
@@ -321,6 +322,66 @@ export function descriptorRowToColumnValues(
 /** 该字段是否走 §4.1 的 PATCH 旁路：`array: true` + `type: 'uri'`。 */
 export function isUriArrayField(field: PodModelFieldDescriptor): boolean {
   return field.array === true && field.type === 'uri';
+}
+
+/** URI arrays use the existing document-relative PATCH representation. */
+export function normalizeUriArray(value: unknown, document: string): string[] {
+  return (Array.isArray(value) ? value : [value])
+    .filter((item): item is string => typeof item === 'string' && item.length > 0)
+    .map(item => ABSOLUTE_URI.test(item) ? item : new URL(item, document).toString());
+}
+
+/**
+ * The pending intent must use the same URI representation as the ORM's RDF read.
+ * Resolve declared scalar links with the current database's public resolver/schema;
+ * array links retain writeField's document-relative PATCH semantics.
+ */
+export function normalizeMutationRow<D extends PodModelDescriptor, R extends object>(
+  descriptor: D,
+  table: AnyPodTable,
+  row: R,
+  options: {
+    database: Pick<SolidDatabase, 'getDialect'> & { schema?: Record<string, unknown> };
+    podUrl: string;
+    document: string;
+    resourceId: string;
+  },
+): R {
+  const normalized = { ...row } as Record<string, unknown>;
+  const record = descriptorRowToColumnValues(descriptor, table, row as Record<string, unknown>, { resourceId: options.resourceId });
+  const bindings = fieldBindings(descriptor, table);
+  // Registries are derived only from the actual schema registered with this DB.
+  const tables = new Set<AnyPodTable>([table]);
+  for (const candidate of Object.values(options.database.schema ?? {})) {
+    if (candidate && typeof candidate === 'object' && 'config' in candidate && 'columns' in candidate) {
+      tables.add(candidate as AnyPodTable);
+    }
+  }
+  const tableNameRegistry = new Map<string, AnyPodTable>();
+  const tableRegistry = new Map<string, AnyPodTable[]>();
+  for (const entry of tables) {
+    tableNameRegistry.set(entry.config.name, entry);
+    const type = entry.getType();
+    tableRegistry.set(type, [...(tableRegistry.get(type) ?? []), entry]);
+  }
+  for (const [field, binding] of bindings) {
+    const value = normalized[field];
+    if (binding.descriptor.type !== 'uri' || value === undefined || value === null) continue;
+    if (binding.descriptor.array) {
+      normalized[field] = normalizeUriArray(value, options.document);
+      continue;
+    }
+    if (!binding.column || typeof value !== 'string' || !value || ABSOLUTE_URI.test(value)) continue;
+    const resolver = options.database.getDialect().getUriResolver();
+    normalized[field] = resolver.resolveLink(value, table.columns[binding.column], {
+      baseUri: options.podUrl,
+      tableRegistry,
+      tableNameRegistry,
+      currentTable: table,
+      record,
+    });
+  }
+  return normalized as R;
 }
 
 /** descriptor 里所有走 PATCH 旁路的字段。 */

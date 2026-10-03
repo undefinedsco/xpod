@@ -68,6 +68,8 @@ describe('guard: descriptor ↔ drizzle table drift (§2.7)', () => {
       'isDefault->isDefault',
       'keyVersion->keyVersion',
       'label->label',
+      'lastFailureAt->lastFailureAt',
+      'lastFailureCode->lastFailureCode',
       'lastRefreshAt->lastRefreshAt',
       'lastUsedAt->lastUsedAt',
       'metadata->metadata',
@@ -92,7 +94,7 @@ describe('guard: descriptor ↔ drizzle table drift (§2.7)', () => {
     expect(identityFieldOf(credentialDescriptor)).toBe('id');
   });
 
-  it('locks 0.2.57 full coverage: zero drift in both directions, uniqueBy is a real column', () => {
+  it('locks credential health field coverage: zero drift in both directions, uniqueBy is a real column', () => {
     // 0.2.56 → 0.2.57 的变化（这条测试就是那次修复的回归锁）。0.2.56 的事实是：
     // descriptor 19 个字段 / 表 36 列，18 个 by-predicate 表独有列，descriptor 独有
     // `providerId`（谓词落在 `provider` 列上，按名不算命中）与 `secretType`（无承载列），
@@ -106,10 +108,11 @@ describe('guard: descriptor ↔ drizzle table drift (§2.7)', () => {
     //   · `providerId` 改名为真实列名 `provider`（谓词不变，是改名不是新增）；
     //   · 删除没有承载列的 `secretType`；
     //   · `uniqueBy` 从引用非列的 `['service','providerId','secretType']` 改成真实列 `['id']`。
+    // 当前新增 lastFailureCode / lastFailureAt，descriptor 与表均为 38 列。
     // 精确计数 + 双向空集：任何一侧将来增删字段/列都会让下面某条断言失败 —— 守卫
     // 不能退化成「descriptor 说什么就是什么」。
-    expect(Object.keys(credentialDescriptor.fields)).toHaveLength(36);
-    expect(columns).toHaveLength(36);
+    expect(Object.keys(credentialDescriptor.fields)).toHaveLength(38);
+    expect(columns).toHaveLength(38);
     // 表里有、descriptor 没有对应**谓词**的列：0 个。
     expect(tableColumnsWithoutDescriptorField(credentialDescriptor, table)).toEqual([]);
     // descriptor 声明了、表里没有对应**谓词**的字段：0 个（行标识 `id` 由行本身承载，不算）。

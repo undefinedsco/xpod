@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, writeFile, rm, chmod } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { parseDocument } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -34,6 +35,101 @@ function allRuns(workflow: Workflow): string[] {
 }
 
 describe('release candidate workflow', () => {
+  it('proves diagnostic container absence and removes private files even when cleanup fails', async () => {
+    const workflow = await loadWorkflow();
+    const steps = workflow.jobs.task_runtime_diagnostic.steps;
+    const cleanupIndex = steps.findIndex((step: { name?: string }) => step.name === 'Cleanup only the owned diagnostic container and private files');
+    const uploadIndex = steps.findIndex((step: { name?: string }) => step.name === 'Upload diagnostic evidence (never stable-promotion evidence)');
+    const parent = path.join(repoRoot, '.test-data', 'task-cleanup-contract');
+    await mkdir(parent, { recursive: true });
+    for (const mode of ['removed', 'remaining', 'unreachable', 'already-absent', 'foreign-marker']) {
+      const directory = await mkdtemp(path.join(parent, 'case-'));
+      try {
+        const bin = path.join(directory, 'bin');
+        await mkdir(bin);
+        await writeFile(path.join(bin, 'docker'), `#!/bin/bash
+printf '%s\\n' "$1" >> "$RUNNER_TEMP/docker-calls"
+case "$1" in
+  info) [ "$FAKE_DOCKER_MODE" != unreachable ] ;;
+  rm) [ "$FAKE_DOCKER_MODE" = removed ] ;;
+  ps) if [ "$FAKE_DOCKER_MODE" = remaining ]; then printf '%s\\n' xpod-task-diagnostic-123-2; fi ;;
+  *) exit 99 ;;
+esac
+`);
+        await chmod(path.join(bin, 'docker'), 0o700);
+        await writeFile(path.join(directory, 'task-diagnostic-container-name'),
+          mode === 'foreign-marker' ? 'foreign-container' : 'xpod-task-diagnostic-123-2');
+        await writeFile(path.join(directory, 'task-diagnostic-provider-config'), 'private-fixture');
+        let failed = false;
+        try {
+          execFileSync('bash', ['-euo', 'pipefail', '-c', steps[cleanupIndex].run], {
+            encoding: 'utf8', stdio: 'pipe', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+              RUNNER_TEMP: directory, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2', FAKE_DOCKER_MODE: mode },
+          });
+        } catch { failed = true; }
+        expect(failed, mode).toBe(['remaining', 'unreachable', 'foreign-marker'].includes(mode));
+        expect(await readFile(path.join(directory, 'task-diagnostic-provider-config'), 'utf8').catch(() => undefined), mode).toBeUndefined();
+        const calls = await readFile(path.join(directory, 'docker-calls'), 'utf8').catch(() => '');
+        if (mode === 'foreign-marker') expect(calls).not.toContain('rm');
+        if (!failed) {
+          expect(JSON.parse(await readFile(path.join(directory, 'task-diagnostic-safe', 'cleanup.json'), 'utf8')))
+            .toMatchObject({ schemaVersion: 1, ownedContainerAbsent: true, privateFilesRemoved: true, accepted: false });
+        }
+      } finally { await rm(directory, { recursive: true, force: true }); }
+    }
+    expect(uploadIndex).toBeGreaterThan(cleanupIndex);
+  });
+
+  it('builds the current diagnostic runtime locally while preserving independent native provenance', async () => {
+    const workflow = await loadWorkflow();
+    const job = workflow.jobs.task_runtime_diagnostic;
+    expect(job.permissions).toEqual({ contents: 'read', packages: 'read' });
+    expect(job.env.DIAGNOSTIC_RUNTIME_SOURCE_SHA).toBe('${{ github.sha }}');
+    expect(job.env.DIAGNOSTIC_NATIVE_SOURCE_SHA).toBe('35dce6f1fc5f69b189b695d5321d68e9c0df9331');
+    const build = job.steps.find((step: { name?: string }) => step.name === 'Build current source only for local Task diagnostics');
+    expect(build.with).toMatchObject({ context: '.', file: './Dockerfile', target: 'runtime',
+      platforms: 'linux/amd64', load: true, push: false });
+    expect(build.with['cache-to']).toBeUndefined();
+    expect(build.with['build-args']).toContain('XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ steps.native.outputs.image }}');
+    const text = jobRunText(workflow, 'task_runtime_diagnostic');
+    expect(text).toContain('git diff --quiet "$DIAGNOSTIC_NATIVE_SOURCE_SHA" HEAD --');
+    expect(text).toContain('org.opencontainers.image.revision');
+    expect(text).toContain('nativeImageId');
+    expect(text).toContain('runtimeImageId');
+    expect(text).not.toContain('publish-qlever');
+    expect(text).not.toContain('docker push');
+    expect(text).not.toContain('--apply-root-version');
+    const verifyIndex = job.steps.findIndex((step: { name?: string }) => step.name === 'Bind the locally built diagnostic runtime and native input');
+    const liveIndex = job.steps.findIndex((step: { name?: string }) => step.name === 'Run unchanged real live Task acceptance against current source');
+    expect(verifyIndex).toBeGreaterThan(-1);
+    expect(liveIndex).toBeGreaterThan(verifyIndex);
+    expect(jobRunText(workflow, 'task_runtime_diagnostic')).not.toContain('release-acceptance-manifest.cjs');
+  });
+
+  it('projects Task model receipts before owned-container cleanup without uploading raw logs', async () => {
+    const workflow = await loadWorkflow();
+    for (const name of ['deploy_and_accept', 'task_runtime_diagnostic']) {
+      const steps = workflow.jobs[name].steps;
+      const projectIndex = steps.findIndex((step: { name?: string }) => step.name === 'Project safe Task model failure evidence');
+      expect(projectIndex).toBeGreaterThan(-1);
+      const project = steps[projectIndex];
+      expect(project.if).toBe('always()');
+      expect(project.run).toContain('project-task-model-diagnostics.ts');
+      expect(project.run).toContain('docker logs --timestamps "$local_name"');
+      expect(project.run).toContain('trap \'rm -f "$raw_log"\' EXIT');
+      expect(project.run).toContain('"$(cat "$name_file")" = "$local_name"');
+      expect(project.run).toContain('xpod-rc-local-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}');
+      expect(project.run).toContain('xpod-task-diagnostic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}');
+      const cleanupIndex = steps.findIndex((step: { name?: string }) => /Cleanup.*(?:Local Xpod|owned diagnostic container)/u.test(step.name ?? ''));
+      expect(cleanupIndex).toBeGreaterThan(projectIndex);
+      const upload = steps.find((step: { name?: string }) => step.name === 'Upload safe Task model failure evidence');
+      expect(upload.if).toBe('always()');
+      expect(upload.with.path).toBe('${{ runner.temp }}/task-model-diagnostic-safe/');
+      expect(upload.with.name).toContain('task-model-failure-diagnostic-${{ github.sha }}');
+      expect(upload.with.path).not.toContain('private');
+    }
+  });
+
   it('allows measured cold image pulls without extending application health probes', async () => {
     const workflow = await loadWorkflow();
     const deployment = parseDocument(await readFile(
@@ -79,7 +175,12 @@ describe('release candidate workflow', () => {
       'publish_qlever_local_runtime',
     ]);
     for (const [ jobName, job ] of Object.entries(workflow.jobs)) {
-      if (!packageJobs.has(jobName)) {
+      if (jobName === 'task_runtime_diagnostic') {
+        expect((job as { permissions?: Record<string, string> }).permissions, jobName).toEqual({
+          contents: 'read',
+          packages: 'read',
+        });
+      } else if (!packageJobs.has(jobName)) {
         expect((job as any).permissions?.packages, jobName).toBeUndefined();
       }
     }
@@ -370,6 +471,99 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('allow-incomplete --chat');
   });
 
+  it('uploads diagnostic Task evidence on failure without relaxing the actual acceptance gate', async () => {
+    const workflow = await loadWorkflow();
+    const steps = workflow.jobs.deploy_and_accept.steps;
+    const project = steps.find((step: any) => step.name === 'Project safe Task approval evidence');
+    const upload = steps.find((step: any) => step.name === 'Upload safe Task approval evidence');
+    expect(project).toBeDefined();
+    expect(project.if).toBe('always()');
+    expect(upload.if).toBe('always()');
+    expect(upload.uses).toBe('actions/upload-artifact@v4');
+    expect(upload.with).toMatchObject({
+      name: 'task-approval-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
+      path: '${{ runner.temp }}/task-approval-evidence.json',
+      'if-no-files-found': 'warn',
+    });
+    const live = steps.find((step: any) => step.name === 'Live Gateway login and Chat acceptance');
+    expect(live['continue-on-error']).toBeUndefined();
+    expect(live.run).toContain('XPOD_LIVE_TASK_APPROVAL=1');
+    expect(live.run).toContain("['task-approval', 'taskApproval']");
+    expect(live.run).toContain('layer?.ok !== true');
+  });
+
+  async function projectTaskEvidence(contents?: string) {
+    const workflow = await loadWorkflow();
+    const step = workflow.jobs.deploy_and_accept.steps.find((entry: any) => entry.name === 'Project safe Task approval evidence');
+    expect(step).toBeDefined();
+    const script = step.run.match(/node - <<'NODE'\n([\s\S]*?)\nNODE/)[1];
+    const parent = path.join(repoRoot, '.test-data', 'task-evidence-contract');
+    await mkdir(parent, { recursive: true });
+    const directory = await mkdtemp(path.join(parent, 'case-'));
+    try {
+      const input = path.join(directory, '.test-data', 'acceptance');
+      await mkdir(input, { recursive: true });
+      if (contents !== undefined) await writeFile(path.join(input, 'live-gateway-login-chat-local.json'), contents);
+      const output = execFileSync(process.execPath, ['-e', script], {
+        cwd: directory, encoding: 'utf8',
+        env: { ...process.env, RUNNER_TEMP: directory, GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2' },
+      });
+      const evidence = await readFile(path.join(directory, 'task-approval-evidence.json'), 'utf8').catch(() => undefined);
+      return { output, evidence };
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  it('executes the projection with a strict allowlist, retaining all three Task cases but no identifiers or free text', async () => {
+    const secret = 'synthetic-private-value';
+    const result = await projectTaskEvidence(JSON.stringify({
+      webId: secret, gateway: secret, modelIds: [secret], apiKey: secret,
+      taskApproval: {
+        ok: true, failure: secret,
+        cases: ['approved', 'rejected', 'stopped'].map(kind => ({
+          kind, ok: true, queuedAck: true, approvalPending: true, sessionPaused: true,
+          sessionCompleted: true, sameRun: true, stableAfterDuplicateOrStop: true,
+          decision: kind === 'stopped' ? secret : kind,
+          terminalStatus: kind === 'approved' ? 'completed' : 'cancelled',
+          taskId: secret, runId: secret, error: secret, toolArguments: secret,
+          markerMatches: kind === 'approved', markerAbsent: kind !== 'approved', duplicateResume: kind !== 'stopped',
+        })).concat([{ kind: secret, ok: true }] as any),
+        cleanup: { ok: true, tasksPaused: 3, runsStopped: 0, sessionsTerminal: 3, grantRevoked: true, credential: secret },
+      },
+    }));
+    expect(result.evidence).toBeDefined();
+    expect(result.evidence).not.toContain(secret);
+    expect(result.output).not.toContain(secret);
+    const evidence = JSON.parse(result.evidence!);
+    expect(evidence).toMatchObject({ schemaVersion: 1, sourceSha: 'a'.repeat(40), runId: '123', runAttempt: '2', ok: true, failurePresent: true });
+    expect(evidence.cases.map((row: any) => row.kind)).toEqual(['approved', 'rejected', 'stopped']);
+    expect(evidence.cases[0]).toMatchObject({ terminalStatus: 'completed', markerMatches: true, duplicateResume: true });
+    expect(evidence.cases[2]).toMatchObject({ terminalStatus: 'cancelled', markerAbsent: true, stableAfterDuplicateOrStop: true });
+    expect(evidence.cases[2].decision).toBeUndefined();
+    expect(evidence.cleanup).toEqual({ ok: true, tasksPaused: 3, runsStopped: 0, sessionsTerminal: 3, grantRevoked: true });
+  });
+
+  it('omits invalid field types instead of copying arbitrary payloads into evidence', async () => {
+    const result = await projectTaskEvidence(JSON.stringify({ taskApproval: {
+      ok: 'private payload', failure: false,
+      cases: [{ kind: 'approved', ok: false, queuedAck: 'private payload', decision: 'private payload', terminalStatus: 'private payload' }],
+      cleanup: { ok: false, grantRevoked: 'private payload', tasksPaused: -1, runsStopped: 'private payload', sessionsTerminal: 1.5 },
+    } }));
+    expect(result.evidence).not.toContain('private payload');
+    expect(JSON.parse(result.evidence!)).toMatchObject({
+      ok: false, failurePresent: false, cases: [{ kind: 'approved', ok: false }], cleanup: { ok: false },
+    });
+    expect(JSON.parse(result.evidence!).cleanup).toEqual({ ok: false });
+  });
+
+  it.each([undefined, '{private malformed input'])('warns safely when Task evidence is missing or unreadable (%s)', async contents => {
+    const result = await projectTaskEvidence(contents);
+    expect(result.evidence).toBeUndefined();
+    expect(result.output).toContain('::warning::');
+    expect(result.output).not.toContain('private malformed input');
+  });
+
   it('separates service checks from unified promotion evidence and records every blocking delivery check', async () => {
     const workflow = await loadWorkflow();
     const serviceText = jobRunText(workflow, 'deploy_and_accept');
@@ -380,6 +574,18 @@ describe('release candidate workflow', () => {
     const finalUpload = finalize.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
 
     expect(serviceText).not.toContain('release-acceptance-manifest.cjs create');
+    // The desktop job builds the app; it cannot see the service acceptance artifact or the
+    // image digest, so only the job that downloads them may freeze the manifest.
+    expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('release-acceptance-manifest.cjs create');
+    expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('release-acceptance-${{ github.sha }}');
+
+    const desktopUpload = workflow.jobs.build_desktop_rc.steps.find((step: any) =>
+      step.uses === 'actions/upload-artifact@v4' && step.with?.name?.startsWith('xpod-desktop-macos-'));
+    expect(desktopUpload.with.name).toBe('xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}');
+    expect(desktopUpload.with.path).toContain('desktop/release/*.zip');
+    expect(desktopUpload.with.path).toContain('desktop/release/*.dmg');
+    expect(desktopUpload.with['if-no-files-found']).toBe('error');
+
     expect(serviceUpload.with.name).toBe('release-service-acceptance-${{ github.sha }}');
     expect(serviceUpload.with.path).toBe('${{ runner.temp }}/checks.json');
     expect(finalize.needs).toEqual([
@@ -413,6 +619,27 @@ describe('release candidate workflow', () => {
     ]) {
       expect(`${serviceText}\n${finalizeText}`).toContain(check);
     }
+    // qlever-local and package-consumers must be verified from downloaded,
+    // source-bound evidence, never echoed as literals.
+    expect(finalizeText).toContain('scripts/release-gate-evidence.cjs verify-qlever-local');
+    expect(finalizeText).toContain('scripts/release-gate-evidence.cjs verify-package-consumers');
+    expect(finalizeText).toContain('qlever-local-check.json');
+    expect(finalizeText).toContain('package-consumer-check.json');
+    expect(finalizeText).not.toMatch(/['"]qlever-local['"]\s*:\s*['"]passed['"]/);
+    expect(finalizeText).not.toMatch(/['"]package-consumers['"]\s*:\s*['"]passed['"]/);
+    const finalizeArtifacts = finalize.steps
+      .filter((step: any) => step.uses === 'actions/download-artifact@v4')
+      .map((step: any) => step.with.name);
+    expect(finalizeArtifacts).toEqual(expect.arrayContaining([
+      'qlever-local-runtime-darwin-arm64-${{ github.sha }}',
+      'package-consumer-acceptance-${{ github.sha }}',
+    ]));
+    const desktopRunText = jobRunText(workflow, 'build_desktop_rc');
+    expect(desktopRunText).toContain('scripts/release-gate-evidence.cjs create-package-consumers');
+    const packageUpload = workflow.jobs.build_desktop_rc.steps.find((step: any) =>
+      step.uses === 'actions/upload-artifact@v4' && step.with?.name === 'package-consumer-acceptance-${{ github.sha }}');
+    expect(packageUpload.with['if-no-files-found']).toBe('error');
+    expect(packageUpload.with.path).toContain('package-consumer-evidence.json');
     expect(finalizeText).not.toContain('npm');
     expect(finalUpload.with.name).toBe('release-acceptance-${{ github.sha }}');
     expect(finalUpload.with.path).toBe('${{ runner.temp }}/release-acceptance.json');

@@ -1,3 +1,4 @@
+import type { GatewayCredentialHealthRecord } from '../AiGatewayService';
 import {
   createHash,
   createHmac,
@@ -194,6 +195,11 @@ export interface ConnectCredentialRecord {
   priority?: number;
   enabled?: boolean;
   health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error' | 'invalid' | 'unknown';
+  failCount?: number;
+  rateLimitResetAt?: Date;
+  lastFailureCode?: string;
+  lastFailureAt?: Date;
+  lastUsedAt?: Date;
   selectedModels?: AiGatewayModelSummary[];
   metadata?: Record<string, unknown>;
 }
@@ -326,6 +332,55 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     this.aiProviderTemplate = alias(aiProviderResource, 'aiProviderTemplate');
   }
 
+  public async recordSuccess(input: GatewayCredentialHealthRecord): Promise<void> {
+    await this.recordHealth(input, true);
+  }
+
+  public async recordFailure(input: GatewayCredentialHealthRecord): Promise<void> {
+    await this.recordHealth(input, false);
+  }
+
+  private async recordHealth(input: GatewayCredentialHealthRecord, success: boolean): Promise<void> {
+    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
+    const key = JSON.stringify([input.webId, input.credentialId]);
+    const previous = credentialUpdateLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    credentialUpdateLocks.set(key, pending);
+    await previous;
+    try {
+      const row = await db.findById<Record<string, unknown>>(credential, input.credentialId);
+      if (!row) return;
+      const current = recordFromCredentialRow(row);
+      // A late request for an old secret must not invalidate its replacement.
+      if (current.webId !== input.webId || current.credentialIri !== input.credentialIri
+        || current.status !== 'active'
+        || (input.expectedVersion !== undefined && input.expectedVersion !== current.version)) return;
+      const occurredAt = input.occurredAt ?? new Date();
+      if (Math.max(current.lastFailureAt?.getTime() ?? 0, current.lastUsedAt?.getTime() ?? 0) > occurredAt.getTime()) return;
+      const classifications = ['authentication', 'login_expired', 'quota_exhausted', 'authorization', 'rate_limited', 'upstream_unavailable', 'provider_error'];
+      const suppliedCode = input.failureCode ?? 'provider_error';
+      const failureCode = suppliedCode === 'authentication' && current.authMode === 'deviceCodeOAuth'
+        ? 'login_expired' : classifications.includes(suppliedCode) ? suppliedCode : 'provider_error';
+      const authenticationFailed = failureCode === 'authentication' || failureCode === 'login_expired';
+      const health = success ? 'healthy' : authenticationFailed
+        ? current.authMode === 'deviceCodeOAuth' ? 'reauthRequired' : 'invalid'
+        : current.health ?? 'healthy';
+      await db.updateById(credential, input.credentialId, {
+        failCount: success ? 0 : (current.failCount ?? 0) + 1,
+        lastFailureCode: success ? null : failureCode,
+        lastFailureAt: success ? null : occurredAt,
+        rateLimitResetAt: !success && failureCode === 'rate_limited' ? input.rateLimitResetAt ?? null : null,
+        ...(success ? { lastUsedAt: occurredAt, reauthRequired: false } :
+          failureCode === 'login_expired' ? { reauthRequired: true } : {}),
+        metadata: { ...current.metadata, health },
+      });
+    } finally {
+      release();
+      if (credentialUpdateLocks.get(key) === pending) credentialUpdateLocks.delete(key);
+    }
+  }
+
   public async getCredential(input: {
     webId: string;
     provider: string;
@@ -373,6 +428,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     defaultModel?: string;
     health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error' | 'invalid' | 'unknown';
     quota?: { status: 'available' | 'unsupported' | 'exhausted' | 'error' };
+    cooldownUntil?: Date;
     encryptedSecret: EncryptedCredentialSecret;
     version?: number;
     runtimeCredential?: Record<string, unknown>;
@@ -408,7 +464,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
           defaultModel: defaultModelFromMetadata(record.metadata),
           priority: record.priority ?? 100,
           health: record.health ?? (record.reauthRequired ? 'reauthRequired' : 'healthy'),
-          quota: { status: 'available' },
+          quota: { status: record.lastFailureCode === 'quota_exhausted' ? 'exhausted' : 'available' },
+          cooldownUntil: record.rateLimitResetAt,
           encryptedSecret: record.encryptedSecret,
           version: record.version,
           runtimeCredential: runtimeCredentialFromMetadata({ ...record.metadata, offeringId }),
@@ -496,6 +553,12 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       deployment: input.deployment,
       version: currentVersion + 1,
     };
+    if (input.patch.health === 'healthy') {
+      merged.lastFailureCode = undefined;
+      merged.lastFailureAt = undefined;
+      merged.rateLimitResetAt = undefined;
+      merged.failCount = 0;
+    }
     if (merged.status === 'revoked' && input.patch.enabled === undefined) {
       merged.enabled = false;
     }
@@ -2131,6 +2194,10 @@ export interface AiProviderCredentialSummary {
   baseUrl?: string;
   proxyUrl?: string;
   expiresAt?: string;
+  lastFailureCode?: string;
+  lastFailureAt?: string;
+  rateLimitResetAt?: string;
+  failCount?: number;
   version: number;
   quota?: unknown;
 }
@@ -3113,6 +3180,10 @@ function publicPoolCredentialSummary(record: ConnectCredentialRecord): AiProvide
     baseUrl: stringMetadata(metadata, 'baseUrl'),
     proxyUrl: redactProviderProxyUrl(record.proxyUrl ?? stringMetadata(metadata, 'proxyUrl')),
     expiresAt: record.expiresAt?.toISOString(),
+    lastFailureCode: record.lastFailureCode,
+    lastFailureAt: record.lastFailureAt?.toISOString(),
+    rateLimitResetAt: record.rateLimitResetAt?.toISOString(),
+    failCount: record.failCount,
     version: record.version ?? 0,
     quota: metadata.quota ?? metadata.quotaStatus,
   }) as unknown as AiProviderCredentialSummary;
@@ -3454,6 +3525,11 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
     accountLabel: record.accountLabel,
     label: record.accountLabel,
     reauthRequired: record.reauthRequired ?? false,
+    failCount: record.failCount ?? 0,
+    rateLimitResetAt: record.rateLimitResetAt ?? null,
+    lastFailureCode: record.lastFailureCode ?? null,
+    lastFailureAt: record.lastFailureAt ?? null,
+    lastUsedAt: record.lastUsedAt,
     proxyUrl: normalizeProviderProxyUrl(record.proxyUrl ?? stringMetadata(metadata, 'proxyUrl')),
     lastRefreshAt: new Date(),
     metadata,
@@ -3492,6 +3568,11 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
     status,
     accountLabel: stringFrom(row.accountLabel) || stringFrom(row.label) || undefined,
     expiresAt: dateFrom(row.expiresAt),
+    failCount: typeof row.failCount === 'number' ? row.failCount : 0,
+    rateLimitResetAt: dateFrom(row.rateLimitResetAt),
+    lastFailureCode: stringFrom(row.lastFailureCode) || undefined,
+    lastFailureAt: dateFrom(row.lastFailureAt),
+    lastUsedAt: dateFrom(row.lastUsedAt),
     scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : undefined,
     version: versionFromRow(row),
     reauthRequired,

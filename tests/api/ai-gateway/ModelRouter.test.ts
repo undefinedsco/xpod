@@ -425,6 +425,34 @@ describe('ModelRouter', () => {
     });
   });
 
+  it('routes a visible catalog model through the custom credential that explicitly selected it', async () => {
+    const modelRouter = router({
+      credentials: [credential({ id: 'custom_key', provider: 'custom', models: ['deepseek-chat'] })],
+    });
+
+    await expect(modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' })).resolves.toContainEqual(
+      expect.objectContaining({ id: 'deepseek-chat', owned_by: 'custom' }),
+    );
+    await expect(modelRouter.route({ webId: WEB_ID, deployment: 'local', model: 'deepseek-chat' }))
+      .resolves.toMatchObject({
+        provider: { id: 'custom' },
+        credential: { id: 'custom_key' },
+        model: 'deepseek-chat',
+        source: 'exact-model',
+      });
+    await expect(modelRouter.route({ webId: WEB_ID, deployment: 'local', model: 'deepseek/deepseek-chat' }))
+      .rejects.toMatchObject({ code: 'credential_unavailable', details: { provider: 'deepseek' } });
+  });
+
+  it('does not infer a cross-provider route from an unrestricted credential', async () => {
+    const modelRouter = router({
+      credentials: [credential({ id: 'custom_key', provider: 'custom' })],
+    });
+
+    await expect(modelRouter.route({ webId: WEB_ID, deployment: 'local', model: 'deepseek-chat' }))
+      .rejects.toMatchObject({ code: 'credential_unavailable', details: { provider: 'deepseek' } });
+  });
+
   it('rejects explicit provider/model routes when the provider is not registered', async () => {
     const modelRouter = router({
       credentials: [

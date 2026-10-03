@@ -1,0 +1,17 @@
+{
+  "name": "@undefineds.co/xpod-cli",
+  "version": "0.1.0-preview.1",
+  "description": "Standalone Xpod CLI client (auth + agent-fs) for reviewable preview artifacts.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "xpodcli": "./dist/bin/xpodcli"
+  },
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "build:cli-only": "bun scripts/build.ts --cli-only",
+    "verify": "bun scripts/verify-install.ts",
+    "test": "bun test ./tests"
+  }
+}

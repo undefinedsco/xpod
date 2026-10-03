@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { findGatewayIngressPort, getFreePort } from '../../port-finder';
+import { findGatewayIngressPort, getFreePortForWildcard } from '../../port-finder';
 import { registerSocketFetchOrigin } from '../../socket-fetch';
 import { registerSocketHttpOrigin } from '../../socket-http';
 import { prepareSocketPath, removeSocketPath } from '../../socket-utils';
@@ -26,14 +26,28 @@ export class NodeRuntimeHost implements RuntimeHost {
   }
 
   public async allocatePorts(options: RuntimePortAllocationOptions = {}): Promise<RuntimePorts> {
-    const gateway = options.gatewayPort ?? await getFreePort(options.basePort ?? 5600);
-    const css = options.cssPort ?? await getFreePort(gateway + 1);
-    const api = options.apiPort ?? await getFreePort(css + 1);
+    const explicitPorts = [options.gatewayPort, options.cssPort, options.apiPort, options.ingressPort]
+      .filter((port): port is number => port !== undefined);
+    const selected = new Set(explicitPorts);
+    if (selected.size !== explicitPorts.length) {
+      throw new Error('Runtime service ports must be distinct');
+    }
+    // Probes release their sockets, so the OS cannot see ports planned for this runtime.
+    // Reserve both explicit and newly selected ports locally until allocation finishes.
+    // Probe wildcard and loopback addresses in both families before selecting each port.
+    const allocate = async (explicit: number | undefined, base: number): Promise<number> => {
+      const port = explicit ?? await getFreePortForWildcard(base, undefined, selected);
+      selected.add(port);
+      return port;
+    };
+    const gateway = await allocate(options.gatewayPort, options.basePort ?? 5600);
+    const css = await allocate(options.cssPort, gateway + 1);
+    const api = await allocate(options.apiPort, css + 1);
     // Tunnels (and the P2P data plane) terminate here, and this listener never treats a
     // caller as local whatever headers it carries - that is the gate. Its port is the one
     // number the user copies into a provider console, so it is predictable rather than
     // random, and it is what the runtime reports as the tunnel origin.
-    const ingress = options.ingressPort ?? await findGatewayIngressPort(gateway);
+    const ingress = options.ingressPort ?? await findGatewayIngressPort(gateway, selected);
 
     return { gateway, css, api, ingress };
   }

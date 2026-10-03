@@ -521,6 +521,20 @@ export class ModelRouter {
         candidates.some((candidate) =>
           this.credentialMatchesProvider(candidate, match.provider.id)
           && credentialSupportsModel(candidate, match.model.id)));
+      // A compatible endpoint can explicitly offer a catalog model without
+      // belonging to its original provider. Unrestricted credentials alone do
+      // not establish that cross-provider route.
+      if (!candidateMatch) {
+        const declaredCandidate = candidates.find((candidate) =>
+          candidate.models !== undefined && credentialSupportsModel(candidate, model));
+        if (declaredCandidate) {
+          return {
+            providerId: this.routeProviderIdForCredential(declaredCandidate),
+            model,
+            source: 'exact-model',
+          };
+        }
+      }
       const match = candidateMatch ?? registryMatches[0];
       return {
         providerId: normalizeProviderId(match.provider.id),

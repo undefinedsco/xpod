@@ -59,10 +59,9 @@ export async function createHostedPodRouteTransport(
 async function importSolidLocalRouteFetch(): Promise<{
   createSolidLocalRouteFetch: CreateSolidLocalRouteFetch;
 }> {
-  // The API runtime is CommonJS while solid-sdk is intentionally ESM-only. Keep the package
-  // boundary and load the SDK without TypeScript lowering import() to require().
-  const dynamicImport = new Function('specifier', 'return import(specifier)') as (
-    specifier: string,
-  ) => Promise<{ createSolidLocalRouteFetch: CreateSolidLocalRouteFetch }>;
-  return dynamicImport('@undefineds.co/solid-sdk/local-route-fetch');
+  // The public CommonJS entry also lets the single-file bundler include this exact SDK
+  // version. Module resolution and initialization failures must retain their original cause.
+  return require('@undefineds.co/solid-sdk/local-route-fetch') as {
+    createSolidLocalRouteFetch: CreateSolidLocalRouteFetch;
+  };
 }

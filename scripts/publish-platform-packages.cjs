@@ -59,7 +59,7 @@ function parseArgs(argv) {
   return args;
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
   const publishRegistry = readNonEmptyEnv('XPOD_PUBLISH_REGISTRY') || OFFICIAL_NPM_REGISTRY;
   const npmCacheDir = path.join(repoRoot, '.test-data', 'npm-cache');
@@ -70,7 +70,7 @@ function main() {
     : PLATFORM_TARGETS.map((target) => target.id);
 
   for (const target of targets) {
-    const { target: targetMeta, stageDir } = buildPlatformPackage(target);
+    const { target: targetMeta, stageDir } = await buildPlatformPackage(target);
     const publishArgs = [
       'publish',
       stageDir,
@@ -97,9 +97,7 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error) => {
   console.error(error);
   process.exit(1);
-}
+});

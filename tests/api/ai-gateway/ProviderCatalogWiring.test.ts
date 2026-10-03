@@ -1,15 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CUSTOM_DEFAULT_OFFERINGS,
   DEFAULT_PROVIDER_OFFERINGS,
   PROVIDER_OFFERINGS,
+  PROVIDER_LABELS,
 } from '@undefineds.co/ai-connections/provider-catalog';
-import { DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
+import { createDefaultProviderRegistry, DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 
 /**
  * The server projects its product catalog from @undefineds.co/ai-connections, so
- * "the two agree" is true by construction and worth nothing as a test. What can
- * still break silently is the wiring around that projection: a catalog provider
+ * Models discovery metadata must never overwrite the capability catalog's
+ * product content. The wiring must also preserve a catalog provider
  * or offering that never reaches the published products, or a runtime capability
  * override that stops applying because its offering was renamed.
  */
@@ -28,10 +29,62 @@ function publishedOffering(providerId: string, offeringId: string) {
 }
 
 describe('provider catalog wiring', () => {
+  afterEach(() => {
+    vi.doUnmock('@undefineds.co/models');
+    vi.resetModules();
+  });
+
+  it('publishes offering content from the capability catalog without legacy metadata overrides', () => {
+    for (const product of DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS) {
+      for (const source of catalogOfferings(product.id)) {
+        expect(publishedOffering(product.id, source.id)).toMatchObject(source);
+      }
+    }
+  });
+
+  it('ignores stale models product content while keeping the published capability declaration', async () => {
+    vi.doMock('@undefineds.co/models', async () => {
+      const actual = await vi.importActual<typeof import('@undefineds.co/models')>('@undefineds.co/models');
+      return {
+        ...actual,
+        getBuiltinProvider: (slug: string) => {
+          const provider = actual.getBuiltinProvider(slug);
+          return provider && {
+            ...provider,
+            displayName: 'Stale discovery product',
+            offerings: provider.offerings?.map((offering) => ({
+              ...offering,
+              label: 'Stale discovery offering',
+              productLabel: 'Stale discovery label',
+              consoleUrl: 'https://legacy.example/console',
+              subscriptionUrl: 'https://legacy.example/subscription',
+            })),
+          };
+        },
+      };
+    });
+    vi.resetModules();
+    const { createDefaultProviderRegistry } = await import('../../../src/api/ai-gateway/providers/ProviderRegistry');
+    const registry = createDefaultProviderRegistry();
+    const source = catalogOfferings('anthropic').find((offering) => offering.id === 'official-subscription')!;
+
+    expect(registry.requireOffering('anthropic', source.id)).toMatchObject(source);
+    expect(registry.requireProduct('anthropic').label).not.toBe('Stale discovery product');
+  });
+
   it('publishes every catalog provider', () => {
-    const expected = [ ...Object.keys(PROVIDER_OFFERINGS), 'custom' ].sort();
+    const expected = Object.keys(PROVIDER_LABELS).sort();
     const published = DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS.map((product) => product.id).sort();
     expect(published).toEqual(expected);
+    for (const product of DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS) {
+      expect(product.label).toBe(PROVIDER_LABELS[product.id as keyof typeof PROVIDER_LABELS]);
+    }
+  });
+
+  it('uses capability catalog labels for default runtime provider descriptors', () => {
+    for (const provider of createDefaultProviderRegistry().listProviders()) {
+      expect(provider.label).toBe(PROVIDER_LABELS[provider.id as keyof typeof PROVIDER_LABELS]);
+    }
   });
 
   it('publishes every catalog offering of every provider', () => {

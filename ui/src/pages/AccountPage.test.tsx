@@ -8,6 +8,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import { xpodFirstPodErrors } from '../auth/xpod-account-copy';
 import { AccountPage } from './AccountPage';
+import { webIdShortName } from '@undefineds.co/shared-ui';
+import { peekConsentContinuation, saveConsentContinuation } from '../utils/safe-continuation';
 
 function authValue(overrides: Partial<AuthContextType> = {}): AuthContextType {
   const authenticated = { status: 'authenticated' } as const;
@@ -41,7 +43,7 @@ describe('AccountPage', () => {
     vi.stubGlobal('fetch', fetchMock);
     render(<AuthContext.Provider value={authValue({ controls: { account: {
       bindings: '/.account/account/bindings/',
-    } } })}><MemoryRouter><AccountPage /></MemoryRouter></AuthContext.Provider>);
+    } } })}><MemoryRouter><AccountPage locale="en" /></MemoryRouter></AuthContext.Provider>);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`${origin}/.account/account/bindings/`, expect.anything()));
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/provision/'))).toBe(false);
   });
@@ -61,7 +63,7 @@ describe('AccountPage', () => {
     render(
       <AuthContext.Provider value={authValue()}>
         <MemoryRouter>
-          <AccountPage />
+          <AccountPage locale="en" />
         </MemoryRouter>
       </AuthContext.Provider>,
     );
@@ -91,7 +93,7 @@ describe('AccountPage', () => {
         },
       })}>
         <MemoryRouter>
-          <AccountPage />
+          <AccountPage locale="en" />
         </MemoryRouter>
       </AuthContext.Provider>,
     );
@@ -148,7 +150,7 @@ describe('AccountPage', () => {
         },
       })}>
         <MemoryRouter>
-          <AccountPage />
+          <AccountPage locale="en" />
         </MemoryRouter>
       </AuthContext.Provider>,
     );
@@ -196,14 +198,16 @@ describe('AccountPage', () => {
         },
       })}>
         <MemoryRouter>
-          <AccountPage />
+          <AccountPage locale="en" />
         </MemoryRouter>
       </AuthContext.Provider>,
     );
 
-    await waitFor(() => expect(screen.getByRole('link', {
-      name: 'https://id.example/alice/profile/card#me',
-    })).toBeTruthy());
+    await waitFor(() => {
+      const link = screen.getByRole('link', { name: webIdShortName('https://id.example/alice/profile/card#me') });
+      expect(link.getAttribute('href')).toBe('https://id.example/alice/profile/card#me');
+      expect(screen.getByText('https://id.example/alice/profile/card#me')).toBeTruthy();
+    });
     expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
       `${cloudAccountIndex}account/account-1/web-id/`,
       `${cloudAccountIndex}account/account-1/pod/`,
@@ -264,12 +268,14 @@ describe('AccountPage', () => {
         },
       })}>
         <MemoryRouter>
-          <AccountPage />
+          <AccountPage locale="en" />
         </MemoryRouter>
       </AuthContext.Provider>,
     );
 
-    expect(await screen.findByRole('link', { name: webId })).toBeTruthy();
+    const webIdLink = await screen.findByRole('link', { name: webIdShortName(webId) });
+    expect(webIdLink.getAttribute('href')).toBe(webId);
+    expect(screen.getByText(webId)).toBeTruthy();
     expect(screen.getByRole('link', { name: storageUrl })).toBeTruthy();
     expect(screen.queryByText('No Pods found. Create one to get started.')).toBeNull();
     expect(screen.queryByRole('button', { name: /delete pod/i })).toBeNull();
@@ -318,13 +324,13 @@ describe('AccountPage', () => {
         },
       })}>
         <MemoryRouter>
-          <AccountPage />
+          <AccountPage locale="en" />
         </MemoryRouter>
       </AuthContext.Provider>,
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: 'https://id.undefineds.co/gcloud/profile/card#me' })).toBeTruthy();
+      expect(screen.getByRole('link', { name: webIdShortName('https://id.undefineds.co/gcloud/profile/card#me') })).toBeTruthy();
     });
     expect(screen.getByText('This device has no Pod yet. Create one to store data here.')).toBeTruthy();
     expect(screen.queryByText(/正在同步/)).toBeNull();
@@ -375,12 +381,12 @@ describe('AccountPage', () => {
         },
       })}>
         <MemoryRouter>
-          <AccountPage />
+          <AccountPage locale="en" />
         </MemoryRouter>
       </AuthContext.Provider>,
     );
 
-    expect(await screen.findByRole('link', { name: webId })).toBeTruthy();
+    expect(await screen.findByRole('link', { name: webIdShortName(webId) })).toBeTruthy();
     expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.cloudRouteUnavailable);
     expect(screen.getByText('This device has no Pod yet. Create one to store data here.')).toBeTruthy();
     expect(alertMock).not.toHaveBeenCalled();
@@ -422,12 +428,12 @@ describe('AccountPage', () => {
         },
       })}>
         <MemoryRouter>
-          <AccountPage />
+          <AccountPage locale="en" />
         </MemoryRouter>
       </AuthContext.Provider>,
     );
 
-    await screen.findByRole('link', { name: webId });
+    await screen.findByRole('link', { name: webIdShortName(webId) });
     fireEvent.click(screen.getByRole('button', { name: /new credential/i }));
     fireEvent.change(screen.getByPlaceholderText('my-solid-client'), { target: { value: 'Workbench' } });
     fireEvent.click(screen.getByRole('button', { name: /^create$/i }));
@@ -462,7 +468,7 @@ describe('AccountPage', () => {
         },
       })}>
         <MemoryRouter>
-          <AccountPage />
+          <AccountPage locale="en" />
         </MemoryRouter>
       </AuthContext.Provider>,
     );
@@ -496,5 +502,344 @@ describe('AccountPage', () => {
     expect(source).not.toContain('New API Key Created');
     expect(source).not.toContain('/chat/completions · /responses · /models');
     expect(source).not.toContain('Authorization: Bearer sk-xxx');
+  });
+
+  test('默认 zh-CN；日常管理入口只存 Account 续接并进入重管理页', async () => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    const browserWindow = window;
+    // The URL even looks like a consent route, but the provider reports no
+    // pending authorization: daily management must not fabricate a task.
+    const navigation = { href: browserWindow.location.href, origin: browserWindow.location.origin, pathname: '/.account/interaction/flow-nine/oidc/consent/' };
+    const facade = Object.create(browserWindow);
+    Object.defineProperty(facade, 'location', { value: navigation });
+    vi.stubGlobal('window', facade);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({}), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    })));
+
+    render(
+      <AuthContext.Provider value={authValue({ controls: { account: {
+        pod: '/.account/account/alice/pod/',
+        logout: '/.account/account/alice/logout/',
+      } } })}>
+        <MemoryRouter><AccountPage /></MemoryRouter>
+      </AuthContext.Provider>,
+    );
+
+    // 没有显式 locale 时默认中文。
+    expect(await screen.findByText('账号总览')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: '管理 Pod' }));
+    expect(navigation.href).toBe('/.account/interaction/flow-nine/manage-pod/');
+    const record = JSON.parse(window.sessionStorage.getItem('xpod.safe-continuation.management.v2') ?? 'null');
+    expect(record?.accountId).toBe('alice');
+    expect(record?.returnTo).toBe('/.account/interaction/flow-nine/account/');
+    expect(record?.kind).toBe('management');
+    expect(window.sessionStorage.getItem('xpod.safe-continuation.consent.v2')).toBeNull();
+  });
+
+  test('从授权上下文进入管理时写入 consent 续接，保留原 interaction 与回程', async () => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    const browserWindow = window;
+    const interactionPath = '/.account/interaction/flow-nine/oidc/consent/';
+    const navigation = { href: `${browserWindow.location.origin}${interactionPath}`, origin: browserWindow.location.origin, pathname: interactionPath };
+    const facade = Object.create(browserWindow);
+    Object.defineProperty(facade, 'location', { value: navigation });
+    vi.stubGlobal('window', facade);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({}), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    })));
+
+    render(
+      <AuthContext.Provider value={authValue({ hasOidcPending: true, controls: { account: {
+        pod: '/.account/account/alice/pod/',
+        logout: '/.account/account/alice/logout/',
+      } } })}>
+        <MemoryRouter><AccountPage /></MemoryRouter>
+      </AuthContext.Provider>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '管理 Pod' }));
+    const record = JSON.parse(window.sessionStorage.getItem('xpod.safe-continuation.consent.v2') ?? 'null');
+    expect(record?.accountId).toBe('alice');
+    expect(record?.interaction).toBe('/.account/interaction/flow-nine');
+    expect(record?.returnTo).toBe('/.account/interaction/flow-nine/oidc/consent/');
+  });
+  /**
+   * A Pod has two authority sources: the bindings listing (WebID ↔ storage URL)
+   * and the Pod inventory (storage URL → its management address). The inventory
+   * is the only source of the advertised delete address, so the two must be
+   * merged onto one row; dropping the duplicate silently removed management.
+   */
+  test('merges the Pod inventory management address onto the binding row and deletes it by that address', async () => {
+    const origin = window.location.origin;
+    const webId = `${origin}/alice/profile/card#me`;
+    const storageUrl = `${origin}/alice/`;
+    const podResource = `${origin}/.account/account/alice/pod/alice/`;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/bindings/')) {
+        return new Response(JSON.stringify({ bindings: [{ webId, storageUrl }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/pod/') && init?.method !== 'DELETE') {
+        return new Response(JSON.stringify({ pods: { [storageUrl]: podResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === podResource && init?.method === 'DELETE') {
+        return new Response(null, { status: 204 });
+      }
+      return new Response(JSON.stringify({ clientCredentials: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(
+      <AuthContext.Provider value={authValue({ controls: { account: {
+        bindings: '/.account/account/alice/bindings/',
+        pod: '/.account/account/alice/pod/',
+      } } })}>
+        <MemoryRouter><AccountPage locale="zh-CN" /></MemoryRouter>
+      </AuthContext.Provider>,
+    );
+
+    const webIdLink = await screen.findByRole('link', { name: webIdShortName(webId) });
+    expect(webIdLink.getAttribute('href')).toBe(webId);
+    // The advertised management address, not the storage URL, drives the removal.
+    const deleteButton = await screen.findByRole('button', { name: new RegExp(`删除 Pod ${webIdShortName(webId)}`) });
+    fireEvent.click(deleteButton);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input) === podResource && init?.method === 'DELETE')).toBe(true));
+    // The storage URL itself must never be used as the management address.
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input) === storageUrl && init?.method === 'DELETE')).toBe(false);
+    confirmSpy.mockRestore();
+  });
+
+  test('keeps the Pod when the user cancels the confirmation', async () => {
+    const origin = window.location.origin;
+    const webId = `${origin}/alice/profile/card#me`;
+    const storageUrl = `${origin}/alice/`;
+    const podResource = `${origin}/.account/account/alice/pod/alice/`;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/bindings/')) {
+        return new Response(JSON.stringify({ bindings: [{ webId, storageUrl }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/pod/') && init?.method !== 'DELETE') {
+        return new Response(JSON.stringify({ pods: { [storageUrl]: podResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ clientCredentials: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    render(
+      <AuthContext.Provider value={authValue({ controls: { account: {
+        bindings: '/.account/account/alice/bindings/',
+        pod: '/.account/account/alice/pod/',
+      } } })}>
+        <MemoryRouter><AccountPage locale="zh-CN" /></MemoryRouter>
+      </AuthContext.Provider>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: new RegExp(`删除 Pod ${webIdShortName(webId)}`) }));
+    await act(async () => { await Promise.resolve(); });
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+    confirmSpy.mockRestore();
+  });
+
+  test('a Pod without an advertised management address offers no removal action', async () => {
+    const origin = window.location.origin;
+    const webId = `${origin}/alice/profile/card#me`;
+    const storageUrl = `${origin}/alice/`;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/bindings/')) {
+        return new Response(JSON.stringify({ bindings: [{ webId, storageUrl }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ clientCredentials: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }));
+
+    render(
+      <AuthContext.Provider value={authValue({ controls: { account: {
+        bindings: '/.account/account/alice/bindings/',
+        pod: '/.account/account/alice/pod/',
+      } } })}>
+        <MemoryRouter><AccountPage locale="zh-CN" /></MemoryRouter>
+      </AuthContext.Provider>,
+    );
+
+    await screen.findByRole('link', { name: webIdShortName(webId) });
+    expect(screen.queryByRole('button', { name: /删除 Pod/ })).toBeNull();
+  });
+
+  test('keeps a real Pod visible when it cannot be linked to any WebID', async () => {
+    const origin = window.location.origin;
+    const webId = `${origin}/alice/profile/card#me`;
+    const storageUrl = `${origin}/alice/`;
+    const orphanStorage = `${origin}/backup/`;
+    const orphanResource = `${origin}/.account/account/alice/pod/backup/`;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/bindings/')) {
+        return new Response(JSON.stringify({ bindings: [{ webId, storageUrl }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/pod/') && init?.method !== 'DELETE') {
+        return new Response(JSON.stringify({ pods: { [storageUrl]: `${origin}/.account/account/alice/pod/alice/`, [orphanStorage]: orphanResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ clientCredentials: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }));
+
+    render(
+      <AuthContext.Provider value={authValue({ controls: { account: {
+        bindings: '/.account/account/alice/bindings/',
+        pod: '/.account/account/alice/pod/',
+      } } })}>
+        <MemoryRouter><AccountPage locale="zh-CN" /></MemoryRouter>
+      </AuthContext.Provider>,
+    );
+
+    // The unlinked Pod is shown as its own storage row, not silently dropped and
+    // not dressed up as a WebID identity.
+    const orphanLink = await screen.findByRole('link', { name: /backup/ });
+    expect(orphanLink.getAttribute('href')).toBe(orphanStorage);
+    expect(screen.getByRole('button', { name: /删除 Pod backup/ })).toBeTruthy();
+  });
+
+  test('daily management drops a leftover consent task so the heavy page cannot resume it', async () => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    const browserWindow = window;
+    const navigation = { href: browserWindow.location.href, origin: browserWindow.location.origin, pathname: '/.account/account/' };
+    const facade = Object.create(browserWindow);
+    Object.defineProperty(facade, 'location', { value: navigation });
+    vi.stubGlobal('window', facade);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({}), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    })));
+
+    // A still-valid consent task queued earlier for this same Account.
+    saveConsentContinuation({
+      accountId: 'alice',
+      interaction: '/.account/interaction/flow-nine',
+      returnTo: '/.account/interaction/flow-nine/oidc/consent/',
+    });
+    expect(peekConsentContinuation({ accountId: 'alice' })).not.toBeNull();
+
+    render(
+      <AuthContext.Provider value={authValue({ hasOidcPending: false, controls: { account: {
+        pod: '/.account/account/alice/pod/',
+        logout: '/.account/account/alice/logout/',
+      } } })}>
+        <MemoryRouter><AccountPage locale="zh-CN" /></MemoryRouter>
+      </AuthContext.Provider>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '管理 Pod' }));
+    // The explicit daily intent is the only source of navigation.
+    expect(peekConsentContinuation({ accountId: 'alice' })).toBeNull();
+    const record = JSON.parse(window.sessionStorage.getItem('xpod.safe-continuation.management.v2') ?? 'null');
+    expect(record?.kind).toBe('management');
+    expect(record?.accountId).toBe('alice');
+  });
+
+  /**
+   * The local provision scope filters *which* storage may show; it must not drop
+   * the management address the account inventory already advertised for the very
+   * same storage URL. Otherwise the local branch loses the only delete address.
+   */
+  test('local provision scope keeps the advertised Pod management address', async () => {
+    window.sessionStorage.clear();
+    const origin = window.location.origin;
+    const webId = `${origin}/alice/profile/card#me`;
+    const storageUrl = `${origin}/alice/`;
+    const podResource = `${origin}/.account/account/alice/pod/alice/`;
+    const outsideStorage = 'https://other.example/backup/';
+    const outsideResource = `${origin}/.account/account/alice/pod/backup/`;
+    const provisionCode = `${btoa(JSON.stringify({ spUrl: `${origin}/`, serviceToken: 'local-service-token', exp: Math.floor(Date.now() / 1000) + 3600 }))}.signature`;
+    window.sessionStorage.setItem('provisionCode', provisionCode);
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/provision/webids')) {
+        return new Response(JSON.stringify({ entries: [{ webId, storageUrl, storageMode: 'local' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/bindings/')) {
+        return new Response(JSON.stringify({ bindings: [{ webId, storageUrl }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/pod/') && init?.method !== 'DELETE') {
+        return new Response(JSON.stringify({ pods: { [storageUrl]: podResource, [outsideStorage]: outsideResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === podResource && init?.method === 'DELETE') {
+        return new Response(null, { status: 204 });
+      }
+      return new Response(JSON.stringify({ clientCredentials: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    render(
+      <AuthContext.Provider value={authValue({ controls: { account: {
+        bindings: '/.account/account/alice/bindings/',
+        pod: '/.account/account/alice/pod/',
+        webId: '/.account/account/alice/web-id/',
+      } } })}>
+        <MemoryRouter><AccountPage locale="zh-CN" /></MemoryRouter>
+      </AuthContext.Provider>,
+    );
+
+    await screen.findByRole('link', { name: webIdShortName(webId) });
+    // The scoped branch must still show the inventory's advertised action.
+    const deleteButton = await screen.findByRole('button', { name: new RegExp(`删除 Pod ${webIdShortName(webId)}`) });
+    // Storage outside the local scope is filtered out, even though the inventory listed it.
+    expect(screen.queryByRole('link', { name: /other\.example/ })).toBeNull();
+
+    // Cancelling the confirmation must not delete anything.
+    fireEvent.click(deleteButton);
+    await act(async () => { await Promise.resolve(); });
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(deleteButton);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input) === podResource && init?.method === 'DELETE')).toBe(true));
+    // Never the storage URL, never the out-of-scope inventory address.
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input) === storageUrl && init?.method === 'DELETE')).toBe(false);
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input) === outsideResource && init?.method === 'DELETE')).toBe(false);
+    confirmSpy.mockRestore();
+  });
+
+  test('local provision scope shows a Pod with no advertised address but offers no removal', async () => {
+    window.sessionStorage.clear();
+    const origin = window.location.origin;
+    const webId = `${origin}/alice/profile/card#me`;
+    const storageUrl = `${origin}/alice/`;
+    const provisionCode = `${btoa(JSON.stringify({ spUrl: `${origin}/`, serviceToken: 'local-service-token', exp: Math.floor(Date.now() / 1000) + 3600 }))}.signature`;
+    window.sessionStorage.setItem('provisionCode', provisionCode);
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/provision/webids')) {
+        return new Response(JSON.stringify({ entries: [{ webId, storageUrl, storageMode: 'local' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/bindings/')) {
+        return new Response(JSON.stringify({ bindings: [{ webId, storageUrl }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/pod/') && init?.method !== 'DELETE') {
+        return new Response(JSON.stringify({ pods: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ clientCredentials: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <AuthContext.Provider value={authValue({ controls: { account: {
+        bindings: '/.account/account/alice/bindings/',
+        pod: '/.account/account/alice/pod/',
+        webId: '/.account/account/alice/web-id/',
+      } } })}>
+        <MemoryRouter><AccountPage locale="zh-CN" /></MemoryRouter>
+      </AuthContext.Provider>,
+    );
+
+    expect(await screen.findByRole('link', { name: new RegExp(storageUrl) })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /删除 Pod/ })).toBeNull();
   });
 });

@@ -40,11 +40,24 @@ jobs:
       - name: Type check tests
         run: bun run typecheck:test
 
+      - name: Type check standalone Xpod CLI
+        run: bun x tsc --noEmit -p packages/xpod-cli/tsconfig.json
+
+      - name: Standalone Xpod CLI tests
+        run: bun run --filter '@undefineds.co/xpod-cli' test
+
       - name: Build Components artifacts
         run: bun run build:components
 
       - name: Build UI artifacts
         run: bun run build:ui
+
+      # Differential CLI tests require the real native ripgrep binary.
+      - name: Install native ripgrep for the differential CLI suites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ripgrep
+          rg --version
 
       - name: Unit tests
         run: bun run test:run

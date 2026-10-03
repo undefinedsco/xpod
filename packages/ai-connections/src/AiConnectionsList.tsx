@@ -1,5 +1,5 @@
-import { useContext, useRef, useState, type KeyboardEvent, type MutableRefObject, type ReactNode } from 'react'
-import { Avatar, AvatarFallback, AvatarImage, cn } from '@undefineds.co/shared-ui'
+import { useContext, useRef, type KeyboardEvent, type MutableRefObject, type ReactNode } from 'react'
+import { Avatar, AvatarFallback, AvatarImage, InlineNotice, StatusDot, cn } from '@undefineds.co/shared-ui'
 import { WorkspaceLayoutContext } from '@undefineds.co/extension-sdk/react'
 import { XPOD_AVATAR, getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type { AiConnectionsController, AiProviderDefinition } from './controller'
@@ -38,17 +38,7 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
   const providers = searchQuery
     ? providerItems.filter((provider) => providerDisplayName(provider, providerProducts).toLocaleLowerCase().includes(searchQuery))
     : providerItems
-  // §7.3：已有配置时先呈现已连接对象，全量 Provider 目录只在"添加连接"时出现；
-  // 什么都没配置时，目录本身就是连接任务的入口，直接出现。
-  const [adding, setAdding] = useState(false)
-  const configured = (provider: ProviderListItem): boolean => {
-    const state = providerStates[provider.id]
-    return state === 'configured' || state === 'connected'
-  }
-  const configuredProviders = providers.filter(configured)
-  const catalogProviders = providers.filter((provider) => !configured(provider))
-  const showCatalog = adding || configuredProviders.length === 0
-  const shownProviders = showCatalog ? providers : configuredProviders
+  const shownProviders = providers
   const items: WorkspaceListItem[] = [
     ...AI_CONNECTIONS_PINNED_SECTIONS.map((section) => ({ kind: 'section' as const, id: section.id, label: section.label })),
     ...shownProviders.map((provider) => ({ kind: 'provider' as const, provider })),
@@ -67,7 +57,7 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
 
   return (
     <div role="listbox" aria-label="AI 服务" aria-orientation="vertical" className="py-2">
-      <section className="mb-3" aria-label="API Keys">
+      <section className="mb-3" aria-label="Xpod 密钥">
         {items.filter((item) => item.kind === 'section').map((item) => {
           const index = items.indexOf(item)
           return (
@@ -92,19 +82,8 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
       <section data-testid="ai-provider-section">
         <div className="flex items-center justify-between gap-2 px-5 py-1">
           <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {configuredProviders.length > 0 && !showCatalog ? '已连接' : 'Provider'}
+            服务商
           </h2>
-          {configuredProviders.length > 0 ? (
-            <button
-              type="button"
-              data-testid="ai-add-connection"
-              className="text-[11px] text-primary underline-offset-4 hover:underline"
-              aria-expanded={showCatalog}
-              onClick={() => setAdding((value) => !value)}
-            >
-              {showCatalog ? '收起目录' : '添加连接'}
-            </button>
-          ) : null}
         </div>
         {shownProviders.map((provider) => {
           const index = items.findIndex((item) => item.kind === 'provider'
@@ -145,7 +124,11 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
         ) : null}
       </section>
       {providerLoadError ? (
-        <p className="px-4 py-2 text-xs text-destructive">Provider 状态读取失败：{providerLoadError}</p>
+        <div className="px-4 py-2">
+          <InlineNotice tone="destructive" role="alert" className="text-xs">
+            连接状态读取失败：{providerLoadError}
+          </InlineNotice>
+        </div>
       ) : null}
     </div>
   )
@@ -251,7 +234,7 @@ function ProviderStateIndicator({
   const active = state === 'configured' || state === 'connected'
   return (
     <span id={statusId} role="status" aria-live="polite" className="flex shrink-0 items-center gap-1.5">
-      {active ? <span className="h-2 w-2 rounded-full bg-primary" aria-hidden="true" /> : null}
+      {active ? <StatusDot tone="info" /> : null}
       <span className="text-[11px] font-normal text-muted-foreground">{providerStateLabel(state)}</span>
     </span>
   )

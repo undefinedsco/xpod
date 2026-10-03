@@ -57,15 +57,15 @@ describe('settings navigation metadata', () => {
 });
 
 describe('XpodSettingsLayout', () => {
-  test('renders the 184px text rail without a global settings header', () => {
+  test('renders the icon rail without a global settings header', () => {
     const html = renderLayout('/models');
 
     expect(html).toContain('data-app-layout="workspace"');
-    // 顶层只剩四个任务入口（spec §3.1）
-    expect(html).toContain('aria-label="概览"');
-    expect(html).toContain('aria-label="存储空间"');
-    expect(html).toContain('aria-label="AI"');
-    expect(html).toContain('aria-label="服务与访问"');
+    // Applet entries precede local device and settings controls.
+    expect(html).toContain('aria-label="任务"');
+    expect(html).toContain('aria-label="Pod"');
+    expect(html).toContain('aria-label="AI 连接"');
+    expect(html).toContain('aria-label="这台设备"');
     expect(html).not.toContain('aria-label="Status"');
     expect(html).not.toContain('aria-label="Network"');
     expect(html).not.toContain('aria-label="Search settings"');
@@ -78,7 +78,7 @@ describe('XpodSettingsLayout', () => {
   test('marks the active navigation link for assistive technology', () => {
     const html = renderLayout('/settings/pod');
 
-    expect(html).toContain('href="/settings/pod"');
+    expect(html).toContain('href="/pod/models"');
     expect(html).toContain('aria-current="page"');
     expect(html).toContain('Services workspace');
   });

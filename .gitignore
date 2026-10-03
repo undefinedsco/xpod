@@ -31,7 +31,6 @@ dist/
 coverage/
 data/
 data.bak.*/
-static/app/assets/
 desktop/dist/
 desktop/release/
 desktop/runtime/

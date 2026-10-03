@@ -24,7 +24,7 @@ import {
   SecretCellVault,
 } from '../../security/secret-cell';
 import { SecretCellCredentialVault } from '../ai-gateway/credentials/SecretCellCredentialVault';
-import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
+import { resolvePersistentSecretCellRootKey, secretPathForSecretCellDatabase } from '../../runtime/secret-cell-root-key';
 
 export type { ApiContainerCradle, ApiContainerConfig } from './types';
 
@@ -70,6 +70,17 @@ function resolveEdition(value: string | undefined): 'cloud' | 'local' {
  * 创建 API 容器
  */
 export function createApiContainer(config: ApiContainerConfig): AwilixContainer<ApiContainerCradle> {
+  // The runtime finalizes databaseUrl after reading ENV. Install the local source
+  // here, and touch its file only when an encrypted-secret consumer needs it.
+  if (!config.secretCellVaultFactory && config.edition === 'local' && secretPathForSecretCellDatabase(config.databaseUrl)) {
+    const { databaseUrl, edition } = config;
+    const factories = secretCellVaultFactories(() => resolvePersistentSecretCellRootKey({ databaseUrl, edition }));
+    config = {
+      ...config,
+      ...factories,
+      secretCellCredentialVaultFactory: config.secretCellCredentialVaultFactory ?? factories.secretCellCredentialVaultFactory,
+    };
+  }
   const container = createContainer<ApiContainerCradle>({
     injectionMode: InjectionMode.PROXY,
     strict: true,
@@ -154,7 +165,6 @@ export function loadConfigFromEnv(): ApiContainerConfig {
       credentialConfigured: true,
     }
     : undefined;
-  const secretCellCredentialVaultFactory = loadSecretCellCredentialVaultFactory(process.env);
   const deploymentRootKeys = loadDeploymentRootKeyProvider(process.env);
   const openAiGatewayBaseUrl = normalizeOptionalBaseUrl(process.env.XPOD_AI_GATEWAY_OPENAI_BASE_URL);
   const aiClientConfiguration = edition === 'local'
@@ -175,6 +185,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),
     solidBaseUrl,
+    solidRootFilePath: path.resolve(rootDir),
     aiConnectionInvocationSecret: process.env.XPOD_AI_CONNECTION_INVOCATION_SECRET,
     aiConnectionInvocationKeyId: process.env.XPOD_AI_CONNECTION_INVOCATION_KEY_ID,
     aiConnectionPreviousInvocationSecrets: parsePreviousInvocationSecrets(process.env.XPOD_AI_CONNECTION_PREVIOUS_INVOCATION_SECRETS),
@@ -183,8 +194,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     gatewayPreviousLocatorSecrets: parsePreviousInvocationSecrets(process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS),
     aiGatewaySessionAffinitySecret: process.env.XPOD_AI_GATEWAY_SESSION_AFFINITY_SECRET,
     gatewayAdminProxyAuthSecret: process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET,
-    secretCellCredentialVaultFactory,
-    secretCellVaultFactory: deploymentRootKeys ? () => new SecretCellVault({ rootKeys: deploymentRootKeys }) : undefined,
+    ...(deploymentRootKeys ? secretCellVaultFactories(() => deploymentRootKeys) : {}),
     taskDatabaseUrl: process.env.CSS_TASK_DB_URL,
     aiGatewayConnectSigningSecret: process.env.XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET,
     aiGatewayKimiOAuthIntegrationId: process.env.XPOD_AI_GATEWAY_KIMI_OAUTH_INTEGRATION_ID,
@@ -277,9 +287,14 @@ function nonEmptyEnv(value: string | undefined): string | undefined {
   return trimmed || undefined;
 }
 
-function loadSecretCellCredentialVaultFactory(env: NodeJS.ProcessEnv): (() => CredentialVault) | undefined {
-  const rootKeys = loadDeploymentRootKeyProvider(env);
-  return rootKeys ? () => new SecretCellCredentialVault({ vault: new SecretCellVault({ rootKeys }) }) : undefined;
+function secretCellVaultFactories(rootKeys: () => DeploymentRootKeyProvider): Required<Pick<ApiContainerConfig, 'secretCellVaultFactory' | 'secretCellCredentialVaultFactory'>> {
+  let vault: SecretCellVault | undefined;
+  let credentialVault: SecretCellCredentialVault | undefined;
+  const secretCellVaultFactory = () => vault ??= new SecretCellVault({ rootKeys: rootKeys() });
+  return {
+    secretCellVaultFactory,
+    secretCellCredentialVaultFactory: () => credentialVault ??= new SecretCellCredentialVault({ vault: secretCellVaultFactory() }),
+  };
 }
 
 /**

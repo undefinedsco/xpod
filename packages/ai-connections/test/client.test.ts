@@ -4,6 +4,8 @@ import {
   AiConnectionsRequestError,
   normalizeProxyUrl,
   resolveAiConnectionsApiBase,
+  PLATFORM_MODEL_ROLES,
+  matchesPlatformModelRole,
 } from '../src/contract/ai-connections-client'
 // The wording lives with the applet now; the client hands over a code.
 import {
@@ -21,6 +23,74 @@ const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_BASE = 'https://pod.example/alice/'
 
 describe('AI Connection management client', () => {
+  it('publishes the Gateway smart and fast wire roles once', () => {
+    expect(PLATFORM_MODEL_ROLES).toEqual({
+      smart: { id: 'linx' }, fast: { id: 'linx-lite' },
+    })
+  })
+
+  it.each([
+    ['linx', 'smart', true], ['LINX', 'smart', true], ['undefineds/linx', 'smart', true],
+    ['UNDEFINEDS/LINX-LITE', 'fast', true], ['linx-lite', 'fast', true],
+    ['other/linx', 'smart', false], ['org/linx-lite', 'fast', false], ['linx-lite', 'smart', false],
+  ] as const)('matches only the published namespace for %s as %s', (id, role, expected) => {
+    expect(matchesPlatformModelRole(id, role)).toBe(expected)
+  })
+
+  it('reads the complete Gateway catalog without weakening attributable model lists', async () => {
+    const authenticatedFetch = vi.fn(async () => jsonResponse({ data: [
+      { id: 'linx', owned_by: 'undefineds', name: 'Gateway smart', apiKey: 'must-not-escape' },
+      { id: 'linx-lite', provider: 'undefineds', display_name: 'Gateway fast' },
+      { id: 'private-model', providerId: 'external-provider', displayName: 'Private' },
+      { id: 'deepseek-v4-pro', owned_by: 'deepseek' },
+      { id: 'unattributed-model' },
+      { id: '' }, { id: 12 }, null,
+    ] }))
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE, authenticatedFetch })
+    await expect(client.listGatewayCatalogModels!()).resolves.toEqual([
+      { id: 'linx', provider: 'undefineds', displayName: 'Gateway smart' },
+      { id: 'linx-lite', provider: 'undefineds', displayName: 'Gateway fast' },
+      { id: 'private-model', provider: 'external-provider', displayName: 'Private' },
+      { id: 'deepseek-v4-pro', provider: 'deepseek' },
+      { id: 'unattributed-model' },
+    ])
+    expect(authenticatedFetch).toHaveBeenCalledWith('https://pod.example/v1/models', expect.objectContaining({
+      method: 'GET', credentials: 'omit', mode: 'cors', headers: { accept: 'application/json' },
+    }))
+    await expect(client.listModels()).resolves.toEqual([{ id: 'deepseek-v4-pro', provider: 'deepseek' }])
+    await expect(client.listGatewayModels!()).resolves.toEqual([{ id: 'deepseek-v4-pro', provider: 'deepseek' }])
+  })
+
+  it('keeps an HTTP 200 empty Gateway catalog distinct from a read failure', async () => {
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => jsonResponse({ data: [] })),
+    })
+    await expect(client.listGatewayCatalogModels!()).resolves.toEqual([])
+  })
+
+  it.each([{}, { data: null }, { data: 'invalid' }])('rejects a malformed HTTP 200 Gateway catalog', async payload => {
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => jsonResponse(payload)),
+    })
+    await expect(client.listGatewayCatalogModels!()).rejects.toThrow('invalid Gateway model catalog response')
+  })
+
+  it.each([401, 403, 502])('preserves HTTP %s from the Gateway catalog read', async status => {
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => jsonResponse({ error: 'gateway_request_failed', secret: 'must-not-escape' }, status)),
+    })
+    const error = await client.listGatewayCatalogModels!().catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(AiConnectionsRequestError)
+    expect(error).toMatchObject({ status })
+    expect((error as Error).message).not.toContain('must-not-escape')
+  })
+
+  it('does not turn a Gateway transport failure into an empty catalog', async () => {
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => { throw new Error('transport unavailable') }),
+    })
+    await expect(client.listGatewayCatalogModels!()).rejects.toThrow('transport unavailable')
+  })
   it.each(['oauth_refresh_failed', 'oauth_refresh_unavailable', 'oauth_session_reauth_required', 'oauth_refresh_token_required'])(
     'preserves the actionable %s message', (code) => {
       const message = normalizeAiConnectionsErrorMessage({ error: code }, 409)

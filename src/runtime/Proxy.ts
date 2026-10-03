@@ -15,6 +15,7 @@ import {
   verifyGatewayAdminProxyHeaders,
 } from './GatewayAdminProxyAuth';
 import { BunNativeUpgradeRelay } from './upgrade/BunNativeUpgradeRelay';
+import { isXpodProductPath } from '../shared/xpod-route-policy';
 
 type InterceptedRequest = http.IncomingMessage & { __xpodInspectRootMutation?: boolean };
 
@@ -422,14 +423,7 @@ export class GatewayProxy {
 
   private isApiWebProductPath(url: string): boolean {
     const pathname = this.pathnameFromRequestUrl(url);
-    return [
-      '/dashboard',
-      '/status',
-      '/network',
-      '/settings',
-      '/ai-config',
-      '/ai-connections',
-    ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))
+    return isXpodProductPath(pathname)
       || pathname === '/auth/callback'
       || pathname === '/auth/callback/theme-init.js'
       || pathname === '/auth/callback/assets'

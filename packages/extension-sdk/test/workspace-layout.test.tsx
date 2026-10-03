@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, test, vi } from 'vitest'
 import {
   SinglePaneLayout,
   ThreePaneLayout,
   TwoPaneLayout,
+  WorkspaceDrawerContext,
   useWorkspaceLayout,
 } from '../src/react'
 
@@ -596,4 +597,36 @@ describe('workspace object column follows the §8.3 page plan', () => {
     )
     expect(screen.getByTestId('workspace-list-pane').hidden).toBe(true)
   })
+})
+
+
+describe('host navigation drawer', () => {
+  afterEach(cleanup)
+  it('keeps the detail visible at narrow widths and moves the list into the host drawer', () => {
+    const view = (open: boolean) => <WorkspaceDrawerContext.Provider value={{ open }}>
+      <TwoPaneLayout mode="stack" listHeader="Search" list="Items" mainHeader="Detail" main="Selected item" />
+    </WorkspaceDrawerContext.Provider>
+    const { rerender } = render(view(false))
+    expect(screen.getByTestId('workspace-main-pane').hidden).toBe(false)
+    expect(screen.getByTestId('workspace-list-pane').hidden).toBe(true)
+    rerender(view(true))
+    expect(screen.getByTestId('workspace-list-pane').hidden).toBe(false)
+    expect(screen.getByTestId('workspace-main-pane').hidden).toBe(false)
+    expect(screen.queryByRole('button', { name: '返回列表' })).toBeNull()
+  })
+})
+
+
+test('host navigation shares the applet header without repeating its title or actions', () => {
+  const { unmount } = render(<WorkspaceDrawerContext.Provider value={{ open: false, headerLeading: <button>打开导航</button> }}>
+    <TwoPaneLayout mode="stack" listHeader="搜索" list="Pages"
+      mainHeader={<><h1>网络访问</h1><button>通知</button><button>收件箱</button></>} main="Device" />
+  </WorkspaceDrawerContext.Provider>)
+  const heading = screen.getByRole('heading', { name: '网络访问' })
+  const header = heading.closest('header')
+  expect(header?.contains(screen.getByRole('button', { name: '打开导航' }))).toBe(true)
+  expect(header?.contains(screen.getByRole('button', { name: '通知' }))).toBe(true)
+  expect(header?.contains(screen.getByRole('button', { name: '收件箱' }))).toBe(true)
+  expect(screen.getAllByRole('heading', { name: '网络访问' })).toHaveLength(1)
+  unmount()
 })

@@ -28,7 +28,7 @@ test.each([502, 200])('renders and copies Alice WebID while Account Bob is activ
   expect(screen.queryByText('Account Bob')).toBeNull();
   expect(screen.queryByText('@bob')).toBeNull();
   expect(screen.queryByText('@bob-account-id')).toBeNull();
-  expect(screen.getByText('@alice')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Copy Xpod ID' }));
+  expect(screen.getByText(webId)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '复制 WebID' }));
   await waitFor(() => expect(writeText).toHaveBeenCalledWith(webId));
 });

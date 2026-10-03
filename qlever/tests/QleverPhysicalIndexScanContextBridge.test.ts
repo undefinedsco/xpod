@@ -661,13 +661,17 @@ int main() {
       !missing_graph_scan.always_empty) {
     return 3;
   }
+  // An always-empty scan over the externally mutable facts store must not be
+  // reported as an *exact* empty result: QLever caches knownEmptyResult() at
+  // plan time, but a host writer can insert the matching graph/terms before the
+  // scan runs. The bounds stay [0, 0]; only the exactness claim is withheld.
   auto missing_graph_estimate = bridge_context.xpodPhysicalIndex()
                                     ->permutation(Permutation::Enum::SPO)
                                     .getSizeEstimateForScan(missing_graph_scan);
   if (missing_graph_estimate.status != XPOD_RDF_STATUS_OK ||
       missing_graph_estimate.lower != 0 ||
       missing_graph_estimate.upper != 0 ||
-      !missing_graph_estimate.exact) {
+      missing_graph_estimate.exact) {
     return 4;
   }
   ScanSpecification mixed_graph_spec{
@@ -1345,7 +1349,11 @@ int main() {
       spec,
       permuted_triple,
       XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT);
-  if (size.status != XPOD_RDF_STATUS_OK || !size.exact || size.rows != 0) return 4;
+  // Same external-mutability contract as the always-empty graph filter above:
+  // a plan-time zero-row scan must not claim exactness, or QLever would cache
+  // knownEmptyResult() and abort if a host writer inserts the term before the
+  // scan runs. Bounds stay zero, exactness is withheld.
+  if (size.status != XPOD_RDF_STATUS_OK || size.exact || size.rows != 0) return 4;
 
   auto exact = xpod::qlever::exactSizeFromQleverScanSpecAndBlocks(
       qec,

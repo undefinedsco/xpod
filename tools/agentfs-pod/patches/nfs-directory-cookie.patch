@@ -1,0 +1,19 @@
+diff --git a/cli/src/nfs.rs b/cli/src/nfs.rs
+--- a/cli/src/nfs.rs
++++ b/cli/src/nfs.rs
+@@ -482 +482 @@
+-        let entries = fs
++        let mut entries = fs
+@@ -495,3 +495,4 @@
+-        // Find start position if start_after is specified
+-        let mut skip = start_after > 0;
++        // File IDs are the continuation cookies. A deleted prior entry must
++        // not hide the remainder of a directory during recursive removal.
++        entries.sort_unstable_by_key(|entry| entry.stats.ino);
+         let mut skipped_count = 0;
+@@ -502,4 +503 @@
+-            if skip {
+-                if ino == start_after {
+-                    skip = false;
+-                }
++            if ino <= start_after {
