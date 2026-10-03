@@ -21,7 +21,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -64,6 +64,244 @@ mod tests {
     }
     impl Drop for TestDir {
         fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    struct OwnedChild(std::process::Child);
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+
+    #[test]
+    fn first_session_killed_before_edit_reclaims_new_seed() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{Command, Stdio};
+        let dir = TestDir::new();
+        assert!(!dir.0.join("session.json").exists());
+        let mut child = OwnedChild(Command::new(std::env::current_exe().unwrap())
+            .args(["session::tests::seed_child_entry", "--exact", "--nocapture"])
+            .env("AGENTFS_TEST_SEED_CHILD_DIR", fs::canonicalize(&dir.0).unwrap())
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap());
+        let mut output = BufReader::new(child.0.stdout.take().unwrap());
+        let seed = loop {
+            let mut line = String::new();
+            assert!(output.read_line(&mut line).unwrap() > 0);
+            if let Some(index) = line.find("SEED_READY ") {
+                break dir.0.join(line[index + "SEED_READY ".len()..].trim());
+            }
+        };
+        let before = fs::read(dir.0.join("session.json")).unwrap();
+        let state: State = serde_json::from_slice(&before).unwrap();
+        assert_eq!(state.identity, "alice");
+        assert!(state.entries.is_empty());
+        SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        assert!(seed.exists());
+        let pid = child.0.id();
+        child.0.kill().unwrap();
+        let status = child.0.wait().unwrap();
+        println!("owned first-session seed child PID={pid} signal={:?}", status.signal());
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        assert!(!seed.exists());
+        assert_eq!(before, fs::read(dir.0.join("session.json")).unwrap());
+    }
+
+    #[test]
+    fn held_seed_never_overrides_dirty_blob_and_primary_edit_failure() {
+        let dir = TestDir::new();
+        let overlay = SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        let mut lease = overlay.create_seed().unwrap();
+        lease.file_mut().write_all(b"unused seed").unwrap();
+        overlay.put("remote.txt", b"dirty_source".to_vec(), "text/plain", Some("\"first\"".into())).unwrap();
+        overlay.edit("remote.txt", Some(lease.file()), Some("\"later\"".into()), "text/plain", Some(0), b"patch", None).unwrap();
+        assert_eq!(overlay.get("remote.txt").unwrap().unwrap().0, b"patch_source");
+        assert_eq!(overlay.first_baseline("remote.txt").unwrap(), Some(Some("\"first\"".into())));
+        {
+            let mut state = overlay.lock_state().unwrap();
+            state.entries.get_mut("remote.txt").unwrap().in_flight = true;
+            overlay.save(&state).unwrap();
+        }
+        let path = lease.path().to_owned();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"FOREIGN").unwrap();
+        let primary = overlay.edit("remote.txt", Some(lease.file()), None, "text/plain", None, &[], None).unwrap_err();
+        assert!(lease.finish().is_err());
+        assert!(primary.to_string().contains("current session state"));
+        assert_eq!(fs::read(path).unwrap(), b"FOREIGN");
+    }
+
+    #[test]
+    fn admission_regression_edit_reads_held_seed_after_path_replacement() {
+        let dir = TestDir::new();
+        let overlay = SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        let mut lease = overlay.create_seed().unwrap();
+        lease.file_mut().write_all(b"owned_original").unwrap();
+        let path = lease.path().to_owned();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"FOREIGN_CONTENT").unwrap();
+        overlay.edit("remote.txt", Some(lease.file()), Some("\"baseline\"".into()), "text/plain", Some(0), b"patch", None).unwrap();
+        assert_eq!(overlay.get("remote.txt").unwrap().unwrap().0, b"patch_original");
+        assert!(lease.finish().is_err());
+        assert_eq!(fs::read(path).unwrap(), b"FOREIGN_CONTENT");
+    }
+
+    #[test]
+    fn admission_regression_missing_manifest_never_collects_under_transaction() {
+        let dir = TestDir::new();
+        let overlay = SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        let path = dir.0.join("seed-lease-v1-123-1");
+        fs::write(&path, b"unknown owner").unwrap();
+        fs::remove_file(dir.0.join("session.json")).unwrap();
+        let state = overlay.lock_state().unwrap();
+        overlay.collect_seed_leases(&state).unwrap();
+        assert!(path.exists(), "actual missing manifest must retain seeds");
+    }
+
+    #[test]
+    fn lease_gc_preserves_unowned_and_invalid_candidates() {
+        let dir = TestDir::new();
+        let overlay = SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        let lease = overlay.create_seed().unwrap();
+        let active = lease.path().to_owned();
+        let legacy = dir.0.join("seed-99999999-1");
+        fs::write(&legacy, b"legacy").unwrap();
+        let foreign = dir.0.join("seed-lease-v1-0-1");
+        fs::write(&foreign, b"foreign").unwrap();
+        let directory = dir.0.join("seed-lease-v1-123-2");
+        fs::create_dir(&directory).unwrap();
+        let symlink = dir.0.join("seed-lease-v1-123-3");
+        std::os::unix::fs::symlink(fs::canonicalize(&legacy).unwrap(), &symlink).unwrap();
+        let hardlink = dir.0.join("seed-lease-v1-123-4");
+        fs::hard_link(&legacy, &hardlink).unwrap();
+        let orphan = dir.0.join("seed-lease-v1-123-5");
+        fs::write(&orphan, b"orphan").unwrap();
+        let before = fs::read(dir.0.join("session.json")).unwrap();
+        SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        assert!(active.exists());
+        assert!(!orphan.exists());
+        for path in [&legacy, &foreign, &directory, &symlink, &hardlink] {
+            assert!(fs::symlink_metadata(path).is_ok());
+        }
+        assert_eq!(fs::read(&legacy).unwrap(), b"legacy");
+        assert_eq!(before, fs::read(dir.0.join("session.json")).unwrap());
+        lease.finish().unwrap();
+        assert!(!active.exists());
+    }
+
+    #[test]
+    fn lease_drop_and_replaced_inode_cleanup_are_safe() {
+        let dir = TestDir::new();
+        let overlay = SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        let lease = overlay.create_seed().unwrap();
+        let path = lease.path().to_owned();
+        drop(lease);
+        assert!(!path.exists());
+        let lease = overlay.create_seed().unwrap();
+        let path = lease.path().to_owned();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"replacement").unwrap();
+        assert!(lease.finish().is_err());
+        assert_eq!(fs::read(path).unwrap(), b"replacement");
+    }
+
+    #[test]
+    fn seed_gc_requires_existing_valid_manifest_and_readable_owner_proof() {
+        let dir = TestDir::new();
+        let path = dir.0.join("seed-lease-v1-123-1");
+        fs::write(&path, b"unknown owner").unwrap();
+        SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        assert!(path.exists(), "new session must not collect preexisting files");
+        if unsafe { libc::geteuid() } != 0 {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+            SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+            assert!(path.exists(), "permission-denied lock proof must retain seed");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    #[test]
+    fn wrong_manifest_never_collects_seeds() {
+        let dir = TestDir::new();
+        let overlay = SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        let path = dir.0.join("seed-lease-v1-123-1");
+        fs::write(&path, b"orphan").unwrap();
+        assert!(SessionOverlay::open(&dir.0, "https://pod.test/other/", "alice").is_err());
+        assert!(path.exists());
+        fs::write(dir.0.join("session.json"), b"malformed").unwrap();
+        assert!(SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").is_err());
+        assert!(path.exists());
+        drop(overlay);
+    }
+
+    #[test]
+    fn seed_child_entry() {
+        let Some(dir) = std::env::var_os("AGENTFS_TEST_SEED_CHILD_DIR") else { return; };
+        let overlay = SessionOverlay::open(Path::new(&dir), "https://pod.test/alice/", "alice").unwrap();
+        let mut lease = overlay.create_seed().unwrap();
+        lease.file_mut().write_all(b"streamed body").unwrap();
+        lease.file_mut().sync_all().unwrap();
+        println!("SEED_READY {}", lease.path().file_name().unwrap().to_str().unwrap());
+        std::io::stdout().flush().unwrap();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+        overlay.edit("remote.txt", Some(lease.file()), Some("\"baseline\"".into()), "text/plain", Some(0), b"edited", None).unwrap();
+        println!("EDIT_READY");
+        std::io::stdout().flush().unwrap();
+        line.clear();
+        std::io::stdin().read_line(&mut line).unwrap();
+        lease.finish().unwrap();
+    }
+
+    #[test]
+    fn killed_owned_process_releases_only_new_seed_lease() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{Command, Stdio};
+        let dir = TestDir::new();
+        let overlay = SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        overlay.put("existing.txt", b"dirty".to_vec(), "text/plain", Some("\"first\"".into())).unwrap();
+        {
+            let mut state = overlay.lock_state().unwrap();
+            state.entries.get_mut("existing.txt").unwrap().in_flight = true;
+            overlay.save(&state).unwrap();
+        }
+        let mut child = OwnedChild(Command::new(std::env::current_exe().unwrap())
+            .args(["session::tests::seed_child_entry", "--exact", "--nocapture"])
+            .env("AGENTFS_TEST_SEED_CHILD_DIR", fs::canonicalize(&dir.0).unwrap())
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap());
+        let mut output = BufReader::new(child.0.stdout.take().unwrap());
+        let read_marker = |output: &mut BufReader<std::process::ChildStdout>, marker: &str| -> String {
+            loop {
+                let mut line = String::new();
+                assert!(output.read_line(&mut line).unwrap() > 0, "child closed before handshake");
+                if let Some(index) = line.find(marker) { return line[index + marker.len()..].trim().to_owned(); }
+            }
+        };
+        let name = read_marker(&mut output, "SEED_READY ");
+        let seed = dir.0.join(name);
+        SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        assert!(seed.exists(), "body-stage live lease must survive");
+        child.0.stdin.as_mut().unwrap().write_all(b"edit\n").unwrap();
+        read_marker(&mut output, "EDIT_READY");
+        SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        assert!(seed.exists(), "post-edit live lease must survive");
+        let manifest = fs::read(dir.0.join("session.json")).unwrap();
+        let blobs: Vec<_> = overlay.lock_state().unwrap().entries.values()
+            .filter_map(|entry| entry.blob.as_ref()).map(|name| (name.clone(), fs::read(dir.0.join(name)).unwrap())).collect();
+        let pid = child.0.id();
+        child.0.kill().unwrap();
+        let status = child.0.wait().unwrap();
+        println!("owned post-edit seed child PID={pid} signal={:?}", status.signal());
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        SessionOverlay::open(&dir.0, "https://pod.test/alice/", "alice").unwrap();
+        assert!(!seed.exists());
+        assert_eq!(manifest, fs::read(dir.0.join("session.json")).unwrap());
+        for (name, bytes) in blobs { assert_eq!(bytes, fs::read(dir.0.join(name)).unwrap()); }
     }
 
     #[test]
@@ -408,6 +646,68 @@ struct State {
     next_revision: u64,
 }
 
+const SEED_PREFIX: &str = "seed-lease-v1-";
+
+/// The open file description owns the seed throughout HTTP and local editing.
+/// GC only tries its lock, so acquiring a session transaction cannot deadlock.
+pub struct SeedLease<'a> {
+    overlay: &'a SessionOverlay,
+    path: PathBuf,
+    file: File,
+    finished: bool,
+}
+impl SeedLease<'_> {
+    pub fn file_mut(&mut self) -> &mut File { &mut self.file }
+    pub fn file(&self) -> &File { &self.file }
+    pub fn path(&self) -> &Path { &self.path }
+    pub fn finish(mut self) -> Result<()> {
+        let result = self.cleanup();
+        self.finished = true;
+        result
+    }
+    fn cleanup(&self) -> Result<()> {
+        let _state = self.overlay.lock_state()?;
+        remove_matching_seed(&self.path, &self.file)
+    }
+}
+impl Drop for SeedLease<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            if let Err(error) = self.cleanup() {
+                eprintln!("seed lease cleanup retained {}: {error}", self.path.display());
+            }
+        }
+    }
+}
+
+fn seed_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(SEED_PREFIX) else { return false; };
+    let Some((pid, nonce)) = rest.split_once('-') else { return false; };
+    !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+        && pid.parse::<u32>().map(|pid| pid > 0).unwrap_or(false)
+        && !nonce.is_empty() && nonce.bytes().all(|b| b.is_ascii_digit())
+        && nonce.parse::<u128>().is_ok()
+}
+
+fn matching_seed(path: &Path, file: &File) -> Result<bool> {
+    let path_meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let file_meta = file.metadata()?;
+    Ok(path_meta.is_file() && file_meta.is_file() && path_meta.nlink() == 1
+        && file_meta.nlink() == 1 && path_meta.dev() == file_meta.dev()
+        && path_meta.ino() == file_meta.ino())
+}
+
+fn remove_matching_seed(path: &Path, file: &File) -> Result<()> {
+    if !matching_seed(path, file)? {
+        anyhow::bail!("seed identity changed; retaining {}", path.display());
+    }
+    fs::remove_file(path).context("removing leased seed")
+}
+
 pub struct SessionOverlay {
     dir: PathBuf,
     state: Mutex<State>,
@@ -418,6 +718,7 @@ pub struct SessionOverlay {
 struct LockedState<'a> {
     state: MutexGuard<'a, State>,
     _file: File,
+    manifest_loaded: bool,
 }
 impl Deref for LockedState<'_> {
     type Target = State;
@@ -468,6 +769,7 @@ impl SessionOverlay {
         };
         let overlay = Self { dir: dir.to_path_buf(), state: Mutex::new(state) };
         let locked = overlay.lock_state()?;
+        overlay.collect_seed_leases(&locked)?;
         overlay.save(&locked)?;
         drop(locked);
         Ok(overlay)
@@ -481,7 +783,7 @@ impl SessionOverlay {
             return Err(std::io::Error::last_os_error().into());
         }
         let manifest = self.dir.join("session.json");
-        match fs::read(&manifest) {
+        let manifest_loaded = match fs::read(&manifest) {
             Ok(raw) => {
                 let loaded: State = serde_json::from_slice(&raw).context("parsing session manifest")?;
                 if loaded.pod_root != state.pod_root || loaded.identity != state.identity {
@@ -504,15 +806,61 @@ impl SessionOverlay {
                     }
                 }
                 *state = loaded;
+                true
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && state.entries.is_empty() => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && state.entries.is_empty() => false,
             Err(error) => return Err(error.into()),
-        }
-        Ok(LockedState { state, _file: file })
+        };
+        Ok(LockedState { state, _file: file, manifest_loaded })
     }
 
-    pub fn dir(&self) -> &Path {
-        &self.dir
+    pub fn create_seed(&self) -> Result<SeedLease<'_>> {
+        let state = self.lock_state()?;
+        // Persist the validated identity before creating any owned seed, even
+        // if an external actor removed an otherwise empty manifest.
+        if !state.manifest_loaded { self.save(&state)?; }
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let path = self.dir.join(format!("{SEED_PREFIX}{}-{nonce}", std::process::id()));
+        let file = OpenOptions::new().read(true).write(true).create_new(true)
+            .mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&path)?;
+        if !matching_seed(&path, &file)? {
+            anyhow::bail!("created seed identity changed; retaining {}", path.display());
+        }
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(SeedLease { overlay: self, path, file, finished: false })
+    }
+
+    // Called under a validated session transaction. Legacy PID names provide
+    // no owner proof across hosts/PID namespaces and are always retained.
+    fn collect_seed_leases(&self, state: &LockedState<'_>) -> Result<()> {
+        if !state.manifest_loaded { return Ok(()); }
+        for entry in fs::read_dir(&self.dir)? {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => { eprintln!("seed scan retained unknown entry: {error}"); continue; },
+            };
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue; };
+            if !seed_name(name) {
+                if name.starts_with("seed-") { eprintln!("retaining unowned legacy/foreign seed {name}"); }
+                continue;
+            }
+            let result = (|| -> Result<()> {
+                let meta = fs::symlink_metadata(entry.path())?;
+                if !meta.is_file() || meta.nlink() != 1 { anyhow::bail!("not a single-link regular seed"); }
+                let file = OpenOptions::new().read(true).write(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(entry.path())?;
+                if !matching_seed(&entry.path(), &file)? { anyhow::bail!("seed identity changed"); }
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                remove_matching_seed(&entry.path(), &file)
+            })();
+            if let Err(error) = result { eprintln!("retaining seed {name}: {error}"); }
+        }
+        Ok(())
     }
 
     fn blob_path(&self, name: &str) -> PathBuf {
@@ -684,7 +1032,7 @@ impl SessionOverlay {
     /// Stage a new revision using bounded file copying, then publish it once
     /// content and metadata are durable. `seed` is a conditionally read lower
     /// snapshot and is ignored when another writer already copied the path up.
-    pub fn edit(&self, path: &str, seed: Option<&Path>, baseline: Option<String>, content_type: &str,
+    pub fn edit(&self, path: &str, seed: Option<&File>, baseline: Option<String>, content_type: &str,
         offset: Option<u64>, data: &[u8], truncate: Option<u64>) -> Result<()> {
         let mut state = self.lock_state()?;
         let previous = state.entries.get(path).cloned();
@@ -699,8 +1047,14 @@ impl SessionOverlay {
         let tmp = self.blob_path(&format!("{name}.tmp"));
         let mut output = File::create(&tmp)?;
         let source = previous.as_ref().and_then(|entry| entry.blob.as_ref()).map(|blob| self.blob_path(blob));
-        if let Some(source) = source.as_deref().or(seed) {
+        if let Some(source) = source {
             std::io::copy(&mut File::open(source)?, &mut output)?;
+        } else if let Some(seed) = seed {
+            // HTTP is complete before edit. A cloned descriptor shares its
+            // offset, so rewind it here; never reopen a replaceable pathname.
+            let mut input = seed.try_clone()?;
+            input.seek(SeekFrom::Start(0))?;
+            std::io::copy(&mut input, &mut output)?;
         }
         if let Some(size) = truncate { output.set_len(size)?; }
         if let Some(offset) = offset {

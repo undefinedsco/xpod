@@ -1,10 +1,12 @@
 # Xpod CLI 目录 MVP 实现与验收记录
 
-当前状态（2026-10-02）：AgentFS 是 AFS 内部引擎，Xpod 提供 CLI/App 入口及可选 CSS/API/AFS 模块；模块统一启停和远程 Agent 控制仍是后续设计。客户端采用外部 Bun/Node，不内嵌 Bun。
+状态：2026-10-03。当前兼容整合已转为 GPT‑6.1 Sol 开发、负责人独立验收；此前 `ab583de` 基线的 43 项诊断单测及编译门禁通过，保留历史失败后，该基线原始完整集成实际退出 0：Lite 162 通过/16 跳过、Full 62 全通过；8,277 项覆盖路径前后稳定。新 source-bound Mac 安装、四项实际 NFS 功能及64／512／1024MiB功能与采样RSS通过；正文中kill后清理失败，恢复GC尚未执行，真实身份与新原生RC仍待验收。当前选型、未完成准入及开发基线以 [选型记录](xpod-cli-engine-selection.md) 为准；下文为保留来源的阶段证据。
 
-发布整合分支 `release/0.4.21` 位于 `/Users/ganlu/.codex/worktrees/directory-release-integration/xpod`，基于已验收 0.4.20 保留既有发布修复，只接入目录相关提交。新 worktree 的 frozen install、工作区构建、源码/测试/客户端类型检查、依赖状态、组件生成和 42 项客户端包装回归均通过。原开发 worktree 的 account B/DeepSeek v4.1 Flash 正完成最终修复及串行集成测试；此处尚无带最终修复的完整回归或新 RC 的真实挂载通过记录。
+开发基线现已推进到 `9460a7e`。新增本地 runtime 卸载协调尚未通过 Rust 编译、真实挂载或整合后的完整回归；六项 CLI 生命周期夹具通过仅是轻量证据。当前待完成门禁以选型记录为准。
 
-现有 0.4.20 RC 的实际临时账号已验证 Profile canonical storage 绑定、Pod PUT/GET 与 Gateway 客户端认证，但目录 list/search 返回403，服务也缺少目录新 revision 逻辑。因此必须部署新候选再验收，不能将旧 RC 的基础成功当成完整目录通过。公开发行尚未完成。选型理由见 [引擎选型](xpod-cli-engine-selection.md)。以下不同提交、旧内嵌产物和早期测试结果保留为历史证据，不能替代最终 exact candidate 验收。
+当前受审开发位于 `/Users/ganlu/.codex/worktrees/agentfs-current-release/xpod`。原始 `bun run test:integration` 单次实际退出 0，145953 ms；Matrix 协作整体用例 52248 ms。24 个授权源码/测试路径在运行前后哈希一致，但完整 SDK、运行入口和生成产物的前后快照缺失；专项测试及类型检查还需结合独立代码审查判断，不能用代理自然退出替代验收。
+
+以下为按阶段保留的历史验收、候选和失败记录；旧文中的“未公开”“当前登录不可用”仅描述其所在阶段。最新客户端状态以 [公开发行记录](xpod-cli-preview-release.md) 为准，新服务/native RC 状态以 [RC 验收](acceptance/rc-qlever.md) 为准。选型理由及 rclone 测试资产比较见 [选型记录](xpod-cli-engine-selection.md)。
 
 ## 声明发行材料增量
 
@@ -30,6 +32,8 @@
 ## 验证证据
 
 所有日志位于 ignored `.test-data/agent-directory-workers/`；以下区分已运行和未运行，不将 skip 当作通过。
+
+新安装大文件验收原fixture receipt保持失败，SHA256为 `212187e8a55f7f61236ea8c3c62bebb64adbf232e41548fdb4da05ba6dd1a330`。随后有界NULL／NFS错误回复释放了本任务内核等待，原Node producer实际退出1/null，日志关闭后取hash，19项夹具／安装材料前后稳定。普通卸载等待期间的挂载表暂时缺项，进程退出后旧挂载重新出现，因此没有将早先缺项当成分离证明。负责人校验私密nonce父目录与精确owned挂载后执行一次强制分离，PID38950实际0/null，1.061秒；再次检查挂载表无该项、已知owner均消失。独立闭合回执SHA256为 `4ac6794b58c03f2bc96c6cd4cab95d837b4f852e4af08fa3832dc6cb06d061f5`。这是失败现场的运维收尾，不是崩溃恢复通过；新夹具修正和同session恢复GC／旧dirty／412重验仍需完成。
 
 ### 真实候选协议增量：存储版本与互斥
 

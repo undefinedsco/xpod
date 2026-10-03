@@ -1,3 +1,4 @@
+import { projectTaskRunFailureDiagnostic, type TaskRunFailureDiagnostic } from '../../src/api/tasks/TaskRunFailureDiagnostic';
 import type { TaskCredentialSummary } from '../../src/api/tasks/TaskCredentialStore';
 import { randomUUID } from 'node:crypto';
 import { drizzle, type SolidAuthSession } from '@undefineds.co/drizzle-solid';
@@ -9,8 +10,10 @@ export interface LiveTaskRun {
   status: string;
   waitingToolCallId?: string;
   error?: unknown;
+  failureDiagnostic?: TaskRunFailureDiagnostic;
 }
 export interface LiveTaskCaseEvidence {
+  failureDiagnostic?: TaskRunFailureDiagnostic;
   kind: 'approved' | 'rejected' | 'stopped';
   taskId?: string;
   runId?: string;
@@ -207,6 +210,11 @@ export async function acceptLiveTaskApproval(options: {
       phase = `${kind}:checkpoint`;
       const approval = await pollLiveTask(async () => {
         const run = await readRun(created.task.id, acknowledged.run.id);
+        if (run.status === 'failed') {
+          row.failureDiagnostic = projectTaskRunFailureDiagnostic(run.failureDiagnostic, run.status)
+            ?? { code: 'TASK_DIAGNOSTIC_UNAVAILABLE', stage: 'unknown', status: 'failed' };
+          return requireLiveCheckpoint(run, [], target, options.webId);
+        }
         const approvals = await db.select().from(approvalResource).execute();
         return requireLiveCheckpoint(run, approvals, target, options.webId, row);
       }, value => Boolean(value), 'real producer approval');

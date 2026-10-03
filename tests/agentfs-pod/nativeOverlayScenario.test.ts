@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
+import { MountCleanupGuard } from './support/mountCleanup';
 import { discoverAgentFsHelper } from './support/helperDiscovery';
 
 const helper = discoverAgentFsHelper();
@@ -12,6 +13,8 @@ const runNative = Boolean(helper.helperPath);
 const runOverlay = runNative && process.env.XPOD_AGENTFS_RUN_OVERLAY === '1';
 const ROOT = path.resolve('.test-data/agent-directory-workers/agentfs-test/overlay');
 const TOKEN = 'overlay-token';
+const cleanup = new MountCleanupGuard();
+let primaryFailure: unknown;
 
 interface ExecResult { status: number; stdout: string; stderr: string }
 
@@ -60,30 +63,40 @@ describe.runIf(runOverlay)('native session overlay: dirty before commit, restart
   const binary = helper.helperPath as string;
   const mnt = path.join(ROOT, 'mnt');
   const session = path.join(ROOT, 'session');
+  let ownedMountAttempted = false;
 
   async function mount(): Promise<ExecResult> {
+    cleanup.assertAbsent(ROOT);
+    ownedMountAttempted = true;
     return exec(binary, [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', 'nfs', '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
   }
-  async function unmount(): Promise<void> {
-    await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+  async function unmount(primary?: unknown): Promise<void> {
+    await cleanup.unmount(mnt, () => exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN }),
+      { mountpoint: mnt, sessionDir: session, binary }, primary);
   }
 
-  afterEach(async () => {
-    await unmount();
+  afterEach(async context => {
+    if (context.task.result?.state === 'fail') primaryFailure ??= context.task.result;
+    try { await unmount(primaryFailure); } catch (error) { primaryFailure ??= error; throw error; }
     expect(await waitForOwnedDaemons(binary, mnt, 0), 'the owned mount daemon must exit after unmount').toBe(true);
   });
 
   beforeAll(async () => {
-    await rm(ROOT, { recursive: true, force: true });
+    cleanup.assertAbsent(ROOT);
+    await cleanup.remove(ROOT, primaryFailure);
     await mkdir(mnt, { recursive: true });
     await mkdir(session, { recursive: true });
     server = await startPodContractServer({ token: TOKEN, files: { 'alpha.txt': 'ALPHA_BODY_0123456789\n' } });
   });
 
   afterAll(async () => {
-    await unmount();
-    await server.close();
-    await rm(ROOT, { recursive: true, force: true });
+    let secondary: unknown;
+    if (ownedMountAttempted) {
+      try { await unmount(primaryFailure); } catch (error) { secondary = error; }
+    }
+    try { await server?.close(); } catch (error) { secondary ??= error; }
+    await cleanup.remove(ROOT, primaryFailure ?? secondary);
+    if (primaryFailure === undefined && secondary !== undefined) throw secondary;
   });
 
   it('keeps uncommitted edits local, recovers them across restart, then writes back on commit', async () => {

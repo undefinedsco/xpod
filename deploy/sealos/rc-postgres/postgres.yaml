@@ -39,10 +39,12 @@ spec:
         fsGroup: 999
         seccompProfile:
           type: RuntimeDefault
+      imagePullSecrets:
+        - name: tcr-creds
       containers:
         - name: postgres
-          image: docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38
-          imagePullPolicy: IfNotPresent
+          image: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba
+          imagePullPolicy: Always
           ports:
             - name: postgres
               containerPort: 5432

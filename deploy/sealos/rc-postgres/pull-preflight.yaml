@@ -1,0 +1,52 @@
+# Template rendered with a unique per-run name and the assigned namespace.
+# tcr-creds is an existing authorization declaration; its current usability
+# must be proved by the fresh UID / Always-pull gate before RC mutation.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: xpod-rc-pg-preflight
+  labels:
+    app: xpod-rc-pg-preflight
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: xpod-rc-pg-preflight
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: tcr-creds
+      containers:
+        - name: postgres-preflight
+          image: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba
+          imagePullPolicy: Always
+          command: [sh, -c]
+          args:
+            - |
+              set -eu
+              postgres --version
+              test -f /usr/share/postgresql/17/extension/vector.control
+              test -f /usr/share/postgresql/17/extension/xpod_rdf.control
+              test -f /usr/share/postgresql/17/extension/xpod_qlever.control
+              echo 'xpod-rc-pg-preflight: ok'
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

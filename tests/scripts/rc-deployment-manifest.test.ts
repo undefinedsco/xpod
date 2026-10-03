@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { parseAllDocuments } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -90,7 +91,9 @@ describe('RC Sealos deployment manifest', () => {
     expect(postgres.spec?.selector?.matchLabels).toEqual({ app: 'xpod-rc-postgres' });
     expect(postgres.spec?.volumeClaimTemplates).toBeUndefined();
     expect(postgres.spec?.template?.spec?.volumes).toEqual([{ name: 'data', emptyDir: {} }]);
-    expect(container?.image).toBe('docker.io/pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38');
+    expect(container?.image).toBe('ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba');
+    expect(container?.imagePullPolicy).toBe('Always');
+    expect(postgres.spec?.template?.spec?.imagePullSecrets).toEqual([{ name: 'tcr-creds' }]);
     expect(container?.volumeMounts).toContainEqual({ name: 'data', mountPath: '/var/lib/postgresql/data' });
     expect(container?.env).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'POSTGRES_DB', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_DB' } } }),
@@ -209,5 +212,29 @@ describe('RC Sealos deployment manifest', () => {
     expect(objects.some((object) => object.kind === 'StatefulSet')).toBe(false);
     expect(objects.some((object) => object.kind === 'PersistentVolumeClaim')).toBe(false);
     expect(objects.some((object) => object.metadata?.name?.startsWith('xpod-rc-minio'))).toBe(false);
+  });
+});
+
+
+describe('fresh native pull template', () => {
+  it('uses the same exact PG image and existing pull authorization without business volumes', () => {
+    const postgres = findOne(renderObjects(readFileSync(path.join(rcPostgresOverlayPath, 'postgres.yaml'), 'utf8')), 'StatefulSet', 'xpod-rc-postgres');
+    const job = findOne(renderObjects(readFileSync(path.join(rcPostgresOverlayPath, 'pull-preflight.yaml'), 'utf8')), 'Job', 'xpod-rc-pg-preflight');
+    const pod = job.spec?.template.spec;
+    const container = pod.containers[0];
+    expect(container.image).toBe(postgres.spec?.template.spec.containers[0].image);
+    expect(container.imagePullPolicy).toBe('Always');
+    expect(pod.imagePullSecrets).toEqual([{ name: 'tcr-creds' }]);
+    expect(pod.volumes).toBeUndefined();
+    expect(container.volumeMounts).toBeUndefined();
+    expect(pod.restartPolicy).toBe('Never');
+    expect(job.spec?.backoffLimit).toBe(0);
+    for (const extension of ['vector', 'xpod_rdf', 'xpod_qlever']) expect(container.args[0]).toContain(`${extension}.control`);
+    expectPodSecurityBaseline(job);
+  });
+
+  it('uses the explicit cloud native override while retaining gateway launch arguments', () => {
+    const deployment = findOne(renderObjects(readFileSync(path.join(rcOverlayPath, 'deployment.yaml'), 'utf8')), 'Deployment', 'xpod-rc');
+    expect(deployment.spec?.template.spec.containers[0].args).toEqual(['node', 'dist/main.js', '-c', 'config/cloud.qlever.json', '-p', '3000']);
   });
 });

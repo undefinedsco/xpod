@@ -470,7 +470,7 @@ impl PodClient {
             headers
         };
         let response = self
-            .send(Method::GET, url.clone(), request_range(offset + size.saturating_sub(1)), None)
+            .send(Method::GET, url.clone(), request_range(offset.saturating_add(size.saturating_sub(1))), None)
             .await?;
         // A strict server answers 416 when the requested end crosses EOF. Only
         // an offset at/after the resource total is a normal EOF; otherwise clamp
@@ -512,10 +512,29 @@ impl PodClient {
             .get(CONTENT_RANGE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| SdkError::Internal(format!("reading range of {path} failed: {error}")))?;
+        let range_form = partial || content_range.is_some();
+        let mut response = response;
+        let mut bytes = Vec::new();
+        let mut prefix_remaining = offset;
+        while let Some(chunk) = response.chunk().await
+            .map_err(|error| SdkError::Internal(format!("reading range of {path} failed: {error}")))? {
+            let remaining = size.saturating_sub(bytes.len() as u64);
+            if range_form {
+                if chunk.len() as u64 > remaining {
+                    return Err(SdkError::Internal(format!("range response for {path} exceeded requested size {size}")));
+                }
+                bytes.extend_from_slice(&chunk);
+            } else {
+                // Discard the prefix and tail without storing the whole body.
+                // Continue to EOF even after the requested window is full so
+                // transport truncation remains an error.
+                let skip = prefix_remaining.min(chunk.len() as u64);
+                prefix_remaining -= skip;
+                let available = &chunk[skip as usize..];
+                let take = remaining.min(available.len() as u64) as usize;
+                bytes.extend_from_slice(&available[..take]);
+            }
+        }
         if partial || content_range.is_some() {
             if let Some(content_range) = &content_range {
                 let start = content_range
@@ -528,12 +547,9 @@ impl PodClient {
                     )));
                 }
             }
-            return Ok((bytes.to_vec(), false));
+            return Ok((bytes, false));
         }
-        let start = offset as usize;
-        let end = (offset + size) as usize;
-        let slice = bytes.get(start..end.min(bytes.len())).unwrap_or_default().to_vec();
-        Ok((slice, true))
+        Ok((bytes, true))
     }
 
     pub async fn put(
@@ -1070,19 +1086,21 @@ impl PodFile {
         if observed.is_none() {
             let version = baseline.as_ref().ok_or_else(|| SdkError::Internal("copy-up requires an observed ETag".into()))?;
             if truncate != Some(0) {
-                let suffix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-                let location = overlay.dir().join(format!("seed-{}-{suffix}", std::process::id()));
-                let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(&location)
-                    .map_err(|error| SdkError::Internal(error.to_string()))?;
-                let copied = self.shared.copy_to(&self.path, version, &mut file).await;
-                if let Err(error) = copied { let _ = std::fs::remove_file(&location); return Err(error); }
-                seed = Some(location);
+                let mut lease = overlay.create_seed().map_err(|error| SdkError::Internal(error.to_string()))?;
+                self.shared.copy_to(&self.path, version, lease.file_mut()).await?;
+                seed = Some(lease);
             }
         }
-        let result = overlay.edit(&self.path, seed.as_deref(), baseline, &self.content_type, offset, data, truncate)
+        let result = overlay.edit(&self.path, seed.as_ref().map(|lease| lease.file()), baseline, &self.content_type, offset, data, truncate)
             .map_err(|error| SdkError::Internal(error.to_string()));
-        if let Some(seed) = seed { let _ = std::fs::remove_file(seed); }
-        result
+        let cleanup = seed.map(|lease| lease.finish()).transpose()
+            .map_err(|error| SdkError::Internal(error.to_string()));
+        if result.is_err() {
+            if let Err(error) = &cleanup { eprintln!("seed cleanup retained after edit failure: {error}"); }
+        }
+        result?;
+        cleanup?;
+        Ok(())
     }
 
     async fn base_version(&self) -> SdkResult<Option<String>> {
@@ -1185,3 +1203,129 @@ impl File for PodFile {
 }
 
 const _: u32 = S_IFREG | S_IFDIR;
+
+#[cfg(test)]
+mod range_stream_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    async fn range_response(headers: &str, body: &[u8], offset: u64, size: u64) -> SdkResult<(Vec<u8>, bool)> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let root = format!("http://{}/", listener.local_addr().unwrap());
+        let headers = headers.to_owned();
+        let body = body.to_vec();
+        let producer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).unwrap();
+            stream.write_all(headers.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        let result = PodClient::new(&root, None).unwrap().get_range("file", offset, size).await;
+        producer.join().unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn active_http_copy_seed_survives_reopen_and_cancellation_cleans_it() {
+        struct SessionDir(std::path::PathBuf);
+        impl Drop for SessionDir {
+            fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = SessionDir(std::path::PathBuf::from("../../.test-data/agentfs-http-seed")
+            .join(format!("{}-{nonce}", std::process::id())));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let root = format!("http://{}/", listener.local_addr().unwrap());
+        let overlay = Arc::new(SessionOverlay::open(&dir.0, &root, "alice").unwrap());
+        let manifest = std::fs::read(dir.0.join("session.json")).unwrap();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 131072\r\nETag: \"baseline\"\r\nConnection: close\r\n\r\n").unwrap();
+            let block = [b'x'; 64 * 1024];
+            stream.write_all(&block).unwrap();
+            // A channel, rather than timing, holds the HTTP tail until the
+            // owner has been cancelled and joined. Cancellation may close TCP.
+            let _ = blocked.recv();
+            let _ = stream.write_all(&block);
+        });
+        let (created, seed_path) = tokio::sync::oneshot::channel();
+        let owner_overlay = overlay.clone();
+        let client = PodClient::new(&root, None).unwrap();
+        let owner = tokio::spawn(async move {
+            let mut lease = owner_overlay.create_seed().map_err(|error| SdkError::Internal(error.to_string()))?;
+            created.send(lease.path().to_owned()).unwrap();
+            client.copy_to("file", "\"baseline\"", lease.file_mut()).await
+        });
+        let seed = seed_path.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if std::fs::metadata(&seed).unwrap().len() >= 64 * 1024 { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("seed must contain the first actual HTTP body block");
+        SessionOverlay::open(&dir.0, &root, "alice").unwrap();
+        assert!(seed.exists(), "active HTTP owner must retain its seed");
+        assert_eq!(std::fs::read(dir.0.join("session.json")).unwrap(), manifest);
+        owner.abort();
+        assert!(owner.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        producer.join().unwrap();
+        assert!(!seed.exists(), "cancelled future must finish RAII seed cleanup");
+        assert_eq!(std::fs::read(dir.0.join("session.json")).unwrap(), manifest);
+        assert!(overlay.pending_paths().unwrap().is_empty());
+        println!("actual HTTP seed first body=65536 bytes; future joined cancelled; producer joined closed");
+    }
+
+    #[tokio::test]
+    async fn oversized_partial_body_is_rejected() {
+        assert!(range_response("HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\nConnection: close\r\n\r\n", b"abcde", 0, 2).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ignored_range_discards_prefix_and_drains_tail_across_chunks() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let root = format!("http://{}/", listener.local_addr().unwrap());
+        const TOTAL: usize = 5 * 1024 * 1024;
+        let producer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).unwrap();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {TOTAL}\r\nConnection: close\r\n\r\n").unwrap();
+            let mut block = [0; 64 * 1024];
+            for base in (0..TOTAL).step_by(block.len()) {
+                for (index, byte) in block.iter_mut().enumerate() { *byte = ((base + index) % 251) as u8; }
+                stream.write_all(&block).unwrap();
+            }
+            TOTAL
+        });
+        let offset = 1024 * 1024 + 3;
+        let result = PodClient::new(&root, None).unwrap().get_range("file", offset, 16).await;
+        assert_eq!(producer.join().unwrap(), TOTAL);
+        assert_eq!(result.unwrap(), ((offset..offset + 16).map(|index| (index % 251) as u8).collect(), true));
+    }
+
+    #[tokio::test]
+    async fn range_forms_keep_offset_and_actual_length_checks() {
+        for headers in [
+            "HTTP/1.1 206 Partial Content\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Range: bytes 0-4/5\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+        ] {
+            assert!(range_response(headers, b"5\r\nabcde\r\n0\r\n\r\n", 0, 2).await.is_err());
+        }
+        assert_eq!(range_response("HTTP/1.1 200 OK\r\nContent-Range: bytes 3-4/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n", b"de", 3, 2).await.unwrap(), (b"de".to_vec(), false));
+        assert!(range_response("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 1-2/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n", b"bc", 3, 2).await.is_err());
+        for (offset, size, expected) in [(8, 2, b"".as_slice()), (u64::MAX, 0, b"".as_slice()), (0, 0, b"".as_slice()), (6, 9, b"gh".as_slice())] {
+            assert_eq!(range_response("HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n", b"abcdefgh", offset, size).await.unwrap(), (expected.to_vec(), true));
+        }
+    }
+
+    #[tokio::test]
+    async fn ignored_range_drains_tail_and_reports_truncation() {
+        assert_eq!(range_response("HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n", b"abcdefgh", 3, 2).await.unwrap(), (b"de".to_vec(), true));
+        assert!(range_response("HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\n", b"abcdefgh", 3, 2).await.is_err());
+    }
+}

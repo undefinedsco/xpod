@@ -6,7 +6,7 @@ import type { Argv, CommandModule } from 'yargs';
 import { AgentDirectoryClient } from '../../agent-directory/client/AgentDirectoryClient';
 import { PACKAGE_ROOT } from '../../runtime/package-root';
 import { authFetch, requireAuthContext } from '../lib/auth-context';
-import { handleCliError, writeJsonResult } from '../lib/output';
+import { fail, handleCliError, writeJson, writeJsonResult } from '../lib/output';
 import { installRgWrapper, renderEnvExports } from '../agent-fs/install';
 import { defaultBackend, describePrerequisites, MountUnavailableError, type MountBackendKind } from '../agent-fs/mount';
 import { startAuthProxy } from '../agent-fs/auth-proxy';
@@ -286,6 +286,8 @@ const mountCommand: CommandModule<object, AgentFsArgs> = {
   builder: (yargs) => agentFsOptions<AgentFsArgs>(yargs),
   handler: async (argv) => {
     let proxy: ReturnType<typeof spawn> | undefined;
+    let retainProxy = false;
+    let helperCode: number | undefined;
     try {
       const backend = resolveBackend(argv);
       const prerequisites = describePrerequisites(PACKAGE_ROOT, process.env, backend);
@@ -321,18 +323,41 @@ const mountCommand: CommandModule<object, AgentFsArgs> = {
         child.on('error', reject);
         child.on('close', (value) => resolve(value ?? 1));
       });
-      if (code !== 0) {
+      helperCode = code;
+      if (code !== 0 && code !== 75) {
         proxy.kill('SIGTERM');
         process.exitCode = code;
         return;
       }
-      writeFileSync(path.join(sessionDir, 'proxy.json'), JSON.stringify({ origin, capability }), { mode: 0o600 });
+      // Pending is failure, not mounted. Once native may be serving kernel
+      // flushes, neither control-record failure nor catch may stop its proxy.
+      retainProxy = true;
       proxy.stdout?.destroy();
       proxy.unref();
-      process.exitCode = 0;
+      writeFileSync(path.join(sessionDir, 'proxy.json'), JSON.stringify({ origin, capability }), { mode: 0o600 });
+      if (code === 75) {
+        if (argv.json) {
+          writeJson(fail('mount_pending', 'Mount startup remains unresolved; authentication proxy retained.', [], { proxyRetained: true }));
+        } else {
+          console.error('Mount startup remains unresolved; authentication proxy retained.');
+        }
+      }
+      process.exitCode = code;
     } catch (error) {
-      if (proxy) {
+      if (proxy && !retainProxy) {
         proxy.kill('SIGTERM');
+      }
+      if (retainProxy) {
+        // Never expose capability, origin or a user's Pod URL in this error.
+        const reason = (error as NodeJS.ErrnoException).code;
+        const secondary = reason === 'EACCES' || reason === 'ENOSPC' ? reason : 'control_write_failed';
+        if (argv.json) {
+          writeJson(fail('mount_control_failed', 'Mount control update failed; authentication proxy retained.', [], { proxyRetained: true, helperExit: helperCode, secondary }));
+        } else {
+          console.error(`Mount control update failed (${secondary}); authentication proxy retained.`);
+        }
+        process.exitCode = helperCode === 75 ? 75 : 1;
+        return;
       }
       if (error instanceof MountUnavailableError) {
         if (argv.json) {

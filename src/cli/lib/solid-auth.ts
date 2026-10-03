@@ -84,13 +84,17 @@ export async function getAccessToken(
     });
 
     if (!tokenRes.ok) return null;
-    const data = (await tokenRes.json()) as { access_token?: string; expires_in?: number };
+    const data = (await tokenRes.json()) as { access_token?: string; expires_in?: unknown };
     if (!data.access_token) return null;
+
+    const expiresIn = typeof data.expires_in === 'number' && Number.isFinite(data.expires_in) && data.expires_in > 0
+      ? data.expires_in : 0;
 
     return {
       accessToken: data.access_token,
       tokenType: 'Bearer',
-      expiresAt: new Date(Date.now() + (data.expires_in ?? 3600) * 1000),
+      // An unadvertised lifetime permits this request, but never token reuse.
+      expiresAt: new Date(Date.now() + expiresIn * 1000),
     };
   } catch {
     return null;

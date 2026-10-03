@@ -4,6 +4,7 @@
 
 mod fixture;
 mod mount;
+mod mount_control;
 mod pod_fs;
 mod session;
 
@@ -117,8 +118,7 @@ fn main() -> std::process::ExitCode {
             run_mount(&server, &mountpoint, &backend, token, session_dir, foreground)
         }
         Command::Unmount { mountpoint, session_dir } => {
-            let _ = session_dir;
-            mount::unmount(&mountpoint).map_err(Into::into)
+            run_unmount(&mountpoint, session_dir)
         }
         Command::Commit { pod_root, session_dir, token } => run_commit(&pod_root, session_dir, token),
         Command::Recover { pod_root, session_dir, token, json } => run_recover(&pod_root, session_dir, token, json),
@@ -129,7 +129,7 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("agentfs-pod: {error:#}");
-            std::process::ExitCode::from(1)
+            std::process::ExitCode::from(if error.downcast_ref::<MountPending>().is_some() || error.downcast_ref::<mount_control::PendingUnmount>().is_some() { 75 } else { 1 })
         }
     }
 }
@@ -161,6 +161,13 @@ fn build_concrete(
     Ok(Arc::new(PodHttpFileSystem::new(server, token, uid, gid, overlay)?))
 }
 
+#[derive(Debug)]
+struct MountPending(String);
+impl std::fmt::Display for MountPending {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { formatter.write_str(&self.0) }
+}
+impl std::error::Error for MountPending {}
+
 fn run_mount(
     server: &str,
     mountpoint: &PathBuf,
@@ -173,9 +180,6 @@ fn run_mount(
         anyhow::bail!("unsupported mount backend: {backend}");
     }
     let mountpoint = mount::canonical_mountpoint(mountpoint)?;
-    if mount::is_mountpoint(&mountpoint) {
-        anyhow::bail!("mountpoint is already mounted: {}", mountpoint.display());
-    }
 
     if !foreground {
         // Daemonize by re-execing ourselves in foreground mode and waiting for
@@ -199,15 +203,29 @@ fn run_mount(
         if let Some(token) = &token {
             command.env("XPOD_AGENTFS_TOKEN", token);
         }
-        let child = command.spawn().context("failed to start the mount daemon")?;
-        if mount::wait_for_mount(&mountpoint, Duration::from_secs(15)) {
-            println!("mounted {} at {}", server, mountpoint.display());
-            std::mem::forget(child);
-            return Ok(());
+        let mut child = command.spawn().context("failed to start the mount daemon")?;
+        match mount::wait_for_mount(&mountpoint, Duration::from_secs(15), backend, &session_dir.clone().unwrap_or_else(default_session_dir)) {
+            Ok(_) => {
+                println!("mounted at {}", mountpoint.display());
+                return Ok(());
+            }
+            Err(primary) => {
+                // A slow mount may already be serving kernel requests. Do not
+                // kill its server, or pretend signal delivery is actual wait.
+                use std::os::unix::process::ExitStatusExt;
+                let detail = match child.try_wait() {
+                    Ok(Some(status)) => {
+                        if !status.success() && matches!(mount::mount_state(&mountpoint), mount::MountState::Absent) {
+                            anyhow::bail!("{primary}; daemon pid={} actual_exit={:?} actual_signal={:?}", child.id(), status.code(), status.signal());
+                        }
+                        format!("{primary}; daemon pid={} actual_exit={:?} actual_signal={:?}; readiness unresolved", child.id(), status.code(), status.signal())
+                    }
+                    Ok(None) => format!("{primary}; daemon retained_pid={} pending actual_wait=null", child.id()),
+                    Err(_) => format!("{primary}; daemon retained_pid={} pending actual_wait=null secondary=wait_error", child.id()),
+                };
+                return Err(MountPending(detail).into());
+            }
         }
-        let mut child = child;
-        let _ = child.kill();
-        anyhow::bail!("mount did not become ready within 15s (is mount privilege available?)");
     }
 
     let session = session_dir.unwrap_or_else(default_session_dir);
@@ -219,21 +237,82 @@ fn run_mount(
         mount::mount_fuse(concrete, &mountpoint)?;
         return Ok(());
     }
-    let fs = build_fs(server, token, Some(session))?;
+    mount::validate_local_session_path(&session)?;
+    let fs = build_fs(server, token, Some(session.clone()))?;
+    let control = Arc::new(mount_control::RuntimeControl::acquire(&session, &mountpoint)?);
     let runtime = agentfs::get_runtime();
     runtime.block_on(async move {
-        let port = mount::mount_nfs(fs, &mountpoint).await?;
-        use std::os::unix::fs::MetadataExt;
-        let device = std::fs::metadata(&mountpoint)?.dev();
-        eprintln!("agentfs-pod: NFS server on 127.0.0.1:{port}; mounted at {}", mountpoint.display());
-        // Stay alive until the mount disappears (e.g. `agentfs-pod unmount`).
+        let control_state = Arc::new(std::sync::Mutex::new(mount_control::State::default()));
+        let mut completion = tokio::spawn(control.clone().serve(control_state.clone(), mountpoint.clone()));
+        let mut command = match mount::mount_nfs(fs, &mountpoint).await {
+            Ok((port, observation)) => {
+                eprintln!("agentfs-pod: NFS server on 127.0.0.1:{port}; observing mount at {}", mountpoint.display());
+                if let Err(error) = observation.require_success() {
+                    eprintln!("agentfs-pod: {error}; preserving NFS server while mount state is unresolved");
+                }
+                Some(observation)
+            }
+            Err(_) => {
+                eprintln!("agentfs-pod: NFS startup unresolved; preserving runtime and control");
+                None
+            }
+        };
+        let mut control_available = true;
+        let mut binding_error_reported = false;
+        let mut binding_ready = false;
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            if !mount::is_mountpoint(&mountpoint) || std::fs::metadata(&mountpoint).map(|metadata| metadata.dev()).ok() != Some(device) {
-                break;
+            if let Some(observation) = &mut command { observation.refresh(); }
+            if !binding_ready && command.as_ref().is_some_and(|observation| observation.status.is_some_and(|status| status.success())) {
+                if let mount::MountState::Mounted(identity) = mount::mount_state(&mountpoint) {
+                    if identity.is_expected_nfs() {
+                        let bound = control.bind_identity(&identity).and_then(|_| {
+                            let mut state = control_state.lock().map_err(|_| anyhow::anyhow!("runtime state poisoned"))?;
+                            state.binding = Some(mount_control::Binding::from_mount(&identity));
+                            Ok(())
+                        });
+                        match bound {
+                            Ok(()) => binding_ready = true,
+                            Err(_) if !binding_error_reported => {
+                                eprintln!("agentfs-pod: runtime binding unresolved; preserving NFS server");
+                                binding_error_reported = true;
+                            }
+                            Err(_) => {},
+                        }
+                    }
+                }
+            }
+            // Absent/Unknown/replaced table entries never retire the server.
+            // Only the runtime-owned child's bound actual-unmount completion
+            // permits ending this runtime and its independently held lease.
+            tokio::select! {
+                result = &mut completion, if control_available => {
+                    match result {
+                        Ok(Ok(())) if command.as_ref().is_some_and(|observation| observation.require_success().is_ok()) => break,
+                        Ok(Ok(())) => {
+                            eprintln!("agentfs-pod: completion proof inconsistent; preserving NFS server");
+                            control_available = false;
+                        }
+                        _ => {
+                            eprintln!("agentfs-pod: lifecycle control unresolved; preserving NFS server");
+                            control_available = false;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {},
             }
         }
         Ok::<(), anyhow::Error>(())
+    })
+}
+
+fn run_unmount(mountpoint: &PathBuf, session_dir: Option<PathBuf>) -> Result<()> {
+    let target = mount::unmount_target(mountpoint)?;
+    if matches!(mount::mount_state(&target), mount::MountState::Mounted(identity) if identity.is_expected_fuse()) {
+        return mount::unmount(&target).map(|_| ());
+    }
+    let session = session_dir.unwrap_or_else(default_session_dir);
+    agentfs::get_runtime().block_on(async move {
+        mount_control::unmount(&session, &target).await
     })
 }
 
@@ -436,4 +515,16 @@ async fn open_path(fs: &PodHttpFileSystem, path: &str, flags: i32) -> Result<age
         .ok_or_else(|| anyhow::anyhow!("{path} not found"))?;
     let ino = stats.ino;
     fs.open(ino, flags).await.map_err(Into::into)
+}
+
+#[cfg(test)]
+mod mount_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn only_typed_daemon_pending_uses_pending_failure_code() {
+        let error: anyhow::Error = MountPending("fixture pending actual_wait=null".into()).into();
+        assert!(error.downcast_ref::<MountPending>().is_some());
+        assert!(anyhow::anyhow!("ordinary failure").downcast_ref::<MountPending>().is_none());
+    }
 }
