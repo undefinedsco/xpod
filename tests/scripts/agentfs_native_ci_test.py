@@ -50,15 +50,16 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_latest_inventory_accepts_only_complete_bound_regressions(self):
-        text = 'test result: ok. 58 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
+        text = 'test result: ok. 59 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
         text += 'test mount::tests::legacy_output_exceeds_observation_budget ... ignored\n'
         text += 'test mount_control::tests::lease_child ... ignored\n'
         for name in ['closed_marker_is_read_only_after_actual_lease_release',
                      'closed_proof_survives_ack_loss_and_partial_socket_cleanup',
-                     'actual_dead_owner_releases_flock_and_only_proven_stale_socket_is_collected']:
+                     'actual_dead_owner_releases_flock_and_only_proven_stale_socket_is_collected',
+                     'owned_atomic_record_replacement_transient_is_not_a_foreign_entry']:
             text += f'test mount_control::tests::{name} ... ok\n'
         a.check_tests(text)
-        for invalid in [text.replace('58 passed', '56 passed'),
+        for invalid in [text.replace('59 passed', '58 passed'),
                         text.replace('0 filtered out', '2 filtered out'),
                         text.replace('closed_marker_is_read_only_after_actual_lease_release ... ok',
                                      'closed_marker_is_read_only_after_actual_lease_release ... FAILED')]:

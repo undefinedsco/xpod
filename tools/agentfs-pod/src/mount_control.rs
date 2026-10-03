@@ -154,14 +154,46 @@ fn nonce() -> Result<String> {
     File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
-fn check_names(directory: &Path) -> Result<()> {
+fn check_names(directory: &Path, transient_nonce: Option<&str>) -> Result<()> {
     // Bounded, nonrecursive inspection of this sole program-owned directory.
-    for (count, entry) in fs::read_dir(directory)?.enumerate() {
-        if count >= 2 { anyhow::bail!("unknown runtime entry retained"); }
-        let name = entry?.file_name();
-        if name != LEASE && name != RECORD { anyhow::bail!("unknown runtime entry retained"); }
+    // During the atomic owner.json replacement the live owner transiently
+    // exposes exactly one private regular file named owner.<nonce>.new for the
+    // recorded nonce. Tolerate only that program-owned writer; any other name,
+    // a non-private transient, or a fourth entry is foreign and fails closed.
+    let expected = transient_nonce.map(|nonce| format!("owner.{nonce}.new"));
+    let mut entries = 0usize;
+    let mut transient_seen = false;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        entries += 1;
+        if entries > 3 { anyhow::bail!("unknown runtime entry retained"); }
+        let name = entry.file_name();
+        if name == LEASE || name == RECORD { continue; }
+        let is_recorded_transient = !transient_seen
+            && expected.as_deref().is_some_and(|expected| name.as_bytes() == expected.as_bytes());
+        if is_recorded_transient {
+            // The atomic writer may rename the transient to owner.json between
+            // read_dir and this observation; a vanished path is that rename.
+            match private_metadata(&entry.path(), false) {
+                Ok(_) => {},
+                Err(error) if error.downcast_ref::<std::io::Error>().is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {},
+                Err(error) => return Err(error).context("runtime transient ownership unknown"),
+            }
+            transient_seen = true;
+            continue;
+        }
+        anyhow::bail!("unknown runtime entry retained");
     }
     Ok(())
+}
+fn recorded_owner_nonce(directory: &Path) -> Result<Option<String>> {
+    // A live writer's transient is keyed to the marker nonce that is stable
+    // across every store_owner replacement.
+    match fs::symlink_metadata(directory.join(RECORD)) {
+        Ok(_) => Ok(Some(read_owner(directory)?.nonce)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 fn read_owner(directory: &Path) -> Result<Owner> {
     let mut file = open_private(&directory.join(RECORD))?;
@@ -249,7 +281,7 @@ impl RuntimeControl {
             Err(error) => return Err(error.into()),
         }
         let directory_id = directory_identity(&directory)?;
-        check_names(&directory)?;
+        check_names(&directory, recorded_owner_nonce(&directory)?.as_deref())?;
         let lease_path = directory.join(LEASE);
         let mut lease = match OpenOptions::new().read(true).write(true).create_new(true).mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&lease_path) {
@@ -284,7 +316,7 @@ impl RuntimeControl {
             }
             Err(error) => return Err(error.into()),
         }
-        check_names(&directory)?;
+        check_names(&directory, None)?;
         let socket_directory_path = new_socket_directory()?;
         let socket_directory_id = directory_identity(&socket_directory_path)?;
         let listener = StdListener::bind(socket_directory_path.join(SOCKET)).context("private UNIX control bind failed")?;
@@ -308,7 +340,7 @@ impl RuntimeControl {
 
     fn verify_owned(&self) -> Result<Owner> {
         let expected = self.owner.lock().map_err(|_| anyhow::anyhow!("runtime owner poisoned"))?.clone();
-        check_names(&self.directory)?;
+        check_names(&self.directory, Some(&expected.nonce))?;
         let owner = read_owner(&self.directory)?;
         if owner != expected || owner.lease != FileIdentity::of(&self.lease.metadata()?) { anyhow::bail!("runtime ownership changed"); }
         if FileIdentity::of(&private_metadata(&socket_directory(&owner)?.join(SOCKET), true)?) != owner.socket { anyhow::bail!("runtime socket replaced; retained"); }
@@ -469,8 +501,11 @@ async fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T, budget: D
 
 fn live_owner(session: &Path, target: &Path) -> Result<(PathBuf, Owner)> {
     let session = mount::canonical_mountpoint(session)?; directory_identity(&session)?;
-    let directory = session.join(DIRECTORY); directory_identity(&directory)?; check_names(&directory)?;
+    let directory = session.join(DIRECTORY); directory_identity(&directory)?;
+    // Read the atomically replaced marker first so the single live writer's
+    // owner.<nonce>.new transient is recognised by its recorded nonce.
     let owner = read_owner(&directory)?;
+    check_names(&directory, Some(&owner.nonce))?;
     if owner.target != target.as_os_str().as_bytes() { anyhow::bail!("unmount target does not match runtime"); }
     let lease = open_private(&directory.join(LEASE))?;
     if FileIdentity::of(&lease.metadata()?) != owner.lease { anyhow::bail!("runtime lease replaced"); }
@@ -512,7 +547,7 @@ fn completed_owner_for_operation(session: &Path, target: &Path, observe: impl Fn
         if errno == Some(libc::EWOULDBLOCK) || errno == Some(libc::EAGAIN) { return Ok(false); }
         anyhow::bail!("closed lease state unknown");
     }
-    check_names(&directory)?;
+    check_names(&directory, None)?;
     let owner = read_owner(&directory)?;
     if owner.target != target.as_os_str().as_bytes() { anyhow::bail!("closed target binding mismatch"); }
     if owner.lease != FileIdentity::of(&lease.metadata()?) { anyhow::bail!("closed lease replaced"); }
@@ -692,6 +727,36 @@ mod tests {
         assert!(control.verify_owned().is_err());
         assert_eq!(fs::read(&foreign).unwrap(), b"foreign fixture sentinel");
         fs::remove_file(foreign).unwrap();
+        clean_fixture_runtime(&control);
+    }
+
+    #[test]
+    fn owned_atomic_record_replacement_transient_is_not_a_foreign_entry() {
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+        let identity = fixture.identity();
+        control.bind_identity(&identity).unwrap();
+        let owner = control.verify_owned().unwrap();
+        // store_owner/acquire expose exactly one program-owned transient
+        // owner.<nonce>.new during the atomic owner.json replacement. Actual
+        // readers (mount readiness and unmount) must tolerate that writer only.
+        let owned = control.directory.join(format!("owner.{}.new", owner.nonce));
+        let held = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&owned).unwrap();
+        assert!(ready(&fixture.session, &fixture.target, &identity).unwrap(), "recorded atomic replacement broke readiness");
+        assert!(live_owner(&fixture.session, &fixture.target).is_ok(), "recorded atomic replacement broke live owner lookup");
+        drop(held);
+        fs::remove_file(&owned).unwrap();
+        // A transient naming any non-recorded nonce is foreign and fails closed.
+        let foreign = control.directory.join(format!("owner.{}.new", nonce().unwrap()));
+        let foreign_held = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&foreign).unwrap();
+        assert!(ready(&fixture.session, &fixture.target, &identity).is_err(), "unrecorded transient must fail closed");
+        assert!(live_owner(&fixture.session, &fixture.target).is_err(), "unrecorded transient must fail closed");
+        drop(foreign_held);
+        fs::remove_file(&foreign).unwrap();
+        // The recorded name must still be a private regular file.
+        fs::create_dir(&owned).unwrap();
+        assert!(ready(&fixture.session, &fixture.target, &identity).is_err(), "non-file recorded transient must fail closed");
+        fs::remove_dir(&owned).unwrap();
         clean_fixture_runtime(&control);
     }
 

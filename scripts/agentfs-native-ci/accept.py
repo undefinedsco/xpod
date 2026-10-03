@@ -22,13 +22,14 @@ BUN_SHA = {
 
 def check_tests(text):
     summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out', text)
-    if ('58', '0', '2', '0', '0') not in summaries:
-        raise RuntimeError('Latest full Rust inventory must report 58 passed, two declared ignores, zero filtered (60 total)')
+    if ('59', '0', '2', '0', '0') not in summaries:
+        raise RuntimeError('Latest full Rust inventory must report 59 passed, two declared ignores, zero filtered (61 total)')
     ignored = re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE)
     if set(ignored) != {'mount::tests::legacy_output_exceeds_observation_budget', 'mount_control::tests::lease_child'}:
         raise RuntimeError('Unexpected ignored tests')
     for test in ['closed_marker_is_read_only_after_actual_lease_release', 'closed_proof_survives_ack_loss_and_partial_socket_cleanup',
-                 'actual_dead_owner_releases_flock_and_only_proven_stale_socket_is_collected']:
+                 'actual_dead_owner_releases_flock_and_only_proven_stale_socket_is_collected',
+                 'owned_atomic_record_replacement_transient_is_not_a_foreign_entry']:
         if not re.search(r'^test mount_control::tests::' + test + r' \.\.\. ok$', text, re.MULTILINE):
             raise RuntimeError(f'Missing latest regression: {test}')
 
@@ -170,7 +171,7 @@ def main():
                  sourceBefore=source_before, sourceAfter=source_after, sdkBefore=sdk_before, sdkAfter=sdk_after,
                  nodeSHA256=sha256(node), hostUname=list(platform.uname()), rustManifestSHA256=RUST_MANIFEST_SHA,
                  bunAssetSHA256=BUN_SHA[host], compiler=receipt['compiler'], nativeReceipt=receipt,
-                 declaredTests=60, passedTests=58, ignoredTests=2, filteredTests=0,
+                 declaredTests=61, passedTests=59, ignoredTests=2, filteredTests=0,
                  ignoredScope='owned lease subprocess invoked by parent; historical RED intentionally ignored',
                  archiveSHA256=sha256(archives[0]), mountExecuted=False, liveGatewayExecuted=False,
                  publicReleaseReady=False)

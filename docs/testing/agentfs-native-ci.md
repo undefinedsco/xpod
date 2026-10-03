@@ -11,7 +11,7 @@
 - Rust `nightly-2026-09-30` 取自官方 `static.rust-lang.org`。先验证日期锁定的发行 manifest SHA256，再由 runner 自带 rustup 安装 minimal profile；assert compiler commit `5c543b0b8c73c7b72bc8284ced4fb22ead15734d`，官方 receipt 记录该平台 cargo/rustc 实际摘要。rustup 和系统 SDK/编译器为外部工具，不声称完整工具链可复现。
 - upstream 固定 `0a014ebd4918615baff589ed17486e557e7c6a23`，官方 `export-native.ts` 使用当前 Cargo.toml/原 Cargo.lock、两已有 patches、当前 helper、recipe 和许可证。首次 registry 缓存为空，导出如实在线 `cargo vendor --locked`，没有宣称首次导出 offline，也不更换锁版本。
 - kit 内 `rebuild-native.ts --verify-only` → `--out <fresh> --test`。recipe 使用隔离 Cargo home、验证后的 stage、内部 jobs2、实际 `build/test --release --frozen`。
-- 核对完整 60 项清单：58 pass、0 fail、2 已声明 ignore、0 filtered。两个 ignore 是历史故障 RED 与由 parent 实际启动的 lease 子进程 fixture；parent 死亡租约测试及最新两个修复回归必须出现 `ok`。不能将 60 项表述为 60 pass。
+- 核对完整 61 项清单：59 pass、0 fail、2 已声明 ignore、0 filtered。两个 ignore 是历史故障 RED 与由 parent 实际启动的 lease 子进程 fixture；parent 死亡租约测试及最新修复回归（含原子 owner.json 替换临时项的 live-reader 容忍）必须出现 `ok`。不能将 61 项表述为 61 pass。
 - 当前 `build.ts` 显式绑定新 helper、新 source kit、新 official receipt，随后 `verify-install.ts --archive <new archive> --expect-validation install-verified` 实际解压并执行安装验收。新 receipt 同时验证 compiler、helper、kit SHA、target、jobs2 和原始 buildArguments。
 
 所有工具子进程使用环境白名单，剔除 runner 凭据和继承的 Cargo/Rust/proxy 覆盖。Linux系统 prerequisites 复用现有 native Linux build 所需 `pkg-config/liblzma-dev/libssl-dev/build-essential`；系统包版本与 SDK 不属于源 kit 的冻结范围。
