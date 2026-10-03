@@ -7,6 +7,8 @@ import {
   descriptorRowToColumnValues,
   fieldBindings,
   isUriArrayField,
+  normalizeMutationRow,
+  normalizeUriArray,
   projectionFieldOrder,
 } from './mapping.js';
 import { documentOfIri, resourceIdForRow, subjectIriForRow } from './layout.js';
@@ -216,12 +218,6 @@ export interface PodMutationContext<D extends PodModelDescriptor> {
   authenticatedFetch?: typeof fetch;
 }
 
-function absoluteUri(value: unknown, base: string): string | undefined {
-  if (typeof value !== 'string' || value.length === 0) return undefined;
-  if (/^[a-z][a-z0-9+.-]*:/iu.test(value)) return value;
-  return new URL(value, base).toString();
-}
-
 /**
  * `array: true` + `type: 'uri'` 字段的唯一写入口（§4.1）：一次 SPARQL PATCH，
  * 先删旧值再插新值。`array + uri` 之外字段不允许走这里。
@@ -239,12 +235,8 @@ export async function writeField<D extends PodModelDescriptor>(
     );
   }
   const documentUrl = documentOfIri(context.document);
-  const previous = (Array.isArray(options.previous) ? options.previous : [options.previous])
-    .map((value) => absoluteUri(value, documentUrl))
-    .filter((value): value is string => value !== undefined);
-  const next = (Array.isArray(options.next) ? options.next : [options.next])
-    .map((value) => absoluteUri(value, documentUrl))
-    .filter((value): value is string => value !== undefined);
+  const previous = normalizeUriArray(options.previous, documentUrl);
+  const next = normalizeUriArray(options.next, documentUrl);
 
   const triples = (iris: readonly string[]): string => iris
     .map((iri) => `<${options.subjectIri}> <${field.predicate}> <${iri}> .`)
@@ -314,10 +306,14 @@ export function createMutationHandlers<D extends PodModelDescriptor>(
   return {
     onInsert: async ({ transaction }) => {
       for (const mutation of transaction.mutations) {
-        const row = mutation.modified as RowOf<D>;
         const key = String(mutation.key);
         const resourceId = resourceIdForRow(descriptor, context.document, context.podUrl, key);
         const subjectIri = subjectIriForRow(descriptor, context.document, key);
+        const row = normalizeMutationRow(descriptor, table, mutation.modified as RowOf<D>, {
+          database: context.database, podUrl: context.podUrl, document: context.document, resourceId,
+        });
+        // TanStack keeps modified as its optimistic/committed transaction row.
+        Object.assign(mutation.modified, row);
         pending.register({
           key,
           intent: row,
@@ -339,10 +335,13 @@ export function createMutationHandlers<D extends PodModelDescriptor>(
       for (const mutation of transaction.mutations) {
         const key = String(mutation.key);
         const original = mutation.original as RowOf<D>;
-        const modified = mutation.modified as RowOf<D>;
         const changes = mutation.changes as Record<string, unknown>;
         const resourceId = resourceIdForRow(descriptor, context.document, context.podUrl, key);
         const subjectIri = subjectIriForRow(descriptor, context.document, key);
+        const modified = normalizeMutationRow(descriptor, table, mutation.modified as RowOf<D>, {
+          database: context.database, podUrl: context.podUrl, document: context.document, resourceId,
+        });
+        Object.assign(mutation.modified, modified);
         const beforeHash = original && Object.keys(original).length > 0 ? hashOf(original) : undefined;
         pending.register({
           key,
@@ -352,11 +351,11 @@ export function createMutationHandlers<D extends PodModelDescriptor>(
         });
         await runWrite(key, async () => {
           const columnChanges: Record<string, unknown> = {};
-          for (const [field, value] of Object.entries(changes)) {
+          for (const field of Object.keys(changes)) {
             if (uriArrayFieldNames.has(field)) continue;
             const column = columnOf(field);
             if (column === undefined) continue;
-            columnChanges[column] = value;
+            columnChanges[column] = modified[field];
           }
           if (Object.keys(columnChanges).length > 0) {
             const updated = await context.database.updateById(table, resourceId, columnChanges as never);

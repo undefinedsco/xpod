@@ -259,8 +259,8 @@ class Component extends DCLogic {
     const R = (id, label, hint, model, o) => Object.assign({ id: 'role-' + id, label, hint, model, note: '', hasNote: false, disabled: null, target: false, needFree: false, testLabel: '测试', editable: true, readonly: false }, o || {});
     const groups = [
       { label: '对话', rows: [
-        R('smart', '智能', '复杂任务、需要推理时', 'Xpod 提供 · [智能模型]', { target: true }),
-        R('fast', '快速', '简单任务、要快的时候', 'Xpod 提供 · [快速模型]', { target: true }),
+        R('smart', '智能', '复杂任务、需要推理时', 'Xpod 提供 · [智能模型]'),
+        R('fast', '快速', '简单任务、要快的时候', 'Xpod 提供 · [快速模型]'),
         R('vision', '视觉辅助', '看图、读扫描件；只列有视觉能力的对话模型', '不使用')
       ] },
       { label: '文档理解', rows: [R('document', '文档理解', '读出文档的结构和内容', 'PaddleOCR · 百度（Xpod 提供）')] },

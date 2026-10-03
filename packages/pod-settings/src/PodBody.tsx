@@ -4,6 +4,7 @@ import type { PodBodyProps, PodToggle } from './contract';
 
 const row = 'flex min-h-14 flex-wrap items-center justify-between gap-3 border-b border-border py-3';
 const jobLabels = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败' };
+const modelStatusLabels = { loading: '正在读取模型…', available: 'Xpod 管理', empty: '已连接 Xpod，暂无模型', unauthorized: '请登录并允许 Xpod 访问', error: '模型读取失败，请重试', unavailable: '当前模型暂不可用' };
 
 /** Identical body for desktop and LinX; the host provides navigation and authenticated operations. */
 export function PodBody(props: PodBodyProps) {
@@ -43,9 +44,10 @@ export function PodBody(props: PodBodyProps) {
               {model.value && !model.models.some(candidate => candidate.ref === model.value) && <option value={model.value}>当前模型（暂不可用）</option>}
               {model.models.map(option => <option key={option.ref} value={option.ref}>{option.label}</option>)}
             </NativeSelect>
-            {model.testable ? <Button variant="outline" size="sm" disabled={busy || !model.value} onClick={() => void run(() => props.onTest(model.id, model.value!), '测试通过')}>测试</Button> : <Pending />}
             {model.models.length === 0 && props.freeQuotaUrl && <a href={props.freeQuotaUrl} className="text-sm leading-normal text-primary">领免费额度 ›</a>}
-          </> : <><span className="flex-1 text-sm leading-normal text-muted-foreground">{model.defaultLabel}</span><Pending /></>}
+          </> : <><span className="flex-1 text-sm leading-normal text-muted-foreground">{model.defaultLabel}</span>{!model.supported && <Pending />}</>}
+          {model.status && (model.models || model.supported) && <span className="text-xs leading-normal text-muted-foreground">{modelStatusLabels[model.status]}</span>}
+          {model.id !== 'embeddingModel' && model.testable && <Button variant="outline" size="sm" disabled={busy || !(model.testValue ?? model.value)} onClick={() => void run(() => props.onTest(model.id, (model.testValue ?? model.value)!), '测试通过')}>测试</Button>}
         </div>)}
       </section>)}
     </section>}

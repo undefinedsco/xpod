@@ -7,6 +7,7 @@ import { useBackgroundPodAccess } from '../settings/ai-config/useBackgroundPodAc
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 import { testAiConfigModel, type AiConfigModelAssignment } from '../../api/ai-config';
 import { fetchPodSettingsStatus, type PodStorageStatus } from '../../api/pod-settings';
+import { matchesPlatformModelRole, type PLATFORM_MODEL_ROLES } from '@undefineds.co/ai-connections/client';
 
 export interface PodPageProps { section: PodSection; onSection(section: PodSection): void; accountUrl?: string }
 export default function PodPage(props: PodPageProps) {
@@ -28,15 +29,25 @@ function PodPageContent({ section, onSection, accountUrl }: PodPageProps) {
     return <div className="p-6 text-sm">{state.loading ? '正在读取 Pod 设置…' : '暂时无法读取 Pod 设置。'}{!state.loading && (state.error?.includes('service_access_missing') ? <button className="ml-3 text-primary" disabled={access.working || access.loading} onClick={() => void access.grant().then(state.reload).catch(() => undefined)}>允许 Xpod 访问</button> : <button className="ml-3 text-primary" onClick={state.reload}>重试</button>)}</div>;
   }
   const config = state.config;
+  const gatewayStatus: PodModelRow['status'] = state.gatewayCatalog.status === 'available' && state.gatewayCatalog.models.length === 0 ? 'empty' : state.gatewayCatalog.status;
+  const gatewayModel = (role: keyof typeof PLATFORM_MODEL_ROLES) => state.gatewayCatalog.models.find(model => matchesPlatformModelRole(model.id, role));
   const option = (model: (typeof state.models)[number]): PodModel => ({ ref: model.ref, label: `${model.displayName ?? model.id} · ${model.owner}`, capabilities: model.capabilities, source: 'own' });
   const assignment = (id: AiConfigModelAssignment, label: string, group: string, defaultLabel: string): PodModelRow => {
     const models = podModelsForAssignment(state.models, id);
     const selected = models.find(model => model.ref === config?.models[id]);
-    return { id, label, group, defaultLabel, value: config?.models[id], models: models.map(option), testable: Boolean(selected && podCapabilityNames(selected.capabilities).some(value => ['chat', 'embedding'].includes(value))) };
+    return { id, label, group, defaultLabel, value: config?.models[id], models: models.map(option), supported: true, status: config?.models[id] && !selected ? 'unavailable' : undefined, testable: Boolean(selected && podCapabilityNames(selected.capabilities).some(value => ['chat', 'embedding'].includes(value))) };
   };
+  const smartDefault = gatewayModel('smart');
+  const fastDefault = gatewayModel('fast');
+  const smart = assignment('chatModel', '智能', '对话', smartDefault?.displayName ?? 'Xpod 提供');
+  if (!smart.value) {
+    smart.status = gatewayStatus;
+    smart.testable = state.gatewayCatalog.status === 'available' && Boolean(smartDefault);
+    smart.testValue = smartDefault?.id;
+  }
   const modelRows: PodModelRow[] = [
-    assignment('chatModel', '智能', '对话', 'Xpod 提供'),
-    { id: 'fast', label: '快速', group: '对话', defaultLabel: 'Xpod 提供' },
+    smart,
+    { id: 'fast', label: '快速', group: '对话', defaultLabel: fastDefault?.displayName ?? 'Xpod 提供', supported: true, status: gatewayStatus, testable: state.gatewayCatalog.status === 'available' && Boolean(fastDefault), testValue: fastDefault?.id },
     assignment('ocrModel', '视觉辅助', '对话', '不使用'),
     assignment('readerModel', '文档理解', '文档理解', 'PaddleOCR · 百度（Xpod 提供）'),
     { id: 'embeddingModel', label: '语义检索', group: '向量', defaultLabel: '' },
@@ -75,7 +86,7 @@ function PodPageContent({ section, onSection, accountUrl }: PodPageProps) {
       { label: '计算时长', value: usage ? `${usage.computeSeconds.toLocaleString()} 秒` : '—' },
     ]}
     onModel={async (id, value) => { if (id === 'chatModel' || id === 'ocrModel' || id === 'readerModel') await state.save({ models: { [id]: value || null } }); }}
-    onTest={async (_id, ref) => { const model = state.models.find(item => item.ref === ref); if (!model) throw new Error('Model unavailable'); await testAiConfigModel(runtime.fetch, { ...model, capabilities: podCapabilityNames(model.capabilities) }); }}
+    onTest={async (_id, ref) => { const model = state.models.find(item => item.ref === ref); const gateway = state.gatewayCatalog.models.find(item => item.id === ref); if (!model && !gateway) throw new Error('Model unavailable'); await testAiConfigModel(runtime.fetch, model ? { ...model, capabilities: podCapabilityNames(model.capabilities) } : { id: gateway!.id, capabilities: ['chat'] }); }}
     onToggle={toggle} onEmbedding={async value => { if (!target || rebuildInFlight(state.lifecycle, state.rebuilding)) throw new Error('Rebuild unavailable'); if (value === config?.models.embeddingModel) await state.rebuild(target); else await state.saveAndRebuild({ models: { embeddingModel: value } }, target); }}
   />;
 }

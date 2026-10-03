@@ -1,5 +1,5 @@
 import { drizzle } from '@undefineds.co/drizzle-solid';
-import { aiConfigResource } from '@undefineds.co/models';
+import { aiConfigResource, aiModelResource } from '@undefineds.co/models';
 import type { SolidAuthContext } from '../auth/AuthContext';
 import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import type {
@@ -43,7 +43,7 @@ export class DrizzlePodAiConfigStore implements AiConfigPolicyStore {
       db.findById<AiConfigRow>(aiConfigResource, id),
       db.findById<AiConfigRow>(xpodAiConfigResource, id),
     ]);
-    return policyFromRows(sharedRow, productRow);
+    return policyFromRows(sharedRow, productRow, input.podUrl);
   }
 
   public async update(input: {
@@ -58,7 +58,7 @@ export class DrizzlePodAiConfigStore implements AiConfigPolicyStore {
       db.findById<AiConfigRow>(aiConfigResource, id),
       db.findById<AiConfigRow>(xpodAiConfigResource, id),
     ]);
-    const mergedPolicy = mergePolicy(policyFromRows(sharedCurrent, productCurrent), input.patch, this.now());
+    const mergedPolicy = mergePolicy(policyFromRows(sharedCurrent, productCurrent, input.podUrl), input.patch, this.now(), input.podUrl);
 
     await Promise.all([
       writeRow(db, aiConfigResource, id, sharedCurrent, sharedRowFromPolicy(mergedPolicy)),
@@ -83,14 +83,14 @@ function aiConfigResourceId(): string {
   return aiConfigResource.buildId({ id: 'config' });
 }
 
-function policyFromRows(sharedRow: AiConfigRow | null, productRow: AiConfigRow | null): AiConfigPolicy {
+function policyFromRows(sharedRow: AiConfigRow | null, productRow: AiConfigRow | null, podUrl: string): AiConfigPolicy {
   const defaults = defaultPolicy();
   if (!sharedRow && !productRow) return defaults;
   const shared = sharedRow ?? {};
   const product = productRow ?? {};
   const models: AiConfigPolicy['models'] = {};
   for (const key of modelKeys) {
-    if (typeof shared[key] === 'string' && shared[key]) models[key] = shared[key] as string;
+    if (typeof shared[key] === 'string' && shared[key]) models[key] = canonicalModelReference(shared[key] as string, podUrl);
   }
   return {
     schemaVersion: '1.0',
@@ -125,12 +125,12 @@ function policyFromRows(sharedRow: AiConfigRow | null, productRow: AiConfigRow |
   };
 }
 
-function mergePolicy(current: AiConfigPolicy, patch: AiConfigPolicyPatch, now: Date): AiConfigPolicy {
+function mergePolicy(current: AiConfigPolicy, patch: AiConfigPolicyPatch, now: Date, podUrl: string): AiConfigPolicy {
   const models = { ...current.models };
   for (const key of modelKeys) {
     const value = patch.models?.[key];
     if (value === null) delete models[key];
-    else if (value !== undefined) models[key] = value;
+    else if (value !== undefined) models[key] = canonicalModelReference(value, podUrl);
   }
   return {
     schemaVersion: '1.0',
@@ -140,6 +140,18 @@ function mergePolicy(current: AiConfigPolicy, patch: AiConfigPolicyPatch, now: D
     lifecycle: { ...current.lifecycle, ...patch.lifecycle },
     updatedAt: now.toISOString(),
   };
+}
+
+/** API refs may be Pod-root-relative; linked ORM columns require target-relative ids or absolute IRIs. */
+function canonicalModelReference(ref: string, podUrl: string): string {
+  if (/^[a-z][a-z\d+.-]*:/i.test(ref)) {
+    // Validate without serializing: external IRI lexical identity must survive.
+    new URL(ref);
+    return ref;
+  }
+  const parsed = aiModelResource.parseRef(ref);
+  if (!parsed) throw new Error('Invalid AI model resource reference');
+  return aiModelResource.buildIri(podUrl, { id: parsed.resourceId });
 }
 
 function sharedRowFromPolicy(policy: AiConfigPolicy): AiConfigRow {

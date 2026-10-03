@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { drizzle } from '@undefineds.co/drizzle-solid';
-import { aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
+import { drizzle, type AnyPodTable, type PodColumn } from '@undefineds.co/drizzle-solid';
+import { TripleBuilderImpl, handlerRegistry, type Triple } from '../../../node_modules/@undefineds.co/drizzle-solid/dist/core/triple/index.js';
+import { AI_MODEL_CAPABILITY, AI_MODEL_CLASS, UDFS, aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
+import type { AiGatewayModel } from '@undefineds.co/ai-connections/client';
+import { Parser as SparqlParser } from 'sparqljs';
 import { modelCatalogId } from '../../../packages/ai-connections/src/AiModelCatalog';
 import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
 
@@ -30,6 +33,111 @@ function renderCredentialInsert(row: Record<string, unknown>): string {
     insert(resource: unknown): { values(value: unknown): { toSPARQL(): { query: string } } };
   };
   return database.insert(credentialResource).values(row).toSPARQL().query;
+}
+
+/** Fake HTTP/storage, genuine installed ORM INSERT/UPDATE compiler and RDF term parsing. */
+function createModelRdfDatabase(initialRows?: Map<unknown, Map<string, Record<string, unknown>>>) {
+  const orm = drizzle({ info: { isLoggedIn: true, webId: WEB_ID }, fetch: async () => { throw new Error('no network in RDF resource regression'); } }, {
+    schema: { aiModel: aiModelResource, aiProvider: aiProviderResource, credential: credentialResource }, podUrl: POD_URL, autoConnect: false, resourcePreparation: 'off',
+  });
+  const builder = new TripleBuilderImpl(orm.getDialect().getUriResolver());
+  builder.setBaseUri(POD_URL);
+  builder.setTableRegistry(new Map([[aiProviderResource.getType(), [aiProviderResource]]]), new Map([['aiProvider', aiProviderResource]]));
+  const rows = initialRows ?? new Map<unknown, Map<string, Record<string, unknown>>>([[aiModelResource, new Map()], [aiProviderResource, new Map()], [credentialResource, new Map()]]);
+  const targets = new Map<string, { resource: AnyPodTable; id: string }>();
+  const graph = new Map<string, Triple[]>();
+  const queries: string[] = [];
+  const register = (resource: AnyPodTable, id: string) => {
+    const subject = resource.buildIri(POD_URL, { id });
+    targets.set(subject, { resource, id });
+    return subject;
+  };
+  const materialize = (subject: string) => {
+    const target = targets.get(subject)!;
+    const terms = graph.get(subject) ?? [];
+    const row: Record<string, unknown> = { id: target.id, '@id': subject };
+    for (const [name, column] of Object.entries(target.resource.columns as Record<string, PodColumn>)) {
+      if (name === 'id') continue;
+      const matches = terms.filter(term => term.predicate.value === builder.getPredicateUri(column, target.resource));
+      if (matches.length === 0) continue;
+      const parsed = matches.map(term => handlerRegistry.getHandler(column).parseValue(term.object, column));
+      row[name] = column.options?.isArray ? parsed : parsed[0];
+    }
+    rows.get(target.resource)!.set(target.id, row);
+    return row;
+  };
+  const apply = (query: string) => {
+    queries.push(query);
+    const parsed = new SparqlParser().parse(query);
+    if (parsed.type !== 'update') throw new Error('fixture expected SPARQL update');
+    const touched = new Set<string>();
+    for (const operation of parsed.updates) {
+      if ('delete' in operation) for (const pattern of operation.delete) for (const term of pattern.triples) {
+        if (!('termType' in term.predicate)) throw new Error('fixture expected RDF predicate term');
+        const predicate = term.predicate.value;
+        const subject = term.subject.value;
+        const current = graph.get(subject) ?? [];
+        graph.set(subject, current.filter(existing => !(existing.predicate.value === predicate
+          && (term.object.termType === 'Variable' || (existing.object.termType === term.object.termType && existing.object.value === term.object.value)))));
+        touched.add(subject);
+      }
+      if ('insert' in operation) for (const pattern of operation.insert) for (const term of pattern.triples) {
+        if (!('termType' in term.predicate)) throw new Error('fixture expected RDF predicate term');
+        const predicate = term.predicate.value;
+        const subject = term.subject.value;
+        const current = graph.get(subject) ?? [];
+        if (!current.some(existing => existing.predicate.value === predicate && existing.object.termType === term.object.termType && existing.object.value === term.object.value)) current.push(term as Triple);
+        graph.set(subject, current);
+        touched.add(subject);
+      }
+    }
+    for (const subject of touched) if (targets.has(subject)) materialize(subject);
+  };
+  const persist = (resource: AnyPodTable, row: Record<string, unknown>) => {
+    const values = orm.insert(resource).values(row).toIR().rows[0]!;
+    const subject = register(resource, String(values.id));
+    const triples = [builder.buildTypeTriple(subject, resource.getType())];
+    for (const [name, column] of Object.entries(resource.columns as Record<string, PodColumn>)) {
+      if (name !== 'id' && values[name] !== undefined && values[name] !== null) triples.push(...builder.buildInsert(subject, column, values[name], resource).triples);
+    }
+    graph.set(subject, triples);
+    return materialize(subject);
+  };
+  for (const resource of [aiModelResource, aiProviderResource]) for (const row of rows.get(resource)?.values() ?? []) persist(resource, row);
+  const authenticatedFetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'PATCH') apply(String(init.body));
+    return new Response(null, { status: 204 });
+  });
+  // Only transport/storage is substituted. Public session.execute itself still
+  // owns initialization, conversion dispatch and subject-index registration.
+  vi.spyOn(orm.getDialect(), 'query').mockImplementation(async operation => {
+    if (operation.type !== 'insert' || !operation.plan || !('rows' in operation.plan)) throw new Error('fixture expected public insert plan');
+    const converter = orm.getDialect().getSPARQLConverter()!;
+    for (const row of operation.plan.rows) register(operation.table, String(row.id));
+    apply(converter.convertInsert(operation.plan).query);
+    return operation.plan.rows.map(row => rows.get(operation.table)!.get(String(row.id))!);
+  });
+  return { rows, graph, queries, persist, authenticatedFetch, database: {
+    init: vi.fn(),
+    session: orm.session,
+    select: () => ({ from: (resource: unknown) => ({ execute: async () => [...rows.get(resource)!.values()] }) }),
+    findById: vi.fn(async (resource: unknown, id: string) => rows.get(resource)?.get(id) ?? null),
+    insert: (resource: AnyPodTable) => ({ values: (value: Record<string, unknown>) => {
+      const insert = orm.insert(resource).values(value);
+      return { toIR: insert.toIR, execute: async () => {
+        const plan = insert.toIR();
+        for (const row of plan.rows) register(resource, String(row.id));
+        apply(insert.toSPARQL().query);
+        return plan.rows.map(row => rows.get(resource)!.get(String(row.id))!);
+      } };
+    } }),
+    updateById: vi.fn(async (resource: AnyPodTable, id: string, patch: Record<string, unknown>) => {
+      if (!rows.get(resource)?.has(id)) return null;
+      const subject = register(resource, id);
+      apply(orm.session.update(resource).set(patch).whereByIri(subject).toSPARQL().query);
+      return rows.get(resource)?.get(id);
+    }),
+  } };
 }
 
 describe('XpodAiConnectionsPodStore', () => {
@@ -497,23 +605,8 @@ describe('XpodAiConnectionsPodStore', () => {
       [aiProviderResource, new Map()],
       [aiModelResource, new Map()],
     ]);
-    const database = {
-      init: vi.fn(),
-      select: () => ({ from: (resource: unknown) => ({ execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])] }) }),
-      insert: (resource: unknown) => ({ values: (value: Record<string, unknown>) => ({ execute: async () => {
-        rowsByResource.get(resource)!.set(String(value.id), value);
-        return [value];
-      } }) }),
-      findById: async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null,
-      updateById: async (resource: unknown, id: string, patch: Record<string, unknown>) => {
-        const current = rowsByResource.get(resource)?.get(id);
-        if (!current) return null;
-        const updated = { ...current, ...patch };
-        rowsByResource.get(resource)!.set(id, updated);
-        return updated;
-      },
-    };
-    const store = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+    const { database, authenticatedFetch } = createModelRdfDatabase(rowsByResource);
+    const store = createXpodAiConnectionsPodStore({ database: database as never, authenticatedFetch, podUrl: POD_URL, webId: WEB_ID });
     const first = await store.createApiKeyCredential!('custom', {
       apiKey: 'sk-first', label: 'timicc', offeringId: 'openai-compatible', baseUrl: 'https://timicc.com/v1', compatibility: 'openai',
     } as never) as { id: string };
@@ -527,8 +620,8 @@ describe('XpodAiConnectionsPodStore', () => {
 
     const firstProviderId = String(rowsByResource.get(credentialResource)!.get(first.id)!.provider);
     const secondProviderId = String(rowsByResource.get(credentialResource)!.get(second.id)!.provider);
-    expect(rowsByResource.get(aiProviderResource)!.get(firstProviderId)?.hasModel).toBeUndefined();
-    expect(rowsByResource.get(aiProviderResource)!.get(secondProviderId)?.hasModel).toEqual([
+    expect([...rowsByResource.get(aiProviderResource)!.values()].find(row => row['@id'] === firstProviderId)?.hasModel).toBeUndefined();
+    expect([...rowsByResource.get(aiProviderResource)!.values()].find(row => row['@id'] === secondProviderId)?.hasModel).toEqual([
       `${secondProviderId.split('#', 1)[0]}#shared-model`,
     ]);
   });
@@ -712,33 +805,10 @@ describe('XpodAiConnectionsPodStore', () => {
       [aiProviderResource, new Map()],
       [aiModelResource, new Map()],
     ]);
-    const database = {
-      init: vi.fn(),
-      select: () => ({
-        from: (resource: unknown) => ({
-          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
-        }),
-      }),
-      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
-      insert: (resource: unknown) => ({
-        values: (value: Record<string, unknown>) => ({
-          execute: async () => {
-            rowsByResource.get(resource)?.set(String(value.id), value);
-            return [value];
-          },
-        }),
-      }),
-      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
-        const rows = rowsByResource.get(resource)!;
-        const current = rows.get(id);
-        if (!current) return null;
-        const updated = { ...current, ...patch };
-        rows.set(id, updated);
-        return updated;
-      }),
-    };
+    const { database, authenticatedFetch } = createModelRdfDatabase(rowsByResource);
     const store = createXpodAiConnectionsPodStore({
       database: database as never,
+      authenticatedFetch,
       podUrl: POD_URL,
       webId: WEB_ID,
     });
@@ -755,8 +825,8 @@ describe('XpodAiConnectionsPodStore', () => {
     // `providers/openai-official-subscription.ttl`; both credentials now name
     // the provider's own document.
     const providerDocument = aiProviderResource.buildId({ id: 'openai' });
-    expect(rowsByResource.get(credentialResource)!.get(subscription.id)?.provider).toBe(providerDocument);
-    expect(rowsByResource.get(credentialResource)!.get(platform.id)?.provider).toBe(providerDocument);
+    expect(rowsByResource.get(credentialResource)!.get(subscription.id)?.provider).toBe(aiProviderResource.buildIri(POD_URL, { id: providerDocument }));
+    expect(rowsByResource.get(credentialResource)!.get(platform.id)?.provider).toBe(aiProviderResource.buildIri(POD_URL, { id: providerDocument }));
 
     await store.saveDiscoveredModels!('openai', subscription.id, [
       { id: 'gpt-6-astra', displayName: 'GPT-6-Astra' },
@@ -768,7 +838,7 @@ describe('XpodAiConnectionsPodStore', () => {
     // The selection stores one reference into the provider's own document, and
     // no phantom offering document is created for it.
     expect(rowsByResource.get(aiProviderResource)!.get(providerDocument)?.hasModel).toEqual([
-      aiModelResource.buildId({ id: 'gpt-6-astra', isProvidedBy: providerDocument }),
+      aiModelResource.buildIri(POD_URL, { id: aiModelResource.buildId({ id: 'gpt-6-astra', isProvidedBy: providerDocument }) }),
     ]);
     expect([...rowsByResource.get(aiProviderResource)!.keys()]).toEqual([providerDocument]);
 
@@ -1121,76 +1191,118 @@ describe('XpodAiConnectionsPodStore', () => {
     }));
   });
 
-  it('keeps the discovered model type so an embedding model is listed as one', async () => {
-    const authenticatedFetch = vi.fn(async () => new Response(null, { status: 204 }));
-    const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
-      [credentialResource, new Map()],
-      [aiProviderResource, new Map()],
-      [aiModelResource, new Map()],
-    ]);
-    const database = {
-      init: vi.fn(),
-      select: () => ({
-        from: (resource: unknown) => ({
-          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
-        }),
-      }),
-      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
-      insert: (resource: unknown) => ({
-        values: (value: Record<string, unknown>) => ({
-          execute: async () => {
-            rowsByResource.get(resource)?.set(String(value.id), value);
-            return [value];
-          },
-        }),
-      }),
-      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
-        const rows = rowsByResource.get(resource)!;
-        const current = rows.get(id);
-        if (!current) return null;
-        const updated = { ...current, ...patch };
-        rows.set(id, updated);
-        return updated;
-      }),
-    };
-    const store = createXpodAiConnectionsPodStore({
-      database: database as never,
-      authenticatedFetch,
-      podUrl: POD_URL,
-      webId: WEB_ID,
-    });
-
+  it('roundtrips discovered chat and embedding classes through the installed ORM RDF resource', async () => {
+    const { rows, graph, queries, database, authenticatedFetch } = createModelRdfDatabase();
+    const store = createXpodAiConnectionsPodStore({ database: database as never, authenticatedFetch, podUrl: POD_URL, webId: WEB_ID });
     await store.saveDiscoveredModels!('openai', 'credentials.ttl#openai-primary', [
       { id: 'gpt-5', modelType: 'chat' },
       { id: 'text-embedding-3-small', modelType: 'embedding' },
     ]);
-
-    // 同步模型的类型必须落进 Pod 行：行里没有类型，embedding 模型之后就和普通
-    // 模型无从区分，向量模型列表与 embedding 允许名单都找不到它。
-    expect(rowsByResource.get(aiModelResource)?.get('openai.ttl#text-embedding-3-small'))
-      .toEqual(expect.objectContaining({ modelType: 'embedding' }));
+    expect(rows.get(aiModelResource)?.get('openai.ttl#gpt-5')?.rdfType).toContain(AI_MODEL_CLASS.chat);
+    expect(rows.get(aiModelResource)?.get('openai.ttl#text-embedding-3-small')?.rdfType).toContain(AI_MODEL_CLASS.embedding);
+    const chatRow = rows.get(aiModelResource)?.get('openai.ttl#gpt-5');
+    expect(chatRow).not.toHaveProperty('modelType');
+    expect(chatRow?.createdAt).toBeInstanceOf(Date);
+    expect(chatRow?.updatedAt).toBeInstanceOf(Date);
+    const classTerms = graph.get(aiModelResource.buildIri(POD_URL, { id: 'openai.ttl#gpt-5' }))!.filter(term => term.predicate.value === aiModelResource.columns.rdfType.options.predicate);
+    expect(classTerms.map(term => term.object.value)).toEqual(expect.arrayContaining([aiModelResource.getType(), AI_MODEL_CLASS.chat]));
+    expect(classTerms.every(term => term.object.termType === 'NamedNode')).toBe(true);
+    const scalarInserts = queries.filter(query => query.includes('INSERT DATA') && query.includes('#gpt-5') && query.includes('createdAt'));
+    expect(scalarInserts).toHaveLength(1);
+    expect(scalarInserts[0]).not.toContain(AI_MODEL_CLASS.chat);
+    expect(scalarInserts[0]).not.toContain('\\"https://undefineds.co/ns#AIModel');
     await expect(store.listModels!()).resolves.toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 'text-embedding-3-small',
-        modelType: 'embedding',
-        capabilities: ['embedding'],
-      }),
-      expect.objectContaining({ id: 'gpt-5', modelType: 'chat' }),
+      expect.objectContaining({ id: 'gpt-5', modelType: 'chat', capabilities: ['chat'] }),
+      expect.objectContaining({ id: 'text-embedding-3-small', modelType: 'embedding', capabilities: ['embedding'] }),
     ]));
-    const chatRow = (await store.listModels!()).find((model) => model.id === 'gpt-5')!;
-    // 只有向量模型带能力标记：聊天模型的能力由目录投影提供，不由 Pod 行伪造。
-    expect(chatRow.capabilities).toBeUndefined();
+  });
 
-    // 后续一次没有类型的同步不能把已记录的类型抹掉。
-    await store.saveDiscoveredModels!('openai', 'credentials.ttl#openai-primary', [
-      { id: 'text-embedding-3-small' },
-    ]);
-    expect(rowsByResource.get(aiModelResource)?.get('openai.ttl#text-embedding-3-small'))
-      .toEqual(expect.objectContaining({ modelType: 'embedding' }));
+  it('preserves known class and independent canonical capabilities when a later discovery omits them', async () => {
+    const { rows, database, authenticatedFetch } = createModelRdfDatabase();
+    const store = createXpodAiConnectionsPodStore({ database: database as never, authenticatedFetch, podUrl: POD_URL, webId: WEB_ID });
+    await store.saveDiscoveredModels!('openai', 'credentials.ttl#openai-primary', [{
+      id: 'gpt-5', modelType: 'chat', capabilities: ['vision', AI_MODEL_CAPABILITY.tool_call],
+    }]);
+    const initial = rows.get(aiModelResource)?.get('openai.ttl#gpt-5');
+    expect(initial?.capabilities).toEqual([AI_MODEL_CAPABILITY.vision, AI_MODEL_CAPABILITY.tool_call]);
+    await store.saveDiscoveredModels!('openai', 'credentials.ttl#openai-primary', [{ id: 'gpt-5', displayName: 'Updated' }]);
+    const updated = rows.get(aiModelResource)?.get('openai.ttl#gpt-5');
+    expect(updated?.rdfType).toEqual(initial?.rdfType);
+    expect(updated?.capabilities).toEqual(initial?.capabilities);
+    await expect(store.listModels!()).resolves.toEqual([expect.objectContaining({
+      id: 'gpt-5', displayName: 'Updated', modelType: 'chat', capabilities: expect.arrayContaining(['chat', 'vision', 'tool_call']),
+    })]);
+  });
+
+  it('replaces an explicitly changed class without dropping independently stored capabilities', async () => {
+    const { rows, persist, database, authenticatedFetch } = createModelRdfDatabase();
+    const store = createXpodAiConnectionsPodStore({ database: database as never, authenticatedFetch, podUrl: POD_URL, webId: WEB_ID });
+    await store.saveDiscoveredModels!('openai', 'credentials.ttl#openai-primary', [{ id: 'change', modelType: 'chat', capabilities: ['vision'] }]);
+    const first = rows.get(aiModelResource)!.get('openai.ttl#change')!;
+    persist(aiModelResource, { ...first, rdfType: [...first.rdfType as string[], 'https://example.test/AdditionalModel'] });
+    await store.saveDiscoveredModels!('openai', 'credentials.ttl#openai-primary', [{ id: 'change', modelType: 'embedding' }]);
+    const row = rows.get(aiModelResource)?.get('openai.ttl#change');
+    expect(row?.rdfType).toContain(AI_MODEL_CLASS.embedding);
+    expect(row?.rdfType).not.toContain(AI_MODEL_CLASS.chat);
+    expect(row?.rdfType).toContain('https://example.test/AdditionalModel');
+    expect(row?.capabilities).toEqual([AI_MODEL_CAPABILITY.vision]);
+    await expect(store.listModels!()).resolves.toEqual([expect.objectContaining({ modelType: 'embedding', capabilities: ['vision', 'embedding'] })]);
+  });
+
+  it('does not turn missing or unknown discovery types into chat', async () => {
+    const { rows, database, authenticatedFetch } = createModelRdfDatabase();
+    const store = createXpodAiConnectionsPodStore({ database: database as never, authenticatedFetch, podUrl: POD_URL, webId: WEB_ID });
+    await store.saveDiscoveredModels!('openai', 'credentials.ttl#openai-primary', [{ id: 'missing' }, { id: 'unknown', modelType: 'not-a-model-class' }, { id: 'null-type', modelType: null }]);
+    for (const row of rows.get(aiModelResource)!.values()) expect(row.rdfType).not.toContain(AI_MODEL_CLASS.chat);
+    const models = await store.listModels!() as AiGatewayModel[];
+    expect(models).toHaveLength(3);
+    expect(models.every(model => model.modelType === undefined && !model.capabilities?.includes('chat'))).toBe(true);
+  });
+
+  it('does not invent chat for a base or unknown RDF class while retaining explicit capabilities', async () => {
+    const { persist, database, authenticatedFetch } = createModelRdfDatabase();
+    persist(aiModelResource, { id: 'openai.ttl#unknown', isProvidedBy: 'openai.ttl', rdfType: [UDFS.AIModel, 'https://example.test/UnknownModel'], capabilities: [AI_MODEL_CAPABILITY.ocr] });
+    persist(aiModelResource, { id: 'openai.ttl#base', isProvidedBy: 'openai.ttl', rdfType: [UDFS.AIModel] });
+    const store = createXpodAiConnectionsPodStore({ database: database as never, authenticatedFetch, podUrl: POD_URL, webId: WEB_ID });
+    const models = await store.listModels!() as AiGatewayModel[];
+    expect(models.find(model => model.id === 'unknown')).toMatchObject({ capabilities: ['ocr'] });
+    expect(models.every(model => model.modelType === undefined && !model.capabilities?.includes('chat'))).toBe(true);
+  });
+
+  it('writes selection links as named nodes without sending an ORM array update or leaving literals', async () => {
+    const { persist, database, authenticatedFetch, rows, graph } = createModelRdfDatabase();
+    persist(aiProviderResource, { id: 'openai.ttl', displayName: 'OpenAI' });
+    persist(aiModelResource, { id: 'openai.ttl#choice', isProvidedBy: 'openai.ttl', rdfType: [aiModelResource.getType(), AI_MODEL_CLASS.chat] });
+    const store = createXpodAiConnectionsPodStore({ database: database as never, authenticatedFetch, podUrl: POD_URL, webId: WEB_ID });
+    await store.saveModelSelection!('openai', [{ id: 'choice' }]);
+    expect(rows.get(aiProviderResource)?.get('openai.ttl')?.hasModel).toEqual([aiModelResource.buildIri(POD_URL, { id: 'openai.ttl#choice' })]);
+    expect(database.updateById.mock.calls.some(call => 'hasModel' in call[2])).toBe(false);
+    const terms = graph.get(aiProviderResource.buildIri(POD_URL, { id: 'openai.ttl' }))!.filter(term => term.predicate.value === aiProviderResource.columns.hasModel.options.predicate);
+    expect(terms).toHaveLength(1);
+    expect(terms[0]?.object.termType).toBe('NamedNode');
+    expect(rows.get(aiProviderResource)?.get('openai.ttl')?.displayName).toBe('OpenAI');
+    await store.saveModelSelection!('openai', []);
+    expect(rows.get(aiProviderResource)?.get('openai.ttl')?.hasModel).toBeUndefined();
+  });
+
+  it('propagates authenticated URI metadata failure and does not claim discovery persistence', async () => {
+    const { database, authenticatedFetch, rows } = createModelRdfDatabase();
+    authenticatedFetch.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    const store = createXpodAiConnectionsPodStore({ database: database as never, authenticatedFetch, podUrl: POD_URL, webId: WEB_ID });
+    await expect(store.saveDiscoveredModels!('openai', 'credentials.ttl#key', [{ id: 'failure', modelType: 'chat' }])).rejects.toThrow('uri_array_persist_failed:503');
+    expect(rows.get(aiModelResource)?.get('openai.ttl#failure')?.rdfType).toEqual([aiModelResource.getType()]);
+    expect((await store.listModels!() as AiGatewayModel[])[0]?.capabilities).toBeUndefined();
+  });
+
+  it('preserves scalar insert rejection through the public ORM session before URI metadata writes', async () => {
+    const { database, authenticatedFetch } = createModelRdfDatabase();
+    vi.spyOn(database.session, 'execute').mockRejectedValueOnce(new Error('scalar-insert-rejected'));
+    const store = createXpodAiConnectionsPodStore({ database: database as never, authenticatedFetch, podUrl: POD_URL, webId: WEB_ID });
+    await expect(store.saveDiscoveredModels!('openai', 'credentials.ttl#key', [{ id: 'failure', modelType: 'chat' }])).rejects.toThrow('scalar-insert-rejected');
+    expect(authenticatedFetch).not.toHaveBeenCalled();
   });
 
   it('persists discovered models and provider selection while retaining missing selected models', async () => {
-    const authenticatedFetch = vi.fn(async () => new Response(null, { status: 204 }));
     const providerId = aiProviderResource.buildId({ id: 'deepseek' });
     const selectedModelId = 'deepseek.ttl#deepseek-reasoner';
     const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
@@ -1213,31 +1325,7 @@ describe('XpodAiConnectionsPodStore', () => {
         status: 'active',
       }]])],
     ]);
-    const database = {
-      init: vi.fn(),
-      select: () => ({
-        from: (resource: unknown) => ({
-          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
-        }),
-      }),
-      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
-      insert: (resource: unknown) => ({
-        values: (value: Record<string, unknown>) => ({
-          execute: async () => {
-            rowsByResource.get(resource)?.set(String(value.id), value);
-            return [value];
-          },
-        }),
-      }),
-      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
-        const rows = rowsByResource.get(resource)!;
-        const current = rows.get(id);
-        if (!current) return null;
-        const updated = { ...current, ...patch };
-        rows.set(id, updated);
-        return updated;
-      }),
-    };
+    const { database, authenticatedFetch } = createModelRdfDatabase(rowsByResource);
     const store = createXpodAiConnectionsPodStore({
       database: database as never,
       authenticatedFetch,
@@ -1251,8 +1339,7 @@ describe('XpodAiConnectionsPodStore', () => {
 
     await expect(store.listModels!()).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'deepseek-chat', availability: 'available' }),
-      // Capabilities are not Pod data: a row records what was discovered, and
-      // the application derives what a model can do from its id.
+      // A missing model remains visible as unavailable; no capability is guessed from its id.
       expect.objectContaining({ id: 'deepseek-reasoner', availability: 'unavailable' }),
     ]));
 
@@ -1267,7 +1354,7 @@ describe('XpodAiConnectionsPodStore', () => {
       expect.objectContaining({ id: 'deepseek-chat', displayName: 'DeepSeek Chat', availability: 'available' }),
     ]);
     expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
-      'deepseek.ttl#deepseek-chat',
+      aiModelResource.buildIri(POD_URL, { id: 'deepseek.ttl#deepseek-chat' }),
     ]);
     expect(authenticatedFetch).toHaveBeenCalledWith(
       expect.stringContaining('/settings/providers/deepseek.ttl'),
@@ -1277,17 +1364,18 @@ describe('XpodAiConnectionsPodStore', () => {
       }),
     );
     const selectionPatch = String(authenticatedFetch.mock.calls.at(-1)?.[1]?.body);
-    expect(selectionPatch).toContain('DELETE DATA');
-    expect(selectionPatch).toContain('deepseek-reasoner');
+    expect(selectionPatch).toContain('DELETE WHERE');
+    expect(selectionPatch).toContain(aiProviderResource.columns.hasModel.options.predicate);
     expect(selectionPatch).toContain('INSERT DATA');
     expect(selectionPatch).toContain('deepseek-chat');
-    expect(selectionPatch).not.toContain('WHERE');
+    expect(selectionPatch).not.toContain(aiProviderResource.columns.displayName.options.predicate);
+    expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.displayName).toBe('DeepSeek');
 
     await store.saveModelSelection!('deepseek', [
       { id: 'stale-upstream-id', resourceId: 'deepseek.ttl#deepseek-chat' },
     ]);
     expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
-      'deepseek.ttl#deepseek-chat',
+      aiModelResource.buildIri(POD_URL, { id: 'deepseek.ttl#deepseek-chat' }),
     ]);
 
     // A selection pinned before the storage model moved a provider's model
@@ -1298,7 +1386,7 @@ describe('XpodAiConnectionsPodStore', () => {
       { id: 'deepseek-chat', resourceId: 'deepseek-official-subscription.ttl#deepseek-chat' },
     ]);
     expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
-      'deepseek.ttl#deepseek-chat',
+      aiModelResource.buildIri(POD_URL, { id: 'deepseek.ttl#deepseek-chat' }),
     ]);
 
     await expect(store.saveModelSelection!('deepseek', [
@@ -1332,33 +1420,10 @@ describe('XpodAiConnectionsPodStore', () => {
         status: 'active',
       }]])],
     ]);
-    const database = {
-      init: vi.fn(),
-      select: () => ({
-        from: (resource: unknown) => ({
-          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
-        }),
-      }),
-      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
-      insert: (resource: unknown) => ({
-        values: (value: Record<string, unknown>) => ({
-          execute: async () => {
-            rowsByResource.get(resource)?.set(String(value.id), value);
-            return [value];
-          },
-        }),
-      }),
-      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
-        const rows = rowsByResource.get(resource)!;
-        const current = rows.get(id);
-        if (!current) return null;
-        const updated = { ...current, ...patch };
-        rows.set(id, updated);
-        return updated;
-      }),
-    };
+    const { database, authenticatedFetch } = createModelRdfDatabase(rowsByResource);
     const store = createXpodAiConnectionsPodStore({
       database: database as never,
+      authenticatedFetch,
       podUrl: POD_URL,
       webId: WEB_ID,
     });
@@ -1407,33 +1472,10 @@ describe('XpodAiConnectionsPodStore', () => {
       }]])],
       [aiModelResource, new Map()],
     ]);
-    const database = {
-      init: vi.fn(),
-      select: () => ({
-        from: (resource: unknown) => ({
-          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
-        }),
-      }),
-      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
-      insert: (resource: unknown) => ({
-        values: (value: Record<string, unknown>) => ({
-          execute: async () => {
-            rowsByResource.get(resource)?.set(String(value.id), value);
-            return [value];
-          },
-        }),
-      }),
-      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
-        const rows = rowsByResource.get(resource)!;
-        const current = rows.get(id);
-        if (!current) return null;
-        const updated = { ...current, ...patch };
-        rows.set(id, updated);
-        return updated;
-      }),
-    };
+    const { database, authenticatedFetch } = createModelRdfDatabase(rowsByResource);
     const store = createXpodAiConnectionsPodStore({
       database: database as never,
+      authenticatedFetch,
       podUrl: POD_URL,
       webId: WEB_ID,
     });
@@ -1452,12 +1494,13 @@ describe('XpodAiConnectionsPodStore', () => {
     expect(persistedModels).toHaveLength(1);
     expect(persistedModels[0]).toMatchObject({
       id: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: productProviderId }),
-      isProvidedBy: productProviderId,
+      isProvidedBy: aiProviderResource.buildIri(POD_URL, { id: productProviderId }),
     });
     expect([...rowsByResource.get(aiProviderResource)!.keys()]).toEqual([productProviderId]);
 
     const reloadedStore = createXpodAiConnectionsPodStore({
       database: database as never,
+      authenticatedFetch,
       podUrl: POD_URL,
       webId: WEB_ID,
     });
@@ -1476,7 +1519,7 @@ describe('XpodAiConnectionsPodStore', () => {
     // Two offerings picking the same upstream model are one provider reference,
     // not a real entry plus a dangling twin.
     expect(rowsByResource.get(aiProviderResource)?.get(productProviderId)?.hasModel).toEqual([
-      aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: productProviderId }),
+      aiModelResource.buildIri(POD_URL, { id: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: productProviderId }) }),
     ]);
     const bailian = (await reloadedStore.listProviders()).find((provider) => provider.id === 'bailian');
     expect(bailian?.selectedModels).toEqual([

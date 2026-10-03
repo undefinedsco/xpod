@@ -14,6 +14,11 @@ function props(overrides: Partial<PodBodyProps> = {}): PodBodyProps {
   };
 }
 describe('shared Pod body', () => {
+  it('does not call an implemented default model pending when no explicit model is selected', () => {
+    render(<PodBody {...props({ models: [{ id: 'chatModel', label: '智能', group: '对话', defaultLabel: 'Xpod 提供', models: [], testable: false }] })} />);
+    expect(screen.getByRole('combobox', { name: '智能' })).toBeTruthy();
+    expect(screen.queryByText('待接入')).toBeNull();
+  });
   it('keeps the semantic model read-only in model settings', () => {
     const value = props(); render(<PodBody {...value} />);
     expect(screen.queryByRole('combobox')).toBeNull();

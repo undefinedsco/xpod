@@ -11,9 +11,9 @@ import {
   type AiConfigRebuildTarget,
 } from '../../../api/ai-config';
 import { useXpodSolidRuntime } from '../../../solid/useXpodSolidRuntime';
-import { AI_MODEL_CLASS_DEFAULT_CAPABILITY, toAIModelClassUri, toAIModelCapabilityUri, toAIModelCapabilityName } from '@undefineds.co/models';
+import { aiModelResource, AI_MODEL_CLASS_DEFAULT_CAPABILITY, toAIModelClassUri, toAIModelCapabilityUri, toAIModelCapabilityName } from '@undefineds.co/models';
 import { aiConfigModelRef } from '@undefineds.co/models/ai-config';
-import type { AiGatewayModel } from '@undefineds.co/ai-connections/client';
+import { AiConnectionsRequestError, type AiGatewayCatalogModel, type AiGatewayModel } from '@undefineds.co/ai-connections/client';
 import { createXpodAiConnectionsPodStore } from '../../../extensions/XpodAiConnectionsPodStore';
 
 interface AiConfigContextValue {
@@ -21,6 +21,7 @@ interface AiConfigContextValue {
   capabilities?: AiConfigCapabilities;
   lifecycle?: AiConfigLifecycleSnapshot;
   models: AiConfigModelOption[];
+  gatewayCatalog: { status: 'loading' | 'available' | 'unauthorized' | 'error'; models: AiGatewayCatalogModel[] };
   loading: boolean;
   saving: boolean;
   rebuilding: boolean;
@@ -47,6 +48,7 @@ export function AiConfigProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AiConfigPolicy>();
   const [capabilities, setCapabilities] = useState<AiConfigCapabilities>();
   const [models, setModels] = useState<AiConfigModelOption[]>([]);
+  const [gatewayCatalog, setGatewayCatalog] = useState<AiConfigContextValue['gatewayCatalog'] & { webId: string; podUrl: string }>();
   const [lifecycle, setLifecycle] = useState<AiConfigLifecycleSnapshot>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -64,11 +66,22 @@ export function AiConfigProvider({ children }: { children: ReactNode }) {
       if (cancelled || !runtime.webId || !runtime.currentPod) return;
       setLoading(true);
       setError(undefined);
+      setGatewayCatalog({ webId: runtime.webId, podUrl: runtime.currentPod.podUrl, status: 'loading', models: [] });
       const client = createXpodAiConnectionsClient({
         webId: runtime.webId,
         podUrl: runtime.currentPod.podUrl,
         authenticatedFetch: runtime.fetch,
       });
+      const gatewayScope = { webId: runtime.webId, podUrl: runtime.currentPod.podUrl };
+      if (client.listGatewayCatalogModels) {
+        void client.listGatewayCatalogModels().then(models => {
+          if (!cancelled) setGatewayCatalog({ ...gatewayScope, status: 'available', models });
+        }).catch((reason: unknown) => {
+          if (!cancelled) setGatewayCatalog({ ...gatewayScope, models: [], status: reason instanceof AiConnectionsRequestError && (reason.status === 401 || reason.status === 403) ? 'unauthorized' : 'error' });
+        });
+      } else {
+        setGatewayCatalog({ ...gatewayScope, status: 'error', models: [] });
+      }
       // The routing projection publishes what the account picked; the Pod
       // catalog holds every model a sync discovered. A Pod that only picked chat
       // models would otherwise offer no embedding model at all, which is exactly
@@ -90,7 +103,7 @@ export function AiConfigProvider({ children }: { children: ReactNode }) {
         setConfig(result.config);
         setCapabilities(result.capabilities);
         setLifecycle(result.lifecycle);
-        setModels(toAiConfigModelOptions(mergeModelCatalog(catalogModels, publishedModels)));
+        setModels(toAiConfigModelOptions(mergeModelCatalog(catalogModels, publishedModels), gatewayScope.podUrl));
       }).catch((reason: unknown) => {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
       }).finally(() => {
@@ -170,8 +183,13 @@ export function AiConfigProvider({ children }: { children: ReactNode }) {
   }, [rebuild, save]);
 
   const effectiveLoading = hasRuntimeTarget ? loading : false;
-  const value = useMemo(() => ({ config, capabilities, lifecycle, models, loading: effectiveLoading, saving, rebuilding, error, reload, save, rebuild, saveAndRebuild }), [
-    capabilities, config, effectiveLoading, error, lifecycle, models, rebuild, rebuilding, reload, save, saveAndRebuild, saving,
+  const activeGatewayCatalog = useMemo<AiConfigContextValue['gatewayCatalog']>(() => !hasRuntimeTarget
+    ? { status: 'unauthorized', models: [] }
+    : gatewayCatalog && gatewayCatalog.webId === runtime.webId && gatewayCatalog.podUrl === runtime.currentPod?.podUrl
+      ? gatewayCatalog
+      : { status: 'loading', models: [] }, [hasRuntimeTarget, gatewayCatalog, runtime.webId, runtime.currentPod?.podUrl]);
+  const value = useMemo(() => ({ config, capabilities, lifecycle, models, gatewayCatalog: activeGatewayCatalog, loading: effectiveLoading, saving, rebuilding, error, reload, save, rebuild, saveAndRebuild }), [
+    capabilities, config, effectiveLoading, error, lifecycle, models, activeGatewayCatalog, rebuild, rebuilding, reload, save, saveAndRebuild, saving,
   ]);
   return <AiConfigContext.Provider value={value}>{children}</AiConfigContext.Provider>;
 }
@@ -232,7 +250,7 @@ function modelCatalogId(id: string): string {
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- covered by focused tests and shared with non-component panels.
-export function toAiConfigModelOptions(models: AiGatewayModel[]): AiConfigModelOption[] {
+export function toAiConfigModelOptions(models: AiGatewayModel[], podUrl: string): AiConfigModelOption[] {
   return models.map((model) => {
     const capabilities = [...(model.capabilities ?? [])];
     const modelClass = model.modelType ? toAIModelClassUri(model.modelType) : undefined;
@@ -240,11 +258,13 @@ export function toAiConfigModelOptions(models: AiGatewayModel[]): AiConfigModelO
     if (defaultCapability && !capabilities.some(value => toAIModelCapabilityUri(value) === defaultCapability)) {
       capabilities.push(toAIModelCapabilityName(defaultCapability)!);
     }
+    const resourceRef = aiModelResource.parseRef(aiConfigModelRef(model.provider, model.id));
+    if (!resourceRef) throw new Error('Invalid AI model resource reference');
     return {
       id: model.id,
       displayName: model.displayName,
       owner: model.provider,
-      ref: aiConfigModelRef(model.provider, model.id),
+      ref: aiModelResource.buildIri(podUrl, { id: resourceRef.resourceId }),
       capabilities,
     };
   });

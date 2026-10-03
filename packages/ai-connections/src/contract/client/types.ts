@@ -139,6 +139,13 @@ export interface AiGatewayModel extends AiConnectionsModelSelection {
   capabilities?: string[]
 }
 
+/** Public Gateway directory entries can belong to a platform or an unknown provider. */
+export interface AiGatewayCatalogModel {
+  id: string
+  displayName?: string
+  provider?: string
+}
+
 /**
  * What the provider's own model list said a model is.
  *
@@ -320,6 +327,8 @@ export interface AiConnectionsClient {
   listModels(): Promise<AiGatewayModel[]>
   /** Active Gateway routing projection, independent of a host's Pod catalog. */
   listGatewayModels?(): Promise<AiGatewayModel[]>
+  /** Complete Gateway directory, including platform routing roles and unattributed entries. */
+  listGatewayCatalogModels?(): Promise<AiGatewayCatalogModel[]>
   listGatewayKeys(): Promise<GatewayKeyRecord[]>
   createGatewayKey(input: {
     name: string

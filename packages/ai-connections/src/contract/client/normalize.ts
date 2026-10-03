@@ -2,6 +2,7 @@ import { PROVIDER_LABELS } from '../provider-catalog'
 import { AI_MODEL_CLASS } from '@undefineds.co/models'
 import type { AiConnectionsOAuthCredential } from '@undefineds.co/extension-sdk/web'
 import { AI_CONNECTIONS_PROVIDERS } from './types'
+import { PLATFORM_MODEL_ROLES, matchesPlatformModelRole } from './gateway-model-roles'
 import type {
   AiConnectAttempt,
   AiConnectionsCredential,
@@ -9,6 +10,7 @@ import type {
   AiConnectionsProvider,
   AiConnectStatus,
   AiGatewayModel,
+  AiGatewayCatalogModel,
   AiProviderAuthorizationMethod,
   AiProviderAuthorizationMethodsSummary,
   AiProviderConnectionSummary,
@@ -216,6 +218,15 @@ export function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
   }) as unknown as AiGatewayModel
 }
 
+export function parseGatewayCatalogModel(value: unknown): AiGatewayCatalogModel | undefined {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id) return undefined
+  return compactObject({
+    id: value.id,
+    displayName: stringValue(value.displayName) ?? stringValue(value.display_name) ?? stringValue(value.name),
+    provider: stringValue(value.provider) ?? stringValue(value.providerId) ?? stringValue(value.owned_by),
+  }) as AiGatewayCatalogModel
+}
+
 function modalitiesFromWire(value: unknown, direction: 'input' | 'output'): string[] | undefined {
   if (!isRecord(value)) return undefined
   const list = value[direction]
@@ -247,11 +258,8 @@ function modelCapabilitiesFromWire(value: Record<string, unknown>): string[] | u
 }
 
 function isPlatformModelId(modelId: string): boolean {
-  const normalized = modelId.toLowerCase()
-  return normalized === 'linx'
-    || normalized === 'linx-lite'
-    || normalized === 'undefineds/linx'
-    || normalized === 'undefineds/linx-lite'
+  return (Object.keys(PLATFORM_MODEL_ROLES) as Array<keyof typeof PLATFORM_MODEL_ROLES>)
+    .some(role => matchesPlatformModelRole(modelId, role))
 }
 
 function providerValue(value: unknown): AiConnectionsProvider | undefined {

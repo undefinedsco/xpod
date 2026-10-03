@@ -47,7 +47,8 @@ afterEach(() => {
 });
 
 describe('WebIdAuthBoundary', () => {
-  test('shows a failed login as one line and waits for the user without retrying or logging out', async () => {
+  test.each([false, true])('shows a failed login as one line and waits for the user without retrying or logging out (native=%s)', async (native) => {
+    if (native) window.xpodDesktop = { platform: 'darwin', setWindowMode: vi.fn() };
     const value = runtime({ state: { status: 'error', error: new Error('offline') } });
     renderBoundary(value, { autoStart: true });
     // C4: one line, no error code, and the primary action is the way forward.
@@ -70,7 +71,8 @@ describe('WebIdAuthBoundary', () => {
     expect(screen.getByText('offline')).toBeTruthy();
   });
 
-  test('cancels only the pending login and persists manual recovery until explicitly continued', async () => {
+  test.each([false, true])('cancels only the pending login and persists manual recovery until explicitly continued (native=%s)', async (native) => {
+    if (native) window.xpodDesktop = { platform: 'darwin', setWindowMode: vi.fn() };
     window.history.replaceState(null, '', '/ai-connections?xpod-login=cancelled');
     const store = createXpodLoginTransactionStore({ origin: window.location.origin });
     store.begin({ id: 'cancel-this-login', route: createXpodLoginRoute(window.location), authorizationSurface: 'redirect', discovery: 'strict' });
@@ -91,7 +93,8 @@ describe('WebIdAuthBoundary', () => {
     expect(window.localStorage.getItem('xpod.auth.login-cancelled')).toBeNull();
   });
 
-  test('switches with standard login for issuers that do not advertise account selection, without silent restore', async () => {
+  test.each([false, true])('switches with standard login for issuers that do not advertise account selection, without silent restore (native=%s)', async (native) => {
+    if (native) window.xpodDesktop = { platform: 'darwin', setWindowMode: vi.fn() };
     window.history.replaceState(null, '', '/ai-connections?xpod-login=switch');
     const initialize = vi.fn(async () => ({ status: 'anonymous' as const }));
     const login = vi.fn(async () => undefined);
@@ -155,6 +158,83 @@ describe('WebIdAuthBoundary', () => {
     expect(login).not.toHaveBeenCalled();
   });
 
+  test('keeps native automatic preflight and login neutral until navigation, then cancellation restores manual sign-in', async () => {
+    window.xpodDesktop = { platform: 'darwin', setWindowMode: vi.fn() };
+    const login = vi.fn(async () => new Promise<void>(() => undefined));
+    const account = { isInitializing: true } as AuthContextType;
+    const value = runtime({ login });
+    const view = renderBoundary(value, { autoStart: true }, account);
+    expect(screen.getByRole('status').textContent).toContain('正在登录');
+    expect(screen.queryByRole('button', { name: '使用 Xpod 账号登录' })).toBeNull();
+    expect(login).not.toHaveBeenCalled();
+    expect(window.xpodDesktop.setWindowMode).toHaveBeenCalledWith('auth');
+    view.rerender(<AuthContext.Provider value={{ ...account, isInitializing: false }}><XpodSolidRuntimeContext.Provider value={value}>
+      <WebIdAuthBoundary autoStart><span>protected</span></WebIdAuthBoundary>
+    </XpodSolidRuntimeContext.Provider></AuthContext.Provider>);
+    await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('status').textContent).toContain('正在登录');
+    expect(screen.queryByRole('button', { name: '使用 Xpod 账号登录' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('button', { name: '使用 Xpod 账号登录' })).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '使用 Xpod 账号登录' }));
+    await waitFor(() => expect(login).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: '使用 Xpod 账号登录' }).getAttribute('aria-busy')).toBe('true');
+  });
+
+  test('native automatic login failure restores retry and manual retry keeps the busy primary action', async () => {
+    window.xpodDesktop = { platform: 'darwin', setWindowMode: vi.fn() };
+    let rejectLogin!: (error: Error) => void;
+    const login = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectLogin = reject; }))
+      .mockImplementationOnce(() => new Promise<void>(() => undefined));
+    renderBoundary(runtime({ login }), { autoStart: true });
+    await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('status').textContent).toContain('正在登录');
+    expect(screen.queryByRole('button', { name: '使用 Xpod 账号登录' })).toBeNull();
+    await act(async () => rejectLogin(new Error('login failed')));
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(login).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await waitFor(() => expect(login).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: '使用 Xpod 账号登录' }).getAttribute('aria-busy')).toBe('true');
+  });
+
+  test('native explicit account switching after automatic failure keeps manual busy UI without Account context', async () => {
+    window.xpodDesktop = { platform: 'darwin', setWindowMode: vi.fn() };
+    window.localStorage.setItem(XPOD_REMEMBERED_LOGIN_KEY, JSON.stringify({
+      account: { displayName: 'Alice' }, webId, storageBinding: { webId, storageUrl: podUrl }, routeId: 'xpod-current-origin',
+    }));
+    let rejectLogin!: (error: Error) => void;
+    const login = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectLogin = reject; }))
+      .mockImplementationOnce(() => new Promise<void>(() => undefined));
+    const value = runtime({ login });
+    renderBoundary(value, { autoStart: true });
+    await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
+    await act(async () => rejectLogin(new Error('login failed')));
+    fireEvent.click(screen.getByRole('button', { name: '使用其他账号' }));
+    await waitFor(() => expect(login).toHaveBeenCalledTimes(2));
+    expect(value.logout).toHaveBeenCalledTimes(1);
+    expect(login).toHaveBeenLastCalledWith(expect.objectContaining({ prompt: 'login' }));
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('button', { name: '进入 Xpod' }).getAttribute('aria-busy')).toBe('true');
+  });
+
+  test('native automatic restoration remains neutral without changing auth window ownership', () => {
+    window.xpodDesktop = { platform: 'darwin', setWindowMode: vi.fn() };
+    const initialize = vi.fn(async () => new Promise<void>(() => undefined));
+    const value = runtime({ state: { status: 'loading' }, session: { initialize } as never });
+    renderBoundary(value, { autoStart: true });
+    expect(screen.getByRole('status').textContent).toContain('正在登录');
+    expect(screen.queryByRole('button', { name: '使用 Xpod 账号登录' })).toBeNull();
+    expect(screen.getByRole('region', { name: '登录 Xpod' }).getAttribute('data-pod-sign-in-frame')).toBe('window');
+    expect(window.xpodDesktop.setWindowMode).toHaveBeenCalledWith('auth');
+    expect(initialize).toHaveBeenCalledWith({ restorePreviousSession: true });
+    expect(value.login).not.toHaveBeenCalled();
+  });
+
   test('uses the native window itself as the WebID gate', () => {
     window.xpodDesktop = {
       platform: 'darwin',
@@ -171,7 +251,8 @@ describe('WebIdAuthBoundary', () => {
     expect(window.xpodDesktop.setWindowMode).toHaveBeenCalledWith('auth');
   });
 
-  test('shows the primary action busy instead of a separate verifying screen while connecting', async () => {
+  test.each([false, true])('shows the primary action busy instead of a separate verifying screen while connecting (native=%s)', async (native) => {
+    if (native) window.xpodDesktop = { platform: 'darwin', setWindowMode: vi.fn() };
     const login = vi.fn(async () => new Promise<void>(() => undefined));
     renderBoundary(runtime({ login }));
     fireEvent.click(screen.getByRole('button', { name: '使用 Xpod 账号登录' }));
@@ -296,7 +377,8 @@ describe('WebIdAuthBoundary', () => {
     expect(logout).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(login).toHaveBeenCalledWith(expect.objectContaining({ prompt: 'login' })));
   });
-  test('does not auto-start OIDC after product sign-out makes Solid anonymous', async () => {
+  test.each([false, true])('does not auto-start OIDC after product sign-out makes Solid anonymous (native=%s)', async (native) => {
+    if (native) window.xpodDesktop = { platform: 'darwin', setWindowMode: vi.fn() };
     const login = vi.fn(async () => undefined);
     const value = runtime({ state: { status: 'authenticated', webId, podUrl }, webId, podUrl,
       selectedStorage: { webId, storageUrl: podUrl }, currentPod: { webId, podUrl } as XpodSolidRuntimeValue['currentPod'], login });

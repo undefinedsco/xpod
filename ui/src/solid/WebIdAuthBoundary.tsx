@@ -8,6 +8,7 @@ import {
   type PodSignInState,
   type RememberedIdentity,
 } from '@undefineds.co/shared-ui';
+import { Loader2 } from 'lucide-react';
 import type { RememberedWebIdLogin, StorageSelectionState, WebIdAuthState } from '@undefineds.co/solid-sdk';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { XpodProductLogoutBoundary } from '../auth/XpodProductLogoutBoundary';
@@ -75,6 +76,7 @@ function WebIdAuthBoundaryContent({
   // auth actions, so an unobserved rejection would otherwise dead-end the UI.
   const [actionError, setActionError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const [manualLoginStarted, setManualLoginStarted] = useState(false);
   // Explicit switching requests fresh authentication using the standard OIDC prompt.
   const [preflight, setPreflight] = useState<{ prompt?: 'login' } | undefined>(
     switchOnEntry ? { prompt: 'login' } : undefined,
@@ -97,7 +99,7 @@ function WebIdAuthBoundaryContent({
       if (version === actionVersion.current) setPending(false);
     });
   }, [reportActionError]);
-  const startLogin = useCallback(
+  const beginLogin = useCallback(
     () => {
       setXpodLoginCancelled(false);
       setLoginCancelled(false);
@@ -106,6 +108,10 @@ function WebIdAuthBoundaryContent({
     },
     [],
   );
+  const startLogin = useCallback(() => {
+    setManualLoginStarted(true);
+    beginLogin();
+  }, [beginLogin]);
   const continueLogin = useCallback(() => {
     if (!preflight) return;
     const prompt = preflight.prompt;
@@ -139,6 +145,7 @@ function WebIdAuthBoundaryContent({
     setActionError(undefined);
   };
   const switchAccount = () => runAction(async () => {
+    setManualLoginStarted(true);
     setSwitchRequested(true);
     const onComplete = () => {
       setXpodLoginCancelled(false);
@@ -164,8 +171,8 @@ function WebIdAuthBoundaryContent({
   useEffect(() => {
     if (loginCancelled || preflight || automaticLoginBlocked || pending || switchRequested || !autoStart || autoStartAttempted.current || state.status !== 'anonymous') return;
     autoStartAttempted.current = true;
-    startLogin();
-  }, [loginCancelled, automaticLoginBlocked, autoStart, pending, preflight, startLogin, state.status, switchRequested]);
+    beginLogin();
+  }, [loginCancelled, automaticLoginBlocked, autoStart, pending, preflight, beginLogin, state.status, switchRequested]);
 
   // Keep the same WebID + selected Pod readiness gate. Only the host's
   // presentation changes: Xpod has one fixed login route, not a route picker.
@@ -176,6 +183,9 @@ function WebIdAuthBoundaryContent({
 
   const remembered = rememberedNow;
   const restoring = state.status === 'restoring';
+  const nativeAutomaticWaiting = Boolean(globalThis.xpodDesktop) && autoStart && !manualLoginStarted
+    && !loginCancelled && !switchOnEntry && !switchRequested && !automaticLoginBlocked && !actionError
+    && (restoring || state.status === 'anonymous');
   const connecting = pending || Boolean(preflight) || (autoStart && !loginCancelled && !automaticLoginBlocked && state.status === 'anonymous' && !actionError);
   // A cancelled or switching login returns to the first-visit screen, not to the remembered one.
   const identity = remembered && !loginCancelled ? presentedIdentity(remembered) : undefined;
@@ -251,7 +261,12 @@ function WebIdAuthBoundaryContent({
   return (
     <XpodSignInFrame ariaLabel="登录 Xpod">
       {preflight ? <XpodLocalLoginPreflight onReady={continueLogin} /> : null}
-      <PodSignIn
+      {nativeAutomaticWaiting ? (
+        <div role="status" aria-live="polite" className="flex flex-1 items-center justify-center p-5 text-sm text-muted-foreground">
+          <Loader2 aria-hidden="true" className="mr-2 h-5 w-5 animate-spin" />
+          正在登录…
+        </div>
+      ) : <PodSignIn
         app={XPOD_APP}
         state={podState}
         notice={notice}
@@ -260,7 +275,7 @@ function WebIdAuthBoundaryContent({
         capabilities={{ customService: false, register: false }}
         onPrimary={onPrimary}
         onUseAnother={onUseAnother}
-      />
+      />}
       {cancellable ? (
         <Button type="button" variant="ghost" className="mt-2 h-9 w-full rounded-lg px-2" onClick={cancel}>
           {copy.cancel}
