@@ -131,14 +131,14 @@ describe('Xpod OIDC callback recovery surface', () => {
     expect(surface.textContent).toContain('这次登录请求已经失效，请重新登录。');
     expect(view.queryByText('Unable to complete Xpod sign-in')).toBeNull();
     expect(view.queryByText('The identity provider could not verify this sign-in. Start again.')).toBeNull();
-    expect(view.getAllByRole('button')).toHaveLength(2);
     expect(view.getByRole('button', { name: '重新登录' })).toBeTruthy();
+    expect(view.getByRole('button', { name: '返回应用' })).toBeTruthy();
     expect(surface.querySelectorAll('a')).toHaveLength(0);
     expect(surface.querySelector('details')?.textContent).toContain('missing-transaction');
     expect(view.getByTestId('xpod-login-brand').getAttribute('data-presentation')).toBe('compact');
     expect(view.queryByText('使用 WebID 登录')).toBeNull();
     expect(view.getByTestId('xpod-login-brand').className).not.toContain('flex-col');
-    expect(view.getByTestId('xpod-login-brand').querySelector('img')?.className).toContain('h-7');
+    expect(view.getByTestId('xpod-login-brand').querySelector('svg')?.getAttribute('class')).toContain('h-7');
     const details = surface.querySelector('details');
     expect(details?.open).toBe(false);
     expect(details?.querySelector('summary')?.className).toContain('focus-visible:ring-ring');
@@ -264,7 +264,9 @@ describe('Xpod OIDC callback recovery surface', () => {
     expect((await view.findByRole('status')).textContent).toContain('Xpod 正在清理不匹配的登录状态。');
     expect(view.queryByText('身份与 Pod 不匹配')).toBeNull();
     expect(view.queryByText(/Account, WebID, and Pod/u)).toBeNull();
-    expect(view.queryByRole('button')).toBeNull();
+    expect(view.queryByRole('button', { name: '重新登录' })).toBeNull();
+    expect(view.queryByRole('button', { name: '重试连接' })).toBeNull();
+    expect(view.queryByRole('button', { name: '返回应用' })).toBeNull();
     await waitFor(() => {
       expect(runtime.session.logout).toHaveBeenCalledTimes(1);
       expect(restartSignIn).toHaveBeenCalledWith('/ai-config/model-assignments');

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ensureSupportedBun } from '../runtime/compat/ensureSupportedBun';
 import '../runtime/configure-drizzle-solid';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
@@ -92,6 +93,7 @@ async function createCommandParser() {
 }
 
 async function main() {
+  ensureSupportedBun();
   const argv = process.argv.slice(2);
   if (argv[0] === 'agent-fs' && argv[1] === 'rg') {
     const { runRgWrapperMain } = await import('./agent-fs/rg-entry');

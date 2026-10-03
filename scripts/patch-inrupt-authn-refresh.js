@@ -3,7 +3,8 @@
 /**
  * Keep an active browser Solid session alive when a proactive token refresh
  * temporarily fails (for example while macOS is asleep or the local IdP is
- * restarting). Inrupt currently stops scheduling refreshes after any thrown
+ * restarting), and renew before the first request after a suspended timer.
+ * Inrupt currently stops scheduling refreshes after any thrown
  * error, including network errors. See:
  * https://github.com/inrupt/solid-client-authn-js/issues/3443
  *
@@ -28,8 +29,71 @@ function replaceOnce(content, search, replacement, label) {
   return content.slice(0, first) + replacement + content.slice(first + search.length);
 }
 
+// Extend the pinned transient-retry patch at the same token-owning boundary.
+// Requests must renew before dispatch; provider HTTP responses never drive it.
+function patchRequestRenewal(content, source) {
+  const marker = 'XPOD_REFRESH_ON_REQUEST';
+  const indent = source ? '  ' : '    ';
+  const outer = indent.repeat(2);
+  const inner = indent.repeat(3);
+  const declaration = source ? ': (() => Promise<void>) | undefined' : '';
+  const pendingType = source ? ': Promise<boolean> | undefined' : '';
+  const errorType = source ? ': unknown' : '';
+  if (content.includes(marker)) {
+    for (const expected of [marker, 'let accessTokenExpiresAt = Date.now()', 'let refreshTerminated = false;', 'refreshBeforeRequest = async () => {', 'await refreshBeforeRequest();']) {
+      if (content.split(expected).length !== 2) throw new Error(`Incomplete ${marker}: ${expected}`);
+    }
+    return content;
+  }
+  content = replaceOnce(content, `${indent}let currentAccessToken = accessToken;\n`,
+    `${indent}let currentAccessToken = accessToken;\n` +
+    `${indent}// ${marker}: use real expiry even when the proactive timer was suspended.\n` +
+    `${indent}let accessTokenExpiresAt = Date.now() + (options?.expiresIn ?? DEFAULT_EXPIRATION_TIME_SECONDS) * 1000;\n` +
+    `${indent}let refreshBeforeRequest${declaration};\n` +
+    `${indent}let refreshInFlight${pendingType};\n` +
+    `${indent}let refreshTerminated = false;\n` +
+    `${indent}let lastRefreshError${errorType};\n`, 'request renewal state');
+
+  const callback = `${outer}const proactivelyRefreshToken = async () => {`;
+  const callbackEnd = `\n${outer}};\n${outer}latestTimeout = setTimeout(`;
+  const start = content.indexOf(callback);
+  const end = content.indexOf(callbackEnd, start);
+  if (start < 0 || end < 0) throw new Error('Missing proactive refresh callback');
+  let body = content.slice(start + callback.length, end);
+  body = replaceOnce(body, 'currentAccessToken = refreshedAccessToken;',
+    'currentAccessToken = refreshedAccessToken;\n' + `${indent.repeat(4)}accessTokenExpiresAt = Date.now() + (expiresIn ?? DEFAULT_EXPIRATION_TIME_SECONDS) * 1000;`, 'renewed expiry');
+  const optionsExpression = source ? 'options!' : 'options';
+  body = replaceOnce(body, `${optionsExpression}.eventEmitter?.emit(EVENTS.TIMEOUT_SET, latestTimeout);`,
+    `${optionsExpression}.eventEmitter?.emit(EVENTS.TIMEOUT_SET, latestTimeout);\n${indent.repeat(4)}return true;`, 'successful renewal result');
+  body = replaceOnce(body, 'catch (e) {', `catch (e) {\n${indent.repeat(4)}lastRefreshError = e;`, 'renewal failure retention');
+  body = replaceOnce(body, 'if (!terminalProviderError && !invalidTokenResponse) {',
+    'refreshTerminated = terminalProviderError || invalidTokenResponse;\n' +
+      `${indent.repeat(4)}if (!terminalProviderError && !invalidTokenResponse) {`, 'terminal renewal retention');
+  if (!body.endsWith(`\n${inner}}`)) throw new Error('Missing refresh catch boundary');
+  body = body.slice(0, -(`\n${inner}}`.length)) + `\n${indent.repeat(4)}return false;\n${inner}}`;
+  body = body.split('\n').map(line => line ? indent + line : line).join('\n');
+  const replacement = `${outer}const proactivelyRefreshToken = async ()${source ? ': Promise<boolean>' : ''} => {\n` +
+    `${inner}if (refreshTerminated) return false;\n` +
+    `${inner}if (refreshInFlight) return refreshInFlight;\n` +
+    `${inner}refreshInFlight = (async () => {${body}\n` +
+    `${inner}})().finally(() => { refreshInFlight = undefined; });\n` +
+    `${inner}return refreshInFlight;\n` +
+    `${outer}};\n` +
+    `${outer}refreshBeforeRequest = async () => {\n` +
+    `${inner}if (!await proactivelyRefreshToken()) throw lastRefreshError;\n` +
+    `${outer}};`;
+  content = content.slice(0, start) + replacement + content.slice(end + `\n${outer}};`.length);
+  const fetchStart = source
+    ? `${indent}return async (url, requestInit?): Promise<Response> => {\n`
+    : `${indent}return async (url, requestInit) => {\n`;
+  content = replaceOnce(content, fetchStart,
+    fetchStart + `${outer}if (refreshBeforeRequest && Date.now() >= accessTokenExpiresAt) {\n` +
+      `${inner}await refreshBeforeRequest();\n${outer}}\n`, 'request renewal before dispatch');
+  return content;
+}
+
 function patchSource(content) {
-  if (content.includes(RETRY_MARKER)) return content;
+  if (content.includes(RETRY_MARKER)) return patchRequestRenewal(content, true);
 
   content = replaceOnce(
     content,
@@ -83,11 +147,11 @@ function patchSource(content) {
       '      }\n',
     'TypeScript transient retry',
   );
-  return content;
+  return patchRequestRenewal(content, true);
 }
 
 function patchBundle(content) {
-  if (content.includes(RETRY_MARKER)) return content;
+  if (content.includes(RETRY_MARKER)) return patchRequestRenewal(content, false);
 
   content = replaceOnce(
     content,
@@ -136,7 +200,7 @@ function patchBundle(content) {
       '            }\n',
     'bundle transient retry',
   );
-  return content;
+  return patchRequestRenewal(content, false);
 }
 
 function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..')) {
@@ -163,13 +227,15 @@ function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..')) {
     ['src/authenticatedFetch/fetchFactory.ts', patchSource],
     ['dist/index.js', patchBundle],
     ['dist/index.mjs', patchBundle],
-  ];
-  let patched = 0;
-  let alreadyPatched = 0;
-  for (const [relativePath, patcher] of targets) {
+  ].map(([relativePath, patcher]) => {
     const targetPath = path.join(packageRoot, relativePath);
     const original = fs.readFileSync(targetPath, 'utf8');
-    const updated = patcher(original);
+    return { targetPath, original, updated: patcher(original) };
+  });
+  let patched = 0;
+  let alreadyPatched = 0;
+  // Validate all three pinned shapes before mutating the installation.
+  for (const { targetPath, original, updated } of targets) {
     if (updated === original) {
       alreadyPatched += 1;
     } else {

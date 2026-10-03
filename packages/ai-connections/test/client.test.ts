@@ -21,6 +21,35 @@ const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_BASE = 'https://pod.example/alice/'
 
 describe('AI Connection management client', () => {
+  it('preserves safe actionable timeout wording through client and display boundaries', async () => {
+    const code = 'provider_request_timeout'
+    const status = 504
+    const expected = '模型服务请求超时。请检查网络或代理设置，稍后重试同步模型。'
+    const client = createAiConnectionsClient({
+      webId: WEB_ID, podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => jsonResponse({
+        error: code,
+        message: 'https://private.example/?token=secret Bearer private-token',
+        providerMessage: 'sk-private-secret-token',
+      }, status)),
+    })
+    const error = await client.discoverModels('openai').catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(AiConnectionsRequestError)
+    expect(error).toMatchObject({ code, status, message: expected })
+    expect(normalizeAiConnectionsThrownError(error)).toBe(expected)
+    expect(normalizeAiConnectionsThrownError(new Error(expected))).toBe(expected)
+    expect(normalizeAiConnectionsThrownError(new Error(`${code}: https://private.example/?token=secret`))).toBe(expected)
+    expect(expected).not.toMatch(/登录|Xpod|private|secret/)
+  })
+
+  it.each([
+    [401, 'Please sign in again to continue.'],
+    [403, 'AI Connection permission was denied.'],
+    [500, 'AI Connection request failed. Please try again.'],
+  ] as const)('preserves unknown failure fallback for HTTP %s', (status, expected) => {
+    expect(normalizeAiConnectionsErrorMessage({ error: 'unrecognized' }, status)).toBe(expected)
+  })
+
   it.each(['oauth_refresh_failed', 'oauth_refresh_unavailable', 'oauth_session_reauth_required', 'oauth_refresh_token_required'])(
     'preserves the actionable %s message', (code) => {
       const message = normalizeAiConnectionsErrorMessage({ error: code }, 409)

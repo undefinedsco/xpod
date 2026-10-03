@@ -8,10 +8,10 @@ afterEach(() => cleanup());
 describe('Xpod login brand', () => {
   test('renders the selected product logo without a second surrounding tile', () => {
     const { container } = render(<XpodLoginBrand />);
-    const icon = container.querySelector('img');
+    const icon = container.querySelector('svg');
 
     expect(icon).toBeTruthy();
-    expect(icon?.className).toContain('h-11');
+    expect(icon?.getAttribute('class')).toContain('h-11');
     expect(icon?.parentElement?.className).not.toContain('rounded-');
     expect(screen.getByRole('heading', { name: 'Xpod' })).toBeTruthy();
     expect(screen.getByText('使用 WebID 登录')).toBeTruthy();
@@ -20,10 +20,10 @@ describe('Xpod login brand', () => {
   test('uses one compact identity row for transient and failure states', () => {
     const { container } = render(<XpodLoginBrand compact />);
     const brand = screen.getByTestId('xpod-login-brand');
-    const icon = container.querySelector('img');
+    const icon = container.querySelector('svg');
 
     expect(brand.getAttribute('data-presentation')).toBe('compact');
-    expect(icon?.className).toContain('h-7');
+    expect(icon?.getAttribute('class')).toContain('h-7');
     expect(screen.getByRole('heading', { name: 'Xpod' })).toBeTruthy();
     expect(screen.queryByText('使用 WebID 登录')).toBeNull();
   });
@@ -32,7 +32,7 @@ describe('Xpod login brand', () => {
     const { container } = render(<XpodLoginBrand compact showSubtitle subtitle="使用 WebID 账号" />);
     const brand = screen.getByTestId('xpod-login-brand');
 
-    expect(container.querySelector('img')?.className).toContain('h-16');
+    expect(container.querySelector('svg')?.getAttribute('class')).toContain('h-16');
     expect(brand.className).toContain('flex-col');
     expect(brand.className).toContain('items-center');
     expect(screen.getByText('使用 WebID 账号')).toBeTruthy();

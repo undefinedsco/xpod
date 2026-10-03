@@ -8,6 +8,7 @@ export interface LiveTaskRun {
   thread: string;
   status: string;
   waitingToolCallId?: string;
+  error?: unknown;
 }
 export interface LiveTaskCaseEvidence {
   kind: 'approved' | 'rejected' | 'stopped';
@@ -18,6 +19,7 @@ export interface LiveTaskCaseEvidence {
   sessionPaused?: boolean;
   decision?: string;
   terminalStatus?: string;
+  producerFailure?: LiveTaskProducerFailure;
   sessionCompleted?: boolean;
   sameRun?: boolean;
   markerMatches?: boolean;
@@ -26,6 +28,42 @@ export interface LiveTaskCaseEvidence {
   stableAfterDuplicateOrStop?: boolean;
   ok: boolean;
 }
+export interface LiveTaskProducerFailure {
+  status: 'failed' | 'cancelled' | 'completed';
+  errorPresent: boolean;
+  errorLength: number;
+  errorClass: 'none' | 'unknown' | 'auth_required' | 'service_access_missing' | 'token_exchange_failed'
+    | 'provider_error' | 'provider_aborted' | 'sandbox_unavailable' | 'worker_start_failed'
+    | 'worker_exited' | 'execution_state_error';
+  httpStatus?: number;
+}
+
+/** Never copy error text: upstream messages may include credentials, bodies or URLs. */
+function recordProducerFailure(run: LiveTaskRun, evidence?: LiveTaskCaseEvidence): void {
+  if (!evidence || !['failed', 'cancelled', 'completed'].includes(run.status)) return;
+  const text = typeof run.error === 'string' ? run.error : '';
+  const errorPresent = run.error !== undefined && run.error !== null && run.error !== '';
+  const classes: Array<[RegExp, LiveTaskProducerFailure['errorClass']]> = [
+    [/\bservice_access_missing\b/u, 'service_access_missing'],
+    [/\btoken_exchange_failed\b/u, 'token_exchange_failed'],
+    [/\bauth_required\b/u, 'auth_required'],
+    [/^(?:Error: )?Pi assistant ended with error(?:$|\s)/u, 'provider_error'],
+    [/^(?:Error: )?Pi assistant ended with aborted(?:$|\s)/u, 'provider_aborted'],
+    [/^(?:Error: )?Cloud Agent Runtime (?:requires an OS sandbox|refused to run without a sandbox)/u, 'sandbox_unavailable'],
+    [/^(?:Error: )?Agent Runtime worker failed to start:/u, 'worker_start_failed'],
+    [/^(?:Error: )?Agent Runtime worker exited with code /u, 'worker_exited'],
+    [/^(?:Error: )?Unable to read execution state:/u, 'execution_state_error'],
+  ];
+  const statuses = new Set(Array.from(text.matchAll(/\b(?:HTTP(?: status)?|status(?: code)?)\s*[:=]?\s*([45]\d{2})(?!\d)/giu),
+    match => Number(match[1])));
+  evidence.producerFailure = {
+    status: run.status as LiveTaskProducerFailure['status'], errorPresent,
+    errorLength: Math.min(text.length, 1_000_000),
+    errorClass: classes.find(([pattern]) => pattern.test(text))?.[1] ?? (errorPresent ? 'unknown' : 'none'),
+    ...(statuses.size === 1 ? { httpStatus: [...statuses][0] } : {}),
+  };
+}
+
 export interface LiveTaskEvidence {
   ok: boolean;
   cases: LiveTaskCaseEvidence[];
@@ -54,8 +92,11 @@ export async function pollLiveTask<T>(read: () => Promise<T>, ready: (value: T) 
 }
 
 export function requireLiveCheckpoint(run: LiveTaskRun, approvals: ApprovalRow[], target: string,
-  owner: string): ApprovalRow | undefined {
-  if (terminal.has(run.status)) throw new LiveTaskEvidenceError(`Producer ended ${run.status} before requesting approval`);
+  owner: string, evidence?: LiveTaskCaseEvidence): ApprovalRow | undefined {
+  if (terminal.has(run.status)) {
+    recordProducerFailure(run, evidence);
+    throw new LiveTaskEvidenceError(`Producer ended ${run.status} before requesting approval`);
+  }
   if (run.status !== 'waiting_input') return undefined;
   const matching = approvals.filter(approval => approval.target === target && approval.thread === run.thread
     && approval.toolCallId === run.waitingToolCallId && approval.toolName === 'request_approval'
@@ -64,9 +105,11 @@ export function requireLiveCheckpoint(run: LiveTaskRun, approvals: ApprovalRow[]
   return matching[0];
 }
 
-export function requireLiveTerminal(run: LiveTaskRun, expectedRunId: string, expectedStatus: string): boolean {
+export function requireLiveTerminal(run: LiveTaskRun, expectedRunId: string, expectedStatus: string,
+  evidence?: LiveTaskCaseEvidence): boolean {
   requireEvidence(run.id === expectedRunId, 'Task resumed into a different Run');
   if (!terminal.has(run.status)) return false;
+  if (run.status !== expectedStatus) recordProducerFailure(run, evidence);
   requireEvidence(run.status === expectedStatus, `Task ended ${run.status}; expected ${expectedStatus}`);
   return true;
 }
@@ -165,7 +208,7 @@ export async function acceptLiveTaskApproval(options: {
       const approval = await pollLiveTask(async () => {
         const run = await readRun(created.task.id, acknowledged.run.id);
         const approvals = await db.select().from(approvalResource).execute();
-        return requireLiveCheckpoint(run, approvals, target, options.webId);
+        return requireLiveCheckpoint(run, approvals, target, options.webId, row);
       }, value => Boolean(value), 'real producer approval');
       requireEvidence(approval, 'Producer approval missing');
       row.approvalPending = true;
@@ -195,7 +238,7 @@ export async function acceptLiveTaskApproval(options: {
       }
       phase = `${kind}:terminal`;
       const finalRun = await pollLiveTask(() => readRun(created.task.id, acknowledged.run.id),
-        run => requireLiveTerminal(run, acknowledged.run.id, kind === 'approved' ? 'completed' : 'cancelled'), 'same Run terminal state');
+        run => requireLiveTerminal(run, acknowledged.run.id, kind === 'approved' ? 'completed' : 'cancelled', row), 'same Run terminal state');
       row.sameRun = true;
       row.terminalStatus = finalRun.status;
       await pollLiveTask(() => sessionStatus(approval.session), value => value === 'completed', 'completed Session');
@@ -220,7 +263,7 @@ export async function acceptLiveTaskApproval(options: {
         await request(`/api/tasks/stop?id=${encodeURIComponent(acknowledged.run.id)}`, 'POST', {});
       }
       await new Promise(resolve => setTimeout(resolve, 2_000));
-      requireEvidence(requireLiveTerminal(await readRun(created.task.id, acknowledged.run.id), acknowledged.run.id, finalRun.status),
+      requireEvidence(requireLiveTerminal(await readRun(created.task.id, acknowledged.run.id), acknowledged.run.id, finalRun.status, row),
         'Duplicate resume or Stop reopened the terminal Run');
       const afterMarker = await marker(target);
       requireEvidence(JSON.stringify(await steps(acknowledged.run.id)) === JSON.stringify(beforeSteps)

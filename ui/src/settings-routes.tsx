@@ -3,7 +3,7 @@ import { Navigate, Outlet, type RouteObject } from 'react-router-dom';
 import { XpodSettingsLayout } from './layout/XpodSettingsLayout';
 import { RouteLoadingBoundary } from './layout/RouteLoadingBoundary';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
-import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
+import { PodManagementBoundary, PodManagementFrame } from './pages/settings/PodDeletionAuthorizationPanel';
 
 const ModelsPage = lazy(() => import('./pages/settings/ModelsPage'));
 const AiConfigPage = lazy(() => import('./pages/settings/AiConfigPage'));
@@ -57,11 +57,13 @@ export const systemSettingsSurfaceRoutes: RouteObject[] = [
     // Pod 管理由 Account 管理边界准入（设计第二部分 §4.1 / U08）：零 Pod、WebID 过期
     // 时仍必须能进入这里管理机器与创建/绑定 Pod。只有访问 Pod 数据的动作才需要 WebID
     // （identity-access 与各内容态另行判定），不得让"创建 Pod"依赖"已有 Pod"。
-    element: <AccountAuthBoundary surface="embedded"><Outlet /></AccountAuthBoundary>,
+    element: <PodManagementBoundary />,
     children: [
-      systemSettingsPage([
-        { path: 'pod', element: lazyRoute(<PodSettingsSubjectPanel kind="pod" />) },
-      ]),
+      { element: <XpodSettingsLayout />, children: [
+        { element: <PodManagementFrame />, children: [
+          { path: 'pod', element: lazyRoute(<PodSettingsSubjectPanel kind="pod" />) },
+        ] },
+      ] },
     ],
   },
   {

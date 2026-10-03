@@ -1,3 +1,4 @@
+import { getXpodAuthSurfaceHost } from '../auth/xpod-auth-surface-host';
 import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -10,6 +11,7 @@ import {
 } from '@undefineds.co/shared-ui';
 import type { StorageBinding, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import { XpodAccountPageSurface } from '../auth/XpodAuthSurface';
+import { XpodDeploymentIdentity } from '../auth/XpodDeploymentIdentity';
 import type { WebAccountConsentOption, WebAccountConsentSelection } from '../auth/WebAccountViews';
 import { WebAccountErrorBanner, WebAccountFailureView, WebAccountRestoringView } from '../auth/WebAccountViews';
 import { useAuth } from '../context/AuthContextValue';
@@ -152,7 +154,7 @@ export function ConsentPage() {
   const [selectedWebId, setSelectedWebId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [failedAction, setFailedAction] = useState<'load' | 'authorize' | 'cancel' | 'switch' | 'return'>('load');
-  const [rememberClient, setRememberClient] = useState(true);
+  const [rememberClient, setRememberClient] = useState(false);
   const [provisionCode, setProvisionCode] = useState<string | undefined>(() => getStoredProvisionCode());
   const [isAuthorizing, setIsAuthorizing] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
@@ -597,7 +599,7 @@ export function ConsentPage() {
   }, [controls, identity, navigate]);
 
   // 完整管理是明确的次要出口：保留当前 Account + 原 interaction + 回程地址 + TTL，
-  // 由重管理页展示"回到授权/取消"横条后回到同一个 Consent；旧式裸 returnTo 已弃用。
+  // Web 轻量桌面入口或桌面管理页验证原任务后，回到同一个 Consent。
   const handleGoToPodManagement = () => {
     const accountId = resolveAuthoritativeAccountId(controls, identity);
     const interaction = currentInteractionScope();
@@ -607,7 +609,8 @@ export function ConsentPage() {
       return;
     }
     clearManagementContinuation();
-    navigate(scopeAccountUrl('/.account/manage-pod/'));
+    if (getXpodAuthSurfaceHost() === 'window') navigate(scopeAccountUrl('/.account/manage-pod/'));
+    else window.location.assign('/settings/pod');
   };
 
   // Manage the account elsewhere and come back: the interaction and its return address are kept.
@@ -712,6 +715,7 @@ export function ConsentPage() {
           <IdpNoWebIdView
             serviceName="Xpod"
             serviceHost={serviceHost}
+            serviceIcon={<XpodDeploymentIdentity />}
             appName={clientName}
             error={firstPodError ?? undefined}
             pending={isSubmitting}
@@ -731,6 +735,7 @@ export function ConsentPage() {
             <ConsentView
               serviceName="Xpod"
               serviceHost={serviceHost}
+              serviceIcon={<XpodDeploymentIdentity />}
               app={{
                 name: clientName,
                 host: consentClientHost(clientInfo),

@@ -58,7 +58,7 @@ describe('PodSignInFrame', () => {
     expect(intro).toBeTruthy()
     expect(intro.className).toContain('bg-[hsl(var(--sunken))]')
     expect(frame.querySelector('[data-pod-sign-in="intro"]')?.textContent).toContain('账号服务介绍')
-    // Narrow screens: the intro column collapses, the body stays a single 360 column.
+    // Narrow screens: the intro column collapses into one responsive column.
     expect(intro.className).toContain('hidden')
     expect(frame.querySelector('.md\\:col-span-2')).toBeNull()
     rerender(<PodSignInFrame presentation="page" ariaLabel="登录"><p>body</p></PodSignInFrame>)
@@ -75,7 +75,7 @@ describe('PodSignInFrame', () => {
     expect(frame.className).toContain('min-h-0')
     expect(frame.className).not.toMatch(/min-[wh]-\[\d+px\]/)
     expect(frame.className).not.toMatch(/w-\[280px\]|h-\[400px\]/)
-    expect(screen.getByText('body').parentElement?.className).toContain('max-w-[360px]')
+    expect(screen.getByText('body').parentElement?.className).toContain('max-w-[480px]')
   })
 
   it('makes the modal dialog own focus, close on Escape and trap Tab', () => {

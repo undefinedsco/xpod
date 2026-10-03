@@ -141,7 +141,7 @@ describe('DesktopWindowModeController', () => {
 
     navigation.emit('did-navigate', base)
     expect(controller.currentMode()).toBe('account')
-    expect(window.size).toEqual([280, 400])
+    expect(window.size).toEqual([440, 620])
     for (const document of ['login/password/register/', 'oidc/consent/', 'create-pod/']) {
       navigation.emit('did-navigate-in-page', `${base}${document}`)
       expect(controller.currentMode()).toBe('workspace')
@@ -149,7 +149,7 @@ describe('DesktopWindowModeController', () => {
       expect(window.resizable).toBe(true)
       navigation.emit('did-navigate-in-page', `${base}login/password/`)
       expect(controller.currentMode()).toBe('account')
-      expect(window.size).toEqual([280, 400])
+      expect(window.size).toEqual([440, 620])
     }
   })
 
@@ -245,18 +245,18 @@ describe('DesktopWindowModeController', () => {
     expect(window.showCalls).toBe(1)
   })
 
-  it('gives WebID sign-in and the account service pages the same 280 x 400 native bounds', () => {
+  it('gives WebID sign-in and the account service pages the same 440 x 620 window', () => {
     expect(AUTH_WINDOW_MODE_SIZE).toEqual({
-      width: 280,
-      height: 400,
-      minWidth: 280,
-      minHeight: 400,
+      width: 440,
+      height: 620,
+      minWidth: 320,
+      minHeight: 480,
     })
     expect(ACCOUNT_WINDOW_MODE_SIZE).toEqual({
-      width: 280,
-      height: 400,
-      minWidth: 280,
-      minHeight: 400,
+      width: 440,
+      height: 620,
+      minWidth: 320,
+      minHeight: 480,
     })
   })
 
@@ -264,12 +264,12 @@ describe('DesktopWindowModeController', () => {
     const window = new FakeWindow()
     const controller = new DesktopWindowModeController(window, new FakeTimers())
     controller.applyMode('auth')
-    expect(window.size).toEqual([280, 400])
+    expect(window.size).toEqual([440, 620])
     expect(window.contentSize).toBeUndefined()
     controller.applyModeForUrl('https://id.example/.account/login/password/')
-    expect(window.size).toEqual([280, 400])
+    expect(window.size).toEqual([440, 620])
     expect(window.contentSize).toBeUndefined()
-    expect(window.minimumSize).toEqual([280, 400])
+    expect(window.minimumSize).toEqual([320, 480])
     controller.applyModeForUrl('https://id.example/.account/account/')
     expect(window.contentSize).toEqual([WORKSPACE_WINDOW_MODE_SIZE.width, WORKSPACE_WINDOW_MODE_SIZE.height])
   })

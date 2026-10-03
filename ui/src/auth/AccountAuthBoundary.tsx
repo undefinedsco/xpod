@@ -7,6 +7,7 @@ import { useAuth } from '../context/AuthContextValue';
 import { AccountEntryLinks, XpodAccountCredentials } from './XpodAccountCredentials';
 import { XpodAccountPageSurface } from './XpodAuthSurface';
 import { WebAccountLayout } from './WebAccountLayout';
+import { XpodDeploymentIdentity } from './XpodDeploymentIdentity';
 import { useXpodSolidRuntimeContext } from '../solid/XpodSolidRuntime';
 
 export function AccountWorkspaceBoundary({ children }: { children: ReactNode }) {
@@ -103,7 +104,7 @@ export function AccountAuthBoundary({
 
 function LoginSurface({ children, surface }: { children: ReactNode; surface: 'page' | 'embedded' }) {
   if (surface === 'embedded') {
-    return <WebAccountLayout title="登录 Xpod" presentation="compact">{children}</WebAccountLayout>;
+    return <WebAccountLayout title="登录 Xpod" presentation="compact" serviceIcon={<XpodDeploymentIdentity />}>{children}</WebAccountLayout>;
   }
   return (
     <XpodAccountPageSurface title="登录 Xpod" presentation="compact">

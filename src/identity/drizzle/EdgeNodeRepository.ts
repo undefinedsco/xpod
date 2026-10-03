@@ -757,6 +757,26 @@ export class EdgeNodeRepository {
   /**
    * Get SP node info by nodeId.
    */
+  /** Resolve a registered SP by its canonical root, never by a client supplied hostname claim. */
+  public async findSpNodeByStorageUrl(storageUrl: string): Promise<{ nodeId: string; publicUrl: string } | undefined> {
+    await this.ready;
+    const result = await executeQuery<{ id: string; public_url: string }>(this.db, sql`
+      SELECT id, public_url FROM cluster_node WHERE node_type = 'sp' AND public_url IS NOT NULL
+    `);
+    const storage = new URL(storageUrl);
+    const matches = result.rows.filter((row) => {
+      try {
+        const root = new URL(row.public_url);
+        const rootPath = root.pathname.replace(/\/?$/u, '/');
+        const relative = storage.pathname.slice(rootPath.length);
+        return storage.origin === root.origin && storage.pathname.startsWith(rootPath) &&
+          /^[a-zA-Z0-9_-]{1,64}\/$/u.test(relative);
+      } catch { return false; }
+    });
+    if (matches.length !== 1) { return undefined; }
+    return { nodeId: String(matches[0].id), publicUrl: matches[0].public_url };
+  }
+
   public async getSpNode(nodeId: string): Promise<SpNodeInfo | undefined> {
     await this.ready;
     const result = await executeQuery(this.db, sql`

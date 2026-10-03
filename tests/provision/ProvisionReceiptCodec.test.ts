@@ -67,4 +67,14 @@ describe('ProvisionReceiptCodec', () => {
       now: () => 1_700_000_002_000,
     })).toEqual({ valid: false, reason: 'expired' });
   });
+  it('binds the Local Pod incarnation so a receipt cannot be retargeted to a recreated Pod', () => {
+    const receipt = createProvisionReceipt({ ...input, podId: 'local-generation-1' });
+    expect(verifyProvisionReceipt(receipt, { secret: input.secret, now })).toMatchObject({ valid: true, payload: { podId: 'local-generation-1' } });
+    const [data, signature] = receipt.split('.');
+    const payload = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
+    payload.podId = 'local-generation-2';
+    const tampered = `${Buffer.from(JSON.stringify(payload)).toString('base64url')}.${signature}`;
+    expect(verifyProvisionReceipt(tampered, { secret: input.secret, now })).toEqual({ valid: false, reason: 'signature' });
+  });
+
 });

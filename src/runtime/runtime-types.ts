@@ -43,6 +43,8 @@ export interface XpodRuntimeOptions {
   gatewayPort?: number;
   cssPort?: number;
   apiPort?: number;
+  /** Internal listener plan; uses the existing gateway ingress, not a new endpoint. */
+  ingressPort?: number;
   gatewaySocketPath?: string;
   cssSocketPath?: string;
   apiSocketPath?: string;

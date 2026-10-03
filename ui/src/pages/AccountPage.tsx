@@ -31,6 +31,8 @@ import {
   CredentialSection,
   IdpChrome,
   Input,
+  Button,
+  ConfirmationDialog,
   WebIdSection,
   resolvePodSignInCopy,
   webIdShortName,
@@ -52,12 +54,16 @@ import {
 interface PodView {
   id: string;
   resourceUrl?: string;
+  deletionUrl?: string;
+  authorizationUrl?: string;
   name?: string;
   storageMode?: StorageMode;
 }
 
 interface AccountPodResponse {
   pods?: Record<string, string>;
+  podDeletionControls?: Record<string, string>;
+  podDeletionAuthorizationControls?: Record<string, string>;
 }
 
 interface AccountWebIdResponse {
@@ -73,6 +79,12 @@ interface CredentialView {
   resourceUrl: string;
   webId?: string;
 }
+
+type RemovalAction =
+  | { kind: 'pod'; target: PodView }
+  | { kind: 'credential'; target: CredentialView };
+
+type PendingRemoval = RemovalAction & { assertAccount?: () => void };
 
 function derivePodName(storageUrl: string): string | undefined {
   try {
@@ -93,6 +105,8 @@ function normalizePods(json: AccountPodResponse | undefined): PodView[] {
   return Object.entries(pods).map(([storageUrl, resourceUrl]) => ({
     id: storageUrl,
     resourceUrl,
+    deletionUrl: typeof json?.podDeletionControls?.[storageUrl] === 'string' ? json.podDeletionControls[storageUrl] : undefined,
+    authorizationUrl: typeof json?.podDeletionAuthorizationControls?.[storageUrl] === 'string' ? json.podDeletionAuthorizationControls[storageUrl] : undefined,
     name: derivePodName(storageUrl),
   }));
 }
@@ -114,14 +128,7 @@ function podsFromScopedEntries(entries: ScopedWebIdEntry[]): PodView[] {
   return pods;
 }
 
-/**
- * One Pod is described by two authority sources: the durable bindings listing
- * (WebID → storage URL, no management address) and the Pod inventory
- * (storage URL → the resource address that owns it). They key off the same
- * storage URL, so merge both facts onto one row instead of dropping the
- * duplicate. The inventory is the only source of the advertised management
- * address; losing it silently removed the Pod's delete action from the page.
- */
+/** Merge bindings with separately advertised owner-management and deletion controls. */
 function mergePodsByStorageUrl(existing: PodView[], incoming: PodView[]): PodView[] {
   const byId = new Map(existing.map((pod) => [pod.id, pod] as const));
   for (const pod of incoming) {
@@ -133,6 +140,8 @@ function mergePodsByStorageUrl(existing: PodView[], incoming: PodView[]): PodVie
     byId.set(pod.id, {
       ...current,
       resourceUrl: pod.resourceUrl ?? current.resourceUrl,
+      deletionUrl: pod.deletionUrl ?? current.deletionUrl,
+      authorizationUrl: pod.authorizationUrl ?? current.authorizationUrl,
       name: current.name ?? pod.name,
       storageMode: current.storageMode ?? pod.storageMode,
     });
@@ -140,16 +149,10 @@ function mergePodsByStorageUrl(existing: PodView[], incoming: PodView[]): PodVie
   return Array.from(byId.values());
 }
 
-/**
- * Carry the inventory's advertised management address onto a Pod row that came
- * from a different authority source. The local provision scope only filters
- * which storage URLs may show; it must not discard the management fact the
- * account inventory already advertised for the same storage URL. A Pod with no
- * advertised address keeps none — the address is never guessed.
- */
+/** Scope filtering must retain both inventory capabilities for the same storage URL. */
 function attachInventoryManagement(pod: PodView, inventory: PodView[]): PodView {
-  const match = inventory.find((candidate) => candidate.id === pod.id && candidate.resourceUrl);
-  return match ? { ...pod, resourceUrl: match.resourceUrl } : pod;
+  const match = inventory.find((candidate) => candidate.id === pod.id);
+  return match ? { ...pod, resourceUrl: match.resourceUrl, deletionUrl: match.deletionUrl, authorizationUrl: match.authorizationUrl } : pod;
 }
 
 function credentialIdFromUrl(resourceUrl: string): string {
@@ -214,6 +217,10 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [showWebIdDropdown, setShowWebIdDropdown] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
+  const [removalError, setRemovalError] = useState<string | null>(null);
+  const [removalPending, setRemovalPending] = useState(false);
+  const removalPendingRef = useRef(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [accountWebIdUrl, setAccountWebIdUrl] = useState<string>();
   const [accountPodUrl, setAccountPodUrl] = useState<string>();
@@ -222,6 +229,16 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
   const [accountLogoutUrl, setAccountLogoutUrl] = useState<string>();
   const passwordForgotUrl = resolveSameOriginAccountControlUrl(controls?.password?.forgot)
     ?? scopeAccountUrl('/.account/login/password/forgot/');
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setPendingRemoval(null);
+      setRemovalError(null);
+    });
+    return () => { active = false; };
+  }, [controls, idpIndex]);
 
   useEffect(() => {
     let active = true;
@@ -281,7 +298,7 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
       clearConsentContinuation();
       clearManagementContinuation();
     }
-    window.location.href = scopeAccountUrl('/.account/manage-pod/');
+    window.location.href = '/settings/pod';
   }, [controls, hasOidcPending, identity]);
 
   const copyToClipboard = async (text: string, field: string) => {
@@ -451,22 +468,87 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
   };
 
 
-  const handleDeletePod = async (pod: PodView) => {
-    const podResourceUrl = await resolveHostedAccountControlUrl(pod.resourceUrl, fetch, idpIndex);
-    if (!podResourceUrl) return;
-    if (!confirm(copy.deletePodConfirm(pod.id))) return;
+  const openRemoval = (action: RemovalAction) => {
+    if (isLoading || removalPendingRef.current) return;
+    setAccountError(null);
+    setRemovalError(null);
+    setPendingRemoval({ ...action, assertAccount: bindAccountCapability?.() });
+  };
+
+  const confirmRemoval = async () => {
+    if (!pendingRemoval || removalPendingRef.current) return;
+    const action = pendingRemoval;
+    const fallback = action.kind === 'pod' ? copy.deletePodFailed : copy.revokeCredentialFailed;
+    removalPendingRef.current = true;
+    setRemovalPending(true);
+    setIsLoading(true);
+    setRemovalError(null);
+    try {
+      action.assertAccount?.();
+      const resourceUrl = await resolveHostedAccountControlUrl(action.kind === 'pod' ? action.target.deletionUrl : action.target.resourceUrl, fetch, idpIndex);
+      action.assertAccount?.();
+      if (!resourceUrl) throw new Error('xpod-account-session-changed');
+      const res = await fetch(scopeAccountUrl(resourceUrl), { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
+      action.assertAccount?.();
+      if (res.ok) {
+        await fetchData();
+        action.assertAccount?.();
+        setPendingRemoval(null);
+      } else {
+        const body = await res.json().catch(() => ({})) as { message?: unknown; code?: unknown };
+        const code = typeof body.code === 'string' ? body.code : body.message;
+        const errors: Record<string, string> = {
+          POD_DELETE_NODE_UNAVAILABLE: copy.deletePodNodeUnavailable,
+          POD_DELETE_NODE_FAILED: copy.deletePodNodeFailed,
+          POD_DELETE_NOT_ACKNOWLEDGED: copy.deletePodNotAcknowledged,
+          POD_DELETE_UNSUPPORTED_PROVIDER: copy.deletePodUnsupported,
+        };
+        setRemovalError(action.kind === 'pod' && typeof code === 'string' && Object.prototype.hasOwnProperty.call(errors, code)
+          ? errors[code] : fallback);
+      }
+    } catch (err: unknown) {
+      setRemovalError(err instanceof Error && err.message === 'xpod-account-session-changed'
+        ? copy.actionUnavailable : accountActionError(err, fallback));
+    } finally {
+      removalPendingRef.current = false;
+      setRemovalPending(false);
+      setIsLoading(false);
+    }
+  };
+
+  const beginDeletionAuthorization = async (pod: PodView | undefined) => {
+    if (!pod?.authorizationUrl || removalPendingRef.current) return;
+    const assertAccount = bindAccountCapability?.();
+    removalPendingRef.current = true;
     setIsLoading(true);
     setAccountError(null);
     try {
-      const res = await fetch(scopeAccountUrl(podResourceUrl), { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
-      if (res.ok) {
-        await fetchData();
-      } else {
-        setAccountError('无法删除存储空间，请重试。');
+      assertAccount?.();
+      const control = await resolveHostedAccountControlUrl(pod.authorizationUrl, fetch, idpIndex);
+      assertAccount?.();
+      if (!control) throw new Error('invalid-control');
+      const response = await fetch(scopeAccountUrl(control), {
+        method: 'POST', credentials: 'include', redirect: 'error',
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ action: 'requestDeletionAuthorization' }),
+      });
+      const body = await response.json();
+      assertAccount?.();
+      if (!response.ok) throw new Error('authorization-failed');
+      const request = body.deletionAuthorization;
+      const target = new URL(request.localManagementUrl);
+      if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password || target.hash
+        || target.origin !== new URL(pod.id).origin || !target.pathname.endsWith('/settings/pod')
+        || typeof request.challenge !== 'string' || !request.challenge || typeof request.podName !== 'string'
+        || target.searchParams.get('deletionAuthorization') !== request.challenge
+        || target.searchParams.get('podName') !== request.podName || !(request.expiresAt > Date.now())) {
+        throw new Error('invalid-target');
       }
-    } catch (err: unknown) {
-      setAccountError(accountActionError(err, '无法删除存储空间，请重试。'));
+      window.location.assign(target.href);
+    } catch {
+      setAccountError(copy.enablePodDeletionFailed);
     } finally {
+      removalPendingRef.current = false;
       setIsLoading(false);
     }
   };
@@ -510,26 +592,6 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
     setShowCreateCredential(true);
   };
 
-  const handleDeleteCredential = async (credential: CredentialView) => {
-    const credentialResourceUrl = await resolveHostedAccountControlUrl(credential.resourceUrl, fetch, idpIndex);
-    if (!credentialResourceUrl) return;
-    if (!confirm(copy.deleteCredentialConfirm)) return;
-    setIsLoading(true);
-    setAccountError(null);
-    try {
-      const res = await fetch(scopeAccountUrl(credentialResourceUrl), { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
-      if (res.ok) {
-        await fetchData();
-      } else {
-        setAccountError('无法撤销客户端凭据，请重试。');
-      }
-    } catch (err: unknown) {
-      setAccountError(accountActionError(err, '无法撤销客户端凭据，请重试。'));
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const accountLocale = resolveXpodAccountPageLocale(locale);
   const signInCopy = resolvePodSignInCopy(accountLocale);
   const pendingInteraction = currentInteractionScope();
@@ -538,14 +600,20 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
   // interaction-shaped URL must never fabricate a resume task.
   const showPendingBanner = hasOidcPending && Boolean(pendingInteraction);
 
-  const storageLocationFor = (webId: string, storageUrl: string | undefined): StorageLocation | undefined => {
+  const storageLocationFor = (storageUrl: string | undefined): StorageLocation | undefined => {
     if (!storageUrl) return undefined;
-    const mode = pods.find((pod) => pod.id === storageUrl)?.storageMode ?? storageModeFor(webId, storageUrl);
-    if (mode === 'cloud') return { kind: 'cloud', label: signInCopy.deviceCloud };
-    if (mode === 'local') return { kind: 'edge', label: signInCopy.deviceEdge };
-    // 'custom' is not one of the public classifications; leave it unclassified
-    // instead of guessing a location.
-    return undefined;
+    try {
+      // A WebID and Pod can share an edge origin. Their being same-origin says
+      // nothing about cloud hosting; compare the real binding to its issuer.
+      const issuer = new URL(idpIndex ?? '/.account/', window.location.origin);
+      const storage = new URL(storageUrl);
+      if (!['https:', 'http:'].includes(storage.protocol)) return undefined;
+      return storage.origin === issuer.origin
+        ? { kind: 'cloud', label: signInCopy.hostedStorage }
+        : { kind: 'edge', label: signInCopy.independentStorage };
+    } catch {
+      return undefined;
+    }
   };
 
   const podForWebId = (webId: string): PodView | undefined => {
@@ -556,13 +624,15 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
   const webIdEntries: WebIdEntry[] = webIds.map((webId) => {
     const storageUrl = bindings.find((item) => item.webId === webId)?.storageUrl;
     const pod = storageUrl ? pods.find((item) => item.id === storageUrl) : undefined;
+    const storage = storageLocationFor(storageUrl);
     return {
       id: webId,
       displayName: webIdShortName(webId),
       webId,
       podUrl: storageUrl,
-      ...(storageLocationFor(webId, storageUrl) ? { storage: storageLocationFor(webId, storageUrl)! } : {}),
-      removable: Boolean(pod?.resourceUrl),
+      ...(storage ? { storage } : {}),
+      removable: Boolean(pod?.deletionUrl),
+      authorizable: Boolean(pod?.authorizationUrl),
     };
   });
   // Real Pods that the account advertises but that have no WebID binding must
@@ -571,17 +641,17 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
   const linkedStorageUrls = new Set(bindings.map((item) => item.storageUrl));
   const unlinkedPodEntries: UnlinkedPodEntry[] = pods
     .filter((pod) => !linkedStorageUrls.has(pod.id))
-    .map((pod) => ({
-      id: pod.id,
-      storageUrl: pod.id,
-      displayName: pod.name ?? pod.id,
-      ...(pod.storageMode === 'cloud' || pod.storageMode === 'local'
-        ? { storage: pod.storageMode === 'cloud'
-            ? { kind: 'cloud' as const, label: signInCopy.deviceCloud }
-            : { kind: 'edge' as const, label: signInCopy.deviceEdge } }
-        : {}),
-      removable: Boolean(pod.resourceUrl),
-    }));
+    .map((pod) => {
+      const storage = storageLocationFor(pod.id);
+      return {
+        id: pod.id,
+        storageUrl: pod.id,
+        displayName: pod.name ?? pod.id,
+        ...(storage ? { storage } : {}),
+        removable: Boolean(pod.deletionUrl),
+        authorizable: Boolean(pod.authorizationUrl),
+      };
+    });
   const webIdLabelById = new Map(webIdEntries.map((entry) => [entry.id, entry.displayName]));
   const credentialEntries: CredentialEntry[] = credentials.map((credential) => ({
     id: credential.id,
@@ -593,12 +663,12 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
 
   const handleRemoveWebIdEntry = (entry: WebIdEntry) => {
     const pod = podForWebId(entry.id);
-    if (pod) void handleDeletePod(pod);
+    if (pod) openRemoval({ kind: 'pod', target: pod });
   };
 
   const handleRemoveUnlinkedPod = (entry: UnlinkedPodEntry) => {
     const pod = pods.find((item) => item.id === entry.id);
-    if (pod) void handleDeletePod(pod);
+    if (pod) openRemoval({ kind: 'pod', target: pod });
   };
 
   /**
@@ -720,13 +790,24 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
           />
         ) : null}
 
+        {accountPodUrl ? (
+          <section aria-label={copy.workspaceTitle} className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold">{copy.workspaceTitle}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">{copy.workspaceHint}</p>
+            </div>
+            <Button onClick={handleManagePods} className="shrink-0">{copy.openWorkspace}</Button>
+          </section>
+        ) : null}
+
         <WebIdSection
           webIds={webIdEntries}
           locale={accountLocale}
-          onCreateExternal={accountPodUrl ? handleManagePods : undefined}
-          createExternalLabel={copy.managePods}
           onRemoveStorage={handleRemoveWebIdEntry}
           removeStorageLabel={copy.deletePod}
+          authorizeStorageLabel={copy.enablePodDeletion}
+          onAuthorizeStorage={(entry) => void beginDeletionAuthorization(podForWebId(entry.id))}
+          onAuthorizeUnlinkedPod={(entry) => void beginDeletionAuthorization(pods.find((pod) => pod.id === entry.id))}
           unlinkedPods={unlinkedPodEntries}
           onRemoveUnlinkedPod={handleRemoveUnlinkedPod}
         />
@@ -742,7 +823,7 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
               onCreate={openCreateCredential}
               onRevoke={(credentialId) => {
                 const credential = credentials.find((item) => item.id === credentialId);
-                if (credential) void handleDeleteCredential(credential);
+                if (credential) openRemoval({ kind: 'credential', target: credential });
               }}
               locale={accountLocale}
               copy={{
@@ -855,6 +936,24 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
           </a>
         </section>
       </main>
+      <ConfirmationDialog
+        open={Boolean(pendingRemoval)}
+        onOpenChange={(open) => { if (!open) setPendingRemoval(null); }}
+        title={pendingRemoval?.kind === 'credential' ? copy.revokeCredential : copy.deletePod}
+        description={pendingRemoval?.kind === 'credential' ? copy.deleteCredentialConfirm : copy.deletePodWarning}
+        confirmLabel={removalPending ? copy.deleting : pendingRemoval?.kind === 'credential' ? copy.revokeCredential : copy.deletePod}
+        cancelLabel={copy.cancel}
+        pending={removalPending}
+        error={removalError}
+        onConfirm={() => void confirmRemoval()}
+      >
+        {pendingRemoval ? (
+          <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
+            <p className="text-muted-foreground">{pendingRemoval.kind === 'pod' ? signInCopy.storageAddress : copy.clientId}</p>
+            <p className="mt-1 break-all font-mono">{pendingRemoval.target.id}</p>
+          </div>
+        ) : null}
+      </ConfirmationDialog>
     </div>
   );
 }

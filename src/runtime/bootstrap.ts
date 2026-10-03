@@ -208,6 +208,7 @@ export async function resolveRuntimeBootstrap(
       gatewayPort: options.gatewayPort,
       cssPort: options.cssPort,
       apiPort: options.apiPort,
+      ingressPort: options.ingressPort,
       basePort: 5600,
     })
     : {};

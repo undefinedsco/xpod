@@ -1,9 +1,20 @@
-import type { Locator } from '@playwright/test';
+import { errors, type Locator } from '@playwright/test';
 import { JSDOM } from 'jsdom';
 import { expect, it, vi } from 'vitest';
 import { clickNonPasswordOidcAction } from './browserSolidOidc';
 
 const CONTROL_SELECTOR = 'button, input[type=submit], a[href]';
+
+it('returns to readiness detection when navigation removes a discovered control', async () => {
+  const locator = { evaluate: vi.fn().mockRejectedValue(new errors.TimeoutError('Control disappeared')) } as unknown as Locator;
+  expect(await clickNonPasswordOidcAction(locator)).toBe(false);
+});
+
+it('does not hide an unexpected action evaluation failure', async () => {
+  const failure = new Error('Unexpected evaluation failure');
+  const locator = { evaluate: vi.fn().mockRejectedValue(failure) } as unknown as Locator;
+  await expect(clickNonPasswordOidcAction(locator)).rejects.toBe(failure);
+});
 
 /** JSDOM stub for `Locator.evaluate` that forwards the serialized argument. */
 function stubLocator(element: Element) {

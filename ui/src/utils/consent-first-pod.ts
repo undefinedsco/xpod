@@ -337,6 +337,9 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
     fetchImpl,
     username,
     provisionCode,
+    createPodUrl,
+    options.trustedAccountIndex,
+    guard.headers,
   );
 
   guard.assertCurrentAccount();
@@ -348,11 +351,20 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
       'Content-Type': 'application/json',
     },
     credentials: 'include',
-    body: JSON.stringify(buildPodCreatePayload(
-      username,
-      preparedProvision?.provisionCode ?? provisionCode,
-      preparedProvision?.provisionReceipt,
-    )),
+    body: JSON.stringify({
+      ...buildPodCreatePayload(
+        username,
+        preparedProvision?.provisionCode ?? provisionCode,
+        preparedProvision?.provisionReceipt,
+      ),
+      ...(preparedProvision?.preparedWebId ? {
+        settings: {
+          provisionCode: preparedProvision.provisionCode,
+          provisionReceipt: preparedProvision.provisionReceipt,
+          webId: preparedProvision.preparedWebId,
+        },
+      } : {}),
+    }),
   } as RequestInit);
 
   guard.assertCurrentAccount();
@@ -408,6 +420,9 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
     fetchImpl,
     username,
     provisionCode,
+    createPodUrl,
+    options.trustedAccountIndex,
+    guard.headers,
   );
 
   guard.assertCurrentAccount();
@@ -420,11 +435,20 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
       'Content-Type': 'application/json',
     },
     credentials: 'include',
-    body: JSON.stringify(buildPodCreatePayload(
-      username,
-      preparedProvision?.provisionCode ?? provisionCode,
-      preparedProvision?.provisionReceipt,
-    )),
+    body: JSON.stringify({
+      ...buildPodCreatePayload(
+        username,
+        preparedProvision?.provisionCode ?? provisionCode,
+        preparedProvision?.provisionReceipt,
+      ),
+      ...(preparedProvision?.preparedWebId ? {
+        settings: {
+          provisionCode: preparedProvision.provisionCode,
+          provisionReceipt: preparedProvision.provisionReceipt,
+          webId: preparedProvision.preparedWebId,
+        },
+      } : {}),
+    }),
   } as RequestInit);
 
   guard.assertCurrentAccount();
@@ -606,9 +630,25 @@ async function prepareFirstPodProvision(
   fetchImpl: typeof fetch,
   username: string,
   provisionCode: string | undefined,
+  createPodUrl: string,
+  trustedAccountIndex: string | undefined,
+  headers: Record<string, string>,
 ) {
   try {
-    return await prepareProvisionedPod(fetchImpl, username, provisionCode);
+    if (!resolveProvisionScope(provisionCode)) return await prepareProvisionedPod(fetchImpl, username, provisionCode);
+    const index = trustedAccountIndex ?? new URL('/.account/', createPodUrl).href;
+    const response = await fetchImpl(scopeAccountUrl(index), { headers, credentials: 'include' });
+    if (!response.ok) throw new Error('Cloud Account controls unavailable. Retry loading your account.');
+    const body = await response.json() as { controls?: { account?: { profile?: string } } };
+    const profileControl = body.controls?.account?.profile;
+    let profileUrl: string | undefined;
+    if (profileControl) {
+      const candidate = new URL(profileControl, index);
+      if (candidate.origin === new URL(index).origin && candidate.pathname.startsWith('/.account/') && !candidate.username && !candidate.password) {
+        profileUrl = await resolveHostedAccountControlUrl(candidate.href, fetchImpl, index);
+      }
+    }
+    return await prepareProvisionedPod(fetchImpl, username, provisionCode, profileUrl ? { profileUrl, headers } : undefined);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (isPodNameConflict(message)) {

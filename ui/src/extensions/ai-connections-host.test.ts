@@ -44,10 +44,11 @@ describe('Xpod AI Connections host', () => {
     const invocationFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({
       client: 'codex', planId: 'plan', changes: [], applied: true,
     }));
-    window.fetch = invocationFetch;
+    window.fetch = vi.fn(async () => new Response(null, { status: 401 }));
     const runtime = {
       ...runtimeWith(vi.fn(async () => undefined)),
       fetch: authenticatedFetch,
+      transportFetch: invocationFetch,
       state: { status: 'authenticated' as const, webId: 'https://pod.example/alice/profile/card#me' },
       currentPod: {
         webId: 'https://pod.example/alice/profile/card#me', podUrl: 'https://pod.example/alice/',
@@ -71,6 +72,7 @@ describe('Xpod AI Connections host', () => {
       'http://localhost:49152/api/ai/client-configuration/codex/apply',
     ]);
     expect(JSON.parse(String(invocationFetch.mock.calls[0]?.[1]?.body)).endpoint).toBe('http://localhost:49152');
+    expect(window.fetch).not.toHaveBeenCalled();
   });
 
   test('starts the shared Xpod current-origin transaction without accepting an issuer', async () => {

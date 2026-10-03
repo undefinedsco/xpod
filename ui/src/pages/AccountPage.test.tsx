@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { act } from 'react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -474,7 +474,7 @@ describe('AccountPage', () => {
     );
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const entry = await screen.findByRole('button', { name: /manage pods/i });
+    const entry = await screen.findByRole('button', { name: /open xpod workspace/i });
     fireEvent.click(entry);
 
     // 不发起任何写请求，也不触发 provisioning。
@@ -529,8 +529,8 @@ describe('AccountPage', () => {
 
     // 没有显式 locale 时默认中文。
     expect(await screen.findByText('账号总览')).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: '管理 Pod' }));
-    expect(navigation.href).toBe('/.account/interaction/flow-nine/manage-pod/');
+    fireEvent.click(await screen.findByRole('button', { name: '桌面管理入口' }));
+    expect(navigation.href).toBe('/settings/pod');
     const record = JSON.parse(window.sessionStorage.getItem('xpod.safe-continuation.management.v2') ?? 'null');
     expect(record?.accountId).toBe('alice');
     expect(record?.returnTo).toBe('/.account/interaction/flow-nine/account/');
@@ -560,7 +560,7 @@ describe('AccountPage', () => {
       </AuthContext.Provider>,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: '管理 Pod' }));
+    fireEvent.click(await screen.findByRole('button', { name: '桌面管理入口' }));
     const record = JSON.parse(window.sessionStorage.getItem('xpod.safe-continuation.consent.v2') ?? 'null');
     expect(record?.accountId).toBe('alice');
     expect(record?.interaction).toBe('/.account/interaction/flow-nine');
@@ -568,11 +568,10 @@ describe('AccountPage', () => {
   });
   /**
    * A Pod has two authority sources: the bindings listing (WebID ↔ storage URL)
-   * and the Pod inventory (storage URL → its management address). The inventory
-   * is the only source of the advertised delete address, so the two must be
-   * merged onto one row; dropping the duplicate silently removed management.
+   * and the Pod inventory (separate owner and deletion capabilities). Explicit
+   * deletion controls must survive merging onto the same binding row.
    */
-  test('merges the Pod inventory management address onto the binding row and deletes it by that address', async () => {
+  test('merges the explicit Pod deletion capability onto the binding row', async () => {
     const origin = window.location.origin;
     const webId = `${origin}/alice/profile/card#me`;
     const storageUrl = `${origin}/alice/`;
@@ -583,7 +582,7 @@ describe('AccountPage', () => {
         return new Response(JSON.stringify({ bindings: [{ webId, storageUrl }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url.endsWith('/pod/') && init?.method !== 'DELETE') {
-        return new Response(JSON.stringify({ pods: { [storageUrl]: podResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ pods: { [storageUrl]: podResource }, podDeletionControls: { [storageUrl]: podResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url === podResource && init?.method === 'DELETE') {
         return new Response(null, { status: 204 });
@@ -604,9 +603,13 @@ describe('AccountPage', () => {
 
     const webIdLink = await screen.findByRole('link', { name: webIdShortName(webId) });
     expect(webIdLink.getAttribute('href')).toBe(webId);
-    // The advertised management address, not the storage URL, drives the removal.
+    // Only an explicit deletion capability drives removal; owner URLs are not sufficient.
     const deleteButton = await screen.findByRole('button', { name: new RegExp(`删除 Pod ${webIdShortName(webId)}`) });
     fireEvent.click(deleteButton);
+    const dialog = await screen.findByRole('dialog', { name: '删除 Pod' });
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+    fireEvent.click(within(dialog).getByRole('button', { name: '删除 Pod', exact: true }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input) === podResource && init?.method === 'DELETE')).toBe(true));
     // The storage URL itself must never be used as the management address.
     expect(fetchMock.mock.calls.some(([input, init]) => String(input) === storageUrl && init?.method === 'DELETE')).toBe(false);
@@ -624,7 +627,7 @@ describe('AccountPage', () => {
         return new Response(JSON.stringify({ bindings: [{ webId, storageUrl }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url.endsWith('/pod/') && init?.method !== 'DELETE') {
-        return new Response(JSON.stringify({ pods: { [storageUrl]: podResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ pods: { [storageUrl]: podResource }, podDeletionControls: { [storageUrl]: podResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify({ clientCredentials: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     });
@@ -641,12 +644,15 @@ describe('AccountPage', () => {
     );
 
     fireEvent.click(await screen.findByRole('button', { name: new RegExp(`删除 Pod ${webIdShortName(webId)}`) }));
+    const dialog = await screen.findByRole('dialog', { name: '删除 Pod' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消', exact: true }));
     await act(async () => { await Promise.resolve(); });
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+    expect(confirmSpy).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
   });
 
-  test('a Pod without an advertised management address offers no removal action', async () => {
+  test('an old server advertising only owner management offers no removal action', async () => {
     const origin = window.location.origin;
     const webId = `${origin}/alice/profile/card#me`;
     const storageUrl = `${origin}/alice/`;
@@ -655,7 +661,7 @@ describe('AccountPage', () => {
       if (url.endsWith('/bindings/')) {
         return new Response(JSON.stringify({ bindings: [{ webId, storageUrl }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      return new Response(JSON.stringify({ clientCredentials: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ pods: { [storageUrl]: `${origin}/.account/pod/alice/` } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }));
 
     render(
@@ -683,7 +689,7 @@ describe('AccountPage', () => {
         return new Response(JSON.stringify({ bindings: [{ webId, storageUrl }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url.endsWith('/pod/') && init?.method !== 'DELETE') {
-        return new Response(JSON.stringify({ pods: { [storageUrl]: `${origin}/.account/account/alice/pod/alice/`, [orphanStorage]: orphanResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ pods: { [storageUrl]: `${origin}/.account/account/alice/pod/alice/`, [orphanStorage]: orphanResource }, podDeletionControls: { [orphanStorage]: orphanResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify({ clientCredentials: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }));
@@ -733,7 +739,7 @@ describe('AccountPage', () => {
       </AuthContext.Provider>,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: '管理 Pod' }));
+    fireEvent.click(await screen.findByRole('button', { name: '桌面管理入口' }));
     // The explicit daily intent is the only source of navigation.
     expect(peekConsentContinuation({ accountId: 'alice' })).toBeNull();
     const record = JSON.parse(window.sessionStorage.getItem('xpod.safe-continuation.management.v2') ?? 'null');
@@ -766,7 +772,7 @@ describe('AccountPage', () => {
         return new Response(JSON.stringify({ bindings: [{ webId, storageUrl }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url.endsWith('/pod/') && init?.method !== 'DELETE') {
-        return new Response(JSON.stringify({ pods: { [storageUrl]: podResource, [outsideStorage]: outsideResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ pods: { [storageUrl]: podResource, [outsideStorage]: outsideResource }, podDeletionControls: { [storageUrl]: podResource, [outsideStorage]: outsideResource } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url === podResource && init?.method === 'DELETE') {
         return new Response(null, { status: 204 });
@@ -794,15 +800,19 @@ describe('AccountPage', () => {
 
     // Cancelling the confirmation must not delete anything.
     fireEvent.click(deleteButton);
+    const dialog = await screen.findByRole('dialog', { name: '删除 Pod' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消', exact: true }));
     await act(async () => { await Promise.resolve(); });
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
 
     confirmSpy.mockReturnValue(true);
     fireEvent.click(deleteButton);
+    fireEvent.click(within(await screen.findByRole('dialog', { name: '删除 Pod' })).getByRole('button', { name: '删除 Pod', exact: true }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input) === podResource && init?.method === 'DELETE')).toBe(true));
     // Never the storage URL, never the out-of-scope inventory address.
     expect(fetchMock.mock.calls.some(([input, init]) => String(input) === storageUrl && init?.method === 'DELETE')).toBe(false);
     expect(fetchMock.mock.calls.some(([input, init]) => String(input) === outsideResource && init?.method === 'DELETE')).toBe(false);
+    expect(confirmSpy).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
   });
 
@@ -839,7 +849,95 @@ describe('AccountPage', () => {
       </AuthContext.Provider>,
     );
 
-    expect(await screen.findByRole('link', { name: new RegExp(storageUrl) })).toBeTruthy();
+    expect(await screen.findByRole('link', { name: storageUrl, exact: true })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /删除 Pod/ })).toBeNull();
+  });
+});
+
+describe('Account Pod deletion confirmation', () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); });
+
+  async function setup(remove: () => Promise<Response>, assertAccount = vi.fn()) {
+    const origin = window.location.origin;
+    const storageUrl = `${origin}/alice/`;
+    const deletionUrl = `${origin}/.account/delete/alice/`;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return remove();
+      if (String(input).endsWith('/bindings/')) return Response.json({ bindings: [{ webId: `${storageUrl}profile/card#me`, storageUrl }] });
+      if (String(input).endsWith('/pod/')) return Response.json({ pods: { [storageUrl]: `${origin}/.account/owner/alice/` }, podDeletionControls: { [storageUrl]: deletionUrl } });
+      return Response.json({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<AuthContext.Provider value={authValue({ bindAccountCapability: () => assertAccount, controls: { account: {
+      bindings: '/.account/bindings/', pod: '/.account/pod/',
+    } } })}><MemoryRouter><AccountPage locale="zh-CN" /></MemoryRouter></AuthContext.Provider>);
+    fireEvent.click(await screen.findByRole('button', { name: /删除 Pod alice/ }));
+    const dialog = await screen.findByRole('dialog', { name: '删除 Pod' });
+    return { dialog, fetchMock, deletionUrl };
+  }
+
+  test('keeps failures retryable, translates known errors, and uses only the deletion capability', async () => {
+    const remove = vi.fn().mockResolvedValueOnce(Response.json({ message: 'POD_DELETE_NODE_UNAVAILABLE' }, { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const { dialog, fetchMock, deletionUrl } = await setup(remove);
+    fireEvent.click(within(dialog).getByRole('button', { name: '删除 Pod', exact: true }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('请确认设备在线');
+    fireEvent.click(within(dialog).getByRole('button', { name: '删除 Pod', exact: true }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(remove).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE').map(([url]) => url)).toEqual([deletionUrl, deletionUrl]);
+  });
+
+  test('disables actions and blocks duplicate submission while deletion is pending', async () => {
+    let resolve!: (response: Response) => void;
+    const remove = vi.fn(() => new Promise<Response>((done) => { resolve = done; }));
+    const { dialog } = await setup(remove);
+    const confirm = within(dialog).getByRole('button', { name: '删除 Pod', exact: true });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+    expect((within(dialog).getByRole('button', { name: '取消' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(dialog).getByRole('button', { name: '正在删除…' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    await act(async () => { resolve(Response.json({ message: 'private server details' }, { status: 500 })); });
+    expect(within(dialog).getByRole('alert').textContent).toBe('无法删除 Pod，请重试。');
+  });
+
+  test('rejects a stale account capability before issuing DELETE', async () => {
+    const assertAccount = vi.fn();
+    const remove = vi.fn(async () => new Response(null, { status: 204 }));
+    const { dialog, fetchMock } = await setup(remove, assertAccount);
+    assertAccount.mockImplementation(() => { throw new Error('xpod-account-session-changed'); });
+    fireEvent.click(within(dialog).getByRole('button', { name: '删除 Pod', exact: true }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('当前账号或操作已失效');
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+  });
+});
+
+describe('legacy Pod deletion authorization', () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); });
+  test('offers an independent authorization action and rejects an off-device destination', async () => {
+    const origin = window.location.origin;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'POST') return Response.json({ deletionAuthorization: {
+        challenge: 'opaque', podName: 'alice', expiresAt: Date.now() + 60000,
+        localManagementUrl: 'https://evil.test/settings/pod?deletionAuthorization=opaque&podName=alice',
+      } });
+      if (String(input).endsWith('/bindings/')) return Response.json({ bindings: [{ webId: 'https://node.test/alice/profile/card#me', storageUrl: 'https://node.test/alice/' }] });
+      return Response.json({ pods: { 'https://node.test/alice/': `${origin}/.account/pod/alice/` }, podDeletionAuthorizationControls: { 'https://node.test/alice/': `${origin}/.account/pod/alice/` } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<AuthContext.Provider value={authValue({ controls: { account: { bindings: '/.account/bindings/', pod: '/.account/pod/' } } })}>
+      <MemoryRouter><AccountPage locale="zh-CN" /></MemoryRouter></AuthContext.Provider>);
+    const action = await screen.findByRole('button', { name: '启用删除 alice' });
+    expect(screen.queryByRole('button', { name: /^删除 Pod/ })).toBeNull();
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    fireEvent.click(action);
+    expect((await screen.findByRole('alert')).textContent).toContain('无法打开设备授权页面');
+    const requests = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
+    expect(requests).toHaveLength(1);
+    expect(JSON.parse(String(requests[0][1]?.body))).toEqual({ action: 'requestDeletionAuthorization' });
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
   });
 });

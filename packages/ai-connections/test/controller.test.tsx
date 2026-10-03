@@ -12,6 +12,7 @@ import { aiConnectionsErrorMessage as normalizeAiConnectionsThrownError } from '
 import type { AiProviderSummary } from '../src'
 import { AiConnectionsList, AiConnectionsMain, createAiConnectionsController } from '../src'
 import { catalogOffering, catalogProvider, makeCredential } from './fixtures'
+import { credentialSummariesForProvider, type CredentialRow } from '../src/collections'
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_URL = 'https://pod.example/alice/'
@@ -751,7 +752,7 @@ describe('AI Connection controller host.solid integration', () => {
   })
 
   it.each(['oauth', 'deviceCode'] as const)(
-    'sends OpenAI local-imported subscription quota through caller-owned OAuth secret for %s credentials',
+    'sends a live OpenAI subscription row through caller-owned quota for %s credentials',
     async (credentialAuthMode) => {
       const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         expect(String(input)).toMatch(/\/openai\/quota\/refresh$/u)
@@ -798,8 +799,17 @@ describe('AI Connection controller host.solid integration', () => {
       }
       const controller = createAiConnectionsController(host)
 
+      const [liveCredential] = credentialSummariesForProvider('openai', [{
+        id: 'openai-subscription',
+        provider: 'https://pod.example/alice/settings/providers/openai.ttl#this',
+        service: 'ai',
+        status: 'active',
+        authMode: 'deviceCodeOAuth',
+      } as CredentialRow])
       await expect(controller.client!.quota('openai', true, {
         offeringId: 'official-subscription',
+        credentialId: liveCredential.id,
+        credentialIri: liveCredential.id,
       })).resolves.toMatchObject({
         status: 'available',
         source: 'openai:chatgpt-wham',

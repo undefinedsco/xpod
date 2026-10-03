@@ -21,6 +21,7 @@ export interface BrowserXpodAccountSnapshot {
 }
 
 export interface BrowserPodRequest {
+  cache?: RequestCache;
   method?: string;
   headers?: Record<string, string>;
   body?: string;

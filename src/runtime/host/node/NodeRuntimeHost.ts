@@ -5,6 +5,7 @@ import { registerSocketHttpOrigin } from '../../socket-http';
 import { prepareSocketPath, removeSocketPath } from '../../socket-utils';
 import type {
   RuntimeConnectionTarget,
+  RuntimeCloseOptions,
   RuntimeHost,
   RuntimeListenEndpoint,
   RuntimeListenableServer,
@@ -89,7 +90,21 @@ export class NodeRuntimeHost implements RuntimeHost {
     });
   }
 
-  public async close(server: RuntimeListenableServer, endpoint?: RuntimeListenEndpoint): Promise<void> {
+  public async close(server: RuntimeListenableServer, endpoint?: RuntimeListenEndpoint, options?: RuntimeCloseOptions): Promise<void> {
+    if (options?.connectionsDrained && server.closeAllConnections) {
+      // Subscribe before closing: Bun stops the native listener here as well,
+      // whereas Node keeps it listening until close(). Never synthesize completion.
+      const closed = new Promise<void>((resolve) => { server.once('close', resolve); });
+      server.closeAllConnections();
+      if (server.listening !== false) { await this.closeListener(server); }
+      await closed;
+    } else {
+      await this.closeListener(server);
+    }
+    if (endpoint?.type === 'socket') { removeSocketPath(endpoint.socketPath); }
+  }
+
+  private async closeListener(server: RuntimeListenableServer): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
         if (error) {
@@ -99,10 +114,6 @@ export class NodeRuntimeHost implements RuntimeHost {
         resolve();
       });
     });
-
-    if (endpoint?.type === 'socket') {
-      removeSocketPath(endpoint.socketPath);
-    }
   }
 
   public async waitForPortReady(port: number, host = '127.0.0.1', timeoutMs = 5_000): Promise<void> {

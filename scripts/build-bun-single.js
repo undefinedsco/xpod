@@ -47,6 +47,9 @@ for (const entry of requiredEntries) {
   }
 }
 
+// Validate the compiler too: it embeds its Bun runtime in the shipped binary.
+require('../dist/runtime/compat/ensureSupportedBun').ensureSupportedBun(run('bun', ['--version']).stdout.trim());
+
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-bun-single-'));
 const stageRoot = path.join(tempRoot, 'package');
 
@@ -250,6 +253,22 @@ function sharedDataFactoryPlugin(bundleOutputPath) {
   };
 }
 
+// Logger state is module-local: CSS initialization and Xpod components must
+// resolve one factory, including loggers created before initialization.
+function sharedLoggerFactoryPlugin(bundleOutputPath) {
+  const entryPath = path.join(stageRoot, 'node_modules', 'global-logger-factory', 'dist', '__bundle__.cjs');
+  const relativePath = path.relative(path.dirname(bundleOutputPath), entryPath).split(path.sep).join('/');
+  return {
+    name: 'shared-global-logger-factory',
+    setup(build) {
+      build.onResolve({ filter: /^global-logger-factory$/ }, () => ({
+        path: relativePath.startsWith('.') ? relativePath : `./${relativePath}`,
+        external: true,
+      }));
+    },
+  };
+}
+
 function copySharedDataFactory() {
   const packageDir = resolvePackageDir('rdf-data-factory');
   const stageDir = resolveStageDir('rdf-data-factory');
@@ -321,6 +340,7 @@ async function bundlePackageMain(packageName, packageDir, packageJson, stageDir)
       },
       createPackagePatchPlugin(packageName, packageDir), extractedComponentsPlugin,
       kyUniversalBrowserPlugin, sharedDataFactoryPlugin(bundleOutputPath),
+      packageName !== 'global-logger-factory' && sharedLoggerFactoryPlugin(bundleOutputPath),
     ].filter(Boolean),
   });
   return bundleMainRelative;
@@ -351,7 +371,7 @@ const rootPackage = readJson(path.join(repoRoot, 'package.json'));
 
 async function main() {
   copySharedDataFactory();
-  const queue = [rootPackage.name];
+  const queue = [rootPackage.name, 'global-logger-factory'];
   const visited = new Set(['rdf-data-factory']);
 
   while (queue.length > 0) {
@@ -448,7 +468,7 @@ async function main() {
     target: 'node22',
     logLevel: 'silent',
     external: COMMON_BUNDLE_EXTERNALS,
-    plugins: [kyUniversalBrowserPlugin, sharedDataFactoryPlugin(cliOutputPath)],
+    plugins: [kyUniversalBrowserPlugin, sharedDataFactoryPlugin(cliOutputPath), sharedLoggerFactoryPlugin(cliOutputPath)],
   });
 
   const manifest = [];

@@ -66,18 +66,27 @@ async function stopWithTimeout(
   name: 'gateway' | 'api' | 'css',
   stop: () => Promise<void>,
   timeoutMs: number,
+  onDrainTimeout?: (error: Error) => void,
 ): Promise<void> {
   let timeout: NodeJS.Timeout | undefined;
+  const pending = stop();
+  const deadline = new Error(`${name} stop timed out after ${timeoutMs}ms`);
   try {
     await Promise.race([
-      stop(),
+      pending,
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
-          reject(new Error(`${name} stop timed out after ${timeoutMs}ms`));
+          reject(deadline);
         }, timeoutMs);
         timeout.unref();
       }),
     ]);
+  } catch (error: unknown) {
+    if (error !== deadline || !onDrainTimeout) { throw error; }
+    onDrainTimeout(deadline);
+    // A deadline is diagnostic for storage consumers. It cannot release their
+    // shared connections while a writer/deletion callback is still running.
+    await pending;
   } finally {
     if (timeout) {
       clearTimeout(timeout);
@@ -222,6 +231,7 @@ export async function stopRuntimeServices({
   restoreRuntimeEnv,
   stopTimeoutMs = DEFAULT_SERVICE_STOP_TIMEOUT_MS,
 }: StopRuntimeServicesOptions): Promise<void> {
+  const storageStopErrors: unknown[] = [];
   try {
     if (services.gateway) {
       await stopWithTimeout('gateway', () => services.gateway!.stop(), stopTimeoutMs);
@@ -233,22 +243,29 @@ export async function stopRuntimeServices({
 
   try {
     if (services.apiService) {
-      await stopWithTimeout('api', () => services.apiService!.stop(), stopTimeoutMs);
+      await stopWithTimeout('api', () => services.apiService!.stop(), stopTimeoutMs,
+        (error) => logger.warn(`API is still draining; preserving shared storage: ${String(error)}`));
       supervisor.setStatus('api', 'stopped');
     }
   } catch (error) {
     logger.warn(`Failed to stop api: ${String(error)}`);
+    storageStopErrors.push(error);
   }
 
   try {
     if (services.cssApp) {
-      await stopWithTimeout('css', () => services.cssApp!.stop(), stopTimeoutMs);
+      await stopWithTimeout('css', () => services.cssApp!.stop(), stopTimeoutMs,
+        (error) => logger.warn(`CSS is still draining; preserving shared storage: ${String(error)}`));
       supervisor.setStatus('css', 'stopped');
     }
   } catch (error) {
     logger.warn(`Failed to stop css: ${String(error)}`);
+    storageStopErrors.push(error);
   }
 
+  if (storageStopErrors.length) {
+    throw new AggregateError(storageStopErrors, 'Data services did not stop; shared storage remains open');
+  }
   await closeManagedRedisClients();
 
   if (state.sockets.css) {

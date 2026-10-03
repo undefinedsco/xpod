@@ -1,3 +1,4 @@
+import { ensureSupportedBun } from './compat/ensureSupportedBun';
 import { getLoggerFor } from 'global-logger-factory';
 import { loadConfigFromEnv, type ApiContainerConfig } from '../api/container';
 import { autoProvisionFirstRunLocal } from '../api/runtime';
@@ -23,6 +24,7 @@ import {
 import type { XpodRuntimeHandle, XpodRuntimeOptions } from './runtime-types';
 
 export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promise<XpodRuntimeHandle> {
+  ensureSupportedBun();
   const driver = options.driver ?? nodeRuntimeDriver;
   const host = options.host ?? driver.host;
   const platform = options.platform ?? driver.platform;

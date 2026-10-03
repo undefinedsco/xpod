@@ -1,3 +1,4 @@
+import { ensureSupportedBun } from '../../compat/ensureSupportedBun';
 import path from 'node:path';
 import fs from 'node:fs';
 import type { App } from '@solid/community-server';
@@ -60,6 +61,7 @@ export class CommunitySolidServerCssRunner implements CssRuntimeRunner {
   public readonly name = 'community-solid-server';
 
   public async start(options: CssRuntimeRunnerStartOptions): Promise<App> {
+    ensureSupportedBun();
     ensureBunUndiciCompat(options.packageRoot);
     const moduleState = await createPackageRootPreferredModuleState(options.packageRoot);
     const communitySolidServer = await import('@solid/community-server');

@@ -18,6 +18,13 @@ import { xpodConsentErrors, xpodFirstPodErrors } from '../auth/xpod-account-copy
 import { storageBindingKey } from '../auth/xpod-storage-selection';
 import { saveConsentContinuation } from '../utils/safe-continuation';
 
+function expectOnlyDeploymentMetadataReads(mock: { mock: { calls: unknown[][] } }): void {
+  for (const [target, options] of mock.mock.calls) {
+    expect(target).toBe('/api/service-info');
+    expect((options as RequestInit | undefined)?.method ?? 'GET').toBe('GET');
+  }
+}
+
 function resetAuthPageTestState(): void {
   cleanup();
   vi.restoreAllMocks();
@@ -193,7 +200,7 @@ describe('CSS identity page controllers', () => {
     expect(screen.getByRole('heading', { level: 1, name: '注册 Xpod' })).toBeTruthy();
     // The next field belongs to the registration form, which starts empty.
     expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('');
-    expect(fetchMock).not.toHaveBeenCalled();
+    expectOnlyDeploymentMetadataReads(fetchMock);
   });
 
   it('keeps what is typed into the registration form across the index-to-register route change', async () => {
@@ -365,6 +372,7 @@ describe('CSS identity page controllers', () => {
     });
     fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'alice@example.test' } });
     fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: '记住账号' }));
     fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -394,6 +402,7 @@ describe('CSS identity page controllers', () => {
     });
     fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'alice@example.test' } });
     fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: '记住账号' }));
     fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -739,7 +748,7 @@ describe('CSS identity page controllers', () => {
     // 裸 legacy 深链没有 interaction/一次性任务：只把用户送到 Account 管理，
     // 不读、不 lookup、不创建；记住的邮箱只是展示记录（设计 §3.1 / §4.1）。
     await waitFor(() => expect(screen.getByTestId('remembered-legacy-location').textContent).toBe('/.account/account/'));
-    expect(fetchMock).not.toHaveBeenCalled();
+    expectOnlyDeploymentMetadataReads(fetchMock);
   });
 
   it('does not create Local storage from the legacy create-pod route', async () => {
@@ -1272,7 +1281,8 @@ describe('CSS identity page controllers', () => {
 
     renderWithAuth(<ConsentPage />, { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } });
 
-    fireEvent.click(await screen.findByRole('button', { name: '允许' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '以后不再询问' }));
+    fireEvent.click(screen.getByRole('button', { name: '允许' }));
     await waitFor(() => expect(pickWebId).toHaveBeenCalledTimes(1));
   });
 

@@ -1625,6 +1625,10 @@ function sendModelsError(response: ServerResponse, error: unknown): void {
     return;
   }
   const message = error instanceof Error ? error.message : String(error);
+  if (message === 'provider_request_timeout') {
+    sendJson(response, 504, { error: 'provider_request_timeout' });
+    return;
+  }
   if (message === 'models_credential_not_found') {
     sendJson(response, 404, { error: 'Provider credential not found for current identity' });
     return;

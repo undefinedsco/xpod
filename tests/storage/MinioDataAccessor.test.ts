@@ -60,7 +60,7 @@ describe('MinioDataAccessor', () => {
     expect(client.removeObject).toHaveBeenCalledWith('bucket', 'alice/public/index.html');
   });
 
-  it('uses a slashless .container marker key for containers', async() => {
+  it('uses the same slashless .container marker key for container write, stat, and delete', async() => {
     const accessor = createAccessor();
     const identifier = { path: 'https://id.example/alice/public/' };
     const metadata = new RepresentationMetadata(identifier);
@@ -74,9 +74,11 @@ describe('MinioDataAccessor', () => {
 
     await accessor.writeContainer(identifier, metadata);
     await accessor.getMetadata(identifier);
+    await accessor.deleteResource(identifier);
 
     expect(client.putObject.mock.calls[0][0]).toBe('bucket');
     expect(client.putObject.mock.calls[0][1]).toBe('alice/public/.container');
     expect(client.statObject).toHaveBeenCalledWith('bucket', 'alice/public/.container');
+    expect(client.removeObject).toHaveBeenCalledWith('bucket', 'alice/public/.container');
   });
 });

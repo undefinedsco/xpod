@@ -111,6 +111,32 @@ function jsonClone<T>(value: T): T {
 }
 
 describe('AiGatewayManagementHandler', () => {
+  it.each([
+    ['provider_request_timeout', 504, 'provider_request_timeout'],
+    ['caller_pod_access_unavailable', 401, 'authentication_required'],
+    ['service_access_missing', 403, 'service_access_missing'],
+    ['unexpected upstream https://private.example/?token=secret', 500, 'Provider models lookup failed'],
+  ])('maps model discovery failure %s without leaking upstream details', async (code, status, expected) => {
+    const { server, routes } = createServer();
+    const failure = Object.assign(new Error(code), {
+      cause: new Error('https://private.example/?token=secret Bearer private-token'),
+    });
+    const lookup = vi.fn().mockRejectedValue(failure);
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      modelsService: { list: lookup, listFromSecret: lookup } as any,
+    });
+    for (const body of [{}, { credentialId: 'openai-key', apiKey: 'secret' }]) {
+      const res = response();
+      await routes['POST /api/ai/gateway/providers/:provider/models/refresh'](
+        request(callerOwnedAuth(), body), res, { provider: 'openai' },
+      );
+      expect(res.statusCode).toBe(status);
+      expect(JSON.parse(res.body)).toEqual({ error: expected });
+    }
+    expect(lookup).toHaveBeenCalledTimes(2);
+  });
+
   it('records a verified CSS credential for the caller without issuing another secret', async () => {
     const apiKey = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
     const credentialResource = 'https://id.example/.account/account/alice/client-credentials/credential-1';

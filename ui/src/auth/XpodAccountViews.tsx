@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
   Input,
+  EmailInput,
   Label,
   ScrollArea,
   cn,
@@ -243,10 +244,9 @@ export function AccountCredentialsView({
       )}>
         <form onSubmit={submit} className={isCompact ? 'space-y-3' : 'space-y-4'}>
           <CredentialField floating={isCompact} id={emailId} label={copy.emailLabel} error={errors?.email}>
-            <Input
+            <EmailInput
               id={emailId}
               name="email"
-              type="email"
               autoComplete="email"
               placeholder={isCompact ? ' ' : copy.emailPlaceholder}
               title={copy.emailPlaceholder}
@@ -470,7 +470,7 @@ export function PasswordRecoveryView({
           <form onSubmit={submit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor={emailId}>{copy.emailLabel}</Label>
-              <Input id={emailId} type="email" autoComplete="email" placeholder={copy.emailPlaceholder} value={email} disabled={isPending} onChange={(event) => onEmailChange(event.currentTarget.value)} />
+              <EmailInput id={emailId} name="email" autoComplete="email" placeholder={copy.emailPlaceholder} value={email} disabled={isPending} onChange={(event) => onEmailChange(event.currentTarget.value)} />
             </div>
             {error ? <p role="alert" aria-live="polite" className="text-sm text-destructive">{error}</p> : null}
             <Button type="submit" className="w-full" disabled={isPending || !email.trim() || !recover}>{isPending ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}{copy.actionLabel}</Button>

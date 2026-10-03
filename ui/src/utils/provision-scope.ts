@@ -1,3 +1,4 @@
+import { scopeAccountUrl } from './account-interaction-url';
 import { isManagedLocalProvisionHost } from './pod';
 
 export interface ProvisionScopePayload {
@@ -36,6 +37,7 @@ export interface ProvisionStorageTarget {
 export interface PreparedProvisionedPod {
   provisionCode: string;
   provisionReceipt?: string;
+  preparedWebId?: string;
 }
 
 export interface StorageScopedWebIdEntry {
@@ -136,10 +138,35 @@ export async function prepareProvisionedPod(
   fetchImpl: typeof fetch,
   podName: string,
   provisionCode: string | undefined | null,
+  cloudProfile?: { profileUrl: string; headers?: HeadersInit },
 ): Promise<PreparedProvisionedPod | undefined> {
   const scope = resolveProvisionScope(provisionCode);
   if (!scope || !provisionCode) {
     return provisionCode ? { provisionCode } : undefined;
+  }
+
+  if (!cloudProfile?.profileUrl) {
+    throw new Error('Cloud profile control unavailable. Retry loading controls.account.profile.');
+  }
+  const profileHeaders = new Headers(cloudProfile.headers);
+  profileHeaders.set('Content-Type', 'application/json');
+  profileHeaders.set('Accept', 'application/json');
+  const profileResponse = await fetchImpl(scopeAccountUrl(cloudProfile.profileUrl), {
+    method: 'POST', headers: profileHeaders, credentials: 'include',
+    body: JSON.stringify({ podName }),
+  });
+  if (!profileResponse.ok) {
+    throw new Error(await readResponseMessage(profileResponse) ?? 'Failed to prepare Cloud profile');
+  }
+  const profile = await profileResponse.json() as { webId?: unknown };
+  const webId = typeof profile?.webId === 'string' ? profile.webId : undefined;
+  let validWebId = false;
+  try {
+    const url = new URL(webId ?? '');
+    validWebId = ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !/\s/u.test(webId!);
+  } catch { /* Reject invalid identities before provisioning storage. */ }
+  if (!webId || !validWebId) {
+    throw new Error('Cloud profile preparation did not return a valid WebID');
   }
 
   const response = await fetchImpl(new URL('/provision/pods', resolveProvisionApiBaseUrl(scope)).toString(), {
@@ -150,7 +177,7 @@ export async function prepareProvisionedPod(
       Accept: 'application/json',
     },
     credentials: 'include',
-    body: JSON.stringify({ podName }),
+    body: JSON.stringify({ podName, webId }),
   } as RequestInit);
 
   if (!response.ok) {
@@ -165,7 +192,7 @@ export async function prepareProvisionedPod(
     throw new Error('Local Pod preparation did not return a provision receipt');
   }
 
-  return { provisionCode, provisionReceipt };
+  return { provisionCode, provisionReceipt, preparedWebId: webId };
 }
 
 export async function lookupProvisionScopedWebIds(

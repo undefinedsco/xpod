@@ -446,6 +446,14 @@ export class SolidRdfDataAccessor implements DataAccessor {
     }
   }
 
+  /** Final lifecycle sweep for Pod facts not reachable through LDP containment. */
+  public async deletePodRdfGraphs(identifier: ResourceIdentifier): Promise<void> {
+    if (!identifier.path.endsWith('/')) { throw new Error('Pod graph cleanup requires a container identifier'); }
+    await this.initialize();
+    await this.rdfEngine.delete({ graph: { $startsWith: identifier.path } });
+    await this.rdfEngine.delete({ graph: { $startsWith: `meta:${identifier.path}` } });
+  }
+
   public async getDataByGraphPrefix(prefix: string): Promise<Quint[]> {
     await this.initialize();
     const scan = await this.rdfEngine.scan({

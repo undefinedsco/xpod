@@ -57,6 +57,10 @@ describe('AccountAuthBoundary', () => {
     </AuthContext.Provider>);
     expect(screen.queryByTestId('protected')).toBeNull();
     expect(screen.getByRole('heading', { name: '登录 Xpod' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '部署详情' })).toBeTruthy();
+    const logo = screen.getByTestId('xpod-deployment-identity');
+    expect(logo.closest('[data-pod-sign-in="idp-chrome"]')).toBeTruthy();
+    expect(logo.closest('[aria-hidden="true"]')).toBeNull();
     expect(setWindowMode).not.toHaveBeenCalled();
   });
 

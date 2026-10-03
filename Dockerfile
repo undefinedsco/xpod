@@ -16,7 +16,7 @@ RUN printf '%s' "${XPOD_QLEVER_LOCAL_RUNTIME_IMAGE}" \
  || { echo "XPOD_QLEVER_LOCAL_RUNTIME_IMAGE must be an immutable @sha256 image reference" >&2; exit 64; } \
  && test -x /opt/xpod/qlever/bin/xpod_qlever_local_runtime
 
-FROM oven/bun:1.3.12 AS bun
+FROM oven/bun:1.4.2 AS bun
 
 FROM node:22-bookworm AS build
 

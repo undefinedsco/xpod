@@ -382,15 +382,20 @@ describe('FirstPodPage Account WebID read failures', () => {
     expect(taskRecord()).not.toBeNull();
   });
 
-  it('does not read, look up or create on the bare legacy create-pod deep link', async () => {
+  it('does not read Account or Pod data, look up or create on the bare legacy create-pod deep link', async () => {
     installLocation(LEGACY_PATH);
-    const fetchMock = vi.fn(async () => jsonResponse({}, 404));
+    const fetchMock = vi.fn<Parameters<typeof fetch>, ReturnType<typeof fetch>>(async () => jsonResponse({}, 404));
     vi.stubGlobal('fetch', fetchMock);
 
     renderAt(LEGACY_PATH, { controls: accountControls() });
 
     await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/.account/account/'));
-    expect(fetchMock).not.toHaveBeenCalled();
+    // The page's source branding can read public deployment metadata while
+    // the legacy entry still rejects every Account/Pod read or mutation.
+    expect(fetchMock.mock.calls.some(([, init]) => method(init) === 'POST')).toBe(false);
+    expect(fetchMock.mock.calls.every(([input, init]) =>
+      requestPath(input) === '/api/service-info' && method(init) === 'GET',
+    )).toBe(true);
   });
 
   it('does not inspect or create ownerless storage from the bare legacy deep link', async () => {

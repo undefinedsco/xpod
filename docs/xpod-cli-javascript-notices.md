@@ -29,7 +29,11 @@ node 的已安装 `dist/index.mjs` 与下载归档字节相同；core 则包含�
 
 ## 验证与限制
 
-生成的 JS 前导现在单独绑定构建工具版本：Bun 1.3.8 对应固定提交 `b64edcb490b486fb8af90cb2cb2dc51590453064`、1127 bytes；CI 使用的 Bun 1.3.12 对应 `700fc117a2fd01ac0201deaa6fa69c5557acb04f`、1639 bytes。原始 `runtime.js`、`ParseTask.zig`、根 LICENSE、前导本身及保守 esbuild 原文进入同一 content-addressed notice 索引。1.3.12 增加缓存/setter helper，未套用 1.3.8 的代码或行号。未知编译器版本、不同前导、通知 hash 或对象路径漂移都会使打包失败；安装包并不包含 Bun/Node/JSC 可执行文件。esbuild 的原始 MIT 文本用于保守归属保留，固定 Bun 源码中的 esbuild 引用不能证明 runtime 移植的精确基线，索引明确保留此限制。客户端运行时的最低版本要求与构建工具的已核对版本是两个不同边界。
+生成的 JS 前导现在单独绑定构建工具版本：Bun 1.3.8 对应固定提交 `b64edcb490b486fb8af90cb2cb2dc51590453064`、1127 bytes；历史 CI 使用的 Bun 1.3.12 对应 `700fc117a2fd01ac0201deaa6fa69c5557acb04f`、1639 bytes。原始 `runtime.js`、`ParseTask.zig`、根 LICENSE、前导本身及保守 esbuild 原文进入同一 content-addressed notice 索引。1.3.12 增加缓存/setter helper，未套用 1.3.8 的代码或行号。未知编译器版本、不同前导、通知 hash 或对象路径漂移都会使打包失败；安装包并不包含 Bun/Node/JSC 可执行文件。esbuild 的原始 MIT 文本用于保守归属保留，固定 Bun 源码中的 esbuild 引用不能证明 runtime 移植的精确基线，索引明确保留此限制。客户端运行时的最低版本要求与构建工具的已核对版本是两个不同边界。
+
+2026-10-03 CI 构建工具升级至 Bun 1.4.2，新增独立的 `licenses/javascript/generated/1.4.2/` 材料，保留上述历史版本。[官方 tag](https://github.com/oven-sh/bun/releases/tag/bun-v1.4.2) 对应提交 `744846f844374847c902b5e7fd59b4342a51ef99`，实际编译器 revision 为 `1.4.2+744846f84`。用现有隔离 `--cli-only --target darwin-arm64` 构建取得的前导为 1867 bytes，SHA-256 为 `a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7`；其中 `__esm` 新增错误缓存与重抛，不能套用旧版前导。
+
+该版本重新取得固定提交的 `runtime.js`、`LICENSE.md` 和新版 `src/bundler/ParseTask.rs` 原始字节；Node `createRequire` 分支位于后者 394–395 行，574 行拼接 runtime 与 target-specific 尾部。`computeChunks.rs:115` 仍引用固定 esbuild 提交 `cd832972927f1f67b6d2cc895c06a8759c1cf309`，其 LICENSE 重新下载后内容哈希与历史材料相同；这里只作保守归属保留，不把该引用当作 runtime 的精确移植基线。新索引逐项保存 source URL、SHA-256、helper 行号及真实前导，不新增生成器或放宽校验。此范围没有完成 Bun 全源码或内嵌运行时许可审计，也不证明跨平台执行或完整 CLI 发布通过。
 
 包装回归覆盖嵌套不同版本、scope 包、type-only 子 manifest、node_modules 符号链接、CRLF 原文、未知许可／缺原文保留，以及作用域外输入和 external 绝对路径拒绝。真实两平台打包会核对索引与 CLI 哈希、原文对象与安装 manifest；macOS 执行解包后的 CLI，Linux 的跨编译安装校验仍不能替代目标 OS 执行。
 

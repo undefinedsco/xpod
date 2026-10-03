@@ -1,0 +1,44 @@
+import { XpodOidcCallbackApp } from './solid/XpodOidcCallbackApp';
+import { getXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
+import { XpodShellApp } from './XpodShellApp';
+import type { XpodOidcCallbackSuccess } from './solid/XpodOidcCallbackApp';
+import {
+  createCallbackNavigation,
+  resolveCallbackProductDestination,
+} from './auth-callback-navigation';
+
+// A full-page OIDC redirect creates one fresh document. Keep one Xpod runtime
+// and one Inrupt Session adapter for this callback document only.
+const runtime = getXpodSolidRuntimeValue();
+const callbackLocation = createCallbackNavigation({
+  location: window.location,
+  history: window.history,
+});
+
+function renderRedirected(result: XpodOidcCallbackSuccess) {
+  const destination = resolveCallbackProductDestination(result.destination, window.location.origin);
+  if (!destination) {
+    return <main role="status" aria-live="polite">Sign-in complete. Opening Xpod…</main>;
+  }
+
+  const currentTarget = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (currentTarget !== destination.target) {
+    window.history.replaceState({}, '', destination.target);
+  }
+
+  return (
+    <XpodShellApp
+      key={destination.target}
+      runtime={runtime}
+      initialPathname={destination.pathname}
+    />
+  );
+}
+
+export default function DesktopOidcCallback() {
+  return <XpodOidcCallbackApp
+      runtime={runtime}
+      location={callbackLocation}
+      renderRedirected={renderRedirected}
+    />;
+}

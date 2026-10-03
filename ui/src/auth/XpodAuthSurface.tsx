@@ -14,6 +14,7 @@ import {
 import { getXpodAuthSurfaceHost, useXpodAuthWindowSurface } from './xpod-auth-surface-host';
 import { WebAccountLayout } from './WebAccountLayout';
 import { XpodAccountServiceIntro } from './XpodAccountServiceIntro';
+import { XpodDeploymentIdentity } from './XpodDeploymentIdentity';
 
 export type XpodAuthSurfaceProps = Omit<
   AuthSurfaceProps,
@@ -82,6 +83,7 @@ export function XpodAccountPageSurface({ title, children, bare = false, intro, p
       host={compact ? host : 'document'}
       bare={bare}
       intro={intro ?? <XpodAccountServiceIntro serviceHost={window.location.host} />}
+      serviceIcon={<XpodDeploymentIdentity />}
     >
       {children}
     </WebAccountLayout>
@@ -115,7 +117,7 @@ export function XpodBlockingAccountCredentialsSurface(
     mode, values, onChange, onSubmit, onFieldChange, onModeChange, rememberAccount = true, onRememberAccountChange,
     pending = false, errors, copy, surfaceTitle, footer, onForgot, onRegister, forgotHref, registerHref,
   } = props;
-  const service = { serviceName: 'Xpod', serviceHost: window.location.host, copy: credentialViewCopy(copy) };
+  const service = { serviceName: 'Xpod', serviceHost: window.location.host, serviceIcon: <XpodDeploymentIdentity />, copy: credentialViewCopy(copy) };
   const changeField = (field: AccountCredentialField, value: string) => {
     onChange({ ...values, [field]: value });
     onFieldChange?.(field, value);

@@ -200,7 +200,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.12
+          bun-version: 1.4.2
 
       - name: Login to GHCR for Local acceptance runtime
         uses: docker/login-action@v3
@@ -665,6 +665,18 @@ jobs:
             for (const field of booleanFields) if (typeof row[field] === 'boolean') safe[field] = row[field];
             if (['approved', 'rejected'].includes(row.decision)) safe.decision = row.decision;
             if (['completed', 'cancelled', 'failed'].includes(row.terminalStatus)) safe.terminalStatus = row.terminalStatus;
+            const failure = row.producerFailure;
+            const errorClasses = ['none', 'unknown', 'auth_required', 'service_access_missing', 'token_exchange_failed',
+              'provider_error', 'provider_aborted', 'sandbox_unavailable', 'worker_start_failed', 'worker_exited', 'execution_state_error'];
+            if (failure && ['failed', 'cancelled', 'completed'].includes(failure.status)
+                && typeof failure.errorPresent === 'boolean' && errorClasses.includes(failure.errorClass)
+                && Number.isSafeInteger(failure.errorLength) && failure.errorLength >= 0 && failure.errorLength <= 1000000) {
+              safe.producerFailure = { status: failure.status, errorPresent: failure.errorPresent,
+                errorLength: failure.errorLength, errorClass: failure.errorClass };
+              if (Number.isInteger(failure.httpStatus) && failure.httpStatus >= 400 && failure.httpStatus <= 599) {
+                safe.producerFailure.httpStatus = failure.httpStatus;
+              }
+            }
             return safe;
           });
           const cleanup = {};
@@ -743,7 +755,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.12
+          bun-version: 1.4.2
       - uses: actions/setup-node@v4
         with:
           node-version: 22

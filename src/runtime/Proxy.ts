@@ -16,6 +16,7 @@ import {
 } from './GatewayAdminProxyAuth';
 import { BunNativeUpgradeRelay } from './upgrade/BunNativeUpgradeRelay';
 import { isXpodProductPath } from '../shared/xpod-route-policy';
+import { podDeletionRouteName } from '../provision/PodDeletionRoute';
 
 type InterceptedRequest = http.IncomingMessage & { __xpodInspectRootMutation?: boolean };
 
@@ -63,6 +64,7 @@ const SOLID_LOCAL_ROUTE_HEADERS = [
 export class GatewayProxy {
   private readonly logger = getLoggerFor(this);
   private proxy: httpProxy;
+  private readonly proxyResponses = new WeakMap<http.IncomingMessage, http.IncomingMessage>();
   private server: http.Server;
   private targets: { css?: GatewayProxyTarget; api?: GatewayProxyTarget } = {};
   private readonly runtimeHost: RuntimeHost;
@@ -110,15 +112,12 @@ export class GatewayProxy {
       xfwd: true,
     });
 
-    this.proxy.on('error', (err, _req, res) => {
-      this.logger.error('Proxy error:', err);
-      if (res && 'writeHead' in res && !res.headersSent) {
-        res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Service Unavailable', details: err.message }));
-      }
-    });
+    this.proxy.on('error', (err, req, res) => this.handleProxyError(err, req, res));
 
     this.proxy.on('proxyRes', (proxyRes, req, res) => {
+      this.proxyResponses.set(req, proxyRes);
+      proxyRes.once('close', () => this.proxyResponses.delete(req));
+      proxyRes.once('error', (err) => this.handleProxyError(err, req, res));
       this.normalizeProxiedCorsHeaders(req, proxyRes);
       this.sanitizeProxyResponseHeaders(req, proxyRes);
       const interceptedRequest = req as InterceptedRequest;
@@ -150,6 +149,28 @@ export class GatewayProxy {
         fallback: (req, socket, head, target) => this.relayUpgradeWithHttpProxy(req, socket, head, target),
       });
     }
+  }
+
+  private handleProxyError(err: Error, req: http.IncomingMessage, res: http.ServerResponse | Duplex): void {
+    this.logger.error('Proxy error:', err);
+    if (!res || !('writeHead' in res)) return;
+    // http-proxy copies headers before piping data. A parser error can arrive
+    // between those steps, so terminate that stream before writing a new body.
+    const upstream = this.proxyResponses.get(req);
+    this.proxyResponses.delete(req);
+    upstream?.unpipe(res);
+    upstream?.destroy();
+    if (res.writableEnded || res.destroyed) return;
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
+    const body = Buffer.from(JSON.stringify({ error: 'Service Unavailable', details: err.message }));
+    res.removeHeader('Content-Length');
+    res.removeHeader('Transfer-Encoding');
+    res.removeHeader('Content-Encoding');
+    res.writeHead(502, { 'Content-Type': 'application/json', 'Content-Length': String(body.byteLength) });
+    res.end(body);
   }
 
   /**
@@ -304,15 +325,16 @@ export class GatewayProxy {
     const localCanonicalProto = originalClientLoopback
       ? this.firstHeaderValue(req.headers['x-xpod-canonical-origin'])?.split(':', 1)[0] ?? originalProto
       : undefined;
-    const apiHost = this.isApiHost(originalHost);
-    const apiPath = this.shouldRouteToApi(pathname);
+    const podDeletion = podDeletionRouteName(req.method, url) !== undefined;
+    const apiHost = !podDeletion && this.isApiHost(originalHost);
+    const apiPath = this.shouldRouteToApi(pathname, req.method);
     const clientCanonicalUrl = originalClientLoopback
       ? this.firstHeaderValue(req.headers[SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER])
       : undefined;
     const clientCanonicalOrigin = originalClientLoopback
       ? this.firstHeaderValue(req.headers[SOLID_LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER])
       : undefined;
-    const clientLocalRouteUrl = originalClientLoopback && localCanonicalHost
+    const clientLocalRouteUrl = originalClientLoopback
       ? this.localRouteUrlFromRequest(originalHost, url)
       : undefined;
     this.stripSolidLocalRouteHeaders(req.headers);
@@ -352,6 +374,16 @@ export class GatewayProxy {
         const parsedBaseUrl = new URL(baseUrl);
         req.headers.host = parsedBaseUrl.host;
         req.headers['x-forwarded-host'] = parsedBaseUrl.host;
+        if (clientLocalRouteUrl) {
+          // Ordinary local Account requests have no SDK routing headers. When
+          // the Gateway canonicalizes their host, preserve the original URL
+          // for CSS to verify the same DPoP proof, just as for an SDK route.
+          // Derive all route metadata here; incoming route headers were stripped.
+          req.headers[SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER] = new URL(url, parsedBaseUrl.origin).href;
+          req.headers[SOLID_LOCAL_ROUTE_CANONICAL_ORIGIN_HEADER] = parsedBaseUrl.origin;
+          req.headers[SOLID_LOCAL_ROUTE_CANONICAL_HOST_HEADER] = parsedBaseUrl.host;
+          req.headers[SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER] = clientLocalRouteUrl;
+        }
       } catch {
         if (!req.headers['x-forwarded-host']) {
           req.headers['x-forwarded-host'] = originalHost;
@@ -405,7 +437,7 @@ export class GatewayProxy {
 
       const interceptedRequest = req as InterceptedRequest;
       interceptedRequest.__xpodInspectRootMutation = this.shouldInspectRootMutation(req);
-      if (clientLocalRouteUrl && clientCanonicalUrl) {
+      if (req.headers[SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER] && req.headers[SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER]) {
         // Unix-socket CSS peers have no IP address. Attest the original local
         // transport using the existing internal signature; CSS still verifies
         // the user's DPoP proof against the actual ingress URL.
@@ -430,7 +462,8 @@ export class GatewayProxy {
       || pathname.startsWith('/auth/callback/assets/');
   }
 
-  private shouldRouteToApi(url: string): boolean {
+  private shouldRouteToApi(url: string, method?: string): boolean {
+    if (podDeletionRouteName(method, url) !== undefined) { return false; }
     const pathname = this.pathnameFromRequestUrl(url);
     return pathname.startsWith('/v1/')
       || pathname.startsWith('/api/')

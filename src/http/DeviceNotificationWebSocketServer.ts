@@ -25,8 +25,12 @@ export class DeviceNotificationWebSocketServer {
   private readonly heartbeatIntervalMs: number;
   private readonly wss = new WebSocketServer({ noServer: true });
   private readonly sockets = new Set<WebSocket>();
+  private readonly transportSockets = new Set<Duplex>();
   private readonly socketConnections = new Map<WebSocket, string>();
   private readonly alive = new Map<WebSocket, boolean>();
+  private stopPromise?: Promise<void>;
+  private stopping = false;
+  private readonly activeFrames = new Set<Promise<void>>();
   private heartbeatTimer?: ReturnType<typeof setInterval>;
 
   public constructor(options: DeviceNotificationWebSocketServerOptions) {
@@ -44,6 +48,7 @@ export class DeviceNotificationWebSocketServer {
   }
 
   public handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
+    if (this.stopping) { this.reject(socket, 503, 'Server shutting down'); return; }
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
     if (url.pathname !== this.path) {
       return;
@@ -58,6 +63,8 @@ export class DeviceNotificationWebSocketServer {
       this.reject(socket, 401, 'Invalid notification ticket');
       return;
     }
+    this.transportSockets.add(socket);
+    socket.once('close', () => this.transportSockets.delete(socket));
     this.wss.handleUpgrade(request, socket as any, head, (ws) => {
       this.sockets.add(ws);
       const connection = this.hub.openConnection({
@@ -80,16 +87,19 @@ export class DeviceNotificationWebSocketServer {
         this.alive.set(ws, true);
       });
       ws.on('message', (data) => {
-        void (async () => {
+        if (this.stopping) { return; }
+        const work = (async () => {
           try {
-          const frame = parseClientFrame(JSON.parse(data.toString()), {
-            origin: record.origin,
-          });
+            const frame = parseClientFrame(JSON.parse(data.toString()), {
+              origin: record.origin,
+            });
             await this.handleFrame(connection.connectionId, frame);
           } catch (error) {
-            ws.send(serializeServerFrame(createProtocolErrorFrame('bad-frame', (error as Error).message)));
+            if (ws.readyState === WebSocket.OPEN) { ws.send(serializeServerFrame(createProtocolErrorFrame('bad-frame', (error as Error).message))); }
           }
         })();
+        this.activeFrames.add(work);
+        void work.then(() => this.activeFrames.delete(work), () => this.activeFrames.delete(work));
       });
       ws.on('close', () => {
         this.cleanupSocket(ws);
@@ -100,18 +110,26 @@ export class DeviceNotificationWebSocketServer {
     });
   }
 
-  public stop(): void {
-    for (const socket of this.sockets) {
-      socket.close();
-    }
-    this.sockets.clear();
-    this.socketConnections.clear();
-    this.alive.clear();
+  public stop(): Promise<void> {
+    if (this.stopPromise) { return this.stopPromise; }
+    this.stopping = true;
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
-    this.wss.close();
+    const channelsClosed = new Promise<void>((resolve, reject) => {
+      // Register before destroying upgraded transports and await real channel
+      // closure. Bun 1.3.8 leaks the native active count when ws.close/terminate
+      // is called first, so shutdown uses the owned raw transport instead.
+      this.wss.close((error) => error ? reject(error) : resolve());
+      for (const socket of this.transportSockets) { socket.destroy(); }
+    });
+    this.stopPromise = Promise.all([channelsClosed, ...this.activeFrames]).then(() => {
+      this.sockets.clear();
+      this.socketConnections.clear();
+      this.alive.clear();
+    });
+    return this.stopPromise;
   }
 
   private async handleFrame(connectionId: string, frame: ReturnType<typeof parseClientFrame>): Promise<void> {

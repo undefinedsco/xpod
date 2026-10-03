@@ -35,6 +35,7 @@ import { DesktopSelfUpdater, UPDATE_RELAUNCH_ENV } from './self-updater.js'
 import { loadDesktopUrlWithoutStaleCache } from './navigation-cache.js'
 import { canCancelDesktopLogin, cancelDesktopLogin, shouldCancelDesktopLoginOnClose } from './login-recovery.js'
 import { navigateDesktopProduct } from './product-navigation.js'
+import { desktopProtocolRoute, desktopProtocolRouteFromArgv, resumeDesktopProtocolNavigation, XPOD_DESKTOP_PROTOCOL } from './product-protocol.js'
 import { ensureDesktopEnvFile, loadDesktopEnvFile } from './user-env.js'
 import { isTrustedOidcNavigation, resolveDesktopOidcIssuer, isOidcAuthorizationRequest, isSameOriginProductUrl } from './navigation-policy.js'
 import {
@@ -86,6 +87,24 @@ const targetUrl = resolveDesktopTargetUrl()
 const targetOrigin = new URL(targetUrl).origin
 const smokeMode = process.env.XPOD_DESKTOP_SMOKE === '1'
 const acceptanceMode = process.env.XPOD_DESKTOP_ACCEPTANCE === '1'
+let pendingProtocolRoute = desktopProtocolRouteFromArgv(process.argv)
+
+function presentProtocolReturn(): void {
+  if (!app.isReady()) return
+  const window = ensureWindow()
+  if (!pendingProtocolRoute) return
+  void resumeDesktopProtocolNavigation(window, targetOrigin, navigationReadyContents.has(window.webContents))
+    .then(navigated => { if (navigated) pendingProtocolRoute = undefined })
+    .catch(() => undefined)
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  const route = desktopProtocolRoute(url)
+  if (!route) return
+  pendingProtocolRoute = route
+  presentProtocolReturn()
+})
 
 let tray: Tray | null = null
 let trayServices: TrayServiceSnapshot[] = []
@@ -714,6 +733,7 @@ ipcMain.on('xpod:navigation-ready', (event, ready: unknown) => {
   if (ready === true) {
     navigationReadyContents.add(event.sender)
     approvalDelivery.ready(event.sender, 'navigation', true)
+    if (pendingProtocolRoute && event.sender === windowLifecycle.currentWindow()?.webContents) presentProtocolReturn()
   } else {
     navigationReadyContents.delete(event.sender)
     approvalDelivery.ready(event.sender, 'navigation', false)
@@ -776,12 +796,14 @@ if (!hasSingleInstanceLock) {
   app.quit()
 } else {
   if (!allowParallelAcceptanceInstance) {
-    app.on('second-instance', () => {
-      ensureWindow()
+    app.on('second-instance', (_event, argv) => {
+      pendingProtocolRoute = desktopProtocolRouteFromArgv(argv) ?? pendingProtocolRoute
+      presentProtocolReturn()
     })
   }
 
   app.whenReady().then(async () => {
+    if (app.isPackaged && !acceptanceMode && !smokeMode) app.setAsDefaultProtocolClient(XPOD_DESKTOP_PROTOCOL)
     installDockIcon({
       app,
       nativeImage,
@@ -801,6 +823,7 @@ if (!hasSingleInstanceLock) {
     await refreshTrayStatus(tray)
     if (acceptanceMode) app.emit('xpod:acceptance:tray-ready')
     ensureWindow()
+    if (pendingProtocolRoute) presentProtocolReturn()
 
     app.on('activate', () => {
       ensureWindow()

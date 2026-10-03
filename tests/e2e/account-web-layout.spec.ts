@@ -7,10 +7,10 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test';
 // The contracts asserted below follow the current source
 // (`packages/shared-ui/src/pod-sign-in/*`, `ui/src/auth/*`, `ui/src/pages/*`) and
 // `docs/superpowers/specs/2026-09-29-shared-ui-pod-sign-in-design.md`: a browser
-// document is a two-column `page` (service introduction beside a 360px body), the
-// desktop bridge fills the host viewport. Short login uses the user-requested
-// WeChat-style 280x400 native bounds (about 280x372 usable content); complete
-// consent and registration use document windows. Implicit Pod creation is forbidden.
+// document is a two-column `page` (service introduction beside a responsive 480px body), the
+// desktop bridge is a `window` that fills 440x620 by default and never collapses below the
+// 320x480 minimum. The retired `compact` layout / 280x400 bounds / implicit Pod
+// registration are gone and must not reappear.
 test.use({ baseURL: process.env.XPOD_ACCOUNT_LAYOUT_BASE_URL ?? 'http://127.0.0.1:5173' });
 
 const LONG_WEBID = 'https://0123456789abcdef0123456789abcdef.nodes.example/acceptance-0123456789/profile/card#me';
@@ -25,6 +25,7 @@ interface LayoutFixtureOptions {
   longBinding?: boolean;
   /** Status for `POST /.account/login/password/` (401 = wrong password). */
   loginStatus?: number;
+  bindings?: Array<{ webId: string; storageUrl: string }>;
 }
 
 interface ObservedCall { method: string; path: string }
@@ -85,9 +86,9 @@ async function mockAccount(page: Page, options: LayoutFixtureOptions = {}) {
         storageUrl: options.longBinding ? LONG_STORAGE : 'https://nodes.example/alice/',
       }] } });
     }
-    if (url.pathname === '/.account/account/pod/') return route.fulfill({ json: { pods: {} } });
+    if (url.pathname === '/.account/account/pod/') return route.fulfill({ json: { pods: Object.fromEntries((options.bindings ?? []).map((binding, i) => [binding.storageUrl, `/.account/account/pod/${i}/`])), podDeletionControls: Object.fromEntries((options.bindings ?? []).map((binding, i) => [binding.storageUrl, `/.account/account/pod/${i}/`])) } });
     if (url.pathname === '/.account/account/webid/') return route.fulfill({ json: { webIdLinks: {} } });
-    if (url.pathname === '/.account/account/bindings/') return route.fulfill({ json: { entries: [] } });
+    if (url.pathname === '/.account/account/bindings/') return route.fulfill({ json: { bindings: options.bindings ?? [] } });
     return route.fulfill({ status: 404, json: {} });
   });
   return observed;
@@ -113,9 +114,9 @@ interface LayoutExpectation {
 
 /**
  * The shared frame contract: `page` = two columns with the service introduction
- * beside a 360px body (introduction shown at >=768px, hidden in a single column
- * below); `window` = the desktop bridge host that fills the available viewport.
- * No horizontal overflow anywhere, and the retired `compact`
+ * beside a responsive 480px body (introduction shown at >=768px, hidden in a single column
+ * below); `window` = the desktop bridge host that fills 440x620 by default and keeps the
+ * 320x480 minimum. No horizontal overflow anywhere, and the retired `compact`
  * layout must not come back.
  */
 async function checkLayout(page: Page, info: TestInfo, name: string, expectation: LayoutExpectation) {
@@ -142,12 +143,12 @@ async function checkLayout(page: Page, info: TestInfo, name: string, expectation
 
   if (expectation.host === 'document') {
     await expect(page.locator('[data-pod-sign-in-frame="page"]')).toHaveCount(1);
-    expect(geometry.body.width).toBeLessThanOrEqual(360);
+    expect(geometry.body.width).toBeLessThanOrEqual(480);
     if (expectation.intro === 'shown') {
       await expect(page.getByTestId('web-account-introduction')).toBeVisible();
       expect(geometry.intro).not.toBeNull();
-      // The shared body caps at exactly 360px, and the introduction sits to its left.
-      expect(geometry.body.width).toBe(360);
+      // The shared body caps at exactly 480px, and the introduction sits to its left.
+      expect(geometry.body.width).toBe(480);
       expect(geometry.intro!.x + geometry.intro!.width).toBeLessThanOrEqual(geometry.body.x);
     } else {
       await expect(page.locator('[data-pod-sign-in="intro"]')).toBeHidden();
@@ -172,7 +173,7 @@ async function checkLayout(page: Page, info: TestInfo, name: string, expectation
   await page.screenshot({ path: info.outputPath(`${name}.png`), scale: 'css' });
 }
 
-test('Wide page shows the service introduction beside the 360px body and recovers from a login error', async ({ page }, info) => {
+test('Wide page shows the service introduction beside the 480px body and recovers from a login error', async ({ page }, info) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const observed = await mockAccount(page, { loginStatus: 401 });
   await page.goto('/.account/login/password/');
@@ -222,7 +223,7 @@ test('Narrow page collapses the introduction into a single column with no horizo
   const bodyWidth = await page.getByTestId('web-account-panel')
     .evaluate((element) => element.parentElement!.getBoundingClientRect().width);
   expect(bodyWidth).toBeGreaterThan(0);
-  expect(bodyWidth).toBeLessThanOrEqual(360);
+  expect(bodyWidth).toBeLessThanOrEqual(480);
 
   // Recovery stays reachable in the single column.
   await page.getByRole('button', { name: '忘记密码？' }).click();
@@ -230,17 +231,24 @@ test('Narrow page collapses the introduction into a single column with no horizo
   await checkLayout(page, info, 'narrow-recovery', { host: 'document', intro: 'hidden' });
 });
 
-test('Desktop bridge account window fills each supplied host viewport', async ({ page }, info) => {
+test('Desktop bridge account window fills 440x620 and honours the 320x480 minimum', async ({ page }, info) => {
   await useDesktopBridge(page);
-  await page.setViewportSize({ width: 360, height: 540 });
+  await page.setViewportSize({ width: 440, height: 620 });
   await mockAccount(page);
   await page.goto('/.account/login/password/');
   await expect(page.getByLabel('邮箱')).toBeVisible();
-  await checkLayout(page, info, 'window-360x540', { host: 'window' });
+  await checkLayout(page, info, 'window-440x620', { host: 'window' });
 
   await page.setViewportSize({ width: 320, height: 480 });
   await expect(page.getByLabel('邮箱')).toBeVisible();
   await checkLayout(page, info, 'window-minimum-320x480', { host: 'window' });
+
+  // Form choices must remain clickable above the pinned action area.
+  const remember = page.getByRole('checkbox', { name: '记住账号' });
+  await remember.click({ trial: true });
+  const rememberBounds = (await remember.boundingBox())!;
+  const actionsBounds = (await page.locator('[data-pod-sign-in="actions"]').boundingBox())!;
+  expect(rememberBounds.y + rememberBounds.height).toBeLessThanOrEqual(actionsBounds.y);
 
   // Primary and return actions stay reachable at the shared minimum.
   await page.getByRole('button', { name: '登录', exact: true }).scrollIntoViewIfNeeded();
@@ -315,7 +323,7 @@ test('Enlarged root text doubles rem typography while fixed-px headings stay put
 
   const before = await measureEnlargedText(page);
   expect(before.rootFont).toBe(16);
-  expect(before.heading).toBe(17);   // fixed `text-[17px]`
+  expect(before.heading).toBe(22);   // shared sign-in title
   expect(before.intro).toBe(12);     // rem `text-xs`
   expect(before.overflow).toBe(0);
 
@@ -325,7 +333,7 @@ test('Enlarged root text doubles rem typography while fixed-px headings stay put
   const after = await measureEnlargedText(page);
   expect(after.rootFont).toBe(32);                      // root font really doubled
   expect(after.intro! / before.intro!).toBeCloseTo(2, 5);   // rem text doubles
-  expect(after.heading).toBe(17);                       // fixed px stays put
+  expect(after.heading).toBe(22);                       // fixed px stays put
   expect(after.submitHeight!).toBeCloseTo(before.submitHeight! * 2, 0); // rem control grows
   expect(after.overflow).toBe(0);                       // wide two-column still fits
   await checkLayout(page, info, 'wide-text-200', { host: 'document', intro: 'shown' });
@@ -463,7 +471,7 @@ test('Desktop sign-in remains operable at 200% root text in default and minimum 
   await page.goto('/.account/login/password/');
   await expect(page.getByLabel('邮箱')).toBeVisible();
   await page.addStyleTag({ content: 'html { font-size: 200%; }' });
-  for (const [width, height] of [[360, 540], [320, 480]]) {
+  for (const [width, height] of [[440, 620], [320, 480]]) {
     await page.setViewportSize({ width, height });
     expect((await measureEnlargedText(page)).rootFont).toBe(32);
     for (const name of ['登录', '注册账号', '忘记密码？']) {
@@ -481,7 +489,7 @@ test('Desktop long-identity consent remains operable at 200% root text', async (
   await page.goto('/.account/oidc/consent/');
   await expect(page.getByRole('heading', { name: '授权 Example App', exact: true })).toBeVisible();
   await page.addStyleTag({ content: 'html { font-size: 200%; }' });
-  for (const [width, height] of [[360, 540], [320, 480]]) {
+  for (const [width, height] of [[440, 620], [320, 480]]) {
     await page.setViewportSize({ width, height });
     for (const name of ['允许', '换一个账号']) {
       const action = page.getByRole('button', { name, exact: true });
@@ -494,32 +502,289 @@ test('Desktop long-identity consent remains operable at 200% root text', async (
 });
 
 
-test('WeChat-size short login fills the native content area and keeps actions reachable', async ({ page }, info) => {
-  await useDesktopBridge(page);
-  await page.setViewportSize({ width: 280, height: 372 });
+for (const theme of ['light', 'dark'] as const) {
+  test(`Acceptance feedback: ${theme} Input focus strengthens its single existing border`, async ({ page }, info) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockAccount(page);
+    await page.addInitScript((theme) => localStorage.setItem('xpod.theme', theme), theme);
+    await page.goto('/.account/login/password/');
+    const email = page.getByLabel('邮箱');
+    await email.fill('acceptance@example.com');
+    await email.focus();
+    await expect(email).toBeFocused();
+    const readFocusStyle = () => email.evaluate((element) => {
+      const s = getComputedStyle(element);
+      const probe = document.createElement('span');
+      probe.style.borderColor = 'hsl(var(--ring))';
+      element.parentElement!.appendChild(probe);
+      const ringColor = getComputedStyle(probe).borderTopColor;
+      probe.remove();
+      return { outlineStyle: s.outlineStyle, borderColor: s.borderTopColor, borderStyle: s.borderTopStyle, borderWidth: s.borderTopWidth, ringColor, boxShadow: s.boxShadow, keyboardFocus: element.matches(':focus-visible') };
+    });
+    // Wait for the existing border-color transition to reach the focus token.
+    await expect.poll(async () => { const s = await readFocusStyle(); return s.borderWidth === '2px' && s.borderColor === s.ringColor; }).toBe(true);
+    const style = await readFocusStyle();
+    await page.screenshot({ path: info.outputPath(`${theme}-single-input-border.png`) });
+    expect(style.keyboardFocus).toBe(true);
+    expect(style.outlineStyle).toBe('none');
+    expect(style.borderStyle).toBe('solid');
+    expect(style.borderColor).toBe(style.ringColor);
+    expect(style.boxShadow === 'none' || (style.boxShadow.match(/-?[\d.]+px/g) ?? []).every((length) => Number.parseFloat(length) === 0)).toBe(true);
+  });
+}
+
+test('Acceptance feedback: entry documents use Xpod branding instead of starter icons', async ({ page }) => {
   await mockAccount(page);
-  await page.goto('/.account/login/password/');
-  await expect(page.getByLabel('邮箱')).toBeVisible();
-  const loginForm = page.locator('[data-pod-sign-in-state="idp-sign-in"]');
-  const initialOverflow = await loginForm.evaluate((form) => ({
-    form: form.scrollHeight - form.clientHeight,
-    main: form.querySelector('[data-pod-sign-in="main"]')!.scrollHeight
-      - form.querySelector('[data-pod-sign-in="main"]')!.clientHeight,
-  }));
-  expect(initialOverflow).toEqual({ form: 0, main: 0 });
-  for (const name of ['邮箱', '密码', '记住账号']) {
-    const box = await page.getByLabel(name, { exact: true }).boundingBox();
-    expect(box).not.toBeNull();
-    expect(box!.y).toBeGreaterThanOrEqual(0);
-    expect(box!.y + box!.height).toBeLessThanOrEqual(372);
+  for (const path of ['/.account/login/password/', '/dashboard/', '/settings/pod']) {
+    await page.goto(path);
+    await expect(page).toHaveTitle(/Xpod/);
+    const icon = page.locator('link[rel="icon"]');
+    await expect(icon).toHaveAttribute('href', /xpod.*\.svg/);
+    const response = await page.request.get((await icon.getAttribute('href'))!);
+    expect(response.ok()).toBe(true);
+    expect(await response.text()).toContain('#563E84');
   }
-  for (const enlarged of [false, true]) {
-    if (enlarged) await page.addStyleTag({ content: 'html { font-size: 200%; }' });
-    for (const name of ['登录', '注册账号', '忘记密码？']) {
-      const action = page.getByRole('button', { name, exact: true });
-      await action.scrollIntoViewIfNeeded();
-      await action.click({ trial: true });
+});
+
+test('Acceptance feedback: Account has a desktop management entry and labelled collapsible addresses', async ({ page }, info) => {
+  const origin = new URL(process.env.XPOD_ACCOUNT_LAYOUT_BASE_URL ?? 'http://127.0.0.1:5173').origin;
+  await mockAccount(page, { authenticated: true, bindings: [
+    { webId: `${origin}/alice/profile/card#me`, storageUrl: `${origin}/alice/` },
+    { webId: LONG_WEBID, storageUrl: LONG_STORAGE },
+  ] });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/.account/account/');
+  const desktop = page.getByRole('region', { name: '桌面 Xpod' });
+  await expect(desktop.getByRole('button', { name: '桌面管理入口' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开 Xpod 工作台' })).toHaveCount(0);
+  const section = page.locator('[data-pod-sign-in="webid-section"]');
+  await expect(section.getByRole('button', { name: /工作台|管理 Pod/ })).toHaveCount(0);
+  await expect(section.getByText('账号服务托管', { exact: true })).toBeVisible();
+  await expect(section.getByText('独立部署', { exact: true })).toBeVisible();
+  const addresses = section.locator('details');
+  await expect(addresses).toHaveCount(2);
+  expect(await addresses.first().getAttribute('open')).toBeNull();
+  await addresses.nth(1).getByText('查看地址', { exact: true }).click();
+  await expect(addresses.nth(1).getByText('WebID（身份地址）', { exact: true })).toBeVisible();
+  await expect(addresses.nth(1).getByText('Pod（存储地址）', { exact: true })).toBeVisible();
+  await expect(section.getByRole('button', { name: /删除 Pod/ }).first()).toHaveClass(/border/);
+  await page.screenshot({ path: info.outputPath('account-workspace-addresses.png') });
+});
+
+test('Acceptance feedback: email selection survives mouse gestures and keeps browser validation', async ({ page }) => {
+  await mockAccount(page);
+  for (const path of ['/.account/login/password/', '/.account/login/password/create/', '/.account/login/password/forgot/']) {
+    await page.goto(path);
+    const email = page.getByLabel('邮箱', { exact: true });
+    await expect(email).toHaveAttribute('type', 'text');
+    await expect(email).toHaveAttribute('inputmode', 'email');
+    for (const value of ['', '   ', '63005737@qq.com', 'a+tag@example.test', 'a@localhost', 'missing-at', 'a@@example.test', 'a@bad domain.test']) {
+      await email.fill(value);
+      expect(await email.evaluate((element: HTMLInputElement) => {
+        const native = document.createElement('input');
+        native.type = 'email';
+        native.required = element.required;
+        native.value = element.value;
+        return element.checkValidity() === native.checkValidity();
+      })).toBe(true);
     }
-    await checkLayout(page, info, `wechat-login-${enlarged ? '200' : '100'}`, { host: 'window' });
+    await email.fill('63005737@qq.com');
+    const box = (await email.boundingBox())!;
+    await page.mouse.move(box.x + 13, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 16, box.y + box.height / 2, { steps: 20 });
+    await page.mouse.up();
+    expect(await email.evaluate((element: HTMLInputElement) => new Promise<string>((resolve) => {
+      setTimeout(() => resolve(element.value.slice(element.selectionStart!, element.selectionEnd!)), 500);
+    }))).toBe('63005737@qq.com');
+    await page.keyboard.type('replacement@example.test');
+    await expect(email).toHaveValue('replacement@example.test');
+    await page.mouse.dblclick(box.x + 30, box.y + box.height / 2);
+    expect(await email.evaluate((element: HTMLInputElement) => new Promise<string>((resolve) => {
+      setTimeout(() => resolve(element.value.slice(element.selectionStart!, element.selectionEnd!)), 500);
+    }))).toBe('replacement');
   }
+});
+
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`Account deletion confirmation: ${theme}, narrow keyboard cancellation and retry`, async ({ page }, info) => {
+    await page.setViewportSize({ width: 360, height: 640 });
+    await page.emulateMedia({ colorScheme: theme });
+    let nativeDialogs = 0;
+    page.on('dialog', async (dialog) => { nativeDialogs++; await dialog.dismiss(); });
+    const observed = await mockAccount(page, { authenticated: true, bindings: [{ webId: LONG_WEBID, storageUrl: LONG_STORAGE }] });
+    let deletes = 0;
+    await page.route('**/.account/account/pod/0/', async (route) => {
+      if (route.request().method() !== 'DELETE') return route.fallback();
+      deletes++;
+      await route.fulfill(deletes === 1
+        ? { status: 503, json: { message: 'POD_DELETE_NODE_UNAVAILABLE' } }
+        : { status: 204, body: '' });
+    });
+    await page.goto('/.account/account/');
+    await page.evaluate((value) => document.documentElement.classList.toggle('dark', value === 'dark'), theme);
+    const trigger = page.getByRole('button', { name: /删除 Pod/ });
+    await trigger.click();
+    const dialog = page.getByRole('dialog', { name: '删除 Pod', exact: true });
+    await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    expect(deletes).toBe(0);
+    expect(observed.filter((call) => call.method === 'DELETE')).toHaveLength(0);
+    await trigger.click();
+    await dialog.getByRole('button', { name: '删除 Pod', exact: true }).click();
+    await expect(dialog.getByRole('alert')).toContainText('请确认设备在线');
+    const bounds = (await dialog.boundingBox())!;
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(360);
+    expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: info.outputPath(`${theme}-pod-delete-retry.png`) });
+    await dialog.getByRole('button', { name: '删除 Pod', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(deletes).toBe(2);
+    expect(nativeDialogs).toBe(0);
+  });
+}
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`Legacy Pod authorization: ${theme} narrow device task and independent deletion`, async ({ page }, info) => {
+    const origin = new URL(process.env.XPOD_ACCOUNT_LAYOUT_BASE_URL ?? 'http://127.0.0.1:5173').origin;
+    let enabled = false;
+    let authorizationRequests = 0;
+    let deletionRequests = 0;
+    let nativeDialogs = 0;
+    page.on('dialog', async (dialog) => { nativeDialogs++; await dialog.dismiss(); });
+    await page.setViewportSize({ width: 360, height: 740 });
+    await page.emulateMedia({ colorScheme: theme });
+    await page.addInitScript((dark) => localStorage.setItem('xpod-theme', dark ? 'dark' : 'light'), theme === 'dark');
+    await mockAccount(page, { authenticated: true, bindings: [{ webId: `${origin}/alice/profile/card#me`, storageUrl: `${origin}/alice/` }] });
+    await page.route('**/api/admin/**', (route) => route.fulfill({ json: { env: {}, configs: [], configFiles: [] } }));
+    await page.route('**/service/status', (route) => route.fulfill({ json: { status: 'running', services: [] } }));
+    await page.route('**/.account/account/pod/', (route) => route.fulfill({ json: {
+      pods: { [`${origin}/alice/`]: '/.account/account/pod/0/' },
+      [enabled ? 'podDeletionControls' : 'podDeletionAuthorizationControls']: { [`${origin}/alice/`]: '/.account/account/pod/0/' },
+    } }));
+    await page.route('**/.account/account/pod/0/', async (route) => {
+      if (route.request().method() === 'DELETE') { deletionRequests++; return route.fulfill({ status: 204, body: '' }); }
+      expect(route.request().postDataJSON()).toEqual({ action: 'requestDeletionAuthorization' });
+      return route.fulfill({ json: { deletionAuthorization: {
+        challenge: 'opaque.challenge', podName: 'alice', expiresAt: Date.now() + 60000,
+        localManagementUrl: `${origin}/settings/pod?deletionAuthorization=opaque.challenge&podName=alice`,
+      } } });
+    });
+    await page.route('**/provision/pods', async (route) => {
+      const body = route.request().postDataJSON();
+      expect(route.request().method()).toBe('POST');
+      expect(route.request().headers().authorization).toBeUndefined();
+      if (body.action === 'inspectDeletionAuthorization') return route.fulfill({ json: { deletionAuthorization: {
+        challenge: 'opaque.challenge', podName: 'alice', expiresAt: Date.now() + 60000,
+        cloudAccountId: 'verified-account', cloudPodId: 'cloud-pod', nodeId: 'local-node',
+        storageUrl: `${origin}/alice/`, currentLocalPodId: 'current-generation', ownerWebIds: [`${origin}/alice/profile/card#me`],
+        returnUrl: `${origin}/.account/account/`,
+      } } });
+      expect(body).toEqual({ action: 'authorizeDeletion', challenge: 'opaque.challenge', podName: 'alice', expectedLocalPodId: 'current-generation' });
+      authorizationRequests++;
+      if (authorizationRequests === 1) return route.fulfill({ status: 502, json: { code: 'POD_DELETE_NODE_UNAVAILABLE' } });
+      enabled = true;
+      return route.fulfill({ json: { success: true, returnUrl: `${origin}/.account/account/` } });
+    });
+    await page.goto('/.account/account/');
+    await page.getByRole('button', { name: '启用删除 alice' }).click();
+    await expect(page).toHaveURL(/\/settings\/pod\?deletionAuthorization=/);
+    const task = page.getByRole('region', { name: '启用 Pod 删除' });
+    await expect(task.getByText('verified-account', { exact: true })).toBeVisible();
+    await page.evaluate((dark) => document.documentElement.classList.toggle('dark', dark), theme === 'dark');
+    await task.getByRole('button', { name: '允许这个账号删除此 Pod' }).click();
+    const dialog = page.getByRole('dialog', { name: '启用 Pod 删除' });
+    await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeFocused();
+    await page.keyboard.press('Escape');
+    expect(authorizationRequests).toBe(0);
+    await task.getByRole('button', { name: '允许这个账号删除此 Pod' }).click();
+    await dialog.getByRole('button', { name: '允许这个账号删除此 Pod' }).click();
+    await expect(dialog.getByRole('alert')).toContainText('暂时无法连接账号服务');
+    const box = (await dialog.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(360);
+    await page.screenshot({ path: info.outputPath(`${theme}-authorize-pod-retry.png`), animations: 'disabled' });
+    await dialog.getByRole('button', { name: '允许这个账号删除此 Pod' }).click();
+    await expect(task.getByRole('status')).toContainText('数据尚未删除');
+    expect(deletionRequests).toBe(0);
+    await task.getByRole('link', { name: '返回账号页面' }).click();
+    await page.getByRole('button', { name: '删除 Pod alice' }).click();
+    expect(deletionRequests).toBe(0);
+    await page.getByRole('dialog', { name: '删除 Pod', exact: true }).getByRole('button', { name: '取消' }).click();
+    expect(deletionRequests).toBe(0);
+    expect(nativeDialogs).toBe(0);
+  });
+}
+
+test('Local authorization task refuses a remote visitor without operator access', async ({ page }) => {
+  await mockAccount(page);
+  await page.route('**/api/admin/**', (route) => route.fulfill({ status: 403, json: {} }));
+  await page.route('**/service/status', (route) => route.fulfill({ json: { status: 'running', services: [] } }));
+  await page.route('**/provision/pods', (route) => route.fulfill({ status: 403, json: { code: 'POD_DELETE_OPERATOR_REQUIRED' } }));
+  await page.goto('/settings/pod?deletionAuthorization=opaque.challenge&podName=alice');
+  const task = page.getByRole('region', { name: '启用 Pod 删除' });
+  await expect(task.getByRole('alert')).toContainText('当前访问没有设备管理权限');
+  await expect(task.getByRole('button', { name: '允许这个账号删除此 Pod' })).toHaveCount(0);
+  await expect(task.getByLabel('本机 Xpod 管理地址')).toBeVisible();
+  await expect(task.locator('input[type=password]')).toHaveCount(0);
+});
+
+test('Local authorization refuses a Pod rebuilt after inspection', async ({ page }) => {
+  const origin = new URL(process.env.XPOD_ACCOUNT_LAYOUT_BASE_URL ?? 'http://127.0.0.1:5173').origin;
+  await mockAccount(page);
+  await page.route('**/api/admin/**', (route) => route.fulfill({ json: { env: {}, configs: [], configFiles: [] } }));
+  await page.route('**/service/status', (route) => route.fulfill({ json: { status: 'running', services: [] } }));
+  let authorizations = 0;
+  await page.route('**/provision/pods', async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.action === 'inspectDeletionAuthorization') return route.fulfill({ json: { deletionAuthorization: {
+      challenge: 'opaque.challenge', podName: 'alice', expiresAt: Date.now() + 60000,
+      cloudAccountId: 'verified-account', cloudPodId: 'cloud-pod', nodeId: 'node', storageUrl: `${origin}/alice/`,
+      currentLocalPodId: 'original-generation', ownerWebIds: [], returnUrl: `${origin}/.account/account/`,
+    } } });
+    expect(body.expectedLocalPodId).toBe('original-generation');
+    authorizations++;
+    return route.fulfill({ status: 409, json: { code: 'POD_DELETE_GENERATION_CHANGED' } });
+  });
+  await page.goto('/settings/pod?deletionAuthorization=opaque.challenge&podName=alice');
+  await page.getByRole('button', { name: '允许这个账号删除此 Pod' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '允许这个账号删除此 Pod' }).click();
+  await expect(page.getByRole('alert')).toContainText('这个地址的 Pod 已发生变化');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '允许这个账号删除此 Pod' })).toHaveCount(0);
+  expect(authorizations).toBe(1);
+});
+
+
+test('Device operator 401 recovers only by explicit loopback navigation with the original challenge', async ({ page }) => {
+  await mockAccount(page);
+  await page.route('**/api/admin/**', (route) => route.fulfill({ status: 401, json: {} }));
+  await page.route('**/service/status', (route) => route.fulfill({ json: { status: 'running', services: [] } }));
+  const requests: string[] = [];
+  await page.route('**/provision/pods', async (route) => {
+    requests.push(route.request().postDataJSON().action);
+    return route.fulfill({ status: 401, json: {} });
+  });
+  await page.goto('/settings/pod?deletionAuthorization=opaque.original&podName=alice&returnTo=https://evil.test/');
+  await expect(page.getByText(/当前访问没有设备管理权限/)).toBeVisible();
+  const field = page.getByLabel('本机 Xpod 管理地址');
+  for (const invalid of ['https://evil.test/', 'http://user:secret@localhost:41873/', 'http://localhost:41873/?x=1', 'http://localhost:41873/#x']) {
+    await field.fill(invalid);
+    await page.getByRole('button', { name: '在本机继续' }).click();
+    await expect(page.getByText('请输入本机 localhost、127.0.0.1 或 [::1] 的 HTTP(S) 地址，不得包含账号密码、查询参数或片段。', { exact: true })).toBeVisible();
+  }
+  const localRequests: Array<{ url: string; navigation: boolean; method: string }> = [];
+  await page.route('http://localhost:41873/**', async (route) => {
+    localRequests.push({ url: route.request().url(), navigation: route.request().isNavigationRequest(), method: route.request().method() });
+    return route.fulfill({ contentType: 'text/html', body: '<title>Local management fixture</title><p>Device management</p>' });
+  });
+  await field.fill('http://localhost:41873/xpod/');
+  await page.getByRole('button', { name: '在本机继续' }).click();
+  await expect(page).toHaveURL('http://localhost:41873/xpod/settings/pod?deletionAuthorization=opaque.original&podName=alice');
+  expect(localRequests).toEqual([{ url: 'http://localhost:41873/xpod/settings/pod?deletionAuthorization=opaque.original&podName=alice', navigation: true, method: 'GET' }]);
+  expect(requests).toEqual(['inspectDeletionAuthorization']);
 });

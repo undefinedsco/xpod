@@ -278,22 +278,32 @@ describe('BackgroundPodAccess', () => {
   });
 
   it('drops a grant whose session ended while the key was being prepared', async () => {
+    const initialRead = deferredCredentials();
     const key = deferred<string | undefined>();
-    const requestPodApiKey = vi.fn(() => key.promise);
-    const first = runtimeValue({ requestPodApiKey });
-    const view = renderPanel(first);
+    const prepareKey = vi.fn(() => key.promise);
+    const onGranted = vi.fn();
+    const first = runtimeValue({ fetch: initialRead.fetch, requestPodApiKey: prepareKey });
+    const view = renderPanel(first, { onGranted });
 
-    await clickGrantWhenReady();
-    expect(await screen.findByRole('button', { name: '正在授权…' })).toBeDefined();
-    expect(requestPodApiKey).toHaveBeenCalledTimes(1);
+    // The button exists while the initial read is pending, but cannot start a grant yet.
+    const grant = screen.getByRole('button', { name: '授权后台任务访问' }) as HTMLButtonElement;
+    expect(grant.disabled).toBe(true);
+    expect(prepareKey).not.toHaveBeenCalled();
+    await act(async () => { initialRead.settle(); });
+    await waitFor(() => { expect(grant.disabled).toBe(false); });
+
+    fireEvent.click(grant);
+    await waitFor(() => { expect(prepareKey).toHaveBeenCalledTimes(1); });
+    expect((screen.getByRole('button', { name: '正在授权…' }) as HTMLButtonElement).disabled).toBe(true);
 
     const second = runtimeValue({ webId: OTHER_WEB_ID });
-    view.rerender(panel(second));
+    view.rerender(panel(second, { onGranted }));
 
     await act(async () => { key.settle('sk-alice-wrapper'); });
 
     expect(postsTo(first.fetch)).toHaveLength(0);
     expect(postsTo(second.fetch)).toHaveLength(0);
+    expect(onGranted).not.toHaveBeenCalled();
   });
 
   it('clears a read failure once a reload succeeds', async () => {

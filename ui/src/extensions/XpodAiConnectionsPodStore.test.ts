@@ -818,7 +818,7 @@ describe('XpodAiConnectionsPodStore', () => {
         productLabel: 'Kimi Coding',
         runtimeProviderIds: ['kimi'],
         credentialPrefixHints: ['sk-kimi-'],
-        consoleUrl: 'https://www.kimi.com/code',
+        consoleUrl: 'https://www.kimi.com/code/console',
         subscriptionUrl: 'https://www.kimi.com/code',
         endpoints: [
           { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1', region: 'cn', supportsDeveloperMessages: false },

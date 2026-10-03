@@ -444,6 +444,42 @@ describe('release candidate workflow', () => {
     expect(evidence.cleanup).toEqual({ ok: true, tasksPaused: 3, runsStopped: 0, sessionsTerminal: 3, grantRevoked: true });
   });
 
+  it('projects producer diagnostics with a second strict allowlist', async () => {
+    const secret = 'SYNTHETIC_CREDENTIAL_MARKER';
+    const result = await projectTaskEvidence(JSON.stringify({ taskApproval: { ok: false, cases: [
+      { kind: 'approved', ok: false, producerFailure: { status: 'failed', errorPresent: true, errorLength: 99,
+        errorClass: 'service_access_missing', httpStatus: 403, error: secret, stack: secret, body: secret, url: secret } },
+      { kind: 'rejected', ok: false, producerFailure: { status: secret, errorPresent: secret, errorLength: -1,
+        errorClass: secret, httpStatus: 200, error: secret } },
+    ], cleanup: { ok: true } } }));
+    expect(result.output + result.evidence).not.toContain(secret);
+    const cases = JSON.parse(result.evidence!).cases;
+    expect(cases[0].producerFailure).toEqual({ status: 'failed', errorPresent: true, errorLength: 99,
+      errorClass: 'service_access_missing', httpStatus: 403 });
+    expect(cases[1].producerFailure).toBeUndefined();
+  });
+
+  it.each([
+    ['status', 'private'], ['errorClass', 'private'], ['errorPresent', 'private'],
+    ['errorLength', -1], ['errorLength', 1.5], ['errorLength', 1000001],
+  ])('rejects invalid producer diagnostic %s', async (field, value) => {
+    const result = await projectTaskEvidence(JSON.stringify({ taskApproval: { cases: [
+      { kind: 'approved', producerFailure: { status: 'failed', errorClass: 'unknown', errorPresent: true,
+        errorLength: 10, [field]: value } },
+    ] } }));
+    expect(JSON.parse(result.evidence!).cases[0].producerFailure).toBeUndefined();
+    expect(result.output + result.evidence).not.toContain('private');
+  });
+  it.each([200, 600, 403.5, '403'])('omits invalid producer HTTP status %s', async httpStatus => {
+    const result = await projectTaskEvidence(JSON.stringify({ taskApproval: { cases: [
+      { kind: 'approved', producerFailure: { status: 'failed', errorClass: 'unknown', errorPresent: true,
+        errorLength: 10, httpStatus } },
+    ] } }));
+    expect(JSON.parse(result.evidence!).cases[0].producerFailure).toEqual({
+      status: 'failed', errorClass: 'unknown', errorPresent: true, errorLength: 10,
+    });
+  });
+
   it('omits invalid field types instead of copying arbitrary payloads into evidence', async () => {
     const result = await projectTaskEvidence(JSON.stringify({ taskApproval: {
       ok: 'private payload', failure: false,

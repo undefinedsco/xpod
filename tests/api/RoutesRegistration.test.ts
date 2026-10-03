@@ -291,6 +291,43 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/linx/capabilities']).toBeUndefined();
   });
 
+  it.each([
+    ['cloud', undefined, false],
+    ['local', undefined, false],
+    ['local', 'https://cloud.example', true],
+  ] as const)('publishes only deployment identity before login (%s, %s)', async (edition, cloudApiEndpoint, managed) => {
+    registerRoutes(createContainer(edition, { config: { cloudApiEndpoint, oidcIssuer: 'https://accounts.example/' } }));
+    const response = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+    await routes['GET /api/service-info']({}, response);
+    expect(JSON.parse(response.end.mock.calls[0][0])).toEqual({
+      edition, managed, publicUrl: null,
+      ...(managed ? { oidcIssuer: 'https://accounts.example/' } : {}),
+    });
+    expect(mockServer.get).toHaveBeenCalledWith('/api/service-info', expect.any(Function), { public: true });
+    expect(response.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+  });
+
+  it('does not advertise CSS transport fallback as an allocated node URL', async () => {
+    const previous = process.env.CSS_BASE_URL;
+    const previousPublicUrl = process.env.XPOD_PUBLIC_URL;
+    process.env.CSS_BASE_URL = 'http://localhost:40991/';
+    delete process.env.XPOD_PUBLIC_URL;
+    try {
+      registerRoutes(createContainer('local', { config: { cloudApiEndpoint: 'https://cloud.example', publicUrl: undefined } }));
+      const response = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+      await routes['GET /api/service-info']({}, response);
+      expect(JSON.parse(response.end.mock.calls[0][0])).toMatchObject({ edition: 'local', managed: true, publicUrl: null });
+      const status = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+      await routes['GET /provision/status']({}, status);
+      expect(JSON.parse(status.end.mock.calls[0][0]).publicUrl).toBe('http://localhost:40991/');
+    } finally {
+      if (previous === undefined) delete process.env.CSS_BASE_URL;
+      else process.env.CSS_BASE_URL = previous;
+      if (previousPublicUrl === undefined) delete process.env.XPOD_PUBLIC_URL;
+      else process.env.XPOD_PUBLIC_URL = previousPublicUrl;
+    }
+  });
+
   it('starts non-AI routes when key-backed AI services are unavailable', () => {
     registerRoutes(createContainer('local', {
       services: {

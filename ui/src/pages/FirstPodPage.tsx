@@ -1,3 +1,4 @@
+import { getXpodAuthSurfaceHost } from '../auth/xpod-auth-surface-host';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Input } from '@undefineds.co/shared-ui';
@@ -199,13 +200,12 @@ export function FirstPodPage() {
   }, [bindAccountCapability, cancelling, controls, idpIndex]);
 
   const openOwnDeployment = useCallback(() => {
-    // Explicit secondary action for users who want their Pod on their own
-    // deployment instead of the current service: open the full deployment
-    // management, choose/configure the location there, and come back through
-    // the same one-time task. This only navigates — it never prepares or posts
-    // a creation, and the stored continuation is left intact so the heavy page
-    // can show the return-to-authorization banner.
-    window.location.assign(scopeAccountUrl('/.account/manage-pod/'));
+    // Keep the exact one-time Consent task while opening deployment management.
+    // The browser offers the desktop entry; only the native host owns management.
+    // Navigation never prepares or creates a Pod.
+    window.location.assign(getXpodAuthSurfaceHost() === 'window'
+      ? scopeAccountUrl('/.account/manage-pod/')
+      : '/settings/pod');
   }, []);
 
   const handleSubmit = useCallback(async (event: React.FormEvent) => {

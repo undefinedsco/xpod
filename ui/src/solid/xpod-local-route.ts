@@ -35,6 +35,7 @@ export interface XpodAdvertisedAccessRoute {
 
 export interface XpodProvisionRouteStatus {
   managed?: boolean;
+  oidcIssuer?: string;
   /** The node's canonical public URL, as reported by its own runtime. */
   storageRoot?: string;
   routes?: XpodAdvertisedAccessRoute[];
@@ -79,6 +80,8 @@ export function provisionLocalPodRoutes(
 ): XpodLocalPodRoute[] {
   const page = safeUrl(currentHref);
   if (!page || !storageUrl) return [];
+  if (status.managed === true && status.storageRoot && status.oidcIssuer
+    && safeUrl(status.storageRoot)?.origin === safeUrl(status.oidcIssuer)?.origin) return [];
 
   const ownRoute = currentOriginRoute(storageUrl, status, page);
   return [...(ownRoute ? [ownRoute] : []), ...advertisedRoutes(storageUrl, status)]

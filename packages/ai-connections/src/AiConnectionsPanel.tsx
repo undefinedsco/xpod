@@ -246,12 +246,14 @@ export function AiConnectionsPanel({
     if (target) await openExternal(target)
   }, [openExternal])
 
-  const beginApiKey = async (provider: AiConnectionsProvider) => {
+  const beginApiKey = async (provider: AiConnectionsProvider, offeringId?: string, authorizationMethodId?: string) => {
     setBusy(provider, true)
     setProviderError(provider)
-    setAttemptOfferingIds((current) => ({ ...current, [provider]: undefined }))
+    setAttemptOfferingIds((current) => ({ ...current, [provider]: offeringId }))
     try {
-      const attempt = await client.beginConnect(provider, 'browserAssistedApiKey')
+      const attempt = offeringId
+        ? await client.beginConnect(provider, 'browserAssistedApiKey', { offeringId, authorizationMethodId })
+        : await client.beginConnect(provider, 'browserAssistedApiKey')
       setAttempts((current) => ({ ...current, [provider]: attempt }))
       const pending = isPendingAttempt(attempt.status)
       updateConnectionState(
@@ -259,13 +261,13 @@ export function AiConnectionsPanel({
         pending ? 'pending' : attempt.status === 'completed' ? 'configured' : 'failed',
       )
       if (!pending && attempt.status !== 'completed') {
-        setProviderError(provider, attempt.message ?? connectFailureMessage(attempt.status))
+        setProviderError(provider, attempt.message ?? connectFailureMessage(attempt.status), offeringId, { mode: 'browserAssistedApiKey', authorizationMethodId })
         return
       }
       await openAttemptUrl(attempt)
     } catch (error) {
       updateConnectionState(provider, 'failed')
-      setProviderError(provider, errorMessage(error))
+      setProviderError(provider, errorMessage(error), offeringId, { mode: 'browserAssistedApiKey', authorizationMethodId })
     } finally {
       setBusy(provider, false)
     }
@@ -289,7 +291,7 @@ export function AiConnectionsPanel({
     method?: AiProviderAuthorizationMethod,
   ) => {
     if (mode === 'browserAssistedApiKey') {
-      await beginApiKey(provider)
+      await beginApiKey(provider, offering.id, method?.id)
       return
     }
     await beginConnectMode(provider, mode, offering.id, method?.id)

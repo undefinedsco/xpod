@@ -182,7 +182,7 @@ export function credentialSummaryFromRow(
   // release can still carry the literal as a string, so keep tolerating both.
   const reauthRequired = row.reauthRequired === true || String(row.reauthRequired) === 'true'
   return {
-    id: String(row.id),
+    id: credentialIdOfRow(row),
     provider,
     offeringId: carrier?.offeringId ?? defaultOfferingFor(provider, authMode),
     authMode,
@@ -209,7 +209,7 @@ export function credentialSummariesForProvider(
   const summaries: AiProviderCredentialSummary[] = []
   for (const row of rows) {
     if (providerOfCredentialRow(row) !== provider) continue
-    summaries.push(credentialSummaryFromRow(row, provider, byId.get(String(row.id))))
+    summaries.push(credentialSummaryFromRow(row, provider, byId.get(credentialIdOfRow(row))))
   }
   return summaries
 }

@@ -68,16 +68,29 @@ Pod 名称。candidate workflow 会把该 secret 写入以 `xpod-rc-seed` 为前
 patch Deployment、set image 或 rollout restart；否则多个 ReplicaSet 会在 CSS
 seed initializer 创建账号和 Pod 的过程中打断进程，留下不完整的 Profile/ACR。
 RC 启动后由 CSS seed initializer 创建账号和 Pod。
-认证验收随后通过真实浏览器 OIDC 流程登录 seed Alice/Bob，生成两份 Playwright
-storage state。候选环境只消费这两份会话，对已经部署的 RC 执行登录恢复、AI
-Connections、Pod、Network、Status 的桌面/窄屏 smoke，并从账号卡实际解析
-`data-selected-pod-url`：两名用户的 Pod 必须不同；每个地址都必须与对应 WebID
-Profile 公布的存储绑定完全一致。IdP 与 Pod 可以同源；验收只要求 storage 来自
-Profile、使用 HTTPS 且不是 loopback。
-协议域名由 Cloud provisioning 返回，不在验收代码中推导或写死。该阶段不得再启动第二套本地 Xpod。
-完整的 provider 写入、Pod 读写、Gateway Key、Models 和真实 Chat 由紧随其后的
-一次性 Local runtime 对同一 RC Cloud 执行；本地 hermetic Playwright 仍作为发布前
-回归单独运行，不冒充部署环境证据。
+认证验收使用测试专用的外部 RP，通过已部署 RC 的真实 IdP 为 seed Alice/Bob 分别执行
+浏览器 OIDC、PKCE 和 DPoP token exchange；不会启动第二套 Xpod、模拟 issuer，或向
+Chromium 注入桌面 bridge。两份私有 Playwright storage state 保存原生 Account Cookie
+和浏览器存储，旁边的 identity JSON 只记录无密钥的 Account ID、WebID 和 storage URL；
+RP token 与 DPoP 私钥仅在进程内使用，不写入该旁档或公开 artifact。
+
+后续测试以独立浏览器上下文加载两份 state，向同一 RC 发起新的真实 OIDC 事务，要求不再
+提交密码，并交叉核验 token WebID、Cookie 恢复的 Account controls/bindings 与公开 Profile
+的规范 HTTPS storage 地址。每个用户都必须以真实 SDK authenticated fetch 完成私有文件
+PUT/GET 精确内容校验；另一用户和匿名请求的 GET/PUT 必须被拒绝，拒绝写入后内容必须
+保持原样，最终删除本次创建的文件。不同的 Pod URL 或公开 Profile 可读不能代替私有隔离。
+
+部署浏览器的宽屏与窄屏 smoke 验证轻量账号页面和桌面入口，且不出现 AI Connections、
+Pod、Network、Status 重管理工作区。Web 永远轻量，重管理只属于桌面 Xpod。这里的三个
+Playwright 用例和 `solid-pod-isolation`、`browser-visual` 必过项保持不变，不得以 skip、
+假 bridge 或 fixture 数据替代部署证据。
+
+完整 provider 写入、Pod 读写、Gateway Key、Models、真实 Chat 和 Tasks 审批由紧随其后的
+一次性 Local runtime 对同一 RC Cloud 执行。本地 hermetic/部署模式矩阵只证明隔离栈，
+不冒充已部署 RC 或真实桌面。现有 macOS `desktop` CI 门禁证明旧包到新包的真实自更新，
+并未证明重管理 UI：这部分仍需在真实 Electron/preload 和候选运行时中验证登录恢复及
+AI Connections、Pod、Network、Status 的已认证访问；不得用普通 Chromium 重页面截图
+宣称完成该桌面补证。本次浏览器契约修正不改变桌面发布门禁。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 
@@ -169,6 +182,8 @@ Gateway Key 不是可以各自热替换的四个独立版本。候选镜像必�
 
 发布前必须检查：
 
+- Cloud 与 managed Local 的身份 card 始终托管在 Cloud，Local 仅保存用户数据。新 card 不产生 Cloud 用户存储 Pod，也不能向身份命名空间上传任意文件；需额外验收一种真实部署条件：Local 从启动时就未配置可达的公网数据路由，但仍有本机私有入口；在此条件下证明 Cloud card 可匿名读取、身份与存储绑定一致、本机私有读写成功。该验收条件不表示禁用 Local 的公网访问能力。旧 node-origin 身份不能静默迁移；此前错误 Local-profile 拓扑的通过记录不得用作发布凭证。
+
 - Account bundle 不再包含原始 `alert(` 错误路径；`fetch failed`、
   `provision_refresh_failed` 等错误只能进入页面内的可恢复状态。
 - Cloud `/provision/nodes` 生成的 managed provision code 同时包含
@@ -199,7 +214,7 @@ Gateway Key 不是可以各自热替换的四个独立版本。候选镜像必�
 
 RC 验收顺序固定为：验证静态 bundle 与 deployed digest → 用同一个 accepted image
 启动一次性 Local edition 并注册到 RC Cloud（不得把 Cloud deployment 的端口转发冒充
-Local）→ 注册 Cloud 身份 → 由 Cloud 为该 Local SP 创建 Pod → 从 canonical Pod URL 命中本地最优路径完成
+Local）→ 注册 Cloud 身份并通过 Account profile control 准备独立 Cloud card → 将同一 Cloud WebID 传入 Local prepare，Cloud 核验回执并 finalize Account/storage 绑定 → 从 canonical Pod URL 命中本地最优路径完成
 读写 → 用 Solid Session 创建 Xpod Gateway API Key 并取得一次性密钥，校验原始列表仅含元数据 → 使用该 Key 调用
 `/v1/models` → 发出真实 `/v1/chat/completions` 并校验有效内容 → 撤销 CSS 凭据并删除 Pod 记录，验证旧 Key 返回 401。任一层失败都不得
 用下一层或隔离测试的结果替代。

@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, expect, it, vi } from 'vitest';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import { saveConsentContinuation, saveManagementContinuation, peekConsentContinuation } from '../utils/safe-continuation';
+import * as firstPod from '../utils/consent-first-pod';
+import * as pod from '../utils/pod';
 import { AccountPodManagement } from './AccountPodManagement';
 
 vi.mock('./account-storage-bindings', () => ({ fetchAccountStorageBindings: vi.fn(async () => []) }));
@@ -91,4 +93,33 @@ it('daily management returns only to Account with no consent request', async () 
   fireEvent.click(await screen.findByRole('button', { name: '返回账号' }));
   expect(navigation.assign).toHaveBeenCalledWith('/.account/account/');
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+
+it('keeps Cloud creation on its verified Account source while Local preparation uses the original transport', async () => {
+  const { auth, view, fetchMock } = setup({ management: true });
+  const authority = 'https://id.example/.account/';
+  const createUrl = `${authority}alice/pod/`;
+  const accountFetch = vi.fn(async () => new Response('{}'));
+  auth.idpIndex = authority;
+  auth.accountFetch = accountFetch;
+  auth.controls = { account: { id: 'alice', pod: createUrl, bindings: `${authority}alice/bindings/` } };
+  vi.spyOn(pod, 'resolveProvisionCodeForCurrentScope').mockResolvedValue(undefined);
+  const create = vi.spyOn(firstPod, 'createFirstPodAndWaitForBinding').mockImplementation(async options => {
+    expect(options.fetchImpl).toBeTypeOf('function');
+    options.assertCurrentAccount?.();
+    await options.fetchImpl!(createUrl, { method: 'POST' });
+    await options.fetchImpl!('/provision/status');
+    await options.fetchImpl!('https://card.example/profile/card');
+    options.assertCurrentAccount?.();
+    return [];
+  });
+  view.rerender(<AuthContext.Provider value={auth}><AccountPodManagement /></AuthContext.Provider>);
+  fireEvent.change(screen.getByLabelText('创建存储空间'), { target: { value: 'alice-pod' } });
+  fireEvent.click(screen.getByRole('button', { name: /^创建$/u }));
+  await screen.findByText('存储空间已创建。');
+  expect(create).toHaveBeenCalledTimes(1);
+  expect(accountFetch).toHaveBeenCalledTimes(1);
+  expect(accountFetch).toHaveBeenCalledWith(createUrl, { method: 'POST' });
+  expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(['/provision/status', 'https://card.example/profile/card']);
 });

@@ -21,6 +21,7 @@ import type { AiClientConfigurationCapability } from '@undefineds.co/extension-s
 import { createContext, useContext } from 'react';
 import { ensureTrailingSlash, fetchProfileStorageUrls } from '../utils/provision-scope';
 import { assertXpodLoginRoute, normalizeXpodReturnTo } from '../auth/xpod-login-route';
+import { normalizeAdvertisedAccessRoutes, provisionLocalPodRoutes, type XpodProvisionRouteStatus } from './xpod-local-route';
 
 export const XPOD_LAST_OIDC_ISSUER_STORAGE_KEY = 'xpod.solid.lastOidcIssuer';
 /** Legacy host key retained only for cleanup of older installations. */
@@ -39,6 +40,8 @@ export interface XpodSolidRuntimeValue {
   readonly session: SolidSessionRuntime;
   readonly pod: PodRuntime<SolidDatabase>;
   readonly fetch: typeof fetch;
+  /** Route transport for explicit credentials; never adds session authorization. */
+  readonly transportFetch?: typeof fetch;
   readonly state: XpodSolidRuntimeState;
   readonly webId?: string;
   readonly podUrl?: string;
@@ -82,7 +85,11 @@ export interface XpodSolidRuntimeCore {
   readonly session: SolidSessionRuntime;
   readonly pod: PodRuntime<SolidDatabase>;
   readonly storage: XpodSolidRuntimeStoragePolicy;
+  /** Canonical route selection without attaching or replacing authorization. */
+  readonly transportFetch?: typeof fetch;
   getIssuer(): string | undefined;
+  /** Reuse the trusted authority preflight before the first Pod read. */
+  getProvisionRouteStatus?(): XpodProvisionRouteStatus | undefined;
   getExpectedIssuer?(): string | undefined;
   setIssuer(issuer: string | undefined): void;
   /**
@@ -182,6 +189,7 @@ export function createXpodSolidRuntimeValue(
 ): XpodSolidRuntimeCore {
   const storage = createXpodSolidRuntimeStoragePolicy(options.storage);
   let localRoutes: readonly AccessRoute[] = [];
+  let provisionRouteStatus: XpodProvisionRouteStatus | undefined;
   // Route discovery belongs to whoever knows how to ask this node for its access
   // points; the transport only calls it when the path it was using stops working.
   let refreshLocalPodRoutes: (() => Promise<void>) | undefined;
@@ -201,7 +209,54 @@ export function createXpodSolidRuntimeValue(
   const sessionAdapter = options.sessionFactory?.({ fetch: transport })
     ?? createInruptSession(storage.oidcSession, transport);
   let lastIssuer = readStoredOidcIssuer(storage.issuer);
-  const session = createSolidSessionRuntime({ session: sessionAdapter });
+  let expectedIssuer: string | undefined;
+  let identityEpoch = 0;
+  const sessionRuntime = createSolidSessionRuntime({ session: {
+    get info() { return sessionAdapter.info; },
+    events: sessionAdapter.events,
+    fetch: (input, init) => init === undefined ? sessionAdapter.fetch(input) : sessionAdapter.fetch(input, init),
+    login: (input) => {
+      identityEpoch += 1;
+      return sessionAdapter.login(input);
+    },
+    logout: (input) => {
+      identityEpoch += 1;
+      return sessionAdapter.logout(input);
+    },
+    handleIncomingRedirect: async (input) => {
+      const epoch = ++identityEpoch;
+      const origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
+      const context = await resolveXpodLoginContext(origin, globalThis.fetch);
+      if (epoch !== identityEpoch) throw new Error('Solid session changed during authority discovery');
+      expectedIssuer = context.oidcIssuer;
+      if (!expectedIssuer) throw new Error('暂时无法确认本机登录信息，请稍后重试。');
+      // The SDK may read the WebID before the Provider opens its Pod. Install
+      // the node's trusted routes from this same authority preflight first.
+      provisionRouteStatus = context.provisionRouteStatus;
+      localRoutes = provisionRouteStatus
+        ? provisionLocalPodRoutes(provisionRouteStatus.storageRoot, provisionRouteStatus)
+        : [];
+      if (typeof input !== 'string' && input?.restorePreviousSession) {
+        const url = new URL(input.url ?? window.location.href);
+        // A callback must still run the SDK's state/PKCE/token validation.
+        // Only silent restoration may be suppressed by stale authority metadata.
+        if (!url.searchParams.has('code') || !url.searchParams.has('state')) {
+          return sessionAdapter.handleIncomingRedirect({
+            ...input,
+            restorePreviousSession: readActiveRestoreIssuer(storage.oidcSession) === expectedIssuer,
+          });
+        }
+      }
+      return sessionAdapter.handleIncomingRedirect(input);
+    },
+  } });
+  const session: SolidSessionRuntime = {
+    ...sessionRuntime,
+    dispose: () => {
+      identityEpoch += 1;
+      sessionRuntime.dispose();
+    },
+  };
   const pod = createPodRuntime<SolidDatabase>({
     adapter: {
       // Pod discovery belongs to the Solid/WebID SDK boundary. The CSS Account
@@ -229,8 +284,10 @@ export function createXpodSolidRuntimeValue(
     session,
     pod,
     storage,
+    transportFetch: transport,
     getIssuer: () => readIssuerFromSessionInfo(sessionAdapter.info) ?? lastIssuer ?? readStoredOidcIssuer(storage.issuer),
-    getExpectedIssuer: () => lastIssuer ?? expectedSameOriginIssuer(readIssuerFromSessionInfo(sessionAdapter.info)),
+    getProvisionRouteStatus: () => provisionRouteStatus,
+    getExpectedIssuer: () => expectedIssuer,
     setIssuer: (issuer) => {
       const normalized = normalizeXpodOidcIssuer(issuer);
       lastIssuer = normalized;
@@ -242,6 +299,7 @@ export function createXpodSolidRuntimeValue(
       // The routes were built for this Pod by a caller that knows it is hosted by
       // the current Xpod; service API prefixes and other Pods stay untouched.
       localRoutes = routes ? [...routes] : [];
+      if (routes === undefined) provisionRouteStatus = undefined;
     },
     setLocalPodRoutesRefresh: (refresh) => {
       refreshLocalPodRoutes = refresh;
@@ -288,6 +346,20 @@ function inruptStorageKey(namespace: XpodInruptStorageNamespace, key: string): s
   return `${XPOD_INRUPT_STORAGE_KEY_PREFIX}${namespace}:${key}`;
 }
 
+/** Inspect only the issuer of the SDK's selected restore record, never a matching bystander. */
+function readActiveRestoreIssuer(storage?: Storage): string | undefined {
+  try {
+    // Inrupt owns this global pointer even when its record storage is namespaced.
+    const id = getOptionalPersistentStorage()?.getItem('solidClientAuthenticationUser:currentSession');
+    if (!id) return undefined;
+    const record = storage?.getItem(inruptStorageKey('insecure', `solidClientAuthenticationUser:${id}`));
+    if (!record) return undefined;
+    return normalizeXpodOidcIssuer((JSON.parse(record) as { issuer?: unknown }).issuer);
+  } catch {
+    return undefined;
+  }
+}
+
 let defaultRuntime: XpodSolidRuntimeCore | undefined;
 
 export function getXpodSolidRuntimeValue(): XpodSolidRuntimeCore {
@@ -305,6 +377,7 @@ export async function resolveXpodLoginIssuer(
 export interface XpodLoginContext {
   oidcIssuer?: string;
   provisionCode?: string;
+  provisionRouteStatus?: XpodProvisionRouteStatus;
 }
 
 export function withXpodProvisionScope(authorizationUrl: string, provisionCode: string): string {
@@ -319,27 +392,49 @@ export async function resolveXpodLoginContext(
   fallbackIssuer: string,
   fetchImpl: typeof fetch,
 ): Promise<XpodLoginContext> {
-  const response = await fetchImpl('/provision/status', {
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
-  }).catch(() => undefined);
-  // Only an explicit absence of managed provisioning permits an unscoped
-  // login. Transient failures must not turn a Local login into a Cloud one.
-  if (response?.status === 404) return { oidcIssuer: normalizeXpodOidcIssuer(fallbackIssuer) };
-  const status = response?.ok
-    ? await response.json().catch(() => undefined) as { managed?: unknown; oidcIssuer?: unknown; provisionCode?: unknown } | undefined
-    : undefined;
-  const provisionedIssuer = normalizeXpodOidcIssuer(status?.oidcIssuer);
-  if (status?.managed === false) {
-    return { oidcIssuer: provisionedIssuer ?? normalizeXpodOidcIssuer(fallbackIssuer) };
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error('暂时无法确认本机登录信息，请稍后重试。'));
+    }, 5_000);
+  });
+  try {
+    const response = await Promise.race([fetchImpl('/provision/status', {
+      headers: { Accept: 'application/json' },
+      credentials: 'include',
+      signal: controller.signal,
+    }).catch(() => undefined), deadline]);
+    // Only an explicit absence of managed provisioning permits an unscoped
+    // login. Transient failures must not turn a Local login into a Cloud one.
+    if (response?.status === 404) return { oidcIssuer: normalizeXpodOidcIssuer(fallbackIssuer) };
+    const status = response?.ok
+      ? await Promise.race([response.json().catch(() => undefined), deadline]) as {
+        managed?: unknown; oidcIssuer?: unknown; provisionCode?: unknown; publicUrl?: unknown; routes?: unknown;
+      } | undefined
+      : undefined;
+    const provisionedIssuer = normalizeXpodOidcIssuer(status?.oidcIssuer);
+    const storageRoot = normalizeXpodOidcIssuer(status?.publicUrl);
+    const routeContext = storageRoot ? { provisionRouteStatus: {
+      managed: status?.managed === true,
+      storageRoot,
+      oidcIssuer: provisionedIssuer,
+      routes: normalizeAdvertisedAccessRoutes(status?.routes),
+    } } : {};
+    if (status?.managed === false) {
+      return { oidcIssuer: provisionedIssuer ?? normalizeXpodOidcIssuer(fallbackIssuer), ...routeContext };
+    }
+    const provisionCode = typeof status?.provisionCode === 'string' && status.provisionCode.trim()
+      ? status.provisionCode.trim()
+      : undefined;
+    if (!provisionedIssuer || (status?.managed === true && !provisionCode)) {
+      throw new Error('暂时无法确认本机登录信息，请稍后重试。');
+    }
+    return { oidcIssuer: provisionedIssuer, provisionCode, ...routeContext };
+  } finally {
+    clearTimeout(timer!);
   }
-  const provisionCode = typeof status?.provisionCode === 'string' && status.provisionCode.trim()
-    ? status.provisionCode.trim()
-    : undefined;
-  if (!provisionedIssuer || (status?.managed === true && !provisionCode)) {
-    throw new Error('暂时无法确认本机登录信息，请稍后重试。');
-  }
-  return { oidcIssuer: provisionedIssuer, provisionCode };
 }
 
 export function safeAuthError(error: Error): Error {
@@ -421,22 +516,6 @@ export function isCurrentXpodSessionSnapshot(
     return false;
   }
   return isHttpResourceUrl(snapshot.webId);
-}
-
-function expectedSameOriginIssuer(
-  issuer: string | undefined,
-  origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin,
-): string | undefined {
-  const normalizedIssuer = normalizeXpodOidcIssuer(issuer);
-  return normalizedIssuer && hasOrigin(normalizedIssuer, origin) ? normalizedIssuer : undefined;
-}
-
-function hasOrigin(value: string, origin: string): boolean {
-  try {
-    return new URL(value).origin === new URL(origin).origin;
-  } catch {
-    return false;
-  }
 }
 
 function isHttpResourceUrl(value: string): boolean {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalRow } from '@undefineds.co/models';
-import { pollLiveTask, requireLiveCheckpoint, requireLiveTerminal, type LiveTaskRun } from '../../scripts/helpers/live-task-approval';
+import { pollLiveTask, requireLiveCheckpoint, requireLiveTerminal, type LiveTaskRun, type LiveTaskCaseEvidence } from '../../scripts/helpers/live-task-approval';
 
 const owner = 'https://pod.example/alice/profile/card#me';
 const target = 'https://pod.example/alice/acceptance/marker.txt';
@@ -22,6 +22,39 @@ describe('live Task acceptance evidence gates (unit checks, not live proof)', ()
   });
   it.each(['completed', 'failed', 'cancelled'])('does not count early %s as an approval', status => {
     expect(() => requireLiveCheckpoint({ ...run, status }, [approval], target, owner)).toThrow('before requesting approval');
+  });
+  it('keeps failed producers blocking while projecting only safe diagnostics', () => {
+    const secret = 'SYNTHETIC_CREDENTIAL_MARKER';
+    const error = `service_access_missing HTTP 403 Bearer ${secret} Cookie=${secret} JWT=eyJ${secret}.payload.signature\nstack: https://user:${secret}@example.test/path?token=${secret} body=${secret}`;
+    const evidence: LiveTaskCaseEvidence = { kind: 'approved', ok: false };
+    expect(() => requireLiveCheckpoint({ ...run, status: 'failed', error }, [], target, owner, evidence))
+      .toThrow('Producer ended failed before requesting approval');
+    expect(evidence.producerFailure).toEqual({ status: 'failed', errorPresent: true, errorLength: error.length,
+      errorClass: 'service_access_missing', httpStatus: 403 });
+    expect(JSON.stringify(evidence)).not.toContain(secret);
+    expect(JSON.stringify(evidence)).not.toMatch(/Bearer|Cookie|https:|stack|body/);
+  });
+  it.each<[unknown, string, boolean, number]>([
+    [undefined, 'none', false, 0], ['', 'none', false, 0],
+    [{ errorClass: 'provider_error', httpStatus: 403, message: 'SECRET' }, 'unknown', true, 0],
+    ['SECRET HTTP 401 then status 403', 'unknown', true, 'SECRET HTTP 401 then status 403'.length],
+    ...([
+      ['Pi assistant ended with error', 'provider_error'],
+      ['Pi assistant ended with aborted', 'provider_aborted'],
+      ['Error: token_exchange_failed', 'token_exchange_failed'],
+      ['auth_required', 'auth_required'],
+      ['Cloud Agent Runtime requires an OS sandbox, but none is available on this host', 'sandbox_unavailable'],
+      ['Cloud Agent Runtime refused to run without a sandbox', 'sandbox_unavailable'],
+      ['Agent Runtime worker failed to start: SECRET', 'worker_start_failed'],
+      ['Agent Runtime worker exited with code 1 SECRET', 'worker_exited'],
+      ['Unable to read execution state: SECRET', 'execution_state_error'],
+    ] as const).map(([text, classification]) => [text, classification, true, text.length] as [unknown, string, boolean, number]),
+  ])('projects terminal failures without accepting arbitrary error objects (%s)', (error, errorClass, errorPresent, errorLength) => {
+    const evidence: LiveTaskCaseEvidence = { kind: 'approved', ok: false };
+    expect(() => requireLiveTerminal({ ...run, status: 'failed', error }, run.id, 'completed', evidence))
+      .toThrow('expected completed');
+    expect(evidence.producerFailure).toEqual({ status: 'failed', errorClass, errorPresent, errorLength });
+    expect(JSON.stringify(evidence)).not.toContain('SECRET');
   });
   it('rejects ambiguous duplicate approvals', () => {
     expect(() => requireLiveCheckpoint(run, [approval, { ...approval, id: 'other' }], target, owner)).toThrow('Multiple approvals');

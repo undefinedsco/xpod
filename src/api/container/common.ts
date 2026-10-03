@@ -314,6 +314,21 @@ export function registerCommonServices(
       });
       const adapterOptions = {
         attempts, credentialRepository, vault, deployment: config.edition, signingSecret,
+        // Connect owns its official endpoints, form bodies and timeout signal;
+        // the shared transport owns proxy routing, target validation and cleanup.
+        fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+          if (typeof input !== 'string' && !(input instanceof URL)) {
+            throw new TypeError('Connect transport requires an endpoint URL');
+          }
+          return cradle.providerHttpTransport.request({
+            url: input.toString(),
+            method: init?.method,
+            headers: init?.headers,
+            body: init?.body,
+            signal: init?.signal ?? undefined,
+            redirect: 'error',
+          });
+        },
       };
       const callbackReceiver = new LoopbackAuthorizationCallbackReceiver();
       const adapters = [
@@ -322,9 +337,12 @@ export function registerCommonServices(
           .map((provider) => new BrowserAssistedApiKeyConnectAdapter({
             ...adapterOptions,
             provider: provider.id,
-            consoleUrl: registry.requireProduct(provider.id).offerings
-              .find((offering) => offering.kind === 'api-platform')?.consoleUrl
-              ?? registry.requireProduct(provider.id).offerings[0].consoleUrl,
+            consoleUrl: (input) => {
+              const offerings = registry.requireProduct(provider.id).offerings;
+              const offeringId = input.offeringId
+                ?? (offerings.find((offering) => offering.kind === 'api-platform') ?? offerings[0]).id;
+              return registry.requireOffering(provider.id, offeringId).consoleUrl;
+            },
           })),
         ...(config.edition === 'local' ? createBrowserOAuthIntegrations().map((integration) => new AuthorizationCodeConnectAdapter({
           ...adapterOptions, integration, callbackReceiver,

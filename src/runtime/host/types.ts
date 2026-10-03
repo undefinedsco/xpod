@@ -21,6 +21,9 @@ export interface RuntimeConnectionTarget {
 
 export interface RuntimeListenableServer {
   once(event: 'error', listener: (error: Error) => void): unknown;
+  once(event: 'close', listener: () => void): unknown;
+  readonly listening?: boolean;
+  closeAllConnections?(): void;
   listen(socketPath: string, listeningListener?: () => void): unknown;
   listen(port: number, host: string, listeningListener?: () => void): unknown;
   close(callback: (error?: Error | null) => void): unknown;
@@ -45,6 +48,11 @@ export interface RuntimePorts {
   ingress: number;
 }
 
+export interface RuntimeCloseOptions {
+  /** Caller has fenced new work and awaited all handlers, responses and upgrades. */
+  connectionsDrained?: boolean;
+}
+
 export interface RuntimeHost {
   readonly name: string;
   resolveTransport(preference?: RuntimeTransportPreference): RuntimeTransport;
@@ -52,7 +60,7 @@ export interface RuntimeHost {
   createListenEndpoint(options: { port?: number; host?: string; socketPath?: string }): RuntimeListenEndpoint;
   formatListenEndpoint(endpoint: RuntimeListenEndpoint): string;
   listen(server: RuntimeListenableServer, endpoint: RuntimeListenEndpoint): Promise<void>;
-  close(server: RuntimeListenableServer, endpoint?: RuntimeListenEndpoint): Promise<void>;
+  close(server: RuntimeListenableServer, endpoint?: RuntimeListenEndpoint, options?: RuntimeCloseOptions): Promise<void>;
   waitForPortReady(port: number, host?: string, timeoutMs?: number): Promise<void>;
   isConnectionTargetReady(target: RuntimeConnectionTarget, timeoutMs?: number): Promise<boolean>;
   registerSocketOrigins(origin: string, socketPath: string): () => Promise<void>;

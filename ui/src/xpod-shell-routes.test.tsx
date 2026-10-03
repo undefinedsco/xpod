@@ -5,6 +5,7 @@ import { WorkspacePage } from './DesktopWorkspaces';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 import { XpodProductLayout } from './layout/XpodProductLayout';
 import { canonicalRoutes, legacyProductRedirects } from './routes/canonical-routes';
+import { PodManagementTaskRoute } from './pages/settings/PodDeletionAuthorizationPanel';
 
 describe('desktop shell routes', () => {
   it.each(['/device/network', '/device/services', '/device/runtime', '/device/logs', '/settings/appearance'])('opens %s with local host authority', pathname => {
@@ -31,7 +32,7 @@ describe('desktop shell routes', () => {
   });
   it.each(Object.entries(legacyProductRedirects))('redirects %s before rendering a duplicate editor', (pathname, to) => {
     const element = matchRoutes(xpodShellRoutes, pathname)?.at(-1)?.route.element;
-    expect(element?.type).toBe(Navigate);
+    expect(element?.type).toBe(pathname === '/settings/pod' ? PodManagementTaskRoute : Navigate);
     expect(element?.props.to).toBe(to);
   });
 });

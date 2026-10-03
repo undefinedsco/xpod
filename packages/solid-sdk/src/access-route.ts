@@ -145,21 +145,19 @@ export interface CreateSolidAccessRouteFetchOptions {
  * Canonical identity is preserved end to end: the target URL is rewritten, the
  * canonical host travels in the `x-xpod-canonical-*` headers, and the response
  * reports its canonical URL again. When the chosen route stops answering, the
- * routes are refreshed and the request is retried once against the new best one.
+ * routes are refreshed and a read is retried once against the new best one.
+ * Writes report the failure because the original request may have been accepted.
  */
 export function createSolidAccessRouteFetch(
   options: CreateSolidAccessRouteFetchOptions,
 ): typeof globalThis.fetch {
   const managedClient = options.managedClient ?? true
   let selected: AccessRoute | undefined
-  // A route that just failed the request itself is the one route we must not
-  // pick again for the retry: a trusted route that turns out to be down has to
-  // be able to fail over to a probed one. Cleared by the next success.
-  let failed: string | undefined
-
-  const selectRoute = async (): Promise<AccessRoute | null> => {
+  const selectRoute = async (excluded?: string): Promise<AccessRoute | null> => {
     const all = options.routes()
-    const routes = failed === undefined ? all : all.filter((route) => routeKey(route) !== failed)
+    // Exclude the failed path only for this request's retry. A later explicit
+    // request can try it again after a transient failure.
+    const routes = excluded === undefined ? all : all.filter((route) => routeKey(route) !== excluded)
     const routeSet: AccessRouteSet = {
       canonicalUrl: routes[0]?.canonicalUrl ?? '',
       routes,
@@ -230,6 +228,14 @@ export function createSolidAccessRouteFetch(
   }
 
   return async (input, init) => {
+    // IdP and other origins are not node-route candidates. A failure there
+    // must not mark a node route dead or replay an unrelated token exchange.
+    const sourceUrl = requestUrl(input)
+    if (!sourceUrl || !routeCovers(sourceUrl)) {
+      return init === undefined
+        ? options.fetch.call(globalThis, input)
+        : options.fetch.call(globalThis, input, init)
+    }
     const route = await routeFor()
     if (!route) {
       const unreachable = unreachablePassThrough(input)
@@ -243,16 +249,18 @@ export function createSolidAccessRouteFetch(
 
     try {
       const response = await routedFetchFor(route)(input, init)
-      failed = undefined
       return response
     } catch (error) {
       // The route went away (laptop moved networks, tunnel restarted, or the
       // runtime reported a health it cannot back up). Ask for the current set
       // once and retry against whatever is best now, without this one.
-      failed = routeKey(route)
       selected = undefined
+      // A lost response cannot prove a mutation was refused. Select a new
+      // path for future calls, but never repeat a possibly accepted write.
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) throw error
       await options.refreshRoutes?.()
-      const retryRoute = await selectRoute()
+      const retryRoute = await selectRoute(routeKey(route))
       if (retryRoute && routeKey(retryRoute) !== routeKey(route)) {
         return routedFetchFor(retryRoute)(input, init)
       }
