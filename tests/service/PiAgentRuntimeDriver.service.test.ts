@@ -153,7 +153,8 @@ describe('Pi assistant terminal status', () => {
       const header = `xpod-${createHash('sha256').update(app.input.threadId).digest('hex')}`;
       expect(receipts()).toEqual([{ event: 'xpod.task-model-diagnostic', schemaVersion: 1,
         scope: 'session', stage: 'stream_open', api: 'openai-completions', stopReason, retryCount: 0,
-        correlationHash: createHash('sha256').update(header).digest('hex'), httpStatus: null, credentialPresent: true }]);
+        correlationHash: createHash('sha256').update(header).digest('hex'), httpStatus: null, credentialPresent: true,
+        sdkErrorHint: { kind: 'unknown' } }]);
       expect(JSON.stringify(diagnosticLogger.error.mock.calls)).not.toContain(privateProviderError);
       expect(JSON.stringify(receipts())).not.toContain(app.input.config.aiConnection!.apiKey);
       expect(JSON.stringify(receipts())).not.toContain(app.input.prompt);
@@ -218,7 +219,8 @@ describe('Pi assistant terminal status', () => {
     }, session => session.setAutoRetryEnabled(false));
     try {
       expect(await drain(app)).toEqual([{ type: 'error', message: 'Pi assistant ended with error' }]);
-      expect(receipts()).toEqual([expect.objectContaining({ stage: 'payload_prepared', stopReason: 'error', retryCount: 0, httpStatus: null })]);
+      expect(receipts()).toEqual([expect.objectContaining({ stage: 'payload_prepared', stopReason: 'error', retryCount: 0,
+        httpStatus: null, sdkErrorHint: { kind: 'http_status', status: 503 } })]);
       expect(JSON.stringify(diagnosticLogger.error.mock.calls)).not.toContain(privateProviderError);
     } finally { await app.cleanup(); }
   });
@@ -282,7 +284,8 @@ describe('Pi assistant terminal status', () => {
       expect(await drain(app)).toEqual([{ type: 'error', message: 'Pi assistant ended with error' }]);
       expect(app.lifecycle.filter(type => type === 'agent_end')).toHaveLength(2);
       expect(app.lifecycle).toContain('auto_retry_end');
-      expect(receipts()).toEqual([expect.objectContaining({ stage: 'stream_open', stopReason: 'error', retryCount: 1, httpStatus: null })]);
+      expect(receipts()).toEqual([expect.objectContaining({ stage: 'stream_open', stopReason: 'error', retryCount: 1,
+        httpStatus: null, sdkErrorHint: { kind: 'http_status', status: 429 } })]);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
     } finally { await app.cleanup(); }
@@ -428,7 +431,8 @@ describe('Pi assistant terminal status', () => {
       expect((await store.loadRun(run.id, context)).error).toBe('Pi assistant ended with error');
       expect(calls).toBe(4);
       expect(app.lifecycle.filter(type => type === 'auto_retry_start')).toHaveLength(2);
-      expect(receipts()).toEqual([expect.objectContaining({ retryCount: 2, stopReason: 'error', httpStatus: null })]);
+      expect(receipts()).toEqual([expect.objectContaining({ retryCount: 2, stopReason: 'error', httpStatus: null,
+        sdkErrorHint: { kind: 'http_status', status: 429 } })]);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
     } finally { await app.cleanup(); }

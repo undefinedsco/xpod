@@ -14,6 +14,7 @@
  */
 import '../src/runtime/configure-drizzle-solid';
 import { acceptLiveTaskApproval, type LiveTaskEvidence } from './helpers/live-task-approval';
+import { withProvisionReceiptFailureDiagnostics } from './helpers/project-provision-receipt-diagnostics';
 import { ensureTrailingSlash } from '../src/runtime/base-url';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -509,7 +510,7 @@ async function prepareLocalProvisionedPod(options: {
   localBaseUrl: string;
   provisionCode: string;
   username: string;
-}): Promise<{ provisionReceipt: string; podUrl: string }> {
+}): Promise<{ provisionReceipt: string; podUrl: string; webId: unknown }> {
   const payload = new ProvisionCodeCodec(options.cloudBaseUrl).decode(options.provisionCode);
   const callbackToken = payload?.serviceAccessToken ?? payload?.serviceToken;
   if (!payload || !callbackToken) {
@@ -529,11 +530,12 @@ async function prepareLocalProvisionedPod(options: {
   const body = await readJson(response, 'POST Local /provision/pods') as {
     podUrl?: unknown;
     provisionReceipt?: unknown;
+    webId?: unknown;
   };
   if (typeof body.podUrl !== 'string' || typeof body.provisionReceipt !== 'string') {
     throw new Error('POST Local /provision/pods did not return podUrl and provisionReceipt');
   }
-  return { provisionReceipt: body.provisionReceipt, podUrl: body.podUrl };
+  return { provisionReceipt: body.provisionReceipt, podUrl: body.podUrl, webId: body.webId };
 }
 
 async function createHostedPod(options: {
@@ -671,6 +673,7 @@ async function main(): Promise<void> {
     };
     const binding = MODE === 'local' && localRoute
       ? await (async() => {
+        const canonicalBaseUrl = localRoute.canonicalBaseUrl;
         const provisionCode = await readLocalProvisionCode();
         const preparedPod = await prepareLocalProvisionedPod({
           cloudBaseUrl: identityBaseUrl,
@@ -678,12 +681,16 @@ async function main(): Promise<void> {
           provisionCode,
           username,
         });
-        return createCloudManagedLocalPod({
+        return withProvisionReceiptFailureDiagnostics(() => createCloudManagedLocalPod({
           ...podOptions,
-          canonicalBaseUrl: localRoute.canonicalBaseUrl,
+          canonicalBaseUrl,
           provisionCode,
           provisionReceipt: preparedPod.provisionReceipt,
-        });
+        }), () => ({
+          cloudBaseUrl: identityBaseUrl, canonicalBaseUrl,
+          username, provisionCode, provisionReceipt: preparedPod.provisionReceipt,
+          preparedPodUrl: preparedPod.podUrl, preparedWebId: preparedPod.webId,
+        }), projection => log('provision-receipt', { ...projection }));
       })()
       : await createHostedPod(podOptions);
     const credentials = await createCloudClientCredentials({

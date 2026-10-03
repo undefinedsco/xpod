@@ -22,6 +22,7 @@ const model = {
   event: 'xpod.task-model-diagnostic', schemaVersion: 1, scope: 'session', correlationHash,
   stage: 'stream_open', api: 'openai-completions', stopReason: 'error',
   retryCount: 1, credentialPresent: true, httpStatus: null,
+  sdkErrorHint: { kind: 'http_status', status: 503 },
 };
 const gateway = {
   event: 'xpod.task-gateway-diagnostic', schemaVersion: 1, scope: 'session', correlationHash,

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
+  classifyTaskModelSdkErrorHint,
   hashTaskModelDiagnosticSession,
   selectTaskModelDiagnosticReceipt,
 } from '../../src/util/task-model-diagnostics';
@@ -66,5 +67,40 @@ describe('safe Task model receipt contract', () => {
     for (const value of [null, undefined, [], 'secret-sentinel']) {
       expect(selectTaskModelDiagnosticReceipt(value)).toBeUndefined();
     }
+  });
+});
+
+describe('bounded SDK error hint contract', () => {
+  const privateSentinel = 'Synthetic upstream refusal; credential=fixture-only';
+
+  it('classifies the installed SDK message formats without retaining the message', () => {
+    expect(classifyTaskModelSdkErrorHint(`503 ${privateSentinel}`)).toEqual({ kind: 'http_status', status: 503 });
+    expect(classifyTaskModelSdkErrorHint('429 synthetic refusal')).toEqual({ kind: 'http_status', status: 429 });
+    expect(classifyTaskModelSdkErrorHint('400 status code (no body)')).toEqual({ kind: 'http_status', status: 400 });
+    expect(classifyTaskModelSdkErrorHint('Connection error.')).toEqual({ kind: 'connection' });
+    expect(classifyTaskModelSdkErrorHint('Request timed out.')).toEqual({ kind: 'timeout' });
+    expect(classifyTaskModelSdkErrorHint('Request was aborted.')).toEqual({ kind: 'aborted' });
+    expect(classifyTaskModelSdkErrorHint('Could not parse response content as the length limit was reached'))
+      .toEqual({ kind: 'length_limit' });
+    expect(classifyTaskModelSdkErrorHint('Could not parse response content as the request was rejected by the content filter'))
+      .toEqual({ kind: 'content_filter' });
+    expect(classifyTaskModelSdkErrorHint(privateSentinel)).toEqual({ kind: 'unknown' });
+    // Only the fixed leading SDK status prefix or exact SDK constants classify; stray numbers and free text never do.
+    expect(classifyTaskModelSdkErrorHint('200 ok')).toEqual({ kind: 'unknown' });
+    expect(classifyTaskModelSdkErrorHint('line 503')).toEqual({ kind: 'unknown' });
+    for (const value of [undefined, null, 1, '', {}, []]) expect(classifyTaskModelSdkErrorHint(value)).toBeUndefined();
+    expect(JSON.stringify(classifyTaskModelSdkErrorHint(`503 ${privateSentinel}`))).not.toContain('sentinel');
+    expect(JSON.stringify(classifyTaskModelSdkErrorHint('x'.repeat(9000) + privateSentinel))).not.toContain('sentinel');
+  });
+
+  it('accepts only a strictly bounded hint in the fixed receipt', () => {
+    expect(selectTaskModelDiagnosticReceipt({ ...model, sdkErrorHint: { kind: 'http_status', status: 503 } }))
+      .toEqual({ ...model, sdkErrorHint: { kind: 'http_status', status: 503 } });
+    expect(selectTaskModelDiagnosticReceipt({ ...model, sdkErrorHint: { kind: 'unknown' } }))
+      .toEqual({ ...model, sdkErrorHint: { kind: 'unknown' } });
+    for (const hint of [
+      { kind: 'http_status' }, { kind: 'http_status', status: 200 }, { kind: 'http_status', status: '503' },
+      { kind: 'unknown', status: 503 }, { kind: 'free' }, 'http_status', 503, [],
+    ]) expect(selectTaskModelDiagnosticReceipt({ ...model, sdkErrorHint: hint })).toBeUndefined();
   });
 });

@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import { getLoggerFor } from 'global-logger-factory';
-import { hashTaskModelDiagnosticSession, selectTaskModelDiagnosticReceipt } from '../../util/task-model-diagnostics';
+import { classifyTaskModelSdkErrorHint, hashTaskModelDiagnosticSession, selectTaskModelDiagnosticReceipt } from '../../util/task-model-diagnostics';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
@@ -230,12 +230,16 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     let credentialPresent = false;
     let retryCount = 0;
     let failureLogged = false;
-    const logFailure = (stopReason: 'error' | 'aborted' | 'unknown') => {
+    const logFailure = (stopReason: 'error' | 'aborted' | 'unknown', errorMessage?: unknown) => {
       if (failureLogged || pausedForApproval || input.signal?.aborted) return;
       failureLogged = true;
+      // The SDK discards the structured provider response; only its formatted
+      // error message survives, so record a bounded hint and never the raw text.
+      const sdkErrorHint = classifyTaskModelSdkErrorHint(errorMessage);
       const receipt = selectTaskModelDiagnosticReceipt({ event: 'xpod.task-model-diagnostic', schemaVersion: 1,
         scope: 'session', stage, api, stopReason, retryCount,
-        correlationHash: hashTaskModelDiagnosticSession(sessionHeader), httpStatus: null, credentialPresent });
+        correlationHash: hashTaskModelDiagnosticSession(sessionHeader), httpStatus: null, credentialPresent,
+        ...(sdkErrorHint ? { sdkErrorHint } : {}) });
       if (receipt) {
         try { this.logger.error(JSON.stringify(receipt)); } catch { /* Diagnostics cannot alter run failure semantics. */ }
       }
@@ -364,7 +368,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         if (!pausedForApproval && !input.signal?.aborted && lastAssistant?.role === 'assistant' &&
             (lastAssistant.stopReason === 'error' || lastAssistant.stopReason === 'aborted')) {
           // Provider errorMessage can contain credentials or response bodies; expose only the classification.
-          logFailure(lastAssistant.stopReason);
+          logFailure(lastAssistant.stopReason, lastAssistant.errorMessage);
           queue.push({ type: 'error', message: `Pi assistant ended with ${lastAssistant.stopReason}` });
         } else if (!streamState.assistantTextStreamed && streamState.lastAssistantText.length > 0) {
           queue.push({ type: 'text', text: streamState.lastAssistantText });
@@ -372,7 +376,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         queue.close();
       }).catch((error) => {
         if (!pausedForApproval) {
-          logFailure('unknown');
+          logFailure('unknown', error);
           queue.push({ type: 'error', message: this.formatError(error) });
         }
         queue.close();
