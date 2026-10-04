@@ -1,6 +1,11 @@
 # Xpod CLI 目录预览发行记录
 
-状态：2026-10-03。此页记录已公开的 preview.1 及其旧 RC223 证据，附件字节没有因后续兼容修复而更新。当前整合与未完成准入见 [选型记录](xpod-cli-engine-selection.md)，新原生服务见 [RC 验收](acceptance/rc-qlever.md)。
+> 当前状态（2026-10-04，账号 B / opencode-go/deepseek-v4.1-flash；本页以下旧段落均为 HISTORICAL）
+> - 当前源码：`codex/agentfs-current-release` HEAD `5ce81c679cf7ba0aab82b277a44b3ea469bcc72d`；native HEAD `8d4983c96e9942b8edeb7912659017d5e98762e4`。原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) darwin+linux 两 ARM runner 串行实际成功；服务候选 [run 37148085189](https://github.com/undefinedsco/xpod/actions/runs/37148085189) 只发布 exact 镜像 `ghcr.io/undefinedsco/xpod@sha256:fd2ee44323e3412c9b43e4ee31d4d9aeb6b512bb2524e9907c6c66cd50fb8428`，deploy 在 registry-authority 预检前失败。
+> - 本地 preview.2（`0.1.0-preview.2`）仍**未公开**：kit5 实际平台准入未通过——macOS NFS 间歇失败（重挂退出 75 `unknown runtime entry retained`），64/512/1024 MiB 通过但 SIGKILL 崩溃恢复阶段失败；Linux Docker `node:22-bookworm-slim`（Node22，无 Bun）FUSE 因 helper 需 `GLIBC_2.39` + `libssl.so.3/libcrypto.so.3` 加载失败（bookworm glibc 2.36）。
+> - 远程 bounded clean-body 缓存仍 NOT IMPLEMENTED（仅 dirty blob）；不主张缓存或 99% native。实现子代理路由：账号 B 是当前唯一实现者；仅 **CONFIRMED HTTP429** 才转 Sol。
+
+历史状态（HISTORICAL，2026-10-03）：此页记录已公开的 preview.1 及其旧 RC223 证据，附件字节没有因后续兼容修复而更新。当前整合与未完成准入见 [选型记录](xpod-cli-engine-selection.md)，新原生服务见 [RC 验收](acceptance/rc-qlever.md)。
 
 - [客户端公开附件](https://github.com/undefinedsco/xpod/releases/tag/xpodcli-0.1.0-preview.1)
 - [客户端源码与全部 22 项 CI](https://github.com/undefinedsco/xpod/actions/runs/36951645641)：`1cb00bdf0a1ad2ff424e4745ecf97b2c9682af57`。
@@ -132,3 +137,10 @@ test session正文需再生成。随后又清除原开发 worktree 两处已结�
 生命周期 kit2 的第二轮编译在 E0507 处实际失败后，其 21,280 个索引源码文件与索引完整保存为私密 `retired-kit2-native-source.tar.gz`（SHA `8a0cd31531d50d1497731c81d6d5bab1f55e7e19a3c41f3db4bd0c9cedae31da`），逐成员正文核验后退休展开目录。另删除 allocated 481,288,192B，同时新增 63,152,747B 的保留压缩归档；累计删除文件量约 6.83GB，仍不能当作净空间变化。日志、失败回执和当前 target 缓存保留；新源码须使用新的 kit3 绑定。
 
 新的开发版本已改为 `0.1.0-preview.2`，manifest、入口和 workspace 版本一致。真实 standalone 包测试 50 项及包类型检查通过，尚未晋级、打包发布或覆盖已公开附件。先前 E0507 与卸载观察诊断修正后的 helper 仍需完整原生编译和两平台实际安装验收。
+
+## 2026-10-04 状态更新（账号 B / deepseek-v4.1-flash）
+
+- 新 kit5 helper 已完成真实远端两平台原生编译与安装验收：[run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) `darwin-arm64` 与 `linux-arm64` 串行成功，官方在线导出 → `--verify-only` → `--frozen` 重建完整 Rust 60（58 通过 / 2 既有 ignore / 0 filtered）→ 打包 → 解压 `install-verified`。
+- helper darwin `2d4a7360…` / linux `88c299dd…`；archive darwin `6cdd9535…` / linux `1408ec6b…`；source-kit `84c5d586…`。
+- 打包消费端 Node 22.21.1/npm 与 Bun 1.4.2 实际通过；固定 Bun 1.4.2 完整集成 exit 0/null、399.152s。
+- 这仅证明 native build/install；公开 preview 附件、真实 OS 挂载（macOS NFS / Linux FUSE）、live Gateway 与正式发布仍未完成。历史附件与失败证据保持不变。

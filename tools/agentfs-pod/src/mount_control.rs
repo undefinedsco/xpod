@@ -209,13 +209,13 @@ fn read_owner(directory: &Path) -> Result<Owner> {
     Ok(owner)
 }
 fn ownership_unchanged(actual: &Owner, expected: &Owner) -> bool {
-    // Immutable binding is what an actual reader must attest. `record` (the
-    // file inode) and `closed` legitimately advance under atomic same-owner
-    // replacement, so they are not part of the identity comparison.
-    let mut actual = actual.clone();
-    actual.record = expected.record;
-    actual.closed = expected.closed.clone();
-    actual == *expected
+    // `verify_owned_after` holds the owner mutex across the clone and the disk
+    // read, so no legitimate same-owner replacement can advance `record` (the
+    // marker inode) or `closed` (the terminal proof) inside that window. The
+    // full identity - including both - must therefore be exactly equal. Any
+    // difference is a foreign same-binding replacement and fails closed; the
+    // previous field-slack comparison silently accepted external record swaps.
+    actual == expected
 }
 fn recorded_target(owner: &Owner) -> Result<PathBuf> {
     if owner.target.contains(&0) || owner.target.split(|byte| *byte == b'/').any(|part| part == b"." || part == b"..") {
@@ -698,6 +698,7 @@ mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Command, Stdio};
+    use std::sync::Barrier;
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     struct Fixture { session: PathBuf, target: PathBuf }
@@ -843,6 +844,43 @@ mod tests {
     }
 
     #[test]
+    fn foreign_record_inode_substitution_between_clone_and_disk_read_fails_closed() {
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+        let identity = fixture.identity();
+        control.bind_identity(&identity).unwrap();
+        // A same-binding external replacement advances only the marker inode
+        // (`record`). With the owner mutex spanning clone/read that is foreign,
+        // and strict full-identity comparison must reject it - the field-slack
+        // comparison accepted it.
+        let result = control.verify_owned_after(|| {
+            let owner = read_owner(&control.directory).unwrap();
+            write_owner_atomic(&control.directory, &owner);
+        });
+        assert!(result.unwrap_err().to_string().contains("runtime ownership changed"));
+        clean_fixture_runtime(&control);
+    }
+
+    #[test]
+    fn foreign_closed_proof_injection_between_clone_and_disk_read_fails_closed() {
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+        let identity = fixture.identity();
+        control.bind_identity(&identity).unwrap();
+        // A same-binding external replacement injects a terminal `closed`
+        // proof. Strict full-identity comparison must reject it rather than
+        // accept the foreign record.
+        let result = control.verify_owned_after(|| {
+            let mut owner = read_owner(&control.directory).unwrap();
+            owner.closed = Some(Closed { pid: 4242, actual_exit: 0, actual_signal: None,
+                binding: owner.binding.clone().unwrap(), cleanup_complete: true });
+            write_owner_atomic(&control.directory, &owner);
+        });
+        assert!(result.unwrap_err().to_string().contains("runtime ownership changed"));
+        clean_fixture_runtime(&control);
+    }
+
+    #[test]
     fn legitimate_same_owner_atomic_update_does_not_false_fail_ownership() {
         let fixture = Fixture::new();
         let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
@@ -858,6 +896,94 @@ mod tests {
         assert_eq!(after.binding, before.binding);
         assert_eq!(after.nonce, before.nonce);
         assert_ne!(after.record, before.record, "atomic replacement must change the record inode");
+        clean_fixture_runtime(&control);
+    }
+
+    #[test]
+    fn concurrent_authorized_writer_is_serialized_by_owner_mutex_against_reader() {
+        // A genuine authorized same-owner writer must be *excluded* while a
+        // reader holds the owner mutex across clone/read, and the reader must
+        // observe the unchanged disk record - all without the reader ever
+        // waiting on writer completion while the guard is held (the previous
+        // fixture waited on a writer that could only finish after that same
+        // guard, a deterministic deadlock).
+        use std::sync::mpsc;
+        let fixture = Fixture::new();
+        let control = Arc::new(RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap());
+        let identity = fixture.identity();
+        control.bind_identity(&identity).unwrap();
+        let before = control.verify_owned().unwrap();
+        let record_path = control.directory.join(RECORD);
+        // Keep the pre-writer inode referenced so the final inode-advance
+        // assertion can never be satisfied by inode-number reuse.
+        let original_record = open_private(&record_path).unwrap();
+        let entered = Arc::new(Barrier::new(2));
+        let (attempt_tx, attempt_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let writer_control = control.clone();
+        let writer_before = before.clone();
+        let writer = std::thread::spawn(move || {
+            entered.wait();
+            // The reader already holds the owner mutex. A real authorized writer
+            // takes that same mutex inside store_owner_before_rename, so it must
+            // observe WouldBlock here; only after the reader releases the guard
+            // may it proceed. The WouldBlock proof is sent *before* the blocking
+            // store_owner, so the reader can safely consume it without waiting
+            // on writer completion.
+            match writer_control.owner.try_lock() {
+                Err(std::sync::TryLockError::WouldBlock) => {},
+                Ok(_) => panic!("reader owner guard must exclude the authorized writer"),
+                Err(std::sync::TryLockError::Poisoned(_)) => panic!("owner mutex poisoned"),
+            }
+            attempt_tx.send(()).unwrap();
+            writer_control.store_owner(writer_before).unwrap();
+            done_tx.send(()).unwrap();
+        });
+        let result = control.verify_owned_after(|| {
+            entered.wait();
+            // Bounded wait for the WouldBlock attempt only; never the writer's
+            // completion or join while the guard is held.
+            attempt_rx.recv_timeout(Duration::from_secs(5))
+                .expect("writer must prove the owner guard blocks it");
+        });
+        assert!(result.is_ok(), "the guarded read must succeed while the writer is excluded");
+        // Guard released. Only now may the writer finish.
+        done_rx.recv_timeout(Duration::from_secs(5)).expect("writer must complete after the guard release");
+        writer.join().unwrap();
+        let actual = control.verify_owned().unwrap();
+        assert_eq!(actual.binding, before.binding);
+        assert_eq!(actual.nonce, before.nonce);
+        assert_ne!(actual.record, before.record, "the authorized writer then advances the record inode");
+        drop(original_record);
+        clean_fixture_runtime(&control);
+    }
+
+    #[test]
+    fn concurrent_authorized_writer_first_is_observed_by_later_reader() {
+        // Inverse ordering: an authorized writer takes the owner mutex and
+        // completes first; the next reader must observe the actual disk record,
+        // never a stale expected clone.
+        let fixture = Fixture::new();
+        let control = Arc::new(RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap());
+        let identity = fixture.identity();
+        control.bind_identity(&identity).unwrap();
+        let before = control.verify_owned().unwrap();
+        let record_path = control.directory.join(RECORD);
+        let original_record = open_private(&record_path).unwrap();
+        let writer_control = control.clone();
+        let writer_before = before.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let writer = std::thread::spawn(move || {
+            writer_control.store_owner(writer_before).unwrap();
+            done_tx.send(()).unwrap();
+        });
+        done_rx.recv_timeout(Duration::from_secs(5)).expect("writer must complete");
+        writer.join().unwrap();
+        let after = control.verify_owned().unwrap();
+        assert_eq!(after.binding, before.binding);
+        assert_eq!(after.nonce, before.nonce);
+        assert_ne!(after.record, before.record, "writer-first must advance the record inode before the later read");
+        drop(original_record);
         clean_fixture_runtime(&control);
     }
 
@@ -884,10 +1010,380 @@ mod tests {
     #[ignore = "owned subprocess fixture, invoked only by stale-lease test"]
     fn lease_child() {
         let session = PathBuf::from(std::env::var_os("XPOD_TEST_NFS_CONTROL_SESSION").unwrap());
+        if std::env::var_os("XPOD_TEST_NFS_LEASE_INHERIT").is_some() {
+            // Isolated subprocess-owned fork: the sole helper process holds the
+            // exact original lease open file description, never a direct fork
+            // inside the multithreaded main test process.
+            lease_inherit_fixture(&session);
+            return;
+        }
         let _control = RuntimeControl::acquire(&session, &session.join("target")).unwrap();
         let mut ready = OpenOptions::new().write(true).create_new(true).mode(0o600).open(session.join("ready")).unwrap();
         ready.write_all(b"ready").unwrap(); ready.sync_all().unwrap();
-        loop { std::thread::park(); }
+        // Controlled release barrier: the parent may write one byte on this
+        // child's stdin to request a clean exit, so the observed lease release
+        // is caused by the holder itself rather than by a signal. The
+        // kill-based fixtures configure stdin to null, so the read returns EOF
+        // and the child parks until they actually kill it.
+        let mut byte = [0u8; 1];
+        match std::io::stdin().read_exact(&mut byte) {
+            Ok(()) => {},
+            Err(_) => loop { std::thread::park(); },
+        }
+    }
+
+    /// Truthful outcome of one bounded, checked `WNOHANG` reap of an exact
+    /// child. `Reaped` carries the raw status; `ChildGone` is a kernel-confirmed
+    /// `ECHILD` (already reaped / not our child); `Unresolved` means the child
+    /// was still running at the deadline; `Error` is any other errno. Only
+    /// `Reaped` yields a status and only `Reaped`/`ChildGone` prove that no
+    /// unreaped owned child remains.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ReapOutcome {
+        Reaped(libc::c_int),
+        ChildGone,
+        Unresolved,
+        Error(libc::c_int),
+    }
+
+    /// The one checked, finite exact-child reap. Retries only `EINTR`; any other
+    /// negative `waitpid` result is reported truthfully instead of being treated
+    /// as success or as an absent process. It never issues a blocking
+    /// `waitpid(pid, 0)`, so no caller can block past `deadline`.
+    fn waitpid_outcome(pid: libc::pid_t, deadline: Instant) -> ReapOutcome {
+        loop {
+            let mut status: libc::c_int = 0;
+            let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            if waited == pid { return ReapOutcome::Reaped(status); }
+            if waited == 0 {
+                if Instant::now() >= deadline { return ReapOutcome::Unresolved; }
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if errno == libc::EINTR {
+                // The finite deadline bounds every continuing path, including an
+                // EINTR retry, so a signal storm cannot loop past the deadline.
+                // Any exact-child status already returned above is preserved.
+                if Instant::now() >= deadline { return ReapOutcome::Unresolved; }
+                continue;
+            }
+            if errno == libc::ECHILD { return ReapOutcome::ChildGone; }
+            return ReapOutcome::Error(errno);
+        }
+    }
+
+    /// Kernel proof of process absence: only `ESRCH` proves the process is gone.
+    /// A successful probe or `EPERM` proves it is still present; any other errno
+    /// is inconclusive and reported as `None`, never as absent.
+    fn process_absent(pid: libc::pid_t) -> Option<bool> {
+        if unsafe { libc::kill(pid, 0) } == 0 { return Some(false); }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ESRCH) => Some(true),
+            Some(libc::EPERM) => Some(false),
+            _ => None,
+        }
+    }
+
+    struct CleanupReport {
+        outcome: ReapOutcome,
+        kill_result: libc::c_int,
+        kill_errno: Option<libc::c_int>,
+        absent: Option<bool>,
+    }
+
+    /// Owns the forked helper child PID and the two parent pipe ends created
+    /// immediately after a successful `fork`. Every early assert/poll/read/probe
+    /// failure and the deliberate pre-release failure unwind through this
+    /// guard's `Drop`: it closes the owned descriptors and performs one bounded
+    /// `SIGKILL` + checked exact-child reap. `reaped` is set only after the exact
+    /// pid is reaped or kernel-confirmed absent, so an unresolved child is never
+    /// silently certified as cleaned up.
+    struct LeaseChildGuard {
+        pid: libc::pid_t,
+        ack_read: Option<libc::c_int>,
+        release_write: Option<libc::c_int>,
+        reaped: bool,
+        proof: Option<(PathBuf, &'static str)>,
+    }
+
+    impl LeaseChildGuard {
+        fn new(pid: libc::pid_t, ack_read: libc::c_int, release_write: libc::c_int) -> Self {
+            Self { pid, ack_read: Some(ack_read), release_write: Some(release_write), reaped: false, proof: None }
+        }
+
+        fn ack_fd(&self) -> libc::c_int { self.ack_read.unwrap_or(-1) }
+
+        fn close_ack(&mut self) {
+            if let Some(fd) = self.ack_read.take() { unsafe { libc::close(fd); } }
+        }
+
+        fn close_release(&mut self) {
+            if let Some(fd) = self.release_write.take() { unsafe { libc::close(fd); } }
+        }
+
+        fn send_release(&mut self) -> bool {
+            match self.release_write {
+                Some(fd) => { let go: [u8; 1] = [b'R']; unsafe { libc::write(fd, go.as_ptr().cast(), 1) == 1 } }
+                None => false,
+            }
+        }
+
+        /// Record that this guard's own `Drop` must publish the checked cleanup
+        /// proof to `path` under `reason`.
+        fn arm_proof(&mut self, path: PathBuf, reason: &'static str) { self.proof = Some((path, reason)); }
+
+        /// The shared cleanup used by every early-error branch (via `Drop`) and
+        /// by the bounded released-child escalation: close owned descriptors,
+        /// bounded `SIGKILL`, then the one checked exact-child reap. `reaped` is
+        /// only set on `Reaped`/`ChildGone`.
+        fn cleanup_pre_release(&mut self, _reason: &str) -> CleanupReport {
+            self.close_ack();
+            self.close_release();
+            self.bounded_kill_reap(Instant::now() + Duration::from_secs(5))
+        }
+
+        fn bounded_kill_reap(&mut self, deadline: Instant) -> CleanupReport {
+            let kill_result = unsafe { libc::kill(self.pid, libc::SIGKILL) };
+            let kill_errno = if kill_result == 0 { None } else { std::io::Error::last_os_error().raw_os_error() };
+            let outcome = waitpid_outcome(self.pid, deadline);
+            if matches!(outcome, ReapOutcome::Reaped(_) | ReapOutcome::ChildGone) { self.reaped = true; }
+            let absent = process_absent(self.pid);
+            CleanupReport { outcome, kill_result, kill_errno, absent }
+        }
+
+        /// Bounded `WNOHANG` reap of the released child. If it does not close
+        /// within the deadline this escalates once to the shared bounded
+        /// kill/reap and panics - there is no unbounded blocking fallback.
+        fn reap_released(&mut self) -> libc::c_int {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            match waitpid_outcome(self.pid, deadline) {
+                ReapOutcome::Reaped(status) => { self.reaped = true; status }
+                ReapOutcome::Unresolved => {
+                    let report = self.bounded_kill_reap(Instant::now() + Duration::from_secs(5));
+                    match report.outcome {
+                        ReapOutcome::Unresolved =>
+                            panic!("inherited-lease child still unresolved after bounded kill/reap"),
+                        ReapOutcome::Error(errno) =>
+                            panic!("inherited-lease child reap failed with errno {errno}"),
+                        _ => panic!("inherited-lease child did not close on explicit release"),
+                    }
+                }
+                ReapOutcome::ChildGone =>
+                    panic!("released inherited-lease child vanished without a waitable status (ECHILD)"),
+                ReapOutcome::Error(errno) =>
+                    panic!("released inherited-lease child reap failed with errno {errno}"),
+            }
+        }
+
+        /// Publish the actual checked cleanup evidence. Never fabricates a
+        /// status: `reapedActualPid` is true only for a real `Reaped` outcome and
+        /// `absentAfterReap` is the ESRCH-only kernel proof. Errors are swallowed
+        /// because this runs during unwind.
+        fn write_proof(&self, path: &Path, reason: &str, report: &CleanupReport) {
+            let (reap, waited, status) = match report.outcome {
+                ReapOutcome::Reaped(raw) => ("reaped", serde_json::Value::from(self.pid as i64), serde_json::Value::from(raw)),
+                ReapOutcome::ChildGone => ("child-gone", serde_json::Value::from(0), serde_json::Value::Null),
+                ReapOutcome::Unresolved => ("unresolved", serde_json::Value::from(0), serde_json::Value::Null),
+                ReapOutcome::Error(errno) => ("error", serde_json::Value::from(0), serde_json::Value::from(errno)),
+            };
+            let proof = serde_json::json!({
+                "reason": reason,
+                "cleanupVia": "guard-drop",
+                "childPid": self.pid,
+                "ackClosed": self.ack_read.is_none(),
+                "releaseClosed": self.release_write.is_none(),
+                "killResult": report.kill_result,
+                "killErrno": report.kill_errno,
+                "reap": reap,
+                "waitedPid": waited,
+                "rawStatus": status,
+                "reapedActualPid": matches!(report.outcome, ReapOutcome::Reaped(_)),
+                "absentAfterReap": report.absent,
+            });
+            if let Ok(bytes) = serde_json::to_vec_pretty(&proof) {
+                let _ = OpenOptions::new().write(true).create_new(true).mode(0o600)
+                    .open(path)
+                    .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()));
+            }
+        }
+    }
+
+    impl Drop for LeaseChildGuard {
+        fn drop(&mut self) {
+            self.close_ack();
+            self.close_release();
+            if self.reaped { return; }
+            // Best-effort bounded cleanup through the shared path. Drop must
+            // never panic (a panic while already unwinding aborts the process)
+            // and must never silently certify a cleanup it could not prove; the
+            // proof records the truthful outcome for the caller's assertions.
+            let report = self.cleanup_pre_release("guard drop before release");
+            if let Some((path, reason)) = self.proof.take() {
+                self.write_proof(&path, reason, &report);
+            }
+        }
+    }
+
+    /// Owns an outer spawned helper process so an early polling/assertion
+    /// failure can never orphan it: `Drop` bounded-kills and reaps the exact
+    /// child when the test has not already performed the checked wait.
+    struct OwnedHelper {
+        child: Option<std::process::Child>,
+        reaped: bool,
+    }
+    impl OwnedHelper {
+        fn new(child: std::process::Child) -> Self { Self { child: Some(child), reaped: false } }
+
+        fn kill_and_reap(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                let pid = child.id() as libc::pid_t;
+                let _ = child.kill();
+                // Reuse the shared finite checked exact-child reap instead of an
+                // unbounded ignored `wait`. `reaped` is set only on an actual
+                // observed exit of this exact child; ECHILD/unresolved/error
+                // never certify a wait, and Drop stays finite and non-panicking.
+                let deadline = Instant::now() + Duration::from_secs(5);
+                if matches!(waitpid_outcome(pid, deadline), ReapOutcome::Reaped(_)) {
+                    self.reaped = true;
+                }
+            }
+        }
+
+        fn wait_bounded(&mut self, deadline: Instant) -> std::process::ExitStatus {
+            loop {
+                match self.child.as_mut().expect("owned helper present").try_wait() {
+                    Ok(Some(status)) => { self.reaped = true; return status; }
+                    Ok(None) => {
+                        if Instant::now() >= deadline {
+                            self.kill_and_reap();
+                            panic!("owned helper exceeded its bounded deadline");
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(error) => {
+                        self.kill_and_reap();
+                        panic!("owned helper try_wait failed: {error}");
+                    }
+                }
+            }
+        }
+    }
+    impl Drop for OwnedHelper {
+        fn drop(&mut self) {
+            if !self.reaped { self.kill_and_reap(); }
+        }
+    }
+
+    /// Force a genuine pre-release panic so the cleanup runs through
+    /// `LeaseChildGuard::drop` - the same path every early assert/poll/read
+    /// failure takes - instead of an explicit cleanup that would disarm Drop.
+    /// `guard` is moved into the panicking closure, so its `Drop` performs the
+    /// checked bounded kill/reap and writes `lease-cleanup-proof.json`. This
+    /// helper then removes the known-owned private socket resources by recorded
+    /// identity and folds that evidence into the same proof before diverging.
+    fn fail_pre_release_through_drop(mut guard: LeaseChildGuard, session: &Path, owner: &Owner) -> ! {
+        let proof_path = session.join("lease-cleanup-proof.json");
+        guard.arm_proof(proof_path.clone(), "deliberate pre-release failure");
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _held = guard; // moved in so the real panic unwinds through its Drop
+            panic!("deliberate pre-release failure: unwinding through LeaseChildGuard Drop");
+        }));
+        assert!(unwound.is_err(), "the deliberate pre-release failure must unwind through Drop");
+        let socket_dir = socket_directory(owner).unwrap();
+        remove_socket_resources(owner).unwrap();
+        let mut proof: serde_json::Value = serde_json::from_slice(&fs::read(&proof_path).unwrap()).unwrap();
+        proof["knownOwnedSocketCleanup"] = serde_json::json!({
+            "socketDirectory": socket_dir.to_string_lossy(),
+            "socketDirectoryRemoved": !socket_dir.exists(),
+        });
+        let bytes = serde_json::to_vec_pretty(&proof).unwrap();
+        let mut receipt = OpenOptions::new().write(true).truncate(true).open(&proof_path).unwrap();
+        receipt.write_all(&bytes).unwrap();
+        receipt.sync_all().unwrap();
+        panic!("deliberate pre-release failure helper exit after known-owned socket cleanup");
+    }
+
+    /// Sole-owner inheritance fixture, run only inside the ignored helper
+    /// subprocess. The helper acquires the one original RuntimeControl (the
+    /// exact lease open file description) and then forks. The child inherits
+    /// that description (CLOEXEC only processes exec, never fork) and performs
+    /// only async-signal-safe libc calls; it never independently acquires or
+    /// opens a second lease description. After the child ACKs, the helper
+    /// *drops* the original control - closing the original descriptor, no
+    /// `LOCK_UN` - while the child's shared description keeps the exclusive
+    /// lock. A fresh independent `EX|NB` probe must then fail. The helper sends
+    /// an explicit release; the child closes the inherited descriptor and
+    /// exits; the helper uses a bounded `WNOHANG` reap with an explicit
+    /// failure kill and actual wait, after which a fresh probe succeeds. Every
+    /// pre-release error path is owned by `LeaseChildGuard`.
+    fn lease_inherit_fixture(session: &Path) {
+        let control = RuntimeControl::acquire(session, &session.join("target")).unwrap();
+        let owner = control.verify_owned().unwrap();
+        let record_path = control.directory.join(RECORD);
+        let lease_path = control.directory.join(LEASE);
+        let lease_fd = control.lease.as_raw_fd();
+        let failure_mode = std::env::var_os("XPOD_TEST_NFS_LEASE_FAIL_BEFORE_RELEASE").is_some();
+        let mut ack = [0i32; 2];
+        let mut release = [0i32; 2];
+        assert_eq!(unsafe { libc::pipe(ack.as_mut_ptr()) }, 0, "ack pipe");
+        assert_eq!(unsafe { libc::pipe(release.as_mut_ptr()) }, 0, "release pipe");
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            // Child: only async-signal-safe libc read/write/close/_exit after
+            // fork. The inherited descriptor carries the exclusive flock; the
+            // child holds it until the explicit release.
+            unsafe {
+                libc::close(ack[0]);
+                libc::close(release[1]);
+                let ready: [u8; 1] = [b'A'];
+                libc::write(ack[1], ready.as_ptr().cast(), 1);
+                let mut byte = [0u8; 1];
+                libc::read(release[0], byte.as_mut_ptr().cast(), 1);
+                // Closing the inherited shared description is the only release;
+                // no LOCK_UN is ever issued.
+                libc::close(lease_fd);
+                libc::_exit(0);
+            }
+        }
+        unsafe { libc::close(ack[1]); libc::close(release[0]); }
+        // The guard is created immediately after a successful fork: it owns the
+        // exact child pid and both parent pipe ends for the rest of the fixture.
+        let mut guard = LeaseChildGuard::new(pid, ack[0], release[1]);
+        // Bounded wait for the child ACK through the guard-owned descriptor.
+        let mut descriptor = libc::pollfd { fd: guard.ack_fd(), events: libc::POLLIN, revents: 0 };
+        let polled = unsafe { libc::poll(&mut descriptor, 1, 5000) };
+        assert!(polled > 0, "child must ACK the inherited lease description");
+        let mut byte = [0u8; 1];
+        assert_eq!(unsafe { libc::read(guard.ack_fd(), byte.as_mut_ptr().cast(), 1) }, 1);
+        guard.close_ack();
+        if failure_mode {
+            fail_pre_release_through_drop(guard, session, &owner);
+        }
+        // Drop the ORIGINAL control: close the original descriptor (not
+        // LOCK_UN). The forked child still references the same description.
+        drop(control);
+        let probe = open_private(&lease_path).unwrap();
+        let held = unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_ne!(held, 0, "the child's inherited shared description must still hold the lease");
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        assert!(errno == Some(libc::EWOULDBLOCK) || errno == Some(libc::EAGAIN),
+                "fresh independent probe must be EAGAIN/EWOULDBLOCK, got {errno:?}");
+        // Explicit release: the child closes the inherited description, which
+        // drops the last reference and frees the kernel lock.
+        assert!(guard.send_release(), "release byte must be written to the child");
+        guard.close_release();
+        let status = guard.reap_released();
+        assert_eq!(std::process::ExitStatus::from_raw(status).code(), Some(0),
+                   "released inherited-lease child must exit 0, status={status}");
+        // Last reference gone: the fresh probe now succeeds.
+        assert_eq!(unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0,
+                   "lease must be free after the child closes the inherited description");
+        unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_UN); }
+        drop(probe);
+        remove_socket_resources(&owner).unwrap();
+        remove_known(&record_path, owner.record, false).unwrap();
     }
 
     #[test]
@@ -933,6 +1429,62 @@ mod tests {
     }
 
     #[test]
+    fn inherited_original_lease_description_survives_helper_close_until_child_release() {
+        // The CONFIRMED deadlock, corrected as a genuinely isolated
+        // subprocess-owned fixture. The ignored helper runs the sole
+        // RuntimeControl acquisition and the fork internally; this outer test
+        // never forks a live lease descriptor itself (the removed fixture did,
+        // in a multithreaded process, and its LOCK_UN-on-a-second-description
+        // never released the original lock). The helper proves the exact
+        // causality: child inherits the original open description, helper
+        // *closes* its own original descriptor (no LOCK_UN), a fresh EAGAIN
+        // window exists, the explicit release through the child closes the
+        // last reference, and only then does a fresh probe succeed.
+        let fixture = Fixture::new();
+        let mut helper = OwnedHelper::new(Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "mount_control::tests::lease_child", "--nocapture"])
+            .env("XPOD_TEST_NFS_CONTROL_SESSION", &fixture.session)
+            .env("XPOD_TEST_NFS_LEASE_INHERIT", "1")
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .spawn().unwrap());
+        // Bounded observation of the owned helper; the guard kills/reaps it on
+        // any early polling/assertion failure so it can never be orphaned.
+        let status = helper.wait_bounded(Instant::now() + Duration::from_secs(30));
+        assert!(status.success(), "isolated lease-inheritance helper failed: {status:?}");
+        // Genuine pre-release panic regression: the helper is forced to panic
+        // before the controlled release, so the cleanup runs through the guard's
+        // own `Drop` (never an explicit pre-panic call). The proof is read back
+        // here and the helper itself must exit nonzero. The actual negative ->
+        // positive Rust child-absence run stays bound to the official remote
+        // unfiltered inventory.
+        let failing = Fixture::new();
+        let mut failed = OwnedHelper::new(Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "mount_control::tests::lease_child", "--nocapture"])
+            .env("XPOD_TEST_NFS_CONTROL_SESSION", &failing.session)
+            .env("XPOD_TEST_NFS_LEASE_INHERIT", "1")
+            .env("XPOD_TEST_NFS_LEASE_FAIL_BEFORE_RELEASE", "1")
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .spawn().unwrap());
+        let fail_status = failed.wait_bounded(Instant::now() + Duration::from_secs(30));
+        assert!(!fail_status.success(), "pre-release failure must fail the helper: {fail_status:?}");
+        let proof: serde_json::Value = serde_json::from_slice(
+            &fs::read(failing.session.join("lease-cleanup-proof.json")).unwrap()).unwrap();
+        let child_pid = proof["childPid"].as_i64().unwrap();
+        assert_eq!(proof["cleanupVia"].as_str(), Some("guard-drop"),
+                   "cleanup must run through the guard Drop, not an explicit pre-panic call");
+        assert_eq!(proof["waitedPid"].as_i64(), Some(child_pid), "Drop must reap the exact child pid");
+        assert_eq!(proof["reapedActualPid"].as_bool(), Some(true));
+        assert_eq!(proof["ackClosed"].as_bool(), Some(true), "owned ack fd must be closed");
+        assert_eq!(proof["releaseClosed"].as_bool(), Some(true), "owned release fd must be closed");
+        assert_eq!(proof["absentAfterReap"].as_bool(), Some(true),
+                   "only ESRCH-confirmed absence proves no owned child remains");
+        assert_eq!(proof["knownOwnedSocketCleanup"]["socketDirectoryRemoved"].as_bool(), Some(true),
+                   "known-owned private socket directory must be removed");
+        let socket_directory = PathBuf::from(proof["knownOwnedSocketCleanup"]["socketDirectory"].as_str().unwrap());
+        assert!(!socket_directory.exists(), "recorded private socket directory must actually be gone");
+    }
+
+    #[test]
     fn live_lease_holder_makes_closed_proof_observation_return_false_until_release() {
         // Controlled ACK lease-holder causality: a real child holds the lease
         // (a separate process, an actual acquired RuntimeControl), so the
@@ -963,53 +1515,6 @@ mod tests {
         let owner = read_owner(&fixture.session.join(DIRECTORY)).unwrap();
         remove_socket_resources(&owner).unwrap();
         fs::remove_file(fixture.session.join(DIRECTORY).join(RECORD)).unwrap();
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn forked_child_inheriting_cloexec_lease_fd_holds_flock_until_exec() {
-        // Controlled fork/descriptor fixture for the ACK lease window: fork(2)
-        // does not itself process CLOEXEC, so a forked child that has not yet
-        // exec'd inherits the live lease fd and the exclusive flock it carries.
-        // This models the actual user-space window without claiming any
-        // particular spawn fast path. The child holds the lock for a bounded
-        // interval and then exits; the parent observes the inherited holder.
-        let fixture = Fixture::new();
-        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
-        let lease = open_private(&control.directory.join(LEASE)).unwrap();
-        assert!(unsafe { libc::fcntl(lease.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC != 0,
-                "runtime lease fd must be CLOEXEC");
-        // Parent releases its own exclusive lock so the child is the sole holder.
-        unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_UN); }
-        let pid = unsafe { libc::fork() };
-        assert!(pid >= 0, "fork failed");
-        if pid == 0 {
-            // Child: take the inherited lock and hold it without exec. Only
-            // async-signal-safe calls run after fork in this multithreaded
-            // process, so nanosleep (not thread::sleep) bounds the window.
-            if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX) } != 0 {
-                unsafe { libc::_exit(2); }
-            }
-            let hold = libc::timespec { tv_sec: 0, tv_nsec: 400_000_000 };
-            unsafe { libc::nanosleep(&hold, std::ptr::null_mut()); }
-            unsafe { libc::_exit(0); }
-        }
-        // Parent observes that the inherited exclusive lock is held by the fork.
-        let probe = open_private(&control.directory.join(LEASE)).unwrap();
-        let mut observed_held = false;
-        for _ in 0..200 {
-            if unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-                observed_held = true;
-                break;
-            }
-            unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_UN); }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let mut status: libc::c_int = 0;
-        unsafe { libc::waitpid(pid, &mut status, 0); }
-        drop(probe); drop(lease);
-        clean_fixture_runtime(&control);
-        assert!(observed_held, "forked child must hold the inherited CLOEXEC lease lock until exec");
     }
 
     async fn send_request(owner: &Owner, start: bool) -> Reply {
@@ -1250,12 +1755,13 @@ mod tests {
         clean_fixture_runtime(&control);
     }
     fn spawn_barrier_child(exit: u8) -> Result<(CommandObservation, std::os::unix::net::UnixStream)> {
-        // The barrier reader is redirected through stdin instead of a pre_exec
-        // fd3 dup. Spawning without a pre_exec hook avoids the user-space
-        // fork-before-exec window entirely (whatever fast path the platform
-        // chooses); the pair stays CLOEXEC, so unrelated children cannot
-        // inherit the writer and delay EOF. No unconditional posix_spawn claim
-        // is made here: only the absence of our own pre_exec hook.
+        // The barrier reader is redirected through stdin. This shared
+        // initializer installs no application `pre_exec` hook, so it adds no
+        // fork-before-exec window of its own. `CLOEXEC` on the pair only
+        // guarantees the writer is closed across `exec`; it does not, on its
+        // own, describe a fork that has not yet reached exec. The exact spawn
+        // backend (posix_spawn vs fork+exec) is `std`'s conditional choice and
+        // is neither selected nor claimed here.
         let (reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
         let owned: std::os::fd::OwnedFd = reader.into();
         let mut command = Command::new("/bin/sh"); command.args(["-c", &format!("read barrier; exit {exit}")]);

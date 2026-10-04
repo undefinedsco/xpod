@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
@@ -50,7 +51,7 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_latest_inventory_accepts_only_complete_bound_regressions(self):
-        text = 'test result: ok. 64 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
+        text = 'test result: ok. 68 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
         text += 'test mount::tests::legacy_output_exceeds_observation_budget ... ignored\n'
         text += 'test mount_control::tests::lease_child ... ignored\n'
         for name in ['closed_marker_is_read_only_after_actual_lease_release',
@@ -60,15 +61,37 @@ class SupervisorTests(unittest.TestCase):
                      'actual_store_owner_temp_before_rename_is_tolerated_by_live_readers',
                      'legitimate_same_owner_atomic_update_does_not_false_fail_ownership',
                      'controlled_foreign_binding_update_between_clone_and_disk_read_fails_closed',
+                     'foreign_record_inode_substitution_between_clone_and_disk_read_fails_closed',
+                     'foreign_closed_proof_injection_between_clone_and_disk_read_fails_closed',
+                     'concurrent_authorized_writer_is_serialized_by_owner_mutex_against_reader',
+                     'concurrent_authorized_writer_first_is_observed_by_later_reader',
+                     'inherited_original_lease_description_survives_helper_close_until_child_release',
                      'live_lease_holder_makes_closed_proof_observation_return_false_until_release']:
             text += f'test mount_control::tests::{name} ... ok\n'
         a.check_tests(text)
-        for invalid in [text.replace('64 passed', '63 passed'),
+        for invalid in [text.replace('68 passed', '67 passed'),
                         text.replace('0 filtered out', '2 filtered out'),
                         text.replace('closed_marker_is_read_only_after_actual_lease_release ... ok',
                                      'closed_marker_is_read_only_after_actual_lease_release ... FAILED')]:
             with self.assertRaises(RuntimeError):
                 a.check_tests(invalid)
+
+    def test_bounded_gate_declares_a_finite_stage_deadline(self):
+        # Every main-chain stage has an owned, bounded producer deadline; an
+        # undeclared stage fails closed rather than inheriting run_stage's None.
+        for name, seconds in a.STAGE_TIMEOUTS.items():
+            self.assertIsInstance(seconds, int)
+            self.assertGreater(seconds, 0)
+        self.assertIn('rebuild', a.STAGE_TIMEOUTS)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(a, 'run_gate') as gate:
+                gate.return_value = {'exit': 0}
+                a.bounded_gate('rebuild', ['true'], Path(directory), ROOT)
+                self.assertEqual(gate.call_args.kwargs.get('timeout'), a.STAGE_TIMEOUTS['rebuild'])
+                a.bounded_gate('rebuild', ['true'], Path(directory), ROOT, timeout=7)
+                self.assertEqual(gate.call_args.kwargs.get('timeout'), 7)
+            with self.assertRaises(KeyError):
+                a.bounded_gate('undeclared-stage', ['true'], Path(directory), ROOT)
 
     def test_source_snapshot_covers_shared_files_and_path_changes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -224,33 +247,94 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(receipt['exit'], 0)
             self.assertEqual(text.strip(), 'ELF text')
 
-    def test_group_present_withholds_semantic_bytes_and_records_members_before_stop(self):
-        # A producer that leaves a live same-session descendant must not publish
-        # semantic bytes while the owned group is still present. On Linux the
-        # pre-stop PID/PPID/PGID/STATE members are recorded before any signal;
-        # other hosts still prove the withhold + gate failure.
-        linux = sys.platform.startswith('linux')
-        leaked = ("import subprocess, sys; "
-                  "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
-                  "print('Name: GLIBC_2.36'); sys.exit(0)")
-        responder = ("import signal, sys, time; "
-                     "signal.signal(signal.SIGTERM, lambda *_: None); "
-                     "print('Name: GLIBC_2.36'); sys.stdout.flush(); "
-                     "time.sleep(60)")
-        if not linux:
+    def test_group_present_withholds_semantic_bytes_and_closed_raw_is_available(self):
+        # Contract: a producer that leaves a live same-session descendant is a
+        # leak (`owned descendant remained after parent wait`) *regardless* of
+        # whether the supervisor's bounded SIGKILL later resolves the group. The
+        # producer uses an explicit ready/held handshake, so the descendant is
+        # provably live before the parent exits; closure is decided from the
+        # actual post-cleanup observation, never assumed from an unreaped PID1
+        # zombie or a fixed sleep. A producer that genuinely closes its group
+        # must publish its raw bytes.
+        if not sys.platform.startswith('linux'):
             self.skipTest('process-group observation requires Linux /proc')
-        for script in (leaked, responder):
-            with tempfile.TemporaryDirectory() as directory:
-                receipt, text = m.run_stage('leak', [sys.executable, '-c', script], directory, ROOT,
-                                            fresh_bytes=0, stop_bytes=0, poll_seconds=1)
-                self.assertIsNone(text)
-                self.assertFalse(receipt['ownedGroupAbsentAfterWait'])
+        descendant = "import sys, time; sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(600)"
+        leaked = (
+            "import subprocess, sys\n"
+            f"child = subprocess.Popen([sys.executable, '-c', {descendant!r}], stdout=subprocess.PIPE)\n"
+            "assert child.stdout.readline() == b'ready\\n'\n"
+            "print('Name: GLIBC_2.36')\n"
+            "sys.exit(0)\n"
+        )
+        command = [sys.executable, '-c', leaked]
+        with tempfile.TemporaryDirectory() as directory:
+            receipt, text = m.run_stage('leak', command, directory, ROOT,
+                                        fresh_bytes=0, stop_bytes=0, poll_seconds=.01, timeout=10)
+            self.assertEqual(receipt['resourceStop'], 'owned descendant remained after parent wait')
+            self.assertTrue(receipt['ownedGroupMembersBeforeStop'],
+                            'the live descendant must be recorded before any signal is sent')
+            # The recorded pre-stop observation must include at least one
+            # genuinely live member (not a PID1-reparented Z/X residue): the
+            # ready/hold handshake keeps the descendant alive before the parent
+            # exits, so this is the member that proves the leak.
+            self.assertTrue(any(member['state'] not in ('Z', 'X')
+                                for member in receipt['ownedGroupMembersBeforeStop']),
+                            'at least one actual before-stop member must be non-Z/X (live)')
+            member = receipt['ownedGroupMembersBeforeStop'][0]
+            self.assertEqual(set(member), {'pid', 'ppid', 'pgid', 'state'})
+            self.assertEqual(member['pgid'], receipt['pgid'])
+            if receipt['ownedGroupAbsentAfterWait']:
+                # The bounded kill genuinely resolved the group: raw bytes are
+                # now available and hashed, but admission still failed for the
+                # observed live leak. Closing raw must not retroactively accept.
+                self.assertTrue(receipt['rawClosedBeforeHash'])
+                self.assertIsNotNone(receipt['rawSHA256'])
+                self.assertIsNotNone(text)
+                self.assertIn('GLIBC_2.36', text)
+            else:
+                self.assertFalse(receipt['rawClosedBeforeHash'])
                 self.assertIsNone(receipt['rawSHA256'])
-                self.assertIn('owned descendant remained after parent wait', receipt['resourceStop'])
-                self.assertTrue(receipt['ownedGroupMembersBeforeStop'])
-                member = receipt['ownedGroupMembersBeforeStop'][0]
-                self.assertEqual(set(member), {'pid', 'ppid', 'pgid', 'state'})
-                self.assertEqual(member['pgid'], receipt['pgid'])
+                self.assertIsNone(text)
+        # The checked producer gate rejects the same leak regardless of whether
+        # the group's raw bytes happen to be available after cleanup.
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, 'producer failed'):
+                m.run_checked_stage('leak-checked', command, directory, ROOT,
+                                    fresh_bytes=0, stop_bytes=0, poll_seconds=.01, timeout=10)
+            checked = json.loads(Path(directory, 'leak-checked.receipt.json').read_text())
+            self.assertEqual(checked['resourceStop'], 'owned descendant remained after parent wait')
+        with tempfile.TemporaryDirectory() as directory:
+            receipt, text = m.run_stage('closed', [sys.executable, '-c', "print('Name: GLIBC_2.36')"],
+                                        directory, ROOT, fresh_bytes=0, stop_bytes=0, poll_seconds=.01, timeout=10)
+            self.assertIsNone(receipt['resourceStop'])
+            self.assertTrue(receipt['ownedGroupAbsentAfterWait'])
+            self.assertTrue(receipt['rawClosedBeforeHash'])
+            self.assertIsNotNone(receipt['rawSHA256'])
+            self.assertIsNotNone(text)
+            self.assertIn('GLIBC_2.36', text)
+
+    def test_controlled_unresolved_group_observation_withholds_raw(self):
+        # Simulated observer unit: this does NOT prove a real child resists
+        # SIGKILL, nor that Linux /proc reports a live group. It forces the
+        # supervisor to observe an owned group whose existence probe never
+        # clears and verifies raw bytes stay withheld. The real Linux /proc
+        # branch is the separate test above; clocks are stubbed only so the
+        # bounded cleanup loop terminates without a real ten-second wait.
+        ticks = itertools.count(0, 1)
+        member = {'pid': 4242, 'ppid': 1, 'pgid': 4242, 'state': 'S'}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(m, 'group_members', return_value=[member]), \
+                    patch.object(m.os, 'killpg', return_value=None), \
+                    patch.object(m.time, 'monotonic', side_effect=lambda: next(ticks)), \
+                    patch.object(m.time, 'sleep', return_value=None):
+                receipt, text = m.run_stage('unresolved', [sys.executable, '-c', 'pass'],
+                                            directory, ROOT, fresh_bytes=0, stop_bytes=0, poll_seconds=.01)
+        self.assertIsNone(text)
+        self.assertIsNone(receipt['rawSHA256'])
+        self.assertFalse(receipt['rawClosedBeforeHash'])
+        self.assertFalse(receipt['ownedGroupAbsentAfterWait'])
+        self.assertEqual(receipt['resourceStop'], 'owned descendant remained after parent wait')
+        self.assertEqual(receipt['ownedGroupMembersBeforeStop'][0]['pid'], 4242)
 
     def test_failed_producer_retains_raw_and_receipt_without_reuse(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -271,6 +355,44 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(receipt['resourceStop'], 'producer deadline')
             self.assertEqual(receipt['signal'], 15)
             self.assertTrue(receipt['actualWait'])
+
+    def test_lease_helper_early_failure_guard_is_present_in_source(self):
+        # Cheap static gate for the Rust lease helper: no local Cargo or native
+        # test binary is run here. It asserts the required early-failure cleanup
+        # guard, the deliberate pre-release failure mode and the checked
+        # waitpid proof wiring exist in the source. The actual Rust
+        # negative->positive child-absence execution is bound to the remote
+        # unfiltered inventory.
+        text = (ROOT / 'tools/agentfs-pod/src/mount_control.rs').read_text()
+        for required in ['struct LeaseChildGuard',
+                         'impl Drop for LeaseChildGuard',
+                         'fn reap_released',
+                         'fn cleanup_pre_release',
+                         'fn waitpid_outcome',
+                         'enum ReapOutcome',
+                         'fn process_absent',
+                         'libc::ESRCH',
+                         'lease-cleanup-proof.json',
+                         'cleanupVia',
+                         'guard-drop',
+                         'reapedActualPid',
+                         'absentAfterReap',
+                         'knownOwnedSocketCleanup',
+                         'fail_pre_release_through_drop',
+                         'struct OwnedHelper']:
+            self.assertIn(required, text)
+        # The deliberate failure must panic while the guard is still armed so the
+        # cleanup runs through Drop; cleanup_pre_release must not be invoked
+        # explicitly before the panic (that would disarm Drop and skip it).
+        self.assertIn('panic!("deliberate pre-release failure: unwinding through LeaseChildGuard Drop")', text)
+        self.assertNotIn('let proof = guard.cleanup_pre_release', text)
+        self.assertGreaterEqual(text.count('XPOD_TEST_NFS_LEASE_FAIL_BEFORE_RELEASE'), 2,
+                                'the failure mode must be wired into both fixture and regression')
+        # The finite-deadline reap must re-check the deadline on the EINTR retry
+        # path too (no unconditional `continue` that bypasses it), and the owned
+        # helper cleanup must not fall back to an unbounded ignored `wait`.
+        self.assertNotIn('if errno == libc::EINTR { continue; }', text)
+        self.assertNotIn('let _ = child.wait();', text)
 
     def test_workflow_runs_bookworm_under_init_with_canonical_pin(self):
         try:

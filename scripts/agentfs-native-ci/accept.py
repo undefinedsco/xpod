@@ -24,6 +24,34 @@ BOOKWORM_IMAGE = 'rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37
 BOOKWORM_MAX_GLIBC = (2, 36)
 GLIBC_SYMBOL = re.compile(r'GLIBC_(\d+)\.(\d+)')
 
+# Bounded per-stage producer deadlines for the main acceptance chain. The job's
+# 90-minute limit is not an owned-producer deadline: it carries no per-stage
+# group wait/raw-closure receipt, so a wedged stage would only die with the
+# whole job. These are generous multiples of observed stage durations, chosen to
+# fail a hung producer inside the supervisor while preserving every original
+# capacity budget and the full, unfiltered native inventory.
+STAGE_TIMEOUTS = {
+    'bun-extract': 180,
+    'toolchain': 1500,
+    'dependencies': 1500,
+    'workspace-packages': 1200,
+    'upstream': 600,
+    'upstream-checkout': 180,
+    'export': 1200,
+    'verify-source': 900,
+    'rebuild': 3000,
+    'package': 900,
+    'verify-install': 600,
+}
+
+
+def bounded_gate(name, command, evidence, cwd, **kwargs):
+    """run_gate with a declared, bounded per-stage deadline. An undeclared
+    stage name fails closed instead of silently inheriting no timeout."""
+    if 'timeout' not in kwargs:
+        kwargs['timeout'] = STAGE_TIMEOUTS[name]
+    return run_gate(name, command, evidence, cwd, **kwargs)
+
 
 def glibc_requirements(readelf_output):
     return sorted({(int(major), int(minor)) for major, minor in GLIBC_SYMBOL.findall(readelf_output)})
@@ -118,8 +146,8 @@ def assert_status_ready(text, platform_name, helper, expected_pending=None):
 
 def check_tests(text):
     summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out', text)
-    if ('64', '0', '2', '0', '0') not in summaries:
-        raise RuntimeError('Latest full Rust inventory must report 64 passed, two declared ignores, zero filtered (66 total)')
+    if ('68', '0', '2', '0', '0') not in summaries:
+        raise RuntimeError('Latest full Rust inventory must report 68 passed, two declared ignores, zero filtered (70 total)')
     ignored = re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE)
     if set(ignored) != {'mount::tests::legacy_output_exceeds_observation_budget', 'mount_control::tests::lease_child'}:
         raise RuntimeError('Unexpected ignored tests')
@@ -129,6 +157,11 @@ def check_tests(text):
                  'actual_store_owner_temp_before_rename_is_tolerated_by_live_readers',
                  'legitimate_same_owner_atomic_update_does_not_false_fail_ownership',
                  'controlled_foreign_binding_update_between_clone_and_disk_read_fails_closed',
+                 'foreign_record_inode_substitution_between_clone_and_disk_read_fails_closed',
+                 'foreign_closed_proof_injection_between_clone_and_disk_read_fails_closed',
+                 'concurrent_authorized_writer_is_serialized_by_owner_mutex_against_reader',
+                 'concurrent_authorized_writer_first_is_observed_by_later_reader',
+                 'inherited_original_lease_description_survives_helper_close_until_child_release',
                  'live_lease_holder_makes_closed_proof_observation_return_false_until_release']:
         if not re.search(r'^test mount_control::tests::' + test + r' \.\.\. ok$', text, re.MULTILINE):
             raise RuntimeError(f'Missing latest regression: {test}')
@@ -277,7 +310,7 @@ def main():
     base.mkdir(mode=0o700)  # fresh only, never reuse another run's outputs
     evidence = base / 'evidence'
     evidence.mkdir(mode=0o700)
-    gate = lambda name, command, **kw: run_gate(name, command, evidence, root, **kw)
+    gate = lambda name, command, **kw: bounded_gate(name, command, evidence, root, **kw)
     if shutil.disk_usage(base).free < FRESH_BYTES:
         raise RuntimeError('Fresh tool/source preparation requires at least 4 GiB')
     source_before = source_snapshot(root)
@@ -360,7 +393,7 @@ def main():
                  nodeSHA256=sha256(node), hostUname=list(platform.uname()), rustManifestSHA256=RUST_MANIFEST_SHA,
                  bunAssetSHA256=BUN_SHA[host], compiler=receipt['compiler'], nativeReceipt=receipt,
                  bookwormImage=bookworm_image if host == 'linux' else None, runtimeAdmission=runtime,
-                 declaredTests=66, passedTests=64, ignoredTests=2, filteredTests=0,
+                 declaredTests=70, passedTests=68, ignoredTests=2, filteredTests=0,
                  ignoredScope='owned lease subprocess invoked by parent; historical RED intentionally ignored',
                  archiveSHA256=sha256(archives[0]), mountExecuted=False, liveGatewayExecuted=False,
                  publicReleaseReady=False)

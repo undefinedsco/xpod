@@ -47,11 +47,21 @@ async function main() {
   const openidLoad = createRequire(load.resolve('openid-client'));
   assert(openidLoad.resolve('jose').startsWith(`${packageRoot}${path.sep}`), 'openid-client must retain its bundled jose version');
   if (process.versions.bun) {
-    // Bun loads jose's ESM build; compare on one separator so the assertion is about which
-    // build was resolved, not about which OS resolved it.
-    const esmBuild = (resolved) => String(resolved).replace(/\\/gu, '/');
-    assert.match(esmBuild(load.resolve('jose')), /dist\/node\/esm\//);
-    assert.match(esmBuild(openidLoad.resolve('jose')), /dist\/node\/esm\//);
+    // createRequire selects the patched require condition, not the import condition.
+    const cjsBuild = (resolved) => String(resolved).replace(/\\/gu, '/');
+    assert.match(cjsBuild(load.resolve('jose')), /dist\/node\/cjs\//);
+    assert.match(cjsBuild(openidLoad.resolve('jose')), /dist\/node\/cjs\//);
+  }
+  for (const scopedLoad of [load, openidLoad]) {
+    const jose = scopedLoad('jose'); // Must be synchronously loadable by its actual callers.
+    const { publicKey, privateKey } = await jose.generateKeyPair('RS256');
+    const publicJwk = await jose.exportJWK(publicKey);
+    const verificationKey = await jose.importJWK(publicJwk, 'RS256');
+    const token = await new jose.SignJWT({ fixture: 'packaged-auth' })
+      .setProtectedHeader({ alg: 'RS256' }).sign(privateKey);
+    const { payload } = await jose.jwtVerify(token, verificationKey, { algorithms: ['RS256'] });
+    assert.equal(payload.fixture, 'packaged-auth');
+    await assert.rejects(jose.jwtVerify(token, verificationKey, { algorithms: ['ES256'] }));
   }
   const { Session } = load('@inrupt/solid-client-authn-browser');
   const { EVENTS } = load('@inrupt/solid-client-authn-core');

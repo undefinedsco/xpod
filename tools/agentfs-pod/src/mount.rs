@@ -104,9 +104,15 @@ pub(crate) fn spawn_command(command: &mut Command, stage: &'static str) -> Resul
 }
 
 /// Spawn a command that the caller has already configured (for example with a
-/// `Stdio` stdin redirection). The spawn itself performs no `pre_exec` hook, so
-/// it never opens a fork-before-exec window in which an unrelated parallel
-/// child could inherit descriptors.
+/// `Stdio` stdin redirection). This is the single shared spawn initializer.
+///
+/// What is established: this initializer installs no application `pre_exec`
+/// hook, so *this code* introduces no fork-before-exec window of its own. What
+/// is not established: the platform spawn backend. `std` may use `posix_spawn`,
+/// or fall back to `fork`+`exec` when a hook or a non-`posix_spawn`able
+/// configuration requires it. No unconditional "posix_spawn / no
+/// fork-before-exec whatever the platform chooses" claim is made here; the
+/// backend stays conditional runtime behaviour outside this helper.
 pub(crate) fn spawn_configured_command(command: &mut Command, stage: &'static str) -> Result<CommandObservation> {
     command.stdout(Stdio::null()).stderr(Stdio::null());
     let child = command.spawn().with_context(|| format!("{stage} spawn failed"))?;
@@ -115,9 +121,10 @@ pub(crate) fn spawn_configured_command(command: &mut Command, stage: &'static st
 
 #[cfg(test)]
 /// Spawn a command whose stdin is configured by the caller. Shares the one
-/// spawn initialization path; `pre_exec` is never used, so no fork-before-exec
-/// window exists in which a parallel child could inherit the caller's
-/// descriptors.
+/// spawn initialization path. No application `pre_exec` hook is installed, so
+/// this fixture adds no fork-before-exec window of its own; the platform spawn
+/// backend (posix_spawn vs fork+exec) remains `std`'s conditional choice and is
+/// neither selected nor claimed here.
 pub(crate) fn spawn_stdin_command(command: &mut Command, stage: &'static str) -> Result<CommandObservation> {
     spawn_configured_command(command, stage)
 }

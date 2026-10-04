@@ -1,6 +1,13 @@
 # Xpod CLI 挂载引擎选型与交付计划
 
-状态：2026-10-03。AgentFS 是目录 MVP 的唯一产品引擎；Xpod 是总产品，CLI/App 是入口，CSS/API/AFS 是可选能力的设计方向。客户端不内嵌 Bun。已公开的 preview.1 通过旧 RC223 的 macOS/Linux ARM64 实际挂载验收，不能替代新原生 QLever RC。当前整合在 `codex/agentfs-current-release`，已 fast-forward 到最新 `release/0.4.23` 的 `cc08174163d71d5bbbb22e13b0b88078d9649e52`，8 处文本冲突已完成语义合并，0.4.24 最终源码门禁及原始完整集成已通过；下文 `9460a7e` 的绿色记录仅对应当时源码。此前 `ab583de` 基线的兼容代码及诊断边界已通过独立语义审查，GPT‑6.1 Sol 最后修复的 43 项单测和编译门禁通过；首轮原始完整集成失败（Lite 两文件/三测试失败，159 通过/16 跳过）；后续冻结回归的唯一失败为旧 RC 静态测试契约，四项字符串修正后，最终原始完整集成实际退出 0（Lite 162 通过/16 跳过、Full 62 全通过，8,277 覆盖路径前后稳定）；原生客户端内存/崩溃准入、新 native RC 仍待验收。273 秒 PUT 500 未证明解决。发行范围见 [预览记录](xpod-cli-preview-release.md)，当前服务门禁见 [RC 验收](acceptance/rc-qlever.md)。历史记录保留原来源与限制。
+> 当前状态（2026-10-04，账号 B / opencode-go/deepseek-v4.1-flash；本页以下旧段落均为 HISTORICAL）
+> - 当前源码：`codex/agentfs-current-release` HEAD `5ce81c679cf7ba0aab82b277a44b3ea469bcc72d`；native HEAD `8d4983c96e9942b8edeb7912659017d5e98762e4`。已公开的 preview.1 通过旧 RC223 的 macOS/Linux 验收，**不能**替代新 kit5 原生准入。
+> - 原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) darwin+linux 两 ARM runner 串行实际成功；ROOT 19 项独立验收只接受 units/source/install。服务候选 [run 37148085189](https://github.com/undefinedsco/xpod/actions/runs/37148085189) 只发布 exact 镜像 `ghcr.io/undefinedsco/xpod@sha256:fd2ee44323e3412c9b43e4ee31d4d9aeb6b512bb2524e9907c6c66cd50fb8428`，deploy 在 registry-authority 预检前失败，无 Public16/Private17/SealOS。
+> - 实际平台准入（kit5）：macOS NFS 间歇失败（重挂退出 75 `unknown runtime entry retained`）；64/512/1024 MiB 与 SIGKILL 崩溃恢复阶段未通过。Linux Docker `node:22-bookworm-slim` FUSE 因 helper 需 `GLIBC_2.39` + `libssl.so.3/libcrypto.so.3` 而加载失败（bookworm glibc 2.36）。
+> - 实现子代理路由：账号 B 是当前唯一实现者；仅 **CONFIRMED HTTP429** 才转 Sol。旧文“主线使用 GPT‑6.1 Sol”为历史状态。
+> - 存储缓存：远程 bounded clean-body 缓存仍 NOT IMPLEMENTED（仅 dirty blob）；不主张缓存或 99% native。
+
+历史状态（HISTORICAL，2026-10-03）：AgentFS 是目录 MVP 的唯一产品引擎；Xpod 是总产品，CLI/App 是入口，CSS/API/AFS 是可选能力的设计方向。客户端不内嵌 Bun。已公开的 preview.1 通过旧 RC223 的 macOS/Linux ARM64 实际挂载验收，不能替代新原生 QLever RC。当前整合在 `codex/agentfs-current-release`，已 fast-forward 到最新 `release/0.4.23` 的 `cc08174163d71d5bbbb22e13b0b88078d9649e52`，8 处文本冲突已完成语义合并，0.4.24 最终源码门禁及原始完整集成已通过；下文 `9460a7e` 的绿色记录仅对应当时源码。此前 `ab583de` 基线的兼容代码及诊断边界已通过独立语义审查，GPT‑6.1 Sol 最后修复的 43 项单测和编译门禁通过；首轮原始完整集成失败（Lite 两文件/三测试失败，159 通过/16 跳过）；后续冻结回归的唯一失败为旧 RC 静态测试契约，四项字符串修正后，最终原始完整集成实际退出 0（Lite 162 通过/16 跳过、Full 62 全通过，8,277 覆盖路径前后稳定）；原生客户端内存/崩溃准入、新 native RC 仍待验收。273 秒 PUT 500 未证明解决。发行范围见 [预览记录](xpod-cli-preview-release.md)，当前服务门禁见 [RC 验收](acceptance/rc-qlever.md)。历史记录保留原来源与限制。
 
 最新基线与卸载生命周期的服务侧原始完整回归已通过：Lite 162 通过／16 跳过，Full 62 全通过；本轮正常退出 0，见下述最新记录。修后的原生 helper、安装产物与实际挂载仍未完成准入。正常卸载已改为由持有挂载的本地 runtime 管理系统子进程，客户端仅请求与查询结果；断线不取消 flush，只有实际退出 0 加可靠挂载消失才允许退休。六项 CLI 夹具通过。旧 runtime target 的回收守卫已补齐：只有可靠观察为 Absent 才回收，Mounted 或 Unknown 保留；独立源码复审无新增 P1/P2。五项源码与依赖已冻结，新固定补丁源码包导出成功，绑定 21,280 个文件和 340 个 registry 包。第一轮官方隔离重建实际退出 1：libgit2-sys 写入对象文件时 ENOSPC，当时 helper 编译和原生单测尚未进入。源码包与输入保持稳定，失败闭合日志保留；后续 kit4 的实际重建结果见下文，不覆盖原失败。新的安装大文件夹具 v3 已通过轻量门禁，保留固定 RSS、正文完整 SHA、SIGKILL、恢复 GC 与原始版本冲突断言；它未执行新 helper 或真实挂载。不能用旧安装包的通过记录晋级新源码。
 
@@ -155,3 +162,10 @@ rclone 为 MIT；AgentFS SDK manifest / README 声明 MIT，但固定树缺 READ
 先形成明确选择与已验收平台清单，再准备独立客户端安装产物和 SHA-256 manifest；安装后以产物执行验收。Xpod 服务端新增接口同样需完整回归及真实 Gateway 认证/Pod 读写证据。真实 Gateway 或目标平台未验证不能标成通过。
 
 独立 CLI 预览已通过 GitHub Release 公开，具体源码、附件和验收见 [发行记录](xpod-cli-preview-release.md)。服务发布继续沿用 `docs/RELEASE.md` 的 RC 与 exact commit/digest 提升流程；新原生后端须完成实际 Gateway/Pod、同轮重启、固定负载及已发布客户端挂载复验后才可晋级。客户端预览公开不等于服务正式发布完成。
+
+## 2026-10-04 状态更新（账号 B / deepseek-v4.1-flash）
+
+- 原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) 在 `darwin-arm64` 与 `linux-arm64` 两 ARM runner 串行实际成功（HEAD `8d4983c96`）：官方在线导出 → `--verify-only` → `--frozen` 离线重建完整 Rust 60（58 通过 / 2 既有 ignore / 0 filtered）→ 新 kit5 helper/源码绑定打包 → 解压安装 `install-verified`。
+- source-kit `84c5d586…`；helper darwin `2d4a7360…` / linux `88c299dd…`；archive darwin `6cdd9535…` / linux `1408ec6b…`。
+- 原固定 Bun 1.4.2 `bun run test:integration` 实际 exit 0/null、399.152s（preflight 30 / Lite 163+16skip / Full 63）；Node 22.21.1 与 Bun 1.4.2 打包消费端实际通过。
+- 未完成：真实 macOS NFS / Linux Node22-without-Bun FUSE 挂载与 64/512/1024MiB、SIGKILL 恢复/GC、dirty412；live Gateway、公开发布。历史失败证据保持不变。
