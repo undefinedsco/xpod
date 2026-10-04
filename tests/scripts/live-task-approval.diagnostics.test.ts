@@ -106,7 +106,7 @@ describe('live Task failure diagnostics before cleanup (unit orchestration only)
 describe('live Task safe failure substage (unit orchestration only)', () => {
   const privateText = 'Bearer private-token https://private.example/pod#id model prose tool arguments';
   type Fault = 'none' | 'persisted-read' | 'persisted-assert' | 'resume-request' | 'resume-assert' | 'resume-unknown' | 'resume-unreadable' | 'resume-abort' | 'queued' | 'checkpoint';
-  async function fixture(fault: Fault, httpFailure?: { status: number; body: string }) {
+  async function fixture(fault: Fault, httpFailure?: { status: number; body: string; unreadable?: boolean }) {
     const owner = 'https://pod.example/alice/profile/card#me';
     const timeout = vi.spyOn(AbortSignal, 'timeout');
     let count = 0;
@@ -151,7 +151,7 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
         body = { run: { id: current.run, thread: current.thread, status: 'queued' } };
       } else if (route === '/api/tasks/runs') body = { runs: [{ id: current.run, thread: current.thread, status: current.status, waitingToolCallId: 'call-one' }] };
       else if (route === '/api/tasks/resume') {
-        if (httpFailure && !injected) { injected = true; const response = new Response(httpFailure.body, { status: 400 }); Object.defineProperty(response, 'status', { value: httpFailure.status }); return response; }
+        if (httpFailure && !injected) { injected = true; const response = new Response(httpFailure.unreadable ? new ReadableStream({ pull(controller) { controller.error(new Error(privateText)); } }) : httpFailure.body, { status: 400 }); Object.defineProperty(response, 'status', { value: httpFailure.status }); return response; }
         if (fault === 'resume-request' && !injected) { injected = true; throw connectionError; }
         if (fault === 'resume-unknown' && !injected) { injected = true; throw Object.assign(new Error(privateText), { name: 'secret-name', code: 'secret-code', cause: { code: 'secret-code' } }); }
         if (fault === 'resume-abort' && !injected) { injected = true; throw new DOMException(privateText, 'AbortError'); }
@@ -200,6 +200,25 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
     [401, JSON.stringify({ error: 'authentication_required' }), 'authentication_required'],
     [403, JSON.stringify({ error: 'service_access_missing' }), 'service_access_missing'],
     [400, JSON.stringify({ error: privateText }), 'other_error'],
+    [400, JSON.stringify({ error: 'Run conditional writes require authenticated Pod access' }), 'run_conditional_auth_required'],
+    [400, JSON.stringify({ error: 'Run updates require a strong document ETag' }), 'run_strong_etag_required'],
+    [400, JSON.stringify({ error: 'Run updates require a Turtle document' }), 'run_turtle_document_required'],
+    [400, JSON.stringify({ error: 'Run has invalid persisted status' }), 'run_persisted_status_invalid'],
+    [400, JSON.stringify({ error: 'Run has invalid persisted timestamp' }), 'run_persisted_timestamp_invalid'],
+    [400, JSON.stringify({ error: 'Run document changed repeatedly during conditional update' }), 'run_conditional_update_conflict'],
+    [400, JSON.stringify({ error: 'Durable client tool continuation claim capability is required' }), 'continuation_claim_required'],
+    [400, JSON.stringify({ error: 'Durable client tool continuation release capability is required' }), 'continuation_release_required'],
+    [400, JSON.stringify({ error: 'Run workspace reference is required' }), 'run_workspace_required'],
+    [400, JSON.stringify({ error: 'Durable approval session storage is unavailable' }), 'approval_session_storage_unavailable'],
+    [400, JSON.stringify({ error: 'Run document read failed: HTTP 401' }), 'run_document_read_failed'],
+    [400, JSON.stringify({ error: 'Run document update failed: HTTP 599' }), 'run_document_update_failed'],
+    [400, JSON.stringify({ error: 'Run document read failed: HTTP 100' }), 'run_document_read_failed'],
+    [400, JSON.stringify({ error: 'Run document read failed: HTTP 99' }), 'other_error'],
+    [400, JSON.stringify({ error: 'Run document update failed: HTTP 600' }), 'other_error'],
+    [400, JSON.stringify({ error: 'Run document read failed: HTTP 400 secret' }), 'other_error'],
+    [400, JSON.stringify({ error: 'Run document read failed: HTTP 0400' }), 'other_error'],
+    [400, JSON.stringify({ error: 'Run document read failed: HTTP 400.5' }), 'other_error'],
+    [400, JSON.stringify({ error: 'Run document read failed: HTTP 400\n' }), 'other_error'],
     [400, '{broken', 'other_error'],
     [400, JSON.stringify({ error: 'Approval has expired', extra: privateText }), 'approval_expired'],
     [400, JSON.stringify({ error: 'Approval has expired' }) + ' '.repeat(5000), 'other_error'],
@@ -210,6 +229,32 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
     expect(result.cleanup.ok).toBe(true);
     expect(revoked).toBe(true);
     expect(JSON.stringify(result)).not.toContain(privateText);
+  });
+  it.each([
+    [JSON.stringify({ error: privateText }), 'error_string'],
+    [JSON.stringify({ message: privateText }), 'json_other'],
+    [JSON.stringify({ error: { secret: privateText } }), 'json_other'],
+    ['private non-JSON ' + privateText, 'non_json'],
+    [privateText.repeat(100), 'oversized'],
+  ])('classifies only the fixed error envelope', async (body, errorEnvelope) => {
+    const { result } = await fixture('none', { status: 400, body });
+    expect(result.cases[0]?.failureDetails).toMatchObject({ taskError: 'other_error', errorEnvelope });
+    expect(JSON.stringify(result)).not.toContain(privateText);
+  });
+  it.each([100, 401, 404, 500, 599])('retains only the strict inner Run document status %s', async runDocumentHttpStatus => {
+    const { result } = await fixture('none', { status: 400, body: JSON.stringify({ error: `Run document read failed: HTTP ${runDocumentHttpStatus}` }) });
+    expect(result.cases[0]?.failureDetails).toMatchObject({ httpStatus: 400, runDocumentHttpStatus, taskError: 'run_document_read_failed' });
+  });
+  it('omits inner status outside the exact document error grammar', async () => {
+    const { result } = await fixture('none', { status: 400, body: JSON.stringify({ error: 'Run document update failed: HTTP 401 secret' }) });
+    expect(result.cases[0]?.failureDetails).not.toHaveProperty('runDocumentHttpStatus');
+  });
+  it('keeps the original HTTP assertion when the error body is unreadable', async () => {
+    const { result } = await fixture('none', { status: 400, body: '', unreadable: true });
+    expect(result.cases[0]?.failureDetails).toMatchObject({ category: 'assertion', httpStatus: 400, taskError: 'other_error', errorEnvelope: 'unreadable' });
+    expect(result.failure).toContain('HTTP 400');
+    expect(JSON.stringify(result)).not.toContain(privateText);
+    expect(result.cleanup.ok).toBe(true);
   });
   it.each([99, 600, 400.5, NaN])('omits malformed HTTP status %s', async status => {
     const { result } = await fixture('none', { status, body: '{broken' });

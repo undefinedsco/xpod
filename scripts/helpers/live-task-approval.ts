@@ -20,7 +20,9 @@ export interface LiveTaskFailureDetails {
   code?: 'ENOSPC' | 'ECONNREFUSED' | 'ECONNRESET' | 'ETIMEDOUT' | 'ENOTFOUND' | 'EACCES' | 'ERR_INVALID_URL';
   causeCode?: LiveTaskFailureDetails['code'];
   httpStatus?: number;
+  runDocumentHttpStatus?: number;
   taskError?: TaskHttpErrorToken;
+  errorEnvelope?: TaskErrorEnvelope;
 }
 
 export interface LiveTaskCaseEvidence {
@@ -72,36 +74,63 @@ const taskHttpErrors = {
   'Task not found for this run': 'task_not_found',
   'Agent execution credential is unavailable': 'agent_execution_credential_unavailable',
   'AI Connection invocation key issuer is required': 'ai_connection_invocation_issuer_required',
+  'Run conditional writes require authenticated Pod access': 'run_conditional_auth_required',
+  'Run updates require a strong document ETag': 'run_strong_etag_required',
+  'Run updates require a Turtle document': 'run_turtle_document_required',
+  'Run has invalid persisted status': 'run_persisted_status_invalid',
+  'Run has invalid persisted timestamp': 'run_persisted_timestamp_invalid',
+  'Run document changed repeatedly during conditional update': 'run_conditional_update_conflict',
+  'Durable client tool continuation claim capability is required': 'continuation_claim_required',
+  'Durable client tool continuation release capability is required': 'continuation_release_required',
+  'Run workspace reference is required': 'run_workspace_required',
+  'Durable approval session storage is unavailable': 'approval_session_storage_unavailable',
 } as const;
-type TaskHttpErrorToken = typeof taskHttpErrors[keyof typeof taskHttpErrors] | 'other_error';
+const taskDocumentErrors = ['run_document_read_failed', 'run_document_update_failed'] as const;
+const taskErrorEnvelopes = ['error_string', 'json_other', 'non_json', 'oversized', 'unreadable'] as const;
+type TaskErrorEnvelope = typeof taskErrorEnvelopes[number];
+type TaskHttpErrorToken = typeof taskHttpErrors[keyof typeof taskHttpErrors] | typeof taskDocumentErrors[number] | 'other_error';
 class LiveTaskEvidenceError extends Error {
   public httpStatus?: number;
+  public runDocumentHttpStatus?: number;
   public taskError?: TaskHttpErrorToken;
+  public errorEnvelope?: TaskErrorEnvelope;
 }
 
 /** Read only a small error envelope; never retain or report its contents. */
-async function taskHttpErrorToken(response: Response): Promise<TaskHttpErrorToken> {
+async function taskHttpErrorToken(response: Response): Promise<{ taskError: TaskHttpErrorToken; errorEnvelope: TaskErrorEnvelope; runDocumentHttpStatus?: number }> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     reader = response.body?.getReader();
-    if (!reader) return 'other_error';
+    if (!reader) return { taskError: 'other_error', errorEnvelope: 'unreadable' };
     const chunks: Uint8Array[] = [];
     let bytes = 0;
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       bytes += value.byteLength;
-      if (bytes > 4096) { void reader.cancel().catch(() => undefined); return 'other_error'; }
+      if (bytes > 4096) { void reader.cancel().catch(() => undefined); return { taskError: 'other_error', errorEnvelope: 'oversized' }; }
       chunks.push(value);
     }
     const buffer = new Uint8Array(bytes);
     let offset = 0;
     for (const chunk of chunks) { buffer.set(chunk, offset); offset += chunk.byteLength; }
-    const body: unknown = JSON.parse(new TextDecoder().decode(buffer));
+    let body: unknown;
+    try { body = JSON.parse(new TextDecoder().decode(buffer)); }
+    catch { return { taskError: 'other_error', errorEnvelope: 'non_json' }; }
     const error = body && typeof body === 'object' && !Array.isArray(body) ? (body as { error?: unknown }).error : undefined;
-    return typeof error === 'string' && Object.prototype.hasOwnProperty.call(taskHttpErrors, error)
-      ? taskHttpErrors[error as keyof typeof taskHttpErrors] : 'other_error';
-  } catch { return 'other_error'; }
+    if (typeof error !== 'string') return { taskError: 'other_error', errorEnvelope: 'json_other' };
+    let taskError: TaskHttpErrorToken = 'other_error';
+    let runDocumentHttpStatus: number | undefined;
+    if (Object.prototype.hasOwnProperty.call(taskHttpErrors, error)) taskError = taskHttpErrors[error as keyof typeof taskHttpErrors];
+    else {
+      const documentError = /^Run document (read|update) failed: HTTP ([1-5][0-9]{2})$/.exec(error);
+      if (documentError?.[0] === error) {
+        taskError = documentError[1] === 'read' ? 'run_document_read_failed' : 'run_document_update_failed';
+        runDocumentHttpStatus = Number(documentError[2]);
+      }
+    }
+    return { taskError, errorEnvelope: 'error_string', ...(runDocumentHttpStatus !== undefined ? { runDocumentHttpStatus } : {}) };
+  } catch { return { taskError: 'other_error', errorEnvelope: 'unreadable' }; }
   finally { reader?.releaseLock(); }
 }
 
@@ -122,8 +151,10 @@ function safeFailureDetails(substage: LiveTaskFailureDetails['substage'], error:
         : observedCodes.some(item => item === 'ECONNREFUSED' || item === 'ECONNRESET' || item === 'ENOTFOUND') ? 'connection'
           : name === 'SyntaxError' ? 'parse' : 'other';
     return { substage, category, name, ...(code ? { code } : {}), ...(causeCode ? { causeCode } : {}),
+      ...(controlled && Number.isInteger(error.runDocumentHttpStatus) && error.runDocumentHttpStatus! >= 100 && error.runDocumentHttpStatus! <= 599 ? { runDocumentHttpStatus: error.runDocumentHttpStatus } : {}),
       ...(controlled && Number.isInteger(error.httpStatus) && error.httpStatus! >= 100 && error.httpStatus! <= 599 ? { httpStatus: error.httpStatus } : {}),
-      ...(controlled && (error.taskError === 'other_error' || Object.values(taskHttpErrors).includes(error.taskError as typeof taskHttpErrors[keyof typeof taskHttpErrors])) ? { taskError: error.taskError } : {}),
+      ...(controlled && (error.taskError === 'other_error' || [...Object.values(taskHttpErrors), ...taskDocumentErrors].includes(error.taskError as Exclude<TaskHttpErrorToken, 'other_error'>)) ? { taskError: error.taskError } : {}),
+      ...(controlled && taskErrorEnvelopes.includes(error.errorEnvelope as TaskErrorEnvelope) ? { errorEnvelope: error.errorEnvelope } : {}),
     };
   } catch {
     return { substage, category: 'other', name: 'other' };
@@ -196,7 +227,7 @@ export async function acceptLiveTaskApproval(options: {
       const validStatus = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599;
       const error = new LiveTaskEvidenceError(`Task ${method} ${route.split('?')[0]} HTTP ${validStatus ? response.status : 'unknown'}`);
       if (validStatus) error.httpStatus = response.status;
-      error.taskError = await taskHttpErrorToken(response);
+      Object.assign(error, await taskHttpErrorToken(response));
       throw error;
     }
     return response.json() as Promise<T>;

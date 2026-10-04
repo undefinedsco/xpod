@@ -684,11 +684,12 @@ jobs:
               if (!details || typeof details !== 'object' || Array.isArray(details)
                 || !substages.includes(details.substage) || !['assertion', 'timeout', 'connection', 'parse', 'other'].includes(details.category)
                 || !names.includes(details.name) || ['code', 'causeCode'].some(field => details[field] !== undefined && !codes.includes(details[field]))) throw new Error('Invalid safe Task failure details');
-              const taskErrors = ['authentication_required', 'pod_owner_mismatch', 'service_access_missing', 'resource_id_required', 'approval_required', 'run_not_found', 'approval_not_authorized', 'approval_checkpoint_mismatch', 'approval_expired', 'run_checkpoint_mismatch', 'task_not_found', 'agent_execution_credential_unavailable', 'ai_connection_invocation_issuer_required', 'other_error'];
-              if (details.httpStatus !== undefined && (!Number.isInteger(details.httpStatus) || details.httpStatus < 100 || details.httpStatus > 599)
-                || details.taskError !== undefined && !taskErrors.includes(details.taskError)) throw new Error('Invalid safe Task failure details');
+              const taskErrors = ['authentication_required', 'pod_owner_mismatch', 'service_access_missing', 'resource_id_required', 'approval_required', 'run_not_found', 'approval_not_authorized', 'approval_checkpoint_mismatch', 'approval_expired', 'run_checkpoint_mismatch', 'task_not_found', 'agent_execution_credential_unavailable', 'ai_connection_invocation_issuer_required', 'run_conditional_auth_required', 'run_strong_etag_required', 'run_turtle_document_required', 'run_persisted_status_invalid', 'run_persisted_timestamp_invalid', 'run_conditional_update_conflict', 'continuation_claim_required', 'continuation_release_required', 'run_workspace_required', 'approval_session_storage_unavailable', 'run_document_read_failed', 'run_document_update_failed', 'other_error'];
+              if (['httpStatus', 'runDocumentHttpStatus'].some(field => details[field] !== undefined && (!Number.isInteger(details[field]) || details[field] < 100 || details[field] > 599))
+                || details.taskError !== undefined && !taskErrors.includes(details.taskError)
+                || details.errorEnvelope !== undefined && !['error_string', 'json_other', 'non_json', 'oversized', 'unreadable'].includes(details.errorEnvelope)) throw new Error('Invalid safe Task failure details');
               safe.failureDetails = { substage: details.substage, category: details.category, name: details.name };
-              for (const field of ['code', 'causeCode', 'httpStatus', 'taskError']) if (details[field] !== undefined) safe.failureDetails[field] = details[field];
+              for (const field of ['code', 'causeCode', 'httpStatus', 'runDocumentHttpStatus', 'taskError', 'errorEnvelope']) if (details[field] !== undefined) safe.failureDetails[field] = details[field];
             }
             const snapshot = row.terminalSnapshot;
             if (snapshot !== undefined) {
