@@ -129,6 +129,8 @@ jobs:
       - name: Run actual macOS system-NFS acceptance (no macFUSE install)
         env:
           XPOD_MOUNTED_OS: darwin
+          XPOD_MOUNTED_BACKEND: nfs
+          XPOD_MOUNTED_WORKSPACE: ${{ github.workspace }}
           XPOD_MOUNTED_ARCHIVE: ${{ steps.product.outputs.archive }}
           XPOD_MOUNTED_ARCHIVE_SHA: ${{ env.DARWIN_ARCHIVE_SHA }}
           XPOD_MOUNTED_HELPER_SHA: ${{ env.DARWIN_HELPER_SHA }}
