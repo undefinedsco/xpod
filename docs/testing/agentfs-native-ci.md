@@ -6,10 +6,10 @@
 
 支持的 Linux 目标是 Debian 12 Bookworm（glibc 2.36 + OpenSSL 3），并且在同一容器内用官方 Node 22.21.1 走 noBun 外部运行时加载。Linux job 只把 checkout 和 `RUNNER_TEMP` 挂载进容器，一切编译产物都针对容器内 glibc/OpenSSL，而不是 Ubuntu 24.04 runner 的 glibc 2.39：
 
-- 固定镜像 `rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e`（arm64 manifest digest）。CI 先 `docker pull` 该 digest（registry 元数据即身份证明），再复用同一镜像，不重复拉取。
+- 固定镜像 `rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e`（arm64 manifest digest）。CI 先 `docker pull` 该 digest（registry 元数据即身份证明），再复用同一镜像，不重复拉取。两个容器运行都带 `--init`：构建阶段是唯一可能留下已退出子进程的入口，用真实 PID1 收尸，而不是把 group-present 当无害或放宽 wait/日志关闭/hash。
 - 容器内 `bookworm-entry.sh` 先断言 `ID=debian`/`VERSION_CODENAME=bookworm`/`GNU_LIBC_VERSION=glibc 2.36`/`aarch64`，TLS 源重试安装 `pkg-config/liblzma-dev/libssl-dev/build-essential/ca-certificates/git/unzip/xz-utils/python3/curl`（`libssl-dev` 提供 `libssl3`），再装固定 SHA256 的官方 Node 22.21.1。
-- `accept.py` 记录的是容器内部真实 glibc/OpenSSL/gcc/toolchain 身份，不是 Ubuntu host 值；`AGENTFS_BOOKWORM_IMAGE` 原样进入 `final.json`。
-- 加载验收（`runtime-admission.receipt.json`）：对打包后的 helper 跑 `readelf --version-info`，要求所需 `GLIBC_*` 不高于 2.36，否则失败；再用**只含 Node、无 Bun** 的 PATH 执行 `bin/xpodcli` 的 `--version`/`agent-fs status --json`，并直接执行 bundled helper，`ldd` 必须解析到 `libssl.so.3`。旧 Ubuntu 产物要求的 `GLIBC_2.39` 会在此被确定性拒绝。
+- `accept.py` 在任何下载/构建之前 fail-closed：Linux 必须有 `AGENTFS_BOOKWORM_IMAGE` 且严格等于上述 canonical pin，容器内部必须是 `debian 12` + `glibc 2.36`；缺失、写错、非 canonical 或 Ubuntu runner 值都直接拒绝，绝不先构建再补证据。记录的 glibc/gcc/OpenSSL/image 全部来自容器内部，不是 Ubuntu host 值。
+- 加载验收（`runtime-admission.receipt.json`）：`tar` 解包、`readelf --version-info`、launcher/helper `--version`、`agent-fs status --json`、`node --version`、`ldd` 每个 producer 都走 `supervise.run_stage`——真实 PID/PGID、`Popen.wait`、有界 deadline、持续磁盘 guard、关闭后 raw SHA，语义元数据不能替代 producer receipt。对打包后的 helper 要求所需 `GLIBC_*` 不高于 2.36；`ldd` 必须实际 exit 0、无 `not found`，并解析到 `libssl.so.3` 与 `libcrypto.so.3` 两个 SONAME；`status --json` 按语义解析（`ok`、`platform`、`helperPresent`、`helperPath` 与打包 helper 实际一致），不是数字节数。只含 Node、无 Bun 的 PATH 执行 `bin/xpodcli`；旧 Ubuntu 产物要求的 `GLIBC_2.39` 会在此被确定性拒绝。
 
 ## 固定输入与执行链
 
@@ -21,7 +21,7 @@
 - Rust `nightly-2026-09-30` 取自官方 `static.rust-lang.org`。先验证日期锁定的发行 manifest SHA256，再由 runner 自带 rustup 安装 minimal profile；assert compiler commit `5c543b0b8c73c7b72bc8284ced4fb22ead15734d`，官方 receipt 记录该平台 cargo/rustc 实际摘要。rustup 和系统 SDK/编译器为外部工具，不声称完整工具链可复现。
 - upstream 固定 `0a014ebd4918615baff589ed17486e557e7c6a23`，官方 `export-native.ts` 使用当前 Cargo.toml/原 Cargo.lock、两已有 patches、当前 helper、recipe 和许可证。首次 registry 缓存为空，导出如实在线 `cargo vendor --locked`，没有宣称首次导出 offline，也不更换锁版本。
 - kit 内 `rebuild-native.ts --verify-only` → `--out <fresh> --test`。recipe 使用隔离 Cargo home、验证后的 stage、内部 jobs2、实际 `build/test --release --frozen`。
-- 核对完整 61 项清单：59 pass、0 fail、2 已声明 ignore、0 filtered。两个 ignore 是历史故障 RED 与由 parent 实际启动的 lease 子进程 fixture；parent 死亡租约测试及最新修复回归（含原子 owner.json 替换临时项的 live-reader 容忍）必须出现 `ok`。不能将 61 项表述为 61 pass。
+- 核对完整 63 项清单：61 pass、0 fail、2 已声明 ignore、0 filtered。两个 ignore 是历史故障 RED 与由 parent 实际启动的 lease 子进程 fixture；parent 死亡租约测试及最新修复回归（含原子 owner.json 替换临时项的 live-reader 容忍、真实 store_owner 写-读重叠屏障，以及去掉 `pre_exec` fork 窗口的 barrier 子进程）必须出现 `ok`。不能将 63 项表述为 63 pass。
 - 当前 `build.ts` 显式绑定新 helper、新 source kit、新 official receipt，随后 `verify-install.ts --archive <new archive> --expect-validation install-verified` 实际解压并执行安装验收。新 receipt 同时验证 compiler、helper、kit SHA、target、jobs2 和原始 buildArguments。
 
 所有工具子进程使用环境白名单，剔除 runner 凭据和继承的 Cargo/Rust/proxy 覆盖。Linux 系统 prerequisites 在 Bookworm 容器内安装（`pkg-config/liblzma-dev/libssl-dev/build-essential/ca-certificates/git/unzip/xz-utils/python3/curl`）；`libssl-dev` 同时提供运行期 `libssl3`。系统包版本与 SDK 不属于源 kit 的冻结范围。
@@ -30,7 +30,7 @@
 
 每个 gate 启动前要求所在文件系统 fresh 可用空间至少 **4 GiB**，无本地或 CI 特例。运行时可用空间低于512 MiB，或 native target 实际 allocated bytes 超过1.5 GiB，supervisor 只停止自己持有的进程组，实际 wait 后保留失败；不把资源退出改成 pass。kit约459 MiB，加临时stage约459 MiB、target预算1.5 GiB、reserve512 MiB，工具下载安装和 JS/package 阶段额外使用空间；4 GiB 是阶段准入线，不是整条链总耗用上限。每个下游 gate 都重新检查，空间不足保持失败。官方 runner 名义磁盘规格不替代实际 fresh 检查。
 
-每 gate 有实际 PID/PGID、wait、exit/signal、UTC/monotonic耗时、关闭后 raw SHA。成功 parent 留有同组 descendant 也视为失败。最终保存全部 tracked 文件（含 root package/bun.lock、shared src、build:packages 输入）的前后内容/类型 hash、精确路径集合、HEAD 和非 ignored Git 状态，以及源码索引、receipt 和新 archive SHA。新增/删除/改写 tracked 源码、HEAD/index 或非 ignored 状态变化都拒绝；ignored node_modules/构建输出是预期，不进入源码快照。失败不会生成成功 final.json。
+每 gate 有实际 PID/PGID、wait、exit/signal、UTC/monotonic耗时、关闭后 raw SHA。成功 parent 留有同组 descendant 也视为失败。若进程组仍存在，receipt 记录 `/proc` 中该组每个成员的 PID/PPID/PGID/STATE，用来区分真实的存活泄漏与 PID1 未回收的 zombie，而不是只看“组还在”。最终保存全部 tracked 文件（含 root package/bun.lock、shared src、build:packages 输入）的前后内容/类型 hash、精确路径集合、HEAD 和非 ignored Git 状态，以及源码索引、receipt 和新 archive SHA。新增/删除/改写 tracked 源码、HEAD/index 或非 ignored 状态变化都拒绝；ignored node_modules/构建输出是预期，不进入源码快照。失败不会生成成功 final.json。
 
 artifact 只上传 evidence 明确文件白名单：关闭的日志/回执、新 source index/native receipt/final 和新安装 archive。不上载环境、node_modules、Cargo home、target、全部 `.test-data` 或私人缓存。原始日志可能含工具警告（例如 optional strip），日志保持原样，只有真实 gate 退出0和完整摘要能入准。
 

@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import urllib.request
-from supervise import FRESH_BYTES, run_gate, sha256
+from supervise import FRESH_BYTES, run_gate, run_stage, sha256
 
 UPSTREAM = '0a014ebd4918615baff589ed17486e557e7c6a23'
 TOOLCHAIN = 'nightly-2026-09-30'
@@ -44,16 +44,83 @@ def assert_bookworm_glibc(readelf_output):
     return highest
 
 
+BOOKWORM_OS_RELEASE = ('debian', '12')
+OPENSSL_SONAMES = ('libssl.so.3', 'libcrypto.so.3')
+
+
+def assert_bookworm_image(image):
+    """The Linux admission must name the exact canonical Rust Bookworm digest;
+    a missing, wrong or noncanonical pin fails closed before any build."""
+    if image is None:
+        raise RuntimeError('AGENTFS_BOOKWORM_IMAGE is required for the Linux Bookworm baseline')
+    if image != BOOKWORM_IMAGE:
+        raise RuntimeError(f'AGENTFS_BOOKWORM_IMAGE must equal the canonical pin {BOOKWORM_IMAGE}')
+
+
+def assert_bookworm_baseline(host, sdk):
+    """Reject an invalid interior before the build: the Linux chain must run on
+    Debian 12 / glibc 2.36, never the Ubuntu ARM runner it is hosted by."""
+    if host != 'linux':
+        return
+    release = tuple(str(sdk.get('osRelease', '')).split())
+    if release != BOOKWORM_OS_RELEASE:
+        raise RuntimeError(f'Linux admission must run inside Debian 12 Bookworm, got {release!r}')
+    if str(sdk.get('glibc', '')).strip() != 'glibc 2.36':
+        raise RuntimeError(f'Linux admission requires the Bookworm glibc 2.36 baseline, got {sdk.get("glibc")!r}')
+
+
+def assert_bun_absent(path):
+    if shutil.which('bun', path=path):
+        raise RuntimeError('Node admission PATH unexpectedly resolves bun')
+
+
+def assert_ldd_ready(text):
+    """A bundled helper must actually resolve its OpenSSL 3 runtime."""
+    if 'not found' in text:
+        raise RuntimeError('Bundled helper has unresolved dynamic dependencies at load time')
+    missing = [soname for soname in OPENSSL_SONAMES if soname not in text]
+    if missing:
+        raise RuntimeError(f'Bundled helper does not resolve OpenSSL 3 at load time: {", ".join(missing)}')
+    return list(OPENSSL_SONAMES)
+
+
+def unwrap_status(text):
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise RuntimeError('agent-fs status --json did not return an object')
+    data = parsed.get('data', parsed)
+    if not isinstance(data, dict):
+        raise RuntimeError('agent-fs status --json did not return a data object')
+    return parsed, data
+
+
+def assert_status_ready(text, platform_name, helper):
+    """Parse the status JSON semantically: a byte count alone is not proof."""
+    parsed, data = unwrap_status(text)
+    if parsed.get('ok') is not True:
+        raise RuntimeError('agent-fs status --json reported not ok')
+    if data.get('platform') != platform_name:
+        raise RuntimeError(f"agent-fs status platform {data.get('platform')!r} != {platform_name!r}")
+    if data.get('helperPresent') is not True:
+        raise RuntimeError('agent-fs status did not discover the bundled helper')
+    reported = data.get('helperPath')
+    if not isinstance(reported, str) or os.path.realpath(reported) != os.path.realpath(str(helper)):
+        raise RuntimeError('agent-fs status helper path does not match the bundled helper')
+    return data
+
+
 def check_tests(text):
     summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out', text)
-    if ('59', '0', '2', '0', '0') not in summaries:
-        raise RuntimeError('Latest full Rust inventory must report 59 passed, two declared ignores, zero filtered (61 total)')
+    if ('61', '0', '2', '0', '0') not in summaries:
+        raise RuntimeError('Latest full Rust inventory must report 61 passed, two declared ignores, zero filtered (63 total)')
     ignored = re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE)
     if set(ignored) != {'mount::tests::legacy_output_exceeds_observation_budget', 'mount_control::tests::lease_child'}:
         raise RuntimeError('Unexpected ignored tests')
     for test in ['closed_marker_is_read_only_after_actual_lease_release', 'closed_proof_survives_ack_loss_and_partial_socket_cleanup',
                  'actual_dead_owner_releases_flock_and_only_proven_stale_socket_is_collected',
-                 'owned_atomic_record_replacement_transient_is_not_a_foreign_entry']:
+                 'owned_atomic_record_replacement_transient_is_not_a_foreign_entry',
+                 'actual_store_owner_temp_before_rename_is_tolerated_by_live_readers',
+                 'controlled_real_writer_update_between_expected_clone_and_disk_read_fails_closed']:
         if not re.search(r'^test mount_control::tests::' + test + r' \.\.\. ok$', text, re.MULTILINE):
             raise RuntimeError(f'Missing latest regression: {test}')
 
@@ -84,15 +151,19 @@ def source_snapshot(root):
 
 
 def sdk_identity(host):
-    commands = [['xcrun', '--show-sdk-path'], ['xcrun', '--show-sdk-version'],
-                ['xcrun', 'clang', '--version']] if host == 'darwin' else [
-                ['cc', '--version'], ['ld', '--version'],
-                ['dpkg-query', '-W', 'liblzma-dev', 'libssl-dev', 'build-essential', 'pkg-config'],
-                # Actual interior GNU identity: never the Ubuntu ARM runner's values.
-                ['getconf', 'GNU_LIBC_VERSION'],
-                ['dpkg-query', '-W', '-f=${Package}=${Version}\n', 'libc6', 'libssl3'],
-                ['sh', '-c', '. /etc/os-release && printf "%s %s" "$ID" "$VERSION_ID"']]
-    return {" ".join(command): subprocess.check_output(command, text=True).strip() for command in commands}
+    run = lambda command: subprocess.check_output(command, text=True).strip()
+    if host == 'darwin':
+        return {'sdkPath': run(['xcrun', '--show-sdk-path']),
+                'sdkVersion': run(['xcrun', '--show-sdk-version']),
+                'clang': run(['xcrun', 'clang', '--version'])}
+    return {
+        'cc': run(['cc', '--version']), 'ld': run(['ld', '--version']),
+        'packages': run(['dpkg-query', '-W', 'liblzma-dev', 'libssl-dev', 'build-essential', 'pkg-config']),
+        'dpkgLibs': run(['dpkg-query', '-W', '-f=${Package}=${Version}\n', 'libc6', 'libssl3']),
+        # Actual interior GNU identity: never the Ubuntu ARM runner's values.
+        'glibc': run(['getconf', 'GNU_LIBC_VERSION']),
+        'osRelease': run(['sh', '-c', '. /etc/os-release && printf "%s %s" "$ID" "$VERSION_ID"']),
+    }
 
 
 def tool_environment(environment):
@@ -109,47 +180,51 @@ def tool_environment(environment):
 def runtime_admission(archive, evidence, node, base):
     # Execute the packaged launcher through the external Node runtime only (no
     # Bun) and prove the bundled helper loads on the pinned Bookworm baseline.
+    # Every producer runs through the existing supervised run_stage: real
+    # PID/PGID/Popen.wait, bounded deadline, continuous disk guard and a closed
+    # raw hash. Semantic metadata never replaces the producer receipt.
     installation = base / 'admission-install'
     if installation.exists():
         raise RuntimeError('Admission install directory must be fresh')
     installation.mkdir(mode=0o700)
-    extract = subprocess.run(['tar', '-xzf', str(archive), '-C', str(installation)], capture_output=True, text=True)
-    if extract.returncode != 0:
-        raise RuntimeError(f'Admission archive extraction failed: {extract.stderr.strip()}')
+    run_gate('runtime-extract', ['tar', '-xzf', str(archive), '-C', str(installation)],
+             evidence, installation, timeout=60)
     install = installation / 'install'
     launcher = install / 'bin/xpodcli'
     helper = install / 'helper/agentfs-pod'
     if not launcher.is_file() or not helper.is_file():
         raise RuntimeError('Admission archive lacks the launcher or bundled helper')
-    version_info = subprocess.check_output(['readelf', '--version-info', str(helper)], text=True, stderr=subprocess.STDOUT)
+    _, version_info = run_stage('runtime-readelf', ['readelf', '--version-info', str(helper)],
+                                evidence, installation, timeout=60)
     (evidence / 'helper-glibc-requirements.raw.log').write_text(version_info)
     highest = assert_bookworm_glibc(version_info)
     node_dir = str(Path(node).parent)
     path = os.pathsep.join([node_dir, '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'])
-    if shutil.which('bun', path=path):
-        raise RuntimeError('Node admission PATH unexpectedly resolves bun')
+    assert_bun_absent(path)
     environment = dict(os.environ)
     environment['PATH'] = path
 
-    def execute(command):
-        result = subprocess.run(command, cwd=str(installation), env=environment, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f'Node-only admission failed ({command[0]}): {result.stderr.strip()}')
-        return result.stdout.strip()
+    def stage(name, command):
+        receipt, text = run_stage(name, command, evidence, installation, environment=environment, timeout=60)
+        if receipt['exit'] != 0 or receipt['signal'] is not None or receipt['resourceStop']:
+            raise RuntimeError(f"{name}: producer failed: exit={receipt['exit']}, "
+                               f"signal={receipt['signal']}, resourceStop={receipt['resourceStop']}")
+        return text.strip()
 
-    launcher_version = execute([str(launcher), '--version'])
-    helper_version = execute([str(helper), '--version'])
-    status = execute([str(launcher), 'agent-fs', 'status', '--json'])
+    launcher_version = stage('runtime-launcher-version', [str(launcher), '--version'])
+    helper_version = stage('runtime-helper-version', [str(helper), '--version'])
+    status = stage('runtime-status', [str(launcher), 'agent-fs', 'status', '--json'])
     if not helper_version.startswith('agentfs-pod '):
         raise RuntimeError(f'Bundled helper did not identify itself: {helper_version}')
-    loaded = subprocess.run(['ldd', str(helper)], capture_output=True, text=True).stdout
-    if 'libssl.so.3' not in loaded:
-        raise RuntimeError('Bundled helper does not resolve OpenSSL 3 (libssl.so.3) at load time')
+    status_data = assert_status_ready(status, sys.platform, helper)
+    _, loaded = run_stage('runtime-ldd', ['ldd', str(helper)], evidence, installation, timeout=60)
+    sonames = assert_ldd_ready(loaded)
     record = {
-        'runtime': 'node', 'nodeVersion': execute([node, '--version']),
+        'runtime': 'node', 'nodeVersion': stage('runtime-node-version', [node, '--version']),
         'launcherVersion': launcher_version, 'helperVersion': helper_version,
-        'highestGlibcRequirement': f'{highest[0]}.{highest[1]}', 'opensslSoname': 'libssl.so.3',
-        'bunAbsentFromPath': True, 'statusJsonBytes': len(status.encode()), 'ldd': loaded,
+        'highestGlibcRequirement': f'{highest[0]}.{highest[1]}', 'opensslSonames': sonames,
+        'bunAbsentFromPath': True, 'status': status_data, 'statusJsonBytes': len(status.encode()),
+        'ldd': loaded,
     }
     (evidence / 'runtime-admission.receipt.json').write_text(json.dumps(record, indent=2) + '\n')
     return record
@@ -168,6 +243,12 @@ def main():
     target = f'{host}-arm64'
     if os.environ['NATIVE_TARGET'] != target:
         raise RuntimeError('Matrix and actual host target differ')
+    # Fail closed before any download/build: the exact canonical pin and a valid
+    # Debian 12 / glibc 2.36 interior are prerequisites, not inferred later.
+    if host == 'linux':
+        assert_bookworm_image(bookworm_image)
+    sdk_before = sdk_identity(host)
+    assert_bookworm_baseline(host, sdk_before)
     base = Path(os.environ['RUNNER_TEMP']) / 'agentfs-native-acceptance'
     base.mkdir(mode=0o700)  # fresh only, never reuse another run's outputs
     evidence = base / 'evidence'
@@ -197,7 +278,6 @@ def main():
     version = subprocess.check_output([rustc, '-vV'], text=True)
     if 'commit-hash: 5c543b0b8c73c7b72bc8284ced4fb22ead15734d' not in version:
         raise RuntimeError('Dated compiler identity drift')
-    sdk_before = sdk_identity(host)
     node = shutil.which('node')
     if subprocess.check_output([node, '--version'], text=True).strip() != 'v22.21.1':
         raise RuntimeError('External Node version drift')
@@ -256,7 +336,7 @@ def main():
                  nodeSHA256=sha256(node), hostUname=list(platform.uname()), rustManifestSHA256=RUST_MANIFEST_SHA,
                  bunAssetSHA256=BUN_SHA[host], compiler=receipt['compiler'], nativeReceipt=receipt,
                  bookwormImage=bookworm_image if host == 'linux' else None, runtimeAdmission=runtime,
-                 declaredTests=61, passedTests=59, ignoredTests=2, filteredTests=0,
+                 declaredTests=63, passedTests=61, ignoredTests=2, filteredTests=0,
                  ignoredScope='owned lease subprocess invoked by parent; historical RED intentionally ignored',
                  archiveSHA256=sha256(archives[0]), mountExecuted=False, liveGatewayExecuted=False,
                  publicReleaseReady=False)

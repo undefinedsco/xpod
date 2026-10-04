@@ -338,8 +338,14 @@ impl RuntimeControl {
         Ok(Self { directory, lease, listener, owner: Mutex::new(owner) })
     }
 
-    fn verify_owned(&self) -> Result<Owner> {
+    fn verify_owned(&self) -> Result<Owner> { self.verify_owned_after(|| {}) }
+
+    /// `between` runs after the expected marker is cloned and before the disk
+    /// read, so a controlled actual writer update can be linearized exactly in
+    /// that window. Production passes a no-op.
+    fn verify_owned_after(&self, between: impl FnOnce()) -> Result<Owner> {
         let expected = self.owner.lock().map_err(|_| anyhow::anyhow!("runtime owner poisoned"))?.clone();
+        between();
         check_names(&self.directory, Some(&expected.nonce))?;
         let owner = read_owner(&self.directory)?;
         if owner != expected || owner.lease != FileIdentity::of(&self.lease.metadata()?) { anyhow::bail!("runtime ownership changed"); }
@@ -347,7 +353,12 @@ impl RuntimeControl {
         Ok(owner)
     }
 
-    fn store_owner(&self, mut updated: Owner) -> Result<()> {
+    fn store_owner(&self, updated: Owner) -> Result<()> { self.store_owner_before_rename(updated, || {}) }
+
+    /// `between_write_and_rename` runs after the replacement marker is fully
+    /// written and fsynced and before the atomic rename, so a controlled live
+    /// reader can observe the sole program-owned transient. Production no-op.
+    fn store_owner_before_rename(&self, mut updated: Owner, between_write_and_rename: impl FnOnce()) -> Result<()> {
         let mut stored = self.owner.lock().map_err(|_| anyhow::anyhow!("runtime owner poisoned"))?;
         let temporary = self.directory.join(format!("owner.{}.new", stored.nonce));
         let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600)
@@ -356,6 +367,7 @@ impl RuntimeControl {
         let bytes = serde_json::to_vec(&updated)?;
         if bytes.len() > LIMIT { anyhow::bail!("runtime binding exceeds protocol limit"); }
         file.write_all(&bytes)?; file.sync_all()?;
+        between_write_and_rename();
         if read_owner(&self.directory)? != *stored { anyhow::bail!("runtime marker changed; retained"); }
         fs::rename(&temporary, self.directory.join(RECORD))?;
         *stored = updated;
@@ -667,7 +679,7 @@ async fn unmount_with_transport_hook(session: &Path, target: &Path, budget: Dura
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     struct Fixture { session: PathBuf, target: PathBuf }
@@ -757,6 +769,44 @@ mod tests {
         fs::create_dir(&owned).unwrap();
         assert!(ready(&fixture.session, &fixture.target, &identity).is_err(), "non-file recorded transient must fail closed");
         fs::remove_dir(&owned).unwrap();
+        clean_fixture_runtime(&control);
+    }
+
+    #[test]
+    fn actual_store_owner_temp_before_rename_is_tolerated_by_live_readers() {
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+        let identity = fixture.identity();
+        control.bind_identity(&identity).unwrap();
+        let owner = control.verify_owned().unwrap();
+        // A real atomic replacement in progress: at the fsynced-but-not-renamed
+        // barrier the sole program-owned transient exists, and the actual live
+        // readers (readiness and owner lookup) must tolerate exactly that one.
+        control.store_owner_before_rename(owner, || {
+            assert!(ready(&fixture.session, &fixture.target, &identity).unwrap());
+            assert!(live_owner(&fixture.session, &fixture.target).is_ok());
+        }).unwrap();
+        clean_fixture_runtime(&control);
+    }
+
+    #[test]
+    fn controlled_real_writer_update_between_expected_clone_and_disk_read_fails_closed() {
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+        let identity = fixture.identity();
+        control.bind_identity(&identity).unwrap();
+        let mut next = identity.clone(); next.id.push(7);
+        // The actual atomic marker replacement lands after verify_owned cloned
+        // its expected snapshot and before it reads the disk, so the read must
+        // observe the changed binding and fail closed rather than trust the
+        // stale expected value.
+        let result = control.verify_owned_after(|| {
+            let mut updated = control.verify_owned().unwrap();
+            updated.binding = Some(Binding::from_mount(&next));
+            control.store_owner(updated).unwrap();
+        });
+        assert!(result.unwrap_err().to_string().contains("runtime ownership changed"));
+        assert_eq!(read_owner(&control.directory).unwrap().binding, Some(Binding::from_mount(&next)));
         clean_fixture_runtime(&control);
     }
 
@@ -1069,22 +1119,18 @@ mod tests {
         clean_fixture_runtime(&control);
     }
     fn spawn_barrier_child(exit: u8) -> Result<(CommandObservation, std::os::unix::net::UnixStream)> {
-        use std::os::unix::process::CommandExt;
-        // The pair is atomically CLOEXEC: unrelated parallel children cannot
-        // inherit a writer and delay EOF. Only this owned child receives fd3.
+        // The barrier reader is redirected through stdin instead of a pre_exec
+        // fd3 dup. That keeps the spawn on the posix_spawn fast path: pre_exec
+        // forces fork+exec and widens the window in which an unrelated parallel
+        // child inherits this process's CLOEXEC descriptors (including a live
+        // runtime lease), which a concurrent exclusive flock probe then observes.
+        // The pair stays CLOEXEC, so unrelated children cannot inherit the
+        // writer and delay EOF.
         let (reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
-        let read_fd = reader.as_raw_fd(); let write_fd = writer.as_raw_fd();
-        let mut command = Command::new("/bin/sh"); command.args(["-c", &format!("read barrier <&3; exit {exit}")]);
-        unsafe { command.pre_exec(move || {
-            if libc::close(write_fd) != 0 { return Err(std::io::Error::last_os_error()); }
-            if libc::dup2(read_fd, 3) == -1 { return Err(std::io::Error::last_os_error()); }
-            // dup2(fd, fd) preserves CLOEXEC when the source already is fd3.
-            if libc::fcntl(3, libc::F_SETFD, 0) == -1 { return Err(std::io::Error::last_os_error()); }
-            if read_fd != 3 && libc::close(read_fd) != 0 { return Err(std::io::Error::last_os_error()); }
-            Ok(())
-        }); }
-        let child = mount::spawn_command(&mut command, "control-test")?;
-        drop(reader);
+        let owned: std::os::fd::OwnedFd = reader.into();
+        let mut command = Command::new("/bin/sh"); command.args(["-c", &format!("read barrier; exit {exit}")]);
+        command.stdin(Stdio::from(owned));
+        let child = mount::spawn_stdin_command(&mut command, "control-test")?;
         Ok((child, writer))
     }
 
@@ -1100,10 +1146,19 @@ mod tests {
     }
     impl Drop for BarrierChildren {
         fn drop(&mut self) {
-            self.writers.lock().unwrap_or_else(|error| error.into_inner()).clear();
+            let mut writers = self.writers.lock().unwrap_or_else(|error| error.into_inner());
+            // Dropping each writer closes the child's stdin and simplifies its
+            // EOF; the owned fixture child is reaped below by its real status.
+            for writer in writers.drain(..) { let _ = writer.shutdown(std::net::Shutdown::Both); }
+            drop(writers);
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             if let Some(child) = state.child.as_mut() {
-                if child.status.is_none() { child.status = Some(child.child.wait().expect("released owned fixture child must be reaped")); }
+                // A child that already exited is reaped directly. A cooperative
+                // fixture child is killed before waiting so a stray reference
+                // can never turn teardown into an unbounded wait and orphan a
+                // descendant after the test process returns.
+                if child.status.is_none() { let _ = child.child.kill(); }
+                child.status = Some(child.child.wait().expect("released owned fixture child must be reaped"));
             }
         }
     }

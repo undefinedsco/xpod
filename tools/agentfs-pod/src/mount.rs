@@ -104,6 +104,17 @@ pub(crate) fn spawn_command(command: &mut Command, stage: &'static str) -> Resul
     Ok(CommandObservation { stage, child, status: None, wait_error: None })
 }
 
+#[cfg(test)]
+/// Spawn a command whose stdin is configured by the caller. Redirection through
+/// `Stdio` keeps this on the `posix_spawn` fast path; with no `pre_exec` hook
+/// there is no fork-before-exec window in which an unrelated parallel child
+/// could inherit the caller's descriptors.
+pub(crate) fn spawn_stdin_command(command: &mut Command, stage: &'static str) -> Result<CommandObservation> {
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let child = command.spawn().with_context(|| format!("{stage} spawn failed"))?;
+    Ok(CommandObservation { stage, child, status: None, wait_error: None })
+}
+
 pub(crate) fn spawn_unmount(target: &Path) -> Result<CommandObservation> {
     #[cfg(target_os = "macos")]
     let mut command = Command::new("/sbin/umount");

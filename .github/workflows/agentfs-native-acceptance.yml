@@ -67,11 +67,11 @@ jobs:
           set -euo pipefail
           docker pull "$BOOKWORM_IMAGE"
           docker image inspect --format 'identity={{.Id}} repoDigests={{.RepoDigests}} os={{.Os}} arch={{.Architecture}}' "$BOOKWORM_IMAGE"
-          docker run --rm "$BOOKWORM_IMAGE" sh -c '. /etc/os-release && printf "%s %s " "$ID" "$VERSION_CODENAME"; getconf GNU_LIBC_VERSION'
+          docker run --rm --init "$BOOKWORM_IMAGE" sh -c '. /etc/os-release && printf "%s %s " "$ID" "$VERSION_CODENAME"; getconf GNU_LIBC_VERSION'
       - name: Build, test, package and Node/noBun admit inside Bookworm
         run: |
           set -euo pipefail
-          docker run --rm \
+          docker run --rm --init \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -v "$RUNNER_TEMP:$RUNNER_TEMP" \
             -w "$GITHUB_WORKSPACE" \

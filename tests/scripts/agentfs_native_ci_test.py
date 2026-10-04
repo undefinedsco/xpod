@@ -50,16 +50,18 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_latest_inventory_accepts_only_complete_bound_regressions(self):
-        text = 'test result: ok. 59 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
+        text = 'test result: ok. 61 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
         text += 'test mount::tests::legacy_output_exceeds_observation_budget ... ignored\n'
         text += 'test mount_control::tests::lease_child ... ignored\n'
         for name in ['closed_marker_is_read_only_after_actual_lease_release',
                      'closed_proof_survives_ack_loss_and_partial_socket_cleanup',
                      'actual_dead_owner_releases_flock_and_only_proven_stale_socket_is_collected',
-                     'owned_atomic_record_replacement_transient_is_not_a_foreign_entry']:
+                     'owned_atomic_record_replacement_transient_is_not_a_foreign_entry',
+                     'actual_store_owner_temp_before_rename_is_tolerated_by_live_readers',
+                     'controlled_real_writer_update_between_expected_clone_and_disk_read_fails_closed']:
             text += f'test mount_control::tests::{name} ... ok\n'
         a.check_tests(text)
-        for invalid in [text.replace('59 passed', '58 passed'),
+        for invalid in [text.replace('61 passed', '60 passed'),
                         text.replace('0 filtered out', '2 filtered out'),
                         text.replace('closed_marker_is_read_only_after_actual_lease_release ... ok',
                                      'closed_marker_is_read_only_after_actual_lease_release ... FAILED')]:
@@ -134,15 +136,89 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'no versioned GLIBC'):
             a.assert_bookworm_glibc('  0000:   Symbol table only\n')
 
-    def test_linux_acceptance_runs_inside_pinned_bookworm_container(self):
-        workflow = (ROOT / '.github/workflows/agentfs-native-acceptance.yml').read_text()
-        self.assertIn('rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e', workflow)
-        self.assertIn('bookworm-entry.sh', workflow)
-        self.assertIn('needs: native-macos', workflow)
-        self.assertIn('docker run', workflow)
-        entry = (ROOT / 'scripts/agentfs-native-ci/bookworm-entry.sh').read_text()
-        self.assertIn('glibc 2.36', entry)
-        self.assertIn('e660365729b434af422bcd2e8e14228637ecf24a1de2cd7c916ad48f2a0521e1', entry)
+    def test_acceptance_fails_closed_on_wrong_or_missing_bookworm_pin(self):
+        with self.assertRaisesRegex(RuntimeError, 'required'):
+            a.assert_bookworm_image(None)
+        with self.assertRaisesRegex(RuntimeError, 'canonical pin'):
+            a.assert_bookworm_image('rust@sha256:' + '0' * 64)
+        a.assert_bookworm_image(a.BOOKWORM_IMAGE)
+
+    def test_bookworm_baseline_rejects_non_debian_or_wrong_glibc_interior(self):
+        a.assert_bookworm_baseline('darwin', {})
+        a.assert_bookworm_baseline('linux', {'osRelease': 'debian 12', 'glibc': 'glibc 2.36'})
+        with self.assertRaisesRegex(RuntimeError, 'Debian 12'):
+            a.assert_bookworm_baseline('linux', {'osRelease': 'ubuntu 24.04', 'glibc': 'glibc 2.36'})
+        with self.assertRaisesRegex(RuntimeError, 'glibc 2.36'):
+            a.assert_bookworm_baseline('linux', {'osRelease': 'debian 12', 'glibc': 'glibc 2.39'})
+
+    def test_node_only_environment_rejects_bun(self):
+        with tempfile.TemporaryDirectory() as directory:
+            a.assert_bun_absent(directory)
+            bun = Path(directory, 'bun')
+            bun.write_text('#!/bin/sh\nexit 0\n')
+            bun.chmod(0o755)
+            with self.assertRaisesRegex(RuntimeError, 'resolves bun'):
+                a.assert_bun_absent(directory)
+
+    def test_ldd_requires_resolved_openssl3_sonames(self):
+        ready = '\tlibssl.so.3 => /usr/lib/libssl.so.3\n\tlibcrypto.so.3 => /usr/lib/libcrypto.so.3\n'
+        self.assertEqual(a.assert_ldd_ready(ready), ['libssl.so.3', 'libcrypto.so.3'])
+        with self.assertRaisesRegex(RuntimeError, 'unresolved'):
+            a.assert_ldd_ready('\tlibssl.so.3 => not found\n')
+        with self.assertRaisesRegex(RuntimeError, 'libcrypto.so.3'):
+            a.assert_ldd_ready('\tlibssl.so.3 => /usr/lib/libssl.so.3\n')
+
+    def test_status_json_is_parsed_semantically_not_counted(self):
+        helper = '/opt/install/helper/agentfs-pod'
+        good = json.dumps({'ok': True, 'data': {'platform': 'linux', 'helperPresent': True, 'helperPath': helper}})
+        self.assertTrue(a.assert_status_ready(good, 'linux', helper)['helperPresent'])
+        with self.assertRaisesRegex(RuntimeError, 'platform'):
+            a.assert_status_ready(json.dumps({'ok': True, 'data': {'platform': 'darwin', 'helperPresent': True,
+                                                                   'helperPath': helper}}), 'linux', helper)
+        with self.assertRaisesRegex(RuntimeError, 'did not discover'):
+            a.assert_status_ready(json.dumps({'ok': True, 'data': {'platform': 'linux', 'helperPresent': False,
+                                                                   'helperPath': None}}), 'linux', helper)
+        with self.assertRaisesRegex(RuntimeError, 'helper path'):
+            a.assert_status_ready(json.dumps({'ok': True, 'data': {'platform': 'linux', 'helperPresent': True,
+                                                                   'helperPath': '/elsewhere/agentfs-pod'}}), 'linux', helper)
+
+    def test_failed_producer_retains_raw_and_receipt_without_reuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            receipt, text = m.run_stage('producer', [sys.executable, '-c', "print('partial'); raise SystemExit(9)"],
+                                        directory, ROOT, fresh_bytes=0, stop_bytes=0, poll_seconds=.01)
+            self.assertEqual(receipt['exit'], 9)
+            self.assertIn('partial', text)
+            self.assertTrue(receipt['rawClosedBeforeHash'])
+            self.assertEqual(Path(directory, 'producer.raw.log').read_text(), 'partial\n')
+            with self.assertRaises(FileExistsError):
+                m.run_stage('producer', [sys.executable, '-c', 'pass'], directory, ROOT,
+                            fresh_bytes=0, stop_bytes=0, poll_seconds=.01)
+
+    def test_producer_deadline_stops_owned_group_and_retains_raw(self):
+        with tempfile.TemporaryDirectory() as directory:
+            receipt, _ = m.run_stage('deadline', [sys.executable, '-c', 'import time; time.sleep(60)'],
+                                     directory, ROOT, fresh_bytes=0, stop_bytes=0, poll_seconds=.01, timeout=.05)
+            self.assertEqual(receipt['resourceStop'], 'producer deadline')
+            self.assertEqual(receipt['signal'], 15)
+            self.assertTrue(receipt['actualWait'])
+
+    def test_workflow_runs_bookworm_under_init_with_canonical_pin(self):
+        try:
+            import yaml
+        except ImportError:
+            yaml = None
+        text = (ROOT / '.github/workflows/agentfs-native-acceptance.yml').read_text()
+        if yaml is None:
+            self.assertIn('--init', text)
+            self.assertIn(a.BOOKWORM_IMAGE, text)
+            return
+        workflow = yaml.safe_load(text)
+        job = workflow['jobs']['native-linux']
+        self.assertEqual(job['needs'], 'native-macos')
+        self.assertEqual(job['env']['BOOKWORM_IMAGE'], a.BOOKWORM_IMAGE)
+        commands = '\n'.join(step.get('run', '') for step in job['steps'])
+        self.assertIn('--init', commands)
+        self.assertIn('bookworm-entry.sh', commands)
 
 
 if __name__ == '__main__':
