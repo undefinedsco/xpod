@@ -106,7 +106,7 @@ describe('live Task failure diagnostics before cleanup (unit orchestration only)
 describe('live Task safe failure substage (unit orchestration only)', () => {
   const privateText = 'Bearer private-token https://private.example/pod#id model prose tool arguments';
   type Fault = 'none' | 'persisted-read' | 'persisted-assert' | 'resume-request' | 'resume-assert' | 'resume-unknown' | 'resume-unreadable' | 'resume-abort' | 'queued' | 'checkpoint';
-  async function fixture(fault: Fault) {
+  async function fixture(fault: Fault, httpFailure?: { status: number; body: string }) {
     const owner = 'https://pod.example/alice/profile/card#me';
     const timeout = vi.spyOn(AbortSignal, 'timeout');
     let count = 0;
@@ -151,6 +151,7 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
         body = { run: { id: current.run, thread: current.thread, status: 'queued' } };
       } else if (route === '/api/tasks/runs') body = { runs: [{ id: current.run, thread: current.thread, status: current.status, waitingToolCallId: 'call-one' }] };
       else if (route === '/api/tasks/resume') {
+        if (httpFailure && !injected) { injected = true; const response = new Response(httpFailure.body, { status: 400 }); Object.defineProperty(response, 'status', { value: httpFailure.status }); return response; }
         if (fault === 'resume-request' && !injected) { injected = true; throw connectionError; }
         if (fault === 'resume-unknown' && !injected) { injected = true; throw Object.assign(new Error(privateText), { name: 'secret-name', code: 'secret-code', cause: { code: 'secret-code' } }); }
         if (fault === 'resume-abort' && !injected) { injected = true; throw new DOMException(privateText, 'AbortError'); }
@@ -193,6 +194,29 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
     expect(JSON.stringify(result)).not.toContain('secret-code');
     if (category !== 'assertion') expect(result.failure).toBe(`Task acceptance failed at approved:${fault === 'queued' ? 'queued' : fault === 'checkpoint' ? 'checkpoint' : 'decision'}`);
     if (category === 'connection') expect(result.cases[0]).toMatchObject({ failureDetails: { causeCode: 'ECONNREFUSED' } });
+  });
+  it.each([
+    [400, JSON.stringify({ error: 'Agent execution credential is unavailable' }), 'agent_execution_credential_unavailable'],
+    [401, JSON.stringify({ error: 'authentication_required' }), 'authentication_required'],
+    [403, JSON.stringify({ error: 'service_access_missing' }), 'service_access_missing'],
+    [400, JSON.stringify({ error: privateText }), 'other_error'],
+    [400, '{broken', 'other_error'],
+    [400, JSON.stringify({ error: 'Approval has expired', extra: privateText }), 'approval_expired'],
+    [400, JSON.stringify({ error: 'Approval has expired' }) + ' '.repeat(5000), 'other_error'],
+  ])('records bounded non-OK diagnostics %s safely', async (status, body, taskError) => {
+    const { result, revoked } = await fixture('none', { status: status as number, body: body as string });
+    expect(result.cases[0]?.failureDetails).toMatchObject({ substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', httpStatus: status, taskError });
+    expect(result.failure).toContain(`HTTP ${status}`);
+    expect(result.cleanup.ok).toBe(true);
+    expect(revoked).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(privateText);
+  });
+  it.each([99, 600, 400.5, NaN])('omits malformed HTTP status %s', async status => {
+    const { result } = await fixture('none', { status, body: '{broken' });
+    expect(result.cases[0]?.failureDetails).toMatchObject({ taskError: 'other_error', category: 'assertion' });
+    expect(result.cases[0]?.failureDetails).not.toHaveProperty('httpStatus');
+    expect(result.failure).toContain('HTTP unknown');
+    expect(result.cleanup.ok).toBe(true);
   });
   it('leaves all three success cases, cleanup and request signals unchanged', async () => {
     const { result, revoked, requests, timeouts } = await fixture('none');

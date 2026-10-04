@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import './setup-jsdom'
-import { cleanup, fireEvent, render as renderUi, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor, within } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { Toaster } from '@undefineds.co/shared-ui'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -353,6 +353,123 @@ describe('Xpod Xpod 密钥', () => {
     expect(screen.getByText('已应用到 Codex')).toBeTruthy()
     // Copying and applying reuse the in-session wrapper; they never issue another key.
     expect(current.createGatewayKey).toHaveBeenCalledTimes(1)
+  })
+
+  it('tests the applied session plan once and refreshes only a matching verified key', async () => {
+    const fingerprint = 'a'.repeat(64)
+    const current = client()
+    vi.mocked(current.createGatewayKey).mockResolvedValue({ plaintext: 'plain-key', record: { ...APPLIED, id: 'created-key', name: '我的 Xpod 密钥', fingerprint } })
+    const bridge = configurationBridge()
+    let finish!: (status: { status: 'configured'; appliedKeyFingerprint: string }) => void
+    vi.mocked(bridge.verify).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    fireEvent.click(await screen.findByRole('button', { name: '测试一次' }))
+    await waitFor(() => expect(bridge.verify).toHaveBeenCalledWith({ client: 'codex', planId: 'plan' }))
+    expect(screen.getByRole('button', { name: '正在测试…' })).toHaveProperty('disabled', true)
+    finish({ status: 'configured', appliedKeyFingerprint: fingerprint })
+    await waitFor(() => expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull())
+    expect(screen.queryByText('已写入，还没验证')).toBeNull()
+    expect(current.createGatewayKey).toHaveBeenCalledTimes(1)
+    expect(bridge.apply).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent).not.toContain('plain-key')
+  })
+
+  it('keeps an unverifiable test result unknown and retries failures without applying another key', async () => {
+    const fingerprint = 'a'.repeat(64)
+    const current = client()
+    vi.mocked(current.createGatewayKey).mockResolvedValue({ plaintext: 'plain-key', record: { ...APPLIED, id: 'created-key', name: '我的 Xpod 密钥', fingerprint } })
+    const bridge = configurationBridge()
+    vi.mocked(bridge.verify).mockRejectedValueOnce(new Error('plain-key')).mockResolvedValueOnce({ status: 'unverifiable' })
+    render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    fireEvent.click(await screen.findByRole('button', { name: '测试一次' }))
+    await screen.findByText('客户端配置测试失败，请重试。')
+    expect(document.body.textContent).not.toContain('plain-key')
+    fireEvent.click(screen.getByRole('button', { name: '测试一次' }))
+    await waitFor(() => expect(bridge.verify).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('button', { name: '测试一次' })).toHaveProperty('disabled', false))
+    expect(screen.getByText('已写入，还没验证')).toBeTruthy()
+    expect(bridge.inspect).toHaveBeenCalledTimes(4)
+    expect(current.createGatewayKey).toHaveBeenCalledTimes(1)
+    expect(bridge.apply).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['configured', 'drifted'] as const)('keeps the current %s inspection when binding a successful verify result', async (status) => {
+    const fingerprint = 'a'.repeat(64)
+    const current = client()
+    vi.mocked(current.createGatewayKey).mockResolvedValue({ plaintext: 'plain-key', record: { ...APPLIED, id: 'created-key', name: '我的 Xpod 密钥', fingerprint } })
+    const bridge = configurationBridge()
+    render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    vi.mocked(bridge.inspect).mockResolvedValue({ status, appliedKeyFingerprint: fingerprint })
+    fireEvent.click(await screen.findByRole('button', { name: '测试一次' }))
+    await waitFor(() => expect(screen.queryByText('已写入，还没验证')).toBeNull())
+    expect(bridge.verify).toHaveBeenCalledWith({ client: 'codex', planId: 'plan' })
+    expect(bridge.inspect).toHaveBeenCalledTimes(5)
+    if (status === 'drifted') expect(screen.getByText('配置被改动过')).toBeTruthy()
+  })
+
+  it('ignores verification results from a session that changed while the request was pending', async () => {
+    const fingerprint = 'a'.repeat(64)
+    const record = { ...APPLIED, id: 'created-key', name: '我的 Xpod 密钥', fingerprint }
+    const current = client()
+    vi.mocked(current.createGatewayKey).mockResolvedValue({ plaintext: 'plain-key', record })
+    const bridge = configurationBridge()
+    let finish!: (status: { status: 'drifted'; appliedKeyFingerprint: string }) => void
+    vi.mocked(bridge.verify).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    const view = render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    fireEvent.click(await screen.findByRole('button', { name: '测试一次' }))
+    await waitFor(() => expect(bridge.verify).toHaveBeenCalledTimes(1))
+    const nextBridge = configurationBridge()
+    vi.mocked(nextBridge.inspect).mockResolvedValue({ status: 'configured', appliedKeyFingerprint: fingerprint })
+    view.rerender(<><AiGatewayKeysSection client={client({ listGatewayKeys: vi.fn(async () => [record]) })} clientConfigurationBridge={nextBridge} /><Toaster /></>)
+    await waitFor(() => expect(nextBridge.inspect).toHaveBeenCalledTimes(4))
+    await act(async () => { finish({ status: 'drifted', appliedKeyFingerprint: fingerprint }) })
+    expect(screen.queryByText('配置被改动过')).toBeNull()
+    expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull()
+    expect(nextBridge.verify).not.toHaveBeenCalled()
+  })
+
+  it('does not offer testing for a historical unverifiable key without a session plan', async () => {
+    const fingerprint = 'a'.repeat(64)
+    const bridge = configurationBridge()
+    vi.mocked(bridge.inspect).mockResolvedValue({ status: 'unverifiable', appliedKeyFingerprint: fingerprint })
+    render(<AiGatewayKeysSection client={client({ listGatewayKeys: vi.fn(async () => [{ ...APPLIED, fingerprint }]) })} clientConfigurationBridge={bridge} />)
+    await screen.findByText('已写入，还没验证')
+    expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull()
+    expect(bridge.verify).not.toHaveBeenCalled()
+  })
+
+  it.each(['disabled', 'different fingerprint'])('does not test a %s row after an applied key changes', async (change) => {
+    const fingerprint = 'a'.repeat(64)
+    const record = { ...APPLIED, id: 'created-key', name: '我的 Xpod 密钥', fingerprint }
+    const current = client()
+    vi.mocked(current.createGatewayKey).mockResolvedValue({ plaintext: 'plain-key', record })
+    const bridge = configurationBridge()
+    const view = render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    await screen.findByRole('button', { name: '测试一次' })
+    vi.mocked(current.listGatewayKeys).mockResolvedValue([{ ...record, ...(change === 'disabled' ? { disabledAt: '2026-10-04T00:00:00Z' } : { fingerprint: 'b'.repeat(64) }) }])
+    view.rerender(<><AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} liveRevision={1} /><Toaster /></>)
+    await waitFor(() => expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull())
+    expect(bridge.verify).not.toHaveBeenCalled()
   })
 
   it('offers the client configuration copy for the declared purpose', async () => {

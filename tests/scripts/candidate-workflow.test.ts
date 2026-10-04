@@ -545,7 +545,7 @@ esac
   });
 
   it('projects only optional allowlisted Task failure details and accepts older evidence', async () => {
-    const details = { substage: 'decision-resume-request', category: 'connection', name: 'TypeError', causeCode: 'ECONNREFUSED' };
+    const details = { substage: 'decision-resume-request', category: 'connection', name: 'TypeError', causeCode: 'ECONNREFUSED', httpStatus: 403, taskError: 'service_access_missing' };
     const result = await projectTaskEvidence(JSON.stringify({ taskApproval: { ok: false,
       cases: [{ kind: 'approved', ok: false, acceptancePhase: 'approved:decision', failureDetails: { ...details, message: 'secret-body', uri: 'private-uri' } }],
       cleanup: { ok: true },
@@ -557,6 +557,8 @@ esac
     expect(result.evidence).not.toContain('private-uri');
   });
   it.each([
+    ...[-1, 99, 600, 400.5, '400', null, 'secret-body'].map(httpStatus => ({ substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', httpStatus })),
+    { substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', taskError: 'secret-body' },
     { substage: 'secret-body', category: 'other', name: 'Error' },
     { substage: 'decision-resume-request', category: 'secret-body', name: 'Error' },
     { substage: 'decision-resume-request', category: 'other', name: 'secret-body' },

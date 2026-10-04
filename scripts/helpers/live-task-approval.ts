@@ -19,6 +19,8 @@ export interface LiveTaskFailureDetails {
   name: 'LiveTaskEvidenceError' | 'Error' | 'TypeError' | 'SyntaxError' | 'AbortError' | 'TimeoutError' | 'DOMException' | 'other';
   code?: 'ENOSPC' | 'ECONNREFUSED' | 'ECONNRESET' | 'ETIMEDOUT' | 'ENOTFOUND' | 'EACCES' | 'ERR_INVALID_URL';
   causeCode?: LiveTaskFailureDetails['code'];
+  httpStatus?: number;
+  taskError?: TaskHttpErrorToken;
 }
 
 export interface LiveTaskCaseEvidence {
@@ -55,7 +57,53 @@ export interface LiveTaskEvidence {
   failure?: string;
 }
 
-class LiveTaskEvidenceError extends Error {}
+const taskHttpErrors = {
+  'Authentication required': 'authentication_required',
+  'authentication_required': 'authentication_required',
+  'pod_owner_mismatch': 'pod_owner_mismatch',
+  'service_access_missing': 'service_access_missing',
+  'Resource id is required': 'resource_id_required',
+  'Approval is required': 'approval_required',
+  'Run not found': 'run_not_found',
+  'Approval does not authorize this run': 'approval_not_authorized',
+  'Approval does not match the pending tool checkpoint': 'approval_checkpoint_mismatch',
+  'Approval has expired': 'approval_expired',
+  'Run is not waiting at this approval checkpoint': 'run_checkpoint_mismatch',
+  'Task not found for this run': 'task_not_found',
+  'Agent execution credential is unavailable': 'agent_execution_credential_unavailable',
+  'AI Connection invocation key issuer is required': 'ai_connection_invocation_issuer_required',
+} as const;
+type TaskHttpErrorToken = typeof taskHttpErrors[keyof typeof taskHttpErrors] | 'other_error';
+class LiveTaskEvidenceError extends Error {
+  public httpStatus?: number;
+  public taskError?: TaskHttpErrorToken;
+}
+
+/** Read only a small error envelope; never retain or report its contents. */
+async function taskHttpErrorToken(response: Response): Promise<TaskHttpErrorToken> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    reader = response.body?.getReader();
+    if (!reader) return 'other_error';
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 4096) { void reader.cancel().catch(() => undefined); return 'other_error'; }
+      chunks.push(value);
+    }
+    const buffer = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) { buffer.set(chunk, offset); offset += chunk.byteLength; }
+    const body: unknown = JSON.parse(new TextDecoder().decode(buffer));
+    const error = body && typeof body === 'object' && !Array.isArray(body) ? (body as { error?: unknown }).error : undefined;
+    return typeof error === 'string' && Object.prototype.hasOwnProperty.call(taskHttpErrors, error)
+      ? taskHttpErrors[error as keyof typeof taskHttpErrors] : 'other_error';
+  } catch { return 'other_error'; }
+  finally { reader?.releaseLock(); }
+}
 
 /** Fixed diagnostics only; upstream prose and arbitrary error properties never enter evidence. */
 function safeFailureDetails(substage: LiveTaskFailureDetails['substage'], error: unknown): LiveTaskFailureDetails {
@@ -73,7 +121,10 @@ function safeFailureDetails(substage: LiveTaskFailureDetails['substage'], error:
       : name === 'TimeoutError' || observedCodes.includes('ETIMEDOUT') ? 'timeout'
         : observedCodes.some(item => item === 'ECONNREFUSED' || item === 'ECONNRESET' || item === 'ENOTFOUND') ? 'connection'
           : name === 'SyntaxError' ? 'parse' : 'other';
-    return { substage, category, name, ...(code ? { code } : {}), ...(causeCode ? { causeCode } : {}) };
+    return { substage, category, name, ...(code ? { code } : {}), ...(causeCode ? { causeCode } : {}),
+      ...(controlled && Number.isInteger(error.httpStatus) && error.httpStatus! >= 100 && error.httpStatus! <= 599 ? { httpStatus: error.httpStatus } : {}),
+      ...(controlled && (error.taskError === 'other_error' || Object.values(taskHttpErrors).includes(error.taskError as typeof taskHttpErrors[keyof typeof taskHttpErrors])) ? { taskError: error.taskError } : {}),
+    };
   } catch {
     return { substage, category: 'other', name: 'other' };
   }
@@ -141,7 +192,13 @@ export async function acceptLiveTaskApproval(options: {
       method, headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(timeout),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    requireEvidence(response.ok, `Task ${method} ${route.split('?')[0]} HTTP ${response.status}`);
+    if (!response.ok) {
+      const validStatus = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599;
+      const error = new LiveTaskEvidenceError(`Task ${method} ${route.split('?')[0]} HTTP ${validStatus ? response.status : 'unknown'}`);
+      if (validStatus) error.httpStatus = response.status;
+      error.taskError = await taskHttpErrorToken(response);
+      throw error;
+    }
     return response.json() as Promise<T>;
   };
   const podFetch: typeof fetch = (input, init) => options.session.fetch(input, {

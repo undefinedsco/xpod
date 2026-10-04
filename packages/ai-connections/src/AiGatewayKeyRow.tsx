@@ -27,6 +27,8 @@ export function AiGatewayKeyRow({
   configurationStatus,
   onReissue,
   onEnable,
+  onTest,
+  testing = false,
   onRequestDestroy,
   onCancelDestroy,
   onDestroy,
@@ -38,6 +40,8 @@ export function AiGatewayKeyRow({
   configurationStatus?: AiClientConfigurationStatus
   onReissue?: () => void
   onEnable?: () => void
+  onTest?: () => void
+  testing?: boolean
   onRequestDestroy: () => void
   onCancelDestroy: () => void
   onDestroy: () => void
@@ -75,6 +79,9 @@ export function AiGatewayKeyRow({
       {configurationStatus && (configurationStatus.status === 'unavailable' || (record.fingerprint && configurationStatus.appliedKeyFingerprint === record.fingerprint)) && configurationStatus.status !== 'configured' && configurationStatus.status !== 'notConfigured' ? (
         <p role="status" className="order-last w-full text-sm text-muted-foreground">{configurationStatusLabel(configurationStatus.status)}</p>
       ) : null}
+      {onTest ? <Button variant="outline" size="sm" disabled={busy} onClick={onTest}>
+        {testing ? '正在测试…' : '测试一次'}
+      </Button> : null}
       {record.plaintextAvailable === false && onReissue ? <div className="order-last flex w-full flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span>密钥原文没有保存，不能再显示</span>
         <Button variant="ghost" size="sm" disabled={busy} onClick={onReissue}>重新签发</Button>

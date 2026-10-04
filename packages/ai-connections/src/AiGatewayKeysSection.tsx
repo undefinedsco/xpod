@@ -75,10 +75,20 @@ export function AiGatewayKeysSection({
   liveRevision?: number
 }) {
   const bridge = clientConfigurationBridge?.available === false ? undefined : clientConfigurationBridge
+  const [busyKeyId, setBusyKeyId] = useState<string>()
+  const operation = useRef(false)
+  const verificationGeneration = useRef(0)
+  const [sessionPlans, setSessionPlans] = useState<Partial<Record<AiConnectionsClientId, { planId: string; fingerprint: string }>>>({})
+  const [testingKeyId, setTestingKeyId] = useState<string>()
   const [clientStatuses, setClientStatuses] = useState<Partial<Record<AiConnectionsClientId, AiClientConfigurationStatus>>>({})
   useEffect(() => {
     let active = true
+    verificationGeneration.current += 1
+    operation.current = false
+    setBusyKeyId(undefined)
+    setTestingKeyId(undefined)
     setClientStatuses({})
+    setSessionPlans({})
     if (bridge) {
       for (const id of AI_CONNECTIONS_CLIENTS) {
         void bridge.inspect(id).then((status) => {
@@ -86,8 +96,8 @@ export function AiGatewayKeysSection({
         }).catch(() => undefined)
       }
     }
-    return () => { active = false }
-  }, [bridge])
+    return () => { active = false; verificationGeneration.current += 1 }
+  }, [bridge, client])
   const [keys, setKeys] = useState<GatewayKeyRecord[]>([])
   const [confirmingKeyId, setConfirmingKeyId] = useState<string | undefined>(undefined)
   const [loadError, setLoadError] = useState<string>()
@@ -104,10 +114,8 @@ export function AiGatewayKeysSection({
   const [issuedClient, setIssuedClient] = useState<AiConnectionsClientId>()
   const [appliedClient, setAppliedClient] = useState<AiConnectionsClientId>()
   const [applying, setApplying] = useState(false)
-  const [busyKeyId, setBusyKeyId] = useState<string>()
   const [error, setError] = useState<string>()
   const plaintexts = useRef(new Map<string, string>())
-  const operation = useRef(false)
   const notification = useRef<string | undefined>(undefined)
 
   const notify = useCallback((options: Parameters<typeof toast>[0]) => {
@@ -261,6 +269,7 @@ export function AiGatewayKeysSection({
           targetHash: plan.confirmation.targetHash,
         } } : {}),
       })
+      setSessionPlans(current => ({ ...current, [plan.client]: issued.fingerprint ? { planId: plan.planId, fingerprint: issued.fingerprint } : undefined }))
       setAppliedClient(plan.client)
       setClientStatuses((current) => ({ ...current, [plan.client]: { status: 'unverifiable', appliedKeyFingerprint: issued.fingerprint } }))
       // The record now points at the client the wrapper was written into.
@@ -274,6 +283,44 @@ export function AiGatewayKeysSection({
       setError(errorMessage(cause))
     } finally {
       setApplying(false)
+    }
+  }
+
+  const verificationPlan = (record: GatewayKeyRecord) => {
+    const clientId = AI_CONNECTIONS_CLIENTS.find(id => id === record.appliedTo)
+    if (!bridge || !clientId || record.disabledAt || !record.fingerprint) return
+    const status = clientStatuses[clientId]
+    const plan = sessionPlans[clientId]
+    if (status?.status !== 'unverifiable' || status.appliedKeyFingerprint !== record.fingerprint || plan?.fingerprint !== record.fingerprint) return
+    return { clientId, ...plan }
+  }
+
+  const testConfiguration = async (record: GatewayKeyRecord) => {
+    const plan = verificationPlan(record)
+    if (!bridge || !plan || operation.current) return
+    const generation = verificationGeneration.current
+    operation.current = true
+    setBusyKeyId(record.id)
+    setTestingKeyId(record.id)
+    try {
+      let status = await bridge.verify({ client: plan.clientId, planId: plan.planId })
+      if (generation !== verificationGeneration.current) return
+      if (status.status === 'configured' && !status.appliedKeyFingerprint) {
+        const inspected = await bridge.inspect(plan.clientId)
+        if (generation !== verificationGeneration.current) return
+        status = { ...status, ...inspected }
+      }
+      const fingerprint = status.appliedKeyFingerprint ?? (status.status !== 'configured' ? plan.fingerprint : undefined)
+      if (fingerprint !== plan.fingerprint) throw new Error('Configuration key changed')
+      setClientStatuses(current => ({ ...current, [plan.clientId]: { ...status, appliedKeyFingerprint: fingerprint } }))
+    } catch {
+      if (generation === verificationGeneration.current) notify({ variant: 'destructive', description: '客户端配置测试失败，请重试。', duration: 8000 })
+    } finally {
+      if (generation === verificationGeneration.current) {
+        operation.current = false
+        setBusyKeyId(undefined)
+        setTestingKeyId(undefined)
+      }
     }
   }
 
@@ -356,6 +403,8 @@ export function AiGatewayKeysSection({
                   confirming={confirmingKeyId === record.id}
                   configurationStatus={record.appliedTo && AI_CONNECTIONS_CLIENTS.includes(record.appliedTo as AiConnectionsClientId)
                     ? clientStatuses[record.appliedTo as AiConnectionsClientId] : undefined}
+                  onTest={verificationPlan(record) ? () => void testConfiguration(record) : undefined}
+                  testing={testingKeyId === record.id}
                   onEnable={() => {
                     if (operation.current) return
                     operation.current = true
