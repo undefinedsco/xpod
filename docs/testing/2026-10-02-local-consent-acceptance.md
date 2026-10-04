@@ -559,3 +559,21 @@ RC `3be53aba6aa04df0a93520ab3a94af0e9bad768a` / run `37195150178` 实际 complet
 本批只修 `scripts/helpers/live-task-approval.ts` 验收 adapter，服务产品源码不变。checkpoint、Session 归属、cleanup 三处通过共享 `threadResource.buildIriForDatabase` 与明确 podUrl 的已认证 DB 做完整 IRI 比较；owner/fragment/target/tool/callId 保护不放宽，不推导 Pod 根。cleanup 独立从本轮 Run 发现 Session，waiting_input/等待 callId 必须恰好一条；Stop 后独立读回 exact owner/thread 及 completed/error 才计终态。缺失、foreign、其他 Pod、owner 或读回错误均使 cleanup 失败，仍尝试撤销 grant。Root 没有该验收 API，不迁入新脚本；本轮仅同步此文档补录，Root 既有产品修复/门禁范围维持。
 
 旧脚本 RED actual exit1（10 fail/26 pass）；修后 40 项/3 files actual exit0，含真实 ORM 关系读回正例与 foreign/owner/fragment 负例，以及独立 Session cleanup 的缺失/归属/读回失败负例。build:ts、typecheck:test、本批 lint 均 actual exit0。冻结验收文件的两次完整 `bun run test:integration` 均 actual exit0/signal=null：UTC 12:12:34.146—12:18:13.272 与提交前 12:18:56.050—12:27:08.597；各次 runtime30、lite163/16既有skip、full63。私有 `.test-data/sol-release/acceptance-final-local-gates.json` 保存原始记录/hash和自有 Compose containers/networks/volumes 各0。旧全量单元/lint欠账、额外 Linux SDK sandbox、原安装桌面等未验证范围保留。批准写入/拒绝不写/Stop不续跑、各真实 Session 终态和 grant 撤销仍必须在下一 exact-SHA RC 实际通过，不能由这里的模拟清理测试替代；尚未宣称 stable 已发布。
+
+
+### 2026-10-04：共享 SolidFS 认证与 Session 文档源修复
+
+候选 `685e7e1496967a33c464538be2dbcb173be85329` / RC run `37202336374` 实际 completed/failure：批准 checkpoint、真实 paused Session 和决定保存已通过，resume 返回 400；Finalize skipped，没有十九项最终凭证，失败 SHA 不提升。当前生产 Gateway 的完整原始错误前缀是 `SolidFS token exchange failed`，内部 token endpoint 被拒绝；先前仅由截断尾部推断 named GRAPH 的解释已撤回，没有基于该误判修改空间守卫。
+
+SolidFS 原先另行发起客户端凭据交换，把内部 token transport 当公开入口，且没有复用共享 DPoP/授权绑定。修复删除这条交换路径，由容器注入现有 OwnerPodAccess，每个 hydrate/sync 请求保留 owner、task grant ref/version、到期与撤销验证，完整 authenticated fetch 负责 DPoP；401 写入不重放。父进程唯一 prepare/commit/rollback，真正沙箱 worker 只获已准备的 file workspace，context 为空、无 Pod token endpoint/存储映射或恢复 secret，持久输入配置不改。真实 macOS sandbox-exec + Pi SDK 的 write/request_approval 证明父 hydrate/commit 各一次，Stop 证明 rollback 且没有 Pod PUT；这不等于 Linux bubblewrap 或 macOS 秘密隔离验收。
+
+本地真实批准/拒绝/Stop 随后都进入正确终态，但最初 overall 仍失败：Session scoped SPARQL query HTTP 200 返回日期文档主体，ORM optional inline object hydration 却请求集合根 404。问题与最小真实模型 RED 已记录于 [共享 ORM issue](../issues/2026-10-04-session-inline-document-read.md)。共享查询层现在把无 fragment 的完整 HTTP(S) 主体作为文档源；fragment 只在 HTTP 文档请求移除，资源身份保留完整。共享仓库源码及参数化回归已修，但未提交或发布；候选固定 0.3.25 CJS/ESM patch 是消费桥，安装/依赖状态确认恰好一次，bun.lock 版本和补丁路径不变。以后上游包含此修复时应删除该桥，不重复应用。实际 CJS require/ESM import 的共享 Session 读回四例全通过；下一 RC 的实际镜像和 clean consumers 仍须独立验证补丁产物。
+
+未插桩 `scripts/accept-live-gateway-login-chat.ts` 在当前候选工作树生产入口、新账号/Pod 上 actual exit0，UTC14:13:47.981250—14:16:50.742980：Pod读写、Gateway key、Pod内AI配置、models、有效真实Chat分项全真；approved 同Run完成、marker正文一致、duplicate resume稳定；rejected/Stop cancelled、marker不存在且稳定。独立三条 Session completed，cleanup/grantRevoked/keyCleanup 全真。私有正式结果在 `.test-data/sol-release/live-resume/formal-result.json` 与 `.test-data/acceptance/live-gateway-login-chat-standalone.json`。该自有生产入口已经停止，原3000、用户资料和原安装0.4.20桌面不动；本地 working-tree 证明不是新 immutable RC。
+
+源码/测试 typecheck 与 build 两树 actual0。候选共享认证组合77项/4files、真实SDK/sandbox驱动32项/1file、ORM/审批读回及清理回归通过；Root共享HTTP15项/3files、driver/container51项/2files通过。Root仅镜像其已有 SolidFS/Driver/container及必要回归9文件，仍0.3.24，不迁移候选0.3.25 patch、后续存储mapping或审批API。Root旧 journal fixture补显式 Bearer 后通过，未放宽认证守卫。候选静态检查9项与基准规则/消息完全一致，无新增；Root既有静态诊断仍保留。全量14项既有单元欠账不称全绿。
+
+产品/patch/tests hash持续冻结。候选修后完整 `bun run test:integration` actual exit0/signal=null，UTC14:19:11.618—14:25:24.353（runtime30、lite163/16既有skip、full63）；Root完整 actual exit0/signal=null，UTC14:25:56.563—14:31:28.848（runtime30、lite157/6既有skip、full46）。仅使用本轮 sol VM、独占 Compose project、缓存四张小镜像，host/guest实际空间预检且无需pull；闲置自有bootstrap副本清理记录保留，授权历史consumer检查没有node_modules可删、回收0。提交前第二次候选完整及新19项exact-SHA RC另行补录。额外Linux SDK+bubblewrap、原桌面、长时间in-flight stream及字面6h/14d缺口维持，不以局部门禁替代稳定发布凭证。
+
+
+本批冻结最终补录：候选提交前完整 `bun run test:integration` actual exit0/signal=null，UTC14:33:16.610—14:39:13.546（runtime30、lite163/16既有skip、full63），与上述修后完整属于同一产品/patch/tests哈希。三条门禁原始退出/日期保存在私有 `.test-data/sol-release/solidfs-final-local-gates.json`，自有 sol Compose containers/networks/volumes均0。两树旧诊断/未测范围保持，新 immutable RC 尚待19项最终凭证；没有 stable tag/promotion。

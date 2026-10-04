@@ -122,24 +122,16 @@ describe('PodSolidFsHydrator', () => {
     }
   });
 
-  it('exchanges client credentials before hydrating when no access token is present', async () => {
+  it('uses shared Pod access before hydrating a restored credential context', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-pod-hydrate-credentials-'));
     const targetPath = path.join(root, 'asset.bin');
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        access_token: 'token-from-client-credentials',
-        token_type: 'Bearer',
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response('remote object\n', {
-        status: 200,
-        headers: { ETag: '"etag-before"' },
-      }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response('remote object\n', { status: 200, headers: { ETag: '"etag-before"' } }));
     const hydrator = new PodSolidFsHydrator({
       fetch: fetchMock as any,
-      tokenEndpoint: 'https://pod.example/.oidc/token',
+      podAccess: { getPodFetch: async () => async (input, init) => {
+        const headers = new Headers(init?.headers); headers.set('Authorization', 'Bearer token-from-client-credentials');
+        return fetchMock(input, { ...init, headers });
+      } },
     });
 
     try {
@@ -157,10 +149,8 @@ describe('PodSolidFsHydrator', () => {
         },
       });
 
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(fetchMock.mock.calls[0][0]).toBe('https://pod.example/.oidc/token');
-      expect(fetchMock.mock.calls[0][1].method).toBe('POST');
-      expect(fetchMock.mock.calls[1][1].headers.get('Authorization')).toBe('Bearer token-from-client-credentials');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1].headers.get('Authorization')).toBe('Bearer token-from-client-credentials');
       await expect(readFile(targetPath, 'utf8')).resolves.toBe('remote object\n');
     } finally {
       await rm(root, { recursive: true, force: true });

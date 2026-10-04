@@ -121,7 +121,17 @@ diff --git a/dist/core/query-builders/select-query-builder.js b/dist/core/query-
                  console.log('mergeRowsBySubject key', key);
              }
              if (!key) {
-@@ -1330,11 +1330,11 @@
+@@ -1318,6 +1318,9 @@
+         if (hashIndex > 0) {
+             return childIri.slice(0, hashIndex);
+         }
++        if (childIri.startsWith('http://') || childIri.startsWith('https://')) {
++            return childIri;
++        }
+         const resourcePath = table.getResourcePath?.() || table.config.base || table.getContainerPath?.();
+         if (resourcePath) {
+             const absolute = resourcePath.startsWith('http')
+@@ -1330,11 +1333,11 @@
      isInlineObjectColumn(column) {
          if (!column)
              return false;
@@ -276,7 +286,17 @@ diff --git a/dist/esm/core/query-builders/select-query-builder.js b/dist/esm/cor
                  console.log('mergeRowsBySubject key', key);
              }
              if (!key) {
-@@ -1327,11 +1327,11 @@
+@@ -1315,6 +1315,9 @@
+         if (hashIndex > 0) {
+             return childIri.slice(0, hashIndex);
+         }
++        if (childIri.startsWith('http://') || childIri.startsWith('https://')) {
++            return childIri;
++        }
+         const resourcePath = table.getResourcePath?.() || table.config.base || table.getContainerPath?.();
+         if (resourcePath) {
+             const absolute = resourcePath.startsWith('http')
+@@ -1327,11 +1330,11 @@
      isInlineObjectColumn(column) {
          if (!column)
              return false;

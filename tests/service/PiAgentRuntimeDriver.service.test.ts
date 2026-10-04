@@ -13,7 +13,7 @@ import type { RunExecutionInput } from '../../src/api/runs/RunExecutionBackend';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
 import { TaskService } from '../../src/api/tasks/TaskService';
 import { cancelRun } from '../../src/api/runs/RunCancellation';
-import type { SolidFS } from '../../src/solidfs';
+import { LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, type SolidFS } from '../../src/solidfs';
 import { registerSocketOriginShims } from '../../src/runtime/socket-shim';
 import { SandboxFactory } from '../../src/terminal/sandbox';
 import { PACKAGE_ROOT } from '../../src/runtime/package-root';
@@ -97,7 +97,7 @@ async function fixture(streamFn: StreamFn, configureSession?: (session: pi.Agent
       return result;
     },
   };
-  const driver = new PiAgentRuntimeDriver({ ...driverOptions, piSdk: sdk, solidfs, solidfsProjection: 'copy' });
+  const driver = new PiAgentRuntimeDriver({ ...driverOptions, piSdk: sdk, solidfs: driverOptions.solidfs ?? solidfs, solidfsProjection: 'copy' });
   const input: RunExecutionInput = { runId: 'run_pi_terminal', threadId: 'thread_pi_terminal',
     prompt: 'Complete the task', conversation: [], config: { workspace,
       runner: { type: 'pi', protocol: 'pi' },
@@ -384,15 +384,25 @@ describe('Pi assistant terminal status', () => {
 });
 
 
-async function transportFixture(mode: 'tcp' | 'socket' | 'external', sandbox = false) {
+async function transportFixture(mode: 'tcp' | 'socket' | 'external', sandbox = false,
+  scenario?: { kind: 'approval' | 'stop'; controller: AbortController; solidfs: SolidFS }) {
   const requests: Array<{ url: string; authorization?: string; model: string }> = [];
   const gateway = createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk.toString();
     requests.push({ url: request.url!, authorization: request.headers.authorization, model: JSON.parse(body).model });
+    if (scenario?.kind === 'stop' && requests.length === 2) { scenario.controller.abort(); return; }
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     const chunk = (delta: object, finish_reason: string | null) => ({ id: 'fixture', object: 'chat.completion.chunk',
       created: 1, model: 'fixture-model', choices: [{ index: 0, delta, finish_reason }] });
+    if (scenario) {
+      const tool = requests.length === 1 ? { name: 'write', arguments: JSON.stringify({ path: 'seed.ttl', content: 'sandbox bytes' }) }
+        : { name: 'request_approval', arguments: JSON.stringify({ target: 'https://pod.example/alice/guarded.ttl',
+          action: 'http://www.w3.org/ns/odrl/2/write', risk: 'low', description: 'Ask before guarded write' }) };
+      response.end(`data: ${JSON.stringify(chunk({ role: 'assistant', tool_calls: [{ index: 0, id: `call-${requests.length}`, type: 'function', function: tool }] }, null))}\n\n`
+        + `data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\ndata: [DONE]\n\n`);
+      return;
+    }
     response.end(`data: ${JSON.stringify(chunk({ role: 'assistant', content: 'Bound transport succeeded' }, null))}\n\n`
       + `data: ${JSON.stringify(chunk({}, 'stop'))}\n\ndata: [DONE]\n\n`);
   });
@@ -405,11 +415,12 @@ async function transportFixture(mode: 'tcp' | 'socket' | 'external', sandbox = f
     ...(mode === 'socket' ? { socketPath } : {}) };
   const unregisterSocket = mode === 'socket' && !sandbox ? registerSocketOriginShims(canonicalBaseUrl, socketPath) : undefined;
   const app = await fixture(streamSimple, undefined, { gatewayTransport: binding,
+    ...(scenario ? { solidfs: scenario.solidfs } : {}),
     ...(sandbox ? { agentLoopIsolation: 'sandboxed-process' as const, requireSandbox: true,
       workerPath: path.join(process.cwd(), 'dist', 'api', 'runs', 'PiAgentRuntimeWorker.js') } : {}),
   });
   if (mode === 'external') app.input.config.aiConnection!.baseUrl = endpoint;
-  app.input.signal = AbortSignal.timeout(10000);
+  app.input.signal = scenario ? AbortSignal.any([scenario.controller.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000);
   const originalConnection = app.input.config.aiConnection;
   return { app, requests, originalConnection, canonicalBaseUrl, endpoint, cleanup: async () => {
     await app.cleanup();
@@ -478,4 +489,53 @@ describe('Pi Gateway transport binding', () => {
       await transport.cleanup();
     }
   });
+  it.runIf(process.platform === 'darwin').each(['approval', 'stop'] as const)(
+    'keeps Pod hydration/sync in the parent during actual sandbox tools (%s)', async kind => {
+      const wire: Array<{ method: string; body?: string }> = [];
+      const authenticated: typeof fetch = async (_input, init) => {
+        const method = init?.method ?? 'GET';
+        wire.push({ method, ...(init?.body ? { body: String(init.body) } : {}) });
+        return new Response(method === 'GET' ? 'initial bytes' : null, { status: 200, headers: { etag: '"seed-version"' } });
+      };
+      const podAccess = { getPodFetch: vi.fn(async () => authenticated) };
+      const parent = new LocalSolidFS({ syncer: new PodSolidFsSyncer({ podAccess }) });
+      const hydrator = new PodSolidFsHydrator({ podAccess });
+      const commits = vi.fn();
+      const rollbacks = vi.fn();
+      const prepare = vi.fn(async (input: Parameters<SolidFS['prepare']>[0]) => {
+        const workspace = 'https://pod.example/alice/';
+        const context = { auth: { type: 'solid', webId: owner, clientSecret: 'parent-only-secret' },
+          taskCredential: { credentialRef: 'fixture-grant', version: 3 } };
+        await hydrator.hydrate({ path: 'seed.ttl', targetPath: path.join(input.sourcePath!, 'seed.ttl'),
+          workspace: { workspace, cwd: input.sourcePath!, projection: 'copy', entries: [] }, context });
+        const prepared = await parent.prepare({ ...input, workspace, context });
+        const commit = prepared.commit.bind(prepared);
+        const rollback = prepared.rollback.bind(prepared);
+        prepared.commit = async () => { commits(); return commit(); };
+        prepared.rollback = async () => { rollbacks(); return rollback(); };
+        return prepared;
+      });
+      const transport = await transportFixture('tcp', true, { kind, controller: new AbortController(), solidfs: { prepare } });
+      const launch = vi.spyOn(SandboxFactory, 'launch');
+      const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+      process.env.PI_CODING_AGENT_DIR = path.join(new URL(transport.app.input.config.workspace).pathname, 'isolated-pi');
+      const originalWorkspace = transport.app.input.config.workspace;
+      try {
+        const events = await drain(transport.app);
+        expect(prepare).toHaveBeenCalledOnce();
+        expect(launch.mock.results[0].value).toMatchObject({ sandboxed: true, technology: 'sandbox-exec' });
+        expect(transport.app.input.config.workspace).toBe(originalWorkspace);
+        expect(transport.requests).toHaveLength(2);
+        expect(wire).toEqual(kind === 'approval' ? [{ method: 'GET' }, { method: 'PUT', body: 'sandbox bytes' }] : [{ method: 'GET' }]);
+        expect(podAccess.getPodFetch).toHaveBeenCalledTimes(kind === 'approval' ? 2 : 1);
+        expect(commits).toHaveBeenCalledTimes(kind === 'approval' ? 1 : 0);
+        expect(rollbacks).toHaveBeenCalledTimes(kind === 'approval' ? 0 : 1);
+        if (kind === 'approval') expect(events).toContainEqual(expect.objectContaining({ type: 'tool_call', name: 'request_approval' }));
+      } finally {
+        launch.mockRestore();
+        if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+        await transport.cleanup();
+      }
+    });
+
 });

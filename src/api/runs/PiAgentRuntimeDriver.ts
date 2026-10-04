@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import { createInterface } from 'node:readline';
 import { getLoggerFor } from 'global-logger-factory';
 import type { WorkspaceRef } from '../workspace/types';
@@ -81,8 +83,8 @@ export interface PiAgentRuntimeDriverOptions {
   gatewayTransport?: { canonicalBaseUrl: string; baseUrl: string; socketPath?: string };
   /** The runtime's canonical Pod authority and storage root, captured at API startup. */
   podWorkspaceMapping?: { baseUrl: string; rootFilePath: string };
-  /** Existing runtime token endpoint used by SolidFS hydration and RDF sync. */
-  podTokenEndpoint?: string;
+  /** Shared authenticated Pod access; hydration and sync remain in the host process. */
+  podAccess?: PodAccessFetchProvider;
   /**
    * local: run pi's full Agent Loop in the API process.
    * cloud: run the entire pi Agent Loop in a sandboxed worker process.
@@ -161,12 +163,12 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         syncer: this.createDefaultSolidFsSyncer(),
         journalRoot: options.solidfsJournalRootDir,
       }),
-      hydrator: new PodSolidFsHydrator({ tokenEndpoint: options.podTokenEndpoint }),
+      hydrator: new PodSolidFsHydrator({ podAccess: options.podAccess }),
     });
   }
 
   private createDefaultSolidFsSyncer(): SolidFsSyncer {
-    const syncers: SolidFsSyncer[] = [new PodSolidFsSyncer({ tokenEndpoint: this.options.podTokenEndpoint })];
+    const syncers: SolidFsSyncer[] = [new PodSolidFsSyncer({ podAccess: this.options.podAccess })];
     if (this.options.rdfSearchIndexingService) {
       syncers.push(new RdfSearchIndexingSolidFsSyncer({
         service: this.options.rdfSearchIndexingService,
@@ -412,13 +414,15 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     if (input.signal?.aborted) onAbort();
     const { signal: _signal, ...serializableInput } = input;
     child.process.stdin?.end(JSON.stringify({
-      input: serializableInput,
+      // The host already prepared this workspace and owns all Pod writes. The worker
+      // receives only its isolated file view, never the restored Pod credential context.
+      input: { ...serializableInput, context: {}, config: {
+        ...serializableInput.config, workspace: pathToFileURL(workdir).href, worktree: undefined,
+      } },
       options: {
         persistPiSessions: this.options.persistPiSessions === true,
         sessionRootDir: this.options.sessionRootDir,
         gatewayTransport: this.options.gatewayTransport,
-        podWorkspaceMapping: this.podWorkspaceMapping,
-        podTokenEndpoint: this.options.podTokenEndpoint,
       },
     }));
 

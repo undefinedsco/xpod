@@ -813,7 +813,7 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, rdfSearchReconciliationRepository, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
+    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, rdfSearchReconciliationRepository, aiConnectionInvocationKeyIssuer, ownerPodAccess }: ApiContainerCradle) => {
       return new InngestRunExecutionBackend({
         baseUrl: inngestRuntimeConfig?.baseUrl,
         eventKey: inngestRuntimeConfig?.eventKey,
@@ -841,7 +841,7 @@ export function registerCommonServices(
           podWorkspaceMapping: config.solidBaseUrl && config.solidRootFilePath
             ? { baseUrl: config.solidBaseUrl, rootFilePath: config.solidRootFilePath }
             : undefined,
-          podTokenEndpoint: config.cssTokenEndpoint,
+          podAccess: ownerPodAccess,
           gatewayTransport: {
             canonicalBaseUrl: resolveAiConnectionsBaseUrl(config),
             baseUrl: resolveAiConnectionsRuntimeBaseUrl(config),

@@ -4,12 +4,9 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
 import { SolidFsConflictError, SolidFsNotFoundError, type SolidFsCommitHydratedInput, type SolidFsHydrateInput, type SolidFsHydrator } from './types';
-import { PodSolidFsHttpClient, resolvePodWorkspaceResourceUrl } from './PodSolidFsHttpClient';
+import { PodSolidFsHttpClient, resolvePodWorkspaceResourceUrl, type PodSolidFsHttpClientOptions } from './PodSolidFsHttpClient';
 
-export interface PodSolidFsHydratorOptions {
-  fetch?: typeof fetch;
-  tokenEndpoint?: string;
-}
+export type PodSolidFsHydratorOptions = PodSolidFsHttpClientOptions;
 
 /**
  * Hydrates object-backed Pod resources through the normal Pod HTTP boundary.
@@ -27,11 +24,11 @@ export class PodSolidFsHydrator implements SolidFsHydrator {
 
   public async hydrate(input: SolidFsHydrateInput): Promise<{ contentType?: string; sourceVersion?: string }> {
     const resourceUrl = this.resolveResourceUrl(input.path, input.workspace);
-    const headers = await this.http.createAuthHeaders(input.context, `hydrate SolidFS object: ${resourceUrl}`);
+    const headers = new Headers();
     const response = await this.http.request(resourceUrl, {
       method: 'GET',
       headers,
-    });
+    }, input.context);
 
     if (response.status === 404) {
       throw new SolidFsNotFoundError(`SolidFS object not found: ${resourceUrl}`);
@@ -54,7 +51,7 @@ export class PodSolidFsHydrator implements SolidFsHydrator {
 
   public async commit(input: SolidFsCommitHydratedInput): Promise<{ sourceVersion?: string }> {
     const resourceUrl = this.resolveChangeResourceUrl(input);
-    const headers = await this.http.createAuthHeaders(input.context, `commit SolidFS object: ${resourceUrl}`);
+    const headers = new Headers();
     if (input.change.contentType) {
       headers.set('Content-Type', input.change.contentType);
     }
@@ -67,7 +64,7 @@ export class PodSolidFsHydrator implements SolidFsHydrator {
       headers,
       body: createReadStream(input.change.sourcePath) as any,
       duplex: 'half' as any,
-    } as RequestInit);
+    } as RequestInit, input.context);
 
     if (response.status === 409 || response.status === 412) {
       throw new SolidFsConflictError([{
@@ -89,7 +86,7 @@ export class PodSolidFsHydrator implements SolidFsHydrator {
 
   public async delete(input: SolidFsCommitHydratedInput): Promise<void> {
     const resourceUrl = this.resolveChangeResourceUrl(input);
-    const headers = await this.http.createAuthHeaders(input.context, `delete SolidFS object: ${resourceUrl}`);
+    const headers = new Headers();
     if (input.change.sourceVersion) {
       headers.set('If-Match', input.change.sourceVersion);
     }
@@ -97,7 +94,7 @@ export class PodSolidFsHydrator implements SolidFsHydrator {
     const response = await this.http.request(resourceUrl, {
       method: 'DELETE',
       headers,
-    });
+    }, input.context);
 
     if (response.status === 409 || response.status === 412) {
       throw new SolidFsConflictError([{
