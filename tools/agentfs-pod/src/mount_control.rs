@@ -723,7 +723,11 @@ mod tests {
         }
     }
     fn clean_fixture_runtime(control: &RuntimeControl) {
-        let owner = control.verify_owned().unwrap();
+        // Teardown locates the owned resources from the current marker itself.
+        // The foreign-injection regressions deliberately leave a same-process
+        // marker that the live ownership check must reject, so verify_owned
+        // cannot be used here; read_owner still enforces structural validity.
+        let owner = read_owner(&control.directory).unwrap();
         let temporary = socket_directory(&owner).unwrap();
         remove_socket_resources(&owner).unwrap();
         remove_known(&control.directory.join(RECORD), owner.record, false).unwrap();
