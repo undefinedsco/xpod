@@ -117,9 +117,13 @@ describe.runIf(runOverlay)('native mounted platform matrix: large files, fault r
       expect((await exec(binary, [ 'mount', '--server', server.podRoot, '--mountpoint', mountpoint, '--backend', backend, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN })).status).toBe(0);
       await new Promise((resolve) => setTimeout(resolve, 500));
       expect((await readdir(mountpoint)).includes('pending.bin'), 'uncommitted complete body retained after recovery').toBe(true);
-      server.mutate('alpha.txt', 'REMOTE_RECOVERY_MOVE\n');
+      // Capture the OLD baseline first (dirty the file before the external
+      // mutation), then mutate the server: a first write after mutation would
+      // pick up the new ETag and never produce the 412 conflict.
       const local = path.join(mountpoint, 'alpha.txt');
       await writeFile(local, 'LOCAL_RECOVERY_EDIT\n');
+      expect(await readFile(local, 'utf8')).toBe('LOCAL_RECOVERY_EDIT\n');
+      server.mutate('alpha.txt', 'REMOTE_RECOVERY_MOVE\n');
       const conflict = await exec(binary, [ 'commit', '--pod-root', server.podRoot, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
       expect(conflict.status, 'commit must surface the conditional 412 conflict, not overwrite').not.toBe(0);
       expect(server.readBody('alpha.txt')).toBe('REMOTE_RECOVERY_MOVE\n');

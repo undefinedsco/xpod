@@ -140,7 +140,7 @@ export async function runMountAcceptance(options: MountAcceptanceOptions): Promi
 
   const mountResult = await run(
     command[0],
-    [ ...command.slice(1), 'mount', '--server', server.podRoot, '--mountpoint', mountpoint, '--backend', options.backend ?? 'nfs' ],
+    [ ...command.slice(1), 'mount', '--server', server.podRoot, '--mountpoint', mountpoint, '--backend', options.backend ?? 'nfs', '--session-dir', sessionDir ],
     { env: { XPOD_AGENTFS_TOKEN: token }, timeoutMs: 30_000 },
   );
   if (mountResult.status !== 0) {
@@ -312,6 +312,6 @@ export async function runMountAcceptance(options: MountAcceptanceOptions): Promi
       notes,
     };
   } finally {
-    await run(command[0], [ ...command.slice(1), 'unmount', '--mountpoint', mountpoint ], { env: { XPOD_AGENTFS_TOKEN: token }, timeoutMs: 30_000 });
+    await run(command[0], [ ...command.slice(1), 'unmount', '--mountpoint', mountpoint, '--session-dir', sessionDir ], { env: { XPOD_AGENTFS_TOKEN: token }, timeoutMs: 30_000 });
   }
 }

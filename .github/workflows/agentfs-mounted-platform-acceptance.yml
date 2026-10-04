@@ -2,10 +2,9 @@ name: AgentFS mounted platform acceptance
 
 # Actual mounted-platform acceptance for the frozen product archive. This is a
 # separate development branch so a harness-only push never recompiles the frozen
-# c7e9 product: the native compiler workflow only runs on
-# codex/agentfs-native-acceptance. The product archive/helper/source are pinned
-# here and consumed from the already-accepted run 37213350112; the harness SHA
-# is this branch's checkout and is recorded separately.
+# c7e9 product (the native compiler workflow only runs on
+# codex/agentfs-native-acceptance). Product archive/helper pins come from the
+# accepted run 37213350112; the harness SHA is this branch's checkout.
 on:
   push:
     branches: ['codex/agentfs-mounted-platform-acceptance']
@@ -42,9 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          echo "harness_sha=$(git rev-parse HEAD)" | tee -a "$GITHUB_OUTPUT" || true
-          { echo "harness_sha=$(git rev-parse HEAD)"; echo "product_sha=${PRODUCT_SHA}"; uname -a; } > "${RUNNER_TEMP}/harness-facts.json"
-          cat "${RUNNER_TEMP}/harness-facts.json"
+          { echo "harness_sha=$(git rev-parse HEAD)"; echo "product_sha=${PRODUCT_SHA}"; uname -a; } | tee "${RUNNER_TEMP}/harness-facts.json"
       - name: Download and verify the frozen product archive (once)
         id: product
         env:
@@ -54,8 +51,7 @@ jobs:
           umask 077
           dir="${RUNNER_TEMP}/product"; mkdir -m 700 "$dir"
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${LINUX_ARTIFACT_ID}/zip" > "$dir/artifact.zip"
-          got="$(shasum -a 256 "$dir/artifact.zip" | cut -d' ' -f1)"
-          test "$got" = "$LINUX_ZIP_SHA" || { echo "::error::linux artifact zip digest mismatch"; exit 1; }
+          test "$(shasum -a 256 "$dir/artifact.zip" | cut -d' ' -f1)" = "$LINUX_ZIP_SHA" || { echo "::error::linux artifact zip digest mismatch"; exit 1; }
           unzip -q "$dir/artifact.zip" -d "$dir/extracted"
           archive="$(ls "$dir/extracted"/xpod-cli-*-linux-arm64.tar.gz)"
           test "$(shasum -a 256 "$archive" | cut -d' ' -f1)" = "$LINUX_ARCHIVE_SHA" || { echo "::error::linux archive digest mismatch"; exit 1; }
@@ -66,16 +62,26 @@ jobs:
         run: |
           set -euo pipefail
           if [ -e /dev/fuse ]; then echo "dev_fuse=present"; else echo "::error::/dev/fuse is not present on this runner; actual FUSE mount cannot be proven"; exit 1; fi
-      - name: Prepare fuse3 + Node22 in an owned prep volume (network allowed)
+      - name: Build a task-owned prep image (pinned Bookworm digest + fuse3 + Node22 + ripgrep)
         run: |
           set -euo pipefail
           umask 077
-          vol="xpod-mount-prep-${{ github.run_id }}-${{ github.run_attempt }}"
-          echo "XPOD_MOUNT_PREP_VOLUME=$vol" >> "$GITHUB_ENV"
-          docker volume create "$vol" >/dev/null
-          docker run --rm --mount "type=volume,src=${vol},dst=/prep" "$BOOKWORM_IMAGE" \
-            sh -c 'apt-get update -o Acquire::Retries=5 && apt-get install -y --no-install-recommends fuse3 ca-certificates curl && curl -fsSL https://nodejs.org/dist/v22.21.1/node-v22.21.1-linux-arm64.tar.xz -o /tmp/node.tar.xz && mkdir -p /prep/node22 && tar -xJf /tmp/node.tar.xz -C /prep/node22 --strip-components=1 && /prep/node22/bin/node --version'
-      - name: Run actual Node22 noBun FUSE acceptance in a disposable owned container (network none)
+          tag="xpod-mount-prep:${{ github.run_id }}-${{ github.run_attempt }}"
+          docker build -t "$tag" - <<DOCKERFILE
+          FROM ${BOOKWORM_IMAGE}
+          RUN apt-get update -o Acquire::Retries=5 \
+            && apt-get install -y --no-install-recommends fuse3 ca-certificates curl ripgrep procps \
+            && rm -rf /var/lib/apt/lists/*
+          RUN curl -fsSL https://nodejs.org/dist/v22.21.1/node-v22.21.1-linux-arm64.tar.xz -o /tmp/node.tar.xz \
+            && mkdir -p /opt/node22 \
+            && tar -xJf /tmp/node.tar.xz -C /opt/node22 --strip-components=1 \
+            && rm /tmp/node.tar.xz \
+            && /opt/node22/bin/node --version
+          DOCKERFILE
+          image_id="$(docker image inspect "$tag" --format '{{.Id}}')"
+          { echo "XPOD_MOUNT_IMAGE=$tag"; echo "XPOD_MOUNT_IMAGE_ID=$image_id"; } >> "$GITHUB_ENV"
+          echo "prep_image_id=$image_id"
+      - name: Run actual Node22 noBun FUSE acceptance (network none, same owned container)
         run: |
           set -euo pipefail
           umask 077
@@ -84,7 +90,6 @@ jobs:
           docker run --rm --init --cidfile "$cidfile" \
             --device /dev/fuse --cap-add SYS_ADMIN \
             --network none \
-            --mount "type=volume,src=${XPOD_MOUNT_PREP_VOLUME},dst=/prep" \
             --mount "type=bind,src=${{ steps.product.outputs.archive }},dst=/product/archive.tar.gz,readonly" \
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace" \
             --mount "type=bind,src=${GITHUB_WORKSPACE}/scripts/agentfs-native-ci/mounted,dst=/mounted,readonly" \
@@ -96,13 +101,16 @@ jobs:
             --env "XPOD_MOUNTED_HELPER_SHA=${LINUX_HELPER_SHA}" \
             --env "XPOD_MOUNTED_EVIDENCE=/evidence" \
             --env "XPOD_MOUNTED_WORKSPACE=/workspace" \
-            --env "XPOD_MOUNTED_PREP=/prep" \
-            "$BOOKWORM_IMAGE" \
+            --env "XPOD_MOUNTED_PREP=/opt" \
+            --env "XPOD_MOUNTED_NODE=/opt/node22/bin/node" \
+            --env "XPOD_MOUNTED_REQUIRE_NOBUN=1" \
+            --env "XPOD_MOUNTED_MIN_PASSED=2" \
+            "$XPOD_MOUNT_IMAGE" \
             sh -c 'bash /mounted/bookworm-fuse-entry.sh'
           test -f "$cidfile" && docker rm -f "$(cat "$cidfile")" >/dev/null 2>&1 || true
-      - name: Remove the owned prep volume
+      - name: Remove the owned prep image
         if: always()
-        run: docker volume rm -f "${XPOD_MOUNT_PREP_VOLUME}" >/dev/null 2>&1 || true
+        run: docker image rm -f "${XPOD_MOUNT_IMAGE}" >/dev/null 2>&1 || true
       - name: Upload mounted evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -117,6 +125,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.21.1'
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -124,8 +135,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          { echo "harness_sha=$(git rev-parse HEAD)"; echo "product_sha=${PRODUCT_SHA}"; uname -a; sw_vers; } > "${RUNNER_TEMP}/harness-facts.json"
-          cat "${RUNNER_TEMP}/harness-facts.json"
+          { echo "harness_sha=$(git rev-parse HEAD)"; echo "product_sha=${PRODUCT_SHA}"; uname -a; sw_vers; node --version; } | tee "${RUNNER_TEMP}/harness-facts.json"
       - name: Download and verify the frozen Darwin product archive (once)
         id: product
         env:
@@ -140,6 +150,8 @@ jobs:
           archive="$(ls "$dir/extracted"/xpod-cli-*-darwin-arm64.tar.gz)"
           test "$(shasum -a 256 "$archive" | cut -d' ' -f1)" = "$DARWIN_ARCHIVE_SHA" || { echo "::error::darwin archive digest mismatch"; exit 1; }
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - name: Install frozen harness dependencies
+        run: bun install --frozen-lockfile
       - name: Run actual macOS system-NFS acceptance (no macFUSE install)
         env:
           XPOD_MOUNTED_OS: darwin
@@ -148,12 +160,15 @@ jobs:
           XPOD_MOUNTED_ARCHIVE: ${{ steps.product.outputs.archive }}
           XPOD_MOUNTED_ARCHIVE_SHA: ${{ env.DARWIN_ARCHIVE_SHA }}
           XPOD_MOUNTED_HELPER_SHA: ${{ env.DARWIN_HELPER_SHA }}
+          XPOD_MOUNTED_MIN_PASSED: '2'
         run: |
           set -euo pipefail
           umask 077
           out="${RUNNER_TEMP}/mounted-evidence"; mkdir -m 700 "$out"
           export XPOD_MOUNTED_EVIDENCE="$out"
-          bun scripts/agentfs-native-ci/mounted/platform-admission.ts
+          export XPOD_MOUNTED_NODE="$(command -v node)"
+          node --version
+          node --experimental-strip-types scripts/agentfs-native-ci/mounted/platform-admission.ts
       - name: Upload mounted evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
