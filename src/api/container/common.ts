@@ -309,6 +309,12 @@ export function registerCommonServices(
         deployment: config.edition,
         baseUrl: resolveAiConnectionsBaseUrl(config),
         audience: resolveAiConnectionsAudience(config),
+        // The task runtime reaches the Gateway through this key, so it must name the owner's
+        // active model; otherwise the runner asks the Gateway for a placeholder it cannot route.
+        resolveModel: async ({ auth }) => {
+          const models = await cradle.aiGatewayService?.listModels(auth);
+          return models?.find((model) => typeof model.id === 'string' && model.id.trim().length > 0)?.id;
+        },
       });
     }).singleton(),
 

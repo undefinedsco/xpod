@@ -281,9 +281,10 @@ describe('OwnerPodAccess', () => {
     expect(podRequests).toHaveLength(0);
   });
 
-  it('accepts the issuer\'s own fragmentless document for the #me principal it denotes', async () => {
+  it('rejects a fragmentless token document for the #me principal it must name exactly', async () => {
     const fragmentless = 'https://pod.example/alice/profile/card';
     const { access, podRequests } = createHarness({
+      // Identity is the exact URI: a fragmentless document is not the #me principal.
       tokenResponse: () => Response.json({
         access_token: 'access-token-1',
         token_type: 'DPoP',
@@ -292,9 +293,9 @@ describe('OwnerPodAccess', () => {
       }),
     });
 
-    const podFetch = await access.getPodFetch(OWNER, { auth: callerAuth() });
-    expect((await podFetch!(POD_RESOURCE)).status).toBe(200);
-    expect(podRequests).toHaveLength(1);
+    const podFetch = access.getPodFetch(OWNER, { auth: callerAuth() });
+    await expect(podFetch).rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:invalid_response`);
+    expect(podRequests).toHaveLength(0);
   });
 });
 

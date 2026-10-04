@@ -676,6 +676,12 @@ jobs:
               if (Number.isInteger(failure.httpStatus) && failure.httpStatus >= 400 && failure.httpStatus <= 599) {
                 safe.producerFailure.httpStatus = failure.httpStatus;
               }
+              // Allowlisted runner classification tokens only; never the provider body.
+              for (const field of ['providerClass', 'providerApi', 'providerName', 'providerModel']) {
+                if (typeof failure[field] === 'string' && /^[A-Za-z0-9_.:\-]{1,64}$/.test(failure[field])) {
+                  safe.producerFailure[field] = failure[field];
+                }
+              }
             }
             return safe;
           });

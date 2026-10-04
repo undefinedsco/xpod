@@ -28,7 +28,7 @@ describe('live Task acceptance evidence gates (unit checks, not live proof)', ()
     const error = `service_access_missing HTTP 403 Bearer ${secret} Cookie=${secret} JWT=eyJ${secret}.payload.signature\nstack: https://user:${secret}@example.test/path?token=${secret} body=${secret}`;
     const evidence: LiveTaskCaseEvidence = { kind: 'approved', ok: false };
     expect(() => requireLiveCheckpoint({ ...run, status: 'failed', error }, [], target, owner, evidence))
-      .toThrow('Producer ended failed before requesting approval');
+      .toThrow('Producer ended failed before requesting approval (class=service_access_missing, http=403)');
     expect(evidence.producerFailure).toEqual({ status: 'failed', errorPresent: true, errorLength: error.length,
       errorClass: 'service_access_missing', httpStatus: 403 });
     expect(JSON.stringify(evidence)).not.toContain(secret);

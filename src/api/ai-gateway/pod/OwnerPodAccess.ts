@@ -219,33 +219,15 @@ export class OwnerPodAccess implements PodAccessFetchProvider {
  * Whether an exchanged token names the owner it was requested for.
  *
  * A WebID is a full URI, so identity is the exact URI, fragment included: two fragments on the
- * same document (`#alice` and `#bob`) are different principals. The only tolerated variance is
- * the fragment the issuer itself normalized away - some issuers answer with the WebID document
- * (`.../card`) when the requested principal was `.../card#me`, which is the same principal and
- * the same resource. That one alias is proven by an explicit allowlist, never by string stripping:
- * a recognized fragmentless document only matches the exact `#me` principal of that document.
- *
- * Anything else - a different document, or an arbitrary different fragment - is a different owner
- * and is rejected.
+ * same document (`#alice` and `#bob`) are different principals, and a fragmentless document is a
+ * different URI from its `#me` principal. The token must name exactly the owner that was asked for.
+ * Any normalization belongs at the authoritative claim/provisioning/fixture source, never here.
  */
-const WEB_ID_PROFILE_FRAGMENT = '#me';
-
 function sameWebIdOwner(sessionWebId: string | undefined, owner: string): boolean {
   if (!sessionWebId) {
     return true;
   }
-  if (sessionWebId === owner) {
-    return true;
-  }
-  return canonicalOwnerWebId(sessionWebId) === canonicalOwnerWebId(owner);
-}
-
-/** Map a recognized fragmentless WebID document to the canonical `#me` principal it denotes. */
-function canonicalOwnerWebId(webId: string): string {
-  if (webId.includes('#')) {
-    return webId;
-  }
-  return `${webId}${WEB_ID_PROFILE_FRAGMENT}`;
+  return sessionWebId === owner;
 }
 
 /**

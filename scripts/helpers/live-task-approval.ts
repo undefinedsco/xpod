@@ -110,7 +110,14 @@ export function requireLiveCheckpoint(run: LiveTaskRun, approvals: ApprovalRow[]
   owner: string, evidence?: LiveTaskCaseEvidence): ApprovalRow | undefined {
   if (terminal.has(run.status)) {
     recordProducerFailure(run, evidence);
-    throw new LiveTaskEvidenceError(`Producer ended ${run.status} before requesting approval`);
+    const failure = evidence?.producerFailure;
+    const facts = failure
+      ? ` (class=${failure.errorClass}${failure.providerClass ? `/${failure.providerClass}` : ''}` +
+        `${failure.providerApi ? `, api=${failure.providerApi}` : ''}` +
+        `${failure.providerModel ? `, model=${failure.providerModel}` : ''}` +
+        `${failure.httpStatus ? `, http=${failure.httpStatus}` : ''})`
+      : '';
+    throw new LiveTaskEvidenceError(`Producer ended ${run.status} before requesting approval${facts}`);
   }
   if (run.status !== 'waiting_input') return undefined;
   const matching = approvals.filter(approval => approval.target === target && approval.thread === run.thread
