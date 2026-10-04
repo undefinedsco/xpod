@@ -722,15 +722,19 @@ mod tests {
             if !std::thread::panicking() { let _ = fs::remove_dir_all(&self.session); }
         }
     }
-    fn clean_fixture_runtime(control: &RuntimeControl) {
-        // Teardown locates the owned resources from the current marker itself.
-        // The foreign-injection regressions deliberately leave a same-process
-        // marker that the live ownership check must reject, so verify_owned
-        // cannot be used here; read_owner still enforces structural validity.
-        let owner = read_owner(&control.directory).unwrap();
-        let temporary = socket_directory(&owner).unwrap();
-        remove_socket_resources(&owner).unwrap();
-        remove_known(&control.directory.join(RECORD), owner.record, false).unwrap();
+    fn clean_fixture_runtime(control: &RuntimeControl, injected_record: Option<FileIdentity>) {
+        // Teardown never derives deletable socket/runtime locators from the
+        // current on-disk marker: the foreign-injection regressions leave a
+        // same-process marker whose socket path must not be trusted. The trusted
+        // ownership is the controlled writer state held by the owner mutex,
+        // which those negatives mutate only on disk. An injected record is
+        // removed by the genuine FileIdentity its writer created and renamed,
+        // retained by the fixture as explicit test-record evidence.
+        let ownership = control.owner.lock().unwrap().clone();
+        let temporary = socket_directory(&ownership).unwrap();
+        remove_socket_resources(&ownership).unwrap();
+        let record = injected_record.unwrap_or(ownership.record);
+        remove_known(&control.directory.join(RECORD), record, false).unwrap();
         assert!(!temporary.exists(), "owned IPC temporary directory must be gone");
     }
     fn actual_exit(code: u8) -> CommandObservation {
@@ -739,15 +743,17 @@ mod tests {
 
     // Direct atomic marker write used only to model a genuine foreign writer in
     // tests; it deliberately bypasses the owner mutex.
-    fn write_owner_atomic(directory: &Path, owner: &Owner) {
+    fn write_owner_atomic(directory: &Path, owner: &Owner) -> FileIdentity {
         let temporary = directory.join(format!("owner.{}.foreign", owner.nonce));
         let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&temporary).unwrap();
         let mut owner = owner.clone();
         owner.record = FileIdentity::of(&file.metadata().unwrap());
+        let record = owner.record;
         file.write_all(&serde_json::to_vec(&owner).unwrap()).unwrap();
         file.sync_all().unwrap();
         fs::rename(&temporary, directory.join(RECORD)).unwrap();
+        record
     }
 
     #[test]
@@ -762,7 +768,7 @@ mod tests {
         let temporary = socket_directory(&owner).unwrap();
         assert!(temporary.join(SOCKET).as_os_str().as_bytes().len() < 100);
         assert_eq!(fs::symlink_metadata(temporary.join(SOCKET)).unwrap().mode() & 0o7777, 0o600);
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, None);
     }
 
     #[test]
@@ -775,7 +781,7 @@ mod tests {
         assert!(control.verify_owned().is_err());
         assert_eq!(fs::read(&foreign).unwrap(), b"foreign fixture sentinel");
         fs::remove_file(foreign).unwrap();
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, None);
     }
 
     #[test]
@@ -805,7 +811,7 @@ mod tests {
         fs::create_dir(&owned).unwrap();
         assert!(ready(&fixture.session, &fixture.target, &identity).is_err(), "non-file recorded transient must fail closed");
         fs::remove_dir(&owned).unwrap();
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, None);
     }
 
     #[test]
@@ -822,7 +828,7 @@ mod tests {
             assert!(ready(&fixture.session, &fixture.target, &identity).unwrap());
             assert!(live_owner(&fixture.session, &fixture.target).is_ok());
         }).unwrap();
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, None);
     }
 
     #[test]
@@ -837,14 +843,15 @@ mod tests {
         // observe the changed binding and fail closed rather than trust the
         // stale expected value. This deliberately bypasses the owner mutex the
         // way an out-of-process same-UID writer would.
+        let mut injected = None;
         let result = control.verify_owned_after(|| {
             let mut owner = read_owner(&control.directory).unwrap();
             owner.binding = Some(Binding::from_mount(&next));
-            write_owner_atomic(&control.directory, &owner);
+            injected = Some(write_owner_atomic(&control.directory, &owner));
         });
         assert!(result.unwrap_err().to_string().contains("runtime ownership changed"));
         assert_eq!(read_owner(&control.directory).unwrap().binding, Some(Binding::from_mount(&next)));
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, injected);
     }
 
     #[test]
@@ -857,12 +864,13 @@ mod tests {
         // (`record`). With the owner mutex spanning clone/read that is foreign,
         // and strict full-identity comparison must reject it - the field-slack
         // comparison accepted it.
+        let mut injected = None;
         let result = control.verify_owned_after(|| {
             let owner = read_owner(&control.directory).unwrap();
-            write_owner_atomic(&control.directory, &owner);
+            injected = Some(write_owner_atomic(&control.directory, &owner));
         });
         assert!(result.unwrap_err().to_string().contains("runtime ownership changed"));
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, injected);
     }
 
     #[test]
@@ -874,14 +882,52 @@ mod tests {
         // A same-binding external replacement injects a terminal `closed`
         // proof. Strict full-identity comparison must reject it rather than
         // accept the foreign record.
+        let mut injected = None;
         let result = control.verify_owned_after(|| {
             let mut owner = read_owner(&control.directory).unwrap();
             owner.closed = Some(Closed { pid: 4242, actual_exit: 0, actual_signal: None,
                 binding: owner.binding.clone().unwrap(), cleanup_complete: true });
-            write_owner_atomic(&control.directory, &owner);
+            injected = Some(write_owner_atomic(&control.directory, &owner));
         });
         assert!(result.unwrap_err().to_string().contains("runtime ownership changed"));
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, injected);
+    }
+
+    #[test]
+    fn teardown_ignores_tampered_socket_locator_from_injected_marker() {
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+        let identity = fixture.identity();
+        control.bind_identity(&identity).unwrap();
+        let original = control.verify_owned().unwrap();
+        let primary_socket_directory = socket_directory(&original).unwrap();
+        // A second real RuntimeControl supplies a genuinely valid foreign
+        // private locator: its socket directory lives in the fixed /tmp
+        // xpod-nfs-* scope with matching recorded directory/socket identities.
+        // A victim under fixture.session is rejected by socket_path's fixed
+        // scope guard and therefore never reproduces valid foreign-locator
+        // deletion. Inject those valid locator fields into the primary marker;
+        // teardown must still delete from the primary's controlled ownership,
+        // never the injected disk locator.
+        let foreign_fixture = Fixture::new();
+        let foreign = RuntimeControl::acquire(&foreign_fixture.session, &foreign_fixture.target).unwrap();
+        let foreign_owner = foreign.verify_owned().unwrap();
+        let foreign_socket_directory = socket_directory(&foreign_owner).unwrap();
+        assert_ne!(primary_socket_directory, foreign_socket_directory);
+        let mut tampered = original.clone();
+        tampered.socket = foreign_owner.socket;
+        tampered.socket_directory_path = foreign_owner.socket_directory_path.clone();
+        tampered.socket_directory = foreign_owner.socket_directory;
+        let injected = Some(write_owner_atomic(&control.directory, &tampered));
+        clean_fixture_runtime(&control, injected);
+        assert!(!primary_socket_directory.exists(), "primary real socket directory must be removed");
+        assert!(foreign_socket_directory.exists(), "foreign real socket locator must be retained");
+        assert_eq!(
+            FileIdentity::of(&private_metadata(&foreign_socket_directory.join(SOCKET), true).unwrap()),
+            foreign_owner.socket,
+            "foreign socket resource must be untouched",
+        );
+        clean_fixture_runtime(&foreign, None);
     }
 
     #[test]
@@ -900,7 +946,7 @@ mod tests {
         assert_eq!(after.binding, before.binding);
         assert_eq!(after.nonce, before.nonce);
         assert_ne!(after.record, before.record, "atomic replacement must change the record inode");
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, None);
     }
 
     #[test]
@@ -960,7 +1006,7 @@ mod tests {
         assert_eq!(actual.nonce, before.nonce);
         assert_ne!(actual.record, before.record, "the authorized writer then advances the record inode");
         drop(original_record);
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, None);
     }
 
     #[test]
@@ -989,7 +1035,7 @@ mod tests {
         assert_eq!(after.nonce, before.nonce);
         assert_ne!(after.record, before.record, "writer-first must advance the record inode before the later read");
         drop(original_record);
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, None);
     }
 
     #[test]
@@ -1430,7 +1476,7 @@ mod tests {
         }).unwrap();
         assert_eq!(control.verify_owned().unwrap().target, fresh_target.as_os_str().as_bytes());
         assert!(!old_temporary.exists());
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, None);
     }
 
     #[test]
@@ -1757,7 +1803,7 @@ mod tests {
             assert!(matches!(read_frame::<Reply>(&mut stream, IO_BUDGET).await.unwrap(), Reply::Rejected { .. }));
             server.abort(); let _ = server.await;
         });
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, None);
     }
     fn spawn_barrier_child(exit: u8) -> Result<(CommandObservation, std::os::unix::net::UnixStream)> {
         // The barrier reader is redirected through stdin. This shared
@@ -1826,7 +1872,7 @@ mod tests {
         let mut foreign = identity.clone(); foreign.id.push(9);
         assert_eq!(KernelObservation::classify(&MountState::Mounted(foreign), &owner, &binding), KernelObservation::Unknown);
         assert_eq!(KernelObservation::classify(&MountState::Absent, &owner, &binding), KernelObservation::Absent);
-        clean_fixture_runtime(&control);
+        clean_fixture_runtime(&control, None);
     }
 
     #[tokio::test]

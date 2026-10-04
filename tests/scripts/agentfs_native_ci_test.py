@@ -51,7 +51,7 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_latest_inventory_accepts_only_complete_bound_regressions(self):
-        text = 'test result: ok. 68 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
+        text = 'test result: ok. 69 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
         text += 'test mount::tests::legacy_output_exceeds_observation_budget ... ignored\n'
         text += 'test mount_control::tests::lease_child ... ignored\n'
         for name in ['closed_marker_is_read_only_after_actual_lease_release',
@@ -63,18 +63,101 @@ class SupervisorTests(unittest.TestCase):
                      'controlled_foreign_binding_update_between_clone_and_disk_read_fails_closed',
                      'foreign_record_inode_substitution_between_clone_and_disk_read_fails_closed',
                      'foreign_closed_proof_injection_between_clone_and_disk_read_fails_closed',
+                     'teardown_ignores_tampered_socket_locator_from_injected_marker',
                      'concurrent_authorized_writer_is_serialized_by_owner_mutex_against_reader',
                      'concurrent_authorized_writer_first_is_observed_by_later_reader',
                      'inherited_original_lease_description_survives_helper_close_until_child_release',
                      'live_lease_holder_makes_closed_proof_observation_return_false_until_release']:
             text += f'test mount_control::tests::{name} ... ok\n'
         a.check_tests(text)
-        for invalid in [text.replace('68 passed', '67 passed'),
+        for invalid in [text.replace('69 passed', '68 passed'),
                         text.replace('0 filtered out', '2 filtered out'),
                         text.replace('closed_marker_is_read_only_after_actual_lease_release ... ok',
                                      'closed_marker_is_read_only_after_actual_lease_release ... FAILED')]:
             with self.assertRaises(RuntimeError):
                 a.check_tests(invalid)
+
+    def test_target_allocation_budget_stops_owned_child(self):
+        # The 1.5 GiB target guard is only armed when run_stage is handed the
+        # owned target directory. It must actually stop a live producer whose
+        # target allocation exceeds the budget (here forced through the real
+        # observation) and keep the receipt/resource reason.
+        with tempfile.TemporaryDirectory() as directory:
+            def huge(_):
+                return m.TARGET_BYTES + 1
+            with patch.object(m, 'allocated_bytes', side_effect=huge):
+                with self.assertRaises(RuntimeError):
+                    m.run_gate('target', [sys.executable, '-c', 'import time; time.sleep(60)'],
+                               directory, ROOT, target=directory,
+                               free=lambda _: SimpleNamespace(free=m.FRESH_BYTES),
+                               stop_bytes=0, poll_seconds=.01)
+            receipt = json.loads(Path(directory, 'target.receipt.json').read_text())
+            self.assertEqual(receipt['resourceStop'], 'target allocation budget')
+            self.assertTrue(receipt['actualWait'])
+
+    def _upstream_fixture(self, base):
+        upstream = base / 'upstream'
+        for sub in ('sdk/rust', 'cli'):
+            (upstream / sub).mkdir(parents=True)
+            (upstream / sub / 'Cargo.toml').write_text('[package]\nname = "fixture"\nversion = "0.0.0"\n')
+        return upstream
+
+    def test_upstream_suites_supervise_exact_target_and_two_jobs(self):
+        # Behavior regression for the fix: both upstream suites must run under
+        # the same owned target-allocation supervisor as the helper rebuild and
+        # be constrained to CARGO_BUILD_JOBS=2, while preserving the CLI's
+        # product no-default-features flags. Captures the actual call the accept
+        # chain would make, not a source-string assertion.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            upstream = self._upstream_fixture(base)
+            evidence = base / 'evidence'
+            evidence.mkdir()
+            calls = []
+
+            def fake_gate(name, command, ev, cwd, **kwargs):
+                calls.append({'name': name, 'command': command, 'cwd': cwd,
+                              'target': kwargs.get('target'),
+                              'cargo_target_dir': kwargs['environment'].get('CARGO_TARGET_DIR'),
+                              'jobs': kwargs['environment'].get('CARGO_BUILD_JOBS')})
+                (Path(ev) / f'{name}.raw.log').write_text(
+                    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n')
+                return {'exit': 0}
+
+            with patch.object(a, 'bounded_gate', side_effect=fake_gate):
+                record = a.upstream_suites(upstream, evidence, '/fixture/cargo', base)
+            self.assertEqual([call['name'] for call in calls], ['sdk-suite', 'cli-suite'])
+            for call in calls:
+                self.assertEqual(call['target'], base / f"{call['name']}-target")
+                self.assertEqual(call['cargo_target_dir'], str(base / f"{call['name']}-target"))
+                self.assertEqual(call['jobs'], '2')
+            self.assertEqual(calls[0]['cwd'], upstream / 'sdk/rust')
+            self.assertEqual(calls[1]['cwd'], upstream / 'cli')
+            self.assertEqual(calls[1]['command'][-1], '--no-default-features')
+            self.assertEqual(record['sdk-suite']['passed'], 1)
+
+    def test_upstream_suites_capture_full_ignored_doctest_identity(self):
+        # The original CLI ignored line is a Rust doctest whose identity spans
+        # spaces: `test src/mount/mod.rs - mount (line 8) ... ignored`. The
+        # parser must retain the whole identity, not the single leading token.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            upstream = self._upstream_fixture(base)
+            evidence = base / 'evidence'
+            evidence.mkdir()
+
+            def fake_gate(name, command, ev, cwd, **kwargs):
+                (Path(ev) / f'{name}.raw.log').write_text(
+                    'test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n'
+                    'test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n'
+                    'test src/mount/mod.rs - mount (line 8) ... ignored\n')
+                return {'exit': 0}
+
+            with patch.object(a, 'bounded_gate', side_effect=fake_gate):
+                record = a.upstream_suites(upstream, evidence, '/fixture/cargo', base)
+            self.assertEqual(record['cli-suite']['ignoredTests'], ['src/mount/mod.rs - mount (line 8)'])
+            self.assertEqual(record['cli-suite']['ignored'], 1)
+            self.assertEqual(record['cli-suite']['passed'], 3)
 
     def test_bounded_gate_declares_a_finite_stage_deadline(self):
         # Every main-chain stage has an owned, bounded producer deadline; an

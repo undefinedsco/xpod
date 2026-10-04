@@ -151,8 +151,8 @@ def assert_status_ready(text, platform_name, helper, expected_pending=None):
 
 def check_tests(text):
     summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out', text)
-    if ('68', '0', '2', '0', '0') not in summaries:
-        raise RuntimeError('Latest full Rust inventory must report 68 passed, two declared ignores, zero filtered (70 total)')
+    if ('69', '0', '2', '0', '0') not in summaries:
+        raise RuntimeError('Latest full Rust inventory must report 69 passed, two declared ignores, zero filtered (71 total)')
     ignored = re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE)
     if set(ignored) != {'mount::tests::legacy_output_exceeds_observation_budget', 'mount_control::tests::lease_child'}:
         raise RuntimeError('Unexpected ignored tests')
@@ -164,6 +164,7 @@ def check_tests(text):
                  'controlled_foreign_binding_update_between_clone_and_disk_read_fails_closed',
                  'foreign_record_inode_substitution_between_clone_and_disk_read_fails_closed',
                  'foreign_closed_proof_injection_between_clone_and_disk_read_fails_closed',
+                 'teardown_ignores_tampered_socket_locator_from_injected_marker',
                  'concurrent_authorized_writer_is_serialized_by_owner_mutex_against_reader',
                  'concurrent_authorized_writer_first_is_observed_by_later_reader',
                  'inherited_original_lease_description_survives_helper_close_until_child_release',
@@ -313,9 +314,14 @@ def upstream_suites(upstream, evidence, cargo, base):
         if not (cwd / 'Cargo.toml').is_file():
             raise RuntimeError(f'{name}: upstream crate manifest missing at {cwd}')
         environment = dict(os.environ)
-        environment['CARGO_TARGET_DIR'] = str(base / f'{name}-target')
+        target_dir = base / f'{name}-target'
+        environment['CARGO_TARGET_DIR'] = str(target_dir)
+        # The suites compile their own crate graphs, so they must run under the
+        # same owned target-allocation budget as the helper rebuild and must not
+        # fan out beyond the two-way parallelism the frozen receipt asserts.
+        environment['CARGO_BUILD_JOBS'] = '2'
         bounded_gate(name, [cargo, 'test', '--release', '--locked', *flags],
-                     evidence, cwd, environment=environment)
+                     evidence, cwd, environment=environment, target=target_dir)
         text = (evidence / f'{name}.raw.log').read_text(errors='replace')
         summaries = SUITE_SUMMARY.findall(text)
         if not summaries:
@@ -329,7 +335,7 @@ def upstream_suites(upstream, evidence, cargo, base):
         record[name] = {
             'crate': subdirectory, 'flags': list(flags),
             'passed': passed, 'failed': failed, 'ignored': ignored,
-            'ignoredTests': re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE),
+            'ignoredTests': re.findall(r'^test (.+) \.\.\. ignored$', text, re.MULTILINE),
             'resultLines': [line for line in text.splitlines() if line.startswith('test result:')],
         }
     return record
@@ -442,7 +448,7 @@ def main():
                  nodeSHA256=sha256(node), hostUname=list(platform.uname()), rustManifestSHA256=RUST_MANIFEST_SHA,
                  bunAssetSHA256=BUN_SHA[host], compiler=receipt['compiler'], nativeReceipt=receipt,
                  bookwormImage=bookworm_image if host == 'linux' else None, runtimeAdmission=runtime,
-                 declaredTests=70, passedTests=68, ignoredTests=2, filteredTests=0,
+                 declaredTests=71, passedTests=69, ignoredTests=2, filteredTests=0,
                  ignoredScope='owned lease subprocess invoked by parent; historical RED intentionally ignored',
                  upstreamSuites=suites,
                  archiveSHA256=sha256(archives[0]), mountExecuted=False, liveGatewayExecuted=False,
