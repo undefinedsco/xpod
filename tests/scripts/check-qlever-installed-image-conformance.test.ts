@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
-import { acquirePrivate17Admission, private17ProofTag, installRegistryConfig, validateImageInspection, validateInstalledReport, validatePullJob, verifyPrivate17Admission } from '../../scripts/check-qlever-installed-image-conformance';
+import { acquirePrivate17Admission, private17ProofTag, installRegistryConfig, selectRegistryAuthority, validateImageInspection, validateInstalledReport, validatePullJob, verifyPrivate17Admission } from '../../scripts/check-qlever-installed-image-conformance';
 import { buildSemanticReport, type SemanticFixtureModule } from '../../src/acceptance/RdfSemanticConformance';
 
 const root = path.resolve(__dirname, '../..');
@@ -172,9 +172,9 @@ describe('authorized namespace pull admission', () => {
 
   it('rejects stale UID, foreign owner, cached pull, business volume and wrong imageID', () => {
     const image = `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${'b'.repeat(64)}`;
-    const expected = { name: 'fresh-job', namespace: 'assigned', uid: 'new-uid', image };
+    const expected = { name: 'fresh-job', namespace: 'assigned', uid: 'new-uid', image, authorityName: 'pg-authority' };
     const job = { metadata: { name: expected.name, namespace: expected.namespace, uid: expected.uid },
-      spec: { template: { spec: { imagePullSecrets: [{ name: 'tcr-creds' }],
+      spec: { template: { spec: { imagePullSecrets: [{ name: 'pg-authority' }],
         containers: [{ name: 'postgres-preflight', image, imagePullPolicy: 'Always' }],
       } } }, status: { conditions: [{ type: 'Complete', status: 'True' }] } };
     const pod = { metadata: { uid: 'pod-uid', ownerReferences: [{ uid: expected.uid, kind: 'Job', controller: true }] },
@@ -191,6 +191,23 @@ describe('authorized namespace pull admission', () => {
     expect(() => validatePullJob(job, [foreign], expected)).toThrow();
     const wrongImage = structuredClone(pod); wrongImage.status.containerStatuses[0].imageID = `containerd://sha256:${'c'.repeat(64)}`;
     expect(() => validatePullJob(job, [wrongImage], expected)).toThrow();
+    expect(() => validatePullJob(job, [pod], { ...expected, authorityName: 'other-authority' })).toThrow();
+  });
+
+  it('selects the single registry authority declared by the fixed PG17 workload', () => {
+    const image = `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${'d'.repeat(64)}`;
+    const workload = { kind: 'StatefulSet', metadata: { name: 'xpod-rdf-postgres', namespace: 'assigned' },
+      spec: { template: { spec: { imagePullSecrets: [{ name: 'xpod-rdf-ghcr' }],
+        containers: [{ name: 'postgres', image }] } } } };
+    expect(selectRegistryAuthority(workload, image)).toBe('xpod-rdf-ghcr');
+    const twoSecrets = structuredClone(workload); twoSecrets.spec.template.spec.imagePullSecrets = [{ name: 'a' }, { name: 'b' }];
+    expect(() => selectRegistryAuthority(twoSecrets, image)).toThrow();
+    const wrongImage = structuredClone(workload); wrongImage.spec.template.spec.containers[0].image = `${image}x`;
+    expect(() => selectRegistryAuthority(wrongImage, image)).toThrow();
+    const noSecret = structuredClone(workload); noSecret.spec.template.spec.imagePullSecrets = [];
+    expect(() => selectRegistryAuthority(noSecret, image)).toThrow();
+    const badName = structuredClone(workload); badName.spec.template.spec.imagePullSecrets = [{ name: 'bad_name' }];
+    expect(() => selectRegistryAuthority(badName, image)).toThrow();
   });
 });
 

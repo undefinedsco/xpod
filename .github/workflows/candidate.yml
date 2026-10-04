@@ -372,7 +372,10 @@ jobs:
             exit "$original_exit"
           }
           trap cleanup_native_registry EXIT
-          kubectl -n "$SEALOS_NAMESPACE" get secret tcr-creds -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null \
+          kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o json > "$docker_config_dir/pg-workload.json"
+          pg_workload_authority="$(bun scripts/check-qlever-installed-image-conformance.ts \
+            --select-registry-authority "$docker_config_dir/pg-workload.json" --pg-image "$NATIVE_PG_IMAGE")"
+          kubectl -n "$SEALOS_NAMESPACE" get secret "$pg_workload_authority" -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null \
             | base64 --decode 2>/dev/null \
             | bun scripts/check-qlever-installed-image-conformance.ts \
                 --install-registry-config "$docker_config_dir/config.json" \
@@ -489,11 +492,16 @@ jobs:
             exit "$original_exit"
           }
           trap cleanup_namespace_native EXIT
-          PREFLIGHT_NAME="$job_name" PREFLIGHT_NONCE="$nonce" bun -e '
+          kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o json > "$preflight_dir/pg-workload.json"
+          pg_authority="$(bun scripts/check-qlever-installed-image-conformance.ts \
+            --select-registry-authority "$preflight_dir/pg-workload.json" \
+            --pg-image ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba)"
+          PREFLIGHT_NAME="$job_name" PREFLIGHT_NONCE="$nonce" PREFLIGHT_AUTHORITY="$pg_authority" bun -e '
             const fs=require("node:fs");const {parseDocument}=require("yaml");
             const job=parseDocument(fs.readFileSync("deploy/sealos/rc-postgres/pull-preflight.yaml","utf8")).toJSON();
             job.metadata.name=process.env.PREFLIGHT_NAME;job.metadata.namespace=process.env.SEALOS_NAMESPACE;
             job.metadata.annotations={"xpod.undefineds.co/preflight-owner":process.env.PREFLIGHT_NONCE};
+            job.spec.template.spec.imagePullSecrets=[{name:process.env.PREFLIGHT_AUTHORITY}];
             fs.writeFileSync(process.argv[1],JSON.stringify(job),{mode:0o600});
           ' "$preflight_dir/manifest.json"
           job_create_attempted=true
@@ -506,6 +514,7 @@ jobs:
           bun scripts/check-qlever-installed-image-conformance.ts \
             --validate-pull-job "$preflight_dir/job.json" --pods "$preflight_dir/pods.json" \
             --job-name "$job_name" --job-uid "$job_uid" --namespace "$SEALOS_NAMESPACE" \
+            --authority-name "$pg_authority" \
             --pg-image ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba \
             --pull-receipt "${RUNNER_TEMP}/namespace-native-pull-check.json"
 

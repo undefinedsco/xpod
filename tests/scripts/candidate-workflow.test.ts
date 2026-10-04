@@ -673,7 +673,9 @@ describe('native RC predeployment admission', () => {
     expect(steps[pair].run).toContain('--source-sha "$NATIVE_SOURCE_SHA" --runner-sha256 "$runner_sha"');
     expect(steps[pair].run).toContain('umask 077');
     expect(steps[pair].run).toContain('trap cleanup_native_registry EXIT');
-    expect(steps[pair].run).toContain('get secret tcr-creds');
+    expect(steps[pair].run).toContain('--select-registry-authority');
+    expect(steps[pair].run).toContain('get secret "$pg_workload_authority"');
+    expect(steps[pair].run).not.toContain('tcr-creds');
     expect(steps[pair].run).toContain('--install-registry-config');
     expect(steps[pair].run).not.toMatch(/docker login|create secret|registry-mirror/);
     expect(steps[private17].run).toContain('--verify-private17-admission');
@@ -691,6 +693,10 @@ describe('native RC predeployment admission', () => {
     expect(step.run).toContain('preconditions:{uid:job.metadata.uid}');
     expect(step.run).toContain('--validate-pull-job');
     expect(step.run).toContain('--job-uid "$job_uid"');
+    expect(step.run).toContain('--select-registry-authority');
+    expect(step.run).toContain('--authority-name "$pg_authority"');
+    expect(step.run).toContain('job.spec.template.spec.imagePullSecrets=[{name:process.env.PREFLIGHT_AUTHORITY}]');
+    expect(step.run).not.toContain('tcr-creds');
     expect(step.run).toContain('if [ "$original_exit" -eq 0 ]; then original_exit=70; fi');
     expect(step.run).not.toContain('|| true');
     const run = jobRunText(workflow, 'deploy_and_accept');
@@ -714,6 +720,7 @@ if args[0]=='create':
  print(json.dumps(job))
 elif 'get' in args:
  kind=args[args.index('get')+1]
+ if kind=='statefulset': print(json.dumps({'kind':'StatefulSet','metadata':{'name':'xpod-rdf-postgres','namespace':'assigned-rc'},'spec':{'template':{'spec':{'imagePullSecrets':[{'name':'xpod-rdf-ghcr'}],'containers':[{'name':'postgres','image':'ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba'}]}}}}))
  if kind=='job':
   if jobfile.exists():
    job=json.loads(jobfile.read_text())
