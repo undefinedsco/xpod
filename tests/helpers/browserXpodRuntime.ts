@@ -1,4 +1,18 @@
-import type { Page } from '@playwright/test';
+import type { JSHandle, Page } from '@playwright/test';
+import type { AiConnectionsController } from '@undefineds.co/ai-connections';
+import type { WebExtensionHost } from '@undefineds.co/extension-sdk/web';
+
+export interface MountedBrowserAiConnections {
+  host: WebExtensionHost;
+  controller: AiConnectionsController;
+}
+
+/** Retain the exact mounted capability so attribution can be restored before navigation.
+ * This is a read-only handle to React's existing objects, not a second host/session.
+ */
+export async function captureBrowserAiConnections(page: Page, binding: { webId: string; podUrl: string }): Promise<JSHandle<MountedBrowserAiConnections>> {
+  return await page.evaluateHandle(inspectCommittedHost, { kind: 'ai-host' as const, ...binding }) as JSHandle<MountedBrowserAiConnections>;
+}
 
 export interface BrowserXpodRuntimeSnapshot {
   status: string;
@@ -62,13 +76,18 @@ export function readBrowserSessionAccountControls(page: Page): Promise<{ status:
   return inspectBrowserHost(page, { kind: 'account-discovery' });
 }
 
-type HostOperation = { kind: 'account-discovery' } | { kind: 'runtime' } | { kind: 'account'; expectedWebId?: string } | { kind: 'refetch-account' }
+type HostOperation = { kind: 'ai-host'; webId: string; podUrl: string }
+  | { kind: 'account-discovery' } | { kind: 'runtime' } | { kind: 'account'; expectedWebId?: string } | { kind: 'refetch-account' }
   | { kind: 'api-fetch'; expectedWebId: string; gatewayOrigin: string; resourcePath: string; init?: BrowserPodRequest }
   | { kind: 'pod-fetch'; resourcePath: string; init?: BrowserPodRequest };
 
 /** Test access to the already-mounted host; never constructs a Session or injects credentials. */
 async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Promise<T> {
-  return await page.evaluate(async (operation) => {
+  return await page.evaluate(inspectCommittedHost, operation) as T;
+}
+
+/** Serialized into the page; all discoveries use the same committed root traversal. */
+async function inspectCommittedHost(operation: HostOperation): Promise<unknown> {
     type HostValue = {
       state?: { status: string };
       session?: { getSnapshot(): { status: string; webId?: string; issuer?: string } };
@@ -91,6 +110,7 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
       sibling?: Fiber;
       stateNode?: { current?: Fiber };
       memoizedProps?: { value?: HostValue };
+      memoizedState?: { memoizedState?: unknown; next?: Fiber['memoizedState'] };
     };
     const root = document.getElementById('root');
     if (!root) throw new Error('Missing React host');
@@ -105,6 +125,24 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
       const fiber = queue.shift();
       if (!fiber) continue;
       const value = fiber.memoizedProps?.value;
+      if (operation.kind === 'ai-host') {
+        // ModelsPage keeps the actual host and mounted applet in adjacent useMemo
+        // hooks. Following current hooks avoids stale alternate/provider values.
+        let host: WebExtensionHost | undefined;
+        let controller: AiConnectionsController | undefined;
+        for (let hook = fiber.memoizedState; hook; hook = hook.next) {
+          const entry = Array.isArray(hook.memoizedState) ? hook.memoizedState[0] : undefined;
+          if (entry?.solid?.session?.getSnapshot && entry?.solid?.permissions && entry?.capabilities) host = entry;
+          if (entry?.layout === 'two-pane' && entry.controller?.client && entry.controller?.authorizeService) controller = entry.controller;
+        }
+        if (host && controller) {
+          const snapshot = host.solid.session.getSnapshot();
+          const pod = host.solid.pod;
+          if (snapshot.status === 'authenticated' && snapshot.webId === operation.webId
+            && pod?.status === 'ready' && pod.current.webId === operation.webId && pod.current.podUrl === operation.podUrl
+            && controller.client?.webId === operation.webId) return { host, controller };
+        }
+      } else
       if (operation.kind === 'account' || operation.kind === 'refetch-account') {
         if (typeof value?.refetchControls === 'function') {
           if (operation.kind === 'refetch-account') {
@@ -170,5 +208,4 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
       queue.push(fiber.child, fiber.sibling);
     }
     throw new Error(`Missing mounted host capability for ${operation.kind}`);
-  }, operation) as T;
 }

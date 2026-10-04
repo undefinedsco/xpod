@@ -12,10 +12,10 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 afterEach(() => clearAccountSessionToken());
 
 describe('account-owned coding client credentials', () => {
-  it('uses the discovered Account endpoint and wraps the returned id and secret in UTF-8 Base64', async () => {
+  it.each([200, 201])('accepts the Account success %s and wraps the validated id and secret in UTF-8 Base64', async status => {
     bindAccountSessionAuthority(index);
     storeAccountSessionToken('account-test-token');
-    const fetch = vi.fn(async () => json({ id: '工作客户端', secret: 'secret:with-colon', resource }));
+    const fetch = vi.fn(async () => json({ id: '工作客户端', secret: 'secret:with-colon', resource }, status));
     const capability = createAccountClientCredentialsCapability({ collection, accountIndex: index, fetch, assertCurrent: () => undefined });
     const created = await capability.create({ name: 'Codex', webId });
     expect(created).toEqual({
@@ -28,6 +28,19 @@ describe('account-owned coding client credentials', () => {
       body: JSON.stringify({ name: 'Codex', webId }),
     }));
     expect(Object.values(window.localStorage)).not.toContain('account-test-token');
+  });
+
+  it.each([401, 403])('rejects an Account creation %s even when the body has credential fields', async status => {
+    const fetch = vi.fn(async () => json({ id: 'client', secret: 'fixture', resource }, status));
+    const capability = createAccountClientCredentialsCapability({ collection, accountIndex: index, fetch, assertCurrent: () => undefined });
+    await expect(capability.create({ name: 'test', webId })).rejects.toThrow(`HTTP ${status}`);
+  });
+
+  it.each([{ id: '', secret: 'fixture', resource }, { id: 'client', secret: '', resource },
+    { id: 'client', secret: 'fixture', resource: '' }])('refuses malformed successful Account records', async value => {
+    const fetch = vi.fn(async () => json(value));
+    const capability = createAccountClientCredentialsCapability({ collection, accountIndex: index, fetch, assertCurrent: () => undefined });
+    await expect(capability.create({ name: 'test', webId })).rejects.toThrow('有效');
   });
 
   it('checks resource identity before revoking a credential', async () => {

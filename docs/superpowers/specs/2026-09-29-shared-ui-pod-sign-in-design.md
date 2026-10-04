@@ -958,3 +958,14 @@ RC `3be53aba6aa04df0a93520ab3a94af0e9bad768a` / run `37195150178` 实际 complet
 本批只修 `scripts/helpers/live-task-approval.ts` 验收 adapter，服务产品源码不变。checkpoint、Session 归属、cleanup 三处通过共享 `threadResource.buildIriForDatabase` 与明确 podUrl 的已认证 DB 做完整 IRI 比较；owner/fragment/target/tool/callId 保护不放宽，不推导 Pod 根。cleanup 独立从本轮 Run 发现 Session，waiting_input/等待 callId 必须恰好一条；Stop 后独立读回 exact owner/thread 及 completed/error 才计终态。缺失、foreign、其他 Pod、owner 或读回错误均使 cleanup 失败，仍尝试撤销 grant。Root 没有该验收 API，不迁入新脚本；本轮仅同步此文档补录，Root 既有产品修复/门禁范围维持。
 
 旧脚本 RED actual exit1（10 fail/26 pass）；修后 40 项/3 files actual exit0，含真实 ORM 关系读回正例与 foreign/owner/fragment 负例，以及独立 Session cleanup 的缺失/归属/读回失败负例。build:ts、typecheck:test、本批 lint 均 actual exit0。冻结验收文件的两次完整 `bun run test:integration` 均 actual exit0/signal=null：UTC 12:12:34.146—12:18:13.272 与提交前 12:18:56.050—12:27:08.597；各次 runtime30、lite163/16既有skip、full63。私有 `.test-data/sol-release/acceptance-final-local-gates.json` 保存原始记录/hash和自有 Compose containers/networks/volumes 各0。旧全量单元/lint欠账、额外 Linux SDK sandbox、原安装桌面等未验证范围保留。批准写入/拒绝不写/Stop不续跑、各真实 Session 终态和 grant 撤销仍必须在下一 exact-SHA RC 实际通过，不能由这里的模拟清理测试替代；尚未宣称 stable 已发布。
+
+
+### 2026-10-05：0.4.25 已发布与 0.4.26 待验分开记录
+
+0.4.25 已按 immutable source `a1cec27fa11d5447e0bc0a18373be7250e30d476` 发布，RC [37223939727](https://github.com/undefinedsco/xpod/actions/runs/37223939727) 与 stable [37225782101](https://github.com/undefinedsco/xpod/actions/runs/37225782101) 的发行证据独立保留。该发行成功不等于原始全部订阅和桌面权限要求已完成。
+
+0.4.26 候选把 server/UI 服务资源声明、当前 Pod 权威绑定及受限 invocation/key scope 收敛到共享入口；ACP 目标初始化/幂等授权保留 owner 和其他 agent 策略，Account 凭据操作沿用同 actor，collection intention 确认复用共享 ORM URI 契约。Cloud card/WebID 与独立 Local 存储、无公网路由可用以及 14 天 Account Cookie、独立 SDK Access/Refresh 的既定规则不变，业务层不推导 Pod 根。
+
+此次新增 [exact 安装包桌面验收契约](../../testing/desktop-permission-acceptance.md) 要求真实双 Pod UI 选择、29 资源首轮/重复授权、配置/模型/额度/首次 Chat、隔离和清理，与原自更新共同构成必需 desktop check；单元与协议夹具不能替代实际包。问题与边界见 [ACP 目标 ACR](../../issues/2026-10-05-missing-target-acr-permission-broker.md)、[canonical session credential 恢复](../../issues/2026-10-05-canonical-gateway-session-credential-recovery.md)、[collection URI intention](../../issues/2026-10-05-collection-uri-intent-confirmation.md)。
+
+当前 Cloud 只读诊断 [37239166566](https://github.com/undefinedsco/xpod/actions/runs/37239166566) 确认工作负载 replicas 为 0，恢复尚未确认；0.4.26 exact packaged managed 链路、新 immutable RC 与稳定发布仍待实际证据。没有宣称所有订阅授权、原安装 App 全流程或自然等待 14 天通过。此前失败与未验边界保留，本地冻结后仍须最终两次完整集成回归。

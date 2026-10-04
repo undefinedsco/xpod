@@ -206,13 +206,13 @@ describe('withRequestPodAuthorization', () => {
     }) as typeof fetch;
     const wrapped = withRequestPodAuthorization(fetchImpl, async() => 'Bearer sk-session');
 
-    const response = await wrapped('https://xpod.example/v1/chat/completions', { method: 'POST' });
+    const response = await wrapped('https://xpod.example/v1/models');
 
     expect(response.status).toBe(200);
     expect(attempts).toEqual([ null, 'Bearer sk-session' ]);
   });
 
-  it('replays a consumed Request body on the retry', async() => {
+  it('does not replay a consumed mutation body after the original refusal', async() => {
     const bodies: string[] = [];
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = input instanceof Request ? input : new Request(String(input), init);
@@ -227,8 +227,8 @@ describe('withRequestPodAuthorization', () => {
       body: 'messages',
     }));
 
-    expect(response.status).toBe(200);
-    expect(bodies).toEqual([ 'messages', 'messages' ]);
+    expect(response.status).toBe(403);
+    expect(bodies).toEqual([ 'messages' ]);
   });
 
   it('leaves other failures, other statuses and other bodies alone', async() => {
@@ -330,5 +330,46 @@ describe('Gateway credential boundary', () => {
     const credential = vi.fn(async() => 'Bearer secret');
     await withAuthorization(transport, credential)('https://xpod.example/api/tasks');
     expect(credential).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('verified canonical Gateway credential recovery', () => {
+  const canonical = 'https://node.example/api/ai/gateway/keys';
+  const local = 'http://127.0.0.1:42320/api/ai/gateway/keys';
+  it('reuses the existing credential transport for a verified same-path canonical read', async () => {
+    const first = vi.fn(async () => Response.json({ error: 'service_access_missing' }, { status: 403 }));
+    const credential = vi.fn(async () => 'Bearer sk-session');
+    const retry = vi.fn(async () => Response.json({ data: [] }));
+    const resolve = vi.fn((url: string) => url === canonical ? local : url);
+    const wrapped = withAuthorization(first, credential, retry, 'http://127.0.0.1:42320', resolve);
+    expect((await wrapped(canonical)).status).toBe(200);
+    expect(retry).toHaveBeenCalledWith(canonical, expect.objectContaining({ headers: expect.any(Headers) }));
+    expect(credential).toHaveBeenCalledOnce();
+  });
+  it.each([
+    'http://127.0.0.1:42321/api/ai/gateway/keys',
+    'http://127.0.0.1:42320/api/ai/providers',
+    'http://127.0.0.1:42320/api/ai/gateway/keys?other=1',
+    'http://127.0.0.1:42320/api/ai/gateway/keys#other',
+    'http://evil@127.0.0.1:42320/api/ai/gateway/keys',
+  ])('does not trust a mapped authority or target change: %s', async mapped => {
+    const first = vi.fn(async () => Response.json({ error: 'service_access_missing' }, { status: 403 }));
+    const credential = vi.fn(async () => 'Bearer secret');
+    const retry = vi.fn();
+    expect((await withAuthorization(first, credential, retry, 'http://127.0.0.1:42320', () => mapped)(canonical)).status).toBe(403);
+    expect(credential).not.toHaveBeenCalled(); expect(retry).not.toHaveBeenCalled();
+  });
+  it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('does not replay a %s mutation after a Pod refusal', async method => {
+    const first = vi.fn(async () => Response.json({ error: 'service_access_missing' }, { status: 403 }));
+    const credential = vi.fn(async () => 'Bearer secret'); const retry = vi.fn();
+    expect((await withAuthorization(first, credential, retry, 'http://127.0.0.1:42320', () => local)(canonical, {method})).status).toBe(403);
+    expect(first).toHaveBeenCalledOnce();expect(credential).not.toHaveBeenCalled();expect(retry).not.toHaveBeenCalled();
+  });
+  it('does not recover an authentication rejection', async () => {
+    const first = vi.fn(async () => Response.json({ error: 'service_access_missing' }, { status: 401 }));
+    const credential = vi.fn(async () => 'Bearer secret'); const retry = vi.fn();
+    expect((await withAuthorization(first, credential, retry, 'http://127.0.0.1:42320', () => local)(canonical)).status).toBe(401);
+    expect(credential).not.toHaveBeenCalled();expect(retry).not.toHaveBeenCalled();
   });
 });

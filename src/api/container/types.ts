@@ -1,3 +1,4 @@
+import type { PodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
 /**
  * API Container 依赖类型定义
  *
@@ -285,6 +286,7 @@ export interface ApiContainerCradle {
   invocationTokenCodec?: InvocationTokenCodec;
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   aiConnectionInvocationKeyIssuer?: AiConnectionsInvocationKeyIssuer;
+  aiConnectionsPodBaseUrlResolver: PodBaseUrlResolver;
   aiClientConfigurationService?: AiClientConfigurationService;
   providerConnectService: ProviderConnectService;
   providerQuotaService?: ProviderQuotaService;

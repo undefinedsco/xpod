@@ -77,6 +77,24 @@ export interface BrowserOidcTrace {
   callbackReturnTo?: string;
   passwordSubmitted: boolean;
   authorizationRedirectUris: string[];
+  /** Observed native Consent selection, never inferred from requested input. */
+  storageBindingSelected?: { webId: string; podUrl: string };
+}
+
+export function chooseConsentBinding(options: Array<{ value: string; disabled: boolean }>, currentValue: string,
+  account: Pick<BrowserSolidCredentials, 'webId' | 'podUrl'>): string | undefined {
+  const selectable = options.filter(option => option.value && !option.disabled);
+  const webId = account.webId ? new URL(account.webId).href : undefined;
+  const podUrl = account.podUrl?.replace(/\/$/u, '');
+  const matches = (value: string): boolean => {
+    const separator = value.indexOf('|');
+    return separator >= 0 && (!webId || value.slice(0, separator) === webId)
+      && (!podUrl || value.slice(separator + 1).replace(/\/$/u, '') === podUrl);
+  };
+  if (webId || podUrl) return selectable.find(option => option.value === currentValue && matches(option.value))?.value
+    ?? selectable.find(option => matches(option.value))?.value;
+  return selectable.find(option => option.value === currentValue)?.value
+    ?? (selectable.length === 1 ? selectable[0].value : undefined);
 }
 
 export interface CompleteOidcLoginOptions {
@@ -374,21 +392,8 @@ export async function completeOidcLogin(
           disabled: (option as HTMLOptionElement).disabled,
         })));
         const selectableOptions = availableOptions.filter((option) => option.value && !option.disabled);
-        const normalizedWebId = account.webId ? new URL(account.webId).href : undefined;
-        const normalizedPodUrl = account.podUrl?.replace(/\/$/u, '');
-        const requestedOption = (currentOptionValue
-          ? selectableOptions.find((option) => option.value === currentOptionValue)
-          : undefined) ?? (account.webId
-          ? selectableOptions.find((option) => {
-            const separator = option.value.indexOf('|');
-            if (separator < 0) return false;
-            const optionWebId = option.value.slice(0, separator);
-            const optionPodUrl = option.value.slice(separator + 1).replace(/\/$/u, '');
-            return optionWebId === normalizedWebId
-              && (!normalizedPodUrl || optionPodUrl === normalizedPodUrl);
-          })
-            ?? selectableOptions.find((option) => option.value.startsWith(`${normalizedWebId}|`))
-          : selectableOptions.length === 1 ? selectableOptions[0] : undefined);
+        const selectedValue = chooseConsentBinding(availableOptions, currentOptionValue, account);
+        const requestedOption = selectableOptions.find(option => option.value === selectedValue);
         if (!requestedOption) {
           throw new Error(account.webId
             ? `The requested WebID and Pod are not available for this account: ${account.webId}; available=${selectableOptions.map((option) => option.label).join(',')}`
@@ -403,6 +408,10 @@ export async function completeOidcLogin(
           && await consentStorageSelect.isEnabled({ timeout: 100 }).catch(() => false)) {
           await consentStorageSelect.selectOption(requestedOption.value, { timeout: 2_000 });
         }
+        const observedValue = await consentWebIdSelect.inputValue();
+        if (observedValue !== requestedOption.value) throw new Error('Consent did not retain the selected storage binding');
+        const separator = observedValue.indexOf('|');
+        trace.storageBindingSelected = { webId: observedValue.slice(0, separator), podUrl: observedValue.slice(separator + 1) };
       }
 
       const webIdRadios = page.locator('input[type="radio"][name="webId"]');

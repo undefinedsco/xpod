@@ -10,6 +10,10 @@
 
 export interface SolidAuthContext {
   type: 'solid';
+  /** Untrusted current-Pod selection hint; only the shared storage adapter may verify it. */
+  requestedPodUrl?: string;
+  /** Trusted Pod capability scope, from authenticated signed claims or a verified key DB. */
+  authorizedPodUrl?: string;
   webId: string;
   accountId?: string;
   clientId?: string;

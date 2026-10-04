@@ -173,9 +173,10 @@ test('candidate workflow binds the desktop check to real source-bound acceptance
   const candidate = fs.readFileSync(path.resolve(__dirname, '../../.github/workflows/candidate.yml'), 'utf8');
   assert.match(candidate, /desktop\/scripts\/packaged-update-acceptance\.mjs/);
   assert.match(candidate, /--source-sha "\$\{\{ github\.sha \}\}"/);
-  assert.match(candidate, /--expected-new-zip/);
+  assert.match(candidate, /--expected-archive/);
   assert.match(candidate, /desktop-self-update-acceptance-\$\{\{ github\.sha \}\}/);
   assert.match(candidate, /scripts\/desktop-self-update-acceptance\.cjs verify/);
+  assert.match(candidate, /scripts\/desktop-acceptance\.cjs/);
   assert.doesNotMatch(candidate, /['"]desktop['"]\s*:\s*['"]passed['"]/);
 });
 

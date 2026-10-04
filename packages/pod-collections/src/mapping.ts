@@ -1,4 +1,4 @@
-import type { AnyPodTable } from '@undefineds.co/drizzle-solid';
+import type { AnyPodTable, SolidDatabase } from '@undefineds.co/drizzle-solid';
 import type { PodModelDescriptor, PodModelFieldDescriptor } from '@undefineds.co/models';
 import { PodCollectionError } from './types.js';
 import type { PodSubjectRow, RowOf } from './types.js';
@@ -24,6 +24,44 @@ import { rowKeyOf, rowKeyVariable } from './layout.js';
  */
 
 const XSD = 'http://www.w3.org/2001/XMLSchema#';
+
+export interface PodProjectionContext {
+  descriptor: PodModelDescriptor;
+  table: AnyPodTable;
+  database: SolidDatabase;
+}
+
+/** Compare mapped URI fields in the same space the bound ORM writes them.
+ * This does not change the collection row or introduce an address resolver. */
+export function createProjectionNormalizer({ descriptor, table, database }: PodProjectionContext): <R extends object>(row: R) => R {
+  if (typeof database.getDialect !== 'function' || typeof table.getColumns !== 'function') return row => row;
+  const resolver = database.getDialect().getUriResolver();
+  const columns = table.getColumns();
+  const bindings = [...fieldBindings(descriptor, table).values()]
+    .filter(binding => binding.descriptor.type === 'uri' && !binding.descriptor.secret && binding.column !== undefined);
+  const tableNameRegistry = new Map<string, AnyPodTable>();
+  const tableRegistry = new Map<string, AnyPodTable[]>();
+  for (const resource of Object.values((database.getSchema() ?? {}) as Record<string, AnyPodTable>)) {
+    if (!resource || typeof resource.getType !== 'function') continue;
+    tableNameRegistry.set(resource.config.name, resource);
+    const type = resource.getType();
+    tableRegistry.set(type, [...(tableRegistry.get(type) ?? []), resource]);
+  }
+  return <R extends object>(row: R): R => {
+    const source = row as Record<string, unknown>;
+    const normalized = { ...source };
+    const record = descriptorRowToColumnValues(descriptor, table, source, { resourceId: String(source.id ?? '') });
+    for (const binding of bindings) {
+      const column = columns[binding.column!];
+      if (!column) continue;
+      const resolve = (value: unknown): unknown => typeof value === 'string'
+        ? resolver.resolveLink(value, column, { currentTable: table, record, tableNameRegistry, tableRegistry }) : value;
+      const value = source[binding.field];
+      normalized[binding.field] = binding.descriptor.array && Array.isArray(value) ? value.map(resolve) : resolve(value);
+    }
+    return normalized as R;
+  };
+}
 
 /** RDF term（只覆盖本层会产生的两种）。 */
 export interface PodRdfTerm {

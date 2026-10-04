@@ -56,6 +56,7 @@ export function createAiConnectionsClient({
       mode: 'cors',
       headers: {
         accept: 'application/json',
+        'X-Xpod-Pod-Url': podBaseUrl,
         ...(body ? { 'content-type': 'application/json' } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),

@@ -9,6 +9,7 @@ import {
   type GatewayAccessKeyRecord,
   type GatewayAccessKeyRepository,
 } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { resolveOwnerPodBaseUrl } from '../../../src/api/ai-gateway/pod/PodBaseUrlResolver';
 import { canManageGatewayKeys } from '../../../src/api/ai-gateway/auth/GatewayPrincipal';
 
 describe('GatewayApiKeyAuthenticator', () => {
@@ -24,6 +25,7 @@ describe('GatewayApiKeyAuthenticator', () => {
       secretHash: issued.record.secretHash,
       deployment: 'local',
       scopes: ['models:read', 'inference:write'],
+      podUrl: 'https://storage.example/alice/',
       createdAt: new Date('2026-08-25T00:00:00.000Z'),
     };
     const repository = memoryGatewayRepository(record);
@@ -44,13 +46,20 @@ describe('GatewayApiKeyAuthenticator', () => {
       viaGatewayApiKey: true,
       gatewayRuntimeAccess: true,
       gatewayKeyId: record.id,
+      authorizedPodUrl: record.podUrl,
       scopes: ['models:read', 'inference:write'],
     });
     expect(canManageGatewayKeys(result.context)).toBe(false);
+    await expect(resolveOwnerPodBaseUrl(record.owner, async (_owner, selected) => selected, {
+      ...result.context, requestedPodUrl: 'https://storage.example/other-owned/',
+    })).rejects.toThrow('service_access_missing');
+    await expect(resolveOwnerPodBaseUrl(record.owner, async (_owner, selected) => selected, {
+      ...result.context, requestedPodUrl: record.podUrl,
+    })).resolves.toBe(record.podUrl);
     expect(repository.touchLastUsed).toHaveBeenCalledWith(
       record.id,
       new Date('2026-08-25T01:00:00.000Z'),
-      expect.objectContaining({ gatewayKeyVerification: { reason: 'gateway-key-verifier' } }),
+      expect.objectContaining({ gatewayKeyVerification: { reason: 'gateway-key-verifier', podUrl: record.podUrl } }),
     );
   });
 

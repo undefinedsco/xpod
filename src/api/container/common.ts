@@ -30,6 +30,7 @@ import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec
 import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
 import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
+import { createOwnerPodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
 import { OwnerPodAccess } from '../ai-gateway/pod/OwnerPodAccess';
 import { resolveHostedPodRoute } from '../ai-gateway/pod/HostedPodRoute';
 import { getTaskCredentialDatabase, resolveTaskCredentialDatabaseUrl } from '../tasks/TaskCredentialDatabase';
@@ -165,25 +166,7 @@ function resolveGatewayLocatorSecret(config: ApiContainerCradle['config']): stri
 }
 
 function podBaseUrlResolver(cradle: ApiContainerCradle, selection: 'first' | 'unique' = 'first') {
-  return async (webId: string): Promise<string | undefined> => {
-    const pods = selection === 'unique'
-      ? await cradle.podLookupRepo?.findAllByWebId(webId) ?? []
-      : [await cradle.podLookupRepo?.findByWebId(webId)];
-    const roots = pods.flatMap(pod => {
-      const root = pod?.storageUrl ?? pod?.baseUrl;
-      return root ? [root] : [];
-    });
-    if (selection === 'first') return roots[0];
-    const normalized = new Set(roots.map(root => {
-      const url = new URL(root);
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-        throw new Error('Invalid Pod storage binding');
-      }
-      return url.href.replace(/\/+$/u, '');
-    }));
-    if (normalized.size > 1) throw new Error('Authoritative Pod storage binding ambiguous');
-    return normalized.values().next().value;
-  };
+  return createOwnerPodBaseUrlResolver(cradle.podLookupRepo, selection);
 }
 
 /**
@@ -193,6 +176,7 @@ export function registerCommonServices(
   container: AwilixContainer<ApiContainerCradle>,
 ): void {
   container.register({
+    aiConnectionsPodBaseUrlResolver: asFunction((cradle: ApiContainerCradle) => podBaseUrlResolver(cradle, 'unique')).singleton(),
     // 数据库
     db: asFunction(({ config }: ApiContainerCradle) => {
       return getIdentityDatabase(config.databaseUrl);
@@ -308,7 +292,7 @@ export function registerCommonServices(
           previous: config.gatewayPreviousLocatorSecrets,
         }),
         podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
       });
     }).singleton(),
 
@@ -333,7 +317,7 @@ export function registerCommonServices(
       const { config } = cradle;
       const credentialRepository = new PodConnectedCredentialRepository({
         podAccess: cradle.ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
       });
       const vault = credentialVaultForConfig(config);
       // AI Gateway Connect has no on/off switch: installing ai-connections
@@ -427,7 +411,7 @@ export function registerCommonServices(
       const { ownerPodAccess } = cradle;
       return new PodConnectedCredentialRepository({
         podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
       });
     }).singleton(),
 
@@ -435,7 +419,7 @@ export function registerCommonServices(
       const { ownerPodAccess } = cradle;
       return new PodModelSelectionRepository({
         podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
       });
     }).singleton(),
 
@@ -450,7 +434,7 @@ export function registerCommonServices(
       return new ProviderModelSelectionService({
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess: ownerPodAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         selectionRepository: podModelSelectionRepository,
         providerRegistry: gatewayProviderRegistry,
@@ -533,11 +517,11 @@ export function registerCommonServices(
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({
           podAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         vault: credentialVaultForConfig(config),
         providerRegistry: cradle.gatewayProviderRegistry,
@@ -567,7 +551,7 @@ export function registerCommonServices(
       return new ProviderModelsService({
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         vault: credentialVaultForConfig(config),
         providerRegistry: registry,
@@ -633,7 +617,7 @@ export function registerCommonServices(
       return new ProviderCustomModelsService({
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess: cradle.ownerPodAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         embeddingModelPolicy: cradle.embeddingModelPolicy,
         registry: cradle.gatewayProviderRegistry,
@@ -717,7 +701,7 @@ export function registerCommonServices(
       const { config, ownerPodAccess, serverGroupReconcilerService } = cradle;
       return new PodChatKitStore({
         podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle, 'unique'),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         serverGroupReconcilerService,
         deployment: config.edition,
         credentialSecretDecoder: createAiCredentialSecretDecoder({

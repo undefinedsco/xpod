@@ -130,7 +130,7 @@ function clientIdFromApiKey(apiKey: string): string {
  *
  * The server decides which calls need a Pod credential: it answers 403
  * `service_access_missing` when the caller's own context has none. That is the moment to prepare
- * the session credential and retry once, which keeps this wrapper out of the business of knowing
+ * the session credential and retry a read once. Mutations are never replayed, which keeps this wrapper out of the business of knowing
  * which routes read a Pod - and keeps Pod traffic, capability calls and other origins untouched.
  *
  * The retry deliberately does not reuse the session transport: a session transport exists to
@@ -142,16 +142,15 @@ export function withRequestPodAuthorization(
   authorization: (() => Promise<string | undefined>) | undefined,
   retryFetch: typeof fetch = fetchImpl,
   gatewayOrigin?: string,
+  resolveGatewayUrl?: (url: string) => string,
 ): typeof fetch {
   if (!authorization) {
     return fetchImpl;
   }
   return async (input, init) => {
-    // A 403 is refused before any work, so replaying the request is safe - but a Request body is
-    // consumed by the first attempt, so the replay needs its own copy.
-    const replay = input instanceof Request ? cloneRequest(input) : input;
+    const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
     const response = await fetchImpl(input, init);
-    if (!replay || !needsPodAuthorization(input, gatewayOrigin) || response.status !== 403 || !await isMissingPodAccess(response)) {
+    if (!['GET', 'HEAD'].includes(method) || !needsPodAuthorization(input, gatewayOrigin, resolveGatewayUrl) || response.status !== 403 || !await isMissingPodAccess(response)) {
       return response;
     }
     const value = await authorization().catch(() => undefined);
@@ -161,17 +160,8 @@ export function withRequestPodAuthorization(
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
     headers.set('authorization', value);
     headers.delete('dpop');
-    return retryFetch(replay, { ...init, headers });
+    return retryFetch(input, { ...init, headers });
   };
-}
-
-function cloneRequest(request: Request): Request | undefined {
-  try {
-    return request.clone();
-  } catch {
-    // A streamed body cannot be replayed; the caller keeps the original refusal.
-    return undefined;
-  }
 }
 
 async function isMissingPodAccess(response: Response): Promise<boolean> {
@@ -186,12 +176,18 @@ async function isMissingPodAccess(response: Response): Promise<boolean> {
 }
 
 /** Credentials may only be replayed to this Gateway's API, never to Pod resources or other hosts. */
-export function needsPodAuthorization(input: RequestInfo | URL, gatewayOrigin?: string): boolean {
+export function needsPodAuthorization(input: RequestInfo | URL, gatewayOrigin?: string, resolveGatewayUrl?: (url: string) => string): boolean {
   if (!gatewayOrigin) return false;
   try {
     const url = new URL(input instanceof Request ? input.url : String(input), gatewayOrigin);
-    return url.origin === new URL(gatewayOrigin).origin &&
-      (url.pathname.startsWith('/api/') || url.pathname.startsWith('/v1/'));
+    if (url.username || url.password || url.hash || !['http:', 'https:'].includes(url.protocol)
+      || !(url.pathname.startsWith('/api/') || url.pathname.startsWith('/v1/'))) return false;
+    const origin = new URL(gatewayOrigin).origin;
+    if (url.origin === origin) return true;
+    if (!resolveGatewayUrl) return false;
+    const mapped = new URL(resolveGatewayUrl(url.href));
+    return mapped.origin === origin && !mapped.username && !mapped.password
+      && mapped.pathname === url.pathname && mapped.search === url.search && mapped.hash === url.hash;
   } catch {
     return false;
   }

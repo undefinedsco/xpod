@@ -441,7 +441,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       .filter((record) => record.status === 'active')
       .filter((record) => normalizeProvider(record.provider) !== '')
       .filter((record) => providerAllowedByConfiguredIds(record.provider, enabledProviderIds));
-    const podBaseUrl = await resolveOwnerPodBaseUrl(input.webId, this.podBaseUrlResolver);
+    const podBaseUrl = await resolveOwnerPodBaseUrl(input.webId, this.podBaseUrlResolver, input.auth);
     const hydrated = await this.withSelectedModels(db, aiProvider, aiModel, filtered, input.webId, podBaseUrl, podFetch);
     return hydrated
       .sort(compareCredentialRecords)
@@ -617,7 +617,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       .filter((record) => record.webId === input.webId)
       .filter((record) => providerMatchesQuery(record.provider, input.provider, providerIds))
       .filter((record) => input.includeRevoked || record.status === 'active');
-    const podBaseUrl = await resolveOwnerPodBaseUrl(input.webId, this.podBaseUrlResolver);
+    const podBaseUrl = await resolveOwnerPodBaseUrl(input.webId, this.podBaseUrlResolver, input.auth);
     return (await this.withSelectedModels(db, aiProvider, aiModel, filtered, input.webId, podBaseUrl, podFetch))
       .sort(compareCredentialRecords);
   }
@@ -840,7 +840,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     fetch: typeof fetch;
   }> {
     const credential = alias(this.credentialTemplate, 'credential');
-    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver);
+    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver, auth);
     const trustedFetch = await this.resolveTrustedFetch(owner, auth, podUrl);
     const podBaseUrl = podUrl.replace(/\/$/u, '');
     const settingsSparqlEndpoint = `${podBaseUrl}/settings/-/sparql`;

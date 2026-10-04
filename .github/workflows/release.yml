@@ -264,7 +264,7 @@ jobs:
         run: node scripts/publish-release.cjs --skip-build
 
       - name: Test npm tarball readiness checks
-        run: node --test tests/scripts/wait-for-npm-package.node-test.cjs tests/scripts/npm-latest-propagation.node-test.cjs tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/bun-single-runtime-entry.node-test.cjs tests/scripts/platform-package-budget.node-test.cjs
+        run: node --test tests/scripts/wait-for-npm-package.node-test.cjs tests/scripts/npm-latest-propagation.node-test.cjs tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/desktop-permission-acceptance.node-test.cjs tests/scripts/desktop-permission-workflow.node-test.cjs tests/scripts/rc-cleanup-ownership.node-test.cjs tests/scripts/bun-single-runtime-entry.node-test.cjs tests/scripts/platform-package-budget.node-test.cjs
 
       - name: Wait for verified root and native tarballs to become publicly installable
         run: |
@@ -462,6 +462,7 @@ jobs:
       - promotion_guard
       - deploy_production_co
     runs-on: macos-15
+    environment: rc
     permissions:
       actions: read
       contents: read
@@ -472,6 +473,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
+      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -493,6 +496,9 @@ jobs:
           test -s "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT"
 
       - run: bun install --frozen-lockfile
+
+      - name: Bootstrap the Electron vendor binary
+        run: node node_modules/electron/install.js
 
       - name: Validate desktop version
         run: |
@@ -523,6 +529,64 @@ jobs:
           [[ "$actual" == "$RELEASE_VERSION" ]]
           test -x "$runtime"
           test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
+
+      - name: Accept actual stable packaged desktop permissions and operations
+        run: |
+          set -euo pipefail
+          test -n "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG"
+          provider_file="${RUNNER_TEMP}/desktop-provider-api-key"
+          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$provider_file"
+          chmod 600 "$provider_file"
+          new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          test -n "$new_zip"
+          bun scripts/accept-packaged-desktop-permissions.ts \
+            --archive "$new_zip" \
+            --version "$RELEASE_VERSION" \
+            --source-sha "$XPOD_ACCEPTED_SHA" \
+            --issuer "https://id.undefineds.co/" \
+            --key-file "$provider_file" \
+            --private-directory "${RUNNER_TEMP}/desktop-permission-private" \
+            --evidence "${RUNNER_TEMP}/desktop-permission-evidence.json"
+
+      - name: Accept stable self-update and verify the combined desktop contract
+        run: |
+          set -euo pipefail
+          accepted_evidence="${RUNNER_TEMP}/accepted-desktop-update"
+          gh run download "$CANDIDATE_RUN_ID" \
+            -n "desktop-self-update-acceptance-${XPOD_ACCEPTED_SHA}" -D "$accepted_evidence"
+          old_tag="$(node -e 'const e=require(process.argv[1]); if (!/^v\d+\.\d+\.\d+$/.test(e.oldReleaseTag)) process.exit(1); process.stdout.write(e.oldReleaseTag)' "$accepted_evidence/desktop-self-update-evidence.json")"
+          dest="${RUNNER_TEMP}/stable-old-desktop"
+          mkdir -p "$dest"
+          gh release download "$old_tag" --repo "${{ github.repository }}" \
+            --pattern '*-arm64-mac.zip' --dir "$dest"
+          old_zip="$(find "$dest" -maxdepth 1 -type f -name '*-arm64-mac.zip' -print -quit)"
+          test -n "$old_zip"
+          unzip -q "$old_zip" -d "$dest/unpacked"
+          old_app="$(find "$dest/unpacked" -type d -name 'Xpod.app' -print -quit)"
+          new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          test -n "$old_app"
+          test -n "$new_zip"
+          node desktop/scripts/packaged-update-acceptance.mjs \
+            --old "$old_app" --old-zip "$old_zip" --old-release-tag "$old_tag" \
+            --new-zip "$new_zip" --version "$RELEASE_VERSION" \
+            --source-sha "$XPOD_ACCEPTED_SHA" --timeout 180000 \
+            --evidence-out "${RUNNER_TEMP}/desktop-self-update-evidence.json"
+          node scripts/desktop-acceptance.cjs \
+            --self-update-evidence "${RUNNER_TEMP}/desktop-self-update-evidence.json" \
+            --permission-evidence "${RUNNER_TEMP}/desktop-permission-evidence.json" \
+            --source-sha "$XPOD_ACCEPTED_SHA" --version "$RELEASE_VERSION" \
+            --expected-archive "$new_zip" --checks-out "${RUNNER_TEMP}/desktop-check.json"
+
+      - name: Upload allowlisted stable desktop acceptance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-stable-acceptance-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/desktop-self-update-evidence.json
+            ${{ runner.temp }}/desktop-permission-evidence.json
+            ${{ runner.temp }}/desktop-check.json
+          if-no-files-found: error
+          retention-days: 30
 
       # The archive ships an ad-hoc (linker) signature; `create_github_release` publishes
       # these exact bytes after production deploys, so hand them over as one artifact.

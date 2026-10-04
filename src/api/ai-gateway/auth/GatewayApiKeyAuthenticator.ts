@@ -16,6 +16,8 @@ export interface GatewayAccessKeyRecord {
   /** CSS credentials are saved configuration, never legacy Gateway authentication records. */
   kind?: 'client-credentials';
   credentialResource?: string;
+  /** Verified storage binding attached by the adapter, never read from a request hint. */
+  podUrl?: string;
   owner: string;
   secretHash: string;
   deployment: GatewayDeployment;
@@ -45,6 +47,8 @@ export interface GatewayAccessKeyRepositoryContext {
   /** Set when the gateway itself is verifying a key, rather than serving an owner request. */
   gatewayKeyVerification?: {
     reason: GatewayAccessKeyRepositoryInternalAccessReason;
+    /** Verified adapter binding carried only after a successful key lookup. */
+    podUrl?: string;
   };
 }
 
@@ -153,7 +157,13 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
 
     const lastUsedAt = this.now();
     try {
-      await this.repository.touchLastUsed(record.id, lastUsedAt, repositoryContext);
+      await this.repository.touchLastUsed(record.id, lastUsedAt, {
+        ...repositoryContext,
+        gatewayKeyVerification: {
+          reason: 'gateway-key-verifier',
+          ...(record.podUrl ? { podUrl: record.podUrl } : {}),
+        },
+      });
     } catch (cause) {
       return infrastructureError(cause);
     }
@@ -161,6 +171,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     const context = {
       type: 'solid',
       webId: record.owner,
+      ...(record.podUrl ? { authorizedPodUrl: record.podUrl } : {}),
       accountId: record.owner,
       viaGatewayApiKey: true,
       gatewayRuntimeAccess: true,
@@ -186,6 +197,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     const context = {
       type: 'solid',
       webId: claims.webId,
+      ...(claims.podUrl ? { authorizedPodUrl: claims.podUrl } : {}),
       accountId: claims.webId,
       viaGatewayApiKey: true,
       internalInvocation: true,

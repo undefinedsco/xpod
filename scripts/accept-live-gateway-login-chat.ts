@@ -178,7 +178,7 @@ function providerSpec(id: string, apiKey: string, source: ProviderChoice['source
   }
 }
 
-function parseKeyFile(contents: string): ProviderChoice | undefined {
+export function parseKeyFile(contents: string): ProviderChoice | undefined {
   const values = new Map<string, string>();
   for (const raw of contents.split(/\r?\n/u)) {
     const line = raw.trim();
@@ -360,7 +360,7 @@ async function readLocalProvisionCode(): Promise<string> {
   return status.provisionCode;
 }
 
-async function createCloudAccountPassword(baseUrl: string, prefix: string): Promise<CloudAccountPassword> {
+export async function createCloudAccountPassword(baseUrl: string, prefix: string): Promise<CloudAccountPassword> {
   const normalizedPrefix = normalizeAcceptanceName(prefix);
   const suffix = Date.now().toString(36);
   const email = `${normalizedPrefix}-${suffix}@test.com`;
@@ -593,13 +593,33 @@ export async function prepareManagedLocalAcceptancePod(options: {
   provisionCode: string;
   fetchImpl?: typeof fetch;
 }): Promise<StorageBinding> {
+  return (await prepareManagedLocalAcceptancePods({ ...options, usernames: [options.username] }))[0];
+}
+
+/** Prepare one identity, then verify each distinct managed storage binding with Cloud.
+ * The existing receipt/provisioning implementation is shared with single-Pod acceptance.
+ */
+export async function prepareManagedLocalAcceptancePods(options: {
+  baseUrl: string;
+  localBaseUrl: string;
+  canonicalBaseUrl: string;
+  authorization: string;
+  controls: AccountControls;
+  usernames: readonly string[];
+  provisionCode: string;
+  fetchImpl?: typeof fetch;
+}): Promise<StorageBinding[]> {
+  if (!options.usernames.length || new Set(options.usernames).size !== options.usernames.length
+    || options.usernames.some(name => !name || normalizeAcceptanceName(name) !== name)) {
+    throw new Error('Acceptance Pod names must be distinct normalized names');
+  }
   const fetchImpl = options.fetchImpl ?? fetch;
   const profileUrl = requiredAccountControl(options.controls.account?.profile, options.baseUrl, 'controls.account.profile');
   const preparedIdentity = await readJson(await fetchImpl(profileUrl, {
     method: 'POST',
     headers: { ...accountTokenHeaders(options.authorization), 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ podName: options.username }),
+    body: JSON.stringify({ podName: options.usernames[0] }),
   }), 'POST Cloud controls.account.profile') as { webId?: unknown; webIdLink?: unknown };
   if (!preparedIdentity || typeof preparedIdentity.webId !== 'string' || !preparedIdentity.webId ||
     /[\u0000-\u0020\u007f\\]/u.test(preparedIdentity.webId) ||
@@ -613,17 +633,21 @@ export async function prepareManagedLocalAcceptancePod(options: {
     !identity.pathname.startsWith(cloud.pathname) || identity.username || identity.password || identity.search) {
     throw new Error('Prepared WebID is outside the acceptance Cloud identity authority');
   }
-  const preparedPod = await prepareLocalProvisionedPod({
-    cloudBaseUrl: options.baseUrl,
-    localBaseUrl: options.localBaseUrl,
-    canonicalBaseUrl: options.canonicalBaseUrl,
-    provisionCode: options.provisionCode,
-    username: options.username,
-    webId: preparedIdentity.webId,
-    fetchImpl,
-  });
-  return createCloudManagedLocalPod({ ...options, fetchImpl, ...preparedPod,
-    webId: preparedIdentity.webId, webIdLink: preparedIdentity.webIdLink });
+  const bindings: StorageBinding[] = [];
+  for (const username of options.usernames) {
+    const preparedPod = await prepareLocalProvisionedPod({
+      cloudBaseUrl: options.baseUrl,
+      localBaseUrl: options.localBaseUrl,
+      canonicalBaseUrl: options.canonicalBaseUrl,
+      provisionCode: options.provisionCode,
+      username,
+      webId: preparedIdentity.webId,
+      fetchImpl,
+    });
+    bindings.push(await createCloudManagedLocalPod({ ...options, username, fetchImpl, ...preparedPod,
+      webId: preparedIdentity.webId, webIdLink: preparedIdentity.webIdLink }));
+  }
+  return bindings;
 }
 
 async function createHostedPod(options: {
@@ -650,7 +674,7 @@ async function createHostedPod(options: {
   return binding;
 }
 
-async function createCloudClientCredentials(options: {
+export async function createCloudClientCredentials(options: {
   baseUrl: string;
   authorization: string;
   controls: AccountControls;

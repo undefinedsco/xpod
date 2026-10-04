@@ -61,7 +61,9 @@ export function createServiceAccessGatewayFetch({
   let pendingInvocation: Promise<AiConnectionsInvocation> | undefined;
 
   const fetchServiceAccess = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const response = await authenticatedFetch(input, init);
+    const headers = new Headers(init?.headers);
+    headers.set('X-Xpod-Pod-Url', podUrl);
+    const response = await authenticatedFetch(input, { ...init, headers });
     invocation = await invocationFromResponse(response.clone(), invocationSelector);
     return response;
   };
@@ -103,6 +105,7 @@ export function createServiceAccessGatewayFetch({
     if (!token) throw new Error('AI Connection request failed. Please try again.');
     const headers = new Headers(init?.headers);
     headers.set('Authorization', `Bearer ${token}`);
+    headers.set('X-Xpod-Pod-Url', podUrl);
     return invocationFetch(input, {
       ...init,
       credentials: 'omit',

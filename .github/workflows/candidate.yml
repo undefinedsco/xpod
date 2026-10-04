@@ -6,8 +6,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: candidate-${{ github.ref }}
-  cancel-in-progress: true
+  # Keep the shared RC instance owned until desktop, Finalize and cleanup finish.
+  # This must differ from the individual RC job lock to avoid nested deadlock.
+  group: xpod-shared-rc-workflow
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -212,7 +214,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Verify the desktop self-update verifier
-        run: node --test tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/bun-single-runtime-entry.node-test.cjs tests/scripts/platform-package-budget.node-test.cjs
+        run: node --test tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/desktop-permission-acceptance.node-test.cjs tests/scripts/desktop-permission-workflow.node-test.cjs tests/scripts/rc-cleanup-ownership.node-test.cjs tests/scripts/bun-single-runtime-entry.node-test.cjs tests/scripts/platform-package-budget.node-test.cjs
 
       - name: Install Chromium for authenticated acceptance
         run: bunx playwright install --with-deps chromium
@@ -387,6 +389,9 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" delete statefulset/xpod-rc-postgres --cascade=foreground --wait=true --ignore-not-found
           kubectl -n "$SEALOS_NAMESPACE" delete service/xpod-rc-postgres --ignore-not-found
           kubectl -n "$SEALOS_NAMESPACE" delete pvc/data-xpod-rc-postgres-0 --ignore-not-found
+          kubectl annotate --local -f "$postgres_manifest" --overwrite \
+            "xpod.undefineds.co/rc-owner-seed=$XPOD_RC_SEED_SECRET_NAME" -o yaml > "${postgres_manifest}.owned"
+          mv "${postgres_manifest}.owned" "$postgres_manifest"
           kubectl apply -f "$postgres_manifest"
           kubectl rollout status statefulset/xpod-rc-postgres -n "$SEALOS_NAMESPACE" --timeout=600s
           postgres_version_num="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
@@ -739,15 +744,9 @@ jobs:
             fi
           fi
 
-      - name: Scale RC deployments to zero
-        if: ${{ always() && vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
-        run: |
-          kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0 || true
-          kubectl -n "$SEALOS_NAMESPACE" scale statefulset/xpod-rc-postgres --replicas=0 || true
-
   build_desktop_rc:
     name: Build macOS RC desktop
-    needs: [metadata, build_qlever_macos_runtime]
+    needs: [metadata, build_qlever_macos_runtime, deploy_and_accept]
     runs-on: macos-15
     environment: rc
     permissions:
@@ -757,6 +756,8 @@ jobs:
       CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
+      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -954,6 +955,37 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Accept actual packaged desktop permissions and operations
+        run: |
+          set -euo pipefail
+          test -n "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG"
+          provider_file="${RUNNER_TEMP}/desktop-provider-api-key"
+          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$provider_file"
+          chmod 600 "$provider_file"
+          new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          test -n "$new_zip"
+          bun scripts/accept-packaged-desktop-permissions.ts \
+            --archive "$new_zip" \
+            --version "$CANDIDATE_VERSION" \
+            --source-sha "${{ github.sha }}" \
+            --issuer "https://id-rc.undefineds.co/" \
+            --key-file "$provider_file" \
+            --private-directory "${RUNNER_TEMP}/desktop-permission-private" \
+            --evidence "${RUNNER_TEMP}/desktop-permission-evidence.json"
+          node scripts/desktop-permission-acceptance.cjs \
+            --evidence "${RUNNER_TEMP}/desktop-permission-evidence.json" \
+            --source-sha "${{ github.sha }}" \
+            --version "$CANDIDATE_VERSION" \
+            --expected-archive "$new_zip"
+
+      - name: Upload allowlisted desktop permission evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-permission-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-permission-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
       - uses: actions/upload-artifact@v4
         with:
           name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
@@ -980,6 +1012,14 @@ jobs:
       REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - run: bun run build:packages
       - uses: actions/download-artifact@v4
         with:
           name: release-service-acceptance-${{ github.sha }}
@@ -990,12 +1030,16 @@ jobs:
           path: ${{ runner.temp }}/desktop-self-update
       - uses: actions/download-artifact@v4
         with:
+          name: desktop-permission-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-permissions
+      - uses: actions/download-artifact@v4
+        with:
           name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
           path: ${{ runner.temp }}/xpod-desktop-candidate
       # The `desktop` check is only accepted from the source-bound evidence the
       # macOS job produced AND must byte-match the uploaded candidate archive;
       # bundle presence alone never sets it.
-      - name: Verify the desktop self-update acceptance evidence
+      - name: Verify the combined mandatory desktop acceptance evidence
         run: |
           set -euo pipefail
           candidate_zip="$(find "${{ runner.temp }}/xpod-desktop-candidate" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
@@ -1003,11 +1047,12 @@ jobs:
             echo "::error::uploaded candidate desktop zip is missing"
             exit 1
           fi
-          node scripts/desktop-self-update-acceptance.cjs verify \
-            --evidence "${{ runner.temp }}/desktop-self-update/desktop-self-update-evidence.json" \
+          node scripts/desktop-acceptance.cjs \
+            --self-update-evidence "${{ runner.temp }}/desktop-self-update/desktop-self-update-evidence.json" \
+            --permission-evidence "${{ runner.temp }}/desktop-permissions/desktop-permission-evidence.json" \
             --source-sha "${{ github.sha }}" \
-            --new-version "$CANDIDATE_VERSION" \
-            --expected-new-zip "$candidate_zip" \
+            --version "$CANDIDATE_VERSION" \
+            --expected-archive "$candidate_zip" \
             --checks-out "${{ runner.temp }}/desktop-check.json"
       # `qlever-local` and `package-consumers` are only accepted from the
       # source/artifact-bound evidence the producing jobs uploaded AND must
@@ -1048,7 +1093,7 @@ jobs:
           const checksPath = path.join(process.env.RUNNER_TEMP, 'service-acceptance', 'checks.json');
           const desktopChecks = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'desktop-check.json'), 'utf8'));
           if (desktopChecks.desktop !== 'passed') {
-            throw new Error('desktop self-update acceptance did not verify');
+            throw new Error('combined desktop acceptance did not verify');
           }
           const qleverChecks = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'qlever-local-check.json'), 'utf8'));
           if (qleverChecks['qlever-local'] !== 'passed') {
@@ -1081,3 +1126,49 @@ jobs:
           name: release-acceptance-${{ github.sha }}
           path: ${{ runner.temp }}/release-acceptance.json
           if-no-files-found: error
+
+  cleanup_rc:
+    name: Cleanup RC after all acceptance jobs
+    needs: [deploy_and_accept, build_desktop_rc, finalize_acceptance]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    environment: rc
+    concurrency:
+      group: xpod-shared-rc-service
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+      XPOD_RC_SEED_SECRET_NAME: xpod-rc-seed-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+        if: ${{ vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
+      - name: Scale RC deployments to zero
+        if: ${{ vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SEALOS_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#SEALOS_NAMESPACE} -gt 63 ]]; then
+            echo "::error::SEALOS_NAMESPACE is invalid"
+            exit 1
+          fi
+          test -n "$KUBE_CONFIG_DATA"
+          umask 077
+          export KUBECONFIG="${RUNNER_TEMP}/rc-cleanup-kubeconfig"
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > "$KUBECONFIG"
+          for kind in deployment postgres; do
+            if [ "$kind" = deployment ]; then resource=deployment/xpod-rc; else resource=statefulset/xpod-rc-postgres; fi
+            observation="${RUNNER_TEMP}/rc-cleanup-${kind}.json"
+            kubectl -n "$SEALOS_NAMESPACE" get "$resource" --ignore-not-found -o json > "$observation"
+            set +e
+            node scripts/rc-cleanup-ownership.cjs "$kind" "$observation" "$SEALOS_NAMESPACE" "$XPOD_RC_SEED_SECRET_NAME"
+            ownership_status=$?
+            set -e
+            if [ "$ownership_status" -eq 2 ]; then
+              echo "RC resource is absent or belongs to another run; resource not scaled"
+              continue
+            fi
+            if [ "$ownership_status" -ne 0 ]; then exit "$ownership_status"; fi
+            kubectl -n "$SEALOS_NAMESPACE" scale "$resource" --replicas=0
+          done

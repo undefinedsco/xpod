@@ -1,7 +1,19 @@
 import { errors, type Locator } from '@playwright/test';
 import { JSDOM } from 'jsdom';
 import { expect, it, vi } from 'vitest';
-import { clickNonPasswordOidcAction } from './browserSolidOidc';
+import { chooseConsentBinding, clickNonPasswordOidcAction } from './browserSolidOidc';
+
+it('selects the requested authoritative Pod instead of retaining another same-owner default', () => {
+  const options = ['https://id.example/card#me|https://a.example/pod/', 'https://id.example/card#me|https://b.example/pod/']
+    .map(value => ({ value, disabled: false }));
+  expect(chooseConsentBinding(options, options[0].value, { webId: 'https://id.example/card#me', podUrl: 'https://b.example/pod/' }))
+    .toBe(options[1].value);
+  expect(chooseConsentBinding(options.slice(0, 1), options[0].value,
+    { webId: 'https://id.example/card#me', podUrl: 'https://b.example/pod/' })).toBeUndefined();
+  expect(chooseConsentBinding([{ ...options[1], disabled: true }], '',
+    { webId: 'https://id.example/card#me', podUrl: 'https://b.example/pod/' })).toBeUndefined();
+  expect(chooseConsentBinding(options, options[0].value, { webId: 'https://id.example/card#other' })).toBeUndefined();
+});
 
 const CONTROL_SELECTOR = 'button, input[type=submit], a[href]';
 

@@ -111,6 +111,42 @@ describe('Xpod AI Connection API client', () => {
     ]);
   });
 
+  test('reacquires a legacy unbound invocation through the existing Solid session with the same selected Pod', async () => {
+    let attempts = 0;
+    const authenticatedFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json(serviceAccessPayload({
+      token: ++attempts === 1 ? 'legacy-unbound' : 'new-pod-bound',
+    })));
+    const invocationFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ error: 'Pod-bound invocation required' }, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ data: [] }));
+    const gatewayFetch = createServiceAccessGatewayFetch({ podUrl: POD_URL, authenticatedFetch, invocationFetch });
+    expect((await gatewayFetch('https://pod.example/api/ai/connections/providers')).status).toBe(200);
+    expect(authenticatedFetch).toHaveBeenCalledTimes(2);
+    expect(authenticatedFetch.mock.calls.every(([url, init]) =>
+      String(url) === 'https://pod.example/api/applets/service-access/ai-connections'
+      && new Headers(init?.headers).get('X-Xpod-Pod-Url') === POD_URL
+      && new Headers(init?.headers).get('Authorization') === null)).toBe(true);
+    expect(invocationFetch.mock.calls.map(([, init]) => [
+      new Headers(init?.headers).get('Authorization'), new Headers(init?.headers).get('X-Xpod-Pod-Url'),
+    ])).toEqual([['Bearer legacy-unbound', POD_URL], ['Bearer new-pod-bound', POD_URL]]);
+  });
+
+  test('keeps invocation caches separate between two Pods of the same owner', async () => {
+    const otherPod = 'https://pod.example/local/alice/';
+    const authenticatedFetch = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => Response.json(serviceAccessPayload({
+      token: new Headers(init?.headers).get('X-Xpod-Pod-Url') === POD_URL ? 'cloud-bound' : 'local-bound',
+    })));
+    const invocationFetch = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ data: [] }));
+    const cloud = createServiceAccessGatewayFetch({ podUrl: POD_URL, authenticatedFetch, invocationFetch });
+    const local = createServiceAccessGatewayFetch({ podUrl: otherPod, authenticatedFetch, invocationFetch });
+    await cloud('https://pod.example/api/ai/providers');
+    await local('https://pod.example/api/ai/providers');
+    await cloud('https://pod.example/api/ai/providers');
+    expect(authenticatedFetch).toHaveBeenCalledTimes(2);
+    expect(invocationFetch.mock.calls.map(([, init]) => new Headers(init?.headers).get('Authorization')))
+      .toEqual(['Bearer cloud-bound', 'Bearer local-bound', 'Bearer cloud-bound']);
+  });
+
   test('reuses the caller Solid session for interactive Provider management', async () => {
     const calls: string[] = [];
     const invocationFetch = mock(async () => {

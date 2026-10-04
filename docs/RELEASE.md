@@ -18,8 +18,8 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
    和认证验收。
 6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，运行真实
    RDF、FTS、VEC Local conformance，但 RC 不向 npm 发布任何包。
-7. 同一个 workflow 构建未签名、未 notarize 的 macOS ARM64 桌面产物，并验证版本、
-   QLever runtime 和 manifest；服务、QLever 和桌面全部通过后才接受该候选。
+7. 同一个 workflow 构建带 ad-hoc 签名、未 notarize 的 macOS ARM64 桌面产物，并验证版本、
+   QLever runtime、manifest、真实自更新及同包真实权限操作；服务、QLever 和桌面全部通过后才接受该候选。
 8. 验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`。该 artifact 是 stable tag promotion 的唯一凭证。
 9. 只在接受的 exact commit 上创建 stable tag，例如 `v0.4.0`。
 10. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
@@ -87,10 +87,13 @@ Playwright 用例和 `solid-pod-isolation`、`browser-visual` 必过项保持不
 
 完整 provider 写入、Pod 读写、Gateway Key、Models、真实 Chat 和 Tasks 审批由紧随其后的
 一次性 Local runtime 对同一 RC Cloud 执行。本地 hermetic/部署模式矩阵只证明隔离栈，
-不冒充已部署 RC 或真实桌面。现有 macOS `desktop` CI 门禁证明旧包到新包的真实自更新，
-并未证明重管理 UI：这部分仍需在真实 Electron/preload 和候选运行时中验证登录恢复及
-AI Connections、Pod、Network、Status 的已认证访问；不得用普通 Chromium 重页面截图
-宣称完成该桌面补证。本次浏览器契约修正不改变桌面发布门禁。
+不冒充已部署 RC 或真实桌面。0.4.25 的 macOS `desktop` 门禁证明旧包到新包的真实自更新，
+未覆盖重管理权限操作。0.4.26 起该必需项同时要求 exact zip 的权限操作证据：真实
+Electron/preload 与自带 Local runtime，Cloud card 身份、两份权威 Local Pod 绑定和无公网
+路由，实际 Consent 选择与回调、两轮完整资源授权、Account Key/配置、collection 写入确认、
+Models/Quota/单发 Chat、跨 Pod 拒绝与清理。缺任一证据不得写入 `desktop:passed`。
+详见[桌面权限验收契约](testing/desktop-permission-acceptance.md)。这项并不声明 Pod、Network、
+Status 所有管理操作、所有订阅 provider 或原安装 App 已验；不得用普通 Chromium 截图补足。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 

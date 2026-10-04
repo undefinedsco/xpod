@@ -1,11 +1,9 @@
 import { resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
 import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from '@undefineds.co/ai-connections/provider-catalog';
 import {
-  aiProviderResource,
-  credentialResource,
-  gatewayAccessKeyResource,
-  quotaSnapshotResource,
-} from '@undefineds.co/models';
+  AI_CONNECTIONS_SERVICE_RESOURCE_IDS,
+  resolveAiConnectionsServiceResource,
+} from '@undefineds.co/ai-connections/service-access-resources';
 
 export const AI_CONNECTIONS_APPLET_ID = 'co.undefineds.ai-connections';
 
@@ -46,20 +44,6 @@ export interface AiConnectionsServiceAccessResource {
   };
 }
 
-interface PodResourceLocator {
-  config?: {
-    base?: string;
-  };
-  buildId(value: { id: string }): string;
-}
-
-const declaredResourceBases = new WeakMap<object, string>([
-  [credentialResource, declaredResourceBase(credentialResource)],
-  [aiProviderResource, declaredResourceBase(aiProviderResource)],
-  [gatewayAccessKeyResource, declaredResourceBase(gatewayAccessKeyResource)],
-  [quotaSnapshotResource, declaredResourceBase(quotaSnapshotResource)],
-]);
-
 export function createAiConnectionsServiceAccess(input: {
   ownerWebId: string;
   serviceWebId: string;
@@ -71,32 +55,20 @@ export function createAiConnectionsServiceAccess(input: {
       webId: input.serviceWebId,
       label: 'Xpod AI Connection',
     },
-    resources: ([
-      ['providerCredentials', resourceUrl(input.ownerWebId, credentialResource, input.podBaseUrl)],
-      ['providerDefinitions', resourceUrl(input.ownerWebId, aiProviderResource, input.podBaseUrl)],
-      ['gatewayAccessKeys', resolveGatewayAccessKeyResourceUrl(input.ownerWebId, input.podBaseUrl)],
-      ['gatewayAccessKeySecrets', resolveGatewayAccessKeySecretResourceUrl(input.ownerWebId, input.podBaseUrl), 'application/json'],
-      ['quotaSnapshots', resourceUrl(input.ownerWebId, quotaSnapshotResource, input.podBaseUrl)],
-      ...AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS.map((provider) => [
-        `providerDocument:${provider}`,
-        providerDocumentUrl(input.ownerWebId, provider, input.podBaseUrl),
-      ] as const),
-    ] as const).map(([id, url, mediaType]) => ({
+    resources: AI_CONNECTIONS_SERVICE_RESOURCE_IDS.map(id => ({
       id,
-      url,
-      mediaType: mediaType ?? 'text/turtle',
+      ...requiredResourceLocation(id, input.ownerWebId, input.podBaseUrl),
       access: { read: true, append: true, write: true },
-    })) as AiConnectionsServiceAccessResource[],
+    })),
   };
 }
 
 export function resolveGatewayAccessKeyResourceUrl(ownerWebId: string, podBaseUrl?: string): string {
-  return resourceUrl(ownerWebId, gatewayAccessKeyResource, podBaseUrl);
+  return requiredResourceLocation('gatewayAccessKeys', ownerWebId, podBaseUrl).url;
 }
 
 export function resolveGatewayAccessKeySecretResourceUrl(ownerWebId: string, podBaseUrl?: string): string {
-  const podRoot = `${(podBaseUrl ?? resolvePodBaseUrl(ownerWebId)).replace(/\/$/u, '')}/`;
-  return new URL('.data/ai/gateway/access-key-secrets.json', podRoot).href;
+  return requiredResourceLocation('gatewayAccessKeySecrets', ownerWebId, podBaseUrl).url;
 }
 
 export function resolveGatewayAccessKeySparqlEndpoint(ownerWebId: string, podBaseUrl?: string): string {
@@ -116,25 +88,8 @@ export function isGatewayAccessKeySparqlEndpoint(
   }
 }
 
-function resourceUrl(ownerWebId: string, resource: PodResourceLocator, podBaseUrl?: string): string {
-  const podRoot = `${(podBaseUrl ?? resolvePodBaseUrl(ownerWebId)).replace(/\/$/u, '')}/`;
-  const resourcePath = declaredResourceBases.get(resource as object);
-  if (!resourcePath) {
-    throw new Error('AI Connection resource is missing an immutable declared base');
-  }
-  const documentPath = resource.buildId({ id: '__service_access__' }).split('#')[0];
-  return new URL(`${resourcePath}/${documentPath}`.replace(/^\/+/u, ''), podRoot).href;
-}
-
-function providerDocumentUrl(ownerWebId: string, provider: string, podBaseUrl?: string): string {
-  const podRoot = `${(podBaseUrl ?? resolvePodBaseUrl(ownerWebId)).replace(/\/$/u, '')}/`;
-  return new URL(`settings/providers/${provider}.ttl`, podRoot).href;
-}
-
-function declaredResourceBase(resource: PodResourceLocator): string {
-  const base = resource.config?.base?.replace(/^\/+|\/+$/gu, '');
-  if (!base) {
-    throw new Error('AI Connection resource is missing a declared base');
-  }
-  return base;
+function requiredResourceLocation(id: string, ownerWebId: string, podBaseUrl?: string) {
+  const location = resolveAiConnectionsServiceResource(id, podBaseUrl ?? resolvePodBaseUrl(ownerWebId));
+  if (!location) throw new Error('AI Connection resource is not declared');
+  return location;
 }

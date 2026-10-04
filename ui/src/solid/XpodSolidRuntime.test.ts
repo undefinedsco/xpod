@@ -150,7 +150,37 @@ describe('Xpod bootstrap access routes', () => {
     runtime.session.dispose();
   });
 
-  test('routes a service-key retry without signing over its authorization or losing the request body', async () => {
+  test('routes a verified canonical read recovery to the current physical Gateway with the explicit credential', async () => {
+    const authorizations: Array<string | null> = [];
+    const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      expect(request.url).toBe(`${LOOPBACK}/api/ai/gateway/keys`);
+      expect(request.headers.get('x-xpod-canonical-url')).toBe(`${CANONICAL}/api/ai/gateway/keys`);
+      const authorization = request.headers.get('authorization');
+      authorizations.push(authorization);
+      return authorization === 'Bearer session-key'
+        ? Response.json({ data: [] }) : Response.json({ error: 'service_access_missing' }, { status: 403 });
+    });
+    let transport!: typeof fetch;
+    const runtime = createXpodSolidRuntimeValue({ sessionFactory: ({ fetch: routed }) => {
+      transport = routed;
+      return { info: { isLoggedIn: false }, fetch: routed, login: vi.fn(), logout: vi.fn(),
+        handleIncomingRedirect: vi.fn(), events: { on: vi.fn(), off: vi.fn() } as unknown as SolidSessionAdapter['events'] };
+    } });
+    runtime.setLocalPodRoutes([podRoute(`${CANONICAL}/`, `${LOOPBACK}/`)]);
+    const signedFetch: typeof fetch = (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set('authorization', 'DPoP browser-session');
+      return transport(input, { ...init, headers });
+    };
+    const response = await withRequestPodAuthorization(signedFetch, async () => 'Bearer session-key',
+      runtime.transportFetch, LOOPBACK, runtime.resolveLocalUrl)(`${CANONICAL}/api/ai/gateway/keys`);
+    expect(response.status).toBe(200);
+    expect(authorizations).toEqual(['DPoP browser-session', 'Bearer session-key']);
+    expect(network).toHaveBeenCalledTimes(2);
+    runtime.session.dispose();
+  });
+  test('does not replay a canonical write after missing Pod access', async () => {
     const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const request = new Request(input, init);
       expect(request.url).toBe(`${LOOPBACK}/v1/chat/completions`);
@@ -174,8 +204,8 @@ describe('Xpod bootstrap access routes', () => {
     };
     const request = new Request(`${CANONICAL}/v1/chat/completions`, { method: 'POST', body: 'request-body' });
     const response = await withRequestPodAuthorization(signedFetch, async () => 'Bearer session-key', runtime.transportFetch, CANONICAL)(request);
-    expect(response.status).toBe(200);
-    expect(network).toHaveBeenCalledTimes(2);
+    expect(response.status).toBe(403);
+    expect(network).toHaveBeenCalledTimes(1);
     runtime.session.dispose();
   });
 });
