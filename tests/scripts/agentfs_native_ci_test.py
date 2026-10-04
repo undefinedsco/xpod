@@ -122,6 +122,26 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(receipt['resourceStop'], 'free-space floor')
             self.assertTrue(receipt['actualWait'])
 
+    def test_bookworm_baseline_rejects_ubuntu_2404_glibc_requirement(self):
+        def readelf(*versions):
+            return '\n'.join(f'  0000:   Name: GLIBC_{version}  Flags: none  Version: {index}'
+                             for index, version in enumerate(versions, 1))
+        self.assertEqual(a.assert_bookworm_glibc(readelf('2.2', '2.17', '2.34', '2.36')), (2, 36))
+        with self.assertRaisesRegex(RuntimeError, 'GLIBC_2.39'):
+            a.assert_bookworm_glibc(readelf('2.2', '2.17', '2.34', '2.36', '2.39'))
+        with self.assertRaisesRegex(RuntimeError, 'no versioned GLIBC'):
+            a.assert_bookworm_glibc('  0000:   Symbol table only\n')
+
+    def test_linux_acceptance_runs_inside_pinned_bookworm_container(self):
+        workflow = (ROOT / '.github/workflows/agentfs-native-acceptance.yml').read_text()
+        self.assertIn('rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e', workflow)
+        self.assertIn('bookworm-entry.sh', workflow)
+        self.assertIn('needs: native-macos', workflow)
+        self.assertIn('docker run', workflow)
+        entry = (ROOT / 'scripts/agentfs-native-ci/bookworm-entry.sh').read_text()
+        self.assertIn('glibc 2.36', entry)
+        self.assertIn('e660365729b434af422bcd2e8e14228637ecf24a1de2cd7c916ad48f2a0521e1', entry)
+
 
 if __name__ == '__main__':
     unittest.main()

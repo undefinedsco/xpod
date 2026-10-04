@@ -18,6 +18,30 @@ BUN_SHA = {
     'darwin': '90987a3a16d7db556d886ac3d551e7b6d3edf0a1cf43acaed622e8676be1d12f',
     'linux': '54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7',
 }
+# Linux is built inside this pinned Bookworm GNU image, so the helper targets
+# glibc 2.36 / OpenSSL 3 instead of the Ubuntu 24.04 runner's glibc 2.39.
+BOOKWORM_IMAGE = 'rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e'
+BOOKWORM_MAX_GLIBC = (2, 36)
+GLIBC_SYMBOL = re.compile(r'GLIBC_(\d+)\.(\d+)')
+
+
+def glibc_requirements(readelf_output):
+    return sorted({(int(major), int(minor)) for major, minor in GLIBC_SYMBOL.findall(readelf_output)})
+
+
+def highest_glibc_requirement(readelf_output):
+    requirements = glibc_requirements(readelf_output)
+    if not requirements:
+        raise RuntimeError('Built helper reports no versioned GLIBC requirement')
+    return requirements[-1]
+
+
+def assert_bookworm_glibc(readelf_output):
+    highest = highest_glibc_requirement(readelf_output)
+    if highest > BOOKWORM_MAX_GLIBC:
+        raise RuntimeError(f'Built helper requires GLIBC_{highest[0]}.{highest[1]} beyond Bookworm '
+                           f'{BOOKWORM_MAX_GLIBC[0]}.{BOOKWORM_MAX_GLIBC[1]}')
+    return highest
 
 
 def check_tests(text):
@@ -63,7 +87,11 @@ def sdk_identity(host):
     commands = [['xcrun', '--show-sdk-path'], ['xcrun', '--show-sdk-version'],
                 ['xcrun', 'clang', '--version']] if host == 'darwin' else [
                 ['cc', '--version'], ['ld', '--version'],
-                ['dpkg-query', '-W', 'liblzma-dev', 'libssl-dev', 'build-essential', 'pkg-config']]
+                ['dpkg-query', '-W', 'liblzma-dev', 'libssl-dev', 'build-essential', 'pkg-config'],
+                # Actual interior GNU identity: never the Ubuntu ARM runner's values.
+                ['getconf', 'GNU_LIBC_VERSION'],
+                ['dpkg-query', '-W', '-f=${Package}=${Version}\n', 'libc6', 'libssl3'],
+                ['sh', '-c', '. /etc/os-release && printf "%s %s" "$ID" "$VERSION_ID"']]
     return {" ".join(command): subprocess.check_output(command, text=True).strip() for command in commands}
 
 
@@ -74,9 +102,59 @@ def tool_environment(environment):
     return {key: value for key, value in environment.items() if key in allowed}
 
 
+def runtime_admission(archive, evidence, node, base):
+    # Execute the packaged launcher through the external Node runtime only (no
+    # Bun) and prove the bundled helper loads on the pinned Bookworm baseline.
+    installation = base / 'admission-install'
+    if installation.exists():
+        raise RuntimeError('Admission install directory must be fresh')
+    installation.mkdir(mode=0o700)
+    extract = subprocess.run(['tar', '-xzf', str(archive), '-C', str(installation)], capture_output=True, text=True)
+    if extract.returncode != 0:
+        raise RuntimeError(f'Admission archive extraction failed: {extract.stderr.strip()}')
+    install = installation / 'install'
+    launcher = install / 'bin/xpodcli'
+    helper = install / 'helper/agentfs-pod'
+    if not launcher.is_file() or not helper.is_file():
+        raise RuntimeError('Admission archive lacks the launcher or bundled helper')
+    version_info = subprocess.check_output(['readelf', '--version-info', str(helper)], text=True, stderr=subprocess.STDOUT)
+    (evidence / 'helper-glibc-requirements.raw.log').write_text(version_info)
+    highest = assert_bookworm_glibc(version_info)
+    node_dir = str(Path(node).parent)
+    path = os.pathsep.join([node_dir, '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'])
+    if shutil.which('bun', path=path):
+        raise RuntimeError('Node admission PATH unexpectedly resolves bun')
+    environment = dict(os.environ)
+    environment['PATH'] = path
+
+    def execute(command):
+        result = subprocess.run(command, cwd=str(installation), env=environment, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f'Node-only admission failed ({command[0]}): {result.stderr.strip()}')
+        return result.stdout.strip()
+
+    launcher_version = execute([str(launcher), '--version'])
+    helper_version = execute([str(helper), '--version'])
+    status = execute([str(launcher), 'agent-fs', 'status', '--json'])
+    if not helper_version.startswith('agentfs-pod '):
+        raise RuntimeError(f'Bundled helper did not identify itself: {helper_version}')
+    loaded = subprocess.run(['ldd', str(helper)], capture_output=True, text=True).stdout
+    if 'libssl.so.3' not in loaded:
+        raise RuntimeError('Bundled helper does not resolve OpenSSL 3 (libssl.so.3) at load time')
+    record = {
+        'runtime': 'node', 'nodeVersion': execute([node, '--version']),
+        'launcherVersion': launcher_version, 'helperVersion': helper_version,
+        'highestGlibcRequirement': f'{highest[0]}.{highest[1]}', 'opensslSoname': 'libssl.so.3',
+        'bunAbsentFromPath': True, 'statusJsonBytes': len(status.encode()), 'ldd': loaded,
+    }
+    (evidence / 'runtime-admission.receipt.json').write_text(json.dumps(record, indent=2) + '\n')
+    return record
+
+
 def main():
     os.umask(0o077)
     clean = tool_environment(os.environ)
+    bookworm_image = os.environ.get('AGENTFS_BOOKWORM_IMAGE')
     os.environ.clear()
     os.environ.update(clean)
     root = Path(__file__).resolve().parents[2]
@@ -157,6 +235,7 @@ def main():
         raise RuntimeError('Expected exactly one newly built install archive')
     gate('verify-install', [bun, str(scripts / 'verify-install.ts'), '--archive', str(archives[0]),
                             '--expect-validation', 'install-verified'])
+    runtime = runtime_admission(archives[0], evidence, node, base) if host == 'linux' else None
     source_after = source_snapshot(root)
     sdk_after = sdk_identity(host)
     if sdk_before != sdk_after:
@@ -167,10 +246,12 @@ def main():
         shutil.copyfile(rebuilt / name, evidence / f'native-{name}')
     shutil.copyfile(kit / 'source-kit.json', evidence / 'source-kit.json')
     shutil.copyfile(archives[0], evidence / archives[0].name)
-    final = dict(scope='source-bound native unit and install verification only', target=target, head=head,
+    final = dict(scope='source-bound native unit, install and Bookworm loader/ABI verification; no mount or release',
+                 target=target, head=head,
                  sourceBefore=source_before, sourceAfter=source_after, sdkBefore=sdk_before, sdkAfter=sdk_after,
                  nodeSHA256=sha256(node), hostUname=list(platform.uname()), rustManifestSHA256=RUST_MANIFEST_SHA,
                  bunAssetSHA256=BUN_SHA[host], compiler=receipt['compiler'], nativeReceipt=receipt,
+                 bookwormImage=bookworm_image if host == 'linux' else None, runtimeAdmission=runtime,
                  declaredTests=61, passedTests=59, ignoredTests=2, filteredTests=0,
                  ignoredScope='owned lease subprocess invoked by parent; historical RED intentionally ignored',
                  archiveSHA256=sha256(archives[0]), mountExecuted=False, liveGatewayExecuted=False,

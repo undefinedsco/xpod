@@ -1,20 +1,30 @@
 # AgentFS 独立 ARM64 原生 CI
 
-此门禁仅监听 `codex/agentfs-native-acceptance` 分支 push，权限为 `contents: read`，不发布、不晋级 release/RC，也不调用真实 Gateway。两平台串行使用 `macos-14` / `ubuntu-24.04-arm`，脚本检查真实 host ARM64，不能通过矩阵标签冒称架构。
+此门禁仅监听 `codex/agentfs-native-acceptance` 分支 push，权限为 `contents: read`，不发布、不晋级 release/RC，也不调用真实 Gateway。两平台串行：`native-macos` 使用 `macos-14`，`native-linux` 在 `native-macos` 之后使用 `ubuntu-24.04-arm` 仅托管 Docker，实际 Linux 导出/重编译/测试/打包/安装/加载验收全部在固定 Bookworm 镜像内执行。脚本检查真实 host ARM64，不能通过矩阵标签冒称架构。
+
+## Linux Bookworm 基线
+
+支持的 Linux 目标是 Debian 12 Bookworm（glibc 2.36 + OpenSSL 3），并且在同一容器内用官方 Node 22.21.1 走 noBun 外部运行时加载。Linux job 只把 checkout 和 `RUNNER_TEMP` 挂载进容器，一切编译产物都针对容器内 glibc/OpenSSL，而不是 Ubuntu 24.04 runner 的 glibc 2.39：
+
+- 固定镜像 `rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e`（arm64 manifest digest）。CI 先 `docker pull` 该 digest（registry 元数据即身份证明），再复用同一镜像，不重复拉取。
+- 容器内 `bookworm-entry.sh` 先断言 `ID=debian`/`VERSION_CODENAME=bookworm`/`GNU_LIBC_VERSION=glibc 2.36`/`aarch64`，TLS 源重试安装 `pkg-config/liblzma-dev/libssl-dev/build-essential/ca-certificates/git/unzip/xz-utils/python3/curl`（`libssl-dev` 提供 `libssl3`），再装固定 SHA256 的官方 Node 22.21.1。
+- `accept.py` 记录的是容器内部真实 glibc/OpenSSL/gcc/toolchain 身份，不是 Ubuntu host 值；`AGENTFS_BOOKWORM_IMAGE` 原样进入 `final.json`。
+- 加载验收（`runtime-admission.receipt.json`）：对打包后的 helper 跑 `readelf --version-info`，要求所需 `GLIBC_*` 不高于 2.36，否则失败；再用**只含 Node、无 Bun** 的 PATH 执行 `bin/xpodcli` 的 `--version`/`agent-fs status --json`，并直接执行 bundled helper，`ldd` 必须解析到 `libssl.so.3`。旧 Ubuntu 产物要求的 `GLIBC_2.39` 会在此被确定性拒绝。
 
 ## 固定输入与执行链
+
 
 专用入口为 `scripts/agentfs-native-ci/accept.py`，supervisor 为同目录 `supervise.py`。输入是该次 checkout 精确 Git SHA 的产品源码，不使用私人 kit5、旧 helper 或公开 preview 的旧 source index。旧归档无法在替换 helper 后保持原始完整索引，故使用现有官方 exporter 生成全新 kit。
 
 - Bun 1.4.2 取自官方 GitHub immutable release URL；Mac/Linux ARM64 zip SHA256 固定在脚本，来自该 release 的官方 asset digest。
-- Node 22.21.1 使用固定 commit 的官方 setup-node action；Bun/Node 是外部构建和运行依赖，不内嵌安装包。
+- Node 22.21.1 为固定版本：Mac 用固定 commit 的官方 `setup-node` action，Linux 在 Bookworm 容器内用固定 SHA256 的官方 nodejs.org tarball；Bun/Node 是外部构建和运行依赖，不内嵌安装包。
 - Rust `nightly-2026-09-30` 取自官方 `static.rust-lang.org`。先验证日期锁定的发行 manifest SHA256，再由 runner 自带 rustup 安装 minimal profile；assert compiler commit `5c543b0b8c73c7b72bc8284ced4fb22ead15734d`，官方 receipt 记录该平台 cargo/rustc 实际摘要。rustup 和系统 SDK/编译器为外部工具，不声称完整工具链可复现。
 - upstream 固定 `0a014ebd4918615baff589ed17486e557e7c6a23`，官方 `export-native.ts` 使用当前 Cargo.toml/原 Cargo.lock、两已有 patches、当前 helper、recipe 和许可证。首次 registry 缓存为空，导出如实在线 `cargo vendor --locked`，没有宣称首次导出 offline，也不更换锁版本。
 - kit 内 `rebuild-native.ts --verify-only` → `--out <fresh> --test`。recipe 使用隔离 Cargo home、验证后的 stage、内部 jobs2、实际 `build/test --release --frozen`。
 - 核对完整 61 项清单：59 pass、0 fail、2 已声明 ignore、0 filtered。两个 ignore 是历史故障 RED 与由 parent 实际启动的 lease 子进程 fixture；parent 死亡租约测试及最新修复回归（含原子 owner.json 替换临时项的 live-reader 容忍）必须出现 `ok`。不能将 61 项表述为 61 pass。
 - 当前 `build.ts` 显式绑定新 helper、新 source kit、新 official receipt，随后 `verify-install.ts --archive <new archive> --expect-validation install-verified` 实际解压并执行安装验收。新 receipt 同时验证 compiler、helper、kit SHA、target、jobs2 和原始 buildArguments。
 
-所有工具子进程使用环境白名单，剔除 runner 凭据和继承的 Cargo/Rust/proxy 覆盖。Linux系统 prerequisites 复用现有 native Linux build 所需 `pkg-config/liblzma-dev/libssl-dev/build-essential`；系统包版本与 SDK 不属于源 kit 的冻结范围。
+所有工具子进程使用环境白名单，剔除 runner 凭据和继承的 Cargo/Rust/proxy 覆盖。Linux 系统 prerequisites 在 Bookworm 容器内安装（`pkg-config/liblzma-dev/libssl-dev/build-essential/ca-certificates/git/unzip/xz-utils/python3/curl`）；`libssl-dev` 同时提供运行期 `libssl3`。系统包版本与 SDK 不属于源 kit 的冻结范围。
 
 ## 资源、证据和失败
 
@@ -26,6 +36,6 @@ artifact 只上传 evidence 明确文件白名单：关闭的日志/回执、新
 
 ## 独立挂载层
 
-当前 workflow **不运行 mount**。`install-verified` 只证明新安装产物验证；不证明实际 mount、RSS、NFS/FUSE、live Gateway、Chat 或公开发布。后续 mount job 需单独验证 NFS mount 权限/工具，并显式绑定本次新安装 CLI/helper，运行已有 installed CLI/overlay 场景；任何 skip、未知挂载状态或未闭合 producer 都不能晋级。CI 的 loopback fixture 也不能冒称真实账号/Pod。
+当前 workflow **不运行 mount**。`install-verified` 只证明新安装产物验证；Bookworm 加载验收只证明 ELF/glibc/OpenSSL 与 noBun Node 启动，不证明实际 mount、RSS、NFS/FUSE、live Gateway、Chat 或公开发布。后续 mount job 需单独验证 NFS/FUSE mount 权限/工具，并显式绑定本次新安装 CLI/helper，运行已有 installed CLI/overlay 场景；任何 skip、未知挂载状态或未闭合 producer 都不能晋级。CI 的 loopback fixture 也不能冒称真实账号/Pod。
 
 本地只运行 `PYTHONDONTWRITEBYTECODE=1 python3 tests/scripts/agentfs_native_ci_test.py -v` 和静态语法/diff检查，不安装工具、不导出 kit、不启动 Cargo。
