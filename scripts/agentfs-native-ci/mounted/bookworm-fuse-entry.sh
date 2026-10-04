@@ -11,20 +11,11 @@ fail() { printf '%s\n' "$1" >&2; exit 70; }
 [ -e /dev/fuse ] || fail '{"stage":"fuse-device","errorClass":"missing-device"}'
 grep -qw fuse /proc/filesystems || fail '{"stage":"fuse-device","errorClass":"kernel-fuse-absent"}'
 
-# 2. Preparation stage (network allowed): install an exact Node 22.21.1 runtime.
+# 2. Use the exact Node 22.21.1 runtime prepared by the network-allowed prep
+#    stage into the owned prep volume; acceptance itself has no network.
 NODE_VERSION=v22.21.1
-node_home=/opt/node22
-if [ ! -x "${node_home}/bin/node" ]; then
-  case "$(uname -m)" in
-    aarch64) narch=arm64 ;;
-    x86_64) narch=x64 ;;
-    *) fail '{"stage":"node-prep","errorClass":"unsupported-arch"}' ;;
-  esac
-  mkdir -p "${node_home}"
-  curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${narch}.tar.xz" -o /tmp/node.tar.xz
-  tar -xJf /tmp/node.tar.xz -C "${node_home}" --strip-components=1
-  rm -f /tmp/node.tar.xz
-fi
+node_home="${XPOD_MOUNTED_PREP:-/prep}/node22"
+[ -x "${node_home}/bin/node" ] || fail '{"stage":"node-prep","errorClass":"prepared-node-missing"}'
 export PATH="${node_home}/bin:${PATH}"
 [ "$("${node_home}/bin/node" --version)" = "${NODE_VERSION}" ] || fail '{"stage":"node-prep","errorClass":"version-mismatch"}'
 

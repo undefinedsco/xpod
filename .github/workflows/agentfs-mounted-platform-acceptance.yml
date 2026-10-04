@@ -66,7 +66,16 @@ jobs:
         run: |
           set -euo pipefail
           if [ -e /dev/fuse ]; then echo "dev_fuse=present"; else echo "::error::/dev/fuse is not present on this runner; actual FUSE mount cannot be proven"; exit 1; fi
-      - name: Run actual Node22 noBun FUSE acceptance in a disposable owned container
+      - name: Prepare fuse3 + Node22 in an owned prep volume (network allowed)
+        run: |
+          set -euo pipefail
+          umask 077
+          vol="xpod-mount-prep-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "XPOD_MOUNT_PREP_VOLUME=$vol" >> "$GITHUB_ENV"
+          docker volume create "$vol" >/dev/null
+          docker run --rm --mount "type=volume,src=${vol},dst=/prep" "$BOOKWORM_IMAGE" \
+            sh -c 'apt-get update -o Acquire::Retries=5 && apt-get install -y --no-install-recommends fuse3 ca-certificates curl && curl -fsSL https://nodejs.org/dist/v22.21.1/node-v22.21.1-linux-arm64.tar.xz -o /tmp/node.tar.xz && mkdir -p /prep/node22 && tar -xJf /tmp/node.tar.xz -C /prep/node22 --strip-components=1 && /prep/node22/bin/node --version'
+      - name: Run actual Node22 noBun FUSE acceptance in a disposable owned container (network none)
         run: |
           set -euo pipefail
           umask 077
@@ -75,6 +84,7 @@ jobs:
           docker run --rm --init --cidfile "$cidfile" \
             --device /dev/fuse --cap-add SYS_ADMIN \
             --network none \
+            --mount "type=volume,src=${XPOD_MOUNT_PREP_VOLUME},dst=/prep" \
             --mount "type=bind,src=${{ steps.product.outputs.archive }},dst=/product/archive.tar.gz,readonly" \
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace" \
             --mount "type=bind,src=${GITHUB_WORKSPACE}/scripts/agentfs-native-ci/mounted,dst=/mounted,readonly" \
@@ -86,9 +96,13 @@ jobs:
             --env "XPOD_MOUNTED_HELPER_SHA=${LINUX_HELPER_SHA}" \
             --env "XPOD_MOUNTED_EVIDENCE=/evidence" \
             --env "XPOD_MOUNTED_WORKSPACE=/workspace" \
+            --env "XPOD_MOUNTED_PREP=/prep" \
             "$BOOKWORM_IMAGE" \
-            sh -c 'apt-get update >/dev/null && apt-get install -y --no-install-recommends fuse3 ca-certificates curl >/dev/null && bash /mounted/bookworm-fuse-entry.sh'
+            sh -c 'bash /mounted/bookworm-fuse-entry.sh'
           test -f "$cidfile" && docker rm -f "$(cat "$cidfile")" >/dev/null 2>&1 || true
+      - name: Remove the owned prep volume
+        if: always()
+        run: docker volume rm -f "${XPOD_MOUNT_PREP_VOLUME}" >/dev/null 2>&1 || true
       - name: Upload mounted evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
