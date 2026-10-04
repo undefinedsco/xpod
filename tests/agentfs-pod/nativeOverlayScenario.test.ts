@@ -68,7 +68,7 @@ describe.runIf(runOverlay)('native session overlay: dirty before commit, restart
   async function mount(): Promise<ExecResult> {
     cleanup.assertAbsent(ROOT);
     ownedMountAttempted = true;
-    return exec(binary, [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', 'nfs', '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+    return exec(binary, [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', process.env.XPOD_MOUNTED_BACKEND ?? 'nfs', '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
   }
   async function unmount(primary?: unknown): Promise<void> {
     await cleanup.unmount(mnt, () => exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN }),

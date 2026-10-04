@@ -104,10 +104,18 @@ jobs:
             --env "XPOD_MOUNTED_PREP=/opt" \
             --env "XPOD_MOUNTED_NODE=/opt/node22/bin/node" \
             --env "XPOD_MOUNTED_REQUIRE_NOBUN=1" \
-            --env "XPOD_MOUNTED_MIN_PASSED=2" \
+            --env "XPOD_MOUNTED_MIN_PASSED=5" \
             "$XPOD_MOUNT_IMAGE" \
             sh -c 'bash /mounted/bookworm-fuse-entry.sh'
           test -f "$cidfile" && docker rm -f "$(cat "$cidfile")" >/dev/null 2>&1 || true
+      - name: Normalise owned evidence ownership (task-scoped only)
+        if: always()
+        run: |
+          set -euo pipefail
+          # The container runs as root and creates 0600 evidence; hand it to the
+          # runner UID/GID so the upload can read it. Scoped to this task's dir.
+          docker run --rm --user 0:0 --mount "type=bind,src=${RUNNER_TEMP}/mounted-evidence,dst=/evidence" \
+            "$XPOD_MOUNT_IMAGE" chown -R "$(id -u):$(id -g)" /evidence >/dev/null 2>&1 || true
       - name: Remove the owned prep image
         if: always()
         run: docker image rm -f "${XPOD_MOUNT_IMAGE}" >/dev/null 2>&1 || true
@@ -160,7 +168,8 @@ jobs:
           XPOD_MOUNTED_ARCHIVE: ${{ steps.product.outputs.archive }}
           XPOD_MOUNTED_ARCHIVE_SHA: ${{ env.DARWIN_ARCHIVE_SHA }}
           XPOD_MOUNTED_HELPER_SHA: ${{ env.DARWIN_HELPER_SHA }}
-          XPOD_MOUNTED_MIN_PASSED: '2'
+          XPOD_MOUNTED_REQUIRE_NOBUN: '1'
+          XPOD_MOUNTED_MIN_PASSED: '5'
         run: |
           set -euo pipefail
           umask 077

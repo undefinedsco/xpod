@@ -312,6 +312,11 @@ export async function runMountAcceptance(options: MountAcceptanceOptions): Promi
       notes,
     };
   } finally {
-    await run(command[0], [ ...command.slice(1), 'unmount', '--mountpoint', mountpoint, '--session-dir', sessionDir ], { env: { XPOD_AGENTFS_TOKEN: token }, timeoutMs: 30_000 });
+    const unmounted = await run(command[0], [ ...command.slice(1), 'unmount', '--mountpoint', mountpoint, '--session-dir', sessionDir ], { env: { XPOD_AGENTFS_TOKEN: token }, timeoutMs: 30_000 });
+    // An ignored failed unmount must never be followed by removing a possibly
+    // still-mounted tree; surface it instead.
+    if (unmounted.status !== 0) {
+      throw new Error(`mounted harness unmount failed: ${(unmounted.stderr || unmounted.stdout).trim() || unmounted.status}`);
+    }
   }
 }

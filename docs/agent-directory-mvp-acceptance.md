@@ -1,6 +1,14 @@
 # Xpod CLI 目录 MVP 实现与验收记录
 
-> 当前状态（2026-10-04，账号 B / opencode-go/deepseek-v4.1-flash；本页以下旧段落均为 HISTORICAL）
+> 当前状态（2026-10-05）：本段取代以下历史段落中的“当前”状态。
+> - 账号 B 的 `opencode-go/deepseek-v4.1-flash` 负责开发，主负责人独立验收；只有真实 provider HTTP 429 才切换 GPT-6.1 Sol。
+> - 冻结 native 产品为 `c7e9aadbf87302908e766411f4ea1fea6d0a54bf`。[run 37213350112](https://github.com/undefinedsco/xpod/actions/runs/37213350112) 的 Darwin/Linux ARM64 原生测试、源码材料和安装产物已独立验收；Bookworm Node22 无 Bun 消费端已通过。这些结果不证明 OS 挂载。新的挂载夹具仍在修复进程回收和崩溃恢复，最新轻量结果为 109 passed / 10 skipped；两轮最终完整集成和实际挂载尚未完成。
+> - [Private17 run 37223585588](https://github.com/undefinedsco/xpod-pro/actions/runs/37223585588) 在自有 Docker 环境中执行固定已发布镜像的 17 项语义检查，0 failed / 0 skipped，search、ABI 和资源清理通过。主负责人接受的是 installed PG17 component；不是 Public16、已部署 SealOS、Gateway 或 Chat 的验收。
+> - 公开 RC 源码为 `c47283cbc3f4929af6afdb9f83396dd5553f8f1d`，服务镜像为 `ghcr.io/undefinedsco/xpod@sha256:2ef561477b9aa8ecdd9f65e25bb51dce369d0c26204d1cd6c8263044e59541bc`，PG17 镜像为 `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba`。镜像已发布，Public16 首次失败仍待真实 producer stderr 定位；未完成部署验收。
+> - 客户端不内嵌 Bun、Node 或 JSC。远程 clean-body 缓存尚未实现；不声称原生 99% 性能、物理 NAS、x64 或 Windows 已验收。Git/worktree 由外部工具维护，Pod 只保留 Link。
+> - 待完成：最终源码回归、macOS NFS / Linux Bookworm FUSE 挂载、大文件与 SIGKILL 恢复、Public16、实际 Gateway 认证与 Pod 读写、models/chat 分项验收及 preview.2。历史失败和旧产物的证据继续保留，不代替当前产品准入。
+
+> 历史状态（2026-10-04，账号 B / opencode-go/deepseek-v4.1-flash；以下为 HISTORICAL）
 > - 当前源码：`codex/agentfs-current-release` HEAD `5ce81c679cf7ba0aab82b277a44b3ea469bcc72d`；native `codex/agentfs-native-acceptance` HEAD `8d4983c96e9942b8edeb7912659017d5e98762e4`。
 > - 原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) darwin+linux 两 ARM runner 串行实际成功；ROOT 19 项独立验收只接受 units/source/install。
 > - 服务候选 [run 37148085189](https://github.com/undefinedsco/xpod/actions/runs/37148085189) 只发布 exact 镜像 `ghcr.io/undefinedsco/xpod@sha256:fd2ee44323e3412c9b43e4ee31d4d9aeb6b512bb2524e9907c6c66cd50fb8428`；deploy 在 registry-authority 预检前失败，无 Public16/Private17/SealOS 证据。

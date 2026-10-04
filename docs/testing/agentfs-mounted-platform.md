@@ -8,6 +8,10 @@ so this harness lives on its own development branch
 `.github/workflows/agentfs-mounted-platform-acceptance.yml` without recompiling
 the frozen `c7e9aadbf` product.
 
+Status as of 2026-10-05: this describes the required acceptance procedure.
+The current harness still needs fixes and actual dual-platform execution; a
+passing native/install run or a gated test skip does not satisfy it.
+
 ## Product vs harness binding
 
 - **Product SHA** `c7e9aadbf87302908e766411f4ea1fea6d0a54bf`, consumed from the
@@ -35,8 +39,10 @@ acceptance stage (network is allowed only for the apt/Node prep stage):
    tracked harness `tests/agentfs-pod/nativeMountedPlatformMatrix.test.ts` under
    Node22 with `XPOD_AGENTFS_HELPER`, `XPOD_AGENTFS_TEST_CLI`,
    `XPOD_MOUNTED_BACKEND=fuse`, `XPOD_AGENTFS_RUN_OVERLAY=1`.
-4. The driver records a real Popen wait, a closed `0600` raw log with SHA, and a
+4. The driver must record the actual child close, a closed `0600` raw log with SHA, and a
    `mounted-linux.receipt.json`. Cleanup removes only the owned container CID.
+   Pending, spawn error and signal termination remain distinct failure facts;
+   a timeout must also retire owned test descendants and verify mount absence.
 
 ## macOS (system NFS, no macFUSE install)
 
