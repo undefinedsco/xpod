@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -68,7 +69,30 @@ describe.runIf(runOverlay)('native session overlay: dirty before commit, restart
   async function mount(): Promise<ExecResult> {
     cleanup.assertAbsent(ROOT);
     ownedMountAttempted = true;
-    return exec(binary, [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', process.env.XPOD_MOUNTED_BACKEND ?? 'nfs', '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+    const result = await exec(binary, [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', process.env.XPOD_MOUNTED_BACKEND ?? 'nfs', '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+    // Persist the real mount stdout/stderr into evidence on failure so the actual
+    // daemon/readiness error is diagnosable (frozen detached daemon uses Stdio::null).
+    if (result.status !== 0 && process.env.XPOD_MOUNTED_EVIDENCE) {
+      const { writeFileSync, chmodSync } = await import('node:fs');
+      // PARENT-CLI (the foreground `mount` command), NOT the detached product
+      // daemon (stdout/stderr are Stdio::null in frozen c7; never claim to
+      // recover that). The combined file is stdout-then-stderr CONCATENATION,
+      // not the original chronological interleaving.
+      const raw = Buffer.from(`${result.stdout}\n--- stderr ---\n${result.stderr}`);
+      const base = path.join(process.env.XPOD_MOUNTED_EVIDENCE, `overlay-mount-${Date.now()}`);
+      writeFileSync(`${base}.raw.log`, raw, { mode: 0o600 });
+      chmodSync(`${base}.raw.log`, 0o600);
+      writeFileSync(`${base}.json`, `${JSON.stringify({
+        status: result.status,
+        source: 'parent-cli-foreground-mount-not-detached-daemon',
+        stdoutBytes: Buffer.byteLength(result.stdout, 'utf8'),
+        stderrBytes: Buffer.byteLength(result.stderr, 'utf8'),
+        rawCombinedOrder: 'stdout-then-stderr-concatenation-not-chronological',
+        rawSHA256: createHash('sha256').update(raw).digest('hex'),
+      }, null, 2)}\n`, { mode: 0o600 });
+      chmodSync(`${base}.json`, 0o600);
+    }
+    return result;
   }
   async function unmount(primary?: unknown): Promise<void> {
     await cleanup.unmount(mnt, () => exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN }),

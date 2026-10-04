@@ -60,7 +60,35 @@ interface VitestJsonReport {
   numPassedTests?: number;
   numTotalTests?: number;
   numFailedTests?: number;
-  testResults?: { assertionResults?: { title?: string; fullName?: string; status?: string }[] }[];
+  testResults?: {
+    name?: string;
+    status?: string;
+    message?: string;
+    assertionResults?: { title?: string; fullName?: string; status?: string; failureMessages?: string[] }[];
+  }[];
+}
+
+/**
+ * Bounded suite/assertion failure text from the JSON report, so a setup/hook
+ * exception (empty assertion statuses) is still recorded in the receipt even if
+ * the human reporter output is unavailable. Trimmed and length-capped.
+ */
+export function failureTextFromReport(reportJson: string, maxChars = 4000): string {
+  try {
+    const report = JSON.parse(reportJson) as VitestJsonReport;
+    const parts: string[] = [];
+    for (const file of report.testResults ?? []) {
+      if (file.status && file.status !== 'passed' && typeof file.message === 'string' && file.message.trim()) {
+        parts.push(`${file.name ?? 'file'}: ${file.message.trim()}`);
+      }
+      for (const assertion of file.assertionResults ?? []) {
+        for (const message of assertion.failureMessages ?? []) {
+          if (message.trim()) parts.push(`${assertion.title ?? 'case'}: ${message.trim()}`);
+        }
+      }
+    }
+    return parts.join('\n').slice(0, maxChars);
+  } catch { return ''; }
 }
 
 /** Real passed-test count from the SAME JSON report (text summary is absent under --reporter=json). */
@@ -220,11 +248,14 @@ async function main(): Promise<void> {
   // Vitest PID. The close promise is attached at birth, before any signal.
   // A real Vitest JSON report lets the driver require the FIVE named actual
   // mounted cases to be EXECUTED and PASSED (a summary count could skip them).
+  // ALSO keep the human (default) reporter on stdout so an actual setup/hook or
+  // test exception is preserved in the closed raw; --reporter=json alone loses it.
   const reportPath = path.join(evidenceDir, `mounted-${os}.vitest-report.json`);
   const child = spawn(node, [ vitest, 'run',
     'tests/agentfs-pod/nativeMountedPlatformMatrix.test.ts',
     'tests/agentfs-pod/nativeOverlayScenario.test.ts',
     '--no-file-parallelism',
+    '--reporter=default',
     '--reporter=json', `--outputFile=${reportPath}` ], { cwd: workspace, env, stdio: [ 'ignore', 'pipe', 'pipe' ], detached: process.platform !== 'win32' });
   started = true; // actual spawn was requested; spawn-error is tracked separately
   const closeAtBirth = new Promise<ChildFact>((resolve) => { child.once('close', (code, signal) => resolve({ state: 'closed', code: code ?? null, signal })); });
@@ -268,12 +299,14 @@ async function main(): Promise<void> {
   // Under --reporter=json the human "Tests N passed" line is suppressed, so the
   // real count MUST come from the SAME report (numPassedTests), not the text.
   let reportPassed: number | undefined;
+  let reportFailureText = '';
   try {
     const reportBytes = readFileSync(reportPath);
     reportSha = createHash('sha256').update(reportBytes).digest('hex');
     const reportText = reportBytes.toString('utf8');
     requiredCases = evaluateRequiredMountedCases(reportText);
     reportPassed = passedCountFromReport(reportText);
+    reportFailureText = failureTextFromReport(reportText);
   } catch { /* report absent: required cases unsatisfied */ }
   const effectivePassed = reportPassed ?? passed; // report is authoritative for the gate
   const ok = actualFact.state === 'closed' && actualFact.code === 0 && actualFact.signal === null
@@ -294,7 +327,8 @@ async function main(): Promise<void> {
     rawSHA256: createHash('sha256').update(raw).digest('hex'), status: ok ? 'ok' : 'failed', failureReason: reason,
     mountExecuted: ok,
     vitestReport: reportSha ? { path: reportPath, sha256: reportSha, requiredCases: REQUIRED_MOUNTED_CASES,
-      requiredSatisfied: requiredCases.satisfied, missingRequired: requiredCases.missing, notPassed: requiredCases.notPassed } : null,
+      requiredSatisfied: requiredCases.satisfied, missingRequired: requiredCases.missing, notPassed: requiredCases.notPassed,
+      failureText: reportFailureText } : null,
   });
   if (!persisted) { process.stderr.write('{"stage":"platform-admission","errorClass":"receipt-persist-failed"}\n'); process.exit(72); }
   if (!ok && lastSummary) process.stderr.write(`mounted-harness-summary:\n${lastSummary}\n`);

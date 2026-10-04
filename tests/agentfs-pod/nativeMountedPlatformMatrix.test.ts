@@ -68,6 +68,39 @@ function spawnOwnedForeground(binary: string, server: PodContractServer, mnt: st
   });
   return { child, closed, spawnError, stdout, stderr };
 }
+/**
+ * Persist the TRUE foreground daemon stdout/stderr buffers (already captured by
+ * spawnOwnedForeground) plus safe identity into the driver-created evidence dir,
+ * so a real mount failure is diagnosable. The frozen product's detached daemon
+ * uses Stdio::null (no daemon.log exists); these are the foreground buffers.
+ * Writes only own 0600 evidence; never a full scene / never credentials.
+ */
+async function captureDaemonEvidence(label: string, daemon: OwnedDaemon, close: CloseFact, extra: Record<string, unknown> = {}): Promise<void> {
+  const dir = process.env.XPOD_MOUNTED_EVIDENCE;
+  if (!dir) return;
+  const { writeFileSync, chmodSync } = await import('node:fs');
+  const stdout = Buffer.concat(daemon.stdout); const stderr = Buffer.concat(daemon.stderr);
+  const raw = Buffer.concat([ stdout, Buffer.from('\n--- stderr ---\n'), stderr ]);
+  const nonce = `${label}-${Date.now()}-${process.pid}`;
+  const rawPath = path.join(dir, `daemon-${nonce}.raw.log`);
+  writeFileSync(rawPath, raw, { mode: 0o600 });
+  chmodSync(rawPath, 0o600);
+  const meta = {
+    label, backend, pid: daemon.child.pid, argv: daemon.child.spawnargs?.slice(0, 8),
+    closeState: close.state, closeCode: close.state === 'closed' ? close.code : null,
+    closeSignal: close.state === 'closed' ? close.signal : null,
+    // TRUE UTF-8 byte counts of the foreground captured channels.
+    stdoutBytes: stdout.length, stderrBytes: stderr.length,
+    rawCombinedOrder: 'stdout-then-stderr-concatenation-not-chronological',
+    rawPath, rawSHA256: createHash('sha256').update(raw).digest('hex'),
+    snapshot: close.state !== 'closed', // pending/spawn-error => SNAPSHOT, not a closed raw
+    ...extra,
+  };
+  const metaPath = path.join(dir, `daemon-${nonce}.json`);
+  writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(metaPath, 0o600);
+}
+
 type CloseFact = { state: 'closed'; code: number | null; signal: NodeJS.Signals | null } | { state: 'spawn-error' } | { state: 'pending' };
 async function awaitClose(daemon: OwnedDaemon, timeoutMs: number): Promise<CloseFact> {
   return Promise.race([
@@ -137,6 +170,14 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
 
   it('passes the original mounted harness for the platform backend', async () => {
     const report: MountAcceptanceReport = await runMountAcceptance({ server, helper, token: TOKEN, workDir: path.join(ROOT, 'harness'), backend });
+    // On failure, persist the ORIGINAL harness's own bounded check detail (the
+    // real mount stderr) into evidence so the actual error is diagnosable.
+    if (report.status !== 'pass' && process.env.XPOD_MOUNTED_EVIDENCE) {
+      const { writeFileSync, chmodSync } = await import('node:fs');
+      const detailPath = path.join(process.env.XPOD_MOUNTED_EVIDENCE, `harness-report-${Date.now()}.json`);
+      writeFileSync(detailPath, `${JSON.stringify({ status: report.status, checks: report.checks }, null, 2)}\n`, { mode: 0o600 });
+      chmodSync(detailPath, 0o600);
+    }
     expect(report.status, JSON.stringify(report.checks)).toBe('pass');
     expect(report.checks.every((check) => check.ok), JSON.stringify(report.checks.filter((check) => !check.ok))).toBe(true);
   }, 300_000);
@@ -215,6 +256,9 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     } finally {
       await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
       const close = await awaitClose(daemon, 30_000);  // actual close only; spawn-error/pending are distinct facts
+      // Capture the TRUE foreground daemon buffers regardless of outcome so a real
+      // mount failure is diagnosable (the frozen detached daemon uses Stdio::null).
+      await captureDaemonEvidence('stream', daemon, close, { phase: `remote-${SIZES_MIB.join('_')}` });
       expect(close.state, 'owned daemon must actually close (not pending/spawn-error)').toBe('closed');
       expect(close.state === 'closed' && (close.code !== null || close.signal !== null), 'actual close code/signal').toBe(true);
       unmounted = true;
@@ -301,6 +345,7 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       } finally {
         await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
         const secondClose = await awaitClose(second, 30_000);
+        await captureDaemonEvidence('recovery-second', second, secondClose, { phase: 'recovery-remount' });
         expect(secondClose.state, 'recovery daemon must actually close').toBe('closed');
       }
     } finally {
@@ -314,6 +359,7 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
         server.releaseStall();
         await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
         const firstClose = await awaitClose(first, 30_000);
+        await captureDaemonEvidence('recovery-first', first, firstClose, { phase: 'recovery-killed', retainedSceneCandidate: firstClose.state !== 'closed' });
         if (firstClose.state !== 'closed') throw new Error(`owned first daemon not actually closed: ${firstClose.state}`);
       } catch (error) { cleanupError = error; }
       const kernelState = observeKernelMounts(work);

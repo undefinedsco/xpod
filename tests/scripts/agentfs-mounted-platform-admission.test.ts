@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { classifyProbeError, evaluateRequiredMountedCases, isEntryPoint, passedCountFromReport, probeOwnedGroup, reapOwnedGroup, REQUIRED_MOUNTED_CASES } from '../../scripts/agentfs-native-ci/mounted/platform-admission';
+import { classifyProbeError, evaluateRequiredMountedCases, failureTextFromReport, isEntryPoint, passedCountFromReport, probeOwnedGroup, reapOwnedGroup, REQUIRED_MOUNTED_CASES } from '../../scripts/agentfs-native-ci/mounted/platform-admission';
 
 /**
  * Behavioural boundaries for the mounted-platform admission driver's owned
@@ -98,6 +99,24 @@ describe('required mounted-case gate (real Vitest JSON report)', () => {
   it('is unsatisfied for a malformed/absent report', () => {
     expect(evaluateRequiredMountedCases('not json').satisfied).toBe(false);
   });
+
+  it('surfaces suite/assertion failure text so a setup/hook error is not lost', () => {
+    const report = JSON.stringify({
+      testResults: [
+        { name: 'matrix.ts', status: 'failed', message: 'beforeAll hook threw: EPERM mount_nfs',
+          assertionResults: [ { title: 'case', status: 'pending' } ] },
+        { name: 'overlay.ts', status: 'failed',
+          assertionResults: [ { title: 'overlay case', status: 'failed', failureMessages: [ 'Error: mount denied' ] } ] },
+      ],
+    });
+    const text = failureTextFromReport(report);
+    expect(text).toContain('EPERM mount_nfs');
+    expect(text).toContain('mount denied');
+    expect(failureTextFromReport('not json')).toBe('');
+    // Bounded: a huge message is capped.
+    const big = JSON.stringify({ testResults: [ { name: 'x', status: 'failed', message: 'z'.repeat(50000) } ] });
+    expect(failureTextFromReport(big).length).toBeLessThanOrEqual(4000);
+  });
 });
 
 describe('driver runtime boundaries (Node22 ESM entry + JSON reporter)', () => {
@@ -125,6 +144,55 @@ describe('driver runtime boundaries (Node22 ESM entry + JSON reporter)', () => {
       execFileSync(node22, [ '--experimental-strip-types', '-e', script ], { cwd: process.cwd(), stdio: 'pipe' });
     } catch (error) {
       throw new Error(`Node22 strip-types import failed (${node22}): ${(error as { stderr?: Buffer }).stderr?.toString() ?? String(error)}`);
+    }
+  });
+
+  it('default+json reporters preserve the real failure text on a tiny failing child', async () => {
+    // REAL observation: run a tiny failing spec with the SAME dual-reporter argv
+    // the driver uses, and prove (a) the human raw carries the exception and
+    // (b) failureTextFromReport surfaces it. Not a copied toy function.
+    const { spawnSync } = await import('node:child_process');
+    const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs');
+    // Generic, suite-owned path so a clean clone works: no timestamped job path.
+    // Create parent with recursive mode 0700, then a randomized child; remove
+    // only the owned child in finally.
+    const parent = path.resolve('.test-data/agentfs-mounted-platform-admission');
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const dir = mkdtempSync(path.join(parent, 'reporter-'));
+    try {
+      const spec = path.join(dir, 'tiny.spec.ts');
+      writeFileSync(spec, [
+        "import { beforeAll, describe, it, expect } from 'vitest';",
+        "describe('tiny-required', () => {",
+        "  beforeAll(() => { throw new Error('owned setup failure beforeAll-EPERM'); });",
+        "  it('required-case', () => { expect(1).toBe(2); });",
+        "});",
+      ].join('\n'), { mode: 0o600 });
+      const vitestConfig = path.join(dir, 'vitest.config.mjs');
+      writeFileSync(vitestConfig, [
+        "import { defineConfig } from 'vitest/config';",
+        "export default defineConfig({ test: { include: ['tiny.spec.ts'], root: " + JSON.stringify(dir) + " } });",
+      ].join('\n'), { mode: 0o600 });
+      const reportPath = path.join(dir, 'report.json');
+      const bun = process.env.XPOD_BUN ?? 'bun';
+      const result = spawnSync(bun, [ 'x', 'vitest', 'run', '--config', vitestConfig, '--no-file-parallelism',
+        '--reporter=default', '--reporter=json', `--outputFile=${reportPath}` ], { encoding: 'utf8', cwd: path.resolve('.'), timeout: 120_000 });
+      // Finite timeout means no hang; a tiny failing spec must exit 1 with no signal.
+      expect(result.status, `child must exit 1 (stderr: ${result.stderr ?? ''})`).toBe(1);
+      expect(result.signal, 'child must not be signalled').toBe(null);
+      const human = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+      // (a) the human (default reporter) output carries the real setup exception.
+      // The EPERM text is a SYNTHETIC fixture string, not an actual privilege cause.
+      expect(human, 'human reporter must surface the beforeAll exception').toContain('owned setup failure beforeAll-EPERM');
+      // (b) vitest 1.6.1 JSON reporter LOSES a beforeAll throw (file status failed,
+      // no message/failureMessages): this is exactly why the driver must ALSO keep
+      // the human reporter. Assert the real shape and that our extractor returns
+      // '' for JSON-only, so the dual-reporter requirement is provably necessary.
+      const report = JSON.parse(readFileSync(reportPath, 'utf8')) as { testResults?: { status?: string }[] };
+      expect(report.testResults?.[0]?.status).toBe('failed');
+      expect(failureTextFromReport(readFileSync(reportPath, 'utf8'))).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
