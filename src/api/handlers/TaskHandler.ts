@@ -1,3 +1,4 @@
+import { getTaskResumeStage, getTaskResumeErrorType, withTaskResumeStage } from '../tasks/TaskResumeDiagnostics';
 import type { ServerResponse } from 'node:http';
 import { runResource, taskResource } from '@undefineds.co/models';
 import type { ApiServer, RouteHandler } from '../ApiServer';
@@ -22,14 +23,14 @@ export interface TaskHandlerOptions {
 
 /** UI reads durable Pod projections; the scheduler is never a query backend. */
 export function registerTaskRoutes(server: ApiServer, options: TaskHandlerOptions): void {
-  const guarded = (handler: (request: AuthenticatedRequest, context: StoreContext, owner: string) => Promise<unknown>): RouteHandler =>
+  const guarded = (handler: (request: AuthenticatedRequest, context: StoreContext, owner: string) => Promise<unknown>, resume = false): RouteHandler =>
     async (request, response) => {
       if (request.auth?.type !== 'solid') { send(response, 401, { error: 'Authentication required' }); return; }
       try {
         send(response, 200, await handler(request, { userId: request.auth.webId, auth: request.auth }, request.auth.webId));
       } catch (error) {
         if (sendPodAccessFailure(response, error)) return;
-        send(response, 400, { error: error instanceof Error ? error.message : 'Task request failed' });
+        send(response, 400, { error: error instanceof Error ? error.message : 'Task request failed', ...(resume ? { taskResumeStage: getTaskResumeStage(error) ?? 'route_request', taskResumeErrorType: getTaskResumeErrorType(error) } : {}) });
       }
     };
   const idOf = (request: AuthenticatedRequest): string => {
@@ -100,16 +101,20 @@ export function registerTaskRoutes(server: ApiServer, options: TaskHandlerOption
     return { runs: (await options.runStore.listRuns({ task: iri }, context)).map(projectRun) };
   }));
   server.post('/api/tasks/resume', guarded(async (request, context, owner) => {
-    const input = await body(request);
-    const approval = requiredString(input.approval, 'Approval');
-    const target = idOf(request);
-    const run = /^https?:\/\//.test(target)
-      ? (await options.runStore.listRuns({}, context)).find(item => runResource.buildIri(owner, { id: item.id }) === target)
-      : await options.runStore.loadRun(target, context);
-    if (!run) throw new Error('Run not found');
+    const { approval, target } = await withTaskResumeStage('route_validation', async () => {
+      const input = await body(request);
+      return { approval: requiredString(input.approval, 'Approval'), target: idOf(request) };
+    });
+    const run = await withTaskResumeStage('route_run_read', async () => {
+      const run = /^https?:\/\//.test(target)
+        ? (await options.runStore.listRuns({}, context)).find(item => runResource.buildIri(owner, { id: item.id }) === target)
+        : await options.runStore.loadRun(target, context);
+      if (!run) throw new Error('Run not found');
+      return run;
+    });
     const result = await options.taskService.resumeApprovedRun({ runId: run.id, approval, owner }, context, options.resolveExecutionContext);
     return { ...result, run: projectRun(result.run) };
-  }));
+  }, true));
   server.get('/api/tasks/selection', guarded(async (request, context, owner) => {
     const target = idOf(request);
     const runs = await options.runStore.listRuns({}, context);

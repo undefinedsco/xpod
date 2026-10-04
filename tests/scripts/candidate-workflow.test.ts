@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { parseDocument } from 'yaml';
 import { describe, expect, it } from 'vitest';
+import { TASK_RESUME_STAGES, TASK_RESUME_ERROR_TYPES } from '../../src/api/tasks/TaskResumeDiagnostics';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const workflowPath = path.join(repoRoot, '.github/workflows/candidate.yml');
@@ -545,7 +546,7 @@ esac
   });
 
   it('projects only optional allowlisted Task failure details and accepts older evidence', async () => {
-    const details = { substage: 'decision-resume-request', category: 'connection', name: 'TypeError', causeCode: 'ECONNREFUSED', httpStatus: 403, taskError: 'service_access_missing', errorEnvelope: 'error_string', runDocumentHttpStatus: 401 };
+    const details = { substage: 'decision-resume-request', category: 'connection', name: 'TypeError', causeCode: 'ECONNREFUSED', httpStatus: 403, taskError: 'service_access_missing', errorEnvelope: 'error_string', runDocumentHttpStatus: 401, taskResumeStage: 'task_auth_restore', taskResumeErrorType: 'type_error' };
     const result = await projectTaskEvidence(JSON.stringify({ taskApproval: { ok: false,
       cases: [{ kind: 'approved', ok: false, acceptancePhase: 'approved:decision', failureDetails: { ...details, message: 'secret-body', uri: 'private-uri' } }],
       cleanup: { ok: true },
@@ -555,6 +556,14 @@ esac
     expect(evidence.cases[0].failureDetails).toEqual(details);
     expect(result.evidence).not.toContain('secret-body');
     expect(result.evidence).not.toContain('private-uri');
+  });
+  it.each([
+    ...TASK_RESUME_STAGES.map(taskResumeStage => ({ taskResumeStage })),
+    ...TASK_RESUME_ERROR_TYPES.map(taskResumeErrorType => ({ taskResumeErrorType })),
+  ])('accepts every producer diagnostic enum in the independent workflow projection', async diagnostic => {
+    const failureDetails = { substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', ...diagnostic };
+    const result = await projectTaskEvidence(JSON.stringify({ taskApproval: { ok: false, cases: [{ kind: 'approved', ok: false, failureDetails }], cleanup: { ok: true } } }));
+    expect(JSON.parse(result.evidence!).cases[0].failureDetails).toEqual(failureDetails);
   });
   it.each(['run_conditional_auth_required', 'run_strong_etag_required', 'run_turtle_document_required', 'run_persisted_status_invalid', 'run_persisted_timestamp_invalid', 'run_conditional_update_conflict', 'continuation_claim_required', 'continuation_release_required', 'run_workspace_required', 'approval_session_storage_unavailable', 'run_document_read_failed', 'run_document_update_failed'])('projects fixed reachable Run error token %s', async taskError => {
     const failureDetails = { substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', httpStatus: 400, taskError };
@@ -566,6 +575,8 @@ esac
     ...[-1, 99, 600, 400.5, '400', null, 'secret-body'].map(httpStatus => ({ substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', httpStatus })),
     { substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', taskError: 'secret-body' },
     { substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', errorEnvelope: 'secret-body' },
+    ...['secret-body', null, 1, {}, [], 'task_auth_restore\n'].map(taskResumeStage => ({ substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', taskResumeStage })),
+    ...['secret-body', null, 1, {}, [], 'type_error\n'].map(taskResumeErrorType => ({ substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', taskResumeErrorType })),
     { substage: 'secret-body', category: 'other', name: 'Error' },
     { substage: 'decision-resume-request', category: 'secret-body', name: 'Error' },
     { substage: 'decision-resume-request', category: 'other', name: 'secret-body' },

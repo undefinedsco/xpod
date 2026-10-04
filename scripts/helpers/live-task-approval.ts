@@ -1,4 +1,5 @@
 import type { TaskCredentialSummary } from '../../src/api/tasks/TaskCredentialStore';
+import { TASK_RESUME_STAGES, TASK_RESUME_ERROR_TYPES, type TaskResumeStage, type TaskResumeErrorType } from '../../src/api/tasks/TaskResumeDiagnostics';
 import { randomUUID } from 'node:crypto';
 import { drizzle, type SolidAuthSession } from '@undefineds.co/drizzle-solid';
 import { approvalResource, sessionResource, decideApprovalRequest, RunStepType, type ApprovalRow } from '@undefineds.co/models';
@@ -21,6 +22,8 @@ export interface LiveTaskFailureDetails {
   causeCode?: LiveTaskFailureDetails['code'];
   httpStatus?: number;
   runDocumentHttpStatus?: number;
+  taskResumeStage?: TaskResumeStage;
+  taskResumeErrorType?: TaskResumeErrorType;
   taskError?: TaskHttpErrorToken;
   errorEnvelope?: TaskErrorEnvelope;
 }
@@ -92,12 +95,14 @@ type TaskHttpErrorToken = typeof taskHttpErrors[keyof typeof taskHttpErrors] | t
 class LiveTaskEvidenceError extends Error {
   public httpStatus?: number;
   public runDocumentHttpStatus?: number;
+  public taskResumeStage?: TaskResumeStage;
+  public taskResumeErrorType?: TaskResumeErrorType;
   public taskError?: TaskHttpErrorToken;
   public errorEnvelope?: TaskErrorEnvelope;
 }
 
 /** Read only a small error envelope; never retain or report its contents. */
-async function taskHttpErrorToken(response: Response): Promise<{ taskError: TaskHttpErrorToken; errorEnvelope: TaskErrorEnvelope; runDocumentHttpStatus?: number }> {
+async function taskHttpErrorToken(response: Response): Promise<Pick<LiveTaskFailureDetails, 'taskResumeStage' | 'taskResumeErrorType' | 'runDocumentHttpStatus'> & { taskError: TaskHttpErrorToken; errorEnvelope: TaskErrorEnvelope }> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     reader = response.body?.getReader();
@@ -117,8 +122,14 @@ async function taskHttpErrorToken(response: Response): Promise<{ taskError: Task
     let body: unknown;
     try { body = JSON.parse(new TextDecoder().decode(buffer)); }
     catch { return { taskError: 'other_error', errorEnvelope: 'non_json' }; }
-    const error = body && typeof body === 'object' && !Array.isArray(body) ? (body as { error?: unknown }).error : undefined;
-    if (typeof error !== 'string') return { taskError: 'other_error', errorEnvelope: 'json_other' };
+    const envelope = body && typeof body === 'object' && !Array.isArray(body)
+      ? body as { error?: unknown; taskResumeStage?: unknown; taskResumeErrorType?: unknown } : undefined;
+    const resumeDiagnostics = {
+      ...(typeof envelope?.taskResumeStage === 'string' && TASK_RESUME_STAGES.includes(envelope.taskResumeStage as TaskResumeStage) ? { taskResumeStage: envelope.taskResumeStage as TaskResumeStage } : {}),
+      ...(typeof envelope?.taskResumeErrorType === 'string' && TASK_RESUME_ERROR_TYPES.includes(envelope.taskResumeErrorType as TaskResumeErrorType) ? { taskResumeErrorType: envelope.taskResumeErrorType as TaskResumeErrorType } : {}),
+    };
+    const error = envelope?.error;
+    if (typeof error !== 'string') return { taskError: 'other_error', errorEnvelope: 'json_other', ...resumeDiagnostics };
     let taskError: TaskHttpErrorToken = 'other_error';
     let runDocumentHttpStatus: number | undefined;
     if (Object.prototype.hasOwnProperty.call(taskHttpErrors, error)) taskError = taskHttpErrors[error as keyof typeof taskHttpErrors];
@@ -129,7 +140,7 @@ async function taskHttpErrorToken(response: Response): Promise<{ taskError: Task
         runDocumentHttpStatus = Number(documentError[2]);
       }
     }
-    return { taskError, errorEnvelope: 'error_string', ...(runDocumentHttpStatus !== undefined ? { runDocumentHttpStatus } : {}) };
+    return { taskError, errorEnvelope: 'error_string', ...resumeDiagnostics, ...(runDocumentHttpStatus !== undefined ? { runDocumentHttpStatus } : {}) };
   } catch { return { taskError: 'other_error', errorEnvelope: 'unreadable' }; }
   finally { reader?.releaseLock(); }
 }
@@ -155,6 +166,8 @@ function safeFailureDetails(substage: LiveTaskFailureDetails['substage'], error:
       ...(controlled && Number.isInteger(error.httpStatus) && error.httpStatus! >= 100 && error.httpStatus! <= 599 ? { httpStatus: error.httpStatus } : {}),
       ...(controlled && (error.taskError === 'other_error' || [...Object.values(taskHttpErrors), ...taskDocumentErrors].includes(error.taskError as Exclude<TaskHttpErrorToken, 'other_error'>)) ? { taskError: error.taskError } : {}),
       ...(controlled && taskErrorEnvelopes.includes(error.errorEnvelope as TaskErrorEnvelope) ? { errorEnvelope: error.errorEnvelope } : {}),
+      ...(controlled && TASK_RESUME_STAGES.includes(error.taskResumeStage as TaskResumeStage) ? { taskResumeStage: error.taskResumeStage } : {}),
+      ...(controlled && TASK_RESUME_ERROR_TYPES.includes(error.taskResumeErrorType as TaskResumeErrorType) ? { taskResumeErrorType: error.taskResumeErrorType } : {}),
     };
   } catch {
     return { substage, category: 'other', name: 'other' };

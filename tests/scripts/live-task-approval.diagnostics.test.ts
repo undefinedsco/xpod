@@ -263,6 +263,33 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
     expect(result.failure).toContain('HTTP unknown');
     expect(result.cleanup.ok).toBe(true);
   });
+  it.each([
+    ['route_run_read', 'type_error'],
+    ['task_auth_restore', 'error'],
+    ['continuation_prepare', 'range_error'],
+    ['continuation_complete', 'syntax_error'],
+    ['route_request', 'non_error'],
+  ])('retains fixed producer resume diagnostics without publishing error text', async (taskResumeStage, taskResumeErrorType) => {
+    const { result, revoked } = await fixture('none', { status: 400, body: JSON.stringify({ error: privateText, taskResumeStage, taskResumeErrorType, stack: privateText }) });
+    expect(result.cases[0]?.failureDetails).toMatchObject({ httpStatus: 400, taskError: 'other_error', taskResumeStage, taskResumeErrorType });
+    expect(result.cleanup.ok).toBe(true);
+    expect(revoked).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(privateText);
+  });
+  it.each([privateText, null, 123, {}, [], 'task_auth_restore\n'])('omits unrecognized resume diagnostic values', async invalid => {
+    const { result } = await fixture('none', { status: 400, body: JSON.stringify({ error: privateText, taskResumeStage: invalid, taskResumeErrorType: invalid }) });
+    expect(result.cases[0]?.failureDetails).not.toHaveProperty('taskResumeStage');
+    expect(result.cases[0]?.failureDetails).not.toHaveProperty('taskResumeErrorType');
+    expect(result.cases[0]?.failureDetails).toMatchObject({ httpStatus: 400, taskError: 'other_error' });
+    expect(JSON.stringify(result)).not.toContain(privateText);
+  });
+  it('does not recover diagnostic fields beyond the original error-body cap', async () => {
+    const { result } = await fixture('none', { status: 400, body: JSON.stringify({ error: privateText.repeat(100), taskResumeStage: 'task_auth_restore', taskResumeErrorType: 'error' }) });
+    expect(result.cases[0]?.failureDetails).toMatchObject({ errorEnvelope: 'oversized' });
+    expect(result.cases[0]?.failureDetails).not.toHaveProperty('taskResumeStage');
+    expect(result.cases[0]?.failureDetails).not.toHaveProperty('taskResumeErrorType');
+    expect(result.cleanup.ok).toBe(true);
+  });
   it('leaves all three success cases, cleanup and request signals unchanged', async () => {
     const { result, revoked, requests, timeouts } = await fixture('none');
     expect(result.ok).toBe(true);

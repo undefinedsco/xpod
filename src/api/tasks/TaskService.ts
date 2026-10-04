@@ -1,3 +1,4 @@
+import { withTaskResumeStage } from './TaskResumeDiagnostics';
 import { updateRunApprovalSession } from '../runs/RunApproval';
 import { runResource, taskResource } from '@undefineds.co/models';
 import { cancelRun } from '../runs/RunCancellation';
@@ -198,21 +199,27 @@ export class TaskService<TContext = StoreContext> {
 
   public async resumeApprovedRun(input: { runId: string; approval: string; owner: string }, context: TContext,
     resolveExecutionContext?: (task: TaskRecordData, caller: TContext) => Promise<TContext | undefined>) {
-    const run = await this.store.loadRun(input.runId, context);
-    const approval = await this.store.readTaskApproval?.(input.approval, context);
-    if (!approval || !['approved', 'rejected'].includes(approval.status)
-      || approval.decisionBy !== input.owner || (approval.assignedTo && approval.assignedTo !== input.owner) || !approval.resolvedAt
-      || approval.thread !== run.thread) throw new Error('Approval does not authorize this run');
+    const run = await withTaskResumeStage('run_read', () => this.store.loadRun(input.runId, context));
+    const approval = await withTaskResumeStage('approval_validation', async () => {
+      const approval = await this.store.readTaskApproval?.(input.approval, context);
+      if (!approval || !['approved', 'rejected'].includes(approval.status)
+        || approval.decisionBy !== input.owner || (approval.assignedTo && approval.assignedTo !== input.owner) || !approval.resolvedAt
+        || approval.thread !== run.thread) throw new Error('Approval does not authorize this run');
+      return approval;
+    });
     const threadRef = toThreadRef({ thread_id: run.thread });
     const output = JSON.stringify({ kind: 'approval_decision', approval: input.approval, decision: approval.status, actionExecuted: false });
     const waiting = run.metadata?.waitingTool as { itemId?: string; requestId?: string } | undefined;
     // Bind the checkpoint to this Run through the durable waiting-tool receipt. The receipt
     // lives on the Run row, independent of the client_tool_call item's free-form metadata;
     // `metadata.runId` remains only as a fallback for runs that predate the receipt.
-    const items = await this.store.loadThreadItems(threadRef, undefined, 1000, 'asc', context);
-    const item = items.data.find(item => item.type === 'client_tool_call' && item.call_id === approval.toolCallId
-      && (waiting?.itemId !== undefined ? item.id === waiting.itemId : item.metadata?.runId === run.id));
-    if (!item || item.type !== 'client_tool_call' || item.name !== approval.toolName) throw new Error('Approval does not match the pending tool checkpoint');
+    const item = await withTaskResumeStage('checkpoint_validation', async () => {
+      const items = await this.store.loadThreadItems(threadRef, undefined, 1000, 'asc', context);
+      const item = items.data.find(item => item.type === 'client_tool_call' && item.call_id === approval.toolCallId
+        && (waiting?.itemId !== undefined ? item.id === waiting.itemId : item.metadata?.runId === run.id));
+      if (!item || item.type !== 'client_tool_call' || item.name !== approval.toolName) throw new Error('Approval does not match the pending tool checkpoint');
+      return item;
+    });
     const atCheckpoint = waiting?.itemId === item.id && waiting.requestId === approval.toolCallId;
     if (item.status === 'completed' && item.output === output) {
       if (approval.status === 'rejected' && atCheckpoint && run.status === 'waiting_input') {
@@ -222,8 +229,12 @@ export class TaskService<TContext = StoreContext> {
       if (run.status === 'cancelled') await updateRunApprovalSession(this.store, run, 'completed', context);
       return { run, resumed: false, duplicate: true };
     }
-    if (approval.expiresAt && new Date(approval.expiresAt).getTime() <= Date.now()) throw new Error('Approval has expired');
-    if (run.status !== 'waiting_input' || waiting?.itemId !== item.id || waiting.requestId !== approval.toolCallId) throw new Error('Run is not waiting at this approval checkpoint');
+    await withTaskResumeStage('approval_validation', async () => {
+      if (approval.expiresAt && new Date(approval.expiresAt).getTime() <= Date.now()) throw new Error('Approval has expired');
+    });
+    await withTaskResumeStage('checkpoint_validation', async () => {
+      if (run.status !== 'waiting_input' || waiting?.itemId !== item.id || waiting.requestId !== approval.toolCallId) throw new Error('Run is not waiting at this approval checkpoint');
+    });
     if (approval.status === 'rejected') {
       await this.store.saveItem(threadRef, { ...item, status: 'completed', output, metadata: { ...item.metadata, approval: input.approval } }, context);
       const cancelled = await cancelRun({ store: this.store, runId: run.id, context, resourceIri: () => runResource.buildIri(input.owner, { id: run.id }) });
@@ -233,15 +244,21 @@ export class TaskService<TContext = StoreContext> {
     // must still restore their separately granted execution credential.
     let execution = context;
     if (run.task) {
-      const tasks = await this.store.listTasks({}, context);
-      const task = tasks.find(task => taskResource.buildIri(input.owner, { id: task.id }) === run.task);
-      if (!task) throw new Error('Task not found for this run');
-      const granted = await resolveExecutionContext?.(task, context);
-      if (!granted) throw new Error('Agent execution credential is unavailable');
+      const task = await withTaskResumeStage('task_lookup', async () => {
+        const tasks = await this.store.listTasks({}, context);
+        const task = tasks.find(task => taskResource.buildIri(input.owner, { id: task.id }) === run.task);
+        if (!task) throw new Error('Task not found for this run');
+        return task;
+      });
+      const granted = await withTaskResumeStage('task_auth_restore', async () => {
+        const granted = await resolveExecutionContext?.(task, context);
+        if (!granted) throw new Error('Agent execution credential is unavailable');
+        return granted;
+      });
       execution = granted;
     }
     const resumed = await this.materializer.resumeClientToolOutput(run, item.id, output, input.approval, execution);
-    return { run: await this.store.loadRun(run.id, context), resumed, ...(!resumed ? { duplicate: true } : {}) };
+    return { run: await withTaskResumeStage('run_result_read', () => this.store.loadRun(run.id, context)), resumed, ...(!resumed ? { duplicate: true } : {}) };
   }
 
   public async materializeDueTasks(

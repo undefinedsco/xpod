@@ -1,3 +1,4 @@
+import { withTaskResumeStage } from './TaskResumeDiagnostics';
 import { monitorRunCancellation } from '../runs/RunCancellation';
 import { getLoggerFor } from 'global-logger-factory';
 import { persistRunApproval, updateRunApprovalSession } from '../runs/RunApproval';
@@ -172,19 +173,24 @@ export class TaskMaterializer<TContext = StoreContext> {
   }
 
   public async resumeClientToolOutput(run: RunRecordData, itemId: string, output: string, approval: string, context: TContext): Promise<boolean> {
-    const executionContext = await this.withInvocationAiConnections(context);
-    const prepared = await this.continuation.prepareClientToolOutput({
-      threadRef: toThreadRef({ thread_id: run.thread }), itemId, output, context: executionContext,
+    const executionContext = await withTaskResumeStage('invocation_issue', () => this.withInvocationAiConnections(context));
+    const prepared = await withTaskResumeStage('continuation_prepare', async () => {
+      const prepared = await this.continuation.prepareClientToolOutput({
+        threadRef: toThreadRef({ thread_id: run.thread }), itemId, output, context: executionContext,
+      });
+      if (prepared) prepared.claim.item.metadata = { ...prepared.claim.item.metadata, approval };
+      return prepared;
     });
     if (!prepared) return false;
-    prepared.claim.item.metadata = { ...prepared.claim.item.metadata, approval };
     let completed = false;
     try {
-      for await (const _event of this.continuation.completePreparedClientToolOutput(prepared, executionContext)) { /* Durable state is the result. */ }
+      await withTaskResumeStage('continuation_complete', async () => {
+        for await (const _event of this.continuation.completePreparedClientToolOutput(prepared, executionContext)) { /* Durable state is the result. */ }
+      });
       completed = true;
       return true;
     } finally {
-      if (!completed) await this.continuation.releaseClientToolOutput(prepared, executionContext);
+      if (!completed) await withTaskResumeStage('continuation_release', () => this.continuation.releaseClientToolOutput(prepared, executionContext));
     }
   }
 

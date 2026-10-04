@@ -1,3 +1,5 @@
+import type { TaskMaterializer } from '../../src/api/tasks/TaskMaterializer';
+import { getTaskResumeStage } from '../../src/api/tasks/TaskResumeDiagnostics';
 import { describe, expect, it, vi } from 'vitest';
 import { approvalResource, sessionResource, type ApprovalRow, type ApprovalInsert, type SessionInsert } from '@undefineds.co/models';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
@@ -7,6 +9,10 @@ import { ChatKitService } from '../../src/api/chatkit/service';
 import { RunStateCenter } from '../../src/api/runs/RunStateCenter';
 import type { RunExecutionInput } from '../../src/api/runs/RunExecutionBackend';
 import type { RunRecordData } from '../../src/api/runs/store';
+type ResumeTestMaterializer = Pick<TaskMaterializer<StoreContext>, 'resumeClientToolOutput'> & {
+  continuation: RunStateCenter<StoreContext>;
+  withInvocationAiConnections(context: StoreContext): Promise<StoreContext>;
+};
 const owner = 'https://pod.test/alice/profile/card#me';
 const context: StoreContext = { userId: owner, auth: { type: 'solid', webId: owner } };
 class ApprovalStore extends InMemoryStore<StoreContext> {
@@ -50,6 +56,47 @@ async function setup(silentContinuation = false, producer = false, chat = false)
   return { store, inputs, service, run, resume, pendingApproval };
 }
 describe('task approval checkpoint continuation', () => {
+  it.each(['run_read', 'approval_validation', 'checkpoint_validation', 'task_lookup', 'task_auth_restore', 'invocation_issue', 'continuation_prepare', 'continuation_complete', 'continuation_release', 'run_result_read'] as const)('preserves original failure at %s', async stage => {
+    const app = await setup();
+    const error = Object.freeze(new Error('generic failure'));
+    const materializer = (app.service as unknown as { materializer: ResumeTestMaterializer }).materializer;
+    const continuation = materializer.continuation;
+    let resume = app.resume;
+    if (stage === 'run_read') vi.spyOn(app.store, 'loadRun').mockRejectedValueOnce(error);
+    if (stage === 'approval_validation') vi.spyOn(app.store, 'readTaskApproval').mockRejectedValueOnce(error);
+    if (stage === 'checkpoint_validation') vi.spyOn(app.store, 'loadThreadItems').mockRejectedValueOnce(error);
+    if (stage === 'task_lookup') vi.spyOn(app.store, 'listTasks').mockRejectedValueOnce(error);
+    if (stage === 'task_auth_restore') resume = () => app.service.resumeApprovedRun({ runId: app.run.id, owner, approval: 'https://pod.test/alice/.data/approvals/test.ttl#a' }, context, async () => { throw error; });
+    if (stage === 'invocation_issue') vi.spyOn(materializer, 'withInvocationAiConnections').mockRejectedValueOnce(error);
+    if (stage === 'continuation_prepare') vi.spyOn(continuation, 'prepareClientToolOutput').mockRejectedValueOnce(error);
+    if (stage === 'continuation_complete' || stage === 'continuation_release') vi.spyOn(continuation, 'completePreparedClientToolOutput').mockImplementationOnce(async function* () { yield* []; throw stage === 'continuation_release' ? new Error('initial failure') : error; });
+    if (stage === 'continuation_release') vi.spyOn(continuation, 'releaseClientToolOutput').mockRejectedValueOnce(error);
+    if (stage === 'run_result_read') {
+      vi.spyOn(materializer, 'resumeClientToolOutput').mockResolvedValueOnce(true);
+      const original = app.store.loadRun.bind(app.store);
+      vi.spyOn(app.store, 'loadRun').mockImplementationOnce(original).mockRejectedValueOnce(error);
+    }
+    await expect(resume()).rejects.toBe(error);
+    expect(getTaskResumeStage(error)).toBe(stage);
+    expect(error.message).toBe('generic failure');
+  });
+  it('classifies a frozen prepared item assignment as preparation without entering continuation cleanup', async () => {
+    const app = await setup();
+    const continuation = (app.service as unknown as { materializer: ResumeTestMaterializer }).materializer.continuation;
+    const prepare = continuation.prepareClientToolOutput.bind(continuation);
+    vi.spyOn(continuation, 'prepareClientToolOutput').mockImplementationOnce(async input => {
+      const prepared = await prepare(input);
+      if (prepared) Object.freeze(prepared.claim.item);
+      return prepared;
+    });
+    const complete = vi.spyOn(continuation, 'completePreparedClientToolOutput');
+    const release = vi.spyOn(continuation, 'releaseClientToolOutput');
+    const error = await app.resume().catch(value => value);
+    expect(error).toBeInstanceOf(TypeError);
+    expect(getTaskResumeStage(error)).toBe('continuation_prepare');
+    expect(complete).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+  });
   it('disposes the continuation monitor when its initial cancellation check fails', async () => {
     const app = await setup();
     const check = vi.spyOn(RunStateCenter.prototype as unknown as { checkCancellation(): Promise<unknown> }, 'checkCancellation')
