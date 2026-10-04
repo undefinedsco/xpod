@@ -95,13 +95,15 @@ class SupervisorTests(unittest.TestCase):
 
     def test_real_tool_child_does_not_inherit_credentials_or_build_overrides(self):
         inherited = dict(os.environ, ACTIONS_RUNTIME_TOKEN='fixture-secret',
-                         CARGO_BUILD_JOBS='97', RUSTC='/fixture/compiler', HTTPS_PROXY='fixture-proxy')
+                         CARGO_BUILD_JOBS='97', RUSTC='/fixture/compiler', HTTPS_PROXY='fixture-proxy',
+                         CARGO_HOME='/fixture/cargo-home', RUSTUP_HOME='/fixture/rustup-home')
         child = subprocess.run([sys.executable, '-c',
             "import os,json; print(json.dumps({k:os.environ.get(k) for k in "
-            "['ACTIONS_RUNTIME_TOKEN','CARGO_BUILD_JOBS','RUSTC','HTTPS_PROXY']}))"],
+            "['ACTIONS_RUNTIME_TOKEN','CARGO_BUILD_JOBS','RUSTC','HTTPS_PROXY','CARGO_HOME','RUSTUP_HOME']}))"],
             env=a.tool_environment(inherited), capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(child.stdout), {
-            'ACTIONS_RUNTIME_TOKEN': None, 'CARGO_BUILD_JOBS': None, 'RUSTC': None, 'HTTPS_PROXY': None})
+            'ACTIONS_RUNTIME_TOKEN': None, 'CARGO_BUILD_JOBS': None, 'RUSTC': None, 'HTTPS_PROXY': None,
+            'CARGO_HOME': '/fixture/cargo-home', 'RUSTUP_HOME': '/fixture/rustup-home'})
 
     def test_wrong_official_download_digest_cannot_be_used(self):
         with tempfile.TemporaryDirectory() as directory:

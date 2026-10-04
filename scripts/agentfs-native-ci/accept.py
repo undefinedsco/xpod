@@ -96,9 +96,13 @@ def sdk_identity(host):
 
 
 def tool_environment(environment):
-    # Keep runner credentials/proxy overrides out of tool and Cargo children.
+    # Keep runner credentials/proxy overrides out of tool and Cargo children,
+    # but preserve the toolchain homes: the Bookworm image installs rustup under
+    # non-default CARGO_HOME/RUSTUP_HOME, and dropping them makes rustup reject
+    # its own installed location ("rustup is not installed at '/root/.cargo'").
     allowed = {'PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'TMP', 'TEMP', 'RUNNER_TEMP',
-               'NATIVE_TARGET', 'LANG', 'LC_ALL', 'PYTHONDONTWRITEBYTECODE'}
+               'NATIVE_TARGET', 'LANG', 'LC_ALL', 'PYTHONDONTWRITEBYTECODE',
+               'CARGO_HOME', 'RUSTUP_HOME'}
     return {key: value for key, value in environment.items() if key in allowed}
 
 
