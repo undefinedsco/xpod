@@ -231,16 +231,47 @@ interface PullPod {
   status: { phase: string; containerStatuses: { name: string; imageID: string; state: { terminated?: { exitCode: number } } }[] };
 }
 
+interface AuthorityWorkload {
+  kind?: unknown;
+  metadata?: { name?: unknown; namespace?: unknown };
+  spec?: { template?: { spec?: {
+    imagePullSecrets?: { name?: unknown }[];
+    containers?: { image?: unknown }[];
+  } } };
+}
+
+const AUTHORITY_SECRET_NAME = /^[a-z0-9](?:[-a-z0-9]{0,251}[a-z0-9])?$/;
+
+// The registry authority is declared by the existing fixed-PG17 workload that
+// already pulls the exact immutable image; it is not a new user setting. Admit
+// exactly one unique, non-conflicting imagePullSecret on that workload.
+export function selectRegistryAuthority(workload: AuthorityWorkload, expectedPgImage: string): string {
+  requireImmutableImage('pg-image', expectedPgImage);
+  const spec = workload?.spec?.template?.spec;
+  if (!spec || !isDeepStrictEqual(workload.kind, 'StatefulSet') && !isDeepStrictEqual(workload.kind, 'Deployment')
+    || !Array.isArray(spec.containers) || spec.containers.length !== 1
+    || spec.containers[0]?.image !== expectedPgImage) {
+    throw new Error('fixed PG17 workload image binding failed');
+  }
+  const secrets = spec.imagePullSecrets;
+  if (!Array.isArray(secrets) || secrets.length !== 1
+    || typeof secrets[0]?.name !== 'string' || !AUTHORITY_SECRET_NAME.test(secrets[0].name)) {
+    throw new Error('fixed PG17 workload authority is not a single unique declaration');
+  }
+  return secrets[0].name;
+}
+
 export function validatePullJob(job: PullJob, pods: PullPod[], expected: {
-  name: string; namespace: string; uid: string; image: string;
+  name: string; namespace: string; uid: string; image: string; authorityName: string;
 }): { jobUID: string; podUID: string; imageID: string } {
   const spec = job.spec.template.spec;
   if (!expected.uid || job.metadata.uid !== expected.uid || job.metadata.name !== expected.name
     || job.metadata.namespace !== expected.namespace
+    || !AUTHORITY_SECRET_NAME.test(expected.authorityName)
     || !job.status?.conditions?.some(condition => condition.type === 'Complete' && condition.status === 'True')
     || job.status.conditions.some(condition => condition.type === 'Failed' && condition.status === 'True')
     || spec.volumes?.length || spec.initContainers?.length
-    || !isDeepStrictEqual(spec.imagePullSecrets, [{ name: 'tcr-creds' }]) || spec.containers.length !== 1
+    || !isDeepStrictEqual(spec.imagePullSecrets, [{ name: expected.authorityName }]) || spec.containers.length !== 1
     || spec.containers[0].image !== expected.image || spec.containers[0].imagePullPolicy !== 'Always'
     || spec.containers[0].volumeMounts?.length) throw new Error('fresh namespace pull job contract failed');
   if (pods.length !== 1 || !pods[0].metadata.uid || !pods[0].metadata.ownerReferences?.some(
@@ -549,12 +580,17 @@ async function cli(): Promise<void> {
       publicDatabase: required('public-database', publicEvidence.database),
     });
     writeFileSync(required('private17-receipt', argValue('--private17-receipt')), `${JSON.stringify(result)}\n`, { mode: 0o600, flag: 'wx' });
+  } else if (argValue('--select-registry-authority')) {
+    const workload = JSON.parse(readFileSync(required('pg-workload', argValue('--select-registry-authority')), 'utf8')) as AuthorityWorkload;
+    process.stdout.write(`${selectRegistryAuthority(workload,
+      requireImmutableImage('pg-image', required('pg-image', argValue('--pg-image'))))}\n`);
   } else if (argValue('--validate-pull-job')) {
     const job = JSON.parse(readFileSync(required('job', argValue('--validate-pull-job')), 'utf8')) as PullJob;
     const pods = JSON.parse(readFileSync(required('pods', argValue('--pods')), 'utf8')) as { items: PullPod[] };
     const validated = validatePullJob(job, pods.items, {
       name: required('job-name', argValue('--job-name')), namespace: required('namespace', argValue('--namespace')),
       uid: required('job-uid', argValue('--job-uid')), image: requireImmutableImage('pg-image', required('pg-image', argValue('--pg-image'))),
+      authorityName: required('authority-name', argValue('--authority-name')),
     });
     writeFileSync(required('pull-receipt', argValue('--pull-receipt')), `${JSON.stringify({
       schemaVersion: 1, status: 'ok', ...validated,
