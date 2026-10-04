@@ -146,7 +146,7 @@ macOS 可能显示未识别开发者提示。未来启用 Apple Developer Progra
 漂移回归不表示每个已缓存文件新增了防篡改检查。
 
 `v0.4.23` 已签名后因原生 npm 包 `E413` 失败，标签及源码保持不可变；恢复发行使用
-`0.4.24` 的新源码、新 RC 和签名标签，不提升失败发行。经过与原因见
+未占用 patch 的新源码、新 RC 和签名标签（本轮为 `0.4.25`），不提升失败发行。经过与原因见
 [平台包发布体积问题](issues/2026-10-04-native-npm-publication-budget.md)。
 
 ### 嵌入式原生 CLI 的 Corresponding Source 与 NOTICE

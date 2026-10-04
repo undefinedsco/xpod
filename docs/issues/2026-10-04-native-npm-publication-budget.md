@@ -58,3 +58,15 @@ already-published `0.4.23` shared versions, even when their runtime code is
 unchanged. Recovery versions are `shared-ui`, `extension-sdk`, `solid-sdk`
 0.1.2 and `pod-settings`, `tasks`, `ai-connections`, `pod-collections` 0.1.1.
 The exact-SHA and immutable-integrity guards remain intact.
+
+The local 0.4.24 recovery commit `7efdb3794458e892ba33f672cdee0fa9814048f0`
+passed two complete gates, but its ordinary branch push was rejected because
+`release/0.4.24` already belongs to another source line at
+`c47283cbc3f4929af6afdb9f83396dd5553f8f1d` (RC 37214065143 failed). No force push,
+tag rewrite or unreviewed merge was performed. Read-only preflight found
+`release/0.4.25`, `v0.4.25`, root/native 0.4.25 and the seven recovery shared
+versions unoccupied. This recovery continues on `release/0.4.25`; root, desktop
+and native versions are 0.4.25 while the seven shared patch versions above stay
+unchanged. The 0.4.24 local evidence remains historical; the final 0.4.25 source
+requires two fresh complete gates, new RC acceptance, actual packaging and public
+stable publication.
