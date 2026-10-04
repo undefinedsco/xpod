@@ -71,7 +71,6 @@ jobs:
       - name: Build, test, package and Node/noBun admit inside Bookworm
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/agentfs-native-acceptance"
           docker run --rm \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -v "$RUNNER_TEMP:$RUNNER_TEMP" \
