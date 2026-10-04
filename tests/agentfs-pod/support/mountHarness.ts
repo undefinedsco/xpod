@@ -33,6 +33,8 @@ export interface MountAcceptanceOptions {
   token: string;
   workDir: string;
   mountReadyTimeoutMs?: number;
+  /** Mount backend. Defaults to the original NFS path so existing callers are unchanged. */
+  backend?: 'nfs' | 'fuse';
 }
 
 interface ExecResult {
@@ -138,7 +140,7 @@ export async function runMountAcceptance(options: MountAcceptanceOptions): Promi
 
   const mountResult = await run(
     command[0],
-    [ ...command.slice(1), 'mount', '--server', server.podRoot, '--mountpoint', mountpoint, '--backend', 'nfs' ],
+    [ ...command.slice(1), 'mount', '--server', server.podRoot, '--mountpoint', mountpoint, '--backend', options.backend ?? 'nfs' ],
     { env: { XPOD_AGENTFS_TOKEN: token }, timeoutMs: 30_000 },
   );
   if (mountResult.status !== 0) {
