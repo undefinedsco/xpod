@@ -99,20 +99,27 @@ pub(crate) fn observe_command(command: &mut Command, stage: &'static str, timeou
 }
 
 pub(crate) fn spawn_command(command: &mut Command, stage: &'static str) -> Result<CommandObservation> {
-    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    command.stdin(Stdio::null());
+    spawn_configured_command(command, stage)
+}
+
+/// Spawn a command that the caller has already configured (for example with a
+/// `Stdio` stdin redirection). The spawn itself performs no `pre_exec` hook, so
+/// it never opens a fork-before-exec window in which an unrelated parallel
+/// child could inherit descriptors.
+pub(crate) fn spawn_configured_command(command: &mut Command, stage: &'static str) -> Result<CommandObservation> {
+    command.stdout(Stdio::null()).stderr(Stdio::null());
     let child = command.spawn().with_context(|| format!("{stage} spawn failed"))?;
     Ok(CommandObservation { stage, child, status: None, wait_error: None })
 }
 
 #[cfg(test)]
-/// Spawn a command whose stdin is configured by the caller. Redirection through
-/// `Stdio` keeps this on the `posix_spawn` fast path; with no `pre_exec` hook
-/// there is no fork-before-exec window in which an unrelated parallel child
-/// could inherit the caller's descriptors.
+/// Spawn a command whose stdin is configured by the caller. Shares the one
+/// spawn initialization path; `pre_exec` is never used, so no fork-before-exec
+/// window exists in which a parallel child could inherit the caller's
+/// descriptors.
 pub(crate) fn spawn_stdin_command(command: &mut Command, stage: &'static str) -> Result<CommandObservation> {
-    command.stdout(Stdio::null()).stderr(Stdio::null());
-    let child = command.spawn().with_context(|| format!("{stage} spawn failed"))?;
-    Ok(CommandObservation { stage, child, status: None, wait_error: None })
+    spawn_configured_command(command, stage)
 }
 
 pub(crate) fn spawn_unmount(target: &Path) -> Result<CommandObservation> {

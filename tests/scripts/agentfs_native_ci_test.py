@@ -50,7 +50,7 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_latest_inventory_accepts_only_complete_bound_regressions(self):
-        text = 'test result: ok. 61 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
+        text = 'test result: ok. 64 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
         text += 'test mount::tests::legacy_output_exceeds_observation_budget ... ignored\n'
         text += 'test mount_control::tests::lease_child ... ignored\n'
         for name in ['closed_marker_is_read_only_after_actual_lease_release',
@@ -58,10 +58,12 @@ class SupervisorTests(unittest.TestCase):
                      'actual_dead_owner_releases_flock_and_only_proven_stale_socket_is_collected',
                      'owned_atomic_record_replacement_transient_is_not_a_foreign_entry',
                      'actual_store_owner_temp_before_rename_is_tolerated_by_live_readers',
-                     'controlled_real_writer_update_between_expected_clone_and_disk_read_fails_closed']:
+                     'legitimate_same_owner_atomic_update_does_not_false_fail_ownership',
+                     'controlled_foreign_binding_update_between_clone_and_disk_read_fails_closed',
+                     'live_lease_holder_makes_closed_proof_observation_return_false_until_release']:
             text += f'test mount_control::tests::{name} ... ok\n'
         a.check_tests(text)
-        for invalid in [text.replace('61 passed', '60 passed'),
+        for invalid in [text.replace('64 passed', '63 passed'),
                         text.replace('0 filtered out', '2 filtered out'),
                         text.replace('closed_marker_is_read_only_after_actual_lease_release ... ok',
                                      'closed_marker_is_read_only_after_actual_lease_release ... FAILED')]:
@@ -145,11 +147,13 @@ class SupervisorTests(unittest.TestCase):
 
     def test_bookworm_baseline_rejects_non_debian_or_wrong_glibc_interior(self):
         a.assert_bookworm_baseline('darwin', {})
-        a.assert_bookworm_baseline('linux', {'osRelease': 'debian 12', 'glibc': 'glibc 2.36'})
+        a.assert_bookworm_baseline('linux', {'osRelease': 'debian 12', 'glibc': 'glibc 2.36', 'machine': 'aarch64'})
         with self.assertRaisesRegex(RuntimeError, 'Debian 12'):
-            a.assert_bookworm_baseline('linux', {'osRelease': 'ubuntu 24.04', 'glibc': 'glibc 2.36'})
+            a.assert_bookworm_baseline('linux', {'osRelease': 'ubuntu 24.04', 'glibc': 'glibc 2.36', 'machine': 'aarch64'})
         with self.assertRaisesRegex(RuntimeError, 'glibc 2.36'):
-            a.assert_bookworm_baseline('linux', {'osRelease': 'debian 12', 'glibc': 'glibc 2.39'})
+            a.assert_bookworm_baseline('linux', {'osRelease': 'debian 12', 'glibc': 'glibc 2.39', 'machine': 'aarch64'})
+        with self.assertRaisesRegex(RuntimeError, 'aarch64'):
+            a.assert_bookworm_baseline('linux', {'osRelease': 'debian 12', 'glibc': 'glibc 2.36', 'machine': 'x86_64'})
 
     def test_node_only_environment_rejects_bun(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -170,17 +174,83 @@ class SupervisorTests(unittest.TestCase):
 
     def test_status_json_is_parsed_semantically_not_counted(self):
         helper = '/opt/install/helper/agentfs-pod'
-        good = json.dumps({'ok': True, 'data': {'platform': 'linux', 'helperPresent': True, 'helperPath': helper}})
-        self.assertTrue(a.assert_status_ready(good, 'linux', helper)['helperPresent'])
+        good = json.dumps({'ok': True, 'data': {'platform': 'linux', 'helperPresent': True, 'helperPath': helper,
+                                                'pendingOperations': 0}})
+        self.assertTrue(a.assert_status_ready(good, 'linux', helper, expected_pending=0)['helperPresent'])
         with self.assertRaisesRegex(RuntimeError, 'platform'):
             a.assert_status_ready(json.dumps({'ok': True, 'data': {'platform': 'darwin', 'helperPresent': True,
-                                                                   'helperPath': helper}}), 'linux', helper)
+                                                                   'helperPath': helper, 'pendingOperations': 0}}),
+                                  'linux', helper, expected_pending=0)
         with self.assertRaisesRegex(RuntimeError, 'did not discover'):
             a.assert_status_ready(json.dumps({'ok': True, 'data': {'platform': 'linux', 'helperPresent': False,
-                                                                   'helperPath': None}}), 'linux', helper)
+                                                                   'helperPath': None, 'pendingOperations': 0}}),
+                                  'linux', helper, expected_pending=0)
         with self.assertRaisesRegex(RuntimeError, 'helper path'):
             a.assert_status_ready(json.dumps({'ok': True, 'data': {'platform': 'linux', 'helperPresent': True,
-                                                                   'helperPath': '/elsewhere/agentfs-pod'}}), 'linux', helper)
+                                                                   'helperPath': '/elsewhere/agentfs-pod',
+                                                                   'pendingOperations': 0}}), 'linux', helper, expected_pending=0)
+
+    def test_status_pending_operations_must_be_finite_nonnegative_integer(self):
+        helper = '/opt/install/helper/agentfs-pod'
+        def status(pending):
+            return json.dumps({'ok': True, 'data': {'platform': 'linux', 'helperPresent': True,
+                                                     'helperPath': helper, 'pendingOperations': pending}})
+        for invalid in [None, -1, 1.5, True, '0']:
+            with self.assertRaisesRegex(RuntimeError, 'pendingOperations'):
+                a.assert_status_ready(status(invalid), 'linux', helper, expected_pending=0)
+        with self.assertRaisesRegex(RuntimeError, 'fresh session'):
+            a.assert_status_ready(status(3), 'linux', helper, expected_pending=0)
+        self.assertEqual(a.assert_status_ready(status(0), 'linux', helper, expected_pending=0)['pendingOperations'], 0)
+        self.assertEqual(a.assert_status_ready(status(5), 'linux', helper)['pendingOperations'], 5)
+
+    def test_checked_stage_rejects_nonzero_producer_with_plausible_text(self):
+        # The old readelf/ldd path discarded the receipt and accepted
+        # valid-looking text from a real exit9 producer. The checked stage must
+        # reject it before semantic interpretation.
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, 'producer failed'):
+                m.run_checked_stage('checked', [sys.executable, '-c',
+                                                "import sys; print('Name: GLIBC_2.36'); sys.exit(9)"],
+                                    directory, ROOT, fresh_bytes=0, stop_bytes=0, poll_seconds=.01)
+            receipt = json.loads(Path(directory, 'checked.receipt.json').read_text())
+            self.assertEqual(receipt['exit'], 9)
+            self.assertTrue(receipt['rawClosedBeforeHash'])
+            self.assertTrue(receipt['ownedGroupAbsentAfterWait'])
+
+    def test_checked_stage_returns_plain_text_only_after_real_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            receipt, text = m.run_checked_stage('ok', [sys.executable, '-c', "print('ELF text')"],
+                                                directory, ROOT, fresh_bytes=0, stop_bytes=0, poll_seconds=.01)
+            self.assertEqual(receipt['exit'], 0)
+            self.assertEqual(text.strip(), 'ELF text')
+
+    def test_group_present_withholds_semantic_bytes_and_records_members_before_stop(self):
+        # A producer that leaves a live same-session descendant must not publish
+        # semantic bytes while the owned group is still present. On Linux the
+        # pre-stop PID/PPID/PGID/STATE members are recorded before any signal;
+        # other hosts still prove the withhold + gate failure.
+        linux = sys.platform.startswith('linux')
+        leaked = ("import subprocess, sys; "
+                  "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                  "print('Name: GLIBC_2.36'); sys.exit(0)")
+        responder = ("import signal, sys, time; "
+                     "signal.signal(signal.SIGTERM, lambda *_: None); "
+                     "print('Name: GLIBC_2.36'); sys.stdout.flush(); "
+                     "time.sleep(60)")
+        if not linux:
+            self.skipTest('process-group observation requires Linux /proc')
+        for script in (leaked, responder):
+            with tempfile.TemporaryDirectory() as directory:
+                receipt, text = m.run_stage('leak', [sys.executable, '-c', script], directory, ROOT,
+                                            fresh_bytes=0, stop_bytes=0, poll_seconds=1)
+                self.assertIsNone(text)
+                self.assertFalse(receipt['ownedGroupAbsentAfterWait'])
+                self.assertIsNone(receipt['rawSHA256'])
+                self.assertIn('owned descendant remained after parent wait', receipt['resourceStop'])
+                self.assertTrue(receipt['ownedGroupMembersBeforeStop'])
+                member = receipt['ownedGroupMembersBeforeStop'][0]
+                self.assertEqual(set(member), {'pid', 'ppid', 'pgid', 'state'})
+                self.assertEqual(member['pgid'], receipt['pgid'])
 
     def test_failed_producer_retains_raw_and_receipt_without_reuse(self):
         with tempfile.TemporaryDirectory() as directory:

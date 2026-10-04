@@ -63,8 +63,10 @@ def run_stage(name, command, evidence, cwd, *, target=None, free=shutil.disk_usa
     deadline, the original continuous disk guard and a closed raw hash.
 
     Returns (receipt, raw_text). The raw text is read only after the log is
-    closed. Environment overrides are exact: callers pass a fully scoped
-    mapping (the Node-only admission changes PATH alone).
+    closed; while the owned group has not been proven absent the text is not
+    published (`None`) so a live descendant can never inject semantic bytes.
+    Environment overrides are exact: callers pass a fully scoped mapping (the
+    Node-only admission changes PATH alone).
     """
     evidence = Path(evidence)
     evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -75,6 +77,16 @@ def run_stage(name, command, evidence, cwd, *, target=None, free=shutil.disk_usa
     started = datetime.datetime.now(datetime.timezone.utc).isoformat()
     monotonic = time.monotonic()
     reason = None
+    # Original members are captured before any signal is sent: a post-kill
+    # zombie is PID1's residue and cannot explain which processes the producer
+    # actually left behind.
+    before_members = None
+
+    def snapshot_before_kill():
+        nonlocal before_members
+        if before_members is None:
+            before_members = group_members(child.pid)
+
     with open(raw_path, 'xb') as raw:
         os.chmod(raw.name, 0o600)
         child = subprocess.Popen(command, cwd=cwd, stdout=raw, stderr=subprocess.STDOUT,
@@ -88,15 +100,18 @@ def run_stage(name, command, evidence, cwd, *, target=None, free=shutil.disk_usa
                 elif target and allocated_bytes(target) > TARGET_BYTES:
                     reason = 'target allocation budget'
                 if reason:
+                    snapshot_before_kill()
                     os.killpg(child.pid, signal.SIGTERM)
                     try:
                         child.wait(timeout=15)
                     except subprocess.TimeoutExpired:
+                        snapshot_before_kill()
                         os.killpg(child.pid, signal.SIGKILL)
                     break
                 time.sleep(poll_seconds)
         finally:
             if child.poll() is None:
+                snapshot_before_kill()
                 os.killpg(child.pid, signal.SIGKILL)
             code = child.wait()
             # A finished parent must not leave descendants writing the raw log.
@@ -107,6 +122,7 @@ def run_stage(name, command, evidence, cwd, *, target=None, free=shutil.disk_usa
             else:
                 group_absent = False
                 reason = reason or 'owned descendant remained after parent wait'
+                snapshot_before_kill()
                 os.killpg(child.pid, signal.SIGKILL)
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
@@ -123,18 +139,34 @@ def run_stage(name, command, evidence, cwd, *, target=None, free=shutil.disk_usa
                   elapsedSeconds=time.monotonic() - monotonic, rawClosedBeforeHash=group_absent,
                   rawSHA256=sha256(raw_path) if group_absent else None, resourceStop=reason,
                   freshAvailableBytes=before, ownedGroupAbsentAfterWait=group_absent,
+                  ownedGroupMembersBeforeStop=before_members or [],
                   ownedGroupMembers=reserved)
     with open(evidence / f'{name}.receipt.json', 'x') as output:
         os.chmod(output.name, 0o600)
         json.dump(result, output, indent=2)
-    raw_text = raw_path.read_text(errors='replace')
+    raw_text = raw_path.read_text(errors='replace') if group_absent else None
     return result, raw_text
 
 
 def run_gate(name, command, evidence, cwd, **kwargs):
-    """Supervised stage that must actually exit 0 with no owned descendant."""
+    """Supervised stage that must actually exit 0 with no owned descendant and
+    no available raw bytes left behind by a live group."""
     result, _ = run_stage(name, command, evidence, cwd, **kwargs)
-    if result['exit'] != 0 or result['signal'] is not None or result['resourceStop']:
+    if (result['exit'] != 0 or result['signal'] is not None or result['resourceStop']
+            or not result['ownedGroupAbsentAfterWait']):
         raise RuntimeError(f"{name}: gate failed: exit={result['exit']}, signal={result['signal']}, "
-                           f"resourceStop={result['resourceStop']}")
+                           f"resourceStop={result['resourceStop']}, groupAbsent={result['ownedGroupAbsentAfterWait']}")
     return result
+
+
+def run_checked_stage(name, command, evidence, cwd, **kwargs):
+    """Supervised producer whose raw bytes are returned only after the original
+    exit/signal/resource/group/raw-closure gate has passed. Semantic callers
+    (readelf/ldd/status) must use this, never a receipt-ignoring read."""
+    receipt, text = run_stage(name, command, evidence, cwd, **kwargs)
+    if (receipt['exit'] != 0 or receipt['signal'] is not None or receipt['resourceStop']
+            or not receipt['ownedGroupAbsentAfterWait'] or text is None):
+        raise RuntimeError(f"{name}: producer failed: exit={receipt['exit']}, "
+                           f"signal={receipt['signal']}, resourceStop={receipt['resourceStop']}, "
+                           f"groupAbsent={receipt['ownedGroupAbsentAfterWait']}")
+    return receipt, text

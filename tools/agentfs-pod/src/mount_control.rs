@@ -208,6 +208,15 @@ fn read_owner(directory: &Path) -> Result<Owner> {
     recorded_target(&owner)?;
     Ok(owner)
 }
+fn ownership_unchanged(actual: &Owner, expected: &Owner) -> bool {
+    // Immutable binding is what an actual reader must attest. `record` (the
+    // file inode) and `closed` legitimately advance under atomic same-owner
+    // replacement, so they are not part of the identity comparison.
+    let mut actual = actual.clone();
+    actual.record = expected.record;
+    actual.closed = expected.closed.clone();
+    actual == *expected
+}
 fn recorded_target(owner: &Owner) -> Result<PathBuf> {
     if owner.target.contains(&0) || owner.target.split(|byte| *byte == b'/').any(|part| part == b"." || part == b"..") {
         anyhow::bail!("recorded runtime target invalid; retained");
@@ -343,12 +352,21 @@ impl RuntimeControl {
     /// `between` runs after the expected marker is cloned and before the disk
     /// read, so a controlled actual writer update can be linearized exactly in
     /// that window. Production passes a no-op.
+    ///
+    /// The owner mutex is held across the clone and the disk read: a legitimate
+    /// same-owner atomic replacement (which necessarily changes the record
+    /// inode while preserving the immutable binding) can only run inside
+    /// `store_owner_before_rename`, which also takes this mutex. Without the
+    /// lock a successful update would be misread as a foreign ownership change.
     fn verify_owned_after(&self, between: impl FnOnce()) -> Result<Owner> {
-        let expected = self.owner.lock().map_err(|_| anyhow::anyhow!("runtime owner poisoned"))?.clone();
+        let stored = self.owner.lock().map_err(|_| anyhow::anyhow!("runtime owner poisoned"))?;
+        let expected = stored.clone();
         between();
         check_names(&self.directory, Some(&expected.nonce))?;
         let owner = read_owner(&self.directory)?;
-        if owner != expected || owner.lease != FileIdentity::of(&self.lease.metadata()?) { anyhow::bail!("runtime ownership changed"); }
+        if !ownership_unchanged(&owner, &expected) || owner.lease != FileIdentity::of(&self.lease.metadata()?) {
+            anyhow::bail!("runtime ownership changed");
+        }
         if FileIdentity::of(&private_metadata(&socket_directory(&owner)?.join(SOCKET), true)?) != owner.socket { anyhow::bail!("runtime socket replaced; retained"); }
         Ok(owner)
     }
@@ -714,6 +732,19 @@ mod tests {
         mount::observe_command(Command::new("/bin/sh").args(["-c", &format!("exit {code}")]), "control-test", Duration::from_secs(5)).unwrap()
     }
 
+    // Direct atomic marker write used only to model a genuine foreign writer in
+    // tests; it deliberately bypasses the owner mutex.
+    fn write_owner_atomic(directory: &Path, owner: &Owner) {
+        let temporary = directory.join(format!("owner.{}.foreign", owner.nonce));
+        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&temporary).unwrap();
+        let mut owner = owner.clone();
+        owner.record = FileIdentity::of(&file.metadata().unwrap());
+        file.write_all(&serde_json::to_vec(&owner).unwrap()).unwrap();
+        file.sync_all().unwrap();
+        fs::rename(&temporary, directory.join(RECORD)).unwrap();
+    }
+
     #[test]
     fn long_session_and_non_utf8_target_keep_short_private_socket() {
         let fixture = Fixture::new();
@@ -790,23 +821,43 @@ mod tests {
     }
 
     #[test]
-    fn controlled_real_writer_update_between_expected_clone_and_disk_read_fails_closed() {
+    fn controlled_foreign_binding_update_between_clone_and_disk_read_fails_closed() {
         let fixture = Fixture::new();
         let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
         let identity = fixture.identity();
         control.bind_identity(&identity).unwrap();
         let mut next = identity.clone(); next.id.push(7);
-        // The actual atomic marker replacement lands after verify_owned cloned
-        // its expected snapshot and before it reads the disk, so the read must
+        // A genuine foreign writer changes the immutable binding on disk after
+        // the expected snapshot is cloned and before it is read. The read must
         // observe the changed binding and fail closed rather than trust the
-        // stale expected value.
+        // stale expected value. This deliberately bypasses the owner mutex the
+        // way an out-of-process same-UID writer would.
         let result = control.verify_owned_after(|| {
-            let mut updated = control.verify_owned().unwrap();
-            updated.binding = Some(Binding::from_mount(&next));
-            control.store_owner(updated).unwrap();
+            let mut owner = read_owner(&control.directory).unwrap();
+            owner.binding = Some(Binding::from_mount(&next));
+            write_owner_atomic(&control.directory, &owner);
         });
         assert!(result.unwrap_err().to_string().contains("runtime ownership changed"));
         assert_eq!(read_owner(&control.directory).unwrap().binding, Some(Binding::from_mount(&next)));
+        clean_fixture_runtime(&control);
+    }
+
+    #[test]
+    fn legitimate_same_owner_atomic_update_does_not_false_fail_ownership() {
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+        let identity = fixture.identity();
+        control.bind_identity(&identity).unwrap();
+        let before = control.verify_owned().unwrap();
+        // Real same-owner update outside the read: every immutable field is
+        // preserved and the record inode advances. Ownership checks must still
+        // pass afterwards; this is the positive the old clone-then-read code
+        // could not express.
+        control.store_owner(before.clone()).unwrap();
+        let after = control.verify_owned().unwrap();
+        assert_eq!(after.binding, before.binding);
+        assert_eq!(after.nonce, before.nonce);
+        assert_ne!(after.record, before.record, "atomic replacement must change the record inode");
         clean_fixture_runtime(&control);
     }
 
@@ -879,6 +930,86 @@ mod tests {
         assert_eq!(control.verify_owned().unwrap().target, fresh_target.as_os_str().as_bytes());
         assert!(!old_temporary.exists());
         clean_fixture_runtime(&control);
+    }
+
+    #[test]
+    fn live_lease_holder_makes_closed_proof_observation_return_false_until_release() {
+        // Controlled ACK lease-holder causality: a real child holds the lease
+        // (a separate process, an actual acquired RuntimeControl), so the
+        // closed-proof observation must return Ok(false) - lease held, nothing
+        // inspected or published - and only flip once the holder is actually
+        // waited. This uses the original lease, spawn and wait paths.
+        let fixture = Fixture::new();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "mount_control::tests::lease_child", "--nocapture"])
+            .env("XPOD_TEST_NFS_CONTROL_SESSION", &fixture.session)
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let started = Instant::now();
+        while !fixture.session.join("ready").exists() && started.elapsed() < Duration::from_secs(5) { std::thread::sleep(Duration::from_millis(10)); }
+        assert!(fixture.session.join("ready").exists(), "live holder must actually acquire the lease");
+        // Held: Ok(false), never an error and never true.
+        assert!(!completed_owner_observed(&fixture.session, &fixture.target, || MountState::Absent, true).unwrap(),
+                "a live lease holder must not be mistaken for a retired runtime");
+        let killed = child.kill();
+        let status = child.wait().unwrap();
+        killed.unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        // The lease was released by actual death; no stale marker exists yet, so
+        // the closed proof is still unavailable but the lease is now free.
+        let lease = open_private(&fixture.session.join(DIRECTORY).join(LEASE)).unwrap();
+        assert_eq!(unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0,
+                   "actual holder death must release the kernel lease");
+        unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_UN); }
+        let owner = read_owner(&fixture.session.join(DIRECTORY)).unwrap();
+        remove_socket_resources(&owner).unwrap();
+        fs::remove_file(fixture.session.join(DIRECTORY).join(RECORD)).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn forked_child_inheriting_cloexec_lease_fd_holds_flock_until_exec() {
+        // Controlled fork/descriptor fixture for the ACK lease window: fork(2)
+        // does not itself process CLOEXEC, so a forked child that has not yet
+        // exec'd inherits the live lease fd and the exclusive flock it carries.
+        // This models the actual user-space window without claiming any
+        // particular spawn fast path. The child holds the lock for a bounded
+        // interval and then exits; the parent observes the inherited holder.
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+        let lease = open_private(&control.directory.join(LEASE)).unwrap();
+        assert!(unsafe { libc::fcntl(lease.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC != 0,
+                "runtime lease fd must be CLOEXEC");
+        // Parent releases its own exclusive lock so the child is the sole holder.
+        unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_UN); }
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            // Child: take the inherited lock and hold it without exec. Only
+            // async-signal-safe calls run after fork in this multithreaded
+            // process, so nanosleep (not thread::sleep) bounds the window.
+            if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                unsafe { libc::_exit(2); }
+            }
+            let hold = libc::timespec { tv_sec: 0, tv_nsec: 400_000_000 };
+            unsafe { libc::nanosleep(&hold, std::ptr::null_mut()); }
+            unsafe { libc::_exit(0); }
+        }
+        // Parent observes that the inherited exclusive lock is held by the fork.
+        let probe = open_private(&control.directory.join(LEASE)).unwrap();
+        let mut observed_held = false;
+        for _ in 0..200 {
+            if unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                observed_held = true;
+                break;
+            }
+            unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_UN); }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut status: libc::c_int = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0); }
+        drop(probe); drop(lease);
+        clean_fixture_runtime(&control);
+        assert!(observed_held, "forked child must hold the inherited CLOEXEC lease lock until exec");
     }
 
     async fn send_request(owner: &Owner, start: bool) -> Reply {
@@ -1120,12 +1251,11 @@ mod tests {
     }
     fn spawn_barrier_child(exit: u8) -> Result<(CommandObservation, std::os::unix::net::UnixStream)> {
         // The barrier reader is redirected through stdin instead of a pre_exec
-        // fd3 dup. That keeps the spawn on the posix_spawn fast path: pre_exec
-        // forces fork+exec and widens the window in which an unrelated parallel
-        // child inherits this process's CLOEXEC descriptors (including a live
-        // runtime lease), which a concurrent exclusive flock probe then observes.
-        // The pair stays CLOEXEC, so unrelated children cannot inherit the
-        // writer and delay EOF.
+        // fd3 dup. Spawning without a pre_exec hook avoids the user-space
+        // fork-before-exec window entirely (whatever fast path the platform
+        // chooses); the pair stays CLOEXEC, so unrelated children cannot
+        // inherit the writer and delay EOF. No unconditional posix_spawn claim
+        // is made here: only the absence of our own pre_exec hook.
         let (reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
         let owned: std::os::fd::OwnedFd = reader.into();
         let mut command = Command::new("/bin/sh"); command.args(["-c", &format!("read barrier; exit {exit}")]);

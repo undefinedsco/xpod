@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import urllib.request
-from supervise import FRESH_BYTES, run_gate, run_stage, sha256
+from supervise import FRESH_BYTES, run_checked_stage, run_gate, run_stage, sha256
 
 UPSTREAM = '0a014ebd4918615baff589ed17486e557e7c6a23'
 TOOLCHAIN = 'nightly-2026-09-30'
@@ -59,7 +59,7 @@ def assert_bookworm_image(image):
 
 def assert_bookworm_baseline(host, sdk):
     """Reject an invalid interior before the build: the Linux chain must run on
-    Debian 12 / glibc 2.36, never the Ubuntu ARM runner it is hosted by."""
+    Debian 12 / glibc 2.36 / aarch64, never the Ubuntu ARM runner it is hosted by."""
     if host != 'linux':
         return
     release = tuple(str(sdk.get('osRelease', '')).split())
@@ -67,6 +67,8 @@ def assert_bookworm_baseline(host, sdk):
         raise RuntimeError(f'Linux admission must run inside Debian 12 Bookworm, got {release!r}')
     if str(sdk.get('glibc', '')).strip() != 'glibc 2.36':
         raise RuntimeError(f'Linux admission requires the Bookworm glibc 2.36 baseline, got {sdk.get("glibc")!r}')
+    if str(sdk.get('machine', '')).strip() != 'aarch64':
+        raise RuntimeError(f'Linux admission requires an aarch64 interior, got {sdk.get("machine")!r}')
 
 
 def assert_bun_absent(path):
@@ -94,7 +96,7 @@ def unwrap_status(text):
     return parsed, data
 
 
-def assert_status_ready(text, platform_name, helper):
+def assert_status_ready(text, platform_name, helper, expected_pending=None):
     """Parse the status JSON semantically: a byte count alone is not proof."""
     parsed, data = unwrap_status(text)
     if parsed.get('ok') is not True:
@@ -106,13 +108,18 @@ def assert_status_ready(text, platform_name, helper):
     reported = data.get('helperPath')
     if not isinstance(reported, str) or os.path.realpath(reported) != os.path.realpath(str(helper)):
         raise RuntimeError('agent-fs status helper path does not match the bundled helper')
+    pending = data.get('pendingOperations')
+    if isinstance(pending, bool) or not isinstance(pending, int) or pending < 0:
+        raise RuntimeError(f'agent-fs status pendingOperations must be a finite nonnegative integer, got {pending!r}')
+    if expected_pending is not None and pending != expected_pending:
+        raise RuntimeError(f'agent-fs status pendingOperations {pending} != {expected_pending} in a fresh session')
     return data
 
 
 def check_tests(text):
     summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out', text)
-    if ('61', '0', '2', '0', '0') not in summaries:
-        raise RuntimeError('Latest full Rust inventory must report 61 passed, two declared ignores, zero filtered (63 total)')
+    if ('64', '0', '2', '0', '0') not in summaries:
+        raise RuntimeError('Latest full Rust inventory must report 64 passed, two declared ignores, zero filtered (66 total)')
     ignored = re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE)
     if set(ignored) != {'mount::tests::legacy_output_exceeds_observation_budget', 'mount_control::tests::lease_child'}:
         raise RuntimeError('Unexpected ignored tests')
@@ -120,7 +127,9 @@ def check_tests(text):
                  'actual_dead_owner_releases_flock_and_only_proven_stale_socket_is_collected',
                  'owned_atomic_record_replacement_transient_is_not_a_foreign_entry',
                  'actual_store_owner_temp_before_rename_is_tolerated_by_live_readers',
-                 'controlled_real_writer_update_between_expected_clone_and_disk_read_fails_closed']:
+                 'legitimate_same_owner_atomic_update_does_not_false_fail_ownership',
+                 'controlled_foreign_binding_update_between_clone_and_disk_read_fails_closed',
+                 'live_lease_holder_makes_closed_proof_observation_return_false_until_release']:
         if not re.search(r'^test mount_control::tests::' + test + r' \.\.\. ok$', text, re.MULTILINE):
             raise RuntimeError(f'Missing latest regression: {test}')
 
@@ -162,6 +171,7 @@ def sdk_identity(host):
         'dpkgLibs': run(['dpkg-query', '-W', '-f=${Package}=${Version}\n', 'libc6', 'libssl3']),
         # Actual interior GNU identity: never the Ubuntu ARM runner's values.
         'glibc': run(['getconf', 'GNU_LIBC_VERSION']),
+        'machine': run(['uname', '-m']),
         'osRelease': run(['sh', '-c', '. /etc/os-release && printf "%s %s" "$ID" "$VERSION_ID"']),
     }
 
@@ -181,8 +191,10 @@ def runtime_admission(archive, evidence, node, base):
     # Execute the packaged launcher through the external Node runtime only (no
     # Bun) and prove the bundled helper loads on the pinned Bookworm baseline.
     # Every producer runs through the existing supervised run_stage: real
-    # PID/PGID/Popen.wait, bounded deadline, continuous disk guard and a closed
-    # raw hash. Semantic metadata never replaces the producer receipt.
+    # PID/PGID/Popen.wait, bounded deadline, continuous disk guard, closed raw
+    # hash and an owned-group-absent closure gate *before* any output is
+    # interpreted semantically. The aggregate metadata binds each actual stage
+    # receipt and raw SHA; it never replaces the producer receipts.
     installation = base / 'admission-install'
     if installation.exists():
         raise RuntimeError('Admission install directory must be fresh')
@@ -194,30 +206,39 @@ def runtime_admission(archive, evidence, node, base):
     helper = install / 'helper/agentfs-pod'
     if not launcher.is_file() or not helper.is_file():
         raise RuntimeError('Admission archive lacks the launcher or bundled helper')
-    _, version_info = run_stage('runtime-readelf', ['readelf', '--version-info', str(helper)],
-                                evidence, installation, timeout=60)
-    (evidence / 'helper-glibc-requirements.raw.log').write_text(version_info)
-    highest = assert_bookworm_glibc(version_info)
     node_dir = str(Path(node).parent)
     path = os.pathsep.join([node_dir, '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'])
     assert_bun_absent(path)
     environment = dict(os.environ)
     environment['PATH'] = path
+    # A fresh, private session directory: pendingOperations must be an actual 0,
+    # never a default or a reused session's residue.
+    session = installation / 'fresh-session'
+    session.mkdir(mode=0o700)
+    stages = {}
 
     def stage(name, command):
-        receipt, text = run_stage(name, command, evidence, installation, environment=environment, timeout=60)
-        if receipt['exit'] != 0 or receipt['signal'] is not None or receipt['resourceStop']:
-            raise RuntimeError(f"{name}: producer failed: exit={receipt['exit']}, "
-                               f"signal={receipt['signal']}, resourceStop={receipt['resourceStop']}")
+        receipt, text = run_checked_stage(name, command, evidence, installation,
+                                          environment=environment, timeout=60)
+        stages[name] = {'receiptSha256': sha256(evidence / f'{name}.receipt.json'),
+                        'rawSha256': receipt['rawSHA256'],
+                        'exit': receipt['exit'], 'signal': receipt['signal'],
+                        'resourceStop': receipt['resourceStop'],
+                        'ownedGroupAbsentAfterWait': receipt['ownedGroupAbsentAfterWait']}
         return text.strip()
 
+    version_info = stage('runtime-readelf', ['readelf', '--version-info', str(helper)])
+    (evidence / 'helper-glibc-requirements.raw.log').write_text(version_info)
+    highest = assert_bookworm_glibc(version_info)
     launcher_version = stage('runtime-launcher-version', [str(launcher), '--version'])
     helper_version = stage('runtime-helper-version', [str(helper), '--version'])
-    status = stage('runtime-status', [str(launcher), 'agent-fs', 'status', '--json'])
+    status = stage('runtime-status', [str(launcher), 'agent-fs', 'status', '--json', '--session-dir', str(session)])
     if not helper_version.startswith('agentfs-pod '):
         raise RuntimeError(f'Bundled helper did not identify itself: {helper_version}')
-    status_data = assert_status_ready(status, sys.platform, helper)
-    _, loaded = run_stage('runtime-ldd', ['ldd', str(helper)], evidence, installation, timeout=60)
+    status_data = assert_status_ready(status, sys.platform, helper, expected_pending=0)
+    if status_data.get('sessionDir') != str(session):
+        raise RuntimeError('agent-fs status did not report the controlled fresh session directory')
+    loaded = stage('runtime-ldd', ['ldd', str(helper)])
     sonames = assert_ldd_ready(loaded)
     record = {
         'runtime': 'node', 'nodeVersion': stage('runtime-node-version', [node, '--version']),
@@ -226,7 +247,10 @@ def runtime_admission(archive, evidence, node, base):
         'bunAbsentFromPath': True, 'status': status_data, 'statusJsonBytes': len(status.encode()),
         'ldd': loaded,
     }
-    (evidence / 'runtime-admission.receipt.json').write_text(json.dumps(record, indent=2) + '\n')
+    (evidence / 'runtime-admission.metadata.json').write_text(json.dumps({
+        'record': record,
+        'stages': stages,
+    }, indent=2) + '\n')
     return record
 
 
@@ -336,7 +360,7 @@ def main():
                  nodeSHA256=sha256(node), hostUname=list(platform.uname()), rustManifestSHA256=RUST_MANIFEST_SHA,
                  bunAssetSHA256=BUN_SHA[host], compiler=receipt['compiler'], nativeReceipt=receipt,
                  bookwormImage=bookworm_image if host == 'linux' else None, runtimeAdmission=runtime,
-                 declaredTests=63, passedTests=61, ignoredTests=2, filteredTests=0,
+                 declaredTests=66, passedTests=64, ignoredTests=2, filteredTests=0,
                  ignoredScope='owned lease subprocess invoked by parent; historical RED intentionally ignored',
                  archiveSHA256=sha256(archives[0]), mountExecuted=False, liveGatewayExecuted=False,
                  publicReleaseReady=False)

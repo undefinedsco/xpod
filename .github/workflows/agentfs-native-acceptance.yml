@@ -40,6 +40,7 @@ jobs:
           path: |
             ${{ runner.temp }}/agentfs-native-acceptance/evidence/*.receipt.json
             ${{ runner.temp }}/agentfs-native-acceptance/evidence/*.raw.log
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/runtime-admission.metadata.json
             ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-build.log
             ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-test.log
             ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-receipt.json
@@ -94,6 +95,7 @@ jobs:
           path: |
             ${{ runner.temp }}/agentfs-native-acceptance/evidence/*.receipt.json
             ${{ runner.temp }}/agentfs-native-acceptance/evidence/*.raw.log
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/runtime-admission.metadata.json
             ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-build.log
             ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-test.log
             ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-receipt.json
