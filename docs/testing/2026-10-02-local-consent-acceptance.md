@@ -537,3 +537,16 @@ Root 本轮完整 `bun run test:integration` actual exit 0，UTC 2026-10-04T03:3
 失败原样保留：额外Linux SDK/bubblewrap镜像拉取的资源估算错误造成宿主ENOSPC，Root那次完整exit1；停止大镜像路线，仅重建本轮自有sol VM/数据盘，不清共享Docker/用户数据。随后Root Matrix单次超时，独立真实认证复跑exit0（63/63events、10sync pages）后再取得上面的整条0。候选另一次完整exit1为临时postgres:16-alpine拉取TLS超时及三例对象存储RequestTimeTooSkewed；pmset确认执行期间宿主多次Sleep/DarkWake。最终只预拉四张必要小镜像，核对host/guest空间、时差与allocation，使用测试生命周期caffeinate，完整重跑通过，没有产品fallback或削弱断言。Linux实际SDK+bubblewrap额外证明仍not-tested；参数负例和macOS sandbox-exec不代替该证明，也不混称秘密隔离。
 
 原安装0.4.20/用户资料、长时间in-flight stream、字面6h/14d等待仍未验证；新Electron夹具和默认120s容差后的同一held-fetch正文证明按上文范围成立。全量单元14项既有失败和两个文件19项既有lint诊断保留，不能写全量绿。新immutable RC/stable仍待外部证据：只在exact SHA artifact的19项全部通过后签名v0.4.23并提升同一digest；a2e5/37171159407失败和Finalize skipped仍无发布凭证。
+
+### 2026-10-04：审批身份与数据库绑定的关系读回
+
+RC `3be53aba6aa04df0a93520ab3a94af0e9bad768a` / run `37195150178` 实际 completed/failure。真实 Chat 为 200 且有内容；Task 的 Pi streaming 已进入本机 Gateway，165 events、finishReason=tool_calls，但随后因 `Approval session identity mismatch` 在 approved:checkpoint 前失败。桌面自更新、原生和 clean consumers 成功，Finalize skipped；该 SHA 没有最终接受凭证，不得 promotion。
+
+真实 drizzle RDF 读回把链接 Thread 返回为绝对 IRI，而业务传递不透明相对 ID。adapter 原先直接比较字符串，误拒绝同一个 Thread；审批读回也没有遵循 Run/Task 的相对关系契约。另一个真实负例证明先前“parsePodResourceRef 会保留 foreign”的注释不成立：该 helper 解析资源布局，本身不验证当前 Pod 归属。这不是共享 ORM 能力缺口。
+
+修复在唯一 `PodChatKitStore` adapter 内完成：Session/checkpoint 比较通过共享 `Thread.buildIriForDatabase` 和已验证数据库绑定解析；关系读回只在提取 ID 经共享 resource helper 能完全还原原 IRI 时转为相对 ID。另一 origin、同 origin 的另一 owner、缺少已验证 DB 绑定都保留绝对 IRI；不同 Thread fragment 仍为不同资源。owner、assignedTo、toolCallId、session、target、action 的 exact 检查保持，业务层没有增加存储 URL 分支。Root 仅同步其已有关系 helper/context；旧 Root 不具备 Candidate 审批 API，不做宽迁移。
+
+回归先取得 Session/checkpoint 两个真实 ORM 正例 RED、审批读回正例 RED，以及 foreign 同路径误归一 RED；修复后 Candidate 68 项/6 files、Root 22 项/3 files actual exit 0。测试保留 owner fragment/无 fragment、其他账号和 Thread、foreign checkpoint、强 ETag、未知 RDF、terminal Session 不重开等保护。两树 build:ts 与 typecheck:test actual exit 0；新测试 lint 0，Pod store 推荐规则从既有 62 项降为 59 项，没有新增诊断。冻结 Candidate 第一轮完整 `bun run test:integration` actual exit 0，UTC 11:10:56.529—11:17:05.637：runtime 30、lite 163/16 既有 skip、full 63。追加修订前 11:00:02.376—11:04:37.309 的完整 exit 0 仅作历史，不替代当前源码门禁；Root 最终完整、Candidate 提交前复跑和新 immutable RC 另行补录。
+
+
+冻结关系修复的最终门禁补录：Candidate提交前完整 `bun run test:integration` actual exit 0，UTC 11:25:00.393—11:30:45.372（runtime 30、lite 163/16 既有 skip、full 63），与上述修后第一轮均属于当前源码。Root 完整门禁 actual exit 0，UTC 11:19:12.321—11:24:10.273（runtime 30、lite 157/6 既有 skip、full 46）。两树源码/测试 hash 不变；扩大 ChatKit/Run/Task Handler 相关回归 100 项/12 files 全通过。私有 `.test-data/sol-release/approval-final-local-gates.json` 保留原始 exit/signal 和日期证据；自有 Compose containers/networks/volumes 均 0，仅停止本轮 sol VM，其他运行资源不动。新 RC 尚待接受凭证，不宣称 stable 已发布。

@@ -1078,17 +1078,19 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   /**
    * Report a relation stored in this Pod as the same opaque resource id business code uses.
    * The ORM's own `parsePodResourceRef` extracts it relative to the relation's resource base
-   * (`/.data/task/`, `/.data/`, ...), so an absolute foreign IRI stays absolute: it belongs to
-   * another Pod and must never be rebound to this one.
+   * (`/.data/task/`, `/.data/`, ...). Only collapse the reference when that ID resolves
+   * back to the exact original IRI through this context's verified database binding.
    */
-  private toResourceRelation(resource: unknown, value: string | null | undefined): string | undefined {
+  private toResourceRelation(resource: Pick<typeof Thread, 'buildIriForDatabase'>, value: string | null | undefined, context: StoreContext): string | undefined {
     if (!value) {
       return undefined;
     }
     if (!/^https?:\/\//.test(value)) {
       return value;
     }
-    return parsePodResourceRef(resource as never, value)?.resourceId ?? value;
+    const id = parsePodResourceRef(resource as never, value)?.resourceId;
+    const db = context._cachedDb;
+    return id && this.readPodUrlFromDatabase(db) && resource.buildIriForDatabase(db, id) === value ? id : value;
   }
 
   private baseRelativeIdFromPodPath(resource: string, context: StoreContext, podPath: string): string {
@@ -1114,11 +1116,11 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     const metadata = this.parseJsonObject(record.metadata);
     return {
       id: record.id || '',
-      task: this.toResourceRelation(Task, record.task),
-      delivery: this.toResourceRelation(deliveryResource, record.delivery),
+      task: this.toResourceRelation(Task, record.task, context),
+      delivery: this.toResourceRelation(deliveryResource, record.delivery, context),
       trigger: record.trigger || undefined,
       input: record.input || undefined,
-      thread: this.toResourceRelation(Thread, record.thread) ?? '',
+      thread: this.toResourceRelation(Thread, record.thread, context) ?? '',
       workspace: record.workspace || '',
       status: (record.status || 'queued') as RunRecordData['status'],
       runner: record.runner || '',
@@ -1139,7 +1141,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   private runStepRecordToData(record: RunStepRecordSource, context: StoreContext): RunStepRecordData {
     const payload = this.parseJsonObject(record.payload) ?? this.parseJsonObject(record.data);
-    const run = this.toResourceRelation(Run, record.run);
+    const run = this.toResourceRelation(Run, record.run, context);
     return {
       id: record.id || '',
       runId: record.runId || run || '',
@@ -1165,7 +1167,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       completedAt: this.isoToTimestamp(record.completedAt),
       notes: record.notes || undefined,
       priority: record.priority || undefined,
-      thread: this.toResourceRelation(Thread, record.thread) ?? '',
+      thread: this.toResourceRelation(Thread, record.thread, context) ?? '',
       workspace: record.workspace || '',
       runner: record.runner || (typeof xpod?.runner === 'string' ? xpod.runner : ''),
       status: (record.status || 'active') as TaskRecordData['status'],
@@ -2230,12 +2232,19 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   // Task Operations
   // =========================================================================
 
+  private sameApprovalThread(db: ReturnType<typeof drizzle>, left: string | null | undefined, right: string | null | undefined): boolean {
+    if (!left || !right) return left === right;
+    // Linked RDF reads contain IRIs; callers retain resource IDs. Resolve both through
+    // the shared resource and this database's verified storage binding, preserving foreign IRIs.
+    return Thread.buildIriForDatabase(db, left) === Thread.buildIriForDatabase(db, right);
+  }
+
   async writeTaskApproval(approval: ApprovalInsert, context: StoreContext): Promise<string> {
     const db = await this.getDb(context);
     const podBase = this.ensurePodBaseUrlCache(context)?.replace(/\/$/, '');
     if (!podBase || !approval.target.startsWith(`${podBase}/`)) throw new Error('Approval target must belong to the current Pod');
     const existing = await db.findById(approvalResource, approval.id!);
-    if (existing && (existing.thread !== approval.thread || existing.toolCallId !== approval.toolCallId || existing.assignedTo !== approval.assignedTo || existing.session !== approval.session || existing.target !== approval.target || existing.action !== approval.action)) throw new Error('Approval checkpoint identity mismatch');
+    if (existing && (!this.sameApprovalThread(db, existing.thread, approval.thread) || existing.toolCallId !== approval.toolCallId || existing.assignedTo !== approval.assignedTo || existing.session !== approval.session || existing.target !== approval.target || existing.action !== approval.action)) throw new Error('Approval checkpoint identity mismatch');
     if (!existing) await db.insert(approvalResource).values(approval);
     return db.resolveRowIri(approvalResource, approval);
   }
@@ -2244,7 +2253,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     const db = await this.getDb(context);
     const existing = await db.findById(sessionResource, session.id!);
     if (existing) {
-      if (existing.owner !== session.owner || existing.thread !== session.thread) throw new Error('Approval session identity mismatch');
+      if (existing.owner !== session.owner || !this.sameApprovalThread(db, existing.thread, session.thread)) throw new Error('Approval session identity mismatch');
       const iri = db.resolveRowIri(sessionResource, session);
       await updateConditionalResource({
         iri, fetch: this.runDocumentFetch(context), columns: sessionResource.columns,
@@ -2269,7 +2278,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     if (!podBase || !iri.startsWith(`${podBase.replace(/\/$/, '')}/.data/approvals/`)) {
       throw new Error('Approval must belong to the current Pod');
     }
-    return db.findByIri(approvalResource, iri) as Promise<ApprovalRow | null>;
+    const approval = await db.findByIri(approvalResource, iri) as ApprovalRow | null;
+    return approval ? { ...approval, thread: this.toResourceRelation(Thread, approval.thread, context) ?? approval.thread } : null;
   }
 
   async saveTask(task: TaskRecordData, context: StoreContext): Promise<void> {

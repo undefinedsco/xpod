@@ -31,7 +31,7 @@ const run: RunRecordData = {
 };
 const runBase: RunRecordData = { ...run, thread: 'chat/default/index.ttl#thread_1' };
 
-function fixture(initial?: Record<string, unknown>) {
+function fixture(initial?: Record<string, unknown>, realRead = false, bound = true) {
   const pod = 'https://pod.example/alice/';
   const iri = `${pod}.data/${run.id}`;
   const documentUrl = iri.split('#')[0];
@@ -79,8 +79,10 @@ function fixture(initial?: Record<string, unknown>) {
   };
   if (initial) persist(initial);
   const db = {
+    getDialect: bound ? () => serializer.getDialect() : undefined,
     findById: async (resource: unknown, id: string) => {
       expect(resource).toBe(Run);
+      if (realRead) return serializer.findById(Run, id);
       return rows.get(id) ?? null;
     },
     insert: (resource: unknown) => {
@@ -99,6 +101,25 @@ function fixture(initial?: Record<string, unknown>) {
 }
 
 describe('Run collaboration relations', () => {
+  it('reads owned RDF relations as opaque IDs using the verified database binding', async () => {
+    const { store, context } = fixture({ ...run, ...relations,
+      createdAt: new Date(run.createdAt * 1000), updatedAt: new Date(run.updatedAt * 1000) }, true);
+    await expect(store.loadRun(run.id, context)).resolves.toMatchObject({ ...runBase, ...relationsBase });
+  });
+
+  it.each(['https://foreign.example/alice/', 'https://pod.example/bob/'])('preserves same-layout relations from another Pod (%s)', async foreignPod => {
+    const foreign = { thread: `${foreignPod}.data/chat/default/index.ttl#thread_1`,
+      task: `${foreignPod}.data/task/index.ttl#task_1`,
+      delivery: `${foreignPod}.data/chat/default/2026/09/22/deliveries.ttl#delivery_1` };
+    const { store, context } = fixture({ ...run, ...relations, ...foreign }, true);
+    await expect(store.loadRun(run.id, context)).resolves.toMatchObject(foreign);
+  });
+
+  it('preserves absolute relations without a verified database binding', async () => {
+    const { store, context } = fixture({ ...run, ...relations }, true, false);
+    await expect(store.loadRun(run.id, context)).resolves.toMatchObject({ thread: run.thread, ...relations });
+  });
+
   it('persists and reads all three shared URI relations when creating a Run', async () => {
     const { store, context, rows } = fixture();
     await store.saveRun({ ...run, ...relations }, context);
