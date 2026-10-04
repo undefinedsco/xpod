@@ -343,18 +343,31 @@ export function createXpodAiConnectionsPodStore(
       const summary = current && credentialSummaryFromRow(input, normalizedProvider, current);
       if (!current || !summary) throw new Error('credential_not_found');
       if (summary.version !== values.expectedVersion) throw new Error('credential_version_conflict');
+      if (values.apiKey !== undefined && (summary.authMode !== 'apiKey'
+        || typeof values.apiKey !== 'string' || !values.apiKey.trim())) {
+        throw new Error('invalid_api_key_replacement');
+      }
+      const replaceKey = values.apiKey !== undefined
+        && parsePlaintextSecret(input, normalizedProvider, credentialId, current.encryptedSecret)?.apiKey !== values.apiKey;
       const metadata = {
         ...objectValue(current.metadata),
         ...(values.priority === undefined ? {} : { priority: values.priority }),
         ...(values.enabled === undefined ? {} : { enabled: values.enabled }),
         ...(values.baseUrl === undefined ? {} : { baseUrl: values.baseUrl }),
         ...(values.proxyUrl === undefined ? {} : { proxyUrl: normalizeProxyUrl(values.proxyUrl) }),
+        ...(replaceKey ? { health: 'unknown' } : {}),
       };
       const patch = {
         ...(values.label === undefined ? {} : { accountLabel: values.label, label: values.label }),
         ...(values.baseUrl === undefined ? {} : { baseUrl: values.baseUrl }),
         ...(values.proxyUrl === undefined ? {} : { proxyUrl: normalizeProxyUrl(values.proxyUrl) }),
         ...(values.enabled === undefined ? {} : { status: values.enabled ? 'active' : 'disabled' }),
+        ...(replaceKey ? {
+          encryptedSecret: plaintextEnvelope(input, normalizedProvider, credentialId, { type: 'apiKey', apiKey: values.apiKey }),
+          encryptionAlgorithm: 'PLAINTEXT',
+          reauthRequired: false,
+          failCount: 0, lastFailureCode: null, lastFailureAt: null, rateLimitResetAt: null,
+        } : {}),
         keyVersion: String(summary.version + 1),
         metadata,
       };

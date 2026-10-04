@@ -119,6 +119,7 @@ export function AiProviderCard({
   }) => Promise<void>
   onCreateLocalCredential?: (offering: AiProviderOffering, method?: AiProviderAuthorizationMethod) => Promise<void>
   onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
+    apiKey?: string
     label?: string
     enabled?: boolean
     priority?: number

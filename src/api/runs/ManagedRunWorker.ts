@@ -32,6 +32,7 @@ import {
   canClaimRun,
   generateRunStepResourceId,
   resolveDataResource,
+  resolveRunAuthBindingId,
   resolveRunUrn,
   type RunRecordData,
   type RunStepRecordData,
@@ -145,7 +146,7 @@ export class ManagedRunWorker<TContext = StoreContext> {
           conversation,
           retrievedContext,
           config: runtimeConfig,
-          authBindingId: this.authBindingIdFromRun(run),
+          authBindingId: resolveRunAuthBindingId(run),
           context: context as StoreContext,
         })
       ) {
@@ -291,7 +292,7 @@ export class ManagedRunWorker<TContext = StoreContext> {
       conversation,
       retrievedContext,
       config: loaded.runtimeConfig,
-      authBindingId: this.authBindingIdFromRun(loaded.run),
+      authBindingId: resolveRunAuthBindingId(loaded.run),
       context: context as StoreContext,
     };
   }
@@ -357,19 +358,6 @@ export class ManagedRunWorker<TContext = StoreContext> {
       workspace: run.workspace,
       runner: this.parseRunner(run.runner),
     };
-  }
-
-  private authBindingIdFromRun(run: RunRecordData): string | undefined {
-    const authBindingId = run.metadata?.authBindingId;
-    if (typeof authBindingId === 'string' && authBindingId.length > 0) {
-      return authBindingId;
-    }
-    const authBinding = run.metadata?.authBinding;
-    if (authBinding && typeof authBinding === 'object') {
-      const id = (authBinding as { id?: unknown }).id;
-      return typeof id === 'string' && id.length > 0 ? id : undefined;
-    }
-    return undefined;
   }
 
   private asRuntimeConfig(value: unknown): AgentRuntimeConfig | undefined {

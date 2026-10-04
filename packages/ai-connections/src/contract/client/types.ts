@@ -289,6 +289,8 @@ export interface CreateApiKeyCredentialInput {
 }
 
 export interface UpdateProviderCredentialInput {
+  /** Nonempty replacement only; omission preserves the existing secret. */
+  apiKey?: string
   expectedVersion: number
   label?: string
   enabled?: boolean

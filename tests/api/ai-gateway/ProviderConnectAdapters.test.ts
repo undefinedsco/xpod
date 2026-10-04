@@ -4778,3 +4778,47 @@ describe('ProviderConnectService', () => {
 function jsonClone<T>(value: T): T {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
+
+
+describe('owned API key credential replacement', () => {
+  async function replacementFixture() {
+    const repository = new RecordingCredentialRepository();
+    const credentialVault = vault();
+    const service = new ProviderConnectService({ registry: createDefaultProviderRegistry(), credentialRepository: repository, vault: credentialVault, adapters: [] });
+    const created = await service.createApiKeyCredential({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', offeringId: 'api-platform', apiKey: 'old-private-key', label: 'Owned', baseUrl: 'https://api.moonshot.ai/v1', priority: 7 });
+    Object.assign(repository.rows[0], { enabled: false, health: 'reauthRequired', reauthRequired: true, failCount: 3, lastFailureCode: '401', lastFailureAt: new Date('2026-10-01'), rateLimitResetAt: new Date('2026-10-02') });
+    repository.rows[0].metadata = { ...repository.rows[0].metadata, custom: 'user-value', health: 'reauthRequired', enabled: false };
+    const query = { webId: WEB_ID, deployment: 'cloud' as const, provider: 'kimi', credentialId: created.id, expectedVersion: created.version! };
+    const replace = (apiKey: string, changes: Partial<typeof query> = {}) => service.updateCredential({ ...query, ...changes, patch: { apiKey } as Parameters<ProviderConnectService['updateCredential']>[0]['patch'] & { apiKey: string } });
+    return { repository, credentialVault, service, query, replace };
+  }
+  it.each([false, true])('replaces encrypted secret on the same CAS record and preserves enabled=%s without fake recovery', async enabled => {
+    const f = await replacementFixture(); f.repository.rows[0].enabled = enabled; f.repository.rows[0].metadata!.enabled = enabled; const before = structuredClone(f.repository.rows[0]);
+    const result = await f.replace('next-private-key'); const row = f.repository.rows[0];
+    expect(await f.credentialVault.open({ webId: WEB_ID }, row.credentialIri, row.provider, row.encryptedSecret)).toEqual({ type: 'apiKey', apiKey: 'next-private-key' });
+    expect(row).toMatchObject({ id: before.id, offeringId: before.offeringId, provider: before.provider, enabled, health: enabled ? 'unknown' : 'disabled', priority: 7, accountLabel: 'Owned', version: before.version! + 1, reauthRequired: false, failCount: 0 });
+    expect(row.lastFailureCode).toBeUndefined(); expect(row.lastFailureAt).toBeUndefined(); expect(row.rateLimitResetAt).toBeUndefined();
+    expect(row.metadata).toMatchObject({ custom: 'user-value', baseUrl: 'https://api.moonshot.ai/v1', enabled });
+    expect(JSON.stringify(result)).not.toMatch(/old-private-key|next-private-key|encryptedSecret/);
+  });
+  it('does not replace or falsely recover a metadata-only update', async () => {
+    const f = await replacementFixture(); const before = structuredClone(f.repository.rows[0]);
+    await f.service.updateCredential({ ...f.query, patch: { label: 'Renamed' } });
+    expect(f.repository.rows[0]).toMatchObject({ encryptedSecret: before.encryptedSecret, health: before.health, reauthRequired: true, failCount: 3, lastFailureCode: '401' });
+  });
+  it.each(['', '   '])('rejects an explicitly empty key without mutating the record', async key => {
+    const f = await replacementFixture(); const before = structuredClone(f.repository.rows);
+    await expect(f.replace(key)).rejects.toThrow(); expect(f.repository.rows).toEqual(before);
+  });
+  it('rejects replacing a non API-key credential without changing it', async () => {
+    const f = await replacementFixture(); f.repository.rows[0].authMode = 'deviceCodeOAuth'; const before = structuredClone(f.repository.rows);
+    await expect(f.replace('next-private-key')).rejects.toThrow(); expect(f.repository.rows).toEqual(before);
+  });
+  it('preserves the record on CAS conflict or a different owner/provider lookup', async () => {
+    const f = await replacementFixture(); const before = structuredClone(f.repository.rows);
+    await expect(f.replace('next-private-key', { expectedVersion: f.query.expectedVersion + 1 })).rejects.toThrow('credential_version_conflict');
+    expect(await f.replace('next-private-key', { webId: 'https://other.example/profile#me' })).toBeUndefined();
+    expect(await f.replace('next-private-key', { provider: 'openai' })).toBeUndefined();
+    expect(f.repository.rows).toEqual(before);
+  });
+});

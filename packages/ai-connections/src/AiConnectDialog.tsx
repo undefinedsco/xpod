@@ -82,6 +82,7 @@ export function AiConnectDialog({
   onSaveApiKey: () => void
   onDisconnect: (credential?: AiProviderCredentialSummary) => void
   onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
+    apiKey?: string
     label?: string
     enabled?: boolean
     priority?: number

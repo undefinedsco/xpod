@@ -1668,6 +1668,46 @@ describe('AI Connection settings', () => {
     ))
   })
 
+  it.each(['replace', 'metadata', 'retry'] as const)('recovers the same failed API Key row through %s edit', async mode => {
+    const saved = { id: 'failed-key', provider: 'openai' as const, offeringId: 'api-platform', authMode: 'apiKey' as const,
+      label: 'Failed key', enabled: true, priority: 20, health: 'invalid' as const,
+      lastFailureCode: 'authentication', maskedHint: 'sk-...old', baseUrl: 'https://api.openai.com/v1', version: 7 };
+    let persist: (() => void) | undefined;
+    const update = vi.fn<AiConnectionsClient['updateProviderCredential']>(async (_provider, _id, input) => {
+      await new Promise<void>(resolve => { persist = resolve });
+      return { ...saved, label: input.label ?? saved.label, health: 'healthy', version: 8 };
+    });
+    if (mode === 'retry') update.mockRejectedValueOnce(new Error('持久化失败，请重试'));
+    const current = client({ updateProviderCredential: update });
+    render(<AiConnectionsPanel client={current} selectedProvider="openai" providerProducts={{ openai: {
+      id: 'openai', name: 'OpenAI', status: 'attention',
+      offerings: [{ id: 'api-platform', label: 'API Platform', authModes: ['apiKey'] }], credentials: [saved], selectedModels: [],
+    } }} />);
+    fireEvent.click(await screen.findByRole('button', { name: '换一把 Key' }));
+    const key = screen.getByLabelText('OpenAI API Key 输入') as HTMLInputElement;
+    expect(key.value).toBe('');
+    expect(key.type).toBe('password');
+    fireEvent.change(key, { target: { value: mode === 'metadata' ? '   ' : '  sk-replacement  ' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存凭证' }));
+    if (mode === 'retry') {
+      expect(await screen.findAllByText('请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。')).not.toHaveLength(0);
+      expect(key.value).toBe('  sk-replacement  ');
+      fireEvent.click(screen.getByRole('button', { name: '保存凭证' }));
+    }
+    await waitFor(() => expect(persist).toBeTypeOf('function'));
+    expect(current.discoverModels).not.toHaveBeenCalled();
+    expect(update).toHaveBeenLastCalledWith('openai', 'failed-key', {
+      expectedVersion: 7, label: 'Failed key', baseUrl: 'https://api.openai.com/v1',
+      ...(mode === 'metadata' ? {} : { apiKey: 'sk-replacement' }),
+    });
+    expect(current.createApiKeyCredential).not.toHaveBeenCalled();
+    persist!();
+    await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('openai', { offeringId: 'api-platform', credentialId: 'failed-key' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    fireEvent.click(await screen.findByRole('button', { name: '编辑 Failed key' }));
+    expect(screen.getByLabelText('OpenAI API Key 输入')).toHaveProperty('value', '');
+  });
+
   it('retains a redacted proxy display when editing a saved credential', async () => {
     const current = client({
       updateProviderCredential: vi.fn(async (provider, credentialId, input) => ({

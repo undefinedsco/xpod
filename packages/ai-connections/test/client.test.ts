@@ -483,6 +483,7 @@ describe('AI Connection management client', () => {
 
     await client.updateProviderCredential('openai', 'openai-key-work', {
       expectedVersion: 7,
+      apiKey: 'replacement-key',
       label: 'Paused key',
       enabled: false,
       priority: 30,
@@ -498,6 +499,7 @@ describe('AI Connection management client', () => {
         method: 'PATCH',
         body: JSON.stringify({
           expectedVersion: 7,
+          apiKey: 'replacement-key',
           label: 'Paused key',
           enabled: false,
           priority: 30,

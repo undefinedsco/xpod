@@ -182,7 +182,7 @@ export function credentialSummaryFromRow(
   // release can still carry the literal as a string, so keep tolerating both.
   const reauthRequired = row.reauthRequired === true || String(row.reauthRequired) === 'true'
   return {
-    id: String(row.id),
+    id: credentialIdOfRow(row),
     provider,
     offeringId: carrier?.offeringId ?? defaultOfferingFor(provider, authMode),
     authMode,
@@ -190,6 +190,10 @@ export function credentialSummaryFromRow(
     enabled: status === undefined ? carrier?.enabled ?? true : status === 'active',
     priority: carrier?.priority ?? 100,
     health: reauthRequired ? 'expired' : carrier?.health ?? 'unknown',
+    lastFailureCode: stringValue(row.lastFailureCode),
+    lastFailureAt: isoStringValue(row.lastFailureAt),
+    rateLimitResetAt: isoStringValue(row.rateLimitResetAt),
+    failCount: numberValue(row.failCount),
     maskedHint: carrier?.maskedHint,
     baseUrl: carrier?.baseUrl,
     proxyUrl: carrier?.proxyUrl,
@@ -205,11 +209,11 @@ export function credentialSummariesForProvider(
   rows: readonly CredentialRow[],
   carrier: readonly AiProviderCredentialSummary[] = [],
 ): AiProviderCredentialSummary[] {
-  const byId = new Map(carrier.map((credential) => [credential.id, credential]))
+  const byId = new Map(carrier.map((credential) => [credentialResource.buildId({ id: credential.id }), credential]))
   const summaries: AiProviderCredentialSummary[] = []
   for (const row of rows) {
     if (providerOfCredentialRow(row) !== provider) continue
-    summaries.push(credentialSummaryFromRow(row, provider, byId.get(String(row.id))))
+    summaries.push(credentialSummaryFromRow(row, provider, byId.get(credentialIdOfRow(row))))
   }
   return summaries
 }
@@ -230,11 +234,14 @@ export function credentialCarriers(
   const carriers: Partial<Record<AiConnectionsProvider, readonly AiProviderCredentialSummary[]>> = {}
   for (const provider of AI_CONNECTIONS_PROVIDERS) {
     const byId = new Map<string, AiProviderCredentialSummary>()
-    for (const credential of overlayProducts[provider]?.credentials ?? []) {
-      byId.set(credential.id, credential)
-    }
-    for (const credential of storeProducts[provider]?.credentials ?? []) {
-      byId.set(credential.id, credential)
+    for (const credential of [
+      ...(storeProducts[provider]?.credentials ?? []),
+      ...(overlayProducts[provider]?.credentials ?? []),
+    ]) {
+      const id = credentialResource.buildId({ id: credential.id })
+      const current = byId.get(id)
+      // Each persisted mutation advances the version; a later store echo can supersede it.
+      if (!current || credential.version >= current.version) byId.set(id, credential)
     }
     carriers[provider] = [...byId.values()]
   }

@@ -1353,6 +1353,7 @@ function publicGatewayAccessKeyRecord(
 }
 
 function normalizeCredentialPatch(body: Record<string, unknown>): {
+  apiKey?: string;
   label?: string;
   enabled?: boolean;
   priority?: number;
@@ -1360,12 +1361,17 @@ function normalizeCredentialPatch(body: Record<string, unknown>): {
   proxyUrl?: string;
 } | undefined {
   const patch: {
+    apiKey?: string;
     label?: string;
     enabled?: boolean;
     priority?: number;
     baseUrl?: string;
     proxyUrl?: string;
   } = {};
+  if (Object.prototype.hasOwnProperty.call(body, 'apiKey')) {
+    if (typeof body.apiKey !== 'string' || !body.apiKey.trim()) return undefined;
+    patch.apiKey = body.apiKey.trim();
+  }
   if (body.label !== undefined) {
     const label = normalizeOptionalString(body.label);
     if (!label) {
@@ -1496,6 +1502,10 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
   if (message === 'local_session_reauth_required' || message === 'local_session_missing_refresh_token'
     || message === 'local_session_refresh_failed') {
     sendJson(response, message === 'local_session_refresh_failed' ? 502 : 409, { error: message });
+    return;
+  }
+  if (message === 'invalid_api_key' || message === 'credential_auth_mode_mismatch') {
+    sendJson(response, 400, { error: message });
     return;
   }
   if (message === 'credential_version_conflict') {

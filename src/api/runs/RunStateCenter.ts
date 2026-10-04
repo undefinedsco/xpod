@@ -44,6 +44,7 @@ import {
   generateRunResourceId,
   generateRunStepResourceId,
   resolveDataResource,
+  resolveRunAuthBindingId,
   resolveRunUrn,
   type RunRecordData,
   type RunStepRecordData,
@@ -433,6 +434,7 @@ export class RunStateCenter<TContext = StoreContext> {
             kind: 'client_tool_output',
             itemId: updatedItem.id,
           },
+          authBindingId: resolveRunAuthBindingId(run),
           context: context as StoreContext,
         })
       ) {

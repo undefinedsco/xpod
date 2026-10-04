@@ -103,6 +103,31 @@ async function openProvider(view: ReturnType<typeof renderPilot>, provider = 'op
 }
 
 describe('AI Connection credentials as a live collection', () => {
+  it('forwards a replacement key only through the real controller collection completion path', async () => {
+    const fixture = pilotFixture()
+    const view = renderPilot({ notifications: fakeNotifications(), fixture })
+    await openProvider(view)
+    const replacement = 'replacement-storage-only'
+    await act(async () => {
+      await view.controller.client!.updateProviderCredential('openai', CREDENTIAL_ID, {
+        expectedVersion: 1, apiKey: replacement,
+      })
+    })
+    expect(fixture.calls.storeUpdate).toEqual([{ provider: 'openai', credentialId: CREDENTIAL_ID,
+      input: { expectedVersion: 1, apiKey: replacement } }])
+    expect(fixture.calls.updateById).toHaveLength(0)
+    expect(JSON.stringify(view.controller.credentialsCollection!.get(CREDENTIAL_KEY))).not.toContain(replacement)
+    expect(JSON.stringify(view.controller.providerSummaries)).not.toContain(replacement)
+    expect(document.body.textContent).not.toContain(replacement)
+    await act(async () => {
+      await view.controller.client!.updateProviderCredential('openai', CREDENTIAL_ID, {
+        expectedVersion: 2, baseUrl: 'https://api.example/v1',
+      })
+    })
+    expect(fixture.calls.storeUpdate[1]).toEqual({ provider: 'openai', credentialId: CREDENTIAL_ID,
+      input: { expectedVersion: 2, baseUrl: 'https://api.example/v1' } })
+  })
+
   it('renders the credentials list from the collection rows and owns the table alone', async () => {
     const notifications = fakeNotifications()
     const fixture = pilotFixture()

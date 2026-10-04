@@ -141,6 +141,76 @@ function createModelRdfDatabase(initialRows?: Map<unknown, Map<string, Record<st
 }
 
 describe('XpodAiConnectionsPodStore', () => {
+  async function replacementFixture() {
+    const fixture = createModelRdfDatabase();
+    const store = createXpodAiConnectionsPodStore({ database: fixture.database as never, podUrl: POD_URL, webId: WEB_ID });
+    const created = await store.createApiKeyCredential!('openai', {
+      id: 'credentials.ttl#replacement', apiKey: 'old-owned-fixture-key', offeringId: 'api-platform',
+      label: 'Keep label', baseUrl: 'https://fixture.example/v1', proxyUrl: 'https://proxy.example/', priority: 9,
+    });
+    const row = fixture.rows.get(credentialResource)!.get(created.id)!;
+    fixture.persist(credentialResource, { ...row, keyVersion: '7', status: 'disabled', reauthRequired: true,
+      failCount: 4, lastFailureCode: 'HTTP_401', lastFailureAt: new Date('2026-10-04T00:00:00Z'),
+      rateLimitResetAt: new Date('2026-10-06T00:00:00Z'),
+      metadata: { ...(row.metadata as object), enabled: false, health: 'expired', compatibility: 'openai' },
+    });
+    return { fixture, store, id: created.id };
+  }
+
+  it('replaces one API key envelope and clears only failure state while preserving its user configuration', async () => {
+    const { fixture, store, id } = await replacementFixture();
+    const before = { ...fixture.rows.get(credentialResource)!.get(id)! };
+    const values = { expectedVersion: 7, apiKey: 'new-owned-fixture-key' };
+    const updated = await store.updateProviderCredential!('openai', id, values);
+    const after = fixture.rows.get(credentialResource)!.get(id)!;
+    expect(after.encryptedSecret).not.toBe(before.encryptedSecret);
+    await expect(store.readCredentialSecret!('openai', id)).resolves.toEqual({ type: 'apiKey', apiKey: values.apiKey });
+    for (const field of ['id', 'provider', 'offeringId', 'accountLabel', 'label', 'baseUrl', 'proxyUrl', 'status']) {
+      expect(after[field]).toEqual(before[field]);
+    }
+    expect(after).toMatchObject({ keyVersion: '8', reauthRequired: false, failCount: 0 });
+    for (const field of ['lastFailureCode', 'lastFailureAt', 'rateLimitResetAt']) expect(after[field] == null).toBe(true);
+    expect(after.metadata).toMatchObject({ enabled: false, priority: 9, compatibility: 'openai', health: 'unknown' });
+    expect(updated).toMatchObject({ id, version: 8, enabled: false, health: 'unknown' });
+    expect(JSON.stringify(updated)).not.toContain(values.apiKey);
+    expect(JSON.stringify(updated)).not.toContain('old-owned-fixture-key');
+  });
+
+  it('does not rotate the secret or clear failures on a metadata-only credential edit', async () => {
+    const { fixture, store, id } = await replacementFixture();
+    const before = { ...fixture.rows.get(credentialResource)!.get(id)! };
+    await store.updateProviderCredential!('openai', id, { expectedVersion: 7, label: 'Rename only' });
+    const after = fixture.rows.get(credentialResource)!.get(id)!;
+    for (const field of ['encryptedSecret', 'reauthRequired', 'failCount', 'lastFailureCode', 'lastFailureAt', 'rateLimitResetAt']) {
+      expect(after[field]).toEqual(before[field]);
+    }
+    expect(after.metadata).toMatchObject({ health: 'expired' });
+  });
+
+  it('does not clear an old failure when the same API key is submitted again', async () => {
+    const { fixture, store, id } = await replacementFixture();
+    const before = { ...fixture.rows.get(credentialResource)!.get(id)! };
+    const values = { expectedVersion: 7, apiKey: 'old-owned-fixture-key' };
+    await store.updateProviderCredential!('openai', id, values);
+    const after = fixture.rows.get(credentialResource)!.get(id)!;
+    expect(after.encryptedSecret).toBe(before.encryptedSecret);
+    expect(after).toMatchObject({ reauthRequired: true, failCount: 4, lastFailureCode: 'HTTP_401' });
+    expect(after.metadata).toMatchObject({ health: 'expired' });
+  });
+
+  it.each(['empty', 'whitespace', 'wrong-auth', 'wrong-provider', 'stale'] as const)(
+    'rejects %s key replacement without changing the original RDF row', async kind => {
+      const { fixture, store, id } = await replacementFixture();
+      if (kind === 'wrong-auth') fixture.persist(credentialResource, { ...fixture.rows.get(credentialResource)!.get(id)!, authMode: 'local' });
+      const before = JSON.stringify(fixture.rows.get(credentialResource)!.get(id));
+      const count = fixture.database.updateById.mock.calls.length;
+      const values = { expectedVersion: kind === 'stale' ? 6 : 7, apiKey: kind === 'empty' ? '' : kind === 'whitespace' ? '   ' : 'new-owned-fixture-key' };
+      await expect(store.updateProviderCredential!(kind === 'wrong-provider' ? 'deepseek' : 'openai', id, values)).rejects.toThrow();
+      expect(fixture.database.updateById.mock.calls.length).toBe(count);
+      expect(JSON.stringify(fixture.rows.get(credentialResource)!.get(id))).toBe(before);
+    },
+  );
+
   it('lists multiple same-provider credential rows from the opened Pod database', async () => {
     const rows = [
       {

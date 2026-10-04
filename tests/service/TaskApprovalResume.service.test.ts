@@ -7,6 +7,7 @@ import { toThreadRef } from '../../src/api/chatkit/types';
 import { TaskService } from '../../src/api/tasks/TaskService';
 import { ChatKitService } from '../../src/api/chatkit/service';
 import { RunStateCenter } from '../../src/api/runs/RunStateCenter';
+import { InngestRunExecutionBackend, type XpodRunRequestedEvent } from '../../src/api/runs/InngestRunExecutionBackend';
 import type { RunExecutionInput } from '../../src/api/runs/RunExecutionBackend';
 import type { RunRecordData } from '../../src/api/runs/store';
 type ResumeTestMaterializer = Pick<TaskMaterializer<StoreContext>, 'resumeClientToolOutput'> & {
@@ -137,6 +138,43 @@ describe('task approval checkpoint continuation', () => {
     const continuation = app.inputs[1];
     const carriedInstruction = [continuation.prompt, ...continuation.conversation.map(message => message.text)].join('\n');
     expect(carriedInstruction).toContain('Prepare and publish');
+  });
+  it.each(['current', 'legacy'] as const)('keeps the %s Task execution binding across approval continuation and deferred Inngest delivery', async bindingLayout => {
+    const app = await setup();
+    expect(app.inputs[0].authBindingId).toBe('credential');
+    expect(app.run.metadata?.authBindingId).toBe('credential');
+    if (bindingLayout === 'legacy') {
+      delete app.run.metadata!.authBindingId;
+      await app.store.saveRun(app.run, context);
+    }
+    const sent: XpodRunRequestedEvent[] = [];
+    const restoredBindings: Array<string | undefined> = [];
+    const restoredRuns: string[] = [];
+    const backend = new InngestRunExecutionBackend({
+      client: {
+        createFunction: (_options: unknown, handler: unknown) => ({ handler }),
+        send: async (event: XpodRunRequestedEvent) => { sent.push(event); return { ids: [event.id] }; },
+      } as unknown as NonNullable<ConstructorParameters<typeof InngestRunExecutionBackend>[0]>['client'],
+      managedRunWorker: {
+        executeRun: async (runId: string) => { restoredRuns.push(runId); return { status: 'completed' }; },
+      } as unknown as NonNullable<ConstructorParameters<typeof InngestRunExecutionBackend>[0]>['managedRunWorker'],
+      contextResolver: data => { restoredBindings.push(data.authBindingId); return data.authBindingId === 'credential' ? context : undefined; },
+      durableDelivery: true,
+      executeInline: false,
+    });
+    const continuation = new RunStateCenter({ store: app.store, enableAgentRuntime: true, executionBackend: backend });
+    const threadRef = toThreadRef({ thread_id: app.run.thread });
+    const items = await app.store.loadThreadItems(threadRef, undefined, 1000, 'asc', context);
+    const tool = items.data.find(item => item.type === 'client_tool_call')!;
+    for await (const _event of continuation.completeClientToolOutput({ threadRef, itemId: tool.id, output: 'approved', context })) { /* Consume the real continuation path. */ }
+    expect(sent).toHaveLength(1);
+    const event = sent[0];
+    await (backend.agentRunFunction as unknown as { handler(input: unknown): Promise<unknown> }).handler({
+      event, runId: `test:${event.id}`, step: { run: async (_id: string, fn: () => Promise<unknown>) => fn() },
+    });
+    expect(restoredBindings).toEqual(['credential']);
+    expect(restoredRuns).toEqual([app.run.id]);
+    expect(event.data).toMatchObject({ runId: app.run.id, authBindingId: 'credential', continuation: { kind: 'client_tool_output', itemId: tool.id } });
   });
   it('acknowledges a repeat decision when the completed checkpoint metadata loses runId in the Pod round-trip', async () => {
     const app = await setup();

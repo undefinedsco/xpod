@@ -27,6 +27,19 @@ export interface RunRecordData {
   updatedAt: number;
 }
 
+export function resolveRunAuthBindingId(run: RunRecordData): string | undefined {
+  const authBindingId = run.metadata?.authBindingId;
+  if (typeof authBindingId === 'string' && authBindingId.length > 0) {
+    return authBindingId;
+  }
+  const authBinding = run.metadata?.authBinding;
+  if (authBinding && typeof authBinding === 'object') {
+    const id = (authBinding as { id?: unknown }).id;
+    return typeof id === 'string' && id.length > 0 ? id : undefined;
+  }
+  return undefined;
+}
+
 export interface RunStepRecordData {
   /** Base-relative Solid resource id, e.g. `chat/default/2026/05/18/runs.ttl#step_x`. */
   id: string;

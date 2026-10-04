@@ -2719,6 +2719,7 @@ export class ProviderConnectService {
     credentialId: string;
     expectedVersion: number;
     patch: {
+      apiKey?: string;
       label?: string;
       enabled?: boolean;
       priority?: number;
@@ -2737,10 +2738,26 @@ export class ProviderConnectService {
       throw new Error('credential_pool_not_configured');
     }
     const existing = await this.credentialRepository.getCredentialById(input);
-    const metadata = metadataFromRowValue(existing?.metadata) ?? {};
+    if (!existing) return undefined;
+    if (input.expectedVersion !== (existing.version ?? 0)) throw new Error('credential_version_conflict');
+    const replacingKey = Object.prototype.hasOwnProperty.call(input.patch, 'apiKey');
+    let replacement: Partial<ConnectCredentialRecord> = {};
+    if (replacingKey) {
+      if (typeof input.patch.apiKey !== 'string' || !input.patch.apiKey.trim()) throw new Error('invalid_api_key');
+      if (existing.authMode !== 'apiKey') throw new Error('credential_auth_mode_mismatch');
+      if (!this.vault) throw new Error('credential_pool_not_configured');
+      replacement = {
+        encryptedSecret: await this.vault.seal({ webId: input.webId }, existing.credentialIri, existing.provider,
+          { type: 'apiKey', apiKey: input.patch.apiKey.trim() }),
+        reauthRequired: false, failCount: 0, lastFailureCode: undefined,
+        lastFailureAt: undefined, rateLimitResetAt: undefined,
+        health: (input.patch.enabled ?? existing.enabled) === false ? 'disabled' : 'unknown',
+      };
+    }
+    const metadata = metadataFromRowValue(existing.metadata) ?? {};
     const updated = await this.credentialRepository.updateCredential({
       ...input,
-      patch: metadataWithoutUndefined({
+      patch: { ...metadataWithoutUndefined({
         accountLabel: input.patch.label,
         enabled: input.patch.enabled,
         priority: input.patch.priority,
@@ -2756,9 +2773,10 @@ export class ProviderConnectService {
             : normalizeProviderProxyUrl(input.patch.proxyUrl),
           priority: input.patch.priority ?? metadata.priority,
           enabled: input.patch.enabled ?? metadata.enabled,
-          health: input.patch.enabled === false ? 'disabled' : metadata.health,
+          health: replacingKey ? replacement.health : input.patch.enabled === false ? 'disabled' : metadata.health,
+          ...(replacingKey ? { maskedHint: maskApiKey(input.patch.apiKey!.trim()) } : {}),
         }),
-      }),
+      }), ...replacement },
     });
     return updated ? publicPoolCredentialSummary(updated) : undefined;
   }

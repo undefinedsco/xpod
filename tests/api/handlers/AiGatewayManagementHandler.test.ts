@@ -1765,7 +1765,7 @@ describe('AiGatewayManagementHandler', () => {
       priority: 5,
       baseUrl: 'https://api.moonshot.cn/v1',
       expectedVersion: 7,
-      apiKey: 'must-be-ignored',
+      apiKey: 'replacement-private-key',
       status: 'revoked',
     }), patched, { provider: 'kimi', credentialId: 'kimi-key-a' });
 
@@ -1783,10 +1783,27 @@ describe('AiGatewayManagementHandler', () => {
         enabled: false,
         priority: 5,
         baseUrl: 'https://api.moonshot.cn/v1',
+        apiKey: 'replacement-private-key',
       },
       auth: { type: 'solid', webId: WEB_ID },
     });
-    expect(JSON.stringify(connectService.updateCredential.mock.calls[0][0])).not.toContain('must-be-ignored');
+    expect(patched.body).not.toContain('replacement-private-key');
+    for (const apiKey of ['', '   ', 7, null]) {
+      const rejected = response();
+      await routes['PATCH /api/ai/providers/:provider/credentials/:credentialId'](request({ type: 'solid', webId: WEB_ID }, { expectedVersion: 7, apiKey }), rejected, { provider: 'kimi', credentialId: 'kimi-key-a' });
+      expect(rejected.statusCode).toBe(400);
+    }
+    expect(connectService.updateCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['invalid_api_key', 'credential_auth_mode_mismatch'])('rejects invalid key replacement with safe code %s', async code => {
+    const connectService = { updateCredential: vi.fn(async () => { throw new Error(code); }) };
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, { deployment: 'cloud', connectService: connectService as unknown as NonNullable<Parameters<typeof registerAiGatewayManagementRoutes>[1]['connectService']> });
+    const res = response();
+    await routes['PATCH /api/ai/providers/:provider/credentials/:credentialId'](request({ type: 'solid', webId: WEB_ID }, { expectedVersion: 1, apiKey: 'private-replacement' }), res, { provider: 'kimi', credentialId: 'owned' });
+    expect(res.statusCode).toBe(400); expect(JSON.parse(res.body)).toEqual({ error: code });
+    expect(res.body).not.toContain('private-replacement');
   });
 
   it('forgets the issuer session when an API Key record is deleted', async () => {

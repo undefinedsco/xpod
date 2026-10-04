@@ -64,6 +64,7 @@ export function AiApiKeyPool({
     priority: number
   }) => Promise<void>
   onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
+    apiKey?: string
     label?: string
     enabled?: boolean
     priority?: number
@@ -171,6 +172,7 @@ export function AiApiKeyPool({
       onSavingChange?.(true)
       try {
         await onUpdateCredential(editingCredential, {
+          ...(poolApiKey.trim() ? { apiKey: poolApiKey.trim() } : {}),
           label: poolLabel.trim() || undefined,
           baseUrl: poolBaseUrl.trim() || undefined,
           ...(proxyChanged ? { proxyUrl: normalizedProxyUrl } : {}),
@@ -273,7 +275,7 @@ export function AiApiKeyPool({
               onChange={(event) => setPoolLabel(event.target.value)}
             />
           ) : null}
-          {formMode === 'create' ? (
+          {formMode === 'create' || formMode === 'edit' ? (
             <Input
               disabled={busy || disabled || saving}
               type={showKey ? 'text' : 'password'}
@@ -281,7 +283,7 @@ export function AiApiKeyPool({
               data-lpignore="true"
               data-1p-ignore
               aria-label={`${definition.name} API Key 输入`}
-              placeholder={definition.apiKeyPlaceholder || '从官方控制台复制 API Key'}
+              placeholder={formMode === 'edit' ? '留空保留现有 Key，填写以替换' : definition.apiKeyPlaceholder || '从官方控制台复制 API Key'}
               value={poolApiKey}
               onChange={(event) => setPoolApiKey(event.target.value)}
               className="font-mono"
