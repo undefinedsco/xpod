@@ -1,4 +1,5 @@
-import { type ETagHandler, type RepresentationMetadata } from '@solid/community-server';
+import { HH, type ETagHandler, type RepresentationMetadata } from '@solid/community-server';
+import { DataFactory } from 'n3';
 import { getStorageVersion, STORAGE_ETAG_PATTERN } from '../StorageVersion';
 
 /** Persisted revision authority for reads, conditional mutations and notifications. */
@@ -6,7 +7,12 @@ export class StorageETagHandler implements ETagHandler {
   public getETag(metadata: RepresentationMetadata): string | undefined {
     const revision = getStorageVersion(metadata);
     if (revision && metadata.contentType) {
-      return `"xpod-${revision}-${Buffer.from(metadata.contentType).toString('base64url')}"`;
+      const tag = `"xpod-${revision}-${Buffer.from(metadata.contentType).toString('base64url')}"`;
+      // Finalize response metadata before CSS merges it into a 304 error that
+      // already contains this tag. Keeping the raw revision here creates two
+      // ETag values; the persisted revision remains recoverable from the tag.
+      metadata.set(HH.terms.etag, DataFactory.literal(tag));
+      return tag;
     }
     // Uninitialized metadata cannot establish a safe write baseline.
     return undefined;

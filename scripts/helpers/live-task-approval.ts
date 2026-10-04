@@ -10,6 +10,17 @@ export interface LiveTaskRun {
   waitingToolCallId?: string;
   error?: unknown;
 }
+export interface LiveTaskFailureDetails {
+  substage: 'queued-request' | 'queued-assert' | 'checkpoint-run-read' | 'checkpoint-approval-read'
+    | 'checkpoint-match' | 'checkpoint-session-read' | 'checkpoint-session-assert' | 'checkpoint-marker-read'
+    | 'checkpoint-marker-assert' | 'decision-request' | 'decision-assert' | 'decision-persisted-read'
+    | 'decision-persisted-assert' | 'decision-resume-request' | 'decision-resume-assert' | 'other';
+  category: 'assertion' | 'timeout' | 'connection' | 'parse' | 'other';
+  name: 'LiveTaskEvidenceError' | 'Error' | 'TypeError' | 'SyntaxError' | 'AbortError' | 'TimeoutError' | 'DOMException' | 'other';
+  code?: 'ENOSPC' | 'ECONNREFUSED' | 'ECONNRESET' | 'ETIMEDOUT' | 'ENOTFOUND' | 'EACCES' | 'ERR_INVALID_URL';
+  causeCode?: LiveTaskFailureDetails['code'];
+}
+
 export interface LiveTaskCaseEvidence {
   kind: 'approved' | 'rejected' | 'stopped';
   taskId?: string;
@@ -26,6 +37,7 @@ export interface LiveTaskCaseEvidence {
   duplicateResume?: boolean;
   stableAfterDuplicateOrStop?: boolean;
   acceptancePhase?: string;
+  failureDetails?: LiveTaskFailureDetails;
   terminalSnapshot?: {
     status: string;
     errorPresent: boolean;
@@ -44,6 +56,28 @@ export interface LiveTaskEvidence {
 }
 
 class LiveTaskEvidenceError extends Error {}
+
+/** Fixed diagnostics only; upstream prose and arbitrary error properties never enter evidence. */
+function safeFailureDetails(substage: LiveTaskFailureDetails['substage'], error: unknown): LiveTaskFailureDetails {
+  try {
+    const value = error as { name?: unknown; code?: unknown; cause?: { code?: unknown } } | null;
+    const names = ['Error', 'TypeError', 'SyntaxError', 'AbortError', 'TimeoutError', 'DOMException'];
+    const codes = ['ENOSPC', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EACCES', 'ERR_INVALID_URL'];
+    const controlled = error instanceof LiveTaskEvidenceError;
+    const name = controlled ? 'LiveTaskEvidenceError'
+      : typeof value?.name === 'string' && names.includes(value.name) ? value.name as LiveTaskFailureDetails['name'] : 'other';
+    const code = typeof value?.code === 'string' && codes.includes(value.code) ? value.code as LiveTaskFailureDetails['code'] : undefined;
+    const causeCode = typeof value?.cause?.code === 'string' && codes.includes(value.cause.code) ? value.cause.code as LiveTaskFailureDetails['code'] : undefined;
+    const observedCodes = [code, causeCode];
+    const category = controlled ? 'assertion'
+      : name === 'TimeoutError' || observedCodes.includes('ETIMEDOUT') ? 'timeout'
+        : observedCodes.some(item => item === 'ECONNREFUSED' || item === 'ECONNRESET' || item === 'ENOTFOUND') ? 'connection'
+          : name === 'SyntaxError' ? 'parse' : 'other';
+    return { substage, category, name, ...(code ? { code } : {}), ...(causeCode ? { causeCode } : {}) };
+  } catch {
+    return { substage, category: 'other', name: 'other' };
+  }
+}
 
 const terminal = new Set(['completed', 'cancelled', 'failed']);
 function requireEvidence(condition: unknown, message: string): asserts condition {
@@ -99,6 +133,7 @@ export async function acceptLiveTaskApproval(options: {
   let grantId: string | undefined;
   let grantAttempted = false;
   let phase = 'grant';
+  let failureSubstage: LiveTaskFailureDetails['substage'] = 'other';
   let lastObservedRun: LiveTaskRun | undefined;
   // Do not include upstream bodies, model prose, tool arguments or credential material in errors/evidence.
   const request = async <T>(route: string, method = 'GET', body?: unknown, timeout = 20_000): Promise<T> => {
@@ -152,6 +187,7 @@ export async function acceptLiveTaskApproval(options: {
       const row: LiveTaskCaseEvidence = { kind, ok: false };
       evidence.cases.push(row);
       lastObservedRun = undefined;
+      failureSubstage = 'other';
       phase = `${kind}:prepare`;
       const unique = randomUUID();
       const workspace = new URL(`acceptance/task-${unique}/`, options.podUrl).href;
@@ -169,44 +205,62 @@ export async function acceptLiveTaskApproval(options: {
       tasks.push(created.task.id);
       await pause(created.task.id);
       phase = `${kind}:queued`;
+      failureSubstage = 'queued-request';
       const acknowledged = await request<{ run: LiveTaskRun }>(
         `/api/tasks/run?id=${encodeURIComponent(created.task.id)}`, 'POST', {});
       row.runId = acknowledged.run.id;
+      failureSubstage = 'queued-assert';
       requireEvidence(acknowledged.run.status === 'queued', 'Manual Run did not acknowledge queued status');
       row.queuedAck = true;
       phase = `${kind}:checkpoint`;
       const approval = await pollLiveTask(async () => {
+        failureSubstage = 'checkpoint-run-read';
         const run = await readRun(created.task.id, acknowledged.run.id);
+        failureSubstage = 'checkpoint-approval-read';
         const approvals = await db.select().from(approvalResource).execute();
+        failureSubstage = 'checkpoint-match';
         return requireLiveCheckpoint(run, approvals, target, options.webId);
       }, value => Boolean(value), 'real producer approval');
       requireEvidence(approval, 'Producer approval missing');
       row.approvalPending = true;
       approvalSessions.add(approval.session);
+      failureSubstage = 'checkpoint-session-read';
       await pollLiveTask(() => sessionStatus(approval.session), value => value === 'paused', 'paused Session');
       const persistedSession = await db.findByIri(sessionResource, approval.session);
+      failureSubstage = 'checkpoint-session-assert';
       requireEvidence(persistedSession?.owner === options.webId && persistedSession.thread === acknowledged.run.thread,
         'Approval Session does not belong to the current owner and Run thread');
       row.sessionPaused = true;
-      requireEvidence((await marker(target)).status === 404, 'Producer wrote before approval');
+      failureSubstage = 'checkpoint-marker-read';
+      const beforeDecisionMarker = await marker(target);
+      failureSubstage = 'checkpoint-marker-assert';
+      requireEvidence(beforeDecisionMarker.status === 404, 'Producer wrote before approval');
       const approvalIri = approvalResource.buildIri(options.podUrl, { id: approval.id });
       const resumeRoute = `/api/tasks/resume?id=${encodeURIComponent(acknowledged.run.id)}`;
       phase = `${kind}:decision`;
+      failureSubstage = 'other';
       if (kind === 'stopped') {
         await request(`/api/tasks/stop?id=${encodeURIComponent(acknowledged.run.id)}`, 'POST', {});
       } else {
+        failureSubstage = 'decision-request';
         const decision = await decideApprovalRequest({ approval: approvalIri, decision: kind,
           decisionBy: options.webId, authenticatedFetch: podFetch });
+        failureSubstage = 'decision-assert';
         requireEvidence(decision.status === 'decided', 'Owner approval compare-and-swap did not decide');
         row.decision = kind;
+        failureSubstage = 'decision-persisted-read';
         const persisted = await db.findByIri(approvalResource, approvalIri);
+        failureSubstage = 'decision-persisted-assert';
         requireEvidence(persisted?.status === kind && persisted.decisionBy === options.webId && persisted.resolvedAt,
           'Owner decision was not durably persisted');
+        failureSubstage = 'decision-resume-request';
         const resumed = await request<{ run: LiveTaskRun; resumed: boolean }>(resumeRoute, 'POST', { approval: approvalIri }, 180_000);
+        failureSubstage = 'decision-resume-assert';
         requireEvidence(resumed.run.id === acknowledged.run.id, 'Resume returned a different Run');
         requireEvidence(resumed.resumed === (kind === 'approved'), 'Unexpected approval continuation result');
       }
       phase = `${kind}:terminal`;
+      failureSubstage = 'other';
       const finalRun = await pollLiveTask(() => readRun(created.task.id, acknowledged.run.id),
         run => requireLiveTerminal(run, acknowledged.run.id, kind === 'approved' ? 'completed' : 'cancelled'), 'same Run terminal state');
       row.sameRun = true;
@@ -224,6 +278,7 @@ export async function acceptLiveTaskApproval(options: {
       // Steps, Run count/status, Session and marker validator must stay stable after duplicate commands.
       const beforeSteps = await steps(acknowledged.run.id);
       phase = `${kind}:duplicate`;
+      failureSubstage = 'other';
       if (kind !== 'stopped') {
         const duplicate = await request<{ run: LiveTaskRun; resumed: boolean; duplicate: boolean }>(resumeRoute, 'POST', { approval: approvalIri });
         requireEvidence(duplicate.duplicate === true && duplicate.resumed === false
@@ -250,6 +305,7 @@ export async function acceptLiveTaskApproval(options: {
     const row = evidence.cases[evidence.cases.length - 1];
     if (row) {
       row.acceptancePhase = phase;
+      row.failureDetails = safeFailureDetails(failureSubstage, error);
       if (lastObservedRun && terminal.has(lastObservedRun.status)) {
         const runError = lastObservedRun.error;
         const errorPresent = typeof runError === 'string' ? runError.length > 0 : runError != null;

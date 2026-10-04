@@ -1,13 +1,9 @@
+import { initializeBrowserSparql } from '../solid/initializeBrowserSparql';
 import {
-  configureSparqlEngine,
   type SolidDatabase,
   type InferInsertData,
   type PodColumn,
-  type SPARQLQueryEngine,
 } from '@undefineds.co/drizzle-solid';
-import { QueryEngine } from '@comunica/query-sparql-solid';
-import { ActionObserverHttp } from '@comunica/actor-query-result-serialize-stats';
-import { ActionObserverHttp as JsonActionObserverHttp } from '@comunica/actor-query-result-serialize-sparql-json';
 import {
   aiModelResource,
   filterAIModelCapabilityUris,
@@ -84,10 +80,7 @@ export interface CreateXpodAiConnectionsPodStoreInput {
 export function createXpodAiConnectionsPodStore(
   input: CreateXpodAiConnectionsPodStoreInput,
 ): AiConnectionsPodStore {
-  patchBrowserComunicaObserver();
-  configureSparqlEngine({
-    createQueryEngine: async () => new QueryEngine() as unknown as SPARQLQueryEngine,
-  });
+  initializeBrowserSparql();
   const settingsSparqlEndpoint = new URL('settings/-/sparql', input.podUrl).toString();
   credentialResource.setSparqlEndpoint(settingsSparqlEndpoint);
   aiProviderResource.setSparqlEndpoint(settingsSparqlEndpoint);
@@ -538,25 +531,6 @@ async function findCredentialRow(
     return id === credentialIdOrIri
       || (id ? credentialResource.buildIri(input.podUrl, { id }) === credentialIdOrIri : false);
   }) ?? null;
-}
-
-function patchBrowserComunicaObserver(): void {
-  patchObserverPrototype(ActionObserverHttp.prototype);
-  patchObserverPrototype(JsonActionObserverHttp.prototype);
-}
-
-function patchObserverPrototype(source: object): void {
-  const prototype = source as {
-    __xpodObservedActorsPatch?: boolean;
-    onRun(actor: { name: string }, action: unknown, output: unknown): unknown;
-  };
-  if (prototype.__xpodObservedActorsPatch) return;
-  const originalOnRun = prototype.onRun;
-  prototype.onRun = function (this: { observedActors?: string[] }, actor, action, output) {
-    if (!Array.isArray(this.observedActors)) this.observedActors = [];
-    return originalOnRun.call(this, actor, action, output);
-  };
-  prototype.__xpodObservedActorsPatch = true;
 }
 
 function providerSummariesFromPodRows(

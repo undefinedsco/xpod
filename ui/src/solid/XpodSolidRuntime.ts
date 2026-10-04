@@ -1,3 +1,4 @@
+import { initializeBrowserSparql } from './initializeBrowserSparql';
 import { InMemoryStorage, Session } from '@inrupt/solid-client-authn-browser';
 import type { IStorage } from '@inrupt/solid-client-authn-core';
 import { createSolidAccessRouteFetch, type AccessRoute } from '@undefineds.co/solid-sdk/access-route';
@@ -180,6 +181,7 @@ export async function discoverPodUrlFromWebId({
 export function createXpodSolidRuntimeValue(
   options: CreateXpodSolidRuntimeOptions = {},
 ): XpodSolidRuntimeCore {
+  initializeBrowserSparql();
   const storage = createXpodSolidRuntimeStoragePolicy(options.storage);
   let localRoutes: readonly AccessRoute[] = [];
   // Route discovery belongs to whoever knows how to ask this node for its access

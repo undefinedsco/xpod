@@ -129,6 +129,25 @@ function offeringFixture(input: {
 }
 
 describe('ProviderModelsAdapters', () => {
+  it('uses the declared Codex compatibility version without a caller override', async () => {
+    const fetch = jsonFetch((url) => {
+      expect(url).toBe('https://chatgpt.com/backend-api/codex/models?client_version=0.160.0');
+      return { body: { models: [
+        { slug: 'gpt-6-sol', display_name: 'GPT-6-Sol', visibility: 'list' },
+        { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1-Sol', visibility: 'list' },
+      ] } };
+    });
+    const adapter = new CodexSubscriptionModelsAdapter({ transport: new ProviderHttpTransport({ fetch }) });
+
+    await expect(adapter.fetch({
+      credential: { ...await credential('openai'), offeringId: 'official-subscription', authMode: 'deviceCodeOAuth' },
+      secret: { accessToken: 'codex-access-token' },
+    })).resolves.toEqual([
+      { id: 'gpt-6-sol', displayName: 'GPT-6-Sol' },
+      { id: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol' },
+    ]);
+  });
+
   it('discovers only visible ChatGPT Codex subscription models', async () => {
     const fetch = jsonFetch((url, init) => {
       expect(url).toBe('https://chatgpt.com/backend-api/codex/models?client_version=0.3.71');
@@ -141,6 +160,9 @@ describe('ProviderModelsAdapters', () => {
           models: [
             { slug: 'gpt-5.6-sol', display_name: 'GPT-5.6-Sol', visibility: 'list' },
             { slug: 'codex-auto-review', display_name: 'Codex Auto Review', visibility: 'hide' },
+            { slug: 'not-in-picker', visibility: 'none' },
+            { slug: 'missing-visibility' },
+            { slug: 'unknown-visibility', visibility: 'future' },
           ],
         },
       };

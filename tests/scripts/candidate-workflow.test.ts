@@ -544,6 +544,30 @@ esac
     expect(evidence.cleanup).toEqual({ ok: true, tasksPaused: 3, runsStopped: 0, sessionsTerminal: 3, grantRevoked: true });
   });
 
+  it('projects only optional allowlisted Task failure details and accepts older evidence', async () => {
+    const details = { substage: 'decision-resume-request', category: 'connection', name: 'TypeError', causeCode: 'ECONNREFUSED' };
+    const result = await projectTaskEvidence(JSON.stringify({ taskApproval: { ok: false,
+      cases: [{ kind: 'approved', ok: false, acceptancePhase: 'approved:decision', failureDetails: { ...details, message: 'secret-body', uri: 'private-uri' } }],
+      cleanup: { ok: true },
+    } }));
+    const evidence = JSON.parse(result.evidence!);
+    expect(evidence.schemaVersion).toBe(1);
+    expect(evidence.cases[0].failureDetails).toEqual(details);
+    expect(result.evidence).not.toContain('secret-body');
+    expect(result.evidence).not.toContain('private-uri');
+  });
+  it.each([
+    { substage: 'secret-body', category: 'other', name: 'Error' },
+    { substage: 'decision-resume-request', category: 'secret-body', name: 'Error' },
+    { substage: 'decision-resume-request', category: 'other', name: 'secret-body' },
+    { substage: 'decision-resume-request', category: 'other', name: 'Error', code: 'secret-body' },
+    { substage: 'decision-resume-request', category: 'other', name: 'Error', causeCode: 'secret-body' },
+  ])('rejects unknown Task failure diagnostic values', async failureDetails => {
+    await expect(projectTaskEvidence(JSON.stringify({ taskApproval: { ok: false,
+      cases: [{ kind: 'approved', ok: false, failureDetails }], cleanup: { ok: true },
+    } }))).rejects.toThrow('Invalid safe Task failure details');
+  });
+
   it('omits invalid field types instead of copying arbitrary payloads into evidence', async () => {
     const result = await projectTaskEvidence(JSON.stringify({ taskApproval: {
       ok: 'private payload', failure: false,

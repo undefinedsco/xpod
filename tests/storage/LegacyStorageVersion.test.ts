@@ -17,7 +17,7 @@ import { MixDataAccessor } from '../../src/storage/accessors/MixDataAccessor';
 import { SparqlUpdateResourceStore } from '../../src/storage/SparqlUpdateResourceStore';
 import { StorageETagHandler } from '../../src/storage/conditions/StorageETagHandler';
 import { RdfQuadIndex, SolidRdfEngine } from '../../src/storage/rdf';
-import { storageVersionReadContext } from '../../src/storage/StorageVersion';
+import { getStorageVersion, storageVersionReadContext } from '../../src/storage/StorageVersion';
 
 const root = 'http://localhost/';
 const id = { path: `${root}run.ttl` };
@@ -173,7 +173,12 @@ describe('legacy storage revision upgrade under resource locks', () => {
     expect(tag).toMatch(/^"xpod-[a-f0-9]{32}-/);
     expect(tag).not.toContain(staleSidecarRevision);
     expect((await arrayifyStream<Buffer>(response.data)).map((chunk) => chunk.toString()).join('')).toBe(originalText);
-    expect(response.metadata.get(HH.terms.etag)?.value).toBe((await accessor.getMetadata(id)).get(HH.terms.etag)?.value);
+    const persistedMetadata = await accessor.getMetadata(id);
+    expect(persistedMetadata.getAll(HH.terms.etag)).toHaveLength(1);
+    expect(persistedMetadata.get(HH.terms.etag)?.value).toMatch(/^[a-f0-9]{32}$/);
+    expect(getStorageVersion(response.metadata)).toBe(getStorageVersion(persistedMetadata));
+    expect(response.metadata.getAll(HH.terms.etag)).toHaveLength(1);
+    expect(response.metadata.get(HH.terms.etag)?.value).toBe(tag);
     const condition = new BasicConditions(etags, { matchesETag: [tag] });
     await localStore.setRepresentation(id, document('updated'), condition);
     await expect(localStore.setRepresentation(id, document('stale'), condition)).rejects.toBeInstanceOf(PreconditionFailedHttpError);

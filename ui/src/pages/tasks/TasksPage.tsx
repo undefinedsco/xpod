@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { runResource } from '@undefineds.co/models';
 import { TasksPanel, createTasksClient } from '@undefineds.co/tasks';
 import '@undefineds.co/tasks/style.css';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
@@ -25,8 +26,9 @@ export default function TasksPage() {
     workspace={runtime.currentPod!.podUrl} selectedTaskId={params.get('task') ?? undefined} selectedRunId={params.get('run') ?? undefined}
     onOpenConnections={() => navigate('/ai-connections')} headerActions={<ShellHeaderControls />}
     renderApproval={(run) => {
-      const request = selectRunApproval(shell.snapshot.attention, run, requestedApprovalId);
-      const recovery = shell.snapshot.attention.some(item => item.id === run.id && item.resumeApproval);
-      return <>{request ? <ApprovalCard item={request} /> : !recovery && <p className="text-sm text-muted-foreground">这次运行在等你确认，暂未收到对应的申请。</p>}<ShellDecisionFeedback run={run.id} /></>;
+      const canonicalRunId = runtime.currentPod!.database.resolveRowIri(runResource, { id: run.id });
+      const request = selectRunApproval(shell.snapshot.attention, { ...run, id: canonicalRunId }, requestedApprovalId);
+      const recovery = shell.snapshot.attention.some(item => item.id === canonicalRunId && item.resumeApproval);
+      return <>{request ? <ApprovalCard item={request} /> : !recovery && <p className="text-sm text-muted-foreground">这次运行在等你确认，暂未收到对应的申请。</p>}<ShellDecisionFeedback run={canonicalRunId} /></>;
     }} />;
 }
