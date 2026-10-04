@@ -7,6 +7,7 @@ const childProcess = require('node:child_process');
 const zlib = require('node:zlib');
 const esbuild = require('esbuild');
 const { stageEmbeddedNativeCli } = require('./lib/embedded-native-cli.cjs');
+const { createSingleBinaryEntry } = require('./lib/bun-single-runtime-entry.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(repoRoot, 'dist');
@@ -483,85 +484,13 @@ async function main() {
   }
 
   manifest.sort((left, right) => left.path.localeCompare(right.path));
-  const compressedManifest = zlib.gzipSync(Buffer.from(JSON.stringify(manifest)));
+  const compressedManifest = zlib.brotliCompressSync(Buffer.from(JSON.stringify(manifest)), {
+    params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 },
+  });
   const manifestSha = crypto.createHash('sha256').update(compressedManifest).digest('hex');
 
   const generatedEntryPath = path.join(tempRoot, 'bun-single-entry.ts');
-  fs.writeFileSync(generatedEntryPath, [
-    'import crypto from \'node:crypto\';',
-    'import fs from \'node:fs\';',
-    'import os from \'node:os\';',
-    'import path from \'node:path\';',
-    'import zlib from \'node:zlib\';',
-    'import { pathToFileURL } from \'node:url\';',
-    '',
-    `const ARCHIVE_SHA256 = '${manifestSha}';`,
-    `const MANIFEST_BASE64 = '${compressedManifest.toString('base64')}';`,
-    '',
-    'function resolveCacheRoot(): string {',
-    '  const candidates = [',
-    '    process.env.XPOD_BUN_SINGLE_CACHE_DIR,',
-    '    path.join(os.tmpdir(), \'xpod-bun-cache\'),',
-    '    path.join(os.homedir(), \'.xpod\', \'bun-single-cache\'),',
-    '  ].filter((value): value is string => typeof value === \'string\' && value.length > 0);',
-    '  for (const candidate of candidates) {',
-    '    try {',
-    '      const absolute = path.resolve(candidate);',
-    '      fs.mkdirSync(absolute, { recursive: true });',
-    '      return absolute;',
-    '    } catch {',
-    '    }',
-    '  }',
-    '  throw new Error(\'No writable cache directory found for Bun single binary.\');',
-    '}',
-    '',
-    'function ensureExtracted(cacheDir: string): void {',
-    '  const marker = path.join(cacheDir, \'.xpod-bun-single-ready\');',
-    '  const entryPath = path.join(cacheDir, \'dist\', \'__cli__.cjs\');',
-    '  try {',
-    '    if (fs.readFileSync(marker, \'utf8\').trim() === ARCHIVE_SHA256 && fs.statSync(entryPath).isFile()) {',
-    '      return;',
-    '    }',
-    '  } catch {',
-    '  }',
-    '  if (fs.existsSync(cacheDir)) {',
-    '    fs.rmSync(cacheDir, { recursive: true, force: true });',
-    '  }',
-    '  fs.mkdirSync(cacheDir, { recursive: true });',
-    '  const compressedManifest = Buffer.from(MANIFEST_BASE64, \'base64\');',
-    '  const actualSha = crypto.createHash(\'sha256\').update(compressedManifest).digest(\'hex\');',
-    '  if (actualSha !== ARCHIVE_SHA256) {',
-    '    throw new Error(\'Embedded manifest checksum mismatch.\');',
-    '  }',
-    '  const manifest = JSON.parse(zlib.gunzipSync(compressedManifest).toString(\'utf8\')) as Array<{ path: string; contentBase64: string; mode: number }>;',
-    '  for (const item of manifest) {',
-    '    const targetPath = path.join(cacheDir, item.path);',
-    '    fs.mkdirSync(path.dirname(targetPath), { recursive: true });',
-    '    fs.writeFileSync(targetPath, Buffer.from(item.contentBase64, \'base64\'));',
-    '    if (process.platform !== \'win32\' && typeof item.mode === \'number\') {',
-    '      fs.chmodSync(targetPath, item.mode);',
-    '    }',
-    '  }',
-    '  fs.writeFileSync(marker, `${ARCHIVE_SHA256}\\n`);',
-    '}',
-    '',
-    'async function main(): Promise<void> {',
-    '  const cacheRoot = resolveCacheRoot();',
-    '  const cacheDir = path.join(cacheRoot, ARCHIVE_SHA256.slice(0, 16));',
-    '  ensureExtracted(cacheDir);',
-    '  const entryPath = path.join(cacheDir, \'dist\', \'__cli__.cjs\');',
-    '  const argv0 = process.argv[0] ?? process.execPath;',
-    '  const childEntrypointAtArgv1 = process.argv[1]?.startsWith(\'__internal-\') === true;',
-    '  const userArgs = childEntrypointAtArgv1 ? process.argv.slice(1) : process.argv.slice(2);',
-    '  process.argv = [argv0, entryPath, ...userArgs];',
-    '  process.env.XPOD_BUN_SINGLE_RUNTIME = \'1\';',
-    '  process.chdir(cacheDir);',
-    '  await import(pathToFileURL(entryPath).href);',
-    '}',
-    '',
-    'void main();',
-    '',
-  ].join('\n'));
+  fs.writeFileSync(generatedEntryPath, createSingleBinaryEntry(manifestSha, compressedManifest));
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   run('bun', [

@@ -132,6 +132,23 @@ runtime artifact，并验证版本、nested runtime 可执行文件和 manifest�
 macOS 可能显示未识别开发者提示。未来启用 Apple Developer Program 时，应直接恢复
 签名与 notarization 作为新版本门禁，不在本次流程中保留双路径或 fallback。
 
+### 平台包发布体积门禁
+
+根 JavaScript 包与原生平台包分别验收。平台构建会测量实际 `npm pack --dry-run --json`
+结果，保存 `*-pack.json`，再验证项目预算：gzip tarball ≤ 180 MiB、base64 attachment
+加 64 KiB metadata 余量后的发布请求体 ≤ 240 MiB。这是 Xpod 的项目预算，**不是 npm
+官方服务器大小保证**。RC 上传 `candidate-native-package-budget-<SHA>`，stable 上传
+`stable-native-package-budget-<SHA>`；真实 tarball/请求体核对与公开 npm 发布仍独立验收。
+预算失败不能通过删除对应源码、QLever/ICU 等必需文件来绕过。
+
+单文件运行归档使用内置 Brotli quality 9 并验证压缩字节摘要；解压后保留相同文件内容、
+权限和启动参数。外置 `SOURCE/` 的固定归档和 pin 不变。冷/热缓存与 archive checksum
+漂移回归不表示每个已缓存文件新增了防篡改检查。
+
+`v0.4.23` 已签名后因原生 npm 包 `E413` 失败，标签及源码保持不可变；恢复发行使用
+`0.4.24` 的新源码、新 RC 和签名标签，不提升失败发行。经过与原因见
+[平台包发布体积问题](issues/2026-10-04-native-npm-publication-budget.md)。
+
 ### 嵌入式原生 CLI 的 Corresponding Source 与 NOTICE
 
 平台包 `@undefineds.co/xpod-darwin-arm64` 内嵌 `inngest-cli@1.40.0`（SSPL-1.0，附

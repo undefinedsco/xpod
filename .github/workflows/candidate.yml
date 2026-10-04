@@ -212,7 +212,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Verify the desktop self-update verifier
-        run: node --test tests/scripts/desktop-self-update-acceptance.node-test.cjs
+        run: node --test tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/bun-single-runtime-entry.node-test.cjs tests/scripts/platform-package-budget.node-test.cjs
 
       - name: Install Chromium for authenticated acceptance
         run: bunx playwright install --with-deps chromium
@@ -863,6 +863,16 @@ jobs:
           name: candidate-package-boundary-${{ github.sha }}
           path: .test-data/npm-preflight/pack.json
           if-no-files-found: ignore
+      - name: Save measured native package publication budget
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-native-package-budget-${{ github.sha }}
+          path: |
+            desktop/runtime-pack-budget.json
+            desktop/runtime-pack.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Verify desktop version and native runtime payload
         run: |
           set -euo pipefail

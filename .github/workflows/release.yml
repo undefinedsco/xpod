@@ -214,12 +214,24 @@ jobs:
       - name: Publish stable native package under the staging tag
         run: |
           set -euo pipefail
+          node scripts/build-platform-package.cjs --target=darwin-arm64
           package='@undefineds.co/xpod-darwin-arm64'
           if npm view "$package@$RELEASE_VERSION" version --json --registry "$XPOD_PUBLISH_REGISTRY" >/dev/null 2>&1; then
             [[ "$(npm view "$package@$RELEASE_VERSION" version --json --registry "$XPOD_PUBLISH_REGISTRY" | tr -d '\"')" == "$RELEASE_VERSION" ]]
           else
-            node scripts/publish-platform-packages.cjs --tag=stable-staging --target=darwin-arm64
+            npm publish dist/npm/darwin-arm64 --registry "$XPOD_PUBLISH_REGISTRY" --access public --tag stable-staging
           fi
+
+      - name: Save measured stable native package publication budget
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stable-native-package-budget-${{ github.sha }}
+          path: |
+            dist/npm/darwin-arm64-pack-budget.json
+            dist/npm/darwin-arm64-pack.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Inspect npm stable version state
         id: npm_state
@@ -252,7 +264,7 @@ jobs:
         run: node scripts/publish-release.cjs --skip-build
 
       - name: Test npm tarball readiness checks
-        run: node --test tests/scripts/wait-for-npm-package.node-test.cjs tests/scripts/npm-latest-propagation.node-test.cjs tests/scripts/desktop-self-update-acceptance.node-test.cjs
+        run: node --test tests/scripts/wait-for-npm-package.node-test.cjs tests/scripts/npm-latest-propagation.node-test.cjs tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/bun-single-runtime-entry.node-test.cjs tests/scripts/platform-package-budget.node-test.cjs
 
       - name: Wait for verified root and native tarballs to become publicly installable
         run: |
