@@ -42,6 +42,11 @@ STAGE_TIMEOUTS = {
     'rebuild': 3000,
     'package': 900,
     'verify-install': 600,
+    # The pinned upstream SDK and CLI suites are their own crates with their own
+    # committed locks and dev-dependencies; they compile independently of the
+    # helper's vendored registry, so they carry separate bounded deadlines.
+    'sdk-suite': 3000,
+    'cli-suite': 3000,
 }
 
 
@@ -287,6 +292,49 @@ def runtime_admission(archive, evidence, node, base):
     return record
 
 
+UPSTREAM_SUITES = (
+    ('sdk-suite', 'sdk/rust', ()),
+    ('cli-suite', 'cli', ('--no-default-features',)),
+)
+SUITE_SUMMARY = re.compile(r'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;')
+
+
+def upstream_suites(upstream, evidence, cargo, base):
+    """Run the pinned upstream SDK and CLI original suites from their own
+    committed locks and dev-dependencies. The product depends on `agentfs` with
+    default-features = false, so the CLI suite runs without the sandbox feature
+    to match the shipped dependency; the SDK suite is the whole crate. These are
+    separate crates from the helper, so a green helper inventory never
+    substitutes for them. Every stage uses the existing supervised producer:
+    real wait, bounded deadline, closed raw hash and owned-group-absent gate."""
+    record = {}
+    for name, subdirectory, flags in UPSTREAM_SUITES:
+        cwd = upstream / subdirectory
+        if not (cwd / 'Cargo.toml').is_file():
+            raise RuntimeError(f'{name}: upstream crate manifest missing at {cwd}')
+        environment = dict(os.environ)
+        environment['CARGO_TARGET_DIR'] = str(base / f'{name}-target')
+        bounded_gate(name, [cargo, 'test', '--release', '--locked', *flags],
+                     evidence, cwd, environment=environment)
+        text = (evidence / f'{name}.raw.log').read_text(errors='replace')
+        summaries = SUITE_SUMMARY.findall(text)
+        if not summaries:
+            raise RuntimeError(f'{name}: no original test result summary was produced')
+        passed = sum(int(count) for _, count, _, _ in summaries)
+        failed = sum(int(count) for _, _, count, _ in summaries)
+        ignored = sum(int(count) for _, _, _, count in summaries)
+        if failed or passed == 0:
+            raise RuntimeError(f'{name}: upstream suite did not run cleanly '
+                               f'({passed} passed, {failed} failed)')
+        record[name] = {
+            'crate': subdirectory, 'flags': list(flags),
+            'passed': passed, 'failed': failed, 'ignored': ignored,
+            'ignoredTests': re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE),
+            'resultLines': [line for line in text.splitlines() if line.startswith('test result:')],
+        }
+    return record
+
+
 def main():
     os.umask(0o077)
     clean = tool_environment(os.environ)
@@ -368,6 +416,7 @@ def main():
             or receipt['compiler']['rustcSha256'] != sha256(rustc)
             or receipt['buildArguments'] != ['build', '--release', '--frozen']):
         raise RuntimeError('Actual native receipt binding mismatch')
+    suites = upstream_suites(kit / 'upstream', evidence, cargo, base)
     package = base / 'package'
     gate('package', [bun, str(scripts / 'build.ts'), '--target', target, '--helper', str(rebuilt / 'agentfs-pod'),
                      '--native-sources', str(kit), '--native-receipt', str(rebuilt / 'receipt.json'), '--out', str(package)])
@@ -387,7 +436,7 @@ def main():
         shutil.copyfile(rebuilt / name, evidence / f'native-{name}')
     shutil.copyfile(kit / 'source-kit.json', evidence / 'source-kit.json')
     shutil.copyfile(archives[0], evidence / archives[0].name)
-    final = dict(scope='source-bound native unit, install and Bookworm loader/ABI verification; no mount or release',
+    final = dict(scope='source-bound native helper, pinned upstream SDK and no-default-features CLI suites, install and Bookworm loader/ABI verification; no mount or release',
                  target=target, head=head,
                  sourceBefore=source_before, sourceAfter=source_after, sdkBefore=sdk_before, sdkAfter=sdk_after,
                  nodeSHA256=sha256(node), hostUname=list(platform.uname()), rustManifestSHA256=RUST_MANIFEST_SHA,
@@ -395,6 +444,7 @@ def main():
                  bookwormImage=bookworm_image if host == 'linux' else None, runtimeAdmission=runtime,
                  declaredTests=70, passedTests=68, ignoredTests=2, filteredTests=0,
                  ignoredScope='owned lease subprocess invoked by parent; historical RED intentionally ignored',
+                 upstreamSuites=suites,
                  archiveSHA256=sha256(archives[0]), mountExecuted=False, liveGatewayExecuted=False,
                  publicReleaseReady=False)
     (evidence / 'final.json').write_text(json.dumps(final, indent=2))
