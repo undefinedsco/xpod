@@ -1,10 +1,26 @@
 # 桌面外壳与 applet 发布审计（2026-10-02）
 
-依据：`docs/superpowers/specs/2026-10-01-xpod-desktop-shell-and-applets-design.md`、画板归档 README 与 `docs/RELEASE.md`。实施分支 `codex/desktop-shell-applets`，原目标版本 0.4.21；并行目录功能已占用该候选分支，当前在独立 worktree 集成其 cb0bbb39 候选，桌面按 0.4.22 准备发布，保留 release/0.4.21。本文件记录当前证据，不作为未完成门禁的通过凭证。
+依据：`docs/superpowers/specs/2026-10-01-xpod-desktop-shell-and-applets-design.md`、画板归档 README 与 `docs/RELEASE.md`。实施分支 `codex/desktop-shell-applets`，原目标版本 0.4.21；并行目录功能已占用该候选分支，已在独立 worktree 完成集成，桌面目标为 0.4.22；其他版本分支不属于本次发布范围。本文件记录当前证据，不作为未完成门禁的通过凭证。
+
+## 当前发布状态（2026-10-04）
+
+- 唯一交付工作区为 `desktop-shell-integration/xpod`，实施分支 `codex/desktop-shell-applets`。已提交 HEAD 为 `1cafd7fa8443b99a43367bf32ec7a2b927d38400`；本轮 Local invocation transport 修复进入 candidate-only 提交冻结；这不是 stable green freeze。下面较早日期的提交、测试和上游状态均为历史证据，不能代替本轮源码验收。
+- 正常 candidate `37151032339` 的 attempt 1/2 均失败于真实 Gateway Task approval，model receipt 为 `pi_assistant_error`、SDK connection hint；finalize skipped，没有 accepted manifest。attempt 2 的实际启动已使用 public cssBaseUrl/publicUrl/canonical，不能将 standalone 的 `0.0.0.0` 静态推导当作该正常候选根因，也不能宣称已证实全部 CI 失败的唯一原因。需要新提交经正常 release branch push 生成新候选，不重跑旧 SHA。
+- Local in-process 模型调用现使用既有 API listener 的 host/port 作为 wire target，复用 `localServiceUrl`；JWT audience/issuer 保留 canonical realm，Cloud public transport 不变，无新增配置。产品文件 SHA-256 为 `4e891ca03c0cd06275fd81a3128ef768049bab4fa62b414e542e84cbacd2bb9a`，新测试为 `f57de1afb201e03736a07adb4e58c214fd6c16d85bf369398887a097efd06524`。
+- 真 SDK/SSE 回归先 RED（旧产品代码发生真实 ECONNREFUSED）后 GREEN（8 项）；相关 13 文件/104 项、服务构建和测试类型检查通过。独立产品审查 PASS；测试 finally 清理和 conservative guard 用例已补齐。该 owned listener 是协议 fixture，不能称为真实 Gateway/Cloud 端到端验收。
+- 用户最新明确指定 `gpt-6.1-sol` 接替 B；旧“仅真实 provider 429 才切 Sol”规则已撤销。本轮提交集合仅为本审计、`src/api/container/common.ts` 与 `tests/api/container/common-ai-invocation-transport.test.ts` 三文件，旧四文件冻结和旧诊断候选策略已被后续提交与本状态取代。
+- 最终标准单测 `VITEST_MAX_FORKS=1 VITEST_MIN_FORKS=1 bun run test` 退出 0，耗时 3094.28 秒：768 suites 通过、44 跳过（812）；7624 tests 通过、309 跳过、1 todo（7934），无失败，dependency-state pretest 通过。common 与最终 test hash 在开始/结束一致；变更文件 lint、`bun run typecheck:test`、`bun run build:ts`、8 case transport 回归及独立 review 已通过；不宣称全库 lint 零错误。最初四处 timeout 本轮均通过，初次 FAIL 回执继续保留；本轮通过不证明最初超时原因。依据私有 `sol-transport-serial-unit.json/md`。
+- 原标准 `VITEST_MAX_FORKS=1 VITEST_MIN_FORKS=1 bun run test:integration` 完整退出 0：lite 32 文件/162 项通过、4 文件/16 项按原规则跳过，561.33 秒；full 7 文件/62 项通过、无跳过，99.52 秒。common/test 开始结束哈希一致，原 scope/排除/隔离/预算不变；runner 与专属 infra 正常清理，首次并发 FAIL 记录保留。依据私有 `sol-desktop-integration.json/md`，不冒称用户生产实例验收。
+- 视觉有 47 张有效截图，root 直接复核其中 3 张。实际 `cd ui && bun run build:dashboard` 退出 0，前后 tracked UI source 相同，dashboard bundle 为 `b91b78724e9e241d133455ecf861f4dd0236bd6014f8a8b61046ef6bbb3d4d3a`。fresh owned Gateway 的四层 AI 验收成功，`linx`/`linx-lite` 真实 Chat 均 200 且内容有效。首轮标准 Task helper 在 approved checkpoint 抛原生 exception，原因未知；实际 Run waiting_input/pendingApproval、Session paused、owner 与 marker 404 已证明，不能称完整 Task PASS。旧 grant 清理撤销后，该 Run 经官方 Stop 200，Run cancelled、Session completed，marker 404；首 helper FAIL 保留。新的 private observed 标准案例、有效 grant 期间真实 UI pending 卡/A6/A7/Inbox 正在验收，完整 UI/Task 尚未通过。
+- 两轮 ENOSPC 与空间波动原因未知；自有 VM 释放 2.72 GiB 后，UTC 05:15:27 私有 64 KiB write/fsync/delete 通过、可用约 5.89 GiB。不扩大其他目录调查，下载大 artifact 前需重新核可用空间。
+- 单测与完整集成通过且产品已冻结，正常候选远端构建可与剩余本地 UI 验收独立并行，因此先执行 candidate-only 提交/普通推送。若本地后续发现产品 bug，须修复后新 SHA 重新验收。正式 tag 必须等待新候选 19 项 accepted manifest、实际产物字节核验和 root 当前 UI/Task 最终证据；stable/production/正式 App 更新尚未授权执行。草稿 PR #28 保留草稿状态。
+- 精确清理已证明三个自有 Pod 删除；三个不同 parent 账户缺少精确 signup receipt 来源绑定，保留账户以避免误删，不能宣称全部账户/凭据已清理。不扩大调查或读取真实 profile。新的视觉夹具须有完整 signup receipt、仅使用私有 runtimeRoot，并以销毁完整 owned runtime 验证清理。
+- 正式 stable 与 `/Applications/Xpod.app` 仍为 0.4.20。尚未发布 0.4.22；历史临时 updater 演练不等于正式应用更新。
+- 发布顺序为最终冻结与显式暂存/Lore commit → 新 exact SHA 正常 candidate → 19 项统一 accepted manifest（16 service + qlever-local + package-consumers + desktop）及实际产物字节验证 → exact SHA stable tag。stable 先 stable-staging/消费者/latest，再 retag accepted 服务 digest、生产健康/回滚门禁；macOS 使用 exact stable source 打包并复用 accepted native runtime，生成 stable ZIP/feed 后发布 GH Release。candidate RC ZIP 与 stable ZIP 是不同版本产物，不能声称字节相同。正式应用更新后还须检查版本、图标和账号保留。
 
 ## 功能归位
 
-### 2026-10-03 候选失败与修复检查点（最终本地回归见文末）
+### 2026-10-03 历史候选失败与修复检查点（当前终态见文首）
 
 - 本轮修复提交前的 feature HEAD 与远端为 `85684934`；`release/0.4.22` 仍为 `ab583de4`，草稿 PR #28 随 feature 更新。尚无通过的最终候选，stable、npm latest、生产部署与已安装桌面更新均未执行。
 - 真实 Ubuntu CI `37083649836` 已验证 rg 59+7 项及后台授权 14 项通过；lite/full、Bun runtime 和 18 个 package-smoke job 通过。全量 unit 仍有 `gateway-locator-secret` 的真实多进程首次读取断言失败。负载探针复现了一个空 stdout 摘要与完整摘要并存，落盘摘要一致；helper 在 `exit` 上读取尚未排空的 stdout。Sol 已完成确定性 `exit`→stdout→`close` 回归：旧 helper 返回 32/64 字符，修复后完整读取；21 项相邻回归、10 轮共 120 个真实进程、类型与 lint 通过，每个摘要都校验为 64 hex 并与落盘 SHA 一致。没有修改生产密钥逻辑，真实 Ubuntu 重跑待后续提交。
@@ -13,7 +29,7 @@
 - 完整回归首次暴露旧静态 harness 仍要求 RC 测试旧分支、标签和路径；Sol 已在实际第 487 行复现 RED，再对齐现有声明式选择和 canonical route，保留会话、认证隔离、无本地 fixture 与严格抽屉合同，整文件 29 项和测试类型检查通过。ChatKit PodStore 的 11 项失败目前均为 15/30 秒超时；成功 Pod 请求中位约 2831ms、最大 38460ms，历史通过轮分别约 126.5/1309ms，超时后操作仍继续执行。没有认证拒绝证据，也未证明 native 或产品回归原因；该轮失败记录保留；最终冻结源码的完整 gate 已按现有单 fork 配置通过，详情见文末，预算保持不变。
 - 已安装 `/Applications/Xpod.app` 仍为 `0.4.20`，其 ICNS 摘要 `26b346ad…` 与新资源 `ad16e479…` 不同。新品牌打包/Dock 证据只证明实现，完成交付仍须最终候选全部 19 门禁、自更新、正式发布与实际桌面更新检查。
 
-### 2026-10-03 当前集成检查点
+### 2026-10-03 历史集成检查点
 
 集成已提交为 `70a8bf94`，草稿 PR #28 与 release/0.4.22 指向同一提交。候选构建用于取得真实打包证据；以下未完成门禁仍阻止正式发布，下文较早轮次保留为历史。
 
@@ -40,9 +56,9 @@
 - Unix socket/显式 Inngest spawn 的真实 CLI 回调已到达认证边界，生命周期回归 30 项通过；这项证据只证明传输可达，完整任务链路仍需单独验收。
 - Inngest 原生 CLI 的固定源码、许可证、文档载体与安装消费校验已实现，73 项回归与类型检查通过。最终 registry 消费者及 bundled runtime 要在 exact SHA 候选上再验收。
 - RC 最终清单的 `qlever-local` 与 `package-consumers` 已删除写死通过值：消费者保留实际安装的 tarball；原生 archive、manifest、runtime 摘要与源码权威 ABI/QLever 固定版本一致才可通过。finalize 重新核对下载产物字节。新 verifier 7 项、消费者 Node 9 项、workflow 33 项及其他发布合同 41 项、自更新 17 项通过；类型和 YAML 解析通过。真实 exact-SHA candidate 仍待执行，actionlint 本机不可用。
-- 实际执行者为 OpenCode Go B；此前 Go 额度不足是历史状态，本轮两条 B 任务正在分别执行组合单测/完整集成及只读发布预检。未发布 0.4.22；不得复用其他 `release/0.4.21` 分支的 RC 证据。
+- 本检查点由 OpenCode Go B 执行，属于历史证据；当前最终验收与发布 owner 已改为 GPT-6.1 Sol。未发布 0.4.22；不得复用其他版本分支的 RC 证据。
 
-剩余顺序：冻结消息修复 → 完整单测与 `bun run test:integration` → 真实默认 inline 与 socket/spawn Task producer → merge commit/PR → exact SHA RC 的 19 项门禁及旧包到新包自更新 → stable 发布与 registry/部署回读。
+该历史检查点的后续顺序已由上方“当前发布状态”取代。
 
 - 64px rail、270px 对象列与单一 48px 内容头；任务、AI 连接、Pod 使用 WebID，设备和设置保留匿名本机入口。390px 抽屉、焦点恢复和关闭行为复用共享工作区接口。
 - AI 连接提供两步密钥创建、整个 Pod 访问面、复制/配置能力降级、模型类型和真实 dimensions、凭据错误码及时间；schema 属 models，目录与行为属能力模块。
@@ -220,16 +236,16 @@
 - 首次完整回归的 lite 162 项与 Matrix（436.304 秒）通过，full 启动因同一测试的 local ingress 先占用未来 standalone gateway 的 5741 失败，整套命令退出 1；独立数据库和 Compose 项目清理成功。完整 runtime 使用 CSS logger 的实际日志另促成双时间戳回归：只有 Docker outer ISO 加 CSS inner ISO 才接受该格式，单 ISO 仍拒绝。投影及 workflow 三文件共 36 项、生产/测试类型、新增文件 lint 与独立复核通过。下一完整运行使用现有四组基端口 16300 / 16400 / 16500 / 16600，间隔 100 覆盖各实例派生端口；原预算和断言不变。
 - 最终冻结源码的完整重跑退出 0：lite 32 文件 / 162 项（另 4 文件 / 16 项按原规则跳过），full 7 文件 / 62 项，Matrix 336.679 秒通过；四个实际 ingress 分别为 16303 / 16403 / 16503 / 16603，启动无端口重叠。唯一独立数据库删除和唯一 Compose 项目 down 均退出 0，容器列表为空，默认数据库未修改。此结果是本地隔离完整集成，通过后仍须当前提交的真实 Task 诊断与后续正式候选验收。
 
-## 当前源码诊断的身份阻断（2026-10-04）
+## 历史源码诊断的身份阻断（2026-10-04，已被后续状态替代）
 
 - `499b85eda15067248dfdf8014cdb884dbd3f5c5c` 的 CI `37133237097` 全部 22 个 job 通过。唯一手动 diagnostic-only `37133238064` 使用该提交构建的 runtime 与不可变的 35dce6 原生镜像，源码/镜像绑定通过，常规候选 job 全部跳过；真实 live 步骤在 identity 阶段失败，尚未进入 Task。模型诊断没有回执不等同于没有 HTTP 流量，也不能据此判断 Pi 故障原因。
 - 同一终态 job 的受控日志读取只接受实际带时间戳的结构化进度。身份断言分类为 `cloud_pod_create_http`，HTTP 400；固定响应消息分类为 `local_preparation_unverified`。该消息合并了 SP secret 不存在、receipt 验证失败及身份绑定不匹配，具体原因仍未观察。三次读取的临时原始文件均已删除；安全报告不保留 body、错误 cause、URL、WebID、token 或 receipt。
 - 当前源码的完整 Provision 串联回归确已执行并通过，不能把实际 RC 身份失败说成已修复。只读生命周期核查确认 CLI 初次注册、Cloud 节点持久化先于 API routes/listen；CLI 与完整 runtime 的 publicURL 传播存在差异，但诊断 Dockerfile 和启动声明均没有显式 publicURL，尚无证据证明该差异触发此次失败，不据此修改默认值。
 - 下一最小客户端诊断只在 Cloud Pod 创建失败时观察回执字段与已准备 Pod、规范入口的匹配布尔值。未签名解析仅用于诊断，签名验证固定为 `unobserved`；原请求、授权、成功断言和原异常保持。它不能观察 Cloud SP secret，也不替代真实身份或 Task 验收。
 
-## 2026-10-04 范围重置与诚实状态
+## 2026-10-04 历史范围重置与诚实状态（已被后续状态替代）
 
-本节由用户纠正后补充，只记录当前范围与证据，不删除上文历史，也不宣称任何未完成门禁通过。
+本节保留当时的范围纠正、失败证据与操作记录。以下“当前”“最新”、四文件冻结、B-only/429 路由及旧候选策略均指该历史检查点，已被文首当前发布状态取代；不得作为现行执行指令或最终验收结果。
 
 ### 范围界线
 
@@ -253,12 +269,12 @@
 - **智能 / 快速经 ai-gateway 可用**：`packages/ai-connections/src/contract/client/gateway-model-roles.ts` 定义 `smart`/`fast` 角色（`linx` / `linx-lite`），不再标“待接入”；Pod 设置消费目录实际模型，快速由 Gateway 管理，不新增 Pod 字段。
 - **登录首帧紫底**：原生自动登录等待已改为登录框架内的中性“正在登录…”（`WebIdAuthBoundary` 等），不再显示通用 WebID 页的紫色忙碌主按钮；手动登录、失败重试、取消、切换账号与窗口尺寸保持。正确入口 `/ai-connections` 的 17 帧验收曾通过（历史记录）。
 
-### 执行者路由（诚实更正）
+### 当时执行者路由（历史，用户最新 Sol 指令已替代）
 
 - 本轮及近期实际执行者是 **OpenCode Go B 的 CLI 路由**（当前模型经 OpenCode Go 提供），**不是**桌面原生 DeepSeek 子代理入口；后者不支持该模型。上文“本机 OpenCode CLI 的可用 deepseek 配置”应理解为 CLI 路由，而非桌面 native role 被成功使用。
 - 只有真实模型 provider HTTP 429 才请求切换 Sol；工具输出或测试中的 HTTP 429 不算，且不得自行切换模型。
 
-### 本分支未提交与未完成事项
+### 当时未提交与未完成事项（历史，非当前冻结集合）
 
 - 四个未提交文件保持冻结：`docs/superpowers/plans/2026-10-02-desktop-shell-release-audit.md`、`scripts/accept-live-gateway-login-chat.ts`、`scripts/helpers/project-provision-receipt-diagnostics.ts`、`tests/scripts/provision-receipt-diagnostics-projection.test.ts`。三个代码文件 sha256 与 `opencode-b-takeover-report` 记录一致（`3d1c61…` / `8b424e…` / `c5df09…`）；37 项 focused + 类型/lint/build/dependency 检查此前通过，无新源码变化不重跑。
 - **发布阻断（本分支真实未完成，须按源码/时间分开，不能并成同一次运行）**：
@@ -268,7 +284,7 @@
 - **候选策略**：三个 provision 诊断代码文件保持未提交冻结，**不宣称已释放或已验收**。已提交的桌面变更 `499b85e` 已有完整本地集成退出 0 与 CI `37133237097` success；当前未提交集的完整 integration 失败如实保留，不修复 Matrix/AgentDirectory。不提交新诊断文件，改由独立 B delivery 针对已验证的 `499b85e` 推进新的正常候选 19 门禁，不修改产品或削弱门禁；正式发布仍必须 accepted。
 - 下一最小动作属 root 协调范围：在授权下执行新的 single manual 诊断与 exact-SHA 候选 19 门禁；本分支不在无授权时修改 provision/身份默认值，也不 dispatch 新诊断。
 
-## 2026-10-04 rc.238 正常候选、SDK hint 诊断与完整集成（UTC 时间）
+## 2026-10-04 rc.238 历史正常候选、SDK hint 诊断与完整集成（UTC 时间）
 
 - 已提交源码 `499b85eda15067248dfdf8014cdb884dbd3f5c5c`（rc.238）的唯一正常候选 run `37142454990`（attempt 1，`release/0.4.22`，event push，workflow 326443657）在 `deploy_and_accept` 第 16 步 "Live Gateway login and Chat acceptance" 失败；run 终态 failure，`37133237097` 为该 exact-SHA CI success。固定进度投影显示 runtime、identity、Pod 读写、Gateway 鉴权、AI connections、models、有效 Chat 全部通过，唯一 `taskApproval` 失败（`approved:checkpoint` → `pi_assistant_error`）。此事实只区分阶段，不定性 Task/HMAC 根因。
 - Task 安全证据：`approved:checkpoint` 终态 failed、`errorClassification=pi_assistant_error`、`modelRequest=unobserved`、步骤计数（run.created/run.started/runtime.error/run.failed）。Task 模型回执为 `stage=payload_prepared`、`api=openai-completions`、`stopReason=error`、`retryCount=3`（SDK `auto_retry_start` 计数，**不是 HTTP 请求数**）、`credentialPresent=true`、`httpStatus=null`、`correlatedSessions` 为空。identity 层未失败，未复现此前手动 499 的 Cloud 400 身份模式。

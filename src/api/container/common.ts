@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
 import { resolvePersistentGatewayLocatorSecret } from '../../runtime/gateway-locator-secret';
+import { localServiceUrl } from '../../runtime/bootstrap';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
@@ -126,12 +127,53 @@ function resolveHostedPodCssBaseUrl(config: ApiContainerCradle['config']): strin
   return config.solidBaseUrl;
 }
 
-function resolveAiConnectionsBaseUrl(config: ApiContainerCradle['config']): string {
-  const origin = config.publicUrl
+function resolveAiConnectionsCanonicalOrigin(config: ApiContainerCradle['config']): string {
+  return config.publicUrl
     ?? process.env.XPOD_PUBLIC_URL
     ?? process.env.CSS_BASE_URL
     ?? `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`;
+}
+
+function aiConnectionsV1Url(origin: string): string {
   return new URL('/v1', origin.endsWith('/') ? origin : `${origin}/`).toString().replace(/\/$/u, '');
+}
+
+/** The canonical identity realm: token audience/issuer and the two authenticators use this. */
+function resolveAiConnectionsBaseUrl(config: ApiContainerCradle['config']): string {
+  return aiConnectionsV1Url(resolveAiConnectionsCanonicalOrigin(config));
+}
+
+/**
+ * Where this process's own model call is sent.
+ *
+ * A Local agent loop runs in-process, so its model request can address the API listener this
+ * process already owns instead of hair-pinning the canonical public origin back through ingress.
+ * The invocation token keeps the canonical realm (audience/issuer); only the wire target differs.
+ * Cloud and cross-namespace workers have no loopback route and keep the canonical public
+ * transport.
+ */
+function resolveAiConnectionsTransportBaseUrl(config: ApiContainerCradle['config']): string {
+  return aiConnectionsV1Url(
+    resolveLocalApiTransportOrigin(config) ?? resolveAiConnectionsCanonicalOrigin(config),
+  );
+}
+
+function resolveLocalApiTransportOrigin(config: ApiContainerCradle['config']): string | undefined {
+  if (config.edition !== 'local' || config.socketPath) {
+    return undefined;
+  }
+  // Only a resolved, positive, in-range listener port names a target. Port 0 means the OS picks
+  // an ephemeral port the runtime cannot know here, so keep the canonical origin rather than
+  // emitting an unusable `localhost:0`.
+  if (!Number.isInteger(config.port) || config.port <= 0 || config.port > 65_535) {
+    return undefined;
+  }
+  const host = config.host?.trim();
+  if (!host) {
+    return undefined;
+  }
+  // Reuse the shared bind-host mapping: wildcard -> loopback, IPv6 bracketed.
+  return localServiceUrl(host, config.port);
 }
 
 function credentialVaultForConfig(config: ApiContainerCradle['config']): CredentialVault {
@@ -292,7 +334,7 @@ export function registerCommonServices(
       return new AiConnectionsInvocationKeyIssuer({
         codec: cradle.invocationTokenCodec!,
         deployment: config.edition,
-        baseUrl: resolveAiConnectionsBaseUrl(config),
+        baseUrl: resolveAiConnectionsTransportBaseUrl(config),
         audience: resolveAiConnectionsAudience(config),
       });
     }).singleton(),
