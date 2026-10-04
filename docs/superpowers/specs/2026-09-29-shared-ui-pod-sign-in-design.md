@@ -949,3 +949,12 @@ RC `3be53aba6aa04df0a93520ab3a94af0e9bad768a` / run `37195150178` 实际 complet
 
 
 冻结关系修复的最终门禁补录：Candidate提交前完整 `bun run test:integration` actual exit 0，UTC 11:25:00.393—11:30:45.372（runtime 30、lite 163/16 既有 skip、full 63），与上述修后第一轮均属于当前源码。Root 完整门禁 actual exit 0，UTC 11:19:12.321—11:24:10.273（runtime 30、lite 157/6 既有 skip、full 46）。两树源码/测试 hash 不变；扩大 ChatKit/Run/Task Handler 相关回归 100 项/12 files 全通过。私有 `.test-data/sol-release/approval-final-local-gates.json` 保留原始 exit/signal 和日期证据；自有 Compose containers/networks/volumes 均 0，仅停止本轮 sol VM，其他运行资源不动。新 RC 尚待接受凭证，不宣称 stable 已发布。
+
+
+### 2026-10-04：真实 Task 验收工具的关系与清理边界
+
+候选 `d8ff7d49701dd5daf75c6719c8483b702c8af835` / RC run `37199188229` 实际 completed/failure。真实 Chat 有效响应，Pi streaming 152 events、finishReason=tool_calls；旧产品身份错误未再出现，但验收工具直接比较 ORM 绝对 Thread 与 API 相对 ID，在 approved:checkpoint 超时。桌面自更新与 clean consumers 成功，Finalize skipped，无十九项最终凭证。旧 cleanup 报 sessionsTerminal=0 是漏匹配，不能称为 Session 清理已证明；失败 SHA 不得提升。
+
+本批只修 `scripts/helpers/live-task-approval.ts` 验收 adapter，服务产品源码不变。checkpoint、Session 归属、cleanup 三处通过共享 `threadResource.buildIriForDatabase` 与明确 podUrl 的已认证 DB 做完整 IRI 比较；owner/fragment/target/tool/callId 保护不放宽，不推导 Pod 根。cleanup 独立从本轮 Run 发现 Session，waiting_input/等待 callId 必须恰好一条；Stop 后独立读回 exact owner/thread 及 completed/error 才计终态。缺失、foreign、其他 Pod、owner 或读回错误均使 cleanup 失败，仍尝试撤销 grant。Root 没有该验收 API，不迁入新脚本；本轮仅同步此文档补录，Root 既有产品修复/门禁范围维持。
+
+旧脚本 RED actual exit1（10 fail/26 pass）；修后 40 项/3 files actual exit0，含真实 ORM 关系读回正例与 foreign/owner/fragment 负例，以及独立 Session cleanup 的缺失/归属/读回失败负例。build:ts、typecheck:test、本批 lint 均 actual exit0。冻结验收文件的两次完整 `bun run test:integration` 均 actual exit0/signal=null：UTC 12:12:34.146—12:18:13.272 与提交前 12:18:56.050—12:27:08.597；各次 runtime30、lite163/16既有skip、full63。私有 `.test-data/sol-release/acceptance-final-local-gates.json` 保存原始记录/hash和自有 Compose containers/networks/volumes 各0。旧全量单元/lint欠账、额外 Linux SDK sandbox、原安装桌面等未验证范围保留。批准写入/拒绝不写/Stop不续跑、各真实 Session 终态和 grant 撤销仍必须在下一 exact-SHA RC 实际通过，不能由这里的模拟清理测试替代；尚未宣称 stable 已发布。

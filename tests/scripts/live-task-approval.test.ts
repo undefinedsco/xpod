@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ApprovalRow } from '@undefineds.co/models';
+import { drizzle } from '@undefineds.co/drizzle-solid';
+import { approvalResource, threadResource, type ApprovalRow } from '@undefineds.co/models';
 import { pollLiveTask, requireLiveCheckpoint, requireLiveTerminal, type LiveTaskRun, type LiveTaskCaseEvidence } from '../../scripts/helpers/live-task-approval';
 
 const owner = 'https://pod.example/alice/profile/card#me';
@@ -12,6 +13,41 @@ const approval = { id: '2026/10/02/approvals.ttl#one', target, thread: run.threa
 afterEach(() => { vi.useRealTimers(); });
 
 describe('live Task acceptance evidence gates (unit checks, not live proof)', () => {
+  it('matches an opaque API Thread to the absolute relation from a real ORM read', async () => {
+    const pod = 'https://storage.example/alice/';
+    const webId = 'https://id.example/alice/profile/card#me';
+    const threadId = 'task/work/index.ttl#thread';
+    let body = '';
+    const db = drizzle({ fetch: async () => new Response(body, { headers: { 'content-type': 'text/turtle' } }),
+      info: { webId, isLoggedIn: true } }, { podUrl: pod });
+    const iri = approvalResource.buildIriForDatabase(db, '2026/10/04.ttl#approval');
+    const threadIri = threadResource.buildIriForDatabase(db, threadId);
+    const marker = `${pod}acceptance/marker.txt`;
+    const terms: Record<string, string> = { thread: `<${threadIri}>`, target: `<${marker}>`,
+      assignedTo: `<${webId}>`, toolCallId: '"call-one"', toolName: '"request_approval"', status: '"pending"' };
+    body = `<${iri}> a <${approvalResource.config.type}>.\n`;
+    for (const [key, value] of Object.entries(terms)) {
+      const predicate = approvalResource.columns[key as keyof typeof approvalResource.columns].options.predicate!;
+      body += `<${iri}> <${predicate}> ${value}.\n`;
+    }
+    const persisted = await db.findByIri(approvalResource, iri);
+    expect(persisted?.thread).toBe(threadIri);
+    const apiRun = { ...run, thread: threadId };
+    expect(requireLiveCheckpoint(apiRun, [persisted!], marker, webId, undefined, db)).toBe(persisted);
+    for (const changed of [
+      { thread: threadIri.replace('#thread', '#other') },
+      { thread: threadIri.replace('storage.example/alice/', 'foreign.example/alice/') },
+      { thread: threadIri.replace('/alice/', '/bob/') },
+      { assignedTo: webId.replace('#me', '#other') },
+      { assignedTo: webId.replace('#me', '') },
+      { target: `${marker}-other` }, { toolCallId: 'other' },
+      { toolName: 'write' }, { status: 'approved' },
+    ]) {
+      expect(requireLiveCheckpoint(apiRun, [{ ...persisted, ...changed } as ApprovalRow], marker, webId, undefined, db)).toBeUndefined();
+    }
+    expect(requireLiveCheckpoint(apiRun, [persisted!], marker, webId)).toBeUndefined();
+  });
+
   it('requires the actual pending tool checkpoint and owner', () => {
     expect(requireLiveCheckpoint(run, [approval], target, owner)).toBe(approval);
     for (const changed of [ { target: `${target}-other` }, { thread: `${run.thread}-other` },
