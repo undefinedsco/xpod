@@ -922,8 +922,9 @@ mod tests {
         let (done_tx, done_rx) = mpsc::channel::<()>();
         let writer_control = control.clone();
         let writer_before = before.clone();
+        let writer_entered = entered.clone();
         let writer = std::thread::spawn(move || {
-            entered.wait();
+            writer_entered.wait();
             // The reader already holds the owner mutex. A real authorized writer
             // takes that same mutex inside store_owner_before_rename, so it must
             // observe WouldBlock here; only after the reader releases the guard
