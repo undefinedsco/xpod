@@ -1,10 +1,11 @@
+import { registerSocketOriginShims } from '../../runtime/socket-shim';
 import { PI_AGENT_WORKER_EVENT_PREFIX, PiAgentRuntimeDriver, type PiAgentRuntimeDriverOptions } from './PiAgentRuntimeDriver';
 import type { AgentRuntimeEvent } from './AgentRuntimeTypes';
 import type { RunExecutionInput } from './RunExecutionBackend';
 
 type WorkerPayload = {
   input: RunExecutionInput;
-  options?: Pick<PiAgentRuntimeDriverOptions, 'persistPiSessions' | 'sessionRootDir' | 'podWorkspaceMapping' | 'podTokenEndpoint'>;
+  options?: Pick<PiAgentRuntimeDriverOptions, 'persistPiSessions' | 'sessionRootDir' | 'gatewayTransport' | 'podWorkspaceMapping' | 'podTokenEndpoint'>;
 };
 
 async function readStdin(): Promise<string> {
@@ -26,8 +27,16 @@ async function main(): Promise<void> {
     agentLoopIsolation: 'in-process',
   });
 
-  for await (const event of driver.start(payload.input)) {
-    emit(event);
+  const binding = payload.options?.gatewayTransport;
+  const unregisterSocket = binding?.socketPath
+    ? registerSocketOriginShims(binding.baseUrl, binding.socketPath)
+    : undefined;
+  try {
+    for await (const event of driver.start(payload.input)) {
+      emit(event);
+    }
+  } finally {
+    await unregisterSocket?.();
   }
 }
 

@@ -77,6 +77,8 @@ type PiMessage =
   };
 
 export interface PiAgentRuntimeDriverOptions {
+  /** Gateway transport bound by the host runtime; canonical client configuration stays unchanged. */
+  gatewayTransport?: { canonicalBaseUrl: string; baseUrl: string; socketPath?: string };
   /** The runtime's canonical Pod authority and storage root, captured at API startup. */
   podWorkspaceMapping?: { baseUrl: string; rootFilePath: string };
   /** Existing runtime token endpoint used by SolidFS hydration and RDF sync. */
@@ -178,6 +180,13 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
 
   public async *start(input: RunExecutionInput): AsyncIterable<AgentRuntimeEvent> {
     if (input.signal?.aborted) return;
+    const connection = input.config.aiConnection;
+    const binding = this.options.gatewayTransport;
+    if (connection && binding && connection.baseUrl === binding.canonicalBaseUrl) {
+      input = { ...input, config: { ...input.config,
+        aiConnection: { ...connection, baseUrl: binding.baseUrl },
+      } };
+    }
     if (this.options.agentLoopIsolation === 'sandboxed-process') {
       let workspace: MaterializedWorkspace | undefined;
       let completed = false;
@@ -376,6 +385,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       args: [this.resolveWorkerPath()],
       env: this.workerEnv(),
       isolateNetwork: false,
+      readonlyPaths: this.workerReadonlyPaths(),
     });
 
     if (requireSandbox && !child.sandboxed) {
@@ -406,6 +416,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       options: {
         persistPiSessions: this.options.persistPiSessions === true,
         sessionRootDir: this.options.sessionRootDir,
+        gatewayTransport: this.options.gatewayTransport,
         podWorkspaceMapping: this.podWorkspaceMapping,
         podTokenEndpoint: this.options.podTokenEndpoint,
       },
@@ -985,6 +996,25 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       return this.options.workerPath;
     }
     return path.join(__dirname, `PiAgentRuntimeWorker${path.extname(__filename)}`);
+  }
+
+  private workerReadonlyPaths(): string[] {
+    const paths = [
+      path.join(PACKAGE_ROOT, path.extname(this.resolveWorkerPath()) === '.ts' ? 'src' : 'dist'),
+      path.join(PACKAGE_ROOT, 'node_modules'),
+      path.join(PACKAGE_ROOT, 'package.json'),
+    ];
+    // Workspace symlinks resolve outside node_modules. Expose only published code and metadata.
+    const workspaceRoot = path.join(PACKAGE_ROOT, 'packages');
+    if (fs.existsSync(workspaceRoot)) {
+      for (const entry of fs.readdirSync(workspaceRoot, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          paths.push(path.join(workspaceRoot, entry.name, 'dist'), path.join(workspaceRoot, entry.name, 'package.json'));
+        }
+      }
+    }
+    if (this.options.gatewayTransport?.socketPath) paths.push(this.options.gatewayTransport.socketPath);
+    return paths;
   }
 
   private workerEnv(): Record<string, string> {

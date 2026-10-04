@@ -1,3 +1,4 @@
+import { getSocketPathForOrigin } from '../../runtime/socket-origin-registry';
 import { SqlMatrixEventJournal } from '../matrix/MatrixEventJournal';
 /**
  * 共享服务注册
@@ -138,6 +139,15 @@ function credentialVaultForConfig(config: ApiContainerCradle['config']): Credent
   return new PlaintextCredentialVault({
     legacyVault: config.secretCellCredentialVaultFactory?.(),
   });
+}
+
+function resolveAiConnectionsRuntimeBaseUrl(config: ApiContainerCradle['config']): string {
+  // Runtime inference must reach the Gateway even when the canonical public route is absent.
+  // Socket mode keeps the canonical origin registered on the owned Gateway socket.
+  const internalBaseUrl = resolveHostedPodCssBaseUrl(config);
+  return internalBaseUrl
+    ? new URL('/v1', internalBaseUrl).toString().replace(/\/$/u, '')
+    : resolveAiConnectionsBaseUrl(config);
 }
 
 function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): string {
@@ -309,6 +319,7 @@ export function registerCommonServices(
         deployment: config.edition,
         baseUrl: resolveAiConnectionsBaseUrl(config),
         audience: resolveAiConnectionsAudience(config),
+        issuer: resolveAiConnectionsAudience(config),
         // The task runtime reaches the Gateway through this key, so it must name the owner's
         // active model; otherwise the runner asks the Gateway for a placeholder it cannot route.
         resolveModel: async ({ auth }) => {
@@ -831,6 +842,11 @@ export function registerCommonServices(
             ? { baseUrl: config.solidBaseUrl, rootFilePath: config.solidRootFilePath }
             : undefined,
           podTokenEndpoint: config.cssTokenEndpoint,
+          gatewayTransport: {
+            canonicalBaseUrl: resolveAiConnectionsBaseUrl(config),
+            baseUrl: resolveAiConnectionsRuntimeBaseUrl(config),
+            socketPath: getSocketPathForOrigin(resolveAiConnectionsRuntimeBaseUrl(config)),
+          },
           agentLoopIsolation: config.edition === 'cloud' ? 'sandboxed-process' : 'in-process',
           requireSandbox: config.edition === 'cloud',
           rdfSearchIndexingService,

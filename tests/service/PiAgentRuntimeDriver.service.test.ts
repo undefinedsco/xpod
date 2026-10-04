@@ -1,18 +1,22 @@
 import * as fs from 'node:fs';
+import { createServer } from 'node:http';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import type { StreamFn } from '@mariozechner/pi-agent-core';
-import { createAssistantMessageEventStream, type AssistantMessage } from '@mariozechner/pi-ai';
+import { createAssistantMessageEventStream, streamSimple, type AssistantMessage } from '@mariozechner/pi-ai';
 import * as pi from '@mariozechner/pi-coding-agent';
 import { approvalResource, sessionResource, type ApprovalInsert, type SessionInsert } from '@undefineds.co/models';
-import { PiAgentRuntimeDriver, classifyAssistantFailure } from '../../src/api/runs/PiAgentRuntimeDriver';
+import { PiAgentRuntimeDriver, classifyAssistantFailure, type PiAgentRuntimeDriverOptions } from '../../src/api/runs/PiAgentRuntimeDriver';
 import type { AgentRuntimeEvent } from '../../src/api/runs/AgentRuntimeTypes';
 import type { RunExecutionInput } from '../../src/api/runs/RunExecutionBackend';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
 import { TaskService } from '../../src/api/tasks/TaskService';
 import { cancelRun } from '../../src/api/runs/RunCancellation';
 import type { SolidFS } from '../../src/solidfs';
+import { registerSocketOriginShims } from '../../src/runtime/socket-shim';
+import { SandboxFactory } from '../../src/terminal/sandbox';
+import { PACKAGE_ROOT } from '../../src/runtime/package-root';
 
 const privateProviderError = 'Synthetic upstream refusal; credential=fixture-only';
 const owner = 'https://pod.test/alice/profile/card#me';
@@ -52,7 +56,8 @@ function response(stopReason: AssistantMessage['stopReason'], text = '', errorMe
   };
 }
 
-async function fixture(streamFn: StreamFn, configureSession?: (session: pi.AgentSession) => void) {
+async function fixture(streamFn: StreamFn, configureSession?: (session: pi.AgentSession) => void,
+  driverOptions: PiAgentRuntimeDriverOptions = {}) {
   const root = path.join(process.cwd(), '.test-data', 'pi-terminal-error');
   fs.mkdirSync(root, { recursive: true });
   const workdir = fs.mkdtempSync(path.join(root, 'session-'));
@@ -92,7 +97,7 @@ async function fixture(streamFn: StreamFn, configureSession?: (session: pi.Agent
       return result;
     },
   };
-  const driver = new PiAgentRuntimeDriver({ piSdk: sdk, solidfs, solidfsProjection: 'copy' });
+  const driver = new PiAgentRuntimeDriver({ ...driverOptions, piSdk: sdk, solidfs, solidfsProjection: 'copy' });
   const input: RunExecutionInput = { runId: 'run_pi_terminal', threadId: 'thread_pi_terminal',
     prompt: 'Complete the task', conversation: [], config: { workspace,
       runner: { type: 'pi', protocol: 'pi' },
@@ -375,5 +380,102 @@ describe('Pi assistant terminal status', () => {
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
     } finally { await app.cleanup(); }
+  });
+});
+
+
+async function transportFixture(mode: 'tcp' | 'socket' | 'external', sandbox = false) {
+  const requests: Array<{ url: string; authorization?: string; model: string }> = [];
+  const gateway = createServer(async (request, response) => {
+    let body = '';
+    for await (const chunk of request) body += chunk.toString();
+    requests.push({ url: request.url!, authorization: request.headers.authorization, model: JSON.parse(body).model });
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    const chunk = (delta: object, finish_reason: string | null) => ({ id: 'fixture', object: 'chat.completion.chunk',
+      created: 1, model: 'fixture-model', choices: [{ index: 0, delta, finish_reason }] });
+    response.end(`data: ${JSON.stringify(chunk({ role: 'assistant', content: 'Bound transport succeeded' }, null))}\n\n`
+      + `data: ${JSON.stringify(chunk({}, 'stop'))}\n\ndata: [DONE]\n\n`);
+  });
+  const socketDir = fs.mkdtempSync(path.join(process.cwd(), '.test-data', 'pi-sock-'));
+  const socketPath = path.join(socketDir, 'g.sock');
+  await new Promise<void>(resolve => mode === 'socket' ? gateway.listen(socketPath, resolve) : gateway.listen(0, '127.0.0.1', resolve));
+  const canonicalBaseUrl = 'https://gateway.invalid/v1';
+  const endpoint = mode === 'socket' ? canonicalBaseUrl : `http://127.0.0.1:${(gateway.address() as { port: number }).port}/v1`;
+  const binding = { canonicalBaseUrl, baseUrl: mode === 'external' ? 'http://127.0.0.1:1/v1' : endpoint,
+    ...(mode === 'socket' ? { socketPath } : {}) };
+  const unregisterSocket = mode === 'socket' && !sandbox ? registerSocketOriginShims(canonicalBaseUrl, socketPath) : undefined;
+  const app = await fixture(streamSimple, undefined, { gatewayTransport: binding,
+    ...(sandbox ? { agentLoopIsolation: 'sandboxed-process' as const, requireSandbox: true,
+      workerPath: path.join(process.cwd(), 'dist', 'api', 'runs', 'PiAgentRuntimeWorker.js') } : {}),
+  });
+  if (mode === 'external') app.input.config.aiConnection!.baseUrl = endpoint;
+  app.input.signal = AbortSignal.timeout(10000);
+  const originalConnection = app.input.config.aiConnection;
+  return { app, requests, originalConnection, canonicalBaseUrl, endpoint, cleanup: async () => {
+    await app.cleanup();
+    await unregisterSocket?.();
+    await new Promise<void>((resolve, reject) => gateway.close(error => error ? reject(error) : resolve()));
+    fs.rmSync(socketDir, { recursive: true, force: true });
+  } };
+}
+
+describe('Pi Gateway transport binding', () => {
+  it.each(['tcp', 'socket', 'external'] as const)('runs the installed SDK through %s without changing the client configuration', async mode => {
+    const transport = await transportFixture(mode);
+    const { app, requests, originalConnection, canonicalBaseUrl, endpoint } = transport;
+    try {
+      expect(await drain(app)).toEqual([{ type: 'text', text: 'Bound transport succeeded' }]);
+      expect(requests).toEqual([{ url: '/v1/chat/completions', authorization: 'Bearer fixture-only', model: 'fixture-model' }]);
+      expect(app.input.config.aiConnection).toBe(originalConnection);
+      expect(originalConnection?.baseUrl).toBe(mode === 'external' ? endpoint : canonicalBaseUrl);
+      expect(app.commit).toHaveBeenCalledOnce();
+      expect(app.rollback).not.toHaveBeenCalled();
+    } finally { await transport.cleanup(); }
+  });
+
+  it('passes the same bound transport to the sandboxed worker without modifying the durable input', async () => {
+    const inputs: RunExecutionInput[] = [];
+    const app = await fixture(response('stop'), undefined, { gatewayTransport: {
+      canonicalBaseUrl: 'https://gateway.invalid/v1', baseUrl: 'http://127.0.0.1:3000/v1' },
+      agentLoopIsolation: 'sandboxed-process', sandboxedLoopRunner: async function* (input) {
+        inputs.push(input);
+        yield { type: 'text', text: 'Sandbox transport received' };
+      },
+    });
+    try {
+      expect(await drain(app)).toEqual([{ type: 'text', text: 'Sandbox transport received' }]);
+      expect(inputs[0].config.aiConnection).toEqual({ ...app.input.config.aiConnection, baseUrl: 'http://127.0.0.1:3000/v1' });
+      expect(app.input.config.aiConnection?.baseUrl).toBe('https://gateway.invalid/v1');
+      expect(app.commit).toHaveBeenCalledOnce();
+    } finally { await app.cleanup(); }
+  });
+
+  it.runIf(process.platform === 'darwin').each(['tcp', 'socket'] as const)('executes the actual OS sandbox worker over %s with a valid SDK response', async mode => {
+    const transport = await transportFixture(mode, true);
+    const launch = vi.spyOn(SandboxFactory, 'launch');
+    const agentDir = path.join(new URL(transport.app.input.config.workspace).pathname, 'isolated-pi');
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      expect(await drain(transport.app)).toEqual([{ type: 'text', text: 'Bound transport succeeded' }]);
+      expect(transport.requests).toHaveLength(1);
+      expect(launch).toHaveBeenCalledOnce();
+      expect(launch.mock.results[0].value).toMatchObject({ sandboxed: true, technology: 'sandbox-exec' });
+      const readable = launch.mock.calls[0][0].readonlyPaths!;
+      expect(readable).toContain(path.join(PACKAGE_ROOT, 'dist'));
+      expect(readable).toContain(path.join(PACKAGE_ROOT, 'node_modules'));
+      expect(readable).toContain(path.join(PACKAGE_ROOT, 'package.json'));
+      for (const excluded of [PACKAGE_ROOT, path.join(PACKAGE_ROOT, '.env'), path.join(PACKAGE_ROOT, '.git'),
+        path.join(PACKAGE_ROOT, 'local'), path.join(PACKAGE_ROOT, 'data'), path.join(PACKAGE_ROOT, 'packages')]) {
+        expect(readable.some(allowed => excluded === allowed || excluded.startsWith(`${allowed}${path.sep}`))).toBe(false);
+      }
+      expect(transport.app.input.config.aiConnection?.baseUrl).toBe(transport.canonicalBaseUrl);
+      expect(transport.app.commit).toHaveBeenCalledOnce();
+    } finally {
+      launch.mockRestore();
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await transport.cleanup();
+    }
   });
 });

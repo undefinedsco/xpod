@@ -430,3 +430,35 @@ describe('OwnerPodAccess held fetch lifecycle', () => {
     expect(podRequests).toHaveLength(1);
   });
 });
+
+
+describe('OwnerPodAccess concurrent wire rejection', () => {
+  it('does not let a late old 401 evict the renewed session or replay either request', async () => {
+    let now = 1_000_000;
+    let exchanged = 0;
+    let rejectOld: (response: Response) => void = () => {};
+    let markOldDispatched: () => void = () => {};
+    const oldDispatched = new Promise<void>((resolve) => { markOldDispatched = resolve; });
+    let dispatched = 0;
+    const { access, tokenRequests, podRequests } = createHarness({
+      now: () => now,
+      tokenResponse: () => Response.json({ access_token: `token-${++exchanged}`, token_type: 'DPoP', expires_in: 60 }),
+      podResponse: () => {
+        if (++dispatched !== 1) return new Response('new session', { status: 200 });
+        markOldDispatched();
+        return new Promise<Response>((resolve) => { rejectOld = resolve; });
+      },
+    });
+    const held = (await access.getPodFetch(OWNER, { auth: callerAuth() }))!;
+    const old = held(POD_RESOURCE, { method: 'POST', body: 'old write once' });
+    await oldDispatched;
+    now += 45_000;
+    expect((await held(POD_RESOURCE)).status).toBe(200);
+    rejectOld(new Response('old rejection', { status: 401 }));
+    expect((await old).status).toBe(401);
+    expect((await held(POD_RESOURCE)).status).toBe(200);
+    expect(tokenRequests).toHaveLength(2);
+    expect(podRequests).toHaveLength(3);
+    expect(podRequests.map(request => request.authorization)).toEqual(['DPoP token-1', 'DPoP token-2', 'DPoP token-2']);
+  });
+});

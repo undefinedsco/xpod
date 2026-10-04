@@ -5,6 +5,8 @@ import {
   TaskAuthBindingStatus,
 } from '../../../src/api/tasks/TaskAuthBinding';
 import type { StoreContext } from '../../../src/api/chatkit/store';
+import { OwnerPodAccess, POD_INTERFACE_KEY_REJECTED } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
+import { createTestSolidSessions } from '../../helpers/solidSessions';
 import type { TaskCredentialSource } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
 
 const OWNER = 'https://pod.example/alice/profile/card#me';
@@ -153,5 +155,46 @@ describe('TaskAuthBindingService credential-bound context', () => {
       expect(previous).toHaveProperty(key);
     }
     expect(resolved?.podBaseUrl).toBe(previous.podBaseUrl);
+  });
+});
+
+
+describe('Task binding to retained Pod fetch', () => {
+  it('renews the frozen grant after clearing caller caches and rejects revocation before dispatch', async () => {
+    let now = 1_000_000;
+    let revoked = false;
+    let tokenCount = 0;
+    const wireAuthorizations: string[] = [];
+    const credential = { credentialRef: GRANT_ID, version: 3, clientId: 'task-client', clientSecret: 'task-secret' };
+    const taskCredentials = source({ forRef: vi.fn(async () => revoked ? undefined : credential) });
+    const wire: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/.oidc/token')) {
+        expect(new Headers(init?.headers).get('authorization')).toBe(`Basic ${Buffer.from('task-client:task-secret').toString('base64')}`);
+        return Response.json({ access_token: `task-token-${++tokenCount}`, token_type: 'DPoP', expires_in: 60, webid: OWNER });
+      }
+      wireAuthorizations.push(new Headers(init?.headers).get('authorization')!);
+      return new Response('private task payload');
+    };
+    const binding = new TaskAuthBindingService({ repository: repository(legacyCredential), taskCredentials });
+    const previous = { ...restoredContext(), _cachedFetch: vi.fn(), _cachedDb: {}, _cachedAuth: {} };
+    const context = await binding.resolveRunContext(GRANT_ID, previous);
+    expect(context).not.toHaveProperty('_cachedFetch');
+    expect(context).not.toHaveProperty('_cachedDb');
+    const access = new OwnerPodAccess({ taskCredentials, fetch: wire,
+      sessions: createTestSolidSessions({ tokenEndpoint: 'https://pod.example/.oidc/token', fetch: wire, now: () => now }),
+    });
+    const held = (await access.getPodFetch(OWNER, context))!;
+    expect(await (await held('https://pod.example/alice/private')).text()).toBe('private task payload');
+    now += 45_000;
+    expect(await (await held('https://pod.example/alice/private')).text()).toBe('private task payload');
+    expect(tokenCount).toBe(2);
+    expect(wireAuthorizations).toEqual(['DPoP task-token-1', 'DPoP task-token-2']);
+    revoked = true;
+    await expect(held('https://pod.example/alice/private', { method: 'POST', body: 'must not dispatch' })).rejects.toThrow(POD_INTERFACE_KEY_REJECTED);
+    expect(tokenCount).toBe(2);
+    expect(wireAuthorizations).toHaveLength(2);
+    expect(previous._cachedFetch).not.toHaveBeenCalled();
+    expect(taskCredentials.forRef).toHaveBeenCalledWith({ credentialRef: GRANT_ID, ownerWebId: OWNER, version: 3 });
   });
 });

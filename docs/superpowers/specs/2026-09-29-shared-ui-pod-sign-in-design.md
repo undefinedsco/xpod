@@ -895,3 +895,44 @@ Run、Task 与 RunStep 的关联 IRI 同样使用该已验证数据 root。写�
 后台任务使用其已授权客户端凭据交换短期令牌，须分别验证同一个缓存请求对象跨到期后的可用性；该交换不称作浏览器 Refresh Token 刷新。凭据被撤销或身份不匹配时必须拒绝，不借用其他账号或部署持有的权限。并发续期复用同一交换；不能用无界重放非幂等写请求掩盖过期。
 
 进行中长请求或流是否跨到期继续完成须单列证据。已经开始的响应与下一次请求的认证分开判断；短 TTL 私有读取不能代替流式请求、原安装资料或自然 14 天有效期验收。
+
+
+### 2026-10-04：运行时本机入口与冻结续期补证
+
+RC `a2e5f2b95b71da611b9eb3f890a55b43d68852ec` / run `37171159407` 实际失败：真实 Chat 为 200 且有内容，但 Task 在 approved:checkpoint 前出现 `provider_error`（Pi `openai-completions`，所选 `deepseek-v4-pro`）；Finalize skipped，不具备 stable promotion 凭证。原生与桌面 self-update / clean-consumer 门禁通过不能抵消该失败。
+
+API 容器此前把规范公网 node 地址交给内部 Pi 客户端；无公网路由的 Local 中，请求没有进入本机 Gateway inference Handler。修复只在容器传输绑定边界复用已绑定 Gateway 入口，socket 模式保留已映射的规范 origin。身份、token audience/issuer 保持规范地址；业务服务不推导 Pod 根地址。因果回归先 1 fail/1 pass，修复后候选相关 60 项通过，新增补证组合 32 项通过；新增/修改文件推荐 TypeScript lint 0。两树 build:ts 与 test types 均实际 exit 0。
+
+冻结最新 OwnerPodAccess/SolidSessionFactory 源码的真实短 TTL + 原生 ABI7 + 新 Electron 33.4.11 夹具完成：同一个持有的 fetch 在原 JWT exp+121580ms（超过默认 verifier 120s 容差）返回 200，正文精确一致；此时发生第 3 次 client_credentials exchange，全部 token exchange 无 Account Cookie。后续新 fetch 也 200 且内容一致。运行期间相关源码 hash 未变化。证据 `.test-data/sol-release/held-final/safe-result.json` 私有保存；旧 source-race smoke 仍只作历史，不改写为最终证明。
+
+新增 TaskAuthBinding→OwnerPodAccess 链路回归确认 caller DB/fetch 缓存清理、ref/version 冻结、原 grant 续期、撤销后不派发 POST；并发 wire 回归确认迟到的旧 401 不清除新 session，原写入仅派发一次。这里是受控 transport 回归，真实 approved/rejected/Stop 仍由下一 immutable RC 验收。
+
+原安装 `/Applications/Xpod.app` 0.4.20 及其用户资料未修改；该原安装完整重管理链路、长时间 in-flight stream、字面 6h/14d 等待未在本轮证明。标准完整集成正在运行，下一 RC 与 stable 状态另行补录，不宣称已经发布。
+
+
+完整门禁后续补录：candidate runtime 30 与 lite 163 pass/16 既有 skip 实际通过后，full 首次 exit 1 是专属 Colima 未挂载本工作区、SQL bind 变成空目录。只修正 VM 内本轮静态夹具并逐项校验 SHA 后，标准 full 子门禁 actual exit 0，63 tests/8 files；自有 Compose containers/networks/volumes 均 0。接下来仍需两次完整 `bun run test:integration` 成功，不把分段结果记成已完成整条命令。
+
+历史 broader 单元欠账因果核对：独立 detached `b5bce18112eef6e650a70c59cf51c716c975c676`（fe51 收敛之前）构建源码与 Components 后，在 Node 22.21.1 / Bun 1.4.2 执行失败的八个文件，actual exit 1 为 14 fail/58 pass；当前含本机传输修复的源码同条件也是 14 fail/58 pass，失败用例完全一致。私有 `.test-data/sol-release/baseline-differential.json` 保留逐项清单；只读基线 checkout 已清理。该证明支持“不是 fe51 及本轮传输修复新增”，不支持“全量单元全部通过”；既有 fixture/assertion 欠账仍明确保留。
+
+
+Root 本轮完整 `bun run test:integration` actual exit 0，UTC 2026-10-04T03:36:50.195Z—03:44:37.709Z：runtime 30/5 files，lite 157/32 files 与 6 既有 skips/3 files，full 46/5 files；19 个实际选定端口（IPv4/IPv6）均无监听，自有 Compose containers/networks/volumes 均 0。原 3000 与其他工作区资源不动。候选两次完整成功门禁尚在执行。
+
+本轮 lint 边界：候选四个改动代码/测试文件推荐 TypeScript 规则为 0；Root 同一切片唯一诊断是既有 `matrixStore` 解构参数 `config` 未使用（与本轮 Gateway helper 修改无关），新增测试全部 0。本轮不擅自改动该无关切片，也不把 Root 整体 lint 写成零诊断。
+
+
+边界复核补录：签发器同时向外部客户端返回配置，因此规范 base URL 保留；只由 API 容器把已绑定 Gateway 传输入口注入 Pi 执行适配器，复制运行时输入并覆盖传输地址，不修改持久配置、token claim 或业务存储地址。真正 Pi SDK 对本机 HTTP/SSE 的回归先 RED（24 pass/2 fail），修复后 26 pass；沙箱输入覆盖与远端配置均独立校验。含身份、授权和管理 Handler 的组合为 122 pass/5 files。先前 root 完整通过及 candidate pass1（actual exit 0，UTC 03:45:18.934—03:57:50.943）属于该边界修订前记录；修订后须重新执行完整门禁，不继承为最终通过。
+
+
+传输入口审查补录：Gateway 绑定收敛为 typed canonical/transport 对，只重绑本宿主签发的规范入口；独立 Pi 外部连接不改变 endpoint。Cloud socket 模式的子进程不继承父 shim，因此把现有注册表的已绑定 socket 随私有 worker payload 传递，在 worker 用同一 `registerSocketOriginShims` 生命周期注册/释放；Linux sandbox 只读挂载运行包与绑定 socket，不降低隔离。真实 SDK 揭示共享 socket 传输把 canonical HTTPS 当作 Unix listener TLS 的缺陷；统一 transport 现按本机 listener 的 plain HTTP 请求，canonical Host 保持。候选组合 33 pass/3 files，包含真实安装 SDK 的 TCP/socket/外部端点，以及实际 `sandbox-exec`（sandboxed=true）子进程 TCP/socket 两例；未用 mock runner 代替实际 OS 隔离证明。Linux bubblewrap 尚无本轮实际运行证据，不混记为 macOS 通过。此前 typed/socket 修订之前的 candidate 完整命令 exit 0（UTC 04:28:17.999—04:34:45.174，runtime30/lite163+16skip/full63）；后续源码仍须两次最终完整回归。
+
+
+沙箱读面复核：不挂载 PACKAGE_ROOT 或 workspace package 整根；Linux worker 清单仅包含实际 src/dist 代码、node_modules、根 package.json、各 workspace 的 dist/package.json 与已绑定 socket。配置负例确认 .env/.git/local/data 与包根均不被扩大挂载。macOS 既有 Seatbelt allow-default 读面是既存限制，本轮实际 sandbox-exec 连通证明不称作秘密隔离证明。真实 TLS 用例证明未注册 HTTPS 与显式 TLS socketPath 仍使用原生 TLS；与 Gateway HTTPS→plain HTTP socket 的行为分开。含真实 OS worker、身份、授权、管理与 TLS 的候选组合 actual 128 pass/6 files。改动代码切片 lint 的 Pi 驱动 6 项与 socket-http 13 项均与 a2e5 原始源码的规则/消息逐项相同，其余改动切片 0；不把整体 lint 说成全绿。产品源码最后修订后完整回归须重新执行，旧并行测试记录不作为最终接受证据。
+
+
+### 2026-10-04：冻结源码最终本地门禁
+
+以上历史结果不追认为最终绿。最后产品/测试修订后，候选10文件hash持续不变，两次完整 `bun run test:integration` 均actual exit0：UTC 05:02:05.433—05:07:52.826和提交前10:12:30.596—10:18:10.414；每次runtime30/5files、lite163pass/16既有skip（33pass/4skip files）、full63/8files。Root最终完整命令actual exit0，UTC09:24:01.995—09:29:01.234：runtime30、lite157/6既有skip、full46。两树build:ts/test types均actual exit0；候选闭环128/6files、Root闭环40/5files、发布契约99/10files及稳定提升Node31均通过。私有 `.test-data/sol-release/final-local-gates.json` 保留原始退出记录；最终自有Compose containers/networks/volumes均0。Root只镜像本轮12路径的窄修改，不提交或覆盖其其他变更。
+
+失败原样保留：额外Linux SDK/bubblewrap镜像拉取的资源估算错误造成宿主ENOSPC，Root那次完整exit1；停止大镜像路线，仅重建本轮自有sol VM/数据盘，不清共享Docker/用户数据。随后Root Matrix单次超时，独立真实认证复跑exit0（63/63events、10sync pages）后再取得上面的整条0。候选另一次完整exit1为临时postgres:16-alpine拉取TLS超时及三例对象存储RequestTimeTooSkewed；pmset确认执行期间宿主多次Sleep/DarkWake。最终只预拉四张必要小镜像，核对host/guest空间、时差与allocation，使用测试生命周期caffeinate，完整重跑通过，没有产品fallback或削弱断言。Linux实际SDK+bubblewrap额外证明仍not-tested；参数负例和macOS sandbox-exec不代替该证明，也不混称秘密隔离。
+
+原安装0.4.20/用户资料、长时间in-flight stream、字面6h/14d等待仍未验证；新Electron夹具和默认120s容差后的同一held-fetch正文证明按上文范围成立。全量单元14项既有失败和两个文件19项既有lint诊断保留，不能写全量绿。新immutable RC/stable仍待外部证据：只在exact SHA artifact的19项全部通过后签名v0.4.23并提升同一digest；a2e5/37171159407失败和Finalize skipped仍无发布凭证。
