@@ -1,37 +1,105 @@
-name: Diagnose Production
-
+name: Restore Existing Xpod Storage
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: Production environment to inspect
+        description: Existing production environment whose bound RDF database is being restored
         required: true
         type: choice
-        options:
-          - co
-          - cn
+        options: [co, cn]
         default: co
-
 permissions:
   contents: read
-
 jobs:
   diagnose:
-    name: Diagnose .${{ inputs.environment }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
+    env:
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
     steps:
-      - name: Set up kubeconfig
+      - name: Configure existing guarded target
         run: |
+          set -euo pipefail
+          test -n "$KUBE_CONFIG_DATA"
+          [[ "$SEALOS_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
           mkdir -p ~/.kube
-          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
-
-      - name: Capture Xpod state
-        env:
-          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl config view --minify -o json | node -e '
+            let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{
+              const j=JSON.parse(s);const c=j.clusters?.[0]?.cluster;const ctx=j.contexts?.[0]?.context;
+              console.log(JSON.stringify({kind:"target",serverHostname:c?.server?new URL(c.server).hostname:null,namespace:process.env.SEALOS_NAMESPACE,contextNamespace:ctx?.namespace||null}));
+            });'
+      - name: Inspect specific RDF storage dependency without exposing configuration
         run: |
-          kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide
-          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=300 --prefix=true --max-log-requests=10 || true
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=300 --prefix=true --max-log-requests=10 || true
+          set -euo pipefail
+          for kind in statefulset service endpoints; do
+            out="$RUNNER_TEMP/xpod-rdf-$kind.json"
+            kubectl -n "$SEALOS_NAMESPACE" get "$kind" xpod-rdf-postgres --ignore-not-found -o json > "$out"
+            chmod 600 "$out"
+            KIND="$kind" INPUT="$out" node -e '
+              const fs=require("node:fs");const s=fs.readFileSync(process.env.INPUT,"utf8");
+              if(!s.trim()){console.log(JSON.stringify({kind:process.env.KIND,name:"xpod-rdf-postgres",exists:false}));process.exit(0);}
+              const j=JSON.parse(s);const out={kind:process.env.KIND,name:j.metadata?.name,exists:true};
+              if(process.env.KIND==="statefulset")Object.assign(out,{replicas:j.spec?.replicas,readyReplicas:j.status?.readyReplicas||0,currentReplicas:j.status?.currentReplicas||0,serviceName:j.spec?.serviceName,images:j.spec?.template?.spec?.containers?.map(c=>({name:c.name,image:c.image})),claimTemplates:j.spec?.volumeClaimTemplates?.map(v=>({name:v.metadata?.name,storageClassName:v.spec?.storageClassName,storage:v.spec?.resources?.requests?.storage}))});
+              if(process.env.KIND==="service")Object.assign(out,{type:j.spec?.type,clusterIP:j.spec?.clusterIP,selector:j.spec?.selector,ports:j.spec?.ports?.map(p=>({name:p.name,port:p.port,targetPort:p.targetPort}))});
+              if(process.env.KIND==="endpoints")Object.assign(out,{readyAddresses:j.subsets?.flatMap(s=>s.addresses||[]).map(a=>a.ip)||[],notReadyCount:j.subsets?.reduce((n,s)=>n+(s.notReadyAddresses?.length||0),0)||0});
+              console.log(JSON.stringify(out));
+            '
+          done
+          kubectl -n "$SEALOS_NAMESPACE" get pvc -o json | node -e '
+            let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{
+              const j=JSON.parse(s);console.log(JSON.stringify({kind:"rdf-persistent-volume-claims",claims:(j.items||[]).filter(v=>v.metadata?.name?.includes("xpod-rdf-postgres")).map(v=>({name:v.metadata.name,phase:v.status?.phase,volumeName:v.spec?.volumeName,storageClassName:v.spec?.storageClassName,storage:v.status?.capacity?.storage}))}));
+            });'
+      - name: Restore only the existing bound RDF database
+        run: |
+          set -euo pipefail
+          test "$SEALOS_NAMESPACE" = ns-1yl0rye9
+          target_host="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>process.stdout.write(new URL(s.trim()).hostname));')"
+          test "$target_host" = cloud.sealos.io
+          kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o json > "$RUNNER_TEMP/rdf-restore-state.json"
+          kubectl -n "$SEALOS_NAMESPACE" get pvc data-xpod-rdf-postgres-0 -o json > "$RUNNER_TEMP/rdf-restore-claim.json"
+          chmod 600 "$RUNNER_TEMP/rdf-restore-state.json" "$RUNNER_TEMP/rdf-restore-claim.json"
+          current="$(node -e '
+            const fs=require("node:fs");
+            const s=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/rdf-restore-state.json","utf8"));
+            const v=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/rdf-restore-claim.json","utf8"));
+            const expected="ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba";
+            if(s.metadata?.name!=="xpod-rdf-postgres"||s.spec?.serviceName!=="xpod-rdf-postgres"||s.spec?.template?.spec?.containers?.length!==1||s.spec.template.spec.containers[0].image!==expected)throw Error("existing RDF workload changed; stop");
+            if(v.metadata?.name!=="data-xpod-rdf-postgres-0"||v.status?.phase!=="Bound"||v.spec?.volumeName!=="pvc-d31b2d74-a45d-46a6-b92b-7b543c563be9")throw Error("existing bound RDF volume changed; stop");
+            if(![0,1].includes(s.spec?.replicas))throw Error("unexpected existing replica count; stop");
+            process.stdout.write(String(s.spec.replicas));
+          ')"
+          if [ "$current" = 0 ]; then
+            kubectl -n "$SEALOS_NAMESPACE" scale statefulset xpod-rdf-postgres --replicas=1 --current-replicas=0
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" rollout status statefulset/xpod-rdf-postgres --timeout=300s
+          kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o json | node -e '
+            let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{
+              const j=JSON.parse(s);console.log(JSON.stringify({kind:"restored-rdf-state",name:j.metadata?.name,replicas:j.spec?.replicas,readyReplicas:j.status?.readyReplicas||0,currentReplicas:j.status?.currentReplicas||0}));
+              if(j.spec?.replicas!==1||j.status?.readyReplicas!==1)process.exit(1);
+            });'
+          kubectl -n "$SEALOS_NAMESPACE" get endpoints xpod-rdf-postgres -o json | node -e '
+            let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{
+              const j=JSON.parse(s);const ips=j.subsets?.flatMap(s=>s.addresses||[]).map(a=>a.ip)||[];
+              console.log(JSON.stringify({kind:"restored-rdf-endpoints",readyAddresses:ips}));if(ips.length!==1)process.exit(1);
+            });'
+      - name: Capture bounded readiness failure metadata
+        if: failure()
+        run: |
+          kubectl -n "$SEALOS_NAMESPACE" get pod xpod-rdf-postgres-0 --ignore-not-found -o json | node -e '
+            let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{
+              if(!s.trim()){console.log(JSON.stringify({kind:"rdf-pod",exists:false}));return;}
+              const j=JSON.parse(s);console.log(JSON.stringify({kind:"rdf-pod",exists:true,name:j.metadata?.name,phase:j.status?.phase,containers:j.status?.containerStatuses?.map(c=>({name:c.name,ready:c.ready,restarts:c.restartCount,waitingReason:c.state?.waiting?.reason,terminatedReason:c.state?.terminated?.reason,terminatedExit:c.state?.terminated?.exitCode})),conditions:j.status?.conditions?.map(c=>({type:c.type,status:c.status,reason:c.reason}))}));
+            });'
+      - name: Summarize registration and database failures without raw logs
+        run: |
+          set -euo pipefail
+          kubectl -n "$SEALOS_NAMESPACE" logs deployment/xpod-cloud --all-containers=true --since=45m | node -e '
+            let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{
+              const count=r=>(s.match(r)||[]).length;
+              const classes=[...new Set(s.match(/\b(?:[A-Z][A-Za-z]+Error|E[A-Z_]{3,24})\b/g)||[])];
+              const dns=[...new Set([...s.matchAll(/getaddrinfo ENOTFOUND ([A-Za-z0-9.-]+)/g)].map(m=>m[1]))];
+              console.log(JSON.stringify({kind:"safe-error-summary",registrationErrors:count(/Failed to register SP node/gi),dnsErrors:count(/ENOTFOUND/g),missingColumns:count(/column .{0,100} does not exist|no such column/gi),missingTables:count(/relation .{0,100} does not exist|no such table/gi),connectionRefusals:count(/ECONNREFUSED/g),errorClasses:classes,dnsHostnames:dns}));
+            });'
