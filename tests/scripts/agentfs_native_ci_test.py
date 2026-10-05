@@ -21,6 +21,11 @@ a = importlib.util.module_from_spec(spec2)
 sys.modules['supervise'] = m
 spec2.loader.exec_module(a)
 
+spec3 = importlib.util.spec_from_file_location('whole_ci_gate', ROOT / 'scripts/agentfs-native-ci/whole_ci_gate.py')
+g = importlib.util.module_from_spec(spec3)
+sys.modules['whole_ci_gate'] = g
+spec3.loader.exec_module(g)
+
 
 class SupervisorTests(unittest.TestCase):
     def test_real_success_is_waited_and_closed_log_hashed(self):
@@ -494,6 +499,87 @@ class SupervisorTests(unittest.TestCase):
         commands = '\n'.join(step.get('run', '') for step in job['steps'])
         self.assertIn('--init', commands)
         self.assertIn('bookworm-entry.sh', commands)
+
+
+class WholeCiGateTests(unittest.TestCase):
+    def test_hash_tree_stops_self_symlink_loop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            os.symlink('.', base / 'loop')
+            entries, digest = g.hash_tree(base)
+            self.assertEqual(entries['loop']['kind'], 'symlink')
+            self.assertIsNone(entries['loop']['resolvedCombinedDigest'])
+            self.assertEqual(len(digest), 64)
+
+    def test_hash_tree_stops_two_directory_loop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            os.symlink('b', base / 'a')
+            os.symlink('a', base / 'b')
+            entries, _ = g.hash_tree(base)
+            self.assertEqual(set(entries), {'a', 'b'})
+
+    def test_manifest_snapshot_binds_known_symlink_dependency_body(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'packages').mkdir()
+            real = root / 'store' / 'drizzle-orm'
+            real.mkdir(parents=True)
+            (real / 'index.js').write_text('v1')
+            (root / 'node_modules').mkdir()
+            os.symlink(real, root / 'node_modules' / 'drizzle-orm')
+            with patch.object(g, 'ROOT', root):
+                first = g.manifest_snapshot()
+                entry = first['entries']['node_modules/drizzle-orm']
+                self.assertEqual(entry['kind'], 'symlink')
+                self.assertEqual(entry['resolvedRealpath'], os.path.realpath(real))
+                self.assertIsNotNone(entry['resolvedCombinedDigest'])
+                (real / 'index.js').write_text('v2')
+                second = g.manifest_snapshot()
+            self.assertNotEqual(first['combinedDigestSha256'], second['combinedDigestSha256'])
+
+    def test_missing_required_root_refuses_before_launch(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as evidence:
+            (Path(directory) / 'packages').mkdir()
+            with patch.object(g, 'ROOT', Path(directory)), patch.object(g, 'EVIDENCE', Path(evidence)), \
+                    patch.object(g, 'docker_storage_root', return_value=evidence), \
+                    patch.object(g.subprocess, 'check_output', return_value='1.4.2\n'):
+                code = g.main()
+            self.assertNotEqual(code, 0)
+            receipt = json.loads((Path(evidence) / 'whole1.receipt.json').read_text())
+            self.assertFalse(receipt['admitted'])
+            self.assertTrue(receipt['missingRequired'])
+            self.assertFalse((Path(evidence) / 'whole1.raw.log').exists())
+
+    def test_manifest_admissible_refuses_missing_and_unresolved(self):
+        self.assertTrue(g.manifest_admissible({'missingRequired': [], 'unresolvedRequired': []}))
+        self.assertFalse(g.manifest_admissible({'missingRequired': ['x'], 'unresolvedRequired': []}))
+        self.assertFalse(g.manifest_admissible({'missingRequired': [], 'unresolvedRequired': ['y']}))
+
+    def test_cleanup_probe_unknown_is_never_empty(self):
+        with patch.object(g, 'docker_probe', return_value=(False, None)):
+            known, empty, state = g.project_state('p')
+        self.assertFalse(known)
+        self.assertFalse(empty)
+        self.assertIsNone(state['containers'])
+
+    def test_docker_probe_timeout_is_unknown(self):
+        with patch.object(g, 'PROBE_TIMEOUT', 1):
+            known, output = g.docker_probe([sys.executable, '-c', 'import time; time.sleep(5)'])
+        self.assertFalse(known)
+        self.assertIsNone(output)
+
+    def test_gate_passed_refuses_drift_and_unclosed_raw(self):
+        base = {'exit': 0, 'signal': None, 'resourceStop': None,
+                'ownedGroupAbsentAfterWait': True, 'rawClosedBeforeHash': True, 'actualWait': True}
+        self.assertTrue(g.gate_passed(base, True, True, True, True))
+        self.assertFalse(g.gate_passed(dict(base, rawClosedBeforeHash=False), True, True, True, True))
+        self.assertFalse(g.gate_passed(dict(base, actualWait=False), True, True, True, True))
+        self.assertFalse(g.gate_passed(dict(base, exit=1), True, True, True, True))
+        self.assertFalse(g.gate_passed(base, False, True, True, True))
+        self.assertFalse(g.gate_passed(base, True, False, True, True))
+        self.assertFalse(g.gate_passed(base, True, True, False, True))
+        self.assertFalse(g.gate_passed(base, True, True, True, False))
 
 
 if __name__ == '__main__':

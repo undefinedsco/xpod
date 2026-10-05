@@ -66,6 +66,13 @@ def hash_tree(base, visited=None):
     a visited realpath set. Entries are keyed relative to `base`."""
     if visited is None:
         visited = set()
+    # Mark the base realpath at the entrance so a symlinked directory that
+    # resolves back to an already-walked root (or forms a cycle) is stopped
+    # before any recursion, not after entering rec().
+    real_base = os.path.realpath(base)
+    if real_base in visited:
+        return {}, hashlib.sha256().hexdigest()
+    visited.add(real_base)
     entries, combined = {}, hashlib.sha256()
 
     def rec(rel, path):
@@ -74,8 +81,13 @@ def hash_tree(base, visited=None):
             real = os.path.realpath(path)
             resolved_digest, resolved_count = None, None
             if os.path.isdir(real):
-                sub_entries, resolved_digest = hash_tree(Path(real), visited)
-                resolved_count = len(sub_entries)
+                if real in visited:
+                    # Cycle: stop without recursing; the link target is still
+                    # recorded, and a required root resolving here is flagged.
+                    resolved_digest, resolved_count = None, None
+                else:
+                    sub_entries, resolved_digest = hash_tree(Path(real), visited)
+                    resolved_count = len(sub_entries)
             elif os.path.isfile(real):
                 resolved_digest, resolved_count = sha256_file(Path(real)), 1
             entries[rel] = {'kind': 'symlink', 'target': target, 'targetSha256': sha256_bytes(target.encode()),
@@ -140,7 +152,8 @@ def manifest_snapshot():
              + [f'packages/{name}/dist' for name in sorted(os.listdir(packages))
                 if (packages / name / 'dist').is_dir()]
              + RUNTIME_INPUTS + PATCHED)
-    present, entries, combined, missing_required = [], {}, hashlib.sha256(), []
+    present, entries, combined = [], {}, hashlib.sha256()
+    missing_required, unresolved_required = [], []
     for rel_root in roots:
         base = ROOT / rel_root
         if not base.exists() and not base.is_symlink():
@@ -161,6 +174,10 @@ def manifest_snapshot():
                 sub_digest, count = None, 0
             entries[rel_root] = {'kind': 'symlink', 'target': target, 'resolvedRealpath': real,
                                  'resolvedFileCount': count, 'resolvedCombinedDigest': sub_digest}
+            # A required dependency that is a symlink must resolve to a real
+            # body; an unresolved/malformed link is a refusal, never valid.
+            if rel_root in REQUIRED_ROOTS and sub_digest is None:
+                unresolved_required.append(rel_root)
             combined.update(rel_root.encode() + (sub_digest or '').encode())
         elif base.is_file():
             body = sha256_file(base)
@@ -173,7 +190,14 @@ def manifest_snapshot():
             combined.update(rel_root.encode() + sub_digest.encode())
     return {'rootsRequested': roots, 'rootsPresent': present, 'fileCount': len(entries),
             'combinedDigestSha256': combined.hexdigest(), 'missingRequired': missing_required,
-            'entries': entries}
+            'unresolvedRequired': unresolved_required, 'entries': entries}
+
+
+def manifest_admissible(manifest):
+    """The pre-launch / post-run admission rule: every required root must be
+    present (or a symlink resolving to a real body). Presence on both sides is
+    NOT enough; a required root missing before AND after must still fail."""
+    return not manifest['missingRequired'] and not manifest['unresolvedRequired']
 
 
 def docker_probe(argv):
@@ -273,10 +297,22 @@ def main():
         tag = f'whole{index}'
         project = f'xpod-afs-cache-ci-{NONCE}-{index}'.lower()
         run_id = f'{NONCE}-{index}'.lower()
-        source_before = tracked_snapshot()
+        # Admission is checked BEFORE any producer is launched: a missing or
+        # unresolved required root refuses the run instead of diffing equal.
         manifest_before = manifest_snapshot()
-        write_json(f'SOURCE-BEFORE-{tag}.json', source_before)
         write_json(f'MANIFEST-BEFORE-{tag}.json', manifest_before)
+        if not manifest_admissible(manifest_before):
+            receipt = {'project': project, 'runId': run_id, 'admitted': False, 'passed': False,
+                       'missingRequired': manifest_before['missingRequired'],
+                       'unresolvedRequired': manifest_before['unresolvedRequired'],
+                       'reason': 'required root missing or unresolved before launch'}
+            write_json(f'{tag}.receipt.json', receipt)
+            summary['runs'].append(receipt)
+            ok = False
+            write_json('gate-summary.json', summary)
+            continue
+        source_before = tracked_snapshot()
+        write_json(f'SOURCE-BEFORE-{tag}.json', source_before)
         environment = dict(os.environ)
         environment['XPOD_FULL_PROJECT'] = project
         environment['XPOD_FULL_RUN_ID'] = run_id
@@ -295,9 +331,12 @@ def main():
         manifest_unchanged = (manifest_before['combinedDigestSha256'] == manifest_after['combinedDigestSha256']
                               and manifest_before['missingRequired'] == manifest_after['missingRequired'])
         cleanup_known, cleanup_empty, cleanup_state = project_state(project)
-        passed = gate_passed(receipt, source_unchanged, manifest_unchanged, cleanup_known, cleanup_empty)
+        manifest_after_admissible = manifest_admissible(manifest_after)
+        passed = (gate_passed(receipt, source_unchanged, manifest_unchanged, cleanup_known, cleanup_empty)
+                  and manifest_after_admissible)
         receipt.update({
-            'project': project, 'runId': run_id,
+            'project': project, 'runId': run_id, 'admitted': True,
+            'manifestBeforeAdmissible': True, 'manifestAfterAdmissible': manifest_after_admissible,
             'sourceUnchanged': source_unchanged, 'manifestUnchanged': manifest_unchanged,
             'sourceBeforeDigest': source_before['trackedDigestSha256'],
             'sourceAfterDigest': source_after['trackedDigestSha256'],
@@ -307,6 +346,8 @@ def main():
             'manifestAfterCount': manifest_after['fileCount'],
             'missingRequiredBefore': manifest_before['missingRequired'],
             'missingRequiredAfter': manifest_after['missingRequired'],
+            'unresolvedRequiredBefore': manifest_before['unresolvedRequired'],
+            'unresolvedRequiredAfter': manifest_after['unresolvedRequired'],
             'cleanupKnown': cleanup_known, 'cleanupEmpty': cleanup_empty,
             'projectResourceRemaining': cleanup_state, 'passed': passed,
         })
