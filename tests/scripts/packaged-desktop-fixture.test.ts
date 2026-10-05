@@ -3,9 +3,46 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { assertBundledRuntimeProcess, createPackagedFixtureEnvironment,
   assertOwnedRuntimeProfile, isMissingProcessReport, readProcessInventory,
-  rememberProcessTree, remainingOwnedProcessIds } from '../../scripts/helpers/packaged-desktop-fixture';
+  rememberProcessTree, remainingOwnedProcessIds, closeOwnedPackagedApp } from '../../scripts/helpers/packaged-desktop-fixture';
 
 describe('owned packaged desktop permission fixture', () => {
+  it('uses the captured OS process when close disposes the Electron channel', async () => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+    let closed = false;
+    const app = {
+      process: () => {
+        if (closed) throw new Error('Disposed Electron dispatcher');
+        return child;
+      },
+      close: async () => {
+        const exited = new Promise(resolve => child.once('exit', resolve));
+        child.kill('SIGTERM'); await exited; closed = true;
+      },
+    };
+    const captured = app.process();
+    try {
+      await closeOwnedPackagedApp(app, captured);
+      expect(closed).toBe(true);
+      expect(captured.exitCode !== null || captured.signalCode !== null).toBe(true);
+      expect((await readProcessInventory()).some(row => row.pid === captured.pid)).toBe(false);
+      expect(() => app.process()).toThrow('Disposed Electron dispatcher');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise(resolve => child.once('exit', resolve));
+        child.kill('SIGTERM'); await exited;
+      }
+    }
+  });
+  it('does not treat a resolved close channel as proof that the captured process stopped', async () => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+    try {
+      await expect(closeOwnedPackagedApp({ close: async () => undefined }, child))
+        .rejects.toThrow('Owned packaged App did not stop');
+    } finally {
+      const exited = new Promise(resolve => child.once('exit', resolve));
+      child.kill('SIGTERM'); await exited;
+    }
+  });
   it('keeps only host transport and standard runtime inputs, never inherited credentials or overrides', () => {
     const env = createPackagedFixtureEnvironment({
       inherited: { PATH: '/bin', HOME: '/Users/test', HTTP_PROXY: 'http://127.0.0.1:7897',

@@ -969,3 +969,7 @@ RC `3be53aba6aa04df0a93520ab3a94af0e9bad768a` / run `37195150178` 实际 complet
 此次新增 [exact 安装包桌面验收契约](../../testing/desktop-permission-acceptance.md) 要求真实双 Pod UI 选择、29 资源首轮/重复授权、配置/模型/额度/首次 Chat、隔离和清理，与原自更新共同构成必需 desktop check；单元与协议夹具不能替代实际包。问题与边界见 [ACP 目标 ACR](../../issues/2026-10-05-missing-target-acr-permission-broker.md)、[canonical session credential 恢复](../../issues/2026-10-05-canonical-gateway-session-credential-recovery.md)、[collection URI intention](../../issues/2026-10-05-collection-uri-intent-confirmation.md)。
 
 当前 Cloud 只读诊断 [37239166566](https://github.com/undefinedsco/xpod/actions/runs/37239166566) 确认工作负载 replicas 为 0，恢复尚未确认；0.4.26 exact packaged managed 链路、新 immutable RC 与稳定发布仍待实际证据。没有宣称所有订阅授权、原安装 App 全流程或自然等待 14 天通过。此前失败与未验边界保留，本地冻结后仍须最终两次完整集成回归。
+
+同日安装包补录：本地 `71243cd91608cccbd488eef0df7acf54411ba4a1` 的原 zip 启动及 fixture 关闭失败分别保留。真实 OS 隔离诊断确认 Components 祖先发现及内部 CSS CLI 未注入同一 moduleState；[提取包 Components 发现问题](../../issues/2026-10-05-extracted-components-ancestor-discovery.md) 记录最小共享修复和工作树 binary 的 Local Gateway/API/CSS、实际 QLever 子进程与零残留证据。这些诊断通过不能追认原 zip 或 managed 权限门禁通过；修复后的新 SHA 仍须完整回归和 exact 包验收。
+
+Cloud 恢复时点补录：用户确认重新打开 Sealos 后，UTC 2026-10-05 01:42:52 的独立公网只读检查经宿主代理实际获得 `/service/status` 200（1.55 秒）和 OIDC discovery 200（1.14 秒），curl 均 exit=0。以上 replicas=0 记录保留为历史时点；当前公网恢复不等于 managed 登录、Cloud card、Local 存储、双 Pod Consent/29 权限或 provider 已通过，须继续实际验收。

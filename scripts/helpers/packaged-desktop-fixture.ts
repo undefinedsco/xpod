@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { createRequire } from 'node:module';
 import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -138,6 +138,15 @@ export interface OwnedPackagedDesktop {
   close(): Promise<{ appStopped: true; runtimeStopped: true; ownedDataRemoved: true; remainingOwnedPids: 0 }>;
 }
 
+/** Keep process exit evidence independent of the disposed Playwright channel. */
+export async function closeOwnedPackagedApp(app: Pick<ElectronApplication, 'close'>,
+  captured: ChildProcess): Promise<void> {
+  await app.close();
+  if (captured.exitCode === null && captured.signalCode === null) {
+    throw new Error('Owned packaged App did not stop');
+  }
+}
+
 /** Real App + its packaged runtime, isolated from every installed App/profile.
  * It only establishes provenance/lifecycle; it cannot claim permissions or Chat passed.
  */
@@ -152,6 +161,7 @@ export async function launchOwnedPackagedDesktop(options: {
   const appPath = path.join(directory, 'Xpod.app');
   const binary = path.join(appPath, 'Contents', 'Resources', 'runtime', 'xpod');
   let app: ElectronApplication | undefined;
+  let appProcess: ChildProcess | undefined;
   let launchAttempted = false;
   let runtimePid: number | undefined;
   let closed = false;
@@ -160,7 +170,7 @@ export async function launchOwnedPackagedDesktop(options: {
   let observationFailed = false;
   const owned = new Map<number, string>();
   async function observeTree(): Promise<void> {
-    const pid = app?.process().pid;
+    const pid = appProcess?.pid;
     if (!pid) throw new Error('Missing owned App pid');
     rememberProcessTree(await readProcessInventory(), pid, owned);
   }
@@ -169,13 +179,12 @@ export async function launchOwnedPackagedDesktop(options: {
     if (app) {
       await observeTree().catch(() => { observationFailed = true; });
       try {
-        await app.close(); // Existing before-quit path stops only the desktop-owned runtime.
+        if (!appProcess) throw new Error('Missing captured owned App process');
+        // Existing before-quit path stops only the desktop-owned runtime.
+        await closeOwnedPackagedApp(app, appProcess);
       } finally {
         if (observer) clearInterval(observer);
         await observation;
-      }
-      if (app.process().exitCode === null && app.process().signalCode === null) {
-        throw new Error('Owned packaged App did not stop');
       }
     }
     if (observer) clearInterval(observer);
@@ -217,13 +226,16 @@ export async function launchOwnedPackagedDesktop(options: {
     const { _electron } = await import('@playwright/test');
     launchAttempted = true;
     app = await _electron.launch({ executablePath: path.join(appPath, 'Contents', 'MacOS', 'Xpod'), cwd: directory, env, timeout: 60_000 });
+    appProcess = app.process();
     await observeTree();
     observer = setInterval(() => {
       if (observation) return;
       observation = observeTree().catch(() => { observationFailed = true; }).finally(() => { observation = undefined; });
     }, 250);
     observer.unref();
-    const page = await app.firstWindow();
+    // The product's cold RuntimeManager startup already has a 60s budget;
+    // its first window is created after that startup, not at Electron launch.
+    const page = await app.firstWindow({ timeout: 60_000 });
     await waitFor(async () => {
       const response = await fetch(new URL('service/status', gateway), { signal: AbortSignal.timeout(1_000) }).catch(() => undefined);
       return response?.ok ? true : undefined;
