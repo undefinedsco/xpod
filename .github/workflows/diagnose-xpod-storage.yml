@@ -1,0 +1,64 @@
+name: Diagnose Xpod Storage
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Existing production environment to inspect without mutations
+        required: true
+        type: choice
+        options: [co, cn]
+        default: co
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+    steps:
+      - name: Configure existing read-only target
+        run: |
+          set -euo pipefail
+          test -n "$KUBE_CONFIG_DATA"
+          [[ "$SEALOS_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
+          mkdir -p ~/.kube
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl config view --minify -o json | node -e '
+            let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{
+              const j=JSON.parse(s);const c=j.clusters?.[0]?.cluster;const ctx=j.contexts?.[0]?.context;
+              console.log(JSON.stringify({kind:"target",serverHostname:c?.server?new URL(c.server).hostname:null,namespace:process.env.SEALOS_NAMESPACE,contextNamespace:ctx?.namespace||null}));
+            });'
+      - name: Inspect specific RDF storage dependency without exposing configuration
+        run: |
+          set -euo pipefail
+          for kind in statefulset service endpoints; do
+            out="$RUNNER_TEMP/xpod-rdf-$kind.json"
+            kubectl -n "$SEALOS_NAMESPACE" get "$kind" xpod-rdf-postgres --ignore-not-found -o json > "$out"
+            chmod 600 "$out"
+            KIND="$kind" INPUT="$out" node -e '
+              const fs=require("node:fs");const s=fs.readFileSync(process.env.INPUT,"utf8");
+              if(!s.trim()){console.log(JSON.stringify({kind:process.env.KIND,name:"xpod-rdf-postgres",exists:false}));process.exit(0);}
+              const j=JSON.parse(s);const out={kind:process.env.KIND,name:j.metadata?.name,exists:true};
+              if(process.env.KIND==="statefulset")Object.assign(out,{replicas:j.spec?.replicas,readyReplicas:j.status?.readyReplicas||0,currentReplicas:j.status?.currentReplicas||0,serviceName:j.spec?.serviceName,images:j.spec?.template?.spec?.containers?.map(c=>({name:c.name,image:c.image})),claimTemplates:j.spec?.volumeClaimTemplates?.map(v=>({name:v.metadata?.name,storageClassName:v.spec?.storageClassName,storage:v.spec?.resources?.requests?.storage}))});
+              if(process.env.KIND==="service")Object.assign(out,{type:j.spec?.type,clusterIP:j.spec?.clusterIP,selector:j.spec?.selector,ports:j.spec?.ports?.map(p=>({name:p.name,port:p.port,targetPort:p.targetPort}))});
+              if(process.env.KIND==="endpoints")Object.assign(out,{readyAddresses:j.subsets?.flatMap(s=>s.addresses||[]).map(a=>a.ip)||[],notReadyCount:j.subsets?.reduce((n,s)=>n+(s.notReadyAddresses?.length||0),0)||0});
+              console.log(JSON.stringify(out));
+            '
+          done
+          kubectl -n "$SEALOS_NAMESPACE" get pvc -o json | node -e '
+            let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{
+              const j=JSON.parse(s);console.log(JSON.stringify({kind:"rdf-persistent-volume-claims",claims:(j.items||[]).filter(v=>v.metadata?.name?.includes("xpod-rdf-postgres")).map(v=>({name:v.metadata.name,phase:v.status?.phase,volumeName:v.spec?.volumeName,storageClassName:v.spec?.storageClassName,storage:v.status?.capacity?.storage}))}));
+            });'
+      - name: Summarize registration and database failures without raw logs
+        run: |
+          set -euo pipefail
+          kubectl -n "$SEALOS_NAMESPACE" logs deployment/xpod-cloud --all-containers=true --since=45m | node -e '
+            let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{
+              const count=r=>(s.match(r)||[]).length;
+              const classes=[...new Set(s.match(/\b(?:[A-Z][A-Za-z]+Error|E[A-Z_]{3,24})\b/g)||[])];
+              const dns=[...new Set([...s.matchAll(/getaddrinfo ENOTFOUND ([A-Za-z0-9.-]+)/g)].map(m=>m[1]))];
+              console.log(JSON.stringify({kind:"safe-error-summary",registrationErrors:count(/Failed to register SP node/gi),dnsErrors:count(/ENOTFOUND/g),missingColumns:count(/column .{0,100} does not exist|no such column/gi),missingTables:count(/relation .{0,100} does not exist|no such table/gi),connectionRefusals:count(/ECONNREFUSED/g),errorClasses:classes,dnsHostnames:dns}));
+            });'
