@@ -95,6 +95,20 @@ fn split_link_parts(value: &str, delimiter: char) -> SdkResult<Vec<&str>> {
     Ok(parts)
 }
 
+/// Parses a concrete `Content-Range: bytes <start>-<end>/<total>` value. A `*`
+/// length or any malformed field is not proof and yields `None`. `end >= start`
+/// is required here; the caller separately checks offset, total legality, and
+/// that the claimed span equals the fully received body.
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let rest = value.trim().strip_prefix("bytes ")?;
+    let (range, total) = rest.split_once('/')?;
+    let total: u64 = total.trim().parse().ok()?;
+    let (start, end) = range.split_once('-')?;
+    let start: u64 = start.trim().parse().ok()?;
+    let end: u64 = end.trim().parse().ok()?;
+    (end >= start).then_some((start, end, total))
+}
+
 fn ldp_container_type(headers: &HeaderMap) -> SdkResult<bool> {
     let mut container = false;
     for header in headers.get_all(LINK) {
@@ -536,6 +550,12 @@ impl PodClient {
         } else {
             response
         };
+        // The clamped retry can itself lose the version race: surface it as a
+        // precondition failure so the caller performs one bounded reacquire
+        // instead of a generic error.
+        if response.status() == StatusCode::PRECONDITION_FAILED {
+            return Ok(RangeFetch { bytes: Vec::new(), etag: None, ranged: false, range_ignored: false, precondition_failed: true });
+        }
         if response.status() == StatusCode::NOT_FOUND {
             return Err(SdkError::Fs(FsError::NotFound));
         }
@@ -553,7 +573,10 @@ impl PodClient {
             .get(CONTENT_RANGE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
+        // Original `rangeIgnored` semantics: any 206 or any declared
+        // Content-Range means the slice was NOT produced locally.
         let range_form = partial || content_range.is_some();
+        let parsed_range = content_range.as_deref().and_then(parse_content_range);
         let mut response = response;
         let mut bytes = Vec::new();
         let mut prefix_remaining = offset;
@@ -576,19 +599,30 @@ impl PodClient {
                 bytes.extend_from_slice(&available[..take]);
             }
         }
-        if partial || content_range.is_some() {
-            if let Some(content_range) = &content_range {
-                let start = content_range
-                    .strip_prefix("bytes ")
-                    .and_then(|value| value.split('-').next())
-                    .and_then(|value| value.parse::<u64>().ok());
-                if start != Some(offset) {
+        if range_form {
+            // A declared start that is not the requested offset is a wrong
+            // proof, never a silent success.
+            if let Some((start, _, _)) = parsed_range {
+                if start != offset {
                     return Err(SdkError::Internal(format!(
-                        "range response for {path} started at {start:?}, expected {offset}"
+                        "range response for {path} started at {start}, expected {offset}"
                     )));
                 }
             }
-            return Ok(RangeFetch { bytes, etag, ranged: true, range_ignored: false, precondition_failed: false });
+            // Cacheable ONLY for a real 206 whose complete Content-Range proves
+            // offset, legality (end<total, total>0), and that the claimed span
+            // equals the fully received body. 200 (even with a fake
+            // Content-Range) and a 206 without a valid Content-Range preserve
+            // `rangeIgnored` semantics but are NEVER range-proven/cacheable.
+            let cr_valid = partial
+                && parsed_range.is_some_and(|(start, end, total)| {
+                    start == offset
+                        && end >= start
+                        && total > 0
+                        && end < total
+                        && end - start + 1 == bytes.len() as u64
+                });
+            return Ok(RangeFetch { bytes, etag, ranged: cr_valid, range_ignored: false, precondition_failed: false });
         }
         Ok(RangeFetch { bytes, etag, ranged: false, range_ignored: true, precondition_failed: false })
     }
@@ -1370,6 +1404,7 @@ const _: u32 = S_IFREG | S_IFDIR;
 mod range_stream_tests {
     use super::*;
     use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     async fn range_response(headers: &str, body: &[u8], offset: u64, size: u64) -> SdkResult<(Vec<u8>, bool)> {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1490,6 +1525,136 @@ mod range_stream_tests {
         assert_eq!(range_response("HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n", b"abcdefgh", 3, 2).await.unwrap(), (b"de".to_vec(), true));
         assert!(range_response("HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\n", b"abcdefgh", 3, 2).await.is_err());
     }
+
+    /// A bounded, task-owned scripted HTTP server. It accepts on a nonblocking
+    /// listener and serves one response per connection in order, so a missing
+    /// request can never block the thread forever; Drop (and the explicit
+    /// `join_owned`) stops and actually joins the owned thread.
+    struct ScriptedServer {
+        root: String,
+        stop: std::sync::Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+    impl ScriptedServer {
+        fn start(responses: Vec<(String, Vec<u8>)>) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let root = format!("http://{}/", listener.local_addr().unwrap());
+            let stop = std::sync::Arc::new(AtomicBool::new(false));
+            let stop_thread = stop.clone();
+            let handle = std::thread::spawn(move || {
+                let mut index = 0usize;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while index < responses.len() && !stop_thread.load(Ordering::SeqCst) {
+                    if std::time::Instant::now() > deadline { break; }
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let (headers, body) = &responses[index];
+                            let _ = stream.set_nonblocking(false);
+                            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                            let mut request = [0; 4096];
+                            let _ = stream.read(&mut request);
+                            let _ = stream.write_all(headers.as_bytes());
+                            let _ = stream.write_all(body);
+                            let _ = stream.flush();
+                            index += 1;
+                        }
+                        Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self { root, stop, handle: Some(handle) }
+        }
+        fn root(&self) -> &str { &self.root }
+        fn join_owned(mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                handle.join().expect("scripted server thread must close");
+            }
+        }
+    }
+    impl Drop for ScriptedServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() { let _ = handle.join(); }
+        }
+    }
+
+    async fn conditional_response(headers: &str, body: &[u8], offset: u64, size: u64) -> SdkResult<RangeFetch> {
+        let server = ScriptedServer::start(vec![(headers.to_string(), body.to_vec())]);
+        let result = PodClient::new(server.root(), None).unwrap().get_range_conditional("file", offset, size, None).await;
+        server.join_owned();
+        result
+    }
+
+    #[tokio::test]
+    async fn only_a_complete_206_content_range_is_range_proven() {
+        // Valid 206 with a complete, legal Content-Range.
+        let good = conditional_response(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-4/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"de", 3, 2,
+        ).await.unwrap();
+        assert_eq!((good.ranged, good.range_ignored, good.bytes), (true, false, b"de".to_vec()));
+
+        // 206 without Content-Range: never range-proven.
+        let no_cr = conditional_response(
+            "HTTP/1.1 206 Partial Content\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"de", 3, 2,
+        ).await.unwrap();
+        assert_eq!((no_cr.ranged, no_cr.range_ignored), (false, false));
+
+        // 200 with a fake Content-Range: preserved rangeIgnored semantics, never proven.
+        let fake = conditional_response(
+            "HTTP/1.1 200 OK\r\nContent-Range: bytes 3-4/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"de", 3, 2,
+        ).await.unwrap();
+        assert_eq!((fake.ranged, fake.range_ignored, fake.bytes), (false, false, b"de".to_vec()));
+
+        // 206 whose claimed span (4) does not equal the received body (2).
+        let short = conditional_response(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-6/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"de", 3, 2,
+        ).await.unwrap();
+        assert_eq!(short.ranged, false, "claimed span must equal received bytes");
+
+        // 206 declaring a start that is not the requested offset is an error.
+        assert!(conditional_response(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 1-2/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"bc", 3, 2,
+        ).await.is_err());
+
+        // 206 with total 0 cannot prove range/total legality.
+        let zero = conditional_response(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-4/0\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"de", 3, 2,
+        ).await.unwrap();
+        assert_eq!(zero.ranged, false);
+    }
+
+    #[tokio::test]
+    async fn clamped_416_retry_that_hits_412_reports_precondition_failed() {
+        // First request (bytes=2-101) gets 416 with the real total; the clamped
+        // retry (bytes=2-7) then loses the race and answers 412.
+        let server = ScriptedServer::start(vec![
+            ("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */8\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(), Vec::new()),
+            ("HTTP/1.1 412 Precondition Failed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(), Vec::new()),
+        ]);
+        let fetch = PodClient::new(server.root(), None).unwrap()
+            .get_range_conditional("file", 2, 100, Some("\"v1\"")).await.unwrap();
+        server.join_owned();
+        assert!(fetch.precondition_failed, "clamped 416 retry 412 must report a precondition failure");
+        assert!(!fetch.ranged);
+
+        // An offset at/after the real total is a normal EOF, not a retry.
+        let eof = conditional_response(
+            "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */8\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            b"", 8, 4,
+        ).await.unwrap();
+        assert_eq!((eof.precondition_failed, eof.ranged, eof.bytes), (false, false, Vec::new()));
+    }
 }
 
 #[cfg(test)]
@@ -1498,8 +1663,9 @@ mod clean_cache_integration_tests {
     use crate::clean_cache::CleanBodyCache;
     use crate::fixture::FixturePod;
     use std::fs;
+    use std::io::{BufRead, BufReader, Write};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering};
 
     // Canonical remote authority. The transport is still the loopback fixture,
     // which models the real HTTPS-canonical-via-loopback-proxy deployment.
@@ -1672,49 +1838,84 @@ mod clean_cache_integration_tests {
     }
 
     /// Minimal stateful Pod surface for the denial path: mode 0 serves a strong
-    /// ETag and a 4-byte range, mode 1 answers every request with 403.
-    fn spawn_scripted_pod() -> (String, Arc<AtomicU8>) {
-        use std::io::{BufRead, BufReader, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let root = format!("http://127.0.0.1:{port}/pod/");
-        let mode = Arc::new(AtomicU8::new(0));
-        let mode_thread = mode.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { break; };
-                let current = mode_thread.load(AtomicOrdering::SeqCst);
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut request_line = String::new();
-                if reader.read_line(&mut request_line).unwrap_or(0) == 0 { continue; }
-                let method = request_line.split_whitespace().next().unwrap_or("GET").to_string();
-                loop {
-                    let mut header = String::new();
-                    if reader.read_line(&mut header).unwrap_or(0) == 0 { break; }
-                    if header.trim_end_matches(['\r', '\n']).is_empty() { break; }
+    /// Owned, bounded stateful Pod surface: mode 0 serves a strong ETag and a
+    /// 4-byte range, mode 1 answers every request with 403. The nonblocking
+    /// listener plus `join_owned`/Drop guarantee the thread actually closes.
+    struct ScriptedModePod {
+        root: String,
+        mode: Arc<AtomicU8>,
+        stop: Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+    impl ScriptedModePod {
+        fn start() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let root = format!("http://127.0.0.1:{port}/pod/");
+            let mode = Arc::new(AtomicU8::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let mode_thread = mode.clone();
+            let stop_thread = stop.clone();
+            let handle = std::thread::spawn(move || {
+                while !stop_thread.load(AtomicOrdering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let current = mode_thread.load(AtomicOrdering::SeqCst);
+                            let _ = stream.set_nonblocking(false);
+                            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                            let mut reader = BufReader::new(stream.try_clone().unwrap());
+                            let mut request_line = String::new();
+                            if reader.read_line(&mut request_line).unwrap_or(0) == 0 { continue; }
+                            let method = request_line.split_whitespace().next().unwrap_or("GET").to_string();
+                            loop {
+                                let mut header = String::new();
+                                if reader.read_line(&mut header).unwrap_or(0) == 0 { break; }
+                                if header.trim_end_matches(['\r', '\n']).is_empty() { break; }
+                            }
+                            if current == 1 {
+                                let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+                                continue;
+                            }
+                            if method == "HEAD" {
+                                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\netag: \"v1\"\r\naccept-ranges: bytes\r\nconnection: close\r\n\r\n");
+                            } else if method == "GET" {
+                                let _ = stream.write_all(b"HTTP/1.1 206 Partial Content\r\ncontent-length: 4\r\netag: \"v1\"\r\ncontent-range: bytes 0-3/11\r\nconnection: close\r\n\r\n");
+                                let _ = stream.write_all(b"BODY");
+                            }
+                        }
+                        Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
                 }
-                if current == 1 {
-                    let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
-                    continue;
-                }
-                if method == "HEAD" {
-                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\netag: \"v1\"\r\naccept-ranges: bytes\r\nconnection: close\r\n\r\n");
-                } else if method == "GET" {
-                    let _ = stream.write_all(b"HTTP/1.1 206 Partial Content\r\ncontent-length: 4\r\netag: \"v1\"\r\ncontent-range: bytes 0-3/11\r\nconnection: close\r\n\r\n");
-                    let _ = stream.write_all(b"BODY");
-                }
+            });
+            Self { root, mode, stop, handle: Some(handle) }
+        }
+        fn root(&self) -> &str { &self.root }
+        fn set_mode(&self, value: u8) { self.mode.store(value, AtomicOrdering::SeqCst); }
+        fn join_owned(mut self) {
+            self.stop.store(true, AtomicOrdering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                handle.join().expect("scripted mode server thread must close");
             }
-        });
-        (root, mode)
+        }
+    }
+    impl Drop for ScriptedModePod {
+        fn drop(&mut self) {
+            self.stop.store(true, AtomicOrdering::SeqCst);
+            if let Some(handle) = self.handle.take() { let _ = handle.join(); }
+        }
     }
 
     #[tokio::test]
     async fn denied_head_invalidates_and_never_serves_a_cached_body() {
-        let (root, mode) = spawn_scripted_pod();
+        let pod = ScriptedModePod::start();
         let dir = CleanDir::new();
         let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
         let file = PodFile::new(
-            Arc::new(PodClient::new(&root, None).unwrap()),
+            Arc::new(PodClient::new(pod.root(), None).unwrap()),
             None,
             Some(clean.clone()),
             "x.bin".into(),
@@ -1726,11 +1927,12 @@ mod clean_cache_integration_tests {
         assert_eq!(file.pread(0, 4).await.unwrap(), b"BODY".to_vec());
         assert_eq!(clean.stats().unwrap().1, 1, "the clean body is cached");
 
-        mode.store(1, AtomicOrdering::SeqCst);
+        pod.set_mode(1);
         assert!(file.pread(0, 4).await.is_err(), "a denied HEAD must surface the live error");
         assert_eq!(clean.stats().unwrap().1, 0, "a denied HEAD must invalidate the cached window");
 
-        mode.store(0, AtomicOrdering::SeqCst);
+        pod.set_mode(0);
         assert_eq!(file.pread(0, 4).await.unwrap(), b"BODY".to_vec(), "the old body is gone; a fresh fetch is required");
+        pod.join_owned();
     }
 }
