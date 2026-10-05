@@ -32,6 +32,17 @@ describe('environment configuration sync', () => {
     expect(run).toContain('rollout restart "deployment/${XPOD_DEPLOYMENT}"');
   });
 
+  it('proves the change at the application level instead of assuming it', () => {
+    const workflow = load();
+    const verify = workflow.jobs.sync.steps.find((step: any) => step.name === 'Verify the environment answers');
+
+    expect(verify).toBeDefined();
+    expect(workflow.jobs.sync.env.PUBLIC_BASE_URL).toBe('${{ vars.XPOD_PUBLIC_BASE_URL }}');
+    expect(verify.run).toContain('service/status');
+    expect(verify.run).toContain('.well-known/openid-configuration');
+    expect(verify.run).toContain('== \"200\"');
+  });
+
   it('does not deploy images, so a configuration change stays a configuration change', () => {
     const workflow = load();
     const run = workflow.jobs.sync.steps.map((step: any) => step.run ?? '').join('\n');

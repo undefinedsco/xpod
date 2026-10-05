@@ -27,6 +27,7 @@ jobs:
     env:
       TARGET_ENVIRONMENT: ${{ inputs.environment }}
       XPOD_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
+      PUBLIC_BASE_URL: ${{ vars.XPOD_PUBLIC_BASE_URL }}
       XPOD_DEPLOYMENT: xpod-${{ inputs.environment }}
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
@@ -62,3 +63,28 @@ jobs:
           fi
           kubectl -n "$SEALOS_NAMESPACE" rollout restart "deployment/${XPOD_DEPLOYMENT}"
           kubectl -n "$SEALOS_NAMESPACE" rollout status "deployment/${XPOD_DEPLOYMENT}" --timeout=900s
+
+      - name: Verify the environment answers
+        # 配置改完必须由应用层证明可用：今天三次事故都是「配置看着对、应用起不来」
+        # （必需键被删、schema 归属、角色密码）。这里拉真实公开端点，不猜。
+        run: |
+          set -euo pipefail
+          if [[ -z "${PUBLIC_BASE_URL:-}" ]]; then
+            echo "::error::XPOD_PUBLIC_BASE_URL is required for $TARGET_ENVIRONMENT"
+            exit 1
+          fi
+          for path in service/status .well-known/openid-configuration; do
+            code=""
+            for attempt in $(seq 1 30); do
+              code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PUBLIC_BASE_URL}/${path}" || true)"
+              if [[ "$code" == "200" ]]; then
+                echo "${PUBLIC_BASE_URL}/${path} -> 200 (attempt ${attempt})"
+                break
+              fi
+              sleep 10
+            done
+            if [[ "$code" != "200" ]]; then
+              echo "::error::${PUBLIC_BASE_URL}/${path} returned ${code:-no response}"
+              exit 1
+            fi
+          done
