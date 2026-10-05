@@ -30,6 +30,23 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use url::Url;
 
+enum CopyUpError<'a> {
+    Http(&'a reqwest::Error),
+    Io(&'a std::io::Error),
+}
+
+// A failure-only scalar record. Never format the error, URL, path, headers or
+// body here; the unchanged SDK error is still returned to the caller.
+fn observe_copy_up_failure(stage: &str, started: &std::time::Instant, received: u64, fully_written: u64, error: CopyUpError<'_>) {
+    let cause = match error {
+        CopyUpError::Http(error) => serde_json::json!({ "kind": "http", "timeout": error.is_timeout(), "body": error.is_body(), "connect": error.is_connect() }),
+        CopyUpError::Io(error) => serde_json::json!({ "kind": "io", "errno": error.raw_os_error(), "ioKind": format!("{:?}", error.kind()) }),
+    };
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr().lock(), "agentfs-pod-copy-up: {}", serde_json::json!({ "stage": stage, "elapsedMs": started.elapsed().as_millis(),
+        "bodyBytesReceived": received, "fullyWrittenChunkBytes": fully_written, "cause": cause }));
+}
+
 pub const ROOT_INO: i64 = 1;
 
 #[derive(Debug)]
@@ -306,16 +323,32 @@ impl PodClient {
 
     pub async fn copy_to(&self, path: &str, baseline: &str, output: &mut std::fs::File) -> SdkResult<()> {
         use std::io::Write;
+        let started = std::time::Instant::now();
+        let mut received = 0u64; let mut fully_written = 0u64;
         let mut headers = HeaderMap::new();
         headers.insert(IF_MATCH, HeaderValue::from_str(baseline).map_err(|error| SdkError::Internal(error.to_string()))?);
-        let mut response = self.send(Method::GET, self.resource_url(path)?, headers, None).await?;
+        let mut response = self.request(Method::GET, self.resource_url(path)?, headers).send().await.map_err(|error| {
+            observe_copy_up_failure("send", &started, received, fully_written, CopyUpError::Http(&error));
+            SdkError::Internal(format!("Pod HTTP request failed: {error}"))
+        })?;
         if response.status() != StatusCode::OK || response.headers().get(ETAG).and_then(|v| v.to_str().ok()) != Some(baseline) {
             return Err(SdkError::Internal("lower content changed during copy-up".into()));
         }
-        while let Some(chunk) = response.chunk().await.map_err(|error| SdkError::Internal(error.to_string()))? {
-            output.write_all(&chunk).map_err(|error| SdkError::Internal(error.to_string()))?;
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            observe_copy_up_failure("chunk", &started, received, fully_written, CopyUpError::Http(&error));
+            SdkError::Internal(error.to_string())
+        })? {
+            received += chunk.len() as u64;
+            output.write_all(&chunk).map_err(|error| {
+                observe_copy_up_failure("write_all", &started, received, fully_written, CopyUpError::Io(&error));
+                SdkError::Internal(error.to_string())
+            })?;
+            fully_written += chunk.len() as u64;
         }
-        output.sync_all().map_err(|error| SdkError::Internal(error.to_string()))
+        output.sync_all().map_err(|error| {
+            observe_copy_up_failure("sync_all", &started, received, fully_written, CopyUpError::Io(&error));
+            SdkError::Internal(error.to_string())
+        })
     }
 
     pub async fn put_file(&self, path: &str, file_path: &std::path::Path, baseline: Option<&str>, content_type: &str, is_dir: bool) -> Result<Option<String>, CommitFailure> {
@@ -1581,6 +1614,88 @@ mod range_stream_tests {
             self.stop.store(true, Ordering::SeqCst);
             if let Some(handle) = self.handle.take() { let _ = handle.join(); }
         }
+    }
+
+    #[tokio::test]
+    async fn copy_up_failure_diagnostics_preserve_errors_and_hide_secrets() {
+        const CHILD: &str = "XPOD_COPY_UP_DIAGNOSTIC_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            use std::process::{Command, Stdio};
+            fn run_child(stderr: Stdio) -> std::process::Output {
+                let mut child = Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "pod_fs::range_stream_tests::copy_up_failure_diagnostics_preserve_errors_and_hide_secrets", "--nocapture"])
+                    .env(CHILD, "1").stdout(Stdio::piped()).stderr(stderr).spawn().unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                while child.try_wait().unwrap().is_none() {
+                    if std::time::Instant::now() >= deadline {
+                        child.kill().unwrap(); child.wait().unwrap();
+                        panic!("owned diagnostic child exceeded its observation deadline");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                let output = child.wait_with_output().unwrap();
+                assert!(output.status.success(), "owned child failed: {}", String::from_utf8_lossy(&output.stdout));
+                output
+            }
+            let output = run_child(Stdio::piped());
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            for secret in ["SECRET_PATH", "SECRET_BEARER", "SECRET_BODY", "SECRET_CAPABILITY", "PRIVATE_BODY_CONTENT"] {
+                assert!(!stderr.contains(secret), "diagnostic disclosed a sensitive test marker");
+            }
+            let records: Vec<serde_json::Value> = stderr.lines().filter_map(|line| line.strip_prefix("agentfs-pod-copy-up: "))
+                .map(|line| serde_json::from_str(line).unwrap()).collect();
+            assert_eq!(records.len(), 4, "each failed operation emits once");
+            assert_eq!(records.iter().map(|row| row["stage"].as_str().unwrap()).collect::<Vec<_>>(), ["send", "chunk", "write_all", "sync_all"]);
+            for row in &records {
+                assert!(row["elapsedMs"].is_number());
+                assert!(row["bodyBytesReceived"].as_u64().unwrap() >= row["fullyWrittenChunkBytes"].as_u64().unwrap());
+            }
+            assert_eq!(records[0]["bodyBytesReceived"], 0);
+            assert_eq!(records[1]["bodyBytesReceived"], records[1]["fullyWrittenChunkBytes"]);
+            assert!((1..=20).contains(&records[2]["bodyBytesReceived"].as_u64().unwrap())); assert_eq!(records[2]["fullyWrittenChunkBytes"], 0);
+            assert!(records[2]["cause"]["errno"].is_number());
+            assert_eq!(records[3]["bodyBytesReceived"], 20); assert_eq!(records[3]["fullyWrittenChunkBytes"], 20);
+            // A closed diagnostic sink must not panic or replace any SDK error.
+            let (reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
+            drop(reader);
+            let writer: std::os::fd::OwnedFd = writer.into();
+            run_child(Stdio::from(writer));
+            return;
+        }
+        use std::io::Write;
+        let directory = std::path::PathBuf::from("../../.test-data/agentfs-copy-up-diagnostics")
+            .join(format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let target = directory.join("SECRET_PATH");
+        let mut output = std::fs::File::create(&target).unwrap();
+        let malformed = ("THIS_IS_NOT_HTTP\r\n\r\n".to_string(), Vec::new());
+        let server = ScriptedServer::start(vec![malformed.clone(), malformed]);
+        let mut client = PodClient::new(server.root(), Some("SECRET_BEARER".into())).unwrap();
+        client.capability = Some("SECRET_CAPABILITY".into());
+        let original = client.send(Method::GET, client.resource_url("SECRET_PATH").unwrap(), HeaderMap::new(), None).await.unwrap_err();
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", &mut output).await.unwrap_err();
+        assert_eq!(format!("{observed:?}"), format!("{original:?}")); server.join_owned();
+
+        let truncated = ("HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n".to_string(), b"SECRET_BODY".to_vec());
+        let server = ScriptedServer::start(vec![truncated.clone(), truncated]);
+        let client = PodClient::new(server.root(), None).unwrap();
+        let mut response = client.send(Method::GET, client.resource_url("SECRET_PATH").unwrap(), HeaderMap::new(), None).await.unwrap();
+        let original = loop { match response.chunk().await { Ok(Some(_)) => (), Ok(None) => panic!("truncated body unexpectedly closed cleanly"), Err(error) => break SdkError::Internal(error.to_string()) } };
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", &mut output).await.unwrap_err();
+        assert_eq!(format!("{observed:?}"), format!("{original:?}")); server.join_owned();
+
+        let complete = ("HTTP/1.1 200 OK\r\nContent-Length: 20\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n".to_string(), b"PRIVATE_BODY_CONTENT".to_vec());
+        let server = ScriptedServer::start(vec![complete.clone(), complete]);
+        let client = PodClient::new(server.root(), None).unwrap();
+        let mut read_only = std::fs::File::open(&target).unwrap();
+        let original = SdkError::Internal(read_only.write_all(b"x").unwrap_err().to_string());
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", &mut read_only).await.unwrap_err();
+        assert_eq!(format!("{observed:?}"), format!("{original:?}"));
+        let mut null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+        let original = SdkError::Internal(null.sync_all().unwrap_err().to_string());
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", &mut null).await.unwrap_err();
+        assert_eq!(format!("{observed:?}"), format!("{original:?}")); server.join_owned();
+        drop(output); drop(read_only); drop(null); std::fs::remove_dir_all(directory).unwrap();
     }
 
     async fn conditional_response(headers: &str, body: &[u8], offset: u64, size: u64) -> SdkResult<RangeFetch> {

@@ -1,9 +1,12 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import {
   AcceptanceArgumentError,
   acceptLiveDirectory,
   assertStoredLoginTarget,
   resolveAcceptanceTarget,
+  startLiveDirectoryObservationRelay,
   type LiveDirectoryOptions,
 } from '../../scripts/accept-live-agent-directory';
 
@@ -254,6 +257,60 @@ describe('acceptance target resolution (arguments and environment only)', () => 
       expect.unreachable('a mismatched stored login must be rejected');
     } catch (error) {
       expect((error as { code?: string }).code).toBe('stored_login_base_url_mismatch');
+    }
+  });
+});
+
+
+describe('acceptance observation relay draft (real loopback streams, no live GZ evidence)', () => {
+  it('streams once, records consumed body bytes and leaves credentials and body out of observations', async () => {
+    const received: string[] = [];
+    const upstream = createServer((request, response) => {
+      received.push(request.url!);
+      response.writeHead(200, { etag: '"v1"' });
+      if (request.method === 'HEAD') response.end();
+      else { response.write('PRIVATE_BODY_'); response.end('CONTENT'); }
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const proxyOrigin = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+    const relay = await startLiveDirectoryObservationRelay(proxyOrigin, 'https://actual.example/alice/');
+    try {
+      const response = await fetch(`${relay.origin}/alice/file`, { headers: {
+        range: 'bytes=0-19', 'if-match': '"v1"', authorization: 'SECRET_AUTH', dpop: 'SECRET_DPOP',
+        'x-xpod-agentfs-capability': 'SECRET_CAPABILITY',
+      } });
+      expect(await response.text()).toBe('PRIVATE_BODY_CONTENT');
+      expect((await fetch(`${relay.origin}/alice/file`, { method: 'HEAD' })).status).toBe(200);
+      const query = new URL(`${relay.origin}/-/agent-directory/list`);
+      query.searchParams.set('root', `${relay.origin}/alice/`);
+      expect((await fetch(query)).status).toBe(200);
+      await relay.close();
+      expect(relay.records[0]).toMatchObject({ method: 'GET', status: 200, range: 'bytes=0-19', ifMatch: '"v1"', etag: '"v1"', consumedBodyBytes: 20, streamClosed: true });
+      expect(relay.records[1]).toMatchObject({ method: 'HEAD', consumedBodyBytes: 0, streamClosed: true });
+      expect(new URL(received[2], proxyOrigin).searchParams.get('root')).toBe(`${proxyOrigin}/alice/`);
+      expect(JSON.stringify(relay.records)).not.toMatch(/SECRET|PRIVATE_BODY|CONTENT/u);
+    } finally {
+      await relay.close();
+      if (upstream.listening) await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('refuses foreign URL targets and mutations before forwarding and bounds owned close', async () => {
+    let calls = 0;
+    const upstream = createServer((_request, response) => { calls += 1; response.end(); });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const proxyOrigin = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+    const relay = await startLiveDirectoryObservationRelay(proxyOrigin, 'https://actual.example/alice/');
+    try {
+      for (const target of [ 'https://foreign.example/alice/', `${proxyOrigin}/alice/`, `${relay.origin}/bob/` ]) {
+        const query = new URL(`${relay.origin}/-/agent-directory/list`); query.searchParams.set('root', target);
+        expect((await fetch(query)).status).toBe(403);
+      }
+      expect((await fetch(`${relay.origin}/alice/file`, { method: 'PUT', body: 'PRIVATE_BODY' })).status).toBe(403);
+      expect(calls).toBe(0); expect(relay.records).toEqual([]);
+    } finally {
+      await relay.close();
+      await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
     }
   });
 });

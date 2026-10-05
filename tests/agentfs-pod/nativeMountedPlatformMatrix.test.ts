@@ -271,9 +271,16 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       const head = await git([ 'rev-parse', 'HEAD' ]);
       await git([ 'worktree', 'add', '-b', 'mounted-consumer', tree, 'HEAD' ]); worktreeAdded = true;
       expect(await git([ 'rev-parse', 'HEAD' ], tree)).toBe(head);
+      expect(await git([ 'rev-parse', '--show-toplevel' ])).toBe(project);
+      expect(await git([ 'rev-parse', '--show-toplevel' ], tree)).toBe(tree);
       await verifyMetadata(tree);
       const listing = await git([ 'worktree', 'list', '--porcelain' ]);
-      expect(listing).toContain(`worktree ${project}`); expect(listing).toContain(`worktree ${tree}`);
+      // Git lists the main record by its separate gitdir; --show-toplevel
+      // independently proves the actual mounted working-content directory.
+      const records = listing.split('\n\n');
+      expect(records).toHaveLength(2);
+      expect(records.some((record) => record.startsWith(`worktree ${gitdir}\n`) && record.split('\n').includes(`HEAD ${head}`))).toBe(true);
+      expect(records.some((record) => record.startsWith(`worktree ${tree}\n`) && record.split('\n').includes(`HEAD ${head}`))).toBe(true);
       expect(await readFile(path.join(tree, 'content.txt'), 'utf8')).toBe('SHELL_CONTENT\n');
       await run('/bin/sh', [ '-c', 'set -eu; printf "WORKTREE_EDIT\\n" >> content.txt' ], tree);
       expect(await git([ 'status', '--porcelain' ], tree)).toContain(' M content.txt');

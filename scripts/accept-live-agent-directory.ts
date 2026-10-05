@@ -1,4 +1,8 @@
 #!/usr/bin/env bun
+import { createServer, request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -278,6 +282,85 @@ export async function acceptLiveDirectory(options: LiveDirectoryOptions): Promis
   }
   report.status = failed ? 'fail' : 'pass';
   return report;
+}
+
+export interface LiveDirectoryObservation {
+  method: string; status: number; range?: string; ifMatch?: string; etag?: string;
+  consumedBodyBytes: number; streamClosed: boolean;
+}
+
+/** Test-layer draft: callers still need real login, strong-version and owned-data gates.
+ * Counts bytes consumed by the relay stream, never socket/wire bytes. No credentials or bodies are recorded.
+ */
+export async function startLiveDirectoryObservationRelay(proxyOrigin: string, podRoot: string): Promise<{
+  origin: string;
+  records: LiveDirectoryObservation[];
+  close: () => Promise<void>;
+}> {
+  const upstream = new URL(proxyOrigin); const canonical = new URL(canonicalRoot(podRoot));
+  insist(upstream.protocol === 'http:' && upstream.hostname === '127.0.0.1' && upstream.pathname === '/' && !upstream.search && !upstream.hash && !upstream.username && !upstream.password, 'invalid_observer_proxy_origin');
+  const records: LiveDirectoryObservation[] = [];
+  const ownedRequests = new Set<ReturnType<typeof httpRequest>>();
+  let origin = ''; let closing = false; let closePromise: Promise<void> | undefined;
+  const server = createServer((incoming, outgoing) => {
+    void (async () => {
+      const local = new URL(incoming.url ?? '/', origin);
+      if (closing || local.origin !== origin || local.username || local.password || local.hash || ![ 'GET', 'HEAD' ].includes(incoming.method ?? '')) {
+        outgoing.writeHead(403); outgoing.end(); return;
+      }
+      if (!local.pathname.startsWith(canonical.pathname) && !local.pathname.startsWith('/-/agent-directory/')) {
+        outgoing.writeHead(403); outgoing.end(); return;
+      }
+      for (const key of [ 'root', 'url' ]) {
+        const raw = local.searchParams.get(key); if (!raw) continue;
+        const target = new URL(raw);
+        if (target.username || target.password || target.hash || !target.pathname.startsWith(canonical.pathname)) {
+          outgoing.writeHead(403); outgoing.end(); return;
+        }
+        if (target.origin === origin) {
+          target.protocol = upstream.protocol; target.host = upstream.host;
+          local.searchParams.set(key, target.href);
+        } else if (target.origin !== canonical.origin) {
+          outgoing.writeHead(403); outgoing.end(); return;
+        }
+      }
+      if (records.length >= 4096) { outgoing.writeHead(503); outgoing.end(); return; }
+      const headers = { ...incoming.headers, host: upstream.host };
+      delete headers.connection;
+      const observation = { method: incoming.method!, status: 0, range: incoming.headers.range,
+        ifMatch: typeof incoming.headers['if-match'] === 'string' ? incoming.headers['if-match'] : undefined,
+        etag: undefined as string | undefined, consumedBodyBytes: 0, streamClosed: false };
+      records.push(observation);
+      const remote = httpRequest(new URL(`${local.pathname}${local.search}`, upstream), { method: incoming.method, headers });
+      ownedRequests.add(remote);
+      incoming.once('aborted', () => remote.destroy());
+      remote.once('close', () => ownedRequests.delete(remote));
+      const response = await new Promise<import('node:http').IncomingMessage>((resolve, reject) => {
+        remote.once('response', resolve); remote.once('error', reject); remote.end();
+      });
+      observation.status = response.statusCode ?? 0;
+      observation.etag = typeof response.headers.etag === 'string' ? response.headers.etag : undefined;
+      outgoing.writeHead(observation.status, response.headers);
+      const counter = new Transform({ transform(chunk: Buffer, _encoding, done) {
+        observation.consumedBodyBytes += chunk.length; done(null, chunk);
+      } });
+      try { await pipeline(response, counter, outgoing); observation.streamClosed = true; }
+      finally { remote.destroy(); }
+    })().catch(() => { outgoing.destroy(); });
+  });
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return { origin, records, close: () => {
+    if (closePromise) return closePromise;
+    closing = true;
+    for (const remote of ownedRequests) remote.destroy();
+    closePromise = new Promise<void>((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error('owned observation relay close unknown')), 5000);
+      server.close((error) => { clearTimeout(deadline); if (error) reject(error); else resolve(); });
+      server.closeAllConnections();
+    });
+    return closePromise;
+  } };
 }
 
 async function main(): Promise<void> {

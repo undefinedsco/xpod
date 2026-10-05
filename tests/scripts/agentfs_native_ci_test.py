@@ -108,7 +108,7 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_latest_inventory_accepts_only_complete_bound_regressions(self):
-        text = 'test result: ok. 96 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
+        text = 'test result: ok. 97 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
         text += 'test mount::tests::legacy_output_exceeds_observation_budget ... ignored\n'
         text += 'test mount_control::tests::lease_child ... ignored\n'
         for name in ['closed_marker_is_read_only_after_actual_lease_release',
@@ -148,14 +148,15 @@ class SupervisorTests(unittest.TestCase):
                           'pod_fs::clean_cache_integration_tests::weak_etag_bypasses_and_is_never_cached',
                           'pod_fs::clean_cache_integration_tests::empty_etag_bypasses_and_is_never_cached',
                           'pod_fs::clean_cache_integration_tests::etag_race_412_reacquires_current_version_once',
+                          'pod_fs::range_stream_tests::copy_up_failure_diagnostics_preserve_errors_and_hide_secrets',
                           'pod_fs::clean_cache_integration_tests::truncated_range_response_is_not_cached',
                           'pod_fs::clean_cache_integration_tests::restart_serves_persisted_hit_only_after_fresh_head',
                           'pod_fs::clean_cache_integration_tests::dirty_overlay_edit_is_never_cached_and_remote_untouched',
                           'pod_fs::clean_cache_integration_tests::identity_and_canonical_pod_are_isolated_and_loopback_has_no_directory',
                           'pod_fs::clean_cache_integration_tests::denied_head_invalidates_and_never_serves_a_cached_body']:
             text += f'test {qualified} ... ok\n'
-        self.assertEqual(a.check_tests(text), dict(declaredTests=98, passedTests=96, ignoredTests=2, filteredTests=0))
-        for invalid in [text.replace('96 passed', '95 passed'),
+        self.assertEqual(a.check_tests(text), dict(declaredTests=99, passedTests=97, ignoredTests=2, filteredTests=0))
+        for invalid in [text.replace('97 passed', '95 passed'),
                         text.replace('0 filtered out', '2 filtered out'),
                         text.replace('closed_marker_is_read_only_after_actual_lease_release ... ok',
                                      'closed_marker_is_read_only_after_actual_lease_release ... FAILED'),
