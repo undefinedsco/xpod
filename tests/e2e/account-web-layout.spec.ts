@@ -173,6 +173,52 @@ async function checkLayout(page: Page, info: TestInfo, name: string, expectation
   await page.screenshot({ path: info.outputPath(`${name}.png`), scale: 'css' });
 }
 
+/**
+ * §4 / §13.11: a native host window never scrolls; only the sign-in body
+ * (`[data-pod-sign-in="main"]`, `overflow-y: auto`) may, and the pinned action
+ * area stays inside the viewport. Returns the measured boxes for evidence.
+ */
+async function expectBodyOnlyScrolling(page: Page) {
+  const state = await page.evaluate(() => {
+    const main = document.querySelector('[data-pod-sign-in="main"]') as HTMLElement | null;
+    const actions = document.querySelector('[data-pod-sign-in="actions"]') as HTMLElement | null;
+    const actionsBox = actions?.getBoundingClientRect();
+    return {
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      documentScrollHeight: document.documentElement.scrollHeight,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      mainOverflowY: main ? getComputedStyle(main).overflowY : null,
+      mainScrollHeight: main?.scrollHeight ?? null,
+      mainClientHeight: main?.clientHeight ?? null,
+      actions: actionsBox ? { top: actionsBox.top, bottom: actionsBox.bottom } : null,
+    };
+  });
+  expect(state.documentScrollWidth).toBeLessThanOrEqual(state.viewport.width);
+  // The host window itself does not scroll; the body region owns any overflow.
+  expect(state.documentScrollHeight).toBeLessThanOrEqual(state.viewport.height + 1);
+  expect(state.mainOverflowY).toBe('auto');
+  expect(state.actions).not.toBeNull();
+  expect(state.actions!.bottom).toBeLessThanOrEqual(state.viewport.height + 1);
+  return state;
+}
+
+/**
+ * Rendered typography of the consent view, read from computed styles.
+ *
+ * The consent heading carries the historical `text-[17px]` utility class, but
+ * the rendered contract is the shared sign-in title size (`22px`, weight 600)
+ * from `.pod-sign-in h1`. Class names are not size evidence: this reads what the
+ * browser actually lays out, so a host change cannot silently restyle it.
+ */
+async function measureConsentTypography(page: Page) {
+  return page.evaluate(() => {
+    const element = document.querySelector('[data-pod-sign-in-state="consent"] h1') as HTMLElement | null;
+    if (!element) return null;
+    const style = getComputedStyle(element);
+    return { fontSize: style.fontSize, fontWeight: style.fontWeight };
+  });
+}
+
 test('Wide page shows the service introduction beside the 480px body and recovers from a login error', async ({ page }, info) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const observed = await mockAccount(page, { loginStatus: 401 });
@@ -415,17 +461,25 @@ test('Initialization failure blocks Account requests until retry succeeds', asyn
   await checkLayout(page, info, 'init-recovered', { host: 'document', intro: 'shown' });
 });
 
-test('Consent with a long node identity uses a desktop document window', async ({ page }, info) => {
+test('Desktop consent fills the native 440x620 window and the 320x480 minimum', async ({ page }, info) => {
   await useDesktopBridge(page);
-  await page.setViewportSize({ width: 360, height: 540 });
+  await page.setViewportSize({ width: 440, height: 620 });
   await mockAccount(page, { authenticated: true, consent: true, longBinding: true });
   await page.goto('/.account/oidc/consent/');
   await expect(page.getByRole('heading', { name: '授权 Example App', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '允许', exact: true })).toBeEnabled();
-  await checkLayout(page, info, 'consent-document-long-identity', { host: 'document', intro: 'hidden' });
-  await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'workspace');
 
-  // Primary and return actions remain reachable in the 360x540 window.
+  // The native authentication surface fills the host-selected window; it is not
+  // the two-column browser document page.
+  await checkLayout(page, info, 'consent-window-440x620-long-identity', { host: 'window' });
+  await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'account');
+  let scrolling = await expectBodyOnlyScrolling(page);
+  expect(scrolling.viewport).toEqual({ width: 440, height: 620 });
+  // Host selection changes geometry only: the consent heading still renders at
+  // the shared sign-in title size the browser page uses (measured, not class-based).
+  expect(await measureConsentTypography(page)).toEqual({ fontSize: '22px', fontWeight: '600' });
+
+  // Primary and return actions remain reachable with the long identity.
   await page.getByRole('button', { name: '允许', exact: true }).scrollIntoViewIfNeeded();
   await page.getByRole('button', { name: '允许', exact: true }).click({ trial: true });
   await page.getByRole('button', { name: '换一个账号', exact: true }).scrollIntoViewIfNeeded();
@@ -436,10 +490,14 @@ test('Consent with a long node identity uses a desktop document window', async (
   await expect(page.getByLabel('以后不再询问')).toBeVisible();
   await page.getByLabel('以后不再询问').uncheck();
 
-  // The shared minimum still fits the long identity.
+  // The shared minimum still fits the long identity in the same native window.
   await page.setViewportSize({ width: 320, height: 480 });
   await expect(page.getByRole('button', { name: '允许', exact: true })).toBeEnabled();
-  await checkLayout(page, info, 'consent-document-narrow-long-identity', { host: 'document', intro: 'hidden' });
+  await checkLayout(page, info, 'consent-window-320x480-long-identity', { host: 'window' });
+  scrolling = await expectBodyOnlyScrolling(page);
+  expect(scrolling.viewport).toEqual({ width: 320, height: 480 });
+  // The minimum window keeps the same typography; it does not compact the copy.
+  expect(await measureConsentTypography(page)).toEqual({ fontSize: '22px', fontWeight: '600' });
   await page.getByRole('button', { name: '允许', exact: true }).scrollIntoViewIfNeeded();
   await page.getByRole('button', { name: '允许', exact: true }).click({ trial: true });
 });
@@ -496,8 +554,8 @@ test('Desktop long-identity consent remains operable at 200% root text', async (
       await action.scrollIntoViewIfNeeded();
       await action.click({ trial: true });
     }
-    await checkLayout(page, info, `consent-document-${width}-text-200`, { host: 'document', intro: 'hidden' });
-    await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'workspace');
+    await checkLayout(page, info, `consent-window-${width}-text-200`, { host: 'window' });
+    await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'account');
   }
 });
 

@@ -76,11 +76,15 @@ function normalizeWindowModePathname(pathname: string): string {
 function isCompactAccountPathname(pathname: string): boolean {
   // Only short authentication steps share the compact frame. Long Account
   // documents need the workspace viewport for readable forms and actions.
+  // The OIDC authorization steps (consent, pick-webid) are short authentication
+  // surfaces, so they stay compact; register/create-pod/account documents do not.
   return pathname === '/.account'
     || pathname === '/.account/login'
     || pathname === '/.account/login/password'
     || pathname === '/.account/login/password/forgot'
     || pathname === '/.account/login/password/reset'
+    || pathname === '/.account/oidc/consent'
+    || pathname === '/.account/oidc/pick-webid'
 }
 
 export function bindDesktopWindowModeNavigation(

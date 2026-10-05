@@ -76,9 +76,88 @@ export interface BrowserOidcTrace {
   callbackTransaction?: string;
   callbackReturnTo?: string;
   passwordSubmitted: boolean;
+  /** Counts only actual password requests; bodies are never retained. */
+  passwordRequestCount?: number;
+  passwordSubmitCount?: number;
+  secondPasswordFormSeen?: boolean;
+  secondLoginActionSeen?: boolean;
   authorizationRedirectUris: string[];
+  /** Observed authorization `scope` sets, normalized (deduped, sorted) per authorize
+   * request; `'<none>'` when no scope was sent. Never inferred from requested input and
+   * never retains state/PKCE/other authorization secrets. */
+  authorizationScopeSets?: string[];
   /** Observed native Consent selection, never inferred from requested input. */
   storageBindingSelected?: { webId: string; podUrl: string };
+  /** Explicit Consent remember-client scenario choice and the value the surface
+   * actually retained before approval. Never inferred from requested input. */
+  rememberClientRequested?: boolean;
+  rememberClientObserved?: boolean;
+  /** Actual Consent POSTs and the safe `remember` boolean they carried. */
+  consentRequestCount?: number;
+  consentRememberPosted?: boolean;
+}
+
+interface ObservedAuthorization { redirectUri: string; state: string; s256: boolean }
+interface CallbackLifecycle {
+  completed: Array<{ id: string; record: string }>;
+  consumed: string[];
+  active?: string;
+}
+
+/** Correlate a new lifecycle marker with this call's actual PKCE request and
+ * code/state callback. A pre-callback active hint is not a completed login. */
+function correlateCallback(input: {
+  origin: string; startedAt: number; baseline: string[]; authorizations: ObservedAuthorization[];
+  callbacks: string[]; lifecycle: CallbackLifecycle;
+}): string | undefined {
+  const matches = new Set<string>();
+  for (const callbackHref of input.callbacks) {
+    const callback = new URL(callbackHref);
+    const state = callback.searchParams.get('state');
+    if (callback.origin !== input.origin || callback.pathname !== '/auth/callback' || callback.hash
+      || callback.username || callback.password || !callback.searchParams.get('code') || !state
+      || callback.searchParams.getAll('code').length !== 1 || callback.searchParams.getAll('state').length !== 1) continue;
+    const authorized = input.authorizations.some(entry => {
+      try {
+        const redirect = new URL(entry.redirectUri);
+        return entry.s256 && entry.state === state && redirect.origin === input.origin
+          && redirect.pathname === callback.pathname && !redirect.hash && !redirect.username && !redirect.password
+          && Array.from(redirect.searchParams).every(([key, value]) => callback.searchParams.get(key) === value);
+      } catch { return false; }
+    });
+    if (!authorized) continue;
+    for (const { id, record } of input.lifecycle.completed) {
+      if (input.baseline.includes(id) || input.lifecycle.active === id || !input.lifecycle.consumed.includes(id)
+        || callback.searchParams.has('transaction') && callback.searchParams.get('transaction') !== id) continue;
+      try {
+        const marker = JSON.parse(record) as { callback?: unknown; completedAt?: unknown; destination?: unknown };
+        if (typeof marker.callback !== 'string' || typeof marker.destination !== 'string'
+          || typeof marker.completedAt !== 'number' || !Number.isFinite(marker.completedAt)
+          || marker.completedAt < input.startedAt || marker.completedAt > Date.now()) continue;
+        const identity = new URL(marker.callback), destination = new URL(marker.destination);
+        if (identity.origin === callback.origin && identity.pathname === callback.pathname
+          && !identity.hash && !identity.username && !identity.password && identity.searchParams.size === 1
+          && identity.searchParams.get('state') === state && destination.origin === input.origin
+          && !destination.username && !destination.password) matches.add(id);
+      } catch { /* A malformed or unrelated marker is never completion evidence. */ }
+    }
+  }
+  return matches.size === 1 ? [...matches][0] : undefined;
+}
+
+async function readCallbackLifecycle(page: Page): Promise<CallbackLifecycle> {
+  return page.evaluate(() => {
+    const completedPrefix = 'xpod.auth.callback.completed.v1.';
+    const consumedPrefix = 'xpod.auth.transaction.v1.consumed.';
+    const keys = Object.keys(window.sessionStorage);
+    return {
+      completed: keys.filter(key => key.startsWith(completedPrefix)).map(key => ({
+        id: key.slice(completedPrefix.length), record: window.sessionStorage.getItem(key) ?? '',
+      })),
+      consumed: keys.filter(key => key.startsWith(consumedPrefix)).map(key => key.slice(consumedPrefix.length)),
+      active: window.sessionStorage.getItem('xpod.auth.transaction.v1.active') ?? undefined,
+    };
+  }).catch(() => ({ completed: [], consumed: [] }));
 }
 
 export function chooseConsentBinding(options: Array<{ value: string; disabled: boolean }>, currentValue: string,
@@ -107,6 +186,10 @@ export interface CompleteOidcLoginOptions {
   requireCallbackEvidence?: boolean;
   /** Explicit UI choice; undefined preserves the form default for this scenario. */
   rememberAccount?: boolean;
+  /** Explicit Consent remember-client choice, independent of account remembering.
+   * undefined preserves the surface default; true or false must be offered, set
+   * and retained before approval or the scenario fails. */
+  rememberClient?: boolean;
   /** Let the scenario inspect and approve Consent instead of the generic action driver. */
   manualConsent?: boolean;
   /** Resolve an intentional callback failure without waiting for protected-route readiness. */
@@ -142,10 +225,14 @@ export async function completeOidcLogin(
     callbackHasState: false,
     passwordSubmitted: false,
     authorizationRedirectUris: [],
+    authorizationScopeSets: [],
   };
   const browserErrors: string[] = [];
   const networkDiagnostics: string[] = [];
   const startedAt = Date.now();
+  const initialCallbackIds = (await readCallbackLifecycle(page)).completed.map(entry => entry.id);
+  const observedAuthorizations: ObservedAuthorization[] = [];
+  const observedCallbacks = new Set<string>();
   const recordDiagnostic = (entry: string) => {
     if (networkDiagnostics.length < 80) networkDiagnostics.push(`${Date.now() - startedAt}ms ${entry}`);
   };
@@ -163,6 +250,26 @@ export async function completeOidcLogin(
         && url.searchParams.has('redirect_uri');
       const redirectUri = url.searchParams.get('redirect_uri');
       if (redirectUri) trace.authorizationRedirectUris.push(redirectUri);
+      if (hasAuthorizationCodeParams) {
+        const scopes = [...new Set(url.searchParams.getAll('scope')
+          .flatMap(value => value.split(' ')).filter(Boolean))].sort();
+        trace.authorizationScopeSets!.push(scopes.length > 0 ? scopes.join(' ') : '<none>');
+      }
+      if (hasAuthorizationCodeParams && redirectUri && url.searchParams.get('state')) {
+        observedAuthorizations.push({ redirectUri, state: url.searchParams.get('state')!,
+          s256: Boolean(url.searchParams.get('code_challenge')) && url.searchParams.get('code_challenge_method') === 'S256'
+            && url.searchParams.getAll('state').length === 1 && url.searchParams.getAll('redirect_uri').length === 1 });
+      }
+      if (request.method() === 'POST' && /^\/\.account\/(?:interaction\/[^/]+\/)?login\/password\/?$/u.test(url.pathname)) {
+        trace.passwordRequestCount = (trace.passwordRequestCount ?? 0) + 1;
+      }
+      if (request.method() === 'POST' && /^\/\.account\/(?:interaction\/[^/]+\/)?oidc\/consent\/?$/u.test(url.pathname)) {
+        trace.consentRequestCount = (trace.consentRequestCount ?? 0) + 1;
+        try {
+          const body = JSON.parse(request.postData() ?? '') as { remember?: unknown };
+          if (typeof body.remember === 'boolean') trace.consentRememberPosted = body.remember;
+        } catch { /* A non-JSON consent body carries no remember evidence. */ }
+      }
       if (url.pathname.startsWith('/api/ai/gateway/')) {
         const headers = request.headers();
         const authorizationScheme = headers.authorization?.split(/\s+/u, 1)[0] ?? '<none>';
@@ -258,6 +365,7 @@ export async function completeOidcLogin(
     trace.callbackPathSeen = true;
     trace.callbackHasCode ||= url.searchParams.has('code');
     trace.callbackHasState ||= url.searchParams.has('state');
+    if (url.searchParams.get('code') && url.searchParams.get('state')) observedCallbacks.add(url.href);
     trace.callbackTransaction ??= url.searchParams.get('transaction') ?? undefined;
     trace.callbackReturnTo ??= url.searchParams.get('returnTo') ?? undefined;
   };
@@ -277,6 +385,8 @@ export async function completeOidcLogin(
     let submittedPassword = false;
     let productWebIdEntryClicked = false;
     let localSpaceClickedAt = 0;
+    let passwordFormLeftAfterSubmit = false;
+    let consentRememberApplied = false;
     let lastPhase = '';
 
     while (Date.now() < deadline) {
@@ -290,14 +400,16 @@ export async function completeOidcLogin(
       }
       if (await options.failure?.(page)) return trace;
       const routeReady = await (options.ready?.(page) ?? isSettingsWorkspaceReady(page, baseOrigin));
-      if (trace.callbackPathSeen && !trace.callbackTransaction) {
-        trace.callbackTransaction = await findConsumedCallbackTransaction(page);
-      }
+      const matchedCallback = options.requireCallbackEvidence && trace.callbackPathSeen ? correlateCallback({
+        origin: baseOrigin, startedAt, baseline: initialCallbackIds, authorizations: observedAuthorizations,
+        callbacks: [...observedCallbacks], lifecycle: await readCallbackLifecycle(page),
+      }) : undefined;
+      if (matchedCallback) trace.callbackTransaction = matchedCallback;
       const callbackReady = !options.requireCallbackEvidence
         || (trace.callbackPathSeen
           && trace.callbackHasCode
           && trace.callbackHasState
-          && await hasConsumedCallback(page, trace.callbackTransaction));
+          && matchedCallback !== undefined);
       if (routeReady && callbackReady) {
         return trace;
       }
@@ -350,6 +462,8 @@ export async function completeOidcLogin(
       const passwordInput = page.locator('input[type="password"], input[name="password"], input#password').first();
       const emailVisible = await emailInput.isVisible({ timeout: 250 }).catch(() => false);
       const passwordVisible = await passwordInput.isVisible({ timeout: 250 }).catch(() => false);
+      if (submittedPassword && (!emailVisible || !passwordVisible)) passwordFormLeftAfterSubmit = true;
+      if (submittedPassword && passwordFormLeftAfterSubmit && emailVisible && passwordVisible) trace.secondPasswordFormSeen = true;
       if (emailVisible && passwordVisible && !submittedPassword) {
         await emailInput.fill(account.email, { timeout: 2_000 });
         await passwordInput.fill(account.password, { timeout: 2_000 });
@@ -361,6 +475,7 @@ export async function completeOidcLogin(
         await passwordInput.press('Enter', { timeout: 2_000 });
         submittedPassword = true;
         trace.passwordSubmitted = true;
+        trace.passwordSubmitCount = (trace.passwordSubmitCount ?? 0) + 1;
         await page.waitForTimeout(350);
         continue;
       }
@@ -372,6 +487,38 @@ export async function completeOidcLogin(
         productWebIdEntryClicked = true;
         await productWebIdEntry.click({ timeout: 2_000, noWaitAfter: true });
         await page.waitForTimeout(350);
+        continue;
+      }
+
+      // An explicit remember-client scenario must set and retain the real
+      // Consent choice before approving; a missing or ignored choice fails the
+      // scenario instead of silently defaulting to "do not remember".
+      const consentSurface = page.locator('[data-pod-sign-in-state="consent"]');
+      if (options.rememberClient !== undefined && !consentRememberApplied
+        && await consentSurface.isVisible({ timeout: 100 }).catch(() => false)) {
+        const rememberClientChoice = page.getByRole('checkbox', { name: /^(?:以后不再询问|Do not ask again)$/u });
+        if (!await rememberClientChoice.isVisible({ timeout: 250 }).catch(() => false)) {
+          // The choice is folded into the collapsed request-details disclosure.
+          const details = page.locator('summary', { hasText: /请求详情|Request details/u }).first();
+          if (await details.isVisible({ timeout: 250 }).catch(() => false)) {
+            await details.click({ timeout: 2_000, noWaitAfter: true }).catch(() => undefined);
+          }
+        }
+        if (!await rememberClientChoice.isVisible({ timeout: 1_000 }).catch(() => false)) {
+          throw new Error(`Consent did not offer the requested remember-client choice (requested=${options.rememberClient})`);
+        }
+        if (!await rememberClientChoice.isEnabled({ timeout: 250 }).catch(() => false)) {
+          throw new Error('Consent remember-client choice is disabled and cannot be set before approval');
+        }
+        await rememberClientChoice.setChecked(options.rememberClient, { timeout: 2_000 });
+        const observedRemember = await rememberClientChoice.isChecked();
+        if (observedRemember !== options.rememberClient) {
+          throw new Error('Consent did not retain the requested remember-client choice');
+        }
+        trace.rememberClientRequested = options.rememberClient;
+        trace.rememberClientObserved = observedRemember;
+        consentRememberApplied = true;
+        await page.waitForTimeout(150);
         continue;
       }
 
@@ -454,6 +601,7 @@ export async function completeOidcLogin(
           name: OIDC_LOGIN_ACTION_NAME,
         }).first();
         if (await secondLoginAction.isVisible({ timeout: 100 }).catch(() => false)) {
+          trace.secondLoginActionSeen = true;
           throw new Error(`Xpod exposed a second visible login action after password submission: ${await secondLoginAction.innerText()}`);
         }
       }
@@ -641,31 +789,7 @@ function safeNetworkPath(url: URL): string {
   return `${normalized}${scope}${keys.length > 0 ? `?keys=${keys.join(',')}` : ''}`;
 }
 
-async function hasConsumedCallback(page: Page, transactionId?: string): Promise<boolean> {
-  if (!transactionId) return false;
-  return await page.evaluate((id) => {
-    const completed = window.sessionStorage.getItem(`xpod.auth.callback.completed.v1.${id}`);
-    const active = window.sessionStorage.getItem('xpod.auth.transaction.v1.active');
-    return completed !== null && active !== id;
-  }, transactionId).catch(() => false);
-}
-
 async function readActiveCallbackTransaction(page: Page): Promise<string | undefined> {
   return await page.evaluate(() => window.sessionStorage.getItem('xpod.auth.transaction.v1.active') ?? undefined)
     .catch(() => undefined);
-}
-
-async function findConsumedCallbackTransaction(page: Page): Promise<string | undefined> {
-  return await page.evaluate(() => {
-    const completedPrefix = 'xpod.auth.callback.completed.v1.';
-    const consumedPrefix = 'xpod.auth.transaction.v1.consumed.';
-    const completed = Object.keys(window.sessionStorage)
-      .filter((key) => key.startsWith(completedPrefix))
-      .map((key) => key.slice(completedPrefix.length));
-    const consumed = new Set(Object.keys(window.sessionStorage)
-      .filter((key) => key.startsWith(consumedPrefix))
-      .map((key) => key.slice(consumedPrefix.length)));
-    const candidates = completed.filter((id) => consumed.has(id));
-    return candidates.length === 1 ? candidates[0] : undefined;
-  }).catch(() => undefined);
 }

@@ -1,3 +1,4 @@
+import { SOLID_CLIENT_AUTHN_KEY_PREFIX } from '@inrupt/solid-client-authn-core';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { AccessRoute } from '@undefineds.co/solid-sdk/access-route';
 import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
@@ -49,7 +50,7 @@ afterEach(() => {
 
 describe('Xpod restore authority', () => {
   const issuer = 'https://id.undefineds.co/';
-  const currentKey = 'solidClientAuthenticationUser:currentSession';
+  const currentKey = `${SOLID_CLIENT_AUTHN_KEY_PREFIX}currentSession`;
   const recordKey = 'xpod.inrupt.insecure:solidClientAuthenticationUser:active';
 
   function fixture(activeIssuer: string | undefined) {
@@ -88,6 +89,18 @@ describe('Xpod restore authority', () => {
     const { runtime, adapter } = fixture(issuer);
     await runtime.session.initialize();
     expect(adapter.handleIncomingRedirect).toHaveBeenCalledWith({ restorePreviousSession: true });
+    runtime.session.dispose();
+  });
+
+  test('does not scan an old pointer or matching bystander when the SDK selected pointer is missing', async () => {
+    const { runtime, adapter } = fixture(issuer);
+    window.localStorage.removeItem(currentKey);
+    window.localStorage.setItem('solidClientAuthenticationUser:currentSession', 'active');
+    const before = { ...window.localStorage };
+    await runtime.session.initialize();
+    expect(adapter.handleIncomingRedirect).toHaveBeenCalledWith({ restorePreviousSession: false });
+    expect(adapter.logout).not.toHaveBeenCalled();
+    expect({ ...window.localStorage }).toEqual(before);
     runtime.session.dispose();
   });
 

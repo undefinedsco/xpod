@@ -973,3 +973,37 @@ RC `3be53aba6aa04df0a93520ab3a94af0e9bad768a` / run `37195150178` 实际 complet
 同日安装包补录：本地 `71243cd91608cccbd488eef0df7acf54411ba4a1` 的原 zip 启动及 fixture 关闭失败分别保留。真实 OS 隔离诊断确认 Components 祖先发现及内部 CSS CLI 未注入同一 moduleState；[提取包 Components 发现问题](../../issues/2026-10-05-extracted-components-ancestor-discovery.md) 记录最小共享修复和工作树 binary 的 Local Gateway/API/CSS、实际 QLever 子进程与零残留证据。这些诊断通过不能追认原 zip 或 managed 权限门禁通过；修复后的新 SHA 仍须完整回归和 exact 包验收。
 
 Cloud 恢复时点补录：用户确认重新打开 Sealos 后，UTC 2026-10-05 01:42:52 的独立公网只读检查经宿主代理实际获得 `/service/status` 200（1.55 秒）和 OIDC discovery 200（1.14 秒），curl 均 exit=0。以上 replicas=0 记录保留为历史时点；当前公网恢复不等于 managed 登录、Cloud card、Local 存储、双 Pod Consent/29 权限或 provider 已通过，须继续实际验收。
+
+
+### 2026-10-05 登录/双 Pod 实测补录（尚未冻结新的发行来源）
+
+同 d02 安装包的实际新 Account/两 Local Pod 预验已越过 SDK callback 与 exact runtime ready；此前 helper 把 pre-callback active 事务当成完成事务的误判已按实际 authorize/state/PKCE/callback 与唯一新 lifecycle marker 修正。仍未通过桌面权限/业务门禁：Cloud `pick-webid` 只返回同 WebID 的第一个 Pod；共享身份 adapter 按 WebID 去重丢掉第二个已验证存储关系，修复范围与 RED 见 [ownership issue](../../issues/2026-10-05-oidc-ownership-drops-second-pod.md)。
+
+同一 owned profile 的互动重启/reload 不再输入密码，但各发生一次新 Consent/authorization-code exchange，因此只能算 Account 复用，不能算 SDK 自动续期。另一个无登录/授权动作的观察验证未能恢复，已定位 host 读取了过时 SDK selected-session pointer；按现有 SDK 公开 prefix 修复并保留 exact active issuer 守卫，见 [restore issue](../../issues/2026-10-05-browser-restore-uses-obsolete-session-pointer.md)。这些新工作树修复、自动复用、用户所见两次 Consent、6h/后台续期、两个 Pod 的真实选择与 29 资源/管理/Chat 均须后续实证；既有 0.4.25 发布、d02 的两轮完整与包预算记录不追认成这些新项通过，14 天 Account Cookie 与独立 SDK Access/Refresh 既定规则不变。
+
+### 2026-10-05 Consent 桌面几何修正（§4 / §11.1 / §13.11）
+
+用户"Consent 偏大"定位到两层，本轮只修了按授权范围允许的渲染层：
+
+- 渲染层（已修）：`ui/src/pages/ConsentPage.tsx` 之前固定 `presentation="standard"`，使 `XpodAccountPageSurface` 在桌面桥下仍取 `document`，Consent 走浏览器 `page`（两栏 + 480 body + `min-h-[520px]` + `min-h-[100dvh]`）。现按 host 推导呈现：桌面原生宿主 `window`（铺满宿主 440×620，最小 320×480），浏览器仍是 `page`。浏览器 page 介绍栏、body 典型化、权限逻辑与请求流未改；管理页/workspace 未改。
+- 宿主层（未修，需 Lead 批准新增写入范围）：`desktop/src/window-mode.ts` 的 `isCompactAccountPathname` 不含 `/.account/oidc/consent`，所以 `desktopWindowModeForUrl` 把 Consent 归为 `workspace`（`desktop/test/window-mode.test.ts` 现有断言即如此）。IPC 先按 URL 解析再退回渲染层请求，故渲染层请求的 `account` 会被丢弃，真实桌面 Consent 窗口仍是 1280×800。定位记录见本节；建议的最小契约是把 OIDC 授权步（consent / pick-webid）并入 compact account 路由，仍保留 workspace 给长 Account 文档。
+
+本轮渲染层证据（fixture 呈现，不等于真实 Electron/Account 验收）：RED 单测 actual exit 1（`data-web-account-layout` 实际为 `page`，期望 `window`）；修后 Consent 相关单测 actual exit 0、103 passed；`typecheck:test` actual exit 0；`tests/e2e/account-web-layout.spec.ts` Consent 两例 actual exit 0，在 440×620 与 320×480 实测渲染（截图 PNG 恰为 440x620 / 320x480），`[data-pod-sign-in="main"]` 为唯一滚动区、操作区在视口内。
+
+### 2026-10-05 第二轮：宿主几何契约与"记住授权"前置条件
+
+**宿主层几何（已改，源码级）**：`desktop/src/window-mode.ts` 的 compact Account 路由分类新增 `/.account/oidc/consent` 与 `/.account/oidc/pick-webid`（含 scoped-interaction 归一化、尾斜杠与 query 情况），使 Consent/pick-webid 与登录步骤共用 440×620（最小 320×480）宿主窗口；register/create-pod/长 Account/workspace 文档仍走 1280×800，iframe 导航守卫与 IPC 权威不变。证据：桌面单测先 RED（3 fail / 15 pass，actual exit 1），最小修复后 18 pass / 0 fail / 92 expect（actual exit 0），`desktop` typecheck actual exit 0。**这仍是源码级契约，不等于原生窗口已重建**：真实 440×620 桌面 Consent 需要新的 exact 源包或 Lead 单独批准的当前源码私有壳诊断，旧 d02 zip 不追认。
+
+**"记住授权"是仓库内既有契约，不是外部 IdP 策略**：`RememberedClientPromptFactory` / `RememberedClientGrantStore` / `RememberedConsentHandler` 均在 `src/identity/oidc/` 内且已由 `config/xpod.base.json` 装配。`ConsentPage` 的 `rememberClient` 默认为 `false`，而此前的验收 helper 只有 `rememberAccount`，因此每次 fresh bootstrap 都提交 `remember:false`（等于主动 `forget`）。保留 profile 上观察到的 `prompt=none → interaction_required` 是在**没有记住记录**的 profile 上测得的，不能据此判定"记住授权自动恢复"已坏；目前确认的缺口是验收/测试前置条件，不是已证明的产品缺陷。
+
+第二轮前置条件修复：`tests/helpers/browserSolidOidc.ts` 新增独立于 `rememberAccount` 的可选 `rememberClient`；`true`/`false` 会展开"请求详情"折叠区、按精确文案设置勾选、在批准前校验其确实被保留，并记录 safe 的 requested/observed 布尔与 Consent POST 的 `remember` 值；`undefined` 完全保持既有默认与策略。包装验收 fresh bootstrap 现显式选择 `rememberClient:true`。前置条件证据：新增 4 个行为用例先 RED（4 fail / 65 pass，actual exit 1），修复后 69 pass / 0 fail（actual exit 0）；`typecheck:test` actual exit 0；既有 remembered-grant 回归 4 files / 73 pass actual exit 0。成功静默恢复（新授权码、不要求 refresh token）才是本项通过标准；真实无交互 reload/reopen 证据仍待本轮诊断。
+
+**仍待验**：真实桌面 Consent 440×620 原生几何（需新 exact 源包）；记住授权的无交互 reload/reopen；用户所见两次 Consent 的页面/事务区分；两 Pod 所有权、29 权限、配额/Chat、provider 矩阵、6h/后台续期。以上均不因本轮 fixture 或单测通过而被视为已验收。
+
+**第二轮实测（owned profile，保留）**：本机该桌面账号的 OIDC 授权面是**云端 IdP** `https://id.undefineds.co/`（issuer host 记为 `id.undefineds.co`），本地打包 CSS 只服务 app 资源与 `/auth/callback`；bootstrap 阶段的 `/.oidc/auth`、`/.account/interaction/**`（account/bindings/webid/pod、consent、pick-webid）、`/.oidc/token`、`/.oidc/jwks` 全部指向该 origin。因此本流程的“记住授权”记录落在授权方，而不是 owned profile 的 `identity.sqlite → internal_kv`；profile 里没有 `idp/remembered-clients/*` 不能作为缺口证据。显式 `rememberClient:true` 的一次受控 bootstrap 结果：`exact-ready`、密码 POST 0、consent POST 1 且 `remember:true`、一个 `authorization_code`；随后**无任何动作**的 reload 在 ~3.0s 内 `exact-ready`（`prompt=none` + 一次 token），**无动作**的整包关闭/重开则打开 `/device/services` 且全程未发起 authorize（token 0），属该阶段未触及会话恢复的**不确定结论**，不是记住授权回归。**仍待证**：服务本流程的授权方是否持久化/复用 remembered grant——service-info 无法证明部署源码 SHA，本轮前置条件只证明勾选被提供、被保留并已提交；需要部署方确认含该代码，或由本地 CSS 承载同一流程，并补一个真正打开 app 路由的冷启动观察阶段。
+
+**第三轮：冷启动更正与“两次 Consent”分类**。此前整包关闭/重开未恢复是**场景构造问题**：打包夹具的启动 URL 就是 `/device/services`，该阶段从未挂载产品路由，也未发起任何 authorize。同一保留 profile 上，把产品路由 `/ai-connections` 作为明确的场景设置打开（全程无登录/Consent/记住账号点击、无 cookie/token 注入）后，**17.9s 达到 exact-ready**：一次 `prompt=none` authorize、一个 `authorization_code` token、**密码 POST 0 / Consent POST 0**，WebID/Pod 哈希与前次一致。观察窗口内状态经历 `initializing → error → authenticated`。**范围限定**：该结果在“旧 d02 原生壳 + 已审阅当前 renderer 私有诊断”上成立，属于窄义观测的就绪/恢复证据，不等于不可变打包验收；且 `initializing/error/authenticated` 不能证明全程无错、也不能证明完整 AI 功能可用。DOM 采样为约 500ms 一次，无法证明不存在极短暂的额外可见屏。因此“冷启动自动恢复”只作窄义成立表述，不作分类断言；封闭该问题仍需未来真实记录的 exact-package 追踪。
+
+**“两次 Consent”分类**：单次授权内（一个 interaction id、一次 `/.oidc/auth`）**只有一个可见 Consent 页和一次 Consent POST**。请求计数偏大来自客户端自身：`/.account/<interaction>/oidc/pick-webid/` 是 `ConsentPage` 自己发起的**页内数据请求**（用于列出可选 WebID/存储绑定，见 `ui/src/pages/ConsentPage.tsx`），不是第二个页面；Consent **文档**被取三次，其中两次相隔 1ms，属同一屏幕的重复/并发拉取。既存证据中的重复授权表现为**两次独立授权**（`restart` 与 `reload` 各一次，各自 interaction id 与各自 Consent POST，同一桌面客户端）；既有轨迹中未见被遗弃的并行 authorize 流。**范围限定**：约 500ms 的 DOM 采样与被记录的 `restart/reload` 交互，不能证明某个具体人工报告的 episode 里没有出现短暂的第二个可见屏，也不能仅凭请求计数类别化该 episode。
+
+**第四轮：authorize scope 记录 hook（面向未来）**。`tests/helpers/browserSolidOidc.ts` 的既有安全 trace hook 现在会按每个 authorize 请求记录归一化后的 `scope` 集合（去重、排序；无 scope 时记 `'<none>'`），且**不保留** state / PKCE / 其他授权秘密；秘密脱敏回归在 `tests/helpers/browserSolidOidc.test.ts`（先 RED 2 fail / 69 pass actual exit 1，修复后 71 pass actual exit 0）。该 hook **不能追溯**补全此前未记录的轨迹，因此“两次询问是否携带相同 scope 集合”仍是 **PENDING**，只能由未来一次**真实记录的**请求轨迹来判定，不能以单元用例绿灯代替。

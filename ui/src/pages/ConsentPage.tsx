@@ -657,7 +657,13 @@ export function ConsentPage() {
 
   return (
     // The consent and no-WebID views bring their own service bar and heading.
-    <XpodAccountPageSurface title={xpodConsentCopy.surfaceTitle} presentation="standard" bare={noPodVisible || consentVisible}>
+    // §4/§11.1/§13.11: the native desktop authentication surface fills the
+    // host-selected 440x620 window; only a browser document is the two-column page.
+    <XpodAccountPageSurface
+      title={xpodConsentCopy.surfaceTitle}
+      presentation={getXpodAuthSurfaceHost() === 'window' ? 'compact' : 'standard'}
+      bare={noPodVisible || consentVisible}
+    >
       <div className="flex min-h-0 flex-1 flex-col gap-4">
       {interactionExpired ? (
         <WebAccountFailureView

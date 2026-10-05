@@ -162,7 +162,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       advance(index === 0 ? 'pod-a' : 'pod-b');
       const trace = await completeOidcLogin(page, { email: account.email, password: account.password,
         webId: binding.webId, podUrl: binding.storageUrl }, { baseUrl: gateway, startUrl: index === 0 ? new URL('ai-connections', gateway).href : undefined,
-        requireCallbackEvidence: true, rememberAccount: true, timeoutMs: 90_000,
+        requireCallbackEvidence: true, rememberAccount: true, rememberClient: true, timeoutMs: 90_000,
         ready: async page => {
           const runtime = await readBrowserXpodRuntime(page).catch(() => undefined);
           return runtime?.status === 'authenticated' && runtime.webId === binding.webId && runtime.podUrl === binding.storageUrl;
@@ -170,6 +170,11 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       await privateJson(options.privateDirectory, `oidc-${index}-private.json`, trace);
       allCallbacks &&= callbackSucceeded(trace, binding);
       if (!callbackSucceeded(trace, binding)) throw new Error('Actual browser callback or exact Consent choice is missing');
+      if (trace.rememberClientRequested !== true || trace.rememberClientObserved !== true || trace.consentRememberPosted !== true) {
+        throw new Error('The remembered-grant bootstrap did not set and retain the explicit remember-client choice: '
+          + `requested=${String(trace.rememberClientRequested)} observed=${String(trace.rememberClientObserved)} `
+          + `posted=${String(trace.consentRememberPosted)}`);
+      }
       phase = await acceptMountedPodPermissions(page, { webId: binding.webId, podUrl: binding.storageUrl });
       const descriptor = await phase.handle.evaluate(({ controller }) => controller.client!.getServiceAccess()) as { invocation?: { token?: string } };
       const invocation = descriptor.invocation?.token;
