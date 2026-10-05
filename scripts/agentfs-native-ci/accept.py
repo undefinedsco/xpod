@@ -151,8 +151,8 @@ def assert_status_ready(text, platform_name, helper, expected_pending=None):
 
 def check_tests(text):
     summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out', text)
-    if ('69', '0', '2', '0', '0') not in summaries:
-        raise RuntimeError('Latest full Rust inventory must report 69 passed, two declared ignores, zero filtered (71 total)')
+    if ('93', '0', '2', '0', '0') not in summaries:
+        raise RuntimeError('Latest full Rust inventory must report 93 passed, two declared ignores, zero filtered (95 total)')
     ignored = re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE)
     if set(ignored) != {'mount::tests::legacy_output_exceeds_observation_budget', 'mount_control::tests::lease_child'}:
         raise RuntimeError('Unexpected ignored tests')
@@ -171,6 +171,34 @@ def check_tests(text):
                  'live_lease_holder_makes_closed_proof_observation_return_false_until_release']:
         if not re.search(r'^test mount_control::tests::' + test + r' \.\.\. ok$', text, re.MULTILINE):
             raise RuntimeError(f'Missing latest regression: {test}')
+    # Exact cache-candidate regression names derived from the current source.
+    # Every one must report ok; the original inventory above is unchanged.
+    for qualified in ['clean_cache::tests::strong_etag_classification',
+                      'clean_cache::tests::loopback_authority_is_not_cached',
+                      'clean_cache::tests::remote_hit_after_reopen_and_weak_etag_bypass',
+                      'clean_cache::tests::wrong_identity_is_rejected',
+                      'clean_cache::tests::invalidate_path_drops_windows',
+                      'clean_cache::tests::eviction_is_clean_only_and_bounded',
+                      'clean_cache::tests::eviction_bounds_entry_count',
+                      'clean_cache::tests::insert_rejects_wrong_length_and_oversized_windows',
+                      'clean_cache::tests::retain_path_etag_drops_stale_versions_only',
+                      'clean_cache::tests::invalidate_prefix_drops_a_directory_tree',
+                      'clean_cache::tests::retired_missing_and_bad_length_rows_reclaim_budget',
+                      'clean_cache::tests::reopen_gc_retires_orphans_and_advances_tick',
+                      'clean_cache::tests::two_instances_same_dir_interleave_without_mixing_or_leaking_budget',
+                      'pod_fs::range_stream_tests::only_a_complete_206_content_range_is_range_proven',
+                      'pod_fs::range_stream_tests::clamped_416_retry_that_hits_412_reports_precondition_failed',
+                      'pod_fs::clean_cache_integration_tests::second_remote_read_avoids_body_get_while_head_present',
+                      'pod_fs::clean_cache_integration_tests::weak_etag_bypasses_and_is_never_cached',
+                      'pod_fs::clean_cache_integration_tests::empty_etag_bypasses_and_is_never_cached',
+                      'pod_fs::clean_cache_integration_tests::etag_race_412_reacquires_current_version_once',
+                      'pod_fs::clean_cache_integration_tests::truncated_range_response_is_not_cached',
+                      'pod_fs::clean_cache_integration_tests::restart_serves_persisted_hit_only_after_fresh_head',
+                      'pod_fs::clean_cache_integration_tests::dirty_overlay_edit_is_never_cached_and_remote_untouched',
+                      'pod_fs::clean_cache_integration_tests::identity_and_canonical_pod_are_isolated_and_loopback_has_no_directory',
+                      'pod_fs::clean_cache_integration_tests::denied_head_invalidates_and_never_serves_a_cached_body']:
+        if not re.search(r'^test ' + re.escape(qualified) + r' \.\.\. ok$', text, re.MULTILINE):
+            raise RuntimeError(f'Missing cache regression: {qualified}')
 
 
 def download(url, destination, expected):

@@ -56,7 +56,7 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_latest_inventory_accepts_only_complete_bound_regressions(self):
-        text = 'test result: ok. 69 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
+        text = 'test result: ok. 93 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
         text += 'test mount::tests::legacy_output_exceeds_observation_budget ... ignored\n'
         text += 'test mount_control::tests::lease_child ... ignored\n'
         for name in ['closed_marker_is_read_only_after_actual_lease_release',
@@ -74,11 +74,38 @@ class SupervisorTests(unittest.TestCase):
                      'inherited_original_lease_description_survives_helper_close_until_child_release',
                      'live_lease_holder_makes_closed_proof_observation_return_false_until_release']:
             text += f'test mount_control::tests::{name} ... ok\n'
+        for qualified in ['clean_cache::tests::strong_etag_classification',
+                          'clean_cache::tests::loopback_authority_is_not_cached',
+                          'clean_cache::tests::remote_hit_after_reopen_and_weak_etag_bypass',
+                          'clean_cache::tests::wrong_identity_is_rejected',
+                          'clean_cache::tests::invalidate_path_drops_windows',
+                          'clean_cache::tests::eviction_is_clean_only_and_bounded',
+                          'clean_cache::tests::eviction_bounds_entry_count',
+                          'clean_cache::tests::insert_rejects_wrong_length_and_oversized_windows',
+                          'clean_cache::tests::retain_path_etag_drops_stale_versions_only',
+                          'clean_cache::tests::invalidate_prefix_drops_a_directory_tree',
+                          'clean_cache::tests::retired_missing_and_bad_length_rows_reclaim_budget',
+                          'clean_cache::tests::reopen_gc_retires_orphans_and_advances_tick',
+                          'clean_cache::tests::two_instances_same_dir_interleave_without_mixing_or_leaking_budget',
+                          'pod_fs::range_stream_tests::only_a_complete_206_content_range_is_range_proven',
+                          'pod_fs::range_stream_tests::clamped_416_retry_that_hits_412_reports_precondition_failed',
+                          'pod_fs::clean_cache_integration_tests::second_remote_read_avoids_body_get_while_head_present',
+                          'pod_fs::clean_cache_integration_tests::weak_etag_bypasses_and_is_never_cached',
+                          'pod_fs::clean_cache_integration_tests::empty_etag_bypasses_and_is_never_cached',
+                          'pod_fs::clean_cache_integration_tests::etag_race_412_reacquires_current_version_once',
+                          'pod_fs::clean_cache_integration_tests::truncated_range_response_is_not_cached',
+                          'pod_fs::clean_cache_integration_tests::restart_serves_persisted_hit_only_after_fresh_head',
+                          'pod_fs::clean_cache_integration_tests::dirty_overlay_edit_is_never_cached_and_remote_untouched',
+                          'pod_fs::clean_cache_integration_tests::identity_and_canonical_pod_are_isolated_and_loopback_has_no_directory',
+                          'pod_fs::clean_cache_integration_tests::denied_head_invalidates_and_never_serves_a_cached_body']:
+            text += f'test {qualified} ... ok\n'
         a.check_tests(text)
-        for invalid in [text.replace('69 passed', '68 passed'),
+        for invalid in [text.replace('93 passed', '92 passed'),
                         text.replace('0 filtered out', '2 filtered out'),
                         text.replace('closed_marker_is_read_only_after_actual_lease_release ... ok',
-                                     'closed_marker_is_read_only_after_actual_lease_release ... FAILED')]:
+                                     'closed_marker_is_read_only_after_actual_lease_release ... FAILED'),
+                        text.replace('clean_cache::tests::strong_etag_classification ... ok',
+                                     'clean_cache::tests::strong_etag_classification ... FAILED')]:
             with self.assertRaises(RuntimeError):
                 a.check_tests(invalid)
 
@@ -501,10 +528,18 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn('bookworm-entry.sh', commands)
 
 
+def owned_scratch():
+    """Scratch under the repo's owned .test-data, never a generic temp dir."""
+    parent = ROOT / '.test-data' / 'agentfs-native-ci-self'
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(dir=parent)
+
+
 class WholeCiGateTests(unittest.TestCase):
     def test_hash_tree_stops_self_symlink_loop(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
+        with owned_scratch() as directory:
+            base = Path(directory) / 'base'
+            base.mkdir()
             os.symlink('.', base / 'loop')
             entries, digest = g.hash_tree(base)
             self.assertEqual(entries['loop']['kind'], 'symlink')
@@ -512,17 +547,22 @@ class WholeCiGateTests(unittest.TestCase):
             self.assertEqual(len(digest), 64)
 
     def test_hash_tree_stops_two_directory_loop(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            os.symlink('b', base / 'a')
-            os.symlink('a', base / 'b')
-            entries, _ = g.hash_tree(base)
-            self.assertEqual(set(entries), {'a', 'b'})
+        with owned_scratch() as directory:
+            base = Path(directory) / 'base'
+            (base / 'A').mkdir(parents=True)
+            (base / 'B').mkdir()
+            os.symlink('../B', base / 'A' / 'to_b')
+            os.symlink('../A', base / 'B' / 'to_a')
+            entries, digest = g.hash_tree(base)
+            # The cycle must be bound, not recursed: the first link is hashed,
+            # the back-link is stopped because its realpath was already visited.
+            self.assertIn('A/to_b', entries)
+            self.assertEqual(len(digest), 64)
 
     def test_manifest_snapshot_binds_known_symlink_dependency_body(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / 'packages').mkdir()
+        with owned_scratch() as directory:
+            root = Path(directory) / 'root'
+            (root / 'packages').mkdir(parents=True)
             real = root / 'store' / 'drizzle-orm'
             real.mkdir(parents=True)
             (real / 'index.js').write_text('v1')
@@ -539,17 +579,19 @@ class WholeCiGateTests(unittest.TestCase):
             self.assertNotEqual(first['combinedDigestSha256'], second['combinedDigestSha256'])
 
     def test_missing_required_root_refuses_before_launch(self):
-        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as evidence:
-            (Path(directory) / 'packages').mkdir()
-            with patch.object(g, 'ROOT', Path(directory)), patch.object(g, 'EVIDENCE', Path(evidence)), \
-                    patch.object(g, 'docker_storage_root', return_value=evidence), \
+        with owned_scratch() as directory:
+            root = Path(directory) / 'root'
+            (root / 'packages').mkdir(parents=True)
+            evidence = Path(directory) / 'evidence'
+            with patch.object(g, 'ROOT', root), patch.object(g, 'EVIDENCE', evidence), \
+                    patch.object(g, 'docker_storage_root', return_value=str(evidence)), \
                     patch.object(g.subprocess, 'check_output', return_value='1.4.2\n'):
                 code = g.main()
             self.assertNotEqual(code, 0)
-            receipt = json.loads((Path(evidence) / 'whole1.receipt.json').read_text())
+            receipt = json.loads((evidence / 'whole1.receipt.json').read_text())
             self.assertFalse(receipt['admitted'])
             self.assertTrue(receipt['missingRequired'])
-            self.assertFalse((Path(evidence) / 'whole1.raw.log').exists())
+            self.assertFalse((evidence / 'whole1.raw.log').exists())
 
     def test_manifest_admissible_refuses_missing_and_unresolved(self):
         self.assertTrue(g.manifest_admissible({'missingRequired': [], 'unresolvedRequired': []}))
