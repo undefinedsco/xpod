@@ -159,7 +159,10 @@ describe('driver runtime boundaries (Node22 ESM entry + JSON reporter)', () => {
 
   it('derives the passed count from the SAME JSON report (text summary is suppressed)', () => {
     const report = JSON.stringify({ numPassedTests: 117, numTotalTests: 127, numFailedTests: 0 });
-    expect(passedCountFromReport(report)).toBe(117);
+    expect(passedCountFromReport(report)).toBeUndefined();
+    expect(passedCountFromReport(JSON.stringify({ numPassedTests: 10, testResults: [{ assertionResults: [
+      ...Array.from({ length: 8 }, () => ({ status: 'passed' })), { status: 'pending' }, { status: 'pending' }, { status: 'failed' },
+    ] }] }))).toBe(8);
     expect(passedCountFromReport('not json')).toBeUndefined();
     expect(passedCountFromReport(JSON.stringify({ foo: 1 }))).toBeUndefined();
   });

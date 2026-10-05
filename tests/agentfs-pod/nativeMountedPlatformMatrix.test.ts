@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, open, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
@@ -198,6 +198,7 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     const gitdir = path.join(host, 'gitdir'); const hooks = path.join(host, 'hooks'); const template = path.join(host, 'template');
     await guard.remove(work); await mkdir(mnt, { recursive: true }); await mkdir(session, { recursive: true });
     await mkdir(hooks, { recursive: true }); await mkdir(template, { recursive: true });
+    const expectedRemote = server.readBody('alpha.txt').trim();
     const daemon = spawnOwnedForeground(binary, server, mnt, session);
     const commands: Record<string, unknown>[] = [];
     const proof: OwnedUnmountProof = { daemonClosed: false };
@@ -237,11 +238,11 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     };
     try {
       expect(await waitForKernelMount(mnt, 'alpha.txt')).toBe(true);
-      expect(await run('/bin/sh', [ '-c', 'set -eu; mkdir project; cat alpha.txt; printf "SHELL_CONTENT\\n" > project/content.txt' ], mnt)).toBe('ALPHA_BODY_0123456789');
+      expect(await run('/bin/sh', [ '-c', 'set -eu; mkdir project; cat alpha.txt; printf "SHELL_CONTENT\\n" > project/content.txt' ], mnt)).toBe(expectedRemote);
       expect(await readFile(path.join(project, 'content.txt'), 'utf8')).toBe('SHELL_CONTENT\n');
       const installedCli = process.env.XPOD_AGENTFS_TEST_CLI;
       if (!installedCli) throw new Error('installed CLI is required for actual PATH rg consumer');
-      const nativeRg = await run('/bin/sh', [ '-c', 'command -v rg' ], host);
+      const nativeRg = process.env.XPOD_AGENT_FS_NATIVE_RG ?? await run('/bin/sh', [ '-c', 'command -v rg' ], host);
       await run(nativeRg, [ '--version' ], host);
       const gitPath = await run('/bin/sh', [ '-c', 'command -v git' ], host);
       await run(gitPath, [ '--version' ], host);
@@ -317,16 +318,35 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     const work = path.join(ROOT, 'stream'); const mnt = path.join(work, 'mnt'); const session = path.join(work, 'session');
     await guard.remove(work); await mkdir(mnt, { recursive: true }); await mkdir(session, { recursive: true });
     const daemon = spawnOwnedForeground(binary, server, mnt, session);
-    let unmounted = false;
+    let unmounted = false; let primaryError: unknown; let cleanupError: unknown;
+    const proof: OwnedUnmountProof = { daemonClosed: false };
+    let stage = 'mount'; let sizeMiB: number | undefined; let baselineVersion: number | undefined;
+    const started = performance.now();
+    let failure: { observedUTC: string; elapsedMs: number; stage: string; sizeMiB?: number } | undefined;
+    const stages: { stage: string; sizeMiB?: number; elapsedMs: number; observedUTC: string }[] = [];
+    const journal = async (): Promise<void> => {
+      if (!process.env.XPOD_MOUNTED_EVIDENCE) return;
+      const previous = stages[stages.length - 1];
+      if (!previous || previous.stage !== stage || previous.sizeMiB !== sizeMiB) stages.push({ stage, sizeMiB, elapsedMs: performance.now() - started, observedUTC: new Date().toISOString() });
+      const error = primaryError as NodeJS.ErrnoException | undefined;
+      await writeFile(path.join(process.env.XPOD_MOUNTED_EVIDENCE, 'stream-journal.json'), `${JSON.stringify({
+        stage, sizeMiB, baselineVersion, stages, failure, observedUTC: new Date().toISOString(), elapsedMs: performance.now() - started, error: error === undefined ? null : { code: error.code, errno: error.errno, syscall: error.syscall },
+        requestCount: server.log.length, requestWindowLimit: 200, requests: server.log.slice(-200).map(({ method, resource, range, status, requestBytes, responseBytes }) => ({ method, resource, range, status, requestBytes, responseBytes })),
+        kernel: observeKernelMountsDetailed(work), sceneRetainedInHarness: primaryError !== undefined || cleanupError !== undefined, scenePath: work, retentionScope: 'ephemeral runner; no persistence after container or runner removal',
+      }, null, 2)}\n`);
+    };
     try {
       expect(await waitForKernelMount(mnt, 'alpha.txt'), 'kernel mount + fixture must be observed ready').toBe(true);
       for (const mib of SIZES_MIB) {
+        sizeMiB = mib; baselineVersion = undefined; stage = 'seed'; await journal();
         const name = `remote-${mib}.bin`;
         const disk = path.join(work, `${name}.disk`);
         await writeDiskBody(disk, mib, 0x78);
         server.seedDiskFile(name, disk);            // disk-backed: no GiB buffering
+        baselineVersion = server.version(name);
         server.resetLog();
         const target = path.join(mnt, name);
+        stage = 'read'; await journal();
         const handle = await open(target, 'r');
         const digest = createHash('sha256'); let total = 0; const rss: number[] = [];
         try {
@@ -347,7 +367,7 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
         // In-place clean copy-up: modify the SEEDED remote target in place, then
         // prove the remote keeps the unchanged bytes and advances ETag using
         // BOUNDED segment reads (never readBytes of the whole 1 GiB body).
-        const baselineVersion = server.version(name);
+        baselineVersion = server.version(name);
         server.resetLog();
         const bodySize = mib * 1024 * 1024; const seg = 64 * 1024;
         const diskHead = await readSeg(disk, 0, seg);
@@ -358,9 +378,11 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
         void sampleRss(daemon.child.pid).then((s) => { if (s) rssCopy.push(s.kib); });
         let committed: ExecResult | undefined;
         try {
+          stage = 'open-copy-up'; await journal();
           const editHandle = await open(editTarget, 'r+');
-          try { await editHandle.write(Buffer.from('EDIT'), 0, 4, 13); await editHandle.sync(); } finally { await editHandle.close(); }
+          try { stage = 'write-copy-up'; await journal(); await editHandle.write(Buffer.from('EDIT'), 0, 4, 13); stage = 'sync'; await journal(); await editHandle.sync(); } finally { await editHandle.close(); }
           // Sampled commit: covers the commit CHILD pid AND the mount daemon.
+          stage = 'commit'; await journal();
           committed = await execSampled(binary, [ 'commit', '--pod-root', server.podRoot, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN }, 900_000, [ daemon.child.pid ], rssCopy);
         } finally { clearInterval(preSampler); }
         expect(committed!.status, committed!.stderr).toBe(0);
@@ -382,19 +404,38 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
           const { writeFileSync } = await import('node:fs');
           writeFileSync(path.join(process.env.XPOD_MOUNTED_EVIDENCE, `rss-${mib}.json`), `${JSON.stringify({ phaseRead: rss, phaseCopyUp: rssCopy, readPeakKib: Math.max(...rss), copyUpPeakKib: Math.max(...rssCopy), limitKib: HELPER_RSS_LIMIT_KIB })}\n`);
         }
+        stage = 'verified'; await journal();
         await rm(disk, { force: true });
       }
-    } finally {
-      await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
-      const close = await awaitClose(daemon, 30_000);  // actual close only; spawn-error/pending are distinct facts
-      // Capture the TRUE foreground daemon buffers regardless of outcome so a real
-      // mount failure is diagnosable (the frozen detached daemon uses Stdio::null).
-      await captureDaemonEvidence('stream', daemon, close, { phase: `remote-${SIZES_MIB.join('_')}` });
-      expect(close.state, 'owned daemon must actually close (not pending/spawn-error)').toBe('closed');
-      expect(close.state === 'closed' && (close.code !== null || close.signal !== null), 'actual close code/signal').toBe(true);
-      unmounted = true;
-      expect(observeKernelMounts(work)).not.toBe('mounted');
-      await guard.remove(work);
+    } catch (error) {
+      primaryError = error;
+      failure = { observedUTC: new Date().toISOString(), elapsedMs: performance.now() - started, stage, sizeMiB };
+    }
+    finally {
+      try { await journal(); } catch (error) { cleanupError = error; }
+      try {
+        await runOwnedUnmountOnce(proof, async () => {
+          const result = await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+          return { result, postKernel: observeKernelMountsDetailed(work).state };
+        });
+        if (!proof.result || proof.result.state !== 'closed' || proof.result.actualExit !== 0 || proof.result.signal !== null || proof.postKernel !== 'absent') throw new Error(`stream unmount failed: ${JSON.stringify(proof)}`);
+      } catch (error) { cleanupError = cleanupError === undefined ? error : new AggregateError([ cleanupError, error ], 'stream cleanup errors'); }
+      try {
+        const close = await awaitClose(daemon, 30_000);
+        await captureDaemonEvidence('stream', daemon, close, { phase: stage, sizeMiB, baselineVersion, unmountProof: proof, kernel: observeKernelMountsDetailed(work) });
+        expect(close.state, 'owned daemon must actually close').toBe('closed');
+        expect(close.state === 'closed' && close.code === 0 && close.signal === null, 'daemon actual successful close').toBe(true);
+        proof.daemonClosed = true;
+        expect(observeKernelMounts(work)).toBe('absent'); unmounted = true;
+      } catch (error) { cleanupError = cleanupError === undefined ? error : new AggregateError([ cleanupError, error ], 'stream cleanup errors'); }
+      if (primaryError !== undefined || cleanupError !== undefined) {
+        retainedScene = true;
+        try { await journal(); } catch (error) { cleanupError = cleanupError === undefined ? error : new AggregateError([ cleanupError, error ], 'cleanup and journal unresolved'); }
+      }
+      else await guard.remove(work);
+      if (primaryError !== undefined && cleanupError !== undefined) throw new AggregateError([ primaryError, cleanupError ], 'stream failed; cleanup also unresolved');
+      if (primaryError !== undefined) throw primaryError;
+      if (cleanupError !== undefined) throw cleanupError;
     }
     expect(unmounted).toBe(true);
   }, 1_800_000);

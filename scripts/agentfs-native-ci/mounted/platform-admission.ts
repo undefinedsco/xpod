@@ -96,7 +96,9 @@ export function failureTextFromReport(reportJson: string, maxChars = 4000): stri
 export function passedCountFromReport(reportJson: string): number | undefined {
   try {
     const report = JSON.parse(reportJson) as VitestJsonReport;
-    if (typeof report.numPassedTests === 'number') return report.numPassedTests;
+    if (Array.isArray(report.testResults)) {
+      return report.testResults.flatMap((file) => file.assertionResults ?? []).filter((assertion) => assertion.status === 'passed').length;
+    }
   } catch { /* ignore */ }
   return undefined;
 }
@@ -252,6 +254,11 @@ async function main(): Promise<void> {
   if (!existsSync(helper) || !existsSync(launcher)) throw new Error('installed archive lacks helper or launcher');
   if (sha256File(helper) !== helperSha) throw new Error('installed helper digest mismatch');
 
+  const nativeRg = execFileSync('/bin/sh', [ '-c', 'command -v rg' ], { encoding: 'utf8' }).trim();
+  if (!path.isAbsolute(nativeRg) || !existsSync(nativeRg)) throw new Error('actual native rg is unavailable');
+  const nativeRgVersion = execFileSync(nativeRg, [ '--version' ], { encoding: 'utf8' }).trim();
+  const nativeRgSha256 = sha256File(nativeRg);
+
   // Consumer PATH: drop every dir that contains a bun executable, then PROVE
   // bun is unreachable from the consumer environment.
   const filtered = (process.env.PATH ?? '').split(':').filter(Boolean).filter((dir) => {
@@ -262,7 +269,7 @@ async function main(): Promise<void> {
   if (process.env.XPOD_MOUNTED_REQUIRE_NOBUN === '1' && bunVisible) throw new Error('consumer PATH still resolves bun');
 
   const env: NodeJS.ProcessEnv = {
-    ...process.env, PATH: acceptancePath,
+    ...process.env, PATH: acceptancePath, XPOD_AGENT_FS_NATIVE_RG: nativeRg,
     XPOD_AGENTFS_HELPER: helper, XPOD_AGENTFS_TEST_CLI: launcher,
     XPOD_AGENTFS_RUN_OVERLAY: '1', XPOD_MOUNTED_BACKEND: backend, XPOD_MOUNTED_OS: os,
   };
@@ -323,7 +330,7 @@ async function main(): Promise<void> {
   let requiredCases: { satisfied: boolean; missing: string[]; notPassed: { title: string; status: string }[] } =
     { satisfied: false, missing: [ ...REQUIRED_MOUNTED_CASES ], notPassed: [] };
   // Under --reporter=json the human "Tests N passed" line is suppressed, so the
-  // real count MUST come from the SAME report (numPassedTests), not the text.
+  // real count MUST come from passed assertions in the SAME report, not summary totals.
   let reportPassed: number | undefined;
   let reportFailureText = '';
   try {
@@ -347,7 +354,7 @@ async function main(): Promise<void> {
     : !requiredCases.satisfied ? 'required-mounted-cases-not-passed'
     : 'failed';
   const persisted = writeReceipt({
-    backend, nodePath: node, nodeVersion, nodeSha256,
+    backend, nodePath: node, nodeVersion, nodeSha256, nativeRg, nativeRgVersion, nativeRgSha256,
     productArchiveSha256: archiveSha, installedHelperSha256: helperSha, installedLauncherPath: launcher,
     harnessRunnerSha256: runnerSha, consumerBunVisible: bunVisible, passedCases: effectivePassed, minPassedCases: minPassed,
     producerState, producerLifecycle: lifecycle.facts(), ownedProcessObservations: processObservations, rawLog: rawPath,
