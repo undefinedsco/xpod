@@ -19,11 +19,11 @@ afterEach(() => { persisted.sessions = []; persisted.read.mockReset(); persisted
 
 // Only cleanup orchestration is simulated here; live evidence comes exclusively from the RC Gateway.
 describe('live Task acceptance bounded cleanup', () => {
-  it.each([{ pauseFailure: false, producerFailed: false, approvalFailure: false },
-    { pauseFailure: true, producerFailed: false, approvalFailure: false },
-    { pauseFailure: true, producerFailed: true, approvalFailure: false },
-    { pauseFailure: false, producerFailed: true, approvalFailure: false },
-    { pauseFailure: false, producerFailed: true, approvalFailure: true }])('keeps primary evidence with cleanup scenario %o', async ({ pauseFailure, producerFailed, approvalFailure }) => {
+  it.each([{ pauseFailure: false, producerFailed: false, approvalFailure: false, producerError: undefined as unknown },
+    { pauseFailure: true, producerFailed: false, approvalFailure: false, producerError: undefined as unknown },
+    { pauseFailure: true, producerFailed: true, approvalFailure: false, producerError: 'Error: service_access_missing HTTP status 403 private-secret' },
+    { pauseFailure: false, producerFailed: true, approvalFailure: false, producerError: 'Pi assistant ended with error (class=rate_limit, api=openai, provider=openai, model=gpt-6.1) HTTP 429 private-secret' },
+    { pauseFailure: false, producerFailed: true, approvalFailure: true, producerError: { message: 'private-secret' } }])('keeps primary evidence with cleanup scenario %o', async ({ pauseFailure, producerFailed, approvalFailure, producerError }) => {
     let cleanupStarted = false;
     const approvalReadPhases: string[] = [];
     approvalRead.mockReset().mockImplementation(async () => {
@@ -52,7 +52,7 @@ describe('live Task acceptance bounded cleanup', () => {
       } else if (route === '/api/tasks/run') {
         // Invalid ACK must fail the gate, but the producer still needs stopping.
         value = { run: { id: 'run-one', thread: 'thread-one', status: producerFailed ? 'queued' : 'running' } };
-      } else if (route === '/api/tasks/runs') value = { runs: [{ id: 'run-one', thread: 'thread-one', status: producerFailed ? 'failed' : cancelled ? 'cancelled' : 'queued',
+      } else if (route === '/api/tasks/runs') value = { runs: [{ id: 'run-one', thread: 'thread-one', status: producerFailed ? 'failed' : cancelled ? 'cancelled' : 'queued', error: producerError,
         failureDiagnostic: { code: producerFailed && !pauseFailure && !approvalFailure ? 'unknown-private-secret' : 'TASK_RUNTIME_ERROR', stage: 'start_backend', status: 'failed', body: 'private-secret' } }] };
       else if (route === '/api/tasks/stop') { cancelled = true; value = { run: { id: 'run-one', status: 'cancelled' } }; }
       else if (route === '/api/ai/task-credentials/grant-one' && method === 'DELETE') { revoked = true; value = { revoked: 'grant-one' }; }
@@ -74,6 +74,16 @@ describe('live Task acceptance bounded cleanup', () => {
     if (producerFailed) expect(result.cases[0].failureDiagnostic).toEqual(pauseFailure || approvalFailure
       ? { code: 'TASK_RUNTIME_ERROR', stage: 'start_backend', status: 'failed' }
       : { code: 'TASK_DIAGNOSTIC_UNAVAILABLE', stage: 'unknown', status: 'failed' });
+    if (producerFailed) {
+      const failure = result.cases[0].producerFailure;
+      expect(failure).toMatchObject({ status: 'failed', errorPresent: true,
+        errorLength: typeof producerError === 'string' ? producerError.length : 0,
+        errorClass: pauseFailure ? 'service_access_missing' : approvalFailure ? 'unknown' : 'provider_error' });
+      if (typeof producerError === 'string') expect(failure?.httpStatus).toBe(pauseFailure ? 403 : 429);
+      else expect(failure?.httpStatus).toBeUndefined();
+      if (!pauseFailure && !approvalFailure) expect(failure).toMatchObject({ providerClass: 'rate_limit',
+        providerApi: 'openai', providerName: 'openai', providerModel: 'gpt-6.1' });
+    }
     expect(cancelled).toBe(!producerFailed);
     expect(result.cleanup.runsStopped).toBe(producerFailed ? 0 : 1);
     expect(result.cleanup.ok).toBe(!pauseFailure && !approvalFailure);

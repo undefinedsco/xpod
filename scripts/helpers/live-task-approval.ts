@@ -240,7 +240,7 @@ export async function acceptLiveTaskApproval(options: {
         if (run.status === 'failed') {
           row.failureDiagnostic = projectTaskRunFailureDiagnostic(run.failureDiagnostic, run.status)
             ?? { code: 'TASK_DIAGNOSTIC_UNAVAILABLE', stage: 'unknown', status: 'failed' };
-          return requireLiveCheckpoint(run, [], target, options.webId);
+          return requireLiveCheckpoint(run, [], target, options.webId, row, db);
         }
         const approvals = await db.select().from(approvalResource).execute();
         return requireLiveCheckpoint(run, approvals, target, options.webId, row, db);
