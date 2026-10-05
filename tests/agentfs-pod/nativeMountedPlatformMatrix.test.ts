@@ -191,6 +191,128 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     expect(report.checks.every((check) => check.ok), JSON.stringify(report.checks.filter((check) => !check.ok))).toBe(true);
   }, 300_000);
 
+  it('consumes mounted content through ordinary shell, PATH rg and Git with host-local metadata and a mounted worktree', async () => {
+    const work = path.join(ROOT, 'consumers'); const mnt = path.join(work, 'mnt');
+    const session = path.join(work, 'session'); const host = path.join(work, 'host');
+    const project = path.join(mnt, 'project'); const tree = path.join(mnt, 'linked-worktree');
+    const gitdir = path.join(host, 'gitdir'); const hooks = path.join(host, 'hooks'); const template = path.join(host, 'template');
+    await guard.remove(work); await mkdir(mnt, { recursive: true }); await mkdir(session, { recursive: true });
+    await mkdir(hooks, { recursive: true }); await mkdir(template, { recursive: true });
+    const daemon = spawnOwnedForeground(binary, server, mnt, session);
+    const commands: Record<string, unknown>[] = [];
+    const proof: OwnedUnmountProof = { daemonClosed: false };
+    let primaryError: unknown; let cleanupError: unknown; let worktreeAdded = false; let unresolvedCommand = false;
+    const run = async (command: string, args: string[], cwd = project, env: NodeJS.ProcessEnv = {}): Promise<string> => {
+      const result = await exec(command, args, env, 60_000, cwd);
+      commands.push({ command, args, cwd, result });
+      if (result.state !== 'closed') unresolvedCommand = true;
+      expect(result.state, JSON.stringify(result)).toBe('closed');
+      expect(result.actualExit, JSON.stringify(result)).toBe(0);
+      expect(result.signal, JSON.stringify(result)).toBeNull();
+      return result.stdout.trim();
+    };
+    const cleanGitEnv: NodeJS.ProcessEnv = Object.fromEntries(Object.keys(process.env).filter((key) => key.startsWith('GIT_')).map((key) => [ key, undefined ]));
+    const git = (args: string[], cwd = project) => run('git', [
+      '-c', 'user.name=Mounted Acceptance', '-c', 'user.email=mounted-acceptance@example.invalid',
+      '-c', `core.hooksPath=${hooks}`, '-c', 'core.autocrlf=false', ...args,
+    ], cwd, { ...cleanGitEnv,
+      GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' });
+    const verifyMetadata = async (cwd: string): Promise<void> => {
+      const pointer = await readFile(path.join(cwd, '.git'), 'utf8');
+      expect(pointer).toMatch(/^gitdir: /u);
+      const actualGitDir = await git([ 'rev-parse', '--absolute-git-dir' ], cwd);
+      const common = await git([ 'rev-parse', '--path-format=absolute', '--git-common-dir' ], cwd);
+      expect(path.relative(host, actualGitDir)).not.toMatch(/^(?:\.\.(?:[/\\]|$)|[/\\])/u);
+      expect(path.relative(host, common)).not.toMatch(/^(?:\.\.(?:[/\\]|$)|[/\\])/u);
+      expect(path.resolve(pointer.trim().slice('gitdir: '.length))).toBe(path.resolve(actualGitDir));
+      for (const name of [ 'objects', 'refs', 'index' ]) {
+        const actualPath = await git([ 'rev-parse', '--path-format=absolute', '--git-path', name ], cwd);
+        expect(path.relative(host, actualPath)).not.toMatch(/^(?:\.\.(?:[/\\]|$)|[/\\])/u);
+      }
+      const names = await readdir(cwd);
+      expect(names).not.toContain('objects'); expect(names).not.toContain('refs'); expect(names).not.toContain('index');
+    };
+    const assertNoMetadataPut = (): void => {
+      expect(server.log.filter((entry) => entry.method === 'PUT' && /(?:^|\/)(?:\.git|objects|refs|index)(?:\/|$)/u.test(entry.resource ?? entry.path))).toEqual([]);
+    };
+    try {
+      expect(await waitForKernelMount(mnt, 'alpha.txt')).toBe(true);
+      expect(await run('/bin/sh', [ '-c', 'set -eu; mkdir project; cat alpha.txt; printf "SHELL_CONTENT\\n" > project/content.txt' ], mnt)).toBe('ALPHA_BODY_0123456789');
+      expect(await readFile(path.join(project, 'content.txt'), 'utf8')).toBe('SHELL_CONTENT\n');
+      const installedCli = process.env.XPOD_AGENTFS_TEST_CLI;
+      if (!installedCli) throw new Error('installed CLI is required for actual PATH rg consumer');
+      const nativeRg = await run('/bin/sh', [ '-c', 'command -v rg' ], host);
+      await run(nativeRg, [ '--version' ], host);
+      const gitPath = await run('/bin/sh', [ '-c', 'command -v git' ], host);
+      await run(gitPath, [ '--version' ], host);
+      const wrapperDir = path.join(host, 'wrapper');
+      const installed = JSON.parse(await run(installedCli, [ 'agent-fs', 'install', '--dir', wrapperDir,
+        '--native-rg', nativeRg, '--session-dir', session, '--root', `${mnt}=${server.podRoot}`, '--json' ], host)) as
+        { ok: boolean; data?: { dir: string; wrapperPath: string; nativeRg: string; launcher: string[] } };
+      expect(installed.ok).toBe(true);
+      if (!installed.data) throw new Error('installed CLI did not return its wrapper identity');
+      const wrapper = installed.data;
+      expect(wrapper.dir).toBe(wrapperDir); expect(wrapper.wrapperPath).toBe(path.join(wrapperDir, 'rg'));
+      expect(wrapper.nativeRg).toBe(nativeRg);
+      expect(wrapper.launcher.length).toBeGreaterThan(0);
+      const wrapperScript = await readFile(wrapper.wrapperPath, 'utf8');
+      expect(wrapperScript).toContain('agent-fs rg');
+      expect(wrapperScript).toContain(nativeRg);
+      expect(wrapperScript).toContain(session);
+      const rgOutput = await run('/bin/sh', [ '-c', `set -eu; command -v rg; rg -F SHELL_CONTENT .` ], project,
+        { PATH: `${wrapper.dir}:${process.env.PATH ?? ''}`, XPOD_AGENT_FS_ACCESS_TOKEN: TOKEN });
+      expect(rgOutput.split('\n')[0]).toBe(wrapper.wrapperPath);
+      expect(rgOutput).toContain('SHELL_CONTENT');
+      await git([ 'init', `--template=${template}`, `--separate-git-dir=${gitdir}`, project ], host);
+      await verifyMetadata(project);
+      await git([ 'add', 'content.txt' ]); await git([ 'commit', '-m', 'Record mounted working content' ]);
+      expect(await git([ 'status', '--porcelain' ])).toBe('');
+      const head = await git([ 'rev-parse', 'HEAD' ]);
+      await git([ 'worktree', 'add', '-b', 'mounted-consumer', tree, 'HEAD' ]); worktreeAdded = true;
+      expect(await git([ 'rev-parse', 'HEAD' ], tree)).toBe(head);
+      await verifyMetadata(tree);
+      const listing = await git([ 'worktree', 'list', '--porcelain' ]);
+      expect(listing).toContain(`worktree ${project}`); expect(listing).toContain(`worktree ${tree}`);
+      expect(await readFile(path.join(tree, 'content.txt'), 'utf8')).toBe('SHELL_CONTENT\n');
+      await run('/bin/sh', [ '-c', 'set -eu; printf "WORKTREE_EDIT\\n" >> content.txt' ], tree);
+      expect(await git([ 'status', '--porcelain' ], tree)).toContain(' M content.txt');
+      expect(await git([ 'status', '--porcelain' ])).toBe('');
+      expect(await readFile(path.join(tree, 'content.txt'), 'utf8')).toContain('WORKTREE_EDIT');
+      assertNoMetadataPut();
+      await git([ 'worktree', 'remove', '--force', tree ]); worktreeAdded = false;
+      expect(await git([ 'worktree', 'list', '--porcelain' ])).not.toContain(`worktree ${tree}`);
+    } catch (error) { primaryError = error; }
+    finally {
+      const addCleanupError = (error: unknown): void => { cleanupError = cleanupError === undefined ? error : new AggregateError([ cleanupError, error ], 'consumer cleanup failed'); };
+      if (unresolvedCommand) addCleanupError(new Error('consumer command still pending or spawn state unknown; scene retained'));
+      if (worktreeAdded && !unresolvedCommand) { try { await git([ 'worktree', 'remove', '--force', tree ]); worktreeAdded = false; } catch (error) { addCleanupError(error); } }
+      try {
+        const preKernel = observeKernelMountsDetailed(work);
+        await runOwnedUnmountOnce(proof, async () => {
+          const result = await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+          const postKernel = observeKernelMountsDetailed(work);
+          commands.push({ phase: 'unmount', preKernel, postKernel, result });
+          return { result, postKernel: postKernel.state };
+        });
+        if (!proof.result || proof.result.state !== 'closed' || proof.result.actualExit !== 0 || proof.result.signal !== null || proof.postKernel !== 'absent') throw new Error(`consumer unmount failed: ${JSON.stringify(proof)}`);
+      } catch (error) { addCleanupError(error); }
+      const close = await awaitClose(daemon, 15_000); proof.daemonClosed = close.state === 'closed';
+      if (close.state !== 'closed' || close.code !== 0 || close.signal !== null) addCleanupError(new Error(`consumer daemon termination invalid: ${JSON.stringify(close)}`));
+      try { assertNoMetadataPut(); } catch (error) { addCleanupError(error); }
+      const kernel = observeKernelMountsDetailed(work);
+      if (kernel.state !== 'absent') addCleanupError(new Error(`consumer kernel unresolved: ${kernel.state}`));
+      let safeToDelete = cleanupError === undefined && kernel.state === 'absent';
+      await captureDaemonEvidence('consumers', daemon, close, { commands, proof, kernel,
+        primaryError: primaryError === undefined ? null : String(primaryError), cleanupError: cleanupError === undefined ? null : String(cleanupError), sceneRetained: !safeToDelete }).catch(addCleanupError);
+      if (cleanupError !== undefined) safeToDelete = false;
+      if (safeToDelete) { try { await guard.remove(work); } catch (error) { addCleanupError(error); safeToDelete = false; } }
+      if (!safeToDelete) retainedScene = true;
+      if (primaryError !== undefined && cleanupError !== undefined) throw new AggregateError([ primaryError, cleanupError ], 'consumer failed; cleanup also unresolved');
+      if (primaryError !== undefined) throw primaryError;
+      if (cleanupError !== undefined) throw cleanupError;
+    }
+  }, 600_000);
+
   it('streams disk-backed 64/512/1024 MiB remote bodies with Range, in-place copy-up and sampled helper RSS', async () => {
     const work = path.join(ROOT, 'stream'); const mnt = path.join(work, 'mnt'); const session = path.join(work, 'session');
     await guard.remove(work); await mkdir(mnt, { recursive: true }); await mkdir(session, { recursive: true });

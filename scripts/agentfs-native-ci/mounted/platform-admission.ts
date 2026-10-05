@@ -44,12 +44,13 @@ export function classifyProbeError(error: unknown): 'absent' | 'unknown' {
 }
 
 /**
- * The FIVE actual cases that MUST be observed PASSED for a mounted success:
- * three from the matrix and two from the original overlay scenario. A summary
+ * The SIX actual cases that MUST be observed PASSED for a mounted success:
+ * four from the matrix and two from the original overlay scenario. A summary
  * count alone is insufficient — a real mounted case could silently skip.
  */
 export const REQUIRED_MOUNTED_CASES = [
   'passes the original mounted harness for the platform backend',
+  'consumes mounted content through ordinary shell, PATH rg and Git with host-local metadata and a mounted worktree',
   'streams disk-backed 64/512/1024 MiB remote bodies with Range, in-place copy-up and sampled helper RSS',
   'interrupts a genuinely in-flight remote copy-up, then recovers the same session and GCs the orphan partial',
   'keeps uncommitted edits local, recovers them across restart, then writes back on commit',
@@ -270,7 +271,7 @@ async function main(): Promise<void> {
   // Spawn in a NEW process group where POSIX supports it, so a timeout/cleanup
   // can terminate the WHOLE owned group (workers/helpers), not only the direct
   // Vitest PID. The close promise is attached at birth, before any signal.
-  // A real Vitest JSON report lets the driver require the FIVE named actual
+  // A real Vitest JSON report lets the driver require the SIX named actual
   // mounted cases to be EXECUTED and PASSED (a summary count could skip them).
   // ALSO keep the human (default) reporter on stdout so an actual setup/hook or
   // test exception is preserved in the closed raw; --reporter=json alone loses it.
@@ -317,7 +318,7 @@ async function main(): Promise<void> {
   // SUCCESS requires the owned process group to be REALLY absent, not merely the
   // direct child closed. A present or unknown group is a red (false-success guard).
   const groupResolved = groupAbsent === true;
-  // Require the FIVE named actual mounted cases to be PASSED from the real report.
+  // Require the SIX named actual mounted cases to be PASSED from the real report.
   let reportSha: string | null = null;
   let requiredCases: { satisfied: boolean; missing: string[]; notPassed: { title: string; status: string }[] } =
     { satisfied: false, missing: [ ...REQUIRED_MOUNTED_CASES ], notPassed: [] };

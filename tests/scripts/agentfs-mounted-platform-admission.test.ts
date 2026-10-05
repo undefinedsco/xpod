@@ -93,13 +93,21 @@ describe('required mounted-case gate (real Vitest JSON report)', () => {
     ] } ],
   });
 
-  it('requires exactly FIVE named cases', () => {
-    expect(REQUIRED_MOUNTED_CASES.length).toBe(5);
+  it('requires exactly SIX named cases', () => {
+    expect(REQUIRED_MOUNTED_CASES.length).toBe(6);
   });
 
-  it('is satisfied only when all five required cases are PASSED', () => {
+  it('is satisfied only when all six required cases are PASSED', () => {
     const all = REQUIRED_MOUNTED_CASES.map((title) => ({ title, status: 'passed' }));
     expect(evaluateRequiredMountedCases(report(all)).satisfied).toBe(true);
+  });
+
+  it('rejects omission of the real shell, PATH rg and Git/worktree consumer', () => {
+    const original = REQUIRED_MOUNTED_CASES.filter((title) => !title.startsWith('consumes mounted content'));
+    expect(original).toHaveLength(5);
+    const verdict = evaluateRequiredMountedCases(report(original.map((title) => ({ title, status: 'passed' }))));
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.missing).toEqual([ REQUIRED_MOUNTED_CASES[1] ]);
   });
 
   it('rejects a required case that is missing (summary-only would false-pass)', () => {

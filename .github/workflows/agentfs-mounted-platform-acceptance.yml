@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -e /dev/fuse ]; then echo "dev_fuse=present"; else echo "::error::/dev/fuse is not present on this runner; actual FUSE mount cannot be proven"; exit 1; fi
-      - name: Build a task-owned prep image (pinned Bookworm digest + fuse3 + Node22 + ripgrep)
+      - name: Build a task-owned prep image (pinned Bookworm digest + fuse3 + Node22 + ripgrep + git)
         run: |
           set -euo pipefail
           umask 077
@@ -70,7 +70,7 @@ jobs:
           docker build -t "$tag" - <<DOCKERFILE
           FROM ${BOOKWORM_IMAGE}
           RUN apt-get update -o Acquire::Retries=5 \
-            && apt-get install -y --no-install-recommends fuse3 ca-certificates curl ripgrep procps \
+            && apt-get install -y --no-install-recommends fuse3 ca-certificates curl ripgrep procps git \
             && rm -rf /var/lib/apt/lists/*
           RUN curl -fsSL https://nodejs.org/dist/v22.21.1/node-v22.21.1-linux-arm64.tar.xz -o /tmp/node.tar.xz \
             && mkdir -p /opt/node22 \
@@ -112,7 +112,7 @@ jobs:
             --env "XPOD_MOUNTED_PREP=/opt" \
             --env "XPOD_MOUNTED_NODE=/opt/node22/bin/node" \
             --env "XPOD_MOUNTED_REQUIRE_NOBUN=1" \
-            --env "XPOD_MOUNTED_MIN_PASSED=5" \
+            --env "XPOD_MOUNTED_MIN_PASSED=6" \
             "$XPOD_MOUNT_IMAGE" \
             sh -c 'bash /mounted/bookworm-fuse-entry.sh'
           test -f "$cidfile" && docker rm -f "$(cat "$cidfile")" >/dev/null 2>&1 || true
@@ -199,7 +199,7 @@ jobs:
           XPOD_MOUNTED_ARCHIVE_SHA: ${{ env.DARWIN_ARCHIVE_SHA }}
           XPOD_MOUNTED_HELPER_SHA: ${{ env.DARWIN_HELPER_SHA }}
           XPOD_MOUNTED_REQUIRE_NOBUN: '1'
-          XPOD_MOUNTED_MIN_PASSED: '5'
+          XPOD_MOUNTED_MIN_PASSED: '6'
         run: |
           set -euo pipefail
           umask 077
