@@ -1,0 +1,64 @@
+name: Sync environment configuration
+
+# Deployment and configuration are deliberately separate paths: the deploy workflow
+# only swaps an image, so a failed release is never confused with a configuration
+# change. This workflow is the other half, and the only place that writes a runtime
+# secret from the environment's APP_ENV_FILE.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment whose configuration to apply
+        required: true
+        type: choice
+        options:
+          - cn
+          - co
+        default: cn
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    env:
+      TARGET_ENVIRONMENT: ${{ inputs.environment }}
+      XPOD_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
+      XPOD_DEPLOYMENT: xpod-${{ inputs.environment }}
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          [[ -n "${SEALOS_NAMESPACE:-}" ]] || { echo "::error::SEALOS_NAMESPACE is required"; exit 1; }
+          [[ -n "${APP_ENV_FILE:-}" ]] || { echo "::error::APP_ENV_FILE is required for $TARGET_ENVIRONMENT"; exit 1; }
+
+      - name: Set up kubeconfig
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.kube
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+
+      - name: Apply the environment file to the runtime secret
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$APP_ENV_FILE" > "$RUNNER_TEMP/xpod-env"
+          before="$(kubectl -n "$SEALOS_NAMESPACE" get secret "$XPOD_SECRET_NAME" -o jsonpath='{.data}' 2>/dev/null | sha256sum | cut -c1-12 || echo none)"
+          # Replaced wholesale: keys removed from the file must disappear from the
+          # deployment instead of lingering as settings nobody notices.
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_SECRET_NAME" \
+            --from-env-file="$RUNNER_TEMP/xpod-env" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          after="$(kubectl -n "$SEALOS_NAMESPACE" get secret "$XPOD_SECRET_NAME" -o jsonpath='{.data}' | sha256sum | cut -c1-12)"
+          echo "configuration: ${before} -> ${after}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$before" == "$after" ]]; then
+            echo "configuration unchanged (${after})"
+            exit 0
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" rollout restart "deployment/${XPOD_DEPLOYMENT}"
+          kubectl -n "$SEALOS_NAMESPACE" rollout status "deployment/${XPOD_DEPLOYMENT}" --timeout=900s
