@@ -8,9 +8,16 @@ so this harness lives on its own development branch
 `.github/workflows/agentfs-mounted-platform-acceptance.yml` without recompiling
 the frozen `c7e9aadbf` product.
 
-Status as of 2026-10-05: this describes the required acceptance procedure.
-The current harness still needs fixes and actual dual-platform execution; a
-passing native/install run or a gated test skip does not satisfy it.
+Status as of 2026-10-05: diagnostic harness `3db4d4f326a485c1203aa1f8f61daa907fe6bbec`
+passed two original, unfiltered integration runs on unchanged source/runtime
+materials. Actual dual-platform [run 37234188908](https://github.com/undefinedsco/xpod/actions/runs/37234188908)
+failed on both platforms. Linux foreground-helper stderr reports
+`fusermount3: mount failed: Permission denied`; the exact capability/device/LSM
+cause remains unproved. macOS fails the beforeAll kernel-mount observation with
+`unknown`, before starting the NFS scenes; five required cases remain pending.
+Do not turn unknown into absent or call this an NFS permission error. Environment
+and observer fixes remain necessary. Native/install success and gated test skips
+do not satisfy mounted acceptance.
 
 ## Product vs harness binding
 

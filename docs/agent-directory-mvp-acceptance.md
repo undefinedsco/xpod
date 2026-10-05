@@ -1,10 +1,11 @@
 # Xpod CLI 目录 MVP 实现与验收记录
 
 > 当前状态（2026-10-05）：本段取代以下历史段落中的“当前”状态。
-> - 账号 B 的 `opencode-go/deepseek-v4.1-flash` 负责开发，主负责人独立验收；只有真实 provider HTTP 429 才切换 GPT-6.1 Sol。
-> - 冻结 native 产品为 `c7e9aadbf87302908e766411f4ea1fea6d0a54bf`。[run 37213350112](https://github.com/undefinedsco/xpod/actions/runs/37213350112) 的 Darwin/Linux ARM64 原生测试、源码材料和安装产物已独立验收；Bookworm Node22 无 Bun 消费端已通过。这些结果不证明 OS 挂载。新的挂载夹具仍在修复进程回收和崩溃恢复，最新轻量结果为 109 passed / 10 skipped；两轮最终完整集成和实际挂载尚未完成。
+> - 用户于 2026-10-05 指定切换账号 A 的 `opencode-go/deepseek-v4.1-flash` 接续开发、自测和发布，主负责人独立验收；账号 B 的既有修改和证据保留。只有真实 provider HTTP 429 才切换 GPT-6.1 Sol。
+> - 冻结 native 产品为 `c7e9aadbf87302908e766411f4ea1fea6d0a54bf`。[run 37213350112](https://github.com/undefinedsco/xpod/actions/runs/37213350112) 的 Darwin/Linux ARM64 原生测试、源码材料和安装产物已独立验收；Bookworm Node22 无 Bun 消费端已通过。这些结果不证明 OS 挂载。诊断源码 `3db4d4f326a485c1203aa1f8f61daa907fe6bbec` 的类型检查与轻量专项通过（122 passed / 10 skipped）；修复后和提交前两轮原始 `bun run test:integration` 均退出 0，每轮前置 30、Lite 163 passed / 16 skipped、Full 63 passed，3492 项跟踪源码及 11577 项物理运行材料前后稳定。隔离项目名含大写而失败的一轮继续保留，不计入这两轮。
+> - [挂载 run 37234188908](https://github.com/undefinedsco/xpod/actions/runs/37234188908) 消费上述冻结产物，两平台均未通过。Linux 的前台 helper 真实 stderr 为 `fusermount3: mount failed: Permission denied`，尚不能仅凭文本认定缺少 device、capability 或具体 LSM 限制。macOS 在 beforeAll 的内核挂载观测中得到 `unknown`，清理守卫拒绝继续，五项必需用例 pending；尚未启动实际 NFS 场景，也未证明 NFS 权限失败。Node22 / 无 Bun 与归档、helper 哈希绑定已核验；测试环境及观测诊断仍需修复。
 > - [Private17 run 37223585588](https://github.com/undefinedsco/xpod-pro/actions/runs/37223585588) 在自有 Docker 环境中执行固定已发布镜像的 17 项语义检查，0 failed / 0 skipped，search、ABI 和资源清理通过。主负责人接受的是 installed PG17 component；不是 Public16、已部署 SealOS、Gateway 或 Chat 的验收。
-> - 公开 RC 源码为 `c47283cbc3f4929af6afdb9f83396dd5553f8f1d`，服务镜像为 `ghcr.io/undefinedsco/xpod@sha256:2ef561477b9aa8ecdd9f65e25bb51dce369d0c26204d1cd6c8263044e59541bc`，PG17 镜像为 `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba`。镜像已发布，Public16 首次失败仍待真实 producer stderr 定位；未完成部署验收。
+> - 公开 RC 源码为 `c47283cbc3f4929af6afdb9f83396dd5553f8f1d`，服务镜像为 `ghcr.io/undefinedsco/xpod@sha256:2ef561477b9aa8ecdd9f65e25bb51dce369d0c26204d1cd6c8263044e59541bc`，PG17 镜像为 `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba`。镜像已发布。[Public16 观察 run 37230040908](https://github.com/undefinedsco/xpod-pro/actions/runs/37230040908) 的实际 native producer 在 `graph/container-prefix` 返回空行，预期为两个子资源；同一 SQLite 夹具通过。PG 镜像标签绑定私有源码 `c5665e33a80507798a39a4290b97013a9904cfeb`，但其 SDK / public adapter 源码版本未取得，不能用当前 adapter 源码代替实际二进制来源。Private17 不覆盖此案例；Public16 与部署验收仍未通过。
 > - 客户端不内嵌 Bun、Node 或 JSC。远程 clean-body 缓存尚未实现；不声称原生 99% 性能、物理 NAS、x64 或 Windows 已验收。Git/worktree 由外部工具维护，Pod 只保留 Link。
 > - 待完成：最终源码回归、macOS NFS / Linux Bookworm FUSE 挂载、大文件与 SIGKILL 恢复、Public16、实际 Gateway 认证与 Pod 读写、models/chat 分项验收及 preview.2。历史失败和旧产物的证据继续保留，不代替当前产品准入。
 
@@ -107,13 +108,13 @@ macOS 原单文件 ENOTEMPTY 的只读审计确认：日志仅保存最终 rmdir
 
 ## 已部署 Gateway 的独立 HTTP 验收入口
 
-`scripts/accept-live-agent-directory.ts` 连接指定的实际 Gateway，复用当前 CLI 登录，不启动服务、创建账号或改写凭据。必须显式提供 canonical Pod storage URL；不从 WebID 推导 Pod，不接受带 userinfo/query/fragment 的目标。当前登录的 Gateway 必须与参数一致，不将已有凭据用于另一部署。
+`scripts/accept-live-agent-directory.ts` 连接指定的实际 Xpod 根（CSS/API/AFS 为其中的可选模块），复用当前 CLI 登录，不启动服务、创建账号或改写凭据。必须显式提供 canonical Pod storage URL；不从 WebID 推导 Pod，不接受带 userinfo/query/fragment 的目标。当前登录的 Xpod 根必须与参数一致，不将已有凭据用于另一部署。
 
 ```sh
 # 只读 preflight：OIDC discovery、CLI 登录、Pod HEAD、目录 API
-bun scripts/accept-live-agent-directory.ts --gateway https://gateway.example/ --pod-root https://pod.example/alice/
+bun scripts/accept-live-agent-directory.ts --base_url https://node.example/ --pod-root https://pod.example/alice/
 # 明确启动写入验收；仅操作随机 xpod-cli-acceptance-UUID/ 子目录
-bun scripts/accept-live-agent-directory.ts --gateway https://gateway.example/ --pod-root https://pod.example/alice/ --write
+bun scripts/accept-live-agent-directory.ts --base_url https://node.example/ --pod-root https://pod.example/alice/ --write
 ```
 
 写入模式检查条件创建/同名冲突、准确 Range 正文及版本、完整目录枚举和 literal search、另一次写入后的旧版本 PUT/DELETE 冲突及新正文保留。清理仅对已确认回执使用 If-Match，删除后 HEAD 确认404；目录使用空枚举之前的版本，避免将旧的空目录观察绑定到后来新增子项的版本。未知写入结果、并发变化、缺 strong ETag 或非空目录保留，并在报告中列出路径及失败状态，不无条件删除或盲重试。报告默认保存在 `.test-data/agent-directory-workers/live-directory/`，记录阶段、固定错误码、目标 URL、遗留路径和 checker 的源码 hash/Git SHA/dirty 状态，不包含 token、正文或服务器错误响应；缺 Git 的源码归档标记身份未知，不伪称 clean commit。

@@ -355,7 +355,9 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('docker port "$local_name" 5737/tcp');
     expect(runText).not.toContain('port-forward deployment/xpod-rc 3000:3000');
     expect(runText).toContain('XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file"');
-    expect(runText).toContain('XPOD_LIVE_GATEWAY_URL="$gateway"');
+    expect(runText).toContain('XPOD_BASE_URL="$gateway"');
+    expect(runText).not.toContain('XPOD_LIVE_GATEWAY_URL');
+    expect(runText).not.toContain('XPOD_LIVE_BASE_URL');
     expect(runText).toContain('XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/"');
     expect(runText).not.toContain('XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX');
     expect(runText).toContain('bun run ai-connections:accept:live');

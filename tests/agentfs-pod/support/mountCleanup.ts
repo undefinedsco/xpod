@@ -1,9 +1,33 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 
 export type KernelMountState = 'absent' | 'mounted' | 'unknown';
+export interface KernelObservationDetail {
+  state: KernelMountState;
+  /** The normalized observed root this snapshot was classified against. */
+  root?: string;
+  /** Bounded, safe classifier reason: which branch produced the state. */
+  reason: string;
+  /** The command name used (NOT a proven resolved absolute path). */
+  executableCommand?: string;
+  /** Summary of argv (the -c code is a static constant; its SHA is recorded). */
+  argvSummary?: string[];
+  /** SHA256 of the exact MAC_INVENTORY code actually passed to python3 -c. */
+  macInventoryCodeSHA256?: string;
+  status?: number | null;
+  signal?: string | null;
+  errorCode?: string | null;
+  stderr?: string;
+  rowCount?: number;
+  /** For classify-unknown: the specific offending row/ancestor/type reason. */
+  classifyReason?: string;
+  /** Bounded offending-entry context (not the whole inventory). */
+  classificationContext?: ClassificationContext;
+  platform: string;
+}
 export interface CleanupOptions {
   observe: (root: string) => KernelMountState;
   remove: (root: string) => Promise<void>;
@@ -22,21 +46,52 @@ rows=(S*128)();n=f(rows,ctypes.sizeof(rows),2)
 assert 0<n<128
 print(json.dumps([{'mountpoint':bytes(x.mount).decode(),'type':bytes(x.fstype).decode()} for x in rows[:n]]))`;
 
-export function observeKernelMounts(root: string): KernelMountState {
+/**
+ * Detailed kernel observation: returns BOTH the state and the exact classifier
+ * reason (bounded), so a real `unknown` is diagnosable without changing the
+ * fail-closed decision. Never stats/enumerates the mount target.
+ */
+export function observeKernelMountsDetailed(root: string): KernelObservationDetail {
+  const platform = process.platform;
+  // SAME single snapshot decides state AND detail; attach the normalized root so
+  // matrix ROOT / stream / recovery scenes are distinguishable.
+  const normRoot = validMountPath(root) ? root : String(root).slice(0, 256);
+  const withRoot = (d: KernelObservationDetail): KernelObservationDetail => ({ ...d, root: normRoot });
   try {
-    if (!validMountPath(root)) return 'unknown';
-    if (process.platform === 'darwin') {
+    if (!validMountPath(root)) return withRoot({ state: 'unknown', reason: 'invalid-mount-path', platform });
+    if (platform === 'darwin') {
       const result = spawnSync('python3', [ '-c', MAC_INVENTORY ], { encoding: 'utf8', timeout: 5_000, maxBuffer: 256 * 1024 });
-      if (result.status !== 0 || result.signal || result.error) return 'unknown';
-      return classifyMountInventory(root, JSON.parse(result.stdout), 'darwin');
+      if (result.status !== 0 || result.signal || result.error) {
+        return withRoot({
+          state: 'unknown', reason: 'python-observer-nonzero', executableCommand: 'python3', argvSummary: [ '-c', '<MAC_INVENTORY>' ],
+          macInventoryCodeSHA256: MAC_INVENTORY_SHA256,
+          status: result.status, signal: result.signal ?? null, errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code ?? null,
+          stderr: (result.stderr ?? '').slice(0, 4096), platform,
+        });
+      }
+      let rows: MountInventoryEntry[];
+      try { rows = JSON.parse(result.stdout) as MountInventoryEntry[]; }
+      catch { return withRoot({ state: 'unknown', reason: 'json-parse-failed', executableCommand: 'python3', macInventoryCodeSHA256: MAC_INVENTORY_SHA256, status: result.status, platform }); }
+      const result2 = classifyMountInventoryDetailed(root, rows, 'darwin');
+      return withRoot({ state: result2.state, reason: result2.state === 'unknown' ? `classify-unknown:${result2.classifyReason}` : `classify-${result2.state}`, macInventoryCodeSHA256: MAC_INVENTORY_SHA256, rowCount: rows.length, classifyReason: result2.classifyReason, classificationContext: result2.classificationContext, platform });
     }
-    if (process.platform === 'linux') {
+    if (platform === 'linux') {
       const rows = parseLinuxMountInfo(readFileSync('/proc/self/mountinfo', 'utf8'));
-      return rows ? classifyMountInventory(root, rows, 'linux') : 'unknown';
+      if (!rows) return withRoot({ state: 'unknown', reason: 'mountinfo-parse-failed', platform });
+      const result2 = classifyMountInventoryDetailed(root, rows, 'linux');
+      return withRoot({ state: result2.state, reason: result2.state === 'unknown' ? `classify-unknown:${result2.classifyReason}` : `classify-${result2.state}`, rowCount: rows.length, classifyReason: result2.classifyReason, classificationContext: result2.classificationContext, platform });
     }
-  } catch { /* A failed observation never authorizes target access. */ }
-  return 'unknown';
+    return withRoot({ state: 'unknown', reason: 'unsupported-platform', platform });
+  } catch (error) {
+    return withRoot({ state: 'unknown', reason: 'observer-threw', errorCode: (error as NodeJS.ErrnoException)?.code ?? null, platform });
+  }
 }
+
+export function observeKernelMounts(root: string): KernelMountState {
+  return observeKernelMountsDetailed(root).state;
+}
+
+const MAC_INVENTORY_SHA256 = createHash('sha256').update(MAC_INVENTORY).digest('hex');
 
 export class MountCleanupGuard {
   private readonly retained = new Set<string>();
@@ -90,6 +145,31 @@ export class MountCleanupGuard {
   }
 }
 
+/**
+ * Observer wrapper used by the suite's guards: ONE detailed kernel probe, write
+ * the bounded detail into XPOD_MOUNTED_EVIDENCE (0600, static node:fs imports),
+ * and return the SAME state the plain observer would. Fail-closed unchanged.
+ */
+let observerSequence = 0;
+export function makeObservingKernelObserver(label: string): (root: string) => KernelMountState {
+  return (root) => {
+    // ONE snapshot decides both state and detail.
+    const detail = observeKernelMountsDetailed(root);
+    const dir = process.env.XPOD_MOUNTED_EVIDENCE;
+    if (dir) {
+      try {
+        // Unique per invocation: monotonic sequence + random UUID (not Date.now-only).
+        const seq = (observerSequence += 1);
+        const nonce = `${label}-${seq}-${randomUUID()}`;
+        const p = path.join(dir, `observer-${nonce}.json`);
+        writeFileSync(p, `${JSON.stringify(detail, null, 2)}\n`, { mode: 0o600 });
+        chmodSync(p, 0o600);
+      } catch { /* diagnostic sink must never break cleanup */ }
+    }
+    return detail.state;
+  };
+}
+
 export interface MountInventoryEntry { mountpoint: string; type: string }
 
 function validMountPath(value: unknown): value is string {
@@ -97,24 +177,47 @@ function validMountPath(value: unknown): value is string {
     && path.posix.normalize(value) === value && !value.split('/').some(part => part === '.' || part === '..');
 }
 
-export function classifyMountInventory(root: string, rows: MountInventoryEntry[], platform = process.platform): KernelMountState {
-  if (!validMountPath(root) || !Array.isArray(rows) || rows.length === 0) return 'unknown';
+export interface ClassificationContext {
+  /** row index of the offending entry (bounded, not the whole inventory). */
+  rowIndex?: number;
+  /** the offending mountpoint / type when applicable. */
+  mountpoint?: string;
+  type?: string;
+  /** for unknown-ancestor: whether the row is an ancestor of root and how. */
+  ancestorOfRoot?: boolean;
+  /** for malformed-row: which field was invalid. */
+  malformedField?: 'null' | 'mountpoint' | 'type';
+}
+
+export function classifyMountInventoryDetailed(root: string, rows: MountInventoryEntry[], platform = process.platform): { state: KernelMountState; classifyReason: string; classificationContext?: ClassificationContext } {
+  if (!validMountPath(root)) return { state: 'unknown', classifyReason: 'invalid-root', classificationContext: { mountpoint: String(root).slice(0, 256) } };
+  if (!Array.isArray(rows) || rows.length === 0) return { state: 'unknown', classifyReason: 'empty-rows' };
   let baseline = false;
   let unknownAncestor = false;
-  for (const row of rows) {
-    if (!row || !validMountPath(row.mountpoint) || typeof row.type !== 'string' || !/^[a-zA-Z0-9_.-]+$/.test(row.type)) return 'unknown';
+  let ancestorContext: ClassificationContext | undefined;
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    if (!row || !validMountPath(row.mountpoint) || typeof row.type !== 'string' || !/^[a-zA-Z0-9_.-]+$/.test(row.type)) {
+      const field: ClassificationContext['malformedField'] = !row ? 'null' : !validMountPath(row.mountpoint) ? 'mountpoint' : 'type';
+      return { state: 'unknown', classifyReason: `malformed-row:${field}`, classificationContext: { rowIndex, mountpoint: row && typeof (row as MountInventoryEntry).mountpoint === 'string' ? String((row as MountInventoryEntry).mountpoint).slice(0, 256) : undefined, type: row && typeof (row as MountInventoryEntry).type === 'string' ? String((row as MountInventoryEntry).type).slice(0, 64) : undefined, malformedField: field } };
+    }
     const mount = row.mountpoint;
-    if (mount === root || mount.startsWith(`${root}/`)) return 'mounted';
+    if (mount === root || mount.startsWith(`${root}/`)) return { state: 'mounted', classifyReason: 'target-mounted', classificationContext: { rowIndex, mountpoint: mount, type: row.type } };
     if (mount === '/' || root.startsWith(`${mount}/`)) {
-      if (/^(?:nfs|fuse|osxfuse|macfuse)/.test(row.type) || ['smbfs', 'cifs', 'afpfs', 'webdav', '9p', 'ceph'].includes(row.type)) return 'mounted';
+      if (/^(?:nfs|fuse|osxfuse|macfuse)/.test(row.type) || ['smbfs', 'cifs', 'afpfs', 'webdav', '9p', 'ceph'].includes(row.type)) return { state: 'mounted', classifyReason: `ancestor-mount:${row.type}`, classificationContext: { rowIndex, mountpoint: mount, type: row.type, ancestorOfRoot: true } };
       const safe = platform === 'darwin'
         ? (row.type === 'apfs' && ['/', '/System/Volumes/Data'].includes(mount)) || (row.type === 'hfs' && mount === '/')
         : platform === 'linux' && ['ext2', 'ext3', 'ext4', 'xfs', 'btrfs', 'tmpfs', 'overlay'].includes(row.type);
       if (safe) baseline = true;
-      else unknownAncestor = true;
+      else { unknownAncestor = true; ancestorContext ??= { rowIndex, mountpoint: mount, type: row.type, ancestorOfRoot: true }; }
     }
   }
-  return baseline && !unknownAncestor ? 'absent' : 'unknown';
+  if (unknownAncestor) return { state: 'unknown', classifyReason: 'unknown-ancestor-type', classificationContext: ancestorContext };
+  return baseline ? { state: 'absent', classifyReason: 'baseline-present' } : { state: 'unknown', classifyReason: 'no-baseline' };
+}
+
+export function classifyMountInventory(root: string, rows: MountInventoryEntry[], platform = process.platform): KernelMountState {
+  return classifyMountInventoryDetailed(root, rows, platform).state;
 }
 
 export function parseLinuxMountInfo(source: string): MountInventoryEntry[] | undefined {

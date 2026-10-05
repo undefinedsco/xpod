@@ -9,7 +9,8 @@ import { AgentDirectoryClient, type AgentDirectoryRequest } from '../src/agent-d
 import { normalizePodRoot } from '../src/cli/agent-fs/roots';
 
 export interface LiveDirectoryOptions {
-  gateway: string;
+  /** Canonical Xpod root that hosts the optional CSS/API/AFS modules. */
+  baseUrl: string;
   /** Explicit canonical storage URL; never inferred from the WebID. */
   podRoot: string;
   write?: boolean;
@@ -20,10 +21,25 @@ export interface LiveDirectoryOptions {
 export interface LiveDirectoryReport {
   status: 'pass' | 'fail';
   phase: 'preflight' | 'pod-http-contract';
-  target: { gateway: string; podRoot: string; webId?: string };
+  target: { baseUrl: string; podRoot: string; webId?: string };
   checks: { name: string; status: 'pass' | 'fail'; code?: string }[];
   cleanup: { status: 'not-needed' | 'pass' | 'retained'; retained: string[] };
   mount: 'not-run';
+}
+
+export interface AcceptanceTarget {
+  baseUrl: string;
+  podRoot: string;
+  write: boolean;
+  report?: string;
+  help: boolean;
+}
+
+export class AcceptanceArgumentError extends Error {
+  public constructor(public readonly code: string, message: string) {
+    super(message);
+    this.name = 'AcceptanceArgumentError';
+  }
 }
 
 class CheckFailure extends Error {
@@ -40,6 +56,68 @@ function canonicalRoot(value: string): string {
   return result;
 }
 
+function requiredCanonicalRoot(value: string, label: string): string {
+  const result = normalizePodRoot(value);
+  if (!result) {
+    throw new AcceptanceArgumentError(
+      'invalid_target_url',
+      `${label} must be a canonical http(s) container URL with no query, fragment or userinfo.`,
+    );
+  }
+  return result;
+}
+
+/**
+ * Resolve the acceptance target from arguments and environment only.
+ *
+ * Priority is exactly explicit `--base_url` over `XPOD_BASE_URL`. `CSS_BASE_URL`
+ * is the server's own canonical/actual-port configuration and is deliberately
+ * not an acceptance fallback: an instance serving a local `CSS_BASE_URL` must
+ * still accept a remote `XPOD_BASE_URL` target.
+ */
+export function resolveAcceptanceTarget(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): AcceptanceTarget {
+  const removed = argv.find((arg) => arg === '--gateway' || arg.startsWith('--gateway='));
+  if (removed) {
+    throw new AcceptanceArgumentError(
+      'removed_argument_gateway',
+      '`--gateway` has been removed; pass `--base_url <Xpod root URL>` instead.',
+    );
+  }
+  const values = (() => {
+    try {
+      return parseArgs({ args: [ ...argv ], options: {
+        base_url: { type: 'string' }, 'pod-root': { type: 'string' },
+        write: { type: 'boolean', default: false }, report: { type: 'string' }, help: { type: 'boolean', default: false },
+      } }).values;
+    } catch (error) {
+      throw new AcceptanceArgumentError(
+        'invalid_arguments',
+        error instanceof Error ? error.message : 'Invalid acceptance arguments.',
+      );
+    }
+  })();
+  if (values.help) {
+    return { baseUrl: '', podRoot: '', write: false, report: values.report, help: true };
+  }
+  const baseUrl = requiredCanonicalRoot(values.base_url ?? env.XPOD_BASE_URL ?? '', 'base URL');
+  const podRoot = requiredCanonicalRoot(values['pod-root'] ?? '', 'Pod root');
+  return { baseUrl, podRoot, write: values.write ?? false, report: values.report, help: false };
+}
+
+/**
+ * Bind the stored CLI login to the explicit target before authenticated Pod requests.
+ *
+ * The stored login is read first and compared against the canonical target.
+ * The target must never be forced into the auth context to bypass this check.
+ */
+export function assertStoredLoginTarget(storedBaseUrl: string, targetBaseUrl: string): void {
+  const stored = normalizePodRoot(storedBaseUrl);
+  insist(stored !== undefined && stored === targetBaseUrl, 'stored_login_base_url_mismatch');
+}
+
 function strongVersion(response: Response): string {
   const version = response.headers.get('etag');
   insist(version && /^"[\x21\x23-\x7e\x80-\xff]*"$/.test(version), 'missing_strong_etag');
@@ -52,11 +130,11 @@ function ok(response: Response): void {
 
 /** Real transport is supplied by main; injected unit transports do not count as live evidence. */
 export async function acceptLiveDirectory(options: LiveDirectoryOptions): Promise<LiveDirectoryReport> {
-  const gateway = canonicalRoot(options.gateway);
+  const baseUrl = canonicalRoot(options.baseUrl);
   const podRoot = canonicalRoot(options.podRoot);
   const report: LiveDirectoryReport = {
     status: 'fail', phase: options.write ? 'pod-http-contract' : 'preflight',
-    target: { gateway, podRoot }, checks: [],
+    target: { baseUrl, podRoot }, checks: [],
     cleanup: { status: 'not-needed', retained: [] }, mount: 'not-run',
   };
   // Only a successful create receipt establishes ownership. Unknown outcomes remain for inspection.
@@ -78,8 +156,8 @@ export async function acceptLiveDirectory(options: LiveDirectoryOptions): Promis
     }
   };
   try {
-    await check('gateway-discovery', async () => {
-      const response = await options.discover(new URL('.well-known/openid-configuration', gateway).href, { method: 'GET' });
+    await check('oidc-discovery', async () => {
+      const response = await options.discover(new URL('.well-known/openid-configuration', baseUrl).href, { method: 'GET' });
       ok(response);
       const config = await response.json() as { issuer?: unknown; token_endpoint?: unknown };
       insist(typeof config.issuer === 'string' && typeof config.token_endpoint === 'string', 'invalid_discovery');
@@ -91,7 +169,7 @@ export async function acceptLiveDirectory(options: LiveDirectoryOptions): Promis
       insist(typeof auth.webId === 'string' && auth.webId.length > 0, 'missing_webid');
       report.target.webId = auth.webId;
       request = auth.request;
-      client = new AgentDirectoryClient({ baseUrl: gateway, request });
+      client = new AgentDirectoryClient({ baseUrl, request });
     });
     await check('pod-read-access', async () => { ok(await request!(podRoot, { method: 'HEAD' })); });
     await check('directory-api', async () => {
@@ -203,29 +281,33 @@ export async function acceptLiveDirectory(options: LiveDirectoryOptions): Promis
 }
 
 async function main(): Promise<void> {
-  const { values } = parseArgs({ options: {
-    gateway: { type: 'string' }, 'pod-root': { type: 'string' }, write: { type: 'boolean', default: false },
-    report: { type: 'string' }, help: { type: 'boolean', default: false },
-  } });
-  if (values.help) {
-    console.log('bun scripts/accept-live-agent-directory.ts --gateway <deployed gateway> --pod-root <canonical Pod URL> [--write] [--report <path>]\nDefaults to read-only preflight. --write tests Pod HTTP in a random isolated directory. Does not mount or create accounts. Uses the existing CLI login.');
+  let target: AcceptanceTarget;
+  try {
+    target = resolveAcceptanceTarget(process.argv.slice(2), process.env);
+  } catch (error) {
+    console.error(error instanceof AcceptanceArgumentError ? error.message
+      : 'Live directory acceptance failed before reporting: check arguments and local CLI login.');
+    process.exitCode = 1;
     return;
   }
-  const gateway = canonicalRoot(values.gateway ?? process.env.XPOD_LIVE_GATEWAY_URL ?? '');
-  const podRoot = canonicalRoot(values['pod-root'] ?? '');
+  if (target.help) {
+    console.log('bun scripts/accept-live-agent-directory.ts --base_url <Xpod root URL> --pod-root <canonical Pod URL> [--write] [--report <path>]\nDefaults to read-only preflight. --write tests Pod HTTP in a random isolated directory. Does not mount or create accounts. Uses the existing CLI login.');
+    return;
+  }
   const report = await acceptLiveDirectory({
-    gateway, podRoot, write: values.write,
+    baseUrl: target.baseUrl, podRoot: target.podRoot, write: target.write,
     discover: (url, init) => fetch(url, { ...init, redirect: 'manual', signal: AbortSignal.timeout(30_000) }),
     authenticate: async () => {
       const { authFetch, requireAuthContext } = await import('../src/cli/lib/auth-context');
+      // Read the stored login first: the target never overrides the auth context.
       const auth = await requireAuthContext();
-      insist(canonicalRoot(auth.baseUrl) === gateway, 'stored_login_gateway_mismatch');
+      assertStoredLoginTarget(auth.baseUrl, target.baseUrl);
       return { webId: auth.webId, request: (url, init) => authFetch(auth, url, {
         ...init, redirect: 'manual', signal: AbortSignal.timeout(30_000),
       }) };
     },
   });
-  const destination = path.resolve(values.report ?? `.test-data/agent-directory-workers/live-directory/${Date.now()}-${randomUUID()}.json`);
+  const destination = path.resolve(target.report ?? `.test-data/agent-directory-workers/live-directory/${Date.now()}-${randomUUID()}.json`);
   const checkerPath = fileURLToPath(import.meta.url);
   const checker: { sha256: string; sourceSHA: string | null; dirty: boolean | null } = {
     sha256: createHash('sha256').update(readFileSync(checkerPath)).digest('hex'), sourceSHA: null, dirty: null,

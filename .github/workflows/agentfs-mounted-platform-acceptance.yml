@@ -87,8 +87,16 @@ jobs:
           umask 077
           out="${RUNNER_TEMP}/mounted-evidence"; mkdir -m 700 "$out"
           cidfile="${RUNNER_TEMP}/mounted-container.cid"
+          # ROOT-authorized minimal policy delta: the default Docker AppArmor
+          # profile (docker-default) denies mount (moby v28 template.go L40), which
+          # is the source-backed hypothesis for the prior fusermount3 EPERM. Scope
+          # `--security-opt apparmor=unconfined` to THIS owned network-none Linux
+          # mount acceptance container ONLY; the existing /dev/fuse device and
+          # CAP_SYS_ADMIN are preserved, and the DEFAULT SECCOMP profile is NOT
+          # disabled. No --privileged, no host/daemon/cluster policy change.
           docker run --rm --init --cidfile "$cidfile" \
             --device /dev/fuse --cap-add SYS_ADMIN \
+            --security-opt apparmor=unconfined \
             --network none \
             --mount "type=bind,src=${{ steps.product.outputs.archive }},dst=/product/archive.tar.gz,readonly" \
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace" \
@@ -108,6 +116,28 @@ jobs:
             "$XPOD_MOUNT_IMAGE" \
             sh -c 'bash /mounted/bookworm-fuse-entry.sh'
           test -f "$cidfile" && docker rm -f "$(cat "$cidfile")" >/dev/null 2>&1 || true
+      - name: Record Linux container security binding status (not-collected)
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/mounted-evidence"; mkdir -m 700 -p "$out"
+          # The acceptance container is run with --rm and removed above, so its
+          # same-CID security binding (imageID/NetworkMode/SecurityOpt/Devices/
+          # CapAdd/CapDrop/Mounts.RW) is NOT observable afterward. Per ROOT's
+          # minimal resolution we explicitly mark it not-collected instead of
+          # emitting an invalid/unallowlisted inspect. No Env/credentials.
+          cat > "$out/linux-container-binding.json" <<'JSON'
+          {
+            "schemaVersion": 1,
+            "source": "host-observer",
+            "state": "not-collected",
+            "reason": "acceptance container ran with --rm and was removed before any host observe; same-CID allowlist not captured",
+            "fields": ["imageID", "NetworkMode", "SecurityOpt", "Devices", "CapAdd", "CapDrop", "Mounts.RW"]
+          }
+          JSON
+          python3 -c "import json,sys; json.load(open('$out/linux-container-binding.json')); print('valid')" >/dev/null
+          chmod 600 "$out/linux-container-binding.json"
       - name: Normalise owned evidence ownership (task-scoped only)
         if: always()
         run: |

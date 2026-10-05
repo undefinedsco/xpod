@@ -1,6 +1,16 @@
 # Xpod CLI 挂载引擎选型与交付计划
 
-> 当前状态（2026-10-04，账号 B / opencode-go/deepseek-v4.1-flash；本页以下旧段落均为 HISTORICAL）
+> 当前状态（2026-10-05）：本段取代下文历史段落中的“当前”口径。
+> - 产品定义：Xpod 是统一入口，CLI / App 是入口形态，CSS / API / AFS 是可选模块。HTTP 验收的唯一地址参数为 `--base_url`，其次读取 `XPOD_BASE_URL`；内部与报告使用 `baseUrl`，保留凭据所属实例与 canonical Pod 绑定。
+> - 选型仍为 AgentFS，置信度中等。固定版 rclone 的通用 backend / VFS 测试资产、范围缓存与平台管理更成熟；AgentFS 的可替换 lower、持久 delta 和本项目不可变写入基线、显式 commit 语义更直接契合。比较及原型反证见下文；没有新的性能优胜结论，也没有因已投入实现而撤销推翻选型的条件。
+> - 当前开发分支为 `codex/agentfs-mounted-platform-acceptance`，冻结产品源码为 `c7e9aadbf87302908e766411f4ea1fea6d0a54bf`，诊断基线为 `3db4d4f326a485c1203aa1f8f61daa907fe6bbec`。两个 ARM64 目标的 native unit / 源码 / 安装产物已验收，Linux Bookworm Node22 无 Bun 消费端通过；客户端不内嵌 Bun / Node / JSC。这些检查不等价于 OS 挂载。
+> - 当前命名迁移的 105 项针对性测试和测试类型检查均实际退出 0，绑定的 12 项源码前后与当前一致；私有 PG 诊断三稿的 9 项保护测试实际退出 0，只接受源码与廉价门禁。当前完整 dirty 源码尚需两轮原始完整集成，旧提交通过的完整回归不能代替它。
+> - 实际挂载 run 37234188908 的两平台结果仍未通过：Linux helper 报 `fusermount3: mount failed: Permission denied`；macOS 在开始 NFS 场景前被 unknown 挂载观测阻止。Public16 的原始 `graph/container-prefix` 案例仍为 native 空结果；Private17 的独立已发布 PG component 通过不能替代该案例或已部署实例。
+> - 实现者已切换至账号 A 的 `opencode-go/deepseek-v4.1-flash`，负责人独立验收；仅真实 provider HTTP 429 才切换 GPT-6.1 Sol。SealOS 控制器尚需修正真实输入绑定、超时判定和资源生命周期。此前 guard 测试曾误调用实际 kubectl 创建临时 Pod / ConfigMap，四轮原始失败及 birth UID 已保留；负责人通过精确服务端 NotFound 核实四个任务资源当前不存在。这不是正式 PG 诊断通过，不能以“清理成功”冒充诊断通过。
+> - 发行材料审查已覆盖源码包内全部 340 个 registry 包及 235 份不同的许可原文，两平台源码文件哈希一致。`quinn-proto 0.11.19` 的 `src/congestion/bbr/min_max.rs` 缺少 Google 2017 BSD 三条款声明，需通过现有 promotion notes 随包补齐；cliui Artistic 2.0 的修改告知也需实际进入发行记录。该源码包通知补充不改变已验 candidate / helper 字节，也不替代挂载、实际 Xpod 或公开发行准入。
+> - 剩余交付：当前源码完整回归、macOS NFS / Linux ARM64 Bookworm FUSE、既定大文件与 SIGKILL 恢复、原始 Public16、真实 Xpod 认证与 Pod 读写、models / chat 分项验收、完整发行材料与 preview.2 发布。远程持久 clean-body 缓存仍未实现；不声称原生 99% 性能、物理 NAS / x64 / Windows 已验收。
+
+> 历史状态（2026-10-04，账号 B / opencode-go/deepseek-v4.1-flash；本页以下旧段落均为 HISTORICAL）
 > - 当前源码：`codex/agentfs-current-release` HEAD `5ce81c679cf7ba0aab82b277a44b3ea469bcc72d`；native HEAD `8d4983c96e9942b8edeb7912659017d5e98762e4`。已公开的 preview.1 通过旧 RC223 的 macOS/Linux 验收，**不能**替代新 kit5 原生准入。
 > - 原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) darwin+linux 两 ARM runner 串行实际成功；ROOT 19 项独立验收只接受 units/source/install。服务候选 [run 37148085189](https://github.com/undefinedsco/xpod/actions/runs/37148085189) 只发布 exact 镜像 `ghcr.io/undefinedsco/xpod@sha256:fd2ee44323e3412c9b43e4ee31d4d9aeb6b512bb2524e9907c6c66cd50fb8428`，deploy 在 registry-authority 预检前失败，无 Public16/Private17/SealOS。
 > - 实际平台准入（kit5）：macOS NFS 间歇失败（重挂退出 75 `unknown runtime entry retained`）；64/512/1024 MiB 与 SIGKILL 崩溃恢复阶段未通过。Linux Docker `node:22-bookworm-slim` FUSE 因 helper 需 `GLIBC_2.39` + `libssl.so.3/libcrypto.so.3` 而加载失败（bookworm glibc 2.36）。

@@ -4,7 +4,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
-import { MountCleanupGuard } from './support/mountCleanup';
+import { MountCleanupGuard, makeObservingKernelObserver } from './support/mountCleanup';
 import { discoverAgentFsHelper } from './support/helperDiscovery';
 
 const helper = discoverAgentFsHelper();
@@ -14,7 +14,11 @@ const runNative = Boolean(helper.helperPath);
 const runOverlay = runNative && process.env.XPOD_AGENTFS_RUN_OVERLAY === '1';
 const ROOT = path.resolve('.test-data/agent-directory-workers/agentfs-test/overlay');
 const TOKEN = 'overlay-token';
-const cleanup = new MountCleanupGuard();
+const cleanup = new MountCleanupGuard({
+  observe: makeObservingKernelObserver('overlay'),
+  remove: (root) => rm(root, { recursive: true, force: true }),
+  report: (record) => console.error('[mount-cleanup]', JSON.stringify(record)),
+});
 let primaryFailure: unknown;
 
 interface ExecResult { status: number; stdout: string; stderr: string }

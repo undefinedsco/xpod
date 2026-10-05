@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
 import { runMountAcceptance, type MountAcceptanceReport } from './support/mountHarness';
 import { discoverAgentFsHelper } from './support/helperDiscovery';
-import { MountCleanupGuard, observeKernelMounts } from './support/mountCleanup';
+import { MountCleanupGuard, makeObservingKernelObserver, observeKernelMounts } from './support/mountCleanup';
 
 /**
  * Actual mounted-platform matrix for the frozen installed product archive.
@@ -145,7 +145,11 @@ async function writeDiskBody(file: string, mib: number, byte: number): Promise<v
 describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, SIGKILL recovery', () => {
   let server: PodContractServer;
   const binary = helper.helperPath as string;
-  const guard = new MountCleanupGuard();
+  const guard = new MountCleanupGuard({
+    observe: makeObservingKernelObserver('matrix'),
+    remove: (root) => rm(root, { recursive: true, force: true }),
+    report: (record) => console.error('[mount-cleanup]', JSON.stringify(record)),
+  });
   // A real primary failure + a retained-scene flag that a finally sets when it
   // refuses to delete a live/unknown daemon. afterAll must NOT erase a retained
   // scene (that would destroy evidence of the leak).

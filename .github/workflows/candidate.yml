@@ -764,7 +764,7 @@ jobs:
 
           XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
           XPOD_LIVE_TASK_APPROVAL=1 \
-          XPOD_LIVE_GATEWAY_URL="$gateway" \
+          XPOD_BASE_URL="$gateway" \
           XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/" \
           bun run ai-connections:accept:live
 

@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { classifyMountInventoryDetailed, makeObservingKernelObserver, observeKernelMounts, observeKernelMountsDetailed, parseLinuxMountInfo } from '../agentfs-pod/support/mountCleanup';
 import { classifyProbeError, evaluateRequiredMountedCases, failureTextFromReport, isEntryPoint, passedCountFromReport, probeOwnedGroup, reapOwnedGroup, REQUIRED_MOUNTED_CASES } from '../../scripts/agentfs-native-ci/mounted/platform-admission';
 
 /**
@@ -192,6 +194,71 @@ describe('driver runtime boundaries (Node22 ESM entry + JSON reporter)', () => {
       expect(report.testResults?.[0]?.status).toBe('failed');
       expect(failureTextFromReport(readFileSync(reportPath, 'utf8'))).toBe('');
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('kernel observer detail (real implementation, fail-closed preserved)', () => {
+  const root = '/tmp/nonexistent-owned-scene';
+
+  it('classifies a safe baseline as absent with a reason', () => {
+    const rows = process.platform === 'darwin'
+      ? [ { mountpoint: '/', type: 'apfs' }, { mountpoint: '/System/Volumes/Data', type: 'apfs' } ]
+      : [ { mountpoint: '/', type: 'ext4' } ];
+    const d = classifyMountInventoryDetailed(root, rows);
+    expect(d.state).toBe('absent');
+    expect(d.classifyReason).toBe('baseline-present');
+  });
+
+  it('returns the specific classify reason + bounded classificationContext (state unknown)', () => {
+    expect(classifyMountInventoryDetailed(root, []).classifyReason).toBe('empty-rows');
+    const malformed = classifyMountInventoryDetailed(root, [ { mountpoint: 'relative', type: 'ext4' } ]);
+    expect(malformed.classifyReason).toBe('malformed-row:mountpoint');
+    expect(malformed.classificationContext?.rowIndex).toBe(0);
+    expect(malformed.classificationContext?.malformedField).toBe('mountpoint');
+    const ancestor = classifyMountInventoryDetailed(root, [ { mountpoint: '/', type: 'zzzfs' } ]);
+    expect(ancestor.classifyReason).toBe('unknown-ancestor-type');
+    expect(ancestor.classificationContext?.type).toBe('zzzfs');
+    expect(ancestor.classificationContext?.mountpoint).toBe('/');
+    expect(ancestor.classificationContext?.ancestorOfRoot).toBe(true);
+    // A target child mount is mounted, not unknown.
+    expect(classifyMountInventoryDetailed(root, [ { mountpoint: `${root}/x`, type: 'nfs' } ]).state).toBe('mounted');
+  });
+
+  it('observeKernelMountsDetailed reports state + bounded detail without throwing', () => {
+    const d = observeKernelMountsDetailed(root);
+    expect(['absent', 'mounted', 'unknown']).toContain(d.state);
+    expect(typeof d.reason).toBe('string');
+    expect(d.reason.length).toBeLessThanOrEqual(64);
+    expect(observeKernelMounts(root)).toBe(d.state); // same decision, no divergence
+  });
+
+  it('parseLinuxMountInfo returns undefined for malformed mountinfo (fail-closed)', () => {
+    expect(parseLinuxMountInfo('garbage line')).toBeUndefined();
+    const good = '36 25 0:32 / / rw,relatime shared:1 - overlay overlay rw\n';
+    const rows = parseLinuxMountInfo(good);
+    expect(rows && rows[0].type).toBe('overlay');
+  });
+
+  it('the observing observer wrapper writes a real NONEMPTY detail file and returns the same state', () => {
+    const base = path.resolve('.test-data/agentfs-mounted-platform-admission');
+    mkdirSync(base, { recursive: true, mode: 0o700 });
+    const dir = mkdtempSync(path.join(base, 'obs-'));
+    const prev = process.env.XPOD_MOUNTED_EVIDENCE;
+    process.env.XPOD_MOUNTED_EVIDENCE = dir;
+    try {
+      const observe = makeObservingKernelObserver('test');
+      const state = observe('/tmp/owned-scene');
+      expect(['absent', 'mounted', 'unknown']).toContain(state);
+      const files = readdirSync(dir).filter((f) => f.startsWith('observer-test-'));
+      expect(files.length, 'a real observer detail file must be written').toBeGreaterThanOrEqual(1);
+      const parsed = JSON.parse(readFileSync(path.join(dir, files[0]), 'utf8')) as { state: string; reason: string; platform: string };
+      expect(parsed.state).toBe(state);
+      expect(typeof parsed.reason).toBe('string');
+      expect(parsed.platform.length).toBeGreaterThan(0);
+    } finally {
+      if (prev === undefined) delete process.env.XPOD_MOUNTED_EVIDENCE; else process.env.XPOD_MOUNTED_EVIDENCE = prev;
       rmSync(dir, { recursive: true, force: true });
     }
   });
