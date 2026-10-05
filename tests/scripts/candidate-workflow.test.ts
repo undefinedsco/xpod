@@ -139,9 +139,9 @@ describe('release candidate workflow', () => {
     expect(preflight.env.APPLE_ID).toBeUndefined();
     expect(runText).not.toContain('MACOS_CERTIFICATE');
     expect(runText).not.toContain('APPLE_APP_SPECIFIC_PASSWORD');
-    expect(runText).toContain('id-rc.undefineds.co');
-    expect(runText).toContain('pods-rc.undefineds.co');
-    expect(runText).toContain('api-rc.undefineds.co');
+    expect(runText).toContain('id-rc.undefineds.cn');
+    expect(runText).toContain('pods-rc.undefineds.cn');
+    expect(runText).toContain('api-rc.undefineds.cn');
     expect(runText).toContain('auth can-i create deployments');
     expect(runText).not.toContain('get secret xpod-rc-tls');
   });
@@ -227,21 +227,21 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('CREATE DATABASE xpod_rc OWNER xpod_rc');
     expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
-    expect(runText).toContain('https://id-rc.undefineds.co/service/status');
-    expect(runText).toContain('https://pods-rc.undefineds.co');
-    expect(runText).toContain('https://api-rc.undefineds.co');
+    expect(runText).toContain('https://id-rc.undefineds.cn/service/status');
+    expect(runText).toContain('https://pods-rc.undefineds.cn');
+    expect(runText).toContain('https://api-rc.undefineds.cn');
     expect(runText).toContain('/.well-known/openid-configuration');
-    expect(runText).toContain('https://id-rc.undefineds.co/dashboard/');
+    expect(runText).toContain('https://id-rc.undefineds.cn/dashboard/');
     expect(runText).toContain('/settings/');
     expect(runText).toContain('dashboard.html');
     expect(runText).toContain('settings.html');
     expect(runText).toContain('dashboard did not return HTML');
     expect(runText).toContain('settings did not return HTML');
-    expect(runText).toContain('https://api-rc.undefineds.co/api/pod/settings/status');
+    expect(runText).toContain('https://api-rc.undefineds.cn/api/pod/settings/status');
     for (const pair of [
-      [ 'xpod-rc-id-tls', 'id-rc.undefineds.co' ],
-      [ 'xpod-rc-pods-tls', 'pods-rc.undefineds.co' ],
-      [ 'xpod-rc-api-tls', 'api-rc.undefineds.co' ],
+      [ 'xpod-rc-id-tls', 'id-rc.undefineds.cn' ],
+      [ 'xpod-rc-pods-tls', 'pods-rc.undefineds.cn' ],
+      [ 'xpod-rc-api-tls', 'api-rc.undefineds.cn' ],
     ]) {
       expect(runText).toContain(pair[0]);
       expect(runText).toContain(pair[1]);
@@ -299,7 +299,7 @@ describe('release candidate workflow', () => {
 
     expect(deploy.env.XPOD_ACCEPTANCE_REAL_XPOD).toBe('true');
     expect(deploy.env.XPOD_ACCEPTANCE_RUN_VISUAL).toBe('true');
-    expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://id-rc.undefineds.co');
+    expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://id-rc.undefineds.cn');
     expect(deploy.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG).toBe('${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}');
     expect(deploy.env.XPOD_AI_PROXY_URL).toBe('${{ secrets.XPOD_AI_PROXY_URL }}');
     expect(deploy.env.XPOD_RC_SEED_CONFIG).toBe('${{ secrets.XPOD_RC_SEED_CONFIG }}');
@@ -347,12 +347,12 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
     expect(runText).toContain('--publish 127.0.0.1::5737');
     expect(runText).toContain('--env XPOD_EDITION=local');
-    expect(runText).toContain('--env SOLID_OIDC_ISSUER=https://id-rc.undefineds.co/');
+    expect(runText).toContain('--env SOLID_OIDC_ISSUER=https://id-rc.undefineds.cn/');
     expect(runText).toContain('docker port "$local_name" 5737/tcp');
     expect(runText).not.toContain('port-forward deployment/xpod-rc 3000:3000');
     expect(runText).toContain('XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file"');
     expect(runText).toContain('XPOD_LIVE_GATEWAY_URL="$gateway"');
-    expect(runText).toContain('XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/"');
+    expect(runText).toContain('XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.cn/"');
     expect(runText).not.toContain('XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX');
     expect(runText).toContain('bun run ai-connections:accept:live');
     expect(runText).toContain('live-gateway-login-chat-local.json');

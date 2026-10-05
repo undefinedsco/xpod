@@ -5,9 +5,9 @@ namespace. It never creates a Namespace or a private Inngest instance.
 
 Public entry points mirror production roles:
 
-- `id-rc.undefineds.co` for OIDC, WebID, dashboard, and settings
-- `pods-rc.undefineds.co` for the hosted Pod entry point
-- `api-rc.undefineds.co` for authenticated APIs
+- `id-rc.undefineds.cn` for OIDC, WebID, dashboard, and settings
+- `pods-rc.undefineds.cn` for the hosted Pod entry point
+- `api-rc.undefineds.cn` for authenticated APIs
 
 All three Ingresses target `Service/xpod-rc-gateway`, a stable selector alias
 for the existing unified Nginx Gateway. The Gateway routes each host to

@@ -14,7 +14,7 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 4. 同一次 RC workflow 构建一个 GHCR 镜像，打 `sha-<full-sha>` 和 RC
    版本 tag，并记录 canonical digest，例如
    `ghcr.io/undefinedsco/xpod@sha256:<64-hex>`。
-5. RC workflow 将该 digest 部署到 `https://id-rc.undefineds.co` 并运行公开
+5. RC workflow 将该 digest 部署到 `https://id-rc.undefineds.cn` 并运行公开
    和认证验收。
 6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，运行真实
    RDF、FTS、VEC Local conformance，但 RC 不向 npm 发布任何包。
@@ -44,8 +44,8 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 | Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
 | Variable | `XPOD_INSTALL_REGISTRY` | 可选，安装烟测 registry 覆盖 |
 
-RC 公开入口为 `https://id-rc.undefineds.co`、`https://pods-rc.undefineds.co`
-和 `https://api-rc.undefineds.co`。`*.undefineds.co` DNS-only CNAME 统一指向
+RC 公开入口为 `https://id-rc.undefineds.cn`、`https://pods-rc.undefineds.cn`
+和 `https://api-rc.undefineds.cn`。`*.undefineds.co` DNS-only CNAME 统一指向
 Sealos ingress，三个 Ingress 经统一 Nginx Gateway 路由到 RC 服务；TLS Secret
 由 Sealos certificate controller 在 Ingress 创建后签发。overlay 不创建
 physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
@@ -234,7 +234,7 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 常见硬 blocker：
 
 - GitHub Environment `rc` 不存在或 secret/var 缺失；
-- `id-rc`、`pods-rc` 或 `api-rc.undefineds.co` DNS/Ingress 未指向统一 Gateway；
+- `id-rc`、`pods-rc` 或 `api-rc.undefineds.cn` DNS/Ingress 未指向统一 Gateway；
 - RC `APP_ENV_FILE` 复用了生产 domain、database、bucket、Redis DB 0 或凭据；
 - logical database or schema、nonzero Redis DB index、object bucket 权限未创建；
 - `XPOD_RC_SEED_CONFIG` 缺失、不是 seed account 数组，或没有 Alice/Bob 账号；
