@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { classifyMountInventoryDetailed, makeObservingKernelObserver, observeKernelMounts, observeKernelMountsDetailed, parseLinuxMountInfo } from '../agentfs-pod/support/mountCleanup';
-import { classifyProbeError, evaluateRequiredMountedCases, failureTextFromReport, isEntryPoint, passedCountFromReport, probeOwnedGroup, reapOwnedGroup, REQUIRED_MOUNTED_CASES } from '../../scripts/agentfs-native-ci/mounted/platform-admission';
+import { classifyProbeError, evaluateRequiredMountedCases, failureTextFromReport, isEntryPoint, observeChildLifecycle, passedCountFromReport, probeOwnedGroup, reapOwnedGroup, REQUIRED_MOUNTED_CASES } from '../../scripts/agentfs-native-ci/mounted/platform-admission';
 
 /**
  * Behavioural boundaries for the mounted-platform admission driver's owned
@@ -40,6 +40,24 @@ describe('owned process-group absence gate (driver functions)', () => {
     } finally {
       await reapOwnedGroup(parent.pid, 15_000);
     }
+  });
+
+  it('observes parent exit separately when an owned descendant holds its pipes open', async () => {
+    if (process.platform === 'win32') return;
+    const parent = spawn(process.execPath, [ '-e',
+      "const {spawn}=require('node:child_process');const g=spawn(process.execPath,['-e','setTimeout(()=>{},60000)']," +
+      "{stdio:['ignore',process.stdout,'ignore']});g.once('spawn',()=>process.exit(0));" ],
+      { detached: true, stdio: [ 'ignore', 'pipe', 'ignore' ] });
+    const lifecycle = observeChildLifecycle(parent);
+    try {
+      const fact = await lifecycle.wait(10_000, 50);
+      expect(fact.state).toBe('pending');
+      expect(lifecycle.facts()).toMatchObject({ exitObserved: true, exit: 0, signal: null, closeObserved: false });
+      expect(probeOwnedGroup(parent.pid)).toBe('present');
+      expect(await reapOwnedGroup(parent.pid, 15_000)).toBe(true);
+      expect((await lifecycle.waitClose(5_000)).state).toBe('closed');
+      expect(lifecycle.facts().closeObserved).toBe(true);
+    } finally { await reapOwnedGroup(parent.pid, 15_000); }
   });
 
   it('classifies a non-ESRCH probe error as UNKNOWN (never absent)', () => {

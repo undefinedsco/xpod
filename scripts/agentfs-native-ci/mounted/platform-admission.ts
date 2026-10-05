@@ -155,17 +155,41 @@ export function reapOwnedGroup(
   })();
 }
 
-/** ONLY an actual close is a closed fact; spawn error and finite pending are distinct. */
-async function waitChildFacts(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<ChildFact> {
-  let resolveSpawnError: (value: boolean) => void = () => undefined;
-  const spawnError = new Promise<boolean>((resolve) => { resolveSpawnError = resolve; });
-  child.once('error', () => resolveSpawnError(true));
-  const closed = new Promise<ChildFact>((resolve) => { child.once('close', (code, signal) => resolve({ state: 'closed', code: code ?? null, signal })); });
-  return Promise.race([
-    closed,
-    spawnError.then((): ChildFact => ({ state: 'spawn-error', code: null, signal: null })),
-    new Promise<ChildFact>((resolve) => { setTimeout(() => resolve({ state: 'pending', code: null, signal: null }), timeoutMs); }),
-  ]);
+/** Exit and stdio close are distinct: descendants can keep a dead parent's pipes open. */
+export function observeChildLifecycle(child: ReturnType<typeof spawn>) {
+  let exitObserved = false; let exit: number | null = null; let signal: string | null = null;
+  let closeObserved = false;
+  const exited = new Promise<'exited'>((resolve) => child.once('exit', (code, sig) => {
+    exitObserved = true; exit = code; signal = sig; resolve('exited');
+  }));
+  const closed = new Promise<ChildFact>((resolve) => child.once('close', (code, sig) => {
+    closeObserved = true; resolve({ state: 'closed', code, signal: sig });
+  }));
+  const failed = new Promise<ChildFact>((resolve) => child.once('error', () => resolve({ state: 'spawn-error', code: null, signal: null })));
+  const bounded = async <T>(promises: Promise<T>[], timeoutMs: number, fallback: T): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([ ...promises, new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), timeoutMs); }) ]); }
+    finally { if (timer) clearTimeout(timer); }
+  };
+  return {
+    facts: () => ({ pid: child.pid, exitObserved, exit, signal, closeObserved }),
+    wait: async (timeoutMs: number, closeBudgetMs = 15_000): Promise<ChildFact> => {
+      const pending: ChildFact = { state: 'pending', code: null, signal: null };
+      const result = await bounded<ChildFact | 'exited'>([ closed, failed, exited ], timeoutMs, pending);
+      return result === 'exited' ? bounded([ closed, failed ], closeBudgetMs, pending) : result;
+    },
+    waitClose: (timeoutMs: number): Promise<ChildFact> => bounded([ closed, failed ], timeoutMs, { state: 'pending', code: null, signal: null }),
+  };
+}
+
+function ownedProcessSnapshot(pgid: number | undefined, phase: string): Record<string, unknown> {
+  if (pgid === undefined) return { phase, known: false, members: [], reason: 'no-owned-pgid' };
+  try {
+    const raw = execFileSync('/bin/ps', [ '-axo', 'pid=,ppid=,pgid=,state=' ], { encoding: 'utf8', timeout: 5000 });
+    const members = raw.trim().split('\n').map((line) => line.trim().split(/\s+/)).filter((fields) => Number(fields[2]) === pgid)
+      .map(([ pid, ppid, group, state ]) => ({ pid: Number(pid), ppid: Number(ppid), pgid: Number(group), state }));
+    return { phase, known: true, members };
+  } catch (error) { return { phase, known: false, members: [], reason: String((error as NodeJS.ErrnoException).code ?? 'process-observation-failed') }; }
 }
 
 let evidenceDir = ''; let os = ''; let rawPath = ''; const rawChunks: Buffer[] = []; let lastSummary = '';
@@ -184,7 +208,7 @@ function writeReceipt(extra: Record<string, unknown>): boolean {
       chmodSync(rawPath, 0o600);
       rawFinished = true; // actual bytes flushed; never inferred from existsSync
     }
-    const rawClosedBeforeHash = closedFact && rawFinished;
+    const rawClosedBeforeHash = closedFact && rawFinished && groupAbsent;
     const receipt = { schemaVersion: 1, os, producerStarted: started, producerClosed: closedFact,
       actualWait: started && closedFact, rawClosedBeforeHash,
       exit: exitCode, signal: exitSignal, ownedGroupAbsent: groupAbsent, ...extra };
@@ -258,23 +282,23 @@ async function main(): Promise<void> {
     '--reporter=default',
     '--reporter=json', `--outputFile=${reportPath}` ], { cwd: workspace, env, stdio: [ 'ignore', 'pipe', 'pipe' ], detached: process.platform !== 'win32' });
   started = true; // actual spawn was requested; spawn-error is tracked separately
-  const closeAtBirth = new Promise<ChildFact>((resolve) => { child.once('close', (code, signal) => resolve({ state: 'closed', code: code ?? null, signal })); });
+  const lifecycle = observeChildLifecycle(child);
+  const processObservations = [ ownedProcessSnapshot(child.pid, 'after-spawn') ];
   child.stdout?.on('data', (chunk: Buffer) => rawChunks.push(chunk));
   child.stderr?.on('data', (chunk: Buffer) => rawChunks.push(chunk));
-  const fact = await waitChildFacts(child, 3_600_000);
+  const fact = await lifecycle.wait(3_600_000);
+  processObservations.push(ownedProcessSnapshot(child.pid, 'after-first-wait'));
   let actualFact = fact;
   const pgid = child.pid;
-  if (fact.state !== 'closed' && child.exitCode === null && child.pid !== undefined) {
+  if (fact.state !== 'closed' && child.pid !== undefined) {
     // Signal the owned group AND also the direct child (belt + braces), then poll.
     groupAbsent = await reapOwnedGroup(pgid, 15_000, (id) => { try { process.kill(-id, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* gone */ } } });
-    actualFact = await Promise.race([
-      closeAtBirth,
-      new Promise<ChildFact>((resolve) => { setTimeout(() => resolve({ state: 'pending', code: null, signal: null }), 15_000); }),
-    ]);
+    actualFact = await lifecycle.waitClose(15_000);
   } else if (process.platform !== 'win32' && child.pid !== undefined) {
     // The direct child closed, but an owned descendant in the group may remain.
     groupAbsent = await reapOwnedGroup(pgid, 15_000);
   } else { groupAbsent = true; }
+  processObservations.push(ownedProcessSnapshot(child.pid, 'after-owned-reap'));
   closedFact = actualFact.state === 'closed';
   exitCode = actualFact.code; exitSignal = actualFact.signal;
   const producerState = actualFact.state;
@@ -282,7 +306,8 @@ async function main(): Promise<void> {
   // rawFinished only on this real write; a pending snapshot never claims closed.
   const raw = Buffer.concat(rawChunks);
   if (raw.length) { writeFileSync(rawPath, raw, { mode: 0o600 }); chmodSync(rawPath, 0o600); rawFinished = true; }
-  const text = raw.toString('utf8');
+  const sealed = closedFact && groupAbsent;
+  const text = sealed ? raw.toString('utf8') : '';
   // Bounded, safe CI projection of the harness output (no product secrets here;
   // this is test/helper diagnostics only) so the failure is visible without
   // downloading the evidence artifact.
@@ -301,6 +326,7 @@ async function main(): Promise<void> {
   let reportPassed: number | undefined;
   let reportFailureText = '';
   try {
+    if (!sealed) throw new Error('producer raw closure or group absence unresolved');
     const reportBytes = readFileSync(reportPath);
     reportSha = createHash('sha256').update(reportBytes).digest('hex');
     const reportText = reportBytes.toString('utf8');
@@ -323,8 +349,9 @@ async function main(): Promise<void> {
     backend, nodePath: node, nodeVersion, nodeSha256,
     productArchiveSha256: archiveSha, installedHelperSha256: helperSha, installedLauncherPath: launcher,
     harnessRunnerSha256: runnerSha, consumerBunVisible: bunVisible, passedCases: effectivePassed, minPassedCases: minPassed,
-    producerState, rawLog: rawPath,
-    rawSHA256: createHash('sha256').update(raw).digest('hex'), status: ok ? 'ok' : 'failed', failureReason: reason,
+    producerState, producerLifecycle: lifecycle.facts(), ownedProcessObservations: processObservations, rawLog: rawPath,
+    rawSHA256: sealed ? createHash('sha256').update(raw).digest('hex') : null,
+    snapshotSHA256: sealed ? null : createHash('sha256').update(raw).digest('hex'), status: ok ? 'ok' : 'failed', failureReason: reason,
     mountExecuted: ok,
     vitestReport: reportSha ? { path: reportPath, sha256: reportSha, requiredCases: REQUIRED_MOUNTED_CASES,
       requiredSatisfied: requiredCases.satisfied, missingRequired: requiredCases.missing, notPassed: requiredCases.notPassed,

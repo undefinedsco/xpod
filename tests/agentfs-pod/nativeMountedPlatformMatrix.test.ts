@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
 import { runMountAcceptance, type MountAcceptanceReport } from './support/mountHarness';
 import { discoverAgentFsHelper } from './support/helperDiscovery';
-import { MountCleanupGuard, makeObservingKernelObserver, observeKernelMounts } from './support/mountCleanup';
+import { MountCleanupGuard, makeObservingKernelObserver, observeKernelMounts, observeKernelMountsDetailed } from './support/mountCleanup';
 
 /**
  * Actual mounted-platform matrix for the frozen installed product archive.
@@ -22,7 +22,7 @@ const CHUNK = 4 * 1024 * 1024;
 // Provisional helper-RSS ceiling (KiB): the helper must not hold the whole body.
 const HELPER_RSS_LIMIT_KIB = 1024 * 1024;
 
-interface ExecResult { status: number; stdout: string; stderr: string; signal: NodeJS.Signals | null; pid: number | undefined }
+interface ExecResult { state: 'closed' | 'spawn-error' | 'pending'; actualExit: number | null; status: number; stdout: string; stderr: string; signal: NodeJS.Signals | null; pid: number | undefined }
 function execSampled(command: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, extraPids: (number | undefined)[], samples: number[]): Promise<ExecResult> {
   return new Promise((resolve) => {
     const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: [ 'ignore', 'pipe', 'pipe' ] });
@@ -33,28 +33,30 @@ function execSampled(command: string, args: string[], env: NodeJS.ProcessEnv, ti
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-    child.on('close', (code, sig) => { clearTimeout(timer); clearInterval(sampler); signal = sig; resolve({ status: code ?? 1, stdout, stderr, signal, pid: child.pid ?? undefined }); });
-    child.on('error', (error) => { clearTimeout(timer); clearInterval(sampler); resolve({ status: 1, stdout, stderr: stderr || error.message, signal, pid: child.pid ?? undefined }); });
+    child.on('close', (code, sig) => { clearTimeout(timer); clearInterval(sampler); signal = sig; resolve({ state: 'closed', actualExit: code, status: code ?? 1, stdout, stderr, signal, pid: child.pid ?? undefined }); });
+    child.on('error', (error) => { clearTimeout(timer); clearInterval(sampler); resolve({ state: 'spawn-error', actualExit: null, status: 1, stdout, stderr: stderr || error.message, signal, pid: child.pid ?? undefined }); });
   });
 }
 // Plain (NON-sampling) spawn/wait. RSS sampling must never route through this,
 // or sampling `ps` would recursively sample its own `ps` child (process storm).
-function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}, timeoutMs = 120_000, cwd = process.cwd()): Promise<ExecResult> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: [ 'ignore', 'pipe', 'pipe' ] });
-    let stdout = ''; let stderr = ''; let signal: NodeJS.Signals | null = null;
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-    child.on('close', (code, sig) => { clearTimeout(timer); signal = sig; resolve({ status: code ?? 1, stdout, stderr, signal, pid: child.pid ?? undefined }); });
-    child.on('error', (error) => { clearTimeout(timer); resolve({ status: 1, stdout, stderr: stderr || error.message, signal, pid: child.pid ?? undefined }); });
-  });
+async function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}, timeoutMs = 120_000, cwd = process.cwd()): Promise<ExecResult> {
+  const owned = observeOwnedChild(spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: [ 'ignore', 'pipe', 'pipe' ] }));
+  const timer = setTimeout(() => owned.child.kill('SIGKILL'), timeoutMs);
+  try {
+    const fact = await awaitClose(owned, timeoutMs + 15_000);
+    return { state: fact.state, actualExit: fact.state === 'closed' ? fact.code : null,
+      status: fact.state === 'closed' ? fact.code ?? 1 : 1,
+      signal: fact.state === 'closed' ? fact.signal : null, pid: owned.child.pid,
+      stdout: Buffer.concat(owned.stdout).toString('utf8'), stderr: Buffer.concat(owned.stderr).toString('utf8') };
+  } finally { clearTimeout(timer); }
 }
 
 interface OwnedDaemon { child: ChildProcess; closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>; spawnError: Promise<boolean>; stdout: Buffer[]; stderr: Buffer[]; }
 function spawnOwnedForeground(binary: string, server: PodContractServer, mnt: string, session: string): OwnedDaemon {
-  const child = spawn(binary, [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', backend, '--session-dir', session, '--foreground' ],
-    { env: { ...process.env, XPOD_AGENTFS_TOKEN: TOKEN }, stdio: [ 'ignore', 'pipe', 'pipe' ] });
+  return observeOwnedChild(spawn(binary, [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', backend, '--session-dir', session, '--foreground' ],
+    { env: { ...process.env, XPOD_AGENTFS_TOKEN: TOKEN }, stdio: [ 'ignore', 'pipe', 'pipe' ] }));
+}
+function observeOwnedChild(child: ChildProcess): OwnedDaemon {
   const stdout: Buffer[] = []; const stderr: Buffer[] = [];
   child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
   child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
@@ -103,11 +105,14 @@ async function captureDaemonEvidence(label: string, daemon: OwnedDaemon, close: 
 
 type CloseFact = { state: 'closed'; code: number | null; signal: NodeJS.Signals | null } | { state: 'spawn-error' } | { state: 'pending' };
 async function awaitClose(daemon: OwnedDaemon, timeoutMs: number): Promise<CloseFact> {
-  return Promise.race([
-    daemon.closed.then((result): CloseFact => ({ state: 'closed', ...result })),
-    daemon.spawnError.then((): CloseFact => ({ state: 'spawn-error' })),
-    new Promise<CloseFact>((resolve) => { setTimeout(() => resolve({ state: 'pending' }), timeoutMs); }),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      daemon.closed.then((result): CloseFact => ({ state: 'closed', ...result })),
+      daemon.spawnError.then((): CloseFact => ({ state: 'spawn-error' })),
+      new Promise<CloseFact>((resolve) => { timer = setTimeout(() => resolve({ state: 'pending' }), timeoutMs); }),
+    ]);
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 async function waitForKernelMount(mnt: string, fixtureName: string, timeoutMs = 30_000): Promise<boolean> {
@@ -282,6 +287,19 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     const baselineVersion = server.version(remote);
     const first = spawnOwnedForeground(binary, server, mnt, session);
     let writerOutcome = 'not-started';
+    let writer: OwnedDaemon | undefined;
+    let second: OwnedDaemon | undefined;
+    let primaryError: unknown;
+    const unmountResults: Record<string, unknown>[] = [];
+    const unmountOwned = async (phase: string): Promise<void> => {
+      const preKernel = observeKernelMountsDetailed(work);
+      const result = await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+      const postKernel = observeKernelMountsDetailed(work);
+      unmountResults.push({ phase, preKernel, postKernel, result });
+      if (result.state !== 'closed' || result.actualExit !== 0 || result.signal !== null || postKernel.state !== 'absent') {
+        throw new Error(`owned unmount ${phase} failed: ${JSON.stringify({ preKernel, postKernel, result })}`);
+      }
+    };
     try {
       expect(await waitForKernelMount(mnt, 'alpha.txt')).toBe(true);
       server.resetLog();
@@ -290,17 +308,12 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       // Concurrent nontruncating offset edit on the mounted existing remote body.
       // The result is registered from birth so an open() rejection is caught,
       // never an unhandled rejection.
-      let writerSettled = false;
-      const writer = (async (): Promise<string> => {
-        let handle: import('node:fs/promises').FileHandle | undefined;
-        try {
-          handle = await open(path.join(mnt, remote), 'r+');
-          await handle.write(Buffer.from('KILL'), 0, 4, 13);
-          await handle.sync();
-          return 'write-completed';
-        } catch (error) { return `write-failed:${String(error)}`; }
-        finally { await handle?.close().catch(() => undefined); }
-      })().finally(() => { writerSettled = true; });
+      // The writer is an owned subprocess: a blocked NFS syscall cannot keep
+      // the Vitest producer's own worker thread alive after a failed detach.
+      writer = observeOwnedChild(spawn(process.execPath, [ '-e',
+        "const fs=require('node:fs/promises');(async()=>{let h;try{h=await fs.open(process.argv[1],'r+');" +
+        "await h.write(Buffer.from('KILL'),0,4,13);await h.sync();}finally{await h?.close();}})().catch(e=>{console.error(e);process.exitCode=1;});",
+        path.join(mnt, remote) ], { stdio: [ 'ignore', 'pipe', 'pipe' ] }));
       // Observe the copy-up GET actually before killing.
       const deadline = Date.now() + 20_000; let observed = false;
       while (Date.now() < deadline) { if (server.log.some((entry) => entry.resource === remote && entry.method === 'GET')) { observed = true; break; } await new Promise((r) => setTimeout(r, 100)); }
@@ -321,16 +334,13 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       // unmount + prove kernel absence WITHOUT awaiting the (possibly NFS-blocked)
       // writer. Only then bound-wait the writer and require actual settlement.
       server.releaseStall();
-      await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
-      expect(observeKernelMounts(work), 'owned dead mount must be kernel-absent before reuse').not.toBe('mounted');
-      const writerDeadline = Date.now() + 60_000;
-      while (!writerSettled && Date.now() < writerDeadline) await new Promise((r) => setTimeout(r, 100));
-      if (!writerSettled) {
-        // A genuinely stuck writer must FAIL the reuse, not silently proceed.
-        throw new Error('owned writer did not settle before same-session reuse');
-      }
-      writerOutcome = await writer;
-      const second = spawnOwnedForeground(binary, server, mnt, session);
+      await unmountOwned('after-sigkill');
+      const writerClose = await awaitClose(writer, 60_000);
+      await captureDaemonEvidence('recovery-writer', writer, writerClose, { phase: 'after-detach' });
+      if (writerClose.state !== 'closed') throw new Error(`owned writer did not settle before same-session reuse: ${writerClose.state}`);
+      writerOutcome = writerClose.code === 0 && writerClose.signal === null ? 'write-completed' : `write-failed:${JSON.stringify(writerClose)}`;
+      second = spawnOwnedForeground(binary, server, mnt, session);
+      let secondError: unknown;
       try {
         expect(await waitForKernelMount(mnt, 'alpha.txt')).toBe(true);
         await expect(stat(path.join(session, seed!.rel)), `the EXACT observed orphan must be GCed (writer=${writerOutcome})`).rejects.toBeTruthy();
@@ -346,38 +356,66 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
         expect(conflict.status, 'commit must surface the conditional 412 conflict').not.toBe(0);
         expect(server.readBody('alpha.txt')).toBe('REMOTE_RECOVERY_MOVE\n');
         expect(await readFile(local, 'utf8')).toBe('LOCAL_RECOVERY_EDIT\n');
-      } finally {
-        await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+      } catch (error) { secondError = error; } finally {
+        let secondCleanup: unknown;
+        try { await unmountOwned('second-cleanup'); } catch (error) { secondCleanup = error; }
         const secondClose = await awaitClose(second, 30_000);
-        await captureDaemonEvidence('recovery-second', second, secondClose, { phase: 'recovery-remount' });
-        expect(secondClose.state, 'recovery daemon must actually close').toBe('closed');
+        await captureDaemonEvidence('recovery-second', second, secondClose, { phase: 'recovery-remount',
+          primaryError: secondError === undefined ? null : String(secondError), cleanupError: secondCleanup === undefined ? null : String(secondCleanup) }).catch((error) => { secondCleanup = new AggregateError([ secondCleanup, error ].filter(Boolean), 'second evidence cleanup failed'); });
+        if (secondClose.state !== 'closed') secondCleanup = new AggregateError([ secondCleanup, new Error(`second daemon not closed: ${secondClose.state}`) ].filter(Boolean), 'second cleanup unresolved');
+        if (secondError !== undefined && secondCleanup !== undefined) throw new AggregateError([ secondError, secondCleanup ], 'second mount failed; cleanup also unresolved');
+        if (secondError !== undefined) throw secondError;
+        if (secondCleanup !== undefined) throw secondCleanup;
       }
-    } finally {
+    } catch (error) { primaryError = error; } finally {
       // Preserve the primary. Release the stalled read FIRST, then bounded owned
       // unmount and REQUIRE the FIRST daemon's ACTUAL close fact (not merely
       // attempted). The exact scene is deleted ONLY when the owned daemon is
       // actually closed AND the kernel mount is absent; on pending/unknown the
       // work dir is retained, and uncertainty is surfaced as a cleanup failure.
       let cleanupError: unknown;
+      const addCleanupError = (error: unknown): void => { cleanupError = cleanupError === undefined ? error : new AggregateError([ cleanupError, error ], 'multiple cleanup failures'); };
       try {
         server.releaseStall();
-        await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+        await unmountOwned('first-cleanup');
         const firstClose = await awaitClose(first, 30_000);
         await captureDaemonEvidence('recovery-first', first, firstClose, { phase: 'recovery-killed', retainedSceneCandidate: firstClose.state !== 'closed' });
         if (firstClose.state !== 'closed') throw new Error(`owned first daemon not actually closed: ${firstClose.state}`);
       } catch (error) { cleanupError = error; }
+      if (second) {
+        const secondClose = await awaitClose(second, 15_000);
+        await captureDaemonEvidence('recovery-second-final', second, secondClose, { phase: 'final-cleanup' }).catch(addCleanupError);
+        if (secondClose.state !== 'closed') cleanupError = new AggregateError([ cleanupError, new Error(`second daemon retained: ${secondClose.state}`) ].filter(Boolean), 'cleanup remains unresolved');
+      }
+      if (writer) {
+        let writerClose = await awaitClose(writer, 15_000);
+        if (writerClose.state === 'pending') {
+          writer.child.kill('SIGKILL');
+          writerClose = await awaitClose(writer, 15_000);
+        }
+        await captureDaemonEvidence('recovery-writer-cleanup', writer, writerClose, { phase: 'failure-or-final-cleanup' }).catch(addCleanupError);
+        if (writerClose.state !== 'closed') cleanupError = new AggregateError([ cleanupError, new Error(`owned writer retained: ${writerClose.state}`) ].filter(Boolean), 'cleanup remains unresolved');
+      }
       const kernelState = observeKernelMounts(work);
-      const safeToDelete = !cleanupError && kernelState !== 'mounted';
-      if (safeToDelete) { await guard.remove(work); }
+      let safeToDelete = !cleanupError && kernelState === 'absent';
+      if (safeToDelete) {
+        try { await guard.remove(work); } catch (error) { addCleanupError(error); safeToDelete = false; }
+      }
       // Never delete the scene while an owned daemon is pending/unknown. Mark the
       // scene RETAINED so afterAll does not erase the leak evidence.
       if (!safeToDelete) {
         retainedScene = true;
         if (cleanupError === undefined) cleanupError = new Error(`scene retained: kernel=${kernelState}`);
-        // Surface the truthful cleanup failure (the primary assertion failure, if
-        // any, is already recorded by the test runner before this finally runs).
-        throw cleanupError;
+
       }
+      await captureDaemonEvidence('recovery-final', first, await awaitClose(first, 100), {
+        unmountResults, kernelState, sceneRetained: !safeToDelete,
+        primaryError: primaryError === undefined ? null : String(primaryError),
+        cleanupError: cleanupError === undefined ? null : String(cleanupError), writerOutcome,
+      }).catch(addCleanupError);
+      if (primaryError !== undefined && cleanupError !== undefined) throw new AggregateError([ primaryError, cleanupError ], 'recovery failed; cleanup also unresolved');
+      if (primaryError !== undefined) throw primaryError;
+      if (cleanupError !== undefined) throw cleanupError;
     }
   }, 600_000);
 });
