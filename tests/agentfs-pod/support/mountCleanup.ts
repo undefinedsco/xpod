@@ -35,13 +35,21 @@ export interface CleanupOptions {
 }
 
 // Kernel inventory only: never stat or enumerate a mount target. Darwin's
-// INODE64 structure is 2168 bytes; MNT_NOWAIT avoids waiting on dead NFS.
-const MAC_INVENTORY = `import ctypes,json,sys
+// Statfs64 structure is 2168 bytes (align 8); MNT_NOWAIT avoids waiting on dead
+// NFS. The getfsstat symbol is ARCH-SELECTED: arm64 uses the modern `getfsstat`
+// (maps to ___getfsstat64), x86_64 uses `getfsstat$INODE64`; any other machine
+// stays unknown. Never a bare x86 legacy fallback; no generic buffer growth.
+// The arch selection lives ONLY in the embedded Python (single source of truth).
+const MAC_INVENTORY = `import ctypes,json,sys,platform
 class S(ctypes.Structure):
  _fields_=[('bsize',ctypes.c_uint32),('iosize',ctypes.c_int32),('blocks',ctypes.c_uint64),('bfree',ctypes.c_uint64),('bavail',ctypes.c_uint64),('files',ctypes.c_uint64),('ffree',ctypes.c_uint64),('fsid',ctypes.c_int32*2),('owner',ctypes.c_uint32),('type',ctypes.c_uint32),('flags',ctypes.c_uint32),('subtype',ctypes.c_uint32),('fstype',ctypes.c_char*16),('mount',ctypes.c_char*1024),('source',ctypes.c_char*1024),('reserved',ctypes.c_uint32*8)]
 assert ctypes.sizeof(S)==2168
+machine=platform.machine()
+if machine=='arm64': sym='getfsstat'
+elif machine=='x86_64': sym='getfsstat$INODE64'
+else: sys.exit(3)
 lib=ctypes.CDLL('/usr/lib/libSystem.B.dylib',use_errno=True)
-f=getattr(lib,'getfsstat$INODE64');f.argtypes=[ctypes.POINTER(S),ctypes.c_int,ctypes.c_int];f.restype=ctypes.c_int
+f=getattr(lib,sym);f.argtypes=[ctypes.POINTER(S),ctypes.c_int,ctypes.c_int];f.restype=ctypes.c_int
 rows=(S*128)();n=f(rows,ctypes.sizeof(rows),2)
 assert 0<n<128
 print(json.dumps([{'mountpoint':bytes(x.mount).decode(),'type':bytes(x.fstype).decode()} for x in rows[:n]]))`;

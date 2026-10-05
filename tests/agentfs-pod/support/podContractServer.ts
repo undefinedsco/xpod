@@ -304,11 +304,12 @@ export async function startPodContractServer(options: PodContractServerOptions =
                     }
                   } else {
                     const body = (stored.content as Buffer).subarray(start, end + 1);
-                    if (stallTarget && stallTarget.resource === resource && body.length > stallTarget.afterBytes) {
+                    // GET-only barrier: HEAD must NOT consume the stall target.
+                    if (request.method === 'GET' && stallTarget && stallTarget.resource === resource && body.length > stallTarget.afterBytes) {
                       const after = stallTarget.afterBytes; stallTarget = undefined;
-                      status = 206; responseBytes = request.method === 'HEAD' ? 0 : body.length;
+                      status = 206; responseBytes = body.length;
                       response.writeHead(206, headers({ 'content-range': `bytes ${start}-${end}/${total}`, 'content-length': body.length }));
-                      if (request.method !== 'HEAD') response.write(body.subarray(0, after));
+                      response.write(body.subarray(0, after));
                       stallRelease = () => { try { response.end(body.subarray(after)); } catch { /* client closed */ } };
                     } else {
                       send(206, body, headers({ 'content-range': `bytes ${start}-${end}/${total}` }));
@@ -325,11 +326,12 @@ export async function startPodContractServer(options: PodContractServerOptions =
                   }
                 } else {
                   const body = stored.content as Buffer;
-                  if (stallTarget && stallTarget.resource === resource && body.length > stallTarget.afterBytes) {
+                  // GET-only barrier: HEAD must NOT consume the stall target.
+                  if (request.method === 'GET' && stallTarget && stallTarget.resource === resource && body.length > stallTarget.afterBytes) {
                     const after = stallTarget.afterBytes; stallTarget = undefined;
-                    status = 200; responseBytes = request.method === 'HEAD' ? 0 : body.length;
+                    status = 200; responseBytes = body.length;
                     response.writeHead(200, headers({ 'content-length': body.length }));
-                    if (request.method !== 'HEAD') response.write(body.subarray(0, after));
+                    response.write(body.subarray(0, after));
                     stallRelease = () => { try { response.end(body.subarray(after)); } catch { /* client closed */ } };
                   } else {
                     send(200, body, headers());

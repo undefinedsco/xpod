@@ -107,6 +107,11 @@ describe.runIf(runOverlay)('native session overlay: dirty before commit, restart
     if (context.task.result?.state === 'fail') primaryFailure ??= context.task.result;
     try { await unmount(primaryFailure); } catch (error) { primaryFailure ??= error; throw error; }
     expect(await waitForOwnedDaemons(binary, mnt, 0), 'the owned mount daemon must exit after unmount').toBe(true);
+    // Retire the owned-mount flag ONLY after a successful unmount (kernel
+    // absence proven by cleanup.unmount) AND the owned daemon actually exited.
+    // afterAll then handles only an UNRETIRED attempt; unknown/pending never
+    // clears, and a failed unmount keeps the scene for retry.
+    ownedMountAttempted = false;
   });
 
   beforeAll(async () => {
