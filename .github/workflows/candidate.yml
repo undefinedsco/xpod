@@ -66,6 +66,8 @@ jobs:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Verify RC DNS and namespace prerequisites
         run: |
           set -euo pipefail
@@ -105,6 +107,7 @@ jobs:
           mkdir -p ~/.kube
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
+          node scripts/verify-rc-cluster-target.cjs
           kubectl auth can-i create deployments -n "$SEALOS_NAMESPACE" | grep -qx yes
           kubectl auth can-i create services -n "$SEALOS_NAMESPACE" | grep -qx yes
           kubectl auth can-i create ingresses.networking.k8s.io -n "$SEALOS_NAMESPACE" | grep -qx yes
@@ -219,7 +222,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Verify the desktop self-update verifier
-        run: node --test tests/scripts/desktop-self-update-acceptance.node-test.cjs
+        run: node --test tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/packaged-update-phases.node-test.mjs
 
       - name: Install Chromium for authenticated acceptance
         run: bunx playwright install --with-deps chromium
@@ -231,6 +234,7 @@ jobs:
           bunx playwright test tests/e2e/consent-cross-origin-resume.spec.ts --workers=1
 
       - name: Set up kubeconfig
+        id: rc_kubeconfig
         run: |
           set -euo pipefail
           validate_k8s_name() {
@@ -259,6 +263,7 @@ jobs:
           mkdir -p ~/.kube
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
+          node scripts/verify-rc-cluster-target.cjs
 
       - name: Validate RC runtime secret isolation
         run: |
@@ -690,7 +695,30 @@ jobs:
                 || details.errorEnvelope !== undefined && !['error_string', 'json_other', 'non_json', 'oversized', 'unreadable'].includes(details.errorEnvelope)
                 || details.taskResumeStage !== undefined && !['route_request', 'route_validation', 'route_run_read', 'run_read', 'approval_validation', 'checkpoint_validation', 'task_lookup', 'task_auth_restore', 'invocation_issue', 'continuation_prepare', 'continuation_complete', 'continuation_release', 'run_result_read'].includes(details.taskResumeStage)
                 || details.taskResumeErrorType !== undefined && !['error', 'type_error', 'range_error', 'syntax_error', 'non_error'].includes(details.taskResumeErrorType)) throw new Error('Invalid safe Task failure details');
+              let taskResumeFailure;
+              if (details.taskResumeFailure !== undefined) {
+                const failure = details.taskResumeFailure;
+                const failureNames = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError'];
+                const modules = ['api/runs/RunStateCenter', 'api/runs/InngestRunExecutionBackend', 'api/runs/ConditionalResourceDocument',
+                  'api/runs/RunApproval', 'api/runs/RunCancellation', 'api/runs/ManagedRunWorker', 'api/runs/store',
+                  'api/chatkit/pod-store', 'api/tasks/TaskMaterializer', 'api/tasks/TaskService', 'api/handlers/TaskHandler'];
+                const record = value => value && typeof value === 'object' && !Array.isArray(value);
+                if (!record(failure) || !failureNames.includes(failure.name)
+                  || Object.keys(failure).some(key => !['name', 'code', 'causeCode', 'site'].includes(key))
+                  || ['code', 'causeCode'].some(key => Object.hasOwn(failure, key) && !codes.includes(failure[key]))) throw new Error('Invalid safe Task failure details');
+                taskResumeFailure = { name: failure.name };
+                for (const key of ['code', 'causeCode']) if (failure[key] !== undefined) taskResumeFailure[key] = failure[key];
+                if (Object.hasOwn(failure, 'site')) {
+                  const site = failure.site;
+                  if (!record(site) || Object.keys(site).some(key => !['module', 'line', 'column', 'coordinate', 'kind'].includes(key))
+                    || !modules.includes(site.module) || site.kind !== 'first_project_frame'
+                    || !['compiled_js', 'source_ts'].includes(site.coordinate)
+                    || ['line', 'column'].some(key => !Number.isSafeInteger(site[key]) || site[key] <= 0 || site[key] > 1000000)) throw new Error('Invalid safe Task failure details');
+                  taskResumeFailure.site = { module: site.module, line: site.line, column: site.column, coordinate: site.coordinate, kind: site.kind };
+                }
+              }
               safe.failureDetails = { substage: details.substage, category: details.category, name: details.name };
+              if (taskResumeFailure) safe.failureDetails.taskResumeFailure = taskResumeFailure;
               for (const field of ['code', 'causeCode', 'httpStatus', 'runDocumentHttpStatus', 'taskError', 'errorEnvelope', 'taskResumeStage', 'taskResumeErrorType']) if (details[field] !== undefined) safe.failureDetails[field] = details[field];
             }
             const snapshot = row.terminalSnapshot;
@@ -777,7 +805,7 @@ jobs:
           retention-days: 14
 
       - name: Dump diagnostics
-        if: failure()
+        if: ${{ failure() && steps.rc_kubeconfig.outcome == 'success' }}
         run: |
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods,svc -o wide || true
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc || true
@@ -807,7 +835,7 @@ jobs:
           fi
 
       - name: Scale RC deployments to zero
-        if: ${{ always() && vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
+        if: ${{ always() && steps.rc_kubeconfig.outcome == 'success' && vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
         run: |
           kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0 || true
           kubectl -n "$SEALOS_NAMESPACE" scale statefulset/xpod-rc-postgres --replicas=0 || true

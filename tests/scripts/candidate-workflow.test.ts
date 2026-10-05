@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { parseDocument } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import { TASK_RESUME_STAGES, TASK_RESUME_ERROR_TYPES } from '../../src/api/tasks/TaskResumeDiagnostics';
+import { TASK_RESUME_STAGES, TASK_RESUME_ERROR_TYPES, TASK_RESUME_FAILURE_NAMES, TASK_RESUME_FAILURE_CODES, TASK_RESUME_SITE_MODULES } from '../../src/api/tasks/TaskResumeDiagnostics';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const workflowPath = path.join(repoRoot, '.github/workflows/candidate.yml');
@@ -246,6 +246,60 @@ esac
     expect(runText).toContain('api-rc.undefineds.co');
     expect(runText).toContain('auth can-i create deployments');
     expect(runText).not.toContain('get secret xpod-rc-tls');
+  });
+
+  it('checks out the repository and validates the Guangzhou cluster target before any namespace access', async () => {
+    const workflow = await loadWorkflow();
+    const job = workflow.jobs.rc_prerequisites;
+    const steps = job.steps;
+    const checkoutIndex = steps.findIndex((step: any) => step.uses === 'actions/checkout@v4');
+    expect(checkoutIndex).toBeGreaterThan(-1);
+
+    const runText = jobRunText(workflow, 'rc_prerequisites');
+    const guardIndex = runText.indexOf('node scripts/verify-rc-cluster-target.cjs');
+    const kubeconfigIndex = runText.search(/> ~\/\.kube\/config/);
+    const authIndex = runText.indexOf('auth can-i create deployments');
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(kubeconfigIndex).toBeGreaterThan(-1);
+    expect(authIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(kubeconfigIndex);
+    expect(guardIndex).toBeLessThan(authIndex);
+
+    const guardStepIndex = steps.findIndex((step: any) =>
+      typeof step.run === 'string' && step.run.includes('verify-rc-cluster-target.cjs'));
+    expect(guardStepIndex).toBeGreaterThan(checkoutIndex);
+  });
+
+  it('guards deployment diagnostics and RC scaling on a verified kubeconfig setup', async () => {
+    const workflow = await loadWorkflow();
+    const job = workflow.jobs.deploy_and_accept;
+    const steps = job.steps;
+    const setupIndex = steps.findIndex((step: any) => step.name === 'Set up kubeconfig');
+    expect(setupIndex).toBeGreaterThan(-1);
+    expect(steps[setupIndex].id).toBe('rc_kubeconfig');
+
+    const runText = jobRunText(workflow, 'deploy_and_accept');
+    const guardIndex = runText.indexOf('node scripts/verify-rc-cluster-target.cjs');
+    const kubeconfigIndex = runText.search(/> ~\/\.kube\/config/);
+    const firstClusterOperation = runText.indexOf(
+      'kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-postgres-secret');
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(kubeconfigIndex).toBeGreaterThan(-1);
+    expect(firstClusterOperation).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(kubeconfigIndex);
+    expect(guardIndex).toBeLessThan(firstClusterOperation);
+
+    const guardStepIndex = steps.findIndex((step: any) =>
+      typeof step.run === 'string' && step.run.includes('verify-rc-cluster-target.cjs'));
+    expect(guardStepIndex).toBeGreaterThanOrEqual(setupIndex);
+
+    const diagnostics = steps.find((step: any) => step.name === 'Dump diagnostics');
+    expect(diagnostics.if).toContain('failure()');
+    expect(diagnostics.if).toContain("steps.rc_kubeconfig.outcome == 'success'");
+    const cleanup = steps.find((step: any) => step.name === 'Scale RC deployments to zero');
+    expect(cleanup.if).toContain('always()');
+    expect(cleanup.if).toContain("steps.rc_kubeconfig.outcome == 'success'");
+    expect(cleanup.if).toContain("vars.XPOD_RC_SCALE_TO_ZERO == 'true'");
   });
 
   it('builds and verifies the macOS desktop without Apple distribution credentials', async () => {
@@ -545,6 +599,27 @@ esac
     expect(evidence.cleanup).toEqual({ ok: true, tasksPaused: 3, runsStopped: 0, sessionsTerminal: 3, grantRevoked: true });
   });
 
+  it('uses the shared failure enums and retains only the bounded producer attribution', async () => {
+    const workflow = await loadWorkflow();
+    const script = workflow.jobs.deploy_and_accept.steps.find((entry: any) => entry.name === 'Project safe Task approval evidence').run;
+    for (const [name, values] of [['failureNames', TASK_RESUME_FAILURE_NAMES], ['codes', TASK_RESUME_FAILURE_CODES], ['modules', TASK_RESUME_SITE_MODULES]] as const) {
+      const literal = script.match(new RegExp(`const ${name} = (\\[[\\s\\S]*?\\]);`))?.[1];
+      expect(literal).toBeDefined();
+      expect(Function(`return ${literal}`)()).toEqual(values);
+    }
+    const taskResumeFailure = { name: 'Error', code: 'ECONNRESET', causeCode: 'ECONNREFUSED',
+      site: { module: 'api/runs/store', line: 17, column: 4, coordinate: 'source_ts', kind: 'first_project_frame' } };
+    const result = await projectTaskEvidence(JSON.stringify({ taskApproval: { ok: false,
+      cases: [{ kind: 'approved', ok: false, failureDetails: { substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', taskResumeFailure } }], cleanup: { ok: true } } }));
+    expect(JSON.parse(result.evidence!).cases[0].failureDetails.taskResumeFailure).toEqual(taskResumeFailure);
+  });
+  it.each([null, 'private', { name: 'private' }, { name: 'Error', stack: 'private' },
+    { name: 'Error', site: { module: '/Users/private/store.ts', line: 17, column: 4, coordinate: 'source_ts', kind: 'first_project_frame' } },
+    { name: 'Error', site: { module: 'api/runs/store', line: 0, column: 4, coordinate: 'source_ts', kind: 'first_project_frame' } },
+  ])('rejects malformed producer attribution %# instead of publishing it', async taskResumeFailure => {
+    await expect(projectTaskEvidence(JSON.stringify({ taskApproval: { ok: false,
+      cases: [{ kind: 'approved', ok: false, failureDetails: { substage: 'decision-resume-request', category: 'assertion', name: 'LiveTaskEvidenceError', taskResumeFailure } }], cleanup: { ok: true } } }))).rejects.toThrow('Invalid safe Task failure details');
+  });
   it('projects only optional allowlisted Task failure details and accepts older evidence', async () => {
     const details = { substage: 'decision-resume-request', category: 'connection', name: 'TypeError', causeCode: 'ECONNREFUSED', httpStatus: 403, taskError: 'service_access_missing', errorEnvelope: 'error_string', runDocumentHttpStatus: 401, taskResumeStage: 'task_auth_restore', taskResumeErrorType: 'type_error' };
     const result = await projectTaskEvidence(JSON.stringify({ taskApproval: { ok: false,
@@ -689,7 +764,8 @@ esac
     expect(finalUpload.with.path).toBe('${{ runner.temp }}/release-acceptance.json');
 
     const diagnostics = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Dump diagnostics');
-    expect(diagnostics.if).toBe('failure()');
+    expect(diagnostics.if).toContain('failure()');
+    expect(diagnostics.if).toContain("steps.rc_kubeconfig.outcome == 'success'");
     expect(diagnostics.run).toContain('kubectl -n "$SEALOS_NAMESPACE" get');
     expect(diagnostics.run).toContain('describe deployment xpod-rc');
     expect(diagnostics.run).toContain('describe statefulset xpod-rc-postgres');
@@ -700,6 +776,7 @@ esac
     expect(diagnostics.run).toContain('docker logs "$local_name"');
     const cleanup = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
     expect(cleanup.if).toContain('always()');
+    expect(cleanup.if).toContain("steps.rc_kubeconfig.outcome == 'success'");
     expect(cleanup.if).toContain("vars.XPOD_RC_SCALE_TO_ZERO == 'true'");
     expect(cleanup.run).toContain('kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0');
     expect(cleanup.run).toContain('scale statefulset/xpod-rc-postgres --replicas=0');

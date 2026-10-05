@@ -252,7 +252,7 @@ jobs:
         run: node scripts/publish-release.cjs --skip-build
 
       - name: Test npm tarball readiness checks
-        run: node --test tests/scripts/wait-for-npm-package.node-test.cjs tests/scripts/npm-latest-propagation.node-test.cjs tests/scripts/desktop-self-update-acceptance.node-test.cjs
+        run: node --test tests/scripts/wait-for-npm-package.node-test.cjs tests/scripts/npm-latest-propagation.node-test.cjs tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/packaged-update-phases.node-test.mjs
 
       - name: Wait for verified root and native tarballs to become publicly installable
         run: |

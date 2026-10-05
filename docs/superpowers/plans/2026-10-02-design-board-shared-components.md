@@ -33,11 +33,11 @@
 
 | 公共 API | 实际消费方（实现文件） | 用法要点 |
 |---|---|---|
-| `StatusDot` | `packages/ai-connections/src/AiConnectionsList.tsx` | `tone="info"`，无 `label` → 装饰点 |
+| `StatusDot` | `packages/ai-connections/src/AiConnectionsList.tsx`、`ui/src/layout/XpodProductLayout.tsx`、`ui/src/shell/ShellHeaderControls.tsx` | 列表/通知无 `label` → 装饰点；rail attention 带可访问名 |
 | `StatusLine` | `ui/src/components/ui/StatusBar.tsx`、`ui/src/layout/XpodUserCard.tsx` | 点 + 可见状态词 |
 | `InlineNotice` | `ui/src/shell/ShellHeaderControls.tsx`、`packages/ai-connections/src/AiGatewayKeysSection.tsx`、`packages/ai-connections/src/AiConnectionsList.tsx`、`packages/tasks/src/TasksPanel.tsx` | `role` 由调用方给，`action` 槽被使用 |
-| `SectionHeader` | `ui/src/pages/device/DevicePages.tsx`、`packages/ai-connections/src/AiGatewayKeysSection.tsx`、`packages/pod-settings/src/PodBody.tsx` | level 2/3，`actions` 槽被使用 |
-| `ListSurface` / `ListRow` | `ui/src/pages/device/DevicePages.tsx` | 非交互行保持语义容器 |
+| `SectionHeader` | `ui/src/pages/device/DevicePages.tsx`、`packages/ai-connections/src/AiGatewayKeysSection.tsx`、`packages/ai-connections/src/AiCredentialPoolSection.tsx`、`packages/pod-settings/src/PodBody.tsx` | level 2/3，`actions` 槽被使用 |
+| `ListSurface` / `ListRow` | `ui/src/pages/device/DevicePages.tsx`；`ListSurface` 另用于 `AiGatewayKeysSection.tsx`、`AiSortableCredentialList.tsx` | 非交互行保持语义容器；AI 容器用 `asChild` 保留 ul/li 或原拖动 div/ref |
 | `SegmentedControl` | `packages/tasks/src/TasksPanel.tsx` | 筛选/视图/计划类型，真实 radio 组 |
 | `SettingRow` | `packages/pod-settings/src/PodBody.tsx` | `control` 渲染既有 `Checkbox` |
 | `SwitchSettingRow` | `ui/src/pages/device/DevicePages.tsx` | 复用共享 `Switch` |
@@ -117,7 +117,7 @@
 
 ### 3.4 `ListSurface` / `ListRow`
 - 文件：`packages/shared-ui/src/list.tsx`
-- `ListSurface(props: HTMLAttributes<HTMLDivElement>)`：纯展示的圆角描边 + `divide-y` 容器，不合成 `role=list/listitem`。
+- `ListSurface({ asChild?, ...props }: ListSurfaceProps)`：纯展示的圆角描边 + `divide-y` 容器，不合成 `role=list/listitem`。默认 div；`asChild` 将样式/ref/事件组合到唯一子元素，保留真实 ul/li 或拖动容器。已有行自带分隔线时以 `divide-y-0` 覆盖公共分隔，不产生重复边框。
 - `ListRow({ leading?, title?, description?, trailing?, asChild?, className?, ...rest })`：非交互行保持语义容器；交互行通过 `asChild` 传入真实 `button`/`a`，由调用方保留原生角色与焦点（无 `interactive`/`selected` 布尔）。
 - 行以 `p-4` + 内容自然撑高满足密度契约（精确指针双行 56px 下限，`ui-modernization §3.1`）；组件本身不写死 min-height，长文案/放大文字可增高。
 

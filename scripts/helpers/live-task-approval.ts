@@ -1,5 +1,5 @@
 import type { TaskCredentialSummary } from '../../src/api/tasks/TaskCredentialStore';
-import { TASK_RESUME_STAGES, TASK_RESUME_ERROR_TYPES, type TaskResumeStage, type TaskResumeErrorType } from '../../src/api/tasks/TaskResumeDiagnostics';
+import { TASK_RESUME_STAGES, TASK_RESUME_ERROR_TYPES, selectTaskResumeFailure, type TaskResumeFailure, type TaskResumeStage, type TaskResumeErrorType } from '../../src/api/tasks/TaskResumeDiagnostics';
 import { randomUUID } from 'node:crypto';
 import { drizzle, type SolidAuthSession } from '@undefineds.co/drizzle-solid';
 import { approvalResource, sessionResource, decideApprovalRequest, RunStepType, type ApprovalRow } from '@undefineds.co/models';
@@ -24,6 +24,7 @@ export interface LiveTaskFailureDetails {
   runDocumentHttpStatus?: number;
   taskResumeStage?: TaskResumeStage;
   taskResumeErrorType?: TaskResumeErrorType;
+  taskResumeFailure?: TaskResumeFailure;
   taskError?: TaskHttpErrorToken;
   errorEnvelope?: TaskErrorEnvelope;
 }
@@ -97,12 +98,13 @@ class LiveTaskEvidenceError extends Error {
   public runDocumentHttpStatus?: number;
   public taskResumeStage?: TaskResumeStage;
   public taskResumeErrorType?: TaskResumeErrorType;
+  public taskResumeFailure?: TaskResumeFailure;
   public taskError?: TaskHttpErrorToken;
   public errorEnvelope?: TaskErrorEnvelope;
 }
 
 /** Read only a small error envelope; never retain or report its contents. */
-async function taskHttpErrorToken(response: Response): Promise<Pick<LiveTaskFailureDetails, 'taskResumeStage' | 'taskResumeErrorType' | 'runDocumentHttpStatus'> & { taskError: TaskHttpErrorToken; errorEnvelope: TaskErrorEnvelope }> {
+async function taskHttpErrorToken(response: Response): Promise<Pick<LiveTaskFailureDetails, 'taskResumeStage' | 'taskResumeErrorType' | 'taskResumeFailure' | 'runDocumentHttpStatus'> & { taskError: TaskHttpErrorToken; errorEnvelope: TaskErrorEnvelope }> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     reader = response.body?.getReader();
@@ -123,8 +125,10 @@ async function taskHttpErrorToken(response: Response): Promise<Pick<LiveTaskFail
     try { body = JSON.parse(new TextDecoder().decode(buffer)); }
     catch { return { taskError: 'other_error', errorEnvelope: 'non_json' }; }
     const envelope = body && typeof body === 'object' && !Array.isArray(body)
-      ? body as { error?: unknown; taskResumeStage?: unknown; taskResumeErrorType?: unknown } : undefined;
+      ? body as { error?: unknown; taskResumeStage?: unknown; taskResumeErrorType?: unknown; taskResumeFailure?: unknown } : undefined;
+    const taskResumeFailure = selectTaskResumeFailure(envelope?.taskResumeFailure);
     const resumeDiagnostics = {
+      ...(taskResumeFailure ? { taskResumeFailure } : {}),
       ...(typeof envelope?.taskResumeStage === 'string' && TASK_RESUME_STAGES.includes(envelope.taskResumeStage as TaskResumeStage) ? { taskResumeStage: envelope.taskResumeStage as TaskResumeStage } : {}),
       ...(typeof envelope?.taskResumeErrorType === 'string' && TASK_RESUME_ERROR_TYPES.includes(envelope.taskResumeErrorType as TaskResumeErrorType) ? { taskResumeErrorType: envelope.taskResumeErrorType as TaskResumeErrorType } : {}),
     };
@@ -157,6 +161,7 @@ function safeFailureDetails(substage: LiveTaskFailureDetails['substage'], error:
     const code = typeof value?.code === 'string' && codes.includes(value.code) ? value.code as LiveTaskFailureDetails['code'] : undefined;
     const causeCode = typeof value?.cause?.code === 'string' && codes.includes(value.cause.code) ? value.cause.code as LiveTaskFailureDetails['code'] : undefined;
     const observedCodes = [code, causeCode];
+    const taskResumeFailure = controlled ? selectTaskResumeFailure(error.taskResumeFailure) : undefined;
     const category = controlled ? 'assertion'
       : name === 'TimeoutError' || observedCodes.includes('ETIMEDOUT') ? 'timeout'
         : observedCodes.some(item => item === 'ECONNREFUSED' || item === 'ECONNRESET' || item === 'ENOTFOUND') ? 'connection'
@@ -168,6 +173,7 @@ function safeFailureDetails(substage: LiveTaskFailureDetails['substage'], error:
       ...(controlled && taskErrorEnvelopes.includes(error.errorEnvelope as TaskErrorEnvelope) ? { errorEnvelope: error.errorEnvelope } : {}),
       ...(controlled && TASK_RESUME_STAGES.includes(error.taskResumeStage as TaskResumeStage) ? { taskResumeStage: error.taskResumeStage } : {}),
       ...(controlled && TASK_RESUME_ERROR_TYPES.includes(error.taskResumeErrorType as TaskResumeErrorType) ? { taskResumeErrorType: error.taskResumeErrorType } : {}),
+      ...(taskResumeFailure ? { taskResumeFailure } : {}),
     };
   } catch {
     return { substage, category: 'other', name: 'other' };

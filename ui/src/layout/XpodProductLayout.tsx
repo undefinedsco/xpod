@@ -1,4 +1,5 @@
 import { WorkspaceDrawerContext } from '@undefineds.co/extension-sdk/react';
+import { StatusDot } from '@undefineds.co/shared-ui';
 import { clsx } from 'clsx';
 import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { Menu, X } from 'lucide-react';
@@ -51,7 +52,7 @@ export function ProductNavLinks({ items, label, attentionIds = [] }: { items: re
           >
             <Icon className="h-5 w-5 shrink-0" aria-hidden="true" />
             <span className="sr-only">{item.label}</span>
-            {attentionIds.includes(item.id) ? <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-destructive" role="img" aria-label="需要处理" /> : null}
+            {attentionIds.includes(item.id) ? <StatusDot tone="destructive" label="需要处理" className="absolute right-1 top-1" /> : null}
           </Link>
         );
       })}

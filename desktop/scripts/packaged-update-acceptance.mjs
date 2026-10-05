@@ -83,6 +83,37 @@ if (isMain) {
   })
 }
 
+/** Wait for one owned phase, removing its listener and timer on every outcome. */
+export function waitForPhaseEvent(emitter, event, accepts, timeoutMs, phase, ownedChild) {
+  return new Promise((resolve, reject) => {
+    const settle = (error, args) => {
+      clearTimeout(timer)
+      emitter.removeListener(event, onEvent)
+      ownedChild?.removeListener('exit', onChildExit)
+      emitter.removeListener('error', onError)
+      if (ownedChild !== emitter) ownedChild?.removeListener('error', onError)
+      if (error) reject(error)
+      else resolve(args)
+    }
+    const onError = () => settle(new Error(`Packaged update acceptance failed waiting for ${phase}.`))
+    const onChildExit = () => settle(new Error(`Packaged update acceptance child exited before ${phase}.`))
+    const onEvent = (...args) => {
+      try {
+        if (accepts(...args)) settle(undefined, args)
+      } catch (error) {
+        settle(error)
+      }
+    }
+    const timer = setTimeout(() => {
+      settle(new Error(`Packaged update acceptance timed out waiting for ${phase}.`))
+    }, timeoutMs)
+    emitter.on(event, onEvent)
+    emitter.on('error', onError)
+    if (ownedChild !== emitter) ownedChild?.on('error', onError)
+    ownedChild?.on('exit', onChildExit)
+  })
+}
+
 async function run() {
   if (process.platform !== 'darwin') {
     console.error('Packaged update acceptance requires macOS.')
@@ -145,17 +176,24 @@ async function run() {
     void releaseOwned().finally(() => process.exit(143))
   })
 
-  fixture.stdout.setEncoding('utf8')
-  let output = ''
-  fixture.stdout.on('data', (chunk) => {
-    output += chunk
-    const match = output.match(/XPOD_UPDATE_FIXTURE_READY (http:\/\/127\.0\.0\.1:\d+\/update\/darwin)/)
-    if (!match || appProcess) return
-    const feedUrl = match[1]
+  const phaseTimeoutMs = Number(options.timeout ?? 120_000)
+  let cleanupFacts
+  let exitCode
+  let events
+  try {
+    fixture.stdout.setEncoding('utf8')
+    let output = ''
+    let feedUrl
+    await waitForPhaseEvent(fixture.stdout, 'data', (chunk) => {
+      output += chunk
+      const match = output.match(/XPOD_UPDATE_FIXTURE_READY (http:\/\/127\.0\.0\.1:\d+\/update\/darwin)/)
+      if (!match) return false
+      feedUrl = match[1]
+      return true
+    }, phaseTimeoutMs, 'fixture READY', fixture)
     console.log(`Update feed: ${feedUrl}`)
     console.log(`Isolated userData: ${userData}`)
     console.log('Expected path: old app checks -> newer manifest -> checksum verify -> swap bundle -> new app version.')
-
     appProcess = spawn(oldBinary, [], {
       cwd: desktopDir,
       env: {
@@ -172,50 +210,38 @@ async function run() {
       },
       stdio: 'inherit',
     })
-    appProcess.once('exit', async (code, signal) => {
-      console.log(`Packaged Xpod exited (code=${code ?? 'null'}, signal=${signal ?? 'none'}).`)
-      try {
-        await waitForAcceptanceEvidence({
-          versionFile: expectedVersionFile,
-          expectedVersion: newVersion,
-          installMarker,
-          lifecycleLog,
-          timeoutMs: Number(options.timeout ?? 120_000),
-        })
-        const events = readLifecycleEvents(lifecycleLog)
-        // Release every owned process and the private userData BEFORE writing
-        // evidence, so the recorded cleanup facts are real, not asserted.
-        const cleanup = await releaseOwned()
-        if (!cleanupSatisfied(cleanup)) {
-          throw new Error(`owned resources were not fully released: ${JSON.stringify(cleanup)}`)
-        }
-        writeAcceptanceEvidence({
-          sourceSha,
-          oldReleaseTag,
-          oldVersion,
-          newVersion,
-          oldApp,
-          oldBinarySha256,
-          oldZip,
-          newArchive,
-          events,
-          cleanup,
-        })
-        console.log(`XPOD_UPDATE_ACCEPTANCE_OK ${newVersion}`)
-        process.exit(code ?? 0)
-      } catch (error) {
-        console.error(error instanceof Error ? error.message : String(error))
-        await releaseOwned()
-        process.exit(1)
-      }
+    const [code, signal] = await waitForPhaseEvent(appProcess, 'exit', () => true, phaseTimeoutMs, 'old App exit')
+    exitCode = code
+    console.log(`Packaged Xpod exited (code=${code ?? 'null'}, signal=${signal ?? 'none'}).`)
+    await waitForAcceptanceEvidence({
+      versionFile: expectedVersionFile,
+      expectedVersion: newVersion,
+      installMarker,
+      lifecycleLog,
+      timeoutMs: Number(options.timeout ?? 120_000),
     })
+    events = readLifecycleEvents(lifecycleLog)
+  } finally {
+    cleanupFacts = await releaseOwned()
+  }
+  const cleanup = cleanupFacts
+  if (!cleanupSatisfied(cleanup)) {
+    throw new Error(`owned resources were not fully released: ${JSON.stringify(cleanup)}`)
+  }
+  writeAcceptanceEvidence({
+    sourceSha,
+    oldReleaseTag,
+    oldVersion,
+    newVersion,
+    oldApp,
+    oldBinarySha256,
+    oldZip,
+    newArchive,
+    events,
+    cleanup,
   })
-
-  fixture.once('exit', (code) => {
-    if (!appProcess && code !== 0) {
-      void releaseOwned().finally(() => process.exit(code ?? 1))
-    }
-  })
+  console.log(`XPOD_UPDATE_ACCEPTANCE_OK ${newVersion}`)
+  process.exit(exitCode ?? 0)
 }
 
 function parseArgs(args) {

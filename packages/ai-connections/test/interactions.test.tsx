@@ -2553,7 +2553,8 @@ it('keeps account import beside New and shows import failures without opening a 
     onSaveApiKey: vi.fn(), onDisconnect: vi.fn(), onCreateLocalCredential,
   }
   const { rerender } = render(<AiCredentialPoolSection {...props} />)
-  const header = screen.getByRole('heading', { name: '当前连接' }).parentElement!
+  expect(screen.getByRole('heading', { name: '当前连接', level: 3 })).toBeTruthy()
+  const header = screen.getByTestId('provider-connect-actions')
   expect(within(header).getByRole('button', { name: '新建 API Key 连接' })).toBeTruthy()
   const importButton = within(header).getByRole('button', { name: '已有登录态' })
   expect(screen.queryByRole('dialog')).toBeNull()

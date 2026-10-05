@@ -2,7 +2,17 @@
 
 依据：`docs/superpowers/specs/2026-10-01-xpod-desktop-shell-and-applets-design.md`、画板归档 README 与 `docs/RELEASE.md`。实施分支 `codex/desktop-shell-applets`，原目标版本 0.4.21；并行目录功能已占用该候选分支，已在独立 worktree 完成集成，桌面目标为 0.4.22；其他版本分支不属于本次发布范围。本文件记录当前证据，不作为未完成门禁的通过凭证。
 
-## 当前发布状态（2026-10-05）
+## 当前发布状态（2026-10-05，c54 后续诊断）
+
+A7 与持久审批身份绑定修复已提交为 `c54c49c816493047770c485c25ef67334faebf64`。该源码原完整集成退出 0（lite 162、full 62，原 16 项 skip、冻结无漂移、自有资源清理闭合），PR CI `37231078290` 22/22 成功；PR merge checkout tree 未另行核验。正常候选 `37231072946`（attempt 1、event push、release/0.4.22）的服务镜像、原生运行时构建通过，但 `deploy_and_accept` 第 16 步于 UTC 2026-10-04 20:32:25 失败：审批续跑请求 HTTP 400，固定边界 `continuation_complete` / `error`。身份绑定回归修复没有使真实候选通过，不能称作该 400 的根因修复。
+
+本轮两份 tiny ZIP 的实际 SHA-256 与 API digest 匹配，原始 tiny JSON 也仅含固定分类；同一失败 job `111523531317` 的官方日志未保存可定位的续跑异常。追加的窄诊断只在原 catch 投影固定内置错误类型、受限 code/causeCode，以及第一个可归属项目 frame 的模块/坐标/坐标类型；这个 frame 可能是调用点，不保证异常起点。消息、原始堆栈、用户路径、URL、函数名和凭据不进入新字段或安全 artifact。原 Error identity、HTTP 响应、持久化 CAS、审批预算及成功断言保持。诊断补丁正在验证，尚未完成其完整集成门禁或产生新候选；旧完整 PASS 不覆盖新补丁。当前候选无 accepted manifest，稳定标签、生产和正式 App 均未晋升；正式安装仍为 0.4.20，同账号两 Sol 的实际发现、分别真实 Chat 和最终安装视觉仍待验收。
+
+后续诊断补丁的四套目标测试共 205 项、生产/测试类型检查、显式变更文件 lint 及独立审查均已通过；新补丁的完整集成尚未运行，旧完整 PASS 不覆盖这些改动。
+
+桌面 producer 的只读核查另确认 `--timeout 180000` 仅约束旧 App 退出后的证据轮询，READY 与旧 App 退出等待无脚本期限；当前 CI 的实际等待阶段与原因未观察，不据此宣称已定位本次长时间运行。已为这两个阶段分别复用原 timeout 值，保持原证据轮询预算与成功断言；缺事件、提前退出、stream/child error 均以固定消息失败，释放阶段监听器和计时器后进入原有清理。八项阶段回归与原十七项证据回归共 25 项通过，语法/diff 与使用已安装推荐规则的显式 JS lint 退出 0，未运行正式 App。既有候选因必需服务门禁真实失败由 root 主动结束，最终 run cancelled，Task job failure、桌面及 finalize cancelled；未完成的桌面自更新结果不能当作通过或根因证明。后续完整门禁锁定 desktop/source/docs/static 的前后字节，保留 1 GiB 硬停止线；根据上次实际空间波动约 462 MiB，操作性起跑余量调整为 4 GiB。当前空间不足，测试虚拟机已优雅停止，磁盘和镜像保留，DB/Compose/完整测试未启动。
+
+## 2026-10-05 c54 提交前冻结检查点（历史）
 
 当前产品工作树基于 `07eff88d4d4a4a2dbf8a2a940c6d0379ea9e1774`，新增修复尚未提交。该提交的正常 rc.256（run `37225299630`、attempt 1、event push）已于 UTC 2026-10-04 19:06:27 终态 failure：SDK、Linux/macOS native、镜像与桌面 job 通过，Live Gateway 第 16 步仍在 `approved:decision` / `decision-resume-request` 返回 HTTP 400，新增固定诊断为 `continuation_complete` / `error`；此边界包含持久化、运行配置、后端执行与完成，不能仅据此归因。两份 tiny artifact 的实际 ZIP 摘要与 API digest 一致；finalize skipped，无 accepted manifest。PR CI `37225303251` 22 个 job success，但实际 merge checkout tree 未另行核验，不冒充 exact-source 候选证明。stable、生产与正式 App 均未晋升。
 
@@ -342,3 +352,7 @@ A6 同 session 的“测试一次”现保留写入计划 id 与 key fingerprint
 - SDK 公开接口只有 `onPayload`，无结构化响应/状态 hook；provider 失败仅保留格式化 `errorMessage`。据此新增的 `sdkErrorHint` 是**消息 hint**，`httpStatus` 保持 null，不冒充观测到的 HTTP 状态。最小 RED 11 项失败 → 聚焦 33 项 + 相关 94 项通过；独立只读审查 PASS（5 源 + 3 client 冻结 hash 一致、`sdkErrorHint` 为可选严格校验、driver 语义保持）。
 - 冻结源码的完整集成 `bun run test:integration` 退出 0：lite 32 文件 / 162 项通过（另 4 文件 / 16 项按原规则跳过），full 7 文件 / 62 项通过；命令 `full-integration.exit.json` testExitCode=0（UTC 2026-10-03T19:36:48Z）。自有唯一数据库 `xpod_task_diag_1791055539868_cb2a2b8c526d`（create receipt、vector true）与唯一 Compose 项目 `xpod-task-diag-20261004-8ab46eaa` 清理：down exit 0、精确 project 容器查询 exit 0 且为空、磁盘释放；默认数据库与外来项目未改动。
 - 该 sdkErrorHint 只用于后续识别“模型失败发生在 payload 之后、HTTP 状态未知”这一事实，**不是根因修复**；真实 Task 授权与 19 项 accepted 仍缺。本轮不修改他人模块，不做 baseline 对照，也不声称 Matrix/AgentDirectory 必然失败。
+
+## 2026-10-05 GZ integration recovery
+
+The supplied `~/develop/undefineds/config/kubeconfig.cn.yaml` establishes trusted GZ access; the co config is SG and was not selected. Complete standard integration now passes on dedicated, disposable GZ PostgreSQL/pgvector, Redis and S3: lite 162 passed with 16 existing skips; full 62 passed across seven targets/four runtimes. Source freeze has zero drift and exact owned-resource cleanup is verified. Target/candidate/promotion regressions pass 128 tests; test type checking and explicit lint pass. Shared UI consumer and packaged-update unit/visual evidence remains as previously recorded. No release acceptance, formal installed-app update or real model Chat result is inferred from this integration run. The unnecessary, unfinished CI-only GZ inspection mode was removed after local configuration recovery.

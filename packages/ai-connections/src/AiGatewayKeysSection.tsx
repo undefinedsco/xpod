@@ -11,6 +11,7 @@ import {
   Input,
   NativeSelect,
   InlineNotice,
+  ListSurface,
   SectionHeader,
   TooltipProvider,
   dismissToast,
@@ -394,7 +395,8 @@ export function AiGatewayKeysSection({
           ) : loadError ? null : keys.length === 0 ? (
             <p className="py-2 text-xs text-muted-foreground">尚未签发 Xpod 密钥</p>
           ) : (
-            <ul aria-label="Xpod 密钥 列表" className="rounded-xl border border-border/70">
+            <ListSurface asChild className="divide-y-0 border-border/70 bg-transparent">
+              <ul aria-label="Xpod 密钥 列表">
               {keys.map((record) => (
                 <AiGatewayKeyRow
                   key={record.id}
@@ -428,6 +430,7 @@ export function AiGatewayKeysSection({
                 />
               ))}
             </ul>
+            </ListSurface>
           )}
 
         </section>

@@ -2,16 +2,28 @@ import { Slot } from '@radix-ui/react-slot'
 import * as React from 'react'
 import { cn } from './utils'
 
-export type ListSurfaceProps = React.HTMLAttributes<HTMLDivElement>
+export interface ListSurfaceProps extends React.HTMLAttributes<HTMLDivElement> {
+  /**
+   * Render the surface as the single child element (e.g. a real `ul` or an
+   * existing sortable container) so native semantics, ref and events stay on
+   * that element without adding a wrapper.
+   */
+  asChild?: boolean
+}
 
 /**
  * Bordered, divided container for a group of rows. Presentation only: it adds
  * no list role, navigation or focus behaviour of its own.
  */
 export const ListSurface = React.forwardRef<HTMLDivElement, ListSurfaceProps>(
-  ({ className, ...props }, ref) => (
-    <div ref={ref} className={cn('divide-y rounded-xl border border-border bg-card', className)} {...props} />
-  ),
+  ({ className, asChild = false, children, ...props }, ref) => {
+    const Component = asChild ? Slot : 'div'
+    return (
+      <Component ref={ref} className={cn('divide-y rounded-xl border border-border bg-card', className)} {...props}>
+        {children}
+      </Component>
+    )
+  },
 )
 ListSurface.displayName = 'ListSurface'
 

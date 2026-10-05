@@ -6,6 +6,35 @@ import { ListRow, ListSurface } from '../src/list'
 
 afterEach(cleanup)
 
+it('keeps a native list and its direct items without adding a surface wrapper', () => {
+  const ref = createRef<HTMLUListElement>()
+  const { container } = render(
+    <ListSurface asChild>
+      <ul ref={ref} aria-label="Xpod 密钥列表"><li>个人客户端</li><li>工作客户端</li></ul>
+    </ListSurface>,
+  )
+  const list = screen.getByRole('list', { name: 'Xpod 密钥列表' })
+  expect(container.firstElementChild).toBe(list)
+  expect(ref.current).toBe(list)
+  expect(Array.from(list.children).map((item) => item.tagName)).toEqual(['LI', 'LI'])
+})
+
+it('forwards surface refs and events to the existing sortable container', () => {
+  const ref = createRef<HTMLDivElement>()
+  const onPointerDown = vi.fn()
+  const { container } = render(
+    <ListSurface asChild ref={ref} onPointerDown={onPointerDown}>
+      <div data-testid="sortable-container"><span role="status">顺序已更新</span><div data-sortable-credential="one">连接</div></div>
+    </ListSurface>,
+  )
+  const sortable = screen.getByTestId('sortable-container')
+  expect(container.firstElementChild).toBe(sortable)
+  expect(ref.current).toBe(sortable)
+  expect(sortable.querySelector('[data-sortable-credential]')?.parentElement).toBe(sortable)
+  fireEvent.pointerDown(sortable)
+  expect(onPointerDown).toHaveBeenCalledOnce()
+})
+
 it('renders row slots and forwards the ref to the row element', () => {
   const ref = createRef<HTMLDivElement>()
   render(

@@ -1,4 +1,4 @@
-import { Button, TooltipProvider } from '@undefineds.co/shared-ui'
+import { Button, SectionHeader, TooltipProvider } from '@undefineds.co/shared-ui'
 import { Plus, Settings2 } from 'lucide-react'
 import type {
   AiConnectAttempt,
@@ -178,11 +178,14 @@ export function AiCredentialPoolSection({
   return (
     <TooltipProvider>
       <section className="space-y-3" aria-label="当前连接">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="flex items-center gap-2 text-sm font-medium text-foreground/90">
+        <SectionHeader
+          level={3}
+          className="items-center gap-2"
+          titleClassName="flex items-center gap-2 text-sm font-medium text-foreground/90"
+          title={<>
             <Settings2 aria-hidden="true" className="h-4 w-4 text-primary" />当前连接
-          </h3>
-          <div data-testid="provider-connect-actions" className="flex flex-wrap items-center justify-end gap-2">
+          </>}
+          actions={<div data-testid="provider-connect-actions" className="flex flex-wrap items-center justify-end gap-2">
           {credentials.length > 1 ? (
             <Button variant="ghost" size="sm" aria-label={`刷新全部 ${definition.name}额度`}
               disabled={disabled || quotaBusy || !credentials.some((c) => c.enabled) || !onRefreshQuota}
@@ -216,8 +219,8 @@ export function AiCredentialPoolSection({
                 <Plus aria-hidden="true" className="h-3.5 w-3.5" />{item.apiKeyMethod.label}</Button>
             )
           })}
-          </div>
-        </div>
+          </div>}
+        />
         {offeringMethods.filter(({ offering, methods }) => offering.lifecycle === 'unavailable'
           && !methods.some((method) => method.lifecycle === 'active')).map(({ offering, methods }) => (
           <AiOfferingDetails key={offering.id} offering={offering} methods={methods} />

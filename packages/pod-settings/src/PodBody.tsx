@@ -35,7 +35,7 @@ export function PodBody(props: PodBodyProps) {
     {props.section === 'models' && <section aria-label="默认模型">
       <p className="text-sm leading-normal text-muted-foreground">应用没有指定模型时用这里的默认值，随时可以改。</p>
       {Array.from(new Set(props.models.map(model => model.group))).map(group => <section key={group} className="mt-5">
-        <h2 className="text-xs leading-normal text-muted-foreground">{group}</h2>
+        <SectionHeader level={2} title={group} titleClassName="text-xs leading-normal text-muted-foreground" />
         {props.models.filter(model => model.group === group).map(model => <div key={model.id} className={row}>
           <label htmlFor={`pod-model-${model.id}`} className="min-w-28 text-sm leading-normal">{model.label}</label>
           {model.id === 'embeddingModel' ? <><span className="flex-1 text-sm leading-normal">{props.embeddingLabel}</span><Button variant="outline" size="sm" onClick={() => props.onSection('search')}>去更换 ›</Button></> : model.models ? <>

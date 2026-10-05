@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Bell, Inbox, RefreshCw, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { ShellAttentionItem } from '@undefineds.co/extension-sdk';
-import { InlineNotice } from '@undefineds.co/shared-ui';
+import { InlineNotice, StatusDot } from '@undefineds.co/shared-ui';
 import { useShellState } from './useShellState';
 
 export function ApprovalCard({ item }: { item: ShellAttentionItem }) {
@@ -83,7 +83,7 @@ export function ShellHeaderControls() {
     <button aria-label={loading ? '正在同步' : error || '刷新同步状态'} title={error || (loading ? '正在同步' : '刷新同步状态')} onClick={refresh} className="rounded p-2 hover:bg-accent"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
     {(['notifications', 'inbox'] as const).map(kind => <button key={kind} aria-label={kind === 'notifications' ? '通知' : '收件箱'} aria-expanded={open === kind} aria-controls="shell-popover" onClick={event => { lastTrigger.current = event.currentTarget; setOpen(open === kind ? null : kind); }} className="relative rounded p-2 hover:bg-accent">
       {kind === 'notifications' ? <Bell size={16} /> : <Inbox size={16} />}
-      {(kind === 'notifications' ? snapshot.attention.length + snapshot.activity.filter(item => !item.read).length : snapshot.inbox.length) > 0 && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-primary" />}
+      {(kind === 'notifications' ? snapshot.attention.length + snapshot.activity.filter(item => !item.read).length : snapshot.inbox.length) > 0 && <StatusDot tone="info" size="sm" className="absolute right-1 top-1" />}
     </button>)}
     {open && <div id="shell-popover" ref={panel} tabIndex={-1} role="region" aria-label={open === 'notifications' ? '通知中心' : '收件箱'} className="absolute right-0 top-full z-50 mt-2 max-h-[70vh] w-[360px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-lg">
       <div className="mb-4 flex items-center justify-between"><h2 className="font-medium">{open === 'notifications' ? '通知中心' : '收件箱'}</h2><button aria-label="关闭" onClick={() => { setOpen(null); lastTrigger.current?.focus(); }}><X size={16} /></button></div>

@@ -1,4 +1,4 @@
-import { withTaskResumeStage } from '../../src/api/tasks/TaskResumeDiagnostics';
+import { withTaskResumeStage, getTaskResumeStage } from '../../src/api/tasks/TaskResumeDiagnostics';
 import { Readable } from 'node:stream';
 import type { ServerResponse } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
@@ -27,12 +27,12 @@ function setup(extra: Partial<TaskHandlerOptions> = {}) {
 describe('public Pod task routes', () => {
   it('adds fixed stages only to resume400 without changing messages or mapped Pod failures', async () => {
     const app = setup();
-    expect(await app.request('post', '/api/tasks/resume', {})).toEqual({ status: 400, body: { error: 'Approval is required', taskResumeStage: 'route_validation', taskResumeErrorType: 'error' } });
+    expect(await app.request('post', '/api/tasks/resume', {})).toEqual({ status: 400, body: { error: 'Approval is required', taskResumeStage: 'route_validation', taskResumeErrorType: 'error', taskResumeFailure: { name: 'Error' } } });
     expect(await app.request('post', '/api/tasks/resume', '{bad', true, true)).toMatchObject({ status: 400, body: { taskResumeStage: 'route_validation', taskResumeErrorType: 'syntax_error' } });
-    expect(await app.request('post', '/api/tasks/resume', { approval: 'approval' })).toEqual({ status: 400, body: { error: 'Resource id is required', taskResumeStage: 'route_validation', taskResumeErrorType: 'error' } });
+    expect(await app.request('post', '/api/tasks/resume', { approval: 'approval' })).toEqual({ status: 400, body: { error: 'Resource id is required', taskResumeStage: 'route_validation', taskResumeErrorType: 'error', taskResumeFailure: { name: 'Error' } } });
     const error = new Error('generic');
     vi.spyOn(app.store, 'loadRun').mockRejectedValueOnce(error);
-    expect(await app.request('post', '/api/tasks/resume?id=run', { approval: 'approval' })).toEqual({ status: 400, body: { error: 'generic', taskResumeStage: 'route_run_read', taskResumeErrorType: 'error' } });
+    expect(await app.request('post', '/api/tasks/resume?id=run', { approval: 'approval' })).toEqual({ status: 400, body: { error: 'generic', taskResumeStage: 'route_run_read', taskResumeErrorType: 'error', taskResumeFailure: { name: 'Error' } } });
     vi.spyOn(app.store, 'loadRun').mockRejectedValueOnce('primitive');
     expect(await app.request('post', '/api/tasks/resume?id=run', { approval: 'approval' })).toEqual({ status: 400, body: { error: 'Task request failed', taskResumeStage: 'route_request', taskResumeErrorType: 'non_error' } });
     vi.spyOn(app.store, 'loadRun').mockRejectedValueOnce(new Error('caller_dpop_replay_unsupported'));
@@ -49,7 +49,24 @@ describe('public Pod task routes', () => {
     await withTaskResumeStage('task_auth_restore', async () => { throw error; }).catch(() => undefined);
     vi.spyOn(app.store, 'loadRun').mockResolvedValueOnce({ id: 'run' } as never);
     vi.spyOn(app.service, 'resumeApprovedRun').mockRejectedValueOnce(error);
-    expect(await app.request('post', '/api/tasks/resume?id=run', { approval: 'approval' })).toEqual({ status: 400, body: { error: 'original service failure', taskResumeStage: 'task_auth_restore', taskResumeErrorType: 'type_error' } });
+    expect(await app.request('post', '/api/tasks/resume?id=run', { approval: 'approval' })).toEqual({ status: 400, body: { error: 'original service failure', taskResumeStage: 'task_auth_restore', taskResumeErrorType: 'type_error', taskResumeFailure: { name: 'TypeError' } } });
+  });
+  it('adds bounded attribution without changing the original400 error response', async () => {
+    const app = setup();
+    const error = new Error('original private message');
+    Object.defineProperty(error, 'stack', { value: 'Error: original private message\n    at async resume (/app/dist/api/runs/RunStateCenter.js:461:15)' });
+    Object.assign(error, { code: 'ECONNRESET', cause: Object.assign(new Error('private cause'), { code: 'ECONNREFUSED' }) });
+    Object.freeze(error);
+    await withTaskResumeStage('continuation_complete', async () => { throw error; }).catch(() => undefined);
+    vi.spyOn(app.store, 'loadRun').mockResolvedValueOnce({ id: 'run' } as never);
+    vi.spyOn(app.service, 'resumeApprovedRun').mockRejectedValueOnce(error);
+    const response = await app.request('post', '/api/tasks/resume?id=run', { approval: 'approval' });
+    expect(response).toEqual({ status: 400, body: { error: 'original private message', taskResumeStage: 'continuation_complete', taskResumeErrorType: 'error',
+      taskResumeFailure: { name: 'Error', code: 'ECONNRESET', causeCode: 'ECONNREFUSED',
+        site: { module: 'api/runs/RunStateCenter', line: 461, column: 15, coordinate: 'compiled_js', kind: 'first_project_frame' } } } });
+    expect(JSON.stringify(response.body.taskResumeFailure)).not.toContain('private');
+    expect(JSON.stringify(response.body.taskResumeFailure)).not.toContain('/app');
+    expect(getTaskResumeStage(error)).toBe('continuation_complete');
   });
   it('returns the Pod authorization retry code for a caller DPoP replay failure', async () => {
     const app = setup();

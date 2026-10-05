@@ -276,6 +276,28 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
     expect(revoked).toBe(true);
     expect(JSON.stringify(result)).not.toContain(privateText);
   });
+  it('retains the bounded producer failure site while rejecting sensitive extra fields', async () => {
+    const taskResumeFailure = { name: 'Error', code: 'ECONNRESET', causeCode: 'ECONNREFUSED',
+      site: { module: 'api/runs/store', line: 17, column: 4, coordinate: 'source_ts', kind: 'first_project_frame' } };
+    const { result } = await fixture('none', { status: 400, body: JSON.stringify({ error: privateText,
+      taskResumeFailure, stack: privateText, taskResumeStage: 'continuation_complete', taskResumeErrorType: 'error' }) });
+    expect(result.ok).toBe(false);
+    expect(result.cases[0]?.failureDetails).toMatchObject({ httpStatus: 400, taskResumeStage: 'continuation_complete', taskResumeFailure });
+    expect(JSON.stringify(result)).not.toContain(privateText);
+    expect(result.cleanup.ok).toBe(true);
+    const invalid = await fixture('none', { status: 400, body: JSON.stringify({ error: privateText,
+      taskResumeFailure: { ...taskResumeFailure, message: privateText } }) });
+    expect(invalid.result.cases[0]?.failureDetails).not.toHaveProperty('taskResumeFailure');
+  });
+  it.each([null, [], 'private', { name: 'private' }, { name: 'Error', code: 'private' },
+    { name: 'Error', site: { module: '/Users/private/store.ts', line: 1, column: 2, coordinate: 'source_ts', kind: 'first_project_frame' } },
+    { name: 'Error', site: { module: 'api/runs/store', line: 0, column: 2, coordinate: 'source_ts', kind: 'first_project_frame' } },
+  ])('omits malformed producer failure schema %#', async taskResumeFailure => {
+    const { result } = await fixture('none', { status: 400, body: JSON.stringify({ error: privateText, taskResumeFailure }) });
+    expect(result.cases[0]?.failureDetails).not.toHaveProperty('taskResumeFailure');
+    expect(result.cleanup.ok).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(privateText);
+  });
   it.each([privateText, null, 123, {}, [], 'task_auth_restore\n'])('omits unrecognized resume diagnostic values', async invalid => {
     const { result } = await fixture('none', { status: 400, body: JSON.stringify({ error: privateText, taskResumeStage: invalid, taskResumeErrorType: invalid }) });
     expect(result.cases[0]?.failureDetails).not.toHaveProperty('taskResumeStage');

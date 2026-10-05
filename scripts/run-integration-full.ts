@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { loadFullIntegrationInfra, checkFullIntegrationInfra, fullIntegrationInfraEnv, type FullIntegrationInfra } from './helpers/full-integration-infra';
 
 import net from 'node:net';
 import { spawn } from 'node:child_process';
@@ -286,6 +287,7 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
 export async function startFullRuntimes(
   ports: FullRuntimePorts,
   qleverRuntimeCommand: string,
+  externalInfra?: FullIntegrationInfra,
 ): Promise<XpodRuntimeHandle[]> {
   const runtimes: XpodRuntimeHandle[] = [];
   const commonCloudEnv = {
@@ -310,6 +312,9 @@ export async function startFullRuntimes(
     XPOD_INNGEST_SIGNING_KEY: 'signkey-test-integration-signing-key',
   };
 
+  if (externalInfra) Object.assign(commonCloudEnv, fullIntegrationInfraEnv(externalInfra));
+  const runtimeCloudDb = externalInfra?.XPOD_FULL_PG_URL ?? cloudDb;
+
   try {
     runtimes.push(await startXpodRuntime({
       mode: 'cloud',
@@ -320,8 +325,8 @@ export async function startFullRuntimes(
       baseUrl: `http://localhost:${ports.cloud.gateway}/`,
       runtimeRoot: path.join(runtimeRoot, 'cloud'),
       rootFilePath: path.join(runtimeRoot, 'cloud', 'data'),
-      sparqlEndpoint: cloudDb,
-      identityDbUrl: cloudDb,
+      sparqlEndpoint: runtimeCloudDb,
+      identityDbUrl: runtimeCloudDb,
       env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-a' },
     }));
 
@@ -334,8 +339,8 @@ export async function startFullRuntimes(
       baseUrl: `http://localhost:${ports.cloudB.gateway}/`,
       runtimeRoot: path.join(runtimeRoot, 'cloud_b'),
       rootFilePath: path.join(runtimeRoot, 'cloud_b', 'data'),
-      sparqlEndpoint: cloudDb,
-      identityDbUrl: cloudDb,
+      sparqlEndpoint: runtimeCloudDb,
+      identityDbUrl: runtimeCloudDb,
       env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-b' },
     }));
 
@@ -387,7 +392,7 @@ export async function startFullRuntimes(
     return runtimes;
   } catch (error) {
     // Preserve the startup cause before infra teardown can terminate pending PG work.
-    console.error('[full] Runtime startup failed:', error);
+    console.error('[full] Runtime startup failed:', externalInfra ? 'external runtime startup failed' : error);
     await Promise.allSettled(runtimes.map((runtime) => runtime.stop()));
     throw error;
   }
@@ -403,6 +408,9 @@ async function waitForFullPorts(ports: FullRuntimePorts): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // Validate and probe before any Compose action: external failures never recreate infrastructure.
+  const externalInfra = await loadFullIntegrationInfra(process.env.XPOD_FULL_INFRA_ENV_FILE);
+  if (externalInfra) await checkFullIntegrationInfra(externalInfra);
   const targets = process.argv.slice(2);
   const testTargets = targets.length > 0 ? targets : defaultTargets;
   const ports = await resolveFullRuntimePorts();
@@ -419,18 +427,19 @@ async function main(): Promise<void> {
     STANDALONE_PORT: String(ports.standalone.gateway),
     STANDALONE_API_PORT: String(ports.standalone.api),
     SOLID_ENV_FILE: path.resolve('.test-data', 'integration', 'full.env'),
+    ...(externalInfra ? fullIntegrationInfraEnv(externalInfra) : {}),
   };
   const runtimes: XpodRuntimeHandle[] = [];
   const reuseRequested = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true';
-  const reuseExistingInfra = reuseRequested && await hasHealthyComposeInfra();
-  const startedInfra = !reuseExistingInfra;
+  const reuseExistingInfra = !externalInfra && reuseRequested && await hasHealthyComposeInfra();
+  const startedInfra = !externalInfra && !reuseExistingInfra;
 
   if (startedInfra) {
     if (reuseRequested) {
       console.log('[full] Existing Compose infrastructure is unhealthy; recreating it.');
     }
     await runCommand('docker', [...composeArgs, 'down', '-v', '--remove-orphans'], { allowFailure: true });
-  } else {
+  } else if (!externalInfra) {
     console.log('[full] Reusing healthy Compose postgres/redis/minio on localhost.');
   }
 
@@ -441,7 +450,7 @@ async function main(): Promise<void> {
       await runCommand('docker', [...composeArgs, 'up', '-d', 'postgres', 'redis', 'minio']);
       await waitForInfraServices();
     }
-    runtimes.push(...await startFullRuntimes(ports, qleverRuntimeFixture.command));
+    runtimes.push(...await startFullRuntimes(ports, qleverRuntimeFixture.command, externalInfra));
     await waitForFullPorts(ports);
 
     await runCommand('bun', ['run', 'test:setup'], { env: sharedEnv });
@@ -476,6 +485,12 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) main().catch((error) => {
-  console.error(error);
+  if (process.env.XPOD_FULL_INFRA_ENV_FILE !== undefined) {
+    const category = error instanceof Error && /^Full integration external (configuration invalid|postgres unhealthy|redis unhealthy|s3 unhealthy)$/u.test(error.message)
+      ? error.message : 'Full integration external execution failed';
+    console.error(category);
+  } else {
+    console.error(error);
+  }
   process.exit(1);
 });

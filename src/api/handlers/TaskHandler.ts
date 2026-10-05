@@ -1,4 +1,4 @@
-import { getTaskResumeStage, getTaskResumeErrorType, withTaskResumeStage } from '../tasks/TaskResumeDiagnostics';
+import { getTaskResumeStage, getTaskResumeErrorType, getTaskResumeFailure, withTaskResumeStage } from '../tasks/TaskResumeDiagnostics';
 import type { ServerResponse } from 'node:http';
 import { runResource, taskResource } from '@undefineds.co/models';
 import type { ApiServer, RouteHandler } from '../ApiServer';
@@ -30,7 +30,7 @@ export function registerTaskRoutes(server: ApiServer, options: TaskHandlerOption
         send(response, 200, await handler(request, { userId: request.auth.webId, auth: request.auth }, request.auth.webId));
       } catch (error) {
         if (sendPodAccessFailure(response, error)) return;
-        send(response, 400, { error: error instanceof Error ? error.message : 'Task request failed', ...(resume ? { taskResumeStage: getTaskResumeStage(error) ?? 'route_request', taskResumeErrorType: getTaskResumeErrorType(error) } : {}) });
+        send(response, 400, { error: error instanceof Error ? error.message : 'Task request failed', ...(resume ? { taskResumeStage: getTaskResumeStage(error) ?? 'route_request', taskResumeErrorType: getTaskResumeErrorType(error), taskResumeFailure: getTaskResumeFailure(error) } : {}) });
       }
     };
   const idOf = (request: AuthenticatedRequest): string => {
