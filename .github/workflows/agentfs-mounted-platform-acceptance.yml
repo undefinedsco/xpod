@@ -34,6 +34,10 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject native inputs that differ from the pinned product
+        run: python3 scripts/agentfs-native-ci/accept.py --verify-native-source
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -163,6 +167,10 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject native inputs that differ from the pinned product
+        run: python3 scripts/agentfs-native-ci/accept.py --verify-native-source
       - uses: actions/setup-node@v4
         with:
           node-version: '22.21.1'
@@ -188,6 +196,14 @@ jobs:
           archive="$(ls "$dir/extracted"/xpod-cli-*-darwin-arm64.tar.gz)"
           test "$(shasum -a 256 "$archive" | cut -d' ' -f1)" = "$DARWIN_ARCHIVE_SHA" || { echo "::error::darwin archive digest mismatch"; exit 1; }
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - name: Prepare actual Darwin ripgrep consumer tool
+        run: |
+          set -euo pipefail
+          brew install ripgrep
+          command -v rg
+          rg --version
+          command -v git
+          git --version
       - name: Install frozen harness dependencies
         run: bun install --frozen-lockfile
       - name: Run actual macOS system-NFS acceptance (no macFUSE install)
