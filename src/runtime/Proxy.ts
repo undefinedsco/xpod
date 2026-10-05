@@ -89,6 +89,7 @@ export class GatewayProxy {
    */
   private readonly ingressPort?: number;
   private ingressServer?: http.Server;
+  private startupFailed = false;
 
   constructor(
     port: number | undefined,
@@ -241,11 +242,24 @@ export class GatewayProxy {
   }
 
   public async start(): Promise<void> {
-    await this.runtimeHost.listen(this.server, this.listenEndpoint);
-    this.logger.info(`Listening on ${this.runtimeHost.formatListenEndpoint(this.listenEndpoint)}`);
-    if (this.ingressServer) {
-      await this.runtimeHost.listen(this.ingressServer, this.ingressListenEndpoint());
-      this.logger.info(`Ingress listener on 127.0.0.1:${this.ingressPort} (never local)`);
+    try {
+      await this.runtimeHost.listen(this.server, this.listenEndpoint);
+      this.logger.info(`Listening on ${this.runtimeHost.formatListenEndpoint(this.listenEndpoint)}`);
+      if (this.ingressServer) {
+        await this.runtimeHost.listen(this.ingressServer, this.ingressListenEndpoint());
+        this.logger.info(`Ingress listener on 127.0.0.1:${this.ingressPort} (never local)`);
+      }
+    } catch (error) {
+      // The runner has not returned this owner to XpodRuntime yet. Close its
+      // resources here before a test/runtime caller considers another start.
+      this.startupFailed = true;
+      try { await this.stop(); }
+      catch (cleanupError) {
+        // Keep both errors without exposing an EADDRINUSE cause/message as a
+        // retryable port conflict when cleanup completion is unknown.
+        throw new AggregateError([ error, cleanupError ], 'Gateway startup cleanup did not complete');
+      }
+      throw error;
     }
   }
 
@@ -274,6 +288,9 @@ export class GatewayProxy {
    * (oven-sh/bun#28396), so waiting forever would block gateway restarts.
    */
   private async closeServer(server: http.Server, endpoint: RuntimeListenEndpoint): Promise<void> {
+    // A listener whose bind failed owns no listening socket. Calling close on
+    // it would report ERR_SERVER_NOT_RUNNING and hide the startup error.
+    if (this.startupFailed && server.listening === false) return;
     const closing = this.runtimeHost.close(server, endpoint);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = await Promise.race([
@@ -287,6 +304,10 @@ export class GatewayProxy {
       clearTimeout(timer);
     }
     if (timedOut) {
+      if (this.startupFailed) {
+        void closing.catch(() => undefined);
+        throw new Error('Gateway startup listener close completion is unknown');
+      }
       this.logger.warn(`Gateway server did not report a clean close within ${SERVER_CLOSE_GRACE_MS}ms; continuing shutdown`);
       void closing.catch(() => undefined);
     }

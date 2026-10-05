@@ -4,6 +4,8 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { isPortConflict, startTestRuntime, withRuntimeStartLock } from './testRuntime';
+import * as runtimeModule from '../../src/runtime/XpodRuntime';
+import { XpodTestStack } from './XpodTestStack';
 import type { XpodRuntimeHandle, XpodRuntimeOptions } from '../../src/runtime/XpodRuntime';
 
 const handle = { id: 'runtime', ports: {} } as unknown as XpodRuntimeHandle;
@@ -135,5 +137,53 @@ describe('withRuntimeStartLock', () => {
     } finally {
       await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+});
+
+
+describe('XpodTestStack retry evidence', () => {
+  it('records only the attempted listen fields before replanning a recoverable conflict', async () => {
+    const stack = new XpodTestStack();
+    const conflict = Object.assign(new Error('listen EADDRINUSE: credential-must-not-be-logged'), {
+      code: 'EADDRINUSE', syscall: 'listen', address: '127.0.0.1', port: 38504,
+      privateContext: 'credential-must-not-be-logged',
+    });
+    const plans = vi.spyOn(stack, 'resolvePortOptions').mockImplementation(async () => ({
+      gatewayPort: 18501, cssPort: 18502, apiPort: 18503, baseUrl: 'http://localhost:18501/',
+    }));
+    const previous = process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET;
+    const stop = vi.fn(async () => undefined);
+    const start = vi.spyOn(runtimeModule, 'startXpodRuntime').mockRejectedValueOnce(conflict).mockImplementationOnce(async () => {
+      process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET = 'disposable-unit-secret';
+      return { baseUrl: 'http://localhost:18501/', ports: { gateway: 18501, api: 18503 }, sockets: {},
+        fetch: async () => new Response('{}'), stop } as unknown as XpodRuntimeHandle;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await stack.start('cloud', { transport: 'port' });
+      expect(start).toHaveBeenCalledTimes(2); expect(plans).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledWith('[XpodTestStack] port-conflict retry', JSON.stringify({
+        attempt: 1, maxAttempts: 3, code: 'EADDRINUSE', syscall: 'listen', address: '127.0.0.1', port: 38504,
+      }));
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('credential-must-not-be-logged');
+      await stack.stop(); expect(stop).toHaveBeenCalledTimes(1);
+    } finally {
+      start.mockRestore(); plans.mockRestore(); warn.mockRestore();
+      if (previous === undefined) delete process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET;
+      else process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET = previous;
+    }
+  });
+
+  it('does not replan or advertise a retry when startup cleanup is unknown', async () => {
+    const stack = new XpodTestStack();
+    const failure = new AggregateError([ portConflict(), new Error('close completion unknown') ], 'Gateway startup cleanup did not complete');
+    const start = vi.spyOn(runtimeModule, 'startXpodRuntime').mockRejectedValue(failure);
+    const plans = vi.spyOn(stack, 'resolvePortOptions').mockResolvedValue({ gatewayPort: 18501, cssPort: 18502, apiPort: 18503 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(stack.start('cloud', { transport: 'port' })).rejects.toBe(failure);
+      expect(start).toHaveBeenCalledTimes(1); expect(plans).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally { start.mockRestore(); plans.mockRestore(); warn.mockRestore(); }
   });
 });

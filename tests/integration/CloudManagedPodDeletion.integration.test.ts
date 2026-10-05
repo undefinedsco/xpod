@@ -49,9 +49,9 @@ it.runIf(process.env.XPOD_RUN_INTEGRATION_TESTS === 'true')('deletes Cloud and m
     await ready(async () => spawnSync('docker', ['exec', redisName, 'redis-cli', 'ping']).status === 0);
     const pgUrl = `postgres://xpod:xpod@localhost:${pgPort}/pod_delete`;
     pg = new Client({ connectionString: pgUrl }); await pg.connect();
-    const cloudPort = await getFreePortForWildcard(38501);
     await cloud.start('cloud', {
-      transport: 'port', baseUrl: `http://localhost:${cloudPort}/`, gatewayPort: cloudPort,
+      // Reuse the stack's locked planning and bounded conflict replanning.
+      transport: 'port',
       open: false, apiOpen: false,
       runtimeRoot: path.join(root, 'cloud'), identityDbUrl: pgUrl, sparqlEndpoint: pgUrl, logLevel: 'warn',
       env: {
