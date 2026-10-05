@@ -3,6 +3,7 @@ name: AgentFS native source-bound acceptance
 on:
   push:
     branches: [codex/agentfs-native-acceptance]
+  workflow_call:
 
 permissions:
   contents: read

@@ -1,10 +1,12 @@
 name: AgentFS cache development gate
 
 # Dedicated controlled DEVELOPMENT gate for the clean-body cache candidate.
-# This is NOT a release path. It runs the ORIGINAL complete
-# `bun run test:integration` twice (no split Lite/Full greens) plus the official
-# source-bound native acceptance, so the changed cache source is actually
-# compiled and exercised remotely while the local host is below the disk floors.
+# NOT a release path. It runs the ORIGINAL complete `bun run test:integration`
+# twice through the existing scripts/agentfs-native-ci/supervise.py API (real
+# Popen wait, exit/signal, continuous disk floor, closed raw SHA, process-group
+# absence, unique lowercase project/run-id, full tracked + physical source
+# snapshots), plus the canonical Mac+Linux serial source-bound native
+# acceptance via workflow_call. No split suites, no live-HTTP substitution.
 on:
   push:
     branches: ['codex/agentfs-cache-dev-gate']
@@ -19,9 +21,9 @@ concurrency:
 
 jobs:
   whole-integration:
-    name: original whole (run 1 and run 2)
+    name: two supervised original wholes
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -31,54 +33,34 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.21.1
 
       - run: bun install --frozen-lockfile
 
-      # Mirror the accepted local environment: the whole suite runs against a
-      # built tree (packages + runtime artifacts).
       - name: Build workspace packages
         run: bun run build:packages
 
       - name: Build runtime artifacts
         run: bun run build:ts && bun run build:components
 
-      - name: Source-bound guard (harness facts)
-        run: |
-          set -euo pipefail
-          umask 077
-          echo "harness_sha=$(git rev-parse HEAD)"
-          test -z "$(git status --porcelain)" || { echo "::error::dirty working tree before the whole gate"; exit 1; }
-          shasum -a 256 tools/agentfs-pod/src/clean_cache.rs tools/agentfs-pod/src/pod_fs.rs
+      - name: Type check tests
+        run: bun run typecheck:test
 
-      - name: Original whole integration (run 1 of 2)
-        run: bun run test:integration
+      - name: Type check standalone Xpod CLI
+        run: bun x tsc --noEmit -p packages/xpod-cli/tsconfig.json
 
-      - name: Original whole integration (run 2 of 2)
-        run: bun run test:integration
+      - name: Two supervised original whole integrations
+        run: python3 scripts/agentfs-native-ci/whole_ci_gate.py
 
-      - name: Record harness facts after
+      - name: Upload whole gate evidence
         if: always()
-        run: echo "harness_sha_after=$(git rev-parse HEAD)"
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agentfs-cache-dev-whole-${{ github.sha }}-${{ github.run_attempt }}
+          path: .test-data/whole-ci
+          if-no-files-found: warn
+          retention-days: 14
 
   native-source-bound:
-    name: native (darwin-arm64) source-bound
-    runs-on: macos-14
-    timeout-minutes: 90
-    env:
-      NATIVE_TARGET: darwin-arm64
-      PYTHONDONTWRITEBYTECODE: '1'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.21.1
-
-      - name: Lightweight supervisor regression
-        run: python3 tests/scripts/agentfs_native_ci_test.py -v
-
-      - name: Official export, offline rebuild, package and extracted install gate
-        run: python3 scripts/agentfs-native-ci/accept.py
+    name: native source-bound (macos + linux, serial)
+    uses: ./.github/workflows/agentfs-native-acceptance.yml
