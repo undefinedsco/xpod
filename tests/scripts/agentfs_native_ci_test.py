@@ -105,7 +105,7 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_latest_inventory_accepts_only_complete_bound_regressions(self):
-        text = 'test result: ok. 93 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
+        text = 'test result: ok. 96 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
         text += 'test mount::tests::legacy_output_exceeds_observation_budget ... ignored\n'
         text += 'test mount_control::tests::lease_child ... ignored\n'
         for name in ['closed_marker_is_read_only_after_actual_lease_release',
@@ -121,7 +121,10 @@ class SupervisorTests(unittest.TestCase):
                      'concurrent_authorized_writer_is_serialized_by_owner_mutex_against_reader',
                      'concurrent_authorized_writer_first_is_observed_by_later_reader',
                      'inherited_original_lease_description_survives_helper_close_until_child_release',
-                     'live_lease_holder_makes_closed_proof_observation_return_false_until_release']:
+                     'live_lease_holder_makes_closed_proof_observation_return_false_until_release',
+                     'crash_detach_rejects_alive_unknown_boot_legacy_and_changed_kernel',
+                     'crash_detach_pending_proof_never_reissues_an_operation',
+                     'actual_dead_runtime_crash_detach_waits_and_preserves_distinct_proof']:
             text += f'test mount_control::tests::{name} ... ok\n'
         for qualified in ['clean_cache::tests::strong_etag_classification',
                           'clean_cache::tests::loopback_authority_is_not_cached',
@@ -148,8 +151,8 @@ class SupervisorTests(unittest.TestCase):
                           'pod_fs::clean_cache_integration_tests::identity_and_canonical_pod_are_isolated_and_loopback_has_no_directory',
                           'pod_fs::clean_cache_integration_tests::denied_head_invalidates_and_never_serves_a_cached_body']:
             text += f'test {qualified} ... ok\n'
-        self.assertEqual(a.check_tests(text), dict(declaredTests=95, passedTests=93, ignoredTests=2, filteredTests=0))
-        for invalid in [text.replace('93 passed', '92 passed'),
+        self.assertEqual(a.check_tests(text), dict(declaredTests=98, passedTests=96, ignoredTests=2, filteredTests=0))
+        for invalid in [text.replace('96 passed', '95 passed'),
                         text.replace('0 filtered out', '2 filtered out'),
                         text.replace('closed_marker_is_read_only_after_actual_lease_release ... ok',
                                      'closed_marker_is_read_only_after_actual_lease_release ... FAILED'),

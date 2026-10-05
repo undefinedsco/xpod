@@ -151,9 +151,9 @@ def assert_status_ready(text, platform_name, helper, expected_pending=None):
 
 def check_tests(text):
     summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out', text)
-    expected = ('93', '0', '2', '0', '0')
+    expected = ('96', '0', '2', '0', '0')
     if expected not in summaries:
-        raise RuntimeError('Latest full Rust inventory must report 93 passed, two declared ignores, zero filtered (95 total)')
+        raise RuntimeError('Latest full Rust inventory must report 96 passed, two declared ignores, zero filtered (98 total)')
     ignored = re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE)
     if set(ignored) != {'mount::tests::legacy_output_exceeds_observation_budget', 'mount_control::tests::lease_child'}:
         raise RuntimeError('Unexpected ignored tests')
@@ -169,7 +169,10 @@ def check_tests(text):
                  'concurrent_authorized_writer_is_serialized_by_owner_mutex_against_reader',
                  'concurrent_authorized_writer_first_is_observed_by_later_reader',
                  'inherited_original_lease_description_survives_helper_close_until_child_release',
-                 'live_lease_holder_makes_closed_proof_observation_return_false_until_release']:
+                 'live_lease_holder_makes_closed_proof_observation_return_false_until_release',
+                 'crash_detach_rejects_alive_unknown_boot_legacy_and_changed_kernel',
+                 'crash_detach_pending_proof_never_reissues_an_operation',
+                 'actual_dead_runtime_crash_detach_waits_and_preserves_distinct_proof']:
         if not re.search(r'^test mount_control::tests::' + test + r' \.\.\. ok$', text, re.MULTILINE):
             raise RuntimeError(f'Missing latest regression: {test}')
     # Exact cache-candidate regression names derived from the current source.

@@ -1,5 +1,5 @@
 //! Private local NFS lifecycle coordination, independent of the session journal.
-//! An ordinary unmount's actual completion, not a mount-table hint, retires NFS.
+//! Actual ordinary completion or separately proven dead-owner detach retires NFS.
 use crate::mount::{self, CommandObservation, MountIdentity, MountState};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,102 @@ impl Binding {
     }
 }
 
+// Process identity is an independent kernel observation, not the unmount child's PID.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct RuntimeIdentity { pid: u32, start: Vec<u64>, boot: String }
+
+fn boot_identity() -> Result<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut buffer = [0u8; 128];
+        let mut length = buffer.len();
+        let status = unsafe { libc::sysctlbyname(b"kern.bootsessionuuid\0".as_ptr().cast(),
+            buffer.as_mut_ptr().cast(), &mut length, std::ptr::null_mut(), 0) };
+        if status != 0 || length == 0 || length > buffer.len() { anyhow::bail!("boot identity unavailable"); }
+        let bytes = &buffer[..length];
+        let value = std::str::from_utf8(bytes)?.trim_end_matches('\0');
+        if value.is_empty() { anyhow::bail!("boot identity empty"); }
+        Ok(value.to_owned())
+    }
+    #[cfg(target_os = "linux")]
+    { Ok(fs::read_to_string("/proc/sys/kernel/random/boot_id")?.trim().to_owned()) }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    { anyhow::bail!("process identity unsupported") }
+}
+
+fn process_start(pid: u32) -> Result<Option<Vec<u64>>> {
+    if pid == 0 || pid > i32::MAX as u32 { anyhow::bail!("invalid runtime PID"); }
+    #[cfg(target_os = "macos")]
+    {
+        // XNU PROC_PIDTBSDINFO arg=1 includes zombies. Exact size is mandatory;
+        // ESRCH alone establishes absence, EPERM and partial results stay unknown.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>();
+        let received = unsafe { libc::proc_pidinfo(pid as i32, libc::PROC_PIDTBSDINFO, 1,
+            (&mut info as *mut libc::proc_bsdinfo).cast(), size as i32) };
+        if received == size as i32 && info.pbi_pid == pid {
+            return Ok(Some(vec![info.pbi_start_tvsec, info.pbi_start_tvusec]));
+        }
+        if received == 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) { return Ok(None); }
+        anyhow::bail!("runtime process identity unknown");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => {
+                let tail = stat.rsplit_once(')').context("invalid process stat")?.1;
+                let start = tail.split_whitespace().nth(19).context("process start unavailable")?.parse::<u64>()?;
+                Ok(Some(vec![start]))
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if unsafe { libc::kill(pid as i32, 0) } != 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) { Ok(None) }
+                else { anyhow::bail!("runtime process absence unknown") }
+            },
+            Err(error) => Err(error.into()),
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    { anyhow::bail!("process identity unsupported") }
+}
+
+impl RuntimeIdentity {
+    fn current() -> Result<Self> {
+        let pid = std::process::id();
+        Ok(Self { pid, start: process_start(pid)?.context("current runtime disappeared")?, boot: boot_identity()? })
+    }
+    fn require_dead(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        let valid_start = self.start.len() == 2 && self.start[0] != 0 && self.start[1] < 1_000_000;
+        #[cfg(target_os = "linux")]
+        let valid_start = self.start.len() == 1 && self.start[0] != 0;
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let valid_start = false;
+        if !valid_start { anyhow::bail!("runtime start identity invalid"); }
+        if self.boot.is_empty() || self.start.is_empty() || boot_identity()? != self.boot { anyhow::bail!("runtime boot identity changed or unavailable"); }
+        if process_start(self.pid)?.as_ref() == Some(&self.start) { anyhow::bail!("original runtime instance remains alive"); }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CrashPhase { Prepared, Spawned, Waited }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CrashDetach {
+    phase: CrashPhase,
+    pid: u32,
+    start: Vec<u64>,
+    binding: Binding,
+    actual_exit: Option<i32>,
+    actual_signal: Option<i32>,
+    actual_wait: bool,
+    identity_error: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Owner {
@@ -49,6 +145,10 @@ struct Owner {
     target: Vec<u8>,
     binding: Option<Binding>,
     closed: Option<Closed>,
+    #[serde(default)]
+    runtime: Option<RuntimeIdentity>,
+    #[serde(default)]
+    crash_detach: Option<CrashDetach>,
     directory: FileIdentity,
     lease: FileIdentity,
     socket: FileIdentity,
@@ -202,7 +302,7 @@ fn read_owner(directory: &Path) -> Result<Owner> {
     std::io::Read::by_ref(&mut file).take((LIMIT + 1) as u64).read_to_end(&mut bytes)?;
     if bytes.len() > LIMIT { anyhow::bail!("runtime marker exceeds bound"); }
     let owner: Owner = serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("malformed runtime marker"))?;
-    if owner.schema_version != 1 || owner.marker != MAGIC || owner.uid != current_uid() || !valid_nonce(&owner.nonce) || owner.record != identity || owner.directory != directory_identity(directory)? {
+    if !matches!(owner.schema_version, 1 | 2) || owner.marker != MAGIC || owner.uid != current_uid() || !valid_nonce(&owner.nonce) || owner.record != identity || owner.directory != directory_identity(directory)? {
         anyhow::bail!("runtime marker ownership unknown");
     }
     recorded_target(&owner)?;
@@ -268,6 +368,23 @@ fn remove_known(path: &Path, expected: FileIdentity, socket: bool) -> Result<()>
     Ok(())
 }
 
+// Caller holds the original lease (and, for live runtime updates, owner mutex).
+fn write_owner_atomic(directory: &Path, expected: &Owner, mut updated: Owner,
+    between_write_and_rename: impl FnOnce()) -> Result<Owner> {
+    let temporary = directory.join(format!("owner.{}.new", expected.nonce));
+    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&temporary)?;
+    updated.record = FileIdentity::of(&file.metadata()?);
+    let bytes = serde_json::to_vec(&updated)?;
+    if bytes.len() > LIMIT { anyhow::bail!("runtime binding exceeds protocol limit"); }
+    file.write_all(&bytes)?; file.sync_all()?;
+    between_write_and_rename();
+    if read_owner(directory)? != *expected { anyhow::bail!("runtime marker changed; retained"); }
+    fs::rename(&temporary, directory.join(RECORD))?;
+    File::open(directory)?.sync_all()?;
+    Ok(updated)
+}
+
 pub struct RuntimeControl {
     directory: PathBuf,
     lease: File,
@@ -311,12 +428,15 @@ impl RuntimeControl {
                 let old = read_owner(&directory)?;
                 if old.lease != lease_id { anyhow::bail!("stale runtime lease identity mismatch"); }
                 let old_target = recorded_target(&old)?;
-                // A released lease proves owner death, never kernel unmount.
+                // A released lease excludes cooperating holders, never proves
+                // process death or kernel unmount.
                 // Do not stat/canonicalize this potentially dead NFS target.
                 if !matches!(observe(&old_target), MountState::Absent) {
                     anyhow::bail!("prior runtime target mounted or unknown; locator retained");
                 }
-                if old.closed.is_some() { reconcile_socket_resources(&old)?; } else { remove_socket_resources(&old)?; }
+                if old.closed.is_some() || old.crash_detach.as_ref().map(|proof| proof.phase == CrashPhase::Waited && proof.pid != 0
+                    && proof.actual_wait && proof.actual_exit == Some(0) && proof.actual_signal.is_none()
+                    && old.binding.as_ref() == Some(&proof.binding)).unwrap_or(false) { reconcile_socket_resources(&old)?; } else { remove_socket_resources(&old)?; }
                 remove_known(&directory.join(RECORD), old.record, false)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -334,7 +454,7 @@ impl RuntimeControl {
         let nonce = nonce()?;
         let temporary = directory.join(format!("owner.{nonce}.new"));
         let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&temporary)?;
-        let owner = Owner { schema_version: 1, marker: MAGIC.into(), uid: current_uid(), nonce, target: target.as_os_str().as_bytes().to_vec(), binding: None, closed: None, directory: directory_id, lease: lease_id, socket, socket_directory_path: socket_directory_path.as_os_str().as_bytes().to_vec(), socket_directory: socket_directory_id, record: FileIdentity::of(&file.metadata()?) };
+        let owner = Owner { schema_version: 2, marker: MAGIC.into(), uid: current_uid(), nonce, target: target.as_os_str().as_bytes().to_vec(), binding: None, closed: None, runtime: Some(RuntimeIdentity::current()?), crash_detach: None, directory: directory_id, lease: lease_id, socket, socket_directory_path: socket_directory_path.as_os_str().as_bytes().to_vec(), socket_directory: socket_directory_id, record: FileIdentity::of(&file.metadata()?) };
         let bytes = serde_json::to_vec(&owner)?;
         if bytes.len() > LIMIT { anyhow::bail!("runtime binding exceeds protocol limit"); }
         file.write_all(&bytes)?; file.sync_all()?;
@@ -376,20 +496,9 @@ impl RuntimeControl {
     /// `between_write_and_rename` runs after the replacement marker is fully
     /// written and fsynced and before the atomic rename, so a controlled live
     /// reader can observe the sole program-owned transient. Production no-op.
-    fn store_owner_before_rename(&self, mut updated: Owner, between_write_and_rename: impl FnOnce()) -> Result<()> {
+    fn store_owner_before_rename(&self, updated: Owner, between_write_and_rename: impl FnOnce()) -> Result<()> {
         let mut stored = self.owner.lock().map_err(|_| anyhow::anyhow!("runtime owner poisoned"))?;
-        let temporary = self.directory.join(format!("owner.{}.new", stored.nonce));
-        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&temporary)?;
-        updated.record = FileIdentity::of(&file.metadata()?);
-        let bytes = serde_json::to_vec(&updated)?;
-        if bytes.len() > LIMIT { anyhow::bail!("runtime binding exceeds protocol limit"); }
-        file.write_all(&bytes)?; file.sync_all()?;
-        between_write_and_rename();
-        if read_owner(&self.directory)? != *stored { anyhow::bail!("runtime marker changed; retained"); }
-        fs::rename(&temporary, self.directory.join(RECORD))?;
-        *stored = updated;
-        File::open(&self.directory)?.sync_all()?;
+        *stored = write_owner_atomic(&self.directory, &stored, updated, between_write_and_rename)?;
         Ok(())
     }
 
@@ -558,6 +667,89 @@ impl std::fmt::Display for PendingUnmount {
 }
 impl std::error::Error for PendingUnmount {}
 
+fn crash_detach_observed(directory: &Path, owner: &Owner, target: &Path,
+    observe: impl Fn() -> MountState, require_dead: impl Fn(&RuntimeIdentity) -> Result<()>,
+    spawn: impl FnOnce() -> Result<CommandObservation>, budget: Duration) -> Result<bool> {
+    use std::os::unix::process::ExitStatusExt;
+    if owner.schema_version != 2 { anyhow::bail!("legacy runtime has no crash recovery authority; retained"); }
+    let runtime = owner.runtime.as_ref().context("runtime identity missing; retained")?;
+    require_dead(runtime)?;
+    let binding = owner.binding.as_ref().context("crashed runtime has no mount binding; retained")?;
+    if let Some(proof) = &owner.crash_detach {
+        if proof.phase == CrashPhase::Waited && proof.pid != 0 && proof.actual_wait && proof.actual_exit == Some(0) && proof.actual_signal.is_none()
+            && proof.binding == *binding && matches!(observe(), MountState::Absent) {
+            reconcile_socket_resources(owner)?;
+            return Ok(true);
+        }
+        anyhow::bail!("crash detach pid={} unresolved; actual_wait={} actual_exit={:?} actual_signal={:?}; retained",
+            proof.pid, proof.actual_wait, proof.actual_exit, proof.actual_signal);
+    }
+    if KernelObservation::classify(&observe(), owner, binding) != KernelObservation::Mounted {
+        anyhow::bail!("crashed runtime kernel binding changed or unknown; retained");
+    }
+    // These checks are repeated immediately before the OS operation. They are
+    // not an atomic guarantee against noncooperating same-UID mount replacement.
+    if read_owner(directory)? != *owner { anyhow::bail!("crashed runtime owner changed; retained"); }
+    require_dead(runtime)?;
+    if KernelObservation::classify(&observe(), owner, binding) != KernelObservation::Mounted {
+        anyhow::bail!("crashed runtime kernel binding changed before detach; retained");
+    }
+    if target.as_os_str().as_bytes() != owner.target { anyhow::bail!("crash target changed"); }
+    let socket_directory = socket_directory(owner)?;
+    if FileIdentity::of(&private_metadata(&socket_directory.join(SOCKET), true)?) != owner.socket {
+        anyhow::bail!("crashed runtime socket replaced; retained");
+    }
+    // Persist intent before the OS command: an interrupted preparation cannot
+    // silently trigger a second detach on the next request.
+    let mut prepared = owner.clone();
+    prepared.crash_detach = Some(CrashDetach { phase: CrashPhase::Prepared, pid: 0, start: Vec::new(),
+        binding: binding.clone(), actual_exit: None, actual_signal: None, actual_wait: false, identity_error: None });
+    let prepared = write_owner_atomic(directory, owner, prepared, || {})?;
+    require_dead(runtime)?;
+    if read_owner(directory)? != prepared || KernelObservation::classify(&observe(), &prepared, binding) != KernelObservation::Mounted {
+        anyhow::bail!("crash preparation owner or kernel binding changed; retained");
+    }
+    let mut child = spawn()?;
+    child.refresh();
+    let (start, identity_error) = match process_start(child.child.id()) {
+        Ok(start) => (start.unwrap_or_default(), None),
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    };
+    let mut updated = prepared.clone();
+    updated.crash_detach = Some(CrashDetach { phase: if child.status.is_some() { CrashPhase::Waited } else { CrashPhase::Spawned }, pid: child.child.id(), start, binding: binding.clone(),
+        actual_exit: child.status.and_then(|status| status.code()),
+        actual_signal: child.status.and_then(|status| status.signal()), actual_wait: child.status.is_some(), identity_error });
+    updated = write_owner_atomic(directory, &prepared, updated, || {})?;
+    let started = std::time::Instant::now();
+    while child.status.is_none() && started.elapsed() < budget {
+        child.refresh();
+        if child.status.is_none() { std::thread::sleep(Duration::from_millis(10).min(budget.saturating_sub(started.elapsed()))); }
+    }
+    let mut completed = updated.clone();
+    let proof = completed.crash_detach.as_mut().expect("crash operation recorded");
+    proof.phase = if child.status.is_some() { CrashPhase::Waited } else { CrashPhase::Spawned };
+    proof.actual_wait = child.status.is_some();
+    proof.actual_exit = child.status.and_then(|status| status.code());
+    proof.actual_signal = child.status.and_then(|status| status.signal());
+    let completed = write_owner_atomic(directory, &updated, completed, || {})?;
+    child.require_success()?;
+    require_dead(runtime)?;
+    if !matches!(observe(), MountState::Absent) { anyhow::bail!("crash detach actual wait succeeded but kernel absence unresolved; retained"); }
+    reconcile_socket_resources(&completed)?;
+    Ok(true)
+}
+
+fn spawn_crash_detach(target: &Path) -> Result<CommandObservation> {
+    #[cfg(target_os = "macos")]
+    {
+        // Only invoked after independently proven dead owner + exact kernel
+        // mount binding while holding the original private runtime lease.
+        mount::spawn_command(std::process::Command::new("/sbin/umount").arg("-f").arg(target), "crash-detach")
+    }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = target; anyhow::bail!("controlled crashed NFS detach unsupported on this platform") }
+}
+
 fn completed_owner_observed(session: &Path, target: &Path, observe: impl Fn() -> MountState, recover: bool) -> Result<bool> {
     completed_owner_for_operation(session, target, observe, recover, None, None, || {})
 }
@@ -586,6 +778,10 @@ fn completed_owner_for_operation(session: &Path, target: &Path, observe: impl Fn
         unchanged.record = expected.record;
         unchanged.closed = expected.closed.clone();
         if unchanged != *expected { anyhow::bail!("closed runtime binding changed; retained"); }
+    }
+    if owner.closed.is_none() && recover && expected.is_none() && last.is_none() {
+        return crash_detach_observed(&directory, &owner, target, observe, RuntimeIdentity::require_dead,
+            || spawn_crash_detach(target), mount::UNMOUNT_OBSERVATION);
     }
     let closed = owner.closed.as_ref().context("no actual closed unmount proof")?;
     if last.map(|snapshot| snapshot.nonce != owner.nonce || snapshot.pid != closed.pid
@@ -1068,7 +1264,11 @@ mod tests {
             lease_inherit_fixture(&session);
             return;
         }
-        let _control = RuntimeControl::acquire(&session, &session.join("target")).unwrap();
+        let control = RuntimeControl::acquire(&session, &session.join("target")).unwrap();
+        if std::env::var_os("XPOD_TEST_NFS_CRASH_BINDING").is_some() {
+            control.bind_identity(&MountIdentity { target: session.join("target"), source: b"127.0.0.1:/".to_vec(),
+                filesystem: b"nfs".to_vec(), id: vec![1, 2, 3, 4] }).unwrap();
+        }
         let mut ready = OpenOptions::new().write(true).create_new(true).mode(0o600).open(session.join("ready")).unwrap();
         ready.write_all(b"ready").unwrap(); ready.sync_all().unwrap();
         // Controlled release barrier: the parent may write one byte on this
@@ -1435,6 +1635,90 @@ mod tests {
         drop(probe);
         remove_socket_resources(&owner).unwrap();
         remove_known(&record_path, owner.record, false).unwrap();
+    }
+
+    #[test]
+    fn crash_detach_rejects_alive_unknown_boot_legacy_and_changed_kernel() {
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+        control.bind_identity(&fixture.identity()).unwrap();
+        let owner = control.verify_owned().unwrap();
+        assert!(owner.runtime.as_ref().unwrap().require_dead().is_err());
+        assert!(crash_detach_observed(&control.directory, &owner, &fixture.target,
+            || MountState::Mounted(fixture.identity()), RuntimeIdentity::require_dead,
+            || panic!("live original runtime must not detach"), Duration::ZERO).is_err());
+        let mut invalid_start = owner.runtime.clone().unwrap(); invalid_start.start.clear();
+        assert!(invalid_start.require_dead().is_err());
+        let mut different_boot = owner.runtime.clone().unwrap();
+        different_boot.boot.push_str("-foreign");
+        assert!(different_boot.require_dead().is_err());
+        let call = |candidate: &Owner, state: MountState| crash_detach_observed(&control.directory, candidate,
+            &fixture.target, || state.clone(), |_| Ok(()), || panic!("rejected state must not spawn detach"), Duration::ZERO);
+        let mut legacy = owner.clone(); legacy.schema_version = 1; legacy.runtime = None;
+        assert!(call(&legacy, MountState::Mounted(fixture.identity())).is_err());
+        let mut foreign = fixture.identity(); foreign.source = b"foreign:/".to_vec();
+        let mut changed = fixture.identity(); changed.id.push(99);
+        for state in [MountState::Unknown("controlled unavailable kernel table".into()),
+            MountState::Mounted(foreign), MountState::Mounted(changed), MountState::Absent] {
+            assert!(call(&owner, state).is_err());
+        }
+        assert!(crash_detach_observed(&control.directory, &owner, &fixture.target,
+            || MountState::Mounted(fixture.identity()), |_| anyhow::bail!("controlled process permission unknown"),
+            || panic!("unknown process must not spawn"), Duration::ZERO).is_err());
+        assert!(!completed_owner_observed(&fixture.session, &fixture.target,
+            || MountState::Mounted(fixture.identity()), true).unwrap(), "held original lease refuses recovery");
+        clean_fixture_runtime(&control, None);
+    }
+
+    #[test]
+    fn crash_detach_pending_proof_never_reissues_an_operation() {
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+        control.bind_identity(&fixture.identity()).unwrap();
+        let mut owner = control.verify_owned().unwrap();
+        for phase in [CrashPhase::Prepared, CrashPhase::Spawned] {
+            owner.crash_detach = Some(CrashDetach { phase, pid: if phase == CrashPhase::Prepared { 0 } else { std::process::id() },
+                start: process_start(std::process::id()).unwrap().unwrap(), binding: Binding::from_mount(&fixture.identity()),
+                actual_exit: None, actual_signal: None, actual_wait: false, identity_error: None });
+            assert!(crash_detach_observed(&control.directory, &owner, &fixture.target,
+                || MountState::Mounted(fixture.identity()), |_| Ok(()), || panic!("pending proof must never respawn"), Duration::ZERO).is_err());
+        }
+        clean_fixture_runtime(&control, None);
+    }
+
+    #[test]
+    fn actual_dead_runtime_crash_detach_waits_and_preserves_distinct_proof() {
+        let fixture = Fixture::new();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "mount_control::tests::lease_child", "--nocapture"])
+            .env("XPOD_TEST_NFS_CONTROL_SESSION", &fixture.session).env("XPOD_TEST_NFS_CRASH_BINDING", "1")
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let mut helper = OwnedHelper::new(child);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fixture.session.join("ready").exists() && Instant::now() < deadline { std::thread::sleep(Duration::from_millis(10)); }
+        assert!(fixture.session.join("ready").exists());
+        let directory = fixture.session.join(DIRECTORY);
+        let owner = read_owner(&directory).unwrap();
+        assert!(owner.runtime.as_ref().unwrap().require_dead().is_err());
+        helper.child.as_mut().unwrap().kill().unwrap();
+        let status = helper.wait_bounded(Instant::now() + Duration::from_secs(5));
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        owner.runtime.as_ref().unwrap().require_dead().unwrap();
+        let lease = open_private(&directory.join(LEASE)).unwrap();
+        assert_eq!(unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        assert_eq!(FileIdentity::of(&lease.metadata().unwrap()), owner.lease);
+        let observations = std::cell::Cell::new(0);
+        let result = crash_detach_observed(&directory, &owner, &fixture.target, || {
+            let number = observations.get(); observations.set(number + 1);
+            if number < 3 { MountState::Mounted(fixture.identity()) } else { MountState::Absent }
+        }, RuntimeIdentity::require_dead, || Ok(actual_exit(0)), Duration::from_secs(1));
+        assert!(result.unwrap(), "controlled kernel observation + actual child wait completes");
+        let completed = read_owner(&directory).unwrap();
+        assert!(completed.closed.is_none(), "crash detach never manufactures a normal runtime closed proof");
+        let proof = completed.crash_detach.as_ref().unwrap();
+        assert!(proof.actual_wait); assert_eq!(proof.actual_exit, Some(0)); assert_eq!(proof.actual_signal, None);
+        assert!(!socket_path(&completed).unwrap().exists());
+        remove_known(&directory.join(RECORD), completed.record, false).unwrap();
     }
 
     #[test]
