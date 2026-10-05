@@ -225,6 +225,8 @@ describe('release candidate workflow', () => {
     expect(runText.indexOf('DROP DATABASE IF EXISTS xpod_rc WITH (FORCE)'))
       .toBeLessThan(runText.indexOf('kubectl apply -f "$rendered_manifest"'));
     expect(runText).toContain('CREATE DATABASE xpod_rc OWNER xpod_rc');
+    // 扩展由超级用户安装，schema 归属必须一并交给应用角色，否则 CSS 起不来。
+    expect(runText).toContain('ALTER SCHEMA %I OWNER TO xpod_rc');
     expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
     expect(runText).toContain('https://id-rc.undefineds.cn/service/status');
@@ -281,9 +283,8 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('rollout status deployment/xpod-rc-minio');
     expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
     expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');
-    // locator 密钥不再是必需项：ai-connections 走纯 Solid 客户端凭据，
-    // 缺省时该服务懒解析（不启用），因此不能要求每个部署都提供它。
-    expect(runText).not.toContain("'XPOD_GATEWAY_LOCATOR_SECRET',");
+    // API 服务启动时会要求它：缺了 rc 会卡在 "Failed to start API Service"。
+    expect(runText).toContain("'XPOD_GATEWAY_LOCATOR_SECRET',");
     expect(runText).not.toContain('--from-literal=POSTGRES_DB=xpod_rc');
     expect(runText).not.toContain('--from-literal=POSTGRES_USER=xpod_rc');
     expect(runText).not.toContain('must match the isolated RC PostgreSQL service identity');

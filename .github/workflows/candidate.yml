@@ -271,6 +271,9 @@ jobs:
             'CSS_MINIO_SECRET_KEY',
             'XPOD_INNGEST_EVENT_KEY',
             'XPOD_INNGEST_SIGNING_KEY',
+            // API 服务在启动时就要求它（缺了会 "Failed to start API Service"），
+            // 所以这是必需项而不是可选项。
+            'XPOD_GATEWAY_LOCATOR_SECRET',
           ];
           const entries = new Map();
           for (const line of text.split(/\r?\n/)) {
@@ -361,6 +364,25 @@ jobs:
           psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
           psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_rdf VERSION '0.2.0'"
           psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_qlever VERSION '0.4.0'"
+          # 扩展是用超级用户装的，schema 因此归 postgres：应用角色读不了，
+          # 会以 "permission denied for schema xpod_rdf" 起不来。整库交给应用角色。
+          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 <<'SQL2'
+          DO $do$
+          DECLARE r record;
+          BEGIN
+            FOR r IN SELECT nspname FROM pg_namespace
+                     WHERE nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+                       AND pg_get_userbyid(nspowner) <> 'xpod_rc'
+            LOOP
+              EXECUTE format('ALTER SCHEMA %I OWNER TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON SCHEMA %I TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON ALL TABLES IN SCHEMA %I TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON ALL SEQUENCES IN SCHEMA %I TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON ALL FUNCTIONS IN SCHEMA %I TO xpod_rc', r.nspname);
+            END LOOP;
+          END
+          $do$;
+          SQL2
           SQL
 
       - name: Deploy RC image by digest
