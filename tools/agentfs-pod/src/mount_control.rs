@@ -135,6 +135,13 @@ struct CrashDetach {
     identity_error: Option<String>,
 }
 
+impl CrashDetach {
+    fn successful_for(&self, binding: Option<&Binding>) -> bool {
+        self.phase == CrashPhase::Waited && self.pid != 0 && self.actual_wait
+            && self.actual_exit == Some(0) && self.actual_signal.is_none() && binding == Some(&self.binding)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Owner {
@@ -427,6 +434,9 @@ impl RuntimeControl {
             Ok(_) => {
                 let old = read_owner(&directory)?;
                 if old.lease != lease_id { anyhow::bail!("stale runtime lease identity mismatch"); }
+                if old.crash_detach.as_ref().map(|proof| !proof.successful_for(old.binding.as_ref())).unwrap_or(false) {
+                    anyhow::bail!("prior crash detach has no actual successful wait; locator retained");
+                }
                 let old_target = recorded_target(&old)?;
                 // A released lease excludes cooperating holders, never proves
                 // process death or kernel unmount.
@@ -434,9 +444,7 @@ impl RuntimeControl {
                 if !matches!(observe(&old_target), MountState::Absent) {
                     anyhow::bail!("prior runtime target mounted or unknown; locator retained");
                 }
-                if old.closed.is_some() || old.crash_detach.as_ref().map(|proof| proof.phase == CrashPhase::Waited && proof.pid != 0
-                    && proof.actual_wait && proof.actual_exit == Some(0) && proof.actual_signal.is_none()
-                    && old.binding.as_ref() == Some(&proof.binding)).unwrap_or(false) { reconcile_socket_resources(&old)?; } else { remove_socket_resources(&old)?; }
+                if old.closed.is_some() || old.crash_detach.as_ref().map(|proof| proof.successful_for(old.binding.as_ref())).unwrap_or(false) { reconcile_socket_resources(&old)?; } else { remove_socket_resources(&old)?; }
                 remove_known(&directory.join(RECORD), old.record, false)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -676,8 +684,7 @@ fn crash_detach_observed(directory: &Path, owner: &Owner, target: &Path,
     require_dead(runtime)?;
     let binding = owner.binding.as_ref().context("crashed runtime has no mount binding; retained")?;
     if let Some(proof) = &owner.crash_detach {
-        if proof.phase == CrashPhase::Waited && proof.pid != 0 && proof.actual_wait && proof.actual_exit == Some(0) && proof.actual_signal.is_none()
-            && proof.binding == *binding && matches!(observe(), MountState::Absent) {
+        if proof.successful_for(Some(binding)) && matches!(observe(), MountState::Absent) {
             reconcile_socket_resources(owner)?;
             return Ok(true);
         }
@@ -1672,18 +1679,29 @@ mod tests {
 
     #[test]
     fn crash_detach_pending_proof_never_reissues_an_operation() {
-        let fixture = Fixture::new();
-        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
-        control.bind_identity(&fixture.identity()).unwrap();
-        let mut owner = control.verify_owned().unwrap();
+        // Controlled negative markers: kernel absence cannot replace the owned
+        // detach child's actual successful wait, including before it is spawned.
         for phase in [CrashPhase::Prepared, CrashPhase::Spawned] {
+            let fixture = Fixture::new();
+            let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+            control.bind_identity(&fixture.identity()).unwrap();
+            let mut owner = control.verify_owned().unwrap();
             owner.crash_detach = Some(CrashDetach { phase, pid: if phase == CrashPhase::Prepared { 0 } else { std::process::id() },
                 start: process_start(std::process::id()).unwrap().unwrap(), binding: Binding::from_mount(&fixture.identity()),
                 actual_exit: None, actual_signal: None, actual_wait: false, identity_error: None });
             assert!(crash_detach_observed(&control.directory, &owner, &fixture.target,
                 || MountState::Mounted(fixture.identity()), |_| Ok(()), || panic!("pending proof must never respawn"), Duration::ZERO).is_err());
+            control.store_owner(owner).unwrap();
+            let retained = control.verify_owned().unwrap();
+            let directory = control.directory.clone();
+            let bytes = fs::read(directory.join(RECORD)).unwrap();
+            drop(control);
+            assert!(RuntimeControl::acquire_observed(&fixture.session, &fixture.target, |_| MountState::Absent).is_err(),
+                "kernel absence must not admit a new runtime while crash child wait is unresolved");
+            assert_eq!(fs::read(directory.join(RECORD)).unwrap(), bytes);
+            remove_socket_resources(&retained).unwrap();
+            remove_known(&directory.join(RECORD), retained.record, false).unwrap();
         }
-        clean_fixture_runtime(&control, None);
     }
 
     #[test]

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
 import { MountCleanupGuard, makeObservingKernelObserver } from './support/mountCleanup';
+import { isObservedConditionalConflict } from './support/mountHarness';
 import { discoverAgentFsHelper } from './support/helperDiscovery';
 
 const helper = discoverAgentFsHelper();
@@ -21,7 +22,7 @@ const cleanup = new MountCleanupGuard({
 });
 let primaryFailure: unknown;
 
-interface ExecResult { status: number; stdout: string; stderr: string }
+interface ExecResult { state: 'closed' | 'spawn-error'; actualExit: number | null; signal: NodeJS.Signals | null; status: number; stdout: string; stderr: string }
 
 function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}, timeoutMs = 30_000, cwd = process.cwd()): Promise<ExecResult> {
   return new Promise((resolve) => {
@@ -31,8 +32,8 @@ function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}, time
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-    child.on('error', (error) => { clearTimeout(timer); resolve({ status: 1, stdout, stderr: error.message }); });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ status: code ?? 1, stdout, stderr }); });
+    child.on('error', (error) => { clearTimeout(timer); resolve({ state: 'spawn-error', actualExit: null, signal: null, status: 1, stdout, stderr: error.message }); });
+    child.on('close', (code, signal) => { clearTimeout(timer); resolve({ state: 'closed', actualExit: code, signal, status: code ?? 1, stdout, stderr }); });
   });
 }
 
@@ -195,8 +196,10 @@ describe.runIf(runOverlay)('native session overlay: dirty before commit, restart
     server.mutate('alpha.txt', 'REMOTE_MOVED_ON\n');
     expect((await mount()).status).toBe(0);
 
+    const commitLogStart = server.log.length;
     const commit = await exec(binary, [ 'commit', '--pod-root', server.podRoot, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
-    expect(commit.status, `commit should surface the 412 conflict: ${commit.stdout}${commit.stderr}`).not.toBe(0);
+    expect(isObservedConditionalConflict(commit, server.log.slice(commitLogStart), 'alpha.txt'),
+      `actual closed conditional 412 conflict required: ${JSON.stringify(commit)}`).toBe(true);
     expect(server.readBody('alpha.txt')).toBe('REMOTE_MOVED_ON\n');
     expect(await readFile(path.join(mnt, 'alpha.txt'), 'utf8')).toBe('LOCAL_EDIT\n');
     const installedCli = process.env.XPOD_AGENTFS_TEST_CLI;

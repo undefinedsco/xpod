@@ -4,7 +4,7 @@ import { mkdir, open, readFile, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
-import { runMountAcceptance, type MountAcceptanceReport } from './support/mountHarness';
+import { isObservedConditionalConflict, ownedUnmountDecision, runOwnedUnmountOnce, runMountAcceptance, type MountAcceptanceReport, type OwnedUnmountProof } from './support/mountHarness';
 import { discoverAgentFsHelper } from './support/helperDiscovery';
 import { MountCleanupGuard, makeObservingKernelObserver, observeKernelMounts, observeKernelMountsDetailed } from './support/mountCleanup';
 
@@ -291,13 +291,21 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     let second: OwnedDaemon | undefined;
     let primaryError: unknown;
     const unmountResults: Record<string, unknown>[] = [];
-    const unmountOwned = async (phase: string): Promise<void> => {
-      const preKernel = observeKernelMountsDetailed(work);
-      const result = await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
-      const postKernel = observeKernelMountsDetailed(work);
-      unmountResults.push({ phase, preKernel, postKernel, result });
-      if (result.state !== 'closed' || result.actualExit !== 0 || result.signal !== null || postKernel.state !== 'absent') {
-        throw new Error(`owned unmount ${phase} failed: ${JSON.stringify({ preKernel, postKernel, result })}`);
+    const proofs: Record<'first' | 'second', OwnedUnmountProof> = { first: { daemonClosed: false }, second: { daemonClosed: false } };
+    const unmountOwned = async (instance: 'first' | 'second', phase: string): Promise<void> => {
+      const proof = proofs[instance];
+      const decision = ownedUnmountDecision(proof);
+      if (decision !== 'unmount') unmountResults.push({ instance, phase, decision, retainedProof: { ...proof, result: proof.result ? { ...proof.result } : undefined } });
+      await runOwnedUnmountOnce(proof, async () => {
+        const preKernel = observeKernelMountsDetailed(work);
+        const result = await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+        const postKernel = observeKernelMountsDetailed(work);
+        unmountResults.push({ instance, phase, preKernel, postKernel, result });
+        return { result, postKernel: postKernel.state };
+      });
+      const result = proof.result;
+      if (!result || result.state !== 'closed' || result.actualExit !== 0 || result.signal !== null || proof.postKernel !== 'absent') {
+        throw new Error(`owned unmount ${phase} failed: ${JSON.stringify(proof)}`);
       }
     };
     try {
@@ -306,8 +314,6 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       // Hold the remote body after 1 MiB so the copy-up read is genuinely in flight.
       server.stallOnce(remote, 1024 * 1024);
       // Concurrent nontruncating offset edit on the mounted existing remote body.
-      // The result is registered from birth so an open() rejection is caught,
-      // never an unhandled rejection.
       // The writer is an owned subprocess: a blocked NFS syscall cannot keep
       // the Vitest producer's own worker thread alive after a failed detach.
       writer = observeOwnedChild(spawn(process.execPath, [ '-e',
@@ -333,8 +339,9 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       // Release the stalled read BEFORE unmount so the copy-up can progress, then
       // unmount + prove kernel absence WITHOUT awaiting the (possibly NFS-blocked)
       // writer. Only then bound-wait the writer and require actual settlement.
+      proofs.first.daemonClosed = killed.state === 'closed';
       server.releaseStall();
-      await unmountOwned('after-sigkill');
+      await unmountOwned('first', 'after-sigkill');
       const writerClose = await awaitClose(writer, 60_000);
       await captureDaemonEvidence('recovery-writer', writer, writerClose, { phase: 'after-detach' });
       if (writerClose.state !== 'closed') throw new Error(`owned writer did not settle before same-session reuse: ${writerClose.state}`);
@@ -352,14 +359,17 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
         await (await import('node:fs/promises')).writeFile(local, 'LOCAL_RECOVERY_EDIT\n');
         expect(await readFile(local, 'utf8')).toBe('LOCAL_RECOVERY_EDIT\n');
         server.mutate('alpha.txt', 'REMOTE_RECOVERY_MOVE\n');
+        const commitLogStart = server.log.length;
         const conflict = await exec(binary, [ 'commit', '--pod-root', server.podRoot, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
-        expect(conflict.status, 'commit must surface the conditional 412 conflict').not.toBe(0);
+        expect(isObservedConditionalConflict(conflict, server.log.slice(commitLogStart), 'alpha.txt'),
+          `actual closed conditional 412 conflict required: ${JSON.stringify(conflict)}`).toBe(true);
         expect(server.readBody('alpha.txt')).toBe('REMOTE_RECOVERY_MOVE\n');
         expect(await readFile(local, 'utf8')).toBe('LOCAL_RECOVERY_EDIT\n');
       } catch (error) { secondError = error; } finally {
         let secondCleanup: unknown;
-        try { await unmountOwned('second-cleanup'); } catch (error) { secondCleanup = error; }
+        try { await unmountOwned('second', 'second-cleanup'); } catch (error) { secondCleanup = error; }
         const secondClose = await awaitClose(second, 30_000);
+        proofs.second.daemonClosed = secondClose.state === 'closed';
         await captureDaemonEvidence('recovery-second', second, secondClose, { phase: 'recovery-remount',
           primaryError: secondError === undefined ? null : String(secondError), cleanupError: secondCleanup === undefined ? null : String(secondCleanup) }).catch((error) => { secondCleanup = new AggregateError([ secondCleanup, error ].filter(Boolean), 'second evidence cleanup failed'); });
         if (secondClose.state !== 'closed') secondCleanup = new AggregateError([ secondCleanup, new Error(`second daemon not closed: ${secondClose.state}`) ].filter(Boolean), 'second cleanup unresolved');
@@ -377,13 +387,16 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       const addCleanupError = (error: unknown): void => { cleanupError = cleanupError === undefined ? error : new AggregateError([ cleanupError, error ], 'multiple cleanup failures'); };
       try {
         server.releaseStall();
-        await unmountOwned('first-cleanup');
+        await unmountOwned('first', 'first-cleanup');
         const firstClose = await awaitClose(first, 30_000);
+        proofs.first.daemonClosed = firstClose.state === 'closed';
         await captureDaemonEvidence('recovery-first', first, firstClose, { phase: 'recovery-killed', retainedSceneCandidate: firstClose.state !== 'closed' });
         if (firstClose.state !== 'closed') throw new Error(`owned first daemon not actually closed: ${firstClose.state}`);
       } catch (error) { cleanupError = error; }
       if (second) {
+        try { await unmountOwned('second', 'second-final-cleanup'); } catch (error) { addCleanupError(error); }
         const secondClose = await awaitClose(second, 15_000);
+        proofs.second.daemonClosed = secondClose.state === 'closed';
         await captureDaemonEvidence('recovery-second-final', second, secondClose, { phase: 'final-cleanup' }).catch(addCleanupError);
         if (secondClose.state !== 'closed') cleanupError = new AggregateError([ cleanupError, new Error(`second daemon retained: ${secondClose.state}`) ].filter(Boolean), 'cleanup remains unresolved');
       }
@@ -409,7 +422,7 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
 
       }
       await captureDaemonEvidence('recovery-final', first, await awaitClose(first, 100), {
-        unmountResults, kernelState, sceneRetained: !safeToDelete,
+        unmountResults, ownedUnmountProofs: proofs, kernelState, sceneRetained: !safeToDelete,
         primaryError: primaryError === undefined ? null : String(primaryError),
         cleanupError: cleanupError === undefined ? null : String(cleanupError), writerOutcome,
       }).catch(addCleanupError);

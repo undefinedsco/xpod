@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import { classifyMountInventoryDetailed, makeObservingKernelObserver, observeKernelMounts, observeKernelMountsDetailed, parseLinuxMountInfo } from '../agentfs-pod/support/mountCleanup';
 import { classifyProbeError, evaluateRequiredMountedCases, failureTextFromReport, isEntryPoint, observeChildLifecycle, passedCountFromReport, probeOwnedGroup, reapOwnedGroup, REQUIRED_MOUNTED_CASES } from '../../scripts/agentfs-native-ci/mounted/platform-admission';
 
+import { isObservedConditionalConflict, ownedUnmountDecision, runOwnedUnmountOnce, type OwnedUnmountProof } from '../agentfs-pod/support/mountHarness';
+
 /**
  * Behavioural boundaries for the mounted-platform admission driver's owned
  * process-group gate. These invoke the EXACT probe/reap/classify functions the
@@ -279,5 +281,53 @@ describe('kernel observer detail (real implementation, fail-closed preserved)', 
       if (prev === undefined) delete process.env.XPOD_MOUNTED_EVIDENCE; else process.env.XPOD_MOUNTED_EVIDENCE = prev;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe('mounted case business and per-instance teardown evidence', () => {
+  const conflict = { state: 'closed', actualExit: 1, signal: null, stdout: 'commit applied=0 conflicts=1 errors=0\n',
+    stderr: 'agentfs-pod: conflict kept for alpha.txt (first baseline preserved)\n' };
+  const mutation = { method: 'PUT', path: '/pod/alpha.txt', resource: 'alpha.txt', range: undefined,
+    status: 412, requestBytes: 4, responseBytes: 0 };
+
+  it('accepts only an actual closed nonzero conflict with the same operation HTTP 412', () => {
+    expect(isObservedConditionalConflict(conflict, [ mutation ], 'alpha.txt')).toBe(true);
+    for (const invalid of [
+      { ...conflict, state: 'pending', actualExit: null },
+      { ...conflict, state: 'spawn-error', actualExit: null },
+      { ...conflict, actualExit: null, signal: 'SIGKILL' },
+      { ...conflict, actualExit: 0 },
+      { ...conflict, actualExit: 1.5 },
+      { ...conflict, stdout: 'commit applied=0 conflicts=0 errors=1\n', stderr: 'HTTP 401 unauthorized' },
+      { ...conflict, stdout: '', stderr: 'network connection reset' },
+    ]) expect(isObservedConditionalConflict(invalid, [ mutation ], 'alpha.txt')).toBe(false);
+    expect(isObservedConditionalConflict(conflict, [], 'alpha.txt')).toBe(false);
+    expect(isObservedConditionalConflict(conflict, [ { ...mutation, status: 401 } ], 'alpha.txt')).toBe(false);
+    expect(isObservedConditionalConflict(conflict, [ { ...mutation, resource: 'foreign.txt' } ], 'alpha.txt')).toBe(false);
+  });
+
+  it('issues one unmount per recovered instance and retains a pending child even if kernel absent', async () => {
+    const first: OwnedUnmountProof = { daemonClosed: true };
+    const second: OwnedUnmountProof = { daemonClosed: false };
+    const calls = { first: 0, second: 0 };
+    const perform = (name: 'first' | 'second') => async () => {
+      calls[name] += 1;
+      return { result: { state: 'closed', actualExit: 0, signal: null }, postKernel: 'absent' as const };
+    };
+    await runOwnedUnmountOnce(first, perform('first'));
+    await runOwnedUnmountOnce(second, perform('second'));
+    expect(ownedUnmountDecision(second)).toBe('wait-daemon');
+    await runOwnedUnmountOnce(second, perform('second')); // wait, no duplicate OS command
+    second.daemonClosed = true;
+    await runOwnedUnmountOnce(second, perform('second'));
+    await runOwnedUnmountOnce(first, perform('first')); // outer finally, after remount teardown
+    expect(calls).toEqual({ first: 1, second: 1 });
+    expect(ownedUnmountDecision(first)).toBe('complete');
+    const pending: OwnedUnmountProof = { daemonClosed: true, postKernel: 'absent',
+      result: { state: 'pending', actualExit: null, signal: null } };
+    expect(ownedUnmountDecision(pending)).toBe('retain');
+    await expect(runOwnedUnmountOnce(pending, perform('first'))).rejects.toThrow('unresolved');
+    expect(calls.first).toBe(1);
   });
 });
