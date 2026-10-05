@@ -9,9 +9,10 @@
 //!
 //! All mounted reads/lookups/listings/renames/deletes consult this view first;
 //! the Pod is unchanged until an explicit `commit`. `fsync` only guarantees
-//! local durability. There is no persistent clean-body read cache: a blob is
+//! local durability. The overlay stores only dirty/baseline state: a blob is
 //! removed once its revision is committed, and untouched remote content is read
-//! from the Pod on demand.
+//! from the Pod on demand. Clean, read-only remote windows are cached separately
+//! by `crate::clean_cache` under the same validated session directory.
 
 use crate::pod_fs::{CommitFailure, PodClient};
 use anyhow::{Context, Result};
@@ -420,7 +421,7 @@ mod tests {
         let pod = FixturePod::start(vec![("race.txt".into(), "external".into())]).unwrap();
         let dir = TestDir::new();
         let overlay = std::sync::Arc::new(SessionOverlay::open(&dir.0, &pod.pod_root, "alice").unwrap());
-        let fs = crate::pod_fs::PodHttpFileSystem::new(&pod.pod_root, Some("selftest-token".into()), 0, 0, Some(overlay.clone())).unwrap();
+        let fs = crate::pod_fs::PodHttpFileSystem::new(&pod.pod_root, Some("selftest-token".into()), 0, 0, Some(overlay.clone()), None).unwrap();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         assert!(runtime.block_on(fs.create_file(crate::pod_fs::ROOT_INO, "race.txt", 0o644, 0, 0)).is_err());
         assert!(overlay.pending_paths().unwrap().is_empty());

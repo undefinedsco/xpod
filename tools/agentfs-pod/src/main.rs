@@ -7,10 +7,12 @@ mod mount;
 mod mount_control;
 mod pod_fs;
 mod session;
+mod clean_cache;
 
 use agentfs_sdk::FileSystem;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use clean_cache::CleanBodyCache;
 use session::SessionOverlay;
 use pod_fs::{PodHttpFileSystem, ROOT_INO};
 use std::path::PathBuf;
@@ -141,10 +143,14 @@ fn build_fs(
 ) -> Result<Arc<Mutex<dyn FileSystem + Send>>> {
     let (uid, gid) = uid_gid();
     let (pod_root, identity) = session_binding(server);
-    let overlay = session_dir
-        .map(|dir| SessionOverlay::open(&dir, &pod_root, &identity).map(Arc::new))
-        .transpose()?;
-    let fs = PodHttpFileSystem::new(server, token, uid, gid, overlay)?;
+    let (overlay, clean) = match session_dir.as_deref() {
+        Some(dir) => (
+            Some(Arc::new(SessionOverlay::open(dir, &pod_root, &identity)?)),
+            CleanBodyCache::open(dir, &pod_root, &identity)?.map(Arc::new),
+        ),
+        None => (None, None),
+    };
+    let fs = PodHttpFileSystem::new(server, token, uid, gid, overlay, clean)?;
     Ok(Arc::new(Mutex::new(fs)))
 }
 
@@ -155,10 +161,14 @@ fn build_concrete(
 ) -> Result<Arc<PodHttpFileSystem>> {
     let (uid, gid) = uid_gid();
     let (pod_root, identity) = session_binding(server);
-    let overlay = session_dir
-        .map(|dir| SessionOverlay::open(&dir, &pod_root, &identity).map(Arc::new))
-        .transpose()?;
-    Ok(Arc::new(PodHttpFileSystem::new(server, token, uid, gid, overlay)?))
+    let (overlay, clean) = match session_dir.as_deref() {
+        Some(dir) => (
+            Some(Arc::new(SessionOverlay::open(dir, &pod_root, &identity)?)),
+            CleanBodyCache::open(dir, &pod_root, &identity)?.map(Arc::new),
+        ),
+        None => (None, None),
+    };
+    Ok(Arc::new(PodHttpFileSystem::new(server, token, uid, gid, overlay, clean)?))
 }
 
 #[derive(Debug)]
@@ -408,7 +418,7 @@ fn run_selftest(json: bool) -> Result<()> {
 
     runtime.block_on(async {
         let (uid, gid) = uid_gid();
-        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("selftest-token".to_string()), uid, gid, None)?;
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("selftest-token".to_string()), uid, gid, None, None)?;
 
         // readdir is metadata only.
         pod.reset_log();

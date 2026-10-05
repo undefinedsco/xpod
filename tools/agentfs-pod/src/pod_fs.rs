@@ -10,6 +10,7 @@
 //!   so external modifications are observed (the mount is also mounted with
 //!   `noac,actimeo=0` to defeat the kernel NFS client cache).
 
+use crate::clean_cache::{is_strong_etag, CleanBodyCache};
 use crate::session::SessionOverlay;
 use agentfs_sdk::error::{Error as SdkError, Result as SdkResult};
 use agentfs_sdk::{
@@ -49,6 +50,21 @@ pub struct HeadInfo {
     pub size: u64,
     pub version: Option<String>,
     pub is_dir: bool,
+}
+
+/// One bounded `GET Range` attempt. `ranged` is true only for a real
+/// `206`/`Content-Range` response whose offset and length were verified; a
+/// `200` (range ignored) attempt must never be cached. `range_ignored` is true
+/// only when the server answered `200` and the slice was produced locally, so
+/// callers that report `rangeIgnored` keep their exact semantics. A
+/// `precondition_failed` marks an `If-Match` mismatch for a single reacquire.
+#[derive(Debug)]
+pub struct RangeFetch {
+    pub bytes: Vec<u8>,
+    pub etag: Option<String>,
+    pub ranged: bool,
+    pub range_ignored: bool,
+    pub precondition_failed: bool,
 }
 
 // Only an unanchored Link with rel=type describes this resource's LDP kind.
@@ -164,7 +180,7 @@ mod nfs_pagination_tests {
             ("a.txt".into(), "a".into()), ("b.txt".into(), "b".into()), ("c.txt".into(), "c".into()),
         ]).unwrap();
         let filesystem: Arc<tokio::sync::Mutex<dyn FileSystem>> = Arc::new(tokio::sync::Mutex::new(
-            PodHttpFileSystem::new(&pod.pod_root, None, 0, 0, None).unwrap(),
+            PodHttpFileSystem::new(&pod.pod_root, None, 0, 0, None, None).unwrap(),
         ));
         let nfs = AgentNFS::new(filesystem.clone());
         let mut cookie = 0;
@@ -462,19 +478,43 @@ impl PodClient {
     /// Returns `(bytes, rangeIgnored)`. `rangeIgnored` is true when the server
     /// answered 200 and the slice was produced locally.
     pub async fn get_range(&self, path: &str, offset: u64, size: u64) -> SdkResult<(Vec<u8>, bool)> {
+        let fetch = self.get_range_conditional(path, offset, size, None).await?;
+        Ok((fetch.bytes, fetch.range_ignored))
+    }
+
+    /// One bounded `GET Range` attempt, optionally guarded by `If-Match`. The
+    /// response is streamed and validated (offset, length, complete body); the
+    /// caller caches only a `ranged` result whose ETag equals `if_match`.
+    pub async fn get_range_conditional(
+        &self,
+        path: &str,
+        offset: u64,
+        size: u64,
+        if_match: Option<&str>,
+    ) -> SdkResult<RangeFetch> {
         let url = self.resource_url(path)?;
-        let request_range = |end: u64| {
-            let mut headers = HeaderMap::new();
+        let mut base = HeaderMap::new();
+        base.insert(ACCEPT, HeaderValue::from_static("application/octet-stream"));
+        if let Some(value) = if_match {
+            base.insert(
+                IF_MATCH,
+                HeaderValue::from_str(value).map_err(|error| SdkError::Internal(error.to_string()))?,
+            );
+        }
+        let request_range = |base: &HeaderMap, end: u64| {
+            let mut headers = base.clone();
             headers.insert(RANGE, HeaderValue::from_str(&format!("bytes={offset}-{end}")).unwrap());
-            headers.insert(ACCEPT, HeaderValue::from_static("application/octet-stream"));
             headers
         };
         let response = self
-            .send(Method::GET, url.clone(), request_range(offset.saturating_add(size.saturating_sub(1))), None)
+            .send(Method::GET, url.clone(), request_range(&base, offset.saturating_add(size.saturating_sub(1))), None)
             .await?;
+        if response.status() == StatusCode::PRECONDITION_FAILED {
+            return Ok(RangeFetch { bytes: Vec::new(), etag: None, ranged: false, range_ignored: false, precondition_failed: true });
+        }
         // A strict server answers 416 when the requested end crosses EOF. Only
         // an offset at/after the resource total is a normal EOF; otherwise clamp
-        // to the real size and retry.
+        // to the real size and retry under the same precondition.
         let response = if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
             let total_from_header = response
                 .headers()
@@ -490,9 +530,9 @@ impl PodClient {
                 return Err(SdkError::Internal(format!("416 for {path} without a usable total size")));
             };
             if offset >= total {
-                return Ok((Vec::new(), false));
+                return Ok(RangeFetch { bytes: Vec::new(), etag: None, ranged: false, range_ignored: false, precondition_failed: false });
             }
-            self.send(Method::GET, url, request_range(total.saturating_sub(1)), None).await?
+            self.send(Method::GET, url, request_range(&base, total.saturating_sub(1)), None).await?
         } else {
             response
         };
@@ -501,12 +541,13 @@ impl PodClient {
         }
         if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
             // A read entirely past EOF is a normal short read, not an error.
-            return Ok((Vec::new(), false));
+            return Ok(RangeFetch { bytes: Vec::new(), etag: None, ranged: false, range_ignored: false, precondition_failed: false });
         }
         if !response.status().is_success() {
             return Err(SdkError::Internal(format!("range GET {path} failed: {}", response.status())));
         }
         let partial = response.status() == StatusCode::PARTIAL_CONTENT;
+        let etag = response.headers().get(ETAG).and_then(|value| value.to_str().ok()).map(str::to_string);
         let content_range = response
             .headers()
             .get(CONTENT_RANGE)
@@ -547,9 +588,9 @@ impl PodClient {
                     )));
                 }
             }
-            return Ok((bytes, false));
+            return Ok(RangeFetch { bytes, etag, ranged: true, range_ignored: false, precondition_failed: false });
         }
-        Ok((bytes, true))
+        Ok(RangeFetch { bytes, etag, ranged: false, range_ignored: true, precondition_failed: false })
     }
 
     pub async fn put(
@@ -631,6 +672,9 @@ pub struct PodHttpFileSystem {
     gid: u32,
     inner: Mutex<Inner>,
     overlay: Option<Arc<SessionOverlay>>,
+    /// Persistent clean-body cache for the canonical remote Pod. `None` for a
+    /// loopback-canonical (Local) authority or when no session directory is set.
+    clean: Option<Arc<CleanBodyCache>>,
 }
 
 impl PodHttpFileSystem {
@@ -640,6 +684,7 @@ impl PodHttpFileSystem {
         uid: u32,
         gid: u32,
         overlay: Option<Arc<SessionOverlay>>,
+        clean: Option<Arc<CleanBodyCache>>,
     ) -> anyhow::Result<Self> {
         let mut inner = Inner { next: 2, ..Default::default() };
         inner.by_ino.insert(ROOT_INO, String::new());
@@ -650,6 +695,7 @@ impl PodHttpFileSystem {
             gid,
             inner: Mutex::new(inner),
             overlay,
+            clean,
         })
     }
 
@@ -739,6 +785,26 @@ impl PodHttpFileSystem {
         let prefix = if path.is_empty() { String::new() } else { format!("{path}/") };
         let entries = self.shared.list_all(&prefix).await?;
         Ok((prefix, entries))
+    }
+
+    /// Drops cached clean-body windows for one path after a mutation. Only the
+    /// clean cache is touched; overlay dirty/baseline files are never involved.
+    fn invalidate_clean_path(&self, path: &str) {
+        if let Some(clean) = &self.clean {
+            if let Err(error) = clean.invalidate_path(path) {
+                eprintln!("clean cache invalidation retained for {path}: {error}");
+            }
+        }
+    }
+
+    /// Drops cached clean-body windows under a directory after a structural
+    /// change (rmdir). Overlay dirty/baseline files are never involved.
+    fn invalidate_clean_prefix(&self, prefix: &str) {
+        if let Some(clean) = &self.clean {
+            if let Err(error) = clean.invalidate_prefix(prefix) {
+                eprintln!("clean cache prefix invalidation retained for {prefix}: {error}");
+            }
+        }
     }
 }
 
@@ -883,6 +949,7 @@ impl FileSystem for PodHttpFileSystem {
         Ok(Arc::new(PodFile::new(
             self.shared.clone(),
             self.overlay.clone(),
+            self.clean.clone(),
             path,
             version,
             writable,
@@ -893,6 +960,7 @@ impl FileSystem for PodHttpFileSystem {
     async fn mkdir(&self, parent_ino: i64, name: &str, _mode: u32, _uid: u32, _gid: u32) -> SdkResult<Stats> {
         let parent = self.path_for(parent_ino).await?;
         let child = Self::child_path(&parent, name)?;
+        self.invalidate_clean_path(&child);
         if let Some(overlay) = &self.overlay {
             if self.lookup(parent_ino, name).await?.is_some() { return Err(SdkError::Fs(FsError::AlreadyExists)); }
             overlay.mkdir(&child).map_err(|error| SdkError::Internal(error.to_string()))?;
@@ -926,6 +994,7 @@ impl FileSystem for PodHttpFileSystem {
     ) -> SdkResult<(Stats, BoxedFile)> {
         let parent = self.path_for(parent_ino).await?;
         let child = Self::child_path(&parent, name)?;
+        self.invalidate_clean_path(&child);
         let observed = self.shared.head(&child).await?;
         let base = if let Some(overlay) = &self.overlay {
             let deleted = overlay.is_deleted(&child).map_err(|error| SdkError::Internal(error.to_string()))?;
@@ -945,6 +1014,7 @@ impl FileSystem for PodHttpFileSystem {
         let file = Arc::new(PodFile::new(
             self.shared.clone(),
             self.overlay.clone(),
+            self.clean.clone(),
             child,
             base.clone(),
             true,
@@ -965,6 +1035,7 @@ impl FileSystem for PodHttpFileSystem {
     async fn unlink(&self, parent_ino: i64, name: &str) -> SdkResult<()> {
         let parent = self.path_for(parent_ino).await?;
         let child = Self::child_path(&parent, name)?;
+        self.invalidate_clean_path(&child);
         let version = self.shared.head(&child).await?.and_then(|info| info.version);
         if let Some(overlay) = &self.overlay {
             overlay.delete(&child, version).map_err(|error| SdkError::Internal(error.to_string()))?;
@@ -980,6 +1051,8 @@ impl FileSystem for PodHttpFileSystem {
         if !self.readdir(ino).await?.unwrap_or_default().is_empty() {
             return Err(SdkError::Fs(FsError::NotEmpty));
         }
+        self.invalidate_clean_path(&child);
+        self.invalidate_clean_prefix(&format!("{child}/"));
         let container = format!("{child}/");
         let version = self.shared.head(&container).await?.and_then(|info| info.version);
         if let Some(overlay) = &self.overlay {
@@ -1004,6 +1077,8 @@ impl FileSystem for PodHttpFileSystem {
         let new_parent = self.path_for(newparent_ino).await?;
         let source = Self::child_path(&old_parent, oldname)?;
         let target = Self::child_path(&new_parent, newname)?;
+        self.invalidate_clean_path(&source);
+        self.invalidate_clean_path(&target);
         let from_info = self.shared.head(&source).await?;
         let to_info = self.shared.head(&target).await?;
         if from_info.as_ref().is_some_and(|info| info.is_dir) || to_info.as_ref().is_some_and(|info| info.is_dir) {
@@ -1014,7 +1089,7 @@ impl FileSystem for PodHttpFileSystem {
         if let Some(overlay) = &self.overlay {
             // Ensure the source exists in the overlay view before renaming.
             if overlay.stat(&source).map_err(|error| SdkError::Internal(error.to_string()))?.is_none() {
-                let file = PodFile::new(self.shared.clone(), self.overlay.clone(), source.clone(), from_base.clone(), true, "application/octet-stream".into());
+                let file = PodFile::new(self.shared.clone(), self.overlay.clone(), self.clean.clone(), source.clone(), from_base.clone(), true, "application/octet-stream".into());
                 file.edit_overlay(None, &[], None).await?;
             }
             overlay.rename(&source, &target, from_base, to_base).map_err(|error| SdkError::Internal(error.to_string()))?;
@@ -1051,6 +1126,7 @@ impl FileSystem for PodHttpFileSystem {
 pub struct PodFile {
     shared: Arc<PodClient>,
     overlay: Option<Arc<SessionOverlay>>,
+    clean: Option<Arc<CleanBodyCache>>,
     path: String,
     content_type: String,
     writable: bool,
@@ -1061,12 +1137,78 @@ impl PodFile {
     fn new(
         shared: Arc<PodClient>,
         overlay: Option<Arc<SessionOverlay>>,
+        clean: Option<Arc<CleanBodyCache>>,
         path: String,
         version: Option<String>,
         writable: bool,
         content_type: String,
     ) -> Self {
-        Self { shared, overlay, path, content_type, writable, version: Mutex::new(version) }
+        Self { shared, overlay, clean, path, content_type, writable, version: Mutex::new(version) }
+    }
+
+    /// Cache-aware clean read. The overlay (dirty/baseline local state) always
+    /// wins and is never cached. Otherwise a LIVE `HEAD` revalidates permission
+    /// and the strong ETag before any cached window may be served; a denied or
+    /// failed HEAD invalidates the path and returns that live error. A changed
+    /// ETag (or `412`) drops the stale windows and reacquires the current
+    /// version exactly once. Weak/missing ETags bypass the cache entirely.
+    async fn cached_pread(&self, clean: &CleanBodyCache, offset: u64, size: u64) -> SdkResult<Vec<u8>> {
+        let info = match self.shared.head(&self.path).await {
+            Ok(Some(info)) => info,
+            Ok(None) => {
+                let _ = clean.invalidate_path(&self.path);
+                return Err(SdkError::Fs(FsError::NotFound));
+            }
+            Err(error) => {
+                let _ = clean.invalidate_path(&self.path);
+                return Err(error);
+            }
+        };
+        let Some(etag) = info.version.clone().filter(|value| is_strong_etag(value)) else {
+            let (data, _ignored) = self.shared.get_range(&self.path, offset, size).await?;
+            return Ok(data);
+        };
+        if let Some(data) = clean
+            .get(&self.path, &etag, offset, size)
+            .map_err(|error| SdkError::Internal(error.to_string()))?
+        {
+            return Ok(data);
+        }
+        // The window is absent for the live version. A live HEAD is the
+        // authority: drop any window still pinned to another version so a
+        // changed ETag can never serve an old range.
+        let _ = clean.retain_path_etag(&self.path, &etag);
+        let mut current = etag;
+        let mut fetch = self.shared.get_range_conditional(&self.path, offset, size, Some(current.as_str())).await?;
+        if fetch.precondition_failed {
+            clean
+                .invalidate_path(&self.path)
+                .map_err(|error| SdkError::Internal(error.to_string()))?;
+            let Some(info) = self.shared.head(&self.path).await? else {
+                return Err(SdkError::Fs(FsError::NotFound));
+            };
+            let Some(next) = info.version.clone().filter(|value| is_strong_etag(value)) else {
+                let (data, _ignored) = self.shared.get_range(&self.path, offset, size).await?;
+                return Ok(data);
+            };
+            current = next;
+            fetch = self.shared.get_range_conditional(&self.path, offset, size, Some(current.as_str())).await?;
+        }
+        if fetch.precondition_failed {
+            // A second concurrent change: serve the fresh bounded read and do
+            // not cache it, rather than retrying indefinitely.
+            let (data, _ignored) = self.shared.get_range(&self.path, offset, size).await?;
+            return Ok(data);
+        }
+        // Cache only a genuine range response that matches the live version and
+        // transferred exactly the requested window.
+        let validated = fetch.ranged
+            && fetch.bytes.len() as u64 == size
+            && fetch.etag.as_deref() == Some(current.as_str());
+        if validated {
+            let _ = clean.insert(&self.path, &current, offset, size, &fetch.bytes);
+        }
+        Ok(fetch.bytes)
     }
 
     async fn load_full(&self) -> SdkResult<Vec<u8>> {
@@ -1079,6 +1221,7 @@ impl PodFile {
     }
 
     async fn edit_overlay(&self, offset: Option<u64>, data: &[u8], truncate: Option<u64>) -> SdkResult<()> {
+        self.invalidate_clean();
         let overlay = self.overlay.as_ref().unwrap();
         let observed = overlay.first_baseline(&self.path).map_err(|error| SdkError::Internal(error.to_string()))?;
         let baseline = self.base_version().await?;
@@ -1103,6 +1246,17 @@ impl PodFile {
         Ok(())
     }
 
+    /// Drops any clean-body windows for this path. Called on every mutation so a
+    /// stale remote window can never be served after the version moves; the
+    /// dirty/baseline overlay itself is never stored in the clean cache.
+    fn invalidate_clean(&self) {
+        if let Some(clean) = &self.clean {
+            if let Err(error) = clean.invalidate_path(&self.path) {
+                eprintln!("clean cache invalidation retained for {}: {error}", self.path);
+            }
+        }
+    }
+
     async fn base_version(&self) -> SdkResult<Option<String>> {
         if let Some(overlay) = &self.overlay {
             if let Some(base) = overlay.first_baseline(&self.path).map_err(|error| SdkError::Internal(error.to_string()))? {
@@ -1122,6 +1276,12 @@ impl File for PodFile {
                 return Ok(data);
             }
         }
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        if let Some(clean) = &self.clean {
+            return self.cached_pread(clean, offset, size).await;
+        }
         let (data, _ignored) = self.shared.get_range(&self.path, offset, size).await?;
         Ok(data)
     }
@@ -1131,6 +1291,7 @@ impl File for PodFile {
             return Err(SdkError::Fs(FsError::InvalidPath));
         }
         if self.overlay.is_some() { return self.edit_overlay(Some(offset), data, None).await; }
+        self.invalidate_clean();
         let mut buffer = self.load_full().await?;
         let required = offset as usize + data.len();
         if buffer.len() < required {
@@ -1148,6 +1309,7 @@ impl File for PodFile {
             return Err(SdkError::Fs(FsError::InvalidPath));
         }
         if self.overlay.is_some() { return self.edit_overlay(None, &[], Some(size)).await; }
+        self.invalidate_clean();
         let mut buffer = self.load_full().await?;
         buffer.resize(size as usize, 0);
         let version = self.version.lock().await.clone();
@@ -1327,5 +1489,248 @@ mod range_stream_tests {
     async fn ignored_range_drains_tail_and_reports_truncation() {
         assert_eq!(range_response("HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n", b"abcdefgh", 3, 2).await.unwrap(), (b"de".to_vec(), true));
         assert!(range_response("HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\n", b"abcdefgh", 3, 2).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod clean_cache_integration_tests {
+    use super::*;
+    use crate::clean_cache::CleanBodyCache;
+    use crate::fixture::FixturePod;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+
+    // Canonical remote authority. The transport is still the loopback fixture,
+    // which models the real HTTPS-canonical-via-loopback-proxy deployment.
+    const REMOTE_ROOT: &str = "https://node.example/alice/";
+
+    struct CleanDir(PathBuf);
+    impl CleanDir {
+        fn new() -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = PathBuf::from("../../.test-data/agentfs-clean-cache")
+                .join(format!("{}-{nonce}", std::process::id()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for CleanDir {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    async fn open_handle(fs: &PodHttpFileSystem, name: &str, flags: i32) -> agentfs_sdk::BoxedFile {
+        let stats = fs.lookup(ROOT_INO, name).await.unwrap().unwrap();
+        fs.open(stats.ino, flags).await.unwrap()
+    }
+
+    fn counted(pod: &FixturePod, method: &str) -> usize {
+        pod.log().iter().filter(|entry| entry.method == method).count()
+    }
+
+    #[tokio::test]
+    async fn second_remote_read_avoids_body_get_while_head_present() {
+        let pod = FixturePod::start(vec![("data.bin".into(), "ABCDEFGHIJKLMNOPQRSTUVWX".into())]).unwrap();
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "data.bin", libc::O_RDONLY).await;
+
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"ABCD".to_vec());
+        assert_eq!(counted(&pod, "GET"), 1, "first clean read must fetch one bounded window");
+        assert_eq!(counted(&pod, "HEAD"), 1, "first clean read must revalidate with a live HEAD");
+
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"ABCD".to_vec());
+        assert_eq!(counted(&pod, "GET"), 0, "cached read must not transfer a body");
+        assert_eq!(counted(&pod, "HEAD"), 1, "cached read must still revalidate with a live HEAD");
+        assert_eq!(clean.stats().unwrap().1, 1);
+    }
+
+    #[tokio::test]
+    async fn weak_etag_bypasses_and_is_never_cached() {
+        let pod = FixturePod::start(vec![("w.bin".into(), "WEAKBODY".into())]).unwrap();
+        pod.set_etag("w.bin", "W/\"v1\"");
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "w.bin", libc::O_RDONLY).await;
+
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"WEAK".to_vec());
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"WEAK".to_vec());
+        assert_eq!(counted(&pod, "GET"), 1, "weak ETag must bypass the cache and refetch");
+        assert_eq!(clean.stats().unwrap().1, 0, "weak ETag must never be cached");
+    }
+
+    #[tokio::test]
+    async fn empty_etag_bypasses_and_is_never_cached() {
+        let pod = FixturePod::start(vec![("m.bin".into(), "MISSINGETAG".into())]).unwrap();
+        pod.set_etag("m.bin", "");
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "m.bin", libc::O_RDONLY).await;
+
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"MISS".to_vec());
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"MISS".to_vec());
+        assert_eq!(counted(&pod, "GET"), 1, "missing/empty ETag must bypass the cache");
+        assert_eq!(clean.stats().unwrap().1, 0);
+    }
+
+    #[tokio::test]
+    async fn etag_race_412_reacquires_current_version_once() {
+        let pod = FixturePod::start(vec![("race.bin".into(), "OLDBODY0".into())]).unwrap();
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "race.bin", libc::O_RDONLY).await;
+
+        // The next GET mutates the resource before If-Match is evaluated, so the
+        // conditional fetch observed the old version and gets a strict 412.
+        pod.change_next_get("race.bin", "NEWBODY1");
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 8).await.unwrap(), b"NEWBODY1".to_vec());
+        assert!(counted(&pod, "GET") <= 2, "at most one bounded fetch after reacquire");
+
+        // The current version is cached; the next read is a pure hit.
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 8).await.unwrap(), b"NEWBODY1".to_vec());
+        assert_eq!(counted(&pod, "GET"), 0);
+        assert_eq!(counted(&pod, "HEAD"), 1);
+    }
+
+    #[tokio::test]
+    async fn truncated_range_response_is_not_cached() {
+        let pod = FixturePod::start(vec![("trunc.bin".into(), "TRUNCATED_BODY".into())]).unwrap();
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "trunc.bin", libc::O_RDONLY).await;
+
+        pod.drop_next_read_body();
+        assert!(handle.pread(0, 5).await.is_err(), "a truncated body must surface as an error");
+        assert_eq!(clean.stats().unwrap().1, 0, "a truncated response must never be cached");
+        assert_eq!(handle.pread(0, 5).await.unwrap(), b"TRUNC".to_vec());
+        assert_eq!(clean.stats().unwrap().1, 1);
+    }
+
+    #[tokio::test]
+    async fn restart_serves_persisted_hit_only_after_fresh_head() {
+        let pod = FixturePod::start(vec![("persist.bin".into(), "PERSISTED_BODY".into())]).unwrap();
+        let dir = CleanDir::new();
+        {
+            let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+            let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean)).unwrap();
+            let handle = open_handle(&fs, "persist.bin", libc::O_RDONLY).await;
+            pod.reset_log();
+            assert_eq!(handle.pread(0, 4).await.unwrap(), b"PERS".to_vec());
+            assert_eq!(counted(&pod, "GET"), 1);
+        }
+        // Fresh open (process restart): the persisted window is reused, but only
+        // after a live HEAD revalidation.
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean)).unwrap();
+        let handle = open_handle(&fs, "persist.bin", libc::O_RDONLY).await;
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"PERS".to_vec());
+        assert_eq!(counted(&pod, "GET"), 0, "persisted hit must not refetch a body");
+        assert_eq!(counted(&pod, "HEAD"), 1, "persisted hit must revalidate with a live HEAD");
+    }
+
+    #[tokio::test]
+    async fn dirty_overlay_edit_is_never_cached_and_remote_untouched() {
+        let pod = FixturePod::start(vec![("dirty.bin".into(), "REMOTE_BASE".into())]).unwrap();
+        let dir = CleanDir::new();
+        let overlay = Arc::new(SessionOverlay::open(&dir.0, REMOTE_ROOT, "alice").unwrap());
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, Some(overlay.clone()), Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "dirty.bin", libc::O_RDWR).await;
+
+        handle.pwrite(0, b"LOCAL_EDIT").await.unwrap();
+        assert_eq!(clean.stats().unwrap(), (0, 0), "a dirty edit must never populate the clean cache");
+        assert_eq!(handle.pread(0, 10).await.unwrap(), b"LOCAL_EDIT".to_vec());
+        assert_eq!(clean.stats().unwrap(), (0, 0), "dirty reads bypass the clean cache");
+        assert_eq!(overlay.first_baseline("dirty.bin").unwrap(), Some(Some("\"v1\"".to_string())));
+        assert_eq!(pod.body("dirty.bin").as_deref(), Some("REMOTE_BASE"), "remote stays untouched until commit");
+    }
+
+    #[tokio::test]
+    async fn identity_and_canonical_pod_are_isolated_and_loopback_has_no_directory() {
+        let dir = CleanDir::new();
+        CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap();
+        assert!(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "bob").is_err(), "another identity is rejected");
+        assert!(CleanBodyCache::open(&dir.0, "https://node.example/bob/", "alice").is_err(), "another Pod is rejected");
+        let local = CleanDir::new();
+        assert!(CleanBodyCache::open(&local.0, "http://127.0.0.1:3000/alice/", "alice").unwrap().is_none());
+        assert!(!local.0.join("clean-v1").exists(), "loopback-canonical Local must create no cache directory");
+    }
+
+    /// Minimal stateful Pod surface for the denial path: mode 0 serves a strong
+    /// ETag and a 4-byte range, mode 1 answers every request with 403.
+    fn spawn_scripted_pod() -> (String, Arc<AtomicU8>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let root = format!("http://127.0.0.1:{port}/pod/");
+        let mode = Arc::new(AtomicU8::new(0));
+        let mode_thread = mode.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break; };
+                let current = mode_thread.load(AtomicOrdering::SeqCst);
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).unwrap_or(0) == 0 { continue; }
+                let method = request_line.split_whitespace().next().unwrap_or("GET").to_string();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 { break; }
+                    if header.trim_end_matches(['\r', '\n']).is_empty() { break; }
+                }
+                if current == 1 {
+                    let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+                    continue;
+                }
+                if method == "HEAD" {
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\netag: \"v1\"\r\naccept-ranges: bytes\r\nconnection: close\r\n\r\n");
+                } else if method == "GET" {
+                    let _ = stream.write_all(b"HTTP/1.1 206 Partial Content\r\ncontent-length: 4\r\netag: \"v1\"\r\ncontent-range: bytes 0-3/11\r\nconnection: close\r\n\r\n");
+                    let _ = stream.write_all(b"BODY");
+                }
+            }
+        });
+        (root, mode)
+    }
+
+    #[tokio::test]
+    async fn denied_head_invalidates_and_never_serves_a_cached_body() {
+        let (root, mode) = spawn_scripted_pod();
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let file = PodFile::new(
+            Arc::new(PodClient::new(&root, None).unwrap()),
+            None,
+            Some(clean.clone()),
+            "x.bin".into(),
+            Some("\"v1\"".into()),
+            false,
+            "application/octet-stream".into(),
+        );
+
+        assert_eq!(file.pread(0, 4).await.unwrap(), b"BODY".to_vec());
+        assert_eq!(clean.stats().unwrap().1, 1, "the clean body is cached");
+
+        mode.store(1, AtomicOrdering::SeqCst);
+        assert!(file.pread(0, 4).await.is_err(), "a denied HEAD must surface the live error");
+        assert_eq!(clean.stats().unwrap().1, 0, "a denied HEAD must invalidate the cached window");
+
+        mode.store(0, AtomicOrdering::SeqCst);
+        assert_eq!(file.pread(0, 4).await.unwrap(), b"BODY".to_vec(), "the old body is gone; a fresh fetch is required");
     }
 }
