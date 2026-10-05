@@ -281,7 +281,9 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('rollout status deployment/xpod-rc-minio');
     expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
     expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');
-    expect(runText).toContain('XPOD_GATEWAY_LOCATOR_SECRET');
+    // locator 密钥不再是必需项：ai-connections 走纯 Solid 客户端凭据，
+    // 缺省时该服务懒解析（不启用），因此不能要求每个部署都提供它。
+    expect(runText).not.toContain("'XPOD_GATEWAY_LOCATOR_SECRET',");
     expect(runText).not.toContain('--from-literal=POSTGRES_DB=xpod_rc');
     expect(runText).not.toContain('--from-literal=POSTGRES_USER=xpod_rc');
     expect(runText).not.toContain('must match the isolated RC PostgreSQL service identity');

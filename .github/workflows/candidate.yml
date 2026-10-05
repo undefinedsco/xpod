@@ -271,7 +271,6 @@ jobs:
             'CSS_MINIO_SECRET_KEY',
             'XPOD_INNGEST_EVENT_KEY',
             'XPOD_INNGEST_SIGNING_KEY',
-            'XPOD_GATEWAY_LOCATOR_SECRET',
           ];
           const entries = new Map();
           for (const line of text.split(/\r?\n/)) {
@@ -647,6 +646,8 @@ jobs:
         run: |
           kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0 || true
           kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0 || true
+          # 逐轮种子 secret 是运行内唯一名，不收就会一轮攒一个（SG 上已积 112 个）。
+          kubectl -n "$SEALOS_NAMESPACE" delete secret "$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found || true
 
   build_desktop_rc:
     name: Build macOS RC desktop
