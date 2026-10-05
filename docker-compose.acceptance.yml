@@ -136,7 +136,7 @@ services:
     image: xpod:local-cloud-acceptance-current
     command: [/runtime-tools/bun, scripts/accept-live-gateway-login-chat.ts]
     environment:
-      XPOD_LIVE_GATEWAY_URL: http://local:16310/
+      XPOD_BASE_URL: http://local:16310/
       XPOD_LIVE_CLOUD_IDP: http://cloud.localhost:16300/
       XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX: .nodes.acceptance.test
     volumes:

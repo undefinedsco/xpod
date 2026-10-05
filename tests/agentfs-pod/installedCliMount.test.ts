@@ -1,10 +1,11 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
+import { MountCleanupGuard } from './support/mountCleanup';
 import { discoverAgentFsHelper } from './support/helperDiscovery';
 
 const helper = discoverAgentFsHelper();
@@ -18,6 +19,8 @@ const CLI = INSTALLED_CLI ? [ INSTALLED_CLI ] : [ 'bun', path.resolve('src/cli/i
 
 const ROOT = path.resolve('.test-data/agent-directory-workers/agentfs-test/installed-cli-mount');
 const TOKEN = 'installed-cli-token';
+const cleanup = new MountCleanupGuard();
+let primaryFailure: unknown;
 
 interface CliRun {
   status: number;
@@ -113,11 +116,13 @@ async function writeCredentials(solidHome: string, oidcOrigin: string, webId: st
 
 describe('agent-fs parser accepts --mountpoint (strict yargs)', () => {
   beforeAll(async () => {
+    cleanup.assertAbsent(ROOT);
+    await cleanup.remove(ROOT, primaryFailure);
     await mkdir(ROOT, { recursive: true });
   });
 
   afterAll(async () => {
-    await rm(ROOT, { recursive: true, force: true });
+    await cleanup.remove(ROOT, primaryFailure);
   });
 
   it('declares --mountpoint on mount and rejects an undeclared option', () => {
@@ -132,6 +137,7 @@ describe('agent-fs parser accepts --mountpoint (strict yargs)', () => {
   it('runs unmount --mountpoint through the real parser without an unknown-argument failure', async () => {
     const dir = await mkdtemp(path.join(ROOT, 'parse-'));
     await mkdir(path.join(dir, 'session'), { recursive: true });
+    let primary: unknown;
     try {
       const result = runCli([
         'agent-fs', 'unmount',
@@ -139,8 +145,8 @@ describe('agent-fs parser accepts --mountpoint (strict yargs)', () => {
         '--session-dir', path.join(dir, 'session'),
       ], { SOLID_HOME: path.join(dir, 'empty-auth') });
       expect(`${result.stdout}${result.stderr}`).not.toContain('Unknown argument');
-    } finally {
-      await rm(dir, { recursive: true, force: true });
+    } catch (error) { primary = error; throw error; } finally {
+      await cleanup.remove(dir, primary);
     }
   });
 });
@@ -149,9 +155,10 @@ describe.runIf(runMount)('installed CLI mount releases its capture pipes without
   let server: PodContractServer;
   let oidc: Awaited<ReturnType<typeof startOidcStub>>;
   const sessionDirs: string[] = [];
-  const owned: { mountpoint: string; sessionDir: string }[] = [];
+  const owned: { mountpoint: string; sessionDir: string; childPID?: number }[] = [];
 
   async function mount(useDefaultMountpoint: boolean): Promise<{ result: Awaited<ReturnType<typeof waitForClose>>; sessionDir: string; mountpoint: string }> {
+    cleanup.assertAbsent(ROOT);
     const caseDir = await mkdtemp(path.join(ROOT, 'case-'));
     sessionDirs.push(caseDir);
     const sessionDir = path.join(caseDir, 'session');
@@ -168,34 +175,43 @@ describe.runIf(runMount)('installed CLI mount releases its capture pipes without
       ...(useDefaultMountpoint ? [] : [ '--mountpoint', explicitMountpoint ]),
     ];
     const child = spawnCaptured(args, { SOLID_HOME: solidHome });
+    const mountpoint = useDefaultMountpoint ? path.join(sessionDir, 'mnt') : explicitMountpoint;
+    owned.push({ mountpoint, sessionDir, childPID: child.pid });
     // Deliberately do NOT unmount here: with the stdio-lifetime bug the CLI
     // never emits EOF while its persistent proxy holds the capture pipe.
     const result = await waitForClose(child, 45_000);
-    const mountpoint = useDefaultMountpoint ? path.join(sessionDir, 'mnt') : explicitMountpoint;
-    owned.push({ mountpoint, sessionDir });
     return { result, sessionDir, mountpoint };
   }
 
-  afterEach(async () => {
-    for (const { mountpoint, sessionDir } of owned.splice(0)) {
-      runCli([ 'agent-fs', 'unmount', '--mountpoint', mountpoint, '--session-dir', sessionDir ]);
+  afterEach(async context => {
+    if (context.task.result?.state === 'fail') primaryFailure ??= context.task.result;
+    let secondary: unknown;
+    for (const { mountpoint, sessionDir, childPID } of owned.splice(0)) {
+      try {
+        await cleanup.unmount(mountpoint, async () => runCli([ 'agent-fs', 'unmount', '--mountpoint', mountpoint, '--session-dir', sessionDir ]),
+          { mountpoint, sessionDir, childPID: String(childPID ?? 'unavailable') }, primaryFailure ?? secondary);
+      } catch (error) { secondary ??= error; }
     }
     for (const dir of sessionDirs.splice(0)) {
-      await rm(dir, { recursive: true, force: true });
+      try { await cleanup.remove(dir, primaryFailure ?? secondary); } catch (error) { secondary ??= error; }
     }
+    if (secondary !== undefined) { primaryFailure ??= secondary; throw secondary; }
   });
 
   afterAll(async () => {
     await oidc?.close();
     await server?.close();
-    await rm(ROOT, { recursive: true, force: true });
+    await cleanup.remove(ROOT, primaryFailure);
   });
 
   beforeAll(async () => {
+    cleanup.assertAbsent(ROOT);
+    await cleanup.remove(ROOT, primaryFailure);
     await mkdir(ROOT, { recursive: true });
   });
 
   it('returns code0 with piped stdio, then mounts/reads and cleans up', async () => {
+    cleanup.assertAbsent(ROOT);
     const caseDir = await mkdtemp(path.join(ROOT, 'fixture-'));
     sessionDirs.push(caseDir);
     server = await startPodContractServer({ token: TOKEN, files: { 'alpha.txt': 'INSTALLED_BODY_0123456789\n' } });

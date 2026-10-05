@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { acceptLiveDirectory, type LiveDirectoryOptions } from '../../scripts/accept-live-agent-directory';
+import {
+  AcceptanceArgumentError,
+  acceptLiveDirectory,
+  assertStoredLoginTarget,
+  resolveAcceptanceTarget,
+  type LiveDirectoryOptions,
+} from '../../scripts/accept-live-agent-directory';
 
 const gateway = 'https://gateway.example/';
 const podRoot = 'https://alice.example/storage/';
@@ -76,7 +82,7 @@ function transport(options: { invalidApi?: boolean; headDenied?: boolean; lostUp
     return new Response(current.body, { headers: { ETag: version() } });
   };
   const config: LiveDirectoryOptions = {
-    gateway, podRoot, write: true, discover: request,
+    baseUrl: gateway, podRoot, write: true, discover: request,
     authenticate: async () => ({ webId: 'https://alice.example/profile/card#me', request }),
   };
   return { config, calls, store };
@@ -172,5 +178,82 @@ describe('live directory acceptance boundaries (injected transport, not live evi
     const directoryDeletes = fixture.calls.filter((call) => call.method === 'DELETE' && call.url.endsWith('/'));
     expect(directoryDeletes).toHaveLength(1);
     expect(directoryDeletes[0].headers.get('if-match')).toBe('"v1"');
+  });
+
+  it('reports the target as baseUrl rather than a gateway field', async () => {
+    const fixture = transport();
+    const result = await acceptLiveDirectory({ ...fixture.config, write: false });
+    expect(result.target).toMatchObject({ baseUrl: gateway, podRoot });
+    expect(JSON.stringify(result)).not.toContain('"gateway"');
+  });
+});
+
+describe('acceptance target resolution (arguments and environment only)', () => {
+  const local = 'http://127.0.0.1:3000/';
+  const remote = 'https://node.example/';
+  const localPod = 'http://127.0.0.1:3000/alice/';
+  const remotePod = 'https://node.example/alice/';
+
+  function argumentError(argv: readonly string[], env: NodeJS.ProcessEnv): AcceptanceArgumentError {
+    try {
+      resolveAcceptanceTarget(argv, env);
+    } catch (error) {
+      if (error instanceof AcceptanceArgumentError) return error;
+      throw error;
+    }
+    throw new Error('expected AcceptanceArgumentError');
+  }
+
+  it('accepts explicit local and remote --base_url targets', () => {
+    expect(resolveAcceptanceTarget(
+      [ '--base_url', local, '--pod-root', localPod ], {},
+    )).toEqual({ baseUrl: local, podRoot: localPod, write: false, report: undefined, help: false });
+    expect(resolveAcceptanceTarget(
+      [ '--base_url', remote, '--pod-root', remotePod, '--write' ], {},
+    )).toMatchObject({ baseUrl: remote, podRoot: remotePod, write: true });
+  });
+
+  it('uses XPOD_BASE_URL only when --base_url is absent and lets the flag win', () => {
+    expect(resolveAcceptanceTarget([ '--pod-root', remotePod ], { XPOD_BASE_URL: remote }))
+      .toMatchObject({ baseUrl: remote });
+    expect(resolveAcceptanceTarget(
+      [ '--base_url', local, '--pod-root', localPod ], { XPOD_BASE_URL: remote },
+    )).toMatchObject({ baseUrl: local });
+  });
+
+  it('never falls back to CSS_BASE_URL and prefers the remote XPOD_BASE_URL', () => {
+    expect(resolveAcceptanceTarget(
+      [ '--pod-root', remotePod ], { CSS_BASE_URL: local, XPOD_BASE_URL: remote },
+    )).toMatchObject({ baseUrl: remote });
+    expect(argumentError([ '--pod-root', localPod ], { CSS_BASE_URL: local }).code).toBe('invalid_target_url');
+  });
+
+  it('never reads the removed XPOD_LIVE_GATEWAY_URL', () => {
+    expect(argumentError([ '--pod-root', remotePod ], { XPOD_LIVE_GATEWAY_URL: remote }).code)
+      .toBe('invalid_target_url');
+  });
+
+  it('rejects the removed --gateway flag explicitly instead of ignoring it', () => {
+    for (const argv of [
+      [ '--gateway', remote, '--pod-root', remotePod ],
+      [ '--gateway=' + remote, '--pod-root', remotePod ],
+    ]) {
+      expect(argumentError(argv, { XPOD_BASE_URL: local }).code).toBe('removed_argument_gateway');
+    }
+  });
+
+  it('accepts only the exact underscore --base_url switch', () => {
+    expect(argumentError([ '--base-url', remote, '--pod-root', remotePod ], {}).code).toBe('invalid_arguments');
+  });
+
+  it('binds the stored login to the canonical target before authenticated Pod requests', () => {
+    expect(() => assertStoredLoginTarget('https://node.example', remote)).not.toThrow();
+    expect(() => assertStoredLoginTarget(remote, remote)).not.toThrow();
+    try {
+      assertStoredLoginTarget('https://other.example/', remote);
+      expect.unreachable('a mismatched stored login must be rejected');
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('stored_login_base_url_mismatch');
+    }
   });
 });

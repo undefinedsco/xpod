@@ -87,3 +87,27 @@ describe('public Pod task routes', () => {
     expect((await app.request('post', '/api/tasks', { kind: 'cron', prompt: 'Execute', workspace: 'https://pod.test/work/', cron: '0 9 * * *' })).status).toBe(400);
   });
 });
+
+
+it('projects only fixed failure fields for an authenticated failed Task Run', async () => {
+  const app = setup();
+  const created = await app.request('post', '/api/tasks', { kind: 'todo', prompt: 'Private', workspace: 'https://pod.test/work/' });
+  vi.spyOn(app.store, 'listRuns').mockResolvedValue([{ id: 'run', thread: 'thread', status: 'failed',
+    metadata: { failureDiagnostic: { code: 'TASK_EXECUTION_ERROR', stage: 'retrieve_context', status: 'failed', message: 'Bearer secret', owner: owner } },
+    workspace: 'https://pod.test/work/', runner: 'pi:codex', createdAt: 1, updatedAt: 1 }]);
+  const response = await app.request('get', `/api/tasks/runs?id=${encodeURIComponent(created.body.task.id)}`);
+  expect(response.body.runs[0].failureDiagnostic).toEqual({ code: 'TASK_EXECUTION_ERROR', stage: 'retrieve_context', status: 'failed' });
+  expect(JSON.stringify(response.body.runs[0].failureDiagnostic)).not.toContain('secret');
+  expect((await app.request('get', `/api/tasks/runs?id=${encodeURIComponent(created.body.task.id)}`, undefined, false)).status).toBe(401);
+});
+
+
+it.each(['cancelled', 'completed', 'waiting_input', 'waiting_runner'] as const)('does not project stale failure metadata for %s', async status => {
+  const app = setup();
+  const created = await app.request('post', '/api/tasks', { kind: 'todo', prompt: 'Private', workspace: 'https://pod.test/work/' });
+  vi.spyOn(app.store, 'listRuns').mockResolvedValue([{ id: 'run', thread: 'thread', status,
+    metadata: { failureDiagnostic: { code: 'TASK_RUNTIME_ERROR', stage: 'start_backend', status: 'failed' } },
+    workspace: 'https://pod.test/work/', runner: 'pi:codex', createdAt: 1, updatedAt: 1 }]);
+  const response = await app.request('get', `/api/tasks/runs?id=${encodeURIComponent(created.body.task.id)}`);
+  expect(response.body.runs[0].failureDiagnostic).toBeUndefined();
+});

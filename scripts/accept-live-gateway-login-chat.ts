@@ -34,8 +34,8 @@ import {
   type AccountSetup,
 } from '../tests/integration/helpers/solidAccount';
 
-const GATEWAY = ensureTrailingSlash(
-  process.env.XPOD_LIVE_GATEWAY_URL?.trim() || 'http://127.0.0.1:3000/',
+const BASE_URL = ensureTrailingSlash(
+  process.env.XPOD_BASE_URL?.trim() || 'http://127.0.0.1:3000/',
 );
 const MODE = process.env.XPOD_LIVE_MODE?.trim() || 'local';
 if (!['cloud', 'local', 'standalone'].includes(MODE)) {
@@ -54,7 +54,7 @@ type Layer = 'runtime' | 'identity' | 'podReadWrite' | 'gatewayAuth' | 'aiConnec
 const report: {
   mode: string;
   startedAt: string;
-  gateway: string;
+  baseUrl: string;
   layers: Record<Layer, { ok: boolean; detail: string }>;
   webId?: string;
   podUrl?: string;
@@ -70,7 +70,7 @@ const report: {
 } = {
   mode: MODE,
   startedAt: new Date().toISOString(),
-  gateway: GATEWAY,
+  baseUrl: BASE_URL,
   layers: {
     runtime: { ok: false, detail: 'not run' },
     identity: { ok: false, detail: 'not run' },
@@ -306,7 +306,7 @@ async function deleteAcceptanceGatewayKey(): Promise<void> {
         throw new Error('Deleted acceptance API Key registration is still listed');
       }
     }
-    const response = await fetch(new URL('v1/models', GATEWAY), {
+    const response = await fetch(new URL('v1/models', BASE_URL), {
       headers: { Authorization: `Bearer ${plaintext}` },
     });
     await response.arrayBuffer();
@@ -351,7 +351,7 @@ function normalizeAcceptanceName(prefix: string): string {
 
 async function readLocalProvisionCode(): Promise<string> {
   const status = await readJson(
-    await fetch(new URL('provision/status', GATEWAY)),
+    await fetch(new URL('provision/status', BASE_URL)),
     'GET /provision/status',
   ) as { registered?: boolean; provisionCode?: unknown };
   if (status.registered !== true || typeof status.provisionCode !== 'string' || status.provisionCode.trim() === '') {
@@ -688,10 +688,10 @@ async function createCloudClientCredentials(options: {
 }
 
 async function main(): Promise<void> {
-  if (!(await checkServer(GATEWAY))) {
-    fail('runtime', `Gateway unreachable at ${GATEWAY}`);
+  if (!(await checkServer(BASE_URL))) {
+    fail('runtime', `Gateway unreachable at ${BASE_URL}`);
   }
-  const statusResponse = await fetch(new URL('service/status', GATEWAY));
+  const statusResponse = await fetch(new URL('service/status', BASE_URL));
   const statusPayload = await readJson(statusResponse, 'GET /service/status') as Array<{ name?: string; status?: string; pid?: number }>;
   const css = statusPayload.find((item) => item.name === 'css');
   const api = statusPayload.find((item) => item.name === 'api');
@@ -705,7 +705,7 @@ async function main(): Promise<void> {
     return fetch(input, init);
   };
   let localSolidTransport = observedTransportFetch;
-  let identityBaseUrl = GATEWAY;
+  let identityBaseUrl = BASE_URL;
   let account: AccountSetup;
   let cloudAccount: CloudAccountPassword;
   let session: Awaited<ReturnType<typeof loginWithClientCredentials>>;
@@ -714,20 +714,20 @@ async function main(): Promise<void> {
     if (MODE === 'local') {
       localRoute = await discoverSolidLocalRoute({
         fetch,
-        localBaseUrl: GATEWAY,
-        statusUrl: new URL('provision/status', GATEWAY).toString(),
+        localBaseUrl: BASE_URL,
+        statusUrl: new URL('provision/status', BASE_URL).toString(),
       });
       if (!localRoute) {
         throw new Error('Gateway did not expose a canonical-to-local Solid route');
       }
-      if (new URL(localRoute.localBaseUrl).origin !== new URL(GATEWAY).origin) {
-        throw new Error(`Local route points at ${localRoute.localBaseUrl}, expected ${GATEWAY}`);
+      if (new URL(localRoute.localBaseUrl).origin !== new URL(BASE_URL).origin) {
+        throw new Error(`Local route points at ${localRoute.localBaseUrl}, expected ${BASE_URL}`);
       }
       const canonicalPodUrl = new URL(localRoute.canonicalBaseUrl);
       if (canonicalPodUrl.protocol !== 'https:') {
         throw new Error(`Canonical Pod route must use HTTPS, got ${canonicalPodUrl.protocol}`);
       }
-      if (canonicalPodUrl.origin === new URL(GATEWAY).origin
+      if (canonicalPodUrl.origin === new URL(BASE_URL).origin
         || [ 'localhost', '127.0.0.1', '::1' ].includes(canonicalPodUrl.hostname)) {
         throw new Error(`Canonical Pod route is not a Cloud-assigned protocol address: ${canonicalPodUrl.origin}`);
       }
@@ -743,10 +743,10 @@ async function main(): Promise<void> {
       identityBaseUrl = CLOUD_IDP;
     } else {
       const discovery = await readJson(
-        await fetch(new URL('.well-known/openid-configuration', GATEWAY)),
+        await fetch(new URL('.well-known/openid-configuration', BASE_URL)),
         'GET hosted OIDC discovery',
       ) as { issuer?: string };
-      if (!discovery.issuer || new URL(discovery.issuer).origin !== new URL(GATEWAY).origin) {
+      if (!discovery.issuer || new URL(discovery.issuer).origin !== new URL(BASE_URL).origin) {
         throw new Error(`${MODE} must use its own IdP, got ${discovery.issuer ?? 'no issuer'}`);
       }
       identityBaseUrl = discovery.issuer;
@@ -904,7 +904,7 @@ async function main(): Promise<void> {
   const verifyTaskApproval = async (ownerInterfaceKey: string): Promise<void> => {
     if (!TASK_APPROVAL_ENABLED) return;
     const result = await acceptLiveTaskApproval({
-      gateway: GATEWAY, podUrl: account.podUrl, webId: account.webId,
+      gateway: BASE_URL, podUrl: account.podUrl, webId: account.webId,
       ownerInterfaceKey, ownerFetch: ownerCredentialFetch, session: authSession,
       onEvidence: (evidence) => { report.taskApproval = evidence; writeEvidence(); },
     });
@@ -1101,7 +1101,7 @@ async function verifyGatewayKeyLifecycle(
   let phase = 'unauthenticated rejection';
   try {
     for (const route of ['v1/models', 'api/ai/gateway/keys']) {
-      const response = await fetch(new URL(route, GATEWAY));
+      const response = await fetch(new URL(route, BASE_URL));
       await response.arrayBuffer();
       if (response.status !== 401) throw new Error(`Unauthenticated /${route} expected 401, got ${response.status}`);
     }
@@ -1165,7 +1165,7 @@ async function verifyGatewayKeyLifecycle(
       throw new Error('Gateway metadata response does not contain the created credential');
     }
     const headers = { Authorization: `Bearer ${gatewayKey}`, Accept: 'application/json' };
-    const modelUrl = new URL('v1/models', GATEWAY);
+    const modelUrl = new URL('v1/models', BASE_URL);
     phase = 'active CSS credential wrapper authentication';
     await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with active CSS credential wrapper');
     phase = 'active CSS credential wrapper model access';
@@ -1181,7 +1181,7 @@ async function verifyGatewayKeyLifecycle(
 }
 
 async function projectModelsAndChat(gatewayKey: string, selectedIds: string[]): Promise<void> {
-  const modelsAfter = await fetch(new URL('v1/models', GATEWAY), {
+  const modelsAfter = await fetch(new URL('v1/models', BASE_URL), {
     headers: { Authorization: `Bearer ${gatewayKey}`, Accept: 'application/json' },
   });
   const modelsAfterPayload = await readJson(modelsAfter, 'GET /v1/models after key') as { data?: Array<{ id?: string }> };
@@ -1199,7 +1199,7 @@ async function chatOnce(gatewayKey: string, chatModel: string): Promise<void> {
   report.chatModel = chatModel;
   const conversationId = randomUUID();
   const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
-  const chatResponse = await fetch(new URL('v1/chat/completions', GATEWAY), {
+  const chatResponse = await fetch(new URL('v1/chat/completions', BASE_URL), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${gatewayKey}`,

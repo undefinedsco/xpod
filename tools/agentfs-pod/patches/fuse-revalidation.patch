@@ -10,3 +10,9 @@ diff --git a/cli/src/fuse.rs b/cli/src/fuse.rs
 @@ -874 +874 @@
 -                reply.opened(fh, 0);
 +                reply.opened(fh, crate::fuser::consts::FOPEN_DIRECT_IO);
+@@ -127,3 +127,2 @@
+-            FUSE_ASYNC_READ
+-                | FUSE_WRITEBACK_CACHE
+-                | FUSE_PARALLEL_DIROPS
++            FUSE_ASYNC_READ
++                | FUSE_PARALLEL_DIROPS

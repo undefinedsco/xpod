@@ -1,3 +1,4 @@
+import { projectTaskRunFailureDiagnostic } from '../tasks/TaskRunFailureDiagnostic';
 import type { ServerResponse } from 'node:http';
 import type { ApiServer, RouteHandler } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
@@ -145,6 +146,7 @@ export function projectTask(task: TaskRecordData) {
 function projectRun(run: RunRecordData) {
   const waitingTool = run.metadata?.waitingTool as { requestId?: string } | undefined;
   return { id: run.id, thread: run.thread, status: run.status, error: run.error, createdAt: run.createdAt,
+    failureDiagnostic: projectTaskRunFailureDiagnostic(run.metadata?.failureDiagnostic, run.status),
     waitingToolCallId: waitingTool?.requestId,
     completedAt: run.completedAt, cancelRequestedAt: run.cancelRequestedAt };
 }

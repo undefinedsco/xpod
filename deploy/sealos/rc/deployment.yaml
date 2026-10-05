@@ -30,7 +30,7 @@ spec:
             - node
             - dist/main.js
             - -c
-            - config/cloud.json
+            - config/cloud.qlever.json
             - -p
             - "3000"
           ports:

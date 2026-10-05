@@ -1,3 +1,4 @@
+import { assertCompleteDigest, collectChildStdout } from '../helpers/collectChildStdout';
 import childProcess from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -64,6 +65,7 @@ describe('Gateway locator secret persistence', () => {
     const databaseUrl = `sqlite:${path.join(root, 'identity.sqlite')}`;
 
     const digests = await Promise.all(Array.from({ length: 12 }, async () => runSecretResolverProcess(databaseUrl)));
+    digests.forEach(assertCompleteDigest);
     expect(new Set(digests).size).toBe(1);
     const secretPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
     const secret = fs.readFileSync(secretPath, 'utf8').trim();
@@ -217,25 +219,13 @@ async function runSecretResolverProcess(databaseUrl: string): Promise<string> {
     const secret = resolvePersistentGatewayLocatorSecret({ databaseUrl: process.env.XPOD_TEST_DATABASE_URL, edition: 'local' });
     process.stdout.write(createHash('sha256').update(secret).digest('hex'));
   `;
-  return new Promise<string>((resolve, reject) => {
-    let digest = '';
-    const child = childProcess.spawn('bun', ['--no-env-file', '-e', script], {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        XPOD_TEST_DATABASE_URL: databaseUrl,
-      },
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    child.stdout.on('data', chunk => { digest += chunk.toString(); });
-    child.once('error', reject);
-    // close follows stdout drainage; exit can arrive before the digest data.
-    child.once('close', (code) => {
-      if (code === 0) {
-        resolve(digest);
-      } else {
-        reject(new Error(`secret resolver child exited with ${code}`));
-      }
-    });
+  const child = childProcess.spawn('bun', ['--no-env-file', '-e', script], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      XPOD_TEST_DATABASE_URL: databaseUrl,
+    },
+    stdio: ['ignore', 'pipe', 'ignore'],
   });
+  return collectChildStdout(child);
 }

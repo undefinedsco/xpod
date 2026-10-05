@@ -49,9 +49,9 @@ it.runIf(process.env.XPOD_RUN_INTEGRATION_TESTS === 'true')('deletes Cloud and m
     await ready(async () => spawnSync('docker', ['exec', redisName, 'redis-cli', 'ping']).status === 0);
     const pgUrl = `postgres://xpod:xpod@localhost:${pgPort}/pod_delete`;
     pg = new Client({ connectionString: pgUrl }); await pg.connect();
-    const cloudPort = await getFreePortForWildcard(38501);
     await cloud.start('cloud', {
-      transport: 'port', baseUrl: `http://localhost:${cloudPort}/`, gatewayPort: cloudPort,
+      // Reuse the stack's locked planning and bounded conflict replanning.
+      transport: 'port',
       open: false, apiOpen: false,
       runtimeRoot: path.join(root, 'cloud'), identityDbUrl: pgUrl, sparqlEndpoint: pgUrl, logLevel: 'warn',
       env: {
@@ -75,7 +75,7 @@ it.runIf(process.env.XPOD_RUN_INTEGRATION_TESTS === 'true')('deletes Cloud and m
         ...(process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND ? { XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND } : {}),
       },
     });
-    const status = await fetch(new URL('provision/status', local.baseUrl)).then((r) => r.json()) as { provisionCode: string; managed: boolean };
+    const status = await local.runtimeFetch('provision/status').then((r) => r.json()) as { provisionCode: string; managed: boolean };
     expect(status.managed).toBe(true);
     const localStates = JSON.parse(await readFile(localStatePath, 'utf8')) as Record<string, { serviceToken: string }>;
     const serviceToken = Object.values(localStates).find((state) => state.serviceToken)?.serviceToken;
@@ -106,7 +106,7 @@ it.runIf(process.env.XPOD_RUN_INTEGRATION_TESTS === 'true')('deletes Cloud and m
       expect(profileResponse.ok, JSON.stringify(profile)).toBe(true);
       expect(new URL(profile.webId).origin).toBe(new URL(cloud.baseUrl).origin);
       expect(new URL(profile.webId).origin).not.toBe(new URL(local.baseUrl).origin);
-      const response = await fetch(new URL('provision/pods', local.baseUrl), { method: 'POST', headers: { ...jsonHeaders, authorization: `Bearer ${serviceToken}` }, body: JSON.stringify({ podName, webId: profile.webId }) });
+      const response = await local.runtimeFetch('provision/pods', { method: 'POST', headers: { ...jsonHeaders, authorization: `Bearer ${serviceToken}` }, body: JSON.stringify({ podName, webId: profile.webId }) });
       const body = await response.json() as { podUrl: string; webId: string; provisionReceipt: string };
       expect(response.ok, JSON.stringify(body)).toBe(true);
       expect(body.webId).toBe(profile.webId);
@@ -133,7 +133,7 @@ it.runIf(process.env.XPOD_RUN_INTEGRATION_TESTS === 'true')('deletes Cloud and m
       body: JSON.stringify({ action, challenge: task.challenge, podName: task.podName, ...extra }),
     });
     const sat = createServiceAccessToken({ serviceToken: serviceToken!, scopes: ['network:read', 'network:connect'], ttlSeconds: 300 });
-    const existingPreparation = await fetch(new URL('provision/pods', local.baseUrl), { method: 'POST', headers: { ...jsonHeaders, authorization: `Bearer ${sat}` }, body: JSON.stringify({ podName: task.podName, webId: prepared.webId }) });
+    const existingPreparation = await local.runtimeFetch('provision/pods', { method: 'POST', headers: { ...jsonHeaders, authorization: `Bearer ${sat}` }, body: JSON.stringify({ podName: task.podName, webId: prepared.webId }) });
     expect(existingPreparation.ok).toBe(true);
     const existingReceipt = verifyProvisionReceipt((await existingPreparation.json() as { provisionReceipt: string }).provisionReceipt, { secret: deriveProvisionReceiptSecret(serviceToken!) });
     expect(existingReceipt.valid).toBe(true);
@@ -185,9 +185,9 @@ it.runIf(process.env.XPOD_RUN_INTEGRATION_TESTS === 'true')('deletes Cloud and m
     expect(keptBefore.sources).toBeGreaterThan(0);
     expect(keptBefore.quads).toBeGreaterThan(0);
     expect(keptBefore.mirror).toBeGreaterThan(0);
-    const unauthenticatedDelete = await fetch(new URL('provision/pods/managed-delete', local.baseUrl), { method: 'DELETE' });
+    const unauthenticatedDelete = await local.runtimeFetch('provision/pods/managed-delete', { method: 'DELETE' });
     expect(unauthenticatedDelete.status, await unauthenticatedDelete.text()).toBe(401);
-    const wrongServiceToken = await fetch(new URL('provision/pods/managed-delete', local.baseUrl), { method: 'DELETE', headers: { authorization: 'Bearer wrong-disposable-fixture-token' } });
+    const wrongServiceToken = await local.runtimeFetch('provision/pods/managed-delete', { method: 'DELETE', headers: { authorization: 'Bearer wrong-disposable-fixture-token' } });
     expect(wrongServiceToken.status, await wrongServiceToken.text()).toBe(401);
     const targetBefore = localFacts(prepared.podUrl);
     expect(targetBefore.sources).toBeGreaterThan(0);

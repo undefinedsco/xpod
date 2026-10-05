@@ -309,7 +309,7 @@ credential，再清理 Pod 登记；任一步失败都必须明确报告。验�
 credential，避免撤销它后影响用于清理 Pod 的 Solid 管理 Session。
 
 `scripts/accept-live-gateway-login-chat.ts` 按上述流程执行真实验收。它会创建测试账号、
-Pod 和 Provider 配置，仅在任务已授权这些操作时运行；通过 `XPOD_LIVE_GATEWAY_URL`
+Pod 和 Provider 配置，仅在任务已授权这些操作时运行；通过 `XPOD_BASE_URL`
 指定当前实际入口，Cloud 分配的二级域名不能由默认 localhost 结果替代。
 
 ## 运行 CLI 测试脚本
