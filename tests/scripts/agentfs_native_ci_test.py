@@ -1,4 +1,7 @@
 import hashlib
+import io
+import tarfile
+import zipfile
 import importlib.util
 import itertools
 import json
@@ -674,6 +677,101 @@ class WholeCiGateTests(unittest.TestCase):
         self.assertFalse(g.gate_passed(base, True, False, True, True))
         self.assertFalse(g.gate_passed(base, True, True, False, True))
         self.assertFalse(g.gate_passed(base, True, True, True, False))
+
+
+class NativeReuseTests(unittest.TestCase):
+    def fixture(self, directory, change=None):
+        inventory = dict(declaredTests=98, passedTests=96, ignoredTests=2, filteredTests=0)
+        helper = b'owned-unit-helper'
+        tar_bytes = io.BytesIO()
+        with tarfile.open(fileobj=tar_bytes, mode='w:gz') as tar:
+            member = tarfile.TarInfo('install/helper/agentfs-pod'); member.size = len(helper)
+            tar.addfile(member, io.BytesIO(helper))
+        package = tar_bytes.getvalue()
+        kit = json.dumps(dict(engine=dict(repository='https://github.com/tursodatabase/agentfs', commit=a.UPSTREAM))).encode()
+        native = dict(target='darwin-arm64', engine=json.loads(kit)['engine'], sourceKitSha256=hashlib.sha256(kit).hexdigest(),
+                      helperSha256=hashlib.sha256(helper).hexdigest(), testsPassed=True, compiler=dict(toolchain=a.TOOLCHAIN),
+                      compilerParallelism=2, buildArguments=['build', '--release', '--frozen'], isolatedCargoHome=True, stagedVerifiedFilesOnly=True)
+        source = dict(head='a' * 40, status='', files={'source': {'sha256': 'b' * 64}})
+        final = dict(head=source['head'], target='darwin-arm64', sourceBefore=source, sourceAfter=source,
+                     sdkBefore={'sdk': 'owned'}, sdkAfter={'sdk': 'owned'}, rustManifestSHA256=a.RUST_MANIFEST_SHA,
+                     bunAssetSHA256=a.BUN_SHA['darwin'], nativeReceipt=native, archiveSHA256=hashlib.sha256(package).hexdigest(),
+                     upstreamSuites={'sdk-suite': dict(passed=102, failed=0, ignored=0), 'cli-suite': dict(passed=27, failed=0, ignored=1)}, **inventory)
+        entries = {'source-kit.json': kit, 'native-receipt.json': json.dumps(native).encode(), 'final.json': json.dumps(final).encode(),
+                   'native-test.log': b'unit inventory parser is tested separately', 'xpod-cli-unit-darwin-arm64.tar.gz': package}
+        for name in ['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream', 'upstream-checkout',
+                     'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install']:
+            raw = b'owned stage closed'
+            command = ['owned-tool']
+            if name in ['sdk-suite', 'cli-suite']:
+                passed, ignored = (102, 0) if name == 'sdk-suite' else (27, 1)
+                raw = f'test result: ok. {passed} passed; 0 failed; {ignored} ignored; 0 measured; 0 filtered out;'.encode()
+                command = ['cargo', 'test', '--release', '--locked'] + (['--no-default-features'] if name == 'cli-suite' else [])
+            entries[f'{name}.raw.log'] = raw
+            entries[f'{name}.receipt.json'] = json.dumps(dict(actualWait=True, exit=0, signal=None, rawClosedBeforeHash=True,
+                ownedGroupAbsentAfterWait=True, closedUTC='owned-unit-close', resourceStop=None, supervisorError=None,
+                cleanupErrors=[], rawSHA256=hashlib.sha256(raw).hexdigest(), command=command)).encode()
+        if change: change(entries)
+        archive = Path(directory) / 'owned.zip'
+        with zipfile.ZipFile(archive, 'w') as z:
+            for name, content in entries.items(): z.writestr(name, content)
+        pins = dict(PRODUCT_SHA=source['head'], DARWIN_ZIP_SHA=a.sha256(archive), DARWIN_ARCHIVE_SHA=final['archiveSHA256'], DARWIN_HELPER_SHA=native['helperSha256'])
+        return archive, pins, inventory
+
+    def test_closed_reuse_preserves_real_inventory_facts(self):
+        with owned_scratch() as directory:
+            archive, pins, inventory = self.fixture(directory)
+            with patch.object(a, 'check_tests', return_value=inventory):
+                result = a.verify_reuse_archive(archive, pins, 'darwin')
+            self.assertEqual(result['passedTests'], 96)
+            self.assertEqual(len(result['stages']), 13)
+
+    def test_missing_or_unclosed_stage_cannot_reuse(self):
+        for kind in ['missing', 'wait', 'group', 'raw']:
+            def change(entries):
+                name = 'rebuild.receipt.json'
+                if kind == 'missing': del entries[name]; return
+                receipt = json.loads(entries[name])
+                receipt[dict(wait='actualWait', group='ownedGroupAbsentAfterWait', raw='rawClosedBeforeHash')[kind]] = False
+                entries[name] = json.dumps(receipt).encode()
+            with self.subTest(kind=kind), owned_scratch() as directory:
+                archive, pins, inventory = self.fixture(directory, change)
+                with patch.object(a, 'check_tests', return_value=inventory), self.assertRaises(RuntimeError):
+                    a.verify_reuse_archive(archive, pins, 'darwin')
+
+    def test_wrong_helper_or_sdk_binding_cannot_reuse(self):
+        for field in ['helperSha256', 'sourceKitSha256']:
+            def change(entries):
+                native = json.loads(entries['native-receipt.json']); native[field] = 'c' * 64
+                entries['native-receipt.json'] = json.dumps(native).encode()
+                final = json.loads(entries['final.json']); final['nativeReceipt'] = native
+                entries['final.json'] = json.dumps(final).encode()
+            with self.subTest(field=field), owned_scratch() as directory:
+                archive, pins, inventory = self.fixture(directory, change)
+                with patch.object(a, 'check_tests', return_value=inventory), self.assertRaises(RuntimeError):
+                    a.verify_reuse_archive(archive, pins, 'darwin')
+
+    def test_linux_facts_cannot_be_inferred_from_a_darwin_artifact(self):
+        with owned_scratch() as directory:
+            archive, pins, inventory = self.fixture(directory)
+            pins.update({key.replace('DARWIN_', 'LINUX_'): value for key, value in list(pins.items()) if key.startswith('DARWIN_')})
+            with patch.object(a, 'check_tests', return_value=inventory), self.assertRaises(RuntimeError):
+                a.verify_reuse_archive(archive, pins, 'linux')
+
+    def test_missing_pins_and_changed_native_or_sdk_inputs_fail_closed(self):
+        with owned_scratch() as directory:
+            root = Path(directory); workflow = root / '.github/workflows'; workflow.mkdir(parents=True)
+            (workflow / 'agentfs-mounted-platform-acceptance.yml').write_text("env:\n  PRODUCT_SHA: '" + 'a' * 40 + "'\n")
+            with self.assertRaises(RuntimeError): a.mounted_reuse_pins(root)
+        with patch.object(a.subprocess, 'check_output', side_effect=[b'old-native-tree', b'changed-sdk-lock-tree']), self.assertRaises(RuntimeError):
+            a.verify_reuse_sources(ROOT, 'a' * 40)
+
+    def test_workflow_default_and_push_keep_native_and_explicit_reuse_precedes_wholes(self):
+        text = (ROOT / '.github/workflows/agentfs-cache-dev-gate.yml').read_text()
+        self.assertIn('type: boolean\n        default: true', text)
+        self.assertIn("github.event_name != 'workflow_dispatch' || inputs.native", text)
+        self.assertIn("github.event_name == 'workflow_dispatch' && !inputs.native", text)
+        self.assertLess(text.index('accept.py --reuse-native'), text.index('whole_ci_gate.py'))
 
 
 if __name__ == '__main__':

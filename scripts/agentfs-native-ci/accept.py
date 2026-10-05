@@ -1,6 +1,10 @@
 """Fresh source-bound native acceptance; no release or mount operation."""
 import json
 import hashlib
+import io
+import tarfile
+import tempfile
+import zipfile
 import os
 from pathlib import Path
 import platform
@@ -493,5 +497,179 @@ def main():
     print(json.dumps({'evidence': str(evidence), 'target': target, 'archiveSHA256': final['archiveSHA256']}))
 
 
+# Reuse claims concern the already-admitted helper, not the new Gateway JS,
+# mounted harness, or final release. Its sole pin registration remains the
+# existing mounted workflow; incomplete or stale pins fail closed.
+def mounted_reuse_pins(root):
+    text = (root / '.github/workflows/agentfs-mounted-platform-acceptance.yml').read_text()
+    keys = ['PRODUCT_RUN', 'PRODUCT_SHA'] + [f'{os}_{suffix}' for os in ['DARWIN', 'LINUX']
+           for suffix in ['ARTIFACT_ID', 'ZIP_SHA', 'ARCHIVE_SHA', 'HELPER_SHA']]
+    pins = {}
+    for key in keys:
+        values = re.findall(r'^  ' + key + r": ['\"]?([0-9a-f]+)['\"]?\s*$", text, re.M)
+        size = 40 if key == 'PRODUCT_SHA' else 64
+        if len(values) != 1 or (not key.endswith(('RUN', 'ID')) and len(values[0]) != size):
+            raise RuntimeError(f'Missing or ambiguous native reuse pin: {key}')
+        if key.endswith(('RUN', 'ID')) and not values[0].isdigit():
+            raise RuntimeError(f'Invalid native reuse identifier: {key}')
+        pins[key] = values[0]
+    return pins
+
+
+def verify_reuse_sources(root, product):
+    # Conservative complete trees include Cargo/SDK locks, patches, source-kit
+    # recipes and packaging declarations; an unrelated change fails closed too.
+    inputs = ['tools/agentfs-pod', 'packages/xpod-cli', 'package.json', 'bun.lock']
+    for path in inputs:
+        old = subprocess.check_output(['git', 'rev-parse', f'{product}:{path}'], cwd=root).strip()
+        current = subprocess.check_output(['git', 'rev-parse', f'HEAD:{path}'], cwd=root).strip()
+        if not old or old != current:
+            raise RuntimeError(f'Native reuse input changed: {path}')
+    if subprocess.check_output(['git', 'status', '--porcelain', '--', *inputs], cwd=root).strip():
+        raise RuntimeError('Native reuse inputs are dirty')
+
+
+def verify_reuse_archive(archive, pins, os_name):
+    prefix = os_name.upper(); target = 'darwin-arm64' if os_name == 'darwin' else 'linux-arm64'
+    if sha256(archive) != pins[f'{prefix}_ZIP_SHA']:
+        raise RuntimeError('Native reuse ZIP hash mismatch')
+    with zipfile.ZipFile(archive) as z:
+        names = z.namelist()
+        if len(names) != len(set(names)):
+            raise RuntimeError('Native reuse ZIP contains duplicate evidence names')
+        def read(name):
+            if name not in names:
+                raise RuntimeError(f'Native reuse evidence missing: {name}')
+            return z.read(name)
+        final = json.loads(read('final.json'))
+        before = final.get('sourceBefore')
+        if not isinstance(before, dict) or before.get('head') != pins['PRODUCT_SHA'] or before.get('status') != '' \
+                or not before.get('files') or before != final.get('sourceAfter') or final.get('head') != pins['PRODUCT_SHA']:
+            raise RuntimeError('Native reuse source receipt is not closed and product-bound')
+        inventory = check_tests(read('native-test.log').decode())
+        if final.get('target') != target or any(final.get(k) != v for k, v in inventory.items()) \
+                or final.get('sdkBefore') != final.get('sdkAfter') or not final.get('sdkBefore') \
+                or final.get('rustManifestSHA256') != RUST_MANIFEST_SHA or final.get('bunAssetSHA256') != BUN_SHA[os_name]:
+            raise RuntimeError('Native reuse inventory, target or SDK binding mismatch')
+        stages = [n[:-len('.receipt.json')] for n in names if n.endswith('.receipt.json')]
+        required = set(['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream',
+                        'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install'])
+        if os_name == 'linux':
+            required.update(['runtime-extract', 'runtime-readelf', 'runtime-launcher-version', 'runtime-helper-version',
+                             'runtime-status', 'runtime-ldd', 'runtime-node-version'])
+        if set(stages) != required:
+            raise RuntimeError('Native reuse stage inventory mismatch')
+        for stage in stages:
+            receipt = json.loads(read(f'{stage}.receipt.json'))
+            raw = read(f'{stage}.raw.log')
+            if receipt.get('actualWait') is not True or type(receipt.get('exit')) is not int or receipt.get('exit') != 0 or receipt.get('signal') is not None \
+                    or receipt.get('rawClosedBeforeHash') is not True or receipt.get('ownedGroupAbsentAfterWait') is not True \
+                    or not receipt.get('closedUTC') or receipt.get('resourceStop') is not None \
+                    or receipt.get('supervisorError') is not None or receipt.get('cleanupErrors') \
+                    or receipt.get('rawSHA256') != hashlib.sha256(raw).hexdigest():
+                raise RuntimeError(f'Native reuse stage is not successfully closed: {stage}')
+        native = json.loads(read('native-receipt.json')); kit_bytes = read('source-kit.json'); kit = json.loads(kit_bytes)
+        if native != final.get('nativeReceipt') or native.get('target') != target or native.get('helperSha256') != pins[f'{prefix}_HELPER_SHA'] \
+                or native.get('engine', {}).get('commit') != UPSTREAM or kit.get('engine') != native.get('engine') \
+                or native.get('sourceKitSha256') != hashlib.sha256(kit_bytes).hexdigest() or native.get('testsPassed') is not True \
+                or native.get('compiler', {}).get('toolchain') != TOOLCHAIN or native.get('compilerParallelism') != 2 \
+                or native.get('buildArguments') != ['build', '--release', '--frozen'] \
+                or native.get('isolatedCargoHome') is not True or native.get('stagedVerifiedFilesOnly') is not True:
+            raise RuntimeError('Native reuse helper or SDK source-kit receipt mismatch')
+        for name, _, flags in UPSTREAM_SUITES:
+            suite = final.get('upstreamSuites', {}).get(name, {})
+            text = read(f'{name}.raw.log').decode()
+            summaries = SUITE_SUMMARY.findall(text)
+            totals = tuple(sum(int(row[index]) for row in summaries) for index in [1, 2, 3])
+            command = json.loads(read(f'{name}.receipt.json')).get('command', [])
+            if not summaries or any(row[0] != 'ok' for row in summaries) or totals[0] <= 0 or totals[1] != 0 \
+                    or tuple(suite.get(k) for k in ['passed', 'failed', 'ignored']) != totals \
+                    or command[1:] != ['test', '--release', '--locked', *flags] \
+                    or totals[2] != (1 if name == 'cli-suite' else 0) \
+                    or any(int(v) != 0 for v in re.findall(r'(\d+) filtered out;', text)):
+                raise RuntimeError(f'Native reuse original upstream suite missing: {name}')
+        packages = [n for n in names if n.endswith(f'-{target}.tar.gz')]
+        if len(packages) != 1:
+            raise RuntimeError('Native reuse requires one exact platform package')
+        package = read(packages[0])
+        if hashlib.sha256(package).hexdigest() != pins[f'{prefix}_ARCHIVE_SHA'] or final.get('archiveSHA256') != pins[f'{prefix}_ARCHIVE_SHA']:
+            raise RuntimeError('Native reuse product archive hash mismatch')
+        with tarfile.open(fileobj=io.BytesIO(package), mode='r:gz') as tar:
+            helpers = [m for m in tar.getmembers() if m.name in ['install/helper/agentfs-pod', './install/helper/agentfs-pod'] and m.isfile()]
+            if len(helpers) != 1 or hashlib.sha256(tar.extractfile(helpers[0]).read()).hexdigest() != pins[f'{prefix}_HELPER_SHA']:
+                raise RuntimeError('Native reuse packaged helper hash mismatch')
+        if os_name == 'linux':
+            assert_bookworm_baseline('linux', final['sdkBefore'])
+            runtime = final.get('runtimeAdmission', {})
+            metadata = json.loads(read('runtime-admission.metadata.json'))
+            highest = assert_bookworm_glibc(read('runtime-readelf.raw.log').decode())
+            sonames = assert_ldd_ready(read('runtime-ldd.raw.log').decode())
+            status = assert_status_ready(read('runtime-status.raw.log').decode(), 'linux',
+                                        Path(runtime.get('status', {}).get('helperPath', '')), expected_pending=0)
+            if final.get('bookwormImage') != BOOKWORM_IMAGE or metadata.get('record') != runtime \
+                    or runtime.get('nodeVersion') != 'v22.21.1' or read('runtime-node-version.raw.log').decode().strip() != 'v22.21.1' \
+                    or runtime.get('bunAbsentFromPath') is not True or runtime.get('runtime') != 'node' \
+                    or runtime.get('status') != status or runtime.get('opensslSonames') != sonames \
+                    or runtime.get('highestGlibcRequirement') != f'{highest[0]}.{highest[1]}':
+                raise RuntimeError('Native reuse Linux loader/ABI admission mismatch')
+            if set(metadata.get('stages', {})) != {n for n in required if n.startswith('runtime-') and n != 'runtime-extract'}:
+                raise RuntimeError('Native reuse Linux runtime metadata stage inventory mismatch')
+            for name, stage in metadata['stages'].items():
+                if stage.get('receiptSha256') != hashlib.sha256(read(f'{name}.receipt.json')).hexdigest() \
+                        or stage.get('rawSha256') != hashlib.sha256(read(f'{name}.raw.log')).hexdigest():
+                    raise RuntimeError('Native reuse Linux runtime metadata is not stage-bound')
+        return dict(target=target, productHead=pins['PRODUCT_SHA'], zipSHA256=pins[f'{prefix}_ZIP_SHA'],
+                    archiveSHA256=pins[f'{prefix}_ARCHIVE_SHA'], helperSHA256=pins[f'{prefix}_HELPER_SHA'],
+                    sourceKitSHA256=native['sourceKitSha256'], stages=sorted(stages), **inventory)
+
+
+def reuse_native_main():
+    root = Path.cwd(); pins = mounted_reuse_pins(root); verify_reuse_sources(root, pins['PRODUCT_SHA'])
+    facts = []
+    evidence = root / '.test-data/whole-ci'; evidence.mkdir(parents=True, exist_ok=True)
+    # CI-only verified artifact reads. ROOT owns the independent local evidence
+    # downloads; this mode never redownloads into the shared workspace.
+    directory = Path(tempfile.mkdtemp(prefix='agentfs-native-reuse-', dir=os.environ['RUNNER_TEMP']))
+    try:
+        for os_name in ['darwin', 'linux']:
+            prefix = os_name.upper(); artifact_id = pins[f'{prefix}_ARTIFACT_ID']
+            endpoint = f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/artifacts/{artifact_id}'
+            _, text = run_checked_stage(f'reuse-{os_name}-metadata', ['gh', 'api', endpoint], directory, root, timeout=60)
+            metadata = json.loads(text)
+            run = metadata.get('workflow_run', {})
+            expected_name = f'agentfs-native-{"darwin-arm64" if os_name == "darwin" else "linux-arm64"}-{pins["PRODUCT_SHA"]}'
+            if metadata.get('expired') is not False or str(run.get('id')) != pins['PRODUCT_RUN'] \
+                    or run.get('head_sha') != pins['PRODUCT_SHA'] or metadata.get('name') != expected_name:
+                raise RuntimeError('Native reuse GitHub artifact identity mismatch')
+            run_gate(f'reuse-{os_name}-zip', ['gh', 'api', endpoint + '/zip'], directory, root, timeout=300)
+            archive = directory / f'reuse-{os_name}-zip.raw.log'
+            facts.append(verify_reuse_archive(archive, pins, os_name))
+    finally:
+        primary_error = sys.exc_info()[1]
+        try:
+            receipts = list(directory.glob('*.receipt.json'))
+            for path in receipts + list(directory.glob('*-metadata.raw.log')):
+                shutil.copyfile(path, evidence / path.name)
+            records = [json.loads(path.read_text()) for path in receipts]
+            if len(receipts) == len(list(directory.glob('*.raw.log'))) and all(
+                    item.get('actualWait') is True and item.get('ownedGroupAbsentAfterWait') is True for item in records):
+                shutil.rmtree(directory)
+            else:
+                (evidence / 'native-reuse-retained.json').write_text(json.dumps({'retainedDirectory': str(directory), 'closure': 'unknown'}))
+        except Exception as cleanup_error:
+            if primary_error is None:
+                raise
+            print(f'Native reuse cleanup failed; original error retained: {type(cleanup_error).__name__}; directory={directory}', file=sys.stderr)
+    if facts[0]['sourceKitSHA256'] != facts[1]['sourceKitSHA256']:
+        raise RuntimeError('Native reuse platforms do not share the pinned SDK/helper source kit')
+    (evidence / 'native-reuse.json').write_text(json.dumps(dict(scope='reused admitted native helper only; new JS/harness/whole unproven',
+        productHead=pins['PRODUCT_SHA'], productRun=pins['PRODUCT_RUN'], harnessHead=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), platforms=facts), indent=2) + '\n')
+
+
 if __name__ == '__main__':
-    main()
+    if sys.argv[1:] == ['--reuse-native']:
+        reuse_native_main()
+    elif sys.argv[1:]:
+        raise RuntimeError('Unknown native acceptance arguments')
+    else:
+        main()

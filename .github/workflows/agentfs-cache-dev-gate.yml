@@ -11,9 +11,15 @@ on:
   push:
     branches: ['codex/agentfs-cache-dev-gate']
   workflow_dispatch:
+    inputs:
+      native:
+        description: Build native helpers; false requires verified two-platform reuse pins
+        type: boolean
+        default: true
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: agentfs-cache-dev-gate-${{ github.ref }}
@@ -26,6 +32,14 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify explicit native reuse before whole runs
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.native }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agentfs-native-ci/accept.py --reuse-native
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -62,5 +76,6 @@ jobs:
           retention-days: 14
 
   native-source-bound:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.native }}
     name: native source-bound (macos + linux, serial)
     uses: ./.github/workflows/agentfs-native-acceptance.yml
