@@ -28,6 +28,35 @@ spec3.loader.exec_module(g)
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_target_disappearance_is_tolerated_but_permission_is_not(self):
+        with patch.object(m.os, 'walk', return_value=[('/target', [], ['gone'])]), \
+                patch.object(m.os, 'lstat', side_effect=FileNotFoundError()):
+            self.assertEqual(m.allocated_bytes('/target'), 0)
+        with patch.object(m.os, 'walk', return_value=[('/target', [], ['private'])]), \
+                patch.object(m.os, 'lstat', side_effect=PermissionError('denied')):
+            with self.assertRaises(PermissionError):
+                m.allocated_bytes('/target')
+
+    def test_first_observation_error_survives_group_permission_error(self):
+        real_killpg = m.os.killpg
+        def killpg(pid, sig):
+            if sig == 0:
+                raise PermissionError('group observation denied')
+            return real_killpg(pid, sig)
+        with tempfile.TemporaryDirectory(dir=ROOT / '.test-data') as directory, \
+                patch.object(m, 'allocated_bytes', side_effect=OSError('original disk error')), \
+                patch.object(m.os, 'killpg', side_effect=killpg):
+            receipt, raw = m.run_stage('observation', [sys.executable, '-c', 'import time; time.sleep(30)'],
+                                      directory, ROOT, target='/target', fresh_bytes=0,
+                                      stop_bytes=0, poll_seconds=.01)
+            self.assertIn('original disk error', receipt['supervisorError'])
+            self.assertTrue(receipt['actualWait'])
+            self.assertIsNone(receipt['ownedGroupAbsentAfterWait'])
+            self.assertIsNone(receipt['rawSHA256'])
+            self.assertIsNone(raw)
+            self.assertTrue(any('group observation denied' in e for e in receipt['cleanupErrors']))
+            self.assertTrue(Path(directory, 'observation.receipt.json').exists())
+
     def test_real_success_is_waited_and_closed_log_hashed(self):
         with tempfile.TemporaryDirectory() as directory:
             receipt = m.run_gate('ok', [sys.executable, '-c', "print('owned child')"], directory,
@@ -99,7 +128,7 @@ class SupervisorTests(unittest.TestCase):
                           'pod_fs::clean_cache_integration_tests::identity_and_canonical_pod_are_isolated_and_loopback_has_no_directory',
                           'pod_fs::clean_cache_integration_tests::denied_head_invalidates_and_never_serves_a_cached_body']:
             text += f'test {qualified} ... ok\n'
-        a.check_tests(text)
+        self.assertEqual(a.check_tests(text), dict(declaredTests=95, passedTests=93, ignoredTests=2, filteredTests=0))
         for invalid in [text.replace('93 passed', '92 passed'),
                         text.replace('0 filtered out', '2 filtered out'),
                         text.replace('closed_marker_is_read_only_after_actual_lease_release ... ok',

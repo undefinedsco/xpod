@@ -151,7 +151,8 @@ def assert_status_ready(text, platform_name, helper, expected_pending=None):
 
 def check_tests(text):
     summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out', text)
-    if ('93', '0', '2', '0', '0') not in summaries:
+    expected = ('93', '0', '2', '0', '0')
+    if expected not in summaries:
         raise RuntimeError('Latest full Rust inventory must report 93 passed, two declared ignores, zero filtered (95 total)')
     ignored = re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE)
     if set(ignored) != {'mount::tests::legacy_output_exceeds_observation_budget', 'mount_control::tests::lease_child'}:
@@ -199,6 +200,10 @@ def check_tests(text):
                       'pod_fs::clean_cache_integration_tests::denied_head_invalidates_and_never_serves_a_cached_body']:
         if not re.search(r'^test ' + re.escape(qualified) + r' \.\.\. ok$', text, re.MULTILINE):
             raise RuntimeError(f'Missing cache regression: {qualified}')
+
+    passed, failed, ignored_count, measured, filtered = map(int, next(row for row in summaries if row == expected))
+    return dict(declaredTests=passed + failed + ignored_count + measured + filtered,
+                passedTests=passed, ignoredTests=ignored_count, filteredTests=filtered)
 
 
 def download(url, destination, expected):
@@ -440,7 +445,7 @@ def main():
         for name in ['build.log', 'test.log', 'receipt.json']:
             if (rebuilt / name).is_file():
                 shutil.copyfile(rebuilt / name, evidence / f'native-{name}')
-    check_tests((rebuilt / 'test.log').read_text())
+    test_inventory = check_tests((rebuilt / 'test.log').read_text())
     receipt = json.loads((rebuilt / 'receipt.json').read_text())
     if (receipt['target'] != target or receipt['engine']['commit'] != UPSTREAM
             or receipt['compiler']['toolchain'] != TOOLCHAIN or receipt['compilerParallelism'] != 2 or not receipt['testsPassed']
@@ -476,7 +481,7 @@ def main():
                  nodeSHA256=sha256(node), hostUname=list(platform.uname()), rustManifestSHA256=RUST_MANIFEST_SHA,
                  bunAssetSHA256=BUN_SHA[host], compiler=receipt['compiler'], nativeReceipt=receipt,
                  bookwormImage=bookworm_image if host == 'linux' else None, runtimeAdmission=runtime,
-                 declaredTests=71, passedTests=69, ignoredTests=2, filteredTests=0,
+                 **test_inventory,
                  ignoredScope='owned lease subprocess invoked by parent; historical RED intentionally ignored',
                  upstreamSuites=suites,
                  archiveSHA256=sha256(archives[0]), mountExecuted=False, liveGatewayExecuted=False,

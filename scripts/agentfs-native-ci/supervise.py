@@ -23,10 +23,18 @@ def sha256(path):
 
 
 def allocated_bytes(directory):
+    def walk_error(error):
+        if not isinstance(error, FileNotFoundError):
+            raise error
+
     seen, total = set(), 0
-    for root, _, files in os.walk(directory):
+    for root, _, files in os.walk(directory, onerror=walk_error):
         for name in files:
-            stat = os.lstat(os.path.join(root, name))
+            try:
+                stat = os.lstat(os.path.join(root, name))
+            except FileNotFoundError:
+                # Compiler outputs may disappear between walk and lstat.
+                continue
             identity = (stat.st_dev, stat.st_ino)
             if identity not in seen:
                 seen.add(identity)
@@ -81,6 +89,27 @@ def run_stage(name, command, evidence, cwd, *, target=None, free=shutil.disk_usa
     # zombie is PID1's residue and cannot explain which processes the producer
     # actually left behind.
     before_members = None
+    supervisor_error = None
+    cleanup_errors = []
+    group_absent = None
+
+    def kill_group(sig):
+        try:
+            os.killpg(child.pid, sig)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            cleanup_errors.append(f'{type(error).__name__}: {error}')
+
+    def observe_group():
+        try:
+            os.killpg(child.pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError as error:
+            cleanup_errors.append(f'{type(error).__name__}: {error}')
+            return None
+        return False
 
     def snapshot_before_kill():
         nonlocal before_members
@@ -101,40 +130,42 @@ def run_stage(name, command, evidence, cwd, *, target=None, free=shutil.disk_usa
                     reason = 'target allocation budget'
                 if reason:
                     snapshot_before_kill()
-                    os.killpg(child.pid, signal.SIGTERM)
+                    kill_group(signal.SIGTERM)
                     try:
                         child.wait(timeout=15)
                     except subprocess.TimeoutExpired:
                         snapshot_before_kill()
-                        os.killpg(child.pid, signal.SIGKILL)
+                        kill_group(signal.SIGKILL)
                     break
                 time.sleep(poll_seconds)
+        except Exception as error:
+            supervisor_error = f'{type(error).__name__}: {error}'
+            reason = reason or 'supervisor observation failed'
         finally:
             if child.poll() is None:
                 snapshot_before_kill()
-                os.killpg(child.pid, signal.SIGKILL)
-            code = child.wait()
-            # A finished parent must not leave descendants writing the raw log.
+                kill_group(signal.SIGKILL)
             try:
-                os.killpg(child.pid, 0)
-            except ProcessLookupError:
-                group_absent = True
-            else:
-                group_absent = False
-                reason = reason or 'owned descendant remained after parent wait'
+                code = child.wait(timeout=15)
+            except subprocess.TimeoutExpired as error:
+                code = None
+                cleanup_errors.append(f'{type(error).__name__}: {error}')
+            # EPERM is unknown, never evidence of group absence.
+            group_absent = observe_group()
+            if group_absent is not True:
+                reason = reason or ('owned descendant remained after parent wait' if group_absent is False
+                                    else 'owned group absence unknown after parent wait')
                 snapshot_before_kill()
-                os.killpg(child.pid, signal.SIGKILL)
+                kill_group(signal.SIGKILL)
                 deadline = time.monotonic() + 10
-                while time.monotonic() < deadline:
-                    try:
-                        os.killpg(child.pid, 0)
-                    except ProcessLookupError:
-                        group_absent = True
-                        break
+                while group_absent is False and time.monotonic() < deadline:
                     time.sleep(.1)
+                    group_absent = observe_group()
     reserved = group_members(child.pid) if not group_absent else []
-    result = dict(command=command, pid=child.pid, pgid=child.pid, actualWait=True,
-                  exit=code if code >= 0 else None, signal=-code if code < 0 else None,
+    result = dict(command=command, pid=child.pid, pgid=child.pid, actualWait=code is not None,
+                  exit=code if code is not None and code >= 0 else None,
+                  signal=-code if code is not None and code < 0 else None,
+                  supervisorError=supervisor_error, cleanupErrors=cleanup_errors,
                   startedUTC=started, closedUTC=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   elapsedSeconds=time.monotonic() - monotonic, rawClosedBeforeHash=group_absent,
                   rawSHA256=sha256(raw_path) if group_absent else None, resourceStop=reason,
