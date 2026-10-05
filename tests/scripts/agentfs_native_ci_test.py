@@ -57,6 +57,26 @@ class SupervisorTests(unittest.TestCase):
             self.assertTrue(any('group observation denied' in e for e in receipt['cleanupErrors']))
             self.assertTrue(Path(directory, 'observation.receipt.json').exists())
 
+    def test_uncompleted_wait_cannot_publish_even_after_group_absence_probe(self):
+        # Controlled negative: no claim that a real process resisted SIGKILL.
+        child = SimpleNamespace(pid=4242, poll=lambda: None,
+                                wait=lambda timeout: (_ for _ in ()).throw(subprocess.TimeoutExpired('owned', timeout)))
+        def probe(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError()
+        with tempfile.TemporaryDirectory(dir=ROOT / '.test-data') as directory, \
+                patch.object(m.subprocess, 'Popen', return_value=child), \
+                patch.object(m.os, 'killpg', side_effect=probe), \
+                patch.object(m, 'group_members', return_value=[]):
+            receipt, raw = m.run_stage('unwaited', ['owned'], directory, ROOT,
+                                      fresh_bytes=0, stop_bytes=0, timeout=0)
+            self.assertFalse(receipt['actualWait'])
+            self.assertTrue(receipt['ownedGroupAbsentAfterWait'])
+            self.assertIsNone(receipt['closedUTC'])
+            self.assertFalse(receipt['rawClosedBeforeHash'])
+            self.assertIsNone(receipt['rawSHA256'])
+            self.assertIsNone(raw)
+
     def test_real_success_is_waited_and_closed_log_hashed(self):
         with tempfile.TemporaryDirectory() as directory:
             receipt = m.run_gate('ok', [sys.executable, '-c', "print('owned child')"], directory,

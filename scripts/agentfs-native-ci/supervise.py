@@ -166,16 +166,16 @@ def run_stage(name, command, evidence, cwd, *, target=None, free=shutil.disk_usa
                   exit=code if code is not None and code >= 0 else None,
                   signal=-code if code is not None and code < 0 else None,
                   supervisorError=supervisor_error, cleanupErrors=cleanup_errors,
-                  startedUTC=started, closedUTC=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                  elapsedSeconds=time.monotonic() - monotonic, rawClosedBeforeHash=group_absent,
-                  rawSHA256=sha256(raw_path) if group_absent else None, resourceStop=reason,
+                  startedUTC=started, closedUTC=datetime.datetime.now(datetime.timezone.utc).isoformat() if code is not None and group_absent is True else None,
+                  elapsedSeconds=time.monotonic() - monotonic, rawClosedBeforeHash=code is not None and group_absent is True,
+                  rawSHA256=sha256(raw_path) if code is not None and group_absent is True else None, resourceStop=reason,
                   freshAvailableBytes=before, ownedGroupAbsentAfterWait=group_absent,
                   ownedGroupMembersBeforeStop=before_members or [],
                   ownedGroupMembers=reserved)
     with open(evidence / f'{name}.receipt.json', 'x') as output:
         os.chmod(output.name, 0o600)
         json.dump(result, output, indent=2)
-    raw_text = raw_path.read_text(errors='replace') if group_absent else None
+    raw_text = raw_path.read_text(errors='replace') if code is not None and group_absent is True else None
     return result, raw_text
 
 
