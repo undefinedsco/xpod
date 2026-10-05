@@ -1,0 +1,84 @@
+name: AgentFS cache development gate
+
+# Dedicated controlled DEVELOPMENT gate for the clean-body cache candidate.
+# This is NOT a release path. It runs the ORIGINAL complete
+# `bun run test:integration` twice (no split Lite/Full greens) plus the official
+# source-bound native acceptance, so the changed cache source is actually
+# compiled and exercised remotely while the local host is below the disk floors.
+on:
+  push:
+    branches: ['codex/agentfs-cache-dev-gate']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agentfs-cache-dev-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  whole-integration:
+    name: original whole (run 1 and run 2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: bun install --frozen-lockfile
+
+      # Mirror the accepted local environment: the whole suite runs against a
+      # built tree (packages + runtime artifacts).
+      - name: Build workspace packages
+        run: bun run build:packages
+
+      - name: Build runtime artifacts
+        run: bun run build:ts && bun run build:components
+
+      - name: Source-bound guard (harness facts)
+        run: |
+          set -euo pipefail
+          umask 077
+          echo "harness_sha=$(git rev-parse HEAD)"
+          test -z "$(git status --porcelain)" || { echo "::error::dirty working tree before the whole gate"; exit 1; }
+          shasum -a 256 tools/agentfs-pod/src/clean_cache.rs tools/agentfs-pod/src/pod_fs.rs
+
+      - name: Original whole integration (run 1 of 2)
+        run: bun run test:integration
+
+      - name: Original whole integration (run 2 of 2)
+        run: bun run test:integration
+
+      - name: Record harness facts after
+        if: always()
+        run: echo "harness_sha_after=$(git rev-parse HEAD)"
+
+  native-source-bound:
+    name: native (darwin-arm64) source-bound
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      NATIVE_TARGET: darwin-arm64
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+
+      - name: Lightweight supervisor regression
+        run: python3 tests/scripts/agentfs_native_ci_test.py -v
+
+      - name: Official export, offline rebuild, package and extracted install gate
+        run: python3 scripts/agentfs-native-ci/accept.py
