@@ -5,12 +5,14 @@ sdk_tag=${REQUESTED_SDK_TAG:-}
 prior_sdk_digest=${PRIOR_SDK_DIGEST:-}
 inputs_tag=${QELEVER_INPUTS_TAG:-}
 reuse_identical_inputs=${REUSE_IDENTICAL_INPUTS:-true}
-sdk_image=${SDK_IMAGE:?SDK_IMAGE is required}
+sdk_image=${SDK_IMAGE:-${RUNTIME_IMAGE:-}}
+[[ -n "$sdk_image" ]] || { echo 'SDK_IMAGE or RUNTIME_IMAGE is required' >&2; exit 64; }
 source_commit=${XPOD_SOURCE_COMMIT:-${GITHUB_SHA:?GITHUB_SHA is required when XPOD_SOURCE_COMMIT is unset}}
 github_output=${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}
 
 build=true
-dockerfile="./docker/qlever-runtime-sdk/Dockerfile"
+runtime_dockerfile=${RUNTIME_DOCKERFILE:-./docker/qlever-runtime-sdk/Dockerfile}
+dockerfile="$runtime_dockerfile"
 prior_image=""
 reused_inputs=false
 
@@ -56,7 +58,7 @@ else
       exit 64
     fi
     docker buildx imagetools inspect "${sdk_image}@${prior_sdk_digest}" >/dev/null
-    dockerfile="./docker/qlever-runtime-sdk/Dockerfile.incremental"
+    dockerfile="${runtime_dockerfile}.incremental"
     prior_image="${sdk_image}@${prior_sdk_digest}"
   fi
 fi

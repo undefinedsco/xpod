@@ -53,20 +53,32 @@ jobs:
       - name: Check out the component source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
+      - name: Resolve the QLever build inputs identity
+        id: inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          inputs_hash="$({ git rev-parse "${GITHUB_SHA}:qlever"; git rev-parse "${GITHUB_SHA}:docker/qlever-local-runtime"; } | sha256sum | cut -c1-12)"
+          echo "tag=qlever-inputs-${inputs_hash}" >> "${GITHUB_OUTPUT}"
+          echo "QLever local runtime inputs: qlever-inputs-${inputs_hash}" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.12
 
       - name: Install and patch product-gate dependencies
+        if: steps.resolve.outputs.build == 'true'
         run: |
           bun install --frozen-lockfile --ignore-scripts
           bun run postinstall
 
       - name: Build the product before native work
+        if: steps.resolve.outputs.build == 'true'
         run: bun run build
 
       - name: Verify the local runtime image contract
+        if: steps.resolve.outputs.build == 'true'
         run: bun test qlever/tests/QleverLocalRuntimeImage.test.ts
 
       - name: Set up Docker Buildx
@@ -79,17 +91,30 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve local runtime build mode
+        id: resolve
+        shell: bash
+        env:
+          RUNTIME_IMAGE: ${{ env.IMAGE }}
+          RUNTIME_DOCKERFILE: ./docker/qlever-local-runtime/Dockerfile
+          QELEVER_INPUTS_TAG: ${{ steps.inputs.outputs.tag }}
+          REUSE_IDENTICAL_INPUTS: 'true'
+        run: bash qlever/scripts/resolve-runtime-sdk-build.sh
+
       - name: Build the exact local runtime image
+        if: steps.resolve.outputs.build == 'true'
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
-          file: ./docker/qlever-local-runtime/Dockerfile
+          file: ${{ steps.resolve.outputs.dockerfile }}
           target: runtime
           platforms: linux/amd64
           load: true
           push: false
-          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+            ${{ env.IMAGE }}:${{ steps.inputs.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -100,6 +125,7 @@ jobs:
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ inputs.prior_sdk_image }}
 
       - name: Smoke the exact image before publishing
+        if: steps.resolve.outputs.build == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -182,6 +208,7 @@ jobs:
           '
 
       - name: Run SQLite QLever semantic and native search conformance
+        if: steps.resolve.outputs.build == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -197,6 +224,7 @@ jobs:
           timeout --signal=TERM 10m bun dist/acceptance/run-installed-qlever-conformance.js
 
       - name: Exercise the Gateway credential path against the exact image
+        if: steps.resolve.outputs.build == 'true'
         shell: bash
         env:
           XPOD_QLEVER_ACCEPTANCE_RUNTIME_COMMAND: ${{ runner.temp }}/run-qlever-local-runtime-image.sh
@@ -207,15 +235,18 @@ jobs:
       # Export the already-tested result from the same BuildKit cache, without
       # sending it through the Docker daemon's separate registry pusher.
       - name: Push the tested local runtime through BuildKit
+        if: steps.resolve.outputs.build == 'true'
         id: push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
-          file: ./docker/qlever-local-runtime/Dockerfile
+          file: ${{ steps.resolve.outputs.dockerfile }}
           target: runtime
           platforms: linux/amd64
           push: true
-          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+            ${{ env.IMAGE }}:${{ steps.inputs.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -224,6 +255,7 @@ jobs:
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ inputs.prior_sdk_image }}
 
       - name: Require the published image to match the tested image
+        if: steps.resolve.outputs.build == 'true'
         id: image_identity
         shell: bash
         env:
@@ -237,10 +269,16 @@ jobs:
         id: publish
         shell: bash
         env:
+          BUILD_IMAGE: ${{ steps.resolve.outputs.build }}
           PUSHED_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
-          digest="${PUSHED_DIGEST}"
+          if [[ "${BUILD_IMAGE}" == 'true' ]]; then
+            digest="${PUSHED_DIGEST}"
+          else
+            digest="$(docker buildx imagetools inspect "${IMAGE}:${{ steps.resolve.outputs.tag }}" \\
+              --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          fi
           [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           echo "image=${IMAGE}@${digest}" >> "${GITHUB_OUTPUT}"

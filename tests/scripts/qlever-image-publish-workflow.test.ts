@@ -28,15 +28,23 @@ const cases = [
     args: [ 'XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}', 'XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}' ],
     gates: [ 'Smoke the exact SDK image before publishing' ],
     condition: "steps.resolve.outputs.build == 'true'",
+    reuseInspect: 'docker buildx imagetools inspect "${tag}"',
   },
   {
     name: 'local runtime image',
     file: '.github/workflows/publish-qlever-local-runtime.yml',
     imageEnv: 'IMAGE',
     publishedImage: '${{ env.IMAGE }}@${{ steps.push.outputs.digest }}',
-    dockerfile: './docker/qlever-local-runtime/Dockerfile',
+    dockerfile: '${{ steps.resolve.outputs.dockerfile }}',
     target: 'runtime',
-    tags: '${{ env.IMAGE }}:sha-${{ github.sha }}',
+    // 构建与推送必须打同一组名字：不可变提交标签 + 以构建输入命名的别名，
+    // 后者正是「输入未变」时下一轮复用的依据。
+    tags: [
+      '${{ env.IMAGE }}:sha-${{ github.sha }}',
+      '${{ env.IMAGE }}:${{ steps.inputs.outputs.tag }}',
+    ].join('\n') + '\n',
+    condition: "steps.resolve.outputs.build == 'true'",
+    reuseInspect: 'docker buildx imagetools inspect "${IMAGE}:${{ steps.resolve.outputs.tag }}"',
     args: [ 'XPOD_QLEVER_BUILD_JOBS=2', 'XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ inputs.prior_sdk_image }}' ],
     gates: [
       'Smoke the exact image before publishing',
@@ -151,16 +159,14 @@ describe.each(cases)('$name publish workflow image identity gate', (workflowCase
     const runText = steps(workflow).map((step) => step.run).filter(Boolean).join('\n');
     const output = runFreshPublish(publish.run, workflowCase.imageEnv);
 
-    if (workflowCase.imageEnv === 'SDK_IMAGE') {
-      expect(publish.env).toEqual({
-        BUILD_IMAGE: '${{ steps.resolve.outputs.build }}',
-        PUSHED_DIGEST: '${{ steps.push.outputs.digest }}',
-      });
-      expect(publish.run).toContain('docker buildx imagetools inspect "${tag}"');
-    } else {
-      expect(publish.env).toEqual({ PUSHED_DIGEST: '${{ steps.push.outputs.digest }}' });
-      expect(publish.run).not.toContain('docker buildx imagetools inspect "${tag}"');
-    }
+    // 构建路径直接用已校验的 push digest；只有「输入未变、复用已发布镜像」的
+    // 分支才 inspect 标签解析 digest。两条链现在形状一致。
+    expect(publish.env).toEqual({
+      BUILD_IMAGE: '${{ steps.resolve.outputs.build }}',
+      PUSHED_DIGEST: '${{ steps.push.outputs.digest }}',
+    });
+    expect(publish.run).toContain(workflowCase.reuseInspect);
+    expect(publish.run).toContain('if [[ "${BUILD_IMAGE}" == \'true\' ]]; then');
     expect(publish.run).toContain(`echo "image=\${${workflowCase.imageEnv}}@\${digest}" >> "\${GITHUB_OUTPUT}"`);
     expect(output).toContain(`digest=sha256:${'f'.repeat(64)}`);
     expect(output).toContain(workflowCase.imageEnv === 'SDK_IMAGE' ? 'image=ghcr.io/acme/sdk@' : 'image=ghcr.io/acme/local@');
