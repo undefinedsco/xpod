@@ -43,7 +43,7 @@ class SupervisorTests(unittest.TestCase):
             if sig == 0:
                 raise PermissionError('group observation denied')
             return real_killpg(pid, sig)
-        with tempfile.TemporaryDirectory(dir=ROOT / '.test-data') as directory, \
+        with owned_scratch() as directory, \
                 patch.object(m, 'allocated_bytes', side_effect=OSError('original disk error')), \
                 patch.object(m.os, 'killpg', side_effect=killpg):
             receipt, raw = m.run_stage('observation', [sys.executable, '-c', 'import time; time.sleep(30)'],
@@ -64,7 +64,7 @@ class SupervisorTests(unittest.TestCase):
         def probe(pid, sig):
             if sig == 0:
                 raise ProcessLookupError()
-        with tempfile.TemporaryDirectory(dir=ROOT / '.test-data') as directory, \
+        with owned_scratch() as directory, \
                 patch.object(m.subprocess, 'Popen', return_value=child), \
                 patch.object(m.os, 'killpg', side_effect=probe), \
                 patch.object(m, 'group_members', return_value=[]):
