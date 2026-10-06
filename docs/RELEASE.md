@@ -86,6 +86,12 @@ Pod、Network、Status 重管理工作区。Web 永远轻量，重管理只属�
 Playwright 用例和 `solid-pod-isolation`、`browser-visual` 必过项保持不变，不得以 skip、
 假 bridge 或 fixture 数据替代部署证据。
 
+轻量账号页面是客户端渲染：文档本身立刻返回 200，`账号总览` 只在 SPA 解析出 Account
+index 并取到 Cookie 认证的 controls 之后才绘制。因此验证按固定预算等待**已绘制**的页面，
+而不是 `domcontentloaded` 之后的一帧；预算内只有 dashboard 形态算通过，其余形态
+（bootstrap 加载/错误、login、consent 跳转、无法识别）在失败时以固定 token 报出，预算到期
+不算通过。绘制文案、URL 凭据与原始浏览器错误都不进入该 token，失败信息只表达观察到的形态。
+
 完整 provider 写入、Pod 读写、Gateway Key、Models、真实 Chat 和 Tasks 审批由紧随其后的
 一次性 Local runtime 对同一 RC Cloud 执行。本地 hermetic/部署模式矩阵只证明隔离栈，
 不冒充已部署 RC 或真实桌面。0.4.25 的 macOS `desktop` 门禁证明旧包到新包的真实自更新，

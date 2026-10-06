@@ -57,6 +57,110 @@ async function readCookieAccountBindings(page: Page, baseUrl: string): Promise<R
   return { accountId, bindings: payload.bindings };
 }
 
+/** The deployed lightweight Account document, independent of the desktop scoped alias. */
+export const RC_ACCOUNT_DOCUMENT_PATH = '/.account/account/';
+
+/**
+ * Closed vocabulary for what the deployed Account document actually painted. Only
+ * these fixed tokens may reach a failure message or a public acceptance artifact;
+ * the observation carries no page text, URL query or credential material.
+ */
+export type RcAccountSurfaceKind =
+  | 'account-dashboard'
+  | 'bootstrap-loading'
+  | 'bootstrap-error'
+  | 'login'
+  | 'oidc-consent'
+  | 'unrecognized';
+
+export interface RcAccountSurfaceReading { kind: RcAccountSurfaceKind; pathname: string }
+
+export interface RcAccountSurfaceObservation extends RcAccountSurfaceReading {
+  /** Painted-surface budget consumed before this observation was read. Timing only. */
+  elapsedMs: number;
+}
+
+/** Shape read out of the live document; never carries page copy or credential material. */
+export interface PaintedRcAccountSurface {
+  pathname: string;
+  headingText: string;
+  hasPasswordInput: boolean;
+  hasBootstrapStatus: boolean;
+  hasAlert: boolean;
+}
+
+/** The Account dashboard heading the lightweight Web surface must render. */
+export const RC_ACCOUNT_DASHBOARD_HEADING = /账号总览|Account (?:overview|dashboard)/iu;
+
+/** A bounce to the login route is not the Account dashboard, whatever painted there. */
+export function classifyRcAccountSurface(painted: PaintedRcAccountSurface,
+  expectedPathname: string = RC_ACCOUNT_DOCUMENT_PATH): RcAccountSurfaceKind {
+  if (painted.pathname !== expectedPathname) {
+    if (/^\/\.account\/login\//u.test(painted.pathname)) return 'login';
+    if (/^\/\.account\/oidc\/consent\//u.test(painted.pathname)) return 'oidc-consent';
+    return 'unrecognized';
+  }
+  if (RC_ACCOUNT_DASHBOARD_HEADING.test(painted.headingText)) return 'account-dashboard';
+  if (painted.hasAlert) return 'bootstrap-error';
+  if (painted.hasBootstrapStatus) return 'bootstrap-loading';
+  return 'unrecognized';
+}
+
+/** Read only the painted landmarks; never account copy, bindings or credential values. */
+export async function observeRcAccountSurface(page: Page,
+  expectedPathname: string = RC_ACCOUNT_DOCUMENT_PATH): Promise<RcAccountSurfaceReading | undefined> {
+  const painted = await page.evaluate(() => {
+    const visible = (element: Element): boolean => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 2 && rect.height > 2 && style.visibility !== 'hidden'
+        && style.display !== 'none' && style.opacity !== '0';
+    };
+    const paintedText = (selector: string): string => Array.from(document.querySelectorAll(selector))
+      .filter(visible).map(element => (element.textContent ?? '').trim()).join(' ').slice(0, 512);
+    return {
+      pathname: window.location.pathname,
+      headingText: paintedText('h1, h2, h3, [role="heading"]'),
+      hasPasswordInput: Array.from(document.querySelectorAll('input[type="password"]')).some(visible),
+      hasBootstrapStatus: Array.from(document.querySelectorAll('[role="status"][aria-live="polite"]')).some(visible),
+      hasAlert: Array.from(document.querySelectorAll('[role="alert"]')).some(visible),
+    };
+  }).catch(() => undefined);
+  if (!painted) return undefined;
+  return { kind: classifyRcAccountSurface(painted, expectedPathname), pathname: painted.pathname };
+}
+
+/**
+ * Budget for the client-rendered Account dashboard to paint on a cold RC pod. The document
+ * returns 200 immediately, but the dashboard only exists after the SPA resolves its Account
+ * index and fetches the Cookie-authenticated controls, so a single frame after
+ * `domcontentloaded` races that boot. Only the dashboard settles early; every other surface
+ * keeps being observed until this budget expires and is then reported as-is.
+ */
+export const RC_ACCOUNT_SURFACE_SETTLE_MS = 20_000;
+
+export async function settleRcAccountSurface(page: Page, expectedPathname: string = RC_ACCOUNT_DOCUMENT_PATH,
+  timeoutMs = RC_ACCOUNT_SURFACE_SETTLE_MS): Promise<RcAccountSurfaceObservation> {
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let last: RcAccountSurfaceObservation = { kind: 'unrecognized', pathname: expectedPathname, elapsedMs: 0 };
+  for (;;) {
+    const observed = await observeRcAccountSurface(page, expectedPathname);
+    if (observed) last = { ...observed, elapsedMs: Date.now() - startedAt };
+    if (last.kind === 'account-dashboard' || Date.now() >= deadline) return last;
+    await page.waitForTimeout(250);
+  }
+}
+
+/**
+ * Fixed-token description of a failed surface observation. The observed kind is already
+ * closed vocabulary, so nothing the page painted can reach the message or a published
+ * artifact through it. An expired budget keeps whatever painted last, never a pass.
+ */
+export function describeRcAccountSurface(observation: RcAccountSurfaceObservation): string {
+  return `RC Account surface did not reach the dashboard (observed=${observation.kind})`;
+}
+
 export async function verifyRcIdentity(baseUrl: string, account: RcAccountBindings,
   session: { webId: string; issuer: string }, publicFetch: typeof fetch = fetch): Promise<RcIdentity> {
   requireEvidence(new URL(session.issuer).href === new URL(baseUrl).href, 'RC token came from a different issuer');
