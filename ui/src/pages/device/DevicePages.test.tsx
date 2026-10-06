@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { beforeEach, afterEach, describe, expect, test, vi } from 'vitest';
 import { BrowserRouter } from 'react-router-dom';
 import { DeviceServicesPage, DeviceLogsPage, DeviceNetworkPage, DeviceRuntimePage } from './DevicePages';
-import { fetchServicesStatusSnapshot, getLogs } from '../../api/admin';
+import { fetchServicesStatusSnapshot, getAdminConfig, getLogs, updateAdminConfig } from '../../api/admin';
 import { fetchTunnelClients, fetchNetworkSettingsStatus } from '../../api/network-settings';
 vi.mock('../../api/admin', () => ({ fetchServicesStatusSnapshot: vi.fn(), getLogs: vi.fn(), triggerRestart: vi.fn(), getAdminConfig: vi.fn(), updateAdminConfig: vi.fn() }));
 vi.mock('../../api/network-settings', () => ({ fetchTunnelClients: vi.fn(), fetchNetworkSettingsStatus: vi.fn(), installTunnelClient: vi.fn(), updateNetworkConfiguration: vi.fn(), renewNetworkCertificate: vi.fn(), runNetworkDiagnostics: vi.fn() }));
@@ -42,6 +42,28 @@ describe('device pages', () => {
     await act(async () => toggle.click());
     expect(setAutoRestart).toHaveBeenCalledWith(false);
     expect(toggle.getAttribute('aria-checked')).toBe('false');
+  });
+  test('opens and changes the data directory through the desktop host bridge', async () => {
+    const showDataDirectory = vi.fn().mockResolvedValue(undefined);
+    const selectDataDirectory = vi.fn().mockResolvedValue('/data/new');
+    vi.mocked(getAdminConfig).mockResolvedValue(null as never);
+    vi.mocked(updateAdminConfig).mockResolvedValue(true);
+    globalThis.xpodDesktop = {
+      setIdentity: vi.fn(), platform: 'darwin', deviceRuntime: {
+        getRuntimeSettings: vi.fn().mockResolvedValue({ state: 'running', ownership: 'desktop', launchAtLogin: false, autoRestart: false, dataDirectory: '/data/xpod' }),
+        setAutoRestart: vi.fn(), setLaunchAtLogin: vi.fn(), runtimeAction: vi.fn(), showDataDirectory, selectDataDirectory,
+      },
+    };
+    await render(<DeviceRuntimePage />);
+    expect(container.textContent).toContain('/data/xpod');
+    const button = (label: string) => Array.from(container.querySelectorAll('button')).find((item) => item.textContent === label) as HTMLButtonElement;
+    await act(async () => button('在访达中显示').click());
+    expect(showDataDirectory).toHaveBeenCalledTimes(1);
+    await act(async () => button('更改').click());
+    expect(selectDataDirectory).toHaveBeenCalledTimes(1);
+    expect(updateAdminConfig).toHaveBeenCalledWith({ CSS_ROOT_FILE_PATH: '/data/new' });
+    expect(container.textContent).toContain('已保存，重启后使用新位置；原有数据不会自动迁移。');
+    expect(container.textContent).toContain('/data/new');
   });
   test('exposes all four log filters and keeps log content as text', async () => {
     vi.mocked(getLogs).mockResolvedValue([{ timestamp: new Date().toISOString(), source: 'api', level: 'error', message: '<script>bad()</script>' }]);

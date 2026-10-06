@@ -60,6 +60,7 @@ export function AiProviderCard({
   baseUrl = '',
   busy,
   disabled = false,
+  developerMode = false,
   error,
   quotas,
   models,
@@ -98,6 +99,7 @@ export function AiProviderCard({
   baseUrl?: string
   busy: boolean
   disabled?: boolean
+  developerMode?: boolean
   error?: AiOfferingActionError
   quotas?: Partial<Record<string, AiOfferingQuotaState>>
   models: AiGatewayModel[]
@@ -203,6 +205,7 @@ export function AiProviderCard({
           baseUrl={baseUrl}
           busy={busy}
           disabled={disabled}
+          developerMode={developerMode}
           error={error}
           suppressError={Boolean(catalogError)}
           quotas={quotas}

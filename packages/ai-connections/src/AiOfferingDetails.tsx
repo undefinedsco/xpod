@@ -3,9 +3,10 @@ import { authMethodLabel, offeringKindLabel, offeringTitle, offeringUnavailableM
 import { authorizationMethodsForOffering } from './authorization-methods'
 import { AiEndpointList } from './AiEndpointList'
 
-export function AiOfferingDetails({ offering, methods }: {
+export function AiOfferingDetails({ offering, methods, developerMode = false }: {
   offering: AiProviderOffering
   methods?: AiProviderAuthorizationMethod[]
+  developerMode?: boolean
 }) {
   const endpoints = offering.endpoints ?? []
   const title = offeringTitle(offering)
@@ -33,7 +34,7 @@ export function AiOfferingDetails({ offering, methods }: {
       {offering.lifecycle === 'unavailable' && !authorizationMethodsForOffering(offering).some((method) => method.lifecycle === 'active') ? (
         <p className="text-xs text-muted-foreground">{offeringUnavailableMessage(offering)}</p>
       ) : null}
-      {endpoints.length ? <AiEndpointList endpoints={endpoints} /> : null}
+      {developerMode && endpoints.length ? <AiEndpointList endpoints={endpoints} /> : null}
     </section>
   )
 }

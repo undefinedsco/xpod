@@ -67,6 +67,7 @@ export function AiCredentialPoolSection({
   baseUrl = '',
   busy,
   disabled = false,
+  developerMode = false,
   error,
   suppressError = false,
   quotas = {},
@@ -97,6 +98,7 @@ export function AiCredentialPoolSection({
   baseUrl?: string
   busy: boolean
   disabled?: boolean
+  developerMode?: boolean
   error?: AiOfferingActionError
   suppressError?: boolean
   quotas?: Partial<Record<string, AiOfferingQuotaState>>
@@ -223,7 +225,7 @@ export function AiCredentialPoolSection({
         />
         {offeringMethods.filter(({ offering, methods }) => offering.lifecycle === 'unavailable'
           && !methods.some((method) => method.lifecycle === 'active')).map(({ offering, methods }) => (
-          <AiOfferingDetails key={offering.id} offering={offering} methods={methods} />
+          <AiOfferingDetails key={offering.id} offering={offering} methods={methods} developerMode={developerMode} />
         ))}
         {credentials.some((credential) => credential.enabled && (credential.health === 'expired' || credential.health === 'invalid' || credential.lastFailureCode === 'quota_exhausted')) ? <p role="status" className="text-sm text-destructive">{credentials.length} 条里有 {credentials.filter((credential) => credential.enabled && credential.health === 'healthy' && credential.lastFailureCode !== 'quota_exhausted').length} 条已验证可用</p> : null}
         {credentials.some((credential) => credential.enabled && credential.lastFailureCode === 'upstream_unavailable') ?
