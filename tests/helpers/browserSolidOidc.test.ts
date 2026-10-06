@@ -3,7 +3,8 @@ import { JSDOM } from 'jsdom';
 import { describe, expect, it, vi } from 'vitest';
 import { describeFailure, publishedFailures } from '../../scripts/accept-packaged-desktop-permissions';
 import { attributeOidcOperation, chooseConsentBinding, clickNonPasswordOidcAction, completeOidcLogin,
-  consentBindingProven, consentOffersSingleBinding, OidcApprovalError, type BrowserOidcTrace } from './browserSolidOidc';
+  consentBindingProven, consentOffersSingleBinding, OIDC_PRIMARY_ACTION_NAME, OidcApprovalError,
+  type BrowserOidcTrace } from './browserSolidOidc';
 
 /** Actual shared driver/evaluate functions, with browser events in their real order. */
 async function callbackScenario(mode = 'current', passwordRequests: Array<{ path: string; method: 'GET' | 'POST' }> = []) {
@@ -649,6 +650,66 @@ async function consentRejectionScenario(operation: 'remember-choice' | 'binding-
   } finally { vi.unstubAllGlobals(); dom.window.close(); }
 }
 
+/** The remaining real Consent binding-read boundaries. The first native
+ * `inputValue()` read and the WebID radio `isChecked()` are awaited outside the
+ * select action, so their own rejection must still carry the fixed
+ * `binding-select` token instead of degrading the run to `unclassified`. */
+async function bindingReadRejectionScenario(row: 'binding-read' | 'binding-radio',
+  rejection: Error): Promise<BrowserOidcTrace> {
+  const dom = new JSDOM('<main>Consent</main>', { url: 'https://app.example/.account/oidc/consent/' });
+  vi.stubGlobal('window', dom.window);
+  vi.stubGlobal('fetch', async () => new Response('fixture asset'));
+  const binding = row === 'binding-read'
+    ? stubLocatorOverrides({ isVisible: async () => true, isEnabled: async () => true,
+      inputValue: async () => { throw rejection; } })
+    : stubLocatorOverrides();
+  const webIdRadios = row === 'binding-radio'
+    ? stubLocatorOverrides({ count: async () => 1, isChecked: async () => { throw rejection; } })
+    : stubLocatorOverrides();
+  const page = { bringToFront: async () => undefined, url: () => dom.window.location.href,
+    on: () => undefined, off: () => undefined,
+    locator: (selector: string) => selector === '[data-pod-sign-in-state="consent"]'
+      ? stubLocatorOverrides({ isVisible: async () => true })
+      : selector === '#oidc-consent-webid' ? binding
+        : selector.includes('name="webId"') ? webIdRadios : stubLocatorOverrides(),
+    getByRole: () => stubLocatorOverrides(), getByText: () => stubLocatorOverrides(),
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg),
+    waitForTimeout: async () => undefined } as unknown as Page;
+  try {
+    return await completeOidcLogin(page, { email: 'fixture@example.test', password: 'not-used' },
+      { baseUrl: 'https://app.example/', timeoutMs: 1_000, ready: async () => false });
+  } finally { vi.unstubAllGlobals(); dom.window.close(); }
+}
+
+/** The real approval candidates on the live consent path. The second readiness
+ * probe before activation and the primary-action enumeration are awaited
+ * outside the click, so their rejections must carry `approval-observation`. */
+async function approvalObservationRejectionScenario(row: 'ready-probe' | 'action-count',
+  rejection: Error): Promise<BrowserOidcTrace> {
+  const dom = new JSDOM('<main>Consent</main>', { url: 'https://app.example/.account/oidc/consent/' });
+  vi.stubGlobal('window', dom.window);
+  vi.stubGlobal('fetch', async () => new Response('fixture asset'));
+  const actionButton = stubLocatorOverrides({ isVisible: async () => true, isEnabled: async () => true,
+    count: row === 'action-count' ? async () => { throw rejection; } : async () => 1 });
+  let readyCalls = 0;
+  const page = { bringToFront: async () => undefined, url: () => dom.window.location.href,
+    on: () => undefined, off: () => undefined,
+    locator: () => stubLocatorOverrides(),
+    // Only the exact primary-action name resolves to the real approval button;
+    // every other button role stays invisible so the helper reaches the action
+    // enumeration rather than the Local/WebID entry shortcuts.
+    getByRole: (role: string, query?: { name?: RegExp }) =>
+      role === 'button' && query?.name === OIDC_PRIMARY_ACTION_NAME ? actionButton : stubLocatorOverrides(),
+    getByText: () => stubLocatorOverrides(),
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg),
+    waitForTimeout: async () => undefined } as unknown as Page;
+  try {
+    return await completeOidcLogin(page, { email: 'fixture@example.test', password: 'not-used' },
+      { baseUrl: 'https://app.example/', timeoutMs: 1_000,
+        ready: async () => { readyCalls += 1; if (row === 'ready-probe' && readyCalls >= 2) throw rejection; return false; } });
+  } finally { vi.unstubAllGlobals(); dom.window.close(); }
+}
+
 function locatorRejection(operation: string): Error {
   return new errors.TimeoutError(`locator.${operation}: Timeout 2000ms exceeded; apiKey=${LOCATOR_SECRET}; `
     + `cookie sid=${LOCATOR_SECRET}; bearer ${LOCATOR_SECRET}`);
@@ -687,6 +748,30 @@ it('attributes a real binding-select locator rejection to its fixed operation to
   const rejection = locatorRejection('selectOption');
   const failure = await consentRejectionScenario('binding-select', rejection).catch((error: unknown) => error);
   await expectAttributedOperation(failure, 'binding-select', rejection);
+});
+
+it('attributes the first real binding-value read rejection to binding-select', async () => {
+  const rejection = locatorRejection('inputValue');
+  const failure = await bindingReadRejectionScenario('binding-read', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'binding-select', rejection);
+});
+
+it('attributes a real WebID radio checked-state rejection to binding-select', async () => {
+  const rejection = locatorRejection('isChecked');
+  const failure = await bindingReadRejectionScenario('binding-radio', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'binding-select', rejection);
+});
+
+it('attributes a real second readiness-probe rejection to approval-observation', async () => {
+  const rejection = locatorRejection('ready');
+  const failure = await approvalObservationRejectionScenario('ready-probe', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'approval-observation', rejection);
+});
+
+it('attributes a real primary-action enumeration rejection to approval-observation', async () => {
+  const rejection = locatorRejection('count');
+  const failure = await approvalObservationRejectionScenario('action-count', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'approval-observation', rejection);
 });
 
 it('keeps an already-typed approval condition instead of renaming it to the boundary operation', async () => {

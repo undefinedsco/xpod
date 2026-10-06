@@ -9,7 +9,7 @@ export type BrowserSolidAccount = AccountSetup & {
 export type BrowserSolidCredentials = Pick<BrowserSolidAccount, 'email' | 'password'>
   & Partial<Pick<BrowserSolidAccount, 'webId' | 'podUrl'>>;
 
-const OIDC_PRIMARY_ACTION_NAME = /authorize|allow|approve|consent|continue|submit|yes|log in|login|sign in|继续|允许|授权|批准|同意|登录|进入/iu;
+export const OIDC_PRIMARY_ACTION_NAME = /authorize|allow|approve|consent|continue|submit|yes|log in|login|sign in|继续|允许|授权|批准|同意|登录|进入/iu;
 const OIDC_LOGIN_ACTION_NAME = /log in|login|sign in|登录|进入/iu;
 const REMEMBER_CLIENT_CHOICE_NAME = /^(?:以后不再询问|Do not ask again)$/u;
 
@@ -627,7 +627,8 @@ export async function completeOidcLogin(
           surfaceVisible: true,
           webIdChooserVisible: await page.locator('#oidc-consent-webid').isVisible({ timeout: 100 }).catch(() => false),
           storageChooserVisible: await page.locator('#oidc-consent-storage').isVisible({ timeout: 100 }).catch(() => false),
-          webIdRadioCount: await page.locator('input[type="radio"][name="webId"]').count(),
+          webIdRadioCount: await attributeOidcOperation('approval-observation',
+            () => page.locator('input[type="radio"][name="webId"]').count()),
         });
       }
       // Pick-WebID and Consent are separate approval documents with independent
@@ -686,7 +687,8 @@ export async function completeOidcLogin(
           await page.waitForTimeout(100);
           continue;
         }
-        const currentOptionValue = await consentWebIdSelect.inputValue();
+        const currentOptionValue = await attributeOidcOperation('binding-select',
+          () => consentWebIdSelect.inputValue());
         const availableOptions = await attributeOidcOperation('binding-select',
           () => consentWebIdSelect.locator('option').evaluateAll((options) => options.map((option) => ({
             label: option.textContent?.trim() ?? '',
@@ -743,7 +745,7 @@ export async function completeOidcLogin(
           throw new OidcApprovalError('multiple-webids', 'Multiple WebIDs are available, but the login scenario did not provide the expected WebID.');
         }
 
-        if (!await matchingRadio!.isChecked()) {
+        if (!await attributeOidcOperation('binding-select', () => matchingRadio!.isChecked())) {
           await attributeOidcOperation('binding-select', () => matchingRadio!.check({ timeout: 2_000 }));
         }
       }
@@ -764,14 +766,14 @@ export async function completeOidcLogin(
         if (await secondLoginAction.isVisible({ timeout: 100 }).catch(() => false)) {
           trace.secondLoginActionSeen = true;
           throw new OidcApprovalError('second-login-action',
-            `Xpod exposed a second visible login action after password submission: ${await secondLoginAction.innerText()}`);
+            `Xpod exposed a second visible login action after password submission: ${await secondLoginAction.innerText().catch(() => '<unavailable>')}`);
         }
       }
 
       const action = page.getByRole('button', {
         name: OIDC_PRIMARY_ACTION_NAME,
       });
-      const actionCount = await action.count();
+      const actionCount = await attributeOidcOperation('approval-observation', () => action.count());
       let clickedAction = false;
       for (let index = 0; index < actionCount; index += 1) {
         const candidate = action.nth(index);
@@ -780,7 +782,8 @@ export async function completeOidcLogin(
         // The requested intermediate surface can finish rendering while the
         // helper inspects its controls. Do not click past a newly ready
         // consent page that the caller needs to interact with itself.
-        if (!options.requireCallbackEvidence && await options.ready?.(page)) return trace;
+        if (!options.requireCallbackEvidence
+          && await attributeOidcOperation('approval-observation', async () => options.ready?.(page))) return trace;
         if (!await attributeOidcOperation('approval-action',
           () => clickNonPasswordOidcAction(candidate, options))) continue;
         recordDiagnostic(`automation-activated button ${safePath(page.url())}`);
@@ -795,7 +798,7 @@ export async function completeOidcLogin(
       const actionLink = page.getByRole('link', {
         name: OIDC_PRIMARY_ACTION_NAME,
       });
-      const actionLinkCount = await actionLink.count();
+      const actionLinkCount = await attributeOidcOperation('approval-observation', () => actionLink.count());
       let clickedActionLink = false;
       for (let index = 0; index < actionLinkCount; index += 1) {
         const candidate = actionLink.nth(index);
