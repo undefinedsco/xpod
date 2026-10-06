@@ -62,6 +62,29 @@ it('keeps the created key when the write fails, then retries only the write', as
   ).toBe('ok'))
 })
 
+it('withdraws the applied client configuration through the real bridge contract', async () => {
+  const restore = vi.fn(async () => ({ status: 'notConfigured' as const }))
+  const bridge: AiClientConfigurationBridge = {
+    inspect: vi.fn(async () => ({ status: 'configured' as const })),
+    plan: vi.fn(async () => ({ client: 'codex' as const, planId: 'plan', changes: [] })),
+    apply: vi.fn(async () => ({ applied: true as const })),
+    verify: vi.fn(() => new Promise(() => undefined)),
+    restore,
+  }
+  render(<AiClientConfigurationSection bridge={bridge} client="codex" endpoint="https://pod.example"
+    createClientCredential={async () => ({ apiKey: 'private-key', revoke: vi.fn(async () => undefined) })} />)
+
+  await waitFor(() => expect(screen.getByText('已配置')).toBeTruthy())
+  const restoreButton = screen.getByRole('button', { name: '恢复 Codex 配置' })
+  expect(restoreButton.hasAttribute('disabled')).toBe(false)
+  restoreButton.click()
+  await waitFor(() => expect(restore).toHaveBeenCalledWith('codex'))
+  await waitFor(() => expect(screen.getByText('未配置')).toBeTruthy())
+  // The Key is Account-owned: withdrawing the local client config must never
+  // re-apply it or revoke the credential itself.
+  expect(bridge.apply).not.toHaveBeenCalled()
+})
+
 it('lets the user choose an existing key without minting a new one', async () => {
   const createClientCredential = vi.fn(async () => ({ apiKey: 'private-key', revoke: vi.fn(async () => undefined) }))
   const bridge: AiClientConfigurationBridge = {

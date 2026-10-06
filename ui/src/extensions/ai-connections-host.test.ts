@@ -348,13 +348,15 @@ test('uses the transport that established the Account actor for create, list and
   });
   const capability = host.capabilities.aiClientCredentials!;
   expect((await capability.create({ name: 'Owned key', webId })).resource).toBe(resource);
-  expect(await capability.list!()).toEqual([{ clientId: 'owned', label: 'owned', resource }]);
+  // The list resolves each collection row's detail because only that detail
+  // carries the Account-verified WebID the row is exposed with.
+  expect(await capability.list!()).toEqual([{ clientId: 'owned', label: 'owned', resource, webId }]);
   await capability.revoke({ clientId: 'owned', resource, webId });
-  expect(accountFetch.mock.calls.map(([, init]) => init?.method)).toEqual(['POST', 'GET', 'GET', 'DELETE']);
+  expect(accountFetch.mock.calls.map(([, init]) => init?.method)).toEqual(['POST', 'GET', 'GET', 'GET', 'DELETE']);
   active = false;
   await expect(capability.create({ name: 'Old key', webId })).rejects.toThrow('old account');
   await expect(capability.list!()).rejects.toThrow('old account');
   await expect(capability.revoke({ clientId: 'owned', resource, webId })).rejects.toThrow('old account');
-  expect(accountFetch).toHaveBeenCalledTimes(4);
+  expect(accountFetch).toHaveBeenCalledTimes(5);
   expect(invocationFetch).not.toHaveBeenCalled();
 });

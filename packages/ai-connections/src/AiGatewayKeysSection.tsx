@@ -330,9 +330,16 @@ export function AiGatewayKeysSection({
         if (generation !== verificationGeneration.current) return
         status = { ...status, ...inspected }
       }
-      const fingerprint = status.appliedKeyFingerprint ?? (status.status !== 'configured' ? plan.fingerprint : undefined)
-      if (fingerprint !== plan.fingerprint) throw new Error('Configuration key changed')
-      setClientStatuses(current => ({ ...current, [plan.clientId]: { ...status, appliedKeyFingerprint: fingerprint } }))
+      const reported = status.appliedKeyFingerprint
+      // Only a digest the host actually reports as *different* proves the
+      // applied key changed. A host that reports nothing leaves the key
+      // unproven; it must never read as "changed" or as verified.
+      if (reported !== undefined && reported !== plan.fingerprint) throw new Error('Configuration key changed')
+      setClientStatuses(current => ({ ...current, [plan.clientId]: {
+        ...status,
+        ...(reported ? {} : { status: 'unverifiable' as const }),
+        appliedKeyFingerprint: reported ?? plan.fingerprint,
+      } }))
     } catch {
       if (generation === verificationGeneration.current) notify({ variant: 'destructive', description: '客户端配置测试失败，请重试。', duration: 8000 })
     } finally {

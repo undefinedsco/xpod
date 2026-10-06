@@ -1,0 +1,1 @@
+import{r as t,j as o}from"./dashboard-DO0K1GYx.js";import{c as s}from"./button-m5AguR1l.js";const m=t.forwardRef(({className:e,...a},r)=>o.jsx("label",{ref:r,className:s("text-sm font-medium leading-none text-muted-foreground",e),...a}));m.displayName="Label";export{m as L};

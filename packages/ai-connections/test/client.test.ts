@@ -1,4 +1,8 @@
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { CodexConfigAdapter } from '../src/contract/client-config'
 import {
   createAiConnectionsClient as createCoreClient,
   AiConnectionsRequestError,
@@ -171,8 +175,8 @@ describe('AI Connection management client', () => {
       resource: 'https://id.example/.account/credentials/one/',
     }))
     const list = vi.fn(async () => [
-      { clientId: 'client', label: 'client', resource: 'https://id.example/.account/credentials/one/' },
-      { clientId: 'other', label: 'other', resource: 'https://id.example/.account/credentials/two/' },
+      { clientId: 'client', label: 'client', resource: 'https://id.example/.account/credentials/one/', webId: WEB_ID },
+      { clientId: 'other', label: 'other', resource: 'https://id.example/.account/credentials/two/', webId: WEB_ID },
     ])
     const revoke = vi.fn(async () => undefined)
     const client = createAiConnectionsClient({
@@ -1174,6 +1178,98 @@ describe('AI Connection management client', () => {
         body: undefined,
       },
     ])
+  })
+})
+
+describe('Account credential fingerprint and ownership contract', () => {
+  const wrapper = 'sk-Y2xpZW50OnNlY3JldA=='
+  const resourceOne = 'https://id.example/.account/credentials/one/'
+  const resourceTwo = 'https://id.example/.account/credentials/two/'
+  const noFetch = () => { throw new Error('no Pod request is expected for Account credential management') }
+  const capability = (overrides: Record<string, unknown> = {}) => ({
+    create: vi.fn(async () => ({ apiKey: wrapper, clientId: 'client-id-1', resource: resourceOne })),
+    list: vi.fn(async () => [{ clientId: 'client-id-1', label: 'client-id-1', resource: resourceOne, webId: WEB_ID }]),
+    revoke: vi.fn(async () => undefined),
+    ...overrides,
+  })
+
+  it('publishes the wrapper digest the native client-config adapter reports, never the Account client id', async () => {
+    const home = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xpod-key-fingerprint-'))
+    try {
+      const credentials = capability()
+      const client = createAiConnectionsClient({
+        webId: WEB_ID,
+        podBaseUrl: POD_BASE,
+        authenticatedFetch: noFetch as unknown as typeof fetch,
+        clientCredentials: credentials as never,
+      })
+      const created = await client.createGatewayKey({ name: 'Work laptop' })
+      expect(created.record.clientCredentialId).toBe('client-id-1')
+      expect(created.record.fingerprint).not.toBe('client-id-1')
+      expect(created.record.fingerprint).toMatch(/^[a-f0-9]{64}$/u)
+
+      // Cross the real native adapter: what it reports for the applied wrapper
+      // must be exactly the digest the row carries, or the UI comparison lies.
+      const adapter = new CodexConfigAdapter({ homeDir: home })
+      const plan = await adapter.plan({ endpoint: 'https://pod.example', apiKey: created.plaintext, webId: WEB_ID })
+      await adapter.apply(plan)
+      const inspection = await adapter.inspect()
+      expect(inspection.apiKeyFingerprint).toMatch(/^[a-f0-9]{64}$/u)
+      expect(inspection.apiKeyFingerprint).toBe(created.record.fingerprint)
+      await adapter.restore(WEB_ID)
+    } finally {
+      await fs.promises.rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the issued digest testable across a list refresh and never fabricates it on reload', async () => {
+    const credentials = capability()
+    const options = {
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch: noFetch as unknown as typeof fetch,
+      clientCredentials: credentials as never,
+    }
+    const client = createAiConnectionsClient(options)
+    const created = await client.createGatewayKey({ name: 'Work laptop' })
+    const digest = created.record.fingerprint
+    expect(digest).toMatch(/^[a-f0-9]{64}$/u)
+
+    // The Account list owns no wrapper, so the row's digest is a session
+    // observation: refreshing rows must not erase it.
+    const refreshed = await client.listGatewayKeys()
+    expect(refreshed).toHaveLength(1)
+    expect(refreshed[0]).toMatchObject({ id: 'client-id-1', fingerprint: digest, owner: WEB_ID })
+
+    // A reload is a new client with no wrapper: the digest must be absent, not invented.
+    const reloaded = createAiConnectionsClient({ ...options, clientCredentials: capability() as never })
+    const afterReload = await reloaded.listGatewayKeys()
+    expect(afterReload).toHaveLength(1)
+    expect(afterReload[0].fingerprint).toBeUndefined()
+  })
+
+  it('exposes only the selected WebID credentials and never destroys a foreign one', async () => {
+    const list = vi.fn(async () => [
+      { clientId: 'mine', label: 'mine', resource: resourceOne, webId: WEB_ID },
+      { clientId: 'foreign', label: 'foreign', resource: resourceTwo, webId: 'https://pod.example/bob/profile/card#me' },
+      { clientId: 'unknown', label: 'unknown', resource: 'https://id.example/.account/credentials/three/' },
+    ])
+    const revoke = vi.fn(async () => undefined)
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch: noFetch as unknown as typeof fetch,
+      clientCredentials: { create: vi.fn(), list, revoke } as never,
+    })
+    const listed = await client.listGatewayKeys()
+    expect(listed.map((record) => record.id)).toEqual(['mine'])
+    expect(listed[0].owner).toBe(WEB_ID)
+
+    await expect(client.deleteGatewayKey('foreign'))
+      .rejects.toThrow('账号服务中已找不到该客户端凭据，请刷新后重试。')
+    await expect(client.deleteGatewayKey('unknown'))
+      .rejects.toThrow('账号服务中已找不到该客户端凭据，请刷新后重试。')
+    expect(revoke).not.toHaveBeenCalled()
   })
 })
 

@@ -102,9 +102,11 @@ export interface GatewayKeyRecord {
   kind?: 'client-credentials'
   credentialResource?: string
   /**
-   * Identity of the credential a client configuration was written with. It is
-   * the Account `clientId`, never a secret, and only lets this session correlate
-   * an apply with the row it came from.
+   * Digest of the `sk-` wrapper the known client configuration was written with
+   * (the same value the native adapters report as `apiKeyFingerprint`), never a
+   * secret. It is a session-local observation: the Account owns no wrapper, so a
+   * row restored from the Account list has no digest and cannot be tested. The
+   * credential's equality identity stays `clientCredentialId`.
    */
   fingerprint?: string
   owner: string

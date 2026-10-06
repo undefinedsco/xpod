@@ -117,3 +117,6 @@ openspec/
 /undefineds.co-xpod-*.tgz
 .omx/
 .pytest_cache/
+
+# Playwright writes its per-run traces/screenshots here; never source.
+test-results/

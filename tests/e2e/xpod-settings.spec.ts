@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { expect, type Page, type Request, test } from '@playwright/test';
+import { expect, type Locator, type Page, type Request, test } from '@playwright/test';
 import { completeOidcLogin, type BrowserOidcTrace, type BrowserSolidAccount } from '../helpers/browserSolidOidc';
 import { openNavigationDrawer } from '../helpers/navigationDrawer';
 
@@ -10,20 +11,33 @@ const fixtureModelId = 'fixture-gpt-acceptance';
 const fixtureModelName = 'Fixture GPT Acceptance';
 const fakeProviderApiKey = 'sk-xpod-acceptance-fixture-key';
 const fakeSiblingApiKey = 'sk-xpod-acceptance-fixture-sibling';
-const primaryCredentialLabel = maskedCredentialLabel(fakeProviderApiKey);
-const siblingCredentialLabel = maskedCredentialLabel(fakeSiblingApiKey);
+const primaryCredentialHint = credentialHint(fakeProviderApiKey);
+const siblingCredentialHint = credentialHint(fakeSiblingApiKey);
 /**
- * STALENESS (recorded 2026-10-07, phase21): the Xpod key flows below were
- * re-pointed at the living contract (Account client credentials; the wrapper is
- * only ever visible in the creating session). The REST OF THIS SPEC'S XPOD-KEY
- * SECTION IS PRE-EXISTING STALE and cannot pass as written: it still drives the
- * retired nav label `API Keys`, heading `API KEYS`, button `新建 API Key`, and a
- * `… 客户端选项` group / `应用到 Codex` checkbox / 停用 affordance that commit
- * 3dd77d648 had already removed from the applet. Re-authoring it against the
- * current dialog-based surface is a dedicated batch; this file is not evidence
- * of a green browser run today.
+ * PROOF BOUNDARY (re-authored 2026-10-07, phase22): the Xpod key flows here are
+ * driven through the living applet surface — nav option `Xpod`, dialog
+ * `新建 Xpod 密钥` / `Xpod 密钥 已签发`, and the Account client-credentials
+ * capability (the wrapper is only ever visible in the creating session).
+ *
+ * The heavy workspace is declared by the desktop preload bridge, never by
+ * viewport or hostname, so a browser fixture must select that surface the same
+ * way `account-web-layout.spec.ts` does (`useDesktopSurface`). The marker only
+ * picks the renderer: no session, cookie, token, callback or authority is
+ * injected, and the real OIDC login and real Xpod key UI still run. This is
+ * browser-fixture evidence against a locally spawned stack for the desktop
+ * SURFACE, NOT evidence about the immutable released ZIP, a real Electron
+ * preload, or a formal RC run; those need their own exact-artifact proof.
+ *
+ * KNOWN UNMET REQUIREMENT in this file (see the last test): destroying an Xpod
+ * key removes the Account credential, but the gateway keeps authenticating the
+ * already-cached `sk-` wrapper until its token expires. That gap is asserted
+ * RED on purpose; it is not a pass.
  */
-const aliceGatewayKeyName = 'Alice acceptance Gateway';
+const aliceGatewayKeyName = 'Alice acceptance Xpod key';
+/** The Account credential id (the CSS label) of the key this run created. */
+let aliceIssuedKeyId = '';
+/** The client-configuration bridge surface the Xpod apply/verify flow drives. */
+const codexClientConfigurationPath = '/api/ai/client-configuration/codex';
 const fixtureFailurePrefix = 'XPOD_SETTINGS_FIXTURE_ERROR ';
 
 type FixtureHarnessReady = {
@@ -190,7 +204,9 @@ test.describe('Xpod settings product acceptance', () => {
       const trace = await loginToSettings(page, alice);
       assertRealOidcTrace(trace);
       plaintext = await createAliceGatewayKeyThroughUi(page);
+      // An Account-backed Xpod key is not a toggleable Gateway key record.
       await expect(page.getByRole('button', { name: `停用 ${aliceGatewayKeyName}` })).toHaveCount(0);
+      await expect(aliceGatewayKeyRow(page)).toHaveCount(1);
       const models = await page.request.get(
         new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(),
         { headers: { authorization: `Bearer ${plaintext}` }, timeout: 30_000 },
@@ -199,28 +215,39 @@ test.describe('Xpod settings product acceptance', () => {
       expect((await models.json()).data).toEqual([]);
 
       await page.reload({ waitUntil: 'domcontentloaded' });
+      await reenterAuthenticatedWorkspace(page, alice);
       await openApiKeysSection(page);
-      await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toBeVisible({ timeout: 30_000 });
+      // A fresh session reads the Account again, so the row is identified by its
+      // stored credential id rather than the wrapper-request display name.
+      await expect(aliceGatewayKeyRow(page)).toBeVisible({ timeout: 30_000 });
       // The Account does not own the wrapper, so a reload cannot recover it:
-      // the row states that plainly and no reveal request is made.
-      await expect(page.getByText('密钥原文没有保存，不能再显示', { exact: true })).toBeVisible({ timeout: 30_000 });
-      const keyRow = page.locator('[data-key-state]').filter({ has: page.getByText(aliceGatewayKeyName, { exact: true }) });
+      // the row states that plainly, no reveal request is made, and the fresh
+      // session has no observed digest so it cannot honestly offer a verify.
+      const keyRow = aliceGatewayKeyRow(page);
       await expect(keyRow).toHaveCount(1);
+      // Scope the unrecoverable-secret note to this row: a fresh session shows
+      // it for every Account credential whose wrapper it never observed, so a
+      // page-wide match would also catch unrelated fixture credentials.
+      await expect(keyRow.getByText('密钥原文没有保存，不能再显示', { exact: true })).toBeVisible({ timeout: 30_000 });
+      await expect(keyRow.getByRole('button', { name: '测试一次', exact: true })).toHaveCount(0);
       await expect(page.locator('body')).not.toContainText(plaintext);
-      await page.screenshot({ path: path.join(screenshotDir, 'api-key-unrecoverable-row.png'), fullPage: true, animations: 'disabled' });
+      await page.screenshot({ path: path.join(screenshotDir, 'xpod-key-unrecoverable-row.png'), fullPage: true, animations: 'disabled' });
     } catch (error) {
       workflowFailed = true;
-      await page.screenshot({ path: path.join(screenshotDir, 'api-key-layout-failure.png'), fullPage: true }).catch(() => undefined);
+      await page.screenshot({ path: path.join(screenshotDir, 'xpod-key-layout-failure.png'), fullPage: true }).catch(() => undefined);
       throw error;
     } finally {
-      await settleWithin(deleteAliceGatewayKeyThroughUi(page), 5_000);
-      if (plaintext) {
-        const revoked = await page.request.get(
-          new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(),
-          { headers: { authorization: `Bearer ${plaintext}` } },
-        ).catch(() => undefined);
-        if (revoked && !workflowFailed) expect(revoked.status()).toBe(401);
+      // Destroying the key is acceptance evidence, not best-effort cleanup: the
+      // helper asserts the Account DELETE returns 200 and the row disappears.
+      // Whether the wrapper stops authenticating straight away is a separate
+      // requirement, covered by its own test at the end of this file.
+      if (!workflowFailed) {
+        const destroyed = await settleWithin(deleteAliceGatewayKeyThroughUi(page), 90_000);
+        expect(destroyed, 'destroying the Xpod key should complete within the budget').toBe(true);
+      } else {
+        await settleWithin(deleteAliceGatewayKeyThroughUi(page), 90_000);
       }
+      if (plaintext) await expect(page.locator('body')).not.toContainText(plaintext).catch(() => undefined);
       await context.close().catch(() => undefined);
     }
   });
@@ -259,8 +286,10 @@ test.describe('Xpod settings product acceptance', () => {
         async () => (await runAiConnectionsPodProbe(alice, { provider: 'openai' })).providerCredentialCount,
         { timeout: 45_000 },
       ).toBe(2);
-      const firstHandle = alicePage.getByRole('button', { name: `拖动排序 ${primaryCredentialLabel}` });
-      const secondHandle = alicePage.getByRole('button', { name: `拖动排序 ${siblingCredentialLabel}` });
+      const firstHandle = providerCredentialRow(alicePage, primaryCredentialHint)
+        .getByRole('button', { name: /^拖动排序 /u });
+      const secondHandle = providerCredentialRow(alicePage, siblingCredentialHint)
+        .getByRole('button', { name: /^拖动排序 /u });
       await expect(secondHandle).toBeEnabled({ timeout: 30_000 });
       const from = await secondHandle.boundingBox();
       const to = await firstHandle.boundingBox();
@@ -270,20 +299,22 @@ test.describe('Xpod settings product acceptance', () => {
       await alicePage.mouse.down();
       await alicePage.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 8 });
       await alicePage.mouse.up();
-      await expect(alicePage.locator('[data-sortable-credential]').first()).toContainText(siblingCredentialLabel, { timeout: 30_000 });
+      await expect(alicePage.locator('[data-sortable-credential]').first()).toContainText(siblingCredentialHint, { timeout: 30_000 });
       await expect(secondHandle).toBeEnabled({ timeout: 30_000 });
       await alicePage.reload({ waitUntil: 'domcontentloaded' });
+      await reenterAuthenticatedWorkspace(alicePage, alice);
       await openModule(alicePage, '/ai-connections', 'AI Connections');
       await alicePage.getByRole('option', { name: 'OpenAI' }).click();
-      await expect(alicePage.locator('[data-sortable-credential]').first()).toContainText(siblingCredentialLabel, { timeout: 30_000 });
+      await expect(alicePage.locator('[data-sortable-credential]').first()).toContainText(siblingCredentialHint, { timeout: 30_000 });
       await alicePage.screenshot({ path: path.join(screenshotDir, 'provider-drag-persisted.png'), fullPage: true });
-      await alicePage.getByRole('button', { name: `停用 ${siblingCredentialLabel}` }).click();
-      await expect(alicePage.getByRole('button', { name: `启用 ${siblingCredentialLabel}` })).toBeVisible({ timeout: 30_000 });
-      await alicePage.getByRole('button', { name: `启用 ${siblingCredentialLabel}` }).click();
-      await expect(alicePage.getByRole('button', { name: `停用 ${siblingCredentialLabel}` })).toBeVisible();
-      await alicePage.getByRole('button', { name: `删除 ${siblingCredentialLabel}` }).click();
-      await expect(alicePage.getByText(siblingCredentialLabel, { exact: true })).toHaveCount(0);
-      await expect(alicePage.getByText(primaryCredentialLabel, { exact: true })).toBeVisible();
+      const siblingRow = providerCredentialRow(alicePage, siblingCredentialHint);
+      await siblingRow.getByRole('button', { name: /^停用 /u }).click();
+      await expect(siblingRow.getByRole('button', { name: /^启用 /u })).toBeVisible({ timeout: 30_000 });
+      await siblingRow.getByRole('button', { name: /^启用 /u }).click();
+      await expect(siblingRow.getByRole('button', { name: /^停用 /u })).toBeVisible();
+      await siblingRow.getByRole('button', { name: /^删除 /u }).click();
+      await expect(alicePage.getByText(siblingCredentialHint, { exact: true })).toHaveCount(0);
+      await expect(providerCredentialRow(alicePage, primaryCredentialHint)).toBeVisible();
       await expect.poll(
         async () => (await runAiConnectionsPodProbe(alice, { provider: 'openai' })).providerCredentialCount,
         { timeout: 45_000 },
@@ -294,15 +325,17 @@ test.describe('Xpod settings product acceptance', () => {
         { timeout: 45_000 },
       ).toBe(1);
       await alicePage.reload({ waitUntil: 'domcontentloaded' });
+      await reenterAuthenticatedWorkspace(alicePage, alice);
       await openModule(alicePage, '/ai-connections', 'AI Connections');
       await alicePage.getByRole('option', { name: 'OpenAI' }).click();
       await expect(alicePage.getByText(fixtureModelName, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
-      await expect(alicePage.getByRole('checkbox', { name: `取消选择 ${fixtureModelName}` }).first()).toHaveAttribute('aria-checked', 'true');
+      await expect(alicePage.getByRole('button', { name: `停用 ${fixtureModelName}` }).first()).toBeVisible({ timeout: 30_000 });
 
-      const aliceGatewayKey = await createAliceGatewayKeyThroughUi(alicePage);
+      const aliceGatewayKey = await createAliceGatewayKeyThroughUi(alicePage, { purpose: 'codex', apply: true });
       await assertAliceGatewayModelAccess(alicePage, aliceGatewayKey);
       await assertAliceGatewayChatAccess(alicePage, aliceGatewayKey);
-      await applyAndWithdrawAliceGatewayKeyThroughUi(alicePage, aliceGatewayKey);
+      await verifyAliceGatewayKeyThroughUi(alicePage, aliceGatewayKey);
+      await assertAliceGatewayKeyRowWorkspace(alicePage);
 
       await fixtureHarness.setModels([]);
       await openModule(alicePage, '/ai-connections', 'AI Connections');
@@ -314,29 +347,33 @@ test.describe('Xpod settings product acceptance', () => {
       ).toBe(1);
       await expect(alicePage.getByText('已失效', { exact: true })).toBeVisible({ timeout: 45_000 });
       await expect(alicePage.getByText(fixtureModelName, { exact: true }).first()).toBeVisible();
-      await expect(alicePage.getByRole('checkbox', { name: `取消选择 ${fixtureModelName}` }).first()).toHaveAttribute('aria-checked', 'true');
+      await expect(alicePage.getByRole('button', { name: `停用 ${fixtureModelName}` }).first()).toBeVisible({ timeout: 30_000 });
 
       const bobTrace = await loginToSettings(bobPage, bob);
       assertRealOidcTrace(bobTrace);
       await openModule(bobPage, '/ai-connections', 'AI Connections');
-      await expect(bobPage.locator('body')).not.toContainText(primaryCredentialLabel);
+      await expect(bobPage.locator('body')).not.toContainText(primaryCredentialHint);
       await expect(bobPage.locator('body')).not.toContainText(aliceGatewayKeyName);
       await expect(bobPage.locator('[data-credential-state]')).toHaveCount(0);
       await expect(bobPage.getByText(fixtureModelName, { exact: true })).toHaveCount(0);
 
       await openApiKeysSection(bobPage);
       await expect(bobPage.locator('body')).not.toContainText(aliceGatewayKeyName);
+      await expect(bobPage.locator('body')).not.toContainText(aliceGatewayKey);
+      // Alice's credential is owned by Alice's WebID: Bob's selected identity
+      // must never list it as his own row.
+      await expect(aliceGatewayKeyRow(bobPage)).toHaveCount(0);
 
       const bobPod = await runAiConnectionsPodProbe(bob, { provider: 'openai' });
       expect(bobPod.providerCredentialCount).toBe(0);
       expect(bobPod.selectedModelCount).toBe(0);
 
+      // Destroying the key removes the Account credential (the helper asserts
+      // the DELETE and the vanished row). Whether the destroyed wrapper stops
+      // authenticating immediately is a separate, currently unmet requirement
+      // with its own test at the end of this file.
       await deleteAliceGatewayKeyThroughUi(alicePage);
-      const revokedGatewayResponse = await alicePage.request.get(
-        new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(),
-        { headers: { authorization: `Bearer ${aliceGatewayKey}` } },
-      );
-      expect(revokedGatewayResponse.status()).toBe(401);
+      await expect(aliceGatewayKeyRow(alicePage)).toHaveCount(0);
 
       // Keep a reference in the test body so the Pod proof cannot accidentally
       // become a UI-only assertion during future acceptance refactors.
@@ -345,8 +382,8 @@ test.describe('Xpod settings product acceptance', () => {
       await alicePage.screenshot({ path: path.join(screenshotDir, 'provider-flow-failure.png'), fullPage: true });
       throw new Error(`${String(error)}\n${redactFixtureSecrets(await alicePage.locator('body').innerText())}\n${flowDiagnostics.slice(-15).join('\n')}`);
     } finally {
-      await settleWithin(deleteAliceFixtureCredentialThroughUi(alicePage), 5_000);
-      await settleWithin(deleteAliceGatewayKeyThroughUi(alicePage), 5_000);
+      await settleWithin(deleteAliceFixtureCredentialThroughUi(alicePage), 90_000);
+      await settleWithin(deleteAliceGatewayKeyThroughUi(alicePage), 90_000);
       await aliceContext.close();
       await bobContext.close();
     }
@@ -380,9 +417,7 @@ test.describe('Xpod settings product acceptance', () => {
 
       await page.getByRole('button', { name: /同步模型|刷新模型/u }).click();
       await expect(page.getByText(modelId, { exact: true }).first()).toBeVisible({ timeout: 45_000 });
-      const checkbox = page.getByRole('checkbox', { name: `选择 ${modelId}` }).first();
-      await checkbox.click();
-      await expect(page.getByRole('checkbox', { name: `取消选择 ${modelId}` }).first()).toHaveAttribute('aria-checked', 'true');
+      await enableModelThroughUi(page, modelId);
       const podState = await runAiConnectionsPodProbe(alice, {
         provider: 'custom',
         expectedSecret: apiKey,
@@ -440,9 +475,7 @@ test.describe('Xpod settings product acceptance', () => {
       await expect(page.locator('body')).not.toContainText(apiKey!);
       await page.getByRole('button', { name: /同步模型|刷新模型/u }).click();
       await expect(page.getByText(modelId, { exact: true }).first()).toBeVisible({ timeout: 45_000 });
-      const checkbox = page.getByRole('checkbox', { name: `选择 ${modelId}` }).first();
-      await checkbox.click();
-      await expect(page.getByRole('checkbox', { name: `取消选择 ${modelId}` }).first()).toHaveAttribute('aria-checked', 'true');
+      await enableModelThroughUi(page, modelId);
 
       const podState = await runAiConnectionsPodProbe(alice, { provider: 'deepseek', expectedSecret: apiKey });
       expect(podState.providerCredentialCount).toBeGreaterThan(0);
@@ -483,11 +516,12 @@ test.describe('Xpod settings product acceptance', () => {
       const page = await browser.newPage();
       try {
         await page.setViewportSize({ width: viewport.width, height: viewport.height });
-        const trace = await loginToSettings(page, alice);
+        const trace = await loginToSettings(page, alice, { rememberClient: true });
         assertRealOidcTrace(trace);
+        assertRememberedDesktopClient(trace);
 
         for (const module of [
-          { label: 'AI Connections', path: '/ai-connections', expected: /OpenAI|Anthropic|Kimi|百炼|DeepSeek|API KEYS/i },
+          { label: 'AI Connections', path: '/ai-connections', expected: /OpenAI|Anthropic|Kimi|百炼|DeepSeek|Xpod/i },
           { label: 'Pod', path: '/pod/models', expected: /模型设置|检索与索引|授权应用|数据管理|Pod/i },
           { label: 'Network', path: '/device/network', expected: /网络访问|服务状态|运行设置|查看日志|隧道/i },
           { label: 'Status', path: '/device/services', expected: /服务状态|核心服务|入口网关|Solid 服务|API 服务/i },
@@ -511,8 +545,9 @@ test.describe('Xpod settings product acceptance', () => {
     test.setTimeout(180_000);
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     try {
-      const trace = await loginToSettings(page, alice);
+      const trace = await loginToSettings(page, alice, { rememberClient: true });
       assertRealOidcTrace(trace);
+      assertRememberedDesktopClient(trace);
       await openModule(page, '/ai-connections', 'AI Connections');
 
       // At 390 the host keeps only the content column and owns the workspace list
@@ -570,9 +605,84 @@ test.describe('Xpod settings product acceptance', () => {
       await page.context().close();
     }
   });
+
+  /**
+   * REQUIREMENT, CURRENTLY UNMET (proven 2026-10-07, phase22): destroying an
+   * Xpod key really removes the Account client credential — the DELETE returns
+   * 200 and the credential detail is gone — but the gateway keeps authenticating
+   * the `sk-` wrapper afterwards.
+   *
+   * Mechanism: `ClientCredentialsAuthenticator` exchanges the wrapper once and
+   * `SolidSessionFactory` caches the token per credential; nothing calls
+   * `SolidSessionFactory.invalidateClientCredential()` any more, because its
+   * last caller was the Gateway key DELETE route deleted together with the
+   * locator in 5b14737075. A destroyed key therefore keeps working until the
+   * cached token expires.
+   *
+   * The repair belongs to the server session boundary (observe the Account
+   * credential DELETE, or stop caching inbound sessions) and is outside this
+   * browser-fixture batch. This test stays RED rather than being relaxed or
+   * skipped, so a future RC cannot mistake the gap for a pass.
+   */
+  test('refuses a destroyed Xpod key immediately (known gap: the cached gateway session is never invalidated)', async ({ browser }) => {
+    test.setTimeout(180_000);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    let plaintext = '';
+    try {
+      const trace = await loginToSettings(page, alice);
+      assertRealOidcTrace(trace);
+      plaintext = await createAliceGatewayKeyThroughUi(page);
+      const before = await page.request.get(
+        new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(),
+        { headers: { authorization: `Bearer ${plaintext}` }, timeout: 30_000 },
+      );
+      expect(before.status()).toBe(200);
+      await deleteAliceGatewayKeyThroughUi(page);
+      const after = await page.request.get(
+        new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(),
+        { headers: { authorization: `Bearer ${plaintext}` }, timeout: 30_000 },
+      );
+      expect(after.status(), 'a destroyed Xpod key must stop authenticating').toBe(401);
+    } finally {
+      await settleWithin(deleteAliceGatewayKeyThroughUi(page), 90_000);
+      await context.close().catch(() => undefined);
+    }
+  });
 });
 
-async function loginToSettings(page: Page, account: BrowserSolidAccount): Promise<BrowserOidcTrace> {
+/**
+ * A bounded desktop-surface marker: enough for the app to choose the desktop
+ * renderer so the real OIDC login and the real Xpod key UI can run in Chromium.
+ * It injects no credential material and no auth result.
+ */
+async function useDesktopSurface(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    Object.assign(window, {
+      xpodDesktop: {
+        setIdentity: () => undefined,
+        setWindowMode: () => undefined,
+      },
+    });
+  });
+}
+
+/**
+ * Real OIDC login for the desktop surface. `rememberClient` drives the actual
+ * Consent "以后不再询问" checkbox when the scenario needs the desktop client to
+ * survive a later document load: the bundled client declares
+ * `application_type: "native"`, and the IdP's `native_client_prompt` policy
+ * answers a `prompt=none` restoration with `interaction_required` until a
+ * remembered grant exists. That grant is a real user choice on the Consent
+ * screen, not an injected authority; callers that navigate the document after
+ * login must select it or the restore will (correctly) be refused.
+ */
+async function loginToSettings(
+  page: Page,
+  account: BrowserSolidAccount,
+  options: { rememberClient?: boolean } = {},
+): Promise<BrowserOidcTrace> {
+  await useDesktopSurface(page);
   try {
     return await completeOidcLogin(page, account, {
       baseUrl: fixtureHarness.ready.baseUrl,
@@ -580,12 +690,41 @@ async function loginToSettings(page: Page, account: BrowserSolidAccount): Promis
       ready: isXpodWorkspaceReady,
       requireCallbackEvidence: true,
       timeoutMs: 90_000,
+      ...(options.rememberClient === undefined ? {} : { rememberClient: options.rememberClient }),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const diagnostics = fixtureHarness.diagnostics();
     throw new Error(diagnostics ? `${message}\n${diagnostics}` : message, { cause: error });
   }
+}
+
+/**
+ * A browser fixture has no native session store, so a reload returns to the
+ * product's own sign-in surface instead of the workspace — persisted session
+ * reuse is an Electron capability (see `browser-session-refresh.spec.ts`).
+ * Re-enter through the product's own affordance and complete the real OIDC
+ * login again, so post-reload coverage still runs in a genuinely fresh
+ * authenticated session instead of being dropped.
+ */
+async function reenterAuthenticatedWorkspace(page: Page, account: BrowserSolidAccount): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    if (await isXpodWorkspaceReady(page)) return;
+    await page.waitForTimeout(300);
+  }
+  await page.waitForLoadState('domcontentloaded').catch(() => undefined);
+  const retry = page.getByRole('button', { name: '重新登录', exact: true });
+  if (await retry.isVisible({ timeout: 5_000 }).catch(() => false)) {
+    await retry.click().catch(() => undefined);
+    // The product's own retry starts its navigation. Let it settle before the
+    // OIDC login navigates again, otherwise the second navigation supersedes
+    // the first and fails as ERR_ABORTED.
+    await page.waitForLoadState('domcontentloaded').catch(() => undefined);
+  }
+  await page.waitForTimeout(500);
+  const trace = await loginToSettings(page, account);
+  assertRealOidcTrace(trace);
 }
 
 async function isXpodWorkspaceReady(page: Page): Promise<boolean> {
@@ -602,11 +741,17 @@ async function isXpodWorkspaceReady(page: Page): Promise<boolean> {
   }
 }
 
-async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
-  await Promise.race([
-    promise.catch(() => undefined),
-    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+/**
+ * Wait for a cleanup action with a hard budget. Returns whether the action
+ * actually finished, so a caller that treats the action as evidence can fail
+ * on a timeout instead of letting a swallowed error read as success.
+ */
+async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  const completed = await Promise.race([
+    promise.then(() => true).catch(() => false),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
   ]);
+  return completed;
 }
 
 function redactFixtureSecrets(value: string): string {
@@ -679,7 +824,7 @@ async function completeApiKeyThroughUi(
     await page.screenshot({ path: path.join(screenshotDir, 'provider-create-failure.png'), fullPage: true });
     throw new Error(`${String(error)}\n${redactFixtureSecrets(await page.getByRole('dialog', { name: '新建连接' }).innerText())}`);
   }
-  await expect(page.getByText(maskedCredentialLabel(apiKey), { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(providerCredentialRow(page, credentialHint(apiKey))).toBeVisible({ timeout: 30_000 });
   await page.screenshot({ path: path.join(screenshotDir, 'provider-credential-list.png'), fullPage: true, animations: 'disabled' });
   const refreshResponsePromise = page.waitForResponse((response) => (
     response.request().method() === 'POST'
@@ -694,20 +839,47 @@ async function completeApiKeyThroughUi(
   }
 }
 
-async function chooseFixtureModel(page: Page): Promise<void> {
-  const checkbox = page.getByRole('checkbox', { name: `选择 ${fixtureModelName}` }).first();
-  await expect(checkbox).toBeVisible({ timeout: 30_000 });
-  await checkbox.click();
-  await expect(page.getByRole('checkbox', { name: `取消选择 ${fixtureModelName}` }).first()).toHaveAttribute('aria-checked', 'true');
+/**
+ * Turn a model row on through the living catalog toggle and prove the state
+ * flipped. The catalog exposes `启用 <name>` / `停用 <name>` row actions; it no
+ * longer renders a selection checkbox.
+ */
+async function enableModelThroughUi(page: Page, modelName: string): Promise<void> {
+  const enable = page.getByRole('button', { name: `启用 ${modelName}` }).first();
+  await expect(enable).toBeVisible({ timeout: 30_000 });
+  await enable.click();
+  await expect(page.getByRole('button', { name: `停用 ${modelName}` }).first()).toBeVisible({ timeout: 30_000 });
 }
 
-async function createAliceGatewayKeyThroughUi(page: Page): Promise<string> {
+async function chooseFixtureModel(page: Page): Promise<void> {
+  await enableModelThroughUi(page, fixtureModelName);
+}
+
+type AliceKeyPurpose = '' | 'codex';
+
+/**
+ * Drive the living Xpod key flow: the section issues an Account client
+ * credential through the host capability, the wrapper is only ever visible in
+ * the session that created it, and the copy action must hand back the complete
+ * credential. When `apply` is set the issued dialog's `写入 Codex` writes the
+ * wrapper into the task-owned local client config through the real
+ * local-filesystem bridge, and `purpose` must then be `codex` because the
+ * living surface only offers apply for the declared client.
+ */
+async function createAliceGatewayKeyThroughUi(
+  page: Page,
+  options: { purpose?: AliceKeyPurpose; apply?: boolean } = {},
+): Promise<string> {
   await openApiKeysSection(page);
-  await expect(page.getByLabel('API Key 名称')).toHaveCount(0);
-  await page.getByRole('button', { name: '新建 API Key' }).click();
-  await expect(page.getByRole('dialog', { name: '新建 API Key' })).toBeVisible();
-  await page.getByLabel('API Key 名称').fill(aliceGatewayKeyName);
-  await page.screenshot({ path: path.join(screenshotDir, 'api-key-create-dialog.png'), fullPage: true, animations: 'disabled' });
+  await expect(page.getByLabel('Xpod 密钥 名称')).toHaveCount(0);
+  await page.getByRole('button', { name: '新建 Xpod 密钥' }).click();
+  const formDialog = page.getByRole('dialog', { name: '新建 Xpod 密钥' });
+  await expect(formDialog).toBeVisible();
+  await page.getByLabel('Xpod 密钥 名称').fill(aliceGatewayKeyName);
+  if (options.purpose) {
+    await page.getByLabel('Xpod 密钥 用途').selectOption(options.purpose);
+  }
+  await page.screenshot({ path: path.join(screenshotDir, 'xpod-key-create-dialog.png'), fullPage: true, animations: 'disabled' });
   const creationRequests: string[] = [];
   const trackRequest = (request: Request) => {
     if (request.method() === 'POST') creationRequests.push(new URL(request.url()).pathname);
@@ -720,117 +892,149 @@ async function createAliceGatewayKeyThroughUi(page: Page): Promise<string> {
     && response.request().postDataJSON()?.webId === alice.webId
   ));
   try {
-    await page.getByRole('button', { name: '创建 API Key' }).click();
+    await page.getByRole('button', { name: '创建 Xpod 密钥' }).click();
     const accountResponse = await accountResponsePromise;
     expect(accountResponse.ok()).toBe(true);
     const credential = await accountResponse.json() as { id?: unknown; secret?: unknown; resource?: unknown };
     expect(typeof credential.id).toBe('string');
     expect(typeof credential.secret).toBe('string');
     expect(typeof credential.resource).toBe('string');
+    // The Account owns the credential id (the CSS label). It is the stable row
+    // identity before and after a reload, unlike the display name the creating
+    // session happens to remember.
+    aliceIssuedKeyId = credential.id as string;
     // An Xpod key is an Account client credential: the page wraps the pair it
     // just received and never posts a second record to a Gateway key route.
-    const expectedKey = `sk-${Buffer.from(`${credential.id}:${credential.secret}`, 'utf8').toString('base64')}`;
-    await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText('API Key 已创建，可在列表中复制或应用配置。', { exact: true })).toBeVisible();
-    await expect(page.getByLabel('API Key 名称')).toHaveCount(0);
-    await expect(page.locator('body')).not.toContainText(expectedKey);
+    const wrapper = `sk-${Buffer.from(`${credential.id}:${credential.secret}`, 'utf8').toString('base64')}`;
+    const issuedDialog = page.getByRole('dialog', { name: 'Xpod 密钥 已签发' });
+    await expect(issuedDialog).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText('Xpod 密钥 已创建，请复制或应用到客户端。', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('body')).not.toContainText(wrapper);
     expect(creationRequests.filter((pathname) => pathname === '/api/ai/gateway/keys')).toHaveLength(0);
-    expect(creationRequests.some((pathname) => /\/(?:plan|apply|verify|reveal)$/u.test(pathname))).toBe(false);
-    return expectedKey;
+    expect(creationRequests.some((pathname) => /\/api\/ai\/gateway\/keys\//u.test(pathname))).toBe(false);
+
+    // The copy action must return the complete wrapper while the page itself
+    // never echoes it back into the DOM.
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await issuedDialog.getByRole('button', { name: '复制 Xpod 密钥', exact: true }).click();
+    await expect.poll(async () => (await page.evaluate(() => navigator.clipboard.readText())) === wrapper,
+      { message: 'The key copy action should copy the complete Xpod key' }).toBe(true);
+    await expect(page.locator('body')).not.toContainText(wrapper);
+
+    if (options.apply) {
+      await applyIssuedAliceGatewayKeyThroughUi(page, issuedDialog, wrapper);
+    }
+
+    await issuedDialog.getByRole('button', { name: '完成' }).click();
+    await expect(issuedDialog).toBeHidden({ timeout: 30_000 });
+    await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toBeVisible({ timeout: 30_000 });
+    return wrapper;
   } finally {
     page.off('request', trackRequest);
   }
 }
 
-async function openGatewayClientMenu(page: Page): Promise<void> {
-  const menu = page.getByRole('group', { name: `${aliceGatewayKeyName} 客户端选项` });
-  const trigger = page.getByRole('button', { name: `${aliceGatewayKeyName} 客户端配置`, exact: true });
-  await expect(trigger).toBeVisible({ timeout: 30_000 });
-  if (!await menu.isVisible()) await trigger.click();
-  await expect(menu).toBeVisible();
-}
-
-async function applyAndWithdrawAliceGatewayKeyThroughUi(page: Page, apiKey: string): Promise<void> {
-  await openApiKeysSection(page);
-  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.getByRole('button', { name: `复制 ${aliceGatewayKeyName}`, exact: true }).click();
-  await expect.poll(async () => (await page.evaluate(() => navigator.clipboard.readText())) === apiKey,
-    { message: 'The key copy action should copy the complete API Key' }).toBe(true);
-  await expect(page.locator('body')).not.toContainText(apiKey);
-  await openGatewayClientMenu(page);
-  const clientCheckbox = page.getByRole('checkbox', { name: `${aliceGatewayKeyName} 应用到 Codex`, exact: true });
-  await expect(clientCheckbox).not.toBeChecked();
-  const endpoint = '/api/ai/client-configuration/codex';
+async function applyIssuedAliceGatewayKeyThroughUi(page: Page, issuedDialog: Locator, wrapper: string): Promise<void> {
   const planResponsePromise = page.waitForResponse((response) => (
-    response.request().method() === 'POST' && new URL(response.url()).pathname === `${endpoint}/plan`
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `${codexClientConfigurationPath}/plan`
   ));
   const applyResponsePromise = page.waitForResponse((response) => (
-    response.request().method() === 'POST' && new URL(response.url()).pathname === `${endpoint}/apply`
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `${codexClientConfigurationPath}/apply`
   ));
-  await clientCheckbox.click();
+  await issuedDialog.getByRole('button', { name: '写入 Codex', exact: true }).click();
   const planResponse = await planResponsePromise;
   expect(planResponse.status()).toBe(200);
-  expect(planResponse.request().postDataJSON().endpoint).toBe(fixtureHarness.ready.baseUrl.replace(/\/$/u, ''));
+  expect(planResponse.request().postDataJSON().endpoint).toBe(new URL(fixtureHarness.ready.baseUrl).origin);
   const plan = await planResponse.json() as { confirmation?: { required?: boolean; token?: string; targetHash?: string } };
-  await expect(page.getByRole('dialog', { name: '确认应用配置' })).toHaveCount(0);
   const applyResponse = await applyResponsePromise;
   expect(applyResponse.status()).toBe(200);
-  expect(applyResponse.request().postDataJSON().apiKey === apiKey).toBe(true);
+  // The bridge writes the session's own wrapper; it never mints or re-fetches a
+  // different credential, and it carries the plan's confirmation when required.
+  expect(applyResponse.request().postDataJSON().apiKey).toBe(wrapper);
   if (plan.confirmation?.required) {
     expect(applyResponse.request().postDataJSON().confirmation).toEqual({
       token: plan.confirmation.token, targetHash: plan.confirmation.targetHash,
     });
   }
   await applyResponse.finished();
-  await test.info().attach('client-configuration-timing', {
-    body: JSON.stringify({ client: 'codex', planMs: planResponse.request().timing().responseEnd, applyMs: applyResponse.request().timing().responseEnd }),
-    contentType: 'application/json',
-  });
-  await expect(page.getByText('Codex 配置已应用。', { exact: true })).toBeVisible();
-  await expect(clientCheckbox).toBeChecked();
-  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(issuedDialog.getByText('已应用到 Codex', { exact: true })).toBeVisible({ timeout: 30_000 });
+}
+
+/**
+ * Exercise the create-session verify: the native adapter reports the SHA-256
+ * digest of the wrapper it wrote, so the UI must observe exactly the digest the
+ * session recorded. A mismatch is the confirmed regression where the browser
+ * compared the Account client id and wrongly reported the key as changed.
+ */
+async function verifyAliceGatewayKeyThroughUi(page: Page, wrapper: string): Promise<void> {
   await openApiKeysSection(page);
-  await openGatewayClientMenu(page);
-  await expect(clientCheckbox).toBeChecked({ timeout: 30_000 });
-  const keyRow = page.locator('[data-key-state]').filter({ has: page.getByText(aliceGatewayKeyName, { exact: true }) });
-  await expect(keyRow.getByText('已启用', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: `应用 ${aliceGatewayKeyName} 配置` })).toHaveCount(0);
+  const row = aliceGatewayKeyRow(page);
+  await expect(row).toHaveCount(1);
+  const testButton = row.getByRole('button', { name: '测试一次', exact: true });
+  await expect(testButton).toBeVisible({ timeout: 30_000 });
+  const verifyResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `${codexClientConfigurationPath}/verify`
+  ));
+  // Only the post-verify inspect carries the applied digest; a stale mount
+  // inspect without a fingerprint must not satisfy this wait.
+  const inspectResponsePromise = page.waitForResponse(async (response) => {
+    if (response.request().method() !== 'GET') return false;
+    if (new URL(response.url()).pathname !== codexClientConfigurationPath) return false;
+    const body = await response.json().catch(() => undefined) as { appliedKeyFingerprint?: string } | undefined;
+    return Boolean(body?.appliedKeyFingerprint);
+  });
+  await testButton.click();
+  const verifyResponse = await verifyResponsePromise;
+  expect(verifyResponse.status()).toBe(200);
+  const inspectResponse = await inspectResponsePromise;
+  expect(inspectResponse.status()).toBe(200);
+  const inspected = await inspectResponse.json() as { status?: string; appliedKeyFingerprint?: string };
+  expect(inspected.appliedKeyFingerprint).toBe(sha256Hex(wrapper));
+  await expect(page.getByText('配置被改动过', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('客户端配置测试失败，请重试。', { exact: true })).toHaveCount(0);
+}
+
+/**
+ * The key row is one compact workspace row: it stays inside the viewport with
+ * no horizontal scrolling at both the split and the stack width. At the stack
+ * width the workspace list lives in the navigation drawer, so the section is
+ * re-opened the way a user would.
+ */
+async function assertAliceGatewayKeyRowWorkspace(page: Page): Promise<void> {
   for (const viewport of [{ width: 1054, height: 768 }, { width: 390, height: 844 }]) {
-    await page.keyboard.press('Escape');
     await page.setViewportSize(viewport);
-    if (viewport.width < 768) await page.getByRole('option', { name: 'API Keys', exact: true }).click();
-    const trigger = page.getByRole('button', { name: `${aliceGatewayKeyName} 客户端配置`, exact: true });
-    await expect(trigger).toBeVisible({ timeout: 30_000 });
-    await expect.poll(async () => {
-      const nameBox = await keyRow.getByText(aliceGatewayKeyName, { exact: true }).boundingBox();
-      const targetBox = await trigger.boundingBox();
-      return Boolean(nameBox && targetBox && Math.abs((targetBox.y + targetBox.height / 2) - (nameBox.y + nameBox.height / 2)) < 4);
-    }, { message: 'Key details and client controls should share one compact row after viewport resize' }).toBe(true);
-    await expect(trigger).toHaveText('应用');
-    await expect(keyRow.getByRole('button', { name: `复制 ${aliceGatewayKeyName}`, exact: true })).toBeVisible();
-    await openGatewayClientMenu(page);
-    await expect(clientCheckbox).toBeChecked({ timeout: 30_000 });
-    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-      { message: 'API Keys and client menu should fit the viewport without horizontal scrolling' }).toBe(true);
-    await page.screenshot({ path: path.join(screenshotDir, `api-key-client-menu-${viewport.width}.png`), fullPage: true, animations: 'disabled' });
+    if (viewport.width < 768) {
+      await openNavigationDrawer(page);
+      await page.getByRole('option', { name: 'Xpod', exact: true }).click();
+    }
+    const row = aliceGatewayKeyRow(page);
+    await expect(row).toBeVisible({ timeout: 30_000 });
+    await expect(row).toContainText('范围：整个 Pod');
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+      { message: 'The Xpod key section should fit the viewport without horizontal scrolling' }).toBe(true);
+    await page.screenshot({ path: path.join(screenshotDir, `xpod-key-row-${viewport.width}.png`), fullPage: true, animations: 'disabled' });
   }
   await page.setViewportSize({ width: 1280, height: 720 });
-  await openGatewayClientMenu(page);
-  const restoreResponsePromise = page.waitForResponse((response) => (
-    response.request().method() === 'POST' && new URL(response.url()).pathname === `${endpoint}/restore`
-  ));
-  await clientCheckbox.click();
-  const restoreResponse = await restoreResponsePromise;
-  expect(restoreResponse.status()).toBe(200);
-  expect((await restoreResponse.json()).status).toBe('notConfigured');
-  await expect(page.getByText('Codex 配置已撤回，API Key 已保留。', { exact: true })).toBeVisible();
-  await expect(clientCheckbox).not.toBeChecked();
-  await page.keyboard.press('Escape');
-  await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toBeVisible();
-  const modelsAfterRestore = await page.request.get(new URL('/v1/models', fixtureHarness.ready.baseUrl).toString(), {
-    headers: { authorization: `Bearer ${apiKey}` }, timeout: 30_000,
-  });
-  expect(modelsAfterRestore.status()).toBe(200);
+}
+
+function aliceGatewayKeyRow(page: Page): Locator {
+  // `data-key-id` is the Account credential id, stable across a reload; the
+  // visible name is only the creating session's memory of the wrapper request.
+  if (aliceIssuedKeyId) return page.locator(`[data-key-id="${aliceIssuedKeyId}"]`);
+  return page.locator('[data-key-id]').filter({ has: page.getByText(aliceGatewayKeyName, { exact: true }) });
+}
+
+/**
+ * The digest the native adapter records for the applied wrapper. Kept byte for
+ * byte in step with `contentHash` in `contract/client-config/base-adapter.ts`
+ * and the browser's `apiKeyFingerprint`, so the comparison here is a real
+ * contract check rather than a re-implementation the test could drift from.
+ */
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
 async function assertAliceGatewayModelAccess(page: Page, gatewayKey: string): Promise<void> {
@@ -872,36 +1076,39 @@ async function assertAliceGatewayChatAccess(page: Page, gatewayKey: string): Pro
 
 async function openApiKeysSection(page: Page): Promise<void> {
   await openModule(page, '/ai-connections', 'AI Connections');
-  await page.getByRole('option', { name: 'API Keys', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'API KEYS', exact: true })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole('button', { name: '新建 API Key' })).toBeVisible({ timeout: 30_000 });
+  if ((page.viewportSize()?.width ?? 0) < 768) await openNavigationDrawer(page);
+  await page.getByRole('option', { name: 'Xpod', exact: true }).click();
+  await expect(page.getByRole('button', { name: '新建 Xpod 密钥' })).toBeVisible({ timeout: 30_000 });
 }
 
 async function deleteAliceFixtureCredentialThroughUi(page: Page): Promise<void> {
   await openModule(page, '/ai-connections', 'AI Connections');
   await page.getByRole('option', { name: 'OpenAI' }).click();
-  const remove = page.getByRole('button', { name: `删除 ${primaryCredentialLabel}` });
+  const row = providerCredentialRow(page, primaryCredentialHint);
+  const remove = row.getByRole('button', { name: /^删除 /u });
   if (await remove.isVisible({ timeout: 1_000 }).catch(() => false)) {
     await remove.click();
-    await expect(page.getByText(primaryCredentialLabel, { exact: true })).toHaveCount(0);
+    await expect(page.getByText(primaryCredentialHint, { exact: true })).toHaveCount(0);
   }
 }
 
 async function deleteAliceGatewayKeyThroughUi(page: Page): Promise<void> {
   await openApiKeysSection(page);
-  const deleteActions = page.getByRole('button', { name: `删除 ${aliceGatewayKeyName}` });
-  const remove = deleteActions.first();
-  await expect(remove).toBeVisible({ timeout: 30_000 });
-  await expect(remove).toBeEnabled();
-  // Revocation is a DELETE on the Account credential resource.
+  const row = aliceGatewayKeyRow(page);
+  await expect(row).toHaveCount(1);
+  const destroy = row.getByRole('button', { name: /^销毁 /u });
+  await expect(destroy).toBeVisible({ timeout: 30_000 });
+  await expect(destroy).toBeEnabled();
+  // Destruction is confirmed first, then a DELETE on the Account credential.
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === 'DELETE'
     && new URL(response.url()).pathname.startsWith('/.account/')
   ));
-  await remove.click();
+  await destroy.click();
+  await row.getByRole('button', { name: /^确认删除 /u }).click();
   const response = await responsePromise;
   expect(response.status()).toBe(200);
-  await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toHaveCount(0);
+  await expect(row).toHaveCount(0);
 }
 
 async function assertReversiblePodCredential(account: BrowserSolidAccount, plaintext: string): Promise<{ id: string }> {
@@ -919,11 +1126,21 @@ async function assertReversiblePodCredential(account: BrowserSolidAccount, plain
   return { id: result.credentialId! };
 }
 
-function maskedCredentialLabel(apiKey: string): string {
-  const hint = apiKey.length <= 8
-    ? `${apiKey.slice(0, 2)}…`
-    : `${apiKey.slice(0, 3)}...${apiKey.slice(-4)}`;
-  return `API Key · ${hint}`;
+/**
+ * The masked hint the applet renders for a provider API key. It mirrors
+ * `maskApiKey` in `src/api/ai-gateway/connect/index.ts`, which is what the
+ * credential row shows beneath its label. The row's own label is the credential
+ * name (the collection runtime defaults it to the provider id), so two OpenAI
+ * keys read `openai`; the hint is what identifies one key's row.
+ */
+function credentialHint(apiKey: string): string {
+  const trimmed = apiKey.trim();
+  return `${trimmed.slice(0, Math.min(3, trimmed.length))}...${trimmed.slice(-Math.min(4, trimmed.length))}`;
+}
+
+/** The provider credential row carrying one key, located by its masked hint. */
+function providerCredentialRow(page: Page, hint: string): Locator {
+  return page.locator('[data-credential-state]').filter({ has: page.getByText(hint, { exact: true }) });
 }
 
 type AiConnectionsPodProbeResult = {
@@ -994,6 +1211,23 @@ async function runAiConnectionsPodProbe(
     throw new Error('Hermetic Pod probe did not complete');
   }
   return result as AiConnectionsPodProbeResult;
+}
+
+/**
+ * These scenarios load the product route as a document after login, so the
+ * desktop client must survive a `prompt=none` restoration. That restoration is
+ * only allowed once a remembered grant exists, and the grant comes from the
+ * real Consent "以后不再询问" choice. On the first login of a shared fixture the
+ * Consent document is rendered and the choice must be offered and retained; a
+ * later login may reuse the stored grant and skip Consent entirely, which is
+ * itself the restored behaviour this prerequisite enables. Either way the
+ * approval document must never report the requested choice as blocked.
+ */
+function assertRememberedDesktopClient(trace: BrowserOidcTrace): void {
+  if ((trace.consentRequestCount ?? 0) > 0) {
+    expect(trace.rememberClientObserved).toBe(true);
+  }
+  expect(trace.rememberClientBlocked).toBeUndefined();
 }
 
 function assertRealOidcTrace(trace: BrowserOidcTrace): void {

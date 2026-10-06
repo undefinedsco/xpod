@@ -1,4 +1,5 @@
 import type { AiClientCredentialsCapability } from '@undefineds.co/extension-sdk/web'
+import { apiKeyFingerprint } from './fingerprint'
 import type {
   AiConnectAttempt,
   AiConnectionsClient,
@@ -60,19 +61,29 @@ export function createAiConnectionsClient({
     }
     return clientCredentials
   }
+  /**
+   * The wrapper only exists in the session that issued it, so its digest is a
+   * session-local observation: refreshing the Account list must not erase the
+   * ability to verify the exact key just applied, and a reload must not invent
+   * one. Nothing here is persisted; the Account remains the only key index.
+   */
+  const observedFingerprints = new Map<string, string>()
   const accountEntryRecord = (
-    entry: { clientId: string; label?: string; resource: string },
-    name?: string,
+    entry: { clientId: string; label?: string; resource: string; webId?: string },
+    options: { name?: string; fingerprint?: string } = {},
   ): GatewayKeyRecord => ({
     id: entry.clientId,
     kind: 'client-credentials',
     credentialResource: entry.resource,
     clientCredentialId: entry.clientId,
-    // The Account client id is the equality identity of the credential; the
-    // session uses it to tell which key a client configuration carries.
-    fingerprint: entry.clientId,
-    owner: webId,
-    name: name ?? entry.label ?? entry.clientId,
+    // The digest of the applied wrapper (identical to what the native adapter
+    // reports), never the Account client id: the UI compares the two, so a
+    // browser-side id here would make every verify look like a key change.
+    ...(options.fingerprint ? { fingerprint: options.fingerprint } : {}),
+    // Only the Account-verified WebID counts as ownership. An entry whose
+    // owner is unknown is never relabelled as the selected identity.
+    owner: entry.webId ?? webId,
+    name: options.name ?? entry.label ?? entry.clientId,
     // The wrapper is only ever visible in the session that created it.
     plaintextAvailable: false,
   })
@@ -166,17 +177,23 @@ export function createAiConnectionsClient({
 
     async listGatewayKeys() {
       const entries = await accountCredentials().list()
-      return entries.map((entry) => accountEntryRecord(entry))
+      return entries
+        // The Account can own credentials for several WebIDs; this page only
+        // ever shows the selected authenticated identity's rows.
+        .filter((entry) => entry.webId === webId)
+        .map((entry) => accountEntryRecord(entry, { fingerprint: observedFingerprints.get(entry.clientId) }))
     },
 
     async createGatewayKey(input) {
       const issued = await accountCredentials().create({ name: input.name, webId })
+      const fingerprint = await apiKeyFingerprint(issued.apiKey)
+      if (fingerprint) observedFingerprints.set(issued.clientId, fingerprint)
       return {
         plaintext: issued.apiKey,
         record: {
           ...accountEntryRecord(
-            { clientId: issued.clientId, label: input.name, resource: issued.resource },
-            input.name,
+            { clientId: issued.clientId, label: input.name, resource: issued.resource, webId },
+            { name: input.name, fingerprint },
           ),
           // The wrapper exists right now, in this session: this row is not the
           // "cannot show it again" case the plain list row is.
@@ -188,7 +205,8 @@ export function createAiConnectionsClient({
 
     async deleteGatewayKey(keyId) {
       const credentials = accountCredentials()
-      const target = (await credentials.list()).find((entry) => entry.clientId === keyId)
+      const target = (await credentials.list())
+        .find((entry) => entry.clientId === keyId && entry.webId === webId)
       // The Account is the only key index, so a credential it no longer lists is
       // a fact the caller reports, not a Pod record this client can recreate.
       if (!target) throw new AiConnectionsRequestError({ code: 'account_client_credential_not_found' }, 0)

@@ -591,11 +591,12 @@ available, the UI must say exactly what is missing and why. A vague message like
 Provider API Keys must never be written into Codex, Claude Code, Pi, or
 CodeBuddy. Local clients receive only Xpod Gateway endpoint plus Xpod API Key.
 
-The shared `gatewayAccessKeyResource` remains the public, hash-only Gateway key
-record. Recoverable Xpod API Key material is an Xpod product concern and is
-stored in a separate Xpod-owned Pod companion resource; it must not weaken or
-duplicate the shared model's `secretHash` contract. Provider credential records
-are also separate and must never be reused as Gateway client keys.
+An Xpod key is an Account client credential, not a Pod record: Xpod stores no
+plaintext, no recoverable companion resource and no second key index. The
+legacy shared `gatewayAccessKeyResource` belongs to the retired Gateway key
+design; Xpod keys no longer read or write it, and nothing may derive a reveal
+capability from its `secretHash`. Provider credential records are separate and
+must never be reused as client keys.
 
 These rules are object-specific:
 
@@ -627,6 +628,26 @@ route and no enable/disable update: the Account offers neither, so the surface
 does not pretend otherwise. A Bearer key accepted by `/v1/models` and
 `/v1/chat/completions` is exactly this wrapper over an Account-issued
 credential.
+
+#### Owned rows and honest restore status
+
+Two rules keep the list from over-claiming what the Account actually returns:
+
+- **Ownership.** A row is shown only for a credential the Account confirms for
+  the **currently authenticated WebID**. The list endpoint returns every
+  credential the account owns, and one Account can hold several Cloud WebIDs and
+  Local bindings, so a row whose `webId` is missing — or is not the selected
+  identity — is never relabelled as "this identity's key". Revocation re-reads
+  the credential and matches its exact `id`, `resource` and `webId` before
+  `DELETE`, so a foreign credential is refused rather than silently deleted.
+- **Unknown restored observations.** `clientId` is the Account credential id and
+  is the row's identity. The fingerprint that the bridge reports is the digest of
+  the wrapper **only while the wrapper is known** — that is, inside the session
+  that issued it. A restored row carries metadata only, so the UI states that the
+  key cannot be verified or re-shown instead of inventing a digest or a
+  "changed" verdict. Applying a key and testing it is a single-session
+  observation, and a refresh must not erase the ability to test the key that was
+  just applied in that session.
 
 ## Provider Detail UX
 

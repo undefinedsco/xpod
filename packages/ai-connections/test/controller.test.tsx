@@ -290,7 +290,7 @@ describe('AI Connection controller host.solid integration', () => {
     host.capabilities.aiClientCredentials = {
       create: vi.fn(),
       list: vi.fn(async () => [{
-        clientId: 'client', label: 'client', resource: 'https://id.example/.account/credentials/one/',
+        clientId: 'client', label: 'client', resource: 'https://id.example/.account/credentials/one/', webId: WEB_ID,
       }]),
       revoke,
     }
@@ -313,7 +313,7 @@ describe('AI Connection controller host.solid integration', () => {
     host.capabilities.aiClientCredentials = {
       create: vi.fn(),
       list: vi.fn(async () => [{
-        clientId: 'client', label: 'client', resource: 'https://id.example/.account/credentials/one/',
+        clientId: 'client', label: 'client', resource: 'https://id.example/.account/credentials/one/', webId: WEB_ID,
       }]),
       revoke,
     }
