@@ -286,8 +286,12 @@ describe('QLever local runtime image contract', () => {
       'prior_sdk_image must be an immutable @sha256 image reference',
     );
     expect(workflow).toContain('^[a-f0-9]{40}$');
+    // 现在推送两个 tag：不可变的提交 tag，以及按输入身份算出的复用别名。
+    // 断言两者都在，且没有 latest 这类可变 tag。
+    expect(workflow).toContain('tags: |');
+    expect(workflow).toContain('${{ env.IMAGE }}:sha-${{ github.sha }}');
     expect(workflow).toContain(
-      'tags: ${{ env.IMAGE }}:sha-${{ github.sha }}',
+      '${{ env.IMAGE }}:${{ steps.inputs.outputs.tag }}',
     );
     expect(workflow).toContain(
       'XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ inputs.prior_sdk_image }}',
