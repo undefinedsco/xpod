@@ -3,6 +3,14 @@
 .xpod-rail { display:flex; flex-direction:column; align-items:center; gap:24px; padding:16px 0; min-height:0; border-right:1px solid hsl(var(--border)); background:hsl(var(--layout-sidebar)); }
 .xpod-rail-profile { flex-shrink:0; }
 .xpod-rail-host { margin-top:auto; width:100%; }
+/* The rail is a fixed 64px physical strip, so containment must not depend on the
+   root font. Pin the rail chrome (profile control, avatar, nav icons) to physical
+   px; otherwise rem sizing grows the controls to 72-80px at 200% root text and the
+   shell clips their hit-boxes and focus state. Same footprint at 100%. */
+.xpod-rail-profile [data-testid="xpod-user-card-trigger"],
+.xpod-rail-profile > a { width:36px; height:36px; }
+.xpod-rail-profile [data-testid="xpod-user-card-trigger"] > span:first-child { width:32px; height:32px; }
+.xpod-rail nav a > svg { width:20px; height:20px; }
 .xpod-shell-content { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; }
 .xpod-narrow-header, .xpod-drawer-close, .xpod-drawer-backdrop { display:none; }
 .xpod-desktop-shell [data-workspace-layout="two-pane"] > [data-workspace-object-column="shown"] { grid-template-columns:270px minmax(0,1fr)!important; }

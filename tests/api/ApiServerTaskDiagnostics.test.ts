@@ -97,6 +97,18 @@ describe('ApiServer Task HTTP diagnostics', () => {
     expect(lines[0]).not.toContain('controlled private');
   }
 
+  // The API server's transport registers its own terminal listeners for
+  // open-response accounting and only removes its `close` listener when `close`
+  // fires. Emitting one terminal event and counting the listeners it removed from
+  // the other event therefore isolates the Task observer's own listener: it is
+  // the only `close` listener removed on `finish`.
+  function removedOnEmit(response: ServerResponse, emit: 'finish' | 'close', observe: 'finish' | 'close'): number {
+    const before = response.listeners(observe);
+    response.emit(emit);
+    const after = response.listeners(observe);
+    return before.filter((listener) => !after.includes(listener)).length;
+  }
+
   it.each(ROUTES)('observes actual 401 before the %s handler runs', async (path, route) => {
     const server = createServer();
     const handler = vi.fn(async () => {});
@@ -191,19 +203,24 @@ describe('ApiServer Task HTTP diagnostics', () => {
   it.each([200, 204, 399, 600, NaN])('does not report non-failure or invalid status %s', async status => {
     const response = await controlledResponse({ session: SESSION });
     response.statusCode = status;
-    response.emit('finish');
+    // The observer attached and must clean its own listeners on the first terminal event.
+    expect(removedOnEmit(response, 'finish', 'close')).toBe(1);
+    response.emit('close');
     expect(lines).toEqual([]);
+    expect(response.listenerCount('finish')).toBe(0);
     expect(response.listenerCount('close')).toBe(0);
   });
 
   it.each([undefined, '', 'private text with spaces', 'a'.repeat(257), ['xpod-a', 'xpod-b'], 'xpod-a,xpod-b']
     .map(session => ({ session })))('does not observe missing or malformed session %j', async ({ session }) => {
       const response = await controlledResponse({ session });
+      // An unhashable session must attach no observer listener.
+      expect(removedOnEmit(response, 'finish', 'close')).toBe(0);
       expect(response.listenerCount('finish')).toBe(0);
-      expect(response.listenerCount('close')).toBe(0);
       response.statusCode = 401;
-      response.emit('finish');
+      response.emit('close');
       expect(lines).toEqual([]);
+      expect(response.listenerCount('close')).toBe(0);
     });
 
   it.each([
@@ -222,9 +239,10 @@ describe('ApiServer Task HTTP diagnostics', () => {
       expect(response.status).toBe(204);
     } else {
       const response = await controlledResponse({ ...options, session: SESSION });
-      expect(response.listenerCount('finish')).toBe(0);
+      // An unrelated route or method must attach no observer listener.
+      expect(removedOnEmit(response, 'finish', 'close')).toBe(0);
       response.statusCode = 401;
-      response.emit('finish');
+      response.emit('close');
     }
     expect(lines).toEqual([]);
   });

@@ -106,6 +106,19 @@ const transportFiles = [
   'dist/index.js', 'dist/index.mjs', 'dist/Session.d.ts', 'dist/dependencies.d.ts',
   'dist/login/oidc/incomingRedirectHandler/AuthCodeRedirectHandler.d.ts',
 ];
+const coreTransportFiles = [
+  'src/authenticatedFetch/dpopUtils.ts', 'src/authenticatedFetch/fetchFactory.ts',
+  'dist/authenticatedFetch/dpopUtils.d.ts', 'dist/index.js', 'dist/index.mjs',
+];
+
+/** Copy an installed transport package into a fixture so the postinstall check sees it. */
+function installTransportPackage(root: string, relative: string, files: readonly string[]): void {
+  for (const entry of ['package.json', ...files]) {
+    const target = path.join(root, relative, entry);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, readFileSync(path.resolve(testDirectory, '../..', relative, entry), 'utf8'));
+  }
+}
 test.each([
   [undefined, undefined, 'all'],
   ['dist/Session.d.ts', 'fetch?: typeof fetch;', 'all'],
@@ -142,6 +155,9 @@ test.each([
     }
     writeFileSync(target, updated);
   }
+  // The postinstall check covers the core resource-DPoP branch too; without a
+  // pinned core package every case would fail on the missing manifest.
+  installTransportPackage(f.root, 'node_modules/@inrupt/solid-client-authn-core', coreTransportFiles);
   const result = await run(f.root);
   expect(result.code).toBe(file ? 1 : 0);
   if (file) expect(result.output).toContain(file);

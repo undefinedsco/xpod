@@ -49,7 +49,7 @@ afterEach(() => {
 
 describe('Xpod restore authority', () => {
   const issuer = 'https://id.undefineds.co/';
-  const currentKey = 'solidClientAuthenticationUser:currentSession';
+  const currentKey = 'solidClientAuthn:currentSession';
   const recordKey = 'xpod.inrupt.insecure:solidClientAuthenticationUser:active';
 
   function fixture(activeIssuer: string | undefined) {

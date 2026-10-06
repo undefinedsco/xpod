@@ -40,8 +40,8 @@ export function AiProviderHeader({
   badge?: ReactNode
 }) {
   return (
-    <header className="flex items-start justify-between gap-4">
-      <div className="flex items-center gap-3">
+    <header className="flex flex-wrap items-start justify-between gap-4">
+      <div className="flex min-w-0 items-center gap-3">
         <Avatar
           className="h-9 w-9 shrink-0 rounded-lg border border-border/50 bg-muted/50 shadow-sm"
           style={avatarBackground ? { backgroundColor: avatarBackground } : undefined}
@@ -51,8 +51,8 @@ export function AiProviderHeader({
             {mark}
           </AvatarFallback>
         </Avatar>
-        <div className="flex flex-col justify-center gap-0.5">
-          <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-col justify-center gap-0.5">
+          <div className="flex min-w-0 items-center gap-2">
             <h2 className="text-base font-semibold leading-none tracking-tight text-foreground">{name}</h2>
             <AiInfoTooltip label={infoLabel} lines={infoLines} />
           </div>
@@ -71,7 +71,7 @@ export function AiProviderHeader({
           </div>
         </div>
       </div>
-      {badge}
+      {badge ? <div className="shrink-0 whitespace-nowrap">{badge}</div> : null}
     </header>
   )
 }

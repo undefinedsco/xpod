@@ -35,7 +35,12 @@ describe('agent directory HTTP handler registration', () => {
       const instance = entry.overrideInstance as { '@id'?: string } | undefined;
       return instance?.['@id'] === 'urn:solid-server:default:BaseHttpHandler';
     });
-    const handlers = (pipeline?.overrideParameters as { handlers?: Array<{ '@id': string }> } | undefined)?.handlers ?? [];
+    // The composed HTTP entrypoint is a PodMutationLockingHttpHandler whose
+    // `mutationSource` is the ordered StatusWaterfallHandler chain.
+    const parameters = pipeline?.overrideParameters as {
+      mutationSource?: { handlers?: Array<{ '@id': string }> };
+    } | undefined;
+    const handlers = parameters?.mutationSource?.handlers ?? [];
     const ids = handlers.map((handler) => handler['@id']);
     expect(ids).toContain('urn:undefineds:xpod:AgentDirectoryHttpHandler');
     // The sidecar must be reachable before the generic LDP handler consumes the path.

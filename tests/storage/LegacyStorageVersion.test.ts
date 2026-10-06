@@ -17,7 +17,7 @@ import { MixDataAccessor } from '../../src/storage/accessors/MixDataAccessor';
 import { SparqlUpdateResourceStore } from '../../src/storage/SparqlUpdateResourceStore';
 import { StorageETagHandler } from '../../src/storage/conditions/StorageETagHandler';
 import { RdfQuadIndex, SolidRdfEngine } from '../../src/storage/rdf';
-import { getStorageVersion, storageVersionReadContext } from '../../src/storage/StorageVersion';
+import { getStorageVersion, STORAGE_ETAG_PATTERN, storageVersionReadContext } from '../../src/storage/StorageVersion';
 
 const root = 'http://localhost/';
 const id = { path: `${root}run.ttl` };
@@ -178,7 +178,10 @@ describe('legacy storage revision upgrade under resource locks', () => {
     expect(persistedMetadata.get(HH.terms.etag)?.value).toMatch(/^[a-f0-9]{32}$/);
     expect(getStorageVersion(response.metadata)).toBe(getStorageVersion(persistedMetadata));
     expect(response.metadata.getAll(HH.terms.etag)).toHaveLength(1);
-    expect(response.metadata.get(HH.terms.etag)?.value).toBe(tag);
+    // The RDF metadata stores the raw revision; the quoted wire tag is rendered on
+    // demand by the actual formatter. Assert both sides of that same contract.
+    expect(response.metadata.get(HH.terms.etag)?.value).toBe(getStorageVersion(persistedMetadata));
+    expect(STORAGE_ETAG_PATTERN.exec(tag)?.[1]).toBe(getStorageVersion(persistedMetadata));
     const condition = new BasicConditions(etags, { matchesETag: [tag] });
     await localStore.setRepresentation(id, document('updated'), condition);
     await expect(localStore.setRepresentation(id, document('stale'), condition)).rejects.toBeInstanceOf(PreconditionFailedHttpError);

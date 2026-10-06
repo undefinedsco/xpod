@@ -47,11 +47,15 @@ describe('lite integration local runtime isolation', () => {
     expect(script).toContain('env: { ...commonCloudEnv');
   });
 
-  it('only reuses explicitly requested, healthy Compose infrastructure', async () => {
+  it('only reuses explicitly requested, healthy Compose infrastructure and honours an external infra file', async () => {
     const script = await readFile(path.join(root, 'scripts/run-integration-full.ts'), 'utf8');
 
     expect(script).toContain("const reuseRequested = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true';");
-    expect(script).toContain('const reuseExistingInfra = reuseRequested && await hasHealthyComposeInfra();');
+    // An explicit external infra file is authoritative: it is loaded and probed
+    // before any Compose action and disables Compose reuse entirely.
+    expect(script).toContain('loadFullIntegrationInfra(process.env.XPOD_FULL_INFRA_ENV_FILE)');
+    expect(script).toContain('const reuseExistingInfra = !externalInfra && reuseRequested && await hasHealthyComposeInfra();');
+    expect(script).toContain('const startedInfra = !externalInfra && !reuseExistingInfra;');
     expect(script).toContain("composeArgs, 'exec', '-T', 'postgres', 'pg_isready'");
     expect(script).toContain("composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping'");
     expect(script).not.toContain('|| await shouldReuseExistingInfra()');

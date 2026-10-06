@@ -352,7 +352,8 @@ function inruptStorageKey(namespace: XpodInruptStorageNamespace, key: string): s
 function readActiveRestoreIssuer(storage?: Storage): string | undefined {
   try {
     // Inrupt owns this global pointer even when its record storage is namespaced.
-    const id = getOptionalPersistentStorage()?.getItem('solidClientAuthenticationUser:currentSession');
+    // KEY_CURRENT_SESSION is `solidClientAuthn:currentSession` (SOLID_CLIENT_AUTHN_KEY_PREFIX).
+    const id = getOptionalPersistentStorage()?.getItem('solidClientAuthn:currentSession');
     if (!id) return undefined;
     const record = storage?.getItem(inruptStorageKey('insecure', `solidClientAuthenticationUser:${id}`));
     if (!record) return undefined;

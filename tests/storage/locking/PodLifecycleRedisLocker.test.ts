@@ -18,14 +18,22 @@ describe('PodLifecycleRedisLocker with isolated Redis', () => {
   const container = `xpod-lifecycle-lock-${process.pid}-${randomUUID().slice(0, 8)}`;
   let client: Redis;
   let redisClient: string;
-  let started = false;
+  let dockerAttempted = false;
   const lockers: UrlAwareRedisLocker[] = [];
   const releases: Array<() => void> = [];
   const operations: Promise<unknown>[] = [];
   const docker = (args: string[]) => {
-    const result = spawnSync('docker', args, { encoding: 'utf8' });
-    if (result.status !== 0) { throw new Error(`Disposable Redis fixture failed: ${result.stderr}`); }
+    // Bounded so an unavailable engine fails the fixture instead of blocking the
+    // event loop past the hook timeout (spawnSync cannot be interrupted).
+    const result = spawnSync('docker', args, { encoding: 'utf8', timeout: 20_000 });
+    if (result.error || result.status !== 0) {
+      throw new Error(`Disposable Redis fixture failed: ${result.error?.message ?? result.stderr}`);
+    }
     return result.stdout.trim();
+  };
+  const removeContainer = () => {
+    // Best-effort cleanup of the owned container name; never throws over cleanup.
+    try { spawnSync('docker', ['rm', '-f', container], { encoding: 'utf8', timeout: 20_000 }); } catch { /* owned cleanup */ }
   };
   const makeLocker = (prefix: string) => {
     const locker = new PodLifecycleRedisLocker({ redisClient, namespacePrefix: prefix, attemptSettings_retryDelay: 10, attemptSettings_retryJitter: 0 });
@@ -38,10 +46,19 @@ describe('PodLifecycleRedisLocker with isolated Redis', () => {
     return deferredValue;
   };
   beforeAll(async () => {
-    const port = await getFreePortForWildcard(29701);
-    docker(['run', '--rm', '-d', '--name', container, '-p', `127.0.0.1:${port}:6379`, 'redis:7-alpine', 'redis-server', '--save', '', '--appendonly', 'no']);
-    started = true;
-    redisClient = `redis://127.0.0.1:${port}`;
+    // An explicit isolated test-only binding wins (produced by fullIntegrationInfraEnv).
+    // The developer/production CSS_REDIS_CLIENT is deliberately never read.
+    const remote = process.env.XPOD_AGENT_DIRECTORY_TEST_REDIS_URL;
+    if (remote) {
+      redisClient = remote;
+    } else {
+      const port = await getFreePortForWildcard(29701);
+      // Record the owned name before spawning: a timeout can create the container
+      // and still fail, so cleanup must not depend on a status-0 return.
+      dockerAttempted = true;
+      docker(['run', '--rm', '-d', '--name', container, '-p', `127.0.0.1:${port}:6379`, 'redis:7-alpine', 'redis-server', '--save', '', '--appendonly', 'no']);
+      redisClient = `redis://127.0.0.1:${port}`;
+    }
     client = new Redis(redisClient);
     client.on('error', () => {});
     await client.ping();
@@ -53,7 +70,8 @@ describe('PodLifecycleRedisLocker with isolated Redis', () => {
   });
   afterAll(async () => {
     client?.disconnect(false);
-    if (started) { docker(['rm', '-f', container]); }
+    // Only the attempted local Docker branch may touch Docker; the remote binding never does.
+    if (dockerAttempted) { removeContainer(); }
   });
 
   it.each(['read', 'write'] as const)('keeps ordinary and %s lifecycle locks persistent without renewal and blocks an opposing writer', async (mode) => {

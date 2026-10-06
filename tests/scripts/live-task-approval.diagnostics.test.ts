@@ -4,10 +4,16 @@ import type { SolidAuthSession } from '@undefineds.co/drizzle-solid';
 import { acceptLiveTaskApproval } from '../../scripts/helpers/live-task-approval';
 
 const mocks = vi.hoisted(() => ({ select: vi.fn(), find: vi.fn(), decide: vi.fn() }));
-vi.mock('@undefineds.co/drizzle-solid', () => ({ drizzle: () => ({
-  select: () => ({ from: () => ({ execute: () => mocks.select() }) }),
-  findByIri: (...args: unknown[]) => mocks.find(...args),
-}) }));
+vi.mock('@undefineds.co/drizzle-solid', async () => {
+  const actual = await vi.importActual<typeof import('@undefineds.co/drizzle-solid')>('@undefineds.co/drizzle-solid');
+  return { ...actual, drizzle: (...drizzleArgs: Parameters<typeof actual.drizzle>) => {
+    const db = actual.drizzle(...drizzleArgs);
+    return Object.assign(Object.create(db), {
+      select: () => ({ from: (table: unknown) => ({ execute: () => mocks.select(table) }) }),
+      findByIri: (...findArgs: unknown[]) => mocks.find(...findArgs),
+    });
+  } };
+});
 vi.mock('@undefineds.co/models', async importOriginal => ({
   ...await importOriginal<typeof import('@undefineds.co/models')>(),
   decideApprovalRequest: (...args: unknown[]) => mocks.decide(...args),
@@ -58,7 +64,7 @@ describe('live Task failure diagnostics before cleanup (unit orchestration only)
     const result = await acceptLiveTaskApproval({
       gateway: 'https://gateway.example/', podUrl: 'https://pod.example/alice/', webId: 'https://pod.example/alice/profile/card#me',
       ownerInterfaceKey: 'secret-key', ownerFetch,
-      session: { info: { isLoggedIn: true }, fetch: async () => new Response('', { status: 201 }) } as SolidAuthSession,
+      session: { info: { isLoggedIn: true, webId: 'https://pod.example/alice/profile/card#me' }, fetch: async () => new Response('', { status: 201 }) } as SolidAuthSession,
       onEvidence: value => { snapshots.push({ value: structuredClone(value), pauses, revoked }); },
     });
     expect(result.ok).toBe(false);
@@ -91,7 +97,7 @@ describe('live Task failure diagnostics before cleanup (unit orchestration only)
       throw new Error('Unexpected request');
     };
     const result = await acceptLiveTaskApproval({ gateway: 'https://gateway.example/', podUrl: 'https://pod.example/', webId: 'https://pod.example/me',
-      ownerInterfaceKey: 'secret-key', ownerFetch, session: { info: { isLoggedIn: true }, fetch: async () => new Response('', { status: 201 }) } as SolidAuthSession,
+      ownerInterfaceKey: 'secret-key', ownerFetch, session: { info: { isLoggedIn: true, webId: 'https://pod.example/profile/card#me' }, fetch: async () => new Response('', { status: 201 }) } as SolidAuthSession,
       onEvidence: () => undefined,
     });
     expect(result.cases[0]).toMatchObject({ terminalSnapshot: { errorClassification: 'pi_assistant_error', steps: { available: false } } });
@@ -114,16 +120,20 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
     let revoked = false;
     let injected = false;
     let current = { id: '', run: '', thread: '', target: '', expected: '', decision: '', status: 'waiting_input', resumes: 0 };
+    const sessionThreads = new Map<string, string>();
     const requests: Array<{ route: string; signal?: AbortSignal | null }> = [];
     const connectionError = Object.assign(new TypeError(privateText), { cause: { code: 'ECONNREFUSED', message: privateText } });
-    mocks.select.mockImplementation(async () => {
+    mocks.select.mockImplementation(async (table: unknown) => {
       if (fault === 'checkpoint' && !injected) { injected = true; throw new SyntaxError(privateText); }
+      if (table === sessionResource) return [{ id: `https://pod.example/session#${count}`, owner, thread: current.thread,
+        status: current.status === 'waiting_input' ? 'paused' : 'completed' }];
       return [{ id: '2026/10/04.ttl#request', session: `https://pod.example/session#${count}`, target: current.target,
         thread: current.thread, toolCallId: 'call-one', toolName: 'request_approval', assignedTo: owner,
         status: current.decision || 'pending' }];
     });
-    mocks.find.mockImplementation(async (table: unknown) => {
-      if (table === sessionResource) return { owner, thread: current.thread, status: current.status === 'waiting_input' ? 'paused' : 'completed' };
+    mocks.find.mockImplementation(async (table: unknown, iri?: unknown) => {
+      if (table === sessionResource) return { owner, thread: sessionThreads.get(String(iri)) ?? current.thread,
+        status: current.status === 'waiting_input' ? 'paused' : 'completed' };
       expect(table).toBe(approvalResource);
       if (fault === 'persisted-read' && !injected) { injected = true; throw new DOMException(privateText, 'TimeoutError'); }
       return { status: fault === 'persisted-assert' ? 'pending' : current.decision, decisionBy: owner, resolvedAt: new Date() };
@@ -141,7 +151,9 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
       else if (route === '/api/tasks') {
         const prompt = JSON.parse(String(init?.body)).prompt as string;
         count += 1;
-        current = { id: `task-${count}`, run: `run-${count}`, thread: `thread-${count}`,
+        const thread = `https://pod.example/alice/.data/task/task-${count}/index.ttl#thread-${count}`;
+        sessionThreads.set(`https://pod.example/session#${count}`, thread);
+        current = { id: `task-${count}`, run: `run-${count}`, thread,
           target: /target=([^,]+)/.exec(prompt)![1], expected: /write exactly (\S+) followed/.exec(prompt)![1],
           decision: '', status: 'waiting_input', resumes: 0 };
         body = { task: { id: current.id } };
@@ -165,7 +177,7 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
       else throw new Error('Unexpected request');
       return Response.json(body);
     };
-    const session = { info: { isLoggedIn: true }, fetch: async (_input: unknown, init?: RequestInit) =>
+    const session = { info: { isLoggedIn: true, webId: owner }, fetch: async (_input: unknown, init?: RequestInit) =>
       init?.method === 'PUT' ? new Response('', { status: 201 })
         : current.status === 'completed' ? new Response(`${current.expected}\n`) : new Response('', { status: 404 }),
     } as unknown as SolidAuthSession;
