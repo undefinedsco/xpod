@@ -1,71 +1,26 @@
 import type { IncomingMessage } from 'node:http';
 import { createHash } from 'node:crypto';
 import type { Authenticator, AuthResult } from '../../auth/Authenticator';
-import type { AuthContext, SolidAuthContext } from '../../auth/AuthContext';
-import {
-  type GatewayDeployment,
-  hashGatewayApiKeySecret,
-  parseGatewayApiKey,
-  verifyGatewayApiKeySecret,
-} from './GatewayApiKey';
-import type { InvocationTokenClaims, InvocationTokenCodec } from './InvocationTokenCodec';
+import type { SolidAuthContext } from '../../auth/AuthContext';
+import type { GatewayDeployment, InvocationTokenClaims, InvocationTokenCodec } from './InvocationTokenCodec';
 import { requireCanonicalOrigin } from './InvocationTokenCodec';
 
-export interface GatewayAccessKeyRecord {
-  id: string;
-  /** CSS credentials are saved configuration, never legacy Gateway authentication records. */
-  kind?: 'client-credentials';
-  credentialResource?: string;
-  /** Verified storage binding attached by the adapter, never read from a request hint. */
-  podUrl?: string;
-  owner: string;
-  secretHash: string;
-  deployment: GatewayDeployment;
-  scopes: string[];
-  createdAt: Date;
-  expiresAt?: Date;
-  lastUsedAt?: Date;
-  disabledAt?: Date;
-  revokedAt?: Date;
-  name?: string;
-  plaintext?: string;
-  /** CSS/OIDC client id of an issued credential; an external runtime identifier. */
-  clientCredentialId?: string;
-  status?: string;
-  appliedTo?: string;
-  appliedOn?: string;
-  appliedAt?: Date;
-}
-
-export const LEGACY_GATEWAY_KEY_AUTHENTICATION = 'legacy-gateway-key-authentication';
-export type GatewayAccessKeyRepositoryInternalAccessReason =
-  | typeof LEGACY_GATEWAY_KEY_AUTHENTICATION
-  | 'gateway-key-verifier';
-
-export interface GatewayAccessKeyRepositoryContext {
-  auth?: AuthContext;
-  /** Set when the gateway itself is verifying a key, rather than serving an owner request. */
-  gatewayKeyVerification?: {
-    reason: GatewayAccessKeyRepositoryInternalAccessReason;
-    /** Verified adapter binding carried only after a successful key lookup. */
-    podUrl?: string;
-  };
-}
-
-export interface GatewayAccessKeyRepository {
-  createKeyId?(owner: string, deployment: GatewayDeployment): string;
-  create(record: GatewayAccessKeyRecord, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord>;
-  findById(id: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
-  listByOwner(owner: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord[]>;
-  setEnabled(id: string, enabled: boolean, changedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
-  revoke(id: string, revokedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
-  delete(id: string, context?: GatewayAccessKeyRepositoryContext): Promise<boolean>;
-  revealPlaintext(id: string, context?: GatewayAccessKeyRepositoryContext): Promise<string | undefined>;
-  touchLastUsed(id: string, lastUsedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<void>;
-}
-
+/**
+ * Verifies AI-Connections invocation tokens for the model gateway.
+ *
+ * This used to verify two kinds of bearer: an `xpod_gw_v1.*` Gateway API Key looked up in its
+ * owner's Pod, and an `xpod_inv_v1.*` invocation token. The Gateway API Key half is gone: no code
+ * issues those keys any more, and a key holder was already refused Pod access. Only the invocation
+ * half remains, unchanged.
+ *
+ * The name and the `viaGatewayApiKey` context flag it sets are kept deliberately. The flag is how
+ * `GatewayPrincipal.isGatewayApiKeyPrincipal`, `AiGatewayService.isGatewayKeySolidPrincipal`,
+ * `CallerPodAccess`, `AiConfigHandler` and `AiConnectionsInvocationKeyIssuer` recognise an
+ * invocation principal, so renaming it here would ripple through the very path this file must keep
+ * working. The `Invalid gateway API key` error text is likewise the wire behaviour invocation
+ * failures already produce.
+ */
 export interface GatewayApiKeyAuthenticatorOptions {
-  repository?: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   requiredScopes?: string[];
   invocationTokenCodec?: InvocationTokenCodec;
@@ -78,8 +33,9 @@ export interface GatewayApiKeyAuthenticatorOptions {
 const INVALID_GATEWAY_API_KEY = 'Invalid gateway API key';
 export const DEFAULT_GATEWAY_API_KEY_SCOPES = ['models:read', 'inference:write'] as const;
 
+const INVOCATION_TOKEN_PREFIX = 'xpod_inv_v1.';
+
 export class GatewayApiKeyAuthenticator implements Authenticator {
-  private readonly repository?: GatewayAccessKeyRepository;
   private readonly deployment: GatewayDeployment;
   private readonly requiredScopes: string[];
   private readonly invocationTokenCodec?: InvocationTokenCodec;
@@ -87,10 +43,8 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
   private readonly invocationTokenIssuer?: string;
   private readonly now: () => Date;
   private readonly maxClockSkewMs: number;
-  private readonly dummyHash: Promise<string>;
 
   public constructor(options: GatewayApiKeyAuthenticatorOptions) {
-    this.repository = options.repository;
     this.deployment = options.deployment;
     this.requiredScopes = options.requiredScopes ?? [...DEFAULT_GATEWAY_API_KEY_SCOPES];
     this.invocationTokenCodec = options.invocationTokenCodec;
@@ -105,88 +59,18 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     if (!Number.isSafeInteger(this.maxClockSkewMs) || this.maxClockSkewMs < 0 || this.maxClockSkewMs > 30_000) {
       throw new Error('Gateway invocation token clock skew must be between 0 and 30000 milliseconds');
     }
-    this.dummyHash = hashGatewayApiKeySecret('xpod-gateway-missing-key-dummy-secret');
   }
 
   public canAuthenticate(request: IncomingMessage): boolean {
-    const bearer = this.readBearer(request);
-    return Boolean(
-      bearer
-      && (bearer.startsWith('xpod_inv_v1.') || parseGatewayApiKey(bearer)),
-    );
+    return Boolean(this.readBearer(request)?.startsWith(INVOCATION_TOKEN_PREFIX));
   }
 
   public async authenticate(request: IncomingMessage): Promise<AuthResult> {
     const bearer = this.readBearer(request);
-    if (bearer?.startsWith('xpod_inv_v1.')) {
-      return this.authenticateInvocationToken(bearer);
-    }
-    const parsed = bearer ? parseGatewayApiKey(bearer) : undefined;
-    if (!parsed) {
-      return { success: false, error: INVALID_GATEWAY_API_KEY };
-    }
-    if (!this.repository) {
-      return infrastructureError(new Error('Gateway API key repository is not configured'));
-    }
-    const repositoryContext: GatewayAccessKeyRepositoryContext = {
-      gatewayKeyVerification: { reason: 'gateway-key-verifier' },
-    };
-    let record: GatewayAccessKeyRecord | undefined;
-    try {
-      record = await this.repository.findById(parsed.keyId, repositoryContext);
-    } catch (cause) {
-      return infrastructureError(cause);
-    }
-    if (!record || record.kind === 'client-credentials') {
-      await verifyGatewayApiKeySecret(parsed.secret, await this.dummyHash);
+    if (!bearer?.startsWith(INVOCATION_TOKEN_PREFIX)) {
       return invalidGatewayApiKey();
     }
-
-    const secretMatches = await verifyGatewayApiKeySecret(parsed.secret, record.secretHash);
-    if (
-      !secretMatches
-      || parsed.deployment !== this.deployment
-      || record.deployment !== this.deployment
-      || record.revokedAt
-      || record.disabledAt
-      || isExpired(record, this.now())
-      || !hasRequiredScopes(record.scopes, this.requiredScopes)
-    ) {
-      return invalidGatewayApiKey();
-    }
-
-    const lastUsedAt = this.now();
-    try {
-      await this.repository.touchLastUsed(record.id, lastUsedAt, {
-        ...repositoryContext,
-        gatewayKeyVerification: {
-          reason: 'gateway-key-verifier',
-          ...(record.podUrl ? { podUrl: record.podUrl } : {}),
-        },
-      });
-    } catch (cause) {
-      return infrastructureError(cause);
-    }
-
-    const context = {
-      type: 'solid',
-      webId: record.owner,
-      ...(record.podUrl ? { authorizedPodUrl: record.podUrl } : {}),
-      accountId: record.owner,
-      viaGatewayApiKey: true,
-      gatewayRuntimeAccess: true,
-      gatewayKeyId: record.id,
-      gatewayKeyFingerprint: fingerprintGatewayBearer(bearer!),
-      scopes: record.scopes,
-      tokenType: 'Bearer',
-    } as SolidAuthContext & {
-      viaGatewayApiKey: true;
-      gatewayRuntimeAccess: true;
-      gatewayKeyId: string;
-      gatewayKeyFingerprint: string;
-      scopes: string[];
-    };
-    return { success: true, context };
+    return this.authenticateInvocationToken(bearer);
   }
 
   private authenticateInvocationToken(token: string): AuthResult {
@@ -247,20 +131,6 @@ function invalidGatewayApiKey(): AuthResult {
     category: 'invalid_credentials',
     statusCode: 401,
   };
-}
-
-function infrastructureError(cause: unknown): AuthResult {
-  return {
-    success: false,
-    error: 'Gateway API key authentication unavailable',
-    category: 'service_unavailable',
-    statusCode: 503,
-    cause,
-  };
-}
-
-function isExpired(record: GatewayAccessKeyRecord, now: Date): boolean {
-  return Boolean(record.expiresAt && record.expiresAt.getTime() <= now.getTime());
 }
 
 function hasRequiredScopes(scopes: string[], requiredScopes: string[]): boolean {

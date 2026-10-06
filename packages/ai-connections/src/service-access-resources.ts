@@ -1,7 +1,6 @@
 import {
   aiProviderResource,
   credentialResource,
-  gatewayAccessKeyResource,
   quotaSnapshotResource,
 } from '@undefineds.co/models'
 import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from './contract/provider-catalog'
@@ -27,26 +26,20 @@ function declaredDocumentPath(resource: DeclaredResource, id = '__service_access
 const RDF_RESOURCE_PATHS = Object.freeze({
   providerCredentials: declaredDocumentPath(credentialResource),
   providerDefinitions: declaredDocumentPath(aiProviderResource),
-  gatewayAccessKeys: declaredDocumentPath(gatewayAccessKeyResource),
   quotaSnapshots: declaredDocumentPath(quotaSnapshotResource),
 })
 
-// This JSON sidecar is owned by the AI Connection capability, outside RDF schemas.
-const GATEWAY_ACCESS_KEY_SECRET_PATH = '.data/ai/gateway/access-key-secrets.json'
 const PROVIDER_DOCUMENT_PATHS = new Map(AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS.map(id => [
   `providerDocument:${id}`,
   declaredDocumentPath(aiProviderResource, id),
 ]))
 
 export type AiConnectionsServiceResourceId = keyof typeof RDF_RESOURCE_PATHS
-  | 'gatewayAccessKeySecrets'
   | `providerDocument:${string}`
 
 export const AI_CONNECTIONS_SERVICE_RESOURCE_IDS: readonly AiConnectionsServiceResourceId[] = [
   'providerCredentials',
   'providerDefinitions',
-  'gatewayAccessKeys',
-  'gatewayAccessKeySecrets',
   'quotaSnapshots',
   ...[...PROVIDER_DOCUMENT_PATHS.keys()] as `providerDocument:${string}`[],
 ] as const
@@ -56,12 +49,10 @@ export function resolveAiConnectionsServiceResource(
   id: string,
   podBaseUrl: string,
 ): AiConnectionsServiceResourceLocation | undefined {
-  const mediaType = id === 'gatewayAccessKeySecrets' ? 'application/json' : 'text/turtle'
-  const path = id === 'gatewayAccessKeySecrets'
-    ? GATEWAY_ACCESS_KEY_SECRET_PATH
-    : Object.prototype.hasOwnProperty.call(RDF_RESOURCE_PATHS, id)
-      ? RDF_RESOURCE_PATHS[id as keyof typeof RDF_RESOURCE_PATHS]
-      : PROVIDER_DOCUMENT_PATHS.get(id)
+  const mediaType = 'text/turtle'
+  const path = Object.prototype.hasOwnProperty.call(RDF_RESOURCE_PATHS, id)
+    ? RDF_RESOURCE_PATHS[id as keyof typeof RDF_RESOURCE_PATHS]
+    : PROVIDER_DOCUMENT_PATHS.get(id)
   if (!path) return undefined
   const root = podBaseUrl.endsWith('/') ? podBaseUrl : `${podBaseUrl}/`
   return { url: new URL(path, root).href, mediaType }

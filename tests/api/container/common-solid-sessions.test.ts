@@ -125,7 +125,6 @@ describe('API container internal WebID/JWKS origin', () => {
       edition, port: 3001, host: '127.0.0.1', authMode: 'acp',
       databaseUrl: 'sqlite::memory:', corsOrigins: ['*'],
       cssTokenEndpoint: `${base}.oidc/token`, solidBaseUrl: base,
-      gatewayLocatorSecret: 'unit-test-locator-secret-000000000000',
     };
     const container = createApiContainer(config);
     try {

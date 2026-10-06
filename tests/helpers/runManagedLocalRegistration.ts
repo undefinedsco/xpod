@@ -53,7 +53,6 @@ try {
     env: {
       XPOD_NODE_ID: `registration-cloud-${process.pid}`,
       XPOD_LOCAL_SETUP_PATH: path.join(root, 'cloud-state.json'),
-      XPOD_GATEWAY_LOCATOR_SECRET: 'managed-registration-test-secret',
       CSS_REDIS_CLIENT: `127.0.0.1:${redisPort}`, CSS_REDIS_USERNAME: '', CSS_REDIS_PASSWORD: '',
       CSS_MINIO_ENDPOINT: `http://localhost:${minioPort}`, CSS_MINIO_ACCESS_KEY: 'minioadmin',
       CSS_MINIO_SECRET_KEY: 'minioadmin', CSS_MINIO_BUCKET_NAME: 'registration',

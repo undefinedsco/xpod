@@ -309,9 +309,6 @@ jobs:
             'CSS_MINIO_SECRET_KEY',
             'XPOD_INNGEST_EVENT_KEY',
             'XPOD_INNGEST_SIGNING_KEY',
-            // API 服务在启动时就要求它（缺了会 "Failed to start API Service"），
-            // 所以这是必需项而不是可选项。
-            'XPOD_GATEWAY_LOCATOR_SECRET',
           ];
           const entries = new Map();
           for (const line of text.split(/\r?\n/)) {

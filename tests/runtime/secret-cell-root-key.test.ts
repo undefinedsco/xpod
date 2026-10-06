@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { resolvePersistentGatewayLocatorSecret, secretPathForGatewayLocatorDatabase } from '../../src/runtime/gateway-locator-secret';
 import { resolvePersistentSecretCellRootKey, secretPathForSecretCellDatabase } from '../../src/runtime/secret-cell-root-key';
 import { SecretCellVault } from '../../src/security/secret-cell';
 
@@ -20,20 +19,14 @@ function fixture() {
 const context = { ownerWebId: 'https://pod.example/#me', resourceIri: 'https://pod.example/task/one', predicate: 'https://undefineds.co/ns#secret', field: 'clientSecret', schemaVersion: 'v1' };
 
 describe('Persistent local SecretCell root key', () => {
-  it('decrypts after restart and keeps its key independent of locator rotation', async () => {
-    const { options, databaseUrl, file, root } = fixture();
+  it('decrypts after restart with the same persistent root key', async () => {
+    const { options, file, root } = fixture();
     const firstRootKeys = resolvePersistentSecretCellRootKey(options);
     const first = new SecretCellVault({ rootKeys: firstRootKeys });
     const plaintext = new TextEncoder().encode('test-task-grant');
     const envelope = await first.seal(plaintext, context);
     expect(envelope.wrappedDek.keyId).toBe('local-v1');
-    const locator = resolvePersistentGatewayLocatorSecret(options);
-    expect(Buffer.from(firstRootKeys.getActiveKey().key).equals(Buffer.from(locator, 'base64url'))).toBe(false);
-    const locatorPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
     expect(file).toBe(path.join(root, '.xpod', 'secrets', 'secret-cell-root-key'));
-    expect(file).not.toBe(locatorPath);
-    fs.unlinkSync(locatorPath);
-    resolvePersistentGatewayLocatorSecret(options);
     const restarted = new SecretCellVault({ rootKeys: resolvePersistentSecretCellRootKey(options) });
     await expect(restarted.open(envelope, context)).resolves.toEqual(plaintext);
     if (process.platform !== 'win32') {

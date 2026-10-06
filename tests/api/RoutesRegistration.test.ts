@@ -154,7 +154,6 @@ describe('registerRoutes mode wiring', () => {
         hasKey: vi.fn(async () => false),
       },
       aiConnectionInvocationKeyIssuer: {},
-      gatewayAccessKeyRepository: {},
       providerConnectService: {},
       serviceTokenRepo: {},
       db: {},
@@ -261,12 +260,12 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs/:runId/steps']).toBeTypeOf('function');
     expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
-    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
-    expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
-    // Issued credentials keep no recoverable copy, so the reveal route is gone.
+    // Every Gateway API Key route is gone, including the retired reveal endpoint.
+    expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['GET /api/ai/gateway/keys']).toBeUndefined();
     expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeUndefined();
-    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
-    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
+    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeUndefined();
+    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeUndefined();
     expect(routes['POST /v1/responses']).toBeTypeOf('function');
     expect(routes['POST /v1/messages']).toBeTypeOf('function');
     expect(routes['POST /v1/chat/completions']).toBeTypeOf('function');
@@ -351,7 +350,9 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/applets/service-access/ai-connections']).toBeTypeOf('function');
     expect(routes['GET /api/ai/connections/providers']).toBeTypeOf('function');
     expect(routes['POST /api/ai/gateway/providers/:provider/models/refresh']).toBeTypeOf('function');
-    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
+    // Gateway API Keys and the locator they were addressed by are removed.
+    expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['GET /api/ai/gateway/keys']).toBeUndefined();
   });
 
   it('registers local-only admin and onboarding routes in local mode', () => {
@@ -364,12 +365,12 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
     expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
-    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
-    expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
-    // Issued credentials keep no recoverable copy, so the reveal route is gone.
+    expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['GET /api/ai/gateway/keys']).toBeUndefined();
+    // Every Gateway API Key route is gone, including the retired reveal endpoint.
     expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeUndefined();
-    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
-    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
+    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeUndefined();
+    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeUndefined();
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['GET /api/_matrix/client/versions']).toBeUndefined();
     expect(routes['GET /matrix/_matrix/client/versions']).toBeUndefined();

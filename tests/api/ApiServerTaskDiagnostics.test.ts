@@ -101,7 +101,9 @@ describe('ApiServer Task HTTP diagnostics', () => {
   // listener per event. Task diagnostics must add nothing on top of that, so assertions
   // filter the server's own listener instead of counting every listener on the response.
   function diagnosticListeners(response: ServerResponse, event: 'finish' | 'close'): Array<(...args: unknown[]) => void> {
-    return response.listeners(event).filter(listener => listener.name !== 'responseDone');
+    return response.listeners(event).filter(
+      (listener): listener is (...args: unknown[]) => void => listener.name !== 'responseDone',
+    );
   }
 
   it.each(ROUTES)('observes actual 401 before the %s handler runs', async (path, route) => {

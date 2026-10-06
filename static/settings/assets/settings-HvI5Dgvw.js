@@ -1,1 +1,0 @@
-import{i as r,c as t,j as e,r as o,X as s,a as i}from"./XpodThemeProvider-QR8L9_mc.js";r();t.createRoot(document.getElementById("root")).render(e.jsx(o.StrictMode,{children:e.jsx(s,{children:e.jsx(i,{})})}));

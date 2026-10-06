@@ -39,68 +39,6 @@ describe('parseAiConnectionsServiceAccess', () => {
       })
   })
 
-  it('accepts the complete backend descriptor including gateway access keys', () => {
-    expect(parseAiConnectionsServiceAccess(descriptor({
-      resources: [
-        {
-          id: 'providerCredentials',
-          url: 'https://pod.example/alice/settings/credentials.ttl',
-          mediaType: 'text/turtle',
-          access: { read: true, append: true, write: true },
-        },
-        {
-          id: 'providerDefinitions',
-          url: 'https://pod.example/alice/settings/providers/__service_access__.ttl',
-          mediaType: 'text/turtle',
-          access: { read: true, append: true, write: true },
-        },
-        {
-          id: 'gatewayAccessKeys',
-          url: 'https://pod.example/alice/.data/ai/gateway/access-keys.ttl',
-          mediaType: 'text/turtle',
-          access: { read: true, append: true, write: true },
-        },
-        {
-          id: 'quotaSnapshots',
-          url: 'https://pod.example/alice/.data/ai/gateway/quota.ttl',
-          mediaType: 'text/turtle',
-          access: { read: true, append: true, write: true },
-        },
-      ],
-    }), CURRENT_POD_URL).resources.map((resource) => resource.id)).toEqual([
-      'providerCredentials',
-      'providerDefinitions',
-      'gatewayAccessKeys',
-      'quotaSnapshots',
-    ])
-  })
-
-  it('accepts the declared JSON sidecar at its exact document and media type', () => {
-    const resource = {
-      id: 'gatewayAccessKeySecrets',
-      url: 'https://pod.example/alice/.data/ai/gateway/access-key-secrets.json',
-      mediaType: 'application/json',
-      access: { read: true, append: true, write: true },
-    }
-    expect(parseAiConnectionsServiceAccess(descriptor({ resources: [resource] }), CURRENT_POD_URL)
-      .resources).toEqual([resource])
-  })
-
-  it.each([
-    ['wrong owner', 'https://pod.example/bob/.data/ai/gateway/access-key-secrets.json', 'application/json'],
-    ['foreign origin', 'https://evil.example/alice/.data/ai/gateway/access-key-secrets.json', 'application/json'],
-    ['wrong document', 'https://pod.example/alice/.data/ai/gateway/access-keys.ttl', 'application/json'],
-    ['fragment', 'https://pod.example/alice/.data/ai/gateway/access-key-secrets.json#me', 'application/json'],
-    ['query', 'https://pod.example/alice/.data/ai/gateway/access-key-secrets.json?owner=alice', 'application/json'],
-    ['encoded separator', 'https://pod.example/alice/.data/ai/gateway%2faccess-key-secrets.json', 'application/json'],
-    ['wrong media type', 'https://pod.example/alice/.data/ai/gateway/access-key-secrets.json', 'text/turtle'],
-  ])('rejects the sidecar with %s', (_label, url, mediaType) => {
-    expect(() => parseAiConnectionsServiceAccess(descriptor({ resources: [{
-      id: 'gatewayAccessKeySecrets', url, mediaType,
-      access: { read: true, append: true, write: true },
-    }] }), CURRENT_POD_URL)).toThrow('invalid_resource')
-  })
-
   it('rejects JSON for an RDF document and unknown JSON resources', () => {
     for (const id of ['providerCredentials', 'unknownResource']) {
       expect(() => parseAiConnectionsServiceAccess(descriptor({ resources: [{

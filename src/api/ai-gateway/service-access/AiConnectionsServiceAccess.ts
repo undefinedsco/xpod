@@ -29,8 +29,6 @@ export interface AiConnectionsServiceAccessResource {
   id:
     | 'providerCredentials'
     | 'providerDefinitions'
-    | 'gatewayAccessKeys'
-    | 'gatewayAccessKeySecrets'
     | 'quotaSnapshots'
     | `providerDocument:${string}`;
   url: string;
@@ -61,31 +59,6 @@ export function createAiConnectionsServiceAccess(input: {
       access: { read: true, append: true, write: true },
     })),
   };
-}
-
-export function resolveGatewayAccessKeyResourceUrl(ownerWebId: string, podBaseUrl?: string): string {
-  return requiredResourceLocation('gatewayAccessKeys', ownerWebId, podBaseUrl).url;
-}
-
-export function resolveGatewayAccessKeySecretResourceUrl(ownerWebId: string, podBaseUrl?: string): string {
-  return requiredResourceLocation('gatewayAccessKeySecrets', ownerWebId, podBaseUrl).url;
-}
-
-export function resolveGatewayAccessKeySparqlEndpoint(ownerWebId: string, podBaseUrl?: string): string {
-  return `${resolveGatewayAccessKeyResourceUrl(ownerWebId, podBaseUrl).replace(/\/$/u, '')}/-/sparql`;
-}
-
-export function isGatewayAccessKeySparqlEndpoint(
-  ownerWebId: string,
-  resourceUrlValue: URL | string,
-): boolean {
-  try {
-    const resource = typeof resourceUrlValue === 'string' ? new URL(resourceUrlValue) : resourceUrlValue;
-    const endpoint = new URL(resolveGatewayAccessKeySparqlEndpoint(ownerWebId));
-    return resource.origin === endpoint.origin && resource.pathname === endpoint.pathname;
-  } catch {
-    return false;
-  }
 }
 
 function requiredResourceLocation(id: string, ownerWebId: string, podBaseUrl?: string) {

@@ -10,7 +10,6 @@ import { asFunction, type AwilixContainer } from 'awilix';
 import { randomBytes } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
-import { resolvePersistentGatewayLocatorSecret } from '../../runtime/gateway-locator-secret';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
@@ -28,8 +27,6 @@ import { InvocationTokenAuthenticator } from '../ai-gateway/auth/InvocationToken
 import { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
-import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
-import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { createOwnerPodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
 import { OwnerPodAccess } from '../ai-gateway/pod/OwnerPodAccess';
 import { resolveHostedPodRoute } from '../ai-gateway/pod/HostedPodRoute';
@@ -115,6 +112,8 @@ import {
   resolveEdgeNodeCertificateCapabilityBridgeId,
 } from '../../edge/EdgeNodeCertificateCapabilityBridge';
 
+const logger = getLoggerFor('ApiContainer');
+
 function resolveCssServiceBaseUrl(): string {
   return `http://127.0.0.1:${process.env.CSS_PORT ?? '3000'}/`;
 }
@@ -163,16 +162,6 @@ function resolveAiConnectionsRuntimeBaseUrl(config: ApiContainerCradle['config']
 
 function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): string {
   return new URL(resolveAiConnectionsBaseUrl(config)).origin;
-}
-
-function resolveGatewayLocatorSecret(config: ApiContainerCradle['config']): string {
-  if (config.gatewayLocatorSecret?.trim()) {
-    return config.gatewayLocatorSecret;
-  }
-  return resolvePersistentGatewayLocatorSecret({
-    databaseUrl: config.databaseUrl,
-    edition: config.edition,
-  });
 }
 
 function podBaseUrlResolver(cradle: ApiContainerCradle, selection: 'first' | 'unique' = 'first') {
@@ -288,21 +277,6 @@ export function registerCommonServices(
           kid: 'active',
           secret: randomBytes(32).toString('hex'),
         },
-      });
-    }).singleton(),
-
-    gatewayAccessKeyRepository: asFunction((cradle: ApiContainerCradle) => {
-      const { config, ownerPodAccess } = cradle;
-      return new PodGatewayAccessKeyRepository({
-        locatorCodec: new AesGatewayKeyLocatorCodec({
-          active: {
-            kid: config.gatewayLocatorKeyId ?? 'active',
-            secret: resolveGatewayLocatorSecret(config),
-          },
-          previous: config.gatewayPreviousLocatorSecrets,
-        }),
-        podAccess: ownerPodAccess,
-        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
       });
     }).singleton(),
 
@@ -654,7 +628,6 @@ export function registerCommonServices(
       nodeRepo,
       serviceTokenRepo,
       invocationTokenCodec,
-      gatewayAccessKeyRepository,
       solidSessions,
       config,
     }: ApiContainerCradle) => {
@@ -686,8 +659,10 @@ export function registerCommonServices(
         })
         : undefined;
 
+      // Verifies the AI-Connections invocation tokens that carry `models:read` / `inference:write`
+      // for the model gateway. It no longer accepts `xpod_gw_v1.*` Gateway API Keys: those are
+      // gone, so such a bearer now falls through to the client-credentials authenticator.
       const gatewayApiKeyAuthenticator = new GatewayApiKeyAuthenticator({
-        repository: gatewayAccessKeyRepository,
         deployment: config.edition,
         invocationTokenCodec,
         invocationTokenAudience: resolveAiConnectionsAudience(config),
@@ -698,7 +673,7 @@ export function registerCommonServices(
         // inference tokens, so route-scoped authentication must run before the
         // generic client-credentials authenticator claims the bearer.
         // Order: Solid DPoP → Service Token → Node Token →
-        // Client Configuration Invocation → Gateway API Key → Client Credentials.
+        // Client Configuration Invocation → Inference Invocation → Client Credentials.
         // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
         authenticators: [
           solidAuthenticator,
