@@ -35,16 +35,16 @@ export async function verifyPublicCloudCard(webId: string, storageUrls: string[]
   const profile = await getSolidDataset(document.href, { fetch: (input, init) => fetch(input, {
     ...init, redirect: 'error', signal: AbortSignal.timeout(20_000),
   }) });
-  if (!getThing(profile, webId)) throw new Error('Public Cloud card has no exact WebID Thing');
+  if (!getThing(profile, webId)) throw new DesktopAcceptanceError('identity-binding', 'Public Cloud card has no exact WebID Thing');
   const advertised = getPodUrlAllFrom({ webIdProfile: profile, altProfileAll: [] }, webId);
-  if (storageUrls.some(url => !advertised.includes(url))) throw new Error('Public Cloud card is missing an authoritative storage binding');
+  if (storageUrls.some(url => !advertised.includes(url))) throw new DesktopAcceptanceError('identity-binding', 'Public Cloud card is missing an authoritative storage binding');
 }
 
 export function assertOwnedTaskRows(body: unknown, required: string[], expectEmpty = false): void {
   const tasks = (body as { tasks?: Array<{ id?: unknown }> } | null)?.tasks;
   if (!Array.isArray(tasks) || tasks.some(task => typeof task.id !== 'string')
     || required.some(id => !tasks.some(task => task.id === id)) || (expectEmpty && tasks.length !== 0)) {
-    throw new Error('Independent task row isolation readback failed');
+    throw new DesktopAcceptanceError('task-isolation', 'Independent task row isolation readback failed');
   }
 }
 
@@ -55,21 +55,52 @@ async function privateJson(directory: string, name: string, record: unknown): Pr
 
 const SAFE_FAILURE_FILE = 'failure-safe.json';
 
-/** CI-visible failure detail: the stage and our own error text with tokens,
- * credentials, query strings and callback URLs removed, so a failed run is
- * diagnosable from the log alone without publishing private evidence. */
-export function safeFailureDetail(raw: string): string {
-  return raw
-    .replace(/Bearer\s+[^\s"']+/giu, 'Bearer <redacted>')
-    .replace(/[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]+/gu, '<redacted-jwt>')
-    .replace(/sk-[A-Za-z0-9._-]+/gu, 'sk-<redacted>')
-    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu, '<redacted-email>')
-    .replace(/https?:\/\/[^\s"']+/gu, (value) => {
-      try { const url = new URL(value); return `${url.origin}${url.pathname}`; } catch { return '<redacted-url>'; }
-    })
-    .replace(/\s+/gu, ' ')
-    .trim()
-    .slice(0, 300);
+/** The only failure codes that may reach a public artifact or CI log. */
+export type DesktopFailureCode = 'invalid-arguments' | 'invalid-source' | 'provider-input'
+  | 'packaged-launch' | 'local-authority' | 'identity-binding' | 'consent-binding'
+  | 'remember-grant' | 'pod-permission' | 'task-isolation' | 'evidence-contract' | 'unclassified';
+
+/** Reviewed fixed explanation for every publishable code. */
+export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = {
+  'invalid-arguments': 'The packaged desktop runner arguments failed validation',
+  'invalid-source': 'The runner checkout did not match the exact packaged source',
+  'provider-input': 'The declared provider acceptance input was missing or not private',
+  'packaged-launch': 'The owned packaged desktop did not reach the expected Local edition',
+  'local-authority': 'The packaged Local authority or no-public-route proof was missing',
+  'identity-binding': 'The managed Cloud card and two-Pod identity/storage binding proof failed',
+  'consent-binding': 'The actual browser callback or exact Consent binding proof was missing',
+  'remember-grant': 'The remembered-grant bootstrap did not retain the explicit remember-client choice',
+  'pod-permission': 'The mounted Pod permission grant or restore proof failed',
+  'task-isolation': 'The packaged task approval, Stop cleanup or cross-Pod isolation proof failed',
+  'evidence-contract': 'The produced desktop evidence failed the strict contract',
+  'unclassified': 'The packaged desktop acceptance failed; full detail is retained in private evidence',
+};
+
+/** A failure whose public projection is its reviewed code, never its text.
+ * `message` keeps the exact private diagnostic for the 600-mode evidence file. */
+export class DesktopAcceptanceError extends Error {
+  readonly code: DesktopFailureCode;
+  constructor(code: DesktopFailureCode, detail: string) {
+    super(detail);
+    this.name = 'DesktopAcceptanceError';
+    this.code = code;
+  }
+}
+
+export interface PublishedDesktopFailure { code: DesktopFailureCode; explanation: string }
+
+/** The only failure data allowed in a public artifact or CI log. Anything that
+ * is not one of our reviewed typed failures degrades to the generic code, so an
+ * arbitrary upstream error can never publish tokens, keys or assertion dumps. */
+export function describeFailure(error: unknown): PublishedDesktopFailure {
+  const code: DesktopFailureCode = error instanceof DesktopAcceptanceError ? error.code : 'unclassified';
+  return { code, explanation: DESKTOP_FAILURE_EXPLANATIONS[code] };
+}
+
+/** Allowlisted public failure list for stdout and the failure artifact. */
+export function publishedFailures(errors: unknown[]): PublishedDesktopFailure[] {
+  return [...new Set(errors.map(error => describeFailure(error).code))]
+    .map(code => ({ code, explanation: DESKTOP_FAILURE_EXPLANATIONS[code] }));
 }
 
 function privateError(error: unknown): unknown {
@@ -85,13 +116,13 @@ function mountedPodFetch(phase: MountedPodPermissionPhase, podUrl: string): type
     const url = input instanceof Request ? input.url : String(input);
     const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
     const headers = Object.fromEntries(new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).entries());
-    if (Object.keys(headers).some(key => ['authorization', 'dpop', 'cookie'].includes(key))) throw new Error('Unexpected second Pod credential source');
+    if (Object.keys(headers).some(key => ['authorization', 'dpop', 'cookie'].includes(key))) throw new DesktopAcceptanceError('pod-permission', 'Unexpected second Pod credential source');
     const body = typeof init?.body === 'string' ? init.body : input instanceof Request && method !== 'GET' && method !== 'HEAD' ? await input.text() : undefined;
-    if (init?.body !== undefined && typeof init.body !== 'string') throw new Error('Unsupported acceptance Pod body');
+    if (init?.body !== undefined && typeof init.body !== 'string') throw new DesktopAcceptanceError('pod-permission', 'Unsupported acceptance Pod body');
     const result = await phase.handle.evaluate(async ({ host }, input) => {
       const target = new URL(input.url), pod = new URL(input.podUrl);
       if (target.origin !== pod.origin || !target.pathname.startsWith(pod.pathname) || target.username || target.password
-        || host.solid.pod?.status !== 'ready' || host.solid.pod.current.podUrl !== input.podUrl) throw new Error('Task acceptance escaped the retained Pod');
+        || host.solid.pod?.status !== 'ready' || host.solid.pod.current.podUrl !== input.podUrl) throw new DesktopAcceptanceError('task-isolation', 'Task acceptance escaped the retained Pod');
       const response = await host.solid.session.fetch(input.url, { method: input.method, headers: input.headers,
         ...(input.body === undefined ? {} : { body: input.body }), signal: AbortSignal.timeout(20_000), redirect: 'error' });
       return { status: response.status, headers: Object.fromEntries(response.headers.entries()), body: await response.text() };
@@ -107,13 +138,13 @@ function rendererOwnerFetch(page: Page, gateway: string, podUrl: string, key: st
   return (async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     const method = init?.method ?? 'GET';
-    if (init?.body !== undefined && typeof init.body !== 'string') throw new Error('Unsupported acceptance API body');
+    if (init?.body !== undefined && typeof init.body !== 'string') throw new DesktopAcceptanceError('task-isolation', 'Unsupported acceptance API body');
     const result = await page.evaluate(async input => {
       const target = new URL(input.url), gateway = new URL(input.gateway);
       if (target.origin !== window.location.origin || target.origin !== gateway.origin || target.username || target.password || target.hash
         || !(target.pathname === '/api/tasks' || target.pathname.startsWith('/api/tasks/')
           || target.pathname === '/api/ai/task-credentials' || target.pathname.startsWith('/api/ai/task-credentials/'))) {
-        throw new Error('Task acceptance API is outside the owned Gateway');
+        throw new DesktopAcceptanceError('task-isolation', 'Task acceptance API is outside the owned Gateway');
       }
       const response = await fetch(target.href, { method: input.method, redirect: 'error', signal: AbortSignal.timeout(20_000),
         headers: { Authorization: `Bearer ${input.key}`, 'X-Xpod-Pod-Url': input.podUrl, 'Content-Type': 'application/json' },
@@ -138,11 +169,11 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
   const advance = (next: Stage): void => { stage = next; console.log(JSON.stringify({ stage })); };
   await mkdir(options.privateDirectory, { recursive: true, mode: 0o700 });
   try {
-    if (!/^[a-f0-9]{40}$/u.test(options.sourceSha)) throw new Error('Invalid source SHA');
+    if (!/^[a-f0-9]{40}$/u.test(options.sourceSha)) throw new DesktopAcceptanceError('invalid-arguments', 'Invalid source SHA');
     await verifyPackagedSourceCheckout({ cwd: process.cwd(), sourceSha: options.sourceSha, version: options.version });
-    if ((await stat(options.keyFile)).mode & 0o077) throw new Error('Provider key file is not private');
+    if ((await stat(options.keyFile)).mode & 0o077) throw new DesktopAcceptanceError('provider-input', 'Provider key file is not private');
     const configuration = parseKeyFile(await readFile(options.keyFile, 'utf8'));
-    if (!configuration?.apiKey || !configuration.expected.length) throw new Error('Missing declared provider acceptance input');
+    if (!configuration?.apiKey || !configuration.expected.length) throw new DesktopAcceptanceError('provider-input', 'Missing declared provider acceptance input');
     advance('launch');
     fixture = await launchOwnedPackagedDesktop({ archive: options.archive, version: options.version,
       issuer: options.issuer, evidenceDirectory: options.privateDirectory });
@@ -152,9 +183,9 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       registered?: boolean; managed?: boolean; provisionCode?: string; publicRoute?: { configured?: boolean; available?: boolean };
     };
     if (status.registered !== true || status.managed !== true || !status.provisionCode
-      || status.publicRoute?.configured !== false || status.publicRoute.available !== false) throw new Error('Fresh packaged Local authority or no-public-route proof is missing');
+      || status.publicRoute?.configured !== false || status.publicRoute.available !== false) throw new DesktopAcceptanceError('local-authority', 'Fresh packaged Local authority or no-public-route proof is missing');
     const route = await discoverSolidLocalRoute({ fetch, localBaseUrl: gateway, statusUrl: new URL('provision/status', gateway).href });
-    if (!route || route.localBaseUrl !== gateway) throw new Error('Packaged runtime did not verify its own Local transport');
+    if (!route || route.localBaseUrl !== gateway) throw new DesktopAcceptanceError('local-authority', 'Packaged runtime did not verify its own Local transport');
     const account = await createCloudAccountPassword(options.issuer, 'desktop-permission');
     await privateJson(options.privateDirectory, 'account-private.json', account);
     const unique = randomUUID().slice(0, 8);
@@ -163,7 +194,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       usernames: [`desktop-a-${unique}`, `desktop-b-${unique}`], provisionCode: status.provisionCode });
     await privateJson(options.privateDirectory, 'bindings-private.json', bindings);
     if (bindings.length !== 2 || bindings[0].webId !== bindings[1].webId || bindings[0].storageUrl === bindings[1].storageUrl
-      || new URL(bindings[0].webId).origin !== new URL(options.issuer).origin) throw new Error('Managed identity/storage binding proof failed');
+      || new URL(bindings[0].webId).origin !== new URL(options.issuer).origin) throw new DesktopAcceptanceError('identity-binding', 'Managed identity/storage binding proof failed');
     await verifyPublicCloudCard(bindings[0].webId, bindings.map(binding => binding.storageUrl));
     const podEvidence = [];
     let firstInvocation: string | undefined;
@@ -187,16 +218,16 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       const bindingProven = consentBindingProven(trace, binding,
         await readBrowserXpodRuntime(page).catch(() => undefined));
       allCallbacks &&= bindingProven;
-      if (!bindingProven) throw new Error('Actual browser callback or exact Consent binding proof is missing');
+      if (!bindingProven) throw new DesktopAcceptanceError('consent-binding', 'Actual browser callback or exact Consent binding proof is missing');
       if (trace.rememberClientRequested !== true || trace.rememberClientObserved !== true || trace.consentRememberPosted !== true) {
-        throw new Error('The remembered-grant bootstrap did not set and retain the explicit remember-client choice: '
+        throw new DesktopAcceptanceError('remember-grant', 'The remembered-grant bootstrap did not set and retain the explicit remember-client choice: '
           + `requested=${String(trace.rememberClientRequested)} observed=${String(trace.rememberClientObserved)} `
           + `posted=${String(trace.consentRememberPosted)}`);
       }
       phase = await acceptMountedPodPermissions(page, { webId: binding.webId, podUrl: binding.storageUrl });
       const descriptor = await phase.handle.evaluate(({ controller }) => controller.client!.getServiceAccess()) as { invocation?: { token?: string } };
       const invocation = descriptor.invocation?.token;
-      if (!invocation) throw new Error('Authoritative current-Pod invocation is absent');
+      if (!invocation) throw new DesktopAcceptanceError('pod-permission', 'Authoritative current-Pod invocation is absent');
       if (index === 0) firstInvocation = invocation;
       advance(index === 0 ? 'operations-a' : 'operations-b');
       provider = await createConfirmedMountedProvider(phase, { provider: configuration.id,
@@ -218,17 +249,17 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
           ownerInterfaceKey: key.key, ownerFetch: rendererOwnerFetch(page, gateway, binding.storageUrl, key.key),
           session: { info: { webId: binding.webId, isLoggedIn: true }, fetch: podFetch },
           onEvidence: evidence => { taskSnapshot = evidence; } });
-        if (!task.ok || !task.cleanup.ok || task.cases.length !== 3) throw new Error('Actual packaged task approval/Stop cleanup failed');
+        if (!task.ok || !task.cleanup.ok || task.cases.length !== 3) throw new DesktopAcceptanceError('task-isolation', 'Actual packaged task approval/Stop cleanup failed');
         originalRun = task.cases[0].runId;
         originalTaskIds = task.cases.flatMap(row => row.taskId ? [row.taskId] : []);
-        if (new Set(originalTaskIds).size !== 3) throw new Error('Actual first-Pod task IDs are incomplete');
+        if (new Set(originalTaskIds).size !== 3) throw new DesktopAcceptanceError('task-isolation', 'Actual first-Pod task IDs are incomplete');
         const rows = await rendererOwnerFetch(page, gateway, binding.storageUrl, key.key)(new URL('/api/tasks', gateway));
-        if (rows.status !== 200) throw new Error('Cannot independently read first-Pod task rows');
+        if (rows.status !== 200) throw new DesktopAcceptanceError('task-isolation', 'Cannot independently read first-Pod task rows');
         assertOwnedTaskRows(await rows.json(), originalTaskIds);
       } else {
-        if (!firstInvocation || !originalRun) throw new Error('Missing actual first-Pod capability/Run');
+        if (!firstInvocation || !originalRun) throw new DesktopAcceptanceError('task-isolation', 'Missing actual first-Pod capability/Run');
         const rows = await rendererOwnerFetch(page, gateway, binding.storageUrl, key.key)(new URL('/api/tasks', gateway));
-        if (rows.status !== 200 || originalTaskIds.length !== 3) throw new Error('Cannot independently read second-Pod task rows');
+        if (rows.status !== 200 || originalTaskIds.length !== 3) throw new DesktopAcceptanceError('task-isolation', 'Cannot independently read second-Pod task rows');
         assertOwnedTaskRows(await rows.json(), [], true);
         const writes = observeOwnedPodTraffic(page, binding.storageUrl);
         try {
@@ -244,7 +275,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
           await privateJson(options.privateDirectory, 'cross-pod-private.json', { foreign, status: resumed.status, body: resumeBody });
           const traffic = writes.snapshot();
           if (foreign !== 403 || resumed.status !== 400 || traffic.writes !== 0 || !/not found|找不到|不存在/iu.test(resumeBody)) {
-            throw new Error('Actual cross-Pod capability or old Run rejection failed');
+            throw new DesktopAcceptanceError('task-isolation', 'Actual cross-Pod capability or old Run rejection failed');
           }
         } finally { writes.stop(); }
       }
@@ -282,13 +313,12 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     const failed = failedStage ?? stage;
     await privateJson(options.privateDirectory, 'failure-private.json', { stage: failed, errors: failures.map(privateError) });
     // A failed run must stay diagnosable even when the workflow skips the
-    // private upload: this record is redacted for CI logs and artifacts.
+    // private upload. This record publishes only the allowlisted stage and
+    // reviewed failure codes; the raw errors stay in the 600-mode private file.
     await writeFile(path.join(options.privateDirectory, SAFE_FAILURE_FILE), JSON.stringify({ schemaVersion: 1,
       kind: 'desktop-permission-failure', sourceSha: options.sourceSha, version: options.version, stage: failed,
-      errors: failures.map(error => error instanceof Error
-        ? { name: error.name, message: safeFailureDetail(error.message) }
-        : { name: 'unknown', message: safeFailureDetail(String(error)) }) }, null, 2) + '\n', { mode: 0o644 });
-    throw new Error(`Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`);
+      failures: publishedFailures(failures) }, null, 2) + '\n', { mode: 0o644 });
+    throw new DesktopAcceptanceError('unclassified', `Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`);
   }
   advance('verify');
   record.cleanup = { ...fixtureCleanup, providerRemoved: true, keyRemoved: true, attributedGrantsRestored: true };
@@ -297,7 +327,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     runtimeBinarySha256: fixture.runtime.binarySha256, resourceIds: AI_CONNECTIONS_SERVICE_RESOURCE_IDS });
   if (!result.valid) {
     await privateJson(options.privateDirectory, 'verification-private.json', { result, record });
-    throw new Error('Produced desktop evidence failed the strict contract');
+    throw new DesktopAcceptanceError('evidence-contract', 'Produced desktop evidence failed the strict contract');
   }
   await writeFile(options.evidenceFile, JSON.stringify(record, null, 2) + '\n');
 }
@@ -306,10 +336,10 @@ async function main(argv: string[]): Promise<void> {
   const keys = ['--archive', '--version', '--source-sha', '--issuer', '--key-file', '--private-directory', '--evidence'];
   const values = new Map<string, string>();
   for (let index = 0; index < argv.length; index += 2) {
-    if (!keys.includes(argv[index]) || !argv[index + 1] || values.has(argv[index])) throw new Error('Invalid packaged runner argument');
+    if (!keys.includes(argv[index]) || !argv[index + 1] || values.has(argv[index])) throw new DesktopAcceptanceError('invalid-arguments', 'Invalid packaged runner argument');
     values.set(argv[index], argv[index + 1]);
   }
-  if (keys.some(key => !values.has(key))) throw new Error('Missing packaged runner argument');
+  if (keys.some(key => !values.has(key))) throw new DesktopAcceptanceError('invalid-arguments', 'Missing packaged runner argument');
   await acceptPackagedDesktopPermissions({ archive: values.get('--archive')!, version: values.get('--version')!,
     sourceSha: values.get('--source-sha')!, issuer: values.get('--issuer')!, keyFile: values.get('--key-file')!,
     privateDirectory: values.get('--private-directory')!, evidenceFile: values.get('--evidence')! });
@@ -317,9 +347,7 @@ async function main(argv: string[]): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main(process.argv.slice(2)).catch((error: unknown) => {
-    console.error(JSON.stringify({ runner: 'desktop-permission-acceptance', failed: true,
-      name: error instanceof Error ? error.name : 'unknown',
-      reason: safeFailureDetail(error instanceof Error ? error.message : String(error)) }));
+    console.error(JSON.stringify({ runner: 'desktop-permission-acceptance', failed: true, ...describeFailure(error) }));
     process.exitCode = 1;
   });
 }

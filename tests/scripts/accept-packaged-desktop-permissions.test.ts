@@ -1,15 +1,33 @@
 import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, it } from 'vitest';
-import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, safeFailureDetail } from '../../scripts/accept-packaged-desktop-permissions';
+import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure,
+  publishedFailures } from '../../scripts/accept-packaged-desktop-permissions';
 
-it('redacts credentials, account identity and callback queries from loggable failure detail', () => {
-  expect(safeFailureDetail('Bearer eyJhbGciOi.payload.sig leaked')).toBe('Bearer <redacted> leaked');
-  expect(safeFailureDetail('jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature')).toBe('jwt <redacted-jwt>');
-  expect(safeFailureDetail('key sk-live-abcdefghij rejected')).toBe('key sk-<redacted> rejected');
-  expect(safeFailureDetail('account desktop-permission-1@example.test failed')).toBe('account <redacted-email> failed');
-  expect(safeFailureDetail('callback https://id-rc.example/auth/callback?code=abc&state=xyz did not finish'))
-    .toBe('callback https://id-rc.example/auth/callback did not finish');
+it('publishes only reviewed failure codes and never the underlying error text', () => {
+  // An arbitrary upstream error can carry provider keys, opaque tokens or an
+  // assertion/credential dump; the public projection must degrade to the
+  // generic code and expose none of it. Regex scrubbing is deliberately not the
+  // safety mechanism here.
+  const secrets = [
+    'oc_sk_live_9f2c1d4b8a7e6f5c6d7e8f90',
+    'opaque-refresh-token-2f8c1d4b8a7e6f5c6d7e8f90a1b2',
+    '{"apiKey":"json-secret-value","assertion":"signed-dump","cookie":"sid=abc"}',
+  ];
+  for (const secret of secrets) {
+    const published = describeFailure(new Error(`upstream rejected ${secret}`));
+    expect(published.code).toBe('unclassified');
+    expect(JSON.stringify(published)).not.toContain(secret);
+    expect(JSON.stringify(publishedFailures([new Error(secret), secret]))).not.toContain(secret);
+  }
+  // A typed failure publishes its reviewed code and explanation, never its
+  // private detail; duplicate codes collapse to one entry.
+  const typed = new DesktopAcceptanceError('local-authority', 'private detail with oc_sk_live_9f2c1d4b8a7e6f5c');
+  expect(describeFailure(typed)).toEqual({ code: 'local-authority',
+    explanation: 'The packaged Local authority or no-public-route proof was missing' });
+  expect(JSON.stringify(describeFailure(typed))).not.toContain('oc_sk_live_9f2c1d4b8a7e6f5c');
+  expect(publishedFailures([typed, typed])).toEqual([{ code: 'local-authority',
+    explanation: 'The packaged Local authority or no-public-route proof was missing' }]);
 });
 
 it('requires actual independent A task rows and refuses any rows in fresh B', () => {
@@ -35,7 +53,8 @@ it('retains the original failing stage and cannot emit public evidence from an i
     const safeFile = path.join(directory, 'failure-safe.json');
     const safe = JSON.parse(await readFile(safeFile, 'utf8'));
     expect(safe).toMatchObject({ schemaVersion: 1, kind: 'desktop-permission-failure', version: '0.4.26', stage: 'input' });
-    expect(safe.errors[0].message).toBe('Invalid source SHA');
+    expect(safe.failures).toEqual([{ code: 'invalid-arguments',
+      explanation: 'The packaged desktop runner arguments failed validation' }]);
     expect((await stat(safeFile)).mode & 0o777).toBe(0o644);
     await expect(readFile(evidenceFile)).rejects.toHaveProperty('code', 'ENOENT');
   } finally { await rm(directory, { recursive: true, force: true }); }

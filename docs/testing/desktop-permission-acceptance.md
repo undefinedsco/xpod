@@ -18,7 +18,7 @@ RC 的 macOS job 等本次服务部署验收成功，再使用已授权 provider
 
 ### 失败可诊断性
 
-驱动在失败时把 stage、错误名与经脱敏（Bearer/JWT/`sk-`/邮箱/URL query 去除）的消息写入 `failure-safe.json`（0644，位于私有目录内），并从 stdout 打印同一脱敏记录；workflow 用 `if: failure()` + `if-no-files-found: ignore` 单独上传它。私有目录本身（含账号、Cookie/token、callback URL、输入配置）从不作为 artifact 上传，因此产物缺失不等于通过。
+驱动失败时只把 allowlist 的 stage 与受审的固定失败 code/说明（`invalid-arguments`、`identity-binding`、`consent-binding`、`task-isolation` 等固定枚举）写入 `failure-safe.json`（0644，位于私有目录内），并从 stdout 打印同一记录。原始 message、错误名与 stack 只进 600 权限的私有文件，从不公开；任何非本驱动抛出的类型化错误一律降级为固定的 `unclassified` 说明——不依赖正则清洗，因此 provider key、opaque token、assertion/credential dump 不会因为绕过正则而外泄。workflow 用 `if: failure()` + `if-no-files-found: ignore` 单独上传该文件。私有目录本身（含账号、Cookie/token、callback URL、输入配置）从不作为 artifact 上传，因此产物缺失不等于通过。
 3. 每个 Pod 都先检查实际 HEAD：404 才记录 absent；已存在目标仍须官方 SDK 独立证明服务权限 missing。首次 authorize 后逐资源 readback，父 ACR 字节不变；再次 authorize 逐资源读取、零 ACR 写且不重新登录。资源集合只从共享声明加载，不复制路径表、不预创建目标绕过首次初始化。
 4. 使用原 mounted controller 的公开 client，等待 collection adoption 后只创建一次 credential；等 pending 清空、无 conflict，独立读回 credential，核对 discovery 与发布模型的 provider/model/credential 关系及真实 quota。Account Key 通过真实 dialog 创建、list、配置 apply 与 revoke；验证本次新增 Account credential 唯一且和 Pod record 绑定，配置文件实际落在独有目录。HTTP 200/201 成功仍要求合法 readback 与正确 Account actor。
 5. 每个 Pod 的第一笔 Chat 请求只 dispatch 一次，校验 200 和 exact marker；两次 GET 复用 descriptor 签发的同一 held invocation。A 的真实批准/拒绝/Stop、Session 终态和 grant cleanup 复用现有 live Task helper。独立读回 A 的三个 Task，B 的集合须为空，A invocation 配 B hint 拒绝，B 不能 resume A 的 Run。
