@@ -9,7 +9,7 @@ import {
   StatusLine,
   cn,
 } from '@undefineds.co/shared-ui';
-import { CheckCircle2, ChevronRight, Copy, Database, Loader2, LogIn, LogOut, RefreshCw, UserRound } from 'lucide-react';
+import { CheckCircle2, ChevronRight, Copy, Database, ExternalLink, Loader2, LogIn, LogOut, RefreshCw, UserRound } from 'lucide-react';
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '../context/AuthContextValue';
@@ -265,9 +265,10 @@ export function XpodUserCard() {
             <div className="p-2">
               {accountHref ? (
                 <Button asChild variant="ghost" className="h-10 w-full justify-start px-3 font-normal">
-                  <a href={accountHref}>
+                  <a href={accountHref} target="_blank" rel="noopener noreferrer">
                     <UserRound className="mr-2 h-4 w-4" aria-hidden="true" />
-                    账号管理
+                    管理账号
+                    <ExternalLink className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
                   </a>
                 </Button>
               ) : null}

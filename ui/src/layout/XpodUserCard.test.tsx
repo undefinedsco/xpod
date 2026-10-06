@@ -41,14 +41,17 @@ describe('XpodUserCard', () => {
     profile.mockReturnValue({ displayName: 'Alice', username: 'alice', loading: false, source: 'account' });
     renderCard({ ...account(true), idpIndex });
     fireEvent.click(screen.getByTestId('xpod-user-card-trigger'));
-    expect(screen.getByRole('link', { name: '账号管理' }).getAttribute('href')).toBe(href);
+    const link = screen.getByRole('link', { name: '管理账号' });
+    expect(link.getAttribute('href')).toBe(href);
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
   });
 
   test('does not offer an Account link without a trusted HTTP issuer', () => {
     profile.mockReturnValue({ displayName: 'Alice', loading: false, source: 'account' });
     renderCard({ ...account(true), idpIndex: 'javascript:alert(1)' });
     fireEvent.click(screen.getByTestId('xpod-user-card-trigger'));
-    expect(screen.queryByRole('link', { name: '账号管理' })).toBeNull();
+    expect(screen.queryByRole('link', { name: '管理账号' })).toBeNull();
   });
 
   test('offers login when neither Account nor WebID is authenticated', () => {
