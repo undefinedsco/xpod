@@ -39,6 +39,8 @@ import { PodInterfaceKeyRepository } from '../../identity/drizzle/PodInterfaceKe
 import { PodInterfaceKeyStore } from '../ai-gateway/pod/PodInterfaceKeyStore';
 import { migratePodInterfaceKeysToTaskCredentials } from '../tasks/PodInterfaceKeyMigration';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
+import type { GatewayCredentialRenewalRequest } from '../ai-gateway/AiGatewayService';
+import type { GatewayDeployment } from '../ai-gateway/auth/InvocationTokenCodec';
 import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCredentialVault';
 import { createAiCredentialSecretDecoder } from '../ai-gateway/credentials/AiCredentialSecretDecoder';
 import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
@@ -409,9 +411,25 @@ export function registerCommonServices(
 
     gatewayCredentialStore: asFunction((cradle: ApiContainerCradle) => {
       const { ownerPodAccess } = cradle;
-      return new PodConnectedCredentialRepository({
+      const store = new PodConnectedCredentialRepository({
         podAccess: ownerPodAccess,
         podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
+      });
+      // Use-time OAuth renewal belongs to the shared credential lifecycle: inference only asks the
+      // store for a usable session. Delegated lazily to the composed Connect service so the
+      // container keeps no construction-time cycle, and the hook stays absent for stores that
+      // cannot renew.
+      return Object.assign(store, {
+        renewCredential: (input: GatewayCredentialRenewalRequest) =>
+          cradle.providerConnectService.renewCredential({
+            webId: input.webId,
+            deployment: input.deployment as GatewayDeployment,
+            provider: input.provider,
+            credentialId: input.credentialId,
+            observedVersion: input.observedVersion,
+            reason: input.reason,
+            auth: input.auth,
+          }),
       });
     }).singleton(),
 

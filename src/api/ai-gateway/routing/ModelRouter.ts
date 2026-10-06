@@ -654,13 +654,7 @@ export class ModelRouter {
     candidate: GatewayCredentialCandidate,
     model: string,
   ): Promise<boolean> {
-    if (!candidate.enabled) {
-      return false;
-    }
-    if (candidate.health && candidate.health !== 'healthy') {
-      return false;
-    }
-    if (candidate.quota?.status === 'exhausted') {
+    if (!this.isCredentialEligible(candidate)) {
       return false;
     }
     const cooldownUntil = await this.effectiveCooldownUntil(input, candidate);
@@ -668,6 +662,18 @@ export class ModelRouter {
       return false;
     }
     return credentialSupportsModel(candidate, model);
+  }
+
+  /**
+   * Whether a credential candidate is currently eligible on its own availability signals:
+   * enabled, healthy and not quota-exhausted. Routing, model visibility and the gateway's
+   * post-renewal reload share this predicate so a row disabled or marked reauth-required between
+   * a credential lifecycle write and its next use is never handed to the provider runtime.
+   */
+  public isCredentialEligible(candidate: GatewayCredentialCandidate): boolean {
+    return candidate.enabled
+      && (!candidate.health || candidate.health === 'healthy')
+      && candidate.quota?.status !== 'exhausted';
   }
 
   private async effectiveCooldownUntil(
@@ -784,9 +790,7 @@ export class ModelRouter {
   }
 
   private isCredentialModelVisible(candidate: GatewayCredentialCandidate): boolean {
-    return candidate.enabled
-      && (!candidate.health || candidate.health === 'healthy')
-      && candidate.quota?.status !== 'exhausted'
+    return this.isCredentialEligible(candidate)
       && (!candidate.cooldownUntil || candidate.cooldownUntil.getTime() <= this.now().getTime());
   }
 

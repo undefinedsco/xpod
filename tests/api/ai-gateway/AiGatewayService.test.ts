@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 
 import { AiGatewayService, type GatewayCredentialStore, type StoredGatewayCredential } from '../../../src/api/ai-gateway/AiGatewayService';
 import type { CredentialVault } from '../../../src/api/ai-gateway/credentials/CredentialVault';
@@ -7,6 +7,7 @@ import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import type { ProviderRuntimeExecuteInput } from '../../../src/api/ai-gateway/providers/ProviderRuntimeAdapter';
+import type { GatewayEvent } from '../../../src/api/ai-gateway/types';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
 import { ModelRouter } from '../../../src/api/ai-gateway/routing/ModelRouter';
 import { ProviderHttpTransport } from '../../../src/api/service/provider-http-transport';
@@ -57,6 +58,7 @@ function credential(input: Partial<StoredGatewayCredential> & {
     metadata: input.metadata,
     encryptedSecret: input.encryptedSecret ?? encrypted(input.id, input.provider),
     version: input.version,
+    expiresAt: input.expiresAt,
     runtimeCredential: input.runtimeCredential,
   };
 }
@@ -73,41 +75,48 @@ function serviceWith(
       outputTokens: number;
       totalTokens: number;
     }) => Promise<void>;
+    renewCredential?: GatewayCredentialStore['renewCredential'];
+    vaultOpen?: CredentialVault['open'];
+    execute?: (input: ProviderRuntimeExecuteInput) => AsyncIterable<GatewayEvent>;
   } = {},
 ): {
   service: AiGatewayService;
   store: GatewayCredentialStore;
   vault: CredentialVault;
+  execute: Mock;
 } {
   const registry = createDefaultProviderRegistry();
   const store: GatewayCredentialStore = {
     listCredentials: vi.fn(async() => credentials),
     recordSuccess: vi.fn(async() => {}),
     recordFailure: vi.fn(async() => {}),
+    ...(options.renewCredential ? { renewCredential: options.renewCredential } : {}),
   };
   const vault: CredentialVault = {
     seal: vi.fn(),
     rewrap: vi.fn(),
-    open: vi.fn(async(_principal, credentialIri) => ({
+    open: options.vaultOpen ?? vi.fn(async(_principal, credentialIri) => ({
       apiKey: credentialIri.includes('backup') ? 'sk-backup' : 'sk-primary',
     })),
   };
-  const runtimes = {
-    get: vi.fn(() => ({
-      execute: vi.fn(async function* () {
+  const execute = options.execute
+    ? vi.fn((input: ProviderRuntimeExecuteInput) => options.execute!(input))
+    : vi.fn(async function* () {
         yield { type: 'response.started', id: 'resp_1' };
         yield { type: 'text.delta', text: 'ok' };
         if (options.usageRecorder) {
           yield { type: 'usage', usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 } };
         }
         yield { type: 'response.completed', finishReason: 'stop' };
-      }),
-    })),
+      });
+  const runtimes = {
+    get: vi.fn(() => ({ execute })),
   } as unknown as ProviderRuntimeRegistry;
 
   return {
     store,
     vault,
+    execute,
     service: new AiGatewayService({
       deployment: 'cloud',
       registry,
@@ -1074,5 +1083,342 @@ describe('AiGatewayService', () => {
     }));
     const recorded = vi.mocked(fixture.store.recordFailure!).mock.calls[0][0];
     expect(recorded.rateLimitResetAt!.getTime() - recorded.occurredAt!.getTime()).toBe(60_000);
+  });
+/** Drains an execution event stream, surfacing any upstream failure to the caller. */
+async function drain(events: AsyncIterable<unknown>): Promise<void> {
+  for await (const _event of events) {
+    // Consume the stream so failure recording and usage accounting run.
+  }
+}
+
+describe('AiGatewayService credential renewal', () => {
+  const NOW = new Date('2026-07-23T00:00:00.000Z');
+  const EXPIRED = new Date('2026-07-22T23:00:00.000Z');
+  const VALID = new Date('2026-07-23T01:00:00.000Z');
+  const OAUTH_SECRET = { type: 'deviceCodeOAuth', accessToken: 'kimi-stored-access', refreshToken: 'kimi-stored-refresh' };
+
+  function subscriptionCredential(expiresAt: Date = EXPIRED) {
+    return credential({
+      id: 'kimi_subscription',
+      provider: 'kimi',
+      authMode: 'deviceCodeOAuth',
+      models: ['kimi-k2'],
+      expiresAt,
+    });
+  }
+
+  function body() {
+    return { model: 'kimi-k2', messages: [{ role: 'user', content: 'hello' }], stream: true };
+  }
+
+  function authenticationFailure(): Error {
+    return Object.assign(new Error('upstream rejected the credential'), { status: 401 });
+  }
+
+  it('renews an expired stored credential before inference and keeps the request single-shot', async () => {
+    const renewCredential = vi.fn(async (_input: unknown) => true);
+    const { service, store, execute } = serviceWith([subscriptionCredential(EXPIRED)], NOW, {
+      renewCredential,
+      vaultOpen: vi.fn(async() => OAUTH_SECRET),
+    });
+
+    const execution = await service.execute({ auth: AUTH, protocol: 'chatCompletions', body: body() });
+    await drain(execution.events);
+
+    expect(renewCredential).toHaveBeenCalledTimes(1);
+    expect(renewCredential.mock.calls[0][0]).toMatchObject({
+      webId: WEB_ID,
+      provider: 'kimi',
+      credentialId: 'kimi_subscription',
+      reason: 'expired',
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(store.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('never renews a credential whose stored expiry is still ahead of the request', async () => {
+    const renewCredential = vi.fn(async (_input: unknown) => true);
+    const { service, execute } = serviceWith([subscriptionCredential(VALID)], NOW, {
+      renewCredential,
+      vaultOpen: vi.fn(async() => OAUTH_SECRET),
+    });
+
+    const execution = await service.execute({ auth: AUTH, protocol: 'chatCompletions', body: body() });
+    await drain(execution.events);
+
+    expect(renewCredential).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('renews once and retries the same route when the upstream rejects the credential', async () => {
+    const renewCredential = vi.fn(async (_input: unknown) => true);
+    let attempt = 0;
+    const { service, store, execute } = serviceWith([subscriptionCredential(VALID)], NOW, {
+      renewCredential,
+      vaultOpen: vi.fn(async() => OAUTH_SECRET),
+      execute: async function*() {
+        attempt += 1;
+        if (attempt === 1) throw authenticationFailure();
+        yield { type: 'response.started', id: 'resp_retry' };
+        yield { type: 'text.delta', text: 'ok' };
+      },
+    });
+
+    const execution = await service.execute({ auth: AUTH, protocol: 'chatCompletions', body: body() });
+    await drain(execution.events);
+
+    expect(renewCredential).toHaveBeenCalledTimes(1);
+    expect(renewCredential.mock.calls[0][0]).toMatchObject({ reason: 'authentication_failed' });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(store.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('does not retry with a credential disabled between renewal and reload', async () => {
+    const row = subscriptionCredential(VALID);
+    const credentials = [row];
+    let attempt = 0;
+    const renewCredential = vi.fn(async (_input: unknown) => {
+      // A concurrent lifecycle change (disable/revoke) may land after renewal reports success but
+      // before the gateway reloads the row it is about to open.
+      Object.assign(row, { enabled: false, health: 'disabled' });
+      return true;
+    });
+    const { service, store, execute } = serviceWith(credentials, NOW, {
+      renewCredential,
+      vaultOpen: vi.fn(async() => OAUTH_SECRET),
+      execute: async function*() {
+        attempt += 1;
+        if (attempt === 1) throw authenticationFailure();
+        yield { type: 'response.started', id: 'resp_should_not_be_revived' };
+        yield { type: 'text.delta', text: 'ok' };
+      },
+    });
+
+    const execution = await service.execute({ auth: AUTH, protocol: 'chatCompletions', body: body() });
+    await expect(drain(execution.events)).rejects.toThrow('upstream rejected the credential');
+
+    // The renewal itself reported success, but the reloaded row is no longer eligible: the gateway
+    // must not open the revoked session for a second provider attempt.
+    expect(renewCredential).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(store.recordFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a typed unusable result when the refreshed row is disabled before reload', async () => {
+    const row = subscriptionCredential(EXPIRED);
+    const credentials = [row];
+    const renewCredential = vi.fn(async (_input: unknown) => {
+      Object.assign(row, { enabled: false, health: 'disabled' });
+      return true;
+    });
+    const { service, execute } = serviceWith(credentials, NOW, {
+      renewCredential,
+      vaultOpen: vi.fn(async() => OAUTH_SECRET),
+    });
+
+    const execution = await service.execute({ auth: AUTH, protocol: 'chatCompletions', body: body() });
+    await expect(drain(execution.events)).rejects.toMatchObject({
+      code: 'credential_unavailable',
+      status: 401,
+    });
+
+    // The renewed-but-disabled credential is never opened against the provider.
+    expect(renewCredential).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('stops after a single renewal retry when the renewed credential is rejected again', async () => {
+    const renewCredential = vi.fn(async (_input: unknown) => true);
+    const { service, store, execute } = serviceWith([subscriptionCredential(VALID)], NOW, {
+      renewCredential,
+      vaultOpen: vi.fn(async() => OAUTH_SECRET),
+      execute: async function*() {
+        throw authenticationFailure();
+        // eslint-disable-next-line no-unreachable
+        yield { type: 'response.started', id: 'unreachable' };
+      },
+    });
+
+    const execution = await service.execute({ auth: AUTH, protocol: 'chatCompletions', body: body() });
+    await expect(drain(execution.events)).rejects.toThrow('upstream rejected the credential');
+
+    expect(renewCredential).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(store.recordFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('never renews after a client event has already been emitted', async () => {
+    const renewCredential = vi.fn(async (_input: unknown) => true);
+    const { service, store, execute } = serviceWith([subscriptionCredential(VALID)], NOW, {
+      renewCredential,
+      vaultOpen: vi.fn(async() => OAUTH_SECRET),
+      execute: async function*() {
+        yield { type: 'response.started', id: 'resp_started' };
+        throw authenticationFailure();
+      },
+    });
+
+    const execution = await service.execute({ auth: AUTH, protocol: 'chatCompletions', body: body() });
+    await expect(drain(execution.events)).rejects.toThrow('upstream rejected the credential');
+
+    expect(renewCredential).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(store.recordFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves API-key credentials on the existing path without consulting the renewal hook', async () => {
+    const renewCredential = vi.fn(async (_input: unknown) => true);
+    const { service, store, execute } = serviceWith([
+      credential({ id: 'openai_api_key', provider: 'openai', authMode: 'apiKey', models: ['gpt-5'] }),
+    ], NOW, {
+      renewCredential,
+      execute: async function*() {
+        throw authenticationFailure();
+        // eslint-disable-next-line no-unreachable
+        yield { type: 'response.started', id: 'unreachable' };
+      },
+    });
+
+    const execution = await service.execute({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: { model: 'gpt-5', messages: [{ role: 'user', content: 'hello' }], stream: true },
+    });
+    await expect(drain(execution.events)).rejects.toThrow('upstream rejected the credential');
+
+    expect(renewCredential).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(store.recordFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a typed reauthorization requirement without issuing a doomed upstream request', async () => {
+    const reauth = new GatewayProtocolError('Provider session requires re-authorization', {
+      code: 'credential_unavailable',
+      status: 401,
+      details: { reauthRequired: true },
+    });
+    const renewCredential = vi.fn(async (_input: unknown) => { throw reauth; });
+    const { service, store, execute } = serviceWith([subscriptionCredential(EXPIRED)], NOW, {
+      renewCredential,
+      vaultOpen: vi.fn(async() => OAUTH_SECRET),
+    });
+
+    const execution = await service.execute({ auth: AUTH, protocol: 'chatCompletions', body: body() });
+    await expect(drain(execution.events)).rejects.toMatchObject({
+      code: 'credential_unavailable',
+      details: { reauthRequired: true },
+    });
+
+    // The known-invalid session must not be used for another provider call, and renewal must not
+    // loop after the definitive invalid_grant.
+    expect(execute).not.toHaveBeenCalled();
+    expect(renewCredential).toHaveBeenCalledTimes(1);
+    expect(store.recordFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs only a typed renewal failure code, never the raw upstream error text', async () => {
+    const renewCredential = vi.fn(async (_input: unknown) => {
+      throw new Error('Bearer sk-live-upstream-secret must never be logged');
+    });
+    const { service } = serviceWith([subscriptionCredential(EXPIRED)], NOW, {
+      renewCredential,
+      vaultOpen: vi.fn(async() => OAUTH_SECRET),
+    });
+    const warn = vi.spyOn((service as unknown as { logger: { warn: (message: string) => void } }).logger, 'warn');
+
+    const execution = await service.execute({ auth: AUTH, protocol: 'chatCompletions', body: body() });
+    await drain(execution.events);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = warn.mock.calls[0][0] as string;
+    expect(logged).toContain('renewal_failed');
+    expect(logged).not.toContain('sk-live-upstream-secret');
+  });
+});
+});
+
+describe('AiGatewayService credential failure version guard', () => {
+  const NOW = new Date('2026-07-23T00:00:00.000Z');
+
+  async function drain(events: AsyncIterable<unknown>): Promise<void> {
+    for await (const _event of events) {
+      // Consume the stream so failure recording runs.
+    }
+  }
+
+  function kimiBody() {
+    return { model: 'kimi-k2', messages: [{ role: 'user', content: 'hello' }], stream: true };
+  }
+
+  it('records a failure against the credential version the attempt actually used', async () => {
+    const { service, store } = serviceWith([
+      credential({
+        id: 'kimi_subscription', provider: 'kimi', authMode: 'deviceCodeOAuth',
+        models: ['kimi-k2'], version: 4, expiresAt: new Date('2026-07-23T01:00:00.000Z'),
+      }),
+    ], NOW, {
+      renewCredential: vi.fn(async () => false),
+      execute: async function*() {
+        throw Object.assign(new Error('upstream rejected the credential'), { status: 401 });
+        // eslint-disable-next-line no-unreachable
+        yield { type: 'response.started', id: 'unreachable' };
+      },
+    });
+
+    const execution = await service.execute({ auth: AUTH, protocol: 'chatCompletions', body: kimiBody() });
+    await expect(drain(execution.events)).rejects.toThrow('upstream rejected the credential');
+
+    // The CAS write must carry the version that was used, never the blanket `undefined` that
+    // would let a stale failure clobber a newer replacement row.
+    expect(vi.mocked(store.recordFailure!).mock.calls[0][0].expectedVersion).toBe(4);
+  });
+
+  it('does not let a delayed failure from an older version disable a newer replacement', async () => {
+    const row = credential({
+      id: 'kimi_subscription', provider: 'kimi', authMode: 'deviceCodeOAuth',
+      models: ['kimi-k2'], version: 1, expiresAt: new Date('2026-07-23T01:00:00.000Z'),
+    });
+    const registry = createDefaultProviderRegistry();
+    // Mirrors the Pod conditional update: a missing expectedVersion means "no guard" and would
+    // overwrite whatever row is current, which is exactly the bug this guards against.
+    const store: GatewayCredentialStore = {
+      listCredentials: vi.fn(async() => [{ ...row }]),
+      recordFailure: vi.fn(async(input) => {
+        if (input.expectedVersion !== undefined && input.expectedVersion !== row.version) return;
+        row.health = 'invalid';
+      }),
+    };
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const execute = vi.fn(async function*() {
+      await blocked;
+      throw Object.assign(new Error('upstream rejected the credential'), { status: 401 });
+      // eslint-disable-next-line no-unreachable
+      yield { type: 'response.started', id: 'unreachable' };
+    });
+    const service = new AiGatewayService({
+      deployment: 'cloud',
+      registry,
+      router: new ModelRouter({
+        registry,
+        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+        credentials: store.listCredentials,
+        now: () => NOW,
+      }),
+      credentials: store,
+      vault: { seal: vi.fn(), rewrap: vi.fn(), open: vi.fn(async() => ({ accessToken: 'kimi-access' })) },
+      runtimes: { get: vi.fn(() => ({ execute })) } as unknown as ProviderRuntimeRegistry,
+      now: () => NOW,
+    });
+
+    const execution = await service.execute({ auth: AUTH, protocol: 'chatCompletions', body: kimiBody() });
+    const draining = drain(execution.events);
+    // A later renewal replaces the row while the older attempt is still in flight.
+    row.version = 2;
+    release();
+    await expect(draining).rejects.toThrow('upstream rejected the credential');
+
+    expect(vi.mocked(store.recordFailure!).mock.calls[0][0].expectedVersion).toBe(1);
+    expect(row.health).toBe('healthy');
   });
 });
