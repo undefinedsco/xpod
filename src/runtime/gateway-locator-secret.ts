@@ -7,12 +7,21 @@ const SECRET_BYTES = 32;
 const SECRET_FILE_MODE = 0o600;
 const SECRET_DIR_MODE = 0o700;
 
+/**
+ * Resolves the locator secret that seals Gateway API Key records for a file-backed Local identity
+ * database, or undefined when this deployment has no stable shared secret.
+ *
+ * Cloud replicas must agree on one locator secret: a secret generated per replica would mint
+ * locator records its siblings cannot read. Cloud therefore never derives a fallback, and a
+ * missing XPOD_GATEWAY_LOCATOR_SECRET means "Gateway API Keys are unavailable here" — callers
+ * skip that assembly instead of failing startup.
+ */
 export function resolvePersistentGatewayLocatorSecret(options: {
   databaseUrl: string;
   edition: 'local' | 'cloud';
-}): string {
+}): string | undefined {
   if (options.edition === 'cloud') {
-    throw new Error('XPOD_GATEWAY_LOCATOR_SECRET is required for Cloud Gateway API keys; configure one stable shared value across replicas.');
+    return undefined;
   }
 
   const databasePath = sqliteDatabaseFilePath(options.databaseUrl);

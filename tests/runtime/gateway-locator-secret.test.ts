@@ -150,13 +150,15 @@ describe('Gateway locator secret persistence', () => {
       .toThrow(/Failed to prepare Gateway locator secret directory/u);
   });
 
-  it('requires an explicit secret for non-file-backed databases', () => {
+  it('requires an explicit secret locally and leaves Cloud without one unresolved', () => {
     expect(() => resolvePersistentGatewayLocatorSecret({ databaseUrl: ':memory:', edition: 'local' }))
       .toThrow(/XPOD_GATEWAY_LOCATOR_SECRET is required/u);
-    expect(() => resolvePersistentGatewayLocatorSecret({
+    // Cloud replicas cannot share a file-derived secret, so Cloud has no fallback at all: the
+    // caller treats the missing variable as "Gateway API Keys unavailable" instead of failing.
+    expect(resolvePersistentGatewayLocatorSecret({
       databaseUrl: 'postgres://db.example/xpod',
       edition: 'cloud',
-    })).toThrow(/stable shared value across replicas/u);
+    })).toBeUndefined();
   });
 });
 

@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig } from '../../../src/api/container';
 import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
+import { PodGatewayAccessKeyRepository } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { secretPathForGatewayLocatorDatabase } from '../../../src/runtime/gateway-locator-secret';
 import { registerProvisionStatusRoute } from '../../../src/api/handlers/ProvisionHandler';
 
@@ -343,14 +344,26 @@ describe('loadConfigFromEnv', () => {
     expect(aiGatewayService.cloudModels).toBeUndefined();
   });
 
-  it('fails closed for Cloud Gateway API keys without a stable shared locator secret', () => {
+  it('keeps Cloud startable without a stable shared locator secret and leaves Gateway API Keys unavailable', () => {
     const container = createApiContainer(baseConfig({
       edition: 'cloud',
       databaseUrl: 'postgres://db.example/xpod',
     }));
 
-    expect(() => container.resolve('gatewayAccessKeyRepository'))
-      .toThrow(/XPOD_GATEWAY_LOCATOR_SECRET is required for Cloud Gateway API keys/u);
+    // Cloud derives no fallback secret, so the Gateway API Key assembly is skipped instead of
+    // failing API startup; the rest of the API still wires up.
+    expect(container.resolve('gatewayAccessKeyRepository', { allowUnregistered: true })).toBeUndefined();
+    expect(container.resolve('authMiddleware')).toBeTruthy();
+  });
+
+  it('keeps Cloud Gateway API Keys wired when a stable shared locator secret is configured', () => {
+    const container = createApiContainer(baseConfig({
+      edition: 'cloud',
+      databaseUrl: 'postgres://db.example/xpod',
+      gatewayLocatorSecret: 'cloud-shared-locator-secret',
+    }));
+
+    expect(container.resolve('gatewayAccessKeyRepository')).toBeInstanceOf(PodGatewayAccessKeyRepository);
   });
 
   it('restores first-run Local Cloud credentials from the default setup file without env tokens', () => {

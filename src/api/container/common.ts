@@ -111,6 +111,8 @@ import {
   resolveEdgeNodeCertificateCapabilityBridgeId,
 } from '../../edge/EdgeNodeCertificateCapabilityBridge';
 
+const logger = getLoggerFor('ApiContainer');
+
 function resolveCssServiceBaseUrl(): string {
   return `http://127.0.0.1:${process.env.CSS_PORT ?? '3000'}/`;
 }
@@ -137,7 +139,12 @@ function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): str
   return new URL(resolveAiConnectionsBaseUrl(config)).origin;
 }
 
-function resolveGatewayLocatorSecret(config: ApiContainerCradle['config']): string {
+/**
+ * Resolves the secret that seals Gateway API Key locator records, or undefined when this
+ * deployment has none. Cloud has no derived fallback, so Cloud without XPOD_GATEWAY_LOCATOR_SECRET
+ * reports Gateway API Keys as unavailable rather than failing API startup.
+ */
+function resolveGatewayLocatorSecret(config: ApiContainerCradle['config']): string | undefined {
   if (config.gatewayLocatorSecret?.trim()) {
     return config.gatewayLocatorSecret;
   }
@@ -265,12 +272,22 @@ export function registerCommonServices(
     }).singleton(),
 
     gatewayAccessKeyRepository: asFunction((cradle: ApiContainerCradle) => {
+      const locatorSecret = resolveGatewayLocatorSecret(cradle.config);
+      if (!locatorSecret) {
+        // Without a locator secret no Gateway API Key can be created or verified. Report the
+        // feature as unavailable instead of failing API startup, and derive nothing in its place.
+        logger.warn(
+          'XPOD_GATEWAY_LOCATOR_SECRET is not configured: Gateway API Keys are unavailable '
+          + '(no key can be created or verified). Configure one stable shared value across replicas to enable them.',
+        );
+        return undefined;
+      }
       const { config, ownerPodAccess } = cradle;
       return new PodGatewayAccessKeyRepository({
         locatorCodec: new AesGatewayKeyLocatorCodec({
           active: {
             kid: config.gatewayLocatorKeyId ?? 'active',
-            secret: resolveGatewayLocatorSecret(config),
+            secret: locatorSecret,
           },
           previous: config.gatewayPreviousLocatorSecrets,
         }),
@@ -618,6 +635,9 @@ export function registerCommonServices(
         })
         : undefined;
 
+      // Kept even when the deployment configured no locator secret: this authenticator also
+      // verifies AI-Connections invocation tokens, and without a repository it reports Gateway API
+      // Keys as unavailable (503) instead of letting the bearer fall through as invalid.
       const gatewayApiKeyAuthenticator = new GatewayApiKeyAuthenticator({
         repository: gatewayAccessKeyRepository,
         deployment: config.edition,
