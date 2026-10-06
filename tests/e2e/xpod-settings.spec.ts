@@ -12,6 +12,17 @@ const fakeProviderApiKey = 'sk-xpod-acceptance-fixture-key';
 const fakeSiblingApiKey = 'sk-xpod-acceptance-fixture-sibling';
 const primaryCredentialLabel = maskedCredentialLabel(fakeProviderApiKey);
 const siblingCredentialLabel = maskedCredentialLabel(fakeSiblingApiKey);
+/**
+ * STALENESS (recorded 2026-10-07, phase21): the Xpod key flows below were
+ * re-pointed at the living contract (Account client credentials; the wrapper is
+ * only ever visible in the creating session). The REST OF THIS SPEC'S XPOD-KEY
+ * SECTION IS PRE-EXISTING STALE and cannot pass as written: it still drives the
+ * retired nav label `API Keys`, heading `API KEYS`, button `新建 API Key`, and a
+ * `… 客户端选项` group / `应用到 Codex` checkbox / 停用 affordance that commit
+ * 3dd77d648 had already removed from the applet. Re-authoring it against the
+ * current dialog-based surface is a dedicated batch; this file is not evidence
+ * of a green browser run today.
+ */
 const aliceGatewayKeyName = 'Alice acceptance Gateway';
 const fixtureFailurePrefix = 'XPOD_SETTINGS_FIXTURE_ERROR ';
 
@@ -168,7 +179,7 @@ test.describe('Xpod settings product acceptance', () => {
     await fixtureHarness?.stop();
   });
 
-  test('creates only, copies an existing client credential after reload, and authorizes the Gateway', async ({ browser }) => {
+  test('creates an Account-backed Xpod key, authenticates /v1/models with it, and reports the wrapper as unrecoverable after reload', async ({ browser }) => {
     test.setTimeout(180_000);
     const context = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] });
     const page = await context.newPage();
@@ -190,28 +201,13 @@ test.describe('Xpod settings product acceptance', () => {
       await page.reload({ waitUntil: 'domcontentloaded' });
       await openApiKeysSection(page);
       await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toBeVisible({ timeout: 30_000 });
-      await openGatewayClientMenu(page);
-      const revealResponsePromise = page.waitForResponse((response) => (
-        response.request().method() === 'POST'
-        && /^\/api\/ai\/gateway\/keys\/[^/]+\/reveal$/u.test(new URL(response.url()).pathname)
-      ));
-      await page.getByRole('button', { name: `复制 ${aliceGatewayKeyName} 的 Codex 配置` }).click();
-      const revealResponse = await revealResponsePromise;
-      expect(revealResponse.status()).toBe(200);
-      const revealPayload = await revealResponse.json() as { key?: unknown };
-      expect(revealPayload.key === plaintext).toBe(true);
+      // The Account does not own the wrapper, so a reload cannot recover it:
+      // the row states that plainly and no reveal request is made.
+      await expect(page.getByText('密钥原文没有保存，不能再显示', { exact: true })).toBeVisible({ timeout: 30_000 });
       const keyRow = page.locator('[data-key-state]').filter({ has: page.getByText(aliceGatewayKeyName, { exact: true }) });
-      await expect(keyRow.getByRole('status').filter({ hasText: '已复制' })).toHaveText('已复制');
-      await page.screenshot({ path: path.join(screenshotDir, 'api-key-copy-menu.png'), fullPage: true, animations: 'disabled' });
-      await expect(page.getByText('配置已复制。', { exact: true })).toHaveCount(0);
-      const copied = await page.evaluate(() => navigator.clipboard.readText());
-      expect(copied.includes(plaintext)).toBe(true);
-      expect(copied).toContain('wire_api = "responses"');
-      expect(copied).toContain(new URL('/v1', fixtureHarness.ready.baseUrl).toString());
+      await expect(keyRow).toHaveCount(1);
       await expect(page.locator('body')).not.toContainText(plaintext);
-      await expect(keyRow.getByText('已复制', { exact: true })).toHaveCount(0);
-      await page.keyboard.press('Escape');
-      await applyAndWithdrawAliceGatewayKeyThroughUi(page, plaintext);
+      await page.screenshot({ path: path.join(screenshotDir, 'api-key-unrecoverable-row.png'), fullPage: true, animations: 'disabled' });
     } catch (error) {
       workflowFailed = true;
       await page.screenshot({ path: path.join(screenshotDir, 'api-key-layout-failure.png'), fullPage: true }).catch(() => undefined);
@@ -723,39 +719,24 @@ async function createAliceGatewayKeyThroughUi(page: Page): Promise<string> {
     && response.request().postDataJSON()?.name === aliceGatewayKeyName
     && response.request().postDataJSON()?.webId === alice.webId
   ));
-  const createResponsePromise = page.waitForResponse((response) => (
-    response.request().method() === 'POST'
-    && new URL(response.url()).pathname === '/api/ai/gateway/keys'
-  ));
   try {
     await page.getByRole('button', { name: '创建 API Key' }).click();
-    const [accountResponse, createResponse] = await Promise.all([accountResponsePromise, createResponsePromise]);
+    const accountResponse = await accountResponsePromise;
     expect(accountResponse.ok()).toBe(true);
     const credential = await accountResponse.json() as { id?: unknown; secret?: unknown; resource?: unknown };
     expect(typeof credential.id).toBe('string');
     expect(typeof credential.secret).toBe('string');
     expect(typeof credential.resource).toBe('string');
-    const responseBody = await createResponse.text();
-    const payload = JSON.parse(responseBody) as { key?: unknown; record?: { kind?: string; fingerprint?: string } };
-    if (createResponse.status() !== 201 || typeof payload.key !== 'string' || !payload.key) {
-      throw new Error(`Gateway key creation failed with ${createResponse.status()}: ${redactFixtureSecrets(responseBody).slice(0, 1500)}\n${fixtureHarness.diagnostics()}`);
-    }
+    // An Xpod key is an Account client credential: the page wraps the pair it
+    // just received and never posts a second record to a Gateway key route.
     const expectedKey = `sk-${Buffer.from(`${credential.id}:${credential.secret}`, 'utf8').toString('base64')}`;
-    expect(payload.key === expectedKey).toBe(true);
-    const stored = createResponse.request().postDataJSON() as { name?: string; apiKey?: string; credentialResource?: string };
-    expect(stored.name).toBe(aliceGatewayKeyName);
-    expect(stored.apiKey === expectedKey).toBe(true);
-    expect(typeof stored.credentialResource).toBe('string');
-    expect(new URL(stored.credentialResource!).pathname).toBe(new URL(credential.resource as string, fixtureHarness.ready.baseUrl).pathname);
-    expect(payload.record?.kind).toBe('client-credentials');
-    expect(payload.record?.fingerprint).toBeTruthy();
     await expect(page.getByText(aliceGatewayKeyName, { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText('API Key 已创建，可在列表中复制或应用配置。', { exact: true })).toBeVisible();
     await expect(page.getByLabel('API Key 名称')).toHaveCount(0);
-    await expect(page.locator('body')).not.toContainText(payload.key);
-    expect(creationRequests.filter((pathname) => pathname === '/api/ai/gateway/keys')).toHaveLength(1);
+    await expect(page.locator('body')).not.toContainText(expectedKey);
+    expect(creationRequests.filter((pathname) => pathname === '/api/ai/gateway/keys')).toHaveLength(0);
     expect(creationRequests.some((pathname) => /\/(?:plan|apply|verify|reveal)$/u.test(pathname))).toBe(false);
-    return payload.key;
+    return expectedKey;
   } finally {
     page.off('request', trackRequest);
   }
@@ -912,9 +893,10 @@ async function deleteAliceGatewayKeyThroughUi(page: Page): Promise<void> {
   const remove = deleteActions.first();
   await expect(remove).toBeVisible({ timeout: 30_000 });
   await expect(remove).toBeEnabled();
+  // Revocation is a DELETE on the Account credential resource.
   const responsePromise = page.waitForResponse((response) => (
     response.request().method() === 'DELETE'
-    && new URL(response.url()).pathname.startsWith('/api/ai/gateway/keys/')
+    && new URL(response.url()).pathname.startsWith('/.account/')
   ));
   await remove.click();
   const response = await responsePromise;

@@ -185,9 +185,9 @@ async function inspectCommittedHost(operation: HostOperation): Promise<unknown> 
           const origin = new URL(operation.gatewayOrigin).origin;
           const url = new URL(operation.resourcePath, origin);
           const method = operation.init?.method ?? 'GET';
-          const permitted = method === 'GET' && ['/api/ai/providers', '/api/ai/gateway/keys'].includes(url.pathname)
-            || method === 'POST' && url.pathname === '/api/ai/gateway/keys'
-            || method === 'DELETE' && /^\/api\/ai\/gateway\/keys\/[^/]+$/u.test(url.pathname);
+          // Only routes this build still serves: Xpod keys are Account client
+          // credentials now, so the retired Gateway key paths are not permitted.
+          const permitted = method === 'GET' && url.pathname === '/api/ai/providers';
           const taskPath = url.pathname === '/api/tasks';
           const taskRequest = taskPath && (method === 'GET' || method === 'POST') && !url.search
             || taskPath && method === 'PATCH' && url.searchParams.has('id')

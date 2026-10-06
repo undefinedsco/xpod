@@ -601,27 +601,32 @@ These rules are object-specific:
 
 | Object | Display and recovery boundary |
 | --- | --- |
-| Xpod API Key | Owner-authorized creation and, when recoverable companion material exists, reveal/copy for cross-device client setup. Existing hash-only records cannot be reversed; missing material must be explained. |
-| Shared `gatewayAccessKeyResource` | Hash-only verification record. Never add plaintext to this shared resource or derive a reveal capability from `secretHash`. |
-| Provider Credential | Separate credential storage and protection contract. Xpod API Key reveal does not authorize provider-secret reveal, copying it into clients, or weakening encryption. |
-| Runtime configuration secret | Keeps its own write-only or redacted configuration contract. Product API Key recovery does not create a runtime-secret reveal operation. |
+| Xpod API Key | An Account client credential the account manages; Xpod only wraps it once as `sk-base64(client_id:client_secret)` for the client. The wrapper is visible in the session that created it and nowhere else: there is no reveal, and the list shows metadata only. |
+| Shared `gatewayAccessKeyResource` | Legacy shared model resource that Xpod keys no longer use. Never add plaintext to it or derive a reveal capability from `secretHash`. |
+| Provider Credential | Separate credential storage and protection contract. Wrapping an Account credential does not authorize provider-secret reveal, copying provider secrets into clients, or weakening encryption. |
+| Runtime configuration secret | Keeps its own write-only or redacted configuration contract. Account-credential handling does not create a runtime-secret reveal operation. |
 
 ### Web Management Contract
 
-The Web UI uses the current authenticated WebID session for these management
-requests. It never asks the user for a CSS Client ID or Client Secret:
+The Account owns Xpod keys; Xpod has no key backend of its own. The Web UI
+drives the CSS Account client-credentials control with the current
+authenticated session. It never asks the user for a CSS Client ID or Client
+Secret, and the page issues, lists and revokes through the capability boundary
+(`ui/src/auth/account-client-credentials.ts`) rather than a Pod route:
 
 | Method | Path | Meaning |
 | --- | --- | --- |
-| `GET` | `/api/ai/gateway/keys` | List non-deleted keys owned by the current WebID. |
-| `POST` | `/api/ai/gateway/keys` | Create a named key and return its plaintext plus durable record. |
-| `POST` | `/api/ai/gateway/keys/:id/reveal` | Recover plaintext from the Xpod-owned Pod companion resource. |
-| `PATCH` | `/api/ai/gateway/keys/:id` | Enable or disable the exact key. |
-| `DELETE` | `/api/ai/gateway/keys/:id` | Delete the exact key; it must not appear after reload. |
+| `POST` | `controls.account.clientCredentials` | Issue one named credential for the current WebID and return `{id, secret, resource}` once. |
+| `GET` | `controls.account.clientCredentials` | List the account's remaining credentials as label → resource; metadata only. |
+| `DELETE` | the credential `resource` | Revoke that exact credential after re-reading it and matching `id` and `webId`. |
 
-Create, reveal, enable, disable, and delete are owner-scoped operations. A
-Bearer key accepted by `/v1/models` and `/v1/chat/completions` is the plaintext
-created here, not a locally assembled `base64(client_id:client_secret)` value.
+The wrapper `sk-base64(client_id:client_secret)` exists only in the session
+that issued it; Xpod stores no plaintext and no Pod-side companion record, so a
+reload cannot show the value again and the row says so. There is no reveal
+route and no enable/disable update: the Account offers neither, so the surface
+does not pretend otherwise. A Bearer key accepted by `/v1/models` and
+`/v1/chat/completions` is exactly this wrapper over an Account-issued
+credential.
 
 ## Provider Detail UX
 

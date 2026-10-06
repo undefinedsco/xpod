@@ -20,6 +20,7 @@ describe('account-owned coding client credentials', () => {
     const created = await capability.create({ name: 'Codex', webId });
     expect(created).toEqual({
       apiKey: `sk-${Buffer.from('工作客户端:secret:with-colon').toString('base64')}`,
+      clientId: '工作客户端',
       resource,
     });
     expect(fetch).toHaveBeenCalledWith(collection, expect.objectContaining({

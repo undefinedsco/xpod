@@ -62,7 +62,7 @@ export function createAccountClientCredentialsCapability({
       const bytes = new TextEncoder().encode(`${value.id}:${value.secret}`);
       const encoded = btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''));
       assertCurrent();
-      return { apiKey: `sk-${encoded}`, resource };
+      return { apiKey: `sk-${encoded}`, clientId: value.id, resource };
     },
     async list() {
       // CSS owns the collection: one GET returns every credential the account

@@ -55,17 +55,28 @@ describe('Xpod Xpod 密钥', () => {
     vi.restoreAllMocks()
   })
 
-  it('repairs missing service access once for the key group and reloads real keys', async () => {
-    const listGatewayKeys = vi.fn().mockRejectedValueOnce(Object.assign(new Error('missing'), { code: 'service_access_missing' })).mockResolvedValue([APPLIED])
+  it('reports missing Pod service access next to the keys and repairs it once', async () => {
+    // The keys are Account-owned, so they list without Pod permission; the
+    // notice is about whether the issued key can actually reach the Pod.
+    const listGatewayKeys = vi.fn(async () => [APPLIED])
+    const getServiceAccess = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('missing'), { code: 'service_access_missing' }))
+      .mockResolvedValue({ status: 'granted' })
     const authorize = vi.fn(async () => undefined)
-    render(<AiGatewayKeysSection client={client({ listGatewayKeys })} onAuthorizeService={authorize} />)
+    render(<AiGatewayKeysSection client={client({ listGatewayKeys, getServiceAccess })} onAuthorizeService={authorize} />)
     const allow = await screen.findByRole('button', { name: '允许 Xpod 访问' })
-    expect(screen.queryByText('尚未签发 Xpod 密钥')).toBeNull()
-    fireEvent.click(allow)
     await screen.findByText('Work laptop', { exact: true })
+    expect(getServiceAccess).toHaveBeenCalledTimes(1)
+    fireEvent.click(allow)
+    await waitFor(() => expect(screen.queryByRole('button', { name: '允许 Xpod 访问' })).toBeNull())
     expect(authorize).toHaveBeenCalledTimes(1)
     expect(listGatewayKeys).toHaveBeenCalledTimes(2)
-    expect(screen.queryByRole('button', { name: '允许 Xpod 访问' })).toBeNull()
+  })
+
+  it('does not claim a Pod-permission problem when service access is fine', async () => {
+    render(<AiGatewayKeysSection client={client()} onAuthorizeService={async () => undefined} />)
+    await screen.findByText('Work laptop', { exact: true })
+    expect(screen.queryByText('Xpod 尚未获准访问这个 Pod')).toBeNull()
   })
 
   it('creates a copy-only key without a client and copies its endpoint', async () => {
@@ -636,7 +647,8 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
     webId: WEB_ID,
     apiBase: 'https://pod.example',
     listGatewayKeys: vi.fn(async () => [APPLIED, UNBOUND]),
-    // The server records the declared purpose with the credential and echoes it.
+    getServiceAccess: vi.fn(async () => ({ status: 'granted' })),
+    // The declared purpose stays a session-local annotation on the new row.
     createGatewayKey: vi.fn(async (input: { name: string; appliedTo?: string }) => ({
       plaintext: 'plain-key',
       record: {
@@ -648,7 +660,6 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
         lastUsedAt: undefined,
       },
     })),
-    updateGatewayKey: vi.fn(),
     deleteGatewayKey: vi.fn(async () => undefined),
     ...overrides,
   } as unknown as AiConnectionsClient

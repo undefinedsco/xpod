@@ -52,7 +52,6 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
         appliedTo: input.appliedTo,
       },
     })),
-    updateGatewayKey: vi.fn(),
     deleteGatewayKey: vi.fn(async () => undefined),
     beginConnect: vi.fn(async (provider, mode) => ({
       provider,

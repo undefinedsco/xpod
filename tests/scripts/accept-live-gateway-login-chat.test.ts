@@ -41,15 +41,22 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
     expect(script).not.toContain('normalizeAcceptanceName(`accept-${ACCEPT_ID}`)');
   });
 
-  it('registers and verifies a CSS client credential as an Xpod Gateway API Key', async () => {
+  it('verifies an Account-issued client credential wrapper without a Gateway key route', async () => {
     const script = await readFile(path.resolve('scripts/accept-live-gateway-login-chat.ts'), 'utf8');
 
-    expect(script).toContain('await client.createGatewayKey');
-    expect(script).toContain('await client.listGatewayKeys');
-    expect(script).not.toContain('revealGatewayKey');
-    expect(script).toContain('await client.deleteGatewayKey');
+    // Xpod keys are Account client credentials: the canary issues through the
+    // Account control, wraps once, and authenticates /v1/models with the wrapper.
+    // It must not touch the removed Gateway key routes or the retired Pod-side
+    // registration the client no longer offers.
+    expect(script).toContain('await createCloudClientCredentials');
+    expect(script).toContain('Account client-credentials collection');
     expect(script).toContain('revocation is verified during cleanup');
-    expect(script).not.toContain('await client.updateGatewayKey');
+    expect(script).not.toContain('/api/ai/gateway/keys');
+    expect(script).not.toContain('createGatewayKey');
+    expect(script).not.toContain('listGatewayKeys');
+    expect(script).not.toContain('deleteGatewayKey');
+    expect(script).not.toContain('revealGatewayKey');
+    expect(script).not.toContain('updateGatewayKey');
     expect(script).not.toContain('function codingClientKey');
     expect(script).not.toContain('Bearer sk- wrapper accepted');
     expect(script).not.toContain('Buffer.from(`${clientId}:${clientSecret}`)');

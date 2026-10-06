@@ -1,7 +1,6 @@
 import { PROVIDER_LABELS } from './contract/provider-catalog'
 import { useSyncExternalStore } from 'react'
 import type {
-  AiClientCredentialsCapability,
   AiConnectionsPodStore,
   SolidLiveUpdateState,
   WebExtensionHost,
@@ -246,11 +245,14 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   }
   const client = authenticated
     ? createInteractiveAiConnectionsClient(
-      withAccountClientCredentials(createAiConnectionsClient({
+      createAiConnectionsClient({
         webId: sessionSnapshot.webId,
         podBaseUrl: readyPod.current.podUrl,
         authenticatedFetch: host.solid.session.fetch,
-      }), host.capabilities.aiClientCredentials),
+        // Account client credentials are the only Xpod key store there is; the
+        // key calls are backed by this capability and never by a Pod route.
+        clientCredentials: host.capabilities.aiClientCredentials,
+      }),
       host.capabilities.aiConnectionsPodStore,
       liveCredentials,
       beginProviderLoad,
@@ -563,50 +565,6 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   }
 
   return controller
-}
-
-function withAccountClientCredentials(
-  client: AiConnectionsClient,
-  credentials?: AiClientCredentialsCapability,
-): AiConnectionsClient {
-  return {
-    ...client,
-    async createGatewayKey(input) {
-      if (!credentials) throw new Error('当前账号登录状态不支持创建客户端凭据。')
-      const issued = await credentials.create({ name: input.name, webId: client.webId })
-      try {
-        // The wrapper is issued here; the declared purpose and the rest of the
-        // caller's input travel with it so the record keeps where it applies.
-        return await client.createGatewayKey({
-          ...input,
-          apiKey: issued.apiKey,
-          credentialResource: issued.resource,
-        })
-      } catch (cause) {
-        try {
-          await credentials.revoke({
-            clientId: clientIdFromApiKey(issued.apiKey), resource: issued.resource, webId: client.webId,
-          })
-        } catch {
-          throw new Error('API Key 未能保存到 Pod，且账号凭据撤销失败。该凭据尚未应用到客户端。')
-        }
-        throw cause
-      }
-    },
-    async deleteGatewayKey(keyId) {
-      const record = (await client.listGatewayKeys()).find((key) => key.id === keyId)
-      if (record?.kind === 'client-credentials') {
-        if (!credentials || !record.clientCredentialId) {
-          throw new Error('当前账号登录状态无法撤销此客户端凭据，Key 记录已保留。')
-        }
-        const issued = await credentials.list()
-        const target = issued.find((entry) => entry.clientId === record.clientCredentialId)
-        if (!target) throw new Error('账号服务中已找不到该客户端凭据，请刷新后重试。')
-        await credentials.revoke({ clientId: target.clientId, resource: target.resource, webId: client.webId })
-      }
-      await client.deleteGatewayKey(keyId)
-    },
-  }
 }
 
 function createInteractiveAiConnectionsClient(
@@ -1284,10 +1242,3 @@ function errorMessage(error: unknown): string {
   return aiConnectionsErrorMessage(error)
 }
 
-/** The wrapper carries the OIDC client id; parsing it needs no stored secret. */
-function clientIdFromApiKey(apiKey: string): string {
-  const decoded = atob(apiKey.replace(/^sk-/u, ''))
-  const separator = decoded.indexOf(':')
-  if (separator <= 0) throw new Error('客户端凭据格式无效。')
-  return decoded.slice(0, separator)
-}

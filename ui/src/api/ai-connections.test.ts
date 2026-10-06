@@ -335,11 +335,8 @@ describe('Xpod AI Connection API client', () => {
     await expect(client.quota('openai')).rejects.toThrow('OpenAI connection is not configured.');
   });
 
-  test('maps legacy missing Gateway API Key plaintext errors to a safe user-facing message', async () => {
-    const authenticatedFetch = mock(async () => new Response(JSON.stringify({
-      error: 'Gateway API Key plaintext is not available',
-    }), {
-      status: 409,
+  test('exposes no key reveal and fails closed when a client has no Account client-credentials capability', async () => {
+    const authenticatedFetch = mock(async () => new Response(JSON.stringify({}), {
       headers: { 'content-type': 'application/json' },
     })) as typeof fetch;
 
@@ -349,12 +346,14 @@ describe('Xpod AI Connection API client', () => {
       authenticatedFetch,
     });
 
-    // An issued wrapper is only visible in the session that created it, so the
-    // client has no reveal operation. A legacy server answer still maps to the
-    // safe message instead of leaking provider text.
+    // Xpod keys are Account client credentials: the issued `sk-` wrapper is only
+    // ever visible in the create response, so the client has no reveal operation.
     expect('revealGatewayKey' in client).toBe(false);
-    await expect(client.deleteGatewayKey('ai/gateway/access-keys.ttl#lost'))
-      .rejects.toThrow('Pod 中未找到此 API Key 的原文，无法复制配置。请创建新的 Key，更新客户端后再删除旧 Key。');
+    // A client without the host's Account client-credentials capability fails
+    // closed instead of falling back to the removed Gateway key routes.
+    await expect(client.deleteGatewayKey('work-client'))
+      .rejects.toThrow('Xpod 密钥 需要当前 Account 登录状态：这个客户端没有 Account 客户端凭据能力。');
+    expect(authenticatedFetch).not.toHaveBeenCalled();
   });
 
   test('uses the caller Solid session for Provider operations and interactive model reads', async () => {

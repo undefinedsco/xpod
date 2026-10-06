@@ -389,14 +389,6 @@ async function normalizeStructuredGatewayError(response: Response): Promise<Resp
   } catch {
     return response;
   }
-  const legacyCode = legacyGatewayErrorCode(payload);
-  if (legacyCode) {
-    return new Response(JSON.stringify({ code: legacyCode }), {
-      status: response.status,
-      statusText: response.statusText,
-      headers: { 'content-type': 'application/json' },
-    });
-  }
   if (!isStructuredGatewayError(payload)) {
     return response;
   }
@@ -425,18 +417,6 @@ function isStructuredGatewayError(value: unknown): value is {
     && typeof (error as { message?: unknown }).message === 'string'
     && typeof (error as { status?: unknown }).status === 'number',
   );
-}
-
-function legacyGatewayErrorCode(value: unknown): string | undefined {
-  if (!isRecord(value) || typeof value.error !== 'string') {
-    return undefined;
-  }
-  switch (value.error) {
-    case 'Gateway API Key plaintext is not available':
-      return 'gateway_api_key_plaintext_unavailable';
-    default:
-      return undefined;
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -238,117 +238,111 @@ describe('AI Connection controller host.solid integration', () => {
     expect(mockCalls(solid.session.fetch).some(([url]) => String(url).endsWith('/connect/begin'))).toBe(false)
   })
 
-  it('creates CSS credentials before registering the exact wrapper at the current Pod gateway', async () => {
+  it('issues Xpod keys only through the Account capability, with no Pod write', async () => {
     const solid = solidCapability()
     const host = hostFromSolid(solid)
-    const issued = { apiKey: 'sk-Y2xpZW50OnNlY3JldA==', resource: 'https://id.example/.account/credentials/one/' }
+    const issued = {
+      apiKey: 'sk-Y2xpZW50OnNlY3JldA==',
+      clientId: 'client',
+      resource: 'https://id.example/.account/credentials/one/',
+    }
     host.capabilities.aiClientCredentials = {
       create: vi.fn(async () => issued), list: vi.fn(async () => []), revoke: vi.fn(async () => undefined),
     }
-    const record = { id: 'key-1', owner: WEB_ID, scopes: [], createdAt: '2026-09-10T00:00:00Z', kind: 'client-credentials', credentialResource: issued.resource }
-    solid.session.fetch = vi.fn(async () => Response.json({ key: issued.apiKey, record }))
     const controller = createAiConnectionsController(host)
+
     const created = await controller.client!.createGatewayKey({ name: 'Work' })
+
     expect(host.capabilities.aiClientCredentials.create).toHaveBeenCalledWith({ name: 'Work', webId: WEB_ID })
-    expect(solid.session.fetch).toHaveBeenCalledWith('https://pod.example/api/ai/gateway/keys', expect.objectContaining({
-      body: JSON.stringify({ name: 'Work', apiKey: issued.apiKey, credentialResource: issued.resource }),
-    }))
-    expect(created.record.kind).toBe('client-credentials')
     expect(created.plaintext).toBe(issued.apiKey)
+    expect(created.record).toMatchObject({
+      id: 'client',
+      kind: 'client-credentials',
+      clientCredentialId: 'client',
+      credentialResource: issued.resource,
+      owner: WEB_ID,
+    })
+    // Account credentials are the only key store: the product has no Pod route
+    // to register the wrapper against, so nothing is written to the Pod.
+    expect(solid.session.fetch).not.toHaveBeenCalled()
   })
 
-  it('revokes newly issued CSS credentials when registration fails', async () => {
+  it('surfaces an Account issuance failure without trying a Pod registration', async () => {
     const solid = solidCapability()
-    solid.session.fetch = vi.fn(async () => Response.json({ error: 'save_failed' }, { status: 500 }))
     const host = hostFromSolid(solid)
-    const issued = { apiKey: 'sk-Y2xpZW50OnNlY3JldA==', resource: 'https://id.example/.account/credentials/one/' }
+    const revoke = vi.fn(async () => undefined)
     host.capabilities.aiClientCredentials = {
-      create: vi.fn(async () => issued), list: vi.fn(async () => []), revoke: vi.fn(async () => undefined),
+      create: vi.fn(async () => { throw new Error('CSS unavailable') }),
+      list: vi.fn(async () => []),
+      revoke,
     }
     const controller = createAiConnectionsController(host)
-    await expect(controller.client!.createGatewayKey({ name: 'Work' })).rejects.toThrow()
-    // The wrapper is the only place the CSS client id exists; the failed create
-    // must decode it and destroy the orphaned credential by client id.
-    expect(host.capabilities.aiClientCredentials.revoke).toHaveBeenCalledWith({
-      clientId: 'client', resource: issued.resource, webId: WEB_ID,
-    })
+
+    await expect(controller.client!.createGatewayKey({ name: 'Work' })).rejects.toThrow('CSS unavailable')
+    expect(revoke).not.toHaveBeenCalled()
+    expect(solid.session.fetch).not.toHaveBeenCalled()
   })
 
-  it('keeps the Pod record when CSS credential revocation fails', async () => {
+  it('revokes the exact Account credential and surfaces a revocation failure', async () => {
     const solid = solidCapability()
-    const record = {
-      id: 'key-1', owner: WEB_ID, scopes: [], createdAt: '2026-09-10T00:00:00Z',
-      kind: 'client-credentials', credentialResource: 'https://id.example/.account/credentials/one/',
-      clientCredentialId: 'client',
-    }
-    solid.session.fetch = vi.fn(async () => Response.json({ data: [record] }))
     const host = hostFromSolid(solid)
     const revoke = vi.fn(async () => { throw new Error('CSS unavailable') })
-    host.capabilities.aiClientCredentials = {
-      create: vi.fn(), list: vi.fn(async () => [{
-        clientId: 'client', label: 'client', resource: 'https://id.example/.account/credentials/one/',
-      }]), revoke,
-    }
-    const controller = createAiConnectionsController(host)
-    await expect(controller.client!.deleteGatewayKey('key-1')).rejects.toThrow('CSS unavailable')
-    expect(host.capabilities.aiClientCredentials.list).toHaveBeenCalledTimes(1)
-    expect(revoke).toHaveBeenCalledWith({
-      clientId: 'client', resource: 'https://id.example/.account/credentials/one/', webId: WEB_ID,
-    })
-    expect(mockCalls(solid.session.fetch).some(([, init]) => init?.method === 'DELETE')).toBe(false)
-  })
-
-  it('retries Pod cleanup after account revocation succeeds but Pod deletion fails', async () => {
-    const solid = solidCapability()
-    const record = {
-      id: 'key-1', owner: WEB_ID, scopes: [], createdAt: '2026-09-10T00:00:00Z',
-      kind: 'client-credentials', credentialResource: 'https://id.example/.account/credentials/one/',
-      clientCredentialId: 'client',
-    }
-    let deletions = 0
-    solid.session.fetch = vi.fn(async (url, init) => {
-      if (init?.method === 'DELETE') {
-        deletions += 1
-        return deletions === 1 ? Response.json({ error: 'Pod unavailable' }, { status: 500 }) : new Response(null, { status: 204 })
-      }
-      return Response.json({ data: [record] })
-    })
-    const host = hostFromSolid(solid)
     host.capabilities.aiClientCredentials = {
       create: vi.fn(),
       list: vi.fn(async () => [{
         clientId: 'client', label: 'client', resource: 'https://id.example/.account/credentials/one/',
       }]),
-      revoke: vi.fn(async () => undefined),
+      revoke,
     }
     const controller = createAiConnectionsController(host)
-    await expect(controller.client!.deleteGatewayKey('key-1')).rejects.toThrow()
-    await expect(controller.client!.deleteGatewayKey('key-1')).resolves.toBeUndefined()
-    expect(deletions).toBe(2)
-    expect(host.capabilities.aiClientCredentials.revoke).toHaveBeenCalledTimes(2)
+
+    await expect(controller.client!.deleteGatewayKey('client')).rejects.toThrow('CSS unavailable')
+    expect(host.capabilities.aiClientCredentials.list).toHaveBeenCalledTimes(1)
+    expect(revoke).toHaveBeenCalledWith({
+      clientId: 'client', resource: 'https://id.example/.account/credentials/one/', webId: WEB_ID,
+    })
+    expect(solid.session.fetch).not.toHaveBeenCalled()
+  })
+
+  it('retries revocation until the Account confirms it, without touching the Pod', async () => {
+    const solid = solidCapability()
+    const host = hostFromSolid(solid)
+    const revoke = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary Account failure'))
+      .mockResolvedValue(undefined)
+    host.capabilities.aiClientCredentials = {
+      create: vi.fn(),
+      list: vi.fn(async () => [{
+        clientId: 'client', label: 'client', resource: 'https://id.example/.account/credentials/one/',
+      }]),
+      revoke,
+    }
+    const controller = createAiConnectionsController(host)
+
+    await expect(controller.client!.deleteGatewayKey('client')).rejects.toThrow('temporary Account failure')
+    await expect(controller.client!.deleteGatewayKey('client')).resolves.toBeUndefined()
+    expect(revoke).toHaveBeenCalledTimes(2)
     expect(host.capabilities.aiClientCredentials.revoke).toHaveBeenLastCalledWith({
       clientId: 'client', resource: 'https://id.example/.account/credentials/one/', webId: WEB_ID,
     })
+    expect(solid.session.fetch).not.toHaveBeenCalled()
   })
 
-  it('keeps the Pod record when the account no longer lists the credential', async () => {
+  it('refuses to revoke a credential the Account no longer lists', async () => {
     const solid = solidCapability()
-    const record = {
-      id: 'key-1', owner: WEB_ID, scopes: [], createdAt: '2026-09-10T00:00:00Z',
-      kind: 'client-credentials', credentialResource: 'https://id.example/.account/credentials/one/',
-      clientCredentialId: 'client',
-    }
-    solid.session.fetch = vi.fn(async () => Response.json({ data: [record] }))
     const host = hostFromSolid(solid)
     const revoke = vi.fn(async () => undefined)
     host.capabilities.aiClientCredentials = {
       create: vi.fn(), list: vi.fn(async () => []), revoke,
     }
     const controller = createAiConnectionsController(host)
-    await expect(controller.client!.deleteGatewayKey('key-1'))
-      .rejects.toThrow('账号服务中已找不到该客户端凭据，请刷新后重试。')
+
+    // The contract carries the fact as a code; the applet renders the sentence.
+    const failure = await controller.client!.deleteGatewayKey('client').catch((cause) => cause)
+    expect(failure).toMatchObject({ code: 'account_client_credential_not_found' })
+    expect(normalizeAiConnectionsThrownError(failure)).toBe('账号服务中已找不到该客户端凭据，请刷新后重试。')
     expect(revoke).not.toHaveBeenCalled()
-    expect(mockCalls(solid.session.fetch).some(([, init]) => init?.method === 'DELETE')).toBe(false)
+    expect(solid.session.fetch).not.toHaveBeenCalled()
   })
 
   it('keeps the real catalog and reloads the saved OAuth account after browser login', async () => {
@@ -1559,12 +1553,6 @@ describe('AI Connection controller host.solid integration', () => {
         const load = providerLoadQueue.shift()
         if (!load) throw new Error('Unexpected provider load')
         return await load.promise
-      }
-      if (url.endsWith('/api/ai/gateway/keys')) {
-        return new Response(JSON.stringify({ data: [] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
       }
       if (url.endsWith('/v1/models')) {
         return new Response(JSON.stringify({ data: [] }), {

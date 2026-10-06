@@ -3,6 +3,7 @@ import type { AIModelClass } from '@undefineds.co/models'
  * Wire and view types of the AI connections API. No behaviour.
  */
 import type {
+  AiClientCredentialsCapability,
   AiConnectionsModelSelection,
   AiConnectionsOAuthCredential,
 } from '@undefineds.co/extension-sdk/web'
@@ -87,14 +88,30 @@ export interface AiQuotaSnapshot {
   stale?: boolean
 }
 
+/**
+ * One row of the Xpod key list as the page renders it.
+ *
+ * The Account owns the credential, so a record carries identity
+ * (`id`/`clientCredentialId`/`credentialResource`) and the label the user gave
+ * it. `lastUsedAt`/`appliedAt`/`expiresAt`/`appliedTo` are session-local
+ * observations or absent: the Account does not own them, and nothing here is a
+ * second key index.
+ */
 export interface GatewayKeyRecord {
   id: string
   kind?: 'client-credentials'
   credentialResource?: string
+  /**
+   * Identity of the credential a client configuration was written with. It is
+   * the Account `clientId`, never a secret, and only lets this session correlate
+   * an apply with the row it came from.
+   */
   fingerprint?: string
   owner: string
-  scopes: string[]
-  createdAt: string
+  /** Account-owned scopes are not projected here; the wrapper's reach is the Pod. */
+  scopes?: string[]
+  /** Account credits carry no creation timestamp; absent rather than invented. */
+  createdAt?: string
   expiresAt?: string
   lastUsedAt?: string
   disabledAt?: string
@@ -331,17 +348,22 @@ export interface AiConnectionsClient {
   listGatewayModels?(): Promise<AiGatewayModel[]>
   /** Complete Gateway directory, including platform routing roles and unattributed entries. */
   listGatewayCatalogModels?(): Promise<AiGatewayCatalogModel[]>
+  /**
+   * Xpod key management is Account client-credentials management. These three
+   * calls are backed by the host's `AiClientCredentialsCapability` and never by
+   * a Gateway key route: a client without that capability fails closed.
+   *
+   * There is deliberately no enable/disable call - the Account has no such
+   * capability - and no reveal call: the `sk-` wrapper exists only in the create
+   * response and in `plaintexts` for the session that issued it.
+   */
   listGatewayKeys(): Promise<GatewayKeyRecord[]>
   createGatewayKey(input: {
     name: string
-    apiKey?: string
     credentialResource?: string
-    /** Client application the credential is written into; recorded with the key. */
+    /** Client application the key is meant for; a session-local annotation only. */
     appliedTo?: string
-    scopes?: string[]
-    expiresAt?: string
   }): Promise<CreatedGatewayKey>
-  updateGatewayKey(keyId: string, input: { enabled: boolean }): Promise<GatewayKeyRecord>
   deleteGatewayKey(keyId: string): Promise<void>
   beginConnect(provider: AiConnectionsProvider, mode: AiConnectionsMode, options?: AiConnectionBeginOptions): Promise<AiConnectAttempt>
   connectStatus(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature' | 'offeringId'> & Partial<Pick<AiConnectAttempt, 'mode'>>): Promise<AiConnectAttempt>
@@ -392,4 +414,10 @@ export interface CreateAiConnectionsClientInput {
   webId: string
   podBaseUrl: string
   authenticatedFetch: typeof fetch
+  /**
+   * The Account client-credentials capability that backs Xpod key management.
+   * Optional at the type level so a Pod-only client still type-checks, but the
+   * three key calls fail closed without it.
+   */
+  clientCredentials?: AiClientCredentialsCapability
 }

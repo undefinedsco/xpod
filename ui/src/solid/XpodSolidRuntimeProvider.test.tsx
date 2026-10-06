@@ -434,7 +434,7 @@ describe('Xpod Solid runtime', () => {
     ));
 
     const resources = [
-      ['/api/ai/gateway/keys', true],
+      ['/api/ai/providers', true],
       ['/api/applets/service-access/ai-connections', true],
       ['/v1/models', true],
       // Another Pod below the same canonical origin is served by the same node,

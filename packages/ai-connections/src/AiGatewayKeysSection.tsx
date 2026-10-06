@@ -128,6 +128,15 @@ export function AiGatewayKeysSection({
     notify({ variant: 'destructive', description: errorMessage(cause), duration: 8000 })
   }, [notify])
 
+  /**
+   * Rows as this session should show them: a revoked key is gone, and a key
+   * whose wrapper this session still holds is not advertised as unrecoverable.
+   * The Account remains the only store; this is a view decision.
+   */
+  const adoptRecords = useCallback((records: GatewayKeyRecord[]): GatewayKeyRecord[] => records
+    .filter((record) => !record.revokedAt)
+    .map((record) => plaintexts.current.has(record.id) ? { ...record, plaintextAvailable: undefined } : record), [])
+
   useEffect(() => {
     let active = true
     setLoading(true)
@@ -139,14 +148,10 @@ export function AiGatewayKeysSection({
     plaintexts.current.clear()
     void client.listGatewayKeys()
       .then((records) => {
-        if (active) setKeys(records.filter((record) => !record.revokedAt))
+        if (active) setKeys(adoptRecords(records))
       })
       .catch((cause) => {
-        if (active) {
-          const missing = Boolean(cause && typeof cause === 'object' && 'code' in cause && cause.code === 'service_access_missing')
-          setLoadError(missing ? 'Xpod 尚未获准访问这个 Pod' : aiConnectionsErrorMessage(cause))
-          setServiceAccessMissing(missing)
-        }
+        if (active) setLoadError(aiConnectionsErrorMessage(cause))
       })
       .finally(() => {
         if (active) setLoading(false)
@@ -155,7 +160,21 @@ export function AiGatewayKeysSection({
       active = false
       if (notification.current) dismissToast(notification.current)
     }
-  }, [client, notifyError])
+  }, [client, notifyError, adoptRecords])
+
+  // The keys themselves are Account-owned and load without any Pod permission,
+  // but a key is only usable while Xpod may read the Pod, so the page still
+  // says so instead of letting an unusable list look healthy.
+  useEffect(() => {
+    if (!onAuthorizeService) return
+    let active = true
+    void client.getServiceAccess()
+      .then(() => { if (active) setServiceAccessMissing(false) })
+      .catch((cause) => {
+        if (active && errorCode(cause) === 'service_access_missing') setServiceAccessMissing(true)
+      })
+    return () => { active = false }
+  }, [client, onAuthorizeService, liveRevision])
 
   // A change made elsewhere only needs new rows: it must not drop the wrapper
   // copies this session is still showing, nor flash the loading state.
@@ -164,13 +183,13 @@ export function AiGatewayKeysSection({
     let active = true
     void client.listGatewayKeys()
       .then((records) => {
-        if (active) setKeys(records.filter((record) => !record.revokedAt))
+        if (active) setKeys(adoptRecords(records))
       })
       .catch(() => undefined)
     return () => {
       active = false
     }
-  }, [client, liveRevision])
+  }, [client, liveRevision, adoptRecords])
 
   const authorize = async () => {
     if (!onAuthorizeService || authorizing) return
@@ -178,7 +197,7 @@ export function AiGatewayKeysSection({
     try {
       await onAuthorizeService()
       const records = await client.listGatewayKeys()
-      setKeys(records.filter((record) => !record.revokedAt))
+      setKeys(adoptRecords(records))
       setLoadError(undefined)
       setServiceAccessMissing(false)
     } catch (cause) {
@@ -379,14 +398,14 @@ export function AiGatewayKeysSection({
               </DialogTrigger>
             )}
           />
-          {loadError ? <InlineNotice
+          {loadError || serviceAccessMissing ? <InlineNotice
             tone="destructive"
             role="alert"
             action={serviceAccessMissing && onAuthorizeService ? <Button size="sm" disabled={authorizing} onClick={() => void authorize()}>
               {authorizing ? '正在授权…' : '允许 Xpod 访问'}
             </Button> : undefined}
           >
-            {loadError}
+            {loadError ?? 'Xpod 尚未获准访问这个 Pod'}
           </InlineNotice> : null}
           {loading ? (
             <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
@@ -407,14 +426,6 @@ export function AiGatewayKeysSection({
                     ? clientStatuses[record.appliedTo as AiConnectionsClientId] : undefined}
                   onTest={verificationPlan(record) ? () => void testConfiguration(record) : undefined}
                   testing={testingKeyId === record.id}
-                  onEnable={() => {
-                    if (operation.current) return
-                    operation.current = true
-                    setBusyKeyId(record.id)
-                    void client.updateGatewayKey(record.id, { enabled: true }).then((updated) => {
-                      setKeys((current) => current.map((item) => item.id === record.id ? updated : item))
-                    }).catch(notifyError).finally(() => { operation.current = false; setBusyKeyId(undefined) })
-                  }}
                   onReissue={() => {
                     beginAnother()
                     setName(record.name ?? DEFAULT_KEY_NAME)
@@ -541,6 +552,12 @@ export function AiGatewayKeysSection({
       </Dialog>
     </TooltipProvider>
   )
+}
+
+function errorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined
 }
 
 function errorMessage(error: unknown): string {
