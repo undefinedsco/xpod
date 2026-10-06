@@ -20,7 +20,7 @@ env:
   GZ_NAMESPACE: ns-iknkxtc8
   GZ_DEPLOYMENT: xpod-rc
   GZ_CONTAINER: xpod
-  GZ_HEALTH_URL: https://undefineds-gz-rc-id.sealosgzg.site/service/status
+  GZ_HEALTH_URL: https://id-rc.undefineds.cn/service/status
 
 jobs:
   validate-build-publish:

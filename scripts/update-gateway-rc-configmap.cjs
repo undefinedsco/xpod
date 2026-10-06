@@ -86,6 +86,13 @@ function updateNginxConfig(existing, namespace) {
     renderServer('pods-rc.undefineds.cn', 8083, upstream),
     '',
     renderServer('api-rc.undefineds.cn', 8081, upstream),
+    // SealOS 自己拥有的域：证书由平台签发，因此 rc 也可以直接用这类入口。
+    '',
+    renderServer('ids.sealosgzg.site', 8082, upstream),
+    '',
+    renderServer('podss.sealosgzg.site', 8083, upstream),
+    '',
+    renderServer('apis.sealosgzg.site', 8081, upstream),
     END_MARKER,
   ].join('\n');
   const markerPattern = new RegExp(`${BEGIN_MARKER}[\\s\\S]*?${END_MARKER}`, 'g');
