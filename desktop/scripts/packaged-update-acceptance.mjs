@@ -50,6 +50,7 @@ const REQUIRED_LIFECYCLE_EVENTS = [
 let options
 let appProcess
 let fixture
+let oldApp
 let oldBinary
 let userData
 let releasedFacts
@@ -121,7 +122,7 @@ async function run() {
   }
 
   options = parseArgs(process.argv.slice(2))
-  const oldApp = resolveCallerPath(String(options.old ?? 'release/mac-arm64/Xpod.app'))
+  oldApp = resolveCallerPath(String(options.old ?? 'release/mac-arm64/Xpod.app'))
   const newZip = resolveNewZip()
   oldBinary = path.join(oldApp, 'Contents', 'MacOS', 'Xpod')
   const newVersion = String(options.version ?? inferVersion(newZip) ?? '0.1.1')
@@ -326,30 +327,200 @@ function readLifecycleEvents(logPath) {
   return REQUIRED_LIFECYCLE_EVENTS.filter((name) => text.includes(name))
 }
 
-function cleanupSatisfied(facts) {
+export function cleanupSatisfied(facts) {
   return Boolean(
     facts
     && facts.oldAppStopped === true
     && facts.relaunchedAppStopped === true
     && facts.fixtureStopped === true
-    && facts.removedUserData === true,
+    && facts.removedUserData === true
+    && facts.remainingOwnedPids === 0
+    && facts.removalError === undefined
+    && facts.inventoryError === undefined,
   )
 }
 
 /**
- * Kill only the processes this run owns and confirm they are gone before the
- * private userData directory is removed. The relaunched app is matched by the
- * exact private bundle path (`oldBinary`), never a broad Electron/profile match.
+ * Exact path markers for the processes this run owns: the private bundle's
+ * `Contents` subtree and, only when this run created it, the private
+ * `xpod-update-*` userData directory.
+ *
+ * `Contents` (rather than the `.app` root) is deliberate: the acceptance
+ * process is launched with `--old <Xpod.app>`, so matching the bundle root
+ * would select this very process and then kill it. `Contents` covers the
+ * Electron main process, the `Contents/Resources/runtime/xpod` runtime that
+ * extracts `runtime-cache`, and `Contents/Frameworks` helpers. A caller
+ * supplied `--user-data` (the original profile) is never a marker.
+ */
+export function ownedProcessMarkers({ appPath, userData: dataDir, privateUserData }) {
+  const markers = []
+  if (appPath) markers.push(path.join(appPath, 'Contents'))
+  if (privateUserData && dataDir) markers.push(dataDir)
+  return markers
+}
+
+/**
+ * True when `command` contains `marker` as a whole path token. A raw substring
+ * test would accept ambiguous prefixes, so a sibling such as
+ * `/tmp/xpod-update-abcdef` could be mistaken for `/tmp/xpod-update-abc`. The
+ * marker must begin at a token boundary and end at end-of-string, a path
+ * separator, whitespace or a quote, which keeps descendants owned without
+ * capturing prefix siblings.
+ */
+export function commandNamesPath(command, marker) {
+  if (!marker) return false
+  let from = 0
+  for (;;) {
+    const index = command.indexOf(marker, from)
+    if (index === -1) return false
+    const before = index === 0 ? '' : command[index - 1]
+    const after = index + marker.length >= command.length ? '' : command[index + marker.length]
+    const beforeOk = index === 0 || /[\s'"]/u.test(before)
+    const afterOk = after === '' || after === '/' || /[\s'"]/u.test(after)
+    if (beforeOk && afterOk) return true
+    from = index + 1
+  }
+}
+
+/**
+ * PIDs whose command line names one of the owned markers, read from the real
+ * process table so a bundle-launched runtime or a userData-argument helper is
+ * caught even though neither appears as `oldBinary`. The acceptance process
+ * itself is never owned.
+ */
+export function listOwnedPids(markers, { readProcessTable = defaultReadProcessTable, selfPid = process.pid } = {}) {
+  const wanted = markers.filter(Boolean)
+  if (wanted.length === 0) return []
+  const pids = new Set()
+  for (const { pid, command } of readProcessTable()) {
+    if (pid === selfPid) continue
+    if (wanted.some((marker) => commandNamesPath(command, marker))) pids.add(pid)
+  }
+  return [ ...pids ]
+}
+
+function defaultReadProcessTable() {
+  let output
+  try {
+    output = execFileSync('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8' })
+  } catch (error) {
+    // An unreadable process table is not "no owned processes". Fail closed so
+    // cleanup never deletes a directory while a writer may still exist.
+    throw new Error(`process inventory unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const rows = []
+  for (const line of String(output).split('\n')) {
+    const match = line.match(/^\s*(\d+)\s+(.*)$/u)
+    if (match) rows.push({ pid: Number(match[1]), command: match[2] })
+  }
+  return rows
+}
+
+/** Wait up to `windowMs` for any owned process to appear, then return its PIDs. */
+export async function observeOwnedProcesses(markers, windowMs, {
+  listPids = (value) => listOwnedPids(value),
+  wait = sleep,
+} = {}) {
+  const deadline = Date.now() + windowMs
+  for (;;) {
+    const pids = listPids(markers)
+    if (pids.length > 0 || Date.now() >= deadline) return pids
+    await wait(200)
+  }
+}
+
+/**
+ * Terminate every owned PID (SIGTERM, then SIGKILL after the deadline) and only
+ * report ownership released once the process table no longer names any of them.
+ */
+export async function stopOwnedProcesses(markers, timeoutMs, {
+  listPids = (value) => listOwnedPids(value),
+  killPid = (pid, signal) => process.kill(pid, signal),
+  wait = sleep,
+} = {}) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const pids = listPids(markers)
+    if (pids.length === 0) return { stopped: true, remaining: 0 }
+    for (const pid of pids) {
+      try { killPid(pid, 'SIGTERM') } catch { /* already gone */ }
+    }
+    await wait(200)
+    if (Date.now() >= deadline) {
+      for (const pid of listPids(markers)) {
+        try { killPid(pid, 'SIGKILL') } catch { /* already gone */ }
+      }
+      await wait(200)
+      const remaining = listPids(markers)
+      return { stopped: remaining.length === 0, remaining: remaining.length }
+    }
+  }
+}
+
+/**
+ * Remove the private userData directory only while no owned process remains.
+ * A transient `ENOTEMPTY` is retried a bounded number of times, each retry
+ * gated on a fresh ownership check; any other error, or a retry budget that is
+ * exhausted while writers may still exist, is returned to the caller rather
+ * than hidden behind a blind `rm` retry.
+ */
+export async function removeOwnedUserData(userDataDir, markers, {
+  listPids = (value) => listOwnedPids(value),
+  remove = (dir) => fs.rmSync(dir, { recursive: true, force: true }),
+  pathExists = (value) => fs.existsSync(value),
+  attempts = 5,
+  retryDelayMs = 200,
+  wait = sleep,
+} = {}) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let owned
+    try {
+      owned = listPids(markers)
+    } catch (error) {
+      // Unknown process inventory: never delete on a guess.
+      return { removed: false, remainingOwnedPids: 0, error }
+    }
+    if (owned.length > 0) {
+      return {
+        removed: false,
+        remainingOwnedPids: owned.length,
+        error: new Error('owned processes still running before userData removal'),
+      }
+    }
+    try {
+      remove(userDataDir)
+      if (!pathExists(userDataDir)) return { removed: true, remainingOwnedPids: 0 }
+      return { removed: false, remainingOwnedPids: 0, error: new Error('userData directory still exists after removal') }
+    } catch (error) {
+      if (error?.code !== 'ENOTEMPTY' || attempt === attempts - 1) {
+        return { removed: false, remainingOwnedPids: 0, error }
+      }
+      await wait(retryDelayMs)
+    }
+  }
+  return { removed: false, remainingOwnedPids: 0, error: new Error('userData removal exhausted its retry budget') }
+}
+
+/**
+ * Kill every process this run owns and confirm none remain before the private
+ * userData directory is removed. Ownership is proven by the exact private
+ * bundle subtree and the exact private userData directory; nothing is selected
+ * by a broad name, and the user's original profile is never touched.
  */
 async function releaseOwned() {
   if (releasedFacts) return releasedFacts
+  const ownsUserData = !options['user-data']
+  const markers = ownedProcessMarkers({ appPath: oldApp, userData, privateUserData: ownsUserData })
   const facts = {
     oldAppStopped: true,
     relaunchedAppStopped: true,
     relaunchProcessObserved: false,
     relaunchDistinctPid: false,
     fixtureStopped: true,
-    removedUserData: !options['user-data'],
+    // Only an actual verified removal of the private directory may set this
+    // true. An explicit --user-data is the user's original profile: it is
+    // preserved, so `removedUserData` stays false and cleanup is not satisfied.
+    removedUserData: false,
     remainingOwnedPids: 0,
   }
 
@@ -369,63 +540,38 @@ async function releaseOwned() {
     facts.oldAppStopped = await waitForChildExit(appProcess, 2_000)
   }
 
-  if (oldBinary && fs.existsSync(oldBinary)) {
-    const observed = await observeOwnedProcess(oldBinary, 3_000)
-    if (observed.length > 0) {
-      facts.relaunchProcessObserved = true
-      if (appProcess) facts.relaunchDistinctPid = observed.some((pid) => pid !== appProcess.pid)
+  try {
+    // The relaunch fact is proven only by the exact old binary path. The bundle
+    // `Contents` subtree also matches a stale runtime or helper, which can have
+    // a different PID without the NEW app main process ever running.
+    if (oldBinary) {
+      const observed = await observeOwnedProcesses([ oldBinary ], 3_000)
+      if (observed.length > 0) {
+        facts.relaunchProcessObserved = true
+        facts.relaunchDistinctPid = observed.some((pid) => pid !== appProcess?.pid)
+      }
     }
-    const stopped = await stopOwnedProcess(oldBinary, 10_000)
-    facts.relaunchedAppStopped = stopped.stopped
-    facts.remainingOwnedPids = stopped.remaining
+
+    if (markers.length > 0) {
+      const stopped = await stopOwnedProcesses(markers, 10_000)
+      facts.relaunchedAppStopped = stopped.stopped
+      facts.remainingOwnedPids = stopped.remaining
+    }
+  } catch (error) {
+    // Process inventory failed: fail closed, do not delete, surface the error.
+    facts.inventoryError = error instanceof Error ? error.message : String(error)
+    facts.relaunchedAppStopped = false
   }
 
-  if (!options['user-data']) {
-    fs.rmSync(userData, { recursive: true, force: true })
-    facts.removedUserData = !fs.existsSync(userData)
+  if (ownsUserData && facts.inventoryError === undefined) {
+    const removal = await removeOwnedUserData(userData, markers)
+    facts.removedUserData = removal.removed
+    if (removal.remainingOwnedPids > facts.remainingOwnedPids) facts.remainingOwnedPids = removal.remainingOwnedPids
+    if (removal.error) facts.removalError = removal.error.message
   }
 
   releasedFacts = facts
   return facts
-}
-
-function listOwnedPids(binary) {
-  try {
-    return execFileSync('/usr/bin/pgrep', ['-f', binary], { encoding: 'utf8' })
-      .trim()
-      .split('\n')
-      .filter((line) => /^\d+$/.test(line))
-      .map(Number)
-  } catch {
-    return []
-  }
-}
-
-async function observeOwnedProcess(binary, windowMs) {
-  const deadline = Date.now() + windowMs
-  for (;;) {
-    const pids = listOwnedPids(binary)
-    if (pids.length > 0 || Date.now() >= deadline) return pids
-    await sleep(200)
-  }
-}
-
-async function stopOwnedProcess(binary, timeoutMs) {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const pids = listOwnedPids(binary)
-    if (pids.length === 0) return { stopped: true, remaining: 0 }
-    try { execFileSync('/usr/bin/pkill', ['-TERM', '-f', binary], { stdio: 'ignore' }) } catch { /* none matched */ }
-    await sleep(300)
-    if (Date.now() >= deadline) {
-      if (listOwnedPids(binary).length > 0) {
-        try { execFileSync('/usr/bin/pkill', ['-KILL', '-f', binary], { stdio: 'ignore' }) } catch { /* none matched */ }
-      }
-      await sleep(300)
-      const remaining = listOwnedPids(binary)
-      return { stopped: remaining.length === 0, remaining: remaining.length }
-    }
-  }
 }
 
 function waitForChildExit(child, timeoutMs) {

@@ -18,7 +18,6 @@
  * the promotion actually carries and requires it to equal `evidence.newZip`.
  */
 const fs = require('node:fs');
-const path = require('node:path');
 const { createHash } = require('node:crypto');
 
 const KIND = 'desktop-self-update-acceptance';
@@ -150,6 +149,18 @@ function verifyEvidence(evidence, expected) {
       if (evidence.cleanup[fact] !== true) {
         errors.push({ path: `cleanup.${fact}`, message: `owned cleanup fact ${fact} must be true` });
       }
+    }
+    if (evidence.cleanup.relaunchDistinctPid !== true) {
+      errors.push({ path: 'cleanup.relaunchDistinctPid', message: 'the relaunched app must be observed as a different PID than the old app' });
+    }
+    if (evidence.cleanup.remainingOwnedPids !== 0) {
+      errors.push({ path: 'cleanup.remainingOwnedPids', message: 'no owned PIDs may remain after cleanup' });
+    }
+    if (evidence.cleanup.removalError !== undefined) {
+      errors.push({ path: 'cleanup.removalError', message: 'userData removal must not report an error' });
+    }
+    if (evidence.cleanup.inventoryError !== undefined) {
+      errors.push({ path: 'cleanup.inventoryError', message: 'process inventory must be readable during cleanup' });
     }
   }
 

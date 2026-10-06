@@ -273,7 +273,7 @@ jobs:
           if [[ "${BUILD_IMAGE}" == 'true' ]]; then
             digest="${PUSHED_DIGEST}"
           else
-            digest="$(docker buildx imagetools inspect "${IMAGE}:${{ steps.resolve.outputs.tag }}" \\
+            digest="$(docker buildx imagetools inspect "${IMAGE}:${{ steps.resolve.outputs.tag }}" \
               --format '{{json .Manifest.Digest}}' | tr -d '"')"
           fi
           [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1

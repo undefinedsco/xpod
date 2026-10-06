@@ -87,6 +87,32 @@ test('rejects cleanup facts that were not actually observed (F5)', () => {
   assert.ok(result.errors.some((error) => error.path === 'cleanup.relaunchedAppStopped'));
 });
 
+test('rejects cleanup that still owns PIDs or never observed a distinct relaunch (F5)', () => {
+  const leftover = verifyEvidence(validEvidence({
+    cleanup: { ...validEvidence().cleanup, remainingOwnedPids: 1 },
+  }), EXPECTED);
+  assert.equal(leftover.valid, false);
+  assert.ok(leftover.errors.some((error) => error.path === 'cleanup.remainingOwnedPids'));
+
+  const samePid = verifyEvidence(validEvidence({
+    cleanup: { ...validEvidence().cleanup, relaunchDistinctPid: false },
+  }), EXPECTED);
+  assert.equal(samePid.valid, false);
+  assert.ok(samePid.errors.some((error) => error.path === 'cleanup.relaunchDistinctPid'));
+
+  const removalFailed = verifyEvidence(validEvidence({
+    cleanup: { ...validEvidence().cleanup, removedUserData: false, removalError: 'ENOTEMPTY: directory not empty' },
+  }), EXPECTED);
+  assert.equal(removalFailed.valid, false);
+  assert.ok(removalFailed.errors.some((error) => error.path === 'cleanup.removalError'));
+
+  const inventoryFailed = verifyEvidence(validEvidence({
+    cleanup: { ...validEvidence().cleanup, inventoryError: 'process inventory unavailable: ps failed' },
+  }), EXPECTED);
+  assert.equal(inventoryFailed.valid, false);
+  assert.ok(inventoryFailed.errors.some((error) => error.path === 'cleanup.inventoryError'));
+});
+
 test('rejects evidence carrying credential-shaped fields', () => {
   const result = verifyEvidence(validEvidence({ apiKey: 'should-not-appear' }), EXPECTED);
   assert.equal(result.valid, false);
