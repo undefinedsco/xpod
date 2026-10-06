@@ -13,7 +13,8 @@ import { acceptMountedPodPermissions, observeOwnedPodTraffic, type MountedPodPer
 import { createConfirmedMountedProvider, createMountedKeyInUi, acceptMountedFirstChat, acceptHeldPodInvocation } from './helpers/packaged-desktop-operations';
 import { verifyPackagedSourceCheckout } from './helpers/packaged-desktop-source';
 import { acceptLiveTaskApproval, type LiveTaskEvidence } from './helpers/live-task-approval';
-import { completeOidcLogin, consentBindingProven, OidcApprovalError, type BrowserOidcTrace } from '../tests/helpers/browserSolidOidc';
+import { completeOidcLogin, consentBindingProven, OidcApprovalError, type BrowserOidcTrace,
+  type OidcApprovalCondition } from '../tests/helpers/browserSolidOidc';
 import { readBrowserXpodRuntime } from '../tests/helpers/browserXpodRuntime';
 
 const { verifyEvidence } = createRequire(import.meta.url)('./desktop-permission-acceptance.cjs') as {
@@ -82,9 +83,7 @@ export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = 
 export type DesktopFailureEvidence = 'choice-not-offered' | 'choice-not-retained' | 'remember-not-posted';
 /** The browser approval step publishes the same closed vocabulary the login
  * helper uses, so the failing operation is named without any private text. */
-export type DesktopApprovalEvidence = DesktopFailureEvidence | 'choice-disabled' | 'binding-not-retained'
-  | 'binding-unavailable' | 'webid-unavailable' | 'multiple-webids' | 'second-login-action'
-  | 'recovery-boundary' | 'login-timeout' | 'account-remember';
+export type DesktopApprovalEvidence = OidcApprovalCondition | 'remember-not-posted';
 
 /** A failure whose public projection is its reviewed code, never its text.
  * `message` keeps the exact private diagnostic for the 600-mode evidence file. */
@@ -127,8 +126,11 @@ export function publishedFailures(errors: unknown[]): PublishedDesktopFailure[] 
 }
 
 function privateError(error: unknown): unknown {
+  const cause = error instanceof OidcApprovalError ? error.cause : undefined;
   return error instanceof Error ? { name: error.name, message: error.message, stack: error.stack,
-    ...(error instanceof AggregateError ? { errors: error.errors.map(privateError) } : {}) } : { name: 'unknown', message: String(error) };
+    ...(cause === undefined ? {} : { cause: privateError(cause) }),
+    ...(error instanceof AggregateError ? { errors: error.errors.map(privateError) } : {}) }
+    : { name: 'unknown', message: String(error) };
 }
 
 /** Adapt actual renderer responses for the existing Node ORM/task acceptance helper.
@@ -236,9 +238,11 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
           return runtime?.status === 'authenticated' && runtime.webId === binding.webId && runtime.podUrl === binding.storageUrl;
         } });
       await privateJson(options.privateDirectory, `oidc-${index}-private.json`, trace);
-      // The product auto-consents one exact binding and renders no chooser, so
-      // the exact binding is proven by the observed selection or by that
-      // rendered auto-consent plus the authenticated runtime binding.
+      // A single offered binding renders no chooser, so the exact binding is
+      // proven by an observed explicit selection, or by that rendered
+      // no-chooser shape together with an authenticated runtime binding that
+      // matches the target. The no-chooser shape is not itself user consent;
+      // callback/PKCE evidence is required in both paths.
       const bindingProven = consentBindingProven(trace, binding,
         await readBrowserXpodRuntime(page).catch(() => undefined));
       allCallbacks &&= bindingProven;

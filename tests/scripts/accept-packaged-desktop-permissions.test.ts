@@ -1,9 +1,10 @@
+import { errors } from '@playwright/test';
 import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, it } from 'vitest';
 import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure,
   publishedFailures } from '../../scripts/accept-packaged-desktop-permissions';
-import { OidcApprovalError } from '../../tests/helpers/browserSolidOidc';
+import { attributeOidcOperation, OidcApprovalError } from '../../tests/helpers/browserSolidOidc';
 
 it('publishes only reviewed failure codes and never the underlying error text', () => {
   // An arbitrary upstream error can carry provider keys, opaque tokens or an
@@ -68,10 +69,32 @@ it('names the failing browser approval operation with a reviewed code and closed
     .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'oidc-approval', evidence: 'choice-disabled' })]));
   for (const condition of ['choice-not-offered', 'choice-not-retained', 'binding-not-retained', 'binding-unavailable',
     'webid-unavailable', 'multiple-webids', 'second-login-action', 'recovery-boundary', 'login-timeout',
-    'account-remember'] as const) {
+    'account-remember', 'login-navigation', 'account-credentials', 'account-submit', 'webid-entry',
+    'remember-choice', 'binding-select', 'approval-action', 'approval-observation'] as const) {
     expect(describeFailure(new OidcApprovalError(condition, 'private detail'))).toEqual({ code: 'oidc-approval',
       explanation: 'The packaged browser approval step failed; the reviewed sub-condition names the operation',
       evidence: condition });
+  }
+});
+
+it('attributes every real browser operation boundary and never publishes the raw rejection', async () => {
+  // The RC failure was a plain external locator rejection. The shared wrapper
+  // maps each boundary to one fixed operation token while keeping the raw cause
+  // private, so neither stdout nor failure-safe.json can leak key/cookie text.
+  const secret = 'oc_sk_live_9f2c1d4b8a7e6f5c6d7e8f90';
+  const operations = ['login-navigation', 'account-credentials', 'account-submit', 'webid-entry',
+    'remember-choice', 'binding-select', 'approval-action', 'approval-observation'] as const;
+  for (const operation of operations) {
+    const rejection = new errors.TimeoutError(`locator rejected; apiKey=${secret}; cookie sid=${secret}`);
+    const attributed = await attributeOidcOperation(operation, async () => { throw rejection; })
+      .catch((error: unknown) => error);
+    expect(attributed).toBeInstanceOf(OidcApprovalError);
+    expect((attributed as OidcApprovalError).condition).toBe(operation);
+    expect((attributed as OidcApprovalError).cause).toBe(rejection);
+    expect(describeFailure(attributed)).toEqual({ code: 'oidc-approval',
+      explanation: 'The packaged browser approval step failed; the reviewed sub-condition names the operation',
+      evidence: operation });
+    expect(JSON.stringify(publishedFailures([attributed, new Error(`raw ${secret}`)]))).not.toContain(secret);
   }
 });
 

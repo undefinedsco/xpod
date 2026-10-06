@@ -1,7 +1,8 @@
 import { errors, type Locator, type Page } from '@playwright/test';
 import { JSDOM } from 'jsdom';
 import { describe, expect, it, vi } from 'vitest';
-import { chooseConsentBinding, clickNonPasswordOidcAction, completeOidcLogin,
+import { describeFailure, publishedFailures } from '../../scripts/accept-packaged-desktop-permissions';
+import { attributeOidcOperation, chooseConsentBinding, clickNonPasswordOidcAction, completeOidcLogin,
   consentBindingProven, consentOffersSingleBinding, OidcApprovalError, type BrowserOidcTrace } from './browserSolidOidc';
 
 /** Actual shared driver/evaluate functions, with browser events in their real order. */
@@ -570,4 +571,128 @@ it('records a missing authorize scope as <none> and never retains authorization 
   for (const secret of ['state-secret-0', 'challenge-secret-0']) {
     expect(serialized).not.toContain(secret);
   }
+});
+
+/**
+ * These scenarios drive the *actual* `completeOidcLogin` caller path with a
+ * locator whose own external operation rejects, instead of throwing a
+ * hand-built error into the wrapper. That is the shape of the real RC failure:
+ * Playwright/renderer raises TimeoutError/detached/strict-mode on its own, with
+ * no manual throw, and the old helper degraded it to the driver's generic
+ * `unclassified` code.
+ */
+const LOCATOR_SECRET = 'oc_sk_live_9f2c1d4b8a7e6f5c6d7e8f90';
+
+function stubLocatorOverrides(overrides: Record<string, unknown> = {}) {
+  return {
+    first() { return this; }, last() { return this; }, nth() { return this; }, locator() { return this; },
+    isVisible: async () => false, isEnabled: async () => false, isChecked: async () => false,
+    setChecked: async () => undefined, check: async () => undefined, click: async () => undefined,
+    count: async () => 0, innerText: async () => '', evaluate: async () => false, evaluateAll: async () => [],
+    selectOption: async () => undefined, inputValue: async () => '', getAttribute: async () => null,
+    fill: async () => undefined, press: async () => undefined,
+    ...overrides,
+  };
+}
+
+/** The real account credential boundary: `input.fill` rejects on its own. */
+async function credentialRejectionScenario(rejection: Error): Promise<BrowserOidcTrace> {
+  const dom = new JSDOM('<main>Login</main>', { url: 'https://app.example/.account/login/' });
+  vi.stubGlobal('window', dom.window);
+  vi.stubGlobal('fetch', async () => new Response('fixture asset'));
+  const email = stubLocatorOverrides({ isVisible: async () => true, fill: async () => { throw rejection; } });
+  const password = stubLocatorOverrides({ isVisible: async () => true });
+  const page = { bringToFront: async () => undefined, url: () => dom.window.location.href,
+    on: () => undefined, off: () => undefined,
+    locator: (selector: string) => selector.includes('email') ? email
+      : selector.includes('password') ? password : stubLocatorOverrides(),
+    getByRole: () => stubLocatorOverrides(), getByText: () => stubLocatorOverrides(),
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg),
+    waitForTimeout: async () => undefined } as unknown as Page;
+  try {
+    return await completeOidcLogin(page, { email: 'fixture@example.test', password: 'not-used' },
+      { baseUrl: 'https://app.example/', timeoutMs: 1_000, ready: async () => false });
+  } finally { vi.unstubAllGlobals(); dom.window.close(); }
+}
+
+/** The real Consent boundaries: the remember checkbox or the binding select
+ * rejects inside the rendered Consent document. */
+async function consentRejectionScenario(operation: 'remember-choice' | 'binding-select',
+  rejection: Error): Promise<BrowserOidcTrace> {
+  const dom = new JSDOM('<main>Consent</main>', { url: 'https://app.example/.account/oidc/consent/' });
+  vi.stubGlobal('window', dom.window);
+  vi.stubGlobal('fetch', async () => new Response('fixture asset'));
+  const remember = operation === 'remember-choice'
+    ? stubLocatorOverrides({ isVisible: async () => true, isEnabled: async () => true, count: async () => 1,
+      setChecked: async () => { throw rejection; } })
+    : stubLocatorOverrides();
+  const optionList = stubLocatorOverrides({ evaluateAll: async () => [
+    { label: 'pair', value: 'pair|https://pod.example/', disabled: false }] });
+  const binding = operation === 'binding-select'
+    ? stubLocatorOverrides({ isVisible: async () => true, isEnabled: async () => true,
+      inputValue: async () => 'pair|https://pod.example/', locator: () => optionList,
+      selectOption: async () => { throw rejection; } })
+    : stubLocatorOverrides();
+  const page = { bringToFront: async () => undefined, url: () => dom.window.location.href,
+    on: () => undefined, off: () => undefined,
+    locator: (selector: string) => selector === '[data-pod-sign-in-state="consent"]'
+      ? stubLocatorOverrides({ isVisible: async () => true })
+      : selector === '#oidc-consent-webid' ? binding : stubLocatorOverrides(),
+    getByRole: (role: string, query?: { name?: RegExp }) => role === 'checkbox' && query?.name?.test('以后不再询问')
+      ? remember : stubLocatorOverrides(),
+    getByText: () => stubLocatorOverrides(),
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg),
+    waitForTimeout: async () => undefined } as unknown as Page;
+  try {
+    return await completeOidcLogin(page, { email: 'fixture@example.test', password: 'not-used' },
+      { baseUrl: 'https://app.example/', timeoutMs: 1_000, rememberClient: true, ready: async () => false });
+  } finally { vi.unstubAllGlobals(); dom.window.close(); }
+}
+
+function locatorRejection(operation: string): Error {
+  return new errors.TimeoutError(`locator.${operation}: Timeout 2000ms exceeded; apiKey=${LOCATOR_SECRET}; `
+    + `cookie sid=${LOCATOR_SECRET}; bearer ${LOCATOR_SECRET}`);
+}
+
+async function expectAttributedOperation(failure: unknown, operation: string,
+  rejection: Error): Promise<void> {
+  expect(failure).toBeInstanceOf(OidcApprovalError);
+  const attributed = failure as OidcApprovalError;
+  expect(attributed.condition).toBe(operation);
+  expect(attributed.cause).toBe(rejection);
+  // The public projection may name only the fixed operation token and must not
+  // carry the key/cookie/token text the external rejection contained.
+  const published = describeFailure(attributed);
+  expect(published).toEqual({ code: 'oidc-approval',
+    explanation: 'The packaged browser approval step failed; the reviewed sub-condition names the operation',
+    evidence: operation });
+  expect(JSON.stringify(published)).not.toContain(LOCATOR_SECRET);
+  expect(JSON.stringify(publishedFailures([attributed, new Error(`raw dump ${LOCATOR_SECRET}`)])))
+    .not.toContain(LOCATOR_SECRET);
+}
+
+it('attributes a real account-credentials locator rejection to its fixed operation token', async () => {
+  const rejection = locatorRejection('fill');
+  const failure = await credentialRejectionScenario(rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'account-credentials', rejection);
+});
+
+it('attributes a real remember-choice locator rejection to its fixed operation token', async () => {
+  const rejection = locatorRejection('setChecked');
+  const failure = await consentRejectionScenario('remember-choice', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'remember-choice', rejection);
+});
+
+it('attributes a real binding-select locator rejection to its fixed operation token', async () => {
+  const rejection = locatorRejection('selectOption');
+  const failure = await consentRejectionScenario('binding-select', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'binding-select', rejection);
+});
+
+it('keeps an already-typed approval condition instead of renaming it to the boundary operation', async () => {
+  const typed = new OidcApprovalError('choice-not-retained', 'private typed detail');
+  const failure = await attributeOidcOperation('remember-choice', async () => { throw typed; })
+    .catch((error: unknown) => error);
+  expect(failure).toBe(typed);
+  expect(describeFailure(failure).evidence).toBe('choice-not-retained');
 });

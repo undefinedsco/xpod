@@ -13,21 +13,50 @@ const OIDC_PRIMARY_ACTION_NAME = /authorize|allow|approve|consent|continue|submi
 const OIDC_LOGIN_ACTION_NAME = /log in|login|sign in|登录|进入/iu;
 const REMEMBER_CLIENT_CHOICE_NAME = /^(?:以后不再询问|Do not ask again)$/u;
 
+/** The real external operations this helper performs on the live page. A
+ * Playwright action or renderer probe rejects on its own (timeout, detached
+ * node, strict-mode violation) without any manual throw; that used to degrade an
+ * entire desktop run to the driver's generic `unclassified` code. Each boundary
+ * below therefore names its operation, so the public artifact can attribute the
+ * failure while the raw cause stays in the private 600-mode evidence. */
+export type OidcOperation = 'login-navigation' | 'account-credentials' | 'account-submit' | 'webid-entry'
+  | 'remember-choice' | 'binding-select' | 'approval-action' | 'approval-observation';
+
 /** Closed vocabulary for the operation that failed inside the browser approval
  * flow. Only these tokens may be projected onto a reviewed failure code, so a CI
  * artifact can name the failing step without the private 600-mode evidence. */
-export type OidcApprovalCondition = 'account-remember' | 'choice-not-offered' | 'choice-disabled'
-  | 'choice-not-retained' | 'binding-not-retained' | 'binding-unavailable' | 'webid-unavailable'
-  | 'multiple-webids' | 'second-login-action' | 'recovery-boundary' | 'login-timeout';
+export type OidcApprovalCondition = OidcOperation | 'account-remember' | 'choice-not-offered'
+  | 'choice-disabled' | 'choice-not-retained' | 'binding-not-retained' | 'binding-unavailable'
+  | 'webid-unavailable' | 'multiple-webids' | 'second-login-action' | 'recovery-boundary' | 'login-timeout';
 
 /** An approval-flow failure that keeps its exact diagnostic text private and
  * publishes only a reviewed closed-vocabulary condition. */
 export class OidcApprovalError extends Error {
   readonly condition: OidcApprovalCondition;
-  constructor(condition: OidcApprovalCondition, detail: string) {
+  /** The untranslated browser rejection behind an attributed operation, kept for
+   * the private 600-mode evidence only. */
+  override readonly cause?: unknown;
+  constructor(condition: OidcApprovalCondition, detail: string, cause?: unknown) {
     super(detail);
     this.name = 'OidcApprovalError';
     this.condition = condition;
+    this.cause = cause;
+  }
+}
+
+/** Run one external browser/renderer operation and attribute its own rejection
+ * to a fixed operation token. A failure that already carries a specific
+ * condition keeps that condition and message unchanged, so this never replaces a
+ * precise diagnosis with a coarser one, and it is applied per boundary rather
+ * than as one catch-all around the whole login. */
+export async function attributeOidcOperation<T>(operation: OidcOperation, action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    if (error instanceof OidcApprovalError) throw error;
+    const cause = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    throw new OidcApprovalError(operation,
+      `Approval operation "${operation}" was rejected by the browser: ${cause}`, error);
   }
 }
 
@@ -212,10 +241,11 @@ export interface ConsentSurfaceState {
   webIdRadioCount: number;
 }
 
-/** The shared Consent view auto-consents exactly one binding and renders no
- * chooser in that case (`single = webIds.length === 1`), so the absence of
- * every chooser on a visible surface is the product's own single-binding ABI.
- * Any chooser at all means the scenario must make an explicit choice. */
+/** Observation only: a visible Consent surface that rendered no chooser and no
+ * WebID radio offers a single binding. This records the rendered shape; it is
+ * not itself proof of user consent or of the authenticated binding, which the
+ * driver still requires from the actual approval/callback plus the live runtime
+ * binding. Any chooser at all means the scenario must make an explicit choice. */
 export function consentOffersSingleBinding(state: ConsentSurfaceState): boolean {
   return state.surfaceVisible && !state.webIdChooserVisible && !state.storageChooserVisible
     && state.webIdRadioCount === 0;
@@ -281,7 +311,7 @@ export async function completeOidcLogin(
 ): Promise<BrowserOidcTrace> {
   // Interleaved tab scenarios must activate the tab being operated, just as
   // a user does; background renderer throttling can otherwise stall scrolling.
-  await page.bringToFront();
+  await attributeOidcOperation('approval-observation', () => page.bringToFront());
   const timeoutMs = options.timeoutMs ?? 60_000;
   const baseOrigin = new URL(options.baseUrl).origin;
   const trace: BrowserOidcTrace = {
@@ -301,7 +331,8 @@ export async function completeOidcLogin(
   const browserErrors: string[] = [];
   const networkDiagnostics: string[] = [];
   const startedAt = Date.now();
-  const initialCallbackIds = (await readCallbackLifecycle(page)).completed.map(entry => entry.id);
+  const initialCallbackIds = (await attributeOidcOperation('approval-observation', () => readCallbackLifecycle(page)))
+    .completed.map(entry => entry.id);
   const observedAuthorizations: ObservedAuthorization[] = [];
   const observedCallbacks = new Set<string>();
   const recordDiagnostic = (entry: string) => {
@@ -448,8 +479,10 @@ export async function completeOidcLogin(
   page.on('console', observeConsole);
   page.on('pageerror', observePageError);
   try {
-    if (options.startUrl) {
-      await page.goto(options.startUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(timeoutMs, 30_000) });
+    const startUrl = options.startUrl;
+    if (startUrl) {
+      await attributeOidcOperation('login-navigation', () =>
+        page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(timeoutMs, 30_000) }));
     }
 
     const deadline = Date.now() + timeoutMs;
@@ -463,18 +496,21 @@ export async function completeOidcLogin(
 
     while (Date.now() < deadline) {
       if (!trace.callbackTransaction) {
-        trace.callbackTransaction = await readActiveCallbackTransaction(page);
+        trace.callbackTransaction = await attributeOidcOperation('approval-observation',
+          () => readActiveCallbackTransaction(page));
       }
       const phase = safePath(page.url());
       if (phase !== lastPhase) {
         lastPhase = phase;
         recordDiagnostic(`phase ${phase}`);
       }
-      if (await options.failure?.(page)) return trace;
-      const routeReady = await (options.ready?.(page) ?? isSettingsWorkspaceReady(page, baseOrigin));
+      if (await attributeOidcOperation('approval-observation', async () => options.failure?.(page))) return trace;
+      const routeReady = await attributeOidcOperation('approval-observation',
+        async () => options.ready?.(page) ?? isSettingsWorkspaceReady(page, baseOrigin));
       const matchedCallback = options.requireCallbackEvidence && trace.callbackPathSeen ? correlateCallback({
         origin: baseOrigin, startedAt, baseline: initialCallbackIds, authorizations: observedAuthorizations,
-        callbacks: [...observedCallbacks], lifecycle: await readCallbackLifecycle(page),
+        callbacks: [...observedCallbacks],
+        lifecycle: await attributeOidcOperation('approval-observation', () => readCallbackLifecycle(page)),
       }) : undefined;
       if (matchedCallback) trace.callbackTransaction = matchedCallback;
       const callbackReady = !options.requireCallbackEvidence
@@ -502,14 +538,16 @@ export async function completeOidcLogin(
       // and login checks used on desktop can run without viewport heuristics.
       const stackProvider = page.locator('[data-workspace-mode="stack"] [role="option"]').first();
       if (await stackProvider.isVisible({ timeout: 250 }).catch(() => false)) {
-        await stackProvider.click({ timeout: 2_000, noWaitAfter: true });
+        await attributeOidcOperation('login-navigation',
+          () => stackProvider.click({ timeout: 2_000, noWaitAfter: true }));
         await page.waitForTimeout(100);
         continue;
       }
 
       const localSpace = page.getByRole('button', { name: /^(?:本机|Local)$/iu }).first();
       if (await localSpace.isVisible({ timeout: 250 }).catch(() => false)) {
-        await localSpace.click({ timeout: 2_000, noWaitAfter: true });
+        await attributeOidcOperation('login-navigation',
+          () => localSpace.click({ timeout: 2_000, noWaitAfter: true }));
         continue;
       }
 
@@ -537,16 +575,21 @@ export async function completeOidcLogin(
       if (submittedPassword && (!emailVisible || !passwordVisible)) passwordFormLeftAfterSubmit = true;
       if (submittedPassword && passwordFormLeftAfterSubmit && emailVisible && passwordVisible) trace.secondPasswordFormSeen = true;
       if (emailVisible && passwordVisible && !submittedPassword) {
-        await emailInput.fill(account.email, { timeout: 2_000 });
-        await passwordInput.fill(account.password, { timeout: 2_000 });
-        if (options.rememberAccount !== undefined) {
+        await attributeOidcOperation('account-credentials', async () => {
+          await emailInput.fill(account.email, { timeout: 2_000 });
+          await passwordInput.fill(account.password, { timeout: 2_000 });
+        });
+        const rememberAccount = options.rememberAccount;
+        if (rememberAccount !== undefined) {
           const remember = page.getByRole('checkbox', { name: /^(?:记住账号|Remember account)$/iu });
-          await remember.setChecked(options.rememberAccount, { timeout: 2_000 });
-          if (await remember.isChecked() !== options.rememberAccount) {
-            throw new OidcApprovalError('account-remember', 'Account remember choice did not match the scenario');
-          }
+          await attributeOidcOperation('account-credentials', async () => {
+            await remember.setChecked(rememberAccount, { timeout: 2_000 });
+            if (await remember.isChecked() !== rememberAccount) {
+              throw new OidcApprovalError('account-remember', 'Account remember choice did not match the scenario');
+            }
+          });
         }
-        await passwordInput.press('Enter', { timeout: 2_000 });
+        await attributeOidcOperation('account-submit', () => passwordInput.press('Enter', { timeout: 2_000 }));
         submittedPassword = true;
         trace.passwordSubmitted = true;
         trace.passwordSubmitCount = (trace.passwordSubmitCount ?? 0) + 1;
@@ -559,7 +602,8 @@ export async function completeOidcLogin(
         && await productWebIdEntry.isVisible({ timeout: 250 }).catch(() => false)
         && await productWebIdEntry.isEnabled({ timeout: 250 }).catch(() => false)) {
         productWebIdEntryClicked = true;
-        await productWebIdEntry.click({ timeout: 2_000, noWaitAfter: true });
+        await attributeOidcOperation('webid-entry',
+          () => productWebIdEntry.click({ timeout: 2_000, noWaitAfter: true }));
         await page.waitForTimeout(350);
         continue;
       }
@@ -599,12 +643,11 @@ export async function completeOidcLogin(
           }
         }
         // A document can render the consent surface without an actionable
-        // choice: it may not offer one at all, or the product may already be
-        // committing that document (its own single-binding auto-approval) and
-        // disable the control while it does. Both are recorded observations and
-        // neither is fatal here - the driver's remember gate still requires the
-        // observed choice AND the actual approval body to carry it, so an
-        // unapplied choice is a reviewed red, never an unclassified crash.
+        // choice: it may not offer one at all, or the rendered control may be
+        // disabled. Both are recorded observations, not product facts and not
+        // approval; the driver's remember gate still requires the observed
+        // choice AND the actual approval body to carry it, so an unapplied
+        // choice is a reviewed red, never an unclassified crash.
         if (!await rememberClientChoice.isVisible({ timeout: 1_000 }).catch(() => false)) {
           trace.rememberClientBlocked = 'not-offered';
           recordDiagnostic('consent remember-client choice not offered');
@@ -612,12 +655,15 @@ export async function completeOidcLogin(
           trace.rememberClientBlocked = 'disabled';
           recordDiagnostic('consent remember-client choice disabled');
         } else {
-          await rememberClientChoice.setChecked(options.rememberClient, { timeout: 2_000 });
-          const observedRemember = await rememberClientChoice.isChecked();
-          if (observedRemember !== options.rememberClient) {
+          const rememberClient = options.rememberClient;
+          await attributeOidcOperation('remember-choice',
+            () => rememberClientChoice.setChecked(rememberClient, { timeout: 2_000 }));
+          const observedRemember = await attributeOidcOperation('remember-choice',
+            () => rememberClientChoice.isChecked());
+          if (observedRemember !== rememberClient) {
             throw new OidcApprovalError('choice-not-retained', 'Consent did not retain the requested remember-client choice');
           }
-          trace.rememberClientRequested = options.rememberClient;
+          trace.rememberClientRequested = rememberClient;
           trace.rememberClientObserved = observedRemember;
           trace.rememberClientBlocked = undefined;
           consentRememberDocument = consentDocument;
@@ -629,20 +675,22 @@ export async function completeOidcLogin(
 
       const consentWebIdSelect = page.locator('#oidc-consent-webid');
       if (await consentWebIdSelect.isVisible({ timeout: 100 }).catch(() => false)) {
-        // A single exact WebID/Pod binding is auto-approved by the Account
-        // surface. During that transition the native select remains visible
-        // but is disabled. Do not let Playwright's selectOption wait until the
-        // scenario timeout while the page is already navigating away.
+        // The Account surface can keep the native select visible while it is
+        // disabled, for example while it resolves the single offered binding.
+        // That is an observation, not proof of approval or of a user choice;
+        // do not let Playwright's selectOption wait until the scenario timeout
+        // while the page is already navigating away.
         if (!await consentWebIdSelect.isEnabled({ timeout: 100 }).catch(() => false)) {
           await page.waitForTimeout(100);
           continue;
         }
         const currentOptionValue = await consentWebIdSelect.inputValue();
-        const availableOptions = await consentWebIdSelect.locator('option').evaluateAll((options) => options.map((option) => ({
-          label: option.textContent?.trim() ?? '',
-          value: (option as HTMLOptionElement).value,
-          disabled: (option as HTMLOptionElement).disabled,
-        })));
+        const availableOptions = await attributeOidcOperation('binding-select',
+          () => consentWebIdSelect.locator('option').evaluateAll((options) => options.map((option) => ({
+            label: option.textContent?.trim() ?? '',
+            value: (option as HTMLOptionElement).value,
+            disabled: (option as HTMLOptionElement).disabled,
+          }))));
         const selectableOptions = availableOptions.filter((option) => option.value && !option.disabled);
         const selectedValue = chooseConsentBinding(availableOptions, currentOptionValue, account);
         const requestedOption = selectableOptions.find(option => option.value === selectedValue);
@@ -654,13 +702,16 @@ export async function completeOidcLogin(
         // React renders the first native option even while its controlled
         // value is still empty. Always select the resolved option so the
         // change event commits the exact binding into the consent state.
-        await consentWebIdSelect.selectOption(requestedOption.value, { timeout: 2_000 });
+        await attributeOidcOperation('binding-select',
+          () => consentWebIdSelect.selectOption(requestedOption.value, { timeout: 2_000 }));
         const consentStorageSelect = page.locator('#oidc-consent-storage');
         if (await consentStorageSelect.isVisible({ timeout: 100 }).catch(() => false)
           && await consentStorageSelect.isEnabled({ timeout: 100 }).catch(() => false)) {
-          await consentStorageSelect.selectOption(requestedOption.value, { timeout: 2_000 });
+          await attributeOidcOperation('binding-select',
+            () => consentStorageSelect.selectOption(requestedOption.value, { timeout: 2_000 }));
         }
-        const observedValue = await consentWebIdSelect.inputValue();
+        const observedValue = await attributeOidcOperation('binding-select',
+          () => consentWebIdSelect.inputValue());
         if (observedValue !== requestedOption.value) {
           throw new OidcApprovalError('binding-not-retained', 'Consent did not retain the selected storage binding');
         }
@@ -669,20 +720,20 @@ export async function completeOidcLogin(
       }
 
       const webIdRadios = page.locator('input[type="radio"][name="webId"]');
-      const webIdRadioCount = await webIdRadios.count();
+      const webIdRadioCount = await attributeOidcOperation('binding-select', () => webIdRadios.count());
       if (webIdRadioCount > 0) {
         let matchingRadio = account.webId ? undefined : webIdRadios.first();
         if (account.webId) {
           for (let index = 0; index < webIdRadioCount; index += 1) {
             const candidate = webIdRadios.nth(index);
-            if (await candidate.getAttribute('value') === account.webId) {
+            if (await attributeOidcOperation('binding-select', () => candidate.getAttribute('value')) === account.webId) {
               matchingRadio = candidate;
               break;
             }
           }
           if (!matchingRadio) {
-            const availableWebIds = await webIdRadios.evaluateAll((inputs) => inputs
-              .map((input) => (input as HTMLInputElement).value));
+            const availableWebIds = await attributeOidcOperation('binding-select', () => webIdRadios.evaluateAll((inputs) => inputs
+              .map((input) => (input as HTMLInputElement).value)));
             throw new OidcApprovalError('webid-unavailable',
               `The requested WebID is not available for this account: ${account.webId}; available=${availableWebIds.join(',')}`);
           }
@@ -691,13 +742,13 @@ export async function completeOidcLogin(
         }
 
         if (!await matchingRadio!.isChecked()) {
-          await matchingRadio!.check({ timeout: 2_000 });
+          await attributeOidcOperation('binding-select', () => matchingRadio!.check({ timeout: 2_000 }));
         }
       }
 
-      // One exact binding is auto-consented. Multiple eligible bindings are
-      // intentionally different: CSS must present one explicit Pod chooser
-      // and consent action inside the same OIDC transaction.
+      // A single offered binding renders without a chooser; multiple eligible
+      // bindings are intentionally different and CSS must present one explicit
+      // Pod chooser plus an actual consent action in the same OIDC transaction.
       const currentPath = safePath(page.url());
       const storageChooserVisible = await page.locator('#oidc-consent-storage').isVisible({ timeout: 100 }).catch(() => false);
       if (submittedPassword
@@ -728,7 +779,8 @@ export async function completeOidcLogin(
         // helper inspects its controls. Do not click past a newly ready
         // consent page that the caller needs to interact with itself.
         if (!options.requireCallbackEvidence && await options.ready?.(page)) return trace;
-        if (!await clickNonPasswordOidcAction(candidate, options)) continue;
+        if (!await attributeOidcOperation('approval-action',
+          () => clickNonPasswordOidcAction(candidate, options))) continue;
         recordDiagnostic(`automation-activated button ${safePath(page.url())}`);
         clickedAction = true;
         break;
@@ -748,7 +800,8 @@ export async function completeOidcLogin(
         if (!await candidate.isVisible({ timeout: 250 }).catch(() => false)) continue;
         // Same-node checked activation for anchors too: refusal and click are
         // evaluated on the exact node that is activated.
-        if (!await clickNonPasswordOidcAction(candidate, options)) continue;
+        if (!await attributeOidcOperation('approval-action',
+          () => clickNonPasswordOidcAction(candidate, options))) continue;
         recordDiagnostic(`automation-activated link ${safePath(page.url())}`);
         clickedActionLink = true;
         break;
@@ -761,7 +814,8 @@ export async function completeOidcLogin(
       const submitInput = page.locator('input[type="submit"]').first();
       if (await submitInput.isVisible({ timeout: 250 }).catch(() => false)
         && await submitInput.isEnabled({ timeout: 250 }).catch(() => false)) {
-        if (await clickNonPasswordOidcAction(submitInput, options)) {
+        if (await attributeOidcOperation('approval-action',
+          () => clickNonPasswordOidcAction(submitInput, options))) {
           recordDiagnostic(`automation-activated submit-input ${safePath(page.url())}`);
           await page.waitForTimeout(350);
           continue;
