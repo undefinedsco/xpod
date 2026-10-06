@@ -120,7 +120,9 @@ describe('deployed Account surface observation', () => {
     const rejected = framePage(['throw']);
     expect(await observeRcAccountSurface(rejected.page)).toBeUndefined();
     const settled = await settleRcAccountSurface(rejected.page, RC_ACCOUNT_DOCUMENT_PATH, 5);
-    expect(settled).toEqual({ kind: 'unrecognized', pathname: RC_ACCOUNT_DOCUMENT_PATH, elapsedMs: 0 });
+    expect(settled).toEqual({ kind: 'unrecognized', pathname: RC_ACCOUNT_DOCUMENT_PATH, elapsedMs: expect.any(Number) });
+    // The returned timing is the real consumed budget, not a stale or zero placeholder.
+    expect(settled.elapsedMs).toBeGreaterThanOrEqual(5);
     expect(describeRcAccountSurface(settled)).not.toMatch(/SECRET/u);
 
     expect(await observeRcAccountSurface({
@@ -128,6 +130,24 @@ describe('deployed Account surface observation', () => {
     } as unknown as Page)).toBeUndefined();
     const loading = framePage([painted({ hasBootstrapStatus: true })]);
     expect((await settleRcAccountSurface(loading.page, RC_ACCOUNT_DOCUMENT_PATH, 5)).kind).toBe('bootstrap-loading');
+  });
+
+  it('bounds a renderer read that never resolves and still reports a real failure', async () => {
+    const waits: number[] = [];
+    const hung = {
+      evaluate: () => new Promise(() => {}),
+      waitForTimeout: async (ms: number) => { waits.push(ms); },
+    } as unknown as Page;
+    const startedAt = Date.now();
+    const settled = await settleRcAccountSurface(hung, RC_ACCOUNT_DOCUMENT_PATH, 40);
+    const wallClockMs = Date.now() - startedAt;
+    // The unresolved evaluation is raced against the remaining budget instead of awaited forever.
+    expect(settled.kind).toBe('unrecognized');
+    expect(settled.pathname).toBe(RC_ACCOUNT_DOCUMENT_PATH);
+    expect(settled.elapsedMs).toBeGreaterThanOrEqual(40);
+    expect(wallClockMs).toBeLessThan(5_000);
+    expect(describeRcAccountSurface(settled)).toBe('RC Account surface did not reach the dashboard (observed=unrecognized)');
+    expect(describeRcAccountSurface(settled)).not.toMatch(/cookie|token|SECRET/iu);
   });
 
   it('classifies a bounced document with the same closed vocabulary the caller publishes', () => {

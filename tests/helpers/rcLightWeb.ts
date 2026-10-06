@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Page } from 'playwright';
 import { startBrowserExternalRp } from './browserExternalRp';
-import { completeOidcLogin, normalizeAccountPath, type BrowserSolidCredentials } from './browserSolidOidc';
+import { boundedProbe, completeOidcLogin, normalizeAccountPath, type BrowserSolidCredentials } from './browserSolidOidc';
 import { fetchProfileStorageUrls } from '../../ui/src/utils/provision-scope';
 import { resolveAuthoritativeAccountId } from '../../ui/src/utils/safe-continuation';
 
@@ -76,11 +76,15 @@ export type RcAccountSurfaceKind =
 export interface RcAccountSurfaceReading { kind: RcAccountSurfaceKind; pathname: string }
 
 export interface RcAccountSurfaceObservation extends RcAccountSurfaceReading {
-  /** Painted-surface budget consumed before this observation was read. Timing only. */
+  /** Total time from the start of the settle to this returned observation. Timing only. */
   elapsedMs: number;
 }
 
-/** Shape read out of the live document; never carries page copy or credential material. */
+/**
+ * Shape read out of the live document. Classification needs the painted heading text, so this
+ * internal shape does carry page copy; it never carries credential material and it is never
+ * returned, published or logged — only the closed kind/pathname observation leaves the helper.
+ */
 export interface PaintedRcAccountSurface {
   pathname: string;
   headingText: string;
@@ -135,7 +139,9 @@ export async function observeRcAccountSurface(page: Page,
  * returns 200 immediately, but the dashboard only exists after the SPA resolves its Account
  * index and fetches the Cookie-authenticated controls, so a single frame after
  * `domcontentloaded` races that boot. Only the dashboard settles early; every other surface
- * keeps being observed until this budget expires and is then reported as-is.
+ * keeps being observed until this budget expires and is then reported as-is. The budget also
+ * bounds each document read, so a renderer that never answers is reported as-is instead of
+ * hanging past the budget or passing.
  */
 export const RC_ACCOUNT_SURFACE_SETTLE_MS = 20_000;
 
@@ -143,12 +149,18 @@ export async function settleRcAccountSurface(page: Page, expectedPathname: strin
   timeoutMs = RC_ACCOUNT_SURFACE_SETTLE_MS): Promise<RcAccountSurfaceObservation> {
   const startedAt = Date.now();
   const deadline = startedAt + timeoutMs;
-  let last: RcAccountSurfaceObservation = { kind: 'unrecognized', pathname: expectedPathname, elapsedMs: 0 };
+  let last: RcAccountSurfaceReading = { kind: 'unrecognized', pathname: expectedPathname };
   for (;;) {
-    const observed = await observeRcAccountSurface(page, expectedPathname);
-    if (observed) last = { ...observed, elapsedMs: Date.now() - startedAt };
-    if (last.kind === 'account-dashboard' || Date.now() >= deadline) return last;
-    await page.waitForTimeout(250);
+    // A renderer blocked inside the read must not outlive the budget, so each read is raced against
+    // the remaining budget. A bounded-out read keeps the previous surface and is never a dashboard.
+    const remaining = deadline - Date.now();
+    if (remaining > 0) {
+      const observed = await boundedProbe(observeRcAccountSurface(page, expectedPathname), remaining, undefined);
+      if (observed) last = observed;
+    }
+    const elapsedMs = Date.now() - startedAt;
+    if (last.kind === 'account-dashboard' || elapsedMs >= timeoutMs) return { ...last, elapsedMs };
+    await page.waitForTimeout(Math.max(1, Math.min(250, deadline - Date.now())));
   }
 }
 

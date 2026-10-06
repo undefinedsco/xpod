@@ -91,6 +91,8 @@ index 并取到 Cookie 认证的 controls 之后才绘制。因此验证按固�
 而不是 `domcontentloaded` 之后的一帧；预算内只有 dashboard 形态算通过，其余形态
 （bootstrap 加载/错误、login、consent 跳转、无法识别）在失败时以固定 token 报出，预算到期
 不算通过。绘制文案、URL 凭据与原始浏览器错误都不进入该 token，失败信息只表达观察到的形态。
+同一预算也约束每一次文档读取：渲染进程在剩余预算内没有应答时按原样上报，既不越过预算继续
+等待，也不被当成通过。
 
 完整 provider 写入、Pod 读写、Gateway Key、Models、真实 Chat 和 Tasks 审批由紧随其后的
 一次性 Local runtime 对同一 RC Cloud 执行。本地 hermetic/部署模式矩阵只证明隔离栈，
