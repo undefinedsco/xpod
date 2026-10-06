@@ -13,7 +13,7 @@ import { acceptMountedPodPermissions, observeOwnedPodTraffic, type MountedPodPer
 import { createConfirmedMountedProvider, createMountedKeyInUi, acceptMountedFirstChat, acceptHeldPodInvocation } from './helpers/packaged-desktop-operations';
 import { verifyPackagedSourceCheckout } from './helpers/packaged-desktop-source';
 import { acceptLiveTaskApproval, type LiveTaskEvidence } from './helpers/live-task-approval';
-import { completeOidcLogin, consentBindingProven, type BrowserOidcTrace } from '../tests/helpers/browserSolidOidc';
+import { completeOidcLogin, consentBindingProven, OidcApprovalError, type BrowserOidcTrace } from '../tests/helpers/browserSolidOidc';
 import { readBrowserXpodRuntime } from '../tests/helpers/browserXpodRuntime';
 
 const { verifyEvidence } = createRequire(import.meta.url)('./desktop-permission-acceptance.cjs') as {
@@ -58,7 +58,7 @@ const SAFE_FAILURE_FILE = 'failure-safe.json';
 /** The only failure codes that may reach a public artifact or CI log. */
 export type DesktopFailureCode = 'invalid-arguments' | 'invalid-source' | 'provider-input'
   | 'packaged-launch' | 'local-authority' | 'identity-binding' | 'consent-binding'
-  | 'remember-grant' | 'pod-permission' | 'task-isolation' | 'evidence-contract' | 'unclassified';
+  | 'remember-grant' | 'oidc-approval' | 'pod-permission' | 'task-isolation' | 'evidence-contract' | 'unclassified';
 
 /** Reviewed fixed explanation for every publishable code. */
 export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = {
@@ -70,6 +70,7 @@ export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = 
   'identity-binding': 'The managed Cloud card and two-Pod identity/storage binding proof failed',
   'consent-binding': 'The actual browser callback or exact Consent binding proof was missing',
   'remember-grant': 'The remembered-grant bootstrap did not retain the explicit remember-client choice',
+  'oidc-approval': 'The packaged browser approval step failed; the reviewed sub-condition names the operation',
   'pod-permission': 'The mounted Pod permission grant or restore proof failed',
   'task-isolation': 'The packaged task approval, Stop cleanup or cross-Pod isolation proof failed',
   'evidence-contract': 'The produced desktop evidence failed the strict contract',
@@ -79,14 +80,19 @@ export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = 
 /** A safe sub-condition for a reviewed code. Only closed-vocabulary tokens are
  * allowed here, so publishing one can never leak private evidence. */
 export type DesktopFailureEvidence = 'choice-not-offered' | 'choice-not-retained' | 'remember-not-posted';
+/** The browser approval step publishes the same closed vocabulary the login
+ * helper uses, so the failing operation is named without any private text. */
+export type DesktopApprovalEvidence = DesktopFailureEvidence | 'choice-disabled' | 'binding-not-retained'
+  | 'binding-unavailable' | 'webid-unavailable' | 'multiple-webids' | 'second-login-action'
+  | 'recovery-boundary' | 'login-timeout' | 'account-remember';
 
 /** A failure whose public projection is its reviewed code, never its text.
  * `message` keeps the exact private diagnostic for the 600-mode evidence file. */
 export class DesktopAcceptanceError extends Error {
   readonly code: DesktopFailureCode;
   /** Optional closed-vocabulary sub-condition, never raw diagnostic text. */
-  readonly evidence?: DesktopFailureEvidence;
-  constructor(code: DesktopFailureCode, detail: string, evidence?: DesktopFailureEvidence) {
+  readonly evidence?: DesktopApprovalEvidence;
+  constructor(code: DesktopFailureCode, detail: string, evidence?: DesktopApprovalEvidence) {
     super(detail);
     this.name = 'DesktopAcceptanceError';
     this.code = code;
@@ -94,14 +100,16 @@ export class DesktopAcceptanceError extends Error {
   }
 }
 
-export interface PublishedDesktopFailure { code: DesktopFailureCode; explanation: string; evidence?: DesktopFailureEvidence }
+export interface PublishedDesktopFailure { code: DesktopFailureCode; explanation: string; evidence?: DesktopApprovalEvidence }
 
 /** The only failure data allowed in a public artifact or CI log. Anything that
  * is not one of our reviewed typed failures degrades to the generic code, so an
  * arbitrary upstream error can never publish tokens, keys or assertion dumps. */
 export function describeFailure(error: unknown): PublishedDesktopFailure {
-  const code: DesktopFailureCode = error instanceof DesktopAcceptanceError ? error.code : 'unclassified';
-  const evidence = error instanceof DesktopAcceptanceError ? error.evidence : undefined;
+  const code: DesktopFailureCode = error instanceof DesktopAcceptanceError ? error.code
+    : error instanceof OidcApprovalError ? 'oidc-approval' : 'unclassified';
+  const evidence = error instanceof DesktopAcceptanceError ? error.evidence
+    : error instanceof OidcApprovalError ? error.condition : undefined;
   return { code, explanation: DESKTOP_FAILURE_EXPLANATIONS[code], ...(evidence ? { evidence } : {}) };
 }
 
@@ -236,7 +244,8 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       allCallbacks &&= bindingProven;
       if (!bindingProven) throw new DesktopAcceptanceError('consent-binding', 'Actual browser callback or exact Consent binding proof is missing');
       if (trace.rememberClientRequested !== true || trace.rememberClientObserved !== true || trace.consentRememberPosted !== true) {
-        const evidence: DesktopFailureEvidence = trace.rememberClientRequested !== true ? 'choice-not-offered'
+        const evidence: DesktopApprovalEvidence = trace.rememberClientBlocked === 'disabled' ? 'choice-disabled'
+          : trace.rememberClientRequested !== true ? 'choice-not-offered'
           : trace.rememberClientObserved !== true ? 'choice-not-retained' : 'remember-not-posted';
         throw new DesktopAcceptanceError('remember-grant', 'The remembered-grant bootstrap did not set and retain the explicit remember-client choice: '
           + `requested=${String(trace.rememberClientRequested)} observed=${String(trace.rememberClientObserved)} `
@@ -341,6 +350,9 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     throw primaryFailure instanceof DesktopAcceptanceError
       ? new DesktopAcceptanceError(primaryFailure.code,
         `Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`, primaryFailure.evidence)
+      : primaryFailure instanceof OidcApprovalError
+        ? new DesktopAcceptanceError('oidc-approval',
+          `Packaged desktop browser approval failed at stage=${failed}; private evidence retained`, primaryFailure.condition)
       : new DesktopAcceptanceError('unclassified', `Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`);
   }
   advance('verify');

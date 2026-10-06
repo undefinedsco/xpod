@@ -3,6 +3,7 @@ import path from 'node:path';
 import { expect, it } from 'vitest';
 import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure,
   publishedFailures } from '../../scripts/accept-packaged-desktop-permissions';
+import { OidcApprovalError } from '../../tests/helpers/browserSolidOidc';
 
 it('publishes only reviewed failure codes and never the underlying error text', () => {
   // An arbitrary upstream error can carry provider keys, opaque tokens or an
@@ -50,6 +51,28 @@ it('publishes only the closed-vocabulary sub-condition the remember gate actuall
   // Every other reviewed code stays exactly as reviewed: no sub-condition.
   expect(describeFailure(new DesktopAcceptanceError('consent-binding', 'private'))).toEqual({
     code: 'consent-binding', explanation: 'The actual browser callback or exact Consent binding proof was missing' });
+});
+
+it('names the failing browser approval operation with a reviewed code and closed token', () => {
+  // RC run 37446580517 failed at pod-a with the generic `unclassified` code: the
+  // browser approval helper threw a plain Error, so neither the stdout
+  // projection nor the artifact could name the operation. Every approval
+  // failure must now publish a reviewed code plus a closed-vocabulary token.
+  const blocked = new OidcApprovalError('choice-disabled',
+    'Consent remember-client choice is disabled with oc_sk_live_9f2c1d4b8a7e6f5c');
+  expect(describeFailure(blocked)).toEqual({ code: 'oidc-approval',
+    explanation: 'The packaged browser approval step failed; the reviewed sub-condition names the operation',
+    evidence: 'choice-disabled' });
+  expect(JSON.stringify(describeFailure(blocked))).not.toContain('oc_sk_live_9f2c1d4b8a7e6f5c');
+  expect(publishedFailures([new Error('unclassified upstream'), blocked]))
+    .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'oidc-approval', evidence: 'choice-disabled' })]));
+  for (const condition of ['choice-not-offered', 'choice-not-retained', 'binding-not-retained', 'binding-unavailable',
+    'webid-unavailable', 'multiple-webids', 'second-login-action', 'recovery-boundary', 'login-timeout',
+    'account-remember'] as const) {
+    expect(describeFailure(new OidcApprovalError(condition, 'private detail'))).toEqual({ code: 'oidc-approval',
+      explanation: 'The packaged browser approval step failed; the reviewed sub-condition names the operation',
+      evidence: condition });
+  }
 });
 
 it('requires actual independent A task rows and refuses any rows in fresh B', () => {

@@ -11,6 +11,25 @@ export type BrowserSolidCredentials = Pick<BrowserSolidAccount, 'email' | 'passw
 
 const OIDC_PRIMARY_ACTION_NAME = /authorize|allow|approve|consent|continue|submit|yes|log in|login|sign in|继续|允许|授权|批准|同意|登录|进入/iu;
 const OIDC_LOGIN_ACTION_NAME = /log in|login|sign in|登录|进入/iu;
+const REMEMBER_CLIENT_CHOICE_NAME = /^(?:以后不再询问|Do not ask again)$/u;
+
+/** Closed vocabulary for the operation that failed inside the browser approval
+ * flow. Only these tokens may be projected onto a reviewed failure code, so a CI
+ * artifact can name the failing step without the private 600-mode evidence. */
+export type OidcApprovalCondition = 'account-remember' | 'choice-not-offered' | 'choice-disabled'
+  | 'choice-not-retained' | 'binding-not-retained' | 'binding-unavailable' | 'webid-unavailable'
+  | 'multiple-webids' | 'second-login-action' | 'recovery-boundary' | 'login-timeout';
+
+/** An approval-flow failure that keeps its exact diagnostic text private and
+ * publishes only a reviewed closed-vocabulary condition. */
+export class OidcApprovalError extends Error {
+  readonly condition: OidcApprovalCondition;
+  constructor(condition: OidcApprovalCondition, detail: string) {
+    super(detail);
+    this.name = 'OidcApprovalError';
+    this.condition = condition;
+  }
+}
 
 /**
  * Disruptive controls the helper must never activate. The broad discovery
@@ -92,6 +111,11 @@ export interface BrowserOidcTrace {
    * actually retained before approval. Never inferred from requested input. */
   rememberClientRequested?: boolean;
   rememberClientObserved?: boolean;
+  /** Observed reason the requested remember-client choice could not be applied
+   * on the approval document that was rendered. Recorded from the live surface,
+   * never inferred from requested input; the driver's remember gate still
+   * decides the run, so an unapplied choice can never pass. */
+  rememberClientBlocked?: 'not-offered' | 'disabled';
   /** Actual Consent POSTs and the safe `remember` boolean they carried. */
   consentRequestCount?: number;
   consentRememberPosted?: boolean;
@@ -463,7 +487,7 @@ export async function completeOidcLogin(
       }
       if (trace.callbackPathSeen
         && await page.getByText('Could not connect to Xpod', { exact: true }).isVisible({ timeout: 100 }).catch(() => false)) {
-        throw new Error(
+        throw new OidcApprovalError('recovery-boundary',
           `Solid OIDC browser login reached the Xpod recovery boundary; `
           + `currentPath=${safePath(page.url())}; network=${networkDiagnostics.join(' || ')}; `
           + `visibleText=${await page.locator('body').innerText({ timeout: 1_000 })
@@ -518,7 +542,9 @@ export async function completeOidcLogin(
         if (options.rememberAccount !== undefined) {
           const remember = page.getByRole('checkbox', { name: /^(?:记住账号|Remember account)$/iu });
           await remember.setChecked(options.rememberAccount, { timeout: 2_000 });
-          if (await remember.isChecked() !== options.rememberAccount) throw new Error('Account remember choice did not match the scenario');
+          if (await remember.isChecked() !== options.rememberAccount) {
+            throw new OidcApprovalError('account-remember', 'Account remember choice did not match the scenario');
+          }
         }
         await passwordInput.press('Enter', { timeout: 2_000 });
         submittedPassword = true;
@@ -564,7 +590,7 @@ export async function completeOidcLogin(
       const consentDocument = accountDocumentKey(page.url());
       if (consentDocument !== consentRememberDocument) consentRememberApplied = false;
       if (options.rememberClient !== undefined && !consentRememberApplied && consentVisible) {
-        const rememberClientChoice = page.getByRole('checkbox', { name: /^(?:以后不再询问|Do not ask again)$/u });
+        const rememberClientChoice = page.getByRole('checkbox', { name: REMEMBER_CLIENT_CHOICE_NAME });
         if (!await rememberClientChoice.isVisible({ timeout: 250 }).catch(() => false)) {
           // The choice is folded into the collapsed request-details disclosure.
           const details = page.locator('summary', { hasText: /请求详情|Request details/u }).first();
@@ -572,23 +598,33 @@ export async function completeOidcLogin(
             await details.click({ timeout: 2_000, noWaitAfter: true }).catch(() => undefined);
           }
         }
+        // A document can render the consent surface without an actionable
+        // choice: it may not offer one at all, or the product may already be
+        // committing that document (its own single-binding auto-approval) and
+        // disable the control while it does. Both are recorded observations and
+        // neither is fatal here - the driver's remember gate still requires the
+        // observed choice AND the actual approval body to carry it, so an
+        // unapplied choice is a reviewed red, never an unclassified crash.
         if (!await rememberClientChoice.isVisible({ timeout: 1_000 }).catch(() => false)) {
-          throw new Error(`Consent did not offer the requested remember-client choice (requested=${options.rememberClient})`);
+          trace.rememberClientBlocked = 'not-offered';
+          recordDiagnostic('consent remember-client choice not offered');
+        } else if (!await rememberClientChoice.isEnabled({ timeout: 250 }).catch(() => false)) {
+          trace.rememberClientBlocked = 'disabled';
+          recordDiagnostic('consent remember-client choice disabled');
+        } else {
+          await rememberClientChoice.setChecked(options.rememberClient, { timeout: 2_000 });
+          const observedRemember = await rememberClientChoice.isChecked();
+          if (observedRemember !== options.rememberClient) {
+            throw new OidcApprovalError('choice-not-retained', 'Consent did not retain the requested remember-client choice');
+          }
+          trace.rememberClientRequested = options.rememberClient;
+          trace.rememberClientObserved = observedRemember;
+          trace.rememberClientBlocked = undefined;
+          consentRememberDocument = consentDocument;
+          consentRememberApplied = true;
+          await page.waitForTimeout(150);
+          continue;
         }
-        if (!await rememberClientChoice.isEnabled({ timeout: 250 }).catch(() => false)) {
-          throw new Error('Consent remember-client choice is disabled and cannot be set before approval');
-        }
-        await rememberClientChoice.setChecked(options.rememberClient, { timeout: 2_000 });
-        const observedRemember = await rememberClientChoice.isChecked();
-        if (observedRemember !== options.rememberClient) {
-          throw new Error('Consent did not retain the requested remember-client choice');
-        }
-        trace.rememberClientRequested = options.rememberClient;
-        trace.rememberClientObserved = observedRemember;
-        consentRememberDocument = consentDocument;
-        consentRememberApplied = true;
-        await page.waitForTimeout(150);
-        continue;
       }
 
       const consentWebIdSelect = page.locator('#oidc-consent-webid');
@@ -611,7 +647,7 @@ export async function completeOidcLogin(
         const selectedValue = chooseConsentBinding(availableOptions, currentOptionValue, account);
         const requestedOption = selectableOptions.find(option => option.value === selectedValue);
         if (!requestedOption) {
-          throw new Error(account.webId
+          throw new OidcApprovalError('binding-unavailable', account.webId
             ? `The requested WebID and Pod are not available for this account: ${account.webId}; available=${selectableOptions.map((option) => option.label).join(',')}`
             : 'Multiple WebID and Pod bindings are available, but the login scenario did not provide the expected binding.');
         }
@@ -625,7 +661,9 @@ export async function completeOidcLogin(
           await consentStorageSelect.selectOption(requestedOption.value, { timeout: 2_000 });
         }
         const observedValue = await consentWebIdSelect.inputValue();
-        if (observedValue !== requestedOption.value) throw new Error('Consent did not retain the selected storage binding');
+        if (observedValue !== requestedOption.value) {
+          throw new OidcApprovalError('binding-not-retained', 'Consent did not retain the selected storage binding');
+        }
         const separator = observedValue.indexOf('|');
         trace.storageBindingSelected = { webId: observedValue.slice(0, separator), podUrl: observedValue.slice(separator + 1) };
       }
@@ -645,10 +683,11 @@ export async function completeOidcLogin(
           if (!matchingRadio) {
             const availableWebIds = await webIdRadios.evaluateAll((inputs) => inputs
               .map((input) => (input as HTMLInputElement).value));
-            throw new Error(`The requested WebID is not available for this account: ${account.webId}; available=${availableWebIds.join(',')}`);
+            throw new OidcApprovalError('webid-unavailable',
+              `The requested WebID is not available for this account: ${account.webId}; available=${availableWebIds.join(',')}`);
           }
         } else if (webIdRadioCount > 1) {
-          throw new Error('Multiple WebIDs are available, but the login scenario did not provide the expected WebID.');
+          throw new OidcApprovalError('multiple-webids', 'Multiple WebIDs are available, but the login scenario did not provide the expected WebID.');
         }
 
         if (!await matchingRadio!.isChecked()) {
@@ -671,7 +710,8 @@ export async function completeOidcLogin(
         }).first();
         if (await secondLoginAction.isVisible({ timeout: 100 }).catch(() => false)) {
           trace.secondLoginActionSeen = true;
-          throw new Error(`Xpod exposed a second visible login action after password submission: ${await secondLoginAction.innerText()}`);
+          throw new OidcApprovalError('second-login-action',
+            `Xpod exposed a second visible login action after password submission: ${await secondLoginAction.innerText()}`);
         }
       }
 
@@ -780,7 +820,7 @@ export async function completeOidcLogin(
         resources,
       };
     }).catch(() => callbackDebugFallback), 2_000, callbackDebugFallback);
-    throw new Error(
+    throw new OidcApprovalError('login-timeout',
       `Solid OIDC browser login did not finish before timeout; submittedPassword=${submittedPassword}; currentPath=${safePath(page.url())}; trace=${JSON.stringify({
         authorizationRequestSeen: trace.authorizationRequestSeen,
         authCodeChallengeSeen: trace.authCodeChallengeSeen,

@@ -2,7 +2,7 @@ import { errors, type Locator, type Page } from '@playwright/test';
 import { JSDOM } from 'jsdom';
 import { describe, expect, it, vi } from 'vitest';
 import { chooseConsentBinding, clickNonPasswordOidcAction, completeOidcLogin,
-  consentBindingProven, consentOffersSingleBinding, type BrowserOidcTrace } from './browserSolidOidc';
+  consentBindingProven, consentOffersSingleBinding, OidcApprovalError, type BrowserOidcTrace } from './browserSolidOidc';
 
 /** Actual shared driver/evaluate functions, with browser events in their real order. */
 async function callbackScenario(mode = 'current', passwordRequests: Array<{ path: string; method: 'GET' | 'POST' }> = []) {
@@ -336,7 +336,7 @@ it('does not activate a detached action', async () => {
  */
 async function consentScenario(
   choice: boolean | undefined,
-  options: { checkbox?: 'present' | 'absent' | 'disabled'; summary?: 'present' | 'absent'; folded?: boolean;
+  options: { checkbox?: 'present' | 'absent' | 'disabled' | 'ignored'; summary?: 'present' | 'absent'; folded?: boolean;
     documents?: string[] } = {},
 ) {
   const checkbox = options.checkbox ?? 'present';
@@ -365,7 +365,9 @@ async function consentScenario(
   const rememberLocator = locator({
     isVisible: async () => checkbox !== 'absent' && current().disclosureOpen,
     isEnabled: async () => checkbox !== 'disabled',
-    isChecked: async () => current().checked,
+    // `ignored` is a live surface that accepts the click but never retains the
+    // value, which is exactly the case the driver must still fail.
+    isChecked: async () => (checkbox === 'ignored' ? !current().checked : current().checked),
     setChecked: async (value: boolean) => { state.setCheckedCalls.push(value); current().checked = value; },
     count: async () => (checkbox === 'absent' ? 0 : 1),
   });
@@ -460,14 +462,41 @@ it('leaves the consent surface default unchanged when no remember choice is requ
   expect(trace.rememberClientObserved).toBeUndefined();
 });
 
-it('fails when the requested remember-client choice is not offered', async () => {
-  await expect(consentScenario(true, { checkbox: 'absent', folded: true }))
-    .rejects.toThrow(/did not offer the requested remember-client choice/);
+it('records an unoffered remember-client choice instead of crashing the login', async () => {
+  // A document can render the consent surface without offering the choice. That
+  // is an observation, not an unclassified runner error: the driver's remember
+  // gate still fails the run because no choice was observed and the approval
+  // body cannot carry one.
+  const { trace } = await consentScenario(true, { checkbox: 'absent', folded: true });
+  expect(trace.rememberClientBlocked).toBe('not-offered');
+  expect(trace.rememberClientRequested).toBeUndefined();
+  expect(trace.rememberClientObserved).toBeUndefined();
+  expect(trace.consentRememberPosted).toBe(false);
 });
 
-it('fails when the requested remember-client choice cannot be set before approval', async () => {
-  await expect(consentScenario(true, { checkbox: 'disabled' }))
-    .rejects.toThrow(/remember-client choice is disabled/);
+it('records a disabled remember-client choice instead of crashing the login', async () => {
+  // The product disables the control while it commits that same document, so a
+  // disabled observation must not be fatal; the gate still requires the choice.
+  const { trace } = await consentScenario(true, { checkbox: 'disabled' });
+  expect(trace.rememberClientBlocked).toBe('disabled');
+  expect(trace.rememberClientRequested).toBeUndefined();
+  expect(trace.rememberClientObserved).toBeUndefined();
+  expect(trace.consentRememberPosted).toBe(false);
+});
+
+it('still fails with a reviewed condition when an offered remember-client choice is not retained', async () => {
+  const failure = await consentScenario(true, { checkbox: 'ignored' }).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(OidcApprovalError);
+  expect((failure as OidcApprovalError).condition).toBe('choice-not-retained');
+  expect((failure as Error).message).toBe('Consent did not retain the requested remember-client choice');
+});
+
+it('publishes a reviewed login-timeout condition when the login never finishes', async () => {
+  // The timeout used to be an untyped Error, which degraded every real login
+  // failure to the public `unclassified` code. It must name its operation.
+  const timedOut = await callbackScenario('wrong-state').catch((error: unknown) => error);
+  expect(timedOut).toBeInstanceOf(OidcApprovalError);
+  expect((timedOut as OidcApprovalError).condition).toBe('login-timeout');
 });
 
 /**
