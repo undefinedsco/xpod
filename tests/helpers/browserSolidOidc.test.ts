@@ -336,16 +336,23 @@ it('does not activate a detached action', async () => {
  */
 async function consentScenario(
   choice: boolean | undefined,
-  options: { checkbox?: 'present' | 'absent' | 'disabled'; summary?: 'present' | 'absent'; folded?: boolean } = {},
+  options: { checkbox?: 'present' | 'absent' | 'disabled'; summary?: 'present' | 'absent'; folded?: boolean;
+    documents?: string[] } = {},
 ) {
   const checkbox = options.checkbox ?? 'present';
   const summary = options.summary ?? 'present';
-  const dom = new JSDOM('<main>Consent</main>', { url: 'https://app.example/.account/oidc/consent/' });
+  // The product renders one approval document per interaction (for example
+  // pick-WebID and Consent); each document keeps its own checkbox state.
+  const documents = options.documents ?? ['/.account/oidc/consent/'];
+  let documentIndex = 0;
+  const perDocument = documents.map(() => ({ checked: false, disclosureOpen: !(options.folded ?? false) }));
+  const current = () => perDocument[Math.min(documentIndex, documents.length - 1)]!;
+  const dom = new JSDOM('<main>Consent</main>', { url: `https://app.example${documents[0]!}` });
   vi.stubGlobal('window', dom.window);
   vi.stubGlobal('fetch', async () => new Response('fixture asset'));
   const events = new Map<string, Array<(value: unknown) => void>>();
   const emit = (name: string, value: unknown) => events.get(name)?.forEach((fn) => fn(value));
-  const state = { checked: false, disclosureOpen: !(options.folded ?? false), setCheckedCalls: [] as boolean[], summaryClicks: 0 };
+  const state = { setCheckedCalls: [] as boolean[], summaryClicks: 0, approvedDocuments: [] as string[] };
   const locator = (overrides: Record<string, unknown> = {}) => ({
     first() { return this; }, last() { return this; }, nth() { return this; }, locator() { return this; },
     isVisible: async () => false, isEnabled: async () => false, isChecked: async () => false,
@@ -356,19 +363,19 @@ async function consentScenario(
     ...overrides,
   });
   const rememberLocator = locator({
-    isVisible: async () => checkbox !== 'absent' && state.disclosureOpen,
+    isVisible: async () => checkbox !== 'absent' && current().disclosureOpen,
     isEnabled: async () => checkbox !== 'disabled',
-    isChecked: async () => state.checked,
-    setChecked: async (value: boolean) => { state.setCheckedCalls.push(value); state.checked = value; },
+    isChecked: async () => current().checked,
+    setChecked: async (value: boolean) => { state.setCheckedCalls.push(value); current().checked = value; },
     count: async () => (checkbox === 'absent' ? 0 : 1),
   });
   const summaryLocator = locator({
     isVisible: async () => summary === 'present',
-    click: async () => { state.summaryClicks += 1; state.disclosureOpen = true; },
+    click: async () => { state.summaryClicks += 1; current().disclosureOpen = true; },
   });
   const page = {
     bringToFront: async () => undefined,
-    url: () => dom.window.location.href,
+    url: () => `https://app.example${documents[Math.min(documentIndex, documents.length - 1)]!}`,
     on: (name: string, fn: (value: unknown) => void) => { events.set(name, [...(events.get(name) ?? []), fn]); },
     off: () => undefined,
     locator: (selector: string) => selector === '[data-pod-sign-in-state="consent"]'
@@ -389,13 +396,19 @@ async function consentScenario(
       ready: async () => {
         readyCalls += 1;
         if (readyCalls === 1) return false;
-        // The approval POST is only real evidence when the checkbox state is
-        // what the scenario requested; the unit observes the same safe boolean.
+        // Approving the current document posts its own approval and navigates
+        // to the next one; the driver must make an independent explicit choice
+        // on every document it is offered. The approval POST is only real
+        // evidence when that document's checkbox state is what the scenario
+        // requested; the unit observes the same safe boolean.
+        const document = documents[documentIndex]!;
         emit('request', {
-          url: () => 'https://id.example/.account/oidc/consent/', method: () => 'POST',
-          headers: () => ({}), postData: () => JSON.stringify({ remember: state.checked }),
+          url: () => `https://id.example${document}`, method: () => 'POST',
+          headers: () => ({}), postData: () => JSON.stringify({ remember: current().checked }),
         });
-        return true;
+        state.approvedDocuments.push(document);
+        documentIndex = Math.min(documentIndex + 1, documents.length);
+        return documentIndex >= documents.length;
       },
     });
     return { trace, state };
@@ -409,6 +422,21 @@ it('sets and retains the explicit remember-client choice before approval', async
   const { trace, state } = await consentScenario(true, { folded: true });
   expect(state.summaryClicks).toBe(1);
   expect(state.setCheckedCalls).toEqual([true]);
+  expect(trace.rememberClientRequested).toBe(true);
+  expect(trace.rememberClientObserved).toBe(true);
+  expect(trace.consentRequestCount).toBe(1);
+  expect(trace.consentRememberPosted).toBe(true);
+});
+
+it('re-applies the explicit remember-client choice on every approval document', async () => {
+  // Pick-WebID and Consent are separate documents with independent checkbox
+  // state, so a one-shot application would leave the Consent approval posting
+  // the default `remember:false` while the trace still claimed a choice.
+  const { trace, state } = await consentScenario(true, { folded: true,
+    documents: ['/.account/oidc/pick-webid/', '/.account/oidc/consent/'] });
+  expect(state.approvedDocuments).toEqual(['/.account/oidc/pick-webid/', '/.account/oidc/consent/']);
+  expect(state.setCheckedCalls).toEqual([true, true]);
+  expect(state.summaryClicks).toBe(2);
   expect(trace.rememberClientRequested).toBe(true);
   expect(trace.rememberClientObserved).toBe(true);
   expect(trace.consentRequestCount).toBe(1);

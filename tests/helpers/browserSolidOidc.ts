@@ -434,6 +434,7 @@ export async function completeOidcLogin(
     let localSpaceClickedAt = 0;
     let passwordFormLeftAfterSubmit = false;
     let consentRememberApplied = false;
+    let consentRememberDocument = '';
     let lastPhase = '';
 
     while (Date.now() < deadline) {
@@ -541,12 +542,15 @@ export async function completeOidcLogin(
       // Consent choice before approving; a missing or ignored choice fails the
       // scenario instead of silently defaulting to "do not remember".
       const consentSurface = page.locator('[data-pod-sign-in-state="consent"]');
+      // One observation per iteration: a second independent probe can miss a
+      // surface the product has already approved away, so both consumers below
+      // must reason about the same rendered fact.
+      const consentVisible = await consentSurface.isVisible({ timeout: 100 }).catch(() => false);
       // Record the rendered Consent shape before driving it: exactly one live
       // binding is auto-consented and offers no chooser, so a caller proving
       // that exact binding needs this observed fact rather than a selection
       // that the product never asked for.
-      if (!trace.consentSingleBindingOffered
-        && await consentSurface.isVisible({ timeout: 100 }).catch(() => false)) {
+      if (!trace.consentSingleBindingOffered && consentVisible) {
         trace.consentSingleBindingOffered = consentOffersSingleBinding({
           surfaceVisible: true,
           webIdChooserVisible: await page.locator('#oidc-consent-webid').isVisible({ timeout: 100 }).catch(() => false),
@@ -554,8 +558,12 @@ export async function completeOidcLogin(
           webIdRadioCount: await page.locator('input[type="radio"][name="webId"]').count(),
         });
       }
-      if (options.rememberClient !== undefined && !consentRememberApplied
-        && await consentSurface.isVisible({ timeout: 100 }).catch(() => false)) {
+      // Pick-WebID and Consent are separate approval documents with independent
+      // checkbox state, so an explicit remember-client choice is re-applied on
+      // every document that offers it instead of only the first one.
+      const consentDocument = accountDocumentKey(page.url());
+      if (consentDocument !== consentRememberDocument) consentRememberApplied = false;
+      if (options.rememberClient !== undefined && !consentRememberApplied && consentVisible) {
         const rememberClientChoice = page.getByRole('checkbox', { name: /^(?:以后不再询问|Do not ask again)$/u });
         if (!await rememberClientChoice.isVisible({ timeout: 250 }).catch(() => false)) {
           // The choice is folded into the collapsed request-details disclosure.
@@ -577,6 +585,7 @@ export async function completeOidcLogin(
         }
         trace.rememberClientRequested = options.rememberClient;
         trace.rememberClientObserved = observedRemember;
+        consentRememberDocument = consentDocument;
         consentRememberApplied = true;
         await page.waitForTimeout(150);
         continue;
@@ -821,6 +830,18 @@ async function isSettingsWorkspaceReady(page: Page, baseOrigin: string): Promise
 /** Normalize only assertions/diagnostics; real requests retain their interaction scope. */
 export function normalizeAccountPath(pathname: string): string {
   return pathname.replace(/^\/\.account\/interaction\/[^/]+(?=\/)/u, '/.account');
+}
+
+/** Identity of the current approval document for per-document UI state. Only
+ * origin and pathname are kept, so no query value (potentially a secret) is
+ * ever retained. */
+function accountDocumentKey(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return rawUrl;
+  }
 }
 
 function safePath(rawUrl: string): string {

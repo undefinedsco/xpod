@@ -76,31 +76,46 @@ export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = 
   'unclassified': 'The packaged desktop acceptance failed; full detail is retained in private evidence',
 };
 
+/** A safe sub-condition for a reviewed code. Only closed-vocabulary tokens are
+ * allowed here, so publishing one can never leak private evidence. */
+export type DesktopFailureEvidence = 'choice-not-offered' | 'choice-not-retained' | 'remember-not-posted';
+
 /** A failure whose public projection is its reviewed code, never its text.
  * `message` keeps the exact private diagnostic for the 600-mode evidence file. */
 export class DesktopAcceptanceError extends Error {
   readonly code: DesktopFailureCode;
-  constructor(code: DesktopFailureCode, detail: string) {
+  /** Optional closed-vocabulary sub-condition, never raw diagnostic text. */
+  readonly evidence?: DesktopFailureEvidence;
+  constructor(code: DesktopFailureCode, detail: string, evidence?: DesktopFailureEvidence) {
     super(detail);
     this.name = 'DesktopAcceptanceError';
     this.code = code;
+    this.evidence = evidence;
   }
 }
 
-export interface PublishedDesktopFailure { code: DesktopFailureCode; explanation: string }
+export interface PublishedDesktopFailure { code: DesktopFailureCode; explanation: string; evidence?: DesktopFailureEvidence }
 
 /** The only failure data allowed in a public artifact or CI log. Anything that
  * is not one of our reviewed typed failures degrades to the generic code, so an
  * arbitrary upstream error can never publish tokens, keys or assertion dumps. */
 export function describeFailure(error: unknown): PublishedDesktopFailure {
   const code: DesktopFailureCode = error instanceof DesktopAcceptanceError ? error.code : 'unclassified';
-  return { code, explanation: DESKTOP_FAILURE_EXPLANATIONS[code] };
+  const evidence = error instanceof DesktopAcceptanceError ? error.evidence : undefined;
+  return { code, explanation: DESKTOP_FAILURE_EXPLANATIONS[code], ...(evidence ? { evidence } : {}) };
 }
 
-/** Allowlisted public failure list for stdout and the failure artifact. */
+/** Allowlisted public failure list for stdout and the failure artifact. A code
+ * that carries a safe sub-condition keeps it; a bare duplicate never replaces
+ * an evidenced entry. */
 export function publishedFailures(errors: unknown[]): PublishedDesktopFailure[] {
-  return [...new Set(errors.map(error => describeFailure(error).code))]
-    .map(code => ({ code, explanation: DESKTOP_FAILURE_EXPLANATIONS[code] }));
+  const published = new Map<DesktopFailureCode, PublishedDesktopFailure>();
+  for (const error of errors) {
+    const failure = describeFailure(error);
+    const existing = published.get(failure.code);
+    if (!existing || (!existing.evidence && failure.evidence)) published.set(failure.code, failure);
+  }
+  return [...published.values()];
 }
 
 function privateError(error: unknown): unknown {
@@ -158,6 +173,7 @@ function rendererOwnerFetch(page: Page, gateway: string, podUrl: string, key: st
 export async function acceptPackagedDesktopPermissions(options: PackagedPermissionOptions): Promise<void> {
   let stage: Stage = 'input';
   let failedStage: Stage | undefined;
+  let primaryFailure: unknown;
   const failures: unknown[] = [];
   let fixture: OwnedPackagedDesktop | undefined;
   let phase: MountedPodPermissionPhase | undefined;
@@ -220,9 +236,11 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       allCallbacks &&= bindingProven;
       if (!bindingProven) throw new DesktopAcceptanceError('consent-binding', 'Actual browser callback or exact Consent binding proof is missing');
       if (trace.rememberClientRequested !== true || trace.rememberClientObserved !== true || trace.consentRememberPosted !== true) {
+        const evidence: DesktopFailureEvidence = trace.rememberClientRequested !== true ? 'choice-not-offered'
+          : trace.rememberClientObserved !== true ? 'choice-not-retained' : 'remember-not-posted';
         throw new DesktopAcceptanceError('remember-grant', 'The remembered-grant bootstrap did not set and retain the explicit remember-client choice: '
           + `requested=${String(trace.rememberClientRequested)} observed=${String(trace.rememberClientObserved)} `
-          + `posted=${String(trace.consentRememberPosted)}`);
+          + `posted=${String(trace.consentRememberPosted)}`, evidence);
       }
       phase = await acceptMountedPodPermissions(page, { webId: binding.webId, podUrl: binding.storageUrl });
       const descriptor = await phase.handle.evaluate(({ controller }) => controller.client!.getServiceAccess()) as { invocation?: { token?: string } };
@@ -297,7 +315,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       operations: { accountActor: true, keyCreate: true, keyList: true, keyRevoke: true, collectionConfirmed: true,
         conflictCount: 0, chatStatus: 200, chatBodyMatches: true, chatDispatches: 1,
         samePodReuse: true, crossPodRejected: true, isolatedRows: true, oldRunRejected: true } };
-  } catch (error) { failedStage = stage; failures.push(error); }
+  } catch (error) { failedStage = stage; primaryFailure = error; failures.push(error); }
   finally {
     advance('cleanup');
     try { if (taskSnapshot) await privateJson(options.privateDirectory, 'tasks-private.json', taskSnapshot); }
@@ -318,7 +336,12 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     await writeFile(path.join(options.privateDirectory, SAFE_FAILURE_FILE), JSON.stringify({ schemaVersion: 1,
       kind: 'desktop-permission-failure', sourceSha: options.sourceSha, version: options.version, stage: failed,
       failures: publishedFailures(failures) }, null, 2) + '\n', { mode: 0o644 });
-    throw new DesktopAcceptanceError('unclassified', `Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`);
+    // The stdout projection must name the real reviewed code, so a CI run stays
+    // diagnosable without the private evidence upload.
+    throw primaryFailure instanceof DesktopAcceptanceError
+      ? new DesktopAcceptanceError(primaryFailure.code,
+        `Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`, primaryFailure.evidence)
+      : new DesktopAcceptanceError('unclassified', `Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`);
   }
   advance('verify');
   record.cleanup = { ...fixtureCleanup, providerRemoved: true, keyRemoved: true, attributedGrantsRestored: true };

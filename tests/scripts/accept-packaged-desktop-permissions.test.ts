@@ -30,6 +30,28 @@ it('publishes only reviewed failure codes and never the underlying error text', 
     explanation: 'The packaged Local authority or no-public-route proof was missing' }]);
 });
 
+it('publishes only the closed-vocabulary sub-condition the remember gate actually failed', () => {
+  // The remember gate is the only reviewed code with a sub-condition. It is a
+  // fixed token set, so a CI log/artifact can name which part of the gate failed
+  // without ever publishing the private trace booleans behind it.
+  const offered = new DesktopAcceptanceError('remember-grant',
+    'requested=undefined observed=undefined posted=false with oc_sk_live_9f2c1d4b8a7e6f5c', 'choice-not-offered');
+  expect(describeFailure(offered)).toEqual({ code: 'remember-grant',
+    explanation: 'The remembered-grant bootstrap did not retain the explicit remember-client choice',
+    evidence: 'choice-not-offered' });
+  expect(JSON.stringify(describeFailure(offered))).not.toContain('oc_sk_live_9f2c1d4b8a7e6f5c');
+  expect(JSON.stringify(describeFailure(offered))).not.toContain('observed=');
+  // A bare duplicate code must never replace the entry that carries the
+  // sub-condition, and the arbitrary error text stays private.
+  expect(publishedFailures([offered, new DesktopAcceptanceError('remember-grant', 'raw-private-detail')]))
+    .toEqual([{ code: 'remember-grant',
+      explanation: 'The remembered-grant bootstrap did not retain the explicit remember-client choice',
+      evidence: 'choice-not-offered' }]);
+  // Every other reviewed code stays exactly as reviewed: no sub-condition.
+  expect(describeFailure(new DesktopAcceptanceError('consent-binding', 'private'))).toEqual({
+    code: 'consent-binding', explanation: 'The actual browser callback or exact Consent binding proof was missing' });
+});
+
 it('requires actual independent A task rows and refuses any rows in fresh B', () => {
   assertOwnedTaskRows({ tasks: [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }] }, ['a1', 'a2', 'a3']);
   assertOwnedTaskRows({ tasks: [] }, [], true);
