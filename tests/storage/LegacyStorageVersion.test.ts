@@ -17,7 +17,7 @@ import { MixDataAccessor } from '../../src/storage/accessors/MixDataAccessor';
 import { SparqlUpdateResourceStore } from '../../src/storage/SparqlUpdateResourceStore';
 import { StorageETagHandler } from '../../src/storage/conditions/StorageETagHandler';
 import { RdfQuadIndex, SolidRdfEngine } from '../../src/storage/rdf';
-import { getStorageVersion, storageVersionReadContext } from '../../src/storage/StorageVersion';
+import { getStorageVersion, STORAGE_ETAG_PATTERN, storageVersionReadContext } from '../../src/storage/StorageVersion';
 
 const root = 'http://localhost/';
 const id = { path: `${root}run.ttl` };
@@ -178,7 +178,12 @@ describe('legacy storage revision upgrade under resource locks', () => {
     expect(persistedMetadata.get(HH.terms.etag)?.value).toMatch(/^[a-f0-9]{32}$/);
     expect(getStorageVersion(response.metadata)).toBe(getStorageVersion(persistedMetadata));
     expect(response.metadata.getAll(HH.terms.etag)).toHaveLength(1);
-    expect(response.metadata.get(HH.terms.etag)?.value).toBe(tag);
+    // This store chain deliberately stops below the HTTP boundary: the negotiated wire tag is
+    // rendered by RepresentationPartialConvertingStore (see RepresentationPartialConvertingStore.etag),
+    // so the metadata that leaves this store carries exactly the persisted raw revision while the
+    // single rendered tag still encodes that same revision for conditional writes.
+    expect(response.metadata.get(HH.terms.etag)?.value).toBe(persistedMetadata.get(HH.terms.etag)?.value);
+    expect(STORAGE_ETAG_PATTERN.exec(tag)?.[1]).toBe(getStorageVersion(persistedMetadata));
     const condition = new BasicConditions(etags, { matchesETag: [tag] });
     await localStore.setRepresentation(id, document('updated'), condition);
     await expect(localStore.setRepresentation(id, document('stale'), condition)).rejects.toBeInstanceOf(PreconditionFailedHttpError);

@@ -188,6 +188,9 @@ export function createCredentialCollectionFixture(
   const database = {
     schema,
     getDialect: () => orm.getDialect(),
+    // `SolidDatabase` declares `getSchema()`; the collection's URI projection uses it to
+    // resolve mapped URI fields in the same space the bound ORM writes them.
+    getSchema: () => schema,
     async init() {},
     select() {
       return {

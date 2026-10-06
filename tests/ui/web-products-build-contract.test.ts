@@ -53,7 +53,11 @@ describe('Xpod web product build contract', () => {
     const entry = readFileSync(path.join(root, 'ui/src/settings.tsx'), 'utf8');
 
     expect(html).toContain('/src/settings.tsx');
-    expect(entry).toContain('<XpodShellApp />');
+    // Settings mounts the shared product entry; that entry, not this document, decides which
+    // host surface loads.
+    expect(entry).toContain('<XpodProductEntry />');
+    expect(entry).toContain('<XpodThemeProvider>');
+    expect(entry).not.toContain('XpodShellApp');
   });
 
   it('serves canonical product documents during Vite dev while leaving APIs proxied', async () => {
@@ -72,11 +76,21 @@ describe('Xpod web product build contract', () => {
     const entry = readFileSync(path.join(root, 'ui/src/auth-callback.tsx'), 'utf8');
 
     expect(html).toContain('/src/auth-callback.tsx');
-    expect(entry).toContain('<XpodOidcCallbackApp');
-    expect(entry).toContain('resolveCallbackProductDestination');
-    expect(entry).toContain('<XpodShellApp');
+    // The callback document asks the shared entry for a callback surface instead of pinning a
+    // product, so a browser redirect can never open the desktop workspace.
+    expect(entry).toContain('<XpodProductEntry callback />');
+    expect(entry).toContain('<XpodThemeProvider>');
+    expect(entry).not.toContain('XpodShellApp');
+    expect(entry).not.toContain('XpodOidcCallbackApp');
     expect(entry).not.toContain("destination.app === 'dashboard'");
-    expect(entry).toContain('initialPathname={destination.pathname}');
-    expect(entry).toContain("window.history.replaceState({}, '', destination.target)");
+  });
+
+  it('resolves the callback product destination in the renderer that owns the redirect', () => {
+    const renderer = readFileSync(path.join(root, 'ui/src/DesktopOidcCallback.tsx'), 'utf8');
+
+    expect(renderer).toContain('resolveCallbackProductDestination');
+    expect(renderer).toContain('initialPathname={destination.pathname}');
+    expect(renderer).toContain("window.history.replaceState({}, '', destination.target)");
+    expect(renderer).not.toContain("destination.app === 'dashboard'");
   });
 });

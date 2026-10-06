@@ -355,7 +355,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       }
       const auth = context.auth as AuthContext | undefined;
       if (auth?.type === 'solid' && (auth.requestedPodUrl || auth.authorizedPodUrl)) {
-        const selectedRoot = await this.resolveContextPodBaseUrl(context, auth);
+        const selectedRoot = await this.requireContextPodBaseUrl(context, auth);
         if (!boundRoot || selectedRoot !== boundRoot) {
           throw new Error('Authoritative Pod storage binding changed on cached context');
         }
@@ -398,6 +398,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     }
 
     const credentialBinding = this.podCredentialBinding(context);
+    // A missing authoritative binding is a storage failure, but it must not decide the diagnosis
+    // for a caller whose credential path is already unusable: resolve it here, then reject only
+    // after Pod access has reported why no usable credential exists.
     const podBaseUrl = await this.resolveContextPodBaseUrl(context, auth);
 
     // One credential path for every caller: the owner's own Pod key, exchanged for a
@@ -419,6 +422,10 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       const reason = podAccessError(auth.webId, auth);
       this.logger.warn(`No usable Pod credential for ${auth.webId}: ${reason}`);
       throw new Error(reason);
+    }
+
+    if (!podBaseUrl) {
+      throw new Error('Authoritative Pod storage binding unavailable');
     }
 
     if (credentialBinding !== this.podCredentialBinding(context)) {
@@ -449,17 +456,36 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return db;
   }
 
-  private async resolveContextPodBaseUrl(context: StoreContext, auth: Extract<AuthContext, { type: 'solid' }>): Promise<string> {
+  /**
+   * Resolve the request's authoritative Pod root, or `undefined` when this deployment has no
+   * binding resolver to consult. Reporting a missing binding is left to the caller so the
+   * credential path can be classified first.
+   */
+  private async resolveContextPodBaseUrl(
+    context: StoreContext,
+    auth: Extract<AuthContext, { type: 'solid' }>,
+  ): Promise<string | undefined> {
     const explicitRoot = this.readExplicitPodBaseUrl(context);
     // Explicit internal contexts already carry a verified binding. A request selection or
     // capability must still intersect that binding through the shared ownership resolver.
     if (explicitRoot && !auth.requestedPodUrl && !auth.authorizedPodUrl) return explicitRoot;
-    if (!this.podBaseUrlResolver) throw new Error('Authoritative Pod storage binding unavailable');
+    if (!this.podBaseUrlResolver) return undefined;
     const selectedRoot = this.normalizePodBaseUrl(await resolveOwnerPodBaseUrl(auth.webId, this.podBaseUrlResolver, auth))!;
     if (explicitRoot && selectedRoot !== explicitRoot) {
       throw new Error('Authoritative Pod storage binding conflicts with request');
     }
     return selectedRoot;
+  }
+
+  private async requireContextPodBaseUrl(
+    context: StoreContext,
+    auth: Extract<AuthContext, { type: 'solid' }>,
+  ): Promise<string> {
+    const root = await this.resolveContextPodBaseUrl(context, auth);
+    if (!root) {
+      throw new Error('Authoritative Pod storage binding unavailable');
+    }
+    return root;
   }
 
   /** Stable identity of the credential binding behind a cached database, without secrets. */

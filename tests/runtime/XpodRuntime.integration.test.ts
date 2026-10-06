@@ -191,13 +191,20 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
       },
       body: JSON.stringify({
         podName: 'autoalice',
-        webId: 'https://auto-node.undefineds.test/autoalice/profile/card#me',
+        webId: `${cloudOrigin}/autoalice/profile/card#me`,
       }),
     });
     expect(createResponse.status).toBe(201);
+    // Managed Local: the Cloud-issued WebID owns the Pod and this node hosts its storage.
+    await expect(createResponse.json()).resolves.toMatchObject({
+      success: true,
+      webId: `${cloudOrigin}/autoalice/profile/card#me`,
+      // The node keeps hosting security: storage is served under the registered public URL.
+      podUrl: 'https://auto-node.undefineds.test/autoalice/',
+    });
   });
 
-  it('reads a Cloud-canonical Pod through the local Gateway route', async () => {
+  it('reads a Cloud-owned Pod storage through the local Gateway route', async () => {
     const canonicalPod = new URL('https://auto-node.undefineds.test/autoalice/');
     const listenerUrl = localServiceUrl('127.0.0.1', runtime.ports.gateway!);
     const localPod = new URL('/autoalice/', listenerUrl);
@@ -212,13 +219,11 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
         localBaseUrl: localPod.href,
       }],
     });
-    const canonicalResource = new URL('profile/card', canonicalPod);
-    const getResponse = await routedFetch(canonicalResource, {
-      headers: { accept: 'text/turtle' },
-    });
+    const getResponse = await routedFetch(canonicalPod, { headers: { accept: 'text/turtle' } });
     expect(getResponse.status).toBe(200);
-    await expect(getResponse.text()).resolves.toContain('https://auto-node.undefineds.test/autoalice/profile/card#me');
-    expect(networkTargets).toEqual([ new URL('profile/card', localPod).href ]);
+    // The Cloud owns the profile card, so what this node serves is the Pod storage itself.
+    await expect(getResponse.text()).resolves.toContain('http://www.w3.org/ns/pim/space#Storage');
+    expect(networkTargets).toEqual([ localPod.href ]);
     expect(new URL(networkTargets[0]!).origin).toBe(listenerUrl);
   });
 
@@ -635,8 +640,11 @@ describe('XpodRuntime SP provisioning authorization', () => {
     await close(cloudServer);
   });
 
-  it('serves a provisioned public profile card without authorization headers', async () => {
-    const webId = new URL('/alice/profile/card#me', canonicalBaseUrl).toString();
+  it('serves the provisioned public Pod storage without authorization headers', async () => {
+    // Managed Local: the Cloud-issued WebID owns the Pod; this node hosts the storage and the
+    // Cloud keeps the profile card.
+    const webId = new URL('/alice/profile/card#me', cloudOrigin).toString();
+    const storageUrl = new URL('/alice/', canonicalBaseUrl).toString();
     const createResponse = await runtime.fetch('/provision/pods', {
       method: 'POST',
       headers: {
@@ -650,28 +658,10 @@ describe('XpodRuntime SP provisioning authorization', () => {
     });
 
     expect(createResponse.status).toBe(201);
+    await expect(createResponse.json()).resolves.toMatchObject({ success: true, webId, podUrl: storageUrl });
 
-    const profileResponse = await runtime.fetch('/alice/profile/card', {
-      headers: {
-        accept: 'text/turtle',
-      },
-    });
-
-    expect(profileResponse.status).toBe(200);
-    const body = await profileResponse.text();
-    const storageUrl = new URL('/alice/', canonicalBaseUrl).toString();
-    expect(body).toContain(webId);
-    expect(body).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
-    expect(body).toContain(canonicalBaseUrl);
-    expect(body).toContain('http://www.w3.org/ns/solid/terms#storage');
-    expect(body).toContain(storageUrl);
-
-    const profileContainerResponse = await runtime.fetch('/alice/profile/', {
-      headers: {
-        accept: 'text/turtle',
-      },
-    });
-
-    expect(profileContainerResponse.status).toBe(200);
+    const storageResponse = await runtime.fetch('/alice/', { headers: { accept: 'text/turtle' } });
+    expect(storageResponse.status).toBe(200);
+    await expect(storageResponse.text()).resolves.toContain('http://www.w3.org/ns/pim/space#Storage');
   });
 });

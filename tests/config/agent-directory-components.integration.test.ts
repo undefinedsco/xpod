@@ -45,13 +45,26 @@ describe('agent directory handler loads in every runtime profile', () => {
     if (!base) throw new Error('Base HTTP handler config was not instantiated');
     const constructorPool = manager.configConstructorPool as typeof manager.configConstructorPool & {
       getRawConfig(value: typeof base): {
-        properties: Record<string, Array<{ list?: Array<{ list?: Array<{ value: string }> }> }>>;
+        properties: Record<string, Array<{
+          list?: unknown[];
+          properties?: Record<string, Array<{ list?: Array<{ value: string }> }>>;
+        }>>;
       };
     };
     const constructed = constructorPool.getRawConfig(base);
-    const handlers = constructed?.properties[
+    // The pipeline is wrapped by PodMutationLockingHttpHandler: the first constructor
+    // argument is the StatusWaterfallHandler that owns the handler chain, so the order
+    // has to be read from that wrapper's `StatusWaterfallHandler_handlers` list.
+    const wrappedPipeline = constructed?.properties[
       'https://linkedsoftwaredependencies.org/vocabularies/object-oriented#arguments'
-    ]?.[0]?.list?.[0]?.list?.map((entry) => entry.value) ?? [];
+    ]?.[0]?.list?.[0] as
+      | { properties?: Record<string, Array<{ list?: Array<{ value: string }> }>> }
+      | undefined;
+    // Property keys are full RDF predicate IRIs, so the wrapper field is matched by
+    // its local name rather than by the bare `StatusWaterfallHandler_handlers` key.
+    const handlersProperty = Object.entries(wrappedPipeline?.properties ?? {})
+      .find(([key]) => key.endsWith('#StatusWaterfallHandler_handlers'))?.[1];
+    const handlers = handlersProperty?.[0]?.list?.map((entry) => entry.value) ?? [];
 
     const directoryIndex = handlers.indexOf(AGENT_DIRECTORY_HANDLER);
     const ldpIndex = handlers.indexOf('urn:solid-server:default:LdpHandler');

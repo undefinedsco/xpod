@@ -381,10 +381,10 @@ describe('screen layout', () => {
     expect(main.contains(actions)).toBe(false)
     expect(actions.contains(screen.getByRole('button', { name: '登录' }))).toBe(true)
     const bar = document.querySelector('[data-pod-sign-in="idp-chrome"]') as HTMLElement
-    expect(bar.className).toContain('h-11')
+    expect(bar.className).toContain('min-h-14')
     expect(bar.className).toContain('border-b')
     expect(bar.className).not.toContain('rounded')
-    expect(bar.className).toContain('px-4')
+    expect(bar.className).toContain('px-6')
   })
 })
 

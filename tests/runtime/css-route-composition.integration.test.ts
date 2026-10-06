@@ -67,14 +67,25 @@ describe('CSS route composition', () => {
     if (!resource) throw new Error('Base HTTP handler config was not instantiated');
     const constructorPool = manager.configConstructorPool as typeof manager.configConstructorPool & {
       getRawConfig(value: typeof resource): {
-        properties: Record<string, Array<{ list?: Array<{ list?: Array<{ value: string }> }> }>>;
+        properties: Record<string, Array<{
+          list?: unknown[];
+          properties?: Record<string, Array<{ list?: Array<{ value: string }> }>>;
+        }>>;
       };
     };
     const constructed = constructorPool.getRawConfig(resource);
-    const constructorArguments = constructed?.properties[
+    // The pipeline is wrapped by PodMutationLockingHttpHandler: the first constructor
+    // argument is the StatusWaterfallHandler that owns the handler chain, so the chain
+    // is read from that wrapper's `StatusWaterfallHandler_handlers` field (a full
+    // predicate IRI, matched by local name).
+    const wrappedPipeline = constructed?.properties[
       'https://linkedsoftwaredependencies.org/vocabularies/object-oriented#arguments'
-    ]?.[0]?.list;
-    const handlers = constructorArguments?.[0]?.list?.map((entry) => entry.value);
+    ]?.[0]?.list?.[0] as
+      | { properties?: Record<string, Array<{ list?: Array<{ value: string }> }>> }
+      | undefined;
+    const handlersProperty = Object.entries(wrappedPipeline?.properties ?? {})
+      .find(([key]) => key.endsWith('#StatusWaterfallHandler_handlers'))?.[1];
+    const handlers = handlersProperty?.[0]?.list?.map((entry) => entry.value);
 
     expect(handlers).toBeDefined();
     // The privileged internal Pod-data channel is deleted end to end: it must not be
