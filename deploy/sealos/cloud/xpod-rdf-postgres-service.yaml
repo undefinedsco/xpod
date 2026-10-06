@@ -1,0 +1,32 @@
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "xpod-rdf-postgres",
+    "namespace": "ns-iknkxtc8"
+  },
+  "spec": {
+    "clusterIP": "10.96.224.73",
+    "clusterIPs": [
+      "10.96.224.73"
+    ],
+    "internalTrafficPolicy": "Cluster",
+    "ipFamilies": [
+      "IPv4"
+    ],
+    "ipFamilyPolicy": "SingleStack",
+    "ports": [
+      {
+        "name": "postgres",
+        "port": 5432,
+        "protocol": "TCP",
+        "targetPort": "postgres"
+      }
+    ],
+    "selector": {
+      "app": "xpod-rdf-postgres"
+    },
+    "sessionAffinity": "None",
+    "type": "ClusterIP"
+  }
+}
