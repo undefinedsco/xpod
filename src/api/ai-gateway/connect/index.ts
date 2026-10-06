@@ -38,7 +38,10 @@ import type {
   OAuthConnectMode,
   OAuthIntegration,
 } from './DeviceCodeProtocol';
-import type { LocalSessionImportAdapter } from './OpenAiSubscriptionSessionImportAdapter';
+import type {
+  LocalSessionImportAdapter,
+  LocalSessionImportResult,
+} from './OpenAiSubscriptionSessionImportAdapter';
 import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../../service/provider-http-transport';
 import { Parser as N3Parser, type Quad as N3Quad } from 'n3';
 export { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
@@ -63,6 +66,12 @@ export {
 
 const CREDENTIAL_COLLECTION_QUERY_UNSUPPORTED = 'credential_collection_query_unsupported';
 const credentialUpdateLocks = new Map<string, Promise<void>>();
+/**
+ * Serializes on-demand session renewals per (webId, credential) so concurrent in-flight requests
+ * coalesce into a single provider refresh. Separate from `credentialUpdateLocks` because the
+ * renewal body persists through the CAS update path, which takes that lock itself.
+ */
+const credentialRenewalLocks = new Map<string, Promise<void>>();
 
 export type ConnectMode = 'browserAssistedApiKey' | OAuthConnectMode | 'connectUnsupported';
 export type ConnectAttemptStatus =
@@ -264,6 +273,11 @@ export interface PodCredentialRepository {
     provider: string;
     deployment: GatewayDeployment;
     reason: string;
+    /**
+     * Selects the exact credential row. Callers that know which credential failed must pass it so
+     * an invalid_grant on one credential can never mark a sibling credential of the same provider.
+     */
+    credentialId?: string;
     expectedVersion?: number;
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined>;
@@ -431,6 +445,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     cooldownUntil?: Date;
     encryptedSecret: EncryptedCredentialSecret;
     version?: number;
+    expiresAt?: Date;
     runtimeCredential?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   }>> {
@@ -441,7 +456,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       .filter((record) => record.status === 'active')
       .filter((record) => normalizeProvider(record.provider) !== '')
       .filter((record) => providerAllowedByConfiguredIds(record.provider, enabledProviderIds));
-    const podBaseUrl = await resolveOwnerPodBaseUrl(input.webId, this.podBaseUrlResolver);
+    const podBaseUrl = await resolveOwnerPodBaseUrl(input.webId, this.podBaseUrlResolver, input.auth);
     const hydrated = await this.withSelectedModels(db, aiProvider, aiModel, filtered, input.webId, podBaseUrl, podFetch);
     return hydrated
       .sort(compareCredentialRecords)
@@ -468,6 +483,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
           cooldownUntil: record.rateLimitResetAt,
           encryptedSecret: record.encryptedSecret,
           version: record.version,
+          expiresAt: record.expiresAt,
           runtimeCredential: runtimeCredentialFromMetadata({ ...record.metadata, offeringId }),
           metadata: {
             ...record.metadata,
@@ -617,7 +633,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       .filter((record) => record.webId === input.webId)
       .filter((record) => providerMatchesQuery(record.provider, input.provider, providerIds))
       .filter((record) => input.includeRevoked || record.status === 'active');
-    const podBaseUrl = await resolveOwnerPodBaseUrl(input.webId, this.podBaseUrlResolver);
+    const podBaseUrl = await resolveOwnerPodBaseUrl(input.webId, this.podBaseUrlResolver, input.auth);
     return (await this.withSelectedModels(db, aiProvider, aiModel, filtered, input.webId, podBaseUrl, podFetch))
       .sort(compareCredentialRecords);
   }
@@ -711,10 +727,15 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     provider: string;
     deployment: GatewayDeployment;
     reason: string;
+    credentialId?: string;
     expectedVersion?: number;
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
-    const current = await this.getActiveCredential(input);
+    // An explicit credentialId pins the exact row; without it the previous single-active-credential
+    // behaviour is preserved for callers that only know the provider.
+    const current = input.credentialId
+      ? await this.getCredentialById({ ...input, credentialId: input.credentialId })
+      : await this.getActiveCredential(input);
     if (!current) {
       return undefined;
     }
@@ -840,7 +861,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     fetch: typeof fetch;
   }> {
     const credential = alias(this.credentialTemplate, 'credential');
-    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver);
+    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver, auth);
     const trustedFetch = await this.resolveTrustedFetch(owner, auth, podUrl);
     const podBaseUrl = podUrl.replace(/\/$/u, '');
     const settingsSparqlEndpoint = `${podBaseUrl}/settings/-/sparql`;
@@ -2694,6 +2715,17 @@ export class ProviderConnectService {
     if ((dateFrom(secret.expiresAt)?.getTime() ?? Infinity) > Date.now()) {
       return { ...secret, ...metadataWithoutUndefined({ ...kimiAccountIdentityHint(input.provider, secret.accessToken) }) };
     }
+    return this.refreshCallerOwnedSecret(secret, input);
+  }
+
+  /**
+   * Exchanges the stored refresh token for a live session. Shared by import-time and use-time
+   * renewal; typed reauth failures stay distinguishable so callers can mark the credential.
+   */
+  private async refreshCallerOwnedSecret(
+    secret: ProviderSecret,
+    input: Omit<CallerOwnedOAuthRefreshInput, 'refreshToken'>,
+  ): Promise<ProviderSecret> {
     if (typeof secret.refreshToken !== 'string' || !secret.refreshToken) {
       throw new Error('local_session_missing_refresh_token');
     }
@@ -2713,6 +2745,176 @@ export class ProviderConnectService {
       throw new Error('local_session_refresh_failed');
     }
     return { ...result, ...metadataWithoutUndefined({ ...kimiAccountIdentityHint(input.provider, result.accessToken) }) };
+  }
+
+  /**
+   * Shared credential lifecycle recovery, called by the inference path when a stored OAuth session
+   * is expired or was just rejected upstream.
+   *
+   * Renewal re-reads the credential row inside a per-credential lock (concurrent callers
+   * coalesce), prefers the declared local session source when the live file still belongs to the
+   * same subscriber, falls back to the stored refresh token, and persists to the SAME row through
+   * the existing CAS update so user settings survive. API keys and local providers keep the
+   * existing path: they report "not renewable" instead of being special-cased by provider id.
+   *
+   * Returns whether a retry with the now-stored credential is worthwhile.
+   */
+  public async renewCredential(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    credentialId: string;
+    observedVersion?: number;
+    reason: 'expired' | 'authentication_failed';
+    auth?: AuthContext;
+  }): Promise<boolean> {
+    if (!this.credentialRepository || !this.vault) return false;
+    const provider = normalizeProvider(input.provider);
+    return withCredentialRenewalLock(JSON.stringify([input.webId, input.credentialId]), async () => {
+      const current = await this.credentialRepository!.getCredentialById({
+        webId: input.webId,
+        provider,
+        deployment: input.deployment,
+        credentialId: input.credentialId,
+        auth: input.auth,
+      });
+      // A revoked or deliberately disabled credential must not be renewed back into service.
+      if (!current || current.status !== 'active' || current.enabled === false) return false;
+      if (current.authMode !== 'deviceCodeOAuth') return false;
+      const secret = await this.vault!.open(
+        { webId: input.webId },
+        current.credentialIri,
+        provider,
+        current.encryptedSecret,
+      );
+      const valid = (dateFrom(secret.expiresAt)?.getTime() ?? Infinity) > Date.now();
+      const versionChanged = input.observedVersion !== undefined && current.version !== input.observedVersion;
+      if (valid) {
+        // A concurrent caller already renewed this exact row: tell the caller to reload and retry.
+        if (versionChanged) return true;
+        // Nothing to renew for a session that is genuinely still valid.
+        if (input.reason === 'expired') return false;
+        // `authentication_failed` with a still-"valid" token: fall through and refresh it.
+      }
+      const offeringId = current.offeringId ?? defaultOfferingFor(provider, current.authMode);
+      // Live-file adoption is reserved for credentials proven imported by the existing fingerprint
+      // contract. A separately device-authorized grant must use its own refresh token instead of
+      // silently inheriting whatever session the host CLI currently holds.
+      const imported = typeof secret.importedSessionFingerprint === 'string';
+      let next = imported
+        ? await this.adoptLiveImportedSession({
+            provider,
+            offeringId,
+            stored: secret,
+            storedScopes: current.scopes,
+            deployment: input.deployment,
+            rejectUnchangedAccessToken: input.reason === 'authentication_failed',
+          })
+        : undefined;
+      if (!next) {
+        try {
+          next = await this.refreshCallerOwnedSecret(secret, {
+            webId: input.webId,
+            deployment: input.deployment,
+            provider,
+            offeringId,
+            credentialId: current.id,
+            expectedVersion: current.version ?? 0,
+            auth: input.auth,
+          });
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== 'local_session_reauth_required') {
+            return false;
+          }
+          await this.credentialRepository!.markReauthRequired({
+            webId: input.webId,
+            provider,
+            deployment: input.deployment,
+            reason: 'invalid_grant',
+            credentialId: current.id,
+            expectedVersion: current.version,
+            auth: input.auth,
+          });
+          throw new GatewayProtocolError('Provider session requires re-authorization', {
+            code: 'credential_unavailable',
+            status: 401,
+            details: { provider, credentialId: current.id, reauthRequired: true },
+          });
+        }
+      }
+      // A "renewal" that would re-store the very token the provider just rejected is not a renewal;
+      // leave the row alone so the caller does not retry with an unchanged rejected token.
+      if (input.reason === 'authentication_failed' && next.accessToken === secret.accessToken) {
+        return false;
+      }
+      const health = current.health === 'disabled' ? 'disabled' : 'healthy';
+      const updated = await this.credentialRepository!.updateCredential({
+        webId: input.webId,
+        provider,
+        deployment: input.deployment,
+        credentialId: current.id,
+        expectedVersion: current.version,
+        auth: input.auth,
+        patch: {
+          encryptedSecret: await this.vault!.seal(
+            { webId: input.webId }, current.credentialIri, provider, next,
+          ),
+          expiresAt: dateFrom(next.expiresAt),
+          scopes: scopeListFromSecret(next),
+          reauthRequired: false,
+          health,
+          metadata: metadataWithoutUndefined({
+            ...current.metadata,
+            accountId: next.accountId,
+            authoritativeSubject: next.accountSubject,
+            offeringId,
+            health,
+          }),
+        },
+      });
+      return Boolean(updated);
+    });
+  }
+
+  /**
+   * On-demand re-read of the declared local session source for an imported credential: the CLI
+   * that owns the file may have rotated it since import. The live session is adopted only when it
+   * is unexpired, still belongs to the same subscriber, and does not narrow the granted scopes the
+   * stored credential relies on.
+   */
+  private async adoptLiveImportedSession(input: {
+    provider: string;
+    offeringId?: string;
+    stored: ProviderSecret;
+    storedScopes?: string[];
+    deployment: GatewayDeployment;
+    rejectUnchangedAccessToken?: boolean;
+  }): Promise<ProviderSecret | undefined> {
+    const importer = input.offeringId
+      ? this.localSessionImporters.get(localSessionImporterKey(input.provider, input.offeringId))
+      : undefined;
+    if (!importer) return undefined;
+    let imported: LocalSessionImportResult;
+    try {
+      imported = await importer.importSession({ deployment: input.deployment });
+    } catch {
+      // A missing or unreadable live file must not block the stored refresh token.
+      return undefined;
+    }
+    if ((dateFrom(imported.secret.expiresAt)?.getTime() ?? 0) <= Date.now()) return undefined;
+    // Re-reading a file that still holds the token the provider just rejected is not a renewal;
+    // the caller must fall back to the declared refresh token instead.
+    if (input.rejectUnchangedAccessToken && imported.secret.accessToken === input.stored.accessToken) {
+      return undefined;
+    }
+    if (!sameImportedSession(input.provider, input.stored, imported.secret)) return undefined;
+    const liveScopes = scopeListFromSecret(imported.secret);
+    if (input.storedScopes?.length
+      && !input.storedScopes.every((scope) => liveScopes?.includes(scope))) return undefined;
+    return {
+      ...imported.secret,
+      importedSessionFingerprint: importedSessionFingerprint(imported.secret),
+    };
   }
 
   public async updateCredential(input: ProviderCredentialQuery & {
@@ -4688,6 +4890,20 @@ function offeringMatchesAuthMode(
   }
   if (authMode === 'local') return offeringAuthModes.includes('local');
   return offeringAuthModes.includes('oauth') || offeringAuthModes.includes('deviceCode');
+}
+
+async function withCredentialRenewalLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = credentialRenewalLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  credentialRenewalLocks.set(key, pending);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (credentialRenewalLocks.get(key) === pending) credentialRenewalLocks.delete(key);
+  }
 }
 
 async function updateByCredentialIdAndVersion(params: {

@@ -119,7 +119,7 @@ describe('contract layer inside the ai-connections package', () => {
       exports: Record<string, { import?: string }>
     }
     // The interoperability subpaths are what the gateway and the scripts read.
-    for (const subpath of [ './client', './provider-catalog', './client-config', './endpoint-urls' ]) {
+    for (const subpath of [ './client', './provider-catalog', './client-config', './endpoint-urls', './service-access-resources' ]) {
       expect(manifest.exports[subpath]?.import, `${subpath} must stay exported`).toBeTruthy()
     }
     // The applet entries ship from the same package; nothing is published twice.
@@ -127,7 +127,7 @@ describe('contract layer inside the ai-connections package', () => {
       expect(manifest.exports[subpath]?.import, `${subpath} must stay exported`).toBeTruthy()
     }
     expect(Object.keys(manifest.exports).sort()).toEqual(
-      [ '.', './client', './client-config', './endpoint-urls', './manifest', './provider-catalog' ],
+      [ '.', './client', './client-config', './endpoint-urls', './manifest', './provider-catalog', './service-access-resources' ],
     )
   })
 

@@ -1,6 +1,6 @@
 import { initializeBrowserSparql } from './initializeBrowserSparql';
 import { InMemoryStorage, Session } from '@inrupt/solid-client-authn-browser';
-import type { IStorage } from '@inrupt/solid-client-authn-core';
+import { SOLID_CLIENT_AUTHN_KEY_PREFIX, type IStorage } from '@inrupt/solid-client-authn-core';
 import { createSolidAccessRouteFetch, type AccessRoute } from '@undefineds.co/solid-sdk/access-route';
 import {
   createPodRuntime,
@@ -352,7 +352,7 @@ function inruptStorageKey(namespace: XpodInruptStorageNamespace, key: string): s
 function readActiveRestoreIssuer(storage?: Storage): string | undefined {
   try {
     // Inrupt owns this global pointer even when its record storage is namespaced.
-    const id = getOptionalPersistentStorage()?.getItem('solidClientAuthenticationUser:currentSession');
+    const id = getOptionalPersistentStorage()?.getItem(`${SOLID_CLIENT_AUTHN_KEY_PREFIX}currentSession`);
     if (!id) return undefined;
     const record = storage?.getItem(inruptStorageKey('insecure', `solidClientAuthenticationUser:${id}`));
     if (!record) return undefined;

@@ -15,6 +15,14 @@ function connectService(edition: 'local' | 'cloud', transport?: ProviderHttpTran
     // Pod access is not under test here; keep the production registration from
     // constructing an OwnerPodAccess that needs a live identity database.
     ownerPodAccess: asValue(undefined as unknown as ApiContainerCradle['ownerPodAccess']),
+    // providerConnectService derives its Pod base-URL resolver from `podLookupRepo` in the
+    // production composition (cloud.ts / local.ts register `new PodLookupRepository(db)`).
+    // Pod data is outside this suite's scope, so fill the dependency slot with an explicit empty
+    // lookup double instead of a live identity database; no test here resolves a Pod URL.
+    podLookupRepo: asValue({
+      findByWebId: async () => undefined,
+      findAllByWebId: async () => [],
+    } as unknown as ApiContainerCradle['podLookupRepo']),
   });
   return container.resolve('providerConnectService')!;
 }

@@ -18,6 +18,8 @@ describe('podAccessFailureResponse', () => {
     [ 'pod_interface_key_rejected:401', 403, 'service_access_missing' ],
     [ 'caller_dpop_replay_unsupported', 403, 'service_access_missing' ],
     [ 'service_access_missing', 403, 'service_access_missing' ],
+    [ 'Authoritative Pod storage binding ambiguous', 403, 'service_access_missing' ],
+    [ 'Authoritative Pod storage binding changed on cached context', 403, 'service_access_missing' ],
   ])('maps %s to %i %s', (message, status, error) => {
     expect(podAccessFailureResponse(new Error(message))).toEqual({ status, error });
   });

@@ -185,17 +185,19 @@ export function XpodSolidRuntimeProvider({
     (input, init) => withRequestPodAuthorization(
       authenticatedFetch,
       () => requestCredential.authorization(),
-      plainFetch,
+      runtime.transportFetch ?? plainFetch,
       window.location.origin,
+      runtime.resolveLocalUrl,
     )(input, init),
-    [authenticatedFetch, requestCredential],
+    [authenticatedFetch, requestCredential, runtime],
   );
   const authorizedSessionFetch = useCallback<typeof fetch>((input, init) => withRequestPodAuthorization(
     exposedFetch,
     () => requestCredential.authorization(),
-    plainFetch,
+    runtime.transportFetch ?? plainFetch,
     window.location.origin,
-  )(input, init), [exposedFetch, requestCredential]);
+    runtime.resolveLocalUrl,
+  )(input, init), [exposedFetch, requestCredential, runtime]);
   const exposedSession = useMemo(() => ({
     ...runtime.session,
     fetch: authorizedSessionFetch,

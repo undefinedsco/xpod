@@ -2,12 +2,18 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createOwnerCredentialFetch, prepareManagedLocalAcceptancePod } from '../../scripts/accept-live-gateway-login-chat';
+import { createOwnerCredentialFetch, prepareManagedLocalAcceptancePod, prepareManagedLocalAcceptancePods, parseKeyFile } from '../../scripts/accept-live-gateway-login-chat';
 import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
 import { createProvisionReceipt } from '../../src/provision/ProvisionReceiptCodec';
 import ts from 'typescript';
 
 describe('real running Xpod login-to-chat acceptance runner', () => {
+  it('shares the existing secret-file parser with the packaged desktop producer', () => {
+    const spec = parseKeyFile('provider=deepseek\napiKey=fixture-only\nexpectedModels=actual-model,other\nbaseUrl=https://api.example/v1\n');
+    expect(spec).toMatchObject({ id: 'deepseek', apiKey: 'fixture-only', expected: ['actual-model', 'other'], baseUrl: 'https://api.example/v1' });
+    expect(parseKeyFile('provider=unknown\napiKey=fixture-only')).toBeUndefined();
+    expect(parseKeyFile('provider=deepseek\napiKey=')).toBeUndefined();
+  });
   it('type-checks the real canary against the current client and Pod store contracts', () => {
     const entry = path.resolve('scripts/accept-live-gateway-login-chat.ts');
     const program = ts.createProgram([entry], {
@@ -267,6 +273,38 @@ describe('managed Local live acceptance provisioning protocol', () => {
       expect(calls[index].init?.credentials).toBe('include');
     }
     expect(new Headers(calls[1].init?.headers).get('authorization')).toBe('Bearer fixture-local-callback');
+  });
+
+  it('prepares one authoritative Cloud identity and verifies two independent Local bindings to it', async () => {
+    const secondPodUrl = `${canonicalBaseUrl}bob/`;
+    const secondReceipt = createProvisionReceipt({ secret: 'fixture-private-receipt-key',
+      podName: 'bob', webId, podUrl: secondPodUrl });
+    const { calls, fetchImpl } = protocol([
+      { webId, webIdLink: 'link-1' }, { webId, podUrl, provisionReceipt: receipt },
+      { webId, pod: podUrl, podResource: `${controls.account.pod}pod-1/`,
+        webIdResource: `${baseUrl}.account/account/account-1/webid/link-1/` },
+      { bindings: [{ webId, storageUrl: podUrl }] },
+      { webId, podUrl: secondPodUrl, provisionReceipt: secondReceipt },
+      { webId, pod: secondPodUrl, podResource: `${controls.account.pod}pod-2/`,
+        webIdResource: `${baseUrl}.account/account/account-1/webid/link-1/` },
+      { bindings: [{ webId, storageUrl: podUrl }, { webId, storageUrl: secondPodUrl }] },
+    ]);
+    await expect(prepareManagedLocalAcceptancePods({ ...options, usernames: ['alice', 'bob'], fetchImpl }))
+      .resolves.toEqual([{ webId, storageUrl: podUrl }, { webId, storageUrl: secondPodUrl }]);
+    expect(calls.filter(call => call.url === controls.account.profile)).toHaveLength(1);
+    expect(calls.filter(call => call.url === `${localBaseUrl}provision/pods`)
+      .map(call => JSON.parse(call.init?.body as string))).toEqual([
+      { podName: 'alice', webId }, { podName: 'bob', webId },
+    ]);
+    expect(JSON.parse(calls[5].init?.body as string).settings.provisionReceipt).toBe(secondReceipt);
+  });
+
+  it('refuses an empty or repeated Pod selection before creating an account identity', async () => {
+    for (const usernames of [[], ['alice', 'alice']]) {
+      const fetchImpl = vi.fn();
+      await expect(prepareManagedLocalAcceptancePods({ ...options, usernames, fetchImpl })).rejects.toThrow();
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
   });
 
   const finalized = { webId, pod: podUrl, podResource: `${controls.account.pod}pod-1/`,

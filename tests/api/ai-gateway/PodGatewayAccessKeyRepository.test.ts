@@ -20,6 +20,7 @@ import {
   type GatewayAccessKeyRecord,
   type GatewayAccessKeyRepository,
 } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { createOwnerPodBaseUrlResolver } from '../../../src/api/ai-gateway/pod/PodBaseUrlResolver';
 import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
 import type {
   PodInterfaceCredential,
@@ -271,6 +272,32 @@ describe('PodGatewayAccessKeyRepository', () => {
     expect(input.credentialListResource).toBe(credentialResource);
   });
 
+  it('uses the same selected registered Pod for authentication, ORM access, and capability intersection', async () => {
+    const podUrl = 'https://local.example/storage/alice/';
+    const aliasUrl = 'https://local.example/alice/';
+    const getPodFetch = vi.fn(async () => fetch);
+    const dbFactory = vi.fn(async () => fakeDb(emptyState()));
+    const repository = new PodGatewayAccessKeyRepository({
+      locatorCodec: new AesGatewayKeyLocatorCodec(LOCATOR_SECRET), podAccess: { getPodFetch }, dbFactory,
+      podBaseUrlResolver: createOwnerPodBaseUrlResolver({
+        findByWebId: vi.fn(),
+        findAllByWebId: vi.fn(async webId => webId === OWNER ? [
+          { podId: 'cloud', accountId: 'alice', webId: OWNER, baseUrl: CLOUD_POD },
+          { podId: 'local', accountId: 'alice', webId: OWNER, baseUrl: aliasUrl, storageUrl: podUrl },
+        ] : []),
+      }, 'unique'),
+    });
+    const auth: AuthContext = { type: 'solid', webId: OWNER, tokenType: 'DPoP', requestedPodUrl: aliasUrl, authorizedPodUrl: podUrl };
+    await expect(repository.listByOwner(OWNER, { auth })).resolves.toEqual([]);
+    expect(getPodFetch).toHaveBeenCalledWith(OWNER, { auth, podBaseUrl: podUrl });
+    expect(dbFactory).toHaveBeenCalledWith(expect.objectContaining({ owner: OWNER, auth, podUrl }));
+    getPodFetch.mockClear(); dbFactory.mockClear();
+    await expect(repository.listByOwner(OWNER, { auth: { ...auth, requestedPodUrl: CLOUD_POD } }))
+      .rejects.toThrow('service_access_missing');
+    expect(getPodFetch).not.toHaveBeenCalled();
+    expect(dbFactory).not.toHaveBeenCalled();
+  });
+
   it('does not fall back to replaying a DPoP proof when no Pod interface key is available', async () => {
     const owner = OWNER;
     const dpopAuth: AuthContext = {
@@ -350,10 +377,14 @@ describe('PodGatewayAccessKeyRepository', () => {
       });
 
       await expect(repository.listByOwner(OWNER, { auth })).rejects.toThrow(expectedError);
-      expect(getPodFetch).toHaveBeenCalledWith(
-        OWNER,
-        auth ? { auth, podBaseUrl: CLOUD_POD } : { podBaseUrl: CLOUD_POD },
-      );
+      if (auth?.type === 'solid' && auth.webId !== OWNER) {
+        expect(getPodFetch).not.toHaveBeenCalled();
+      } else {
+        expect(getPodFetch).toHaveBeenCalledWith(
+          OWNER,
+          auth ? { auth, podBaseUrl: CLOUD_POD } : { podBaseUrl: CLOUD_POD },
+        );
+      }
       expect(upstream).not.toHaveBeenCalled();
       expect(dbFactory).not.toHaveBeenCalled();
     },

@@ -234,6 +234,7 @@ function registerSharedRoutes(
   });
   registerAiGatewayManagementRoutes(server, {
     deployment: config.edition,
+    podBaseUrlResolver: container.resolve('aiConnectionsPodBaseUrlResolver'),
     connectService: providerConnectService,
     quotaService: providerQuotaService,
     modelsService: providerModelsService,

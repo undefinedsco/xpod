@@ -32,6 +32,33 @@ export interface StoredGatewayCredential extends GatewayCredentialCandidate {
   secretPayload?: string;
   version?: number;
   runtimeCredential?: ProviderRuntimeCredential;
+  /**
+   * Stored session expiry. Lets the gateway ask the credential lifecycle to renew an expired
+   * OAuth session before it is used, without an extra read of the credential row.
+   */
+  expiresAt?: Date;
+}
+
+/**
+ * Why the runtime asked for a renewal. `expired` is the proactive path (the stored session is
+ * already past its expiry); `authentication_failed` is the reactive path (upstream just rejected
+ * a credential the store still considered usable).
+ */
+export type GatewayCredentialRenewalReason = 'expired' | 'authentication_failed';
+
+export interface GatewayCredentialRenewalRequest {
+  webId: string;
+  deployment: string;
+  provider: string;
+  credentialId: string;
+  credentialIri: string;
+  /**
+   * Version the caller observed. A different row version means a concurrent caller already
+   * renewed the credential, so the caller can retry with the freshly stored secret.
+   */
+  observedVersion?: number;
+  reason: GatewayCredentialRenewalReason;
+  auth?: AuthContext;
 }
 
 export interface GatewayCredentialStore {
@@ -50,6 +77,13 @@ export interface GatewayCredentialStore {
     encryptedSecret: EncryptedCredentialSecret;
     auth?: AuthContext;
   }): Promise<boolean>;
+  /**
+   * Shared credential lifecycle hook. Renews the stored OAuth session (re-reading the declared
+   * local session source or refreshing the stored refresh token) and reports whether the caller
+   * may retry with the credential that is now stored. Absent or false leaves the existing
+   * failure/failover behaviour untouched.
+   */
+  renewCredential?(input: GatewayCredentialRenewalRequest): Promise<boolean>;
 }
 
 export interface GatewayCredentialHealthRecord {
@@ -351,12 +385,24 @@ export class AiGatewayService {
     let route = input.route;
     let firstClientEventEmitted = false;
     const attempted = new Set<string>();
+    // A single request may renew a given credential at most once, so a credential the provider
+    // keeps rejecting cannot turn into a refresh loop.
+    const renewalAttempted = new Set<string>();
 
     for (;;) {
+      // A request that is already cancelled must not start a renewal or another upstream attempt.
+      if (input.signal?.aborted) throw abortError();
       attempted.add(route.credential.id);
-      const credential = route.credential as StoredGatewayCredential;
+      let credential = route.credential as StoredGatewayCredential;
       try {
         let finalUsage: GatewayUsage | undefined;
+        if (await this.renewCredentialIfExpired(input.principal, credential, input.auth, renewalAttempted)) {
+          // The stored secret was replaced; reload the same row so the provider call below opens the
+          // renewed token instead of the stale route snapshot.
+          route = await this.applyRenewedCredential(input.principal, input.auth, route, credential);
+          credential = route.credential as StoredGatewayCredential;
+        }
+        if (input.signal?.aborted) throw abortError();
         const apiKey = await this.openApiKey(input.principal, route, credential, input.auth);
         const adapter = this.runtimes.get(route.provider.id);
         const upstream = adapter.execute({
@@ -382,6 +428,28 @@ export class AiGatewayService {
         await this.recordUsage(input.principal.webId, input.auth, route, finalUsage);
         return;
       } catch (error) {
+        // A cancelled request must not renew, record health, or issue another provider request.
+        if (input.signal?.aborted) throw abortError();
+        // Renew before recording health: a recoverable rejection must not be recorded as a
+        // credential failure that disables the session.
+        const renewed = !firstClientEventEmitted
+          && isCredentialAuthenticationFailure(error)
+          && await this.tryRenewCredential(
+            input.principal,
+            credential,
+            input.auth,
+            'authentication_failed',
+            renewalAttempted,
+          );
+        if (renewed) {
+          const fresh = await this.reloadCredential(input.principal, input.auth, credential);
+          // Only retry once the renewed row is observable; retrying with the stale secret would
+          // repeat the exact request the provider just rejected.
+          if (fresh) {
+            route = { ...route, credential: fresh };
+            continue;
+          }
+        }
         await this.recordRouteFailure(input.principal.webId, route, error, input.auth);
         if (!firstClientEventEmitted && this.router.canFailOver(route) && isCredentialFailoverError(error)) {
           const nextRoute = await this.findFailoverRoute(input.principal.webId, input.auth, input.request, route, attempted);
@@ -445,6 +513,109 @@ export class AiGatewayService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Asks the shared credential lifecycle for a usable session whenever the stored one is already
+   * past its expiry. Non-OAuth credentials and stores without a lifecycle hook are left alone.
+   */
+  private async renewCredentialIfExpired(
+    principal: { webId: string },
+    credential: StoredGatewayCredential,
+    auth: AuthContext,
+    renewalAttempted: Set<string>,
+  ): Promise<boolean> {
+    const expiresAt = credential.expiresAt?.getTime();
+    if (expiresAt === undefined || expiresAt > this.now().getTime()) {
+      return false;
+    }
+    return this.tryRenewCredential(principal, credential, auth, 'expired', renewalAttempted);
+  }
+
+  /**
+   * Renews at most once per credential per request; returns whether a retry may proceed. A typed
+   * reauthorization requirement is rethrown so the caller surfaces it instead of issuing another
+   * provider request with a session that is already known to be invalid.
+   */
+  private async tryRenewCredential(
+    principal: { webId: string },
+    credential: StoredGatewayCredential,
+    auth: AuthContext,
+    reason: GatewayCredentialRenewalReason,
+    renewalAttempted: Set<string>,
+  ): Promise<boolean> {
+    const renew = this.credentials.renewCredential;
+    if (!renew || credential.authMode !== 'deviceCodeOAuth' || renewalAttempted.has(credential.id)) {
+      return false;
+    }
+    renewalAttempted.add(credential.id);
+    try {
+      return await renew.call(this.credentials, {
+        webId: principal.webId,
+        deployment: this.deployment,
+        provider: credential.provider,
+        credentialId: credential.id,
+        credentialIri: credential.credentialIri,
+        observedVersion: credential.version,
+        reason,
+        auth,
+      });
+    } catch (error) {
+      if (isReauthRequiredError(error)) throw error;
+      // Log a typed safe code only: a raw error message could carry upstream token/response text.
+      this.logger.warn(
+        `Credential renewal failed for provider ${credential.provider}: ${renewalFailureCode(error)}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Re-reads the renewed row so the next attempt uses the new secret and its version. The reload
+   * must land on the same credential identity and the row must still be currently eligible: a
+   * concurrent disable, revoke or reauth between the lifecycle write and this read must not hand a
+   * revoked session back to the provider. Returns undefined when the credential is no longer usable.
+   */
+  private async reloadCredential(
+    principal: { webId: string },
+    auth: AuthContext,
+    expected: Pick<StoredGatewayCredential, 'id' | 'provider' | 'credentialIri'>,
+  ): Promise<StoredGatewayCredential | undefined> {
+    try {
+      const credentials = await this.credentials.listCredentials({
+        webId: principal.webId,
+        deployment: this.deployment,
+        auth,
+      });
+      const candidate = credentials.find((row) =>
+        row.id === expected.id
+        && row.credentialIri === expected.credentialIri
+        && normalizeProviderId(row.provider) === normalizeProviderId(expected.provider));
+      return candidate && this.router.isCredentialEligible(candidate) ? candidate : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Swaps the reloaded row into the route. Throws when the renewed row cannot be observed, because
+   * retrying with the stale secret would repeat the request the provider just rejected.
+   */
+  private async applyRenewedCredential(
+    principal: { webId: string },
+    auth: AuthContext,
+    route: ModelRouteResult,
+    credential: StoredGatewayCredential,
+  ): Promise<ModelRouteResult> {
+    const fresh = await this.reloadCredential(principal, auth, credential);
+    if (!fresh) {
+      throw new GatewayProtocolError('Renewed credential could not be reloaded', {
+        code: 'credential_unavailable',
+        status: 401,
+        details: { credentialId: credential.id },
+      });
+    }
+    return { ...route, credential: fresh };
   }
 
   private async openApiKey(
@@ -591,12 +762,13 @@ export class AiGatewayService {
     };
   }
 
-  private async recordRouteFailure(webId: string, route: ModelRouteResult, error: unknown, auth: AuthContext): Promise<void> {
-    const status = typeof (error as { status?: unknown })?.status === 'number'
-      ? (error as { status: number }).status
-      : error instanceof GatewayProtocolError
-        ? error.status
-        : undefined;
+  private async recordRouteFailure(
+    webId: string,
+    route: ModelRouteResult,
+    error: unknown,
+    auth: AuthContext,
+  ): Promise<void> {
+    const status = providerFailureStatus(error);
     const occurredAt = this.now();
     const normalized = normalizeGatewayError(error);
     const failureCode = stringMetadata(normalized.error.details, 'classification') ?? classifyProviderStatus(status ?? 502);
@@ -787,6 +959,44 @@ function healthRecord(webId: string, deployment: string, route: ModelRouteResult
     credentialIri: route.credential.credentialIri,
     expectedVersion: (route.credential as StoredGatewayCredential).version,
   };
+}
+
+/** Upstream status carried by a provider failure, if any. */
+function providerFailureStatus(error: unknown): number | undefined {
+  if (typeof (error as { status?: unknown })?.status === 'number') {
+    return (error as { status: number }).status;
+  }
+  return error instanceof GatewayProtocolError ? error.status : undefined;
+}
+
+/** A cancelled request stops the failover loop without touching credential health. */
+function abortError(): Error {
+  const error = new Error('Request aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
+/** A typed reauthorization requirement that must reach the caller instead of being swallowed. */
+function isReauthRequiredError(error: unknown): boolean {
+  return error instanceof GatewayProtocolError
+    && error.details?.reauthRequired === true;
+}
+
+/** Safe, non-secret renewal failure code for logs. */
+function renewalFailureCode(error: unknown): string {
+  return error instanceof GatewayProtocolError ? error.code : 'renewal_failed';
+}
+
+/** True when the failure is an upstream authentication rejection that a renewal could recover. */
+function isCredentialAuthenticationFailure(error: unknown): boolean {
+  const status = providerFailureStatus(error);
+  if (status === undefined) {
+    return false;
+  }
+  const classification = error instanceof GatewayProtocolError
+    ? stringMetadata(error.details, 'classification')
+    : undefined;
+  return (classification ?? classifyProviderStatus(status)) === 'authentication';
 }
 
 function isCredentialFailoverError(error: unknown): boolean {

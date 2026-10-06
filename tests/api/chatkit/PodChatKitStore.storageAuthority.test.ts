@@ -52,7 +52,7 @@ describe('ChatKit authoritative Pod storage', () => {
   it('fails before data access when no owned storage binding is available', async () => {
     const request = transport();
     const { store } = wiredStore([], request);
-    await expect(store.saveThread(thread(), context())).rejects.toThrow(/storage.*unavailable/i);
+    await expect(store.saveThread(thread(), context())).rejects.toThrow('service_access_missing');
     expect(request).not.toHaveBeenCalled();
   });
 
@@ -108,6 +108,46 @@ describe('ChatKit authoritative Pod storage', () => {
     const store = new PodChatKitStore({});
     await store.saveThread(thread(), { ...context(), _cachedDb: db } as StoreContext);
     expect(request.mock.calls.every(([input]) => String(input).startsWith(STORAGE))).toBe(true);
+  });
+
+  it('isolates equal resource ids in two selected Pods and reuses only the same Pod database', async () => {
+    const otherRoot = 'https://other.example/alice/';
+    const request = transport();
+    const { store } = wiredStore([STORAGE, otherRoot], request);
+    const selected = (root: string): StoreContext => ({ ...context(), auth: { type: 'solid', webId: WEB_ID, requestedPodUrl: root } });
+    const first = selected(STORAGE); const second = selected(otherRoot);
+    await store.saveThread(thread(), first);
+    const firstDb = (first as { _cachedDb?: unknown })._cachedDb;
+    await store.saveThread(thread(), first);
+    expect((first as { _cachedDb?: unknown })._cachedDb).toBe(firstDb);
+    await store.saveThread(thread(), second);
+    expect((second as { _cachedDb?: unknown })._cachedDb).not.toBe(firstDb);
+    const writes = request.mock.calls.filter(([, init]) => ['PUT', 'PATCH'].includes(init?.method ?? 'GET')).map(([input]) => String(input));
+    expect(writes).toContain(`${STORAGE}.data/task/task_1/index.ttl`);
+    expect(writes).toContain(`${otherRoot}.data/task/task_1/index.ttl`);
+  });
+
+  it('refuses an existing Pod-scoped grant selecting another owned Pod before any access', async () => {
+    const request = transport();
+    const { store } = wiredStore([STORAGE, 'https://other.example/alice/'], request);
+    await expect(store.saveThread(thread(), { ...context(), podUrl: STORAGE,
+      auth: { type: 'solid', webId: WEB_ID, authorizedPodUrl: STORAGE, requestedPodUrl: 'https://other.example/alice/' },
+    } as StoreContext)).rejects.toThrow();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('cannot resume or write the old Run after the request context selects another Pod', async () => {
+    const request = transport();
+    const { store } = wiredStore([STORAGE, 'https://other.example/alice/'], request);
+    const boundContext: StoreContext = { ...context(), auth: { type: 'solid', webId: WEB_ID, requestedPodUrl: STORAGE } };
+    await store.saveThread(thread(), boundContext);
+    request.mockClear();
+    boundContext.auth = { type: 'solid', webId: WEB_ID, requestedPodUrl: 'https://other.example/alice/' };
+    await expect(store.loadRun('task/task_1/2026/10/05/runs.ttl#run_1', boundContext)).rejects.toThrow(/binding.*changed/i);
+    await expect(store.saveRun({ id: 'task/task_1/2026/10/05/runs.ttl#run_1', thread: THREAD_ID,
+      status: 'running', workspace: `${STORAGE}work/`, runner: 'pi:pi', createdAt: 1, updatedAt: 2 }, boundContext))
+      .rejects.toThrow(/binding.*changed/i);
+    expect(request).not.toHaveBeenCalled();
   });
 
   it('forwards the task credential binding to Pod access and binds it to the cached database', async () => {

@@ -71,6 +71,51 @@ async function writePackageFixture(root: string, version = '3.1.1'): Promise<voi
   );
 }
 
+async function writeUnpatchedCoreFixture(root: string): Promise<void> {
+  // `patchInstalledPackage` patches the pinned core transport surface too. The host
+  // install is already patched, so the fixture must materialize an unpatched core so
+  // the count reflects a real clean install instead of the local machine state.
+  const core = path.join(root, 'node_modules/@inrupt/solid-client-authn-core');
+  await mkdir(path.join(core, 'src/authenticatedFetch'), { recursive: true });
+  await mkdir(path.join(core, 'dist/authenticatedFetch'), { recursive: true });
+  await writeFile(path.join(core, 'package.json'), JSON.stringify({ version: '3.1.1' }));
+  await writeFile(path.join(core, 'src/authenticatedFetch/dpopUtils.ts'), [
+    'import { SignJWT, generateKeyPair, exportJWK } from "jose";\n',
+    'export async function createDpopHeader(\n',
+    '  audience: string,\n',
+    '  method: string,\n',
+    '  dpopKey: KeyPair,\n',
+    '): Promise<string> {\n',
+    '  return new SignJWT({\n',
+    '    jti: v4(),\n',
+    '  });\n',
+    '}\n',
+  ].join(''));
+  await writeFile(path.join(core, 'src/authenticatedFetch/fetchFactory.ts'), [
+    '    await createDpopHeader(targetUrl, defaultOptions?.method ?? "get", dpopKey),\n',
+  ].join(''));
+  await writeFile(path.join(core, 'dist/authenticatedFetch/dpopUtils.d.ts'), [
+    'export declare function createDpopHeader(audience: string, method: string, dpopKey: KeyPair): Promise<string>;\n',
+  ].join(''));
+  await writeFile(path.join(core, 'dist/index.js'), [
+    'async function createDpopHeader(audience, method, dpopKey) {\n',
+    '    return new SignJWT({\n',
+    '        jti: uuid.v4(),\n',
+    '    });\n',
+    '}\n',
+    '    headers.set("DPoP", await createDpopHeader(targetUrl, defaultOptions?.method ?? "get", dpopKey));\n',
+  ].join(''));
+  await writeFile(path.join(core, 'dist/index.mjs'), [
+    "import { jwtVerify, exportJWK, SignJWT, generateKeyPair } from 'jose';\n",
+    'async function createDpopHeader(audience, method, dpopKey) {\n',
+    '    return new SignJWT({\n',
+    '        jti: v4(),\n',
+    '    });\n',
+    '}\n',
+    '    headers.set("DPoP", await createDpopHeader(targetUrl, defaultOptions?.method ?? "get", dpopKey));\n',
+  ].join(''));
+}
+
 async function linkRuntimeDependencies(root: string): Promise<void> {
   await mkdir(path.join(root, 'node_modules/@inrupt'), { recursive: true });
   await symlink(coreRoot, path.join(root, 'node_modules/@inrupt/solid-client-authn-core'));
@@ -152,9 +197,13 @@ describe('Inrupt browser auth transport patch', () => {
   it('applies only to the pinned browser package version and is idempotent', async () => {
     const root = await makeTempRoot();
     await writePackageFixture(root);
+    // `patchInstalledPackage` also patches the pinned core transport surface, so the
+    // fixture must expose an unpatched core to mirror a real clean install.
+    await writeUnpatchedCoreFixture(root);
 
-    expect(patchInstalledPackage(root)).toEqual({ patched: 8, alreadyPatched: 0 });
-    expect(patchInstalledPackage(root)).toEqual({ patched: 0, alreadyPatched: 8 });
+    // 8 browser targets + 5 pinned core transport targets.
+    expect(patchInstalledPackage(root)).toEqual({ patched: 13, alreadyPatched: 0 });
+    expect(patchInstalledPackage(root)).toEqual({ patched: 0, alreadyPatched: 13 });
 
     const packageRoot = path.join(root, 'node_modules/@inrupt/solid-client-authn-browser');
     await writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({ version: '3.1.2' }));

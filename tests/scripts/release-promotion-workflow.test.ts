@@ -67,7 +67,11 @@ describe('stable release promotion workflow', () => {
     const publish = workflow.jobs.create_github_release;
     const artifactName = 'xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}';
 
-    const upload = build.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
+    // The desktop job also uploads allowlisted acceptance evidence; bind the assertion
+    // to the packaged payload artifact that the release job downloads.
+    const upload = build.steps.find(
+      (step: any) => step.uses === 'actions/upload-artifact@v4' && step.with?.name === artifactName,
+    );
     expect(upload?.with?.name).toBe(artifactName);
     expect(upload?.with?.path).toContain('desktop/release/*.dmg');
     expect(upload?.with?.path).toContain('desktop/release/*.zip');

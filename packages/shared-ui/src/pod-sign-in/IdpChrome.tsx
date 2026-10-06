@@ -14,18 +14,18 @@ export interface IdpChromeProps {
   locale?: PodSignInLocale
 }
 
-/** 44px tinted bar at the top of every sign-in-service page (B group). */
+/** Service identity stays readable above the form, even on a narrow host. */
 export function IdpChrome({ serviceName, serviceHost, icon, serviceLabel, locale }: IdpChromeProps) {
   const label = serviceLabel ?? resolvePodSignInCopy(locale).serviceLabel
   return (
     <div
       data-pod-sign-in="idp-chrome"
-      className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-[hsl(var(--sunken))] px-4 text-[13px] text-foreground"
+      className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border bg-[hsl(var(--sunken))] px-6 py-2 text-[13px] text-foreground min-[400px]:px-8"
     >
       <span className="flex shrink-0 items-center justify-center">
         {icon ?? <XpodMark size={24} />}
       </span>
-      <span className="min-w-0 truncate font-medium">{serviceName} · {label}</span>
+      <span className="min-w-0 max-w-[50%] shrink-0 truncate font-medium">{serviceName} · {label}</span>
       {serviceHost ? <span className="ml-auto truncate font-mono text-xs text-muted-foreground">{serviceHost}</span> : null}
     </div>
   )

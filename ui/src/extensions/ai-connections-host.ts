@@ -32,7 +32,7 @@ const aiConnectionApplet = discoveredAiConnectionsApplet;
 
 export function createXpodAiConnectionsHost(
   runtime: XpodSolidRuntimeValue,
-  account?: Pick<AuthContextType, 'controls' | 'idpIndex' | 'bindAccountCapability'> | null,
+  account?: Pick<AuthContextType, 'controls' | 'idpIndex' | 'bindAccountCapability' | 'accountFetch'> | null,
 ): WebExtensionHost<SolidDatabase> {
   const loginController = createXpodLoginController({ runtime });
   const clientConfigurationPodUrl = runtime.currentPod?.podUrl
@@ -107,7 +107,7 @@ export function createXpodAiConnectionsHost(
           collection: account.controls.account.clientCredentials,
           assertCurrent: account.bindAccountCapability(),
           accountIndex: account.idpIndex,
-          fetch: invocationFetch,
+          fetch: account.accountFetch ?? invocationFetch,
         })
         : undefined,
       aiConnectionsPodStore: runtime.currentPod

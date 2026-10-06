@@ -1,3 +1,4 @@
+import { resolveOwnerPodBaseUrl, type PodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
 import type { ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
@@ -45,6 +46,8 @@ const logger = getLoggerFor('AiGatewayManagementHandler');
 
 export interface AiGatewayManagementHandlerOptions {
   deployment: GatewayDeployment;
+  /** The storage adapter verifies ownership and an optional current-Pod selection. */
+  podBaseUrlResolver?: PodBaseUrlResolver;
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
   modelsService?: ProviderModelsService;
@@ -92,17 +95,31 @@ export function registerAiGatewayManagementRoutes(
           logger.warn('Local AI Connection service identity is unavailable; using the authenticated WebID for this interactive request');
         }
       }
+      const selectedPod = request.headers['x-xpod-pod-url'];
+      if (Array.isArray(selectedPod)) {
+        throw new GatewayProtocolError('Provide exactly one X-Xpod-Pod-Url', { status: 400 });
+      }
+      if (!options.podBaseUrlResolver) throw new Error('Pod storage binding resolver is unavailable');
+      const podBaseUrl = await resolveOwnerPodBaseUrl(request.auth.webId, options.podBaseUrlResolver, {
+        ...request.auth,
+        ...(selectedPod ? { requestedPodUrl: selectedPod } : {}),
+      });
+      if (!podBaseUrl) {
+        throw new GatewayProtocolError('No owned Pod storage binding is available', { status: 404, code: 'service_access_missing' });
+      }
       const descriptor = createAiConnectionsServiceAccess({
         ownerWebId: request.auth.webId,
         serviceWebId: service.webId,
+        podBaseUrl,
       });
+      const boundAuth = { ...request.auth, authorizedPodUrl: podBaseUrl };
       const invocation = options.aiConnectionInvocationKeyIssuer
-        ? await options.aiConnectionInvocationKeyIssuer.issue({ auth: request.auth })
+        ? await options.aiConnectionInvocationKeyIssuer.issue({ auth: boundAuth })
         : undefined;
       const aiClientConfiguration = await withAiClientConfigurationInvocation(
         options.aiClientConfiguration ?? unavailableAiClientConfigurationCapability(),
         options.aiConnectionInvocationKeyIssuer,
-        request.auth,
+        boundAuth,
       );
       logger.debug(`Issuing AI Connection service access for ${request.auth.webId}; invocation=${Boolean(invocation)}`);
       sendJson(response, 200, {

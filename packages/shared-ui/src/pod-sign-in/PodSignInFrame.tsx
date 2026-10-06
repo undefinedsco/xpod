@@ -11,7 +11,7 @@ export interface PodSignInFrameProps {
    * service name.
    */
   appIntro?: ReactNode
-  /** The 360px wide body. */
+  /** A responsive body, up to 480px wide. */
   children: ReactNode
   /**
    * `dialog` only. `true` (default) draws a modal layer over the document;
@@ -114,12 +114,12 @@ function useModalFocus(active: boolean, onClose?: () => void) {
   return ref
 }
 
-const bodyClass = 'flex min-h-0 w-full max-w-[360px] flex-1 flex-col'
+const bodyClass = 'flex min-h-0 w-full max-w-[480px] flex-1 flex-col'
 
 /**
  * Outer frame of every sign-in surface. `window` fills the host window,
- * `dialog` is a 400px layer, `page` is two columns. All three share the same
- * 360px body, so a state looks the same wherever the host places it.
+ * `dialog` is a 480px layer, `page` is two columns. All three share the same
+ * responsive body, so narrower hosts keep the same controls and hierarchy.
  */
 export function PodSignInFrame({
   presentation,
@@ -167,7 +167,7 @@ export function PodSignInFrame({
           </aside>
         ) : null}
         <div className={cn('flex min-w-0 items-center justify-center px-4 py-8', intro ? '' : 'md:col-span-2')}>
-          <div className={bodyClass}>{children}</div>
+          <div className={cn(bodyClass, 'min-h-[520px]')}>{children}</div>
         </div>
       </div>
     )
@@ -183,7 +183,7 @@ export function PodSignInFrame({
       data-pod-sign-in-frame="dialog"
       {...dataAttributes}
       className={cn(
-        'pod-sign-in relative flex max-h-[90dvh] w-[min(400px,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-lg focus:outline-none motion-safe:animate-in motion-safe:fade-in-0',
+        'pod-sign-in relative flex min-h-[min(440px,90dvh)] max-h-[90dvh] w-[min(480px,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-lg focus:outline-none motion-safe:animate-in motion-safe:fade-in-0',
       )}
     >
       {isModal && onClose && closeLabel ? (

@@ -154,13 +154,17 @@ test('Account registration expands into a full document frame', () => {
   expect(setWindowMode).toHaveBeenLastCalledWith('workspace');
 });
 
-test('CSS consent documents use Account window geometry', () => {
+test('the consent surface derives its frame from the host: native Account window in the desktop shell', () => {
   const setWindowMode = vi.fn();
   vi.stubGlobal('xpodDesktop', { setWindowMode });
-  render(<XpodAccountPageSurface title="授权" presentation="standard"><p>Consent</p></XpodAccountPageSurface>);
-  expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('page');
-  expect(screen.queryByTestId('web-account-introduction')).toBeTruthy();
-  expect(setWindowMode).toHaveBeenLastCalledWith('workspace');
+  // ConsentPage passes the host-derived presentation (§4/§11.1/§13.11).
+  render(<XpodAccountPageSurface title="授权" presentation="compact"><p>Consent</p></XpodAccountPageSurface>);
+  const panel = screen.getByTestId('web-account-panel');
+  expect(panel.getAttribute('data-web-account-layout')).toBe('window');
+  expect(panel.getAttribute('data-web-account-host')).toBe('window');
+  expect(screen.queryByTestId('web-account-introduction')).toBeNull();
+  expect(screen.getByRole('region', { name: '授权' }).getAttribute('data-pod-sign-in-frame')).toBe('window');
+  expect(setWindowMode).toHaveBeenLastCalledWith('account');
 });
 
 test('a browser page frame shows the account-service introduction the host supplies', () => {

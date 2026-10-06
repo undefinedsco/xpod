@@ -14,6 +14,7 @@ vi.mock('inngest/node', () => ({
 }));
 
 import { registerRoutes, resolveLocalStorageProviderBaseUrl } from '../../src/api/container/routes';
+import { createOwnerPodBaseUrlResolver } from '../../src/api/ai-gateway/pod/PodBaseUrlResolver';
 import type { ApiContainerConfig } from '../../src/api/container/types';
 import type { ApiServer } from '../../src/api/ApiServer';
 import { serve } from 'inngest/node';
@@ -189,6 +190,13 @@ describe('registerRoutes mode wiring', () => {
       serverGroupReconcilerService: { getQueue: () => ({}) },
       ...overrides.services,
     };
+
+    // AI gateway management routes resolve the verified-binding Pod base URL resolver at
+    // registration time; mirror the real container wiring (unique-owner selection).
+    services.aiConnectionsPodBaseUrlResolver = createOwnerPodBaseUrlResolver(
+      services.podLookupRepo as Parameters<typeof createOwnerPodBaseUrlResolver>[0],
+      'unique',
+    );
 
     return {
       resolve(name: string, options?: { allowUnregistered?: boolean }) {

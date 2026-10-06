@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,9 @@ const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const script = path.resolve(testDirectory, '../../scripts/check-dependency-state.ts');
 const fixtures: string[] = [];
 const testRoot = path.resolve(testDirectory, '../../.test-data/dependency-state-checker');
+// The postinstall transport patch also validates the installed core package, so a
+// fixture that declares that postinstall must expose the same installed core link.
+const inruptCore = path.resolve(testDirectory, '../../node_modules/@inrupt/solid-client-authn-core');
 const original = Array.from({ length: 6 }, (_, index) => `declare Alias${index} {\ncreatedAt: optional;\n}`).join('\n') + '\n';
 const patch = '--- a/types.d.ts\n+++ b/types.d.ts\n' + Array.from({ length: 6 }, (_, index) =>
   `@@ -${index * 3 + 2},2 +${index * 3 + 2},2 @@\n-createdAt: required;\n+createdAt: optional;\n }\n`).join('');
@@ -126,6 +129,8 @@ test.each([
   const manifest = JSON.parse(readFileSync(path.join(f.root, 'package.json'), 'utf8'));
   manifest.scripts = { postinstall: 'bun scripts/patch-inrupt-authn-transport.js' };
   writeFileSync(path.join(f.root, 'package.json'), JSON.stringify(manifest));
+  mkdirSync(path.join(f.root, 'node_modules/@inrupt'), { recursive: true });
+  symlinkSync(inruptCore, path.join(f.root, 'node_modules/@inrupt/solid-client-authn-core'));
   const relative = 'node_modules/@inrupt/solid-client-authn-browser';
   for (const entry of ['package.json', ...transportFiles]) {
     const target = path.join(f.root, relative, entry);

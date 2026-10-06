@@ -55,7 +55,10 @@ describe('AI Connection management client', () => {
       { id: 'unattributed-model' },
     ])
     expect(authenticatedFetch).toHaveBeenCalledWith('https://pod.example/v1/models', expect.objectContaining({
-      method: 'GET', credentials: 'omit', mode: 'cors', headers: { accept: 'application/json' },
+      method: 'GET', credentials: 'omit', mode: 'cors',
+      // The selected Pod binding travels with every gateway request so multi-Pod owners
+      // select an exact repository-verified storage root (the API base keeps only the origin).
+      headers: { accept: 'application/json', 'X-Xpod-Pod-Url': POD_BASE },
     }))
     await expect(client.listModels()).resolves.toEqual([{ id: 'deepseek-v4-pro', provider: 'deepseek' }])
     await expect(client.listGatewayModels!()).resolves.toEqual([{ id: 'deepseek-v4-pro', provider: 'deepseek' }])

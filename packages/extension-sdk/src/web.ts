@@ -236,7 +236,7 @@ export interface SolidAgentAccess {
 export interface SolidServiceAccessResource {
   id: string;
   url: string;
-  mediaType: 'text/turtle';
+  mediaType: 'text/turtle' | 'application/json';
   access: SolidAgentAccess;
 }
 

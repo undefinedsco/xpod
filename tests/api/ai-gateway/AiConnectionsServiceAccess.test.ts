@@ -82,6 +82,18 @@ describe('createAiConnectionsServiceAccess', () => {
     )).toBe(true);
   });
 
+  it('accepts the entire server descriptor including the JSON credential sidecar', () => {
+    const podBaseUrl = 'https://storage.example/managed/alice/';
+    const descriptor = createAiConnectionsServiceAccess({
+      ownerWebId: 'https://identity.example/alice/profile/card#me',
+      serviceWebId: 'https://identity.example/xpod/profile/card#me',
+      podBaseUrl,
+    });
+
+    expect(parseAiConnectionsServiceAccess(descriptor, podBaseUrl).resources)
+      .toEqual(descriptor.resources);
+  });
+
   it('projects the granted provider documents from the shared catalogue for both consumers', () => {
     const catalogOfferings = (provider: string) =>
       provider === 'custom'

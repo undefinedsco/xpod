@@ -4,9 +4,18 @@ import type { SolidAuthSession } from '@undefineds.co/drizzle-solid';
 import { acceptLiveTaskApproval } from '../../scripts/helpers/live-task-approval';
 
 const mocks = vi.hoisted(() => ({ select: vi.fn(), find: vi.fn(), decide: vi.fn() }));
+// The mock database must satisfy the real resource.buildIriForDatabase contract
+// (`resolvePodBaseUrlFromDatabase` reads a Pod URL/WebID from the dialect or session).
+// Without it `sameThread` cannot canonicalise approval/run thread identifiers.
+const acceptanceDbSession = {
+  info: { isLoggedIn: true, podUrl: 'https://pod.example/alice/', webId: 'https://pod.example/alice/profile/card#me' },
+};
 vi.mock('@undefineds.co/drizzle-solid', () => ({ drizzle: () => ({
-  select: () => ({ from: () => ({ execute: () => mocks.select() }) }),
+  select: () => ({ from: (table: unknown) => ({ execute: () => mocks.select(table) }) }),
   findByIri: (...args: unknown[]) => mocks.find(...args),
+  getDialect: () => 'sqlite',
+  getSession: () => acceptanceDbSession,
+  session: acceptanceDbSession,
 }) }));
 vi.mock('@undefineds.co/models', async importOriginal => ({
   ...await importOriginal<typeof import('@undefineds.co/models')>(),
@@ -116,14 +125,24 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
     let current = { id: '', run: '', thread: '', target: '', expected: '', decision: '', status: 'waiting_input', resumes: 0 };
     const requests: Array<{ route: string; signal?: AbortSignal | null }> = [];
     const connectionError = Object.assign(new TypeError(privateText), { cause: { code: 'ECONNREFUSED', message: privateText } });
-    mocks.select.mockImplementation(async () => {
+    mocks.select.mockImplementation(async (table: unknown) => {
       if (fault === 'checkpoint' && !injected) { injected = true; throw new SyntaxError(privateText); }
+      // Mirror the real store per table: Session rows live at the Session IRI reported on the Approval,
+      // so cleanup discovery collapses onto the same IRI instead of inventing a second Session entry.
+      if (table === sessionResource) return [{ id: `https://pod.example/session#${count}`, owner,
+        thread: current.thread, status: current.status === 'waiting_input' ? 'paused' : 'completed' }];
       return [{ id: '2026/10/04.ttl#request', session: `https://pod.example/session#${count}`, target: current.target,
-        thread: current.thread, toolCallId: 'call-one', toolName: 'request_approval', assignedTo: owner,
+        thread: current.thread, toolCallId: 'call-one', toolName: 'request_approval', assignedTo: owner, owner,
         status: current.decision || 'pending' }];
     });
-    mocks.find.mockImplementation(async (table: unknown) => {
-      if (table === sessionResource) return { owner, thread: current.thread, status: current.status === 'waiting_input' ? 'paused' : 'completed' };
+    // findByIri must mirror the real store: the row returned for a Session IRI is that Session,
+    // whose thread is the Run thread it belongs to (session#N -> thread-N), not whichever case ran last.
+    const threadForSessionIri = (iri: unknown) => {
+      const match = /session#(\d+)$/.exec(String(iri ?? ''));
+      return match ? `https://pod.example/alice/.data/index.ttl#thread-${match[1]}` : current.thread;
+    };
+    mocks.find.mockImplementation(async (table: unknown, iri?: unknown) => {
+      if (table === sessionResource) return { owner, thread: threadForSessionIri(iri), status: current.status === 'waiting_input' ? 'paused' : 'completed' };
       expect(table).toBe(approvalResource);
       if (fault === 'persisted-read' && !injected) { injected = true; throw new DOMException(privateText, 'TimeoutError'); }
       return { status: fault === 'persisted-assert' ? 'pending' : current.decision, decisionBy: owner, resolvedAt: new Date() };
@@ -141,7 +160,8 @@ describe('live Task safe failure substage (unit orchestration only)', () => {
       else if (route === '/api/tasks') {
         const prompt = JSON.parse(String(init?.body)).prompt as string;
         count += 1;
-        current = { id: `task-${count}`, run: `run-${count}`, thread: `thread-${count}`,
+        // Threads travel as complete Pod resource IRIs, so the real buildIriForDatabase resolves them.
+        current = { id: `task-${count}`, run: `run-${count}`, thread: `https://pod.example/alice/.data/index.ttl#thread-${count}`,
           target: /target=([^,]+)/.exec(prompt)![1], expected: /write exactly (\S+) followed/.exec(prompt)![1],
           decision: '', status: 'waiting_input', resumes: 0 };
         body = { task: { id: current.id } };

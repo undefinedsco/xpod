@@ -8,6 +8,7 @@ import type { AuthResult } from '../../../src/api/auth/Authenticator';
 import type { SolidAuthContext } from '../../../src/api/auth/AuthContext';
 import { AiConnectionsInvocationKeyIssuer } from '../../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../../../src/api/ai-gateway/auth/InvocationTokenCodec';
+import { createOwnerPodBaseUrlResolver } from '../../../src/api/ai-gateway/pod/PodBaseUrlResolver';
 import { InvocationTokenAuthenticator } from '../../../src/api/ai-gateway/auth/InvocationTokenAuthenticator';
 import type {
   GatewayAccessKeyRecord,
@@ -338,6 +339,10 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
       },
@@ -350,10 +355,80 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Authentication required' });
   });
 
+  it('binds a Cloud identity descriptor and both invocation types to the selected registered Local Pod', async () => {
+    const cloud = 'https://cloud.example/alice/';
+    const localAlias = 'https://local.example/alice/';
+    const storage = 'https://local.example/storage/alice/';
+    const resolver = createOwnerPodBaseUrlResolver({
+      findByWebId: vi.fn(),
+      findAllByWebId: vi.fn(async webId => webId === WEB_ID ? [
+        { podId: 'cloud', accountId: 'alice', baseUrl: cloud, webId: WEB_ID },
+        { podId: 'local', accountId: 'alice', baseUrl: localAlias, storageUrl: storage, webId: WEB_ID },
+      ] : []),
+    }, 'unique');
+    const codec = new AesInvocationTokenCodec({ active: { kid: 'current', secret: 'fixture-secret' } });
+    const issuer = new AiConnectionsInvocationKeyIssuer({ codec, deployment: 'local', baseUrl: 'https://local.example' });
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'local', podBaseUrlResolver: resolver, aiConnectionInvocationKeyIssuer: issuer,
+      aiClientConfiguration: { available: true, authority: 'local-filesystem', manualInstructions: 'Fixture client configuration' },
+    });
+    for (const selected of [localAlias, storage]) {
+      const req = request({ type: 'solid', webId: WEB_ID });
+      req.headers['x-xpod-pod-url'] = selected;
+      const res = response();
+      await routes['GET /api/applets/service-access/ai-connections'](req, res, {});
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.service.webId).toBe(WEB_ID);
+      expect(body.resources.every((resource: { url: string }) => resource.url.startsWith(storage))).toBe(true);
+      for (const invocation of [body.invocation, body.aiClientConfiguration.invocation]) {
+        expect(codec.decode(invocation.apiKey)).toMatchObject({ webId: WEB_ID, podUrl: storage });
+      }
+    }
+    // A valid Pod-scoped capability remains confined even when both Pods share an owner.
+    const req = request({ type: 'solid', webId: WEB_ID, internalInvocation: true, authorizedPodUrl: cloud });
+    req.headers['x-xpod-pod-url'] = storage;
+    const res = response();
+    await routes['GET /api/applets/service-access/ai-connections'](req, res, {});
+    expect(res.statusCode).not.toBe(200);
+  });
+
+  it.each(['ambiguous', 'unregistered', 'non-owner', 'multiple header'] as const)(
+    'does not issue a descriptor or invocation for a %s Pod selection', async failure => {
+      const issue = vi.fn();
+      const { server, routes } = createServer();
+      registerAiGatewayManagementRoutes(server, {
+        deployment: 'local',
+        podBaseUrlResolver: createOwnerPodBaseUrlResolver({
+          findByWebId: vi.fn(),
+          findAllByWebId: vi.fn(async webId => webId === WEB_ID ? [
+            { podId: 'one', accountId: 'alice', webId: WEB_ID, baseUrl: 'https://local.example/one/' },
+            { podId: 'two', accountId: 'alice', webId: WEB_ID, baseUrl: 'https://local.example/two/' },
+          ] : []),
+        }, 'unique'),
+        aiConnectionInvocationKeyIssuer: { issue, issueClientConfiguration: vi.fn() },
+      });
+      const req = request({ type: 'solid', webId: failure === 'non-owner' ? 'https://id.example/bob/profile/card#me' : WEB_ID });
+      if (failure === 'unregistered') req.headers['x-xpod-pod-url'] = 'https://foreign.example/alice/';
+      if (failure === 'non-owner') req.headers['x-xpod-pod-url'] = 'https://local.example/one/';
+      if (failure === 'multiple header') req.headers['x-xpod-pod-url'] = ['https://local.example/one/', 'https://local.example/two/'];
+      const res = response();
+      await routes['GET /api/applets/service-access/ai-connections'](req, res, {});
+      expect(res.statusCode).not.toBe(200);
+      expect(JSON.parse(res.body)).not.toHaveProperty('resources');
+      expect(issue).not.toHaveBeenCalled();
+    },
+  );
+
   it('uses the authenticated WebID for interactive service access when no service identity is configured', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
     });
     const res = response();
 
@@ -379,6 +454,10 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => {
           throw new Error('Gateway internal Pod token exchange failed: HTTP 503');
@@ -404,6 +483,7 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'local',
+      podBaseUrlResolver: async webId => webId === WEB_ID ? 'https://id.example/alice/' : undefined,
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => {
           throw new Error('stale local client credentials');
@@ -428,6 +508,10 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
       },
@@ -453,13 +537,17 @@ describe('AiGatewayManagementHandler', () => {
     expect(res.body).not.toContain('signing key');
   });
 
-  it('publishes AI Connection service-access resources derived only from the authenticated WebID', async () => {
+  it('publishes only resources in the registered binding of the authenticated owner', async () => {
     const servicePrincipal = {
       getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal,
     });
     const req = request({
@@ -501,6 +589,10 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
       },
@@ -521,8 +613,8 @@ describe('AiGatewayManagementHandler', () => {
 
     await routes['GET /api/applets/service-access/ai-connections'](request(auth), res, {});
 
-    expect(issue).toHaveBeenCalledWith({ auth });
-    expect(issueClientConfiguration).toHaveBeenCalledWith({ auth });
+    expect(issue).toHaveBeenCalledWith({ auth: { ...auth, authorizedPodUrl: 'https://id.example/alice/' } });
+    expect(issueClientConfiguration).toHaveBeenCalledWith({ auth: { ...auth, authorizedPodUrl: 'https://id.example/alice/' } });
     expect(JSON.parse(res.body)).toMatchObject({
       invocation: {
         baseUrl: 'https://pod.example',
@@ -569,6 +661,10 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       aiConnectionInvocationKeyIssuer: issuer,
       aiClientConfiguration: {
         available: true,
@@ -628,6 +724,7 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'local',
+      podBaseUrlResolver: async webId => webId === WEB_ID ? 'https://id.example/alice/' : undefined,
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
       },
@@ -659,6 +756,10 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
       },

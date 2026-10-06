@@ -115,7 +115,8 @@ async function main() {
       : await import('@solid/community-server');
     ensureBunCommunitySolidServerJwkCompat(css);
     const { AppRunner } = css;
-    await new AppRunner().runCli(process.argv);
+    const { createPackageRootPreferredAppRunner } = await import('../runtime/runner/node/CommunitySolidServerCssRunner');
+    await createPackageRootPreferredAppRunner(AppRunner, PACKAGE_ROOT).runCli(process.argv);
     return;
   }
   const wantsRootHelp = argv.length === 0 || argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h';

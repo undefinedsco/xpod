@@ -96,7 +96,8 @@ export class AiConnectionsInvocationKeyIssuer {
 
   private async issueScoped(auth: SolidAuthContext, scopes: string[], model?: string): Promise<AIConnectionInvocationConfig> {
     const webId = requireCanonicalWebId(auth.webId);
-    const cacheKey = `${webId}\n${scopes.join(' ')}`;
+    const podUrl = auth.authorizedPodUrl;
+    const cacheKey = `${webId}\n${podUrl ?? ''}\n${scopes.join(' ')}`;
     const now = this.now();
     const cached = this.cache.get(cacheKey);
     if (cached && cached.expiresAt.getTime() - now.getTime() >= this.reuseSafetyMarginMs) {
@@ -104,7 +105,7 @@ export class AiConnectionsInvocationKeyIssuer {
     }
     let pending = this.pending.get(cacheKey);
     if (!pending) {
-      pending = Promise.resolve().then(() => this.createInvocation(cacheKey, webId, scopes, now));
+      pending = Promise.resolve().then(() => this.createInvocation(cacheKey, webId, scopes, now, podUrl));
       this.pending.set(cacheKey, pending);
       const clearPending = (): void => {
         if (this.pending.get(cacheKey) === pending) {
@@ -118,7 +119,7 @@ export class AiConnectionsInvocationKeyIssuer {
     return this.toInvocationConfig(issued, model);
   }
 
-  private createInvocation(cacheKey: string, webId: string, scopes: string[], createdAt: Date): CachedInvocation {
+  private createInvocation(cacheKey: string, webId: string, scopes: string[], createdAt: Date, podUrl?: string): CachedInvocation {
     this.pruneCache(createdAt);
     const expiresAt = new Date(createdAt.getTime() + this.ttlMs);
     const plaintext = this.codec.encode({
@@ -126,6 +127,7 @@ export class AiConnectionsInvocationKeyIssuer {
       audience: this.audience,
       issuer: this.issuer,
       webId,
+      ...(podUrl ? { podUrl } : {}),
       scopes,
       issuedAt: createdAt,
       expiresAt,

@@ -321,6 +321,22 @@ describe('loadConfigFromEnv', () => {
     expect(typeof ownerPodAccess.getPodFetch).toBe('function');
     expect(providerConnectService.credentialRepository.podAccess).toBe(ownerPodAccess);
     expect(gatewayCredentialStore.podAccess).toBe(ownerPodAccess);
+    // Use-time OAuth renewal must reach the shared Connect lifecycle through the store hook;
+    // without it the inference path can never renew an imported subscription session.
+    expect(typeof gatewayCredentialStore.renewCredential).toBe('function');
+    const renewSpy = vi.spyOn(providerConnectService, 'renewCredential').mockResolvedValue(true);
+    await expect(gatewayCredentialStore.renewCredential({
+      webId: 'https://id.example/alice/profile/card#me',
+      deployment: 'local',
+      provider: 'kimi',
+      credentialId: 'kimi-session',
+      credentialIri: 'https://id.example/alice/settings/credentials.ttl#kimi-session',
+      reason: 'expired',
+    })).resolves.toBe(true);
+    expect(renewSpy).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'kimi', credentialId: 'kimi-session', reason: 'expired', deployment: 'local',
+    }));
+    renewSpy.mockRestore();
     expect(providerQuotaService.repository.podAccess).toBe(ownerPodAccess);
     expect(providerQuotaService.credentialRepository.podAccess).toBe(ownerPodAccess);
     expect(podModelSelectionRepository.podAccess).toBe(ownerPodAccess);

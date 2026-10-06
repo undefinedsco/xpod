@@ -97,6 +97,13 @@ describe('ApiServer Task HTTP diagnostics', () => {
     expect(lines[0]).not.toContain('controlled private');
   }
 
+  // The server tracks every response for graceful drain with exactly one 'responseDone'
+  // listener per event. Task diagnostics must add nothing on top of that, so assertions
+  // filter the server's own listener instead of counting every listener on the response.
+  function diagnosticListeners(response: ServerResponse, event: 'finish' | 'close'): Array<(...args: unknown[]) => void> {
+    return response.listeners(event).filter(listener => listener.name !== 'responseDone');
+  }
+
   it.each(ROUTES)('observes actual 401 before the %s handler runs', async (path, route) => {
     const server = createServer();
     const handler = vi.fn(async () => {});
@@ -161,8 +168,8 @@ describe('ApiServer Task HTTP diagnostics', () => {
     response.emit('close');
     response.emit('finish');
     expect(lines).toEqual([]);
-    expect(response.listenerCount('finish')).toBe(0);
-    expect(response.listenerCount('close')).toBe(0);
+    expect(diagnosticListeners(response, 'finish')).toEqual([]);
+    expect(diagnosticListeners(response, 'close')).toEqual([]);
   });
 
   it('reports sent failure headers on close once and cleans listeners', async () => {
@@ -172,8 +179,8 @@ describe('ApiServer Task HTTP diagnostics', () => {
     response.emit('close');
     response.emit('finish');
     expectReceipt(403, 'chat_completions', 'response_closed');
-    expect(response.listenerCount('finish')).toBe(0);
-    expect(response.listenerCount('close')).toBe(0);
+    expect(diagnosticListeners(response, 'finish')).toEqual([]);
+    expect(diagnosticListeners(response, 'close')).toEqual([]);
   });
 
   it('reports finish once despite duplicate finish/close, without URL/query prose', async () => {
@@ -184,8 +191,8 @@ describe('ApiServer Task HTTP diagnostics', () => {
     response.emit('close');
     expectReceipt(502, 'responses');
     expect(lines[0]).not.toContain('private');
-    expect(response.listenerCount('finish')).toBe(0);
-    expect(response.listenerCount('close')).toBe(0);
+    expect(diagnosticListeners(response, 'finish')).toEqual([]);
+    expect(diagnosticListeners(response, 'close')).toEqual([]);
   });
 
   it.each([200, 204, 399, 600, NaN])('does not report non-failure or invalid status %s', async status => {
@@ -193,14 +200,14 @@ describe('ApiServer Task HTTP diagnostics', () => {
     response.statusCode = status;
     response.emit('finish');
     expect(lines).toEqual([]);
-    expect(response.listenerCount('close')).toBe(0);
+    expect(diagnosticListeners(response, 'close')).toEqual([]);
   });
 
   it.each([undefined, '', 'private text with spaces', 'a'.repeat(257), ['xpod-a', 'xpod-b'], 'xpod-a,xpod-b']
     .map(session => ({ session })))('does not observe missing or malformed session %j', async ({ session }) => {
       const response = await controlledResponse({ session });
-      expect(response.listenerCount('finish')).toBe(0);
-      expect(response.listenerCount('close')).toBe(0);
+      expect(diagnosticListeners(response, 'finish')).toEqual([]);
+      expect(diagnosticListeners(response, 'close')).toEqual([]);
       response.statusCode = 401;
       response.emit('finish');
       expect(lines).toEqual([]);
@@ -222,7 +229,7 @@ describe('ApiServer Task HTTP diagnostics', () => {
       expect(response.status).toBe(204);
     } else {
       const response = await controlledResponse({ ...options, session: SESSION });
-      expect(response.listenerCount('finish')).toBe(0);
+      expect(diagnosticListeners(response, 'finish')).toEqual([]);
       response.statusCode = 401;
       response.emit('finish');
     }

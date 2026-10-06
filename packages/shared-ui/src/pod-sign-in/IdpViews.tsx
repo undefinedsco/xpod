@@ -128,7 +128,7 @@ export function IdpSignInView(props: IdpSignInViewProps) {
           <p className="text-sm text-muted-foreground">{formatCopy(copy.returnToApp, { app: returnToAppName })}</p>
         ) : null}
       </div>
-      <div data-pod-sign-in="fields" className="flex flex-col gap-4">
+      <div data-pod-sign-in="fields" className="flex flex-col gap-5">
         <Field label={copy.email} error={fieldErrors?.email}>
           {(fieldProps) => (
             <EmailInput
@@ -242,7 +242,7 @@ export function IdpRegisterView(props: IdpRegisterViewProps) {
           <p className="text-sm text-muted-foreground">{formatCopy(copy.returnToApp, { app: returnToAppName })}</p>
         ) : null}
       </div>
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-5">
         {requireUsername ? (
           <Field
             label={copy.username}

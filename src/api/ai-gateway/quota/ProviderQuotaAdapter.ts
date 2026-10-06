@@ -658,7 +658,7 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
   }
 
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<QuotaSnapshotDb> {
-    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver);
+    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver, auth);
     const trustedFetch = await this.resolveTrustedFetch(owner, auth, podUrl);
     const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, podUrl });
     await db.init?.(quotaSnapshotResource);

@@ -15,6 +15,7 @@ import {
 } from '../service-access/AiConnectionsServiceAccess';
 import {
   resolveOwnerPodBaseUrl,
+  resolveOwnerPodBindings,
   type PodBaseUrlResolver,
 } from '../pod/PodBaseUrlResolver';
 import { createGatewayKeyLocator, type GatewayKeyLocatorCodec } from './GatewayKeyLocatorCodec';
@@ -114,7 +115,24 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     if (!locator) {
       return undefined;
     }
-    const { db, resource } = await this.dbForOwner(locator.owner, context);
+    if (context?.gatewayKeyVerification) {
+      const matches: GatewayAccessKeyRecord[] = [];
+      // A legacy locator names an exact owner and key, but no Pod. Its bearer must
+      // not pick the storage scope with a request hint or a matching secret.
+      for (const podUrl of await resolveOwnerPodBindings(locator.owner, this.podBaseUrlResolver)) {
+        const { db, resource } = await this.dbForOwner(locator.owner, {
+          ...context, gatewayKeyVerification: { ...context.gatewayKeyVerification, podUrl },
+        });
+        const row = await db.findById<GatewayAccessKeyRow>(resource, gatewayAccessKeyStorageId(id));
+        if (!row) continue;
+        const record = recordFromRow(row);
+        if (record.owner !== locator.owner || record.id !== id || record.deployment !== locator.deployment) return undefined;
+        matches.push({ ...record, podUrl });
+        if (matches.length > 1) return undefined;
+      }
+      return matches[0];
+    }
+    const { db, resource, podUrl } = await this.dbForOwner(locator.owner, context);
     // Authentication uses only the legacy RDF verifier rows; issued client
     // credentials are owner-authorized management records.
     if (!context?.gatewayKeyVerification) {
@@ -122,7 +140,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
       if (credential) return clientCredentialRecord(id, locator, credential);
     }
     const row = await db.findById<GatewayAccessKeyRow>(resource, gatewayAccessKeyStorageId(id));
-    return row ? recordFromRow(row) : undefined;
+    return row && String(row.owner) === locator.owner ? { ...recordFromRow(row), podUrl } : undefined;
   }
 
   public async listByOwner(
@@ -242,7 +260,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     }
     const { db, resource } = await this.dbForOwner(locator.owner, context);
     const credentialStorageId = clientCredentialStorageId(id);
-    if (await db.findById<CredentialRow>(credentialResource, credentialStorageId)) {
+    if (!context?.gatewayKeyVerification && await db.findById<CredentialRow>(credentialResource, credentialStorageId)) {
       await db.updateById(credentialResource, credentialStorageId, { lastUsedAt });
       return;
     }
@@ -260,7 +278,10 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     fetch: typeof fetch;
     podUrl: string;
   }> {
-    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver);
+    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver,
+      context?.gatewayKeyVerification?.podUrl
+        ? { type: 'solid', webId: owner, authorizedPodUrl: context.gatewayKeyVerification.podUrl }
+        : context?.auth);
     const trustedFetch = await this.resolveTrustedFetch(owner, podUrl, context);
     const resource = gatewayAccessKeyResource;
     const listResource = this.usesDefaultDbFactory
@@ -278,7 +299,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
       listResource,
       credentialListResource,
     });
-    await db.init?.(resource, listResource, credentialResource, credentialListResource);
+    if (!context?.gatewayKeyVerification) await db.init?.(resource, listResource, credentialResource, credentialListResource);
     return { db, resource, listResource, credentialListResource, fetch: trustedFetch, podUrl };
   }
 

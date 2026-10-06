@@ -4,6 +4,7 @@ import type { Duplex } from 'node:stream';
 import { getLoggerFor } from 'global-logger-factory';
 import type { AuthMiddleware, AuthenticatedRequest } from './middleware/AuthMiddleware';
 import { nodeRuntimeHost } from '../runtime/host/node/NodeRuntimeHost';
+import { sendPodAccessFailure } from './handlers/PodAccessFailureResponse';
 import type { RuntimeHost, RuntimeListenEndpoint } from '../runtime/host/types';
 import {
   hashTaskModelDiagnosticSession,
@@ -296,6 +297,7 @@ export class ApiServer {
     try {
       await route.handler(authRequest, response, params);
     } catch (error) {
+      if (!response.headersSent && sendPodAccessFailure(response, error)) return;
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
       const causes: string[] = [];
       let cause: unknown = error instanceof Error ? error.cause : undefined;
@@ -410,6 +412,7 @@ export class ApiServer {
         'Content-Type',
         'Accept',
         'DPoP',
+        'X-Xpod-Pod-Url',
         'Origin',
         'X-Requested-With',
         'If-Match',

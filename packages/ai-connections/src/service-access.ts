@@ -3,18 +3,9 @@ import type {
   SolidServiceAccessRequest,
   SolidServiceAccessResource,
 } from '@undefineds.co/extension-sdk/web'
-import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from './contract/provider-catalog'
+import { resolveAiConnectionsServiceResource } from './service-access-resources'
 
 export const AI_CONNECTIONS_APPLET_ID = 'co.undefineds.ai-connections'
-
-const KNOWN_RESOURCE_PATHS = {
-  providerCredentials: 'settings/credentials.ttl',
-  providerDefinitions: 'settings/providers/__service_access__.ttl',
-  gatewayAccessKeys: '.data/ai/gateway/access-keys.ttl',
-  quotaSnapshots: '.data/ai/gateway/quota.ttl',
-} as const
-
-const PROVIDER_DOCUMENT_ID_SET = new Set<string>(AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS)
 
 export function parseAiConnectionsServiceAccess(
   value: unknown,
@@ -57,12 +48,11 @@ function parseResource(
   if (!isRecord(value)
     || typeof value.id !== 'string'
     || typeof value.url !== 'string'
-    || value.mediaType !== 'text/turtle'
     || !isRecord(value.access)) {
     throw new Error('invalid_resource')
   }
-  const expectedResourceUrl = expectedResourceHref(value.id, podRoot)
-  if (!expectedResourceUrl || ids.has(value.id)) {
+  const expectedResource = resolveAiConnectionsServiceResource(value.id, podRoot.href)
+  if (!expectedResource || value.mediaType !== expectedResource.mediaType || ids.has(value.id)) {
     throw new Error('invalid_resource')
   }
   assertSafeResourceUrlString(value.url)
@@ -76,7 +66,7 @@ function parseResource(
   if (!isInsideContainer(url, podRoot)) {
     throw new Error('invalid_resource')
   }
-  if (url.href !== expectedResourceUrl) {
+  if (url.href !== expectedResource.url) {
     throw new Error('invalid_resource')
   }
 
@@ -84,24 +74,9 @@ function parseResource(
   return {
     id: value.id,
     url: url.href,
-    mediaType: 'text/turtle',
+    mediaType: expectedResource.mediaType,
     access: parseAccess(value.access),
   }
-}
-
-function expectedResourceHref(id: string, podRoot: URL): string | undefined {
-  const knownPath = KNOWN_RESOURCE_PATHS[id as keyof typeof KNOWN_RESOURCE_PATHS]
-  if (knownPath) {
-    return new URL(knownPath, podRoot).href
-  }
-
-  const providerDocumentId = id.startsWith('providerDocument:')
-    ? id.slice('providerDocument:'.length)
-    : undefined
-  if (providerDocumentId && PROVIDER_DOCUMENT_ID_SET.has(providerDocumentId)) {
-    return new URL(`settings/providers/${providerDocumentId}.ttl`, podRoot).href
-  }
-  return undefined
 }
 
 function assertSafeResourceUrlString(value: string): void {

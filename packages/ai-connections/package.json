@@ -34,10 +34,15 @@
     "./endpoint-urls": {
       "types": "./dist/contract/endpoint-urls.d.ts",
       "import": "./dist/contract/endpoint-urls.js"
+    },
+    "./service-access-resources": {
+      "types": "./dist/service-access-resources.d.ts",
+      "import": "./dist/service-access-resources.js",
+      "require": "./dist/service-access-resources.cjs"
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/contract/client-config/index.ts --target=node --format=cjs --outfile=dist/contract/client-config/index.cjs && bun build src/contract/provider-catalog.ts --target=node --format=cjs --outfile=dist/contract/provider-catalog.cjs",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/contract/client-config/index.ts --target=node --format=cjs --outfile=dist/contract/client-config/index.cjs && bun build src/contract/provider-catalog.ts --target=node --format=cjs --outfile=dist/contract/provider-catalog.cjs && bun build src/service-access-resources.ts --target=node --format=cjs --external @undefineds.co/models --outfile=dist/service-access-resources.cjs",
     "test": "vitest run --config ../../vitest.packages.config.mts"
   },
   "dependencies": {
@@ -76,6 +81,9 @@
       ],
       "endpoint-urls": [
         "dist/contract/endpoint-urls.d.ts"
+      ],
+      "service-access-resources": [
+        "dist/service-access-resources.d.ts"
       ]
     }
   }

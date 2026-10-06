@@ -12,8 +12,10 @@ on:
         default: false
 
 concurrency:
-  group: candidate-${{ github.ref }}${{ inputs.task_diagnostic_only && '-task-diagnostic' || '' }}
-  cancel-in-progress: true
+  # Keep the shared RC instance owned until desktop, Finalize and cleanup finish.
+  # This must differ from the individual RC job lock to avoid nested deadlock.
+  group: xpod-shared-rc-workflow
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -241,7 +243,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Verify the desktop self-update verifier
-        run: node --test tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/packaged-update-phases.node-test.mjs tests/scripts/bun-single-runtime-entry.node-test.cjs tests/scripts/platform-package-budget.node-test.cjs
+        run: node --test tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/packaged-update-phases.node-test.mjs tests/scripts/desktop-permission-acceptance.node-test.cjs tests/scripts/desktop-permission-workflow.node-test.cjs tests/scripts/rc-cleanup-ownership.node-test.cjs tests/scripts/bun-single-runtime-entry.node-test.cjs tests/scripts/platform-package-budget.node-test.cjs
 
       - name: Install Chromium for authenticated acceptance
         run: bunx playwright install --with-deps chromium
@@ -298,6 +300,8 @@ jobs:
           const text = fs.readFileSync(process.argv[2], 'utf8');
           const seedText = fs.readFileSync(process.argv[3], 'utf8');
           const required = [
+            'CSS_IDENTITY_DB_URL',
+            'CSS_SPARQL_ENDPOINT',
             'CSS_REDIS_CLIENT',
             'CSS_MINIO_ENDPOINT',
             'CSS_MINIO_BUCKET_NAME',
@@ -318,6 +322,24 @@ jobs:
           for (const key of required) {
             if (!entries.has(key) || entries.get(key).trim() === '') {
               throw new Error(`missing required RC secret key: ${key}`);
+            }
+          }
+          const namespace = process.env.SEALOS_NAMESPACE;
+          const sharedPostgresHosts = new Set([
+            'xpod-rdf-postgres',
+            `xpod-rdf-postgres.${namespace}`,
+            `xpod-rdf-postgres.${namespace}.svc`,
+            `xpod-rdf-postgres.${namespace}.svc.cluster.local`,
+          ]);
+          for (const key of ['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT']) {
+            let url;
+            try { url = new URL(entries.get(key)); } catch {
+              throw new Error(`${key} must be a valid PostgreSQL URL`);
+            }
+            if (!['postgres:', 'postgresql:'].includes(url.protocol) ||
+                decodeURIComponent(url.username) !== 'xpod_rc' || url.pathname !== '/xpod_rc' ||
+                !sharedPostgresHosts.has(url.hostname) || (url.port && url.port !== '5432')) {
+              throw new Error(`${key} must use the isolated xpod_rc database and role on shared PostgreSQL`);
             }
           }
           const seed = JSON.parse(seedText);
@@ -398,6 +420,13 @@ jobs:
           psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
           psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_rdf VERSION '0.2.0'"
           psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_qlever VERSION '0.4.0'"
+          postgres_version_num="$(psql -U "$POSTGRES_USER" -d xpod_rc --no-align --tuples-only --command 'SHOW server_version_num' | tr -d '[:space:]')"
+          if ! echo "$postgres_version_num" | grep -Eq '^17[0-9]{4}$'; then
+            echo 'RC database must run PostgreSQL 17' >&2
+            exit 1
+          fi
+          vector_version="$(psql -U "$POSTGRES_USER" -d xpod_rc --no-align --tuples-only --command "SELECT extversion FROM pg_extension WHERE extname = 'vector'" | tr -d '[:space:]')"
+          test -n "$vector_version"
           # 扩展是用超级用户装的，schema 因此归 postgres：应用角色读不了，
           # 会以 "permission denied for schema xpod_rdf" 起不来。整库交给应用角色。
           psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 <<'SQL2'
@@ -869,20 +898,9 @@ jobs:
             fi
           fi
 
-      - name: Scale RC deployments to zero
-        # 无条件执行：合并成一个实例后 RC 只剩自己的 Deployment 需要回收，
-        # 不再依赖 XPOD_RC_SCALE_TO_ZERO（失败时同样要收，否则白烧资源）。
-        # 仍要求 rc_kubeconfig 成功（已通过 GZ 目标集群校验），避免缩容到错误集群。
-        if: ${{ always() && steps.rc_kubeconfig.outcome == 'success' }}
-        run: |
-          kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0 || true
-          kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0 || true
-          # 逐轮种子 secret 是运行内唯一名，不收就会一轮攒一个（SG 上已积 112 个）。
-          kubectl -n "$SEALOS_NAMESPACE" delete secret "$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found || true
-
   build_desktop_rc:
     name: Build macOS RC desktop
-    needs: [metadata, build_qlever_macos_runtime]
+    needs: [metadata, build_qlever_macos_runtime, deploy_and_accept]
     runs-on: macos-15
     environment: rc
     permissions:
@@ -892,6 +910,8 @@ jobs:
       CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
+      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -1027,11 +1047,18 @@ jobs:
           set -euo pipefail
           dest="${RUNNER_TEMP}/xpod-old-desktop"
           mkdir -p "$dest"
-          old_tag="$(gh release list --repo "${{ github.repository }}" --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')"
-          if [ -z "$old_tag" ]; then
-            echo "::error::no stable desktop release is available as the update baseline"
-            exit 1
-          fi
+          # The acceptance proves a *released* build upgrades to this candidate, and
+          # the verifier rejects evidence unless oldVersion < newVersion. Taking the
+          # newest stable release unconditionally breaks that contract once a stable
+          # newer than the candidate exists: the released app is then asked to
+          # "upgrade" to an older version, the updater refuses, no update is offered
+          # and the packaged app never exits -- so the baseline is resolved by
+          # version order (`scripts/select-desktop-update-baseline.cjs`).
+          gh release list --repo "${{ github.repository }}" --exclude-pre-releases --exclude-drafts --limit 100 \
+            --json tagName,publishedAt,isDraft > "$dest/releases.json"
+          old_tag="$(node scripts/select-desktop-update-baseline.cjs \
+            --candidate "$CANDIDATE_VERSION" \
+            --releases "$dest/releases.json")"
           gh release download "$old_tag" --repo "${{ github.repository }}" \
             --pattern '*-arm64-mac.zip' --dir "$dest" --clobber
           old_zip="$(find "$dest" -maxdepth 1 -type f -name '*-arm64-mac.zip' -print -quit)"
@@ -1089,6 +1116,37 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Accept actual packaged desktop permissions and operations
+        run: |
+          set -euo pipefail
+          test -n "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG"
+          provider_file="${RUNNER_TEMP}/desktop-provider-api-key"
+          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$provider_file"
+          chmod 600 "$provider_file"
+          new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          test -n "$new_zip"
+          bun scripts/accept-packaged-desktop-permissions.ts \
+            --archive "$new_zip" \
+            --version "$CANDIDATE_VERSION" \
+            --source-sha "${{ github.sha }}" \
+            --issuer "https://id-rc.undefineds.cn/" \
+            --key-file "$provider_file" \
+            --private-directory "${RUNNER_TEMP}/desktop-permission-private" \
+            --evidence "${RUNNER_TEMP}/desktop-permission-evidence.json"
+          node scripts/desktop-permission-acceptance.cjs \
+            --evidence "${RUNNER_TEMP}/desktop-permission-evidence.json" \
+            --source-sha "${{ github.sha }}" \
+            --version "$CANDIDATE_VERSION" \
+            --expected-archive "$new_zip"
+
+      - name: Upload allowlisted desktop permission evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-permission-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-permission-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
       - uses: actions/upload-artifact@v4
         with:
           name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
@@ -1097,6 +1155,16 @@ jobs:
             desktop/release/*.zip
             desktop/release/*.blockmap
           if-no-files-found: error
+          retention-days: 30
+      # Keep the redacted producer failure summary last so the release archive
+      # stays the first upload in this job and no gate reads it as the artifact.
+      - name: Upload desktop permission failure summary
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-permission-failure-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-permission-private/failure-safe.json
+          if-no-files-found: ignore
           retention-days: 30
 
   finalize_acceptance:
@@ -1115,6 +1183,14 @@ jobs:
       REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - run: bun run build:packages
       - uses: actions/download-artifact@v4
         with:
           name: release-service-acceptance-${{ github.sha }}
@@ -1125,12 +1201,16 @@ jobs:
           path: ${{ runner.temp }}/desktop-self-update
       - uses: actions/download-artifact@v4
         with:
+          name: desktop-permission-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-permissions
+      - uses: actions/download-artifact@v4
+        with:
           name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
           path: ${{ runner.temp }}/xpod-desktop-candidate
       # The `desktop` check is only accepted from the source-bound evidence the
       # macOS job produced AND must byte-match the uploaded candidate archive;
       # bundle presence alone never sets it.
-      - name: Verify the desktop self-update acceptance evidence
+      - name: Verify the combined mandatory desktop acceptance evidence
         run: |
           set -euo pipefail
           candidate_zip="$(find "${{ runner.temp }}/xpod-desktop-candidate" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
@@ -1138,11 +1218,12 @@ jobs:
             echo "::error::uploaded candidate desktop zip is missing"
             exit 1
           fi
-          node scripts/desktop-self-update-acceptance.cjs verify \
-            --evidence "${{ runner.temp }}/desktop-self-update/desktop-self-update-evidence.json" \
+          node scripts/desktop-acceptance.cjs \
+            --self-update-evidence "${{ runner.temp }}/desktop-self-update/desktop-self-update-evidence.json" \
+            --permission-evidence "${{ runner.temp }}/desktop-permissions/desktop-permission-evidence.json" \
             --source-sha "${{ github.sha }}" \
-            --new-version "$CANDIDATE_VERSION" \
-            --expected-new-zip "$candidate_zip" \
+            --version "$CANDIDATE_VERSION" \
+            --expected-archive "$candidate_zip" \
             --checks-out "${{ runner.temp }}/desktop-check.json"
       # `qlever-local` and `package-consumers` are only accepted from the
       # source/artifact-bound evidence the producing jobs uploaded AND must
@@ -1183,7 +1264,7 @@ jobs:
           const checksPath = path.join(process.env.RUNNER_TEMP, 'service-acceptance', 'checks.json');
           const desktopChecks = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'desktop-check.json'), 'utf8'));
           if (desktopChecks.desktop !== 'passed') {
-            throw new Error('desktop self-update acceptance did not verify');
+            throw new Error('combined desktop acceptance did not verify');
           }
           const qleverChecks = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'qlever-local-check.json'), 'utf8'));
           if (qleverChecks['qlever-local'] !== 'passed') {
@@ -1454,3 +1535,51 @@ jobs:
           path: ${{ runner.temp }}/task-diagnostic-safe/
           if-no-files-found: error
           retention-days: 14
+
+  cleanup_rc:
+    name: Cleanup RC after all acceptance jobs
+    needs: [deploy_and_accept, build_desktop_rc, finalize_acceptance]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    environment: rc
+    concurrency:
+      group: xpod-shared-rc-service
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+      XPOD_RC_SEED_SECRET_NAME: xpod-rc-seed-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scale RC deployments to zero
+        run: |
+          set -euo pipefail
+          if [[ ! "$SEALOS_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#SEALOS_NAMESPACE} -gt 63 ]]; then
+            echo "::error::SEALOS_NAMESPACE is invalid"
+            exit 1
+          fi
+          test -n "$KUBE_CONFIG_DATA"
+          umask 077
+          export KUBECONFIG="${RUNNER_TEMP}/rc-cleanup-kubeconfig"
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > "$KUBECONFIG"
+          resource=deployment/xpod-rc
+          observation="${RUNNER_TEMP}/rc-cleanup-deployment.json"
+          kubectl -n "$SEALOS_NAMESPACE" get "$resource" --ignore-not-found -o json > "$observation"
+          set +e
+          node scripts/rc-cleanup-ownership.cjs deployment "$observation" "$SEALOS_NAMESPACE" "$XPOD_RC_SEED_SECRET_NAME"
+          ownership_status=$?
+          set -e
+          if [ "$ownership_status" -eq 0 ]; then
+            kubectl -n "$SEALOS_NAMESPACE" scale "$resource" --replicas=0
+            # The RC-only Inngest deployment may be absent when the shared service is used.
+            if [ -n "$(kubectl -n "$SEALOS_NAMESPACE" get deployment/xpod-rc-inngest --ignore-not-found -o name)" ]; then
+              kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0
+            fi
+          elif [ "$ownership_status" -eq 2 ]; then
+            echo "RC resource is absent or belongs to another run; resource not scaled"
+          else
+            exit "$ownership_status"
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" delete secret "$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found

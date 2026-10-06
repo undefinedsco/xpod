@@ -8,13 +8,13 @@ import { Checkbox } from '../checkbox'
 import { StorageBadge } from './StorageBadge'
 import type { StorageLocation } from './types'
 
-/** Minimum hit targets (spec §5); content may grow when text is enlarged or wraps. */
-export const primaryButtonClass = 'h-auto min-h-11 w-full whitespace-normal break-normal rounded-lg py-2 text-sm font-medium leading-snug'
+/** Screen-level controls leave room for readable text and touch targets. */
+export const primaryButtonClass = 'h-auto min-h-12 w-full whitespace-normal break-normal rounded-lg py-2 text-base font-medium leading-snug'
 export const outlineButtonClass = primaryButtonClass
-export const textButtonClass = 'h-auto min-h-9 max-w-full whitespace-normal break-normal rounded-lg px-2 py-1 text-sm font-medium leading-snug'
+export const textButtonClass = 'h-9 rounded-lg px-2 text-sm font-medium'
 
 export const fieldClass =
-  'h-11 w-full rounded-lg border border-input bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground disabled:opacity-60'
+  'h-12 w-full rounded-lg border border-input bg-card px-4 text-base text-foreground placeholder:text-muted-foreground disabled:opacity-60'
 
 export function Spinner({ className }: { className?: string }) {
   return <Loader2 aria-hidden="true" className={cn('h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none', className)} />
@@ -148,10 +148,10 @@ export function ScreenLayout({
   const inner = (
     <>
       {chrome}
-      <div data-pod-sign-in="main" className={cn('flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 pb-2 pt-5', mainClassName)}>
+      <div data-pod-sign-in="main" className={cn('flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-6 pb-3 pt-7 min-[400px]:px-8 min-[400px]:pt-8', mainClassName)}>
         {children}
       </div>
-      {actions ? <div data-pod-sign-in="actions" className="flex shrink-0 flex-col gap-3 px-6 pb-6 pt-3">{actions}</div> : null}
+      {actions ? <div data-pod-sign-in="actions" className="flex shrink-0 flex-col gap-4 px-6 pb-7 pt-5 min-[400px]:px-8 min-[400px]:pb-8">{actions}</div> : null}
     </>
   )
   const className = 'flex min-h-0 flex-1 flex-col'

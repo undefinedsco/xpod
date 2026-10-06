@@ -72,14 +72,22 @@ describe('ConsentPage presentation', () => {
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
     expect(screen.getByTestId('web-account-introduction')).toBeTruthy();
     const authorizeHeading = screen.getByRole('heading', { level: 1, name: '授权 Northstar' });
-    // §3/§5 title spec: the consent heading shares the sign-in/register scale —
-    // 17px at weight 600 (font-semibold), not the default 20px `text-xl`.
+    // §3/§5 title spec: the consent heading carries the shared sign-in/register
+    // class contract — `text-[17px]` at weight 600, not the default `text-xl`.
+    // The utility class is the source-level guard only; the rendered size is the
+    // shared `.pod-sign-in h1` contract (22px/600), asserted from computed styles in
+    // tests/e2e/account-web-layout.spec.ts. Do not read this assertion as the
+    // computed font size.
     expect(authorizeHeading.className).toContain('text-[17px]');
     expect(authorizeHeading.className).toContain('font-semibold');
     expect(screen.getByText('app.example')).toBeTruthy();
     expect(screen.getByRole('alert').textContent).toContain('未能验证这个应用的来源');
     // One WebID: a single row, no choice, and the location is only a badge.
     expect(screen.queryByRole('radiogroup')).toBeNull();
+    // The packaged acceptance driver proves the exact binding from this
+    // rendered shape: a single binding must expose no chooser at all.
+    expect(document.getElementById('oidc-consent-webid')).toBeNull();
+    expect(document.getElementById('oidc-consent-storage')).toBeNull();
     expect(screen.getByRole('img', { name: '数据存在 Xpod 云端' })).toBeTruthy();
     expect(screen.queryByText('Personal Messages Platform')).toBeNull();
   });
@@ -157,5 +165,37 @@ describe('ConsentPage presentation', () => {
     expect(screen.queryByText(/也可以在这里直接创建/)).toBeNull();
     expect(screen.queryByRole('button', { name: '前往 Pod 管理' })).toBeNull();
     expect(screen.queryByText(/Pod 名称可用/)).toBeNull();
+  });
+
+  // §4 / §11.1 / §13.11: a native host authentication surface fills the
+  // host-selected 440x620 window; only a browser document is the two-column page.
+  it('fills the native host window instead of the browser document page', async () => {
+    const setWindowMode = vi.fn();
+    vi.stubGlobal('xpodDesktop', { setWindowMode });
+    stubConsent([cloud]);
+    renderPage();
+    await screen.findByRole('button', { name: '允许' });
+
+    const panel = screen.getByTestId('web-account-panel');
+    expect(panel.getAttribute('data-web-account-layout')).toBe('window');
+    expect(panel.getAttribute('data-web-account-host')).toBe('window');
+    expect(document.querySelector('[data-pod-sign-in-frame="window"]')).not.toBeNull();
+    expect(document.querySelector('[data-pod-sign-in-frame="page"]')).toBeNull();
+    // The page frame's introduction column is a browser-document surface only.
+    expect(screen.queryByTestId('web-account-introduction')).toBeNull();
+    expect(setWindowMode).toHaveBeenLastCalledWith('account');
+  });
+
+  it('keeps the missing-Pod branch in the same native host window', async () => {
+    const setWindowMode = vi.fn();
+    vi.stubGlobal('xpodDesktop', { setWindowMode });
+    stubConsent([]);
+    renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: '还没有 WebID' })).toBeTruthy();
+
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('window');
+    expect(document.querySelector('[data-pod-sign-in-frame="window"]')).not.toBeNull();
+    expect(screen.queryByTestId('web-account-introduction')).toBeNull();
+    expect(setWindowMode).toHaveBeenLastCalledWith('account');
   });
 });

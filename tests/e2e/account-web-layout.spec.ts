@@ -7,10 +7,10 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test';
 // The contracts asserted below follow the current source
 // (`packages/shared-ui/src/pod-sign-in/*`, `ui/src/auth/*`, `ui/src/pages/*`) and
 // `docs/superpowers/specs/2026-09-29-shared-ui-pod-sign-in-design.md`: a browser
-// document is a two-column `page` (service introduction beside a responsive 360px body), the
-// desktop bridge is a `window` that fills the accepted native 280x400 compact frame.
-// Account registration creates only an Account (no implicit Pod); the compact
-// `window` frame is the current native contract, not a retired layout.
+// document is a two-column `page` (service introduction beside a responsive 480px body), the
+// desktop bridge is a `window` that fills 440x620 by default and never collapses below the
+// 320x480 minimum. The retired `compact` layout / 280x400 bounds / implicit Pod
+// registration are gone and must not reappear.
 test.use({ baseURL: process.env.XPOD_ACCOUNT_LAYOUT_BASE_URL ?? 'http://127.0.0.1:5173' });
 
 const LONG_WEBID = 'https://0123456789abcdef0123456789abcdef.nodes.example/acceptance-0123456789/profile/card#me';
@@ -131,9 +131,10 @@ interface LayoutExpectation {
 
 /**
  * The shared frame contract: `page` = two columns with the service introduction
- * beside a responsive 360px body (introduction shown at >=768px, hidden in a single column
- * below); `window` = the desktop bridge host that fills the native 280x400 compact
- * frame. No horizontal overflow anywhere; the compact `window` frame is current.
+ * beside a responsive 480px body (introduction shown at >=768px, hidden in a single column
+ * below); `window` = the desktop bridge host that fills 440x620 by default and keeps the
+ * 320x480 minimum. No horizontal overflow anywhere, and the retired `compact`
+ * layout must not come back.
  */
 async function checkLayout(page: Page, info: TestInfo, name: string, expectation: LayoutExpectation) {
   const panel = page.getByTestId('web-account-panel');
@@ -159,12 +160,12 @@ async function checkLayout(page: Page, info: TestInfo, name: string, expectation
 
   if (expectation.host === 'document') {
     await expect(page.locator('[data-pod-sign-in-frame="page"]')).toHaveCount(1);
-    expect(geometry.body.width).toBeLessThanOrEqual(360);
+    expect(geometry.body.width).toBeLessThanOrEqual(480);
     if (expectation.intro === 'shown') {
       await expect(page.getByTestId('web-account-introduction')).toBeVisible();
       expect(geometry.intro).not.toBeNull();
-      // The shared body caps at exactly 360px, and the introduction sits to its left.
-      expect(geometry.body.width).toBe(360);
+      // The shared body caps at exactly 480px, and the introduction sits to its left.
+      expect(geometry.body.width).toBe(480);
       expect(geometry.intro!.x + geometry.intro!.width).toBeLessThanOrEqual(geometry.body.x);
     } else {
       await expect(page.locator('[data-pod-sign-in="intro"]')).toBeHidden();
@@ -189,7 +190,53 @@ async function checkLayout(page: Page, info: TestInfo, name: string, expectation
   await page.screenshot({ path: info.outputPath(`${name}.png`), scale: 'css' });
 }
 
-test('Wide page shows the service introduction beside the 360px body and recovers from a login error', async ({ page }, info) => {
+/**
+ * §4 / §13.11: a native host window never scrolls; only the sign-in body
+ * (`[data-pod-sign-in="main"]`, `overflow-y: auto`) may, and the pinned action
+ * area stays inside the viewport. Returns the measured boxes for evidence.
+ */
+async function expectBodyOnlyScrolling(page: Page) {
+  const state = await page.evaluate(() => {
+    const main = document.querySelector('[data-pod-sign-in="main"]') as HTMLElement | null;
+    const actions = document.querySelector('[data-pod-sign-in="actions"]') as HTMLElement | null;
+    const actionsBox = actions?.getBoundingClientRect();
+    return {
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      documentScrollHeight: document.documentElement.scrollHeight,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      mainOverflowY: main ? getComputedStyle(main).overflowY : null,
+      mainScrollHeight: main?.scrollHeight ?? null,
+      mainClientHeight: main?.clientHeight ?? null,
+      actions: actionsBox ? { top: actionsBox.top, bottom: actionsBox.bottom } : null,
+    };
+  });
+  expect(state.documentScrollWidth).toBeLessThanOrEqual(state.viewport.width);
+  // The host window itself does not scroll; the body region owns any overflow.
+  expect(state.documentScrollHeight).toBeLessThanOrEqual(state.viewport.height + 1);
+  expect(state.mainOverflowY).toBe('auto');
+  expect(state.actions).not.toBeNull();
+  expect(state.actions!.bottom).toBeLessThanOrEqual(state.viewport.height + 1);
+  return state;
+}
+
+/**
+ * Rendered typography of the consent view, read from computed styles.
+ *
+ * The consent heading carries the historical `text-[17px]` utility class, but
+ * the rendered contract is the shared sign-in title size (`22px`, weight 600)
+ * from `.pod-sign-in h1`. Class names are not size evidence: this reads what the
+ * browser actually lays out, so a host change cannot silently restyle it.
+ */
+async function measureConsentTypography(page: Page) {
+  return page.evaluate(() => {
+    const element = document.querySelector('[data-pod-sign-in-state="consent"] h1') as HTMLElement | null;
+    if (!element) return null;
+    const style = getComputedStyle(element);
+    return { fontSize: style.fontSize, fontWeight: style.fontWeight };
+  });
+}
+
+test('Wide page shows the service introduction beside the 480px body and recovers from a login error', async ({ page }, info) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const observed = await mockAccount(page, { loginStatus: 401 });
   await page.goto('/.account/login/password/');
@@ -239,7 +286,7 @@ test('Narrow page collapses the introduction into a single column with no horizo
   const bodyWidth = await page.getByTestId('web-account-panel')
     .evaluate((element) => element.parentElement!.getBoundingClientRect().width);
   expect(bodyWidth).toBeGreaterThan(0);
-  expect(bodyWidth).toBeLessThanOrEqual(360);
+  expect(bodyWidth).toBeLessThanOrEqual(480);
 
   // Recovery stays reachable in the single column.
   await page.getByRole('button', { name: '忘记密码？' }).click();
@@ -247,13 +294,17 @@ test('Narrow page collapses the introduction into a single column with no horizo
   await checkLayout(page, info, 'narrow-recovery', { host: 'document', intro: 'hidden' });
 });
 
-test('Desktop bridge account window fills the native 280x400 compact frame', async ({ page }, info) => {
+test('Desktop bridge account window fills 440x620 and honours the 320x480 minimum', async ({ page }, info) => {
   await useDesktopBridge(page);
-  await page.setViewportSize({ width: 280, height: 400 });
+  await page.setViewportSize({ width: 440, height: 620 });
   await mockAccount(page);
   await page.goto('/.account/login/password/');
   await expect(page.getByLabel('邮箱')).toBeVisible();
-  await checkLayout(page, info, 'window-280x400', { host: 'window' });
+  await checkLayout(page, info, 'window-440x620', { host: 'window' });
+
+  await page.setViewportSize({ width: 320, height: 480 });
+  await expect(page.getByLabel('邮箱')).toBeVisible();
+  await checkLayout(page, info, 'window-minimum-320x480', { host: 'window' });
 
   // Form choices must remain clickable above the pinned action area.
   const remember = page.getByRole('checkbox', { name: '记住账号' });
@@ -262,8 +313,10 @@ test('Desktop bridge account window fills the native 280x400 compact frame', asy
   const actionsBounds = (await page.locator('[data-pod-sign-in="actions"]').boundingBox())!;
   expect(rememberBounds.y + rememberBounds.height).toBeLessThanOrEqual(actionsBounds.y);
 
-  // Primary and return actions stay reachable in the compact window.
+  // Primary and return actions stay reachable at the shared minimum.
+  await page.getByRole('button', { name: '登录', exact: true }).scrollIntoViewIfNeeded();
   await page.getByRole('button', { name: '登录', exact: true }).click({ trial: true });
+  await page.getByRole('button', { name: '注册账号', exact: true }).scrollIntoViewIfNeeded();
   await page.getByRole('button', { name: '注册账号', exact: true }).click({ trial: true });
 });
 
@@ -333,7 +386,7 @@ test('Enlarged root text doubles rem typography while fixed-px headings stay put
 
   const before = await measureEnlargedText(page);
   expect(before.rootFont).toBe(16);
-  expect(before.heading).toBe(17);   // shared sign-in title (`text-[17px]`)
+  expect(before.heading).toBe(22);   // shared sign-in title
   expect(before.intro).toBe(12);     // rem `text-xs`
   expect(before.overflow).toBe(0);
 
@@ -343,7 +396,7 @@ test('Enlarged root text doubles rem typography while fixed-px headings stay put
   const after = await measureEnlargedText(page);
   expect(after.rootFont).toBe(32);                      // root font really doubled
   expect(after.intro! / before.intro!).toBeCloseTo(2, 5);   // rem text doubles
-  expect(after.heading).toBe(17);                       // fixed px stays put
+  expect(after.heading).toBe(22);                       // fixed px stays put
   expect(after.submitHeight!).toBeCloseTo(before.submitHeight! * 2, 0); // rem control grows
   expect(after.overflow).toBe(0);                       // wide two-column still fits
   await checkLayout(page, info, 'wide-text-200', { host: 'document', intro: 'shown' });
@@ -425,17 +478,25 @@ test('Initialization failure blocks Account requests until retry succeeds', asyn
   await checkLayout(page, info, 'init-recovered', { host: 'document', intro: 'shown' });
 });
 
-test('Consent with a long node identity uses a desktop document window', async ({ page }, info) => {
+test('Desktop consent fills the native 440x620 window and the 320x480 minimum', async ({ page }, info) => {
   await useDesktopBridge(page);
-  await page.setViewportSize({ width: 360, height: 540 });
+  await page.setViewportSize({ width: 440, height: 620 });
   await mockAccount(page, { authenticated: true, consent: true, longBinding: true });
   await page.goto('/.account/oidc/consent/');
   await expect(page.getByRole('heading', { name: '授权 Example App', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '允许', exact: true })).toBeEnabled();
-  await checkLayout(page, info, 'consent-document-long-identity', { host: 'document', intro: 'hidden' });
-  await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'workspace');
 
-  // Primary and return actions remain reachable in the native 280x400 window.
+  // The native authentication surface fills the host-selected window; it is not
+  // the two-column browser document page.
+  await checkLayout(page, info, 'consent-window-440x620-long-identity', { host: 'window' });
+  await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'account');
+  let scrolling = await expectBodyOnlyScrolling(page);
+  expect(scrolling.viewport).toEqual({ width: 440, height: 620 });
+  // Host selection changes geometry only: the consent heading still renders at
+  // the shared sign-in title size the browser page uses (measured, not class-based).
+  expect(await measureConsentTypography(page)).toEqual({ fontSize: '22px', fontWeight: '600' });
+
+  // Primary and return actions remain reachable with the long identity.
   await page.getByRole('button', { name: '允许', exact: true }).scrollIntoViewIfNeeded();
   await page.getByRole('button', { name: '允许', exact: true }).click({ trial: true });
   await page.getByRole('button', { name: '换一个账号', exact: true }).scrollIntoViewIfNeeded();
@@ -446,10 +507,14 @@ test('Consent with a long node identity uses a desktop document window', async (
   await expect(page.getByLabel('以后不再询问')).toBeVisible();
   await page.getByLabel('以后不再询问').uncheck();
 
-  // The shared minimum still fits the long identity.
-  await page.setViewportSize({ width: 280, height: 400 });
+  // The shared minimum still fits the long identity in the same native window.
+  await page.setViewportSize({ width: 320, height: 480 });
   await expect(page.getByRole('button', { name: '允许', exact: true })).toBeEnabled();
-  await checkLayout(page, info, 'consent-document-narrow-long-identity', { host: 'document', intro: 'hidden' });
+  await checkLayout(page, info, 'consent-window-320x480-long-identity', { host: 'window' });
+  scrolling = await expectBodyOnlyScrolling(page);
+  expect(scrolling.viewport).toEqual({ width: 320, height: 480 });
+  // The minimum window keeps the same typography; it does not compact the copy.
+  expect(await measureConsentTypography(page)).toEqual({ fontSize: '22px', fontWeight: '600' });
   await page.getByRole('button', { name: '允许', exact: true }).scrollIntoViewIfNeeded();
   await page.getByRole('button', { name: '允许', exact: true }).click({ trial: true });
 });
@@ -481,11 +546,12 @@ test('Desktop sign-in remains operable at 200% root text in default and minimum 
   await page.goto('/.account/login/password/');
   await expect(page.getByLabel('邮箱')).toBeVisible();
   await page.addStyleTag({ content: 'html { font-size: 200%; }' });
-  for (const [width, height] of [[280, 400]]) {
+  for (const [width, height] of [[440, 620], [320, 480]]) {
     await page.setViewportSize({ width, height });
     expect((await measureEnlargedText(page)).rootFont).toBe(32);
     for (const name of ['登录', '注册账号', '忘记密码？']) {
       const action = page.getByRole('button', { name, exact: true });
+      await action.scrollIntoViewIfNeeded();
       await action.click({ trial: true });
     }
     await checkLayout(page, info, `sign-in-window-${width}-text-200`, { host: 'window' });
@@ -498,14 +564,15 @@ test('Desktop long-identity consent remains operable at 200% root text', async (
   await page.goto('/.account/oidc/consent/');
   await expect(page.getByRole('heading', { name: '授权 Example App', exact: true })).toBeVisible();
   await page.addStyleTag({ content: 'html { font-size: 200%; }' });
-  for (const [width, height] of [[280, 400]]) {
+  for (const [width, height] of [[440, 620], [320, 480]]) {
     await page.setViewportSize({ width, height });
     for (const name of ['允许', '换一个账号']) {
       const action = page.getByRole('button', { name, exact: true });
+      await action.scrollIntoViewIfNeeded();
       await action.click({ trial: true });
     }
-    await checkLayout(page, info, `consent-document-${width}-text-200`, { host: 'document', intro: 'hidden' });
-    await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'workspace');
+    await checkLayout(page, info, `consent-window-${width}-text-200`, { host: 'window' });
+    await expect(page.locator('html')).toHaveAttribute('data-requested-window-mode', 'account');
   }
 });
 

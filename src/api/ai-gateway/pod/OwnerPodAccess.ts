@@ -264,6 +264,11 @@ export function podAccessError(owner: string, auth?: AuthContext): string {
  */
 export function isPodAccessFailure(message: string): boolean {
   return message === 'service_access_missing'
+    || message === 'Authoritative Pod storage binding ambiguous'
+    || message === 'Authoritative Pod credential binding changed on cached context'
+    || message === 'Authoritative Pod credential binding changed while opening database'
+    || message === 'Authoritative Pod storage binding changed on cached context'
+    || message === 'Authoritative Pod storage binding conflicts with request'
     || message.startsWith(POD_INTERFACE_KEY_MISSING)
     || message.startsWith(POD_INTERFACE_KEY_REJECTED)
     || message.startsWith(CALLER_DPOP_REPLAY_UNSUPPORTED)

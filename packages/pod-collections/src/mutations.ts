@@ -5,6 +5,8 @@ import type { PodRowConflict, RowOf } from './types.js';
 import { PodCollectionError } from './types.js';
 import {
   descriptorRowToColumnValues,
+  createProjectionNormalizer,
+  type PodProjectionContext,
   fieldBindings,
   isUriArrayField,
   normalizeMutationRow,
@@ -167,7 +169,9 @@ export function reconcilePendingWrites<R extends object>(
   next: ReadonlyMap<string, R>,
   hashOf: (row: R) => string,
   writeOnly: ReadonlySet<string> = EMPTY_WRITE_ONLY,
+  projectionContext?: PodProjectionContext,
 ): void {
+  const normalize = projectionContext ? createProjectionNormalizer(projectionContext) : <T extends object>(row: T): T => row;
   for (const entry of pending.entries.values()) {
     if (entry.settled) continue;
     const server = next.get(entry.key);
@@ -182,7 +186,7 @@ export function reconcilePendingWrites<R extends object>(
       }
       continue;
     }
-    if (projectionCovers(server, entry.intent, writeOnly)) {
+    if (projectionCovers(server && normalize(server), normalize(entry.intent), writeOnly)) {
       // 意图的可读字段都在服务端行里（插入意图可能只带一部分字段；带 secret 的意图
       // 只按可读部分确认，secret 的证据是写调用已经成功）。
       pending.settle(entry);
@@ -278,7 +282,8 @@ export function createMutationHandlers<D extends PodModelDescriptor>(
 ): PodMutationHandlers<D> {
   const { descriptor, table, pending } = context;
   const fieldOrder = projectionFieldOrder(descriptor);
-  const hashOf = (row: RowOf<D>): string => projectionHash(row, fieldOrder);
+  const normalize = createProjectionNormalizer(context);
+  const hashOf = (row: RowOf<D>): string => projectionHash(normalize(row), fieldOrder);
   const uriArrayFieldNames = new Set(
     Object.entries(descriptor.fields)
       .filter(([, field]) => isUriArrayField(field))
