@@ -149,12 +149,21 @@ jobs:
         id: previous
         run: |
           set -euo pipefail
-          previous_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
-          if [[ -z "$previous_image" ]]; then
-            echo "::error::current deployment/${XPOD_DEPLOYMENT} container xpod image is missing"
+          deployment_json="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o json)"
+          selection="$(printf '%s' "$deployment_json" | node scripts/lib/production-deployment-container.cjs --target-image "$TARGET_IMAGE")"
+          service_container="$(printf '%s' "$selection" | jq -r '.serviceContainer')"
+          previous_image="$(printf '%s' "$selection" | jq -r '.previousImage')"
+          if [[ -z "$service_container" || "$service_container" == "null" ]]; then
+            echo "::error::could not derive the service container for deployment/${XPOD_DEPLOYMENT} from image repository of ${TARGET_IMAGE}"
             exit 1
           fi
+          if [[ -z "$previous_image" || "$previous_image" == "null" ]]; then
+            echo "::error::current deployment/${XPOD_DEPLOYMENT} service container ${service_container} image is missing"
+            exit 1
+          fi
+          printf '%s' "$service_container" > "$RUNNER_TEMP/xpod-service-container"
           printf '%s' "$previous_image" > "$RUNNER_TEMP/xpod-previous-image"
+          echo "service_container=$service_container" >> "$GITHUB_OUTPUT"
           echo "previous_image=$previous_image" >> "$GITHUB_OUTPUT"
 
       # Runtime profiles and infrastructure are owned by the environment's deployment
@@ -162,7 +171,8 @@ jobs:
       - name: Deploy digest image
         run: |
           set -euo pipefail
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} xpod="$TARGET_IMAGE"
+          service_container="$(cat "$RUNNER_TEMP/xpod-service-container")"
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$TARGET_IMAGE"
           kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s
 
@@ -221,7 +231,9 @@ jobs:
           fi
           expected_status "$protected_settings_url" 401
 
-          deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
+          service_container="$(cat "$RUNNER_TEMP/xpod-service-container")"
+          deployment_json="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o json)"
+          deployment_image="$(printf '%s' "$deployment_json" | jq -r --arg name "$service_container" '.spec.template.spec.containers[] | select(.name == $name) | .image')"
           if [[ "$deployment_image" != "$TARGET_IMAGE" ]]; then
             echo "::error::deployment image does not match requested digest"
             exit 1
@@ -232,12 +244,12 @@ jobs:
             echo "::error::no running ${XPOD_DEPLOYMENT} pod found"
             exit 1
           fi
-          pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$ready_pod" -o 'jsonpath={.status.containerStatuses[?(@.name=="xpod")].imageID}')"
+          pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$ready_pod" -o json | jq -r --arg name "$service_container" '.status.containerStatuses[] | select(.name == $name) | .imageID')"
           if [[ "$pod_image_id" != *"$INPUT_IMAGE_DIGEST"* ]]; then
             echo "::error::ready pod imageID does not contain requested digest"
             exit 1
           fi
-          kubectl -n "$SEALOS_NAMESPACE" exec "$ready_pod" -c xpod -- node -e '
+          kubectl -n "$SEALOS_NAMESPACE" exec "$ready_pod" -c "$service_container" -- node -e '
             fetch("http://127.0.0.1:3000/service/status")
               .then((response) => {
                 if (response.status !== 200) throw new Error(`status ${response.status}`);
@@ -253,7 +265,8 @@ jobs:
             exit 0
           fi
           PREVIOUS_IMAGE="$(cat "$RUNNER_TEMP/xpod-previous-image")"
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} xpod="$PREVIOUS_IMAGE" || exit 0
+          service_container="$(cat "$RUNNER_TEMP/xpod-service-container")"
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$PREVIOUS_IMAGE" || exit 0
           kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s || exit 0
 
       - name: Dump diagnostics on failure
@@ -348,12 +361,21 @@ jobs:
         id: previous
         run: |
           set -euo pipefail
-          previous_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
-          if [[ -z "$previous_image" ]]; then
-            echo "::error::current deployment/${XPOD_DEPLOYMENT} container xpod image is missing"
+          deployment_json="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o json)"
+          selection="$(printf '%s' "$deployment_json" | node scripts/lib/production-deployment-container.cjs --target-image "$TARGET_IMAGE")"
+          service_container="$(printf '%s' "$selection" | jq -r '.serviceContainer')"
+          previous_image="$(printf '%s' "$selection" | jq -r '.previousImage')"
+          if [[ -z "$service_container" || "$service_container" == "null" ]]; then
+            echo "::error::could not derive the service container for deployment/${XPOD_DEPLOYMENT} from image repository of ${TARGET_IMAGE}"
             exit 1
           fi
+          if [[ -z "$previous_image" || "$previous_image" == "null" ]]; then
+            echo "::error::current deployment/${XPOD_DEPLOYMENT} service container ${service_container} image is missing"
+            exit 1
+          fi
+          printf '%s' "$service_container" > "$RUNNER_TEMP/xpod-service-container"
           printf '%s' "$previous_image" > "$RUNNER_TEMP/xpod-previous-image"
+          echo "service_container=$service_container" >> "$GITHUB_OUTPUT"
           echo "previous_image=$previous_image" >> "$GITHUB_OUTPUT"
 
       # Runtime profiles and infrastructure are owned by the environment's deployment
@@ -361,7 +383,8 @@ jobs:
       - name: Deploy digest image
         run: |
           set -euo pipefail
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} xpod="$TARGET_IMAGE"
+          service_container="$(cat "$RUNNER_TEMP/xpod-service-container")"
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$TARGET_IMAGE"
           kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s
 
@@ -420,7 +443,9 @@ jobs:
           fi
           expected_status "$protected_settings_url" 401
 
-          deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
+          service_container="$(cat "$RUNNER_TEMP/xpod-service-container")"
+          deployment_json="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o json)"
+          deployment_image="$(printf '%s' "$deployment_json" | jq -r --arg name "$service_container" '.spec.template.spec.containers[] | select(.name == $name) | .image')"
           if [[ "$deployment_image" != "$TARGET_IMAGE" ]]; then
             echo "::error::deployment image does not match requested digest"
             exit 1
@@ -431,12 +456,12 @@ jobs:
             echo "::error::no running ${XPOD_DEPLOYMENT} pod found"
             exit 1
           fi
-          pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$ready_pod" -o 'jsonpath={.status.containerStatuses[?(@.name=="xpod")].imageID}')"
+          pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$ready_pod" -o json | jq -r --arg name "$service_container" '.status.containerStatuses[] | select(.name == $name) | .imageID')"
           if [[ "$pod_image_id" != *"$INPUT_IMAGE_DIGEST"* ]]; then
             echo "::error::ready pod imageID does not contain requested digest"
             exit 1
           fi
-          kubectl -n "$SEALOS_NAMESPACE" exec "$ready_pod" -c xpod -- node -e '
+          kubectl -n "$SEALOS_NAMESPACE" exec "$ready_pod" -c "$service_container" -- node -e '
             fetch("http://127.0.0.1:3000/service/status")
               .then((response) => {
                 if (response.status !== 200) throw new Error(`status ${response.status}`);
@@ -452,7 +477,8 @@ jobs:
             exit 0
           fi
           PREVIOUS_IMAGE="$(cat "$RUNNER_TEMP/xpod-previous-image")"
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} xpod="$PREVIOUS_IMAGE" || exit 0
+          service_container="$(cat "$RUNNER_TEMP/xpod-service-container")"
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$PREVIOUS_IMAGE" || exit 0
           kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s || exit 0
 
       - name: Dump diagnostics on failure
