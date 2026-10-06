@@ -48,6 +48,12 @@ evidence).
   wrapper is known (the creating session). A restored list row cannot fabricate
   one, so the UI reports the key as unverifiable instead of "changed". The
   Account credential id stays the row identity.
+- Inbound admission revalidates the presented client credential with the issuer
+  on **every new** request to `/v1/models` and the inference routes. The session
+  cache is reused only for that one request's outbound Pod access, so a cached
+  access token can no longer keep a deleted credential alive. The Xpod keys page
+  no longer probes the applet service-access descriptor; a missing Pod read is
+  detected from a real refusal, matching step 4.
 - See `docs/ai-connections-product-spec.md` for the ownership and
   honest-restore-status rules.
 

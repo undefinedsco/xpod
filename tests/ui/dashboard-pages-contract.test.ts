@@ -150,7 +150,9 @@ describe('upgraded dashboard pages', () => {
     expect(productLayout).toContain('data-drawer-open={drawerOpen}');
     expect(productLayout).toContain('getRailNavItemClass(active)');
     expect(productLayout).toContain('className="sr-only"');
-    expect(navItemStyle).toContain('h-10 w-10 items-center justify-center');
+    // The 64px rail is a physical strip, so its icon hit-box is pinned to physical
+    // px; a rem-based hit-box would grow and clip against the rail at large text.
+    expect(navItemStyle).toContain('h-[40px] w-[40px] items-center justify-center');
     expect(shellCss).toContain('grid-template-columns:64px minmax(0,1fr)');
     expect(shellCss).toContain('@media (max-width:767px)');
     expect(productLayout).toContain('ProductNavLinks');

@@ -28,10 +28,12 @@ const siblingCredentialHint = credentialHint(fakeSiblingApiKey);
  * SURFACE, NOT evidence about the immutable released ZIP, a real Electron
  * preload, or a formal RC run; those need their own exact-artifact proof.
  *
- * KNOWN UNMET REQUIREMENT in this file (see the last test): destroying an Xpod
- * key removes the Account credential, but the gateway keeps authenticating the
- * already-cached `sk-` wrapper until its token expires. That gap is asserted
- * RED on purpose; it is not a pass.
+ * REPAIRED CONTRACT (2026-10-07, phase23): destroying an Xpod key removes the
+ * Account credential and the gateway must refuse the `sk-` wrapper on the very
+ * next request. The gateway admits through `SolidSessionFactory.admit()`, which
+ * proves the presented wrapper to its issuer on every inbound request; the
+ * session cache only stops the same request from exchanging twice. The last test
+ * asserts that 401, so a cache-first regression fails here instead of passing.
  */
 const aliceGatewayKeyName = 'Alice acceptance Xpod key';
 /** The Account credential id (the CSS label) of the key this run created. */
@@ -541,6 +543,53 @@ test.describe('Xpod settings product acceptance', () => {
     });
   }
 
+  test('keeps the desktop rail controls inside the 64px strip at 200% root text', async ({ browser }) => {
+    test.setTimeout(180_000);
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    try {
+      const trace = await loginToSettings(page, alice, { rememberClient: true });
+      assertRealOidcTrace(trace);
+      assertRememberedDesktopClient(trace);
+      await openModule(page, '/device/network', 'Network');
+
+      // Real root-relative text enlargement: `html { font-size: 200% }` grows rem
+      // units, which is exactly what pushed the rem-based rail hit-boxes past the
+      // fixed 64px strip (design §10.2 / desktop-shell.css).
+      await page.addStyleTag({ content: 'html { font-size: 200%; }' });
+
+      const geometry = await page.evaluate(() => {
+        const rect = (element: Element | null | undefined) => {
+          const box = element?.getBoundingClientRect();
+          return box ? { x: box.x, y: box.y, width: box.width, height: box.height, right: box.right } : null;
+        };
+        const shell = document.querySelector('.xpod-desktop-shell');
+        return {
+          rail: rect(document.querySelector('.xpod-rail')),
+          items: [...document.querySelectorAll('.xpod-rail nav a')].map((item) => rect(item)),
+          scrollWidth: shell?.scrollWidth ?? 0,
+          clientWidth: shell?.clientWidth ?? 0,
+          rootFontPx: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+        };
+      });
+
+      // The enlargement really happened (200% of the 16px default root).
+      expect(geometry.rootFontPx).toBeGreaterThanOrEqual(30);
+      expect(geometry.rail?.width).toBe(64);
+      expect(geometry.items.length).toBeGreaterThan(0);
+      for (const item of geometry.items) {
+        // Physical 40px hit-box: it must not grow with the root font.
+        expect(item?.width).toBeCloseTo(40, 0);
+        expect(item?.height).toBeCloseTo(40, 0);
+        // The control stays fully inside the rail strip instead of being clipped.
+        expect(item?.right ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual((geometry.rail?.right ?? 0) + 0.5);
+      }
+      expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
+      await page.screenshot({ path: path.join(screenshotDir, 'desktop-rail-200pct.png'), fullPage: false });
+    } finally {
+      await page.context().close();
+    }
+  });
+
   test('keeps narrow Models stack detail, focus, and drawer navigation accessible', async ({ browser }) => {
     test.setTimeout(180_000);
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -607,24 +656,17 @@ test.describe('Xpod settings product acceptance', () => {
   });
 
   /**
-   * REQUIREMENT, CURRENTLY UNMET (proven 2026-10-07, phase22): destroying an
-   * Xpod key really removes the Account client credential — the DELETE returns
-   * 200 and the credential detail is gone — but the gateway keeps authenticating
-   * the `sk-` wrapper afterwards.
+   * Destroying an Xpod key removes the Account client credential, and the gateway
+   * has to stop admitting the `sk-` wrapper on the very next request — not
+   * whenever the token some earlier request obtained happens to expire.
    *
-   * Mechanism: `ClientCredentialsAuthenticator` exchanges the wrapper once and
-   * `SolidSessionFactory` caches the token per credential; nothing calls
-   * `SolidSessionFactory.invalidateClientCredential()` any more, because its
-   * last caller was the Gateway key DELETE route deleted together with the
-   * locator in 5b14737075. A destroyed key therefore keeps working until the
-   * cached token expires.
-   *
-   * The repair belongs to the server session boundary (observe the Account
-   * credential DELETE, or stop caching inbound sessions) and is outside this
-   * browser-fixture batch. This test stays RED rather than being relaxed or
-   * skipped, so a future RC cannot mistake the gap for a pass.
+   * The gateway admits through `SolidSessionFactory.admit()`, which proves the
+   * presented wrapper to its issuer on every inbound request; the session cache
+   * only keeps the same request's outbound Pod access from exchanging twice. The
+   * run below uses the real CSS Account credential and the real gateway route, so
+   * a cache-first regression fails here instead of shipping as a pass.
    */
-  test('refuses a destroyed Xpod key immediately (known gap: the cached gateway session is never invalidated)', async ({ browser }) => {
+  test('refuses a destroyed Xpod key immediately', async ({ browser }) => {
     test.setTimeout(180_000);
     const context = await browser.newContext();
     const page = await context.newPage();

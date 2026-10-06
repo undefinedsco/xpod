@@ -649,6 +649,34 @@ Two rules keep the list from over-claiming what the Account actually returns:
   observation, and a refresh must not erase the ability to test the key that was
   just applied in that session.
 
+#### Revocation Is Revalidated On Admission
+
+An Xpod key is only as valid as the Account credential behind it. Deleting that
+credential must stop the wrapper it backs even while an access token minted
+before the deletion is still inside its own lifetime:
+
+- Every **new** inbound `sk-base64(client_id:client_secret)` request to
+  `/v1/models` and the inference routes revalidates the presented credential with
+  the issuer before the request is admitted. A cached access token proves an
+  earlier exchange; it is not proof that the credential still exists.
+- The session cache serves only the **same** request's outbound Pod access: one
+  exchange is reused for that request's own reads and writes. It never admits a
+  later inbound request, and a pending pre-revocation exchange is not reused to
+  admit a request that began after the revocation completed.
+- A definitive issuer refusal (400/401/403) drops the cached session and fails
+  the request with 401. An issuer that cannot be reached (5xx or network) leaves
+  the cache untouched and answers 503 - a cached success is never substituted for
+  an answer the issuer did not give.
+- A request already in flight when the revocation lands is not torn down; only
+  admissions that start afterwards must fail.
+- The rule holds in Cloud, managed Local and Standalone and across separate CSS
+  and API processes: it lives in the shared authentication/session boundary, not
+  in a UI revoke hook, a RAM event notification, a TTL, a clock advance or a
+  provider branch.
+- Typed errors and secret redaction are unchanged: a refusal never echoes the
+  presented secret, and an accepted request keeps exactly the WebID association
+  and authorized Pod binding its exchange proved.
+
 ## Provider Detail UX
 
 Provider setup must reflect real capability:

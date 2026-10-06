@@ -106,7 +106,7 @@ describe('ClientCredentialsAuthenticator', () => {
     }
   });
 
-  it('reuses one exchange per credential across repeated requests', async () => {
+  it('revalidates the credential on every new request instead of trusting a warm session', async () => {
     const request = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
       access_token: 'cached-token',
       token_type: 'DPoP',
@@ -118,9 +118,63 @@ describe('ClientCredentialsAuthenticator', () => {
     const first = await authenticator.authenticate(makeRequest(VALID_SK_KEY));
     const second = await authenticator.authenticate(makeRequest(VALID_SK_KEY));
 
-    expect(request).toHaveBeenCalledOnce();
+    // Two independent inbound requests each prove the credential to its issuer; the token a
+    // previous request obtained is not evidence that the credential is still registered.
+    expect(request).toHaveBeenCalledTimes(2);
     expect(first).toMatchObject({ success: true, context: { accessToken: 'cached-token' } });
     expect(second).toMatchObject({ success: true, context: { accessToken: 'cached-token' } });
+  });
+
+  it('refuses a destroyed credential on the next request without waiting for the token to expire', async () => {
+    // The issuer keeps accepting the credential until the Account credential is destroyed, and
+    // then answers invalid_client. The first token is still unexpired throughout.
+    let destroyed = false;
+    const request = vi.fn().mockImplementation(async () => (destroyed
+      ? new Response('invalid_client', { status: 401 })
+      : new Response(JSON.stringify({
+        access_token: 'pre-destroy-token',
+        token_type: 'DPoP',
+        expires_in: 3600,
+        webid: TEST_WEB_ID,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    const authenticator = authenticatorFor({ fetch: request });
+
+    const before = await authenticator.authenticate(makeRequest(VALID_SK_KEY));
+    expect(before).toMatchObject({ success: true, context: { accessToken: 'pre-destroy-token' } });
+
+    destroyed = true;
+    const after = await authenticator.authenticate(makeRequest(VALID_SK_KEY));
+
+    expect(after).toMatchObject({ success: false, category: 'invalid_credentials', statusCode: 401 });
+    expect(after).not.toHaveProperty('context');
+    // The refusal is reported without echoing the wrapper or its decoded secret.
+    expect(JSON.stringify(after)).not.toContain(TEST_CLIENT_SECRET);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('never answers from a cached session while the issuer is unavailable', async () => {
+    let unavailable = false;
+    const request = vi.fn().mockImplementation(async () => (unavailable
+      ? new Response('boom', { status: 503 })
+      : new Response(JSON.stringify({
+        access_token: 'cached-token',
+        token_type: 'DPoP',
+        expires_in: 3600,
+        webid: TEST_WEB_ID,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    const authenticator = authenticatorFor({ fetch: request });
+
+    await expect(authenticator.authenticate(makeRequest(VALID_SK_KEY)))
+      .resolves.toMatchObject({ success: true });
+
+    unavailable = true;
+    // An issuer we cannot reach is not proof of anything, so the cached token must not promote
+    // itself into an admission decision.
+    await expect(authenticator.authenticate(makeRequest(VALID_SK_KEY))).resolves.toMatchObject({
+      success: false,
+      category: 'service_unavailable',
+      statusCode: 503,
+    });
   });
 
   it('refuses a credential the issuer rejects, without inventing an identity', async () => {

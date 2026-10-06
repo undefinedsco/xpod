@@ -103,6 +103,39 @@ export class SolidSessionFactory {
   }
 
   /**
+   * Admit an inbound request that presents these client credentials.
+   *
+   * Admission is always a fresh exchange with the issuer that owns the credential. A cached token
+   * proves that some earlier exchange succeeded; it is not evidence that the credential is still
+   * registered, so it must never stand in for present authority. A credential deleted from its
+   * Account has to stop opening the gateway on the very next request, not whenever the last token
+   * it obtained happens to expire.
+   *
+   * The fresh session is published to the cache, so the rest of this request - reaching the
+   * owner's Pod - finds that same token and the DPoP key it is bound to instead of exchanging the
+   * same credential a second time. Concurrent inbound requests deliberately do not share each
+   * other's exchange, for the same reason they do not share a cached token: each has to prove the
+   * credential itself.
+   */
+  public async admit(credential: SolidClientCredential): Promise<SolidSession> {
+    const key = cacheKey(this.route, credential);
+    let session: SolidSession;
+    try {
+      session = await this.exchange(credential);
+    } catch (error) {
+      // A definitive refusal means this credential is gone, so the session cached under it is
+      // stale evidence and goes with it. An outage says nothing about the credential, so the
+      // cache is left alone and the caller hears 503 instead of 401.
+      if (isCredentialRefusal(error)) {
+        this.invalidate(credential);
+      }
+      throw error;
+    }
+    this.remember(key, credential.clientId, session);
+    return session;
+  }
+
+  /**
    * Forget every cached session for one client.
    *
    * Revocation happens at the issuer, which this process cannot observe, so the record that
@@ -225,6 +258,18 @@ function cacheKey(route: TokenEndpointRoute, credential: SolidClientCredential):
 /** A stable, non-reversible fingerprint: two different secrets must never share a session. */
 function fingerprintSecret(secret: string): string {
   return createHash('sha256').update(secret).digest('hex');
+}
+
+/**
+ * Whether the issuer definitively refused the credential itself, rather than failing to answer.
+ *
+ * Only a 4xx means "this credential is not registered any more". A 5xx, a network error or an
+ * unparseable response is an outage of the issuer, and reporting that as a revoked key would both
+ * mislead the caller and throw away a session that is still perfectly good.
+ */
+function isCredentialRefusal(error: unknown): boolean {
+  const status = error instanceof SolidSessionError ? error.status : undefined;
+  return status === 400 || status === 401 || status === 403;
 }
 
 function pruneOldest(

@@ -19,13 +19,18 @@ export function getNavItemClass(isActive: boolean, options?: { compact?: boolean
 
 /**
  * 64px rail 中的图标入口；窄窗在抽屉里复用同一棵导航树。
+ *
+ * The rail column is a fixed 64px physical strip, so its controls must keep a
+ * fixed physical footprint too: rem-based sizing grows the hit-box to 80px at
+ * 200% root text and clips it against the 64px rail. Use physical px here so the
+ * control and its focus state stay fully inside the rail at any text scale.
  */
 export function getRailNavItemClass(isActive: boolean) {
   return [
     navItemBaseClass,
     navItemFocusClass,
     isActive ? 'bg-accent text-accent-foreground' : `text-foreground ${navItemInteractiveClass}`,
-    'relative flex h-10 w-10 items-center justify-center rounded-lg',
+    'relative flex h-[40px] w-[40px] items-center justify-center rounded-lg',
   ].join(' ');
 }
 

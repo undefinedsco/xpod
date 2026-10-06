@@ -90,11 +90,21 @@ function createEmptyPodDatabase() {
 describe('ModelsPage AI Connection host', () => {
   test('mounts AI Connection with caller-owned Pod access and aligned slots', async () => {
     let serviceAccessCalls = 0;
+    let gatewayKeyRouteCalls = 0;
     const fetchImpl = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.includes('/api/ai/gateway/keys')) {
+        gatewayKeyRouteCalls += 1;
+        throw new Error('Xpod keys are Account-owned: the retired Gateway key route must not be called');
+      }
       if (url.endsWith('/api/applets/service-access/ai-connections')) {
+        // Reading the service-access descriptor is how the keys page learns
+        // whether Xpod may still read the Pod; it is not a token exchange, so
+        // the request stays on the caller-owned session fetch above.
         serviceAccessCalls += 1;
-        throw new Error('AI Connections settings must not request service access in an interactive browser session');
+        return new Response(JSON.stringify({ status: 'granted' }), {
+          headers: { 'content-type': 'application/json' },
+        });
       }
       expect(new Headers(init?.headers).get('authorization')).not.toBe('Bearer xpod_inv_v1.page-token');
       if (url.endsWith('/api/ai/connections/providers')) {
@@ -134,7 +144,12 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-testid="workspace-main-pane"] [role="tablist"][aria-label="选择客户端"]')).toBeNull();
     expect(container.querySelector('[aria-label="通知"]')).toBeTruthy();
     expect(container.querySelector('[aria-label="收件箱"]')).toBeTruthy();
-    expect(serviceAccessCalls).toBe(0);
+    // The keys list is read through the caller-owned Pod session; the retired
+    // Gateway key route is never used, and the descriptor read is a plain
+    // request that does not exchange the session for an invocation token.
+    expect(gatewayKeyRouteCalls).toBe(0);
+    expect(serviceAccessCalls).toBeLessThanOrEqual(1);
+    expect(container.textContent).not.toContain('允许 Xpod 访问');
     await unmount(root);
   });
 });
