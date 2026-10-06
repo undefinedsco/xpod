@@ -84,6 +84,10 @@ describe('ConsentPage presentation', () => {
     expect(screen.getByRole('alert').textContent).toContain('未能验证这个应用的来源');
     // One WebID: a single row, no choice, and the location is only a badge.
     expect(screen.queryByRole('radiogroup')).toBeNull();
+    // The packaged acceptance driver proves the exact binding from this
+    // rendered shape: a single binding must expose no chooser at all.
+    expect(document.getElementById('oidc-consent-webid')).toBeNull();
+    expect(document.getElementById('oidc-consent-storage')).toBeNull();
     expect(screen.getByRole('img', { name: '数据存在 Xpod 云端' })).toBeTruthy();
     expect(screen.queryByText('Personal Messages Platform')).toBeNull();
   });

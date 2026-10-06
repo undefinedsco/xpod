@@ -600,6 +600,14 @@ jobs:
             desktop/release/latest-mac.yml
           if-no-files-found: error
           retention-days: 14
+      - name: Upload stable desktop permission failure summary
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-permission-failure-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-permission-private/failure-safe.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   create_github_release:
     name: Create GitHub Release

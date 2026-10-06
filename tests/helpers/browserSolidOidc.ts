@@ -95,6 +95,10 @@ export interface BrowserOidcTrace {
   /** Actual Consent POSTs and the safe `remember` boolean they carried. */
   consentRequestCount?: number;
   consentRememberPosted?: boolean;
+  /** The product auto-consents one exact binding and renders no chooser at all;
+   * `true` only when the live Consent surface was observed with no WebID or
+   * storage chooser and no WebID radio, never inferred from requested input. */
+  consentSingleBindingOffered?: boolean;
 }
 
 interface ObservedAuthorization { redirectUri: string; state: string; s256: boolean }
@@ -174,6 +178,49 @@ export function chooseConsentBinding(options: Array<{ value: string; disabled: b
     ?? selectable.find(option => matches(option.value))?.value;
   return selectable.find(option => option.value === currentValue)?.value
     ?? (selectable.length === 1 ? selectable[0].value : undefined);
+}
+
+/** What the rendered Consent surface actually offered, read from the live DOM. */
+export interface ConsentSurfaceState {
+  surfaceVisible: boolean;
+  webIdChooserVisible: boolean;
+  storageChooserVisible: boolean;
+  webIdRadioCount: number;
+}
+
+/** The shared Consent view auto-consents exactly one binding and renders no
+ * chooser in that case (`single = webIds.length === 1`), so the absence of
+ * every chooser on a visible surface is the product's own single-binding ABI.
+ * Any chooser at all means the scenario must make an explicit choice. */
+export function consentOffersSingleBinding(state: ConsentSurfaceState): boolean {
+  return state.surfaceVisible && !state.webIdChooserVisible && !state.storageChooserVisible
+    && state.webIdRadioCount === 0;
+}
+
+/** The live runtime binding the browser actually established for this login. */
+export interface BrowserRuntimeBinding {
+  status?: string;
+  webId?: string;
+  podUrl?: string;
+}
+
+/** Callback/PKCE evidence plus an exact binding proof that never invents a
+ * choice: either the observed explicit selection, or the product's
+ * single-binding auto-consent corroborated by the authenticated runtime
+ * binding. A surface that offered any chooser can never take the second path,
+ * and a mismatched selection never falls through to it. */
+export function consentBindingProven(trace: BrowserOidcTrace, binding: { webId: string; storageUrl: string },
+  runtime: BrowserRuntimeBinding | undefined): boolean {
+  const callbackProven = trace.authorizationRequestSeen && trace.authCodeChallengeMethodS256
+    && trace.tokenAuthorizationCodeGrantSeen && trace.tokenCodeVerifierSeen
+    && trace.callbackHasCode && trace.callbackHasState;
+  if (!callbackProven) return false;
+  if (trace.storageBindingSelected) {
+    return trace.storageBindingSelected.webId === binding.webId
+      && trace.storageBindingSelected.podUrl === binding.storageUrl;
+  }
+  return trace.consentSingleBindingOffered === true && runtime?.status === 'authenticated'
+    && runtime.webId === binding.webId && runtime.podUrl === binding.storageUrl;
 }
 
 export interface CompleteOidcLoginOptions {
@@ -494,6 +541,19 @@ export async function completeOidcLogin(
       // Consent choice before approving; a missing or ignored choice fails the
       // scenario instead of silently defaulting to "do not remember".
       const consentSurface = page.locator('[data-pod-sign-in-state="consent"]');
+      // Record the rendered Consent shape before driving it: exactly one live
+      // binding is auto-consented and offers no chooser, so a caller proving
+      // that exact binding needs this observed fact rather than a selection
+      // that the product never asked for.
+      if (!trace.consentSingleBindingOffered
+        && await consentSurface.isVisible({ timeout: 100 }).catch(() => false)) {
+        trace.consentSingleBindingOffered = consentOffersSingleBinding({
+          surfaceVisible: true,
+          webIdChooserVisible: await page.locator('#oidc-consent-webid').isVisible({ timeout: 100 }).catch(() => false),
+          storageChooserVisible: await page.locator('#oidc-consent-storage').isVisible({ timeout: 100 }).catch(() => false),
+          webIdRadioCount: await page.locator('input[type="radio"][name="webId"]').count(),
+        });
+      }
       if (options.rememberClient !== undefined && !consentRememberApplied
         && await consentSurface.isVisible({ timeout: 100 }).catch(() => false)) {
         const rememberClientChoice = page.getByRole('checkbox', { name: /^(?:以后不再询问|Do not ask again)$/u });

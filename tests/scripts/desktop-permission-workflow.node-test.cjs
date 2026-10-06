@@ -17,6 +17,14 @@ test('RC requires real permission producer and source-bound artifact in the comb
   const upload = jobs.build_desktop_rc.steps.find(step => step.with?.name === 'desktop-permission-acceptance-${{ github.sha }}');
   assert.equal(upload.with['if-no-files-found'], 'error');
   assert.equal(upload.with.path, '${{ runner.temp }}/desktop-permission-evidence.json');
+  // A failed producer must still leave a redacted stage/error summary in the log
+  // and as an artifact; the private directory itself is never uploaded.
+  const failureSummary = jobs.build_desktop_rc.steps.find(step => step.with?.name === 'desktop-permission-failure-${{ github.sha }}');
+  assert.ok(failureSummary);
+  assert.equal(failureSummary.if, 'failure()');
+  assert.equal(failureSummary.with['if-no-files-found'], 'ignore');
+  assert.equal(failureSummary.with.path, '${{ runner.temp }}/desktop-permission-private/failure-safe.json');
+  assert.ok(!failureSummary.with.path.endsWith('failure-private.json'));
   const final = jobs.finalize_acceptance.steps;
   assert.ok(final.some(step => step.with?.name === 'desktop-permission-acceptance-${{ github.sha }}'));
   const combined = final.find(step => step.run?.includes('node scripts/desktop-acceptance.cjs'));
@@ -37,6 +45,10 @@ test('stable repeats both actual operations and self-update for its newly built 
   const evidence = job.steps.find(step => step.with?.name === 'desktop-stable-acceptance-${{ github.sha }}');
   assert.equal(evidence.with['if-no-files-found'], 'error');
   assert.ok(!evidence.with.path.includes('private'));
+  const stableFailure = job.steps.find(step => step.with?.name === 'desktop-permission-failure-${{ github.sha }}');
+  assert.ok(stableFailure);
+  assert.equal(stableFailure.if, 'failure()');
+  assert.equal(stableFailure.with.path, '${{ runner.temp }}/desktop-permission-private/failure-safe.json');
 });
 
 test('RC scale-down waits for desktop and final acceptance even when upstream jobs fail', () => {

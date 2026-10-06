@@ -1,8 +1,8 @@
 import { errors, type Locator, type Page } from '@playwright/test';
 import { JSDOM } from 'jsdom';
-import { expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { chooseConsentBinding, clickNonPasswordOidcAction, completeOidcLogin,
-  type BrowserOidcTrace } from './browserSolidOidc';
+  consentBindingProven, consentOffersSingleBinding, type BrowserOidcTrace } from './browserSolidOidc';
 
 /** Actual shared driver/evaluate functions, with browser events in their real order. */
 async function callbackScenario(mode = 'current', passwordRequests: Array<{ path: string; method: 'GET' | 'POST' }> = []) {
@@ -105,6 +105,58 @@ it('selects the requested authoritative Pod instead of retaining another same-ow
 });
 
 const CONTROL_SELECTOR = 'button, input[type=submit], a[href]';
+
+function consentTrace(overrides: Partial<BrowserOidcTrace> = {}): BrowserOidcTrace {
+  return {
+    authorizationRequestSeen: true,
+    authCodeChallengeSeen: true,
+    authCodeChallengeMethodS256: true,
+    redirectCodeSeen: true,
+    tokenAuthorizationCodeGrantSeen: true,
+    tokenCodeVerifierSeen: true,
+    callbackPathSeen: true,
+    callbackHasCode: true,
+    callbackHasState: true,
+    passwordSubmitted: true,
+    authorizationRedirectUris: [],
+    ...overrides,
+  };
+}
+
+describe('packaged Consent binding proof', () => {
+  const binding = { webId: 'https://id.example/card#me', storageUrl: 'https://a.example/pod/' };
+  const runtime = { status: 'authenticated', webId: binding.webId, podUrl: binding.storageUrl };
+
+  it('reads the product single-binding auto-consent ABI from the rendered surface', () => {
+    expect(consentOffersSingleBinding({ surfaceVisible: true, webIdChooserVisible: false,
+      storageChooserVisible: false, webIdRadioCount: 0 })).toBe(true);
+    expect(consentOffersSingleBinding({ surfaceVisible: true, webIdChooserVisible: true,
+      storageChooserVisible: false, webIdRadioCount: 0 })).toBe(false);
+    expect(consentOffersSingleBinding({ surfaceVisible: true, webIdChooserVisible: false,
+      storageChooserVisible: false, webIdRadioCount: 2 })).toBe(false);
+    expect(consentOffersSingleBinding({ surfaceVisible: false, webIdChooserVisible: false,
+      storageChooserVisible: false, webIdRadioCount: 0 })).toBe(false);
+  });
+
+  it('accepts one exact scoped binding through the live runtime binding, not a fabricated choice', () => {
+    expect(consentBindingProven(consentTrace({ consentSingleBindingOffered: true }), binding, runtime)).toBe(true);
+    expect(consentBindingProven(consentTrace({ consentSingleBindingOffered: true }), binding,
+      { status: 'authenticated', webId: binding.webId, podUrl: 'https://b.example/pod/' })).toBe(false);
+    expect(consentBindingProven(consentTrace({ consentSingleBindingOffered: true }), binding, undefined)).toBe(false);
+    expect(consentBindingProven(consentTrace({ consentSingleBindingOffered: true }), binding,
+      { status: 'anonymous', webId: binding.webId, podUrl: binding.storageUrl })).toBe(false);
+    expect(consentBindingProven(consentTrace({ callbackHasState: false, consentSingleBindingOffered: true }),
+      binding, runtime)).toBe(false);
+  });
+
+  it('still requires the explicit choice whenever the surface offered a chooser', () => {
+    expect(consentBindingProven(consentTrace(), binding, runtime)).toBe(false);
+    expect(consentBindingProven(consentTrace({ storageBindingSelected:
+      { webId: binding.webId, podUrl: binding.storageUrl } }), binding, runtime)).toBe(true);
+    expect(consentBindingProven(consentTrace({ storageBindingSelected:
+      { webId: binding.webId, podUrl: 'https://b.example/pod/' } }), binding, runtime)).toBe(false);
+  });
+});
 
 it('returns to readiness detection when navigation removes a discovered control', async () => {
   const locator = { evaluate: vi.fn().mockRejectedValue(new errors.TimeoutError('Control disappeared')) } as unknown as Locator;

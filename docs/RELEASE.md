@@ -91,7 +91,8 @@ Playwright 用例和 `solid-pod-isolation`、`browser-visual` 必过项保持不
 不冒充已部署 RC 或真实桌面。0.4.25 的 macOS `desktop` 门禁证明旧包到新包的真实自更新，
 未覆盖重管理权限操作。0.4.26 起该必需项同时要求 exact zip 的权限操作证据：真实
 Electron/preload 与自带 Local runtime，Cloud card 身份、两份权威 Local Pod 绑定和无公网
-路由，实际 Consent 选择与回调、两轮完整资源授权、Account Key/配置、collection 写入确认、
+路由，实际 Consent 绑定证明（显式选择，或唯一精确绑定的自动同意加 authenticated 运行态
+binding）与回调、两轮完整资源授权、Account Key/配置、collection 写入确认、
 Models/Quota/单发 Chat、跨 Pod 拒绝与清理。缺任一证据不得写入 `desktop:passed`。
 详见[桌面权限验收契约](testing/desktop-permission-acceptance.md)。这项并不声明 Pod、Network、
 Status 所有管理操作、所有订阅 provider 或原安装 App 已验；不得用普通 Chromium 截图补足。

@@ -13,7 +13,7 @@ import { acceptMountedPodPermissions, observeOwnedPodTraffic, type MountedPodPer
 import { createConfirmedMountedProvider, createMountedKeyInUi, acceptMountedFirstChat, acceptHeldPodInvocation } from './helpers/packaged-desktop-operations';
 import { verifyPackagedSourceCheckout } from './helpers/packaged-desktop-source';
 import { acceptLiveTaskApproval, type LiveTaskEvidence } from './helpers/live-task-approval';
-import { completeOidcLogin, type BrowserOidcTrace } from '../tests/helpers/browserSolidOidc';
+import { completeOidcLogin, consentBindingProven, type BrowserOidcTrace } from '../tests/helpers/browserSolidOidc';
 import { readBrowserXpodRuntime } from '../tests/helpers/browserXpodRuntime';
 
 const { verifyEvidence } = createRequire(import.meta.url)('./desktop-permission-acceptance.cjs') as {
@@ -53,10 +53,23 @@ async function privateJson(directory: string, name: string, record: unknown): Pr
   await writeFile(path.join(directory, name), JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
 }
 
-function callbackSucceeded(trace: BrowserOidcTrace, binding: { webId: string; storageUrl: string }): boolean {
-  return trace.authorizationRequestSeen && trace.authCodeChallengeMethodS256 && trace.tokenAuthorizationCodeGrantSeen
-    && trace.tokenCodeVerifierSeen && trace.callbackHasCode && trace.callbackHasState
-    && trace.storageBindingSelected?.webId === binding.webId && trace.storageBindingSelected.podUrl === binding.storageUrl;
+const SAFE_FAILURE_FILE = 'failure-safe.json';
+
+/** CI-visible failure detail: the stage and our own error text with tokens,
+ * credentials, query strings and callback URLs removed, so a failed run is
+ * diagnosable from the log alone without publishing private evidence. */
+export function safeFailureDetail(raw: string): string {
+  return raw
+    .replace(/Bearer\s+[^\s"']+/giu, 'Bearer <redacted>')
+    .replace(/[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]+/gu, '<redacted-jwt>')
+    .replace(/sk-[A-Za-z0-9._-]+/gu, 'sk-<redacted>')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu, '<redacted-email>')
+    .replace(/https?:\/\/[^\s"']+/gu, (value) => {
+      try { const url = new URL(value); return `${url.origin}${url.pathname}`; } catch { return '<redacted-url>'; }
+    })
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 300);
 }
 
 function privateError(error: unknown): unknown {
@@ -160,7 +173,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     const configurationHome = path.join(fixture.directory, 'profile', 'client-config-home');
     for (const [index, binding] of bindings.entries()) {
       advance(index === 0 ? 'pod-a' : 'pod-b');
-      const trace = await completeOidcLogin(page, { email: account.email, password: account.password,
+      const trace: BrowserOidcTrace = await completeOidcLogin(page, { email: account.email, password: account.password,
         webId: binding.webId, podUrl: binding.storageUrl }, { baseUrl: gateway, startUrl: index === 0 ? new URL('ai-connections', gateway).href : undefined,
         requireCallbackEvidence: true, rememberAccount: true, rememberClient: true, timeoutMs: 90_000,
         ready: async page => {
@@ -168,8 +181,13 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
           return runtime?.status === 'authenticated' && runtime.webId === binding.webId && runtime.podUrl === binding.storageUrl;
         } });
       await privateJson(options.privateDirectory, `oidc-${index}-private.json`, trace);
-      allCallbacks &&= callbackSucceeded(trace, binding);
-      if (!callbackSucceeded(trace, binding)) throw new Error('Actual browser callback or exact Consent choice is missing');
+      // The product auto-consents one exact binding and renders no chooser, so
+      // the exact binding is proven by the observed selection or by that
+      // rendered auto-consent plus the authenticated runtime binding.
+      const bindingProven = consentBindingProven(trace, binding,
+        await readBrowserXpodRuntime(page).catch(() => undefined));
+      allCallbacks &&= bindingProven;
+      if (!bindingProven) throw new Error('Actual browser callback or exact Consent binding proof is missing');
       if (trace.rememberClientRequested !== true || trace.rememberClientObserved !== true || trace.consentRememberPosted !== true) {
         throw new Error('The remembered-grant bootstrap did not set and retain the explicit remember-client choice: '
           + `requested=${String(trace.rememberClientRequested)} observed=${String(trace.rememberClientObserved)} `
@@ -261,9 +279,16 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     try { if (fixture) fixtureCleanup = await fixture.close(); } catch (error) { failures.push(error); }
   }
   if (failures.length || !record || !fixtureCleanup || !fixture) {
-    await privateJson(options.privateDirectory, 'failure-private.json', { stage: failedStage ?? stage,
-      errors: failures.map(privateError) });
-    throw new Error('Packaged desktop permission acceptance failed; private evidence retained');
+    const failed = failedStage ?? stage;
+    await privateJson(options.privateDirectory, 'failure-private.json', { stage: failed, errors: failures.map(privateError) });
+    // A failed run must stay diagnosable even when the workflow skips the
+    // private upload: this record is redacted for CI logs and artifacts.
+    await writeFile(path.join(options.privateDirectory, SAFE_FAILURE_FILE), JSON.stringify({ schemaVersion: 1,
+      kind: 'desktop-permission-failure', sourceSha: options.sourceSha, version: options.version, stage: failed,
+      errors: failures.map(error => error instanceof Error
+        ? { name: error.name, message: safeFailureDetail(error.message) }
+        : { name: 'unknown', message: safeFailureDetail(String(error)) }) }, null, 2) + '\n', { mode: 0o644 });
+    throw new Error(`Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`);
   }
   advance('verify');
   record.cleanup = { ...fixtureCleanup, providerRemoved: true, keyRemoved: true, attributedGrantsRestored: true };
@@ -291,5 +316,10 @@ async function main(argv: string[]): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  main(process.argv.slice(2)).catch(() => { console.error('Packaged desktop acceptance failed; inspect task-private evidence'); process.exitCode = 1; });
+  main(process.argv.slice(2)).catch((error: unknown) => {
+    console.error(JSON.stringify({ runner: 'desktop-permission-acceptance', failed: true,
+      name: error instanceof Error ? error.name : 'unknown',
+      reason: safeFailureDetail(error instanceof Error ? error.message : String(error)) }));
+    process.exitCode = 1;
+  });
 }

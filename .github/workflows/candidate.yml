@@ -1015,6 +1015,16 @@ jobs:
             desktop/release/*.blockmap
           if-no-files-found: error
           retention-days: 30
+      # Keep the redacted producer failure summary last so the release archive
+      # stays the first upload in this job and no gate reads it as the artifact.
+      - name: Upload desktop permission failure summary
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-permission-failure-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-permission-private/failure-safe.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   finalize_acceptance:
     name: Finalize RC acceptance

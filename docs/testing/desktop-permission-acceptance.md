@@ -1,6 +1,8 @@
 # 桌面权限与发行验收契约
 
-2026-10-05：0.4.26 候选增加本契约。当前 producer、拒绝回归和 CI 接线属于待实际运行的实现；单元/本地协议通过不等于 exact 0.4.26 安装包通过。生产 Cloud 的只读诊断 run [37239166566](https://github.com/undefinedsco/xpod/actions/runs/37239166566) 确认 namespace 工作负载 replica 为 0，managed 登录与权限链尚无恢复证据。0.4.25 已发布事实与此缺项分别保存。
+2026-10-05：0.4.26 候选增加本契约。单元/本地协议通过不等于 exact 0.4.26 安装包通过。生产 Cloud 的只读诊断 run [37239166566](https://github.com/undefinedsco/xpod/actions/runs/37239166566) 确认 namespace 工作负载 replica 为 0，managed 登录与权限链尚无恢复证据。0.4.25 已发布事实与此缺项分别保存。
+
+2026-10-06：首个正式 RC run [37425088832](https://github.com/undefinedsco/xpod/actions/runs/37425088832)（source `9d153c3b6`）服务侧 19 项与 `launch`/`provision` 全绿，在 `pod-a` 失败：驱动要求一次显式 Consent 选择，而产品对唯一精确绑定本就自动同意、不渲染任何选择器。该阶段失败是验收驱动过严，不是产品缺陷；修复见下节，`pod-a` 失败事实保留。
 
 ## 同一个必需 desktop check
 
@@ -11,7 +13,12 @@ RC 的 macOS job 等本次服务部署验收成功，再使用已授权 provider
 ## 实际流程
 
 1. 只从 exact zip 解出新的 App，独有 userData、cache、数据/数据库与配置 apply/backups 目录；不启动或修改原 App/profile。检查 plist、bundled binary 版本与 hash、真实 desktop IPC ownership/PID、实际运行命令及生成的配置位置。
-2. 复用现有 Cloud Account/password、provision receipt、Local route、浏览器 OIDC helper，一个 Cloud WebID/card 对应两份注册 Local 存储绑定。公开 card 使用已安装 Solid client 的 `getSolidDataset`、exact WebID `getThing` 和 `getPodUrlAllFrom` 读取存储关系，支持相对 Turtle/prefix 序列化；只去 HTTP 文档 fragment，主体身份保持完整。实际 Consent 选择目标 Pod 并独立确认 callback/PKCE，不通过写 remembered storage 伪造选择。当前入口为账号卡片“切换账号”后新的 Consent 事务；若事务没有目标选项，流程失败。
+2. 复用现有 Cloud Account/password、provision receipt、Local route、浏览器 OIDC helper，一个 Cloud WebID/card 对应两份注册 Local 存储绑定。公开 card 使用已安装 Solid client 的 `getSolidDataset`、exact WebID `getThing` 和 `getPodUrlAllFrom` 读取存储关系，支持相对 Turtle/prefix 序列化；只去 HTTP 文档 fragment，主体身份保持完整。实际 Consent 确认目标 Pod 并独立确认 callback/PKCE，不通过写 remembered storage 伪造选择。当前入口为账号卡片“切换账号”后新的 Consent 事务。
+   绑定的证明分两条互斥路径：surface 出现 WebID/存储选择器或 radio 时，必须实际选中该 exact 绑定；surface 一个选择器都不渲染（`ConsentView` 的 `single = webIds.length === 1`，事务已带 `entryBinding` 时即为此形态）时，取该已渲染的单绑定事实，加上页面运行态 binding 为 authenticated 且 webId/podUrl 与目标完全一致。两条路径都要求 callback code/state 与 PKCE 证据。已提供的选择器不匹配时不得回退到单绑定路径；若事务没有目标选项且 surface 提供了选择器，流程失败。
+
+### 失败可诊断性
+
+驱动在失败时把 stage、错误名与经脱敏（Bearer/JWT/`sk-`/邮箱/URL query 去除）的消息写入 `failure-safe.json`（0644，位于私有目录内），并从 stdout 打印同一脱敏记录；workflow 用 `if: failure()` + `if-no-files-found: ignore` 单独上传它。私有目录本身（含账号、Cookie/token、callback URL、输入配置）从不作为 artifact 上传，因此产物缺失不等于通过。
 3. 每个 Pod 都先检查实际 HEAD：404 才记录 absent；已存在目标仍须官方 SDK 独立证明服务权限 missing。首次 authorize 后逐资源 readback，父 ACR 字节不变；再次 authorize 逐资源读取、零 ACR 写且不重新登录。资源集合只从共享声明加载，不复制路径表、不预创建目标绕过首次初始化。
 4. 使用原 mounted controller 的公开 client，等待 collection adoption 后只创建一次 credential；等 pending 清空、无 conflict，独立读回 credential，核对 discovery 与发布模型的 provider/model/credential 关系及真实 quota。Account Key 通过真实 dialog 创建、list、配置 apply 与 revoke；验证本次新增 Account credential 唯一且和 Pod record 绑定，配置文件实际落在独有目录。HTTP 200/201 成功仍要求合法 readback 与正确 Account actor。
 5. 每个 Pod 的第一笔 Chat 请求只 dispatch 一次，校验 200 和 exact marker；两次 GET 复用 descriptor 签发的同一 held invocation。A 的真实批准/拒绝/Stop、Session 终态和 grant cleanup 复用现有 live Task helper。独立读回 A 的三个 Task，B 的集合须为空，A invocation 配 B hint 拒绝，B 不能 resume A 的 Run。
