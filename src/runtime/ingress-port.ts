@@ -14,7 +14,10 @@ import { tunnelProviderDescriptor } from '../tunnel/TunnelProviderCatalog';
  *      `GET /v4/tunnels` `local_port`; the Cloudflare dashboard's remote configuration read
  *      back through the connector) — adopted when it is free, so the operator does not have to
  *      edit the console to match the runtime;
- *   3. `findGatewayIngressPort(gatewayPort)` — the predictable, dynamic gateway+3..+9 entry.
+ *   3. `findGatewayIngressPort(gatewayPort, reservedPorts)` — the predictable, dynamic
+ *      gateway+3..+9 entry. It skips the gateway/CSS/API ports this run serves itself, because
+ *      the tunnel entry is the one port an operator copies into a provider console: a number a
+ *      sibling service binds later must never be the address a tunnel forwards to.
  *
  * Both strict sources are strict about *being taken*: a port somebody else holds fails the
  * start with the occupant named (pid, command line, cwd). Nothing here signals a process, and
@@ -60,7 +63,11 @@ export interface IngressPortLogger {
 }
 
 export interface IngressPortDeps {
-  findDefaultPort(mainPort: number): Promise<number>;
+  /**
+   * The dynamic gateway-derived entry. `excluded` carries this run's own service ports so the
+   * default scan cannot hand back a port a sibling service is about to bind.
+   */
+  findDefaultPort(mainPort: number, excluded: ReadonlySet<number>): Promise<number>;
   isFree(port: number): Promise<boolean>;
   identifyOccupants(port: number): string;
   readDeclaredOrigin(
@@ -225,9 +232,14 @@ export async function resolveIngressPort(request: IngressPortRequest): Promise<I
     );
   }
 
-  const port = await deps.findDefaultPort(request.mainPort);
+  // The dynamic entry is the only source derived from a *planned* neighbourhood, so it is the
+  // only one that has to be told which of those numbers this run has already claimed. Without
+  // it the scan can pick the API port that has been chosen but not bound yet, and the Gateway
+  // then proxies its own API traffic into its tunnel ingress in a loop.
+  const port = await deps.findDefaultPort(request.mainPort, reservedPorts);
   deps.logger.info(
-    `Tunnel entry ${port} chosen from the gateway port ${request.mainPort} (gateway+3..+9, first free port)`,
+    `Tunnel entry ${port} chosen from the gateway port ${request.mainPort} `
+    + '(gateway+3..+9, first free port outside this runtime\'s own service ports)',
   );
   return { port, source: 'gateway-default', inactiveDeclarations };
 }
