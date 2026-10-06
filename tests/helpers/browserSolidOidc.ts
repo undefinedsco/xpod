@@ -148,9 +148,10 @@ export interface BrowserOidcTrace {
   /** Actual Consent POSTs and the safe `remember` boolean they carried. */
   consentRequestCount?: number;
   consentRememberPosted?: boolean;
-  /** The product auto-consents one exact binding and renders no chooser at all;
-   * `true` only when the live Consent surface was observed with no WebID or
-   * storage chooser and no WebID radio, never inferred from requested input. */
+  /** Observed rendered shape: the live Consent surface showed no WebID or
+   * storage chooser and no WebID radio. `true` only from that observation,
+   * never inferred from requested input; it is not user consent and not an
+   * approval, which still need the actual callback/approval evidence. */
   consentSingleBindingOffered?: boolean;
 }
 
@@ -259,10 +260,11 @@ export interface BrowserRuntimeBinding {
 }
 
 /** Callback/PKCE evidence plus an exact binding proof that never invents a
- * choice: either the observed explicit selection, or the product's
- * single-binding auto-consent corroborated by the authenticated runtime
- * binding. A surface that offered any chooser can never take the second path,
- * and a mismatched selection never falls through to it. */
+ * choice: either the observed explicit selection, or the observed no-chooser
+ * surface corroborated by the authenticated runtime binding. The no-chooser
+ * shape is a rendered observation, not user consent. A surface that offered any
+ * chooser can never take the second path, and a mismatched selection never
+ * falls through to it. */
 export function consentBindingProven(trace: BrowserOidcTrace, binding: { webId: string; storageUrl: string },
   runtime: BrowserRuntimeBinding | undefined): boolean {
   const callbackProven = trace.authorizationRequestSeen && trace.authCodeChallengeMethodS256
@@ -616,10 +618,10 @@ export async function completeOidcLogin(
       // surface the product has already approved away, so both consumers below
       // must reason about the same rendered fact.
       const consentVisible = await consentSurface.isVisible({ timeout: 100 }).catch(() => false);
-      // Record the rendered Consent shape before driving it: exactly one live
-      // binding is auto-consented and offers no chooser, so a caller proving
-      // that exact binding needs this observed fact rather than a selection
-      // that the product never asked for.
+      // Record the rendered Consent shape before driving it: a single live
+      // binding can render with no chooser, so a caller proving the exact
+      // binding needs this observed fact rather than a selection the product
+      // never asked for. No chooser is a rendered observation, not consent.
       if (!trace.consentSingleBindingOffered && consentVisible) {
         trace.consentSingleBindingOffered = consentOffersSingleBinding({
           surfaceVisible: true,
