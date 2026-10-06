@@ -2,7 +2,7 @@
 
 2026-10-05：0.4.26 候选增加本契约。单元/本地协议通过不等于 exact 0.4.26 安装包通过。生产 Cloud 的只读诊断 run [37239166566](https://github.com/undefinedsco/xpod/actions/runs/37239166566) 确认 namespace 工作负载 replica 为 0，managed 登录与权限链尚无恢复证据。0.4.25 已发布事实与此缺项分别保存。
 
-2026-10-06：首个正式 RC run [37425088832](https://github.com/undefinedsco/xpod/actions/runs/37425088832)（source `9d153c3b6`）服务侧 19 项与 `launch`/`provision` 全绿，在 `pod-a` 失败：驱动要求一次显式 Consent 选择，而产品对唯一精确绑定本就自动同意、不渲染任何选择器。该阶段失败是验收驱动过严，不是产品缺陷；修复见下节，`pod-a` 失败事实保留。
+2026-10-06：首个正式 RC run [37425088832](https://github.com/undefinedsco/xpod/actions/runs/37425088832)（source `9d153c3b6`）服务侧 19 项与 `launch`/`provision` 全绿，在 `pod-a` 失败：驱动要求一次显式 Consent 选择，而产品对唯一精确绑定不渲染任何身份/存储选择器。singleton 只表示"没有可挑的身份/存储选项"，**不代表**"自动代替用户同意"：实际的批准提交（POST）与显式"记住授权"选择仍然必须被证明。该阶段失败是验收驱动对呈现形态过严，不是产品缺陷；修复见下节，`pod-a` 失败事实保留。
 
 2026-10-06：第二个正式 RC run [37437352362](https://github.com/undefinedsco/xpod/actions/runs/37437352362)（source `7a67a12ce`，version `0.4.26-rc.272`）服务侧 19 项、native 构建/SDK/local runtime/image 与自更新全绿，仍停在 `pod-a`，失败 code 为 `remember-grant`。绑定证明已通过，说明上一节的单绑定修复生效；新的失败点是显式"记住客户端"选择的驱动前置条件：产品为**每个交互渲染一份独立的批准文档**（Pick-WebID 与 Consent 是两份文档，各自持有独立勾选状态），而驱动只在一份文档上操作一次该选项，后一份文档便提交了默认的 `remember:false`。该阶段失败同样是验收驱动与产品 ABI 不一致，不是产品缺陷；修复见下节，`pod-a` 失败事实保留，未因修复而改写。
 
@@ -24,7 +24,7 @@ RC 的 macOS job 等本次服务部署验收成功，再使用已授权 provider
 
 ### 失败可诊断性
 
-驱动失败时只把 allowlist 的 stage 与受审的固定失败 code/说明（`invalid-arguments`、`identity-binding`、`consent-binding`、`task-isolation` 等固定枚举）写入 `failure-safe.json`（0644，位于私有目录内）。`remember-grant` 例外地附带一个**封闭词表**的子条件 token（`choice-not-offered` / `choice-not-retained` / `remember-not-posted`），使 CI 无需私有文件即可判断 gate 的哪一段失败；该 token 只由布尔条件推导，不包含原始 trace。runner 的 stdout 投影现在直接给出真实受审 code（此前统一降级为 `unclassified`），原始 message、错误名与 stack 仍只进 600 权限的私有文件，从不公开。原始 message、错误名与 stack 只进 600 权限的私有文件，从不公开；任何非本驱动抛出的类型化错误一律降级为固定的 `unclassified` 说明——不依赖正则清洗，因此 provider key、opaque token、assertion/credential dump 不会因为绕过正则而外泄。workflow 用 `if: failure()` + `if-no-files-found: ignore` 单独上传该文件。私有目录本身（含账号、Cookie/token、callback URL、输入配置）从不作为 artifact 上传，因此产物缺失不等于通过。
+驱动失败时只把 allowlist 的 stage 与受审的固定失败 code/说明（`invalid-arguments`、`identity-binding`、`consent-binding`、`task-isolation` 等固定枚举）写入 `failure-safe.json`（0644，位于私有目录内）。`remember-grant` 例外地附带一个**封闭词表**的子条件 token（`choice-not-offered` / `choice-not-retained` / `remember-not-posted`），使 CI 无需私有文件即可判断 gate 的哪一段失败；该 token 只由布尔条件推导，不包含原始 trace。runner 的 stdout 投影现在直接给出真实受审 code（此前统一降级为 `unclassified`）；任何非本驱动抛出的类型化错误一律降级为固定的 `unclassified` 说明——不依赖正则清洗，因此 provider key、opaque token、assertion/credential dump 不会因为绕过正则而外泄。原始 message、错误名与 stack 只进 600 权限的私有文件，从不公开。workflow 用 `if: failure()` + `if-no-files-found: ignore` 单独上传该文件。私有目录本身（含账号、Cookie/token、callback URL、输入配置）从不作为 artifact 上传，因此产物缺失不等于通过。
 3. 每个 Pod 都先检查实际 HEAD：404 才记录 absent；已存在目标仍须官方 SDK 独立证明服务权限 missing。首次 authorize 后逐资源 readback，父 ACR 字节不变；再次 authorize 逐资源读取、零 ACR 写且不重新登录。资源集合只从共享声明加载，不复制路径表、不预创建目标绕过首次初始化。
 4. 使用原 mounted controller 的公开 client，等待 collection adoption 后只创建一次 credential；等 pending 清空、无 conflict，独立读回 credential，核对 discovery 与发布模型的 provider/model/credential 关系及真实 quota。Account Key 通过真实 dialog 创建、list、配置 apply 与 revoke；验证本次新增 Account credential 唯一且和 Pod record 绑定，配置文件实际落在独有目录。HTTP 200/201 成功仍要求合法 readback 与正确 Account actor。
 5. 每个 Pod 的第一笔 Chat 请求只 dispatch 一次，校验 200 和 exact marker；两次 GET 复用 descriptor 签发的同一 held invocation。A 的真实批准/拒绝/Stop、Session 终态和 grant cleanup 复用现有 live Task helper。独立读回 A 的三个 Task，B 的集合须为空，A invocation 配 B hint 拒绝，B 不能 resume A 的 Run。
