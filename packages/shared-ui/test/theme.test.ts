@@ -127,10 +127,12 @@ describe('shared theme contract', () => {
   test('limits short-window login density to its own state and keeps one scroll area', () => {
     const source = themeSource();
     const scope = '[data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"]';
+    // One scroll owner: the state root scrolls, the form body stays visible so
+    // errors and enlarged text share a single vertical scroll area.
     expect(source).toContain(`${scope} {\n    overflow-y: auto;`);
     expect(source).toContain(`${scope} [data-pod-sign-in="idp-chrome"] {\n    height: 32px;`);
-    expect(source).toContain(`${scope} [data-pod-sign-in="main"] {\n    flex: 1 0 auto;\n    overflow: visible;\n    gap: 8px;\n    padding: 8px 16px;`);
-    expect(source).toContain(`${scope} [data-pod-sign-in="actions"] {\n    gap: 0;\n    padding: 8px 16px;`);
+    expect(source).toContain(`${scope} [data-pod-sign-in="main"] {\n    flex: 1 0 auto;\n    overflow: visible;\n    gap: 6px;\n    padding: 4px 16px 2px;`);
+    expect(source).toContain(`${scope} [data-pod-sign-in="actions"] {\n    gap: 0;\n    padding: 4px 16px 6px;`);
   });
 
   test('marks exported CSS as a retained package side effect', () => {

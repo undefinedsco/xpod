@@ -5,8 +5,8 @@ import { ComponentsManager } from 'componentsjs';
 import { DataFactory } from 'rdf-data-factory';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createCssChildRuntimeConfig } from '../../src/runtime/css-process';
+import { configuredHttpHandlerIds, LDP_HANDLER } from '../helpers/configuredHttpHandlerIds';
 
-const BASE_HTTP_HANDLER = 'urn:solid-server:default:BaseHttpHandler';
 const AGENT_DIRECTORY_HANDLER = 'urn:undefineds:xpod:AgentDirectoryHttpHandler';
 
 const runtimeRoots: string[] = [];
@@ -41,33 +41,9 @@ describe('agent directory handler loads in every runtime profile', () => {
     const handler = manager.configRegistry.getInstantiatedResource(factory.namedNode(AGENT_DIRECTORY_HANDLER));
     expect(handler).toBeDefined();
 
-    const base = manager.configRegistry.getInstantiatedResource(factory.namedNode(BASE_HTTP_HANDLER));
-    if (!base) throw new Error('Base HTTP handler config was not instantiated');
-    const constructorPool = manager.configConstructorPool as typeof manager.configConstructorPool & {
-      getRawConfig(value: typeof base): {
-        properties: Record<string, Array<{
-          list?: unknown[];
-          properties?: Record<string, Array<{ list?: Array<{ value: string }> }>>;
-        }>>;
-      };
-    };
-    const constructed = constructorPool.getRawConfig(base);
-    // The pipeline is wrapped by PodMutationLockingHttpHandler: the first constructor
-    // argument is the StatusWaterfallHandler that owns the handler chain, so the order
-    // has to be read from that wrapper's `StatusWaterfallHandler_handlers` list.
-    const wrappedPipeline = constructed?.properties[
-      'https://linkedsoftwaredependencies.org/vocabularies/object-oriented#arguments'
-    ]?.[0]?.list?.[0] as
-      | { properties?: Record<string, Array<{ list?: Array<{ value: string }> }>> }
-      | undefined;
-    // Property keys are full RDF predicate IRIs, so the wrapper field is matched by
-    // its local name rather than by the bare `StatusWaterfallHandler_handlers` key.
-    const handlersProperty = Object.entries(wrappedPipeline?.properties ?? {})
-      .find(([key]) => key.endsWith('#StatusWaterfallHandler_handlers'))?.[1];
-    const handlers = handlersProperty?.[0]?.list?.map((entry) => entry.value) ?? [];
-
+    const handlers = configuredHttpHandlerIds(manager);
     const directoryIndex = handlers.indexOf(AGENT_DIRECTORY_HANDLER);
-    const ldpIndex = handlers.indexOf('urn:solid-server:default:LdpHandler');
+    const ldpIndex = handlers.indexOf(LDP_HANDLER);
     expect(directoryIndex).toBeGreaterThanOrEqual(0);
     expect(ldpIndex).toBeGreaterThan(directoryIndex);
   }, 60_000);

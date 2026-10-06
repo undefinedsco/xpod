@@ -5,8 +5,8 @@ import { ComponentsManager } from 'componentsjs';
 import { DataFactory } from 'rdf-data-factory';
 import { describe, expect, it } from 'vitest';
 import { createCssChildRuntimeConfig } from '../../src/runtime/css-process';
+import { configuredHttpHandlerIds, LDP_HANDLER } from '../helpers/configuredHttpHandlerIds';
 
-const BASE_HTTP_HANDLER = 'urn:solid-server:default:BaseHttpHandler';
 const INTERNAL_POD_DATA_HANDLER = 'urn:undefineds:xpod:InternalPodDataHttpHandler';
 
 describe('CSS route composition', () => {
@@ -61,33 +61,8 @@ describe('CSS route composition', () => {
     });
     await manager.configRegistry.register(runtimeConfig.configPath);
 
-    const resource = manager.configRegistry.getInstantiatedResource(
-      new DataFactory().namedNode(BASE_HTTP_HANDLER),
-    );
-    if (!resource) throw new Error('Base HTTP handler config was not instantiated');
-    const constructorPool = manager.configConstructorPool as typeof manager.configConstructorPool & {
-      getRawConfig(value: typeof resource): {
-        properties: Record<string, Array<{
-          list?: unknown[];
-          properties?: Record<string, Array<{ list?: Array<{ value: string }> }>>;
-        }>>;
-      };
-    };
-    const constructed = constructorPool.getRawConfig(resource);
-    // The pipeline is wrapped by PodMutationLockingHttpHandler: the first constructor
-    // argument is the StatusWaterfallHandler that owns the handler chain, so the chain
-    // is read from that wrapper's `StatusWaterfallHandler_handlers` field (a full
-    // predicate IRI, matched by local name).
-    const wrappedPipeline = constructed?.properties[
-      'https://linkedsoftwaredependencies.org/vocabularies/object-oriented#arguments'
-    ]?.[0]?.list?.[0] as
-      | { properties?: Record<string, Array<{ list?: Array<{ value: string }> }>> }
-      | undefined;
-    const handlersProperty = Object.entries(wrappedPipeline?.properties ?? {})
-      .find(([key]) => key.endsWith('#StatusWaterfallHandler_handlers'))?.[1];
-    const handlers = handlersProperty?.[0]?.list?.map((entry) => entry.value);
+    const handlers = configuredHttpHandlerIds(manager);
 
-    expect(handlers).toBeDefined();
     // The privileged internal Pod-data channel is deleted end to end: it must not be
     // composed into the handler chain, nor be instantiable from the composed config.
     expect(handlers).not.toContain(INTERNAL_POD_DATA_HANDLER);
@@ -96,8 +71,8 @@ describe('CSS route composition', () => {
     )).toBeUndefined();
 
     // The Xpod sidecar route that used to sit behind it still precedes the CSS routes.
-    const sidecarIndex = handlers?.indexOf('urn:undefineds:xpod:SubgraphSparqlHttpHandler') ?? -1;
-    const cssRouteIndex = handlers?.indexOf('urn:solid-server:default:LdpHandler') ?? -1;
+    const sidecarIndex = handlers.indexOf('urn:undefineds:xpod:SubgraphSparqlHttpHandler');
+    const cssRouteIndex = handlers.indexOf(LDP_HANDLER);
     expect(sidecarIndex).toBeGreaterThanOrEqual(0);
     expect(cssRouteIndex).toBeGreaterThan(sidecarIndex);
   }, 30_000);

@@ -48,13 +48,15 @@ describe('Xpod web product build contract', () => {
     expect(rootPackage.scripts['build:ui']).toBe('bun run --filter ui build:all');
   });
 
-  it('provides a Settings HTML and React entry', () => {
+  it('provides a Settings HTML and React entry behind the web-light product boundary', () => {
     const html = readFileSync(path.join(root, 'ui/settings.html'), 'utf8');
     const entry = readFileSync(path.join(root, 'ui/src/settings.tsx'), 'utf8');
 
     expect(html).toContain('/src/settings.tsx');
-    // Settings mounts the shared product entry; that entry, not this document, decides which
-    // host surface loads.
+    // The Settings document mounts the product boundary, not the desktop workspace:
+    // the heavy XpodShellApp chunk stays lazy and is only reachable through the
+    // preload bridge declared by XpodProductEntry.
+    expect(entry).toContain("import { XpodProductEntry } from './XpodProductEntry'");
     expect(entry).toContain('<XpodProductEntry />');
     expect(entry).toContain('<XpodThemeProvider>');
     expect(entry).not.toContain('XpodShellApp');
@@ -71,26 +73,39 @@ describe('Xpod web product build contract', () => {
     expect(developmentDocumentPath('/auth/callback?state=test', 'GET', 'text/html')).toBe('/auth-callback.html?state=test');
   });
 
-  it('provides a callback HTML and React entry', () => {
+  it('provides a callback HTML and React entry that routes through the product boundary', () => {
     const html = readFileSync(path.join(root, 'ui/auth-callback.html'), 'utf8');
     const entry = readFileSync(path.join(root, 'ui/src/auth-callback.tsx'), 'utf8');
+    const desktopCallback = readFileSync(path.join(root, 'ui/src/DesktopOidcCallback.tsx'), 'utf8');
 
     expect(html).toContain('/src/auth-callback.tsx');
-    // The callback document asks the shared entry for a callback surface instead of pinning a
-    // product, so a browser redirect can never open the desktop workspace.
+    // The callback document mounts the boundary in callback mode; the desktop
+    // callback engine and the destination hand-off stay in the lazy desktop chunk.
+    expect(entry).toContain("import { XpodProductEntry } from './XpodProductEntry'");
     expect(entry).toContain('<XpodProductEntry callback />');
     expect(entry).toContain('<XpodThemeProvider>');
-    expect(entry).not.toContain('XpodShellApp');
     expect(entry).not.toContain('XpodOidcCallbackApp');
+    expect(entry).not.toContain('XpodShellApp');
     expect(entry).not.toContain("destination.app === 'dashboard'");
+    expect(desktopCallback).toContain('XpodOidcCallbackApp');
+    expect(desktopCallback).toContain('resolveCallbackProductDestination');
+    expect(desktopCallback).toContain('<XpodShellApp');
+    expect(desktopCallback).not.toContain("destination.app === 'dashboard'");
+    expect(desktopCallback).toContain('initialPathname={destination.pathname}');
+    expect(desktopCallback).toContain("window.history.replaceState({}, '', destination.target)");
   });
 
-  it('resolves the callback product destination in the renderer that owns the redirect', () => {
-    const renderer = readFileSync(path.join(root, 'ui/src/DesktopOidcCallback.tsx'), 'utf8');
+  it('keeps the desktop workspace behind the preload-bridge product boundary', () => {
+    const boundary = readFileSync(path.join(root, 'ui/src/XpodProductEntry.tsx'), 'utf8');
 
-    expect(renderer).toContain('resolveCallbackProductDestination');
-    expect(renderer).toContain('initialPathname={destination.pathname}');
-    expect(renderer).toContain("window.history.replaceState({}, '', destination.target)");
-    expect(renderer).not.toContain("destination.app === 'dashboard'");
+    // The preload bridge, never viewport or hostname, declares the desktop host.
+    expect(boundary).toContain("getXpodAuthSurfaceHost() === 'window'");
+    expect(boundary).toContain("import('./XpodShellApp')");
+    expect(boundary).toContain("import('./DesktopOidcCallback')");
+    expect(boundary).toContain("import('./pages/WebDesktopEntry')");
+    // Web documents resolve to the lightweight entry; a browser callback never
+    // initialises the desktop Solid session.
+    expect(boundary).toContain('<WebDesktopEntry />');
+    expect(boundary).toContain('<DesktopCallback />');
   });
 });
