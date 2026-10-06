@@ -172,15 +172,26 @@ async function run() {
       },
       stdio: 'inherit',
     })
-    appProcess.once('exit', async (code, signal) => {
-      console.log(`Packaged Xpod exited (code=${code ?? 'null'}, signal=${signal ?? 'none'}).`)
+    void (async () => {
+      const budgetMs = acceptanceBudgetMs(options)
+      const deadline = Date.now() + budgetMs
+      const exit = await waitForAppExit(appProcess, remainingMs(deadline))
+      if (exit.exited) {
+        console.log(`Packaged Xpod exited (code=${exit.code ?? 'null'}, signal=${exit.signal ?? 'none'}).`)
+      }
       try {
+        if (!exit.exited) {
+          throw new Error(
+            `packaged Xpod did not exit within ${budgetMs}ms, so the released build never installed ${newVersion}; `
+            + 'the self-update baseline must be a released version strictly older than the candidate version',
+          )
+        }
         await waitForAcceptanceEvidence({
           versionFile: expectedVersionFile,
           expectedVersion: newVersion,
           installMarker,
           lifecycleLog,
-          timeoutMs: Number(options.timeout ?? 120_000),
+          timeoutMs: remainingMs(deadline),
         })
         const events = readLifecycleEvents(lifecycleLog)
         // Release every owned process and the private userData BEFORE writing
@@ -202,13 +213,13 @@ async function run() {
           cleanup,
         })
         console.log(`XPOD_UPDATE_ACCEPTANCE_OK ${newVersion}`)
-        process.exit(code ?? 0)
+        process.exit(exit.code ?? 0)
       } catch (error) {
         console.error(error instanceof Error ? error.message : String(error))
         await releaseOwned()
         process.exit(1)
       }
-    })
+    })()
   })
 
   fixture.once('exit', (code) => {
@@ -411,6 +422,50 @@ function waitForChildExit(child, timeoutMs) {
       clearTimeout(timer)
       resolve(true)
     })
+  })
+}
+
+/**
+ * Budget for the whole packaged self-update acceptance.
+ *
+ * The released build must install the candidate and quit within the budget, and
+ * the relaunched build must then publish its evidence out of what remains.
+ * `--timeout` is deliberately the only knob: the observed defect (RC
+ * 37472378083) was an app-exit await that sat *outside* the configured budget,
+ * so a released build that was never offered an update (its baseline was newer
+ * than the candidate) kept running and turned the shared RC into an unbounded
+ * hang. Bounding the await by the same configured budget means a real transfer
+ * still has room and a stalled one fails by name.
+ */
+export function acceptanceBudgetMs(options) {
+  const configured = Number(options.timeout)
+  return Number.isFinite(configured) && configured > 0 ? configured : 120_000
+}
+
+/** Milliseconds left before `deadline`, never negative. */
+export function remainingMs(deadline, now = Date.now()) {
+  return Math.max(0, deadline - now)
+}
+
+/**
+ * Resolve with the child's exit facts, or `{ exited: false }` once the deadline
+ * elapses. Never throws for a child that stays alive.
+ */
+export function waitForAppExit(child, timeoutMs) {
+  if (!child) return Promise.resolve({ exited: true, code: null, signal: null })
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ exited: true, code: child.exitCode, signal: child.signalCode })
+  }
+  return new Promise((resolve) => {
+    const onExit = (code, signal) => {
+      clearTimeout(timer)
+      resolve({ exited: true, code, signal })
+    }
+    const timer = setTimeout(() => {
+      child.removeListener('exit', onExit)
+      resolve({ exited: false, code: null, signal: null })
+    }, timeoutMs)
+    child.once('exit', onExit)
   })
 }
 

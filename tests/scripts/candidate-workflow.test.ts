@@ -673,4 +673,24 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('metadata.deletionTimestamp');
     expect(runText).not.toContain("image: 'passed'");
   });
+
+  it('resolves the desktop self-update baseline by version order, not by recency alone', async () => {
+    const workflow = await loadWorkflow();
+    const step = workflow.jobs.build_desktop_rc.steps.find(
+      (candidate: any) => candidate.name === 'Download the previously released desktop bundle',
+    );
+    expect(step).toBeDefined();
+    // The verifier already rejects evidence unless oldVersion < newVersion, so the
+    // baseline must be resolved against the candidate instead of taken blindly.
+    expect(step.run).toContain('scripts/select-desktop-update-baseline.cjs');
+    expect(step.run).toContain('--candidate "$CANDIDATE_VERSION"');
+    expect(step.run).toContain('--releases "$dest/releases.json"');
+    expect(step.run).toContain('gh release download "$old_tag"');
+    // A shipped build is the only valid baseline, so pre-releases stay excluded.
+    expect(step.run).toContain('--exclude-pre-releases');
+    // Recency alone is what asked the newer released app to downgrade: the list is
+    // no longer truncated to a single newest tag.
+    expect(step.run).not.toMatch(/release list[\s\S]*--limit 1\b/);
+    expect(step.run).not.toContain("--jq '.[0].tagName'");
+  });
 });

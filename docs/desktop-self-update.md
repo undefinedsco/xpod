@@ -68,6 +68,17 @@ node scripts/packaged-update-acceptance.mjs \
 
 `--new-app` 会先签名再打包成 zip（`--new-zip` 可直接给现成归档）。脚本拉起本地夹具 feed，启动旧包，并只在下列证据齐备时打印 `XPOD_UPDATE_ACCEPTANCE_OK <version>`：
 
+> **基线必须是严格旧于候选的正式发布版。** 候选工作流不再取“最新 release”，而是用
+> `scripts/select-desktop-update-baseline.cjs` 按版本序选取“最新的、严格小于候选版本”的正式发布版；
+> 校验方（`scripts/desktop-self-update-acceptance.cjs`）本来就要求 `oldVersion < newVersion`。
+> 一旦取到比候选更新的发布版，发布版就是被要求“升级”到更旧的版本，更新器按设计拒绝升级、
+> 应用不会安装也不会退出（RC 37472378083 即因此挂住）。因此：
+> 没有可用的旧基线时脚本显式报错退出；`packaged-update-acceptance.mjs` 里“等待旧包退出”与
+> “等待更新证据”共用同一个 `--timeout` 预算（同一 deadline，默认 120000 ms），该预算现在也
+> 覆盖了此前落在预算之外的那个无界等待。旧包未在预算内退出时以具名错误失败：
+> “packaged Xpod did not exit within …ms, so the released build never installed …”，
+> 不再把这类基线错误拖成无界等待。
+
 - `update-events.log` 含 `checking-for-update`、`update-available`、`download-verified`、`update-downloaded`、`auto-install-ready`；
 - `install-requested.txt` 等于新版本号；
 - `accepted-version.txt` 由**重启后的新包**写成新版本号（旧包自己写的是旧版本号）。

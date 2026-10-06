@@ -262,3 +262,40 @@ test('feed fixture rejects a checksum that is not base64 sha512 (F2)', () => {
   ], { encoding: 'utf8', timeout: 10_000 });
   assert.notEqual(result.status, 0);
 });
+
+test('bounded app-exit wait fails by name instead of hanging on a build that never installs (RC 37472378083)', async (t) => {
+  const producer = await import(pathToFileURL(producerPath).href);
+  assert.equal(typeof producer.waitForAppExit, 'function');
+  assert.equal(typeof producer.acceptanceBudgetMs, 'function');
+  assert.equal(typeof producer.remainingMs, 'function');
+
+  // The observed RC hang: the released app is offered no update (the baseline was
+  // newer than the candidate), so it keeps running and never exits. The wait has
+  // to give up at its deadline instead of blocking the shared RC for hours.
+  const stuck = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => stuck.kill('SIGKILL'));
+  const started = Date.now();
+  assert.deepEqual(
+    await producer.waitForAppExit(stuck, 1500),
+    { exited: false, code: null, signal: null },
+  );
+  assert.ok(Date.now() - started >= 1400, 'the wait must actually observe its deadline');
+
+  // A build that really installed the candidate exits, and its code is reported.
+  const updated = spawn(process.execPath, ['-e', 'process.exit(7)'], { stdio: 'ignore' });
+  const exit = await producer.waitForAppExit(updated, 10_000);
+  assert.equal(exit.exited, true);
+  assert.equal(exit.code, 7);
+
+  // Already-exited children resolve immediately rather than waiting a deadline.
+  const alreadyGone = spawnSync(process.execPath, ['-e', 'process.exit(3)'], { stdio: 'ignore' });
+  assert.equal(alreadyGone.status, 3);
+
+  // The app-exit await and the evidence await draw from one configured budget,
+  // so a stalled update fails inside `--timeout` instead of outside it.
+  assert.equal(producer.acceptanceBudgetMs({}), 120_000);
+  assert.equal(producer.acceptanceBudgetMs({ timeout: '4000' }), 4000);
+  assert.equal(producer.acceptanceBudgetMs({ timeout: 'nonsense' }), 120_000);
+  assert.equal(producer.remainingMs(1000, 400), 600);
+  assert.equal(producer.remainingMs(1000, 4000), 0);
+});
