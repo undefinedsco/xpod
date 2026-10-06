@@ -112,6 +112,25 @@ jobs:
           kubectl auth can-i create services -n "$SEALOS_NAMESPACE" | grep -qx yes
           kubectl auth can-i create ingresses.networking.k8s.io -n "$SEALOS_NAMESPACE" | grep -qx yes
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run build:packages
+
+      # Read-only preflight: an already published shared version may differ from the
+      # freshly packed payload only in the provenance field gitHead. That case PASSES and
+      # the verified registry tarball is reused (no republish); any real content, member,
+      # mode, or manifest semantic divergence fails closed here, before expensive artifact
+      # jobs. It downloads and raw-integrity-checks the existing registry tarballs and
+      # consumes the exact mixed tarballs. It never publishes and never moves a dist-tag.
+      - name: Verify shared package reuse without publishing
+        env:
+          XPOD_ACCEPTED_SHA: ${{ github.sha }}
+        run: node scripts/publish-workspace-packages.cjs --verify-only
+
   publish_qlever_runtime_sdk:
     needs: [metadata, rc_prerequisites]
     uses: ./.github/workflows/publish-qlever-runtime-sdk.yml

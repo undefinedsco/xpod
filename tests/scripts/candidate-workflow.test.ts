@@ -251,6 +251,30 @@ esac
     expect(runText).not.toContain('get secret xpod-rc-tls');
   });
 
+  it('runs the read-only shared-package reuse preflight before artifact jobs and never publishes', async () => {
+    const workflow = await loadWorkflow();
+    const steps = workflow.jobs.rc_prerequisites.steps;
+    const bun = steps.find((step: any) => step.uses === 'oven-sh/setup-bun@v2');
+    expect(bun.with['bun-version']).toBe('1.4.2');
+    const installIndex = steps.findIndex((step: any) => step.run === 'bun install --frozen-lockfile');
+    const buildIndex = steps.findIndex((step: any) => step.run === 'bun run build:packages');
+    const preflightIndex = steps.findIndex((step: any) =>
+      typeof step.run === 'string' && step.run.includes('scripts/publish-workspace-packages.cjs --verify-only'));
+    const preflight = steps[preflightIndex];
+    expect(installIndex).toBeGreaterThan(-1);
+    expect(buildIndex).toBeGreaterThan(installIndex);
+    expect(preflightIndex).toBeGreaterThan(buildIndex);
+    expect(preflight.name).toBe('Verify shared package reuse without publishing');
+    expect(preflight.env.XPOD_ACCEPTED_SHA).toBe('${{ github.sha }}');
+    expect(preflight.run).not.toContain('npm publish');
+    expect(preflight.run).not.toContain('dist-tag');
+    expect(preflight.run).not.toContain(':latest');
+    for (const jobName of ['publish_qlever_runtime_sdk', 'build_qlever_macos_runtime', 'build_image']) {
+      const needs = workflow.jobs[jobName].needs;
+      expect(Array.isArray(needs) ? needs.includes('rc_prerequisites') : needs === 'rc_prerequisites', jobName).toBe(true);
+    }
+  });
+
   it('checks out the repository and validates the Guangzhou cluster target before any namespace access', async () => {
     const workflow = await loadWorkflow();
     const job = workflow.jobs.rc_prerequisites;

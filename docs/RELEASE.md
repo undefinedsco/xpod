@@ -341,6 +341,38 @@ ready Pod imageID 和 direct pod health 全部通过后才算部署成功。
 image 并等待 readiness，然后输出 diagnostics。回滚不是新发布；需要修复时
 继续在 `release/<version>` 上提交新 commit，重新走 RC 和 stable tag。
 
+## 共享包版本复用与 provenance
+
+同一共享包版本（例如 `@undefineds.co/solid-sdk@0.1.4`）一旦发布即不可变，
+stable promotion 不得覆写它。`scripts/publish-workspace-packages.cjs` 对已存在的
+版本执行只读复用校验：从 registry 下载该版本的精确 tarball，先按
+`dist.integrity` 校验原始字节，再逐项比较完整载荷——成员文件名、类型、权限位、
+内容以及 manifest 语义字段——仅显式排除 provenance 字段 `gitHead`。内容一致
+（只有 `gitHead` 不同）时，直接复用该已验证的已发布 tarball，不再重新发布。
+
+必须区分两个 SHA：
+
+- **accepted root SHA**：本轮 candidate 验收的 exact commit（`github.sha`），
+  也是 `npm pack` 注入到 `gitHead` 的值；
+- **shared artifact original gitHead**：该共享包版本最初发布时的 commit。
+
+用一个新的 accepted root SHA 重跑时，`gitHead` 必然变化，所以重新打包的 tarball
+字节不可能与已发布版本逐字节相同；这不是内容漂移。只要该版本的运行时、类型、
+CSS、文件集合、权限位与 manifest 语义字段都未变、仅 `gitHead` 不同，就判定为可
+复用并沿用已发布字节，而不是重新发布。若除 `gitHead` 外任何内容、成员集合、
+权限或 manifest 语义字段（`name`、`version`、`types`、`exports`、`dependencies`、
+`peerDependencies`、`optionalDependencies`、`devDependencies` 等）发生变化，或
+tarball 损坏、integrity 不匹配、出现重复成员、路径穿越、链接或不受支持的条目
+类型，复用校验会 fail closed 并提示提升共享包版本，绝不覆写既有版本。新版本仍
+发布 packed tarball，并把发布后的 `dist.integrity` 绑定回 packed 文件的 sha512。
+
+`rc_prerequisites` 在 `bun install --frozen-lockfile` 与 `bun run build:packages`
+之后、任何 artifact job 之前运行只读 preflight
+`node scripts/publish-workspace-packages.cjs --verify-only`（`XPOD_ACCEPTED_SHA`
+为 `github.sha`）：它执行复用、原始完整性与载荷校验，并对精确的混合 tarball
+（已存在版本用已验证的已发布字节，新版本用打包字节）运行 clean consumer 检查，
+但不发布、不移动 `latest`。没有新版本时该 preflight 不产生任何 registry 副作用。
+
 ## 构建耗时与缓存
 
 RC 里最重的一环是 `build_qlever_macos_runtime`（macOS ARM64 原生运行时）。
