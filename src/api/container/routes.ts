@@ -141,7 +141,6 @@ function registerSharedRoutes(
   const rdfSearchIndexingService = container.resolve('rdfSearchIndexingService', { allowUnregistered: true });
   const ownerPodAccess = container.resolve('ownerPodAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
-  const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository', { allowUnregistered: true });
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const providerModelsService = container.resolve('providerModelsService', { allowUnregistered: true });
@@ -213,13 +212,6 @@ function registerSharedRoutes(
     modelsService: providerModelsService,
     providerModelSelectionService,
     customModelsService: providerCustomModelsService,
-    gatewayAccessKeyRepository,
-    invalidateClientCredential: (clientId) => container.resolve('solidSessions').invalidateClientCredential(clientId),
-    validateClientCredential: (apiKey) => container.resolve('authenticator').authenticate({
-      headers: { authorization: `Bearer ${apiKey}` },
-      method: 'POST',
-      url: '/api/ai/gateway/keys',
-    } as IncomingMessage),
     aiClientConfiguration: aiClientConfigurationService?.capability(),
     aiConnectionInvocationKeyIssuer,
   });

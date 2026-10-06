@@ -283,8 +283,8 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('rollout status deployment/xpod-rc-minio');
     expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
     expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');
-    // API 服务启动时会要求它：缺了 rc 会卡在 "Failed to start API Service"。
-    expect(runText).toContain("'XPOD_GATEWAY_LOCATOR_SECRET',");
+    // Gateway API Keys are gone, so the API no longer requires a locator secret at startup.
+    expect(runText).not.toContain('XPOD_GATEWAY_LOCATOR_SECRET');
     expect(runText).not.toContain('--from-literal=POSTGRES_DB=xpod_rc');
     expect(runText).not.toContain('--from-literal=POSTGRES_USER=xpod_rc');
     expect(runText).not.toContain('must match the isolated RC PostgreSQL service identity');

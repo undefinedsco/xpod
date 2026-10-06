@@ -3,7 +3,6 @@ import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from '@undefineds.co/ai-connecti
 import {
   aiProviderResource,
   credentialResource,
-  gatewayAccessKeyResource,
   quotaSnapshotResource,
 } from '@undefineds.co/models';
 
@@ -31,8 +30,6 @@ export interface AiConnectionsServiceAccessResource {
   id:
     | 'providerCredentials'
     | 'providerDefinitions'
-    | 'gatewayAccessKeys'
-    | 'gatewayAccessKeySecrets'
     | 'quotaSnapshots'
     | `providerDocument:${string}`;
   url: string;
@@ -56,7 +53,6 @@ interface PodResourceLocator {
 const declaredResourceBases = new WeakMap<object, string>([
   [credentialResource, declaredResourceBase(credentialResource)],
   [aiProviderResource, declaredResourceBase(aiProviderResource)],
-  [gatewayAccessKeyResource, declaredResourceBase(gatewayAccessKeyResource)],
   [quotaSnapshotResource, declaredResourceBase(quotaSnapshotResource)],
 ]);
 
@@ -74,46 +70,18 @@ export function createAiConnectionsServiceAccess(input: {
     resources: ([
       ['providerCredentials', resourceUrl(input.ownerWebId, credentialResource, input.podBaseUrl)],
       ['providerDefinitions', resourceUrl(input.ownerWebId, aiProviderResource, input.podBaseUrl)],
-      ['gatewayAccessKeys', resolveGatewayAccessKeyResourceUrl(input.ownerWebId, input.podBaseUrl)],
-      ['gatewayAccessKeySecrets', resolveGatewayAccessKeySecretResourceUrl(input.ownerWebId, input.podBaseUrl), 'application/json'],
       ['quotaSnapshots', resourceUrl(input.ownerWebId, quotaSnapshotResource, input.podBaseUrl)],
       ...AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS.map((provider) => [
         `providerDocument:${provider}`,
         providerDocumentUrl(input.ownerWebId, provider, input.podBaseUrl),
       ] as const),
-    ] as const).map(([id, url, mediaType]) => ({
+    ] as const).map(([id, url]) => ({
       id,
       url,
-      mediaType: mediaType ?? 'text/turtle',
+      mediaType: 'text/turtle',
       access: { read: true, append: true, write: true },
     })) as AiConnectionsServiceAccessResource[],
   };
-}
-
-export function resolveGatewayAccessKeyResourceUrl(ownerWebId: string, podBaseUrl?: string): string {
-  return resourceUrl(ownerWebId, gatewayAccessKeyResource, podBaseUrl);
-}
-
-export function resolveGatewayAccessKeySecretResourceUrl(ownerWebId: string, podBaseUrl?: string): string {
-  const podRoot = `${(podBaseUrl ?? resolvePodBaseUrl(ownerWebId)).replace(/\/$/u, '')}/`;
-  return new URL('.data/ai/gateway/access-key-secrets.json', podRoot).href;
-}
-
-export function resolveGatewayAccessKeySparqlEndpoint(ownerWebId: string, podBaseUrl?: string): string {
-  return `${resolveGatewayAccessKeyResourceUrl(ownerWebId, podBaseUrl).replace(/\/$/u, '')}/-/sparql`;
-}
-
-export function isGatewayAccessKeySparqlEndpoint(
-  ownerWebId: string,
-  resourceUrlValue: URL | string,
-): boolean {
-  try {
-    const resource = typeof resourceUrlValue === 'string' ? new URL(resourceUrlValue) : resourceUrlValue;
-    const endpoint = new URL(resolveGatewayAccessKeySparqlEndpoint(ownerWebId));
-    return resource.origin === endpoint.origin && resource.pathname === endpoint.pathname;
-  } catch {
-    return false;
-  }
 }
 
 function resourceUrl(ownerWebId: string, resource: PodResourceLocator, podBaseUrl?: string): string {

@@ -9,7 +9,6 @@ import { asFunction, type AwilixContainer } from 'awilix';
 import { randomBytes } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
-import { resolvePersistentGatewayLocatorSecret } from '../../runtime/gateway-locator-secret';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
@@ -27,8 +26,6 @@ import { InvocationTokenAuthenticator } from '../ai-gateway/auth/InvocationToken
 import { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
-import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
-import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { OwnerPodAccess } from '../ai-gateway/pod/OwnerPodAccess';
 import { resolveHostedPodRoute } from '../ai-gateway/pod/HostedPodRoute';
 import { getTaskCredentialDatabase, resolveTaskCredentialDatabaseUrl } from '../tasks/TaskCredentialDatabase';
@@ -137,21 +134,6 @@ function credentialVaultForConfig(config: ApiContainerCradle['config']): Credent
 
 function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): string {
   return new URL(resolveAiConnectionsBaseUrl(config)).origin;
-}
-
-/**
- * Resolves the secret that seals Gateway API Key locator records, or undefined when this
- * deployment has none. Cloud has no derived fallback, so Cloud without XPOD_GATEWAY_LOCATOR_SECRET
- * reports Gateway API Keys as unavailable rather than failing API startup.
- */
-function resolveGatewayLocatorSecret(config: ApiContainerCradle['config']): string | undefined {
-  if (config.gatewayLocatorSecret?.trim()) {
-    return config.gatewayLocatorSecret;
-  }
-  return resolvePersistentGatewayLocatorSecret({
-    databaseUrl: config.databaseUrl,
-    edition: config.edition,
-  });
 }
 
 function podBaseUrlResolver(cradle: ApiContainerCradle) {
@@ -268,31 +250,6 @@ export function registerCommonServices(
           kid: 'active',
           secret: randomBytes(32).toString('hex'),
         },
-      });
-    }).singleton(),
-
-    gatewayAccessKeyRepository: asFunction((cradle: ApiContainerCradle) => {
-      const locatorSecret = resolveGatewayLocatorSecret(cradle.config);
-      if (!locatorSecret) {
-        // Without a locator secret no Gateway API Key can be created or verified. Report the
-        // feature as unavailable instead of failing API startup, and derive nothing in its place.
-        logger.warn(
-          'XPOD_GATEWAY_LOCATOR_SECRET is not configured: Gateway API Keys are unavailable '
-          + '(no key can be created or verified). Configure one stable shared value across replicas to enable them.',
-        );
-        return undefined;
-      }
-      const { config, ownerPodAccess } = cradle;
-      return new PodGatewayAccessKeyRepository({
-        locatorCodec: new AesGatewayKeyLocatorCodec({
-          active: {
-            kid: config.gatewayLocatorKeyId ?? 'active',
-            secret: locatorSecret,
-          },
-          previous: config.gatewayPreviousLocatorSecrets,
-        }),
-        podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
       });
     }).singleton(),
 
@@ -603,7 +560,6 @@ export function registerCommonServices(
       nodeRepo,
       serviceTokenRepo,
       invocationTokenCodec,
-      gatewayAccessKeyRepository,
       solidSessions,
       config,
     }: ApiContainerCradle) => {
@@ -635,11 +591,10 @@ export function registerCommonServices(
         })
         : undefined;
 
-      // Kept even when the deployment configured no locator secret: this authenticator also
-      // verifies AI-Connections invocation tokens, and without a repository it reports Gateway API
-      // Keys as unavailable (503) instead of letting the bearer fall through as invalid.
+      // Verifies the AI-Connections invocation tokens that carry `models:read` / `inference:write`
+      // for the model gateway. It no longer accepts `xpod_gw_v1.*` Gateway API Keys: those are
+      // gone, so such a bearer now falls through to the client-credentials authenticator.
       const gatewayApiKeyAuthenticator = new GatewayApiKeyAuthenticator({
-        repository: gatewayAccessKeyRepository,
         deployment: config.edition,
         invocationTokenCodec,
         invocationTokenAudience: resolveAiConnectionsAudience(config),
@@ -650,7 +605,7 @@ export function registerCommonServices(
         // inference tokens, so route-scoped authentication must run before the
         // generic client-credentials authenticator claims the bearer.
         // Order: Solid DPoP → Service Token → Node Token →
-        // Client Configuration Invocation → Gateway API Key → Client Credentials.
+        // Client Configuration Invocation → Inference Invocation → Client Credentials.
         // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
         authenticators: [
           solidAuthenticator,

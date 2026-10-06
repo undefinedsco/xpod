@@ -104,7 +104,7 @@ describe('release lifecycle documentation', () => {
     expect(text).not.toContain('推荐值 `xpod-rc`');
   });
 
-  it('treats managed Local provisioning, Account UI, and Gateway key recovery as one release contract', async () => {
+  it('treats managed Local provisioning and the Account UI as one release contract', async () => {
     const text = await loadReleaseDoc();
 
     for (const expected of [
@@ -114,11 +114,15 @@ describe('release lifecycle documentation', () => {
       '`cluster_node.pod_base_urls`',
       '`cluster_node.connectivity_status`',
       '`cluster_service_token`',
-      '`XPOD_GATEWAY_LOCATOR_SECRET`',
       '同一个镜像',
       '不得只替换静态文件',
     ]) {
       expect(text).toContain(expected);
     }
+
+    // The Gateway API Key product line is removed, so the release contract must
+    // say so rather than still demanding a locator secret from every environment.
+    expect(text).not.toContain('必须提供各副本共享的稳定');
+    expect(text).toContain('本版本已移除 Gateway API Key');
   });
 });

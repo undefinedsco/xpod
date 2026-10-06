@@ -1,4 +1,4 @@
-import { gatewayAccessKeyResource } from '@undefineds.co/models';
+import { quotaSnapshotResource } from '@undefineds.co/models';
 import { describe, expect, it } from 'vitest';
 import {
   AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS,
@@ -62,16 +62,12 @@ describe('createAiConnectionsServiceAccess', () => {
     expect(descriptor.resources.map((resource) => resource.id)).toEqual([
       'providerCredentials',
       'providerDefinitions',
-      'gatewayAccessKeys',
-      'gatewayAccessKeySecrets',
       'quotaSnapshots',
       ...AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS.map((provider) => `providerDocument:${provider}`),
     ]);
     expect(descriptor.resources.map((resource) => resource.url)).toEqual([
       'https://pod.example/alice/settings/credentials.ttl',
       'https://pod.example/alice/settings/providers/__service_access__.ttl',
-      'https://pod.example/alice/.data/ai/gateway/access-keys.ttl',
-      'https://pod.example/alice/.data/ai/gateway/access-key-secrets.json',
       'https://pod.example/alice/.data/ai/gateway/quota.ttl',
       ...AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS.map((provider) =>
         `https://pod.example/alice/settings/providers/${provider}.ttl`),
@@ -133,14 +129,12 @@ describe('createAiConnectionsServiceAccess', () => {
       podBaseUrl: 'http://127.0.0.1:3000/test/',
     });
 
-    expect(descriptor.resources.find((resource) => resource.id === 'gatewayAccessKeys')?.url)
-      .toBe('http://127.0.0.1:3000/test/.data/ai/gateway/access-keys.ttl');
-    expect(descriptor.resources.find((resource) => resource.id === 'gatewayAccessKeySecrets')?.url)
-      .toBe('http://127.0.0.1:3000/test/.data/ai/gateway/access-key-secrets.json');
+    expect(descriptor.resources.find((resource) => resource.id === 'quotaSnapshots')?.url)
+      .toBe('http://127.0.0.1:3000/test/.data/ai/gateway/quota.ttl');
   });
 
   it('does not leak a previously hydrated Pod resource path into another owner descriptor', () => {
-    const mutableResource = gatewayAccessKeyResource as unknown as {
+    const mutableResource = quotaSnapshotResource as unknown as {
       resourcePath: string;
       config: { base: string };
     };
@@ -155,8 +149,8 @@ describe('createAiConnectionsServiceAccess', () => {
         serviceWebId: 'https://pod.example/alice/profile/card#me',
       });
 
-      expect(descriptor.resources.find((resource) => resource.id === 'gatewayAccessKeys')?.url)
-        .toBe('https://pod.example/bob/.data/ai/gateway/access-keys.ttl');
+      expect(descriptor.resources.find((resource) => resource.id === 'quotaSnapshots')?.url)
+        .toBe('https://pod.example/bob/.data/ai/gateway/quota.ttl');
     } finally {
       mutableResource.resourcePath = originalResourcePath;
       mutableResource.config.base = originalConfigBase;

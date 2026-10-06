@@ -164,19 +164,18 @@ Gateway Key 不是可以各自热替换的四个独立版本。候选镜像必�
   route 时不得把首启强制绑定到可选的 Cloudflare Tunnel；仅当实际选择的信令、路由、
   DNS 或 tunnel 配置失败时才阻断注册。不得先持久化“已注册”状态再让 Account 页面在
   创建 Pod 时暴露 `fetch failed`；RC 日志中出现所选路径的注册失败必须直接阻断候选版本。
-- 若候选版本包含 Gateway API Key，Cloud/RC 必须提供各副本共享的稳定
-  `XPOD_GATEWAY_LOCATOR_SECRET`。Local/Standalone 默认从 SQLite 身份库目录
-  派生私有文件 `.xpod/secrets/gateway-locator-secret`，随实例数据卷保留，
-  不要求用户另配环境变量；显式配置仍优先。不得依赖进程随机值、临时
-  Gateway ingress secret 或会轮换的服务访问 token，否则重启后历史 Key 的 locator
-  无法解码，列表、停用和删除会出现不一致。密钥仅在创建时返回一次，列表只能返回元数据。验收必须在重建容器后
-  用创建时保留的同一个 Key 重验模型列表和 Chat，而不只是复用存活进程。
+- 本版本已移除 Gateway API Key（`xpod_gw_v1_*`）与为它服务的 locator 密钥
+  `XPOD_GATEWAY_LOCATOR_SECRET`：不再有代码签发这类 Key，也不再从 Key 反解 owner 去
+  Pod 里校验。任何环境都不需要、也不应再配置该变量；发布门禁不得把它列为必需项，
+  配置里残留它不会启用任何功能。存量 `xpod_gw_v1_*` Key 立即全部失效（401），
+  只能改用调用者自己的凭据。AI-Connections 的 invocation token
+  （`xpod_inv_v1.*`）不在此次移除范围内，短期推理授权行为保持不变。
 
 RC 验收顺序固定为：验证静态 bundle 与 deployed digest → 用同一个 accepted image
 启动一次性 Local edition 并注册到 RC Cloud（不得把 Cloud deployment 的端口转发冒充
 Local）→ 注册 Cloud 身份 → 由 Cloud 为该 Local SP 创建 Pod → 从 canonical Pod URL 命中本地最优路径完成
-读写 → 用 Solid Session 创建 Xpod Gateway API Key 并取得一次性密钥，校验原始列表仅含元数据 → 使用该 Key 调用
-`/v1/models` → 发出真实 `/v1/chat/completions` 并校验有效内容 → 撤销 CSS 凭据并删除 Pod 记录，验证旧 Key 返回 401。任一层失败都不得
+读写 → 用调用者自己的 Solid 凭据（AI-Connections invocation token）调用
+`/v1/models` → 发出真实 `/v1/chat/completions` 并校验有效内容。任一层失败都不得
 用下一层或隔离测试的结果替代。
 
 ## 操作命令

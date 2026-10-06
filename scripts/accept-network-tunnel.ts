@@ -1080,7 +1080,6 @@ export function stripCloudRegistrationEnv(env: NodeJS.ProcessEnv): NodeJS.Proces
     'XPOD_SERVICE_TOKEN',
     'XPOD_PUBLIC_URL',
     'XPOD_SP_DOMAIN',
-    'XPOD_GATEWAY_LOCATOR_SECRET',
   ]) {
     delete cleaned[key];
   }

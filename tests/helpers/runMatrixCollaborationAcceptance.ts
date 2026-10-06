@@ -36,7 +36,6 @@ async function main(): Promise<void> {
       runtimeRoot, transport: 'port', open: false, authMode: 'acp', logLevel: 'warn',
       env: {
         XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: fixture.command,
-        XPOD_GATEWAY_LOCATOR_SECRET: 'matrix-integration-locator',
         XPOD_SECRET_CELL_KEY_ID: 'matrix-integration',
         XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 7).toString('base64'),
       },

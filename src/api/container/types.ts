@@ -57,7 +57,6 @@ import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinity
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import type { OwnerPodAccess } from '../ai-gateway/pod/OwnerPodAccess';
-import type { GatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
 import type { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import type { AiClientConfigurationService } from '../service/AiClientConfigurationService';
@@ -139,10 +138,6 @@ export interface ApiContainerConfig {
   aiConnectionInvocationSecret?: string;
   aiConnectionInvocationKeyId?: string;
   aiConnectionPreviousInvocationSecrets?: Array<{ kid: string; secret: string }>;
-  /** Durable Gateway API Key locator signing config. */
-  gatewayLocatorSecret?: string;
-  gatewayLocatorKeyId?: string;
-  gatewayPreviousLocatorSecrets?: Array<{ kid: string; secret: string }>;
   aiGatewaySessionAffinitySecret?: string;
 
   /** Runtime-generated secret used only between GatewayProxy and the internal API server for admin ingress evidence. */
@@ -281,7 +276,6 @@ export interface ApiContainerCradle {
    */
   legacyPodKeyMigration?: () => Promise<PodInterfaceKeyMigrationResult>;
   invocationTokenCodec?: InvocationTokenCodec;
-  gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   aiConnectionInvocationKeyIssuer?: AiConnectionsInvocationKeyIssuer;
   aiClientConfigurationService?: AiClientConfigurationService;
   providerConnectService: ProviderConnectService;

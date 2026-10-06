@@ -25,7 +25,6 @@ describe('accept-network-tunnel candidate environment', () => {
       XPOD_SERVICE_TOKEN: 'service-token',
       XPOD_PUBLIC_URL: 'https://node.example/',
       XPOD_SP_DOMAIN: 'node.example',
-      XPOD_GATEWAY_LOCATOR_SECRET: 'secret',
     });
 
     // Acceptance candidates must stay self-contained: a real Cloud registration would both

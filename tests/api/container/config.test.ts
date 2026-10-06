@@ -6,8 +6,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig } from '../../../src/api/container';
 import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
-import { PodGatewayAccessKeyRepository } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
-import { secretPathForGatewayLocatorDatabase } from '../../../src/runtime/gateway-locator-secret';
 import { registerProvisionStatusRoute } from '../../../src/api/handlers/ProvisionHandler';
 
 const cleanupRoots: string[] = [];
@@ -185,32 +183,6 @@ describe('loadConfigFromEnv', () => {
     expect(config.aiGatewayProviderBaseUrls?.openai).toBe('http://127.0.0.1:48111/v1');
   });
 
-  it('loads an explicit Gateway locator secret without deriving a local file secret', () => {
-    process.env.XPOD_EDITION = 'local';
-    process.env.CSS_IDENTITY_DB_URL = ':memory:';
-    process.env.XPOD_GATEWAY_LOCATOR_SECRET = 'explicit-gateway-locator-secret';
-
-    const config = loadConfigFromEnv();
-    const container = createApiContainer(config);
-
-    expect(config.gatewayLocatorSecret).toBe('explicit-gateway-locator-secret');
-    expect(() => container.resolve('gatewayAccessKeyRepository')).not.toThrow();
-  });
-
-  it('derives a persistent Gateway locator secret for local SQLite identity storage', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-container-locator-'));
-    cleanupRoots.push(root);
-    const databaseUrl = `sqlite:${path.join(root, 'identity.sqlite')}`;
-    const container = createApiContainer(baseConfig({ databaseUrl }));
-
-    expect(() => container.resolve('gatewayAccessKeyRepository')).not.toThrow();
-    const secretPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
-    expect(fs.existsSync(secretPath)).toBe(true);
-    if (process.platform !== 'win32') {
-      expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
-    }
-  });
-
   it('explicitly enables the local filesystem AI client configuration capability', () => {
     process.env.XPOD_EDITION = 'local';
     process.env.CSS_ROOT_FILE_PATH = '.test-data/api-container-config';
@@ -342,28 +314,6 @@ describe('loadConfigFromEnv', () => {
     const aiGatewayService = container.resolve('aiGatewayService') as any;
 
     expect(aiGatewayService.cloudModels).toBeUndefined();
-  });
-
-  it('keeps Cloud startable without a stable shared locator secret and leaves Gateway API Keys unavailable', () => {
-    const container = createApiContainer(baseConfig({
-      edition: 'cloud',
-      databaseUrl: 'postgres://db.example/xpod',
-    }));
-
-    // Cloud derives no fallback secret, so the Gateway API Key assembly is skipped instead of
-    // failing API startup; the rest of the API still wires up.
-    expect(container.resolve('gatewayAccessKeyRepository', { allowUnregistered: true })).toBeUndefined();
-    expect(container.resolve('authMiddleware')).toBeTruthy();
-  });
-
-  it('keeps Cloud Gateway API Keys wired when a stable shared locator secret is configured', () => {
-    const container = createApiContainer(baseConfig({
-      edition: 'cloud',
-      databaseUrl: 'postgres://db.example/xpod',
-      gatewayLocatorSecret: 'cloud-shared-locator-secret',
-    }));
-
-    expect(container.resolve('gatewayAccessKeyRepository')).toBeInstanceOf(PodGatewayAccessKeyRepository);
   });
 
   it('restores first-run Local Cloud credentials from the default setup file without env tokens', () => {
