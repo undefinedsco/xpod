@@ -6,7 +6,7 @@ const SECRET_BYTES = 32;
 const SECRET_FILE_MODE = 0o600;
 const SECRET_DIR_MODE = 0o700;
 
-export type LocalSecretPurpose = 'gateway-locator-secret' | 'secret-cell-root-key';
+export type LocalSecretPurpose = 'secret-cell-root-key';
 
 export function localSecretPathForDatabase(databasePath: string, purpose: LocalSecretPurpose): string {
   return path.join(path.dirname(databasePath), '.xpod', 'secrets', purpose);
