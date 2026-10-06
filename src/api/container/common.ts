@@ -1,3 +1,4 @@
+import { getSocketPathForOrigin } from '../../runtime/socket-origin-registry';
 import { SqlMatrixEventJournal } from '../matrix/MatrixEventJournal';
 /**
  * 共享服务注册
@@ -10,7 +11,6 @@ import { randomBytes } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
 import { resolvePersistentGatewayLocatorSecret } from '../../runtime/gateway-locator-secret';
-import { localServiceUrl } from '../../runtime/bootstrap';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
@@ -143,43 +143,19 @@ function resolveAiConnectionsBaseUrl(config: ApiContainerCradle['config']): stri
   return aiConnectionsV1Url(resolveAiConnectionsCanonicalOrigin(config));
 }
 
-/**
- * Where this process's own model call is sent.
- *
- * A Local agent loop runs in-process, so its model request can address the API listener this
- * process already owns instead of hair-pinning the canonical public origin back through ingress.
- * The invocation token keeps the canonical realm (audience/issuer); only the wire target differs.
- * Cloud and cross-namespace workers have no loopback route and keep the canonical public
- * transport.
- */
-function resolveAiConnectionsTransportBaseUrl(config: ApiContainerCradle['config']): string {
-  return aiConnectionsV1Url(
-    resolveLocalApiTransportOrigin(config) ?? resolveAiConnectionsCanonicalOrigin(config),
-  );
-}
-
-function resolveLocalApiTransportOrigin(config: ApiContainerCradle['config']): string | undefined {
-  if (config.edition !== 'local' || config.socketPath) {
-    return undefined;
-  }
-  // Only a resolved, positive, in-range listener port names a target. Port 0 means the OS picks
-  // an ephemeral port the runtime cannot know here, so keep the canonical origin rather than
-  // emitting an unusable `localhost:0`.
-  if (!Number.isInteger(config.port) || config.port <= 0 || config.port > 65_535) {
-    return undefined;
-  }
-  const host = config.host?.trim();
-  if (!host) {
-    return undefined;
-  }
-  // Reuse the shared bind-host mapping: wildcard -> loopback, IPv6 bracketed.
-  return localServiceUrl(host, config.port);
-}
-
 function credentialVaultForConfig(config: ApiContainerCradle['config']): CredentialVault {
   return new PlaintextCredentialVault({
     legacyVault: config.secretCellCredentialVaultFactory?.(),
   });
+}
+
+function resolveAiConnectionsRuntimeBaseUrl(config: ApiContainerCradle['config']): string {
+  // Runtime inference must reach the Gateway even when the canonical public route is absent.
+  // Socket mode keeps the canonical origin registered on the owned Gateway socket.
+  const internalBaseUrl = resolveHostedPodCssBaseUrl(config);
+  return internalBaseUrl
+    ? new URL('/v1', internalBaseUrl).toString().replace(/\/$/u, '')
+    : resolveAiConnectionsBaseUrl(config);
 }
 
 function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): string {
@@ -196,10 +172,25 @@ function resolveGatewayLocatorSecret(config: ApiContainerCradle['config']): stri
   });
 }
 
-function podBaseUrlResolver(cradle: ApiContainerCradle) {
+function podBaseUrlResolver(cradle: ApiContainerCradle, selection: 'first' | 'unique' = 'first') {
   return async (webId: string): Promise<string | undefined> => {
-    const pod = await cradle.podLookupRepo?.findByWebId(webId);
-    return pod?.storageUrl ?? pod?.baseUrl;
+    const pods = selection === 'unique'
+      ? await cradle.podLookupRepo?.findAllByWebId(webId) ?? []
+      : [await cradle.podLookupRepo?.findByWebId(webId)];
+    const roots = pods.flatMap(pod => {
+      const root = pod?.storageUrl ?? pod?.baseUrl;
+      return root ? [root] : [];
+    });
+    if (selection === 'first') return roots[0];
+    const normalized = new Set(roots.map(root => {
+      const url = new URL(root);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+        throw new Error('Invalid Pod storage binding');
+      }
+      return url.href.replace(/\/+$/u, '');
+    }));
+    if (normalized.size > 1) throw new Error('Authoritative Pod storage binding ambiguous');
+    return normalized.values().next().value;
   };
 }
 
@@ -334,8 +325,15 @@ export function registerCommonServices(
       return new AiConnectionsInvocationKeyIssuer({
         codec: cradle.invocationTokenCodec!,
         deployment: config.edition,
-        baseUrl: resolveAiConnectionsTransportBaseUrl(config),
+        baseUrl: resolveAiConnectionsBaseUrl(config),
         audience: resolveAiConnectionsAudience(config),
+        issuer: resolveAiConnectionsAudience(config),
+        // The task runtime reaches the Gateway through this key, so it must name the owner's
+        // active model; otherwise the runner asks the Gateway for a placeholder it cannot route.
+        resolveModel: async ({ auth }) => {
+          const models = await cradle.aiGatewayService?.listModels(auth);
+          return models?.find((model) => typeof model.id === 'string' && model.id.trim().length > 0)?.id;
+        },
       });
     }).singleton(),
 
@@ -356,6 +354,21 @@ export function registerCommonServices(
       });
       const adapterOptions = {
         attempts, credentialRepository, vault, deployment: config.edition, signingSecret,
+        // Connect owns its official endpoints, form bodies and timeout signal;
+        // the shared transport owns proxy routing, target validation and cleanup.
+        fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+          if (typeof input !== 'string' && !(input instanceof URL)) {
+            throw new TypeError('Connect transport requires an endpoint URL');
+          }
+          return cradle.providerHttpTransport.request({
+            url: input.toString(),
+            method: init?.method,
+            headers: init?.headers,
+            body: init?.body,
+            signal: init?.signal ?? undefined,
+            redirect: 'error',
+          });
+        },
       };
       const callbackReceiver = new LoopbackAuthorizationCallbackReceiver();
       const adapters = [
@@ -364,9 +377,12 @@ export function registerCommonServices(
           .map((provider) => new BrowserAssistedApiKeyConnectAdapter({
             ...adapterOptions,
             provider: provider.id,
-            consoleUrl: registry.requireProduct(provider.id).offerings
-              .find((offering) => offering.kind === 'api-platform')?.consoleUrl
-              ?? registry.requireProduct(provider.id).offerings[0].consoleUrl,
+            consoleUrl: (input) => {
+              const offerings = registry.requireProduct(provider.id).offerings;
+              const offeringId = input.offeringId
+                ?? (offerings.find((offering) => offering.kind === 'api-platform') ?? offerings[0]).id;
+              return registry.requireOffering(provider.id, offeringId).consoleUrl;
+            },
           })),
         ...(config.edition === 'local' ? createBrowserOAuthIntegrations().map((integration) => new AuthorizationCodeConnectAdapter({
           ...adapterOptions, integration, callbackReceiver,
@@ -705,9 +721,11 @@ export function registerCommonServices(
     }).singleton(),
 
     // ChatKit 存储与服务
-    chatKitStore: asFunction(({ config, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
+    chatKitStore: asFunction((cradle: ApiContainerCradle) => {
+      const { config, ownerPodAccess, serverGroupReconcilerService } = cradle;
       return new PodChatKitStore({
         podAccess: ownerPodAccess,
+        podBaseUrlResolver: podBaseUrlResolver(cradle, 'unique'),
         serverGroupReconcilerService,
         deployment: config.edition,
         credentialSecretDecoder: createAiCredentialSecretDecoder({
@@ -803,7 +821,7 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, rdfSearchReconciliationRepository, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
+    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, rdfSearchReconciliationRepository, aiConnectionInvocationKeyIssuer, ownerPodAccess }: ApiContainerCradle) => {
       return new InngestRunExecutionBackend({
         baseUrl: inngestRuntimeConfig?.baseUrl,
         eventKey: inngestRuntimeConfig?.eventKey,
@@ -831,7 +849,12 @@ export function registerCommonServices(
           podWorkspaceMapping: config.solidBaseUrl && config.solidRootFilePath
             ? { baseUrl: config.solidBaseUrl, rootFilePath: config.solidRootFilePath }
             : undefined,
-          podTokenEndpoint: config.cssTokenEndpoint,
+          podAccess: ownerPodAccess,
+          gatewayTransport: {
+            canonicalBaseUrl: resolveAiConnectionsBaseUrl(config),
+            baseUrl: resolveAiConnectionsRuntimeBaseUrl(config),
+            socketPath: getSocketPathForOrigin(resolveAiConnectionsRuntimeBaseUrl(config)),
+          },
           agentLoopIsolation: config.edition === 'cloud' ? 'sandboxed-process' : 'in-process',
           requireSandbox: config.edition === 'cloud',
           rdfSearchIndexingService,

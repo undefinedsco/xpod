@@ -1,4 +1,5 @@
 import './runtime/configure-drizzle-solid';
+export { LocalPodDeletionHttpHandler } from './http/LocalPodDeletionHttpHandler';
 import { RepresentationPartialConvertingStore } from './storage/RepresentationPartialConvertingStore';
 import { MinioDataAccessor } from './storage/accessors/MinioDataAccessor';
 import { SolidRdfDataAccessor } from './storage/accessors/SolidRdfDataAccessor';
@@ -330,3 +331,14 @@ export type {
 } from './storage/ObservableResourceStore';
 
 export { RdfHandlebarsTemplateEngine } from './util/templates/RdfHandlebarsTemplateEngine';
+export * from './identity/PodDeletionInteractionHandler';
+export * from './identity/PodDeletionInventoryHandler';
+export * from './service/PodDeletionLifecycleService';
+export * from './service/PodDataDeletionService';
+export * from './http/PodDeletionMutationGuard';
+export * from './http/PodMutationLockingHttpHandler';
+export * from './storage/locking/PodLifecycleLocker';
+export * from './storage/locking/PodLifecycleRedisLocker';
+
+export { CloudProfileCreator } from './provision/CloudProfileCreator';
+export { CloudProfilePreparationHandler } from './identity/CloudProfilePreparationHandler';

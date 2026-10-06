@@ -1,6 +1,7 @@
 import { getLoggerFor } from 'global-logger-factory';
 import {
   BadRequestHttpError,
+  ConflictHttpError,
   BasePodStore,
   OWNER_STORAGE_TYPE,
   POD_STORAGE_TYPE,
@@ -65,15 +66,29 @@ export class ProvisionPodStore extends BasePodStore {
       return super.create(accountId, settings, overwrite);
     }
 
+    const existing = await this.provisionStorage.find(POD_STORAGE_TYPE, { baseUrl: remoteStorageUrl });
+    if (existing.length) {
+      if (existing.length !== 1 || existing[0].accountId !== accountId ||
+        !(await this.getOwners(existing[0].id))?.some((owner) => owner.webId === settings.webId)) {
+        throw new ConflictHttpError('The remote Pod has different ownership.');
+      }
+      return existing[0].id;
+    }
+
     const pod = await this.provisionStorage.create(POD_STORAGE_TYPE, {
       baseUrl: remoteStorageUrl,
       accountId,
     });
-    await this.provisionStorage.create(OWNER_STORAGE_TYPE, {
-      podId: pod.id,
-      webId: settings.webId,
-      visible: this.provisionVisible,
-    });
+    try {
+      await this.provisionStorage.create(OWNER_STORAGE_TYPE, {
+        podId: pod.id,
+        webId: settings.webId,
+        visible: this.provisionVisible,
+      });
+    } catch (error) {
+      await this.provisionStorage.delete(POD_STORAGE_TYPE, pod.id);
+      throw error;
+    }
 
     this.provisionLogger.debug(`Recorded remote Pod ${remoteStorageUrl} for account ${accountId}`);
     return pod.id;

@@ -16,6 +16,7 @@ import { XpodLocalLoginPreflight } from '../auth/XpodLocalLoginPreflight';
 import { consumeXpodAccountSwitch, readXpodAccountSwitch, readXpodLoginCancelled, setXpodLoginCancelled } from '../auth/xpod-login-recovery';
 import { createXpodLoginController } from '../auth/XpodLoginController';
 import { XpodSignInFrame } from '../auth/XpodAuthSurface';
+import { XpodDeploymentIdentity } from '../auth/XpodDeploymentIdentity';
 import { xpodStorageLocationKind } from '../auth/xpod-storage-location';
 import { AuthContext } from '../context/AuthContextValue';
 import { isXpodAutomaticLoginBlocked, logoutXpodProduct, subscribeXpodProductLogout } from '../auth/xpod-product-logout';
@@ -251,7 +252,7 @@ function WebIdAuthBoundaryContent({
   } else if (!loginCancelled && (state.status === 'error' || state.status === 'expired')) {
     notice = {
       tone: 'warning',
-      text: copy.noticeIncomplete,
+      text: state.status === 'expired' ? copy.expiredLine : copy.noticeIncomplete,
       primaryLabel: copy.reauthenticate,
       developerDetail: state.status === 'error' ? state.message : undefined,
     };
@@ -268,6 +269,15 @@ function WebIdAuthBoundaryContent({
         </div>
       ) : <PodSignIn
         app={XPOD_APP}
+        brand={<XpodDeploymentIdentity renderLogo={label => (
+          <span className="flex items-center gap-2">
+            <XpodMark size={24} />
+            <span className="flex flex-col text-left">
+              <span className="text-[13px] font-medium">Xpod</span>
+              <span className="text-[9px] leading-none text-primary">{label}</span>
+            </span>
+          </span>
+        )} />}
         state={podState}
         notice={notice}
         locale="zh-CN"

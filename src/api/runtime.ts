@@ -1,3 +1,4 @@
+import { ensureSupportedBun } from '../runtime/compat/ensureSupportedBun';
 import { asValue, type AwilixContainer } from 'awilix';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory';
@@ -599,6 +600,7 @@ async function startEmbeddedInngestService(
 }
 
 export async function startApiService(options: StartApiServiceOptions = {}): Promise<ApiServiceHandle> {
+  ensureSupportedBun();
   if (options.initializeLogger !== false) {
     initApiLogger();
   }

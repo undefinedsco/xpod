@@ -26,6 +26,19 @@ function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Pr
 }
 
 async function main() {
+  // Stress/shutdown fixtures must finish before the full-stack suites compete
+  // for ports and runtime-start locks. They retain their own per-request guards.
+  const runtimeExitCode = await runCommand('bun', ['run', 'vitest', '--run',
+    'tests/api/ApiServerShutdown.test.ts',
+    'tests/runtime/gateway-asset-transport.test.ts',
+    'tests/runtime/provider-http-transport.test.ts',
+    'tests/runtime/supported-bun.test.ts',
+    'tests/scripts/patch-jose.test.ts',
+    '--no-file-parallelism',
+  ], process.env);
+  if (runtimeExitCode !== 0) {
+    throw new Error(`Runtime compatibility regression failed with exit code ${runtimeExitCode}`);
+  }
   const componentBuildExitCode = await runCommand('bun', [ 'run', 'build:components' ], process.env);
   if (componentBuildExitCode !== 0) {
     throw new Error(`Components.js metadata generation failed with exit code ${componentBuildExitCode}`);
@@ -63,7 +76,8 @@ async function main() {
             'tests/http/ServerLogin.integration.test.ts',
             'tests/http/ServerApiAuth.integration.test.ts',
           ]),
-          '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken,CloudClientCredentialVisibility}*',
+          '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken,CloudClientCredentialVisibility,CloudManagedPodDeletion}*',
+          '--no-file-parallelism',
         ], sharedEnv);
     }
   } finally {

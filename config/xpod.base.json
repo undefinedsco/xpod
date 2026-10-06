@@ -20,7 +20,39 @@
       "versionPutMetadataStrategy": "StoragePutOperationHandler:_metadataStrategy",
       "versionPutETagHandler": "StoragePutOperationHandler:_eTagHandler",
       "sparqlMutationStore": "SubgraphSparqlHttpHandler:_mutationStore",
-      "headResponseMetadataWriter": "HeadSafeResponseWriter:_metadataWriter"
+      "headResponseMetadataWriter": "HeadSafeResponseWriter:_metadataWriter",
+      "deletionPodStore": "PodDeletionLifecycleService:_options_podStore",
+      "deletionAccountStorage": "PodDeletionLifecycleService:_options_accountStorage",
+      "deletionData": "PodDeletionLifecycleService:_options_dataDeletion",
+      "deletionDb": "PodDeletionLifecycleService:_options_identityDbUrl",
+      "deletionBase": "PodDeletionLifecycleService:_options_storageBaseUrl",
+      "deletionEdition": "PodDeletionLifecycleService:_options_edition",
+      "deletionLocker": "PodDeletionLifecycleService:_options_resourceLocker",
+      "deletionAccessor": "PodDataDeletionService:_dataAccessor",
+      "deletionAuxiliary": "PodDataDeletionService:_auxiliaryStrategy",
+      "deletionSource": "PodDeletionInteractionHandler:_source",
+      "deletionRoute": "PodDeletionInteractionHandler:_podRoute",
+      "deletionLifecycle": "PodDeletionInteractionHandler:_lifecycle",
+      "deletionInventorySource": "PodDeletionInventoryHandler:_source",
+      "deletionInventoryLifecycle": "PodDeletionInventoryHandler:_lifecycle",
+      "deletionGuardDb": "PodDeletionMutationGuard:_identityDbUrl",
+      "deletionGuardBase": "PodDeletionMutationGuard:_baseUrl",
+      "localDeletionLifecycle": "LocalPodDeletionHttpHandler:_options_lifecycle",
+      "localDeletionBase": "LocalPodDeletionHttpHandler:_options_storageBaseUrl",
+      "localDeletionRoot": "LocalPodDeletionHttpHandler:_options_rootFilePath",
+      "localDeletionErrors": "LocalPodDeletionHttpHandler:_options_errorHandler",
+      "localDeletionResponse": "LocalPodDeletionHttpHandler:_options_responseWriter",
+      "podLifecycleSource": "PodLifecycleLocker:_source",
+      "cloudProfileBaseUrl": "CloudProfileCreator:_options_baseUrl",
+      "cloudProfileIssuer": "CloudProfileCreator:_options_oidcIssuer",
+      "cloudProfileIdentifiers": "CloudProfileCreator:_options_identifierGenerator",
+      "cloudProfileResources": "CloudProfileCreator:_options_resourcesGenerator",
+      "cloudProfileStore": "CloudProfileCreator:_options_resourceStore",
+      "cloudProfileWebIds": "CloudProfileCreator:_options_webIdStore",
+      "cloudProfileAccounts": "CloudProfileCreator:_options_accountStorage",
+      "cloudProfileLocker": "CloudProfileCreator:_options_resourceLocker",
+      "cloudProfileHandlerCreator": "CloudProfilePreparationHandler:_cloudProfileCreator",
+      "provisionCloudProfiles": "ProvisionPodCreator:_args_cloudProfileCreator"
     }
   ],
   "import": [
@@ -298,6 +330,53 @@
       }
     },
     {
+      "@id": "urn:undefineds:xpod:CloudProfileCreator",
+      "@type": "CloudProfileCreator",
+      "cloudProfileBaseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl"
+      },
+      "cloudProfileIssuer": { "@id": "urn:solid-server:default:variable:oidcIssuer" },
+      "cloudProfileIdentifiers": {
+        "@id": "urn:solid-server:default:IdentifierGenerator"
+      },
+      "cloudProfileResources": {
+        "@id": "urn:solid-server:default:PodResourcesGenerator"
+      },
+      "cloudProfileStore": {
+        "@id": "urn:solid-server:default:ResourceStore"
+      },
+      "cloudProfileWebIds": {
+        "@id": "urn:solid-server:default:WebIdStore"
+      },
+      "cloudProfileAccounts": {
+        "@id": "urn:solid-server:default:AccountStorage"
+      },
+      "cloudProfileLocker": {
+        "@id": "urn:solid-server:default:ResourceLocker"
+      }
+    },
+    {
+      "@id": "urn:undefineds:xpod:CloudProfilePreparationRoute",
+      "@type": "RelativePathInteractionRoute",
+      "base": {
+        "@id": "urn:solid-server:default:AccountIdRoute"
+      },
+      "relativePath": "profile/"
+    },
+    {
+      "@id": "urn:undefineds:xpod:CloudProfilePreparationRouter",
+      "@type": "AuthorizedRouteHandler",
+      "route": {
+        "@id": "urn:undefineds:xpod:CloudProfilePreparationRoute"
+      },
+      "source": {
+        "@type": "CloudProfilePreparationHandler",
+        "cloudProfileHandlerCreator": {
+          "@id": "urn:undefineds:xpod:CloudProfileCreator"
+        }
+      }
+    },
+    {
       "comment": "Expose exact Account-owned WebID/storage pairs; Local retains its storage-root scope.",
       "@id": "urn:undefineds:xpod:AccountStorageBindingsRoute",
       "@type": "RelativePathInteractionRoute",
@@ -333,6 +412,7 @@
       "@id": "urn:solid-server:default:InteractionRouteHandler",
       "@type": "StatusWaterfallHandler",
       "handlers": [
+        { "@id": "urn:undefineds:xpod:CloudProfilePreparationRouter" },
         {
           "@id": "urn:undefineds:xpod:AccountStorageBindingsRouter"
         }
@@ -342,6 +422,10 @@
       "@id": "urn:solid-server:default:AccountControlHandler",
       "@type": "ControlHandler",
       "controls": [
+        {
+          "ControlHandler:_controls_key": "profile",
+          "ControlHandler:_controls_value": { "@id": "urn:undefineds:xpod:CloudProfilePreparationRoute" }
+        },
         {
           "ControlHandler:_controls_key": "bindings",
           "ControlHandler:_controls_value": {
@@ -414,6 +498,7 @@
         "webIdStore": { "@id": "urn:solid-server:default:WebIdStore" },
         "podStore": { "@id": "urn:solid-server:default:PodStore" },
         "resourceStore": { "@id": "urn:solid-server:default:ResourceStore" },
+        "provisionCloudProfiles": { "@id": "urn:undefineds:xpod:CloudProfileCreator" },
         "identityDbUrl": { "@id": "urn:solid-server:default:variable:identityDbUrl" }
       }
     },
@@ -502,6 +587,114 @@
           { "@id": "urn:solid-server:default:ParallelMiddleware" },
           { "@id": "urn:solid-server:default:Middleware_Cors" }
         ]
+      }
+    },
+    {
+      "@id": "urn:undefineds:xpod:PodDataDeletionService",
+      "@type": "PodDataDeletionService",
+      "deletionAccessor": {
+        "@id": "urn:undefineds:xpod:MixDataAccessor"
+      },
+      "deletionAuxiliary": {
+        "@id": "urn:solid-server:default:AuxiliaryStrategy"
+      }
+    },
+    {
+      "@id": "urn:undefineds:xpod:PodDeletionLifecycleService",
+      "@type": "PodDeletionLifecycleService",
+      "deletionPodStore": {
+        "@id": "urn:solid-server:default:PodStore"
+      },
+      "deletionAccountStorage": {
+        "@id": "urn:solid-server:default:AccountStorage"
+      },
+      "deletionData": {
+        "@id": "urn:undefineds:xpod:PodDataDeletionService"
+      },
+      "deletionDb": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl"
+      },
+      "deletionBase": {
+        "@id": "urn:solid-server:default:variable:baseUrl"
+      },
+      "deletionEdition": {
+        "@id": "urn:solid-server:default:variable:edition"
+      },
+      "deletionLocker": {
+        "@id": "urn:undefineds:xpod:PodLifecycleLocker"
+      }
+    },
+    {
+      "@id": "urn:undefineds:xpod:PodDeletionMutationGuard",
+      "@type": "PodDeletionMutationGuard",
+      "deletionGuardDb": {
+        "@id": "urn:solid-server:default:variable:identityDbUrl"
+      },
+      "deletionGuardBase": {
+        "@id": "urn:solid-server:default:variable:baseUrl"
+      }
+    },
+    {
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:AccountPodIdRouter"
+      },
+      "overrideParameters": {
+        "@type": "AuthorizedRouteHandler",
+        "source": {
+          "@type": "PodDeletionInteractionHandler",
+          "deletionSource": {
+            "@type": "ViewInteractionHandler",
+            "source": {
+              "@id": "urn:solid-server:default:PodResourceHandler"
+            }
+          },
+          "deletionRoute": {
+            "@id": "urn:solid-server:default:AccountPodIdRoute"
+          },
+          "deletionLifecycle": {
+            "@id": "urn:undefineds:xpod:PodDeletionLifecycleService"
+          }
+        }
+      }
+    },
+    {
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:AccountPodRouter"
+      },
+      "overrideParameters": {
+        "@type": "AuthorizedRouteHandler",
+        "source": {
+          "@type": "ViewInteractionHandler",
+          "source": {
+            "@type": "PodDeletionInventoryHandler",
+            "deletionInventorySource": {
+              "@id": "urn:solid-server:default:CreatePodHandler"
+            },
+            "deletionInventoryLifecycle": {
+              "@id": "urn:undefineds:xpod:PodDeletionLifecycleService"
+            }
+          }
+        }
+      }
+    },
+    {
+      "@id": "urn:undefineds:xpod:LocalPodDeletionHttpHandler",
+      "@type": "LocalPodDeletionHttpHandler",
+      "localDeletionErrors": { "@id": "urn:solid-server:default:ErrorHandler" },
+      "localDeletionResponse": { "@id": "urn:solid-server:default:ResponseWriter" },
+      "localDeletionLifecycle": { "@id": "urn:undefineds:xpod:PodDeletionLifecycleService" },
+      "localDeletionBase": { "@id": "urn:solid-server:default:variable:baseUrl" },
+      "localDeletionRoot": { "@id": "urn:solid-server:default:variable:rootFilePath" }
+    },
+    {
+      "@id": "urn:undefineds:xpod:PodLifecycleLocker",
+      "@type": "PodLifecycleLocker",
+      "podLifecycleSource": {
+        "@type": "GreedyReadWriteLocker",
+        "locker": { "@type": "MemoryResourceLocker" },
+        "storage": { "@type": "MemoryMapStorage" }
       }
     }
   ]

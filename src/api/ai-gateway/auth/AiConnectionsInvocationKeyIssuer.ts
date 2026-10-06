@@ -19,6 +19,14 @@ export interface AiConnectionsInvocationKeyIssuerOptions {
   reuseSafetyMarginMs?: number;
   maxCacheEntries?: number;
   now?: () => Date;
+  /**
+   * Resolve the owner's active Gateway model for this invocation.
+   *
+   * The task runtime reaches the Gateway through this key, so it must name a model the owner
+   * actually selected; otherwise the runner falls back to a placeholder the Gateway cannot route.
+   * The resolver reuses the same visible-model authority the Gateway serves at `/v1/models`.
+   */
+  resolveModel?: (input: { webId: string; auth: AuthContext }) => Promise<string | undefined>;
 }
 
 /**
@@ -36,6 +44,7 @@ export class AiConnectionsInvocationKeyIssuer {
   private readonly reuseSafetyMarginMs: number;
   private readonly maxCacheEntries: number;
   private readonly now: () => Date;
+  private readonly resolveModel?: (input: { webId: string; auth: AuthContext }) => Promise<string | undefined>;
   private readonly cache = new Map<string, CachedInvocation>();
   private readonly pending = new Map<string, Promise<CachedInvocation>>();
 
@@ -49,17 +58,20 @@ export class AiConnectionsInvocationKeyIssuer {
     this.reuseSafetyMarginMs = normalizeSafetyMargin(options.reuseSafetyMarginMs, this.ttlMs);
     this.maxCacheEntries = normalizeMaxCacheEntries(options.maxCacheEntries);
     this.now = options.now ?? (() => new Date());
+    this.resolveModel = options.resolveModel;
   }
 
   public async issue(context: StoreContext): Promise<AIConnectionInvocationConfig> {
     const auth = requireTrustedSolidAuth(context.auth as AuthContext | undefined);
+    const model = await this.resolveOwnerModel(auth);
     if (auth.viaApiKey === true && auth.clientId && auth.clientSecret) {
       return {
         baseUrl: this.baseUrl,
         apiKey: encodeClientCredentialsApiKey(auth.clientId, auth.clientSecret),
+        ...(model ? { model } : {}),
       };
     }
-    return this.issueScoped(auth, ['models:read', 'inference:write']);
+    return this.issueScoped(auth, ['models:read', 'inference:write'], model);
   }
 
   public async issueClientConfiguration(context: StoreContext): Promise<AIConnectionInvocationConfig> {
@@ -67,13 +79,28 @@ export class AiConnectionsInvocationKeyIssuer {
     return this.issueScoped(auth, ['client-config:read', 'client-config:write']);
   }
 
-  private async issueScoped(auth: SolidAuthContext, scopes: string[]): Promise<AIConnectionInvocationConfig> {
+  private async resolveOwnerModel(auth: SolidAuthContext): Promise<string | undefined> {
+    if (!this.resolveModel) {
+      return undefined;
+    }
+    try {
+      const webId = requireCanonicalWebId(auth.webId);
+      const model = await this.resolveModel({ webId, auth });
+      return typeof model === 'string' && model.trim().length > 0 ? model.trim() : undefined;
+    } catch {
+      // A model-lookup failure must not block issuing the invocation key; the runner will then
+      // surface the same provider error it would have without a model.
+      return undefined;
+    }
+  }
+
+  private async issueScoped(auth: SolidAuthContext, scopes: string[], model?: string): Promise<AIConnectionInvocationConfig> {
     const webId = requireCanonicalWebId(auth.webId);
     const cacheKey = `${webId}\n${scopes.join(' ')}`;
     const now = this.now();
     const cached = this.cache.get(cacheKey);
     if (cached && cached.expiresAt.getTime() - now.getTime() >= this.reuseSafetyMarginMs) {
-      return this.toInvocationConfig(cached);
+      return this.toInvocationConfig(cached, model);
     }
     let pending = this.pending.get(cacheKey);
     if (!pending) {
@@ -88,7 +115,7 @@ export class AiConnectionsInvocationKeyIssuer {
     }
     const issued = await pending;
 
-    return this.toInvocationConfig(issued);
+    return this.toInvocationConfig(issued, model);
   }
 
   private createInvocation(cacheKey: string, webId: string, scopes: string[], createdAt: Date): CachedInvocation {
@@ -108,11 +135,12 @@ export class AiConnectionsInvocationKeyIssuer {
     return cached;
   }
 
-  private toInvocationConfig(invocation: CachedInvocation): AIConnectionInvocationConfig {
+  private toInvocationConfig(invocation: CachedInvocation, model?: string): AIConnectionInvocationConfig {
     return {
       baseUrl: this.baseUrl,
       apiKey: invocation.plaintext,
       expiresAt: invocation.expiresAt.toISOString(),
+      ...(model ? { model } : {}),
     };
   }
 

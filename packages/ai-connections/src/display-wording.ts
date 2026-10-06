@@ -26,7 +26,7 @@ import type {
  */
 const AUTHORIZATION_METHOD_LABEL_BY_ID: Record<string, string> = {
   'api-key': '添加 API Key',
-  'browser-login': '浏览器登录',
+  'browser-login': '打开控制台',
   'browser-oauth': '浏览器登录',
   'device-code': '设备码登录',
   'local-session-import': '已有登录态',

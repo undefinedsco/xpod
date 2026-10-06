@@ -31,6 +31,29 @@ interface LocalizedProps {
 
 const smallButtonClass = 'h-9 rounded-lg px-3 text-sm font-medium'
 
+/** Full addresses stay available, with identity and storage named separately. */
+function BindingAddresses({ webId, podUrl, copy }: { webId?: string; podUrl?: string; copy: PodSignInCopy }) {
+  return (
+    <details className="mt-1 min-w-0 text-xs">
+      <summary className="w-fit cursor-pointer rounded py-1 text-primary underline-offset-4 hover:underline">{copy.showAddresses}</summary>
+      <dl className="mt-1 grid min-w-0 gap-2">
+        {[{ label: copy.identityAddress, url: webId }, { label: copy.storageAddress, url: podUrl }]
+          .filter((address) => address.url)
+          .map(({ label, url }) => (
+            <div key={label} className="min-w-0">
+              <dt className="text-muted-foreground">{label}</dt>
+              <dd className="min-w-0">
+                <a className="break-all text-primary underline underline-offset-4" href={url} target="_blank" rel="noopener noreferrer">
+                  <Hostname className="text-inherit">{url}</Hostname>
+                </a>
+              </dd>
+            </div>
+          ))}
+      </dl>
+    </details>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // WebID section
 // ---------------------------------------------------------------------------
@@ -51,6 +74,8 @@ export interface WebIdEntry {
   authorizedAppCount?: number
   /** True when the host can delete this WebID's Pod; only then is the action offered. */
   removable?: boolean
+  /** Explicit capability to authorize deletion; not deletion itself. */
+  authorizable?: boolean
 }
 
 /** A Pod the host knows about but cannot associate with any WebID. */
@@ -63,6 +88,8 @@ export interface UnlinkedPodEntry {
   storage?: StorageLocation
   /** True when the host can delete this Pod; only then is the action offered. */
   removable?: boolean
+  /** Explicit capability to authorize deletion; not deletion itself. */
+  authorizable?: boolean
 }
 
 export interface CreateWebIdFormProps extends LocalizedProps {
@@ -235,6 +262,9 @@ export interface WebIdSectionProps extends LocalizedProps {
   onRemoveStorage?(entry: WebIdEntry): void
   /** Overrides the remove action label; defaults to `revokeCredential` ("删除"). */
   removeStorageLabel?: string
+  authorizeStorageLabel?: string
+  onAuthorizeStorage?(entry: WebIdEntry): void
+  onAuthorizeUnlinkedPod?(entry: UnlinkedPodEntry): void
   /** Offered only for unlinked Pods flagged `removable`. */
   onRemoveUnlinkedPod?(entry: UnlinkedPodEntry): void
 }
@@ -251,6 +281,9 @@ export function WebIdSection({
   onGoToDevice,
   onRemoveStorage,
   removeStorageLabel,
+  authorizeStorageLabel,
+  onAuthorizeStorage,
+  onAuthorizeUnlinkedPod,
   unlinkedPods,
   onRemoveUnlinkedPod,
   locale,
@@ -287,16 +320,12 @@ export function WebIdSection({
           {webIds.map((entry) => (
             <li key={entry.id} className={listRowClass} data-webid-id={entry.id}>
               <PodAvatar name={entry.displayName} avatarUrl={entry.avatarUrl} storage={entry.storage} size={40} />
-              <span className="flex min-w-0 flex-1 flex-col">
+              <div className="flex min-w-0 flex-1 flex-col">
                 <a className="truncate text-sm font-medium text-primary hover:underline" href={entry.webId} target="_blank" rel="noopener noreferrer">
                   {entry.displayName}
                 </a>
-                <Hostname className="truncate">{entry.webId}</Hostname>
-                {entry.podUrl ? (
-                  <a className="truncate text-xs text-primary hover:underline" href={entry.podUrl} target="_blank" rel="noopener noreferrer">
-                    <Hostname>{entry.podUrl}</Hostname>
-                  </a>
-                ) : null}
+                {entry.storage ? <span className="text-xs text-muted-foreground">{entry.storage.label}</span> : null}
+                <BindingAddresses webId={entry.webId} podUrl={entry.podUrl} copy={copy} />
                 <span className="flex flex-wrap items-center gap-x-3 text-xs text-muted-foreground">
                   {entry.deviceName ? (
                     entry.deviceId && onGoToDevice ? (
@@ -313,16 +342,21 @@ export function WebIdSection({
                     <span>{formatCopy(copy.authorizedApps, { count: entry.authorizedAppCount })}</span>
                   ) : null}
                 </span>
-              </span>
+              </div>
+              {!entry.removable && entry.authorizable && onAuthorizeStorage && authorizeStorageLabel ? (
+                <ActionButton variant="outline" className={cn(smallButtonClass, 'shrink-0')}
+                  aria-label={`${authorizeStorageLabel} ${entry.displayName}`}
+                  onClick={() => onAuthorizeStorage(entry)}>{authorizeStorageLabel}</ActionButton>
+              ) : null}
               {entry.removable && onRemoveStorage ? (
-                <button
-                  type="button"
+                <ActionButton
+                  variant="outline"
                   aria-label={`${removeStorageLabel ?? copy.revokeCredential} ${entry.displayName}`}
-                  className={cn(textButtonClass, 'shrink-0 text-destructive hover:underline')}
+                  className={cn(smallButtonClass, 'shrink-0 border-destructive/50 text-destructive hover:text-destructive')}
                   onClick={() => onRemoveStorage(entry)}
                 >
                   {removeStorageLabel ?? copy.revokeCredential}
-                </button>
+                </ActionButton>
               ) : null}
             </li>
           ))}
@@ -334,21 +368,25 @@ export function WebIdSection({
           {unlinkedPods.map((pod) => (
             <li key={pod.id} className={listRowClass} data-unlinked-pod-id={pod.id}>
               <PodAvatar name={pod.displayName} storage={pod.storage} size={40} />
-              <span className="flex min-w-0 flex-1 flex-col">
+              <div className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-sm font-medium text-foreground">{pod.displayName}</span>
-                <a className="truncate text-xs text-primary hover:underline" href={pod.storageUrl} target="_blank" rel="noopener noreferrer">
-                  <Hostname>{pod.storageUrl}</Hostname>
-                </a>
-              </span>
+                {pod.storage ? <span className="text-xs text-muted-foreground">{pod.storage.label}</span> : null}
+                <BindingAddresses podUrl={pod.storageUrl} copy={copy} />
+              </div>
+              {!pod.removable && pod.authorizable && onAuthorizeUnlinkedPod && authorizeStorageLabel ? (
+                <ActionButton variant="outline" className={cn(smallButtonClass, 'shrink-0')}
+                  aria-label={`${authorizeStorageLabel} ${pod.displayName}`}
+                  onClick={() => onAuthorizeUnlinkedPod(pod)}>{authorizeStorageLabel}</ActionButton>
+              ) : null}
               {pod.removable && onRemoveUnlinkedPod ? (
-                <button
-                  type="button"
+                <ActionButton
+                  variant="outline"
                   aria-label={`${removeStorageLabel ?? copy.revokeCredential} ${pod.displayName}`}
-                  className={cn(textButtonClass, 'shrink-0 text-destructive hover:underline')}
+                  className={cn(smallButtonClass, 'shrink-0 border-destructive/50 text-destructive hover:text-destructive')}
                   onClick={() => onRemoveUnlinkedPod(pod)}
                 >
                   {removeStorageLabel ?? copy.revokeCredential}
-                </button>
+                </ActionButton>
               ) : null}
             </li>
           ))}

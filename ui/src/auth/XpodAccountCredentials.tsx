@@ -1,3 +1,4 @@
+import { useXpodAccountCredentialValues, useXpodAccountRememberChoice } from './useXpodAccountRememberChoice';
 import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useRef, useState, type ComponentProps } from 'react';
 import { Button } from '@undefineds.co/shared-ui';
@@ -11,7 +12,6 @@ import { clearAccountSessionToken, storeAccountSessionToken } from '../utils/acc
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import { normalizeXpodReturnTo } from './xpod-login-route';
 import {
-  readPendingXpodAccountEmail,
   rememberPendingXpodAccountEmail,
 } from './xpod-remembered-login';
 import { safeXpodLoginMessage, xpodAccountPageCopy, xpodAccountCredentialsCopy } from './xpod-account-copy';
@@ -38,18 +38,15 @@ export function XpodAccountCredentials({
   onAuthenticated,
   initialEmail,
 }: XpodAccountCredentialsProps) {
-  const { controls, idpIndex, refetchControls } = useAuth();
-  const [values, setValues] = useState<AccountCredentialsValues>({
-    email: initialEmail !== undefined ? initialEmail : readPendingXpodAccountEmail(undefined, idpIndex) ?? '',
-    password: '',
-  });
+  const { controls, idpIndex, refetchControls, isInitializing } = useAuth();
+  const [values, setValues, credentialScope] = useXpodAccountCredentialValues(idpIndex, isInitializing, initialEmail);
   const [formError, setFormError] = useState<string>();
   const [pending, setPending] = useState(false);
-  const [rememberAccount, setRememberAccount] = useState(true);
+  const [rememberAccount, setRememberAccount] = useXpodAccountRememberChoice(idpIndex, isInitializing);
   const submittingRef = useRef(false);
 
   const handleSubmit = async (submitted: AccountCredentialsValues) => {
-    if (submittingRef.current) return;
+    if (submittingRef.current || isInitializing) return;
 
     submittingRef.current = true;
     setPending(true);
@@ -71,7 +68,7 @@ export function XpodAccountCredentials({
         },
       });
       storeAccountSessionToken(login.accountToken);
-      rememberPendingXpodAccountEmail(submitted.email?.trim() ?? '', undefined, idpIndex);
+      rememberPendingXpodAccountEmail(submitted.email?.trim() ?? '', undefined, idpIndex, rememberAccount);
       const confirmedState = await refetchControls();
       if (confirmedState?.status !== 'authenticated') {
         if (confirmedState?.status === 'anonymous') clearAccountSessionToken();
@@ -124,7 +121,7 @@ export function XpodAccountCredentials({
       showHeader={false}
     />
   ) : (
-    <XpodBlockingAccountCredentialsSurface {...surfaceProps} />
+    <XpodBlockingAccountCredentialsSurface key={credentialScope ?? 'bootstrap'} {...surfaceProps} />
   );
 }
 

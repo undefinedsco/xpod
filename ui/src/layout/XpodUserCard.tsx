@@ -1,3 +1,5 @@
+import { accountOverviewHref } from '../utils/account-overview-href';
+import { resolveAuthoritativeAccountId } from '../utils/safe-continuation';
 import {
   Avatar,
   AvatarFallback,
@@ -7,14 +9,17 @@ import {
   StatusLine,
   cn,
 } from '@undefineds.co/shared-ui';
-import { CheckCircle2, ChevronRight, Copy, Database, ExternalLink, Loader2, LogIn, LogOut, RefreshCw } from 'lucide-react';
+import { CheckCircle2, ChevronRight, Copy, Database, Loader2, LogIn, LogOut, RefreshCw, UserRound } from 'lucide-react';
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '../context/AuthContextValue';
 import { useXpodProfileCardIdentity } from '../profile/useXpodProfileCardIdentity';
 import {
   clearRememberedXpodLogin,
+  readPendingXpodAccountEmail,
+  readRememberedXpodLogin,
 } from '../auth/xpod-remembered-login';
+import type { SanitizedAccountIdentity } from '../context/AuthContextValue';
 import { XpodSolidRuntimeContext } from '../solid/XpodSolidRuntime';
 import { logoutXpodProduct } from '../auth/xpod-product-logout';
 import { XPOD_DEFAULT_RETURN_PATH } from '../routes/canonical-routes';
@@ -23,8 +28,9 @@ import { accountCardPosition } from './account-card-position';
 export function XpodUserCard() {
   const account = useAuth();
   const runtime = useContext(XpodSolidRuntimeContext);
+  const accountAuthenticated = account.isLoggedIn && account.accountState.status === 'authenticated';
   const webIdAuthenticated = runtime?.state.status === 'authenticated' && Boolean(runtime.webId ?? runtime.state.webId);
-  const isAuthenticated = webIdAuthenticated;
+  const isAuthenticated = accountAuthenticated || webIdAuthenticated;
   const [open, setOpen] = useState(accountCardRequestedByUrl(isAuthenticated));
   const [busy, setBusy] = useState<'logout' | 'switch' | undefined>();
   const [copyFeedback, setCopyFeedback] = useState<'已复制' | '复制失败'>();
@@ -33,8 +39,20 @@ export function XpodUserCard() {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const copyFeedbackTimerRef = useRef<number | undefined>(undefined);
   const cardId = useId();
+  const identity = account.identity;
+  const accountHref = accountOverviewHref(account.idpIndex);
+  const issuer = !account.isInitializing && accountHref ? new URL(accountHref).origin : undefined;
+  const pendingAccountEmail = issuer ? readPendingXpodAccountEmail(undefined, account.idpIndex) : undefined;
+  const remembered = readRememberedXpodLogin();
+  const accountId = resolveAuthoritativeAccountId(account.controls, identity);
+  const rememberedAccount = issuer && remembered?.issuer === issuer && accountId && remembered.account.id === accountId
+    ? remembered.account
+    : undefined;
+  const accountIdentity = accountAuthenticated
+    ? accountCardIdentityFallback(identity, pendingAccountEmail, rememberedAccount)
+    : undefined;
   const profile = useXpodProfileCardIdentity({
-    accountIdentity: undefined,
+    accountIdentity,
     runtime: webIdAuthenticated ? runtime : undefined,
   });
   const displayName = profile.displayName;
@@ -245,7 +263,14 @@ export function XpodUserCard() {
 
             <Separator />
             <div className="p-2">
-              <Button asChild variant="ghost" className="h-10 w-full justify-start px-3 font-normal"><a href={`${(account.idpIndex ?? '/.account/').replace(/\/$/, '')}/account/`} target="_blank" rel="noopener noreferrer"><ExternalLink className="mr-2 h-4 w-4" aria-hidden="true" />管理账号 ↗</a></Button>
+              {accountHref ? (
+                <Button asChild variant="ghost" className="h-10 w-full justify-start px-3 font-normal">
+                  <a href={accountHref}>
+                    <UserRound className="mr-2 h-4 w-4" aria-hidden="true" />
+                    账号管理
+                  </a>
+                </Button>
+              ) : null}
               <Button type="button" variant="ghost" className="h-10 w-full justify-start px-3 font-normal" onClick={() => void runSwitchAccount()} disabled={busy !== undefined}>
                 {busy === 'switch' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />}
                 切换 WebID
@@ -260,6 +285,32 @@ export function XpodUserCard() {
       ), document.body) : null}
     </div>
   );
+}
+
+function accountCardIdentityFallback(
+  identity: SanitizedAccountIdentity | undefined,
+  pendingEmail: string | undefined,
+  rememberedAccount: (SanitizedAccountIdentity & { email?: string }) | undefined,
+): SanitizedAccountIdentity | undefined {
+  if (identity?.displayName || identity?.username) return identity;
+  const email = pendingEmail || (rememberedAccount && 'email' in rememberedAccount && typeof rememberedAccount.email === 'string'
+    ? rememberedAccount.email
+    : undefined);
+  if (!email && !rememberedAccount) return identity;
+  const username = rememberedAccount?.username || usernameFromEmail(email);
+  return {
+    ...(rememberedAccount ?? {}),
+    ...(identity ?? {}),
+    ...(username ? { username } : {}),
+    ...(rememberedAccount?.displayName
+      ? { displayName: rememberedAccount.displayName }
+      : { displayName: username || email || 'Xpod account' }),
+  };
+}
+
+function usernameFromEmail(value?: string): string | undefined {
+  if (!value) return undefined;
+  return value.split('@')[0]?.trim() || undefined;
 }
 
 function initialsFor(value: string): string {

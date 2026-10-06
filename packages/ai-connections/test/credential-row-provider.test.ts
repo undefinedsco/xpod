@@ -144,6 +144,34 @@ describe('credentialSummariesForProvider', () => {
       expect.objectContaining({ id: 'credentials.ttl#openai-2', provider: 'kimi' }),
     ])
   })
+
+  it('joins live collection keys to the store credential identity and preserves enrichment', () => {
+    const carrier = {
+      id: 'credentials.ttl#openai-subscription',
+      provider: 'openai' as const,
+      offeringId: 'official-subscription',
+      authMode: 'oauth' as const,
+      enabled: true,
+      priority: 10,
+      health: 'healthy' as const,
+      proxyUrl: 'http://127.0.0.1:7890',
+    }
+    const row = credentialRow({
+      id: 'openai-subscription',
+      provider: PROVIDER_RELATION,
+      authMode: 'deviceCodeOAuth',
+    })
+
+    expect(credentialSummariesForProvider('openai', [row], [carrier])).toEqual([
+      expect.objectContaining({
+        id: carrier.id,
+        offeringId: carrier.offeringId,
+        health: carrier.health,
+        priority: carrier.priority,
+        proxyUrl: carrier.proxyUrl,
+      }),
+    ])
+  })
 })
 
 describe('credentialCarriers', () => {

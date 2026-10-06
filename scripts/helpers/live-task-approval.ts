@@ -2,7 +2,7 @@ import type { TaskCredentialSummary } from '../../src/api/tasks/TaskCredentialSt
 import { TASK_RESUME_STAGES, TASK_RESUME_ERROR_TYPES, selectTaskResumeFailure, type TaskResumeFailure, type TaskResumeStage, type TaskResumeErrorType } from '../../src/api/tasks/TaskResumeDiagnostics';
 import { randomUUID } from 'node:crypto';
 import { drizzle, type SolidAuthSession } from '@undefineds.co/drizzle-solid';
-import { approvalResource, sessionResource, decideApprovalRequest, RunStepType, type ApprovalRow } from '@undefineds.co/models';
+import { approvalResource, sessionResource, threadResource, decideApprovalRequest, RunStepType, type ApprovalRow } from '@undefineds.co/models';
 
 export interface LiveTaskRun {
   id: string;
@@ -38,6 +38,7 @@ export interface LiveTaskCaseEvidence {
   sessionPaused?: boolean;
   decision?: string;
   terminalStatus?: string;
+  producerFailure?: LiveTaskProducerFailure;
   sessionCompleted?: boolean;
   sameRun?: boolean;
   markerMatches?: boolean;
@@ -56,6 +57,57 @@ export interface LiveTaskCaseEvidence {
   };
   ok: boolean;
 }
+export interface LiveTaskProducerFailure {
+  status: 'failed' | 'cancelled' | 'completed';
+  errorPresent: boolean;
+  errorLength: number;
+  errorClass: 'none' | 'unknown' | 'auth_required' | 'service_access_missing' | 'token_exchange_failed'
+    | 'provider_error' | 'provider_aborted' | 'sandbox_unavailable' | 'worker_start_failed'
+    | 'worker_exited' | 'execution_state_error';
+  httpStatus?: number;
+  /** Safe coarse provider classification produced by the runner (never upstream text). */
+  providerClass?: string;
+  providerApi?: string;
+  providerName?: string;
+  providerModel?: string;
+}
+
+/** Never copy error text: upstream messages may include credentials, bodies or URLs. */
+function recordProducerFailure(run: LiveTaskRun, evidence?: LiveTaskCaseEvidence): void {
+  if (!evidence || !['failed', 'cancelled', 'completed'].includes(run.status)) return;
+  const text = typeof run.error === 'string' ? run.error : '';
+  const errorPresent = run.error !== undefined && run.error !== null && run.error !== '';
+  const classes: Array<[RegExp, LiveTaskProducerFailure['errorClass']]> = [
+    [/\bservice_access_missing\b/u, 'service_access_missing'],
+    [/\btoken_exchange_failed\b/u, 'token_exchange_failed'],
+    [/\bauth_required\b/u, 'auth_required'],
+    [/^(?:Error: )?Pi assistant ended with error(?:$|\s)/u, 'provider_error'],
+    [/^(?:Error: )?Pi assistant ended with aborted(?:$|\s)/u, 'provider_aborted'],
+    [/^(?:Error: )?Cloud Agent Runtime (?:requires an OS sandbox|refused to run without a sandbox)/u, 'sandbox_unavailable'],
+    [/^(?:Error: )?Agent Runtime worker failed to start:/u, 'worker_start_failed'],
+    [/^(?:Error: )?Agent Runtime worker exited with code /u, 'worker_exited'],
+    [/^(?:Error: )?Unable to read execution state:/u, 'execution_state_error'],
+  ];
+  const statuses = new Set(Array.from(text.matchAll(/\b(?:HTTP(?: status)?|status(?: code)?)\s*[:=]?\s*([45]\d{2})(?!\d)/giu),
+    match => Number(match[1])));
+  // The runner appends allowlisted wire facts as `(class=..., api=..., provider=..., model=...)`.
+  // Only that fixed vocabulary is copied; the provider body is never in these tokens.
+  const token = (key: string): string | undefined => {
+    const match = text.match(new RegExp(`\\b${key}=([A-Za-z0-9_.:\\-]{1,64})`, 'u'));
+    return match?.[1];
+  };
+  evidence.producerFailure = {
+    status: run.status as LiveTaskProducerFailure['status'], errorPresent,
+    errorLength: Math.min(text.length, 1_000_000),
+    errorClass: classes.find(([pattern]) => pattern.test(text))?.[1] ?? (errorPresent ? 'unknown' : 'none'),
+    ...(statuses.size === 1 ? { httpStatus: [...statuses][0] } : {}),
+    ...(token('class') ? { providerClass: token('class') } : {}),
+    ...(token('api') ? { providerApi: token('api') } : {}),
+    ...(token('provider') ? { providerName: token('provider') } : {}),
+    ...(token('model') ? { providerModel: token('model') } : {}),
+  };
+}
+
 export interface LiveTaskEvidence {
   ok: boolean;
   cases: LiveTaskCaseEvidence[];
@@ -198,20 +250,37 @@ export async function pollLiveTask<T>(read: () => Promise<T>, ready: (value: T) 
   throw new LiveTaskEvidenceError(`Timed out waiting for ${label}`);
 }
 
+function sameThread(left: string | null | undefined, right: string | null | undefined, db?: ReturnType<typeof drizzle>): boolean {
+  if (!left || !right) return false;
+  return db ? threadResource.buildIriForDatabase(db, left) === threadResource.buildIriForDatabase(db, right) : left === right;
+}
+
 export function requireLiveCheckpoint(run: LiveTaskRun, approvals: ApprovalRow[], target: string,
-  owner: string): ApprovalRow | undefined {
-  if (terminal.has(run.status)) throw new LiveTaskEvidenceError(`Producer ended ${run.status} before requesting approval`);
+  owner: string, evidence?: LiveTaskCaseEvidence, db?: ReturnType<typeof drizzle>): ApprovalRow | undefined {
+  if (terminal.has(run.status)) {
+    recordProducerFailure(run, evidence);
+    const failure = evidence?.producerFailure;
+    const facts = failure
+      ? ` (class=${failure.errorClass}${failure.providerClass ? `/${failure.providerClass}` : ''}` +
+        `${failure.providerApi ? `, api=${failure.providerApi}` : ''}` +
+        `${failure.providerModel ? `, model=${failure.providerModel}` : ''}` +
+        `${failure.httpStatus ? `, http=${failure.httpStatus}` : ''})`
+      : '';
+    throw new LiveTaskEvidenceError(`Producer ended ${run.status} before requesting approval${facts}`);
+  }
   if (run.status !== 'waiting_input') return undefined;
-  const matching = approvals.filter(approval => approval.target === target && approval.thread === run.thread
+  const matching = approvals.filter(approval => approval.target === target && sameThread(approval.thread, run.thread, db)
     && approval.toolCallId === run.waitingToolCallId && approval.toolName === 'request_approval'
     && approval.assignedTo === owner && approval.status === 'pending');
   requireEvidence(matching.length <= 1, 'Multiple approvals matched one producer checkpoint');
   return matching[0];
 }
 
-export function requireLiveTerminal(run: LiveTaskRun, expectedRunId: string, expectedStatus: string): boolean {
+export function requireLiveTerminal(run: LiveTaskRun, expectedRunId: string, expectedStatus: string,
+  evidence?: LiveTaskCaseEvidence): boolean {
   requireEvidence(run.id === expectedRunId, 'Task resumed into a different Run');
   if (!terminal.has(run.status)) return false;
+  if (run.status !== expectedStatus) recordProducerFailure(run, evidence);
   requireEvidence(run.status === expectedStatus, `Task ended ${run.status}; expected ${expectedStatus}`);
   return true;
 }
@@ -230,7 +299,7 @@ export async function acceptLiveTaskApproval(options: {
     ok: false, cases: [], cleanup: { ok: false, tasksPaused: 0, runsStopped: 0, sessionsTerminal: 0, grantRevoked: false },
   };
   const tasks: string[] = [];
-  const approvalSessions = new Set<string>();
+  const approvalSessions = new Map<string, string>();
   let grantId: string | undefined;
   let grantAttempted = false;
   let phase = 'grant';
@@ -326,16 +395,16 @@ export async function acceptLiveTaskApproval(options: {
         failureSubstage = 'checkpoint-approval-read';
         const approvals = await db.select().from(approvalResource).execute();
         failureSubstage = 'checkpoint-match';
-        return requireLiveCheckpoint(run, approvals, target, options.webId);
+        return requireLiveCheckpoint(run, approvals, target, options.webId, row, db);
       }, value => Boolean(value), 'real producer approval');
       requireEvidence(approval, 'Producer approval missing');
       row.approvalPending = true;
-      approvalSessions.add(approval.session);
+      approvalSessions.set(approval.session, acknowledged.run.thread);
       failureSubstage = 'checkpoint-session-read';
       await pollLiveTask(() => sessionStatus(approval.session), value => value === 'paused', 'paused Session');
       const persistedSession = await db.findByIri(sessionResource, approval.session);
       failureSubstage = 'checkpoint-session-assert';
-      requireEvidence(persistedSession?.owner === options.webId && persistedSession.thread === acknowledged.run.thread,
+      requireEvidence(persistedSession?.owner === options.webId && sameThread(persistedSession.thread, acknowledged.run.thread, db),
         'Approval Session does not belong to the current owner and Run thread');
       row.sessionPaused = true;
       failureSubstage = 'checkpoint-marker-read';
@@ -369,7 +438,7 @@ export async function acceptLiveTaskApproval(options: {
       phase = `${kind}:terminal`;
       failureSubstage = 'other';
       const finalRun = await pollLiveTask(() => readRun(created.task.id, acknowledged.run.id),
-        run => requireLiveTerminal(run, acknowledged.run.id, kind === 'approved' ? 'completed' : 'cancelled'), 'same Run terminal state');
+        run => requireLiveTerminal(run, acknowledged.run.id, kind === 'approved' ? 'completed' : 'cancelled', row), 'same Run terminal state');
       row.sameRun = true;
       row.terminalStatus = finalRun.status;
       await pollLiveTask(() => sessionStatus(approval.session), value => value === 'completed', 'completed Session');
@@ -395,7 +464,7 @@ export async function acceptLiveTaskApproval(options: {
         await request(`/api/tasks/stop?id=${encodeURIComponent(acknowledged.run.id)}`, 'POST', {});
       }
       await new Promise(resolve => setTimeout(resolve, 2_000));
-      requireEvidence(requireLiveTerminal(await readRun(created.task.id, acknowledged.run.id), acknowledged.run.id, finalRun.status),
+      requireEvidence(requireLiveTerminal(await readRun(created.task.id, acknowledged.run.id), acknowledged.run.id, finalRun.status, row),
         'Duplicate resume or Stop reopened the terminal Run');
       const afterMarker = await marker(target);
       requireEvidence(JSON.stringify(await steps(acknowledged.run.id)) === JSON.stringify(beforeSteps)
@@ -451,9 +520,15 @@ export async function acceptLiveTaskApproval(options: {
       try {
         const runs = await runsFor(taskId);
         try {
-          const approvals = await db.select().from(approvalResource).execute();
-          for (const approval of approvals) {
-            if (runs.some(run => run.thread === approval.thread)) approvalSessions.add(approval.session);
+          // Discover Sessions independently of checkpoint matching: a failed producer may
+          // have persisted its Session before writing the Approval, and both relations read as IRIs.
+          const sessions = await db.select().from(sessionResource).execute();
+          for (const run of runs) {
+            const matching = sessions.filter(session => sameThread(session.thread, run.thread, db));
+            requireEvidence(matching.every(session => session.owner === options.webId), 'Cleanup Session owner mismatch');
+            requireEvidence(!(run.status === 'waiting_input' || run.waitingToolCallId) || matching.length === 1,
+              'Cleanup approval Run requires its real Session');
+            for (const session of matching) approvalSessions.set(sessionResource.buildIriForDatabase(db, session), run.thread);
           }
         } catch { cleanupOk = false; }
         for (const run of runs) {
@@ -467,9 +542,11 @@ export async function acceptLiveTaskApproval(options: {
         }
       } catch { cleanupOk = false; }
     }
-    for (const iri of approvalSessions) {
+    for (const [iri, thread] of approvalSessions) {
       try {
-        await pollLiveTask(() => sessionStatus(iri), value => value === 'completed' || value === 'error', 'cleanup Session termination', 60_000);
+        await pollLiveTask(() => db.findByIri(sessionResource, iri), session => Boolean(session
+          && session.owner === options.webId && sameThread(session.thread, thread, db)
+          && (session.status === 'completed' || session.status === 'error')), 'cleanup Session termination', 60_000);
         evidence.cleanup.sessionsTerminal += 1;
       } catch { cleanupOk = false; }
     }

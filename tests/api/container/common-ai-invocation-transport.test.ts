@@ -1,19 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createServer, type Server, type ServerResponse } from 'node:http';
-import { createServer as createNetServer } from 'node:net';
+import { createServer as createNetServer, type AddressInfo } from 'node:net';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import OpenAI from 'openai';
 import { createApiContainer, type ApiContainerConfig } from '../../../src/api/container';
+import { registerSocketOriginShims } from '../../../src/runtime/socket-shim';
 
 /**
- * Regression: on Local edition the server-side model call must be addressed to the bound API
- * listener, while the invocation token's canonical identity (audience/issuer) stays the public
- * origin. The model wire target and the token realm are allowed to differ.
+ * Regression: the invocation key issued to remote consumers is always bound to the canonical
+ * identity realm (baseUrl/audience/issuer). A local agent loop reaches the Gateway through the
+ * runtime `gatewayTransport` binding (socket or gateway port), which never leaks into that key.
  *
- * This drives the real container + issuer + real public OpenAI-compatible SDK against an owned
- * loopback listener; the canonical origin is a closed loopback port. No fetch/streamFn mock.
- *
- * The owned listener is a raw OpenAI-compatible fixture, NOT the production API server: this test
- * proves URL selection + SDK wiring + token realm, not end-to-end API routing.
+ * The owned listener is a raw OpenAI-compatible fixture, NOT the production API server.
  */
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
@@ -57,12 +56,7 @@ function reserveClosedPort(): Promise<number> {
 
 type Served = { url: string; streaming: boolean };
 
-/**
- * Owned OpenAI-compatible fixture. It branches on `stream` so a streaming request receives a
- * legal SSE body that ends with the terminal marker. Only the decoded body's `stream` flag is
- * retained (never the prompt, credential, or model text).
- */
-async function startModelServer(served: Served[]): Promise<{ server: Server; port: number }> {
+function startModelServer(served: Served[], listen: number | string): Promise<Server> {
   const server = createServer((request, response) => {
     void (async () => {
       let body = '';
@@ -119,18 +113,14 @@ async function startModelServer(served: Served[]): Promise<{ server: Server; por
       }));
     })();
   });
-  const port = await new Promise<number>((resolve, reject) => {
+  return new Promise<Server>((resolve, reject) => {
     server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      if (address && typeof address === 'object') {
-        resolve(address.port);
-      } else {
-        reject(new Error('No bound port'));
-      }
-    });
+    if (typeof listen === 'number') {
+      server.listen(listen, '127.0.0.1', () => resolve(server));
+    } else {
+      server.listen(listen, () => resolve(server));
+    }
   });
-  return { server, port };
 }
 
 function sendSse(response: ServerResponse, chunk: Record<string, unknown>): void {
@@ -194,23 +184,35 @@ function fakeClient(issued: Issued): OpenAI {
   return new OpenAI({ apiKey: issued.apiKey, baseURL: issued.baseUrl, maxRetries: 0, timeout: 5_000 });
 }
 
-describe('Local AI-Connection invocation transport', () => {
-  it('streams the model call to the bound API listener while the token realm stays canonical', async () => {
-    const served: Served[] = [];
-    let server: Server | undefined;
-    let issued: Issued | undefined;
-    try {
-      const started = await startModelServer(served);
-      server = started.server;
-      const canonicalPort = await reserveClosedPort();
-      const canonicalOrigin = `http://127.0.0.1:${canonicalPort}`;
-      issued = await issueForLocal(baseConfig({
-        host: '0.0.0.0',
-        port: started.port,
-        publicUrl: `${canonicalOrigin}/`,
-      }));
+async function authenticateConsumer(issued: Issued): Promise<boolean> {
+  const authenticator = issued.container.resolve('authenticator') as unknown as {
+    authenticate: (request: unknown) => Promise<{ success: boolean }>;
+  };
+  const result = await authenticator.authenticate({
+    headers: { authorization: `Bearer ${issued.apiKey}` },
+    method: 'POST',
+    url: '/v1/chat/completions',
+  });
+  return result.success;
+}
 
-      // Real network first: the model SDK must complete against the owned listener.
+describe('Hosted AI-Connection invocation key realm', () => {
+  it('routes the installed SDK to the owned gateway socket through the canonical origin without changing the key realm', async () => {
+    const served: Served[] = [];
+    const socketDir = fs.mkdtempSync(path.join(process.cwd(), '.test-data', 'inv-sock-'));
+    const socketPath = path.join(socketDir, 'g.sock');
+    const canonicalOrigin = 'https://node.example';
+    let issued: Issued | undefined;
+    let server: Server | undefined;
+    const unregister = registerSocketOriginShims(canonicalOrigin, socketPath);
+    try {
+      server = await startModelServer(served, socketPath);
+      issued = await issueForLocal(baseConfig({ host: '127.0.0.1', port: 3001, publicUrl: `${canonicalOrigin}/` }));
+
+      expect(issued.baseUrl).toBe(`${canonicalOrigin}/v1`);
+      expect(issued.audience).toBe(canonicalOrigin);
+      expect(issued.issuer).toBe(canonicalOrigin);
+
       const stream = await fakeClient(issued).chat.completions.create({
         model: 'test-model',
         messages: [{ role: 'user', content: 'ping' }],
@@ -229,54 +231,37 @@ describe('Local AI-Connection invocation transport', () => {
       expect(sawStop).toBe(true);
       expect(served).toEqual([{ url: '/v1/chat/completions', streaming: true }]);
 
-      // Then the target assertions.
-      expect(new URL(issued.baseUrl).origin).toBe(`http://127.0.0.1:${started.port}`);
-      expect(issued.audience).toBe(canonicalOrigin);
-      expect(issued.issuer).toBe(canonicalOrigin);
-
-      // The canonical-realm token is accepted by the real existing authenticator.
-      const authenticator = issued.container.resolve('authenticator') as unknown as {
-        authenticate: (request: unknown) => Promise<{ success: boolean }>;
-      };
-      const authResult = await authenticator.authenticate({
-        headers: { authorization: `Bearer ${issued.apiKey}` },
-        method: 'POST',
-        url: '/v1/chat/completions',
-      });
-      expect(authResult.success).toBe(true);
+      expect(await authenticateConsumer(issued)).toBe(true);
     } finally {
       await issued?.container.dispose();
+      await unregister();
       if (server) {
         await closeServer(server);
       }
+      fs.rmSync(socketDir, { recursive: true, force: true });
     }
   });
 
-  it('without a publicUrl still targets the bound API rather than the public CSS_BASE_URL', async () => {
+  it('keeps the issued key canonical while a bound local listener and gateway port serve only the runtime wire target', async () => {
     const served: Served[] = [];
-    let server: Server | undefined;
+    const server = await startModelServer(served, 0);
+    const listenerPort = (server.address() as AddressInfo).port;
+    const canonicalPort = await reserveClosedPort();
+    const canonicalOrigin = `http://127.0.0.1:${canonicalPort}`;
+    process.env.XPOD_MAIN_PORT = '34567';
     let issued: Issued | undefined;
     try {
-      const started = await startModelServer(served);
-      server = started.server;
-      const canonicalPort = await reserveClosedPort();
-      process.env.CSS_BASE_URL = `http://127.0.0.1:${canonicalPort}/`;
-      issued = await issueForLocal(baseConfig({ host: '0.0.0.0', port: started.port }));
+      issued = await issueForLocal(baseConfig({ host: '0.0.0.0', port: listenerPort, publicUrl: `${canonicalOrigin}/` }));
 
-      const completion = await fakeClient(issued).chat.completions.create({
-        model: 'test-model',
-        messages: [{ role: 'user', content: 'ping' }],
-      });
-      expect(completion.choices[0]?.message?.content).toBe('ok');
-      expect(served).toEqual([{ url: '/v1/chat/completions', streaming: false }]);
+      expect(issued.baseUrl).toBe(`${canonicalOrigin}/v1`);
+      expect(issued.audience).toBe(canonicalOrigin);
+      expect(issued.issuer).toBe(canonicalOrigin);
 
-      expect(new URL(issued.baseUrl).origin).toBe(`http://127.0.0.1:${started.port}`);
-      expect(issued.audience).toBe(`http://127.0.0.1:${canonicalPort}`);
+      expect(await authenticateConsumer(issued)).toBe(true);
+      expect(served).toEqual([]);
     } finally {
       await issued?.container.dispose();
-      if (server) {
-        await closeServer(server);
-      }
+      await closeServer(server);
     }
   });
 
@@ -290,6 +275,7 @@ describe('Local AI-Connection invocation transport', () => {
     try {
       expect(issued.baseUrl).toBe('https://node.example/v1');
       expect(issued.audience).toBe('https://node.example');
+      expect(issued.issuer).toBe('https://node.example');
     } finally {
       await issued.container.dispose();
     }
@@ -299,7 +285,7 @@ describe('Local AI-Connection invocation transport', () => {
     { name: 'unresolved port 0', host: '0.0.0.0', port: 0 },
     { name: 'out-of-range port', host: '0.0.0.0', port: 70_000 },
     { name: 'empty host', host: '', port: 3001 },
-  ])('falls back to the canonical origin for $name', async ({ host, port }) => {
+  ])('keeps the canonical realm despite $name', async ({ host, port }) => {
     const issued = await issueForLocal(baseConfig({ host, port, publicUrl: 'https://node.example/' }));
     try {
       expect(issued.baseUrl).toBe('https://node.example/v1');
@@ -309,7 +295,7 @@ describe('Local AI-Connection invocation transport', () => {
     }
   });
 
-  it('falls back to the canonical origin over a socket transport', async () => {
+  it('keeps the canonical realm over a configured socket transport', async () => {
     const issued = await issueForLocal(baseConfig({
       host: '0.0.0.0',
       port: 3001,
@@ -324,11 +310,11 @@ describe('Local AI-Connection invocation transport', () => {
     }
   });
 
-  it('maps an IPv6 wildcard API host to bracketed loopback on the wire', async () => {
+  it('keeps the canonical realm for an IPv6 wildcard host', async () => {
     process.env.CSS_BASE_URL = 'https://node.example/';
     const issued = await issueForLocal(baseConfig({ host: '::', port: 65_530 }));
     try {
-      expect(issued.baseUrl).toBe('http://[::1]:65530/v1');
+      expect(issued.baseUrl).toBe('https://node.example/v1');
       expect(issued.audience).toBe('https://node.example');
     } finally {
       await issued.container.dispose();

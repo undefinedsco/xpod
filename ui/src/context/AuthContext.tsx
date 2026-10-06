@@ -1,8 +1,9 @@
 import { scopeAccountUrl } from '../utils/account-interaction-url';
+import { createSessionAccountFetch } from '../auth/session-account-controls';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { bindAccountSessionAuthority, storedAccountTokenHeaders, clearAccountSessionToken, getAccountSessionToken } from '../utils/account-session';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
-import { AuthContext, type AccountAuthState, type Controls, type SanitizedAccountIdentity } from './AuthContextValue';
+import { AuthContext, type AccountAuthState, type Controls, type SanitizedAccountIdentity, type AccountSessionTransport } from './AuthContextValue';
 import { resolveXpodAccountIndex } from './resolve-xpod-account-index';
 
 interface ControlsResponse {
@@ -72,6 +73,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const fetchGenerationRef = useRef(0);
   const accountIndexRef = useRef<string | undefined>(undefined);
   const controlsRef = useRef<Controls | null>(null);
+  // Only server controls or completed logout confirm anonymity.
+  const isAnonymousRef = useRef(false);
+  const sessionTransportRef = useRef<AccountSessionTransport | undefined>(undefined);
+  const controlsTransportRef = useRef<AccountSessionTransport | undefined>(undefined);
+  const suppressedTransportRef = useRef<AccountSessionTransport | undefined>(undefined);
+  const [sessionTransportVersion, setSessionTransportVersion] = useState(0);
 
   const accountControlsTokenRef = useRef<string | undefined>(undefined);
   const accountCapabilityEpochRef = useRef(0);
@@ -87,20 +94,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     accountCapabilityEpochRef.current += 1;
     accountCapabilityRevokedRef.current = true;
   }, []);
-  const acceptControls = useCallback((next: Controls | null, token?: string) => {
+  const acceptControls = useCallback((next: Controls | null, token?: string, transport?: AccountSessionTransport) => {
     const previous = accountBinding();
     const previousToken = accountControlsTokenRef.current;
+    const previousTransport = controlsTransportRef.current;
     controlsRef.current = next;
     accountControlsTokenRef.current = token;
-    if (previous !== accountBinding() || previousToken !== token) revokeAccountCapabilities();
+    controlsTransportRef.current = transport;
+    if (previous !== accountBinding() || previousToken !== token || previousTransport !== transport) revokeAccountCapabilities();
     accountCapabilityRevokedRef.current = !accountBinding();
   }, [accountBinding, revokeAccountCapabilities]);
   const bindAccountCapability = useCallback(() => {
     const binding = accountBinding();
     const epoch = accountCapabilityEpochRef.current;
     const token = getAccountSessionToken();
+    const transport = controlsTransportRef.current;
     let valid = Boolean(binding) && token === accountControlsTokenRef.current && !accountCapabilityRevokedRef.current && accountLogoutOperationsRef.current === 0;
     return () => {
+      if (transport) {
+        try {
+          if (transport !== sessionTransportRef.current || transport !== controlsTransportRef.current) throw new Error('Stale Account source');
+          transport.assertCurrent();
+        } catch { valid = false; }
+      }
       if (!valid || !mountedRef.current || accountCapabilityRevokedRef.current || accountLogoutOperationsRef.current > 0
         || epoch !== accountCapabilityEpochRef.current || binding !== accountBinding() || token !== getAccountSessionToken()) {
         valid = false;
@@ -109,11 +125,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [accountBinding]);
 
+  const registerAccountSession = useCallback((transport: AccountSessionTransport) => {
+    const invalidate = () => {
+      // A Cookie-authenticated Account is an independent actor. SDK changes
+      // must not restart its controls or overwrite logout failure/retry state.
+      if (controlsRef.current?.account?.logout && !controlsTransportRef.current) return;
+      fetchGenerationRef.current += 1;
+      if (controlsTransportRef.current || (!controlsRef.current?.account?.logout && sessionTransportRef.current)) {
+        acceptControls(null);
+        setControls(null);
+        isAnonymousRef.current = false;
+        setAccountState({ status: 'initializing' });
+        setIsInitializing(true);
+      }
+      setSessionTransportVersion((version) => version + 1);
+    };
+    sessionTransportRef.current = transport;
+    invalidate();
+    return () => {
+      if (sessionTransportRef.current !== transport) return;
+      sessionTransportRef.current = undefined;
+      invalidate();
+    };
+  }, [acceptControls]);
+
+  const accountFetch = useCallback<typeof fetch>(async (input, init) => {
+    const index = accountIndexRef.current;
+    const url = new URL(input instanceof Request ? input.url : String(input), index);
+    if (!index || url.origin !== new URL(index).origin || !url.pathname.startsWith('/.account/')
+      || url.username || url.password) throw new Error('Account request outside current authority');
+    const assertCurrent = bindAccountCapability();
+    const transport = controlsTransportRef.current;
+    assertCurrent();
+    const sourceFetch = transport
+      ? createSessionAccountFetch({ accountIndex: index, fetch: transport.fetch, assertCurrent })
+      : fetch;
+    const response = await sourceFetch(input instanceof Request ? input : url.href, { ...init, redirect: 'error' });
+    try { assertCurrent(); } catch (error) {
+      void response.body?.cancel().catch(() => undefined);
+      throw error;
+    }
+    return response;
+  }, [bindAccountCapability]);
+
   const isLoggedIn = accountState.status === 'authenticated';
   const authenticating = isInitializing || accountState.status === 'submitting';
-  // Only a CSS controls response or completed logout confirms anonymity.
-  // An error presentation must not turn a failed logout into success.
-  const isAnonymousRef = useRef(false);
 
   const acceptAccountIndex = useCallback((accountIndex: string) => {
     const bridgeChanged = bindAccountSessionAuthority(accountIndex);
@@ -229,10 +285,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!json?.controls || typeof json.controls !== 'object' || Array.isArray(json.controls)) {
           throw new Error('Invalid CSS Account controls response');
         }
-        const nextControls = json.controls;
+        let nextControls = json.controls;
+        let transport: AccountSessionTransport | undefined;
+        const sessionTransport = sessionTransportRef.current;
+        // Cookie Account authentication is independent from the Solid actor and wins.
+        // Only the authority's real anonymous response allows a session-based probe.
+        if (!nextControls.account?.logout && sessionTransport && sessionTransport !== suppressedTransportRef.current && accountLogoutOperationsRef.current === 0
+          && new URL('.account/', sessionTransport.issuer).href === new URL(idpIndex).href) {
+          setAccountState((prev) => prev.status === 'authenticated' ? prev : { status: 'initializing' });
+          sessionTransport.assertCurrent();
+          const sessionFetch = createSessionAccountFetch({
+            accountIndex: idpIndex, fetch: sessionTransport.fetch, assertCurrent: () => sessionTransport.assertCurrent(),
+          });
+          const sessionResponse = await sessionFetch(scopeAccountUrl(idpIndex), {
+            headers: { accept: 'application/json' },
+            signal: AbortSignal.timeout(OIDC_PENDING_PROBE_TIMEOUT_MS),
+          });
+          if (!isFetchCurrent(generation) || sessionTransport !== sessionTransportRef.current) return 'stale';
+          sessionTransport.assertCurrent();
+          if (!tokenIsCurrent()) return 'transient-error';
+          if (sessionResponse.ok) {
+            const sessionJson = await sessionResponse.json() as ControlsResponse | null;
+            if (!isFetchCurrent(generation) || sessionTransport !== sessionTransportRef.current) return 'stale';
+            sessionTransport.assertCurrent();
+            if (!tokenIsCurrent()) return 'transient-error';
+            if (!sessionJson?.controls || typeof sessionJson.controls !== 'object' || Array.isArray(sessionJson.controls)) {
+              throw new Error('Invalid CSS Account controls response');
+            }
+            nextControls = sessionJson.controls;
+            if (nextControls.account?.logout) transport = sessionTransport;
+          } else if (sessionResponse.status !== 401 && sessionResponse.status !== 403) {
+            // A failed session probe cannot confirm the Cookie response's anonymity.
+            // Reuse the bounded retry path instead of presenting another password form.
+            if (isTransientAccountControlsStatus(sessionResponse.status)
+              || sessionResponse.status === 408 || sessionResponse.status === 429 || sessionResponse.status === 500) {
+              throw new Error('Transient CSS Account controls response');
+            }
+            pendingProbeIdRef.current += 1;
+            setHasOidcPending(false);
+            revokeAccountCapabilities();
+            setInitError(ACCOUNT_ERROR_MESSAGE);
+            setAccountState({ status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE });
+            return 'terminal-error';
+          }
+        }
         const probeId = ++pendingProbeIdRef.current;
         setHasOidcPending(false);
-        acceptControls(nextControls, requestToken);
+        acceptControls(nextControls, requestToken, transport);
         setControls(nextControls);
         setInitError(null);
         const nextAccountState = accountStateForControls(nextControls);
@@ -321,7 +420,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, [fetchControls, idpIndex]);
+  }, [fetchControls, idpIndex, sessionTransportVersion]);
 
   const refetchControls = useCallback(async (): Promise<AccountAuthState> => {
     const resolvedIndex = await retryAccountIndex();
@@ -337,6 +436,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     accountLogoutOperationsRef.current += 1;
+    suppressedTransportRef.current = sessionTransportRef.current;
     try {
       revokeAccountCapabilities();
       // Discard controls/consent obtained before the user requested sign-out.
@@ -344,7 +444,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       pendingProbeIdRef.current += 1;
       // An anonymous controls cache can predate login in another tab. Confirm
       // current CSS state unless an advertised logout control can revoke it.
-      if (!controlsRef.current?.account?.logout) {
+      // A session projection is not evidence of a Cookie session. During product
+      // logout the SDK may already be revoked; re-read only the Cookie authority.
+      if (controlsTransportRef.current || !controlsRef.current?.account?.logout) {
         isAnonymousRef.current = false;
         const accountIndex = accountIndexRef.current ?? await retryAccountIndex();
         if (accountIndex) await fetchControls();
@@ -403,6 +505,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       authenticating,
       hasOidcPending,
       refetchControls,
+      registerAccountSession,
+      accountFetch,
       retry,
       logout,
       accountState,

@@ -2,6 +2,7 @@
 import './setup-jsdom'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { offeringTitle } from '../src/offering-label'
 import { AiProviderCard } from '../src/AiProviderCard'
 import { AiConnectionsPanel } from '../src'
 import { PROVIDERS } from '../src/controller'
@@ -15,27 +16,8 @@ import type {
   AiProviderSummary,
 } from '../src/contract/ai-connections-client'
 
-/**
- * Guard for the connect entries of a provider page.
- *
- * The page used to carry a provider-level connect label (`browserMode` /
- * `browserLabel` on the definition), which named a provider instead of an
- * action. The capability behind it was real, though: openai, anthropic, kimi,
- * 百炼 and 智谱 open their own console so the user signs in there and mints a key.
- * That entry is now declared where every other action lives - on the offerings
- * that accept a key, in the shared catalog - and reaches the page through
- * `authorizationMethods`. DeepSeek declares none (it has no account console),
- * Ollama is a local service, and custom is configured inside Xpod.
- *
- * The server only publishes entries it can actually run: an oauth/deviceCode
- * mode with no integration binding is omitted outright, while an entry that is
- * merely unavailable in this deployment (cloud without a local callback) stays
- * visible, greyed, with its reason as a tooltip. Nothing is explained in a
- * second row under the buttons.
- *
- * The data is the real server derivation (`providerProductsForDeployment`), not
- * a hand-written fixture: the labels asserted below are the labels the API sends.
- */
+/** Real server catalog drives these UI regressions: console key creation and
+ * OAuth authorization must remain distinct, including their offering targets. */
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 
@@ -61,7 +43,7 @@ function serverProduct(
   }
 }
 
-function renderProviderPage(product: AiProviderSummary) {
+function renderProviderPage(product: AiProviderSummary, onBeginOffering = vi.fn()) {
   const definition = PROVIDERS.find((candidate) => candidate.id === product.id)
   if (!definition) throw new Error(`no provider definition for ${product.id}`)
   return render(
@@ -74,7 +56,7 @@ function renderProviderPage(product: AiProviderSummary) {
       models={[]}
       onApiKeyChange={vi.fn()}
       onBeginApiKey={vi.fn()}
-      onBeginOffering={vi.fn()}
+      onBeginOffering={onBeginOffering}
       onBeginBrowser={vi.fn()}
       onSaveApiKey={vi.fn()}
       onDisconnect={vi.fn()}
@@ -111,7 +93,7 @@ describe('provider page connect entries come from authorizationMethods', () => {
     const declared = authorizationMethodsForOffering(
       product.offerings.find((offering) => offering.id === 'pay-as-you-go')!,
     ).find((method) => method.connectMode === 'browserAssistedApiKey')
-    expect(declared?.label).toBe('浏览器登录')
+    expect(declared?.label).toBe('打开控制台')
     expect(declared?.lifecycle).toBe('active')
     expect(screen.getByRole('link', { name: '打开工作台' }).getAttribute('href')).toBe(
       product.offerings.find((offering) => offering.authorizationMethods?.some((method) => method.id === 'browser-login'))!.consoleUrl,
@@ -138,6 +120,7 @@ describe('provider page connect entries come from authorizationMethods', () => {
     expect(screen.getByTestId('provider-connect-actions').querySelectorAll('ul')).toHaveLength(0)
 
     // A method this deployment can run stays actionable beside the disabled one.
+    expect(screen.getByRole('link', { name: '打开工作台' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '设备码登录' })).toHaveProperty('disabled', false)
 
     const local = screen.getByRole('button', { name: '已有登录态' })
@@ -145,6 +128,19 @@ describe('provider page connect entries come from authorizationMethods', () => {
     const localUnavailable = methodOf(subscription, 'local-session-import')
     expect(local.getAttribute('title')).toBe(localUnavailable.reason)
     expect(screen.queryByText(localUnavailable.reason!)).toBeNull()
+  })
+
+  it('starts the declared OpenAI OAuth action instead of opening its API console', () => {
+    const product = serverProduct('openai', 'local')
+    const onBeginOffering = vi.fn()
+    renderProviderPage(product, onBeginOffering)
+    fireEvent.click(screen.getByRole('button', { name: '浏览器登录' }))
+    expect(onBeginOffering).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'official-subscription' }),
+      'authorizationCodeOAuth',
+      expect.objectContaining({ id: 'browser-oauth' }),
+    )
+    expect(screen.queryByText('请在控制台创建 API Key，再返回此处填写；无需等待网页授权。')).toBeNull()
   })
 
   it('renders no entry at all for an authorization this build has not implemented', () => {
@@ -172,9 +168,7 @@ describe('provider page connect entries come from authorizationMethods', () => {
     expect(screen.queryByText('此授权方式尚未接入。')).toBeNull()
   })
 
-  it('shows the desktop subscription split beside the console login on a local deployment', () => {
-    // Local dev is where the subscription binding runs, so the split and the
-    // console entry both have to fit without either inventing a label.
+  it('shows subscription authorization with separate workbench navigation on a local deployment', () => {
     renderProviderPage(serverProduct('openai', 'local'))
 
     expect(connectActionLabels()).toEqual([
@@ -235,6 +229,7 @@ describe('provider page connect entries come from authorizationMethods', () => {
   })
 
   it('opens the declared workbench as navigation without starting a connection', async () => {
+    const provider = 'bailian'
     const product = serverProduct('bailian', 'cloud')
     const beginConnect = vi.fn(async (provider: string, mode: string) => ({
       provider,
@@ -258,8 +253,8 @@ describe('provider page connect entries come from authorizationMethods', () => {
       render(
         <AiConnectionsPanel
           client={client}
-          selectedProvider="bailian"
-          providerProducts={{ bailian: product }}
+          selectedProvider={provider}
+          providerProducts={{ [provider]: product }}
           openExternal={openExternal}
           renderToaster={false}
         />,

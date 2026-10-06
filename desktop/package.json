@@ -1,6 +1,6 @@
 {
   "name": "@undefineds.co/xpod-desktop",
-  "version": "0.4.22",
+  "version": "0.4.27",
   "private": true,
   "type": "module",
   "description": "Xpod desktop tray shell: window lifecycle, system tray and external browser hand-off for the local settings dashboard.",
@@ -55,7 +55,15 @@
       "provider": "github",
       "owner": "undefinedsco",
       "repo": "xpod"
-    }
+    },
+    "protocols": [
+      {
+        "name": "Return to Xpod",
+        "schemes": [
+          "xpod"
+        ]
+      }
+    ]
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

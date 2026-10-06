@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { EventEmitter } from 'node:events';
+import { EVENTS } from '@inrupt/solid-client-authn-browser';
+import { createSolidSessionRuntime, type SolidSessionAdapter } from '../../../packages/solid-sdk/src/session';
 import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
@@ -47,6 +50,57 @@ afterEach(() => {
 });
 
 describe('WebIdAuthBoundary', () => {
+  test.each([webId, undefined])('keeps terminal refresh expiry distinct without remembering identity (%s)', async (activeWebId) => {
+    const events = new EventEmitter();
+    const session: SolidSessionAdapter = {
+      info: { isLoggedIn: true, webId: activeWebId },
+      events,
+      fetch: vi.fn() as typeof fetch,
+      handleIncomingRedirect: async () => undefined,
+      login: async () => {},
+      logout: async () => {},
+    };
+    const solid = createSolidSessionRuntime({ session });
+    // Actual Inrupt terminal refresh failure protocol, in order. The provider
+    // description is private diagnostic detail, not the user's expiry message.
+    events.emit(EVENTS.ERROR, 'invalid_grant', 'Refresh token is expired or revoked');
+    events.emit(EVENTS.SESSION_EXPIRED);
+    const snapshot = solid.getSnapshot();
+    expect(snapshot.status).toBe('expired');
+    if (snapshot.status !== 'expired') throw new Error('Expected expired SDK state');
+    const login = vi.fn(async () => undefined);
+    try {
+      await act(async () => { renderBoundary(runtime({ session: solid, state: snapshot, login }), { autoStart: true }); });
+      expect(screen.getByText('登录已过期，需要重新确认', { exact: true })).toBeTruthy();
+      expect(screen.queryByText('登录没有完成，请再试一次')).toBeNull();
+      expect(screen.queryByText('Refresh token is expired or revoked')).toBeNull();
+      expect(screen.queryByTestId('protected')).toBeNull();
+      expect(window.localStorage.getItem(XPOD_REMEMBERED_LOGIN_KEY)).toBeNull();
+      expect(login).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: '重新登录', exact: true }));
+      await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
+    } finally { solid.dispose(); }
+  });
+
+  test('keeps a non-expiry OIDC error generic instead of treating ordinary login failure as refresh expiry', async () => {
+    const events = new EventEmitter();
+    const session: SolidSessionAdapter = {
+      info: { isLoggedIn: false }, events, fetch: vi.fn() as typeof fetch,
+      handleIncomingRedirect: async () => undefined, login: async () => {}, logout: async () => {},
+    };
+    const solid = createSolidSessionRuntime({ session });
+    events.emit(EVENTS.ERROR, 'invalid_grant', 'Authorization code rejected');
+    const snapshot = solid.getSnapshot();
+    expect(snapshot.status).toBe('error');
+    if (snapshot.status !== 'error') throw new Error('Expected ordinary error SDK state');
+    try {
+      await act(async () => { renderBoundary(runtime({ session: solid, state: snapshot }), { autoStart: true }); });
+      expect(screen.getByRole('alert').textContent).toBe('登录没有完成，请再试一次');
+      expect(screen.queryByText('登录已过期，需要重新确认')).toBeNull();
+      expect(screen.queryByText('Authorization code rejected')).toBeNull();
+    } finally { solid.dispose(); }
+  });
+
   test.each([false, true])('shows a failed login as one line and waits for the user without retrying or logging out (native=%s)', async (native) => {
     if (native) window.xpodDesktop = { platform: 'darwin', setWindowMode: vi.fn() };
     const value = runtime({ state: { status: 'error', error: new Error('offline') } });
@@ -125,7 +179,10 @@ describe('WebIdAuthBoundary', () => {
     renderBoundary(runtime({ login }));
     // A3: the app is named by the source mark, the one heading is "登录".
     expect(screen.getByRole('heading', { level: 1, name: '登录' })).toBeTruthy();
-    expect(document.querySelector('[data-pod-sign-in="source"]')?.textContent).toBe('Xpod');
+    const source = document.querySelector('[data-pod-sign-in="source"]');
+    expect(source?.textContent).toContain('Xpod');
+    expect(source?.querySelectorAll('svg[viewBox="0 0 100 100"]').length).toBe(1);
+    expect(screen.getByRole('button', { name: '部署详情' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '使用 Xpod 账号登录' }));
     await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('protected')).toBeNull();

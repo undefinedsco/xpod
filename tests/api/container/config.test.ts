@@ -95,7 +95,9 @@ describe('loadConfigFromEnv', () => {
       publicUrl: config.solidBaseUrl,
     });
     const response = { setHeader: vi.fn(), end: vi.fn() };
-    await get.mock.calls[0][1]({}, response);
+    // Select the provision-status route by path; service-info is registered first.
+    const statusRoute = get.mock.calls.find(([path]) => path === '/provision/status');
+    await statusRoute![1]({}, response);
     expect(JSON.parse(response.end.mock.calls[0][0])).toMatchObject({
       managed: Boolean(expectedCloud),
       registered: false,

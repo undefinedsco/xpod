@@ -1,19 +1,23 @@
 import * as fs from 'node:fs';
+import { createServer } from 'node:http';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StreamFn } from '@mariozechner/pi-agent-core';
-import { createAssistantMessageEventStream, type AssistantMessage } from '@mariozechner/pi-ai';
+import { createAssistantMessageEventStream, streamSimple, type AssistantMessage } from '@mariozechner/pi-ai';
 import * as pi from '@mariozechner/pi-coding-agent';
 import { approvalResource, sessionResource, type ApprovalInsert, type SessionInsert } from '@undefineds.co/models';
-import { PiAgentRuntimeDriver } from '../../src/api/runs/PiAgentRuntimeDriver';
+import { PiAgentRuntimeDriver, classifyAssistantFailure, type PiAgentRuntimeDriverOptions } from '../../src/api/runs/PiAgentRuntimeDriver';
 import type { AgentRuntimeEvent } from '../../src/api/runs/AgentRuntimeTypes';
 import type { RunExecutionInput } from '../../src/api/runs/RunExecutionBackend';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
 import { TaskService } from '../../src/api/tasks/TaskService';
 import { cancelRun } from '../../src/api/runs/RunCancellation';
-import type { SolidFS } from '../../src/solidfs';
+import { LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, type SolidFS } from '../../src/solidfs';
+import { registerSocketOriginShims } from '../../src/runtime/socket-shim';
+import { SandboxFactory } from '../../src/terminal/sandbox';
+import { PACKAGE_ROOT } from '../../src/runtime/package-root';
 
 const diagnosticLogger = vi.hoisted(() => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() }));
 vi.mock('global-logger-factory', async importOriginal => ({
@@ -65,7 +69,8 @@ function response(stopReason: AssistantMessage['stopReason'], text = '', errorMe
   };
 }
 
-async function fixture(streamFn: StreamFn, configureSession?: (session: pi.AgentSession) => void) {
+async function fixture(streamFn: StreamFn, configureSession?: (session: pi.AgentSession) => void,
+  driverOptions: PiAgentRuntimeDriverOptions = {}) {
   const root = path.join(process.cwd(), '.test-data', 'pi-terminal-error');
   fs.mkdirSync(root, { recursive: true });
   const workdir = fs.mkdtempSync(path.join(root, 'session-'));
@@ -105,7 +110,7 @@ async function fixture(streamFn: StreamFn, configureSession?: (session: pi.Agent
       return result;
     },
   };
-  const driver = new PiAgentRuntimeDriver({ piSdk: sdk, solidfs, solidfsProjection: 'copy' });
+  const driver = new PiAgentRuntimeDriver({ ...driverOptions, piSdk: sdk, solidfs: driverOptions.solidfs ?? solidfs, solidfsProjection: 'copy' });
   const input: RunExecutionInput = { runId: 'run_pi_terminal', threadId: 'thread_pi_terminal',
     prompt: 'Complete the task', conversation: [], config: { workspace,
       runner: { type: 'pi', protocol: 'pi' },
@@ -142,13 +147,31 @@ async function runTask(app: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe('Pi assistant terminal status', () => {
+  describe('provider failure classification', () => {
+    it.each([
+      ['{"error":{"message":"Unauthorized","status":401}}', 'auth'],
+      ['openai-completions 403 Forbidden: invalid api key', 'auth'],
+      ['429 Too Many Requests: rate limit exceeded', 'rate_limited'],
+      ['model_not_found: unknown model xpod-gateway/model', 'model_unavailable'],
+      ['400 Bad Request: malformed tool schema', 'client_400'],
+      ['502 Bad Gateway from upstream', 'server_502'],
+      ['request timed out after 30000ms', 'timeout'],
+      ['fetch failed', 'transport'],
+      ['upstream produced an unexpected stop', 'provider_error'],
+      ['', 'unclassified'],
+      [undefined, 'unclassified'],
+    ])('classifies %j as %s without returning message text', (message, expected) => {
+      expect(classifyAssistantFailure(message)).toBe(expected);
+    });
+  });
+
   it.each(['error', 'aborted'] as const)('fails a resolved SDK prompt with final stopReason %s without exposing upstream prose', async stopReason => {
     const app = await fixture(response(stopReason, '', privateProviderError));
     try {
       const events = await drain(app);
       expect(app.resolvedPrompts()).toBe(1);
       expect(app.lifecycle).toEqual(expect.arrayContaining(['message_end', 'turn_end', 'agent_end']));
-      expect(events).toEqual([{ type: 'error', message: `Pi assistant ended with ${stopReason}` }]);
+      expect(events).toEqual([{ type: 'error', message: expect.stringContaining(`Pi assistant ended with ${stopReason}`) }]);
       expect(JSON.stringify(events)).not.toContain(privateProviderError);
       const header = `xpod-${createHash('sha256').update(app.input.threadId).digest('hex')}`;
       expect(receipts()).toEqual([{ event: 'xpod.task-model-diagnostic', schemaVersion: 1,
@@ -170,7 +193,7 @@ describe('Pi assistant terminal status', () => {
       });
     });
     try {
-      expect(await drain(app)).toEqual([{ type: 'error', message: 'Pi assistant ended with error' }]);
+      expect(await drain(app)).toEqual([{ type: 'error', message: expect.stringContaining('Pi assistant ended with error') }]);
       expect(app.resolvedPrompts()).toBe(1);
       expect(app.lifecycle).toContain('agent_end');
       // The user message ends normally; the SDK catch path never emits an assistant message_end.
@@ -186,7 +209,10 @@ describe('Pi assistant terminal status', () => {
     const app = await fixture(response('error', '', privateProviderError));
     diagnosticLogger.error.mockImplementationOnce(() => { throw new Error(privateProviderError); });
     try {
-      expect(await drain(app)).toEqual([{ type: 'error', message: 'Pi assistant ended with error' }]);
+      const events = await drain(app);
+      expect(events).toEqual([{ type: 'error',
+        message: 'Pi assistant ended with error (class=provider_error, api=openai-completions, provider=xpod, model=fixture-model)' }]);
+      expect(JSON.stringify(events)).not.toContain(privateProviderError);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
     } finally { await app.cleanup(); }
@@ -218,7 +244,10 @@ describe('Pi assistant terminal status', () => {
       return stream;
     }, session => session.setAutoRetryEnabled(false));
     try {
-      expect(await drain(app)).toEqual([{ type: 'error', message: 'Pi assistant ended with error' }]);
+      const events = await drain(app);
+      expect(events).toEqual([{ type: 'error',
+        message: 'Pi assistant ended with error (class=server_503, api=openai-completions, provider=xpod, model=fixture-model)' }]);
+      expect(JSON.stringify(events)).not.toContain(privateProviderError);
       expect(receipts()).toEqual([expect.objectContaining({ stage: 'payload_prepared', stopReason: 'error', retryCount: 0,
         httpStatus: null, sdkErrorHint: { kind: 'http_status', status: 503 } })]);
       expect(JSON.stringify(diagnosticLogger.error.mock.calls)).not.toContain(privateProviderError);
@@ -281,7 +310,7 @@ describe('Pi assistant terminal status', () => {
   it('reports one safe failure after the real SDK exhausts its internal retry', async () => {
     const app = await fixture(response('error', '', '429 synthetic refusal; credential=fixture-only'));
     try {
-      expect(await drain(app)).toEqual([{ type: 'error', message: 'Pi assistant ended with error' }]);
+      expect(await drain(app)).toEqual([{ type: 'error', message: expect.stringContaining('Pi assistant ended with error') }]);
       expect(app.lifecycle.filter(type => type === 'agent_end')).toHaveLength(2);
       expect(app.lifecycle).toContain('auto_retry_end');
       expect(receipts()).toEqual([expect.objectContaining({ stage: 'stream_open', stopReason: 'error', retryCount: 1,
@@ -347,7 +376,7 @@ describe('Pi assistant terminal status', () => {
     try {
       const { store, context, run } = await runTask(app);
       await vi.waitFor(async () => expect((await store.loadRun(run.id, context)).status).toBe('failed'));
-      expect(await store.loadRun(run.id, context)).toMatchObject({ status: 'failed', error: 'Pi assistant ended with error' });
+      expect(await store.loadRun(run.id, context)).toMatchObject({ status: 'failed', error: expect.stringContaining('Pi assistant ended with error') });
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
     } finally { await app.cleanup(); }
@@ -394,7 +423,7 @@ describe('Pi assistant terminal status', () => {
       expect(app.sessions[0].isStreaming).toBe(true);
       await finishFinalStream();
       await vi.waitFor(async () => expect((await store.loadRun(run.id, context)).status).toBe('failed'));
-      expect(await store.loadRun(run.id, context)).toMatchObject({ status: 'failed', error: 'Pi assistant ended with error' });
+      expect(await store.loadRun(run.id, context)).toMatchObject({ status: 'failed', error: expect.stringContaining('Pi assistant ended with error') });
       expect(calls).toBe(3);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
@@ -428,7 +457,7 @@ describe('Pi assistant terminal status', () => {
     try {
       const { store, context, run } = await runTask(app);
       await vi.waitFor(async () => expect((await store.loadRun(run.id, context)).status).toBe('failed'));
-      expect((await store.loadRun(run.id, context)).error).toBe('Pi assistant ended with error');
+      expect((await store.loadRun(run.id, context)).error).toContain('Pi assistant ended with error');
       expect(calls).toBe(4);
       expect(app.lifecycle.filter(type => type === 'auto_retry_start')).toHaveLength(2);
       expect(receipts()).toEqual([expect.objectContaining({ retryCount: 2, stopReason: 'error', httpStatus: null,
@@ -467,4 +496,161 @@ describe('Pi assistant terminal status', () => {
       expect(app.rollback).toHaveBeenCalledOnce();
     } finally { await app.cleanup(); }
   });
+});
+
+
+async function transportFixture(mode: 'tcp' | 'socket' | 'external', sandbox = false,
+  scenario?: { kind: 'approval' | 'stop'; controller: AbortController; solidfs: SolidFS }) {
+  const requests: Array<{ url: string; authorization?: string; model: string }> = [];
+  const gateway = createServer(async (request, response) => {
+    let body = '';
+    for await (const chunk of request) body += chunk.toString();
+    requests.push({ url: request.url!, authorization: request.headers.authorization, model: JSON.parse(body).model });
+    if (scenario?.kind === 'stop' && requests.length === 2) { scenario.controller.abort(); return; }
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    const chunk = (delta: object, finish_reason: string | null) => ({ id: 'fixture', object: 'chat.completion.chunk',
+      created: 1, model: 'fixture-model', choices: [{ index: 0, delta, finish_reason }] });
+    if (scenario) {
+      const tool = requests.length === 1 ? { name: 'write', arguments: JSON.stringify({ path: 'seed.ttl', content: 'sandbox bytes' }) }
+        : { name: 'request_approval', arguments: JSON.stringify({ target: 'https://pod.example/alice/guarded.ttl',
+          action: 'http://www.w3.org/ns/odrl/2/write', risk: 'low', description: 'Ask before guarded write' }) };
+      response.end(`data: ${JSON.stringify(chunk({ role: 'assistant', tool_calls: [{ index: 0, id: `call-${requests.length}`, type: 'function', function: tool }] }, null))}\n\n`
+        + `data: ${JSON.stringify(chunk({}, 'tool_calls'))}\n\ndata: [DONE]\n\n`);
+      return;
+    }
+    response.end(`data: ${JSON.stringify(chunk({ role: 'assistant', content: 'Bound transport succeeded' }, null))}\n\n`
+      + `data: ${JSON.stringify(chunk({}, 'stop'))}\n\ndata: [DONE]\n\n`);
+  });
+  const socketDir = fs.mkdtempSync(path.join(process.cwd(), '.test-data', 'pi-sock-'));
+  const socketPath = path.join(socketDir, 'g.sock');
+  await new Promise<void>(resolve => mode === 'socket' ? gateway.listen(socketPath, resolve) : gateway.listen(0, '127.0.0.1', resolve));
+  const canonicalBaseUrl = 'https://gateway.invalid/v1';
+  const endpoint = mode === 'socket' ? canonicalBaseUrl : `http://127.0.0.1:${(gateway.address() as { port: number }).port}/v1`;
+  const binding = { canonicalBaseUrl, baseUrl: mode === 'external' ? 'http://127.0.0.1:1/v1' : endpoint,
+    ...(mode === 'socket' ? { socketPath } : {}) };
+  const unregisterSocket = mode === 'socket' && !sandbox ? registerSocketOriginShims(canonicalBaseUrl, socketPath) : undefined;
+  const app = await fixture(streamSimple, undefined, { gatewayTransport: binding,
+    ...(scenario ? { solidfs: scenario.solidfs } : {}),
+    ...(sandbox ? { agentLoopIsolation: 'sandboxed-process' as const, requireSandbox: true,
+      workerPath: path.join(process.cwd(), 'dist', 'api', 'runs', 'PiAgentRuntimeWorker.js') } : {}),
+  });
+  if (mode === 'external') app.input.config.aiConnection!.baseUrl = endpoint;
+  app.input.signal = scenario ? AbortSignal.any([scenario.controller.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000);
+  const originalConnection = app.input.config.aiConnection;
+  return { app, requests, originalConnection, canonicalBaseUrl, endpoint, cleanup: async () => {
+    await app.cleanup();
+    await unregisterSocket?.();
+    await new Promise<void>((resolve, reject) => gateway.close(error => error ? reject(error) : resolve()));
+    fs.rmSync(socketDir, { recursive: true, force: true });
+  } };
+}
+
+describe('Pi Gateway transport binding', () => {
+  it.each(['tcp', 'socket', 'external'] as const)('runs the installed SDK through %s without changing the client configuration', async mode => {
+    const transport = await transportFixture(mode);
+    const { app, requests, originalConnection, canonicalBaseUrl, endpoint } = transport;
+    try {
+      expect(await drain(app)).toEqual([{ type: 'text', text: 'Bound transport succeeded' }]);
+      expect(requests).toEqual([{ url: '/v1/chat/completions', authorization: 'Bearer fixture-only', model: 'fixture-model' }]);
+      expect(app.input.config.aiConnection).toBe(originalConnection);
+      expect(originalConnection?.baseUrl).toBe(mode === 'external' ? endpoint : canonicalBaseUrl);
+      expect(app.commit).toHaveBeenCalledOnce();
+      expect(app.rollback).not.toHaveBeenCalled();
+    } finally { await transport.cleanup(); }
+  });
+
+  it('passes the same bound transport to the sandboxed worker without modifying the durable input', async () => {
+    const inputs: RunExecutionInput[] = [];
+    const app = await fixture(response('stop'), undefined, { gatewayTransport: {
+      canonicalBaseUrl: 'https://gateway.invalid/v1', baseUrl: 'http://127.0.0.1:3000/v1' },
+      agentLoopIsolation: 'sandboxed-process', sandboxedLoopRunner: async function* (input) {
+        inputs.push(input);
+        yield { type: 'text', text: 'Sandbox transport received' };
+      },
+    });
+    try {
+      expect(await drain(app)).toEqual([{ type: 'text', text: 'Sandbox transport received' }]);
+      expect(inputs[0].config.aiConnection).toEqual({ ...app.input.config.aiConnection, baseUrl: 'http://127.0.0.1:3000/v1' });
+      expect(app.input.config.aiConnection?.baseUrl).toBe('https://gateway.invalid/v1');
+      expect(app.commit).toHaveBeenCalledOnce();
+    } finally { await app.cleanup(); }
+  });
+
+  it.runIf(process.platform === 'darwin').each(['tcp', 'socket'] as const)('executes the actual OS sandbox worker over %s with a valid SDK response', async mode => {
+    const transport = await transportFixture(mode, true);
+    const launch = vi.spyOn(SandboxFactory, 'launch');
+    const agentDir = path.join(new URL(transport.app.input.config.workspace).pathname, 'isolated-pi');
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      expect(await drain(transport.app)).toEqual([{ type: 'text', text: 'Bound transport succeeded' }]);
+      expect(transport.requests).toHaveLength(1);
+      expect(launch).toHaveBeenCalledOnce();
+      expect(launch.mock.results[0].value).toMatchObject({ sandboxed: true, technology: 'sandbox-exec' });
+      const readable = launch.mock.calls[0][0].readonlyPaths!;
+      expect(readable).toContain(path.join(PACKAGE_ROOT, 'dist'));
+      expect(readable).toContain(path.join(PACKAGE_ROOT, 'node_modules'));
+      expect(readable).toContain(path.join(PACKAGE_ROOT, 'package.json'));
+      for (const excluded of [PACKAGE_ROOT, path.join(PACKAGE_ROOT, '.env'), path.join(PACKAGE_ROOT, '.git'),
+        path.join(PACKAGE_ROOT, 'local'), path.join(PACKAGE_ROOT, 'data'), path.join(PACKAGE_ROOT, 'packages')]) {
+        expect(readable.some(allowed => excluded === allowed || excluded.startsWith(`${allowed}${path.sep}`))).toBe(false);
+      }
+      expect(transport.app.input.config.aiConnection?.baseUrl).toBe(transport.canonicalBaseUrl);
+      expect(transport.app.commit).toHaveBeenCalledOnce();
+    } finally {
+      launch.mockRestore();
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await transport.cleanup();
+    }
+  });
+  it.runIf(process.platform === 'darwin').each(['approval', 'stop'] as const)(
+    'keeps Pod hydration/sync in the parent during actual sandbox tools (%s)', async kind => {
+      const wire: Array<{ method: string; body?: string }> = [];
+      const authenticated: typeof fetch = async (_input, init) => {
+        const method = init?.method ?? 'GET';
+        wire.push({ method, ...(init?.body ? { body: String(init.body) } : {}) });
+        return new Response(method === 'GET' ? 'initial bytes' : null, { status: 200, headers: { etag: '"seed-version"' } });
+      };
+      const podAccess = { getPodFetch: vi.fn(async () => authenticated) };
+      const parent = new LocalSolidFS({ syncer: new PodSolidFsSyncer({ podAccess }) });
+      const hydrator = new PodSolidFsHydrator({ podAccess });
+      const commits = vi.fn();
+      const rollbacks = vi.fn();
+      const prepare = vi.fn(async (input: Parameters<SolidFS['prepare']>[0]) => {
+        const workspace = 'https://pod.example/alice/';
+        const context = { auth: { type: 'solid', webId: owner, clientSecret: 'parent-only-secret' },
+          taskCredential: { credentialRef: 'fixture-grant', version: 3 } };
+        await hydrator.hydrate({ path: 'seed.ttl', targetPath: path.join(input.sourcePath!, 'seed.ttl'),
+          workspace: { workspace, cwd: input.sourcePath!, projection: 'copy', entries: [] }, context });
+        const prepared = await parent.prepare({ ...input, workspace, context });
+        const commit = prepared.commit.bind(prepared);
+        const rollback = prepared.rollback.bind(prepared);
+        prepared.commit = async () => { commits(); return commit(); };
+        prepared.rollback = async () => { rollbacks(); return rollback(); };
+        return prepared;
+      });
+      const transport = await transportFixture('tcp', true, { kind, controller: new AbortController(), solidfs: { prepare } });
+      const launch = vi.spyOn(SandboxFactory, 'launch');
+      const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+      process.env.PI_CODING_AGENT_DIR = path.join(new URL(transport.app.input.config.workspace).pathname, 'isolated-pi');
+      const originalWorkspace = transport.app.input.config.workspace;
+      try {
+        const events = await drain(transport.app);
+        expect(prepare).toHaveBeenCalledOnce();
+        expect(launch.mock.results[0].value).toMatchObject({ sandboxed: true, technology: 'sandbox-exec' });
+        expect(transport.app.input.config.workspace).toBe(originalWorkspace);
+        expect(transport.requests).toHaveLength(2);
+        expect(wire).toEqual(kind === 'approval' ? [{ method: 'GET' }, { method: 'PUT', body: 'sandbox bytes' }] : [{ method: 'GET' }]);
+        expect(podAccess.getPodFetch).toHaveBeenCalledTimes(kind === 'approval' ? 2 : 1);
+        expect(commits).toHaveBeenCalledTimes(kind === 'approval' ? 1 : 0);
+        expect(rollbacks).toHaveBeenCalledTimes(kind === 'approval' ? 0 : 1);
+        if (kind === 'approval') expect(events).toContainEqual(expect.objectContaining({ type: 'tool_call', name: 'request_approval' }));
+      } finally {
+        launch.mockRestore();
+        if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+        await transport.cleanup();
+      }
+    });
+
 });

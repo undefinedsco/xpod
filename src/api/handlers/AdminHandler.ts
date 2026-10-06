@@ -152,6 +152,8 @@ function safeTokenEquals(actual: string, expected: string): boolean {
 
 export interface AdminAuthorizerOptions {
   internalAdminAuthSecret?: string;
+  /** Require a configured admin credential for callers that must not inherit loopback authority. */
+  allowLoopback?: boolean;
 }
 
 export function isAdminMutationAllowed(req: AuthenticatedRequest, options: AdminAuthorizerOptions = {}): boolean {
@@ -166,6 +168,8 @@ export function isAdminMutationAllowed(req: AuthenticatedRequest, options: Admin
     return true;
   }
 
+  if (options.allowLoopback === false) { return false; }
+
   const peerLoopback = isLoopbackRemoteAddress(req.socket?.remoteAddress);
   const proxyMarker = verifyGatewayAdminProxyHeaders({
     headers: req.headers,
@@ -174,7 +178,10 @@ export function isAdminMutationAllowed(req: AuthenticatedRequest, options: Admin
     url: req.url,
   });
   if (proxyMarker.present) {
-    return peerLoopback && proxyMarker.valid && proxyMarker.originalClientLoopback;
+    // Unix peers have no IP address. Only the Gateway's authenticated provenance
+    // can authorize that transport; an unsigned Unix request stays untrusted.
+    const unixPeer = Boolean(req.socket && req.socket.remoteAddress === undefined);
+    return (peerLoopback || unixPeer) && proxyMarker.valid && proxyMarker.originalClientLoopback;
   }
 
   return peerLoopback;

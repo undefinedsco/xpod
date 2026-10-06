@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ensureSupportedBun } from './runtime/compat/ensureSupportedBun';
 import './runtime/configure-drizzle-solid';
 import { createHash } from 'crypto';
 import { spawn } from 'child_process';
@@ -553,6 +554,7 @@ async function commandStop(envPath?: string, timeoutMs = 10000, asJson = false):
 }
 
 async function main(): Promise<void> {
+  ensureSupportedBun();
   const rawArgs = hideBin(process.argv);
   const commandMode = [ 'run', 'status', 'health', 'stop' ].includes(rawArgs[0] ?? '');
 

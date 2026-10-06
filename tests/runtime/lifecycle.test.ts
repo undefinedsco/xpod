@@ -275,4 +275,64 @@ describe('runtime lifecycle helpers', () => {
     expect(closeIdentityConnections).toHaveBeenCalledOnce();
     expect(restoreRuntimeEnv).toHaveBeenCalledOnce();
   });
+
+  it.each(['api', 'css'] as const)('keeps shared storage alive while %s drains beyond the stop deadline', async(name) => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const draining = new Promise<void>((resolve) => { release = resolve; });
+    const stop = vi.fn(() => draining);
+    const closeIdentityConnections = vi.fn(async() => {});
+    const restoreRuntimeEnv = vi.fn();
+    const cleanupSocketPath = vi.fn();
+    const unregisterSocketOrigins = vi.fn(async() => {});
+    const setStatus = vi.fn();
+    const warn = vi.fn();
+    const pending = stopRuntimeServices({
+      services: name === 'css' ? { cssApp: { stop } as never } : { apiService: { stop } as never },
+      supervisor: { setStatus } as never, logger: { warn } as never,
+      host: { cleanupSocketPath } as never,
+      state: { sockets: { css: '/tmp/xpod-css.sock', api: '/tmp/xpod-api.sock' } } as never,
+      unregisterSocketOrigins, closeIdentityConnections, restoreRuntimeEnv, stopTimeoutMs: 10,
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(11);
+      expect(warn).toHaveBeenCalled();
+      expect(closeManagedRedisClients).not.toHaveBeenCalled();
+      expect(closeIdentityConnections).not.toHaveBeenCalled();
+      expect(cleanupSocketPath).not.toHaveBeenCalled();
+      expect(unregisterSocketOrigins).not.toHaveBeenCalled();
+      expect(restoreRuntimeEnv).not.toHaveBeenCalled();
+      expect(setStatus).not.toHaveBeenCalledWith(name, 'stopped');
+      release();
+      await pending;
+      expect(stop).toHaveBeenCalledOnce();
+      expect(closeManagedRedisClients).toHaveBeenCalledOnce();
+      expect(closeIdentityConnections).toHaveBeenCalledOnce();
+      expect(setStatus).toHaveBeenCalledWith(name, 'stopped');
+    } finally {
+      release();
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['api', 'css'] as const)('preserves shared dependencies if %s cannot finish stopping', async(name) => {
+    const failure = new Error('writer still owns storage');
+    const stop = vi.fn(async() => { throw failure; });
+    const closeIdentityConnections = vi.fn(async() => {});
+    const restoreRuntimeEnv = vi.fn();
+    const cleanupSocketPath = vi.fn();
+    const unregisterSocketOrigins = vi.fn(async() => {});
+    await expect(stopRuntimeServices({
+      services: name === 'css' ? { cssApp: { stop } as never } : { apiService: { stop } as never },
+      supervisor: { setStatus: vi.fn() } as never, logger: { warn: vi.fn() } as never,
+      host: { cleanupSocketPath } as never, state: { sockets: {} } as never,
+      unregisterSocketOrigins, closeIdentityConnections, restoreRuntimeEnv,
+    })).rejects.toThrow();
+    expect(closeManagedRedisClients).not.toHaveBeenCalled();
+    expect(closeIdentityConnections).not.toHaveBeenCalled();
+    expect(cleanupSocketPath).not.toHaveBeenCalled();
+    expect(unregisterSocketOrigins).not.toHaveBeenCalled();
+    expect(restoreRuntimeEnv).not.toHaveBeenCalled();
+  });
 });

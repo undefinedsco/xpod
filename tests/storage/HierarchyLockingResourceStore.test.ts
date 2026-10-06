@@ -23,6 +23,165 @@ function barrier(): { promise: Promise<void>; release: () => void } {
 }
 
 describe('HierarchyLockingResourceStore parent/child mutation boundary', () => {
+  it('keeps ancestor read leases while preparing a slow representation, then releases them at stream end', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    const entered = barrier();
+    const unblock = barrier();
+    const body = new PassThrough();
+    body.on('error', () => undefined);
+    const source = { getRepresentation: async () => {
+      entered.release();
+      await unblock.promise;
+      return new BasicRepresentation(body, 'text/plain', true);
+    } } as unknown as ResourceStore;
+    const locks = new WrappedExpiringReadWriteLocker(new GreedyReadWriteLocker(new MemoryResourceLocker(), new MemoryMapStorage<number>()), 6000);
+    const store = new HierarchyLockingResourceStore(source, locks, { isAuxiliaryIdentifier: () => false } as unknown as AuxiliaryIdentifierStrategy, new Strategy());
+    let failure: unknown;
+    let response: Awaited<ReturnType<typeof store.getRepresentation>> | undefined;
+    const running = store.getRepresentation({ path: `${root}pod/dir/file.txt` }, {}).then(value => { response = value; }, error => { failure = error; });
+    const mutation = vi.fn();
+    let pending: Promise<unknown> | undefined;
+    try {
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(failure).toBeUndefined();
+      expect(response).toBeUndefined();
+      pending = store.withMutationLocks({ path: `${root}pod/` }, mutation);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mutation).not.toHaveBeenCalled();
+      unblock.release();
+      await running;
+      expect(response).toBeDefined();
+      body.end('prepared body');
+      const chunks: Buffer[] = [];
+      for await (const chunk of response!.data) chunks.push(Buffer.from(chunk));
+      expect(Buffer.concat(chunks).toString()).toBe('prepared body');
+      await pending;
+      expect(mutation).toHaveBeenCalledOnce();
+    } finally {
+      unblock.release();
+      body.destroy();
+      await running;
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
+  it('still expires an unread response under the original lease after preparation finishes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    const body = new PassThrough();
+    body.on('error', () => undefined);
+    const source = { getRepresentation: async () => new BasicRepresentation(body, 'text/plain', true) } as unknown as ResourceStore;
+    const locks = new WrappedExpiringReadWriteLocker(new GreedyReadWriteLocker(new MemoryResourceLocker(), new MemoryMapStorage<number>()), 6000);
+    const store = new HierarchyLockingResourceStore(source, locks, { isAuxiliaryIdentifier: () => false } as unknown as AuxiliaryIdentifierStrategy, new Strategy());
+    try {
+      await store.getRepresentation({ path: `${root}pod/dir/file.txt` }, {});
+      const mutation = vi.fn();
+      const pending = store.withMutationLocks({ path: `${root}pod/` }, mutation);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mutation).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(6000);
+      await pending;
+      expect(body.destroyed).toBe(true);
+      expect(mutation).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      body.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('maintains acquired ancestors while waiting for the target read lock', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    const target = { path: `${root}pod/dir/file.txt` };
+    const plain = new GreedyReadWriteLocker(new MemoryResourceLocker(), new MemoryMapStorage<number>());
+    const held = barrier();
+    const release = barrier();
+    const blocker = plain.withWriteLock(target, async () => { held.release(); await release.promise; });
+    const body = new PassThrough();
+    body.on('error', () => undefined);
+    const source = { getRepresentation: vi.fn().mockResolvedValue(new BasicRepresentation(body, 'text/plain', true)) } as unknown as ResourceStore;
+    const locks = new WrappedExpiringReadWriteLocker(plain, 6000);
+    const store = new HierarchyLockingResourceStore(source, locks, { isAuxiliaryIdentifier: () => false } as unknown as AuxiliaryIdentifierStrategy, new Strategy());
+    let failure: unknown;
+    const running = store.getRepresentation(target, {}).catch(error => { failure = error; return undefined; });
+    try {
+      await held.promise;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(failure).toBeUndefined();
+      expect(source.getRepresentation).not.toHaveBeenCalled();
+      release.release();
+      await blocker;
+      const response = await running;
+      expect(response).toBeDefined();
+      body.end('ready');
+      for await (const _chunk of response!.data) { /* Drain the real stream. */ }
+      await vi.advanceTimersByTimeAsync(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      release.release();
+      body.destroy();
+      await blocker;
+      await running;
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['action rejection', 'stream error', 'stream close'] as const)('releases read locks and timers on %s', async (mode) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    const body = new PassThrough();
+    body.on('error', () => undefined);
+    const source = { getRepresentation: async () => {
+      if (mode === 'action rejection') throw new Error('Read failed');
+      return new BasicRepresentation(body, 'text/plain', true);
+    } } as unknown as ResourceStore;
+    const locks = new WrappedExpiringReadWriteLocker(new GreedyReadWriteLocker(new MemoryResourceLocker(), new MemoryMapStorage<number>()), 6000);
+    const store = new HierarchyLockingResourceStore(source, locks, { isAuxiliaryIdentifier: () => false } as unknown as AuxiliaryIdentifierStrategy, new Strategy());
+    try {
+      const response = store.getRepresentation({ path: `${root}pod/dir/file.txt` }, {});
+      if (mode === 'action rejection') await expect(response).rejects.toThrow('Read failed');
+      else {
+        await response;
+        body.destroy(mode === 'stream error' ? new Error('Stream failed') : undefined);
+      }
+      const mutation = vi.fn();
+      await store.withMutationLocks({ path: `${root}pod/` }, mutation);
+      expect(mutation).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      body.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not publish a representation after an outer lease failed during an inner acquisition', async () => {
+    const entered = barrier();
+    const failOuter = barrier();
+    const lateAcquire = barrier();
+    const body = new PassThrough();
+    const source = { getRepresentation: vi.fn().mockResolvedValue(new BasicRepresentation(body, 'text/plain', true)) } as unknown as ResourceStore;
+    const locks = {
+      withReadLock: async (id: ResourceIdentifier, callback: (renew: () => void) => Promise<unknown>) => {
+        if (id.path === root) return Promise.race([callback(() => undefined), failOuter.promise.then(() => { throw new Error('Lease lost'); })]);
+        if (id.path.endsWith('file.txt')) { entered.release(); await lateAcquire.promise; }
+        return callback(() => undefined);
+      },
+    } as unknown as import('@solid/community-server').ExpiringReadWriteLocker;
+    const store = new HierarchyLockingResourceStore(source, locks, { isAuxiliaryIdentifier: () => false } as unknown as AuxiliaryIdentifierStrategy, new Strategy());
+    const running = store.getRepresentation({ path: `${root}pod/dir/file.txt` }, {});
+    try {
+      await entered.promise;
+      failOuter.release();
+      await expect(running).rejects.toThrow('Lease lost');
+      lateAcquire.release();
+      await setImmediate();
+      expect(source.getRepresentation).not.toHaveBeenCalled();
+    } finally {
+      lateAcquire.release();
+      body.destroy();
+    }
+  });
+
   it('holds ancestor read locks until the child response stream ends', async () => {
     const body = new PassThrough();
     const source = { getRepresentation: async () => new BasicRepresentation(body, 'text/plain', true) } as unknown as ResourceStore;

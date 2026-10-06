@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { IssuerKeySetCache } from '@solid/access-token-verifier/dist/class/IssuerKeySetCache';
 import { WebIDIssuersCache } from '@solid/access-token-verifier/dist/class/WebIDIssuersCache';
 import { createLocalJWKSet, createRemoteJWKSet, type JSONWebKeySet } from 'jose';
@@ -13,6 +14,47 @@ const WEB_ID_DEREFERENCE_RETRY_DELAYS_MS = [ 0, 200, 500 ] as const;
 const DEFAULT_CACHE_TTL_MS = 15 * 60 * 1000;
 /** 防止缓存条目无限增长（大量不同 WebID/issuer 的场景）。 */
 const MAX_CACHE_ENTRIES = 1_000;
+
+type TokenDocumentStage = 'webid-profile' | 'oidc-discovery' | 'issuer-jwks';
+type TokenDocumentPhase = 'headers' | 'body';
+
+// Only fixed transport identifiers may enter the user-visible verifier error.
+// Upstream error messages can contain private URLs, credentials or body text.
+const TRANSPORT_ERROR_CODES = new Set([
+  'BunFetchSocketClosed', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND',
+  'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+]);
+const TRANSPORT_ERROR_NAMES = new Set([ 'Error', 'TypeError', 'AbortError', 'TimeoutError', 'SyntaxError' ]);
+
+class TokenDocumentError extends Error {
+  public constructor(message: string, public override readonly cause: unknown) {
+    super(message);
+    this.name = 'TokenDocumentError';
+  }
+}
+
+async function observeTokenDocument<T>(
+  stage: TokenDocumentStage,
+  phase: TokenDocumentPhase,
+  logicalUrl: URL | string,
+  target: URL | string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (cause: unknown) {
+    const logicalOrigin = new URL(logicalUrl).origin;
+    const route = new URL(target).origin === logicalOrigin ? 'external' : 'internal';
+    const originHash = createHash('sha256').update(logicalOrigin).digest('hex').slice(0, 16);
+    const code = typeof cause === 'object' && cause !== null && 'code' in cause ? cause.code : undefined;
+    const safeCause = typeof code === 'string' && TRANSPORT_ERROR_CODES.has(code) ? code
+      : cause instanceof Error && TRANSPORT_ERROR_NAMES.has(cause.name) ? cause.name : 'unknown';
+    throw new TokenDocumentError(
+      `Solid token document unavailable (stage=${stage}, phase=${phase}, route=${route}, origin=${originHash}, cause=${safeCause})`,
+      cause,
+    );
+  }
+}
 
 /**
  * A minimal Map-based cache with per-entry TTL and bounded size.
@@ -107,7 +149,8 @@ class FetchWebIdIssuersCache extends WebIDIssuersCache {
       throw new Error(`WebID dereference failed: HTTP ${response.status}`);
     }
     const baseIRI = response.url || webId;
-    const store = new Store(new Parser({ baseIRI }).parse(await response.text()));
+    const body = await observeTokenDocument('webid-profile', 'body', webId, this.internalUrl(webId), () => response.text());
+    const store = new Store(new Parser({ baseIRI }).parse(body));
     const issuers = store
       .getObjects(DataFactory.namedNode(webId), SOLID_OIDC_ISSUER, null)
       .map((term) => term.value);
@@ -122,10 +165,10 @@ class FetchWebIdIssuersCache extends WebIDIssuersCache {
       if (delayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
-      response = await fetch(target, {
+      response = await observeTokenDocument('webid-profile', 'headers', webId, target, () => fetch(target, {
         headers: { Accept: 'text/turtle', ...this.forwardedHeaders(webId) },
         signal: AbortSignal.timeout(10_000),
-      });
+      }));
       if (response.ok || !this.isTransientBootstrapStatus(response.status)) {
         return response;
       }
@@ -186,27 +229,37 @@ class FetchIssuerKeySetCache extends IssuerKeySetCache {
       '.well-known/openid-configuration',
       issuer.endsWith('/') ? issuer : `${issuer}/`,
     );
-    const configurationResponse = await fetch(this.internalUrl(logicalConfigurationUrl), {
-      headers: { Accept: 'application/json', ...this.forwardedHeaders(logicalConfigurationUrl) },
-      signal: AbortSignal.timeout(10_000),
-    });
+    const configurationTarget = this.internalUrl(logicalConfigurationUrl);
+    const configurationResponse = await observeTokenDocument(
+      'oidc-discovery', 'headers', logicalConfigurationUrl, configurationTarget,
+      () => fetch(configurationTarget, {
+        headers: { Accept: 'application/json', ...this.forwardedHeaders(logicalConfigurationUrl) },
+        signal: AbortSignal.timeout(10_000),
+      }),
+    );
     if (!configurationResponse.ok) {
       throw new Error(`OIDC issuer configuration failed: HTTP ${configurationResponse.status}`);
     }
-    const configuration = await configurationResponse.json() as { jwks_uri?: unknown };
+    const configuration = await observeTokenDocument(
+      'oidc-discovery', 'body', logicalConfigurationUrl, configurationTarget, () => configurationResponse.json(),
+    ) as { jwks_uri?: unknown };
     if (typeof configuration.jwks_uri !== 'string') {
       throw new Error('OIDC issuer configuration is missing jwks_uri');
     }
-    const keySetResponse = await fetch(this.internalUrl(new URL(configuration.jwks_uri)), {
-      headers: { Accept: 'application/json', ...this.forwardedHeaders(configuration.jwks_uri) },
-      signal: AbortSignal.timeout(10_000),
-    });
+    const logicalKeySetUrl = new URL(configuration.jwks_uri);
+    const keySetTarget = this.internalUrl(logicalKeySetUrl);
+    const keySetResponse = await observeTokenDocument(
+      'issuer-jwks', 'headers', logicalKeySetUrl, keySetTarget,
+      () => fetch(keySetTarget, {
+        headers: { Accept: 'application/json', ...this.forwardedHeaders(logicalKeySetUrl) },
+        signal: AbortSignal.timeout(10_000),
+      }),
+    );
     if (!keySetResponse.ok) {
       throw new Error(`OIDC issuer JWKS failed: HTTP ${keySetResponse.status}`);
     }
-    const keySet = createLocalJWKSet(
-      await keySetResponse.json() as JSONWebKeySet,
-    ) as unknown as ReturnType<typeof createRemoteJWKSet>;
+    const keySetBody = await observeTokenDocument('issuer-jwks', 'body', logicalKeySetUrl, keySetTarget, () => keySetResponse.json());
+    const keySet = createLocalJWKSet(keySetBody as JSONWebKeySet) as unknown as ReturnType<typeof createRemoteJWKSet>;
     this.resolved.set(issuer, keySet);
     return keySet;
   }

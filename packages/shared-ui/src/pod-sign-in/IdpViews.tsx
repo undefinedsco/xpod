@@ -13,6 +13,7 @@ import {
   textButtonClass,
 } from './parts'
 import { Input } from '../input'
+import { EmailInput } from '../email-input'
 import { cn } from '../utils'
 
 /** Shared by every B-group view: which service's page this is, and the wording. */
@@ -130,10 +131,9 @@ export function IdpSignInView(props: IdpSignInViewProps) {
       <div data-pod-sign-in="fields" className="flex flex-col gap-4">
         <Field label={copy.email} error={fieldErrors?.email}>
           {(fieldProps) => (
-            <Input
+            <EmailInput
               {...fieldProps}
               name="email"
-              type="email"
               autoComplete="username"
               autoCapitalize="none"
               spellCheck={false}
@@ -270,10 +270,9 @@ export function IdpRegisterView(props: IdpRegisterViewProps) {
         ) : null}
         <Field label={copy.email} error={fieldErrors?.email}>
           {(fieldProps) => (
-            <Input
+            <EmailInput
               {...fieldProps}
               name="email"
-              type="email"
               autoComplete="email"
               autoCapitalize="none"
               spellCheck={false}

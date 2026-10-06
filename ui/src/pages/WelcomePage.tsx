@@ -1,3 +1,4 @@
+import { useXpodAccountCredentialValues, useXpodAccountRememberChoice } from '../auth/useXpodAccountRememberChoice';
 import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useEffect, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
@@ -15,7 +16,7 @@ import {
   bootstrapAccountPasswordLogin,
   loginAccountPassword,
 } from '../utils/registration-flow';
-import { readPendingXpodAccountEmail, rememberPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
+import { rememberPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { storeAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import { XpodBlockingAccountCredentialsSurface } from '../auth/XpodAuthSurface';
@@ -37,7 +38,7 @@ function safeRegistrationMessage(error: unknown): string {
 }
 
 export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
-  const { controls, idpIndex, isLoggedIn, hasOidcPending } = useAuth();
+  const { controls, idpIndex, isLoggedIn, hasOidcPending, isInitializing } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   // The route decides the mode, but a router transition can land a frame after the click.
@@ -45,13 +46,9 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   // belongs to the new form; the override lapses as soon as the route prop catches up.
   const [modeSwitch, setModeSwitch] = useState<{ from: boolean; register: boolean }>();
   const isRegister = modeSwitch && modeSwitch.from === initialIsRegister ? modeSwitch.register : initialIsRegister;
-  const [values, setValues] = useState<AccountCredentialsValues>({
-    email: readPendingXpodAccountEmail(undefined, idpIndex) ?? '',
-    password: '',
-    confirmation: '',
-  });
+  const [values, setValues, credentialScope] = useXpodAccountCredentialValues(idpIndex, isInitializing);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [rememberAccount, setRememberAccount] = useState(true);
+  const [rememberAccount, setRememberAccount] = useXpodAccountRememberChoice(idpIndex, isInitializing);
   const [isCancelling, setIsCancelling] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -85,7 +82,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   };
 
   const handleSubmit = async (submitted: AccountCredentialsValues) => {
-    if (isSubmitting) return;
+    if (isSubmitting || isInitializing) return;
     setIsSubmitting(true);
     setEmailError(null);
     setFormError(null);
@@ -155,7 +152,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       storeAccountSessionToken(typeof json.authorization === 'string' ? json.authorization : undefined);
       // CSS owns the password form; the Xpod host remembers only this public
       // identity hint after the eventual Account + WebID + Pod composition.
-      rememberPendingXpodAccountEmail(email, undefined, idpIndex);
+      rememberPendingXpodAccountEmail(email, undefined, idpIndex, rememberAccount);
       const locationHeader = response.headers.get('Location');
       if (typeof json.location === 'string' && json.location) {
         window.location.href = scopeAccountUrl(json.location);
@@ -236,6 +233,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
   return (
     <XpodBlockingAccountCredentialsSurface
+      key={credentialScope ?? 'bootstrap'}
       surface="page"
       surfaceTitle={isRegister ? xpodAccountPageCopy.registerSurfaceTitle : xpodAccountPageCopy.loginSurfaceTitle}
       mode={isRegister ? 'register' : 'login'}

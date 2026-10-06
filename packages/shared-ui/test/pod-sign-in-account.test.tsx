@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AddDeviceDialog,
   ConsentResumeBanner,
+  ConfirmationDialog,
   CreateWebIdForm,
   CredentialSection,
   DevicePickerDialog,
@@ -433,12 +434,17 @@ describe('WebIdSection', () => {
     expect(screen.queryByRole('button', { name: '取消' })).toBeNull()
   })
 
-  it('links the display name to the full WebID and keeps the raw WebID visible', () => {
-    render(<WebIdSection webIds={[entry]} />)
+  it('links the display name and labels full identity/storage addresses in a collapsed disclosure', () => {
+    const addressEntry = { ...entry, podUrl: 'https://node-7f3a.undefineds.co/ari/' }
+    render(<WebIdSection webIds={[addressEntry]} />)
     const link = screen.getByRole('link', { name: 'Ari' })
     expect(link.getAttribute('href')).toBe(entry.webId)
-    // The full WebID stays a readable monospace line, not only an href.
-    expect(screen.getByText(entry.webId)).toBeTruthy()
+    const details = screen.getByText('查看地址').closest('details')!
+    expect(details.open).toBe(false)
+    expect(within(details).getByText('WebID（身份地址）')).toBeTruthy()
+    expect(within(details).getByText(entry.webId)).toBeTruthy()
+    expect(within(details).getByText('Pod（存储地址）')).toBeTruthy()
+    expect(within(details).getByText(addressEntry.podUrl)).toBeTruthy()
   })
 
   it('offers the host external-create entry instead of an inline form', () => {
@@ -571,4 +577,35 @@ describe('account page section headers and device actions', () => {
     expect(container.querySelectorAll('h2 svg, svg.h-\\[18px\\]').length).toBeGreaterThanOrEqual(0)
     expect(container.querySelectorAll('section > div > div > svg')).toHaveLength(2)
   })
+})
+
+it('keeps deletion authorization separate from deletion for mixed linked and unlinked Pods', () => {
+  const authorize = vi.fn()
+  const remove = vi.fn()
+  const authorizeUnlinked = vi.fn()
+  render(<WebIdSection webIds={[
+    { id: 'old', displayName: 'Old', webId: 'https://node.test/old/#me', authorizable: true },
+    { id: 'new', displayName: 'New', webId: 'https://node.test/new/#me', removable: true, authorizable: true },
+    { id: 'none', displayName: 'None', webId: 'https://node.test/none/#me' },
+  ]} unlinkedPods={[{ id: 'unlinked', storageUrl: 'https://node.test/unlinked/', displayName: 'Unlinked', authorizable: true }]}
+    authorizeStorageLabel="启用删除" removeStorageLabel="删除 Pod"
+    onAuthorizeStorage={authorize} onAuthorizeUnlinkedPod={authorizeUnlinked} onRemoveStorage={remove} />)
+  fireEvent.click(screen.getByRole('button', { name: '启用删除 Old' }))
+  expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ id: 'old' }))
+  expect(remove).not.toHaveBeenCalled()
+  expect(screen.queryByRole('button', { name: '启用删除 New' })).toBeNull()
+  expect(screen.getByRole('button', { name: '删除 Pod New' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: /None/ })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '启用删除 Unlinked' }))
+  expect(authorizeUnlinked).toHaveBeenCalledWith(expect.objectContaining({ id: 'unlinked' }))
+})
+
+
+it('defaults deletion confirmation to destructive and allows primary authorization confirmation', () => {
+  const props = { open: true, onOpenChange: vi.fn(), onConfirm: vi.fn(), title: 'Confirm', description: 'Details', confirmLabel: 'Continue', cancelLabel: 'Cancel' }
+  const { rerender } = render(<ConfirmationDialog {...props} />)
+  expect(screen.getByRole('button', { name: 'Continue' }).className).toContain('bg-destructive')
+  rerender(<ConfirmationDialog {...props} confirmVariant="default" />)
+  expect(screen.getByRole('button', { name: 'Continue' }).className).toContain('bg-primary')
+  expect(screen.getByRole('button', { name: 'Continue' }).className).not.toContain('bg-destructive')
 })

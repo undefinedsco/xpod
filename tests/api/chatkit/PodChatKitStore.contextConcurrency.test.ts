@@ -6,13 +6,16 @@ import type { PodAccessFetchProvider } from '../../../src/api/ai-gateway/pod/Own
 
 const OWNER = 'https://pod.example/alice/profile/card#me';
 const OTHER = 'https://pod.example/bob/profile/card#me';
+const POD_ROOTS = new Map([[OWNER, 'https://pod.example/alice/'], [OTHER, 'https://pod.example/bob/']]);
 const caller = { type: 'solid', webId: OWNER } as StoreContext['auth'];
 
 describe('PodChatKitStore request-scoped database acquisition', () => {
   it('opens one Pod database when a single request context is used concurrently', async () => {
     const podFetch = (async () => new Response('', { status: 404 })) as typeof fetch;
     const getPodFetch = vi.fn(async () => podFetch);
-    const store = new PodChatKitStore({ podAccess: { getPodFetch } as PodAccessFetchProvider });
+    const store = new PodChatKitStore({ podAccess: { getPodFetch } as PodAccessFetchProvider,
+      podBaseUrlResolver: async webId => POD_ROOTS.get(webId),
+    });
     const context: StoreContext = { userId: OWNER, auth: caller };
 
     await Promise.allSettled([
@@ -30,7 +33,9 @@ describe('PodChatKitStore request-scoped database acquisition', () => {
   it('never shares a Pod database between distinct request credentials', async () => {
     const podFetch = (async () => new Response('', { status: 404 })) as typeof fetch;
     const getPodFetch = vi.fn(async () => podFetch);
-    const store = new PodChatKitStore({ podAccess: { getPodFetch } as PodAccessFetchProvider });
+    const store = new PodChatKitStore({ podAccess: { getPodFetch } as PodAccessFetchProvider,
+      podBaseUrlResolver: async webId => POD_ROOTS.get(webId),
+    });
     const ownerContext: StoreContext = { userId: OWNER, auth: caller };
     const otherContext: StoreContext = { userId: OTHER, auth: { type: 'solid', webId: OTHER } };
 
@@ -55,7 +60,9 @@ describe('PodChatKitStore request-scoped database acquisition', () => {
       if (calls === 1) throw new Error('transient credential failure');
       return podFetch;
     });
-    const store = new PodChatKitStore({ podAccess: { getPodFetch } as PodAccessFetchProvider });
+    const store = new PodChatKitStore({ podAccess: { getPodFetch } as PodAccessFetchProvider,
+      podBaseUrlResolver: async webId => POD_ROOTS.get(webId),
+    });
     const context: StoreContext = { userId: OWNER, auth: caller };
 
     await expect(store.loadThreads(1, undefined, 'desc', context))

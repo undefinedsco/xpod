@@ -69,7 +69,9 @@ NFS client and does not require an additional FUSE driver.
 
 ## Artifacts
 
-Packaging is currently audited for the installed Bun 1.3.8 or CI's Bun 1.3.12.
+Packaging has separate generated-prefix evidence for Bun 1.3.8, 1.3.12 and
+CI's Bun 1.4.2. The 1.4.2 record binds its official source commit and the
+1867-byte prefix emitted by the actual compiler; earlier records remain intact.
 Each compiler has its own hash-bound generated JavaScript prefix/source notices;
 an unknown compiler version or changed prefix fails the build. This restriction
 is on artifact production, not the installed CLI's external runtime requirements.

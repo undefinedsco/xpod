@@ -3,7 +3,7 @@
 // Consent 专用轻量快速创建页（`/.account/create-pod/`，scoped）的新契约：
 //   * 单纯访问 / 刷新**不创建**任何资源；
 //   * 已有可用绑定时直接回到同一个 interaction 的授权页，不新建替代 Pod；
-//   * 次级入口“使用自己的部署”只导航到重管理页，保留一次性续接上下文，
+//   * 次级入口“使用自己的部署”只导航到轻量桌面入口，保留一次性续接上下文，
 //     在离开时**不** prepare/POST。
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -129,7 +129,7 @@ describe('FirstPodPage light quick-create', () => {
     expect(window.sessionStorage.getItem('xpod.safe-continuation.consent.v2')).toBeNull();
   });
 
-  it('“使用自己的部署” navigates to the heavy page, never creates, and keeps the continuation', async () => {
+  it('“使用自己的部署” navigates to the lightweight desktop entry, never creates, and keeps the continuation', async () => {
     const navigation = installLocation(CREATE_PATH);
     seedContinuation();
     const fetchMock = vi.fn(async () => new Response('{}', { status: 404 }));
@@ -139,10 +139,10 @@ describe('FirstPodPage light quick-create', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '使用自己的部署' }));
 
-    expect(navigation.assign).toHaveBeenCalledWith(`${INTERACTION}/manage-pod/`);
+    expect(navigation.assign).toHaveBeenCalledWith('/settings/pod');
     expect(anyPosts(fetchMock)).toEqual([]);
     expect(createFirstPodAndWaitForBinding).not.toHaveBeenCalled();
-    // 离开时保留上下文，重管理页才能显示“回到授权”并可回到同一原事务。
+    // 离开时保留上下文，轻量入口才能显示“回到授权”并可回到同一原事务。
     const record = JSON.parse(window.sessionStorage.getItem('xpod.safe-continuation.consent.v2') ?? 'null');
     expect(record?.interaction).toBe(INTERACTION);
     expect(record?.returnTo).toBe(CONSENT_RETURN);

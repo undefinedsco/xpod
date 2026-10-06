@@ -30,8 +30,6 @@ import {
   extractResourceLocalId,
   generateRunResourceId,
   generateRunStepResourceId,
-  resolveDataResource,
-  resolveRunUrn,
   type RunRecordData,
   type RunStepRecordData,
   type RunStore,
@@ -44,7 +42,7 @@ import {
 } from '../runs/AgentRuntimeTypes';
 import { isWorkspaceRef } from '../workspace/types';
 import { TaskStatus, TaskTriggerKind } from './schema';
-import { resolveTaskResource as expandTaskResource, resolveTaskUrn, type TaskRecordData } from './store';
+import type { TaskRecordData } from './store';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 
 export interface MaterializedTaskRun {
@@ -363,7 +361,7 @@ export class TaskMaterializer<TContext = StoreContext> {
         created_at: now,
         updated_at: now,
         metadata: {
-          task: this.resolveTaskResource(task, context),
+          task: task.id,
           runtime: {
             workspace: task.workspace,
             runner: this.parseRunner(task.runner),
@@ -396,7 +394,7 @@ export class TaskMaterializer<TContext = StoreContext> {
         parentKey: taskParentKey,
         createdAt: now,
       }),
-      task: this.resolveTaskResource(task, context),
+      task: task.id,
       thread: task.thread,
       workspace: task.workspace,
       status: RunStatus.QUEUED,
@@ -509,7 +507,7 @@ export class TaskMaterializer<TContext = StoreContext> {
         createdAt,
       }),
       runId: run.id,
-      run: this.resolveRunResource(run, context),
+      run: run.id,
       type,
       message: options.message,
       data: options.data,
@@ -687,44 +685,6 @@ export class TaskMaterializer<TContext = StoreContext> {
       return parts.length > 1 ? decodeURIComponent(parts[1]) : decodeURIComponent(parts[0]);
     }
     return thread;
-  }
-
-  private resolveTaskResource(task: TaskRecordData, context: TContext): string {
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl) {
-      return expandTaskResource(podBaseUrl, task.id);
-    }
-    return resolveTaskUrn(task.id);
-  }
-
-  private resolveRunResource(run: RunRecordData, context: TContext): string {
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl) {
-      return resolveDataResource(podBaseUrl, run.id);
-    }
-    return resolveRunUrn(run.id);
-  }
-
-  private resolvePodBaseUrl(context: TContext): string | undefined {
-    const auth = (context as Record<string, unknown>).auth as { webId?: unknown } | undefined;
-    const webId = typeof auth?.webId === 'string' ? auth.webId : undefined;
-    if (!webId) {
-      return undefined;
-    }
-    try {
-      const url = new URL(webId);
-      url.hash = '';
-      url.search = '';
-      const normalizedPath = url.pathname.replace(/\/+$/, '');
-      if (!normalizedPath.endsWith('/profile/card')) {
-        return undefined;
-      }
-      const podPath = normalizedPath.slice(0, -'/profile/card'.length) || '/';
-      url.pathname = podPath;
-      return url.toString().replace(/\/$/, '');
-    } catch {
-      return undefined;
-    }
   }
 
   private hasSaveTask(value: unknown): value is { saveTask(task: TaskRecordData, context: TContext): Promise<void> } {

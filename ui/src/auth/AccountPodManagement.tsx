@@ -61,19 +61,33 @@ export function AccountPodManagement() {
 
   const controls = account.controls;
   const idpIndex = account.idpIndex;
+  const accountFetch = account.accountFetch;
+  // Account controls retain their verified actor. Local preparation and public
+  // resources keep the existing transport; a Pod-create helper spans both.
+  const managementFetch = useCallback<typeof fetch>((input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), window.location.origin);
+    const authority = new URL(idpIndex, window.location.origin);
+    return accountFetch && url.origin === authority.origin && url.pathname.startsWith('/.account/')
+      ? accountFetch(input instanceof Request ? input : url.href, init)
+      : fetch(input, init);
+  }, [accountFetch, idpIndex]);
   const accountId = resolveAuthoritativeAccountId(controls, account.identity);
   const bindAccountCapability = account.bindAccountCapability;
   const loadBindings = useCallback(async () => {
     setListError('');
     try {
-      setBindings(await fetchAccountStorageBindings({
-        controls, origin: window.location.origin, trustedAccountIndex: idpIndex,
-      }));
+      const assertCurrent = bindAccountCapability?.();
+      assertCurrent?.();
+      const nextBindings = await fetchAccountStorageBindings({
+        controls, origin: window.location.origin, trustedAccountIndex: idpIndex, fetchImpl: accountFetch,
+      });
+      assertCurrent?.();
+      setBindings(nextBindings);
     } catch {
       setBindings(null);
       setListError('暂时无法读取存储绑定，请重试。');
     }
-  }, [controls, idpIndex]);
+  }, [accountFetch, bindAccountCapability, controls, idpIndex]);
 
   useEffect(() => {
     let cancelled = false;
@@ -103,7 +117,7 @@ export function AccountPodManagement() {
       try {
         confirmed = await readConfirmedConsentContinuation(
           { accountId },
-          { assertCurrent: assertAccount },
+          { assertCurrent: assertAccount, fetch: managementFetch },
         );
       } catch {
         confirmed = null;
@@ -116,7 +130,7 @@ export function AccountPodManagement() {
       setManagementResume(management);
     })();
     return () => { cancelled = true; };
-  }, [accountId, bindAccountCapability]);
+  }, [accountId, bindAccountCapability, managementFetch]);
 
   /**
    * Drop the resume banner when the captured session is no longer the current
@@ -152,6 +166,7 @@ export function AccountPodManagement() {
       // cancelled since the banner was confirmed on load.
       const confirmed = await confirmConsentInteractionAtAuthority(consentResume, {
         headers: storedAccountTokenHeaders({ Accept: 'application/json' }),
+        fetch: managementFetch,
         assertCurrent: assertAccount,
       });
       const consumed = confirmed
@@ -170,7 +185,7 @@ export function AccountPodManagement() {
       setResumeError('这个授权任务已失效，请回到应用重新发起。');
       setResuming(false);
     }
-  }, [assertResumeSession, consentResume, resuming]);
+  }, [assertResumeSession, consentResume, managementFetch, resuming]);
 
   const cancelAuthorization = useCallback(async () => {
     if (!consentResume || resuming) return;
@@ -187,6 +202,7 @@ export function AccountPodManagement() {
         // Rebuild from the confirmed interaction, whether the advertised
         // control is unscoped or already includes an interaction UID.
         cancelUrl: interactionScopedCancelUrl(consentResume.interaction, controls, idpIndex),
+        fetchImpl: managementFetch,
         headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
       });
       assertAccount();
@@ -199,7 +215,7 @@ export function AccountPodManagement() {
       setResumeError('取消授权失败，请重试。');
       setResuming(false);
     }
-  }, [assertResumeSession, consentResume, controls, idpIndex, resuming]);
+  }, [assertResumeSession, consentResume, controls, idpIndex, managementFetch, resuming]);
 
   const returnToAccount = useCallback(() => {
     if (!managementResume || resuming) return;
@@ -234,6 +250,7 @@ export function AccountPodManagement() {
     try {
       await createFirstPodAndWaitForBinding({
         assertCurrentAccount: assertAccount,
+        fetchImpl: managementFetch,
         createPodUrl,
         headers: storedAccountTokenHeaders(),
         provisionCode: await resolveProvisionCodeForCurrentScope(),

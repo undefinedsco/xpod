@@ -1,10 +1,35 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
 import { isValidElement } from 'react';
-import { matchRoutes, Navigate } from 'react-router-dom';
+import { matchRoutes, Navigate, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { xpodShellRoutes } from './xpod-shell-routes';
 import { AccountAuthBoundary, AccountWorkspaceBoundary } from './auth/AccountAuthBoundary';
 import { XpodProductLayout } from './layout/XpodProductLayout';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
+import { PodManagementBoundary, PodManagementTaskRoute } from './pages/settings/PodDeletionAuthorizationPanel';
+import { AuthContext, type AuthContextType } from './context/AuthContextValue';
+
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+function renderPodManagementAdmission(path: string, authenticated: boolean) {
+  const account: AuthContextType = {
+    controls: {}, isInitializing: false, initError: null, idpIndex: '/.account/',
+    isLoggedIn: authenticated, authenticating: false, hasOidcPending: false,
+    refetchControls: vi.fn(async () => undefined), retry: vi.fn(async () => undefined),
+    logout: vi.fn(async () => undefined),
+    accountState: authenticated ? { status: 'authenticated' } : { status: 'anonymous', mode: 'login' },
+  };
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ edition: 'local', managed: false })));
+  return render(<AuthContext.Provider value={account}>
+    <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route element={<PodManagementBoundary />}>
+          <Route path="/pod" element={<span data-testid="pod-workspace">Pod workspace</span>} />
+        </Route>
+      </Routes>
+    </MemoryRouter>
+  </AuthContext.Provider>);
+}
 
 function containsElementType(element: unknown, type: unknown): boolean {
   if (!isValidElement(element)) return false;
@@ -49,7 +74,26 @@ describe('desktop settings and applet route boundaries', () => {
     ['/ai-config/search-indexing', '/pod/search'], ['/status/overview', '/device/services'],
   ])('redirects legacy %s to its one canonical owner', (path, target) => {
     const redirect = routeElements(path).at(-1);
-    expect(isValidElement(redirect) && redirect.type).toBe(Navigate);
+    expect(isValidElement(redirect) && redirect.type).toBe(path === '/settings/pod' ? PodManagementTaskRoute : Navigate);
     expect(isValidElement(redirect) && redirect.props.to).toBe(target);
+  });
+});
+
+
+describe('explicit Pod deletion operator admission', () => {
+  test.each([false, true])('keeps ordinary management behind Account admission: %s', async authenticated => {
+    renderPodManagementAdmission('/pod', authenticated);
+    if (authenticated) {
+      expect(await screen.findByTestId('pod-workspace')).toBeTruthy();
+      expect(screen.queryByLabelText('邮箱')).toBeNull();
+    } else {
+      expect(screen.queryByTestId('pod-workspace')).toBeNull();
+      expect(await screen.findByLabelText('邮箱')).toBeTruthy();
+    }
+  });
+  test('admits a deletion task without Account login', () => {
+    renderPodManagementAdmission('/pod?deletionAuthorization=opaque.challenge&podName=alice', false);
+    expect(screen.getByTestId('pod-workspace')).toBeTruthy();
+    expect(screen.queryByLabelText('邮箱')).toBeNull();
   });
 });

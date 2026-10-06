@@ -61,6 +61,7 @@ export class SolidSessionFactory {
   private readonly now: () => number;
   private readonly maxEntries: number;
   private readonly sessions = new Map<string, SolidSession>();
+  private readonly pending = new Map<string, { clientId: string; promise: Promise<SolidSession> }>();
   /** Cache keys per client id, so a revoked credential can be forgotten without its secret. */
   private readonly keysByClientId = new Map<string, Set<string>>();
   private readonly clientIdByKey = new Map<string, string>();
@@ -79,11 +80,26 @@ export class SolidSessionFactory {
     if (cached && cached.expiresAt > this.now() + TOKEN_EXPIRY_SKEW_MS) {
       return cached;
     }
+    const existing = this.pending.get(key);
+    if (existing) {
+      return existing.promise;
+    }
     this.forgetKey(key);
 
-    const session = await this.exchange(credential);
-    this.remember(key, credential.clientId, session);
-    return session;
+    const promise = this.exchange(credential).then((session) => {
+      if (this.pending.get(key) !== pending) {
+        throw new SolidSessionError('token_exchange_invalidated');
+      }
+      this.remember(key, credential.clientId, session);
+      return session;
+    }).finally(() => {
+      if (this.pending.get(key) === pending) {
+        this.pending.delete(key);
+      }
+    });
+    const pending = { clientId: credential.clientId, promise };
+    this.pending.set(key, pending);
+    return promise;
   }
 
   /**
@@ -95,14 +111,14 @@ export class SolidSessionFactory {
    */
   public invalidateClientCredential(clientId: string): void {
     const keys = this.keysByClientId.get(clientId);
-    if (!keys) {
-      return;
+    for (const key of keys ?? []) {
+      this.forgetKey(key);
     }
-    for (const key of keys) {
-      this.sessions.delete(key);
-      this.clientIdByKey.delete(key);
+    for (const [key, pending] of this.pending) {
+      if (pending.clientId === clientId) {
+        this.pending.delete(key);
+      }
     }
-    this.keysByClientId.delete(clientId);
   }
 
   private remember(key: string, clientId: string, session: SolidSession): void {
@@ -138,8 +154,14 @@ export class SolidSessionFactory {
    * The caller retries with a fresh exchange rather than a different identity: a rejected token
    * says nothing about who the caller is.
    */
-  public invalidate(credential: SolidClientCredential): void {
-    this.forgetKey(cacheKey(this.route, credential));
+  public invalidate(credential: SolidClientCredential, expectedSession?: SolidSession): void {
+    const key = cacheKey(this.route, credential);
+    // A late rejection of an old token cannot evict its replacement or pending renewal.
+    if (expectedSession && this.sessions.get(key) !== expectedSession) {
+      return;
+    }
+    this.pending.delete(key);
+    this.forgetKey(key);
   }
 
   private async exchange(credential: SolidClientCredential): Promise<SolidSession> {

@@ -47,7 +47,7 @@ export function createXpodAiConnectionsHost(
         : runtime.state.status === 'error'
           ? { status: 'error' as const, error: runtime.state.error }
           : { status: 'unavailable' as const };
-  const invocationFetch = window.fetch.bind(window);
+  const invocationFetch = runtime.transportFetch ?? window.fetch.bind(window);
   const session = {
     // Read the live authority even while React still holds this host value.
     getSnapshot: () => runtime.session.getSnapshot(),

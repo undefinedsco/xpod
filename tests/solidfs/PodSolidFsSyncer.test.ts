@@ -171,19 +171,14 @@ describe('PodSolidFsSyncer', () => {
     }
   });
 
-  it('DELETEs removed RDF files with exchanged client-credentials tokens and ignores non-Pod workspaces', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        access_token: 'token-from-client-credentials',
-        token_type: 'Bearer',
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  it('DELETEs removed RDF files with shared authenticated Pod transport and ignores non-Pod workspaces', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     const syncer = new PodSolidFsSyncer({
       fetch: fetchMock as any,
-      tokenEndpoint: 'https://pod.example/.oidc/token',
+      podAccess: { getPodFetch: async () => async (input, init) => {
+        const headers = new Headers(init?.headers); headers.set('Authorization', 'Bearer token-from-client-credentials');
+        return fetchMock(input, { ...init, headers });
+      } },
     });
 
     await syncer.sync(
@@ -198,11 +193,9 @@ describe('PodSolidFsSyncer', () => {
         },
       },
     );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][0]).toBe('https://pod.example/.oidc/token');
-    expect(fetchMock.mock.calls[0][1].method).toBe('POST');
-    expect(fetchMock.mock.calls[1][1].method).toBe('DELETE');
-    expect(fetchMock.mock.calls[1][1].headers.get('Authorization')).toBe('Bearer token-from-client-credentials');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE');
+    expect(fetchMock.mock.calls[0][1].headers.get('Authorization')).toBe('Bearer token-from-client-credentials');
 
     await syncer.sync(
       rdfChange('data.ttl', '/tmp/data.ttl', 'updated'),
@@ -215,7 +208,7 @@ describe('PodSolidFsSyncer', () => {
         },
       },
     );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

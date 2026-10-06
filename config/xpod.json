@@ -2,7 +2,14 @@
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld",
+    {
+      "mutationSource": "PodMutationLockingHttpHandler:_source",
+      "mutationPodStore": "PodMutationLockingHttpHandler:_podStore",
+      "mutationLocker": "PodMutationLockingHttpHandler:_resourceLocker",
+      "mutationDb": "PodMutationLockingHttpHandler:_identityDbUrl",
+      "mutationBase": "PodMutationLockingHttpHandler:_baseUrl"
+    }
   ],
   "import": [
     "./main.json",
@@ -261,8 +268,16 @@
       "@type": "Override",
       "overrideInstance": { "@id": "urn:solid-server:default:BaseHttpHandler" },
       "overrideParameters": {
+        "@type": "PodMutationLockingHttpHandler",
+        "mutationPodStore": { "@id": "urn:solid-server:default:PodStore" },
+        "mutationLocker": { "@id": "urn:undefineds:xpod:PodLifecycleLocker" },
+        "mutationDb": { "@id": "urn:solid-server:default:variable:identityDbUrl" },
+        "mutationBase": { "@id": "urn:solid-server:default:variable:baseUrl" },
+        "mutationSource": {
         "@type": "StatusWaterfallHandler",
         "handlers": [
+          { "@id": "urn:undefineds:xpod:PodDeletionMutationGuard" },
+          { "@id": "urn:undefineds:xpod:LocalPodDeletionHttpHandler" },
           { "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler" },
           { "@id": "urn:undefineds:xpod:VectorHttpHandler" },
           { "@id": "urn:undefineds:xpod:TerminalHttpHandler" },
@@ -279,6 +294,7 @@
           { "@id": "urn:solid-server:default:IdentityProviderHandler" },
           { "@id": "urn:solid-server:default:LdpHandler" }
         ]
+      }
       }
     }
   ]

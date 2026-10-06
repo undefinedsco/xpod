@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { _electron as electron, expect, test, type Page } from '@playwright/test';
 import { completeOidcLogin, normalizeAccountPath, type BrowserSolidCredentials } from '../helpers/browserSolidOidc';
-import { fetchBrowserXpodPod, readBrowserXpodRuntime } from '../helpers/browserXpodRuntime';
+import { startBrowserExternalRp } from '../helpers/browserExternalRp';
 
 type Fixture = {
   baseUrl: string;
@@ -13,6 +13,7 @@ type Fixture = {
 };
 let child: ChildProcess | undefined;
 let fixture: Fixture;
+let rp: Awaited<ReturnType<typeof startBrowserExternalRp>>;
 
 test.beforeAll(async () => {
   test.setTimeout(180_000);
@@ -35,9 +36,11 @@ test.beforeAll(async () => {
       }
     });
   });
+  rp = await startBrowserExternalRp(fixture.baseUrl);
 });
 
 test.afterAll(async () => {
+  await rp?.close();
   if (!child || child.exitCode !== null) return;
   const exited = new Promise<void>(resolve => {
     const timer = setTimeout(() => child!.kill('SIGKILL'), 10_000);
@@ -57,7 +60,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 540 
       const context = await browser.newContext({ viewport });
       const page = await context.newPage();
       const account = fixture.accounts.bob;
-      const original = new URL(`/ai-connections?consent-recovery=${action}-${viewport.width}`, fixture.baseUrl).href;
+      const authorization = rp.authorization();
+      const original = authorization.url;
       const first = account.podBindings[0];
       const second = account.podBindings[1];
       expect(first && second).toBeTruthy();
@@ -89,11 +93,11 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 540 
       try {
         await completeOidcLogin(page, account, {
           baseUrl: fixture.baseUrl, startUrl: original,
-          ready: current => current.getByRole('combobox', { name: /身份与存储空间|identity.*storage/i }).isVisible(),
+          ready: current => current.getByRole('radiogroup', { name: /WebID/i }).isVisible(),
           requireCallbackEvidence: false,
         });
         const selection = await chooseBinding(page, first.podUrl);
-        await page.getByRole('checkbox', { name: '以后不再询问', exact: true }).check();
+        await (await rememberChoice(page)).check({ timeout: 5_000 });
         await page.getByRole('button', { name: '允许', exact: true }).click();
         await expect(page.getByRole('button', { name: '返回授权', exact: true })).toBeVisible();
         expect(failedPosts).toBe(1);
@@ -104,36 +108,46 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 540 
           await page.getByRole('button', { name: '取消授权', exact: true }).click();
           await expect.poll(() => cancelledCallback).toBe(true);
           expect(cancelPosts).toBe(1);
-          await expect(page.getByRole('button', { name: '返回应用', exact: true })).toBeVisible();
-          await page.getByRole('button', { name: '返回应用', exact: true }).click();
-          await expect(page).toHaveURL(original);
+          await expect(page.getByRole('heading', { name: 'Application callback', exact: true })).toBeVisible();
+          const callback = new URL(page.url());
+          expect(`${callback.origin}${callback.pathname}`).toBe(rp.callbackUrl);
+          expect(callback.searchParams.get('state')).toBe(authorization.state);
+          expect(callback.searchParams.get('error')).toBe('access_denied');
+          expect(authorization.tokenRequests).toBe(0);
           expect(tokenPosts).toBe(0);
           await expect(page.locator('[data-pod-ready="true"]')).toHaveCount(0);
         } else {
           const beforePosts = pickPosts;
           const beforeGets = pickGets;
           await page.getByRole('button', { name: action === 'retry' ? '重试' : '返回授权', exact: true }).click();
-          const selector = page.getByRole('combobox', { name: /身份与存储空间|identity.*storage/i });
-          await expect(selector).toBeEnabled();
+          const choices = page.getByRole('radiogroup', { name: /WebID/i }).getByRole('radio');
+          await expect(choices.first()).toBeEnabled();
           expect(pickPosts).toBe(beforePosts);
           if (action === 'retry') expect(pickGets).toBeGreaterThan(beforeGets);
-          await expect(selector).toHaveValue(selection);
-          await expect(page.getByRole('checkbox', { name: '以后不再询问', exact: true })).toBeChecked();
+          const selectedValues = await choices.evaluateAll(inputs => inputs.filter(input => (input as HTMLInputElement).checked).map(input => (input as HTMLInputElement).value));
+          expect(selectedValues).toEqual([selection]);
+          await expect(await rememberChoice(page)).toBeChecked();
           const target = action === 'return' ? second : first;
           await chooseBinding(page, target.podUrl);
           await completeOidcLogin(page, { ...account, ...target }, {
-            baseUrl: fixture.baseUrl, requireCallbackEvidence: true,
-            ready: current => current.locator('[data-pod-ready="true"]').isVisible(),
+            baseUrl: new URL(rp.callbackUrl).origin, requireCallbackEvidence: false,
+            ready: current => current.getByRole('heading', { name: 'Application callback', exact: true }).isVisible(),
           });
-          await expect(page).toHaveURL(original);
-          expect(tokenPosts).toBe(1);
-          expect(await readBrowserXpodRuntime(page)).toMatchObject({ webId: target.webId, podUrl: target.podUrl });
-          const resource = `consent-${action}-${viewport.width}.txt`;
-          expect(await fetchBrowserXpodPod(page, resource, { method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: resource })).toMatchObject({ status: 201 });
-          expect(await fetchBrowserXpodPod(page, resource)).toEqual({ status: 200, body: resource });
+          const session = await authorization.exchange(new URL(page.url()));
+          // Token exchange belongs to the external RP, not Xpod's browser shell.
+          expect(authorization.tokenRequests).toBe(1);
+          expect(tokenPosts).toBe(0);
+          expect(session.tokenStatus).toBe(200);
+          expect(session.webId).toBe(target.webId);
+          const resource = new URL(`consent-${action}-${viewport.width}.txt`, target.podUrl).href;
+          expect((await session.authenticatedFetch(resource, { method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: resource })).status).toBe(201);
+          const read = await session.authenticatedFetch(resource);
+          expect(read.status).toBe(200);
+          expect(await read.text()).toBe(resource);
+          expect([401, 403]).toContain((await fetch(resource)).status);
         }
         await page.screenshot({ path: testInfo.outputPath('recovered.png') });
-        await testInfo.attach('consent-recovery-evidence', { contentType: 'application/json', body: JSON.stringify({ viewport, action, failedPosts, pickPosts, pickGets, tokenPosts, cancelPosts, cancelledCallback }) });
+        await testInfo.attach('consent-recovery-evidence', { contentType: 'application/json', body: JSON.stringify({ viewport, action, failedPosts, pickPosts, pickGets, tokenPosts, externalTokenPosts: authorization.tokenRequests, cancelPosts, cancelledCallback }) });
       } finally {
         await context.close();
       }
@@ -154,6 +168,12 @@ test('Electron failed consent returns through the trusted native cancellation br
   let cancelPosts = 0;
   try {
     const page = await app.firstWindow();
+    let nativeCancellationReceived = false;
+    page.on('framenavigated', frame => {
+      if (frame === page.mainFrame() && new URL(frame.url()).searchParams.get('xpod-login') === 'cancelled') {
+        nativeCancellationReceived = true;
+      }
+    });
     const context = app.context();
     context.on('request', request => {
       const pathname = normalizeAccountPath(new URL(request.url()).pathname);
@@ -168,7 +188,7 @@ test('Electron failed consent returns through the trusted native cancellation br
     });
     await completeOidcLogin(page, fixture.accounts.bob, {
       baseUrl: fixture.baseUrl, requireCallbackEvidence: false,
-      ready: current => current.getByRole('combobox', { name: /身份与存储空间|identity.*storage/i }).isVisible(),
+      ready: current => current.getByRole('radiogroup', { name: /WebID/i }).isVisible(),
     });
     await chooseBinding(page, fixture.accounts.bob.podBindings[0].podUrl);
     await page.getByRole('button', { name: '允许', exact: true }).click();
@@ -180,14 +200,18 @@ test('Electron failed consent returns through the trusted native cancellation br
       size: await page.evaluate(() => ({ width: innerWidth, height: innerHeight })) };
     await page.screenshot({ path: testInfo.outputPath('electron-consent-failed.png') });
     await page.getByRole('button', { name: '返回应用', exact: true }).click();
-    const expected = new URL(original);
-    expected.searchParams.set('xpod-login', 'cancelled');
-    await expect(page).toHaveURL(expected.href);
+    // The boundary consumes the native intent before attempting restoration;
+    // assert delivery and its persisted choice, not a transient query string.
+    await expect.poll(() => nativeCancellationReceived).toBe(true);
+    await expect(page).toHaveURL(original);
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('xpod.auth.login-cancelled'))).toBe('1');
     await expect(page.locator('[data-pod-ready="true"]')).toHaveCount(0);
     expect(tokenPosts).toBe(0);
     expect(cancelPosts).toBe(0);
     expect(app.windows()).toHaveLength(1);
-    await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual({ width: 360, height: 540 });
+    // The returned account window is the native 280x400 frame; assert the actual
+    // content viewport (280x372), not the native outer bounds.
+    await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual({ width: 280, height: 372 });
     await page.screenshot({ path: testInfo.outputPath('electron-returned-app.png') });
     await testInfo.attach('electron-native-recovery', { contentType: 'application/json', body: JSON.stringify({
       before, after: { path: new URL(page.url()).pathname, text: await page.locator('body').innerText(),
@@ -222,12 +246,22 @@ test('Electron failed consent returns through the trusted native cancellation br
   }
 });
 
+async function rememberChoice(page: Page) {
+  const checkbox = page.getByRole('checkbox', { name: '以后不再询问', exact: true });
+  if (!await checkbox.isVisible()) await page.locator('summary').filter({ hasText: '请求详情' }).click({ timeout: 5_000 });
+  return checkbox;
+}
+
 async function chooseBinding(page: Page, podUrl: string): Promise<string> {
-  const selector = page.getByRole('combobox', { name: /身份与存储空间|identity.*storage/i });
-  const value = await selector.locator('option').evaluateAll((options, pod) => options.map(option => (option as HTMLOptionElement).value).find(value => value.endsWith(`|${pod}`) || value.endsWith(`|${pod.replace(/\/$/u, '')}`)), podUrl);
-  if (!value) throw new Error('Expected real multi-Pod consent binding is missing');
-  await selector.selectOption(value);
-  return value;
+  const choices = page.getByRole('radiogroup', { name: /WebID/i }).getByRole('radio');
+  const values = await choices.evaluateAll(inputs => inputs.map(input => (input as HTMLInputElement).value));
+  const index = values.findIndex(value => value.endsWith(`|${podUrl}`) || value.endsWith(`|${podUrl.replace(/\/$/u, '')}`));
+  if (index < 0) throw new Error('Expected real multi-Pod consent binding is missing');
+  const choice = choices.nth(index);
+  // Activate the visible card, as a user does; the native radio is visually hidden.
+  await choice.locator('..').click();
+  await expect(choice).toBeChecked();
+  return values[index];
 }
 
 async function assertActionInViewport(page: Page, label: string): Promise<void> {

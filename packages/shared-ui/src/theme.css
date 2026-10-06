@@ -337,21 +337,21 @@
   [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="main"] {
     flex: 1 0 auto;
     overflow: visible;
-    gap: 8px;
-    padding: 8px 16px;
+    gap: 6px;
+    padding: 4px 16px 2px;
   }
 
   [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="fields"] {
-    gap: 8px;
+    gap: 6px;
   }
 
   [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="field"] {
-    gap: 2px;
+    gap: 1px;
   }
 
   [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="actions"] {
     gap: 0;
-    padding: 8px 16px;
+    padding: 4px 16px 6px;
   }
 
   @media (prefers-reduced-motion: reduce) {

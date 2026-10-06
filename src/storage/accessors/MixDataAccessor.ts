@@ -348,6 +348,18 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     this.invalidateMetadataCache(identifier);
   }
 
+  /** Sweep graph-only provisioning facts after resource/source lifecycle deletion. */
+  public async deletePodRdfGraphs(identifier: ResourceIdentifier): Promise<void> {
+    const accessor = this.structuredDataAccessor as DataAccessor & {
+      deletePodRdfGraphs?: (root: ResourceIdentifier) => Promise<void>;
+    };
+    if (!accessor.deletePodRdfGraphs) {
+      throw new Error('Structured accessor does not support Pod-scoped graph cleanup');
+    }
+    await accessor.deletePodRdfGraphs(identifier);
+    this.invalidateMetadataCache(identifier);
+  }
+
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
     const metadata = await this.getMetadata(identifier);
     
@@ -355,6 +367,11 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     // can operate on real files; remove that mirror together with the index.
     if (this.isLocalMirroredRdf(identifier, metadata)) {
       await this.deleteRdfFileResourceIfPresent(identifier);
+      // Blob writes may have created a separate object-store container marker,
+      // even though the container's authoritative metadata is RDF.
+      if (isContainerIdentifier(identifier) && this.unstructuredDataAccessor !== this.rdfFileDataAccessor) {
+        await this.deleteUnstructuredResourceIfPresent(identifier);
+      }
       await this.deleteSearchIndexes(identifier);
     } else if (this.isUnstructured(metadata)) {
       await this.deleteUnstructuredResourceIfPresent(identifier);
@@ -364,6 +381,11 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     // Always delete from structured storage (contains metadata)
     await this.structuredDataAccessor.deleteResource(identifier);
     this.invalidateMetadataCache(identifier);
+  }
+
+  /** Whether this document can commit a direct native source-file update. */
+  public supportsSparqlUpdate(identifier: ResourceIdentifier): boolean {
+    return this.isByLineRdfIdentifier(identifier);
   }
 
   /**

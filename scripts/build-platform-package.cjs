@@ -11,6 +11,7 @@ const {
   resolvePlatformTarget,
 } = require('./platform-binaries.cjs');
 const { stageEmbeddedNativeSource } = require('./lib/embedded-native-source.cjs');
+const { verifyPlatformPackageBudget } = require('./lib/platform-package-budget.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const DEFAULT_SOURCE_CACHE_DIR = path.join(repoRoot, 'node_modules', '.cache', 'xpod-embedded-native-source');
@@ -162,7 +163,24 @@ async function buildPlatformPackage(targetRef, options = {}) {
     fs.chmodSync(binaryOutputPath, 0o755);
   }
 
+  // Measure the actual gzip tarball, including all fixed source/runtime files,
+  // before either desktop/RC packaging or stable publication can proceed.
+  const packed = spawnSync('npm', ['pack', '--dry-run', '--json'], {
+    cwd: stageDir,
+    encoding: 'utf8',
+  });
+  if (packed.status !== 0) {
+    throw new Error(`Platform package preflight failed: ${packed.stderr}`);
+  }
+  const pack = JSON.parse(packed.stdout)[0];
+  writeJson(`${stageDir}-pack.json`, [pack]);
+  const publicationBudget = verifyPlatformPackageBudget(pack, target, rootPackage.version);
+  const publicationBudgetPath = `${stageDir}-pack-budget.json`;
+  writeJson(publicationBudgetPath, publicationBudget);
+
   return {
+    publicationBudget,
+    publicationBudgetPath,
     target,
     stageDir,
     binaryOutputPath,

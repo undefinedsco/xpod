@@ -82,9 +82,9 @@ jobs:
           node - <<'NODE'
           const { Resolver } = require('node:dns').promises;
           const hosts = [
-            'id-rc.undefineds.co',
-            'pods-rc.undefineds.co',
-            'api-rc.undefineds.co',
+            'id-rc.undefineds.cn',
+            'pods-rc.undefineds.cn',
+            'api-rc.undefineds.cn',
           ];
           const resolvers = [ undefined, [ '1.1.1.1', '8.8.8.8' ] ].map((servers) => {
             const resolver = new Resolver();
@@ -201,7 +201,7 @@ jobs:
       XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
       XPOD_ACCEPTANCE_REAL_XPOD: 'true'
       XPOD_ACCEPTANCE_RUN_VISUAL: 'true'
-      XPOD_SETTINGS_E2E_BASE_URL: https://id-rc.undefineds.co
+      XPOD_SETTINGS_E2E_BASE_URL: https://id-rc.undefineds.cn
       XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
       XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
       REF_NAME: ${{ github.ref_name }}
@@ -210,7 +210,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.12
+          bun-version: 1.4.2
 
       - name: Login to GHCR for Local acceptance runtime
         uses: docker/login-action@v3
@@ -222,7 +222,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Verify the desktop self-update verifier
-        run: node --test tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/packaged-update-phases.node-test.mjs
+        run: node --test tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/packaged-update-phases.node-test.mjs tests/scripts/bun-single-runtime-entry.node-test.cjs tests/scripts/platform-package-budget.node-test.cjs
 
       - name: Install Chromium for authenticated acceptance
         run: bunx playwright install --with-deps chromium
@@ -286,6 +286,8 @@ jobs:
             'CSS_MINIO_SECRET_KEY',
             'XPOD_INNGEST_EVENT_KEY',
             'XPOD_INNGEST_SIGNING_KEY',
+            // API 服务在启动时就要求它（缺了会 "Failed to start API Service"），
+            // 所以这是必需项而不是可选项。
             'XPOD_GATEWAY_LOCATOR_SECRET',
           ];
           const entries = new Map();
@@ -340,13 +342,9 @@ jobs:
           if (objectStoreUrl.protocol !== 'https:' || !objectStoreUrl.hostname.endsWith('.r2.cloudflarestorage.com')) {
             throw new Error('RC object-store endpoint must use Cloudflare R2 over HTTPS');
           }
-          const sanitized = [];
-          for (const [ key, value ] of entries) {
-            if (!['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT'].includes(key)) {
-              sanitized.push(`${key}=${value}`);
-            }
-          }
-          fs.writeFileSync(process.argv[2], `${sanitized.join('\n')}\n`);
+          // RC 与 cn/co 共用同一个 Postgres 实例，库由 APP_ENV_FILE 指定；
+          // 这两个键不再过滤（过滤会让配置里的值静默失效）。
+          fs.writeFileSync(process.argv[2], `${[ ...entries ].map(([ key, value ]) => `${key}=${value}`).join('\n')}\n`);
           NODE
           bun scripts/verify-rc-r2-access.ts --env-file "$env_file"
           bun scripts/materialize-rc-seed-config.ts \
@@ -358,20 +356,7 @@ jobs:
       - name: Create runtime secrets
         run: |
           set -euo pipefail
-          pg_password="$(openssl rand -hex 32)"
-          pg_host="xpod-rc-postgres"
-          identity_db_url="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"
-          sparql_endpoint="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"
-          echo "::add-mask::$pg_password"
-          echo "::add-mask::$identity_db_url"
-          echo "::add-mask::$sparql_endpoint"
-          printf 'CSS_IDENTITY_DB_URL=%s\n' "$identity_db_url" >> "${RUNNER_TEMP}/xpod-rc.env"
-          printf 'CSS_SPARQL_ENDPOINT=%s\n' "$sparql_endpoint" >> "${RUNNER_TEMP}/xpod-rc.env"
-          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-postgres-secret \
-            --from-literal=POSTGRES_DB=xpod_rc \
-            --from-literal=POSTGRES_USER=xpod_rc \
-            --from-literal=POSTGRES_PASSWORD="$pg_password" \
-            --dry-run=client -o yaml | kubectl apply -f -
+          # 不再创建独立的 RC Postgres 及其随机密码；DB URL 由 APP_ENV_FILE 提供。
           kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME" \
             --from-env-file="${RUNNER_TEMP}/xpod-rc.env" \
             --dry-run=client -o yaml | kubectl apply -f -
@@ -379,15 +364,46 @@ jobs:
             --from-file=rc.json="${RUNNER_TEMP}/xpod-rc-seed.json" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Reset the shared RC database
+        run: |
+          set -euo pipefail
+          # RC 与 cn/co 共用 xpod-rdf-postgres：不重建实例，只重置 RC 自己的库。
+          # 扩展顺序是硬要求：vector -> xpod_rdf -> xpod_qlever；
+          # 顺序错了会缺 native_sparql_capabilities，应用启动即失败。
+          # 用 statefulset/<name> 交给 kubectl 挑就绪 Pod；不用 items[0]（可能选中正在终止的那个）
+          kubectl -n "$SEALOS_NAMESPACE" exec -i statefulset/xpod-rdf-postgres -- sh -s <<'SQL'
+          set -e
+          export PGPASSWORD="$POSTGRES_PASSWORD"
+          psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS xpod_rc WITH (FORCE)'
+          psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE xpod_rc OWNER xpod_rc'
+          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
+          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_rdf VERSION '0.2.0'"
+          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_qlever VERSION '0.4.0'"
+          # 扩展是用超级用户装的，schema 因此归 postgres：应用角色读不了，
+          # 会以 "permission denied for schema xpod_rdf" 起不来。整库交给应用角色。
+          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 <<'SQL2'
+          DO $do$
+          DECLARE r record;
+          BEGIN
+            FOR r IN SELECT nspname FROM pg_namespace
+                     WHERE nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+                       AND pg_get_userbyid(nspowner) <> 'xpod_rc'
+            LOOP
+              EXECUTE format('ALTER SCHEMA %I OWNER TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON SCHEMA %I TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON ALL TABLES IN SCHEMA %I TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON ALL SEQUENCES IN SCHEMA %I TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON ALL FUNCTIONS IN SCHEMA %I TO xpod_rc', r.nspname);
+            END LOOP;
+          END
+          $do$;
+          SQL2
+          SQL
+
       - name: Deploy RC image by digest
         run: |
           set -euo pipefail
-          postgres_manifest="${RUNNER_TEMP}/xpod-rc-postgres.rendered.yaml"
           rendered_manifest="${RUNNER_TEMP}/xpod-rc.rendered.yaml"
-          node scripts/render-rc-manifests.cjs \
-            --overlay deploy/sealos/rc-postgres \
-            --output "$postgres_manifest" \
-            --namespace "$SEALOS_NAMESPACE"
           node scripts/render-rc-manifests.cjs \
             --overlay deploy/sealos/rc \
             --output "$rendered_manifest" \
@@ -396,26 +412,6 @@ jobs:
             --seed-secret-name "$XPOD_RC_SEED_SECRET_NAME" \
             --image "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
           kubectl -n "$SEALOS_NAMESPACE" delete deployment/xpod-rc --cascade=foreground --wait=true --ignore-not-found
-          kubectl -n "$SEALOS_NAMESPACE" delete statefulset/xpod-rc-postgres --cascade=foreground --wait=true --ignore-not-found
-          kubectl -n "$SEALOS_NAMESPACE" delete service/xpod-rc-postgres --ignore-not-found
-          kubectl -n "$SEALOS_NAMESPACE" delete pvc/data-xpod-rc-postgres-0 --ignore-not-found
-          kubectl apply -f "$postgres_manifest"
-          kubectl rollout status statefulset/xpod-rc-postgres -n "$SEALOS_NAMESPACE" --timeout=600s
-          postgres_version_num="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
-            psql -U xpod_rc -d xpod_rc --no-align --tuples-only --command 'SHOW server_version_num' | tr -d '[:space:]')"
-          if ! [[ "$postgres_version_num" =~ ^17[0-9]{4}$ ]]; then
-            echo "::error::RC database must run PostgreSQL 17"
-            exit 1
-          fi
-          kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
-            psql -v ON_ERROR_STOP=1 -U xpod_rc -d xpod_rc --command 'CREATE EXTENSION IF NOT EXISTS vector'
-          vector_version="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
-            psql -U xpod_rc -d xpod_rc --no-align --tuples-only \
-              --command "SELECT extversion FROM pg_extension WHERE extname = 'vector'" | tr -d '[:space:]')"
-          if [ -z "$vector_version" ]; then
-            echo "::error::RC database did not activate the vector extension"
-            exit 1
-          fi
           kubectl -n "$SEALOS_NAMESPACE" get configmap gateway -o yaml \
             | node scripts/update-gateway-rc-configmap.cjs --namespace "$SEALOS_NAMESPACE" \
             | kubectl apply -f -
@@ -459,6 +455,8 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" get secret "$XPOD_RUNTIME_SECRET_NAME" -o json \
             | node -e "const input=[];process.stdin.on('data',(chunk)=>input.push(chunk));process.stdin.on('end',()=>{const data=JSON.parse(Buffer.concat(input)).data||{};for(const key of ['CSS_MINIO_ENDPOINT','CSS_MINIO_BUCKET_NAME','CSS_MINIO_ACCESS_KEY','CSS_MINIO_SECRET_KEY'])if(!data[key])throw new Error('deployed RC secret is missing '+key);});"
           kubectl -n "$SEALOS_NAMESPACE" delete deployment/xpod-rc-minio service/xpod-rc-minio job/xpod-rc-minio-init pvc/xpod-rc-minio secret/xpod-rc-object-store --ignore-not-found
+          # postgres-ephemeral 指逻辑库 xpod_rc 每轮 DROP/CREATE 后的新鲜状态；
+          # 物理实例 xpod-rdf-postgres 由 cn/co/RC 共享，不重建实例、不回收 PVC。
           cat > "${RUNNER_TEMP}/deployment-checks.json" <<'JSON'
           {
             "image": "passed",
@@ -474,9 +472,9 @@ jobs:
         run: |
           set -euo pipefail
           for pair in \
-            'xpod-rc-id-tls:id-rc.undefineds.co' \
-            'xpod-rc-pods-tls:pods-rc.undefineds.co' \
-            'xpod-rc-api-tls:api-rc.undefineds.co'
+            'xpod-rc-id-tls:id-rc.undefineds.cn' \
+            'xpod-rc-pods-tls:pods-rc.undefineds.cn' \
+            'xpod-rc-api-tls:api-rc.undefineds.cn'
           do
             secret_name="${pair%%:*}"
             host="${pair#*:}"
@@ -497,23 +495,23 @@ jobs:
       - name: Verify public RC service
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/service/status > /dev/null
-          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/.well-known/openid-configuration > /dev/null
-          curl --fail --silent --show-error --max-time 15 https://pods-rc.undefineds.co/ > /dev/null
-          curl --fail --silent --show-error --max-time 15 https://api-rc.undefineds.co/service/status > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.cn/service/status > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.cn/.well-known/openid-configuration > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://pods-rc.undefineds.cn/ > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://api-rc.undefineds.cn/service/status > /dev/null
           dashboard_file="$RUNNER_TEMP/dashboard.html"
-          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.co/dashboard/ --output "$dashboard_file"
+          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.cn/dashboard/ --output "$dashboard_file"
           if ! grep -qi '<!doctype html\|<html' "$dashboard_file"; then
             echo "::error::dashboard did not return HTML"
             exit 1
           fi
           settings_file="$RUNNER_TEMP/settings.html"
-          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.co/settings/ --output "$settings_file"
+          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.cn/settings/ --output "$settings_file"
           if ! grep -qi '<!doctype html\|<html' "$settings_file"; then
             echo "::error::settings did not return HTML"
             exit 1
           fi
-          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 https://api-rc.undefineds.co/api/pod/settings/status)"
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 https://api-rc.undefineds.cn/api/pod/settings/status)"
           if [ "$status" != "401" ]; then
             echo "::error::protected settings route must reject anonymous requests with 401"
             exit 1
@@ -568,7 +566,7 @@ jobs:
           docker run --detach --name "$local_name" \
             --publish 127.0.0.1::5737 \
             --env XPOD_EDITION=local \
-            --env SOLID_OIDC_ISSUER=https://id-rc.undefineds.co/ \
+            --env SOLID_OIDC_ISSUER=https://id-rc.undefineds.cn/ \
             --env CSS_ROOT_FILE_PATH=/app/data \
             --env CSS_IDENTITY_DB_URL=/app/data/identity.sqlite \
             --env DATABASE_URL=/app/data/identity.sqlite \
@@ -600,7 +598,7 @@ jobs:
           XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
           XPOD_LIVE_TASK_APPROVAL=1 \
           XPOD_LIVE_GATEWAY_URL="$gateway" \
-          XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/" \
+          XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.cn/" \
           bun run ai-connections:accept:live
 
           node - <<'NODE'
@@ -744,6 +742,24 @@ jobs:
               safe.terminalSnapshot = { status: snapshot.status, errorPresent: snapshot.errorPresent,
                 errorClassification: snapshot.errorClassification, modelRequest: snapshot.modelRequest, steps };
             }
+            const failure = row.producerFailure;
+            const errorClasses = ['none', 'unknown', 'auth_required', 'service_access_missing', 'token_exchange_failed',
+              'provider_error', 'provider_aborted', 'sandbox_unavailable', 'worker_start_failed', 'worker_exited', 'execution_state_error'];
+            if (failure && ['failed', 'cancelled', 'completed'].includes(failure.status)
+                && typeof failure.errorPresent === 'boolean' && errorClasses.includes(failure.errorClass)
+                && Number.isSafeInteger(failure.errorLength) && failure.errorLength >= 0 && failure.errorLength <= 1000000) {
+              safe.producerFailure = { status: failure.status, errorPresent: failure.errorPresent,
+                errorLength: failure.errorLength, errorClass: failure.errorClass };
+              if (Number.isInteger(failure.httpStatus) && failure.httpStatus >= 400 && failure.httpStatus <= 599) {
+                safe.producerFailure.httpStatus = failure.httpStatus;
+              }
+              // Allowlisted runner classification tokens only; never the provider body.
+              for (const field of ['providerClass', 'providerApi', 'providerName', 'providerModel']) {
+                if (typeof failure[field] === 'string' && /^[A-Za-z0-9_.:\-]{1,64}$/.test(failure[field])) {
+                  safe.producerFailure[field] = failure[field];
+                }
+              }
+            }
             return safe;
           });
           const cleanup = {};
@@ -809,13 +825,13 @@ jobs:
         run: |
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods,svc -o wide || true
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc || true
-          kubectl -n "$SEALOS_NAMESPACE" describe statefulset xpod-rc-postgres || true
+          kubectl -n "$SEALOS_NAMESPACE" describe statefulset xpod-rdf-postgres || true
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc || true
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc-postgres || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rdf-postgres || true
           kubectl -n "$SEALOS_NAMESPACE" get events --sort-by='.lastTimestamp' | tail -n 200 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 --previous || true
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc-postgres --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rdf-postgres --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
           if [ -f "${RUNNER_TEMP}/live-gateway-local-container-name" ]; then
             local_name="$(cat "${RUNNER_TEMP}/live-gateway-local-container-name")"
             if [ -n "$local_name" ]; then
@@ -835,10 +851,15 @@ jobs:
           fi
 
       - name: Scale RC deployments to zero
-        if: ${{ always() && steps.rc_kubeconfig.outcome == 'success' && vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
+        # 无条件执行：合并成一个实例后 RC 只剩自己的 Deployment 需要回收，
+        # 不再依赖 XPOD_RC_SCALE_TO_ZERO（失败时同样要收，否则白烧资源）。
+        # 仍要求 rc_kubeconfig 成功（已通过 GZ 目标集群校验），避免缩容到错误集群。
+        if: ${{ always() && steps.rc_kubeconfig.outcome == 'success' }}
         run: |
           kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0 || true
-          kubectl -n "$SEALOS_NAMESPACE" scale statefulset/xpod-rc-postgres --replicas=0 || true
+          kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0 || true
+          # 逐轮种子 secret 是运行内唯一名，不收就会一轮攒一个（SG 上已积 112 个）。
+          kubectl -n "$SEALOS_NAMESPACE" delete secret "$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found || true
 
   build_desktop_rc:
     name: Build macOS RC desktop
@@ -856,7 +877,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.12
+          bun-version: 1.4.2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -958,6 +979,16 @@ jobs:
           name: candidate-package-boundary-${{ github.sha }}
           path: .test-data/npm-preflight/pack.json
           if-no-files-found: ignore
+      - name: Save measured native package publication budget
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-native-package-budget-${{ github.sha }}
+          path: |
+            desktop/runtime-pack-budget.json
+            desktop/runtime-pack.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Verify desktop version and native runtime payload
         run: |
           set -euo pipefail
@@ -1157,7 +1188,7 @@ jobs:
             --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
             --source-branch "$REF_NAME" \
             --image-digest "${{ needs.build_image.outputs.digest }}" \
-            --endpoint "https://id-rc.undefineds.co" \
+            --endpoint "https://id-rc.undefineds.cn" \
             --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
             --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
       - name: Upload the only stable-promotion evidence
@@ -1197,13 +1228,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/task-diagnostic-safe"
-          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/service/status > /dev/null
-          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/.well-known/openid-configuration > "${RUNNER_TEMP}/task-diagnostic-oidc.json"
+          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.cn/service/status > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.cn/.well-known/openid-configuration > "${RUNNER_TEMP}/task-diagnostic-oidc.json"
           node - <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
           const discovery = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'task-diagnostic-oidc.json'), 'utf8'));
-          if (new URL(discovery.issuer).origin !== 'https://id-rc.undefineds.co') throw new Error('RC identity issuer mismatch');
+          if (new URL(discovery.issuer).origin !== 'https://id-rc.undefineds.cn') throw new Error('RC identity issuer mismatch');
           NODE
 
       - name: Set up Docker Buildx for local diagnostics
@@ -1272,7 +1303,7 @@ jobs:
             diagnosticSourceSha: process.env.GITHUB_SHA, runtimeSourceSha: runtime.sourceSha,
             image: process.env.DIAGNOSTIC_IMAGE, runtimeImageId: runtime.imageId,
             nativeSourceSha: native.sourceSha, nativeImage: process.env.DIAGNOSTIC_NATIVE_IMAGE, nativeImageId: native.imageId,
-            nativeSdkRebuilt: false, nativeInputUnchanged: true, identityOrigin: 'https://id-rc.undefineds.co',
+            nativeSdkRebuilt: false, nativeInputUnchanged: true, identityOrigin: 'https://id-rc.undefineds.cn',
             runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
           }, null, 2) + '\n');
           NODE
@@ -1297,7 +1328,7 @@ jobs:
           docker run --detach --name "$local_name" \
             --publish 127.0.0.1::5737 \
             --env XPOD_EDITION=local \
-            --env SOLID_OIDC_ISSUER=https://id-rc.undefineds.co/ \
+            --env SOLID_OIDC_ISSUER=https://id-rc.undefineds.cn/ \
             --env CSS_ROOT_FILE_PATH=/app/data \
             --env CSS_IDENTITY_DB_URL=/app/data/identity.sqlite \
             --env DATABASE_URL=/app/data/identity.sqlite \
@@ -1322,7 +1353,7 @@ jobs:
           XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
           XPOD_LIVE_TASK_APPROVAL=1 \
           XPOD_LIVE_GATEWAY_URL="$gateway" \
-          XPOD_LIVE_CLOUD_IDP=https://id-rc.undefineds.co/ \
+          XPOD_LIVE_CLOUD_IDP=https://id-rc.undefineds.cn/ \
           bun run ai-connections:accept:live
 
       # Reuse the same strict allowlist projection as normal candidate failure evidence.

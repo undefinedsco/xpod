@@ -29,6 +29,7 @@ describe('StorageETagHandler', () => {
     stampStorageVersion(metadata);
     const revision = getStorageVersion(metadata)!;
     const tag = `"xpod-${revision}-${Buffer.from(contentType).toString('base64url')}"`;
+    metadata.set(HH.terms.etag, DataFactory.literal(tag));
     const preserved = DataFactory.namedNode('https://example.org/read-marker');
     metadata.set(preserved, DataFactory.literal('preserve'));
     metadata.set(DC.terms.modified, DataFactory.literal('2026-10-04T00:00:00.000Z'));

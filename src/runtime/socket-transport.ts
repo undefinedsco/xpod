@@ -1,5 +1,4 @@
 import http from 'node:http';
-import https from 'node:https';
 
 const NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
 
@@ -22,9 +21,9 @@ export interface SocketTransportResponse {
 
 export async function requestViaSocket(request: SocketTransportRequest): Promise<SocketTransportResponse> {
   return await new Promise<SocketTransportResponse>((resolve, reject) => {
-    const requester = request.protocol === 'https:' ? https : http;
-    const req = requester.request({
-      protocol: request.protocol,
+    // Registered runtime sockets terminate plain HTTP; HTTPS belongs to the canonical public origin.
+    const req = http.request({
+      protocol: 'http:',
       socketPath: request.socketPath,
       path: request.path,
       method: request.method,

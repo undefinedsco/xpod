@@ -26,7 +26,7 @@ export interface DeviceNotificationRuntimeHandle {
     ticketEndpoint: string;
     webSocketEndpoint: string;
   };
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 export function registerDeviceNotificationRuntime(
@@ -74,11 +74,12 @@ export function registerDeviceNotificationRuntime(
     webSocketServer.handleUpgrade(request, socket, head);
   });
   ObservableResourceStore.addGlobalListener(resourceListener);
-  server.addShutdownHandler(() => {
-    webSocketServer.stop();
+  const stop = (): Promise<void> => {
     ticketStore.clear();
     ObservableResourceStore.removeGlobalListener(resourceListener);
-  });
+    return webSocketServer.stop();
+  };
+  server.addShutdownHandler(stop);
 
   return {
     hub,
@@ -86,11 +87,7 @@ export function registerDeviceNotificationRuntime(
     webSocketServer,
     resourceListener,
     descriptor,
-    stop: () => {
-      webSocketServer.stop();
-      ticketStore.clear();
-      ObservableResourceStore.removeGlobalListener(resourceListener);
-    },
+    stop,
   };
 }
 

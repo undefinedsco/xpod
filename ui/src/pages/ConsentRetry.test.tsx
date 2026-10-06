@@ -222,10 +222,22 @@ function mutationCount(fetchMock: ReturnType<typeof mockFailedConsent>, pathname
   return fetchMock.mock.calls.filter(([input, init]) => requestPath(input) === pathname && init?.method === 'POST').length;
 }
 
+it('defaults a new consent decision to unchecked and submits that choice', async () => {
+  const fetchMock = mockFailedConsent();
+  renderConsentPage();
+  expect((await screen.findByRole('checkbox', { name: '以后不再询问' }) as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: '允许' }));
+  await screen.findByRole('button', { name: '返回授权' });
+  const mutation = fetchMock.mock.calls.find(([input, init]) => requestPath(input) === '/.account/oidc/consent/' && init?.method === 'POST');
+  expect(mutation).toBeDefined();
+  expect(JSON.parse(String(mutation?.[1]?.body))).toMatchObject({ remember: false });
+});
+
 it('returns from failed consent to the editable form with remember disabled without submitting again', async () => {
   const fetchMock = mockFailedConsent();
   renderConsentPage();
   fireEvent.click(await screen.findByRole('checkbox', { name: '以后不再询问' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: '以后不再询问' }));
   fireEvent.click(screen.getByRole('button', { name: '允许' }));
   fireEvent.click(await screen.findByRole('button', { name: '返回授权' }));
   expect((await screen.findByRole('checkbox', { name: '以后不再询问' }) as HTMLInputElement).checked).toBe(false);
@@ -361,4 +373,23 @@ it('does not create a replacement for ownerless existing storage', async () => {
   renderAt(consentPath, 'consent', { controls: accountControls });
   await waitFor(() => expect((screen.getByRole('button', { name: '允许', exact: true }) as HTMLButtonElement).disabled).toBe(false));
   expect(readyFetch.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+});
+
+it('opens lightweight desktop management on a failed binding lookup without losing the original Consent', async () => {
+  const interaction = '/.account/interaction/light-management';
+  const consentPath = `${interaction}/oidc/consent/`;
+  const navigation = installLocation(consentPath);
+  const network = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'POST') throw new Error('Unexpected mutation');
+    if (requestPath(input) === consentPath) return Response.json({ client: { client_id: 'client' } });
+    return new Response('{}', { status: 503 });
+  });
+  vi.stubGlobal('fetch', network);
+  renderAt(consentPath, 'consent', { controls: { account: { id: 'alice' } } });
+  fireEvent.click(await screen.findByRole('button', { name: '前往 Pod 管理' }));
+  expect(navigation.assign).toHaveBeenCalledWith('/settings/pod');
+  const task = peekConsentContinuation({ accountId: 'alice' });
+  expect(task?.interaction).toBe(interaction);
+  expect(task?.returnTo).toBe(consentPath);
+  expect(network.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
 });

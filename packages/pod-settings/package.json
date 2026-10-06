@@ -1,6 +1,6 @@
 {
   "name": "@undefineds.co/pod-settings",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "type": "module",
   "sideEffects": false,
   "files": [

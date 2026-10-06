@@ -25,6 +25,44 @@ import { LocalRdfAuthorityRecoveryInitializer, RootedSolidFsSyncJournal, SqliteS
 
 type ResourceIdentifier = { path: string };
 
+describe('RDF container deletion with separate content mirrors', () => {
+  function fixture() {
+    const root = { path: 'https://pod.example/alice/' };
+    const other = 'https://pod.example/bob/';
+    const objects = new Set([root.path, other]);
+    const events: string[] = [];
+    const metadata = new RepresentationMetadata(root);
+    metadata.contentType = 'internal/quads';
+    const structured = {
+      getMetadata: vi.fn(async () => metadata),
+      deleteResource: vi.fn(async () => { events.push('metadata'); }),
+    };
+    const remote = { deleteResource: vi.fn(async (identifier: ResourceIdentifier) => {
+      events.push('object'); objects.delete(identifier.path);
+    }) };
+    const files = { deleteResource: vi.fn(async () => { events.push('file'); }) };
+    const accessor = new MixDataAccessor(structured as unknown as DataAccessor,
+      remote as unknown as DataAccessor, false, true, files as unknown as DataAccessor);
+    return { root, other, objects, events, structured, remote, accessor };
+  }
+
+  it('cleans the object marker even when RDF metadata chooses the file mirror', async () => {
+    const f = fixture();
+    await f.accessor.deleteResource(f.root);
+    expect(f.objects.has(f.root.path)).toBe(false);
+    expect(f.objects.has(f.other)).toBe(true);
+    expect(f.events).toEqual(['file', 'object', 'metadata']);
+  });
+
+  it('preserves metadata if the separate object mirror fails to delete', async () => {
+    const f = fixture();
+    f.remote.deleteResource.mockRejectedValueOnce(new Error('object store unavailable'));
+    await expect(f.accessor.deleteResource(f.root)).rejects.toThrow('object store unavailable');
+    expect(f.structured.deleteResource).not.toHaveBeenCalled();
+    expect(f.objects.has(f.root.path)).toBe(true);
+  });
+});
+
 class SimpleIdentifierStrategy extends BaseIdentifierStrategy {
   public constructor(private baseUrl: string) {
     super();

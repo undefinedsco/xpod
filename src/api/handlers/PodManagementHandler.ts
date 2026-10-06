@@ -2,18 +2,23 @@ import type { ServerResponse, IncomingMessage } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
+import { isAdminMutationAllowed } from './AdminHandler';
+import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
+import { readLocalProvisionState, resolveLocalSetupPath, resolveLocalSetupProviderId } from '../../provision/LocalProvisionState';
+import type { PodDeletionAuthorization } from '../../identity/drizzle/PodDeletionOperationRepository';
 import { createProvisionReceipt } from '../../provision/ProvisionReceiptCodec';
 
 export interface PodManagementHandlerOptions {
   /** Pod 存储根目录 */
   rootDir: string;
+  internalAdminAuthSecret?: string;
   /** 验证 IdP service token */
   verifyServiceToken: (token: string) => Promise<boolean>;
   /** 可选：限制允许的 pod 名称正则 */
   podNameRegex?: RegExp;
   /** 可选：创建 CSS-compatible Pod 数据，而不是只创建裸目录 */
   provisioningService?: {
-    createPod(input: CreatePodRequest): Promise<{ podUrl: string; webId?: string }>;
+    createPod(input: CreatePodRequest): Promise<{ podUrl: string; webId?: string; podId?: string }>;
   };
   /** SP-local Pod lookup used by Cloud consent to scope account WebIDs. */
   podLookupRepository?: Pick<PodLookupRepository, 'findByWebIds'> & Partial<Pick<PodLookupRepository, 'findByResourceIdentifier'>>;
@@ -86,6 +91,64 @@ export function registerPodManagementRoutes(
     receiptSigningSecret,
   } = options;
   const storageProviderRoot = normalizeStorageRoot(options.storageProviderBaseUrl);
+  const setupPath = resolveLocalSetupPath(process.env.XPOD_LOCAL_SETUP_PATH, rootDir);
+  const providerId = resolveLocalSetupProviderId(process.env.XPOD_PROVIDER_ID);
+
+  async function deletionAuthorization(request: IncomingMessage, response: ServerResponse, body: Record<string, unknown>): Promise<void> {
+    if (!isAdminMutationAllowed(request as AuthenticatedRequest, { internalAdminAuthSecret: options.internalAdminAuthSecret, allowLoopback: !request.headers.authorization && !request.headers['x-xpod-admin-token'] })) {
+      sendJson(response, 403, { error: 'POD_DELETE_OPERATOR_REQUIRED' }); return;
+    }
+    const origin = request.headers.origin;
+    let sameOrigin = false;
+    try {
+      const parsed = new URL(typeof origin === 'string' ? origin : '');
+      const canonical = storageProviderRoot && new URL(storageProviderRoot).origin;
+      const localAlias = parsed.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) && parsed.host === request.headers.host;
+      sameOrigin = ['http:', 'https:'].includes(parsed.protocol) && parsed.origin === origin && parsed.host === request.headers.host && (parsed.origin === canonical || localAlias);
+    } catch { /* An absent/opaque Origin never grants browser operator authority. */ }
+    if (!sameOrigin) { sendJson(response, 403, { error: 'POD_DELETE_ORIGIN_REQUIRED' }); return; }
+    const { challenge, podName, expectedLocalPodId } = body;
+    if (typeof challenge !== 'string' || !/^[a-f0-9-]{36}\.[a-zA-Z0-9_-]{43}$/u.test(challenge) || typeof podName !== 'string' || !validatePodName(podName) || !storageProviderRoot) {
+      sendJson(response, 403, { error: 'POD_DELETE_AUTHORIZATION_INVALID' }); return;
+    }
+    const state = readLocalProvisionState(setupPath, providerId);
+    if (!state?.nodeId || !state.nodeToken || !state.cloudApiUrl) { sendJson(response, 403, { error: 'POD_DELETE_AUTHORIZATION_INVALID' }); return; }
+    const storageUrl = new URL(`${podName}/`, storageProviderRoot).href;
+    const callback = async (action: 'authorize-details' | 'authorize', payload?: unknown): Promise<{ status: number; body: Record<string, unknown> }> => {
+      const callbackRoot = new URL(state.cloudApiUrl!);
+      if (!['http:', 'https:'].includes(callbackRoot.protocol) || callbackRoot.username || callbackRoot.password || callbackRoot.search || callbackRoot.hash) { throw new Error('Invalid registered callback'); }
+      const result = await fetch(new URL(`api/pod-deletions/${challenge.split('.')[0]}/${action}`, callbackRoot.href.replace(/\/?$/u, '/')), {
+        method: payload ? 'POST' : 'GET', redirect: 'error', signal: AbortSignal.timeout(15_000),
+        headers: { authorization: `XpodNode ${state.nodeId}:${state.nodeToken}`, 'x-xpod-pod-authorization': challenge, ...(payload ? { 'content-type': 'application/json' } : {}) },
+        ...(payload ? { body: JSON.stringify(payload) } : {}),
+      });
+      return { status: result.status, body: await result.json() as Record<string, unknown> };
+    };
+    try {
+      const result = await callback('authorize-details');
+      if (result.status !== 200) { sendAuthorizationFailure(response, result.status); return; }
+      const details = result.body.authorization as PodDeletionAuthorization | undefined;
+      if (!details || details.storageUrl !== storageUrl || details.nodeId !== state.nodeId || details.challengeId !== challenge.split('.')[0]) {
+        sendJson(response, 403, { error: 'POD_DELETE_AUTHORIZATION_INVALID' }); return;
+      }
+      const pod = await podLookupRepository?.findByResourceIdentifier?.(storageUrl);
+      if (!pod || pod.baseUrl !== storageUrl || !pod.podId) { sendJson(response, 404, { error: 'POD_DELETE_NOT_FOUND' }); return; }
+      const ownerWebIds = [...new Set([pod.webId, ...(pod.webIds ?? [])].filter((value): value is string => Boolean(value)))];
+      if (body.action === 'inspectDeletionAuthorization') {
+        sendJson(response, 200, { deletionAuthorization: { challenge, podName, expiresAt: details.expiresAt,
+          cloudAccountId: details.accountId, cloudPodId: details.podId, nodeId: details.nodeId, storageUrl,
+          currentLocalPodId: pod.podId, ownerWebIds, returnUrl: details.returnUrl } }); return;
+      }
+      if (expectedLocalPodId !== pod.podId) { sendJson(response, 409, { error: 'POD_DELETE_GENERATION_CHANGED' }); return; }
+      const accepted = await callback('authorize', { storageUrl, remotePodId: pod.podId, ownerWebIds });
+      if (accepted.status !== 200) { sendAuthorizationFailure(response, accepted.status); return; }
+      sendJson(response, 200, { success: true, returnUrl: details.returnUrl });
+    } catch (error) {
+      logger.warn('Pod deletion authorization callback failed');
+      sendJson(response, 502, { error: 'POD_DELETE_NODE_UNAVAILABLE' });
+    }
+  }
+
 
   /**
    * 验证 service token
@@ -126,19 +189,23 @@ export function registerPodManagementRoutes(
    *   409: { error: "Pod already exists" }
    */
   server.post('/provision/pods', async (request, response) => {
-    // 1. 认证
-    if (!await authenticate(request)) {
-      sendJson(response, 401, { error: 'Unauthorized', message: 'Invalid or missing service token' });
-      return;
+    const serviceAuthorized = Boolean(await authenticate(request));
+    if (!serviceAuthorized && !isAdminMutationAllowed(request, { internalAdminAuthSecret: options.internalAdminAuthSecret, allowLoopback: !request.headers.authorization && !request.headers['x-xpod-admin-token'] })) {
+      sendJson(response, 401, { error: 'Unauthorized' }); return;
     }
-
-    // 2. 解析请求体
     let body: CreatePodRequest;
-    try {
-      body = await readJsonBody(request) as CreatePodRequest;
-    } catch (error) {
-      sendJson(response, 400, { error: 'Bad Request', message: 'Invalid JSON body' });
-      return;
+    try { body = await readJsonBody(request) as CreatePodRequest; }
+    catch (error) {
+      if (error instanceof Error && error.message === 'Request body too large') { sendJson(response, 413, { error: 'Request body too large' }); return; }
+      sendJson(response, serviceAuthorized ? 400 : 401, { error: 'Invalid request' }); return;
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) { sendJson(response, 400, { error: 'Invalid request' }); return; }
+    const action = (body as unknown as Record<string, unknown>).action;
+    if (action === 'inspectDeletionAuthorization' || action === 'authorizeDeletion') {
+      await deletionAuthorization(request, response, body as unknown as Record<string, unknown>); return;
+    }
+    if (!serviceAuthorized) {
+      sendJson(response, 401, { error: 'Unauthorized', message: 'Invalid or missing service token' }); return;
     }
 
     const { podName, initialResources } = body;
@@ -164,6 +231,7 @@ export function registerPodManagementRoutes(
             success: true,
             podUrl: existing.storageUrl,
             webId: existing.webId,
+            // A network access token may retry provisioning but cannot acquire deletion authority over an existing Pod.
             provisionReceipt: createReceipt({ secret: receiptSigningSecret, podName, podUrl: existing.storageUrl, webId: existing.webId }),
             message: `Pod ${podName} already exists for this WebID`,
           });
@@ -198,7 +266,7 @@ export function registerPodManagementRoutes(
         podUrl,
         ...(webId ? {
           webId,
-          provisionReceipt: createReceipt({ secret: receiptSigningSecret, podName, podUrl, webId }),
+          provisionReceipt: createReceipt({ secret: receiptSigningSecret, podName, podUrl, webId, podId: result?.podId }),
         } : {}),
         message: `Pod ${podName} created successfully`
       });
@@ -298,8 +366,9 @@ export function registerPodManagementRoutes(
   async function findExistingProvisionedPod(
     body: CreatePodRequest,
     podName: string,
-  ): Promise<{ storageUrl: string; webId: string } | undefined> {
-    if (!podLookupRepository || !storageProviderRoot) {
+  ): Promise<{ storageUrl: string; webId: string; podId?: string } | undefined> {
+    if (!podLookupRepository || !storageProviderRoot || typeof body.webId !== 'string' ||
+      !body.webId || body.webId !== body.webId.trim() || /[\r\n\t]/u.test(body.webId)) {
       return undefined;
     }
 
@@ -314,74 +383,21 @@ export function registerPodManagementRoutes(
             storageUrlBelongsToRoot(storageUrl, storageProviderRoot) &&
             Boolean(resolveMatchedWebId(pod.webId, pod.webIds, [requestedWebId]));
         });
-        return match ? { storageUrl: expectedPodUrl, webId: requestedWebId } : undefined;
+        return match ? { storageUrl: expectedPodUrl, webId: requestedWebId, podId: match.podId } : undefined;
       }
 
-      const pod = await podLookupRepository.findByResourceIdentifier?.(expectedPodUrl);
-      const storageUrl = canonicalizeStorageProviderUrl(pod?.storageUrl ?? pod?.baseUrl, storageProviderRoot);
-      const webId = getFirstWebId(pod);
-      return storageUrl === expectedPodUrl && webId ? { storageUrl: expectedPodUrl, webId } : undefined;
+      return undefined;
     } catch (error) {
       logger.warn(`Failed to verify existing pod ownership for ${podName}: ${(error as Error).message}`);
       return undefined;
     }
   }
 
-  /**
-   * DELETE /provision/pods/:podName
-   *
-   * 删除 Pod 目录
-   *
-   * Request:
-   *   Authorization: Bearer {service_token}
-   *
-   * Response:
-   *   200: { success: true }
-   *   401: { error: "Unauthorized" }
-   *   404: { error: "Pod not found" }
-   */
-  server.delete('/provision/pods/:podName', async (request, response, params) => {
-    // 1. 认证
-    if (!await authenticate(request)) {
-      sendJson(response, 401, { error: 'Unauthorized', message: 'Invalid or missing service token' });
-      return;
-    }
-
-    const podName = decodeURIComponent(params.podName);
-
-    // 2. 验证 pod 名称
-    if (!validatePodName(podName)) {
-      sendJson(response, 400, { error: 'Bad Request', message: `Invalid pod name: ${podName}` });
-      return;
-    }
-
-    // 3. 检查是否存在
-    const podPath = `${rootDir}/${podName}`;
-    try {
-      const exists = await fileExists(podPath);
-      if (!exists) {
-        sendJson(response, 404, { error: 'Not Found', message: `Pod ${podName} not found` });
-        return;
-      }
-    } catch (error) {
-      logger.error(`Error checking pod existence: ${(error as Error).message}`);
-      sendJson(response, 500, { error: 'Internal Server Error', message: 'Failed to check pod existence' });
-      return;
-    }
-
-    // 4. 删除 Pod 目录
-    try {
-      await deletePodDirectory(podPath);
-      logger.info(`Deleted pod: ${podName}`);
-
-      sendJson(response, 200, {
-        success: true,
-        message: `Pod ${podName} deleted successfully`
-      });
-    } catch (error) {
-      logger.error(`Failed to delete pod: ${(error as Error).message}`);
-      sendJson(response, 500, { error: 'Internal Server Error', message: 'Failed to delete pod' });
-    }
+  // Pod deletion runs in CSS with its actual data accessor, indexes and AccountStorage.
+  // Direct API callers fail closed instead of removing only a filesystem directory.
+  server.delete('/provision/pods/:podName', async (_request, response) => {
+    response.setHeader('Allow', 'GET');
+    sendJson(response, 405, { error: 'POD_DELETE_USE_GATEWAY', message: 'Pod deletion must use the Gateway lifecycle endpoint' });
   }, { public: true });
 
   /**
@@ -424,7 +440,7 @@ export function registerPodManagementRoutes(
   logger.info(`Pod management routes registered with rootDir: ${rootDir}`);
 }
 
-function createReceipt(input: { secret: string | undefined; podName: string; podUrl: string; webId: string }): string | undefined {
+function createReceipt(input: { secret: string | undefined; podName: string; podUrl: string; webId: string; podId?: string }): string | undefined {
   if (!input.secret) {
     return undefined;
   }
@@ -433,7 +449,13 @@ function createReceipt(input: { secret: string | undefined; podName: string; pod
     podName: input.podName,
     webId: input.webId,
     podUrl: input.podUrl,
+    podId: input.podId,
   });
+}
+
+function sendAuthorizationFailure(response: ServerResponse, status: number): void {
+  if (status >= 500) { sendJson(response, 502, { error: 'POD_DELETE_NODE_UNAVAILABLE' }); return; }
+  sendJson(response, status === 409 ? 409 : 403, { error: status === 409 ? 'POD_DELETE_AUTHORIZATION_CONFLICT' : 'POD_DELETE_AUTHORIZATION_INVALID' });
 }
 
 /**
@@ -442,11 +464,15 @@ function createReceipt(input: { secret: string | undefined; podName: string; pod
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let data = '';
+    let tooLarge = false;
     request.setEncoding('utf8');
     request.on('data', (chunk: string) => {
+      if (tooLarge) { return; }
+      if (Buffer.byteLength(data) + Buffer.byteLength(chunk) > 1_048_576) { tooLarge = true; data = ''; reject(new Error('Request body too large')); return; }
       data += chunk;
     });
     request.on('end', () => {
+      if (tooLarge) { return; }
       if (!data) {
         resolve({});
         return;
@@ -600,12 +626,4 @@ async function createPodDirectory(
       await writeFile(filePath, content, 'utf8');
     }
   }
-}
-
-/**
- * 删除 Pod 目录
- */
-async function deletePodDirectory(podPath: string): Promise<void> {
-  const { rm } = await import('node:fs/promises');
-  await rm(podPath, { recursive: true, force: true });
 }

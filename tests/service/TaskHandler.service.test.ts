@@ -68,6 +68,38 @@ describe('public Pod task routes', () => {
     expect(JSON.stringify(response.body.taskResumeFailure)).not.toContain('/app');
     expect(getTaskResumeStage(error)).toBe('continuation_complete');
   });
+  it('keeps create, run, selection, list and Stop on opaque Pod resource ids with an independent card identity', async () => {
+    const source = { activeFor: async () => ({ credentialRef: 'taskcred_test', version: 1, clientId: 'agent-key', clientSecret: 'secret' }) };
+    const app = setup({ resolveAgentBinding: createGrantedTaskAgentResolver(source),
+      resolveExecutionContext: async (_task, caller) => ({ ...caller }),
+    });
+    const created = await app.request('post', '/api/tasks', { kind: 'interval', prompt: 'Summarize', workspace: 'https://pod.test/work/', intervalSeconds: 3600 });
+    expect(created.status).toBe(200);
+    const taskId = created.body.task.id as string;
+    // The task and its thread are opaque base-relative Pod ids, not the caller's Cloud card IRI.
+    const taskParent = taskId.replace(/^index\.ttl#/, '');
+    expect(taskId).toMatch(/^index\.ttl#task_/);
+    const storedTask = await app.store.loadTask(taskId, { userId: owner });
+    expect(storedTask.thread).toMatch(new RegExp(`^task/${taskParent}/index\\.ttl#thread_`));
+    expect(storedTask.thread).not.toContain('pod.test');
+    expect(storedTask.thread).not.toContain('storage.example');
+    const started = await app.request('post', `/api/tasks/run?id=${encodeURIComponent(taskId)}`, {});
+    expect(started.status).toBe(200);
+    const runId = started.body.run.id as string;
+    expect(await app.store.loadRun(runId, { userId: owner })).toMatchObject({ task: taskId, thread: storedTask.thread });
+    expect((await app.request('get', `/api/tasks/runs?id=${encodeURIComponent(taskId)}`)).body.runs).toHaveLength(1);
+    expect(await app.request('get', `/api/tasks/selection?id=${encodeURIComponent(runId)}`)).toMatchObject({ status: 200, body: { taskId } });
+    expect((await app.request('get', '/api/tasks')).body.tasks[0].iri).toBe(taskId);
+    expect(await app.request('post', `/api/tasks/stop?id=${encodeURIComponent(runId)}`, {})).toMatchObject({ status: 200, body: { run: { status: 'cancelled' } } });
+    const steps = await app.store.loadRunSteps(runId, { userId: owner });
+    expect(steps.map(step => step.type)).toEqual(['run.created', 'run.cancel_requested', 'run.cancelled']);
+    expect(steps.every(step => step.run === runId)).toBe(true);
+    const run = await app.store.loadRun(runId, { userId: owner });
+    const storageRelations = [storedTask.thread, run.task, run.thread, ...steps.map(step => step.run)]
+      .filter((relation): relation is string => typeof relation === 'string');
+    expect(storageRelations.every(relation => !relation.includes('pod.test'))).toBe(true);
+  });
+
   it('returns the Pod authorization retry code for a caller DPoP replay failure', async () => {
     const app = setup();
     vi.spyOn(app.service, 'listTasks').mockRejectedValueOnce(new Error('caller_dpop_replay_unsupported'));

@@ -46,7 +46,9 @@ try {
   const pg = startContainer('pg', ['-p', `127.0.0.1:${pgPort}:5432`, '-e', 'POSTGRES_USER=xpod', '-e', 'POSTGRES_PASSWORD=xpod', '-e', 'POSTGRES_DB=login_matrix', 'postgres:16-alpine']);
   startContainer('minio', ['-p', `127.0.0.1:${minioPort}:${OBJECT_STORE_PORT}`, ...objectStoreContainerArgs('login-matrix')]);
   const redis = startContainer('redis', ['-p', `127.0.0.1:${redisPort}:6379`, 'redis:7-alpine', 'redis-server', '--save', '', '--appendonly', 'no']);
-  await waitReady(async () => spawnSync('docker', ['exec', pg, 'pg_isready', '-U', 'xpod'], { stdio: 'ignore' }).status === 0);
+  // The image's initialization server only listens on a Unix socket. Wait for
+  // the final TCP server used by the published port, not that temporary server.
+  await waitReady(async () => spawnSync('docker', ['exec', pg, 'pg_isready', '-h', '127.0.0.1', '-p', '5432', '-U', 'xpod', '-d', 'login_matrix'], { stdio: 'ignore' }).status === 0);
   await waitReady(async () => hasObjectStore(minioPort, 'login-matrix'));
   await waitReady(async () => spawnSync('docker', ['exec', redis, 'redis-cli', 'ping'], { stdio: 'ignore' }).status === 0);
   const pgUrl = `postgres://xpod:xpod@localhost:${pgPort}/login_matrix`;
@@ -69,7 +71,9 @@ try {
   });
   for (const [name, stack] of [['managed-local', managed], ['standalone', standalone]] as const) {
     const port = await getFreePortForWildcard(name === 'managed-local' ? 39991 : 40991);
-    const baseUrl = `http://localhost:${port}/`;
+    // Exercise the shipped cross-site Cloud Account cookie boundary.
+    const host = name === 'managed-local' ? '127.0.0.1' : 'localhost';
+    const baseUrl = `http://${host}:${port}/`;
     await stack.start('local', {
       transport: 'port', baseUrl, gatewayPort: port, open: false, apiOpen: false,
       runtimeRoot: path.join(root, name), logLevel: 'error', envFile: undefined,

@@ -35,18 +35,62 @@ export class HierarchyLockingResourceStore extends LockingResourceStore {
 
   protected override async lockedRepresentationRun(id: ResourceIdentifier, action: () => Promise<Representation>): Promise<Representation> {
     const identifiers = [...this.ancestors(id), id];
-    const acquire = async (index: number): Promise<Representation> => index === identifiers.length
-      ? this.withFreshMetadata(() => storageVersionReadContext.run(true, action))
-      : super.lockedRepresentationRun(identifiers[index], () => acquire(index + 1));
     for (;;) {
+      const state = { active: true };
+      const renewals = new Set<() => void>();
+      // Preparing a response can wait on an inner lock or a bounded backend
+      // query. Once delivered, CSS's stream-read renewal and idle expiry apply.
+      const timer = setInterval(() => { for (const renew of renewals) renew(); }, 1000);
+      const acquire = async (index: number): Promise<Representation> => {
+        if (!state.active) throw new Error('Resource read lock expired');
+        return index === identifiers.length
+          ? this.withFreshMetadata(() => storageVersionReadContext.run(true, action))
+          : this.withPreparingReadLock(identifiers[index], () => acquire(index + 1), state, renewals);
+      };
       try {
         return await acquire(0);
       } catch (error) {
+        state.active = false;
         if (!(error instanceof LegacyStorageVersionError)) throw error;
         // acquire() has rejected only after every read lock was released. Never upgrade a held lock.
         await this.withMutationLocks(error.identifier, error.initialize);
+      } finally {
+        clearInterval(timer);
       }
     }
+  }
+
+  private withPreparingReadLock(
+    identifier: ResourceIdentifier,
+    action: () => Promise<Representation>,
+    state: { active: boolean },
+    renewals: Set<() => void>,
+  ): Promise<Representation> {
+    // Preserve CSS's split lifetime: return the representation immediately,
+    // while its read lock remains held until the source stream ends or fails.
+    return new Promise((resolve, reject) => {
+      let representation: Representation | undefined;
+      this.hierarchyLocks.withReadLock(identifier, async (maintainLock) => {
+        if (!state.active) throw new Error('Resource read lock expired');
+        renewals.add(maintainLock);
+        try {
+          representation = await action();
+        } finally {
+          renewals.delete(maintainLock);
+        }
+        if (!state.active) {
+          representation.data.destroy();
+          throw new Error('Resource read lock expired');
+        }
+        resolve(this.createExpiringRepresentation(representation, maintainLock));
+        await this.waitForStreamToEnd(representation.data);
+      }).catch((error: unknown) => {
+        state.active = false;
+        renewals.clear();
+        representation?.data.destroy(error instanceof Error ? error : new Error(String(error)));
+        reject(error);
+      });
+    });
   }
 
   private async withFreshMetadata<T>(action: () => Promise<T>): Promise<T> {

@@ -12,7 +12,7 @@ import { IdpChrome, PodSignInFrame, ScreenLayout } from '@undefineds.co/shared-u
  * frame's left column and is supplied by the host (the account service adapter),
  * so the shared library never hardcodes a service name.
  */
-export function WebAccountLayout({ title, description, children, host = 'document', bare = false, intro }: {
+export function WebAccountLayout({ title, description, children, host = 'document', bare = false, intro, serviceIcon }: {
   title: string;
   description?: string;
   children: ReactNode;
@@ -22,6 +22,8 @@ export function WebAccountLayout({ title, description, children, host = 'documen
   bare?: boolean;
   /** `page` only: the left introduction column. */
   intro?: ReactNode;
+  /** Logo and optional info supplied by the account-service adapter. */
+  serviceIcon?: ReactNode;
 }) {
   const titleId = useId();
   const windowFrame = host === 'window';
@@ -41,7 +43,7 @@ export function WebAccountLayout({ title, description, children, host = 'documen
           className="flex min-h-0 min-w-0 flex-1 flex-col"
         >
           {bare ? children : (
-            <ScreenLayout chrome={<IdpChrome serviceName="Xpod" serviceHost={window.location.host} />}>
+            <ScreenLayout chrome={<IdpChrome serviceName="Xpod" serviceHost={window.location.host} icon={serviceIcon} />}>
               <header className="flex flex-col gap-1">
                 <h1 id={titleId} className="text-[17px] font-semibold text-foreground">{title}</h1>
                 {description ? <p className="text-sm leading-[22px] text-muted-foreground">{description}</p> : null}

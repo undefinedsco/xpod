@@ -1,10 +1,12 @@
 import * as fs from 'node:fs';
-import { getLoggerFor } from 'global-logger-factory';
 import { classifyTaskModelSdkErrorHint, hashTaskModelDiagnosticSession, selectTaskModelDiagnosticReceipt } from '../../util/task-model-diagnostics';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import { createInterface } from 'node:readline';
+import { getLoggerFor } from 'global-logger-factory';
 import type { WorkspaceRef } from '../workspace/types';
 import { GitWorktreeService } from '../chatkit/runtime/GitWorktreeService';
 import { SandboxFactory } from '../../terminal/sandbox';
@@ -78,10 +80,12 @@ type PiMessage =
   };
 
 export interface PiAgentRuntimeDriverOptions {
+  /** Gateway transport bound by the host runtime; canonical client configuration stays unchanged. */
+  gatewayTransport?: { canonicalBaseUrl: string; baseUrl: string; socketPath?: string };
   /** The runtime's canonical Pod authority and storage root, captured at API startup. */
   podWorkspaceMapping?: { baseUrl: string; rootFilePath: string };
-  /** Existing runtime token endpoint used by SolidFS hydration and RDF sync. */
-  podTokenEndpoint?: string;
+  /** Shared authenticated Pod access; hydration and sync remain in the host process. */
+  podAccess?: PodAccessFetchProvider;
   /**
    * local: run pi's full Agent Loop in the API process.
    * cloud: run the entire pi Agent Loop in a sandboxed worker process.
@@ -161,12 +165,12 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         syncer: this.createDefaultSolidFsSyncer(),
         journalRoot: options.solidfsJournalRootDir,
       }),
-      hydrator: new PodSolidFsHydrator({ tokenEndpoint: options.podTokenEndpoint }),
+      hydrator: new PodSolidFsHydrator({ podAccess: options.podAccess }),
     });
   }
 
   private createDefaultSolidFsSyncer(): SolidFsSyncer {
-    const syncers: SolidFsSyncer[] = [new PodSolidFsSyncer({ tokenEndpoint: this.options.podTokenEndpoint })];
+    const syncers: SolidFsSyncer[] = [new PodSolidFsSyncer({ podAccess: this.options.podAccess })];
     if (this.options.rdfSearchIndexingService) {
       syncers.push(new RdfSearchIndexingSolidFsSyncer({
         service: this.options.rdfSearchIndexingService,
@@ -180,6 +184,13 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
 
   public async *start(input: RunExecutionInput): AsyncIterable<AgentRuntimeEvent> {
     if (input.signal?.aborted) return;
+    const connection = input.config.aiConnection;
+    const binding = this.options.gatewayTransport;
+    if (connection && binding && connection.baseUrl === binding.canonicalBaseUrl) {
+      input = { ...input, config: { ...input.config,
+        aiConnection: { ...connection, baseUrl: binding.baseUrl },
+      } };
+    }
     if (this.options.agentLoopIsolation === 'sandboxed-process') {
       let workspace: MaterializedWorkspace | undefined;
       let completed = false;
@@ -367,9 +378,11 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         const lastAssistant = (session?.messages ?? []).slice().reverse().find(message => message.role === 'assistant');
         if (!pausedForApproval && !input.signal?.aborted && lastAssistant?.role === 'assistant' &&
             (lastAssistant.stopReason === 'error' || lastAssistant.stopReason === 'aborted')) {
-          // Provider errorMessage can contain credentials or response bodies; expose only the classification.
+          // The feature structured receipt is the single diagnostic sink for one failure; the
+          // pushed message carries only allowlisted wire facts (class/protocol/provider/model),
+          // never the provider body or credential material.
           logFailure(lastAssistant.stopReason, lastAssistant.errorMessage);
-          queue.push({ type: 'error', message: `Pi assistant ended with ${lastAssistant.stopReason}` });
+          queue.push({ type: 'error', message: `Pi assistant ended with ${lastAssistant.stopReason}${describeAssistantFailure(lastAssistant)}` });
         } else if (!streamState.assistantTextStreamed && streamState.lastAssistantText.length > 0) {
           queue.push({ type: 'text', text: streamState.lastAssistantText });
         }
@@ -428,6 +441,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       args: [this.resolveWorkerPath()],
       env: this.workerEnv(),
       isolateNetwork: false,
+      readonlyPaths: this.workerReadonlyPaths(),
     });
 
     if (requireSandbox && !child.sandboxed) {
@@ -454,12 +468,15 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     if (input.signal?.aborted) onAbort();
     const { signal: _signal, ...serializableInput } = input;
     child.process.stdin?.end(JSON.stringify({
-      input: serializableInput,
+      // The host already prepared this workspace and owns all Pod writes. The worker
+      // receives only its isolated file view, never the restored Pod credential context.
+      input: { ...serializableInput, context: {}, config: {
+        ...serializableInput.config, workspace: pathToFileURL(workdir).href, worktree: undefined,
+      } },
       options: {
         persistPiSessions: this.options.persistPiSessions === true,
         sessionRootDir: this.options.sessionRootDir,
-        podWorkspaceMapping: this.podWorkspaceMapping,
-        podTokenEndpoint: this.options.podTokenEndpoint,
+        gatewayTransport: this.options.gatewayTransport,
       },
     }));
 
@@ -1039,6 +1056,25 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     return path.join(__dirname, `PiAgentRuntimeWorker${path.extname(__filename)}`);
   }
 
+  private workerReadonlyPaths(): string[] {
+    const paths = [
+      path.join(PACKAGE_ROOT, path.extname(this.resolveWorkerPath()) === '.ts' ? 'src' : 'dist'),
+      path.join(PACKAGE_ROOT, 'node_modules'),
+      path.join(PACKAGE_ROOT, 'package.json'),
+    ];
+    // Workspace symlinks resolve outside node_modules. Expose only published code and metadata.
+    const workspaceRoot = path.join(PACKAGE_ROOT, 'packages');
+    if (fs.existsSync(workspaceRoot)) {
+      for (const entry of fs.readdirSync(workspaceRoot, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          paths.push(path.join(workspaceRoot, entry.name, 'dist'), path.join(workspaceRoot, entry.name, 'package.json'));
+        }
+      }
+    }
+    if (this.options.gatewayTransport?.socketPath) paths.push(this.options.gatewayTransport.socketPath);
+    return paths;
+  }
+
   private workerEnv(): Record<string, string> {
     const env = sanitizeRuntimeEnv(process.env);
     env.XPOD_AGENT_LOOP_WORKER = '1';
@@ -1104,6 +1140,58 @@ function pushMetadataTag(tags: string[], key: string, value: unknown): void {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A short, non-secret protocol/provider/model label for logs. */
+function safeLabel(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= 64 ? trimmed : undefined;
+}
+
+/**
+ * Coarse classification of a provider failure, derived only from the shape of the message.
+ *
+ * Never returns any part of the message text: it exists so an operator can tell an auth failure
+ * from a rate limit from a transport problem without reading a body that may hold credentials.
+ */
+export function classifyAssistantFailure(errorMessage: unknown): string {
+  if (typeof errorMessage !== 'string' || errorMessage.trim().length === 0) {
+    return 'unclassified';
+  }
+  const text = errorMessage.toLowerCase();
+  const status = text.match(/\b(4\d\d|5\d\d)\b/)?.[1];
+  if (status === '401' || status === '403' || /\bunauthoriz|\bforbidden|invalid[_ ]?api[_ ]?key|\binvalid[_ ]?token\b|\bauthentication\b/.test(text)) {
+    return 'auth';
+  }
+  if (status === '429' || /rate[_ ]?limit|too many requests|\bquota\b/.test(text)) {
+    return 'rate_limited';
+  }
+  if (status === '404' || /model[_ ]?not[_ ]?found|\bdoes not exist\b|unknown[_ ]?model/.test(text)) {
+    return 'model_unavailable';
+  }
+  if (status !== undefined && status.startsWith('4')) {
+    return `client_${status}`;
+  }
+  if (status !== undefined && status.startsWith('5')) {
+    return `server_${status}`;
+  }
+  if (/timeout|timed out|\babort/.test(text)) {
+    return 'timeout';
+  }
+  if (/fetch failed|network|econnrefused|econnreset|socket|dns|enotfound/.test(text)) {
+    return 'transport';
+  }
+  return 'provider_error';
+}
+
+/** Allowlisted wire facts appended to a failed-turn message; never the provider body. */
+function describeAssistantFailure(message: { api?: string; provider?: string; model?: string; errorMessage?: string }): string {
+  const parts = [`class=${classifyAssistantFailure(message.errorMessage)}`];
+  if (safeLabel(message.api)) parts.push(`api=${safeLabel(message.api)}`);
+  if (safeLabel(message.provider)) parts.push(`provider=${safeLabel(message.provider)}`);
+  if (safeLabel(message.model)) parts.push(`model=${safeLabel(message.model)}`);
+  return ` (${parts.join(', ')})`;
 }
 
 export const PI_AGENT_WORKER_EVENT_PREFIX = 'XPOD_AGENT_EVENT ';

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { act, StrictMode, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -31,7 +31,14 @@ import { completeXpodOidcCallback } from './XpodOidcCallbackApp';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+// Unmanaged test hosts advertise the absence of provisioning explicitly.
+beforeEach(() => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('', { status: 404 }));
+});
 
 test('uses the Cloud-issued IdP independently from the local Pod origin', async () => {
   const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
@@ -226,6 +233,25 @@ function InitializeOnLoadingProbe() {
     }
   }, [runtime.session, runtime.state.status]);
   return null;
+}
+
+async function initializeManagedSessionForOptionalRouteProbe(runtime: XpodSolidRuntimeCore, webId: string): Promise<void> {
+  // Authority discovery is mandatory and precedes the optional provider probe.
+  // Complete it first, then clear cached routes to exercise the optional probe.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+    managed: true,
+    publicUrl: 'https://acceptance-local.nodes.acceptance.test/',
+    oidcIssuer: 'https://id.undefineds.co/',
+    provisionCode: 'test-scope',
+  }), { headers: { 'content-type': 'application/json' } }));
+  try {
+    await expect(runtime.session.initialize({ restorePreviousSession: true }))
+      .resolves.toMatchObject({ status: 'authenticated', webId });
+    runtime.setLocalPodRoutes?.(undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 }
 
 function currentOriginTransaction(overrides: Partial<WebIdLoginTransaction> = {}): WebIdLoginTransaction {
@@ -775,6 +801,7 @@ describe('Xpod Solid runtime', () => {
           managed: true,
           publicUrl: 'https://acceptance-local.nodes.acceptance.test/',
           oidcIssuer: 'https://id.undefineds.co/',
+          provisionCode: 'test-scope',
         }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
       return new Response('{}', { status: 404 });
@@ -843,6 +870,7 @@ describe('Xpod Solid runtime', () => {
           managed: true,
           publicUrl: 'https://acceptance-local.nodes.acceptance.test/',
           oidcIssuer: 'https://id.undefineds.co/',
+          provisionCode: 'test-scope',
         }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
       return new Response('{}', { status: 404 });
@@ -903,6 +931,7 @@ describe('Xpod Solid runtime', () => {
       return Promise.resolve(new Response('', { status: 404 }));
     });
     const originalFetch = globalThis.fetch;
+    await initializeManagedSessionForOptionalRouteProbe(runtime, webId);
     globalThis.fetch = provisionFetch as typeof fetch;
 
     const container = document.getElementById('root');
@@ -917,9 +946,6 @@ describe('Xpod Solid runtime', () => {
             <IdentityPairProbe />
           </XpodSolidRuntimeProvider>,
         );
-      });
-      await act(async () => {
-        await runtime.session.initialize({ restorePreviousSession: true });
       });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
@@ -966,6 +992,7 @@ describe('Xpod Solid runtime', () => {
       return Promise.resolve(new Response('', { status: 404 }));
     });
     const originalFetch = globalThis.fetch;
+    await initializeManagedSessionForOptionalRouteProbe(runtime, webId);
     globalThis.fetch = provisionFetch as typeof fetch;
 
     const container = document.getElementById('root');
@@ -980,9 +1007,6 @@ describe('Xpod Solid runtime', () => {
             <IdentityPairProbe />
           </XpodSolidRuntimeProvider>,
         );
-      });
-      await act(async () => {
-        await runtime.session.initialize({ restorePreviousSession: true });
       });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
@@ -1031,6 +1055,7 @@ describe('Xpod Solid runtime', () => {
       return Promise.resolve(new Response('', { status: 404 }));
     });
     const originalFetch = globalThis.fetch;
+    await initializeManagedSessionForOptionalRouteProbe(runtime, aliceWebId);
     globalThis.fetch = provisionFetch as typeof fetch;
 
     const container = document.getElementById('root');
@@ -1105,6 +1130,8 @@ describe('Xpod Solid runtime', () => {
       registered: true,
       managed: true,
       publicUrl: 'https://acceptance-local.nodes.acceptance.test/managed/',
+      oidcIssuer: 'https://id.undefineds.co/',
+      provisionCode: 'test-scope',
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const originalFetch = globalThis.fetch;
     globalThis.fetch = provisionFetch as typeof fetch;
@@ -1165,6 +1192,8 @@ describe('Xpod Solid runtime', () => {
       registered: true,
       managed: true,
       publicUrl: 'https://acceptance-local.nodes.acceptance.test/',
+      oidcIssuer: 'https://id.undefineds.co/',
+      provisionCode: 'test-scope',
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const originalFetch = globalThis.fetch;
     globalThis.fetch = provisionFetch as typeof fetch;
@@ -1238,7 +1267,9 @@ describe('Xpod Solid runtime', () => {
       const provisionFetch = vi.fn(async () => {
         if (testCase.reject) throw new Error(testCase.name);
         return testCase.response!.clone();
-      });
+      }).mockResolvedValueOnce(Response.json({
+        managed: true, oidcIssuer: 'https://id.undefineds.co/', provisionCode: 'test-scope',
+      }));
       const originalFetch = globalThis.fetch;
       globalThis.fetch = provisionFetch as typeof fetch;
 
@@ -1261,6 +1292,41 @@ describe('Xpod Solid runtime', () => {
         .toHaveBeenCalledWith('https://acceptance-local.nodes.acceptance.test/alice/settings/credentials.ttl');
       globalThis.fetch = originalFetch;
       await unmount(root);
+    }
+  });
+
+  test('keeps preflight routes for a remembered Pod without a second status request', async () => {
+    installDom('http://127.0.0.1:3000/ai-connections');
+    const canonical = 'https://acceptance-local.nodes.acceptance.test/';
+    const issuer = 'https://id.acceptance.test/';
+    const binding = { webId: `${canonical}alice/profile/card#me`, storageUrl: `${canonical}alice/` };
+    rememberXpodSelectedStorage(binding, { storageRoot: canonical });
+    const session = new FakeSession();
+    session.authenticate(binding.webId, issuer);
+    const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => String(input) === '/provision/status'
+      ? Response.json({ managed: true, oidcIssuer: issuer, publicUrl: canonical, provisionCode: 'test-scope' })
+      : new Response(null, { status: 503 }));
+    await runtime.session.initialize();
+    const open = vi.fn(async () => {
+      expect(runtime.resolveLocalUrl(binding.webId)).toBe('http://127.0.0.1:3000/alice/profile/card#me');
+      return { webId: binding.webId, podUrl: binding.storageUrl, database: {}, collections: 'ready' as const };
+    });
+    runtime.pod.open = open as typeof runtime.pod.open;
+    const container = document.getElementById('root')!;
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<XpodSolidRuntimeProvider value={runtime}><RuntimeStateProbe /></XpodSolidRuntimeProvider>);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[data-testid="runtime-pod-error"]')?.textContent).toBe('');
+      expect(network).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+      runtime.session.dispose();
     }
   });
 
@@ -1294,10 +1360,9 @@ describe('Xpod Solid runtime', () => {
       logout: mock(async () => undefined),
       accountState: { status: 'authenticated' },
     };
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ bindings: [] }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === '/provision/status'
+      ? Response.json({ managed: false, oidcIssuer: 'https://app.example/' })
+      : Response.json({ bindings: [] }));
     const originalFetch = globalThis.fetch;
     globalThis.fetch = fetchMock as typeof fetch;
 
@@ -1566,6 +1631,9 @@ describe('Xpod Solid runtime', () => {
     installDom('http://127.0.0.1:5173/ai-connections');
     const session = new FakeSession();
     const issuer = 'https://id-rc.undefineds.co/';
+    vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json({
+      managed: true, oidcIssuer: issuer, provisionCode: 'test-scope',
+    }));
     const webId = 'https://7cca443f57b7b8bba68b56344237a4a2.nodes.undefineds.co/profile/card#me';
     session.authenticate(webId, issuer);
     const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });

@@ -14,7 +14,7 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 4. 同一次 RC workflow 构建一个 GHCR 镜像，打 `sha-<full-sha>` 和 RC
    版本 tag，并记录 canonical digest，例如
    `ghcr.io/undefinedsco/xpod@sha256:<64-hex>`。
-5. RC workflow 将该 digest 部署到 `https://id-rc.undefineds.co` 并运行公开
+5. RC workflow 将该 digest 部署到 `https://id-rc.undefineds.cn` 并运行公开
    和认证验收。
 6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，运行真实
    RDF、FTS、VEC Local conformance，但 RC 不向 npm 发布任何包。
@@ -41,11 +41,11 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 | Secret | `XPOD_AI_PROXY_URL` | 可选，真实 AI Provider 验收需要代理时填写 |
 | Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-iknkxtc8` |
 | Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
-| Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
+| Variable | `XPOD_RC_SCALE_TO_ZERO` | 已废弃：验收后固定执行 scale-to-zero（不再读取该变量；需 rc_kubeconfig 校验通过） |
 | Variable | `XPOD_INSTALL_REGISTRY` | 可选，安装烟测 registry 覆盖 |
 
-RC 公开入口为 `https://id-rc.undefineds.co`、`https://pods-rc.undefineds.co`
-和 `https://api-rc.undefineds.co`。`*.undefineds.co` DNS-only CNAME 统一指向
+RC 公开入口为 `https://id-rc.undefineds.cn`、`https://pods-rc.undefineds.cn`
+和 `https://api-rc.undefineds.cn`。这三个 `.cn` 别名（DNS-only CNAME）统一指向
 Sealos ingress，三个 Ingress 经统一 Nginx Gateway 路由到 RC 服务；TLS Secret
 由 Sealos certificate controller 在 Ingress 创建后签发。overlay 不创建
 physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
@@ -68,16 +68,29 @@ Pod 名称。candidate workflow 会把该 secret 写入以 `xpod-rc-seed` 为前
 patch Deployment、set image 或 rollout restart；否则多个 ReplicaSet 会在 CSS
 seed initializer 创建账号和 Pod 的过程中打断进程，留下不完整的 Profile/ACR。
 RC 启动后由 CSS seed initializer 创建账号和 Pod。
-认证验收随后通过真实浏览器 OIDC 流程登录 seed Alice/Bob，生成两份 Playwright
-storage state。候选环境只消费这两份会话，对已经部署的 RC 执行登录恢复、AI
-Connections、Pod、Network、Status 的桌面/窄屏 smoke，并从账号卡实际解析
-`data-selected-pod-url`：两名用户的 Pod 必须不同；每个地址都必须与对应 WebID
-Profile 公布的存储绑定完全一致。IdP 与 Pod 可以同源；验收只要求 storage 来自
-Profile、使用 HTTPS 且不是 loopback。
-协议域名由 Cloud provisioning 返回，不在验收代码中推导或写死。该阶段不得再启动第二套本地 Xpod。
-完整的 provider 写入、Pod 读写、Gateway Key、Models 和真实 Chat 由紧随其后的
-一次性 Local runtime 对同一 RC Cloud 执行；本地 hermetic Playwright 仍作为发布前
-回归单独运行，不冒充部署环境证据。
+认证验收使用测试专用的外部 RP，通过已部署 RC 的真实 IdP 为 seed Alice/Bob 分别执行
+浏览器 OIDC、PKCE 和 DPoP token exchange；不会启动第二套 Xpod、模拟 issuer，或向
+Chromium 注入桌面 bridge。两份私有 Playwright storage state 保存原生 Account Cookie
+和浏览器存储，旁边的 identity JSON 只记录无密钥的 Account ID、WebID 和 storage URL；
+RP token 与 DPoP 私钥仅在进程内使用，不写入该旁档或公开 artifact。
+
+后续测试以独立浏览器上下文加载两份 state，向同一 RC 发起新的真实 OIDC 事务，要求不再
+提交密码，并交叉核验 token WebID、Cookie 恢复的 Account controls/bindings 与公开 Profile
+的规范 HTTPS storage 地址。每个用户都必须以真实 SDK authenticated fetch 完成私有文件
+PUT/GET 精确内容校验；另一用户和匿名请求的 GET/PUT 必须被拒绝，拒绝写入后内容必须
+保持原样，最终删除本次创建的文件。不同的 Pod URL 或公开 Profile 可读不能代替私有隔离。
+
+部署浏览器的宽屏与窄屏 smoke 验证轻量账号页面和桌面入口，且不出现 AI Connections、
+Pod、Network、Status 重管理工作区。Web 永远轻量，重管理只属于桌面 Xpod。这里的三个
+Playwright 用例和 `solid-pod-isolation`、`browser-visual` 必过项保持不变，不得以 skip、
+假 bridge 或 fixture 数据替代部署证据。
+
+完整 provider 写入、Pod 读写、Gateway Key、Models、真实 Chat 和 Tasks 审批由紧随其后的
+一次性 Local runtime 对同一 RC Cloud 执行。本地 hermetic/部署模式矩阵只证明隔离栈，
+不冒充已部署 RC 或真实桌面。现有 macOS `desktop` CI 门禁证明旧包到新包的真实自更新，
+并未证明重管理 UI：这部分仍需在真实 Electron/preload 和候选运行时中验证登录恢复及
+AI Connections、Pod、Network、Status 的已认证访问；不得用普通 Chromium 重页面截图
+宣称完成该桌面补证。本次浏览器契约修正不改变桌面发布门禁。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 
@@ -118,6 +131,23 @@ runtime artifact，并验证版本、nested runtime 可执行文件和 manifest�
 0.4.0 不承诺 Developer ID 签名或 notarization；该桌面 artifact 用于验收和直接分发，
 macOS 可能显示未识别开发者提示。未来启用 Apple Developer Program 时，应直接恢复
 签名与 notarization 作为新版本门禁，不在本次流程中保留双路径或 fallback。
+
+### 平台包发布体积门禁
+
+根 JavaScript 包与原生平台包分别验收。平台构建会测量实际 `npm pack --dry-run --json`
+结果，保存 `*-pack.json`，再验证项目预算：gzip tarball ≤ 180 MiB、base64 attachment
+加 64 KiB metadata 余量后的发布请求体 ≤ 240 MiB。这是 Xpod 的项目预算，**不是 npm
+官方服务器大小保证**。RC 上传 `candidate-native-package-budget-<SHA>`，stable 上传
+`stable-native-package-budget-<SHA>`；真实 tarball/请求体核对与公开 npm 发布仍独立验收。
+预算失败不能通过删除对应源码、QLever/ICU 等必需文件来绕过。
+
+单文件运行归档使用内置 Brotli quality 9 并验证压缩字节摘要；解压后保留相同文件内容、
+权限和启动参数。外置 `SOURCE/` 的固定归档和 pin 不变。冷/热缓存与 archive checksum
+漂移回归不表示每个已缓存文件新增了防篡改检查。
+
+`v0.4.23` 已签名后因原生 npm 包 `E413` 失败，标签及源码保持不可变；恢复发行使用
+未占用 patch 的新源码、新 RC 和签名标签（本轮为 `0.4.25`），不提升失败发行。经过与原因见
+[平台包发布体积问题](issues/2026-10-04-native-npm-publication-budget.md)。
 
 ### 嵌入式原生 CLI 的 Corresponding Source 与 NOTICE
 
@@ -169,6 +199,8 @@ Gateway Key 不是可以各自热替换的四个独立版本。候选镜像必�
 
 发布前必须检查：
 
+- Cloud 与 managed Local 的身份 card 始终托管在 Cloud，Local 仅保存用户数据。新 card 不产生 Cloud 用户存储 Pod，也不能向身份命名空间上传任意文件；需额外验收一种真实部署条件：Local 从启动时就未配置可达的公网数据路由，但仍有本机私有入口；在此条件下证明 Cloud card 可匿名读取、身份与存储绑定一致、本机私有读写成功。该验收条件不表示禁用 Local 的公网访问能力。旧 node-origin 身份不能静默迁移；此前错误 Local-profile 拓扑的通过记录不得用作发布凭证。
+
 - Account bundle 不再包含原始 `alert(` 错误路径；`fetch failed`、
   `provision_refresh_failed` 等错误只能进入页面内的可恢复状态。
 - Cloud `/provision/nodes` 生成的 managed provision code 同时包含
@@ -199,7 +231,7 @@ Gateway Key 不是可以各自热替换的四个独立版本。候选镜像必�
 
 RC 验收顺序固定为：验证静态 bundle 与 deployed digest → 用同一个 accepted image
 启动一次性 Local edition 并注册到 RC Cloud（不得把 Cloud deployment 的端口转发冒充
-Local）→ 注册 Cloud 身份 → 由 Cloud 为该 Local SP 创建 Pod → 从 canonical Pod URL 命中本地最优路径完成
+Local）→ 注册 Cloud 身份并通过 Account profile control 准备独立 Cloud card → 将同一 Cloud WebID 传入 Local prepare，Cloud 核验回执并 finalize Account/storage 绑定 → 从 canonical Pod URL 命中本地最优路径完成
 读写 → 用 Solid Session 创建 Xpod Gateway API Key 并取得一次性密钥，校验原始列表仅含元数据 → 使用该 Key 调用
 `/v1/models` → 发出真实 `/v1/chat/completions` 并校验有效内容 → 撤销 CSS 凭据并删除 Pod 记录，验证旧 Key 返回 401。任一层失败都不得
 用下一层或隔离测试的结果替代。
@@ -259,7 +291,7 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 常见硬 blocker：
 
 - GitHub Environment `rc` 不存在或 secret/var 缺失；
-- `id-rc`、`pods-rc` 或 `api-rc.undefineds.co` DNS/Ingress 未指向统一 Gateway；
+- `id-rc`、`pods-rc` 或 `api-rc.undefineds.cn` DNS/Ingress 未指向统一 Gateway；
 - RC `APP_ENV_FILE` 复用了生产 domain、database、bucket、Redis DB 0 或凭据；
 - logical database or schema、nonzero Redis DB index、object bucket 权限未创建；
 - `XPOD_RC_SEED_CONFIG` 缺失、不是 seed account 数组，或没有 Alice/Bob 账号；
@@ -268,8 +300,9 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 修复方式是提交新的 release branch commit，让 candidate workflow 产生新的
 RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进生产。
 
-如果 `XPOD_RC_SCALE_TO_ZERO=true`，candidate workflow 最后会把
-`deployment/xpod-rc` scale-to-zero；共享 `deployment/xpod-inngest` 保持运行。
+candidate workflow 最后总会把 `deployment/xpod-rc` scale-to-zero（不再依赖
+`XPOD_RC_SCALE_TO_ZERO`，完成后固定回收避免空烧资源；仅在 rc_kubeconfig 校验
+通过时执行）；共享 `deployment/xpod-inngest` 保持运行。
 下一次 RC workflow 会重新 apply overlay、写入 Secret、设置 digest 并等待 rollout。
 手动恢复 RC 时可在同一 namespace 将 Xpod Deployment scale 到 1，然后重新
 运行 candidate workflow 做完整验收。

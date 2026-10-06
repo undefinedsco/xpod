@@ -55,6 +55,12 @@ function mappings(routes: Routes): string[] {
 }
 
 describe('provisionLocalPodRoutes', () => {
+  test('never maps a managed external IdP onto the node, including refreshed status', () => {
+    expect(provisionLocalPodRoutes('https://id.undefineds.co/alice/', {
+      managed: true, storageRoot: 'https://id.undefineds.co/', oidcIssuer: 'https://id.undefineds.co/',
+      routes: MANAGED.routes,
+    }, LOOPBACK_PAGE)).toEqual([]);
+  });
   test('ranks this page own origin above every advertised access point', () => {
     const routes = provisionLocalPodRoutes(STORAGE, MANAGED, LOOPBACK_PAGE);
 

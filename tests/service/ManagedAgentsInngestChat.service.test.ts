@@ -743,7 +743,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       workspace: workspaceRef,
       runner: 'pi:codex',
       prompt: 'persist run facts',
-      thread: 'http://localhost/alice/.data/' + (run.metadata?.threadId as string),
+      thread: run.metadata?.threadId as string,
     });
     expect(extractResourceLocalId(run.id)).toMatch(/^run_/);
     expect(invocationKeyIssuer.issue).toHaveBeenCalledWith(expect.objectContaining({
@@ -3060,6 +3060,7 @@ describe('Managed Agents Inngest Chat backend', () => {
             type: 'solid',
             webId: 'https://pod.example/alice/profile/card#me',
             accessToken: 'token-1',
+            tokenType: 'Bearer',
           },
         },
         config: {
@@ -3234,7 +3235,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(createCodingToolsMock).not.toHaveBeenCalled();
   });
 
-  it('passes the instance workspace mapping and token endpoint to the child runtime', async () => {
+  it('passes only the prepared file workspace to the child runtime without Pod credentials', async () => {
     fs.mkdirSync('.test-data', { recursive: true });
     const root = fs.mkdtempSync(path.resolve('.test-data/pi-worker-mapping-'));
     const stdinEnd = vi.fn((_payload: string) => { queueMicrotask(() => child.emit('close', 0)); });
@@ -3246,16 +3247,18 @@ describe('Managed Agents Inngest Chat backend', () => {
       const driver = new PiAgentRuntimeDriver({
         agentLoopIsolation: 'sandboxed-process', requireSandbox: false,
         podWorkspaceMapping: { baseUrl: 'https://node.example/', rootFilePath: root },
-        podTokenEndpoint: 'https://identity.example/.oidc/token',
       });
       for await (const _event of driver.start({
         runId: 'worker-mapping', threadId: 'thread-worker', prompt: 'hello', conversation: [],
         config: { workspace: pathToFileURL(root).href, runner: { type: 'pi', protocol: 'pi' } },
+        context: { auth: { webId: 'https://identity.example/alice/card#me', clientSecret: 'worker-must-not-receive' } },
       })) { /* drain */ }
-      expect(JSON.parse(stdinEnd.mock.calls[0][0] as string).options).toMatchObject({
-        podWorkspaceMapping: { baseUrl: 'https://node.example/', rootFilePath: root },
-        podTokenEndpoint: 'https://identity.example/.oidc/token',
-      });
+      const payload = JSON.parse(stdinEnd.mock.calls[0][0] as string);
+      expect(payload.input.config.workspace).toBe(pathToFileURL(root).href);
+      expect(payload.input.context).toEqual({});
+      expect(payload.options).not.toHaveProperty('podWorkspaceMapping');
+      expect(payload.options).not.toHaveProperty('podTokenEndpoint');
+      expect(JSON.stringify(payload)).not.toContain('worker-must-not-receive');
     } finally {
       launch.mockRestore(); child.stdout.destroy(); child.stderr.destroy();
       fs.rmSync(root, { recursive: true, force: true });

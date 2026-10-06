@@ -1,10 +1,8 @@
-import { armDelayedProviders, cleanupDelayedProviders, delayedProvidersState, releaseDelayedProviders } from '../helpers/browserDelayedProviders';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { expect, test, type Frame, type Page, type Request, type TestInfo } from '@playwright/test';
-import { boundedProbe, completeOidcLogin, normalizeAccountPath } from '../helpers/browserSolidOidc';
-import { completeOfflineProductLogout, verifyOfflinePodRecovery } from '../helpers/browserLoginNetwork';
-import { fetchBrowserXpodPod, readBrowserXpodAccount, readBrowserXpodRuntime } from '../helpers/browserXpodRuntime';
+import { startBrowserExternalRp } from '../helpers/browserExternalRp';
+import { expect, test, type Page, type Request } from '@playwright/test';
+import { completeOidcLogin, normalizeAccountPath } from '../helpers/browserSolidOidc';
 
 type Deployment = {
   mode: 'cloud' | 'managed-local' | 'standalone';
@@ -16,413 +14,284 @@ type Deployment = {
 const manifestPath = process.env.XPOD_E2E_LOGIN_MATRIX_MANIFEST;
 const deployments = manifestPath ? JSON.parse(readFileSync(manifestPath, 'utf8')) as Deployment[] : [];
 
-// A whole-test timeout that fires during a navigation aborts the test before a
-// post-timeout attachment can be written. Each navigation window therefore arms
-// one bounded observation timer that takes a snapshot while the test is still
-// live. Budgets stay below the 240 s test timeout so the snapshot can land once
-// the earlier phases have completed normally. They only record facts; they do
-// not change waitUntil, guards or any timeout.
-const INITIAL_NAVIGATION_OBSERVATION_MS = 180_000;
-const REFRESH_STALL_OBSERVATION_MS = 30_000;
-const STATUS_NAVIGATION_OBSERVATION_MS = 120_000;
-
-// Browser product evidence, not a claim of three-mode Electron lifecycle
-// coverage. The runner owns the disposable deployments and their accounts.
+// The relying party is intentionally a tiny external test application. It does
+// not mount Xpod's desktop shell or inject a desktop bridge into Chromium.
+// Accounts, Consent, creation, issuer and protected resources are real Xpod.
 if (!manifestPath) test('deployment matrix requires its isolated runner', () => {
   test.skip(true, 'Run bun --no-env-file tests/helpers/runLoginDeploymentMatrix.ts');
 });
 
 for (const deployment of deployments) {
-  test.describe(`${deployment.mode} real product login`, () => {
+  test.describe(`${deployment.mode} lightweight Web and external application`, () => {
     test.describe.configure({ mode: 'serial', timeout: 240_000 });
-    let accountControl: string | undefined;
-    for (const [index, route] of ['/ai-connections', '/ai-config/model-assignments'].entries()) {
-      test(`${route}: identity, private Pod, refresh, network recovery, Status Account and offline logout`, async ({ page, context }, testInfo) => {
-        const origin = new URL(deployment.baseUrl).origin;
-        const original = `${origin}${route}?login-matrix=${deployment.mode}`;
-        const expectedPod = `${origin}/${deployment.account.username}/`;
-        const expectedWebId = `${expectedPod}profile/card#me`;
-        const tokenStatuses: number[] = [];
-        const issuerOrigins = new Set<string>();
-        let provisionScopeSeen = false;
-        let callbackHasCode = false;
-        let callbackHasState = false;
-        page.on('framenavigated', frame => {
-          if (frame !== page.mainFrame()) return;
-          const url = new URL(frame.url());
-          if (url.origin === origin && url.pathname === '/auth/callback') {
-            callbackHasCode ||= url.searchParams.has('code');
-            callbackHasState ||= url.searchParams.has('state');
-          }
-        });
-        page.on('request', request => {
-          const url = new URL(request.url());
-          if (url.searchParams.get('response_type') === 'code') {
-            issuerOrigins.add(url.origin);
-            provisionScopeSeen ||= url.searchParams.has('provisionCode');
-          }
-        });
-        page.on('response', response => {
-          if (response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/token')) tokenStatuses.push(response.status());
-        });
-        // Sanitized, bounded observation for the whole test. It is armed before
-        // the first product navigation so the initial register/login window (runs
-        // l and a) is covered too. Snapshots are pure events (exact Request
-        // identity + observed main-frame navigations), so capturing them never
-        // depends on a responsive renderer. `page.once('close')` plus the
-        // `finally` below both detach, so neither a thrown assertion nor a
-        // test timeout can leave listeners attached to the page.
-        const diagnostics = createOriginNavigationCollector(page, origin);
-        diagnostics.attach();
-        page.once('close', () => diagnostics.detach());
-        try {
-          const diagnosticContext = (mark: number, startedAt: number, name: string): DiagnosticContext =>
-            ({ page, testInfo, collector: diagnostics, mark, startedAt, mode: deployment.mode, route, name });
-          const discovery = await page.request.get(new URL('/.well-known/openid-configuration', deployment.issuer).href);
-          expect(discovery.ok()).toBe(true);
-          expect(new URL((await discovery.json()).issuer).origin).toBe(new URL(deployment.issuer).origin);
-          if (deployment.mode === 'managed-local') {
-            expect(origin).not.toBe(new URL(deployment.issuer).origin);
-            const provision = await page.request.get(`${origin}/provision/status`);
-            expect(await provision.json()).toMatchObject({ managed: true, registered: true, oidcIssuer: deployment.issuer });
-          }
-
-          const initialStartedAt = Date.now();
-          const initialMark = diagnostics.mark();
-          const trace = await withNavigationObservation(
-            diagnosticContext(initialMark, initialStartedAt, 'initial-navigation'),
-            INITIAL_NAVIGATION_OBSERVATION_MS,
-            async () => {
-              if (index === 0) await registerFromProduct(page, deployment, original);
-              return completeOidcLogin(page, { ...deployment.account, podUrl: expectedPod, webId: expectedWebId }, {
-                baseUrl: origin,
-                ...(index === 0 ? {} : { startUrl: original }),
-                ready: productReady,
-                requireCallbackEvidence: true,
-                timeoutMs: 120_000,
-              });
-            },
-          );
-          expect(callbackHasCode && callbackHasState).toBe(true);
-          expect(trace.callbackHasCode && trace.callbackHasState).toBe(true);
-          expect(tokenStatuses).toContain(200);
-          expect([...issuerOrigins]).toEqual([new URL(deployment.issuer).origin]);
-          if (deployment.mode === 'managed-local') expect(provisionScopeSeen).toBe(true);
-          await expect(page).toHaveURL(original);
-          const binding = await runtimeProbe(page, { operation: 'identity' });
-          expect(binding).toMatchObject({ webId: expectedWebId, podUrl: expectedPod, issuer: deployment.issuer });
-          await assertProtectedAiConfigContent(page, route);
-
-          const resource = new URL(`matrix-private-${randomUUID()}.txt`, expectedPod).href;
-          const body = `private-matrix-${randomUUID()}`;
-          const write = await runtimeProbe(page, { operation: 'write-read', url: resource, body });
-          expect(write).toMatchObject({ writeStatus: 201, readStatus: 200, matches: true, anonymousDenied: true });
-          await verifyOfflinePodRecovery(page, context, resource.slice(expectedPod.length), body);
-          // Refresh window. The real reload guard below stays in force and
-          // unchanged; the observation timer only records facts while it runs.
-          const reloadStartedAt = Date.now();
-          const reloadMark = diagnostics.mark();
-          const refreshContext = diagnosticContext(reloadMark, reloadStartedAt, 'refresh');
-          await withNavigationObservation(refreshContext, REFRESH_STALL_OBSERVATION_MS, () => page.reload());
-          try {
-            await expect.poll(() => productReady(page), { timeout: 60_000 }).toBe(true);
-          } catch (error) {
-            await attachDiagnostics(refreshContext, 'refresh-not-ready');
-            throw error;
-          }
-          await expect(page).toHaveURL(original);
-          expect(await runtimeProbe(page, { operation: 'read', url: resource, body })).toMatchObject({ readStatus: 200, matches: true, webId: expectedWebId, podUrl: expectedPod });
-          await assertProtectedAiConfigContent(page, route);
-
-          // The formal Status route additionally requires native Account controls.
-          // Preserve the product's own router navigation when it is available.
-          const statusStartedAt = Date.now();
-          const statusMark = diagnostics.mark();
-          const statusContext = diagnosticContext(statusMark, statusStartedAt, 'status-navigation');
-          try {
-            await withNavigationObservation(statusContext, STATUS_NAVIGATION_OBSERVATION_MS, () => page.goto(`${origin}/status/overview`, { waitUntil: 'domcontentloaded' }));
-          } catch (error) {
-            await attachDiagnostics(statusContext, 'status-navigation-stall');
-            throw error;
-          }
-          await expect.poll(() => accountProbe(page, expectedWebId), { timeout: 45_000 }).toMatchObject({ authenticated: true, ownsWebId: true });
-          const account = await accountProbe(page, expectedWebId);
-          expect(new URL(account.authority!).origin).toBe(new URL(deployment.issuer).origin);
-          if (accountControl) expect(account.webIdControl).toBe(accountControl);
-          accountControl = account.webIdControl;
-          expect(accountControl).toBeTruthy();
-          const authenticatedWebIdControl = account.webIdControl!;
-
-          await completeOfflineProductLogout(page, context);
-          await expect.poll(async () => {
-            const state = await accountProbe(page, expectedWebId);
-            return state.anonymous === true && await page.evaluate(() => localStorage.getItem('solidClientAuthn:currentSession') === null);
-          }, { timeout: 45_000 }).toBe(true);
-          const revokedAccountStatus = await page.evaluate(async url => {
-            const response = await fetch(url, { credentials: 'include', headers: { Accept: 'application/json' } });
-            return response.status;
-          }, authenticatedWebIdControl);
-          expect([401, 403]).toContain(revokedAccountStatus);
-          const anonymousRead = await page.request.get(resource);
-          expect([401, 403]).toContain(anonymousRead.status());
-          await testInfo.attach('deployment-evidence', {
-            contentType: 'application/json',
-            body: JSON.stringify({ mode: deployment.mode, runnerBunVersion: deployment.runnerBunVersion, entry: route, origin, issuer: deployment.issuer,
-              topology: { productHostname: new URL(origin).hostname, issuerHostname: new URL(deployment.issuer).hostname, distinctOrigin: origin !== new URL(deployment.issuer).origin },
-              selected: binding, tokenStatuses, accountControl, privateWriteRead: true, refreshRead: true, offlineRecovery: true, offlineLogoutRetry: true, revokedAccountStatus, signedOut: true }),
-          });
-        } finally {
-          diagnostics.detach();
-        }
-      });
-    }
-    test('delayed real Pod providers cannot continue Gateway reads after product logout', async ({ page }, testInfo) => {
-      const origin = new URL(deployment.baseUrl).origin;
-      const expectedPod = `${origin}/${deployment.account.username}/`;
-      const calls: Array<{ origin: string; phase: string }> = [];
-      let phase = 'login';
-      page.on('request', request => {
+    let rp: Awaited<ReturnType<typeof startBrowserExternalRp>>;
+    let provisionCode: string | undefined;
+    const origin = new URL(deployment.baseUrl).origin;
+    const expectedPod = `${origin}/${deployment.account.username}/`;
+    let expectedWebId: string | undefined = deployment.mode === 'managed-local' ? undefined : `${expectedPod}profile/card#me`;
+    // Retain request identity and completion evidence if document/module loading
+    // stalls. Never capture query strings, request bodies, cookies or tokens.
+    let network: Array<Record<string, unknown>> = [];
+    test.beforeEach(async ({ page }) => {
+      network = [];
+      const requests = new WeakMap<Request, number>();
+      let requestId = 0;
+      const record = (phase: string, request: Request, status?: number) => {
+        if (network.length >= 600) return;
+        if (!requests.has(request)) requests.set(request, ++requestId);
         const url = new URL(request.url());
-        if (url.pathname === '/api/ai/connections/authorization-methods') calls.push({ origin: url.origin, phase });
-      });
-      try {
-        await completeOidcLogin(page, { ...deployment.account, podUrl: expectedPod, webId: `${expectedPod}profile/card#me` }, {
-          baseUrl: origin, startUrl: `${origin}/ai-connections`, ready: productReady, requireCallbackEvidence: true,
-        });
-        phase = 'positive';
-        await armDelayedProviders(page);
-        phase = 'positive-release';
-        await releaseDelayedProviders(page);
-        expect(await delayedProvidersState(page)).toMatchObject({ resultReady: true, statusAtRelease: 'authenticated', settled: true, rejected: false });
-        expect(calls.filter(call => call.phase === 'positive-release').length).toBeGreaterThan(0);
-        expect(calls.filter(call => call.phase === 'positive-release').every(call => call.origin === origin)).toBe(true);
-        await cleanupDelayedProviders(page);
+        network.push({ phase, id: requests.get(request), origin: url.origin, path: url.pathname,
+          type: request.resourceType(), method: request.method(), ...(status === undefined ? {} : { status }) });
+      };
+      page.on('request', request => record('request', request));
+      page.on('response', response => record('response', response.request(), response.status()));
+      page.on('requestfinished', request => record('finished', request));
+      page.on('requestfailed', request => record('failed', request));
+    });
+    test.afterEach(async () => {
+      const testInfo = test.info();
+      await testInfo.attach('browser-navigation-evidence', { contentType: 'application/json', body: JSON.stringify(network) });
+    });
 
-        phase = 'delayed';
-        await armDelayedProviders(page);
-        const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
-        if (!await signOut.isVisible()) await page.getByTestId('xpod-user-card-trigger').click();
-        await signOut.click();
-        await expect(page.getByTestId('xpod-user-card-trigger')).toHaveCount(0);
-        await expect(page.getByText('退出未完成', { exact: true })).toHaveCount(0);
-        await expect.poll(async () => (await readBrowserXpodAccount(page)).isAnonymous, { timeout: 30_000 }).toBe(true);
-        expect(await page.evaluate(() => localStorage.getItem('solidClientAuthn:currentSession'))).toBeNull();
-        expect(await delayedProvidersState(page)).toMatchObject({ resultReady: true, released: false, settled: false });
-        phase = 'after-logout';
-        await releaseDelayedProviders(page);
-        const operation = await delayedProvidersState(page);
-        await testInfo.attach('delayed-provider-logout', { contentType: 'application/json',
-          body: JSON.stringify({ mode: deployment.mode, calls, operation }) });
-        expect(operation).toMatchObject({ statusAtRelease: 'anonymous', settled: true, rejected: true });
-        expect(calls.filter(call => call.phase === 'after-logout')).toEqual([]);
-      } finally {
-        try {
-          await cleanupDelayedProviders(page);
-        } catch (error) {
-          await testInfo.attach('delayed-provider-cleanup-failed', { contentType: 'application/json',
-            body: JSON.stringify({ mode: deployment.mode, cleanupFailed: true }) });
-          throw error;
-        }
+    test.beforeAll(async () => {
+      rp = await startBrowserExternalRp(deployment.issuer);
+      const metadataResponse = await fetch(`${origin}/api/service-info`);
+      expect(metadataResponse.status).toBe(200);
+      const metadata = await metadataResponse.json() as Record<string, unknown>;
+      expect(metadata).toMatchObject({
+        edition: deployment.mode === 'cloud' ? 'cloud' : 'local',
+        managed: deployment.mode === 'managed-local',
+      });
+      expect(Object.keys(metadata).every(key => ['edition', 'managed', 'publicUrl', 'oidcIssuer'].includes(key))).toBe(true);
+      if (deployment.mode === 'managed-local') {
+        expect(origin).not.toBe(new URL(deployment.issuer).origin);
+        const provision = await fetch(`${origin}/provision/status`);
+        const state = await provision.json() as { managed: boolean; registered: boolean; oidcIssuer: string; provisionCode: string };
+        expect(state).toMatchObject({ managed: true, registered: true, oidcIssuer: deployment.issuer });
+        expect(state.provisionCode).toBeTruthy();
+        provisionCode = state.provisionCode;
       }
     });
+
+    test.afterAll(async () => {
+      await rp?.close();
+    });
+
+    for (const register of [true, false]) {
+      test(register ? 'registration and quick creation return to the original Consent and grant private Pod access'
+        : 'an existing account can authorize an external application to access its private Pod', async ({ page }, testInfo) => {
+        const passwordAuthorityPosts: string[] = [];
+        page.context().on('request', request => {
+          const url = new URL(request.url());
+          if (request.method() === 'POST' && normalizeAccountPath(url.pathname) === '/.account/login/password/') passwordAuthorityPosts.push(url.origin);
+        });
+        const authorization = rp.authorization(provisionCode);
+        if (register) {
+          await registerFromProduct(page, deployment, authorization.url);
+          const bindingWebId = await readCreatedAccountBinding(page, deployment, expectedPod);
+          if (expectedWebId) expect(bindingWebId).toBe(expectedWebId);
+          expectedWebId = bindingWebId;
+        }
+        expect(expectedWebId).toBeTruthy();
+        await completeOidcLogin(page, { ...deployment.account, podUrl: expectedPod, webId: expectedWebId }, {
+          baseUrl: new URL(rp.callbackUrl).origin,
+          ...(register ? {} : { startUrl: authorization.url }),
+          ready: current => current.getByRole('heading', { name: 'Application callback', exact: true }).isVisible(),
+          requireCallbackEvidence: false,
+          timeoutMs: 120_000,
+        });
+        const callback = new URL(page.url());
+        const session = await authorization.exchange(callback);
+        expect(session.webId).toBe(expectedWebId);
+        expect(new URL(session.issuer).origin).toBe(new URL(deployment.issuer).origin);
+        const { authenticatedFetch } = session;
+        const resource = new URL(`matrix-private-${randomUUID()}.txt`, expectedPod).href;
+        const body = `private-matrix-${randomUUID()}`;
+        const write = await authenticatedFetch(resource, { method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body });
+        expect(write.status).toBe(201);
+        const read = await authenticatedFetch(resource);
+        expect(read.status).toBe(200);
+        expect(await read.text()).toBe(body);
+        expect([401, 403]).toContain((await fetch(resource)).status);
+        await testInfo.attach('external-application-evidence', { contentType: 'application/json', body: JSON.stringify({
+          mode: deployment.mode, runnerBunVersion: deployment.runnerBunVersion, origin, issuer: deployment.issuer,
+          callbackOrigin: callback.origin, selectedWebId: session.webId, podUrl: expectedPod,
+          registeredFromProduct: register, passwordAuthorityPosts, nativeCallbackCodeAndState: true, tokenStatus: session.tokenStatus,
+          privateWriteRead: true, anonymousDenied: true, managedProvisionScope: Boolean(provisionCode),
+        }) });
+      });
+    }
+
+    for (const accountCookieOnly of [false, true]) {
+      test(`session reuse with ${accountCookieOnly ? 'only the Account cookie' : 'the existing provider session'} preserves identity, Consent and browser isolation`, async ({ page, context, browser }, testInfo) => {
+        const passwordPosts: string[] = [];
+        const consentPosts: string[] = [];
+        const pickWebIdPosts: string[] = [];
+        context.on('request', request => {
+          const url = new URL(request.url());
+          if (request.method() !== 'POST') return;
+          const pathname = normalizeAccountPath(url.pathname);
+          if (pathname === '/.account/login/password/') passwordPosts.push(url.origin);
+          if (pathname === '/.account/oidc/consent/') consentPosts.push(url.origin);
+          if (pathname === '/.account/oidc/pick-webid/') pickWebIdPosts.push(url.origin);
+        });
+        const credentials = { ...deployment.account, podUrl: expectedPod, webId: expectedWebId };
+        const loginOptions = {
+          baseUrl: new URL(rp.callbackUrl).origin,
+          ready: (current: Page) => current.getByRole('heading', { name: 'Application callback', exact: true }).isVisible(),
+          requireCallbackEvidence: false,
+          timeoutMs: 90_000,
+        };
+        const passwordVisible = (current: Page) => current.locator('input[type="password"]').first().isVisible();
+        const consentVisible = (current: Page) => current.getByRole('button', { name: '允许', exact: true }).isVisible();
+        const exchange = async (authorization: ReturnType<typeof rp.authorization>) => {
+          const callback = new URL(page.url());
+          expect(`${callback.origin}${callback.pathname}`).toBe(rp.callbackUrl);
+          expect(callback.searchParams.get('state')).toBe(authorization.state);
+          expect(callback.searchParams.get('error')).toBeNull();
+          expect(callback.searchParams.get('code')).toBeTruthy();
+          const session = await authorization.exchange(callback);
+          expect(session.webId).toBe(expectedWebId);
+          expect(new URL(session.issuer).href).toBe(new URL(deployment.issuer).href);
+          expect(session.tokenStatus).toBe(200);
+          return session;
+        };
+
+        const first = rp.authorization(provisionCode);
+        const initialTrace = await completeOidcLogin(page, credentials, {
+          ...loginOptions, startUrl: first.url, ready: consentVisible, manualConsent: true, rememberAccount: true,
+        });
+        expect(initialTrace.passwordSubmitted).toBe(true);
+        expect(passwordPosts).toEqual([new URL(deployment.issuer).origin]);
+        await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible();
+        const rememberChoice = page.getByRole('checkbox', { name: '以后不再询问', exact: true });
+        if (!await rememberChoice.isVisible()) {
+          await page.locator('summary').filter({ hasText: '请求详情' }).click();
+        }
+        await rememberChoice.check();
+        await expect(rememberChoice).toBeChecked();
+        expect(consentPosts).toHaveLength(0);
+        const initialCompletion = await completeOidcLogin(page, credentials, { ...loginOptions, failure: passwordVisible });
+        expect(initialCompletion.passwordSubmitted).toBe(false);
+        const initialSession = await exchange(first);
+        expect(consentPosts).toHaveLength(1);
+        const initialPickWebIdPosts = pickWebIdPosts.length;
+        expect(initialPickWebIdPosts).toBe(1);
+        const resource = new URL(`matrix-session-reuse-${randomUUID()}.txt`, expectedPod).href;
+        const body = `private-session-reuse-${randomUUID()}`;
+        expect((await initialSession.authenticatedFetch(resource, {
+          method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body,
+        })).status).toBe(201);
+        expect([401, 403]).toContain((await fetch(resource)).status);
+
+        if (accountCookieOnly) {
+          const accountCookies = (await context.cookies(deployment.issuer)).filter(cookie => cookie.name === 'css-account');
+          expect(accountCookies).toHaveLength(1);
+          const providerCookies = (await context.cookies(deployment.issuer)).filter(cookie => /^_session(?:\.|$)/u.test(cookie.name));
+          expect(providerCookies.length).toBeGreaterThan(0);
+          for (const cookie of providerCookies) {
+            await context.clearCookies({ name: cookie.name, domain: cookie.domain, path: cookie.path });
+          }
+          // Clear storage on both real origins (separate on Managed Local),
+          // retaining the original cookie instead of manufacturing a session.
+          for (const storageOrigin of new Set([origin, new URL(deployment.issuer).origin, new URL(rp.callbackUrl).origin])) {
+            await page.goto(new URL('/dashboard', storageOrigin).href, { waitUntil: 'domcontentloaded' });
+            expect(new URL(page.url()).origin).toBe(storageOrigin);
+            await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); });
+          }
+          expect((await context.cookies(deployment.issuer)).filter(cookie => cookie.name === 'css-account')).toEqual(accountCookies);
+          expect((await context.cookies(deployment.issuer)).filter(cookie => /^_session(?:\.|$)/u.test(cookie.name))).toHaveLength(0);
+        }
+
+        const resumed = rp.authorization(provisionCode);
+        expect(resumed.state).not.toBe(first.state);
+        const resumedTrace = await completeOidcLogin(page, credentials, {
+          ...loginOptions, startUrl: resumed.url, failure: passwordVisible, ready: consentVisible, manualConsent: true,
+        });
+        expect(resumedTrace.passwordSubmitted).toBe(false);
+        expect(passwordPosts).toHaveLength(1);
+        // The RP is a dynamically registered native client, not Xpod Desktop.
+        // oidc-provider requires native-client re-consent; only the real desktop
+        // client has Xpod's remembered-grant exemption. Make this extra approval
+        // explicit so the login helper cannot conceal a second consent screen.
+        expect(normalizeAccountPath(new URL(page.url()).pathname)).toBe('/.account/oidc/consent/');
+        await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible();
+        expect(consentPosts).toHaveLength(1);
+        expect(resumed.tokenRequests).toBe(0);
+        const resumedCompletion = await completeOidcLogin(page, credentials, { ...loginOptions, failure: passwordVisible });
+        expect(resumedCompletion.passwordSubmitted).toBe(false);
+        const resumedSession = await exchange(resumed);
+        expect(consentPosts).toHaveLength(2);
+        const resumedPickWebIdPosts = pickWebIdPosts.length - initialPickWebIdPosts;
+        expect(resumedPickWebIdPosts).toBe(accountCookieOnly ? 1 : 0);
+        const read = await resumedSession.authenticatedFetch(resource);
+        expect(read.status).toBe(200);
+        expect(await read.text()).toBe(body);
+
+        const explicit = rp.authorization(provisionCode);
+        const explicitUrl = new URL(explicit.url);
+        explicitUrl.searchParams.set('prompt', 'consent');
+        const consentTrace = await completeOidcLogin(page, credentials, {
+          ...loginOptions, startUrl: explicitUrl.href, failure: passwordVisible,
+          ready: consentVisible, manualConsent: true,
+        });
+        expect(consentTrace.passwordSubmitted).toBe(false);
+        expect(normalizeAccountPath(new URL(page.url()).pathname)).toBe('/.account/oidc/consent/');
+        await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible();
+        expect(explicit.tokenRequests).toBe(0);
+        expect(consentPosts).toHaveLength(2);
+        const consentCompletion = await completeOidcLogin(page, credentials, { ...loginOptions, failure: passwordVisible });
+        expect(consentCompletion.passwordSubmitted).toBe(false);
+        const explicitSession = await exchange(explicit);
+        const explicitRead = await explicitSession.authenticatedFetch(resource);
+        expect(explicitRead.status).toBe(200);
+        expect(await explicitRead.text()).toBe(body);
+        expect(passwordPosts).toHaveLength(1);
+        expect(consentPosts).toHaveLength(3);
+        expect(pickWebIdPosts).toHaveLength(initialPickWebIdPosts + resumedPickWebIdPosts);
+        expect(consentPosts.every(postOrigin => postOrigin === new URL(deployment.issuer).origin)).toBe(true);
+        expect(pickWebIdPosts.every(postOrigin => postOrigin === new URL(deployment.issuer).origin)).toBe(true);
+
+        const cleanContext = await browser.newContext();
+        try {
+          expect(await cleanContext.cookies()).toHaveLength(0);
+          const cleanPage = await cleanContext.newPage();
+          const fresh = rp.authorization(provisionCode);
+          await cleanPage.goto(fresh.url, { waitUntil: 'domcontentloaded' });
+          await expect(cleanPage.getByLabel('邮箱', { exact: true })).toBeVisible({ timeout: 60_000 });
+          await expect(cleanPage.getByLabel('密码', { exact: true })).toBeVisible();
+          expect(new URL(cleanPage.url()).origin).toBe(new URL(deployment.issuer).origin);
+          expect(fresh.tokenRequests).toBe(0);
+          expect([401, 403]).toContain((await cleanContext.request.get(resource)).status());
+        } finally {
+          await cleanContext.close();
+        }
+        await testInfo.attach('session-reuse-evidence', { contentType: 'application/json', body: JSON.stringify({
+          mode: deployment.mode, accountCookieOnly, issuer: deployment.issuer, selectedWebId: expectedWebId,
+          passwordPosts: { initial: 1, resumed: 0, explicitConsent: 0 },
+          consentPosts: { initial: 1, resumed: 1, explicitConsent: 1 },
+          pickWebIdPosts: { initial: initialPickWebIdPosts, resumed: resumedPickWebIdPosts,
+            explicitConsent: pickWebIdPosts.length - initialPickWebIdPosts - resumedPickWebIdPosts },
+          nativeExternalClientRequiresReconsent: true,
+          newCallbackStateValidated: true, privatePodReadAfterResume: true,
+          explicitConsentDisplayed: true, privatePodReadAfterExplicitConsent: true,
+          cleanContextRequiresPassword: true, cleanContextPrivatePodDenied: true,
+        }) });
+      });
+    }
+
+    for (const route of ['/dashboard', '/status/overview', '/network', '/settings/pod', '/ai-connections', '/ai-config/model-assignments']) {
+      test(`browser ${route} provides the lightweight desktop entry`, async ({ page }) => {
+        await page.goto(`${origin}${route}`, { waitUntil: 'domcontentloaded' });
+        await expect(page.getByRole('heading', { name: '在桌面 Xpod 中管理', exact: true })).toBeVisible({ timeout: 30_000 });
+        await expect(page.getByTestId('xpod-user-card-trigger')).toHaveCount(0);
+        await expect(page.getByRole('link', { name: '账号页面', exact: true })).toHaveAttribute('href', new URL('/.account/account/', deployment.issuer).href);
+        expect(await page.evaluate(() => Boolean(window.xpodDesktop))).toBe(false);
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await expect(page.getByRole('heading', { name: '在桌面 Xpod 中管理', exact: true })).toBeVisible();
+      });
+    }
   });
-}
-
-type OriginNavigationSnapshot = {
-  elapsedMs: number;
-  /**
-   * Observed main-frame navigations in this window. This is evidence that
-   * Chromium committed a main-frame navigation — it is NOT proof that the
-   * document, its module scripts or its data requests finished loading and
-   * executing, and it must not be derived from a DOMContentLoaded wait.
-   */
-  observedMainFrameNavigation: boolean;
-  mainFrameNavigations: string[];
-  finishedCount: number;
-  failed: string[];
-  pending: Array<{ request: string; resourceType: string; pendingMs: number }>;
-};
-
-/**
- * One small, sanitized, bounded same-origin request/navigation collector shared
- * by every observation window (initial navigation, refresh, Status navigation).
- * Requests are keyed by Playwright Request identity so two concurrent requests
- * to the same METHOD + pathname stay independently pending. It exposes only
- * origin + normalized pathname — no queries, headers, bodies or cookies.
- */
-function createOriginNavigationCollector(page: Page, origin: string) {
-  // Large enough that the earliest window's events survive later activity, still
-  // a hard bound on retained facts.
-  const MAX_EVENTS = 512;
-  const pending = new Map<Request, { resourceType: string; at: number; key: string }>();
-  const events: Array<{ at: number; kind: 'finished' | 'failed' | 'navigation'; detail: string }> = [];
-  const describe = (request: Request): string | undefined => {
-    try {
-      const url = new URL(request.url());
-      if (url.origin !== origin) return undefined;
-      return `${request.method()} ${url.origin}${normalizeAccountPath(url.pathname)}`;
-    } catch {
-      return undefined;
-    }
-  };
-  const record = (kind: 'finished' | 'failed' | 'navigation', detail: string) => {
-    events.push({ at: Date.now(), kind, detail });
-    if (events.length > MAX_EVENTS) events.shift();
-  };
-  const onRequest = (request: Request) => {
-    const key = describe(request);
-    if (!key) return;
-    pending.set(request, { resourceType: request.resourceType(), at: Date.now(), key });
-  };
-  const onFinished = (request: Request) => {
-    const entry = pending.get(request);
-    if (!entry) return;
-    pending.delete(request);
-    record('finished', entry.key);
-  };
-  const onFailed = (request: Request) => {
-    const entry = pending.get(request);
-    if (!entry) return;
-    pending.delete(request);
-    record('failed', `${entry.key} :: ${request.failure()?.errorText ?? 'failed'}`);
-  };
-  const onNavigated = (frame: Frame) => {
-    if (frame !== page.mainFrame()) return;
-    let url: URL;
-    try {
-      url = new URL(frame.url());
-    } catch {
-      return;
-    }
-    if (url.origin !== origin) return;
-    record('navigation', `${url.origin}${normalizeAccountPath(url.pathname)}`);
-  };
-  return {
-    attach(): void {
-      page.on('request', onRequest);
-      page.on('requestfinished', onFinished);
-      page.on('requestfailed', onFailed);
-      page.on('framenavigated', onNavigated);
-    },
-    detach(): void {
-      page.off('request', onRequest);
-      page.off('requestfinished', onFinished);
-      page.off('requestfailed', onFailed);
-      page.off('framenavigated', onNavigated);
-    },
-    mark(): number {
-      return Date.now();
-    },
-    snapshot(mark: number, startedAt: number): OriginNavigationSnapshot {
-      const since = events.filter(event => event.at >= mark);
-      const navigations = since.filter(event => event.kind === 'navigation').map(event => event.detail);
-      return {
-        elapsedMs: Date.now() - startedAt,
-        observedMainFrameNavigation: navigations.length > 0,
-        mainFrameNavigations: navigations,
-        finishedCount: since.filter(event => event.kind === 'finished').length,
-        failed: since.filter(event => event.kind === 'failed').map(event => event.detail),
-        pending: [...pending.values()].map(({ key, resourceType, at }) => ({ request: key, resourceType, pendingMs: Date.now() - at })),
-      };
-    },
-  };
-}
-
-type OriginNavigationCollector = ReturnType<typeof createOriginNavigationCollector>;
-
-type DiagnosticContext = {
-  page: Page;
-  testInfo: TestInfo;
-  collector: OriginNavigationCollector;
-  mark: number;
-  startedAt: number;
-  mode: string;
-  route: string;
-  /** Attachment name prefix; a stall is reported as `${name}-stall`. */
-  name: string;
-};
-
-/** Bounded window around a navigation with no internal timeout. One timer
- * implementation, always cleared, that cannot fire after `stop()`. */
-function armNavigationObservation(context: DiagnosticContext, budgetMs: number): { stop(): void } {
-  let stopped = false;
-  const timer = setTimeout(() => {
-    if (stopped) return;
-    // Attach from the live test: an attachment attempted only after the 240 s
-    // test deadline may never be written.
-    void attachDiagnostics(context, `${context.name}-stall`).catch(() => undefined);
-  }, budgetMs);
-  return {
-    stop(): void {
-      stopped = true;
-      clearTimeout(timer);
-    },
-  };
-}
-
-async function withNavigationObservation<T>(context: DiagnosticContext, budgetMs: number, work: () => Promise<T>): Promise<T> {
-  const observation = armNavigationObservation(context, budgetMs);
-  try {
-    return await work();
-  } finally {
-    observation.stop();
-  }
-}
-
-async function collectBoundedDiagnostics(context: DiagnosticContext): Promise<Record<string, unknown>> {
-  const { page, collector, mark, startedAt, mode, route, name } = context;
-  // Pure event facts first and synchronously: they must survive an unresponsive
-  // renderer, so the snapshot never depends on page.evaluate resolving.
-  const events = collector.snapshot(mark, startedAt);
-  const probes = await boundedProbe((async () => ({
-    readyState: await page.evaluate(() => document.readyState).catch(() => 'unavailable'),
-    visibility: await page.evaluate(() => document.visibilityState).catch(() => 'unavailable'),
-    productReady: await productReady(page).catch(() => false),
-    identity: await readBrowserXpodRuntime(page)
-      .then(value => ({ status: value.status, podUrl: value.podUrl, webId: value.webId }))
-      .catch(() => null),
-    resources: await page.evaluate(() => performance.getEntriesByType('resource').map(entry => {
-      const timing = entry as PerformanceResourceTiming;
-      const url = new URL(timing.name);
-      return `${timing.initiatorType}:${url.origin === location.origin ? url.pathname : url.origin}:${Math.round(timing.duration)}ms:${timing.transferSize ?? 0}B`;
-    }).slice(-24)).catch(() => [] as string[]),
-  }))(), 2_500, { '<probe-timeout>': true } as Record<string, unknown>);
-  return { name, mode, route, ...events, probes };
-}
-
-/** Attach bounded facts; a hung page can neither block the attachment nor the test. */
-async function attachDiagnostics(context: DiagnosticContext, name: string): Promise<void> {
-  const facts = await boundedProbe(
-    collectBoundedDiagnostics(context).catch(() => ({ error: 'diagnostics-unavailable' })),
-    8_000,
-    { error: 'diagnostics-timeout' },
-  );
-  await boundedProbe(
-    context.testInfo.attach(name, { contentType: 'application/json', body: JSON.stringify(facts, null, 2) })
-      .then(() => true).catch(() => false),
-    5_000,
-    false,
-  );
-}
-
-async function productReady(page: Page): Promise<boolean> {
-  return page.locator('[data-testid="xpod-user-card-trigger"][data-pod-ready="true"]').isVisible().catch(() => false);
-}
-
-/**
- * Protected-content acceptance for the AI Config route. `productReady` only
- * proves the signed-in user card mounted; on `/ai-config/model-assignments` the
- * route must additionally render its six model-assignment controls with no
- * load error. This proves the protected route actually read Pod data, and is a
- * no-op for entries without an equivalent protected-content contract.
- */
-async function assertProtectedAiConfigContent(page: Page, route: string): Promise<void> {
-  if (!route.startsWith('/ai-config')) return;
-  const rows = page.locator('[data-testid="model-assignment-row"]');
-  const loadError = page.getByText('AI configuration could not be loaded', { exact: true });
-  await expect.poll(() => rows.count(), { timeout: 60_000 }).toBe(6);
-  await expect(loadError).toHaveCount(0);
-  expect(new URL(page.url()).pathname.startsWith('/ai-config')).toBe(true);
 }
 
 async function registerFromProduct(page: Page, deployment: Deployment, startUrl: string): Promise<void> {
@@ -433,6 +302,12 @@ async function registerFromProduct(page: Page, deployment: Deployment, startUrl:
   // That entry is a different control from the register form's "创建账号" submit;
   // binding them to one label is exactly what the product stopped doing.
   await page.getByRole('button', { name: '注册账号', exact: true }).click();
+  await expect(page.getByTestId('xpod-deployment-identity')).toContainText(deployment.mode === 'standalone' ? '独立部署' : '云端');
+  await page.getByRole('button', { name: '部署详情', exact: true }).click();
+  await expect(page.getByRole('tooltip')).toContainText(`当前访问：${issuerOrigin}`);
+  await expect(page.getByRole('tooltip')).toContainText(deployment.mode === 'standalone' ? 'Local · 独立部署' : 'Cloud');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('tooltip')).toHaveCount(0);
   await page.getByLabel('邮箱', { exact: true }).fill(deployment.account.email);
   await page.getByLabel('密码', { exact: true }).fill(deployment.account.password);
   await page.getByRole('button', { name: '创建账号', exact: true }).click();
@@ -464,15 +339,14 @@ async function registerFromProduct(page: Page, deployment: Deployment, startUrl:
   };
   await enterQuickCreate();
 
-  // "使用自己的部署" is the explicit detour into heavy Pod management. It must be
-  // reachable on the same origin and hand back to this very Consent; it only
-  // navigates (no creation, no network deployment, no Account-gate bypass).
+  // The deployment detour stays lightweight in the browser and preserves the
+  // original Consent. Heavy management is available only in the desktop host.
   await page.getByTestId('first-pod-quick-create').waitFor({ timeout: 120_000 });
   await page.getByRole('button', { name: '使用自己的部署', exact: true }).click();
   await page.waitForURL(url => url.origin === consentOrigin && url.pathname === '/settings/pod', { timeout: 60_000, waitUntil: 'domcontentloaded' });
   expect(new URL(page.url()).origin).toBe(consentOrigin);
   expect(new URL(page.url()).pathname).toBe('/settings/pod');
-  await expect(page.getByTestId('consent-resume-banner')).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('heading', { name: '在桌面 Xpod 中管理', exact: true })).toBeVisible({ timeout: 60_000 });
   await page.getByRole('button', { name: '回到授权', exact: true }).click();
   await page.waitForURL(url => url.origin === consentOrigin && url.pathname === consentPath, { timeout: 60_000, waitUntil: 'domcontentloaded' });
   expect(new URL(page.url()).origin).toBe(consentOrigin);
@@ -492,36 +366,22 @@ async function registerFromProduct(page: Page, deployment: Deployment, startUrl:
   expect(new URL(page.url()).pathname).toBe(consentPath);
 }
 
-type ProbeRequest = { operation: 'identity' | 'write-read' | 'read'; url?: string; body?: string };
-async function runtimeProbe(page: Page, request: ProbeRequest): Promise<Record<string, unknown>> {
-  const identity = await readBrowserXpodRuntime(page);
-  if (request.operation === 'identity') return { ...identity };
-  if (!identity.podUrl || !request.url?.startsWith(identity.podUrl)) {
-    throw new Error('Probe resource must be inside the selected Pod');
-  }
-  const resourcePath = request.url.slice(identity.podUrl.length);
-  const write = request.operation === 'write-read'
-    ? await fetchBrowserXpodPod(page, resourcePath, { method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body: request.body })
-    : undefined;
-  const read = await fetchBrowserXpodPod(page, resourcePath);
-  const anonymousStatus = await page.evaluate(async url => (await fetch(url, { credentials: 'omit' })).status, request.url);
-  return { ...identity, writeStatus: write?.status, readStatus: read.status, matches: read.body === request.body,
-    anonymousDenied: [401, 403].includes(anonymousStatus) };
-}
-
-async function accountProbe(page: Page, expectedWebId: string): Promise<{
-  authenticated?: boolean; anonymous?: boolean; authority?: string; webIdControl?: string; ownsWebId?: boolean;
-}> {
-  try {
-    const account = await readBrowserXpodAccount(page);
-    const webIdControl = account.controls.account?.webId;
-    const ownsWebId = account.status === 'authenticated' && Boolean(webIdControl) && await page.evaluate(async ({ url, webId }) => {
-      const response = await fetch(url, { credentials: 'include', headers: { Accept: 'application/json' } });
-      return response.ok && Object.prototype.hasOwnProperty.call((await response.json()).webIdLinks ?? {}, webId);
-    }, { url: webIdControl!, webId: expectedWebId });
-    return { authenticated: account.status === 'authenticated', anonymous: account.isAnonymous,
-      authority: account.authority, webIdControl, ownsWebId };
-  } catch {
-    return {};
-  }
+async function readCreatedAccountBinding(page: Page, deployment: Deployment, podUrl: string): Promise<string> {
+  const bindings = await page.evaluate(async issuer => {
+    const index = await fetch(new URL('/.account/', issuer).href, { credentials: 'include', headers: { Accept: 'application/json' } });
+    if (!index.ok) throw new Error(`Account controls unavailable (${index.status})`);
+    const control = (await index.json()).controls?.account?.bindings;
+    if (!control) throw new Error('Account did not expose storage bindings');
+    const url = new URL(control, issuer);
+    if (url.origin !== new URL(issuer).origin) throw new Error('Account bindings authority changed');
+    const response = await fetch(url.href, { credentials: 'include', headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error(`Account bindings unavailable (${response.status})`);
+    return (await response.json()).bindings as Array<{ webId: string; storageUrl: string }>;
+  }, deployment.issuer);
+  const exactBindings = bindings.filter(binding => new URL(binding.storageUrl).href === new URL(podUrl).href);
+  expect(exactBindings).toHaveLength(1);
+  const webId = exactBindings[0].webId;
+  expect(new URL(webId).origin).toBe(new URL(deployment.issuer).origin);
+  if (deployment.mode === 'managed-local') expect(new URL(webId).origin).not.toBe(new URL(podUrl).origin);
+  return webId;
 }

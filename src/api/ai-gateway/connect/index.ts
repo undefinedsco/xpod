@@ -1165,12 +1165,12 @@ abstract class SignedConnectAttemptAdapterBase {
 }
 
 export interface BrowserAssistedApiKeyConnectAdapterOptions extends SignedConnectAttemptAdapterOptions {
-  consoleUrl: string;
+  consoleUrl: string | ((input: ConnectBeginInput) => string);
 }
 
 export class BrowserAssistedApiKeyConnectAdapter extends SignedConnectAttemptAdapterBase implements ProviderConnectAdapter {
   public readonly mode: ConnectMode = 'browserAssistedApiKey';
-  private readonly consoleUrl: string;
+  private readonly consoleUrl: BrowserAssistedApiKeyConnectAdapterOptions['consoleUrl'];
 
   public constructor(options: BrowserAssistedApiKeyConnectAdapterOptions) {
     super(options);
@@ -1179,10 +1179,10 @@ export class BrowserAssistedApiKeyConnectAdapter extends SignedConnectAttemptAda
 
   public async begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
     this.assertInput(input, 'browserAssistedApiKey');
+    const url = new URL(typeof this.consoleUrl === 'function' ? this.consoleUrl(input) : this.consoleUrl);
     const now = this.now();
     const expiresAt = new Date(now.getTime() + 5 * 60 * 1000);
     const attempt = await this.createAttempt(input, expiresAt);
-    const url = new URL(this.consoleUrl);
     url.searchParams.set('xpod_connect_attempt', attempt.id);
     url.searchParams.set('xpod_provider', this.provider);
 
@@ -4369,17 +4369,11 @@ function oneTimeOAuthCredential(
 }
 
 function safeProviderError(body: Record<string, unknown>): string {
-  const code = stringFrom(body.error);
-  if (SAFE_PROVIDER_ERROR_CODES.has(code)) {
-    return code;
-  }
-  if (!code) {
-    return 'provider_error';
-  }
-  if (code.endsWith('_error')) {
-    return 'provider_error';
-  }
-  return 'provider_error';
+  const error = body.error;
+  const code = stringFrom(error && typeof error === 'object' && !Array.isArray(error)
+    ? (error as Record<string, unknown>).code
+    : error);
+  return SAFE_PROVIDER_ERROR_CODES.has(code) ? code : 'provider_error';
 }
 
 const SAFE_PROVIDER_ERROR_CODES = new Set([
@@ -4388,6 +4382,7 @@ const SAFE_PROVIDER_ERROR_CODES = new Set([
   'expired_token',
   'access_denied',
   'invalid_grant',
+  'invalid_token',
   'invalid_client',
 ]);
 

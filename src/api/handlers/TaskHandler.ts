@@ -1,6 +1,5 @@
 import { getTaskResumeStage, getTaskResumeErrorType, getTaskResumeFailure, withTaskResumeStage } from '../tasks/TaskResumeDiagnostics';
 import type { ServerResponse } from 'node:http';
-import { runResource, taskResource } from '@undefineds.co/models';
 import type { ApiServer, RouteHandler } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { StoreContext } from '../chatkit/store';
@@ -44,7 +43,7 @@ export function registerTaskRoutes(server: ApiServer, options: TaskHandlerOption
     ]);
     const waitingTasks = new Set(waiting.map(run => run.task));
     return {
-      tasks: tasks.map(task => ({ ...projectTask(task), iri: taskResource.buildIri(owner, { id: task.id }), waiting: waitingTasks.has(taskResource.buildIri(owner, { id: task.id })) })),
+      tasks: tasks.map(task => ({ ...projectTask(task), iri: task.id, waiting: waitingTasks.has(task.id) })),
       capabilities: { createAi: Boolean(await options.resolveAgentBinding?.(_request).catch(() => undefined)), resumeStep: false, handoff: false, approve: true },
     };
   }));
@@ -97,8 +96,7 @@ export function registerTaskRoutes(server: ApiServer, options: TaskHandlerOption
   }));
   server.get('/api/tasks/runs', guarded(async (request, context, owner) => {
     const task = await options.taskService.loadTask(idOf(request), context);
-    const iri = taskResource.buildIri(owner, { id: task.id });
-    return { runs: (await options.runStore.listRuns({ task: iri }, context)).map(projectRun) };
+    return { runs: (await options.runStore.listRuns({ task: task.id }, context)).map(projectRun) };
   }));
   server.post('/api/tasks/resume', guarded(async (request, context, owner) => {
     const { approval, target } = await withTaskResumeStage('route_validation', async () => {
@@ -106,9 +104,8 @@ export function registerTaskRoutes(server: ApiServer, options: TaskHandlerOption
       return { approval: requiredString(input.approval, 'Approval'), target: idOf(request) };
     });
     const run = await withTaskResumeStage('route_run_read', async () => {
-      const run = /^https?:\/\//.test(target)
-        ? (await options.runStore.listRuns({}, context)).find(item => runResource.buildIri(owner, { id: item.id }) === target)
-        : await options.runStore.loadRun(target, context);
+      const run = (await options.runStore.listRuns({}, context)).find(item => item.id === target)
+        ?? (target.startsWith('https://') || target.startsWith('http://') ? undefined : await options.runStore.loadRun(target, context));
       if (!run) throw new Error('Run not found');
       return run;
     });
@@ -118,10 +115,10 @@ export function registerTaskRoutes(server: ApiServer, options: TaskHandlerOption
   server.get('/api/tasks/selection', guarded(async (request, context, owner) => {
     const target = idOf(request);
     const runs = await options.runStore.listRuns({}, context);
-    const run = runs.find(item => item.id === target || runResource.buildIri(owner, { id: item.id }) === target);
+    const run = runs.find(item => item.id === target);
     if (!run) throw new Error('Run not found');
     const tasks = await options.taskService.listTasks(context);
-    const task = tasks.find(item => taskResource.buildIri(owner, { id: item.id }) === run.task);
+    const task = tasks.find(item => item.id === run.task);
     if (!task) throw new Error('Task not found for this run');
     return { taskId: task.id, run: projectRun(run) };
   }));
@@ -133,7 +130,7 @@ export function registerTaskRoutes(server: ApiServer, options: TaskHandlerOption
   server.post('/api/tasks/stop', guarded(async (request, context, owner) => {
     const run = await cancelRun({
       store: options.runStore, runId: idOf(request), context,
-      resourceIri: run => runResource.buildIri(owner, { id: run.id }),
+      resourceIri: run => run.id,
     });
     return { run: projectRun(run) };
   }));

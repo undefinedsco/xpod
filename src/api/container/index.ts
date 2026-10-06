@@ -221,8 +221,8 @@ export function loadConfigFromEnv(): ApiContainerConfig {
       baseStorageDomain: process.env.CSS_BASE_STORAGE_DOMAIN,
       cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
       cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
-      tencentDnsSecretId: process.env.TENCENT_DNS_SECRET_ID,
-      tencentDnsSecretKey: process.env.TENCENT_DNS_SECRET_KEY,
+      tencentDnsSecretId: process.env.TENCENT_DNSPOD_ID,
+      tencentDnsSecretKey: process.env.TENCENT_DNSPOD_TOKEN,
     },
 
     // Local 托管式：连接 Cloud

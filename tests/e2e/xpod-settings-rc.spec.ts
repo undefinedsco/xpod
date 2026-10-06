@@ -1,239 +1,98 @@
-import { expect, type Browser, type BrowserContext, type Page, test } from '@playwright/test';
-import { fetchProfileStorageUrls } from '../../ui/src/utils/provision-scope';
-import { openNavigationDrawer } from '../helpers/navigationDrawer';
+import { readFile } from 'node:fs/promises';
+import { expect, type BrowserContext, type Page, test } from '@playwright/test';
+import { startBrowserExternalRp } from '../helpers/browserExternalRp';
+import { authorizeRcSession, readRcAccountBindings, verifyRcPrivateIsolation, type RcIdentity, type RcRp, type RcSession } from '../helpers/rcLightWeb';
 
 const baseUrl = requiredEnv('XPOD_SETTINGS_E2E_BASE_URL');
-const aliceStatePath = requiredEnv('XPOD_SETTINGS_E2E_ALICE_STATE');
-const bobStatePath = requiredEnv('XPOD_SETTINGS_E2E_BOB_STATE');
+const statePaths = [requiredEnv('XPOD_SETTINGS_E2E_ALICE_STATE'), requiredEnv('XPOD_SETTINGS_E2E_BOB_STATE')];
+test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
-test.describe.configure({ mode: 'serial', timeout: 90_000 });
-
-test.describe('deployed Xpod settings acceptance', () => {
-  let alice: Awaited<ReturnType<typeof openAuthenticatedAiConnections>>;
-  let bob: Awaited<ReturnType<typeof openAuthenticatedAiConnections>>;
-
+test.describe('deployed Xpod lightweight Web acceptance (no desktop bridge)', () => {
+  const owners: Array<{ context: BrowserContext; page: Page; session: RcSession }> = [];
+  let rp: RcRp | undefined;
+  const closeOwned = async () => {
+    const contexts = owners.splice(0);
+    const ownedRp = rp;
+    rp = undefined;
+    try {
+      const results = await Promise.allSettled(contexts.map(owner => owner.context.close()));
+      if (results.some(result => result.status === 'rejected')) throw new Error('RC browser context cleanup failed');
+    } finally { await ownedRp?.close(); }
+  };
   test.beforeAll(async ({ browser }) => {
-    [ alice, bob ] = await Promise.all([
-      openAuthenticatedAiConnections(browser, aliceStatePath),
-      openAuthenticatedAiConnections(browser, bobStatePath),
-    ]);
-  });
-
-  test.afterAll(async () => {
-    await Promise.all([
-      alice?.context.close(),
-      bob?.context.close(),
-    ]);
-  });
-
-  test('restores two authenticated sessions with distinct managed Pod bindings', async () => {
-    const [ aliceIdentity, bobIdentity ] = await Promise.all([
-      authoritativeSelectedStorage(alice.page),
-      authoritativeSelectedStorage(bob.page),
-    ]);
-
-    expect(aliceIdentity.webId).not.toBe(bobIdentity.webId);
-    expect(aliceIdentity.storageUrl).not.toBe(bobIdentity.storageUrl);
-  });
-
-  test('loads the deployed product modules at desktop width', async ({}, testInfo) => {
-    await alice.page.setViewportSize({ width: 1440, height: 900 });
-    for (const module of deployedModules) {
-      await openAuthenticatedModule(alice.page, module.path, module.readySelector);
-      await alice.page.screenshot({
-        path: testInfo.outputPath(`desktop-${module.name}.png`),
-        fullPage: true,
-      });
-    }
-  });
-
-  test('keeps the deployed product modules usable at narrow width', async ({}, testInfo) => {
-    await alice.page.setViewportSize({ width: 390, height: 844 });
-    for (const module of deployedModules) {
-      await test.step(module.name, async () => {
-        await openAuthenticatedModule(
-          alice.page,
-          module.path,
-          module.readySelector,
-          'attached',
-        );
-        const workspace = alice.page
-          .locator('[data-workspace-layout="two-pane"][data-workspace-mode="stack"]:visible')
-          .first();
-        const workspaceState = workspace.locator('[data-workspace-active-pane]').first();
-        const listPane = workspace.getByTestId('workspace-list-pane');
-        await expect(workspace, `${module.name} must use the compact stack layout`).toBeVisible({ timeout: 45_000 });
-        await expect(workspaceState).toHaveAttribute('data-workspace-active-pane', 'list');
-
-        // At 390 the host keeps only the content column and moves the workspace
-        // list into the navigation drawer (design §2.7), so open the drawer
-        // before touching any list item.
-        await openNavigationDrawer(alice.page);
-
-        // Each module's list is the product's real one: the AI applet exposes a
-        // Provider listbox, the Pod/device workspaces expose the shared search
-        // list header plus their navigation links. The list is only reachable
-        // once the host drawer owns it at this width, and selecting any entry -
-        // including the one for the current route - hands the workspace to its
-        // main pane and closes the host drawer.
-        for (const control of module.listControls) {
-          await expect(
-            listPane.locator(control.selector),
-            `${module.name} list must expose ${control.selector}`,
-          ).toBeVisible({ timeout: 45_000 });
+    try {
+      rp = await startBrowserExternalRp(baseUrl);
+      for (const statePath of statePaths) {
+        const identity = JSON.parse(await readFile(`${statePath}.identity.json`, 'utf8')) as RcIdentity;
+        const context = await browser.newContext({ storageState: statePath, viewport: { width: 1440, height: 900 } });
+        try {
+          const page = await context.newPage();
+          // No password is provided on reuse. A fresh authorization transaction
+          // must authenticate using the server Account Cookie from preparation.
+          const session = await authorizeRcSession(page, rp, baseUrl);
+          expect(session.identity).toEqual(identity);
+          owners.push({ context, page, session });
+        } catch (error) {
+          await context.close();
+          throw error;
         }
-        await listPane.getByRole(module.selection.role, { name: module.selection.name, exact: true })
-          .first().click();
-
-        await expect(
-          workspaceState,
-          `${module.name} must switch from the compact list to its main pane`,
-        ).toHaveAttribute('data-workspace-active-pane', 'main', { timeout: 45_000 });
-        await expect(alice.page.locator('[data-drawer-open="false"]')).toBeVisible({ timeout: 45_000 });
-        const mainPane = workspace.getByTestId('workspace-main-pane');
-        await expect(mainPane).toBeVisible({ timeout: 45_000 });
-        await expect(mainPane).not.toHaveAttribute('inert', '');
-        await expect(alice.page.locator(module.readySelector).first()).toBeVisible({ timeout: 45_000 });
-        expect(await alice.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
-        await alice.page.screenshot({
-          path: testInfo.outputPath(`narrow-${module.name}.png`),
-          fullPage: true,
-        });
-      });
+      }
+    } catch (error) {
+      await closeOwned();
+      throw error;
     }
   });
+  test.afterAll(closeOwned);
+
+  test('restores independent Account Cookies, authenticates real OIDC owners, and enforces private Pod isolation', async () => {
+    expect(owners).toHaveLength(2);
+    await verifyRcPrivateIsolation(owners.map(owner => owner.session));
+    for (const owner of owners) await assertLightAccount(owner.page, owner.session.identity);
+  });
+
+  for (const viewport of [{ name: 'wide', width: 1440, height: 900 }, { name: 'narrow', width: 390, height: 844 }]) {
+    test(`keeps lightweight Account and desktop entry usable at ${viewport.name} width`, async ({}, testInfo) => {
+      const { page, session } = owners[0];
+      await page.setViewportSize(viewport);
+      await assertLightAccount(page, session.identity);
+      await page.screenshot({ path: testInfo.outputPath(`${viewport.name}-account.png`), fullPage: true });
+      for (const route of ['/ai-connections', '/settings/pod', '/network', '/status/overview']) {
+        const response = await page.goto(new URL(route, baseUrl).href, { waitUntil: 'domcontentloaded' });
+        expect(response?.status()).toBe(200);
+        await expect(page.getByRole('heading', { name: '在桌面 Xpod 中管理', exact: true })).toBeVisible();
+        await expect(page.getByRole('link', { name: '下载桌面 Xpod', exact: true })).toHaveAttribute('href',
+          'https://github.com/undefinedsco/xpod/releases/latest');
+        const accountLink = page.getByRole('link', { name: '账号页面', exact: true });
+        await expect(accountLink).toBeVisible();
+        const accountUrl = new URL((await accountLink.getAttribute('href'))!, baseUrl);
+        expect(accountUrl.origin).toBe(new URL(baseUrl).origin);
+        expect(accountUrl.pathname).toMatch(/^\/\.account\/account\//u);
+        await assertNoHeavyWorkspace(page);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+        await page.screenshot({ path: testInfo.outputPath(`${viewport.name}-${route.replaceAll('/', '_')}.png`), fullPage: true });
+      }
+    });
+  }
 });
 
-const deployedModules = [
-  {
-    name: 'ai-connections',
-    path: '/ai-connections',
-    readySelector: '[data-testid="ai-connections-panel"]',
-    listControls: [{ selector: '[role="listbox"][aria-label="AI 服务"]' }],
-    selection: { role: 'option' as const, name: 'OpenAI' },
-  },
-  {
-    name: 'pod',
-    path: '/pod/models',
-    readySelector: 'main',
-    listControls: [{ selector: 'input[aria-label="搜索页面"]' }],
-    selection: { role: 'link' as const, name: '模型设置' },
-  },
-  {
-    name: 'network',
-    path: '/device/network',
-    readySelector: 'main',
-    listControls: [{ selector: 'input[aria-label="搜索页面"]' }],
-    selection: { role: 'link' as const, name: '网络访问' },
-  },
-  {
-    name: 'status',
-    path: '/device/services',
-    readySelector: 'main',
-    listControls: [{ selector: 'input[aria-label="搜索页面"]' }],
-    selection: { role: 'link' as const, name: '服务状态' },
-  },
-] as const;
-
-async function openAuthenticatedAiConnections(
-  browser: Browser,
-  storageState: string,
-): Promise<{ context: BrowserContext; page: Page }> {
-  const context = await browser.newContext({ storageState, viewport: { width: 1440, height: 900 } });
-  const page = await context.newPage();
-  await openAuthenticatedModule(page, '/ai-connections', '[data-testid="ai-connections-panel"]');
-  return { context, page };
+async function assertLightAccount(page: Page, identity: RcIdentity) {
+  const response = await page.goto(new URL('/.account/account/', baseUrl).href, { waitUntil: 'domcontentloaded' });
+  expect(response?.status()).toBe(200);
+  await expect(page.getByRole('heading', { name: /账号总览|Account (?:overview|dashboard)/iu })).toBeVisible();
+  await expect(page.locator('input[type="password"]')).toHaveCount(0);
+  const account = await readRcAccountBindings(page, baseUrl);
+  expect(account.accountId).toBe(identity.accountId);
+  expect(account.bindings).toContainEqual(expect.objectContaining({ webId: identity.webId, storageUrl: identity.storageUrl }));
+  await assertNoHeavyWorkspace(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
 }
 
-async function openAuthenticatedModule(
-  page: Page,
-  route: string,
-  readySelector: string,
-  readyState: 'attached' | 'visible' = 'visible',
-): Promise<void> {
-  const targetUrl = new URL(route, baseUrl);
-  const currentUrl = new URL(page.url());
-  if (currentUrl.origin !== targetUrl.origin || currentUrl.pathname !== targetUrl.pathname) {
-    // The host rail links each module by its own href; some modules share a rail
-    // entry (Pod and this device), so navigate through the link whose href is the
-    // route when present and fall back to a direct visit otherwise.
-    const routeLink = page.locator(`a[href="${targetUrl.pathname}"]`).first();
-
-    if (await routeLink.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await Promise.all([
-        page.waitForURL((url) => url.origin === targetUrl.origin && url.pathname === targetUrl.pathname, {
-          timeout: 60_000,
-        }),
-        routeLink.click(),
-      ]);
-    } else {
-      const response = await page.goto(targetUrl.toString(), {
-        waitUntil: 'domcontentloaded',
-        timeout: 60_000,
-      });
-      expect(response?.status() ?? 599).toBeLessThan(400);
-    }
-  }
-  const ready = page.locator(readySelector).first();
-  if (readyState === 'attached') {
-    await expect(ready).toBeAttached({ timeout: 45_000 });
-  } else {
-    await expect(ready).toBeVisible({ timeout: 45_000 });
-  }
-  await expect(page.locator('[data-auth-surface-mode="page"]')).toHaveCount(0);
+async function assertNoHeavyWorkspace(page: Page) {
+  expect(await page.evaluate(() => Boolean((globalThis as { xpodDesktop?: unknown }).xpodDesktop))).toBe(false);
+  await expect(page.locator('[data-testid="ai-connections-panel"], [data-workspace-layout], [data-testid="workspace-list-pane"]')).toHaveCount(0);
 }
-
-async function selectedPodUrl(page: Page): Promise<string> {
-  const trigger = page.getByTestId('xpod-user-card-trigger');
-  await expect(trigger).toHaveAttribute('data-pod-ready', 'true', { timeout: 30_000 });
-  await trigger.click();
-  const card = page.locator('[data-avatar-card="true"][data-selected-pod-url]');
-  await expect(card).toBeVisible();
-  const podUrl = await card.getAttribute('data-selected-pod-url');
-  if (!podUrl) throw new Error('Authenticated account card did not expose its selected Pod URL');
-  await page.keyboard.press('Escape');
-  return podUrl;
-}
-
-async function authoritativeSelectedStorage(page: Page): Promise<{ webId: string; storageUrl: string }> {
-  const selectedStorageUrl = normalizeUrl(await selectedPodUrl(page));
-  const remembered = await page.evaluate(() => localStorage.getItem('xpod.remembered-login.v1'));
-  if (!remembered) throw new Error('Authenticated browser session did not remember its Xpod identity');
-
-  const parsed = JSON.parse(remembered) as {
-    webId?: unknown;
-    storageBinding?: { webId?: unknown; storageUrl?: unknown };
-  };
-  if (typeof parsed.webId !== 'string'
-    || typeof parsed.storageBinding?.webId !== 'string'
-    || typeof parsed.storageBinding.storageUrl !== 'string') {
-    throw new Error('Remembered Xpod identity is malformed');
-  }
-
-  expect(parsed.storageBinding.webId).toBe(parsed.webId);
-  expect(normalizeUrl(parsed.storageBinding.storageUrl)).toBe(selectedStorageUrl);
-
-  const profileStorageUrls = (await fetchProfileStorageUrls(fetch, parsed.webId)).map(normalizeUrl);
-  expect(profileStorageUrls, `WebID ${parsed.webId} must advertise selected storage ${selectedStorageUrl}`)
-    .toContain(selectedStorageUrl);
-
-  const selectedUrl = new URL(selectedStorageUrl);
-  expect(selectedUrl.protocol).toBe('https:');
-  expect([ 'localhost', '127.0.0.1', '::1' ]).not.toContain(selectedUrl.hostname);
-
-  return { webId: parsed.webId, storageUrl: selectedStorageUrl };
-}
-
 function requiredEnv(key: string): string {
   const value = process.env[key]?.trim();
   if (!value) throw new Error(`${key} is required for deployed RC browser acceptance`);
   return value;
-}
-
-function normalizeUrl(value: string): string {
-  const normalized = new URL(value);
-  normalized.hash = '';
-  normalized.search = '';
-  if (!normalized.pathname.endsWith('/')) normalized.pathname += '/';
-  return normalized.href;
 }

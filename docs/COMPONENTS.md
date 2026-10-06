@@ -20,16 +20,22 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
 | `BaseLoginAccountStorage` | `LoginMethodGuardStorage` + `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储；保留"最后一个登录方法不可删除"的防锁定保护，但允许 SP 托管账户无密码存在（不要求登录方法、不做孤儿账户过期） |
 | `DPoPWebIdExtractor` | `ConfiguredLoopbackDPoPWebIdExtractor` | 保留 issuer、签名、audience/expiry 与完整 DPoP 校验；仅为与 CSS `baseUrl` 完全同源的 HTTP `127/8` 或 `::1` 桌面回环地址放开 upstream 的 localhost-only URI 限制 |
+| Account `AuthorizingHttpHandler.credentialsExtractor`（暂缓方案） | `CachedHandler` + `AccountHostDPoPCredentialsExtractor` | 未接线的审计原型；基于错误 Local-profile 前提的方案已撤回，Draft PR #29 暂缓，不进入发布产物 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
 | `ResourceStore` 写入通知边界 | `ObservableResourceStore` + `PostgresDerivedIndexJournal` | Cloud 写成功后、响应返回前追加一条 Pod 级持久化 outbox；FTS/VEC 异步消费且 Pod 内保序。Local 继续复用 SolidFS 文件 journal |
 | `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
 | `StaticAssetHandler` (`/app/*`) | `AppStaticAssetHandler` | 保留 CSS Account UI 的同源静态路径；内置小型 bundle 不依赖共享异步文件池，以完整 Buffer 响应并等待 HTTP `finish`，避免登录并发期间出现悬空模块请求 |
 | `IdentityProviderFactory` | `SessionBoundIdentityProviderFactory` | 固定 Desktop client 可取得绑定 IdP 会话的在线 refresh token；保留 offline 策略、授权检查和默认有效期 |
-| `IdentityProviderHttpHandler` | `ValidatingIdentityProviderHttpHandler` | 校验账户 Cookie；对 interaction 路径先执行原生签名/会话校验并匹配 UID，再复用 CSS Account 操作路由 |
+| `IdentityProviderHttpHandler` | `ValidatingIdentityProviderHttpHandler` | 校验账户 Cookie；自身 host 会话只能解析到当前唯一且存在的 Account；对 interaction 路径先执行原生签名/会话校验并匹配 UID，再复用 CSS Account 操作路由 |
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
 | `HandlebarsTemplateEngine` | `RdfHandlebarsTemplateEngine` | 仅在 CSS 内置 Profile、WAC ACL 和 ACP ACR 模板中校验并原样输出完整身份 IRI，避免 HTML 转义改变 WebID；拒绝 Turtle IRIREF 禁字符，保留 EJS、HTML、Markdown 与非受控模板行为 |
-| `PodCreator` | `ProvisionPodCreator` | 保留 CSS 原生 Pod/Profile/授权资源创建，在创建完成后同步 `solid:storage`，canonical storage URL 留在 CSS account Pod 数据中 |
+| `PodCreator` | `ProvisionPodCreator` | 同源创建保留 CSS 原生资源；managed Local 核验当前 Account 的 Cloud WebID 和 Local 签名回执，将 canonical storage URL 登记到 Account 和 Cloud card |
 | `WebSocket2023Storer` | `ReclaimingWebSocket2023Storer` | 保留原有 socket 记账与过期清理；某个通道的最后一个 socket 关闭/出错时一并删除通道记录，避免通道在 KV 里留到 `endAt`（CSS 默认 2 周） |
+| Account Pod resource/view | `PodDeletionInteractionHandler` + `PodDeletionInventoryHandler` | 保留 GET/POST owner 管理，新增创建账号授权的 DELETE，并单独声明 `podDeletionControls` 能力 |
+| `BaseHttpHandler` 数据写入边界 | `PodMutationLockingHttpHandler` | 包装原有处理链，让完整写入参与 Pod 删除屏障；避免子资源与删除快照并发提交 |
+| Local `DELETE /provision/pods/:podName` | `LocalPodDeletionHttpHandler` | Gateway 精确转交 CSS，在既有节点认证下执行统一数据/metadata 生命周期，替代 API 只删目录的路径 |
+
+Pod 删除的计划持久化、Cloud/Local 回执、重建代次与验收边界见 [Pod 删除生命周期](pod-deletion-lifecycle.md)。
 
 ### 桌面应用授权记忆
 
@@ -143,6 +149,10 @@ Account Cookie 之外，该组件还接受**宿主自己的 Solid 会话**作为
 
 ## Identity & Authentication
 
+### AccountHostDPoPCredentialsExtractor（前提撤回，暂缓）
+
+Cloud / managed Local 的独立 `profile/card` 始终在 Cloud，用于身份与 Pod 发现。曾基于 Local profile 不可达提出的 Account host 原型已撤回配置接线与公共导出，不进入本次发布；Draft PR #29 不作为发布来源。原方案及测试只保留审计记录，见 [Account host 会话授权边界](account-host-session-authorization.md)。当前实现通过 Cloud profile 准备与 Local storage 绑定修复归属，不能用原型的测试结果代替该链路验收。
+
 ### ConfiguredLoopbackDPoPWebIdExtractor
 - **Path**: `src/authentication/ConfiguredLoopbackDPoPWebIdExtractor.ts`
 - **Purpose**: 本地桌面 Xpod 的 Solid 凭据提取器；DPoP 与 Bearer 共用已配置的 WebID/issuer/JWKS 读取路由，支持 socket 运行时的规范地址。
@@ -178,7 +188,7 @@ Account Cookie 之外，该组件还接受**宿主自己的 Solid 会话**作为
   - Cloud IdP + Local SP login: validates `provisionCode` for the selected canonical storage target, then reads the remote Pod ownership already verified during provisioning and persisted in the CSS account stores.
   - Both GET and POST require the intersection of the account's WebID links, account-owned Pods, matching canonical storage scope, and recorded Pod owners. Missing or mismatched bindings fail closed.
   - Never sends remote lookup or managed-route credentials to ownership resolution while CSS holds the Account lock. An offline Local node must not turn consent into a network wait or a six-second Account lock timeout.
-- **Boundary**: `/{pod}/profile/card` remains CSS-native. Xpod does not proxy WebID profile documents through the API server.
+- **Boundary**: Cloud/managed Local identity discovery uses an independent Cloud-hosted `profile/card`, served by CSS native resource/authorization handlers, not by an API proxy. Its path is not derived from the Local Pod URL; preparation is handled by `CloudProfileCreator` below.
 
 ### AccountStorageBindingsHandler
 
@@ -197,13 +207,22 @@ Account Cookie 之外，该组件还接受**宿主自己的 Solid 会话**作为
 - **Boundary**: The resolver only returns ownership entries that can be established by the CSS stores or authenticated remote lookup; it does not inspect Pod files directly.
 - **Deployment**: All modes through `config/xpod.base.json`.
 
+### CloudProfileCreator / CloudProfilePreparationHandler
+
+- **Paths**: `src/provision/CloudProfileCreator.ts`, `src/identity/CloudProfilePreparationHandler.ts`.
+- **Control**: authenticated `controls.account.profile` (`/.account/profile/`) accepts a Pod name and returns the current Account’s Cloud WebID and link. It rejects an externally managed Local issuer; identity preparation occurs at Cloud.
+- **Resources**: reuses CSS native profile and authorization templates, creates ordinary identity containers and card-specific owner permissions, and denies arbitrary uploads into the Cloud identity namespace. No Account user-storage Pod entry is created. Existing Cloud data Pods and their permissions are preserved.
+- **Ownership**: current Account existence and the globally unique exact WebID association are checked before reuse or storage binding. Signed Local receipts do not confer ownership of an arbitrary Cloud identity.
+- **Deployment**: `config/xpod.base.json`; Local and Cloud provisioning share one interface. Source-level regression and actual deployment acceptance are separate evidence.
+
 ### ProvisionPodCreator
 - **Path**: `src/provision/ProvisionPodCreator.ts`
 - **Purpose**: Extend CSS Pod creation without replacing the account/consent flow.
 - **Functionality**:
   - Leaves `PodResourcesGenerator` untouched so the installed CSS version is the sole owner of native Pod files and the public `profile/card` ACP/WAC rules.
   - After CSS finishes creating a same-origin Pod, adds or updates only the Xpod-specific `solid:storage` relation in the CSS-native profile card.
-  - Keeps `solid:oidcIssuer` under CSS ownership. In Cloud WebID + Local SP mode the WebID subject and issuer stay on Cloud, while `solid:storage` points at the selected Local SP.
+  - Keeps `solid:oidcIssuer` under CSS ownership. Managed Local requires an already linked Cloud WebID and finalizes storage discovery in its independent Cloud-hosted card. It does not mint a Local WebID or create a Cloud user-storage Pod.
+  - Serializes ordinary Cloud Pod creation with standalone card preparation using the same namespace lock. A failed discovery update remains an error; same-owner retry reuses the existing remote Account metadata instead of creating another Pod entry.
   - In remote provisioning, verifies the signed receipt from the Pod that the Account UI prepared on the selected SP before entering CSS's Account resource lock, then records the canonical Cloud-issued storage URL in CSS account Pod data. The creator performs no cross-service network call and no remote profile read/write while that lock is held.
   - Removes `provisionCode` before handing settings to CSS Pod storage.
 - **Deployment**: All modes through `config/xpod.base.json`.

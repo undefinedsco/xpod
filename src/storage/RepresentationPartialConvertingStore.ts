@@ -12,12 +12,16 @@ import {
   Representation,
   RepresentationConverterArgs,
   Conditions,
+  RepresentationMetadata,
+  BasicRepresentation,
+  HH,
   
   ChangeMap,
   INTERNAL_QUADS,
   APPLICATION_JSON,
 } from "@solid/community-server"
 import { isSafeRdfDocumentContentType } from './rdf/RdfContentTypes'
+import { getStorageETag } from './conditions/StorageETagHandler';
 
 interface RepresentationPartialConvertingStoreOptions {
   outConverter?: RepresentationConverter
@@ -94,11 +98,18 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     preferences: RepresentationPreferences,
     conditions?: Conditions,
   ): Promise<Representation> {
-    let representation = await super.getRepresentation(identifier, preferences, conditions);
+    const source = await super.getRepresentation(identifier, preferences, conditions);
+    let representation: Representation = new BasicRepresentation(source.data, new RepresentationMetadata(source.metadata), source.binary);
     if (await this.shouldConvert(identifier, representation, preferences)) {
       representation = await this.outConverter.handleSafe({ identifier, representation, preferences });
     }
-    return representation;
+    // CSS merges representation metadata into a 304's HTTP ETag. Expose only the
+    // negotiated HTTP tag so its raw storage revision cannot become a second value.
+    // Keep source and converter-owned metadata isolated from HTTP response mutation.
+    const metadata = new RepresentationMetadata(representation.metadata);
+    const eTag = getStorageETag(metadata);
+    if (eTag) metadata.set(HH.terms.etag, eTag);
+    return new BasicRepresentation(representation.data, metadata, representation.binary);
   }
 
   public override async addResource(

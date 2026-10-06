@@ -12,3 +12,14 @@ The production Pi runtime registers `request_approval` through the SDK's custom-
 Record Gateway origin, Task/Run/Approval/Session IRIs, actual tool-call id, state transitions, non-secret response statuses and marker readback. Artificial checkpoints and mocked model output only validate adapters; they do not satisfy this real producer-to-decision acceptance.
 
 Pi sends its actual `Xpod/<version>` user agent and a stable thread-derived session identifier to the Gateway through the SDK model header contract. It does not impersonate another client or put provider secrets in those headers.
+
+
+## Host-owned Pod transport and sandbox workspaces (2026-10-04)
+
+SolidFS hydration and sync use the API container's existing owner-bound Pod access provider, including the exact task grant reference/version. The shared session factory owns credential exchange and DPoP signing. Canonical identity and request transport remain separate; a private client-credentials POST from SolidFS is not a second supported authentication path. Expired held fetches renew through that shared provider, revoked grants fail before writes, and a rejected write is not replayed.
+
+The host owns the Pod hydration/sync lifecycle and its commit/rollback. The child may still prepare and commit its own file SolidFS view. A sandboxed Pi worker receives that prepared file view, no Pod credential context, no Pod token endpoint and no host storage mapping. The original durable workspace configuration remains unchanged. Real macOS sandbox tests exercise SDK write plus request_approval (one host hydrate and commit), and Stop (one hydrate, rollback, no Pod write). Those tests do not establish Linux bubblewrap execution or macOS secret isolation.
+
+The working tree based on `685e7e1496967a33c464538be2dbcb173be85329` passed the unmodified live Gateway acceptance at UTC 2026-10-04T14:13:47.981250Z--14:16:50.742980Z. A fresh standalone account/Pod proved Pod read/write, Gateway key, persisted AI configuration, models and real Chat separately. Approved resumed the same Run and read the exact marker; rejected and Stop left their markers absent; duplicate resumes were stable. Three actual Sessions were independently completed, tasks paused and grant/key revoked. Its local entry point was the candidate's production Gateway, not the original installed desktop or a final immutable RC.
+
+Session collection verification also uses the actual shared ORM query after the scoped endpoint succeeds. The date-document inline source repair is documented in [the shared ORM issue](../issues/2026-10-04-session-inline-document-read.md); suppressing a collection 404 or accepting zero matched Sessions would invalidate cleanup evidence. The upstream repository contains the source/test repair but is not published; the candidate consumes its pinned 0.3.25 CJS/ESM patch bridge exactly once.

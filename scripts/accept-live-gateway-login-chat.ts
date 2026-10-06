@@ -19,6 +19,7 @@ import { ensureTrailingSlash } from '../src/runtime/base-url';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { drizzle, type SolidAuthSession, type SolidDatabase } from '@undefineds.co/drizzle-solid';
 import { aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
 import { createSolidLocalRouteFetch, discoverSolidLocalRoute } from '../packages/solid-sdk/src/local-route-fetch';
@@ -249,6 +250,7 @@ type AccountControls = {
   password?: { create?: string };
   account?: {
     pod?: string;
+    profile?: string;
     bindings?: string;
     clientCredentials?: string;
   };
@@ -456,15 +458,15 @@ async function fetchCloudAccountBindings(
   baseUrl: string,
   controls: AccountControls,
   authorization: string,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<StorageBinding[]> {
-  if (!controls.account?.bindings) return [];
+  if (!controls.account?.bindings) throw new Error('Cloud account controls did not expose controls.account.bindings');
   const url = requiredAccountControl(controls.account.bindings, baseUrl, 'controls.account.bindings');
-  const response = await fetch(url, {
+  const response = await fetchImpl(url, {
     headers: accountTokenHeaders(authorization),
     credentials: 'include',
   });
-  if (!response.ok) return [];
-  return parseBindingCandidates(await response.json().catch(() => undefined));
+  return parseBindingCandidates(await readJson(response, 'GET Cloud controls.account.bindings'));
 }
 
 async function createCloudManagedLocalPod(options: {
@@ -474,10 +476,14 @@ async function createCloudManagedLocalPod(options: {
   canonicalBaseUrl: string;
   provisionCode: string;
   provisionReceipt: string;
+  webId: string;
+  webIdLink: string;
+  podUrl: string;
   username: string;
+  fetchImpl?: typeof fetch;
 }): Promise<StorageBinding> {
   const createPodUrl = requiredAccountControl(options.controls.account?.pod, options.baseUrl, 'controls.account.pod');
-  const response = await fetch(createPodUrl, {
+  const response = await (options.fetchImpl ?? fetch)(createPodUrl, {
     method: 'POST',
     headers: {
       ...accountTokenHeaders(options.authorization),
@@ -489,17 +495,42 @@ async function createCloudManagedLocalPod(options: {
       settings: {
         provisionCode: options.provisionCode,
         provisionReceipt: options.provisionReceipt,
+        webId: options.webId,
       },
     }),
   });
-  const body = await readJson(response, 'POST Cloud controls.account.pod');
-  const immediate = chooseLocalBinding(parseBindingCandidates(body), options.canonicalBaseUrl);
-  if (immediate) return immediate;
+  const body = await readJson(response, 'POST Cloud controls.account.pod') as {
+    webId?: unknown; pod?: unknown; podUrl?: unknown; webIdResource?: unknown; podResource?: unknown;
+  };
+  if (!body || body.webId !== options.webId || (body.pod ?? body.podUrl) !== options.podUrl) {
+    throw new Error('Cloud finalize returned a different WebID/storage binding');
+  }
+  const accountRoot = new URL('../', createPodUrl);
+  const pointer = (value: unknown): URL => {
+    if (typeof value !== 'string' || !value || value !== value.trim()) {
+      throw new Error('Cloud finalize did not return valid Account binding pointers');
+    }
+    const url = new URL(value, options.baseUrl);
+    if (url.origin !== accountRoot.origin || !url.pathname.startsWith(accountRoot.pathname) ||
+      url.username || url.password || url.search || url.hash) {
+      throw new Error('Cloud finalize returned an Account binding pointer outside this Account');
+    }
+    return url;
+  };
+  const webIdResource = pointer(body.webIdResource);
+  const podResource = pointer(body.podResource);
+  if (!webIdResource.pathname.endsWith(`/${encodeURIComponent(options.webIdLink)}/`) ||
+    !podResource.pathname.startsWith(new URL(createPodUrl).pathname) || podResource.href === createPodUrl) {
+    throw new Error('Cloud finalize returned inconsistent Account binding pointers');
+  }
 
   for (let attempt = 0; attempt < 20; attempt++) {
-    const bindings = await fetchCloudAccountBindings(options.baseUrl, options.controls, options.authorization);
-    const binding = chooseLocalBinding(bindings, options.canonicalBaseUrl);
+    const bindings = await fetchCloudAccountBindings(options.baseUrl, options.controls, options.authorization, options.fetchImpl);
+    const binding = bindings.find((candidate) => candidate.webId === options.webId && candidate.storageUrl === options.podUrl);
     if (binding) return binding;
+    if (bindings.some((candidate) => candidate.storageUrl === options.podUrl)) {
+      throw new Error('Cloud Account published a different WebID/storage binding');
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error('Cloud account did not publish the Local-managed WebID/storage binding');
@@ -510,6 +541,9 @@ async function prepareLocalProvisionedPod(options: {
   localBaseUrl: string;
   provisionCode: string;
   username: string;
+  webId: string;
+  canonicalBaseUrl: string;
+  fetchImpl?: typeof fetch;
 }): Promise<{ provisionReceipt: string; podUrl: string; webId: unknown }> {
   const payload = new ProvisionCodeCodec(options.cloudBaseUrl).decode(options.provisionCode);
   const callbackToken = payload?.serviceAccessToken ?? payload?.serviceToken;
@@ -517,7 +551,7 @@ async function prepareLocalProvisionedPod(options: {
     throw new Error('Local provisionCode did not expose a valid Local callback token');
   }
 
-  const response = await fetch(new URL('provision/pods', options.localBaseUrl), {
+  const response = await (options.fetchImpl ?? fetch)(new URL('provision/pods', options.localBaseUrl), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -525,17 +559,79 @@ async function prepareLocalProvisionedPod(options: {
     },
     body: JSON.stringify({
       podName: options.username,
+      webId: options.webId,
     }),
   });
   const body = await readJson(response, 'POST Local /provision/pods') as {
     podUrl?: unknown;
-    provisionReceipt?: unknown;
     webId?: unknown;
+    provisionReceipt?: unknown;
   };
-  if (typeof body.podUrl !== 'string' || typeof body.provisionReceipt !== 'string') {
-    throw new Error('POST Local /provision/pods did not return podUrl and provisionReceipt');
+  const expectedPodUrl = new URL(`${encodeURIComponent(options.username)}/`, options.canonicalBaseUrl).href;
+  if (!body || body.webId !== options.webId || body.podUrl !== expectedPodUrl ||
+    typeof body.provisionReceipt !== 'string' || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(body.provisionReceipt)) {
+    throw new Error('POST Local /provision/pods returned inconsistent identity, Pod or receipt');
+  }
+  // Check observable payload consistency; Cloud is responsible for verifying the signature.
+  let receipt: Record<string, unknown>;
+  try { receipt = JSON.parse(Buffer.from(body.provisionReceipt.split('.')[0], 'base64url').toString('utf8')); }
+  catch { throw new Error('Local provision receipt payload is malformed'); }
+  if (!receipt || receipt.typ !== 'xpod-provision-receipt' || receipt.webId !== options.webId ||
+    receipt.podUrl !== body.podUrl || receipt.podName !== options.username ||
+    typeof receipt.exp !== 'number' || !Number.isFinite(receipt.exp) || receipt.exp <= Math.floor(Date.now() / 1000)) {
+    throw new Error('Local provision receipt does not bind the prepared Cloud identity and Pod');
   }
   return { provisionReceipt: body.provisionReceipt, podUrl: body.podUrl, webId: body.webId };
+}
+
+export async function prepareManagedLocalAcceptancePod(options: {
+  baseUrl: string;
+  localBaseUrl: string;
+  canonicalBaseUrl: string;
+  authorization: string;
+  controls: AccountControls;
+  username: string;
+  provisionCode: string;
+  fetchImpl?: typeof fetch;
+}): Promise<StorageBinding> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const profileUrl = requiredAccountControl(options.controls.account?.profile, options.baseUrl, 'controls.account.profile');
+  const preparedIdentity = await readJson(await fetchImpl(profileUrl, {
+    method: 'POST',
+    headers: { ...accountTokenHeaders(options.authorization), 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ podName: options.username }),
+  }), 'POST Cloud controls.account.profile') as { webId?: unknown; webIdLink?: unknown };
+  if (!preparedIdentity || typeof preparedIdentity.webId !== 'string' || !preparedIdentity.webId ||
+    /[\u0000-\u0020\u007f\\]/u.test(preparedIdentity.webId) ||
+    typeof preparedIdentity.webIdLink !== 'string' || !preparedIdentity.webIdLink ||
+    preparedIdentity.webIdLink !== preparedIdentity.webIdLink.trim()) {
+    throw new Error('Cloud profile preparation did not return a valid WebID and Account link');
+  }
+  const identity = new URL(preparedIdentity.webId);
+  const cloud = new URL(options.baseUrl);
+  if (!['http:', 'https:'].includes(identity.protocol) || identity.origin !== cloud.origin ||
+    !identity.pathname.startsWith(cloud.pathname) || identity.username || identity.password || identity.search) {
+    throw new Error('Prepared WebID is outside the acceptance Cloud identity authority');
+  }
+  const preparedWebId: string = preparedIdentity.webId;
+  const webIdLink: string = preparedIdentity.webIdLink;
+  const preparedPod = await prepareLocalProvisionedPod({
+    cloudBaseUrl: options.baseUrl,
+    localBaseUrl: options.localBaseUrl,
+    canonicalBaseUrl: options.canonicalBaseUrl,
+    provisionCode: options.provisionCode,
+    username: options.username,
+    webId: preparedWebId,
+    fetchImpl,
+  });
+  return withProvisionReceiptFailureDiagnostics(() => createCloudManagedLocalPod({ ...options, fetchImpl, ...preparedPod,
+    webId: preparedWebId, webIdLink }), () => ({
+    cloudBaseUrl: options.baseUrl, canonicalBaseUrl: options.canonicalBaseUrl,
+    username: options.username, provisionCode: options.provisionCode,
+    provisionReceipt: preparedPod.provisionReceipt, preparedPodUrl: preparedPod.podUrl,
+    preparedWebId,
+  }), projection => log('provision-receipt', { ...projection }));
 }
 
 async function createHostedPod(options: {
@@ -672,26 +768,12 @@ async function main(): Promise<void> {
       username,
     };
     const binding = MODE === 'local' && localRoute
-      ? await (async() => {
-        const canonicalBaseUrl = localRoute.canonicalBaseUrl;
-        const provisionCode = await readLocalProvisionCode();
-        const preparedPod = await prepareLocalProvisionedPod({
-          cloudBaseUrl: identityBaseUrl,
-          localBaseUrl: localRoute.localBaseUrl,
-          provisionCode,
-          username,
-        });
-        return withProvisionReceiptFailureDiagnostics(() => createCloudManagedLocalPod({
-          ...podOptions,
-          canonicalBaseUrl,
-          provisionCode,
-          provisionReceipt: preparedPod.provisionReceipt,
-        }), () => ({
-          cloudBaseUrl: identityBaseUrl, canonicalBaseUrl,
-          username, provisionCode, provisionReceipt: preparedPod.provisionReceipt,
-          preparedPodUrl: preparedPod.podUrl, preparedWebId: preparedPod.webId,
-        }), projection => log('provision-receipt', { ...projection }));
-      })()
+      ? await prepareManagedLocalAcceptancePod({
+        ...podOptions,
+        localBaseUrl: localRoute.localBaseUrl,
+        canonicalBaseUrl: localRoute.canonicalBaseUrl,
+        provisionCode: await readLocalProvisionCode(),
+      })
       : await createHostedPod(podOptions);
     const credentials = await createCloudClientCredentials({
       baseUrl: identityBaseUrl,
@@ -1163,11 +1245,14 @@ async function chatOnce(gatewayKey: string, chatModel: string): Promise<void> {
   layer('chat', true, `HTTP ${chatResponse.status} model=${chatModel} contentChars=${text.trim().length}`);
 }
 
-main()
-  .catch((error) => {
-    const message = error instanceof Error ? redact(error.message) : 'unknown error';
-    log('fatal', { message });
-    writeEvidence();
-    process.exitCode = 1;
-  })
-  .finally(deleteAcceptanceGatewayKey);
+// Imports expose protocol probes without executing the live canary.
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main()
+    .catch((error) => {
+      const message = error instanceof Error ? redact(error.message) : 'unknown error';
+      log('fatal', { message });
+      writeEvidence();
+      process.exitCode = 1;
+    })
+    .finally(deleteAcceptanceGatewayKey);
+}

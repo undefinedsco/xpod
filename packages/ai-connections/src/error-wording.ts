@@ -23,9 +23,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const LOCAL_SESSION_REFRESH_FAILED_MESSAGE = '订阅登录态自动刷新失败，请稍后重试。'
 const LOCAL_SESSION_REAUTH_REQUIRED_MESSAGE = '订阅登录态已失效，请在原客户端重新登录后重读，或使用设备码登录。'
 
+const PROVIDER_REQUEST_TIMEOUT_MESSAGE = '模型服务请求超时。请检查网络或代理设置，稍后重试同步模型。'
+
 const OAUTH_MODEL_AUTH_FAILED_MESSAGE = '订阅登录态不可用，请重读登录态或重新登录后再同步模型。'
 
 const MODEL_DISCOVERY_SAFE_MESSAGES = new Set([
+  PROVIDER_REQUEST_TIMEOUT_MESSAGE,
   OAUTH_MODEL_AUTH_FAILED_MESSAGE,
   LOCAL_SESSION_REFRESH_FAILED_MESSAGE,
   LOCAL_SESSION_REAUTH_REQUIRED_MESSAGE,
@@ -161,6 +164,8 @@ function messageForSafeErrorCode(
       return 'AI Connection service is unavailable.'
     case 'unsafe_provider_base_url':
       return '该服务地址指向 Xpod 不允许访问的网络，请改用公网 HTTPS 地址。'
+    case 'provider_request_timeout':
+      return PROVIDER_REQUEST_TIMEOUT_MESSAGE
     case 'invalid_proxy_url':
       return '代理地址必须是无账号密码的 HTTP 或 HTTPS 地址。'
     case 'oauth_refresh_failed':

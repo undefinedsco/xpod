@@ -232,7 +232,10 @@ describe('stable release promotion workflow', () => {
     expect(publishRunText).toContain('qlever-local-runtime-darwin-arm64-${XPOD_ACCEPTED_SHA}');
     expect(publishRunText).toContain('node -e');
     expect(publishRunText).toContain('packageJson.version !== process.env.RELEASE_VERSION');
-    expect(publishRunText).toContain('publish-platform-packages.cjs --tag=stable-staging --target=darwin-arm64');
+    expect(publishRunText).toContain('build-platform-package.cjs --target=darwin-arm64');
+    expect(publishRunText).toContain('npm publish dist/npm/darwin-arm64 --registry');
+    expect(publishRunText.indexOf('build-platform-package.cjs')).toBeLessThan(publishRunText.indexOf('if npm view'));
+    expect(publishRunText).toContain('--access public --tag stable-staging');
     expect(publishRunText).toContain('registry_url="https://registry.npmjs.org/@undefineds.co%2fxpod/${RELEASE_VERSION}"');
     expect(publishRunText).toContain('npm_status=');
     expect(publishRunText).toContain('exists=false');

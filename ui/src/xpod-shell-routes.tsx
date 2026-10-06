@@ -4,6 +4,7 @@ import { SubjectWorkspace, AppearancePage, PodSectionPage, WorkspacePage } from 
 import { XpodProductLayout } from './layout/XpodProductLayout';
 import { RouteLoadingBoundary } from './layout/RouteLoadingBoundary';
 import { XPOD_DEFAULT_RETURN_PATH, legacyProductRedirects } from './routes/canonical-routes';
+import { PodManagementTaskRoute } from './pages/settings/PodDeletionAuthorizationPanel';
 import { WebIdAuthBoundary } from './solid/WebIdAuthBoundary';
 import { ShellInboxContent, ShellNotificationsContent } from './shell/ShellHeaderControls';
 
@@ -44,7 +45,7 @@ export const xpodShellRoutes: RouteObject[] = [{
   element: <XpodProductLayout product="settings" />,
   children: [
     ...localRoutes, ...webIdRoutes,
-    ...Object.entries(legacyProductRedirects).map(([path, to]) => ({ path: path.slice(1), element: <Navigate to={to} replace /> })),
+    ...Object.entries(legacyProductRedirects).map(([path, to]) => ({ path: path.slice(1), element: path === '/settings/pod' ? <PodManagementTaskRoute to={to} /> : <Navigate to={to} replace /> })),
     { index: true, element: <Navigate to={XPOD_DEFAULT_RETURN_PATH} replace /> },
     { path: '*', element: <Navigate to={XPOD_DEFAULT_RETURN_PATH} replace /> },
   ],

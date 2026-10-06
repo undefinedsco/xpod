@@ -61,6 +61,12 @@ export class ApiServer {
   private readonly upgradeHandlers: UpgradeHandler[] = [];
   private readonly shutdownHandlers: Array<() => void | Promise<void>> = [];
   private responseHeaders: Record<string, string> = {};
+  private readonly activeHandlers = new Map<IncomingMessage, string>();
+  private readonly openResponses = new Map<ServerResponse, string>();
+  private readonly upgradedSockets = new Set<Duplex>();
+  private readonly drainWaiters = new Set<() => void>();
+  private stopping = false;
+  private stopPromise?: Promise<void>;
   private server?: Server;
 
   public constructor(options: ApiServerOptions) {
@@ -132,9 +138,7 @@ export class ApiServer {
 
   public addUpgradeHandler(handler: UpgradeHandler): void {
     this.upgradeHandlers.push(handler);
-    if (this.server) {
-      this.server.on('upgrade', handler);
-    }
+
   }
 
   public addShutdownHandler(handler: () => void | Promise<void>): void {
@@ -151,6 +155,25 @@ export class ApiServer {
   public async start(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = createServer((req, res) => {
+        const requestPath = `${req.method ?? 'GET'} ${(req.url ?? '/').split('?', 1)[0]}`;
+        this.openResponses.set(res, requestPath);
+        const responseDone = (): void => {
+          this.openResponses.delete(res);
+          req.off('aborted', responseDone);
+          req.socket.off('close', responseDone);
+          this.notifyDrained();
+        };
+        res.once('finish', responseDone);
+        res.once('close', responseDone);
+        req.once('aborted', responseDone);
+        req.socket.once('close', responseDone);
+        if (this.stopping) {
+          res.statusCode = 503;
+          res.setHeader('Connection', 'close');
+          res.end('Service is shutting down');
+          return;
+        }
+        this.activeHandlers.set(req, requestPath);
         this.handleRequest(req, res).catch((error) => {
           this.logger.error(`Unhandled error: ${error}`);
           if (!res.headersSent) {
@@ -158,11 +181,20 @@ export class ApiServer {
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({ error: 'Internal Server Error' }));
           }
+        }).finally(() => {
+          // Bun can omit response finish/close after the peer disconnected.
+          // The transport is gone, but its logical write still had to finish.
+          if (req.aborted || req.socket.destroyed || res.destroyed) { responseDone(); }
+          this.activeHandlers.delete(req);
+          this.notifyDrained();
         });
       });
-      for (const handler of this.upgradeHandlers) {
-        this.server.on('upgrade', handler);
-      }
+      this.server.on('upgrade', (request, socket, head) => {
+        this.upgradedSockets.add(socket);
+        socket.once('close', () => { this.upgradedSockets.delete(socket); this.notifyDrained(); });
+        if (this.stopping) { socket.destroy(); return; }
+        for (const handler of this.upgradeHandlers) { handler(request, socket, head); }
+      });
 
       this.runtimeHost.listen(this.server, this.listenEndpoint).then(() => {
         this.logger.info(`API Server listening on ${this.runtimeHost.formatListenEndpoint(this.listenEndpoint)}`);
@@ -175,18 +207,32 @@ export class ApiServer {
    * Stop the server
    */
   public async stop(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.server) {
-        resolve();
-        return;
-      }
+    if (this.stopPromise) { return this.stopPromise; }
+    this.stopping = true;
+    this.stopPromise = this.drainAndClose();
+    return this.stopPromise;
+  }
 
-      Promise.all(this.shutdownHandlers.map(async (handler) => handler())).then(() =>
-        this.runtimeHost.close(this.server!, this.listenEndpoint)).then(() => {
-          this.logger.info('API Server stopped');
-          resolve();
-      }, reject);
-    });
+  private async drainAndClose(): Promise<void> {
+    if (!this.server) { return; }
+    const endpoint = JSON.stringify(this.listenEndpoint);
+    this.logger.info(`Stopping API shutdown handlers at ${endpoint}`);
+    await Promise.all(this.shutdownHandlers.map(async (handler) => handler()));
+    // Upgraded channels no longer accept work. Wait for actual socket close,
+    // not just destroy() returning: Bun's native WebSocket cleanup is asynchronous.
+    // Shutdown handlers own the WebSocket close handshake; wait for its socket close.
+    this.logger.info(`Draining API HTTP server at ${endpoint}`);
+    this.logger.info(`API pending handlers at ${endpoint}: ${JSON.stringify([...this.activeHandlers.values()])}; responses: ${JSON.stringify([...this.openResponses.values()])}`);
+    await new Promise<void>((resolve) => { this.drainWaiters.add(resolve); this.notifyDrained(); });
+    this.server.once('close', () => this.logger.info(`API HTTP close event at ${endpoint}`));
+    await this.runtimeHost.close(this.server, this.listenEndpoint, { connectionsDrained: true });
+    this.logger.info(`API Server stopped at ${endpoint}`);
+  }
+
+  private notifyDrained(): void {
+    if (this.activeHandlers.size || this.openResponses.size || this.upgradedSockets.size) { return; }
+    for (const resolve of this.drainWaiters) { resolve(); }
+    this.drainWaiters.clear();
   }
 
   /**

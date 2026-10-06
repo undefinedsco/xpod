@@ -88,6 +88,11 @@ export interface PodSignInCopy {
   storageCloud: string
   storageEdge: string
   // D group: account page
+  hostedStorage: string
+  independentStorage: string
+  identityAddress: string
+  storageAddress: string
+  showAddresses: string
   webIdSectionTitle: string
   webIdEmpty: string
   createWebId: string
@@ -231,6 +236,11 @@ const zhCN: PodSignInCopy = {
   allow: '允许',
   storageCloud: '数据存在 Xpod 云端',
   storageEdge: '数据存在边缘设备上',
+  hostedStorage: '账号服务托管',
+  independentStorage: '独立部署',
+  identityAddress: 'WebID（身份地址）',
+  storageAddress: 'Pod（存储地址）',
+  showAddresses: '查看地址',
   webIdSectionTitle: 'WebID',
   webIdEmpty: '还没有 WebID。新建一个，用它登录应用。',
   createWebId: '新建 WebID',
@@ -374,6 +384,11 @@ const en: PodSignInCopy = {
   allow: 'Allow',
   storageCloud: 'Data is stored on Xpod Cloud',
   storageEdge: 'Data is stored on an edge device',
+  hostedStorage: 'Hosted by account service',
+  independentStorage: 'Independent deployment',
+  identityAddress: 'WebID (identity address)',
+  storageAddress: 'Pod (storage address)',
+  showAddresses: 'View addresses',
   webIdSectionTitle: 'WebID',
   webIdEmpty: 'No WebID yet. Create one to sign in to applications.',
   createWebId: 'New WebID',

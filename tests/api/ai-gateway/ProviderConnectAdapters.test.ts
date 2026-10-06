@@ -853,6 +853,56 @@ describe('Provider credential pool management', () => {
   });
 
   it.each([
+    ['string invalid grant', 'invalid_grant', 'invalid_grant'],
+    ['string invalid token', 'invalid_token', 'invalid_token'],
+    ['nested invalid grant', { code: 'invalid_grant', message: 'fixture-private-token' }, 'invalid_grant'],
+    ['nested invalid token', { code: 'invalid_token', message: 'fixture-private-token' }, 'invalid_token'],
+    ['unknown string', 'fixture-private-token', 'provider_error'],
+    ['unknown nested code', { code: 'fixture-private-token', message: 'invalid_grant' }, 'provider_error'],
+    ['message without code', { message: 'invalid_token fixture-private-token' }, 'provider_error'],
+    ['malformed nested code', { code: { secret: 'fixture-private-token' } }, 'provider_error'],
+    ['array error', [{ code: 'invalid_grant' }], 'provider_error'],
+    ['absent error', null, 'provider_error'],
+  ])('classifies decoded refresh failures without exposing provider secrets (%s)', async (_label, providerError, safeCode) => {
+    const repository = new RecordingCredentialRepository();
+    const sharedVault = vault();
+    const fetchMock = vi.fn(async () => Response.json({
+      error: providerError,
+      error_description: 'fixture-private-description',
+      access_token: 'fixture-private-access',
+    }, { status: 400 }));
+    const adapter = new DeviceCodeConnectAdapter({
+      fetch: fetchMock,
+      attempts: new InMemoryConnectAttemptStore(),
+      credentialRepository: repository,
+      vault: sharedVault,
+      deployment: 'local',
+      integration: kimiOAuthIntegration(),
+      signingSecret: 'connect-signing-secret',
+    });
+    const input = { webId: WEB_ID, deployment: 'local' as const, provider: 'kimi', offeringId: 'subscription-key' };
+    await expect(adapter.refreshCallerOwned({
+      ...input, credentialId: 'fixture-credential', refreshToken: 'fixture-refresh', expectedVersion: 0,
+    })).rejects.toThrow(new Error(`OAuth refresh failed: ${safeCode}`));
+
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry({ products: providerProductsForDeployment('local') }),
+      credentialRepository: repository, vault: sharedVault, adapters: [adapter],
+      localSessionImporters: [{
+        provider: 'kimi', offeringId: 'subscription-key',
+        importSession: async () => ({ secret: {
+          accessToken: 'expired-access', refreshToken: 'fixture-refresh', expiresAt: '2020-01-01T00:00:00.000Z',
+        } }),
+      }],
+    });
+    await expect(service.createLocalCredential(input)).rejects.toThrow(new Error(
+      safeCode === 'provider_error' ? 'local_session_refresh_failed' : 'local_session_reauth_required',
+    ));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(repository.rows).toHaveLength(0);
+  });
+
+  it.each([
     ['refresh_rejected', 'local_session_refresh_failed'],
     ['OAuth refresh failed: invalid_grant', 'local_session_reauth_required'],
     ['OAuth refresh failed: invalid_token', 'local_session_reauth_required'],

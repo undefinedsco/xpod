@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { buildRuntimeEnv, buildRuntimeShorthand, createCssRuntimeConfig, resolveRuntimeBootstrap } from '../../src/runtime/bootstrap';
 import { normalizeDatabaseUrl, resolveDefaultRdfIndexPath } from '../../src/runtime/database-url';
-import { nodeRuntimeHost } from '../../src/runtime/host/node/NodeRuntimeHost';
+import { NodeRuntimeHost, nodeRuntimeHost } from '../../src/runtime/host/node/NodeRuntimeHost';
 import type { RuntimeHost } from '../../src/runtime/host/types';
 import type { RuntimePlatform } from '../../src/runtime/platform/types';
 import { PACKAGE_ROOT } from '../../src/runtime/package-root';
@@ -169,6 +169,39 @@ describe('runtime bootstrap helpers', () => {
     expect(state.sockets.gateway).toContain('gateway.sock');
     expect(state.sockets.api).toContain('api.sock');
     expect(state.ports.gateway).toBeUndefined();
+  });
+
+  it.each([
+    ['explicit planned', 5819],
+    ['default allocated', undefined],
+  ] as const)('passes the %s ingress allocation through the real runtime host', async(_name, ingressPort) => {
+    const host = new NodeRuntimeHost();
+    // A call-through spy records the bootstrap boundary without replacing the
+    // allocator: dropping the planned ingress must change the returned port.
+    const allocatePorts = vi.spyOn(host, 'allocatePorts');
+    try {
+      const state = await resolveRuntimeBootstrap(`planned-ingress-${ingressPort ?? 'default'}`, {
+        mode: 'cloud',
+        transport: 'port',
+        runtimeRoot: `.test-data/runtime-bootstrap/planned-ingress-${ingressPort ?? 'default'}`,
+        gatewayPort: 5810,
+        cssPort: 5811,
+        apiPort: 5812,
+        ...(ingressPort === undefined ? {} : { ingressPort }),
+      }, host);
+
+      expect(allocatePorts).toHaveBeenCalledOnce();
+      expect(allocatePorts.mock.calls[0]?.[0]?.ingressPort).toBe(ingressPort);
+      expect(state.ports).toMatchObject({ gateway: 5810, css: 5811, api: 5812 });
+      if (ingressPort !== undefined) {
+        expect(state.ports.ingress).toBe(ingressPort);
+      } else {
+        expect(state.ports.ingress).toBeGreaterThan(0);
+        expect([state.ports.gateway, state.ports.css, state.ports.api]).not.toContain(state.ports.ingress);
+      }
+    } finally {
+      allocatePorts.mockRestore();
+    }
   });
 
   it('should build env and shorthand from bootstrap state', async() => {

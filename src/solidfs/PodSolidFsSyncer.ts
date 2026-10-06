@@ -2,12 +2,9 @@ import { readFile } from 'node:fs/promises';
 
 import type { SolidFsChange, SolidFsManifest, SolidFsSyncer } from './types';
 import { isRdfDocument } from '../storage/rdf/RdfContentTypes';
-import { PodSolidFsHttpClient, resolvePodWorkspaceResourceUrl } from './PodSolidFsHttpClient';
+import { PodSolidFsHttpClient, resolvePodWorkspaceResourceUrl, type PodSolidFsHttpClientOptions } from './PodSolidFsHttpClient';
 
-export interface PodSolidFsSyncerOptions {
-  fetch?: typeof fetch;
-  tokenEndpoint?: string;
-}
+export type PodSolidFsSyncerOptions = PodSolidFsHttpClientOptions;
 
 /**
  * Writes SolidFS file changes back through the Pod HTTP surface.
@@ -42,12 +39,12 @@ export class PodSolidFsSyncer implements SolidFsSyncer {
       return;
     }
 
-    const headers = await this.http.createAuthHeaders(context, `sync SolidFS change: ${resourceUrl}`);
+    const headers = new Headers();
     if (change.type === 'deleted') {
       const response = await this.http.request(resourceUrl, {
         method: 'DELETE',
         headers,
-      });
+      }, context);
       if (!response.ok && response.status !== 404) {
         throw new Error(`SolidFS delete sync failed for ${resourceUrl}: ${response.status} ${await response.text().catch(() => '')}`);
       }
@@ -63,7 +60,7 @@ export class PodSolidFsSyncer implements SolidFsSyncer {
       method: 'PUT',
       headers,
       body,
-    } as RequestInit);
+    } as RequestInit, context);
     if (!response.ok) {
       throw new Error(`SolidFS write sync failed for ${resourceUrl}: ${response.status} ${await response.text().catch(() => '')}`);
     }

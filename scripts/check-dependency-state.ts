@@ -231,7 +231,7 @@ function checkPostinstallPatches(): void {
     {
       script: 'patch-inrupt-authn-refresh.js', name: '@inrupt/solid-client-authn-core',
       files: ['src/authenticatedFetch/fetchFactory.ts', 'dist/index.js', 'dist/index.mjs']
-        .map((file) => [file, ['XPOD_REFRESH_RETRY_MAX_DELAY_MS']]),
+        .map((file) => [file, ['XPOD_REFRESH_RETRY_MAX_DELAY_MS', 'XPOD_REFRESH_ON_REQUEST']]),
     },
     {
       script: 'patch-inrupt-authn-transport.js', name: browser,
@@ -245,6 +245,18 @@ function checkPostinstallPatches(): void {
         ['dist/dependencies.d.ts', ['fetch?: typeof fetch;']],
         ['dist/login/oidc/incomingRedirectHandler/AuthCodeRedirectHandler.d.ts', ['fetch?: typeof fetch']],
       ].map(([file, snippets]) => [file as string, ['XPOD_INRUPT_AUTHN_BROWSER_FETCH_TRANSPORT', ...snippets as string[]]]),
+    },
+    {
+      script: 'patch-inrupt-authn-transport.js', name: '@inrupt/solid-client-authn-core',
+      files: [
+        ['src/authenticatedFetch/dpopUtils.ts', ['accessToken?: string', 'new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(accessToken)))']],
+        ['src/authenticatedFetch/fetchFactory.ts', ['createDpopHeader(targetUrl, defaultOptions?.method ?? "get", dpopKey, authToken)']],
+        ['dist/authenticatedFetch/dpopUtils.d.ts', ['accessToken?: string']],
+        ...['dist/index.js', 'dist/index.mjs'].map(file => [file, [
+          'new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(accessToken)))',
+          'createDpopHeader(targetUrl, defaultOptions?.method ?? "get", dpopKey, authToken)',
+        ]]),
+      ].map(([file, snippets]) => [file as string, ['XPOD_INRUPT_RESOURCE_DPOP_ATH', ...snippets as string[]]]),
     },
     {
       script: 'patch-inrupt-authn-operation-cleanup.js', name: browser,
@@ -264,7 +276,8 @@ function checkPostinstallPatches(): void {
       const target = path.join(directory, file);
       const content = existsSync(target) ? readFileSync(target, 'utf8') : '';
       const normalized = content.replace(/\s+/gu, ' ');
-      if (snippets.some((snippet) => !normalized.includes(snippet))) {
+      if (snippets.some((snippet) => !normalized.includes(snippet)) ||
+          (snippets.includes('XPOD_INRUPT_RESOURCE_DPOP_ATH') && content.split('XPOD_INRUPT_RESOURCE_DPOP_ATH').length !== 2)) {
         failures.push(`${check.name}/${file}: ${check.script} missing or incomplete — run: bun run postinstall`);
       }
     }
@@ -282,7 +295,7 @@ function checkPostinstallPatches(): void {
         const manifest = path.join(packageDir, 'package.json');
         if (!existsSync(manifest)) continue;
         if (entry.name === 'jose' && existsSync(path.join(packageDir, 'dist/node/esm/index.js')) &&
-            /"bun"\s*:\s*"\.\/dist\/browser\//u.test(readFileSync(manifest, 'utf8'))) {
+            /"bun"\s*:\s*"\.\/dist\/(?:browser|node\/esm)\//u.test(readFileSync(manifest, 'utf8'))) {
           failures.push(`${packageDir}: jose Bun exports are unpatched — run: bun run postinstall`);
         }
         queue.push(path.join(packageDir, 'node_modules'));

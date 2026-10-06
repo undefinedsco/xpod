@@ -1,4 +1,4 @@
-import type { Frame, Locator, Page, Request, Response } from '@playwright/test';
+import { errors, type Frame, type Locator, type Page, type Request, type Response } from '@playwright/test';
 import type { AccountSetup } from '../integration/helpers/solidAccount';
 
 export type BrowserSolidAccount = AccountSetup & {
@@ -42,17 +42,25 @@ export async function boundedProbe<T>(work: Promise<T>, ms: number, fallback: T)
  * browser task: a later Locator click could resolve to a freshly mounted
  * password submit or a different control.
  */
-export async function clickNonPasswordOidcAction(candidate: Locator): Promise<boolean> {
-  return candidate.evaluate((element, source) => {
+export async function clickNonPasswordOidcAction(candidate: Locator, policy: { manualConsent?: boolean } = {}): Promise<boolean> {
+  return candidate.evaluate((element, activation) => {
     const control = element as HTMLButtonElement | HTMLInputElement;
+    // Read and refuse on the same DOM task that would activate the control.
+    // Consent can mount between the caller's ready probe and this evaluation.
+    if (activation.manualConsent && control.ownerDocument.querySelector('[data-pod-sign-in-state="consent"]')) return false;
     if (!control.isConnected || control.matches(':disabled') || control.getAttribute('aria-disabled') === 'true') return false;
     const name = [control.getAttribute('aria-label') ?? '', control.textContent ?? '', control.value ?? ''].join(' ');
-    if (new RegExp(source, 'iu').test(name)) return false;
+    if (new RegExp(activation.negativeActionSource, 'iu').test(name)) return false;
     const form = control.form ?? control.closest('form');
     if (form?.querySelector('input[type="password"], input[name="password"], input#password')) return false;
     control.click();
     return true;
-  }, OIDC_NEGATIVE_ACTION_SOURCE);
+  }, { negativeActionSource: OIDC_NEGATIVE_ACTION_SOURCE, manualConsent: policy.manualConsent }, { timeout: 1_000 }).catch((error: unknown) => {
+    // Navigation can remove a discovered control before evaluation. Use the
+    // native cancellable deadline; a Promise.race could leave a late click.
+    if (error instanceof errors.TimeoutError) return false;
+    throw error;
+  });
 }
 
 export interface BrowserOidcTrace {
@@ -79,6 +87,10 @@ export interface CompleteOidcLoginOptions {
   ready?: (page: Page) => boolean | Promise<boolean>;
   /** Require callback code/state evidence before accepting route readiness. */
   requireCallbackEvidence?: boolean;
+  /** Explicit UI choice; undefined preserves the form default for this scenario. */
+  rememberAccount?: boolean;
+  /** Let the scenario inspect and approve Consent instead of the generic action driver. */
+  manualConsent?: boolean;
   /** Resolve an intentional callback failure without waiting for protected-route readiness. */
   failure?: (page: Page) => boolean | Promise<boolean>;
 }
@@ -323,6 +335,11 @@ export async function completeOidcLogin(
       if (emailVisible && passwordVisible && !submittedPassword) {
         await emailInput.fill(account.email, { timeout: 2_000 });
         await passwordInput.fill(account.password, { timeout: 2_000 });
+        if (options.rememberAccount !== undefined) {
+          const remember = page.getByRole('checkbox', { name: /^(?:记住账号|Remember account)$/iu });
+          await remember.setChecked(options.rememberAccount, { timeout: 2_000 });
+          if (await remember.isChecked() !== options.rememberAccount) throw new Error('Account remember choice did not match the scenario');
+        }
         await passwordInput.press('Enter', { timeout: 2_000 });
         submittedPassword = true;
         trace.passwordSubmitted = true;
@@ -445,7 +462,8 @@ export async function completeOidcLogin(
         // helper inspects its controls. Do not click past a newly ready
         // consent page that the caller needs to interact with itself.
         if (!options.requireCallbackEvidence && await options.ready?.(page)) return trace;
-        if (!await clickNonPasswordOidcAction(candidate)) continue;
+        if (!await clickNonPasswordOidcAction(candidate, options)) continue;
+        recordDiagnostic(`automation-activated button ${safePath(page.url())}`);
         clickedAction = true;
         break;
       }
@@ -464,7 +482,8 @@ export async function completeOidcLogin(
         if (!await candidate.isVisible({ timeout: 250 }).catch(() => false)) continue;
         // Same-node checked activation for anchors too: refusal and click are
         // evaluated on the exact node that is activated.
-        if (!await clickNonPasswordOidcAction(candidate)) continue;
+        if (!await clickNonPasswordOidcAction(candidate, options)) continue;
+        recordDiagnostic(`automation-activated link ${safePath(page.url())}`);
         clickedActionLink = true;
         break;
       }
@@ -476,7 +495,8 @@ export async function completeOidcLogin(
       const submitInput = page.locator('input[type="submit"]').first();
       if (await submitInput.isVisible({ timeout: 250 }).catch(() => false)
         && await submitInput.isEnabled({ timeout: 250 }).catch(() => false)) {
-        if (await clickNonPasswordOidcAction(submitInput)) {
+        if (await clickNonPasswordOidcAction(submitInput, options)) {
+          recordDiagnostic(`automation-activated submit-input ${safePath(page.url())}`);
           await page.waitForTimeout(350);
           continue;
         }

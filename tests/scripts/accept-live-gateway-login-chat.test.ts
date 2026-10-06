@@ -2,7 +2,9 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createOwnerCredentialFetch } from '../../scripts/accept-live-gateway-login-chat';
+import { createOwnerCredentialFetch, prepareManagedLocalAcceptancePod } from '../../scripts/accept-live-gateway-login-chat';
+import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
+import { createProvisionReceipt } from '../../src/provision/ProvisionReceiptCodec';
 import ts from 'typescript';
 
 describe('real running Xpod login-to-chat acceptance runner', () => {
@@ -54,9 +56,9 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
     expect(script).toContain('prepareLocalProvisionedPod');
     expect(script).toContain('createCloudManagedLocalPod');
     expect(script).toContain('POST Local /provision/pods');
-    expect(script).toContain('cloudBaseUrl: identityBaseUrl');
+    expect(script).toContain('cloudBaseUrl: options.baseUrl');
     expect(script).toContain('new ProvisionCodeCodec(options.cloudBaseUrl)');
-    expect(script).toContain('body: JSON.stringify({\n      podName: options.username,\n    })');
+    expect(script).toContain('podName: options.username');
     expect(script).toContain('provisionCode: options.provisionCode');
     expect(script).toContain('provisionReceipt: options.provisionReceipt');
     expect(script).not.toContain('receipt: body.receipt');
@@ -202,4 +204,178 @@ describe('live gateway acceptance credential fetch', () => {
       globalFetch.mockRestore();
     }
   });
+});
+
+/** Only in-memory protocol responses; no live account, provider or external route. */
+describe('managed Local live acceptance provisioning protocol', () => {
+  const baseUrl = 'https://id.example/';
+  const localBaseUrl = 'http://127.0.0.1:3000/';
+  const canonicalBaseUrl = 'https://node.nodes.example/';
+  const webId = `${baseUrl}identity/profile/card#me`;
+  const podUrl = `${canonicalBaseUrl}alice/`;
+  const authorization = 'fixture-account-token';
+  const controls = { account: {
+    profile: `${baseUrl}.account/account/account-1/profile/`,
+    pod: `${baseUrl}.account/account/account-1/pod/`,
+    bindings: `${baseUrl}.account/account/account-1/bindings/`,
+  } };
+  const provisionCode = new ProvisionCodeCodec(baseUrl).encode({
+    spUrl: canonicalBaseUrl, serviceAccessToken: 'fixture-local-callback',
+    serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 600,
+    exp: Math.floor(Date.now() / 1000) + 600,
+  });
+  const receipt = createProvisionReceipt({
+    secret: 'fixture-private-receipt-key', podName: 'alice', webId, podUrl,
+  });
+  const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
+    status, headers: { 'content-type': 'application/json' },
+  });
+  const options = { baseUrl, localBaseUrl, canonicalBaseUrl, authorization, controls,
+    username: 'alice', provisionCode };
+
+  function protocol(responses: unknown[] = [
+    { webId, webIdLink: 'link-1' }, { webId, podUrl, provisionReceipt: receipt },
+    { webId, pod: podUrl, podResource: `${controls.account.pod}pod-1/`,
+      webIdResource: `${baseUrl}.account/account/account-1/webid/link-1/` },
+    { bindings: [{ webId, storageUrl: podUrl }] },
+  ]) {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: input instanceof Request ? input.url : String(input), init });
+      const result = responses.shift();
+      if (result === undefined) throw new Error('Unexpected extra provisioning request');
+      return result instanceof Response ? result : json(result);
+    };
+    return { calls, fetchImpl };
+  }
+
+  it('prepares the Cloud identity before Local storage, forwards the original receipt, and verifies the Account pair', async () => {
+    const { calls, fetchImpl } = protocol();
+    await expect(prepareManagedLocalAcceptancePod({ ...options, fetchImpl }))
+      .resolves.toEqual({ webId, storageUrl: podUrl });
+    expect(calls.map(({ url }) => url)).toEqual([
+      controls.account.profile, `${localBaseUrl}provision/pods`, controls.account.pod, controls.account.bindings,
+    ]);
+    expect(calls.map(({ init }) => init?.method ?? 'GET')).toEqual(['POST', 'POST', 'POST', 'GET']);
+    expect(JSON.parse(calls[0].init?.body as string)).toEqual({ podName: 'alice' });
+    expect(JSON.parse(calls[1].init?.body as string)).toEqual({ podName: 'alice', webId });
+    expect(JSON.parse(calls[2].init?.body as string)).toEqual({ name: 'alice', settings: {
+      provisionCode, provisionReceipt: receipt, webId,
+    } });
+    for (const index of [0, 2, 3]) {
+      expect(new Headers(calls[index].init?.headers).get('authorization')).toBe(`CSS-Account-Token ${authorization}`);
+      expect(calls[index].init?.credentials).toBe('include');
+    }
+    expect(new Headers(calls[1].init?.headers).get('authorization')).toBe('Bearer fixture-local-callback');
+  });
+
+  const finalized = { webId, pod: podUrl, podResource: `${controls.account.pod}pod-1/`,
+    webIdResource: `${baseUrl}.account/account/account-1/webid/link-1/` };
+  const local = { webId, podUrl, provisionReceipt: receipt };
+
+  it('requires the authenticated Cloud profile control before making any request', async () => {
+    const { calls, fetchImpl } = protocol();
+    await expect(prepareManagedLocalAcceptancePod({ ...options,
+      controls: { account: { pod: controls.account.pod, bindings: controls.account.bindings } }, fetchImpl,
+    })).rejects.toThrow('controls.account.profile');
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ['external identity', { webId: 'https://other.example/card#me', webIdLink: 'link-1' }],
+    ['node identity', { webId: `${canonicalBaseUrl}alice/profile/card#me`, webIdLink: 'link-1' }],
+    ['whitespace identity', { webId: ` ${webId}`, webIdLink: 'link-1' }],
+    ['missing Account link', { webId }],
+    ['Cloud error', json({ error: 'profile unavailable' }, 503)],
+  ])('stops before Local preparation on %s', async (_label, prepared) => {
+    const { calls, fetchImpl } = protocol([prepared]);
+    await expect(prepareManagedLocalAcceptancePod({ ...options, fetchImpl })).rejects.toThrow();
+    expect(calls.map(({ url }) => url)).toEqual([controls.account.profile]);
+  });
+
+  it.each([
+    ['different returned WebID', { ...local, webId: `${baseUrl}other/card#me` }],
+    ['different returned Pod', { ...local, podUrl: `${canonicalBaseUrl}other/` }],
+    ['missing returned identity', { podUrl, provisionReceipt: receipt }],
+    ['different receipt WebID', { ...local, provisionReceipt: createProvisionReceipt({
+      secret: 'fixture-private-receipt-key', podName: 'alice', podUrl, webId: `${baseUrl}other/card#me`,
+    }) }],
+    ['URL-equivalent receipt identity', { ...local, provisionReceipt: createProvisionReceipt({
+      secret: 'fixture-private-receipt-key', podName: 'alice', podUrl, webId: webId.replace('/identity/', '/%69dentity/'),
+    }) }],
+    ['different receipt Pod', { ...local, provisionReceipt: createProvisionReceipt({
+      secret: 'fixture-private-receipt-key', podName: 'alice', podUrl: `${canonicalBaseUrl}other/`, webId,
+    }) }],
+    ['different receipt Pod name', { ...local, provisionReceipt: createProvisionReceipt({
+      secret: 'fixture-private-receipt-key', podName: 'other', podUrl, webId,
+    }) }],
+    ['expired receipt', { ...local, provisionReceipt: createProvisionReceipt({
+      secret: 'fixture-private-receipt-key', podName: 'alice', podUrl, webId, expiresAt: 1,
+    }) }],
+    ['malformed receipt', { ...local, provisionReceipt: 'not-a-receipt' }],
+  ])('does not finalize Cloud when Local returns %s', async (_label, prepared) => {
+    const { calls, fetchImpl } = protocol([{ webId, webIdLink: 'link-1' }, prepared]);
+    await expect(prepareManagedLocalAcceptancePod({ ...options, fetchImpl })).rejects.toThrow();
+    expect(calls.map(({ url }) => url)).toEqual([controls.account.profile, `${localBaseUrl}provision/pods`]);
+  });
+
+  it.each([
+    ['different WebID', { ...finalized, webId: `${baseUrl}other/card#me` }],
+    ['different Pod', { ...finalized, pod: `${canonicalBaseUrl}other/` }],
+    ['missing pointers', { webId, pod: podUrl }],
+    ['another Account pointer', { ...finalized, webIdResource: `${baseUrl}.account/account/account-2/webid/link-1/` }],
+    ['another origin pointer', { ...finalized, podResource: 'https://other.example/.account/account/account-1/pod/pod-1/' }],
+    ['different identity link', { ...finalized, webIdResource: `${baseUrl}.account/account/account-1/webid/link-2/` }],
+    ['Cloud signature rejection', json({ error: 'invalid receipt' }, 400)],
+  ])('does not accept a successful binding from %s', async (_label, result) => {
+    const { calls, fetchImpl } = protocol([{ webId, webIdLink: 'link-1' }, local, result]);
+    await expect(prepareManagedLocalAcceptancePod({ ...options, fetchImpl })).rejects.toThrow();
+    expect(calls).toHaveLength(3);
+  });
+
+  it('rejects an Account binding for the right Pod but a different raw identity', async () => {
+    const { calls, fetchImpl } = protocol([{ webId, webIdLink: 'link-1' }, local, finalized,
+      { bindings: [{ webId: webId.replace('/identity/', '/%69dentity/'), storageUrl: podUrl }] },
+    ]);
+    await expect(prepareManagedLocalAcceptancePod({ ...options, fetchImpl })).rejects.toThrow('different WebID/storage binding');
+    expect(calls).toHaveLength(4);
+  });
+
+  it('requires Account binding publication even when the finalize response has the expected pair', async () => {
+    const { calls, fetchImpl } = protocol([{ webId, webIdLink: 'link-1' }, local, finalized,
+      json({ error: 'bindings unavailable' }, 503),
+    ]);
+    await expect(prepareManagedLocalAcceptancePod({ ...options, fetchImpl })).rejects.toThrow('GET Cloud controls.account.bindings HTTP 503');
+    expect(calls).toHaveLength(4);
+  });
+
+  it('keeps polling past unrelated existing Pods without accepting them', async () => {
+    vi.useFakeTimers();
+    try {
+      const { calls, fetchImpl } = protocol([{ webId, webIdLink: 'link-1' }, local, finalized,
+        { bindings: [{ webId, storageUrl: `${canonicalBaseUrl}other/` }] },
+        { bindings: [{ webId, storageUrl: `${canonicalBaseUrl}other/` }, { webId, storageUrl: podUrl }] },
+      ]);
+      const pending = prepareManagedLocalAcceptancePod({ ...options, fetchImpl });
+      const check = expect(pending).resolves.toEqual({ webId, storageUrl: podUrl });
+      await vi.advanceTimersByTimeAsync(500);
+      await check;
+      expect(calls).toHaveLength(5);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('fails when Account bindings never publish the prepared pair instead of using the finalize response', async () => {
+    vi.useFakeTimers();
+    try {
+      const { calls, fetchImpl } = protocol([{ webId, webIdLink: 'link-1' }, local, finalized,
+        ...Array.from({ length: 20 }, () => ({ bindings: [] })),
+      ]);
+      const pending = prepareManagedLocalAcceptancePod({ ...options, fetchImpl });
+      const check = expect(pending).rejects.toThrow('did not publish the Local-managed WebID/storage binding');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await check;
+      expect(calls).toHaveLength(23);
+    } finally { vi.useRealTimers(); }
+  });
+
 });

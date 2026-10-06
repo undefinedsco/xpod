@@ -45,6 +45,8 @@ export interface PodSignInNotice {
 
 export interface PodSignInProps {
   app: AppIdentity
+  /** Host-supplied logo and optional info; defaults to the application source mark. */
+  brand?: ReactNode
   state: PodSignInState
   notice?: PodSignInNotice
   locale?: PodSignInLocale
@@ -163,6 +165,7 @@ function CustomServiceForm({
  */
 export function PodSignIn({
   app,
+  brand,
   state,
   notice,
   locale = 'zh-CN',
@@ -179,7 +182,7 @@ export function PodSignIn({
   const copy = resolvePodSignInCopy(locale, copyOverrides)
   const pastRestoreDelay = usePastDelay(RESTORE_REVEAL_DELAY_MS)
   const [localCustomOpen, setLocalCustomOpen] = useState(false)
-  const source = <SourceMark icon={app.icon} name={app.name} />
+  const source = brand ? <div data-pod-sign-in="source">{brand}</div> : <SourceMark icon={app.icon} name={app.name} />
 
   if (state.kind === 'restoring') {
     const identity = pastRestoreDelay ? state.identity : undefined

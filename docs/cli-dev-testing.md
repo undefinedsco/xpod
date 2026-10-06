@@ -165,7 +165,7 @@ package 构建会删除再生成 `dist`，并行构建可能造成依赖入口�
 
 Monitor 串行处理源码构建；UI 由 Vite 热更新，服务源码构建成功后重启 Gateway。
 Vite 明确由 Node 运行，因为其 WebSocket 代理在拒绝升级时使用
-`socket.destroySoon()`，Bun 1.3.8 尚未实现该方法；Gateway、CSS、API 仍使用 Bun。
+`socket.destroySoon()`，Bun 1.3.8 尚未实现该方法；Gateway、CSS、API 使用 Bun 1.4.2 或更高版本。旧 Bun 的代理响应流和 WebSocket 关闭存在实际复现的缺陷；服务启动及单文件构建会明确拒绝低于受支持基线的 Bun。
 托管服务异常退出后按 0.5、1、2、5、10 秒最多重试五次，仅恢复退出的服务，
 不重新构建或重启健康服务。端口已有其他进程时会报告占用，不会杀掉该进程。
 
