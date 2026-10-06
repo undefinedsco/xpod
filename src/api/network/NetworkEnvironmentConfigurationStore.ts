@@ -174,7 +174,7 @@ function firstString(...values: unknown[]): string | undefined {
 function splitList(value: string | undefined): string[] { return value?.split(',').map((item) => item.trim()).filter(Boolean) ?? []; }
 function positiveInteger(value: string | undefined, fallback: number): number { const parsed = Number(value); return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback; }
 function dnsCredential(env: Env, provider: string): string | undefined { return env[dnsCredentialKey(provider)]; }
-function dnsCredentialKey(provider: string): string { return provider === 'tencent' ? 'XPOD_TENCENT_DNS_TOKEN' : provider === 'cloudflare' ? 'CLOUDFLARE_API_TOKEN' : 'XPOD_DNS_PROVIDER_TOKEN'; }
+function dnsCredentialKey(provider: string): string { return provider === 'tencent' ? 'TENCENT_DNSPOD_TOKEN' : provider === 'cloudflare' ? 'CLOUDFLARE_API_TOKEN' : 'XPOD_DNS_PROVIDER_TOKEN'; }
 function p2pFallback(value: string | undefined): NetworkDesiredConfiguration['p2p']['fallbackPolicy'] { return value === 'never' || value === 'prefer-p2p' ? value : 'when-direct-unavailable'; }
 function plainStringRecord(value: unknown): value is Record<string, string> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value) && Object.values(value as Record<string, unknown>).every((item) => typeof item === 'string'); }
 function boolString(value: boolean | undefined): string | undefined { return value === undefined ? undefined : String(value); }

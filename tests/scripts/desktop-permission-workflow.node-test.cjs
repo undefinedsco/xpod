@@ -47,12 +47,13 @@ test('RC scale-down waits for desktop and final acceptance even when upstream jo
   for (const name of ['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']) assert.ok(cleanup.needs.includes(name));
   assert.equal(cleanup.concurrency.group, jobs.deploy_and_accept.concurrency.group);
   const scale = cleanup.steps.find(step => step.run?.includes('scale "$resource"'));
-  assert.match(scale.if, /XPOD_RC_SCALE_TO_ZERO/);
+  assert.equal(scale.if, undefined);
   assert.match(scale.run, /rc-cleanup-ownership\.cjs/);
-  assert.match(scale.run, /resource=statefulset\/xpod-rc-postgres/);
-  assert.ok(jobs.deploy_and_accept.steps.some(step => step.run?.includes('annotate --local') && step.run.includes('xpod.undefineds.co/rc-owner-seed')));
+  assert.doesNotMatch(scale.run, /statefulset\//);
+  assert.match(scale.run, /scale deployment\/xpod-rc-inngest --replicas=0/);
+  assert.match(scale.run, /delete secret "\$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found/);
   assert.match(scale.run, /resource=deployment\/xpod-rc/);
-  assert.doesNotMatch(scale.run, /deployment\/xpod-cloud|namespace\/|delete|rollout/);
+  assert.doesNotMatch(scale.run, /deployment\/xpod-cloud|namespace\/|delete deployment|delete statefulset|rollout/);
 });
 
 test('different release branches retain the same workflow RC lock through desktop and cleanup', () => {

@@ -116,10 +116,12 @@ jobs:
             echo "::error::deployer cannot patch $GZ_NAMESPACE/$GZ_DEPLOYMENT"
             exit 1
           fi
-          if kubectl auth can-i patch deployment/xpod-cloud -n "$GZ_NAMESPACE" | grep -qx yes; then
-            echo "::error::deployer must not be able to patch xpod-cloud"
-            exit 1
-          fi
+          for prod in xpod-cn xpod-co; do
+            if kubectl auth can-i patch "deployment/$prod" -n "$GZ_NAMESPACE" | grep -qx yes; then
+              echo "::error::deployer must not be able to patch $prod"
+              exit 1
+            fi
+          done
 
       - name: Deploy immutable image
         id: deploy

@@ -52,15 +52,15 @@ describe('release candidate workflow', () => {
     expect(container.readinessProbe.httpGet.path).toBe('/service/status');
   });
 
-  it('only runs on release branches with branch-scoped cancellation and minimal permissions', async () => {
+  it('only runs on release branches with a shared workflow lock and minimal permissions', async () => {
     const workflow = await loadWorkflow();
 
     expect(workflow.on.push.branches).toEqual([ 'release/**' ]);
     expect(workflow.on.push.tags).toBeUndefined();
     expect(workflow.on.workflow_dispatch).toBeDefined();
     expect(workflow.concurrency).toEqual({
-      group: expect.stringContaining('${{ github.ref }}'),
-      'cancel-in-progress': true,
+      group: 'xpod-shared-rc-workflow',
+      'cancel-in-progress': false,
     });
     expect(workflow.permissions).toEqual({
       contents: 'read',
@@ -140,9 +140,9 @@ describe('release candidate workflow', () => {
     expect(preflight.env.APPLE_ID).toBeUndefined();
     expect(runText).not.toContain('MACOS_CERTIFICATE');
     expect(runText).not.toContain('APPLE_APP_SPECIFIC_PASSWORD');
-    expect(runText).toContain('id-rc.undefineds.co');
-    expect(runText).toContain('pods-rc.undefineds.co');
-    expect(runText).toContain('api-rc.undefineds.co');
+    expect(runText).toContain('id-rc.undefineds.cn');
+    expect(runText).toContain('pods-rc.undefineds.cn');
+    expect(runText).toContain('api-rc.undefineds.cn');
     expect(runText).toContain('auth can-i create deployments');
     expect(runText).not.toContain('get secret xpod-rc-tls');
   });
@@ -154,7 +154,7 @@ describe('release candidate workflow', () => {
     const desktopManifest = JSON.parse(await readFile(path.join(repoRoot, 'desktop/package.json'), 'utf8'));
 
     expect(desktop.name).toBe('Build macOS RC desktop');
-    expect(desktop.needs).toEqual([ 'metadata', 'build_qlever_macos_runtime' ]);
+    expect(desktop.needs).toEqual([ 'metadata', 'build_qlever_macos_runtime', 'deploy_and_accept' ]);
     expect(desktop.env.CSC_IDENTITY_AUTO_DISCOVERY).toBe('false');
     for (const key of [ 'CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID' ]) {
       expect(desktop.env[key]).toBeUndefined();
@@ -199,8 +199,7 @@ describe('release candidate workflow', () => {
       'cancel-in-progress': false,
     });
     expect(runText).toContain('node scripts/render-rc-manifests.cjs');
-    expect(runText).toContain('--overlay deploy/sealos/rc-postgres');
-    expect(runText).toContain('kubectl apply -f "$postgres_manifest"');
+    expect(runText).not.toContain('--overlay deploy/sealos/rc-postgres');
     expect(runText).toContain('kubectl apply -f "$rendered_manifest"');
     expect(runText.match(/kubectl apply -f \"\$rendered_manifest\"/g)).toHaveLength(1);
     expect(runText).toContain('SEALOS_NAMESPACE is required');
@@ -212,40 +211,40 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('--image "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"');
     expect(runText).toContain('--seed-secret-name "$XPOD_RC_SEED_SECRET_NAME"');
     expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME"');
-    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-postgres-secret');
+    expect(runText).not.toContain('xpod-rc-postgres-secret');
     expect(runText).not.toContain('kubectl -n "$SEALOS_NAMESPACE" patch deployment/xpod-rc');
     expect(runText).not.toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc');
     expect(runText).not.toContain('kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/xpod-rc');
     expect(runText).toContain('kubectl rollout status deployment/xpod-rc');
-    expect(runText).toContain('kubectl rollout status statefulset/xpod-rc-postgres');
-    expect(runText).toContain("SHOW server_version_num");
     expect(runText).toContain("CREATE EXTENSION IF NOT EXISTS vector");
-    expect(runText).toContain("SELECT extversion FROM pg_extension WHERE extname = 'vector'");
+    expect(runText).toContain("CREATE EXTENSION IF NOT EXISTS xpod_rdf VERSION '0.2.0'");
+    expect(runText).toContain("CREATE EXTENSION IF NOT EXISTS xpod_qlever VERSION '0.4.0'");
     expect(runText).toContain('delete deployment/xpod-rc --cascade=foreground --wait=true --ignore-not-found');
-    expect(runText).toContain('delete statefulset/xpod-rc-postgres --cascade=foreground --wait=true --ignore-not-found');
-    expect(runText).toContain('delete pvc/data-xpod-rc-postgres-0 --ignore-not-found');
+    expect(runText).not.toContain('delete statefulset/xpod-rc-postgres');
+    expect(runText).not.toContain('pvc/data-xpod-rc-postgres-0');
     expect(runText).not.toContain('delete pvc -l');
-    expect(runText.indexOf('delete deployment/xpod-rc --cascade=foreground --wait=true --ignore-not-found'))
-      .toBeLessThan(runText.indexOf('delete statefulset/xpod-rc-postgres'));
-    expect(runText.indexOf('kubectl apply -f "$postgres_manifest"'))
+    expect(runText.indexOf('DROP DATABASE IF EXISTS xpod_rc WITH (FORCE)'))
       .toBeLessThan(runText.indexOf('kubectl apply -f "$rendered_manifest"'));
+    expect(runText).toContain('CREATE DATABASE xpod_rc OWNER xpod_rc');
+    // 扩展由超级用户安装，schema 归属必须一并交给应用角色，否则 CSS 起不来。
+    expect(runText).toContain('ALTER SCHEMA %I OWNER TO xpod_rc');
     expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
-    expect(runText).toContain('https://id-rc.undefineds.co/service/status');
-    expect(runText).toContain('https://pods-rc.undefineds.co');
-    expect(runText).toContain('https://api-rc.undefineds.co');
+    expect(runText).toContain('https://id-rc.undefineds.cn/service/status');
+    expect(runText).toContain('https://pods-rc.undefineds.cn');
+    expect(runText).toContain('https://api-rc.undefineds.cn');
     expect(runText).toContain('/.well-known/openid-configuration');
-    expect(runText).toContain('https://id-rc.undefineds.co/dashboard/');
+    expect(runText).toContain('https://id-rc.undefineds.cn/dashboard/');
     expect(runText).toContain('/settings/');
     expect(runText).toContain('dashboard.html');
     expect(runText).toContain('settings.html');
     expect(runText).toContain('dashboard did not return HTML');
     expect(runText).toContain('settings did not return HTML');
-    expect(runText).toContain('https://api-rc.undefineds.co/api/pod/settings/status');
+    expect(runText).toContain('https://api-rc.undefineds.cn/api/pod/settings/status');
     for (const pair of [
-      [ 'xpod-rc-id-tls', 'id-rc.undefineds.co' ],
-      [ 'xpod-rc-pods-tls', 'pods-rc.undefineds.co' ],
-      [ 'xpod-rc-api-tls', 'api-rc.undefineds.co' ],
+      [ 'xpod-rc-id-tls', 'id-rc.undefineds.cn' ],
+      [ 'xpod-rc-pods-tls', 'pods-rc.undefineds.cn' ],
+      [ 'xpod-rc-api-tls', 'api-rc.undefineds.cn' ],
     ]) {
       expect(runText).toContain(pair[0]);
       expect(runText).toContain(pair[1]);
@@ -261,11 +260,11 @@ describe('release candidate workflow', () => {
     const workflow = await loadWorkflow();
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
-    expect(runText).toContain("['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT'].includes(key)");
-    expect(runText).toContain('identity_db_url="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"');
-    expect(runText).toContain('sparql_endpoint="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"');
-    expect(runText).toContain('pg_password="$(openssl rand -hex 32)"');
-    expect(runText).toContain('echo "::add-mask::$pg_password"');
+    expect(runText).not.toContain("['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT'].includes(key)");
+    expect(runText).not.toContain('identity_db_url="postgresql://xpod_rc:');
+    expect(runText).not.toContain('sparql_endpoint="postgresql://xpod_rc:');
+    expect(runText).not.toContain('pg_password="$(openssl rand -hex 32)"');
+    expect(runText).not.toContain('add-mask::$pg_password');
     expect(runText).toContain('CSS_REDIS_CLIENT');
     expect(runText).toContain('RC Redis DB must use a non-default database index');
     expect(runText).toContain('RC Redis URL must include an explicit nonzero DB index');
@@ -285,13 +284,55 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('rollout status deployment/xpod-rc-minio');
     expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
     expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');
-    expect(runText).toContain('XPOD_GATEWAY_LOCATOR_SECRET');
-    expect(runText).toContain('--from-literal=POSTGRES_DB=xpod_rc');
-    expect(runText).toContain('--from-literal=POSTGRES_USER=xpod_rc');
+    // API 服务启动时会要求它：缺了 rc 会卡在 "Failed to start API Service"。
+    expect(runText).toContain("'XPOD_GATEWAY_LOCATOR_SECRET',");
+    expect(runText).not.toContain('--from-literal=POSTGRES_DB=xpod_rc');
+    expect(runText).not.toContain('--from-literal=POSTGRES_USER=xpod_rc');
     expect(runText).not.toContain('must match the isolated RC PostgreSQL service identity');
     expect(runText).not.toContain('production database is not allowed in RC APP_ENV_FILE');
     expect(runText).not.toMatch(/cat\s+["']?\$APP_ENV_FILE/);
     expect(runText).not.toMatch(/grep .*APP_ENV_FILE/);
+  });
+
+  it.each([
+    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_rc', true],
+    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres.fixture-ns.svc.cluster.local/xpod_rc', true],
+    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_cn', false],
+    ['postgresql://postgres:fixture@xpod-rdf-postgres:5432/xpod_rc', false],
+    ['postgresql://xpod_rc:fixture@production-postgres:5432/xpod_rc', false],
+    ['https://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_rc', false],
+  ])('validates both configured database URLs before resetting the shared RC database (%s)', async (url, allowed) => {
+    const workflow = await loadWorkflow();
+    const run = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Validate RC runtime secret isolation').run;
+    const script = run.match(/<<'NODE'\n([\s\S]*?)\nNODE/)[1];
+    const parent = path.join(repoRoot, '.test-data/candidate-database-isolation');
+    await mkdir(parent, { recursive: true, mode: 0o700 });
+    const directory = await mkdtemp(path.join(parent, 'case-'));
+    const envPath = path.join(directory, 'runtime.env');
+    const seedPath = path.join(directory, 'seed.json');
+    try {
+      for (const key of ['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT']) {
+        const entries = {
+          CSS_IDENTITY_DB_URL: 'postgresql://xpod_rc:fixture@xpod-rdf-postgres/xpod_rc',
+          CSS_SPARQL_ENDPOINT: 'postgresql://xpod_rc:fixture@xpod-rdf-postgres/xpod_rc',
+          CSS_REDIS_CLIENT: 'redis://redis:6379/1',
+          CSS_MINIO_ENDPOINT: 'https://fixture.r2.cloudflarestorage.com',
+          CSS_MINIO_BUCKET_NAME: 'xpod-rc', CSS_MINIO_ACCESS_KEY: 'fixture', CSS_MINIO_SECRET_KEY: 'fixture',
+          XPOD_INNGEST_EVENT_KEY: 'fixture', XPOD_INNGEST_SIGNING_KEY: 'fixture', XPOD_GATEWAY_LOCATOR_SECRET: 'fixture',
+          [key]: url,
+        };
+        await writeFile(envPath, Object.entries(entries).map(([name, value]) => `${name}=${value}`).join('\n'), { mode: 0o600 });
+        await writeFile(seedPath, JSON.stringify([{email: 'alice@fixture'}, {email: 'bob@fixture'}]), { mode: 0o600 });
+        const runValidation = () => execFileSync(process.execPath, ['-', envPath, seedPath], {
+          env: {...process.env, SEALOS_NAMESPACE: 'fixture-ns'}, input: script, stdio: 'pipe',
+        });
+        if (allowed) expect(runValidation).not.toThrow();
+        else expect(runValidation).toThrow(/must use the isolated xpod_rc database and role/);
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+    const reset = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Reset the shared RC database').run;
+    expect(reset).toContain('SHOW server_version_num');
+    expect(reset).toContain("SELECT extversion FROM pg_extension WHERE extname = 'vector'");
   });
 
   it('derives authenticated smoke configuration from the fixed RC seed instead of manual secrets', async () => {
@@ -301,7 +342,7 @@ describe('release candidate workflow', () => {
 
     expect(deploy.env.XPOD_ACCEPTANCE_REAL_XPOD).toBe('true');
     expect(deploy.env.XPOD_ACCEPTANCE_RUN_VISUAL).toBe('true');
-    expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://id-rc.undefineds.co');
+    expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://id-rc.undefineds.cn');
     expect(deploy.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG).toBe('${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}');
     expect(deploy.env.XPOD_AI_PROXY_URL).toBe('${{ secrets.XPOD_AI_PROXY_URL }}');
     expect(deploy.env.XPOD_RC_SEED_CONFIG).toBe('${{ secrets.XPOD_RC_SEED_CONFIG }}');
@@ -349,12 +390,12 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
     expect(runText).toContain('--publish 127.0.0.1::5737');
     expect(runText).toContain('--env XPOD_EDITION=local');
-    expect(runText).toContain('--env SOLID_OIDC_ISSUER=https://id-rc.undefineds.co/');
+    expect(runText).toContain('--env SOLID_OIDC_ISSUER=https://id-rc.undefineds.cn/');
     expect(runText).toContain('docker port "$local_name" 5737/tcp');
     expect(runText).not.toContain('port-forward deployment/xpod-rc 3000:3000');
     expect(runText).toContain('XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file"');
     expect(runText).toContain('XPOD_LIVE_GATEWAY_URL="$gateway"');
-    expect(runText).toContain('XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/"');
+    expect(runText).toContain('XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.cn/"');
     expect(runText).not.toContain('XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX');
     expect(runText).toContain('bun run ai-connections:accept:live');
     expect(runText).toContain('live-gateway-login-chat-local.json');
@@ -584,17 +625,23 @@ describe('release candidate workflow', () => {
     expect(diagnostics.if).toBe('failure()');
     expect(diagnostics.run).toContain('kubectl -n "$SEALOS_NAMESPACE" get');
     expect(diagnostics.run).toContain('describe deployment xpod-rc');
-    expect(diagnostics.run).toContain('describe statefulset xpod-rc-postgres');
-    expect(diagnostics.run).toContain('app=xpod-rc-postgres');
+    expect(diagnostics.run).toContain('describe statefulset xpod-rdf-postgres');
+    expect(diagnostics.run).toContain('app=xpod-rdf-postgres');
     expect(diagnostics.run).toContain('--previous');
     expect(diagnostics.run).toContain('live-gateway-local-container-name');
     expect(diagnostics.run).toContain('docker inspect "$local_name"');
     expect(diagnostics.run).toContain('docker logs "$local_name"');
-    const cleanup = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
-    expect(cleanup.if).toContain('always()');
-    expect(cleanup.if).toContain("vars.XPOD_RC_SCALE_TO_ZERO == 'true'");
-    expect(cleanup.run).toContain('kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0');
-    expect(cleanup.run).toContain('scale statefulset/xpod-rc-postgres --replicas=0');
+    expect(workflow.jobs.deploy_and_accept.steps.some((step: any) => step.name === 'Scale RC deployments to zero')).toBe(false);
+    const cleanupJob = workflow.jobs.cleanup_rc;
+    expect(cleanupJob.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']);
+    expect(cleanupJob.if).toBe('${{ always() }}');
+    expect(workflow.jobs.build_desktop_rc.needs).toContain('deploy_and_accept');
+    const cleanup = cleanupJob.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
+    expect(cleanup.if).toBeUndefined();
+    expect(cleanup.run).toContain('resource=deployment/xpod-rc');
+    expect(cleanup.run).toContain('scale deployment/xpod-rc-inngest --replicas=0');
+    expect(cleanup.run).toContain('delete secret "$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found');
+    expect(cleanup.run).not.toContain('statefulset/');
     expect(cleanup.run).not.toContain('deployment/xpod-inngest');
   });
 

@@ -75,9 +75,9 @@ jobs:
           node - <<'NODE'
           const { Resolver } = require('node:dns').promises;
           const hosts = [
-            'id-rc.undefineds.co',
-            'pods-rc.undefineds.co',
-            'api-rc.undefineds.co',
+            'id-rc.undefineds.cn',
+            'pods-rc.undefineds.cn',
+            'api-rc.undefineds.cn',
           ];
           const resolvers = [ undefined, [ '1.1.1.1', '8.8.8.8' ] ].map((servers) => {
             const resolver = new Resolver();
@@ -193,7 +193,7 @@ jobs:
       XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
       XPOD_ACCEPTANCE_REAL_XPOD: 'true'
       XPOD_ACCEPTANCE_RUN_VISUAL: 'true'
-      XPOD_SETTINGS_E2E_BASE_URL: https://id-rc.undefineds.co
+      XPOD_SETTINGS_E2E_BASE_URL: https://id-rc.undefineds.cn
       XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
       XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
       REF_NAME: ${{ github.ref_name }}
@@ -269,6 +269,8 @@ jobs:
           const text = fs.readFileSync(process.argv[2], 'utf8');
           const seedText = fs.readFileSync(process.argv[3], 'utf8');
           const required = [
+            'CSS_IDENTITY_DB_URL',
+            'CSS_SPARQL_ENDPOINT',
             'CSS_REDIS_CLIENT',
             'CSS_MINIO_ENDPOINT',
             'CSS_MINIO_BUCKET_NAME',
@@ -276,6 +278,8 @@ jobs:
             'CSS_MINIO_SECRET_KEY',
             'XPOD_INNGEST_EVENT_KEY',
             'XPOD_INNGEST_SIGNING_KEY',
+            // API 服务在启动时就要求它（缺了会 "Failed to start API Service"），
+            // 所以这是必需项而不是可选项。
             'XPOD_GATEWAY_LOCATOR_SECRET',
           ];
           const entries = new Map();
@@ -287,6 +291,24 @@ jobs:
           for (const key of required) {
             if (!entries.has(key) || entries.get(key).trim() === '') {
               throw new Error(`missing required RC secret key: ${key}`);
+            }
+          }
+          const namespace = process.env.SEALOS_NAMESPACE;
+          const sharedPostgresHosts = new Set([
+            'xpod-rdf-postgres',
+            `xpod-rdf-postgres.${namespace}`,
+            `xpod-rdf-postgres.${namespace}.svc`,
+            `xpod-rdf-postgres.${namespace}.svc.cluster.local`,
+          ]);
+          for (const key of ['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT']) {
+            let url;
+            try { url = new URL(entries.get(key)); } catch {
+              throw new Error(`${key} must be a valid PostgreSQL URL`);
+            }
+            if (!['postgres:', 'postgresql:'].includes(url.protocol) ||
+                decodeURIComponent(url.username) !== 'xpod_rc' || url.pathname !== '/xpod_rc' ||
+                !sharedPostgresHosts.has(url.hostname) || (url.port && url.port !== '5432')) {
+              throw new Error(`${key} must use the isolated xpod_rc database and role on shared PostgreSQL`);
             }
           }
           const seed = JSON.parse(seedText);
@@ -330,13 +352,9 @@ jobs:
           if (objectStoreUrl.protocol !== 'https:' || !objectStoreUrl.hostname.endsWith('.r2.cloudflarestorage.com')) {
             throw new Error('RC object-store endpoint must use Cloudflare R2 over HTTPS');
           }
-          const sanitized = [];
-          for (const [ key, value ] of entries) {
-            if (!['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT'].includes(key)) {
-              sanitized.push(`${key}=${value}`);
-            }
-          }
-          fs.writeFileSync(process.argv[2], `${sanitized.join('\n')}\n`);
+          // RC 与 cn/co 共用同一个 Postgres 实例，库由 APP_ENV_FILE 指定；
+          // 这两个键不再过滤（过滤会让配置里的值静默失效）。
+          fs.writeFileSync(process.argv[2], `${[ ...entries ].map(([ key, value ]) => `${key}=${value}`).join('\n')}\n`);
           NODE
           bun scripts/verify-rc-r2-access.ts --env-file "$env_file"
           bun scripts/materialize-rc-seed-config.ts \
@@ -348,20 +366,7 @@ jobs:
       - name: Create runtime secrets
         run: |
           set -euo pipefail
-          pg_password="$(openssl rand -hex 32)"
-          pg_host="xpod-rc-postgres"
-          identity_db_url="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"
-          sparql_endpoint="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"
-          echo "::add-mask::$pg_password"
-          echo "::add-mask::$identity_db_url"
-          echo "::add-mask::$sparql_endpoint"
-          printf 'CSS_IDENTITY_DB_URL=%s\n' "$identity_db_url" >> "${RUNNER_TEMP}/xpod-rc.env"
-          printf 'CSS_SPARQL_ENDPOINT=%s\n' "$sparql_endpoint" >> "${RUNNER_TEMP}/xpod-rc.env"
-          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-postgres-secret \
-            --from-literal=POSTGRES_DB=xpod_rc \
-            --from-literal=POSTGRES_USER=xpod_rc \
-            --from-literal=POSTGRES_PASSWORD="$pg_password" \
-            --dry-run=client -o yaml | kubectl apply -f -
+          # 不再创建独立的 RC Postgres 及其随机密码；DB URL 由 APP_ENV_FILE 提供。
           kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME" \
             --from-env-file="${RUNNER_TEMP}/xpod-rc.env" \
             --dry-run=client -o yaml | kubectl apply -f -
@@ -369,15 +374,53 @@ jobs:
             --from-file=rc.json="${RUNNER_TEMP}/xpod-rc-seed.json" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Reset the shared RC database
+        run: |
+          set -euo pipefail
+          # RC 与 cn/co 共用 xpod-rdf-postgres：不重建实例，只重置 RC 自己的库。
+          # 扩展顺序是硬要求：vector -> xpod_rdf -> xpod_qlever；
+          # 顺序错了会缺 native_sparql_capabilities，应用启动即失败。
+          # 用 statefulset/<name> 交给 kubectl 挑就绪 Pod；不用 items[0]（可能选中正在终止的那个）
+          kubectl -n "$SEALOS_NAMESPACE" exec -i statefulset/xpod-rdf-postgres -- sh -s <<'SQL'
+          set -e
+          export PGPASSWORD="$POSTGRES_PASSWORD"
+          psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS xpod_rc WITH (FORCE)'
+          psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE xpod_rc OWNER xpod_rc'
+          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
+          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_rdf VERSION '0.2.0'"
+          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_qlever VERSION '0.4.0'"
+          postgres_version_num="$(psql -U "$POSTGRES_USER" -d xpod_rc --no-align --tuples-only --command 'SHOW server_version_num' | tr -d '[:space:]')"
+          if ! echo "$postgres_version_num" | grep -Eq '^17[0-9]{4}$'; then
+            echo 'RC database must run PostgreSQL 17' >&2
+            exit 1
+          fi
+          vector_version="$(psql -U "$POSTGRES_USER" -d xpod_rc --no-align --tuples-only --command "SELECT extversion FROM pg_extension WHERE extname = 'vector'" | tr -d '[:space:]')"
+          test -n "$vector_version"
+          # 扩展是用超级用户装的，schema 因此归 postgres：应用角色读不了，
+          # 会以 "permission denied for schema xpod_rdf" 起不来。整库交给应用角色。
+          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 <<'SQL2'
+          DO $do$
+          DECLARE r record;
+          BEGIN
+            FOR r IN SELECT nspname FROM pg_namespace
+                     WHERE nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+                       AND pg_get_userbyid(nspowner) <> 'xpod_rc'
+            LOOP
+              EXECUTE format('ALTER SCHEMA %I OWNER TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON SCHEMA %I TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON ALL TABLES IN SCHEMA %I TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON ALL SEQUENCES IN SCHEMA %I TO xpod_rc', r.nspname);
+              EXECUTE format('GRANT ALL ON ALL FUNCTIONS IN SCHEMA %I TO xpod_rc', r.nspname);
+            END LOOP;
+          END
+          $do$;
+          SQL2
+          SQL
+
       - name: Deploy RC image by digest
         run: |
           set -euo pipefail
-          postgres_manifest="${RUNNER_TEMP}/xpod-rc-postgres.rendered.yaml"
           rendered_manifest="${RUNNER_TEMP}/xpod-rc.rendered.yaml"
-          node scripts/render-rc-manifests.cjs \
-            --overlay deploy/sealos/rc-postgres \
-            --output "$postgres_manifest" \
-            --namespace "$SEALOS_NAMESPACE"
           node scripts/render-rc-manifests.cjs \
             --overlay deploy/sealos/rc \
             --output "$rendered_manifest" \
@@ -386,29 +429,6 @@ jobs:
             --seed-secret-name "$XPOD_RC_SEED_SECRET_NAME" \
             --image "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
           kubectl -n "$SEALOS_NAMESPACE" delete deployment/xpod-rc --cascade=foreground --wait=true --ignore-not-found
-          kubectl -n "$SEALOS_NAMESPACE" delete statefulset/xpod-rc-postgres --cascade=foreground --wait=true --ignore-not-found
-          kubectl -n "$SEALOS_NAMESPACE" delete service/xpod-rc-postgres --ignore-not-found
-          kubectl -n "$SEALOS_NAMESPACE" delete pvc/data-xpod-rc-postgres-0 --ignore-not-found
-          kubectl annotate --local -f "$postgres_manifest" --overwrite \
-            "xpod.undefineds.co/rc-owner-seed=$XPOD_RC_SEED_SECRET_NAME" -o yaml > "${postgres_manifest}.owned"
-          mv "${postgres_manifest}.owned" "$postgres_manifest"
-          kubectl apply -f "$postgres_manifest"
-          kubectl rollout status statefulset/xpod-rc-postgres -n "$SEALOS_NAMESPACE" --timeout=600s
-          postgres_version_num="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
-            psql -U xpod_rc -d xpod_rc --no-align --tuples-only --command 'SHOW server_version_num' | tr -d '[:space:]')"
-          if ! [[ "$postgres_version_num" =~ ^17[0-9]{4}$ ]]; then
-            echo "::error::RC database must run PostgreSQL 17"
-            exit 1
-          fi
-          kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
-            psql -v ON_ERROR_STOP=1 -U xpod_rc -d xpod_rc --command 'CREATE EXTENSION IF NOT EXISTS vector'
-          vector_version="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
-            psql -U xpod_rc -d xpod_rc --no-align --tuples-only \
-              --command "SELECT extversion FROM pg_extension WHERE extname = 'vector'" | tr -d '[:space:]')"
-          if [ -z "$vector_version" ]; then
-            echo "::error::RC database did not activate the vector extension"
-            exit 1
-          fi
           kubectl -n "$SEALOS_NAMESPACE" get configmap gateway -o yaml \
             | node scripts/update-gateway-rc-configmap.cjs --namespace "$SEALOS_NAMESPACE" \
             | kubectl apply -f -
@@ -467,9 +487,9 @@ jobs:
         run: |
           set -euo pipefail
           for pair in \
-            'xpod-rc-id-tls:id-rc.undefineds.co' \
-            'xpod-rc-pods-tls:pods-rc.undefineds.co' \
-            'xpod-rc-api-tls:api-rc.undefineds.co'
+            'xpod-rc-id-tls:id-rc.undefineds.cn' \
+            'xpod-rc-pods-tls:pods-rc.undefineds.cn' \
+            'xpod-rc-api-tls:api-rc.undefineds.cn'
           do
             secret_name="${pair%%:*}"
             host="${pair#*:}"
@@ -490,23 +510,23 @@ jobs:
       - name: Verify public RC service
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/service/status > /dev/null
-          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/.well-known/openid-configuration > /dev/null
-          curl --fail --silent --show-error --max-time 15 https://pods-rc.undefineds.co/ > /dev/null
-          curl --fail --silent --show-error --max-time 15 https://api-rc.undefineds.co/service/status > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.cn/service/status > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.cn/.well-known/openid-configuration > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://pods-rc.undefineds.cn/ > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://api-rc.undefineds.cn/service/status > /dev/null
           dashboard_file="$RUNNER_TEMP/dashboard.html"
-          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.co/dashboard/ --output "$dashboard_file"
+          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.cn/dashboard/ --output "$dashboard_file"
           if ! grep -qi '<!doctype html\|<html' "$dashboard_file"; then
             echo "::error::dashboard did not return HTML"
             exit 1
           fi
           settings_file="$RUNNER_TEMP/settings.html"
-          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.co/settings/ --output "$settings_file"
+          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.cn/settings/ --output "$settings_file"
           if ! grep -qi '<!doctype html\|<html' "$settings_file"; then
             echo "::error::settings did not return HTML"
             exit 1
           fi
-          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 https://api-rc.undefineds.co/api/pod/settings/status)"
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 https://api-rc.undefineds.cn/api/pod/settings/status)"
           if [ "$status" != "401" ]; then
             echo "::error::protected settings route must reject anonymous requests with 401"
             exit 1
@@ -561,7 +581,7 @@ jobs:
           docker run --detach --name "$local_name" \
             --publish 127.0.0.1::5737 \
             --env XPOD_EDITION=local \
-            --env SOLID_OIDC_ISSUER=https://id-rc.undefineds.co/ \
+            --env SOLID_OIDC_ISSUER=https://id-rc.undefineds.cn/ \
             --env CSS_ROOT_FILE_PATH=/app/data \
             --env CSS_IDENTITY_DB_URL=/app/data/identity.sqlite \
             --env DATABASE_URL=/app/data/identity.sqlite \
@@ -593,7 +613,7 @@ jobs:
           XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
           XPOD_LIVE_TASK_APPROVAL=1 \
           XPOD_LIVE_GATEWAY_URL="$gateway" \
-          XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/" \
+          XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.cn/" \
           bun run ai-connections:accept:live
 
           node - <<'NODE'
@@ -719,13 +739,13 @@ jobs:
         run: |
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods,svc -o wide || true
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc || true
-          kubectl -n "$SEALOS_NAMESPACE" describe statefulset xpod-rc-postgres || true
+          kubectl -n "$SEALOS_NAMESPACE" describe statefulset xpod-rdf-postgres || true
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc || true
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc-postgres || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rdf-postgres || true
           kubectl -n "$SEALOS_NAMESPACE" get events --sort-by='.lastTimestamp' | tail -n 200 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 --previous || true
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc-postgres --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rdf-postgres --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
           if [ -f "${RUNNER_TEMP}/live-gateway-local-container-name" ]; then
             local_name="$(cat "${RUNNER_TEMP}/live-gateway-local-container-name")"
             if [ -n "$local_name" ]; then
@@ -968,7 +988,7 @@ jobs:
             --archive "$new_zip" \
             --version "$CANDIDATE_VERSION" \
             --source-sha "${{ github.sha }}" \
-            --issuer "https://id-rc.undefineds.co/" \
+            --issuer "https://id-rc.undefineds.cn/" \
             --key-file "$provider_file" \
             --private-directory "${RUNNER_TEMP}/desktop-permission-private" \
             --evidence "${RUNNER_TEMP}/desktop-permission-evidence.json"
@@ -1117,7 +1137,7 @@ jobs:
             --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
             --source-branch "$REF_NAME" \
             --image-digest "${{ needs.build_image.outputs.digest }}" \
-            --endpoint "https://id-rc.undefineds.co" \
+            --endpoint "https://id-rc.undefineds.cn" \
             --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
             --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
       - name: Upload the only stable-promotion evidence
@@ -1144,9 +1164,7 @@ jobs:
       XPOD_RC_SEED_SECRET_NAME: xpod-rc-seed-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
-        if: ${{ vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
       - name: Scale RC deployments to zero
-        if: ${{ vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
         run: |
           set -euo pipefail
           if [[ ! "$SEALOS_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#SEALOS_NAMESPACE} -gt 63 ]]; then
@@ -1157,18 +1175,22 @@ jobs:
           umask 077
           export KUBECONFIG="${RUNNER_TEMP}/rc-cleanup-kubeconfig"
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > "$KUBECONFIG"
-          for kind in deployment postgres; do
-            if [ "$kind" = deployment ]; then resource=deployment/xpod-rc; else resource=statefulset/xpod-rc-postgres; fi
-            observation="${RUNNER_TEMP}/rc-cleanup-${kind}.json"
-            kubectl -n "$SEALOS_NAMESPACE" get "$resource" --ignore-not-found -o json > "$observation"
-            set +e
-            node scripts/rc-cleanup-ownership.cjs "$kind" "$observation" "$SEALOS_NAMESPACE" "$XPOD_RC_SEED_SECRET_NAME"
-            ownership_status=$?
-            set -e
-            if [ "$ownership_status" -eq 2 ]; then
-              echo "RC resource is absent or belongs to another run; resource not scaled"
-              continue
-            fi
-            if [ "$ownership_status" -ne 0 ]; then exit "$ownership_status"; fi
+          resource=deployment/xpod-rc
+          observation="${RUNNER_TEMP}/rc-cleanup-deployment.json"
+          kubectl -n "$SEALOS_NAMESPACE" get "$resource" --ignore-not-found -o json > "$observation"
+          set +e
+          node scripts/rc-cleanup-ownership.cjs deployment "$observation" "$SEALOS_NAMESPACE" "$XPOD_RC_SEED_SECRET_NAME"
+          ownership_status=$?
+          set -e
+          if [ "$ownership_status" -eq 0 ]; then
             kubectl -n "$SEALOS_NAMESPACE" scale "$resource" --replicas=0
-          done
+            # The RC-only Inngest deployment may be absent when the shared service is used.
+            if [ -n "$(kubectl -n "$SEALOS_NAMESPACE" get deployment/xpod-rc-inngest --ignore-not-found -o name)" ]; then
+              kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0
+            fi
+          elif [ "$ownership_status" -eq 2 ]; then
+            echo "RC resource is absent or belongs to another run; resource not scaled"
+          else
+            exit "$ownership_status"
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" delete secret "$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found
