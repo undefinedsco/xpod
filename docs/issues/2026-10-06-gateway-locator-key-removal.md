@@ -114,3 +114,24 @@ HEAD 生产代码里**已经没有任何地方签发** `xpod_gw_v1_...` key（`c
 - `docs/superpowers/specs/2026-08-03-plaintext-pod-credentials-design.md`
 - `docs/superpowers/plans/2026-08-04-client-credentials-convergence.md`
 - 交接记录：`~/develop/undefineds/handover/DEPLOYMENT-STATE-2026-10-06.md`
+
+---
+
+## 9. 为什么 owner 不该出现在 credential 的 id 里（2026-10-06 追加）
+
+原始设计的错误链条是这样的：
+
+> API 需要知道「去**哪个** Pod 查这条 credential」→ 于是把 **owner 编进 id**（再用 locator 加密）→ 于是需要一把**跨副本稳定的密钥**来解它 → 于是它成了 **API 启动的必需项**。
+
+而正确的模型是：**Pod 本身就是 owner 的作用域**。记录存在谁的 Pod 里，owner 就是谁 —— 不需要在任何 id、列或索引里再写一次。请求本来就跑在用户凭据的上下文里（session 的 owner），所以：
+
+- credential 的 id 应当是**纯不透明 id**（例如 keyId），**不含 owner**；
+- 需要 owner 时**从已认证的 session 取**，不要从 id 反解；
+- 于是 locator 与那把密钥**都没有存在理由**（本次已删除）。
+
+**因此，后续处理仓库外的 `@undefineds.co/models`（在 `node_modules`，本仓库不得改）时，正确改法是：**
+
+- ❌ **不要**给 `credentialResource` 加 owner 列 —— 那是在迁就错误模型；
+- ✅ 把「从 id 反解 owner」改成「owner 取自当前请求的 session」，id 退化为普通主键。
+
+同理，仓库内已删除的 `PodGatewayAccessKeyRepository` 之类的「先解 id 得 owner、再按 owner 找 Pod」的写法，都不应被重新引入。
