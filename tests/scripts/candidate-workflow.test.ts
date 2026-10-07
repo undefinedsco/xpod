@@ -134,6 +134,16 @@ esac
     }
   });
 
+  it('checks out the candidate before running the RC boundary script', async () => {
+    const workflow = await loadWorkflow();
+    const steps = workflow.jobs.rc_prerequisites.steps;
+    const checkout = steps.findIndex((step: any) => step.uses === 'actions/checkout@v4');
+    const boundary = steps.findIndex((step: any) =>
+      step.run?.includes('node scripts/check-rc-deployment-boundary.cjs'));
+    expect(checkout).toBeGreaterThanOrEqual(0);
+    expect(boundary).toBeGreaterThan(checkout);
+  });
+
   it('allows measured cold image pulls without extending application health probes', async () => {
     const workflow = await loadWorkflow();
     const deployment = parseDocument(await readFile(
