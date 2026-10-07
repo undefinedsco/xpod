@@ -167,9 +167,37 @@ async function waitForKernelMount(mnt: string, fixtureName: string, timeoutMs = 
 
 async function sampleRss(pid: number | undefined): Promise<{ kib: number; atMs: number } | undefined> {
   if (!pid) return undefined;
+  if (process.platform === 'linux') {
+    // Fork/exec can close inherited FUSE descriptors before returning to the
+    // parent, blocking the colocated HTTP fixture during an in-flight write.
+    try {
+      const kib = parseLinuxRss(await readFile(`/proc/${pid}/status`, 'utf8'));
+      return kib === undefined ? undefined : { kib, atMs: Date.now() };
+    } catch { return undefined; }
+  }
   const result = await exec('ps', [ '-o', 'rss=', '-p', String(pid) ], {}, 5_000);
   const kib = Number(result.stdout.trim());
   return Number.isFinite(kib) && kib > 0 ? { kib, atMs: Date.now() } : undefined;
+}
+function parseLinuxRss(status: string): number | undefined {
+  const match = /^VmRSS:\s+(\d+) kB$/m.exec(status);
+  const kib = match ? Number(match[1]) : 0;
+  return Number.isSafeInteger(kib) && kib > 0 ? kib : undefined;
+}
+async function linuxThreadWaits(pids: number[]): Promise<string> {
+  const rows: string[] = [];
+  for (const pid of pids) {
+    try {
+      for (const tid of (await readdir(`/proc/${pid}/task`)).filter((id) => /^\d+$/.test(id)).slice(0, 256)) {
+        try {
+          const base = `/proc/${pid}/task/${tid}`;
+          const [wait, name] = await Promise.all([readFile(`${base}/wchan`, 'utf8'), readFile(`${base}/comm`, 'utf8')]);
+          rows.push(`${pid} ${tid} ${wait.trim()} ${name.trim()}`);
+        } catch { rows.push(`${pid} ${tid} unavailable`); }
+      }
+    } catch { rows.push(`${pid} unavailable`); }
+  }
+  return rows.join('\n').slice(0, 8192);
 }
 function hashOfSize(mib: number): string {
   const expected = createHash('sha256'); const chunk = Buffer.alloc(CHUNK, 0x78);
@@ -370,7 +398,7 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     const started = performance.now();
     let failure: { observedUTC: string; elapsedMs: number; stage: string; sizeMiB?: number } | undefined;
     const stages: { stage: string; sizeMiB?: number; elapsedMs: number; observedUTC: string }[] = [];
-    const threadWaits: { observedUTC: string; state: ExecResult['state']; exit: number | null; rows: string; resources: Record<string, number> }[] = [];
+    const threadWaits: { observedUTC: string; source: 'procfs-no-child'; rows: string; resources: Record<string, number> }[] = [];
     const journal = async (): Promise<void> => {
       if (!process.env.XPOD_MOUNTED_EVIDENCE) return;
       const previous = stages[stages.length - 1];
@@ -426,8 +454,8 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
           if (process.platform !== 'linux' || waitSample || threadWaits.length >= 180) return;
           const resources: Record<string, number> = {};
           for (const type of process.getActiveResourcesInfo()) resources[type] = (resources[type] ?? 0) + 1;
-          waitSample = exec('ps', ['-L', '-p', [process.pid, daemon.child.pid].filter(Boolean).join(','), '-o', 'pid=,tid=,wchan:32=,comm='], {}, 5000)
-            .then((result) => { threadWaits.push({ observedUTC: new Date().toISOString(), state: result.state, exit: result.actualExit, rows: result.stdout.slice(0, 8192), resources }); })
+          waitSample = linuxThreadWaits([process.pid, ...(daemon.child.pid ? [daemon.child.pid] : [])])
+            .then((rows) => { threadWaits.push({ observedUTC: new Date().toISOString(), source: 'procfs-no-child', rows, resources }); })
             .finally(() => { waitSample = undefined; });
         };
         const waitSampler = setInterval(sampleWaits, 10_000); sampleWaits();
@@ -676,6 +704,14 @@ describe.skipIf(runOverlay)('native mounted platform matrix (gated)', () => {
 });
 
 describe('RSS sampling is non-recursive and bounded', () => {
+  it('parses only positive Linux resident-memory values with explicit KiB units', () => {
+    expect(parseLinuxRss('Name:\thelper\nVmRSS:\t1234 kB\n')).toBe(1234);
+    for (const input of ['VmSize: 1234 kB', 'VmRSS: 0 kB', 'VmRSS: -1 kB', 'VmRSS: 2 MB', 'VmRSS: 999999999999999999999 kB']) expect(parseLinuxRss(input)).toBeUndefined();
+  });
+  it.runIf(process.platform === 'linux')('observes its own RSS and threads through procfs without launching a child', async () => {
+    expect((await sampleRss(process.pid))?.kib).toBeGreaterThan(0);
+    expect(await linuxThreadWaits([process.pid])).toContain(`${process.pid} ${process.pid} `);
+  });
   it('a single sample resolves without recursively spawning ps', async () => {
     const sample = await sampleRss(process.pid);
     expect(sample, 'one sample returns a numeric value').toBeTruthy();

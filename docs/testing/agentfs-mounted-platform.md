@@ -51,6 +51,18 @@ The next diagnostic captures bounded Linux thread wait points for only the test
 process/helper plus Node active-resource type counts. No argv or credentials
 are captured; no product or acceptance policy is changed.
 
+Run [37609620312](https://github.com/undefinedsco/xpod/actions/runs/37609620312)
+again failed 512 MiB copy-up. Its bounded thread evidence shows the Node main
+thread in `anon_pipe_read`, with all four libuv workers idle; only three samples
+were collected across the long timeout, disproving the worker-pool saturation
+hypothesis. The pinned upstream FUSE write handler synchronously `block_on`s
+`pwrite`, so fork/exec descriptor closure can wait for a queued FUSE flush while
+the same Node parent must serve the HTTP response. Linux RSS/thread sampling now
+reads `/proc` directly, without spawning while mounted descriptors are active.
+This tests the sampler-induced deadlock hypothesis; actual mounted acceptance
+is still required before claiming the failure fixed. Budgets and product pins
+remain unchanged.
+
 Actual mounted (OS-level) acceptance for the frozen product archive, separate
 from the source-bound native unit/install CI. The native compiler workflow
 (`agentfs-native-acceptance.yml`) only runs on `codex/agentfs-native-acceptance`,
