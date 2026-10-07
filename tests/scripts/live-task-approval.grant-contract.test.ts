@@ -6,7 +6,7 @@ import { registerTaskCredentialRoutes } from '../../src/api/handlers/TaskCredent
 import { getTaskCredentialDatabase, resetTaskCredentialDatabases } from '../../src/api/tasks/TaskCredentialDatabase';
 import { TaskCredentialStore } from '../../src/api/tasks/TaskCredentialStore';
 import { DeploymentRootKeyProvider, SecretCellVault } from '../../src/security/secret-cell';
-import { acceptLiveTaskApproval } from '../../scripts/helpers/live-task-approval';
+import { acceptLiveTaskApproval, summarizeLiveTaskFailure } from '../../scripts/helpers/live-task-approval';
 
 vi.mock('@undefineds.co/drizzle-solid', () => ({ drizzle: () => ({}) }));
 
@@ -14,6 +14,21 @@ vi.mock('@undefineds.co/drizzle-solid', () => ({ drizzle: () => ({}) }));
 afterEach(() => { vi.useRealTimers(); });
 
 describe('live Task acceptance matches the TaskCredentialHandler wire contract', () => {
+  it('records the real pre-case HTTP failure for the desktop public projection', async () => {
+    const observed = vi.fn();
+    const result = await acceptLiveTaskApproval({ gateway: 'https://gateway.example/',
+      podUrl: 'https://pod.example/alice/', webId: 'https://id.example/alice/card#me',
+      ownerInterfaceKey: 'synthetic-private-key',
+      ownerFetch: async () => new Response(JSON.stringify({ error: 'Authentication required', private: 'private-body' }), { status: 401 }),
+      session: { info: { isLoggedIn: true }, fetch } as SolidAuthSession, onEvidence: observed });
+    expect(result.ok).toBe(false);
+    expect(result.cases).toEqual([]);
+    expect(observed).toHaveBeenCalled();
+    expect(summarizeLiveTaskFailure(result)).toEqual({ phase: 'grant', category: 'assertion', httpStatus: 401,
+      taskError: 'authentication_required', completedCases: 0, cleanupOk: true });
+    expect(JSON.stringify(summarizeLiveTaskFailure(result))).not.toMatch(/synthetic-private-key|private-body/u);
+  });
+
   it.each(['normal', 'malformed', 'late-commit', 'unobserved'] as const)('closes the real grant lifecycle after %s outcome', async outcome => {
     const malformed = outcome === 'malformed';
     const late = outcome === 'late-commit';
