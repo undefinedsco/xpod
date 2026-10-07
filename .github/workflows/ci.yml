@@ -64,6 +64,9 @@ jobs:
       - name: Install Chromium for browser-backed unit and layout regressions
         run: bunx playwright install --with-deps chromium
 
+      - name: Node release and tooling tests
+        run: node --test tests/scripts/*.node-test.cjs tests/scripts/*.node-test.mjs
+
       - name: Unit tests
         run: bun run test:run
 

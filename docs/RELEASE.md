@@ -510,7 +510,12 @@ SDK 冷编译（BuildKit 无缓存）的实测对比——同一镜像、同一 
 
 发布相关改动提交前至少运行：
 
+Node 发布与工具测试使用独立的 `node:test` runner，不包含在 Vitest 单元测试中。
+普通 PR CI 会在单元测试前运行全部 `tests/scripts/*.node-test.cjs` 和
+`tests/scripts/*.node-test.mjs`，避免 workflow 契约漂移直到 RC 才暴露。
+
 ```bash
+node --test tests/scripts/*.node-test.cjs tests/scripts/*.node-test.mjs
 bun run test -- \
   tests/scripts/release-candidate.test.ts \
   tests/scripts/release-acceptance-manifest.test.ts \
