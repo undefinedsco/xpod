@@ -6,6 +6,7 @@ import { Toaster } from '@undefineds.co/shared-ui'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AiGatewayKeysSection } from '../src/AiGatewayKeysSection'
 import { AiConnectionsPanel } from '../src/AiConnectionsPanel'
+import { createAiConnectionsClient } from '../src/contract/ai-connections-client'
 import type { AiConnectionsClient, AiGatewayModel, GatewayKeyRecord } from '../src/contract/ai-connections-client'
 import type {
   AiClientConfigurationBridge,
@@ -483,6 +484,67 @@ describe('Xpod Xpod 密钥', () => {
     expect(bridge.verify).not.toHaveBeenCalled()
   })
 
+  it('keeps a session-applied key testable after an Account refresh that carries no binding', async () => {
+    const resource = 'https://id.example/.account/credentials/one/'
+    let entries = [{ clientId: 'client-id-1', label: 'Work laptop', resource, webId: WEB_ID }]
+    const credentials = {
+      create: vi.fn(async () => ({ apiKey: 'sk-first-wrapper', clientId: 'client-id-1', resource })),
+      list: vi.fn(async () => entries),
+      revoke: vi.fn(async () => undefined),
+    }
+    const current = realClient(credentials)
+    const bridge = configurationBridge()
+    const view = render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+
+    // The Account list owns no application state, so the refreshed row comes back without
+    // `appliedTo`; the session still knows the plan it wrote and must keep offering its test.
+    view.rerender(<><AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} liveRevision={1} /><Toaster /></>)
+    await waitFor(() => expect(credentials.list).toHaveBeenCalledTimes(2))
+    expect(rowByKey('client-id-1')?.getAttribute('data-key-binding')).toBe('bound')
+    fireEvent.click(await screen.findByRole('button', { name: '测试一次' }))
+    await waitFor(() => expect(bridge.verify).toHaveBeenCalledWith({ client: 'codex', planId: 'plan' }))
+
+    // Once the Account stops listing the key, the observation goes with it: a row that reappears
+    // later is not handed back a binding it no longer has evidence for.
+    entries = []
+    view.rerender(<><AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} liveRevision={2} /><Toaster /></>)
+    await waitFor(() => expect(rowByKey('client-id-1')).toBeNull())
+    entries = [{ clientId: 'client-id-1', label: 'Work laptop', resource, webId: WEB_ID }]
+    view.rerender(<><AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} liveRevision={3} /><Toaster /></>)
+    await waitFor(() => expect(rowByKey('client-id-1')?.getAttribute('data-key-binding')).toBe('unbound'))
+    expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull()
+  })
+
+  it('does not hand a refreshed row a binding when the session digest changed', async () => {
+    const resource = 'https://id.example/.account/credentials/one/'
+    const credentials = {
+      create: vi.fn(async () => ({ apiKey: 'sk-first-wrapper', clientId: 'client-id-1', resource })),
+      list: vi.fn(async () => [{ clientId: 'client-id-1', label: 'Work laptop', resource, webId: WEB_ID }]),
+      revoke: vi.fn(async () => undefined),
+    }
+    const current = realClient(credentials)
+    const bridge = configurationBridge()
+    const view = render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    expect(rowByKey('client-id-1')?.getAttribute('data-key-binding')).toBe('bound')
+
+    // A different wrapper is issued for the same credential id, so this session's digest for the
+    // key changes: the old application must not be attributed to the row that now carries it.
+    credentials.create.mockResolvedValueOnce({ apiKey: 'sk-second-wrapper', clientId: 'client-id-1', resource })
+    await current.createGatewayKey({ name: 'Work laptop' })
+
+    view.rerender(<><AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} liveRevision={1} /><Toaster /></>)
+    await waitFor(() => expect(credentials.list).toHaveBeenCalledTimes(2))
+    expect(rowByKey('client-id-1')?.getAttribute('data-key-binding')).toBe('unbound')
+    expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull()
+  })
   it('offers the client configuration copy for the declared purpose', async () => {
     const current = client()
     render(<AiGatewayKeysSection client={current} />)
@@ -673,6 +735,26 @@ function configurationBridge(): AiClientConfigurationBridge {
     verify: vi.fn(async () => ({ status: 'configured' as const })),
     restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
   }
+}
+
+/**
+ * The real request client over a fake Account capability. Using it (rather than a fixture that
+ * already carries `appliedTo`) is what makes a refresh genuinely drop the binding, because the
+ * Account list is the only key source and it owns no application state.
+ */
+function realClient(credentials: unknown): AiConnectionsClient {
+  return createAiConnectionsClient({
+    webId: WEB_ID,
+    podBaseUrl: 'https://pod.example',
+    authenticatedFetch: (() => {
+      throw new Error('no Pod request is expected for Account credential management')
+    }) as unknown as typeof fetch,
+    clientCredentials: credentials as never,
+  })
+}
+
+function rowByKey(id: string): HTMLElement | null {
+  return document.querySelector(`li[data-key-id="${id}"]`)
 }
 
 describe('Xpod model list selection', () => {

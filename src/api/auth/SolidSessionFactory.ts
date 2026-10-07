@@ -46,11 +46,14 @@ const DEFAULT_TOKEN_LIFETIME_SECONDS = 300;
 const DEFAULT_MAX_ENTRIES = 256;
 
 /**
- * Exchanges CSS client credentials for Solid tokens, once per credential.
+ * Exchanges CSS client credentials for Solid tokens.
  *
- * Inbound authentication and outbound Pod access share this cache, so one request that arrives
- * with an `sk-` wrapper and then reads the Pod performs a single token exchange and keeps the
- * key the token is bound to. Cache identity is the issuer, the complete credential and its
+ * Inbound admission is a fresh exchange with the issuer on every request: a session in this cache
+ * proves only that some earlier exchange succeeded, never that the credential is still
+ * registered. The cache serves the outbound side - one request that arrives with an `sk-` wrapper
+ * and then reads the Pod reuses the token its own admission just obtained instead of exchanging
+ * the same credential a second time, and repeated Pod work keeps a live token and the key it is
+ * bound to until it is spent. Cache identity is the issuer, the complete credential and its
  * version - never just the owner or the client id, which are public identification rather than
  * authentication evidence.
  */
@@ -65,6 +68,16 @@ export class SolidSessionFactory {
   /** Cache keys per client id, so a revoked credential can be forgotten without its secret. */
   private readonly keysByClientId = new Map<string, Set<string>>();
   private readonly clientIdByKey = new Map<string, string>();
+  /**
+   * Monotonic per-client invalidation counter. `admit` reads it before its exchange and only
+   * publishes the result while it is unchanged, so a success that resolves after a revocation
+   * cannot hand the outbound cache authority the revocation just took away. It is not a
+   * revocation record and never admits anything: every request still proves its own credential
+   * with a fresh exchange.
+   */
+  private readonly invalidationSeq = new Map<string, number>();
+  /** In-flight `admit` calls per client id, so a counter is kept only while it guards one. */
+  private readonly admissionsInFlight = new Map<string, number>();
 
   public constructor(options: SolidSessionFactoryOptions) {
     this.route = resolveTokenEndpointRoute(options.tokenEndpoint, options.publicBaseUrl);
@@ -116,9 +129,17 @@ export class SolidSessionFactory {
    * same credential a second time. Concurrent inbound requests deliberately do not share each
    * other's exchange, for the same reason they do not share a cached token: each has to prove the
    * credential itself.
+   *
+   * The publishing is conditional on the credential not having been invalidated while the
+   * exchange was in flight. A success the issuer returned before a revocation is not present
+   * authority, so it is handed to this caller - already-authorized work is not torn down - but it
+   * is not written into the cache that later Pod access reads.
    */
   public async admit(credential: SolidClientCredential): Promise<SolidSession> {
     const key = cacheKey(this.route, credential);
+    const clientId = credential.clientId;
+    const capturedSeq = this.invalidationSeq.get(clientId) ?? 0;
+    this.admissionsInFlight.set(clientId, (this.admissionsInFlight.get(clientId) ?? 0) + 1);
     let session: SolidSession;
     try {
       session = await this.exchange(credential);
@@ -126,12 +147,22 @@ export class SolidSessionFactory {
       // A definitive refusal means this credential is gone, so the session cached under it is
       // stale evidence and goes with it. An outage says nothing about the credential, so the
       // cache is left alone and the caller hears 503 instead of 401.
-      if (isCredentialRefusal(error)) {
-        this.invalidate(credential);
+      try {
+        if (isCredentialRefusal(error)) {
+          this.invalidate(credential);
+        }
+      } finally {
+        this.releaseAdmission(clientId);
       }
       throw error;
     }
-    this.remember(key, credential.clientId, session);
+    try {
+      if ((this.invalidationSeq.get(clientId) ?? 0) === capturedSeq) {
+        this.remember(key, clientId, session);
+      }
+    } finally {
+      this.releaseAdmission(clientId);
+    }
     return session;
   }
 
@@ -143,6 +174,7 @@ export class SolidSessionFactory {
    * authenticating the wrapper until it expires, and a deleted API Key looks like it still works.
    */
   public invalidateClientCredential(clientId: string): void {
+    this.bumpInvalidation(clientId);
     const keys = this.keysByClientId.get(clientId);
     for (const key of keys ?? []) {
       this.forgetKey(key);
@@ -152,6 +184,37 @@ export class SolidSessionFactory {
         this.pending.delete(key);
       }
     }
+    this.pruneInvalidation(clientId);
+  }
+
+  /**
+   * Mark a credential as definitively invalidated without deleting anything yet: the counter makes
+   * an in-flight exchange that resolves later decline to publish its result. Removed as soon as no
+   * admission for the client is still in flight, so it carries no state past its purpose.
+   */
+  private bumpInvalidation(clientId: string): void {
+    this.invalidationSeq.set(clientId, (this.invalidationSeq.get(clientId) ?? 0) + 1);
+  }
+
+  private releaseAdmission(clientId: string): void {
+    const remaining = (this.admissionsInFlight.get(clientId) ?? 1) - 1;
+    if (remaining > 0) {
+      this.admissionsInFlight.set(clientId, remaining);
+    } else {
+      this.admissionsInFlight.delete(clientId);
+    }
+    this.pruneInvalidation(clientId);
+  }
+
+  /**
+   * Drop the counter once no admission can still be racing it. While one is in flight the counter
+   * has to survive so that admission declines to republish; afterwards it is dead weight.
+   */
+  private pruneInvalidation(clientId: string): void {
+    if (this.admissionsInFlight.has(clientId)) {
+      return;
+    }
+    this.invalidationSeq.delete(clientId);
   }
 
   private remember(key: string, clientId: string, session: SolidSession): void {
@@ -193,8 +256,10 @@ export class SolidSessionFactory {
     if (expectedSession && this.sessions.get(key) !== expectedSession) {
       return;
     }
+    this.bumpInvalidation(credential.clientId);
     this.pending.delete(key);
     this.forgetKey(key);
+    this.pruneInvalidation(credential.clientId);
   }
 
   private async exchange(credential: SolidClientCredential): Promise<SolidSession> {
@@ -263,9 +328,10 @@ function fingerprintSecret(secret: string): string {
 /**
  * Whether the issuer definitively refused the credential itself, rather than failing to answer.
  *
- * Only a 4xx means "this credential is not registered any more". A 5xx, a network error or an
- * unparseable response is an outage of the issuer, and reporting that as a revoked key would both
- * mislead the caller and throw away a session that is still perfectly good.
+ * Only 400, 401 and 403 mean "this credential is not registered any more". Everything else is not
+ * evidence about the credential: a 5xx, a 429, a network error or an unparseable response is an
+ * outage or a rate limit of the issuer, and reporting that as a revoked key would both mislead the
+ * caller and throw away a session that is still perfectly good.
  */
 function isCredentialRefusal(error: unknown): boolean {
   const status = error instanceof SolidSessionError ? error.status : undefined;

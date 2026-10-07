@@ -79,6 +79,16 @@ export function AiGatewayKeysSection({
   const [busyKeyId, setBusyKeyId] = useState<string>()
   const operation = useRef(false)
   const verificationGeneration = useRef(0)
+  /**
+   * Where a key this session actually applied is in effect, and the digest it was applied with.
+   * The Account owns the credential but no application state, so a list refresh hands back a row
+   * without `appliedTo`; without this the plan that is still live would look like it was never
+   * written and lose its one test. Honoured only for the exact key id whose row still carries the
+   * matching digest, and dropped as soon as the Account stops listing the key, so a changed,
+   * reissued or deleted credential never inherits another key's application. Session-local: it is
+   * only ever a ref, never persisted and never sent anywhere.
+   */
+  const appliedObservations = useRef(new Map<string, { appliedTo: AiConnectionsClientId; fingerprint: string }>())
   const [sessionPlans, setSessionPlans] = useState<Partial<Record<AiConnectionsClientId, { planId: string; fingerprint: string }>>>({})
   const [testingKeyId, setTestingKeyId] = useState<string>()
   const [clientStatuses, setClientStatuses] = useState<Partial<Record<AiConnectionsClientId, AiClientConfigurationStatus>>>({})
@@ -90,6 +100,8 @@ export function AiGatewayKeysSection({
     setTestingKeyId(undefined)
     setClientStatuses({})
     setSessionPlans({})
+    // A new client or bridge is a new session: no application observed under the old one carries.
+    appliedObservations.current.clear()
     if (bridge) {
       for (const id of AI_CONNECTIONS_CLIENTS) {
         void bridge.inspect(id).then((status) => {
@@ -133,9 +145,23 @@ export function AiGatewayKeysSection({
    * whose wrapper this session still holds is not advertised as unrecoverable.
    * The Account remains the only store; this is a view decision.
    */
-  const adoptRecords = useCallback((records: GatewayKeyRecord[]): GatewayKeyRecord[] => records
-    .filter((record) => !record.revokedAt)
-    .map((record) => plaintexts.current.has(record.id) ? { ...record, plaintextAvailable: undefined } : record), [])
+  const adoptRecords = useCallback((records: GatewayKeyRecord[]): GatewayKeyRecord[] => {
+    // A key the Account no longer lists is gone: the session observation for it is not kept to be
+    // handed back if the same id ever reappears, because that would be inventing application state.
+    const listed = new Set(records.map((record) => record.id))
+    for (const id of [...appliedObservations.current.keys()]) {
+      if (!listed.has(id)) appliedObservations.current.delete(id)
+    }
+    return records
+      .filter((record) => !record.revokedAt)
+      .map((record) => {
+        const observed = record.appliedTo ? undefined : appliedObservations.current.get(record.id)
+        const restored = observed && record.fingerprint !== undefined && observed.fingerprint === record.fingerprint
+          ? { ...record, appliedTo: observed.appliedTo }
+          : record
+        return plaintexts.current.has(record.id) ? { ...restored, plaintextAvailable: undefined } : restored
+      })
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -291,6 +317,11 @@ export function AiGatewayKeysSection({
       })
       setSessionPlans(current => ({ ...current, [plan.client]: issued.fingerprint ? { planId: plan.planId, fingerprint: issued.fingerprint } : undefined }))
       setAppliedClient(plan.client)
+      // Only a successful apply records where the key is in effect; a list refresh afterwards
+      // restores this row's binding from here instead of losing it with the Account rows.
+      if (issued.fingerprint) {
+        appliedObservations.current.set(issued.id, { appliedTo: plan.client, fingerprint: issued.fingerprint })
+      }
       setClientStatuses((current) => ({ ...current, [plan.client]: { status: 'unverifiable', appliedKeyFingerprint: issued.fingerprint } }))
       // The record now points at the client the wrapper was written into.
       setKeys((current) => current.map((record) => record.id === issued.id
@@ -359,6 +390,7 @@ export function AiGatewayKeysSection({
     try {
       await client.deleteGatewayKey(record.id)
       plaintexts.current.delete(record.id)
+      appliedObservations.current.delete(record.id)
       setKeys((current) => current.filter((item) => item.id !== record.id))
       if (issued?.id === record.id) {
         setIssued(undefined)

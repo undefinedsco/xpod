@@ -97,7 +97,11 @@ export class ClientCredentialsAuthenticator implements Authenticator {
         session = await this.sessions.admit({ clientId, clientSecret });
       } catch (error) {
         const status = error instanceof SolidSessionError ? error.status : undefined;
-        const unavailable = status === undefined || status >= 500;
+        // The issuer being unreachable, failing, or rate limiting us is not a statement about the
+        // credential. Only a definitive refusal (the 400/401/403 the factory treats as such) is an
+        // invalid credential; everything else is retryable availability, so it is reported as 503
+        // rather than telling the caller its key is dead.
+        const unavailable = status === undefined || status >= 500 || status === 429;
         this.logger.warn(`Client credentials exchange failed for ${clientId.slice(0, 8)}...: ${String(error)}`);
         return unavailable
           ? { success: false, error: 'Token exchange temporarily unavailable', category: 'service_unavailable', statusCode: 503, cause: error }

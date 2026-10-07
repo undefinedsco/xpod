@@ -197,6 +197,16 @@ describe('ClientCredentialsAuthenticator', () => {
       statusCode: 503,
     });
 
+    // A rate limit is the issuer asking us to slow down, not a statement that the key is gone.
+    const limited = authenticatorFor({
+      fetch: vi.fn().mockImplementation(async () => new Response('slow down', { status: 429 })),
+    });
+    await expect(limited.authenticate(makeRequest(VALID_SK_KEY))).resolves.toMatchObject({
+      success: false,
+      category: 'service_unavailable',
+      statusCode: 503,
+    });
+
     const unreachable = authenticatorFor({
       fetch: vi.fn().mockImplementation(async () => {
         throw new Error('connect ECONNREFUSED');
