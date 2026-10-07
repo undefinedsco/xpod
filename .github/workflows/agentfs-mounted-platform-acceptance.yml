@@ -3,11 +3,11 @@ name: AgentFS mounted platform acceptance
 # Actual mounted-platform acceptance for the frozen product archive. This is a
 # separate development branch so a harness-only push never recompiles the frozen
 # admitted product (the native compiler workflow only runs on
-# codex/agentfs-native-acceptance). Product archive/helper pins come from the
-# accepted native jobs of run 37592276758; the harness SHA is this branch's checkout.
+# codex/agentfs-native-acceptance or the staging integration branch). Product
+# pins come from accepted run 37670475752; the harness SHA is this checkout.
 on:
   push:
-    branches: ['codex/agentfs-mounted-platform-acceptance']
+    branches: ['codex/solidfs-mounted-staging-20261008']
   workflow_dispatch:
 
 permissions:
@@ -16,17 +16,17 @@ permissions:
   actions: read
 
 env:
-  PRODUCT_RUN: '37592276758'
-  PRODUCT_SHA: '48a71dceddf4ab40eddc52a5bb04c54474eeb030'
-  LINUX_ARTIFACT_ID: '11470781946'
-  LINUX_ZIP_SHA: '7ca934792713057afbc1911e99a3431cfa1d509bb20fd4c9d1684fc28c90a703'
-  LINUX_ARCHIVE_SHA: 'bba85186a15895c7b5f32fe58781185db62196e3a53206d057315daa804f389e'
-  LINUX_HELPER_SHA: '28d496fc4ce7c40b82607dd256c1d8e1d171c0463e36d3e4ec6bb99db120da10'
+  PRODUCT_RUN: '37670475752'
+  PRODUCT_SHA: '17572c3b3f8be655c833f3ade80cd84cb01d1b99'
+  LINUX_ARTIFACT_ID: '11507043398'
+  LINUX_ZIP_SHA: 'a6f39d0957d8940375327d716de078ced82b4ae6516b1cbddde958d0b50785f0'
+  LINUX_ARCHIVE_SHA: 'e0c7b3f14306b570f77d0b50d79618898f5e18274dd4239e14a35cd0264bb521'
+  LINUX_HELPER_SHA: '190f2c228f44a217e37c17418acb182cba50d0b159121ed98e02786e2f3aff90'
   BOOKWORM_IMAGE: rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e
-  DARWIN_ARTIFACT_ID: '11469149971'
-  DARWIN_ZIP_SHA: 'bcf70912f12c3f9657f19b3fb03fcc1d14bfd6b99900ec1e3c1816efc1b0ba45'
-  DARWIN_ARCHIVE_SHA: 'c62a190c17ea5a1755a7d272d0815044a8f5e02c5795e78acfad9d98c7f3411d'
-  DARWIN_HELPER_SHA: 'c4068f00dbe05e1989077de68fecab426cddb27960a041fd12c31b2ceb6b7384'
+  DARWIN_ARTIFACT_ID: '11505897600'
+  DARWIN_ZIP_SHA: '59093786c13ffb102557b11be287cb37f6acab02975542bd29c43d99d3c38baf'
+  DARWIN_ARCHIVE_SHA: 'c7f7a5a70d132dac399a2ab45795556f81f3d3adf7200dda9521f5cf4e4d1daf'
+  DARWIN_HELPER_SHA: 'eac5ec3f822e2c00d0b8d2f9d1c0c0a59971d58918ec647663bab9b0bf39b8d8'
 
 jobs:
   linux-fuse:
