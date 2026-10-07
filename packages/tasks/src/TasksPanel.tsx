@@ -66,6 +66,30 @@ export function TasksPanel({ client, webId, workspace, onOpenConnections, select
     return () => { active = false; };
   }, [client, run?.id]);
   useEffect(() => {
+    if (!selected) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        if (document.visibilityState !== 'hidden') {
+          const [taskResult, runResult, stepResult] = await Promise.all([
+            client.list(), client.runs(selected), run?.id ? client.steps(run.id) : undefined,
+          ]);
+          if (!active) return;
+          setTasks(taskResult.tasks); setCapabilities(taskResult.capabilities); setRuns(runResult.runs);
+          setRun(current => current ? runResult.runs.find(item => item.id === current.id) ?? current : current);
+          if (stepResult) setSteps(stepResult.steps);
+        }
+      } catch (error) {
+        if (active) setError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (active) timer = setTimeout(poll, 2000);
+      }
+    };
+    timer = setTimeout(poll, 2000);
+    return () => { active = false; clearTimeout(timer); };
+  }, [client, selected, run?.id]);
+  useEffect(() => {
     if (!selectedTaskId) return;
     const linked = tasks.find(item => item.id === selectedTaskId || item.iri === selectedTaskId);
     if (linked) { setSelected(linked.id); setCreating(false); }

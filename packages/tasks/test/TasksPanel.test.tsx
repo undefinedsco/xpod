@@ -141,3 +141,30 @@ describe('scheduled task behavior', () => {
     expect(screen.getByText('工作空间不代表授权范围。实际可读写的资料由 Pod 权限决定，逐项授权明细待接入。')).toBeTruthy();
     expect(screen.queryByText('工作空间：https://pod.test/other/')).toBeNull();
   });
+
+ it('updates the open run and its steps after asynchronous approval and completion without navigation', async () => {
+    const task: TaskSummary = { id: 'scheduled', instruction: 'Write report', status: 'active', createdAt: 1, updatedAt: 1,
+      schedule: { kind: 'interval', intervalSeconds: 3600, paused: false } };
+    const client = clientFor([task]);
+    let status = 'queued';
+    let message = 'Queued';
+    vi.mocked(client.run).mockImplementation(async () => ({ task, run: { id: 'run-one', status: 'queued', createdAt: 1 } }));
+    vi.mocked(client.runs).mockImplementation(async () => ({ runs: [{ id: 'run-one', status, createdAt: 1 }] }));
+    vi.mocked(client.steps).mockImplementation(async () => ({ steps: [{ id: 'step-one', type: 'progress', message, createdAt: 1 }] }));
+    const view = render(<TasksPanel client={client} webId={owner} workspace="https://pod.test/work/" selectedTaskId={task.id}
+      renderApproval={() => <p>Approve this real run</p>} />);
+    await screen.findByRole('heading', { name: 'Write report' });
+    fireEvent.click(screen.getByRole('button', { name: '立即运行一次' }));
+    await screen.findByRole('heading', { name: '这次运行 · 等待执行' });
+    await waitFor(() => expect(screen.getByRole('button', { name: '立即运行一次' }).hasAttribute('disabled')).toBe(false));
+    status = 'waiting_input'; message = 'Approval requested';
+    await screen.findByRole('heading', { name: '这次运行 · 在等你' }, { timeout: 5000 });
+    expect(screen.getByText('Approve this real run')).toBeTruthy();
+    expect(screen.getByText(/Approval requested/)).toBeTruthy();
+    status = 'completed'; message = 'Report written';
+    await screen.findByRole('heading', { name: '这次运行 · 已完成' }, { timeout: 5000 });
+    expect(screen.queryByText('Approve this real run')).toBeNull();
+    expect(screen.queryByRole('button', { name: '停止这次运行' })).toBeNull();
+    expect(screen.getByText(/Report written/)).toBeTruthy();
+    view.unmount();
+  });
