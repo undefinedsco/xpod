@@ -30,9 +30,9 @@ kubectl -n ns-1yl0rye9 rollout status deployment/gateway
 
 | Host | Gateway 端口 | 上游 |
 | --- | ---: | --- |
-| `id-rc.undefineds.co` | 8082 | `http://xpod-rc.<namespace>.svc.cluster.local:80` |
-| `pods-rc.undefineds.co` | 8083 | `http://xpod-rc.<namespace>.svc.cluster.local:80` |
-| `api-rc.undefineds.co` | 8081 | `http://xpod-rc.<namespace>.svc.cluster.local:80` |
+| `id-rc.undefineds.cn` | 8082 | `http://xpod-rc.<namespace>.svc.cluster.local:80` |
+| `pods-rc.undefineds.cn` | 8083 | `http://xpod-rc.<namespace>.svc.cluster.local:80` |
+| `api-rc.undefineds.cn` | 8081 | `http://xpod-rc.<namespace>.svc.cluster.local:80` |
 
 默认从 stdin 读取 ConfigMap YAML/JSON并输出可供 `kubectl apply -f -` 使用的 YAML；也可使用
 `--input <path>`、`--output <path>`。若 ConfigMap 有多个 Nginx 配置项，用

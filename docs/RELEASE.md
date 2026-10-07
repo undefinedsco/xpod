@@ -65,7 +65,7 @@ policy 为空。上线前必须补齐分支与环境策略；创建/推送 stagi
 4. 同一次 RC workflow 构建一个 GHCR 镜像，打 `sha-<full-sha>` 和 RC
    版本 tag，并记录 canonical digest，例如
    `ghcr.io/undefinedsco/xpod@sha256:<64-hex>`。
-5. RC workflow 将该 digest 部署到 `https://id-rc.undefineds.co` 并运行公开
+5. RC workflow 将该 digest 部署到 `https://id-rc.undefineds.cn` 并运行公开
    和认证验收。
 6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，运行真实
    RDF、FTS、VEC Local conformance，但 RC 不向 npm 发布任何包。
@@ -85,18 +85,17 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 
 | 类型 | 名称 | 说明 |
 | --- | --- | --- |
-| Secret | `KUBE_CONFIG_DATA` | base64 编码的 CO Sealos kubeconfig，使用 Sealos 分配的固定 namespace |
+| Secret | `KUBE_CONFIG_DATA` | base64 编码的 GZ Sealos kubeconfig，server 必须为 `https://gzg.sealos.run:6443` |
 | Secret | `APP_ENV_FILE` | RC runtime env 文件内容 |
 | Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |
 | Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |
 | Secret | `XPOD_AI_PROXY_URL` | 可选，真实 AI Provider 验收需要代理时填写 |
-| Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-1yl0rye9` |
+| Variable | `SEALOS_NAMESPACE` | 必须为 GZ 固定 namespace `ns-iknkxtc8` |
 | Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
-| Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
 | Variable | `XPOD_INSTALL_REGISTRY` | 可选，安装烟测 registry 覆盖 |
 
-RC 公开入口为 `https://id-rc.undefineds.co`、`https://pods-rc.undefineds.co`
-和 `https://api-rc.undefineds.co`。`*.undefineds.co` DNS-only CNAME 统一指向
+RC 公开入口为 `https://id-rc.undefineds.cn`、`https://pods-rc.undefineds.cn`
+和 `https://api-rc.undefineds.cn`。RC 的 `.cn` DNS-only CNAME 统一指向
 Sealos ingress，三个 Ingress 经统一 Nginx Gateway 路由到 RC 服务；TLS Secret
 由 Sealos certificate controller 在 Ingress 创建后签发。overlay 不创建
 physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
@@ -107,6 +106,7 @@ physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它�
 - runtime Secret：`xpod-rc-secret`
 - Xpod Deployment：`xpod-rc`
 - shared Inngest Deployment：`xpod-inngest`（只复用，不由 RC overlay 创建或缩容）
+- RC-only Inngest Deployment：`xpod-rc-inngest`（若存在，仅在确认本轮 RC 所有权后回收）
 - ConfigMap：`xpod-rc-config`
 - seed Secret：以 `xpod-rc-seed` 为前缀、按 workflow run 唯一命名
 
@@ -144,8 +144,12 @@ Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供
 - `XPOD_INNGEST_EVENT_KEY`
 - `XPOD_INNGEST_SIGNING_KEY`
 
-候选 workflow 会拒绝生产数据库名称或
-`xpod-cloud`/`prod`/`production` 风格值。`CSS_REDIS_CLIENT` 必须显式指向
+候选 workflow 在任何集群请求前校验 GZ server/namespace。Identity/RDF DSN 必须
+使用 `xpod-rdf-postgres` 上的 `xpod_rc` 专用角色和同名数据库，且凭据一致；禁止
+URL query/fragment 或冲突的数据库覆盖。每轮重建这个 RC 数据库并安装
+`vector → xpod_rdf → xpod_qlever`，不重建共享实例、不触碰 `xpod_cn`/`xpod_co`。
+此操作会销毁上一轮 RC 数据；上线前必须确认共享 RC 独占权和数据处理边界。
+`CSS_REDIS_CLIENT` 必须显式指向
 独立 Redis DB，格式上应类似 `CSS_REDIS_CLIENT=.../<nonzero>`；候选 workflow
 会拒绝缺少 DB index、使用 Redis DB 0 或包含 production marker 的 Redis URL。
 不要通过 `XPOD_REDIS_PREFIX` 或 `XPOD_OBJECT_PREFIX` 试图隔离 RC；当前代码
@@ -278,7 +282,7 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 常见硬 blocker：
 
 - GitHub Environment `rc` 不存在或 secret/var 缺失；
-- `id-rc`、`pods-rc` 或 `api-rc.undefineds.co` DNS/Ingress 未指向统一 Gateway；
+- `id-rc`、`pods-rc` 或 `api-rc.undefineds.cn` DNS/Ingress 未指向统一 Gateway；
 - RC `APP_ENV_FILE` 复用了生产 domain、database、bucket、Redis DB 0 或凭据；
 - logical database or schema、nonzero Redis DB index、object bucket 权限未创建；
 - `XPOD_RC_SEED_CONFIG` 缺失、不是 seed account 数组，或没有 Alice/Bob 账号；
@@ -287,8 +291,9 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 修复方式是将修复普通 merge 到 staging，让 candidate workflow 产生新的
 RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进生产。
 
-如果 `XPOD_RC_SCALE_TO_ZERO=true`，candidate workflow 最后会把
-`deployment/xpod-rc` scale-to-zero；共享 `deployment/xpod-inngest` 保持运行。
+candidate workflow 在服务、桌面和最终验收全部结束后执行 cleanup，确认本轮 RC 所有权并核对本轮
+seed Secret 的部署绑定后将 `deployment/xpod-rc` 和存在的 `xpod-rc-inngest`
+scale-to-zero；共享 PostgreSQL 与 `deployment/xpod-inngest` 保持运行。
 下一次 RC workflow 会重新 apply overlay、写入 Secret、设置 digest 并等待 rollout。
 手动恢复 RC 时可在同一 namespace 将 Xpod Deployment scale 到 1，然后重新
 运行 candidate workflow 做完整验收。
@@ -310,7 +315,8 @@ stable release workflow 在 promotion guard 通过后执行三件事：
    `ghcr.io/undefinedsco/xpod@sha256:<64-hex>` 的 digest 形式部署生产。
 
 生产 deploy workflow 要求输入 stable SemVer、immutable image digest 和
-目标 environment。它会先捕获当前 `deployment/xpod-cloud` 的 previous
+目标 environment。`cn` 对应 `deployment/xpod-cn`，`co` 对应 `deployment/xpod-co`；
+两者部署资源位于 GZ，生产公开域名仍分别为 `.cn`/`.co`。它会先捕获对应 Deployment 的 previous
 image，再仅通过 `set image` 提升到请求 digest。正式发布不 apply runtime
 Secret、ConfigMap 或通用 Cloud manifests；现有启动参数、环境变量、
 initContainers 和挂载属于环境部署流程，不由镜像提升覆盖。这也保证
