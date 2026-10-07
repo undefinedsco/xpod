@@ -42,6 +42,15 @@ export async function verifyPublicCloudCard(webId: string, storageUrls: string[]
   if (storageUrls.some(url => !advertised.includes(url))) throw new DesktopAcceptanceError('identity-binding', 'Public Cloud card is missing an authoritative storage binding');
 }
 
+/** Read the canonical credential returned by the mounted service-access route. */
+export function requirePackagedInvocationKey(descriptor: unknown): string {
+  const invocation = (descriptor as { invocation?: { apiKey?: unknown } } | null)?.invocation;
+  if (typeof invocation?.apiKey !== 'string' || !invocation.apiKey.trim()) {
+    throw new DesktopAcceptanceError('pod-permission', 'Authoritative current-Pod invocation is absent', 'service-access');
+  }
+  return invocation.apiKey;
+}
+
 export function assertOwnedTaskRows(body: unknown, required: string[], expectEmpty = false): void {
   const tasks = (body as { tasks?: Array<{ id?: unknown }> } | null)?.tasks;
   if (!Array.isArray(tasks) || tasks.some(task => typeof task.id !== 'string')
@@ -267,9 +276,8 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       }
       phase = await acceptMountedPodPermissions(page, { webId: binding.webId, podUrl: binding.storageUrl });
       const descriptor = await attributeMountedOperation('service-access',
-        () => phase!.handle.evaluate(({ controller }) => controller.client!.getServiceAccess())) as { invocation?: { token?: string } };
-      const invocation = descriptor.invocation?.token;
-      if (!invocation) throw new DesktopAcceptanceError('pod-permission', 'Authoritative current-Pod invocation is absent');
+        () => phase!.handle.evaluate(({ controller }) => controller.client!.getServiceAccess()));
+      const invocation = requirePackagedInvocationKey(descriptor);
       if (index === 0) firstInvocation = invocation;
       advance(index === 0 ? 'operations-a' : 'operations-b');
       provider = await createConfirmedMountedProvider(phase, { provider: configuration.id,
