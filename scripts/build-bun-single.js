@@ -8,6 +8,7 @@ const zlib = require('node:zlib');
 const esbuild = require('esbuild');
 const { stageEmbeddedNativeCli } = require('./lib/embedded-native-cli.cjs');
 const { createSingleBinaryEntry } = require('./lib/bun-single-runtime-entry.cjs');
+const { stageRuntimePackageClosure } = require('./lib/runtime-package-closure.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(repoRoot, 'dist');
@@ -449,6 +450,9 @@ async function main() {
       exports: packageJson.exports,
     });
   }
+
+  const agentPackages = await stageRuntimePackageClosure('@mariozechner/pi-coding-agent', repoRoot, stageRoot);
+  console.log(`[build:bun-single] staged lazy agent runtime: ${agentPackages.length} packages`);
 
   // Native CLIs the runtime spawns by path. Components.js reference walking
   // never discovers them, so stage the installed binary for the matching
