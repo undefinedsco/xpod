@@ -14,7 +14,12 @@ describe('release lifecycle documentation', () => {
     const text = await loadReleaseDoc();
 
     for (const expected of [
-      'release/<version>',
+      '`staging` 是唯一集成与 RC 来源分支',
+      'squash 同步到 `main`',
+      '普通 merge 合入 `staging`',
+      '不将 main 反向合回 staging',
+      'cancel-in-progress=false',
+      '不是 FIFO 队列',
       '0.4.0-rc.',
       '`stable-staging`',
       'npm `latest`',

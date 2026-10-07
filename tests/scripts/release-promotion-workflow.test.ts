@@ -124,8 +124,8 @@ describe('stable release promotion workflow', () => {
       GH_TOKEN: '${{ github.token }}',
     });
     expect(runText).toContain("TAG_REGEX='^v[0-9]+\\.[0-9]+\\.[0-9]+$'");
-    expect(runText).toContain('git branch --remote --contains "$TAG_SHA"');
-    expect(runText).toContain('release/$VERSION');
+    expect(runText).toContain("'+refs/heads/staging:refs/remotes/origin/staging'");
+    expect(runText).toContain('git merge-base --is-ancestor "$TAG_SHA" origin/staging');
     expect(runText).toContain('gh run list');
     expect(runText).toContain('Release Candidate');
     expect(runText).toContain('--commit "$TAG_SHA"');
