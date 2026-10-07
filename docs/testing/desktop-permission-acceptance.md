@@ -51,6 +51,8 @@ driver 以 origin+pathname 识别当前文档（不保留 query，避免把潜�
 
 App 生命周期持续记录自有 PID/PPID/start identity，包括 reparented child；正常 ps 不存在与工具/权限错误区分。仅成功观测所有自有进程已终止才删除独有数据并记录 remainingOwnedPids=0；未知状态保留数据、拒绝清理成功。失败和回滚失败同时留档，始终 dispose retained handle，不用 cleanup 异常覆盖原失败阶段。
 
+Pod 已认证不代表 Account controls 已提交。Account controls 到达后，React 会创建新的 host；Pod 授权阶段保留的旧 host 不会原地获得 `aiClientCredentials`。真实打包诊断已观察到旧句柄无该能力、当前句柄有该能力且 Account 已认证。Key 操作必须重新捕获当前 committed host，仍严格匹配同一 WebID/Pod，并等待 Account 能力；其独立句柄在 Key 清理后释放，原权限句柄继续用于恢复原授权。这个观察不等于完整 Key/Chat/跨 Pod 链路已通过。
+
 正式 runner 拒绝未提交 source/runner 文件；允许既有 `release-candidate` 的精确 version/native optional dependency 变换和明确生成目录/pack 预算文件。生成目录仅为 `dist/`、`components/`、`desktop/dist/`、`desktop/release/` 与 UI 实际产出的 `static/app/`、`static/dashboard/`、`static/settings/`；`static/landing/` 等发布源输入修改仍拒绝。生成目录允许重建并不证明缓存防篡改；archive/runtime 内容由实际包 hash 和执行证据独立绑定。所有代码/CI/文档冻结并完成最终两轮完整回归后可先提交本地 immutable SHA，再构建真实包。真实验收失败必须保留失败并后续修复，未全绿不能 stable tag/promotion。
 
 本契约不覆盖所有 provider 订阅授权、原安装 App 全流程或 Linux bubblewrap 实测；这些缺项单列。Cloud 停服、人类授权未完成或外部额度/凭据失败均不能以单元、协议夹具或旧发行门禁代替。

@@ -17,7 +17,7 @@ import { verifyPackagedSourceCheckout } from './helpers/packaged-desktop-source'
 import { acceptLiveTaskApproval, type LiveTaskEvidence } from './helpers/live-task-approval';
 import { completeOidcLogin, consentBindingProven, OidcApprovalError, type BrowserOidcTrace,
   type OidcApprovalCondition } from '../tests/helpers/browserSolidOidc';
-import { readBrowserXpodRuntime } from '../tests/helpers/browserXpodRuntime';
+import { captureBrowserAiConnections, readBrowserXpodRuntime } from '../tests/helpers/browserXpodRuntime';
 
 const { verifyEvidence } = createRequire(import.meta.url)('./desktop-permission-acceptance.cjs') as {
   verifyEvidence(record: unknown, expected: unknown): { valid: boolean; errors: unknown[] };
@@ -207,6 +207,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
   const failures: unknown[] = [];
   let fixture: OwnedPackagedDesktop | undefined;
   let phase: MountedPodPermissionPhase | undefined;
+  let keyHandle: MountedPodPermissionPhase['handle'] | undefined;
   let provider: Awaited<ReturnType<typeof createConfirmedMountedProvider>> | undefined;
   let key: Awaited<ReturnType<typeof createMountedKeyInUi>> | undefined;
   let fixtureCleanup: Awaited<ReturnType<OwnedPackagedDesktop['close']>> | undefined;
@@ -285,7 +286,13 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
         credential: { apiKey: configuration.apiKey, offeringId: configuration.offeringId,
           baseUrl: configuration.baseUrl, proxyUrl: process.env.XPOD_AI_PROXY_URL?.trim() || undefined,
           label: `desktop-${unique}-${index}` }, expectedModels: configuration.expected });
-      key = await createMountedKeyInUi(page, phase, { name: `desktop-${unique}-${index}`, configurationHome, gateway,
+      // Account controls may commit a new host after the Pod-only handle was
+      // retained. Keep the original grant actor for restore; bind Key UI work
+      // to the current committed host with the exact same identity/storage.
+      keyHandle = await captureBrowserAiConnections(page, {
+        webId: binding.webId, podUrl: binding.storageUrl, requireAccountActor: true,
+      });
+      key = await createMountedKeyInUi(page, { ...phase, handle: keyHandle }, { name: `desktop-${unique}-${index}`, configurationHome, gateway,
         accountCredentialControl: account.controls.account?.clientCredentials ?? '' });
       const samePodReuse = await acceptHeldPodInvocation(page, { gateway, podUrl: binding.storageUrl, invocation, model: provider.model });
       const chat = await acceptMountedFirstChat(page, { gateway, podUrl: binding.storageUrl, key: key.key,
@@ -333,6 +340,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       podEvidence.push({ ...phase.evidence, selectedInUi: true,
         management: { configuration: true, models: true, quota: true } });
       await key.remove(); key = undefined;
+      await keyHandle.dispose(); keyHandle = undefined;
       await provider.remove(); provider = undefined;
       await phase.restore(); await phase.handle.dispose(); phase = undefined;
       if (index === 0) {
@@ -358,6 +366,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       try { await cleanup(); } catch (error) { failures.push(error); }
     }
     try { if (phase) await phase.handle.dispose(); } catch (error) { failures.push(error); }
+    try { if (keyHandle) await keyHandle.dispose(); } catch (error) { failures.push(error); }
     try { if (fixture) fixtureCleanup = await fixture.close(); } catch (error) { failures.push(error); }
   }
   if (failures.length || !record || !fixtureCleanup || !fixture) {

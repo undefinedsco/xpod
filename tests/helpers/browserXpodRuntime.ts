@@ -10,7 +10,7 @@ export interface MountedBrowserAiConnections {
 /** Retain the exact mounted capability so attribution can be restored before navigation.
  * This is a read-only handle to React's existing objects, not a second host/session.
  */
-export async function captureBrowserAiConnections(page: Page, binding: { webId: string; podUrl: string }): Promise<JSHandle<MountedBrowserAiConnections>> {
+export async function captureBrowserAiConnections(page: Page, binding: { webId: string; podUrl: string; requireAccountActor?: boolean }): Promise<JSHandle<MountedBrowserAiConnections>> {
   // Session authentication and the lazy applet commit are separate transitions.
   // Poll the committed tree, retaining only the exact current binding; a stale
   // host, another Pod or an anonymous session can never satisfy this wait.
@@ -80,7 +80,7 @@ export function readBrowserSessionAccountControls(page: Page): Promise<{ status:
   return inspectBrowserHost(page, { kind: 'account-discovery' });
 }
 
-type HostOperation = { kind: 'ai-host'; webId: string; podUrl: string }
+type HostOperation = { kind: 'ai-host'; webId: string; podUrl: string; requireAccountActor?: boolean }
   | { kind: 'account-discovery' } | { kind: 'runtime' } | { kind: 'account'; expectedWebId?: string } | { kind: 'refetch-account' }
   | { kind: 'api-fetch'; expectedWebId: string; gatewayOrigin: string; resourcePath: string; init?: BrowserPodRequest }
   | { kind: 'pod-fetch'; resourcePath: string; init?: BrowserPodRequest };
@@ -144,7 +144,8 @@ function inspectCommittedHost(operation: HostOperation): unknown {
           const pod = host.solid.pod;
           if (snapshot.status === 'authenticated' && snapshot.webId === operation.webId
             && pod?.status === 'ready' && pod.current.webId === operation.webId && pod.current.podUrl === operation.podUrl
-            && controller.client?.webId === operation.webId) return { host, controller };
+            && controller.client?.webId === operation.webId
+            && (!operation.requireAccountActor || host.capabilities.aiClientCredentials)) return { host, controller };
         }
       } else
       if (operation.kind === 'account' || operation.kind === 'refetch-account') {

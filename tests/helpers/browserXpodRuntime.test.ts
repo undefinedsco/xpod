@@ -42,7 +42,7 @@ it('retains only the exact committed mounted host, including its existing grant 
 });
 
 // Authentication can commit before the lazy settings page mounts its applet.
-it('waits for the exact mounted applet after authentication without accepting another Pod', async () => {
+it.each([false, true])('waits for the exact mounted applet and required Account actor (%s)', async requireAccountActor => {
   const dom = new JSDOM('<div id="root"></div>');
   vi.stubGlobal('document', dom.window.document);
   const binding = { webId: 'https://id.example/card#me', podUrl: 'https://local.example/b/' };
@@ -53,8 +53,8 @@ it('waits for the exact mounted applet after authentication without accepting an
   const controller = { client: { webId: binding.webId }, authorizeService: vi.fn() };
   const committed: { child?: object } = {};
   Object.assign(dom.window.document.getElementById('root')!, { __reactContainer$fixture: { stateNode: { current: committed } } });
-  const mount = (podUrl: string) => ({ memoizedState: {
-    memoizedState: [{ ...host, solid: { ...host.solid, pod: { status: 'ready', current: { ...binding, podUrl } } } }, []],
+  const mount = (podUrl: string, accountReady = false) => ({ memoizedState: {
+    memoizedState: [{ ...host, capabilities: accountReady ? { aiClientCredentials: { list: vi.fn() } } : {}, solid: { ...host.solid, pod: { status: 'ready', current: { ...binding, podUrl } } } }, []],
     next: { memoizedState: [{ layout: 'two-pane', controller }, []] },
   } });
   const observations: unknown[] = [];
@@ -67,12 +67,16 @@ it('waits for the exact mounted applet after authentication without accepting an
       committed.child = mount('https://local.example/a/');
       observations.push(await fn(arg));
       committed.child = mount(binding.podUrl);
+      if (requireAccountActor) {
+        observations.push(await fn(arg));
+        committed.child = mount(binding.podUrl, true);
+      }
       return await fn(arg);
     },
   } as unknown as Page;
   try {
-    const retained = await captureBrowserAiConnections(page, binding) as unknown as { host: typeof host; controller: typeof controller };
-    expect(observations).toEqual([false, false]);
+    const retained = await captureBrowserAiConnections(page, { ...binding, requireAccountActor }) as unknown as { host: typeof host; controller: typeof controller };
+    expect(observations).toEqual(requireAccountActor ? [false, false, false] : [false, false]);
     expect(retained.host.solid.pod.current).toEqual(binding);
     expect(retained.controller).toBe(controller);
     expect(host.solid.permissions.revokeAgentAccess).not.toHaveBeenCalled();
