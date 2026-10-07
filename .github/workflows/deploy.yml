@@ -85,6 +85,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs.environment == 'all')
     env:
       TARGET_ENVIRONMENT: co
+      XPOD_DEPLOYMENT: xpod-co
       PUBLIC_BASE_URL: https://id.undefineds.co
       INPUT_VERSION: ${{ inputs.version }}
       INPUT_IMAGE_DIGEST: ${{ inputs.image-digest }}
@@ -148,9 +149,9 @@ jobs:
         id: previous
         run: |
           set -euo pipefail
-          previous_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
+          previous_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
           if [[ -z "$previous_image" ]]; then
-            echo "::error::current deployment/xpod-cloud container xpod image is missing"
+            echo "::error::current deployment/${XPOD_DEPLOYMENT} container xpod image is missing"
             exit 1
           fi
           printf '%s' "$previous_image" > "$RUNNER_TEMP/xpod-previous-image"
@@ -161,9 +162,9 @@ jobs:
       - name: Deploy digest image
         run: |
           set -euo pipefail
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$TARGET_IMAGE"
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} xpod="$TARGET_IMAGE"
           kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
-          kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=900s
+          kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s
 
       - name: Verify production gates
         run: |
@@ -212,15 +213,15 @@ jobs:
           fi
           expected_status "$protected_settings_url" 401
 
-          deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
+          deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
           if [[ "$deployment_image" != "$TARGET_IMAGE" ]]; then
             echo "::error::deployment image does not match requested digest"
             exit 1
           fi
 
-          ready_pod="$(kubectl -n "$SEALOS_NAMESPACE" get pod -l app=xpod-cloud -o 'jsonpath={.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')"
+          ready_pod="$(kubectl -n "$SEALOS_NAMESPACE" get pod -l app=$XPOD_DEPLOYMENT -o 'jsonpath={.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')"
           if [[ -z "$ready_pod" ]]; then
-            echo "::error::no running xpod-cloud pod found"
+            echo "::error::no running ${XPOD_DEPLOYMENT} pod found"
             exit 1
           fi
           pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$ready_pod" -o 'jsonpath={.status.containerStatuses[?(@.name=="xpod")].imageID}')"
@@ -244,21 +245,21 @@ jobs:
             exit 0
           fi
           PREVIOUS_IMAGE="$(cat "$RUNNER_TEMP/xpod-previous-image")"
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$PREVIOUS_IMAGE" || exit 0
-          kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=900s || exit 0
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} xpod="$PREVIOUS_IMAGE" || exit 0
+          kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s || exit 0
 
       - name: Dump diagnostics on failure
         if: failure()
         run: |
           set +e
-          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o wide
+          kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o wide
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide
-          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment "$XPOD_DEPLOYMENT"
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-inngest
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=$XPOD_DEPLOYMENT
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-inngest
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=200 --prefix=true --max-log-requests=10
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=200 --prefix=true --max-log-requests=10
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=$XPOD_DEPLOYMENT --all-containers=true --tail=200 --prefix=true --max-log-requests=10
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=$XPOD_DEPLOYMENT --all-containers=true --previous --tail=200 --prefix=true --max-log-requests=10
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-inngest --all-containers=true --tail=200 --prefix=true --max-log-requests=10
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-inngest --all-containers=true --previous --tail=200 --prefix=true --max-log-requests=10
 
@@ -275,6 +276,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs.environment == 'all')
     env:
       TARGET_ENVIRONMENT: cn
+      XPOD_DEPLOYMENT: xpod-cn
       PUBLIC_BASE_URL: https://id.undefineds.cn
       INPUT_VERSION: ${{ inputs.version }}
       INPUT_IMAGE_DIGEST: ${{ inputs.image-digest }}
@@ -338,9 +340,9 @@ jobs:
         id: previous
         run: |
           set -euo pipefail
-          previous_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
+          previous_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
           if [[ -z "$previous_image" ]]; then
-            echo "::error::current deployment/xpod-cloud container xpod image is missing"
+            echo "::error::current deployment/${XPOD_DEPLOYMENT} container xpod image is missing"
             exit 1
           fi
           printf '%s' "$previous_image" > "$RUNNER_TEMP/xpod-previous-image"
@@ -351,9 +353,9 @@ jobs:
       - name: Deploy digest image
         run: |
           set -euo pipefail
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$TARGET_IMAGE"
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} xpod="$TARGET_IMAGE"
           kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
-          kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=900s
+          kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s
 
       - name: Verify production gates
         run: |
@@ -402,15 +404,15 @@ jobs:
           fi
           expected_status "$protected_settings_url" 401
 
-          deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
+          deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
           if [[ "$deployment_image" != "$TARGET_IMAGE" ]]; then
             echo "::error::deployment image does not match requested digest"
             exit 1
           fi
 
-          ready_pod="$(kubectl -n "$SEALOS_NAMESPACE" get pod -l app=xpod-cloud -o 'jsonpath={.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')"
+          ready_pod="$(kubectl -n "$SEALOS_NAMESPACE" get pod -l app=$XPOD_DEPLOYMENT -o 'jsonpath={.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')"
           if [[ -z "$ready_pod" ]]; then
-            echo "::error::no running xpod-cloud pod found"
+            echo "::error::no running ${XPOD_DEPLOYMENT} pod found"
             exit 1
           fi
           pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$ready_pod" -o 'jsonpath={.status.containerStatuses[?(@.name=="xpod")].imageID}')"
@@ -434,20 +436,20 @@ jobs:
             exit 0
           fi
           PREVIOUS_IMAGE="$(cat "$RUNNER_TEMP/xpod-previous-image")"
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$PREVIOUS_IMAGE" || exit 0
-          kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=900s || exit 0
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} xpod="$PREVIOUS_IMAGE" || exit 0
+          kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s || exit 0
 
       - name: Dump diagnostics on failure
         if: failure()
         run: |
           set +e
-          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o wide
+          kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o wide
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide
-          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment "$XPOD_DEPLOYMENT"
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-inngest
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=$XPOD_DEPLOYMENT
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-inngest
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=200 --prefix=true --max-log-requests=10
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=200 --prefix=true --max-log-requests=10
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=$XPOD_DEPLOYMENT --all-containers=true --tail=200 --prefix=true --max-log-requests=10
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=$XPOD_DEPLOYMENT --all-containers=true --previous --tail=200 --prefix=true --max-log-requests=10
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-inngest --all-containers=true --tail=200 --prefix=true --max-log-requests=10
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-inngest --all-containers=true --previous --tail=200 --prefix=true --max-log-requests=10

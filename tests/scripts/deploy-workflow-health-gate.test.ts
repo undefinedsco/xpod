@@ -123,10 +123,10 @@ describe('production deployment workflow', () => {
     expect(runText).toContain('jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}');
     expect(runText).toContain('previous_image=');
     expect(runText).toContain('PREVIOUS_IMAGE');
-    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$TARGET_IMAGE"');
+    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} xpod="$TARGET_IMAGE"');
     expect(runText).toContain('kubectl rollout status deployment/xpod-inngest');
-    expect(runText).toContain('kubectl rollout status deployment/xpod-cloud');
-    expect(runText).not.toMatch(/set image deployment\/xpod-cloud xpod=ghcr\.io\/undefinedsco\/xpod:[^\s"]+/);
+    expect(runText).toContain('kubectl rollout status deployment/${XPOD_DEPLOYMENT}');
+    expect(runText).not.toMatch(/set image deployment\/\$\{XPOD_DEPLOYMENT\} xpod=ghcr\.io\/undefinedsco\/xpod:[^\s"]+/);
     expect(runText).not.toContain('xpod:replace-me');
     expect(runText).not.toMatch(/kubectl\s+(?:-n\s+"\$SEALOS_NAMESPACE"\s+)?(?:apply|create|patch|delete)\b/);
     expect(runText).not.toContain('deploy/sealos/cloud/');
@@ -156,7 +156,7 @@ describe('production deployment workflow', () => {
     expect(runText).toContain('expected_status "$protected_settings_url" 401');
     expect(runText).not.toContain('expected_status "$settings_url" 401');
     expect(runText).not.toContain('/settings/api/providers');
-    expect(runText).toContain('deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud');
+    expect(runText).toContain('deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT"');
     expect(runText).toContain('imageID');
     expect(runText).toContain('service/status');
     expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" exec "$ready_pod"');
@@ -173,12 +173,12 @@ describe('production deployment workflow', () => {
       expect(diagnostics.if).toBe('failure()');
       expect(rollback.run).toContain('PREVIOUS_IMAGE="$(cat "$RUNNER_TEMP/xpod-previous-image")"');
       expect(rollback.run).toContain('No previous image was captured; skipping rollback');
-      expect(rollback.run).toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$PREVIOUS_IMAGE"');
-      expect(rollback.run).toContain('kubectl rollout status deployment/xpod-cloud');
+      expect(rollback.run).toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} xpod="$PREVIOUS_IMAGE"');
+      expect(rollback.run).toContain('kubectl rollout status deployment/${XPOD_DEPLOYMENT}');
       expect(diagnostics.run).toContain('--previous');
-      expect(diagnostics.run).toContain('get deployment xpod-cloud');
-      expect(diagnostics.run).toContain('describe deployment xpod-cloud');
-      expect(diagnostics.run).toContain('logs -l app=xpod-cloud');
+      expect(diagnostics.run).toContain('get deployment "$XPOD_DEPLOYMENT"');
+      expect(diagnostics.run).toContain('describe deployment "$XPOD_DEPLOYMENT"');
+      expect(diagnostics.run).toContain('logs -l app=$XPOD_DEPLOYMENT');
       expect(diagnostics.run).not.toContain('get secret');
       expect(diagnostics.run).not.toContain('describe secret');
     }

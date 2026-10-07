@@ -29,9 +29,10 @@ jobs:
       - name: Capture Xpod state
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+          XPOD_DEPLOYMENT: xpod-${{ inputs.environment }}
         run: |
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide
-          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=300 --prefix=true --max-log-requests=10 || true
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=300 --prefix=true --max-log-requests=10 || true
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment "$XPOD_DEPLOYMENT"
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=$XPOD_DEPLOYMENT
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=$XPOD_DEPLOYMENT --all-containers=true --tail=300 --prefix=true --max-log-requests=10 || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=$XPOD_DEPLOYMENT --all-containers=true --previous --tail=300 --prefix=true --max-log-requests=10 || true

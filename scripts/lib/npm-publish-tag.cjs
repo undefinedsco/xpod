@@ -3,7 +3,7 @@
  * publish scripts.
  *
  * Release candidates exist to run acceptance (a GHCR digest deployed to the
- * *-rc.undefineds.co hosts); RELEASE.md is explicit that they publish no npm
+ * *-rc.undefineds.cn hosts); RELEASE.md is explicit that they publish no npm
  * package at all, and that npm is published only from the stable workflow —
  * first to the invisible `stable-staging` tag, then to `latest` once reinstalling
  * the packed artifact verifies it. Publishing a prerelease therefore fails here
