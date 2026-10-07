@@ -123,9 +123,25 @@ describe('release candidate metadata', () => {
     });
   });
 
-  it('rejects main branches with release branch guidance', () => {
+  it('derives staging candidates from the committed package version', () => {
+    expect(deriveCandidate({ branch: 'staging', version: '0.4.27', runNumber: 42,
+      runAttempt: 1, sha: fullSha }).candidateVersion).toBe('0.4.27-rc.42');
+  });
+
+  it('reads the staging CLI target from its checkout before applying the candidate version', async () => {
+    const root = await makeManifestRepo('0.4.27');
+    const { stdout } = await runCli([
+      '--branch', 'staging', '--repo-root', root, '--run-number', '42',
+      '--run-attempt', '1', '--sha', fullSha, '--apply-root-version', '--json',
+    ]);
+    expect(JSON.parse(stdout).targetVersion).toBe('0.4.27');
+    expect(JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version)
+      .toBe('0.4.27-rc.42');
+  });
+
+  it('rejects feature branches with release branch guidance', () => {
     expect(() => deriveCandidate({
-      branch: 'main',
+      branch: 'codex/feature',
       runNumber: 42,
       runAttempt: 1,
       sha: fullSha,
@@ -196,7 +212,7 @@ describe('release candidate metadata', () => {
 
   it('fails CLI validation without leaking environment values', async () => {
     await expect(runCli([
-      '--branch', 'main',
+      '--branch', 'codex/feature',
       '--run-number', '42',
       '--run-attempt', '1',
       '--sha', fullSha,

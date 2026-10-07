@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseDocument } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -51,15 +52,15 @@ describe('release candidate workflow', () => {
     expect(container.readinessProbe.httpGet.path).toBe('/service/status');
   });
 
-  it('only runs on release branches with branch-scoped cancellation and minimal permissions', async () => {
+  it('only runs on staging and never cancels an active RC', async () => {
     const workflow = await loadWorkflow();
 
-    expect(workflow.on.push.branches).toEqual([ 'release/**' ]);
+    expect(workflow.on.push.branches).toEqual([ 'staging' ]);
     expect(workflow.on.push.tags).toBeUndefined();
     expect(workflow.on.workflow_dispatch).toBeDefined();
     expect(workflow.concurrency).toEqual({
-      group: expect.stringContaining('${{ github.ref }}'),
-      'cancel-in-progress': true,
+      group: 'xpod-rc-candidate',
+      'cancel-in-progress': false,
     });
     expect(workflow.permissions).toEqual({
       contents: 'read',
@@ -110,6 +111,31 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('--run-attempt');
     expect(runText).toContain('--sha');
     expect(runText).toContain('--json');
+  });
+
+  it('executes RC admission and rejects main, release and feature branches', async () => {
+    const workflow = await loadWorkflow();
+    const run = workflow.jobs.metadata.steps.find((step: any) => step.id === 'candidate').run;
+    const parent = path.join(repoRoot, '.test-data', 'rc-branch-admission');
+    await mkdir(parent, { recursive: true });
+    const directory = await mkdtemp(path.join(parent, 'case-'));
+    try {
+      for (const branch of ['staging', 'rc', 'main', 'release/0.4.27', 'codex/feature']) {
+        const output = path.join(directory, 'output');
+        await writeFile(output, '');
+        const execute = () => execFileSync('bash', ['-euo', 'pipefail', '-c', run], {
+          cwd: repoRoot, stdio: 'pipe', env: { ...process.env, REF_NAME: branch,
+            RUN_NUMBER: '42', RUN_ATTEMPT: '1', SOURCE_SHA: 'a'.repeat(40), GITHUB_OUTPUT: output },
+        });
+        if (branch === 'staging') {
+          expect(execute).not.toThrow();
+          expect(await readFile(output, 'utf8')).toContain(`sourceSha=${'a'.repeat(40)}`);
+        } else {
+          expect(execute).toThrow();
+          expect(await readFile(output, 'utf8')).toBe('');
+        }
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
   it('keeps RC validation independent from npm publishing', async () => {

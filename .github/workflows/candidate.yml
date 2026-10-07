@@ -2,12 +2,12 @@ name: Release Candidate
 
 on:
   push:
-    branches: ['release/**']
+    branches: ['staging']
   workflow_dispatch:
 
 concurrency:
-  group: candidate-${{ github.ref }}
-  cancel-in-progress: true
+  group: xpod-rc-candidate
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -32,8 +32,8 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [[ "$REF_NAME" != release/* ]]; then
-            echo "::error::candidate workflow can only run on release/** branches"
+          if [[ "$REF_NAME" != staging ]]; then
+            echo "::error::merge into staging before requesting RC"
             exit 1
           fi
           metadata="$(node scripts/release-candidate.cjs \
