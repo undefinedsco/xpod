@@ -208,6 +208,7 @@ esac
       candidate: expect.stringContaining('candidate'),
       shaTag: expect.stringContaining('shaTag'),
       sourceSha: expect.stringContaining('sourceSha'),
+      runAttempt: '${{ steps.candidate.outputs.runAttempt }}',
     });
     expect(runText).toContain('node scripts/release-candidate.cjs');
     expect(runText).toContain('--branch');
@@ -229,6 +230,56 @@ esac
     expect(text).not.toContain('npm publish');
     expect(text).not.toContain('npm dist-tag');
     expect(text).not.toMatch(/:latest\b|value=latest/);
+  });
+
+  it.each([
+    ['1', '2', '0.4.30-rc.288'],
+    ['2', '2', '0.4.30-rc.288.2'],
+  ])('keeps metadata attempt %s authoritative when version jobs run in attempt %s', async (metadataAttempt, currentAttempt, expectedVersion) => {
+    const workflow = await loadWorkflow();
+    const parent = path.join(repoRoot, '.test-data', 'candidate-version-retry');
+    await mkdir(parent, { recursive: true });
+    const directory = await mkdtemp(path.join(parent, 'case-'));
+    try {
+      const output = path.join(directory, 'metadata-output');
+      const metadataStep = workflow.jobs.metadata.steps.find((step: any) => step.id === 'candidate');
+      execFileSync('bash', ['-euo', 'pipefail', '-c', metadataStep.run], {
+        cwd: repoRoot, stdio: 'pipe', env: { ...process.env,
+          REF_NAME: 'release/0.4.30', RUN_NUMBER: '288', RUN_ATTEMPT: metadataAttempt,
+          SOURCE_SHA: '0123456789abcdef0123456789abcdef01234567', GITHUB_OUTPUT: output },
+      });
+      const metadata = Object.fromEntries((await readFile(output, 'utf8')).trim().split('\n')
+        .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+      expect(metadata.candidate).toBe(expectedVersion);
+      expect(metadata.runAttempt).toBe(metadataAttempt);
+      const context: Record<string, string> = {
+        'github.run_number': '288', 'github.run_attempt': currentAttempt,
+        'github.sha': metadata.sourceSha, 'needs.metadata.outputs.runAttempt': metadata.runAttempt,
+      };
+      for (const [jobName, stepName] of [
+        ['build_image', 'Apply candidate root version'],
+        ['build_desktop_rc', 'Apply and verify the candidate version'],
+      ]) {
+        const manifests = path.join(directory, jobName);
+        await mkdir(path.join(manifests, 'desktop'), { recursive: true });
+        await writeFile(path.join(manifests, 'package.json'), JSON.stringify({ name: '@undefineds.co/xpod', version: '0.4.30' }));
+        await writeFile(path.join(manifests, 'desktop/package.json'), JSON.stringify({ name: '@undefineds.co/xpod-desktop', version: '0.4.30' }));
+        const step = workflow.jobs[jobName].steps.find((candidate: any) => candidate.name === stepName);
+        const run = step.run.replace(/\$\{\{\s*([^}]+)\s*\}\}/g, (_match: string, expression: string) => {
+          const value = context[expression.trim()];
+          if (!value) throw new Error(`Unresolved workflow input: ${expression}`);
+          return value;
+        }).replace('node scripts/release-candidate.cjs', 'node "$RELEASE_CANDIDATE_SCRIPT" --repo-root "$MANIFEST_ROOT"');
+        execFileSync('bash', ['-euo', 'pipefail', '-c', run], {
+          cwd: manifests, stdio: 'pipe', env: { ...process.env, REF_NAME: 'release/0.4.30',
+            CANDIDATE_VERSION: metadata.candidate, MANIFEST_ROOT: manifests,
+            RELEASE_CANDIDATE_SCRIPT: path.join(repoRoot, 'scripts/release-candidate.cjs') },
+        });
+        for (const file of ['package.json', 'desktop/package.json']) {
+          expect(JSON.parse(await readFile(path.join(manifests, file), 'utf8')).version, `${jobName}/${file}`).toBe(expectedVersion);
+        }
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
   it('checks all RC DNS names and assigned namespace access before publishing artifacts', async () => {
