@@ -322,7 +322,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
         const writes = observeOwnedPodTraffic(page, binding.storageUrl);
         try {
           const foreign = await page.evaluate(async input => {
-            const response = await fetch(new URL('/api/ai/gateway/keys', window.location.origin), {
+            const response = await fetch(new URL('/api/ai/providers', window.location.origin), {
               headers: { Authorization: `Bearer ${input.token}`, 'X-Xpod-Pod-Url': input.podUrl },
               redirect: 'error', signal: AbortSignal.timeout(20_000) });
             await response.arrayBuffer(); return response.status;

@@ -49,7 +49,7 @@ function verifyEvidence(record, expected) {
       sha256: s => hash(s) && s === expected?.archive?.sha256,
       sha512: s => typeof s === 'string' && SHA512.test(s) && s === expected?.archive?.sha512 },
     runtime: { version: s => s === expected?.version, edition: s => s === 'local',
-      ownership: s => s === 'desktop', binarySha256: s => hash(s) && s === expected?.runtimeBinarySha256, bundled: trueValue,
+      ownership: s => s === 'desktop', binarySha256: s => hash(s) && s === expected?.runtimeBinarySha256, bundled: trueValue, installed: trueValue,
       noExternalOverride: trueValue, freshEndpoint: trueValue },
     identity: { cloudCard: trueValue, sameWebId: trueValue, independentStorage: trueValue,
       noPublicRoute: trueValue, browserCallback: trueValue },

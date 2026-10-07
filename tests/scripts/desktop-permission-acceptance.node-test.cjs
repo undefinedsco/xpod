@@ -29,7 +29,7 @@ function evidence() {
     schemaVersion: 1, kind: 'desktop-permission-acceptance', ok: true,
     sourceSha: expected.sourceSha, version: expected.version, archive: { ...expected.archive },
     runtime: { version: expected.version, edition: 'local', ownership: 'desktop',
-      binarySha256: 'c'.repeat(64), bundled: true, noExternalOverride: true, freshEndpoint: true },
+      binarySha256: 'c'.repeat(64), bundled: true, installed: true, noExternalOverride: true, freshEndpoint: true },
     identity: { cloudCard: true, sameWebId: true, independentStorage: true, noPublicRoute: true, browserCallback: true },
     pods: [pod('d'), pod('e')],
     operations: { accountActor: true, keyCreate: true, keyList: true, keyRevoke: true,
@@ -132,4 +132,9 @@ test('mandatory desktop passes only with both complete records for the same actu
   assert.equal(verifyDesktopAcceptance({ selfUpdate: update, permissions: evidence() }, expected).valid, false);
   const permission = evidence(); permission.operations.chatDispatches = 2;
   assert.equal(verifyDesktopAcceptance({ selfUpdate: selfUpdate(), permissions: permission }, expected).valid, false);
+});
+
+test('rejects ZIP extraction without actual installation', () => {
+  const record = evidence(); delete record.runtime.installed;
+  assert.equal(verifyEvidence(record, expected).valid, false);
 });

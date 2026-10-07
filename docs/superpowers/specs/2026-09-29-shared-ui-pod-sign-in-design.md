@@ -1008,3 +1008,7 @@ Cloud 恢复时点补录：用户确认重新打开 Sealos 后，UTC 2026-10-05 
 **“两次 Consent”分类**：单次授权内（一个 interaction id、一次 `/.oidc/auth`）**只有一个可见 Consent 页和一次 Consent POST**。请求计数偏大来自客户端自身：`/.account/<interaction>/oidc/pick-webid/` 是 `ConsentPage` 自己发起的**页内数据请求**（用于列出可选 WebID/存储绑定，见 `ui/src/pages/ConsentPage.tsx`），不是第二个页面；Consent **文档**被取三次，其中两次相隔 1ms，属同一屏幕的重复/并发拉取。既存证据中的重复授权表现为**两次独立授权**（`restart` 与 `reload` 各一次，各自 interaction id 与各自 Consent POST，同一桌面客户端）；既有轨迹中未见被遗弃的并行 authorize 流。**范围限定**：约 500ms 的 DOM 采样与被记录的 `restart/reload` 交互，不能证明某个具体人工报告的 episode 里没有出现短暂的第二个可见屏，也不能仅凭请求计数类别化该 episode。
 
 **第四轮：authorize scope 记录 hook（面向未来）**。`tests/helpers/browserSolidOidc.ts` 的既有安全 trace hook 现在会按每个 authorize 请求记录归一化后的 `scope` 集合（去重、排序；无 scope 时记 `'<none>'`），且**不保留** state / PKCE / 其他授权秘密；秘密脱敏回归在 `tests/helpers/browserSolidOidc.test.ts`（先 RED 2 fail / 69 pass actual exit 1，修复后 71 pass actual exit 0）。该 hook **不能追溯**补全此前未记录的轨迹，因此“两次询问是否携带相同 scope 集合”仍是 **PENDING**，只能由未来一次**真实记录的**请求轨迹来判定，不能以单元用例绿灯代替。
+
+### 安装包前置验收约束（2026-10-07）
+
+桌面本地 full 验收必须使用实际安装的候选包：构建安装包 → 安装 → 运行安装后的应用完成验收 → 发布。解压 ZIP、开发服务器或发布后的补验均不能替代此门禁。有效 WebID 会话恢复 Account 时不应再次输入账号密码；首次授权、已授权复用、应用重启和运行中过期续期分别验证。

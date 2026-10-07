@@ -1,3 +1,4 @@
+import { installOwnedDesktop } from './packaged-desktop-installation';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { createRequire } from 'node:module';
@@ -134,7 +135,7 @@ export interface OwnedPackagedDesktop {
   directory: string;
   archive: { size: number; sha256: string; sha512: string };
   runtime: { version: string; edition: 'local'; ownership: 'desktop'; binarySha256: string;
-    bundled: true; noExternalOverride: true; freshEndpoint: true };
+    bundled: true; installed: true; noExternalOverride: true; freshEndpoint: true };
   close(): Promise<{ appStopped: true; runtimeStopped: true; ownedDataRemoved: true; remainingOwnedPids: 0 }>;
 }
 
@@ -147,7 +148,7 @@ export async function closeOwnedPackagedApp(app: Pick<ElectronApplication, 'clos
   }
 }
 
-/** Real App + its packaged runtime, isolated from every installed App/profile.
+/** Real App + its packaged runtime, installed from DMG with its own application directory and profile.
  * It only establishes provenance/lifecycle; it cannot claim permissions or Chat passed.
  */
 export async function launchOwnedPackagedDesktop(options: {
@@ -156,10 +157,11 @@ export async function launchOwnedPackagedDesktop(options: {
   if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS');
   if (!/^\d+\.\d+\.\d+(?:-rc\.\d+(?:\.\d+)?)?$/.test(options.version)) throw new Error('Invalid packaged version');
   await mkdir(options.evidenceDirectory, { recursive: true, mode: 0o700 });
-  const directory = await mkdtemp(path.join(options.evidenceDirectory, 'owned-app-'));
+  const directory = await mkdtemp(path.join(path.resolve(options.evidenceDirectory), 'owned-app-'));
   const archive = await describeArchive(options.archive);
-  const appPath = path.join(directory, 'Xpod.app');
-  const binary = path.join(appPath, 'Contents', 'Resources', 'runtime', 'xpod');
+  let installation: Awaited<ReturnType<typeof installOwnedDesktop>> | undefined;
+  let appPath = '';
+  let binary = '';
   let app: ElectronApplication | undefined;
   let appProcess: ChildProcess | undefined;
   let launchAttempted = false;
@@ -203,12 +205,15 @@ export async function launchOwnedPackagedDesktop(options: {
       const ids = remainingOwnedProcessIds(owned, await readProcessInventory());
       return ids.length === 0 ? ids.length : undefined;
     }, 'Owned desktop child processes remain');
+    await installation?.remove();
     await rm(directory, { recursive: true, force: true });
     closed = true;
     return { appStopped: true, runtimeStopped: true, ownedDataRemoved: true, remainingOwnedPids: remaining as 0 };
   }
   try {
-    await execute('/usr/bin/ditto', ['-x', '-k', path.resolve(options.archive), directory]);
+    installation = await installOwnedDesktop(path.resolve(options.archive), directory);
+    appPath = installation.appPath;
+    binary = path.join(appPath, 'Contents', 'Resources', 'runtime', 'xpod');
     const afterExtract = await describeArchive(options.archive);
     if (JSON.stringify(afterExtract) !== JSON.stringify(archive)) throw new Error('Desktop archive changed during extraction');
     const binaryInfo = await lstat(binary);
@@ -260,7 +265,7 @@ export async function launchOwnedPackagedDesktop(options: {
     await page.goto(new URL('ai-connections', gateway).href);
     return { app, page, gateway, directory, archive,
       runtime: { version: runtimeVersion, edition: 'local', ownership: 'desktop', binarySha256,
-        bundled: true, noExternalOverride: true, freshEndpoint: true }, close };
+        bundled: true, installed: true, noExternalOverride: true, freshEndpoint: true }, close };
   } catch (error) {
     // Keep owned files if lifecycle cleanup cannot be proven. Never clean another App/profile.
     await close().catch(() => undefined);

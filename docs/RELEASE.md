@@ -474,3 +474,7 @@ bun run test:integration
 
 `bun run test:integration` 会运行 lite 和 full 集成链路。若 Docker、数据库或
 本机网络权限缺失，记录真实失败输出；不要把未运行的集成测试写成通过。
+
+### 本地安装包前置门禁
+
+桌面版本发布前，必须先构建候选 DMG/ZIP，实际安装 DMG，使用安装后的应用完成本地 full 验收；通过后才继续发布。开发启动、仅解压 ZIP、单元或隔离集成测试不能替代安装后的完整登录、Consent、会话复用与业务链路验收。安装隔离、产物一致性和清理规则见 [桌面权限验收](testing/desktop-permission-acceptance.md)。

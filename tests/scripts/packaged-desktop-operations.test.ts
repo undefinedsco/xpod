@@ -107,3 +107,9 @@ it('requires actual Pi files in the owned home and refuses foreign paths or gate
     await expect(readOwnedPiConfiguration(home, gateway)).rejects.toThrow();
   } finally { await rm(fixture, { recursive: true, force: true }); }
 });
+
+it('accepts session DPoP issuance only with its proof', () => {
+  expect(accountCreationResponseSucceeded(200, 'DPoP fixture', 'proof')).toBe(true);
+  expect(accountCreationResponseSucceeded(200, 'DPoP fixture')).toBe(false);
+  expect(accountCreationResponseSucceeded(401, 'DPoP fixture', 'proof')).toBe(false);
+});

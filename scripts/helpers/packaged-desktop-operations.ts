@@ -5,11 +5,12 @@ import type { Page, Request, Response } from '@playwright/test';
 import type { AiConnectionsProvider, CreateApiKeyCredentialInput } from '@undefineds.co/ai-connections/client';
 import type { MountedPodPermissionPhase } from './packaged-desktop-permissions';
 
-export function accountCreationResponseSucceeded(status: number, authorization?: string): boolean {
-  return status >= 200 && status < 300 && authorization?.startsWith('CSS-Account-Token ') === true;
+export function accountCreationResponseSucceeded(status: number, authorization?: string, dpop?: string): boolean {
+  return status >= 200 && status < 300 && (authorization?.startsWith('CSS-Account-Token ') === true
+    || (authorization?.startsWith('DPoP ') === true && Boolean(dpop?.trim())));
 }
 
-/** A missing Pod row does not prove the Account compensation succeeded. */
+/** Confirm independently that no issued Account credential remains. */
 export function assertAccountCredentialsRestored(baseline: string[], current: Array<{ clientId: string }>): void {
   if (current.some(record => !baseline.includes(record.clientId))) throw new Error('New Account credential remains after key cleanup');
 }
@@ -142,7 +143,7 @@ export async function readOwnedPiConfiguration(home: string, gateway: string): P
   return provider.apiKey;
 }
 
-/** Real key dialog → Account credential → Pod record → actual fixture-only files.
+/** Real key dialog → Account credential index → actual fixture-only files.
  * Never replaces clipboard, fetch, forms or the applet's credential capability.
  */
 export async function createMountedKeyInUi(page: Page, phase: MountedPodPermissionPhase, input: {
@@ -150,6 +151,9 @@ export async function createMountedKeyInUi(page: Page, phase: MountedPodPermissi
 }): Promise<{ key: string; id: string; accountActor: true; remove(): Promise<true> }> {
   const control = new URL(input.accountCredentialControl);
   let accountCreationSucceeded = false;
+  let issuedClientId: string | undefined;
+  const observations: Promise<void>[] = [];
+  let observationError: unknown;
   const baseline = await phase.handle.evaluate(async ({ host }) => {
     const capability = host.capabilities.aiClientCredentials;
     if (!capability) throw new Error('Missing original Account actor');
@@ -163,9 +167,20 @@ export async function createMountedKeyInUi(page: Page, phase: MountedPodPermissi
     assertAccountCredentialsRestored(baseline, current);
   };
   const response = (response: Response): void => {
-    if (response.url() === control.href && response.request().method() === 'POST') {
-      accountCreationSucceeded ||= accountCreationResponseSucceeded(response.status(), response.request().headers().authorization);
-    }
+    if (response.url() !== control.href || response.request().method() !== 'POST') return;
+    observations.push((async () => {
+      const request = response.request();
+      const body = request.postDataJSON() as { name?: string; webId?: string };
+      const owner = await phase.handle.evaluate(({ controller }) => controller.client!.webId);
+      if (body.name !== input.name || body.webId !== owner) return;
+      const headers = await request.allHeaders();
+      // Keep plaintext response secrets inside this process only.
+      const issued = await response.json() as { id?: unknown };
+      if (typeof issued.id !== 'string' || !issued.id || baseline.includes(issued.id)) return;
+      if (issuedClientId) throw new Error('Multiple Account issuances observed for one UI action');
+      issuedClientId = issued.id;
+      accountCreationSucceeded = accountCreationResponseSucceeded(response.status(), headers.authorization, headers.dpop);
+    })().catch(error => { observationError = error; }));
   };
   page.on('response', response);
   try {
@@ -176,9 +191,11 @@ export async function createMountedKeyInUi(page: Page, phase: MountedPodPermissi
     await dialog.getByRole('combobox', { name: 'Xpod 密钥 用途', exact: true }).selectOption('pi');
     await dialog.getByRole('button', { name: '创建 Xpod 密钥', exact: true }).click();
     await dialog.getByRole('heading', { name: 'Xpod 密钥 已签发', exact: true }).waitFor();
-    if (!accountCreationSucceeded) throw new Error('Key dialog did not use the current Account actor');
+    await Promise.all(observations);
+    if (observationError) throw observationError;
+    if (!accountCreationSucceeded || !issuedClientId) throw new Error('Key dialog did not use the current Account actor');
     const records = await phase.handle.evaluate(({ controller }) => controller.client!.listGatewayKeys());
-    const matching = records.filter(record => record.name === input.name);
+    const matching = records.filter(record => record.id === issuedClientId);
     const owner = await phase.handle.evaluate(({ controller }) => controller.client!.webId);
     if (matching.length !== 1 || matching[0].owner !== owner || matching[0].kind !== 'client-credentials' || !matching[0].clientCredentialId) throw new Error('Key dialog record readback mismatch');
     const accountRecords = await phase.handle.evaluate(async ({ host }) => {
@@ -193,12 +210,12 @@ export async function createMountedKeyInUi(page: Page, phase: MountedPodPermissi
     await dialog.getByRole('button', { name: '完成', exact: true }).click();
     const remove = async (): Promise<true> => {
       await phase.handle.evaluate(({ controller }) => controller.selectSection('keys'));
-      await page.getByRole('button', { name: `销毁 ${input.name}`, exact: true }).click();
-      await page.getByRole('button', { name: `确认删除 ${input.name}`, exact: true }).click();
+      await page.getByRole('button', { name: `销毁 ${matching[0].name}`, exact: true }).click();
+      await page.getByRole('button', { name: `确认删除 ${matching[0].name}`, exact: true }).click();
       await until(async () => phase.handle.evaluate(async ({ controller }, id) => {
         const records = await controller.client!.listGatewayKeys();
         return !records.some(record => record.id === id && !record.revokedAt) ? true : undefined;
-      }, id), 'UI key revoke did not remove the Pod record');
+      }, id), 'UI key revoke did not remove the Account credential');
       const accountAbsent = await phase.handle.evaluate(async ({ host }, clientId) => {
         const capability = host.capabilities.aiClientCredentials;
         if (!capability) throw new Error('Missing original Account actor');
@@ -211,14 +228,16 @@ export async function createMountedKeyInUi(page: Page, phase: MountedPodPermissi
     return { key, id, accountActor: true, remove };
   } catch (error) {
     // Dialog/configuration failure may happen after Account issuance. Reuse the
-    // same guarded product client to revoke this uniquely named owned record.
+    // same guarded product client to revoke the exact observed issued credential.
     try {
-      await phase.handle.evaluate(async ({ controller }, name) => {
+      await Promise.all(observations);
+      await phase.handle.evaluate(async ({ controller }, id) => {
+        if (!id) return;
         const client = controller.client!;
-        const records = (await client.listGatewayKeys()).filter(record => record.name === name);
+        const records = (await client.listGatewayKeys()).filter(record => record.id === id);
         if (records.length > 1 || records.some(record => record.owner !== client.webId)) throw new Error('Owned key cleanup is ambiguous');
         if (records.length === 1) await client.deleteGatewayKey(records[0].id);
-      }, input.name);
+      }, issuedClientId);
       await verifyAccountCleanup();
     } catch (cleanup) { throw new AggregateError([error, cleanup], 'Key dialog and cleanup failed'); }
     throw error;
