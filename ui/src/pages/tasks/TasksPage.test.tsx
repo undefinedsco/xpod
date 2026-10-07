@@ -11,7 +11,7 @@ vi.mock('@undefineds.co/tasks', () => ({
   createTasksClient: () => ({ stop: mocks.stop }),
   TasksPanel: ({ client, renderApproval }: { client: TasksClient; renderApproval: (run: TaskRun) => ReactNode }) => { mocks.client = client; return mocks.run ? renderApproval(mocks.run) : null; },
 }));
-vi.mock('../../solid/useXpodSolidRuntime', () => ({ useXpodSolidRuntime: () => ({ fetch, webId: 'https://pod.test/profile/card#me', currentPod: { podUrl: mocks.podUrl, database: { resolveRowIri: (_resource: unknown, row: { id: string }) => new URL(`.data/${row.id}`, mocks.podUrl).href } } }) }));
+vi.mock('../../solid/useXpodSolidRuntime', () => ({ useXpodSolidRuntime: () => ({ fetch, webId: 'https://pod.test/profile/card#me', currentPod: { podUrl: mocks.podUrl, database: { resolveResourceIri: (_resource: unknown, id: string) => /^https?:/.test(id) ? id : new URL(`.data/${id}`, mocks.podUrl).href, resolveRelationIri: (_resource: unknown, id: string) => /^https?:/.test(id) ? id : new URL(`.data/${id}`, mocks.podUrl).href } } }) }));
 vi.mock('../../shell/ShellHeaderControls', () => ({ ApprovalCard: ({ item }: { item: ShellAttentionItem }) => <div data-testid="approval">{item.approvalId}</div>, ShellDecisionFeedback: ({ run }: { run: string }) => <div data-testid="feedback">{run}</div>, ShellHeaderControls: () => null }));
 vi.mock('../../shell/useShellState', () => ({ useShellState: () => ({ snapshot: { attention: mocks.attention } }) }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); mocks.run = undefined; mocks.attention = []; mocks.podUrl = 'https://pod.test/'; });
@@ -61,4 +61,13 @@ it('recognizes canonical recovery without showing a missing approval and keeps H
   mocks.stop.mockResolvedValueOnce({ run: mocks.run });
   await mocks.client!.stop(rawRun);
   expect(mocks.stop).toHaveBeenCalledWith(rawRun);
+});
+
+it('matches the API relative Thread relation to the exact ORM-resolved approval Thread', () => {
+  const thread = 'threads.ttl#owned-thread';
+  mocks.run = { ...pendingRun(), thread };
+  mocks.attention = [{ ...approval(), thread: `https://pod.test/.data/${thread}` }];
+  render(<MemoryRouter><TasksPage /></MemoryRouter>);
+  expect(screen.getByTestId('approval').textContent).toBe(approval().approvalId);
+  expect(mocks.run.thread).toBe(thread);
 });
