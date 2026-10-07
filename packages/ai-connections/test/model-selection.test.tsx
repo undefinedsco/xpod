@@ -684,6 +684,28 @@ describe('AI Connection model selection', () => {
     expect(screen.getByRole('button', { name: '停用 GPT-5 Mini' })).toBeTruthy()
   })
 
+  it('adopts the host selection when the provider catalog is refreshed externally', async () => {
+    const current = client([
+      { id: 'gpt-5', provider: 'openai', displayName: 'GPT-5' },
+      { id: 'gpt-5-mini', provider: 'openai', displayName: 'GPT-5 Mini' },
+    ])
+    const view = render(<AiConnectionsPanel client={current} selectedProvider="openai"
+      providerProducts={{ openai: openAiProduct([]) }} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '启用 GPT-5' }))
+    await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith('openai', [{ id: 'gpt-5' }]))
+
+    // A host refresh supersedes the optimistic local selection: the panel shows
+    // the catalog the store now reports, not the one it last wrote.
+    view.rerender(<AiConnectionsPanel client={current} selectedProvider="openai"
+      providerProducts={{ openai: openAiProduct([
+        { id: 'gpt-5-mini', provider: 'openai', displayName: 'GPT-5 Mini', availability: 'available' },
+      ]) }} />)
+
+    expect(await screen.findByRole('button', { name: '停用 GPT-5 Mini' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '启用 GPT-5' })).toBeTruthy()
+  })
+
   it.each([
     [new Error('selection_write_failed'), '请求未完成。请确认 Xpod 正在运行且登录仍有效，然后重试。'],
     [new TypeError('Failed to fetch'), '暂时无法连接 Xpod，请在连接恢复后确认操作结果，再重试。'],

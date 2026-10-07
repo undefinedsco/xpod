@@ -156,4 +156,16 @@ describe('package release gates', () => {
     expect(workflow).toContain('package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke" --package-only');
     expect(workflow).toContain('package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun" --package-only');
   });
+
+  it('installs a real Chromium before unit tests that launch it', () => {
+    const workflow = readFileSync(path.join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
+    const install = workflow.indexOf('bunx playwright install --with-deps chromium');
+    const unitTests = workflow.indexOf('name: Unit tests');
+
+    // tests/scripts/rc-light-web-browser.test.ts launches Chromium inside the unit run, so the
+    // browser must be installed before it; the Account layout regression reuses the same install.
+    expect(install).toBeGreaterThan(-1);
+    expect(unitTests).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(unitTests);
+  });
 });

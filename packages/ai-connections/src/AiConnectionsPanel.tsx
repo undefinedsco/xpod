@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Toaster,
   toast,
@@ -45,6 +45,7 @@ import { modelCatalogId, withCatalogModelId } from './AiModelCatalog'
 import type { GatewayModelSelection } from './AiGatewayModelsSection'
 
 const EMPTY_PROVIDER_SUMMARIES: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>> = {}
+const EMPTY_PROVIDER_PRODUCTS: Partial<Record<AiConnectionsProvider, AiProviderSummary>> = {}
 
 interface ModelDiscoveryMergeScope {
   markMissing: boolean
@@ -103,7 +104,7 @@ export function AiConnectionsPanel({
   selectedProvider,
   selectedCredentialId,
   providerSummaries: providerSummariesInput = EMPTY_PROVIDER_SUMMARIES,
-  providerProducts = {},
+  providerProducts = EMPTY_PROVIDER_PRODUCTS,
   providerLoadError,
   providerLoading = false,
   onProviderStateChange,
@@ -111,18 +112,29 @@ export function AiConnectionsPanel({
   liveRevision = 0,
   liveCredentialRows,
 }: AiConnectionsPanelProps) {
-  const [connectionStates, setConnectionStates] = useState<Record<string, ProviderConnectionState>>({})
+  const [connectionStates, setConnectionStates] = useState<{
+    source: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>>
+    states: Record<string, ProviderConnectionState>
+  }>({ source: {}, states: {} })
   const [models, setModels] = useState<AiGatewayModel[]>([])
-  const [gatewayModels, setGatewayModels] = useState<AiGatewayModel[]>()
+  const [gatewayCatalog, setGatewayCatalog] = useState<{
+    client: AiConnectionsClient
+    version: number
+    models?: AiGatewayModel[]
+  }>()
   const [gatewayCatalogVersion, setGatewayCatalogVersion] = useState(0)
-  const [selectedModelIds, setSelectedModelIds] = useState<
-    Partial<Record<AiConnectionsProvider, string[]>>
-  >({})
+  const [selectionOverrides, setSelectionOverrides] = useState<{
+    source: Partial<Record<AiConnectionsProvider, AiProviderSummary>>
+    ids: Partial<Record<AiConnectionsProvider, string[]>>
+  }>(() => ({ source: providerProducts, ids: {} }))
   const [modelSelectionStatus, setModelSelectionStatus] = useState<Partial<Record<AiConnectionsProvider, 'saving' | 'saved' | 'error'>>>({})
   const [attempts, setAttempts] = useState<Record<string, AiConnectAttempt | undefined>>({})
   const [attemptOfferingIds, setAttemptOfferingIds] = useState<Partial<Record<AiConnectionsProvider, string>>>({})
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({})
-  const [baseUrlInputs, setBaseUrlInputs] = useState<Record<string, string>>({})
+  const [baseUrlDrafts, setBaseUrlDrafts] = useState<{
+    source: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>>
+    values: Record<string, string>
+  }>({ source: {}, values: {} })
   const [busyProviders, setBusyProviders] = useState<Record<string, boolean>>({})
   const [providerErrors, setProviderErrors] = useState<Record<string, AiOfferingActionError | undefined>>({})
   const [quotas, setQuotas] = useState<Partial<Record<
@@ -160,46 +172,48 @@ export function AiConnectionsPanel({
     provider: AiConnectionsProvider,
     state: ProviderConnectionState,
   ) => {
-    setConnectionStates((current) => ({ ...current, [provider]: state }))
+    setConnectionStates((current) => ({
+      // The override is bound to the summary it was raised against; a fresh
+      // summary for this provider (host fix or revoke) supersedes it, while a
+      // refresh of another provider leaves it untouched.
+      source: { ...current.source, [provider]: providerSummariesInput[provider] },
+      states: { ...current.states, [provider]: state },
+    }))
     onProviderStateChange?.(provider, productStateFromConnection(state))
-  }, [onProviderStateChange])
+  }, [onProviderStateChange, providerSummariesInput])
 
-  useEffect(() => {
-    setConnectionStates(Object.fromEntries(
-      Object.values(providerSummariesInput).filter(isDefined).map((summary) => [
-        summary.provider,
-        summary.status === 'connected' && summary.authMode === 'browserAssistedApiKey'
-          ? 'configured'
-          : summary.status,
-      ]),
-    ))
-    setBaseUrlInputs(Object.fromEntries(
-      Object.values(providerSummariesInput).filter(isDefined).map((summary) => [
-        summary.provider,
-        summary.baseUrl ?? '',
-      ]),
-    ))
-  }, [providerSummariesInput])
+  /**
+   * The connection state to render: a local pending/failed override while the
+   * summary it was raised against is still current, otherwise the summary's own
+   * projection.
+   */
+  const connectionStateFor = (
+    provider: AiConnectionsProvider,
+  ): ProviderConnectionState | undefined => {
+    const summary = providerSummariesInput[provider]
+    const local = connectionStates.source[provider] === summary
+      ? connectionStates.states[provider]
+      : undefined
+    return local ?? summaryConnectionState(summary)
+  }
 
-  useEffect(() => {
-    setSelectedModelIds((current) => {
-      const next = { ...current }
-      let changed = false
-      for (const [provider, product] of Object.entries(providerProducts) as Array<[
-        AiConnectionsProvider,
-        AiProviderSummary | undefined,
-      ]>) {
-        if (!product) continue
-        const ids = product.selectedModels.map(modelSelectionId)
-        const previous = current[provider]
-        if (!previous || previous.join('\u0000') !== ids.join('\u0000')) {
-          next[provider] = ids
-          changed = true
-        }
-      }
-      return changed ? next : current
-    })
-  }, [providerProducts])
+  /**
+   * The Base URL a provider's input shows and its submit sends: a local draft
+   * while the summary it was typed against is still current, otherwise the
+   * summary's own endpoint. Both the field and `saveApiKey` share this so the
+   * displayed and submitted values cannot diverge.
+   */
+  const baseUrlFor = (provider: AiConnectionsProvider): string => {
+    const summary = providerSummariesInput[provider]
+    const draft = baseUrlDrafts.source[provider] === summary
+      ? baseUrlDrafts.values[provider]
+      : undefined
+    return draft ?? summary?.baseUrl ?? ''
+  }
+
+  // Connection status, base URLs, and the model selection are projections of the
+  // props plus the user's local overrides; none of them is mirrored into state,
+  // so no effect has to copy props.
 
   useEffect(() => {
     let active = true
@@ -218,13 +232,21 @@ export function AiConnectionsPanel({
 
   useEffect(() => {
     let active = true
-    setGatewayModels(undefined)
     // Load the routing projection independently: the host's listModels may be a Pod catalog.
     void client.listGatewayModels?.()
-      .then((availableModels) => { if (active) setGatewayModels(availableModels) })
+      .then((availableModels) => {
+        if (active) setGatewayCatalog({ client, version: gatewayCatalogVersion, models: availableModels })
+      })
       .catch(() => undefined)
     return () => { active = false }
   }, [client, gatewayCatalogVersion])
+
+  // A result is only current for the client + catalog revision it was loaded for;
+  // a stale response (or a not-yet-reloaded catalog) reads as undefined.
+  const gatewayModels = gatewayCatalog?.client === client
+    && gatewayCatalog.version === gatewayCatalogVersion
+    ? gatewayCatalog.models
+    : undefined
 
   const setBusy = (provider: AiConnectionsProvider, value: boolean) => {
     setBusyProviders((current) => ({ ...current, [provider]: value }))
@@ -377,9 +399,7 @@ export function AiConnectionsPanel({
 
   const saveApiKey = async (definition: AiProviderDefinition) => {
     const apiKey = apiKeyInputs[definition.id]?.trim()
-    const baseUrl = baseUrlInputs[definition.id]
-      ?? providerSummariesInput[definition.id]?.baseUrl
-      ?? ''
+    const baseUrl = baseUrlFor(definition.id)
     const attempt = attempts[definition.id]
     if (!apiKey || !attempt) return
     setBusy(definition.id, true)
@@ -848,17 +868,36 @@ export function AiConnectionsPanel({
     }
   }
 
-  const handleModelSelectionChange = useCallback((
-    provider: AiConnectionsProvider,
-    modelIds: string[],
-  ) => {
-    const ids = [...new Set(modelIds)]
-    const previousIds = selectedModelIds[provider]
+  /**
+   * Selection ids a provider currently has, however they were last reported.
+   *
+   * The local override is only valid for the `providerProducts` snapshot it was
+   * written against; a host refresh supersedes it, so the projection always
+   * falls back to the authoritative product selection.
+   */
+  const selectionIdsFor = (provider: AiConnectionsProvider): string[] => {
+    const overrides = selectionOverrides.source === providerProducts ? selectionOverrides.ids : {}
+    return overrides[provider]
       ?? effectiveProviderProducts[provider]?.selectedModels.map(modelSelectionId)
       ?? []
+  }
+
+  const setSelectionOverride = (provider: AiConnectionsProvider, ids: string[]) => {
+    setSelectionOverrides((current) => ({
+      source: providerProducts,
+      ids: {
+        ...(current.source === providerProducts ? current.ids : {}),
+        [provider]: ids,
+      },
+    }))
+  }
+
+  const handleModelSelectionChange = (provider: AiConnectionsProvider, modelIds: string[]) => {
+    const ids = [...new Set(modelIds)]
+    const previousIds = selectionIdsFor(provider)
     const generation = (modelSelectionGeneration.current[provider] ?? 0) + 1
     modelSelectionGeneration.current[provider] = generation
-    setSelectedModelIds((current) => ({ ...current, [provider]: ids }))
+    setSelectionOverride(provider, ids)
     setModelSelectionStatus((current) => ({ ...current, [provider]: 'saving' }))
     void (async () => {
       try {
@@ -884,19 +923,12 @@ export function AiConnectionsPanel({
       } catch (error) {
         if (modelSelectionGeneration.current[provider] !== generation) return
         setModelSelectionStatus((current) => ({ ...current, [provider]: 'error' }))
-        setSelectedModelIds((current) => ({ ...current, [provider]: previousIds }))
+        setSelectionOverride(provider, previousIds)
         onModelSelectionChange?.(provider, previousIds)
         toast({ variant: 'destructive', description: errorMessage(error) })
       }
     })()
-  }, [client, effectiveProviderProducts, modelSelectionGeneration, models, onModelSelectionChange, selectedCredentialId, selectedModelIds])
-
-  /** Selection ids a provider currently has, however they were last reported. */
-  const selectionIdsFor = useCallback((provider: AiConnectionsProvider): string[] => (
-    selectedModelIds[provider]
-    ?? effectiveProviderProducts[provider]?.selectedModels.map(modelSelectionId)
-    ?? []
-  ), [selectedModelIds, effectiveProviderProducts])
+  }
 
   /**
    * The key a gateway row is selected under.
@@ -906,15 +938,15 @@ export function AiConnectionsPanel({
    * unequal against everything already stored and resolve to a resource the
    * write cannot find, so the row's own id is used whenever the account has one.
    */
-  const gatewaySelectionId = useCallback((model: AiGatewayModel): string => {
+  const gatewaySelectionId = (model: AiGatewayModel): string => {
     const stored = models.find((candidate) =>
       candidate.provider === model.provider
       && modelCatalogId(candidate) === modelCatalogId(model))
     return stored ? modelSelectionId(stored) : modelSelectionId(model)
-  }, [models])
+  }
 
   /** The gateway list switches the same selection the provider pages switch. */
-  const gatewayModelSelection = useMemo<GatewayModelSelection>(() => ({
+  const gatewayModelSelection: GatewayModelSelection = {
     isSelected: (model) => selectionIdsFor(model.provider).includes(gatewaySelectionId(model)),
     toggle: (model) => {
       const current = selectionIdsFor(model.provider)
@@ -927,7 +959,7 @@ export function AiConnectionsPanel({
       )
     },
     disabled: providerLoading,
-  }), [gatewaySelectionId, handleModelSelectionChange, providerLoading, selectionIdsFor])
+  }
 
   const providerContent = (
       <section>
@@ -944,20 +976,21 @@ export function AiConnectionsPanel({
               providerProduct?.selectedModels ?? [],
               gatewayModels ?? [],
             )
-            const providerSelectedModelIds = selectedModelIds[definition.id]
-              ?? providerProduct?.selectedModels.map(modelSelectionId)
-              ?? []
+            const providerSelectedModelIds = selectionIdsFor(definition.id)
             return (
             <AiProviderCard
               key={definition.id}
               definition={definition}
               product={providerProduct}
-              status={resolvedConnectionState(connectionStates[definition.id], providerProduct)}
+              status={resolvedConnectionState(
+                connectionStateFor(definition.id),
+                providerProduct,
+              )}
               accountLabel={providerSummariesInput[definition.id]?.accountLabel}
               attempt={attempts[definition.id]}
               attemptOfferingId={attemptOfferingIds[definition.id]}
               apiKey={apiKeyInputs[definition.id] ?? ''}
-              baseUrl={baseUrlInputs[definition.id] ?? providerSummariesInput[definition.id]?.baseUrl ?? ''}
+              baseUrl={baseUrlFor(definition.id)}
               busy={Boolean(busyProviders[definition.id] || verifyingProviders[definition.id])}
               disabled={providerLoading}
               developerMode={developerMode}
@@ -970,9 +1003,9 @@ export function AiConnectionsPanel({
                 ...current,
                 [definition.id]: value,
               }))}
-              onBaseUrlChange={(value) => setBaseUrlInputs((current) => ({
-                ...current,
-                [definition.id]: value,
+              onBaseUrlChange={(value) => setBaseUrlDrafts((current) => ({
+                source: { ...current.source, [definition.id]: providerSummariesInput[definition.id] },
+                values: { ...current.values, [definition.id]: value },
               }))}
               onBeginApiKey={() => void beginApiKey(definition.id)}
               onBeginOffering={(offering, mode, method) => void beginOfferingConnect(definition.id, offering, mode, method)}
@@ -1060,6 +1093,15 @@ function connectionStateFromProduct(product: AiProviderSummary | undefined): Pro
   return credential?.authMode === 'oauth' || credential?.authMode === 'deviceCode'
     ? 'connected'
     : 'configured'
+}
+
+function summaryConnectionState(
+  summary: AiProviderConnectionSummary | undefined,
+): ProviderConnectionState | undefined {
+  if (!summary) return undefined
+  return summary.status === 'connected' && summary.authMode === 'browserAssistedApiKey'
+    ? 'configured'
+    : summary.status
 }
 
 function resolvedConnectionState(
@@ -1431,8 +1473,4 @@ function compactModelSelection(model: AiGatewayModel): AiConnectionsModelSelecti
     ...(model.offeringId ? { offeringId: model.offeringId } : {}),
     ...(model.resourceId ? { resourceId: model.resourceId } : {}),
   }
-}
-
-function isDefined<T>(value: T | undefined): value is T {
-  return value !== undefined
 }
