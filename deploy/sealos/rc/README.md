@@ -8,14 +8,15 @@ must coordinate exclusive ownership before touching RC. See the authoritative
 [release process](../../../docs/RELEASE.md#先合入再发-rc); this overlay is not an
 alternative branch release entry point.
 
-This overlay deploys only RC-owned resources into the Sealos-assigned CO
-namespace. It never creates a Namespace or a private Inngest instance.
+This overlay deploys only RC-owned resources into GZ
+(`https://gzg.sealos.run:6443`, namespace `ns-iknkxtc8`). It never creates a
+Namespace or modifies production PostgreSQL databases or shared Inngest.
 
 Public entry points mirror production roles:
 
-- `id-rc.undefineds.co` for OIDC, WebID, dashboard, and settings
-- `pods-rc.undefineds.co` for the hosted Pod entry point
-- `api-rc.undefineds.co` for authenticated APIs
+- `id-rc.undefineds.cn` for OIDC, WebID, dashboard, and settings
+- `pods-rc.undefineds.cn` for the hosted Pod entry point
+- `api-rc.undefineds.cn` for authenticated APIs
 
 All three Ingresses target `Service/xpod-rc-gateway`, a stable selector alias
 for the existing unified Nginx Gateway. The Gateway routes each host to
@@ -29,10 +30,13 @@ must place the immutable image digest, seed Secret name, seed mount, and
 `CSS_SEED_CONFIG` into one final Deployment manifest before the workflow calls
 `kubectl apply`. Do not patch the Deployment, set its image, or restart it in
 separate steps: each pod-template mutation creates another ReplicaSet and can
-interrupt CSS while it is creating the seeded accounts. Every candidate replaces
-`StatefulSet/xpod-rc-postgres` with the pinned PostgreSQL 17 + pgvector image in
-`deploy/sealos/rc-postgres`. Its `emptyDir` and generated password belong only to
-that run, so stale RDF schemas and candidate data cannot cross runs. The shared
+interrupt CSS while it is creating the seeded accounts. Every admitted candidate
+resets only database `xpod_rc` on the existing shared `xpod-rdf-postgres` instance,
+then installs vector, xpod_rdf and xpod_qlever in dependency order. APP_ENV_FILE
+must use the isolated `xpod_rc` role/database for identity and RDF; production
+databases and the PostgreSQL instance are never recreated. This destroys prior
+RC data, so coordinate exclusive ownership before merging a deploying candidate.
+The shared
 public RC entry points are serialized: only staging candidates may deploy, and
 development branches must not mutate the static RC service. RC reuses
 Redis and Inngest with an isolated nonzero Redis DB and Event Key. Pod blobs are written to the
@@ -41,10 +45,11 @@ from `APP_ENV_FILE`. The historical `CSS_MINIO_*` names remain for compatibility
 in this release even though the backend is R2. The Inngest Signing Key is shared
 with the shared Inngest instance. Production object storage is not modified.
 
-`CSS_BASE_URL`, `CSS_ALLOWED_HOSTS`, `XPOD_PUBLIC_API_URL`, ports, edition, and
-RC source are fixed in the manifest. The managed Gateway block also preserves
+`CSS_BASE_URL`, `CSS_ALLOWED_HOSTS` and `XPOD_PUBLIC_API_URL` come from APP_ENV_FILE;
+inline constants must not override them. Ports and edition remain structural
+manifest settings. The managed Gateway block also preserves
 the public Host and HTTPS forwarding headers so OIDC/DPoP URL verification sees
 the same origin as the browser. `CSS_IDENTITY_DB_URL` and `CSS_SPARQL_ENDPOINT`
-from `APP_ENV_FILE` are discarded; the workflow injects the ephemeral PostgreSQL
-URLs. Do not place production hosts or unsupported prefix variables in
+from `APP_ENV_FILE` are preserved and validated against the shared GZ PostgreSQL
+and isolated `xpod_rc` role/database. Do not place production hosts or unsupported prefix variables in
 `APP_ENV_FILE`.
