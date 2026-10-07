@@ -107,6 +107,11 @@ describe('AI Connection credentials as a live collection', () => {
     const fixture = pilotFixture()
     const view = renderPilot({ notifications: fakeNotifications(), fixture })
     await openProvider(view)
+    await waitFor(() => {
+      expect(view.controller.credentialsCollection).toBeDefined()
+      expect(view.controller.credentialsCollection).toBe(fixture.collection())
+      expect(view.controller.credentialsCollection!.isReady()).toBe(true)
+    })
     const replacement = 'replacement-storage-only'
     await act(async () => {
       await view.controller.client!.updateProviderCredential('openai', CREDENTIAL_ID, {

@@ -12,7 +12,8 @@ import { createCloudAccountPassword, prepareManagedLocalAcceptancePods, parseKey
 import { launchOwnedPackagedDesktop, type OwnedPackagedDesktop } from './helpers/packaged-desktop-fixture';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError,
   observeOwnedPodTraffic, type MountedPermissionCondition, type MountedPodPermissionPhase } from './helpers/packaged-desktop-permissions';
-import { createConfirmedMountedProvider, createMountedKeyInUi, acceptMountedFirstChat, acceptHeldPodInvocation } from './helpers/packaged-desktop-operations';
+import { createConfirmedMountedProvider, createMountedKeyInUi, acceptMountedFirstChat, acceptHeldPodInvocation,
+  attributePackagedOperation, PackagedOperationError, type PackagedOperationCondition } from './helpers/packaged-desktop-operations';
 import { verifyPackagedSourceCheckout } from './helpers/packaged-desktop-source';
 import { acceptLiveTaskApproval, type LiveTaskEvidence } from './helpers/live-task-approval';
 import { completeOidcLogin, consentBindingProven, OidcApprovalError, type BrowserOidcTrace,
@@ -70,7 +71,7 @@ const SAFE_FAILURE_FILE = 'failure-safe.json';
 /** The only failure codes that may reach a public artifact or CI log. */
 export type DesktopFailureCode = 'invalid-arguments' | 'invalid-source' | 'provider-input'
   | 'packaged-launch' | 'local-authority' | 'identity-binding' | 'consent-binding'
-  | 'remember-grant' | 'oidc-approval' | 'pod-permission' | 'task-isolation' | 'evidence-contract' | 'unclassified';
+  | 'remember-grant' | 'oidc-approval' | 'pod-permission' | 'pod-operation' | 'task-isolation' | 'evidence-contract' | 'unclassified';
 
 /** Reviewed fixed explanation for every publishable code. */
 export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = {
@@ -84,6 +85,7 @@ export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = 
   'remember-grant': 'The remembered-grant bootstrap did not retain the explicit remember-client choice',
   'oidc-approval': 'The packaged browser approval step failed; the reviewed sub-condition names the operation',
   'pod-permission': 'The mounted Pod permission grant or restore proof failed',
+  'pod-operation': 'The mounted provider, key or Chat operation failed; the reviewed sub-condition names the operation',
   'task-isolation': 'The packaged task approval, Stop cleanup or cross-Pod isolation proof failed',
   'evidence-contract': 'The produced desktop evidence failed the strict contract',
   'unclassified': 'The packaged desktop acceptance failed; full detail is retained in private evidence',
@@ -93,7 +95,7 @@ export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = 
  * allowed here, so publishing one can never leak private evidence: the browser
  * approval flow, the mounted-permission phase and the remember gate each publish
  * the fixed vocabulary their own helper owns, never raw diagnostic text. */
-export type DesktopFailureEvidence = OidcApprovalCondition | MountedPermissionCondition | 'remember-not-posted';
+export type DesktopFailureEvidence = OidcApprovalCondition | MountedPermissionCondition | PackagedOperationCondition | 'remember-not-posted';
 
 /** A failure whose public projection is its reviewed code, never its text.
  * `message` keeps the exact private diagnostic for the 600-mode evidence file. */
@@ -125,10 +127,11 @@ export function describeFailure(error: unknown): PublishedDesktopFailure {
   }
   const code: DesktopFailureCode = error instanceof DesktopAcceptanceError ? error.code
     : error instanceof OidcApprovalError ? 'oidc-approval'
-    : error instanceof MountedPermissionError ? 'pod-permission' : 'unclassified';
+    : error instanceof MountedPermissionError ? 'pod-permission'
+    : error instanceof PackagedOperationError ? 'pod-operation' : 'unclassified';
   const evidence = error instanceof DesktopAcceptanceError ? error.evidence
     : error instanceof OidcApprovalError ? error.condition
-    : error instanceof MountedPermissionError ? error.condition : undefined;
+    : error instanceof MountedPermissionError || error instanceof PackagedOperationError ? error.condition : undefined;
   return { code, explanation: DESKTOP_FAILURE_EXPLANATIONS[code], ...(evidence ? { evidence } : {}) };
 }
 
@@ -146,7 +149,7 @@ export function publishedFailures(errors: unknown[]): PublishedDesktopFailure[] 
 }
 
 function privateError(error: unknown): unknown {
-  const cause = error instanceof OidcApprovalError || error instanceof MountedPermissionError ? error.cause : undefined;
+  const cause = error instanceof OidcApprovalError || error instanceof MountedPermissionError || error instanceof PackagedOperationError ? error.cause : undefined;
   return error instanceof Error ? { name: error.name, message: error.message, stack: error.stack,
     ...(cause === undefined ? {} : { cause: privateError(cause) }),
     ...(error instanceof AggregateError ? { errors: error.errors.map(privateError) } : {}) }
@@ -289,14 +292,30 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       // Account controls may commit a new host after the Pod-only handle was
       // retained. Keep the original grant actor for restore; bind Key UI work
       // to the current committed host with the exact same identity/storage.
-      keyHandle = await captureBrowserAiConnections(page, {
+      keyHandle = await attributePackagedOperation('key-dialog', () => captureBrowserAiConnections(page, {
         webId: binding.webId, podUrl: binding.storageUrl, requireAccountActor: true,
+      }));
+      key = await attributePackagedOperation('key-dialog', () => createMountedKeyInUi(page, { ...phase!, handle: keyHandle! }, { name: `desktop-${unique}-${index}`, configurationHome, gateway,
+        accountCredentialControl: account.controls.account?.clientCredentials ?? '' }));
+      // Models reuse and the first Chat are independent observations. Await both
+      // before cleanup so one failure cannot hide or interrupt the other request.
+      const [heldOutcome, chatOutcome] = await Promise.allSettled([
+        attributePackagedOperation('held-invocation', () =>
+          acceptHeldPodInvocation(page, { gateway, podUrl: binding.storageUrl, invocation, model: provider!.model })),
+        attributePackagedOperation('first-chat', () => acceptMountedFirstChat(page,
+          { gateway, podUrl: binding.storageUrl, key: key!.key, model: provider!.model, marker: `XPOD_${unique}_${index}` })),
+      ]);
+      await privateJson(options.privateDirectory, `operation-attempt-${index}-private.json`, {
+        held: heldOutcome.status === 'fulfilled' ? { passed: true } : { passed: false, error: privateError(heldOutcome.reason) },
+        chat: chatOutcome.status === 'fulfilled' ? { passed: true, observation: chatOutcome.value }
+          : { passed: false, error: privateError(chatOutcome.reason) },
       });
-      key = await createMountedKeyInUi(page, { ...phase, handle: keyHandle }, { name: `desktop-${unique}-${index}`, configurationHome, gateway,
-        accountCredentialControl: account.controls.account?.clientCredentials ?? '' });
-      const samePodReuse = await acceptHeldPodInvocation(page, { gateway, podUrl: binding.storageUrl, invocation, model: provider.model });
-      const chat = await acceptMountedFirstChat(page, { gateway, podUrl: binding.storageUrl, key: key.key,
-        model: provider.model, marker: `XPOD_${unique}_${index}` });
+      if (heldOutcome.status === 'rejected' || chatOutcome.status === 'rejected') {
+        throw new AggregateError([heldOutcome, chatOutcome].flatMap(result => result.status === 'rejected' ? [result.reason] : []),
+          'Mounted models reuse or first Chat failed');
+      }
+      const samePodReuse = heldOutcome.value;
+      const chat = chatOutcome.value;
       await privateJson(options.privateDirectory, `operations-${index}-private.json`, {
         credentialId: provider.credentialId, model: provider.model, quotaObserved: provider.quotaObserved,
         keyId: key.id, accountActor: key.accountActor, samePodReuse, chat,
@@ -339,7 +358,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       }
       podEvidence.push({ ...phase.evidence, selectedInUi: true,
         management: { configuration: true, models: true, quota: true } });
-      await key.remove(); key = undefined;
+      await attributePackagedOperation('key-cleanup', () => key!.remove()); key = undefined;
       await keyHandle.dispose(); keyHandle = undefined;
       await provider.remove(); provider = undefined;
       await phase.restore(); await phase.handle.dispose(); phase = undefined;
@@ -361,7 +380,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     advance('cleanup');
     try { if (taskSnapshot) await privateJson(options.privateDirectory, 'tasks-private.json', taskSnapshot); }
     catch (error) { failures.push(error); }
-    for (const cleanup of [async () => { if (key) await key.remove(); }, async () => { if (provider) await provider.remove(); },
+    for (const cleanup of [async () => { if (key) await attributePackagedOperation('key-cleanup', () => key!.remove()); }, async () => { if (provider) await provider.remove(); },
       async () => { if (phase) await phase.restore(); }]) {
       try { await cleanup(); } catch (error) { failures.push(error); }
     }

@@ -5,6 +5,30 @@ import type { Page, Request, Response } from '@playwright/test';
 import type { AiConnectionsProvider, CreateApiKeyCredentialInput } from '@undefineds.co/ai-connections/client';
 import type { MountedPodPermissionPhase } from './packaged-desktop-permissions';
 
+/** Closed boundary names are the only operation detail published by CI. */
+export type PackagedOperationCondition = 'provider-identity' | 'provider-collection'
+  | 'provider-create' | 'provider-confirm' | 'provider-publication' | 'provider-cleanup'
+  | 'key-dialog' | 'key-cleanup' | 'held-invocation' | 'first-chat';
+
+export class PackagedOperationError extends Error {
+  override readonly cause: unknown;
+  constructor(readonly condition: PackagedOperationCondition, cause: unknown) {
+    super('Packaged operation rejected at ' + condition);
+    this.name = 'PackagedOperationError';
+    this.cause = cause;
+  }
+}
+
+/** Attribute the real operation, retaining its untranslated rejection privately. */
+export async function attributePackagedOperation<T>(condition: PackagedOperationCondition,
+  action: () => Promise<T>): Promise<T> {
+  try { return await action(); } catch (error) {
+    if (error instanceof PackagedOperationError) throw error;
+    if (error instanceof AggregateError && error.errors[0] instanceof PackagedOperationError) throw error;
+    throw new PackagedOperationError(condition, error);
+  }
+}
+
 export function accountCreationResponseSucceeded(status: number, authorization?: string, dpop?: string): boolean {
   return status >= 200 && status < 300 && (authorization?.startsWith('CSS-Account-Token ') === true
     || (authorization?.startsWith('DPoP ') === true && Boolean(dpop?.trim())));
@@ -38,14 +62,32 @@ export function assertMountedModelBinding(input: { provider: string; credentialI
   }
 }
 
-async function until<T>(probe: () => Promise<T | undefined>, label: string): Promise<T> {
-  const deadline = Date.now() + 30_000;
-  do {
-    const result = await probe();
-    if (result !== undefined) return result;
-    await new Promise(resolve => setTimeout(resolve, 100));
-  } while (Date.now() < deadline);
-  throw new Error(label);
+async function until<T>(probe: () => Promise<T | undefined>, label: string,
+  condition: PackagedOperationCondition): Promise<T> {
+  return attributePackagedOperation(condition, async () => {
+    const deadline = Date.now() + 30_000;
+    do {
+      const result = await probe();
+      if (result !== undefined) return result;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } while (Date.now() < deadline);
+    throw new Error(label);
+  });
+}
+
+async function mountedCredentialConfirmed(phase: MountedPodPermissionPhase, resourceId: string,
+  present: boolean): Promise<boolean> {
+  const state = await phase.handle.evaluate(({ controller }) => {
+    const collection = controller.credentialsCollection;
+    if (!collection || collection.conflicts.length) throw new Error('Credential confirmation conflicted');
+    return { ready: collection.isReady(), pending: collection.pendingKeys.size,
+      ids: controller.credentialRows?.map(row => String(row.id)) };
+  });
+  // Collection rows carry descriptor keys; provider summaries carry resource ids.
+  // Models owns this mapping, and runs here rather than inside the serialized callback.
+  const expected = credentialResource.buildId({ id: resourceId });
+  return state.ready && state.ids !== undefined && state.pending === 0
+    && state.ids.some(id => credentialResource.buildId({ id }) === expected) === present;
 }
 
 /** Require collection adoption before writing, then independently observe its
@@ -55,50 +97,37 @@ export async function createConfirmedMountedProvider(phase: MountedPodPermission
   provider: AiConnectionsProvider; credential: CreateApiKeyCredentialInput; model?: string; expectedModels?: string[];
 }): Promise<{ credentialId: string; model: string; quotaObserved: true; remove(): Promise<true> }> {
   const { handle } = phase;
-  const boundWebId = await handle.evaluate(({ host, controller }) => {
+  const boundWebId = await attributePackagedOperation('provider-identity', () => handle.evaluate(({ host, controller }) => {
     const session = host.solid.session.getSnapshot();
     if (session.status !== 'authenticated' || host.solid.pod?.status !== 'ready'
       || session.webId !== host.solid.pod.current.webId || controller.client?.webId !== session.webId) {
       throw new Error('Mounted provider identity is unavailable');
     }
     return session.webId;
-  });
+  }));
   await until(async () => handle.evaluate(({ controller }) =>
     controller.credentialsCollection?.isReady() && controller.credentialsCollection.pendingKeys.size === 0 ? true : undefined),
-  'Mounted credential collection did not become ready');
-  const created = await handle.evaluate(({ controller }, input) => {
+  'Mounted credential collection did not become ready', 'provider-collection');
+  const created = await attributePackagedOperation('provider-create', () => handle.evaluate(({ controller }, input) => {
     if (!controller.client) throw new Error('Missing mounted AI client');
     return controller.client.createApiKeyCredential(input.provider, input.credential);
-  }, input);
-  const remove = async (): Promise<true> => {
+  }, input));
+  const remove = async (): Promise<true> => attributePackagedOperation<true>('provider-cleanup', async () => {
     await handle.evaluate(({ controller }, input) => controller.client!.deleteProviderCredential(input.provider, input.id),
       { provider: input.provider, id: created.id });
-    await until(async () => {
-      const state = await handle.evaluate(({ controller }) => {
-        const collection = controller.credentialsCollection;
-        if (!collection || collection.conflicts.length) throw new Error('Credential cleanup conflicted');
-        return { pending: collection.pendingKeys.size, ids: controller.credentialRows?.map(row => String(row.id)) };
-      });
-      return state.pending === 0 && state.ids !== undefined
-        && !state.ids.some(id => credentialResource.buildId({ id }) === created.id) ? true : undefined;
-    }, 'Credential cleanup was not independently confirmed');
+    await until(async () => await mountedCredentialConfirmed(phase, created.id, false) ? true : undefined,
+      'Credential cleanup was not independently confirmed', 'provider-cleanup');
     const absent = await handle.evaluate(async ({ controller }, input) => {
       const rows = await controller.client!.listProviders();
       return !rows.find(row => row.id === input.provider)?.credentials.some(row => row.id === input.id);
     }, { provider: input.provider, id: created.id });
     if (!absent) throw new Error('Removed credential persisted in provider readback');
     return true;
-  };
+  });
   try {
-    await until(async () => {
-      const state = await handle.evaluate(({ controller }) => {
-        const collection = controller.credentialsCollection;
-        if (!collection || collection.conflicts.length) throw new Error('Credential mutation conflicted');
-        return { pending: collection.pendingKeys.size, ids: controller.credentialRows?.map(row => String(row.id)) };
-      });
-      return state.pending === 0 && state.ids?.some(id => credentialResource.buildId({ id }) === created.id) ? true : undefined;
-    }, 'Credential mutation was not confirmed');
-    const result = await handle.evaluate(async ({ controller }, input) => {
+    await until(async () => await mountedCredentialConfirmed(phase, created.id, true) ? true : undefined,
+      'Credential mutation was not confirmed', 'provider-confirm');
+    const result = await attributePackagedOperation('provider-publication', () => handle.evaluate(async ({ controller }, input) => {
       const client = controller.client!;
       const providers = await client.listProviders();
       const provider = providers.find(row => row.id === input.provider);
@@ -114,8 +143,9 @@ export async function createConfirmedMountedProvider(phase: MountedPodPermission
       const quota = await client.quota(input.provider, true, { credentialId: input.id });
       if (quota.status !== 'available') throw new Error('Provider quota was not actually available');
       return { credential, credentialCount: provider!.credentials.length, providerId: provider!.id, discovery, models, selectedModel, webId: client.webId };
-    }, { provider: input.provider, id: created.id, model: input.model, expectedModels: input.expectedModels });
-    assertMountedModelBinding({ provider: input.provider, credentialId: created.id, model: result.selectedModel, webId: boundWebId }, result);
+    }, { provider: input.provider, id: created.id, model: input.model, expectedModels: input.expectedModels }));
+    await attributePackagedOperation('provider-publication', async () =>
+      assertMountedModelBinding({ provider: input.provider, credentialId: created.id, model: result.selectedModel, webId: boundWebId }, result));
     return { credentialId: created.id, model: result.models[0].id, quotaObserved: true, remove };
   } catch (error) {
     try { await remove(); } catch (cleanup) { throw new AggregateError([error, cleanup], 'Provider phase and cleanup failed'); }
@@ -166,6 +196,17 @@ export async function createMountedKeyInUi(page: Page, phase: MountedPodPermissi
     });
     assertAccountCredentialsRestored(baseline, current);
   };
+  const revokeObservedCredential = async (): Promise<void> => {
+    await Promise.all(observations);
+    await phase.handle.evaluate(async ({ controller }, id) => {
+      if (!id) return;
+      const client = controller.client!;
+      const records = (await client.listGatewayKeys()).filter(record => record.id === id);
+      if (records.length > 1 || records.some(record => record.owner !== client.webId)) throw new Error('Owned key cleanup is ambiguous');
+      if (records.length === 1) await client.deleteGatewayKey(records[0].id);
+    }, issuedClientId);
+    await verifyAccountCleanup();
+  };
   const response = (response: Response): void => {
     if (response.url() !== control.href || response.request().method() !== 'POST') return;
     observations.push((async () => {
@@ -209,36 +250,35 @@ export async function createMountedKeyInUi(page: Page, phase: MountedPodPermissi
     const key = await readOwnedPiConfiguration(input.configurationHome, input.gateway);
     await dialog.getByRole('button', { name: '完成', exact: true }).click();
     const remove = async (): Promise<true> => {
-      await phase.handle.evaluate(({ controller }) => controller.selectSection('keys'));
-      await page.getByRole('button', { name: `销毁 ${matching[0].name}`, exact: true }).click();
-      await page.getByRole('button', { name: `确认删除 ${matching[0].name}`, exact: true }).click();
-      await until(async () => phase.handle.evaluate(async ({ controller }, id) => {
-        const records = await controller.client!.listGatewayKeys();
-        return !records.some(record => record.id === id && !record.revokedAt) ? true : undefined;
-      }, id), 'UI key revoke did not remove the Account credential');
-      const accountAbsent = await phase.handle.evaluate(async ({ host }, clientId) => {
-        const capability = host.capabilities.aiClientCredentials;
-        if (!capability) throw new Error('Missing original Account actor');
-        return !(await capability.list()).some(record => record.clientId === clientId);
-      }, matching[0].clientCredentialId!);
-      if (!accountAbsent) throw new Error('UI key revoke left the Account credential active');
-      await verifyAccountCleanup();
-      return true;
+      try {
+        await phase.handle.evaluate(({ controller }) => controller.selectSection('keys'));
+        const row = page.locator(`[data-key-id=${JSON.stringify(id)}]`);
+        await row.getByRole('button', { name: /^销毁 /u }).click();
+        await row.getByRole('button', { name: /^确认删除 /u }).click();
+        await until(async () => phase.handle.evaluate(async ({ controller }, id) => {
+          const records = await controller.client!.listGatewayKeys();
+          return !records.some(record => record.id === id && !record.revokedAt) ? true : undefined;
+        }, id), 'UI key revoke did not remove the Account credential', 'key-cleanup');
+        const accountAbsent = await phase.handle.evaluate(async ({ host }, clientId) => {
+          const capability = host.capabilities.aiClientCredentials;
+          if (!capability) throw new Error('Missing original Account actor');
+          return !(await capability.list()).some(record => record.clientId === clientId);
+        }, matching[0].clientCredentialId!);
+        if (!accountAbsent) throw new Error('UI key revoke left the Account credential active');
+        await verifyAccountCleanup();
+        return true;
+      } catch (error) {
+        try { await revokeObservedCredential(); }
+        catch (cleanup) { throw new AggregateError([error, cleanup], 'Key UI revoke and cleanup failed'); }
+        throw error;
+      }
     };
     return { key, id, accountActor: true, remove };
   } catch (error) {
     // Dialog/configuration failure may happen after Account issuance. Reuse the
     // same guarded product client to revoke the exact observed issued credential.
     try {
-      await Promise.all(observations);
-      await phase.handle.evaluate(async ({ controller }, id) => {
-        if (!id) return;
-        const client = controller.client!;
-        const records = (await client.listGatewayKeys()).filter(record => record.id === id);
-        if (records.length > 1 || records.some(record => record.owner !== client.webId)) throw new Error('Owned key cleanup is ambiguous');
-        if (records.length === 1) await client.deleteGatewayKey(records[0].id);
-      }, issuedClientId);
-      await verifyAccountCleanup();
+      await revokeObservedCredential();
     } catch (cleanup) { throw new AggregateError([error, cleanup], 'Key dialog and cleanup failed'); }
     throw error;
   } finally { page.off('response', response); }
@@ -279,15 +319,18 @@ export async function acceptHeldPodInvocation(page: Page, input: {
   const statuses = await page.evaluate(async input => {
     const endpoint = new URL('v1/models', input.gateway);
     if (endpoint.origin !== window.location.origin) throw new Error('Held invocation is outside the own Gateway');
-    const observed: boolean[] = [];
+    const observed: Array<{ status: number; modelCount: number; modelMatches: boolean }> = [];
     for (let index = 0; index < 2; index++) {
       const response = await fetch(endpoint.href, { redirect: 'error', signal: AbortSignal.timeout(20_000),
         headers: { Authorization: `Bearer ${input.invocation}`, 'X-Xpod-Pod-Url': input.podUrl } });
       const value = await response.json() as { data?: Array<{ id?: string }> };
-      observed.push(response.status === 200 && value.data?.length === 1 && value.data[0].id === input.model);
+      observed.push({ status: response.status, modelCount: Array.isArray(value.data) ? value.data.length : -1,
+        modelMatches: value.data?.length === 1 && value.data[0].id === input.model });
     }
     return observed;
   }, input);
-  if (statuses.length !== 2 || statuses.some(value => value !== true)) throw new Error('Same-Pod held invocation reuse failed');
+  if (statuses.length !== 2 || statuses.some(value => value.status !== 200 || value.modelCount !== 1 || !value.modelMatches)) {
+    throw new Error('Same-Pod held invocation reuse failed: ' + JSON.stringify(statuses));
+  }
   return true;
 }

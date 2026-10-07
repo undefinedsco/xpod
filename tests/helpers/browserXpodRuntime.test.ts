@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 import { expect, it, vi } from 'vitest';
 import { captureBrowserAiConnections, readBrowserXpodRuntime } from './browserXpodRuntime';
 
-it('retains only the exact committed mounted host, including its existing grant attribution', async () => {
+function mountedFixture() {
   const dom = new JSDOM('<div id="root"></div>');
   vi.stubGlobal('document', dom.window.document);
   const binding = { webId: 'https://id.example/card#me', podUrl: 'https://local.example/b/' };
@@ -14,19 +14,30 @@ it('retains only the exact committed mounted host, including its existing grant 
   }, capabilities: {} };
   const controller = { client: { webId: binding.webId }, authorizeService: vi.fn() };
   const runtime = { state: { status: 'authenticated' }, session: host.solid.session, fetch: vi.fn(), currentPod: binding };
-  const committed = { memoizedProps: { value: runtime }, child: { memoizedState: {
-    memoizedState: [host, []], next: { memoizedState: [{ layout: 'two-pane', controller }, []] },
-  } } };
+  const appletFiber = (value: typeof host) => ({ memoizedState: {
+    memoizedState: [value, []], next: { memoizedState: [{ layout: 'two-pane', controller }, []] },
+  } });
+  const committed = { memoizedProps: { value: runtime }, child: appletFiber(host) };
   const stale = { memoizedProps: { value: { ...runtime, currentPod: { ...binding, podUrl: 'https://local.example/a/' } } } };
-  Object.assign(dom.window.document.getElementById('root')!, { __reactContainer$fixture: { ...stale, stateNode: { current: committed } } });
+  const rootState = { current: committed };
+  Object.assign(dom.window.document.getElementById('root')!, { __reactContainer$fixture: { ...stale, stateNode: rootState } });
+  const evaluate = async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg);
   const page = {
+    evaluateHandle: evaluate, evaluate,
     waitForFunction: async (fn: (arg: unknown) => unknown, arg: unknown) => {
-      const result = await fn(arg);
-      if (!result) throw new Error('Missing mounted host');
-      return result;
+      const value = await fn(arg);
+      if (!value) throw new Error('Missing mounted host capability for ai-host');
+      return value;
     },
-    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg),
-  } as unknown as Page;
+  };
+  return { binding, host, controller, revoke, runtime, committed, rootState, appletFiber, page,
+    close: () => { vi.unstubAllGlobals(); dom.window.close(); } };
+}
+
+it('retains only the exact committed mounted host, including its existing grant attribution', async () => {
+  const fixture = mountedFixture();
+  const { binding, host, controller, revoke } = fixture;
+  const page = fixture.page as unknown as Page;
   try {
     const retained = await captureBrowserAiConnections(page, binding) as unknown as { host: typeof host; controller: typeof controller };
     expect(retained.host).toBe(host);
@@ -38,47 +49,61 @@ it('retains only the exact committed mounted host, including its existing grant 
     host.solid.session.getSnapshot = () => ({ status: 'anonymous', webId: binding.webId });
     await expect(captureBrowserAiConnections(page, binding)).rejects.toThrow('Missing mounted host');
     expect(revoke).not.toHaveBeenCalled();
-  } finally { vi.unstubAllGlobals(); dom.window.close(); }
+  } finally { fixture.close(); }
 });
 
-// Authentication can commit before the lazy settings page mounts its applet.
-it.each([false, true])('waits for the exact mounted applet and required Account actor (%s)', async requireAccountActor => {
-  const dom = new JSDOM('<div id="root"></div>');
-  vi.stubGlobal('document', dom.window.document);
-  const binding = { webId: 'https://id.example/card#me', podUrl: 'https://local.example/b/' };
-  const host = { solid: {
-    session: { getSnapshot: () => ({ status: 'authenticated', webId: binding.webId }) },
-    permissions: { revokeAgentAccess: vi.fn() }, pod: { status: 'ready', current: binding },
-  }, capabilities: {} };
-  const controller = { client: { webId: binding.webId }, authorizeService: vi.fn() };
-  const committed: { child?: object } = {};
-  Object.assign(dom.window.document.getElementById('root')!, { __reactContainer$fixture: { stateNode: { current: committed } } });
-  const mount = (podUrl: string, accountReady = false) => ({ memoizedState: {
-    memoizedState: [{ ...host, capabilities: accountReady ? { aiClientCredentials: { list: vi.fn() } } : {}, solid: { ...host.solid, pod: { status: 'ready', current: { ...binding, podUrl } } } }, []],
-    next: { memoizedState: [{ layout: 'two-pane', controller }, []] },
-  } });
+it('waits for the exact committed applet after runtime authentication', async () => {
+  const fixture = mountedFixture();
+  const { binding, host, controller, committed, rootState, appletFiber } = fixture;
+  const unmounted = { ...committed, child: undefined } as unknown as typeof committed;
+  const foreignHost = { ...host, solid: { ...host.solid,
+    pod: { ...host.solid.pod, current: { ...binding, podUrl: 'https://local.example/a/' } } } };
+  const foreign = { ...committed, child: appletFiber(foreignHost) };
+  rootState.current = unmounted;
   const observations: unknown[] = [];
-  const page = {
-    waitForFunction: async (fn: (arg: unknown) => unknown, arg: unknown, options: { timeout: number }) => {
-      expect(options.timeout).toBeGreaterThan(0);
-      const observed = fn(arg);
-      expect(observed).not.toBeInstanceOf(Promise);
-      observations.push(observed);
-      committed.child = mount('https://local.example/a/');
-      observations.push(await fn(arg));
-      committed.child = mount(binding.podUrl);
-      if (requireAccountActor) {
-        observations.push(await fn(arg));
-        committed.child = mount(binding.podUrl, true);
-      }
-      return await fn(arg);
-    },
-  } as unknown as Page;
+  fixture.page.waitForFunction = async (fn, arg) => {
+    for (const current of [unmounted, foreign, committed]) {
+      rootState.current = current;
+      const value = fn(arg);
+      expect(value).not.toBeInstanceOf(Promise);
+      observations.push(value);
+      if (value) return value;
+    }
+    throw new Error('Missing mounted host capability for ai-host');
+  };
   try {
-    const retained = await captureBrowserAiConnections(page, { ...binding, requireAccountActor }) as unknown as { host: typeof host; controller: typeof controller };
-    expect(observations).toEqual(requireAccountActor ? [false, false, false] : [false, false]);
-    expect(retained.host.solid.pod.current).toEqual(binding);
+    expect((await readBrowserXpodRuntime(fixture.page as unknown as Page)).status).toBe('authenticated');
+    const retained = await captureBrowserAiConnections(fixture.page as unknown as Page, binding) as unknown as { host: typeof host; controller: typeof controller };
+    expect(observations).toHaveLength(3);
+    expect(observations.slice(0, 2).every(value => !value)).toBe(true);
+    expect(retained.host).toBe(host);
     expect(retained.controller).toBe(controller);
-    expect(host.solid.permissions.revokeAgentAccess).not.toHaveBeenCalled();
-  } finally { vi.unstubAllGlobals(); dom.window.close(); }
+    expect(fixture.revoke).not.toHaveBeenCalled();
+  } finally { fixture.close(); }
+});
+
+it('waits for the current Account actor without accepting the retained Pod-only host', async () => {
+  const fixture = mountedFixture();
+  const { binding, host, controller, committed, rootState, appletFiber } = fixture;
+  const accountHost = { ...host, capabilities: { aiClientCredentials: { list: vi.fn() } } };
+  const accountCommitted = { ...committed, child: appletFiber(accountHost) };
+  const observations: unknown[] = [];
+  fixture.page.waitForFunction = async (fn, arg) => {
+    for (const current of [committed, accountCommitted]) {
+      rootState.current = current;
+      const value = fn(arg);
+      expect(value).not.toBeInstanceOf(Promise);
+      observations.push(value);
+      if (value) return value;
+    }
+    throw new Error('Missing mounted host capability for ai-host');
+  };
+  try {
+    const retained = await captureBrowserAiConnections(fixture.page as unknown as Page,
+      { ...binding, requireAccountActor: true }) as unknown as { host: typeof accountHost; controller: typeof controller };
+    expect(observations.map(Boolean)).toEqual([false, true]);
+    expect(retained.host).toBe(accountHost);
+    expect(retained.controller).toBe(controller);
+    expect(fixture.revoke).not.toHaveBeenCalled();
+  } finally { fixture.close(); }
 });
