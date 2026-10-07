@@ -2695,9 +2695,9 @@ test('routes both Provider read recoveries through the real runtime while Accoun
     expect(issued).toHaveLength(1);
     expect(issued[0].canonical).toBeNull();
     expect(issued[0].body).toBe(JSON.stringify({ name: 'Xpod 会话凭据', webId }));
-    await act(async () => { expect((await current.fetch(api, { method: 'POST', body: 'once' })).status).toBe(403); });
+    await act(async () => { expect((await current.fetch(api, { method: 'POST', body: 'once' })).status).toBe(200); });
     expect(received.filter(call => call.url === `${origin}/api/ai/gateway/keys` && call.method === 'POST')).toEqual([
-      expect.objectContaining({ body: 'once', authorization: 'DPoP browser-session', canonical: api }),
+      expect.objectContaining({ body: 'once', authorization: `Bearer sk-${btoa('request-client:request-secret')}`, canonical: api, dpop: false }),
     ]);
     expect(network.mock.calls.some(([input]) => String(input) === api)).toBe(false);
   } finally {

@@ -193,7 +193,7 @@ describe('Xpod bootstrap access routes', () => {
     expect(network).toHaveBeenCalledTimes(2);
     runtime.session.dispose();
   });
-  test('does not replay a canonical write after missing Pod access', async () => {
+  test('authorizes a canonical write before sending its body once', async () => {
     const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const request = new Request(input, init);
       expect(request.url).toBe(`${LOOPBACK}/v1/chat/completions`);
@@ -217,7 +217,7 @@ describe('Xpod bootstrap access routes', () => {
     };
     const request = new Request(`${CANONICAL}/v1/chat/completions`, { method: 'POST', body: 'request-body' });
     const response = await withRequestPodAuthorization(signedFetch, async () => 'Bearer session-key', runtime.transportFetch, CANONICAL)(request);
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(200);
     expect(network).toHaveBeenCalledTimes(1);
     runtime.session.dispose();
   });

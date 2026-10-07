@@ -212,7 +212,7 @@ describe('withRequestPodAuthorization', () => {
     expect(attempts).toEqual([ null, 'Bearer sk-session' ]);
   });
 
-  it('does not replay a consumed mutation body after the original refusal', async() => {
+  it('authorizes a mutation before its body is consumed and sends it once', async() => {
     const bodies: string[] = [];
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = input instanceof Request ? input : new Request(String(input), init);
@@ -227,8 +227,24 @@ describe('withRequestPodAuthorization', () => {
       body: 'messages',
     }));
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(200);
     expect(bodies).toEqual([ 'messages' ]);
+  });
+
+  it.each([undefined, 'reject'])('sends an uncredentialed mutation once when credential preparation yields %s', async result => {
+    const first = vi.fn(async () => Response.json({ error: 'service_access_missing' }, { status: 403 }));
+    const credential = vi.fn(async () => { if (result === 'reject') throw new Error('unavailable'); return undefined; });
+    const transport = vi.fn();
+    const response = await withRequestPodAuthorization(first, credential, transport)('https://xpod.example/api/tasks', { method: 'PATCH', body: '{}' });
+    expect(response.status).toBe(403);
+    expect(first).toHaveBeenCalledOnce(); expect(credential).toHaveBeenCalledOnce(); expect(transport).not.toHaveBeenCalled();
+  });
+
+  it.each(['https://other.example/api/tasks', 'https://xpod.example/alice/data.ttl'])('does not attach a request credential to mutations at %s', async url => {
+    const first = vi.fn(async () => new Response(null, { status: 204 }));
+    const credential = vi.fn(async () => 'Bearer secret'); const transport = vi.fn();
+    await withRequestPodAuthorization(first, credential, transport)(url, { method: 'PATCH', body: 'data' });
+    expect(first).toHaveBeenCalledOnce(); expect(credential).not.toHaveBeenCalled(); expect(transport).not.toHaveBeenCalled();
   });
 
   it('leaves other failures, other statuses and other bodies alone', async() => {
@@ -362,9 +378,11 @@ describe('verified canonical Gateway credential recovery', () => {
   });
   it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('does not replay a %s mutation after a Pod refusal', async method => {
     const first = vi.fn(async () => Response.json({ error: 'service_access_missing' }, { status: 403 }));
-    const credential = vi.fn(async () => 'Bearer secret'); const retry = vi.fn();
+    const credential = vi.fn(async () => 'Bearer secret');
+    const retry = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ error: 'service_access_missing' }, { status: 403 }));
     expect((await withAuthorization(first, credential, retry, 'http://127.0.0.1:42320', () => local)(canonical, {method})).status).toBe(403);
-    expect(first).toHaveBeenCalledOnce();expect(credential).not.toHaveBeenCalled();expect(retry).not.toHaveBeenCalled();
+    expect(first).not.toHaveBeenCalled(); expect(credential).toHaveBeenCalledOnce(); expect(retry).toHaveBeenCalledOnce();
+    expect(new Headers(retry.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer secret');
   });
   it('does not recover an authentication rejection', async () => {
     const first = vi.fn(async () => Response.json({ error: 'service_access_missing' }, { status: 401 }));

@@ -130,7 +130,8 @@ function clientIdFromApiKey(apiKey: string): string {
  *
  * The server decides which calls need a Pod credential: it answers 403
  * `service_access_missing` when the caller's own context has none. That is the moment to prepare
- * the session credential and retry a read once. Mutations are never replayed, which keeps this wrapper out of the business of knowing
+ * the session credential and retry a read once. Mutations carry that credential on their first
+ * attempt and are never replayed, which keeps this wrapper out of the business of knowing
  * which routes read a Pod - and keeps Pod traffic, capability calls and other origins untouched.
  *
  * The retry deliberately does not reuse the session transport: a session transport exists to
@@ -149,8 +150,18 @@ export function withRequestPodAuthorization(
   }
   return async (input, init) => {
     const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+    const gatewayRequest = needsPodAuthorization(input, gatewayOrigin, resolveGatewayUrl);
+    if (!['GET', 'HEAD'].includes(method) && gatewayRequest) {
+      const value = await authorization().catch(() => undefined);
+      if (value) {
+        const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+        headers.set('authorization', value);
+        headers.delete('dpop');
+        return retryFetch(input, { ...init, headers });
+      }
+    }
     const response = await fetchImpl(input, init);
-    if (!['GET', 'HEAD'].includes(method) || !needsPodAuthorization(input, gatewayOrigin, resolveGatewayUrl) || response.status !== 403 || !await isMissingPodAccess(response)) {
+    if (!['GET', 'HEAD'].includes(method) || !gatewayRequest || response.status !== 403 || !await isMissingPodAccess(response)) {
       return response;
     }
     const value = await authorization().catch(() => undefined);
