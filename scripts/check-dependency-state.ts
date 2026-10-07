@@ -282,7 +282,7 @@ function checkPostinstallPatches(): void {
         const manifest = path.join(packageDir, 'package.json');
         if (!existsSync(manifest)) continue;
         if (entry.name === 'jose' && existsSync(path.join(packageDir, 'dist/node/esm/index.js')) &&
-            /"bun"\s*:\s*"\.\/dist\/browser\//u.test(readFileSync(manifest, 'utf8'))) {
+            /"bun"\s*:\s*"\.\/dist\/(?:browser|node\/esm)\//u.test(readFileSync(manifest, 'utf8'))) {
           failures.push(`${packageDir}: jose Bun exports are unpatched — run: bun run postinstall`);
         }
         queue.push(path.join(packageDir, 'node_modules'));

@@ -134,6 +134,7 @@ import { SessionBoundIdentityProviderFactory } from './identity/oidc/SessionBoun
 import { RememberedClientPromptFactory } from './identity/oidc/RememberedClientPromptFactory';
 import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
 import { ConfiguredLoopbackDPoPWebIdExtractor } from './authentication/ConfiguredLoopbackDPoPWebIdExtractor';
+import { AccountHostDPoPCredentialsExtractor } from './authentication/AccountHostDPoPCredentialsExtractor';
 import { AccountStorageBindingsHandler } from './identity/AccountStorageBindingsHandler';
 import { CssPodOwnershipResolver } from './identity/oidc/PodOwnershipResolver';
 // Provision components
@@ -296,6 +297,7 @@ export {
   SessionBoundIdentityProviderFactory,
   ScopedPickWebIdHandler,
   ConfiguredLoopbackDPoPWebIdExtractor,
+  AccountHostDPoPCredentialsExtractor,
   AccountStorageBindingsHandler,
   CssPodOwnershipResolver,
   UrlAwareRedisLocker,

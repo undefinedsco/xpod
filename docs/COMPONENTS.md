@@ -15,6 +15,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
 | `BaseLoginAccountStorage` | `LoginMethodGuardStorage` + `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储；保留"最后一个登录方法不可删除"的防锁定保护，但允许 SP 托管账户无密码存在（不要求登录方法、不做孤儿账户过期） |
 | `DPoPWebIdExtractor` | `ConfiguredLoopbackDPoPWebIdExtractor` | 保留 issuer、签名、audience/expiry 与完整 DPoP 校验；仅为与 CSS `baseUrl` 完全同源的 HTTP `127/8` 或 `::1` 桌面回环地址放开 upstream 的 localhost-only URI 限制 |
+| Account `AuthorizingHttpHandler.credentialsExtractor` | `CachedHandler` + `AccountHostDPoPCredentialsExtractor` | 仅在 Account 控制面接受自身 issuer 签发的 host DPoP 会话，验证自身公钥及完整 DPoP，不依赖外部 WebID 的公网 profile；与 Account handler 共用请求缓存 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
 | `ResourceStore` 写入通知边界 | `ObservableResourceStore` + `PostgresDerivedIndexJournal` | Cloud 写成功后、响应返回前追加一条 Pod 级持久化 outbox；FTS/VEC 异步消费且 Pod 内保序。Local 继续复用 SolidFS 文件 journal |
 | `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
@@ -135,6 +136,18 @@ Account Cookie 之外，该组件还接受**宿主自己的 Solid 会话**作为
 - **Deployment**: Cloud 使用 PostgreSQL；Local 不创建第二份日志，继续由 `SqliteSolidFsSyncJournal` 驱动 composite RDF/text/vector syncer
 
 ## Identity & Authentication
+
+### AccountHostDPoPCredentialsExtractor
+- **Path**: `src/authentication/AccountHostDPoPCredentialsExtractor.ts`
+- **Purpose**: 让没有公网入站路由的 Local Pod 所属用户仍能通过中央 IdP 的自身 host 会话读取 Account controls、申请客户端凭据，随后访问本机 AI Connections/Chat。
+- **Wiring**: `config/xpod.base.json` 中 `IdentityProviderAuthorizingHandler.credentialsExtractor` 与 `ValidatingIdentityProviderHttpHandler.sessionExtractor` 共享 `urn:undefineds:xpod:AccountHostCredentialsExtractor` 的 `CachedHandler`；缓存只按同一 HTTP request 对象生效，避免对同一个 DPoP proof 二次验证造成 replay 拒绝。
+- **Mode selection**: 复用既有 `oidcIssuer`：未设置或规范 URL 等于自身 `baseUrl` 时使用自身签名路径；外部 issuer 与自身不同的 managed Local SP 委托原 `CredentialsExtractor`，保留本机 Account 控制面的中央 Solid 会话验证行为。
+- **Trust boundary**: 固定自身 CSS `baseUrl` 为 issuer，只使用自身 `JwkGenerator.getPublicKey()`，直接导入公钥；不按 token 的未验证 `iss`/`kid` 选择密钥，不读 WebID profile、OIDC discovery 或公网 JWKS。
+- **Verification**: 校验 JWT 签名、固定 issuer、`aud=solid`、`iat`/`exp`、非空 OIDC `sub`、签名保护的 `webid`、host client allowlist，以及 DPoP 签名、`typ`、`iat`、`cnf.jkt`、`htm`、`htu`、提供时严格验证的 `ath` 和 JTI 防重放。保留上游遗留缺 `ath` proof 的兼容行为，客户端 hash 增强单独发布。允许 issuer 的 pairwise subject；extractor 只接受自身 `baseUrl` 下的 `/.account/` 操作。
+- **Account binding**: handler 每次读取当前 `webIdLink`，只在其指向唯一且仍存在的 Account 时授予 Account 权限；关联删除、多账号歧义与账号删除均不借用其他凭据。
+- **Native Account auth**: CSS Cookie / `CSS-Account-Token` 继续优先。无 DPoP 或合法的非 host 会话保持匿名；坏 DPoP proof 保留 CSS 前置 authorizer 的拒绝行为，即使同时携带 Cookie。
+- **Resource servers**: LDP、SPARQL 与 API 的一般 Solid 验证继续要求 WebID profile 声明可信 issuer。本组件不把已关联的 WebID 一律视作 managed Pod，也不为资源服务器绕过 profile 验证。详见 [Account host 会话授权边界](account-host-session-authorization.md)。
+
 
 ### ConfiguredLoopbackDPoPWebIdExtractor
 - **Path**: `src/authentication/ConfiguredLoopbackDPoPWebIdExtractor.ts`
