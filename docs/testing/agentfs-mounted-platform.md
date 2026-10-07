@@ -1,5 +1,27 @@
 # AgentFS mounted platform acceptance
 
+## mini mounted gate passed (2026-10-07)
+
+[Run 37611622913](https://github.com/undefinedsco/xpod/actions/runs/37611622913)
+completed successfully with harness `afac65595545771ebdb001200a7f6000f9143bf0`
+and the unchanged native product `48a71dceddf4ab40eddc52a5bb04c54474eeb030`.
+Linux FUSE reports 15 passed / 2 skipped; Darwin system NFS reports
+14 passed / 3 skipped (including the Linux-only procfs test). All six required
+mounted cases passed on both platforms. Downloaded evidence was independently
+checked for archive/helper identities, raw/report hashes, actual producer
+closure, absent owned process groups and Linux same-container cleanup.
+Both journals reached verified 64/512/1024 MiB reads, conditional in-place
+copy-up and commit, with nonempty RSS samples below the unchanged ceiling.
+Linux large-file matrix completed in about 27 seconds; its read/copy-up RSS
+peaks were 44576/48672, 49056/51116 and 52740/42740 KiB respectively.
+The procfs-only sampler eliminated the prior same-process fork interference
+without changing the helper, transfer budget, file sizes or RSS thresholds.
+
+This admits only the frozen native/install + mounted platform gate described
+here. It is not Pro Public16/Private17, a GZ PG17 restore, real OAuth/DPoP/Pod,
+Gateway/Models/Chat/Tasks, desktop or release promotion evidence. Those remain
+separate required gates. Earlier failures below remain evidence of their runs.
+
 ## mini continuation candidate (2026-10-07)
 
 The current product pin is `48a71dceddf4ab40eddc52a5bb04c54474eeb030`, from
