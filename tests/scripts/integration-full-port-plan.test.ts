@@ -7,6 +7,17 @@ import { resolveFullRuntimePorts, resolveFullInfrastructurePorts, fullInfrastruc
 import { isFreePortForWildcard } from '../../src/runtime/port-finder';
 
 describe('full integration port planning', () => {
+  it('uses the release PostgreSQL candidate in the resolved Compose stack', () => {
+    const image = `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${'1'.repeat(64)}`;
+    const result = spawnSync('docker', ['compose', '-f', 'docker-compose.cluster.yml',
+      '-f', 'docker-compose.cluster.integration.yml', 'config', '--format', 'json'], {
+      encoding: 'utf8', timeout: 10000,
+      env: { ...process.env, XPOD_FULL_POSTGRES_IMAGE: image },
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).services.postgres.image).toBe(image);
+  });
+
   it('reserves every ingress together with future instance service ports', async () => {
     const plans = Object.values(await resolveFullRuntimePorts());
     const selected = plans.flatMap(plan => [plan.gateway, plan.css, plan.api, 'ingress' in plan ? plan.ingress : undefined]);

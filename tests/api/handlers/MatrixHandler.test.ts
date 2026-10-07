@@ -1,11 +1,64 @@
 import { PassThrough } from 'node:stream';
-import { describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
+import { mkdirSync, rmSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import TransportStream from 'winston-transport';
+import type * as Transport from 'winston-transport';
+import { MESSAGE } from 'triple-beam';
+import { setGlobalLoggerFactory } from 'global-logger-factory';
+import { ConfigurableLoggerFactory } from '../../../src/logging/ConfigurableLoggerFactory';
 import { MatrixError } from '../../../src/api/matrix/MatrixError';
 import { registerMatrixRoutes } from '../../../src/api/handlers/MatrixHandler';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { MatrixStore } from '../../../src/api/matrix';
 import type { ReconcilerOwner } from '../../../src/api/reconciler';
+
+const logRoot = path.resolve(process.cwd(), '.test-data', 'matrix-handler-logs');
+
+/** Captures the final formatted line produced by the shared logger factory. */
+class MemoryTransport extends TransportStream {
+  public readonly lines: string[] = [];
+  public override log(info: Record<symbol, unknown>, callback: () => void): void {
+    this.lines.push(String(info[MESSAGE] ?? ''));
+    callback();
+  }
+}
+
+class CapturingLoggerFactory extends ConfigurableLoggerFactory {
+  public readonly memory = new MemoryTransport();
+  protected override createTransports(): Transport[] {
+    return [ this.memory ];
+  }
+}
+
+let logFactory: CapturingLoggerFactory;
+
+beforeAll(() => {
+  rmSync(logRoot, { recursive: true, force: true });
+  mkdirSync(logRoot, { recursive: true });
+  logFactory = new CapturingLoggerFactory('warn', {
+    fileName: path.join(logRoot, 'matrix-%DATE%.log'),
+    showLocation: false,
+  });
+  setGlobalLoggerFactory(logFactory);
+});
+
+afterAll(async () => {
+  const transport = (logFactory as unknown as {
+    fileTransport?: { close?: () => void; logStream?: { end?: (cb?: () => void) => void } };
+  }).fileTransport;
+  await new Promise<void>((resolve) => {
+    try {
+      transport?.close?.();
+      transport?.logStream?.end?.(() => resolve());
+      setTimeout(resolve, 200);
+    } catch {
+      resolve();
+    }
+  });
+  rmSync(logRoot, { recursive: true, force: true });
+});
 
 type CapturedRoute = {
   method: string;
@@ -482,6 +535,193 @@ describe('MatrixHandler', () => {
     expect(result.body()).toEqual({ errcode, error: message });
   });
 
+  it('records only whitelisted safe error fields for unknown failures', async () => {
+    logFactory.memory.lines.length = 0;
+    const error = Object.assign(
+      new Error('database password=secret https://user:pw@db.example/xpod?token=abc'),
+      { code: 'ETIMEDOUT', cause: { code: 'ECONNRESET' } },
+    );
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    // The status and body behavior must stay exactly as before.
+    expect(result.response.statusCode).toBe(500);
+    expect(result.body()).toEqual({ errcode: 'M_UNKNOWN', error: 'Internal server error' });
+    // The real shared formatter must carry the allowlisted tokens into the
+    // emitted message; metadata-only fields would be dropped by printf.
+    expect(logFactory.memory.lines).toHaveLength(1);
+    const logged = logFactory.memory.lines[0];
+    expect(logged).toContain('[MatrixHandler] error:');
+    expect(logged).toContain('Matrix handler failed with an unknown error');
+    expect(logged).toContain('"errorName":"Error"');
+    expect(logged).toContain('"code":"ETIMEDOUT"');
+    expect(logged).toContain('"causeCode":"ECONNRESET"');
+    for (const forbidden of [ 'secret', 'password', 'https://', 'user:pw', 'token', 'xpod', 'database password' ]) {
+      expect(logged).not.toContain(forbidden);
+    }
+    // No raw error message or stack frame may ever reach the log line.
+    expect(logged).not.toContain('at ');
+    expect(logged).not.toContain('boom');
+  });
+
+  it('reports only project-relative stack frame locations for unknown failures', async () => {
+    logFactory.memory.lines.length = 0;
+    const error = new Error('sensitive message https://user:pw@host/x?token=abc');
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), createResponse().response, {});
+
+    expect(logFactory.memory.lines).toHaveLength(1);
+    const logged = logFactory.memory.lines[0];
+    expect(logged).toContain('"frames":"tests/api/handlers/MatrixHandler.test.ts:');
+    expect(logged).not.toContain('sensitive message');
+    for (const forbidden of [ 'https://', 'token', 'password', 'user:pw' ]) {
+      expect(logged).not.toContain(forbidden);
+    }
+    // A frame is a location only: never a raw stack line with `at ` or a function.
+    expect(logged).not.toContain(' at ');
+  });
+
+  it('never treats an error message line as a project frame', async () => {
+    logFactory.memory.lines.length = 0;
+    const root = process.cwd();
+    const error = new Error('opaque data src/FAKE_MESSAGE_SENTINEL.ts:1:2');
+    error.name = 'TimeoutError';
+    error.stack = `Error: opaque data src/FAKE_MESSAGE_SENTINEL.ts:1:2\n    at good (${root}/src/api/handlers/MatrixHandler.ts:1:2)`;
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    expect(result.response.statusCode).toBe(500);
+    expect(result.body()).toEqual({ errcode: 'M_UNKNOWN', error: 'Internal server error' });
+    const logged = logFactory.memory.lines.join('\n');
+    expect(logged).not.toContain('FAKE_MESSAGE_SENTINEL');
+    expect(logged).toContain('"frames":"src/api/handlers/MatrixHandler.ts:1:2"');
+  });
+
+  it('never treats a remote URL frame as a project frame', async () => {
+    logFactory.memory.lines.length = 0;
+    const error = new Error('remote');
+    error.name = 'TimeoutError';
+    error.stack = 'TimeoutError\n    at remote (https://user:FAKE_PASSWORD@remote.example/src/FAKE_URL_SENTINEL.ts:13:7)';
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    expect(result.response.statusCode).toBe(500);
+    const logged = logFactory.memory.lines.join('\n');
+    expect(logged).not.toContain('FAKE_URL_SENTINEL');
+    expect(logged).not.toContain('FAKE_PASSWORD');
+    expect(logged).not.toContain('frames');
+  });
+
+  it('keeps a compiled project dist frame', async () => {
+    logFactory.memory.lines.length = 0;
+    const root = process.cwd();
+    const error = new Error('timeout');
+    error.name = 'TimeoutError';
+    error.stack = `TimeoutError\n    at local (${root}/dist/api/handlers/MatrixHandler.js:391:7)`;
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    const logged = logFactory.memory.lines.join('\n');
+    expect(logged).toContain('"frames":"dist/api/handlers/MatrixHandler.js:391:7"');
+    expect(logged).not.toContain(' at ');
+  });
+
+  it.each([
+    [ 'query', '?token=FAKE_QUERY_SENTINEL' ],
+    [ 'fragment', '#FAKE_FRAGMENT_SENTINEL' ],
+    [ 'control', '\tFAKE_CONTROL_SENTINEL' ],
+  ])('drops a %s suffix that rides on an otherwise local stack frame', async (_id, suffix) => {
+    logFactory.memory.lines.length = 0;
+    const root = process.cwd();
+    const error = new Error('unsafe location');
+    error.name = 'TimeoutError';
+    error.stack = `TimeoutError\n    at bad (${root}/src/api/Fake.ts${suffix}:1:2)\n`
+      + `    at good (${root}/src/api/handlers/MatrixHandler.ts:3:4)`;
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    expect(result.response.statusCode).toBe(500);
+    expect(result.body()).toEqual({ errcode: 'M_UNKNOWN', error: 'Internal server error' });
+    const logged = logFactory.memory.lines.join('\n');
+    for (const sentinel of [ 'FAKE_QUERY_SENTINEL', 'FAKE_FRAGMENT_SENTINEL', 'FAKE_CONTROL_SENTINEL' ]) {
+      expect(logged).not.toContain(sentinel);
+    }
+    expect(logged).toContain('"frames":"src/api/handlers/MatrixHandler.ts:3:4"');
+  });
+
+  it('drops an untrusted repository-root file frame', async () => {
+    logFactory.memory.lines.length = 0;
+    const root = process.cwd();
+    const error = new Error('unsafe root file');
+    error.name = 'TimeoutError';
+    error.stack = `TimeoutError\n    at bad (${root}/FAKE_PATH_SECRET.ts:1:2)\n`
+      + `    at good (${root}/src/api/handlers/MatrixHandler.ts:3:4)`;
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    expect(result.response.statusCode).toBe(500);
+    expect(result.body()).toEqual({ errcode: 'M_UNKNOWN', error: 'Internal server error' });
+    const logged = logFactory.memory.lines.join('\n');
+    expect(logged).not.toContain('FAKE_PATH_SECRET');
+    expect(logged).toContain('"frames":"src/api/handlers/MatrixHandler.ts:3:4"');
+  });
+
+  it('drops a file-URL frame whose encoded query decodes to raw query text', async () => {
+    logFactory.memory.lines.length = 0;
+    const root = process.cwd();
+    const error = new Error('encoded query');
+    error.name = 'TimeoutError';
+    error.stack = `TimeoutError\n    at bad (file://${root}/src/api/Fake.ts%3Ftoken=FAKE_ENCODED_SENTINEL:1:2)\n`
+      + `    at good (${root}/src/api/handlers/MatrixHandler.ts:3:4)`;
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    expect(result.response.statusCode).toBe(500);
+    const logged = logFactory.memory.lines.join('\n');
+    expect(logged).not.toContain('FAKE_ENCODED_SENTINEL');
+    expect(logged).toContain('"frames":"src/api/handlers/MatrixHandler.ts:3:4"');
+  });
+
+  it('drops non-token error codes instead of recording arbitrary text', async () => {
+    logFactory.memory.lines.length = 0;
+    const error = Object.assign(new Error('boom'), { code: 'has spaces and /slash' });
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    expect(result.response.statusCode).toBe(500);
+    expect(logFactory.memory.lines).toHaveLength(1);
+    const logged = logFactory.memory.lines[0];
+    expect(logged).toContain('"errorName":"Error"');
+    expect(logged).not.toContain('has spaces');
+    expect(logged).not.toContain('/slash');
+  });
+
   it('fails closed when Pod lookup is unavailable', async () => {
     const store = createStore();
     const { server, routes } = createMockServer();
@@ -537,6 +777,90 @@ describe('MatrixHandler', () => {
     expect(result.response.statusCode).toBe(400);
     expect(result.body()).toMatchObject({ errcode: 'M_BAD_JSON' });
     expect(store.createRoom).not.toHaveBeenCalled();
+  });
+
+  it('records a call-local resolveMatrixContext failure without changing its 403 status', async () => {
+    logFactory.memory.lines.length = 0;
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => { throw new MatrixError(403, 'M_FORBIDDEN', 'Pod not owned'); } });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    expect(result.response.statusCode).toBe(403);
+    expect(result.body()).toEqual({ errcode: 'M_FORBIDDEN', error: 'Pod not owned' });
+    const logged = logFactory.memory.lines.join('\n');
+    expect(logged).toContain('[matrix-phase]');
+    expect(logged).toContain('"phase":"handler.resolveMatrixContext.failed"');
+    expect(logged).toContain('"phase":"handler.buildContext.failed"');
+    expect(logged).toContain('"errorName":"MatrixError"');
+    expect(logged).toContain('"elapsedMs":');
+    expect(logged).not.toContain(' at ');
+  });
+
+  it('records a call-local readBoundedBody failure while keeping the 413 response', async () => {
+    logFactory.memory.lines.length = 0;
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store });
+    const result = createResponse();
+    await routes['POST /_matrix/client/v3/createRoom'].handler(createRequest('/', { name: 'a'.repeat(1024 * 1024) }), result.response, {});
+
+    expect(result.response.statusCode).toBe(413);
+    const logged = logFactory.memory.lines.join('\n');
+    expect(logged).toContain('"phase":"handler.readBoundedBody.failed"');
+    expect(logged).toContain('"limitBytes":1048576');
+    expect(logged).not.toContain(' at ');
+  });
+
+  it('records a readJson parse failure and keeps the 400 response', async () => {
+    logFactory.memory.lines.length = 0;
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store });
+    const request = new PassThrough() as PassThrough & AuthenticatedRequest;
+    request.headers = {};
+    request.end('{invalid');
+    const result = createResponse();
+    await routes['POST /_matrix/client/v3/createRoom'].handler(request, result.response, {});
+
+    expect(result.response.statusCode).toBe(400);
+    const logged = logFactory.memory.lines.join('\n');
+    expect(logged).toContain('"phase":"handler.readJson.failed"');
+    expect(logged).toContain('"errorName":"SyntaxError"');
+  });
+
+  it('emits no phase line for a fast successful handler boundary', async () => {
+    logFactory.memory.lines.length = 0;
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    expect(result.response.statusCode).toBe(200);
+    expect(logFactory.memory.lines).toHaveLength(0);
+  });
+
+  it('projects a native DOM TimeoutError numeric code without leaking its message', async () => {
+    logFactory.memory.lines.length = 0;
+    const error = new DOMException('native timeout https://user:pw@host/x?token=secret', 'TimeoutError');
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    expect(result.response.statusCode).toBe(500);
+    expect(result.body()).toEqual({ errcode: 'M_UNKNOWN', error: 'Internal server error' });
+    const logged = logFactory.memory.lines.join('\n');
+    expect(logged).toContain('"errorName":"TimeoutError"');
+    expect(logged).toContain('"domTimeout":true');
+    expect(logged).toContain('"codeType":"number"');
+    expect(logged).toContain('"code":23');
+    for (const forbidden of [ 'native timeout', 'https://', 'user:pw', 'token', 'secret' ]) {
+      expect(logged).not.toContain(forbidden);
+    }
   });
 
 });

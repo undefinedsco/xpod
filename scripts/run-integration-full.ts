@@ -4,7 +4,9 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { getFreePortForWildcard } from '../src/runtime/port-finder';
+import { resolveFullIntegrationInfra } from '../tests/helpers/fullIntegrationInfra';
+import { RESERVED_PORTS_ENV } from '../src/runtime/port-reservations';
+import { getFreePortForWildcard, requireFreePortForWildcard } from '../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import {
@@ -73,20 +75,12 @@ export interface InfrastructurePorts {
 export function fullInfrastructureConnections(ports: InfrastructurePorts, postgresUrl?: string): {
   postgresUrl: string; redisUrl: string; minioUrl: string;
 } {
-  const ownedPostgresUrl = `postgres://xpod:xpod@localhost:${ports.postgres}/xpod`;
-  let parsed: URL;
-  try { parsed = new URL(postgresUrl ?? ownedPostgresUrl); } catch {
-    throw new Error('XPOD_FULL_PG_URL must be a valid URL for the owned PostgreSQL host port.');
-  }
-  if (!['postgres:', 'postgresql:'].includes(parsed.protocol) ||
-    !['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || Number(parsed.port || 5432) !== ports.postgres) {
-    throw new Error("XPOD_FULL_PG_URL must use this Compose project's owned PostgreSQL host port.");
-  }
-  return {
-    postgresUrl: postgresUrl ?? ownedPostgresUrl,
-    redisUrl: `redis://localhost:${ports.redis}`,
-    minioUrl: `http://localhost:${ports.minio}`,
-  };
+  let selected: ReturnType<typeof resolveFullIntegrationInfra>;
+  try {
+    selected = resolveFullIntegrationInfra({ XPOD_FULL_POSTGRES_PORT: String(ports.postgres),
+      XPOD_FULL_REDIS_PORT: String(ports.redis), XPOD_FULL_OBJECT_STORE_PORT: String(ports.minio), XPOD_FULL_PG_URL: postgresUrl });
+  } catch { throw new Error('XPOD_FULL_PG_URL must use this Compose project owned PostgreSQL host port.'); }
+  return { postgresUrl: selected.postgresUrl, redisUrl: `redis://localhost:${ports.redis}`, minioUrl: `http://localhost:${ports.minio}` };
 }
 
 export async function createFullInfrastructureOverlay(ports: InfrastructurePorts, directory = runtimeRoot): Promise<{
@@ -180,43 +174,17 @@ async function hasTcpService(port: number, host = '127.0.0.1', timeoutMs = 1500)
   });
 }
 
-async function hasWritableRedis(port = 6379, host = '127.0.0.1', timeoutMs = 1500): Promise<boolean> {
+
+async function hasOwnedPublication(service: string, containerPort: number, hostPort: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = new net.Socket();
-    let buffer = '';
-    const command = [
-      '*5',
-      '$3',
-      'SET',
-      '$21',
-      'xpod:full:healthcheck',
-      '$2',
-      'ok',
-      '$2',
-      'EX',
-      '$2',
-      '30',
-      '',
-    ].join('\r\n');
-
-    const finish = (ok: boolean): void => {
-      socket.destroy();
-      resolve(ok);
-    };
-
-    socket.setTimeout(timeoutMs);
-    socket.once('connect', () => socket.write(command));
-    socket.on('data', (chunk) => {
-      buffer += chunk.toString('utf8');
-      if (buffer.startsWith('+OK')) {
-        finish(true);
-      } else if (buffer.startsWith('-')) {
-        finish(false);
-      }
+    const child = spawn('docker', [...composeArgs, 'port', service, String(containerPort)], {
+      stdio: ['ignore', 'pipe', 'ignore'], env: process.env,
     });
-    socket.once('error', () => finish(false));
-    socket.once('timeout', () => finish(false));
-    socket.connect(port, host);
+    let output = '';
+    child.stdout.on('data', (chunk: Buffer) => { output = (output + chunk.toString('utf8')).slice(0, 4096); });
+    child.on('error', () => resolve(false));
+    child.on('close', (code) => resolve(code === 0 && output.trim().split(/\r?\n/u).some((line) =>
+      new RegExp(`^(?:0\\.0\\.0\\.0|127\\.0\\.0\\.1|\\[::\\]|\\[::1\\]):${hostPort}$`, 'u').test(line))));
   });
 }
 
@@ -225,36 +193,53 @@ async function probeMinio(): Promise<{ ok: boolean; detail: string }> {
   // MinIO-only /minio/health/live path is gone. Probe what the tests actually
   // need instead: an authenticated request for the test bucket. The probe never
   // throws, so a container that is still starting is a retry, not a crash.
-  return await probeObjectStore(infrastructurePorts.minio, OBJECT_STORE_BUCKET);
+  return await probeObjectStore(resolveFullIntegrationInfra().ports.objectStore, OBJECT_STORE_BUCKET);
 }
 
 async function hasMinio(): Promise<boolean> {
   return (await probeMinio()).ok;
 }
 
-async function hasHealthyComposeInfra(): Promise<boolean> {
-  const owned = await readOwnedInfrastructurePorts();
-  if (!owned) return false;
-  infrastructurePorts = owned;
-  const [postgresReady, redisReady, postgresHostReady, redisHostReady, redisWritable, minioReady] = await Promise.all([
-    commandExitCode('docker', [...composeArgs, 'exec', '-T', 'postgres', 'pg_isready', '-h', '127.0.0.1', '-p', '5432', '-U', 'xpod', '-d', 'xpod']),
-    commandExitCode('docker', [...composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping']),
-    hasTcpService(infrastructurePorts.postgres),
-    hasTcpService(infrastructurePorts.redis),
-    hasWritableRedis(infrastructurePorts.redis),
-    hasMinio(),
+async function hasOwnedInfraPublications(ports: ReturnType<typeof resolveFullIntegrationInfra>['ports']): Promise<boolean> {
+  const owned = await Promise.all([
+    hasOwnedPublication('postgres', 5432, ports.postgres),
+    hasOwnedPublication('redis', 6379, ports.redis),
+    hasOwnedPublication('minio', 9000, ports.objectStore),
   ]);
-  return postgresReady === 0 && redisReady === 0 && postgresHostReady && redisHostReady && redisWritable && minioReady;
+  return owned.every(Boolean);
 }
 
-async function waitForInfraServices(maxRetries = 60, delayMs = 1000): Promise<void> {
+export async function hasHealthyComposeInfra(): Promise<boolean> {
+  const { ports } = resolveFullIntegrationInfra();
+  const [postgresReady, redisReady, publicationsOwned] = await Promise.all([
+    commandExitCode('docker', [...composeArgs, 'exec', '-T', 'postgres', 'pg_isready', '-U', 'xpod', '-d', 'xpod']),
+    commandExitCode('docker', [...composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping']),
+    hasOwnedInfraPublications(ports),
+  ]);
+  if (postgresReady !== 0 || redisReady !== 0 || !publicationsOwned) return false;
+  const [postgresHostReady, redisHostReady, redisWritable, minioReady] = await Promise.all([
+    hasTcpService(ports.postgres),
+    hasTcpService(ports.redis),
+    // Writability is checked inside our Compose service, never foreign host Redis.
+    commandExitCode('docker', [...composeArgs, 'exec', '-T', 'redis', 'redis-cli', '-e', 'SET', 'xpod:full:healthcheck', 'ok', 'EX', '30']),
+    hasMinio(),
+  ]);
+  return postgresHostReady && redisHostReady && redisWritable === 0 && minioReady;
+}
+
+export async function waitForInfraServices(maxRetries = 60, delayMs = 1000): Promise<void> {
+  const { ports } = resolveFullIntegrationInfra();
   let lastStatus = '';
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    if (!await hasOwnedInfraPublications(ports)) {
+      lastStatus = 'host publications do not match the selected Compose project';
+      await new Promise(resolve => setTimeout(resolve, delayMs)); continue;
+    }
     const [postgresReady, redisReady, postgresHostReady, redisHostReady, minio] = await Promise.all([
       commandExitCode('docker', [...composeArgs, 'exec', '-T', 'postgres', 'pg_isready', '-h', '127.0.0.1', '-p', '5432', '-U', 'xpod', '-d', 'xpod']),
       commandExitCode('docker', [...composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping']),
-      hasTcpService(infrastructurePorts.postgres),
-      hasTcpService(infrastructurePorts.redis),
+      hasTcpService(ports.postgres),
+      hasTcpService(ports.redis),
       probeMinio(),
     ]);
     const minioReady = minio.ok;
@@ -310,11 +295,17 @@ export async function resolveFullInfrastructurePorts(
   reserved = new Set<number>(),
   preferred: InfrastructurePorts = { postgres: 5432, redis: 6379, minio: OBJECT_STORE_PORT },
 ): Promise<InfrastructurePorts> {
-  return {
-    postgres: await allocatePort(preferred.postgres, reserved),
-    redis: await allocatePort(preferred.redis, reserved),
-    minio: await allocatePort(preferred.minio, reserved),
-  };
+  const explicit = resolveFullIntegrationInfra();
+  const definitions = [['postgres', 'XPOD_FULL_POSTGRES_PORT', explicit.ports.postgres],
+    ['redis', 'XPOD_FULL_REDIS_PORT', explicit.ports.redis], ['minio', 'XPOD_FULL_OBJECT_STORE_PORT', explicit.ports.objectStore]] as const;
+  const result = {} as InfrastructurePorts;
+  for (const [name, key, selected] of definitions) {
+    if (process.env[key] !== undefined) {
+      if (reserved.has(selected)) throw new Error('Explicit infrastructure port overlaps another planned listener');
+      result[name] = await requireFreePortForWildcard(selected); reserved.add(selected);
+    } else result[name] = await allocatePort(preferred[name], reserved);
+  }
+  return result;
 }
 
 export async function resolveFullRuntimePorts(reserved = new Set<number>()): Promise<FullRuntimePorts> {
@@ -324,6 +315,21 @@ export async function resolveFullRuntimePorts(reserved = new Set<number>()): Pro
     local: await allocateRuntimePorts(DEFAULT_LOCAL_PORT, reserved),
     standalone: await allocateRuntimePorts(DEFAULT_STANDALONE_PORT, reserved),
   };
+}
+
+export async function selectFullInfrastructurePorts(reuseRequested: boolean, reserved: Set<number>): Promise<InfrastructurePorts> {
+  const requested = resolveFullIntegrationInfra();
+  const owned = reuseRequested ? await readOwnedInfrastructurePorts() : undefined;
+  if (owned) {
+    for (const [name, key, expected] of [['postgres', 'XPOD_FULL_POSTGRES_PORT', requested.ports.postgres],
+      ['redis', 'XPOD_FULL_REDIS_PORT', requested.ports.redis], ['minio', 'XPOD_FULL_OBJECT_STORE_PORT', requested.ports.objectStore]] as const) {
+      if (process.env[key] !== undefined && owned[name] !== expected) {
+        throw new Error('Explicit infrastructure port conflicts with the selected Compose project owned publication');
+      }
+    }
+    Object.values(owned).forEach(port => reserved.add(port)); return owned;
+  }
+  return resolveFullInfrastructurePorts(reserved, { postgres: requested.ports.postgres, redis: requested.ports.redis, minio: requested.ports.objectStore });
 }
 
 async function waitForService(name: string, baseUrl: string, maxRetries = 90, delayMs = 2000): Promise<void> {
@@ -356,19 +362,32 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
   throw new Error(`[full] ${name} not ready: ${statusUrl}`);
 }
 
-export async function startFullRuntimes(
-  ports: FullRuntimePorts,
-  qleverRuntimeCommand: string,
-  infrastructure: InfrastructurePorts = infrastructurePorts,
-  externalInfra?: FullIntegrationInfra,
-): Promise<XpodRuntimeHandle[]> {
+type RuntimeStartPorts = { [K in keyof FullRuntimePorts]: Omit<RuntimePorts, 'ingress'> & { ingress?: number } };
+
+async function withPlannedPortReservations<T>(ports: RuntimeStartPorts, infrastructure: InfrastructurePorts, work: () => Promise<T>): Promise<T> {
+  const previous = process.env[RESERVED_PORTS_ENV];
+  const planned = [...Object.values(infrastructure), ...Object.values(ports).flatMap(runtime => Object.values(runtime))];
+  process.env[RESERVED_PORTS_ENV] = [previous, ...planned].filter(value => value !== undefined && value !== '').join(',');
+  try { return await work(); } finally {
+    if (previous === undefined) delete process.env[RESERVED_PORTS_ENV]; else process.env[RESERVED_PORTS_ENV] = previous;
+  }
+}
+
+export async function startFullRuntimes(ports: RuntimeStartPorts, qleverRuntimeCommand: string, infrastructure?: InfrastructurePorts, externalInfra?: FullIntegrationInfra): Promise<XpodRuntimeHandle[]> {
+  const selected = resolveFullIntegrationInfra();
+  const resolved = infrastructure ?? { postgres: selected.ports.postgres, redis: selected.ports.redis, minio: selected.ports.objectStore };
+  return withPlannedPortReservations(ports, resolved, () => startFullRuntimesReserved(ports, qleverRuntimeCommand, resolved, externalInfra));
+}
+
+async function startFullRuntimesReserved(ports: RuntimeStartPorts, qleverRuntimeCommand: string, infrastructure: InfrastructurePorts, externalInfra?: FullIntegrationInfra): Promise<XpodRuntimeHandle[]> {
   const connections = fullInfrastructureConnections(infrastructure, process.env.XPOD_FULL_PG_URL);
   const cloudDb = connections.postgresUrl;
   const runtimes: XpodRuntimeHandle[] = [];
   const commonCloudEnv = {
     ...TEST_GATEWAY_ENV,
+    [RESERVED_PORTS_ENV]: process.env[RESERVED_PORTS_ENV],
     CSS_BASE_STORAGE_DOMAIN: 'undefineds.site',
-    CSS_REDIS_CLIENT: connections.redisUrl,
+    CSS_REDIS_CLIENT: `localhost:${infrastructure.redis}`,
     CSS_REDIS_USERNAME: '',
     CSS_REDIS_PASSWORD: '',
     CSS_MINIO_ENDPOINT: connections.minioUrl,
@@ -444,6 +463,7 @@ export async function startFullRuntimes(
       identityDbUrl: path.join(runtimeRoot, 'local', 'local-managed-identity.sqlite'),
       env: {
         ...TEST_GATEWAY_ENV,
+        [RESERVED_PORTS_ENV]: process.env[RESERVED_PORTS_ENV],
         SOLID_OIDC_ISSUER: `http://localhost:${ports.cloud.gateway}`,
         XPOD_NODE_ID: 'local-managed-node',
         XPOD_SERVICE_TOKEN: 'svc-testservicetokenforintegration',
@@ -470,6 +490,7 @@ export async function startFullRuntimes(
       identityDbUrl: path.join(runtimeRoot, 'standalone', 'local-standalone-identity.sqlite'),
       env: {
         ...TEST_GATEWAY_ENV,
+        [RESERVED_PORTS_ENV]: process.env[RESERVED_PORTS_ENV],
         // Standalone 节点自身就是 IdP：显式把 issuer 指向自身 baseUrl，
         // 退出 XpodRuntime 对 local 模式的默认官方云接管（DEFAULT_LOCAL_OIDC_ISSUER），
         // 否则测试运行会向真实 id.undefineds.co 注册节点并把 Pod 建到不可解析的 nodes.undefineds.co 域。
@@ -502,19 +523,24 @@ async function main(): Promise<void> {
   // Validate and probe before any Compose action: external failures never recreate infrastructure.
   const externalInfra = await loadFullIntegrationInfra(process.env.XPOD_FULL_INFRA_ENV_FILE);
   if (externalInfra) await checkFullIntegrationInfra(externalInfra);
+  resolveFullIntegrationInfra();
   const targets = process.argv.slice(2);
   const testTargets = targets.length > 0 ? targets : defaultTargets;
   const reuseRequested = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true';
-  const ownedInfrastructure = reuseRequested ? await readOwnedInfrastructurePorts() : undefined;
-  const reserved = new Set<number>(ownedInfrastructure ? Object.values(ownedInfrastructure) : []);
-  infrastructurePorts = ownedInfrastructure ?? await resolveFullInfrastructurePorts(reserved);
+  const reserved = new Set<number>();
+  infrastructurePorts = await selectFullInfrastructurePorts(reuseRequested, reserved);
   const connections = fullInfrastructureConnections(infrastructurePorts, process.env.XPOD_FULL_PG_URL);
+  const oldEnv = Object.fromEntries(['XPOD_FULL_POSTGRES_PORT', 'XPOD_FULL_REDIS_PORT', 'XPOD_FULL_OBJECT_STORE_PORT'].map(key => [key, process.env[key]]));
+  Object.assign(process.env, { XPOD_FULL_POSTGRES_PORT: String(infrastructurePorts.postgres), XPOD_FULL_REDIS_PORT: String(infrastructurePorts.redis), XPOD_FULL_OBJECT_STORE_PORT: String(infrastructurePorts.minio) });
+  try {
   const ports = await resolveFullRuntimePorts(reserved);
   const overlay = await createFullInfrastructureOverlay(infrastructurePorts);
   composeArgs.push('-f', overlay.path);
   const reuseExistingInfra = !externalInfra && reuseRequested && await hasHealthyComposeInfra();
   const startedInfra = !externalInfra && !reuseExistingInfra;
   const sharedEnv = {
+    ...resolveFullIntegrationInfra().hostEnv,
+    [RESERVED_PORTS_ENV]: [...(process.env[RESERVED_PORTS_ENV] ? [process.env[RESERVED_PORTS_ENV]] : []), ...Object.values(infrastructurePorts), ...Object.values(ports).flatMap(runtime => Object.values(runtime))].join(','),
     XPOD_FULL_PG_URL: connections.postgresUrl,
     XPOD_AGENT_DIRECTORY_TEST_CLOUD_URL: `http://localhost:${ports.cloud.gateway}/`,
     XPOD_AGENT_DIRECTORY_TEST_REDIS_URL: connections.redisUrl,
@@ -583,7 +609,10 @@ async function main(): Promise<void> {
     }
   }
 
-  process.exit(testExitCode);
+  process.exitCode = testExitCode;
+  } finally {
+    for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
 }
 
 if (import.meta.main) main().catch((error) => {

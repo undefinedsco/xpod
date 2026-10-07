@@ -99,6 +99,27 @@ describe('TaskCredentialStore', () => {
     expect(JSON.parse(String(rows[0].sealedSecret))).toMatchObject({ algorithm: 'AES-256-GCM' });
   });
 
+  it('preserves rows across a fresh factory handle and Store', async () => {
+    const directory = await temporaryDirectory();
+    const url = `sqlite:${path.join(directory, 'tasks.sqlite')}`;
+    const first = new TaskCredentialStore({ database: getTaskCredentialDatabase(url), vault: vaultFor() });
+    const granted = await first.grant({
+      ownerWebId: OWNER,
+      issuer: ISSUER,
+      clientId: CLIENT_ID,
+      clientSecret: CLIENT_SECRET,
+      status: 'active',
+    });
+
+    // A fresh handle at the same URL is the in-process analogue of a restarted deployment: the
+    // awaited Store initializer must leave the existing table and its rows untouched.
+    resetTaskCredentialDatabases();
+    const second = new TaskCredentialStore({ database: getTaskCredentialDatabase(url), vault: vaultFor() });
+    await expect(second.lease({ credentialRef: granted.credentialRef, ownerWebId: OWNER }))
+      .resolves.toMatchObject({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET });
+    expect(await second.listForOwner(OWNER)).toHaveLength(1);
+  });
+
   it('does not let a pending grant run, and activates it on request', async () => {
     const directory = await temporaryDirectory();
     const { store } = await storeAt(directory);

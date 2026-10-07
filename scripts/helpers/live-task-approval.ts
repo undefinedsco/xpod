@@ -1,3 +1,4 @@
+import { projectTaskRunFailureDiagnostic, type TaskRunFailureDiagnostic } from '../../src/api/tasks/TaskRunFailureDiagnostic';
 import type { TaskCredentialSummary } from '../../src/api/tasks/TaskCredentialStore';
 import { TASK_RESUME_STAGES, TASK_RESUME_ERROR_TYPES, selectTaskResumeFailure, type TaskResumeFailure, type TaskResumeStage, type TaskResumeErrorType } from '../../src/api/tasks/TaskResumeDiagnostics';
 import { randomUUID } from 'node:crypto';
@@ -10,6 +11,7 @@ export interface LiveTaskRun {
   status: string;
   waitingToolCallId?: string;
   error?: unknown;
+  failureDiagnostic?: TaskRunFailureDiagnostic;
 }
 export interface LiveTaskFailureDetails {
   substage: 'queued-request' | 'queued-assert' | 'checkpoint-run-read' | 'checkpoint-approval-read'
@@ -30,6 +32,7 @@ export interface LiveTaskFailureDetails {
 }
 
 export interface LiveTaskCaseEvidence {
+  failureDiagnostic?: TaskRunFailureDiagnostic;
   kind: 'approved' | 'rejected' | 'stopped';
   taskId?: string;
   runId?: string;
@@ -392,6 +395,11 @@ export async function acceptLiveTaskApproval(options: {
       const approval = await pollLiveTask(async () => {
         failureSubstage = 'checkpoint-run-read';
         const run = await readRun(created.task.id, acknowledged.run.id);
+        if (run.status === 'failed') {
+          row.failureDiagnostic = projectTaskRunFailureDiagnostic(run.failureDiagnostic, run.status)
+            ?? { code: 'TASK_DIAGNOSTIC_UNAVAILABLE', stage: 'unknown', status: 'failed' };
+          return requireLiveCheckpoint(run, [], target, options.webId, row, db);
+        }
         failureSubstage = 'checkpoint-approval-read';
         const approvals = await db.select().from(approvalResource).execute();
         failureSubstage = 'checkpoint-match';

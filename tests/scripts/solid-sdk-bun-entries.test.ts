@@ -61,7 +61,7 @@ describe('Solid SDK Bun distribution entries', () => {
     expect(Object.keys(manifest.exports['./session'])).toEqual(['types', 'bun', 'import']);
     expect(manifest.exports['./react'].import).toBe('./dist/react.js');
     expect(manifest.exports['./login-store'].import).toBe('./dist/login-store.js');
-    expect(manifest.scripts.build).toContain('bun build src/session.ts --target=node --format=cjs --packages=external --outfile=dist/session.cjs');
+    expect(manifest.scripts.build).toContain('bun build src/session.ts --target=node --format=cjs --outfile=dist/session.cjs');
     expect(manifest.scripts.build).toContain('bun scripts/build-bun-entries.cjs');
   });
 });

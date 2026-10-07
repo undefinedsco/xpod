@@ -12,7 +12,7 @@ import {
 } from './credentials-store';
 import { createOidcSessionStorage } from './oidc-session-storage';
 
-const TOKEN_EXPIRY_SKEW_MS = 60_000;
+export const TOKEN_EXPIRY_SKEW_MS = 60_000;
 
 export async function getOidcAccessToken(
   credentials: StoredCredentials,
