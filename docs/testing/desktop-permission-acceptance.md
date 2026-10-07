@@ -56,3 +56,5 @@ App 生命周期持续记录自有 PID/PPID/start identity，包括 reparented c
 正式 runner 拒绝未提交 source/runner 文件；允许既有 `release-candidate` 的精确 version/native optional dependency 变换和明确生成目录/pack 预算文件。生成目录仅为 `dist/`、`components/`、`desktop/dist/`、`desktop/release/` 与 UI 实际产出的 `static/app/`、`static/dashboard/`、`static/settings/`；`static/landing/` 等发布源输入修改仍拒绝。生成目录允许重建并不证明缓存防篡改；archive/runtime 内容由实际包 hash 和执行证据独立绑定。所有代码/CI/文档冻结并完成最终两轮完整回归后可先提交本地 immutable SHA，再构建真实包。真实验收失败必须保留失败并后续修复，未全绿不能 stable tag/promotion。
 
 本契约不覆盖所有 provider 订阅授权、原安装 App 全流程或 Linux bubblewrap 实测；这些缺项单列。Cloud 停服、人类授权未完成或外部额度/凭据失败均不能以单元、协议夹具或旧发行门禁代替。
+
+Provider confirmation compares collection descriptor keys and provider resource ids through the authoritative models mapping. Missing collection rows or a non-ready collection cannot prove deletion; both creation and removal require an independently observed, ready collection snapshot. This repairs the reproducible identity mismatch without claiming that RC.292's unclassified operation failure is already attributed.
