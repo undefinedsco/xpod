@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
@@ -21,6 +21,45 @@ const SIZES_MIB = [ 64, 512, 1024 ];
 const CHUNK = 4 * 1024 * 1024;
 // Provisional helper-RSS ceiling (KiB): the helper must not hold the whole body.
 const HELPER_RSS_LIMIT_KIB = 1024 * 1024;
+
+// Command terminators are incidental; porcelain columns and filename spaces are data.
+function normaliseCommandOutput(stdout: string): string {
+  return stdout.replace(/(?:\r?\n)+$/u, '');
+}
+
+describe('command output preserves Git porcelain columns', () => {
+  it('preserves the actual unstaged column from Git status', async () => {
+    const parent = path.resolve('.test-data/agentdir-git-output');
+    await mkdir(parent, { recursive: true });
+    const directory = await mkdtemp(path.join(parent, 'owned-'));
+    const env: NodeJS.ProcessEnv = Object.fromEntries(Object.keys(process.env).filter((key) => key.startsWith('GIT_')).map((key) => [ key, undefined ]));
+    env.GIT_CONFIG_NOSYSTEM = '1'; env.GIT_CONFIG_GLOBAL = '/dev/null';
+    let closed = true;
+    const git = async (args: string[]): Promise<string> => {
+      const result = await exec('git', [ '-c', 'user.name=Output Test', '-c', 'user.email=output@example.invalid', '-c', 'core.hooksPath=/dev/null', ...args ], env, 10_000, directory);
+      closed &&= result.state === 'closed';
+      expect(result.state).toBe('closed'); expect(result.actualExit).toBe(0); expect(result.signal).toBeNull();
+      return result.stdout;
+    };
+    try {
+      await git([ 'init', '--template=' ]);
+      await writeFile(path.join(directory, 'content.txt'), 'original\n');
+      await git([ 'add', 'content.txt' ]); await git([ 'commit', '-m', 'baseline' ]);
+      await writeFile(path.join(directory, 'content.txt'), 'modified\n');
+      const raw = await git([ 'status', '--porcelain=v1' ]);
+      expect(raw).toBe(' M content.txt\n');
+      expect(normaliseCommandOutput(raw)).toBe(' M content.txt');
+    } finally {
+      if (closed) await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it('removes only terminal newlines and retains filename spaces', () => {
+    expect(normaliseCommandOutput(' M content.txt\n')).toBe(' M content.txt');
+    expect(normaliseCommandOutput(' M filename \r\n')).toBe(' M filename ');
+    expect(normaliseCommandOutput(' M first\n?? second\n')).toBe(' M first\n?? second');
+    expect(normaliseCommandOutput('')).toBe('');
+  });
+});
 
 interface ExecResult { state: 'closed' | 'spawn-error' | 'pending'; actualExit: number | null; status: number; stdout: string; stderr: string; signal: NodeJS.Signals | null; pid: number | undefined }
 function execSampled(command: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, extraPids: (number | undefined)[], samples: number[]): Promise<ExecResult> {
@@ -210,7 +249,7 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       expect(result.state, JSON.stringify(result)).toBe('closed');
       expect(result.actualExit, JSON.stringify(result)).toBe(0);
       expect(result.signal, JSON.stringify(result)).toBeNull();
-      return result.stdout.trim();
+      return normaliseCommandOutput(result.stdout);
     };
     const cleanGitEnv: NodeJS.ProcessEnv = Object.fromEntries(Object.keys(process.env).filter((key) => key.startsWith('GIT_')).map((key) => [ key, undefined ]));
     const git = (args: string[], cwd = project) => run('git', [

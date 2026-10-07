@@ -155,9 +155,9 @@ def assert_status_ready(text, platform_name, helper, expected_pending=None):
 
 def check_tests(text):
     summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out', text)
-    expected = ('97', '0', '2', '0', '0')
+    expected = ('98', '0', '2', '0', '0')
     if expected not in summaries:
-        raise RuntimeError('Latest full Rust inventory must report 97 passed, two declared ignores, zero filtered (99 total)')
+        raise RuntimeError('Latest full Rust inventory must report 98 passed, two declared ignores, zero filtered (100 total)')
     ignored = re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE)
     if set(ignored) != {'mount::tests::legacy_output_exceeds_observation_budget', 'mount_control::tests::lease_child'}:
         raise RuntimeError('Unexpected ignored tests')
@@ -181,7 +181,8 @@ def check_tests(text):
             raise RuntimeError(f'Missing latest regression: {test}')
     # Exact cache-candidate regression names derived from the current source.
     # Every one must report ok; the original inventory above is unchanged.
-    for qualified in ['pod_fs::range_stream_tests::copy_up_failure_diagnostics_preserve_errors_and_hide_secrets',
+    for qualified in ['pod_fs::range_stream_tests::whole_file_deadlines_bind_verified_sizes_and_leave_metadata_unchanged',
+                      'pod_fs::range_stream_tests::copy_up_failure_diagnostics_preserve_errors_and_hide_secrets',
                       'clean_cache::tests::strong_etag_classification',
                       'clean_cache::tests::loopback_authority_is_not_cached',
                       'clean_cache::tests::remote_hit_after_reopen_and_weak_etag_bypass',

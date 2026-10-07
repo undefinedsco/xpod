@@ -252,6 +252,14 @@ pub struct PodClient {
     capability: Option<String>,
 }
 
+/// A bounded throughput allowance for whole-file streaming only. Metadata
+/// keeps the client's 60-second deadline and 10-second connection deadline.
+fn file_transfer_budget(size: u64) -> std::time::Duration {
+    const MIB: u64 = 1024 * 1024;
+    let seconds = 60u64.saturating_add(size / MIB + u64::from(size % MIB != 0));
+    std::time::Duration::from_secs(seconds.min(1800))
+}
+
 impl PodClient {
     pub fn new(base: &str, token: Option<String>) -> anyhow::Result<Self> {
         let normalized = if base.ends_with('/') { base.to_string() } else { format!("{base}/") };
@@ -321,13 +329,32 @@ impl PodClient {
         request
     }
 
-    pub async fn copy_to(&self, path: &str, baseline: &str, output: &mut std::fs::File) -> SdkResult<()> {
+    fn file_request(&self, method: Method, url: Url, extra: HeaderMap, size: u64) -> reqwest::RequestBuilder {
+        self.request(method, url, extra).timeout(file_transfer_budget(size))
+    }
+
+    /// Size authority for copy-up: a fresh conditional HEAD for the ORIGINAL
+    /// observed baseline. Missing/invalid lengths never silently become zero.
+    async fn copy_up_size(&self, path: &str, baseline: &str) -> SdkResult<u64> {
+        let mut headers = HeaderMap::new();
+        headers.insert(IF_MATCH, HeaderValue::from_str(baseline).map_err(|error| SdkError::Internal(error.to_string()))?);
+        let response = self.send(Method::HEAD, self.resource_url(path)?, headers, None).await?;
+        if response.status() != StatusCode::OK || response.headers().get(ETAG).and_then(|v| v.to_str().ok()) != Some(baseline) {
+            return Err(SdkError::Internal("lower content changed before copy-up".into()));
+        }
+        response.headers().get(CONTENT_LENGTH).and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| SdkError::Internal("copy-up HEAD requires a valid content length".into()))
+    }
+
+    pub async fn copy_to(&self, path: &str, baseline: &str, size: u64, output: &mut std::fs::File) -> SdkResult<()> {
         use std::io::Write;
         let started = std::time::Instant::now();
         let mut received = 0u64; let mut fully_written = 0u64;
         let mut headers = HeaderMap::new();
         headers.insert(IF_MATCH, HeaderValue::from_str(baseline).map_err(|error| SdkError::Internal(error.to_string()))?);
-        let mut response = self.request(Method::GET, self.resource_url(path)?, headers).send().await.map_err(|error| {
+        let mut response = self.file_request(Method::GET, self.resource_url(path)?, headers, size).send().await.map_err(|error| {
             observe_copy_up_failure("send", &started, received, fully_written, CopyUpError::Http(&error));
             SdkError::Internal(format!("Pod HTTP request failed: {error}"))
         })?;
@@ -339,11 +366,17 @@ impl PodClient {
             SdkError::Internal(error.to_string())
         })? {
             received += chunk.len() as u64;
+            if received > size {
+                return Err(SdkError::Internal("lower body exceeds the conditional HEAD length".into()));
+            }
             output.write_all(&chunk).map_err(|error| {
                 observe_copy_up_failure("write_all", &started, received, fully_written, CopyUpError::Io(&error));
                 SdkError::Internal(error.to_string())
             })?;
             fully_written += chunk.len() as u64;
+        }
+        if received != size {
+            return Err(SdkError::Internal("lower body differs from the conditional HEAD length".into()));
         }
         output.sync_all().map_err(|error| {
             observe_copy_up_failure("sync_all", &started, received, fully_written, CopyUpError::Io(&error));
@@ -372,7 +405,7 @@ impl PodClient {
         if is_dir { headers.insert(LINK, HeaderValue::from_static("<http://www.w3.org/ns/ldp#BasicContainer>; rel=\"type\"")); }
         let remote_path = if is_dir { format!("{path}/") } else { path.into() };
         let url = self.resource_url(&remote_path).map_err(|error| CommitFailure::Rejected(error.to_string()))?;
-        let response = self.request(Method::PUT, url, headers)
+        let response = self.file_request(Method::PUT, url, headers, size)
             .body(reqwest::Body::wrap_stream(stream)).send().await
             .map_err(|error| CommitFailure::OutcomeUnknown(format!("Pod HTTP request failed: {error}")))?;
         Self::check_commit_response(&response, "PUT", path)?;
@@ -401,10 +434,13 @@ impl PodClient {
     /// Read-only recovery proof: compare bytes under the exact observed ETag.
     /// A newer HEAD alone never proves that our earlier mutation was applied.
     pub async fn matches_file(&self, path: &str, version: &str, local: &std::path::Path, content_type: &str) -> SdkResult<bool> {
+        let mut local = std::fs::File::open(local).map_err(|error| SdkError::Internal(error.to_string()))?;
+        let size = local.metadata().map_err(|error| SdkError::Internal(error.to_string()))?.len();
         let mut headers = HeaderMap::new();
         headers.insert(IF_MATCH, HeaderValue::from_str(version).map_err(|error| SdkError::Internal(error.to_string()))?);
         headers.insert(ACCEPT, HeaderValue::from_str(content_type).map_err(|error| SdkError::Internal(error.to_string()))?);
-        let mut response = self.send(Method::GET, self.resource_url(path)?, headers, None).await?;
+        let mut response = self.file_request(Method::GET, self.resource_url(path)?, headers, size).send().await
+            .map_err(|error| SdkError::Internal(format!("Pod HTTP request failed: {error}")))?;
         if response.status() != StatusCode::OK || response.headers().get(ETAG).and_then(|value| value.to_str().ok()) != Some(version) {
             return Err(SdkError::Internal("remote version changed during recovery read".into()));
         }
@@ -412,7 +448,6 @@ impl PodClient {
             .ok_or_else(|| SdkError::Internal("recovery read has no media type".into()))?;
         if remote_type != content_type { return Ok(false); }
         if ldp_container_type(response.headers())? { return Ok(false); }
-        let mut local = std::fs::File::open(local).map_err(|error| SdkError::Internal(error.to_string()))?;
         let mut buffer = vec![0; 64 * 1024];
         while let Some(chunk) = response.chunk().await.map_err(|error| SdkError::Internal(error.to_string()))? {
             for bytes in chunk.chunks(buffer.len()) {
@@ -1297,7 +1332,8 @@ impl PodFile {
             let version = baseline.as_ref().ok_or_else(|| SdkError::Internal("copy-up requires an observed ETag".into()))?;
             if truncate != Some(0) {
                 let mut lease = overlay.create_seed().map_err(|error| SdkError::Internal(error.to_string()))?;
-                self.shared.copy_to(&self.path, version, lease.file_mut()).await?;
+                let size = self.shared.copy_up_size(&self.path, version).await?;
+                self.shared.copy_to(&self.path, version, size, lease.file_mut()).await?;
                 seed = Some(lease);
             }
         }
@@ -1488,7 +1524,7 @@ mod range_stream_tests {
         let owner = tokio::spawn(async move {
             let mut lease = owner_overlay.create_seed().map_err(|error| SdkError::Internal(error.to_string()))?;
             created.send(lease.path().to_owned()).unwrap();
-            client.copy_to("file", "\"baseline\"", lease.file_mut()).await
+            client.copy_to("file", "\"baseline\"", 131072, lease.file_mut()).await
         });
         let seed = seed_path.await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -1567,6 +1603,7 @@ mod range_stream_tests {
         root: String,
         stop: std::sync::Arc<AtomicBool>,
         handle: Option<std::thread::JoinHandle<()>>,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
     impl ScriptedServer {
         fn start(responses: Vec<(String, Vec<u8>)>) -> Self {
@@ -1575,6 +1612,8 @@ mod range_stream_tests {
             let root = format!("http://{}/", listener.local_addr().unwrap());
             let stop = std::sync::Arc::new(AtomicBool::new(false));
             let stop_thread = stop.clone();
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observed = requests.clone();
             let handle = std::thread::spawn(move || {
                 let mut index = 0usize;
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1586,7 +1625,8 @@ mod range_stream_tests {
                             let _ = stream.set_nonblocking(false);
                             let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
                             let mut request = [0; 4096];
-                            let _ = stream.read(&mut request);
+                            let length = stream.read(&mut request).unwrap_or(0);
+                            observed.lock().unwrap().push(String::from_utf8_lossy(&request[..length]).into_owned());
                             let _ = stream.write_all(headers.as_bytes());
                             let _ = stream.write_all(body);
                             let _ = stream.flush();
@@ -1599,7 +1639,7 @@ mod range_stream_tests {
                     }
                 }
             });
-            Self { root, stop, handle: Some(handle) }
+            Self { root, stop, handle: Some(handle), requests }
         }
         fn root(&self) -> &str { &self.root }
         fn join_owned(mut self) {
@@ -1607,6 +1647,46 @@ mod range_stream_tests {
             if let Some(handle) = self.handle.take() {
                 handle.join().expect("scripted server thread must close");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn whole_file_deadlines_bind_verified_sizes_and_leave_metadata_unchanged() {
+        for (size, seconds) in [(0, 60), (1, 61), (1024 * 1024, 61),
+            (64 * 1024 * 1024, 124), (512 * 1024 * 1024, 572),
+            (1024 * 1024 * 1024, 1084), (u64::MAX, 1800)] {
+            assert_eq!(file_transfer_budget(size).as_secs(), seconds);
+        }
+        let client = PodClient::new("http://127.0.0.1/", None).unwrap();
+        assert!(client.request(Method::HEAD, client.resource_url("file").unwrap(), HeaderMap::new())
+            .build().unwrap().timeout().is_none(), "metadata retains the existing client deadline");
+        for method in [Method::GET, Method::PUT] {
+            let request = client.file_request(method, client.resource_url("file").unwrap(), HeaderMap::new(), 512 * 1024 * 1024).build().unwrap();
+            assert_eq!(request.timeout().unwrap().as_secs(), 572);
+        }
+        for (length, etag, status, expected) in [
+            (Some("0"), Some("\"baseline\""), 200, Some(0)),
+            (Some("536870912"), Some("\"baseline\""), 200, Some(536870912)),
+            (None, Some("\"baseline\""), 200, None),
+            (Some("bad"), Some("\"baseline\""), 200, None),
+            (Some("+5"), Some("\"baseline\""), 200, None),
+            (Some("18446744073709551616"), Some("\"baseline\""), 200, None),
+            (Some("5"), Some("\"changed\""), 200, None),
+            (Some("5"), None, 200, None),
+            (Some("5"), Some("\"baseline\""), 412, None),
+        ] {
+            let mut headers = format!("HTTP/1.1 {status} Test\r\nConnection: close\r\n");
+            if let Some(value) = length { headers.push_str(&format!("Content-Length: {value}\r\n")); }
+            if let Some(value) = etag { headers.push_str(&format!("ETag: {value}\r\n")); }
+            headers.push_str("\r\n");
+            let server = ScriptedServer::start(vec![(headers, Vec::new())]);
+            let observed = PodClient::new(server.root(), None).unwrap().copy_up_size("file", "\"baseline\"").await;
+            match expected { Some(size) => assert_eq!(observed.unwrap(), size), None => assert!(observed.is_err()) }
+            let requests = server.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].starts_with("HEAD /file HTTP/1.1\r\n"));
+            assert!(requests[0].to_ascii_lowercase().contains("if-match: \"baseline\""));
+            drop(requests); server.join_owned();
         }
     }
     impl Drop for ScriptedServer {
@@ -1673,7 +1753,7 @@ mod range_stream_tests {
         let mut client = PodClient::new(server.root(), Some("SECRET_BEARER".into())).unwrap();
         client.capability = Some("SECRET_CAPABILITY".into());
         let original = client.send(Method::GET, client.resource_url("SECRET_PATH").unwrap(), HeaderMap::new(), None).await.unwrap_err();
-        let observed = client.copy_to("SECRET_PATH", "\"v1\"", &mut output).await.unwrap_err();
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", 0, &mut output).await.unwrap_err();
         assert_eq!(format!("{observed:?}"), format!("{original:?}")); server.join_owned();
 
         let truncated = ("HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n".to_string(), b"SECRET_BODY".to_vec());
@@ -1681,7 +1761,7 @@ mod range_stream_tests {
         let client = PodClient::new(server.root(), None).unwrap();
         let mut response = client.send(Method::GET, client.resource_url("SECRET_PATH").unwrap(), HeaderMap::new(), None).await.unwrap();
         let original = loop { match response.chunk().await { Ok(Some(_)) => (), Ok(None) => panic!("truncated body unexpectedly closed cleanly"), Err(error) => break SdkError::Internal(error.to_string()) } };
-        let observed = client.copy_to("SECRET_PATH", "\"v1\"", &mut output).await.unwrap_err();
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", 4096, &mut output).await.unwrap_err();
         assert_eq!(format!("{observed:?}"), format!("{original:?}")); server.join_owned();
 
         let complete = ("HTTP/1.1 200 OK\r\nContent-Length: 20\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n".to_string(), b"PRIVATE_BODY_CONTENT".to_vec());
@@ -1689,11 +1769,11 @@ mod range_stream_tests {
         let client = PodClient::new(server.root(), None).unwrap();
         let mut read_only = std::fs::File::open(&target).unwrap();
         let original = SdkError::Internal(read_only.write_all(b"x").unwrap_err().to_string());
-        let observed = client.copy_to("SECRET_PATH", "\"v1\"", &mut read_only).await.unwrap_err();
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", 20, &mut read_only).await.unwrap_err();
         assert_eq!(format!("{observed:?}"), format!("{original:?}"));
         let mut null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
         let original = SdkError::Internal(null.sync_all().unwrap_err().to_string());
-        let observed = client.copy_to("SECRET_PATH", "\"v1\"", &mut null).await.unwrap_err();
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", 20, &mut null).await.unwrap_err();
         assert_eq!(format!("{observed:?}"), format!("{original:?}")); server.join_owned();
         drop(output); drop(read_only); drop(null); std::fs::remove_dir_all(directory).unwrap();
     }

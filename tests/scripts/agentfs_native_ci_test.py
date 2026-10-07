@@ -1,4 +1,5 @@
 import hashlib
+import copy
 import io
 import tarfile
 import zipfile
@@ -28,6 +29,113 @@ spec3 = importlib.util.spec_from_file_location('whole_ci_gate', ROOT / 'scripts/
 g = importlib.util.module_from_spec(spec3)
 sys.modules['whole_ci_gate'] = g
 spec3.loader.exec_module(g)
+
+spec4 = importlib.util.spec_from_file_location('linux_binding', ROOT / 'scripts/agentfs-native-ci/mounted/linux-container-binding.py')
+b = importlib.util.module_from_spec(spec4)
+spec4.loader.exec_module(b)
+
+
+class LinuxContainerBindingTests(unittest.TestCase):
+    def fixture(self):
+        return dict(cid='a' * 64, imageID='sha256:' + 'b' * 64, running=True, privileged=False,
+                    AppArmorProfile='unconfined', NetworkMode='none', SecurityOpt=['apparmor=unconfined'],
+                    Devices=[dict(PathOnHost='/dev/fuse', PathInContainer='/dev/fuse', CgroupPermissions='rwm')],
+                    CapAdd=['SYS_ADMIN'], CapDrop=None, Mounts=[
+                        dict(destination=destination, RW=rw) for destination, rw in
+                        [('/product/archive.tar.gz', False), ('/workspace', True), ('/mounted', False), ('/evidence', True)]
+                    ] + [None])
+
+    def test_only_exact_live_binding_passes(self):
+        value = self.fixture()
+        b.validate(value, value['cid'], value['imageID'], ['name=seccomp,profile=builtin'], 'Seccomp:\t2\n')
+        mutations = dict(cid='c' * 64, imageID='sha256:wrong', running=False, privileged=True,
+                         AppArmorProfile='docker-default', NetworkMode='host', SecurityOpt=['seccomp=unconfined'],
+                         Devices=[], CapAdd=['SYS_ADMIN', 'NET_ADMIN'], CapDrop=['ALL'])
+        for field, wrong in mutations.items():
+            changed = copy.deepcopy(value); changed[field] = wrong
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                b.validate(changed, value['cid'], value['imageID'], ['name=seccomp,profile=builtin'], 'Seccomp:\t2\n')
+        for change in ['readonly-workspace', 'writable-product', 'duplicate-mount', 'foreign-mount']:
+            changed = copy.deepcopy(value)
+            if change == 'readonly-workspace': changed['Mounts'][1]['RW'] = False
+            if change == 'writable-product': changed['Mounts'][0]['RW'] = True
+            if change == 'duplicate-mount': changed['Mounts'].append(changed['Mounts'][0])
+            if change == 'foreign-mount': changed['Mounts'][0]['destination'] = '/foreign'
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                b.validate(changed, value['cid'], value['imageID'], ['name=seccomp,profile=builtin'], 'Seccomp:\t2\n')
+        for daemon, seccomp in [([], 'Seccomp:\t2\n'), (['name=seccomp,profile=builtin'], 'Seccomp:\t0\n'),
+                               (['name=seccomp,profile=builtin'], 'Seccomp:\t2\nSeccomp_filters:\t1\n')]:
+            with self.subTest(daemon=daemon, seccomp=seccomp), self.assertRaises(RuntimeError):
+                b.validate(value, value['cid'], value['imageID'], daemon, seccomp)
+
+    def test_docker_output_boundary_does_not_read_config_or_environment(self):
+        self.assertNotIn('.Config', b.INSPECT)
+        self.assertNotIn('.Env', b.INSPECT)
+        self.assertNotIn('json .Mounts', b.INSPECT)
+        self.assertIn('json .RW', b.INSPECT)
+
+    def test_existing_release_or_cidfile_refuses_before_any_producer(self):
+        for name in ['linux-binding.release', 'container.cid']:
+            with self.subTest(name=name), owned_scratch() as directory:
+                evidence = Path(directory); (evidence / name).touch()
+                with patch.object(b, 'run_stage') as producer, self.assertRaises(RuntimeError):
+                    b.run('/archive', evidence, evidence / 'container.cid', ROOT, 'prep', 'image-id')
+                producer.assert_not_called()
+
+    def exercise_consumer(self, reject_inspect):
+        # Real, waited subprocess stands in for Docker attachment. It only starts
+        # the consumer after the production release gate; no Docker/FUSE claim.
+        with owned_scratch() as directory:
+            evidence = Path(directory); cidfile = evidence / 'container.cid'
+            release = evidence / 'linux-binding.release'; marker = evidence / 'consumer-started'
+            calls = []; value = self.fixture()
+            def stage(name, argv, ev, cwd, **kwargs):
+                calls.append((name, argv))
+                if name == 'linux-consumer':
+                    script = ('from pathlib import Path; import time\n'
+                              f'Path({str(cidfile)!r}).write_text({value["cid"]!r})\n'
+                              'for _ in range(150):\n'
+                              f' if Path({str(release)!r}).exists():\n'
+                              f'  Path({str(marker)!r}).write_text("started"); print("consumer completed"); break\n'
+                              f' if Path({str(evidence / "removed")!r}).exists(): raise SystemExit(70)\n'
+                              ' time.sleep(.01)\n'
+                              'else: raise SystemExit(71)\n')
+                else:
+                    self.assertEqual(argv, ['docker', 'rm', '-f', value['cid']])
+                    script = f'from pathlib import Path; Path({str(evidence / "removed")!r}).touch()'
+                return m.run_stage(name, [sys.executable, '-c', script], ev, cwd,
+                                   fresh_bytes=0, stop_bytes=0, timeout=5, poll_seconds=.01)
+            def checked(name, argv, ev, cwd, **kwargs):
+                calls.append((name, argv))
+                self.assertFalse(marker.exists() or release.exists()) if name != 'linux-container-absence' else None
+                output = dict({'linux-live-inspect': json.dumps(value), 'linux-daemon-seccomp': json.dumps(['name=seccomp,profile=builtin']),
+                               'linux-pid1-seccomp': 'Seccomp:\t2\n', 'linux-container-absence': ''})[name]
+                code = 7 if reject_inspect and name == 'linux-live-inspect' else 0
+                return m.run_checked_stage(name, [sys.executable, '-c', f'print({output!r}); raise SystemExit({code})'],
+                                           ev, cwd, fresh_bytes=0, stop_bytes=0, timeout=5, poll_seconds=.01)
+            with patch.object(b, 'run_stage', side_effect=stage), patch.object(b, 'run_checked_stage', side_effect=checked), \
+                    patch.dict(os.environ, LINUX_ARCHIVE_SHA='archive-pin', LINUX_HELPER_SHA='helper-pin'):
+                if reject_inspect:
+                    with self.assertRaises(RuntimeError): b.run('/archive', evidence, cidfile, ROOT, 'prep', value['imageID'])
+                else: b.run('/archive', evidence, cidfile, ROOT, 'prep', value['imageID'])
+            binding = json.loads((evidence / 'linux-container-binding.json').read_text())
+            self.assertEqual(binding['released'], not reject_inspect)
+            self.assertEqual(marker.exists(), not reject_inspect)
+            self.assertTrue(binding['containerAbsent'])
+            receipt = binding['consumerReceipt']
+            self.assertTrue(receipt['actualWait'] and receipt['rawClosedBeforeHash'] and receipt['ownedGroupAbsentAfterWait'])
+            self.assertEqual(receipt['rawSHA256'], m.sha256(evidence / 'linux-consumer.raw.log'))
+            self.assertEqual(receipt['exit'], 70 if reject_inspect else 0)
+            argv = calls[0][1]
+            self.assertIn('--init', argv); self.assertIn('--rm', argv); self.assertIn('--network', argv)
+            self.assertNotIn('--privileged', argv); self.assertNotIn('seccomp=unconfined', argv)
+            self.assertIn('XPOD_MOUNTED_MIN_PASSED=6', argv)
+
+    def test_actual_consumer_is_only_released_after_same_live_inspection(self):
+        self.exercise_consumer(False)
+
+    def test_inspection_failure_never_releases_actual_consumer_and_waits_for_cleanup(self):
+        self.exercise_consumer(True)
 
 
 class SupervisorTests(unittest.TestCase):
@@ -108,7 +216,7 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_latest_inventory_accepts_only_complete_bound_regressions(self):
-        text = 'test result: ok. 97 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
+        text = 'test result: ok. 98 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out\n'
         text += 'test mount::tests::legacy_output_exceeds_observation_budget ... ignored\n'
         text += 'test mount_control::tests::lease_child ... ignored\n'
         for name in ['closed_marker_is_read_only_after_actual_lease_release',
@@ -148,6 +256,7 @@ class SupervisorTests(unittest.TestCase):
                           'pod_fs::clean_cache_integration_tests::weak_etag_bypasses_and_is_never_cached',
                           'pod_fs::clean_cache_integration_tests::empty_etag_bypasses_and_is_never_cached',
                           'pod_fs::clean_cache_integration_tests::etag_race_412_reacquires_current_version_once',
+                          'pod_fs::range_stream_tests::whole_file_deadlines_bind_verified_sizes_and_leave_metadata_unchanged',
                           'pod_fs::range_stream_tests::copy_up_failure_diagnostics_preserve_errors_and_hide_secrets',
                           'pod_fs::clean_cache_integration_tests::truncated_range_response_is_not_cached',
                           'pod_fs::clean_cache_integration_tests::restart_serves_persisted_hit_only_after_fresh_head',
@@ -155,8 +264,10 @@ class SupervisorTests(unittest.TestCase):
                           'pod_fs::clean_cache_integration_tests::identity_and_canonical_pod_are_isolated_and_loopback_has_no_directory',
                           'pod_fs::clean_cache_integration_tests::denied_head_invalidates_and_never_serves_a_cached_body']:
             text += f'test {qualified} ... ok\n'
-        self.assertEqual(a.check_tests(text), dict(declaredTests=99, passedTests=97, ignoredTests=2, filteredTests=0))
-        for invalid in [text.replace('97 passed', '95 passed'),
+        self.assertEqual(a.check_tests(text), dict(declaredTests=100, passedTests=98, ignoredTests=2, filteredTests=0))
+        for invalid in [text.replace('98 passed', '95 passed'),
+                        text.replace('whole_file_deadlines_bind_verified_sizes_and_leave_metadata_unchanged ... ok',
+                                     'whole_file_deadlines_bind_verified_sizes_and_leave_metadata_unchanged ... FAILED'),
                         text.replace('0 filtered out', '2 filtered out'),
                         text.replace('closed_marker_is_read_only_after_actual_lease_release ... ok',
                                      'closed_marker_is_read_only_after_actual_lease_release ... FAILED'),

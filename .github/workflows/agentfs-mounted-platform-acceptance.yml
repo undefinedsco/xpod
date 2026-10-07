@@ -98,50 +98,8 @@ jobs:
           # mount acceptance container ONLY; the existing /dev/fuse device and
           # CAP_SYS_ADMIN are preserved, and the DEFAULT SECCOMP profile is NOT
           # disabled. No --privileged, no host/daemon/cluster policy change.
-          docker run --rm --init --cidfile "$cidfile" \
-            --device /dev/fuse --cap-add SYS_ADMIN \
-            --security-opt apparmor=unconfined \
-            --network none \
-            --mount "type=bind,src=${{ steps.product.outputs.archive }},dst=/product/archive.tar.gz,readonly" \
-            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace" \
-            --mount "type=bind,src=${GITHUB_WORKSPACE}/scripts/agentfs-native-ci/mounted,dst=/mounted,readonly" \
-            --mount "type=bind,src=${out},dst=/evidence" \
-            --env "XPOD_MOUNTED_OS=linux" \
-            --env "XPOD_MOUNTED_BACKEND=fuse" \
-            --env "XPOD_MOUNTED_ARCHIVE=/product/archive.tar.gz" \
-            --env "XPOD_MOUNTED_ARCHIVE_SHA=${LINUX_ARCHIVE_SHA}" \
-            --env "XPOD_MOUNTED_HELPER_SHA=${LINUX_HELPER_SHA}" \
-            --env "XPOD_MOUNTED_EVIDENCE=/evidence" \
-            --env "XPOD_MOUNTED_WORKSPACE=/workspace" \
-            --env "XPOD_MOUNTED_PREP=/opt" \
-            --env "XPOD_MOUNTED_NODE=/opt/node22/bin/node" \
-            --env "XPOD_MOUNTED_REQUIRE_NOBUN=1" \
-            --env "XPOD_MOUNTED_MIN_PASSED=6" \
-            "$XPOD_MOUNT_IMAGE" \
-            sh -c 'bash /mounted/bookworm-fuse-entry.sh'
-          test -f "$cidfile" && docker rm -f "$(cat "$cidfile")" >/dev/null 2>&1 || true
-      - name: Record Linux container security binding status (not-collected)
-        if: always()
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          out="${RUNNER_TEMP}/mounted-evidence"; mkdir -m 700 -p "$out"
-          # The acceptance container is run with --rm and removed above, so its
-          # same-CID security binding (imageID/NetworkMode/SecurityOpt/Devices/
-          # CapAdd/CapDrop/Mounts.RW) is NOT observable afterward. Per ROOT's
-          # minimal resolution we explicitly mark it not-collected instead of
-          # emitting an invalid/unallowlisted inspect. No Env/credentials.
-          cat > "$out/linux-container-binding.json" <<'JSON'
-          {
-            "schemaVersion": 1,
-            "source": "host-observer",
-            "state": "not-collected",
-            "reason": "acceptance container ran with --rm and was removed before any host observe; same-CID allowlist not captured",
-            "fields": ["imageID", "NetworkMode", "SecurityOpt", "Devices", "CapAdd", "CapDrop", "Mounts.RW"]
-          }
-          JSON
-          python3 -c "import json,sys; json.load(open('$out/linux-container-binding.json')); print('valid')" >/dev/null
-          chmod 600 "$out/linux-container-binding.json"
+          python3 scripts/agentfs-native-ci/mounted/linux-container-binding.py \
+            "${{ steps.product.outputs.archive }}" "$out" "$cidfile"
       - name: Normalise owned evidence ownership (task-scoped only)
         if: always()
         run: |
