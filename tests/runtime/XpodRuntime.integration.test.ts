@@ -195,9 +195,16 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
       }),
     });
     expect(createResponse.status).toBe(201);
+    // Managed Local: the Cloud-issued WebID owns the Pod and this node hosts its storage.
+    await expect(createResponse.json()).resolves.toMatchObject({
+      success: true,
+      webId: `${cloudOrigin}/autoalice/profile/card#me`,
+      // The node keeps hosting security: storage is served under the registered public URL.
+      podUrl: 'https://auto-node.undefineds.test/autoalice/',
+    });
   });
 
-  it('reads a Cloud-canonical Pod through the local Gateway route', async () => {
+  it('reads a Cloud-owned Pod storage through the local Gateway route', async () => {
     const canonicalPod = new URL('https://auto-node.undefineds.test/autoalice/');
     const listenerUrl = localServiceUrl('127.0.0.1', runtime.ports.gateway!);
     const localPod = new URL('/autoalice/', listenerUrl);
@@ -212,10 +219,10 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
         localBaseUrl: localPod.href,
       }],
     });
-    const podResponse = await routedFetch(canonicalPod, { headers: { accept: 'text/turtle' } });
-    expect(podResponse.status).toBe(200);
-    // Managed Local: the Cloud-issued WebID owns the Pod; the node hosts the storage.
-    await expect(podResponse.text()).resolves.toContain('http://www.w3.org/ns/pim/space#Storage');
+    const getResponse = await routedFetch(canonicalPod, { headers: { accept: 'text/turtle' } });
+    expect(getResponse.status).toBe(200);
+    // The Cloud owns the profile card, so what this node serves is the Pod storage itself.
+    await expect(getResponse.text()).resolves.toContain('http://www.w3.org/ns/pim/space#Storage');
     expect(networkTargets).toEqual([ localPod.href ]);
     expect(new URL(networkTargets[0]!).origin).toBe(listenerUrl);
   });
@@ -634,7 +641,8 @@ describe('XpodRuntime SP provisioning authorization', () => {
   });
 
   it('serves the provisioned public Pod storage without authorization headers', async () => {
-    // Managed Local: the Cloud-issued WebID owns the Pod; the node hosts the storage.
+    // Managed Local: the Cloud-issued WebID owns the Pod; this node hosts the storage and the
+    // Cloud keeps the profile card.
     const webId = new URL('/alice/profile/card#me', cloudOrigin).toString();
     const storageUrl = new URL('/alice/', canonicalBaseUrl).toString();
     const createResponse = await runtime.fetch('/provision/pods', {

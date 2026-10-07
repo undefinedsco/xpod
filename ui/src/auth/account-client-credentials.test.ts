@@ -12,14 +12,15 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 afterEach(() => clearAccountSessionToken());
 
 describe('account-owned coding client credentials', () => {
-  it('uses the discovered Account endpoint and wraps the returned id and secret in UTF-8 Base64', async () => {
+  it.each([200, 201])('accepts the Account success %s and wraps the validated id and secret in UTF-8 Base64', async status => {
     bindAccountSessionAuthority(index);
     storeAccountSessionToken('account-test-token');
-    const fetch = vi.fn(async () => json({ id: '工作客户端', secret: 'secret:with-colon', resource }));
+    const fetch = vi.fn(async () => json({ id: '工作客户端', secret: 'secret:with-colon', resource }, status));
     const capability = createAccountClientCredentialsCapability({ collection, accountIndex: index, fetch, assertCurrent: () => undefined });
     const created = await capability.create({ name: 'Codex', webId });
     expect(created).toEqual({
       apiKey: `sk-${Buffer.from('工作客户端:secret:with-colon').toString('base64')}`,
+      clientId: '工作客户端',
       resource,
     });
     expect(fetch).toHaveBeenCalledWith(collection, expect.objectContaining({
@@ -28,6 +29,19 @@ describe('account-owned coding client credentials', () => {
       body: JSON.stringify({ name: 'Codex', webId }),
     }));
     expect(Object.values(window.localStorage)).not.toContain('account-test-token');
+  });
+
+  it.each([401, 403])('rejects an Account creation %s even when the body has credential fields', async status => {
+    const fetch = vi.fn(async () => json({ id: 'client', secret: 'fixture', resource }, status));
+    const capability = createAccountClientCredentialsCapability({ collection, accountIndex: index, fetch, assertCurrent: () => undefined });
+    await expect(capability.create({ name: 'test', webId })).rejects.toThrow(`HTTP ${status}`);
+  });
+
+  it.each([{ id: '', secret: 'fixture', resource }, { id: 'client', secret: '', resource },
+    { id: 'client', secret: 'fixture', resource: '' }])('refuses malformed successful Account records', async value => {
+    const fetch = vi.fn(async () => json(value));
+    const capability = createAccountClientCredentialsCapability({ collection, accountIndex: index, fetch, assertCurrent: () => undefined });
+    await expect(capability.create({ name: 'test', webId })).rejects.toThrow('有效');
   });
 
   it('checks resource identity before revoking a credential', async () => {
@@ -153,4 +167,70 @@ it('cancels a stale response stream without claiming an issued POST was undone',
   await expect(capability.create({ name: 'test', webId })).rejects.toThrow('account changed');
   expect(cancel).toHaveBeenCalledTimes(1);
   expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+describe('Account credential list ownership', () => {
+  const aliceWebId = 'https://id.example/alice/profile/card#me';
+  const bobWebId = 'https://id.example/bob/profile/card#me';
+  const aliceResource = `${collection}credential-alice/`;
+  const bobResource = `${collection}credential-bob/`;
+
+  it('resolves each credential detail and projects the CSS-verified webId, never the current identity', async () => {
+    // CSS collection GET is { label: credentialPath }; only the credential
+    // detail carries the authoritative webId, so the adapter must read it.
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      if (String(url) === collection) return json({ clientCredentials: { 'alice_1': aliceResource, 'bob_1': bobResource } });
+      if (String(url) === aliceResource) return json({ id: 'alice_1', webId: aliceWebId });
+      if (String(url) === bobResource) return json({ id: 'bob_1', webId: bobWebId });
+      return new Response(null, { status: 404 });
+    });
+    const capability = createAccountClientCredentialsCapability({ collection, accountIndex: index, fetch, assertCurrent: () => undefined });
+    await expect(capability.list!()).resolves.toEqual([
+      { clientId: 'alice_1', label: 'alice_1', resource: aliceResource, webId: aliceWebId },
+      { clientId: 'bob_1', label: 'bob_1', resource: bobResource, webId: bobWebId },
+    ]);
+    // No secret is ever read or carried by the list path.
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('secret'), expect.anything());
+  });
+
+  it('never exposes a credential whose identity cannot be verified against the collection label', async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (String(url) === collection) return json({ clientCredentials: { 'alice_1': aliceResource, 'mystery': bobResource } });
+      if (String(url) === aliceResource) return json({ id: 'alice_1', webId: aliceWebId });
+      // A detail whose label does not match the collection key, and one with no webId.
+      if (String(url) === bobResource) return json({ id: 'someone-else', webId: bobWebId });
+      return new Response(null, { status: 404 });
+    });
+    const capability = createAccountClientCredentialsCapability({ collection, accountIndex: index, fetch, assertCurrent: () => undefined });
+    await expect(capability.list!()).resolves.toEqual([
+      { clientId: 'alice_1', label: 'alice_1', resource: aliceResource, webId: aliceWebId },
+    ]);
+  });
+
+  it('drops a credential the Account no longer has instead of relabelling it as the current identity', async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (String(url) === collection) return json({ clientCredentials: { 'alice_1': aliceResource, 'gone_1': bobResource } });
+      if (String(url) === aliceResource) return json({ id: 'alice_1', webId: aliceWebId });
+      return new Response(null, { status: 404 });
+    });
+    const capability = createAccountClientCredentialsCapability({ collection, accountIndex: index, fetch, assertCurrent: () => undefined });
+    await expect(capability.list!()).resolves.toEqual([
+      { clientId: 'alice_1', label: 'alice_1', resource: aliceResource, webId: aliceWebId },
+    ]);
+  });
+
+  it('refuses to revoke a credential that the Account resolves to a different WebID', async () => {
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      if (String(url) === collection) return json({ clientCredentials: { 'bob_1': bobResource } });
+      return json({ id: 'bob_1', webId: bobWebId });
+    });
+    const capability = createAccountClientCredentialsCapability({ collection, accountIndex: index, fetch, assertCurrent: () => undefined });
+    const listed = await capability.list!();
+    expect(listed).toEqual([{ clientId: 'bob_1', label: 'bob_1', resource: bobResource, webId: bobWebId }]);
+    await expect(capability.revoke({ clientId: 'bob_1', resource: bobResource, webId: aliceWebId }))
+      .rejects.toThrow('不匹配');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0);
+  });
 });

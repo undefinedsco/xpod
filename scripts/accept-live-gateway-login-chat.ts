@@ -179,7 +179,7 @@ function providerSpec(id: string, apiKey: string, source: ProviderChoice['source
   }
 }
 
-function parseKeyFile(contents: string): ProviderChoice | undefined {
+export function parseKeyFile(contents: string): ProviderChoice | undefined {
   const values = new Map<string, string>();
   for (const raw of contents.split(/\r?\n/u)) {
     const line = raw.trim();
@@ -269,8 +269,6 @@ type StorageBinding = {
 };
 
 let gatewayKeyCleanup: {
-  client: ReturnType<typeof createXpodAiConnectionsClient>;
-  id?: string;
   plaintext: string;
   credentialResource: string;
   clientId: string;
@@ -280,7 +278,7 @@ let gatewayKeyCleanup: {
 
 async function deleteAcceptanceGatewayKey(): Promise<void> {
   if (!gatewayKeyCleanup) return;
-  const { client, id, plaintext, credentialResource, clientId, webId, accountAuthorization } = gatewayKeyCleanup;
+  const { plaintext, credentialResource, clientId, webId, accountAuthorization } = gatewayKeyCleanup;
   try {
     const accountHeaders = accountTokenHeaders(accountAuthorization);
     const detailsResponse = await fetch(credentialResource, { headers: accountHeaders, credentials: 'include' });
@@ -299,22 +297,16 @@ async function deleteAcceptanceGatewayKey(): Promise<void> {
     } else {
       await detailsResponse.arrayBuffer();
     }
-    // Revoking the CSS credential invalidates authentication. Deleting the Pod
-    // companion alone would only remove the saved configuration.
-    if (id) {
-      await client.deleteGatewayKey(id);
-      if ((await client.listGatewayKeys()).some((record) => record.id === id)) {
-        throw new Error('Deleted acceptance API Key registration is still listed');
-      }
-    }
+    // Revoking the Account client credential invalidates authentication; the
+    // Account is the only key index, so there is no Pod-side registration left.
     const response = await fetch(new URL('v1/models', GATEWAY), {
       headers: { Authorization: `Bearer ${plaintext}` },
     });
     await response.arrayBuffer();
     if (response.status !== 401) {
-      throw new Error(`Deleted API Key expected HTTP 401, got ${response.status}`);
+      throw new Error(`Revoked Xpod key expected HTTP 401, got ${response.status}`);
     }
-    report.keyCleanup = { ok: true, detail: 'CSS credential revoked, Pod registration removed, and authentication rejects the wrapper' };
+    report.keyCleanup = { ok: true, detail: 'Account client credential revoked and authentication rejects the wrapper' };
   } catch (error) {
     report.keyCleanup = {
       ok: false,
@@ -361,7 +353,7 @@ async function readLocalProvisionCode(): Promise<string> {
   return status.provisionCode;
 }
 
-async function createCloudAccountPassword(baseUrl: string, prefix: string): Promise<CloudAccountPassword> {
+export async function createCloudAccountPassword(baseUrl: string, prefix: string): Promise<CloudAccountPassword> {
   const normalizedPrefix = normalizeAcceptanceName(prefix);
   const suffix = Date.now().toString(36);
   const email = `${normalizedPrefix}-${suffix}@test.com`;
@@ -594,13 +586,33 @@ export async function prepareManagedLocalAcceptancePod(options: {
   provisionCode: string;
   fetchImpl?: typeof fetch;
 }): Promise<StorageBinding> {
+  return (await prepareManagedLocalAcceptancePods({ ...options, usernames: [options.username] }))[0];
+}
+
+/** Prepare one identity, then verify each distinct managed storage binding with Cloud.
+ * The existing receipt/provisioning implementation is shared with single-Pod acceptance.
+ */
+export async function prepareManagedLocalAcceptancePods(options: {
+  baseUrl: string;
+  localBaseUrl: string;
+  canonicalBaseUrl: string;
+  authorization: string;
+  controls: AccountControls;
+  usernames: readonly string[];
+  provisionCode: string;
+  fetchImpl?: typeof fetch;
+}): Promise<StorageBinding[]> {
+  if (!options.usernames.length || new Set(options.usernames).size !== options.usernames.length
+    || options.usernames.some(name => !name || normalizeAcceptanceName(name) !== name)) {
+    throw new Error('Acceptance Pod names must be distinct normalized names');
+  }
   const fetchImpl = options.fetchImpl ?? fetch;
   const profileUrl = requiredAccountControl(options.controls.account?.profile, options.baseUrl, 'controls.account.profile');
   const preparedIdentity = await readJson(await fetchImpl(profileUrl, {
     method: 'POST',
     headers: { ...accountTokenHeaders(options.authorization), 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ podName: options.username }),
+    body: JSON.stringify({ podName: options.usernames[0] }),
   }), 'POST Cloud controls.account.profile') as { webId?: unknown; webIdLink?: unknown };
   if (!preparedIdentity || typeof preparedIdentity.webId !== 'string' || !preparedIdentity.webId ||
     /[\u0000-\u0020\u007f\\]/u.test(preparedIdentity.webId) ||
@@ -616,22 +628,26 @@ export async function prepareManagedLocalAcceptancePod(options: {
   }
   const preparedWebId: string = preparedIdentity.webId;
   const webIdLink: string = preparedIdentity.webIdLink;
-  const preparedPod = await prepareLocalProvisionedPod({
-    cloudBaseUrl: options.baseUrl,
-    localBaseUrl: options.localBaseUrl,
-    canonicalBaseUrl: options.canonicalBaseUrl,
-    provisionCode: options.provisionCode,
-    username: options.username,
-    webId: preparedWebId,
-    fetchImpl,
-  });
-  return withProvisionReceiptFailureDiagnostics(() => createCloudManagedLocalPod({ ...options, fetchImpl, ...preparedPod,
-    webId: preparedWebId, webIdLink }), () => ({
-    cloudBaseUrl: options.baseUrl, canonicalBaseUrl: options.canonicalBaseUrl,
-    username: options.username, provisionCode: options.provisionCode,
-    provisionReceipt: preparedPod.provisionReceipt, preparedPodUrl: preparedPod.podUrl,
-    preparedWebId,
-  }), projection => log('provision-receipt', { ...projection }));
+  const bindings: StorageBinding[] = [];
+  for (const username of options.usernames) {
+    const preparedPod = await prepareLocalProvisionedPod({
+      cloudBaseUrl: options.baseUrl,
+      localBaseUrl: options.localBaseUrl,
+      canonicalBaseUrl: options.canonicalBaseUrl,
+      provisionCode: options.provisionCode,
+      username,
+      webId: preparedWebId,
+      fetchImpl,
+    });
+    bindings.push(await withProvisionReceiptFailureDiagnostics(() => createCloudManagedLocalPod({ ...options, username, fetchImpl, ...preparedPod,
+      webId: preparedWebId, webIdLink }), () => ({
+      cloudBaseUrl: options.baseUrl, canonicalBaseUrl: options.canonicalBaseUrl,
+      username, provisionCode: options.provisionCode,
+      provisionReceipt: preparedPod.provisionReceipt, preparedPodUrl: preparedPod.podUrl,
+      preparedWebId,
+    }), projection => log('provision-receipt', { ...projection })));
+  }
+  return bindings;
 }
 
 async function createHostedPod(options: {
@@ -658,7 +674,7 @@ async function createHostedPod(options: {
   return binding;
 }
 
-async function createCloudClientCredentials(options: {
+export async function createCloudClientCredentials(options: {
   baseUrl: string;
   authorization: string;
   controls: AccountControls;
@@ -920,12 +936,12 @@ async function main(): Promise<void> {
     layer('taskApproval', true, 'Real producer approve/reject/Stop; same Run, owner CAS, Session terminal, Pod marker and duplicate stability verified');
   };
 
-  const { gatewayKey, initialModelIds } = await verifyGatewayKeyLifecycle(client, {
+  const { gatewayKey, initialModelIds } = await verifyGatewayKeyLifecycle({
     baseUrl: identityBaseUrl,
     authorization: cloudAccount.authorization,
     controls: cloudAccount.controls,
     webId: account.webId,
-  }, ownerCredentialFetch);
+  });
 
   const fileState = providerFromFile();
   if (fileState.present && !fileState.spec) {
@@ -1042,9 +1058,10 @@ async function main(): Promise<void> {
 /**
  * The owner's own interface key as a request credential.
  *
- * `POST /api/ai/gateway/keys` and its list/delete siblings are backed by the owner's Pod, so the API
- * exchanges whatever credential the request carries. A DPoP-bound session token cannot be replayed
- * by the API, which is why the host attaches an `sk-` wrapper instead - and why this caller does too.
+ * Xpod keys are Account client credentials now: the runtime authenticates the
+ * `sk-base64(client_id:client_secret)` wrapper against the Account that issued it, and no Gateway
+ * key is registered in the Pod. A DPoP-bound session token cannot be replayed by the API, which is
+ * why the host attaches that wrapper instead - and why this caller does too.
  */
 export function createOwnerCredentialFetch(
   account: { clientId: string; clientSecret: string },
@@ -1099,30 +1116,30 @@ async function waitForCredentialExchange(
 }
 
 async function verifyGatewayKeyLifecycle(
-  client: ReturnType<typeof createXpodAiConnectionsClient>,
   account: Omit<Parameters<typeof createCloudClientCredentials>[0], 'name'>,
-  requestFetch: typeof fetch,
 ): Promise<{
   gatewayKey: string;
   initialModelIds: string[];
 }> {
   let phase = 'unauthenticated rejection';
   try {
-    for (const route of ['v1/models', 'api/ai/gateway/keys']) {
-      const response = await fetch(new URL(route, GATEWAY));
-      await response.arrayBuffer();
-      if (response.status !== 401) throw new Error(`Unauthenticated /${route} expected 401, got ${response.status}`);
+    const unauthenticated = await fetch(new URL('v1/models', GATEWAY));
+    await unauthenticated.arrayBuffer();
+    if (unauthenticated.status !== 401) {
+      throw new Error(`Unauthenticated /v1/models expected 401, got ${unauthenticated.status}`);
     }
-    phase = 'create CSS client credential';
+    phase = 'create Account client credential';
+    // The Account owns issuance: Xpod keys are Account client credentials, so
+    // there is no Gateway key route and no Pod registration to create here.
     // Keep this credential separate from the Solid management session so
     // revocation does not prevent subsequent Pod companion cleanup.
     let credentials = await createCloudClientCredentials({
       ...account, name: `accept-key-${ACCEPT_ID}`,
     });
-    phase = 'confirm the new CSS credential is exchangeable';
+    phase = 'confirm the new Account client credential is exchangeable';
     if (!(await waitForCredentialExchange(credentials, account.webId, account.baseUrl))) {
       // The account service answered a create before its own readers saw the credential; ask once for
-      // a replacement instead of reporting a registration failure for a credential the issuer has
+      // a replacement instead of reporting an authentication failure for a credential the issuer has
       // not published yet.
       credentials = await createCloudClientCredentials({
         ...account, name: `accept-key-${ACCEPT_ID}-again`,
@@ -1133,58 +1150,48 @@ async function verifyGatewayKeyLifecycle(
     }
     const gatewayKey = `sk-${Buffer.from(`${credentials.id}:${credentials.secret}`, 'utf8').toString('base64')}`;
     gatewayKeyCleanup = {
-      client, plaintext: gatewayKey, credentialResource: credentials.resource,
+      plaintext: gatewayKey, credentialResource: credentials.resource,
       clientId: credentials.id, webId: account.webId, accountAuthorization: account.authorization,
     };
-    phase = 'register CSS credential in Pod';
-    const issuedGatewayKey = await client.createGatewayKey({
-      name: `Login-to-chat acceptance ${ACCEPT_ID}`,
-      apiKey: gatewayKey,
-      credentialResource: credentials.resource,
+    phase = 'Account metadata excludes secrets';
+    // The Account collection is the only key index now. Inspect the wire form as
+    // well: it is a label-to-resource map and must never carry the secret or the
+    // derived wrapper.
+    const collectionUrl = requiredAccountControl(
+      account.controls.account?.clientCredentials, account.baseUrl, 'controls.account.clientCredentials',
+    );
+    const collectionResponse = await fetch(collectionUrl, {
+      headers: accountTokenHeaders(account.authorization), credentials: 'include',
     });
-    const id = issuedGatewayKey.record.id;
-    gatewayKeyCleanup.id = id;
-    if (issuedGatewayKey.plaintext !== gatewayKey || issuedGatewayKey.record.kind !== 'client-credentials') {
-      throw new Error('Registration must preserve the original CSS credential wrapper');
+    const collection = await readJson(collectionResponse, 'GET Account client-credentials collection') as {
+      clientCredentials?: Record<string, unknown>;
+    };
+    const entries = collection.clientCredentials ?? {};
+    if (!(credentials.id in entries)) {
+      throw new Error('The Account collection does not list the created client credential');
     }
-    phase = 'list';
-    if (!(await client.listGatewayKeys()).some((record) => record.id === id)) {
-      throw new Error('Created Xpod Gateway API Key was not returned by the Pod-backed list API');
-    }
-    phase = 'list wire metadata excludes secrets';
-    // Inspect the wire response as well: the client intentionally normalizes
-    // records and could otherwise hide an unexpected secret field from this gate.
-    const rawList = await readJson(await requestFetch(
-      new URL('/api/ai/gateway/keys', client.apiBase),
-      { headers: { Accept: 'application/json' } },
-    ), 'GET Gateway key metadata');
-    const serializedList = JSON.stringify(rawList, (name, value: unknown) => {
-      if (/^(?:key|plaintext|apiKey|secret|client_secret|encryptedSecret|secretPayload|access_token|refresh_token)$/iu.test(name)) {
-        throw new Error('Gateway key list exposes a secret field');
+    const serializedCollection = JSON.stringify(collection, (name, value: unknown) => {
+      if (/^(?:key|plaintext|apiKey|secret|client_secret|clientSecret|encryptedSecret|secretPayload|access_token|refresh_token)$/iu.test(name)) {
+        throw new Error('Account client-credential metadata exposes a secret field');
       }
       return value;
     });
-    if (serializedList.includes(gatewayKey) || serializedList.includes(credentials.secret)) {
-      throw new Error('Gateway key list exposes credential secret material');
-    }
-    if (!rawList || typeof rawList !== 'object' || !('data' in rawList)
-      || !Array.isArray(rawList.data) || !rawList.data.some((record: unknown) =>
-        record !== null && typeof record === 'object' && 'id' in record && record.id === id)) {
-      throw new Error('Gateway metadata response does not contain the created credential');
+    if (serializedCollection.includes(gatewayKey) || serializedCollection.includes(credentials.secret)) {
+      throw new Error('Account client-credential metadata exposes credential secret material');
     }
     const headers = { Authorization: `Bearer ${gatewayKey}`, Accept: 'application/json' };
     const modelUrl = new URL('v1/models', GATEWAY);
-    phase = 'active CSS credential wrapper authentication';
-    await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with active CSS credential wrapper');
-    phase = 'active CSS credential wrapper model access';
-    const modelsPayload = await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with active CSS credential wrapper') as {
+    phase = 'active client-credential wrapper authentication';
+    await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with active client-credential wrapper');
+    phase = 'active client-credential wrapper model access';
+    const modelsPayload = await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with active client-credential wrapper') as {
       data?: Array<{ id?: string }>;
     };
     const initialModelIds = (modelsPayload.data ?? []).flatMap((model) => model.id ? [model.id] : []);
-    layer('gatewayAuth', true, `CSS credential created/wrapped/registered; one-time plaintext matched; metadata-only list verified and authenticated; unauthenticated calls rejected; ${initialModelIds.length} model(s), not Chat proof; revocation is verified during cleanup`);
+    layer('gatewayAuth', true, `Account client credential created and wrapped once; Account metadata lists it without secrets; unauthenticated calls rejected; ${initialModelIds.length} model(s), not Chat proof; revocation is verified during cleanup`);
     return { gatewayKey, initialModelIds };
   } catch (error) {
-    fail('gatewayAuth', `${phase}: ${error instanceof Error ? redact(error.message) : 'Unknown Gateway API Key error'}`);
+    fail('gatewayAuth', `${phase}: ${error instanceof Error ? redact(error.message) : 'Unknown Xpod key error'}`);
   }
 }
 

@@ -1,3 +1,4 @@
+import { normalizeVerifiedPodRoot } from '../ai-gateway/pod/PodBaseUrlResolver';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { Authenticator, AuthResult } from '../auth/Authenticator';
@@ -66,7 +67,33 @@ export class AuthMiddleware {
     }
 
     // Attach auth context to request
-    request.auth = result.context;
+    const requestedPodUrl = request.headers['x-xpod-pod-url'];
+    if (Array.isArray(requestedPodUrl)) {
+      response.statusCode = 400;
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({ error: 'invalid_request', message: 'Provide exactly one X-Xpod-Pod-Url' }));
+      return false;
+    }
+    if (requestedPodUrl !== undefined) {
+      try {
+        normalizeVerifiedPodRoot(requestedPodUrl);
+      } catch {
+        response.statusCode = 400;
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ error: 'invalid_request', message: 'Invalid X-Xpod-Pod-Url' }));
+        return false;
+      }
+    }
+    if (requestedPodUrl !== undefined && result.context?.type === 'solid'
+      && (result.context.viaGatewayApiKey || result.context.internalInvocation)
+      && !result.context.authorizedPodUrl) {
+      // The existing browser fetch reacquires an invocation on 401 using its Solid session.
+      this.sendUnauthorized(response, 'A Pod-bound invocation is required');
+      return false;
+    }
+    request.auth = result.context?.type === 'solid' && requestedPodUrl !== undefined
+      ? { ...result.context, requestedPodUrl }
+      : result.context;
     return true;
   }
 

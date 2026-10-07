@@ -10,7 +10,6 @@ import { asFunction, type AwilixContainer } from 'awilix';
 import { randomBytes } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
-import { resolvePersistentGatewayLocatorSecret } from '../../runtime/gateway-locator-secret';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
@@ -28,8 +27,7 @@ import { InvocationTokenAuthenticator } from '../ai-gateway/auth/InvocationToken
 import { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
-import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
-import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
+import { createOwnerPodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
 import { OwnerPodAccess } from '../ai-gateway/pod/OwnerPodAccess';
 import { resolveHostedPodRoute } from '../ai-gateway/pod/HostedPodRoute';
 import { getTaskCredentialDatabase, resolveTaskCredentialDatabaseUrl } from '../tasks/TaskCredentialDatabase';
@@ -38,6 +36,8 @@ import { PodInterfaceKeyRepository } from '../../identity/drizzle/PodInterfaceKe
 import { PodInterfaceKeyStore } from '../ai-gateway/pod/PodInterfaceKeyStore';
 import { migratePodInterfaceKeysToTaskCredentials } from '../tasks/PodInterfaceKeyMigration';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
+import type { GatewayCredentialRenewalRequest } from '../ai-gateway/AiGatewayService';
+import type { GatewayDeployment } from '../ai-gateway/auth/InvocationTokenCodec';
 import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCredentialVault';
 import { createAiCredentialSecretDecoder } from '../ai-gateway/credentials/AiCredentialSecretDecoder';
 import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
@@ -112,6 +112,8 @@ import {
   resolveEdgeNodeCertificateCapabilityBridgeId,
 } from '../../edge/EdgeNodeCertificateCapabilityBridge';
 
+const logger = getLoggerFor('ApiContainer');
+
 function resolveCssServiceBaseUrl(): string {
   return `http://127.0.0.1:${process.env.CSS_PORT ?? '3000'}/`;
 }
@@ -162,36 +164,8 @@ function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): str
   return new URL(resolveAiConnectionsBaseUrl(config)).origin;
 }
 
-function resolveGatewayLocatorSecret(config: ApiContainerCradle['config']): string {
-  if (config.gatewayLocatorSecret?.trim()) {
-    return config.gatewayLocatorSecret;
-  }
-  return resolvePersistentGatewayLocatorSecret({
-    databaseUrl: config.databaseUrl,
-    edition: config.edition,
-  });
-}
-
 function podBaseUrlResolver(cradle: ApiContainerCradle, selection: 'first' | 'unique' = 'first') {
-  return async (webId: string): Promise<string | undefined> => {
-    const pods = selection === 'unique'
-      ? await cradle.podLookupRepo?.findAllByWebId(webId) ?? []
-      : [await cradle.podLookupRepo?.findByWebId(webId)];
-    const roots = pods.flatMap(pod => {
-      const root = pod?.storageUrl ?? pod?.baseUrl;
-      return root ? [root] : [];
-    });
-    if (selection === 'first') return roots[0];
-    const normalized = new Set(roots.map(root => {
-      const url = new URL(root);
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-        throw new Error('Invalid Pod storage binding');
-      }
-      return url.href.replace(/\/+$/u, '');
-    }));
-    if (normalized.size > 1) throw new Error('Authoritative Pod storage binding ambiguous');
-    return normalized.values().next().value;
-  };
+  return createOwnerPodBaseUrlResolver(cradle.podLookupRepo, selection);
 }
 
 /**
@@ -201,6 +175,7 @@ export function registerCommonServices(
   container: AwilixContainer<ApiContainerCradle>,
 ): void {
   container.register({
+    aiConnectionsPodBaseUrlResolver: asFunction((cradle: ApiContainerCradle) => podBaseUrlResolver(cradle, 'unique')).singleton(),
     // 数据库
     db: asFunction(({ config }: ApiContainerCradle) => {
       return getIdentityDatabase(config.databaseUrl);
@@ -305,21 +280,6 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayAccessKeyRepository: asFunction((cradle: ApiContainerCradle) => {
-      const { config, ownerPodAccess } = cradle;
-      return new PodGatewayAccessKeyRepository({
-        locatorCodec: new AesGatewayKeyLocatorCodec({
-          active: {
-            kid: config.gatewayLocatorKeyId ?? 'active',
-            secret: resolveGatewayLocatorSecret(config),
-          },
-          previous: config.gatewayPreviousLocatorSecrets,
-        }),
-        podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
-      });
-    }).singleton(),
-
     aiConnectionInvocationKeyIssuer: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
       return new AiConnectionsInvocationKeyIssuer({
@@ -341,7 +301,7 @@ export function registerCommonServices(
       const { config } = cradle;
       const credentialRepository = new PodConnectedCredentialRepository({
         podAccess: cradle.ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
       });
       const vault = credentialVaultForConfig(config);
       // AI Gateway Connect has no on/off switch: installing ai-connections
@@ -433,9 +393,25 @@ export function registerCommonServices(
 
     gatewayCredentialStore: asFunction((cradle: ApiContainerCradle) => {
       const { ownerPodAccess } = cradle;
-      return new PodConnectedCredentialRepository({
+      const store = new PodConnectedCredentialRepository({
         podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
+      });
+      // Use-time OAuth renewal belongs to the shared credential lifecycle: inference only asks the
+      // store for a usable session. Delegated lazily to the composed Connect service so the
+      // container keeps no construction-time cycle, and the hook stays absent for stores that
+      // cannot renew.
+      return Object.assign(store, {
+        renewCredential: (input: GatewayCredentialRenewalRequest) =>
+          cradle.providerConnectService.renewCredential({
+            webId: input.webId,
+            deployment: input.deployment as GatewayDeployment,
+            provider: input.provider,
+            credentialId: input.credentialId,
+            observedVersion: input.observedVersion,
+            reason: input.reason,
+            auth: input.auth,
+          }),
       });
     }).singleton(),
 
@@ -443,7 +419,7 @@ export function registerCommonServices(
       const { ownerPodAccess } = cradle;
       return new PodModelSelectionRepository({
         podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
       });
     }).singleton(),
 
@@ -458,7 +434,7 @@ export function registerCommonServices(
       return new ProviderModelSelectionService({
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess: ownerPodAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         selectionRepository: podModelSelectionRepository,
         providerRegistry: gatewayProviderRegistry,
@@ -541,11 +517,11 @@ export function registerCommonServices(
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({
           podAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         vault: credentialVaultForConfig(config),
         providerRegistry: cradle.gatewayProviderRegistry,
@@ -575,7 +551,7 @@ export function registerCommonServices(
       return new ProviderModelsService({
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         vault: credentialVaultForConfig(config),
         providerRegistry: registry,
@@ -641,7 +617,7 @@ export function registerCommonServices(
       return new ProviderCustomModelsService({
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess: cradle.ownerPodAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         embeddingModelPolicy: cradle.embeddingModelPolicy,
         registry: cradle.gatewayProviderRegistry,
@@ -652,7 +628,6 @@ export function registerCommonServices(
       nodeRepo,
       serviceTokenRepo,
       invocationTokenCodec,
-      gatewayAccessKeyRepository,
       solidSessions,
       config,
     }: ApiContainerCradle) => {
@@ -684,8 +659,10 @@ export function registerCommonServices(
         })
         : undefined;
 
+      // Verifies the AI-Connections invocation tokens that carry `models:read` / `inference:write`
+      // for the model gateway. It no longer accepts `xpod_gw_v1.*` Gateway API Keys: those are
+      // gone, so such a bearer now falls through to the client-credentials authenticator.
       const gatewayApiKeyAuthenticator = new GatewayApiKeyAuthenticator({
-        repository: gatewayAccessKeyRepository,
         deployment: config.edition,
         invocationTokenCodec,
         invocationTokenAudience: resolveAiConnectionsAudience(config),
@@ -696,7 +673,7 @@ export function registerCommonServices(
         // inference tokens, so route-scoped authentication must run before the
         // generic client-credentials authenticator claims the bearer.
         // Order: Solid DPoP → Service Token → Node Token →
-        // Client Configuration Invocation → Gateway API Key → Client Credentials.
+        // Client Configuration Invocation → Inference Invocation → Client Credentials.
         // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
         authenticators: [
           solidAuthenticator,
@@ -725,7 +702,7 @@ export function registerCommonServices(
       const { config, ownerPodAccess, serverGroupReconcilerService } = cradle;
       return new PodChatKitStore({
         podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle, 'unique'),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         serverGroupReconcilerService,
         deployment: config.edition,
         credentialSecretDecoder: createAiCredentialSecretDecoder({

@@ -181,10 +181,15 @@ function messageForSafeErrorCode(
       return '模型已获取，但保存到 Pod 失败。请重试同步模型。'
     case 'quota_credential_not_found':
       return '当前身份没有可用的额度凭证。'
+    case 'account_client_credentials_unavailable':
+      // Xpod keys are Account client credentials; a host without the Account
+      // capability has no key surface at all, so the user must re-enter from a
+      // signed-in Account session.
+      return 'Xpod 密钥 需要当前 Account 登录状态：这个客户端没有 Account 客户端凭据能力。'
+    case 'account_client_credential_not_found':
+      return '账号服务中已找不到该客户端凭据，请刷新后重试。'
     case 'credential_secret_unavailable':
       return '当前凭证密钥不可用，请重新保存后再查询额度。'
-    case 'gateway_api_key_plaintext_unavailable':
-      return 'Pod 中未找到此 API Key 的原文，无法复制配置。请创建新的 Key，更新客户端后再删除旧 Key。'
     case 'quota_adapter_not_found':
       return '该接入方式不支持查询官方额度。'
     default:

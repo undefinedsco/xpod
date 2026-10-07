@@ -1,5 +1,4 @@
 import { PassThrough } from 'node:stream';
-import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
@@ -8,11 +7,8 @@ import type { AuthResult } from '../../../src/api/auth/Authenticator';
 import type { SolidAuthContext } from '../../../src/api/auth/AuthContext';
 import { AiConnectionsInvocationKeyIssuer } from '../../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../../../src/api/ai-gateway/auth/InvocationTokenCodec';
+import { createOwnerPodBaseUrlResolver } from '../../../src/api/ai-gateway/pod/PodBaseUrlResolver';
 import { InvocationTokenAuthenticator } from '../../../src/api/ai-gateway/auth/InvocationTokenAuthenticator';
-import type {
-  GatewayAccessKeyRecord,
-  GatewayAccessKeyRepository,
-} from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
 import {
   BrowserAssistedApiKeyConnectAdapter,
   InMemoryConnectAttemptStore,
@@ -137,207 +133,14 @@ describe('AiGatewayManagementHandler', () => {
     expect(lookup).toHaveBeenCalledTimes(2);
   });
 
-  it('records a verified CSS credential for the caller without issuing another secret', async () => {
-    const apiKey = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
-    const credentialResource = 'https://id.example/.account/account/alice/client-credentials/credential-1';
-    const verifiedContext: SolidAuthContext = {
-      ...callerOwnedAuth(), type: 'solid', webId: WEB_ID, clientId: 'client-id',
-    };
-    const validateClientCredential = vi.fn(async (): Promise<AuthResult> => ({
-      success: true,
-      context: verifiedContext,
-    }));
-    const create = vi.fn(async (record: GatewayAccessKeyRecord, context?: unknown) => record);
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      deployment: 'cloud',
-      validateClientCredential,
-      gatewayAccessKeyRepository: { createKeyId: () => 'registered-id', create } as unknown as GatewayAccessKeyRepository,
-    });
-    const res = response();
-    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), {
-      name: 'Codex', apiKey, credentialResource, appliedTo: 'codex', appliedOn: 'desktop',
-      owner: 'https://attacker.example/me',
-    }), res, {});
-    expect(res.statusCode).toBe(201);
-    expect(validateClientCredential).toHaveBeenCalledWith(apiKey);
-    const [storedRecord, repositoryContext] = create.mock.calls[0] as unknown as [GatewayAccessKeyRecord, unknown];
-    expect(storedRecord).toMatchObject({
-      kind: 'client-credentials', owner: WEB_ID, clientCredentialId: 'client-id', name: 'Codex',
-      appliedTo: 'codex', appliedOn: 'desktop', scopes: [], secretHash: '',
-    });
-    // Neither the wrapper nor the client-supplied credentialResource claim is stored.
-    expect(storedRecord).not.toHaveProperty('plaintext');
-    expect(storedRecord).not.toHaveProperty('credentialResource');
-    expect(repositoryContext).toEqual({ auth: callerOwnedAuth() });
-    const payload = JSON.parse(res.body);
-    expect(payload.key).toBe(apiKey);
-    expect(payload.record).toMatchObject({
-      kind: 'client-credentials', plaintextAvailable: false,
-    });
-    expect(payload.record.plaintext).toBeUndefined();
-    expect(payload.record.credentialResource).toBeUndefined();
-    expect(payload.record.fingerprint).toBe(createHash('sha256').update(apiKey).digest('hex'));
-    expect(res.body).not.toContain('xpod_gw');
-    // The wrapper leaves Xpod exactly once: in the response of the call that issued it.
-    expect(res.body.split(apiKey)).toHaveLength(2);
-  });
-
-  it('writes the Pod record without keeping a deployment copy of the key', async () => {
-    const apiKey = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
-    const verifiedContext: SolidAuthContext = {
-      ...callerOwnedAuth(), type: 'solid', webId: WEB_ID,
-      clientId: 'client-id', clientSecret: 'client-secret',
-    };
-    const create = vi.fn(async (record: GatewayAccessKeyRecord) => record);
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      deployment: 'cloud',
-      validateClientCredential: async () => ({ success: true, context: verifiedContext }),
-      gatewayAccessKeyRepository: { createKeyId: () => 'registered-id', create } as unknown as GatewayAccessKeyRepository,
-    });
-    const res = response();
-    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), {
-      name: 'Codex', apiKey,
-      credentialResource: 'https://id.example/.account/account/alice/client-credentials/credential-1',
-    }), res, {});
-
-    expect(res.statusCode).toBe(201);
-    expect(create).toHaveBeenCalledTimes(1);
-    // The API keeps the management record only: no endpoint of its own opens a Pod with a stored
-    // key, so registering does not leave one behind.
-    expect(JSON.parse(res.body)).toMatchObject({ record: { owner: WEB_ID } });
-  });
-
-  it('registers the application without touching background task access', async () => {
-    const apiKey = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
-    const verifiedContext: SolidAuthContext = {
-      ...callerOwnedAuth(), type: 'solid', webId: WEB_ID,
-      clientId: 'client-id', clientSecret: 'client-secret',
-    };
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      deployment: 'cloud',
-      validateClientCredential: async () => ({ success: true, context: verifiedContext }),
-      gatewayAccessKeyRepository: {
-        createKeyId: () => 'registered-id',
-        create: (async (record: GatewayAccessKeyRecord) => record) as unknown as GatewayAccessKeyRepository['create'],
-      } as unknown as GatewayAccessKeyRepository,
-    });
-    const res = response();
-    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), { name: 'Codex', apiKey }), res, {});
-
-    // An application keeps its own credential: where it is in effect, and how to revoke it.
-    // Background Pod access is granted separately, where the user manages index/embedding work.
-    expect(res.statusCode).toBe(201);
-    expect(JSON.parse(res.body)).toMatchObject({
-      record: { id: 'registered-id', owner: WEB_ID, clientCredentialId: 'client-id' },
-    });
-  });
-
-  it.each<[string, SolidAuthContext]>([
-    ['no client credentials', { ...callerOwnedAuth(), type: 'solid', webId: WEB_ID }],
-    ['an empty client secret', {
-      ...callerOwnedAuth(), type: 'solid', webId: WEB_ID, clientId: 'client-id', clientSecret: '',
-    }],
-  ])('does not store an owner interface key when the validated context has %s', async (_case, verifiedContext) => {
-    const apiKey = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
-    const create = vi.fn(async (record: GatewayAccessKeyRecord) => record);
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      deployment: 'cloud',
-      validateClientCredential: async (): Promise<AuthResult> => ({
-        success: true,
-        context: verifiedContext,
-      }),
-      gatewayAccessKeyRepository: { createKeyId: () => 'registered-id', create } as unknown as GatewayAccessKeyRepository,
-    });
-    const res = response();
-    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), {
-      name: 'Codex', apiKey,
-      credentialResource: 'https://id.example/.account/account/alice/client-credentials/credential-1',
-    }), res, {});
-
-    expect(res.statusCode).toBe(201);
-    expect(create).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(['xpod_gw_v1_cloud_id_secret', 'sk-aWQ6c2VjcmV0!!!', 'sk-aWQ6', 'sk-OnNlY3JldA=='])('rejects malformed CSS wrappers before validation: %s', async (apiKey) => {
-    const validateClientCredential = vi.fn();
-    const create = vi.fn();
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      deployment: 'cloud', validateClientCredential,
-      gatewayAccessKeyRepository: { createKeyId: () => 'id', create } as unknown as GatewayAccessKeyRepository,
-    });
-    const res = response();
-    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), {
-      apiKey, credentialResource: 'https://id.example/.account/client-credentials/1',
-    }), res, {});
-    expect(res.statusCode).toBe(400);
-    expect(validateClientCredential).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
-  });
-
-  it('does not register a credential authenticated as another WebID', async () => {
-    const verifiedContext: SolidAuthContext = {
-      ...callerOwnedAuth('https://id.example/bob#me'), type: 'solid', webId: 'https://id.example/bob#me',
-      clientId: 'bob-client-id', clientSecret: 'bob-client-secret',
-    };
-    const create = vi.fn();
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      deployment: 'cloud',
-      validateClientCredential: async () => ({ success: true, context: verifiedContext }),
-      gatewayAccessKeyRepository: { createKeyId: () => 'id', create } as unknown as GatewayAccessKeyRepository,
-    });
-    const res = response();
-    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), {
-      apiKey: `sk-${Buffer.from('id:secret').toString('base64')}`,
-      credentialResource: 'https://id.example/.account/client-credentials/1',
-    }), res, {});
-    expect(res.statusCode).toBe(403);
-    expect(create).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    { result: { success: false }, status: 401 },
-    { result: { success: false, category: 'service_unavailable' as const }, status: 503 },
-  ])('does not save credentials when CSS verification fails with status $status', async ({ result, status }) => {
-    const create = vi.fn();
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      deployment: 'cloud', validateClientCredential: async () => result,
-      gatewayAccessKeyRepository: { createKeyId: () => 'id', create } as unknown as GatewayAccessKeyRepository,
-    });
-    const res = response();
-    await routes['POST /api/ai/gateway/keys'](request(callerOwnedAuth(), {
-      apiKey: `sk-${Buffer.from('id:secret').toString('base64')}`,
-      credentialResource: 'https://id.example/.account/client-credentials/1',
-    }), res, {});
-    expect(res.statusCode).toBe(status);
-    expect(create).not.toHaveBeenCalled();
-  });
-
-  it('rejects suspension of CSS credentials instead of changing ineffective Pod flags', async () => {
-    const setEnabled = vi.fn();
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      deployment: 'cloud',
-      gatewayAccessKeyRepository: {
-        findById: async () => ({ id: 'id', owner: WEB_ID, kind: 'client-credentials' }), setEnabled,
-      } as unknown as GatewayAccessKeyRepository,
-    });
-    const res = response();
-    await routes['PATCH /api/ai/gateway/keys/:keyId'](request(callerOwnedAuth(), { enabled: false }), res, { keyId: 'id' });
-    expect(res.statusCode).toBe(409);
-    expect(setEnabled).not.toHaveBeenCalled();
-  });
-
   it('requires Solid authentication for the AI Connection service-access descriptor', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
       },
@@ -350,10 +153,80 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Authentication required' });
   });
 
+  it('binds a Cloud identity descriptor and both invocation types to the selected registered Local Pod', async () => {
+    const cloud = 'https://cloud.example/alice/';
+    const localAlias = 'https://local.example/alice/';
+    const storage = 'https://local.example/storage/alice/';
+    const resolver = createOwnerPodBaseUrlResolver({
+      findByWebId: vi.fn(),
+      findAllByWebId: vi.fn(async webId => webId === WEB_ID ? [
+        { podId: 'cloud', accountId: 'alice', baseUrl: cloud, webId: WEB_ID },
+        { podId: 'local', accountId: 'alice', baseUrl: localAlias, storageUrl: storage, webId: WEB_ID },
+      ] : []),
+    }, 'unique');
+    const codec = new AesInvocationTokenCodec({ active: { kid: 'current', secret: 'fixture-secret' } });
+    const issuer = new AiConnectionsInvocationKeyIssuer({ codec, deployment: 'local', baseUrl: 'https://local.example' });
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'local', podBaseUrlResolver: resolver, aiConnectionInvocationKeyIssuer: issuer,
+      aiClientConfiguration: { available: true, authority: 'local-filesystem', manualInstructions: 'Fixture client configuration' },
+    });
+    for (const selected of [localAlias, storage]) {
+      const req = request({ type: 'solid', webId: WEB_ID });
+      req.headers['x-xpod-pod-url'] = selected;
+      const res = response();
+      await routes['GET /api/applets/service-access/ai-connections'](req, res, {});
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.service.webId).toBe(WEB_ID);
+      expect(body.resources.every((resource: { url: string }) => resource.url.startsWith(storage))).toBe(true);
+      for (const invocation of [body.invocation, body.aiClientConfiguration.invocation]) {
+        expect(codec.decode(invocation.apiKey)).toMatchObject({ webId: WEB_ID, podUrl: storage });
+      }
+    }
+    // A valid Pod-scoped capability remains confined even when both Pods share an owner.
+    const req = request({ type: 'solid', webId: WEB_ID, internalInvocation: true, authorizedPodUrl: cloud });
+    req.headers['x-xpod-pod-url'] = storage;
+    const res = response();
+    await routes['GET /api/applets/service-access/ai-connections'](req, res, {});
+    expect(res.statusCode).not.toBe(200);
+  });
+
+  it.each(['ambiguous', 'unregistered', 'non-owner', 'multiple header'] as const)(
+    'does not issue a descriptor or invocation for a %s Pod selection', async failure => {
+      const issue = vi.fn();
+      const { server, routes } = createServer();
+      registerAiGatewayManagementRoutes(server, {
+        deployment: 'local',
+        podBaseUrlResolver: createOwnerPodBaseUrlResolver({
+          findByWebId: vi.fn(),
+          findAllByWebId: vi.fn(async webId => webId === WEB_ID ? [
+            { podId: 'one', accountId: 'alice', webId: WEB_ID, baseUrl: 'https://local.example/one/' },
+            { podId: 'two', accountId: 'alice', webId: WEB_ID, baseUrl: 'https://local.example/two/' },
+          ] : []),
+        }, 'unique'),
+        aiConnectionInvocationKeyIssuer: { issue, issueClientConfiguration: vi.fn() },
+      });
+      const req = request({ type: 'solid', webId: failure === 'non-owner' ? 'https://id.example/bob/profile/card#me' : WEB_ID });
+      if (failure === 'unregistered') req.headers['x-xpod-pod-url'] = 'https://foreign.example/alice/';
+      if (failure === 'non-owner') req.headers['x-xpod-pod-url'] = 'https://local.example/one/';
+      if (failure === 'multiple header') req.headers['x-xpod-pod-url'] = ['https://local.example/one/', 'https://local.example/two/'];
+      const res = response();
+      await routes['GET /api/applets/service-access/ai-connections'](req, res, {});
+      expect(res.statusCode).not.toBe(200);
+      expect(JSON.parse(res.body)).not.toHaveProperty('resources');
+      expect(issue).not.toHaveBeenCalled();
+    },
+  );
+
   it('uses the authenticated WebID for interactive service access when no service identity is configured', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
     });
     const res = response();
 
@@ -379,6 +252,10 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => {
           throw new Error('Gateway internal Pod token exchange failed: HTTP 503');
@@ -404,6 +281,7 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'local',
+      podBaseUrlResolver: async webId => webId === WEB_ID ? 'https://id.example/alice/' : undefined,
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => {
           throw new Error('stale local client credentials');
@@ -428,6 +306,10 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
       },
@@ -453,13 +335,17 @@ describe('AiGatewayManagementHandler', () => {
     expect(res.body).not.toContain('signing key');
   });
 
-  it('publishes AI Connection service-access resources derived only from the authenticated WebID', async () => {
+  it('publishes only resources in the registered binding of the authenticated owner', async () => {
     const servicePrincipal = {
       getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal,
     });
     const req = request({
@@ -501,6 +387,10 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
       },
@@ -521,8 +411,8 @@ describe('AiGatewayManagementHandler', () => {
 
     await routes['GET /api/applets/service-access/ai-connections'](request(auth), res, {});
 
-    expect(issue).toHaveBeenCalledWith({ auth });
-    expect(issueClientConfiguration).toHaveBeenCalledWith({ auth });
+    expect(issue).toHaveBeenCalledWith({ auth: { ...auth, authorizedPodUrl: 'https://id.example/alice/' } });
+    expect(issueClientConfiguration).toHaveBeenCalledWith({ auth: { ...auth, authorizedPodUrl: 'https://id.example/alice/' } });
     expect(JSON.parse(res.body)).toMatchObject({
       invocation: {
         baseUrl: 'https://pod.example',
@@ -569,6 +459,10 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       aiConnectionInvocationKeyIssuer: issuer,
       aiClientConfiguration: {
         available: true,
@@ -628,6 +522,7 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'local',
+      podBaseUrlResolver: async webId => webId === WEB_ID ? 'https://id.example/alice/' : undefined,
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
       },
@@ -659,6 +554,10 @@ describe('AiGatewayManagementHandler', () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       deployment: 'cloud',
+      podBaseUrlResolver: async webId => ({
+        [WEB_ID]: 'https://id.example/alice/',
+        'https://pod.example/bob/profile/card#me': 'https://pod.example/bob/',
+      })[webId],
       servicePrincipal: {
         getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
       },
@@ -675,53 +574,6 @@ describe('AiGatewayManagementHandler', () => {
       available: false,
       manualInstructions: expect.any(String),
     });
-  });
-
-  it('lists Gateway API keys without plaintext, fingerprints or a reveal route', async () => {
-    const record: GatewayAccessKeyRecord = {
-      id: 'gakv1.default.public_locator',
-      kind: 'client-credentials',
-      owner: WEB_ID,
-      secretHash: '',
-      deployment: 'local',
-      scopes: [],
-      createdAt: new Date('2026-08-28T00:00:00.000Z'),
-      name: 'Web persistent acceptance 20260828',
-      clientCredentialId: 'client-id',
-    };
-    const revealPlaintext = vi.fn(async () => 'xpod_gw_v1_local_public_locator_secretTail');
-    const repository = {
-      listByOwner: vi.fn(async () => [record]),
-      revealPlaintext,
-    } as unknown as GatewayAccessKeyRepository;
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      deployment: 'local',
-      gatewayAccessKeyRepository: repository,
-    });
-    const res = response();
-
-    await routes['GET /api/ai/gateway/keys'](request({
-      type: 'solid',
-      webId: WEB_ID,
-    }), res, {});
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    // Nothing is recoverable, so the row can only mask the identifier it has.
-    expect(body.data[0]).toMatchObject({
-      id: record.id,
-      kind: 'client-credentials',
-      plaintextAvailable: false,
-      suffix: '_locator',
-      maskedHint: '••••••••_locator',
-    });
-    expect(body.data[0].plaintext).toBeUndefined();
-    expect(body.data[0].fingerprint).toBeUndefined();
-    expect(revealPlaintext).not.toHaveBeenCalled();
-    expect(res.body).not.toContain('secretTail');
-    // The removed reveal endpoint is not registered at all.
-    expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeUndefined();
   });
 
   it('begins provider Connect for the current Solid WebID only', async () => {
@@ -1830,37 +1682,6 @@ describe('AiGatewayManagementHandler', () => {
     await routes['PATCH /api/ai/providers/:provider/credentials/:credentialId'](request({ type: 'solid', webId: WEB_ID }, { expectedVersion: 1, apiKey: 'private-replacement' }), res, { provider: 'kimi', credentialId: 'owned' });
     expect(res.statusCode).toBe(400); expect(JSON.parse(res.body)).toEqual({ error: code });
     expect(res.body).not.toContain('private-replacement');
-  });
-
-  it('forgets the issuer session when an API Key record is deleted', async () => {
-    const invalidateClientCredential = vi.fn();
-    const { server, routes } = createServer();
-    registerAiGatewayManagementRoutes(server, {
-      deployment: 'cloud',
-      gatewayAccessKeyRepository: {
-        findById: async () => ({
-          id: 'key-1',
-          kind: 'client-credentials' as const,
-          owner: WEB_ID,
-          secretHash: '',
-          deployment: 'cloud' as const,
-          scopes: [],
-          createdAt: new Date(0),
-          name: 'Codex',
-          clientCredentialId: 'the-client',
-        }),
-        delete: async () => true,
-      } as unknown as GatewayAccessKeyRepository,
-      invalidateClientCredential,
-    });
-    const res = response();
-
-    await routes['DELETE /api/ai/gateway/keys/:keyId'](request(callerOwnedAuth()), res, { keyId: 'key-1' });
-
-    expect(res.statusCode).toBe(200);
-    // Revocation happens at the issuer; the record is how this process learns to stop accepting the
-    // cached token, so the API Key stops working now rather than at token expiry.
-    expect(invalidateClientCredential).toHaveBeenCalledWith('the-client');
   });
 
   it('deletes one credential by id', async () => {

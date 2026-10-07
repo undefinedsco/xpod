@@ -62,23 +62,33 @@ export function createAccountClientCredentialsCapability({
       const bytes = new TextEncoder().encode(`${value.id}:${value.secret}`);
       const encoded = btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''));
       assertCurrent();
-      return { apiKey: `sk-${encoded}`, resource };
+      return { apiKey: `sk-${encoded}`, clientId: value.id, resource };
     },
     async list() {
-      // CSS owns the collection: one GET returns every credential the account
-      // still knows about, keyed by label (which is the OIDC client id).
+      // CSS owns the collection GET, which returns only `{ label: credentialPath }`.
+      // One Account can own credentials for several WebIDs, so the authoritative
+      // owner is only in the credential detail. Every row is therefore resolved
+      // before it is exposed; a row that has gone or whose identity does not match
+      // its collection label is dropped rather than relabelled as the current
+      // identity, and no secret is ever read here.
       const response = await request(await trustedUrl(collection), 'GET');
       if (!response.ok) throw new Error(`读取客户端凭据失败（HTTP ${response.status}）。`);
       const value = await response.json() as { clientCredentials?: Record<string, unknown> };
       assertCurrent();
       const entries = Object.entries(value.clientCredentials ?? {});
-      const credentials = await Promise.all(entries.map(async ([label, path]) => ({
-        clientId: label,
-        label,
-        resource: await trustedUrl(String(path)),
-      })));
+      const resolved = await Promise.all(entries.map(async ([label, path]) => {
+        const resource = await trustedUrl(String(path));
+        const detail = await request(resource, 'GET');
+        if (detail.status === 404 || detail.status === 410) return undefined;
+        if (!detail.ok) throw new Error(`读取客户端凭据失败（HTTP ${detail.status}）。`);
+        const credential = await detail.json() as Record<string, unknown>;
+        assertCurrent();
+        if (credential.id !== label || typeof credential.webId !== 'string' || !credential.webId) return undefined;
+        return { clientId: label, label, resource, webId: credential.webId };
+      }));
       assertCurrent();
-      return credentials;
+      return resolved.filter((entry): entry is { clientId: string; label: string; resource: string; webId: string } =>
+        entry !== undefined);
     },
     async revoke({ clientId, resource, webId }) {
       const url = await trustedUrl(resource);
@@ -102,4 +112,3 @@ export function createAccountClientCredentialsCapability({
     },
   };
 }
-

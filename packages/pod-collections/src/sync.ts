@@ -2,7 +2,7 @@ import type { Collection, SyncConfig } from '@tanstack/db';
 import type { AnyPodTable, SolidDatabase } from '@undefineds.co/drizzle-solid';
 import type { PodModelDescriptor } from '@undefineds.co/models';
 import { conditionalDocumentRead } from './read.js';
-import { mapSubjectRows, projectionFieldOrder, writeOnlyFields } from './mapping.js';
+import { createProjectionNormalizer, mapSubjectRows, projectionFieldOrder, writeOnlyFields } from './mapping.js';
 import { computeDocumentDiff, projectionHash, stripVirtualProps } from './diff.js';
 import { subscribeDocumentFeed } from './feed.js';
 import type { PodFeedSubscription } from './feed.js';
@@ -92,7 +92,8 @@ export function createPodSync<D extends PodModelDescriptor>(
   const fieldOrder = projectionFieldOrder(descriptor);
   // `secret: true` 的字段读不回来，确认协议要按这条规则把它们排除在比对之外（§4.2、§9-7）。
   const writeOnly = writeOnlyFields(descriptor);
-  const hashOf = (row: RowOf<D>): string => projectionHash(row, fieldOrder);
+  const normalize = createProjectionNormalizer(options);
+  const hashOf = (row: RowOf<D>): string => projectionHash(normalize(row), fieldOrder);
 
   let params: SyncParams<RowOf<D>> | undefined;
   let subscription: PodFeedSubscription | undefined;
@@ -230,7 +231,7 @@ export function createPodSync<D extends PodModelDescriptor>(
       failureReported = false;
       sync.markReady();
     }
-    reconcilePendingWrites(pending, next, hashOf, writeOnly);
+    reconcilePendingWrites(pending, next, hashOf, writeOnly, options);
     syncState = feedAvailable ? 'live' : 'unavailable';
   }
 

@@ -131,8 +131,13 @@ describe('shared theme contract', () => {
     // errors and enlarged text share a single vertical scroll area.
     expect(source).toContain(`${scope} {\n    overflow-y: auto;`);
     expect(source).toContain(`${scope} [data-pod-sign-in="idp-chrome"] {\n    height: 32px;`);
-    expect(source).toContain(`${scope} [data-pod-sign-in="main"] {\n    flex: 1 0 auto;\n    overflow: visible;\n    gap: 6px;\n    padding: 4px 16px 2px;`);
-    expect(source).toContain(`${scope} [data-pod-sign-in="actions"] {\n    gap: 0;\n    padding: 4px 16px 6px;`);
+    expect(source).toContain(`${scope} [data-pod-sign-in="main"] {\n    flex: 1 0 auto;\n    overflow: visible;\n    gap: 8px;\n    padding: 8px 16px;`);
+    expect(source).toContain(`${scope} [data-pod-sign-in="actions"] {\n    gap: 0;\n    padding: 8px 16px;`);
+    // spec §13.11: a native frame shorter than 560px keeps 16px body spacing /
+    // top lead and 12px action spacing with 16px bottom lead, so the choices
+    // and the standalone-deployment entry never sit under a fixed action bar.
+    expect(source).toContain("@media (max-height: 559px) {\n    .pod-sign-in[data-pod-sign-in-frame='window'] [data-pod-sign-in='main'] {\n      gap: 1rem;\n      padding-top: 1rem;\n      padding-bottom: 0.5rem;");
+    expect(source).toContain(".pod-sign-in[data-pod-sign-in-frame='window'] [data-pod-sign-in='actions'] {\n      gap: 0.75rem;\n      padding-top: 0.75rem;\n      padding-bottom: 1rem;");
   });
 
   test('marks exported CSS as a retained package side effect', () => {

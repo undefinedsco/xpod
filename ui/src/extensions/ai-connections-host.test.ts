@@ -327,3 +327,36 @@ test('binds Account credential operations to the host Account session', async ()
   expect(window.fetch).not.toHaveBeenCalled();
   expect(createXpodAiConnectionsHost(runtimeWith(vi.fn()), { ...account, bindAccountCapability: undefined }).capabilities.aiClientCredentials).toBeUndefined();
 });
+
+test('uses the transport that established the Account actor for create, list and revoke', async () => {
+  installDom();
+  const webId = 'https://id.example/alice/card#me';
+  const collection = 'https://id.example/.account/account/alice/client-credentials/';
+  const resource = `${collection}owned/`;
+  let active = true;
+  const accountFetch = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+    if (String(input) === collection && init?.method === 'POST') return Response.json({ id: 'owned', secret: 'test-secret', resource });
+    if (String(input) === collection) return Response.json({ clientCredentials: { owned: resource } });
+    if (String(input) === resource && init?.method === 'GET') return Response.json({ id: 'owned', webId });
+    if (String(input) === resource && init?.method === 'DELETE') return new Response(null, { status: 204 });
+    return new Response(null, { status: 401 });
+  });
+  const invocationFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 401 }));
+  const host = createXpodAiConnectionsHost({ ...runtimeWith(vi.fn()), transportFetch: invocationFetch }, {
+    idpIndex: 'https://id.example/.account/', controls: { account: { clientCredentials: collection } }, accountFetch,
+    bindAccountCapability: () => () => { if (!active) throw new Error('old account'); },
+  });
+  const capability = host.capabilities.aiClientCredentials!;
+  expect((await capability.create({ name: 'Owned key', webId })).resource).toBe(resource);
+  // The list resolves each collection row's detail because only that detail
+  // carries the Account-verified WebID the row is exposed with.
+  expect(await capability.list!()).toEqual([{ clientId: 'owned', label: 'owned', resource, webId }]);
+  await capability.revoke({ clientId: 'owned', resource, webId });
+  expect(accountFetch.mock.calls.map(([, init]) => init?.method)).toEqual(['POST', 'GET', 'GET', 'GET', 'DELETE']);
+  active = false;
+  await expect(capability.create({ name: 'Old key', webId })).rejects.toThrow('old account');
+  await expect(capability.list!()).rejects.toThrow('old account');
+  await expect(capability.revoke({ clientId: 'owned', resource, webId })).rejects.toThrow('old account');
+  expect(accountFetch).toHaveBeenCalledTimes(5);
+  expect(invocationFetch).not.toHaveBeenCalled();
+});

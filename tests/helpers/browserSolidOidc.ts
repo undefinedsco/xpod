@@ -9,8 +9,56 @@ export type BrowserSolidAccount = AccountSetup & {
 export type BrowserSolidCredentials = Pick<BrowserSolidAccount, 'email' | 'password'>
   & Partial<Pick<BrowserSolidAccount, 'webId' | 'podUrl'>>;
 
-const OIDC_PRIMARY_ACTION_NAME = /authorize|allow|approve|consent|continue|submit|yes|log in|login|sign in|继续|允许|授权|批准|同意|登录|进入/iu;
+export const OIDC_PRIMARY_ACTION_NAME = /authorize|allow|approve|consent|continue|submit|yes|log in|login|sign in|继续|允许|授权|批准|同意|登录|进入/iu;
 const OIDC_LOGIN_ACTION_NAME = /log in|login|sign in|登录|进入/iu;
+const REMEMBER_CLIENT_CHOICE_NAME = /^(?:以后不再询问|Do not ask again)$/u;
+
+/** The real external operations this helper performs on the live page. A
+ * Playwright action or renderer probe rejects on its own (timeout, detached
+ * node, strict-mode violation) without any manual throw; that used to degrade an
+ * entire desktop run to the driver's generic `unclassified` code. Each boundary
+ * below therefore names its operation, so the public artifact can attribute the
+ * failure while the raw cause stays in the private 600-mode evidence. */
+export type OidcOperation = 'login-navigation' | 'account-credentials' | 'account-submit' | 'webid-entry'
+  | 'remember-choice' | 'binding-select' | 'approval-action' | 'approval-observation';
+
+/** Closed vocabulary for the operation that failed inside the browser approval
+ * flow. Only these tokens may be projected onto a reviewed failure code, so a CI
+ * artifact can name the failing step without the private 600-mode evidence. */
+export type OidcApprovalCondition = OidcOperation | 'account-remember' | 'choice-not-offered'
+  | 'choice-disabled' | 'choice-not-retained' | 'binding-not-retained' | 'binding-unavailable'
+  | 'webid-unavailable' | 'multiple-webids' | 'second-login-action' | 'recovery-boundary' | 'login-timeout';
+
+/** An approval-flow failure that keeps its exact diagnostic text private and
+ * publishes only a reviewed closed-vocabulary condition. */
+export class OidcApprovalError extends Error {
+  readonly condition: OidcApprovalCondition;
+  /** The untranslated browser rejection behind an attributed operation, kept for
+   * the private 600-mode evidence only. */
+  override readonly cause?: unknown;
+  constructor(condition: OidcApprovalCondition, detail: string, cause?: unknown) {
+    super(detail);
+    this.name = 'OidcApprovalError';
+    this.condition = condition;
+    this.cause = cause;
+  }
+}
+
+/** Run one external browser/renderer operation and attribute its own rejection
+ * to a fixed operation token. A failure that already carries a specific
+ * condition keeps that condition and message unchanged, so this never replaces a
+ * precise diagnosis with a coarser one, and it is applied per boundary rather
+ * than as one catch-all around the whole login. */
+export async function attributeOidcOperation<T>(operation: OidcOperation, action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    if (error instanceof OidcApprovalError) throw error;
+    const cause = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    throw new OidcApprovalError(operation,
+      `Approval operation "${operation}" was rejected by the browser: ${cause}`, error);
+  }
+}
 
 /**
  * Disruptive controls the helper must never activate. The broad discovery
@@ -76,7 +124,159 @@ export interface BrowserOidcTrace {
   callbackTransaction?: string;
   callbackReturnTo?: string;
   passwordSubmitted: boolean;
+  /** Counts only actual password requests; bodies are never retained. */
+  passwordRequestCount?: number;
+  passwordSubmitCount?: number;
+  secondPasswordFormSeen?: boolean;
+  secondLoginActionSeen?: boolean;
   authorizationRedirectUris: string[];
+  /** Observed authorization `scope` sets, normalized (deduped, sorted) per authorize
+   * request; `'<none>'` when no scope was sent. Never inferred from requested input and
+   * never retains state/PKCE/other authorization secrets. */
+  authorizationScopeSets?: string[];
+  /** Observed native Consent selection, never inferred from requested input. */
+  storageBindingSelected?: { webId: string; podUrl: string };
+  /** Explicit Consent remember-client scenario choice and the value the surface
+   * actually retained before approval. Never inferred from requested input. */
+  rememberClientRequested?: boolean;
+  rememberClientObserved?: boolean;
+  /** Observed reason the requested remember-client choice could not be applied
+   * on the approval document that was rendered. Recorded from the live surface,
+   * never inferred from requested input; the driver's remember gate still
+   * decides the run, so an unapplied choice can never pass. */
+  rememberClientBlocked?: 'not-offered' | 'disabled';
+  /** Actual Consent POSTs and the safe `remember` boolean they carried. */
+  consentRequestCount?: number;
+  consentRememberPosted?: boolean;
+  /** Observed rendered shape: the live Consent surface showed no WebID or
+   * storage chooser and no WebID radio. `true` only from that observation,
+   * never inferred from requested input; it is not user consent and not an
+   * approval, which still need the actual callback/approval evidence. */
+  consentSingleBindingOffered?: boolean;
+}
+
+interface ObservedAuthorization { redirectUri: string; state: string; s256: boolean }
+interface CallbackLifecycle {
+  completed: Array<{ id: string; record: string }>;
+  consumed: string[];
+  active?: string;
+}
+
+/** Correlate a new lifecycle marker with this call's actual PKCE request and
+ * code/state callback. A pre-callback active hint is not a completed login. */
+function correlateCallback(input: {
+  origin: string; startedAt: number; baseline: string[]; authorizations: ObservedAuthorization[];
+  callbacks: string[]; lifecycle: CallbackLifecycle;
+}): string | undefined {
+  const matches = new Set<string>();
+  for (const callbackHref of input.callbacks) {
+    const callback = new URL(callbackHref);
+    const state = callback.searchParams.get('state');
+    if (callback.origin !== input.origin || callback.pathname !== '/auth/callback' || callback.hash
+      || callback.username || callback.password || !callback.searchParams.get('code') || !state
+      || callback.searchParams.getAll('code').length !== 1 || callback.searchParams.getAll('state').length !== 1) continue;
+    const authorized = input.authorizations.some(entry => {
+      try {
+        const redirect = new URL(entry.redirectUri);
+        return entry.s256 && entry.state === state && redirect.origin === input.origin
+          && redirect.pathname === callback.pathname && !redirect.hash && !redirect.username && !redirect.password
+          && Array.from(redirect.searchParams).every(([key, value]) => callback.searchParams.get(key) === value);
+      } catch { return false; }
+    });
+    if (!authorized) continue;
+    for (const { id, record } of input.lifecycle.completed) {
+      if (input.baseline.includes(id) || input.lifecycle.active === id || !input.lifecycle.consumed.includes(id)
+        || callback.searchParams.has('transaction') && callback.searchParams.get('transaction') !== id) continue;
+      try {
+        const marker = JSON.parse(record) as { callback?: unknown; completedAt?: unknown; destination?: unknown };
+        if (typeof marker.callback !== 'string' || typeof marker.destination !== 'string'
+          || typeof marker.completedAt !== 'number' || !Number.isFinite(marker.completedAt)
+          || marker.completedAt < input.startedAt || marker.completedAt > Date.now()) continue;
+        const identity = new URL(marker.callback), destination = new URL(marker.destination);
+        if (identity.origin === callback.origin && identity.pathname === callback.pathname
+          && !identity.hash && !identity.username && !identity.password && identity.searchParams.size === 1
+          && identity.searchParams.get('state') === state && destination.origin === input.origin
+          && !destination.username && !destination.password) matches.add(id);
+      } catch { /* A malformed or unrelated marker is never completion evidence. */ }
+    }
+  }
+  return matches.size === 1 ? [...matches][0] : undefined;
+}
+
+async function readCallbackLifecycle(page: Page): Promise<CallbackLifecycle> {
+  return page.evaluate(() => {
+    const completedPrefix = 'xpod.auth.callback.completed.v1.';
+    const consumedPrefix = 'xpod.auth.transaction.v1.consumed.';
+    const keys = Object.keys(window.sessionStorage);
+    return {
+      completed: keys.filter(key => key.startsWith(completedPrefix)).map(key => ({
+        id: key.slice(completedPrefix.length), record: window.sessionStorage.getItem(key) ?? '',
+      })),
+      consumed: keys.filter(key => key.startsWith(consumedPrefix)).map(key => key.slice(consumedPrefix.length)),
+      active: window.sessionStorage.getItem('xpod.auth.transaction.v1.active') ?? undefined,
+    };
+  }).catch(() => ({ completed: [], consumed: [] }));
+}
+
+export function chooseConsentBinding(options: Array<{ value: string; disabled: boolean }>, currentValue: string,
+  account: Pick<BrowserSolidCredentials, 'webId' | 'podUrl'>): string | undefined {
+  const selectable = options.filter(option => option.value && !option.disabled);
+  const webId = account.webId ? new URL(account.webId).href : undefined;
+  const podUrl = account.podUrl?.replace(/\/$/u, '');
+  const matches = (value: string): boolean => {
+    const separator = value.indexOf('|');
+    return separator >= 0 && (!webId || value.slice(0, separator) === webId)
+      && (!podUrl || value.slice(separator + 1).replace(/\/$/u, '') === podUrl);
+  };
+  if (webId || podUrl) return selectable.find(option => option.value === currentValue && matches(option.value))?.value
+    ?? selectable.find(option => matches(option.value))?.value;
+  return selectable.find(option => option.value === currentValue)?.value
+    ?? (selectable.length === 1 ? selectable[0].value : undefined);
+}
+
+/** What the rendered Consent surface actually offered, read from the live DOM. */
+export interface ConsentSurfaceState {
+  surfaceVisible: boolean;
+  webIdChooserVisible: boolean;
+  storageChooserVisible: boolean;
+  webIdRadioCount: number;
+}
+
+/** Observation only: a visible Consent surface that rendered no chooser and no
+ * WebID radio offers a single binding. This records the rendered shape; it is
+ * not itself proof of user consent or of the authenticated binding, which the
+ * driver still requires from the actual approval/callback plus the live runtime
+ * binding. Any chooser at all means the scenario must make an explicit choice. */
+export function consentOffersSingleBinding(state: ConsentSurfaceState): boolean {
+  return state.surfaceVisible && !state.webIdChooserVisible && !state.storageChooserVisible
+    && state.webIdRadioCount === 0;
+}
+
+/** The live runtime binding the browser actually established for this login. */
+export interface BrowserRuntimeBinding {
+  status?: string;
+  webId?: string;
+  podUrl?: string;
+}
+
+/** Callback/PKCE evidence plus an exact binding proof that never invents a
+ * choice: either the observed explicit selection, or the observed no-chooser
+ * surface corroborated by the authenticated runtime binding. The no-chooser
+ * shape is a rendered observation, not user consent. A surface that offered any
+ * chooser can never take the second path, and a mismatched selection never
+ * falls through to it. */
+export function consentBindingProven(trace: BrowserOidcTrace, binding: { webId: string; storageUrl: string },
+  runtime: BrowserRuntimeBinding | undefined): boolean {
+  const callbackProven = trace.authorizationRequestSeen && trace.authCodeChallengeMethodS256
+    && trace.tokenAuthorizationCodeGrantSeen && trace.tokenCodeVerifierSeen
+    && trace.callbackHasCode && trace.callbackHasState;
+  if (!callbackProven) return false;
+  if (trace.storageBindingSelected) {
+    return trace.storageBindingSelected.webId === binding.webId
+      && trace.storageBindingSelected.podUrl === binding.storageUrl;
+  }
+  return trace.consentSingleBindingOffered === true && runtime?.status === 'authenticated'
+    && runtime.webId === binding.webId && runtime.podUrl === binding.storageUrl;
 }
 
 export interface CompleteOidcLoginOptions {
@@ -89,6 +289,10 @@ export interface CompleteOidcLoginOptions {
   requireCallbackEvidence?: boolean;
   /** Explicit UI choice; undefined preserves the form default for this scenario. */
   rememberAccount?: boolean;
+  /** Explicit Consent remember-client choice, independent of account remembering.
+   * undefined preserves the surface default; true or false must be offered, set
+   * and retained before approval or the scenario fails. */
+  rememberClient?: boolean;
   /** Let the scenario inspect and approve Consent instead of the generic action driver. */
   manualConsent?: boolean;
   /** Resolve an intentional callback failure without waiting for protected-route readiness. */
@@ -109,7 +313,7 @@ export async function completeOidcLogin(
 ): Promise<BrowserOidcTrace> {
   // Interleaved tab scenarios must activate the tab being operated, just as
   // a user does; background renderer throttling can otherwise stall scrolling.
-  await page.bringToFront();
+  await attributeOidcOperation('approval-observation', () => page.bringToFront());
   const timeoutMs = options.timeoutMs ?? 60_000;
   const baseOrigin = new URL(options.baseUrl).origin;
   const trace: BrowserOidcTrace = {
@@ -124,10 +328,15 @@ export async function completeOidcLogin(
     callbackHasState: false,
     passwordSubmitted: false,
     authorizationRedirectUris: [],
+    authorizationScopeSets: [],
   };
   const browserErrors: string[] = [];
   const networkDiagnostics: string[] = [];
   const startedAt = Date.now();
+  const initialCallbackIds = (await attributeOidcOperation('approval-observation', () => readCallbackLifecycle(page)))
+    .completed.map(entry => entry.id);
+  const observedAuthorizations: ObservedAuthorization[] = [];
+  const observedCallbacks = new Set<string>();
   const recordDiagnostic = (entry: string) => {
     if (networkDiagnostics.length < 80) networkDiagnostics.push(`${Date.now() - startedAt}ms ${entry}`);
   };
@@ -145,6 +354,26 @@ export async function completeOidcLogin(
         && url.searchParams.has('redirect_uri');
       const redirectUri = url.searchParams.get('redirect_uri');
       if (redirectUri) trace.authorizationRedirectUris.push(redirectUri);
+      if (hasAuthorizationCodeParams) {
+        const scopes = [...new Set(url.searchParams.getAll('scope')
+          .flatMap(value => value.split(' ')).filter(Boolean))].sort();
+        trace.authorizationScopeSets!.push(scopes.length > 0 ? scopes.join(' ') : '<none>');
+      }
+      if (hasAuthorizationCodeParams && redirectUri && url.searchParams.get('state')) {
+        observedAuthorizations.push({ redirectUri, state: url.searchParams.get('state')!,
+          s256: Boolean(url.searchParams.get('code_challenge')) && url.searchParams.get('code_challenge_method') === 'S256'
+            && url.searchParams.getAll('state').length === 1 && url.searchParams.getAll('redirect_uri').length === 1 });
+      }
+      if (request.method() === 'POST' && /^\/\.account\/(?:interaction\/[^/]+\/)?login\/password\/?$/u.test(url.pathname)) {
+        trace.passwordRequestCount = (trace.passwordRequestCount ?? 0) + 1;
+      }
+      if (request.method() === 'POST' && /^\/\.account\/(?:interaction\/[^/]+\/)?oidc\/consent\/?$/u.test(url.pathname)) {
+        trace.consentRequestCount = (trace.consentRequestCount ?? 0) + 1;
+        try {
+          const body = JSON.parse(request.postData() ?? '') as { remember?: unknown };
+          if (typeof body.remember === 'boolean') trace.consentRememberPosted = body.remember;
+        } catch { /* A non-JSON consent body carries no remember evidence. */ }
+      }
       if (url.pathname.startsWith('/api/ai/gateway/')) {
         const headers = request.headers();
         const authorizationScheme = headers.authorization?.split(/\s+/u, 1)[0] ?? '<none>';
@@ -240,6 +469,7 @@ export async function completeOidcLogin(
     trace.callbackPathSeen = true;
     trace.callbackHasCode ||= url.searchParams.has('code');
     trace.callbackHasState ||= url.searchParams.has('state');
+    if (url.searchParams.get('code') && url.searchParams.get('state')) observedCallbacks.add(url.href);
     trace.callbackTransaction ??= url.searchParams.get('transaction') ?? undefined;
     trace.callbackReturnTo ??= url.searchParams.get('returnTo') ?? undefined;
   };
@@ -251,41 +481,51 @@ export async function completeOidcLogin(
   page.on('console', observeConsole);
   page.on('pageerror', observePageError);
   try {
-    if (options.startUrl) {
-      await page.goto(options.startUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(timeoutMs, 30_000) });
+    const startUrl = options.startUrl;
+    if (startUrl) {
+      await attributeOidcOperation('login-navigation', () =>
+        page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(timeoutMs, 30_000) }));
     }
 
     const deadline = Date.now() + timeoutMs;
     let submittedPassword = false;
     let productWebIdEntryClicked = false;
     let localSpaceClickedAt = 0;
+    let passwordFormLeftAfterSubmit = false;
+    let consentRememberApplied = false;
+    let consentRememberDocument = '';
     let lastPhase = '';
 
     while (Date.now() < deadline) {
       if (!trace.callbackTransaction) {
-        trace.callbackTransaction = await readActiveCallbackTransaction(page);
+        trace.callbackTransaction = await attributeOidcOperation('approval-observation',
+          () => readActiveCallbackTransaction(page));
       }
       const phase = safePath(page.url());
       if (phase !== lastPhase) {
         lastPhase = phase;
         recordDiagnostic(`phase ${phase}`);
       }
-      if (await options.failure?.(page)) return trace;
-      const routeReady = await (options.ready?.(page) ?? isSettingsWorkspaceReady(page, baseOrigin));
-      if (trace.callbackPathSeen && !trace.callbackTransaction) {
-        trace.callbackTransaction = await findConsumedCallbackTransaction(page);
-      }
+      if (await attributeOidcOperation('approval-observation', async () => options.failure?.(page))) return trace;
+      const routeReady = await attributeOidcOperation('approval-observation',
+        async () => options.ready?.(page) ?? isSettingsWorkspaceReady(page, baseOrigin));
+      const matchedCallback = options.requireCallbackEvidence && trace.callbackPathSeen ? correlateCallback({
+        origin: baseOrigin, startedAt, baseline: initialCallbackIds, authorizations: observedAuthorizations,
+        callbacks: [...observedCallbacks],
+        lifecycle: await attributeOidcOperation('approval-observation', () => readCallbackLifecycle(page)),
+      }) : undefined;
+      if (matchedCallback) trace.callbackTransaction = matchedCallback;
       const callbackReady = !options.requireCallbackEvidence
         || (trace.callbackPathSeen
           && trace.callbackHasCode
           && trace.callbackHasState
-          && await hasConsumedCallback(page, trace.callbackTransaction));
+          && matchedCallback !== undefined);
       if (routeReady && callbackReady) {
         return trace;
       }
       if (trace.callbackPathSeen
         && await page.getByText('Could not connect to Xpod', { exact: true }).isVisible({ timeout: 100 }).catch(() => false)) {
-        throw new Error(
+        throw new OidcApprovalError('recovery-boundary',
           `Solid OIDC browser login reached the Xpod recovery boundary; `
           + `currentPath=${safePath(page.url())}; network=${networkDiagnostics.join(' || ')}; `
           + `visibleText=${await page.locator('body').innerText({ timeout: 1_000 })
@@ -300,14 +540,16 @@ export async function completeOidcLogin(
       // and login checks used on desktop can run without viewport heuristics.
       const stackProvider = page.locator('[data-workspace-mode="stack"] [role="option"]').first();
       if (await stackProvider.isVisible({ timeout: 250 }).catch(() => false)) {
-        await stackProvider.click({ timeout: 2_000, noWaitAfter: true });
+        await attributeOidcOperation('login-navigation',
+          () => stackProvider.click({ timeout: 2_000, noWaitAfter: true }));
         await page.waitForTimeout(100);
         continue;
       }
 
       const localSpace = page.getByRole('button', { name: /^(?:本机|Local)$/iu }).first();
       if (await localSpace.isVisible({ timeout: 250 }).catch(() => false)) {
-        await localSpace.click({ timeout: 2_000, noWaitAfter: true });
+        await attributeOidcOperation('login-navigation',
+          () => localSpace.click({ timeout: 2_000, noWaitAfter: true }));
         continue;
       }
 
@@ -332,17 +574,27 @@ export async function completeOidcLogin(
       const passwordInput = page.locator('input[type="password"], input[name="password"], input#password').first();
       const emailVisible = await emailInput.isVisible({ timeout: 250 }).catch(() => false);
       const passwordVisible = await passwordInput.isVisible({ timeout: 250 }).catch(() => false);
+      if (submittedPassword && (!emailVisible || !passwordVisible)) passwordFormLeftAfterSubmit = true;
+      if (submittedPassword && passwordFormLeftAfterSubmit && emailVisible && passwordVisible) trace.secondPasswordFormSeen = true;
       if (emailVisible && passwordVisible && !submittedPassword) {
-        await emailInput.fill(account.email, { timeout: 2_000 });
-        await passwordInput.fill(account.password, { timeout: 2_000 });
-        if (options.rememberAccount !== undefined) {
+        await attributeOidcOperation('account-credentials', async () => {
+          await emailInput.fill(account.email, { timeout: 2_000 });
+          await passwordInput.fill(account.password, { timeout: 2_000 });
+        });
+        const rememberAccount = options.rememberAccount;
+        if (rememberAccount !== undefined) {
           const remember = page.getByRole('checkbox', { name: /^(?:记住账号|Remember account)$/iu });
-          await remember.setChecked(options.rememberAccount, { timeout: 2_000 });
-          if (await remember.isChecked() !== options.rememberAccount) throw new Error('Account remember choice did not match the scenario');
+          await attributeOidcOperation('account-credentials', async () => {
+            await remember.setChecked(rememberAccount, { timeout: 2_000 });
+            if (await remember.isChecked() !== rememberAccount) {
+              throw new OidcApprovalError('account-remember', 'Account remember choice did not match the scenario');
+            }
+          });
         }
-        await passwordInput.press('Enter', { timeout: 2_000 });
+        await attributeOidcOperation('account-submit', () => passwordInput.press('Enter', { timeout: 2_000 }));
         submittedPassword = true;
         trace.passwordSubmitted = true;
+        trace.passwordSubmitCount = (trace.passwordSubmitCount ?? 0) + 1;
         await page.waitForTimeout(350);
         continue;
       }
@@ -352,88 +604,167 @@ export async function completeOidcLogin(
         && await productWebIdEntry.isVisible({ timeout: 250 }).catch(() => false)
         && await productWebIdEntry.isEnabled({ timeout: 250 }).catch(() => false)) {
         productWebIdEntryClicked = true;
-        await productWebIdEntry.click({ timeout: 2_000, noWaitAfter: true });
+        await attributeOidcOperation('webid-entry',
+          () => productWebIdEntry.click({ timeout: 2_000, noWaitAfter: true }));
         await page.waitForTimeout(350);
         continue;
       }
 
+      // An explicit remember-client scenario must set and retain the real
+      // Consent choice before approving; a missing or ignored choice fails the
+      // scenario instead of silently defaulting to "do not remember".
+      const consentSurface = page.locator('[data-pod-sign-in-state="consent"]');
+      // One observation per iteration: a second independent probe can miss a
+      // surface the product has already approved away, so both consumers below
+      // must reason about the same rendered fact.
+      const consentVisible = await consentSurface.isVisible({ timeout: 100 }).catch(() => false);
+      // Record the rendered Consent shape before driving it: a single live
+      // binding can render with no chooser, so a caller proving the exact
+      // binding needs this observed fact rather than a selection the product
+      // never asked for. No chooser is a rendered observation, not consent.
+      if (!trace.consentSingleBindingOffered && consentVisible) {
+        trace.consentSingleBindingOffered = consentOffersSingleBinding({
+          surfaceVisible: true,
+          webIdChooserVisible: await page.locator('#oidc-consent-webid').isVisible({ timeout: 100 }).catch(() => false),
+          storageChooserVisible: await page.locator('#oidc-consent-storage').isVisible({ timeout: 100 }).catch(() => false),
+          webIdRadioCount: await attributeOidcOperation('approval-observation',
+            () => page.locator('input[type="radio"][name="webId"]').count()),
+        });
+      }
+      // Pick-WebID and Consent are separate approval documents with independent
+      // checkbox state, so an explicit remember-client choice is re-applied on
+      // every document that offers it instead of only the first one.
+      const consentDocument = accountDocumentKey(page.url());
+      if (consentDocument !== consentRememberDocument) consentRememberApplied = false;
+      if (options.rememberClient !== undefined && !consentRememberApplied && consentVisible) {
+        const rememberClientChoice = page.getByRole('checkbox', { name: REMEMBER_CLIENT_CHOICE_NAME });
+        if (!await rememberClientChoice.isVisible({ timeout: 250 }).catch(() => false)) {
+          // The choice is folded into the collapsed request-details disclosure.
+          const details = page.locator('summary', { hasText: /请求详情|Request details/u }).first();
+          if (await details.isVisible({ timeout: 250 }).catch(() => false)) {
+            await details.click({ timeout: 2_000, noWaitAfter: true }).catch(() => undefined);
+          }
+        }
+        // A document can render the consent surface without an actionable
+        // choice: it may not offer one at all, or the rendered control may be
+        // disabled. Both are recorded observations, not product facts and not
+        // approval; the driver's remember gate still requires the observed
+        // choice AND the actual approval body to carry it, so an unapplied
+        // choice is a reviewed red, never an unclassified crash.
+        if (!await rememberClientChoice.isVisible({ timeout: 1_000 }).catch(() => false)) {
+          trace.rememberClientBlocked = 'not-offered';
+          recordDiagnostic('consent remember-client choice not offered');
+        } else if (!await rememberClientChoice.isEnabled({ timeout: 250 }).catch(() => false)) {
+          trace.rememberClientBlocked = 'disabled';
+          recordDiagnostic('consent remember-client choice disabled');
+        } else {
+          const rememberClient = options.rememberClient;
+          await attributeOidcOperation('remember-choice',
+            () => rememberClientChoice.setChecked(rememberClient, { timeout: 2_000 }));
+          const observedRemember = await attributeOidcOperation('remember-choice',
+            () => rememberClientChoice.isChecked());
+          if (observedRemember !== rememberClient) {
+            throw new OidcApprovalError('choice-not-retained', 'Consent did not retain the requested remember-client choice');
+          }
+          trace.rememberClientRequested = rememberClient;
+          trace.rememberClientObserved = observedRemember;
+          trace.rememberClientBlocked = undefined;
+          consentRememberDocument = consentDocument;
+          consentRememberApplied = true;
+          await page.waitForTimeout(150);
+          continue;
+        }
+      }
+
       const consentWebIdSelect = page.locator('#oidc-consent-webid');
       if (await consentWebIdSelect.isVisible({ timeout: 100 }).catch(() => false)) {
-        // A single exact WebID/Pod binding is auto-approved by the Account
-        // surface. During that transition the native select remains visible
-        // but is disabled. Do not let Playwright's selectOption wait until the
-        // scenario timeout while the page is already navigating away.
+        // The Account surface can keep the native select visible while it is
+        // disabled, for example while it resolves the single offered binding.
+        // That is an observation, not proof of approval or of a user choice;
+        // do not let Playwright's selectOption wait until the scenario timeout
+        // while the page is already navigating away.
         if (!await consentWebIdSelect.isEnabled({ timeout: 100 }).catch(() => false)) {
           await page.waitForTimeout(100);
           continue;
         }
-        const currentOptionValue = await consentWebIdSelect.inputValue();
-        const availableOptions = await consentWebIdSelect.locator('option').evaluateAll((options) => options.map((option) => ({
-          label: option.textContent?.trim() ?? '',
-          value: (option as HTMLOptionElement).value,
-          disabled: (option as HTMLOptionElement).disabled,
-        })));
+        const currentOptionValue = await attributeOidcOperation('binding-select',
+          () => consentWebIdSelect.inputValue());
+        const availableOptions = await attributeOidcOperation('binding-select',
+          () => consentWebIdSelect.locator('option').evaluateAll((options) => options.map((option) => ({
+            label: option.textContent?.trim() ?? '',
+            value: (option as HTMLOptionElement).value,
+            disabled: (option as HTMLOptionElement).disabled,
+          }))));
         const selectableOptions = availableOptions.filter((option) => option.value && !option.disabled);
-        const normalizedWebId = account.webId ? new URL(account.webId).href : undefined;
-        const normalizedPodUrl = account.podUrl?.replace(/\/$/u, '');
-        const requestedOption = (currentOptionValue
-          ? selectableOptions.find((option) => option.value === currentOptionValue)
-          : undefined) ?? (account.webId
-          ? selectableOptions.find((option) => {
-            const separator = option.value.indexOf('|');
-            if (separator < 0) return false;
-            const optionWebId = option.value.slice(0, separator);
-            const optionPodUrl = option.value.slice(separator + 1).replace(/\/$/u, '');
-            return optionWebId === normalizedWebId
-              && (!normalizedPodUrl || optionPodUrl === normalizedPodUrl);
-          })
-            ?? selectableOptions.find((option) => option.value.startsWith(`${normalizedWebId}|`))
-          : selectableOptions.length === 1 ? selectableOptions[0] : undefined);
+        const selectedValue = chooseConsentBinding(availableOptions, currentOptionValue, account);
+        const requestedOption = selectableOptions.find(option => option.value === selectedValue);
         if (!requestedOption) {
-          throw new Error(account.webId
+          throw new OidcApprovalError('binding-unavailable', account.webId
             ? `The requested WebID and Pod are not available for this account: ${account.webId}; available=${selectableOptions.map((option) => option.label).join(',')}`
             : 'Multiple WebID and Pod bindings are available, but the login scenario did not provide the expected binding.');
         }
         // React renders the first native option even while its controlled
         // value is still empty. Always select the resolved option so the
         // change event commits the exact binding into the consent state.
-        await consentWebIdSelect.selectOption(requestedOption.value, { timeout: 2_000 });
+        await attributeOidcOperation('binding-select',
+          () => consentWebIdSelect.selectOption(requestedOption.value, { timeout: 2_000 }));
         const consentStorageSelect = page.locator('#oidc-consent-storage');
         if (await consentStorageSelect.isVisible({ timeout: 100 }).catch(() => false)
           && await consentStorageSelect.isEnabled({ timeout: 100 }).catch(() => false)) {
-          await consentStorageSelect.selectOption(requestedOption.value, { timeout: 2_000 });
+          await attributeOidcOperation('binding-select',
+            () => consentStorageSelect.selectOption(requestedOption.value, { timeout: 2_000 }));
         }
+        // The change event is what commits the binding into React state, and a
+        // loaded renderer can finish that commit a tick after selectOption
+        // resolves. Give the exact requested pair a bounded window to become the
+        // live value instead of reading the DOM exactly once; the reviewed
+        // failure is unchanged -- a chooser that never holds the requested pair
+        // is still `binding-not-retained`.
+        let observedValue = await attributeOidcOperation('binding-select',
+          () => consentWebIdSelect.inputValue());
+        const retentionDeadline = Date.now() + 2_000;
+        while (observedValue !== requestedOption.value) {
+          if (Date.now() >= retentionDeadline) {
+            throw new OidcApprovalError('binding-not-retained', 'Consent did not retain the selected storage binding');
+          }
+          await page.waitForTimeout(50);
+          observedValue = await attributeOidcOperation('binding-select',
+            () => consentWebIdSelect.inputValue());
+        }
+        const separator = observedValue.indexOf('|');
+        trace.storageBindingSelected = { webId: observedValue.slice(0, separator), podUrl: observedValue.slice(separator + 1) };
       }
 
       const webIdRadios = page.locator('input[type="radio"][name="webId"]');
-      const webIdRadioCount = await webIdRadios.count();
+      const webIdRadioCount = await attributeOidcOperation('binding-select', () => webIdRadios.count());
       if (webIdRadioCount > 0) {
         let matchingRadio = account.webId ? undefined : webIdRadios.first();
         if (account.webId) {
           for (let index = 0; index < webIdRadioCount; index += 1) {
             const candidate = webIdRadios.nth(index);
-            if (await candidate.getAttribute('value') === account.webId) {
+            if (await attributeOidcOperation('binding-select', () => candidate.getAttribute('value')) === account.webId) {
               matchingRadio = candidate;
               break;
             }
           }
           if (!matchingRadio) {
-            const availableWebIds = await webIdRadios.evaluateAll((inputs) => inputs
-              .map((input) => (input as HTMLInputElement).value));
-            throw new Error(`The requested WebID is not available for this account: ${account.webId}; available=${availableWebIds.join(',')}`);
+            const availableWebIds = await attributeOidcOperation('binding-select', () => webIdRadios.evaluateAll((inputs) => inputs
+              .map((input) => (input as HTMLInputElement).value)));
+            throw new OidcApprovalError('webid-unavailable',
+              `The requested WebID is not available for this account: ${account.webId}; available=${availableWebIds.join(',')}`);
           }
         } else if (webIdRadioCount > 1) {
-          throw new Error('Multiple WebIDs are available, but the login scenario did not provide the expected WebID.');
+          throw new OidcApprovalError('multiple-webids', 'Multiple WebIDs are available, but the login scenario did not provide the expected WebID.');
         }
 
-        if (!await matchingRadio!.isChecked()) {
-          await matchingRadio!.check({ timeout: 2_000 });
+        if (!await attributeOidcOperation('binding-select', () => matchingRadio!.isChecked())) {
+          await attributeOidcOperation('binding-select', () => matchingRadio!.check({ timeout: 2_000 }));
         }
       }
 
-      // One exact binding is auto-consented. Multiple eligible bindings are
-      // intentionally different: CSS must present one explicit Pod chooser
-      // and consent action inside the same OIDC transaction.
+      // A single offered binding renders without a chooser; multiple eligible
+      // bindings are intentionally different and CSS must present one explicit
+      // Pod chooser plus an actual consent action in the same OIDC transaction.
       const currentPath = safePath(page.url());
       const storageChooserVisible = await page.locator('#oidc-consent-storage').isVisible({ timeout: 100 }).catch(() => false);
       if (submittedPassword
@@ -445,14 +776,16 @@ export async function completeOidcLogin(
           name: OIDC_LOGIN_ACTION_NAME,
         }).first();
         if (await secondLoginAction.isVisible({ timeout: 100 }).catch(() => false)) {
-          throw new Error(`Xpod exposed a second visible login action after password submission: ${await secondLoginAction.innerText()}`);
+          trace.secondLoginActionSeen = true;
+          throw new OidcApprovalError('second-login-action',
+            `Xpod exposed a second visible login action after password submission: ${await secondLoginAction.innerText().catch(() => '<unavailable>')}`);
         }
       }
 
       const action = page.getByRole('button', {
         name: OIDC_PRIMARY_ACTION_NAME,
       });
-      const actionCount = await action.count();
+      const actionCount = await attributeOidcOperation('approval-observation', () => action.count());
       let clickedAction = false;
       for (let index = 0; index < actionCount; index += 1) {
         const candidate = action.nth(index);
@@ -461,8 +794,10 @@ export async function completeOidcLogin(
         // The requested intermediate surface can finish rendering while the
         // helper inspects its controls. Do not click past a newly ready
         // consent page that the caller needs to interact with itself.
-        if (!options.requireCallbackEvidence && await options.ready?.(page)) return trace;
-        if (!await clickNonPasswordOidcAction(candidate, options)) continue;
+        if (!options.requireCallbackEvidence
+          && await attributeOidcOperation('approval-observation', async () => options.ready?.(page))) return trace;
+        if (!await attributeOidcOperation('approval-action',
+          () => clickNonPasswordOidcAction(candidate, options))) continue;
         recordDiagnostic(`automation-activated button ${safePath(page.url())}`);
         clickedAction = true;
         break;
@@ -475,14 +810,15 @@ export async function completeOidcLogin(
       const actionLink = page.getByRole('link', {
         name: OIDC_PRIMARY_ACTION_NAME,
       });
-      const actionLinkCount = await actionLink.count();
+      const actionLinkCount = await attributeOidcOperation('approval-observation', () => actionLink.count());
       let clickedActionLink = false;
       for (let index = 0; index < actionLinkCount; index += 1) {
         const candidate = actionLink.nth(index);
         if (!await candidate.isVisible({ timeout: 250 }).catch(() => false)) continue;
         // Same-node checked activation for anchors too: refusal and click are
         // evaluated on the exact node that is activated.
-        if (!await clickNonPasswordOidcAction(candidate, options)) continue;
+        if (!await attributeOidcOperation('approval-action',
+          () => clickNonPasswordOidcAction(candidate, options))) continue;
         recordDiagnostic(`automation-activated link ${safePath(page.url())}`);
         clickedActionLink = true;
         break;
@@ -495,7 +831,8 @@ export async function completeOidcLogin(
       const submitInput = page.locator('input[type="submit"]').first();
       if (await submitInput.isVisible({ timeout: 250 }).catch(() => false)
         && await submitInput.isEnabled({ timeout: 250 }).catch(() => false)) {
-        if (await clickNonPasswordOidcAction(submitInput, options)) {
+        if (await attributeOidcOperation('approval-action',
+          () => clickNonPasswordOidcAction(submitInput, options))) {
           recordDiagnostic(`automation-activated submit-input ${safePath(page.url())}`);
           await page.waitForTimeout(350);
           continue;
@@ -554,7 +891,7 @@ export async function completeOidcLogin(
         resources,
       };
     }).catch(() => callbackDebugFallback), 2_000, callbackDebugFallback);
-    throw new Error(
+    throw new OidcApprovalError('login-timeout',
       `Solid OIDC browser login did not finish before timeout; submittedPassword=${submittedPassword}; currentPath=${safePath(page.url())}; trace=${JSON.stringify({
         authorizationRequestSeen: trace.authorizationRequestSeen,
         authCodeChallengeSeen: trace.authCodeChallengeSeen,
@@ -606,6 +943,18 @@ export function normalizeAccountPath(pathname: string): string {
   return pathname.replace(/^\/\.account\/interaction\/[^/]+(?=\/)/u, '/.account');
 }
 
+/** Identity of the current approval document for per-document UI state. Only
+ * origin and pathname are kept, so no query value (potentially a secret) is
+ * ever retained. */
+function accountDocumentKey(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return rawUrl;
+  }
+}
+
 function safePath(rawUrl: string): string {
   try {
     const url = new URL(rawUrl);
@@ -632,31 +981,7 @@ function safeNetworkPath(url: URL): string {
   return `${normalized}${scope}${keys.length > 0 ? `?keys=${keys.join(',')}` : ''}`;
 }
 
-async function hasConsumedCallback(page: Page, transactionId?: string): Promise<boolean> {
-  if (!transactionId) return false;
-  return await page.evaluate((id) => {
-    const completed = window.sessionStorage.getItem(`xpod.auth.callback.completed.v1.${id}`);
-    const active = window.sessionStorage.getItem('xpod.auth.transaction.v1.active');
-    return completed !== null && active !== id;
-  }, transactionId).catch(() => false);
-}
-
 async function readActiveCallbackTransaction(page: Page): Promise<string | undefined> {
   return await page.evaluate(() => window.sessionStorage.getItem('xpod.auth.transaction.v1.active') ?? undefined)
     .catch(() => undefined);
-}
-
-async function findConsumedCallbackTransaction(page: Page): Promise<string | undefined> {
-  return await page.evaluate(() => {
-    const completedPrefix = 'xpod.auth.callback.completed.v1.';
-    const consumedPrefix = 'xpod.auth.transaction.v1.consumed.';
-    const completed = Object.keys(window.sessionStorage)
-      .filter((key) => key.startsWith(completedPrefix))
-      .map((key) => key.slice(completedPrefix.length));
-    const consumed = new Set(Object.keys(window.sessionStorage)
-      .filter((key) => key.startsWith(consumedPrefix))
-      .map((key) => key.slice(consumedPrefix.length)));
-    const candidates = completed.filter((id) => consumed.has(id));
-    return candidates.length === 1 ? candidates[0] : undefined;
-  }).catch(() => undefined);
 }

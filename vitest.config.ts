@@ -33,6 +33,7 @@ export default defineConfig({
       '**/dist/**',
       '**/.test-data/**',
       '**/.worktrees/**',
+      '**/.claude/**',
       '**/_deprecated/**',
       '**/_deprecated_quadstore/**',
       'qlever/**',

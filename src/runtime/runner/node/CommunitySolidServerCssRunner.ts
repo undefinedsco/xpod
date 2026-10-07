@@ -1,7 +1,7 @@
 import { ensureSupportedBun } from '../../compat/ensureSupportedBun';
 import path from 'node:path';
 import fs from 'node:fs';
-import type { App } from '@solid/community-server';
+import type { App, AppRunner, AppRunnerInput } from '@solid/community-server';
 import { ModuleStateBuilder, type IModuleState } from 'componentsjs';
 import {
   ensureBunCommunitySolidServerJwkCompat,
@@ -9,10 +9,41 @@ import {
 } from '../../compat/ensureBunUndiciCompat';
 import type { CssRuntimeRunner, CssRuntimeRunnerStartOptions } from '../types';
 
+/** The compiled archive owns its complete Components.js dependency tree. */
+class ExtractedPackageModuleStateBuilder extends ModuleStateBuilder {
+  public override buildNodeModuleImportPaths(mainModulePath: string): string[] {
+    return [mainModulePath];
+  }
+}
+
 export async function createPackageRootPreferredModuleState(packageRoot: string): Promise<IModuleState> {
-  const moduleState = await new ModuleStateBuilder().buildModuleState(require, packageRoot);
+  const extracted = process.env.XPOD_BUN_SINGLE_RUNTIME === '1';
+  const builder = extracted ? new ExtractedPackageModuleStateBuilder() : new ModuleStateBuilder();
+  const moduleState = await builder.buildModuleState(require, packageRoot);
+  if (extracted && moduleState.nodeModulePaths.some(directory => {
+    const relative = path.relative(moduleState.mainModulePath, directory);
+    return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+  })) {
+    throw new Error('Extracted Components dependency is outside its packaged runtime');
+  }
   preferMainPackageComponents(moduleState);
   return moduleState;
+}
+
+/** Keep CSS's CLI parsing and startup while supplying the extracted dependency state. */
+export function createPackageRootPreferredAppRunner(Runner: typeof AppRunner, packageRoot: string): AppRunner {
+  if (process.env.XPOD_BUN_SINGLE_RUNTIME !== '1') {
+    return new Runner();
+  }
+  return new class extends Runner {
+    public override async create(input: AppRunnerInput = {}): Promise<App> {
+      const moduleState = await createPackageRootPreferredModuleState(packageRoot);
+      return super.create({
+        ...input,
+        loaderProperties: { ...input.loaderProperties, mainModulePath: packageRoot, moduleState },
+      });
+    }
+  }();
 }
 
 function preferMainPackageComponents(moduleState: IModuleState): void {

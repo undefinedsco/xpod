@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { expect, type BrowserContext, type Page, test } from '@playwright/test';
 import { startBrowserExternalRp } from '../helpers/browserExternalRp';
-import { authorizeRcSession, readRcAccountBindings, verifyRcPrivateIsolation, type RcIdentity, type RcRp, type RcSession } from '../helpers/rcLightWeb';
+import { authorizeRcSession, describeRcAccountSurface, RC_ACCOUNT_DASHBOARD_HEADING, RC_ACCOUNT_DOCUMENT_PATH,
+  readRcAccountBindings, settleRcAccountSurface, verifyRcPrivateIsolation, type RcIdentity, type RcRp,
+  type RcSession } from '../helpers/rcLightWeb';
 
 const baseUrl = requiredEnv('XPOD_SETTINGS_E2E_BASE_URL');
 const statePaths = [requiredEnv('XPOD_SETTINGS_E2E_ALICE_STATE'), requiredEnv('XPOD_SETTINGS_E2E_BOB_STATE')];
@@ -76,9 +78,17 @@ test.describe('deployed Xpod lightweight Web acceptance (no desktop bridge)', ()
 });
 
 async function assertLightAccount(page: Page, identity: RcIdentity) {
-  const response = await page.goto(new URL('/.account/account/', baseUrl).href, { waitUntil: 'domcontentloaded' });
+  const response = await page.goto(new URL(RC_ACCOUNT_DOCUMENT_PATH, baseUrl).href, { waitUntil: 'domcontentloaded' });
   expect(response?.status()).toBe(200);
-  await expect(page.getByRole('heading', { name: /账号总览|Account (?:overview|dashboard)/iu })).toBeVisible();
+  // The Account document is client rendered: the dashboard only exists after the SPA
+  // resolves its Account index and fetches the Cookie-authenticated controls. Observe the
+  // painted surface instead of a single frame, and report exactly which surface painted
+  // when it is not the dashboard.
+  const surface = await settleRcAccountSurface(page);
+  expect(surface.kind, describeRcAccountSurface(surface)).toBe('account-dashboard');
+  expect(await page.getByRole('heading', { name: RC_ACCOUNT_DASHBOARD_HEADING }).count(),
+    describeRcAccountSurface(surface)).toBe(1);
+  process.stdout.write(`RC account surface settled kind=${surface.kind} elapsedMs=${surface.elapsedMs}\n`);
   await expect(page.locator('input[type="password"]')).toHaveCount(0);
   const account = await readRcAccountBindings(page, baseUrl);
   expect(account.accountId).toBe(identity.accountId);

@@ -6,7 +6,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig } from '../../../src/api/container';
 import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
-import { secretPathForGatewayLocatorDatabase } from '../../../src/runtime/gateway-locator-secret';
 import { registerProvisionStatusRoute } from '../../../src/api/handlers/ProvisionHandler';
 
 const cleanupRoots: string[] = [];
@@ -200,32 +199,6 @@ describe('loadConfigFromEnv', () => {
     expect(config.aiGatewayProviderBaseUrls?.openai).toBe('http://127.0.0.1:48111/v1');
   });
 
-  it('loads an explicit Gateway locator secret without deriving a local file secret', () => {
-    process.env.XPOD_EDITION = 'local';
-    process.env.CSS_IDENTITY_DB_URL = ':memory:';
-    process.env.XPOD_GATEWAY_LOCATOR_SECRET = 'explicit-gateway-locator-secret';
-
-    const config = loadConfigFromEnv();
-    const container = createApiContainer(config);
-
-    expect(config.gatewayLocatorSecret).toBe('explicit-gateway-locator-secret');
-    expect(() => container.resolve('gatewayAccessKeyRepository')).not.toThrow();
-  });
-
-  it('derives a persistent Gateway locator secret for local SQLite identity storage', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-container-locator-'));
-    cleanupRoots.push(root);
-    const databaseUrl = `sqlite:${path.join(root, 'identity.sqlite')}`;
-    const container = createApiContainer(baseConfig({ databaseUrl }));
-
-    expect(() => container.resolve('gatewayAccessKeyRepository')).not.toThrow();
-    const secretPath = secretPathForGatewayLocatorDatabase(databaseUrl)!;
-    expect(fs.existsSync(secretPath)).toBe(true);
-    if (process.platform !== 'win32') {
-      expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
-    }
-  });
-
   it('explicitly enables the local filesystem AI client configuration capability', () => {
     process.env.XPOD_EDITION = 'local';
     process.env.CSS_ROOT_FILE_PATH = '.test-data/api-container-config';
@@ -321,6 +294,22 @@ describe('loadConfigFromEnv', () => {
     expect(typeof ownerPodAccess.getPodFetch).toBe('function');
     expect(providerConnectService.credentialRepository.podAccess).toBe(ownerPodAccess);
     expect(gatewayCredentialStore.podAccess).toBe(ownerPodAccess);
+    // Use-time OAuth renewal must reach the shared Connect lifecycle through the store hook;
+    // without it the inference path can never renew an imported subscription session.
+    expect(typeof gatewayCredentialStore.renewCredential).toBe('function');
+    const renewSpy = vi.spyOn(providerConnectService, 'renewCredential').mockResolvedValue(true);
+    await expect(gatewayCredentialStore.renewCredential({
+      webId: 'https://id.example/alice/profile/card#me',
+      deployment: 'local',
+      provider: 'kimi',
+      credentialId: 'kimi-session',
+      credentialIri: 'https://id.example/alice/settings/credentials.ttl#kimi-session',
+      reason: 'expired',
+    })).resolves.toBe(true);
+    expect(renewSpy).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'kimi', credentialId: 'kimi-session', reason: 'expired', deployment: 'local',
+    }));
+    renewSpy.mockRestore();
     expect(providerQuotaService.repository.podAccess).toBe(ownerPodAccess);
     expect(providerQuotaService.credentialRepository.podAccess).toBe(ownerPodAccess);
     expect(podModelSelectionRepository.podAccess).toBe(ownerPodAccess);
@@ -357,16 +346,6 @@ describe('loadConfigFromEnv', () => {
     const aiGatewayService = container.resolve('aiGatewayService') as any;
 
     expect(aiGatewayService.cloudModels).toBeUndefined();
-  });
-
-  it('fails closed for Cloud Gateway API keys without a stable shared locator secret', () => {
-    const container = createApiContainer(baseConfig({
-      edition: 'cloud',
-      databaseUrl: 'postgres://db.example/xpod',
-    }));
-
-    expect(() => container.resolve('gatewayAccessKeyRepository'))
-      .toThrow(/XPOD_GATEWAY_LOCATOR_SECRET is required for Cloud Gateway API keys/u);
   });
 
   it('restores first-run Local Cloud credentials from the default setup file without env tokens', () => {

@@ -1,6 +1,6 @@
 # Xpod RC Sealos overlay
 
-This overlay deploys only RC-owned resources into the Sealos-assigned CO
+This overlay deploys only RC-owned resources into the Sealos-assigned RC
 namespace. It never creates a Namespace or a private Inngest instance.
 
 Public entry points mirror production roles:
@@ -27,8 +27,11 @@ database in the shared PostgreSQL instance (`xpod-rdf-postgres`, database
 `vector`, `xpod_rdf` and `xpod_qlever` extensions are installed in that order,
 so stale schemas and candidate data cannot cross runs and no per-run database
 instance has to be provisioned or reclaimed. The shared
-public RC entry points are serialized at the deployment job: release branches may
-build in parallel but cannot mutate the static RC service concurrently. RC reuses
+public RC entry points are serialized for the entire candidate workflow across release
+branches, including desktop and final acceptance. Cleanup always runs after those
+jobs finish, scales only this run's RC deployment (and an existing RC-only Inngest
+deployment), and deletes this run's seed Secret; shared PostgreSQL and Inngest
+remain running. RC reuses
 Redis and Inngest with an isolated nonzero Redis DB and Event Key. Pod blobs are written to the
 dedicated Cloudflare R2 bucket `xpod-rc`; its endpoint and credentials come only
 from `APP_ENV_FILE`. The historical `CSS_MINIO_*` names remain for compatibility
@@ -39,9 +42,6 @@ with the shared Inngest instance. Production object storage is not modified.
 RC source are fixed in the manifest. The managed Gateway block also preserves
 the public Host and HTTPS forwarding headers so OIDC/DPoP URL verification sees
 the same origin as the browser. `CSS_IDENTITY_DB_URL` and `CSS_SPARQL_ENDPOINT`
-are provided by `APP_ENV_FILE` and target the shared `xpod-rdf-postgres`
-instance; the workflow resets only the logical `xpod_rc` database (drop and
-recreate, then the `vector`/`xpod_rdf`/`xpod_qlever` extensions) before
-deploying, without provisioning or reclaiming a per-run PostgreSQL instance.
-Do not place production hosts or unsupported prefix variables in
+from `APP_ENV_FILE` are preserved and must address the isolated `xpod_rc` database
+and role on the shared `xpod-rdf-postgres` instance. Do not place production hosts or unsupported prefix variables in
 `APP_ENV_FILE`.

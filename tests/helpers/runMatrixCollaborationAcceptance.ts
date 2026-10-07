@@ -53,7 +53,6 @@ async function main(): Promise<void> {
       logLevel: (process.env.XPOD_MATRIX_LOG_LEVEL as never) ?? (diag ? 'debug' : 'warn'),
       env: {
         XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: fixture.command,
-        XPOD_GATEWAY_LOCATOR_SECRET: 'matrix-integration-locator',
         XPOD_SECRET_CELL_KEY_ID: 'matrix-integration',
         XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 7).toString('base64'),
       },

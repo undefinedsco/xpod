@@ -79,6 +79,16 @@ export function AiGatewayKeysSection({
   const [busyKeyId, setBusyKeyId] = useState<string>()
   const operation = useRef(false)
   const verificationGeneration = useRef(0)
+  /**
+   * Where a key this session actually applied is in effect, and the digest it was applied with.
+   * The Account owns the credential but no application state, so a list refresh hands back a row
+   * without `appliedTo`; without this the plan that is still live would look like it was never
+   * written and lose its one test. Honoured only for the exact key id whose row still carries the
+   * matching digest, and dropped as soon as the Account stops listing the key, so a changed,
+   * reissued or deleted credential never inherits another key's application. Session-local: it is
+   * only ever a ref, never persisted and never sent anywhere.
+   */
+  const appliedObservations = useRef(new Map<string, { appliedTo: AiConnectionsClientId; fingerprint: string }>())
   const [sessionPlans, setSessionPlans] = useState<Partial<Record<AiConnectionsClientId, { planId: string; fingerprint: string }>>>({})
   const [testingKeyId, setTestingKeyId] = useState<string>()
   const [clientStatuses, setClientStatuses] = useState<Partial<Record<AiConnectionsClientId, AiClientConfigurationStatus>>>({})
@@ -90,6 +100,8 @@ export function AiGatewayKeysSection({
     setTestingKeyId(undefined)
     setClientStatuses({})
     setSessionPlans({})
+    // A new client or bridge is a new session: no application observed under the old one carries.
+    appliedObservations.current.clear()
     if (bridge) {
       for (const id of AI_CONNECTIONS_CLIENTS) {
         void bridge.inspect(id).then((status) => {
@@ -128,6 +140,29 @@ export function AiGatewayKeysSection({
     notify({ variant: 'destructive', description: errorMessage(cause), duration: 8000 })
   }, [notify])
 
+  /**
+   * Rows as this session should show them: a revoked key is gone, and a key
+   * whose wrapper this session still holds is not advertised as unrecoverable.
+   * The Account remains the only store; this is a view decision.
+   */
+  const adoptRecords = useCallback((records: GatewayKeyRecord[]): GatewayKeyRecord[] => {
+    // A key the Account no longer lists is gone: the session observation for it is not kept to be
+    // handed back if the same id ever reappears, because that would be inventing application state.
+    const listed = new Set(records.map((record) => record.id))
+    for (const id of [...appliedObservations.current.keys()]) {
+      if (!listed.has(id)) appliedObservations.current.delete(id)
+    }
+    return records
+      .filter((record) => !record.revokedAt)
+      .map((record) => {
+        const observed = record.appliedTo ? undefined : appliedObservations.current.get(record.id)
+        const restored = observed && record.fingerprint !== undefined && observed.fingerprint === record.fingerprint
+          ? { ...record, appliedTo: observed.appliedTo }
+          : record
+        return plaintexts.current.has(record.id) ? { ...restored, plaintextAvailable: undefined } : restored
+      })
+  }, [])
+
   useEffect(() => {
     let active = true
     setLoading(true)
@@ -139,14 +174,10 @@ export function AiGatewayKeysSection({
     plaintexts.current.clear()
     void client.listGatewayKeys()
       .then((records) => {
-        if (active) setKeys(records.filter((record) => !record.revokedAt))
+        if (active) setKeys(adoptRecords(records))
       })
       .catch((cause) => {
-        if (active) {
-          const missing = Boolean(cause && typeof cause === 'object' && 'code' in cause && cause.code === 'service_access_missing')
-          setLoadError(missing ? 'Xpod 尚未获准访问这个 Pod' : aiConnectionsErrorMessage(cause))
-          setServiceAccessMissing(missing)
-        }
+        if (active) setLoadError(aiConnectionsErrorMessage(cause))
       })
       .finally(() => {
         if (active) setLoading(false)
@@ -155,7 +186,21 @@ export function AiGatewayKeysSection({
       active = false
       if (notification.current) dismissToast(notification.current)
     }
-  }, [client, notifyError])
+  }, [client, notifyError, adoptRecords])
+
+  // The keys themselves are Account-owned and load without any Pod permission,
+  // but a key is only usable while Xpod may read the Pod, so the page still
+  // says so instead of letting an unusable list look healthy.
+  useEffect(() => {
+    if (!onAuthorizeService) return
+    let active = true
+    void client.getServiceAccess()
+      .then(() => { if (active) setServiceAccessMissing(false) })
+      .catch((cause) => {
+        if (active && errorCode(cause) === 'service_access_missing') setServiceAccessMissing(true)
+      })
+    return () => { active = false }
+  }, [client, onAuthorizeService, liveRevision])
 
   // A change made elsewhere only needs new rows: it must not drop the wrapper
   // copies this session is still showing, nor flash the loading state.
@@ -164,13 +209,13 @@ export function AiGatewayKeysSection({
     let active = true
     void client.listGatewayKeys()
       .then((records) => {
-        if (active) setKeys(records.filter((record) => !record.revokedAt))
+        if (active) setKeys(adoptRecords(records))
       })
       .catch(() => undefined)
     return () => {
       active = false
     }
-  }, [client, liveRevision])
+  }, [client, liveRevision, adoptRecords])
 
   const authorize = async () => {
     if (!onAuthorizeService || authorizing) return
@@ -178,7 +223,7 @@ export function AiGatewayKeysSection({
     try {
       await onAuthorizeService()
       const records = await client.listGatewayKeys()
-      setKeys(records.filter((record) => !record.revokedAt))
+      setKeys(adoptRecords(records))
       setLoadError(undefined)
       setServiceAccessMissing(false)
     } catch (cause) {
@@ -272,6 +317,11 @@ export function AiGatewayKeysSection({
       })
       setSessionPlans(current => ({ ...current, [plan.client]: issued.fingerprint ? { planId: plan.planId, fingerprint: issued.fingerprint } : undefined }))
       setAppliedClient(plan.client)
+      // Only a successful apply records where the key is in effect; a list refresh afterwards
+      // restores this row's binding from here instead of losing it with the Account rows.
+      if (issued.fingerprint) {
+        appliedObservations.current.set(issued.id, { appliedTo: plan.client, fingerprint: issued.fingerprint })
+      }
       setClientStatuses((current) => ({ ...current, [plan.client]: { status: 'unverifiable', appliedKeyFingerprint: issued.fingerprint } }))
       // The record now points at the client the wrapper was written into.
       setKeys((current) => current.map((record) => record.id === issued.id
@@ -311,9 +361,16 @@ export function AiGatewayKeysSection({
         if (generation !== verificationGeneration.current) return
         status = { ...status, ...inspected }
       }
-      const fingerprint = status.appliedKeyFingerprint ?? (status.status !== 'configured' ? plan.fingerprint : undefined)
-      if (fingerprint !== plan.fingerprint) throw new Error('Configuration key changed')
-      setClientStatuses(current => ({ ...current, [plan.clientId]: { ...status, appliedKeyFingerprint: fingerprint } }))
+      const reported = status.appliedKeyFingerprint
+      // Only a digest the host actually reports as *different* proves the
+      // applied key changed. A host that reports nothing leaves the key
+      // unproven; it must never read as "changed" or as verified.
+      if (reported !== undefined && reported !== plan.fingerprint) throw new Error('Configuration key changed')
+      setClientStatuses(current => ({ ...current, [plan.clientId]: {
+        ...status,
+        ...(reported ? {} : { status: 'unverifiable' as const }),
+        appliedKeyFingerprint: reported ?? plan.fingerprint,
+      } }))
     } catch {
       if (generation === verificationGeneration.current) notify({ variant: 'destructive', description: '客户端配置测试失败，请重试。', duration: 8000 })
     } finally {
@@ -333,6 +390,7 @@ export function AiGatewayKeysSection({
     try {
       await client.deleteGatewayKey(record.id)
       plaintexts.current.delete(record.id)
+      appliedObservations.current.delete(record.id)
       setKeys((current) => current.filter((item) => item.id !== record.id))
       if (issued?.id === record.id) {
         setIssued(undefined)
@@ -379,14 +437,14 @@ export function AiGatewayKeysSection({
               </DialogTrigger>
             )}
           />
-          {loadError ? <InlineNotice
+          {loadError || serviceAccessMissing ? <InlineNotice
             tone="destructive"
             role="alert"
             action={serviceAccessMissing && onAuthorizeService ? <Button size="sm" disabled={authorizing} onClick={() => void authorize()}>
               {authorizing ? '正在授权…' : '允许 Xpod 访问'}
             </Button> : undefined}
           >
-            {loadError}
+            {loadError ?? 'Xpod 尚未获准访问这个 Pod'}
           </InlineNotice> : null}
           {loading ? (
             <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
@@ -407,14 +465,6 @@ export function AiGatewayKeysSection({
                     ? clientStatuses[record.appliedTo as AiConnectionsClientId] : undefined}
                   onTest={verificationPlan(record) ? () => void testConfiguration(record) : undefined}
                   testing={testingKeyId === record.id}
-                  onEnable={() => {
-                    if (operation.current) return
-                    operation.current = true
-                    setBusyKeyId(record.id)
-                    void client.updateGatewayKey(record.id, { enabled: true }).then((updated) => {
-                      setKeys((current) => current.map((item) => item.id === record.id ? updated : item))
-                    }).catch(notifyError).finally(() => { operation.current = false; setBusyKeyId(undefined) })
-                  }}
                   onReissue={() => {
                     beginAnother()
                     setName(record.name ?? DEFAULT_KEY_NAME)
@@ -541,6 +591,12 @@ export function AiGatewayKeysSection({
       </Dialog>
     </TooltipProvider>
   )
+}
+
+function errorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined
 }
 
 function errorMessage(error: unknown): string {

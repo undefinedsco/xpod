@@ -591,37 +591,91 @@ available, the UI must say exactly what is missing and why. A vague message like
 Provider API Keys must never be written into Codex, Claude Code, Pi, or
 CodeBuddy. Local clients receive only Xpod Gateway endpoint plus Xpod API Key.
 
-The shared `gatewayAccessKeyResource` remains the public, hash-only Gateway key
-record. Recoverable Xpod API Key material is an Xpod product concern and is
-stored in a separate Xpod-owned Pod companion resource; it must not weaken or
-duplicate the shared model's `secretHash` contract. Provider credential records
-are also separate and must never be reused as Gateway client keys.
+An Xpod key is an Account client credential, not a Pod record: Xpod stores no
+plaintext, no recoverable companion resource and no second key index. The
+legacy shared `gatewayAccessKeyResource` belongs to the retired Gateway key
+design; Xpod keys no longer read or write it, and nothing may derive a reveal
+capability from its `secretHash`. Provider credential records are separate and
+must never be reused as client keys.
 
 These rules are object-specific:
 
 | Object | Display and recovery boundary |
 | --- | --- |
-| Xpod API Key | Owner-authorized creation and, when recoverable companion material exists, reveal/copy for cross-device client setup. Existing hash-only records cannot be reversed; missing material must be explained. |
-| Shared `gatewayAccessKeyResource` | Hash-only verification record. Never add plaintext to this shared resource or derive a reveal capability from `secretHash`. |
-| Provider Credential | Separate credential storage and protection contract. Xpod API Key reveal does not authorize provider-secret reveal, copying it into clients, or weakening encryption. |
-| Runtime configuration secret | Keeps its own write-only or redacted configuration contract. Product API Key recovery does not create a runtime-secret reveal operation. |
+| Xpod API Key | An Account client credential the account manages; Xpod only wraps it once as `sk-base64(client_id:client_secret)` for the client. The wrapper is visible in the session that created it and nowhere else: there is no reveal, and the list shows metadata only. |
+| Shared `gatewayAccessKeyResource` | Legacy shared model resource that Xpod keys no longer use. Never add plaintext to it or derive a reveal capability from `secretHash`. |
+| Provider Credential | Separate credential storage and protection contract. Wrapping an Account credential does not authorize provider-secret reveal, copying provider secrets into clients, or weakening encryption. |
+| Runtime configuration secret | Keeps its own write-only or redacted configuration contract. Account-credential handling does not create a runtime-secret reveal operation. |
 
 ### Web Management Contract
 
-The Web UI uses the current authenticated WebID session for these management
-requests. It never asks the user for a CSS Client ID or Client Secret:
+The Account owns Xpod keys; Xpod has no key backend of its own. The Web UI
+drives the CSS Account client-credentials control with the current
+authenticated session. It never asks the user for a CSS Client ID or Client
+Secret, and the page issues, lists and revokes through the capability boundary
+(`ui/src/auth/account-client-credentials.ts`) rather than a Pod route:
 
 | Method | Path | Meaning |
 | --- | --- | --- |
-| `GET` | `/api/ai/gateway/keys` | List non-deleted keys owned by the current WebID. |
-| `POST` | `/api/ai/gateway/keys` | Create a named key and return its plaintext plus durable record. |
-| `POST` | `/api/ai/gateway/keys/:id/reveal` | Recover plaintext from the Xpod-owned Pod companion resource. |
-| `PATCH` | `/api/ai/gateway/keys/:id` | Enable or disable the exact key. |
-| `DELETE` | `/api/ai/gateway/keys/:id` | Delete the exact key; it must not appear after reload. |
+| `POST` | `controls.account.clientCredentials` | Issue one named credential for the current WebID and return `{id, secret, resource}` once. |
+| `GET` | `controls.account.clientCredentials` | List the account's remaining credentials as label → resource; metadata only. |
+| `DELETE` | the credential `resource` | Revoke that exact credential after re-reading it and matching `id` and `webId`. |
 
-Create, reveal, enable, disable, and delete are owner-scoped operations. A
-Bearer key accepted by `/v1/models` and `/v1/chat/completions` is the plaintext
-created here, not a locally assembled `base64(client_id:client_secret)` value.
+The wrapper `sk-base64(client_id:client_secret)` exists only in the session
+that issued it; Xpod stores no plaintext and no Pod-side companion record, so a
+reload cannot show the value again and the row says so. There is no reveal
+route and no enable/disable update: the Account offers neither, so the surface
+does not pretend otherwise. A Bearer key accepted by `/v1/models` and
+`/v1/chat/completions` is exactly this wrapper over an Account-issued
+credential.
+
+#### Owned rows and honest restore status
+
+Two rules keep the list from over-claiming what the Account actually returns:
+
+- **Ownership.** A row is shown only for a credential the Account confirms for
+  the **currently authenticated WebID**. The list endpoint returns every
+  credential the account owns, and one Account can hold several Cloud WebIDs and
+  Local bindings, so a row whose `webId` is missing — or is not the selected
+  identity — is never relabelled as "this identity's key". Revocation re-reads
+  the credential and matches its exact `id`, `resource` and `webId` before
+  `DELETE`, so a foreign credential is refused rather than silently deleted.
+- **Unknown restored observations.** `clientId` is the Account credential id and
+  is the row's identity. The fingerprint that the bridge reports is the digest of
+  the wrapper **only while the wrapper is known** — that is, inside the session
+  that issued it. A restored row carries metadata only, so the UI states that the
+  key cannot be verified or re-shown instead of inventing a digest or a
+  "changed" verdict. Applying a key and testing it is a single-session
+  observation, and a refresh must not erase the ability to test the key that was
+  just applied in that session.
+
+#### Revocation Is Revalidated On Admission
+
+An Xpod key is only as valid as the Account credential behind it. Deleting that
+credential must stop the wrapper it backs even while an access token minted
+before the deletion is still inside its own lifetime:
+
+- Every **new** inbound `sk-base64(client_id:client_secret)` request to
+  `/v1/models` and the inference routes revalidates the presented credential with
+  the issuer before the request is admitted. A cached access token proves an
+  earlier exchange; it is not proof that the credential still exists.
+- The session cache serves only the **same** request's outbound Pod access: one
+  exchange is reused for that request's own reads and writes. It never admits a
+  later inbound request, and a pending pre-revocation exchange is not reused to
+  admit a request that began after the revocation completed.
+- A definitive issuer refusal (400/401/403) drops the cached session and fails
+  the request with 401. An issuer that cannot be reached (5xx or network) leaves
+  the cache untouched and answers 503 - a cached success is never substituted for
+  an answer the issuer did not give.
+- A request already in flight when the revocation lands is not torn down; only
+  admissions that start afterwards must fail.
+- The rule holds in Cloud, managed Local and Standalone and across separate CSS
+  and API processes: it lives in the shared authentication/session boundary, not
+  in a UI revoke hook, a RAM event notification, a TTL, a clock advance or a
+  provider branch.
+- Typed errors and secret redaction are unchanged: a refusal never echoes the
+  presented secret, and an accepted request keeps exactly the WebID association
+  and authorized Pod binding its exchange proved.
 
 ## Provider Detail UX
 

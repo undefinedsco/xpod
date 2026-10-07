@@ -19,7 +19,6 @@ import type {
   AiProviderSummary,
   CustomProviderModel,
   DiscoveredProviderModel,
-  GatewayKeyRecord,
   ProviderModelDiscovery,
 } from './types'
 
@@ -128,40 +127,6 @@ export function assertProvider(provider: string): asserts provider is AiConnecti
   if (!(AI_CONNECTIONS_PROVIDERS as readonly string[]).includes(provider)) {
     throw new Error(`Unsupported AI provider: ${provider}`)
   }
-}
-
-export function parseGatewayKeyRecord(value: unknown): GatewayKeyRecord | undefined {
-  if (!isRecord(value)
-    || typeof value.id !== 'string'
-    || typeof value.owner !== 'string'
-    || !Array.isArray(value.scopes)
-    || !value.scopes.every((scope) => typeof scope === 'string')
-    || typeof value.createdAt !== 'string') {
-    return undefined
-  }
-  return compactObject({
-    id: value.id,
-    kind: value.kind === 'client-credentials' ? value.kind : undefined,
-    credentialResource: stringValue(value.credentialResource),
-    fingerprint: stringValue(value.fingerprint),
-    owner: value.owner,
-    scopes: value.scopes,
-    createdAt: value.createdAt,
-    expiresAt: stringValue(value.expiresAt),
-    lastUsedAt: stringValue(value.lastUsedAt),
-    disabledAt: stringValue(value.disabledAt),
-    revokedAt: stringValue(value.revokedAt),
-    name: stringValue(value.name),
-    maskedHint: stringValue(value.maskedHint),
-    plaintextAvailable: typeof value.plaintextAvailable === 'boolean' ? value.plaintextAvailable : undefined,
-    // Recorded by the server when the credential was issued/applied; the app
-    // needs them to revoke the CSS credential without a stored secret.
-    clientCredentialId: stringValue(value.clientCredentialId),
-    appliedTo: stringValue(value.appliedTo),
-    appliedOn: stringValue(value.appliedOn),
-    appliedAt: stringValue(value.appliedAt),
-    appliedClients: stringListValue(value.appliedClients),
-  }) as unknown as GatewayKeyRecord
 }
 
 export function parseCustomModelList(value: unknown): CustomProviderModel[] {

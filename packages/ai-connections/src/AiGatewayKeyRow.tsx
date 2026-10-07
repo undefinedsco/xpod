@@ -26,7 +26,6 @@ export function AiGatewayKeyRow({
   confirming = false,
   configurationStatus,
   onReissue,
-  onEnable,
   onTest,
   testing = false,
   onRequestDestroy,
@@ -39,7 +38,6 @@ export function AiGatewayKeyRow({
   confirming?: boolean
   configurationStatus?: AiClientConfigurationStatus
   onReissue?: () => void
-  onEnable?: () => void
   onTest?: () => void
   testing?: boolean
   onRequestDestroy: () => void
@@ -86,7 +84,6 @@ export function AiGatewayKeyRow({
         <span>密钥原文没有保存，不能再显示</span>
         <Button variant="ghost" size="sm" disabled={busy} onClick={onReissue}>重新签发</Button>
       </div> : null}
-      {record.disabledAt ? <div className="order-last flex w-full items-center gap-2 text-sm text-muted-foreground">已停用{onEnable ? <Button size="sm" variant="outline" disabled={busy} onClick={onEnable}>启用</Button> : null}</div> : null}
       {destroyable ? confirming ? (
         <div data-testid="gateway-key-destroy-confirm" className="mt-2 shrink-0 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
           {/* §7.3：停用共享 Key 前说明已知影响与未记录关联的局限 */}

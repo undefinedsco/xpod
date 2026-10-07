@@ -151,15 +151,15 @@ esac
     expect(container.readinessProbe.httpGet.path).toBe('/service/status');
   });
 
-  it('only runs on release branches with branch-scoped cancellation and minimal permissions', async () => {
+  it('only runs on release branches with a shared workflow lock and minimal permissions', async () => {
     const workflow = await loadWorkflow();
 
     expect(workflow.on.push.branches).toEqual([ 'release/**' ]);
     expect(workflow.on.push.tags).toBeUndefined();
     expect(workflow.on.workflow_dispatch).toBeDefined();
     expect(workflow.concurrency).toEqual({
-      group: expect.stringContaining('${{ github.ref }}'),
-      'cancel-in-progress': true,
+      group: 'xpod-shared-rc-workflow',
+      'cancel-in-progress': false,
     });
     expect(workflow.permissions).toEqual({
       contents: 'read',
@@ -323,10 +323,9 @@ esac
     const diagnostics = steps.find((step: any) => step.name === 'Dump diagnostics');
     expect(diagnostics.if).toContain('failure()');
     expect(diagnostics.if).toContain("steps.rc_kubeconfig.outcome == 'success'");
-    const cleanup = steps.find((step: any) => step.name === 'Scale RC deployments to zero');
-    expect(cleanup.if).toContain('always()');
-    expect(cleanup.if).toContain("steps.rc_kubeconfig.outcome == 'success'");
-    expect(cleanup.if).not.toContain('XPOD_RC_SCALE_TO_ZERO');
+    // The RC scale-down moved to the dedicated `cleanup_rc` job so it can run after
+    // the desktop and finalize acceptance jobs (asserted by the cleanup contract test).
+    expect(steps.some((step: any) => step.name === 'Scale RC deployments to zero')).toBe(false);
   });
 
   it('builds and verifies the macOS desktop without Apple distribution credentials', async () => {
@@ -336,7 +335,7 @@ esac
     const desktopManifest = JSON.parse(await readFile(path.join(repoRoot, 'desktop/package.json'), 'utf8'));
 
     expect(desktop.name).toBe('Build macOS RC desktop');
-    expect(desktop.needs).toEqual([ 'metadata', 'build_qlever_macos_runtime' ]);
+    expect(desktop.needs).toEqual([ 'metadata', 'build_qlever_macos_runtime', 'deploy_and_accept' ]);
     expect(desktop.env.CSC_IDENTITY_AUTO_DISCOVERY).toBe('false');
     for (const key of [ 'CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID' ]) {
       expect(desktop.env[key]).toBeUndefined();
@@ -466,14 +465,55 @@ esac
     expect(runText).not.toContain('rollout status deployment/xpod-rc-minio');
     expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
     expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');
-    // API 服务启动时会要求它：缺了 rc 会卡在 "Failed to start API Service"。
-    expect(runText).toContain("'XPOD_GATEWAY_LOCATOR_SECRET',");
+    // Gateway API Keys are gone, so the API no longer requires a locator secret at startup.
+    expect(runText).not.toContain('XPOD_GATEWAY_LOCATOR_SECRET');
     expect(runText).not.toContain('--from-literal=POSTGRES_DB=xpod_rc');
     expect(runText).not.toContain('--from-literal=POSTGRES_USER=xpod_rc');
     expect(runText).not.toContain('must match the isolated RC PostgreSQL service identity');
     expect(runText).not.toContain('production database is not allowed in RC APP_ENV_FILE');
     expect(runText).not.toMatch(/cat\s+["']?\$APP_ENV_FILE/);
     expect(runText).not.toMatch(/grep .*APP_ENV_FILE/);
+  });
+
+  it.each([
+    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_rc', true],
+    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres.fixture-ns.svc.cluster.local/xpod_rc', true],
+    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_cn', false],
+    ['postgresql://postgres:fixture@xpod-rdf-postgres:5432/xpod_rc', false],
+    ['postgresql://xpod_rc:fixture@production-postgres:5432/xpod_rc', false],
+    ['https://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_rc', false],
+  ])('validates both configured database URLs before resetting the shared RC database (%s)', async (url, allowed) => {
+    const workflow = await loadWorkflow();
+    const run = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Validate RC runtime secret isolation').run;
+    const script = run.match(/<<'NODE'\n([\s\S]*?)\nNODE/)[1];
+    const parent = path.join(repoRoot, '.test-data/candidate-database-isolation');
+    await mkdir(parent, { recursive: true, mode: 0o700 });
+    const directory = await mkdtemp(path.join(parent, 'case-'));
+    const envPath = path.join(directory, 'runtime.env');
+    const seedPath = path.join(directory, 'seed.json');
+    try {
+      for (const key of ['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT']) {
+        const entries = {
+          CSS_IDENTITY_DB_URL: 'postgresql://xpod_rc:fixture@xpod-rdf-postgres/xpod_rc',
+          CSS_SPARQL_ENDPOINT: 'postgresql://xpod_rc:fixture@xpod-rdf-postgres/xpod_rc',
+          CSS_REDIS_CLIENT: 'redis://redis:6379/1',
+          CSS_MINIO_ENDPOINT: 'https://fixture.r2.cloudflarestorage.com',
+          CSS_MINIO_BUCKET_NAME: 'xpod-rc', CSS_MINIO_ACCESS_KEY: 'fixture', CSS_MINIO_SECRET_KEY: 'fixture',
+          XPOD_INNGEST_EVENT_KEY: 'fixture', XPOD_INNGEST_SIGNING_KEY: 'fixture', XPOD_GATEWAY_LOCATOR_SECRET: 'fixture',
+          [key]: url,
+        };
+        await writeFile(envPath, Object.entries(entries).map(([name, value]) => `${name}=${value}`).join('\n'), { mode: 0o600 });
+        await writeFile(seedPath, JSON.stringify([{email: 'alice@fixture'}, {email: 'bob@fixture'}]), { mode: 0o600 });
+        const runValidation = () => execFileSync(process.execPath, ['-', envPath, seedPath], {
+          env: {...process.env, SEALOS_NAMESPACE: 'fixture-ns'}, input: script, stdio: 'pipe',
+        });
+        if (allowed) expect(runValidation).not.toThrow();
+        else expect(runValidation).toThrow(/must use the isolated xpod_rc database and role/);
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+    const reset = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Reset the shared RC database').run;
+    expect(reset).toContain('SHOW server_version_num');
+    expect(reset).toContain("SELECT extversion FROM pg_extension WHERE extname = 'vector'");
   });
 
   it('derives authenticated smoke configuration from the fixed RC seed instead of manual secrets', async () => {
@@ -837,12 +877,17 @@ esac
     expect(diagnostics.run).toContain('live-gateway-local-container-name');
     expect(diagnostics.run).toContain('docker inspect "$local_name"');
     expect(diagnostics.run).toContain('docker logs "$local_name"');
-    const cleanup = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
-    expect(cleanup.if).toContain('always()');
-    expect(cleanup.if).toContain("steps.rc_kubeconfig.outcome == 'success'");
-    expect(cleanup.if).not.toContain('XPOD_RC_SCALE_TO_ZERO');
-    expect(cleanup.run).toContain('kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0');
+    expect(workflow.jobs.deploy_and_accept.steps.some((step: any) => step.name === 'Scale RC deployments to zero')).toBe(false);
+    const cleanupJob = workflow.jobs.cleanup_rc;
+    expect(cleanupJob.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']);
+    expect(cleanupJob.if).toBe('${{ always() }}');
+    expect(workflow.jobs.build_desktop_rc.needs).toContain('deploy_and_accept');
+    const cleanup = cleanupJob.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
+    expect(cleanup.if).toBeUndefined();
+    expect(cleanup.run).toContain('resource=deployment/xpod-rc');
     expect(cleanup.run).toContain('scale deployment/xpod-rc-inngest --replicas=0');
+    expect(cleanup.run).toContain('delete secret "$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found');
+    expect(cleanup.run).not.toContain('statefulset/');
     expect(cleanup.run).not.toContain('deployment/xpod-inngest');
   });
 
@@ -877,5 +922,29 @@ esac
     expect(runText).toContain('containerStatus?.ready');
     expect(runText).toContain('metadata.deletionTimestamp');
     expect(runText).not.toContain("image: 'passed'");
+  });
+
+  it('resolves the desktop self-update baseline by version order, not by recency alone', async () => {
+    const workflow = await loadWorkflow();
+    const step = workflow.jobs.build_desktop_rc.steps.find(
+      (candidate: any) => candidate.name === 'Download the previously released desktop bundle',
+    );
+    expect(step).toBeDefined();
+    // The verifier already rejects evidence unless oldVersion < newVersion, so the
+    // baseline must be resolved against the candidate instead of taken blindly.
+    expect(step.run).toContain('scripts/select-desktop-update-baseline.cjs');
+    expect(step.run).toContain('--candidate "$CANDIDATE_VERSION"');
+    expect(step.run).toContain('--releases "$dest/releases.json"');
+    expect(step.run).toContain('gh release download "$old_tag"');
+    // A shipped build is the only valid baseline, so pre-releases stay excluded.
+    expect(step.run).toContain('--exclude-pre-releases');
+    // Drafts are unpublished; exclude them from gh and pass the field through so
+    // the selector can drop a draft row as well.
+    expect(step.run).toContain('--exclude-drafts');
+    expect(step.run).toContain('isDraft');
+    // Recency alone is what asked the newer released app to downgrade: the list is
+    // no longer truncated to a single newest tag.
+    expect(step.run).not.toMatch(/release list[\s\S]*--limit 1\b/);
+    expect(step.run).not.toContain("--jq '.[0].tagName'");
   });
 });

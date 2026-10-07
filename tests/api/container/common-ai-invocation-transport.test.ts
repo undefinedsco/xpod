@@ -140,7 +140,6 @@ function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerCo
     databaseUrl: 'sqlite::memory:',
     corsOrigins: ['*'],
     cssTokenEndpoint: 'http://127.0.0.1:1/.oidc/token',
-    gatewayLocatorSecret: 'unit-test-locator-secret-000000000000',
     secretCellVaultFactory: (() => ({})) as never,
     ...overrides,
   };

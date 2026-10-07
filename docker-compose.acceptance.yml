@@ -55,7 +55,6 @@ services:
       XPOD_NODE_ID: acceptance-cloud
       # Fixed test-only shared signing material, as required for Cloud replicas.
       # Local/Standalone deliberately omit this and exercise automatic persistence.
-      XPOD_GATEWAY_LOCATOR_SECRET: acceptance-only-cloud-locator-secret-not-for-production
       # One authority must work from both the host browser and the Compose network.
       # Browsers resolve *.localhost to loopback; Docker resolves the same name
       # through the network alias below.

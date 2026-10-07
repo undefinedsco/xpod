@@ -52,6 +52,25 @@ describe('PodChatKitStore request-scoped database acquisition', () => {
       .not.toBe((otherContext as { _cachedDb?: unknown })._cachedDb);
   });
 
+  it('rejects switching Pods while the original database acquisition is still pending', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>(done => { release = done; });
+    const getPodFetch = vi.fn(async () => { await blocked; return (async () => new Response('', { status: 404 })) as typeof fetch; });
+    const store = new PodChatKitStore({ podAccess: { getPodFetch },
+      podBaseUrlResolver: async (_owner, selected) => selected,
+    });
+    const context: StoreContext = { userId: OWNER, auth: { type: 'solid', webId: OWNER, requestedPodUrl: 'https://local.example/first/' } };
+    const pending = store.loadThreads(1, undefined, 'desc', context);
+    // Attach the rejection handler before releasing the paused acquisition.
+    const rejected = expect(pending).rejects.toThrow(/binding changed/i);
+    await vi.waitFor(() => expect(getPodFetch).toHaveBeenCalledOnce());
+    context.auth = { type: 'solid', webId: OWNER, requestedPodUrl: 'https://local.example/second/' };
+    await expect(store.loadThreads(1, undefined, 'desc', context)).rejects.toThrow(/binding changed/i);
+    release();
+    await rejected;
+    expect((context as { _cachedDb?: unknown })._cachedDb).toBeUndefined();
+  });
+
   it('re-resolves Pod access after a failed open instead of caching the failure', async () => {
     const podFetch = (async () => new Response('', { status: 404 })) as typeof fetch;
     let calls = 0;

@@ -434,7 +434,7 @@ describe('Xpod Solid runtime', () => {
     ));
 
     const resources = [
-      ['/api/ai/gateway/keys', true],
+      ['/api/ai/providers', true],
       ['/api/applets/service-access/ai-connections', true],
       ['/v1/models', true],
       // Another Pod below the same canonical origin is served by the same node,
@@ -2630,5 +2630,78 @@ test.each([false, true])('retries public runtime task fetch without an Account-s
     expect(headers.get('x-request-id')).toBe('tasks-probe');
   } finally {
     await unmount(root);
+  }
+});
+
+test('routes both Provider read recoveries through the real runtime while Account issuance stays native', async () => {
+  installDom();
+  const origin = 'https://app.example';
+  const canonical = 'https://local-node.example';
+  const webId = `${origin}/alice/profile/card#me`;
+  const collection = `${origin}/.account/account/alice/client-credentials/`;
+  const resource = `${collection}request/`;
+  const api = `${canonical}/api/ai/gateway/keys`;
+  const received: Array<{ url: string; authorization: string | null; canonical: string | null; dpop: boolean; method: string; body: string }> = [];
+  const network = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.startsWith('/')) return new Response('{}', { status: 404 });
+    const request = new Request(input, init);
+    received.push({ url, authorization: request.headers.get('authorization'), canonical: request.headers.get('x-xpod-canonical-url'),
+      dpop: request.headers.has('dpop'), method: request.method, body: await request.text() });
+    if (url === collection && request.method === 'POST') return Response.json({ id: 'request-client', secret: 'request-secret', resource });
+    if (url === resource) return request.method === 'DELETE' ? new Response(null, { status: 204 }) : Response.json({ id: 'request-client', webId });
+    if (url === `${origin}/api/ai/gateway/keys`) return request.headers.get('authorization')?.startsWith('Bearer sk-')
+      ? Response.json({ data: [] }) : Response.json({ error: 'service_access_missing' }, { status: 403 });
+    return new Response('{}', { status: 404 });
+  });
+  const adapter = new FakeSession();
+  const runtime = createXpodSolidRuntimeValue({ sessionFactory: ({ fetch: routed }) => {
+    adapter.fetch.mockImplementation((input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set('authorization', 'DPoP browser-session');
+      headers.set('dpop', 'browser-proof');
+      return routed(input, { ...init, headers });
+    });
+    return adapter;
+  } });
+  runtime.setIssuer(`${origin}/`);
+  runtime.pod.open = mock(async (args: { webId: string }) => ({ webId: args.webId, podUrl: `${canonical}/alice/`, database: {}, collections: 'ready' })) as typeof runtime.pod.open;
+  const account: AuthContextType = {
+    controls: { account: { clientCredentials: collection } }, identity: { webId }, bindAccountCapability: () => () => undefined,
+    isInitializing: false, initError: null, idpIndex: `${origin}/.account/`, isLoggedIn: true, authenticating: false, hasOidcPending: false,
+    refetchControls: vi.fn(async () => undefined), retry: vi.fn(async () => undefined), logout: vi.fn(async () => undefined),
+    accountState: { status: 'anonymous', mode: 'login' },
+  };
+  let current!: XpodSolidRuntimeValue;
+  const { root } = await renderWithRoot(<AuthContext.Provider value={account}><XpodSolidRuntimeProvider value={runtime}>
+    <RuntimeCaptureProbe onReady={value => { current = value; }} />
+  </XpodSolidRuntimeProvider></AuthContext.Provider>);
+  try {
+    await act(async () => { adapter.authenticate(webId, `${origin}/`); });
+    await waitFor(() => expect(current.currentPod?.podUrl).toBe(`${canonical}/alice/`));
+    runtime.setLocalPodRoutes([{ id: 'verified-local', kind: 'loopback', canonicalUrl: `${canonical}/`, targetUrl: `${origin}/`,
+      priority: 10, requiresManagedClient: true, visibility: 'local-only', health: 'healthy' }]);
+    received.length = 0;
+    await act(async () => {
+      expect((await current.fetch(api)).status).toBe(200);
+      expect((await current.session.fetch(api)).status).toBe(200);
+    });
+    const reads = received.filter(call => call.url === `${origin}/api/ai/gateway/keys`);
+    expect(reads).toHaveLength(4);
+    expect(reads.map(call => call.authorization)).toEqual(['DPoP browser-session', `Bearer sk-${btoa('request-client:request-secret')}`, 'DPoP browser-session', `Bearer sk-${btoa('request-client:request-secret')}`]);
+    expect(reads.every(call => call.canonical === api)).toBe(true);
+    expect(reads.map(call => call.dpop)).toEqual([true, false, true, false]);
+    const issued = received.filter(call => call.url === collection && call.method === 'POST');
+    expect(issued).toHaveLength(1);
+    expect(issued[0].canonical).toBeNull();
+    expect(issued[0].body).toBe(JSON.stringify({ name: 'Xpod 会话凭据', webId }));
+    await act(async () => { expect((await current.fetch(api, { method: 'POST', body: 'once' })).status).toBe(403); });
+    expect(received.filter(call => call.url === `${origin}/api/ai/gateway/keys` && call.method === 'POST')).toEqual([
+      expect.objectContaining({ body: 'once', authorization: 'DPoP browser-session', canonical: api }),
+    ]);
+    expect(network.mock.calls.some(([input]) => String(input) === api)).toBe(false);
+  } finally {
+    await unmount(root);
+    runtime.session.dispose();
   }
 });

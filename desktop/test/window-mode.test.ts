@@ -98,7 +98,6 @@ class FakeTimers implements DesktopWindowModeTimers {
 describe('DesktopWindowModeController', () => {
   it('keeps short authentication compact and opens long Account documents in the workspace', () => {
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/')).toBe('account')
-    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/consent?prompt=consent')).toBe('workspace')
     expect(desktopWindowModeForUrl('http://127.0.0.1:3000/auth/callback?code=used')).toBe('auth')
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/password/register/')).toBe('workspace')
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/password/forgot/')).toBe('account')
@@ -107,10 +106,20 @@ describe('DesktopWindowModeController', () => {
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/account/')).toBe('workspace')
   })
 
+  // §4 / §11.1 / §13.11: the OIDC authorization steps are short authentication
+  // surfaces, not long Account documents, so they stay in the compact window.
+  it('keeps the OIDC consent and pick-webid authorization steps in the compact Account window', () => {
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/consent?prompt=consent')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/consent/')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/pick-webid/')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/pick-webid?select=pod')).toBe('account')
+  })
+
   it('preserves Account window modes within a scoped OIDC interaction', () => {
     const base = 'https://id.example/.account/interaction/transaction-A/'
     expect(desktopWindowModeForUrl(`${base}login/password/`)).toBe('account')
-    expect(desktopWindowModeForUrl(`${base}oidc/consent/`)).toBe('workspace')
+    expect(desktopWindowModeForUrl(`${base}oidc/consent/`)).toBe('account')
+    expect(desktopWindowModeForUrl(`${base}oidc/pick-webid/`)).toBe('account')
     expect(desktopWindowModeForUrl(`${base}login/password/register/`)).toBe('workspace')
   })
 
@@ -132,7 +141,7 @@ describe('DesktopWindowModeController', () => {
     expect(window.size).toEqual([ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height])
   })
 
-  it('expands registration and consent before returning to compact login', () => {
+  it('expands registration before returning to compact login and keeps consent compact', () => {
     const window = new FakeWindow()
     const controller = new DesktopWindowModeController(window, new FakeTimers())
     const navigation = new FakeNavigationSource()
@@ -141,16 +150,22 @@ describe('DesktopWindowModeController', () => {
 
     navigation.emit('did-navigate', base)
     expect(controller.currentMode()).toBe('account')
-    expect(window.size).toEqual([280, 400])
-    for (const document of ['login/password/register/', 'oidc/consent/', 'create-pod/']) {
+    expect(window.size).toEqual([440, 620])
+    for (const document of ['login/password/register/', 'create-pod/']) {
       navigation.emit('did-navigate-in-page', `${base}${document}`)
       expect(controller.currentMode()).toBe('workspace')
       expect(window.contentSize).toEqual([1280, 800])
       expect(window.resizable).toBe(true)
       navigation.emit('did-navigate-in-page', `${base}login/password/`)
       expect(controller.currentMode()).toBe('account')
-      expect(window.size).toEqual([280, 400])
+      expect(window.size).toEqual([440, 620])
     }
+    // The consent step stays compact inside the same scoped interaction.
+    navigation.emit('did-navigate-in-page', `${base}oidc/consent/`)
+    expect(controller.currentMode()).toBe('account')
+    expect(window.size).toEqual([440, 620])
+    navigation.emit('did-navigate-in-page', `${base}login/password/`)
+    expect(controller.currentMode()).toBe('account')
   })
 
   it('preserves renderer auth mode when cancellation removes only the product query', () => {
@@ -245,18 +260,18 @@ describe('DesktopWindowModeController', () => {
     expect(window.showCalls).toBe(1)
   })
 
-  it('gives WebID sign-in and the account service pages the same 280 x 400 native bounds', () => {
+  it('gives WebID sign-in and the account service pages the same 440 x 620 window', () => {
     expect(AUTH_WINDOW_MODE_SIZE).toEqual({
-      width: 280,
-      height: 400,
-      minWidth: 280,
-      minHeight: 400,
+      width: 440,
+      height: 620,
+      minWidth: 320,
+      minHeight: 480,
     })
     expect(ACCOUNT_WINDOW_MODE_SIZE).toEqual({
-      width: 280,
-      height: 400,
-      minWidth: 280,
-      minHeight: 400,
+      width: 440,
+      height: 620,
+      minWidth: 320,
+      minHeight: 480,
     })
   })
 
@@ -264,12 +279,12 @@ describe('DesktopWindowModeController', () => {
     const window = new FakeWindow()
     const controller = new DesktopWindowModeController(window, new FakeTimers())
     controller.applyMode('auth')
-    expect(window.size).toEqual([280, 400])
+    expect(window.size).toEqual([440, 620])
     expect(window.contentSize).toBeUndefined()
     controller.applyModeForUrl('https://id.example/.account/login/password/')
-    expect(window.size).toEqual([280, 400])
+    expect(window.size).toEqual([440, 620])
     expect(window.contentSize).toBeUndefined()
-    expect(window.minimumSize).toEqual([280, 400])
+    expect(window.minimumSize).toEqual([320, 480])
     controller.applyModeForUrl('https://id.example/.account/account/')
     expect(window.contentSize).toEqual([WORKSPACE_WINDOW_MODE_SIZE.width, WORKSPACE_WINDOW_MODE_SIZE.height])
   })

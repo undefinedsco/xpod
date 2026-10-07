@@ -178,9 +178,11 @@ describe('legacy storage revision upgrade under resource locks', () => {
     expect(persistedMetadata.get(HH.terms.etag)?.value).toMatch(/^[a-f0-9]{32}$/);
     expect(getStorageVersion(response.metadata)).toBe(getStorageVersion(persistedMetadata));
     expect(response.metadata.getAll(HH.terms.etag)).toHaveLength(1);
-    // The RDF metadata stores the raw revision; the quoted wire tag is rendered on
-    // demand by the actual formatter. Assert both sides of that same contract.
-    expect(response.metadata.get(HH.terms.etag)?.value).toBe(getStorageVersion(persistedMetadata));
+    // This store chain deliberately stops below the HTTP boundary: the negotiated wire tag is
+    // rendered by RepresentationPartialConvertingStore (see RepresentationPartialConvertingStore.etag),
+    // so the metadata that leaves this store carries exactly the persisted raw revision while the
+    // single rendered tag still encodes that same revision for conditional writes.
+    expect(response.metadata.get(HH.terms.etag)?.value).toBe(persistedMetadata.get(HH.terms.etag)?.value);
     expect(STORAGE_ETAG_PATTERN.exec(tag)?.[1]).toBe(getStorageVersion(persistedMetadata));
     const condition = new BasicConditions(etags, { matchesETag: [tag] });
     await localStore.setRepresentation(id, document('updated'), condition);

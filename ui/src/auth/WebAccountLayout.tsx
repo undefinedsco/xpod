@@ -8,7 +8,7 @@ import { IdpChrome, PodSignInFrame, ScreenLayout } from '@undefineds.co/shared-u
  * (the B-group views) use just the frame.
  *
  * The frame decides `window` vs `page` from the host: the desktop auth window
- * fills 360×540, a browser document is a two-column page. `intro` is the page
+ * fills 440×620 by default, a browser document is a two-column page. `intro` is the page
  * frame's left column and is supplied by the host (the account service adapter),
  * so the shared library never hardcodes a service name.
  */

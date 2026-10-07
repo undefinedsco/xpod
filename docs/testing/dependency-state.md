@@ -30,7 +30,7 @@ bun install
 
 `bun run test` 入口先做上述检查。检查失败不会继续测试；工作区缺失构建产物的处理见下一节。
 
-行为守卫仍然是测试：`tests/identity/oidc/SessionBoundIdentityProviderFactory.test.ts` 守 CSS 补丁，`tests/api/ai-gateway/PodGatewayAccessKeyRepository.test.ts` 守模型 schema。
+行为守卫仍然是测试：`tests/identity/oidc/SessionBoundIdentityProviderFactory.test.ts` 守 CSS 补丁。
 
 ### 安装脚本产生的认证补丁
 

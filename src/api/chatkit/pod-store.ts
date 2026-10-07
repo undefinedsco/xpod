@@ -81,7 +81,7 @@ import {
 import type { AuthContext } from '../auth/AuthContext';
 import { CALLER_POD_ACCESS_UNAVAILABLE } from '../ai-gateway/auth/CallerPodAccess';
 import { podAccessError, type PodAccessFetchProvider, type PodAccessRequestContext } from '../ai-gateway/pod/OwnerPodAccess';
-import type { PodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
+import { resolveOwnerPodBaseUrl, type PodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
 import { isSolidAuth } from '../auth/AuthContext';
 import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
@@ -353,6 +353,13 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       if (expectedAuth && expectedAuth !== this.podCredentialBinding(context)) {
         throw new Error('Authoritative Pod credential binding changed on cached context');
       }
+      const auth = context.auth as AuthContext | undefined;
+      if (auth?.type === 'solid' && (auth.requestedPodUrl || auth.authorizedPodUrl)) {
+        const selectedRoot = await this.requireContextPodBaseUrl(context, auth);
+        if (!boundRoot || selectedRoot !== boundRoot) {
+          throw new Error('Authoritative Pod storage binding changed on cached context');
+        }
+      }
       this.logger.debug('Using cached db from context');
       return cachedDb;
     }
@@ -363,9 +370,13 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     // it never outlives the request or crosses credentials.
     const inFlight = (context as any)._cachedDbPromise as Promise<any> | undefined;
     if (inFlight) {
+      if ((context as any)._cachedDbPromiseAuth !== this.podCredentialBinding(context)) {
+        throw new Error('Authoritative Pod credential binding changed while opening database');
+      }
       return inFlight;
     }
 
+    (context as any)._cachedDbPromiseAuth = this.podCredentialBinding(context);
     const opening = this.openDb(context);
     (context as any)._cachedDbPromise = opening;
     try {
@@ -373,6 +384,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     } finally {
       if ((context as any)._cachedDbPromise === opening) {
         delete (context as any)._cachedDbPromise;
+        delete (context as any)._cachedDbPromiseAuth;
       }
     }
   }
@@ -385,6 +397,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       throw new Error(CALLER_POD_ACCESS_UNAVAILABLE);
     }
 
+    const credentialBinding = this.podCredentialBinding(context);
+    // A missing authoritative binding is a storage failure, but it must not decide the diagnosis
+    // for a caller whose credential path is already unusable: resolve it here, then reject only
+    // after Pod access has reported why no usable credential exists.
+    const podBaseUrl = await this.resolveContextPodBaseUrl(context, auth);
+
     // One credential path for every caller: the owner's own Pod key, exchanged for a
     // token this process can prove, or the caller's reusable token. Unattended work carries a
     // task-layer grant, which is forwarded so the Pod fetch is bound to that exact grant.
@@ -393,6 +411,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     try {
       podFetch = await this.podAccess?.getPodFetch(auth.webId, {
         auth,
+        podBaseUrl,
         ...(taskCredential ? { taskCredential } : {}),
       });
     } catch (error) {
@@ -405,11 +424,14 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       throw new Error(reason);
     }
 
-    const podBaseUrl = this.readExplicitPodBaseUrl(context)
-      ?? this.normalizePodBaseUrl(await this.podBaseUrlResolver?.(auth.webId));
     if (!podBaseUrl) {
       throw new Error('Authoritative Pod storage binding unavailable');
     }
+
+    if (credentialBinding !== this.podCredentialBinding(context)) {
+      throw new Error('Authoritative Pod credential binding changed while opening database');
+    }
+
     const db: any = drizzle(
       { fetch: podFetch, info: { webId: auth.webId, isLoggedIn: true } } as any,
       { schema, podUrl: podBaseUrl },
@@ -423,12 +445,47 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       this.logger.error(`Failed to init tables: ${initError}`);
     }
 
+    if (credentialBinding !== this.podCredentialBinding(context)) {
+      throw new Error('Authoritative Pod credential binding changed while opening database');
+    }
     (context as any)._cachedDb = db;
     (context as any)._cachedFetch = podFetch;
     (context as any)._cachedWebId = auth.webId;
-    (context as any)._cachedAuth = this.podCredentialBinding(context);
+    (context as any)._cachedAuth = credentialBinding;
     this.ensurePodBaseUrlCache(context, db);
     return db;
+  }
+
+  /**
+   * Resolve the request's authoritative Pod root, or `undefined` when this deployment has no
+   * binding resolver to consult. Reporting a missing binding is left to the caller so the
+   * credential path can be classified first.
+   */
+  private async resolveContextPodBaseUrl(
+    context: StoreContext,
+    auth: Extract<AuthContext, { type: 'solid' }>,
+  ): Promise<string | undefined> {
+    const explicitRoot = this.readExplicitPodBaseUrl(context);
+    // Explicit internal contexts already carry a verified binding. A request selection or
+    // capability must still intersect that binding through the shared ownership resolver.
+    if (explicitRoot && !auth.requestedPodUrl && !auth.authorizedPodUrl) return explicitRoot;
+    if (!this.podBaseUrlResolver) return undefined;
+    const selectedRoot = this.normalizePodBaseUrl(await resolveOwnerPodBaseUrl(auth.webId, this.podBaseUrlResolver, auth))!;
+    if (explicitRoot && selectedRoot !== explicitRoot) {
+      throw new Error('Authoritative Pod storage binding conflicts with request');
+    }
+    return selectedRoot;
+  }
+
+  private async requireContextPodBaseUrl(
+    context: StoreContext,
+    auth: Extract<AuthContext, { type: 'solid' }>,
+  ): Promise<string> {
+    const root = await this.resolveContextPodBaseUrl(context, auth);
+    if (!root) {
+      throw new Error('Authoritative Pod storage binding unavailable');
+    }
+    return root;
   }
 
   /** Stable identity of the credential binding behind a cached database, without secrets. */
@@ -438,6 +495,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return JSON.stringify({
       webId: auth && isSolidAuth(auth) ? auth.webId : null,
       clientId: auth && isSolidAuth(auth) ? auth.clientId ?? null : null,
+      requestedPodUrl: auth && isSolidAuth(auth) ? auth.requestedPodUrl ?? null : null,
+      authorizedPodUrl: auth && isSolidAuth(auth) ? auth.authorizedPodUrl ?? null : null,
       taskCredential: task
         ? { ref: task.credentialRef ?? null, version: task.version ?? null, ownerGrant: task.ownerGrant ?? null }
         : null,

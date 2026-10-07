@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import { describe, expect, it } from 'vitest';
 
+import { resolveOwnerPodBaseUrl } from '../../../src/api/ai-gateway/pod/PodBaseUrlResolver';
 import { InvocationTokenAuthenticator } from '../../../src/api/ai-gateway/auth/InvocationTokenAuthenticator';
 import { AesInvocationTokenCodec } from '../../../src/api/ai-gateway/auth/InvocationTokenCodec';
 
@@ -52,6 +53,26 @@ describe('InvocationTokenAuthenticator', () => {
           scopes: ['client-config:read', 'client-config:write'],
         },
       });
+  });
+
+  it('trusts only the signed Pod scope and rejects a same-owner selection outside it', async () => {
+    const podUrl = 'https://local.example/owned/';
+    const codec = new AesInvocationTokenCodec({ active: { kid: 'active', secret: 'fixture-secret' } });
+    const token = codec.encode({
+      deployment: 'local', audience: 'https://local.example', issuer: 'https://local.example',
+      webId: WEB_ID, podUrl, scopes: ['client-config:read'],
+      issuedAt: new Date('2026-08-04T00:00:00Z'), expiresAt: new Date('2026-08-04T00:10:00Z'),
+    });
+    const authenticator = new InvocationTokenAuthenticator({ codec, deployment: 'local', audience: 'https://local.example', now: () => new Date('2026-08-04T00:01:00Z') });
+    const req = requestWith(token, '/api/ai/client-configuration/codex');
+    req.headers['x-xpod-pod-url'] = 'https://local.example/other/';
+    const result = await authenticator.authenticate(req);
+    expect(result.context).toMatchObject({ authorizedPodUrl: podUrl });
+    expect(result.context).not.toHaveProperty('requestedPodUrl');
+    if (result.context?.type !== 'solid') throw new Error('Expected authenticated Solid context');
+    await expect(resolveOwnerPodBaseUrl(WEB_ID, async (_owner, selected) => selected, {
+      ...result.context, requestedPodUrl: 'https://local.example/other/',
+    })).rejects.toThrow('service_access_missing');
   });
 
   it('rejects inference scopes and never authenticates inference routes', async () => {

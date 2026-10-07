@@ -314,6 +314,33 @@
     line-height: 22px;
   }
 
+  .pod-sign-in h1 {
+    font-size: 22px;
+    line-height: 1.4;
+  }
+
+  /* Keep the choices visible at the native window's minimum height. */
+  @media (max-height: 559px) {
+    .pod-sign-in[data-pod-sign-in-frame='window'] [data-pod-sign-in='main'] {
+      gap: 1rem;
+      padding-top: 1rem;
+      padding-bottom: 0.5rem;
+    }
+
+    .pod-sign-in[data-pod-sign-in-frame='window'] [data-pod-sign-in='actions'] {
+      gap: 0.75rem;
+      padding-top: 0.75rem;
+      padding-bottom: 1rem;
+    }
+  }
+
+  /* Taller native windows keep the submit action close to the form. */
+  @media (min-width: 400px) and (min-height: 560px) {
+    .pod-sign-in[data-pod-sign-in-frame='window'] [data-pod-sign-in='actions'] {
+      padding-bottom: 5rem;
+    }
+  }
+
   /*
    * Front-door focus for links, buttons and summary. Form controls are excluded:
    * the shared control primitive owns their focus outline, so a control never
@@ -337,21 +364,21 @@
   [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="main"] {
     flex: 1 0 auto;
     overflow: visible;
-    gap: 6px;
-    padding: 4px 16px 2px;
+    gap: 8px;
+    padding: 8px 16px;
   }
 
   [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="fields"] {
-    gap: 6px;
+    gap: 8px;
   }
 
   [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="field"] {
-    gap: 1px;
+    gap: 2px;
   }
 
   [data-pod-sign-in-frame="window"] [data-pod-sign-in-state="idp-sign-in"] [data-pod-sign-in="actions"] {
     gap: 0;
-    padding: 4px 16px 6px;
+    padding: 8px 16px;
   }
 
   @media (prefers-reduced-motion: reduce) {

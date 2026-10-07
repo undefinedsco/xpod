@@ -43,7 +43,7 @@
 2. **先确认身份，再准备 Pod**：登录只回答"你是谁、在哪个服务登录"。Pod 放在登录之后，而且只在确实缺少时才出现。
 3. **说清要去哪里**：每次跳转外部登录前，都标明将要打开的服务主机名。这是生态信任的基础，也能防钓鱼。
 4. **不静默改道**：用户选的是本机，就只走本机；本机不可用就明说，并给出修复动作。
-5. **一眼可认**：纸色画布、墨紫主操作、系统字体、44px 主按钮。在应用的品牌下出现，但能看出是 Xpod/Pod 登录。
+5. **一眼可认**：纸色画布、墨紫主操作、系统字体、48px 主按钮。在应用的品牌下出现，但能看出是 Xpod/Pod 登录。
 
 ## 3. 用语（唯一口径）
 
@@ -67,7 +67,7 @@
 - URL 默认只显示主机名，完整地址放在折叠的详情里。
 - 文案按 locale 打包，随组件发布；宿主可以覆盖，不必每家重写一遍。
 - **locale 唯一**：默认 zh-CN；需要英文的宿主显式选择 `en`。同一流程内登录、注册、授权，以及现有账号页的空态、操作、验证提示必须使用同一 locale，不得在流程中途切换语言。
-- **注册 / 登录相邻链接成对**：登录页写"没有账号？注册账号"；注册页写"已有账号？登录"。两侧措辞成对出现，不混用"注册 / Sign up / 创建账号"。
+- **注册 / 登录相邻链接成对**：登录页写"还没有账号？注册账号"；注册页写"已有账号？登录"。两侧措辞成对出现，不混用"注册 / Sign up / 创建账号"。
 - **边缘设备 ≠ 自带账号服务的独立部署**：界面中的"Xpod 边缘 / 这台电脑"只表示 Pod 存在哪里，仍然用 Xpod 账号登录；只有极少数 Standalone 部署自带账号服务（§6 A 组）。文案不得暗示普通浏览器能把当前账号服务变成本机服务。
 - **轻页 / 桌面 / 日常入口的安全任务口径**：授权页缺 Pod 只读引导，主操作把**一次性创建任务**交给同 UID 轻页；轻页的"使用自己的部署"引导到桌面 Xpod，原浏览器保留该任务，不能假定任务已安全跨进程迁移。返回原标签页后须重查任务与权威绑定再回原授权。任务绑定真实 Account id（**不是**服务地址 / WebID / username）、精确 UID、同源原 ConsentURL、TTL、单次消耗；切号 / 超时 / 服务端授权 410 一律拒绝旧任务。
 - **日常入口不被遗留任务覆盖**：Account 的桌面管理入口不消费旧 Consent 任务；只有持有当前、经过验证的原授权上下文时才显示回到授权的操作。
@@ -76,19 +76,19 @@
 
 | 呈现 | 尺寸 | 用于 |
 |---|---|---|
-| `window` | 宿主窗口 **360×540**，最小 320×480，内容铺满、无卡片 | 桌面独立认证窗 |
-| `dialog` | 宽 400px（窄屏为 100vw−32px），高随内容，最大 90dvh | 应用内弹层（LinX、第三方） |
-| `page` | 宽屏（≥768）整页左右两栏：左栏是介绍（图标、名称、一句主张、几条要点，下沉底色；A 组由应用提供，B 组为账号服务介绍），右栏居中放同一个 360 宽的 body；窄屏退回单栏 | 浏览器直接访问、重定向落地页 |
+| `window` | 宿主窗口默认 **440×620**，最小 320×480，内容铺满、无卡片 | 桌面独立认证窗 |
+| `dialog` | 宽 480px（窄屏为 100vw−32px），舒适高度 440px、高随内容增加，最大 90dvh | 应用内弹层（LinX、第三方） |
+| `page` | 整页左右两栏：左栏是介绍（图标、名称、一句主张、几条要点，下沉底色；A 组由应用提供，B 组为账号服务介绍）；右栏居中放上限 480px 的响应式 body。窄屏收成单列 | 浏览器直接访问、重定向落地页 |
 
-- `page` 左栏内容：由应用发起（OIDC）时介绍这个应用（图标、名称、host）；直接访问账号服务时介绍 Xpod 账号（一句话加三条要点：一个 WebID 登录所有 Solid 应用；数据存在你选的 Pod 里；可以放在云端，也可以放在自己的设备上）。浏览器里直接打开账号服务，不得只显示一张小卡。
-- 放弃 280×400。按 14px 正文、44px 主按钮、应用头部加说明计算，280 宽度装不下中文两行说明和主机名；1.4 里的溢出就是这么来的。
+- `page` 左栏由应用发起（OIDC）时介绍应用；直接访问账号服务时介绍 Xpod 账号：一个 WebID 登录 Solid 应用，数据存在所选 Pod，可放在云端或自己的设备上。浏览器直接打开账号服务时保留整页介绍。
+- 放弃 280×400。按 14px 正文、48px 主按钮、应用头部加说明计算，280 宽度装不下中文两行说明和主机名；1.4 里的溢出就是这么来的。
 - **呈现由宿主传入，不由页面默认**。`PodSignInFrame` 接收 `presentation: 'window' | 'dialog' | 'page'`（§8.1）。**不得把所有账号页默认成 compact 小卡**——`XpodAccountPageSurface` 与 `XpodBlockingAccountCredentialsSurface` 已改为经 `WebAccountLayout` 按宿主选择 `page` / `window`，不再默认或固定 `compact`；`compact` 小卡只保留给应用侧 WebID 门（`XpodAuthSurface`，`ui/src/auth/XpodAuthSurface.tsx`）。
-  - **桌面独立认证小窗**：`window`，铺满 360×540（最小 320×480），无卡片外框。
-  - **浏览器直接访问的登录 / 注册 / 找回 / 授权页**：`page`。宽屏左右两栏——左栏是**账号服务介绍**（图标、名称、一句主张、几条要点，下沉底色），右栏居中放 360 宽 body；窄屏收成**单列**，介绍置顶或收起。真正的认证小窗才用 `window` 铺满 360×540。
+  - **桌面独立认证小窗**：`window`，铺满 440×620（最小 320×480），无卡片外框。
+  - **浏览器直接访问的登录 / 注册 / 找回 / 授权页**：`page`。宽屏左右两栏——左栏是**账号服务介绍**（图标、名称、一句主张、几条要点，下沉底色），右栏居中放 最多 480px 宽 body；窄屏收成**单列**，介绍置顶或收起。真正的认证小窗才用 `window` 铺满 440×620。
   - **应用内弹层**：`dialog`。
 - **层次用公共语义 token 表达，不能"把整站 primary 换掉"就算完成**：账号服务顶栏用底色条（`IdpChrome`："服务图标 + Xpod · 账号服务 + 主机名"）与应用侧轻量标识区分；表单底色、必要边界、选中 tint 各用公共角色（raised / control / tint，见 §5 与 R2 §8.1），不新造登录专用色板。
 - 三种呈现共用同一个 body，只有外框不同。body 永远是一个单列：**来源标识 → 标题 → 主体 → 操作区**。
-- **每屏只有一个标题**（h1，**17/600**，见 §5）。B 组（登录 / 注册 / 找回 / 授权）与 A/C 组标题都是 17/600，**不承诺 20/600**；D 组账号页若将来出现页面级大标题，需在 §6 D 组单独声明，不能写进这里的通用承诺。顶部的来源标识不是标题，只是一行 24px 图标加 13px 名称：
+- **每屏只有一个标题**（h1，**22/600**，见 §5）。B 组（登录 / 注册 / 找回 / 授权）与 A/C 组标题统一为 22/600；D 组账号页若将来出现页面级大标题，需在 §6 D 组单独声明，不能写进这里的通用承诺。顶部的来源标识不是标题，只是一行 24px 图标加 13px 名称：
   - 应用侧（A、C 组）标识写应用名称，由宿主传入，组件里不写死任何应用。
   - 账号服务侧（B 组）标识写 "Xpod" 和服务主机名。用户在弹窗里能认出这是哪个服务的页面，这一行同时起防钓鱼的作用。
 - **次要信息默认收起**。每屏正文不超过两行，Pod 的解释、位置差异、完整地址、错误码、检测明细都放进 `<details>` 折叠区（"什么是 Pod？""详情""原因和处理"）。
@@ -113,8 +113,8 @@
 深色 action 是墨紫的浅化映射，**不能拿固定墨紫当深色小字或焦点色**（R2 §8.4：固定墨紫 / 深色 canvas 对比度仅 1.93）。
 
 - 字体：系统无衬线栈（PingFang SC / SF Pro Text / Segoe UI / Noto Sans SC …），不加载网络字体；主机名用等宽 12px。
-- 字号：标题 17/600，正文 14/400（行高 22），说明 13，最小 12。不再使用 11px 和 10px。
-- 控件：主按钮 44px 高、8px 圆角、满宽；次按钮 44px 描边；文字按钮 36px。外框 12px 圆角，列表行 8px。全局只用这三档圆角。
+- 字号：标题 22/600，正文 14/400（行高 22），输入与主操作 16，字段标签 14，说明 13，最小 12。不再使用 11px 和 10px。
+- 控件：主按钮 48px 高、8px 圆角、满宽；次按钮 48px 描边；文字按钮 36px。外框 12px 圆角，列表行 8px。全局只用这三档圆角。
 - 状态色只用 token：`--destructive`、`--warning`、`--success`。不使用 sky/emerald 等原色，"本机"标记用中性图标加文字。
 - 焦点：见下方"焦点"小节。
 - 动效：120–180ms 淡入；`prefers-reduced-motion` 时去掉。加载转圈旁边必须有阶段文字。
@@ -142,7 +142,7 @@
 
 ### A 组：应用侧
 
-参照微信的登录逻辑：**大多数人只会看到"记住的身份"，点一下就进去**。应用侧没有独立的"选择服务"首屏，也没有"验证中"过渡屏。
+保留一键进入的登录逻辑：**大多数人只会看到"记住的身份"，点一下就进去**。应用侧没有独立的"选择服务"首屏，也没有"验证中"过渡屏。
 
 **A0 恢复中 `restoring`**
 - 小于 300ms：只显示来源标识。
@@ -174,9 +174,7 @@
 
 ### B 组：账号服务侧（弹窗内）
 
-来源标识改为顶部 44px 底色条："服务图标 + Xpod · 账号服务 + 主机名"，和应用侧的轻量标识在视觉上明确区分。底色条要一眼能和正文分开：带一条底部分隔线，底色在深浅主题下都与正文有可辨的色差。
-
-输入框聚焦只有一层聚焦样式，不叠加浏览器自带的 outline。邮箱和密码表单**只出现在这里**，任何应用都不会渲染它。
+来源标识改为顶部至少 56px 底色条（底部分隔线，深浅主题下与正文有可辨的色差）："服务图标 + Xpod · 账号服务 + 主机名"，和应用侧的轻量标识在视觉上明确区分。邮箱和密码表单**只出现在这里**，任何应用都不会渲染它。
 
 登录或注册完成后，账号服务读取权威 Pod 清单：
 - 至少有一个 Pod：进入 B4 授权。多个时在 B4 里选择。
@@ -186,7 +184,7 @@
 **B1 登录 `idp-sign-in`**
 - 标题"登录 Xpod"（写明登录的是哪个服务），副行"完成后回到 {应用}"。
 - 字段：邮箱、密码。"忘记密码？"放在密码标签右侧；"在这台设备上保持登录"默认不勾选。
-- 主操作"登录"。底部左侧"没有账号？注册账号"（与 B2 的"已有账号？登录"对称），沿用当前宿主容器打开 B2；右侧"使用其他 Solid 账号"，回到 A3 并展开地址输入框。
+- 主操作"登录"。底部左侧"还没有账号？注册账号"，沿用当前宿主容器打开 B2；右侧"使用其他 Solid 账号"，回到 A3 并展开地址输入框。
 
 **B2 注册 `idp-register`**
 - 注册**只创建 Account**，不准备或创建 WebID / Pod，不以存储可用性作为注册成功条件。
@@ -210,7 +208,7 @@
 
 | 角色 | 位置 | 样式 |
 |---|---|---|
-| **账号服务**（验证身份的一方，页面归它所有） | 顶部 44px 底色条 | 服务图标 + "Xpod · 账号服务" + 右侧主机名。B 组所有页面共用这条，表示"你现在在账号服务的页面上" |
+| **账号服务**（验证身份的一方，页面归它所有） | 顶部至少 56px 底色条 | 服务图标 + "Xpod · 账号服务" + 右侧主机名。B 组所有页面共用这条，表示"你现在在账号服务的页面上" |
 | **请求授权的应用** | 页面主体居中 | 应用图标，标题"授权 LinX"，下方是应用主机名 |
 | **你授出的身份** | 标签"用哪个 WebID 登录？"加单选列表 | 每行：头像（角标表示数据存在哪：电脑 / 云）+ 名字 + WebID 短名。只有一个 WebID 时只显示一行，不出现单选框 |
 
@@ -224,7 +222,7 @@
 
 ### C 组：出错时只留一行提示
 
-参照微信：普通用户**看不到错误屏、错误码和技术详情**。出错时留在 A1，只做两件事：
+错误处理：普通用户**看不到错误屏、错误码和技术详情**。出错时留在 A1，只做两件事：
 - 在主按钮上方加**一行**提示（13px，可带 14px 图标）；
 - 把主按钮的文字改成能解决问题的动作。
 
@@ -338,14 +336,14 @@ interface PodSignInFrameProps {
   presentation: SignInPresentation
   ariaLabel: string
   appIntro?: ReactNode          // 仅 page：左栏介绍，由宿主（应用或账号服务适配器）提供；A 组为应用介绍，B 组为账号服务介绍。真实 API 保留 appIntro，不设 pageIntro 别名
-  children: ReactNode           // 360 宽的 body
+  children: ReactNode           // 最多 480px 宽的 body
 }
 
 // 头像右下角标：数据存在云端还是边缘
 type StorageLocationKind = 'cloud' | 'edge'
 interface StorageBadgeProps { kind: StorageLocationKind; label: string }   // label 给读屏和悬停用
 
-// B 组顶部 44px 底色条
+// B 组顶部至少 56px 底色条
 interface IdpChromeProps { serviceName: string; serviceHost: string; icon?: ReactNode }
 ```
 
@@ -431,7 +429,7 @@ interface ConsentViewProps {           // B4
 }
 ```
 
-- B1–B4 都用 `IdpChrome` 加 360 宽 body，由 `PodSignInFrame` 的 `window` 或 `page` 外框承载。
+- B1–B4 都用 `IdpChrome` 加 最多 480px 宽 body，由 `PodSignInFrame` 的 `window` 或 `page` 外框承载。
 - `ConsentView`：只有一个 WebID 时只显示一行，不出现单选。client 未能验证时，在标题下加警示，并隐藏"以后不再询问"。
 - B3 的"创建并继续"在 Consent 缺 Pod 时只**导航**到同 UID 轻页（`/.account/create-pod/` 作用域化），不在这里 prepare 或 POST；名称字段与显式提交由轻页承担（`ui/src/pages/FirstPodPage.tsx`）。`onChooseOtherLocation` 按宿主能力走（当前是打开同 UID 账号页）。
 
@@ -463,7 +461,7 @@ interface ConsentViewProps {           // B4
 
 | 本稿 | 现有规定 | 理由 |
 |---|---|---|
-| 桌面小窗 360×540 | 280×400 compact 基线 | 280 宽度下 14px 正文和 44px 按钮放不下，浏览器实测已溢出 |
+| 桌面小窗 440×620 | 280×400 compact 基线 | 280 宽度下 14px 正文和 44px 按钮放不下，浏览器实测已溢出 |
 | 注册只建 Account；缺 Pod 时 Consent 只交任务，由同 UID 轻页显式 submit 创建 | 9/29 曾批准注册同时建 Account / WebID / Pod，后列为第二期 | 2026-10-03 本会话已纠正该计划（§13.16）；注册、显式创建与授权各自保留独立成功和失败边界 |
 | Xpod 控制台用 WebID 登录，不以 Account 表单作为入口 | 现有 dashboard 首屏是 Account 邮箱密码表单 | AI 连接和 API Key 都是 WebID 级；Account 只处理账号本身的事务 |
 | 云端 / 边缘只表示存储位置，账号服务只有 Xpod | 旧前门把"本机空间"当登录选项 | 边缘设备上的 Pod 也用 Xpod 账号登录 |
@@ -475,12 +473,12 @@ canonical（9/19）与 R2 的对应条款，在本稿实现并验收后另行回
 ## 10. 验收
 
 1. **A 组状态**：`SolidAuthBoundary` 示例应用和 Xpod WebID 门，逐状态截图一致：A0–A3，以及 C1–C4 的一行提示。
-2. **尺寸与主题**：`window` 360×540、`dialog`、`page`（1280 宽两栏，390 宽单栏），200% 文字、深浅主题下，主操作和返回都可见，没有水平滚动。
+2. **尺寸与主题**：`window` 440×620、`dialog`、`page`（1280 宽两栏，390 宽单栏），200% 文字、深浅主题下，主操作和返回都可见，没有水平滚动。
 3. **键盘与读屏**：只用键盘能走完路径 1–4。状态变化用 polite 播报，失败用 assertive。
 4. **一行提示**：普通模式下，C 组只有一行提示，没有错误码；开启开发者模式后，可以点开查看详情。
 5. **不静默改道**：本机 Xpod 边缘不可用时，不会有任何请求发往其他 issuer（回归测试）。
 6. **测试**：所有新组件都有单元测试，覆盖每个状态的渲染、按钮回调、ARIA 角色（radiogroup / dialog / status / alert）。
-7. **呈现选择**：直接访问账号页（登录 / 注册 / 找回 / 授权）宽屏为两栏 `page`（左栏有账号服务介绍）、窄屏为单列；真正的认证小窗 `window` 铺满 360×540。三种呈现分别截图，均无水平滚动。
+7. **呈现选择**：直接访问账号页（登录 / 注册 / 找回 / 授权）宽屏为两栏 `page`（左栏有账号服务介绍）、窄屏为单列；真正的认证小窗 `window` 铺满 440×620。三种呈现分别截图，均无水平滚动。
 8. **Input 状态**：共享 Input 的 focus / filled / error / disabled / auto-fill 逐态检查，聚焦只有一套可见边界，无蓝色与紫色叠加；键盘焦点可见。
 9. **locale 一致**：登录、注册、授权、账号页空态 / 操作 / 验证提示在同一流程内使用同一 locale；zh-CN 为默认，en 为显式选择。
 10. **账号管理旧功能回归**：已有 WebID、Pod、凭据、密码等既有功能换公共呈现后仍可用。
@@ -514,7 +512,7 @@ canonical（9/19）与 R2 的对应条款，在本稿实现并验收后另行回
    | `authenticated` | `error` | A1，加 C1 提示（"重试"） |
    | `authenticated` | `conflict` | A1，加 C4 提示（"使用其他账号"） |
    | `authenticated` | `empty` | A1，加提示"还没有 WebID"，主按钮"去创建"，调用 `onCreateStorage` |
-   | `authenticated` | `selecting` | 保留现有的 `StorageSelectionView`，但换成新 token 与 360 body 样式 |
+   | `authenticated` | `selecting` | 保留现有的 `StorageSelectionView`，但换成新 token 与 响应式 body 样式 |
 
    更新 `packages/extension-sdk/test` 中的相关断言。
 5. **Xpod WebID 门**：`ui/src/solid/WebIdAuthBoundary.tsx` 改用 `PodSignIn`，映射同上。
@@ -523,7 +521,7 @@ canonical（9/19）与 R2 的对应条款，在本稿实现并验收后另行回
    - 失败走 notice，`SolidSessionPendingError` 的提示为"上次登录尚未结束"，主按钮"刷新页面"。
    - 更新 `WebIdAuthBoundary.test.tsx`。
 6. **Xpod 账号服务页换皮**：只换呈现，不改协议、状态和请求。
-   - **呈现选择**：浏览器直接访问的登录 / 注册 / 找回 / 授权用 `page`（宽屏两栏、左栏为账号服务介绍；窄屏单列），**不是默认 `compact`**；真正的认证小窗才用 `window` 铺满 360×540。当前实现：`XpodAccountPageSurface` 与 `XpodBlockingAccountCredentialsSurface` 已统一经 `WebAccountLayout` 按 host 推导 `page` / `window`（`ui/src/auth/XpodAuthSurface.tsx`），不再有 `compact` 默认值，也不再固定 `compact`；**不新增 presentation props**。
+   - **呈现选择**：浏览器直接访问的登录 / 注册 / 找回 / 授权用 `page`（宽屏两栏、左栏为账号服务介绍；窄屏单列），**不是默认 `compact`**；真正的认证小窗才用 `window` 铺满 440×620。当前实现：`XpodAccountPageSurface` 与 `XpodBlockingAccountCredentialsSurface` 已统一经 `WebAccountLayout` 按 host 推导 `page` / `window`（`ui/src/auth/XpodAuthSurface.tsx`），不再有 `compact` 默认值，也不再固定 `compact`；**不新增 presentation props**。
    - 登录（`XpodBlockingAccountCredentialsSurface` 的 login 模式）→ `IdpSignInView`；
    - 注册 → `IdpRegisterView`（`requireUsername` 按现有 controls 决定）；
    - `ConsentPage` 的正常授权 → `ConsentView`；
@@ -757,11 +755,15 @@ bun run build:ui              # app + dashboard + settings（= ui build:all）
 
 网络故障仅允许 GET、HEAD、OPTIONS 在当前请求中切换路径重试；写操作不自动重放。失效候选只在该次故障切换中排除，后续用户主动重试仍可重新连接。此规则不改变登录凭据持久化方案；本机资源读取成功也不代表中央 Account、模型同步或 Chat 已通过。
 
-### 13.11 登录版式舒适度修订（2026-10-03，2026-10-06 桌面/UI 合并裁决）
+### 13.11 登录版式舒适度修订（2026-10-03）
 
-本节的 440×620 窗口、480px body、至少 56px 服务栏、48px 控件、22/600 标题是 formal25 提出的“舒适版式”。desktop-shell 特性线保留用户已认可的微信式（WeChat-referenced）紧凑版式：原生认证窗口 280×400（见 `desktop/src/window-mode.ts`；设计稿内容基线沿用 360×540），共享 body 360px、服务栏 44px、主/次/字段控件 44px、标题 17/600。合并以特性线版式为准，不采纳上述舒适版式的尺寸；正文分区与操作区间距维持 feature 的 20px（`gap-5`）/ 12px（`gap-3`）。
+用户明确不追求微信的卡片比例，保留现有品牌与登录流程，放宽默认认证空间。桌面 WebID / Account 认证窗口共用 440×620（兼容最小 320×480），切换时不因表单种类改变尺寸。页面 body 上限 480px；弹层宽度上限 480px、舒适高度 440px，始终受 90dvh 和窄屏可用宽度限制。页面表单保留至少 520px 的内容区。
 
-本节其余非尺寸约定（颜色、logo/info、认证状态、授权规则与请求处理）沿用现有实现；次要信息保持默认收起，长表单滚动主体区，操作区保持可达。舒适版式的尺寸记录保留为历史，不再作为本分支的版式约束。当前组件截图与测试证据见 formal25 历史 `.test-data/login-card-comfort/`；呈现夹具不是实际 Account 或 Chat 验收。
+400px 以下的宿主保留左右 24px 边距，其余用 32px。主体分区间距 28px，操作区间距 16px；主标题 22/600，输入与主操作 16px / 48px 高，字段标签 14px，服务栏最小 56px。较高的桌面窗将多余留白放到操作区下方，避免选项与主按钮断开。窄屏优先保留服务名称，完整域名仍可在已有 info 中查看。
+
+高度不足 560px 的原生认证窗使用 16px 主体间距和顶部留白、12px 操作间距及 16px 底部留白，保留 48px 控件。最小 320×480 的登录选项与独立部署入口不能被固定操作区裁切；更长内容仍由主体滚动。
+
+颜色、logo/info、认证状态、授权规则和请求处理沿用现有实现；次要信息保持默认收起，长表单滚动主体区，操作区保持可达。此前 360×540 / 400px / 17px 的验收记录属于旧版测量，保留作为历史，不再约束本次版式。当前组件截图与测试证据统一存入 `.test-data/login-card-comfort/`，视觉判定存入 `.omx/state/login-card-comfort/ralph-progress.json`。呈现夹具不是实际 Account 或 Chat 验收。
 
 
 ### 13.12 三部署与会话复用契约（2026-10-03）
@@ -957,3 +959,52 @@ RC `3be53aba6aa04df0a93520ab3a94af0e9bad768a` / run `37195150178` 实际 complet
 本批只修 `scripts/helpers/live-task-approval.ts` 验收 adapter，服务产品源码不变。checkpoint、Session 归属、cleanup 三处通过共享 `threadResource.buildIriForDatabase` 与明确 podUrl 的已认证 DB 做完整 IRI 比较；owner/fragment/target/tool/callId 保护不放宽，不推导 Pod 根。cleanup 独立从本轮 Run 发现 Session，waiting_input/等待 callId 必须恰好一条；Stop 后独立读回 exact owner/thread 及 completed/error 才计终态。缺失、foreign、其他 Pod、owner 或读回错误均使 cleanup 失败，仍尝试撤销 grant。Root 没有该验收 API，不迁入新脚本；本轮仅同步此文档补录，Root 既有产品修复/门禁范围维持。
 
 旧脚本 RED actual exit1（10 fail/26 pass）；修后 40 项/3 files actual exit0，含真实 ORM 关系读回正例与 foreign/owner/fragment 负例，以及独立 Session cleanup 的缺失/归属/读回失败负例。build:ts、typecheck:test、本批 lint 均 actual exit0。冻结验收文件的两次完整 `bun run test:integration` 均 actual exit0/signal=null：UTC 12:12:34.146—12:18:13.272 与提交前 12:18:56.050—12:27:08.597；各次 runtime30、lite163/16既有skip、full63。私有 `.test-data/sol-release/acceptance-final-local-gates.json` 保存原始记录/hash和自有 Compose containers/networks/volumes 各0。旧全量单元/lint欠账、额外 Linux SDK sandbox、原安装桌面等未验证范围保留。批准写入/拒绝不写/Stop不续跑、各真实 Session 终态和 grant 撤销仍必须在下一 exact-SHA RC 实际通过，不能由这里的模拟清理测试替代；尚未宣称 stable 已发布。
+
+
+### 2026-10-05：0.4.25 已发布与 0.4.26 待验分开记录
+
+0.4.25 已按 immutable source `a1cec27fa11d5447e0bc0a18373be7250e30d476` 发布，RC [37223939727](https://github.com/undefinedsco/xpod/actions/runs/37223939727) 与 stable [37225782101](https://github.com/undefinedsco/xpod/actions/runs/37225782101) 的发行证据独立保留。该发行成功不等于原始全部订阅和桌面权限要求已完成。
+
+0.4.26 候选把 server/UI 服务资源声明、当前 Pod 权威绑定及受限 invocation/key scope 收敛到共享入口；ACP 目标初始化/幂等授权保留 owner 和其他 agent 策略，Account 凭据操作沿用同 actor，collection intention 确认复用共享 ORM URI 契约。Cloud card/WebID 与独立 Local 存储、无公网路由可用以及 14 天 Account Cookie、独立 SDK Access/Refresh 的既定规则不变，业务层不推导 Pod 根。
+
+此次新增 [exact 安装包桌面验收契约](../../testing/desktop-permission-acceptance.md) 要求真实双 Pod UI 选择、29 资源首轮/重复授权、配置/模型/额度/首次 Chat、隔离和清理，与原自更新共同构成必需 desktop check；单元与协议夹具不能替代实际包。问题与边界见 [ACP 目标 ACR](../../issues/2026-10-05-missing-target-acr-permission-broker.md)、[canonical session credential 恢复](../../issues/2026-10-05-canonical-gateway-session-credential-recovery.md)、[collection URI intention](../../issues/2026-10-05-collection-uri-intent-confirmation.md)。
+
+当前 Cloud 只读诊断 [37239166566](https://github.com/undefinedsco/xpod/actions/runs/37239166566) 确认工作负载 replicas 为 0，恢复尚未确认；0.4.26 exact packaged managed 链路、新 immutable RC 与稳定发布仍待实际证据。没有宣称所有订阅授权、原安装 App 全流程或自然等待 14 天通过。此前失败与未验边界保留，本地冻结后仍须最终两次完整集成回归。
+
+同日安装包补录：本地 `71243cd91608cccbd488eef0df7acf54411ba4a1` 的原 zip 启动及 fixture 关闭失败分别保留。真实 OS 隔离诊断确认 Components 祖先发现及内部 CSS CLI 未注入同一 moduleState；[提取包 Components 发现问题](../../issues/2026-10-05-extracted-components-ancestor-discovery.md) 记录最小共享修复和工作树 binary 的 Local Gateway/API/CSS、实际 QLever 子进程与零残留证据。这些诊断通过不能追认原 zip 或 managed 权限门禁通过；修复后的新 SHA 仍须完整回归和 exact 包验收。
+
+Cloud 恢复时点补录：用户确认重新打开 Sealos 后，UTC 2026-10-05 01:42:52 的独立公网只读检查经宿主代理实际获得 `/service/status` 200（1.55 秒）和 OIDC discovery 200（1.14 秒），curl 均 exit=0。以上 replicas=0 记录保留为历史时点；当前公网恢复不等于 managed 登录、Cloud card、Local 存储、双 Pod Consent/29 权限或 provider 已通过，须继续实际验收。
+
+
+### 2026-10-05 登录/双 Pod 实测补录（尚未冻结新的发行来源）
+
+同 d02 安装包的实际新 Account/两 Local Pod 预验已越过 SDK callback 与 exact runtime ready；此前 helper 把 pre-callback active 事务当成完成事务的误判已按实际 authorize/state/PKCE/callback 与唯一新 lifecycle marker 修正。仍未通过桌面权限/业务门禁：Cloud `pick-webid` 只返回同 WebID 的第一个 Pod；共享身份 adapter 按 WebID 去重丢掉第二个已验证存储关系，修复范围与 RED 见 [ownership issue](../../issues/2026-10-05-oidc-ownership-drops-second-pod.md)。
+
+同一 owned profile 的互动重启/reload 不再输入密码，但各发生一次新 Consent/authorization-code exchange，因此只能算 Account 复用，不能算 SDK 自动续期。另一个无登录/授权动作的观察验证未能恢复，已定位 host 读取了过时 SDK selected-session pointer；按现有 SDK 公开 prefix 修复并保留 exact active issuer 守卫，见 [restore issue](../../issues/2026-10-05-browser-restore-uses-obsolete-session-pointer.md)。这些新工作树修复、自动复用、用户所见两次 Consent、6h/后台续期、两个 Pod 的真实选择与 29 资源/管理/Chat 均须后续实证；既有 0.4.25 发布、d02 的两轮完整与包预算记录不追认成这些新项通过，14 天 Account Cookie 与独立 SDK Access/Refresh 既定规则不变。
+
+### 2026-10-05 Consent 桌面几何修正（§4 / §11.1 / §13.11）
+
+用户"Consent 偏大"定位到两层，本轮只修了按授权范围允许的渲染层：
+
+- 渲染层（已修）：`ui/src/pages/ConsentPage.tsx` 之前固定 `presentation="standard"`，使 `XpodAccountPageSurface` 在桌面桥下仍取 `document`，Consent 走浏览器 `page`（两栏 + 480 body + `min-h-[520px]` + `min-h-[100dvh]`）。现按 host 推导呈现：桌面原生宿主 `window`（铺满宿主 440×620，最小 320×480），浏览器仍是 `page`。浏览器 page 介绍栏、body 典型化、权限逻辑与请求流未改；管理页/workspace 未改。
+- 宿主层（未修，需 Lead 批准新增写入范围）：`desktop/src/window-mode.ts` 的 `isCompactAccountPathname` 不含 `/.account/oidc/consent`，所以 `desktopWindowModeForUrl` 把 Consent 归为 `workspace`（`desktop/test/window-mode.test.ts` 现有断言即如此）。IPC 先按 URL 解析再退回渲染层请求，故渲染层请求的 `account` 会被丢弃，真实桌面 Consent 窗口仍是 1280×800。定位记录见本节；建议的最小契约是把 OIDC 授权步（consent / pick-webid）并入 compact account 路由，仍保留 workspace 给长 Account 文档。
+
+本轮渲染层证据（fixture 呈现，不等于真实 Electron/Account 验收）：RED 单测 actual exit 1（`data-web-account-layout` 实际为 `page`，期望 `window`）；修后 Consent 相关单测 actual exit 0、103 passed；`typecheck:test` actual exit 0；`tests/e2e/account-web-layout.spec.ts` Consent 两例 actual exit 0，在 440×620 与 320×480 实测渲染（截图 PNG 恰为 440x620 / 320x480），`[data-pod-sign-in="main"]` 为唯一滚动区、操作区在视口内。
+
+### 2026-10-05 第二轮：宿主几何契约与"记住授权"前置条件
+
+**宿主层几何（已改，源码级）**：`desktop/src/window-mode.ts` 的 compact Account 路由分类新增 `/.account/oidc/consent` 与 `/.account/oidc/pick-webid`（含 scoped-interaction 归一化、尾斜杠与 query 情况），使 Consent/pick-webid 与登录步骤共用 440×620（最小 320×480）宿主窗口；register/create-pod/长 Account/workspace 文档仍走 1280×800，iframe 导航守卫与 IPC 权威不变。证据：桌面单测先 RED（3 fail / 15 pass，actual exit 1），最小修复后 18 pass / 0 fail / 92 expect（actual exit 0），`desktop` typecheck actual exit 0。**这仍是源码级契约，不等于原生窗口已重建**：真实 440×620 桌面 Consent 需要新的 exact 源包或 Lead 单独批准的当前源码私有壳诊断，旧 d02 zip 不追认。
+
+**"记住授权"是仓库内既有契约，不是外部 IdP 策略**：`RememberedClientPromptFactory` / `RememberedClientGrantStore` / `RememberedConsentHandler` 均在 `src/identity/oidc/` 内且已由 `config/xpod.base.json` 装配。`ConsentPage` 的 `rememberClient` 默认为 `false`，而此前的验收 helper 只有 `rememberAccount`，因此每次 fresh bootstrap 都提交 `remember:false`（等于主动 `forget`）。保留 profile 上观察到的 `prompt=none → interaction_required` 是在**没有记住记录**的 profile 上测得的，不能据此判定"记住授权自动恢复"已坏；目前确认的缺口是验收/测试前置条件，不是已证明的产品缺陷。
+
+第二轮前置条件修复：`tests/helpers/browserSolidOidc.ts` 新增独立于 `rememberAccount` 的可选 `rememberClient`；`true`/`false` 会展开"请求详情"折叠区、按精确文案设置勾选、在批准前校验其确实被保留，并记录 safe 的 requested/observed 布尔与 Consent POST 的 `remember` 值；`undefined` 完全保持既有默认与策略。包装验收 fresh bootstrap 现显式选择 `rememberClient:true`。前置条件证据：新增 4 个行为用例先 RED（4 fail / 65 pass，actual exit 1），修复后 69 pass / 0 fail（actual exit 0）；`typecheck:test` actual exit 0；既有 remembered-grant 回归 4 files / 73 pass actual exit 0。成功静默恢复（新授权码、不要求 refresh token）才是本项通过标准；真实无交互 reload/reopen 证据仍待本轮诊断。
+
+**仍待验**：真实桌面 Consent 440×620 原生几何（需新 exact 源包）；记住授权的无交互 reload/reopen；用户所见两次 Consent 的页面/事务区分；两 Pod 所有权、29 权限、配额/Chat、provider 矩阵、6h/后台续期。以上均不因本轮 fixture 或单测通过而被视为已验收。
+
+**第二轮实测（owned profile，保留）**：本机该桌面账号的 OIDC 授权面是**云端 IdP** `https://id.undefineds.co/`（issuer host 记为 `id.undefineds.co`），本地打包 CSS 只服务 app 资源与 `/auth/callback`；bootstrap 阶段的 `/.oidc/auth`、`/.account/interaction/**`（account/bindings/webid/pod、consent、pick-webid）、`/.oidc/token`、`/.oidc/jwks` 全部指向该 origin。因此本流程的“记住授权”记录落在授权方，而不是 owned profile 的 `identity.sqlite → internal_kv`；profile 里没有 `idp/remembered-clients/*` 不能作为缺口证据。显式 `rememberClient:true` 的一次受控 bootstrap 结果：`exact-ready`、密码 POST 0、consent POST 1 且 `remember:true`、一个 `authorization_code`；随后**无任何动作**的 reload 在 ~3.0s 内 `exact-ready`（`prompt=none` + 一次 token），**无动作**的整包关闭/重开则打开 `/device/services` 且全程未发起 authorize（token 0），属该阶段未触及会话恢复的**不确定结论**，不是记住授权回归。**仍待证**：服务本流程的授权方是否持久化/复用 remembered grant——service-info 无法证明部署源码 SHA，本轮前置条件只证明勾选被提供、被保留并已提交；需要部署方确认含该代码，或由本地 CSS 承载同一流程，并补一个真正打开 app 路由的冷启动观察阶段。
+
+**第三轮：冷启动更正与“两次 Consent”分类**。此前整包关闭/重开未恢复是**场景构造问题**：打包夹具的启动 URL 就是 `/device/services`，该阶段从未挂载产品路由，也未发起任何 authorize。同一保留 profile 上，把产品路由 `/ai-connections` 作为明确的场景设置打开（全程无登录/Consent/记住账号点击、无 cookie/token 注入）后，**17.9s 达到 exact-ready**：一次 `prompt=none` authorize、一个 `authorization_code` token、**密码 POST 0 / Consent POST 0**，WebID/Pod 哈希与前次一致。观察窗口内状态经历 `initializing → error → authenticated`。**范围限定**：该结果在“旧 d02 原生壳 + 已审阅当前 renderer 私有诊断”上成立，属于窄义观测的就绪/恢复证据，不等于不可变打包验收；且 `initializing/error/authenticated` 不能证明全程无错、也不能证明完整 AI 功能可用。DOM 采样为约 500ms 一次，无法证明不存在极短暂的额外可见屏。因此“冷启动自动恢复”只作窄义成立表述，不作分类断言；封闭该问题仍需未来真实记录的 exact-package 追踪。
+
+**“两次 Consent”分类**：单次授权内（一个 interaction id、一次 `/.oidc/auth`）**只有一个可见 Consent 页和一次 Consent POST**。请求计数偏大来自客户端自身：`/.account/<interaction>/oidc/pick-webid/` 是 `ConsentPage` 自己发起的**页内数据请求**（用于列出可选 WebID/存储绑定，见 `ui/src/pages/ConsentPage.tsx`），不是第二个页面；Consent **文档**被取三次，其中两次相隔 1ms，属同一屏幕的重复/并发拉取。既存证据中的重复授权表现为**两次独立授权**（`restart` 与 `reload` 各一次，各自 interaction id 与各自 Consent POST，同一桌面客户端）；既有轨迹中未见被遗弃的并行 authorize 流。**范围限定**：约 500ms 的 DOM 采样与被记录的 `restart/reload` 交互，不能证明某个具体人工报告的 episode 里没有出现短暂的第二个可见屏，也不能仅凭请求计数类别化该 episode。
+
+**第四轮：authorize scope 记录 hook（面向未来）**。`tests/helpers/browserSolidOidc.ts` 的既有安全 trace hook 现在会按每个 authorize 请求记录归一化后的 `scope` 集合（去重、排序；无 scope 时记 `'<none>'`），且**不保留** state / PKCE / 其他授权秘密；秘密脱敏回归在 `tests/helpers/browserSolidOidc.test.ts`（先 RED 2 fail / 69 pass actual exit 1，修复后 71 pass actual exit 0）。该 hook **不能追溯**补全此前未记录的轨迹，因此“两次询问是否携带相同 scope 集合”仍是 **PENDING**，只能由未来一次**真实记录的**请求轨迹来判定，不能以单元用例绿灯代替。

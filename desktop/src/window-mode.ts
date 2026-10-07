@@ -29,15 +29,14 @@ export interface DesktopWindowModeNavigationSource {
 
 /**
  * The sign-in window: application-side WebID sign-in (A group) and the account
- * short sign-in/recovery pages (B group) share 280 x 400 native logical bounds.
- * The content fills the available viewport after native window chrome.
- * Registration, full consent and Pod management use the workspace frame.
+ * service pages (B group) share one 440 x 620 window, so moving between
+ * them does not resize it. The minimum is 320 x 480.
  */
 const SIGN_IN_WINDOW_SIZE = {
-  width: 280,
-  height: 400,
-  minWidth: 280,
-  minHeight: 400,
+  width: 440,
+  height: 620,
+  minWidth: 320,
+  minHeight: 480,
 } as const
 
 export const AUTH_WINDOW_MODE_SIZE = SIGN_IN_WINDOW_SIZE
@@ -77,11 +76,15 @@ function normalizeWindowModePathname(pathname: string): string {
 function isCompactAccountPathname(pathname: string): boolean {
   // Only short authentication steps share the compact frame. Long Account
   // documents need the workspace viewport for readable forms and actions.
+  // The OIDC authorization steps (consent, pick-webid) are short authentication
+  // surfaces, so they stay compact; register/create-pod/account documents do not.
   return pathname === '/.account'
     || pathname === '/.account/login'
     || pathname === '/.account/login/password'
     || pathname === '/.account/login/password/forgot'
     || pathname === '/.account/login/password/reset'
+    || pathname === '/.account/oidc/consent'
+    || pathname === '/.account/oidc/pick-webid'
 }
 
 export function bindDesktopWindowModeNavigation(
@@ -128,7 +131,7 @@ export function isDesktopWindowMode(value: unknown): value is DesktopWindowMode 
  * Keeps the native shell visually aligned with the renderer's current surface.
  *
  * The first BrowserWindow is created hidden. Shared WebID authentication owns
- * 280 × 400 native logical bounds and renders edge-to-edge inside them. Product
+ * the 440 × 620 native window and renders edge-to-edge inside it. Product
  * workspaces use the resizable workspace frame; CSS identity-provider
  * documents can request compact Account mode when hosted by Electron.
  */

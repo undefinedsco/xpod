@@ -18,8 +18,8 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
    和认证验收。
 6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，运行真实
    RDF、FTS、VEC Local conformance，但 RC 不向 npm 发布任何包。
-7. 同一个 workflow 构建未签名、未 notarize 的 macOS ARM64 桌面产物，并验证版本、
-   QLever runtime 和 manifest；服务、QLever 和桌面全部通过后才接受该候选。
+7. 同一个 workflow 构建带 ad-hoc 签名、未 notarize 的 macOS ARM64 桌面产物，并验证版本、
+   QLever runtime、manifest、真实自更新及同包真实权限操作；服务、QLever 和桌面全部通过后才接受该候选。
 8. 验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`。该 artifact 是 stable tag promotion 的唯一凭证。
 9. 只在接受的 exact commit 上创建 stable tag，例如 `v0.4.0`。
 10. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
@@ -50,6 +50,8 @@ Sealos ingress，三个 Ingress 经统一 Nginx Gateway 路由到 RC 服务；TL
 由 Sealos certificate controller 在 Ingress 创建后签发。overlay 不创建
 physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
 但必须使用独立 logical database or schema、独立 Redis DB 和独立 object bucket。
+`APP_ENV_FILE` 的 `CSS_IDENTITY_DB_URL` 与 `CSS_SPARQL_ENDPOINT` 均指向共享
+`xpod-rdf-postgres` 的独立 `xpod_rc` 库和角色；不再丢弃这些配置或注入临时数据库 URL。
 
 推荐的 RC Kubernetes 资源拓扑：
 
@@ -85,12 +87,25 @@ Pod、Network、Status 重管理工作区。Web 永远轻量，重管理只属�
 Playwright 用例和 `solid-pod-isolation`、`browser-visual` 必过项保持不变，不得以 skip、
 假 bridge 或 fixture 数据替代部署证据。
 
+轻量账号页面是客户端渲染：文档本身立刻返回 200，`账号总览` 只在 SPA 解析出 Account
+index 并取到 Cookie 认证的 controls 之后才绘制。因此验证按固定预算等待**已绘制**的页面，
+而不是 `domcontentloaded` 之后的一帧；预算内只有 dashboard 形态算通过，其余形态
+（bootstrap 加载/错误、login、consent 跳转、无法识别）在失败时以固定 token 报出，预算到期
+不算通过。绘制文案、URL 凭据与原始浏览器错误都不进入该 token，失败信息只表达观察到的形态。
+同一预算也约束每一次文档读取：渲染进程在剩余预算内没有应答时按原样上报，既不越过预算继续
+等待，也不被当成通过。
+
 完整 provider 写入、Pod 读写、Gateway Key、Models、真实 Chat 和 Tasks 审批由紧随其后的
 一次性 Local runtime 对同一 RC Cloud 执行。本地 hermetic/部署模式矩阵只证明隔离栈，
-不冒充已部署 RC 或真实桌面。现有 macOS `desktop` CI 门禁证明旧包到新包的真实自更新，
-并未证明重管理 UI：这部分仍需在真实 Electron/preload 和候选运行时中验证登录恢复及
-AI Connections、Pod、Network、Status 的已认证访问；不得用普通 Chromium 重页面截图
-宣称完成该桌面补证。本次浏览器契约修正不改变桌面发布门禁。
+不冒充已部署 RC 或真实桌面。0.4.25 的 macOS `desktop` 门禁证明旧包到新包的真实自更新，
+未覆盖重管理权限操作。0.4.26 起该必需项同时要求 exact zip 的权限操作证据：真实
+Electron/preload 与自带 Local runtime，Cloud card 身份、两份权威 Local Pod 绑定和无公网
+路由，实际 Consent 绑定证明（显式选择，或观察到的 singleton/no-chooser 呈现形态加已认证且与
+目标完全一致的 exact 运行态 binding；两条路径都必须另有实际批准提交与 callback/PKCE 证据）
+与回调、两轮完整资源授权、Account Key/配置、collection 写入确认、
+Models/Quota/单发 Chat、跨 Pod 拒绝与清理。缺任一证据不得写入 `desktop:passed`。
+详见[桌面权限验收契约](testing/desktop-permission-acceptance.md)。这项并不声明 Pod、Network、
+Status 所有管理操作、所有订阅 provider 或原安装 App 已验；不得用普通 Chromium 截图补足。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 
@@ -221,19 +236,19 @@ Gateway Key 不是可以各自热替换的四个独立版本。候选镜像必�
   route 时不得把首启强制绑定到可选的 Cloudflare Tunnel；仅当实际选择的信令、路由、
   DNS 或 tunnel 配置失败时才阻断注册。不得先持久化“已注册”状态再让 Account 页面在
   创建 Pod 时暴露 `fetch failed`；RC 日志中出现所选路径的注册失败必须直接阻断候选版本。
-- 若候选版本包含 Gateway API Key，Cloud/RC 必须提供各副本共享的稳定
-  `XPOD_GATEWAY_LOCATOR_SECRET`。Local/Standalone 默认从 SQLite 身份库目录
-  派生私有文件 `.xpod/secrets/gateway-locator-secret`，随实例数据卷保留，
-  不要求用户另配环境变量；显式配置仍优先。不得依赖进程随机值、临时
-  Gateway ingress secret 或会轮换的服务访问 token，否则重启后历史 Key 的 locator
-  无法解码，列表、停用和删除会出现不一致。密钥仅在创建时返回一次，列表只能返回元数据。验收必须在重建容器后
-  用创建时保留的同一个 Key 重验模型列表和 Chat，而不只是复用存活进程。
+- 本版本已移除 Gateway API Key（`xpod_gw_v1_*`）与为它服务的 locator 密钥
+  `XPOD_GATEWAY_LOCATOR_SECRET`：不再有代码签发这类 Key，也不再从 Key 反解 owner 去
+  Pod 里校验。任何环境都不需要、也不应再配置该变量；发布门禁不得把它列为必需项，
+  配置里残留它不会启用任何功能。存量 `xpod_gw_v1_*` Key 立即全部失效（401），
+  只能改用调用者自己的凭据。AI-Connections 的 invocation token
+  （`xpod_inv_v1.*`）不在此次移除范围内，短期推理授权行为保持不变。
 
 RC 验收顺序固定为：验证静态 bundle 与 deployed digest → 用同一个 accepted image
 启动一次性 Local edition 并注册到 RC Cloud（不得把 Cloud deployment 的端口转发冒充
 Local）→ 注册 Cloud 身份并通过 Account profile control 准备独立 Cloud card → 将同一 Cloud WebID 传入 Local prepare，Cloud 核验回执并 finalize Account/storage 绑定 → 从 canonical Pod URL 命中本地最优路径完成
-读写 → 用 Solid Session 创建 Xpod Gateway API Key 并取得一次性密钥，校验原始列表仅含元数据 → 使用该 Key 调用
-`/v1/models` → 发出真实 `/v1/chat/completions` 并校验有效内容 → 撤销 CSS 凭据并删除 Pod 记录，验证旧 Key 返回 401。任一层失败都不得
+读写 → 用调用者自己的 Solid 凭据换取 AI-Connections invocation token 调用
+`/v1/models` → 发出真实 `/v1/chat/completions` 并校验有效内容 → 撤销该调用者凭据并删除 Pod 记录，
+验证同一个 invocation token、以及缺失凭据的请求均被拒绝（401）。任一层失败都不得
 用下一层或隔离测试的结果替代。
 
 ## 操作命令
@@ -300,9 +315,11 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 修复方式是提交新的 release branch commit，让 candidate workflow 产生新的
 RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进生产。
 
-candidate workflow 最后总会把 `deployment/xpod-rc` scale-to-zero（不再依赖
-`XPOD_RC_SCALE_TO_ZERO`，完成后固定回收避免空烧资源；仅在 rc_kubeconfig 校验
-通过时执行）；共享 `deployment/xpod-inngest` 保持运行。
+candidate workflow 的 `cleanup_rc` 在服务、真实桌面和最终验收全部结束后无条件执行
+scale-to-zero；即使前序验收失败，也只回收本轮持有的 `deployment/xpod-rc`、
+存在时的 `deployment/xpod-rc-inngest` 和本轮 seed Secret。共享
+`statefulset/xpod-rdf-postgres` 与 `deployment/xpod-inngest` 保持运行。
+整个 workflow 通过跨 release 分支的共享锁串行化，防止桌面或最终验收时被下一轮重置。
 下一次 RC workflow 会重新 apply overlay、写入 Secret、设置 digest 并等待 rollout。
 手动恢复 RC 时可在同一 namespace 将 Xpod Deployment scale 到 1，然后重新
 运行 candidate workflow 做完整验收。

@@ -58,6 +58,7 @@ describe('Xpod web product build contract', () => {
     // preload bridge declared by XpodProductEntry.
     expect(entry).toContain("import { XpodProductEntry } from './XpodProductEntry'");
     expect(entry).toContain('<XpodProductEntry />');
+    expect(entry).toContain('<XpodThemeProvider>');
     expect(entry).not.toContain('XpodShellApp');
   });
 
@@ -82,8 +83,10 @@ describe('Xpod web product build contract', () => {
     // callback engine and the destination hand-off stay in the lazy desktop chunk.
     expect(entry).toContain("import { XpodProductEntry } from './XpodProductEntry'");
     expect(entry).toContain('<XpodProductEntry callback />');
+    expect(entry).toContain('<XpodThemeProvider>');
     expect(entry).not.toContain('XpodOidcCallbackApp');
     expect(entry).not.toContain('XpodShellApp');
+    expect(entry).not.toContain("destination.app === 'dashboard'");
     expect(desktopCallback).toContain('XpodOidcCallbackApp');
     expect(desktopCallback).toContain('resolveCallbackProductDestination');
     expect(desktopCallback).toContain('<XpodShellApp');

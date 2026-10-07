@@ -64,9 +64,10 @@ Cloud 模式以及非文件型 SQLite 部署仍需显式配置稳定根密钥，
 备份和迁移任务数据库时应同时保留根密钥文件；丢失根密钥将无法解密旧凭据。切换为显式根密钥时，
 需保留旧 `local-v1` 解密材料于轮换配置中，完成密文重封装后才能移除旧 key。
 
-Gateway locator 继续使用原来的 `.xpod/secrets/gateway-locator-secret`。两种用途使用独立随机材料，
-仅复用安全文件读写机制，因此 locator 轮换不会使任务凭据失效。这些是部署加密材料，用户级 AI key、
-endpoint 和 proxy 仍属于用户 Pod 配置。
+本机秘密文件现在只有 `secret-cell-root-key` 一个用途：Gateway locator 及其密钥已随该功能整体移除
+（见 [`docs/issues/2026-10-06-gateway-locator-key-removal.md`](issues/2026-10-06-gateway-locator-key-removal.md)），
+遗留的 `.xpod/secrets/gateway-locator-secret` 文件不再被任何代码读取或写入。这些是部署加密材料，
+用户级 AI key、endpoint 和 proxy 仍属于用户 Pod 配置。
 
 ### 3.1 CSS原生参数（完全不动）
 

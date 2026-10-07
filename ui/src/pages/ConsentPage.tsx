@@ -152,6 +152,11 @@ export function ConsentPage() {
   const [storageSelection, setStorageSelection] = useState<XpodStorageSelectionState>({ status: 'loading' });
   const [pendingTransaction, setPendingTransaction] = useState<WebIdLoginTransaction>();
   const [selectedWebId, setSelectedWebId] = useState('');
+  // The operator's explicit Pod binding is a session-local observation, not an
+  // Account fact: an authoritative reload may re-list bindings at any time, and
+  // it must keep the exact chosen pair while that pair still exists instead of
+  // dropping the choice (and re-disabling 允许) back to the empty chooser.
+  const explicitBindingRef = useRef<StorageBinding | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [failedAction, setFailedAction] = useState<'load' | 'authorize' | 'cancel' | 'switch' | 'return'>('load');
   const [rememberClient, setRememberClient] = useState(false);
@@ -284,9 +289,20 @@ export function ConsentPage() {
     const eligibleBindings = selectedPendingBinding
       ? exactBindings.filter((binding) => storageBindingKey(binding) === storageBindingKey(selectedPendingBinding))
       : exactBindings;
+    const requestedBinding = preferredBinding ?? explicitBindingRef.current;
+    const requestedBindingSurvives = requestedBinding !== undefined
+      && eligibleBindings.some((binding) => storageBindingKey(binding) === storageBindingKey(requestedBinding));
+    if (requestedBinding && !requestedBindingSurvives) {
+      // The selected pair is gone from the fresh Account enumeration; drop the
+      // session-local observation instead of keeping a stale preference.
+      explicitBindingRef.current = undefined;
+    }
     const selection: XpodStorageSelectionState = entryBindingScope.current.binding && eligibleBindings.length === 0
       ? { status: 'conflict', message: xpodConsentErrors.bindingUnavailable }
-      : reconcileXpodStorageSelection({ bindings: eligibleBindings, remembered: preferredBinding });
+      : reconcileXpodStorageSelection({
+        bindings: eligibleBindings,
+        remembered: requestedBindingSurvives ? requestedBinding : undefined,
+      });
     setConsentBindings(exactBindings);
     if (exactBindings.length === 0 && missingOwnerBinding.current) {
       setError(missingOwnerBinding.current);
@@ -657,7 +673,13 @@ export function ConsentPage() {
 
   return (
     // The consent and no-WebID views bring their own service bar and heading.
-    <XpodAccountPageSurface title={xpodConsentCopy.surfaceTitle} presentation="standard" bare={noPodVisible || consentVisible}>
+    // §4/§11.1/§13.11: the native desktop authentication surface fills the
+    // host-selected 440x620 window; only a browser document is the two-column page.
+    <XpodAccountPageSurface
+      title={xpodConsentCopy.surfaceTitle}
+      presentation={getXpodAuthSurfaceHost() === 'window' ? 'compact' : 'standard'}
+      bare={noPodVisible || consentVisible}
+    >
       <div className="flex min-h-0 flex-1 flex-col gap-4">
       {interactionExpired ? (
         <WebAccountFailureView
@@ -755,10 +777,12 @@ export function ConsentPage() {
               onSelectWebId={(optionId) => {
                 const binding = displayBindings.find((candidate) => storageBindingKey(candidate) === optionId);
                 if (binding) {
+                  explicitBindingRef.current = binding;
                   setSelectedWebId(binding.webId);
                   setSelectedStorageUrl(binding.storageUrl);
                   setStorageSelection({ status: 'ready', selected: binding });
                 } else {
+                  explicitBindingRef.current = undefined;
                   setSelectedWebId(optionId);
                   setSelectedStorageUrl('');
                 }

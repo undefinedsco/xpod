@@ -1,1 +1,0 @@
-import{r as t,j as o}from"./XpodThemeProvider-DK3pIdRG.js";import{c as s}from"./button-D3yW-2o1.js";const m=t.forwardRef(({className:e,...a},r)=>o.jsx("label",{ref:r,className:s("text-sm font-medium leading-none text-muted-foreground",e),...a}));m.displayName="Label";export{m as L};

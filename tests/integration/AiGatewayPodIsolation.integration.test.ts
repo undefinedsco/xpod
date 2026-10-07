@@ -406,9 +406,10 @@ describe('AI Connection Pod isolation integration', () => {
       auth: callerOwnedAuth(ALICE_WEB_ID),
     })).rejects.toThrow('caller_owner_mismatch');
 
-    expect(pod.getPodFetch).toHaveBeenCalledWith(BOB_WEB_ID, expect.objectContaining({
-      auth: expect.objectContaining({ webId: ALICE_WEB_ID }),
-    }));
+    // The shared binding resolver rejects the owner mismatch before requesting any Pod fetch.
+    expect(pod.getPodFetch).not.toHaveBeenCalled();
+    expect(backing.dbFactory).not.toHaveBeenCalled();
+    expect(backing.calls).toHaveLength(0);
     // Bob's Pod fetch was never borrowed, so his Pod db was never even opened.
     expect(backing.podFetches).toHaveLength(0);
   });

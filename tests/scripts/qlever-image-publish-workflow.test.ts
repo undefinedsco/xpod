@@ -108,6 +108,49 @@ function runFreshPublish(run: string, imageEnv: string): string {
   }
 }
 
+function runReusePublish(run: string, imageEnv: string): string {
+  const testRoot = path.join(repoRoot, '.test-data');
+  mkdirSync(testRoot, { recursive: true });
+  const tempRoot = mkdtempSync(path.join(testRoot, 'qlever-reuse-test-'));
+  try {
+    const binRoot = path.join(tempRoot, 'bin');
+    const output = path.join(tempRoot, 'github-output');
+    const digest = `sha256:${'a'.repeat(64)}`;
+    mkdirSync(binRoot);
+    writeFileSync(path.join(binRoot, 'docker'), [
+      '#!/bin/sh',
+      'set -eu',
+      'if [ "$1" != buildx ] || [ "$2" != imagetools ] || [ "$3" != inspect ] || [ -z "$4" ] || [ "$5" != --format ]; then',
+      '  echo "unexpected docker args: $*" >&2',
+      '  exit 42',
+      'fi',
+      `printf '"%s"\\n' "${digest}"`,
+    ].join('\n'));
+    chmodSync(path.join(binRoot, 'docker'), 0o755);
+    // The runner substitutes ${{ }} before bash sees the step; do the same here so
+    // the reuse branch runs exactly as the workflow would.
+    const templated = run.replace(/\$\{\{[^}]*\}\}/g, (expression) =>
+      expression.includes('resolve.outputs.tag') ? 'qlever-inputs-deadbeef00' : '');
+    const result = spawnSync('/bin/bash', [ '-c', templated ], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${binRoot}:${process.env.PATH}`,
+        BUILD_IMAGE: 'false',
+        GITHUB_OUTPUT: output,
+        IMAGE: imageEnv === 'IMAGE' ? 'ghcr.io/acme/local' : '',
+        PUSHED_DIGEST: '',
+        SDK_IMAGE: imageEnv === 'SDK_IMAGE' ? 'ghcr.io/acme/sdk' : '',
+      },
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    return readFileSync(output, 'utf8');
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
 describe.each(cases)('$name publish workflow image identity gate', (workflowCase: WorkflowCase) => {
   it('uses the same image inputs for local build and registry push', async () => {
     const workflow = await load(workflowCase.file);
@@ -171,6 +214,18 @@ describe.each(cases)('$name publish workflow image identity gate', (workflowCase
     expect(output).toContain(`digest=sha256:${'f'.repeat(64)}`);
     expect(output).toContain(workflowCase.imageEnv === 'SDK_IMAGE' ? 'image=ghcr.io/acme/sdk@' : 'image=ghcr.io/acme/local@');
     expect(runText).not.toMatch(/\bdocker\s+push\b/);
+  });
+
+  it('resolves a reused image digest through one real inspect call', async () => {
+    const publish = byId(await load(workflowCase.file), 'publish');
+    const output = runReusePublish(publish.run, workflowCase.imageEnv);
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const image = workflowCase.imageEnv === 'SDK_IMAGE' ? 'ghcr.io/acme/sdk' : 'ghcr.io/acme/local';
+
+    // 复用分支必须把 --format 作为同一个 docker 调用的参数；行尾写成 `\\` 会让
+    // shell 把它当成一条独立命令（exit 127）。这里真实执行该分支来锁住它。
+    expect(output).toContain(`digest=${digest}`);
+    expect(output).toContain(`image=${image}@${digest}`);
   });
 
   it('delegates image identity verification to the published-image CLI', async () => {
