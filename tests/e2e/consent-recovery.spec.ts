@@ -209,9 +209,12 @@ test('Electron failed consent returns through the trusted native cancellation br
     expect(tokenPosts).toBe(0);
     expect(cancelPosts).toBe(0);
     expect(app.windows()).toHaveLength(1);
-    // The returned account window is the native 280x400 frame; assert the actual
-    // content viewport (280x372), not the native outer bounds.
-    await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual({ width: 280, height: 372 });
+    // The account surface returns into the shared sign-in/account window, which
+    // the desktop shell owns at exactly 440x620 native bounds (accepted LOGIN
+    // comfort contract, see desktop/src/window-mode.ts SIGN_IN_WINDOW_SIZE and
+    // the 320x480 minimum). Assert the actual content viewport (620 minus the
+    // 28px macOS frame chrome), not the native outer bounds.
+    await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual({ width: 440, height: 592 });
     await page.screenshot({ path: testInfo.outputPath('electron-returned-app.png') });
     await testInfo.attach('electron-native-recovery', { contentType: 'application/json', body: JSON.stringify({
       before, after: { path: new URL(page.url()).pathname, text: await page.locator('body').innerText(),

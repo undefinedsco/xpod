@@ -714,10 +714,22 @@ export async function completeOidcLogin(
           await attributeOidcOperation('binding-select',
             () => consentStorageSelect.selectOption(requestedOption.value, { timeout: 2_000 }));
         }
-        const observedValue = await attributeOidcOperation('binding-select',
+        // The change event is what commits the binding into React state, and a
+        // loaded renderer can finish that commit a tick after selectOption
+        // resolves. Give the exact requested pair a bounded window to become the
+        // live value instead of reading the DOM exactly once; the reviewed
+        // failure is unchanged -- a chooser that never holds the requested pair
+        // is still `binding-not-retained`.
+        let observedValue = await attributeOidcOperation('binding-select',
           () => consentWebIdSelect.inputValue());
-        if (observedValue !== requestedOption.value) {
-          throw new OidcApprovalError('binding-not-retained', 'Consent did not retain the selected storage binding');
+        const retentionDeadline = Date.now() + 2_000;
+        while (observedValue !== requestedOption.value) {
+          if (Date.now() >= retentionDeadline) {
+            throw new OidcApprovalError('binding-not-retained', 'Consent did not retain the selected storage binding');
+          }
+          await page.waitForTimeout(50);
+          observedValue = await attributeOidcOperation('binding-select',
+            () => consentWebIdSelect.inputValue());
         }
         const separator = observedValue.indexOf('|');
         trace.storageBindingSelected = { webId: observedValue.slice(0, separator), podUrl: observedValue.slice(separator + 1) };

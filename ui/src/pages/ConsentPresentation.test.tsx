@@ -2,7 +2,7 @@
 //
 // The consent page renders the shared Pod sign-in views. Requests and state
 // stay the page's own; this file locks what the user sees.
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
@@ -49,16 +49,116 @@ function stubConsent(entries: unknown[], client: Record<string, unknown> = { cli
   return fetchMock;
 }
 
-function renderPage(overrides: Partial<AuthContextType> = {}) {
-  return render(
+function pageTree(overrides: Partial<AuthContextType> = {}) {
+  return (
     <AuthContext.Provider value={authValue(overrides)}>
       <MemoryRouter initialEntries={['/.account/oidc/consent/']}><ConsentPage /></MemoryRouter>
-    </AuthContext.Provider>,
+    </AuthContext.Provider>
   );
+}
+
+function renderPage(overrides: Partial<AuthContextType> = {}) {
+  return render(pageTree(overrides));
 }
 
 const cloud = { webId: 'https://pod.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/', label: 'Alice' };
 const edge = { webId: 'http://127.0.0.1:3000/alice/profile/card#me', storageUrl: 'http://127.0.0.1:3000/alice/', label: 'Alice Home' };
+
+// The packaged desktop acceptance logs in with two Pod bindings that share one
+// WebID and differ only by storageUrl, so consent must render the multi-binding
+// chooser (`#oidc-consent-webid`) and keep whatever the operator picks. These
+// cases drive the real Account load with deferred responses: an authoritative
+// reload -- earlier or later than the choice -- must not silently drop the
+// explicit binding back to the empty chooser, which would leave 允许 disabled.
+describe('ConsentPage keeps the explicit storage binding across Account reloads', () => {
+  const aliceCloud = { webId: 'https://pod.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/', label: 'Alice Cloud' };
+  const aliceLocal = { webId: 'https://pod.example/alice/profile/card#me', storageUrl: 'http://127.0.0.1:3000/alice/', label: 'Alice Local' };
+  const client = { client_id: 'https://app.example/id', client_name: 'Northstar', client_uri: 'https://app.example/' };
+
+  function controlledConsentFetch() {
+    const consentCalls: Array<{ resolve: (body: unknown) => void }> = [];
+    const pickCalls: Array<{ resolve: (body: unknown) => void }> = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const path = new URL(String(input), window.location.origin).pathname;
+      if (path === '/.account/oidc/consent/' || path === '/.account/oidc/pick-webid/') {
+        const calls = path.endsWith('pick-webid/') ? pickCalls : consentCalls;
+        return new Promise<Response>((resolve) => {
+          calls.push({ resolve: (body) => resolve(new Response(JSON.stringify(body), { status: 200 })) });
+        });
+      }
+      return Promise.resolve(new Response('{}', { status: 404 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return { fetchMock, consentCalls, pickCalls };
+  }
+
+  async function selectedConsentSelect(): Promise<HTMLSelectElement> {
+    await screen.findByRole('button', { name: '允许' });
+    const select = document.getElementById('oidc-consent-webid') as HTMLSelectElement | null;
+    expect(select).not.toBeNull();
+    return select!;
+  }
+
+  function allowButton(): HTMLButtonElement {
+    return screen.getByRole('button', { name: '允许' }) as HTMLButtonElement;
+  }
+
+  it('keeps the chosen binding when an earlier Account load resolves after the choice', async () => {
+    const { consentCalls, pickCalls } = controlledConsentFetch();
+    const view = renderPage({ isLoggedIn: false });
+    await waitFor(() => expect(consentCalls.length).toBe(1));
+
+    // The account session settles while the first load is still in flight, so the
+    // page loads the same consent state again with the authoritative session.
+    view.rerender(pageTree(authValue()));
+    await waitFor(() => expect(consentCalls.length).toBe(2));
+    await act(async () => { consentCalls[1]!.resolve({ client }); });
+    await waitFor(() => expect(pickCalls.length).toBe(1));
+    await act(async () => { pickCalls[0]!.resolve({ entries: [aliceCloud, aliceLocal] }); });
+
+    const select = await selectedConsentSelect();
+    const chosen = storageBindingKey(aliceLocal);
+    fireEvent.change(select, { target: { value: chosen } });
+    await waitFor(() => expect(select.value).toBe(chosen));
+    expect(allowButton().disabled).toBe(false);
+
+    // The superseded first load finally answers with the same authoritative
+    // bindings; the operator's explicit choice is still the live one.
+    await act(async () => { consentCalls[0]!.resolve({ client }); });
+    await waitFor(() => expect(pickCalls.length).toBe(2));
+    await act(async () => { pickCalls[1]!.resolve({ entries: [aliceCloud, aliceLocal] }); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+
+    expect((document.getElementById('oidc-consent-webid') as HTMLSelectElement).value).toBe(chosen);
+    expect(allowButton().disabled).toBe(false);
+  });
+
+  it('keeps the chosen binding when the Account bindings are reconciled again', async () => {
+    const { consentCalls, pickCalls } = controlledConsentFetch();
+    const view = renderPage();
+    await waitFor(() => expect(consentCalls.length).toBe(1));
+    await act(async () => { consentCalls[0]!.resolve({ client }); });
+    await waitFor(() => expect(pickCalls.length).toBe(1));
+    await act(async () => { pickCalls[0]!.resolve({ entries: [aliceCloud, aliceLocal] }); });
+
+    const select = await selectedConsentSelect();
+    const chosen = storageBindingKey(aliceLocal);
+    fireEvent.change(select, { target: { value: chosen } });
+    await waitFor(() => expect(select.value).toBe(chosen));
+
+    // A later authoritative reload (for example after the account controls are
+    // refreshed) must not relabel or drop the choice that still exists.
+    view.rerender(pageTree(authValue({ refetchControls: vi.fn(async () => undefined) })));
+    await waitFor(() => expect(consentCalls.length).toBe(2));
+    await act(async () => { consentCalls[1]!.resolve({ client }); });
+    await waitFor(() => expect(pickCalls.length).toBe(2));
+    await act(async () => { pickCalls[1]!.resolve({ entries: [aliceCloud, aliceLocal] }); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+
+    expect((document.getElementById('oidc-consent-webid') as HTMLSelectElement).value).toBe(chosen);
+    expect(allowButton().disabled).toBe(false);
+  });
+});
 
 describe('ConsentPage presentation', () => {
   it('renders the authorization as the shared consent view: service bar, app title and host, one level-1 heading', async () => {
