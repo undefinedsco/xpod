@@ -342,6 +342,9 @@ export interface ApiContainerCradle {
   matrixOutboundDelivery: import('../matrix/federation/outboundDelivery').MatrixOutboundDelivery | undefined;
   /** Drives the outbound queue; absent when there is nothing to drive. */
   matrixOutboxScheduler: import('../matrix/federation/outboxScheduler').MatrixOutboxScheduler | undefined;
+  matrixCanonicalRoomSource: import('../matrix/canonicalRoomSource').CanonicalRoomSource | undefined;
+  matrixMembershipAuthorityLocator: import('../matrix/membershipAuthorityLocator').MembershipAuthorityLocator;
+  matrixMembershipAuthorityResolver: import('../matrix/membershipAuthorityResolver').MembershipAuthorityResolver | undefined;
   matrixStore: PodMatrixStore;
   clientReconcilerCoordinator: ClientReconcilerCoordinator;
   serverGroupReconcilerService: ServerGroupReconcilerService;

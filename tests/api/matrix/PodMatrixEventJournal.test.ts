@@ -59,7 +59,16 @@ function journal() {
 }
 
 const HANDLE = (scope: string, write: unknown): MatrixControlRecordTarget => ({ scope, write }) as never;
-const CANDIDATE = { eventId: '$reserved', createdAt: Date.parse('2026-09-28T10:00:00.000Z'), contentHash: 'hash-a' };
+/**
+ * A moment inside the lookup window.
+ *
+ * The reservation's timestamp picks its day bucket, and `findReservation` looks back from *now*:
+ * a fixed calendar date drifts out of the window as wall-clock time moves on, which is the
+ * retention policy under test, not a fixture accident. Pinning this to the current clock keeps
+ * the test about the boundary it names while leaving the production window untouched.
+ */
+const RECENT = Date.now();
+const CANDIDATE = { eventId: '$reserved', createdAt: RECENT, contentHash: 'hash-a' };
 const LOOKUP = { eventId: '$reserved', roomId: '!room:pod.example', type: 'm.room.message', txnId: 'txn-1', txnDevice: 'XPODDEVICE' };
 
 describe('a Pod-backed event journal', () => {

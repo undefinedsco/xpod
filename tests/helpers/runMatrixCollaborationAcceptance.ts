@@ -1,7 +1,7 @@
 import { execFile, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { appendFile, rm } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { XpodTestStack } from './XpodTestStack';
 import { createFakeQleverRuntimeCommand } from './qleverRuntime';
@@ -11,6 +11,12 @@ import { createFakeQleverRuntimeCommand } from './qleverRuntime';
 async function main(): Promise<void> {
   const { values } = parseArgs({ args: process.argv.slice(2), options: { output: { type: 'string' } } });
   if (!values.output) throw new Error('--output is required');
+  const startedAt = Date.now();
+  const progress = async (phase: string): Promise<void> => {
+    const record = { suite: 'matrix-fixture', phase, elapsedMs: Date.now() - startedAt };
+    console.error(JSON.stringify(record));
+    await appendFile(`${values.output}.fixture-progress.jsonl`, `${JSON.stringify(record)}\n`).catch(() => undefined);
+  };
   const runtimeRoot = path.resolve('.test-data/matrix-collaboration-integration', randomUUID());
   const stack = new XpodTestStack();
   let token: string;
@@ -18,11 +24,13 @@ async function main(): Promise<void> {
   let sample: ChildProcess | undefined;
   let cleanupTask: Promise<void> | undefined;
   const cleanup = (): Promise<void> => cleanupTask ??= (async () => {
+    await progress('cleanup-start');
     sample?.kill('SIGTERM');
     try { await stack.stop(); } finally {
       fixture?.cleanup();
       await rm(runtimeRoot, { recursive: true, force: true });
     }
+    await progress('cleanup-finished');
   })();
   const onSignal = (): void => {
     const deadline = setTimeout(() => { fixture?.cleanup(); process.exit(1); }, 15_000);
@@ -32,6 +40,7 @@ async function main(): Promise<void> {
   process.once('SIGINT', onSignal);
   try {
     fixture = createFakeQleverRuntimeCommand();
+    await progress('runtime-start');
     await stack.start('local', {
       runtimeRoot, transport: 'port', open: false, authMode: 'acp', logLevel: 'warn',
       env: {
@@ -41,6 +50,7 @@ async function main(): Promise<void> {
         XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 7).toString('base64'),
       },
     });
+    await progress('runtime-ready');
 
     async function request(url: string, method = 'GET', body?: unknown, accountToken?: string): Promise<any> {
       const target = new URL(url, stack.baseUrl);
@@ -63,6 +73,7 @@ async function main(): Promise<void> {
     // Fresh account + Pod + client credentials bind the fixture's real WebID;
     // never reuse the shared open stack's synthetic identity or environment key.
     const account = await request('/.account/account/', 'POST', {});
+    await progress('account-created');
     const controls = await request('/.account/', 'GET', undefined, account.authorization);
     await request(controls.controls.password.create, 'POST', {
       email: `matrix-${randomUUID()}@example.test`, password: `Matrix-${randomUUID()}!`,
@@ -75,15 +86,20 @@ async function main(): Promise<void> {
     token = `sk-${Buffer.from(`${credentials.id}:${credentials.secret}`).toString('base64')}`;
     const anonymous = await stack.runtimeFetch(new URL('/_matrix/client/v3/account/whoami', stack.baseUrl));
     if (anonymous.status !== 401) throw new Error('Anonymous Matrix access must return 401');
+    await progress('acceptance-start');
     await new Promise<void>((resolve, reject) => {
       sample = execFile('bun', ['--no-env-file', path.resolve('scripts/accept-matrix-collaboration.ts'),
         '--url', stack.baseUrl, '--output', values.output!], {
         cwd: process.cwd(), env: { ...process.env, XPOD_MATRIX_TOKEN: token }, timeout: 900_000, maxBuffer: 1024 * 1024,
       }, (error, _stdout, stderr) => {
-        if (error) { reject(new Error(`Matrix acceptance failed: ${stderr.slice(-4000)}`)); return; }
+        if (error) {
+          reject(new Error(`Matrix acceptance failed (code=${error.code}, signal=${error.signal}, killed=${error.killed}): ${stderr.slice(-4000)}`));
+          return;
+        }
         resolve();
       });
     });
+    await progress('acceptance-finished');
   } finally {
     await cleanup();
     process.removeListener('SIGTERM', onSignal);

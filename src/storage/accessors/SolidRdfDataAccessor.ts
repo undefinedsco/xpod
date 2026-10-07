@@ -1,3 +1,7 @@
+import { isAuthorityThenable } from '../AuthorityExclusionGate';
+import { AuthorityPendingUnavailableError } from '../AuthorityFreshnessService';
+import type { LocalPhysicalOperationService } from '../LocalPhysicalOperationService';
+import { deliverPhysicalResult, iteratePhysicalResult, observePhysicalStream, runPhysicalOperation } from '../LocalPhysicalStreamLifetime';
 import { Readable } from 'node:stream';
 import arrayifyStream from 'arrayify-stream';
 import { getLoggerFor } from 'global-logger-factory';
@@ -26,6 +30,11 @@ import {
   applyRdfAccessScope,
   type RdfAccessScope,
 } from '../rdf/RdfAccessScope';
+import {
+  graphUrlsMentionedInSparql,
+  type AuthorityFreshnessProvider,
+  type AuthorityFreshnessQuery,
+} from '../AuthorityFreshnessService';
 import {
   NativeSparqlExecutionError,
   UnsupportedSparqlQueryError,
@@ -194,11 +203,30 @@ export class SolidRdfDataAccessor implements DataAccessor {
   private readonly sparqlAdapter = new RdfSparqlAdapter();
   private initialized = false;
   private initializing: Promise<void> | null = null;
+  private authorityFreshness?: AuthorityFreshnessProvider;
 
   public constructor(
     private readonly rdfEngine: RdfEngineLike,
     private readonly identifierStrategy: IdentifierStrategy,
-  ) {}
+    private readonly operationService?: LocalPhysicalOperationService,
+  ) {
+    if (operationService && typeof rdfEngine.assertAuthorityFreshSync !== 'function') {
+      throw new AuthorityPendingUnavailableError('Protected direct RDF reads require synchronous authority freshness');
+    }
+  }
+
+  /**
+   * Install the shared derived-index freshness contract. Configured storage wiring (MixDataAccessor
+   * with its authority journal) attaches this once; native and conditional-prepare reads then refuse
+   * stale facts. It is forwarded to the engine so direct native callers are covered too.
+   */
+  public setAuthorityFreshnessProvider(provider: AuthorityFreshnessProvider): void {
+    this.authorityFreshness = provider;
+    const engine = this.rdfEngine as RdfEngineLike & {
+      setAuthorityFreshnessProvider?: (provider: AuthorityFreshnessProvider) => void;
+    };
+    engine.setAuthorityFreshnessProvider?.(provider);
+  }
 
   public async initialize(): Promise<void> {
     if (this.initialized) {
@@ -235,51 +263,65 @@ export class SolidRdfDataAccessor implements DataAccessor {
   }
 
   public async getData(identifier: ResourceIdentifier): Promise<Guarded<Readable>> {
-    await this.initialize();
-    const quads = await this.scanGraph(namedNode(identifier.path));
-    return guardStream(Readable.from(quads));
+    return deliverPhysicalResult(this.operationService, async () => {
+      this.assertReadFresh({ resourceUrls: [identifier.path] });
+      await this.initialize();
+      const quads = await this.scanGraph(namedNode(identifier.path));
+      return guardStream(Readable.from(quads));
+    }, value => observePhysicalStream(value));
   }
 
   public async getMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
-    await this.initialize();
-    const name = namedNode(identifier.path);
-    const quads = await this.scanGraph(this.getMetadataNode(name));
+    const execute = async () => {
+      this.assertReadFresh({ resourceUrls: [identifier.path] });
+      await this.initialize();
+      const name = namedNode(identifier.path);
+      const quads = await this.scanGraph(this.getMetadataNode(name));
 
-    if (quads.length === 0) {
-      throw new NotFoundHttpError();
-    }
+      if (quads.length === 0) {
+        throw new NotFoundHttpError();
+      }
 
-    const metadata = new RepresentationMetadata(identifier).addQuads(quads);
-    if (!isContainerIdentifier(identifier) && !metadata.contentType) {
-      metadata.contentType = INTERNAL_QUADS;
-    }
-    return metadata;
+      const metadata = new RepresentationMetadata(identifier).addQuads(quads);
+      if (!isContainerIdentifier(identifier) && !metadata.contentType) {
+        metadata.contentType = INTERNAL_QUADS;
+      }
+      return metadata;
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async* getChildren(identifier: ResourceIdentifier): AsyncIterableIterator<RepresentationMetadata> {
-    await this.initialize();
-    const name = namedNode(identifier.path);
-    const scan = await this.rdfEngine.scan({
-      pattern: {
-        graph: name,
-        subject: name,
-        predicate: LDP.terms.contains,
-      },
-      options: { order: ['object'] },
-    });
-    for (const entry of scan.quads) {
-      if (entry.object.termType === 'NamedNode') {
-        yield new RepresentationMetadata(entry.object as NamedNode);
+    const source = async function* (this: SolidRdfDataAccessor) {
+      this.assertReadFresh({ basePath: identifier.path });
+      await this.initialize();
+      const name = namedNode(identifier.path);
+      const scan = await this.rdfEngine.scan({
+        pattern: {
+          graph: name,
+          subject: name,
+          predicate: LDP.terms.contains,
+        },
+        options: { order: ['object'] },
+      });
+      for (const entry of scan.quads) {
+        if (entry.object.termType === 'NamedNode') {
+          yield new RepresentationMetadata(entry.object as NamedNode);
+        }
       }
-    }
+    };
+    yield* iteratePhysicalResult(this.operationService, () => source.call(this));
   }
 
   public async writeContainer(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
-    await this.initialize();
-    addResourceMetadata(metadata, true);
-    updateModifiedDate(metadata);
-    const { name, parent } = this.getRelatedNames(identifier);
-    await this.replaceMetadata(name, metadata, parent);
+    const execute = async () => {
+      await this.initialize();
+      addResourceMetadata(metadata, true);
+      updateModifiedDate(metadata);
+      const { name, parent } = this.getRelatedNames(identifier);
+      await this.replaceMetadata(name, metadata, parent);
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async writeDocument(
@@ -287,24 +329,27 @@ export class SolidRdfDataAccessor implements DataAccessor {
     data: Guarded<Readable>,
     metadata: RepresentationMetadata,
   ): Promise<void> {
-    await this.initialize();
-    if (this.isMetadataIdentifier(identifier)) {
-      throw new ConflictHttpError('Not allowed to create NamedNodes with the metadata extension.');
-    }
+    const execute = async () => {
+      await this.initialize();
+      if (this.isMetadataIdentifier(identifier)) {
+        throw new ConflictHttpError('Not allowed to create NamedNodes with the metadata extension.');
+      }
 
-    const triples = await arrayifyStream<Quad>(data);
-    const def = defaultGraph();
-    if (triples.some((triple): boolean => !def.equals(triple.graph))) {
-      throw new NotImplementedHttpError('Only triples in the default graph are supported.');
-    }
+      const triples = await arrayifyStream<Quad>(data);
+      const def = defaultGraph();
+      if (triples.some((triple): boolean => !def.equals(triple.graph))) {
+        throw new NotImplementedHttpError('Only triples in the default graph are supported.');
+      }
 
-    addResourceMetadata(metadata, false);
-    updateModifiedDate(metadata);
-    metadata.removeAll(CONTENT_TYPE_TERM);
-    const { name, parent } = this.getRelatedNames(identifier);
-    await this.rdfEngine.delete({ graph: name });
-    await this.replaceMetadata(name, metadata, parent);
-    await this.putGraphQuads(name, triples);
+      addResourceMetadata(metadata, false);
+      updateModifiedDate(metadata);
+      metadata.removeAll(CONTENT_TYPE_TERM);
+      const { name, parent } = this.getRelatedNames(identifier);
+      await this.rdfEngine.delete({ graph: name });
+      await this.replaceMetadata(name, metadata, parent);
+      await this.putGraphQuads(name, triples);
+    };
+    return runPhysicalOperation(this.operationService, execute, data);
   }
 
   public async writeRdfSourceDocument(
@@ -313,131 +358,168 @@ export class SolidRdfDataAccessor implements DataAccessor {
     metadata: RepresentationMetadata,
     source: RdfSourceInput,
   ): Promise<void> {
-    await this.initialize();
-    if (this.isMetadataIdentifier(identifier)) {
-      throw new ConflictHttpError('Not allowed to create NamedNodes with the metadata extension.');
-    }
+    const execute = async () => {
+      await this.initialize();
+      if (this.isMetadataIdentifier(identifier)) {
+        throw new ConflictHttpError('Not allowed to create NamedNodes with the metadata extension.');
+      }
 
-    const def = defaultGraph();
-    if (quads.some((value): boolean => !def.equals(value.graph))) {
-      throw new NotImplementedHttpError('Only triples in the default graph are supported.');
-    }
+      const def = defaultGraph();
+      if (quads.some((value): boolean => !def.equals(value.graph))) {
+        throw new NotImplementedHttpError('Only triples in the default graph are supported.');
+      }
 
-    metadata.removeAll(CONTENT_TYPE_TERM);
-    const { name, parent } = this.getRelatedNames(identifier);
-    await this.replaceMetadata(name, metadata, parent);
-    await this.rdfEngine.replaceSource(
-      quads.map((value) => quad(value.subject, value.predicate, value.object, name) as Quad),
-      source,
-    );
+      metadata.removeAll(CONTENT_TYPE_TERM);
+      const { name, parent } = this.getRelatedNames(identifier);
+      await this.replaceMetadata(name, metadata, parent);
+      await this.rdfEngine.replaceSource(
+        quads.map((value) => quad(value.subject, value.predicate, value.object, name) as Quad),
+        source,
+      );
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async indexTextSource(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): Promise<void> {
-    await this.initialize();
-    if (!this.rdfEngine.indexTextSource) {
-      throw new Error('SolidRdfDataAccessor text indexing requires an RDF engine with text index support');
-    }
-    await this.rdfEngine.indexTextSource(source, text, chunks);
+    const execute = async () => {
+      await this.initialize();
+      if (!this.rdfEngine.indexTextSource) {
+        throw new Error('SolidRdfDataAccessor text indexing requires an RDF engine with text index support');
+      }
+      await this.rdfEngine.indexTextSource(source, text, chunks);
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async deleteTextSource(source: string): Promise<number> {
-    await this.initialize();
-    if (!this.rdfEngine.deleteTextSource) {
-      return 0;
-    }
-    return await this.rdfEngine.deleteTextSource(source);
+    const execute = async () => {
+      await this.initialize();
+      if (!this.rdfEngine.deleteTextSource) {
+        return 0;
+      }
+      return await this.rdfEngine.deleteTextSource(source);
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async moveTextSource(oldSource: string, next: RdfTextSourceInput): Promise<number> {
-    await this.initialize();
-    if (!this.rdfEngine.moveTextSource) {
-      return 0;
-    }
-    return await this.rdfEngine.moveTextSource(oldSource, next);
+    const execute = async () => {
+      await this.initialize();
+      if (!this.rdfEngine.moveTextSource) {
+        return 0;
+      }
+      return await this.rdfEngine.moveTextSource(oldSource, next);
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async moveRdfSourceDocument(oldSource: string, next: RdfSourceInput): Promise<number> {
-    await this.initialize();
-    if (!this.rdfEngine.moveSource) {
-      return 0;
-    }
-    return await this.rdfEngine.moveSource(oldSource, next);
+    const execute = async () => {
+      await this.initialize();
+      if (!this.rdfEngine.moveSource) {
+        return 0;
+      }
+      return await this.rdfEngine.moveSource(oldSource, next);
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async indexVectorSource(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): Promise<void> {
-    await this.initialize();
-    if (!this.rdfEngine.indexVectorSource) {
-      throw new Error('SolidRdfDataAccessor vector indexing requires an RDF engine with vector index support');
-    }
-    await this.rdfEngine.indexVectorSource(source, chunks);
+    const execute = async () => {
+      await this.initialize();
+      if (!this.rdfEngine.indexVectorSource) {
+        throw new Error('SolidRdfDataAccessor vector indexing requires an RDF engine with vector index support');
+      }
+      await this.rdfEngine.indexVectorSource(source, chunks);
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async deleteVectorSource(source: string): Promise<number> {
-    await this.initialize();
-    if (!this.rdfEngine.deleteVectorSource) {
-      return 0;
-    }
-    return await this.rdfEngine.deleteVectorSource(source);
+    const execute = async () => {
+      await this.initialize();
+      if (!this.rdfEngine.deleteVectorSource) {
+        return 0;
+      }
+      return await this.rdfEngine.deleteVectorSource(source);
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async moveVectorSource(oldSource: string, next: RdfVectorSourceInput): Promise<number> {
-    await this.initialize();
-    if (!this.rdfEngine.moveVectorSource) {
-      return 0;
-    }
-    return await this.rdfEngine.moveVectorSource(oldSource, next);
+    const execute = async () => {
+      await this.initialize();
+      if (!this.rdfEngine.moveVectorSource) {
+        return 0;
+      }
+      return await this.rdfEngine.moveVectorSource(oldSource, next);
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async deleteRdfSourceDocument(identifier: ResourceIdentifier): Promise<void> {
-    await this.initialize();
-    const { name, parent } = this.getRelatedNames(identifier);
-    await this.rdfEngine.deleteSource(identifier.path);
-    await this.rdfEngine.delete({ graph: this.getMetadataNode(name) });
-    if (parent) {
-      await this.rdfEngine.delete({
-        graph: parent,
-        subject: parent,
-        predicate: LDP.terms.contains,
-        object: name,
-      });
-    }
+    const execute = async () => {
+      await this.initialize();
+      const { name, parent } = this.getRelatedNames(identifier);
+      await this.rdfEngine.deleteSource(identifier.path);
+      await this.rdfEngine.delete({ graph: this.getMetadataNode(name) });
+      if (parent) {
+        await this.rdfEngine.delete({
+          graph: parent,
+          subject: parent,
+          predicate: LDP.terms.contains,
+          object: name,
+        });
+      }
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async writeMetadata(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
-    await this.initialize();
-    const { name, parent } = this.getRelatedNames(identifier);
-    const metaName = this.getMetadataNode(name);
-    await this.rdfEngine.delete({ graph: metaName });
-    const inserts = this.toGraphQuads(metaName, metadata.quads());
-    if (parent) {
-      inserts.push(quad(parent, LDP.terms.contains, name, parent) as Quad);
-    }
-    await this.rdfEngine.put(inserts);
+    const execute = async () => {
+      await this.initialize();
+      const { name, parent } = this.getRelatedNames(identifier);
+      const metaName = this.getMetadataNode(name);
+      await this.rdfEngine.delete({ graph: metaName });
+      const inserts = this.toGraphQuads(metaName, metadata.quads());
+      if (parent) {
+        inserts.push(quad(parent, LDP.terms.contains, name, parent) as Quad);
+      }
+      await this.rdfEngine.put(inserts);
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
-    await this.initialize();
-    const { name, parent } = this.getRelatedNames(identifier);
-    await this.rdfEngine.delete({ graph: name });
-    await this.rdfEngine.delete({ graph: this.getMetadataNode(name) });
-    if (parent) {
-      await this.rdfEngine.delete({
-        graph: parent,
-        subject: parent,
-        predicate: LDP.terms.contains,
-        object: name,
-      });
-    }
+    const execute = async () => {
+      await this.initialize();
+      const { name, parent } = this.getRelatedNames(identifier);
+      await this.rdfEngine.delete({ graph: name });
+      await this.rdfEngine.delete({ graph: this.getMetadataNode(name) });
+      if (parent) {
+        await this.rdfEngine.delete({
+          graph: parent,
+          subject: parent,
+          predicate: LDP.terms.contains,
+          object: name,
+        });
+      }
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async getDataByGraphPrefix(prefix: string): Promise<Quint[]> {
-    await this.initialize();
-    const scan = await this.rdfEngine.scan({
-      pattern: {
-        graph: { $startsWith: prefix },
-      },
-    });
-    return scan.quads as Quint[];
+    const execute = async () => {
+      this.assertReadFresh({ unbounded: true });
+      await this.initialize();
+      const scan = await this.rdfEngine.scan({
+        pattern: {
+          graph: { $startsWith: prefix },
+        },
+      });
+      return scan.quads as Quint[];
+    };
+    return runPhysicalOperation(this.operationService, execute);
   }
 
   public async prepareSparqlUpdate(
@@ -446,32 +528,66 @@ export class SolidRdfDataAccessor implements DataAccessor {
     accessScope?: RdfNativeSparqlAccessScope,
     options?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<RdfPreparedUpdateDelta | undefined> {
-    await this.initialize();
-    if (!this.rdfEngine.sparqlQuery) {
-      return this.prepareEmbeddedSparqlUpdate(query, baseIri, accessScope);
+    const execute = async () => {
+      await this.initialize();
+      if (!this.rdfEngine.sparqlQuery) {
+        await this.assertAuthorityFresh(query, baseIri, accessScope);
+        return this.prepareEmbeddedSparqlUpdate(query, baseIri, accessScope);
+      }
+      // basePath is the writable boundary. Keep sourceUri unset so each explicit
+      // child graph resolves to its own RDF document source.
+      const result = await this.rdfEngine.sparqlQuery(query, {
+        basePath: baseIri,
+        operation: 'prepareUpdate',
+        acceptMediaType: PREPARED_UPDATE_MEDIA_TYPE,
+        ...(accessScope ? { accessScope } : {}),
+        ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        ...(options?.signal ? { signal: options.signal } : {}),
+      });
+      if (result.status === 'unsupported') {
+        throw new UnsupportedSparqlQueryError(
+          result.error || 'Native QLever cannot prepare this SPARQL update for file-authority commit',
+        );
+      }
+      if (result.status !== 'ok') {
+        throw new NativeSparqlExecutionError(result.error || 'Native QLever failed to prepare the SPARQL update');
+      }
+      if (result.mediaType !== PREPARED_UPDATE_MEDIA_TYPE) {
+        throw new NativeSparqlExecutionError(`Native prepared update returned unexpected media type ${result.mediaType}`);
+      }
+      return parsePreparedUpdateDelta(result.body);
+    };
+    return runPhysicalOperation(this.operationService, execute);
+  }
+
+  private assertReadFresh(query: AuthorityFreshnessQuery): void {
+    if (!this.operationService) { return; }
+    const proof = this.rdfEngine.assertAuthorityFreshSync;
+    if (!proof) { throw new AuthorityPendingUnavailableError('Local direct read has no synchronous authority proof'); }
+    const outcome = proof.call(this.rdfEngine, query);
+    if (isAuthorityThenable(outcome)) {
+      void Promise.resolve(outcome).catch(() => undefined);
+      this.operationService.retainUnconfirmedProducer();
+      throw new AuthorityPendingUnavailableError('Local direct read freshness returned an unqualified thenable');
     }
-    // basePath is the writable boundary. Keep sourceUri unset so each explicit
-    // child graph resolves to its own RDF document source.
-    const result = await this.rdfEngine.sparqlQuery(query, {
+  }
+
+  private async assertAuthorityFresh(
+    query: string,
+    baseIri: string,
+    accessScope?: RdfNativeSparqlAccessScope,
+  ): Promise<void> {
+    if (!this.authorityFreshness && !this.operationService) { return; }
+    const graphUrls = new Set<string>(graphUrlsMentionedInSparql(query));
+    for (const url of accessScope?.allowedGraphUrls ?? []) {
+      graphUrls.add(url);
+    }
+    const freshnessQuery: AuthorityFreshnessQuery = {
       basePath: baseIri,
-      operation: 'prepareUpdate',
-      acceptMediaType: PREPARED_UPDATE_MEDIA_TYPE,
-      ...(accessScope ? { accessScope } : {}),
-      ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-      ...(options?.signal ? { signal: options.signal } : {}),
-    });
-    if (result.status === 'unsupported') {
-      throw new UnsupportedSparqlQueryError(
-        result.error || 'Native QLever cannot prepare this SPARQL update for file-authority commit',
-      );
-    }
-    if (result.status !== 'ok') {
-      throw new NativeSparqlExecutionError(result.error || 'Native QLever failed to prepare the SPARQL update');
-    }
-    if (result.mediaType !== PREPARED_UPDATE_MEDIA_TYPE) {
-      throw new NativeSparqlExecutionError(`Native prepared update returned unexpected media type ${result.mediaType}`);
-    }
-    return parsePreparedUpdateDelta(result.body);
+      graphUrls: [ ...graphUrls ],
+    };
+    if (this.operationService) { this.assertReadFresh(freshnessQuery); }
+    else { await this.authorityFreshness!.assertFresh(freshnessQuery); }
   }
 
   private async prepareEmbeddedSparqlUpdate(

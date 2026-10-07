@@ -43,6 +43,7 @@ export interface XpodRuntimeOptions {
   gatewayPort?: number;
   cssPort?: number;
   apiPort?: number;
+  ingressPort?: number;
   gatewaySocketPath?: string;
   cssSocketPath?: string;
   apiSocketPath?: string;

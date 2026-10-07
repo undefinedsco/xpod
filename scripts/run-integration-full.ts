@@ -1,23 +1,22 @@
 import path from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { allocateFullInfrastructure, createFullInfrastructure, composePortsOverride, readDockerPublishedTcpPorts, hasTcpService, hasWritableRedis, commandExitCode, probeMinio, runIntegrationWithCompletionGuard,
+  type FullIntegrationInfrastructure } from '../tests/helpers/fullIntegrationInfrastructure';
 
-import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { getFreePort } from '../src/runtime/port-finder';
+import { findGatewayIngressPort, getFreePort } from '../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import {
   OBJECT_STORE_ACCESS_KEY,
   OBJECT_STORE_BUCKET,
-  OBJECT_STORE_PORT,
   OBJECT_STORE_SECRET_KEY,
-  probeObjectStore,
 } from '../tests/helpers/dockerObjectStore';
 
 const DEFAULT_CLOUD_PORT = Number(process.env.CLOUD_PORT || '6300');
 const DEFAULT_CLOUD_B_PORT = Number(process.env.CLOUD_B_PORT || '6400');
 const DEFAULT_LOCAL_PORT = Number(process.env.LOCAL_PORT || '5737');
 const DEFAULT_STANDALONE_PORT = Number(process.env.STANDALONE_PORT || '5739');
-const COMPOSE_PROJECT = process.env.XPOD_FULL_PROJECT || 'xpod-full-test';
 const TEST_SECRET_CELL_KEY = Buffer.alloc(32, 3).toString('base64');
 const TEST_GATEWAY_ENV = {
   // Cloud Gateway keys require one stable value shared by all replicas. Keep
@@ -30,17 +29,6 @@ const TEST_GATEWAY_ENV = {
     'previous-id': Buffer.alloc(32, 4).toString('base64'),
   }),
 };
-const composeArgs = [
-  'compose',
-  '-p',
-  COMPOSE_PROJECT,
-  '-f',
-  'docker-compose.cluster.yml',
-  '-f',
-  'docker-compose.cluster.integration.yml',
-];
-const runtimeRoot = path.resolve('.test-data/full-runtime', process.env.XPOD_FULL_RUN_ID || `${Date.now()}-${process.pid}`);
-const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@localhost:5432/xpod';
 const defaultTargets = [
   'tests/integration/DockerCluster.integration.test.ts',
   'tests/integration/MultiNodeCluster.integration.test.ts',
@@ -52,6 +40,7 @@ interface RuntimePorts {
   gateway: number;
   css: number;
   api: number;
+  ingress: number;
 }
 
 interface FullRuntimePorts {
@@ -87,116 +76,20 @@ function runCommand(
   });
 }
 
-function commandExitCode(command: string, args: string[]): Promise<number> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      stdio: 'ignore',
-      env: process.env,
-    });
-
-    child.on('close', (code) => resolve(code ?? 1));
-    child.on('error', () => resolve(1));
-  });
-}
-
-
-async function hasTcpService(port: number, host = '127.0.0.1', timeoutMs = 1500): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = new net.Socket();
-    socket.setTimeout(timeoutMs);
-    socket.once('connect', () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once('error', () => {
-      socket.destroy();
-      resolve(false);
-    });
-    socket.once('timeout', () => {
-      socket.destroy();
-      resolve(false);
-    });
-    socket.connect(port, host);
-  });
-}
-
-async function hasWritableRedis(port = 6379, host = '127.0.0.1', timeoutMs = 1500): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = new net.Socket();
-    let buffer = '';
-    const command = [
-      '*5',
-      '$3',
-      'SET',
-      '$21',
-      'xpod:full:healthcheck',
-      '$2',
-      'ok',
-      '$2',
-      'EX',
-      '$2',
-      '30',
-      '',
-    ].join('\r\n');
-
-    const finish = (ok: boolean): void => {
-      socket.destroy();
-      resolve(ok);
-    };
-
-    socket.setTimeout(timeoutMs);
-    socket.once('connect', () => socket.write(command));
-    socket.on('data', (chunk) => {
-      buffer += chunk.toString('utf8');
-      if (buffer.startsWith('+OK')) {
-        finish(true);
-      } else if (buffer.startsWith('-')) {
-        finish(false);
-      }
-    });
-    socket.once('error', () => finish(false));
-    socket.once('timeout', () => finish(false));
-    socket.connect(port, host);
-  });
-}
-
-async function probeMinio(): Promise<{ ok: boolean; detail: string }> {
-  // The Compose service is still named `minio`, but it is VersityGW now, so the
-  // MinIO-only /minio/health/live path is gone. Probe what the tests actually
-  // need instead: an authenticated request for the test bucket. The probe never
-  // throws, so a container that is still starting is a retry, not a crash.
-  return await probeObjectStore(OBJECT_STORE_PORT, OBJECT_STORE_BUCKET);
-}
-
-async function hasMinio(): Promise<boolean> {
-  return (await probeMinio()).ok;
-}
-
-async function hasHealthyComposeInfra(): Promise<boolean> {
-  const [postgresReady, redisReady, postgresHostReady, redisHostReady, redisWritable, minioReady] = await Promise.all([
-    commandExitCode('docker', [...composeArgs, 'exec', '-T', 'postgres', 'pg_isready', '-U', 'xpod', '-d', 'xpod']),
-    commandExitCode('docker', [...composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping']),
-    hasTcpService(5432),
-    hasTcpService(6379),
-    hasWritableRedis(),
-    hasMinio(),
-  ]);
-  return postgresReady === 0 && redisReady === 0 && postgresHostReady && redisHostReady && redisWritable && minioReady;
-}
-
-async function waitForInfraServices(maxRetries = 60, delayMs = 1000): Promise<void> {
+async function waitForInfraServices(infra: FullIntegrationInfrastructure, maxRetries = 60, delayMs = 1000): Promise<void> {
   let lastStatus = '';
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const [postgresReady, redisReady, postgresHostReady, redisHostReady, minio] = await Promise.all([
-      commandExitCode('docker', [...composeArgs, 'exec', '-T', 'postgres', 'pg_isready', '-U', 'xpod', '-d', 'xpod']),
-      commandExitCode('docker', [...composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping']),
-      hasTcpService(5432),
-      hasTcpService(6379),
-      probeMinio(),
+    const [postgresReady, redisReady, postgresHostReady, redisHostReady, redisWritable, minio] = await Promise.all([
+      commandExitCode('docker', [...infra.composeArgs, 'exec', '-T', 'postgres', 'pg_isready', '-U', 'xpod', '-d', 'xpod']),
+      commandExitCode('docker', [...infra.composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping']),
+      hasTcpService(infra.ports.postgres),
+      hasTcpService(infra.ports.redis),
+      hasWritableRedis(infra.ports.redis),
+      probeMinio(infra.ports.objectStore),
     ]);
     const minioReady = minio.ok;
 
-    if (postgresReady === 0 && redisReady === 0 && postgresHostReady && redisHostReady && minioReady) {
+    if (postgresReady === 0 && redisReady === 0 && postgresHostReady && redisHostReady && redisWritable && minioReady) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       console.log('[full] postgres/redis/minio ready.');
       return;
@@ -206,6 +99,7 @@ async function waitForInfraServices(maxRetries = 60, delayMs = 1000): Promise<vo
       `redis=${redisReady}`,
       `postgresHost=${postgresHostReady}`,
       `redisHost=${redisHostReady}`,
+      `redisWritable=${redisWritable}`,
       // The object store's own words, so a timeout says "code ECONNRESET" or
       // "Access Denied" instead of only "minio=false".
       `minio=${minioReady ? 'true' : minio.detail}`,
@@ -237,11 +131,12 @@ async function allocateRuntimePorts(preferredGatewayPort: number, reserved: Set<
   const gateway = await allocatePort(preferredGatewayPort, reserved);
   const css = await allocatePort(preferredGatewayPort + 10, reserved);
   const api = await allocatePort(preferredGatewayPort + 11, reserved);
-  return { gateway, css, api };
+  const ingress = await findGatewayIngressPort(gateway, reserved);
+  reserved.add(ingress);
+  return { gateway, css, api, ingress };
 }
 
-async function resolveFullRuntimePorts(): Promise<FullRuntimePorts> {
-  const reserved = new Set<number>();
+async function resolveFullRuntimePorts(reserved: Set<number>): Promise<FullRuntimePorts> {
   return {
     cloud: await allocateRuntimePorts(DEFAULT_CLOUD_PORT, reserved),
     cloudB: await allocateRuntimePorts(DEFAULT_CLOUD_B_PORT, reserved),
@@ -254,10 +149,12 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
   const statusUrl = `${baseUrl.replace(/\/$/, '')}/service/status`;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 3000);
     try {
       const response = await fetch(statusUrl, {
         method: 'GET',
-        signal: AbortSignal.timeout(3000),
+        signal: controller.signal,
       });
 
       if (response.ok) {
@@ -272,7 +169,7 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
       }
     } catch {
       // not ready yet
-    }
+    } finally { clearTimeout(deadline); controller.abort(); }
 
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
@@ -283,15 +180,17 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
 async function startFullRuntimes(
   ports: FullRuntimePorts,
   qleverRuntimeCommand: string,
-): Promise<XpodRuntimeHandle[]> {
-  const runtimes: XpodRuntimeHandle[] = [];
+  infra: FullIntegrationInfrastructure,
+  runtimes: XpodRuntimeHandle[],
+): Promise<void> {
+  const runtimeRoot = infra.runtimeRoot;
   const commonCloudEnv = {
     ...TEST_GATEWAY_ENV,
     CSS_BASE_STORAGE_DOMAIN: 'undefineds.site',
-    CSS_REDIS_CLIENT: 'localhost:6379',
+    CSS_REDIS_CLIENT: infra.redisAddress,
     CSS_REDIS_USERNAME: '',
     CSS_REDIS_PASSWORD: '',
-    CSS_MINIO_ENDPOINT: `http://localhost:${OBJECT_STORE_PORT}`,
+    CSS_MINIO_ENDPOINT: infra.objectStoreEndpoint,
     CSS_MINIO_ACCESS_KEY: OBJECT_STORE_ACCESS_KEY,
     CSS_MINIO_SECRET_KEY: OBJECT_STORE_SECRET_KEY,
     CSS_MINIO_BUCKET_NAME: OBJECT_STORE_BUCKET,
@@ -313,11 +212,12 @@ async function startFullRuntimes(
     gatewayPort: ports.cloud.gateway,
     cssPort: ports.cloud.css,
     apiPort: ports.cloud.api,
+    ingressPort: ports.cloud.ingress,
     baseUrl: `http://localhost:${ports.cloud.gateway}/`,
     runtimeRoot: path.join(runtimeRoot, 'cloud'),
     rootFilePath: path.join(runtimeRoot, 'cloud', 'data'),
-    sparqlEndpoint: cloudDb,
-    identityDbUrl: cloudDb,
+    sparqlEndpoint: infra.pgUrl,
+    identityDbUrl: infra.pgUrl,
     env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-a' },
   }));
 
@@ -327,11 +227,12 @@ async function startFullRuntimes(
     gatewayPort: ports.cloudB.gateway,
     cssPort: ports.cloudB.css,
     apiPort: ports.cloudB.api,
+    ingressPort: ports.cloudB.ingress,
     baseUrl: `http://localhost:${ports.cloudB.gateway}/`,
     runtimeRoot: path.join(runtimeRoot, 'cloud_b'),
     rootFilePath: path.join(runtimeRoot, 'cloud_b', 'data'),
-    sparqlEndpoint: cloudDb,
-    identityDbUrl: cloudDb,
+    sparqlEndpoint: infra.pgUrl,
+    identityDbUrl: infra.pgUrl,
     env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-b' },
   }));
 
@@ -341,6 +242,7 @@ async function startFullRuntimes(
     gatewayPort: ports.local.gateway,
     cssPort: ports.local.css,
     apiPort: ports.local.api,
+    ingressPort: ports.local.ingress,
     baseUrl: `http://localhost:${ports.local.gateway}/`,
     runtimeRoot: path.join(runtimeRoot, 'local'),
     rootFilePath: path.join(runtimeRoot, 'local', 'data'),
@@ -363,6 +265,7 @@ async function startFullRuntimes(
     gatewayPort: ports.standalone.gateway,
     cssPort: ports.standalone.css,
     apiPort: ports.standalone.api,
+    ingressPort: ports.standalone.ingress,
     baseUrl: `http://localhost:${ports.standalone.gateway}/`,
     runtimeRoot: path.join(runtimeRoot, 'standalone'),
     rootFilePath: path.join(runtimeRoot, 'standalone', 'data'),
@@ -380,7 +283,6 @@ async function startFullRuntimes(
     },
   }));
 
-  return runtimes;
 }
 
 async function waitForFullPorts(ports: FullRuntimePorts): Promise<void> {
@@ -392,11 +294,20 @@ async function waitForFullPorts(ports: FullRuntimePorts): Promise<void> {
   ]);
 }
 
+let cleanupOwnedRun: () => Promise<void> = async() => undefined;
+
 async function main(): Promise<void> {
   const targets = process.argv.slice(2);
   const testTargets = targets.length > 0 ? targets : defaultTargets;
-  const ports = await resolveFullRuntimePorts();
+  const reserved = await readDockerPublishedTcpPorts();
+  const infra = createFullInfrastructure(await allocateFullInfrastructure(reserved), {
+    projectPrefix: process.env.XPOD_FULL_PROJECT, runPrefix: process.env.XPOD_FULL_RUN_ID });
+  await mkdir(infra.runtimeRoot, { recursive: true });
+  await writeFile(infra.overridePath, composePortsOverride(infra.ports));
+  await writeFile(path.join(infra.runtimeRoot, 'infrastructure.json'), JSON.stringify({ projectName: infra.projectName, ports: infra.ports }, null, 2));
+  const ports = await resolveFullRuntimePorts(reserved);
   const sharedEnv = {
+    ...infra.testEnv,
     CSS_BASE_URL: `http://localhost:${ports.standalone.gateway}`,
     CLOUD_PORT: String(ports.cloud.gateway),
     CLOUD_API_PORT: String(ports.cloud.api),
@@ -406,30 +317,27 @@ async function main(): Promise<void> {
     LOCAL_API_PORT: String(ports.local.api),
     STANDALONE_PORT: String(ports.standalone.gateway),
     STANDALONE_API_PORT: String(ports.standalone.api),
-    SOLID_ENV_FILE: path.resolve('.test-data', 'integration', 'full.env'),
   };
   const runtimes: XpodRuntimeHandle[] = [];
-  const reuseRequested = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true';
-  const reuseExistingInfra = reuseRequested && await hasHealthyComposeInfra();
-  const startedInfra = !reuseExistingInfra;
-
-  if (startedInfra) {
-    if (reuseRequested) {
-      console.log('[full] Existing Compose infrastructure is unhealthy; recreating it.');
-    }
-    await runCommand('docker', [...composeArgs, 'down', '-v', '--remove-orphans'], { allowFailure: true });
-  } else {
-    console.log('[full] Reusing healthy Compose postgres/redis/minio on localhost.');
-  }
-
   let testExitCode = 1;
   const qleverRuntimeFixture = createFakeQleverRuntimeCommand();
+  let cleanupPromise: Promise<void> | undefined;
+  cleanupOwnedRun = () => cleanupPromise ??= (async() => {
+    const stopped = await Promise.allSettled(runtimes.map(runtime => runtime.stop()));
+    let down = 0;
+    try {
+      if (process.env.XPOD_FULL_KEEP_RUNNING !== 'true') {
+        down = await runCommand('docker', [...infra.composeArgs, 'down', '-v', '--remove-orphans'], { allowFailure: true });
+      }
+    } finally { qleverRuntimeFixture.cleanup(); }
+    if (down !== 0 || stopped.some(result => result.status === 'rejected')) throw new Error('[full] Owned infrastructure cleanup failed');
+    console.log('[full] Owned cleanup complete.');
+  })();
   try {
-    if (startedInfra) {
-      await runCommand('docker', [...composeArgs, 'up', '-d', 'postgres', 'redis', 'minio']);
-      await waitForInfraServices();
-    }
-    runtimes.push(...await startFullRuntimes(ports, qleverRuntimeFixture.command));
+    await runCommand('docker', [...infra.composeArgs, 'config', '--quiet']);
+    await runCommand('docker', [...infra.composeArgs, 'up', '-d', 'postgres', 'redis', 'minio']);
+    await waitForInfraServices(infra);
+    await startFullRuntimes(ports, qleverRuntimeFixture.command, infra, runtimes);
     await waitForFullPorts(ports);
 
     await runCommand('bun', ['run', 'test:setup'], { env: sharedEnv });
@@ -452,18 +360,15 @@ async function main(): Promise<void> {
         allowFailure: true,
       },
     );
+    console.log(`[full] Docker integration tests completed with exit ${testExitCode}.`);
   } finally {
-    await Promise.allSettled(runtimes.map((runtime) => runtime.stop()));
-    if (startedInfra && process.env.XPOD_FULL_KEEP_RUNNING !== 'true') {
-      await runCommand('docker', [...composeArgs, 'down', '-v', '--remove-orphans'], { allowFailure: true });
-    }
-    qleverRuntimeFixture.cleanup();
+    await cleanupOwnedRun();
   }
 
   process.exit(testExitCode);
 }
 
-main().catch((error) => {
+runIntegrationWithCompletionGuard(main, () => cleanupOwnedRun()).catch((error) => {
   console.error(error);
   process.exit(1);
 });

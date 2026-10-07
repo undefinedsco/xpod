@@ -30,9 +30,11 @@ function harness(options: {
 } = {}) {
   const store = options.store ?? new InMemoryMatrixOutboundStore();
   let index = 0;
-  const sent: { origin: string; destination: string; txnId: string; pdus: readonly unknown[]; edus?: readonly unknown[] }[] = [];
+  const sent: { origin: string; destination: string; txnId: string; pdus: readonly unknown[]; edus?: readonly unknown[];
+    actor?: { webId: string; podUrl?: string; taskCredential?: { credentialRef?: string; version?: number } } }[] = [];
   const clock = options.clock ?? { now: 1_000 };
-  const send = vi.fn(async (input: { origin: string; destination: string; txnId: string; pdus: readonly unknown[]; edus?: readonly unknown[] }) => {
+  const send = vi.fn(async (input: { origin: string; destination: string; txnId: string; pdus: readonly unknown[]; edus?: readonly unknown[];
+    actor?: { webId: string; podUrl?: string; taskCredential?: { credentialRef?: string; version?: number } } }) => {
     sent.push(input);
     const status = typeof options.results === 'function'
       ? options.results(input)
@@ -131,6 +133,90 @@ describe('queueing outbound transactions', () => {
     const [ batch ] = await store.pending(SCOPE);
     expect(batch.pdus).toEqual([]);
     expect(batch.edus).toEqual([ { edu_type: 'm.typing' } ]);
+  });
+});
+
+describe('batch authority (O1 named grants)', () => {
+  const ALICE = 'https://alice.example/card#me';
+  const eventIds = (batch: MatrixOutboundBatch): (string | undefined)[] =>
+    batch.pdus.map(p => (p as { event_id?: string }).event_id);
+
+  it('keeps events authorized with different named grants in separate batches', async () => {
+    const { outbox, store } = harness();
+    // This is the R11 probe: granting B must not let B's event ride in A's batch.
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$a') ],
+      actor: { webId: ALICE, taskCredential: { credentialRef: 'grant-A', version: 1 } } });
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$b') ],
+      actor: { webId: ALICE, taskCredential: { credentialRef: 'grant-B', version: 1 } } });
+
+    const pending = await store.pending(SCOPE);
+    expect(pending).toHaveLength(2);
+    expect(pending.map(batch => [ eventIds(batch), batch.actor?.taskCredential?.credentialRef ])).toEqual([
+      [ [ '$a' ], 'grant-A' ],
+      [ [ '$b' ], 'grant-B' ],
+    ]);
+  });
+
+  it('separates the same named ref frozen at different versions', async () => {
+    const { outbox, store } = harness();
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$a') ],
+      actor: { webId: ALICE, taskCredential: { credentialRef: 'grant-A', version: 1 } } });
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$b') ],
+      actor: { webId: ALICE, taskCredential: { credentialRef: 'grant-A', version: 2 } } });
+
+    expect((await store.pending(SCOPE)).map(batch => batch.actor?.taskCredential?.version)).toEqual([ 1, 2 ]);
+  });
+
+  it('separates a named ref from the owner\'s active grant and from a different actor', async () => {
+    const { outbox, store } = harness();
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$named') ],
+      actor: { webId: ALICE, taskCredential: { credentialRef: 'grant-A', version: 1 } } });
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$active') ],
+      actor: { webId: ALICE } });
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$other') ],
+      actor: { webId: 'https://bob.example/card#me' } });
+
+    expect((await store.pending(SCOPE)).map(eventIds)).toEqual([ [ '$named' ], [ '$active' ], [ '$other' ] ]);
+  });
+
+  it('keeps a legacy actorless batch from absorbing an O1 event, and the reverse', async () => {
+    const { outbox, store } = harness();
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$legacy-a') ] });
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$o1') ], actor: { webId: ALICE } });
+    // A later legacy event extends the legacy batch, not the O1 one.
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$legacy-b') ] });
+
+    const pending = await store.pending(SCOPE);
+    expect(pending).toHaveLength(2);
+    expect(pending[0].actor).toBeUndefined();
+    expect(eventIds(pending[0])).toEqual([ '$legacy-a', '$legacy-b' ]);
+    expect(pending[1].actor).toEqual({ webId: ALICE });
+    expect(eventIds(pending[1])).toEqual([ '$o1' ]);
+  });
+
+  it('merges only an exactly compatible authority into one open batch', async () => {
+    const { outbox, store } = harness();
+    const authority = { webId: ALICE, podUrl: 'https://pod.example/alice/', taskCredential: { credentialRef: 'grant-A', version: 3 } };
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$a') ], actor: authority });
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$b') ], actor: { ...authority } });
+
+    const pending = await store.pending(SCOPE);
+    expect(pending).toHaveLength(1);
+    expect(eventIds(pending[0])).toEqual([ '$a', '$b' ]);
+    expect(pending[0].actor?.taskCredential).toEqual({ credentialRef: 'grant-A', version: 3 });
+  });
+
+  it('sends each authority under its own grant, so a revoked B cannot borrow active A', async () => {
+    const { outbox, sent } = harness({ results: [ 'delivered', 'delivered' ] });
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$a') ],
+      actor: { webId: ALICE, taskCredential: { credentialRef: 'grant-A', version: 1 } } });
+    await outbox.enqueue({ scope: SCOPE, origin: US, destination: THEM, pdus: [ pdu('$b') ],
+      actor: { webId: ALICE, taskCredential: { credentialRef: 'grant-B', version: 1 } } });
+    await outbox.flush({ scope: SCOPE });
+
+    // The queue never re-labels B's event with A's grant; resolving B (and denying it if revoked)
+    // is the send layer's job, and it can only do that if B's reference survived.
+    expect(sent.map(entry => entry.actor?.taskCredential?.credentialRef)).toEqual([ 'grant-A', 'grant-B' ]);
   });
 });
 

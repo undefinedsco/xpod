@@ -10,13 +10,17 @@ describe.skipIf(!integration)('Matrix authenticated Pod collaboration', () => {
   it('roundtrips two runtimes and a paginated backlog through its authenticated Gateway', async () => {
     const evidenceRoot = path.resolve('.test-data/matrix-collaboration-evidence', randomUUID());
     const output = path.join(evidenceRoot, 'result.json');
+    let passed = false;
     await mkdir(evidenceRoot, { recursive: true });
     try {
       await new Promise<void>((resolve, reject) => {
         execFile('bun', ['--no-env-file', path.resolve('tests/helpers/runMatrixCollaborationAcceptance.ts'), '--output', output], {
           cwd: process.cwd(), env: process.env, timeout: 960_000, maxBuffer: 8 * 1024 * 1024,
         }, (error, _stdout, stderr) => {
-          if (error) { reject(new Error(`Matrix fixture failed: ${stderr.slice(-4000)}`)); return; }
+          if (error) {
+            reject(new Error(`Matrix fixture failed (code=${error.code}, signal=${error.signal}, killed=${error.killed}): ${stderr.slice(-4000)}`));
+            return;
+          }
           resolve();
         });
       });
@@ -24,8 +28,13 @@ describe.skipIf(!integration)('Matrix authenticated Pod collaboration', () => {
       expect(evidence).toMatchObject({ status: 'passed', mode: 'deterministic-runtime', expectedEvents: 63, observedEvents: 63 });
       expect(evidence.results).toHaveLength(2);
       expect(evidence.syncPages).toBeGreaterThan(1);
+      passed = true;
     } finally {
-      await rm(evidenceRoot, { recursive: true, force: true });
+      if (passed) {
+        await rm(evidenceRoot, { recursive: true, force: true });
+      } else {
+        console.error(`Matrix failure evidence preserved at ${evidenceRoot}`);
+      }
     }
   }, 990_000);
 });

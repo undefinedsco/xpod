@@ -86,7 +86,7 @@ describe('joining a room another deployment hosts', () => {
     expect(remoteJoin).toHaveBeenCalledTimes(1);
     const asked = remoteJoin.mock.calls[0][0] as unknown as { roomId: string; userId: string; destination: string };
     expect(asked).toMatchObject({ roomId: REMOTE_ROOM, destination: 'peer.example' });
-    expect(asked.userId).toMatch(/^@u_[0-9a-f]{64}:alice\.example$/u);
+    expect(asked.userId).toBe(WEB_ID);
 
     // The room's state is stored the way a received event is: verbatim, marked as somebody else's.
     const stored = pdus(harness.rows);
@@ -103,6 +103,42 @@ describe('joining a room another deployment hosts', () => {
     // And joining again asks nobody: the membership is already there.
     await expect(harness.store.joinRoom(REMOTE_ROOM, context)).resolves.toEqual({ roomId: REMOTE_ROOM });
     expect(remoteJoin).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses the first join id and timestamp when a lost response is retried (G04)', async () => {
+    const ours = identity('alice.example');
+    const registry = matrixSigningIdentityRegistry({ providers: [
+      { serverName: 'alice.example', provider: { identity: async () => ours } as never },
+    ] });
+    const seen: { eventId: string; originServerTs: number }[] = [];
+    const remoteJoin = vi.fn(async (request: { userId: string; pending?: { eventId: string; originServerTs: number } }): Promise<RemoteJoinOutcome> => {
+      seen.push(request.pending!);
+      // The first attempt reaches the resident but loses the answer on the way back. The retry must
+      // present the *same* join event, not a fresh one: the pending identity is reserved before the
+      // first send precisely so a retry can reuse it.
+      if (seen.length === 1) return { status: 'retry', reason: 'connection lost after send_join' };
+      const answer = residentAnswer(request.userId);
+      return {
+        status: 'joined',
+        event: { ...answer.join, event_id: request.pending!.eventId, origin_server_ts: request.pending!.originServerTs },
+        eventId: request.pending!.eventId,
+        state: [ answer.create, answer.rules ],
+        authChain: [ answer.create, answer.rules ],
+      };
+    });
+    const harness = matrixHarness({ identities: registry, remoteJoin });
+    const context = { ...harness.context, webId: WEB_ID };
+
+    await expect(harness.store.joinRoom(REMOTE_ROOM, context)).rejects.toThrow(/connection lost/u);
+    await expect(harness.store.joinRoom(REMOTE_ROOM, context)).resolves.toEqual({ roomId: REMOTE_ROOM });
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toEqual(seen[0]);
+    expect(seen[0].eventId).toMatch(/^\$/u);
+    // The stored join keeps the first attempt's identity and creation time, not the retry's.
+    const join = pdus(harness.rows).find((entry: any) => entry.event?.type === 'm.room.member');
+    expect(join?.event?.event_id).toBe(seen[0].eventId);
+    expect(join?.event?.origin_server_ts).toBe(seen[0].originServerTs);
   });
 
   it('answers a refusal as forbidden and a retryable answer as unavailable', async () => {

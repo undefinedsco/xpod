@@ -420,6 +420,9 @@ export function createTaskCredentialSource(input: {
           // A version probe must not look like a use of the credential.
           recordUsage: false,
         });
+        if (lease.issuer !== issuer) {
+          return undefined;
+        }
         return {
           credentialRef: lease.credentialRef,
           version: lease.version,

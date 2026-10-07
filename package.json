@@ -303,6 +303,9 @@
   "patchedDependencies": {
     "oidc-provider@9.5.1": "patches/oidc-provider@9.5.1.patch",
     "@undefineds.co/drizzle-solid@0.3.24": "patches/@undefineds.co%2Fdrizzle-solid@0.3.24.patch",
-    "@solid/community-server@8.0.0-alpha.1": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch"
+    "@solid/community-server@8.0.0-alpha.1": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch",
+    "sparqljs@3.7.4": "patches/sparqljs@3.7.4.patch",
+    "@comunica/actor-query-operation-orderby@4.5.0": "patches/@comunica%2Factor-query-operation-orderby@4.5.0.patch",
+    "@comunica/utils-expression-evaluator@4.5.0": "patches/@comunica%2Futils-expression-evaluator@4.5.0.patch"
   }
 }

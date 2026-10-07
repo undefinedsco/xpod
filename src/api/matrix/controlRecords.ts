@@ -52,11 +52,16 @@
  * containers there is nothing to list.
  */
 import { createHash } from 'node:crypto';
-import { Parser } from 'n3';
-import { buildPodResourceIriForResource } from '@undefineds.co/drizzle-solid';
+import { Parser, DataFactory, termToId, type Quad } from 'n3';
+import { Parser as SparqlParser, Generator as SparqlGenerator } from 'sparqljs';
+import { buildPodResourceIriForResource, drizzle } from '@undefineds.co/drizzle-solid';
+import { isDeepStrictEqual } from 'node:util';
 import { dateParts, taskResource, TaskStatus, type TaskStatusType } from '@undefineds.co/models';
 import { MatrixError } from './MatrixError';
 import type { MatrixPodWrite } from './podAccess';
+import { isSolidAuth } from '../auth/AuthContext';
+import type { MatrixStoreContext } from './types';
+import { parseMembershipAuthorityBinding, type MembershipAuthorityBinding } from './canonicalRoomSource';
 
 /**
  * What a record is for.
@@ -292,6 +297,181 @@ export async function deleteControlRecord(
   record: MatrixControlRecord,
 ): Promise<void> {
   await target.write.db.deleteByResource(taskResource, record.subject);
+}
+
+const namedPublicationAuthorities = new WeakSet<object>();
+export interface NamedPublicationControlAuthority {
+  kind: 'named-publication';
+  webId: string;
+  podUrl: string;
+  binding: MembershipAuthorityBinding;
+  beforeRequest: () => Promise<void>;
+}
+export async function createNamedPublicationControlAuthority(input: NamedPublicationControlAuthority): Promise<NamedPublicationControlAuthority> {
+  if (!parseMembershipAuthorityBinding(input.binding) || !input.webId || !input.podUrl || typeof input.beforeRequest !== 'function') {
+    throw new MatrixError(403, 'M_FORBIDDEN', 'A complete named publication authority is required');
+  }
+  await input.beforeRequest();
+  const authority = Object.freeze({ ...input, binding: Object.freeze({ ...input.binding }) });
+  namedPublicationAuthorities.add(authority);
+  return authority;
+}
+export type PublicationControlAuthority = MatrixStoreContext | NamedPublicationControlAuthority;
+
+/** Publication-only exact deletion; ordinary record removal retains its existing semantics. */
+export async function deletePublicationControlRecordExactly(target: MatrixControlRecordTarget,
+  expected: MatrixControlRecord, caller: PublicationControlAuthority): Promise<void> {
+  await mutatePublicationControlRecordExactly(target, expected, caller);
+}
+
+export async function transitionPublicationControlRecordExactly(target: MatrixControlRecordTarget,
+  expected: MatrixControlRecord, next: WriteControlRecordInput, caller: PublicationControlAuthority): Promise<boolean> {
+  if (next.kind !== expected.kind || controlRecordBucket(next.at) !== expected.bucket) {
+    throw new MatrixError(409, 'M_CONFLICT', 'Publication transition must retain its original day bucket');
+  }
+  return await mutatePublicationControlRecordExactly(target, expected, caller, next);
+}
+
+async function mutatePublicationControlRecordExactly(target: MatrixControlRecordTarget,
+  expected: MatrixControlRecord, caller: PublicationControlAuthority, next?: WriteControlRecordInput): Promise<boolean> {
+  if ('kind' in caller && caller.kind === 'named-publication') {
+    if (!namedPublicationAuthorities.has(caller) || caller.podUrl !== target.scope) {
+      throw new MatrixError(403, 'M_FORBIDDEN', 'Publication task authority was not minted for this scope');
+    }
+    await caller.beforeRequest();
+  } else {
+    const original = caller as MatrixStoreContext;
+    if (original.service || !original.auth || !isSolidAuth(original.auth) || original.auth.webId !== original.webId
+      || original.podUrl !== target.scope) throw new MatrixError(403, 'M_FORBIDDEN', 'Publication deletion requires the original caller');
+  }
+  const document = expected.subject.split('#')[0];
+  const response = await target.write.fetch(document, { method: 'GET', redirect: 'error', headers: { Accept: 'text/turtle' } });
+  if (response.status === 404 && !response.redirected && response.url === document) return !next;
+  if (!response.ok || response.redirected || response.url !== document) {
+    throw new MatrixError(409, 'M_CONFLICT', 'The publication record could not be read exactly');
+  }
+  const ttl = await response.clone().text();
+  let served = false;
+  const sealed: typeof fetch = async(input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (served || url !== document || String(init?.method ?? 'GET').toUpperCase() !== 'GET') {
+      throw new MatrixError(409, 'M_CONFLICT', 'Publication record hydration must use the same original body');
+    }
+    served = true;
+    return response.clone();
+  };
+  const db = drizzle({ fetch: sealed, info: { webId: caller.webId, podUrl: caller.podUrl, isLoggedIn: true } } as never,
+    { podUrl: caller.podUrl, resourcePreparation: 'off', disableInteropDiscovery: true });
+  const row = await db.findByIri(taskResource, expected.subject) as Record<string, unknown> | null;
+  if (!row && next) return false;
+  if (!row) throw new MatrixError(409, 'M_CONFLICT', 'Publication record has no matching ORM row');
+  const hydrated = decodeControlRecord(expected.key, expected.kind, expected.bucket, expected.resource, expected.subject, row);
+  if (next && (!hydrated || !isDeepStrictEqual(hydrated, expected))) return false;
+  if (!hydrated || !isDeepStrictEqual(hydrated, expected)) throw new MatrixError(409, 'M_CONFLICT', 'Publication record changed before deletion');
+  const raw = new Map<string, Quad>();
+  const key = (q: Quad): string => `${termToId(q.subject)}|${termToId(q.predicate)}|${termToId(q.object)}`;
+  for (const quad of new Parser({ baseIRI: document }).parse(ttl)) raw.set(key(quad), quad);
+  const metadataPredicate = taskResource.getColumn('metadata')!.getPredicate(taskResource.config.namespace);
+  const metadataEdges = [ ...raw.values() ].filter(q => q.subject.value === expected.subject && q.predicate.value === metadataPredicate);
+  if (metadataEdges.length !== 1 || metadataEdges[0].object.termType !== 'NamedNode') {
+    throw new MatrixError(409, 'M_CONFLICT', 'Publication metadata is ambiguous');
+  }
+  const subjects = [ expected.subject, metadataEdges[0].object.value ];
+  const captured = [ ...raw.values() ].filter(q => subjects.includes(q.subject.value));
+  const serialized = new SparqlParser().parse(db.insert(taskResource).values(row as never).toSPARQL().query) as unknown as {
+    updates: Array<{ insert?: unknown[] }> };
+  const emitted: Quad[] = [];
+  const collect = (entries: unknown[]): void => {
+    for (const entry of entries) {
+      const pattern = entry as { triples?: Quad[]; patterns?: unknown[] };
+      emitted.push(...pattern.triples ?? []);
+      if (pattern.patterns) collect(pattern.patterns);
+    }
+  };
+  for (const update of serialized.updates) collect(update.insert ?? []);
+  const serializedSet = new Set(emitted.filter(q => subjects.includes(q.subject.value)).map(key));
+  if (serializedSet.size !== captured.length || captured.some(q => !serializedSet.has(key(q)))) {
+    throw new MatrixError(409, 'M_CONFLICT', 'Raw and ORM publication record terms differ');
+  }
+  const graph = DataFactory.namedNode(document);
+  const where: unknown[] = [ { type: 'graph', name: graph, patterns: [ { type: 'bgp', triples: captured } ] } ];
+  for (const [ index, subject ] of subjects.entries()) {
+    const predicate = DataFactory.variable(`p${index}`), object = DataFactory.variable(`o${index}`);
+    const expectedTerms = captured.filter(q => q.subject.value === subject).map(q => ({ type: 'operation', operator: '&&', args: [
+      { type: 'operation', operator: 'sameterm', args: [ predicate, q.predicate ] },
+      { type: 'operation', operator: 'sameterm', args: [ object, q.object ] },
+    ] }));
+    const allowed = expectedTerms.slice(1).reduce<unknown>((left, right) =>
+      ({ type: 'operation', operator: '||', args: [ left, right ] }), expectedTerms[0]);
+    where.push({ type: 'filter', expression: { type: 'operation', operator: 'notexists', args: [ {
+      type: 'graph', name: graph, patterns: [ { type: 'bgp', triples: [ { subject: DataFactory.namedNode(subject), predicate, object } ] },
+        { type: 'filter', expression: { type: 'operation', operator: '!', args: [ allowed ] } } ],
+    } ] } });
+  }
+  let nextAddress: ReturnType<typeof controlRecordAddress> | undefined;
+  let nextTriples: Quad[] = [];
+  if (next) {
+    nextAddress = controlRecordAddress(target.scope, next.kind, next.key, expected.bucket);
+    const nextRow = { ...row, id: nextAddress.id, instruction: next.instruction, status: next.status, metadata: next.metadata };
+    delete (nextRow as Record<string, unknown>)['@id'];
+    const nextAst = new SparqlParser().parse(target.write.db.insert(taskResource).values(nextRow as never).toSPARQL().query) as unknown as { updates: Array<{ insert?: unknown[] }> };
+    emitted.length = 0;
+    for (const update of nextAst.updates) collect(update.insert ?? []);
+    nextTriples = [ ...emitted ];
+    if (!nextTriples.some(q => q.subject.value === nextAddress!.subject)) {
+      throw new MatrixError(409, 'M_CONFLICT', 'Public ORM did not serialize the replacement publication record');
+    }
+    if (nextAddress.subject !== expected.subject) {
+      // The fresh transaction cannot overwrite an unrelated pre-existing record or metadata.
+      for (const [ index, subject ] of [ ...new Set(nextTriples.map(q => q.subject.value)) ].entries()) {
+        where.push({ type: 'filter', expression: { type: 'operation', operator: 'notexists', args: [ {
+          type: 'graph', name: DataFactory.namedNode(nextAddress.resource), patterns: [ { type: 'bgp', triples: [ {
+            subject: DataFactory.namedNode(subject), predicate: DataFactory.variable(`newP${index}`), object: DataFactory.variable(`newO${index}`),
+          } ] } ],
+        } ] } });
+      }
+    }
+  }
+  const query = new SparqlGenerator().stringify({ type: 'update', prefixes: {}, updates: [ { updateType: 'insertdelete',
+    delete: [ { type: 'graph', name: graph, triples: nextAddress?.subject === expected.subject
+      ? captured : captured.filter(q => q.subject.value === expected.subject) } ],
+    insert: nextAddress ? [ { type: 'graph', name: DataFactory.namedNode(nextAddress.resource), triples: nextTriples } ] : [], where,
+  } ] } as never);
+  const endpoint = `${document.slice(0, document.lastIndexOf('/') + 1)}-/sparql`;
+  let updateError: unknown;
+  try { await target.write.db.getDialect().executeOnResource(endpoint, { type: next ? 'UPDATE' : 'DELETE', query, prefixes: {} }, { mode: 'sparql', endpoint }); }
+  catch (error) { updateError = error; }
+  await target.write.db.getDialect().getSPARQLExecutor()?.invalidateHttpCache?.(document);
+  if (nextAddress) {
+    await target.write.db.getDialect().getSPARQLExecutor()?.invalidateHttpCache?.(nextAddress.resource);
+    const proof = await target.write.fetch(nextAddress.resource, { method: 'GET', redirect: 'error', headers: { Accept: 'text/turtle' } });
+    if (!proof.ok || proof.redirected || proof.url !== nextAddress.resource) {
+      if (updateError) throw updateError;
+      return false;
+    }
+    const actual = new Parser({ baseIRI: nextAddress.resource }).parse(await proof.text());
+    const nextSubjects = new Set(nextTriples.map(q => q.subject.value));
+    const actualSet = new Set(actual.filter(q => nextSubjects.has(q.subject.value)).map(key));
+    const expectedSet = new Set(nextTriples.map(key));
+    if (actualSet.size !== expectedSet.size || [ ...expectedSet ].some(term => !actualSet.has(term))) {
+      if (updateError) throw updateError;
+      return false;
+    }
+    if (nextAddress.subject === expected.subject) return true;
+  }
+  const readback = await target.write.fetch(document, { method: 'GET', redirect: 'error', headers: { Accept: 'text/turtle' } });
+  if (readback.status === 404 && !readback.redirected && readback.url === document) return true;
+  if (!readback.ok || readback.redirected || readback.url !== document) {
+    if (updateError) throw updateError;
+    throw new MatrixError(409, 'M_CONFLICT', 'Publication deletion could not be confirmed');
+  }
+  const remaining = new Parser({ baseIRI: document }).parse(await readback.text());
+  if (remaining.some(q => q.subject.value === expected.subject)) {
+    if (next) return false;
+    if (updateError) throw updateError;
+    throw new MatrixError(409, 'M_CONFLICT', 'Publication record changed or remained after conditional deletion');
+  }
+  return true;
 }
 
 /**

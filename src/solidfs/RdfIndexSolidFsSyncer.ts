@@ -27,6 +27,8 @@ type MaybePromise<T> = T | Promise<T>;
 
 export interface RdfIndexSolidFsSyncerOptions {
   index: LocalRdfIndexAccessor;
+  /** Startup recovery uses the complete file that remains as authority, without rewriting it. */
+  retainedAuthorityFiles?: boolean;
   textIndex?: RdfTextIndexLike;
   vectorIndex?: RdfVectorIndexLike;
   vectorizeText?: (input: RdfIndexSolidFsVectorizeInput) => MaybePromise<RdfVectorChunkInput[]>;
@@ -67,6 +69,7 @@ export interface RdfIndexSolidFsRebuildError {
  */
 export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
   private readonly index: LocalRdfIndexAccessor;
+  private readonly retainedAuthorityFiles: boolean;
   private readonly textIndex?: RdfTextIndexLike;
   private readonly vectorIndex?: RdfVectorIndexLike;
   private readonly vectorizeText?: NonNullable<RdfIndexSolidFsSyncerOptions['vectorizeText']>;
@@ -77,6 +80,7 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
       throw new Error('RdfIndexSolidFsSyncer vectorIndex requires vectorizeText');
     }
     this.index = options.index;
+    this.retainedAuthorityFiles = options.retainedAuthorityFiles === true;
     this.textIndex = options.textIndex;
     this.vectorIndex = options.vectorIndex;
     this.vectorizeText = options.vectorizeText;
@@ -224,7 +228,7 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
         identifier,
         guardStream(createReadStream(change.sourcePath)),
         change.contentType,
-        source,
+        this.retainedAuthorityFiles ? { ...source, retainedAuthorityFile: true } : source,
       );
     }
 
@@ -302,7 +306,7 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
         identifier,
         guardStream(createReadStream(change.sourcePath)),
         change.contentType,
-        source,
+        this.retainedAuthorityFiles ? { ...source, retainedAuthorityFile: true } : source,
       );
     }
 

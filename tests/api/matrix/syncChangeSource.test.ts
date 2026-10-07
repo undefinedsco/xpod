@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { messageResource } from '@undefineds.co/models';
 import { matrixHarness } from '../../helpers/MatrixMemoryDatabase';
 import type { MatrixRoomChangeSource } from '../../../src/api/matrix/PodMatrixStore';
+import { roomChatIri, roomDirectoryIri } from '../../../src/api/matrix/roomResources';
 
 /**
  * A change source the test drives, standing in for a notification subscription.
@@ -24,9 +26,24 @@ function changeSource() {
 
 function counting(db: any) {
   let selects = 0;
+  let boundaries = 0;
   const select = db.select.bind(db);
-  db.select = (...args: unknown[]) => { selects += 1; return select(...args); };
-  return { selects: () => selects, reset: () => { selects = 0; } };
+  db.select = (...args: unknown[]) => {
+    selects += 1;
+    const query = select(...args);
+    const limit = query.limit.bind(query);
+    query.limit = (size: number) => {
+      // These fixtures have exactly one LIMIT 1 query: the fixed source upper keyset.
+      if (size === 1) { boundaries += 1; }
+      return limit(size);
+    };
+    return query;
+  };
+  return {
+    selects: () => selects,
+    boundaries: () => boundaries,
+    sourceAndStateReads: () => selects - boundaries,
+  };
 }
 
 /** A deployment of `rooms` rooms, each with a message, and a caught-up sync token. */
@@ -41,6 +58,16 @@ async function caughtUp(rooms: number, options: { roomChanges?: MatrixRoomChange
   }
   const first = await store.sync(context, { limit: 1_000 });
   return { ...harness, roomIds, token: first.next_batch };
+}
+
+function appendNativeRows(scale: Awaited<ReturnType<typeof caughtUp>>, label: string): void {
+  const createdAt = '2000-01-01T00:00:00.000Z';
+  for (const roomId of scale.roomIds) {
+    const parent = roomChatIri(scale.context.podUrl, roomId);
+    const exemplar = scale.rows.get(messageResource)!.find(row => row.parent === parent && row.role === 'user');
+    scale.rows.get(messageResource)!.push({ ...exemplar, parent, metadata: {}, createdAt,
+      id: messageResource.buildId({ id: `${label}-${roomId}`, parent, createdAt }), content: label });
+  }
 }
 
 describe('sync with a change source', () => {
@@ -63,16 +90,25 @@ describe('sync with a change source', () => {
     const [ changed, other ] = scale.roomIds;
     await scale.store.sendEvent(changed, 'm.room.message', 'txn-new', { body: 'new' }, scale.context);
     const counter = counting(scale.db);
+    const exactReads = vi.spyOn(scale.db, 'findByIri');
+    const history = vi.spyOn(scale.store as any, 'listEvents');
     changes.says([ changed ]);
 
     const sync = await scale.store.sync(scale.context, { since: scale.token, timeout: 0 });
-    // Two passes, each reading the room list and that one room — not twenty.
-    expect(counter.selects()).toBe(4);
+    // A published reference needs bounded point reads, irrespective of the other nineteen rooms.
+    expect(counter.selects()).toBeLessThanOrEqual(2);
+    expect(history).not.toHaveBeenCalled();
+    expect(exactReads.mock.calls.length).toBeGreaterThan(0);
+    expect(exactReads.mock.calls.length).toBeLessThanOrEqual(4);
+    const directory = roomDirectoryIri(scale.context.podUrl, changed);
+    expect(exactReads.mock.calls.every(([, iri]) => String(iri).startsWith(directory))).toBe(true);
     expect(Object.keys(sync.rooms.join)).toEqual([ changed ]);
     expect(sync.rooms.join[changed].timeline.events.map(event => event.content.body)).toEqual([ 'new' ]);
     expect(sync.rooms.join[other]).toBeUndefined();
     // The source may forget what was read, and only what was read.
     expect(changes.settled.at(-1)).toEqual([ changed ]);
+    exactReads.mockRestore();
+    history.mockRestore();
   });
 
   it('ignores the source for a caller that is behind, and reads every room', async () => {
@@ -84,19 +120,26 @@ describe('sync with a change source', () => {
     changes.says([]);
 
     const sync = await scale.store.sync(scale.context, { timeout: 0 });
-    expect(counter.selects()).toBe(2 * (scale.roomIds.length + 1));
+    // Initial state bootstrap is separate from discovery; normal cursor pages must not repeat it.
+    expect(counter.boundaries()).toBe(scale.roomIds.length);
+    expect(counter.sourceAndStateReads()).toBeLessThanOrEqual(2 * (scale.roomIds.length + 1));
     expect(Object.keys(sync.rooms.join)).toHaveLength(scale.roomIds.length);
   });
 
   it('reads every room when the source admits it cannot account for everything', async () => {
     const changes = changeSource();
     const scale = await caughtUp(10, { roomChanges: changes.source });
+    appendNativeRows(scale, 'unknown native');
     const counter = counting(scale.db);
     changes.says([], 'all');
 
     const sync = await scale.store.sync(scale.context, { since: scale.token, timeout: 0 });
-    expect(counter.selects()).toBe(2 * (scale.roomIds.length + 1));
+    expect(counter.boundaries()).toBe(scale.roomIds.length);
+    expect(counter.sourceAndStateReads()).toBeLessThanOrEqual(scale.roomIds.length + 1);
     expect(Object.keys(sync.rooms.join)).toHaveLength(scale.roomIds.length);
+    for (const roomId of scale.roomIds) {
+      expect(sync.rooms.join[roomId].timeline.events.map(event => event.content.body)).toEqual(['unknown native']);
+    }
   });
 
   it('picks up a change that arrives while the caller waits', async () => {
@@ -115,11 +158,16 @@ describe('sync with a change source', () => {
     const changes = changeSource();
     // A zero safety net means "always due", i.e. the periodic full pass is happening now.
     const scale = await caughtUp(10, { roomChanges: changes.source, roomChangeFullPassMs: 0 });
+    appendNativeRows(scale, 'due native');
     const counter = counting(scale.db);
     changes.says([]);
 
     const sync = await scale.store.sync(scale.context, { since: scale.token, timeout: 0 });
-    expect(counter.selects()).toBe(2 * (scale.roomIds.length + 1));
+    expect(counter.boundaries()).toBe(scale.roomIds.length);
+    expect(counter.sourceAndStateReads()).toBeLessThanOrEqual(scale.roomIds.length + 1);
     expect(Object.keys(sync.rooms.join)).toHaveLength(scale.roomIds.length);
+    for (const roomId of scale.roomIds) {
+      expect(sync.rooms.join[roomId].timeline.events.map(event => event.content.body)).toEqual(['due native']);
+    }
   });
 });

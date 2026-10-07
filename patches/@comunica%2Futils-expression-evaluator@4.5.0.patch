@@ -1,0 +1,23 @@
+diff --git a/node_modules/@comunica/utils-expression-evaluator/.bun-tag-337c39035bf5d7b8 b/.bun-tag-337c39035bf5d7b8
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/lib/util/DateTimeHelpers.js b/lib/util/DateTimeHelpers.js
+index 79a9625ea31d7c53300eb34c211933ea16ba2b36..bc985d6efa32e2d90f357401d61986d3afea1db9 100755
+--- a/lib/util/DateTimeHelpers.js
++++ b/lib/util/DateTimeHelpers.js
+@@ -105,7 +105,14 @@ function negateDuration(dur) {
+ exports.negateDuration = negateDuration;
+ function toJSDate(date) {
+     // The given hours will be assumed to be local time.
+-    const res = new Date(date.year, date.month - 1, date.day, date.hours, date.minutes, Math.trunc(date.seconds), (date.seconds % 1) * 1_000);
++    // Truncate decimal digits before parsing: binary fractional multiplication can
++    // turn an exact millisecond into 647.999999..., which Date then truncates.
++    const [coefficient, exponent = '0'] = String(Math.abs(date.seconds)).split('e');
++    const [integer, fraction = ''] = coefficient.split('.');
++    const digits = integer + fraction;
++    const end = integer.length + Number(exponent) + 3;
++    const milliseconds = Math.sign(date.seconds) * Number(end <= 0 ? '0' : digits.padEnd(end, '0').slice(0, end));
++    const res = new Date(date.year, date.month - 1, date.day, date.hours, date.minutes, 0, milliseconds);
+     if (date.year >= 0 && date.year < 100) {
+         // Special rule of date has gone int action:
+         // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/Date#individual_date_and_time_component_values

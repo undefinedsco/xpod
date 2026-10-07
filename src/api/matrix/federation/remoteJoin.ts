@@ -18,7 +18,7 @@
  * what a caller stores in the joining participant's Pod, and a caller that cannot store them has
  * not joined the room — so the decision stays where the Pod write is.
  */
-import { computeEventId } from '../protocol/eventIntegrity';
+import { eventIdForWrite } from '../eventIdentity';
 import { SUPPORTED_ROOM_VERSION } from '../protocol/authRules';
 import type { MatrixFederationClient } from './outboundTransaction';
 
@@ -46,6 +46,15 @@ export interface RemoteJoinInput {
   sign: (event: Record<string, unknown>) => Record<string, unknown>;
   /** Room versions we offer to support; the version this deployment implements by default. */
   versions?: readonly string[];
+  /**
+   * The id and timestamp of the *first* attempt, when the caller persisted one.
+   *
+   * A join is a write this deployment names itself, and a lost response must be retried as the
+   * same write: reusing the id and creation time is what keeps one join event per `(room, user)`
+   * instead of splitting the membership across two. Absent means this is the first attempt and a
+   * fresh id/time is named here.
+   */
+  pending?: { eventId: string; originServerTs: number };
   now?: () => number;
 }
 
@@ -76,12 +85,21 @@ export async function joinRoomOverFederation(input: RemoteJoinInput): Promise<Re
   }
 
   // Only the sender's own facts are added; the resident's graph position is used as received.
-  const signed = input.sign({
-    ...template.event,
-    origin: input.serverName,
-    origin_server_ts: (input.now ?? Date.now)(),
-  });
-  const eventId = computeEventId(signed);
+  // This deployment is the writer, so it names the join itself: an id the caller persisted before
+  // the first attempt, so a lost response is retried as the same event, rather than a content hash
+  // that would rename the event if the graph moved. The id goes on *after* signing, as in
+  // `buildPersistedEvent`, because the signature does not cover `event_id`; that is what keeps the
+  // signed bytes and the id independent.
+  const eventId = input.pending?.eventId ?? eventIdForWrite(undefined);
+  const originServerTs = input.pending?.originServerTs ?? (input.now ?? Date.now)();
+  const signed = {
+    ...input.sign({
+      ...template.event,
+      origin: input.serverName,
+      origin_server_ts: originServerTs,
+    }),
+    event_id: eventId,
+  };
 
   const answer = await input.client.sendJoin({
     destination: input.destination,

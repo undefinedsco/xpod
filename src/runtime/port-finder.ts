@@ -1,4 +1,5 @@
 import net from 'node:net';
+import type { RuntimePortAllocationOptions, RuntimePorts } from './host/types';
 import os from 'node:os';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -132,14 +133,18 @@ async function canListen(port: number, host: string, timeoutMs = PORT_PROBE_TIME
  * reservation, and a dynamic entry that took it would break that group's tunnel instead of
  * merely moving its own listener.
  */
-export async function findGatewayIngressPort(gatewayPort: number): Promise<number> {
+export async function findGatewayIngressPort(gatewayPort: number, excluded: ReadonlySet<number> = new Set()): Promise<number> {
   for (let offset = 3; offset < 10; offset += 1) {
     const candidate = gatewayPort + offset;
-    if (await getFreePortForWildcard(candidate) === candidate) {
+    if (!excluded.has(candidate) && await getFreePortForWildcard(candidate) === candidate) {
       return candidate;
     }
   }
-  return await getEphemeralLoopbackPort();
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const port = await getEphemeralLoopbackPort();
+    if (!excluded.has(port)) { return port; }
+  }
+  throw new Error('Unable to allocate ingress outside planned ports');
 }
 
 /**
@@ -150,10 +155,10 @@ export async function findGatewayIngressPort(gatewayPort: number): Promise<numbe
  * the runtime, the test helpers, the integration runners - goes around it instead of racing for
  * it. That is the difference between "usually fine" and "cannot collide".
  */
-export async function getFreePort(basePort: number, host = '127.0.0.1', timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<number> {
+export async function getFreePort(basePort: number, host = '127.0.0.1', timeoutMs = PORT_PROBE_TIMEOUT_MS, excluded: ReadonlySet<number> = new Set()): Promise<number> {
   const reserved = reservedPorts();
   for (let port = basePort; port <= HIGHEST_PORT; port++) {
-    if (reserved.has(port)) {
+    if (reserved.has(port) || excluded.has(port)) {
       continue;
     }
     if (await canListen(port, host, timeoutMs)) {
@@ -247,4 +252,25 @@ export async function getFreePortForWildcard(basePort: number, timeoutMs = PORT_
   }
 
   throw new Error(`No open port available from 0.0.0.0:${basePort} to 0.0.0.0:${HIGHEST_PORT}`);
+}
+
+/** Allocate a runtime tuple while excluding all explicit pins before any probing. */
+export async function allocateRuntimePortSet(options: RuntimePortAllocationOptions = {}): Promise<RuntimePorts> {
+  const pins = [ options.gatewayPort, options.cssPort, options.apiPort, options.ingressPort ]
+    .filter((port): port is number => port !== undefined);
+  if (pins.some((port) => !Number.isInteger(port) || port < 1 || port > HIGHEST_PORT)) {
+    throw new Error('Runtime ports must be integers between 1 and 65535');
+  }
+  const used = new Set(pins);
+  if (used.size !== pins.length) { throw new Error('Duplicate explicit runtime ports'); }
+  const allocate = async(preferred: number): Promise<number> => {
+    const port = await getFreePort(preferred, '127.0.0.1', PORT_PROBE_TIMEOUT_MS, used);
+    used.add(port);
+    return port;
+  };
+  const gateway = options.gatewayPort ?? await allocate(options.basePort ?? 5600);
+  const css = options.cssPort ?? await allocate(gateway + 1);
+  const api = options.apiPort ?? await allocate(css + 1);
+  const ingress = options.ingressPort ?? await findGatewayIngressPort(gateway, used);
+  return { gateway, css, api, ingress };
 }

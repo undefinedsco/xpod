@@ -6,7 +6,7 @@ import { rewriteConfigAssetPaths } from './config-asset-paths';
 import { oidcTokenEndpoint } from './oidc-issuer';
 import type { AuthMode } from '../authorization/AuthMode';
 import { applyAuthModeEnv, isAuthModeEnvKey, resolveAuthModeInput } from '../authorization/AuthMode';
-import { cssAuthModeConfigImports } from './bootstrap';
+import { conditionalAuthStrategyWiring, cssAuthModeConfigImports } from './bootstrap';
 import { normalizeDatabaseUrl, sqliteDatabaseFilePath } from './database-url';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
@@ -148,18 +148,20 @@ export function createCssChildRuntimeConfig(options: {
     Boolean(options.externalOidcIssuer),
   );
   const authMode = resolveAuthModeInput(options.authMode, options.baseEnv);
+  const authStrategyWiring = conditionalAuthStrategyWiring(authMode);
 
   fs.writeFileSync(runtimeConfigPath, JSON.stringify({
     '@context': [
       CSS_COMPONENTS_CONTEXT,
       XPOD_COMPONENTS_CONTEXT,
       ASYNC_HANDLERS_CONTEXT,
+      ...(Object.keys(authStrategyWiring.context).length > 0 ? [ authStrategyWiring.context ] : []),
     ],
     import: [
       toImportSpecifier(runtimeConfigPath, configImportPath),
       ...cssAuthModeConfigImports(authMode),
     ],
-    '@graph': [],
+    ...(authStrategyWiring.graph.length > 0 ? { '@graph': authStrategyWiring.graph } : {}),
   }, null, 2), 'utf-8');
 
   if (options.externalOidcIssuer) {

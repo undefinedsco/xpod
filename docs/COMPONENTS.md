@@ -10,6 +10,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 |-------------|--------------|----------|
 | `DataAccessorBasedStore` | `SparqlUpdateResourceStore` | 拦截 PATCH 操作，能处理的直接执行 SPARQL UPDATE，不能处理的抛出 `NotImplementedHttpError` 让 CSS 回落到 get-patch-set |
 | `RepresentationConvertingStore` | `RepresentationPartialConvertingStore` | **能转尽量转，不能转保留原始**。CSS 默认遇到不能转换的会报错；我们的实现让 JSON、二进制等非 RDF 内容直接通过 |
+| `BasicETagHandler` | `AuthorityETagHandler` | 等位替换 CSS ETag 校验器。仅为 Local 文件权威 RDF 的完整 Turtle 文档提供 authority 派生的精确字节版本 token；其余资源/存储族、以及转换后字节改变的表示，继续委托原 CSS validator 或显式省略校验器，不在全局关闭既有校验能力 |
 | `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 Quadstore/SPARQL 索引；非结构化文件走 FileSystem/MinIO |
 | RDF `DataAccessor` (Local/Standalone) | `SolidRdfDataAccessor` | 从主 RDF 引擎读写；首次启用空索引时先完成旧 quints 数据迁移，再允许 CSS 读取资源及 ACR 元数据 |
 | `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
@@ -25,6 +26,9 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `HandlebarsTemplateEngine` | `RdfHandlebarsTemplateEngine` | 仅在 CSS 内置 Profile、WAC ACL 和 ACP ACR 模板中校验并原样输出完整身份 IRI，避免 HTML 转义改变 WebID；拒绝 Turtle IRIREF 禁字符，保留 EJS、HTML、Markdown 与非受控模板行为 |
 | `PodCreator` | `ProvisionPodCreator` | 保留 CSS 原生 Pod/Profile/授权资源创建，在创建完成后同步 `solid:storage`，canonical storage URL 留在 CSS account Pod 数据中 |
 | `WebSocket2023Storer` | `ReclaimingWebSocket2023Storer` | 保留原有 socket 记账与过期清理；某个通道的最后一个 socket 关闭/出错时一并删除通道记录，避免通道在 KV 里留到 `endAt`（CSS 默认 2 周） |
+| `WrappedExpiringReadWriteLocker` (`ResourceLocker`) | `HierarchicalReadWriteLocker` | 祖先共享、目标读写；同一实例同时接入 `ResourceStore_Locking` 与 `SubgraphSparqlHttpHandler`，使 scoped SPARQL 写入与同容器内每日文档 LDP 写入互斥。不再用 `Promise.race` 超时释放仍在运行的回调 |
+| `ParsingHttpHandler` (`LdpHandler`, Local) | `LocalPhysicalParsingHttpHandler` | 保留 CSS parsing/permission/authorization/error 算法，同 id 在授权前进入 Local 物理域，含 `.acl` / `.acr` 路由；响应源的真实 close 后释放 |
+| `LockingResourceStore` (`ResourceStore_Locking`) | `LockingResourceStore` (Xpod) | 等位替换：锁层级仍用上面那个 locker；GET 读取超时改为在已知的 representation 生命周期内取消——先挂 `close` 监听再 `destroy`，等待真实 close 确认后才解锁。流不确认则宁可持锁（fail-closed），不再超时释放回调 |
 
 ### 桌面应用授权记忆
 
@@ -50,7 +54,7 @@ Xpod 等位替换后:
 MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
   → LockingResourceStore → PatchingStore → RepresentationPartialConvertingStore [替换]
     → SparqlUpdateResourceStore [替换] → MixDataAccessor [替换]
-                                           ├─ rdfFileDataAccessor → FileDataAccessor (.ttl/.jsonld 权威文件)
+                                           ├─ rdfFileDataAccessor → AtomicFileDataAccessor (.ttl/.jsonld 权威文件；临时写入→rename→metadata)
                                            ├─ unstructuredDataAccessor → FileDataAccessor/RemoteDataAccessor (普通对象内容)
                                            └─ structuredDataAccessor → QuadstoreSparqlDataAccessor (RDF/SPARQL 索引)
 ```
@@ -73,6 +77,31 @@ Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁
 
 ## Storage Components
 
+### LocalPhysicalOperationService
+
+- **Path**: `src/storage/LocalPhysicalOperationService.ts`
+- **Deployment**: `config/local.json` declares one `urn:undefineds:xpod:LocalPhysicalOperationService`, shared by `SolidRdfEngine`, `SolidFsSyncJournal` and `LocalRdfAuthorityRecoveryInitializer`. The exclusion database lives outside the canonical authority root, so aliases of the same physical root use the same coordination domain.
+- **Current integration**: Engine query/startup/shutdown and journal initialization use the same physical admission. Nested calls reuse an opaque active session; synchronous calls refuse contention instead of bypassing it. Shutdown stops admission and waits for registered native work and actual connection cleanup.
+- **Failure boundary**: A rejected caller Promise does not prove that its producer stopped. Unconfirmed producers retain exclusion and prevent successful close; a failed transaction release poisons admission until the same connection is confirmed closed.
+- **Outer operation integration**: Local's same-id `LdpHandler` enters admission before CSS authorization, including ACL/ACP auxiliary references. Public Subgraph, all six Store methods, complete Mix/RDF accessor operations and remaining Engine methods share that instance. Stream/iterator results are delivered promptly while their original callbacks retain admission through actual close/return; response socket close only requests source teardown. A pre-result Store timeout retains its original internal read and late cleanup.
+- **Direct-read freshness**: Protected facts/metadata/container scans, direct accessor reads and text/vector results consult the same synchronous current-authority provider before index work. Unbounded derived reads refuse pending authority conservatively. Metadata graphs map to their exact authority resource, so a descendant pending token does not block the parent metadata reads needed by qualified rebuilds.
+- **Recovery**: Startup reuses the admitted recovery callback and indexes the complete retained authority file without rewriting it. Exact pending tokens clear only after rebuilding; a newer token continues to refuse startup.
+- **Remaining integration**: Independent vector/raw index/CLI/tool/import/managed child writers and whole-root replacement still need qualification. Controlled fixture evidence does not qualify Cloud, production QLever, the current Gateway or the complete Matrix migration.
+
+### LocalPhysicalParsingHttpHandler
+
+- **Path**: `src/http/LocalPhysicalParsingHttpHandler.ts`
+- **Deployment**: Local overrides the existing `urn:solid-server:default:LdpHandler` using the installed CSS `ParsingHttpHandlerArgs`. Ordinary LDP and WebACL/ACP auxiliary routing therefore resolve the same protected handler.
+- **Credentials boundary**: Before admission, the original request-keyed CSS `CredentialsExtractor` prepares token verification and cold issuer/WebID HTTP reads. Authorizing reuses that same cached request; permissions and current authority checks remain inside admission. Credential errors use the original CSS error handler and response writer without repeating verification.
+- **Lifetime**: The response writer observes the actual source before CSS starts piping. Cancellation waits for that source's confirmed close, including asynchronous `_destroy`, and preserves registered native drains. `LocalPhysicalStreamLifetime` reuses this producer boundary for direct streamed Store/accessor results and asynchronous iteration.
+
+### Local explicit Vector storage and HTTP
+
+- **Paths**: `src/storage/vector/SqliteVectorStore.ts`, `src/http/vector/VectorHttpHandler.ts`
+- **Admission**: Local injects the existing canonical-root service into both components, independent of the index file location. Every explicit vector SQL/lifecycle operation enters the same domain. Component close only closes its own connection; protected instances cannot reopen after close, and the owner also finalizes that connection. Standalone private stores retain their previous reopen contract.
+- **HTTP**: The original request-cached credentials prepare before admission; current Append/Read/Modify permission checks, authorizer and SQL results share the admitted session. Refused admission propagates as503 rather than a successful per-record error envelope. HTTP bodies retain actual-close cleanup.
+- **Qualification limits**: Explicit `vec_*` records remain distinct from derived RDF indexes. Existing DELETE/INSERT upsert crash atomicity is unchanged. Search outer permission integration, raw index/tool/file writers and Cloud owners require subsequent qualification. Default macOS Bun extension loading remains a runtime/distribution gap; explicit test SQLite preloading is not product configuration or a Node fallback.
+
 ### SolidRdfDataAccessor / ShadowRdfQuintStore
 - **Paths**: `src/storage/accessors/SolidRdfDataAccessor.ts`, `src/storage/rdf/ShadowRdfQuintStore.ts`
 - **Deployment**: Local/Standalone 的 `local.json` / `bun.json` 将现有 `QuintStore` 作为可选 `legacyIndex` 注入。Cloud 的 PostgreSQL 存储链不变。
@@ -85,9 +114,12 @@ Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁
 - **Purpose**: Unified storage interface combining structured and unstructured data access
 - **Functionality**: Keeps line-addressable RDF resources (`.ttl`, `.jsonld`) as real local files first, then parses them into the structured RDF index; routes binary/object content to MinIO/FileSystem
 - **Configuration**: Uses `rdfFileDataAccessor` for RDF authority files, `unstructuredDataAccessor` for ordinary object content, and `structuredDataAccessor` for RDF/SPARQL index state
-- **Deployment**: All modes. Local can let `rdfFileDataAccessor` default to the same `FileDataAccessor`; cloud pins `rdfFileDataAccessor` to `FileDataAccessor` while `unstructuredDataAccessor` points at `RemoteDataAccessor`
+- **Deployment**: All modes bind `rdfFileDataAccessor` to the ONE shared installed CSS component `urn:undefineds:xpod:AtomicRdfFileDataAccessor` (declared once in `config/xpod.base.json`): local/xpod/bun and cloud all reuse the same `AtomicFileDataAccessor(resourceMapper=FileIdentifierMapper, rootFilePath=variable:rootFilePath, tempFilePath="/.internal/tempFiles/")`. `unstructuredDataAccessor` stays the ordinary `FileDataAccessor`/`RemoteDataAccessor`; `urn:solid-server:default:FileDataAccessor` and Minio are not overridden. No custom writer/TS component is added — this is a pure builtin reuse.
+- **Durability boundary (no overclaim)**: `AtomicFileDataAccessor.writeDocument` writes the body to `rootFilePath/.internal/tempFiles/temp-<uuid>.txt`, verifies the existing extension, `rename`s it to the final path, then writes the metadata file; a body-stream error unlinks its own temp file. This gives stable-extension RDF authority **body** process-crash safety (the old complete body/metadata survive a mid-stream crash). It does NOT fsync, does NOT make body+metadata one transaction, may unlink the old file during content-type extension migration before the final rename, and makes no host-power-loss / multi-document / multi-graph atomicity or true commit-provenance guarantee. The after-write outbox crash gap and complete-A4 commit evidence remain pending.
 
 `MixDataAccessor.getData()` intentionally keeps CSS's internal RDF contract by returning `internal/quads` for RDF resources. User-facing HTTP reads and SolidFS/tool reads use the explicit local RDF path (`getLocalRdfDocument()` through `SparqlUpdateResourceStore`) so `cat`, `rg`, `grep`, and editors operate on real `.ttl` / `.jsonld` files instead of hidden DB rows.
+
+一次 SPARQL UPDATE 经原生 prepared delta 持久化时，`executeSparqlUpdate` 保留既有的**外层 `baseIri` 目录 mutation fence**（prepare、persist 与 rollback 都在该边界内，空 delta 也照样运行），并在 `writeLocalRdfAuthorityPatches` 中**额外**对该 delta 实际写到的每个精确资源（`graphIri === sourceUri`，去重后）在任何文件/索引写入之前 `beginMutation`，在文件、索引、journal 与可能的回滚全部落定后才 `endMutation`。因此除了目录级 fence，真正被改写的 ACL/ACR 也会在自身 generation 上失效；未触及的图与无关同级资源不产生**额外精确**版本噪音。该 tracker 是**进程内**的，不能单独作为多个 CSS 实例共享存储时的 fencing；跨进程互斥仍依赖共享 Redis 锁。
 
 ### MinioDataAccessor
 - **Path**: `src/storage/accessors/MinioDataAccessor.ts`
@@ -112,6 +144,29 @@ Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁
 - **Purpose**: Content-type conversion for storage compatibility
 - **Functionality**: Converts incoming RDF representations to quads for the CSS internal store path while skipping unnecessary conversions when the representation already satisfies requested preferences
 - **Integration**: Used in ResourceStore chains for both local and server modes
+- **Document version on conversion**: After a real `outConverter` change, the delivered bytes are bounded-captured (16 MiB). If they are byte-identical to the raw authority token, the exact token is re-attached so a default/`*/*` GET keeps its ETag; otherwise the surface is marked with a sealed suppression directive so the ETag is omitted instead of falling back to a collision-prone seconds validator. Untrusted client literals are dropped.
+
+### AuthorityETagHandler
+- **Path**: `src/storage/AuthorityETagHandler.ts`
+- **Purpose**: Same-interface CSS `ETagHandler` that expresses one authority-derived document version for qualified Local RDF documents.
+- **Functionality**: When metadata carries a genuine sealed token (attached by `MixDataAccessor` before this synchronous handler runs), `getETag` returns the exact prepared token and `matchesETag` requires a FULL comparison (document state + representation identity + exact byte digest), ignoring CSS `strict=false`. `sameResourceState` compares the document-state part only. A sealed suppression directive returns `undefined` (no validator) and fails `matchesETag` closed; everything else delegates to the wrapped `BasicETagHandler`.
+- **Wiring**: `config/local.json` overrides `urn:solid-server:default:ETagHandler` with `AuthorityETagHandler` and a `BasicETagHandler` delegate; `src/index.ts` exports it. No global or Cloud/Matrix change.
+- **Boundary**: token provenance is internal-only and never serialized to sidecar/response RDF; a client-supplied RDF literal of the same shape is not trusted. See [docs/document-version-contract.md](document-version-contract.md).
+
+### HierarchicalReadWriteLocker
+- **Path**: `src/storage/HierarchicalReadWriteLocker.ts`
+- **Purpose**: 等位替换 CSS `ResourceLocker`（原 `WrappedExpiringReadWriteLocker`）。对资源取“根→叶祖先共享读锁 + 目标读/写锁”，使 scoped SPARQL 写入与同容器内每日文档的普通 LDP 写入互斥，而不同子文档之间仍然并发。
+- **Interface**: 实现 CSS `ExpiringReadWriteLocker`，可直接替换 `ResourceStore_Locking` 的 `locks`；`maintainLock` 为 no-op，避免旧 wrapper 用超时释放仍在运行的回调。
+- **Wiring**: `config/local.json` / `config/cloud.json` / `config/xpod.json` 各自把底层 `GreedyReadWriteLocker` / `UrlAwareRedisLocker` 包进本组件；`config/xpod.base.json` 的 `SubgraphSparqlHttpHandler.locks` 引用同一个 `urn:solid-server:default:ResourceLocker` 实例。
+- **Boundary**: 授权（ACL/ACR、`PermissionReader`）必须在锁外完成，否则对 store 的读会与本写入锁自锁；通知/监听在释放锁之后再发出。多 CSS 共享 Redis 的 owner/fencing 限制另计，不由本组件独自保证。
+
+### UrlAwareRedisLocker
+
+- **Path**: `src/storage/locking/UrlAwareRedisLocker.ts`
+- **Interface**: 保持 CSS `ReadWriteLocker`、`ResourceLocker` 与初始化/退出接口；Redis URL、命名空间和重试参数沿用现有配置。
+- **Ownership**: 每次获取锁使用独立 owner token，Redis 服务端时间决定租期。读锁可共享，写锁排他；续租与释放只操作本次 owner。初始化和退出不清空命名空间。
+- **Lifetime**: 祖先锁从获取后立即续租，本地锁保持到回调及已开始的 I/O 完整结束。丢锁永久取消本次执行，不能重新获取锁后继续旧回调；退出等待本实例的执行结束。
+- **Storage boundary**: `MixDataAccessor` 在原生准备阶段传递丢锁取消信号，并在主要写入前检查所有权。部分写入的回滚仍在本地锁内完成。这些检查不等同于多个 CSS 实例共享存储时的原子 fencing。
 
 ### UsageTrackingStore
 - **Path**: `src/storage/quota/UsageTrackingStore.ts`
@@ -292,9 +347,11 @@ Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁
   - SPARQL UPDATE (POST only)
   - WAC-based authorization (read/append/delete)
   - Graph scope validation
+  - 条件授权资源写入（`.acl`/`.acr`）：单一 ACL 写图 + 定长命名图读守卫，走 prepared native authority 与共享层级锁，缺任一即 fail-closed
   - Emits one CSS change activity (`as:Create` / `as:Update` / `as:Delete`) per affected document after a successful write, on the injected `emitter` (`urn:solid-server:default:ResourceStore`, the `MonitoringStore` that `ListeningActivityHandler` listens to), so notification channels see `.sparql` writes like store writes
+- **Configuration**: `authStrategy` must reference the current CSS `urn:solid-server:default:AuthIdentifierStrategy` (ACL mode `.acl`, ACP mode `.acr`). Both runtime config composers (`createCssChildRuntimeConfig` for `main.ts`/`xpod start`, `createCssRuntimeConfig` for the public SDK `startXpodRuntime`) share `conditionalAuthStrategyWiring`: it merges the reference onto the handler by `@id` only for `acl`/`acp`, while `allow-all` composes the empty auxiliary strategy and therefore omits the optional parameter instead of carrying a dangling reference. Missing wiring makes ACL/ACR writes look like ordinary data writes and the conditional branch unreachable
 - **Deployment**: All modes
-- **Documentation**: See [docs/sparql-support.md](sparql-support.md) for full details and [docs/pod-collections.md](pod-collections.md) §8.8 for the write-path notification boundary
+- **Documentation**: See [docs/sparql-support.md](sparql-support.md) for full details and [docs/pod-collections.md](pod-collections.md) §8.8 for the write-path notification boundary; conditional authorization-resource writes: [docs/conditional-auth-auxiliary-update.md](conditional-auth-auxiliary-update.md)
 
 ### EdgeNodeProxyHttpHandler
 - **Path**: `src/http/EdgeNodeProxyHttpHandler.ts`
@@ -531,3 +588,5 @@ This strategy provides **performance where needed** and **developer experience w
 `RdfHandlebarsTemplateEngine` 仅信任已安装 CSS 的五个精确模板路径：`base/profile/card$.ttl.hbs`、`wac/.acl.hbs`、`wac/README.acl.hbs`、`wac/profile/card.acl.hbs`、`acp/.acr.hbs`。它仅为这些模板内的 `webId`、`oidcIssuer` 和 `mailto:` email 变量提供经校验的 IRI 原文；`name` 等 literal 不参与此处理。任意同后缀文件或字符串模板仍使用原有 HTML 转义。
 
 IRI 必须是绝对 URL，WebID/issuer 限 HTTP(S) 且无用户密码部分；禁止 Turtle IRIREF 禁字符、控制字符及孤立 UTF-16 代理字符。URL 解析仅校验，不使用规范化结果替换身份。查询参数、大小写、显式端口、Unicode 与 percent 编码原文均保留。本修复只影响新生成资源；不会自动改写已存在 Profile 或授权文件。
+
+`SubgraphSparqlHttpHandler` 的 guarded policy 请求复用实际 `ResourceStore_Locking`、`IdentifierStrategy`、`AuxiliaryStrategy` 与既有同层级 locker；内部 profile 由现有运行时 auth mode 派生。首版只支持 `wac-ground-v1`，未配置 profile 或 ACP/allow-all 不接受 guarded media。普通 SPARQL 请求保持原行为。

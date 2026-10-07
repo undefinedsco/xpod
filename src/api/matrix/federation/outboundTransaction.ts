@@ -27,7 +27,7 @@
  */
 import { buildXMatrixAuthorization, type XMatrixSigner } from './requestAuth';
 import { checkMembershipTemplate, type MembershipKind } from './membershipHandshake';
-import { computeEventId } from '../protocol/eventIntegrity';
+import { computeContentHash, computeEventId } from '../protocol/eventIntegrity';
 import { SUPPORTED_ROOM_VERSION } from '../protocol/authRules';
 import type { FederationFetchTarget } from './federationFetch';
 import type { MatrixResolvedServer } from './serverNameResolution';
@@ -144,7 +144,32 @@ export interface MatrixFederationClientOptions {
    * Absent means `fetch`, which is fine for a deployment whose peers are reached at their own name.
    */
   fetchTarget?: FederationFetchTarget;
+  /**
+   * Resolve the participant's authenticated fetch for an O1 request. Absent means this client
+   * cannot send as a participant, so an actor-bearing request is refused rather than signed. The
+   * fetched transport is the actual one used: it carries the Solid session (DPoP) and is the only
+   * authorization on the request.
+   */
+  actorFetch?: (actor: MatrixFederationActor) => Promise<typeof fetch | undefined>;
   now?: () => number;
+}
+
+/**
+ * The participant whose authority a federation request carries (O1).
+ *
+ * The actor is a *reference*, not a credential: it names the WebID and (when known) the Pod the
+ * grant belongs to. The actual bearer/DPoP session is resolved at send time from the current grant,
+ * so nothing short-lived is persisted in the outbound queue and a revoked grant is rechecked on
+ * every attempt. Absent means the legacy signed request; present with no resolvable credential is a
+ * refusal, never a fallback to the deployment identity or another participant.
+ */
+export interface MatrixFederationActor {
+  webId: string;
+  podUrl?: string;
+  /** A named task-layer grant; absent means the owner's active grant is resolved at send time. */
+  taskCredential?: { credentialRef?: string; version?: number; ownerGrant?: true;
+    /** Publication-only named authority marker; both fields require exact ref and frozen version. */
+    purpose?: 'membership'; issuer?: string };
 }
 
 export interface SendTransactionInput {
@@ -153,6 +178,8 @@ export interface SendTransactionInput {
   txnId: string;
   pdus: readonly unknown[];
   edus?: readonly unknown[];
+  /** Send this request as the participant (O1); absent keeps the signed legacy path. */
+  actor?: MatrixFederationActor;
 }
 
 export interface DeliverTransactionInput extends SendTransactionInput {
@@ -191,6 +218,7 @@ export class MatrixFederationClient {
   private readonly resolve: (serverName: string) => Promise<MatrixResolvedServer | undefined>;
   private readonly fetch: typeof fetch;
   private readonly fetchTarget?: FederationFetchTarget;
+  private readonly actorFetch?: (actor: MatrixFederationActor) => Promise<typeof fetch | undefined>;
   private readonly now: () => number;
   private readonly random: () => number;
 
@@ -199,6 +227,7 @@ export class MatrixFederationClient {
     this.resolve = options.resolve;
     this.fetch = options.fetch;
     this.fetchTarget = options.fetchTarget;
+    this.actorFetch = options.actorFetch;
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
   }
@@ -233,7 +262,7 @@ export class MatrixFederationClient {
     // The signed URI must be exactly the request target the peer will reconstruct,
     // including the encoded transaction id, so the signature covers the endpoint too.
     const uri = `/_matrix/federation/v1/send/${encodeURIComponent(txnId)}`;
-    const result = await this.execute({ destination, method: 'PUT', uri, content });
+    const result = await this.execute({ destination, method: 'PUT', uri, content }, input.actor);
     if (result.status === 'retry') {
       return { ...base, status: 'retry', ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }), reason: result.reason };
     }
@@ -288,9 +317,10 @@ export class MatrixFederationClient {
     destination: string;
     roomId: string;
     eventId: string;
+    actor?: MatrixFederationActor;
   }): Promise<FederationEventsOutcome> {
     const uri = `/_matrix/federation/v1/event_auth/${encodeURIComponent(input.roomId)}/${encodeURIComponent(input.eventId)}`;
-    const result = await this.execute({ destination: input.destination, method: 'GET', uri });
+    const result = await this.execute({ destination: input.destination, method: 'GET', uri }, input.actor);
     if (result.status !== 'ok') return result;
     const authChain = isRecord(result.body) ? result.body.auth_chain : undefined;
     if (!Array.isArray(authChain)) return { status: 'retry', reason: 'destination answered 200 without an auth_chain array' };
@@ -543,6 +573,12 @@ export class MatrixFederationClient {
     if (id !== input.eventId) {
       return { status: 'rejected', reason: `destination signed ${id ?? 'an unusable'} invite event, not ${input.eventId}` };
     }
+    // The id is the writer's name now, so it no longer proves the content: the peer's only
+    // permitted change is adding its signature. A changed depth or body is a different event
+    // wearing our name, and must not be taken as the countersigned invite.
+    if (!sameEventContent(event, input.event)) {
+      return { status: 'rejected', reason: `destination answered with different content for invite event, not ${input.eventId}` };
+    }
     const signatures = isRecord(event.signatures) ? event.signatures : undefined;
     if (!isRecord(signatures?.[input.destination])) {
       return { status: 'retry', reason: `destination answered 200 without its own signature on the invite` };
@@ -639,21 +675,48 @@ export class MatrixFederationClient {
     uri: string;
     /** Absent for a request with no body, e.g. `GET /event_auth`; then no `content` is signed. */
     content?: Record<string, unknown>;
-  }): Promise<MatrixRequestOutcome> {
-    const sent = await this.sendSigned(request);
+  }, actor?: MatrixFederationActor): Promise<MatrixRequestOutcome> {
+    const sent = await this.sendSigned(request, actor);
     if ('failure' in sent) return sent.failure;
     return await this.classify(sent.response, sent.text, request.destination);
   }
 
-  /** Resolve, sign and send one request; the answer is unread, because callers read it differently. */
+  /** Resolve, authorize and send one request; the answer is unread, because callers read it differently. */
   private async sendSigned(request: {
     destination: string;
     method: string;
     uri: string;
     content?: Record<string, unknown>;
-  }): Promise<{ response: Response; text: string } | { failure: MatrixRequestOutcome }> {
+  }, actor?: MatrixFederationActor): Promise<{ response: Response; text: string } | { failure: MatrixRequestOutcome }> {
     const target = await this.resolve(request.destination);
     if (!target) return { failure: { status: 'rejected', reason: `cannot resolve ${request.destination}` } };
+    const url = `${target.baseUrl}${request.uri}`;
+
+    if (actor) {
+      // O1: the request carries the participant's own Solid session, and only that. The credential
+      // is resolved from the *current* grant now, so a revoked or missing grant is a refusal — never
+      // a fallback to the deployment identity or another participant. There is deliberately no
+      // X-Matrix header here: this hop is authenticated by the Solid session.
+      const authenticated = this.actorFetch ? await this.actorFetch(actor) : undefined;
+      if (!authenticated) {
+        return { failure: { status: 'rejected', reason: `no authenticated credential for ${actor.webId}` } };
+      }
+      const init: RequestInit = {
+        method: request.method,
+        headers: { ...(request.content === undefined ? {} : { 'content-type': 'application/json' }) },
+        ...(request.content === undefined ? {} : { body: JSON.stringify(request.content) }),
+      };
+      let authenticatedResponse: Response;
+      try {
+        // The authenticated transport is the actual one: the Solid session adds its Authorization
+        // (DPoP) to this URL. It must not be bypassed by a raw transport, or the request would go
+        // out unauthenticated (root finding R07).
+        authenticatedResponse = await authenticated(url, init);
+      } catch (error) {
+        return { failure: { status: 'retry', reason: `could not reach ${request.destination}: ${describeError(error)}` } };
+      }
+      return { response: authenticatedResponse, text: await authenticatedResponse.text().catch(() => '') };
+    }
 
     const authorization = buildXMatrixAuthorization({
       origin: this.identity.serverName,
@@ -663,7 +726,6 @@ export class MatrixFederationClient {
       ...(request.content === undefined ? {} : { content: request.content }),
     }, this.identity);
 
-    const url = `${target.baseUrl}${request.uri}`;
     const init: RequestInit = {
       method: request.method,
       headers: {
@@ -752,14 +814,30 @@ function versionsQuery(versions: readonly string[]): string {
   return `?${query.toString()}`;
 }
 
-/** The id an event has by its own content, or `undefined` when it cannot be one of ours. */
+/**
+ * The id an event carries: the writer's name for it, or its content hash when it has none.
+ *
+ * A peer echoing an event we submitted must keep the name we gave it; recomputing the id from the
+ * content would rename our own event and read as "the destination signed a different event". The
+ * content-hash fallback is kept only for the Matrix-shaped sender that never stated an id.
+ */
 function derivedEventId(value: unknown): string | undefined {
   if (!isRecord(value)) return undefined;
+  if (typeof value.event_id === 'string' && value.event_id.length > 0) return value.event_id;
   try {
     return computeEventId(value);
   } catch {
     // Values canonical JSON refuses cannot be an event this server submitted.
     return undefined;
+  }
+}
+
+/** Whether two events carry the same content: id, hashes and signatures are not content. */
+function sameEventContent(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
+  try {
+    return computeContentHash(left).equals(computeContentHash(right));
+  } catch {
+    return false;
   }
 }
 

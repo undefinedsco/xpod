@@ -75,7 +75,7 @@ describe('LocalRdfAuthorityRecoveryInitializer', () => {
     );
 
     await expect(initializer.handle()).rejects.toThrow(
-      'Local RDF authority recovery left 1 retryable and 0 reconcile-required operations',
+      'Local RDF authority recovery left 1 retryable, 0 reconcile-required and 0 pending operations',
     );
     expect(journal.listOperations()).toEqual([
       expect.objectContaining({ stage: 'failed_retryable', retryCount: 1 }),

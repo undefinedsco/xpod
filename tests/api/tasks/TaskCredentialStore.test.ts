@@ -420,3 +420,18 @@ describe('createTaskCredentialSource', () => {
     await expect(source.activeFor(OWNER)).resolves.toMatchObject({ version: 2, clientId: 'alice-client-2' });
   });
 });
+
+describe('named task credential configured issuer', () => {
+  it('refuses another issuer with or without an optional version while matching issuer remains usable', async () => {
+    const directory = await temporaryDirectory();
+    const { store } = await storeAt(directory);
+    const granted = await store.grant({ ownerWebId: OWNER, issuer: 'https://other-issuer.example/',
+      clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, status: 'active' });
+    const configured = createTaskCredentialSource({ store, issuer: ISSUER });
+    // Boolean assertions keep fixture credentials out of red-test output.
+    expect((await configured.forRef({ credentialRef: granted.credentialRef, ownerWebId: OWNER })) === undefined).toBe(true);
+    expect((await configured.forRef({ credentialRef: granted.credentialRef, ownerWebId: OWNER, version: 1 })) === undefined).toBe(true);
+    const matching = createTaskCredentialSource({ store, issuer: 'https://other-issuer.example/' });
+    expect((await matching.forRef({ credentialRef: granted.credentialRef, ownerWebId: OWNER }))?.version).toBe(1);
+  });
+});

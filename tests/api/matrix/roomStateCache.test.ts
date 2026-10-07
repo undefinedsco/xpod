@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MATRIX_TEST_SERVER_NAME, matrixHarness } from '../../helpers/MatrixMemoryDatabase';
+import { MATRIX_TEST_SERVER_NAME, matrixHarness, canonicalSourceFor } from '../../helpers/MatrixMemoryDatabase';
 import { PodMatrixStore } from '../../../src/api/matrix/PodMatrixStore';
 
 describe('resolved state memoization', () => {
@@ -61,7 +61,7 @@ describe('resolved state memoization', () => {
   it('can be switched off or bounded, and stays correct either way', async () => {
     // Every store reads the Pod through the same context, so they share one room store.
     const { context } = matrixHarness();
-    const uncached = new PodMatrixStore({ serverName: MATRIX_TEST_SERVER_NAME, stateCacheLimit: 0 });
+    const uncached = new PodMatrixStore({ serverName: MATRIX_TEST_SERVER_NAME, stateCacheLimit: 0, canonicalSource: canonicalSourceFor(context.webId, [ context.podUrl ]) });
     const uncachedRoom = await uncached.createRoom({ name: 'Uncached' }, context);
     const firstRead = await uncached.currentState(uncachedRoom.roomId, context);
     const secondRead = await uncached.currentState(uncachedRoom.roomId, context);
@@ -70,7 +70,7 @@ describe('resolved state memoization', () => {
     expect(secondRead.get('m.room.name')?.content.name).toBe('Uncached');
 
     // A bound of one evicts the previous room rather than growing without limit.
-    const bounded = new PodMatrixStore({ serverName: MATRIX_TEST_SERVER_NAME, stateCacheLimit: 1 });
+    const bounded = new PodMatrixStore({ serverName: MATRIX_TEST_SERVER_NAME, stateCacheLimit: 1, canonicalSource: canonicalSourceFor(context.webId, [ context.podUrl ]) });
     const roomA = await bounded.createRoom({ name: 'A' }, context);
     const roomB = await bounded.createRoom({ name: 'B' }, context);
     const aFirst = await bounded.currentState(roomA.roomId, context);

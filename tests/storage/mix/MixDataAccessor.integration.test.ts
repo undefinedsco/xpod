@@ -18,6 +18,7 @@ import {
 import { DataFactory } from 'n3';
 import { MixDataAccessor } from '../../../src/storage/accessors/MixDataAccessor';
 import { SolidRdfDataAccessor } from '../../../src/storage/accessors/SolidRdfDataAccessor';
+import { withLockLease, type LockLeaseGuard } from '../../../src/storage/locking/LockExecutionContext';
 import { SolidRdfEngine, UnsupportedSparqlQueryError } from '../../../src/storage/rdf';
 import { LocalRdfAuthorityRecoveryInitializer, RootedSolidFsSyncJournal, SqliteSolidFsSyncJournal } from '../../../src/solidfs';
 
@@ -535,6 +536,74 @@ INSERT DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.
     expect(localRdf).not.toContain('before native update');
     const resultQuads = await arrayifyStream(await accessor.getData(resourceId));
     expect(resultQuads.map((item) => item.object.value)).toEqual(['after native update']);
+  });
+
+  it('creates readable parent containers for a prepared insert into a new daily document', async () => {
+    const containerPaths = [ baseUrl, `${baseUrl}alice/`, `${baseUrl}alice/chat/`,
+      `${baseUrl}alice/chat/2026/`, `${baseUrl}alice/chat/2026/10/`, `${baseUrl}alice/chat/2026/10/02/` ];
+    const resourceId = { path: `${containerPaths[5]}messages.ttl` };
+    const { quad, namedNode, literal } = DataFactory;
+    vi.spyOn(structuredAccessor, 'prepareSparqlUpdate').mockResolvedValue({
+      version: 1,
+      graphs: [{ graphIri: resourceId.path, sourceUri: resourceId.path, deletes: [], inserts: [
+        quad(namedNode(`${resourceId.path}#first`), namedNode('https://schema.org/text'), literal('first'), namedNode(resourceId.path)),
+      ] }],
+    });
+    await accessor.executeSparqlUpdate('PREPARED NEW DOCUMENT', `${baseUrl}alice/chat/`, {
+      basePath: `${baseUrl}alice/chat/`, mode: 'write', allowedGraphUrls: [ resourceId.path ],
+    });
+    for (const [index, containerPath] of containerPaths.entries()) {
+      const metadata = await accessor.getMetadata({ path: containerPath });
+      expect(metadata.getAll(RDF.terms.type).map(term => term.value)).toContain(LDP.terms.Container.value);
+      const children = await arrayifyStream(Readable.from(accessor.getChildren({ path: containerPath })));
+      expect(children.map((child: RepresentationMetadata) => child.identifier.value))
+        .toContain(containerPaths[index + 1] ?? resourceId.path);
+    }
+  });
+
+  it.each([ 'during prepare', 'after first authority write' ])('preserves authority and index on lease loss %s', async point => {
+    const ids = [ 'first', 'second' ].map(name => ({ path: `${baseUrl}alice/lease-${name}.ttl` }));
+    const { quad, namedNode, literal } = DataFactory;
+    const predicate = namedNode('https://schema.org/name');
+    for (const id of ids) {
+      const metadata = new RepresentationMetadata(id);
+      metadata.contentType = 'internal/quads';
+      await accessor.writeDocument(id, guardStream(Readable.from([
+        quad(namedNode(`${id.path}#item`), predicate, literal('original')),
+      ])), metadata);
+    }
+    const links = await Promise.all(ids.map(id => mapper.mapUrlToFilePath(id, false, 'text/turtle')));
+    const before = await Promise.all(links.map(link => readFile(link.filePath, 'utf8')));
+    const owner: LockLeaseGuard = { assertOwned: async() => { if (owner.failure) throw owner.failure; } };
+    const lose = (): void => {
+      owner.failure = new Error('Lease lost at authority boundary');
+      owner.onLoss?.(owner.failure);
+    };
+    vi.spyOn(structuredAccessor, 'prepareSparqlUpdate').mockImplementation(async() => {
+      if (point === 'during prepare') lose();
+      return { version: 1, graphs: ids.map(id => ({
+        graphIri: id.path, sourceUri: id.path,
+        deletes: [ quad(namedNode(`${id.path}#item`), predicate, literal('original'), namedNode(id.path)) ],
+        inserts: [ quad(namedNode(`${id.path}#item`), predicate, literal('replacement'), namedNode(id.path)) ],
+      })) };
+    });
+    // Preserve the actual file writer: loss occurs after its first write settles.
+    const internals = accessor as unknown as { rdfFileDataAccessor: DataAccessor };
+    const fileWriter = internals.rdfFileDataAccessor.writeDocument.bind(internals.rdfFileDataAccessor);
+    const writeSpy = vi.spyOn(internals.rdfFileDataAccessor, 'writeDocument');
+    if (point === 'after first authority write') {
+      writeSpy.mockImplementationOnce(async(...args) => { await fileWriter(...args); lose(); });
+    }
+    await expect(withLockLease(owner, () => accessor.executeSparqlUpdate('PREPARED', `${baseUrl}alice/`, {
+      basePath: `${baseUrl}alice/`, mode: 'write', allowedGraphUrls: ids.map(id => id.path),
+    }))).rejects.toThrow('Lease lost');
+    expect(writeSpy).toHaveBeenCalledTimes(point === 'during prepare' ? 0 : 2);
+    const after = await Promise.all(links.map(link => readFile(link.filePath, 'utf8')));
+    expect(after).toEqual(before);
+    for (const id of ids) {
+      const values = (await arrayifyStream(await accessor.getData(id))).map(item => item.object.value);
+      expect(values).toEqual([ 'original' ]);
+    }
   });
 
   it('rejects a native prepared graph whose source cannot preserve its graph identity', async () => {

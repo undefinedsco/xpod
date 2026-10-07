@@ -88,9 +88,9 @@ describe('Matrix signing identity provisioning', () => {
     registry.register('alice.example', providerFor(pod.db, 'alice.example'));
     expect(registry.serverNames()).toEqual([ 'alice.example' ]);
 
-    const harness = matrixHarness({ identities: registry });
+    const harness = matrixHarness({ identities: registry, podUrl: 'https://alice.example/alice/' });
     const alice = (await harness.store.getAccount(harness.context)).userId;
-    expect(alice).toMatch(/:alice\.example$/u);
+    expect(alice).toBe('https://alice.example/profile/card#me');
     const room = await harness.store.createRoom({}, harness.context);
     expect(room.roomId).toMatch(/:alice\.example$/u);
 

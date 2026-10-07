@@ -19,7 +19,7 @@ build_jobs=${XPOD_QLEVER_BUILD_JOBS:-3}
 [[ "$archive_path" == /* && "$archive_path" == *.tar.gz ]] || fail "runtime archive must be an absolute .tar.gz path"
 [[ "$build_jobs" =~ ^[1-9][0-9]*$ ]] || fail "build jobs must be a positive integer"
 
-for command in brew cmake ninja git python3 dylibbundler codesign otool sw_vers tar; do
+for command in brew cmake ninja git python3 dylibbundler codesign otool install_name_tool lipo bun sw_vers tar; do
   command -v "$command" >/dev/null || fail "$command is required"
 done
 
@@ -137,8 +137,13 @@ cmake --install "$local_build_dir"
 runtime_path="$artifact_dir/bin/xpod_qlever_local_runtime"
 test -x "$runtime_path"
 mkdir -p "$artifact_dir/lib"
-dylibbundler -od -b \
+# Carry the actual build input even when the native linker chose a static SQLite.
+sqlite_runtime="$artifact_dir/lib/libsqlite3.dylib"
+cp -L "$sqlite_prefix/lib/libsqlite3.dylib" "$sqlite_runtime"
+install_name_tool -id '@rpath/libsqlite3.dylib' "$sqlite_runtime"
+dylibbundler -of -b \
   -x "$runtime_path" \
+  -x "$sqlite_runtime" \
   -d "$artifact_dir/lib" \
   -p '@loader_path/../lib/'
 find "$artifact_dir/lib" -type f -exec codesign --force --sign - {} \;
@@ -155,7 +160,8 @@ python3 "$qlever_root/scripts/verify-local-runtime-artifacts.py" \
   --prefix "$artifact_dir" \
   --lock "$lock_file" \
   --build-source macos-arm64 \
-  --smoke-database "$smoke_database"
+  --smoke-database "$smoke_database" \
+  --sqlite-runtime "$sqlite_runtime"
 test -f "$artifact_dir/manifest.json"
 
 rm -f "$archive_path"

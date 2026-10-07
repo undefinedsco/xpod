@@ -1,0 +1,5 @@
+# drizzle-solid 0.3.24 leaves incoming schema inverse links after deletion
+
+Independent read-only reproduction uses the actual models messageResource, TripleBuilderImpl and N3/Comunica. Deleting selectedMessages removes each outgoing subject and inline metadata, and preserves a third protectedmessage, but Thread sioc:has_member Message links remain. Message.chat and Message.thread are inverse URI columns. LdpExecutor.fetchRecursiveTriplesToDelete selects only `<subject> ?p ?o`; its inverse helper is used by update, not delete.
+
+This is a separate semantic defect from repeated shared-document PATCHes. Do not claim all Message relationships have been removed just because outgoing subjects are gone. Any future fix must use the public schema inverse declarations, preserve unrelatedincoming links, handle document boundaries under the caller's authority and avoid raw unscoped deletes or a local schema copy. Shared-document batch performance repair retains the old relation semantics pending this separate proof.

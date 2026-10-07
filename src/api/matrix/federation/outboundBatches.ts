@@ -56,6 +56,10 @@ export function encodeOutboundBatch(batch: MatrixOutboundBatch): {
       edus: batch.edus,
       createdAt: batch.createdAt,
       attempts: batch.attempts,
+      // The actor reference (O1), not a credential: the live session is still resolved per attempt.
+      // Persisting it is what keeps an explicit named grant ref/version attached across a reload,
+      // so a background send cannot quietly fall back to a different active grant.
+      ...(batch.actor === undefined ? {} : { actor: batch.actor }),
       ...(batch.notBefore === undefined ? {} : { notBefore: batch.notBefore }),
       ...(batch.lastReason === undefined ? {} : { lastReason: batch.lastReason }),
     },
@@ -82,6 +86,7 @@ export function decodeOutboundBatch(record: MatrixControlRecord): MatrixOutbound
   if (typeof createdAt !== 'number' || typeof attempts !== 'number') {
     throw new MatrixError(500, 'M_UNKNOWN', `Outbound batch ${record.key} is missing its bookkeeping`);
   }
+  const actor = decodeActor(metadata.actor);
   return {
     txnId,
     origin,
@@ -90,8 +95,90 @@ export function decodeOutboundBatch(record: MatrixControlRecord): MatrixOutbound
     edus: metadata.edus,
     createdAt,
     attempts,
+    ...(actor === undefined ? {} : { actor }),
     ...(typeof metadata.notBefore === 'number' ? { notBefore: metadata.notBefore } : {}),
     ...(typeof metadata.lastReason === 'string' ? { lastReason: metadata.lastReason } : {}),
+  };
+}
+
+/**
+ * The persisted actor reference, or `undefined` when the record predates the field.
+ *
+ * A *present* actor is authorization data, so a malformed one must fail the read rather than quietly
+ * become "no actor" (which would send signed as the deployment) or drop a named grant to the owner's
+ * active grant (which would broaden what the credential may do). Only a missing field follows the
+ * historical legacy policy.
+ */
+function decodeActor(value: unknown): MatrixOutboundBatch['actor'] {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new MatrixError(500, 'M_UNKNOWN', 'Persisted outbound actor is not an object');
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (key !== 'webId' && key !== 'podUrl' && key !== 'taskCredential') {
+      throw new MatrixError(500, 'M_UNKNOWN', `Persisted outbound actor has an unknown field ${key}`);
+    }
+  }
+  const webId = record.webId;
+  if (typeof webId !== 'string' || webId.length === 0) {
+    throw new MatrixError(500, 'M_UNKNOWN', 'Persisted outbound actor names no WebID');
+  }
+  const podUrl = record.podUrl;
+  if (podUrl !== undefined && (typeof podUrl !== 'string' || podUrl.length === 0)) {
+    throw new MatrixError(500, 'M_UNKNOWN', 'Persisted outbound actor has a malformed Pod URL');
+  }
+  return {
+    webId,
+    ...(typeof podUrl === 'string' ? { podUrl } : {}),
+    ...decodeTaskCredential(record.taskCredential),
+  };
+}
+
+/** The task credential carried by a persisted actor, validated or refused; absence means active. */
+function decodeTaskCredential(value: unknown): { taskCredential?: { credentialRef?: string; version?: number;
+  purpose?: 'membership'; issuer?: string } } {
+  if (value === undefined) return {};
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new MatrixError(500, 'M_UNKNOWN', 'Persisted outbound actor has a malformed task credential');
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (key !== 'credentialRef' && key !== 'version' && key !== 'ownerGrant' && key !== 'purpose' && key !== 'issuer') {
+      throw new MatrixError(500, 'M_UNKNOWN', `Persisted task credential has an unknown field ${key}`);
+    }
+  }
+  if (record.ownerGrant !== undefined && record.ownerGrant !== true) {
+    // The contract is `ownerGrant?: true`. A present `false` (or any other non-true value) is
+    // malformed authorization data: treating it as the owner's active grant would silently broaden
+    // what the persisted record may do, so a present-but-not-true marker is refused rather than
+    // truthiness-coerced. Only `true` (or absence) means the active grant.
+    throw new MatrixError(500, 'M_UNKNOWN', 'Persisted task credential has a malformed ownerGrant');
+  }
+  const credentialRef = record.credentialRef;
+  if (credentialRef !== undefined && (typeof credentialRef !== 'string' || credentialRef.length === 0)) {
+    throw new MatrixError(500, 'M_UNKNOWN', 'Persisted task credential has a malformed credentialRef');
+  }
+  const version = record.version;
+  if (version !== undefined && (!Number.isSafeInteger(version) || (version as number) < 1)) {
+    throw new MatrixError(500, 'M_UNKNOWN', 'Persisted task credential has a malformed version');
+  }
+  const publication = record.purpose !== undefined || record.issuer !== undefined;
+  if (publication && (record.purpose !== 'membership' || typeof record.issuer !== 'string' || record.issuer.trim().length === 0
+    || typeof credentialRef !== 'string' || credentialRef.trim().length === 0 || version === undefined
+    || Object.keys(record).length !== 4 || record.ownerGrant !== undefined)) {
+    throw new MatrixError(500, 'M_UNKNOWN', 'Persisted publication authority is malformed');
+  }
+  if (credentialRef === undefined) {
+    // `{}` and `{ ownerGrant: true }` both mean the owner's active grant.
+    return {};
+  }
+  return {
+    taskCredential: {
+      credentialRef,
+      ...(version === undefined ? {} : { version: version as number }),
+      ...(publication ? { purpose: 'membership' as const, issuer: record.issuer as string } : {}),
+    },
   };
 }
 

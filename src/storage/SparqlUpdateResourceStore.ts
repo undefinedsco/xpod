@@ -313,64 +313,28 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
       this.logger.debug(`[normalizeGraphs] updateTypes: ${parsed.updates.map((op: any) => op.updateType).join(', ')}`);
 
       if (simpleOps && deleteTriples.length + insertTriples.length > 0) {
-        const termToString = (term: any): string => {
-          if (term.termType === 'NamedNode') {
-            return `<${term.value}>`;
-          }
-          if (term.termType === 'Literal') {
-            // Escape special characters in literal values
-            const hasQuotes = term.value.includes('"');
-            const hasNewlines = term.value.includes('\n') || term.value.includes('\r');
-
-            let escaped: string;
-            let useTripleQuotes = false;
-
-            if (hasQuotes || hasNewlines) {
-              // Use triple-quoted strings for values with quotes or newlines
-              useTripleQuotes = true;
-              escaped = term.value;
-              // Escape triple-quote sequences
-              escaped = escaped.replace(/"""/g, '"\\"\\""');
-              // Escape trailing quotes to avoid """content"""" sequences
-              if (escaped.endsWith('"')) {
-                const match = escaped.match(/"*$/);
-                const trailingQuotes = match ? match[0].length : 0;
-                if (trailingQuotes > 0) {
-                  escaped = escaped.slice(0, -trailingQuotes) + '\\"'.repeat(trailingQuotes);
-                }
-              }
-            } else {
-              // Regular escaping for simple strings
-              escaped = term.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-            }
-
-            const quote = useTripleQuotes ? '"""' : '"';
-
-            // Handle language tags and datatypes
-            if (term.language) {
-              return `${quote}${escaped}${quote}@${term.language}`;
-            }
-            if (term.datatype && term.datatype.value !== 'http://www.w3.org/2001/XMLSchema#string') {
-              return `${quote}${escaped}${quote}^^<${term.datatype.value}>`;
-            }
-            return `${quote}${escaped}${quote}`;
-          }
-          if (term.termType === 'BlankNode') {
-            return `_:${term.value}`;
-          }
-          // Fallback for unknown term types
-          return `<${term.value}>`;
-        };
-        const toTripleStr = (triples: any[]): string =>
-          triples.map((t): string => `${termToString(t.subject)} ${termToString(t.predicate)} ${termToString(t.object)} .`).join(' ');
-        let parts: string[] = [];
+        // Serialize through the public SPARQLJS generator instead of hand-escaping literals. The
+        // bespoke path triple-quoted values with quotes/newlines but never escaped existing
+        // backslashes, so a literal such as `a\\b` (or a trailing quote after a backslash) was
+        // emitted as invalid escape sequences and the native parser rejected the whole update. The
+        // generator owns literal escaping, typed terms and language tags; graph boundaries are kept
+        // by wrapping the collected triples in their target GRAPH quad.
+        const stripGraph = (triples: any[]): any[] =>
+          triples.map(({ graph: _graph, ...triple }) => triple);
+        const updates: UpdateOperation[] = [];
         if (deleteTriples.length > 0) {
-          parts.push(`DELETE DATA { GRAPH <${graph.value}> { ${toTripleStr(deleteTriples)} } }`);
+          updates.push({
+            updateType: 'delete',
+            delete: [ { type: 'graph', name: graph, triples: stripGraph(deleteTriples) } ],
+          } as unknown as UpdateOperation);
         }
         if (insertTriples.length > 0) {
-          parts.push(`INSERT DATA { GRAPH <${graph.value}> { ${toTripleStr(insertTriples)} } }`);
+          updates.push({
+            updateType: 'insert',
+            insert: [ { type: 'graph', name: graph, triples: stripGraph(insertTriples) } ],
+          } as unknown as UpdateOperation);
         }
-        const normalizedSimple = parts.join(';\n');
+        const normalizedSimple = this.generator.stringify({ ...parsed, updates });
         this.logger.verbose(`Normalized SPARQL UPDATE for ${identifier.path}: ${normalizedSimple}`);
         return normalizedSimple;
       }

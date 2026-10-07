@@ -416,11 +416,23 @@ describe('resolveRuntimeLaunchCommand', () => {
       env: {},
       resourcesPath: '/Electron.app/Contents/Resources',
       moduleDir: '/Users/ganlu/develop/xpod/desktop/dist',
-      pathExists: (value) => value === '/Users/ganlu/develop/xpod/desktop/runtime/xpod',
+      pathExists: (value) => [
+        '/Users/ganlu/develop/xpod/desktop/runtime/xpod',
+        '/Users/ganlu/develop/xpod/desktop/runtime/qlever/bin/xpod_qlever_local_runtime',
+      ].includes(value),
     })).toEqual({
       command: '/Users/ganlu/develop/xpod/desktop/runtime/xpod',
       args: ['start', '--foreground'],
+      env: { XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: '/Users/ganlu/develop/xpod/desktop/runtime/qlever/bin/xpod_qlever_local_runtime' },
     });
+  });
+
+  it.each(['xpod', 'qlever'])('refuses an incomplete local desktop payload containing only %s', (member) => {
+    expect(resolveRuntimeLaunchCommand({
+      env: {}, resourcesPath: '/Electron.app/Contents/Resources',
+      moduleDir: '/owned/desktop/dist',
+      pathExists: (value) => value === `/owned/desktop/runtime/${member}`,
+    })).toBeUndefined();
   });
 
   it('keeps PATH fallback only after packaged and local runtimes are unavailable', () => {

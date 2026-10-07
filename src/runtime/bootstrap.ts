@@ -168,6 +168,86 @@ export function cssAuthModeConfigImports(authMode: AuthMode): string[] {
   }
 }
 
+export const SUBGRAPH_SPARQL_HANDLER_IRI = 'urn:undefineds:xpod:SubgraphSparqlHttpHandler';
+// `SubgraphSparqlHttpHandler` is `@prefix: true`, so this canonical compact IRI expands to
+// `...#SubgraphSparqlHttpHandler_authStrategy` and avoids a bare generic key colliding across
+// components.
+export const SUBGRAPH_AUTH_STRATEGY_ALIAS = 'SubgraphSparqlHttpHandler:_authStrategy';
+export const SUBGRAPH_OBSERVATION_ALIAS = 'SubgraphSparqlHttpHandler:_observation';
+export const XPOD_AUTHORIZATION_OBSERVATION_IRI = 'urn:undefineds:xpod:AgentReadObservation';
+const SAME_BUILTIN_ACP_READER_IRI = 'urn:solid-server:default:PathBasedReader';
+const AUTH_AUXILIARY_READER_IRI = 'urn:solid-server:default:AuthAuxiliaryReader';
+
+/**
+ * The conditional authorization-resource primitive is only meaningful when ACL/ACP authorization is
+ * composed. Those imports define `urn:solid-server:default:AuthIdentifierStrategy`; `allow-all`
+ * composes the empty auxiliary strategy instead, so the handler's optional `authStrategy` must be
+ * omitted rather than left as a dangling non-null reference. This helper returns the extra context
+ * alias plus the graph entry that merges the reference onto the existing handler resource (a second
+ * `Override` would clash with the base config's own bandwidth `Override` for the same instance).
+ */
+/**
+ * The single existing authMode-derived guarded profile contract. The deployed reader import and
+ * this profile are chosen in the same branch, so the guard cannot pick a different engine than the
+ * actual configuration. `allow-all` / any unsupported mode remains unsupported.
+ */
+export function guardedPolicyProfileFor(authMode: AuthMode): 'wac-ground-v1' | 'acp-ground-v1' | 'unsupported' {
+  if (authMode === 'acl') return 'wac-ground-v1';
+  if (authMode === 'acp') return 'acp-ground-v1';
+  return 'unsupported';
+}
+
+export function conditionalAuthStrategyWiring(authMode: AuthMode): {
+  context: Record<string, string>;
+  graph: unknown[];
+} {
+  if (authMode === 'allow-all') {
+    return { context: {}, graph: [] };
+  }
+  const handlerEntry = {
+    '@id': SUBGRAPH_SPARQL_HANDLER_IRI,
+    authStrategy: { '@id': 'urn:solid-server:default:AuthIdentifierStrategy' },
+    guardedPolicyProfile: { '@value': guardedPolicyProfileFor(authMode) },
+  };
+  const context = { authStrategy: SUBGRAPH_AUTH_STRATEGY_ALIAS, guardedPolicyProfile: 'SubgraphSparqlHttpHandler:_options_guardedPolicyProfile' };
+  // The bounded identity-bound capability is wired inside the SAME runtime branch that chose the
+  // actual builtin guarded profile (ACL -> wac-ground-v1, ACP -> acp-ground-v1). The installed
+  // `ObservationPathBasedReader` replaces the ACTUAL `urn:solid-server:default:PathBasedReader`
+  // (both maintained imports share that one builtin chain) so the per-call default-dispatch audit
+  // applies to both profiles. This extends the existing seam (short aliases + one merged handler
+  // graph entry + one PathBasedReader Override) and never adds a second handler Override, a profile
+  // registry, a suffix guess or a class-name authorization. allow-all keeps no capability (415).
+  return {
+    context: { ...context, observation: SUBGRAPH_OBSERVATION_ALIAS },
+    graph: [
+      { ...handlerEntry, observation: { '@id': XPOD_AUTHORIZATION_OBSERVATION_IRI } },
+      {
+        '@id': XPOD_AUTHORIZATION_OBSERVATION_IRI,
+        '@type': 'AgentReadObservation',
+        permissionReader: { '@id': 'urn:solid-server:default:PermissionReader' },
+        authorizer: { '@id': 'urn:solid-server:default:Authorizer' },
+        credentialsExtractor: { '@id': 'urn:solid-server:default:CredentialsExtractor' },
+        accessor: { '@id': 'urn:undefineds:xpod:MixDataAccessor' },
+        authorityStore: { '@id': 'urn:solid-server:default:ResourceStore_Locking' },
+        locks: { '@id': 'urn:solid-server:default:ResourceLocker' },
+        identifierStrategy: { '@id': 'urn:solid-server:default:IdentifierStrategy' },
+        authStrategy: { '@id': 'urn:solid-server:default:AuthIdentifierStrategy' },
+        auxiliaryStrategy: { '@id': 'urn:solid-server:default:AuxiliaryStrategy' },
+        profile: { '@value': guardedPolicyProfileFor(authMode) },
+      },
+      {
+        '@type': 'Override',
+        overrideInstance: { '@id': SAME_BUILTIN_ACP_READER_IRI },
+        overrideParameters: {
+          '@type': 'ObservationPathBasedReader',
+          baseUrl: { '@id': 'urn:solid-server:default:variable:baseUrl' },
+          defaultReader: { '@id': AUTH_AUXILIARY_READER_IRI },
+        },
+      },
+    ],
+  };
+}
+
 export async function resolveRuntimeBootstrap(
   id: string,
   options: XpodRuntimeOptions,
@@ -208,6 +288,7 @@ export async function resolveRuntimeBootstrap(
       gatewayPort: options.gatewayPort,
       cssPort: options.cssPort,
       apiPort: options.apiPort,
+      ingressPort: options.ingressPort,
       basePort: 5600,
     })
     : {};
@@ -419,16 +500,19 @@ export function createCssRuntimeConfig(
     platform.joinPath(runtimeConfigDir, 'config'),
     platform,
   );
+  const authStrategyWiring = conditionalAuthStrategyWiring(state.cssAuthMode);
   platform.writeTextFile(runtimeConfigPath, JSON.stringify({
     '@context': [
       CSS_COMPONENTS_CONTEXT,
       XPOD_COMPONENTS_CONTEXT,
       ASYNC_HANDLERS_CONTEXT,
+      ...(Object.keys(authStrategyWiring.context).length > 0 ? [ authStrategyWiring.context ] : []),
     ],
     import: [
       toConfigImportSpecifier(runtimeConfigPath, runtimeConfigImportPath),
       ...cssAuthModeConfigImports(state.cssAuthMode),
     ],
+    ...(authStrategyWiring.graph.length > 0 ? { '@graph': authStrategyWiring.graph } : {}),
   }, null, 2));
 
   return runtimeConfigPath;

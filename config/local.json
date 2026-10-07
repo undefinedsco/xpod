@@ -2,7 +2,26 @@
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld",
+    {
+      "SqliteVectorStore_operationService": "SqliteVectorStore:_options_operationService",
+      "VectorHttpHandler_operationService": "VectorHttpHandler:_options_operationService",
+      "LocalPhysicalOperationService_rootFilePath": "LocalPhysicalOperationService:_rootFilePath",
+      "RootedSolidFsSyncJournal_operationService": "RootedSolidFsSyncJournal:_operationService",
+      "SolidRdfEngine_operationService": "SolidRdfEngine:_options_operationService",
+      "LocalRdfAuthorityRecoveryInitializer_operationService": "LocalRdfAuthorityRecoveryInitializer:_operationService",
+      "LocalRdfAuthorityRecoveryInitializer_rdfEngine": "LocalRdfAuthorityRecoveryInitializer:_rdfEngine",
+      "LocalPhysicalParsingHttpHandler_credentialsExtractor": "LocalPhysicalParsingHttpHandler:_credentialsExtractor",
+      "LocalPhysicalParsingHttpHandler_operationService": "LocalPhysicalParsingHttpHandler:_operationService",
+      "LockingResourceStore_operationService": "LockingResourceStore:_options_operationService",
+      "MixDataAccessor_operationService": "MixDataAccessor:_operationService",
+      "SolidRdfDataAccessor_operationService": "SolidRdfDataAccessor:_operationService",
+      "SubgraphSparqlHttpHandler_operationService": "SubgraphSparqlHttpHandler:_operationService",
+      "LocalPhysicalParsingHttpHandler_requestParser": "LocalPhysicalParsingHttpHandler:_args_requestParser",
+      "LocalPhysicalParsingHttpHandler_errorHandler": "LocalPhysicalParsingHttpHandler:_args_errorHandler",
+      "LocalPhysicalParsingHttpHandler_responseWriter": "LocalPhysicalParsingHttpHandler:_args_responseWriter",
+      "LocalPhysicalParsingHttpHandler_operationHandler": "LocalPhysicalParsingHttpHandler:_args_operationHandler"
+    }
   ],
   "import": [
     "./main.json",
@@ -77,21 +96,50 @@
       "@id": "urn:solid-server:default:PrimarySequenceInitializer",
       "@type": "SequenceHandler",
       "handlers": [
-        { "@id": "urn:solid-server:default:CleanupInitializer" },
-        { "@id": "urn:solid-server:default:MigrationInitializer" },
-        { "@id": "urn:solid-server:default:BaseUrlVerifier" },
-        { "@id": "urn:solid-server:default:PrimaryParallelInitializer" },
-        { "@id": "urn:solid-server:default:ModuleVersionVerifier" },
-        { "@id": "urn:undefineds:xpod:LocalRdfAuthorityRecoveryInitializer" },
-        { "@id": "urn:solid-server:default:WorkerManager" },
-        { "@id": "urn:solid-server:default:SeededAccountInitializer" },
-        { "@id": "urn:undefineds:xpod:EdgeNodeAgentInitializer" }
+        {
+          "@id": "urn:solid-server:default:CleanupInitializer"
+        },
+        {
+          "@id": "urn:solid-server:default:MigrationInitializer"
+        },
+        {
+          "@id": "urn:solid-server:default:BaseUrlVerifier"
+        },
+        {
+          "@id": "urn:solid-server:default:PrimaryParallelInitializer"
+        },
+        {
+          "@id": "urn:solid-server:default:ModuleVersionVerifier"
+        },
+        {
+          "@id": "urn:undefineds:xpod:LocalRdfAuthorityRecoveryInitializer"
+        },
+        {
+          "@id": "urn:solid-server:default:WorkerManager"
+        },
+        {
+          "@id": "urn:solid-server:default:SeededAccountInitializer"
+        },
+        {
+          "@id": "urn:undefineds:xpod:EdgeNodeAgentInitializer"
+        }
       ]
+    },
+    {
+      "@id": "urn:undefineds:xpod:LocalPhysicalOperationService",
+      "@type": "LocalPhysicalOperationService",
+      "LocalPhysicalOperationService_rootFilePath": {
+        "@id": "urn:solid-server:default:variable:rootFilePath",
+        "@type": "Variable"
+      }
     },
     {
       "comment": "Persistent outbox for Local authority-file writes and startup recovery.",
       "@id": "urn:undefineds:xpod:LocalRdfAuthorityJournal",
       "@type": "RootedSolidFsSyncJournal",
+      "RootedSolidFsSyncJournal_operationService": {
+        "@id": "urn:undefineds:xpod:LocalPhysicalOperationService"
+      },
       "rootFilePath": {
         "@id": "urn:solid-server:default:variable:rootFilePath",
         "@type": "Variable"
@@ -101,6 +149,12 @@
       "comment": "Rebuild the derived Local RDF index before CSS workers start.",
       "@id": "urn:undefineds:xpod:LocalRdfAuthorityRecoveryInitializer",
       "@type": "LocalRdfAuthorityRecoveryInitializer",
+      "LocalRdfAuthorityRecoveryInitializer_operationService": {
+        "@id": "urn:undefineds:xpod:LocalPhysicalOperationService"
+      },
+      "LocalRdfAuthorityRecoveryInitializer_rdfEngine": {
+        "@id": "urn:undefineds:xpod:SolidRdfEngine"
+      },
       "journal": {
         "@id": "urn:undefineds:xpod:LocalRdfAuthorityJournal"
       },
@@ -139,6 +193,7 @@
       "comment": "Vector API storage sharing the canonical Local RDF SQLite file.",
       "@id": "urn:undefineds:xpod:VectorStore",
       "@type": "SqliteVectorStore",
+      "SqliteVectorStore_operationService": { "@id": "urn:undefineds:xpod:LocalPhysicalOperationService" },
       "options_connectionString": {
         "@id": "urn:solid-server:default:variable:rdfIndexPath",
         "@type": "Variable"
@@ -148,6 +203,7 @@
       "comment": "Vector HTTP Handler",
       "@id": "urn:undefineds:xpod:VectorHttpHandler",
       "@type": "VectorHttpHandler",
+      "VectorHttpHandler_operationService": { "@id": "urn:undefineds:xpod:LocalPhysicalOperationService" },
       "vectorStore": {
         "@id": "urn:undefineds:xpod:VectorStore"
       },
@@ -196,6 +252,9 @@
       "comment": "RDF facts, FTS, VEC, and native QLever share one Local SQLite file.",
       "@id": "urn:undefineds:xpod:SolidRdfEngine",
       "@type": "SolidRdfEngine",
+      "SolidRdfEngine_operationService": {
+        "@id": "urn:undefineds:xpod:LocalPhysicalOperationService"
+      },
       "index_path": {
         "@id": "urn:solid-server:default:variable:rdfIndexPath",
         "@type": "Variable"
@@ -209,7 +268,7 @@
       "nativeSparqlClient": {
         "@id": "urn:undefineds:xpod:LocalQleverNativeSparqlClient"
       },
-      "autoOpen": true
+      "autoOpen": false
     },
     {
       "comment": "Default SPARQL engine: every server-owned Pod query requires native QLever.",
@@ -230,7 +289,7 @@
         "@id": "urn:solid-server:default:FileDataAccessor"
       },
       "rdfFileDataAccessor": {
-        "@id": "urn:solid-server:default:FileDataAccessor"
+        "@id": "urn:undefineds:xpod:AtomicRdfFileDataAccessor"
       },
       "rdfFileMapper": {
         "@id": "urn:solid-server:default:FileIdentifierMapper"
@@ -241,6 +300,9 @@
       },
       "rdfSearchIntentSink": {
         "@id": "urn:undefineds:xpod:RdfSearchIntentSink"
+      },
+      "MixDataAccessor_operationService": {
+        "@id": "urn:undefineds:xpod:LocalPhysicalOperationService"
       }
     },
     {
@@ -252,6 +314,9 @@
       },
       "identifierStrategy": {
         "@id": "urn:solid-server:default:IdentifierStrategy"
+      },
+      "SolidRdfDataAccessor_operationService": {
+        "@id": "urn:undefineds:xpod:LocalPhysicalOperationService"
       }
     },
     {
@@ -303,13 +368,26 @@
       }
     },
     {
-      "comment": "等位替换: 用内存锁替换文件锁，避免高并发下的 ECOMPROMISED 错误",
+      "comment": "等位替换: 用 AuthorityETagHandler 包裹默认 BasicETagHandler。仅为 Local 文件权威 RDF 的完整 Turtle 文档提供 authority 派生的文档版本，未受影响的资源/存储族继续委托原 CSS validator，不在全局关闭既有校验能力。",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:ETagHandler"
+      },
+      "overrideParameters": {
+        "@type": "AuthorityETagHandler",
+        "delegate": {
+          "@type": "BasicETagHandler"
+        }
+      }
+    },
+    {
+      "comment": "等位替换: 内存锁外层再包一层层级锁；祖先共享、目标读写，使 scoped SPARQL 写入与同容器内的每日文档 LDP 写入互斥。替换 WrappedExpiringReadWriteLocker 是为了去掉 Promise.race 超时释放仍在运行回调的行为。",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:ResourceLocker"
       },
       "overrideParameters": {
-        "@type": "WrappedExpiringReadWriteLocker",
+        "@type": "HierarchicalReadWriteLocker",
         "locker": {
           "@type": "GreedyReadWriteLocker",
           "locker": {
@@ -319,7 +397,9 @@
             "@type": "MemoryMapStorage"
           }
         },
-        "expiration": 6000
+        "identifierStrategy": {
+          "@id": "urn:solid-server:default:IdentifierStrategy"
+        }
       }
     },
     {
@@ -387,6 +467,77 @@
             "@id": "urn:solid-server:default:LdpHandler"
           }
         ]
+      }
+    },
+    {
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:LdpHandler"
+      },
+      "overrideParameters": {
+        "@type": "LocalPhysicalParsingHttpHandler",
+        "LocalPhysicalParsingHttpHandler_credentialsExtractor": {
+          "@id": "urn:solid-server:default:CredentialsExtractor"
+        },
+        "LocalPhysicalParsingHttpHandler_operationService": {
+          "@id": "urn:undefineds:xpod:LocalPhysicalOperationService"
+        },
+        "LocalPhysicalParsingHttpHandler_requestParser": {
+          "@id": "urn:solid-server:default:RequestParser"
+        },
+        "LocalPhysicalParsingHttpHandler_errorHandler": {
+          "@id": "urn:solid-server:default:ErrorHandler"
+        },
+        "LocalPhysicalParsingHttpHandler_responseWriter": {
+          "@id": "urn:solid-server:default:ResponseWriter"
+        },
+        "LocalPhysicalParsingHttpHandler_operationHandler": {
+          "@type": "AuthorizingHttpHandler",
+          "args_credentialsExtractor": {
+            "@id": "urn:solid-server:default:CredentialsExtractor"
+          },
+          "args_modesExtractor": {
+            "@id": "urn:solid-server:default:ModesExtractor"
+          },
+          "args_permissionReader": {
+            "@id": "urn:solid-server:default:PermissionReader"
+          },
+          "args_authorizer": {
+            "@id": "urn:solid-server:default:Authorizer"
+          },
+          "args_operationHandler": {
+            "@type": "WacAllowHttpHandler",
+            "args_credentialsExtractor": {
+              "@id": "urn:solid-server:default:CredentialsExtractor"
+            },
+            "args_modesExtractor": {
+              "@id": "urn:solid-server:default:ModesExtractor"
+            },
+            "args_permissionReader": {
+              "@id": "urn:solid-server:default:PermissionReader"
+            },
+            "args_operationHandler": {
+              "@id": "urn:solid-server:default:OperationHandler"
+            }
+          }
+        }
+      }
+    },
+    {
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:undefineds:xpod:LockingResourceStoreOverride"
+      },
+      "overrideParameters": {
+        "LockingResourceStore_operationService": {
+          "@id": "urn:undefineds:xpod:LocalPhysicalOperationService"
+        }
+      }
+    },
+    {
+      "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler",
+      "SubgraphSparqlHttpHandler_operationService": {
+        "@id": "urn:undefineds:xpod:LocalPhysicalOperationService"
       }
     }
   ]

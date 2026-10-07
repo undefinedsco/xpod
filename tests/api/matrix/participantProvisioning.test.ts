@@ -44,7 +44,7 @@ describe('provisioning a participant when they enter a room', () => {
       expect(input.webId).toBe('https://alice.example/profile/card#me');
       add(alice);
     });
-    const { store, context, rows } = matrixHarness({ identities: source, participantIdentity: { ensureParticipantIdentity } });
+    const { store, context, rows } = matrixHarness({ identities: source, participantIdentity: { ensureParticipantIdentity }, podUrl: 'https://alice.example/alice/' });
 
     const room = await store.createRoom({ invite: [] }, context);
     expect(ensureParticipantIdentity).toHaveBeenCalledTimes(1);
@@ -52,7 +52,8 @@ describe('provisioning a participant when they enter a room', () => {
     // server, not to the deployment name the registry started with.
     expect(room.roomId).toMatch(/:alice\.example$/u);
     const create = storedEvents(rows).find(event => event.type === 'm.room.create')!;
-    expect(create.sender).toMatch(/:alice\.example$/u);
+    // The event's author is the participant's WebID itself, not a hash of it under the host.
+    expect(create.sender).toBe('https://alice.example/profile/card#me');
     expect(Object.keys(create.signatures ?? {})).toEqual([ 'alice.example' ]);
     expect(verifyPersistedEventSignature(
       create, 'alice.example', alice.keyId, decodeVerifyKey(alice.serverKeyResponse().verify_keys[alice.keyId].key),
@@ -65,13 +66,13 @@ describe('provisioning a participant when they enter a room', () => {
     const participantIdentity: MatrixParticipantIdentityProvider = {
       ensureParticipantIdentity: async input => { add(identityFor(new URL(input.webId).host)); },
     };
-    const { store, context } = matrixHarness({ identities: source, participantIdentity });
+    const { store, context } = matrixHarness({ identities: source, participantIdentity, podUrl: 'https://alice.example/alice/' });
 
     // Without the hook the reported identity would be derived before the participant's own signing
     // identity exists; the reported id must already
     // be the participant's own server, because this is the id others invite.
     const account = await store.getAccount(context);
-    expect(account.userId).toMatch(/:alice\.example$/u);
+    expect(account.userId).toBe('https://alice.example/profile/card#me');
     expect(await source.identityFor('alice.example')).toBeDefined();
   });
 
@@ -81,7 +82,7 @@ describe('provisioning a participant when they enter a room', () => {
     const participantIdentity: MatrixParticipantIdentityProvider = {
       ensureParticipantIdentity: async () => undefined,
     };
-    const { store, context } = matrixHarness({ identities: source, participantIdentity });
+    const { store, context } = matrixHarness({ identities: source, participantIdentity, podUrl: 'https://alice.example/alice/' });
 
     expect((await store.getAccount(context)).userId).toEqual(expect.any(String));
   });
@@ -96,21 +97,21 @@ describe('provisioning a participant when they enter a room', () => {
         add(identityFor(new URL(input.webId).host));
       },
     };
-    const { store, context, rows } = matrixHarness({ identities: source, participantIdentity });
+    const { store, context, rows } = matrixHarness({ identities: source, participantIdentity, podUrl: 'https://alice.example/alice/' });
     const bobContext: MatrixStoreContext = { ...context, webId: 'https://bob.example/profile/card#me' };
 
     // Bob is provisioned before he can be invited at all: asking who he is gives the
     // identity he will join under, and that is the identity the invite has to name.
     const bob = (await store.getAccount(bobContext)).userId;
-    expect(bob).toMatch(/:bob\.example$/u);
+    expect(bob).toBe('https://bob.example/profile/card#me');
 
     const room = await store.createRoom({ invite: [ bob ] }, context);
     await store.joinRoom(room.roomId, bobContext);
 
     expect(seen).toEqual([
-      { webId: 'https://bob.example/profile/card#me', targetPodUrl: 'https://pod.example/alice/' },
-      { webId: 'https://alice.example/profile/card#me', targetPodUrl: 'https://pod.example/alice/' },
-      { webId: 'https://bob.example/profile/card#me', targetPodUrl: 'https://pod.example/alice/' },
+      { webId: 'https://bob.example/profile/card#me', targetPodUrl: 'https://alice.example/alice/' },
+      { webId: 'https://alice.example/profile/card#me', targetPodUrl: 'https://alice.example/alice/' },
+      { webId: 'https://bob.example/profile/card#me', targetPodUrl: 'https://alice.example/alice/' },
     ]);
     const join = storedEvents(rows).find(event => event.type === 'm.room.member' && event.sender?.includes('bob.example'))!;
     expect(Object.keys(join.signatures ?? {})).toEqual([ 'bob.example' ]);
@@ -123,7 +124,7 @@ describe('provisioning a participant when they enter a room', () => {
     const deployment = identityFor(MATRIX_TEST_SERVER_NAME, 'ed25519:deployment');
     const { source } = growingIdentitySource([ deployment ]);
     const ensureParticipantIdentity = vi.fn(async () => undefined);
-    const { store, context, rows } = matrixHarness({ identities: source, participantIdentity: { ensureParticipantIdentity } });
+    const { store, context, rows } = matrixHarness({ identities: source, participantIdentity: { ensureParticipantIdentity }, podUrl: 'https://alice.example/alice/' });
 
     const account = await store.getAccount(context);
     expect(ensureParticipantIdentity).toHaveBeenCalledTimes(1);
@@ -150,7 +151,7 @@ describe('provisioning a participant when they enter a room', () => {
         if (input.webId.includes('bob')) throw new Error('Pod unreachable');
       },
     };
-    const { store, context, rows } = matrixHarness({ identities: source, participantIdentity });
+    const { store, context, rows } = matrixHarness({ identities: source, participantIdentity, podUrl: 'https://alice.example/alice/' });
     const bobContext = { ...context, webId: 'https://bob.example/profile/card#me' };
 
     const room = await store.createRoom({ invite: [] }, context);
@@ -165,7 +166,7 @@ describe('provisioning a participant when they enter a room', () => {
   });
 
   it('leaves a deployment without the hook unchanged', async () => {
-    const { store, context } = matrixHarness();
+    const { store, context } = matrixHarness({ podUrl: 'https://alice.example/alice/' });
     const account = await store.getAccount(context);
     expect(serverNameOf(account.userId)).toBe(MATRIX_TEST_SERVER_NAME);
     const room = await store.createRoom({}, context);

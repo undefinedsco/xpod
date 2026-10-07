@@ -1,7 +1,8 @@
 import path from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { ComponentsManager } from 'componentsjs';
 import { describe, expect, it, vi } from 'vitest';
-import { buildRuntimeEnv, buildRuntimeShorthand, createCssRuntimeConfig, resolveRuntimeBootstrap } from '../../src/runtime/bootstrap';
+import { buildRuntimeEnv, buildRuntimeShorthand, createCssRuntimeConfig, resolveRuntimeBootstrap, conditionalAuthStrategyWiring } from '../../src/runtime/bootstrap';
 import { normalizeDatabaseUrl, resolveDefaultRdfIndexPath } from '../../src/runtime/database-url';
 import { nodeRuntimeHost } from '../../src/runtime/host/node/NodeRuntimeHost';
 import type { RuntimeHost } from '../../src/runtime/host/types';
@@ -35,6 +36,91 @@ const ALLOW_ALL_AUTH_IMPORTS = [
 const XPOD_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld';
 
 describe('runtime bootstrap helpers', () => {
+  it('derives guarded WAC profile solely from the current auth mode', () => {
+    expect(conditionalAuthStrategyWiring('acl').graph).toEqual([
+      {
+        '@id': 'urn:undefineds:xpod:SubgraphSparqlHttpHandler',
+        authStrategy: { '@id': 'urn:solid-server:default:AuthIdentifierStrategy' },
+        guardedPolicyProfile: { '@value': 'wac-ground-v1' },
+        observation: { '@id': 'urn:undefineds:xpod:AgentReadObservation' },
+      },
+      {
+        '@id': 'urn:undefineds:xpod:AgentReadObservation',
+        '@type': 'AgentReadObservation',
+        permissionReader: { '@id': 'urn:solid-server:default:PermissionReader' },
+        authorizer: { '@id': 'urn:solid-server:default:Authorizer' },
+        credentialsExtractor: { '@id': 'urn:solid-server:default:CredentialsExtractor' },
+        accessor: { '@id': 'urn:undefineds:xpod:MixDataAccessor' },
+        authorityStore: { '@id': 'urn:solid-server:default:ResourceStore_Locking' },
+        locks: { '@id': 'urn:solid-server:default:ResourceLocker' },
+        identifierStrategy: { '@id': 'urn:solid-server:default:IdentifierStrategy' },
+        authStrategy: { '@id': 'urn:solid-server:default:AuthIdentifierStrategy' },
+        auxiliaryStrategy: { '@id': 'urn:solid-server:default:AuxiliaryStrategy' },
+        profile: { '@value': 'wac-ground-v1' },
+      },
+      {
+        '@type': 'Override',
+        overrideInstance: { '@id': 'urn:solid-server:default:PathBasedReader' },
+        overrideParameters: {
+          '@type': 'ObservationPathBasedReader',
+          baseUrl: { '@id': 'urn:solid-server:default:variable:baseUrl' },
+          defaultReader: { '@id': 'urn:solid-server:default:AuthAuxiliaryReader' },
+        },
+      },
+    ]);
+    expect(conditionalAuthStrategyWiring('allow-all').graph).toEqual([]);
+    expect(conditionalAuthStrategyWiring('acp').graph).toEqual([
+      {
+        '@id': 'urn:undefineds:xpod:SubgraphSparqlHttpHandler',
+        authStrategy: { '@id': 'urn:solid-server:default:AuthIdentifierStrategy' },
+        guardedPolicyProfile: { '@value': 'acp-ground-v1' },
+        observation: { '@id': 'urn:undefineds:xpod:AgentReadObservation' },
+      },
+      {
+        '@id': 'urn:undefineds:xpod:AgentReadObservation',
+        '@type': 'AgentReadObservation',
+        permissionReader: { '@id': 'urn:solid-server:default:PermissionReader' },
+        authorizer: { '@id': 'urn:solid-server:default:Authorizer' },
+        credentialsExtractor: { '@id': 'urn:solid-server:default:CredentialsExtractor' },
+        accessor: { '@id': 'urn:undefineds:xpod:MixDataAccessor' },
+        authorityStore: { '@id': 'urn:solid-server:default:ResourceStore_Locking' },
+        locks: { '@id': 'urn:solid-server:default:ResourceLocker' },
+        identifierStrategy: { '@id': 'urn:solid-server:default:IdentifierStrategy' },
+        authStrategy: { '@id': 'urn:solid-server:default:AuthIdentifierStrategy' },
+        auxiliaryStrategy: { '@id': 'urn:solid-server:default:AuxiliaryStrategy' },
+        profile: { '@value': 'acp-ground-v1' },
+      },
+      {
+        '@type': 'Override',
+        overrideInstance: { '@id': 'urn:solid-server:default:PathBasedReader' },
+        overrideParameters: {
+          '@type': 'ObservationPathBasedReader',
+          baseUrl: { '@id': 'urn:solid-server:default:variable:baseUrl' },
+          defaultReader: { '@id': 'urn:solid-server:default:AuthAuxiliaryReader' },
+        },
+      },
+    ]);
+  });
+  it('loads derived profile strings as RDF literals through the real Components.js registry', async() => {
+    const parent = path.resolve('.test-data/runtime-bootstrap/guarded-literal');
+    mkdirSync(parent, { recursive: true });
+    const runtimeRoot = mkdtempSync(path.join(parent, 'owned-'));
+    try {
+      const manager = await ComponentsManager.build({ mainModulePath: process.cwd(), dumpErrorState: false });
+      for (const authMode of ['acl', 'acp'] as const) {
+        const configPath = createCssRuntimeConfig({
+          id: `literal-${authMode}`, mode: 'local', runtimeRoot: path.join(runtimeRoot, authMode), cssAuthMode: authMode,
+        } as Parameters<typeof createCssRuntimeConfig>[0]);
+        await manager.configRegistry.register(configPath);
+        const resource = manager.objectLoader.resources['urn:undefineds:xpod:SubgraphSparqlHttpHandler'];
+        const values = resource.properties['https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/SubgraphSparqlHttpHandler.jsonld#SubgraphSparqlHttpHandler_options_guardedPolicyProfile'];
+        expect(values?.some((value) => value.term.termType === 'Literal' && value.value === (authMode === 'acl' ? 'wac-ground-v1' : 'acp-ground-v1'))).toBe(true);
+        expect(values?.every((value) => value.term.termType === 'Literal')).toBe(true);
+      }
+    } finally {
+      rmSync(runtimeRoot, { recursive: true, force: true });
+    }
+  }, 30000);
   it('should trim whitespace before resolving database paths', () => {
     const resolvePath = vi.fn((value: string) => `/sandbox/${value}`);
 
@@ -152,6 +238,15 @@ describe('runtime bootstrap helpers', () => {
       runtimeRoot: '.test-data/runtime-bootstrap/database-url-empty',
       sparqlEndpoint: '',
     }, nodeRuntimeHost)).rejects.toThrow(/Database URL must not be empty/);
+  });
+
+  it('forwards the explicit ingress pin through the typed runtime entry', async() => {
+    const state = await resolveRuntimeBootstrap('ingress-pin', {
+      mode: 'local', transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/ingress-pin',
+      gatewayPort: 23200, cssPort: 23210, apiPort: 23211, ingressPort: 23220,
+    }, nodeRuntimeHost);
+    expect(state.ports.ingress).toBe(23220);
   });
 
   it('should resolve socket runtime bootstrap layout', async() => {

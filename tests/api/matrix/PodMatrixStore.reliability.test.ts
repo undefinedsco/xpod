@@ -21,10 +21,17 @@ describe('Matrix durable collaboration invariants', () => {
     }
     expect(expected.every(id=>seen.has(id))).toBe(true);
     const exemplar=rows.get(messageResource)!.find(r=>r.role==='user');
-    rows.get(messageResource)!.push({...exemplar,id:'chat/native/2000/01/01/messages.ttl#late',content:'late reply',maker:'https://pod.example/agent#one',role:'assistant',metadata:{},createdAt:'2000-01-01T00:00:00Z'});
+    const createdAt = '2000-01-01T00:00:00Z';
+    rows.get(messageResource)!.push({...exemplar,
+      id: messageResource.buildId({ id: 'late', parent: exemplar.parent, createdAt }),
+      content:'late reply',maker:'https://pod.example/agent#one',role:'assistant',metadata:{},createdAt});
+    // A forged matching parent cannot bring a different room's physical document into this scan.
+    rows.get(messageResource)!.push({...exemplar,id:'chat/native/2000/01/01/messages.ttl#foreign',
+      content:'foreign reply',metadata:{},createdAt});
     const next=await store.sync(context,{since});
     const reply=next.rooms.join[room.roomId].timeline.events.find(e=>e.content.body==='late reply');
-    expect(reply?.room_id).toBe(room.roomId); expect(reply?.sender).toMatch(/^@/);
+    expect(reply?.room_id).toBe(room.roomId); expect(reply?.sender).toBe('https://pod.example/agent#one');
+    expect(next.rooms.join[room.roomId].timeline.events.some(e=>e.content.body==='foreign reply')).toBe(false);
   });
   it('paginates equal-time events backwards without repetition', async () => {
     const {store,context}=harness(); const room=await store.createRoom({},context);

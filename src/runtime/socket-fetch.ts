@@ -91,6 +91,8 @@ export async function fetchViaSocket(
   const requestUrl = resolveRequestUrl(baseUrl, input);
   const method = resolveRequestMethod(input, init);
   const headers = resolveRequestHeaders(input, requestUrl, init);
+  const signal = init?.signal === undefined ? (input instanceof Request ? input.signal : undefined) : init.signal ?? undefined;
+  signal?.throwIfAborted();
   const body = await resolveRequestBody(input, init);
 
   if (body && method !== 'GET' && method !== 'HEAD' && !headers.has('content-length')) {
@@ -109,7 +111,7 @@ export async function fetchViaSocket(
     method,
     headers: requestHeaders,
     body,
-    signal: init?.signal ?? undefined,
+    signal,
   });
 
   return new Response(response.body, {

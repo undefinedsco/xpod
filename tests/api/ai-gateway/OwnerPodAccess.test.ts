@@ -45,6 +45,7 @@ function withUrl(response: Response, url: string): Response {
 function createHarness(options: {
   tokenResponse?: () => Response;
   podResponse?: () => Response;
+  podResponseUrl?: string;
   route?: { canonicalBaseUrl: string; localBaseUrl: string };
   taskCredentials?: TaskCredentialSource;
 } = {}) {
@@ -75,7 +76,7 @@ function createHarness(options: {
       dpop: headers.get('dpop'),
       headers,
     });
-    return withUrl(podResponse(), url);
+    return withUrl(podResponse(), options.podResponseUrl ?? url);
   }) as unknown as typeof fetch;
 
   const access = new OwnerPodAccess({
@@ -103,6 +104,34 @@ function callerAuth(overrides: Partial<SolidAuthContext> = {}): SolidAuthContext
 }
 
 describe('OwnerPodAccess', () => {
+  it('rechecks an internal fence before the real DPoP authentication retry transport', async() => {
+    let revoked = false;
+    const harness = createHarness({
+      podResponseUrl: 'https://pod.example/redirected-resource',
+      podResponse: () => { revoked = true; return new Response('fixture unauthorized', { status: 401 }); },
+    });
+    const beforeRequest = vi.fn(async() => { if (revoked) throw new Error('fixture lease revoked'); });
+    const podFetch = await harness.access.getPodFetch(OWNER, { auth: callerAuth(), beforeRequest });
+    await expect(podFetch!(POD_RESOURCE)).rejects.toThrow('fixture lease revoked');
+    expect(beforeRequest).toHaveBeenCalledTimes(2);
+    expect(harness.podRequests).toHaveLength(1);
+    const call = vi.mocked(harness.fetchImpl).mock.calls.find(([input]) => String(input) === POD_RESOURCE);
+    expect(call?.[1]?.redirect).toBe('error');
+  });
+
+  it('rechecks a bearer caller fence on each request without borrowing task credentials', async() => {
+    const harness = createHarness();
+    let revoked = false;
+    const beforeRequest = vi.fn(async() => { if (revoked) throw new Error('fixture lease revoked'); });
+    const podFetch = await harness.access.getPodFetch(OWNER, { auth: callerAuth({ viaApiKey: false,
+      clientId: undefined, clientSecret: undefined, accessToken: 'fixture-bearer', tokenType: 'Bearer' }), beforeRequest });
+    await podFetch!(POD_RESOURCE);
+    revoked = true;
+    await expect(podFetch!(POD_RESOURCE)).rejects.toThrow('fixture lease revoked');
+    expect(beforeRequest).toHaveBeenCalledTimes(2);
+    expect(harness.podRequests).toHaveLength(1);
+    expect(harness.tokenRequests).toHaveLength(0);
+  });
   const savedEnv = { CSS_BASE_URL: process.env.CSS_BASE_URL, XPOD_MAIN_PORT: process.env.XPOD_MAIN_PORT };
 
   beforeEach(() => {
@@ -261,6 +290,91 @@ describe('OwnerPodAccess', () => {
     expect(tokenRequests).toHaveLength(0);
     expect(podRequests[0].authorization).toBe('Bearer session-token');
   });
+
+  it('refuses a credential the issuer exchanged for a different identity, before any Pod request', async () => {
+    const { access, fetchImpl, tokenRequests, podRequests } = createHarness({
+      tokenResponse: () => Response.json({
+        access_token: 'access-token-1',
+        token_type: 'DPoP',
+        expires_in: 300,
+        // The authoritative answer names Bob while Alice's Pod was requested.
+        webid: OTHER_OWNER,
+      }),
+    });
+
+    await expect(access.getPodFetch(OWNER, { auth: callerAuth() }))
+      .rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:identity_mismatch`);
+    // No outbound Pod request is attempted with the wrong identity.
+    expect(podRequests).toHaveLength(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // The unsuitable session is forgotten: the next attempt re-exchanges instead of replaying it.
+    await expect(access.getPodFetch(OWNER, { auth: callerAuth() }))
+      .rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:identity_mismatch`);
+    expect(tokenRequests).toHaveLength(2);
+  });
+
+  it('accepts a credential the issuer bound to the requested owner', async () => {
+    const { access, podRequests } = createHarness({
+      tokenResponse: () => Response.json({
+        access_token: 'access-token-1',
+        token_type: 'DPoP',
+        expires_in: 300,
+        webid: OWNER,
+      }),
+    });
+
+    const podFetch = await access.getPodFetch(OWNER, { auth: callerAuth() });
+    expect(podFetch).toBeTypeOf('function');
+    await podFetch!(POD_RESOURCE);
+
+    expect(podRequests).toHaveLength(1);
+  });
+
+  it('refuses an issuer WebID that differs only by the profile-document fragment', async () => {
+    // `…/profile/card` and `…/profile/card#me` are different RDF subjects, not aliases. A token for
+    // the document must not be spent on the subject's Pod.
+    const { access, podRequests } = createHarness({
+      tokenResponse: () => Response.json({
+        access_token: 'access-token-1', token_type: 'DPoP', expires_in: 300,
+        webid: OWNER.split('#')[0],
+      }),
+    });
+
+    await expect(access.getPodFetch(OWNER, { auth: callerAuth() }))
+      .rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:identity_mismatch`);
+    expect(podRequests).toHaveLength(0);
+  });
+
+  it('refuses a request that names the document when the issuer bound the subject', async () => {
+    const document = OWNER.split('#')[0];
+    const { access, podRequests } = createHarness({
+      tokenResponse: () => Response.json({
+        access_token: 'access-token-1', token_type: 'DPoP', expires_in: 300,
+        webid: OWNER, // `…/card#me`
+      }),
+    });
+
+    await expect(access.getPodFetch(document, { auth: callerAuth({ webId: document }) }))
+      .rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:identity_mismatch`);
+    expect(podRequests).toHaveLength(0);
+  });
+
+  it('refuses a different subject of the same profile document', async () => {
+    // A fragment that is not the conventional `#me` names another subject, not the requested actor.
+    const { access, podRequests } = createHarness({
+      tokenResponse: () => Response.json({
+        access_token: 'access-token-1',
+        token_type: 'DPoP',
+        expires_in: 300,
+        webid: `${OWNER.split('#')[0]}#someone-else`,
+      }),
+    });
+
+    await expect(access.getPodFetch(OWNER, { auth: callerAuth() }))
+      .rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:identity_mismatch`);
+    expect(podRequests).toHaveLength(0);
+  });
 });
 
 describe('OwnerPodAccess task credentials', () => {
@@ -339,5 +453,24 @@ describe('OwnerPodAccess task credentials', () => {
 
     await expect(access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } })).resolves.toBeUndefined();
     expect(tokenRequests).toHaveLength(0);
+  });
+
+  it('refuses a task credential exchanged for a different identity than the named owner', async () => {
+    const { access, podRequests } = createHarness({
+      taskCredentials: {
+        activeFor: async () => ({ ...TASK_KEY, credentialRef: 'taskcred_1', version: 1 }),
+        forRef: async () => undefined,
+      },
+      tokenResponse: () => Response.json({
+        access_token: 'task-token',
+        token_type: 'DPoP',
+        expires_in: 300,
+        webid: OTHER_OWNER,
+      }),
+    });
+
+    await expect(access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } }))
+      .rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:identity_mismatch`);
+    expect(podRequests).toHaveLength(0);
   });
 });

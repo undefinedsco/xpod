@@ -99,6 +99,11 @@ import { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliatio
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
 import { PodMatrixStore } from '../matrix';
+import { CanonicalRoomSource, parseMembershipAuthorityBinding } from '../matrix/canonicalRoomSource';
+import { MembershipAuthorityPublisher } from '../matrix/membershipAuthorityPublication';
+import { MembershipAuthorityLocator } from '../matrix/membershipAuthorityLocator';
+import { MembershipAuthorityResolver } from '../matrix/membershipAuthorityResolver';
+import { matrixPodWriteFor } from '../matrix/podAccess';
 import { createParticipantRoutes } from '../matrix/participantRoutes';
 import { MatrixServerKeyFetcher } from '../matrix/federation/serverKeys';
 import { PodMatrixInboundTransactionStore } from '../matrix/federation/podInboundTransaction';
@@ -106,7 +111,7 @@ import { MatrixServerNameResolver } from '../matrix/federation/serverNameResolut
 import { createNodeFederationFetch } from '../matrix/federation/federationFetch';
 import { joinRoomOverFederation } from '../matrix/federation/remoteJoin';
 import { webIdServerName } from '../matrix/protocol/serverName';
-import { createMatrixRoomWatchService } from '../matrix/notifications/roomWatchService';
+import { createMatrixRoomWatchService, notificationEndpointOf } from '../matrix/notifications/roomWatchService';
 import { MatrixRoomChangeTracker } from '../matrix/notifications/roomChangeTracker';
 import type { NotificationSocket } from '../matrix/notifications/roomChangeSubscription';
 import { matrixSigningIdentityRegistry } from '../matrix/identityRegistry';
@@ -114,8 +119,10 @@ import { matrixSigningIdentityForPod } from '../matrix/identityProvisioning';
 import { createPodParticipantIdentityProvider } from '../matrix/podParticipantIdentity';
 import { createMatrixOutboundDelivery, nodeSrvRecords } from '../matrix/federation/outboundDelivery';
 import { PodMatrixOutboundStore } from '../matrix/federation/podOutboundStore';
-import type { MatrixControlRecordTarget } from '../matrix/controlRecords';
+import { createNamedPublicationControlAuthority, type MatrixControlRecordTarget } from '../matrix/controlRecords';
+import type { MatrixFederationActor } from '../matrix/federation/outboundTransaction';
 import { createSchedulingOutbox, MatrixOutboxScheduler } from '../matrix/federation/outboxScheduler';
+import { MatrixOutbox } from '../matrix/federation/outboundQueue';
 import { promises as dns } from 'node:dns';
 import { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
@@ -194,6 +201,23 @@ async function outboundHandleFor(
     return await cradle.matrixStore.controlRecordHandleFor({ webId: route.webId, podUrl: route.podUrl, service: {} });
   }
   return undefined;
+}
+
+/** Explicit publication authority; shared by physical delivery and conditional carrier mutation. */
+async function publicationTaskAuthority(cradle: ApiContainerCradle, actor: MatrixFederationActor) {
+  const binding = parseMembershipAuthorityBinding(actor.taskCredential);
+  const issuer = cradle.config.solidBaseUrl ?? cradle.config.publicUrl;
+  if (!binding || !cradle.taskCredentialStore || binding.issuer !== issuer || !actor.podUrl) {
+    throw new Error('A configured named publication authority is required');
+  }
+  const beforeRequest = async(): Promise<void> => {
+    const lease = await cradle.taskCredentialStore!.lease({ credentialRef: binding.credentialRef,
+      ownerWebId: actor.webId, version: binding.version, recordUsage: false });
+    if (lease.credentialRef !== binding.credentialRef || lease.ownerWebId !== actor.webId
+      || lease.version !== binding.version || lease.issuer !== issuer) throw new Error('Current publication authority differs');
+  };
+  await beforeRequest();
+  return { binding, beforeRequest };
 }
 
 export function registerCommonServices(
@@ -796,11 +820,20 @@ export function registerCommonServices(
         rooms: async route => await cradle.matrixStore.listJoinedRooms({
           webId: route.webId, podUrl: route.podUrl, service: {},
         }),
-        watch: async ({ route, endpoint, rooms }) => {
+        watch: async ({ route, rooms }) => {
+          // Resolve current participant authority on every request, including reconnects.
+          const participantFetch: typeof fetch = async(input, init) => {
+            const authenticated = await cradle.ownerPodAccess.getPodFetch(route.webId, {
+              taskCredential: {}, podBaseUrl: route.podUrl,
+            });
+            if (!authenticated) throw new Error(`No current Pod grant for ${route.webId}`);
+            return await authenticated(input, init);
+          };
+          const endpoint = await notificationEndpointOf(route.podUrl, participantFetch);
           const tracker = new MatrixRoomChangeTracker({
             scope: route.podUrl,
             endpoint,
-            fetch: globalThis.fetch,
+            fetch: participantFetch,
             openSocket: url => new WebSocket(url) as unknown as NotificationSocket,
             rooms,
             onError: error => { logger.warn(`Watching ${route.podUrl} failed: ${error.message}`); },
@@ -816,12 +849,27 @@ export function registerCommonServices(
     // and what is still owed. Absent without an identity of our own: a queue whose every
     // batch would be abandoned is worse than no queue.
     matrixOutboundDelivery: asFunction((cradle: ApiContainerCradle) => {
-      const { config, matrixSigningIdentities, matrixServerNameResolver, matrixFederationFetch } = cradle;
+      const { config, matrixSigningIdentities, matrixServerNameResolver, matrixFederationFetch, ownerPodAccess, taskCredentialStore } = cradle;
       if (!config.matrixServiceIdentity) return undefined;
       return createMatrixOutboundDelivery({
         identities: matrixSigningIdentities,
         fetch: globalThis.fetch,
         fetchTarget: matrixFederationFetch,
+        // O1: the actual outbound request is authenticated as the participant whose event is
+        // travelling, using the participant's own current grant through the existing
+        // OwnerPodAccess/SolidSessionFactory. The grant is re-resolved on every attempt, so a
+        // revoked or missing one refuses rather than falling back to a deployment identity. Only
+        // the actor reference is carried here; no bearer/session is read from it.
+        actorFetch: async(actor) => {
+          const publication = actor.taskCredential?.purpose !== undefined || actor.taskCredential?.issuer !== undefined;
+          const named = publication ? await publicationTaskAuthority(cradle, actor) : undefined;
+          const beforeRequest = named?.beforeRequest;
+          return await ownerPodAccess.getPodFetch(actor.webId, {
+            ...(actor.taskCredential === undefined ? { taskCredential: { ownerGrant: true } } : { taskCredential: actor.taskCredential }),
+            ...(actor.podUrl === undefined ? {} : { podBaseUrl: actor.podUrl }),
+            ...(beforeRequest ? { beforeRequest } : {}),
+          });
+        },
         resolver: matrixServerNameResolver,
         // The queue lives in the Pods this deployment serves, so what is owed survives a restart.
         // Both halves resolve lazily: the routes are what a scope means, and the store is the
@@ -829,6 +877,25 @@ export function registerCommonServices(
         // delivery is being built for.
         store: new PodMatrixOutboundStore({
           handleFor: async(scope: string) => await outboundHandleFor(cradle, scope),
+          publicationHandleFor: async(scope, batch) => {
+            const actor = batch.actor;
+            if (!actor || actor.podUrl !== scope) throw new Error('Publication batch scope differs from its actor');
+            const routes = cradle.matrixParticipantRoutes;
+            const served = routes ? [ ...(await routes.routes()).served.values() ] : [];
+            if (!served.some(route => route.webId === actor.webId && route.podUrl === scope)) {
+              throw new Error('Publication actor is not the exact served participant');
+            }
+            const named = await publicationTaskAuthority(cradle, actor);
+            const authority = await createNamedPublicationControlAuthority({ kind: 'named-publication',
+              webId: actor.webId, podUrl: scope, binding: named.binding, beforeRequest: named.beforeRequest });
+            const authenticated = await ownerPodAccess.getPodFetch(actor.webId, {
+              podBaseUrl: scope, taskCredential: named.binding, beforeRequest: named.beforeRequest,
+            });
+            if (!authenticated) throw new Error('Publication named task transport is unavailable');
+            const context = { webId: actor.webId, podUrl: scope, service: { taskCredential: named.binding } };
+            const write = await matrixPodWriteFor(context, { getPodFetch: async() => authenticated });
+            return { target: { scope, write }, authority };
+          },
           scopes: async () => {
             const routes = cradle.matrixParticipantRoutes;
             if (!routes) return [];
@@ -854,10 +921,57 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    matrixStore: asFunction(({ config, db, ownerPodAccess, serverGroupReconcilerService, matrixSigningIdentities, matrixParticipantIdentity, matrixOutboundDelivery, matrixOutboxScheduler, matrixRoomWatchService }: ApiContainerCradle) => {
+    matrixCanonicalRoomSource: asFunction(({ podLookupRepo, ownerPodAccess }: ApiContainerCradle) => {
+      return podLookupRepo ? new CanonicalRoomSource({
+        pods: podLookupRepo,
+        callerFetchFor: async(context, beforeRequest) => {
+          if (!beforeRequest) return (await matrixPodWriteFor(context, ownerPodAccess, {})).fetch;
+          const callerFetch = await ownerPodAccess.getPodFetch(context.webId, { auth: context.auth,
+            podBaseUrl: context.podUrl, beforeRequest });
+          if (!callerFetch) throw new Error('Caller Pod access is unavailable');
+          return callerFetch;
+        },
+      }) : undefined;
+    }).singleton(),
+    matrixMembershipAuthorityLocator: asFunction(({ db }: ApiContainerCradle) => new MembershipAuthorityLocator(db)).singleton(),
+    matrixMembershipAuthorityResolver: asFunction(({ matrixCanonicalRoomSource, matrixMembershipAuthorityLocator,
+      taskCredentialStore, ownerPodAccess, config }: ApiContainerCradle) => {
+      const issuer = config.solidBaseUrl ?? config.publicUrl;
+      return matrixCanonicalRoomSource && taskCredentialStore && issuer ? new MembershipAuthorityResolver({
+        canonicalSource: matrixCanonicalRoomSource, locator: matrixMembershipAuthorityLocator,
+        credentials: taskCredentialStore, podAccess: ownerPodAccess, issuer,
+      }) : undefined;
+    }).singleton(),
+
+    matrixStore: asFunction(({ config, db, ownerPodAccess, matrixCanonicalRoomSource, taskCredentialStore, serverGroupReconcilerService, matrixSigningIdentities, matrixParticipantIdentity, matrixOutboundDelivery, matrixOutboxScheduler, matrixRoomWatchService }: ApiContainerCradle) => {
+      const canonicalSource = matrixCanonicalRoomSource;
+      const issuer = config.solidBaseUrl ?? config.publicUrl;
       return new PodMatrixStore({
         serverGroupReconcilerService,
         podAccess: ownerPodAccess,
+        // Creation qualifies ownership against the deployment's own Pod registry, with the caller's
+        // own authenticated fetch. A missing registry leaves the port absent, so creation fails
+        // closed instead of writing under an owner nobody registered.
+        ...(canonicalSource ? { canonicalSource } : {}),
+        ...(canonicalSource && taskCredentialStore && issuer ? {
+          membershipAuthorityPublisher: new MembershipAuthorityPublisher({
+            canonicalSource, credentials: taskCredentialStore, podAccess: ownerPodAccess, issuer,
+          }),
+        } : {}),
+        ...(matrixOutboundDelivery && matrixOutboxScheduler ? {
+          publicationOutboxFor: (write: import('../matrix/podAccess').MatrixPodWrite, context: import('../matrix/types').MatrixStoreContext) =>
+            createSchedulingOutbox({
+              outbox: new MatrixOutbox({
+                store: new PodMatrixOutboundStore({ publicationCaller: context, handleFor: async(scope) =>
+                  scope === context.podUrl ? { scope, write } : undefined }),
+                send: async(input) => await matrixOutboundDelivery.sender.send(input),
+              }),
+              schedule: () => { matrixOutboxScheduler.schedule(); },
+            }),
+        } : {}),
+        // O1: queue each outbound batch under the participant whose event it carries, so delivery
+        // authenticates as that participant's current grant instead of a deployment signature.
+        deliverAsActor: true,
         // Registering participants only makes sense while the deployment itself can sign:
         // an unserved participant falls back to the deployment name, and a registry
         // without that identity would refuse their writes instead of signing nothing.
@@ -883,7 +997,7 @@ export function registerCommonServices(
             const answer = await client.queryDirectory({ destination, roomAlias });
             return answer.status === 'ok' ? answer.roomId : undefined;
           },
-          remoteJoin: async ({ roomId, userId, destination, context }) => {
+          remoteJoin: async ({ roomId, userId, destination, context, pending }) => {
             const serverName = webIdServerName(context.webId);
             if (!serverName) return undefined;
             const client = await matrixOutboundDelivery.sender.clientFor(serverName);
@@ -896,6 +1010,7 @@ export function registerCommonServices(
               destination,
               serverName,
               sign: event => identity.signEvent(event),
+              ...(pending === undefined ? {} : { pending }),
             });
           },
         } : {}),

@@ -12,6 +12,7 @@ import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
 import { registerSocketOriginShims } from '../src/runtime/socket-shim';
+import { upsertEnvContent } from './env-file';
 
 const envFilePath = path.resolve(process.env.SOLID_ENV_FILE ?? path.join('.test-data', 'integration', '.env'));
 dotenv.config({ path: envFilePath });
@@ -310,16 +311,7 @@ function updateEnvFile(clientId: string, clientSecret: string, webId: string, po
     TEST_SOLID_POD_ID: podName,
   };
 
-  for (const [key, value] of Object.entries(updates)) {
-    const regex = new RegExp(`^${key}=.*$`, 'm');
-    if (regex.test(envContent)) {
-      envContent = envContent.replace(regex, `${key}=${value}`);
-    } else {
-      envContent += `\n${key}=${value}`;
-    }
-  }
-
-  fs.writeFileSync(envFilePath, envContent.trim() + '\n');
+  fs.writeFileSync(envFilePath, upsertEnvContent(envContent, updates));
   console.log(`Updated ${envFilePath}`);
   return apiKey;
 }

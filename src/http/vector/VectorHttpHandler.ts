@@ -24,6 +24,9 @@ import { PERMISSIONS } from '@solidlab/policy-engine';
 import type { CredentialsExtractor, PermissionReader, Authorizer, ResourceIdentifier } from '@solid/community-server';
 import { VectorStore } from '../../storage/vector/VectorStore';
 import type { VectorSearchOptions, VectorSearchResult } from '../../storage/vector/types';
+import type { LocalPhysicalOperationService } from '../../storage/LocalPhysicalOperationService';
+import { observePhysicalStream, runPhysicalOperation } from '../../storage/LocalPhysicalStreamLifetime';
+import { AuthorityPendingUnavailableError } from '../../storage/AuthorityFreshnessService';
 
 const ALLOWED_METHODS = ['GET', 'POST', 'DELETE', 'OPTIONS'];
 
@@ -112,12 +115,13 @@ interface DeleteRequest {
   ids: number[];
 }
 
-interface VectorHttpHandlerOptions {
+export interface VectorHttpHandlerOptions {
   vectorStore: VectorStore;
   credentialsExtractor: CredentialsExtractor;
   permissionReader: PermissionReader;
   authorizer: Authorizer;
   sidecarPath?: string;
+  operationService?: LocalPhysicalOperationService;
 }
 
 export class VectorHttpHandler extends HttpHandler {
@@ -128,6 +132,7 @@ export class VectorHttpHandler extends HttpHandler {
   private readonly permissionReader: PermissionReader;
   private readonly authorizer: Authorizer;
   private readonly sidecarPath: string;
+  private readonly operationService?: LocalPhysicalOperationService;
 
   public constructor(options: VectorHttpHandlerOptions) {
     super();
@@ -136,6 +141,7 @@ export class VectorHttpHandler extends HttpHandler {
     this.permissionReader = options.permissionReader;
     this.authorizer = options.authorizer;
     this.sidecarPath = options.sidecarPath ?? '/-/vector';
+    this.operationService = options.operationService;
   }
 
   public override async canHandle({ request }: HttpHandlerInput): Promise<void> {
@@ -158,48 +164,65 @@ export class VectorHttpHandler extends HttpHandler {
     }
 
     try {
-      const url = this.parseUrl(request);
-      const path = decodeURIComponent(url.pathname);
-
-      const sidecarIndex = path.indexOf(this.sidecarPath);
-      if (sidecarIndex === -1) {
-        throw new NotImplementedHttpError('Request is not targeting a vector endpoint.');
+      // Original CSS cache prepares cold network verification before this same server's SQL admission.
+      if (this.operationService) {
+        try { await this.credentialsExtractor.handleSafe(request); }
+        catch (error) {
+          const drained = observePhysicalStream(request);
+          this.handleError(response, error);
+          request.resume();
+          await drained;
+          return;
+        }
       }
-
-      let basePath = path.slice(0, sidecarIndex);
-      if (!basePath.endsWith('/')) {
-        basePath = `${basePath}/`;
-      }
-
-      const actionPath = path.slice(sidecarIndex + this.sidecarPath.length);
-      const action = actionPath.replace(/^\//, '').split('/')[0] || '';
-
-      const origin = `${url.protocol}//${url.host}`;
-      const baseUrl = `${origin}${basePath}`;
-
-      this.logger.debug(`Vector request: ${method} ${path}, action=${action}, baseUrl=${baseUrl}`);
-
-      switch (action) {
-        case 'upsert':
-          await this.handleUpsert(request, response, baseUrl, method);
-          break;
-        case 'search':
-          await this.handleSearch(request, response, baseUrl, method);
-          break;
-        case 'delete':
-          await this.handleDelete(request, response, baseUrl, method);
-          break;
-        case 'status':
-        case 'stats':
-          await this.handleStatus(request, response, baseUrl, method);
-          break;
-        default:
-          throw VectorApiError.notFound(action);
-      }
+      await runPhysicalOperation(this.operationService,
+        () => this.handleAdmitted(request, response, method), request);
     } catch (error: unknown) {
       this.handleError(response, error);
     }
   }
+
+  private async handleAdmitted(request: HttpRequest, response: HttpResponse, method: string): Promise<void> {
+    const url = this.parseUrl(request);
+    const path = decodeURIComponent(url.pathname);
+
+    const sidecarIndex = path.indexOf(this.sidecarPath);
+    if (sidecarIndex === -1) {
+      throw new NotImplementedHttpError('Request is not targeting a vector endpoint.');
+    }
+
+    let basePath = path.slice(0, sidecarIndex);
+    if (!basePath.endsWith('/')) {
+      basePath = `${basePath}/`;
+    }
+
+    const actionPath = path.slice(sidecarIndex + this.sidecarPath.length);
+    const action = actionPath.replace(/^\//, '').split('/')[0] || '';
+
+    const origin = `${url.protocol}//${url.host}`;
+    const baseUrl = `${origin}${basePath}`;
+
+    this.logger.debug(`Vector request: ${method} ${path}, action=${action}, baseUrl=${baseUrl}`);
+
+    switch (action) {
+      case 'upsert':
+        await this.handleUpsert(request, response, baseUrl, method);
+        break;
+      case 'search':
+        await this.handleSearch(request, response, baseUrl, method);
+        break;
+      case 'delete':
+        await this.handleDelete(request, response, baseUrl, method);
+        break;
+      case 'status':
+      case 'stats':
+        await this.handleStatus(request, response, baseUrl, method);
+        break;
+      default:
+        throw VectorApiError.notFound(action);
+    }
+  }
+
 
   // ============================================
   // HTTP Handlers
@@ -241,6 +264,7 @@ export class VectorHttpHandler extends HttpHandler {
         await this.vectorStore.upsertVector(body.model, item.id, item.vector);
         upserted++;
       } catch (err) {
+        if (err instanceof AuthorityPendingUnavailableError) { throw err; }
         errors.push(`id=${item.id}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
@@ -316,6 +340,7 @@ export class VectorHttpHandler extends HttpHandler {
         await this.vectorStore.deleteVector(body.model, id);
         deleted++;
       } catch (err) {
+        if (err instanceof AuthorityPendingUnavailableError) { throw err; }
         errors.push(`id=${id}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }

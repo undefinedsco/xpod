@@ -237,6 +237,10 @@ export function resolveRuntimeLaunchCommand({
       env: { XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntime },
     }
   }
+  const selectedNativeRoot = path.join(resourcesPath, 'runtime', 'qlever')
+  if (pathExists(selectedNativeRoot)) {
+    return undefined
+  }
   const packagedCli = path.join(resourcesPath, 'runtime', 'bin', 'xpod.js')
   if (pathExists(packagedCli)) {
     const packagedBun = resolvePackagedBun(resourcesPath, pathExists)
@@ -255,8 +259,11 @@ export function resolveRuntimeLaunchCommand({
   }
   const localDesktopRuntime = moduleDir ? path.resolve(moduleDir, '..', 'runtime', 'xpod') : undefined
   if (localDesktopRuntime && pathExists(localDesktopRuntime)) {
-    return { command: localDesktopRuntime, args: ['start', '--foreground'] }
+    const qleverRuntime = path.join(path.dirname(localDesktopRuntime), 'qlever', 'bin', 'xpod_qlever_local_runtime')
+    if (!pathExists(qleverRuntime)) return undefined
+    return { command: localDesktopRuntime, args: ['start', '--foreground'], env: { XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntime } }
   }
+  if (localDesktopRuntime && pathExists(path.join(path.dirname(localDesktopRuntime), 'qlever'))) return undefined
   return { command: 'xpod', args: ['start', '--foreground'] }
 }
 

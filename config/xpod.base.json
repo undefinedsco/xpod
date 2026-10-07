@@ -1,6 +1,7 @@
 {
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solidlab/policy-engine/^0.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld",
     {
@@ -11,10 +12,16 @@
       "rememberedConsentSource": "RememberedConsentHandler:_source",
       "rememberedConsentStore": "RememberedConsentHandler:_store",
       "rememberedConsentProvider": "RememberedConsentHandler:_providerFactory",
-      "scopedRememberedGrantStore": "ScopedPickWebIdHandler:_options_rememberedClientGrantStore"
+      "scopedRememberedGrantStore": "ScopedPickWebIdHandler:_options_rememberedClientGrantStore",
+      "authStrategy": "SubgraphSparqlHttpHandler:_authStrategy",
+      "authorityStore": "SubgraphSparqlHttpHandler:_authorityStore",
+      "guardIdentifierStrategy": "SubgraphSparqlHttpHandler:_identifierStrategy",
+      "guardAuxiliaryStrategy": "SubgraphSparqlHttpHandler:_auxiliaryStrategy",
+      "guardedPolicyProfile": "SubgraphSparqlHttpHandler:_options_guardedPolicyProfile"
     }
   ],
   "import": [
+    "spe:config/access-checkers/agent-group.json",
     "./cli.json",
     "./resolver.json",
     "./notifications.json"
@@ -56,7 +63,9 @@
         "handlers": [
           {
             "@type": "MethodFilterHandler",
-            "methods": [ "GET" ],
+            "methods": [
+              "GET"
+            ],
             "source": {
               "@type": "ClientInfoHandler",
               "providerFactory": { "@id": "urn:solid-server:default:IdentityProviderFactory" }
@@ -64,7 +73,9 @@
           },
           {
             "@type": "MethodFilterHandler",
-            "methods": [ "POST" ],
+            "methods": [
+              "POST"
+            ],
             "source": {
               "@type": "RememberedConsentHandler",
               "rememberedConsentProvider": { "@id": "urn:solid-server:default:IdentityProviderFactory" },
@@ -263,9 +274,7 @@
           "@id": "urn:solid-server:default:variable:edition",
           "@type": "Variable"
         },
-        "podStore": {
-          "@id": "urn:solid-server:default:PodStore"
-        },
+        "podStore": { "@id": "urn:solid-server:default:PodStore" },
         "storageBaseUrl": {
           "@id": "urn:solid-server:default:variable:baseUrl",
           "@type": "Variable"
@@ -391,6 +400,9 @@
       "emitter": {
         "@id": "urn:solid-server:default:ResourceStore"
       },
+      "locks": {
+        "@id": "urn:solid-server:default:ResourceLocker"
+      },
       "options_identityDbUrl": {
         "@id": "urn:solid-server:default:variable:identityDbUrl",
         "@type": "Variable"
@@ -402,6 +414,45 @@
       "options_defaultAccountBandwidthLimitBps": {
         "@type": "Literal",
         "value": 0
+      },
+      "authorityStore": {
+        "@id": "urn:solid-server:default:ResourceStore_Locking"
+      },
+      "guardIdentifierStrategy": {
+        "@id": "urn:solid-server:default:IdentifierStrategy"
+      },
+      "guardAuxiliaryStrategy": {
+        "@id": "urn:solid-server:default:AuxiliaryStrategy"
+      }
+    },
+    {
+      "comment": "等位替换: 严格组授权检查器。普通上下文委托原 AgentGroupAccessChecker；authority 快照内未跟踪/外部 group grant fail closed，direct/public 授权不受影响。",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solidlab:policy-engine:AgentGroupAccessChecker"
+      },
+      "overrideParameters": {
+        "@type": "StrictAgentGroupAccessChecker"
+      }
+    },
+    {
+      "comment": "等位替换: 用带 GET 读取取消生命周期的 LockingResourceStore 替换 CSS 默认实现。层级锁不再按超时释放；超时取消改在已知的 representation 生命周期内完成（先挂 close 监听再 destroy，等待真实 close 确认后才解锁）。锁实例仍是同一个 ResourceLocker。",
+      "@id": "urn:undefineds:xpod:LockingResourceStoreOverride",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:ResourceStore_Locking"
+      },
+      "overrideParameters": {
+        "@type": "npmd:@undefineds.co/xpod/^0.0.0/dist/storage/LockingResourceStore.jsonld#LockingResourceStore",
+        "npmd:@undefineds.co/xpod/^0.0.0/dist/storage/LockingResourceStore.jsonld#LockingResourceStore_source": {
+          "@id": "urn:solid-server:default:ResourceStore_Patching"
+        },
+        "npmd:@undefineds.co/xpod/^0.0.0/dist/storage/LockingResourceStore.jsonld#LockingResourceStore_locks": {
+          "@id": "urn:solid-server:default:ResourceLocker"
+        },
+        "npmd:@undefineds.co/xpod/^0.0.0/dist/storage/LockingResourceStore.jsonld#LockingResourceStore_auxiliaryStrategy": {
+          "@id": "urn:solid-server:default:AuxiliaryStrategy"
+        }
       }
     },
     {
@@ -423,6 +474,14 @@
           { "@id": "urn:solid-server:default:Middleware_Cors" }
         ]
       }
+    },
+    {
+      "comment": "ONE shared installed-CSS atomic RDF authority file accessor (temp write -> rename -> metadata). Used only for RDF file mirrors via MixDataAccessor.rdfFileDataAccessor; ordinary/internal FileDataAccessor and Minio are unchanged. Staging lives under rootFilePath/.internal/tempFiles/ (outside owner Pods).",
+      "@id": "urn:undefineds:xpod:AtomicRdfFileDataAccessor",
+      "@type": "AtomicFileDataAccessor",
+      "resourceMapper": { "@id": "urn:solid-server:default:FileIdentifierMapper" },
+      "rootFilePath": { "@id": "urn:solid-server:default:variable:rootFilePath" },
+      "tempFilePath": "/.internal/tempFiles/"
     }
   ]
 }

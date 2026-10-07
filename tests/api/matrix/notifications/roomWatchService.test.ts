@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createMatrixRoomWatchService,
-  notificationEndpointOf,
   type MatrixRoomWatch,
   type MatrixRoomWatchServiceOptions,
 } from '../../../../src/api/matrix/notifications/roomWatchService';
@@ -11,7 +10,7 @@ const route = (name: string, podUrl = `https://pod.example/${name.split('.')[0]}
   ({ webId: `https://${name}/card#me`, podUrl });
 
 /** A watcher that answers like the real tracker: `changed` only while it is watching. */
-function fakeWatch(input: { route: MatrixServerRoute; endpoint: string; rooms: () => Promise<readonly string[]> }) {
+function fakeWatch(input: { route: MatrixServerRoute; rooms: () => Promise<readonly string[]> }) {
   const watch: MatrixRoomWatch & { settled: string[][]; stopped: boolean } = {
     settled: [],
     stopped: false,
@@ -23,7 +22,7 @@ function fakeWatch(input: { route: MatrixServerRoute; endpoint: string; rooms: (
 }
 
 function service(options: Partial<MatrixRoomWatchServiceOptions> = {}) {
-  const started: { endpoint: string; route: MatrixServerRoute; watch: ReturnType<typeof fakeWatch> }[] = [];
+  const started: { route: MatrixServerRoute; watch: ReturnType<typeof fakeWatch> }[] = [];
   const errors: Error[] = [];
   const instance = createMatrixRoomWatchService({
     routes: async () => [ route('alice.example'), route('carol.example') ],
@@ -31,7 +30,7 @@ function service(options: Partial<MatrixRoomWatchServiceOptions> = {}) {
     intervalMs: 0,
     watch: async input => {
       const watch = fakeWatch(input);
-      started.push({ endpoint: input.endpoint, route: input.route, watch });
+      started.push({ route: input.route, watch });
       return watch;
     },
     onError: error => { errors.push(error); },
@@ -41,13 +40,80 @@ function service(options: Partial<MatrixRoomWatchServiceOptions> = {}) {
 }
 
 describe('watching the Pods this deployment serves', () => {
-  it('watches every served Pod, with the endpoint derived from its root', async () => {
+  it('does not install watches or a timer when stopped during initial route discovery', async () => {
+    vi.useFakeTimers();
+    let release!: (value: MatrixServerRoute[]) => void;
+    const routes = new Promise<MatrixServerRoute[]>(resolve => { release = resolve; });
+    const watch = vi.fn(async input => fakeWatch(input));
+    const { instance } = service({ intervalMs: 10, routes: async () => routes, watch });
+    try {
+      const started = instance.start();
+      await Promise.resolve();
+      instance.stop();
+      release([ route('alice.example') ]);
+      await started;
+      expect(watch).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      instance.stop();
+      vi.useRealTimers();
+    }
+  });
+  it('stops trusting an existing watch when its refresh fails and retries it', async () => {
+    let fail = false;
+    const refresh = vi.fn(async () => { if (fail) throw new Error('room authority unavailable'); });
+    const { instance } = service({ watch: async input => ({ ...fakeWatch(input), refresh }) });
+    await instance.start();
+    fail = true;
+    await instance.reconcile();
+    expect(await instance.pending({ scope: 'https://pod.example/alice/' })).toEqual({ trust: 'all', rooms: [] });
+    fail = false;
+    await instance.reconcile();
+    expect((await instance.pending({ scope: 'https://pod.example/alice/' })).trust).toBe('changed');
+    instance.stop();
+  });
+
+  it('invalidates watches when the current route inventory cannot be read', async () => {
+    let fail = false;
+    const { instance } = service({ routes: async () => {
+      if (fail) throw new Error('routes unavailable');
+      return [ route('alice.example') ];
+    } });
+    await instance.start();
+    fail = true;
+    await instance.reconcile();
+    expect(await instance.pending({ scope: 'https://pod.example/alice/' })).toEqual({ trust: 'all', rooms: [] });
+    fail = false;
+    await instance.reconcile();
+    expect((await instance.pending({ scope: 'https://pod.example/alice/' })).trust).toBe('changed');
+    instance.stop();
+  });
+
+  it('replaces a watcher when the participant identity changes on the same Pod', async () => {
+    let routes = [ route('alice.example', 'https://pod.example/shared/') ];
+    const { instance, started } = service({ routes: async () => routes });
+    await instance.start();
+    routes = [ route('bob.example', 'https://pod.example/shared/') ];
+    await instance.reconcile();
+    expect(started).toHaveLength(2);
+    expect(started[0].watch.stopped).toBe(true);
+    expect(started[1].route.webId).toBe(routes[0].webId);
+    instance.stop();
+  });
+  it('refreshes existing watches on reconciliation instead of skipping their new topics', async () => {
+    const refresh = vi.fn(async () => undefined);
+    const { instance } = service({ watch: async input => ({ ...fakeWatch(input), refresh }) });
+    await instance.start();
+    await instance.reconcile();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    instance.stop();
+  });
+  it('watches every served Pod using its own route and room source', async () => {
     const { instance, started } = service();
     await instance.start();
 
     expect(started.map(entry => entry.route.podUrl).sort())
       .toEqual([ 'https://pod.example/alice/', 'https://pod.example/carol/' ]);
-    expect(started[0].endpoint).toBe('https://pod.example/alice/.notifications/WebSocketChannel2023/');
     expect(instance.watchedScopes).toEqual([ 'https://pod.example/alice/', 'https://pod.example/carol/' ]);
     expect(instance.isRunning).toBe(true);
   });
@@ -143,13 +209,7 @@ describe('watching the Pods this deployment serves', () => {
     }
   });
 
-  it('derives the channel endpoint the way Solid notifications define it', () => {
-    expect(notificationEndpointOf('https://pod.example/alice/'))
-      .toBe('https://pod.example/alice/.notifications/WebSocketChannel2023/');
-    // A Pod root without its trailing slash still points at the Pod, not at a sibling path.
-    expect(notificationEndpointOf('https://pod.example/alice'))
-      .toBe('https://pod.example/.notifications/WebSocketChannel2023/');
-  });
+
 });
 
 describe('reporting a Pod that cannot be watched', () => {

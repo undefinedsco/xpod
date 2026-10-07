@@ -66,6 +66,51 @@ describe('a delivery batch as a control record', () => {
     expect(outboundBatchKey(base)).not.toBe(outboundBatchKey({ ...base, origin: 'dave.example' }));
   });
 
+  it('preserves the explicit actor reference, including a named grant ref and version', () => {
+    const batch: MatrixOutboundBatch = {
+      ...BATCH,
+      actor: {
+        webId: 'https://alice.example/profile/card#me',
+        podUrl: 'https://pods.example/alice/',
+        taskCredential: { credentialRef: 'taskcred_9', version: 4 },
+      },
+    };
+    const decoded = decodeOutboundBatch(recordOf(batch));
+    expect(decoded).toEqual(batch);
+    // A reference, not a credential: no bearer/session material is ever persisted.
+    expect(JSON.stringify(recordOf(batch).metadata)).not.toMatch(/accessToken|clientSecret|dpop/iu);
+  });
+
+  it('refuses a present but malformed actor rather than downgrading its authority', () => {
+    const record = recordOf(BATCH);
+    const badActors: unknown[] = [
+      { webId: 42 },
+      { webId: '' },
+      { webId: 'https://alice.example/card#me', podUrl: 7 },
+      { webId: 'https://alice.example/card#me', taskCredential: 'grant-A' },
+      { webId: 'https://alice.example/card#me', taskCredential: { credentialRef: '' } },
+      { webId: 'https://alice.example/card#me', taskCredential: { credentialRef: 'grant-A', version: 0 } },
+      { webId: 'https://alice.example/card#me', taskCredential: { credentialRef: 'grant-A', version: 1.5 } },
+      { webId: 'https://alice.example/card#me', taskCredential: { ownerGrant: 'yes' } },
+      // `ownerGrant?: true` is the contract; a present `false` must not be read as the active grant.
+      { webId: 'https://alice.example/card#me', taskCredential: { ownerGrant: false } },
+      { webId: 'https://alice.example/card#me', taskCredential: { ownerGrant: 0 } },
+      { webId: 'https://alice.example/card#me', taskCredential: { credentialRef: 'grant-A', extra: 1 } },
+      null,
+    ];
+    for (const actor of badActors) {
+      expect(() => decodeOutboundBatch({ ...record, metadata: { ...record.metadata, actor } }), String(JSON.stringify(actor)))
+        .toThrow(MatrixError);
+    }
+  });
+
+  it('keeps the signed legacy path only when the actor field is entirely absent', () => {
+    const record = recordOf(BATCH);
+    const withoutActor = { ...record, metadata: { ...record.metadata } };
+    delete (withoutActor.metadata as Record<string, unknown>).actor;
+    expect(decodeOutboundBatch(withoutActor)).toEqual(BATCH);
+  });
+
   it('describes the batch as owed work, with the payload under the protocol namespace', () => {
     const encoded = encodeOutboundBatch(BATCH);
     expect(encoded.status).toBe('open');

@@ -43,6 +43,7 @@ export * from './document';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
+import { AuthorityETagHandler } from './storage/AuthorityETagHandler';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
 import { ClusterWebSocketConfigurator } from './http/ClusterWebSocketConfigurator';
 import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHandler';
@@ -85,6 +86,11 @@ import { createBandwidthThrottleTransform } from './util/stream/BandwidthThrottl
 import { UsageTrackingStore } from './storage/quota/UsageTrackingStore';
 import { EdgeNodeModeDetector } from './edge/EdgeNodeModeDetector';
 import { ClusterIdentifierStrategy } from './util/identifiers/ClusterIdentifierStrategy';
+import { HierarchicalReadWriteLocker } from './storage/HierarchicalReadWriteLocker';
+import { StrictAgentGroupAccessChecker } from './authorization/StrictAgentGroupAccessChecker';
+import { ObservationPathBasedReader } from './authorization/ObservationPathBasedReader';
+import { AgentReadObservation } from './authorization/AgentReadObservation';
+import { LockingResourceStore } from './storage/LockingResourceStore';
 import { CenterNodeRegistrationService } from './identity/CenterNodeRegistrationService';
 import { PodRoutingHttpHandler } from './http/PodRoutingHttpHandler';
 import { ReactAppViewHandler } from './identity/ReactAppViewHandler';
@@ -98,6 +104,8 @@ import { RdfVectorIndex } from './storage/rdf/RdfVectorIndex';
 import { PostgresRdfTextIndex } from './storage/rdf/PostgresRdfTextIndex';
 import { PostgresRdfVectorIndex } from './storage/rdf/PostgresRdfVectorIndex';
 import { RdfTermDictionary } from './storage/rdf/RdfTermDictionary';
+import { LocalPhysicalOperationService } from './storage/LocalPhysicalOperationService';
+export type { LocalPhysicalOperationSession } from './storage/LocalPhysicalOperationService';
 import { SolidRdfEngine } from './storage/rdf/SolidRdfEngine';
 import { LocalQleverNativeSparqlClient } from './storage/rdf/LocalQleverNativeSparqlClient';
 import { QleverSparqlEngine } from './storage/rdf/QleverSparqlEngine';
@@ -146,6 +154,20 @@ import {
   SqliteSolidFsSyncJournal,
 } from './solidfs/SolidFsSyncJournal';
 import { LocalRdfAuthorityRecoveryInitializer } from './solidfs/LocalRdfAuthorityRecoveryInitializer';
+import {
+  AuthorityExclusionError,
+  AuthorityExclusionTimeoutError,
+  AuthorityExclusionClosedError,
+  AuthorityExclusionBusyError,
+  AuthorityExclusionPoisonedError,
+  SqliteAuthorityExclusionGate,
+} from './storage/AuthorityExclusionGate';
+// The gate interface is exported so Components.js can resolve SqliteAuthorityExclusionGate's type.
+export type { AuthorityExclusionGate } from './storage/AuthorityExclusionGate';
+import {
+  AuthorityFreshnessService,
+  AuthorityPendingUnavailableError,
+} from './storage/AuthorityFreshnessService';
 import { ObservableResourceStore } from './storage/ObservableResourceStore';
 import { RdfSearchReconciliationIntentSink } from './search/RdfSearchIntentSink';
 
@@ -189,6 +211,7 @@ export { AppStaticAssetHandler } from './http/AppStaticAssetHandler';
 
 export {
   RepresentationPartialConvertingStore,
+  AuthorityETagHandler,
   MinioDataAccessor,
   SolidRdfDataAccessor,
   MixDataAccessor,
@@ -244,6 +267,11 @@ export {
   AcmeCertificateManager,
   EdgeNodeModeDetector,
   ClusterIdentifierStrategy,
+  HierarchicalReadWriteLocker,
+  StrictAgentGroupAccessChecker,
+  ObservationPathBasedReader,
+  AgentReadObservation,
+  LockingResourceStore,
   UsageTrackingStore,
   CenterNodeRegistrationService,
   PodRoutingHttpHandler,
@@ -261,6 +289,7 @@ export {
   PostgresRdfTextIndex,
   PostgresRdfVectorIndex,
   SolidRdfEngine,
+  LocalPhysicalOperationService,
   LocalQleverNativeSparqlClient,
   QleverSparqlEngine,
   RdfQuerySparqlEngine,
@@ -310,6 +339,15 @@ export {
   LocalRdfAuthorityRecoveryInitializer,
   ObservableResourceStore,
   RdfSearchReconciliationIntentSink,
+  // Authority exclusion and derived-fact freshness
+  AuthorityExclusionError,
+  AuthorityExclusionTimeoutError,
+  AuthorityExclusionClosedError,
+  AuthorityExclusionBusyError,
+  AuthorityExclusionPoisonedError,
+  SqliteAuthorityExclusionGate,
+  AuthorityFreshnessService,
+  AuthorityPendingUnavailableError,
 };
 
 export type {
@@ -319,3 +357,8 @@ export type {
 } from './storage/ObservableResourceStore';
 
 export { RdfHandlebarsTemplateEngine } from './util/templates/RdfHandlebarsTemplateEngine';
+
+export { LocalPhysicalParsingHttpHandler } from './http/LocalPhysicalParsingHttpHandler';
+
+export type { SqliteVectorStoreOptions } from './storage/vector/SqliteVectorStore';
+export type { VectorHttpHandlerOptions } from './http/vector/VectorHttpHandler';

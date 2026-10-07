@@ -111,11 +111,19 @@ describe('SparqlUpdateResourceStore', () => {
       await store.modifyResource(identifier, patch);
 
       expect(accessor.executeSparqlUpdate).toHaveBeenCalledTimes(1);
-      const executedQuery = accessor.executeSparqlUpdate.mock.calls[0][0];
+      const executedQuery = accessor.executeSparqlUpdate.mock.calls[0][0] as string;
 
-      // Integer literals should be quoted with datatype
-      expect(executedQuery).toMatch(/"30"/);
-      expect(executedQuery).toMatch(/"31"/);
+      // The public generator may emit an unquoted numeric literal; parse and assert the value/type
+      // rather than a specific surface form. Numeric literals must not become IRIs.
+      const { Parser } = await import('sparqljs');
+      const reparsed = new Parser().parse(executedQuery) as any;
+      const objects = reparsed.updates
+        .flatMap((update: any) => (update.insert ?? []).concat(update.delete ?? []))
+        .flatMap((entry: any) => entry.triples ?? [])
+        .map((triple: any) => triple.object);
+      const values = objects.filter((object: any) => object.termType === 'Literal').map((object: any) => object.value);
+      expect(values).toContain('30');
+      expect(values).toContain('31');
       // Should NOT contain angle brackets around literal values
       expect(executedQuery).not.toContain('<30>');
       expect(executedQuery).not.toContain('<31>');
@@ -193,6 +201,31 @@ describe('SparqlUpdateResourceStore', () => {
       // IRIs should have angle brackets
       expect(executedQuery).toContain('<http://example.org/bob>');
       expect(executedQuery).toContain('<http://example.org/charlie>');
+    });
+    it('round-trips quotes, Unicode, newlines and backslashes through the public parser', async() => {
+      // The previous bespoke serializer triple-quoted these values but never escaped existing
+      // backslashes, producing invalid escape sequences that the native parser rejected with a 500.
+      const { Parser } = await import('sparqljs');
+      const value = 'quote" unicode \u2603 back\\slash line\nnext';
+      const sparql = `
+        INSERT DATA {
+          <http://example.org/resource> <https://schema.org/name> ${JSON.stringify(value)} .
+        }
+      `;
+
+      const patch = createPatch(sparql);
+      const identifier = { path: 'http://localhost:3000/test/resource' };
+
+      await store.modifyResource(identifier, patch);
+
+      expect(accessor.executeSparqlUpdate).toHaveBeenCalledTimes(1);
+      const executedQuery = accessor.executeSparqlUpdate.mock.calls[0][0] as string;
+      // The normalized update must be accepted by the public parser and preserve the exact value.
+      const reparsed = new Parser().parse(executedQuery) as any;
+      const values = reparsed.updates.flatMap((update: any) =>
+        (update.insert ?? []).flatMap((entry: any) => entry.triples ?? []))
+        .map((triple: any) => triple.object.value);
+      expect(values).toContain(value);
     });
   });
 

@@ -98,6 +98,29 @@ describe('received events', () => {
     expect(rows.get(messageResource as never)!.filter((row: any) => row.id === first.resourceId)).toHaveLength(1);
   });
 
+  it('refuses a same-resource event whose content differs instead of returning the first (G03)', async () => {
+    const { store, context, rows, room, invite } = await roomWithInvitedRemote();
+    const remote = remoteServer();
+    // The writer names the event and gives it a time; both are part of the row's resource id, so the
+    // conflicting write reaches the stored row through the fast path — the one that used to return
+    // the first body without comparing sender/type/state_key/content.
+    const received = {
+      ...remote.sign({
+        type: 'm.room.message', room_id: room.roomId, sender: REMOTE_BOB, origin_server_ts: NOW - 100,
+        content: { body: 'first' }, prev_events: [ invite.eventId ], auth_events: [ invite.eventId ],
+      }),
+      event_id: '$receive-conflict',
+    };
+    const first = await store.acceptReceivedEvent({ event: received as Record<string, unknown>, context });
+
+    await expect(store.acceptReceivedEvent({
+      event: { ...received, content: { body: 'conflicting' } } as Record<string, unknown>, context,
+    })).rejects.toMatchObject({ status: 409 });
+
+    expect(rows.get(messageResource as never)!.filter((row: any) => row.id === first.resourceId)).toHaveLength(1);
+    expect((storedEvent(rows, '$receive-conflict').event as Record<string, any>).content.body).toBe('first');
+  });
+
   it('does not attribute a received event to the Pod owner', async () => {
     const { store, context, room, invite } = await roomWithInvitedRemote();
     const remote = remoteServer();

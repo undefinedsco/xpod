@@ -1,6 +1,7 @@
 import { getLoggerFor } from 'global-logger-factory';
 import type { ResourceIdentifier } from '@solid/community-server';
 import { SingleRootIdentifierStrategy } from '@solid/community-server';
+import { ensureTrailingSlash } from '@solid/community-server/dist/util/PathUtil';
 
 /**
  * MultiDomainIdentifierStrategy - 支持多个域名的 IdentifierStrategy
@@ -38,6 +39,19 @@ export class MultiDomainIdentifierStrategy extends SingleRootIdentifierStrategy 
       : `Identifier ${identifier.path} is not supported by any domain`);
 
     return supported;
+  }
+
+  /**
+   * Every configured base URL is a root, not just the primary one.
+   *
+   * The inherited single-root check only treats the primary URL as a root, so a resource on a
+   * secondary host walked past its own host root into an invalid `https://` parent. With the
+   * hierarchical locker resolving the whole ancestor chain (and failing closed when it cannot), that
+   * would reject legitimate secondary-host requests; this makes each base URL terminate the chain.
+   */
+  public override isRootContainer(identifier: ResourceIdentifier): boolean {
+    const normalized = ensureTrailingSlash(identifier.path);
+    return this.getAllBaseUrls().some(baseUrl => normalized === ensureTrailingSlash(baseUrl));
   }
 
   /**

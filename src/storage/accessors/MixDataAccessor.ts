@@ -1,4 +1,8 @@
+import type { LocalPhysicalOperationService } from '../LocalPhysicalOperationService';
+import { deliverPhysicalResult, iteratePhysicalResult, observePhysicalStream, runPhysicalOperation } from '../LocalPhysicalStreamLifetime';
 import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'stream';
 import { getLoggerFor } from 'global-logger-factory';
@@ -39,6 +43,11 @@ import {
 import { createRdfEntityTextChunks } from '../rdf/RdfTextProjection';
 import { serializeRdfXml } from '../rdf/RdfXmlSerializer';
 import { rdfAccessGraphAllowed, type RdfAccessScope } from '../rdf/RdfAccessScope';
+import {
+  clearDocumentVersion,
+  computeDocumentVersion,
+  writeDocumentVersion,
+} from '../rdf/DocumentVersion';
 import type {
   RdfPreparedUpdateDelta,
   RdfSourceInput,
@@ -51,8 +60,23 @@ import type {
 } from '../rdf/types';
 import { metadataRequestContext } from '../MetadataRequestContext';
 import { isDirectDataRead } from '../ResourceReadContext';
+import { assertCurrentLockOwnership, currentLockCancellationSignal } from '../locking/LockExecutionContext';
+import { captureAuthorityDependency } from '../AuthoritySnapshotContext';
+import { authorityResourceTracker } from '../AuthorityResourceTracker';
 import type { SparqlVoidOptions } from '../sparql/SubgraphQueryEngine';
 import type { SolidFsChange, SolidFsManifest } from '../../solidfs/types';
+import {
+  AuthorityFreshnessService,
+  AuthorityPendingFreshnessProvider,
+  AuthorityPendingUnavailableError,
+  hashAuthoritySource,
+  type AuthorityFreshnessBackend,
+  type AuthorityFreshnessProvider,
+} from '../AuthorityFreshnessService';
+
+interface AuthorityFreshnessAttachable {
+  setAuthorityFreshnessProvider?(provider: AuthorityFreshnessProvider): void;
+}
 import type { RdfSearchReconciliationIntentSink } from '../../search/RdfSearchIntentSink';
 
 export interface LocalRdfDocument {
@@ -81,6 +105,8 @@ export interface LocalRdfIndexAccessor {
 }
 
 export interface LocalRdfSyncOptions {
+  /** Internal recovery reads an already retained authority file and rebuilds derived state only. */
+  retainedAuthorityFile?: boolean;
   source?: string;
   workspace?: string;
   localPath?: string;
@@ -110,6 +136,8 @@ export interface SourceScopedStructuredRdfAccessor {
 
 export interface LocalRdfAuthorityJournalOperation {
   id: string;
+  change?: SolidFsChange;
+  afterHash?: string;
 }
 
 export interface LocalRdfAuthorityJournal {
@@ -122,6 +150,16 @@ export interface LocalRdfAuthorityJournal {
   markRetryableFailure(id: string, error: unknown): Promise<void>;
   markReconcileRequired(id: string, reason: string): Promise<void>;
   markFailedPermanent(id: string, error: unknown): Promise<void>;
+  /** Optional pre-write pending bookkeeping used by the authority freshness contract. */
+  recordAuthorityPending?(
+    change: SolidFsChange,
+    workspace: SolidFsManifest,
+    sourceVersion: string,
+    txId?: string,
+  ): LocalRdfAuthorityJournalOperation;
+  attachAuthorityPendingHash?(id: string, afterHash: string): void;
+  clearAuthorityPending?(id: string): boolean;
+  listAuthorityPending?(path?: string): LocalRdfAuthorityJournalOperation[];
 }
 
 interface LocalRdfAuthorityPatch {
@@ -176,6 +214,7 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     rdfFileMapper?: FileIdentifierMapper,
     localRdfAuthorityJournal?: LocalRdfAuthorityJournal,
     rdfSearchIntentSink?: RdfSearchReconciliationIntentSink,
+    private readonly operationService?: LocalPhysicalOperationService,
   ) {
     this.structuredDataAccessor = structuredDataAccessor;
     this.unstructuredDataAccessor = unstructuredDataAccessor;
@@ -186,6 +225,16 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     this.mirrorContainersToUnstructured = mirrorContainersToUnstructured;
     this.textSearchIndexingEnabled = textSearchIndexingEnabled;
     this.rdfSearchIntentSink = rdfSearchIntentSink;
+    // The configured authority journal is the single source of derived-index freshness. Wire it into
+    // the structured engine so native/conditional reads observe the same state as ordinary Mix reads.
+    if (
+      localRdfAuthorityJournal
+      && typeof (localRdfAuthorityJournal as Partial<AuthorityFreshnessBackend>).listAuthorityPending === 'function'
+    ) {
+      const freshness = new AuthorityFreshnessService(localRdfAuthorityJournal as unknown as AuthorityFreshnessBackend);
+      (structuredDataAccessor as AuthorityFreshnessAttachable)
+        .setAuthorityFreshnessProvider?.(new AuthorityPendingFreshnessProvider(freshness));
+    }
   }
 
   /**
@@ -203,21 +252,24 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
   }
 
   public async getData(identifier: ResourceIdentifier): Promise<Guarded<Readable>> {
-    const metadata = await this.getMetadata(identifier);
-    if (this.isUnstructured(metadata)) {
-      // When presigned redirect is enabled and the unstructured accessor supports it,
-      // generate a presigned URL and throw FoundHttpError to trigger a 302 redirect.
-      if (this.presignedRedirectEnabled && !isDirectDataRead()) {
-        const accessor = this.unstructuredDataAccessor as { getPresignedUrl?: (id: ResourceIdentifier, expires?: number) => Promise<string> };
-        if (typeof accessor.getPresignedUrl === 'function') {
-          const presignedUrl = await accessor.getPresignedUrl(identifier);
-          this.logger.debug(`Presigned redirect: ${identifier.path}`);
-          throw new FoundHttpError(presignedUrl);
+    return deliverPhysicalResult(this.operationService, async () => {
+      captureAuthorityDependency(identifier.path, identifier.path);
+      const metadata = await this.getMetadata(identifier);
+      if (this.isUnstructured(metadata)) {
+        // When presigned redirect is enabled and the unstructured accessor supports it,
+        // generate a presigned URL and throw FoundHttpError to trigger a 302 redirect.
+        if (this.presignedRedirectEnabled && !isDirectDataRead()) {
+          const accessor = this.unstructuredDataAccessor as { getPresignedUrl?: (id: ResourceIdentifier, expires?: number) => Promise<string> };
+          if (typeof accessor.getPresignedUrl === 'function') {
+            const presignedUrl = await accessor.getPresignedUrl(identifier);
+            this.logger.debug(`Presigned redirect: ${identifier.path}`);
+            throw new FoundHttpError(presignedUrl);
+          }
         }
+        return await this.unstructuredDataAccessor.getData(identifier);
       }
-      return await this.unstructuredDataAccessor.getData(identifier);
-    }
-    return await this.structuredDataAccessor.getData(identifier);
+      return await this.structuredDataAccessor.getData(identifier);
+    }, value => observePhysicalStream(value));
   }
 
   /**
@@ -228,89 +280,175 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
    * that need a real Turtle/JSON-LD byte stream.
    */
   public async getLocalRdfDocument(identifier: ResourceIdentifier): Promise<LocalRdfDocument> {
-    if (isContainerIdentifier(identifier)) {
-      throw new NotFoundHttpError();
-    }
+    return deliverPhysicalResult(this.operationService, async () => {
+      if (isContainerIdentifier(identifier)) {
+        throw new NotFoundHttpError();
+      }
 
-    if (this.isByLineRdfIdentifier(identifier)) {
+      if (this.isByLineRdfIdentifier(identifier)) {
+        try {
+          const document: LocalRdfDocument = {
+            data: await this.rdfFileDataAccessor.getData(identifier),
+            metadata: await this.getExistingLocalRdfMetadata(identifier),
+          };
+          return await this.qualifyLocalRdfDocument(identifier, document);
+        } catch (error) {
+          if (!NotFoundHttpError.isInstance(error)) {
+            throw error;
+          }
+        }
+      }
+
+      const metadata = await this.getMetadata(identifier);
+      if (!this.isLocalMirroredRdf(identifier, metadata)) {
+        throw new NotFoundHttpError();
+      }
+
       try {
-        return {
+        const document: LocalRdfDocument = {
           data: await this.rdfFileDataAccessor.getData(identifier),
-          metadata: await this.getExistingLocalRdfMetadata(identifier),
+          metadata: await this.getLocalRdfMetadata(identifier, metadata),
         };
+        return await this.qualifyLocalRdfDocument(identifier, document);
       } catch (error) {
         if (!NotFoundHttpError.isInstance(error)) {
           throw error;
         }
       }
-    }
 
-    const metadata = await this.getMetadata(identifier);
-    if (!this.isLocalMirroredRdf(identifier, metadata)) {
-      throw new NotFoundHttpError();
-    }
+      await this.refreshLocalRdfMirror(identifier);
 
-    try {
-      return {
+      return await this.qualifyLocalRdfDocument(identifier, {
         data: await this.rdfFileDataAccessor.getData(identifier),
         metadata: await this.getLocalRdfMetadata(identifier, metadata),
-      };
-    } catch (error) {
-      if (!NotFoundHttpError.isInstance(error)) {
-        throw error;
-      }
-    }
-
-    await this.refreshLocalRdfMirror(identifier);
-
-    return {
-      data: await this.rdfFileDataAccessor.getData(identifier),
-      metadata: await this.getLocalRdfMetadata(identifier, metadata),
-    };
+      });
+    }, value => observePhysicalStream(value.data));
   }
 
   public async getMetadata(identifier: ResourceIdentifier): Promise<RepresentationMetadata> {
-    const cache = metadataRequestContext.getStore()?.metadataCache;
-    const cacheKey = identifier.path;
-    const cached = cache?.get(cacheKey);
-    if (cached) {
-      if (cached.kind === 'miss') {
-        throw new NotFoundHttpError();
-      }
-      return new RepresentationMetadata(cached.metadata);
-    }
-
-    try {
-      const metadata = await this.structuredDataAccessor.getMetadata(identifier);
-
-      if (!metadata.contentType) {
-        metadata.contentType = INTERNAL_QUADS;
+    const execute = async () => {
+      // Capture the authority dependency before any memo/cache/404 so a warm hit cannot hide a
+      // concurrent ACL/ACR mutation during an authorization attempt.
+      captureAuthorityDependency(identifier.path, identifier.path);
+      await this.ensureDerivedFactsFresh(identifier);
+      const cache = metadataRequestContext.getStore()?.metadataCache;
+      const cacheKey = identifier.path;
+      const cached = cache?.get(cacheKey);
+      if (cached) {
+        if (cached.kind === 'miss') {
+          throw new NotFoundHttpError();
+        }
+        return await this.attachDocumentVersion(identifier, new RepresentationMetadata(cached.metadata));
       }
 
-      cache?.set(cacheKey, { kind: 'hit', metadata: new RepresentationMetadata(metadata) });
-      return metadata;
-    } catch (error) {
-      if (NotFoundHttpError.isInstance(error)) {
-        cache?.set(cacheKey, { kind: 'miss' });
+      try {
+        const metadata = await this.structuredDataAccessor.getMetadata(identifier);
+
+        if (!metadata.contentType) {
+          metadata.contentType = INTERNAL_QUADS;
+        }
+
+        cache?.set(cacheKey, { kind: 'hit', metadata: new RepresentationMetadata(metadata) });
+        return await this.attachDocumentVersion(identifier, metadata);
+      } catch (error) {
+        if (NotFoundHttpError.isInstance(error)) {
+          cache?.set(cacheKey, { kind: 'miss' });
+        }
+        throw error;
       }
-      throw error;
-    }
+    };
+    return this.operationService ? this.operationService.run(execute) : execute();
   }
 
   public async* getChildren(identifier: ResourceIdentifier): AsyncIterableIterator<RepresentationMetadata> {
-    // Children metadata is stored in the structured accessor
-    yield* this.structuredDataAccessor.getChildren(identifier);
+    const source = async function* (this: MixDataAccessor) {
+      // A pending source anywhere in this container's subtree may hide a child; rebuild the affected
+      // retained files or refuse rather than return a possibly stale or incomplete listing.
+      await this.ensureDerivedFactsFresh(identifier, { subtree: true });
+      // Children metadata is stored in the structured accessor
+      yield* this.structuredDataAccessor.getChildren(identifier);
+    };
+    yield* iteratePhysicalResult(this.operationService, () => source.call(this));
+  }
+
+  /**
+   * Generic derived-index freshness check. If the exact-source pending token for this resource is
+   * still present, rebuild the derived facts from the complete authority file; on success clear the
+   * exact token; on failure report explicit retryable unavailability (never a false 404).
+   */
+  private async ensureDerivedFactsFresh(
+    identifier: ResourceIdentifier,
+    options: { subtree?: boolean } = {},
+  ): Promise<void> {
+    const journal = this.localRdfAuthorityJournal;
+    const list = journal?.listAuthorityPending;
+    if (!journal || typeof list !== 'function') {
+      return;
+    }
+    const scope = identifier.path;
+    const descendantPrefix = scope.endsWith('/') ? scope : `${scope}/`;
+    const pending = list.call(journal).filter((op) => {
+      const resource = op.change?.resource;
+      if (resource === scope || op.change?.path === scope) {
+        return true;
+      }
+      // A container listing must observe pending descendants, not just an exact-resource token.
+      return Boolean(options.subtree && typeof resource === 'string' && resource.startsWith(descendantPrefix));
+    });
+    if (pending.length === 0) {
+      return;
+    }
+    for (const op of pending) {
+      const target = op.change?.resource ?? op.change?.path;
+      if (typeof target !== 'string' || target.length === 0) {
+        continue;
+      }
+      try {
+        await this.rebuildDerivedFromAuthorityFile({ path: target });
+        journal.attachAuthorityPendingHash?.(op.id, '');
+        journal.clearAuthorityPending?.(op.id);
+      } catch (error) {
+        // Reference only the requested scope; never leak unrelated pending resource paths.
+        this.logger.warn(`Derived facts still pending for a requested read scope: ${String(error)}`);
+        throw new AuthorityPendingUnavailableError(
+          `Derived facts for ${scope} are pending against the authority file and could not be rebuilt`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Rebuild derived facts from the actual complete authority file. Never reverse-repairs the file
+   * from an old index/payload.
+   */
+  private async rebuildDerivedFromAuthorityFile(identifier: ResourceIdentifier): Promise<void> {
+    const source = await this.rdfFileDataAccessor.getData(identifier);
+    const text = await this.readStreamText(source);
+    const contentType = this.localRdfContentType(identifier);
+    const quads = await this.parseLocalRdf(identifier, text, contentType);
+    await this.writeStructuredRdfIndex(identifier, quads, new RepresentationMetadata(identifier), { contentType });
+    if (this.textSearchIndexingEnabled) {
+      await this.syncTextSearchIndex(identifier, text, { contentType }, quads);
+    }
+    this.invalidateMetadataCache(identifier);
   }
 
   public async writeContainer(
     identifier: ResourceIdentifier,
     metadata: RepresentationMetadata,
   ): Promise<void> {
-    if (this.mirrorContainersToUnstructured && this.isUnstructured(metadata)) {
-      await this.unstructuredDataAccessor.writeContainer(identifier, metadata);
-    }
-    await this.structuredDataAccessor.writeContainer(identifier, metadata);
-    this.invalidateMetadataCache(identifier);
+    const execute = async () => {
+      await assertCurrentLockOwnership();
+      // The lock is held (asserted above); only now is this an actual authority mutation.
+      await authorityResourceTracker.runMutation(identifier.path, async() => {
+        if (this.mirrorContainersToUnstructured && this.isUnstructured(metadata)) {
+          await this.unstructuredDataAccessor.writeContainer(identifier, metadata);
+        }
+        await this.structuredDataAccessor.writeContainer(identifier, metadata);
+        this.invalidateMetadataCache(identifier);
+      });
+    };
+    return this.operationService ? this.operationService.run(execute) : execute();
   }
 
   public async writeDocument(
@@ -318,37 +456,53 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     data: Guarded<Readable>,
     metadata: RepresentationMetadata,
   ): Promise<void> {
-    if (this.isUnstructured(metadata)) {
-      await this.writeUnstructuredDocument(identifier, data, metadata);
-      this.invalidateMetadataCache(identifier);
-      return;
-    }
-    await this.writeRdfDocument(identifier, data, metadata);
-    this.invalidateMetadataCache(identifier);
+    const execute = async () => {
+      await authorityResourceTracker.runMutation(identifier.path, async() => {
+        if (this.isUnstructured(metadata)) {
+          await this.writeUnstructuredDocument(identifier, data, metadata);
+          this.invalidateMetadataCache(identifier);
+          return;
+        }
+        await this.writeRdfDocument(identifier, data, metadata);
+        this.invalidateMetadataCache(identifier);
+      });
+    };
+    return runPhysicalOperation(this.operationService, execute, data);
   }
 
   public async writeMetadata(identifier: ResourceIdentifier, metadata: RepresentationMetadata): Promise<void> {
-    // Metadata always goes to structured storage
-    await this.structuredDataAccessor.writeMetadata(identifier, metadata);
-    this.invalidateMetadataCache(identifier);
+    const execute = async () => {
+      // Metadata always goes to structured storage
+      await assertCurrentLockOwnership();
+      await authorityResourceTracker.runMutation(identifier.path, async() => {
+        await this.structuredDataAccessor.writeMetadata(identifier, metadata);
+        this.invalidateMetadataCache(identifier);
+      });
+    };
+    return this.operationService ? this.operationService.run(execute) : execute();
   }
 
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
-    const metadata = await this.getMetadata(identifier);
-    
-    // RDF by-line resources are mirrored to local file storage so shell tools
-    // can operate on real files; remove that mirror together with the index.
-    if (this.isLocalMirroredRdf(identifier, metadata)) {
-      await this.deleteRdfFileResourceIfPresent(identifier);
-      await this.deleteSearchIndexes(identifier);
-    } else if (this.isUnstructured(metadata)) {
-      await this.deleteUnstructuredResourceIfPresent(identifier);
-      await this.deleteSearchIndexes(identifier);
-    }
-    
-    // Always delete from structured storage (contains metadata)
-    await this.structuredDataAccessor.deleteResource(identifier);
-    this.invalidateMetadataCache(identifier);
+    const execute = async () => {
+      const metadata = await this.getMetadata(identifier);
+      await assertCurrentLockOwnership();
+      await authorityResourceTracker.runMutation(identifier.path, async() => {
+        // RDF by-line resources are mirrored to local file storage so shell tools
+        // can operate on real files; remove that mirror together with the index.
+        if (this.isLocalMirroredRdf(identifier, metadata)) {
+          await this.deleteRdfFileResourceIfPresent(identifier);
+          await this.deleteSearchIndexes(identifier);
+        } else if (this.isUnstructured(metadata)) {
+          await this.deleteUnstructuredResourceIfPresent(identifier);
+          await this.deleteSearchIndexes(identifier);
+        }
+
+        // Always delete from structured storage (contains metadata)
+        await this.structuredDataAccessor.deleteResource(identifier);
+        this.invalidateMetadataCache(identifier);
+      });
+    };
+    return this.operationService ? this.operationService.run(execute) : execute();
   }
 
   /**
@@ -363,21 +517,30 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     accessScope?: RdfAccessScope,
     options?: SparqlVoidOptions,
   ): Promise<void> {
-    if (!baseIri) {
-      throw new UnsupportedSparqlQueryError(
-        'Pod SPARQL UPDATE requires a server-owned base IRI',
-        { code: 'rdf.sparql.update_authority_required' },
-      );
-    }
-    const prepared = await this.prepareNativeRdfSparqlUpdate(query, baseIri, accessScope, options);
-    const writtenIdentifiers = await this.executePreparedRdfSparqlUpdate(
-      prepared,
-      baseIri,
-      accessScope,
-    );
-    for (const writtenIdentifier of writtenIdentifiers) {
-      this.invalidateMetadataCache(writtenIdentifier);
-    }
+    const execute = async () => {
+      if (!baseIri) {
+        throw new UnsupportedSparqlQueryError(
+          'Pod SPARQL UPDATE requires a server-owned base IRI',
+          { code: 'rdf.sparql.update_authority_required' },
+        );
+      }
+      // Register the mutation only once the server-owned base IRI is known and the caller's scope
+      // lock is held; preparation, persist and rollback all settle inside this boundary. The directory
+      // fence is intentionally preserved; the exact-resource fence inside
+      // `writeLocalRdfAuthorityPatches` additionally invalidates only the resources this delta writes.
+      await authorityResourceTracker.runMutation(baseIri, async() => {
+        const prepared = await this.prepareNativeRdfSparqlUpdate(query, baseIri, accessScope, options);
+        const writtenIdentifiers = await this.executePreparedRdfSparqlUpdate(
+          prepared,
+          baseIri,
+          accessScope,
+        );
+        for (const writtenIdentifier of writtenIdentifiers) {
+          this.invalidateMetadataCache(writtenIdentifier);
+        }
+      });
+    };
+    return this.operationService ? this.operationService.run(execute) : execute();
   }
 
   private async prepareNativeRdfSparqlUpdate(
@@ -403,13 +566,19 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
         },
       );
     }
-    const prepareOptions = options
+    await assertCurrentLockOwnership();
+    const leaseSignal = currentLockCancellationSignal();
+    const signal = leaseSignal && options?.signal
+      ? AbortSignal.any([ leaseSignal, options.signal ])
+      : leaseSignal ?? options?.signal;
+    const prepareOptions = options || signal
       ? {
-          ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-          ...(options.signal ? { signal: options.signal } : {}),
+          ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+          ...(signal ? { signal } : {}),
         }
       : undefined;
     const prepared = await accessor.prepareSparqlUpdate(query, baseIri, accessScope, prepareOptions);
+    await assertCurrentLockOwnership();
     if (!prepared) {
       throw new UnsupportedSparqlQueryError(
         'Native QLever did not return a prepared update delta',
@@ -508,52 +677,78 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     }
   }
 
-  private async writeLocalRdfAuthority(identifier: ResourceIdentifier, quads: Quad[]): Promise<void> {
+  private async writeLocalRdfAuthority(
+    identifier: ResourceIdentifier,
+    quads: Quad[],
+    verifyLockOwnership = false,
+  ): Promise<void> {
+    // Rollback must finish under the still-held local lock even after lease loss.
+    if (verifyLockOwnership) await assertCurrentLockOwnership();
     await this.ensureRdfFileParentContainers(identifier);
+    const text = await this.serializeQuadsForLocalFile(identifier, quads);
+    if (verifyLockOwnership) await assertCurrentLockOwnership();
     await this.rdfFileDataAccessor.writeDocument(
       identifier,
-      guardStream(Readable.from([ await this.serializeQuadsForLocalFile(identifier, quads) ])),
+      guardStream(Readable.from([ text ])),
       this.createLocalRdfMetadata(identifier, new RepresentationMetadata(identifier)),
     );
   }
 
   private async writeLocalRdfAuthorityPatches(patches: LocalRdfAuthorityPatch[]): Promise<void> {
-    const applied: LocalRdfAuthorityPatch[] = [];
-    const journalPatches: LocalRdfAuthorityJournalPatch[] = [];
-    const journalDrafts = await this.prepareLocalRdfAuthorityJournalPatches(patches);
+    await assertCurrentLockOwnership();
+    // Invalidate exactly the resources this prepared delta actually writes — never the `baseIri`
+    // directory. A snapshot of the changed ACL/ACR must observe `active:true` from before the first
+    // file/index mutation until rollback settles, so a concurrent authorization cannot commit a
+    // stale decision. Deduplicate: one resource written by several graph deltas is one authority.
+    const changedResources = [ ...new Set(patches.map((patch) => patch.identifier.path)) ];
+    for (const resource of changedResources) {
+      authorityResourceTracker.beginMutation(resource);
+    }
     try {
-      for (let index = 0; index < patches.length; index += 1) {
-        const patch = patches[index];
-        const authorityQuads = patch.nextQuads.map((quad) => this.toDefaultGraphQuad(quad));
-        await this.writeLocalRdfAuthority(patch.identifier, authorityQuads);
-        applied.push(patch);
-        const operation = await this.recordLocalRdfAuthorityJournalPatch(journalDrafts[index]);
-        if (operation) {
-          journalPatches.push({ patch, operation });
+      const applied: LocalRdfAuthorityPatch[] = [];
+      const journalPatches: LocalRdfAuthorityJournalPatch[] = [];
+      const journalDrafts = await this.prepareLocalRdfAuthorityJournalPatches(patches);
+      try {
+        for (let index = 0; index < patches.length; index += 1) {
+          const patch = patches[index];
+          const authorityQuads = patch.nextQuads.map((quad) => this.toDefaultGraphQuad(quad));
+          await this.writeLocalRdfAuthority(patch.identifier, authorityQuads, true);
+          applied.push(patch);
+          const operation = await this.recordLocalRdfAuthorityJournalPatch(journalDrafts[index]);
+          if (operation) {
+            journalPatches.push({ patch, operation });
+          }
         }
-      }
 
-      for (const patch of applied) {
-        const authorityQuads = patch.nextQuads.map((quad) => this.toDefaultGraphQuad(quad));
-        await this.writeStructuredRdfIndex(patch.identifier, authorityQuads, new RepresentationMetadata(patch.identifier));
-        await this.syncTextSearchIndex(
-          patch.identifier,
-          await this.serializeQuadsForLocalFile(patch.identifier, authorityQuads),
-          {},
-          authorityQuads,
-        );
-      }
+        for (const patch of applied) {
+          const authorityQuads = patch.nextQuads.map((quad) => this.toDefaultGraphQuad(quad));
+          await this.writeStructuredRdfIndex(patch.identifier, authorityQuads, new RepresentationMetadata(patch.identifier));
+          await this.syncTextSearchIndex(
+            patch.identifier,
+            await this.serializeQuadsForLocalFile(patch.identifier, authorityQuads),
+            {},
+            authorityQuads,
+          );
+        }
 
-      for (const journalPatch of journalPatches) {
-        await this.localRdfAuthorityJournal?.markDone(journalPatch.operation.id);
+        for (const journalPatch of journalPatches) {
+          await this.localRdfAuthorityJournal?.markDone(journalPatch.operation.id);
+        }
+      } catch (error) {
+        await this.markLocalRdfAuthorityJournalFailure(journalPatches, error);
+        const rollbackFailures = await this.rollbackLocalRdfAuthorityPatches(applied);
+        if (rollbackFailures.length === 0) {
+          await this.markLocalRdfAuthorityRollbackComplete(journalPatches, error);
+        }
+        throw error;
       }
-    } catch (error) {
-      await this.markLocalRdfAuthorityJournalFailure(journalPatches, error);
-      const rollbackFailures = await this.rollbackLocalRdfAuthorityPatches(applied);
-      if (rollbackFailures.length === 0) {
-        await this.markLocalRdfAuthorityRollbackComplete(journalPatches, error);
+    } finally {
+      // Settle the exact resources only after the file/index writes, journal bookkeeping and any
+      // rollback have all finished, so neither the committed state nor a rolled-back state is ever
+      // observed as a fresh authority mid-flight.
+      for (const resource of changedResources) {
+        authorityResourceTracker.endMutation(resource);
       }
-      throw error;
     }
   }
 
@@ -721,52 +916,58 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     contentType?: string,
     options?: LocalRdfSyncOptions,
   ): Promise<void> {
-    // CSS maps Turtle files such as profile/card$.ttl to extensionless URLs.
-    // Recovery already supplies the authority file's RDF content type.
-    if (!isRdfDocumentContentType(contentType) && !this.isRdfDocumentIdentifier(identifier)) {
-      throw new Error(`Cannot sync non RDF document into RDF index: ${identifier.path}`);
-    }
+    const execute = async () => {
+      // CSS maps Turtle files such as profile/card$.ttl to extensionless URLs.
+      // Recovery already supplies the authority file's RDF content type.
+      if (!isRdfDocumentContentType(contentType) && !this.isRdfDocumentIdentifier(identifier)) {
+        throw new Error(`Cannot sync non RDF document into RDF index: ${identifier.path}`);
+      }
 
-    const source = data ?? await this.rdfFileDataAccessor.getData(identifier);
-    const localContentType = contentType ?? this.localRdfContentType(identifier);
-    const text = await this.readStreamText(source);
-    if (data) {
-      await this.ensureRdfFileParentContainers(identifier);
-      const localMetadata = this.createLocalRdfMetadata(identifier, new RepresentationMetadata(identifier));
-      localMetadata.contentType = localContentType;
-      await this.rdfFileDataAccessor.writeDocument(
-        identifier,
-        guardStream(Readable.from([ text ])),
-        localMetadata,
-      );
-    }
-    const quads = await this.parseLocalRdf(identifier, text, localContentType);
-    await this.writeStructuredRdfIndex(identifier, quads, new RepresentationMetadata(identifier), {
-      ...options,
-      contentType: localContentType,
-    });
-    await this.syncTextSearchIndex(identifier, text, {
-      ...options,
-      contentType: localContentType,
-    }, quads);
-    this.invalidateMetadataCache(identifier);
+      const source = data ?? await this.rdfFileDataAccessor.getData(identifier);
+      const localContentType = contentType ?? this.localRdfContentType(identifier);
+      const text = await this.readStreamText(source);
+      if (data && !options?.retainedAuthorityFile) {
+        await this.ensureRdfFileParentContainers(identifier);
+        const localMetadata = this.createLocalRdfMetadata(identifier, new RepresentationMetadata(identifier));
+        localMetadata.contentType = localContentType;
+        await this.rdfFileDataAccessor.writeDocument(
+          identifier,
+          guardStream(Readable.from([ text ])),
+          localMetadata,
+        );
+      }
+      const quads = await this.parseLocalRdf(identifier, text, localContentType);
+      await this.writeStructuredRdfIndex(identifier, quads, new RepresentationMetadata(identifier), {
+        ...options,
+        contentType: localContentType,
+      });
+      await this.syncTextSearchIndex(identifier, text, {
+        ...options,
+        contentType: localContentType,
+      }, quads);
+      this.invalidateMetadataCache(identifier);
+    };
+    return runPhysicalOperation(this.operationService, execute, data);
   }
 
   public async deleteLocalRdfIndex(identifier: ResourceIdentifier): Promise<void> {
-    try {
-      const sourceScopedAccessor = this.sourceScopedStructuredAccessor();
-      if (sourceScopedAccessor) {
-        await sourceScopedAccessor.deleteRdfSourceDocument(identifier);
-      } else {
-        await this.structuredDataAccessor.deleteResource(identifier);
+    const execute = async () => {
+      try {
+        const sourceScopedAccessor = this.sourceScopedStructuredAccessor();
+        if (sourceScopedAccessor) {
+          await sourceScopedAccessor.deleteRdfSourceDocument(identifier);
+        } else {
+          await this.structuredDataAccessor.deleteResource(identifier);
+        }
+        await this.deleteSearchIndexes(identifier);
+        this.invalidateMetadataCache(identifier);
+      } catch (error) {
+        if (!NotFoundHttpError.isInstance(error)) {
+          throw error;
+        }
       }
-      await this.deleteSearchIndexes(identifier);
-      this.invalidateMetadataCache(identifier);
-    } catch (error) {
-      if (!NotFoundHttpError.isInstance(error)) {
-        throw error;
-      }
-    }
+    };
+    return this.operationService ? this.operationService.run(execute) : execute();
   }
 
   public async moveLocalRdfIndex(
@@ -774,21 +975,24 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     nextIdentifier: ResourceIdentifier,
     options: LocalRdfMoveOptions = {},
   ): Promise<number> {
-    const sourceScopedAccessor = this.sourceScopedStructuredAccessor();
-    if (!sourceScopedAccessor?.moveRdfSourceDocument) {
-      return 0;
-    }
+    const execute = async () => {
+      const sourceScopedAccessor = this.sourceScopedStructuredAccessor();
+      if (!sourceScopedAccessor?.moveRdfSourceDocument) {
+        return 0;
+      }
 
-    const moved = await sourceScopedAccessor.moveRdfSourceDocument(
-      options.previousSource ?? previousIdentifier.path,
-      this.rdfSourceInput(nextIdentifier, options),
-    );
-    if (moved > 0) {
-      await this.moveSearchIndexes(previousIdentifier, nextIdentifier, options, sourceScopedAccessor);
-      this.invalidateMetadataCache(previousIdentifier);
-      this.invalidateMetadataCache(nextIdentifier);
-    }
-    return moved;
+      const moved = await sourceScopedAccessor.moveRdfSourceDocument(
+        options.previousSource ?? previousIdentifier.path,
+        this.rdfSourceInput(nextIdentifier, options),
+      );
+      if (moved > 0) {
+        await this.moveSearchIndexes(previousIdentifier, nextIdentifier, options, sourceScopedAccessor);
+        this.invalidateMetadataCache(previousIdentifier);
+        this.invalidateMetadataCache(nextIdentifier);
+      }
+      return moved;
+    };
+    return this.operationService ? this.operationService.run(execute) : execute();
   }
 
   private async writeRdfDocument(
@@ -797,11 +1001,18 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     metadata: RepresentationMetadata,
   ): Promise<void> {
     const quads = await arrayifyStream<Quad>(data);
+    await assertCurrentLockOwnership();
     const structuredMetadata = new RepresentationMetadata(metadata);
     addResourceMetadata(structuredMetadata, false);
     updateModifiedDate(structuredMetadata);
     await this.ensureRdfFileParentContainers(identifier);
     const text = await this.serializeQuadsForLocalFile(identifier, quads);
+
+    await assertCurrentLockOwnership();
+    // Persist a fresh exact-source pending token BEFORE any authority change. If persistence
+    // fails, no file change is attempted. Pending means the derived index may be stale; it is
+    // not a commit receipt.
+    const pending = await this.recordAuthorityPendingBeforeWrite(identifier, text);
 
     await this.rdfFileDataAccessor.writeDocument(
       identifier,
@@ -812,11 +1023,67 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     try {
       await this.writeStructuredRdfIndex(identifier, quads, structuredMetadata);
       await this.syncTextSearchIndex(identifier, text, {}, quads);
+      // All required derived stages succeeded and the retained bytes still match the intended
+      // source: clear exactly this pending token.
+      this.clearAuthorityPendingAfterSuccess(pending, text);
     } catch (error) {
-      await this.deleteRdfFileResourceIfPresent(identifier);
-      await this.deleteSearchIndexes(identifier);
+      // Preserve the complete authority bytes and retain pending. Invalidate the request cache on
+      // failure, and never erase authority or hide the derived failure. Ancillary bookkeeping must
+      // not obscure the original mutation error.
+      this.invalidateMetadataCache(identifier);
+      try {
+        await this.deleteSearchIndexes(identifier);
+      } catch (ancillary) {
+        this.logger.warn(
+          `Post-write index cleanup failed for ${identifier.path}: ${String(ancillary)}; original authority error retained`,
+        );
+      }
       throw error;
     }
+  }
+
+  private async recordAuthorityPendingBeforeWrite(
+    identifier: ResourceIdentifier,
+    text: string,
+  ): Promise<LocalRdfAuthorityJournalOperation | undefined> {
+    const journal = this.localRdfAuthorityJournal;
+    if (!journal?.recordAuthorityPending) {
+      return undefined;
+    }
+    const sourcePath = this.rdfFileMapper
+      ? (await this.rdfFileMapper.mapUrlToFilePath(identifier, false, this.localRdfContentType(identifier))).filePath
+      : identifier.path;
+    // Reuse the existing journal/SolidFsPathUtils contract: `change.path` is the physical-relative
+    // path under the workspace cwd, `sourcePath` is the absolute physical file, `resource` is the
+    // resource IRI, and the workspace carries the authoritative HTTP container + physical cwd.
+    const workspace = this.localRdfPatchWorkspace([ identifier.path ], [ sourcePath ]);
+    return journal.recordAuthorityPending(
+      {
+        path: this.localRdfPatchRelativePath(identifier.path, workspace.workspace, sourcePath, workspace.cwd),
+        resource: identifier.path,
+        sourcePath,
+        source: 'filesystem',
+        projection: 'direct',
+        contentType: this.localRdfContentType(identifier),
+        type: 'updated',
+      },
+      workspace,
+      hashAuthoritySource(text),
+    );
+  }
+
+  private clearAuthorityPendingAfterSuccess(
+    pending: LocalRdfAuthorityJournalOperation | undefined,
+    text: string,
+  ): void {
+    const journal = this.localRdfAuthorityJournal;
+    if (!pending || !journal?.clearAuthorityPending) {
+      return;
+    }
+    if (journal.attachAuthorityPendingHash) {
+      journal.attachAuthorityPendingHash(pending.id, hashAuthoritySource(text));
+    }
+    journal.clearAuthorityPending(pending.id);
   }
 
   private async writeStructuredRdfIndex(
@@ -825,7 +1092,14 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     metadata: RepresentationMetadata,
     options: LocalRdfSyncOptions & { contentType?: string } = {},
   ): Promise<void> {
+    // Native prepared inserts bypass CSS's usual parent-container creation.
+    // Container GET and containment use the structured accessor, not the file mirror.
+    await this.ensureParentContainers(identifier, this.structuredDataAccessor);
     const structuredMetadata = new RepresentationMetadata(metadata);
+    // The authority-derived version marker is a read-time validator, never persisted state. A
+    // read-modify-write (for example a PATCH that reuses read metadata) must not store the sealed
+    // marker into derived index metadata.
+    clearDocumentVersion(structuredMetadata);
     addResourceMetadata(structuredMetadata, false);
     updateModifiedDate(structuredMetadata);
     const sourceScopedAccessor = this.sourceScopedStructuredAccessor();
@@ -902,6 +1176,10 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     metadata: RepresentationMetadata,
   ): RepresentationMetadata {
     const localMetadata = new RepresentationMetadata(metadata);
+    // Never persist the internal authority-version marker (predicate and seal) into the local
+    // authority sidecar. A read-modify-write can hand us read metadata that carries a genuine
+    // sealed token; the token is recomputed from the authority bytes on every read instead.
+    clearDocumentVersion(localMetadata);
     const graphScopedQuads = localMetadata.quads()
       .filter((quad) => quad.graph.termType !== 'DefaultGraph');
     localMetadata.removeQuads(graphScopedQuads);
@@ -1095,6 +1373,222 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     return pathname.endsWith('.md') || pathname.endsWith('.markdown') || pathname.endsWith('.mdown');
   }
 
+  /**
+   * Buffer small documents for an exact in-memory replay; above this the read path digests the
+   * authority file with a bounded stream and keeps the untouched file-backed producer as the
+   * replay. This is a memory bound, never a qualification cliff: large ordinary reads keep
+   * working and stay qualified instead of silently regressing to seconds validators.
+   */
+  private static readonly DOCUMENT_VERSION_BUFFER_MAX_BYTES = 16 * 1024 * 1024;
+  private static readonly DOCUMENT_VERSION_SIDECAR_MAX_BYTES = 4 * 1024 * 1024;
+
+  /**
+   * Eligible scope of the qualified document-version lane: a local file-authoritative
+   * RDF document whose complete Turtle bytes are the delivered representation. Anything
+   * else (containers, other MIME types, non-mirrored resources, oversized documents)
+   * stays unqualified and keeps the original CSS validator.
+   */
+  private isQualifiedLocalDocument(
+    identifier: ResourceIdentifier,
+    metadata: RepresentationMetadata,
+  ): boolean {
+    if (isContainerIdentifier(identifier)) {
+      return false;
+    }
+    if (!this.isLocalMirroredRdf(identifier, metadata)) {
+      return false;
+    }
+    return normalizeContentType(this.localRdfContentType(identifier)) === 'text/turtle';
+  }
+
+  /**
+   * Resolve the authority file path. An eligible document whose file cannot be mapped is an
+   * authority-capture failure and must propagate, never silently drop qualification.
+   */
+  private async localRdfAuthorityFilePath(identifier: ResourceIdentifier): Promise<string | undefined> {
+    if (!this.rdfFileMapper) {
+      return undefined;
+    }
+    const mapped = await this.rdfFileMapper.mapUrlToFilePath(
+      identifier,
+      false,
+      this.localRdfContentType(identifier),
+    );
+    return mapped.filePath;
+  }
+
+  /** Resolve the FileDataAccessor metadata sidecar that carries relevant authoritative metadata. */
+  private async localRdfAuthoritySidecarPath(identifier: ResourceIdentifier): Promise<string | undefined> {
+    if (!this.rdfFileMapper) {
+      return undefined;
+    }
+    const mapped = await this.rdfFileMapper.mapUrlToFilePath(
+      identifier,
+      true,
+      this.localRdfContentType(identifier),
+    );
+    return mapped.filePath;
+  }
+
+  /**
+   * Read the relevant authoritative sidecar bytes under the same physical boundary. A missing
+   * sidecar is legal (no extra state), an unreadable or oversized one is not.
+   */
+  private async readAuthoritySidecar(identifier: ResourceIdentifier): Promise<Uint8Array | undefined> {
+    const sidecarPath = await this.localRdfAuthoritySidecarPath(identifier);
+    if (!sidecarPath) {
+      return undefined;
+    }
+    let info;
+    try {
+      info = await stat(sidecarPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return undefined;
+      }
+      throw error;
+    }
+    if (!info.isFile()) {
+      return undefined;
+    }
+    if (info.size > MixDataAccessor.DOCUMENT_VERSION_SIDECAR_MAX_BYTES) {
+      throw new Error(`Local RDF authority sidecar for ${identifier.path} exceeds the bounded capture limit`);
+    }
+    return await readFile(sidecarPath);
+  }
+
+  /** Bounded sha256 over the authority bytes; never buffers the whole document. */
+  private async digestAuthorityFile(filePath: string): Promise<string> {
+    const hash = createHash('sha256');
+    const source = createReadStream(filePath, { highWaterMark: 64 * 1024 });
+    try {
+      for await (const chunk of source) {
+        hash.update(chunk as Buffer);
+      }
+      return hash.digest('hex');
+    } finally {
+      if (!source.destroyed) {
+        source.destroy();
+      }
+    }
+  }
+
+  /**
+   * One trusted encoder input: authority path + representation identity + protected body digest +
+   * relevant sidecar digest. No index/tracker freshness and no client marker participates.
+   */
+  private async buildLocalDocumentVersion(
+    identifier: ResourceIdentifier,
+    metadata: RepresentationMetadata,
+    body: { bytes: Uint8Array } | { digest: string },
+  ): Promise<string> {
+    const sidecar = await this.readAuthoritySidecar(identifier);
+    const base = {
+      resourcePath: this.documentVersionResourcePath(identifier, metadata),
+      representationId: this.localRdfContentType(identifier),
+      ...(sidecar ? { sidecar } : {}),
+    };
+    return 'bytes' in body
+      ? computeDocumentVersion({ ...base, body: body.bytes })
+      : computeDocumentVersion({ ...base, bodyDigest: body.digest });
+  }
+
+  private documentVersionResourcePath(identifier: ResourceIdentifier, metadata: RepresentationMetadata): string {
+    return metadata.identifier.value || identifier.path;
+  }
+
+  /**
+   * Attach the authority-derived document version to an eligible local document so the
+   * synchronous CSS ETag path (GET/HEAD response metadata and write conditions) can use one
+   * protected state. Recomputes from the current physical bytes on every call, so a warm
+   * metadata cache can never revive a stale token. Eligible capture failure propagates;
+   * absent or ineligible documents stay unqualified.
+   */
+  private async attachDocumentVersion(
+    identifier: ResourceIdentifier,
+    metadata: RepresentationMetadata,
+  ): Promise<RepresentationMetadata> {
+    if (!this.isQualifiedLocalDocument(identifier, metadata)) {
+      return metadata;
+    }
+    const filePath = await this.localRdfAuthorityFilePath(identifier);
+    if (!filePath) {
+      throw new Error(`Local RDF authority file mapping failed for ${identifier.path}`);
+    }
+    let info;
+    try {
+      info = await stat(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return metadata;
+      }
+      throw error;
+    }
+    if (!info.isFile()) {
+      return metadata;
+    }
+    const digest = await this.digestAuthorityFile(filePath);
+    const token = await this.buildLocalDocumentVersion(identifier, metadata, { digest });
+    writeDocumentVersion(metadata, token, this.documentVersionResourcePath(identifier, metadata));
+    return metadata;
+  }
+
+  /**
+   * Bind the delivered representation to one authority-derived version under the existing
+   * operation boundary.
+   *
+   * Small documents are buffered for an exact in-memory replay. Larger documents are digested
+   * with a bounded stream and the untouched file-backed producer is delivered as the replay, so
+   * large ordinary reads keep working with bounded memory and are still qualified. The original
+   * producer is registered before consumption and its real close is awaited before any buffered
+   * replay is handed off, so admission never drains between materialization and replay.
+   */
+  private async qualifyLocalRdfDocument(
+    identifier: ResourceIdentifier,
+    document: LocalRdfDocument,
+  ): Promise<LocalRdfDocument> {
+    if (!this.isQualifiedLocalDocument(identifier, document.metadata)) {
+      return document;
+    }
+    const filePath = await this.localRdfAuthorityFilePath(identifier);
+    if (!filePath) {
+      throw new Error(`Local RDF authority file mapping failed for ${identifier.path}`);
+    }
+    const info = await stat(filePath);
+    if (!info.isFile()) {
+      throw new NotFoundHttpError();
+    }
+
+    if (info.size > MixDataAccessor.DOCUMENT_VERSION_BUFFER_MAX_BYTES) {
+      const digest = await this.digestAuthorityFile(filePath);
+      const token = await this.buildLocalDocumentVersion(identifier, document.metadata, { digest });
+      writeDocumentVersion(document.metadata, token, this.documentVersionResourcePath(identifier, document.metadata));
+      return document;
+    }
+
+    const original = document.data;
+    const drained = observePhysicalStream(original);
+    const hash = createHash('sha256');
+    const chunks: Buffer[] = [];
+    try {
+      for await (const chunk of original) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+        hash.update(buffer);
+        chunks.push(buffer);
+      }
+    } catch (error) {
+      if (!original.destroyed) {
+        original.destroy();
+      }
+      await drained.catch(() => undefined);
+      throw error;
+    }
+    await drained;
+    const token = await this.buildLocalDocumentVersion(identifier, document.metadata, { digest: hash.digest('hex') });
+    writeDocumentVersion(document.metadata, token, this.documentVersionResourcePath(identifier, document.metadata));
+    return { data: guardStream(Readable.from(Buffer.concat(chunks))), metadata: document.metadata };
+  }
+
   private isLocalMirroredRdf(
     identifier: ResourceIdentifier,
     metadata: RepresentationMetadata,
@@ -1155,10 +1649,12 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
   }
 
   private async readStreamText(data: Guarded<Readable>): Promise<string> {
-    const chunks = await arrayifyStream(data as any);
-    return chunks
-      .map((chunk: Buffer | Uint8Array | string) => typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
-      .join('');
+    return runPhysicalOperation(this.operationService, async () => {
+      const chunks = await arrayifyStream(data as any);
+      return chunks
+        .map((chunk: Buffer | Uint8Array | string) => typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+        .join('');
+    }, data);
   }
 
   /**
@@ -1176,6 +1672,7 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     const writeData = indexableText === undefined ? data : guardStream(Readable.from([ indexableText ]));
 
     // Write the actual data to unstructured storage
+    await assertCurrentLockOwnership();
     await this.unstructuredDataAccessor.writeDocument(identifier, writeData, metadata);
     
     let updatedMetadata: RepresentationMetadata;
@@ -1272,6 +1769,7 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     }
 
     await accessor.writeContainer(identifier, new RepresentationMetadata(identifier));
+    this.invalidateMetadataCache(identifier);
   }
 
   private sameIdentifier(left: ResourceIdentifier, right: ResourceIdentifier): boolean {

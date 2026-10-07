@@ -33,6 +33,7 @@ interface Enqueued {
   origin: string;
   destination: string;
   pdus: readonly unknown[];
+  actor?: { webId: string; podUrl?: string; taskCredential?: { credentialRef?: string; version?: number } };
 }
 
 function outbox() {
@@ -48,7 +49,7 @@ const BOB_CONTEXT_WEBID = 'https://bob.example/profile/card#me';
 
 async function twoServerRoom() {
   const { port, enqueued } = outbox();
-  const { store, context, rows } = matrixHarness({ identities: registry(), outbound: port });
+  const { store, context, rows } = matrixHarness({ identities: registry(), outbound: port, deliverAsActor: true });
   const bobContext = { ...context, webId: BOB_CONTEXT_WEBID };
   const bob = (await store.getAccount(bobContext)).userId;
   const room = await store.createRoom({ invite: [ bob ] }, context);
@@ -64,6 +65,9 @@ describe('handing written events to the other servers in the room', () => {
     const sent = await store.sendEvent(room.roomId, 'm.room.message', 'txn-1', { body: 'hi' }, context);
     expect(enqueued).toHaveLength(1);
     expect(enqueued[0]).toMatchObject({ origin: 'alice.example', destination: 'bob.example', scope: 'https://pod.example/alice/' });
+    // The batch carries the *reference* to the participant whose authority sends it (O1); the live
+    // credential is resolved per attempt and never persisted here.
+    expect(enqueued[0]).toMatchObject({ actor: { webId: ALICE_CONTEXT_WEBID, podUrl: 'https://pod.example/alice/' } });
     expect(enqueued[0].pdus).toHaveLength(1);
 
     // What goes on the wire is the persisted protocol event: verifiable material and the
@@ -112,7 +116,7 @@ describe('handing written events to the other servers in the room', () => {
     const room = await store.createRoom({ invite: [ bob ] }, context);
     await store.joinRoom(room.roomId, bobContext);
 
-    await store.inviteUser(room.roomId, '@u_carol:carol.example', context);
+    await store.inviteUser(room.roomId, 'https://carol.example/card#me', context);
     enqueued.length = 0;
     await store.sendEvent(room.roomId, 'm.room.message', 'txn-2', { body: 'hello all' }, context);
     // Bob is joined; Carol was only invited, so she does not make carol.example a
@@ -139,5 +143,21 @@ describe('handing written events to the other servers in the room', () => {
     const { store, context } = matrixHarness({ identities: registry() });
     const room = await store.createRoom({}, context);
     await expect(store.sendEvent(room.roomId, 'm.room.message', 'txn-1', { body: 'hi' }, context)).resolves.toBeDefined();
+  });
+
+  it('carries the caller\'s explicit named grant reference into the queued actor', async () => {
+    const { store, context, room, enqueued } = await twoServerRoom();
+    enqueued.length = 0;
+
+    // A deployment doing work for one participant names the exact grant it is acting under; the
+    // reference (not the secret) travels with the batch so a later retry rechecks *that* grant and
+    // never silently borrows another active one.
+    const serviceContext = { ...context, service: { taskCredential: { credentialRef: 'grant-7', version: 3 } } };
+    await store.sendEvent(room.roomId, 'm.room.message', 'txn-grant', { body: 'delegated' }, serviceContext);
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]).toMatchObject({
+      actor: { webId: ALICE_CONTEXT_WEBID, taskCredential: { credentialRef: 'grant-7', version: 3 } },
+    });
   });
 });

@@ -1,5 +1,5 @@
 /** Real Gateway acceptance with deterministic runtimes. Run with Bun; no model calls. */
-import { lstat, mkdir, realpath } from 'node:fs/promises';
+import { appendFile, lstat, mkdir, realpath } from 'node:fs/promises';
 import { dirname, resolve, relative, isAbsolute } from 'node:path';
 import { parseArgs } from 'node:util';
 
@@ -53,7 +53,16 @@ async function main(): Promise<void> {
       const kind = error instanceof Error && /^[A-Za-z]+$/.test(error.name) ? error.name : 'Error';
       throw new AcceptanceError(`${method} ${path.split('?')[0]} failed (${kind}; request budget ${REQUEST_BUDGET_MS / 1000}s)`);
     }
-    if (response.status !== status) throw new AcceptanceError(`${method} ${path.split('?')[0]} returned ${response.status}; expected ${status}`);
+    if (response.status !== status) {
+      const failure = await response.json().catch(() => undefined) as { errcode?: unknown; error?: unknown } | undefined;
+      const code = typeof failure?.errcode === 'string' && /^M_[A-Z_]+$/u.test(failure.errcode) ? failure.errcode : 'unknown';
+      const detail = typeof failure?.error === 'string' ? failure.error
+        .split(token!).join('[REDACTED]')
+        .replace(/sk-[A-Za-z0-9_+/=-]+/gu, '[REDACTED]')
+        .replace(/(?:Bearer|DPoP)\s+\S+/giu, '[REDACTED]')
+        .replace(/[\r\n\t]/gu, ' ').slice(0, 240) : 'no error description';
+      throw new AcceptanceError(`${method} ${path.split('?')[0]} returned ${response.status}; expected ${status} (${code}: ${detail})`);
+    }
     try { return await response.json(); } catch { throw new AcceptanceError('Gateway returned a non-JSON response'); }
   }
   /**
@@ -80,10 +89,19 @@ async function main(): Promise<void> {
   const phaseRecord = phaseMs;
   async function phase<T>(name: string, run: () => Promise<T>): Promise<T> {
     const started = Date.now();
-    try { return await run(); } finally { phaseRecord[name] = Date.now() - started; }
+    const progress = async (status: 'started' | 'finished'): Promise<void> => {
+      const record = { phase: name, status, elapsedMs: Date.now() - started };
+      console.error(`Matrix acceptance phase: ${JSON.stringify(record)}`);
+      if (output) await appendFile(`${output}.progress.jsonl`, `${JSON.stringify(record)}\n`).catch(() => undefined);
+    };
+    await progress('started');
+    try { return await run(); } finally {
+      phaseRecord[name] = Date.now() - started;
+      await progress('finished');
+    }
   }
   const assert = (condition: unknown, label: string): void => { if (!condition) throw new AcceptanceError(`Acceptance failed: ${label}`); };
-  const account = await durable(() => api('/_matrix/client/v3/account/whoami'), 'Whoami');
+  const account = await phase('whoami', () => durable(() => api('/_matrix/client/v3/account/whoami'), 'Whoami'));
   assert(typeof account.user_id === 'string', 'whoami user_id');
   const webId = account['co.undefineds.webid'] ?? values.webid;
   assert(typeof webId === 'string' && webId.length > 0, 'provide --webid or expose co.undefineds.webid from whoami');
@@ -94,13 +112,24 @@ async function main(): Promise<void> {
   headers['X-Xpod-Pod-Url'] = pod;
   const tag = crypto.randomUUID();
   const agents = ['author', 'reviewer'].map(name => new URL(`.data/agents/matrix-accept-${tag}-${name}.ttl#this`, pod).toString());
-  const room = await durable(() => api('/_matrix/client/v3/createRoom', 'POST', { name: `Matrix collaboration acceptance ${tag}`, visibility: 'private' }), 'Room creation');
+  // createRoom has no idempotency key: a timeout can follow a committed room creation.
+  // Retrying that unknown outcome would create another room and contaminate the acceptance scope.
+  const room = await phase('room-create', async () => {
+    try {
+      return await api('/_matrix/client/v3/createRoom', 'POST', { name: `Matrix collaboration acceptance ${tag}`, visibility: 'private' });
+    } catch (error) {
+      if (error instanceof AcceptanceError && /request budget/u.test(error.message)) {
+        throw new AcceptanceError(`${error.message}; creation outcome is unknown and was not retried`);
+      }
+      throw error;
+    }
+  });
   assert(typeof room.room_id === 'string', 'created room ID');
   const roomId: string = room.room_id;
   const roomPath = `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}`;
-  await durable(() => api(`${roomPath}/state/co.undefineds.agents`, 'PUT', { agents: agents.map((agent, index) => ({
+  await phase('grant-write', () => durable(() => api(`${roomPath}/state/co.undefineds.agents`, 'PUT', { agents: agents.map((agent, index) => ({
     agent, executor: webId, workspace: pod, allowedActors: [webId], handoffTo: index === 0 ? [agents[1]] : [],
-  })) }), 'Grant write');
+  })) }), 'Grant write'));
 
   const savedGrants = await phase('grant-readback', async () => durable(() => api(`${roomPath}/state/co.undefineds.agents`), 'Grant readback'));
   assert(Array.isArray(savedGrants.agents) && savedGrants.agents.length === 2 && savedGrants.agents[0].agent === agents[0], 'agent grants survive Pod persistence');
@@ -157,7 +186,7 @@ async function main(): Promise<void> {
   });
 
   // Remove grants so backlog verification creates no unrelated pending agent work.
-  await durable(() => api(`${roomPath}/state/co.undefineds.agents`, 'PUT', { agents: [] }), 'Grant clear');
+  await phase('grant-clear', () => durable(() => api(`${roomPath}/state/co.undefineds.agents`, 'PUT', { agents: [] }), 'Grant clear'));
   const expected = new Map<string, string>([[original.event_id, prompt], ...results.map((result, index) => [result.eventId, resultBodies[index]] as [string, string])]);
   // Four concurrent senders exercise same-document append while keeping load bounded.
   await phase('backlog-writes', async () => {

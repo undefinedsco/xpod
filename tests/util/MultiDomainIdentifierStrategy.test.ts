@@ -38,4 +38,16 @@ describe('MultiDomainIdentifierStrategy', () => {
       'https://node-1.nodes.undefineds.co/alice/data.ttl',
     );
   });
+
+  it('treats every configured host root as a root, not just the primary', () => {
+    // The hierarchical locker resolves the full ancestor chain and fails closed if it cannot
+    // terminate. A secondary-host root that looks like a non-root would walk to an invalid
+    // `https://` parent and reject a legitimate request.
+    expect(strategy.isRootContainer(identifier('https://node-1.nodes.undefineds.co/'))).toBe(true);
+    expect(strategy.isRootContainer(identifier('https://id.undefineds.co/'))).toBe(true);
+    expect(strategy.isRootContainer(identifier('https://id.undefineds.co/alice/'))).toBe(false);
+    // The chain from a secondary-host resource terminates at its own host root.
+    expect(strategy.getParentContainer(identifier('https://id.undefineds.co/alice/data.ttl')))
+      .toEqual(identifier('https://id.undefineds.co/alice/'));
+  });
 });

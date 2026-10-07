@@ -602,7 +602,11 @@ export function createFederationSendHandler(options: FederationHandlerOptions): 
         ...(session?.webId === undefined ? {} : {
           solidSession: {
             webId: session.webId,
-            identityOf: (webId: string, serverName: string) => options.store.matrixUserIdFor(webId, serverName),
+            // The sender of a delivered event is the participant's WebID itself, so the hop's
+            // authenticated identity is compared against it directly. Deriving an MXID here was the
+            // old spelling: it produced `@u_<hash>:server` while the event carried a WebID, so a
+            // participant's own honest delivery was refused as impersonation.
+            identityOf: (webId: string) => webId,
           },
         }),
         authorization: headerValue(request.headers.authorization),

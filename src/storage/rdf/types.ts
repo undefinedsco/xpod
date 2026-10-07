@@ -1,3 +1,4 @@
+import type { AuthorityFreshnessQuery } from '../AuthorityFreshnessService';
 import type { Quad, Term } from '@rdfjs/types';
 import type { QueryOptions, QuintPattern, TermMatch, TermName } from '../quint/types';
 
@@ -1411,6 +1412,23 @@ export interface RdfNativeSparqlResult {
   error?: string;
 }
 
+/**
+ * Generic native query execution descriptor.
+ *
+ * `result` is the caller-visible outcome and may reject promptly on timeout/abort. `drained` is a
+ * separate producer-completion proof: it resolves only when the actual dispatched producer work is
+ * terminal (a valid correlated result/error, or confirmed owned-process termination) and never on a
+ * cancel message, timer, write error, stdio destruction or close deadline. Creating the descriptor
+ * performs no side effect; `start()` is idempotent and begins the request after the caller can observe
+ * `drained`.
+ */
+export interface RdfNativeQueryExecution {
+  readonly result: Promise<RdfNativeSparqlResult>;
+  readonly drained: Promise<void>;
+  start(): void;
+  cancel(): void;
+}
+
 export interface RdfPreparedUpdateGraphDelta {
   graphIri: string;
   sourceUri: string;
@@ -1423,6 +1441,8 @@ export interface RdfPreparedUpdateDelta {
   graphs: RdfPreparedUpdateGraphDelta[];
 }
 export interface RdfEngineLike {
+  /** Explicit synchronous current-authority proof for protected direct accessor reads. */
+  assertAuthorityFreshSync?(query: AuthorityFreshnessQuery): void;
   open(): void | Promise<void>;
   close(): void | Promise<void>;
   put(quads: Quad | Quad[], options?: RdfIndexPutOptions): void | Promise<void>;

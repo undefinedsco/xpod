@@ -2,6 +2,9 @@ import { XpodTestStack } from '../tests/helpers/XpodTestStack';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import { spawn } from 'child_process';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { mkdir, rm } from 'node:fs/promises';
+import { normalizeDatabaseUrl } from '../src/runtime/database-url';
 
 const TEST_SECRET_CELL_KEY = Buffer.alloc(32, 1).toString('base64');
 const TEST_SECRET_CELL_PREVIOUS_KEYS = JSON.stringify({
@@ -33,17 +36,21 @@ async function main() {
 
   const stack = new XpodTestStack();
   const qleverRuntimeFixture = createFakeQleverRuntimeCommand();
+  // Direct-store acceptance uses the same real Pod registry as this Gateway, never a synthetic owner map.
+  const identityDbPath = path.resolve('.test-data', 'integration', `lite-identity-${randomUUID()}.sqlite`);
+  const identityDbUrl = normalizeDatabaseUrl(identityDbPath);
   let exitCode = 1;
 
   try {
     console.log('Starting xpod stack...');
+    await mkdir(path.dirname(identityDbPath), { recursive: true });
     const liteRuntimeEnv = {
       ...TEST_GATEWAY_ENV,
       XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeFixture.command,
     };
     // Suites that verify authentication create their own strict stack. Keep
     // the shared fixture's established open-mode contract for other suites.
-    await stack.start('local', { env: liteRuntimeEnv, transport: 'port' });
+    await stack.start('local', { env: liteRuntimeEnv, transport: 'port', identityDbUrl });
     console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);
 
     const sharedEnv = {
@@ -53,6 +60,7 @@ async function main() {
       XPOD_GATEWAY_SOCKET_PATH: stack.socketPath ?? '',
       XPOD_RUN_INTEGRATION_TESTS: 'true',
       SOLID_ENV_FILE: path.resolve('.test-data', 'integration', 'lite.env'),
+      XPOD_INTEGRATION_IDENTITY_DB_URL: identityDbUrl,
     };
 
     exitCode = await runCommand('bun', [ 'run', 'test:setup' ], sharedEnv);
@@ -69,6 +77,8 @@ async function main() {
   } finally {
     await stack.stop();
     qleverRuntimeFixture.cleanup();
+    await Promise.all([ identityDbPath, `${identityDbPath}-wal`, `${identityDbPath}-shm` ]
+      .map(file => rm(file, { force: true })));
   }
 
   process.exit(exitCode);

@@ -190,6 +190,7 @@
       "@type": "MixDataAccessor",
       "structuredDataAccessor": { "@id": "urn:undefineds:xpod:SolidRdfDataAccessor" },
       "unstructuredDataAccessor": { "@id": "urn:solid-server:default:FileDataAccessor" },
+      "rdfFileDataAccessor": { "@id": "urn:undefineds:xpod:AtomicRdfFileDataAccessor" },
       "textSearchIndexingEnabled": true,
       "rdfSearchIntentSink": { "@id": "urn:undefineds:xpod:RdfSearchIntentSink" }
     },
@@ -229,17 +230,17 @@
       }
     },
     {
-      "comment": "Override: 使用内存锁",
+      "comment": "Override: 内存锁外层再包一层层级锁；祖先共享、目标读写，使 scoped SPARQL 写入与同容器内每日文档 LDP 写入互斥",
       "@type": "Override",
       "overrideInstance": { "@id": "urn:solid-server:default:ResourceLocker" },
       "overrideParameters": {
-        "@type": "WrappedExpiringReadWriteLocker",
+        "@type": "HierarchicalReadWriteLocker",
         "locker": {
           "@type": "GreedyReadWriteLocker",
           "locker": { "@type": "MemoryResourceLocker" },
           "storage": { "@type": "MemoryMapStorage" }
         },
-        "expiration": 6000
+        "identifierStrategy": { "@id": "urn:solid-server:default:IdentifierStrategy" }
       }
     },
     {

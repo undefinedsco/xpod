@@ -79,8 +79,13 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
       format.label({ label }),
       format.timestamp({
         format: () => {
-          // 使用 sv-SE 区域设置获得类似 ISO 但为本地时间的格式: YYYY-MM-DD HH:mm:ss
-          return new Date().toLocaleString('sv-SE', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+          // Preserve local time without constructing Intl formatters for every log record.
+          const date = new Date();
+          if (Number.isNaN(date.getTime())) {
+            return 'Invalid Date';
+          }
+          const pad = (value: number): string => String(value).padStart(2, '0');
+          return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
         }
       }),
       format((info) => {

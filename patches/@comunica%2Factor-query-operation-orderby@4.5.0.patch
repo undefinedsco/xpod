@@ -1,0 +1,20 @@
+diff --git a/lib/SortIterator.js b/lib/SortIterator.js
+index cf79f2a5971374dee7a1b413bf47feef612b8232..48026d36bf15670960d696952f5b3908eb4a2427 100755
+--- a/lib/SortIterator.js
++++ b/lib/SortIterator.js
+@@ -33,12 +33,10 @@ class SortIterator extends asynciterator_1.TransformIterator {
+                 if (order < 0) {
+                     left = mid + 1;
+                 }
+-                else if (order > 0) {
+-                    right = mid - 1;
+-                }
+                 else {
+-                    left = mid;
+-                    right = -1;
++                    // Equal items must precede existing ties: pop() then preserves
++                    // their input order across successive composite sorting passes.
++                    right = mid - 1;
+                 }
+             }
+             this.sorted.splice(left, 0, item);

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { drizzle } from '@undefineds.co/drizzle-solid';
 import { chatResource, messageResource, threadResource } from '@undefineds.co/models';
 import { PodMatrixStore } from '../../../src/api/matrix';
-import { MATRIX_TEST_SERVER_NAME, matrixHarness } from '../../helpers/MatrixMemoryDatabase';
+import { MATRIX_TEST_SERVER_NAME, matrixHarness, canonicalSourceFor } from '../../helpers/MatrixMemoryDatabase';
 import { InMemoryMatrixEventJournal, reservationKeyForEvent } from '../../../src/api/matrix/MatrixEventJournal';
 
 vi.mock('@undefineds.co/drizzle-solid', async () => {
@@ -30,7 +30,7 @@ describe('PodMatrixStore shared Pod contract', () => {
     }
     const journal = new SpyJournal();
     const keys = journal.keys;
-    const store = new PodMatrixStore({ journal });
+    const store = new PodMatrixStore({ journal, canonicalSource: canonicalSourceFor(context.webId, [ context.podUrl ]) });
     const reader = { ...context, _matrixDb: db } as never;
     const room = await store.createRoom({}, context);
     const sent = await store.sendEvent(room.roomId, 'm.room.message', 'txn-key', { body: 'hi' }, reader);
@@ -64,7 +64,7 @@ describe('PodMatrixStore shared Pod contract', () => {
     // one. Two independent rebuilds have to agree: sequences are assigned in the order the Pod is
     // read — createdAt, then id — which is a function of the Pod and not of the table that was lost.
     const rebuilt = async(): Promise<string[]> => await ordered(
-      new PodMatrixStore({ journal: new InMemoryMatrixEventJournal() }),
+      new PodMatrixStore({ journal: new InMemoryMatrixEventJournal(), canonicalSource: canonicalSourceFor(context.webId, [ context.podUrl ]) }),
       { ...context, _matrixDb: db } as never,
     );
     expect(await rebuilt()).toEqual(await rebuilt());
@@ -87,7 +87,9 @@ describe('PodMatrixStore shared Pod contract', () => {
       .filter((event: any) => event.type === 'm.room.member' && event.state_key === userId);
 
     const agent = 'https://pod.example/alice/.data/agents/scribe.ttl#this';
-    const agentUserId = store.matrixUserIdFor(agent, MATRIX_TEST_SERVER_NAME);
+    // The agent's identity is its own URI: an agent is a room member in its own right, so the
+    // membership keys are the URI the grant names, not a hash of it under a server name.
+    const agentUserId = agent;
     await store.setState(room.roomId, 'co.undefineds.agents', '', { agents: [ grant(agent) ] }, context);
 
     // Granting is what makes it a member: an invite by the granter, then the agent's own join.
@@ -247,7 +249,7 @@ describe('PodMatrixStore owner Pod access', () => {
     const podFetch = vi.fn(async () => new Response());
     const getPodFetch = vi.fn(async () => podFetch);
     vi.mocked(drizzle).mockReturnValue(db);
-    const store = new PodMatrixStore({ serverName: MATRIX_TEST_SERVER_NAME, podAccess: { getPodFetch } });
+    const store = new PodMatrixStore({ serverName: MATRIX_TEST_SERVER_NAME, podAccess: { getPodFetch }, canonicalSource: canonicalSourceFor(context.webId, [ context.podUrl ]) });
     await store.createRoom({ name: 'Delegated room' }, context);
     expect(getPodFetch).toHaveBeenCalledWith(context.webId, { auth: context.auth, podBaseUrl: context.podUrl });
     expect(drizzle).toHaveBeenCalledWith(
@@ -259,7 +261,7 @@ describe('PodMatrixStore owner Pod access', () => {
   it('denies storage access without an owner Pod grant', async () => {
     const { context: cachedContext } = matrixHarness();
     const { _matrixDb: _cachedDb, ...context } = cachedContext;
-    const store = new PodMatrixStore({ podAccess: { getPodFetch: async () => undefined } });
+    const store = new PodMatrixStore({ podAccess: { getPodFetch: async () => undefined }, canonicalSource: canonicalSourceFor(context.webId, [ context.podUrl ]) });
     await expect(store.createRoom({}, context)).rejects.toThrow('Grant Pod interface access');
     expect(drizzle).not.toHaveBeenCalled();
   });

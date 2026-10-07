@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { deliveryResource, messageResource, MessageRole, runResource, runStepResource } from '@undefineds.co/models';
-import { MATRIX_TEST_SERVER_NAME, matrixHarness } from '../../helpers/MatrixMemoryDatabase';
+import { MATRIX_TEST_SERVER_NAME, matrixHarness, canonicalSourceFor } from '../../helpers/MatrixMemoryDatabase';
 import { PodMatrixStore } from '../../../src/api/matrix/PodMatrixStore';
 import { InMemoryMatrixEventJournal } from '../../../src/api/matrix/MatrixEventJournal';
 import { InMemoryWakeAgentQueue } from '../../../src/api/reconciler/WakeAgentQueue';
@@ -17,6 +17,7 @@ async function fixture() {
   const queue = new InMemoryWakeAgentQueue();
   const journal = new InMemoryMatrixEventJournal();
   const makeStore = (wakeQueue = queue) => new PodMatrixStore({ serverName: MATRIX_TEST_SERVER_NAME, journal,
+    canonicalSource: canonicalSourceFor(context.webId, [ context.podUrl ]),
     serverGroupReconcilerService: new ServerGroupReconcilerService({ wakeQueue }) });
   const store = makeStore();
   const runtime = new AgentWakeRuntimeService(queue, store);
@@ -317,5 +318,63 @@ describe('Matrix collaboration contract (in-memory persistence; no LLM)', () => 
     row.role = MessageRole.ASSISTANT;
     await expect(f.runtime.claim(f.request(), f.context)).rejects.toMatchObject({ status: 403 });
     expect((f.rows.get(runResource) ?? []).filter(item => item.status === 'running')).toHaveLength(0);
+  });
+
+  it('replays a completed durable result after grant revocation and refuses a different one', async () => {
+    const f = await fixture();
+    await f.store.sendEvent(f.room.roomId, 'm.room.message', 'replay-task', f.content, f.context);
+    const claimed = await f.runtime.claim(f.request(), f.context);
+    const job = claimed.job!;
+    const result = await f.runtime.complete({ ...f.request(), id: job.id, fencingToken: job.fencingToken!,
+      body: 'Durable output', evidence: ['https://pod.example/alice/artifacts/out'] }, f.context);
+    // Revoke the execution grant after the durable result committed.
+    await f.store.setState(f.room.roomId, 'co.undefineds.agents', '', { agents: [] }, f.context);
+
+    // Reading the committed result is a replay, not new execution: a revoked grant must not erase it.
+    const replay = await f.makeStore().commitResult(f.room.roomId, job,
+      { body: 'Durable output', evidence: ['https://pod.example/alice/artifacts/out'] }, f.context);
+    expect(replay.eventId).toBe(result.eventId);
+
+    // A different result for the same logical wake is a conflict; the first output is preserved.
+    await expect(f.store.commitResult(f.room.roomId, job, { body: 'Different output' }, f.context))
+      .rejects.toMatchObject({ status: 409 });
+    const assistants = (f.rows.get(messageResource) ?? []).filter(row => row.role === MessageRole.ASSISTANT);
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].content).toBe('Durable output');
+  });
+
+  it('denies a new non-completed execution after its grant is revoked', async () => {
+    const f = await fixture();
+    await f.store.sendEvent(f.room.roomId, 'm.room.message', 'new-task', f.content, f.context);
+    const claimed = await f.runtime.claim(f.request(), f.context);
+    await f.store.setState(f.room.roomId, 'co.undefineds.agents', '', { agents: [] }, f.context);
+    await expect(f.store.commitResult(f.room.roomId, claimed.job!, { body: 'should not commit' }, f.context))
+      .rejects.toMatchObject({ status: 403 });
+    expect((f.rows.get(messageResource) ?? []).filter(row => row.role === MessageRole.ASSISTANT)).toHaveLength(0);
+  });
+
+  it('does not replay a completed run whose metadata binds another room', async () => {
+    const f = await fixture();
+    await f.store.sendEvent(f.room.roomId, 'm.room.message', 'bind-task', f.content, f.context);
+    const claimed = await f.runtime.claim(f.request(), f.context);
+    await f.runtime.complete({ ...f.request(), id: claimed.job!.id, fencingToken: claimed.job!.fencingToken!,
+      body: 'Durable output' }, f.context);
+    const runRow = (f.rows.get(runResource) ?? []).find(row => row.status === 'completed')!;
+    // Tamper the completed Run so it points at another room; the replay must not legitimize it.
+    runRow.metadata = withProtocolMetadata(runRow.metadata, 'matrix', { roomId: '!other:pod.example' });
+    await expect(f.store.commitResult(f.room.roomId, claimed.job!, { body: 'Durable output' }, f.context))
+      .rejects.toMatchObject({ status: 503 });
+  });
+
+  it('does not replay a completed run pointed at a non-ASSISTANT record', async () => {
+    const f = await fixture();
+    await f.store.sendEvent(f.room.roomId, 'm.room.message', 'role-bind-task', f.content, f.context);
+    const claimed = await f.runtime.claim(f.request(), f.context);
+    await f.runtime.complete({ ...f.request(), id: claimed.job!.id, fencingToken: claimed.job!.fencingToken!,
+      body: 'Durable output' }, f.context);
+    const assistantRow = (f.rows.get(messageResource) ?? []).find(row => row.role === MessageRole.ASSISTANT)!;
+    assistantRow.role = MessageRole.USER;
+    await expect(f.store.commitResult(f.room.roomId, claimed.job!, { body: 'Durable output' }, f.context))
+      .rejects.toMatchObject({ status: 409 });
   });
 });

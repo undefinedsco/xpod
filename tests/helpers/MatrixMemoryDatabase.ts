@@ -1,4 +1,5 @@
 import { PodMatrixStore } from '../../src/api/matrix/PodMatrixStore';
+import { CanonicalRoomSource } from '../../src/api/matrix/canonicalRoomSource';
 import { matrixSigningIdentityRegistry } from '../../src/api/matrix/identityRegistry';
 /**
  * The server name the harness deployment signs as.
@@ -8,6 +9,36 @@ import { matrixSigningIdentityRegistry } from '../../src/api/matrix/identityRegi
  * Exported so tests do not spell it out — one line moves every test that follows it.
  */
 export const MATRIX_TEST_SERVER_NAME = 'alice.example';
+
+/**
+ * An explicit in-memory canonical source registration for creation/ownership units: the given WebID
+ * owns the given Pod roots. Production resolves this through `PodLookupRepository`; a unit that needs
+ * a mismatch supplies different roots/WebIDs. It makes no network request — creation never reads the
+ * new (nonexistent) document.
+ */
+export function canonicalSourceFor(webId: string, ownedRoots: readonly string[]): CanonicalRoomSource {
+  return canonicalSourceForOwners(new Map([ [ webId, [ ...ownedRoots ] ] ]));
+}
+
+/**
+ * A multi-owner registry for creation units that exercise more than one participant (each owning
+ * their own Pod). Still an explicit fixture, never a production ownership derivation.
+ */
+export function canonicalSourceForOwners(owners: ReadonlyMap<string, readonly string[]>): CanonicalRoomSource {
+  const pod = (ownerWebId: string, root: string): Record<string, unknown> => ({
+    podId: 'pod-harness', accountId: 'alice', baseUrl: root, webId: ownerWebId, webIds: [ ownerWebId ],
+  });
+  return new CanonicalRoomSource({
+    pods: {
+      findByResourceIdentifier: async () => {
+        const first = [ ...owners.entries() ][0];
+        return first ? pod(first[0], first[1][0] ?? '') : undefined;
+      },
+      findAllByWebId: async (candidate: string) => (owners.get(candidate) ?? []).map(root => pod(candidate, root)),
+    } as never,
+    callerFetchFor: async () => { throw new Error('Creation must not fetch the source'); },
+  });
+}
 
 export function matrixHarness(
   options?: {
@@ -26,12 +57,35 @@ export function matrixHarness(
     remoteJoin?: import('../../src/api/matrix/PodMatrixStore').PodMatrixStoreOptions['remoteJoin'];
     /** How an alias this deployment does not hold is resolved, when a test provides the query. */
     directoryQuery?: import('../../src/api/matrix/PodMatrixStore').PodMatrixStoreOptions['directoryQuery'];
+    /** Queue outbound batches under the participant's authority (O1); off keeps the signed path. */
+    deliverAsActor?: boolean;
+    /**
+     * Explicit registered source Pod roots owned by the harness caller WebID, for creation/ownership
+     * units. Absent means the harness registers the caller's own `podUrl` as owned (the common unit
+     * case); a test that needs a mismatch supplies its own keys/values. Production never derives
+     * ownership this way — this is a fixture, not a fallback.
+     */
+    registeredOwnedRoots?: string[];
+    /** The caller WebID the harness context and registry use. Defaults to the shared alice WebID. */
+    webId?: string;
+    /** The caller Pod URL the harness context uses. Defaults to the shared alice Pod. */
+    podUrl?: string;
+    /** A prebuilt canonical source for multi-owner creation units; overrides the default registry. */
+    canonicalSource?: CanonicalRoomSource;
   },
 ) {
   const rows = new Map<any, any[]>();
+  const subjectOf = (table: any, row: any): string => {
+    if (typeof row['@id'] === 'string') return row['@id'];
+    const storedTable = rows.has(table) ? table : [...rows.keys()]
+      .find(candidate => candidate.getType() === table.getType()) ?? table;
+    return storedTable.buildIri(context.podUrl, { id: row.id });
+  };
   const db: any = {
     init: async () => undefined,
     findById: async (table: any, id: string) => (rows.get(table) ?? []).find((r: any) => r.id === id),
+    findByIri: async (table: any, iri: string) => (rows.get(table) ?? [])
+      .find((row: any) => subjectOf(table, row) === iri),
     insert: (table: any) => ({ values: async (row: any) => {
       const list = rows.get(table) ?? [];
       if (!list.some((r: any) => r.id === row.id)) list.push(structuredClone(row));
@@ -39,14 +93,71 @@ export function matrixHarness(
     } }),
     updateById: async (table: any, id: string, value: any) => Object.assign((rows.get(table) ?? []).find((r: any) => r.id === id), value),
     select: () => {
-      let table: any; let condition: any;
-      const match = (r: any, c: any): boolean => !c || (c.expressions
-        ? c.expressions.filter(Boolean).every((x: any) => match(r, x))
-        : c.operator === '=' ? r[c.left.name] === c.right : true);
-      const q: any = { from: (t: any) => { table = t; return q; },
-        where: (c: any) => { condition = c; return q; }, orderBy: () => q, limit: () => q,
-        then: (ok: any, fail: any) => Promise.resolve((rows.get(table) ?? []).filter((r: any) => match(r, condition))).then(ok, fail),
-      }; return q;
+      let table: any;
+      const conditions: any[] = [];
+      const orderColumns: any[] = [];
+      let limitCount: number | undefined;
+      const columnName = (column: any): string => typeof column === 'string'
+        ? column : column?.name ?? column?.column?.name ?? column?.column ?? '';
+      const normalise = (name: string, value: any): any => table.getColumn(name)?.dataType === 'datetime'
+        ? new Date(value).getTime() : value;
+      const valueOf = (row: any, name: string): any => name === 'id'
+        ? subjectOf(table, row) : normalise(name, row[name]);
+      const match = (row: any, condition: any): boolean => {
+        if (!condition) return true;
+        if (condition.expressions) {
+          const expressions = condition.expressions.filter(Boolean);
+          if (condition.operator === 'AND') return expressions.every((child: any) => match(row, child));
+          if (condition.operator === 'OR') return expressions.some((child: any) => match(row, child));
+          throw new Error(`Unsupported fixture logical operator: ${condition.operator}`);
+        }
+        const name = columnName(condition.left);
+        const right = normalise(name, condition.right);
+        const left = name === 'id' && typeof right === 'string' && !/^https?:\/\//u.test(right)
+          ? row.id : valueOf(row, name);
+        switch (condition.operator) {
+          case '=': return left === right;
+          case '>': return left > right;
+          case '<': return left < right;
+          case '>=': return left >= right;
+          case '<=': return left <= right;
+          default: throw new Error(`Unsupported fixture comparison: ${condition.operator}`);
+        }
+      };
+      const resolve = (): any[] => {
+        const storedTable = rows.has(table) ? table : [...rows.keys()]
+          .find(candidate => candidate.getType() === table.getType());
+        const resourcePath = table.getResourcePath();
+        const scoped = storedTable !== table && /^https?:\/\//u.test(resourcePath);
+        let out = (rows.get(storedTable) ?? []).filter((row: any) =>
+          (!scoped || subjectOf(storedTable, row).startsWith(resourcePath.endsWith('/')
+            ? resourcePath : `${resourcePath}#`)) && conditions.every(condition => match(row, condition)));
+        if (orderColumns.length > 0) {
+          out = [...out].sort((left: any, right: any) => {
+            for (const column of orderColumns) {
+              const name = columnName(column);
+              const direction = column.direction === 'desc' ? -1 : 1;
+              const a = valueOf(left, name);
+              const b = valueOf(right, name);
+              if (a < b) return -direction;
+              if (a > b) return direction;
+            }
+            return 0;
+          });
+        }
+        if (limitCount !== undefined) out = out.slice(0, limitCount);
+        // Source identity belongs to the hydrated result, not the mutable stored exemplar.
+        return out.map((row: any) => ({ ...row, '@id': subjectOf(storedTable, row) }));
+      };
+      const q: any = {
+        from: (t: any) => { table = t; return q; },
+        where: (c: any) => { conditions.push(c); return q; },
+        whereCursor: (condition: any) => { conditions.push(condition); return q; },
+        orderBy: (...columns: any[]) => { orderColumns.push(...columns); return q; },
+        limit: (count: number) => { limitCount = count; return q; },
+        then: (ok: any, fail: any) => Promise.resolve(resolve()).then(ok, fail),
+      };
+      return q;
     },
   };
   // The database is injected, so the fetch it stands for has to be injected with it: a Matrix Pod
@@ -56,17 +167,25 @@ export function matrixHarness(
   const podFetch = async(): Promise<Response> => {
     throw new Error('The Matrix test harness has no Pod fetch; use a real Pod for Pod-backed stores');
   };
-  const context: any = { webId: 'https://alice.example/profile/card#me', podUrl: 'https://pod.example/alice/',
-    auth: {type:'solid', webId:'https://alice.example/profile/card#me', clientId:'device-a'}, _matrixDb: db,
+  const contextWebId = options?.webId ?? 'https://alice.example/profile/card#me';
+  const contextPodUrl = options?.podUrl ?? 'https://pod.example/alice/';
+  const context: any = { webId: contextWebId, podUrl: contextPodUrl,
+    auth: {type:'solid', webId: contextWebId, clientId:'device-a'}, _matrixDb: db,
     _matrixPodFetch: podFetch };
+  // A fixture registry: the caller owns the roots it was given, or its own podUrl by default. It is
+  // an explicit in-memory registration, not a production ownership derivation.
+  const ownedRoots = options?.registeredOwnedRoots ?? [ context.podUrl ];
+  const canonicalSource = options?.canonicalSource ?? canonicalSourceFor(context.webId, ownedRoots);
   const store = new PodMatrixStore({
     serverName: MATRIX_TEST_SERVER_NAME,
+    canonicalSource,
     ...(options?.participantIdentity ? { participantIdentity: options.participantIdentity } : {}),
     ...(options?.outbound ? { outbound: options.outbound } : {}),
     ...(options?.roomChanges ? { roomChanges: options.roomChanges } : {}),
     ...(options?.roomChangeFullPassMs === undefined ? {} : { roomChangeFullPassMs: options.roomChangeFullPassMs }),
     ...(options?.remoteJoin ? { remoteJoin: options.remoteJoin } : {}),
     ...(options?.directoryQuery ? { directoryQuery: options.directoryQuery } : {}),
+    ...(options?.deliverAsActor ? { deliverAsActor: true } : {}),
     ...(options?.identities
       ? { identities: options.identities }
       : options?.serviceIdentity

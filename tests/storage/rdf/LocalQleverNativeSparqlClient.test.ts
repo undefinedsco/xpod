@@ -233,6 +233,47 @@ describe('LocalQleverNativeSparqlClient', () => {
     }
   });
 
+  it('keeps the fixture graph inventory inside basePath even without an accessScope', async () => {
+    const directory = createTestDir('qlever-fixture-base-scope');
+    const databasePath = path.join(directory, 'rdf-index.sqlite');
+    const runtimeFixture = createFakeQleverRuntimeCommand();
+    seedRuntimeDatabase(databasePath);
+    const database = getSqliteRuntime().openDatabase(databasePath);
+    try {
+      database.exec(`
+        INSERT INTO rdf_terms (id, kind, value) VALUES
+          (5, 'iri', 'https://pod.example/'),
+          (6, 'iri', 'https://pod.example/b.ttl'),
+          (7, 'iri', 'https://other.example/private.ttl');
+        INSERT INTO rdf_quads (graph_id, subject_id, predicate_id, object_id) VALUES
+          (5, 2, 3, 4), (6, 2, 3, 4), (7, 2, 3, 4);
+      `);
+    } finally {
+      database.close();
+    }
+    const client = new LocalQleverNativeSparqlClient({
+      command: runtimeFixture.command, args: [ '--sqlite-path', databasePath ],
+    });
+    try {
+      const query = 'SELECT DISTINCT ?g WHERE { GRAPH ?g { ?s ?p ?o } }';
+      const options = { basePath: 'https://pod.example/a.ttl', operation: 'queryBindings' };
+      const inventory = await client.query(query, options);
+      expect(JSON.parse(inventory.body).results.bindings).toEqual([
+        { g: { type: 'uri', value: 'https://pod.example/a.ttl' } },
+      ]);
+      const denied = await client.query(query, {
+        ...options, accessScope: {
+          basePath: 'https://pod.example/', mode: 'read', deniedGraphUrls: [ 'https://pod.example/a.ttl' ],
+        },
+      });
+      expect(JSON.parse(denied.body).results.bindings).toEqual([]);
+    } finally {
+      await client.close();
+      runtimeFixture.cleanup();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('cancels timed out and aborted requests without killing the runtime', async () => {
     const client = createClient('normal', { requestTimeoutMs: 30 });
     try {

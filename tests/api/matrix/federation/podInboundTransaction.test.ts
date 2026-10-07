@@ -109,23 +109,37 @@ function store() {
   return new PodMatrixInboundTransactionStore();
 }
 
+/**
+ * A moment inside the lookup window.
+ *
+ * A record's timestamp picks its day bucket, and every read without an explicit `at` looks back
+ * from *now* — that is the retention policy (`CONTROL_RECORD_LOOKBACK_DAYS`), and a fixed calendar
+ * date drifts out of it as wall-clock time moves. Fixtures therefore anchor to the current clock so
+ * the tests keep exercising the window instead of expiring with it.
+ */
+const RECENT = Date.now();
+const recentIso = (offsetMs = 0): string => new Date(RECENT + offsetMs).toISOString();
+
 function reservation(overrides: Partial<{ payloadFingerprint: string; receivedAt: string }> = {}) {
   return {
     origin: ORIGIN,
     transactionId: 'txn-1',
     payloadFingerprint: overrides.payloadFingerprint ?? 'fingerprint-a',
-    receivedAt: overrides.receivedAt ?? '2026-09-28T10:00:00.000Z',
+    receivedAt: overrides.receivedAt ?? recentIso(),
   };
 }
 
 describe('a Pod-backed transaction store', () => {
   it('records a first attempt in the day document the models layout names', async() => {
     const pod = scriptedPod();
-    const first = await store().reserve(SCOPE, reservation(), pod.handle);
+    // A fixed moment, because this test is about where the models layout puts a record, not about
+    // the lookup window; the calls that follow read through an explicit `at` and stay self-contained.
+    const fixedDay = '2026-09-28T10:00:00.000Z';
+    const first = await store().reserve(SCOPE, reservation({ receivedAt: fixedDay }), pod.handle);
     expect(first.created).toBe(true);
     expect(first.record).toMatchObject({ origin: ORIGIN, transactionId: 'txn-1', response: { pdus: {}}});
 
-    const bucket = controlRecordBucket('2026-09-28T10:00:00.000Z');
+    const bucket = controlRecordBucket(fixedDay);
     expect(bucket).toBe('2026/09/28');
     const { resource } = controlRecordAddress(POD, 'txn', JSON.stringify([ ORIGIN, 'txn-1' ]), bucket);
     // One record, one document, inside the day directory the models buckets name.
@@ -169,24 +183,25 @@ describe('a Pod-backed transaction store', () => {
     await store().reserve(SCOPE, reservation(), pod.handle);
     const conflicting = await store().reserve(SCOPE, reservation({
       payloadFingerprint: 'fingerprint-b',
-      receivedAt: '2026-09-28T10:00:05.000Z',
+      receivedAt: recentIso(5_000),
     }), pod.handle);
     expect(conflicting.created).toBe(false);
     expect(conflicting.record.payloadFingerprint).toBe('fingerprint-a');
-    expect(conflicting.record.conflictAt).toBe('2026-09-28T10:00:05.000Z');
+    expect(conflicting.record.conflictAt).toBe(recentIso(5_000));
   });
 
   it('answers a replay from the first response once the attempt completed', async() => {
     const pod = scriptedPod();
     const first = await store().reserve(SCOPE, reservation(), pod.handle);
     const response = { pdus: { '$event-1': {}, '$event-2': { error: 'not authorised' } } };
-    await store().complete(SCOPE, { origin: ORIGIN, transactionId: 'txn-1' }, response, '2026-09-28T10:00:01.000Z', pod.handle);
+    const completedAt = recentIso(1_000);
+    await store().complete(SCOPE, { origin: ORIGIN, transactionId: 'txn-1' }, response, completedAt, pod.handle);
 
     // A different store instance, as a restarted process would be: the Pod is the authority.
     const replay = await store().reserve(SCOPE, reservation(), pod.handle);
     expect(replay.created).toBe(false);
     expect(replay.record.response).toEqual(response);
-    expect(replay.record.completedAt).toBe('2026-09-28T10:00:01.000Z');
+    expect(replay.record.completedAt).toBe(completedAt);
     expect(replay.record.receivedAt).toBe(first.record.receivedAt);
   });
 

@@ -17,6 +17,8 @@ export const POD_INTERFACE_KEY_MISSING = 'pod_interface_key_missing';
 export const POD_INTERFACE_KEY_REJECTED = 'pod_interface_key_rejected';
 
 export interface PodAccessRequestContext {
+  /** Internal phase fence, called at the actual transport boundary (including auth retries). */
+  beforeRequest?: () => Promise<void>;
   /** The authenticated caller, when the request carries one. */
   auth?: AuthContext;
   /** Physical Pod root when the identity WebID is hosted by a separate IdP. */
@@ -117,7 +119,7 @@ export class OwnerPodAccess implements PodAccessFetchProvider {
       return undefined;
     }
     if (context.taskCredential) {
-      return await this.taskCredentialFetch(owner, context.taskCredential);
+      return await this.taskCredentialFetch(owner, context.taskCredential, context.beforeRequest);
     }
     if (hasSolidClientCredentialsAuthority(auth)) {
       // The caller's own interface key, already exchanged while authenticating this request: the
@@ -125,11 +127,12 @@ export class OwnerPodAccess implements PodAccessFetchProvider {
       return await this.credentialFetch(
         owner,
         { clientId: auth.clientId, clientSecret: auth.clientSecret },
+        context.beforeRequest,
       );
     }
     // Only the caller's own credential opens the Pod. A deployment-held key would make "this
     // request was authorized" indistinguishable from "somebody registered once".
-    return createCallerAuthenticatedPodFetch(owner, auth, this.fetchImpl, this.route);
+    return createCallerAuthenticatedPodFetch(owner, auth, this.guardedTransport(this.fetchImpl, context.beforeRequest), this.route);
   }
 
   /**
@@ -140,6 +143,7 @@ export class OwnerPodAccess implements PodAccessFetchProvider {
   private async taskCredentialFetch(
     owner: string,
     request: NonNullable<PodAccessRequestContext['taskCredential']>,
+    beforeRequest?: () => Promise<void>,
   ): Promise<typeof fetch | undefined> {
     if (!this.taskCredentials) {
       return undefined;
@@ -154,12 +158,13 @@ export class OwnerPodAccess implements PodAccessFetchProvider {
     if (!credential) {
       return undefined;
     }
-    return await this.credentialFetch(owner, credential);
+    return await this.credentialFetch(owner, credential, beforeRequest);
   }
 
   private async credentialFetch(
     owner: string,
     credential: PodInterfaceCredential,
+    beforeRequest?: () => Promise<void>,
   ): Promise<typeof fetch> {
     let session: SolidSession;
     try {
@@ -170,12 +175,34 @@ export class OwnerPodAccess implements PodAccessFetchProvider {
       throw new Error(`${POD_INTERFACE_KEY_REJECTED}:${status ?? 'invalid_response'}`);
     }
 
+    // The issuer's answer, not the request, is the authority on who this credential acts as. A
+    // credential exchanged into a *different* WebID must never reach for the requested owner's Pod:
+    // that would let one participant's key write as another. The comparison is exact — a WebID with
+    // and without its `#me` fragment are different RDF subjects and are not aliases — so a fixture
+    // that lost the fragment is a fixture bug, not a reason to weaken this check. Reject before
+    // building or using the fetch, and forget the unsuitable session so a later attempt re-exchanges
+    // rather than replaying the wrong identity. An issuer that reports no WebID is not authoritative
+    // either way; the Pod's own authorization still decides, so the legitimate path is preserved.
+    if (session.webId !== undefined && session.webId !== owner) {
+      this.sessions.invalidate(credential);
+      this.logger.warn(`Pod interface credential exchanged for a different identity than ${owner}`);
+      throw new Error(`${POD_INTERFACE_KEY_REJECTED}:identity_mismatch`);
+    }
+
     const transport = await (this.transport ??= createHostedPodRouteTransport(this.fetchImpl, this.route));
     const authenticated = buildAuthenticatedFetch(session.accessToken, {
       ...(session.dpopKey ? { dpopKey: session.dpopKey } : {}),
-      fetch: transport,
+      fetch: this.guardedTransport(transport, beforeRequest),
     });
     return this.invalidateOnUnauthorized(credential, authenticated);
+  }
+
+  private guardedTransport(transport: typeof fetch, beforeRequest?: () => Promise<void>): typeof fetch {
+    if (!beforeRequest) return transport;
+    return async(input, init) => {
+      await beforeRequest();
+      return await transport(input, { ...init, redirect: 'error' });
+    };
   }
 
   private invalidateOnUnauthorized(
@@ -233,4 +260,3 @@ export function isPodAccessFailure(message: string): boolean {
     || message.startsWith(CALLER_OWNER_MISMATCH)
     || message.startsWith(CALLER_POD_ACCESS_UNAVAILABLE);
 }
-

@@ -44,7 +44,8 @@
  *   did not happen. (Answering with a partial state and claiming the omission would be worse:
  *   the joining server would have to go and fetch what it was not told.)
  */
-import { authorizeEvent, isUserId, serverNameOf, SUPPORTED_ROOM_VERSION, type AuthEvent } from '../protocol/authRules';
+import { authorizeEvent, serverNameOf, SUPPORTED_ROOM_VERSION, type AuthEvent } from '../protocol/authRules';
+import { isUserIdentity } from '../protocol/serverName';
 import { computeEventId } from '../protocol/eventIntegrity';
 import { eventReferenceIds } from '../protocol/eventReferences';
 import { roomGraphPosition } from '../protocol/roomGraph';
@@ -256,9 +257,11 @@ export type MembershipSubmissionInput = RoomMembershipSubmission | InviteMembers
  * The membership-specific checks come first because the specification names them (`M_INVALID_PARAM`
  * for a wrong type, membership, sender server or `state_key`), and they are cheap: they reject a
  * body that is not the event the endpoint is for before any key is fetched. The id check is the
- * same idea one step further: room v11 derives the event id from the event, so an event whose
- * derived id is not the id in the path is not the event the sender thinks it sent — accepting it
- * under either id would break the sender's own de-duplication.
+ * same idea one step further: the writer names the event, so the event must carry the same id the
+ * request path names — accepting it under a different id would break the sender's own
+ * de-duplication. Deriving the id from the content is deliberately *not* done here (it would
+ * rename a writer-named event back to a content hash); an event that arrives without a stated id
+ * still gets one, for the Matrix-shaped sender that never sent one.
  *
  * What remains is the ordinary inbound PDU pipeline, so a join accepted here and a join received in
  * a transaction are held to exactly the same standard; `refusal` maps its outcome onto the answer
@@ -391,12 +394,15 @@ function normalizeSubmission(
     if (event.state_key !== event.sender) return { eventId: '', reason: 'the event changes somebody else\'s membership' };
   } else {
     const invited = String(event.state_key ?? '');
-    if (!isUserId(invited) || serverNameOf(invited) !== stateKey.serverName) {
+    // An invitee is a WebID (the norm) or the `@local:server` form stored history carries; both
+    // must resolve to the receiving server, because that is what makes the invite worth signing.
+    if (!isUserIdentity(invited) || serverNameOf(invited) !== stateKey.serverName) {
       return { eventId: '', reason: `the invite is for ${invited || 'nobody'}, who is not a user of ${stateKey.serverName}` };
     }
   }
   if (event.room_id !== input.roomId) return { eventId: '', reason: `the event is for room ${String(event.room_id)}` };
-  return { event, eventId: computeEventId(event), reason: 'a membership event for a user of the requesting server' };
+  const statedId = typeof event.event_id === 'string' && event.event_id.length > 0 ? event.event_id : undefined;
+  return { event, eventId: statedId ?? computeEventId(event), reason: 'a membership event for a user of the requesting server' };
 }
 
 /**

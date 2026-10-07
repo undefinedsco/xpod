@@ -53,7 +53,8 @@ describe('bounded sync reads', () => {
     const matrix = getProtocolMetadata(native.metadata, 'matrix')!;
     native.metadata = withProtocolMetadata(native.metadata, 'matrix', {
       ...matrix,
-      event: { ...(matrix.event as Record<string, unknown>), event_id: nativeEventId, content: { body: 'native write' } },
+      event: { ...(matrix.event as Record<string, unknown>), event_id: nativeEventId,
+        type: 'm.room.message', origin_server_ts: Date.parse(native.createdAt), content: { body: 'native write' } },
     });
     await db.insert(messageResource).values(native);
 

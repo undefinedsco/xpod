@@ -3,6 +3,9 @@ const CONTENT_TYPE_BY_EXTENSION: Record<string, string> = {
   // representation is Turtle. Treat them as line-addressable RDF so native
   // prepared updates can safely persist universalAccess mutations.
   '.acr': 'text/turtle',
+  // Solid WebACL access-control resources use the `.acl` suffix (Turtle). Same
+  // line-addressable treatment as `.acr` so a native prepared ACL write can persist.
+  '.acl': 'text/turtle',
   '.ttl': 'text/turtle',
   '.jsonld': 'application/ld+json',
   '.nt': 'application/n-triples',

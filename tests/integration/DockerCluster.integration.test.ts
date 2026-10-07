@@ -66,13 +66,7 @@ suite('Docker Cluster Integration', () => {
   beforeAll(async () => {
     // 尝试连接 PostgreSQL (Cloud 使用)
     try {
-      pgClient = new Client({
-        user: 'xpod',
-        password: 'xpod',
-        host: 'localhost',
-        database: 'xpod',
-        port: 5432,
-      });
+      pgClient = new Client({ connectionString: process.env.XPOD_FULL_PG_URL ?? 'postgres://xpod:xpod@localhost:5432/xpod' });
       await pgClient.connect();
     } catch {
       console.warn('PostgreSQL not available');

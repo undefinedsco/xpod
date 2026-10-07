@@ -228,8 +228,19 @@ export async function handleInboundTransaction(input: HandleInboundTransactionIn
         result = await fetchAndRetry(input, pdu, result, authEventIds, now);
       }
       if (result.outcome === 'accepted' && result.event && result.eventId) {
-        await input.acceptEvent(result.event);
-        pdus[result.eventId] = {};
+        try {
+          await input.acceptEvent(result.event);
+          pdus[result.eventId] = {};
+        } catch (error) {
+          // Only a conflict is a verdict *about this event*: the logical id already names different
+          // content, and the peer must learn that without the rest of the batch being replayed. It
+          // is answered per-PDU so an HTTP 200 never reads as "accepted". Every other refusal —
+          // missing grant (403), storage failure (5xx) — is a decision about the transaction or the
+          // deployment, not about this event; it aborts so the sender sees a failure rather than a
+          // per-event verdict that was never made.
+          if (!(error instanceof MatrixError) || error.status !== 409) throw error;
+          pdus[result.eventId] = { error: `${error.errcode}: ${error.message}` };
+        }
         continue;
       }
       pdus[result.eventId ?? `unknown-${index}`] = { error: result.reason };

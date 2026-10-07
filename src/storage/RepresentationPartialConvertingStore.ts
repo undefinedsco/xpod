@@ -1,7 +1,9 @@
 import rdfParser from 'rdf-parse';
 import { getLoggerFor } from 'global-logger-factory';
+import { Readable } from 'node:stream';
 
 import {
+  BasicRepresentation,
   PassthroughStore,
   PassthroughConverter,
   AuxiliaryStrategy,
@@ -18,6 +20,15 @@ import {
   APPLICATION_JSON,
 } from "@solid/community-server"
 import { isSafeRdfDocumentContentType } from './rdf/RdfContentTypes'
+import {
+  clearDocumentVersion,
+  parseDocumentVersion,
+  readDocumentVersion,
+  sanitizeRepresentationId,
+  sha256Hex,
+  writeDocumentVersion,
+  writeDocumentVersionSuppressed,
+} from './rdf/DocumentVersion'
 
 interface RepresentationPartialConvertingStoreOptions {
   outConverter?: RepresentationConverter
@@ -30,6 +41,13 @@ interface RepresentationPartialConvertingStoreOptions {
  */
 export class RepresentationPartialConvertingStore<T extends ResourceStore = ResourceStore> extends PassthroughStore<T> {
   protected readonly logger = getLoggerFor(this)
+
+  /**
+   * Memory bound for materializing a converted representation before headers. Within the bound the
+   * exact selected bytes are captured so the validator can be decided synchronously; above it the
+   * surface is marked validator-less rather than reusing an unrelated strong validator.
+   */
+  private static readonly CONVERTED_VERSION_MAX_BYTES = 16 * 1024 * 1024;
 
   private readonly metadataStrategy: AuxiliaryStrategy
   private readonly inConverter: RepresentationConverter
@@ -94,11 +112,131 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     preferences: RepresentationPreferences,
     conditions?: Conditions,
   ): Promise<Representation> {
-    let representation = await super.getRepresentation(identifier, preferences, conditions);
-    if (await this.shouldConvert(identifier, representation, preferences)) {
-      representation = await this.outConverter.handleSafe({ identifier, representation, preferences });
+    const before = await super.getRepresentation(identifier, preferences, conditions);
+    if (!(await this.shouldConvert(identifier, before, preferences))) {
+      return before;
+    }
+    const rawToken = readDocumentVersion(before.metadata);
+    const resourcePath = before.metadata.identifier?.value;
+    let representation = await this.outConverter.handleSafe({ identifier, representation: before, preferences });
+    if (!rawToken || !resourcePath) {
+      // Unverified/unqualified surfaces keep the raw marker out of the delivered metadata.
+      clearDocumentVersion(representation.metadata);
+      return representation;
+    }
+    // A converted surface must never reuse the raw Turtle strong validator. Only a byte stream can
+    // be captured to prove byte identity; an RDF quad (object) stream or any other non-byte stream
+    // has no exact-byte Turtle validator, so omit the validator explicitly instead of falling back
+    // to a collision-prone seconds validator.
+    if (representation.binary !== true) {
+      writeDocumentVersionSuppressed(representation.metadata, resourcePath);
+      return representation;
+    }
+    // The delivered bytes are produced by the converter now. Capture them within the bound so the
+    // strongest honest validator can be attached: the exact raw authority token when the converter
+    // round-tripped to identical bytes, otherwise a sealed directive that omits the validator.
+    const captured = await this.captureConvertedStream(representation.data as unknown as Readable);
+    if (captured.kind === 'passthrough') {
+      representation = new BasicRepresentation(captured.replay, representation.metadata, true);
+      writeDocumentVersionSuppressed(representation.metadata, resourcePath);
+      return representation;
+    }
+    if (captured.kind === 'exceeded') {
+      representation = new BasicRepresentation(
+        Readable.from((async function* replay(): AsyncGenerator<Buffer> {
+          yield captured.prefix;
+          for await (const chunk of captured.stream as AsyncIterable<Buffer>) {
+            yield chunk;
+          }
+        })()),
+        representation.metadata,
+        true,
+      );
+      writeDocumentVersionSuppressed(representation.metadata, resourcePath);
+      return representation;
+    }
+    const parts = parseDocumentVersion(rawToken);
+    const contentType = representation.metadata.contentType;
+    const digest = sha256Hex(captured.buffer);
+    const representationId = contentType ? sanitizeRepresentationId(contentType) : undefined;
+    const identical = Boolean(parts && representationId &&
+      parts.byteDigest === digest && parts.representationId === representationId);
+    representation = new BasicRepresentation(Readable.from([ captured.buffer ]), representation.metadata, true);
+    if (identical) {
+      writeDocumentVersion(representation.metadata, rawToken, resourcePath);
+    } else {
+      writeDocumentVersionSuppressed(representation.metadata, resourcePath);
     }
     return representation;
+  }
+
+  /**
+   * Read a converted stream up to the bounded cap. Byte streams are captured whole; on overflow the
+   * stream is paused with its remaining bytes intact so the caller can hand it off without data loss.
+   * A non-byte chunk (for example an RDF quad stream) stops capture immediately and hands back the
+   * untouched sequence, so an object stream is never forced through `Buffer.from`.
+   */
+  private captureConvertedStream(stream: Readable): Promise<
+  | { kind: 'bytes'; buffer: Buffer }
+  | { kind: 'exceeded'; prefix: Buffer; stream: Readable }
+  | { kind: 'passthrough'; replay: Readable }> {
+    const max = RepresentationPartialConvertingStore.CONVERTED_VERSION_MAX_BYTES;
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let total = 0;
+      let settled = false;
+      const isByteChunk = (chunk: unknown): chunk is Buffer | string =>
+        Buffer.isBuffer(chunk) || typeof chunk === 'string' || chunk instanceof Uint8Array;
+      const replayFrom = (first: unknown): Readable => Readable.from(
+        (async function* replay(): AsyncGenerator<unknown> {
+          for (const chunk of chunks) {
+            yield chunk;
+          }
+          yield first;
+          for await (const chunk of stream as AsyncIterable<unknown>) {
+            yield chunk;
+          }
+        })(),
+      );
+      const onData = (chunk: unknown): void => {
+        if (settled) {
+          return;
+        }
+        if (!isByteChunk(chunk)) {
+          settled = true;
+          stream.off('data', onData);
+          stream.pause();
+          resolve({ kind: 'passthrough', replay: replayFrom(chunk) });
+          return;
+        }
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        total += buffer.length;
+        chunks.push(buffer);
+        if (total > max) {
+          settled = true;
+          stream.off('data', onData);
+          stream.pause();
+          resolve({ kind: 'exceeded', prefix: Buffer.concat(chunks), stream });
+        }
+      };
+      stream.on('data', onData);
+      stream.once('end', () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        stream.off('data', onData);
+        resolve({ kind: 'bytes', buffer: Buffer.concat(chunks) });
+      });
+      stream.once('error', (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        stream.off('data', onData);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
   }
 
   public override async addResource(

@@ -18,6 +18,7 @@ import {
   type FederationEventsOutcome,
   type MatrixDeliveryOutcome,
   type MatrixDeliveryPolicy,
+  type MatrixFederationActor,
 } from './outboundTransaction';
 import type { MatrixSigningIdentitySource } from '../identityRegistry';
 import type { FederationFetchTarget } from './federationFetch';
@@ -30,6 +31,11 @@ export interface MatrixOutboundSenderOptions {
   fetch: typeof fetch;
   /** Transport that can present a delegated server name; see `federationFetch.ts`. */
   fetchTarget?: FederationFetchTarget;
+  /**
+   * Resolve the participant's authenticated fetch at send time (O1). Absent means actor-bearing
+   * sends are refused by the client rather than falling back to a signed deployment identity.
+   */
+  actorFetch?: (actor: MatrixFederationActor) => Promise<typeof fetch | undefined>;
   now?: () => number;
   random?: () => number;
   /** How hard one attempt tries before the transaction is handed back to the queue. */
@@ -44,6 +50,8 @@ export interface SendAsInput {
   txnId: string;
   pdus: readonly unknown[];
   edus?: readonly unknown[];
+  /** The participant whose authority sends this transaction (O1); absent keeps the signed path. */
+  actor?: MatrixFederationActor;
 }
 
 export class MatrixOutboundSender {
@@ -76,6 +84,7 @@ export class MatrixOutboundSender {
       txnId: input.txnId,
       pdus: input.pdus,
       ...(input.edus === undefined ? {} : { edus: input.edus }),
+      ...(input.actor === undefined ? {} : { actor: input.actor }),
       ...(this.options.policy === undefined ? {} : { policy: this.options.policy }),
       ...(this.options.sleep === undefined ? {} : { sleep: this.options.sleep }),
     };
@@ -133,6 +142,7 @@ export class MatrixOutboundSender {
       resolve: this.options.resolve,
       fetch: this.options.fetch,
       ...(this.options.fetchTarget === undefined ? {} : { fetchTarget: this.options.fetchTarget }),
+      ...(this.options.actorFetch === undefined ? {} : { actorFetch: this.options.actorFetch }),
       ...(this.options.now === undefined ? {} : { now: this.options.now }),
       ...(this.options.random === undefined ? {} : { random: this.options.random }),
     });

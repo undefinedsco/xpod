@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Writable } from 'node:stream';
 import { DataFactory } from 'n3';
 import { SubgraphSparqlHttpHandler } from '../../src/http/SubgraphSparqlHttpHandler';
+import { HierarchicalReadWriteLocker } from '../../src/storage/HierarchicalReadWriteLocker';
 import type { HttpRequest, HttpResponse } from '@solid/community-server';
 import {
   AS,
@@ -11,6 +12,7 @@ import {
   NotImplementedHttpError,
   IdentifierSetMultiMap,
   RepresentationMetadata,
+  GreedyReadWriteLocker, MemoryResourceLocker, MemoryMapStorage, SingleRootIdentifierStrategy,
 } from '@solid/community-server';
 import type { ActivityEmitter, ResourceIdentifier } from '@solid/community-server';
 import { PERMISSIONS } from '@solidlab/policy-engine';
@@ -40,6 +42,10 @@ const mockPermissionReader = {
 const mockAuthorizer = {
   handleSafe: vi.fn().mockResolvedValue(undefined),
 };
+const createLocker = (): HierarchicalReadWriteLocker => new HierarchicalReadWriteLocker(
+  new GreedyReadWriteLocker(new MemoryResourceLocker(), new MemoryMapStorage<number>()),
+  new SingleRootIdentifierStrategy('http://localhost:3000/'),
+);
 
 function createMockRequest(url: string, method = 'GET', headers: Record<string, string> = {}): HttpRequest {
   return {
@@ -93,6 +99,7 @@ describe('SubgraphSparqlHttpHandler', () => {
       mockPermissionReader as any,
       mockAuthorizer as any,
       {},
+      undefined, undefined, createLocker(),
     );
   });
 
@@ -317,6 +324,7 @@ describe('SubgraphSparqlHttpHandler', () => {
         mockAuthorizer as any,
         {},
         updateAuthority as any,
+        undefined, createLocker(),
       );
 
       const response = await postUpdate(`
@@ -780,6 +788,7 @@ describe('SubgraphSparqlHttpHandler', () => {
         mockAuthorizer as any,
         {},
         updateAuthority as any,
+        undefined, createLocker(),
       );
       mockQueryEngine.constructGraph.mockResolvedValue([
         DataFactory.quad(
@@ -907,6 +916,7 @@ describe('SubgraphSparqlHttpHandler', () => {
         mockAuthorizer as any,
         {},
         updateAuthority as any,
+        undefined, createLocker(),
       );
       mockQueryEngine.listGraphs.mockResolvedValue(new Set([
         'http://localhost:3000/alice/public.ttl',
@@ -1109,6 +1119,7 @@ describe('SubgraphSparqlHttpHandler', () => {
         {},
         updateAuthority as any,
         emitter as any,
+        createLocker(),
       );
       return { emitter, updateAuthority };
     }

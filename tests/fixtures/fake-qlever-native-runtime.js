@@ -145,7 +145,7 @@ function loadFixtureStore(options) {
       ORDER BY quad.rowid
     `).all();
     return new Store(rows
-      .filter((row) => fixtureRowAllowed(row, options?.accessScope))
+      .filter((row) => fixtureRowAllowed(row, options))
       .map((row) => DataFactory.quad(
         databaseTerm(row.subject_kind, row.subject_value),
         databaseTerm(row.predicate_kind, row.predicate_value),
@@ -175,11 +175,25 @@ function databaseTerm(kind, value, language, datatype) {
     : DataFactory.literal(value);
 }
 
-function fixtureRowAllowed(row, scope) {
+function fixtureRowAllowed(row, options) {
+  // Match the production envelope's physical scope independently of resolved
+  // authorization. An absent accessScope never makes basePath unbounded.
+  const graph = row.graph_value;
+  const source = row.source_value;
+  if (options?.basePath && !graph.startsWith(options.basePath)) {
+    return false;
+  }
+  if (source && options?.basePath && options.operation !== 'prepareUpdate'
+    && !source.startsWith(options.basePath)) {
+    return false;
+  }
+  if (source && options?.sourceUri && source !== options.sourceUri) {
+    return false;
+  }
+  const scope = options?.accessScope;
   if (!scope) {
     return true;
   }
-  const graph = row.graph_value;
   if (graph && !graph.startsWith(scope.basePath)) {
     return false;
   }
@@ -192,7 +206,6 @@ function fixtureRowAllowed(row, scope) {
   if ((scope.deniedGraphPrefixes || []).some((prefix) => graph.startsWith(prefix))) {
     return false;
   }
-  const source = row.source_value;
   if (source && scope.allowedSourceUrls?.length && !scope.allowedSourceUrls.includes(source)) {
     return false;
   }

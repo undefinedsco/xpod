@@ -79,9 +79,14 @@ describe('joining a room another deployment hosts', () => {
       state_key: BOB,
       content: { membership: 'join' },
     });
-    // The event id is derived from the signed event, not taken from anywhere, and the submission
-    // names the same id.
-    expect(submitted.eventId).toBe(computeEventId(submitted.event));
+    // The event id is the writer's name for the join, not a content hash: the joining deployment
+    // picks it and the submission names the same id, so a retry can reuse it without the graph
+    // having to be byte-identical. Its being *not* the reference hash is the contract change —
+    // the id no longer proves the content, the signed bytes and the writer's identity do.
+    expect(typeof submitted.event.event_id).toBe('string');
+    expect((submitted.event.event_id as string).length).toBeGreaterThan(8);
+    expect(submitted.eventId).toBe(submitted.event.event_id);
+    expect(submitted.eventId).not.toBe(computeEventId(submitted.event));
     expect(computeEventId(submitted.event)).toBe(computeEventId({ ...template(), origin: US, origin_server_ts: NOW,
       hashes: submitted.event.hashes, signatures: submitted.event.signatures }));
     expect(Object.keys(submitted.event.signatures as Record<string, unknown>)).toEqual([ US ]);

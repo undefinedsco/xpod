@@ -41,7 +41,10 @@ describe('Local RDF authority recovery Components configuration', () => {
     const accessor = byId(local, 'urn:undefineds:xpod:MixDataAccessor');
 
     expect(accessor).toMatchObject({
-      rdfFileDataAccessor: { '@id': 'urn:solid-server:default:FileDataAccessor' },
+      // The approved shared atomic RDF authority accessor owns RDF file mirrors...
+      rdfFileDataAccessor: { '@id': 'urn:undefineds:xpod:AtomicRdfFileDataAccessor' },
+      // ...while the ordinary (non-RDF) accessor remains the plain filesystem accessor.
+      unstructuredDataAccessor: { '@id': 'urn:solid-server:default:FileDataAccessor' },
       rdfFileMapper: { '@id': 'urn:solid-server:default:FileIdentifierMapper' },
       localRdfAuthorityJournal: { '@id': 'urn:undefineds:xpod:LocalRdfAuthorityJournal' },
       textSearchIndexingEnabled: true,

@@ -276,10 +276,20 @@ function transaction(input: {
 
 describe('the inbound /send route', () => {
   it('judges a batch delivered with a Solid session by the session identity', async() => {
+    // A WebID participant, and the member event that names *that* WebID as joined. The new identity
+    // model spells sender and state_key as the WebID itself, so this — not the legacy MXID room —
+    // is the positive route the session path must accept.
     const webId = 'https://alice.example/card#me';
     const room = heldRoom();
+    const aliceMember = {
+      ...room.join,
+      event_id: '$alice-webid-member',
+      sender: webId,
+      state_key: webId,
+      content: { membership: 'join' },
+    };
     const h = await harness({
-      events: [ room.create, room.join, room.rules ],
+      events: [ room.create, room.join, room.rules, aliceMember ],
       auth: {
         canAuthenticate: () => true,
         authenticate: async request => request.headers.authorization === `Solid ${webId}`
@@ -293,23 +303,23 @@ describe('the inbound /send route', () => {
       const answer = await send({
         port: h.port, method: 'PUT', path: '/_matrix/federation/v1/send/solid-1', host: SERVED,
         authorization: `Solid ${webId}`,
-        body: JSON.stringify({ origin: SERVED, pdus: [ { ...room.join, sender: '@u_other:alice.example' } ] }),
+        body: JSON.stringify({ origin: SERVED, pdus: [ { ...aliceMember, sender: 'https://bob.example/card#me' } ] }),
       });
       expect(answer.status).toBe(403);
       expect(answer.body.errcode).toBe('M_FORBIDDEN');
 
       // The accept path: a session-delivered batch needs no per-event signature, and the id the
       // writer chose is the id the event keeps — otherwise the same event would be known by two
-      // names in two Pods.
+      // names in two Pods. The sender is the session's own WebID.
       const chosen = {
-        ...room.join,
+        ...aliceMember,
         event_id: '$writer-chosen',
-        sender: ALICE,
+        sender: webId,
         type: 'm.room.message',
         state_key: undefined,
         content: { body: 'written under a session' },
-        auth_events: [ room.create.event_id as string, room.join.event_id as string ],
-        prev_events: [ room.join.event_id as string ],
+        auth_events: [ room.create.event_id as string, aliceMember.event_id as string ],
+        prev_events: [ aliceMember.event_id as string ],
         signatures: undefined,
         hashes: undefined,
       };
@@ -328,7 +338,7 @@ describe('the inbound /send route', () => {
       const stranger = {
         ...chosen,
         event_id: '$not-a-member',
-        sender: ALICE,
+        sender: webId,
         auth_events: [ room.create.event_id as string ],
       };
       const refused = await send({

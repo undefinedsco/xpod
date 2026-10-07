@@ -90,10 +90,19 @@ describe('resolved room state', () => {
 
   it('keeps a member slot for someone who was invited and never joined', async () => {
     const { store, context, room } = await joinedRoom();
-    const carol = '@u_carol:example.test';
+    const carol = 'https://carol.example/card#me';
     await store.inviteUser(room.roomId, carol, context);
     const state = await store.currentState(room.roomId, context);
     expect(state.membership(carol)).toBe('invite');
+  });
+
+  it('refuses a new invite that names a legacy MXID instead of a WebID', async () => {
+    // The `@local:server` form still appears in stored history and is understood where history is
+    // read, but a *new* membership key must be a WebID: an MXID is a participant no Solid identity
+    // can authorise, which is exactly the identity this protocol removed.
+    const { store, context, room } = await joinedRoom();
+    await expect(store.inviteUser(room.roomId, '@bob:example.test', context))
+      .rejects.toMatchObject({ status: 400 });
   });
 
   it('falls back to the latest event per slot for rows written before the graph', async () => {

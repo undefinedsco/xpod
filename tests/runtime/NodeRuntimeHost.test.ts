@@ -65,6 +65,23 @@ describe('NodeRuntimeHost', () => {
     }
   });
 
+  it('excludes a planned API from implicit ingress allocation', async() => {
+    const ports = await host.allocatePorts({ gatewayPort: 23000, cssPort: 23010, apiPort: 23003 });
+    expect(ports.ingress).not.toBe(ports.api);
+    expect(new Set(Object.values(ports)).size).toBe(4);
+  });
+
+  it('excludes explicit pins from implicit CSS and API allocation', async() => {
+    const ports = await host.allocatePorts({ gatewayPort: 23100, apiPort: 23101, ingressPort: 23102 });
+    expect(ports.css).not.toBe(23101);
+    expect(ports.css).not.toBe(23102);
+    expect(new Set(Object.values(ports)).size).toBe(4);
+  });
+
+  it('rejects duplicate explicit service ports before allocation', async() => {
+    await expect(host.allocatePorts({ gatewayPort: 23000, apiPort: 23000 })).rejects.toThrow(/duplicate/i);
+  });
+
   it('should format listen endpoints', () => {
     expect(host.formatListenEndpoint(host.createListenEndpoint({
       host: '127.0.0.1',

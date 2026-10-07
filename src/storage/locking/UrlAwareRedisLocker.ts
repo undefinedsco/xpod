@@ -1,163 +1,200 @@
+import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
-import { RedisLocker } from '@solid/community-server';
-import {
-  attachRedisClientErrorHandler,
-  isIgnorableRedisShutdownError,
-} from '../redis/RedisClientLifecycle';
+import { getLoggerFor } from 'global-logger-factory';
+import { GreedyReadWriteLocker, MemoryResourceLocker, MemoryMapStorage } from '@solid/community-server';
+import type { ReadWriteLocker, ResourceLocker, ResourceIdentifier, Initializable, Finalizable } from '@solid/community-server';
+import { attachRedisClientErrorHandler, isIgnorableRedisShutdownError } from '../redis/RedisClientLifecycle';
+import { assertLockContextActive, withLockLease, type LockLeaseGuard } from './LockExecutionContext';
 
-const REDIS_LUA_SCRIPTS: Record<string, string> = (() => {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require('@solid/community-server/dist/util/locking/scripts/RedisLuaScripts').REDIS_LUA_SCRIPTS;
-  } catch {
-    return {};
-  }
-})();
-
-/**
- * CSS 原生 Lua 脚本创建的 lock/count key 都不带 TTL：
- * 进程在 acquire 与 release 之间崩溃时 key 永久残留，资源被永久死锁（只能手工清 Redis）。
- * 这里在相同语义上加 TTL 兜底，并在读计数归零时主动删除 key。
- */
-function buildTtlLuaScripts(ttlSeconds: number): Record<string, string> {
-  const ttl = Math.max(1, Math.floor(ttlSeconds));
-  return {
-    acquireReadLock: `
-    -- Return 0 if an entry already exists.
-    local lockKey = KEYS[1]..".wlock"
-    if redis.call("exists", lockKey) == 1 then
-      return 0
-    end
-
-    -- Increment the counter and arm the TTL backstop
-    local countKey = KEYS[1]..".count"
-    local count = redis.call("incr", countKey)
-    redis.call("expire", countKey, ${ttl})
-    return count > 0
-    `,
-    acquireWriteLock: `
-    -- Return 0 if a lock entry already exists or read count is > 0
-    local lockKey = KEYS[1]..".wlock"
-    local countKey = KEYS[1]..".count"
-    local count = tonumber(redis.call("get", countKey))
-    if ((redis.call("exists", lockKey) == 1) or (count ~= nil and count > 0)) then
-      return 0
-    end
-
-    -- Set lock with a TTL backstop and respond with 'OK' if succeeded (otherwise null)
-    return redis.call("set", lockKey, "locked", "EX", ${ttl});
-    `,
-    releaseReadLock: `
-      -- Return 1 after decreasing the counter, if counter is < 0 now: return '-ERR'
-      local countKey = KEYS[1]..".count"
-      local result = redis.call("decr", countKey)
-      if result > 0 then
-        redis.call("expire", countKey, ${ttl})
-        return 1
-      elseif result == 0 then
-        redis.call("del", countKey)
-        return 1
-      else
-        return redis.error_reply("Error trying to release readlock when read count was 0.")
-      end
-    `,
-    acquireLock: `
-      -- Return 0 if lock entry already exists, or 'OK' if it succeeds in setting the lock entry.
-      local key = KEYS[1]..".lock"
-      if redis.call("exists", key) == 1 then
-        return 0
-      end
-
-      -- Return 'OK' if succeeded setting entry (with a TTL backstop)
-      return redis.call("set", key, "locked", "EX", ${ttl});
-      `,
-  };
-}
-
+// Each hash field is an acquisition owner, not a shared reader count or anonymous writer flag.
+// Redis server time defines expiry. Renew never creates a missing/expired owner; release is owner-only.
+const OWNER_LEASE_SCRIPT = `
+local nowParts = redis.call('TIME')
+local now = tonumber(nowParts[1]) * 1000 + math.floor(tonumber(nowParts[2]) / 1000)
+local entries = redis.call('HGETALL', KEYS[1])
+local writer = false
+local count = 0
+for i = 1, #entries, 2 do
+  if tonumber(entries[i + 1]) <= now then
+    redis.call('HDEL', KEYS[1], entries[i])
+  else
+    count = count + 1
+    if string.sub(entries[i], 1, 1) == 'w' then writer = true end
+  end
+end
+local action = ARGV[1]
+local owner = ARGV[2]
+local ttl = tonumber(ARGV[3])
+if action == 'acquire' then
+  if writer or (string.sub(owner, 1, 1) == 'w' and count > 0) then return 0 end
+  redis.call('HSET', KEYS[1], owner, now + ttl)
+elseif action == 'renew' then
+  if not redis.call('HGET', KEYS[1], owner) then return 0 end
+  redis.call('HSET', KEYS[1], owner, now + ttl)
+elseif action == 'release' then
+  local removed = redis.call('HDEL', KEYS[1], owner)
+  if removed == 0 then return 0 end
+else
+  return redis.error_reply('Unknown owner lease operation')
+end
+local remaining = redis.call('HGETALL', KEYS[1])
+local lastExpiry = now
+for i = 2, #remaining, 2 do lastExpiry = math.max(lastExpiry, tonumber(remaining[i])) end
+if #remaining == 0 then redis.call('DEL', KEYS[1])
+else redis.call('PEXPIRE', KEYS[1], math.max(1, lastExpiry - now)) end
+return 1
+`;
 export interface UrlAwareRedisLockerOptions {
   redisClient?: string;
   attemptSettings_retryCount?: number;
   attemptSettings_retryDelay?: number;
   attemptSettings_retryJitter?: number;
   namespacePrefix?: string;
-  /** TTL backstop (seconds) for Redis lock/count keys; guards against crash-leaked locks. */
+  /** Owner lease duration; active acquisitions renew automatically. */
   lockKeyTtlSeconds?: number;
 }
+interface OwnerLease extends LockLeaseGuard {
+  key: string;
+  token: string;
+  stopped: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+  renewal?: Promise<void>;
+}
+/** Same CSS public interfaces; one client and no namespace-wide startup/shutdown deletion. */
+export class UrlAwareRedisLocker implements ReadWriteLocker, ResourceLocker, Initializable, Finalizable {
+  protected readonly logger = getLoggerFor(this);
+  private readonly client: Redis;
+  private readonly local = new GreedyReadWriteLocker(new MemoryResourceLocker(), new MemoryMapStorage<number>());
+  private readonly mutex = new MemoryResourceLocker();
+  private readonly raw = new Map<string, { lease: OwnerLease; done: () => void }>();
+  private readonly pending = new Set<Promise<void>>();
+  private readonly ttlMs: number;
+  private readonly prefix: string;
+  private readonly retries: number;
+  private readonly delay: number;
+  private readonly jitter: number;
+  private shuttingDown = false;
+  private initialized?: Promise<void>;
+  private finalizing?: Promise<void>;
 
-/**
- * 扩展 CSS RedisLocker，支持 redis:// 和 rediss:// URL 格式。
- *
- * CSS 原生 RedisLocker.createRedisClient 是 private 的，无法 override。
- * 这里在构造函数中检测 URL 格式，如果是 URL 则用 ioredis 直接创建连接，
- * 替换掉父类构造函数中创建的（会报错的）连接。
- */
-export class UrlAwareRedisLocker extends RedisLocker {
-  private shuttingDown: boolean;
-
-  constructor(options: UrlAwareRedisLockerOptions = {}) {
-    const redisClient = options.redisClient ?? '127.0.0.1:6379';
-    const attemptSettings = {
-      retryCount: options.attemptSettings_retryCount ?? -1,
-      retryDelay: options.attemptSettings_retryDelay ?? 50,
-      retryJitter: options.attemptSettings_retryJitter ?? 30,
-    };
-    const redisSettings = {
-      namespacePrefix: options.namespacePrefix ?? '',
-    };
-
-    const isUrl = redisClient.startsWith('redis://') || redisClient.startsWith('rediss://');
-
-    if (isUrl) {
-      // 传一个合法的 host:port 给父类，避免它报错
-      super('127.0.0.1:6379', attemptSettings, redisSettings);
-
-      // 关闭父类创建的无用连接
-      const oldRedis = (this as any).redis as Redis;
-      oldRedis.disconnect(false);
-
-      // 用 URL 创建真正的连接
-      const redis = new Redis(redisClient);
-
-      // 注册 Lua 脚本
-      for (const [name, script] of Object.entries(REDIS_LUA_SCRIPTS)) {
-        redis.defineCommand(name, { numberOfKeys: 1, lua: script });
-      }
-
-      // 替换父类的 redis 实例
-      (this as any).redis = redis;
-      (this as any).redisRw = redis;
-      (this as any).redisLock = redis;
-    } else {
-      super(redisClient, attemptSettings, redisSettings);
+  public constructor(options: UrlAwareRedisLockerOptions = {}) {
+    const seconds = options.lockKeyTtlSeconds ?? 60;
+    if (!Number.isFinite(seconds) || seconds < 1) throw new Error('Redis owner lease must be at least one second');
+    this.ttlMs = Math.floor(seconds * 1000);
+    this.prefix = options.namespacePrefix ?? '';
+    this.retries = options.attemptSettings_retryCount ?? -1;
+    this.delay = options.attemptSettings_retryDelay ?? 50;
+    this.jitter = options.attemptSettings_retryJitter ?? 30;
+    if (!Number.isInteger(this.retries) || this.retries < -1 || !Number.isFinite(this.delay) || this.delay < 0 || !Number.isFinite(this.jitter) || this.jitter < 0) throw new Error('Invalid Redis lock retry settings');
+    const address = options.redisClient ?? '127.0.0.1:6379';
+    const settings = { lazyConnect: true, enableOfflineQueue: false, maxRetriesPerRequest: 1, commandTimeout: Math.max(100, Math.floor(this.ttlMs / 3)), connectTimeout: 10_000 };
+    if (address.startsWith('redis://') || address.startsWith('rediss://')) this.client = new Redis(address, settings);
+    else {
+      const match = /^(?:([^:]+):)?(\d{4,5})$/u.exec(address);
+      if (!match) throw new Error('Redis locker requires a Redis URL or host:port address');
+      this.client = new Redis(Number(match[2]), match[1] ?? '127.0.0.1', settings);
     }
-
-    // 用带 TTL 的脚本覆盖 CSS 原生实现，兜底崩溃泄漏的锁
-    const ttlScripts = buildTtlLuaScripts(options.lockKeyTtlSeconds ?? 60);
-    const liveRedis = (this as any).redis as Redis;
-    for (const [name, script] of Object.entries(ttlScripts)) {
-      liveRedis.defineCommand(name, { numberOfKeys: 1, lua: script });
-    }
-
-    this.shuttingDown = false;
-    attachRedisClientErrorHandler((this as any).redis as Redis, {
-      logger: this.logger,
-      label: 'UrlAwareRedisLocker',
-      isShuttingDown: (): boolean => this.shuttingDown,
-    });
+    attachRedisClientErrorHandler(this.client, { logger: this.logger, label: 'UrlAwareRedisLocker', isShuttingDown: () => this.shuttingDown });
   }
-
-  public override async finalize(): Promise<void> {
-    this.shuttingDown = true;
-    const redis = (this as any).redis as Redis;
-
+  public initialize(): Promise<void> {
+    this.ensureAccepting();
+    this.initialized ??= (async() => { if (this.client.status === 'wait') await this.client.connect(); await this.client.ping(); })();
+    return this.initialized;
+  }
+  public withReadLock<T>(identifier: ResourceIdentifier, callback: () => T | Promise<T>): Promise<T> { return this.withLease(identifier, 'r', callback); }
+  public withWriteLock<T>(identifier: ResourceIdentifier, callback: () => T | Promise<T>): Promise<T> { return this.withLease(identifier, 'w', callback); }
+  private async withLease<T>(identifier: ResourceIdentifier, mode: 'r' | 'w', callback: () => T | Promise<T>): Promise<T> {
+    this.ensureAccepting();
+    const done = this.track();
+    const lock = mode === 'r' ? this.local.withReadLock.bind(this.local) : this.local.withWriteLock.bind(this.local);
     try {
-      await super.finalize();
-    } catch (error: unknown) {
-      if (!isIgnorableRedisShutdownError(error)) {
-        throw error;
-      }
-    } finally {
-      redis.disconnect(false);
+      return await lock(identifier, async() => {
+        this.ensureAccepting();
+        await this.initialize();
+        const lease = await this.acquireOwner(`${this.prefix}__RW__${identifier.path}.owners`, mode);
+        let failed = false;
+        try { return await withLockLease(lease, callback); }
+        catch (error) { failed = true; throw error; }
+        finally { try { await this.releaseOwner(lease); } catch (error) { if (!failed) throw error; } }
+      }) as T;
+    } finally { done(); }
+  }
+  public async acquire(identifier: ResourceIdentifier): Promise<void> {
+    this.ensureAccepting();
+    const done = this.track();
+    let localHeld = false;
+    try {
+      await this.mutex.acquire(identifier); localHeld = true;
+      this.ensureAccepting(); await this.initialize();
+      const lease = await this.acquireOwner(`${this.prefix}__L__${identifier.path}.owners`, 'w');
+      this.raw.set(identifier.path, { lease, done });
+    } catch (error) { if (localHeld) await this.mutex.release(identifier); done(); throw error; }
+  }
+  public async release(identifier: ResourceIdentifier): Promise<void> {
+    const owner = this.raw.get(identifier.path);
+    if (!owner) throw new Error('Cannot release a resource not owned by this locker');
+    this.raw.delete(identifier.path);
+    try { await this.releaseOwner(owner.lease); }
+    finally { await this.mutex.release(identifier); owner.done(); }
+  }
+  public finalize(): Promise<void> {
+    this.shuttingDown = true;
+    this.finalizing ??= (async() => {
+      // Pending callbacks and raw holders must actually settle; closing another instance never clears their keys.
+      while (this.pending.size) await Promise.all([...this.pending]);
+      try { if (this.client.status !== 'wait' && this.client.status !== 'end') await this.client.quit(); }
+      catch (error) { if (!isIgnorableRedisShutdownError(error)) throw error; }
+      finally { this.client.disconnect(false); }
+    })();
+    return this.finalizing;
+  }
+  private ensureAccepting(): void { if (this.shuttingDown) throw new Error('Redis locker is shutting down'); assertLockContextActive(); }
+  private track(): () => void {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => { resolve = done; });
+    this.pending.add(promise);
+    return () => { this.pending.delete(promise); resolve(); };
+  }
+  private async operation(lease: Pick<OwnerLease, 'key' | 'token'>, action: string): Promise<boolean> {
+    return Number(await this.client.eval(OWNER_LEASE_SCRIPT, 1, lease.key, action, lease.token, this.ttlMs)) === 1;
+  }
+  private async acquireOwner(key: string, mode: 'r' | 'w'): Promise<OwnerLease> {
+    const lease: OwnerLease = { key, token: `${mode}:${randomUUID()}`, stopped: false, assertOwned: () => this.renewOwner(lease) };
+    for (let attempt = 0; ; attempt++) {
+      this.ensureAccepting();
+      if (await this.operation(lease, 'acquire')) break;
+      if (this.retries >= 0 && attempt >= this.retries) throw new Error('Redis owner lease acquisition exhausted its retry budget');
+      await new Promise<void>(resolve => setTimeout(resolve, this.delay + Math.random() * this.jitter));
     }
+    this.scheduleRenewal(lease);
+    return lease;
+  }
+  private lose(lease: OwnerLease): Error {
+    if (!lease.failure) { lease.failure = new Error('Redis lock ownership was lost; this execution cannot commit'); lease.onLoss?.(lease.failure); }
+    return lease.failure;
+  }
+  private renewOwner(lease: OwnerLease): Promise<void> {
+    if (lease.failure) return Promise.reject(lease.failure);
+    if (lease.stopped) return Promise.reject(this.lose(lease));
+    lease.renewal ??= (async() => {
+      try { if (!await this.operation(lease, 'renew')) throw this.lose(lease); }
+      catch { throw this.lose(lease); }
+      finally { lease.renewal = undefined; }
+    })();
+    return lease.renewal;
+  }
+  private scheduleRenewal(lease: OwnerLease): void {
+    lease.timer = setTimeout(() => {
+      if (lease.stopped || lease.failure) return;
+      void this.renewOwner(lease).then(() => { if (!lease.stopped && !lease.failure) this.scheduleRenewal(lease); }, () => undefined);
+    }, Math.max(50, Math.floor(this.ttlMs / 3)));
+    lease.timer.unref();
+  }
+  private async releaseOwner(lease: OwnerLease): Promise<void> {
+    lease.stopped = true;
+    if (lease.timer) clearTimeout(lease.timer);
+    await lease.renewal?.catch(() => undefined);
+    const released = await this.operation(lease, 'release');
+    if (!released && !lease.failure) throw this.lose(lease);
   }
 }

@@ -178,6 +178,9 @@ function deployment(input: {
   const harness = matrixHarness({
     identities: registry,
     outbound,
+    // The store's creation qualification is bound to this participant's WebID and Pod.
+    webId: input.participantWebId,
+    podUrl: input.podUrl,
     // The same wiring the container does: ask the room's server, sign as this participant.
     ...(input.federationJoin ? {
       directoryQuery: async ({ roomAlias, destination }: { roomAlias: string; destination: string }) => {
@@ -271,14 +274,14 @@ function twoDeployments(options: {
   const bobIdentity = identity('bob.example');
   const a = deployment({
     deploymentName: 'a.example', participant: 'alice.example', participantWebId: 'https://alice.example/profile/card#me',
-    podUrl: 'https://pod-a.example/alice/', participantIdentity: aliceIdentity, peers: [ bobIdentity ],
+    podUrl: 'https://alice.example/alice/', participantIdentity: aliceIdentity, peers: [ bobIdentity ],
     ...(options.schedulerDriven ? { schedulerDriven: true } : {}),
     ...(options.fetchA === undefined ? {} : { fetch: options.fetchA }),
     ...(options.federationJoin ? { federationJoin: true } : {}),
   });
   const b = deployment({
     deploymentName: 'b.example', participant: 'bob.example', participantWebId: 'https://bob.example/profile/card#me',
-    podUrl: 'https://pod-b.example/bob/', participantIdentity: bobIdentity, peers: [ aliceIdentity ],
+    podUrl: 'https://bob.example/bob/', participantIdentity: bobIdentity, peers: [ aliceIdentity ],
     ...(options.fetchAuthChain === false ? { canFetchAuthChain: false } : {}),
     ...(options.schedulerDriven ? { schedulerDriven: true } : {}),
     ...(options.fetchB === undefined ? {} : { fetch: options.fetchB }),
@@ -315,7 +318,8 @@ describe('two deployments federating one room', () => {
     const { a, b } = twoDeployments();
     const alice = (await a.store.getAccount(a.context)).userId;
     const bob = (await b.store.getAccount(b.context)).userId;
-    expect(bob).toMatch(/:bob\.example$/u);
+    // Members and authors are WebIDs, so Bob's identity is the same string in both Pods.
+    expect(bob).toBe('https://bob.example/profile/card#me');
 
     // Alice creates the room on her own deployment; nobody else is in it yet, so nothing
     // leaves the Pod.
@@ -865,7 +869,10 @@ describe('two deployments federating over real HTTP', () => {
       expect(outcome.status).toBe('ok');
       const signed = outcome.event!;
       // Both signatures, and the same event: the invited server adds to it, it does not replace it.
-      expect(computeEventId(signed)).toBe(invite.event_id);
+      // The id is the inviting writer's name for the event, kept across the countersign hop — the
+      // old assertion here recomputed it from the content, which is the self-proving contract this
+      // migration replaces (see docs/solid-multiparty-protocol.md §2/§6).
+      expect(signed.event_id).toBe(invite.event_id);
       expect(Object.keys(signed.signatures as Record<string, unknown>).sort()).toEqual([ 'alice.example', 'bob.example' ]);
       expect(requestsToB.some(request => request.path.startsWith('/_matrix/federation/v2/invite/'))).toBe(true);
       // Nothing was written to Bob's Pod by the invite: he has not accepted anything yet.

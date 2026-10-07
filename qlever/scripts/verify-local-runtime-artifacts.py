@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -755,12 +756,51 @@ def artifact(prefix: Path, path: Path) -> dict[str, object]:
     }
 
 
-def runtime_artifacts(prefix: Path, runtime_path: Path) -> list[dict[str, object]]:
+def runtime_artifacts(prefix: Path, runtime_path: Path, sqlite_runtime: Path | None = None) -> list[dict[str, object]]:
     paths = [runtime_path]
     library_root = prefix / "lib"
     if library_root.is_dir():
         paths.extend(sorted(path for path in library_root.rglob("*") if path.is_file()))
-    return [artifact(prefix, path) for path in paths]
+    records = [artifact(prefix, path) for path in paths]
+    if sqlite_runtime is not None:
+        matches = [record for record in records if (prefix / str(record["path"])).resolve() == sqlite_runtime.resolve()]
+        if len(matches) != 1:
+            raise SystemExit("expected exactly one SQLite runtime library in artifacts")
+        matches[0]["role"] = "sqlite-runtime"
+    return records
+
+
+def qualify_sqlite_runtime(prefix: Path, library: Path) -> None:
+    actual = library.resolve(strict=True)
+    if not actual.is_relative_to(prefix.resolve()) or not actual.is_file():
+        raise SystemExit("SQLite runtime escapes artifact")
+    arch = subprocess.check_output(["lipo", "-archs", str(actual)], text=True).strip().split()
+    if "arm64" not in arch:
+        raise SystemExit("SQLite runtime is not ARM64")
+    for line in subprocess.check_output(["otool", "-L", str(actual)], text=True).splitlines()[1:]:
+        dependency = line.strip().split()[0]
+        if not dependency.startswith(("@loader_path/", "@rpath/", "/usr/lib/", "/System/Library/")):
+            raise SystemExit(f"SQLite runtime has non-relocatable dependency: {dependency}")
+    handle = ctypes.CDLL(str(actual))
+    for symbol in ["sqlite3_open_v2", "sqlite3_close_v2", "sqlite3_prepare_v3", "sqlite3_enable_load_extension", "sqlite3_load_extension"]:
+        getattr(handle, symbol)
+    # Cold actual Bun, without host preload; require FTS and real vec0 before packaging.
+    script = """
+    const { Database } = require('bun:sqlite');
+    if (Database.setCustomSQLite(process.argv[1]) !== true) throw Error('SQLite loading returned false');
+    const db = new Database(':memory:');
+    db.exec('CREATE VIRTUAL TABLE docs USING fts5(body); INSERT INTO docs VALUES("current")');
+    if (db.query('SELECT count(*) n FROM docs WHERE docs MATCH "current"').get().n !== 1) throw Error('FTS');
+    require('sqlite-vec').load(db);
+    db.exec('CREATE VIRTUAL TABLE vectors USING vec0(embedding float[768])');
+    const vector = new Float32Array(768); vector[0] = 1;
+    db.query('INSERT INTO vectors(rowid,embedding) VALUES (?,?)').run(41,vector);
+    if (db.query('SELECT length(embedding) n FROM vectors WHERE rowid=41').get().n !== 3072) throw Error('VEC readback');
+    if (db.query('SELECT rowid FROM vectors WHERE embedding MATCH ? AND k=1').get(vector).rowid !== 41) throw Error('VEC search');
+    db.close();
+    """
+    subprocess.run(["bun", "--no-env-file", "-e", script, str(actual)], check=True, timeout=30,
+                   cwd=Path(__file__).resolve().parents[2])
 
 
 def main() -> int:
@@ -771,7 +811,12 @@ def main() -> int:
     provenance.add_argument("--prior-sdk-image")
     provenance.add_argument("--build-source")
     parser.add_argument("--smoke-database", required=True, type=Path)
+    parser.add_argument("--sqlite-runtime", type=Path)
     args = parser.parse_args()
+    if args.build_source == "macos-arm64" and args.sqlite_runtime is None:
+        raise SystemExit("macOS artifact requires --sqlite-runtime")
+    if args.sqlite_runtime is not None:
+        qualify_sqlite_runtime(args.prefix, args.sqlite_runtime)
 
     prefix = args.prefix
     runtime_path = prefix / "bin/xpod_qlever_local_runtime"
@@ -808,7 +853,7 @@ def main() -> int:
             "patchSeriesSha256": lock["patchSeriesSha256"],
         },
         "build": build,
-        "artifacts": runtime_artifacts(prefix, runtime_path),
+        "artifacts": runtime_artifacts(prefix, runtime_path, args.sqlite_runtime),
     }
     manifest_path = prefix / "manifest.json"
     manifest_path.write_text(

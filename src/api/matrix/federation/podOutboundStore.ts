@@ -19,12 +19,17 @@
  * asked about, which is honest — "the ones I have work for" — rather than pretending to know more.
  */
 import { MatrixError } from '../MatrixError';
+import { isDeepStrictEqual } from 'node:util';
+import type { MatrixStoreContext } from '../types';
 import {
   deleteControlRecord,
+  deletePublicationControlRecordExactly,
+  transitionPublicationControlRecordExactly,
   listControlRecords,
   readControlRecord,
   writeControlRecord,
   type MatrixControlRecordTarget,
+  type PublicationControlAuthority,
 } from '../controlRecords';
 import { decodeOutboundBatch, encodeOutboundBatch, outboundBatchKey } from './outboundBatches';
 import type { MatrixOutboundBatch, MatrixOutboundStore } from './outboundQueue';
@@ -39,6 +44,11 @@ import type { MatrixOutboundBatch, MatrixOutboundStore } from './outboundQueue';
 export const OUTBOUND_BATCH_LOOKBACK_DAYS = 7;
 
 export interface PodMatrixOutboundStoreOptions {
+  /** Present only for the owner-driven publication enqueue handle. */
+  publicationCaller?: MatrixStoreContext;
+  publicationHandleFor?: (scope: string, batch: MatrixOutboundBatch) => Promise<{
+    target: MatrixControlRecordTarget; authority: PublicationControlAuthority;
+  }>;
   /**
    * The Pod handle a scope's writes use, resolved from the same authority a Matrix write uses.
    * `undefined` means this deployment does not serve that scope, and the caller is told so.
@@ -107,6 +117,53 @@ export class PodMatrixOutboundStore implements MatrixOutboundStore {
     // Already gone is the state we wanted; a delivery that was retried after a restart should not
     // fail because the record it is clearing has already been cleared.
     if (record) await deleteControlRecord(target, record);
+  }
+
+  public async preparePublication(scope: string, batch: MatrixOutboundBatch): Promise<void> {
+    await this.requirePublicationHandle(scope, batch);
+  }
+
+  private async requirePublicationHandle(scope: string, batch: MatrixOutboundBatch): Promise<{
+    target: MatrixControlRecordTarget; authority: PublicationControlAuthority;
+  }> {
+    if (batch.pdus.length !== 1 || batch.edus.length !== 0) {
+      throw new MatrixError(409, 'M_CONFLICT', 'Publication requires a single event');
+    }
+    if (this.options.publicationCaller) return { target: await this.requireHandle(scope), authority: this.options.publicationCaller };
+    if (!this.options.publicationHandleFor) throw new MatrixError(409, 'M_CONFLICT', 'Publication carrier has no explicit authority resolver');
+    const handle = await this.options.publicationHandleFor(scope, batch);
+    if (handle.target.scope !== scope || handle.authority.podUrl !== scope || handle.authority.webId !== batch.actor?.webId) {
+      throw new MatrixError(403, 'M_FORBIDDEN', 'Publication authority does not match the batch scope and actor');
+    }
+    return handle;
+  }
+
+  public async transitionPublicationExact(scope: string, expected: MatrixOutboundBatch, next: MatrixOutboundBatch): Promise<boolean> {
+    if (expected.pdus.length !== 1 || expected.edus.length !== 0
+      || next.pdus.length !== 1 || next.edus.length !== 0 || next.createdAt !== expected.createdAt
+      || !isDeepStrictEqual(expected.actor, next.actor) || !isDeepStrictEqual(expected.pdus, next.pdus)
+      || expected.origin !== next.origin || expected.destination !== next.destination) {
+      throw new MatrixError(409, 'M_CONFLICT', 'Publication transition requires the exact payload authority and original bucket');
+    }
+    const { target, authority } = await this.requirePublicationHandle(scope, expected);
+    const record = await readControlRecord(target, 'outbound', outboundBatchKey(expected), { at: expected.createdAt, days: 0 });
+    if (!record || !isDeepStrictEqual(decodeOutboundBatch(record), expected)) return false;
+    return await transitionPublicationControlRecordExactly(target, record, {
+      kind: 'outbound', key: outboundBatchKey(next), at: expected.createdAt, ...encodeOutboundBatch(next),
+    }, authority);
+  }
+
+  public async removePublicationExact(scope: string, batch: MatrixOutboundBatch): Promise<void> {
+    if (batch.pdus.length !== 1 || batch.edus.length !== 0) {
+      throw new MatrixError(409, 'M_CONFLICT', 'Publication cleanup requires an exact single-event caller handle');
+    }
+    const { target, authority } = await this.requirePublicationHandle(scope, batch);
+    const record = await readControlRecord(target, 'outbound', outboundBatchKey(batch), { at: batch.createdAt, days: 0 });
+    if (!record) return;
+    if (!isDeepStrictEqual(decodeOutboundBatch(record), batch)) {
+      throw new MatrixError(409, 'M_CONFLICT', 'Publication batch changed before cleanup');
+    }
+    await deletePublicationControlRecordExactly(target, record, authority);
   }
 
   private async requireHandle(scope: string): Promise<MatrixControlRecordTarget> {

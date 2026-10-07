@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
-import { drizzle, eq } from '@undefineds.co/drizzle-solid';
+import { drizzle, alias, eq, and, or, gt, lt, lte, asc, desc, resolveRowSubject } from '@undefineds.co/drizzle-solid';
+import { Parser as N3Parser, termToId, type Quad } from 'n3';
 import {
   chatResource,
   messageResource,
@@ -20,11 +21,24 @@ import {
 } from '../reconciler';
 import { getProtocolMetadata, withProtocolMetadata, type ProtocolMetadata } from '../protocol-metadata';
 import { MatrixError } from './MatrixError';
+import { isDeepStrictEqual } from 'node:util';
+import { parseMembershipOperation, type MembershipOperation } from './membershipOperation';
+import type { MembershipInviteProjectEvent } from './membershipLifecycle';
 import { inboundWriteAuthority } from './inboundAuthority';
-import { eventIdForWrite } from './eventIdentity';
+import { eventIdForWrite, generateEventId } from './eventIdentity';
+import { MEMBERSHIP_AUTHORITY_EVENT_TYPE, type MembershipAuthorityPublisher } from './membershipAuthorityPublication';
 import { matrixPodWriteFor, type MatrixPodWrite } from './podAccess';
 import type { MatrixControlRecordTarget } from './controlRecords';
-import { InMemoryMatrixEventJournal, type MatrixEventJournal, type MatrixTransactionReservation } from './MatrixEventJournal';
+import type { MatrixFederationActor } from './federation/outboundTransaction';
+import {
+  InMemoryMatrixEventJournal,
+  parseReconcileCycleView,
+  type MatrixEventJournal,
+  type MatrixEventReference,
+  type MatrixReconcileCheckpoint,
+  type MatrixReconcileCycleView,
+  type MatrixTransactionReservation,
+} from './MatrixEventJournal';
 import { buildPersistedEvent, readPersistedEvent, type PersistedEventInput, type PersistedMatrixEvent } from './persistedEvent';
 import { roomGraphPosition } from './protocol/roomGraph';
 import { storedGraphEvent, storedProtocolEvent } from './storedEvent';
@@ -35,12 +49,25 @@ import type { RemoteJoinOutcome } from './federation/remoteJoin';
 import { matrixUserIdFor, webIdServerName } from './protocol/serverName';
 import {
   roomChatIri,
+  roomDirectoryIri,
   roomMessagesDocumentIri,
   roomSurfaceId,
   roomThreadIri,
 } from './roomResources';
+import {
+  canonicalChatResourceId,
+  decodeSourceBoundRoomId,
+  encodeSourceBoundRoomId,
+} from './canonicalRoomIdentity';
+import type { CanonicalRoomSource } from './canonicalRoomSource';
+import {
+  buildConditionalEventWrite,
+  canWriteConditionally,
+  executeConditionalEventWrite,
+  type ConditionalWriteDatabase,
+} from './conditionalEventWrite';
 import type { MatrixSigningIdentitySource } from './identityRegistry';
-import { computeEventId, EventIntegrityError } from './protocol/eventIntegrity';
+import { computeEventId } from './protocol/eventIntegrity';
 import type { MatrixServiceIdentity } from './protocol/serviceIdentity';
 import type { PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
 import type { SharedWakeAgentJob } from '../reconciler/coordination';
@@ -68,6 +95,53 @@ const schema = {
 
 /** The tables a Matrix Pod handle registers, in one place for the store and its callers. */
 const MATRIX_TABLES = [ chatResource, threadResource, runResource, runStepResource, deliveryResource, messageResource ];
+
+/** One protected message column, derived once from the installed public models metadata. */
+interface MessageColumnGuard {
+  name: string;
+  predicate: string;
+  inverse: boolean;
+  dataType: string;
+}
+
+let messageGuardColumns: MessageColumnGuard[] | undefined;
+let messageGuardByName: Map<string, MessageColumnGuard> | undefined;
+
+/**
+ * The message columns and their declared predicate, direction and cardinality, read from the
+ * installed public models metadata (`getPredicate`, `dataType`, `isInverse()`). Cached because the
+ * winner guard runs on every conditional write.
+ */
+function messageColumnGuards(): { all: MessageColumnGuard[]; byName: Map<string, MessageColumnGuard> } {
+  if (!messageGuardColumns || !messageGuardByName) {
+    const all: MessageColumnGuard[] = [];
+    const byName = new Map<string, MessageColumnGuard>();
+    const namespace = messageResource.config.namespace;
+    for (const [ name, column ] of Object.entries(messageResource as unknown as Record<string, {
+      getPredicate?: (namespace: unknown) => string;
+      dataType?: string;
+      isInverse?: () => boolean;
+    }>)) {
+      if (!column || typeof column.getPredicate !== 'function' || typeof column.dataType !== 'string') {
+        continue;
+      }
+      const guard: MessageColumnGuard = {
+        name,
+        predicate: String(column.getPredicate(namespace)),
+        inverse: typeof column.isInverse === 'function' && Boolean(column.isInverse()),
+        dataType: column.dataType,
+      };
+      if (guard.predicate === '@id') {
+        continue;
+      }
+      all.push(guard);
+      byName.set(name, guard);
+    }
+    messageGuardColumns = all;
+    messageGuardByName = byName;
+  }
+  return { all: messageGuardColumns, byName: messageGuardByName };
+}
 
 /**
  * Provisioning a participant's own signing identity when they enter a room.
@@ -117,17 +191,37 @@ export interface MatrixParticipantIdentityProvider {
  * deployment that watches the Pod's resources (Solid notifications) *can* say, and then only
  * the rooms that changed have to be read. Absent means "cannot tell", and every room is read.
  */
+export interface MatrixRoomDocumentChange {
+  roomId: string;
+  documentIri: string;
+}
+
+export interface MatrixRoomChangeSnapshot {
+  trust: 'all' | 'changed';
+  rooms: readonly string[];
+  /** Exact document hints; absence never proves that other documents did not change. */
+  documentChanges?: readonly MatrixRoomDocumentChange[];
+  /** Rooms needing reconciliation beyond the document hints, such as a connection gap. */
+  reconcileRooms?: readonly string[];
+  /**
+   * An opaque observation owned by the source, acknowledged after its reads succeed. A production
+   * source hands back a serialized, authenticated token (a string); a custom test source may hand
+   * back an object it keeps in memory.
+   */
+  snapshot?: string | object;
+}
+
 export interface MatrixRoomChangeSource {
   /**
    * The rooms with a change to pick up. `trust: 'all'` means the source cannot account for
    * everything (not watching, just started, dropped) and every room has to be read.
    */
-  pending(input: { scope: string }): Promise<{ trust: 'all' | 'changed'; rooms: readonly string[] }>;
+  pending(input: { scope: string }): Promise<MatrixRoomChangeSnapshot>;
   /**
    * The pass has read those rooms. A source keeps reporting a change until this is called, so
    * a change that arrives while a pass runs is not forgotten.
    */
-  settle(input: { scope: string; rooms: readonly string[] }): Promise<void>;
+  settle(input: { scope: string; rooms: readonly string[]; documentChanges?: readonly MatrixRoomDocumentChange[]; reconcileRooms?: readonly string[]; snapshot?: string | object; full?: boolean }): Promise<void>;
 }
 
 /**
@@ -138,10 +232,22 @@ export interface MatrixRoomChangeSource {
  * satisfies this.
  */
 export interface MatrixFederationOutbox {
-  enqueue(input: { scope: string; origin: string; destination: string; pdus: readonly unknown[] }): Promise<unknown>;
+  /**
+   * `actor` is the participant whose authority the batch travels under (O1): a reference to the
+   * WebID/Pod the live grant is resolved from at send time, never a credential.
+   */
+  enqueue(input: {
+    scope: string;
+    origin: string;
+    destination: string;
+    pdus: readonly unknown[];
+    actor?: MatrixFederationActor;
+  }): Promise<unknown>;
 }
 
 export interface PodMatrixStoreOptions {
+  membershipAuthorityPublisher?: Pick<MembershipAuthorityPublisher, 'publish'>;
+  publicationOutboxFor?: (write: MatrixPodWrite, context: MatrixStoreContext) => MatrixFederationOutbox;
   podAccess?: PodAccessFetchProvider;
   journal?: MatrixEventJournal;
   serverName?: string;
@@ -174,6 +280,12 @@ export interface PodMatrixStoreOptions {
     /** The server named by the room id: the resident to ask. */
     destination: string;
     context: MatrixStoreContext;
+    /**
+     * The id and timestamp this join was first attempted with, persisted before the handshake.
+     * A retry that lost the first response reuses them, so the room sees one join event and one
+     * creation time rather than a second membership event under a fresh identity.
+     */
+    pending?: { eventId: string; originServerTs: number };
   }) => Promise<RemoteJoinOutcome | undefined>;
   /**
    * Resolving a room alias this deployment does not hold, by asking the server the alias names
@@ -190,6 +302,29 @@ export interface PodMatrixStoreOptions {
    * to five minutes; `0` makes every pass a full one, i.e. the source is never trusted.
    */
   roomChangeFullPassMs?: number;
+  /**
+   * The clock that stamps events and decides their day bucket, in epoch milliseconds.
+   *
+   * Defaults to `Date.now`. A test that needs to cross a day boundary injects this rather than
+   * faking global time: faking `Date` also backdates the DPoP proof on the authenticated fetch
+   * (`iat`), which the issuer rightly refuses, so the fix belongs at the storage clock — auth
+   * keeps the real time. Queues and lease deadlines deliberately keep using wall time.
+   */
+  clock?: () => number;
+  /**
+   * Queue each outbound batch with the participant whose authority it travels under (O1).
+   *
+   * Enabled in the production wiring, where the outbound sender resolves that participant's live
+   * grant. Off by default so in-memory harnesses that exercise the legacy signed transport keep
+   * their established behaviour; it changes only *what is queued*, never the local write.
+   */
+  deliverAsActor?: boolean;
+  /**
+   * The canonical source port, used **before any write** to prove the caller owns the exact
+   * registered Pod a new room's canonical Chat will live in (`assertCreationOwner`). Absent means the
+   * store cannot qualify creation and refuses it rather than writing under an unproven owner.
+   */
+  canonicalSource?: Pick<CanonicalRoomSource, 'assertCreationOwner'> & Partial<Pick<CanonicalRoomSource, 'assertActorPod' | 'assertRegisteredActorPod'>>;
 }
 
 type Db = any;
@@ -207,6 +342,7 @@ interface MatrixRoomSource {
 
 interface MatrixEventSource {
   id: string;
+  parent?: string;
   maker?: string | null;
   content?: JsonObjectSource;
   role?: string;
@@ -258,12 +394,36 @@ export class PodMatrixStore {
   private readonly lastFullPassAt = new Map<string, number>();
   private readonly stateCache = new Map<string, MatrixRoomStateReplay>();
   private readonly stateCacheLimit: number;
+  /**
+   * In-process write locks keyed by logical event `(scope, roomId, eventId)`.
+   *
+   * A **partial** mitigation only, not the G03 guarantee. The read-then-insert sequence is not atomic
+   * on its own: two concurrent requests served by *this* store instance for one logical key can both
+   * miss the timeline read and both write, and the Solid insert then keeps each attempt's object value
+   * as a separate triple under the same subject. The lock makes the second request served here read
+   * back the first instead of inserting again. It does **not** cover a second store/process writing the
+   * same Pod, and must never be described as if a deployment were the only writer of its Pod — that is
+   * not accepted protocol design (root finding R08). The durable cross-writer guarantee requires the
+   * upstream contract in `docs/issues/drizzle-solid-matrix-atomicity.md`; this map is only a
+   * single-instance defense and is held just for the write decision.
+   */
+  private readonly eventWriteLocks = new Map<string, Promise<void>>();
   private readonly logger = getLoggerFor(this);
   private readonly serverName?: string;
   private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
+  private readonly clock: () => number;
+  private readonly deliverAsActor: boolean;
+  private readonly canonicalSource?: Pick<CanonicalRoomSource, 'assertCreationOwner'> & Partial<Pick<CanonicalRoomSource, 'assertActorPod' | 'assertRegisteredActorPod'>>;
+  private readonly membershipAuthorityPublisher?: Pick<MembershipAuthorityPublisher, 'publish'>;
+  private readonly publicationOutboxFor?: PodMatrixStoreOptions['publicationOutboxFor'];
 
   public constructor(options: PodMatrixStoreOptions) {
     this.serverName = options.serverName;
+    this.clock = options.clock ?? Date.now;
+    this.deliverAsActor = options.deliverAsActor ?? false;
+    this.canonicalSource = options.canonicalSource;
+    this.membershipAuthorityPublisher = options.membershipAuthorityPublisher;
+    this.publicationOutboxFor = options.publicationOutboxFor;
     this.podAccess = options.podAccess;
     this.journal = options.journal ?? new InMemoryMatrixEventJournal();
     this.identities = options.identities;
@@ -280,6 +440,33 @@ export class PodMatrixStore {
     this.serverGroupReconcilerService = options.serverGroupReconcilerService;
   }
 
+  /** The storage/event clock. Auth, queues and lease deadlines keep wall time (see `clock`). */
+  private now(): number {
+    return this.clock();
+  }
+
+  /**
+   * Run `task` while holding the in-process lock for one logical event.
+   *
+   * Calls for the same key run one after another in arrival order; calls for different keys stay
+   * concurrent. Rejections from an earlier holder do not leak into a later waiter: the queue only
+   * carries the gate, and the task's own result is returned to its own caller.
+   */
+  private async runExclusive<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.eventWriteLocks.get(key) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const queued = previous.then(() => gate);
+    this.eventWriteLocks.set(key, queued);
+    await previous.catch(() => undefined);
+    try {
+      return await task();
+    } finally {
+      release();
+      if (this.eventWriteLocks.get(key) === queued) this.eventWriteLocks.delete(key);
+    }
+  }
+
   public async getAccount(context: MatrixStoreContext): Promise<MatrixAccountInfo> {
     // The MXID reported here is the one others will invite, so it has to be final before
     // it is handed out — never the deployment-name fallback that provisioning would move.
@@ -293,7 +480,41 @@ export class PodMatrixStore {
   }
 
   public async createRoom(input: MatrixCreateRoomRequest, context: MatrixStoreContext): Promise<MatrixRoomRecord> {
-    const db = await this.getDb(context);
+    // Qualification precedes *any* effect: no getDb/init, no participant-identity mint, no Pod write.
+    // The caller must be a Solid session matching the context, and must own the exact registered Pod
+    // the new canonical Chat will live in. The chosen scope must be that exact registered root.
+    if (!context.podUrl) {
+      throw new MatrixError(403, 'M_FORBIDDEN', 'A new canonical room needs the caller Pod');
+    }
+    const canonicalSource = this.canonicalSource;
+    if (!canonicalSource) {
+      throw new MatrixError(403, 'M_FORBIDDEN', 'Canonical room creation is not available');
+    }
+    const scope = this.scope(context);
+    // A random storage key -> exact public Chat IRI -> source-bound room id, validated (255 bytes)
+    // before any write so an over-long id never reaches the Pod.
+    const storageKey = this.randomId(18);
+    const sourceIri = chatResource.buildIri(scope, { id: storageKey });
+    // The exact public id that addresses this source. A null here means the chosen scope is not a
+    // strict canonical Chat root the public builder reproduces: fail closed *before* any effect
+    // rather than silently writing a hashed mirror while naming the room by its source.
+    const chatId = canonicalChatResourceId(sourceIri, scope);
+    if (chatId === null) {
+      throw new MatrixError(403, 'M_FORBIDDEN', 'The new room scope is not a canonical Chat root');
+    }
+    let roomId: string;
+    try {
+      roomId = encodeSourceBoundRoomId(sourceIri);
+    } catch {
+      throw new MatrixError(400, 'M_BAD_JSON', 'The new room identity could not be encoded');
+    }
+    const { sourceRoot } = await canonicalSource.assertCreationOwner(sourceIri, context);
+    // The context Pod must be *exactly* the chosen registered canonical root; a spelling that
+    // normalisation would equate (e.g. a missing trailing slash) must not silently move the Pod.
+    if (scope !== sourceRoot) {
+      throw new MatrixError(403, 'M_FORBIDDEN', 'The new room must be created in the chosen registered Pod');
+    }
+
     for (const state of input.initial_state ?? []) {
       if (['m.room.create', 'm.room.member', 'm.room.encryption'].includes(state.type)) {
         throw new MatrixError(400, 'M_BAD_JSON', 'Unsupported initial state event');
@@ -307,12 +528,11 @@ export class PodMatrixStore {
     // room whose participants are on different servers (the distributed target) must
     // not opt out, so only an explicit `false` is written.
     const federate = input.creation_content?.['m.federate'] !== false;
+    const db = await this.getDb(context);
     await this.ensureParticipantIdentity(context);
     const sender = this.getMatrixUserId(context);
-    const now = Date.now();
-    const roomId = this.generateRoomId(context);
-    const chatId = this.chatResourceIdFromRoomId(roomId);
-    const threadId = this.threadResourceIdFromRoomId(roomId);
+    const now = this.now();
+    const threadId = this.threadResourceId(roomId, scope);
     const reconcilerOwner = 'server' as const;
     const coordination = reconcilerCoordinationMetadata(reconcilerOwner);
 
@@ -326,6 +546,8 @@ export class PodMatrixStore {
       metadata: withProtocolMetadata({
         '@id': `${this.chatIri(roomId, context)}/metadata`,
         protocol: 'matrix',
+        // The shared ChatMetadata role map is the sole generic role truth: the creator is owner.
+        memberRoles: { [context.webId]: 'owner' },
         ...coordination,
       }, 'matrix', {
         roomId,
@@ -333,7 +555,6 @@ export class PodMatrixStore {
         visibility: input.visibility === 'public' ? 'public' : 'private',
         roomVersion: String(input.creation_content?.room_version ?? SUPPORTED_ROOM_VERSION),
         federate,
-        members: [context.webId],
         preset: input.preset,
         invite: input.invite ?? [],
       }),
@@ -414,7 +635,7 @@ export class PodMatrixStore {
     for (const state of input.initial_state ?? []) {
       await append({
         type: state.type,
-        originServerTs: Date.now(),
+        originServerTs: this.now(),
         stateKey: state.state_key ?? '',
         content: state.content ?? {},
       });
@@ -499,7 +720,26 @@ export class PodMatrixStore {
     if (existing?.content.membership === 'join') return true;
     if (existing?.content.membership === 'ban') throw new MatrixError(403, 'M_FORBIDDEN', 'Banned from room');
 
-    const outcome = await remoteJoin({ roomId, userId, destination, context });
+    // The pending join is named before the handshake and kept under a key that only names the
+    // logical join — the room and the participant. A response lost after the resident accepted the
+    // join is then retried with the same id and timestamp, so the room never sees two membership
+    // events for one join. Naming a fresh id on each attempt is what the previous code did, and it
+    // cannot be fixed by a comment: the reservation is what makes the retry reuse it.
+    const pendingKey = JSON.stringify([ 'remote-join', roomId, userId ]);
+    const pending = await this.journal.reserveTransaction(
+      this.scope(context),
+      pendingKey,
+      {
+        eventId: eventIdForWrite(undefined),
+        createdAt: this.now(),
+        contentHash: this.hash(this.canonicalJson([ 'remote-join', roomId, userId, destination ])),
+      },
+      await this.reservationAuthority(context),
+    );
+    const outcome = await remoteJoin({
+      roomId, userId, destination, context,
+      pending: { eventId: pending.eventId, originServerTs: pending.createdAt },
+    });
     if (!outcome) return false;
     if (outcome.status !== 'joined') {
       throw outcome.status === 'rejected'
@@ -515,7 +755,7 @@ export class PodMatrixStore {
       roomId,
       type: 'm.room.member',
       sender: userId,
-      originServerTs: Number(outcome.event.origin_server_ts ?? Date.now()),
+      originServerTs: Number(outcome.event.origin_server_ts ?? this.now()),
       stateKey: userId,
       content: (isRecord(outcome.event.content) ? outcome.event.content : { membership: 'join' }),
       event: outcome.event as PersistedMatrixEvent,
@@ -527,10 +767,62 @@ export class PodMatrixStore {
     return true;
   }
 
+  /** Internal membership projection adapter; not an HTTP action or a source-owner capability. */
+  public async projectMembershipInvite(input: Parameters<MembershipInviteProjectEvent>[0]): Promise<MatrixEventRecord> {
+    const operation = parseMembershipOperation(input.operation);
+    if (!operation || operation.kind !== 'invite' || !['committed', 'complete'].includes(operation.phase)
+      || typeof input.validateCommitted !== 'function') throw new MatrixError(400, 'M_INVALID_PARAM', 'A strict invitation operation is required');
+    const caller = input.actor;
+    const source = this.canonicalSource;
+    if (caller.service || !caller.auth || !isSolidAuth(caller.auth) || caller.auth.webId !== caller.webId
+      || !source?.assertActorPod || !source.assertRegisteredActorPod || !this.podAccess) {
+      throw new MatrixError(403, 'M_FORBIDDEN', 'Original caller membership transport is required');
+    }
+    const selected = await source.assertActorPod(caller);
+    await source.assertRegisteredActorPod(operation.actor);
+    if (!input.existingOnly && (operation.actor.webId !== caller.webId || operation.actor.podUrl !== selected.podUrl)) {
+      throw new MatrixError(403, 'M_FORBIDDEN', 'Only the original actor may persist or register this invitation');
+    }
+    const context: MatrixStoreContext = { webId: caller.webId, podUrl: selected.podUrl, auth: { ...caller.auth } };
+    const callerFetch = await this.podAccess.getPodFetch(context.webId, { auth: context.auth, podBaseUrl: context.podUrl });
+    if (!callerFetch) throw new MatrixError(403, 'M_FORBIDDEN', 'The original caller transport is unavailable');
+    const resourceId = this.messageResourceId(input.roomId, operation.operationId, operation.event.createdAt, operation.actor.podUrl);
+    const confirmWinner = async(): Promise<MatrixEventRecord | undefined> => await this.readCommittedMessageFromPod(
+      context, resourceId, input.roomId, operation.operationId, operation.actor.webId, { operation, fetch: callerFetch });
+    const register = async(winner: MatrixEventRecord): Promise<MatrixEventRecord> => {
+      await input.validateCommitted(winner);
+      const reference = await this.journal.registerReference(selected.podUrl, { roomId: input.roomId,
+        eventId: operation.operationId, createdAt: operation.event.createdAt,
+        messageIri: messageResource.buildIri(operation.actor.podUrl, { id: resourceId }) });
+      winner.depth = reference.sequence;
+      return winner;
+    };
+    const existing = await confirmWinner();
+    if (existing) {
+      if (input.existingOnly) { await input.validateCommitted(existing); return existing; }
+      return await register(existing);
+    }
+    if (input.existingOnly) throw new MatrixError(409, 'M_CONFLICT', 'The exact original actor invitation is absent');
+    // Absence is now proven. Only the actor's own fresh caller context resolves a write handle.
+    const write = await matrixPodWriteFor(context, { getPodFetch: async() => callerFetch });
+    if (!canWriteConditionally(write.db)) throw new MatrixError(500, 'M_UNKNOWN', 'Membership persistence requires conditional Pod writes');
+    const observed = await this.listEvents(write.db, input.roomId, context, { registerJournal: false });
+    return await this.appendEvent(write.db, { roomId: input.roomId, type: 'm.room.member', stateKey: operation.targetWebId,
+      sender: operation.actor.webId, maker: operation.actor.webId, eventId: operation.operationId,
+      originServerTs: operation.event.createdAt, content: { ...operation.event.content },
+      validateCommitted: input.validateCommitted, suppressQueue: true, confirmWinner }, context, observed);
+  }
+
   public async inviteUser(roomId: string, userId: string, context: MatrixStoreContext): Promise<void> {
     const db = await this.getDb(context);
     await this.requireRoomOwner(db, roomId, context);
-    if (!/^@[^:]+:.+$/u.test(userId)) throw new MatrixError(400, 'M_BAD_JSON', 'Invalid Matrix user id');
+    // New membership keys are WebIDs. The `@localpart:server` form still appears in stored history
+    // and is understood where history is read, but a *new* invite must name a WebID: writing an
+    // MXID into member state would create a participant no Solid identity can authorise, which is
+    // exactly the identity this protocol removed. History is read, never rewritten.
+    if (webIdServerName(userId) === undefined) {
+      throw new MatrixError(400, 'M_BAD_JSON', 'A new invite must name a WebID');
+    }
     await this.appendMembershipEvent(db, roomId, userId, 'invite', context);
   }
 
@@ -543,6 +835,17 @@ export class PodMatrixStore {
   public async sendEvent(roomId: string, eventType: string, txnId: string, content: MatrixSendEventRequest,
     context: MatrixStoreContext, options: { msgid?: string } = {}): Promise<MatrixEventRecord> {
     const db = await this.getDb(context);
+    // The writer's id names this attempt before anything is read, so the per-key lock can be taken
+    // ahead of the timeline read: a concurrent request for the same logical key then waits and sees
+    // the first attempt's row instead of inserting a second copy under the same deterministic id.
+    const writerEventId = eventIdForWrite(options.msgid);
+    const lockKey = `${this.scope(context)}|${roomId}|${writerEventId}`;
+    return this.runExclusive(lockKey, () =>
+      this.sendEventLocked(db, roomId, eventType, txnId, content, context, writerEventId));
+  }
+
+  private async sendEventLocked(db: Db, roomId: string, eventType: string, txnId: string,
+    content: MatrixSendEventRequest, context: MatrixStoreContext, writerEventId: string): Promise<MatrixEventRecord> {
     // Membership and grant checks share one timeline read; each extra read is a
     // full Pod document fetch with its own authorization cost.
     const events = await this.listEvents(db, roomId, context);
@@ -551,6 +854,23 @@ export class PodMatrixStore {
     await this.authorizeTargets(db, roomId, content, context, events);
     const sender = this.getMatrixUserId(context);
     const contentHash = this.hash(this.canonicalJson(['user',context.webId,eventType,content]));
+    // The logical key is `(roomId, eventId)`: a retry is the same event whatever transaction carried
+    // it and whatever day it lands on. The room's own timeline is the authority, so the writer's id
+    // is looked up there — not in a resource id rebuilt from the current clock, which is what put a
+    // cross-day retry into a second document. `eventIdForWrite` names this attempt when the caller
+    // did not, so an unnamed send can never collide with a stored event.
+    const claimed = events.find(event => event.eventId === writerEventId);
+    if (claimed) {
+      const claimedHash = this.hash(this.canonicalJson(['user',claimed.senderWebId,claimed.type,claimed.content]));
+      if (claimedHash !== contentHash) {
+        throw new MatrixError(409, 'M_CONFLICT', 'Event id already names different content');
+      }
+      // Answering from the stored event must not run the wake chain again; `reconcileEvent` reads
+      // the stored transaction's own receipt, so an already-delivered trigger stays delivered.
+      claimed.depth = await this.journal.registerEvent(this.scope(context),roomId,claimed.eventId);
+      await this.reconcileEvent(db, claimed, context, events);
+      return claimed;
+    }
     // The graph position is part of the event, so it is fixed before the id is
     // reserved — including on a replay, which therefore has to attach to the same
     // place as the first attempt rather than to whatever the room looks like now.
@@ -559,41 +879,44 @@ export class PodMatrixStore {
       // The writer names its own event: a client picks an id (random is fine) and reuses it on every
       // retry, which is what makes a replay land on the first attempt's event without a reservation
       // having to remember it. Without one the deployment names the event itself.
-      eventId: eventIdForWrite(options.msgid),
+      eventId: writerEventId,
       ...this.graphPosition(events, { type: eventType, sender, content }),
     };
     const transactionKey = JSON.stringify([this.deviceId(context), roomId, eventType, txnId]);
-    const { reservation, proposal } = await this.reserveEventTransaction(context, transactionKey, eventInput, contentHash);
+    const { reservation } = await this.reserveEventTransaction(context, transactionKey, eventInput, contentHash);
     if (reservation.contentHash !== contentHash) {
       throw new MatrixError(409, 'M_CONFLICT', 'Transaction already reserved with different content');
     }
+    // Idempotency is the logical key `(roomId, eventId)`, so it cannot be pinned to the transaction:
+    // a retry carried by another txn, or a concurrent attempt that missed the timeline read above on
+    // both sides, must still adopt the first attempt's id and creation time. Reserving the event id
+    // itself is what makes that true; the transaction reservation above stays as the receipt the
+    // wake path reads. Without this the first timestamp would depend on which txn happened to win.
+    const identityKey = JSON.stringify([ 'event', roomId, reservation.eventId ]);
+    const identity = await this.journal.reserveTransaction(this.scope(context), identityKey, {
+      eventId: reservation.eventId, createdAt: reservation.createdAt, contentHash,
+    }, await this.reservationAuthority(context));
+    if (identity.contentHash !== contentHash) {
+      throw new MatrixError(409, 'M_CONFLICT', 'Event id already names different content');
+    }
     // A retry whose first attempt completed is answered from the Pod: the event is
     // already there, so nothing is rebuilt, re-signed or written again.
-    const source = await db.findById(messageResource,this.messageResourceIdFromEvent(roomId,reservation.eventId,reservation.createdAt));
+    const source = await db.findById(messageResource,this.messageResourceId(roomId,identity.eventId,identity.createdAt,this.scope(context)));
     if (source) {
       const existing = this.eventSourceToRecord(source,roomId,context);
-      if (reservation.contentHash !== this.hash(this.canonicalJson(['user',existing.senderWebId,existing.type,existing.content]))) {
+      if (identity.contentHash !== this.hash(this.canonicalJson(['user',existing.senderWebId,existing.type,existing.content]))) {
         throw new MatrixError(409,'M_CONFLICT','Stored event no longer matches its receipt');
       }
       existing.depth = await this.journal.registerEvent(this.scope(context),roomId,existing.eventId);
       await this.reconcileEvent(db, existing, context);
       return existing;
     }
-    const active = await this.reservationInForce(context, transactionKey, reservation, proposal, eventInput, contentHash);
+    const event = await this.eventForReservation(eventInput, identity, context);
     return this.appendEvent(db, { roomId, type: eventType, sender, txnId, txnDevice: this.deviceId(context),
-      eventId: active.reservation.eventId, originServerTs: active.reservation.createdAt, content, event: active.event },
+      eventId: identity.eventId, originServerTs: identity.createdAt, content, event },
     context, events);
   }
 
-  /**
-   * Reserve a transaction for an event that does not exist yet.
-   *
-   * The event id is derived from the event, so an id can only be reserved by
-   * building the event first. The proposal therefore supplies the id and the
-   * timestamp; a retry at the same key must adopt the reservation rather than its
-   * own proposal, which is what `eventForReservation` does. The proposal is
-   * returned for the one caller that may legitimately replace a reservation.
-   */
   /**
    * The identity that signs for this caller's server, or `undefined` when events are
    * written unsigned. A registry in use answers only for the server names it holds
@@ -611,7 +934,7 @@ export class PodMatrixStore {
     contentHash: string,
   ): Promise<{ reservation: MatrixTransactionReservation; proposal: PersistedMatrixEvent }> {
     const identity = await this.signingIdentity(context);
-    const proposal = buildPersistedEvent({ ...input, originServerTs: Date.now() }, identity);
+    const proposal = buildPersistedEvent({ ...input, originServerTs: this.now() }, identity);
     const reservation = await this.journal.reserveTransaction(this.scope(context), key, {
       eventId: proposal.event_id!, createdAt: proposal.origin_server_ts as number, contentHash,
     }, await this.reservationAuthority(context));
@@ -619,47 +942,13 @@ export class PodMatrixStore {
   }
 
   /**
-   * The reservation in force for this attempt, and the event it pins.
-   *
-   * Normally the reservation wins: a retry must land on the event the first attempt
-   * reserved, so the event is rebuilt from the reservation's timestamp and id. The
-   * room moves on, though, and `prev_events`/`auth_events`/`depth` are part of the
-   * event: a reservation taken before other events landed pins an id that this
-   * content can no longer derive. When that happens the proposal — built against
-   * the room as it is now — takes the reservation over. That is only sound because
-   * every caller checks first that the reserved event is not in the Pod, so no
-   * event is orphaned; a concurrent attempt that lands afterwards becomes a branch
-   * in the graph, which the still-open "unknown outcome" contract has to resolve.
-   */
-  private async reservationInForce(
-    context: MatrixStoreContext,
-    key: string,
-    reservation: MatrixTransactionReservation,
-    proposal: PersistedMatrixEvent,
-    input: Omit<PersistedEventInput, 'originServerTs' | 'eventId'>,
-    contentHash: string,
-  ): Promise<{ reservation: MatrixTransactionReservation; event: PersistedMatrixEvent }> {
-    try {
-      return { reservation, event: await this.eventForReservation(input, reservation, context) };
-    } catch (error) {
-      if (!(error instanceof EventIntegrityError)) throw error;
-      const replacement = {
-        eventId: proposal.event_id!, createdAt: proposal.origin_server_ts as number, contentHash,
-      };
-      const event = await this.eventForReservation(input, replacement, context);
-      await this.journal.replaceReservation(this.scope(context), key, replacement, await this.reservationAuthority(context));
-      return { reservation: replacement, event };
-    }
-  }
-
-  /**
    * Build the event a reservation pins.
    *
-   * The reservation owns the timestamp: a retry that reserved a moment later must
-   * still land on the event the first attempt reserved, so the event is rebuilt
-   * from the reservation instead of from the clock. `buildPersistedEvent` asserts
-   * the id, so a reservation naming an id that this content and time do not
-   * derive fails loudly rather than writing a second id for one transaction.
+   * The reservation owns the id and the timestamp: a retry that reserved a moment later, or under
+   * another transaction, must still land on the event the first attempt reserved, so the event is
+   * rebuilt from the reservation instead of from the clock. The id is the writer's to choose, so
+   * there is no content-derived assertion to satisfy — a reservation simply names the event that
+   * will exist.
    */
   private async eventForReservation(
     input: Omit<PersistedEventInput, 'originServerTs' | 'eventId'>,
@@ -675,6 +964,32 @@ export class PodMatrixStore {
 
   public async setState(roomId: string, eventType: string, stateKey: string, content: Record<string, unknown>,
     context: MatrixStoreContext): Promise<MatrixEventRecord> {
+    if (eventType === MEMBERSHIP_AUTHORITY_EVENT_TYPE) {
+      if (stateKey !== '' || !this.membershipAuthorityPublisher || (this.outbound && !this.publicationOutboxFor)) {
+        throw new MatrixError(403, 'M_FORBIDDEN', 'Explicit membership publication is unavailable');
+      }
+      return await this.membershipAuthorityPublisher.publish(roomId, content, context, async input => {
+        const { publication, binding, write, context: caller } = input;
+        if (input.existingOnly) {
+          const resourceId = this.messageResourceId(roomId, publication.eventId, publication.createdAt, this.scope(caller));
+          const existing = await this.awaitCommittedWinner(write.db, resourceId, roomId, publication.eventId, caller, caller.webId);
+          if (!existing) throw new MatrixError(409, 'M_CONFLICT', 'Completed publication has no persisted event');
+          await input.validateCommitted(existing);
+          if (input.queueOnly && this.outbound) {
+            const timeline = await this.listEvents(write.db, roomId, caller);
+            await this.queueFederationDelivery(roomId, caller, timeline, existing.event as unknown as PersistedMatrixEvent, {
+              outbox: this.publicationOutboxFor!(write, caller),
+              actor: { webId: caller.webId, podUrl: caller.podUrl, taskCredential: { ...input.authorityBinding } },
+            });
+          }
+          return existing;
+        }
+        return await this.appendEvent(write.db, { roomId, type: eventType, stateKey: '',
+          sender: caller.webId, maker: caller.webId, eventId: publication.eventId,
+          originServerTs: publication.createdAt, content: { ...binding }, validateCommitted: input.validateCommitted,
+          suppressQueue: true }, caller);
+      });
+    }
     const db = await this.getDb(context);
     await this.requireJoined(db, roomId, context);
     await this.requireRoomOwner(db, roomId, context);
@@ -691,7 +1006,7 @@ export class PodMatrixStore {
       ? (previousGrants ? this.validateAgentGrants(previousGrants.content ?? {}) : []).map(grant => grant.agent)
       : undefined;
     const record = await this.appendEvent(db, {roomId, type: eventType, sender: this.getMatrixUserId(context), stateKey,
-      originServerTs: Date.now(), content}, context);
+      originServerTs: this.now(), content}, context);
     // Granting an agent is what makes it a member: the grant state is set through an ordinary state
     // write, and an agent with execution rights but no membership would be an agent the write path
     // has to special-case for ever. The two events are the ordinary membership pair — an invite by
@@ -722,11 +1037,11 @@ export class PodMatrixStore {
     const known = new Set(knownAgents);
     const pending = this.validateAgentGrants(content).map(grant => grant.agent).filter(agent => !known.has(agent));
     if (pending.length === 0) return;
-    const serverName = this.getServerName(context);
     const granter = this.getMatrixUserId(context);
     const state = this.resolvedState(roomId, context, await this.listEvents(db, roomId, context));
     for (const agent of pending) {
-      const agentUserId = matrixUserIdFor(agent, serverName);
+      // The agent's identity is its own URI, stated by the grant: no derivation, no server name.
+      const agentUserId = agent;
       const membership = state.get('m.room.member', agentUserId)?.content.membership;
       // Write only the step that is missing. A re-grant after a revocation leaves an agent that is
       // still a member, and a second invite would be history for nothing — the room's own rules
@@ -745,60 +1060,106 @@ export class PodMatrixStore {
   public async sync(context: MatrixStoreContext, options: { since?: string; limit?: number; timeout?: number; signal?: AbortSignal } = {}): Promise<MatrixSyncResponse> {
     const deadline = Date.now() + Math.min(Math.max(options.timeout ?? 0, 0), 30_000);
     const scope = this.scope(context);
-    const read = new Set<string>();
-    const since = this.parseSyncToken(options.since);
-    const decide = async (): Promise<readonly string[] | undefined> => {
-      if (!this.roomChanges) return undefined;
-      // A change source speaks for changes since the last pass, which only helps a caller that
-      // already has what that pass indexed. A caller that is behind needs its rooms' events.
+    const cursor = this.parseSyncCursor(options.since);
+    const since = cursor ? cursor.position : this.parseSyncToken(options.since);
+    let firstRead = true;
+    const read = async (): Promise<MatrixSyncResponse> => {
+      // Without a notification source, retain the bounded journal polling after this call's
+      // initial authoritative indexing pass. The next call still starts by reading the Pod.
+      if (!this.roomChanges && !firstRead) return await this.syncOnce(context, options, { indexed: true });
+      // Observe before every read, including forced full passes. Each call owns its observation
+      // so concurrent syncs cannot acknowledge each other's newer notifications.
+      const pending = await this.roomChanges?.pending({ scope });
       const indexed = this.indexedAt.get(scope);
-      if (indexed === undefined || since < indexed) {
-        // The caller is behind (or has never synced), so every room is read.
-        this.lastFullPassAt.set(scope, Date.now());
-        return undefined;
-      }
-      // The safety net: a source can miss a change (a dropped socket, a restart), so every
-      // room is read again eventually whatever the source says. A source that has never been
-      // trusted yet starts its clock with this pass.
       const lastFull = this.lastFullPassAt.get(scope);
-      if (lastFull === undefined) {
-        this.lastFullPassAt.set(scope, Date.now());
-        return undefined;
+      const due = lastFull === undefined || Date.now() - lastFull >= this.roomChangeFullPassMs;
+      // An unavailable source requires a full pull at the start of every sync and when the
+      // safety net is due, not on every 500ms wait. Reconnect/unknown-change observations carry
+      // rooms and still trigger authoritative reads immediately; local journal news can wake
+      // an otherwise quiet poll. A subsequent request always pulls again while untrusted.
+      if (!firstRead && pending?.trust === 'all' && pending.rooms.length === 0 && !due) {
+        return await this.syncOnce(context, options, { indexed: true });
       }
-      if (Date.now() - lastFull >= this.roomChangeFullPassMs) {
-        this.lastFullPassAt.set(scope, Date.now());
-        return undefined;
+      const full = !pending || pending.trust === 'all' || indexed === undefined || since < indexed ||
+        due;
+      const rooms = full ? undefined : pending.rooms;
+      // Each completed room's cycle carries the observation it was observed under. Rooms observed
+      // under different cycles are settled under their own observation, never under the request's
+      // latest pending — a completed old cycle must not clear a newer hint it never read.
+      const completed = new Map<string | object, { rooms: string[]; sameAsRequest: boolean }>();
+      const requestedObservation = pending?.snapshot;
+      let allSameAsRequest = true;
+      let completedFull = false;
+      const discover = async(roomIds: readonly string[]): Promise<boolean> => {
+        const db = await this.getDb(context);
+        let complete = true;
+        for (const roomId of roomIds) {
+          const scan = await this.discoverRoomReferences(db, context, roomId, requestedObservation);
+          if (!scan.completed) { complete = false; continue; }
+          // A source with no observation settles by rooms; a source with one groups by its cycle
+          // observation (which may differ from the request's latest pending).
+          if (requestedObservation === undefined) {
+            const legacy = completed.get('legacy') ?? { rooms: [], sameAsRequest: true };
+            legacy.rooms.push(roomId);
+            completed.set('legacy', legacy);
+            continue;
+          }
+          if (scan.observation === undefined) { complete = false; continue; }
+          const observation = scan.observation;
+          const sameAsRequest = observation === requestedObservation;
+          if (!sameAsRequest) allSameAsRequest = false;
+          const key = typeof observation === 'string' ? observation : observation as object;
+          const group = completed.get(key) ?? { rooms: [], sameAsRequest };
+          group.rooms.push(roomId);
+          completed.set(key, group);
+        }
+        return complete;
+      };
+      if (!full && pending) {
+        const hints = new Set([...pending.rooms, ...(pending.reconcileRooms ?? []),
+          ...(pending.documentChanges ?? []).map(change => change.roomId)]);
+        await discover([...hints]);
+      } else {
+        const published = await this.journal.getPublishedReferenceWatermark(scope);
+        const hasKnownRefs = cursor !== undefined && published > cursor.position;
+        // Known API references may serve a normal page, but cannot postpone a due safety pull.
+        if (pending || (firstRead && (!hasKnownRefs || due))) {
+          const db = await this.getDb(context);
+          completedFull = await discover((await this.listRooms(db)).map(room => room.roomId));
+        }
       }
-      const pending = await this.roomChanges.pending({ scope });
-      // A source that cannot account for everything sends the pass back to reading every room.
-      if (pending.trust === 'all') return undefined;
-      for (const roomId of pending.rooms) read.add(roomId);
-      return pending.rooms;
+      // A discovery pass never constructs a client response; hydrate the selected window once.
+      const result = await this.syncOnce(context, options, { rooms });
+      firstRead = false;
+      // `full:true` clears uncertainty only when the whole actual scope was completed AND every room
+      // was observed under this request's SAME observation. A mixed-cycle full pass stays conservative.
+      // A source that carries no observation at all keeps the legacy room-based settlement.
+      const observes = requestedObservation !== undefined;
+      const canClearFull = completedFull && (!observes || allSameAsRequest);
+      if (canClearFull) this.lastFullPassAt.set(scope, Date.now());
+      if (pending) {
+        if (canClearFull) {
+          await this.roomChanges?.settle({ scope, rooms: pending.rooms, ...(observes ? { snapshot: pending.snapshot } : {}), full: true });
+        } else {
+          for (const [ observation, group ] of completed) {
+            if ((group.sameAsRequest || !observes) && group.rooms.length > 0) {
+              await this.roomChanges?.settle({ scope, rooms: group.rooms, snapshot: observation, full: false });
+            }
+          }
+        }
+      }
+      return result;
     };
 
-    // The first pass is what indexes rows written straight into the Pod: a native write has
-    // no journal sequence until a read registers it, and the snapshot taken *before* that
-    // read cannot include the sequences it just assigned — which is why this pass always
-    // reads and its result is deliberately discarded. A change source can say which rooms
-    // that could concern, and then only those are read.
-    let rooms = await decide();
-    await this.syncOnce(context, options, { rooms });
-    let result = await this.syncOnce(context, options, { rooms });
+    let result = await read();
     while (!hasSyncNews(result) && !options.signal?.aborted && Date.now() < deadline) {
       await new Promise<void>((resolve) => {
         const done = (): void => { clearTimeout(timer); options.signal?.removeEventListener('abort', done); resolve(); };
         const timer = setTimeout(done, Math.min(500, Math.max(0, deadline - Date.now())));
         options.signal?.addEventListener('abort', done, { once: true });
       });
-      // Ask again: a change that arrived while we waited is the news the caller is waiting for.
-      rooms = await decide();
-      // Everything the Pod holds has been indexed above, so an unchanged scope watermark
-      // means no room can have anything new and the per-room reads can be skipped.
-      result = await this.syncOnce(context, options, { indexed: true, rooms });
+      result = await read();
     }
-    // Only now are the rooms we read allowed to leave the source: a change that arrived
-    // during this call has to survive for the next one.
-    await this.roomChanges?.settle({ scope, rooms: [ ...read ] });
     return result;
   }
 
@@ -808,22 +1169,40 @@ export class PodMatrixStore {
     state: { indexed?: boolean; rooms?: readonly string[] } = {},
   ): Promise<MatrixSyncResponse> {
     const db = await this.getDb(context);
-    const since = this.parseSyncToken(options.since);
-    const snapshot = await this.journal.getHighWatermark(this.scope(context));
+    const scope = this.scope(context);
+    const cursor = this.parseSyncCursor(options.since);
+    const since = cursor ? cursor.position : this.parseSyncToken(options.since);
+    const snapshot = await this.journal.getHighWatermark(scope);
+    let limit = 50;
+    if (options.limit !== undefined) {
+      if (!Number.isFinite(options.limit) || options.limit < 1 || !Number.isSafeInteger(options.limit)) {
+        throw new MatrixError(400, 'M_INVALID_PARAM', 'limit must be a positive integer');
+      }
+      limit = Math.min(options.limit, 1000);
+    }
+    // The cursor path runs first and independently of the notification room hints: empty hints are
+    // discovery news, never a filter over the client's existing reference backlog.
+    if (cursor) {
+      return await this.syncFromCursor(context, db, cursor, limit);
+    }
     // `state.rooms` is the caller's decision, already made against what the last pass indexed:
     // an empty list means nothing changed anywhere, and a list means only those rooms can hold
     // anything the caller does not have.
     const restricted = state.rooms;
     if (restricted && restricted.length === 0) {
-      // Nothing changed anywhere, so no room needs reading at all.
-      return { next_batch: this.encodeSyncToken(since), rooms: { join: {}, invite: {}, leave: {} } };
+      // Nothing changed anywhere, so no room needs reading at all. The token is positioned at the
+      // current published watermark, so a later poll can extend past it when new refs appear.
+      const published = await this.journal.getPublishedReferenceWatermark(scope);
+      return {
+        next_batch: this.encodeSyncCursor(await this.journal.getEpoch(scope), published, published),
+        rooms: { join: {}, invite: {}, leave: {} },
+      };
     }
     // Every event that could be reported has a sequence at or below the watermark, and
     // everything above `since` has already been read and indexed by an earlier pass.
     if (state.indexed && since >= snapshot) {
-      return { next_batch: this.encodeSyncToken(since), rooms: { join: {}, invite: {}, leave: {} } };
+      return { next_batch: await this.nextSyncCursor(scope, since), rooms: { join: {}, invite: {}, leave: {} } };
     }
-    const limit = Math.min(Math.max(options.limit ?? 50, 1), 1000);
     const join: MatrixSyncResponse['rooms']['join'] = {};
     const invite: NonNullable<MatrixSyncResponse['rooms']['invite']> = {};
     const leave: NonNullable<MatrixSyncResponse['rooms']['leave']> = {};
@@ -871,7 +1250,260 @@ export class PodMatrixStore {
     // When a joined timeline has backlog, do not advance past its last delivered event.
     const next = selected.length ? selected[selected.length-1].depth! : since;
     const high = candidates.length === 0 && transitionPositions.length ? snapshot : next;
-    return {next_batch: this.encodeSyncToken(high), rooms: {join, invite, leave}};
+    return {next_batch: await this.nextSyncCursor(scope, high), rooms: {join, invite, leave}};
+  }
+
+  /**
+   * The normal incremental read over a fixed published-reference window. It reads ONE scope-level
+   * reference page (never per notification room, never the room history), hydrates each selected
+   * reference by its exact IRI only, and verifies the canonical owner Chat before exposing events.
+   * Discovery has already published native references. An empty window therefore returns an empty
+   * response without reopening historical rows.
+   */
+  private async syncFromCursor(
+    context: MatrixStoreContext,
+    db: Db,
+    cursor: { epoch: string; through: number; position: number },
+    limit: number,
+  ): Promise<MatrixSyncResponse> {
+    const scope = this.scope(context);
+    const epoch = await this.journal.getEpoch(scope);
+    if (epoch !== cursor.epoch) {
+      throw new MatrixError(400, 'M_UNKNOWN_POS', 'Cursor operational-index epoch changed; resync required');
+    }
+    const published = await this.journal.getPublishedReferenceWatermark(scope);
+    if (cursor.through > published || cursor.position > published) {
+      throw new MatrixError(400, 'M_UNKNOWN_POS', 'Cursor window exceeds the published source index');
+    }
+    // While backlog remains, keep the original fixed upper bound. Once the page reaches it, the next
+    // poll may extend to a newer published watermark (so a late event is discovered).
+    const through = cursor.position >= cursor.through ? published : cursor.through;
+    const references = await this.journal.listReferences(scope, {
+      afterSequence: cursor.position, throughSequence: through, limit: limit + 1,
+    });
+    if (references.length === 0) {
+      return { next_batch: this.encodeSyncCursor(epoch, through, through),
+        rooms: { join: {}, invite: {}, leave: {} } };
+    }
+    const selected = references.slice(0, limit);
+    const rooms = [ ...new Set(selected.map(reference => reference.roomId)) ];
+    for (const roomId of rooms) {
+      await this.requireCanonicalOwnRoom(db, context, roomId);
+    }
+    const eventsByRoom = new Map<string, MatrixEventRecord[]>();
+    for (const reference of selected) {
+      if (!reference.messageIri) {
+        throw new MatrixError(503, 'M_UNKNOWN', `Cursor reference ${reference.eventId} has no exact IRI`);
+      }
+      const findByIri = (db as { findByIri?: (table: unknown, iri: string) => Promise<MatrixEventSource | undefined> }).findByIri;
+      const source = findByIri ? await findByIri.call(db, messageResource, reference.messageIri) : undefined;
+      if (!source) {
+        // Fail closed: the cursor must not advance past an event the caller cannot receive, and a
+        // failed read must not acknowledge the discovery hint.
+        throw new MatrixError(503, 'M_UNKNOWN', `Cursor reference ${reference.eventId} could not be resolved`);
+      }
+      const list = eventsByRoom.get(reference.roomId) ?? [];
+      list.push(this.eventSourceToRecord(source, reference.roomId, context));
+      eventsByRoom.set(reference.roomId, list);
+    }
+    const join: MatrixSyncResponse['rooms']['join'] = {};
+    for (const [ roomId, events ] of eventsByRoom) {
+      join[roomId] = {
+        state: { events: [] },
+        timeline: {
+          events: events.map(event => this.toClientEvent(event)),
+          limited: references.length > selected.length,
+        },
+      };
+    }
+    const position = selected.length ? selected[selected.length - 1].sequence : cursor.position;
+    const nextThrough = position >= through ? published : through;
+    return {
+      next_batch: this.encodeSyncCursor(epoch, nextThrough, position),
+      rooms: { join, invite: {}, leave: {} },
+    };
+  }
+
+  /**
+   * Bounded, durable, resumable discovery of one room's message references from the room directory.
+   *
+   * It reads ONE source page per call at the checkpoint's `(createdAt, sourceIri)` keyset, using the
+   * room's scoped directory endpoint, and publishes the exact references plus the advanced
+   * checkpoint in a single journal transaction. A brand-new (or rotated-complete) cycle starts from
+   * the beginning; a page that has not exhausted the source leaves the room incomplete, so its hint
+   * is retained and the next request resumes exactly at the next source row. A lost CAS publishes
+   * nothing and leaves the room incomplete. The exact-document fast path is a later slice.
+   */
+  private async discoverRoomReferences(
+    db: Db,
+    context: MatrixStoreContext,
+    roomId: string,
+    observation?: string | object,
+    pageSize = 500,
+  ): Promise<{ completed: boolean; observation?: string | object }> {
+    const scope = this.scope(context);
+    const chatIri = this.chatIri(roomId, context);
+    const pod = new URL(scope);
+    const podPath = pod.pathname.endsWith('/') ? pod.pathname : `${pod.pathname}/`;
+    const directory = roomDirectoryIri(scope, roomId);
+    const epoch = await this.journal.getEpoch(scope);
+
+    // Begin (or reset) only when there is no usable checkpoint: a new cycle, or one finished by an
+    // earlier complete page. A stale-epoch checkpoint is intentionally left alone here — the caller's
+    // explicit resync (bumpEpoch) is what invalidates old tokens; we never silently reset a live one.
+    let checkpoint = await this.journal.getReconcileCheckpoint(scope, directory);
+    if (!checkpoint || checkpoint.epoch !== epoch) {
+      checkpoint = await this.journal.beginReconcileScan(scope, { sourceUri: directory, epoch });
+    }
+    const cursor = checkpoint.lastCreatedAt !== undefined && checkpoint.lastSourceIri !== undefined
+      ? { at: new Date(checkpoint.lastCreatedAt), iri: checkpoint.lastSourceIri }
+      : undefined;
+
+    // LDP applies ORDER/LIMIT independently per document. A scoped endpoint orders the
+    // room's daily graphs together using the same public shared schema and caller fetch.
+    const sourceTable = alias(messageResource, 'room_source_messages').$schema.table('room_source_messages', {
+      base: directory, resourceMode: 'sparql', sparqlEndpoint: `${directory}-/sparql`, autoRegister: false,
+    });
+    const positionOf = (row: MatrixEventSource): { at: Date; iri: string } => {
+      const iri = resolveRowSubject(row as unknown as Record<string, unknown>);
+      let source: URL;
+      try { source = new URL(iri ?? ''); } catch {
+        throw new MatrixError(503, 'M_UNKNOWN', 'Source discovery did not return an absolute resource IRI');
+      }
+      const at = new Date(row.createdAt as string);
+      if (!iri || !['http:', 'https:'].includes(source.protocol) || source.origin !== pod.origin ||
+        !source.pathname.startsWith(podPath) || source.username || source.password || source.search || !source.hash ||
+        row.parent !== chatIri || !Number.isFinite(at.getTime())) {
+        throw new MatrixError(503, 'M_UNKNOWN', 'Source discovery returned an invalid message identity');
+      }
+      return { at, iri };
+    };
+    const compare = (a: { at: Date; iri: string }, b: { at: Date; iri: string }): number =>
+      a.at.getTime() - b.at.getTime() || (a.iri < b.iri ? -1 : a.iri > b.iri ? 1 : 0);
+
+    // Recover the cycle view: the bound one, or capture a fresh one on the first page of a cycle.
+    let view: MatrixReconcileCycleView | undefined;
+    let bindView: string | undefined;
+    if (checkpoint.view !== undefined) {
+      view = parseReconcileCycleView(checkpoint.view);
+    } else if (cursor === undefined && checkpoint.roomCursor === undefined && checkpoint.bucketCursor === undefined) {
+      // The fixed upper source keyset is captured with the SAME public scoped alias, DESC LIMIT 1 —
+      // never Date.now — so a cycle is finite even with rows appended while it runs.
+      // Notifications affect settlement, not whether the source cycle has a fixed bound.
+      let upper: { createdAt: number; sourceIri: string } | null = null;
+      const boundary = await db.select().from(sourceTable).where(eq(sourceTable.parent, chatIri))
+        .orderBy(desc('createdAt'), desc('id')).limit(1) as MatrixEventSource[];
+      if (boundary.length > 1) {
+        throw new MatrixError(503, 'M_UNKNOWN', 'Source discovery exceeded its boundary read bound');
+      }
+      if (boundary.length > 0) {
+        const top = positionOf(boundary[0]);
+        upper = { createdAt: top.at.getTime(), sourceIri: top.iri };
+      }
+      view = { version: 1, upper, observation: typeof observation === 'string' ? observation : null };
+      bindView = JSON.stringify(view);
+    }
+    // A first page whose cycle is bounded by an upper keyset must not read past it.
+    const upper = view?.upper ?? null;
+
+    const query = db.select().from(sourceTable).where(eq(sourceTable.parent, chatIri));
+    if (cursor) {
+      query.whereCursor(or(gt(sourceTable.createdAt, cursor.at),
+        and(eq(sourceTable.createdAt, cursor.at), gt(sourceTable.id, cursor.iri))));
+    }
+    if (upper) {
+      query.whereCursor(or(lt(sourceTable.createdAt, new Date(upper.createdAt)),
+        and(eq(sourceTable.createdAt, new Date(upper.createdAt)), lte(sourceTable.id, upper.sourceIri))));
+    }
+    // An empty captured source belongs to this cycle; later appends belong to the next one.
+    const sources = view?.upper === null ? []
+      : await query.orderBy(asc('createdAt'), asc('id')).limit(pageSize) as MatrixEventSource[];
+    // The backend must never return more than the declared page bound; reject before any publish.
+    if (sources.length > pageSize) {
+      throw new MatrixError(503, 'M_UNKNOWN', 'Source discovery exceeded its declared page bound');
+    }
+
+    // Validate the whole page before publishing anything: a malformed later row exposes no prefix.
+    const references: Omit<MatrixEventReference, 'scope' | 'sequence'>[] = [];
+    let previous = cursor;
+    for (const row of sources) {
+      const position = positionOf(row);
+      if (previous && compare(position, previous) <= 0) {
+        throw new MatrixError(503, 'M_UNKNOWN', 'Source cursor did not advance in its declared order');
+      }
+      if (upper && compare(position, { at: new Date(upper.createdAt), iri: upper.sourceIri }) > 0) {
+        throw new MatrixError(503, 'M_UNKNOWN', 'Source row exceeds the cycle upper keyset');
+      }
+      const record = this.eventSourceToRecord(row, roomId, context);
+      if (record.roomId !== roomId || record.originServerTs !== position.at.getTime()) {
+        throw new MatrixError(503, 'M_UNKNOWN', 'Source event identity disagrees with its RDF row');
+      }
+      references.push({
+        roomId, eventId: record.eventId, messageIri: position.iri, createdAt: position.at.getTime(),
+      });
+      previous = position;
+    }
+
+    // A short (exhausted) page completes the cycle; a full page advances the keyset to its last
+    // source row — the last SOURCE row even when every reference was already known.
+    const complete = sources.length < pageSize;
+    const published = await this.journal.publishReferencePage(scope, {
+      sourceUri: directory,
+      epoch: checkpoint.epoch,
+      scanGeneration: checkpoint.scanGeneration,
+      revision: checkpoint.revision,
+      references,
+      ...(complete || !previous
+        ? {}
+        : { next: { roomId, last: { createdAt: previous.at.getTime(), sourceIri: previous.iri } } }),
+      complete,
+      ...(bindView === undefined ? {} : { view: bindView }),
+    });
+    if (!published.advanced) {
+      // A lost CAS (or a stale epoch) publishes nothing: keep the hint so a later request retries.
+      return { completed: false };
+    }
+    if (!complete) {
+      return { completed: false };
+    }
+    // The cycle's ORIGINAL observation settles it, taken from the view that was bound BEFORE this
+    // page advanced (completion rotates the generation and clears the view). A serialized (string)
+    // observation comes from the bound view; a single-page custom object observation may settle now,
+    // but a resumed page must never settle a freshly supplied snapshot.
+    const cycleObservation = view?.observation ?? undefined;
+    const finalObservation = cycleObservation ?? (bindView !== undefined ? observation : undefined);
+    return { completed: true, ...(finalObservation === undefined ? {} : { observation: finalObservation }) };
+  }
+
+  /**
+   * Verify the canonical owner Chat for a room before its events are exposed. An unknown, unreadable
+   * or non-owner authority fails closed (the temporary remote gap; the C2 read port is a later step).
+   */
+  private async requireCanonicalOwnRoom(db: Db, context: MatrixStoreContext, roomId: string): Promise<void> {
+    const scope = this.scope(context);
+    const chatIri = roomChatIri(scope, roomId);
+    const findByIri = (db as { findByIri?: (table: unknown, iri: string) => Promise<MatrixEventSource | undefined> }).findByIri;
+    const chat = (findByIri ? await findByIri.call(db, chatResource, chatIri) : undefined)
+      ?? await db.findById(chatResource, this.chatResourceId(roomId, scope));
+    if (!chat) {
+      throw new MatrixError(403, 'M_FORBIDDEN', `Room ${roomId} authority is unavailable`);
+    }
+    const metadata = this.parseJsonObject(chat.metadata) ?? {};
+    const matrix = getProtocolMetadata(metadata, 'matrix') ?? {};
+    if (this.stringValue(matrix.roomId) !== roomId) {
+      throw new MatrixError(403, 'M_FORBIDDEN', `Room ${roomId} authority does not match the hint`);
+    }
+    if (chat.author !== context.webId) {
+      throw new MatrixError(403, 'M_FORBIDDEN', `Room ${roomId} is not owned by the caller`);
+    }
+  }
+
+  private async nextSyncCursor(scope: string, position: number): Promise<string> {
+    return this.encodeSyncCursor(
+      await this.journal.getEpoch(scope),
+      await this.journal.getPublishedReferenceWatermark(scope),
+      position,
+    );
   }
 
   public async listJoinedRooms(context: MatrixStoreContext): Promise<string[]> {
@@ -1065,12 +1697,19 @@ export class PodMatrixStore {
       maker?: string;
       /** Already-built protocol event, so a caller that reserved an id can reuse it. */
       event?: PersistedMatrixEvent;
+      /** Publication alone requires full winner identity/time proof before bookkeeping. */
+      validateCommitted?: (record: MatrixEventRecord) => Promise<void>;
+      /** Publication queues only after its canonical complete phase is confirmed. */
+      suppressQueue?: true;
+      /** Membership alone confirms its fixed original-actor RDF subject, without history fallback. */
+      confirmWinner?: () => Promise<MatrixEventRecord | undefined>;
 
     },
     context: MatrixStoreContext,
     /** Events already read from this room; loaded here when the caller has none. */
     observed?: readonly MatrixEventRecord[],
   ): Promise<MatrixEventRecord> {
+    if (input.confirmWinner && !canWriteConditionally(db)) throw new MatrixError(500, 'M_UNKNOWN', 'Membership persistence requires conditional Pod writes');
     const depth = 0;
     // One read answers the graph position and, when federation is on, who the room's other
     // servers are; both need the same timeline and neither may see a stale one.
@@ -1078,6 +1717,10 @@ export class PodMatrixStore {
     // The protocol event is built first: its content-derived id is the event's
     // identity, and the stored copy carries the hashes and signature that make
     // the event verifiable from the Pod alone.
+    // An event this deployment initiates is named by this deployment, not by its content: a
+    // content-derived id was the old self-proving shape, and it also made a replay depend on
+    // rebuilding the exact same bytes. `input.event` is a peer's copy and keeps the id its author
+    // gave it.
     const built = input.event ?? buildPersistedEvent({
       roomId: input.roomId,
       type: input.type,
@@ -1085,7 +1728,7 @@ export class PodMatrixStore {
       originServerTs: input.originServerTs,
       content: input.content,
       ...(input.stateKey === undefined ? {} : { stateKey: input.stateKey }),
-      ...(input.eventId === undefined ? {} : { eventId: input.eventId }),
+      eventId: input.eventId ?? generateEventId(),
       ...this.graphPosition(timeline, input),
     }, await this.signingIdentity(context));
     // A caller-provided event can come from a peer — a resident's copy of our join — and carries no
@@ -1110,7 +1753,7 @@ export class PodMatrixStore {
     const roomMetadata = roomContext?.metadata;
     const reconcilerOwner = input.reconcilerOwner ?? this.reconcilerOwnerFromRoomMetadata(roomMetadata);
     const coordination = reconcilerCoordinationMetadata(reconcilerOwner);
-    const messageResourceId = this.messageResourceIdFromEvent(input.roomId, eventId, input.originServerTs);
+    const messageResourceId = this.messageResourceId(input.roomId, eventId, input.originServerTs, this.scope(context));
     const thread = this.threadIri(input.roomId, context);
     const contentText = this.messageContentFromMatrixEvent(input.type, input.content);
     const mentions = this.mentionsFromMatrixContent(input.content);
@@ -1132,7 +1775,7 @@ export class PodMatrixStore {
       createdAt: originIso,
       event: persistedEvent as unknown as Record<string, unknown>,
     };
-    await db.insert(messageResource).values({
+    const row = {
       id: messageResourceId,
       parent: this.chatIri(input.roomId, context),
       chat: this.chatIri(input.roomId, context),
@@ -1162,13 +1805,411 @@ export class PodMatrixStore {
       }),
       createdAt: originIso,
       updatedAt: originIso,
+    };
+    // The row is written as a conditional first-writer insert against the room's canonical Chat
+    // anchor, so two independent stores/processes racing the same logical `(roomId, eventId)` cannot
+    // both create it. On a real Pod the ORM serializes the row and the authenticated scoped POST
+    // carries the guard; the in-memory harness (no Pod) keeps the plain insert.
+    let recovered: MatrixEventRecord | undefined;
+    let usedConditional: boolean;
+    try {
+      usedConditional = await this.writeMessageRow(db, {
+        roomId: input.roomId, eventId, originServerTs: input.originServerTs, row, context,
+      });
+    } catch (error) {
+      if (!input.confirmWinner) throw error;
+      // Only this exact strict subject may resolve an unknown write outcome. No room-wide search.
+      recovered = await input.confirmWinner();
+      if (!recovered) throw error;
+      usedConditional = true;
+    }
+    let committed: MatrixEventRecord = record;
+    if (usedConditional) {
+      const winner = recovered ?? (input.confirmWinner ? await input.confirmWinner()
+        : await this.awaitCommittedWinner(db, messageResourceId, input.roomId, eventId, context, input.sender));
+      if (!winner) {
+        throw new MatrixError(503, 'M_UNKNOWN', 'The event write could not be confirmed');
+      }
+      if (!this.sameEventSemantics(winner, record)) {
+        throw new MatrixError(409, 'M_CONFLICT', 'Event id already names different content');
+      }
+      committed = winner;
+    }
+
+    if (!committed.event) throw new MatrixError(409, 'M_CONFLICT', 'Committed event has no persisted PDU');
+    await input.validateCommitted?.(committed);
+
+    const reference = await this.journal.registerReference(this.scope(context), {
+      roomId: input.roomId,
+      eventId,
+      messageIri: messageResource.buildIri(this.scope(context), { id: messageResourceId }),
+      createdAt: input.originServerTs,
     });
+    committed.depth = reference.sequence;
+    if (committed.role === MessageRole.USER) await this.reconcileEvent(db, committed, context);
+    if (!input.suppressQueue) await this.queueFederationDelivery(input.roomId, context, timeline, committed.event as unknown as PersistedMatrixEvent);
 
-    record.depth = await this.journal.registerEvent(this.scope(context), input.roomId, eventId);
-    if (record.role === MessageRole.USER) await this.reconcileEvent(db, record, context);
-    await this.queueFederationDelivery(input.roomId, context, timeline, persistedEvent);
+    return committed;
+  }
 
-    return record;
+  /**
+   * Read the committed copy of a conditional write, tolerating a short index-visibility lag.
+   *
+   * The sidecar commits the RDF authority and its read projection before releasing its lock, but a
+   * concurrent writer's read can still race that projection by a few milliseconds. The write is
+   * confirmed by a bounded re-read of the document-addressed row, then a room-wide fallback; if
+   * neither ever shows the row the write is reported as unconfirmed rather than as success.
+   */
+  private async awaitCommittedWinner(
+    db: Db,
+    messageResourceId: string,
+    roomId: string,
+    eventId: string,
+    context: MatrixStoreContext,
+    expectedSender?: string,
+  ): Promise<MatrixEventRecord | undefined> {
+    // The committed RDF authority is the only place the protected scalar/relationship cardinality is
+    // still visible; the ORM decoder can discard competing values before a row reaches us. There is
+    // exactly ONE way to confirm a winner: the strict typed document guard. The ORM projection is
+    // never trusted on its own.
+    const direct = await this.readCommittedMessageFromPod(context, messageResourceId, roomId, eventId, expectedSender);
+    if (direct) {
+      return direct;
+    }
+    // The write may have lost to another day's document. Find the exact winner IRI with the room-wide
+    // authoritative read, then validate THAT document with the same guard (never a repeated
+    // candidate-day poll, and never the decoded row).
+    const winner = await this.findEventById(db, roomId, eventId, context);
+    if (winner?.resourceId) {
+      return await this.readCommittedMessageFromPod(context, winner.resourceId, roomId, eventId, expectedSender);
+    }
+    return undefined;
+  }
+
+  /**
+   * The committed message as the RDF authority holds it, read directly from its document.
+   *
+   * This is the strict guard: it requires the exact typed Message subject, exactly one models
+   * metadata edge to exactly the expected metadata subject, exactly one literal `protocols` payload,
+   * exactly one parent/maker/content term, the canonical room parent, maker/protocol provenance, and
+   * all required protocol fields with their types. A malformed competitor — duplicate scalar, wrong
+   * parent, extra edge, wrong provenance or missing field — must not confirm a winner.
+   */
+  private async readCommittedMessageFromPod(
+    context: MatrixStoreContext,
+    messageResourceId: string,
+    roomId: string,
+    eventId: string,
+    expectedSender?: string,
+    membership?: { operation: MembershipOperation; fetch: typeof fetch },
+  ): Promise<MatrixEventRecord | undefined> {
+    const scope = membership?.operation.actor.podUrl ?? this.scope(context);
+    const invalid = (): undefined => {
+      if (membership) throw new MatrixError(409, 'M_CONFLICT', 'The exact original actor PDU is malformed or differs');
+      return undefined;
+    };
+    const messageIri = messageResource.buildIri(scope, { id: messageResourceId });
+    const url = new URL(messageIri);
+    url.hash = '';
+    const readFetch = membership?.fetch ?? (await this.podWriteFor(context)).fetch;
+    let response: Response;
+    try {
+      response = await readFetch(url.href, { headers: { Accept: 'text/turtle' }, ...(membership ? { redirect: 'error' as const } : {}) });
+    } catch {
+      if (membership) throw new MatrixError(403, 'M_FORBIDDEN', 'The original actor PDU could not be read');
+      return undefined;
+    }
+    if (membership && (response.redirected || response.url !== url.href)) return invalid();
+    if (membership && response.status === 404) return undefined;
+    if (membership && response.status !== 200) {
+      throw new MatrixError(403, 'M_FORBIDDEN', 'The complete original actor PDU document is unavailable');
+    }
+    if (!response.ok) {
+      if (membership) throw new MatrixError(403, 'M_FORBIDDEN', 'The original actor PDU is unavailable');
+      return undefined;
+    }
+    const ttl = await response.text();
+    if (membership && !ttl.trim()) return invalid();
+    const rdfType = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
+    const guards = messageColumnGuards();
+    const metadataGuard = guards.byName.get('metadata');
+    if (!metadataGuard) {
+      throw new MatrixError(500, 'M_UNKNOWN', 'The models message column metadata is unavailable');
+    }
+    const protocolsPredicate = `${metadataGuard.predicate.slice(0, metadataGuard.predicate.lastIndexOf('metadata'))}protocols`;
+    // One parse pass, index outgoing (subject) and incoming (object) quads by predicate so every
+    // guard check is a map lookup instead of a repeated store query. RDF is a set: identical quads
+    // (same full term identity including literal datatype/language) are deduplicated before any
+    // cardinality decision, so appending the exact same payload quad again is not a competitor. An
+    // incoming edge only counts for identity when its object is a real NamedNode: a literal spelling
+    // of the same IRI is a different term and never a subject-identity edge.
+    const parsedQuads: Quad[] = [];
+    const seenQuads = new Set<string>();
+    let bodyQuads: Quad[];
+    try { bodyQuads = new N3Parser({ baseIRI: url.href }).parse(ttl); } catch (error) {
+      if (membership) return invalid();
+      throw error;
+    }
+    for (const quad of bodyQuads) {
+      const identity = `${termToId(quad.subject)}|${termToId(quad.predicate)}|${termToId(quad.object)}|${termToId(quad.graph)}`;
+      if (seenQuads.has(identity)) {
+        continue;
+      }
+      seenQuads.add(identity);
+      parsedQuads.push(quad);
+    }
+    if (membership && !parsedQuads.some(q => q.subject.value === messageIri || q.subject.value === `${messageIri}/metadata`
+      || (q.object.termType === 'NamedNode' && [messageIri, `${messageIri}/metadata`].includes(q.object.value)))) return undefined;
+    const outgoing = new Map<string, Quad[]>();
+    const incoming = new Map<string, Quad[]>();
+    for (const quad of parsedQuads) {
+      if (quad.subject.termType === 'NamedNode' && quad.subject.value === messageIri) {
+        const list = outgoing.get(quad.predicate.value) ?? [];
+        list.push(quad);
+        outgoing.set(quad.predicate.value, list);
+      }
+      if (quad.object.termType === 'NamedNode' && quad.object.value === messageIri) {
+        const list = incoming.get(quad.predicate.value) ?? [];
+        list.push(quad);
+        incoming.set(quad.predicate.value, list);
+      }
+    }
+    const subjectQuads = (predicate: string): Quad[] => outgoing.get(predicate) ?? [];
+
+    // Exactly one Message type on the exact subject.
+    if (subjectQuads(rdfType).filter(quad => quad.object.termType === 'NamedNode'
+      && quad.object.value === String(messageResource.config.type)).length !== 1) {
+      return invalid();
+    }
+    // Exactly one metadata edge, and it must reach this resource's own metadata subject.
+    const metadataEdges = subjectQuads(metadataGuard.predicate);
+    if (metadataEdges.length !== 1 || metadataEdges[0].object.termType !== 'NamedNode'
+      || metadataEdges[0].object.value !== `${messageIri}/metadata`) {
+      return invalid();
+    }
+    // Exactly one literal protocol payload (a NamedNode or literal competitor fails closed).
+    const metadataSubject = metadataEdges[0].object.value;
+    const protocolTerms = parsedQuads.filter(quad =>
+      quad.subject.value === metadataSubject && quad.predicate.value === protocolsPredicate);
+    if (protocolTerms.length !== 1 || protocolTerms[0].object.termType !== 'Literal') {
+      return invalid();
+    }
+    if (membership && (protocolTerms[0].object.termType !== 'Literal'
+      || protocolTerms[0].object.datatype.value !== 'http://www.w3.org/2001/XMLSchema#json')) return invalid();
+    let parsed: { matrix?: Record<string, unknown> };
+    try {
+      parsed = JSON.parse(protocolTerms[0].object.value) as { matrix?: Record<string, unknown> };
+    } catch {
+      return invalid();
+    }
+    const matrix = parsed.matrix;
+    const event = matrix?.event as Record<string, unknown> | undefined;
+    if (!event) {
+      return invalid();
+    }
+    // Required protocol fields with types; no defaulted authority.
+    if (typeof event.event_id !== 'string' || event.event_id !== eventId) {
+      return invalid();
+    }
+    if (typeof event.room_id !== 'string' || event.room_id !== roomId) {
+      return invalid();
+    }
+    if (typeof event.type !== 'string' || event.type.length === 0) {
+      return invalid();
+    }
+    if (typeof event.sender !== 'string' || event.sender.length === 0) {
+      return invalid();
+    }
+    if (expectedSender !== undefined && event.sender !== expectedSender) {
+      return invalid();
+    }
+    if (typeof event.origin_server_ts !== 'number' || !Number.isFinite(event.origin_server_ts)) {
+      return invalid();
+    }
+    if (!isRecord(event.content)) {
+      return invalid();
+    }
+    // `state_key` is optional, but when present it must be a string (a numeric scalar is malformed).
+    if ('state_key' in event && event.state_key !== undefined && typeof event.state_key !== 'string') {
+      return invalid();
+    }
+
+    // Cardinality comes from the installed public models column metadata, not a field-name whitelist:
+    // `dataType: 'array'` allows many values; every other column is single-valued. Inverse columns
+    // (`isInverse()`) are stored as `<container> predicate <subject>`, so they are counted through the
+    // subject's position and validated against the canonical relation.
+    const termsFor = (guard: MessageColumnGuard): Quad[] =>
+      guard.inverse ? (incoming.get(guard.predicate) ?? []) : (outgoing.get(guard.predicate) ?? []);
+    for (const guard of guards.all) {
+      if (guard.dataType === 'array') {
+        continue;
+      }
+      if (termsFor(guard).length > 1) {
+        return invalid();
+      }
+    }
+
+    // Required RDF facts, each derived from the same models columns.
+    const quadsOf = (name: string): Quad[] => {
+      const guard = guards.byName.get(name);
+      if (!guard) {
+        throw new MatrixError(500, 'M_UNKNOWN', `The models message column ${name} is unavailable`);
+      }
+      return termsFor(guard);
+    };
+    const contentQuads = quadsOf('content');
+    const expectedContent = this.messageContentFromMatrixEvent(String(event.type), event.content);
+    if (contentQuads.length !== 1 || contentQuads[0].object.termType !== 'Literal'
+      || contentQuads[0].object.value !== String(expectedContent)) {
+      return invalid();
+    }
+    const makerQuads = quadsOf('maker');
+    if (makerQuads.length !== 1 || makerQuads[0].object.termType !== 'NamedNode') {
+      return invalid();
+    }
+    const parentQuads = quadsOf('parent');
+    if (parentQuads.length !== 1 || parentQuads[0].object.termType !== 'NamedNode'
+      || parentQuads[0].object.value !== roomChatIri(scope, roomId)) {
+      return invalid();
+    }
+    const metadataQuads = quadsOf('metadata');
+    if (metadataQuads.length !== 1 || metadataQuads[0].object.termType !== 'NamedNode'
+      || metadataQuads[0].object.value !== `${messageIri}/metadata`) {
+      return invalid();
+    }
+    // The canonical inverse chat relation must exist exactly once and point from this room's chat.
+    const chatQuads = quadsOf('chat');
+    if (chatQuads.length !== 1 || chatQuads[0].subject.termType !== 'NamedNode'
+      || chatQuads[0].subject.value !== roomChatIri(scope, roomId)) {
+      return invalid();
+    }
+    // Required datetime: one literal carrying the model's xsd:dateTime datatype, parseable, and
+    // exactly the protocol event instant. A right-looking ISO string typed as xsd:string (or any
+    // other datatype) is a different RDF term and must not confirm a winner.
+    const createdAtGuard = guards.byName.get('createdAt');
+    if (!createdAtGuard || createdAtGuard.dataType !== 'datetime') {
+      throw new MatrixError(500, 'M_UNKNOWN', 'The models message column createdAt is not a datetime');
+    }
+    const createdQuads = quadsOf('createdAt');
+    if (createdQuads.length !== 1 || createdQuads[0].object.termType !== 'Literal') {
+      return invalid();
+    }
+    if (createdQuads[0].object.datatype.value !== 'http://www.w3.org/2001/XMLSchema#dateTime') {
+      return invalid();
+    }
+    const createdMillis = Date.parse(createdQuads[0].object.value);
+    if (!Number.isFinite(createdMillis) || createdMillis !== Number(event.origin_server_ts)) {
+      return invalid();
+    }
+    // Provenance: the RDF maker must agree with the protocol's verified author WebID when present.
+    const senderWebId = matrix?.senderWebId;
+    if (typeof senderWebId === 'string' && senderWebId.length > 0 && makerQuads[0].object.value !== senderWebId) {
+      return invalid();
+    }
+
+    if (membership) {
+      const operation = membership.operation;
+      if (makerQuads[0].object.value !== operation.actor.webId || senderWebId !== operation.actor.webId
+        || event.type !== 'm.room.member' || event.sender !== operation.actor.webId
+        || event.state_key !== operation.targetWebId || event.origin_server_ts !== operation.event.createdAt
+        || !isDeepStrictEqual(event.content, operation.event.content)) return invalid();
+    }
+    const type = String(event.type);
+    return {
+      eventId,
+      roomId,
+      type,
+      sender: String(event.sender),
+      originServerTs: Number(event.origin_server_ts),
+      role: type === 'm.room.message' ? MessageRole.USER : MessageRole.SYSTEM,
+      resourceId: membership ? messageIri : messageResourceId,
+      ...(membership ? { senderWebId: makerQuads[0].object.value } : {}),
+      content: event.content,
+      ...(typeof event.state_key === 'string' ? { stateKey: event.state_key } : {}),
+      event,
+    } as MatrixEventRecord;
+  }
+
+  /**
+   * Write one message row as a conditional first-writer insert when the Pod handle supports it.
+   *
+   * Returns whether the conditional path was used. The in-memory test harness has no real Pod and no
+   * dialect transport, so it keeps the plain insert; a deployment always goes through the guarded
+   * scoped POST. A capability failure falls back rather than silently dropping the event.
+   */
+  private async writeMessageRow(
+    db: Db,
+    input: { roomId: string; eventId: string; originServerTs: number; row: Record<string, unknown>;
+      context: MatrixStoreContext },
+  ): Promise<boolean> {
+    const dialectFactory = (db as { getDialect?: unknown }).getDialect;
+    if (typeof dialectFactory !== 'function') {
+      // Not a Pod-backed database (the in-memory test adapter has no dialect/transport). There is no
+      // conditional capability to lose, so the plain in-memory insert is the whole implementation.
+      await db.insert(messageResource).values(input.row);
+      return false;
+    }
+    if (!canWriteConditionally(db)) {
+      // A real Pod database that cannot express an authenticated conditional insert must fail rather
+      // than silently downgrade to an unconditional write that reintroduces the race.
+      throw new MatrixError(500, 'M_UNKNOWN',
+        'The Pod database cannot execute a conditional event insert; refusing an unconditional write');
+    }
+    const scope = this.scope(input.context);
+    const builder = db.insert(messageResource).values(input.row) as { toSPARQL?: () => { query: string } };
+    if (typeof builder.toSPARQL !== 'function') {
+      throw new MatrixError(500, 'M_UNKNOWN',
+        'The ORM insert builder does not expose toSPARQL; refusing an unconditional write');
+    }
+    const messageIri = messageResource.buildIri(scope, { id: String(input.row.id) });
+    const write = buildConditionalEventWrite({
+      insertQuery: builder.toSPARQL().query,
+      messageIri,
+      chatIri: this.chatIri(input.roomId, input.context),
+      roomDirectory: roomDirectoryIri(scope, input.roomId),
+      chatType: String(chatResource.config.type),
+      messageType: String(messageResource.config.type),
+      parentPredicate: String(messageResource.parent.getPredicate(messageResource.config.namespace)),
+    });
+    // No catch: a refused, timed-out or unknown-outcome conditional POST must propagate. A lost
+    // response still leaves the committed winner to be read back by the caller.
+    await executeConditionalEventWrite(db as unknown as ConditionalWriteDatabase, write);
+    // The raw scoped POST bypasses the ORM's ordinary LDP write path, so its transport cache must be
+    // told the one document changed. Scoped to that document: clearing the whole engine cache would
+    // turn every later read into a refetch storm.
+    await this.invalidateTransportCache(db, write.document);
+    return true;
+  }
+
+  /** Drop the ORM transport's cached copy of one document after a raw scoped POST changed it. */
+  private async invalidateTransportCache(db: Db, document: string): Promise<void> {
+    try {
+      const executor = (db as {
+        getDialect?: () => { getSPARQLExecutor?: () => { invalidateHttpCache?: (url?: string) => Promise<void> } };
+      }).getDialect?.().getSPARQLExecutor?.();
+      await executor?.invalidateHttpCache?.(document);
+    } catch (error) {
+      // Cache invalidation is best-effort; the authority file is already committed.
+      this.logger.debug(`Could not invalidate the transport cache: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** The semantic fields a retry has to agree on; bookkeeping (txn, time, bucket) is not identity. */
+  private sameEventSemantics(left: MatrixEventRecord, right: MatrixEventRecord): boolean {
+    // `state_key` is optional but its absence and an empty string are different Matrix event shapes,
+    // so compare it exactly rather than collapsing both to ''.
+    const leftStateKey = left.stateKey;
+    const rightStateKey = right.stateKey;
+    if (leftStateKey !== undefined && typeof leftStateKey !== 'string') {
+      return false;
+    }
+    if (rightStateKey !== undefined && typeof rightStateKey !== 'string') {
+      return false;
+    }
+    return left.sender === right.sender
+      && left.type === right.type
+      && leftStateKey === rightStateKey
+      && this.canonicalJson(left.content) === this.canonicalJson(right.content);
   }
 
   /**
@@ -1185,7 +2226,7 @@ export class PodMatrixStore {
    * Idempotent: an existing record is left exactly as it is.
    */
   private async materializeReceivedRoom(db: Db, roomId: string, context: MatrixStoreContext): Promise<void> {
-    const chatId = this.chatResourceIdFromRoomId(roomId);
+    const chatId = this.chatResourceId(roomId, this.scope(context));
     if (await db.findById(chatResource, chatId)) return;
     const timeline = await this.listEvents(db, roomId, context);
     const create = timeline.find(record => record.type === 'm.room.create');
@@ -1213,7 +2254,7 @@ export class PodMatrixStore {
       updatedAt: nowIso,
     });
     await db.insert(threadResource).values({
-      id: this.threadResourceIdFromRoomId(roomId),
+      id: this.threadResourceId(roomId, this.scope(context)),
       parent: this.chatIri(roomId, context),
       title: roomId,
       status: 'active',
@@ -1273,7 +2314,6 @@ export class PodMatrixStore {
     event: Record<string, unknown>;
     context: MatrixStoreContext;
   }): Promise<MatrixEventRecord> {
-    const db = await this.getDb(input.context);
     const event = input.event;
     const roomId = String(event.room_id ?? '');
     const type = String(event.type ?? '');
@@ -1292,24 +2332,65 @@ export class PodMatrixStore {
     // The identity is attached here when it was not sent; it is safe because neither the content
     // hash, the reference hash nor the signature covers `event_id`.
     const storedEvent: Record<string, unknown> = { ...event, event_id: eventId };
-    const messageResourceId = this.messageResourceIdFromEvent(roomId, eventId, originServerTs);
-    const existing = await db.findById(messageResource, messageResourceId);
-    if (existing) return this.eventSourceToRecord(existing, roomId, input.context);
-    await this.materializeReceivedRoom(db, roomId, input.context);
+    const messageResourceId = this.messageResourceId(roomId, eventId, originServerTs, this.scope(input.context));
+    // The semantic comparison is what "same logical event" means, so it is computed before either
+    // lookup. `(roomId, eventId)` is the logical key; the resource id merely happens to be a fast
+    // way to reach one row. A resource-id hit alone only proves the row exists — not that it says
+    // the same thing — so it runs the same sender/type/state_key/content check the timeline path
+    // does. Returning the first row for a same-key/different-content write would accept a conflict
+    // as a harmless duplicate and silently keep content the author did not send.
+    const receivedHash = this.receivedContentHash(sender, type, event.state_key, content);
+    // Serialize with a concurrent local send for the same logical key: both would otherwise miss the
+    // timeline read and insert, and the Solid insert would keep each attempt's object value as a
+    // second triple on the same subject.
+    return this.runExclusive(`${this.scope(input.context)}|${roomId}|${eventId}`, () =>
+      this.acceptReceivedEventLocked(input.context, {
+        roomId, type, sender, originServerTs, content, eventId, storedEvent, messageResourceId, receivedHash,
+      }));
+  }
+
+  private async acceptReceivedEventLocked(context: MatrixStoreContext, parsed: {
+    roomId: string; type: string; sender: string; originServerTs: number;
+    content: Record<string, unknown>; eventId: string; storedEvent: Record<string, unknown>;
+    messageResourceId: string; receivedHash: string;
+  }): Promise<MatrixEventRecord> {
+    const db = await this.getDb(context);
+    const { roomId, type, sender, originServerTs, content, eventId, storedEvent, messageResourceId, receivedHash } = parsed;
+    const fast = await db.findById(messageResource, messageResourceId);
+    if (fast) {
+      const existing = this.eventSourceToRecord(fast, roomId, context);
+      if (this.receivedContentHash(existing.sender, existing.type, existing.stateKey, existing.content) !== receivedHash) {
+        throw new MatrixError(409, 'M_CONFLICT', 'Event id already names different content');
+      }
+      return existing;
+    }
+    await this.materializeReceivedRoom(db, roomId, context);
+    // The logical key is `(roomId, eventId)`, so the room's own timeline is what decides whether
+    // this event is already here. The resource id also carries the day bucket and the arrival
+    // timestamp, and a retry that lands on another day (or with a recomputed timestamp) would
+    // build a second resource id for the same event; looking the id up in the timeline is what
+    // keeps one logical event to one row.
+    const claimedEvent = (await this.listEvents(db, roomId, context)).find(candidate => candidate.eventId === eventId);
+    if (claimedEvent) {
+      if (this.receivedContentHash(claimedEvent.sender, claimedEvent.type, claimedEvent.stateKey, claimedEvent.content) !== receivedHash) {
+        throw new MatrixError(409, 'M_CONFLICT', 'Event id already names different content');
+      }
+      return claimedEvent;
+    }
     // The room exists here now, so "is our participant in it" is answerable — and that is what
     // decides whether this event belongs in their Pod at all.
-    await this.requireInboundAuthority(db, roomId, type, input.context);
+    await this.requireInboundAuthority(db, roomId, type, context);
 
     const originIso = new Date(originServerTs).toISOString();
     const role = type === 'm.room.message' ? MessageRole.USER : MessageRole.SYSTEM;
     const coordination = reconcilerCoordinationMetadata(
-      this.reconcilerOwnerFromRoomMetadata((await this.getRoomContext(db, roomId, input.context))?.metadata));
-    await db.insert(messageResource).values({
+      this.reconcilerOwnerFromRoomMetadata((await this.getRoomContext(db, roomId, context))?.metadata));
+    const row = {
       id: messageResourceId,
-      parent: this.chatIri(roomId, input.context),
-      chat: this.chatIri(roomId, input.context),
-      thread: this.threadIri(roomId, input.context),
-      maker: input.context.webId,
+      parent: this.chatIri(roomId, context),
+      chat: this.chatIri(roomId, context),
+      thread: this.threadIri(roomId, context),
+      maker: context.webId,
       role,
       content: this.messageContentFromMatrixEvent(type, content),
       status: MessageStatus.SENT,
@@ -1317,7 +2398,7 @@ export class PodMatrixStore {
       routeTargetAgent: this.routeTargetAgentFromMatrixContent(content) ?? null,
       replyTo: typeof content['co.undefineds.replyTo'] === 'string' ? content['co.undefineds.replyTo'] : null,
       metadata: withProtocolMetadata({
-        '@id': `${messageResource.buildIri(this.scope(input.context),{id:messageResourceId})}/metadata`,
+        '@id': `${messageResource.buildIri(this.scope(context),{id:messageResourceId})}/metadata`,
         protocol: 'matrix',
         commandKind: 'chat',
         surface_id: this.surfaceIdFromRoomId(roomId),
@@ -1331,7 +2412,8 @@ export class PodMatrixStore {
       }),
       createdAt: originIso,
       updatedAt: originIso,
-    });
+    };
+    const usedConditional = await this.writeMessageRow(db, { roomId, eventId, originServerTs, row, context });
 
     const record: MatrixEventRecord = {
       eventId,
@@ -1345,7 +2427,26 @@ export class PodMatrixStore {
       event: storedEvent,
       ...(typeof storedEvent.state_key === 'string' ? { stateKey: storedEvent.state_key } : {}),
     };
-    record.depth = await this.journal.registerEvent(this.scope(input.context), roomId, eventId);
+    if (usedConditional) {
+      const winner = await this.awaitCommittedWinner(db, messageResourceId, roomId, eventId, context, sender);
+      if (!winner) {
+        throw new MatrixError(503, 'M_UNKNOWN', 'The received event write could not be confirmed');
+      }
+      if (this.receivedContentHash(winner.sender, winner.type, winner.stateKey, winner.content) !== receivedHash) {
+        throw new MatrixError(409, 'M_CONFLICT', 'Event id already names different content');
+      }
+      const reference = await this.journal.registerReference(this.scope(context), {
+        roomId, eventId, createdAt: originServerTs,
+        messageIri: messageResource.buildIri(this.scope(context), { id: messageResourceId }),
+      });
+      winner.depth = reference.sequence;
+      return winner;
+    }
+    const reference = await this.journal.registerReference(this.scope(context), {
+      roomId, eventId, createdAt: originServerTs,
+      messageIri: messageResource.buildIri(this.scope(context), { id: messageResourceId }),
+    });
+    record.depth = reference.sequence;
     return record;
   }
 
@@ -1363,7 +2464,7 @@ export class PodMatrixStore {
       reconcilerOwner: options.reconcilerOwner,
       type: 'm.room.member',
       sender,
-      originServerTs: Date.now(),
+      originServerTs: this.now(),
       stateKey: memberUserId,
       content: {
         membership,
@@ -1419,7 +2520,7 @@ export class PodMatrixStore {
     db: Db,
     roomId: string,
     context: MatrixStoreContext,
-    options: { newestFirst?: boolean } = {},
+    options: { newestFirst?: boolean; registerJournal?: false } = {},
   ): Promise<MatrixEventRecord[]> {
     const sources = await db.select().from(messageResource)
       .where(eq(messageResource.thread, this.threadIri(roomId, context))) as MatrixEventSource[];
@@ -1427,6 +2528,7 @@ export class PodMatrixStore {
     // One journal round trip per page instead of one per event: the per-event
     // form made every read cost O(history) SQL calls.
     const records = sources.map(source => this.eventSourceToRecord(source, roomId, context));
+    if (options.registerJournal === false) return records;
     const sequences = await this.journal.registerEvents(this.scope(context), roomId, records.map(record => record.eventId));
     records.forEach((record, index) => { record.depth = sequences[index]; });
     const events = records;
@@ -1476,7 +2578,7 @@ export class PodMatrixStore {
       // until the sender's own binding can be consulted.
       senderWebId: this.stringValue(matrix.senderWebId ?? matrix.sender_web_id ?? metadata.senderWebId)
         ?? (matrix.received === true ? undefined : source.maker ?? undefined),
-      originServerTs: this.numberValue(stored?.origin_server_ts ?? matrix.originServerTs ?? matrix.origin_server_ts ?? metadata.originServerTs) ?? this.isoToMillis(source.createdAt) ?? Date.now(),
+      originServerTs: this.numberValue(stored?.origin_server_ts ?? matrix.originServerTs ?? matrix.origin_server_ts ?? metadata.originServerTs) ?? this.isoToMillis(source.createdAt) ?? this.now(),
       depth: this.numberValue(stored?.depth ?? matrix.depth ?? metadata.depth),
       role: source.role,
       resourceId: source.id,
@@ -1555,7 +2657,10 @@ export class PodMatrixStore {
   private async findRoomSource(db: Db, roomId: string, context: MatrixStoreContext): Promise<MatrixRoomSource | undefined> {
     const holder = context as MatrixStoreContext & { _roomSources?: Map<string, MatrixRoomSource | undefined> };
     holder._roomSources ??= new Map();
-    const key = this.chatResourceIdFromRoomId(roomId);
+    // `chatResourceId` already chooses the exact own source, or the hashed display layout for a
+    // legacy/foreign id. A missing row is a missing room — never a hashed replacement for an own
+    // source, which would let a mirror stand in for the room's authority.
+    const key = this.chatResourceId(roomId, this.scope(context));
     if (!holder._roomSources.has(key)) {
       holder._roomSources.set(key, await db.findById(chatResource, key) as MatrixRoomSource | undefined);
     }
@@ -1757,6 +2862,45 @@ export class PodMatrixStore {
     const db = await this.getDb(context);
     const events = await this.listEvents(db,roomId,context);
     await this.requireJoined(db,roomId,context,events);
+    // A completed wake is a durable fact: its first full output is replayed/returned before any
+    // current grant or lease is consulted. This is a read of the committed result, not new
+    // execution, so a later revoked grant cannot erase it — but it grants no new side effects.
+    const runValues = { id: job.id, thread: job.thread, createdAt: job.createdAt };
+    const completedRun = await db.findById(runResource, runResource.buildId(runValues));
+    if (completedRun?.status === 'completed') {
+      const runIri = runResource.buildIri(this.scope(context), runValues);
+      const runMetadata = this.parseJsonObject(completedRun.metadata) ?? {};
+      const runMatrix = getProtocolMetadata(runMetadata, 'matrix') ?? {};
+      // The completed Run must bind to this exact wake: same room, job, thread and trigger.
+      if (this.stringValue(runMatrix.roomId) !== roomId
+        || this.stringValue(runMatrix.jobId) !== job.id
+        || this.stringValue(completedRun.thread) !== job.thread
+        || this.stringValue(completedRun.input) !== job.triggerMessage) {
+        throw new MatrixError(503, 'M_UNKNOWN', 'The completed run does not bind to this wake');
+      }
+      const committedEventId = this.stringValue(runMatrix.eventId);
+      const committed = committedEventId ? events.find(event => event.eventId === committedEventId) : undefined;
+      if (!committed) {
+        throw new MatrixError(503, 'M_UNKNOWN', 'The completed result could not be read back from the Pod');
+      }
+      const execution = this.parseJsonObject(committed.content['co.undefineds.execution'] as JsonObjectSource) ?? {};
+      // The output must be the ASSISTANT result of this job/agent/trigger, not an unrelated
+      // same-agent/same-body room message the Run metadata might have been pointed at.
+      const same = committed.role === MessageRole.ASSISTANT
+        && committed.type === 'm.room.message'
+        && committed.roomId === roomId
+        && committed.sender === this.getMatrixUserId({ ...context, webId: job.agent })
+        && committed.content.body === result.body
+        && committed.content['co.undefineds.replyTo'] === job.triggerMessage
+        && String(execution.jobId) === job.id
+        && String(execution.agent) === job.agent
+        && (execution.handoffTo ?? undefined) === (result.handoffTo ?? undefined)
+        && JSON.stringify(execution.evidence ?? []) === JSON.stringify(result.evidence ?? []);
+      if (!same) {
+        throw new MatrixError(409, 'M_CONFLICT', 'A different result was already committed for this wake');
+      }
+      return { eventId: committed.eventId, run: runIri };
+    }
     if (!(await this.agentGrants(db,roomId,context,events)).some(g=>g.agent===job.agent && g.executor===context.webId)) {
       throw new MatrixError(403,'M_FORBIDDEN','No execution grant for this agent');
     }
@@ -1777,8 +2921,12 @@ export class PodMatrixStore {
     const contentHash = this.hash(this.canonicalJson(['assistant',job.agent,'m.room.message',content]));
     const key = JSON.stringify(['wake-result',job.id]);
     const resultSender = this.getMatrixUserId({...context,webId:job.agent});
+    // One wake owns exactly one result identity: naming it from the job id makes a retry of the
+    // same wake land on the same event rather than on a second one.
+    const resultEventId = eventIdForWrite(`$wake-${this.hash(job.id)}`);
     const resultInput = {
       roomId, type: 'm.room.message', sender: resultSender, content,
+      eventId: resultEventId,
       ...this.graphPosition(events, { type: 'm.room.message', sender: resultSender, content }),
     };
     const { reservation, proposal } = await this.reserveEventTransaction(context, key, resultInput, contentHash);
@@ -1899,7 +3047,7 @@ export class PodMatrixStore {
     const receipt = stored === undefined ? undefined : await this.journal.findReservation(this.scope(context), stored, await this.reservationAuthority(context));
     const resultEventId = stored?.eventId;
     if (receipt && resultEventId) {
-      const source = await db.findById(messageResource,this.messageResourceIdFromEvent(event.roomId,resultEventId,receipt.createdAt));
+      const source = await db.findById(messageResource,this.messageResourceId(event.roomId,resultEventId,receipt.createdAt,this.scope(context)));
       if (source) {
         const output = this.eventSourceToRecord(source,event.roomId,context);
         if (receipt.contentHash === this.hash(this.canonicalJson(['assistant',agent,output.type,output.content]))) {
@@ -2073,8 +3221,10 @@ export class PodMatrixStore {
     context: MatrixStoreContext,
     timeline: readonly MatrixEventRecord[],
     event: PersistedMatrixEvent,
+    publication?: { outbox: MatrixFederationOutbox; actor: MatrixFederationActor },
   ): Promise<void> {
-    if (!this.outbound) return;
+    const outbox = publication?.outbox ?? this.outbound;
+    if (!outbox) return;
     const origin = serverNameOf(typeof event.sender === 'string' ? event.sender : undefined);
     if (!origin) return;
     const destinations = eventDestinations({
@@ -2086,12 +3236,33 @@ export class PodMatrixStore {
       },
     });
     for (const destination of destinations) {
-      await this.outbound.enqueue({ scope: this.scope(context), origin, destination, pdus: [ event ] });
+      // The batch remembers *who* it is from, so the background send rechecks that participant's
+      // current grant instead of signing with a deployment key (O1). Only the reference is queued.
+      await outbox.enqueue({
+        scope: this.scope(context),
+        origin,
+        destination,
+        pdus: [ event ],
+        ...(publication ? { actor: publication.actor } : this.deliverAsActor
+          ? { actor: {
+            webId: context.webId,
+            ...(context.podUrl === undefined ? {} : { podUrl: context.podUrl }),
+            // The caller's explicit named grant travels with the reference so a background send
+            // rechecks *that* grant (ref/version) instead of silently taking another active one.
+            ...(context.service?.taskCredential === undefined
+              ? {}
+              : { taskCredential: context.service.taskCredential }),
+          } }
+          : {}),
+      });
     }
   }
 
   private getMatrixUserId(context: MatrixStoreContext): string {
-    return this.matrixUserIdFor(context.webId, this.getServerName(context));
+    // The identity in an event is the participant's WebID itself. No MXID, no hash derivation, no
+    // server name: `sender` and `state_key` are the WebID, so the same participant is the same
+    // string in every Pod, and there is nothing to keep in step when a Pod moves.
+    return context.webId;
   }
 
   /**
@@ -2145,18 +3316,47 @@ export class PodMatrixStore {
     return roomSurfaceId(roomId);
   }
 
-  private chatResourceIdFromRoomId(roomId: string): string {
-    return chatResource.buildId({id: this.surfaceIdFromRoomId(roomId)});
+  /**
+   * The public `id` that addresses a room's canonical Chat under `scope`. For a source-bound own
+   * room this is the exact original source id (`canonicalChatResourceId`, which preserves percent
+   * escapes and requires the public builder to reproduce the exact IRI); a foreign/legacy room uses
+   * the hashed display surface. No layout is copied here.
+   */
+  private chatResourceId(roomId: string, scope: string): string {
+    const decoded = decodeSourceBoundRoomId(roomId);
+    if (decoded.status === 'source-bound') {
+      const exact = canonicalChatResourceId(decoded.canonicalChatIri, scope);
+      if (exact !== null) {
+        return exact;
+      }
+    }
+    return chatResource.buildId({ id: this.surfaceIdFromRoomId(roomId) });
   }
 
-  private threadResourceIdFromRoomId(roomId: string): string {
-    return threadResource.buildId({id: 'thread', parent: chatResource.buildIri('https://layout.invalid/', {id:this.surfaceIdFromRoomId(roomId)})});
+  /** The parent Chat IRI the thread/message rows attach to: the actual local Chat, exact or hashed. */
+  private localChatParentIri(roomId: string, scope: string): string {
+    return roomChatIri(scope, roomId);
   }
 
-  private messageResourceIdFromEvent(roomId: string, eventId: string, ts: number): string {
-    return messageResource.buildId({id: this.hash(eventId),
-      parent: chatResource.buildIri('https://layout.invalid/', {id:this.surfaceIdFromRoomId(roomId)}),
-      createdAt:new Date(ts).toISOString()});
+  private threadResourceId(roomId: string, scope: string): string {
+    return threadResource.buildId({ id: 'thread', parent: this.localChatParentIri(roomId, scope) });
+  }
+
+  private messageResourceId(roomId: string, eventId: string, ts: number, scope: string): string {
+    return messageResource.buildId({ id: this.hash(eventId),
+      parent: this.localChatParentIri(roomId, scope),
+      createdAt: new Date(ts).toISOString() });
+  }
+
+  /**
+   * The semantic content of a received event, for the `(roomId, eventId)` conflict check.
+   *
+   * Retry comparison covers the fields an event is about — `sender`, `type`, `state_key`,
+   * `content` — so a peer cannot keep a logical id while changing what it says, and a retry that
+   * only re-arrives with a different arrival day or bookkeeping is still the same event.
+   */
+  private receivedContentHash(sender: string, type: string, stateKey: unknown, content: Record<string, unknown>): string {
+    return this.hash(this.canonicalJson(['inbound', sender, type, typeof stateKey === 'string' ? stateKey : null, content]));
   }
 
   private isoToMillis(value: string | Date | null | undefined): number | undefined {
@@ -2180,5 +3380,37 @@ export class PodMatrixStore {
     const parsed = Number(token.slice(3));
     if (!Number.isSafeInteger(parsed)) throw new MatrixError(400, 'M_UNKNOWN_POS', 'Invalid cursor');
     return parsed;
+  }
+
+  /**
+   * The opaque incremental cursor: version, operational-index epoch, the fixed page upper bound and
+   * the last processed position. Bounded regardless of history size; an old epoch is an explicit
+   * resync, never silently reused.
+   */
+  private encodeSyncCursor(epoch: string, through: number, position: number): string {
+    return `v3.${epoch}.${through}.${position}`;
+  }
+
+  private parseSyncCursor(token: string | undefined): { epoch: string; through: number; position: number } | undefined {
+    if (token === undefined) {
+      // Only a caller with no token bootstraps; every provided token must be a valid v3 cursor.
+      return undefined;
+    }
+    if (token.length > 128) {
+      throw new MatrixError(400, 'M_UNKNOWN_POS', 'Cursor is too long; start a fresh sync');
+    }
+    const match = /^v3\.([0-9a-fA-F-]{36})\.(\d+)\.(\d+)$/u.exec(token);
+    if (!match) {
+      throw new MatrixError(400, 'M_UNKNOWN_POS', 'Cursor version changed; start a fresh sync');
+    }
+    const through = Number(match[2]);
+    const position = Number(match[3]);
+    if (!Number.isSafeInteger(through) || !Number.isSafeInteger(position) || through < 0 || position < 0) {
+      throw new MatrixError(400, 'M_UNKNOWN_POS', 'Invalid cursor position');
+    }
+    if (position > through) {
+      throw new MatrixError(400, 'M_UNKNOWN_POS', 'Cursor position is beyond its snapshot');
+    }
+    return { epoch: match[1], through, position };
   }
 }

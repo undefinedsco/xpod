@@ -1,4 +1,5 @@
 import { Client } from 'minio';
+import http from 'node:http';
 
 /**
  * Test-only S3 endpoint shared by the Docker-backed integration helpers.
@@ -68,6 +69,7 @@ export async function probeObjectStore(
   bucket: string,
   accessKey = OBJECT_STORE_ACCESS_KEY,
   secretKey = OBJECT_STORE_SECRET_KEY,
+  signal?: AbortSignal,
 ): Promise<{ ok: boolean; detail: string }> {
   const client = new Client({
     endPoint: '127.0.0.1',
@@ -75,6 +77,33 @@ export async function probeObjectStore(
     useSSL: false,
     accessKey,
     secretKey,
+    ...(signal ? { transport: {request: ((options: http.RequestOptions, callback?: (response: http.IncomingMessage) => void) => {
+      const failure = (): Error => Object.assign(new Error('Object store readiness aborted'), {name:'AbortError', code:'ABORT_ERR'});
+      if (signal.aborted) throw failure();
+      let response: http.IncomingMessage | undefined;
+      const cleanup = (): void => signal.removeEventListener('abort', abort);
+      const request = http.request(options, incoming => {
+        response = incoming;
+        incoming.once('end', cleanup);
+        incoming.once('close', () => {
+          if (!incoming.readableEnded) incoming.emit('error', new Error('Object store readiness response closed before completion'));
+          cleanup();
+        });
+        callback?.(incoming);
+      });
+      const abort = (): void => {
+        const error = failure();
+        // Bun's http.request signal alone may close without settling the SDK's error listener.
+        request.emit('error', error);
+        request.destroy(error);
+        response?.destroy(error);
+      };
+      signal.addEventListener('abort', abort, {once:true});
+      request.once('close', () => {
+        if (!response) {request.emit('error', new Error('Object store readiness request closed before response')); cleanup();}
+      });
+      return request;
+    }) as typeof http.request} } : {}),
   });
   try {
     const exists = await client.bucketExists(bucket);

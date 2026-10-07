@@ -27,7 +27,13 @@ import {
   type MatrixControlRecordTarget,
 } from './controlRecords';
 import type {
+  BeginMatrixReconcileScan,
+  ListEventReferencesOptions,
   MatrixEventJournal,
+  MatrixEventReference,
+  MatrixReconcileCheckpoint,
+  MatrixReferencePage,
+  MatrixReferencePageResult,
   MatrixReservationLookup,
   MatrixTransactionReservation,
 } from './MatrixEventJournal';
@@ -120,6 +126,49 @@ export class PodMatrixEventJournal implements MatrixEventJournal {
 
   public async getHighWatermark(scope: string): Promise<number> {
     return await this.options.sequences.getHighWatermark(scope);
+  }
+
+  /** Exact cursor references are rebuildable operational state; keep them with the sequences. */
+  public async registerReference(
+    scope: string,
+    reference: Omit<MatrixEventReference, 'scope' | 'sequence'>,
+  ): Promise<MatrixEventReference> {
+    return await this.options.sequences.registerReference(scope, reference);
+  }
+
+  public async listReferences(
+    scope: string,
+    options: ListEventReferencesOptions,
+  ): Promise<MatrixEventReference[]> {
+    return await this.options.sequences.listReferences(scope, options);
+  }
+
+  public async getPublishedReferenceWatermark(scope: string): Promise<number> {
+    return await this.options.sequences.getPublishedReferenceWatermark(scope);
+  }
+
+  public async getEpoch(scope: string): Promise<string> {
+    return await this.options.sequences.getEpoch(scope);
+  }
+
+  public async bumpEpoch(scope: string): Promise<string> {
+    return await this.options.sequences.bumpEpoch(scope);
+  }
+
+  /**
+   * Durable reconciliation checkpoints are rebuildable operational state, so they stay with the
+   * deployment's own ordering store — no new Pod credential or control record.
+   */
+  public async beginReconcileScan(scope: string, scan: BeginMatrixReconcileScan): Promise<MatrixReconcileCheckpoint> {
+    return await this.options.sequences.beginReconcileScan(scope, scan);
+  }
+
+  public async getReconcileCheckpoint(scope: string, sourceUri: string): Promise<MatrixReconcileCheckpoint | undefined> {
+    return await this.options.sequences.getReconcileCheckpoint(scope, sourceUri);
+  }
+
+  public async publishReferencePage(scope: string, page: MatrixReferencePage): Promise<MatrixReferencePageResult> {
+    return await this.options.sequences.publishReferencePage(scope, page);
   }
 
   /**

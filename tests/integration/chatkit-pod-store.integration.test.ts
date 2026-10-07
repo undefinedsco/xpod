@@ -625,6 +625,15 @@ suite('ChatKit PodStore Integration', () => {
 
   describe('Thread Deletion', () => {
     it('should delete thread and all messages from Pod', async () => {
+      const phasesStarted = performance.now();
+      let previousPhase = phasesStarted;
+      const phase = (name: string): void => {
+        const now = performance.now();
+        console.log(JSON.stringify({ suite: 'chatkit-thread-deletion', phase: name,
+          elapsedMs: Math.round(now - previousPhase), totalMs: Math.round(now - phasesStarted) }));
+        previousPhase = now;
+      };
+      phase('start');
       // Create a thread
       const createRequest = JSON.stringify({
         type: 'threads.create',
@@ -636,6 +645,7 @@ suite('ChatKit PodStore Integration', () => {
       });
 
       const createResult = await service.process(createRequest, testContext);
+      phase('create-process-complete');
       let threadId: string = '';
       if (createResult.type === 'streaming') {
         const decoder = new TextDecoder();
@@ -653,6 +663,7 @@ suite('ChatKit PodStore Integration', () => {
         }
       }
 
+      phase('create-stream-complete');
       expect(threadId).toBeTruthy();
       // Delete the thread
       const deleteRequest = JSON.stringify({
@@ -660,7 +671,9 @@ suite('ChatKit PodStore Integration', () => {
         params: threadParams(threadId),
       });
 
+      phase('delete-start');
       const deleteResult = await service.process(deleteRequest, testContext);
+      phase('delete-complete');
       expect(deleteResult.type).toBe('non_streaming');
 
       if (deleteResult.type === 'non_streaming') {
@@ -675,6 +688,7 @@ suite('ChatKit PodStore Integration', () => {
       });
 
       // The query might throw "Thread not found" or a 404 error if the container was cleaned up
+      phase('verify-start');
       try {
         await service.process(getRequest, testContext);
         // If we get here without error, the test should fail
@@ -682,6 +696,7 @@ suite('ChatKit PodStore Integration', () => {
       } catch (error: any) {
         // Both "Thread not found" and container 404 are valid outcomes
         expect(error.message).toMatch(/Thread not found|404|NotFoundHttpError|Could not retrieve/);
+        phase('verify-complete');
       }
     }, 15000);
   });

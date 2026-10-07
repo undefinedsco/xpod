@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+import { LocalPhysicalOperationService } from '../storage/LocalPhysicalOperationService';
 import { getSqliteRuntime, type SqliteDatabase } from '../storage/SqliteRuntime';
 import type { LocalRdfAuthorityJournal } from '../storage/accessors/MixDataAccessor';
 import type {
@@ -29,6 +30,7 @@ const DEFAULT_TOMBSTONE_RETENTION_MS = 30 * DAY_MS;
 const DEFAULT_FAILED_PERMANENT_RETENTION_MS = 30 * DAY_MS;
 
 export type SolidFsSyncJournalStage =
+  | 'pending'
   | 'local_committed'
   | 'failed_retryable'
   | 'failed_permanent'
@@ -37,6 +39,7 @@ export type SolidFsSyncJournalStage =
 
 export interface SolidFsSyncJournalOptions {
   path: string;
+  operationService?: LocalPhysicalOperationService;
   now?: () => number;
   doneRetentionMs?: number;
   tombstoneRetentionMs?: number;
@@ -111,6 +114,7 @@ interface CheckpointRow {
  */
 export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
   private readonly db: SqliteDatabase;
+  private closed = false;
   private readonly now: () => number;
   private readonly doneRetentionMs: number;
   private readonly tombstoneRetentionMs: number;
@@ -121,14 +125,23 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
     this.doneRetentionMs = options.doneRetentionMs ?? DEFAULT_DONE_RETENTION_MS;
     this.tombstoneRetentionMs = options.tombstoneRetentionMs ?? DEFAULT_TOMBSTONE_RETENTION_MS;
     this.failedPermanentRetentionMs = options.failedPermanentRetentionMs ?? DEFAULT_FAILED_PERMANENT_RETENTION_MS;
-    this.db = getSqliteRuntime().openDatabase(options.path);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('busy_timeout = 5000');
-    this.initializeSchema();
+    const initialize = (): SqliteDatabase => {
+      const db = getSqliteRuntime().openDatabase(options.path);
+      try {
+        db.pragma('journal_mode = WAL');
+        db.pragma('busy_timeout = 5000');
+        this.initializeSchema(db);
+        return db;
+      } catch (error) { db.close(); throw error; }
+    };
+    this.db = options.operationService ? options.operationService.runSync(initialize) : initialize();
+    options.operationService?.registerFinalizer(() => this.close());
   }
 
   public close(): void {
+    if (this.closed) { return; }
     this.db.close();
+    this.closed = true;
   }
 
   public async recordLocalCommitted(
@@ -224,6 +237,93 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
 
   public listPending(): SolidFsSyncJournalOperation[] {
     return this.listOperations(['local_committed', 'failed_retryable']);
+  }
+
+  /**
+   * Persist a fresh exact-source pending token BEFORE any authority change.
+   *
+   * Pending means the derived index may be stale; it is not a commit receipt. Every accepted attempt
+   * gets a distinct persistent token independent of the intended bytes, so identical-content writes
+   * cannot alias onto one barrier and a stale recovery naming an older token can never clear a newer
+   * pending state.
+   */
+  public recordAuthorityPending(
+    change: SolidFsChange,
+    workspace: SolidFsManifest,
+    sourceVersion: string,
+    txId?: string,
+  ): SolidFsSyncJournalOperation {
+    const normalizedChange = normalizeChange(change);
+    const opId = `pending_${randomUUID().replace(/-/gu, '')}`;
+    const now = this.now();
+    const journalWorkspace = journalWorkspaceSnapshot(workspace);
+    this.db.prepare(`
+      INSERT INTO sync_ops (
+        id, tx_id, workspace, path, op_type, stage, source_path, resource, content_type,
+        source, projection, source_version, after_hash, workspace_json, change_json,
+        retry_count, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, NULL, ?, ?, 0, ?, ?)
+    `).run(
+      opId,
+      txId ?? null,
+      workspace.workspace,
+      normalizedChange.path,
+      normalizedChange.type,
+      normalizedChange.sourcePath,
+      normalizedChange.resource ?? null,
+      normalizedChange.contentType ?? null,
+      normalizedChange.source,
+      normalizedChange.projection,
+      sourceVersion,
+      JSON.stringify(journalWorkspace),
+      JSON.stringify({ ...normalizedChange, sourceVersion }),
+      now,
+      now,
+    );
+    return this.getOperation(opId)!;
+  }
+
+  public getAuthorityPending(id: string): SolidFsSyncJournalOperation | undefined {
+    const op = this.getOperation(id);
+    return op?.stage === 'pending' ? op : undefined;
+  }
+
+  public listAuthorityPending(path?: string): SolidFsSyncJournalOperation[] {
+    const rows = path === undefined
+      ? this.db.prepare<SyncOpRow>(`
+          SELECT id, tx_id, workspace_json, change_json, stage, after_hash, retry_count,
+                 last_error, created_at, updated_at, done_at
+          FROM sync_ops WHERE stage = 'pending' ORDER BY created_at ASC, id ASC
+        `).all()
+      : this.db.prepare<SyncOpRow>(`
+          SELECT id, tx_id, workspace_json, change_json, stage, after_hash, retry_count,
+                 last_error, created_at, updated_at, done_at
+          FROM sync_ops WHERE stage = 'pending' AND path = ? ORDER BY created_at ASC, id ASC
+        `).all(path);
+    return rows.map(rowToOperation);
+  }
+
+  /**
+   * Attach the hash of the exact complete authority bytes retained after the write. Recovery uses
+   * this to decide whether the retained file is the intended new source or an older complete file.
+   */
+  public attachAuthorityPendingHash(id: string, afterHash: string): void {
+    const now = this.now();
+    this.db.prepare(`
+      UPDATE sync_ops SET after_hash = ?, updated_at = ? WHERE id = ? AND stage = 'pending'
+    `).run(afterHash, now, id);
+  }
+
+  /**
+   * Clear exactly the named pending token. A stale recovery attempt that names an older token
+   * cannot clear a newer pending state.
+   */
+  public clearAuthorityPending(id: string): boolean {
+    const result = this.db.prepare(`
+      DELETE FROM sync_ops WHERE id = ? AND stage = 'pending'
+    `).run(id);
+    return result.changes > 0;
   }
 
   public async markDone(id: string): Promise<void> {
@@ -496,8 +596,8 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
     `).run(op.workspace.workspace, op.change.path, op.afterHash ?? null, now, op.id);
   }
 
-  private initializeSchema(): void {
-    this.db.exec(`
+  private initializeSchema(db: SqliteDatabase): void {
+    db.exec(`
       CREATE TABLE IF NOT EXISTS sync_ops (
         id TEXT PRIMARY KEY,
         tx_id TEXT,
@@ -541,8 +641,8 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
 }
 
 export class RootedSolidFsSyncJournal extends SqliteSolidFsSyncJournal {
-  public constructor(rootFilePath: string, cwd = process.cwd()) {
-    super({ path: resolveLocalRdfAuthorityJournalPath(rootFilePath, cwd) });
+  public constructor(rootFilePath: string, cwd = process.cwd(), operationService?: LocalPhysicalOperationService) {
+    super({ path: resolveLocalRdfAuthorityJournalPath(operationService?.canonicalRoot ?? rootFilePath, cwd), operationService });
   }
 }
 

@@ -22,13 +22,14 @@ function fakeSocket() {
   };
   return {
     socket,
+    open: () => { for (const listener of listeners.get('open') ?? []) listener({}); },
     emit: (data: unknown) => { for (const listener of listeners.get('message') ?? []) listener({ data }); },
     drop: () => { for (const listener of listeners.get('close') ?? []) listener({}); },
     fail: () => { for (const listener of listeners.get('error') ?? []) listener({}); },
   };
 }
 
-function harness(options: { channelStatus?: number } = {}) {
+function harness(options: { channelStatus?: number; autoOpen?: boolean } = {}) {
   const sockets: ReturnType<typeof fakeSocket>[] = [];
   const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
@@ -44,6 +45,7 @@ function harness(options: { channelStatus?: number } = {}) {
   });
   const changes: SolidChangeNotification[] = [];
   const errors: Error[] = [];
+  const ready = vi.fn();
   const subscription = new SolidNotificationSubscription({
     endpoint: ENDPOINT,
     topic: TOPIC,
@@ -51,18 +53,51 @@ function harness(options: { channelStatus?: number } = {}) {
     openSocket: () => {
       const created = fakeSocket();
       sockets.push(created);
+      if (options.autoOpen !== false) queueMicrotask(() => created.open());
       return created.socket;
     },
     onChange: notification => { changes.push(notification); },
     onError: error => { errors.push(error); },
+    onReady: ready,
     initialRetryDelayMs: 0,
     maxRetryDelayMs: 0,
     sleep: async () => undefined,
   });
-  return { subscription, fetch, sockets, changes, errors };
+  return { subscription, fetch, sockets, changes, errors, ready };
 }
 
 describe('subscribing to a resource\'s changes', () => {
+  it('does not open a socket if stopped while the channel request is pending', async () => {
+    let release!: (value: Response) => void;
+    const response = new Promise<Response>(resolve => { release = resolve; });
+    const openSocket = vi.fn(() => fakeSocket().socket);
+    const subscription = new SolidNotificationSubscription({
+      endpoint: ENDPOINT, topic: TOPIC, fetch: (async () => response) as typeof fetch,
+      openSocket, onChange: () => undefined,
+    });
+    const started = subscription.start();
+    subscription.stop();
+    release(new Response(JSON.stringify({ id: 'retired-channel', receiveFrom: 'wss://pod.example/retired' })));
+    await started;
+    expect(openSocket).not.toHaveBeenCalled();
+    expect(subscription.id).toBeUndefined();
+  });
+  it('reports readiness only after the socket opens and ignores retired sockets', async () => {
+    const { subscription, sockets, ready, changes } = harness({ autoOpen: false });
+    await subscription.start();
+    expect(ready).not.toHaveBeenCalled();
+    sockets[0].open();
+    expect(ready).toHaveBeenCalledTimes(1);
+    sockets[0].drop();
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    sockets[0].open();
+    sockets[0].emit(JSON.stringify({ object: TOPIC }));
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(changes).toEqual([]);
+    sockets[1].open();
+    expect(ready).toHaveBeenCalledTimes(2);
+    subscription.stop();
+  });
   it('creates a channel for the topic and reads what the socket pushes', async () => {
     const { subscription, fetch, sockets, changes } = harness();
     await subscription.start();

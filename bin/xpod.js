@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const path = require('node:path');
+const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 
 const QLEVER_LOCAL_RUNTIME_ENV = 'XPOD_QLEVER_LOCAL_RUNTIME_COMMAND';
@@ -37,23 +38,28 @@ function getBinaryPackageCandidates() {
 
 function resolvePlatformPackage() {
   for (const packageName of getBinaryPackageCandidates()) {
+    let packageJsonPath;
     try {
-      const packageJsonPath = require.resolve(`${packageName}/package.json`);
-      const packageRoot = path.dirname(packageJsonPath);
-      const packageJson = require(packageJsonPath);
-      const binaryRelativePath = packageJson.xpodBinary || './xpod';
-      const runtimeRelativePath = packageJson.xpodQleverLocalRuntime;
-      return {
-        binaryPath: path.join(packageRoot, binaryRelativePath),
-        qleverLocalRuntimePath: typeof runtimeRelativePath === 'string'
-          ? path.join(packageRoot, runtimeRelativePath)
-          : undefined,
-      };
-    } catch {
-      // Try next candidate.
+      packageJsonPath = require.resolve(`${packageName}/package.json`);
+    } catch (error) {
+      if (error.code === 'MODULE_NOT_FOUND') continue;
+      throw error;
     }
+    const packageRoot = path.dirname(packageJsonPath);
+    const packageJson = require(packageJsonPath);
+    const binaryPath = path.resolve(packageRoot, packageJson.xpodBinary || './xpod');
+    const runtimeRelativePath = packageJson.xpodQleverLocalRuntime;
+    if (typeof runtimeRelativePath !== 'string') throw new Error(`Selected platform package lacks QLever runtime: ${packageName}`);
+    const qleverLocalRuntimePath = path.resolve(packageRoot, runtimeRelativePath);
+    for (const file of [binaryPath, qleverLocalRuntimePath]) {
+      const actual = fs.realpathSync(file);
+      const local = path.relative(fs.realpathSync(packageRoot), actual);
+      if (local.startsWith(`..${path.sep}`) || local === '..' || path.isAbsolute(local) || !fs.statSync(actual).isFile()) {
+        throw new Error(`Selected platform payload escapes package: ${file}`);
+      }
+    }
+    return { binaryPath, qleverLocalRuntimePath };
   }
-
   return undefined;
 }
 

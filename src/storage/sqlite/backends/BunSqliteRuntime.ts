@@ -1,13 +1,16 @@
+import { initializeBunSqlite } from './BunSqliteInitialization';
 import type { SqliteDatabase, SqliteOpenOptions, SqliteRunResult, SqliteRuntime, SqliteStatement } from '../types';
 import { ensureParentDirectory, shouldEnsureParentDirectory, tagDrizzleDatabase } from '../shared';
 
 export function createBunSqliteRuntime(): SqliteRuntime {
   const { Database } = require('bun:sqlite') as { Database: any };
+  initializeBunSqlite(Database);
   const { drizzle } = require('drizzle-orm/bun-sqlite') as { drizzle: (database: any) => any };
 
   return {
     kind: 'bun-sqlite',
     openDatabase: (path: string, options?: SqliteOpenOptions): SqliteDatabase => {
+      initializeBunSqlite(Database);
       if (shouldEnsureParentDirectory(path, options)) {
         ensureParentDirectory(path);
       }

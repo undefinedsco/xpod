@@ -47,14 +47,32 @@ describe('lite integration local runtime isolation', () => {
     expect(script).toContain('env: { ...commonCloudEnv');
   });
 
-  it('only reuses explicitly requested, healthy Compose infrastructure', async () => {
+  it('uses one owned full-run infrastructure configuration without reusing external listeners', async () => {
     const script = await readFile(path.join(root, 'scripts/run-integration-full.ts'), 'utf8');
-
-    expect(script).toContain("const reuseRequested = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true';");
-    expect(script).toContain('const reuseExistingInfra = reuseRequested && await hasHealthyComposeInfra();');
-    expect(script).toContain("composeArgs, 'exec', '-T', 'postgres', 'pg_isready'");
-    expect(script).toContain("composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping'");
-    expect(script).not.toContain('|| await shouldReuseExistingInfra()');
+    const { createFullInfrastructure } = await import('../helpers/fullIntegrationInfrastructure');
+    const requested = { projectPrefix: 'existing-foreign-project', runPrefix: 'existing-run' };
+    const ports = { postgres: 15432, redis: 16379, objectStore: 19000 };
+    const first = createFullInfrastructure(ports, requested);
+    const second = createFullInfrastructure(ports, requested);
+    expect(first.projectName).not.toBe(requested.projectPrefix);
+    expect(first.projectName).not.toBe(second.projectName);
+    expect(first.runtimeRoot).not.toBe(second.runtimeRoot);
+    expect(first.testEnv.XPOD_FULL_PG_URL).toBe(first.pgUrl);
+    expect(script).not.toContain('XPOD_FULL_USE_EXISTING_INFRA');
+    expect(script).not.toContain('hasHealthyComposeInfra');
+    expect(script).toContain('const reserved = await readDockerPublishedTcpPorts()');
+    expect(script.indexOf('await readDockerPublishedTcpPorts()')).toBeLessThan(script.indexOf('await allocateFullInfrastructure(reserved)'));
+    expect(script).toContain('allocateFullInfrastructure(reserved)');
+    expect(script).toContain('resolveFullRuntimePorts(reserved)');
+    expect(script).toContain('...infra.testEnv');
+    expect(script).toContain('CSS_REDIS_CLIENT: infra.redisAddress');
+    expect(script).toContain('CSS_MINIO_ENDPOINT: infra.objectStoreEndpoint');
+    expect(script).toContain('identityDbUrl: infra.pgUrl');
+    expect(script).toContain("infra.composeArgs, 'exec', '-T', 'postgres', 'pg_isready'");
+    expect(script).toContain("infra.composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping'");
+    expect(script).toContain('hasTcpService(infra.ports.postgres)');
+    expect(script).toContain('hasWritableRedis(infra.ports.redis)');
+    expect(script).toContain('probeMinio(infra.ports.objectStore)');
   });
 
 });

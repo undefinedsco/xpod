@@ -157,7 +157,37 @@ describe('CSS child process env and args', () => {
       '@graph'?: Array<Record<string, unknown>>
     };
     expect(parsed.import).toEqual(['./config/local.json', ...ACP_AUTH_IMPORTS]);
-    expect(parsed['@graph']).toEqual([]);
+    expect(parsed['@graph']).toEqual([
+      {
+        '@id': 'urn:undefineds:xpod:SubgraphSparqlHttpHandler',
+        authStrategy: { '@id': 'urn:solid-server:default:AuthIdentifierStrategy' },
+        guardedPolicyProfile: { '@value': 'acp-ground-v1' },
+        observation: { '@id': 'urn:undefineds:xpod:AgentReadObservation' },
+      },
+      {
+        '@id': 'urn:undefineds:xpod:AgentReadObservation',
+        '@type': 'AgentReadObservation',
+        permissionReader: { '@id': 'urn:solid-server:default:PermissionReader' },
+        authorizer: { '@id': 'urn:solid-server:default:Authorizer' },
+        credentialsExtractor: { '@id': 'urn:solid-server:default:CredentialsExtractor' },
+        accessor: { '@id': 'urn:undefineds:xpod:MixDataAccessor' },
+        authorityStore: { '@id': 'urn:solid-server:default:ResourceStore_Locking' },
+        locks: { '@id': 'urn:solid-server:default:ResourceLocker' },
+        identifierStrategy: { '@id': 'urn:solid-server:default:IdentifierStrategy' },
+        authStrategy: { '@id': 'urn:solid-server:default:AuthIdentifierStrategy' },
+        auxiliaryStrategy: { '@id': 'urn:solid-server:default:AuxiliaryStrategy' },
+        profile: { '@value': 'acp-ground-v1' },
+      },
+      {
+        '@type': 'Override',
+        overrideInstance: { '@id': 'urn:solid-server:default:PathBasedReader' },
+        overrideParameters: {
+          '@type': 'ObservationPathBasedReader',
+          baseUrl: { '@id': 'urn:solid-server:default:variable:baseUrl' },
+          defaultReader: { '@id': 'urn:solid-server:default:AuthAuxiliaryReader' },
+        },
+      },
+    ]);
     expect(fs.existsSync(path.join(runtimeRoot, 'config', 'local.json'))).toBe(true);
     expect(JSON.parse(fs.readFileSync(path.join(runtimeRoot, '.community-solid-server.config.json'), 'utf-8'))).toEqual({
       oidcIssuer: 'https://id.undefineds.co/',

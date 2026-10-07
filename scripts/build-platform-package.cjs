@@ -134,6 +134,25 @@ function buildPlatformPackage(targetRef, options = {}) {
     `--output=${relativeBinaryOutputPath}`,
   ]);
   const qleverRuntimeOutputPath = extractQleverRuntimeArtifact(stageDir, qleverRuntimeArtifactPath);
+  if (target.os.includes('darwin')) {
+    if (process.platform !== 'darwin' || process.arch !== target.cpu[0]) {
+      throw new Error('macOS native platform package requires matching-host cold Bun qualification');
+    }
+    // Qualify the same extracted payload in cold Bun; no host preload or alternate asset list.
+    run('bun', ['--no-env-file', '-e', `
+      const {getSqliteRuntime}=require('./dist/storage/SqliteRuntime.js');
+      const db=getSqliteRuntime().openDatabase(':memory:');
+      db.exec('CREATE VIRTUAL TABLE docs USING fts5(body); INSERT INTO docs VALUES("current")');
+      if(db.prepare('SELECT count(*) n FROM docs WHERE docs MATCH "current"').get().n!==1)throw Error('FTS');
+      db.loadExtension(require('sqlite-vec').getLoadablePath());
+      db.exec('CREATE VIRTUAL TABLE vectors USING vec0(embedding float[768])');
+      const vector=new Float32Array(768);vector[0]=1;
+      db.prepare('INSERT INTO vectors(rowid,embedding) VALUES(?,?)').run(41,vector);
+      if(db.prepare('SELECT length(embedding) n FROM vectors WHERE rowid=41').get().n!==3072)throw Error('VEC readback');
+      if(db.prepare('SELECT rowid FROM vectors WHERE embedding MATCH ? AND k=1').get(vector).rowid!==41)throw Error('VEC search');
+      db.close();
+    `], { env: { ...process.env, XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeOutputPath, XPOD_SQLITE_RUNTIME: 'bun-sqlite' } });
+  }
 
   writeJson(path.join(stageDir, 'package.json'), createStagePackageJson(rootPackage, target));
   fs.writeFileSync(path.join(stageDir, 'README.md'), createReadme(rootPackage, target));

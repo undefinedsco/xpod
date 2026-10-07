@@ -39,8 +39,16 @@
  * can replace the in-memory one without touching this logic.
  */
 import { randomBytes } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import { MatrixError } from '../MatrixError';
+import { parseMembershipAuthorityBinding } from '../canonicalRoomSource';
 import { eventReferenceIds } from '../protocol/eventReferences';
-import { MAX_EDUS_PER_TRANSACTION, MAX_PDUS_PER_TRANSACTION, type MatrixDeliveryOutcome } from './outboundTransaction';
+import {
+  MAX_EDUS_PER_TRANSACTION,
+  MAX_PDUS_PER_TRANSACTION,
+  type MatrixDeliveryOutcome,
+  type MatrixFederationActor,
+} from './outboundTransaction';
 
 export interface MatrixOutboundBatch {
   txnId: string;
@@ -53,6 +61,12 @@ export interface MatrixOutboundBatch {
   pdus: unknown[];
   edus: unknown[];
   createdAt: number;
+  /**
+   * The participant whose authority this batch travels under (O1). A reference, not a credential:
+   * the live session is resolved per attempt, so a revoked grant is rechecked rather than replayed.
+   * Absent keeps the legacy signed path.
+   */
+  actor?: MatrixFederationActor;
   /** How many times this batch's PDUs have been attempted, across transaction ids. */
   attempts: number;
   /** Not before this moment, so a retry cannot become a hot loop. */
@@ -62,6 +76,10 @@ export interface MatrixOutboundBatch {
 }
 
 export interface MatrixOutboundStore {
+  /** Publication alone deletes an unchanged complete single-PDU batch. */
+  preparePublication?(scope: string, batch: MatrixOutboundBatch): Promise<void>;
+  transitionPublicationExact?(scope: string, expected: MatrixOutboundBatch, next: MatrixOutboundBatch): Promise<boolean>;
+  removePublicationExact?(scope: string, batch: MatrixOutboundBatch): Promise<void>;
   /** The scopes holding work, so a scheduler can flush without being told which Pods exist. */
   scopes(): Promise<readonly string[]>;
   /** Batches still to send, oldest first. */
@@ -97,7 +115,8 @@ export interface MatrixOutboxOptions {
    * which already spends a bounded number of retries with backoff; a batch that is still
    * undelivered after that stays queued here, so this queue absorbs longer outages.
    */
-  send(input: { origin: string; destination: string; txnId: string; pdus: readonly unknown[]; edus?: readonly unknown[] }): Promise<MatrixDeliveryOutcome>;
+  send(input: { origin: string; destination: string; txnId: string; pdus: readonly unknown[]; edus?: readonly unknown[];
+    actor?: MatrixFederationActor }): Promise<MatrixDeliveryOutcome>;
   now?: () => number;
   /** Transaction ids are opaque; this is injectable so tests are deterministic. */
   newTransactionId?: () => string;
@@ -119,6 +138,8 @@ export interface EnqueueInput {
   destination: string;
   pdus?: readonly unknown[];
   edus?: readonly unknown[];
+  /** The participant whose authority sends this batch (O1); absent keeps the signed path. */
+  actor?: MatrixFederationActor;
 }
 
 export class MatrixOutbox {
@@ -150,6 +171,9 @@ export class MatrixOutbox {
    */
   public async enqueue(input: EnqueueInput): Promise<MatrixOutboundBatch[]> {
     const pending = await this.store.pending(input.scope, { origin: input.origin, destination: input.destination });
+    if (input.actor?.taskCredential?.purpose !== undefined || input.actor?.taskCredential?.issuer !== undefined) {
+      return await this.enqueuePublication(input, pending);
+    }
     const queued = new Set(pending.flatMap(batch => batch.pdus.map(eventIdOf).filter((id): id is string => id !== undefined)));
     const pdus = [ ...(input.pdus ?? []) ];
     const edus = [ ...(input.edus ?? []) ];
@@ -162,8 +186,14 @@ export class MatrixOutbox {
     if (fresh.length === 0 && edus.length === 0) return [];
 
     const batches: MatrixOutboundBatch[] = [];
-    // A never-attempted batch has room, and its id has not been seen by the peer yet.
-    const open = pending.filter(batch => batch.attempts === 0).at(-1);
+    // A never-attempted batch has room, and its id has not been seen by the peer yet — but only a
+    // batch sent under the *same* authority may absorb these events. An event authorized with grant
+    // B must never ride in a batch that authenticates as grant A: the peer and the sender would
+    // then treat B's event as A's. Legacy actorless work and O1 actor work are likewise distinct.
+    const open = pending
+      .filter(batch => batch.attempts === 0 && batch.actor?.taskCredential?.purpose === undefined
+        && batch.actor?.taskCredential?.issuer === undefined && sameBatchAuthority(batch.actor, input.actor))
+      .at(-1);
     let restPdus = fresh;
     let restEdus = edus;
     if (open && open.pdus.length + fresh.length <= this.maxPdus && open.edus.length + edus.length <= this.maxEdus) {
@@ -185,6 +215,7 @@ export class MatrixOutbox {
         pdus: orderByDependencies(restPdus.slice(0, this.maxPdus)),
         edus: restEdus.slice(0, this.maxEdus),
         createdAt: this.now(),
+        ...(input.actor === undefined ? {} : { actor: input.actor }),
         attempts: 0,
       };
       restPdus = restPdus.slice(this.maxPdus);
@@ -193,6 +224,54 @@ export class MatrixOutbox {
       batches.push(batch);
     }
     return batches;
+  }
+
+  private async enqueuePublication(input: EnqueueInput, pending: MatrixOutboundBatch[]): Promise<MatrixOutboundBatch[]> {
+    const authority = parseMembershipAuthorityBinding(input.actor?.taskCredential);
+    const pdu = input.pdus?.[0] as Record<string, unknown> | undefined;
+    const id = eventIdOf(pdu);
+    if (!authority || input.pdus?.length !== 1 || (input.edus?.length ?? 0) !== 0 || !id
+      || pdu?.type !== 'co.undefineds.membership.authority' || pdu.state_key !== ''
+      || pdu.sender !== input.actor?.webId || !parseMembershipAuthorityBinding(pdu.content)) {
+      throw new MatrixError(409, 'M_CONFLICT', 'Publication queue requires an exact single persistent event and named authority');
+    }
+    const matches = pending.filter(batch => batch.pdus.some(event => eventIdOf(event) === id));
+    for (const batch of matches) {
+      if (batch.pdus.length !== 1 || batch.edus.length !== 0 || !isDeepStrictEqual(batch.pdus[0], pdu)) {
+        throw new MatrixError(409, 'M_CONFLICT', 'Publication event is held in a mixed or different batch');
+      }
+    }
+    let current = matches.find(batch => sameBatchAuthority(batch.actor, input.actor));
+    if (!current) {
+      const candidate: MatrixOutboundBatch = { txnId: this.newTransactionId(), origin: input.origin,
+        destination: input.destination, pdus: [ pdu ], edus: [], createdAt: this.now(), actor: input.actor, attempts: 0 };
+      let writeError: unknown;
+      try { await this.store.put(input.scope, candidate); } catch (error) { writeError = error; }
+      const confirmed = await this.store.pending(input.scope, { origin: input.origin, destination: input.destination });
+      current = confirmed.find(batch => batch.txnId === candidate.txnId && isDeepStrictEqual(batch, candidate));
+      if (!current) {
+        if (writeError) throw writeError;
+        throw new MatrixError(409, 'M_CONFLICT', 'The new publication batch was not proven persistent');
+      }
+    }
+    for (const old of matches.filter(batch => !sameBatchAuthority(batch.actor, input.actor))) {
+      if (!this.store.removePublicationExact) throw new MatrixError(409, 'M_CONFLICT', 'Publication carrier has no exact deletion capability');
+      let cleanupError: unknown;
+      try { await this.store.removePublicationExact(input.scope, old); } catch (error) { cleanupError = error; }
+      const remaining = await this.store.pending(input.scope, { origin: input.origin, destination: input.destination });
+      if (remaining.some(batch => batch.txnId === old.txnId && batch.pdus.some(event => eventIdOf(event) === id))) {
+        if (cleanupError) throw cleanupError;
+        throw new MatrixError(409, 'M_CONFLICT', 'The old publication batch was not proven removed');
+      }
+    }
+    const final = await this.store.pending(input.scope, { origin: input.origin, destination: input.destination });
+    const sameEvent = final.filter(batch => batch.pdus.some(event => eventIdOf(event) === id));
+    if (!sameEvent.some(batch => isDeepStrictEqual(batch, current))
+      || sameEvent.some(batch => !sameBatchAuthority(batch.actor, input.actor)
+        || batch.pdus.length !== 1 || batch.edus.length !== 0 || !isDeepStrictEqual(batch.pdus[0], pdu))) {
+      throw new MatrixError(409, 'M_CONFLICT', 'Publication authority changed during queue recovery');
+    }
+    return [ current ];
   }
 
   /**
@@ -230,23 +309,33 @@ export class MatrixOutbox {
           report.waiting.push({ txnId: batch.txnId, destination });
           continue;
         }
+        const publication = batch.actor?.taskCredential?.purpose === 'membership';
+        if (publication) {
+          if (!this.store.removePublicationExact || !this.store.transitionPublicationExact) {
+            throw new MatrixError(409, 'M_CONFLICT', 'Publication carrier lacks exact delivery transitions');
+          }
+          await this.store.preparePublication?.(input.scope, batch);
+        }
         const outcome = await this.send({
           origin,
           destination,
           txnId: batch.txnId,
           pdus: batch.pdus,
           ...(batch.edus.length === 0 ? {} : { edus: batch.edus }),
+          ...(batch.actor === undefined ? {} : { actor: batch.actor }),
         });
         if (outcome.status === 'rejected') {
           // The peer decided; the queue is free to move on to the next transaction.
-          await this.store.remove(input.scope, batch);
+          if (publication) await this.store.removePublicationExact!(input.scope, batch);
+          else await this.store.remove(input.scope, batch);
           report.rejected.push({ txnId: batch.txnId, destination, reason: outcome.reason });
           continue;
         }
         if (outcome.status === 'delivered') {
-          await this.store.remove(input.scope, batch);
+          if (!publication) await this.store.remove(input.scope, batch);
           const refused = refusedPdus(batch.pdus, outcome.pdus);
           if (refused.length === 0) {
+            if (publication) await this.store.removePublicationExact!(input.scope, batch);
             report.delivered.push(batch.txnId);
             continue;
           }
@@ -255,6 +344,7 @@ export class MatrixOutbox {
           const attempts = batch.attempts + 1;
           const reason = refusedReason(batch.pdus, outcome.pdus);
           if (attempts >= this.retryRefused.maxAttempts) {
+            if (publication) await this.store.removePublicationExact!(input.scope, batch);
             report.abandoned.push({ txnId: batch.txnId, destination, reason });
             continue;
           }
@@ -264,12 +354,15 @@ export class MatrixOutbox {
             destination,
             pdus: refused,
             edus: batch.edus,
-            createdAt: this.now(),
+            createdAt: publication ? batch.createdAt : this.now(),
+            ...(batch.actor === undefined ? {} : { actor: batch.actor }),
             attempts,
             notBefore: this.now() + this.backoffMs(attempts),
             lastReason: reason,
           };
-          await this.store.put(input.scope, retry);
+          if (publication) {
+            if (!await this.store.transitionPublicationExact!(input.scope, batch, retry)) continue;
+          } else await this.store.put(input.scope, retry);
           report.deferred.push({ txnId: retry.txnId, destination, reason });
           // Later batches keep their turn: the dependencies this one is missing may well be
           // among them, and holding them back would be a deadlock.
@@ -278,11 +371,10 @@ export class MatrixOutbox {
         // A transaction the peer never answered is retried under the *same* id, and the
         // queue behind it waits: those events may depend on this one, and the peer has not
         // seen any of it yet.
-        await this.store.put(input.scope, {
-          ...batch,
-          attempts: batch.attempts + 1,
-          lastReason: outcome.reason,
-        });
+        const deferred = { ...batch, attempts: batch.attempts + 1, lastReason: outcome.reason };
+        if (publication) {
+          if (!await this.store.transitionPublicationExact!(input.scope, batch, deferred)) continue;
+        } else await this.store.put(input.scope, deferred);
         report.deferred.push({ txnId: batch.txnId, destination, reason: outcome.reason });
         blockBehind(report, batches.slice(index + 1), destination);
         break;
@@ -299,6 +391,35 @@ export class MatrixOutbox {
 
 function blockBehind(report: MatrixOutboxReport, behind: readonly MatrixOutboundBatch[], destination: string): void {
   for (const batch of behind) report.blocked.push({ txnId: batch.txnId, destination });
+}
+
+/**
+ * Whether two batches travel under exactly the same authority and may therefore share a transaction.
+ *
+ * Both actorless is the legacy signed path. An actorless batch and an O1 batch are different
+ * authorities even when the WebID is the same, and within O1 the participant, the Pod and the exact
+ * task credential (named ref and frozen version, or the owner's active grant) all have to agree. A
+ * named ref without a version is a different authority from the same ref frozen at a version: the
+ * latter may only use that version, so the events cannot share a batch. Comparison is textual; no
+ * credential is read here.
+ */
+function sameBatchAuthority(left: MatrixFederationActor | undefined, right: MatrixFederationActor | undefined): boolean {
+  return actorAuthorityKey(left) === actorAuthorityKey(right);
+}
+
+function actorAuthorityKey(actor: MatrixFederationActor | undefined): string {
+  if (actor === undefined) return 'legacy';
+  const named = actor.taskCredential?.credentialRef;
+  return JSON.stringify([
+    actor.webId,
+    actor.podUrl ?? null,
+    // A named ref is matched exactly, including whether it was frozen at a version. With no named
+    // ref, `{}`/`ownerGrant`/absent all mean "the owner's active grant" and are compatible.
+    named ?? null,
+    named === undefined ? null : actor.taskCredential?.version ?? null,
+    actor.taskCredential?.purpose ?? null,
+    actor.taskCredential?.issuer ?? null,
+  ]);
 }
 
 /**
@@ -398,5 +519,30 @@ export class InMemoryMatrixOutboundStore implements MatrixOutboundStore {
     const all = this.batches.get(scope);
     if (!all) return;
     this.batches.set(scope, all.filter(existing => existing.txnId !== batch.txnId));
+  }
+
+  public async transitionPublicationExact(scope: string, expected: MatrixOutboundBatch, next: MatrixOutboundBatch): Promise<boolean> {
+    const all = this.batches.get(scope) ?? [];
+    const index = all.findIndex(entry => entry.txnId === expected.txnId);
+    if (index < 0 || !isDeepStrictEqual(all[index], expected)) return false;
+    if (expected.pdus.length !== 1 || expected.edus.length !== 0 || next.pdus.length !== 1 || next.edus.length !== 0
+      || next.createdAt !== expected.createdAt || !sameBatchAuthority(expected.actor, next.actor)
+      || !isDeepStrictEqual(expected.pdus, next.pdus) || expected.origin !== next.origin || expected.destination !== next.destination) {
+      throw new MatrixError(409, 'M_CONFLICT', 'Publication transition changed its payload authority or bucket');
+    }
+    if (next.txnId !== expected.txnId && all.some(entry => entry.txnId === next.txnId)) return false;
+    all[index] = structuredClone(next);
+    this.batches.set(scope, all);
+    return true;
+  }
+
+  public async removePublicationExact(scope: string, batch: MatrixOutboundBatch): Promise<void> {
+    const all = this.batches.get(scope) ?? [];
+    const current = all.find(entry => entry.txnId === batch.txnId);
+    if (!current) return;
+    if (batch.pdus.length !== 1 || batch.edus.length !== 0 || !isDeepStrictEqual(current, batch)) {
+      throw new MatrixError(409, 'M_CONFLICT', 'Publication batch changed before deletion');
+    }
+    this.batches.set(scope, all.filter(entry => entry.txnId !== batch.txnId));
   }
 }

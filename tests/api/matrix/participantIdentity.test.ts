@@ -1,7 +1,8 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { messageResource } from '@undefineds.co/models';
-import { MATRIX_TEST_SERVER_NAME, matrixHarness } from '../../helpers/MatrixMemoryDatabase';
+import { chatResource, messageResource } from '@undefineds.co/models';
+import { MATRIX_TEST_SERVER_NAME, matrixHarness, canonicalSourceForOwners } from '../../helpers/MatrixMemoryDatabase';
+import { decodeSourceBoundRoomId } from '../../../src/api/matrix/canonicalRoomIdentity';
 import { matrixSigningIdentityRegistry } from '../../../src/api/matrix/identityRegistry';
 import { InMemoryMatrixSigningKeyStore, MatrixSigningIdentityProvider } from '../../../src/api/matrix/signingKeyStore';
 import { MatrixServiceIdentity } from '../../../src/api/matrix/protocol/serviceIdentity';
@@ -62,12 +63,21 @@ describe('participant signing identities', () => {
 
     const alice = (await store.getAccount(context)).userId;
     const bob = (await store.getAccount(bobContext)).userId;
-    // The WebID host is the server name, because this deployment holds that identity.
-    expect(alice).toMatch(/:alice\.example$/u);
-    expect(bob).toMatch(/:bob\.example$/u);
+    // The identity reported is the WebID itself; `serverNameOf` still answers which server it
+    // belongs to, which is the property the events' domain and signatures have to agree with.
+    expect(alice).toBe('https://alice.example/profile/card#me');
+    expect(bob).toBe('https://bob.example/profile/card#me');
+    expect(serverNameOf(alice)).toBe('alice.example');
+    expect(serverNameOf(bob)).toBe('bob.example');
 
     const room = await store.createRoom({ invite: [ bob ] }, context);
-    expect(room.roomId).toMatch(/:alice\.example$/u);
+    // The room id carries the *source* IRI (whose host is the Pod, not the participant's server):
+    // identity and source location are separate facts.
+    const chat = rows.get(chatResource as never)![0];
+    expect(decodeSourceBoundRoomId(room.roomId)).toMatchObject({
+      status: 'source-bound',
+      canonicalChatIri: chatResource.buildIri(context.podUrl!, { id: chat.id }),
+    });
     const create = storedEvent(rows, (await store.currentState(room.roomId, context)).get('m.room.create')!.eventId);
     expect(create.sender).toBe(alice);
     expect(Object.keys(create.signatures ?? {})).toEqual([ 'alice.example' ]);
@@ -89,18 +99,33 @@ describe('participant signing identities', () => {
     expect(bobKey.verify(storedEvent(rows, sent.eventId))).toBe(false);
   });
 
-  it('falls back to the deployment identity for a WebID whose server it does not sign for', async () => {
+  it('keeps a WebID whose server this deployment has no key for as the event author', async () => {
     const registry = participantRegistry();
-    const { store, context, rows } = matrixHarness({ identities: registry });
-    const carolContext = { ...context, webId: 'https://carol.example/profile/card#me' };
+    const { store, context, rows } = matrixHarness({
+      identities: registry,
+      // Carol creates her own room, so the fixture registers her as owning the default Pod.
+      canonicalSource: canonicalSourceForOwners(new Map([
+        [ 'https://carol.example/profile/card#me', [ 'https://pod.example/alice/' ] ],
+      ])),
+    });
+    const carolContext = { ...context, webId: 'https://carol.example/profile/card#me',
+      auth: { ...context.auth, webId: 'https://carol.example/profile/card#me' } };
 
     const carol = (await store.getAccount(carolContext)).userId;
-    // No key for carol.example, so she is served under the deployment's own name — and
-    // the event is signed by that name, so sender and signature agree.
-    expect(serverNameOf(carol)).toBe(MATRIX_TEST_SERVER_NAME);
+    // The identity is the WebID, full stop: this deployment having no key for carol.example
+    // does not rename her, and the event's `sender` is still her. (Removing the signing
+    // fallback entirely is item 3's work; it is not a reason to change who wrote the event.)
+    expect(carol).toBe('https://carol.example/profile/card#me');
+    expect(serverNameOf(carol)).toBe('carol.example');
 
     const room = await store.createRoom({}, carolContext);
-    expect(serverNameOf(room.roomId)).toBe(MATRIX_TEST_SERVER_NAME);
+    // The room id carries the source IRI, not the author's server name; the author is never
+    // rewritten to match the deployment name.
+    const carolChat = rows.get(chatResource as never)![0];
+    expect(decodeSourceBoundRoomId(room.roomId)).toMatchObject({
+      status: 'source-bound',
+      canonicalChatIri: chatResource.buildIri(context.podUrl!, { id: carolChat.id }),
+    });
     const sent = await store.sendEvent(room.roomId, 'm.room.message', 'from-carol', { body: 'hi' }, carolContext);
     const event = storedEvent(rows, sent.eventId);
     expect(event.sender).toBe(carol);
@@ -108,7 +133,7 @@ describe('participant signing identities', () => {
   });
 
   it('keeps one deployment identity working when no participant identity is registered', async () => {
-    const { store, context } = matrixHarness({
+    const { store, context, rows } = matrixHarness({
       identities: matrixSigningIdentityRegistry({ identity: deploymentIdentity(MATRIX_TEST_SERVER_NAME) }),
     });
     const alice = (await store.getAccount(context)).userId;
@@ -116,7 +141,11 @@ describe('participant signing identities', () => {
     // deployment name is used exactly as before.
     expect(serverNameOf(alice)).toBe(MATRIX_TEST_SERVER_NAME);
     const room = await store.createRoom({}, context);
-    expect(serverNameOf(room.roomId)).toBe(MATRIX_TEST_SERVER_NAME);
+    const chat = rows.get(chatResource as never)![0];
+    expect(decodeSourceBoundRoomId(room.roomId)).toMatchObject({
+      status: 'source-bound',
+      canonicalChatIri: chatResource.buildIri(context.podUrl!, { id: chat.id }),
+    });
   });
 
   it('reports members with the server each of them belongs to', async () => {
@@ -128,7 +157,7 @@ describe('participant signing identities', () => {
     await store.joinRoom(room.roomId, bobContext);
 
     const members = await store.getMembers(room.roomId, context);
-    const servers = members.map(event => event.state_key?.split(':').slice(1).join(':')).sort();
+    const servers = members.map(event => serverNameOf(event.state_key)).sort();
     expect(servers).toEqual([ 'alice.example', 'bob.example' ]);
   });
 });

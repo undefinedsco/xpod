@@ -19,13 +19,12 @@ function getSmokeMode() {
   return process.argv[3] === '--package-only' ? 'package-only' : 'runtime';
 }
 
-function runInIsolatedConsumerProcess(consumerDir, smokeMode) {
+function runInIsolatedConsumerProcess(consumerDir, smokeMode, executable = process.env.XPOD_SMOKE_NODE || 'node') {
   const childScriptPath = path.join(consumerDir, '.xpod-package-consumer-smoke.cjs');
   fs.writeFileSync(childScriptPath, fs.readFileSync(__filename, 'utf8'));
 
   try {
-    const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
-    const result = spawnSync(nodeExecutable, [ childScriptPath ], {
+    const result = spawnSync(executable, [ childScriptPath ], {
       cwd: consumerDir,
       stdio: 'inherit',
       env: {
@@ -53,7 +52,7 @@ function runCli(consumerDir, requireFromConsumer) {
     throw new Error('Missing xpod bin entry');
   }
   const binPath = path.resolve(path.dirname(packageJsonPath), binRelative);
-  const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
+  const nodeExecutable = typeof globalThis.Bun !== 'undefined' ? process.execPath : process.env.XPOD_SMOKE_NODE || 'node';
   const result = spawnSync(nodeExecutable, [ binPath, '--help' ], {
     cwd: consumerDir,
     encoding: 'utf8',
@@ -72,15 +71,14 @@ function resolveInstalledQleverRuntime(requireFromConsumer, rootPackage) {
   const candidates = Object.keys(rootPackage.optionalDependencies ?? {})
     .filter((name) => name.startsWith('@undefineds.co/xpod-'));
   for (const packageName of candidates) {
-    try {
-      const packageJsonPath = requireFromConsumer.resolve(`${packageName}/package.json`);
-      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-      if (typeof packageJson.xpodQleverLocalRuntime !== 'string') continue;
-      const runtimePath = path.resolve(path.dirname(packageJsonPath), packageJson.xpodQleverLocalRuntime);
-      if (fs.existsSync(runtimePath)) return runtimePath;
-    } catch {
-      // npm skips optional packages that do not match the current platform.
-    }
+    let packageJsonPath;
+    try { packageJsonPath = requireFromConsumer.resolve(`${packageName}/package.json`); }
+    catch(error) { if(error.code==='MODULE_NOT_FOUND')continue;throw error; }
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    if (typeof packageJson.xpodQleverLocalRuntime !== 'string') throw Error('Selected platform package lacks QLever runtime metadata');
+    const runtimePath = path.resolve(path.dirname(packageJsonPath), packageJson.xpodQleverLocalRuntime);
+    if (!fs.existsSync(runtimePath)) throw Error(`Selected platform QLever payload is missing: ${runtimePath}`);
+    return runtimePath;
   }
   throw new Error('Installed package is missing its platform QLever runtime');
 }
@@ -100,7 +98,7 @@ function runInstalledQleverConformance(
     throw new Error('Installed package is missing its QLever conformance runner');
   }
   const artifactPath = path.join(runtimeRoot, 'installed-qlever-conformance.json');
-  const nodeExecutable = process.env.XPOD_SMOKE_NODE || 'node';
+  const nodeExecutable = typeof globalThis.Bun !== 'undefined' ? process.execPath : process.env.XPOD_SMOKE_NODE || 'node';
   const result = spawnSync(nodeExecutable, [ runnerPath ], {
     cwd: consumerDir,
     encoding: 'utf8',
@@ -120,6 +118,33 @@ function runInstalledQleverConformance(
   const report = JSON.parse(fs.readFileSync(artifactPath, 'utf8'));
   if (report.status !== 'ok' || report.backend !== 'sqlite' || report.semantic?.failed?.length !== 0) {
     throw new Error(`installed QLever conformance returned invalid evidence: ${JSON.stringify(report)}`);
+  }
+}
+
+async function runInstalledSqliteConformance(packageRoot, runtimeRoot) {
+  if (typeof globalThis.Bun === 'undefined') return; // Node remains an independent control.
+  const { LocalPhysicalOperationService } = require(path.join(packageRoot, 'dist/storage/LocalPhysicalOperationService.js'));
+  const { getSqliteRuntime } = require(path.join(packageRoot, 'dist/storage/SqliteRuntime.js'));
+  const { SqliteVectorStore } = require(path.join(packageRoot, 'dist/storage/vector/SqliteVectorStore.js'));
+  // Coordination must open first, then ordinary RDF/FTS, then public vec0 on that same frozen choice.
+  const service = new LocalPhysicalOperationService(path.join(runtimeRoot, 'authority'));
+  const db = getSqliteRuntime().openDatabase(path.join(runtimeRoot, 'ordinary.sqlite'));
+  const vectors = new SqliteVectorStore({connectionString:path.join(runtimeRoot,'vec.sqlite'), operationService:service});
+  try {
+    await service.run(() => {
+      db.exec('CREATE TABLE rdf(s TEXT,p TEXT,o TEXT); INSERT INTO rdf VALUES("s","p","current"); CREATE VIRTUAL TABLE docs USING fts5(body); INSERT INTO docs VALUES("current")');
+      if(db.prepare('SELECT o FROM rdf').get().o!=='current')throw Error('Bun RDF');
+      if(db.prepare('SELECT count(*) n FROM docs WHERE docs MATCH "current"').get().n!==1)throw Error('Bun FTS');
+    });
+    const vector = Array(768).fill(0);vector[0]=1;
+    await vectors.ensureVectorTable('consumer-cold');
+    await vectors.upsertVector('consumer-cold',41,vector);
+    const saved=await vectors.getVector('consumer-cold',41);
+    if(saved?.embedding.length!==768 || saved.embedding[0]!==1)throw Error('Bun public VEC readback');
+    const nearest=await vectors.search('consumer-cold',vector,{limit:1});
+    if(nearest[0]?.id!==41)throw Error('Bun public VEC search');
+  } finally {
+    await vectors.close();await service.run(()=>db.close());await service.close();
   }
 }
 
@@ -163,6 +188,7 @@ async function main() {
   const smokeMode = getSmokeMode();
   if (process.env.XPOD_CONSUMER_SMOKE_CHILD !== '1') {
     runInIsolatedConsumerProcess(consumerDir, smokeMode);
+    if (smokeMode === 'runtime') runInIsolatedConsumerProcess(consumerDir, smokeMode, 'bun');
     return;
   }
 
@@ -171,6 +197,9 @@ async function main() {
   const packageJsonPath = requireFromConsumer.resolve('@undefineds.co/xpod/package.json');
   const packageRoot = path.dirname(packageJsonPath);
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+
+  const qleverRuntimePath = smokeMode === 'runtime' ? resolveInstalledQleverRuntime(requireFromConsumer, packageJson) : undefined;
+  if (qleverRuntimePath) process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND = qleverRuntimePath;
 
   const runtime = requireFromConsumer('@undefineds.co/xpod/runtime');
   const testUtils = requireFromConsumer('@undefineds.co/xpod/test-utils');
@@ -188,8 +217,6 @@ async function main() {
     return;
   }
 
-  const qleverRuntimePath = resolveInstalledQleverRuntime(requireFromConsumer, packageJson);
-  process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND = qleverRuntimePath;
 
   const previousCwd = process.cwd();
   const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-smoke-'));
@@ -197,6 +224,7 @@ async function main() {
   let xpod;
 
   try {
+    await runInstalledSqliteConformance(packageRoot, runtimeRoot);
     runInstalledQleverConformance(
       consumerDir,
       packageRoot,

@@ -10,13 +10,13 @@
   ],
   "@graph": [
     {
-      "comment": "Redis-based locker with expiration wrapper for clustered deployments",
+      "comment": "Redis-based locker wrapped in the hierarchical locker for clustered deployments. The hierarchy is what excludes a scoped SPARQL write from a concurrent descendant LDP write; Redis only supplies the cross-process primitive.",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:ResourceLocker"
       },
       "overrideParameters": {
-        "@type": "WrappedExpiringReadWriteLocker",
+        "@type": "HierarchicalReadWriteLocker",
         "locker": {
           "@type": "UrlAwareRedisLocker",
           "redisClient": {
@@ -24,7 +24,9 @@
             "@type": "Variable"
           }
         },
-        "expiration": 6000
+        "identifierStrategy": {
+          "@id": "urn:solid-server:default:IdentifierStrategy"
+        }
       }
     },
     {
@@ -148,7 +150,7 @@
         "@id": "urn:undefineds:xpod:RdfSearchIntentSink"
       },
       "rdfFileDataAccessor": {
-        "@id": "urn:solid-server:default:FileDataAccessor"
+        "@id": "urn:undefineds:xpod:AtomicRdfFileDataAccessor"
       }
     },
     {

@@ -13,18 +13,25 @@ import { matrixHarness } from '../../helpers/MatrixMemoryDatabase';
 
 interface Counters {
   selects: number;
+  /** One fixed upper-keyset read per source reconciliation cycle. */
+  boundaries: number;
   inserts: number;
   /** Rows the reads returned: a Pod read costs what it reads, not what it returns. */
   rows: number;
 }
 
 function counting(db: any) {
-  const counters: Counters = { selects: 0, inserts: 0, rows: 0 };
+  const counters: Counters = { selects: 0, boundaries: 0, inserts: 0, rows: 0 };
   const select = db.select.bind(db);
   const insert = db.insert.bind(db);
   db.select = (...args: unknown[]) => {
     counters.selects += 1;
     const query = select(...args);
+    const limit = query.limit.bind(query);
+    query.limit = (size: number) => {
+      if (size === 1) { counters.boundaries += 1; }
+      return limit(size);
+    };
     const then = query.then.bind(query);
     query.then = (ok: (rows: unknown) => unknown, fail: (error: unknown) => unknown) => then(
       (rows: unknown) => { counters.rows += Array.isArray(rows) ? rows.length : 0; return ok(rows); },
@@ -37,6 +44,7 @@ function counting(db: any) {
     counters,
     async measure<T>(work: () => Promise<T>): Promise<{ result: T; ops: Counters }> {
       counters.selects = 0;
+      counters.boundaries = 0;
       counters.inserts = 0;
       counters.rows = 0;
       const result = await work();
@@ -97,49 +105,47 @@ describe('Pod work at scale', () => {
     // Nothing here is quadratic in the room's history either: the page limit bounds the work.
   });
 
-  it('reads every room once per sync pass, which is the part that is not bounded', async () => {
-    const scale = await atScale(50, 2);
-    const counters = counting(scale.db);
-    const room = scale.roomIds[0];
-    // A limit large enough that the first sync delivers everything, so its token is the
-    // scope watermark rather than the depth of a page boundary.
-    const first = await counters.measure(async () => await scale.store.sync(scale.context, { limit: 1_000 }));
-    expect(first.result.next_batch).toBeTruthy();
-
-    // One new event in one room: the incremental sync still walks every room, because a
-    // room's own watermark cannot say whether a row was written straight into the Pod.
-    await scale.store.sendEvent(room, 'm.room.message', 'txn-new', { body: 'new' }, scale.context);
-    const incremental = await counters.measure(async () => await scale.store.sync(scale.context, { since: first.result.next_batch, timeout: 0 }));
-    expect(incremental.result.rooms.join[room].timeline.events).toHaveLength(1);
-
-    // Measured: 102 selects for 50 rooms, i.e. 2 x (rooms + 1) — one room-list read and one
-    // timeline read per pass, and nothing per event.
-    const rooms = scale.roomIds.length;
-    // Two passes (the indexing pass and the reading pass), each reading the room list once and
-    // every room's timeline once.
-    expect(incremental.ops.selects).toBe(2 * (rooms + 1));
-    // Measured: 602 rows read for a change of one event, against 600 for the full sync — the
-    // pass costs the Pod's whole history, not the part that changed. This is the term the
-    // gate's "bounded work" is about, and bounding it needs a Pod-side index or signal.
-    expect(incremental.ops.rows).toBeGreaterThanOrEqual(first.ops.rows);
-    expect(incremental.ops.rows).toBeLessThanOrEqual(first.ops.rows + 10);
-    // The idle case is the same shape, which is why the wait loop short-circuits instead.
-    const idle = await counters.measure(async () => await scale.store.sync(scale.context, { since: incremental.result.next_batch, timeout: 0 }));
-    // Nothing new: the timeline is empty. (With `timeout: 0` the response still carries the
-    // unchanged state; the empty-rooms short-circuit belongs to the wait loop.)
-    expect(idle.result.rooms.join[room].timeline.events).toEqual([]);
-    expect(idle.ops.selects).toBe(2 * (rooms + 1));
-  });
+  for (const rooms of [ 10, 200, 1_000 ]) {
+    it(`reads only the selected room for a cursor increment among ${rooms} rooms`, async () => {
+      const scale = await atScale(rooms, 2);
+      const room = scale.roomIds[0];
+      let initial = await scale.store.sync(scale.context, { limit: 1_000 });
+      let bootstrapPages = 0;
+      while (Object.values(initial.rooms.join).some(joined => joined.timeline.events.length > 0)) {
+        expect(bootstrapPages++, 'bootstrap must finish before incremental work is measured').toBeLessThan(10);
+        initial = await scale.store.sync(scale.context, { since: initial.next_batch, limit: 1_000 });
+      }
+      const written = await scale.store.sendEvent(room, 'm.room.message', 'txn-new', { body: 'new' }, scale.context);
+      const counters = counting(scale.db);
+      const history = vi.spyOn(scale.store as any, 'listEvents');
+      const exact = vi.spyOn(scale.db, 'findByIri');
+      const incremental = await counters.measure(async () => await scale.store.sync(scale.context, {
+        since: initial.next_batch, timeout: 0,
+      }));
+      expect(Object.keys(incremental.result.rooms.join)).toEqual([ room ]);
+      expect(incremental.result.rooms.join[room].timeline.events.map(event => event.event_id)).toEqual([ written.eventId ]);
+      expect(incremental.result.rooms.join[room].timeline.events.map(event => event.content.body)).toEqual([ 'new' ]);
+      expect(history, 'normal published increments must not reopen any room history').not.toHaveBeenCalled();
+      expect(incremental.ops.selects).toBe(0);
+      expect(exact.mock.calls, 'one authority read and one selected event read').toHaveLength(2);
+      history.mockRestore();
+      exact.mockRestore();
+    });
+  }
 
   it('keeps the idle wait loop from re-reading rooms, whatever the deployment size', async () => {
     const scale = await atScale(20, 2);
     const counters = counting(scale.db);
     const first = await scale.store.sync(scale.context, { limit: 1_000 });
+    const history = vi.spyOn(scale.store as any, 'listEvents');
 
     const idle = await counters.measure(async () => await scale.store.sync(scale.context, { since: first.next_batch, timeout: 1_000 }));
     expect(idle.result.rooms.join).toEqual({});
-    // Two indexing/reading passes, and then nothing: the wait loop stops touching the Pod.
-    expect(idle.ops.selects).toBe(2 * (scale.roomIds.length + 1));
+    // One fixed-upper metadata read and one source page per room, then no further wait-loop reads.
+    expect(idle.ops.boundaries).toBe(scale.roomIds.length);
+    expect(idle.ops.selects - idle.ops.boundaries).toBeLessThanOrEqual(scale.roomIds.length + 1);
+    expect(history).not.toHaveBeenCalled();
+    history.mockRestore();
   });
 });
 
