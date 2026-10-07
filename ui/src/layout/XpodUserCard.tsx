@@ -83,7 +83,8 @@ export function XpodUserCard() {
     const positionCard = () => {
       const trigger = triggerRef.current;
       if (!trigger) return;
-      setCardStyle(accountCardPosition(trigger.getBoundingClientRect(), window.innerWidth, window.innerHeight));
+      const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      setCardStyle(accountCardPosition(trigger.getBoundingClientRect(), window.innerWidth, window.innerHeight, rootFontSize));
     };
     positionCard();
     window.addEventListener('resize', positionCard);
@@ -208,15 +209,15 @@ export function XpodUserCard() {
           data-avatar-card="true"
           data-selected-pod-url={podUrl}
           style={cardStyle}
-          className={`fixed z-50 overflow-y-auto rounded-xl border border-border/40 bg-card text-card-foreground shadow-xl shadow-black/10 ${cardStyle ? '' : 'invisible'}`}
+          className={`fixed z-50 flex flex-col overflow-hidden rounded-xl border border-border/40 bg-card text-card-foreground shadow-xl shadow-black/10 ${cardStyle ? '' : 'invisible'}`}
         >
-          <div>
-            <div className="flex items-start gap-5 px-6 pb-5 pt-6">
+          <div className="min-h-0 overflow-y-auto">
+            <div className="flex flex-wrap items-start gap-5 px-6 pb-5 pt-6">
               <Avatar data-testid="xpod-profile-avatar" className="h-20 w-20 shrink-0 rounded-2xl border border-border/50 bg-primary/10 shadow-sm">
                 {profile.avatarUrl ? <AvatarImage src={profile.avatarUrl} alt={displayName} /> : null}
                 <AvatarFallback className="rounded-2xl bg-primary/10 text-2xl font-bold text-primary">{initials}</AvatarFallback>
               </Avatar>
-              <div className="min-w-0 flex-1 py-0.5">
+              <div className="min-w-0 flex-[1_1_10rem] py-0.5">
                 <h2 className="truncate text-xl font-bold text-foreground">{displayName}</h2>
                 <div className="mt-1 flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
                   <span className="shrink-0 opacity-70">WebID</span>
@@ -261,26 +262,26 @@ export function XpodUserCard() {
               </Button>
             </div>
 
-            <Separator />
-            <div className="p-2">
-              {accountHref ? (
-                <Button asChild variant="ghost" className="h-10 w-full justify-start px-3 font-normal">
-                  <a href={accountHref} target="_blank" rel="noopener noreferrer">
-                    <UserRound className="mr-2 h-4 w-4" aria-hidden="true" />
-                    管理账号
-                    <ExternalLink className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
-                  </a>
-                </Button>
-              ) : null}
-              <Button type="button" variant="ghost" className="h-10 w-full justify-start px-3 font-normal" onClick={() => void runSwitchAccount()} disabled={busy !== undefined}>
-                {busy === 'switch' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />}
-                切换 WebID
+          </div>
+          <Separator className="shrink-0" />
+          <div className="shrink-0 p-2">
+            {accountHref ? (
+              <Button asChild variant="ghost" className="h-10 w-full justify-start px-3 font-normal">
+                <a href={accountHref} target="_blank" rel="noopener noreferrer">
+                  <UserRound className="mr-2 h-4 w-4" aria-hidden="true" />
+                  管理账号
+                  <ExternalLink className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
+                </a>
               </Button>
-              <Button type="button" variant="ghost" className="h-10 w-full justify-start px-3 font-normal text-destructive hover:text-destructive" onClick={() => void runLogout()} disabled={busy !== undefined}>
-                {busy === 'logout' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />}
-                退出
-              </Button>
-            </div>
+            ) : null}
+            <Button type="button" variant="ghost" className="h-10 w-full justify-start px-3 font-normal" onClick={() => void runSwitchAccount()} disabled={busy !== undefined}>
+              {busy === 'switch' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />}
+              切换 WebID
+            </Button>
+            <Button type="button" variant="ghost" className="h-10 w-full justify-start px-3 font-normal text-destructive hover:text-destructive" onClick={() => void runLogout()} disabled={busy !== undefined}>
+              {busy === 'logout' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />}
+              退出
+            </Button>
           </div>
         </section>
       ), document.body) : null}
