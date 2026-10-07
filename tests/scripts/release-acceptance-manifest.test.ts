@@ -26,7 +26,7 @@ function validInput(overrides = {}) {
     sourceSha: fullSha,
     sourceBranch: 'release/0.3.68',
     imageDigest,
-    endpoint: 'https://id-rc.undefineds.co',
+    endpoint: 'https://undefineds-gz-rc-id.sealosgzg.site',
     acceptedAt,
     checks: {
       'build:ts': 'passed',
@@ -292,7 +292,7 @@ describe('release acceptance manifest', () => {
       '--source-sha', fullSha,
       '--source-branch', 'release/0.3.68',
       '--image-digest', imageDigest,
-      '--endpoint', 'https://id-rc.undefineds.co',
+      '--endpoint', 'https://undefineds-gz-rc-id.sealosgzg.site',
       '--accepted-at', acceptedAt,
       '--checks-file', checksPath,
     ], {
@@ -345,7 +345,7 @@ describe('release acceptance manifest', () => {
       '--source-sha', fullSha,
       '--source-branch', 'release/0.3.68',
       '--image-digest', imageDigest,
-      '--endpoint', 'https://id-rc.undefineds.co',
+      '--endpoint', 'https://undefineds-gz-rc-id.sealosgzg.site',
       '--accepted-at', acceptedAt,
       '--checks-file', checksPath,
     ])).rejects.toMatchObject({

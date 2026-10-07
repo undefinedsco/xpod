@@ -292,6 +292,9 @@ jobs:
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
 
       - name: Validate deployment inputs
         run: |
@@ -341,27 +344,22 @@ jobs:
           set -euo pipefail
           mkdir -p ~/.kube
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          bun scripts/verify-gz-rc-prerequisites.cjs boundary
 
       - name: Capture previous deployment image
         id: previous
         run: |
           set -euo pipefail
-          previous_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
-          if [[ -z "$previous_image" ]]; then
-            echo "::error::current deployment/xpod-cloud container xpod image is missing"
-            exit 1
-          fi
-          printf '%s' "$previous_image" > "$RUNNER_TEMP/xpod-previous-image"
-          echo "previous_image=$previous_image" >> "$GITHUB_OUTPUT"
+          bun scripts/verify-gz-rc-prerequisites.cjs production-preflight
 
       # Runtime profiles and infrastructure are owned by the environment's deployment
       # process. Release promotion changes only the accepted application image.
       - name: Deploy digest image
         run: |
           set -euo pipefail
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$TARGET_IMAGE"
-          kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
-          kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=900s
+          bun scripts/verify-gz-rc-prerequisites.cjs promote-production-image
+          kubectl rollout status deployment/"$TARGET_DEPLOYMENT" -n "$SEALOS_NAMESPACE" --timeout=900s
 
       - name: Verify production gates
         run: |
@@ -386,7 +384,7 @@ jobs:
 
           for attempt in $(seq 1 24); do
             if status_payload="$(curl --fail --silent --show-error --location --max-time 15 "$service_url")"; then
-              if jq -e 'length == 2 and ((map(.name) | sort) == ["api", "css"]) and all(.status == "running")' <<< "$status_payload" > /dev/null; then
+              if jq -e 'type == "array" and ((map(.name) | index("api")) != null) and ((map(.name) | index("css")) != null) and all(.status == "running")' <<< "$status_payload" > /dev/null; then
                 break
               fi
             fi
@@ -418,15 +416,15 @@ jobs:
           fi
           expected_status "$protected_settings_url" 401
 
-          deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
+          deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment "$TARGET_DEPLOYMENT" -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
           if [[ "$deployment_image" != "$TARGET_IMAGE" ]]; then
             echo "::error::deployment image does not match requested digest"
             exit 1
           fi
 
-          ready_pod="$(kubectl -n "$SEALOS_NAMESPACE" get pod -l app=xpod-cloud -o 'jsonpath={.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')"
+          ready_pod="$(kubectl -n "$SEALOS_NAMESPACE" get pod -l "app=$TARGET_DEPLOYMENT" -o 'jsonpath={.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')"
           if [[ -z "$ready_pod" ]]; then
-            echo "::error::no running xpod-cloud pod found"
+            echo "::error::no running xpod-cn pod found"
             exit 1
           fi
           pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$ready_pod" -o 'jsonpath={.status.containerStatuses[?(@.name=="xpod")].imageID}')"
@@ -434,36 +432,27 @@ jobs:
             echo "::error::ready pod imageID does not contain requested digest"
             exit 1
           fi
-          kubectl -n "$SEALOS_NAMESPACE" exec "$ready_pod" -c xpod -- node -e '
-            fetch("http://127.0.0.1:3000/service/status")
-              .then((response) => {
-                if (response.status !== 200) throw new Error(`status ${response.status}`);
-              })
-          '
+          # Fresh Pod readiness plus canonical public health belong to this exact digest.
+          pod_ready="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$ready_pod" -o 'jsonpath={.status.containerStatuses[?(@.name=="xpod")].ready}')"
+          test "$pod_ready" = true
+          bun scripts/verify-gz-rc-prerequisites.cjs production-health
 
       - name: Rollback on failure
         if: failure()
         run: |
-          set -uo pipefail
-          if [[ ! -s "$RUNNER_TEMP/xpod-previous-image" ]]; then
-            echo "No previous image was captured; skipping rollback"
-            exit 0
+          set -euo pipefail
+          bun scripts/verify-gz-rc-prerequisites.cjs rollback-production-image
+          if [ -f "$RUNNER_TEMP/gz-production-promoted.json" ]; then
+            kubectl rollout status deployment/"$TARGET_DEPLOYMENT" -n "$SEALOS_NAMESPACE" --timeout=900s
           fi
-          PREVIOUS_IMAGE="$(cat "$RUNNER_TEMP/xpod-previous-image")"
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$PREVIOUS_IMAGE" || exit 0
-          kubectl rollout status deployment/xpod-cloud -n "$SEALOS_NAMESPACE" --timeout=900s || exit 0
 
       - name: Dump diagnostics on failure
         if: failure()
         run: |
           set +e
-          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o wide
+          kubectl -n "$SEALOS_NAMESPACE" get deployment "$TARGET_DEPLOYMENT" -o wide
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide
-          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud
-          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-inngest
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-inngest
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=200 --prefix=true --max-log-requests=10
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=200 --prefix=true --max-log-requests=10
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-inngest --all-containers=true --tail=200 --prefix=true --max-log-requests=10
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-inngest --all-containers=true --previous --tail=200 --prefix=true --max-log-requests=10
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment "$TARGET_DEPLOYMENT"
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l "app=$TARGET_DEPLOYMENT"
+          kubectl -n "$SEALOS_NAMESPACE" logs -l "app=$TARGET_DEPLOYMENT" --all-containers=true --tail=200 --prefix=true --max-log-requests=10
+          kubectl -n "$SEALOS_NAMESPACE" logs -l "app=$TARGET_DEPLOYMENT" --all-containers=true --previous --tail=200 --prefix=true --max-log-requests=10

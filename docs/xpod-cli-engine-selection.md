@@ -1,11 +1,12 @@
 # Xpod CLI 挂载引擎选型与交付计划
 
-> 最新状态（2026-10-05）：本段及文末 GZ 更新为当前口径，其余阶段记录保留原证据归属。
+> 最新状态（2026-10-05）：本段为当前口径，其余阶段记录保留各自证据归属。
 > - 选型为 AgentFS，置信度中等；持久 delta、不可变基线及显式 commit 是决定因素。rclone 的成熟测试、范围缓存与平台资产仍是优势，不宣称 AgentFS 性能领先。
-> - 最终开发分支为 `codex/agentfs-v25-integration`，以已发布 v0.4.25 为第一父提交正常合并完整 native 提交链。首次合并 `c5f0a83…` 的 161 项定点回归、17 项 Node/Bun 消费端检查及两类类型检查通过；借用旧依赖导致 dependency-state 实际失败，最终 lock 安装和全套验收尚未完成。独立审查确认审批失败快路漏传报告行，须补修并保留 v25 分类字段。
-> - 下一服务发行目标为未占用的 `0.4.27`，RC 版本由既有发布流程派生；另一个 worktree 的 `release/0.4.26` 不改动。CLI 保持 `0.1.0-preview.2`，不内嵌 Bun / Node / JSC。
-> - native 诊断与真实 Git/rg 测试修正已冻结 `925cf4a…`，新增诊断后的原生库存为 99 项（97 pass、2 原有 ignore、0 filtered 的要求）；这只是源码和门禁要求，尚未实际编译运行。512MiB copy-up 的约 60 秒 EIO 仍在定位，64/512/1024MiB、RSS、SIGKILL、412 与真实挂载门槛不降低。
-> - 部署、诊断和远程验收全部限定 GZ `https://gzg.sealos.run:6443` / `ns-iknkxtc8`；镜像未就绪不计作 Public16 / Private17 执行，临时诊断不替代当前 RC Gateway。合并后的新 source-kit、安装包、两次原始全套及实际 OS 挂载仍须重新验收。
+> - 开发分支 `codex/agentfs-v25-integration` 已正常整合 v0.4.25 与 native 提交链。冻结产品 `0e260a49ce28cb7b5cf8ee0bc4342d893cb742a8` 的 [run 37310635987](https://github.com/undefinedsco/xpod/actions/runs/37310635987) 实际成功：两轮原始完整集成每轮 preflight 30、Lite 163 pass / 16 原有 skip、Full 63 pass；两平台 ARM64 原生各 99 项（97 pass / 2 原有 ignore / 0 filtered）以及源码、许可、安装材料已独立核验。这些结果不替代实际挂载或真实 RC。
+> - 下一服务发行目标为 `0.4.27`，另一个 worktree 的 `release/0.4.26` 不改动。CLI 保持 `0.1.0-preview.2`，外部运行时、不内嵌 Bun / Node / JSC；Linux Node22 无 Bun 消费端通过。Darwin 构建保留两次非致命 rust-objcopy / LLVM warning，不宣称零 warning。RC 发布改动在独立 `codex/agentfs-gz-rc-release` 分支。
+> - typed native 诊断已真实编译，但 512MiB copy-up 约 60 秒 EIO 仍需新的实际挂载请求定位。新挂载夹具已绑定上述冻结材料；64/512/1024MiB、RSS、SIGKILL、412 与真实 Git/rg 门槛不降低，尚未声称新材料挂载通过。
+> - 部署、诊断和远程验收全部限定 GZ `https://gzg.sealos.run:6443` / `ns-iknkxtc8`。已实际证明独占缓存 Pod 到 GHCR 的 DNS/TCP/证书 TLS、认证 manifest 与两层 HEAD（约 14.8 秒），并按原 UID 清理；它不证明 containerd 完整镜像拉取或原始 Public16 / Private17 已执行。
+> - RC 当前源库实测为 GZ shared PostgreSQL 上的 `xpod_rc`、PG16.4、约 4.82GiB，尚无 native 扩展；不能原地加载 PG17 ABI。完整私有备份与独立 PG17 恢复、源扩展兼容及真实 Gateway / Pod / Models / Chat / Tasks 验收仍须完成，未发布或晋级。真实 RC 路由为既有 Ingress → `gateway` → `xpod-rc`；本轮独立 managed 任务执行器复用已有组件，不改共享生产执行器。
 
 > 上一阶段记录（2026-10-05）：以下“当前”均指各自记录时的状态，不替代上述最新口径。
 > - 产品定义：Xpod 是统一入口，CLI / App 是入口形态，CSS / API / AFS 是可选模块。HTTP 验收的唯一地址参数为 `--base_url`，其次读取 `XPOD_BASE_URL`；内部与报告使用 `baseUrl`，保留凭据所属实例与 canonical Pod 绑定。

@@ -26,13 +26,19 @@ spec:
         - name: xpod
           image: ghcr.io/undefinedsco/xpod:replace-me
           imagePullPolicy: IfNotPresent
+          command: [bun]
           args:
-            - node
-            - dist/main.js
-            - -c
+            - --no-env-file
+            - dist/cli/index.js
+            - start
+            - --mode
+            - cloud
+            - --config
             - config/cloud.qlever.json
-            - -p
+            - --port
             - "3000"
+            - --host
+            - 0.0.0.0
           ports:
             - name: http
               containerPort: 3000
@@ -51,11 +57,11 @@ spec:
             - name: CSS_LOGGING_LEVEL
               value: info
             - name: CSS_BASE_URL
-              value: https://id-rc.undefineds.co
+              value: https://undefineds-gz-rc-id.sealosgzg.site
             - name: CSS_ALLOWED_HOSTS
-              value: id-rc.undefineds.co,pods-rc.undefineds.co,api-rc.undefineds.co
+              value: undefineds-gz-rc-id.sealosgzg.site,undefineds-gz-rc-pods.sealosgzg.site,undefineds-gz-rc-api.sealosgzg.site
             - name: XPOD_PUBLIC_API_URL
-              value: https://api-rc.undefineds.co
+              value: https://undefineds-gz-rc-api.sealosgzg.site
             - name: XPOD_EDGE_NODES_ENABLED
               value: "false"
             - name: XPOD_INNGEST_ENABLED

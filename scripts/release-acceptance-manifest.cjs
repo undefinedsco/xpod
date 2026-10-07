@@ -174,7 +174,7 @@ function validateManifest(manifest, expected) {
     addError(errors, 'candidateVersion', 'candidateVersion must be an rc for the target version');
   }
 
-  if (manifest.endpoint !== 'https://id-rc.undefineds.co') {
+  if (manifest.endpoint !== `https://${require('./verify-gz-rc-prerequisites.cjs').GZ_HOSTS[0]}`) {
     addError(errors, 'endpoint', 'endpoint must match the release candidate endpoint');
   }
 

@@ -21,9 +21,9 @@ describe('release lifecycle documentation', () => {
       '`@undefineds.co/xpod-darwin-arm64`',
       'macOS ARM64',
       'RDF、FTS、VEC Local conformance',
-      'https://id-rc.undefineds.co',
-      'https://pods-rc.undefineds.co',
-      'https://api-rc.undefineds.co',
+      'https://undefineds-gz-rc-id.sealosgzg.site',
+      'https://undefineds-gz-rc-pods.sealosgzg.site',
+      'https://undefineds-gz-rc-api.sealosgzg.site',
       'GitHub Environment `rc`',
       '`KUBE_CONFIG_DATA`',
       '`APP_ENV_FILE`',
@@ -94,8 +94,9 @@ describe('release lifecycle documentation', () => {
     expect(text).toContain('artifact 内文件是 `release-acceptance.json`');
     expect(text).not.toContain('release-acceptance-${GITHUB_SHA}.json');
 
-    expect(text).toContain('| Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-1yl0rye9` |');
-    expect(text).toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |');
+    expect(text).toContain('| Variable | `SEALOS_NAMESPACE` | 必填变量，只允许 `ns-iknkxtc8`，并与 kubeconfig context namespace 一致 |');
+    expect(text).toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，runtime Secret 名称前缀');
+    expect(text).toContain('实际名称追加本次 run ID/attempt，不覆盖已有 Secret');
     expect(text).toContain('| Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |');
     expect(text).toContain('| Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |');
     expect(text).not.toContain('| Variable | `SEALOS_NAMESPACE` | 默认 `xpod-rc` |');

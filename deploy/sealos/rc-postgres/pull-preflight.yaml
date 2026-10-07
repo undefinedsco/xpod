@@ -28,7 +28,7 @@ spec:
         - name: tcr-creds
       containers:
         - name: postgres-preflight
-          image: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba
+          image: ghcr.io/undefinedsco/xpod-rdf-postgres@sha256:156b6ef3a27d5ee43b8aa54c16583b288cfb33e47e532aaa1f377515f187fed5
           imagePullPolicy: Always
           command: [sh, -c]
           args:

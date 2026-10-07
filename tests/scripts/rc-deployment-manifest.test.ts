@@ -76,30 +76,8 @@ function expectPodSecurityBaseline(deployment: KubernetesObject): void {
 }
 
 describe('RC Sealos deployment manifest', () => {
-  it('runs PostgreSQL 17 plus pgvector on a disposable RC-owned volume', async () => {
-    const manifest = await runKustomize(rcPostgresOverlayPath);
-    const objects = renderObjects(manifest);
-    const postgres = findOne(objects, 'StatefulSet', 'xpod-rc-postgres');
-    const service = findOne(objects, 'Service', 'xpod-rc-postgres');
-    const container = postgres.spec?.template?.spec?.containers?.find((entry: any) => entry.name === 'postgres');
-
-    expect(objects.map((object) => `${object.kind}/${object.metadata?.name}`).sort()).toEqual([
-      'Service/xpod-rc-postgres',
-      'StatefulSet/xpod-rc-postgres',
-    ]);
-    expect(service.spec?.selector).toEqual({ app: 'xpod-rc-postgres' });
-    expect(postgres.spec?.selector?.matchLabels).toEqual({ app: 'xpod-rc-postgres' });
-    expect(postgres.spec?.volumeClaimTemplates).toBeUndefined();
-    expect(postgres.spec?.template?.spec?.volumes).toEqual([{ name: 'data', emptyDir: {} }]);
-    expect(container?.image).toBe('ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba');
-    expect(container?.imagePullPolicy).toBe('Always');
-    expect(postgres.spec?.template?.spec?.imagePullSecrets).toEqual([{ name: 'tcr-creds' }]);
-    expect(container?.volumeMounts).toContainEqual({ name: 'data', mountPath: '/var/lib/postgresql/data' });
-    expect(container?.env).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'POSTGRES_DB', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_DB' } } }),
-      expect.objectContaining({ name: 'POSTGRES_USER', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_USER' } } }),
-      expect.objectContaining({ name: 'POSTGRES_PASSWORD', valueFrom: { secretKeyRef: { name: 'xpod-rc-postgres-secret', key: 'POSTGRES_PASSWORD' } } }),
-    ]));
+  it('cannot render the removed disposable database overlay', async () => {
+    await expect(runKustomize(rcPostgresOverlayPath)).rejects.toThrow();
   });
 
   it('renders an isolated Xpod RC overlay without production-only resources or secrets', async () => {
@@ -115,17 +93,9 @@ describe('RC Sealos deployment manifest', () => {
     expect(manifest).not.toMatch(/your-password|your-project-ref|sk-[A-Za-z0-9_-]+/);
 
     expect(objects.map((object) => `${object.kind}/${object.metadata?.name}`).sort()).toEqual([
-      'Certificate/xpod-rc-api',
-      'Certificate/xpod-rc-id',
-      'Certificate/xpod-rc-pods',
       'ConfigMap/xpod-rc-config',
       'Deployment/xpod-rc',
-      'Ingress/xpod-rc-api',
-      'Ingress/xpod-rc-id',
-      'Ingress/xpod-rc-pods',
-      'Issuer/xpod-rc-letsencrypt',
       'Service/xpod-rc',
-      'Service/xpod-rc-gateway',
     ]);
     expect(objects.every((object) => object.metadata?.namespace === 'xpod-rc')).toBe(true);
 
@@ -133,8 +103,8 @@ describe('RC Sealos deployment manifest', () => {
     expect(configMap.data).toMatchObject({
       NODE_ENV: 'production',
       XPOD_EDITION: 'cloud',
-      CSS_BASE_URL: 'https://id-rc.undefineds.co',
-      CSS_ALLOWED_HOSTS: 'id-rc.undefineds.co,pods-rc.undefineds.co,api-rc.undefineds.co',
+      CSS_BASE_URL: 'https://undefineds-gz-rc-id.sealosgzg.site',
+      CSS_ALLOWED_HOSTS: 'undefineds-gz-rc-id.sealosgzg.site,undefineds-gz-rc-pods.sealosgzg.site,undefineds-gz-rc-api.sealosgzg.site',
     });
 
     const deployments = objects.filter((object) => object.kind === 'Deployment');
@@ -153,9 +123,9 @@ describe('RC Sealos deployment manifest', () => {
       CSS_PORT: '6300',
       API_PORT: '6301',
       CSS_LOGGING_LEVEL: 'info',
-      CSS_BASE_URL: 'https://id-rc.undefineds.co',
-      CSS_ALLOWED_HOSTS: 'id-rc.undefineds.co,pods-rc.undefineds.co,api-rc.undefineds.co',
-      XPOD_PUBLIC_API_URL: 'https://api-rc.undefineds.co',
+      CSS_BASE_URL: 'https://undefineds-gz-rc-id.sealosgzg.site',
+      CSS_ALLOWED_HOSTS: 'undefineds-gz-rc-id.sealosgzg.site,undefineds-gz-rc-pods.sealosgzg.site,undefineds-gz-rc-api.sealosgzg.site',
+      XPOD_PUBLIC_API_URL: 'https://undefineds-gz-rc-api.sealosgzg.site',
       XPOD_EDGE_NODES_ENABLED: 'false',
     });
     expect(xpodContainer.envFrom).toEqual([
@@ -189,26 +159,8 @@ describe('RC Sealos deployment manifest', () => {
     expectDeploymentSelectorsMatchTemplate(xpodDeployment);
     expectPodSecurityBaseline(xpodDeployment);
 
-    const gatewayService = findOne(objects, 'Service', 'xpod-rc-gateway');
-    expect(gatewayService.spec?.selector).toEqual({ app: 'gateway' });
-    expect(gatewayService.spec?.ports).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'api', port: 8081, targetPort: 8081 }),
-      expect.objectContaining({ name: 'id', port: 8082, targetPort: 8082 }),
-      expect.objectContaining({ name: 'pods', port: 8083, targetPort: 8083 }),
-    ]));
-
-    for (const [ name, host, secretName, port ] of [
-      [ 'xpod-rc-id', 'id-rc.undefineds.co', 'xpod-rc-id-tls', 'id' ],
-      [ 'xpod-rc-pods', 'pods-rc.undefineds.co', 'xpod-rc-pods-tls', 'pods' ],
-      [ 'xpod-rc-api', 'api-rc.undefineds.co', 'xpod-rc-api-tls', 'api' ],
-    ]) {
-      const ingress = findOne(objects, 'Ingress', name);
-      expect(ingress.spec?.tls).toEqual([{ hosts: [ host ], secretName }]);
-      expect(ingress.spec?.rules?.[0]).toMatchObject({
-        host,
-        http: { paths: [{ backend: { service: { name: 'xpod-rc-gateway', port: { name: port } } } }] },
-      });
-    }
+    expect(objects.some(object => ['Ingress','Certificate','Issuer'].includes(object.kind ?? ''))).toBe(false);
+    expect(objects.some(object => object.metadata?.name === 'xpod-rc-gateway')).toBe(false);
     expect(objects.some((object) => object.kind === 'StatefulSet')).toBe(false);
     expect(objects.some((object) => object.kind === 'PersistentVolumeClaim')).toBe(false);
     expect(objects.some((object) => object.metadata?.name?.startsWith('xpod-rc-minio'))).toBe(false);
@@ -218,11 +170,10 @@ describe('RC Sealos deployment manifest', () => {
 
 describe('fresh native pull template', () => {
   it('uses the same exact PG image and existing pull authorization without business volumes', () => {
-    const postgres = findOne(renderObjects(readFileSync(path.join(rcPostgresOverlayPath, 'postgres.yaml'), 'utf8')), 'StatefulSet', 'xpod-rc-postgres');
     const job = findOne(renderObjects(readFileSync(path.join(rcPostgresOverlayPath, 'pull-preflight.yaml'), 'utf8')), 'Job', 'xpod-rc-pg-preflight');
     const pod = job.spec?.template.spec;
     const container = pod.containers[0];
-    expect(container.image).toBe(postgres.spec?.template.spec.containers[0].image);
+    expect(container.image).toBe(require('../../scripts/verify-gz-rc-prerequisites.cjs').PG_IMAGE);
     expect(container.imagePullPolicy).toBe('Always');
     expect(pod.imagePullSecrets).toEqual([{ name: 'tcr-creds' }]);
     expect(pod.volumes).toBeUndefined();
@@ -235,6 +186,7 @@ describe('fresh native pull template', () => {
 
   it('uses the explicit cloud native override while retaining gateway launch arguments', () => {
     const deployment = findOne(renderObjects(readFileSync(path.join(rcOverlayPath, 'deployment.yaml'), 'utf8')), 'Deployment', 'xpod-rc');
-    expect(deployment.spec?.template.spec.containers[0].args).toEqual(['node', 'dist/main.js', '-c', 'config/cloud.qlever.json', '-p', '3000']);
+    expect(deployment.spec?.template.spec.containers[0].command).toEqual(['bun']);
+    expect(deployment.spec?.template.spec.containers[0].args).toEqual(['--no-env-file','dist/cli/index.js','start','--mode','cloud','--config','config/cloud.qlever.json','--port','3000','--host','0.0.0.0']);
   });
 });

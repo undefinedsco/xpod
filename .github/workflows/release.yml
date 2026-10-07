@@ -438,8 +438,8 @@ jobs:
           grep -F "$ACCEPTED_IMAGE_DIGEST" "$RUNNER_TEMP/version-image.json"
           grep -F "$ACCEPTED_IMAGE_DIGEST" "$RUNNER_TEMP/latest-image.json"
 
-  deploy_production_co:
-    name: Deploy production .co
+  deploy_production_cn:
+    name: Deploy production .cn
     needs:
       - promotion_guard
       - verify_npm_consumer_node
@@ -453,14 +453,14 @@ jobs:
     with:
       version: ${{ needs.promotion_guard.outputs.version }}
       image-digest: ${{ needs.promotion_guard.outputs.image_digest }}
-      environment: co
+      environment: cn
     secrets: inherit
 
   build_desktop_macos:
     name: Build macOS desktop release
     needs:
       - promotion_guard
-      - deploy_production_co
+      - deploy_production_cn
     runs-on: macos-15
     permissions:
       actions: read
@@ -541,7 +541,7 @@ jobs:
     name: Create GitHub Release
     needs:
       - promotion_guard
-      - deploy_production_co
+      - deploy_production_cn
       - build_desktop_macos
     runs-on: ubuntu-latest
     permissions:

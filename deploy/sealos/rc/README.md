@@ -1,42 +1,33 @@
-# Xpod RC Sealos overlay
+# GZ RC overlay
 
-This overlay deploys only RC-owned resources into the Sealos-assigned CO
-namespace. It never creates a Namespace or a private Inngest instance.
+This overlay contains only RC-owned ConfigMap, Service and Deployment. It cannot initialize a database,
+create a Namespace or modify shared Gateway, Inngest, Ingress or TLS resources.
+The only admitted server/namespace are https://gzg.sealos.run:6443 / ns-iknkxtc8.
 
-Public entry points mirror production roles:
+The existing canonical hosts are undefineds-gz-rc-id.sealosgzg.site,
+undefineds-gz-rc-pods.sealosgzg.site and undefineds-gz-rc-api.sealosgzg.site.
+Fresh UID/TLS/route admission verifies shared nginx 8082/8083/8081 → xpod-rc:80.
+Missing or conflicting declarations stop deployment; the workflow never rewrites shared routes.
+The 2026-10-05 read-only observation binds all three Ingress paths to the existing `gateway` Service. It does not prove loaded nginx routing. Headers may be inherited; real OAuth/DPoP/Pod acceptance determines their runtime correctness. Shared Inngest has no RC registration and is left untouched. This workflow birth-creates a run-owned managed executor from the existing cloud Inngest template and derives its Service URL. The independent PG17 clone remains a required separately prepared input.
 
-- `id-rc.undefineds.co` for OIDC, WebID, dashboard, and settings
-- `pods-rc.undefineds.co` for the hosted Pod entry point
-- `api-rc.undefineds.co` for authenticated APIs
+The authoritative APP_ENV_FILE supplies the prepared independent PG17 xpod_rc DSNs,
+nonzero Redis DB, isolated xpod-rc R2 bucket/credentials and stable locator/Inngest keys.
+The real original xpod_rc is PG16.4 on undefineds-gz-postgresql-postgresql; the old scaled-down
+RC StatefulSet/PVC is not its source. Controlled backup and clone restoration happen outside
+this workflow. See docs/RELEASE.md for PG156, required extension/ABI and provenance checks.
+No random password, emptyDir database reset, CREATE EXTENSION or PVC/Secret deletion is permitted.
 
-All three Ingresses target `Service/xpod-rc-gateway`, a stable selector alias
-for the existing unified Nginx Gateway. The Gateway routes each host to
-`Service/xpod-rc`; it must be updated with
-`scripts/update-gateway-rc-configmap.cjs` before public acceptance.
+Run-specific immutable runtime/seed Secret names carry a nonce and acknowledged birth UID.
+Secrets still referenced by a Deployment/Pod are retained. Only unused acknowledged owned
+Secrets may be deleted with a UID precondition; collisions/unknown creation outcomes are preserved.
+The current RC Deployment UID/resourceVersion, accepted digest and run seed mount are rendered
+into one final manifest and applied once, without set-image/restart intermediate operations.
+The Bun CLI explicitly uses cloud.qlever.json, Gateway 3000 and internal CSS/API 6300/6301.
 
-The candidate workflow renders this placeholder overlay into the assigned
-namespace, creates `xpod-rc-secret` from the RC Environment's `APP_ENV_FILE`,
-and mounts the fixed Alice/Bob seed from a run-specific Secret. The renderer
-must place the immutable image digest, seed Secret name, seed mount, and
-`CSS_SEED_CONFIG` into one final Deployment manifest before the workflow calls
-`kubectl apply`. Do not patch the Deployment, set its image, or restart it in
-separate steps: each pod-template mutation creates another ReplicaSet and can
-interrupt CSS while it is creating the seeded accounts. Every candidate replaces
-`StatefulSet/xpod-rc-postgres` with the pinned PostgreSQL 17 + pgvector image in
-`deploy/sealos/rc-postgres`. Its `emptyDir` and generated password belong only to
-that run, so stale RDF schemas and candidate data cannot cross runs. The shared
-public RC entry points are serialized at the deployment job: release branches may
-build in parallel but cannot mutate the static RC service concurrently. RC reuses
-Redis and Inngest with an isolated nonzero Redis DB and Event Key. Pod blobs are written to the
-dedicated Cloudflare R2 bucket `xpod-rc`; its endpoint and credentials come only
-from `APP_ENV_FILE`. The historical `CSS_MINIO_*` names remain for compatibility
-in this release even though the backend is R2. The Inngest Signing Key is shared
-with the shared Inngest instance. Production object storage is not modified.
+All live Pod, OIDC, two-identity/browser, Gateway/AI/Tasks, Local, desktop, native and package
+consumer gates remain mandatory. Local mock contract tests do not establish GZ readiness.
 
-`CSS_BASE_URL`, `CSS_ALLOWED_HOSTS`, `XPOD_PUBLIC_API_URL`, ports, edition, and
-RC source are fixed in the manifest. The managed Gateway block also preserves
-the public Host and HTTPS forwarding headers so OIDC/DPoP URL verification sees
-the same origin as the browser. `CSS_IDENTITY_DB_URL` and `CSS_SPARQL_ENDPOINT`
-from `APP_ENV_FILE` are discarded; the workflow injects the ephemeral PostgreSQL
-URLs. Do not place production hosts or unsupported prefix variables in
-`APP_ENV_FILE`.
+Run-owned executor objects use `xpod-rc-inngest-<run-id>-<attempt>` and `inngest start`, the same existing image/protocol, prepared PG17 and isolated Redis from the versioned runtime Secret. Fresh absence precedes atomic create; acknowledged birth UID and owner nonce precede rollout. Unknown create outcomes are retained. The guarded final app apply references that executor. Cleanup preserves any referenced executor or Secret; an accepted later switch may reclaim the prior run by exact UID/nonce, with foreground deletion and bounded absence waits. No actual executor rollout or Tasks delivery is established by local fixtures.
+
+
+Prepared clone admission requires the immutable ConfigMap referenced by the target StatefulSet annotation `xpod.undefineds.co/rc-clone-restore-admission`; see `docs/RELEASE.md` for the source/archive/restore/UID proof schema. Metadata labels do not establish a full restore. Missing records, nonpersistent PGDATA, reuse of source or legacy RC volumes, conflicting optional `CSS_TASK_DB_URL`, and a Service pointing outside the admitted ready Pod fail closed. Actual backup/restore compatibility remains untested until the data lane produces and independently validates the original evidence.

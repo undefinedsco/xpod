@@ -14,7 +14,7 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 4. 同一次 RC workflow 构建一个 GHCR 镜像，打 `sha-<full-sha>` 和 RC
    版本 tag，并记录 canonical digest，例如
    `ghcr.io/undefinedsco/xpod@sha256:<64-hex>`。
-5. RC workflow 将该 digest 部署到 `https://id-rc.undefineds.co` 并运行公开
+5. RC workflow 将该 digest 部署到 `https://undefineds-gz-rc-id.sealosgzg.site` 并运行公开
    和认证验收。
 6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，运行真实
    RDF、FTS、VEC Local conformance，但 RC 不向 npm 发布任何包。
@@ -26,7 +26,7 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
    artifact，校验 stable tag、release branch、required
    checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到不可见的
    `stable-staging` tag，并由 Node/Bun 重新安装验证；然后才移动 npm `latest`、把 accepted digest
-   重新标记为 stable/latest 容器 tag，并调用生产部署。
+   重新标记为 stable/latest 容器 tag，并调用 GZ `cn` 生产部署。
 
 ## 一次性 RC 环境
 
@@ -34,28 +34,32 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 
 | 类型 | 名称 | 说明 |
 | --- | --- | --- |
-| Secret | `KUBE_CONFIG_DATA` | base64 编码的 CO Sealos kubeconfig，使用 Sealos 分配的固定 namespace |
+| Secret | `KUBE_CONFIG_DATA` | base64 编码的 GZ kubeconfig，server 必须为 `https://gzg.sealos.run:6443`，context namespace 必须为 `ns-iknkxtc8` |
 | Secret | `APP_ENV_FILE` | RC runtime env 文件内容 |
 | Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |
 | Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |
 | Secret | `XPOD_AI_PROXY_URL` | 可选，真实 AI Provider 验收需要代理时填写 |
-| Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-1yl0rye9` |
-| Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
+| Variable | `SEALOS_NAMESPACE` | 必填变量，只允许 `ns-iknkxtc8`，并与 kubeconfig context namespace 一致 |
+| Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，runtime Secret 名称前缀（例如 `xpod-rc-secret`）；实际名称追加本次 run ID/attempt，不覆盖已有 Secret |
 | Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
 | Variable | `XPOD_INSTALL_REGISTRY` | 可选，安装烟测 registry 覆盖 |
 
-RC 公开入口为 `https://id-rc.undefineds.co`、`https://pods-rc.undefineds.co`
-和 `https://api-rc.undefineds.co`。`*.undefineds.co` DNS-only CNAME 统一指向
-Sealos ingress，三个 Ingress 经统一 Nginx Gateway 路由到 RC 服务；TLS Secret
-由 Sealos certificate controller 在 Ingress 创建后签发。overlay 不创建
-physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
-但必须使用独立 logical database or schema、独立 Redis DB 和独立 object bucket。
+RC 公开入口为 `https://undefineds-gz-rc-id.sealosgzg.site`、`https://undefineds-gz-rc-pods.sealosgzg.site`
+和 `https://undefineds-gz-rc-api.sealosgzg.site`。既有 GZ Ingress 的三个 host 经
+共享 `gateway` Service 的 8082/8083/8081 和 Nginx Gateway 路由到 RC 服务；workflow 重新核对
+Ingress、TLS Secret 的 UID 和 route，并用公开 HTTPS 验证证书；不创建或重写共享 Gateway、Ingress、证书或 Inngest。overlay 不创建
+physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它只接入事先受控准备的
+独立 PG17 clone、独立 Redis DB 和独立 object bucket。
+2026-10-05 只读核对确认实际 Ingress backend 为 `gateway`；未证明 nginx 已加载当前配置。
+三个 RC server block 没有 inline forwarded-host/proto 声明；继承与默认行为由原真实 OAuth/DPoP/Pod 门禁验证，不据此新增阻断。
+共享 Inngest 没有 RC 注册，因此复用已有 cloud managed `inngest start` manifest，创建本轮独立 Deployment/Service，不修改共享生产客户端。
+PG17 clone 缺失仍停止准入，受控备份/恢复由数据责任方另行准备。
 
 推荐的 RC Kubernetes 资源拓扑：
 
-- runtime Secret：`xpod-rc-secret`
+- runtime Secret：`<XPOD_RUNTIME_SECRET_NAME>-<run-id>-<attempt>`
 - Xpod Deployment：`xpod-rc`
-- shared Inngest Deployment：`xpod-inngest`（只复用，不由 RC overlay 创建或缩容）
+- 本轮 managed Inngest Deployment/Service：`xpod-rc-inngest-<run-id>-<attempt>`（沿现有 cloud manifest，独立 birth-create；共享 `xpod-inngest` 不变）
 - ConfigMap：`xpod-rc-config`
 - seed Secret：以 `xpod-rc-seed` 为前缀、按 workflow run 唯一命名
 
@@ -114,6 +118,34 @@ Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供
 不读取这些变量。RC 对象存储使用独立 R2 bucket/credential，并在部署前执行真实
 读写/删除 preflight；不得创建 overlay 内 MinIO 或复用生产 bucket。隔离由 nonzero
 Redis DB index、数据库/schema principal 和独立对象存储共同完成。
+
+## GZ 已有数据与独立 PG17 clone
+
+candidate 只允许 `https://gzg.sealos.run:6443` / `ns-iknkxtc8`，默认失败关闭；不回退 CO/SG。
+现有数据源为 `undefineds-gz-postgresql-postgresql.ns-iknkxtc8.svc:5432/xpod_rc`（PG16.4），
+不是已缩容的旧 RC StatefulSet/PVC。canonical PG156 是 PG17-specific ABI，不能将其模块加载到 PG16。
+受控迁移由独立流程在维护窗口执行：保护的全库 custom logical dump → 新独立 PG17 workload/PVC/database restore，
+验证 owner/ACL、vector、监控/set_user 扩展兼容、identity/RDF metadata 和显式 schema 迁移，再允许切换。
+原 PG16 数据库、DSN 和卷不动；不默认需要 PG16 中间 clone，不以忽略 restore 错误或删除不兼容对象代替验证。
+新库接受写入后，旧库无法自动包含这些新写；image rollback 不等于数据回滚，逆向 major/extension 恢复不能假定可行。
+
+workflow 保留 `APP_ENV_FILE` 中的 `CSS_IDENTITY_DB_URL` 和 `CSS_SPARQL_ENDPOINT`，要求它们指向
+同一准备好的 GZ `xpod_rc` clone；不生成数据库密码，不初始化数据库/扩展，不删除 PVC/Secret。
+目标 StatefulSet 需声明 `xpod.undefineds.co/rc-database=prepared-pg17`、
+`xpod.undefineds.co/rc-clone-source` 为上述真实来源和 `xpod.undefineds.co/rc-clone-archive-sha256` 为实际备份摘要。
+这些是受控 clone 的 provenance，不是第二份 runtime 配置。缺少 provenance、实际 PG17/扩展/ABI、
+ready Pod/imageID、registry authority 或独立 source/service/PG 的 Public16/Private17 证明时，不进入服务修改。
+prepared clone 镜像唯一 pin：
+`ghcr.io/undefinedsco/xpod-rdf-postgres@sha256:156b6ef3a27d5ee43b8aa54c16583b288cfb33e47e532aaa1f377515f187fed5`。
+
+服务使用 Bun 统一 CLI：`start --mode cloud --config config/cloud.qlever.json --port 3000 --host 0.0.0.0`，
+保留 QleverSparqlEngine/native SPARQL 语义。实际验收的 `--base_url`/`XPOD_BASE_URL` 是同一 Xpod 根入口；
+CSS/API/AFS 的存在与准备状态逐项验证，CSS 内部地址不作为公共验收入口。
+
+stable 自动调用只走 `deploy.yml` 的 `cn` lane，fresh 校验 canonical `id.undefineds.cn` /
+`api.undefineds.cn` / `pods.undefineds.cn` 的既有 Gateway → `xpod-cn:80` 声明以及 workload UID/selector/container。
+Sealos 非 RC host 指向 `xpod-co`，不能作为 CN smoke。生产仅在 UID/resourceVersion/原 image 的 JSON Patch
+条件全部满足后替换 accepted image；不改生产配置、数据库、共享 Gateway/Inngest。
 
 ## 原生 Local 与桌面发布边界
 
@@ -291,7 +323,7 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 常见硬 blocker：
 
 - GitHub Environment `rc` 不存在或 secret/var 缺失；
-- `id-rc`、`pods-rc` 或 `api-rc.undefineds.co` DNS/Ingress 未指向统一 Gateway；
+- `id-rc`、`pods-rc` 或 `undefineds-gz-rc-api.sealosgzg.site` DNS/Ingress 未指向统一 Gateway；
 - RC `APP_ENV_FILE` 复用了生产 domain、database、bucket、Redis DB 0 或凭据；
 - logical database or schema、nonzero Redis DB index、object bucket 权限未创建；
 - `XPOD_RC_SEED_CONFIG` 缺失、不是 seed account 数组，或没有 Alice/Bob 账号；
@@ -302,7 +334,12 @@ RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进�
 
 如果 `XPOD_RC_SCALE_TO_ZERO=true`，candidate workflow 最后会把
 `deployment/xpod-rc` scale-to-zero；共享 `deployment/xpod-inngest` 保持运行。
-下一次 RC workflow 会重新 apply overlay、写入 Secret、设置 digest 并等待 rollout。
+下一次 RC workflow 创建版本化自有 Secret，将 digest 和 seed 挂载一次性渲染到最终 RC manifest 后 apply 并等待 rollout。
+Secret 只在没有 Pod 或 Deployment 引用时，按创建时 UID 和 nonce 删除；未知创建结果或替换对象保留并报告失败。
+scale-to-zero 只操作绑定到本次 run 的 Xpod Deployment，不缩容数据库或共享 Inngest。
+本轮 executor 先验证名称不存在，再 `create` 并记录 birth UID/owner，有限 rollout 后才由 final guarded apply 引用。
+仍被应用引用的 executor/Secret 保留；后续成功切换且旧应用/Pod 不再引用时，按旧 run 的已记录 UID/nonce 回收。
+未确认创建结果或清理未闭合的现场保留，不能写为成功。
 手动恢复 RC 时可在同一 namespace 将 Xpod Deployment scale 到 1，然后重新
 运行 candidate workflow 做完整验收。
 
@@ -417,3 +454,18 @@ bun run test:integration
 
 `bun run test:integration` 会运行 lite 和 full 集成链路。若 Docker、数据库或
 本机网络权限缺失，记录真实失败输出；不要把未运行的集成测试写成通过。
+
+
+### GZ RC prepared clone admission record
+
+Candidate rollout never performs dump, restore, initialization or source-volume replacement. The data lane must first complete a protected full custom logical archive of the existing PG16 `undefineds-gz-postgresql-postgresql.ns-iknkxtc8.svc:5432/xpod_rc`, restore into a new independent PG17 clone, and obtain independent admission. This has not yet been executed for this release; a prepared label or successful ABI query alone is insufficient.
+
+The target StatefulSet references one immutable, same-namespace ConfigMap through `xpod.undefineds.co/rc-clone-restore-admission`; its `data["admission.json"]` is the existing preparation evidence, not a second environment configuration. The JSON binds exact `server`/`namespace`; `source` with the authoritative source service, current Pod UID and `pvcUIDs`; `archive.bytes` and `archive.sha256`; `target` with workload/Pod/PVC/PV UIDs, actual `dataDirectory`, full `specImage` and `actualImageID`, and `canonicalSourceImage`; successful closed `dump` and `restore` receipts (`exit: 0`, `actualWait`, `rawClosedBeforeHash`, `ownedGroupAbsentAfterWait`, `rawSHA256`); and explicit `validation.ownersAndACL`, `allUserObjectsAndData`, and `extensionCompatibility` conclusions. The archive SHA also matches the existing StatefulSet archive annotation. The independent preparation review must verify these claims against original artifacts before publishing that immutable record.
+
+Fresh candidate preflight cross-checks the record against actual metadata. PGDATA must be an explicit absolute literal, covered by one writable PVC mount without subPath; both PVC and PV must be Bound with the exact claim UID. Actual source and retained old RC PVC/PV UIDs are excluded. The runtime Service must expose 5432 and resolve through Ready Endpoints to precisely the admitted Pod UID on 5432; a direct Pod port-forward alone does not prove the DSN Service. A read-only query validates actual `data_directory`, PG17 and vector plus both native extensions/ABI. Missing preparation evidence fails closed before an owned executor can write.
+
+All identity/RDF and optional task/default database URLs must resolve to the same admitted clone with the same user/password. URL queries and fragments are rejected, including PostgreSQL parser host/port/user/password or TLS overrides. The port-forward client uses explicit loopback connection fields and retains normal pg TLS policy; required deployment TLS must be configured consistently rather than weakened for admission. The canonical PG156 immutable digest remains required for both spec and actual image identity. A registry mirror can transport identical OCI bytes only when the full actual spec/imageID is also bound by the restore record; no mirror copy has been accepted yet.
+
+Each final app manifest persists the bounded ownership history, including unreclaimed predecessor executor/Secret birth UIDs and nonce. If run A succeeds and run B applies but fails acceptance, run C keeps both identities until successful acceptance and then reclaims each only with fresh UID/nonce, no live references, UID-preconditioned deletion and observed absence. Replaced or unknown objects remain intact. Image rollback does not undo writes made in the PG17 clone; the old PG16 database, DSN and volume remain untouched for a separately controlled data rollback.
+
+At the next run, carried ownership history drops a predecessor only after fresh reads confirm every recorded executor and Secret name is absent. Present or replaced objects remain recorded; a failed read refuses admission. This prevents successful reclamation from consuming the bounded history budget without adding an annotation mutation.

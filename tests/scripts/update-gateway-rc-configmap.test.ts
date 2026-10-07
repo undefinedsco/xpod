@@ -1,121 +1,40 @@
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { parse } from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
-
-const execFile = promisify(execFileCallback);
-const repoRoot = path.resolve(__dirname, '../..');
-const scriptPath = path.join(repoRoot, 'scripts/update-gateway-rc-configmap.cjs');
-const tempRoots: string[] = [];
-const configKey = 'vn-etcvn-nginxvn-confvn-dvn-defaultvn-conf';
-
-const existingNginx = `map $http_upgrade $connection_upgrade {
-  default upgrade;
-  '' close;
+const execFile=promisify(execFileCallback);
+const repoRoot=path.resolve(__dirname,'../..');
+const scriptPath=path.join(repoRoot,'scripts/update-gateway-rc-configmap.cjs');
+const tempRoots:string[]=[];
+function fixture():any {
+  const object=(kind:string,name:string,extra:any={})=>({kind,metadata:{name,namespace:'ns-iknkxtc8',uid:`${name}-uid`,resourceVersion:'42'},...extra});
+  const hosts=['id','pods','api'].map(role=>`undefineds-gz-rc-${role}.sealosgzg.site`);
+  return {gateway:object('ConfigMap','gateway',{data:{unrelated:'PRIVATE_UNTOUCHED',nginx:hosts.map((host,index)=>`server { listen ${[8082,8083,8081][index]}; server_name ${host}; location / { proxy_pass http://xpod-rc:80; proxy_set_header Host $host; proxy_set_header X-Forwarded-Host $host; proxy_set_header X-Forwarded-Proto https; } }`).join('\n')}}),
+    ingresses:{items:hosts.map((host,index)=>object('Ingress',`rc-${index}`,{spec:{tls:[{hosts:[host],secretName:`tls-${index}`}],rules:[{host,http:{paths:[{path:'/',pathType:'Prefix',backend:{service:{name:'gateway',port:{number:[8082,8083,8081][index]}}}}]}}]}}))},
+    inngest:object('Deployment','xpod-inngest',{spec:{template:{spec:{containers:[{name:'inngest',args:['--sdk-url','http://xpod-rc/api/inngest'],env:[{name:'XPOD_RC_INNGEST_EVENT_KEY',valueFrom:{secretKeyRef:{name:'old-key',key:'XPOD_INNGEST_EVENT_KEY'}}}]}]}}}})};
 }
-
-server {
-  listen 8082;
-  server_name id.undefineds.co;
-  location / { proxy_pass http://xpod.example.svc.cluster.local:80; }
+async function run(input:any,namespace='ns-iknkxtc8') {
+  const parent=path.join(repoRoot,'.test-data/gateway-verify');await mkdir(parent,{recursive:true});
+  const root=await mkdtemp(path.join(parent,'case-'));tempRoots.push(root);
+  const file=path.join(root,'input.json');const original=JSON.stringify(input);await writeFile(file,original);
+  const result=await execFile('bun',[scriptPath,'--input',file,'--namespace',namespace],{cwd:repoRoot});
+  expect(await readFile(file,'utf8')).toBe(original);return result;
 }
-`;
-
-async function run(input: unknown, namespace = 'ns-rc'): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-gateway-rc-'));
-  tempRoots.push(root);
-  const inputPath = path.join(root, 'gateway.yaml');
-  await writeFile(inputPath, JSON.stringify(input));
-  const { stdout } = await execFile('node', [scriptPath, '--input', inputPath, '--namespace', namespace], {
-    cwd: repoRoot,
+describe('shared GZ Gateway verification-only command',()=>{
+  afterEach(async()=>{await Promise.all(tempRoots.splice(0).map(root=>rm(root,{recursive:true,force:true})));});
+  it('preserves all input bytes and emits identities rather than a ConfigMap apply manifest',async()=>{
+    const result=await run(fixture());const output=JSON.parse(result.stdout);
+    expect(output.status).toBe('ok');expect(output.identities).toHaveLength(4);
+    expect(result.stdout).not.toContain('PRIVATE_UNTOUCHED');expect(output.kind).toBeUndefined();
+    expect(output.identities[0]).toMatchObject({uid:'gateway-uid',resourceVersion:'42'});
   });
-  return stdout;
-}
-
-function configMap(value = existingNginx): Record<string, unknown> {
-  return {
-    apiVersion: 'v1',
-    kind: 'ConfigMap',
-    metadata: {
-      name: 'gateway',
-      namespace: 'old-namespace',
-      labels: { existing: 'preserved' },
-      resourceVersion: '123',
-      uid: 'do-not-apply',
-    },
-    data: {
-      untouched: 'keep-me',
-      [configKey]: value,
-    },
-  };
-}
-
-describe('RC gateway ConfigMap updater', () => {
-  afterEach(async () => {
-    await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  it('refuses changed RC routes without emitting replacement shared configuration',async()=>{
+    const input=fixture();input.gateway.data.nginx=input.gateway.data.nginx.replaceAll('xpod-rc:80','xpod-cn:80');
+    await expect(run(input)).rejects.toMatchObject({stderr:expect.stringContaining('shared mutation refused'),stdout:''});
   });
-
-  it('preserves the ConfigMap and adds the three RC routes inside a managed marker', async () => {
-    const output = await run(configMap(), 'ns-1yl0rye9');
-    const manifest = parse(output);
-    const nginx = manifest.data[configKey] as string;
-
-    expect(manifest).toMatchObject({
-      apiVersion: 'v1',
-      kind: 'ConfigMap',
-      metadata: {
-        name: 'gateway',
-        namespace: 'old-namespace',
-        labels: { existing: 'preserved' },
-      },
-      data: { untouched: 'keep-me' },
-    });
-    expect(manifest.metadata).not.toHaveProperty('resourceVersion');
-    expect(manifest.metadata).not.toHaveProperty('uid');
-    expect(nginx).toContain('server_name id.undefineds.co;');
-    expect(nginx).toContain('# BEGIN XPOD RC ROUTES');
-    expect(nginx).toContain('# END XPOD RC ROUTES');
-    expect(nginx).toContain('listen 8082;\n  server_name id-rc.undefineds.co;');
-    expect(nginx).toContain('listen 8083;\n  server_name pods-rc.undefineds.co;');
-    expect(nginx).toContain('listen 8081;\n  server_name api-rc.undefineds.co;');
-    expect(nginx.match(/proxy_pass http:\/\/xpod-rc\.ns-1yl0rye9\.svc\.cluster\.local:80;/g)).toHaveLength(3);
-    expect(nginx.match(/proxy_set_header Host \$host;/g)).toHaveLength(3);
-    expect(nginx.match(/proxy_set_header X-Forwarded-Host \$host;/g)).toHaveLength(3);
-    expect(nginx.match(/proxy_set_header X-Forwarded-Proto https;/g)).toHaveLength(3);
-    expect(nginx.match(/proxy_set_header X-Forwarded-Port 443;/g)).toHaveLength(3);
-  });
-
-  it('updates its managed block idempotently without duplicating routes', async () => {
-    const first = parse(await run(configMap(), 'first-ns'));
-    const second = parse(await run(first, 'second-ns'));
-    const nginx = second.data[configKey] as string;
-
-    expect(nginx.match(/# BEGIN XPOD RC ROUTES/g)).toHaveLength(1);
-    expect(nginx.match(/server_name id-rc\.undefineds\.co;/g)).toHaveLength(1);
-    expect(nginx.match(/server_name pods-rc\.undefineds\.co;/g)).toHaveLength(1);
-    expect(nginx.match(/server_name api-rc\.undefineds\.co;/g)).toHaveLength(1);
-    expect(nginx).not.toContain('xpod-rc.first-ns.svc.cluster.local');
-    expect(nginx.match(/xpod-rc\.second-ns\.svc\.cluster\.local/g)).toHaveLength(3);
-  });
-
-  it('rejects Secret input without printing its contents', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-gateway-secret-'));
-    tempRoots.push(root);
-    const inputPath = path.join(root, 'secret.yaml');
-    await writeFile(inputPath, JSON.stringify({
-      apiVersion: 'v1',
-      kind: 'Secret',
-      metadata: { name: 'gateway' },
-      stringData: { password: 'super-sensitive-value' },
-    }));
-
-    await expect(execFile('node', [scriptPath, '--input', inputPath, '--namespace', 'ns-rc'], {
-      cwd: repoRoot,
-    })).rejects.toMatchObject({
-      stderr: expect.not.stringContaining('super-sensitive-value'),
-    });
+  it('rejects foreign namespace and Secret input without printing private values',async()=>{
+    await expect(run(fixture(),'other-ns')).rejects.toMatchObject({stderr:expect.stringContaining('shared mutation refused')});
+    await expect(run({kind:'Secret',stringData:{password:'PRIVATE_PASSWORD'}})).rejects.toMatchObject({stderr:expect.not.stringContaining('PRIVATE_PASSWORD'),stdout:''});
   });
 });

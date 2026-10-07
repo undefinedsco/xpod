@@ -59,6 +59,10 @@ jobs:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
       - name: Verify RC DNS and namespace prerequisites
         run: |
           set -euo pipefail
@@ -73,9 +77,9 @@ jobs:
           node - <<'NODE'
           const { Resolver } = require('node:dns').promises;
           const hosts = [
-            'id-rc.undefineds.co',
-            'pods-rc.undefineds.co',
-            'api-rc.undefineds.co',
+            'undefineds-gz-rc-id.sealosgzg.site',
+            'undefineds-gz-rc-pods.sealosgzg.site',
+            'undefineds-gz-rc-api.sealosgzg.site',
           ];
           const resolvers = [ undefined, [ '1.1.1.1', '8.8.8.8' ] ].map((servers) => {
             const resolver = new Resolver();
@@ -98,6 +102,7 @@ jobs:
           mkdir -p ~/.kube
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
+          bun scripts/verify-gz-rc-prerequisites.cjs boundary
           kubectl auth can-i create deployments -n "$SEALOS_NAMESPACE" | grep -qx yes
           kubectl auth can-i create services -n "$SEALOS_NAMESPACE" | grep -qx yes
           kubectl auth can-i create ingresses.networking.k8s.io -n "$SEALOS_NAMESPACE" | grep -qx yes
@@ -194,7 +199,7 @@ jobs:
       XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
       XPOD_ACCEPTANCE_REAL_XPOD: 'true'
       XPOD_ACCEPTANCE_RUN_VISUAL: 'true'
-      XPOD_SETTINGS_E2E_BASE_URL: https://id-rc.undefineds.co
+      XPOD_SETTINGS_E2E_BASE_URL: https://undefineds-gz-rc-id.sealosgzg.site
       XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
       XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
       REF_NAME: ${{ github.ref_name }}
@@ -255,6 +260,7 @@ jobs:
           mkdir -p ~/.kube
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
+          bun scripts/verify-gz-rc-prerequisites.cjs boundary
 
       - name: Validate RC runtime secret isolation
         run: |
@@ -270,6 +276,8 @@ jobs:
           const text = fs.readFileSync(process.argv[2], 'utf8');
           const seedText = fs.readFileSync(process.argv[3], 'utf8');
           const required = [
+            'CSS_IDENTITY_DB_URL',
+            'CSS_SPARQL_ENDPOINT',
             'CSS_REDIS_CLIENT',
             'CSS_MINIO_ENDPOINT',
             'CSS_MINIO_BUCKET_NAME',
@@ -331,13 +339,8 @@ jobs:
           if (objectStoreUrl.protocol !== 'https:' || !objectStoreUrl.hostname.endsWith('.r2.cloudflarestorage.com')) {
             throw new Error('RC object-store endpoint must use Cloudflare R2 over HTTPS');
           }
-          const sanitized = [];
-          for (const [ key, value ] of entries) {
-            if (!['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT'].includes(key)) {
-              sanitized.push(`${key}=${value}`);
-            }
-          }
-          fs.writeFileSync(process.argv[2], `${sanitized.join('\n')}\n`);
+          // Preserve the prepared database DSNs and all supplied authority.
+          // GZ preflight below verifies the independent PG17 clone before mutation.
           NODE
           bun scripts/verify-rc-r2-access.ts --env-file "$env_file"
           bun scripts/materialize-rc-seed-config.ts \
@@ -349,11 +352,14 @@ jobs:
       - name: Compile current source before comparing installed runner bytes
         run: bun run build:ts
 
+      - name: Verify prepared PG17 clone and existing shared GZ routes
+        run: bun scripts/verify-gz-rc-prerequisites.cjs preflight
+
       - name: Preflight immutable native images before any RC mutation
         env:
           NATIVE_SOURCE_SHA: ${{ needs.metadata.outputs.sourceSha }}
           NATIVE_SERVICE_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
-          NATIVE_PG_IMAGE: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba
+          NATIVE_PG_IMAGE: ghcr.io/undefinedsco/xpod-rdf-postgres@sha256:156b6ef3a27d5ee43b8aa54c16583b288cfb33e47e532aaa1f377515f187fed5
         run: |
           set -euo pipefail
           umask 077
@@ -372,7 +378,7 @@ jobs:
             exit "$original_exit"
           }
           trap cleanup_native_registry EXIT
-          kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o json > "$docker_config_dir/pg-workload.json"
+          cp "${RUNNER_TEMP}/prepared-pg-workload.json" "$docker_config_dir/pg-workload.json"
           pg_workload_authority="$(bun scripts/check-qlever-installed-image-conformance.ts \
             --select-registry-authority "$docker_config_dir/pg-workload.json" --pg-image "$NATIVE_PG_IMAGE")"
           kubectl -n "$SEALOS_NAMESPACE" get secret "$pg_workload_authority" -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null \
@@ -407,7 +413,7 @@ jobs:
           PRIVATE17_ADMISSION_SHA256: ${{ vars.XPOD_PRIVATE17_ADMISSION_SHA256 }}
           NATIVE_SOURCE_SHA: ${{ needs.metadata.outputs.sourceSha }}
           NATIVE_SERVICE_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
-          NATIVE_PG_IMAGE: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba
+          NATIVE_PG_IMAGE: ghcr.io/undefinedsco/xpod-rdf-postgres@sha256:156b6ef3a27d5ee43b8aa54c16583b288cfb33e47e532aaa1f377515f187fed5
         run: |
           set -euo pipefail
           umask 077
@@ -443,6 +449,7 @@ jobs:
       - name: Preflight exact PostgreSQL image pull in the assigned namespace
         run: |
           set -euo pipefail
+          bun scripts/verify-gz-rc-prerequisites.cjs boundary
           umask 077
           preflight_dir="$(mktemp -d "${RUNNER_TEMP}/namespace-native.XXXXXX")"
           nonce="$(bun -e 'console.log(crypto.randomUUID())')"
@@ -492,10 +499,10 @@ jobs:
             exit "$original_exit"
           }
           trap cleanup_namespace_native EXIT
-          kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o json > "$preflight_dir/pg-workload.json"
+          cp "${RUNNER_TEMP}/prepared-pg-workload.json" "$preflight_dir/pg-workload.json"
           pg_authority="$(bun scripts/check-qlever-installed-image-conformance.ts \
             --select-registry-authority "$preflight_dir/pg-workload.json" \
-            --pg-image ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba)"
+            --pg-image ghcr.io/undefinedsco/xpod-rdf-postgres@sha256:156b6ef3a27d5ee43b8aa54c16583b288cfb33e47e532aaa1f377515f187fed5)"
           PREFLIGHT_NAME="$job_name" PREFLIGHT_NONCE="$nonce" PREFLIGHT_AUTHORITY="$pg_authority" bun -e '
             const fs=require("node:fs");const {parseDocument}=require("yaml");
             const job=parseDocument(fs.readFileSync("deploy/sealos/rc-postgres/pull-preflight.yaml","utf8")).toJSON();
@@ -515,84 +522,38 @@ jobs:
             --validate-pull-job "$preflight_dir/job.json" --pods "$preflight_dir/pods.json" \
             --job-name "$job_name" --job-uid "$job_uid" --namespace "$SEALOS_NAMESPACE" \
             --authority-name "$pg_authority" \
-            --pg-image ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba \
+            --pg-image ghcr.io/undefinedsco/xpod-rdf-postgres@sha256:156b6ef3a27d5ee43b8aa54c16583b288cfb33e47e532aaa1f377515f187fed5 \
             --pull-receipt "${RUNNER_TEMP}/namespace-native-pull-check.json"
 
       - name: Create runtime secrets
         run: |
           set -euo pipefail
-          pg_password="$(openssl rand -hex 32)"
-          pg_host="xpod-rc-postgres"
-          identity_db_url="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"
-          sparql_endpoint="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"
-          echo "::add-mask::$pg_password"
-          echo "::add-mask::$identity_db_url"
-          echo "::add-mask::$sparql_endpoint"
-          printf 'CSS_IDENTITY_DB_URL=%s\n' "$identity_db_url" >> "${RUNNER_TEMP}/xpod-rc.env"
-          printf 'CSS_SPARQL_ENDPOINT=%s\n' "$sparql_endpoint" >> "${RUNNER_TEMP}/xpod-rc.env"
-          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-postgres-secret \
-            --from-literal=POSTGRES_DB=xpod_rc \
-            --from-literal=POSTGRES_USER=xpod_rc \
-            --from-literal=POSTGRES_PASSWORD="$pg_password" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME" \
-            --from-env-file="${RUNNER_TEMP}/xpod-rc.env" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RC_SEED_SECRET_NAME" \
-            --from-file=rc.json="${RUNNER_TEMP}/xpod-rc-seed.json" \
-            --dry-run=client -o yaml | kubectl apply -f -
+          # Rebind current UID/resourceVersion facts after the private native gates.
+          bun scripts/verify-gz-rc-prerequisites.cjs preflight
+          bun scripts/verify-gz-rc-prerequisites.cjs create-run-secrets
+
+      - name: Create and verify this run owned managed executor
+        run: bun scripts/verify-gz-rc-prerequisites.cjs create-run-executor
 
       - name: Deploy RC image by digest
         run: |
           set -euo pipefail
-          postgres_manifest="${RUNNER_TEMP}/xpod-rc-postgres.rendered.yaml"
+          bun scripts/verify-gz-rc-prerequisites.cjs boundary
           rendered_manifest="${RUNNER_TEMP}/xpod-rc.rendered.yaml"
-          node scripts/render-rc-manifests.cjs \
-            --overlay deploy/sealos/rc-postgres \
-            --output "$postgres_manifest" \
-            --namespace "$SEALOS_NAMESPACE"
-          node scripts/render-rc-manifests.cjs \
+          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc -o json > "${RUNNER_TEMP}/current-rc-deployment.json"
+          bun scripts/render-rc-manifests.cjs \
             --overlay deploy/sealos/rc \
             --output "$rendered_manifest" \
             --namespace "$SEALOS_NAMESPACE" \
             --secret-name "$XPOD_RUNTIME_SECRET_NAME" \
             --seed-secret-name "$XPOD_RC_SEED_SECRET_NAME" \
+            --current-deployment "${RUNNER_TEMP}/current-rc-deployment.json" \
+            --admission "${RUNNER_TEMP}/gz-rc-prerequisites.json" \
+            --run-ownership "${RUNNER_TEMP}/rc-run-secrets.json" \
             --image "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
-          kubectl -n "$SEALOS_NAMESPACE" delete deployment/xpod-rc --cascade=foreground --wait=true --ignore-not-found
-          kubectl -n "$SEALOS_NAMESPACE" delete statefulset/xpod-rc-postgres --cascade=foreground --wait=true --ignore-not-found
-          kubectl -n "$SEALOS_NAMESPACE" delete service/xpod-rc-postgres --ignore-not-found
-          kubectl -n "$SEALOS_NAMESPACE" delete pvc/data-xpod-rc-postgres-0 --ignore-not-found
-          kubectl apply -f "$postgres_manifest"
-          kubectl rollout status statefulset/xpod-rc-postgres -n "$SEALOS_NAMESPACE" --timeout=600s
-          postgres_version_num="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
-            psql -U xpod_rc -d xpod_rc --no-align --tuples-only --command 'SHOW server_version_num' | tr -d '[:space:]')"
-          if ! [[ "$postgres_version_num" =~ ^17[0-9]{4}$ ]]; then
-            echo "::error::RC database must run PostgreSQL 17"
-            exit 1
-          fi
-          kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
-            psql -v ON_ERROR_STOP=1 -U xpod_rc -d xpod_rc --command 'CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS xpod_rdf; CREATE EXTENSION IF NOT EXISTS xpod_qlever'
-          vector_version="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- \
-            psql -U xpod_rc -d xpod_rc --no-align --tuples-only \
-              --command "SELECT extversion FROM pg_extension WHERE extname = 'vector'" | tr -d '[:space:]')"
-          if [ -z "$vector_version" ]; then
-            echo "::error::RC database did not activate the vector extension"
-            exit 1
-          fi
-          native_abi="$(kubectl -n "$SEALOS_NAMESPACE" exec statefulset/xpod-rc-postgres -- psql -U xpod_rc -d xpod_rc -Atc "SELECT (value->>'abiVersion') || '|' || (value->>'ready') FROM (SELECT xpod_rdf.native_sparql_capabilities() AS value) AS capability")"
-          test "$native_abi" = '1|true'
-          kubectl -n "$SEALOS_NAMESPACE" get configmap gateway -o yaml \
-            | node scripts/update-gateway-rc-configmap.cjs --namespace "$SEALOS_NAMESPACE" \
-            | kubectl apply -f -
+          # The final RC-owned manifest is applied once. Shared Gateway/Ingress,
+          # Inngest and prepared PostgreSQL are verified, never rewritten here.
           kubectl apply -f "$rendered_manifest"
-          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-inngest -o json > "${RUNNER_TEMP}/inngest.json"
-          node scripts/patch-shared-inngest-rc.cjs \
-            --input "${RUNNER_TEMP}/inngest.json" \
-            --output "${RUNNER_TEMP}/inngest-rc.json" \
-            --secret-name "$XPOD_RUNTIME_SECRET_NAME"
-          kubectl apply -f "${RUNNER_TEMP}/inngest-rc.json"
-          kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/gateway
-          kubectl rollout status deployment/gateway -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=2400s
           expected_image="ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
           deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc -o jsonpath='{.spec.template.spec.containers[?(@.name=="xpod")].image}')"
@@ -620,65 +581,57 @@ jobs:
             echo "::error::ready pod imageID digest mismatch"
             exit 1
           fi
-          kubectl -n "$SEALOS_NAMESPACE" exec "$pod_name" -c xpod -- node -e "fetch('http://127.0.0.1:3000/service/status').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"
-          kubectl -n "$SEALOS_NAMESPACE" get secret "$XPOD_RUNTIME_SECRET_NAME" -o json \
-            | node -e "const input=[];process.stdin.on('data',(chunk)=>input.push(chunk));process.stdin.on('end',()=>{const data=JSON.parse(Buffer.concat(input)).data||{};for(const key of ['CSS_MINIO_ENDPOINT','CSS_MINIO_BUCKET_NAME','CSS_MINIO_ACCESS_KEY','CSS_MINIO_SECRET_KEY'])if(!data[key])throw new Error('deployed RC secret is missing '+key);});"
-          kubectl -n "$SEALOS_NAMESPACE" delete deployment/xpod-rc-minio service/xpod-rc-minio job/xpod-rc-minio-init pvc/xpod-rc-minio secret/xpod-rc-object-store --ignore-not-found
-          cat > "${RUNNER_TEMP}/deployment-checks.json" <<'JSON'
-          {
+          kubectl -n "$SEALOS_NAMESPACE" exec "$pod_name" -c xpod -- bun --no-env-file -e "fetch('http://127.0.0.1:3000/service/status').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"
+          python3 - <<'PY_CHECK'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          admission = json.loads((root / 'gz-rc-prerequisites.json').read_text())
+          if admission.get('fullRestoreStatus') != 'verified' or not admission.get('restoreAdmissionUID'):
+              raise SystemExit('full restored clone admission is missing')
+          (root / 'deployment-checks.json').write_text(json.dumps({
             "image": "passed",
             "deployed-digest": "passed",
             "direct-pod": "passed",
             "postgres-17": "passed",
-            "postgres-ephemeral": "passed",
+            "postgres-prepared-clone": "passed",
             "vector": "passed"
-          }
-          JSON
+          }))
+          PY_CHECK
 
       - name: Verify RC TLS certificates
         run: |
           set -euo pipefail
-          for pair in \
-            'xpod-rc-id-tls:id-rc.undefineds.co' \
-            'xpod-rc-pods-tls:pods-rc.undefineds.co' \
-            'xpod-rc-api-tls:api-rc.undefineds.co'
+          # curl validates the existing public TLS chain and canonical host name.
+          # No Secret values, certificate issuer or shared Ingress is modified.
+          for host in \
+            undefineds-gz-rc-id.sealosgzg.site \
+            undefineds-gz-rc-pods.sealosgzg.site \
+            undefineds-gz-rc-api.sealosgzg.site
           do
-            secret_name="${pair%%:*}"
-            host="${pair#*:}"
-            cert_file="${RUNNER_TEMP}/${secret_name}.crt"
-            for attempt in $(seq 1 60); do
-              if kubectl -n "$SEALOS_NAMESPACE" get secret "$secret_name" -o 'jsonpath={.data.tls\.crt}' 2>/dev/null | base64 -d > "$cert_file" && [ -s "$cert_file" ]; then
-                break
-              fi
-              sleep 5
-            done
-            if [ ! -s "$cert_file" ]; then
-              echo "::error::$secret_name did not receive tls.crt"
-              exit 1
-            fi
-            openssl x509 -in "$cert_file" -noout -checkhost "$host"
+            curl --silent --show-error --max-time 15 --output /dev/null "https://$host/service/status"
           done
 
       - name: Verify public RC service
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/service/status > /dev/null
-          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/.well-known/openid-configuration > /dev/null
-          curl --fail --silent --show-error --max-time 15 https://pods-rc.undefineds.co/ > /dev/null
-          curl --fail --silent --show-error --max-time 15 https://api-rc.undefineds.co/service/status > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://undefineds-gz-rc-id.sealosgzg.site/service/status > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://undefineds-gz-rc-id.sealosgzg.site/.well-known/openid-configuration > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://undefineds-gz-rc-pods.sealosgzg.site/ > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://undefineds-gz-rc-api.sealosgzg.site/service/status > /dev/null
           dashboard_file="$RUNNER_TEMP/dashboard.html"
-          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.co/dashboard/ --output "$dashboard_file"
+          curl --fail --silent --show-error --location --max-time 15 https://undefineds-gz-rc-id.sealosgzg.site/dashboard/ --output "$dashboard_file"
           if ! grep -qi '<!doctype html\|<html' "$dashboard_file"; then
             echo "::error::dashboard did not return HTML"
             exit 1
           fi
           settings_file="$RUNNER_TEMP/settings.html"
-          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.co/settings/ --output "$settings_file"
+          curl --fail --silent --show-error --location --max-time 15 https://undefineds-gz-rc-id.sealosgzg.site/settings/ --output "$settings_file"
           if ! grep -qi '<!doctype html\|<html' "$settings_file"; then
             echo "::error::settings did not return HTML"
             exit 1
           fi
-          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 https://api-rc.undefineds.co/api/pod/settings/status)"
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 https://undefineds-gz-rc-api.sealosgzg.site/api/pod/settings/status)"
           if [ "$status" != "401" ]; then
             echo "::error::protected settings route must reject anonymous requests with 401"
             exit 1
@@ -733,7 +686,7 @@ jobs:
           docker run --detach --name "$local_name" \
             --publish 127.0.0.1::5737 \
             --env XPOD_EDITION=local \
-            --env SOLID_OIDC_ISSUER=https://id-rc.undefineds.co/ \
+            --env SOLID_OIDC_ISSUER=https://undefineds-gz-rc-id.sealosgzg.site/ \
             --env CSS_ROOT_FILE_PATH=/app/data \
             --env CSS_IDENTITY_DB_URL=/app/data/identity.sqlite \
             --env DATABASE_URL=/app/data/identity.sqlite \
@@ -765,7 +718,7 @@ jobs:
           XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
           XPOD_LIVE_TASK_APPROVAL=1 \
           XPOD_BASE_URL="$gateway" \
-          XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/" \
+          XPOD_LIVE_CLOUD_IDP="https://undefineds-gz-rc-id.sealosgzg.site/" \
           bun run ai-connections:accept:live
 
           node - <<'NODE'
@@ -908,13 +861,10 @@ jobs:
         run: |
           kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods,svc -o wide || true
           kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc || true
-          kubectl -n "$SEALOS_NAMESPACE" describe statefulset xpod-rc-postgres || true
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc || true
-          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc-postgres || true
           kubectl -n "$SEALOS_NAMESPACE" get events --sort-by='.lastTimestamp' | tail -n 200 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 --previous || true
-          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc-postgres --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
           if [ -f "${RUNNER_TEMP}/live-gateway-local-container-name" ]; then
             local_name="$(cat "${RUNNER_TEMP}/live-gateway-local-container-name")"
             if [ -n "$local_name" ]; then
@@ -936,8 +886,21 @@ jobs:
       - name: Scale RC deployments to zero
         if: ${{ always() && vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
         run: |
-          kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0 || true
-          kubectl -n "$SEALOS_NAMESPACE" scale statefulset/xpod-rc-postgres --replicas=0 || true
+          set -euo pipefail
+          # UID/resourceVersion and this run's Secret references guard scale-down.
+          bun scripts/verify-gz-rc-prerequisites.cjs scale-owned-rc
+
+      - name: Reclaim unreferenced prior accepted run objects
+        if: success()
+        run: bun scripts/verify-gz-rc-prerequisites.cjs cleanup-previous-run
+
+      - name: Cleanup unused this run owned managed executor
+        if: always()
+        run: bun scripts/verify-gz-rc-prerequisites.cjs cleanup-run-executor
+
+      - name: Cleanup unused owned runtime and seed Secrets
+        if: always()
+        run: bun scripts/verify-gz-rc-prerequisites.cjs cleanup-run-secrets
 
   build_desktop_rc:
     name: Build macOS RC desktop
@@ -1266,7 +1229,7 @@ jobs:
             --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
             --source-branch "$REF_NAME" \
             --image-digest "${{ needs.build_image.outputs.digest }}" \
-            --endpoint "https://id-rc.undefineds.co" \
+            --endpoint "https://undefineds-gz-rc-id.sealosgzg.site" \
             --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
             --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
       - name: Upload the only stable-promotion evidence

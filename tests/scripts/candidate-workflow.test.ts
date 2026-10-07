@@ -142,9 +142,9 @@ describe('release candidate workflow', () => {
     expect(preflight.env.APPLE_ID).toBeUndefined();
     expect(runText).not.toContain('MACOS_CERTIFICATE');
     expect(runText).not.toContain('APPLE_APP_SPECIFIC_PASSWORD');
-    expect(runText).toContain('id-rc.undefineds.co');
-    expect(runText).toContain('pods-rc.undefineds.co');
-    expect(runText).toContain('api-rc.undefineds.co');
+    expect(runText).toContain('undefineds-gz-rc-id.sealosgzg.site');
+    expect(runText).toContain('undefineds-gz-rc-pods.sealosgzg.site');
+    expect(runText).toContain('undefineds-gz-rc-api.sealosgzg.site');
     expect(runText).toContain('auth can-i create deployments');
     expect(runText).not.toContain('get secret xpod-rc-tls');
   });
@@ -200,58 +200,33 @@ describe('release candidate workflow', () => {
       group: 'xpod-shared-rc-service',
       'cancel-in-progress': false,
     });
-    expect(runText).toContain('node scripts/render-rc-manifests.cjs');
-    expect(runText).toContain('--overlay deploy/sealos/rc-postgres');
-    expect(runText).toContain('kubectl apply -f "$postgres_manifest"');
+    expect(runText).toContain('bun scripts/render-rc-manifests.cjs');
+    expect(runText).not.toContain('--overlay deploy/sealos/rc-postgres');
     expect(runText).toContain('kubectl apply -f "$rendered_manifest"');
     expect(runText.match(/kubectl apply -f \"\$rendered_manifest\"/g)).toHaveLength(1);
     expect(runText).toContain('SEALOS_NAMESPACE is required');
     expect(runText).toContain('XPOD_RUNTIME_SECRET_NAME is required');
     expect(runText).toContain('must be a valid Kubernetes name');
-    expect(runText).not.toContain('SEALOS_NAMESPACE: xpod-rc');
-    expect(runText).not.toContain('xpod-rc-secret \\');
-    expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
     expect(runText).toContain('--image "ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"');
     expect(runText).toContain('--seed-secret-name "$XPOD_RC_SEED_SECRET_NAME"');
-    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME"');
-    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-postgres-secret');
-    expect(runText).not.toContain('kubectl -n "$SEALOS_NAMESPACE" patch deployment/xpod-rc');
-    expect(runText).not.toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc');
-    expect(runText).not.toContain('kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/xpod-rc');
+    expect(runText).toContain('--current-deployment');
+    expect(runText).toContain('scripts/verify-gz-rc-prerequisites.cjs create-run-secrets');
+    expect(runText).toContain('scripts/verify-gz-rc-prerequisites.cjs preflight');
+    expect(runText).not.toMatch(/delete (deployment|statefulset|pvc)|CREATE EXTENSION|rollout restart/);
     expect(runText).toContain('kubectl rollout status deployment/xpod-rc');
-    expect(runText).toContain('kubectl rollout status statefulset/xpod-rc-postgres');
-    expect(runText).toContain("SHOW server_version_num");
-    expect(runText).toContain("CREATE EXTENSION IF NOT EXISTS vector");
-    expect(runText).toContain("SELECT extversion FROM pg_extension WHERE extname = 'vector'");
-    expect(runText).toContain('delete deployment/xpod-rc --cascade=foreground --wait=true --ignore-not-found');
-    expect(runText).toContain('delete statefulset/xpod-rc-postgres --cascade=foreground --wait=true --ignore-not-found');
-    expect(runText).toContain('delete pvc/data-xpod-rc-postgres-0 --ignore-not-found');
-    expect(runText).not.toContain('delete pvc -l');
-    expect(runText.indexOf('delete deployment/xpod-rc --cascade=foreground --wait=true --ignore-not-found'))
-      .toBeLessThan(runText.indexOf('delete statefulset/xpod-rc-postgres'));
-    expect(runText.indexOf('kubectl apply -f "$postgres_manifest"'))
-      .toBeLessThan(runText.indexOf('kubectl apply -f "$rendered_manifest"'));
-    expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
-    expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
-    expect(runText).toContain('https://id-rc.undefineds.co/service/status');
-    expect(runText).toContain('https://pods-rc.undefineds.co');
-    expect(runText).toContain('https://api-rc.undefineds.co');
+    expect(runText).toContain('https://undefineds-gz-rc-id.sealosgzg.site/service/status');
+    expect(runText).toContain('https://undefineds-gz-rc-pods.sealosgzg.site');
+    expect(runText).toContain('https://undefineds-gz-rc-api.sealosgzg.site');
     expect(runText).toContain('/.well-known/openid-configuration');
-    expect(runText).toContain('https://id-rc.undefineds.co/dashboard/');
+    expect(runText).toContain('https://undefineds-gz-rc-id.sealosgzg.site/dashboard/');
     expect(runText).toContain('/settings/');
     expect(runText).toContain('dashboard.html');
     expect(runText).toContain('settings.html');
     expect(runText).toContain('dashboard did not return HTML');
     expect(runText).toContain('settings did not return HTML');
-    expect(runText).toContain('https://api-rc.undefineds.co/api/pod/settings/status');
-    for (const pair of [
-      [ 'xpod-rc-id-tls', 'id-rc.undefineds.co' ],
-      [ 'xpod-rc-pods-tls', 'pods-rc.undefineds.co' ],
-      [ 'xpod-rc-api-tls', 'api-rc.undefineds.co' ],
-    ]) {
-      expect(runText).toContain(pair[0]);
-      expect(runText).toContain(pair[1]);
-    }
+    expect(runText).toContain('https://undefineds-gz-rc-api.sealosgzg.site/api/pod/settings/status');
+    expect(runText).not.toContain('get secret "$XPOD_RUNTIME_SECRET_NAME"');
+    expect(runText).toContain('curl --silent --show-error --max-time 15 --output /dev/null "https://$host/service/status"');
     expect(runText).toContain('401');
     expect(runText).not.toContain('/settings/api/providers');
     expect(runText).not.toContain('https://id.undefineds.co');
@@ -263,11 +238,10 @@ describe('release candidate workflow', () => {
     const workflow = await loadWorkflow();
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
-    expect(runText).toContain("['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT'].includes(key)");
-    expect(runText).toContain('identity_db_url="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"');
-    expect(runText).toContain('sparql_endpoint="postgresql://xpod_rc:${pg_password}@${pg_host}:5432/xpod_rc"');
-    expect(runText).toContain('pg_password="$(openssl rand -hex 32)"');
-    expect(runText).toContain('echo "::add-mask::$pg_password"');
+    expect(runText).toContain("'CSS_IDENTITY_DB_URL'");
+    expect(runText).toContain("'CSS_SPARQL_ENDPOINT'");
+    expect(runText).not.toContain('pg_password=');
+    expect(runText).not.toContain('sanitized.push');
     expect(runText).toContain('CSS_REDIS_CLIENT');
     expect(runText).toContain('RC Redis DB must use a non-default database index');
     expect(runText).toContain('RC Redis URL must include an explicit nonzero DB index');
@@ -282,14 +256,14 @@ describe('release candidate workflow', () => {
     }
     expect(runText).toContain('RC object-store bucket must be xpod-rc');
     expect(runText).toContain('bun scripts/verify-rc-r2-access.ts --env-file "$env_file"');
-    expect(runText).toContain('delete deployment/xpod-rc-minio service/xpod-rc-minio job/xpod-rc-minio-init pvc/xpod-rc-minio secret/xpod-rc-object-store --ignore-not-found');
+    expect(runText).not.toContain('delete deployment/xpod-rc-minio');
     expect(runText).not.toContain('create secret generic xpod-rc-object-store');
     expect(runText).not.toContain('rollout status deployment/xpod-rc-minio');
     expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
     expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');
     expect(runText).toContain('XPOD_GATEWAY_LOCATOR_SECRET');
-    expect(runText).toContain('--from-literal=POSTGRES_DB=xpod_rc');
-    expect(runText).toContain('--from-literal=POSTGRES_USER=xpod_rc');
+    expect(runText).not.toContain('--from-literal=POSTGRES_DB');
+    expect(runText).not.toContain('--from-literal=POSTGRES_USER');
     expect(runText).not.toContain('must match the isolated RC PostgreSQL service identity');
     expect(runText).not.toContain('production database is not allowed in RC APP_ENV_FILE');
     expect(runText).not.toMatch(/cat\s+["']?\$APP_ENV_FILE/);
@@ -303,7 +277,7 @@ describe('release candidate workflow', () => {
 
     expect(deploy.env.XPOD_ACCEPTANCE_REAL_XPOD).toBe('true');
     expect(deploy.env.XPOD_ACCEPTANCE_RUN_VISUAL).toBe('true');
-    expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://id-rc.undefineds.co');
+    expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://undefineds-gz-rc-id.sealosgzg.site');
     expect(deploy.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG).toBe('${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}');
     expect(deploy.env.XPOD_AI_PROXY_URL).toBe('${{ secrets.XPOD_AI_PROXY_URL }}');
     expect(deploy.env.XPOD_RC_SEED_CONFIG).toBe('${{ secrets.XPOD_RC_SEED_CONFIG }}');
@@ -314,7 +288,7 @@ describe('release candidate workflow', () => {
     expect(deploy.env.RC_AUTHENTICATED_SMOKE_COMMAND).toBeUndefined();
     expect(runText).toContain('XPOD_RC_SEED_CONFIG is required');
     expect(deploy.env.XPOD_RC_SEED_SECRET_NAME).toContain('xpod-rc-seed-');
-    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RC_SEED_SECRET_NAME"');
+    expect(runText).toContain('scripts/verify-gz-rc-prerequisites.cjs create-run-secrets');
     expect(runText).toContain('--seed-secret-name "$XPOD_RC_SEED_SECRET_NAME"');
     expect(runText).toContain('scripts/prepare-rc-authenticated-smoke.ts');
     expect(runText).toContain('scripts/materialize-rc-seed-config.ts');
@@ -351,14 +325,14 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
     expect(runText).toContain('--publish 127.0.0.1::5737');
     expect(runText).toContain('--env XPOD_EDITION=local');
-    expect(runText).toContain('--env SOLID_OIDC_ISSUER=https://id-rc.undefineds.co/');
+    expect(runText).toContain('--env SOLID_OIDC_ISSUER=https://undefineds-gz-rc-id.sealosgzg.site/');
     expect(runText).toContain('docker port "$local_name" 5737/tcp');
     expect(runText).not.toContain('port-forward deployment/xpod-rc 3000:3000');
     expect(runText).toContain('XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file"');
     expect(runText).toContain('XPOD_BASE_URL="$gateway"');
     expect(runText).not.toContain('XPOD_LIVE_GATEWAY_URL');
     expect(runText).not.toContain('XPOD_LIVE_BASE_URL');
-    expect(runText).toContain('XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.co/"');
+    expect(runText).toContain('XPOD_LIVE_CLOUD_IDP="https://undefineds-gz-rc-id.sealosgzg.site/"');
     expect(runText).not.toContain('XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX');
     expect(runText).toContain('bun run ai-connections:accept:live');
     expect(runText).toContain('live-gateway-login-chat-local.json');
@@ -564,7 +538,7 @@ describe('release candidate workflow', () => {
       'deployed-digest',
       'direct-pod',
       'postgres-17',
-      'postgres-ephemeral',
+      'postgres-prepared-clone',
       'vector',
       'public-service',
       'secret-isolation',
@@ -608,8 +582,7 @@ describe('release candidate workflow', () => {
     expect(diagnostics.if).toBe('failure()');
     expect(diagnostics.run).toContain('kubectl -n "$SEALOS_NAMESPACE" get');
     expect(diagnostics.run).toContain('describe deployment xpod-rc');
-    expect(diagnostics.run).toContain('describe statefulset xpod-rc-postgres');
-    expect(diagnostics.run).toContain('app=xpod-rc-postgres');
+    expect(diagnostics.run).not.toContain('xpod-rc-postgres');
     expect(diagnostics.run).toContain('--previous');
     expect(diagnostics.run).toContain('live-gateway-local-container-name');
     expect(diagnostics.run).toContain('docker inspect "$local_name"');
@@ -617,8 +590,8 @@ describe('release candidate workflow', () => {
     const cleanup = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
     expect(cleanup.if).toContain('always()');
     expect(cleanup.if).toContain("vars.XPOD_RC_SCALE_TO_ZERO == 'true'");
-    expect(cleanup.run).toContain('kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0');
-    expect(cleanup.run).toContain('scale statefulset/xpod-rc-postgres --replicas=0');
+    expect(cleanup.run).toContain('scripts/verify-gz-rc-prerequisites.cjs scale-owned-rc');
+    expect(cleanup.run).not.toContain('scale statefulset');
     expect(cleanup.run).not.toContain('deployment/xpod-inngest');
   });
 
@@ -713,6 +686,8 @@ const fakeNamespaceKubectl = `#!/usr/bin/env python3
 import sys,os,json,pathlib
 args=sys.argv[1:]; root=pathlib.Path(os.environ['FAKE_KUBE_STATE']); mode=os.environ['FAKE_KUBE_MODE']; jobfile=root/'job.json'; podfile=root/'pod.json'
 with (root/'calls.jsonl').open('a') as out: out.write(json.dumps(args)+'\\n')
+if args[:2]==['config','view']:
+ print(json.dumps({'clusters':[{'cluster':{'server':'https://gzg.sealos.run:6443'}}],'contexts':[{'context':{'namespace':'ns-iknkxtc8'}}]}));sys.exit()
 if args[0]=='create':
  job=json.loads(pathlib.Path(args[args.index('-f')+1]).read_text()); job['metadata']['uid']='created-uid'; job['status']={'conditions':[{'type':'Complete','status':'True'}]}
  if mode=='foreign-create':
@@ -722,7 +697,7 @@ if args[0]=='create':
  print(json.dumps(job))
 elif 'get' in args:
  kind=args[args.index('get')+1]
- if kind=='statefulset': print(json.dumps({'kind':'StatefulSet','metadata':{'name':'xpod-rdf-postgres','namespace':'assigned-rc'},'spec':{'template':{'spec':{'imagePullSecrets':[{'name':'xpod-rdf-ghcr'}],'containers':[{'name':'postgres','image':'ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba'}]}}}}))
+ if kind=='statefulset': print(json.dumps({'kind':'StatefulSet','metadata':{'name':'xpod-rdf-postgres','namespace':'assigned-rc'},'spec':{'template':{'spec':{'imagePullSecrets':[{'name':'xpod-rdf-ghcr'}],'containers':[{'name':'postgres','image':'ghcr.io/undefinedsco/xpod-rdf-postgres@sha256:156b6ef3a27d5ee43b8aa54c16583b288cfb33e47e532aaa1f377515f187fed5'}]}}}}))
  if kind=='job':
   if jobfile.exists():
    job=json.loads(jobfile.read_text())
@@ -753,11 +728,12 @@ describe('actual namespace preflight shell with fake Kubernetes', () => {
     const bin = path.join(dir, 'bin'); const state = path.join(dir, 'state'); const temp = path.join(dir, 'temp');
     for (const sub of [bin, state, temp]) mkdirSync(sub, { mode: 0o700 });
     writeFileSync(path.join(bin, 'kubectl'), fakeNamespaceKubectl, { mode: 0o700 });
+    writeFileSync(path.join(temp, 'prepared-pg-workload.json'), JSON.stringify({kind:'StatefulSet', metadata:{name:'prepared-clone',namespace:'ns-iknkxtc8'},spec:{template:{spec:{imagePullSecrets:[{name:'xpod-rdf-ghcr'}],containers:[{name:'postgres',image:'ghcr.io/undefinedsco/xpod-rdf-postgres@sha256:156b6ef3a27d5ee43b8aa54c16583b288cfb33e47e532aaa1f377515f187fed5'}]}}}}));
     try {
       const start = Date.now();
       const result = spawnSync('bash', ['-c', step.run], { cwd: repoRoot, encoding: 'utf8', timeout: 25_000, env: {
         ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, RUNNER_TEMP: temp,
-        SEALOS_NAMESPACE: 'assigned-rc', GITHUB_RUN_ID: '12345', GITHUB_RUN_ATTEMPT: '1',
+        SEALOS_NAMESPACE: 'ns-iknkxtc8', GITHUB_RUN_ID: '12345', GITHUB_RUN_ATTEMPT: '1',
         FAKE_KUBE_STATE: state, FAKE_KUBE_MODE: mode, FAKE_KUBE_CLEANUP_EXIT: String(cleanupExit),
       } });
       const evidenceDir = process.env.XPOD_NATIVE_TEST_EVIDENCE_DIR;
@@ -863,5 +839,543 @@ sys.exit(${mode === 'missing-release' ? 27 : 0})
       const remaining = await (await import('node:fs/promises')).readdir(dir);
       expect(remaining.some(name => name.startsWith('private17-proof'))).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+
+describe('GZ-only RC data and shared-resource protection', () => {
+  it('rejects any other cluster or namespace before deployment', async () => {
+    const helper = require('../../scripts/verify-gz-rc-prerequisites.cjs');
+    expect(() => helper.validateBoundary('https://gzg.sealos.run:6443', 'ns-iknkxtc8')).not.toThrow();
+    for (const [server, namespace] of [
+      ['https://sgp.sealos.run:6443', 'ns-iknkxtc8'],
+      ['https://gzg.sealos.run:6443', 'other-ns'],
+    ]) expect(() => helper.validateBoundary(server, namespace)).toThrow();
+  });
+
+  it('never resets data or mutates shared Gateway and Inngest during an RC rollout', async () => {
+    const workflow = await loadWorkflow();
+    const run = jobRunText(workflow, 'deploy_and_accept');
+    expect(run).not.toMatch(/delete (?:deployment|statefulset|service|pvc|secret)\//);
+    expect(run).not.toContain('openssl rand -hex');
+    expect(run).not.toContain('--overlay deploy/sealos/rc-postgres');
+    expect(run).not.toContain('CREATE EXTENSION');
+    expect(run).not.toContain('update-gateway-rc-configmap');
+    expect(run).not.toContain('patch-shared-inngest-rc');
+    expect(run).not.toContain('rollout restart deployment/gateway');
+    expect(run).not.toContain('get secret "$XPOD_RUNTIME_SECRET_NAME" -o json');
+    expect(run).toContain('scripts/verify-gz-rc-prerequisites.cjs preflight');
+    expect(run).toContain('scripts/verify-gz-rc-prerequisites.cjs cleanup-run-secrets');
+  });
+
+  it('preserves the supplied prepared database authority and refuses the old shared PG16 source', () => {
+    const helper = require('../../scripts/verify-gz-rc-prerequisites.cjs');
+    const env = { CSS_IDENTITY_DB_URL: 'postgresql://xpod_rc:PRIVATE@prepared-clone.ns-iknkxtc8.svc:5432/xpod_rc',
+      CSS_SPARQL_ENDPOINT: 'postgresql://xpod_rc:PRIVATE@prepared-clone.ns-iknkxtc8.svc:5432/xpod_rc' };
+    expect(helper.preparedDatabase(env)).toMatchObject({ service: 'prepared-clone', database: 'xpod_rc' });
+    expect(env.CSS_IDENTITY_DB_URL).toContain('PRIVATE');
+    expect(() => helper.preparedDatabase({ ...env, CSS_SPARQL_ENDPOINT: env.CSS_SPARQL_ENDPOINT.replace('prepared-clone', 'foreign') })).toThrow();
+    for (const service of ['undefineds-gz-postgresql-postgresql', 'xpod-rdf-postgres-rc', 'xpod-rc-postgres']) {
+      const dsn = env.CSS_IDENTITY_DB_URL.replace('prepared-clone', service);
+      expect(() => helper.preparedDatabase({ CSS_IDENTITY_DB_URL: dsn, CSS_SPARQL_ENDPOINT: dsn })).toThrow();
+    }
+  });
+
+  it('uses the unified Bun CLI while retaining the native cloud.qlever configuration', async () => {
+    const deployment = parseDocument(await readFile(path.join(repoRoot, 'deploy/sealos/rc/deployment.yaml'), 'utf8')).toJSON();
+    const xpod = deployment.spec.template.spec.containers.find((entry: any) => entry.name === 'xpod');
+    expect(xpod.command).toEqual(['bun']);
+    expect(xpod.args).toEqual(['--no-env-file', 'dist/cli/index.js', 'start', '--mode', 'cloud', '--config',
+      'config/cloud.qlever.json', '--port', '3000', '--host', '0.0.0.0']);
+    const workflow = await loadWorkflow();
+    expect(jobRunText(workflow, 'deploy_and_accept')).not.toContain('-- node -e');
+  });
+
+  it('has no legacy RC host in candidate or promotion endpoint authority', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    const manifest = await readFile(path.join(repoRoot, 'scripts/release-acceptance-manifest.cjs'), 'utf8');
+    expect(workflow).not.toMatch(/(?:id|pods|api)-rc\.undefineds\.co/);
+    expect(manifest).not.toContain('https://id-rc.undefineds.co');
+    expect(workflow).toContain('https://undefineds-gz-rc-id.sealosgzg.site');
+  });
+});
+
+const gzHelper = () => require('../../scripts/verify-gz-rc-prerequisites.cjs');
+function gzObject(kind: string, name: string, extra: Record<string, any> = {}): any {
+  return {kind,metadata:{name,namespace:'ns-iknkxtc8',uid:`${name}-uid`,resourceVersion:'42'},...extra};
+}
+function gzRouteFixture(): any {
+  const hosts = gzHelper().GZ_HOSTS;
+  const gateway = gzObject('ConfigMap','gateway',{data:{nginx:hosts.map((host: string,index: number) => `server { listen ${[8082,8083,8081][index]}; server_name ${host}; location / { proxy_pass http://xpod-rc:80; proxy_set_header Host $host; proxy_set_header X-Forwarded-Host $host; proxy_set_header X-Forwarded-Proto https; } }`).join('\n')}});
+  const ingresses = {items:hosts.map((host: string,index: number) => gzObject('Ingress',`rc-${index}`,{spec:{tls:[{hosts:[host],secretName:`tls-${index}`}],rules:[{host,http:{paths:[{path:'/',pathType:'Prefix',backend:{service:{name:'gateway',port:{number:[8082,8083,8081][index]}}}}]}}]}}))};
+  const inngest = gzObject('Deployment','xpod-inngest',{spec:{template:{spec:{containers:[{name:'inngest',args:['--sdk-url','http://production/api/inngest','--sdk-url','http://xpod-rc/api/inngest'],env:[{name:'XPOD_RC_INNGEST_EVENT_KEY',valueFrom:{secretKeyRef:{name:'existing-rc-key',key:'XPOD_INNGEST_EVENT_KEY'}}}]}]}}}});
+  return {gateway,ingresses,inngest};
+}
+describe('prepared GZ resource admission facts', () => {
+  it('checks existing shared routes without changing any bytes or clients', () => {
+    const input = gzRouteFixture(); const before = JSON.stringify(input);
+    expect(gzHelper().verifySharedRoutes(input.gateway,input.ingresses)).toHaveLength(4);
+    expect(JSON.stringify(input)).toBe(before);
+  });
+  it.each(['legacy-host','duplicate-host','wrong-upstream','foreign-namespace','deleting','wrong-ingress'])('refuses %s before shared writes or Secret creation', mode => {
+    const input = gzRouteFixture();
+    if(mode==='legacy-host') input.gateway.data.nginx=input.gateway.data.nginx.replace('undefineds-gz-rc-id.sealosgzg.site','id-rc.undefineds.co');
+    if(mode==='duplicate-host') input.gateway.data.nginx+=input.gateway.data.nginx;
+    if(mode==='wrong-upstream') input.gateway.data.nginx=input.gateway.data.nginx.replaceAll('xpod-rc:80','xpod-cn:80');
+    if(mode==='missing-forwarding') input.gateway.data.nginx=input.gateway.data.nginx.replaceAll('proxy_set_header X-Forwarded-Proto https;','');
+    if(mode==='foreign-namespace') input.gateway.metadata.namespace='other-ns';
+    if(mode==='deleting') input.gateway.metadata.deletionTimestamp='now';
+    if(mode==='wrong-ingress') input.ingresses.items[0].spec.rules[0].http.paths[0].backend.service.name='xpod-cn';
+    if(mode==='missing-inngest') input.inngest.spec.template.spec.containers[0].args=[];
+    expect(() => gzHelper().verifySharedRoutes(input.gateway,input.ingresses,input.inngest)).toThrow();
+  });
+  it('accepts declared GZ routes without inventing inline-header or shared Inngest prerequisites',()=>{
+    const input=gzRouteFixture();input.gateway.data.nginx=input.gateway.data.nginx.replaceAll(/proxy_set_header [^;]+;/g,'');
+    expect(gzHelper().verifySharedRoutes(input.gateway,input.ingresses)).toHaveLength(4);
+  });
+  it.each([160004,180000])('refuses incompatible database major %s', version => {
+    expect(() => gzHelper().verifyDatabaseFacts({version,extensions:['vector','xpod_rdf','xpod_qlever'],native:{abiVersion:1,ready:true}})).toThrow();
+  });
+  it('requires both native extensions, vector and ready ABI 1', () => {
+    const facts={version:170000,extensions:['vector','xpod_rdf','xpod_qlever'],native:{abiVersion:1,ready:true}};
+    expect(() => gzHelper().verifyDatabaseFacts(facts)).not.toThrow();
+    for(const name of facts.extensions) expect(() => gzHelper().verifyDatabaseFacts({...facts,extensions:facts.extensions.filter(x=>x!==name)})).toThrow();
+    expect(() => gzHelper().verifyDatabaseFacts({...facts,native:{abiVersion:2,ready:true}})).toThrow();
+  });
+  it('binds prepared clone provenance, workload owner and actual PG156 imageID', () => {
+    const h=gzHelper(); const service=gzObject('Service','clone');
+    const workload=gzObject('StatefulSet','clone');
+    workload.metadata.labels={'xpod.undefineds.co/rc-database':'prepared-pg17'};
+    workload.metadata.annotations={'xpod.undefineds.co/rc-clone-source':h.SOURCE_DATABASE,'xpod.undefineds.co/rc-clone-archive-sha256':'a'.repeat(64)};
+    const pod=gzObject('Pod','clone-0',{spec:{containers:[{name:'postgres',image:h.PG_IMAGE}]},status:{phase:'Running',conditions:[{type:'Ready',status:'True'}],containerStatuses:[{name:'postgres',ready:true,imageID:`docker-pullable://${h.PG_IMAGE}`}]}});
+    pod.metadata.ownerReferences=[{controller:true,uid:workload.metadata.uid,name:'clone',kind:'StatefulSet'}];
+    expect(h.verifyPreparedPod(service,{items:[pod]},workload)).toBe(pod);
+    for(const change of [
+      () => {pod.status.containerStatuses[0].imageID='sha256:'+'b'.repeat(64);},
+      () => {pod.metadata.ownerReferences[0].uid='foreign';},
+      () => {delete workload.metadata.annotations['xpod.undefineds.co/rc-clone-archive-sha256'];},
+    ]) {
+      const old=JSON.stringify({pod,workload});change();expect(() => h.verifyPreparedPod(service,{items:[pod]},workload)).toThrow();
+      const restored=JSON.parse(old);Object.assign(pod,restored.pod);Object.assign(workload,restored.workload);
+    }
+  });
+});
+
+const fakeRunSecretKubectl=`#!/usr/bin/env python3
+import sys,os,json,pathlib
+args=sys.argv[1:];root=pathlib.Path(os.environ['FAKE_SECRET_STATE']);mode=os.environ['FAKE_SECRET_MODE']
+with (root/'calls.jsonl').open('a') as out:out.write(json.dumps(args)+'\\n')
+if args[:2]==['config','view']:
+ print(json.dumps({'clusters':[{'cluster':{'server':'https://gzg.sealos.run:6443'}}],'contexts':[{'context':{'namespace':'ns-iknkxtc8'}}]}));sys.exit()
+if 'create' in args:
+ obj=json.load(sys.stdin);name=obj['metadata']['name'];obj['metadata']['uid']=name+'-birth';(root/(name+'.json')).write_text(json.dumps(obj))
+ if mode=='ack-loss':print('PRIVATE_ACK',file=sys.stderr);sys.exit(17)
+ print(obj['metadata']['uid']);sys.exit()
+if 'get' in args:
+ kind=args[args.index('get')+1]
+ if kind in ['pods','deployments']:
+  refs=[{'spec':{'secretRef':{'name':'xpod-rc-secret-123-1'}}}] if mode=='referenced' else []
+  print(json.dumps({'items':refs}));sys.exit()
+ name=args[args.index('get')+2];file=root/(name+'.json')
+ if not file.exists():sys.exit()
+ obj=json.loads(file.read_text())
+ if mode=='replaced':obj['metadata']['uid']='foreign'
+ print(json.dumps(obj['metadata']));sys.exit()
+if args[0]=='delete':
+ options=json.load(sys.stdin);name=args[args.index('--raw')+1].rsplit('/',1)[1];file=root/(name+'.json');obj=json.loads(file.read_text())
+ if mode=='raw-race':print('PRIVATE_409',file=sys.stderr);sys.exit(39)
+ if options['preconditions']['uid']!=obj['metadata']['uid']:sys.exit(40)
+ file.unlink();sys.exit()
+if 'wait' in args:sys.exit()
+print('PRIVATE_UNSUPPORTED',file=sys.stderr);sys.exit(80)
+`;
+describe('actual versioned RC Secret CLI with fake Kubernetes', () => {
+  it.each(['success','referenced','replaced','raw-race','ack-loss'])('protects birth ownership in %s', mode => {
+    const parent=path.join(repoRoot,'.test-data/gz-run-secrets');mkdirSync(parent,{recursive:true});
+    const dir=mkdtempSync(path.join(parent,'case-'));const bin=path.join(dir,'bin');mkdirSync(bin);
+    writeFileSync(path.join(bin,'kubectl'),fakeRunSecretKubectl,{mode:0o700});
+    writeFileSync(path.join(dir,'xpod-rc.env'),'CSS_IDENTITY_DB_URL=PRIVATE\n');writeFileSync(path.join(dir,'xpod-rc-seed.json'),'[{"password":"PRIVATE"}]');
+    const env={...process.env,PATH:`${bin}${path.delimiter}${process.env.PATH}`,RUNNER_TEMP:dir,GITHUB_ENV:path.join(dir,'github-env'),SEALOS_NAMESPACE:'ns-iknkxtc8',GITHUB_RUN_ID:'123',GITHUB_RUN_ATTEMPT:'1',XPOD_RUNTIME_SECRET_NAME:'xpod-rc-secret',FAKE_SECRET_STATE:dir,FAKE_SECRET_MODE:mode};
+    try {
+      const create=spawnSync('bun',['scripts/verify-gz-rc-prerequisites.cjs','create-run-secrets'],{cwd:repoRoot,env,encoding:'utf8',timeout:10000});
+      expect(create.signal).toBeNull();expect(create.status).toBe(mode==='ack-loss'?1:0);
+      const cleanup=spawnSync('bun',['scripts/verify-gz-rc-prerequisites.cjs','cleanup-run-secrets'],{cwd:repoRoot,env,encoding:'utf8',timeout:10000});
+      expect(cleanup.signal).toBeNull();expect(cleanup.status).toBe(['replaced','raw-race'].includes(mode)?1:0);
+      expect(create.stdout+create.stderr+cleanup.stdout+cleanup.stderr).not.toContain('PRIVATE');
+      const calls=readFileSync(path.join(dir,'calls.jsonl'),'utf8').trim().split('\n').map(x=>JSON.parse(x) as string[]);
+      const deletes=calls.filter(x=>x[0]==='delete');
+      if(mode==='success') {expect(deletes).toHaveLength(2);expect(() => readFileSync(path.join(dir,'xpod-rc-secret-123-1.json'))).toThrow();}
+      if(['replaced','ack-loss'].includes(mode)) expect(deletes).toHaveLength(0);
+      if(mode==='referenced') {expect(deletes).toHaveLength(1);expect(JSON.parse(readFileSync(path.join(dir,'rc-run-secrets.json'),'utf8')).secrets[0].cleanup).toBe('retained-while-referenced');}
+      if(mode==='raw-race') {expect(deletes).toHaveLength(1);expect(readFileSync(path.join(dir,'xpod-rc-secret-123-1.json'),'utf8')).toContain('birth');}
+      expect(calls.filter(x=>x.includes('get')&&x.includes('secret')).every(x=>x.includes('jsonpath={.metadata}') || x.includes('jsonpath={.metadata.uid}'))).toBe(true);
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  });
+});
+
+
+describe('private prepared workload projection', () => {
+  it('retains registry references without environment values or arbitrary annotations', () => {
+    const input = gzObject('StatefulSet', 'prepared-clone', {spec:{template:{spec:{
+      containers:[{name:'postgres',image:gzHelper().PG_IMAGE,env:[{name:'PASSWORD',value:'PRIVATE_ENV'}]}],
+      imagePullSecrets:[{name:'existing-pull'}],
+    }}}});
+    input.metadata.annotations = {private:'PRIVATE_ANNOTATION'};
+    const projection = gzHelper().preparedWorkloadProjection(input);
+    expect(projection).toEqual({kind:'StatefulSet',metadata:{name:'prepared-clone',namespace:'ns-iknkxtc8',uid:'prepared-clone-uid',resourceVersion:'42'},
+      spec:{template:{spec:{containers:[{name:'postgres',image:gzHelper().PG_IMAGE}],imagePullSecrets:[{name:'existing-pull'}]}}}});
+    expect(JSON.stringify(projection)).not.toContain('PRIVATE');
+  });
+});
+const fakePortForward = `#!/usr/bin/env python3
+import os,sys,time,signal
+mode=os.environ['FAKE_FORWARD_MODE']
+if mode=='early-exit':print('PRIVATE_ERROR',file=sys.stderr);sys.exit(37)
+if mode=='never-ready':time.sleep(20);sys.exit()
+if mode=='cleanup-nonzero':signal.signal(signal.SIGTERM,lambda *_:sys.exit(37))
+print('Forwarding from 127.0.0.1:23456 -> 5432',flush=True)
+if mode=='ready-exit':time.sleep(.02);sys.exit(41)
+if mode=='descendant':
+ child=os.fork()
+ if child==0:
+  signal.signal(signal.SIGTERM,signal.SIG_IGN)
+  time.sleep(20);sys.exit()
+while True:time.sleep(.1)
+`;
+describe('actual owned port-forward lifecycle', () => {
+  it.each(['success','spawn-error','early-exit','never-ready','ready-exit','cleanup-nonzero','consumer-failure','consumer-timeout','descendant'])('closes pipes and owned process group in %s', mode => {
+    const parent=path.join(repoRoot,'.test-data/gz-port-forward');mkdirSync(parent,{recursive:true});
+    const dir=mkdtempSync(path.join(parent,'case-'));const bin=path.join(dir,'bin');mkdirSync(bin);
+    if(mode!=='spawn-error')writeFileSync(path.join(bin,'kubectl'),fakePortForward,{mode:0o700});
+    const launcher=path.join(dir,'launch.cjs');
+    writeFileSync(launcher,`const h=require(${JSON.stringify(path.join(repoRoot,'scripts/verify-gz-rc-prerequisites.cjs'))});
+      const mode=process.env.FAKE_FORWARD_MODE;
+      h.withPortForward({metadata:{name:'owned-pod',uid:'owned-pod-uid'}},5432,async port=>{
+        if(port!=='23456')throw Error('unexpected port');
+        if(mode==='consumer-failure')throw Error('PRIVATE_CONSUMER');
+        if(mode==='consumer-timeout'||mode==='ready-exit')await new Promise(resolve=>setTimeout(resolve,100));
+        return 'checked';
+      },{readyMs:2000,checkMs:mode==='consumer-timeout'?20:1000,stopMs:500}).then(result=>console.log(result),()=>{process.exitCode=1;});`);
+    try {
+      const env={...process.env,PATH:mode==='spawn-error'?bin:`${bin}${path.delimiter}${process.env.PATH}`,RUNNER_TEMP:dir,GITHUB_SHA:'0e260a49ce28cb7b5cf8ee0bc4342d893cb742a8',FAKE_FORWARD_MODE:mode};
+      const result=spawnSync(process.execPath,[launcher],{cwd:repoRoot,env,encoding:'utf8',timeout:10000});
+      expect(result.signal).toBeNull();expect(result.status).toBe(['success','descendant'].includes(mode)?0:1);
+      expect(result.stdout+result.stderr).not.toContain('PRIVATE');
+      const files=require('node:fs').readdirSync(dir) as string[];
+      const receipt=JSON.parse(readFileSync(path.join(dir,files.find(file=>file.endsWith('.receipt.json'))!),'utf8'));
+      const raw=readFileSync(path.join(dir,files.find(file=>file.endsWith('.raw.log'))!));
+      expect(receipt).toMatchObject({sourceSha:'0e260a49ce28cb7b5cf8ee0bc4342d893cb742a8',podUID:'owned-pod-uid',actualWait:true,rawClosedBeforeHash:true,ownedGroupAbsentAfterWait:true,
+        rawSHA256:createHash('sha256').update(raw).digest('hex')});
+      if(mode==='spawn-error')expect(receipt.spawnError).toBe('ENOENT');
+      else {expect(receipt.pid).toBe(receipt.pgid);expect(receipt.pid).toBeGreaterThan(0);}
+      if(mode==='early-exit')expect(receipt.exit).toBe(37);
+      if(mode==='cleanup-nonzero')expect(receipt).toMatchObject({exit:37,checkPassed:true,prematureExit:false});
+      if(mode==='ready-exit')expect(receipt).toMatchObject({exit:41,prematureExit:true});
+      if(mode==='never-ready')expect(receipt.readyTimeout).toBe(true);
+      if(mode==='consumer-timeout')expect(receipt.checkTimeout).toBe(true);
+      if(mode==='descendant')expect(receipt.forcedStop).toBe(true);
+      if(mode==='success')expect(receipt.signal).toBe('SIGTERM');
+      const evidence=process.env.XPOD_NATIVE_TEST_EVIDENCE_DIR;
+      if(evidence){mkdirSync(evidence,{recursive:true,mode:0o700});writeFileSync(path.join(evidence,`forward-${mode}.raw.log`),raw,{mode:0o600});writeFileSync(path.join(evidence,`forward-${mode}.receipt.json`),JSON.stringify(receipt,null,2),{mode:0o600});}
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  });
+});
+
+describe('run-owned managed RC executor', () => {
+  it('reuses managed production protocol with isolated run name, callback and Secret', () => {
+    const owner={nonce:'run-nonce',secrets:[{name:'runtime-123-1',uid:'runtime-uid'},{name:'seed-123-1',uid:'seed-uid'}]};
+    const objects=gzHelper().buildManagedExecutor(owner,'123-1');
+    expect(objects.map((entry:any)=>entry.kind)).toEqual(['Service','Deployment']);
+    for(const object of objects)expect(object.metadata).toMatchObject({name:'xpod-rc-inngest-123-1',namespace:'ns-iknkxtc8',annotations:{'xpod.undefineds.co/rc-run-owner':'run-nonce'}});
+    const deployment=objects[1],container=deployment.spec.template.spec.containers[0];
+    expect(container.image).toBe('inngest/inngest:v1.19.4');expect(container.command).toEqual(['inngest']);
+    expect(container.args[0]).toBe('start');expect(container.args).not.toContain('dev');
+    expect(container.args[container.args.indexOf('--sdk-url')+1]).toBe('http://xpod-rc/api/inngest');
+    expect(container.envFrom).toEqual([{secretRef:{name:'runtime-123-1'}}]);
+    expect(container.args).toContain('$(CSS_IDENTITY_DB_URL)');expect(container.args).toContain('$(CSS_REDIS_CLIENT)');
+    expect(deployment.spec.template.spec.automountServiceAccountToken).toBe(false);
+    expect(container.securityContext.allowPrivilegeEscalation).toBe(false);
+  });
+  it('refuses invalid or overlong run identity before executor birth',()=>{
+    for(const id of ['prod','123-../other','9'.repeat(70)+'-1'])expect(()=>gzHelper().buildManagedExecutor({nonce:'n',secrets:[{name:'s'}]},id)).toThrow();
+  });
+});
+
+const fakeExecutorKubectl=`#!/usr/bin/env python3
+import sys,os,json,pathlib
+args=sys.argv[1:];root=pathlib.Path(os.environ['FAKE_EXEC_STATE']);mode=os.environ['FAKE_EXEC_MODE'];name='xpod-rc-inngest-123-1'
+with (root/'calls.jsonl').open('a') as out:out.write(json.dumps(args)+'\\n')
+def file(kind,name):return root/(kind+'-'+name+'.json')
+if args[:2]==['config','view']:
+ print(json.dumps({'clusters':[{'cluster':{'server':'https://gzg.sealos.run:6443'}}],'contexts':[{'context':{'namespace':'ns-iknkxtc8'}}]}));sys.exit()
+if 'create' in args:
+ obj=json.load(sys.stdin);kind=obj['kind'].lower();obj['metadata']['uid']=kind+'-birth';obj['metadata']['resourceVersion']='1'
+ if kind=='deployment':obj['status']={'availableReplicas':1}
+ file(kind,obj['metadata']['name']).write_text(json.dumps(obj))
+ if mode=='ack-'+kind:print('PRIVATE_ACK',file=sys.stderr);sys.exit(17)
+ print(obj['metadata']['uid']);sys.exit()
+if 'get' in args:
+ kind=args[args.index('get')+1]
+ if kind in ['pods','deployments']:
+  objects=[json.loads(f.read_text()) for f in root.glob('deployment-*.json')] if kind=='deployments' else []
+  if mode in ['referenced','previous-referenced']:objects.append({'spec':{'env':[{'name':'XPOD_INNGEST_BASE_URL','value':'http://'+('xpod-rc-inngest-122-1' if mode=='previous-referenced' else name)+':8288'}],**({'seed':{'secretName':'seed-old'}} if mode=='previous-referenced' else {})}})
+  print(json.dumps({'items':objects}));sys.exit()
+ target=args[args.index('get')+2]
+ if mode=='history-read-error' and target=='runtime-old':sys.exit(55)
+ if target=='xpod-rc' and not file(kind,target).exists():print(json.dumps({'kind':'Deployment','metadata':{'name':'xpod-rc','namespace':'ns-iknkxtc8','uid':'rc-uid','resourceVersion':'1'}}));sys.exit()
+ f=file(kind,target)
+ if mode=='collision' and kind=='service' and not f.exists():f.write_text(json.dumps({'metadata':{'uid':'foreign','annotations':{'xpod.undefineds.co/rc-run-owner':'foreign'}}}))
+ if not f.exists():sys.exit()
+ obj=json.loads(f.read_text())
+ if mode==kind+'-replaced':obj['metadata']['uid']='foreign';f.write_text(json.dumps(obj))
+ output=args[args.index('-o')+1]
+ print(obj['metadata']['uid'] if output=='jsonpath={.metadata.uid}' else json.dumps(obj['metadata'] if output=='jsonpath={.metadata}' else obj));sys.exit()
+if 'rollout' in args:
+ if mode=='rollout-failed':print('PRIVATE_ROLLOUT',file=sys.stderr);sys.exit(44)
+ print('deployment ready');sys.exit()
+if args[0]=='delete':
+ raw=args[args.index('--raw')+1];plural,target=raw.rsplit('/',2)[-2:];kind={'deployments':'deployment','services':'service','secrets':'secret'}[plural];f=file(kind,target);obj=json.loads(f.read_text());options=json.load(sys.stdin)
+ if mode=='raw-race':obj['metadata']['uid']='foreign';f.write_text(json.dumps(obj))
+ if obj['metadata']['uid']!=options['preconditions']['uid']:print('PRIVATE_409',file=sys.stderr);sys.exit(39)
+ if options['propagationPolicy']!='Foreground':sys.exit(40)
+ f.unlink();sys.exit()
+if 'wait' in args:sys.exit()
+print('PRIVATE_UNSUPPORTED',file=sys.stderr);sys.exit(80)
+`;
+describe('actual managed executor birth and cleanup CLI',()=>{
+  it.each(['success','collision','ack-service','ack-deployment','service-replaced','deployment-replaced','rollout-failed','referenced','raw-race'])('protects actual owned resources in %s',mode=>{
+    const parent=path.join(repoRoot,'.test-data/gz-executor-birth');mkdirSync(parent,{recursive:true});
+    const dir=mkdtempSync(path.join(parent,'case-'));const bin=path.join(dir,'bin');mkdirSync(bin);
+    writeFileSync(path.join(bin,'kubectl'),fakeExecutorKubectl,{mode:0o700});
+    const sourceSha='0e260a49ce28cb7b5cf8ee0bc4342d893cb742a8';
+    const record={sourceSha,nonce:'run-nonce',secrets:[{name:'runtime-123-1',uid:'runtime-uid'},{name:'seed-123-1',uid:'seed-uid'}]};
+    writeFileSync(path.join(dir,'rc-run-secrets.json'),JSON.stringify(record));
+    writeFileSync(path.join(dir,'gz-rc-prerequisites.json'),JSON.stringify({status:'ok',namespace:'ns-iknkxtc8',sourceSha}));
+    const env={...process.env,PATH:`${bin}${path.delimiter}${process.env.PATH}`,RUNNER_TEMP:dir,SEALOS_NAMESPACE:'ns-iknkxtc8',GITHUB_SHA:sourceSha,GITHUB_RUN_ID:'123',GITHUB_RUN_ATTEMPT:'1',FAKE_EXEC_STATE:dir,FAKE_EXEC_MODE:mode};
+    const execute=(command:string)=>spawnSync('bun',['scripts/verify-gz-rc-prerequisites.cjs',command],{cwd:repoRoot,env,encoding:'utf8',timeout:10000});
+    try {
+      const birth=execute('create-run-executor');expect(birth.signal).toBeNull();expect(birth.status).toBe(['success','referenced','raw-race'].includes(mode)?0:1);
+      const cleanup=execute('cleanup-run-executor');expect(cleanup.signal).toBeNull();expect(cleanup.status).toBe(['ack-service','ack-deployment','service-replaced','deployment-replaced','raw-race'].includes(mode)?1:0);
+      expect(birth.stdout+birth.stderr+cleanup.stdout+cleanup.stderr).not.toContain('PRIVATE');
+      const owner=JSON.parse(readFileSync(path.join(dir,'rc-run-secrets.json'),'utf8'));
+      const calls=readFileSync(path.join(dir,'calls.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line) as string[]);
+      const deletes=calls.filter(call=>call[0]==='delete');
+      expect(calls.some(call=>['apply','replace','exec'].some(value=>call.includes(value)))).toBe(false);
+      if(mode==='collision'){expect(calls.filter(call=>call.includes('create'))).toHaveLength(0);expect(deletes).toHaveLength(0);}
+      if(['success','rollout-failed'].includes(mode)){expect(deletes).toHaveLength(2);expect(owner.executor.cleanup).toBe('verified-absent');}
+      if(mode==='referenced'){expect(deletes).toHaveLength(0);expect(owner.executor.cleanup).toBe('retained-while-referenced');}
+      if(['ack-service','ack-deployment','service-replaced','deployment-replaced'].includes(mode))expect(deletes).toHaveLength(0);
+      if(mode==='raw-race')expect(deletes).toHaveLength(1);
+      for(const call of deletes)expect(call[call.indexOf('--raw')+1]).toContain('/ns-iknkxtc8/');
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  });
+});
+
+
+describe('prior accepted managed run cleanup',()=>{
+  it.each(['success','previous-referenced','foreign-uid'])('protects previous run objects in %s',mode=>{
+    const parent=path.join(repoRoot,'.test-data/gz-previous-executor');mkdirSync(parent,{recursive:true});
+    const dir=mkdtempSync(path.join(parent,'case-'));const bin=path.join(dir,'bin');mkdirSync(bin);
+    writeFileSync(path.join(bin,'kubectl'),fakeExecutorKubectl,{mode:0o700});
+    const previous={nonce:'old-owner',secrets:[{name:'runtime-old',uid:'runtime-old-uid'},{name:'seed-old',uid:'seed-old-uid'}],
+      executor:{name:'xpod-rc-inngest-122-1',deploymentUID:'deployment-old-uid',serviceUID:'service-old-uid',status:'ready'}};
+    writeFileSync(path.join(dir,'rc-run-secrets.json'),JSON.stringify({nonce:'new-owner',secrets:[],previous}));
+    for(const [kind,name,uid] of [['deployment',previous.executor.name,previous.executor.deploymentUID],['service',previous.executor.name,previous.executor.serviceUID],
+      ...previous.secrets.map(secret=>['secret',secret.name,secret.uid])]) {
+      writeFileSync(path.join(dir,`${kind}-${name}.json`),JSON.stringify({metadata:{name,uid:mode==='foreign-uid'&&kind==='deployment'?'foreign':uid,annotations:{'xpod.undefineds.co/rc-run-owner':previous.nonce}},
+        spec:kind==='deployment'?{containers:[{envFrom:[{secretRef:{name:'runtime-old'}}]}]}:{}}));
+    }
+    try {
+      const result=spawnSync('bun',['scripts/verify-gz-rc-prerequisites.cjs','cleanup-previous-run'],{cwd:repoRoot,env:{...process.env,PATH:`${bin}${path.delimiter}${process.env.PATH}`,
+        RUNNER_TEMP:dir,SEALOS_NAMESPACE:'ns-iknkxtc8',FAKE_EXEC_STATE:dir,FAKE_EXEC_MODE:mode},encoding:'utf8',timeout:10000});
+      expect(result.signal).toBeNull();expect(result.status).toBe(mode==='foreign-uid'?1:0);
+      const calls=readFileSync(path.join(dir,'calls.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line) as string[]);
+      expect(calls.filter(call=>call[0]==='delete')).toHaveLength(mode==='success'?4:0);
+      if(mode==='success')expect(JSON.parse(readFileSync(path.join(dir,'rc-run-secrets.json'),'utf8')).previous.executor.cleanup).toBe('verified-absent');
+      if(mode==='previous-referenced')expect(JSON.parse(readFileSync(path.join(dir,'rc-run-secrets.json'),'utf8')).previous.executor.cleanup).toBe('retained-while-referenced');
+      expect(result.stdout+result.stderr).not.toContain('PRIVATE');
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  });
+  it('waits for this run executor birth before one guarded app apply and reclaims old objects only after acceptance',async()=>{
+    const workflow=await loadWorkflow(),steps=workflow.jobs.deploy_and_accept.steps;
+    const index=(name:string)=>steps.findIndex((entry:any)=>entry.name===name);
+    expect(index('Create and verify this run owned managed executor')).toBeGreaterThan(index('Create runtime secrets'));
+    expect(index('Deploy RC image by digest')).toBeGreaterThan(index('Create and verify this run owned managed executor'));
+    expect(steps[index('Deploy RC image by digest')].run).toContain('--run-ownership');
+    expect(steps.find((entry:any)=>entry.run?.includes('cleanup-previous-run')).if).toBe('success()');
+    expect(steps.find((entry:any)=>entry.run?.includes('cleanup-run-executor')).if).toBe('always()');
+  });
+});
+
+
+describe('prepared database write and storage authority regressions',()=>{
+  const dsn='postgresql://rc:secret@clone.ns-iknkxtc8.svc:5432/xpod_rc';
+  const env={CSS_IDENTITY_DB_URL:dsn,CSS_SPARQL_ENDPOINT:dsn};
+  it.each(['host=foreign','port=1234','user=foreign','password=foreign','database=foreign','sslmode=disable'])('rejects pg parser query authority %s',query=>{
+    const parsed=new (require('pg').Client)({connectionString:dsn+'?'+query}).connectionParameters;
+    if(query==='host=foreign')expect(parsed.host).toBe('foreign');
+    if(query==='port=1234')expect(parsed.port).toBe(1234);
+    expect(()=>gzHelper().preparedDatabase({...env,CSS_IDENTITY_DB_URL:dsn+'?'+query,CSS_SPARQL_ENDPOINT:dsn+'?'+query})).toThrow();
+  });
+  it('uses explicit port-forward connection parameters and decodes credentials once',()=>{
+    const database=gzHelper().preparedDatabase({...env,CSS_IDENTITY_DB_URL:dsn.replace('secret','s%40cret'),CSS_SPARQL_ENDPOINT:dsn.replace('secret','s%40cret')});
+    const options=gzHelper().preparedPgClientOptions(database,'23456');
+    expect(options.connectionString).toBeUndefined();
+    const params=new (require('pg').Client)(options).connectionParameters;
+    expect(params).toMatchObject({host:'127.0.0.1',port:23456,user:'rc',password:'s@cret',database:'xpod_rc'});
+  });
+  it('binds the actual Task credential write consumer to the admitted clone',async()=>{
+    const {resolveTaskCredentialDatabaseUrl}=await import('../../src/api/tasks/TaskCredentialDatabase');
+    expect(resolveTaskCredentialDatabaseUrl({configuredUrl:'postgres://rc:secret@foreign/xpod_rc',identityDatabaseUrl:dsn})).toContain('foreign');
+    expect(()=>gzHelper().preparedDatabase({...env,CSS_TASK_DB_URL:'postgres://rc:secret@foreign/xpod_rc'})).toThrow();
+    expect(()=>gzHelper().preparedDatabase({...env,CSS_TASK_DB_URL:dsn+'?host=foreign'})).toThrow();
+    expect(()=>gzHelper().preparedDatabase({...env,CSS_TASK_DB_URL:dsn})).not.toThrow();
+  });
+  it.each(['emptyDir','hostPath','no-mount','source-pvc','source-pv','old-pvc','unbound','wrong-pv-claim','pgdata-env-ref'])('rejects unprotected data storage %s',mode=>{
+    const f=preparedStorageFixture();
+    if(mode==='emptyDir')f.pod.spec.volumes=[{name:'data',emptyDir:{}}];
+    if(mode==='hostPath')f.pod.spec.volumes=[{name:'data',hostPath:{path:'/data'}}];
+    if(mode==='no-mount')f.pod.spec.containers[0].volumeMounts=[];
+    if(mode==='source-pvc')f.forbidden.push(f.pvc.metadata.uid);
+    if(mode==='old-pvc')f.forbidden.push(f.pvc.metadata.uid);
+    if(mode==='unbound')f.pvc.status.phase='Pending';
+    if(mode==='wrong-pv-claim')f.pv.spec.claimRef.uid='foreign';
+    if(mode==='pgdata-env-ref')f.pod.spec.containers[0].env=[{name:'PGDATA',valueFrom:{configMapKeyRef:{name:'other',key:'path'}}}];
+    expect(()=>gzHelper().verifyPreparedStorage(f.pod,[f.pvc],[f.pv],f.forbidden,mode==='source-pv'?[f.pv.metadata.uid]:[])).toThrow();
+  });
+  it.each(['wrong-port','wrong-target','wrong-pod','not-ready','extra-pod'])('binds the runtime database Service to the actual ready Pod: %s',mode=>{
+    const f=preparedStorageFixture();
+    if(mode==='wrong-port')f.service.spec.ports[0].port=6432;
+    if(mode==='wrong-target')f.service.spec.ports[0].targetPort=6432;
+    if(mode==='wrong-pod')f.endpoints.subsets[0].addresses[0].targetRef.uid='foreign';
+    if(mode==='not-ready'){f.endpoints.subsets[0].notReadyAddresses=f.endpoints.subsets[0].addresses;f.endpoints.subsets[0].addresses=[];}
+    if(mode==='extra-pod')f.endpoints.subsets[0].addresses.push({targetRef:{kind:'Pod',uid:'foreign'}});
+    expect(()=>gzHelper().verifyPreparedEndpoints(f.service,f.pod,f.endpoints)).toThrow();
+  });
+  it.each(['missing','mutable','wrong-source','wrong-pvc','wrong-pv','wrong-image','unclosed-dump','restore-failed','owners-unverified','data-unverified'])('refuses incomplete full restore evidence: %s',mode=>{
+    const f=preparedStorageFixture();const admission=structuredClone(f.admission),cm=gzObject('ConfigMap','clone-restore');cm.immutable=true;cm.data={'admission.json':JSON.stringify(admission)};
+    if(mode==='missing')cm.data={};if(mode==='mutable')cm.immutable=false;
+    if(mode==='wrong-source')admission.source.podUID='foreign';if(mode==='wrong-pvc')admission.target.pvcUID='foreign';
+    if(mode==='wrong-pv')admission.target.pvUID='foreign';if(mode==='wrong-image')admission.target.actualImageID='sha256:'+'b'.repeat(64);
+    if(mode==='unclosed-dump')admission.dump.rawClosedBeforeHash=false;if(mode==='restore-failed')admission.restore.exit=1;
+    if(mode==='owners-unverified')admission.validation.ownersAndACL=false;if(mode==='data-unverified')admission.validation.allUserObjectsAndData=false;
+    if(mode!=='missing')cm.data={'admission.json':JSON.stringify(admission)};
+    expect(()=>gzHelper().verifyRestoreAdmission(cm,f.workload,f.pod,f.storage,f.source)).toThrow();
+  });
+  it('admits only a fresh cross-bound restore record, volume and endpoint identity',()=>{
+    const f=preparedStorageFixture(),cm=gzObject('ConfigMap','clone-restore');cm.immutable=true;cm.data={'admission.json':JSON.stringify(f.admission)};
+    expect(gzHelper().verifyPreparedStorage(f.pod,[f.pvc],[f.pv],f.forbidden)).toEqual(f.storage);
+    expect(()=>gzHelper().verifyPreparedEndpoints(f.service,f.pod,f.endpoints)).not.toThrow();
+    expect(gzHelper().verifyRestoreAdmission(cm,f.workload,f.pod,f.storage,f.source)).toMatchObject({archive:{sha256:'a'.repeat(64)}});
+  });
+});
+function preparedStorageFixture():any {
+  const h=gzHelper(),digest=h.PG_IMAGE.split('@')[1];
+  const workload=gzObject('StatefulSet','clone');workload.metadata.annotations={'xpod.undefineds.co/rc-clone-archive-sha256':'a'.repeat(64),'xpod.undefineds.co/rc-clone-restore-admission':'clone-restore'};
+  const pod=gzObject('Pod','clone-0',{spec:{containers:[{name:'postgres',image:h.PG_IMAGE,env:[{name:'PGDATA',value:'/var/lib/postgresql/data/pgdata'}],ports:[{name:'postgres',containerPort:5432}],volumeMounts:[{name:'data',mountPath:'/var/lib/postgresql/data'}]}],volumes:[{name:'data',persistentVolumeClaim:{claimName:'clone-data'}}]},status:{containerStatuses:[{name:'postgres',ready:true,imageID:'docker-pullable://'+h.PG_IMAGE}]}});
+  const pvc=gzObject('PersistentVolumeClaim','clone-data',{spec:{volumeName:'clone-pv'},status:{phase:'Bound'}});
+  const pv={kind:'PersistentVolume',metadata:{name:'clone-pv',uid:'clone-pv-uid',resourceVersion:'1'},spec:{claimRef:{name:'clone-data',namespace:h.GZ_NAMESPACE,uid:pvc.metadata.uid}},status:{phase:'Bound'}};
+  const service=gzObject('Service','clone',{spec:{selector:{app:'clone'},ports:[{port:5432,targetPort:'postgres',protocol:'TCP'}]}});
+  const endpoints=gzObject('Endpoints','clone',{subsets:[{ports:[{port:5432,protocol:'TCP'}],addresses:[{targetRef:{kind:'Pod',uid:pod.metadata.uid}}]}]});
+  const storage={pgdata:'/var/lib/postgresql/data/pgdata',pvcName:pvc.metadata.name,pvcUID:pvc.metadata.uid,pvName:pv.metadata.name,pvUID:pv.metadata.uid};
+  const source={service:h.SOURCE_DATABASE,podUID:'source-pod-uid',pvcUIDs:['source-pvc-uid']};
+  const closed={exit:0,actualWait:true,rawClosedBeforeHash:true,ownedGroupAbsentAfterWait:true,rawSHA256:'c'.repeat(64)};
+  const admission={server:h.GZ_SERVER,namespace:h.GZ_NAMESPACE,source,archive:{bytes:1234,sha256:'a'.repeat(64)},dump:{...closed},restore:{...closed},target:{workloadUID:workload.metadata.uid,podUID:pod.metadata.uid,pvcUID:pvc.metadata.uid,pvUID:pv.metadata.uid,dataDirectory:storage.pgdata,specImage:h.PG_IMAGE,actualImageID:pod.status.containerStatuses[0].imageID,canonicalSourceImage:h.PG_IMAGE},validation:{ownersAndACL:true,allUserObjectsAndData:true,extensionCompatibility:true}};
+  return {workload,pod,pvc,pv,service,endpoints,storage,source,admission,forbidden:['source-pvc-uid','old-rc-pvc-uid']};
+}
+
+
+describe('three actual run ownership transitions',()=>{
+  it('keeps A after B applies but fails acceptance, then C safely reclaims both identities',()=>{
+    const parent=path.join(repoRoot,'.test-data/gz-three-run-history');mkdirSync(parent,{recursive:true});
+    const dir=mkdtempSync(path.join(parent,'case-')),bin=path.join(dir,'bin');mkdirSync(bin);
+    writeFileSync(path.join(bin,'kubectl'),fakeExecutorKubectl,{mode:0o700});
+    const sourceSha=spawnSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8'}).stdout.trim();
+    const rc=gzObject('Deployment','xpod-rc');
+    const base={...process.env,PATH:`${bin}${path.delimiter}${process.env.PATH}`,RUNNER_TEMP:dir,SEALOS_NAMESPACE:'ns-iknkxtc8',GITHUB_SHA:sourceSha,GITHUB_RUN_ATTEMPT:'1',FAKE_EXEC_STATE:dir,FAKE_EXEC_MODE:'success'};
+    writeFileSync(path.join(dir,'gz-rc-prerequisites.json'),JSON.stringify({status:'ok',namespace:'ns-iknkxtc8',sourceSha}));
+    const execute=(command:string,id:string)=>spawnSync('bun',['scripts/verify-gz-rc-prerequisites.cjs',command],{cwd:repoRoot,env:{...base,GITHUB_RUN_ID:id},encoding:'utf8',timeout:45000});
+    try {
+      for(const id of ['121','122','123']) {
+        const record={sourceSha,nonce:`owner-${id}`,secrets:[{name:`runtime-${id}`,uid:`runtime-${id}-uid`},{name:`seed-${id}`,uid:`seed-${id}-uid`}]};
+        for(const secret of record.secrets)writeFileSync(path.join(dir,`secret-${secret.name}.json`),JSON.stringify({metadata:{name:secret.name,uid:secret.uid,annotations:{[gzHelper().OWNER]:record.nonce}}}));
+        writeFileSync(path.join(dir,'rc-run-secrets.json'),JSON.stringify(record));
+        expect(execute('create-run-executor',id).status).toBe(0);
+        const born=JSON.parse(readFileSync(path.join(dir,'rc-run-secrets.json'),'utf8'));
+        // This is the exact projection used by the final manifest renderer; each app apply persists it.
+        rc.metadata.annotations={[gzHelper().OWNER]:born.nonce,[gzHelper().OWNERSHIP]:JSON.stringify(gzHelper().ownershipForDeployment(born))};
+        rc.spec={template:{spec:{containers:[{env:[{name:'XPOD_INNGEST_BASE_URL',value:`http://${born.executor.name}:8288`}],envFrom:[{secretRef:{name:record.secrets[0].name}}]}],volumes:[{secret:{secretName:record.secrets[1].name}}]}}};
+        writeFileSync(path.join(dir,'deployment-xpod-rc.json'),JSON.stringify(rc));
+        if(id==='122') { // failed acceptance cleanup must preserve the now referenced B and earlier A.
+          expect(execute('cleanup-run-executor',id).status).toBe(0);
+          expect(readFileSync(path.join(dir,'deployment-xpod-rc-inngest-121-1.json'),'utf8')).toContain('owner-121');
+        }
+      }
+      const retained=JSON.parse(rc.metadata.annotations[gzHelper().OWNERSHIP]);
+      expect(retained.previous.nonce).toBe('owner-122');expect(retained.previous.previous.nonce).toBe('owner-121');
+      expect(execute('cleanup-previous-run','123').status).toBe(0);
+      const calls=readFileSync(path.join(dir,'calls.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line) as string[]);
+      expect(calls.filter(call=>call[0]==='delete')).toHaveLength(8);
+      for(const id of ['121','122'])for(const file of [`deployment-xpod-rc-inngest-${id}-1`,`service-xpod-rc-inngest-${id}-1`,`secret-runtime-${id}`,`secret-seed-${id}`])expect(()=>readFileSync(path.join(dir,file+'.json'))).toThrow();
+      expect(readFileSync(path.join(dir,'deployment-xpod-rc-inngest-123-1.json'),'utf8')).toContain('owner-123');
+      expect(readFileSync(path.join(dir,'secret-runtime-123.json'),'utf8')).toContain('owner-123');
+    }finally{rmSync(dir,{recursive:true,force:true});}
+  });
+});
+
+describe('reclaimed run ownership convergence',()=>{
+  it('carries only unreclaimed history across repeated successes and a failed acceptance',()=>{
+    const parent=path.join(repoRoot,'.test-data/gz-pruned-run-history');mkdirSync(parent,{recursive:true});
+    const dir=mkdtempSync(path.join(parent,'case-')),bin=path.join(dir,'bin');mkdirSync(bin);
+    writeFileSync(path.join(bin,'kubectl'),fakeExecutorKubectl,{mode:0o700});
+    const sourceSha=spawnSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8'}).stdout.trim();
+    const rc=gzObject('Deployment','xpod-rc');
+    const base={...process.env,PATH:`${bin}${path.delimiter}${process.env.PATH}`,RUNNER_TEMP:dir,SEALOS_NAMESPACE:'ns-iknkxtc8',GITHUB_SHA:sourceSha,GITHUB_RUN_ATTEMPT:'1',FAKE_EXEC_STATE:dir,FAKE_EXEC_MODE:'success'};
+    writeFileSync(path.join(dir,'gz-rc-prerequisites.json'),JSON.stringify({status:'ok',namespace:'ns-iknkxtc8',sourceSha}));
+    const execute=(command:string,id:string)=>spawnSync('bun',['scripts/verify-gz-rc-prerequisites.cjs',command],{cwd:repoRoot,env:{...base,GITHUB_RUN_ID:id},encoding:'utf8',timeout:45000});
+    const depth=(record:any):number=>record?1+depth(record.previous):0;
+    try {
+      for(const id of ['201','202','203','204','205','206']) {
+        const record={sourceSha,nonce:`owner-${id}`,secrets:[{name:`runtime-${id}`,uid:`runtime-${id}-uid`},{name:`seed-${id}`,uid:`seed-${id}-uid`}]};
+        for(const secret of record.secrets)writeFileSync(path.join(dir,`secret-${secret.name}.json`),JSON.stringify({metadata:{name:secret.name,uid:secret.uid,annotations:{[gzHelper().OWNER]:record.nonce}}}));
+        writeFileSync(path.join(dir,'rc-run-secrets.json'),JSON.stringify(record));
+        expect(execute('create-run-executor',id).status).toBe(0);
+        const born=JSON.parse(readFileSync(path.join(dir,'rc-run-secrets.json'),'utf8'));
+        // 203 remains published but fails acceptance; the next run must retain it and 202.
+        expect(depth(born.previous)).toBe(id==='201'?0:id==='204'?2:1);
+        rc.metadata.annotations={[gzHelper().OWNER]:born.nonce,[gzHelper().OWNERSHIP]:JSON.stringify(gzHelper().ownershipForDeployment(born))};
+        rc.spec={template:{spec:{containers:[{env:[{name:'XPOD_INNGEST_BASE_URL',value:`http://${born.executor.name}:8288`}],envFrom:[{secretRef:{name:record.secrets[0].name}}]}],volumes:[{secret:{secretName:record.secrets[1].name}}]}}};
+        writeFileSync(path.join(dir,'deployment-xpod-rc.json'),JSON.stringify(rc));
+        if(id==='203') {
+          expect(execute('cleanup-run-executor',id).status).toBe(0);
+          expect(readFileSync(path.join(dir,'deployment-xpod-rc-inngest-202-1.json'),'utf8')).toContain('owner-202');
+        } else expect(execute('cleanup-previous-run',id).status).toBe(0);
+      }
+      expect(depth(JSON.parse(rc.metadata.annotations[gzHelper().OWNERSHIP]))).toBe(2);
+      expect(readFileSync(path.join(dir,'deployment-xpod-rc-inngest-206-1.json'),'utf8')).toContain('owner-206');
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  },120000);
+});
+
+
+describe('unresolved ownership history retention',()=>{
+  it.each(['present','foreign','unknown-uid','history-read-error'])('retains or refuses uncertain predecessor reads: %s',mode=>{
+    const parent=path.join(repoRoot,'.test-data/gz-history-uncertain');mkdirSync(parent,{recursive:true});
+    const dir=mkdtempSync(path.join(parent,'case-')),bin=path.join(dir,'bin');mkdirSync(bin);
+    writeFileSync(path.join(bin,'kubectl'),fakeExecutorKubectl,{mode:0o700});
+    const sourceSha=spawnSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8'}).stdout.trim();
+    const previous={nonce:'old-owner',secrets:[{name:'runtime-old',uid:'runtime-old-uid'}],executor:{name:'xpod-rc-inngest-200-1',status:'ready',deploymentUID:'old-deploy-uid',serviceUID:'old-service-uid'}};
+    const rc=gzObject('Deployment','xpod-rc');rc.metadata.annotations={[gzHelper().OWNER]:previous.nonce,[gzHelper().OWNERSHIP]:JSON.stringify(previous)};
+    writeFileSync(path.join(dir,'deployment-xpod-rc.json'),JSON.stringify(rc));
+    if(mode!=='history-read-error')writeFileSync(path.join(dir,'secret-runtime-old.json'),JSON.stringify({metadata:mode==='unknown-uid'?{name:'runtime-old'}:{uid:mode==='foreign'?'foreign-uid':'runtime-old-uid'}}));
+    writeFileSync(path.join(dir,'gz-rc-prerequisites.json'),JSON.stringify({status:'ok',namespace:'ns-iknkxtc8',sourceSha}));
+    writeFileSync(path.join(dir,'rc-run-secrets.json'),JSON.stringify({sourceSha,nonce:'new-owner',secrets:[{name:'runtime-new',uid:'new-runtime-uid'},{name:'seed-new',uid:'new-seed-uid'}]}));
+    try{
+      const result=spawnSync('bun',['scripts/verify-gz-rc-prerequisites.cjs','create-run-executor'],{cwd:repoRoot,env:{...process.env,PATH:`${bin}${path.delimiter}${process.env.PATH}`,RUNNER_TEMP:dir,SEALOS_NAMESPACE:'ns-iknkxtc8',GITHUB_SHA:sourceSha,GITHUB_RUN_ID:'123',GITHUB_RUN_ATTEMPT:'1',FAKE_EXEC_STATE:dir,FAKE_EXEC_MODE:mode},encoding:'utf8',timeout:45000});
+      const calls=readFileSync(path.join(dir,'calls.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line) as string[]);
+      expect(calls.some(call=>call[0]==='delete')).toBe(false);
+      if(mode==='history-read-error'){expect(result.status).not.toBe(0);expect(calls.some(call=>call.includes('create'))).toBe(false);}
+      else{expect(result.status).toBe(0);expect(JSON.parse(readFileSync(path.join(dir,'rc-run-secrets.json'),'utf8')).previous.nonce).toBe('old-owner');}
+    }finally{rmSync(dir,{recursive:true,force:true});}
   });
 });

@@ -360,7 +360,7 @@ describe('stable release promotion workflow', () => {
 
   it('waits for production deploy before creating the GitHub Release', async () => {
     const workflow = await loadWorkflow();
-    const deploy = workflow.jobs.deploy_production_co;
+    const deploy = workflow.jobs.deploy_production_cn;
     const release = workflow.jobs.create_github_release;
 
     expect(deploy.needs).toEqual(expect.arrayContaining([
@@ -378,9 +378,9 @@ describe('stable release promotion workflow', () => {
     expect(deploy.with).toEqual({
       version: '${{ needs.promotion_guard.outputs.version }}',
       'image-digest': '${{ needs.promotion_guard.outputs.image_digest }}',
-      environment: 'co',
+      environment: 'cn',
     });
-    expect(release.needs).toEqual(expect.arrayContaining([ 'deploy_production_co' ]));
+    expect(release.needs).toEqual(expect.arrayContaining([ 'deploy_production_cn' ]));
     expect(release.permissions).toEqual({
       contents: 'write',
     });

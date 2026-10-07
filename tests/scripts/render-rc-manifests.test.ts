@@ -1,5 +1,5 @@
-import { execFile as execFileCallback } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { execFile as execFileCallback, execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -18,6 +18,13 @@ async function render(namespace: string, secretName: string, seedSecretName = 'c
   const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rc-render-'));
   tempRoots.push(root);
   const outputPath = path.join(root, 'rendered.yaml');
+  const currentPath = path.join(root, 'current.json');
+  await writeFile(currentPath, JSON.stringify({kind:'Deployment',metadata:{name:'xpod-rc',namespace:'ns-iknkxtc8',uid:'rc-uid',resourceVersion:'42'}}));
+  const admissionPath=path.join(root,'admission.json');
+  await writeFile(admissionPath,JSON.stringify({status:'ok',sourceSha:execFileSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8'}).trim(),namespace:'ns-iknkxtc8',identities:[{kind:'Deployment',name:'xpod-rc',uid:'rc-uid',resourceVersion:'42'},{kind:'Service',name:'xpod-rc',uid:'svc-uid',resourceVersion:'43'},{kind:'ConfigMap',name:'xpod-rc-config',uid:'cm-uid',resourceVersion:'44'}]}));
+  const ownershipPath=path.join(root,'ownership.json');
+  const previous={nonce:'previous-owner',secrets:[{name:'previous-runtime',uid:'previous-runtime-uid'}],executor:{name:'xpod-rc-inngest-122-1',status:'ready',serviceUID:'previous-service-uid',deploymentUID:'previous-deploy-uid'}};
+  await writeFile(ownershipPath,JSON.stringify({sourceSha:execFileSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8'}).trim(),nonce:'run-nonce',previous,secrets:[{name:secretName,uid:'runtime-uid'},{name:seedSecretName,uid:'seed-uid'}],executor:{name:'xpod-rc-inngest-123-1',status:'ready',serviceUID:'exec-service-uid',deploymentUID:'exec-deploy-uid'}}));
   await execFile('node', [
     scriptPath,
     '--overlay', overlayPath,
@@ -26,6 +33,9 @@ async function render(namespace: string, secretName: string, seedSecretName = 'c
     '--secret-name', secretName,
     '--seed-secret-name', seedSecretName,
     '--image', immutableImage,
+    '--current-deployment', currentPath,
+    '--admission', admissionPath,
+    '--run-ownership', ownershipPath,
   ], { cwd: repoRoot });
   return readFile(outputPath, 'utf8');
 }
@@ -49,16 +59,16 @@ describe('RC manifest renderer', () => {
   });
 
   it('renders the RC overlay into a custom namespace and secret without xpod-rc residue', async () => {
-    const manifest = await render('custom-rc', 'custom-secret', 'custom-seed');
+    const manifest = await render('ns-iknkxtc8', 'custom-secret', 'custom-seed');
     const objects = parseAllDocuments(manifest)
       .map((document) => document.toJSON() as any)
       .filter(Boolean);
 
     expect(objects.some((object) => object.kind === 'Namespace' && object.metadata?.name === 'xpod-rc')).toBe(false);
-    expect(objects.every((object) => object.kind === 'Namespace' || object.metadata?.namespace === 'custom-rc')).toBe(true);
+    expect(objects.every((object) => object.kind === 'Namespace' || object.metadata?.namespace === 'ns-iknkxtc8')).toBe(true);
     expect(manifest).not.toContain('namespace: xpod-rc');
     expect(manifest).not.toContain('name: xpod-rc-secret');
-    expect(manifest).toContain('namespace: custom-rc');
+    expect(manifest).toContain('namespace: ns-iknkxtc8');
     expect(manifest).toContain('name: custom-secret');
     expect(manifest).toContain('secretName: custom-seed');
     expect(manifest).toContain('secretRef:');
@@ -66,6 +76,9 @@ describe('RC manifest renderer', () => {
     const deployment = objects.find((object) => object.kind === 'Deployment' && object.metadata?.name === 'xpod-rc');
     const container = deployment?.spec?.template?.spec?.containers?.find((entry: any) => entry.name === 'xpod');
     expect(container?.image).toBe(immutableImage);
+    expect(container?.env).toContainEqual({name:'XPOD_INNGEST_BASE_URL',value:'http://xpod-rc-inngest-123-1:8288'});
+    expect(JSON.parse(deployment.metadata.annotations['xpod.undefineds.co/rc-run-ownership']).executor.deploymentUID).toBe('exec-deploy-uid');
+    expect(JSON.parse(deployment.metadata.annotations['xpod.undefineds.co/rc-run-ownership']).previous.nonce).toBe('previous-owner');
     expect(container?.env).toContainEqual({
       name: 'CSS_SEED_CONFIG',
       value: '/app/config/seeds/rc.json',
@@ -79,31 +92,32 @@ describe('RC manifest renderer', () => {
       name: 'xpod-rc-seed',
       secret: { secretName: 'custom-seed' },
     });
-    const ingresses = objects.filter((object) => object.kind === 'Ingress');
-    expect(ingresses.map((ingress) => ingress.metadata?.name).sort()).toEqual([
-      'xpod-rc-api', 'xpod-rc-id', 'xpod-rc-pods',
-    ]);
-    expect(ingresses.every((ingress) => ingress.metadata?.namespace === 'custom-rc')).toBe(true);
-    expect(ingresses.map((ingress) => ingress.spec?.rules?.[0]?.host).sort()).toEqual([
-      'api-rc.undefineds.co', 'id-rc.undefineds.co', 'pods-rc.undefineds.co',
-    ]);
+    expect(objects.map(object => object.kind).sort()).toEqual(['ConfigMap', 'Deployment', 'Service']);
+    expect(deployment.metadata).toMatchObject({uid:'rc-uid',resourceVersion:'42'});
+
   });
 
-  it('renders the placeholder-free PostgreSQL overlay without weakening application placeholders', async () => {
-    const manifest = await renderPostgres('custom-rc');
-    expect(manifest).toContain('name: xpod-rc-postgres');
-    expect(manifest).toContain('namespace: custom-rc');
-    expect(manifest).not.toContain('namespace: xpod-rc');
-    expect(manifest).not.toContain('ghcr.io/undefinedsco/xpod:replace-me');
+  it('rejects a PostgreSQL overlay before initialization or replacement', async () => {
+    await expect(renderPostgres('ns-iknkxtc8')).rejects.toMatchObject({stderr:expect.stringContaining('cannot initialize or replace PostgreSQL')});
+  });
+
+  it('rejects a foreign namespace even when it is a syntactically valid name', async () => {
+    await expect(render('other-ns','runtime')).rejects.toMatchObject({stderr:expect.stringContaining('assigned GZ namespace')});
   });
 
   it('rejects an application overlay when any required replacement is omitted', async () => {
     const outputPath = path.join(os.tmpdir(), 'unused.yaml');
+    const currentPath = path.join(repoRoot,'.test-data/gz-rc-release/current-test.json');
+    await writeFile(currentPath,JSON.stringify({kind:'Deployment',metadata:{name:'xpod-rc',namespace:'ns-iknkxtc8',uid:'uid',resourceVersion:'1'}}));
+    const admissionPath=path.join(repoRoot,'.test-data/gz-rc-release/admission-test.json');
+    await writeFile(admissionPath,JSON.stringify({status:'ok',sourceSha:execFileSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8'}).trim(),namespace:'ns-iknkxtc8',identities:[{kind:'Deployment',name:'xpod-rc',uid:'uid',resourceVersion:'1'}]}));
     await expect(execFile('node', [
       scriptPath,
       '--overlay', overlayPath,
       '--output', outputPath,
-      '--namespace', 'assigned-ns',
+      '--namespace', 'ns-iknkxtc8',
+      '--current-deployment', currentPath,
+      '--admission', admissionPath,
     ], { cwd: repoRoot })).rejects.toMatchObject({
       stderr: expect.stringContaining('xpod-rc-secret'),
     });
@@ -124,18 +138,24 @@ describe('RC manifest renderer', () => {
   });
 
   it('accepts the documented xpod-rc-secret runtime name in an assigned namespace', async () => {
-    const manifest = await render('assigned-ns', 'xpod-rc-secret');
-    expect(manifest).toContain('namespace: assigned-ns');
+    const manifest = await render('ns-iknkxtc8', 'xpod-rc-secret');
+    expect(manifest).toContain('namespace: ns-iknkxtc8');
     expect(manifest).toContain('name: xpod-rc-secret');
   });
 
   it('rejects mutable images and unsafe seed secret names before rendering', async () => {
     const outputPath = path.join(os.tmpdir(), 'unused.yaml');
+    const currentPath = path.join(repoRoot,'.test-data/gz-rc-release/current-test.json');
+    await writeFile(currentPath,JSON.stringify({kind:'Deployment',metadata:{name:'xpod-rc',namespace:'ns-iknkxtc8',uid:'uid',resourceVersion:'1'}}));
+    const admissionPath=path.join(repoRoot,'.test-data/gz-rc-release/admission-test.json');
+    await writeFile(admissionPath,JSON.stringify({status:'ok',sourceSha:execFileSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8'}).trim(),namespace:'ns-iknkxtc8',identities:[{kind:'Deployment',name:'xpod-rc',uid:'uid',resourceVersion:'1'}]}));
     await expect(execFile('node', [
       scriptPath,
       '--overlay', overlayPath,
       '--output', outputPath,
-      '--namespace', 'assigned-ns',
+      '--namespace', 'ns-iknkxtc8',
+      '--current-deployment', currentPath,
+      '--admission', admissionPath,
       '--secret-name', 'custom-secret',
       '--seed-secret-name', 'Bad_Seed',
       '--image', immutableImage,
@@ -146,7 +166,9 @@ describe('RC manifest renderer', () => {
       scriptPath,
       '--overlay', overlayPath,
       '--output', outputPath,
-      '--namespace', 'assigned-ns',
+      '--namespace', 'ns-iknkxtc8',
+      '--current-deployment', currentPath,
+      '--admission', admissionPath,
       '--secret-name', 'custom-secret',
       '--seed-secret-name', 'custom-seed',
       '--image', 'ghcr.io/undefinedsco/xpod:latest',
