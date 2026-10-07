@@ -1,4 +1,25 @@
 'use strict';
+const zlib = require('node:zlib');
+
+// Compress file bytes directly; base64 inside JSON wastes the platform budget.
+function encodeSingleBinaryArchive(files) {
+  const metadata = [];
+  const contents = [];
+  let offset = 0;
+  for (const file of [...files].sort((a, b) => a.path.localeCompare(b.path))) {
+    const content = Buffer.from(file.content);
+    metadata.push({ path: file.path, offset, length: content.length, mode: file.mode });
+    contents.push(content);
+    offset += content.length;
+  }
+  const header = Buffer.from(JSON.stringify(metadata));
+  const prefix = Buffer.alloc(12);
+  prefix.write('XPODAR01');
+  prefix.writeUInt32LE(header.length, 8);
+  return zlib.brotliCompressSync(Buffer.concat([prefix, header, ...contents]), {
+    params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 },
+  });
+}
 
 // Keep bootstrap generation testable without executing the package build.
 function createSingleBinaryEntry(manifestSha, compressedManifest) {
@@ -48,11 +69,17 @@ function createSingleBinaryEntry(manifestSha, compressedManifest) {
     '  if (actualSha !== ARCHIVE_SHA256) {',
     '    throw new Error(\'Embedded manifest checksum mismatch.\');',
     '  }',
-    '  const manifest = JSON.parse(zlib.brotliDecompressSync(compressedManifest).toString(\'utf8\')) as Array<{ path: string; contentBase64: string; mode: number }>;',
+    '  const archive = zlib.brotliDecompressSync(compressedManifest);',
+    '  if (archive.length < 12 || archive.subarray(0, 8).toString() !== \'XPODAR01\') throw new Error(\'Invalid embedded archive format\');',
+    '  const bodyOffset = 12 + archive.readUInt32LE(8);',
+    '  if (bodyOffset > archive.length) throw new Error(\'Invalid embedded archive header\');',
+    '  const manifest = JSON.parse(archive.subarray(12, bodyOffset).toString(\'utf8\')) as Array<{ path: string; offset: number; length: number; mode: number }>;',
     '  for (const item of manifest) {',
+    '    if (!Number.isSafeInteger(item.offset) || !Number.isSafeInteger(item.length) || item.offset < 0 || item.length < 0',
+    '      || item.offset + item.length > archive.length - bodyOffset) throw new Error(\'Invalid embedded archive file range\');',
     '    const targetPath = path.join(cacheDir, item.path);',
     '    fs.mkdirSync(path.dirname(targetPath), { recursive: true });',
-    '    fs.writeFileSync(targetPath, Buffer.from(item.contentBase64, \'base64\'));',
+    '    fs.writeFileSync(targetPath, archive.subarray(bodyOffset + item.offset, bodyOffset + item.offset + item.length));',
     '    if (process.platform !== \'win32\' && typeof item.mode === \'number\') {',
     '      fs.chmodSync(targetPath, item.mode);',
     '    }',
@@ -79,4 +106,4 @@ function createSingleBinaryEntry(manifestSha, compressedManifest) {
   ].join('\n');
 }
 
-module.exports = { createSingleBinaryEntry };
+module.exports = { createSingleBinaryEntry, encodeSingleBinaryArchive };

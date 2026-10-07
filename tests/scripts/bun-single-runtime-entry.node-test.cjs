@@ -2,10 +2,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const zlib = require('node:zlib');
 const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
-const { createSingleBinaryEntry } = require('../../scripts/lib/bun-single-runtime-entry.cjs');
+const { createSingleBinaryEntry, encodeSingleBinaryArchive } = require('../../scripts/lib/bun-single-runtime-entry.cjs');
 
 const root = path.resolve(__dirname, '../..');
 const sha = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -18,11 +17,11 @@ test('compiled bootstrap retains bytes, executable mode, internal argv and verif
     const resource = Buffer.from([0, 255, 17, 128, 10]);
     const cli = `const fs=require('node:fs'), cp=require('node:child_process');console.log(JSON.stringify({resource:Array.from(fs.readFileSync('data.bin')),mode:fs.statSync('native-fixture').mode&0o777,argv:process.argv.slice(2),native:cp.execFileSync('./native-fixture',[],{encoding:'utf8'}).trim()}));`;
     const manifest = [
-      { path: 'dist/__cli__.cjs', contentBase64: Buffer.from(cli).toString('base64'), mode: 0o644 },
-      { path: 'data.bin', contentBase64: resource.toString('base64'), mode: 0o600 },
-      { path: 'native-fixture', contentBase64: Buffer.from('#!/bin/sh\nprintf native-ok').toString('base64'), mode: 0o755 },
+      { path: 'dist/__cli__.cjs', content: Buffer.from(cli), mode: 0o644 },
+      { path: 'data.bin', content: resource, mode: 0o600 },
+      { path: 'native-fixture', content: Buffer.from('#!/bin/sh\nprintf native-ok'), mode: 0o755 },
     ];
-    const archive = zlib.brotliCompressSync(Buffer.from(JSON.stringify(manifest)), { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 } });
+    const archive = encodeSingleBinaryArchive(manifest);
     const source = path.join(dir, 'entry.ts');
     const binary = path.join(dir, 'bootstrap');
     fs.writeFileSync(source, createSingleBinaryEntry(sha(archive), archive));

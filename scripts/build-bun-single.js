@@ -4,10 +4,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
-const zlib = require('node:zlib');
 const esbuild = require('esbuild');
 const { stageEmbeddedNativeCli } = require('./lib/embedded-native-cli.cjs');
-const { createSingleBinaryEntry } = require('./lib/bun-single-runtime-entry.cjs');
+const { createSingleBinaryEntry, encodeSingleBinaryArchive } = require('./lib/bun-single-runtime-entry.cjs');
 const { stageRuntimePackageClosure } = require('./lib/runtime-package-closure.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -482,15 +481,12 @@ async function main() {
     const content = fs.readFileSync(sourcePath);
     manifest.push({
       path: relativePath,
-      contentBase64: content.toString('base64'),
+      content,
       mode: fs.statSync(sourcePath).mode & 0o777,
     });
   }
 
-  manifest.sort((left, right) => left.path.localeCompare(right.path));
-  const compressedManifest = zlib.brotliCompressSync(Buffer.from(JSON.stringify(manifest)), {
-    params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 },
-  });
+  const compressedManifest = encodeSingleBinaryArchive(manifest);
   const manifestSha = crypto.createHash('sha256').update(compressedManifest).digest('hex');
 
   const generatedEntryPath = path.join(tempRoot, 'bun-single-entry.ts');
