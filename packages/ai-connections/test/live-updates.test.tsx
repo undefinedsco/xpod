@@ -64,6 +64,32 @@ function renderApplet(options: {
 const afterCoalesce = () => new Promise((resolve) => setTimeout(resolve, TABLE_CHANGE_COALESCE_MS + 120))
 
 describe('AI Connection live Pod updates', () => {
+  it('refreshes model usages from the config document and releases its channel on unmount', async () => {
+    const notifications = fakeNotifications()
+    const document = `${POD_URL}settings/ai/config.ttl`
+    let label = '智能'
+    const listModelUsages = vi.fn(async () => [{ resourceId: 'settings/models/openai.ttl#gpt', label }])
+    const view = renderApplet({ notifications, store: {
+      listProviders: vi.fn(async () => []), listModels: vi.fn(async () => []),
+      modelUsageTableDocument: () => document, listModelUsages,
+    } })
+    await waitFor(() => expect(notifications.topics()).toContain(document))
+    expect(await view.controller.client?.listModelUsages?.()).toEqual([
+      { resourceId: 'settings/models/openai.ttl#gpt', label: '智能' },
+    ])
+    const revision = view.controller.liveRevision
+    label = '文档理解'
+    notifications.signal(document, 3)
+    await act(afterCoalesce)
+    expect(view.controller.liveRevision).toBe(revision + 1)
+    expect(await view.controller.client?.listModelUsages?.()).toEqual([
+      { resourceId: 'settings/models/openai.ttl#gpt', label: '文档理解' },
+    ])
+    view.unmount()
+    await waitFor(() => expect(notifications.subscriberCount()).toBe(0))
+    expect(notifications.releaseCalls).toContain(document)
+  })
+
   it('watches the credentials table and the open provider document, never rows', async () => {
     const notifications = fakeNotifications()
     const listProviders = vi.fn(async () => [catalogProvider('openai')])

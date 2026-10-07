@@ -5,6 +5,7 @@ import type { AIModelClass } from '@undefineds.co/models'
 import type {
   AiClientCredentialsCapability,
   AiConnectionsModelSelection,
+  AiConnectionsModelUsage,
   AiConnectionsOAuthCredential,
 } from '@undefineds.co/extension-sdk/web'
 
@@ -346,6 +347,7 @@ export interface AiConnectionsClient {
   listProviders(): Promise<AiProviderSummary[]>
   listAuthorizationMethods?(): Promise<AiProviderAuthorizationMethodsSummary[]>
   listModels(): Promise<AiGatewayModel[]>
+  listModelUsages?(): Promise<AiConnectionsModelUsage[]>
   /** Active Gateway routing projection, independent of a host's Pod catalog. */
   listGatewayModels?(): Promise<AiGatewayModel[]>
   /** Complete Gateway directory, including platform routing roles and unattributed entries. */

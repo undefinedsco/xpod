@@ -1,3 +1,5 @@
+import type { AiConnectionsModelUsage } from '@undefineds.co/extension-sdk/web'
+import { modelUsageLabels } from './model-usages'
 import { AiModelClassTabs, catalogModelClass } from './AiModelCatalog'
 import type { AIModelClass } from '@undefineds.co/models'
 import { useMemo, useState } from 'react'
@@ -64,6 +66,7 @@ export function AiProviderCard({
   error,
   quotas,
   models,
+  modelUsages = [],
   verifyPending = false,
   onApiKeyChange,
   onBaseUrlChange,
@@ -103,6 +106,7 @@ export function AiProviderCard({
   error?: AiOfferingActionError
   quotas?: Partial<Record<string, AiOfferingQuotaState>>
   models: AiGatewayModel[]
+  modelUsages?: readonly AiConnectionsModelUsage[]
   verifyPending?: boolean
   onApiKeyChange: (value: string) => void
   onBaseUrlChange?: (value: string) => void
@@ -329,6 +333,7 @@ export function AiProviderCard({
                     modelId={model.id}
                     iconTokens={iconTokens}
                     enabled={isSelected}
+                    usageLabels={modelUsageLabels(model.selectionIds, modelUsages)}
                     toggleDisabled={disabled || busy || (isUnavailable && !isSelected)}
                     onToggle={() => toggleModel(model)}
                     onEdit={model.custom && onEditModel ? () => onEditModel(model) : undefined}

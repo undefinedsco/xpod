@@ -104,6 +104,9 @@ export interface AiClientConfigurationCapability {
 export interface AiConnectionsPodStore {
   listProviders(): Promise<unknown[]>;
   listModels?(): Promise<unknown[]>;
+  /** Read-only reverse relations; resource IDs use the same authority as listModels. */
+  listModelUsages?(): Promise<AiConnectionsModelUsage[]>;
+  modelUsageTableDocument?(): string;
   /**
    * `settings/credentials.ttl`: the document credential rows live in, and
    * therefore the live-update topic of the credentials table.
@@ -184,6 +187,11 @@ export interface AiConnectionsModelSelection {
   id: string;
   offeringId?: string;
   resourceId?: string;
+}
+
+export interface AiConnectionsModelUsage {
+  resourceId: string;
+  label: string;
 }
 
 export interface AiConnectionsOAuthCredential {

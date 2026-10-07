@@ -3,7 +3,8 @@ import {
   Toaster,
   toast,
 } from '@undefineds.co/shared-ui'
-import type { AiConnectionsModelSelection } from '@undefineds.co/extension-sdk/web'
+import { modelUsageLabels } from './model-usages'
+import type { AiConnectionsModelUsage, AiConnectionsModelSelection } from '@undefineds.co/extension-sdk/web'
 import {
   type AiConnectAttempt,
   type AiConnectionsClient,
@@ -127,6 +128,11 @@ export function AiConnectionsPanel({
     source: Partial<Record<AiConnectionsProvider, AiProviderSummary>>
     ids: Partial<Record<AiConnectionsProvider, string[]>>
   }>(() => ({ source: providerProducts, ids: {} }))
+  const [usageState, setUsageState] = useState<{
+    client: AiConnectionsClient; revision: number; usages: AiConnectionsModelUsage[]; failed: boolean
+  }>()
+  const currentUsages = usageState?.client === client && usageState.revision === liveRevision ? usageState : undefined
+  const modelUsages = currentUsages?.usages ?? []
   const [modelSelectionStatus, setModelSelectionStatus] = useState<Partial<Record<AiConnectionsProvider, 'saving' | 'saved' | 'error'>>>({})
   const [attempts, setAttempts] = useState<Record<string, AiConnectAttempt | undefined>>({})
   const [attemptOfferingIds, setAttemptOfferingIds] = useState<Partial<Record<AiConnectionsProvider, string>>>({})
@@ -217,6 +223,13 @@ export function AiConnectionsPanel({
 
   useEffect(() => {
     let active = true
+    if (client.listModelUsages) {
+      void client.listModelUsages().then(usages => {
+        if (active) setUsageState({ client, revision: liveRevision, usages, failed: false })
+      }).catch(() => {
+        if (active) setUsageState({ client, revision: liveRevision, usages: [], failed: true })
+      })
+    }
     void client.listModels()
       .then((availableModels) => {
         if (active) setModels(availableModels)
@@ -948,6 +961,7 @@ export function AiConnectionsPanel({
   /** The gateway list switches the same selection the provider pages switch. */
   const gatewayModelSelection: GatewayModelSelection = {
     isSelected: (model) => selectionIdsFor(model.provider).includes(gatewaySelectionId(model)),
+    usageLabels: model => modelUsageLabels([gatewaySelectionId(model)], modelUsages),
     toggle: (model) => {
       const current = selectionIdsFor(model.provider)
       const selectionId = gatewaySelectionId(model)
@@ -997,6 +1011,7 @@ export function AiConnectionsPanel({
               error={providerErrors[definition.id]}
               quotas={quotas[definition.id]}
               models={providerModels}
+              modelUsages={modelUsages}
               selectedModelIds={providerSelectedModelIds}
               modelSelectionStatus={modelSelectionStatus[definition.id]}
               onApiKeyChange={(value) => setApiKeyInputs((current) => ({
@@ -1056,6 +1071,7 @@ export function AiConnectionsPanel({
       className="mx-auto w-full max-w-5xl space-y-10 px-4 py-6 sm:px-8 sm:py-8"
     >
       {renderToaster ? <Toaster /> : null}
+      {currentUsages?.failed ? <p role="status" className="text-sm text-muted-foreground">暂时无法读取模型用途，请稍后重试。</p> : null}
       {selectedSection === 'keys' ? keyContent : null}
       {selectedSection === 'provider' ? providerContent : null}
       {selectedSection === 'provider' && modelEditor ? (

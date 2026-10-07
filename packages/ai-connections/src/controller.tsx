@@ -299,6 +299,8 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   function pageTableDocuments(): string[] {
     if (!podStore) return []
     const documents = new Set<string>()
+    const usagesDocument = podStore.modelUsageTableDocument?.()
+    if (usagesDocument) documents.add(usagesDocument)
     const credentialsDocument = credentials ? undefined : podStore.credentialsTableDocument?.()
     if (credentialsDocument) documents.add(credentialsDocument)
     if (selectedSection === 'provider') {
@@ -655,6 +657,7 @@ function createInteractiveAiConnectionsClient(
   }
   const storeClient: AiConnectionsClient = {
     ...operationsClient,
+    listModelUsages: podStore.listModelUsages?.bind(podStore) ?? operationsClient.listModelUsages,
     listProviders,
     listModels: podStore.listModels
       ? async () => podStore.listModels!() as Promise<AiGatewayModel[]>

@@ -764,3 +764,43 @@ describe('AI Connection model selection', () => {
     expect(screen.getByText('手工')).toBeTruthy()
   })
 })
+
+
+describe('read-only model usage back-references', () => {
+  const first = { id: 'shared-model', resourceId: 'providers/openai.ttl#first', provider: 'openai' as const }
+  const second = { id: 'shared-model', resourceId: 'providers/openai.ttl#second', provider: 'openai' as const }
+
+  it('matches actual resource identities, refreshes purposes, and never adds a second editor', async () => {
+    const current = client([first])
+    current.listModelUsages = vi.fn(async () => [{ resourceId: second.resourceId, label: '视觉辅助' }])
+    const props = { client: current, selectedProvider: 'openai' as const, providerProducts: { openai: openAiProduct([first]) } }
+    const view = render(<AiConnectionsPanel {...props} />)
+    await screen.findByRole('button', { name: '停用 shared-model' })
+    await waitFor(() => expect(current.listModelUsages).toHaveBeenCalledOnce())
+    expect(screen.queryByText(/用于 /)).toBeNull()
+    current.listModelUsages = vi.fn(async () => [
+      { resourceId: first.resourceId, label: '智能' },
+      { resourceId: first.resourceId, label: '视觉辅助' },
+    ])
+    view.rerender(<AiConnectionsPanel {...props} liveRevision={1} />)
+    expect(await screen.findByText('用于 智能、视觉辅助')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /编辑.*用途/ })).toBeNull()
+    current.listModelUsages = vi.fn(async () => [])
+    view.rerender(<AiConnectionsPanel {...props} liveRevision={2} />)
+    await waitFor(() => expect(screen.queryByText(/用于 /)).toBeNull())
+    expect(current.saveModelSelection).not.toHaveBeenCalled()
+  })
+
+  it('drops old-session usage before loading a different owner and reports read failures honestly', async () => {
+    const oldClient = client([first])
+    oldClient.listModelUsages = vi.fn(async () => [{ resourceId: first.resourceId, label: '智能' }])
+    const view = render(<AiConnectionsPanel client={oldClient} selectedProvider="openai" providerProducts={{ openai: openAiProduct([first]) }} />)
+    await screen.findByText('用于 智能')
+    const nextClient = client([first])
+    nextClient.listModelUsages = vi.fn(async () => { throw new Error('unavailable') })
+    view.rerender(<AiConnectionsPanel client={nextClient} selectedProvider="openai" providerProducts={{ openai: openAiProduct([first]) }} />)
+    expect(screen.queryByText('用于 智能')).toBeNull()
+    expect(await screen.findByText('暂时无法读取模型用途，请稍后重试。')).toBeTruthy()
+    expect(screen.queryByText(/用于 /)).toBeNull()
+  })
+})

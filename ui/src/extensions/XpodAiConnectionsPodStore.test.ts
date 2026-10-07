@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { drizzle, type AnyPodTable, type PodColumn } from '@undefineds.co/drizzle-solid';
 import { TripleBuilderImpl, handlerRegistry, type Triple } from '../../../node_modules/@undefineds.co/drizzle-solid/dist/core/triple/index.js';
-import { AI_MODEL_CAPABILITY, AI_MODEL_CLASS, UDFS, aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
+import { AI_MODEL_CAPABILITY, AI_MODEL_CLASS, UDFS, aiConfigResource, aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
 import type { AiGatewayModel } from '@undefineds.co/ai-connections/client';
 import { Parser as SparqlParser } from 'sparqljs';
 import { modelCatalogId } from '../../../packages/ai-connections/src/AiModelCatalog';
@@ -1621,5 +1621,42 @@ describe('XpodAiConnectionsPodStore', () => {
     expect(customDocument.startsWith(`${POD_URL}settings/providers/custom-instance-`)).toBe(true);
     expect(customDocument.endsWith('.ttl')).toBe(true);
     expect(customDocument).not.toContain('#');
+  });
+});
+
+
+describe('Pod model usage projection', () => {
+  it('follows shared AI Config relations through exact ORM reads and shares one read for repeated references', async () => {
+    const firstRef = 'https://pod.example/alice/settings/providers/openai.ttl#first';
+    const secondRef = 'https://pod.example/alice/settings/providers/openai.ttl#second';
+    const findById = vi.fn(async () => ({ chatModel: firstRef, ocrModel: firstRef, embeddingModel: secondRef }));
+    const findByIri = vi.fn(async (resource: unknown, id: string) => {
+      if (resource === aiModelResource && id === firstRef) return { id: 'providers/openai.ttl#first' };
+      if (resource === aiModelResource && id === secondRef) return { id: 'providers/openai.ttl#second' };
+      throw new Error('Unexpected resource lookup');
+    });
+    const store = createXpodAiConnectionsPodStore({ database: { findById, findByIri } as never, webId: WEB_ID, podUrl: POD_URL });
+    expect(await store.listModelUsages!()).toEqual([
+      { resourceId: 'providers/openai.ttl#first', label: '智能' },
+      { resourceId: 'providers/openai.ttl#first', label: '视觉辅助' },
+      { resourceId: 'providers/openai.ttl#second', label: '语义检索' },
+    ]);
+    expect(findById).toHaveBeenCalledTimes(1);
+    expect(findByIri).toHaveBeenCalledTimes(2);
+    expect(findByIri).toHaveBeenCalledWith(aiModelResource, firstRef);
+    expect(findByIri).toHaveBeenCalledWith(aiModelResource, secondRef);
+    expect(findById).toHaveBeenCalledWith(aiConfigResource, aiConfigResource.buildId({ id: 'config' }));
+    expect(store.modelUsageTableDocument!()).toBe('https://pod.example/alice/settings/ai/config.ttl');
+  });
+
+  it('does not fabricate usages for missing config, dangling model relations, or unreadable Pod data', async () => {
+    const findById = vi.fn().mockResolvedValueOnce(null);
+    const findByIri = vi.fn().mockResolvedValue(null);
+    const store = createXpodAiConnectionsPodStore({ database: { findById, findByIri } as never, webId: WEB_ID, podUrl: POD_URL });
+    expect(await store.listModelUsages!()).toEqual([]);
+    findById.mockResolvedValueOnce({ chatModel: `${POD_URL}settings/providers/openai.ttl#missing` });
+    expect(await store.listModelUsages!()).toEqual([]);
+    findById.mockRejectedValueOnce(new Error('read denied'));
+    await expect(store.listModelUsages!()).rejects.toThrow('read denied');
   });
 });

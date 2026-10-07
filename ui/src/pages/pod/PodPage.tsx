@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { eligiblePodEmbeddingModels, podCapabilityNames, podModelsForAssignment } from './model-options';
-import { PodBody, type PodBodyProps, type PodModel, type PodModelRow, type PodSection } from '@undefineds.co/pod-settings';
+import { POD_MODEL_ASSIGNMENTS, PodBody, type PodBodyProps, type PodModel, type PodModelRow, type PodSection } from '@undefineds.co/pod-settings';
 import { AiConfigProvider, useAiConfig } from '../settings/ai-config/AiConfigContext';
 import { rebuildInFlight, rebuildTargetForCapabilities } from '../settings/ai-config/model-assignment-state';
 import { useBackgroundPodAccess } from '../settings/ai-config/useBackgroundPodAccess';
@@ -32,14 +32,15 @@ function PodPageContent({ section, onSection, accountUrl }: PodPageProps) {
   const gatewayStatus: PodModelRow['status'] = state.gatewayCatalog.status === 'available' && state.gatewayCatalog.models.length === 0 ? 'empty' : state.gatewayCatalog.status;
   const gatewayModel = (role: keyof typeof PLATFORM_MODEL_ROLES) => state.gatewayCatalog.models.find(model => matchesPlatformModelRole(model.id, role));
   const option = (model: (typeof state.models)[number]): PodModel => ({ ref: model.ref, label: `${model.displayName ?? model.id} · ${model.owner}`, capabilities: model.capabilities, source: 'own' });
-  const assignment = (id: AiConfigModelAssignment, label: string, group: string, defaultLabel: string): PodModelRow => {
+  const assignment = (id: AiConfigModelAssignment, defaultLabel: string): PodModelRow => {
+    const { label, group } = POD_MODEL_ASSIGNMENTS.find(assignment => assignment.id === id)!;
     const models = podModelsForAssignment(state.models, id);
     const selected = models.find(model => model.ref === config?.models[id]);
     return { id, label, group, defaultLabel, value: config?.models[id], models: models.map(option), supported: true, status: config?.models[id] && !selected ? 'unavailable' : undefined, testable: Boolean(selected && podCapabilityNames(selected.capabilities).some(value => ['chat', 'embedding'].includes(value))) };
   };
   const smartDefault = gatewayModel('smart');
   const fastDefault = gatewayModel('fast');
-  const smart = assignment('chatModel', '智能', '对话', smartDefault?.displayName ?? 'Xpod 提供');
+  const smart = assignment('chatModel', smartDefault?.displayName ?? 'Xpod 提供');
   if (!smart.value) {
     smart.status = gatewayStatus;
     smart.testable = state.gatewayCatalog.status === 'available' && Boolean(smartDefault);
@@ -48,9 +49,9 @@ function PodPageContent({ section, onSection, accountUrl }: PodPageProps) {
   const modelRows: PodModelRow[] = [
     smart,
     { id: 'fast', label: '快速', group: '对话', defaultLabel: fastDefault?.displayName ?? 'Xpod 提供', supported: true, status: gatewayStatus, testable: state.gatewayCatalog.status === 'available' && Boolean(fastDefault), testValue: fastDefault?.id },
-    assignment('ocrModel', '视觉辅助', '对话', '不使用'),
-    assignment('readerModel', '文档理解', '文档理解', 'PaddleOCR · 百度（Xpod 提供）'),
-    { id: 'embeddingModel', label: '语义检索', group: '向量', defaultLabel: '' },
+    assignment('ocrModel', '不使用'),
+    assignment('readerModel', 'PaddleOCR · 百度（Xpod 提供）'),
+    { ...POD_MODEL_ASSIGNMENTS.find(assignment => assignment.id === 'embeddingModel')!, defaultLabel: '' },
     ...['语音合成', '语音识别'].map(label => ({ id: label, label, group: '语音', defaultLabel: '不使用' })),
     ...['图像生成', '视频生成'].map(label => ({ id: label, label, group: '图像与视频', defaultLabel: '不使用' })),
     { id: 'decision', label: '决策', group: '决策', defaultLabel: '不使用' },

@@ -1,3 +1,4 @@
+import { POD_MODEL_ASSIGNMENTS } from '@undefineds.co/pod-settings';
 import { initializeBrowserSparql } from '../solid/initializeBrowserSparql';
 import {
   type SolidDatabase,
@@ -6,6 +7,7 @@ import {
 } from '@undefineds.co/drizzle-solid';
 import {
   aiModelResource,
+  aiConfigResource,
   filterAIModelCapabilityUris,
   toAIModelCapabilityName,
   toAIModelClassName,
@@ -85,6 +87,7 @@ export function createXpodAiConnectionsPodStore(
   credentialResource.setSparqlEndpoint(settingsSparqlEndpoint);
   aiProviderResource.setSparqlEndpoint(settingsSparqlEndpoint);
   aiModelResource.setSparqlEndpoint(settingsSparqlEndpoint);
+  aiConfigResource.setSparqlEndpoint(settingsSparqlEndpoint);
   return {
     /**
      * `settings/credentials.ttl`: the document the credential rows live in, and
@@ -107,6 +110,25 @@ export function createXpodAiConnectionsPodStore(
         ? providerResourceIdForCustomCredential(instanceId)
         : providerResourceId(normalizedProvider);
       return aiProviderResource.buildIri(input.podUrl, { id: documentIdOfRow(rowId) });
+    },
+    modelUsageTableDocument() {
+      return aiConfigResource.buildIri(input.podUrl, {
+        id: documentIdOfRow(aiConfigResource.buildId({ id: 'config' })),
+      });
+    },
+    async listModelUsages() {
+      await input.database.init?.(aiConfigResource, aiModelResource);
+      const config = await input.database.findById(aiConfigResource, aiConfigResource.buildId({ id: 'config' })) as Record<string, unknown> | null;
+      if (!config) return [];
+      const references = [...new Set(POD_MODEL_ASSIGNMENTS.map(assignment => stringValue(config[assignment.id])).filter(isDefined))];
+      const models = new Map(await Promise.all(references.map(async reference => [reference,
+        await input.database.findByIri(aiModelResource, reference) as Record<string, unknown> | null,
+      ] as const)));
+      return POD_MODEL_ASSIGNMENTS.flatMap(assignment => {
+        const reference = stringValue(config[assignment.id]);
+        const resourceId = reference ? stringValue(models.get(reference)?.id) : undefined;
+        return resourceId ? [{ resourceId, label: assignment.label }] : [];
+      });
     },
     async listModels() {
       await input.database.init?.(aiModelResource);

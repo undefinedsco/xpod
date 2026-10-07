@@ -211,6 +211,7 @@ export function AiModelRow({
   onEdit,
   onDelete,
   unavailable = false,
+  usageLabels = [],
   badges,
 }: {
   label: string
@@ -224,6 +225,7 @@ export function AiModelRow({
   onEdit?: () => void
   onDelete?: () => void
   unavailable?: boolean
+  usageLabels?: readonly string[]
   badges?: ReactNode
 }) {
   // The action order is the credential rows' order - edit, 启用/停用, delete - so
@@ -236,7 +238,9 @@ export function AiModelRow({
       iconTokens={iconTokens}
       selected={enabled}
       unavailable={unavailable}
-      badges={badges}
+      badges={<>{badges}{enabled && usageLabels.length > 0 ? (
+        <span className="text-xs text-muted-foreground">用于 {usageLabels.join('、')}</span>
+      ) : null}</>}
       actions={hasActions ? (
         <div className="flex shrink-0 items-center gap-1">
           {onEdit ? (

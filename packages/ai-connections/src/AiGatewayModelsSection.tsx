@@ -18,6 +18,7 @@ import {
 export interface GatewayModelSelection {
   isSelected(model: AiGatewayModel): boolean
   toggle(model: AiGatewayModel): void
+  usageLabels?(model: AiGatewayModel): string[]
   disabled?: boolean
 }
 
@@ -72,6 +73,7 @@ export function AiGatewayModelsSection({ models, selection }: { models?: AiGatew
               modelId={model.id}
               iconTokens={model.iconTokens}
               enabled={selection?.isSelected(model) ?? false}
+              usageLabels={selection?.usageLabels?.(model)}
               toggleDisabled={selection?.disabled}
               onToggle={selection ? () => selection.toggle(model) : undefined}
               unavailable={model.availability === 'unavailable'}
