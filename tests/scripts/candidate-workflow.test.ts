@@ -151,14 +151,14 @@ esac
     expect(container.readinessProbe.httpGet.path).toBe('/service/status');
   });
 
-  it('only runs on release branches with a shared workflow lock and minimal permissions', async () => {
+  it('only runs on staging and never cancels an active RC', async () => {
     const workflow = await loadWorkflow();
 
-    expect(workflow.on.push.branches).toEqual([ 'release/**' ]);
+    expect(workflow.on.push.branches).toEqual([ 'staging' ]);
     expect(workflow.on.push.tags).toBeUndefined();
     expect(workflow.on.workflow_dispatch).toBeDefined();
     expect(workflow.concurrency).toEqual({
-      group: 'xpod-shared-rc-workflow',
+      group: 'xpod-rc-candidate',
       'cancel-in-progress': false,
     });
     expect(workflow.permissions).toEqual({
@@ -218,6 +218,31 @@ esac
     expect(runText).toContain('--json');
   });
 
+  it('executes RC admission and rejects main, release and feature branches', async () => {
+    const workflow = await loadWorkflow();
+    const run = workflow.jobs.metadata.steps.find((step: any) => step.id === 'candidate').run;
+    const parent = path.join(repoRoot, '.test-data', 'rc-branch-admission');
+    await mkdir(parent, { recursive: true });
+    const directory = await mkdtemp(path.join(parent, 'case-'));
+    try {
+      for (const branch of ['staging', 'rc', 'main', 'release/0.4.27', 'codex/feature']) {
+        const output = path.join(directory, 'output');
+        await writeFile(output, '');
+        const execute = () => execFileSync('bash', ['-euo', 'pipefail', '-c', run], {
+          cwd: repoRoot, stdio: 'pipe', env: { ...process.env, REF_NAME: branch,
+            RUN_NUMBER: '42', RUN_ATTEMPT: '1', SOURCE_SHA: 'a'.repeat(40), GITHUB_OUTPUT: output },
+        });
+        if (branch === 'staging') {
+          expect(execute).not.toThrow();
+          expect(await readFile(output, 'utf8')).toContain(`sourceSha=${'a'.repeat(40)}`);
+        } else {
+          expect(execute).toThrow();
+          expect(await readFile(output, 'utf8')).toBe('');
+        }
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it('keeps RC validation independent from npm publishing', async () => {
     const workflow = await loadWorkflow();
 
@@ -245,7 +270,7 @@ esac
       const metadataStep = workflow.jobs.metadata.steps.find((step: any) => step.id === 'candidate');
       execFileSync('bash', ['-euo', 'pipefail', '-c', metadataStep.run], {
         cwd: repoRoot, stdio: 'pipe', env: { ...process.env,
-          REF_NAME: 'release/0.4.30', RUN_NUMBER: '288', RUN_ATTEMPT: metadataAttempt,
+          REF_NAME: 'staging', RUN_NUMBER: '288', RUN_ATTEMPT: metadataAttempt,
           SOURCE_SHA: '0123456789abcdef0123456789abcdef01234567', GITHUB_OUTPUT: output },
       });
       const metadata = Object.fromEntries((await readFile(output, 'utf8')).trim().split('\n')
@@ -271,7 +296,7 @@ esac
           return value;
         }).replace('node scripts/release-candidate.cjs', 'node "$RELEASE_CANDIDATE_SCRIPT" --repo-root "$MANIFEST_ROOT"');
         execFileSync('bash', ['-euo', 'pipefail', '-c', run], {
-          cwd: manifests, stdio: 'pipe', env: { ...process.env, REF_NAME: 'release/0.4.30',
+          cwd: manifests, stdio: 'pipe', env: { ...process.env, REF_NAME: 'staging',
             CANDIDATE_VERSION: metadata.candidate, MANIFEST_ROOT: manifests,
             RELEASE_CANDIDATE_SCRIPT: path.join(repoRoot, 'scripts/release-candidate.cjs') },
         });
@@ -458,8 +483,6 @@ esac
     expect(runText.indexOf('DROP DATABASE IF EXISTS xpod_rc WITH (FORCE)'))
       .toBeLessThan(runText.indexOf('kubectl apply -f "$rendered_manifest"'));
     expect(runText).toContain('CREATE DATABASE xpod_rc OWNER xpod_rc');
-    // 扩展由超级用户安装，schema 归属必须一并交给应用角色，否则 CSS 起不来。
-    expect(runText).toContain('ALTER SCHEMA %I OWNER TO xpod_rc');
     expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
     expect(runText).toContain('https://id-rc.undefineds.cn/service/status');
@@ -528,7 +551,7 @@ esac
 
   it.each([
     ['postgresql://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_rc', true],
-    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres.fixture-ns.svc.cluster.local/xpod_rc', true],
+    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres.ns-iknkxtc8.svc.cluster.local/xpod_rc', true],
     ['postgresql://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_cn', false],
     ['postgresql://postgres:fixture@xpod-rdf-postgres:5432/xpod_rc', false],
     ['postgresql://xpod_rc:fixture@production-postgres:5432/xpod_rc', false],
@@ -556,7 +579,7 @@ esac
         await writeFile(envPath, Object.entries(entries).map(([name, value]) => `${name}=${value}`).join('\n'), { mode: 0o600 });
         await writeFile(seedPath, JSON.stringify([{email: 'alice@fixture'}, {email: 'bob@fixture'}]), { mode: 0o600 });
         const runValidation = () => execFileSync(process.execPath, ['-', envPath, seedPath], {
-          env: {...process.env, SEALOS_NAMESPACE: 'fixture-ns'}, input: script, stdio: 'pipe',
+          env: {...process.env, SEALOS_NAMESPACE: 'ns-iknkxtc8'}, input: script, stdio: 'pipe',
         });
         if (allowed) expect(runValidation).not.toThrow();
         else expect(runValidation).toThrow(/must use the isolated xpod_rc database and role/);
@@ -877,7 +900,7 @@ esac
       'deployed-digest',
       'direct-pod',
       'postgres-17',
-      'postgres-ephemeral',
+      'postgres-isolated',
       'vector',
       'public-service',
       'secret-isolation',
@@ -929,16 +952,12 @@ esac
     expect(diagnostics.run).toContain('docker inspect "$local_name"');
     expect(diagnostics.run).toContain('docker logs "$local_name"');
     expect(workflow.jobs.deploy_and_accept.steps.some((step: any) => step.name === 'Scale RC deployments to zero')).toBe(false);
-    const cleanupJob = workflow.jobs.cleanup_rc;
-    expect(cleanupJob.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']);
-    expect(cleanupJob.if).toBe('${{ always() }}');
-    expect(workflow.jobs.build_desktop_rc.needs).toContain('deploy_and_accept');
-    const cleanup = cleanupJob.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
-    expect(cleanup.if).toBeUndefined();
-    expect(cleanup.run).toContain('resource=deployment/xpod-rc');
+    expect(workflow.jobs.cleanup_rc.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']);
+    expect(workflow.jobs.cleanup_rc.if).toContain('always()');
+    const cleanup = workflow.jobs.cleanup_rc.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
+    expect(cleanup.run).toContain('scripts/rc-cleanup-ownership.cjs');
+    expect(cleanup.run).toContain('kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0');
     expect(cleanup.run).toContain('scale deployment/xpod-rc-inngest --replicas=0');
-    expect(cleanup.run).toContain('delete secret "$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found');
-    expect(cleanup.run).not.toContain('statefulset/');
     expect(cleanup.run).not.toContain('deployment/xpod-inngest');
   });
 

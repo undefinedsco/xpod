@@ -2,13 +2,64 @@
 
 Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个 commit
 和同一个容器 digest。不要用 stable tag 调试发布问题；修复必须继续提交到
-`release/<version>`，由新的 RC 重新验收。
+开发分支，通过 PR 普通 merge 合入 `staging` 后，由新的 RC 重新验收。
+
+## 先合入，再发 RC
+
+`staging` 是唯一集成与 RC 来源分支。开发工作树的 Docker/Compose 验证使用
+各自独立的项目名、端口和数据目录；它们不占用共享 RC，也不能代替 RC 验收。
+完成分支验证和代码审查后先普通 merge 合入 `staging`，保留全部祖先，再验证合入后的 exact SHA，不把多个
+未合入分支临时拼装部署到共享 RC。版本号来自该提交的根 `package.json`。
+
+所有参与者遵循同一顺序：隔离验证 → PR 审查 → 普通 merge 合入 `staging` → 固定候选 SHA
+与镜像 digest → 独占 RC 部署、验收、取证和清理 → stable promotion。
+修复同样先合入，生成新候选；禁止在 RC 上热改、换镜像或借旧通过记录晋级。
+公有服务、私有 PG/SDK 分别保留源码归属；跨仓库组合必须记录各自不可变 SHA/digest，
+不能把私有实现或凭据搬进公有仓库，也不能用临时组合代替已合入候选。
+
+`candidate.yml` 只接受 `staging` 的 push/手动执行。
+固定 workflow concurrency group 串行运行，`cancel-in-progress=false`，新提交
+不得自动中断正在占用 RC 的候选；部署 job 继续使用共享服务锁。GitHub concurrency
+不是 FIFO 队列，等待中的旧候选可能被较新候选替换，未执行的 SHA 不得标记通过。
+需要指定某个合入 SHA 时，先确认该 run 的 source SHA，再等待其完整结果。
+
+锁的范围是本仓库 GitHub workflow，不覆盖 CNB、其他仓库或手工 kubectl。
+共享 RC 同一时刻只能有一个发布负责人；这些外部入口必须先协调占用并等待整轮
+结束，不能与 workflow 并行改同一环境。独立资源前缀的隔离诊断不属于共享 RC
+发布。环境缩到 0 是回收状态，不是其他分支可以绕过队列接管的信号。
+
+验收通过后将该候选的变更通过 PR squash 同步到 `main`，保留一条概括性提交，
+而不是将开发过程的所有提交搬进主线。squash 后的 main SHA 与已验收 staging SHA
+不同：stable tag 必须仍打在已验收的 staging exact SHA，发布复用对应 acceptance 和
+镜像 digest。main 的新 SHA 不得继承或重标该凭证；若要发布 main SHA，必须先
+作为新的 staging 候选重新验收。后续开发基于最新 staging，禁止 force-push/reset 改写 staging
+历史或仅因已 squash 到 main 就删除长期 staging 分支。开发分支持续沿 staging 开发，
+不从 main 的 squash 提交重建，也不将 main 反向合回 staging。main 不接独立功能或
+热修复：修复先进入 staging 并验收，再同步 main。
+
+每轮只同步已验收的 exact staging SHA，不能在等待同步时改用 staging 的最新 tip。
+提交 main 前核对 squash 结果与 accepted SHA 的代码树一致（`git diff
+<accepted-staging-sha> <main-squash-sha>` 应为空），并在提交/PR 中记录 staging SHA、
+验收 run URL、accepted digest 和上一轮同步点。普通 squash 不记录合并祖先，
+所以后续 PR 可能显示累计提交；这不表示要把 main 合回 staging。若出现冲突或树不一致，
+停止同步并定位 main 的独立改动，不以“每次一定无冲突”作为流程前提。
+
+本次流程变更先合入 `main`，作为启用长期 `staging` 的引导基线；后续功能与修复遵循上述流程。
+候选规则随本次变更进入 `staging` 后生效；不追认历史分支候选，也不自动部署当前
+开发分支。仓库维护者应将 GitHub `rc` Environment 的 deployment branch policy
+限制为 `staging`，并对 `staging`/`main` 启用 PR 审查与必需检查；这些服务端设置需另行核对，
+不能仅凭本文或 workflow 文件宣称已配置。
+
+首次启用时，由发布负责人选定并审查集成基线，一次性创建长期 `staging` 分支，再通过
+普通 merge 纳入本变更；不要直接将任意开发分支重命名为 staging。2026-10-07 的
+只读核对未发现远端 staging 分支，且 GitHub rc Environment 的 deployment branch
+policy 为空。上线前必须补齐分支与环境策略；创建/推送 staging 可能触发候选部署，
+应在共享 RC 占用协调完成后执行，本地文档修改不自动执行这些操作。
 
 ## 生命周期总览
 
-1. 从准备发布的 commit 创建 `release/<version>` 分支，例如
-   `release/0.4.0`。
-2. 每个推送到 `release/<version>` 的 commit 都触发
+1. 在开发分支完成隔离验证和审查，先普通 merge 合入 `staging`；不再为各版本创建 RC 来源分支。
+2. 每个推送到 `staging` 的 commit 都触发
    `.github/workflows/candidate.yml`，生成一个新的 RC。
 3. CI 的 metadata job 从 source SHA、run number 和该 job 的 run attempt 派生候选版本，镜像和桌面构建都使用这份 metadata。首次运行格式为 `0.4.0-rc.<run-number>`；重跑整个 workflow 时 metadata 重新执行，版本为 `0.4.0-rc.<run-number>.<run-attempt>`，例如 `0.4.0-rc.41.2`。只重跑失败 job 时，成功的 metadata 与构建产物被保留，版本也必须沿用（例如 `0.4.0-rc.41`），不能按下游 job 当前的 attempt 重新计算版本。
 4. 同一次 RC workflow 构建一个 GHCR 镜像，打 `sha-<full-sha>` 和 RC
@@ -23,7 +74,7 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 8. 验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`。该 artifact 是 stable tag promotion 的唯一凭证。
 9. 只在接受的 exact commit 上创建 stable tag，例如 `v0.4.0`。
 10. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
-   artifact，校验 stable tag、release branch、required
+   artifact，校验 stable tag、staging 来源、required
    checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到不可见的
    `stable-staging` tag，并由 Node/Bun 重新安装验证；然后才移动 npm `latest`、把 accepted digest
    重新标记为 stable/latest 容器 tag，并调用生产部署。
@@ -34,18 +85,17 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 
 | 类型 | 名称 | 说明 |
 | --- | --- | --- |
-| Secret | `KUBE_CONFIG_DATA` | base64 编码的 GZ Sealos kubeconfig，使用广州集群分配的固定 namespace |
+| Secret | `KUBE_CONFIG_DATA` | base64 编码的 GZ Sealos kubeconfig，server 必须为 `https://gzg.sealos.run:6443` |
 | Secret | `APP_ENV_FILE` | RC runtime env 文件内容 |
 | Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |
 | Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |
 | Secret | `XPOD_AI_PROXY_URL` | 可选，真实 AI Provider 验收需要代理时填写 |
-| Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-iknkxtc8` |
+| Variable | `SEALOS_NAMESPACE` | 必须为 GZ 固定 namespace `ns-iknkxtc8` |
 | Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
-| Variable | `XPOD_RC_SCALE_TO_ZERO` | 已废弃：验收后固定执行 scale-to-zero（不再读取该变量；需 rc_kubeconfig 校验通过） |
 | Variable | `XPOD_INSTALL_REGISTRY` | 可选，安装烟测 registry 覆盖 |
 
 RC 公开入口为 `https://id-rc.undefineds.cn`、`https://pods-rc.undefineds.cn`
-和 `https://api-rc.undefineds.cn`。这三个 `.cn` 别名（DNS-only CNAME）统一指向
+和 `https://api-rc.undefineds.cn`。RC 的 `.cn` DNS-only CNAME 统一指向
 Sealos ingress，三个 Ingress 经统一 Nginx Gateway 路由到 RC 服务；TLS Secret
 由 Sealos certificate controller 在 Ingress 创建后签发。overlay 不创建
 physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
@@ -58,6 +108,7 @@ physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它�
 - runtime Secret：`xpod-rc-secret`
 - Xpod Deployment：`xpod-rc`
 - shared Inngest Deployment：`xpod-inngest`（只复用，不由 RC overlay 创建或缩容）
+- RC-only Inngest Deployment：`xpod-rc-inngest`（若存在，仅在确认本轮 RC 所有权后回收）
 - ConfigMap：`xpod-rc-config`
 - seed Secret：以 `xpod-rc-seed` 为前缀、按 workflow run 唯一命名
 
@@ -125,8 +176,12 @@ Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供
 - `XPOD_INNGEST_EVENT_KEY`
 - `XPOD_INNGEST_SIGNING_KEY`
 
-候选 workflow 会拒绝生产数据库名称或
-`xpod-cloud`/`prod`/`production` 风格值。`CSS_REDIS_CLIENT` 必须显式指向
+候选 workflow 在任何集群请求前校验 GZ server/namespace。Identity/RDF DSN 必须
+使用 `xpod-rdf-postgres` 上的 `xpod_rc` 专用角色和同名数据库，且凭据一致；禁止
+URL query/fragment 或冲突的数据库覆盖。每轮重建这个 RC 数据库并安装
+`vector → xpod_rdf → xpod_qlever`，不重建共享实例、不触碰 `xpod_cn`/`xpod_co`。
+此操作会销毁上一轮 RC 数据；上线前必须确认共享 RC 独占权和数据处理边界。
+`CSS_REDIS_CLIENT` 必须显式指向
 独立 Redis DB，格式上应类似 `CSS_REDIS_CLIENT=.../<nonzero>`；候选 workflow
 会拒绝缺少 DB index、使用 Redis DB 0 或包含 production marker 的 Redis URL。
 不要通过 `XPOD_REDIS_PREFIX` 或 `XPOD_OBJECT_PREFIX` 试图隔离 RC；当前代码
@@ -257,14 +312,14 @@ Local）→ 注册 Cloud 身份并通过 Account profile control 准备独立 Cl
 
 ## 操作命令
 
-创建 release branch：
+通过 PR 将已验证的开发分支普通 merge 合入 `staging`（示例）：
 
 ```bash
-git switch -c release/0.4.0
-git push -u origin release/0.4.0
+gh pr create --base staging
+gh pr merge <pr-number> --merge
 ```
 
-正常修复继续推送普通 commit。每个 commit 会产生新的 immutable 服务镜像、原生
+正常修复继续经过 PR 普通 merge 合入 staging。每个执行的候选会产生新的 immutable 服务镜像、原生
 runtime 和桌面候选；失败候选保留为失败证据，不覆盖既有版本。RC 不发布 npm 包，
 npm 只在 accepted commit 的 stable tag workflow 中发布。
 
@@ -286,7 +341,7 @@ RC 成功后必须存在 artifact name `release-acceptance-${GITHUB_SHA}`，
 stable promotion 校验以下内容：
 
 - stable tag 是 `vX.Y.Z`，且 tag commit 是 workflow source SHA；
-- tag commit 属于 `release/<version>`；
+- tag commit 属于 `staging`，acceptance 的 source branch 必须为 `staging`；
 - tag commit 的 `package.json` version 等于 stable version；
 - artifact 的 source SHA、source branch、target version、candidate version
   和 endpoint 与当前 tag 匹配；
@@ -316,14 +371,12 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 - `XPOD_RC_SEED_CONFIG` 缺失、不是 seed account 数组，或没有 Alice/Bob 账号；
 - seed Alice/Bob 无法完成浏览器 OIDC 登录，或一次性 provider canary 验收失败。
 
-修复方式是提交新的 release branch commit，让 candidate workflow 产生新的
+修复方式是将修复普通 merge 到 staging，让 candidate workflow 产生新的
 RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进生产。
 
-candidate workflow 的 `cleanup_rc` 在服务、真实桌面和最终验收全部结束后无条件执行
-scale-to-zero；即使前序验收失败，也只回收本轮持有的 `deployment/xpod-rc`、
-存在时的 `deployment/xpod-rc-inngest` 和本轮 seed Secret。共享
-`statefulset/xpod-rdf-postgres` 与 `deployment/xpod-inngest` 保持运行。
-整个 workflow 通过跨 release 分支的共享锁串行化，防止桌面或最终验收时被下一轮重置。
+candidate workflow 的 `cleanup_rc` 在服务、桌面和最终验收全部结束后执行 cleanup，确认本轮 RC 所有权并核对本轮
+seed Secret 的部署绑定后将 `deployment/xpod-rc` 和存在的 `xpod-rc-inngest`
+scale-to-zero；共享 `statefulset/xpod-rdf-postgres` 与 `deployment/xpod-inngest` 保持运行。
 下一次 RC workflow 会重新 apply overlay、写入 Secret、设置 digest 并等待 rollout。
 手动恢复 RC 时可在同一 namespace 将 Xpod Deployment scale 到 1，然后重新
 运行 candidate workflow 做完整验收。
@@ -345,7 +398,9 @@ stable release workflow 在 promotion guard 通过后执行三件事：
    `ghcr.io/undefinedsco/xpod@sha256:<64-hex>` 的 digest 形式部署生产。
 
 生产 deploy workflow 要求输入 stable SemVer、immutable image digest 和
-目标 environment。它会读取目标环境的实际 `Deployment` manifest，按目标
+目标 environment。`cn` 对应 `deployment/xpod-cn`，`co` 对应 `deployment/xpod-co`；
+两者部署资源位于 GZ，生产公开域名仍分别为 `.cn`/`.co`。
+它会读取目标环境的实际 `Deployment` manifest，按目标
 镜像 repository 选出唯一的 service container（`.co` 为 `xpod-co`，`.cn`
 为 `xpod`），先捕获该容器的 previous image，再仅对该容器执行 `set image`
 提升到请求 digest。service container 由已部署 manifest 推导，不硬编码、
@@ -360,7 +415,7 @@ ready Pod imageID 和 direct pod health 全部通过后才算部署成功。
 
 如果生产 rollout 或健康门禁失败，workflow 会 rollback 到捕获的 previous
 image 并等待 readiness，然后输出 diagnostics。回滚不是新发布；需要修复时
-继续在 `release/<version>` 上提交新 commit，重新走 RC 和 stable tag。
+修复先通过 PR 普通 merge 合入 `staging`，重新走 RC 和 stable tag。
 
 ## 共享包版本复用与 provenance
 
@@ -402,7 +457,7 @@ RC 里最重的一环是 `build_qlever_macos_runtime`（macOS ARM64 原生运行
 缓存体积只有约 0.1 GiB，恢复代价可忽略。
 
 **GitHub 的缓存在分支间是隔离的**：一个 run 只能恢复自己分支的缓存和默认分支
-（main）的缓存，永远读不到别的分支的。因此只在 `release/*` 上跑这个 workflow
+（main）的缓存，永远读不到别的分支的。以下为迁移到单一 staging 分支前的历史缓存分析：只在 `release/*` 上跑这个 workflow
 时，每条新的 release 分支第一次都是全量冷编译。workflow 已经在 main 上按
 `qlever/**` 路径触发来"预热"默认分支缓存，新 release 分支才会一上来就是暖的。
 改 QLever 版本或构建脚本会让缓存键轮换，这是有意的：键只决定恢复哪个压缩包，

@@ -14,7 +14,12 @@ describe('release lifecycle documentation', () => {
     const text = await loadReleaseDoc();
 
     for (const expected of [
-      'release/<version>',
+      '`staging` 是唯一集成与 RC 来源分支',
+      'squash 同步到 `main`',
+      '普通 merge 合入 `staging`',
+      '不将 main 反向合回 staging',
+      'cancel-in-progress=false',
+      '不是 FIFO 队列',
       '0.4.0-rc.',
       '`stable-staging`',
       'npm `latest`',
@@ -36,6 +41,7 @@ describe('release lifecycle documentation', () => {
       '`XPOD_RUNTIME_SECRET_NAME`',
       '`cleanup_rc`',
       '`statefulset/xpod-rdf-postgres`',
+      '本轮 RC 所有权',
       '`xpod-rc`',
       '`xpod-rc-secret`',
       '`xpod-rc-seed`',
@@ -97,7 +103,7 @@ describe('release lifecycle documentation', () => {
     expect(text).toContain('artifact 内文件是 `release-acceptance.json`');
     expect(text).not.toContain('release-acceptance-${GITHUB_SHA}.json');
 
-    expect(text).toContain('| Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-iknkxtc8` |');
+    expect(text).toContain('| Variable | `SEALOS_NAMESPACE` | 必须为 GZ 固定 namespace `ns-iknkxtc8` |');
     expect(text).toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |');
     expect(text).toContain('| Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |');
     expect(text).toContain('| Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |');

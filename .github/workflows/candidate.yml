@@ -2,7 +2,7 @@ name: Release Candidate
 
 on:
   push:
-    branches: ['release/**']
+    branches: ['staging']
   workflow_dispatch:
     inputs:
       task_diagnostic_only:
@@ -12,9 +12,7 @@ on:
         default: false
 
 concurrency:
-  # Keep the shared RC instance owned until desktop, Finalize and cleanup finish.
-  # This must differ from the individual RC job lock to avoid nested deadlock.
-  group: xpod-shared-rc-workflow
+  group: xpod-rc-candidate
   cancel-in-progress: false
 
 permissions:
@@ -42,8 +40,8 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [[ "$REF_NAME" != release/* ]]; then
-            echo "::error::candidate workflow can only run on release/** branches"
+          if [[ "$REF_NAME" != staging ]]; then
+            echo "::error::merge into staging before requesting RC"
             exit 1
           fi
           metadata="$(node scripts/release-candidate.cjs \
@@ -112,6 +110,7 @@ jobs:
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
           node scripts/verify-rc-cluster-target.cjs
+          node scripts/check-rc-deployment-boundary.cjs
           kubectl auth can-i create deployments -n "$SEALOS_NAMESPACE" | grep -qx yes
           kubectl auth can-i create services -n "$SEALOS_NAMESPACE" | grep -qx yes
           kubectl auth can-i create ingresses.networking.k8s.io -n "$SEALOS_NAMESPACE" | grep -qx yes
@@ -287,6 +286,7 @@ jobs:
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
           node scripts/verify-rc-cluster-target.cjs
+          node scripts/check-rc-deployment-boundary.cjs
 
       - name: Validate RC runtime secret isolation
         run: |
@@ -349,7 +349,8 @@ jobs:
           if (!accountKeys.some((value) => value.includes('alice')) || !accountKeys.some((value) => value.includes('bob'))) {
             throw new Error('XPOD_RC_SEED_CONFIG must include Alice and Bob seed accounts');
           }
-          const productionDomainPattern = /(^|[^A-Za-z0-9.-])id\.undefineds\.co\b/;
+          require('./scripts/check-rc-deployment-boundary.cjs').validateDatabases(entries);
+          const productionDomainPattern = /(^|[^A-Za-z0-9.-])id\.undefineds\.(?:co|cn)\b/;
           const redisValue = entries.get('CSS_REDIS_CLIENT') || '';
           if (/(?:prod|production|xpod-cloud)/i.test(redisValue) || productionDomainPattern.test(redisValue)) {
             throw new Error('production Redis is not allowed in RC APP_ENV_FILE');
@@ -414,37 +415,27 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" exec -i statefulset/xpod-rdf-postgres -- sh -s <<'SQL'
           set -e
           export PGPASSWORD="$POSTGRES_PASSWORD"
+          version="$(psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -Atc 'SHOW server_version_num')"
+          case "$version" in
+            17????) ;;
+            *) echo 'RC requires PostgreSQL 17 before database reset'; exit 1 ;;
+          esac
           psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS xpod_rc WITH (FORCE)'
           psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE xpod_rc OWNER xpod_rc'
           psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
           psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_rdf VERSION '0.2.0'"
           psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_qlever VERSION '0.4.0'"
-          postgres_version_num="$(psql -U "$POSTGRES_USER" -d xpod_rc --no-align --tuples-only --command 'SHOW server_version_num' | tr -d '[:space:]')"
-          if ! echo "$postgres_version_num" | grep -Eq '^17[0-9]{4}$'; then
-            echo 'RC database must run PostgreSQL 17' >&2
-            exit 1
-          fi
+          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 <<'GRANTS'
+          ALTER SCHEMA xpod_rdf OWNER TO xpod_rc;
+          GRANT ALL ON SCHEMA public, xpod_rdf TO xpod_rc;
+          GRANT ALL ON ALL TABLES IN SCHEMA public, xpod_rdf TO xpod_rc;
+          GRANT ALL ON ALL SEQUENCES IN SCHEMA public, xpod_rdf TO xpod_rc;
+          GRANT ALL ON ALL FUNCTIONS IN SCHEMA public, xpod_rdf TO xpod_rc;
+          GRANTS
+          extensions="$(psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_extension WHERE extname IN ('vector', 'xpod_rdf', 'xpod_qlever')")"
+          test "$extensions" = 3
           vector_version="$(psql -U "$POSTGRES_USER" -d xpod_rc --no-align --tuples-only --command "SELECT extversion FROM pg_extension WHERE extname = 'vector'" | tr -d '[:space:]')"
           test -n "$vector_version"
-          # 扩展是用超级用户装的，schema 因此归 postgres：应用角色读不了，
-          # 会以 "permission denied for schema xpod_rdf" 起不来。整库交给应用角色。
-          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 <<'SQL2'
-          DO $do$
-          DECLARE r record;
-          BEGIN
-            FOR r IN SELECT nspname FROM pg_namespace
-                     WHERE nspname NOT IN ('pg_catalog','information_schema','pg_toast')
-                       AND pg_get_userbyid(nspowner) <> 'xpod_rc'
-            LOOP
-              EXECUTE format('ALTER SCHEMA %I OWNER TO xpod_rc', r.nspname);
-              EXECUTE format('GRANT ALL ON SCHEMA %I TO xpod_rc', r.nspname);
-              EXECUTE format('GRANT ALL ON ALL TABLES IN SCHEMA %I TO xpod_rc', r.nspname);
-              EXECUTE format('GRANT ALL ON ALL SEQUENCES IN SCHEMA %I TO xpod_rc', r.nspname);
-              EXECUTE format('GRANT ALL ON ALL FUNCTIONS IN SCHEMA %I TO xpod_rc', r.nspname);
-            END LOOP;
-          END
-          $do$;
-          SQL2
           SQL
 
       - name: Deploy RC image by digest
@@ -510,7 +501,7 @@ jobs:
             "deployed-digest": "passed",
             "direct-pod": "passed",
             "postgres-17": "passed",
-            "postgres-ephemeral": "passed",
+            "postgres-isolated": "passed",
             "vector": "passed"
           }
           JSON
@@ -1563,22 +1554,21 @@ jobs:
           umask 077
           export KUBECONFIG="${RUNNER_TEMP}/rc-cleanup-kubeconfig"
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > "$KUBECONFIG"
-          resource=deployment/xpod-rc
+          node scripts/check-rc-deployment-boundary.cjs
           observation="${RUNNER_TEMP}/rc-cleanup-deployment.json"
-          kubectl -n "$SEALOS_NAMESPACE" get "$resource" --ignore-not-found -o json > "$observation"
+          kubectl -n "$SEALOS_NAMESPACE" get deployment/xpod-rc --ignore-not-found -o json > "$observation"
           set +e
           node scripts/rc-cleanup-ownership.cjs deployment "$observation" "$SEALOS_NAMESPACE" "$XPOD_RC_SEED_SECRET_NAME"
           ownership_status=$?
           set -e
           if [ "$ownership_status" -eq 0 ]; then
-            kubectl -n "$SEALOS_NAMESPACE" scale "$resource" --replicas=0
-            # The RC-only Inngest deployment may be absent when the shared service is used.
+            kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0
             if [ -n "$(kubectl -n "$SEALOS_NAMESPACE" get deployment/xpod-rc-inngest --ignore-not-found -o name)" ]; then
               kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0
             fi
+            kubectl -n "$SEALOS_NAMESPACE" delete secret "$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found
           elif [ "$ownership_status" -eq 2 ]; then
-            echo "RC resource is absent or belongs to another run; resource not scaled"
+            echo 'RC is absent or belongs to another run; resources retained'
           else
             exit "$ownership_status"
           fi
-          kubectl -n "$SEALOS_NAMESPACE" delete secret "$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found
