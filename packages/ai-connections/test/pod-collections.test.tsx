@@ -103,6 +103,36 @@ async function openProvider(view: ReturnType<typeof renderPilot>, provider = 'op
 }
 
 describe('AI Connection credentials as a live collection', () => {
+  it('forwards a replacement key only through the real controller collection completion path', async () => {
+    const fixture = pilotFixture()
+    const view = renderPilot({ notifications: fakeNotifications(), fixture })
+    await openProvider(view)
+    await waitFor(() => {
+      expect(view.controller.credentialsCollection).toBeDefined()
+      expect(view.controller.credentialsCollection).toBe(fixture.collection())
+      expect(view.controller.credentialsCollection!.isReady()).toBe(true)
+    })
+    const replacement = 'replacement-storage-only'
+    await act(async () => {
+      await view.controller.client!.updateProviderCredential('openai', CREDENTIAL_ID, {
+        expectedVersion: 1, apiKey: replacement,
+      })
+    })
+    expect(fixture.calls.storeUpdate).toEqual([{ provider: 'openai', credentialId: CREDENTIAL_ID,
+      input: { expectedVersion: 1, apiKey: replacement } }])
+    expect(fixture.calls.updateById).toHaveLength(0)
+    expect(JSON.stringify(view.controller.credentialsCollection!.get(CREDENTIAL_KEY))).not.toContain(replacement)
+    expect(JSON.stringify(view.controller.providerSummaries)).not.toContain(replacement)
+    expect(document.body.textContent).not.toContain(replacement)
+    await act(async () => {
+      await view.controller.client!.updateProviderCredential('openai', CREDENTIAL_ID, {
+        expectedVersion: 2, baseUrl: 'https://api.example/v1',
+      })
+    })
+    expect(fixture.calls.storeUpdate[1]).toEqual({ provider: 'openai', credentialId: CREDENTIAL_ID,
+      input: { expectedVersion: 2, baseUrl: 'https://api.example/v1' } })
+  })
+
   it('renders the credentials list from the collection rows and owns the table alone', async () => {
     const notifications = fakeNotifications()
     const fixture = pilotFixture()
@@ -222,6 +252,31 @@ describe('AI Connection credentials as a live collection', () => {
 
     await waitFor(() => expect(screen.getByText('Live label')).toBeTruthy())
     expect(fixture.documentRow(CREDENTIAL_KEY)).toBeTruthy()
+  })
+
+  it('confirms insert and update provider links through real ORM URI normalization', async () => {
+    const fixture = pilotFixture()
+    const view = renderPilot({ fixture, notifications: fakeNotifications() })
+    await waitFor(() => expect(fixture.collection()).toBeDefined())
+    const collection = fixture.collection()!
+    let persisted: Promise<unknown>
+    act(() => {
+      persisted = collection.insert({ id: 'uri-roundtrip', provider: 'openai.ttl', label: 'URI roundtrip', service: 'ai' }).isPersisted.promise
+    })
+    await act(async () => { await persisted })
+    const first = `${POD_URL}settings/providers/openai.ttl`
+    expect(collection.get('uri-roundtrip')?.provider).toBe(first)
+    expect(fixture.calls.insert.at(-1)?.values?.provider).toBe(first)
+    act(() => {
+      persisted = collection.update('uri-roundtrip', draft => { draft.provider = 'anthropic.ttl' }).isPersisted.promise
+    })
+    await act(async () => { await persisted })
+    const updated = `${POD_URL}settings/providers/anthropic.ttl`
+    expect(collection.get('uri-roundtrip')?.provider).toBe(updated)
+    expect(fixture.calls.updateById.at(-1)?.changes?.provider).toBe(updated)
+    expect(collection.pendingKeys.size).toBe(0)
+    expect(collection.conflicts).toHaveLength(0)
+    view.unmount()
   })
 
   it('degrades to the store’s own read when the host offers no collection', async () => {

@@ -7,9 +7,13 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
   Input,
+  NativeSelect,
+  InlineNotice,
+  ListSurface,
+  SectionHeader,
   TooltipProvider,
-  controlFocusClass,
   dismissToast,
   toast,
 } from '@undefineds.co/shared-ui'
@@ -25,7 +29,9 @@ import {
   manualConfigurationText,
   type AiClientConfigurationBridge,
   type AiConnectionsClientId,
+  type AiClientConfigurationStatus,
 } from './AiClientConfigurationSection'
+import { aiConnectionsErrorMessage } from './error-wording'
 import { AiCopyButton } from './AiCopyButton'
 import { AiEndpointList } from './AiEndpointList'
 import { AiProviderHeader } from './AiProviderHeader'
@@ -34,18 +40,13 @@ import { XPOD_AVATAR } from './provider-visuals'
 import { AiGatewayKeyRow } from './AiGatewayKeyRow'
 import { AiGatewayModelsSection, type GatewayModelSelection } from './AiGatewayModelsSection'
 
-const DEFAULT_KEY_NAME = '我的 API Key'
-const CREATED_NOTIFICATION = 'API Key 已创建，请复制或应用到客户端。'
-const UNPERSISTED_COPY_MESSAGE = '这个 API Key 只在创建时可见：请销毁它，然后重新创建并立即复制或应用。'
-const UNPERSISTED_APPLY_MESSAGE = '这个 API Key 只在创建时可见：请销毁它，然后重新创建并直接应用到客户端。'
+const DEFAULT_KEY_NAME = '我的 Xpod 密钥'
+const CREATED_NOTIFICATION = 'Xpod 密钥 已创建，请复制或应用到客户端。'
+const UNPERSISTED_COPY_MESSAGE = '这个 Xpod 密钥 只在创建时可见：请销毁它，然后重新创建并立即复制或应用。'
+const UNPERSISTED_APPLY_MESSAGE = '这个 Xpod 密钥 只在创建时可见：请销毁它，然后重新创建并直接应用到客户端。'
 /** Header tooltip: what Xpod is, then how the Key itself is protected. */
-const XPOD_DESCRIPTION = '把已接入的 Provider 模型统一发布给编码客户端，兼容 OpenAI 与 Anthropic 协议。'
-const XPOD_CREDENTIAL_NOTE = 'API Key 保存在当前 Pod，由 Pod 权限保护；Xpod 不保存明文。'
-const SELECT_CLASS = [
-  'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-[border-color]',
-  'disabled:cursor-not-allowed disabled:opacity-50',
-  controlFocusClass,
-].join(' ')
+const XPOD_DESCRIPTION = '把已接入的模型提供给客户端。'
+const XPOD_CREDENTIAL_NOTE = '密钥允许客户端以你的 WebID 访问整个 Pod。'
 
 /**
  * The Xpod provider page. From a coding client's point of view Xpod is just
@@ -56,12 +57,14 @@ const SELECT_CLASS = [
  */
 export function AiGatewayKeysSection({
   client,
+  onAuthorizeService,
   clientConfigurationBridge,
   gatewayModels,
   modelSelection,
   liveRevision = 0,
 }: {
   client: AiConnectionsClient
+  onAuthorizeService?: () => Promise<void>
   clientConfigurationBridge?: AiClientConfigurationBridge
   gatewayModels?: AiGatewayModel[]
   /** Publishes or withdraws models on the models list endpoint, from this page. */
@@ -72,8 +75,47 @@ export function AiGatewayKeysSection({
    */
   liveRevision?: number
 }) {
+  const bridge = clientConfigurationBridge?.available === false ? undefined : clientConfigurationBridge
+  const [busyKeyId, setBusyKeyId] = useState<string>()
+  const operation = useRef(false)
+  const verificationGeneration = useRef(0)
+  /**
+   * Where a key this session actually applied is in effect, and the digest it was applied with.
+   * The Account owns the credential but no application state, so a list refresh hands back a row
+   * without `appliedTo`; without this the plan that is still live would look like it was never
+   * written and lose its one test. Honoured only for the exact key id whose row still carries the
+   * matching digest, and dropped as soon as the Account stops listing the key, so a changed,
+   * reissued or deleted credential never inherits another key's application. Session-local: it is
+   * only ever a ref, never persisted and never sent anywhere.
+   */
+  const appliedObservations = useRef(new Map<string, { appliedTo: AiConnectionsClientId; fingerprint: string }>())
+  const [sessionPlans, setSessionPlans] = useState<Partial<Record<AiConnectionsClientId, { planId: string; fingerprint: string }>>>({})
+  const [testingKeyId, setTestingKeyId] = useState<string>()
+  const [clientStatuses, setClientStatuses] = useState<Partial<Record<AiConnectionsClientId, AiClientConfigurationStatus>>>({})
+  useEffect(() => {
+    let active = true
+    verificationGeneration.current += 1
+    operation.current = false
+    setBusyKeyId(undefined)
+    setTestingKeyId(undefined)
+    setClientStatuses({})
+    setSessionPlans({})
+    // A new client or bridge is a new session: no application observed under the old one carries.
+    appliedObservations.current.clear()
+    if (bridge) {
+      for (const id of AI_CONNECTIONS_CLIENTS) {
+        void bridge.inspect(id).then((status) => {
+          if (active) setClientStatuses((current) => ({ ...current, [id]: status }))
+        }).catch(() => undefined)
+      }
+    }
+    return () => { active = false; verificationGeneration.current += 1 }
+  }, [bridge, client])
   const [keys, setKeys] = useState<GatewayKeyRecord[]>([])
   const [confirmingKeyId, setConfirmingKeyId] = useState<string | undefined>(undefined)
+  const [loadError, setLoadError] = useState<string>()
+  const [serviceAccessMissing, setServiceAccessMissing] = useState(false)
+  const [authorizing, setAuthorizing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState(DEFAULT_KEY_NAME)
@@ -85,10 +127,8 @@ export function AiGatewayKeysSection({
   const [issuedClient, setIssuedClient] = useState<AiConnectionsClientId>()
   const [appliedClient, setAppliedClient] = useState<AiConnectionsClientId>()
   const [applying, setApplying] = useState(false)
-  const [busyKeyId, setBusyKeyId] = useState<string>()
   const [error, setError] = useState<string>()
   const plaintexts = useRef(new Map<string, string>())
-  const operation = useRef(false)
   const notification = useRef<string | undefined>(undefined)
 
   const notify = useCallback((options: Parameters<typeof toast>[0]) => {
@@ -100,19 +140,44 @@ export function AiGatewayKeysSection({
     notify({ variant: 'destructive', description: errorMessage(cause), duration: 8000 })
   }, [notify])
 
+  /**
+   * Rows as this session should show them: a revoked key is gone, and a key
+   * whose wrapper this session still holds is not advertised as unrecoverable.
+   * The Account remains the only store; this is a view decision.
+   */
+  const adoptRecords = useCallback((records: GatewayKeyRecord[]): GatewayKeyRecord[] => {
+    // A key the Account no longer lists is gone: the session observation for it is not kept to be
+    // handed back if the same id ever reappears, because that would be inventing application state.
+    const listed = new Set(records.map((record) => record.id))
+    for (const id of [...appliedObservations.current.keys()]) {
+      if (!listed.has(id)) appliedObservations.current.delete(id)
+    }
+    return records
+      .filter((record) => !record.revokedAt)
+      .map((record) => {
+        const observed = record.appliedTo ? undefined : appliedObservations.current.get(record.id)
+        const restored = observed && record.fingerprint !== undefined && observed.fingerprint === record.fingerprint
+          ? { ...record, appliedTo: observed.appliedTo }
+          : record
+        return plaintexts.current.has(record.id) ? { ...restored, plaintextAvailable: undefined } : restored
+      })
+  }, [])
+
   useEffect(() => {
     let active = true
     setLoading(true)
+    setLoadError(undefined)
+    setServiceAccessMissing(false)
     setError(undefined)
     // The wrapper cache belongs to the session that created the keys; a new
     // client means a new session and no copy may survive it.
     plaintexts.current.clear()
     void client.listGatewayKeys()
       .then((records) => {
-        if (active) setKeys(records.filter((record) => !record.revokedAt))
+        if (active) setKeys(adoptRecords(records))
       })
       .catch((cause) => {
-        if (active) notifyError(cause)
+        if (active) setLoadError(aiConnectionsErrorMessage(cause))
       })
       .finally(() => {
         if (active) setLoading(false)
@@ -121,7 +186,21 @@ export function AiGatewayKeysSection({
       active = false
       if (notification.current) dismissToast(notification.current)
     }
-  }, [client, notifyError])
+  }, [client, notifyError, adoptRecords])
+
+  // The keys themselves are Account-owned and load without any Pod permission,
+  // but a key is only usable while Xpod may read the Pod, so the page still
+  // says so instead of letting an unusable list look healthy.
+  useEffect(() => {
+    if (!onAuthorizeService) return
+    let active = true
+    void client.getServiceAccess()
+      .then(() => { if (active) setServiceAccessMissing(false) })
+      .catch((cause) => {
+        if (active && errorCode(cause) === 'service_access_missing') setServiceAccessMissing(true)
+      })
+    return () => { active = false }
+  }, [client, onAuthorizeService, liveRevision])
 
   // A change made elsewhere only needs new rows: it must not drop the wrapper
   // copies this session is still showing, nor flash the loading state.
@@ -130,13 +209,29 @@ export function AiGatewayKeysSection({
     let active = true
     void client.listGatewayKeys()
       .then((records) => {
-        if (active) setKeys(records.filter((record) => !record.revokedAt))
+        if (active) setKeys(adoptRecords(records))
       })
       .catch(() => undefined)
     return () => {
       active = false
     }
-  }, [client, liveRevision])
+  }, [client, liveRevision, adoptRecords])
+
+  const authorize = async () => {
+    if (!onAuthorizeService || authorizing) return
+    setAuthorizing(true)
+    try {
+      await onAuthorizeService()
+      const records = await client.listGatewayKeys()
+      setKeys(adoptRecords(records))
+      setLoadError(undefined)
+      setServiceAccessMissing(false)
+    } catch (cause) {
+      setLoadError(aiConnectionsErrorMessage(cause))
+    } finally {
+      setAuthorizing(false)
+    }
+  }
 
   const openCreate = () => {
     setError(undefined)
@@ -159,11 +254,7 @@ export function AiGatewayKeysSection({
   const create = async () => {
     const trimmedName = name.trim()
     if (!trimmedName) {
-      setError('请填写 API Key 名称。')
-      return
-    }
-    if (!purpose) {
-      setError('请选择 API Key 的用途。')
+      setError('请填写 Xpod 密钥 名称。')
       return
     }
     setCreating(true)
@@ -173,12 +264,12 @@ export function AiGatewayKeysSection({
         name: trimmedName,
         // Declared at creation: the key is for this client application, and the
         // record carries where it is in effect.
-        appliedTo: purpose,
+        ...(purpose ? { appliedTo: purpose } : {}),
       })
       plaintexts.current.set(created.record.id, created.plaintext)
       setKeys((current) => [created.record, ...current.filter((record) => record.id !== created.record.id)])
       setIssued(created.record)
-      setIssuedClient(purpose)
+      setIssuedClient(purpose || undefined)
       setAppliedClient(undefined)
       notify({ variant: 'success', description: CREATED_NOTIFICATION })
     } catch (cause) {
@@ -195,7 +286,7 @@ export function AiGatewayKeysSection({
   }
 
   const apply = async () => {
-    if (!issued || !issuedClient || !clientConfigurationBridge) return
+    if (!issued || !issuedClient || !bridge) return
     setError(undefined)
     let plaintext: string
     try {
@@ -206,7 +297,7 @@ export function AiGatewayKeysSection({
     }
     setApplying(true)
     try {
-      const plan = await clientConfigurationBridge.plan({
+      const plan = await bridge.plan({
         client: issuedClient,
         endpoint: client.apiBase,
         ...(issuedClient === 'codex' && gatewayModels !== undefined ? {
@@ -215,7 +306,7 @@ export function AiGatewayKeysSection({
           })),
         } : {}),
       })
-      await clientConfigurationBridge.apply({
+      await bridge.apply({
         client: plan.client,
         planId: plan.planId,
         apiKey: plaintext,
@@ -224,7 +315,14 @@ export function AiGatewayKeysSection({
           targetHash: plan.confirmation.targetHash,
         } } : {}),
       })
+      setSessionPlans(current => ({ ...current, [plan.client]: issued.fingerprint ? { planId: plan.planId, fingerprint: issued.fingerprint } : undefined }))
       setAppliedClient(plan.client)
+      // Only a successful apply records where the key is in effect; a list refresh afterwards
+      // restores this row's binding from here instead of losing it with the Account rows.
+      if (issued.fingerprint) {
+        appliedObservations.current.set(issued.id, { appliedTo: plan.client, fingerprint: issued.fingerprint })
+      }
+      setClientStatuses((current) => ({ ...current, [plan.client]: { status: 'unverifiable', appliedKeyFingerprint: issued.fingerprint } }))
       // The record now points at the client the wrapper was written into.
       setKeys((current) => current.map((record) => record.id === issued.id
         ? { ...record, appliedTo: plan.client }
@@ -239,6 +337,51 @@ export function AiGatewayKeysSection({
     }
   }
 
+  const verificationPlan = (record: GatewayKeyRecord) => {
+    const clientId = AI_CONNECTIONS_CLIENTS.find(id => id === record.appliedTo)
+    if (!bridge || !clientId || record.disabledAt || !record.fingerprint) return
+    const status = clientStatuses[clientId]
+    const plan = sessionPlans[clientId]
+    if (status?.status !== 'unverifiable' || status.appliedKeyFingerprint !== record.fingerprint || plan?.fingerprint !== record.fingerprint) return
+    return { clientId, ...plan }
+  }
+
+  const testConfiguration = async (record: GatewayKeyRecord) => {
+    const plan = verificationPlan(record)
+    if (!bridge || !plan || operation.current) return
+    const generation = verificationGeneration.current
+    operation.current = true
+    setBusyKeyId(record.id)
+    setTestingKeyId(record.id)
+    try {
+      let status = await bridge.verify({ client: plan.clientId, planId: plan.planId })
+      if (generation !== verificationGeneration.current) return
+      if (status.status === 'configured' && !status.appliedKeyFingerprint) {
+        const inspected = await bridge.inspect(plan.clientId)
+        if (generation !== verificationGeneration.current) return
+        status = { ...status, ...inspected }
+      }
+      const reported = status.appliedKeyFingerprint
+      // Only a digest the host actually reports as *different* proves the
+      // applied key changed. A host that reports nothing leaves the key
+      // unproven; it must never read as "changed" or as verified.
+      if (reported !== undefined && reported !== plan.fingerprint) throw new Error('Configuration key changed')
+      setClientStatuses(current => ({ ...current, [plan.clientId]: {
+        ...status,
+        ...(reported ? {} : { status: 'unverifiable' as const }),
+        appliedKeyFingerprint: reported ?? plan.fingerprint,
+      } }))
+    } catch {
+      if (generation === verificationGeneration.current) notify({ variant: 'destructive', description: '客户端配置测试失败，请重试。', duration: 8000 })
+    } finally {
+      if (generation === verificationGeneration.current) {
+        operation.current = false
+        setBusyKeyId(undefined)
+        setTestingKeyId(undefined)
+      }
+    }
+  }
+
   const destroy = async (record: GatewayKeyRecord) => {
     if (operation.current) return
     operation.current = true
@@ -247,6 +390,7 @@ export function AiGatewayKeysSection({
     try {
       await client.deleteGatewayKey(record.id)
       plaintexts.current.delete(record.id)
+      appliedObservations.current.delete(record.id)
       setKeys((current) => current.filter((item) => item.id !== record.id))
       if (issued?.id === record.id) {
         setIssued(undefined)
@@ -263,7 +407,8 @@ export function AiGatewayKeysSection({
 
   return (
     <TooltipProvider>
-      <section className="space-y-8" aria-label="API Keys">
+      <Dialog open={showCreate} onOpenChange={(open) => { if (!open && (creating || applying)) return; setShowCreate(open) }}>
+        <section className="space-y-8" aria-label="Xpod 密钥">
         <AiProviderHeader
           name="Xpod"
           mark="XP"
@@ -279,31 +424,53 @@ export function AiGatewayKeysSection({
         />
 
         <section className="space-y-3" aria-label="当前连接">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="flex items-center gap-2 text-sm font-medium text-foreground/90">
-              <Settings2 aria-hidden="true" className="h-4 w-4 text-primary" />当前连接
-            </h3>
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 API Key"
-                disabled={creating || loading} onClick={openCreate}>
-                <Plus aria-hidden="true" className="h-3.5 w-3.5" />API Key
-              </Button>
-            </div>
-          </div>
+          <SectionHeader
+            level={3}
+            title={<><Settings2 aria-hidden="true" className="h-4 w-4 text-primary" />当前连接</>}
+            titleClassName="flex items-center gap-2 font-medium text-foreground/90"
+            actions={(
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 Xpod 密钥"
+                  disabled={creating || loading} onClick={openCreate}>
+                  <Plus aria-hidden="true" className="h-3.5 w-3.5" />Xpod 密钥
+                </Button>
+              </DialogTrigger>
+            )}
+          />
+          {loadError || serviceAccessMissing ? <InlineNotice
+            tone="destructive"
+            role="alert"
+            action={serviceAccessMissing && onAuthorizeService ? <Button size="sm" disabled={authorizing} onClick={() => void authorize()}>
+              {authorizing ? '正在授权…' : '允许 Xpod 访问'}
+            </Button> : undefined}
+          >
+            {loadError ?? 'Xpod 尚未获准访问这个 Pod'}
+          </InlineNotice> : null}
           {loading ? (
             <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />正在读取 API Key
+              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />正在读取 Xpod 密钥
             </div>
-          ) : keys.length === 0 ? (
-            <p className="py-2 text-xs text-muted-foreground">尚未签发 API Key</p>
+          ) : loadError ? null : keys.length === 0 ? (
+            <p className="py-2 text-xs text-muted-foreground">尚未签发 Xpod 密钥</p>
           ) : (
-            <ul aria-label="API Key 列表" className="rounded-xl border border-border/70">
+            <ListSurface asChild className="divide-y-0 border-border/70 bg-transparent">
+              <ul aria-label="Xpod 密钥 列表">
               {keys.map((record) => (
                 <AiGatewayKeyRow
                   key={record.id}
                   record={record}
                   busy={Boolean(busyKeyId)}
                   confirming={confirmingKeyId === record.id}
+                  configurationStatus={record.appliedTo && AI_CONNECTIONS_CLIENTS.includes(record.appliedTo as AiConnectionsClientId)
+                    ? clientStatuses[record.appliedTo as AiConnectionsClientId] : undefined}
+                  onTest={verificationPlan(record) ? () => void testConfiguration(record) : undefined}
+                  testing={testingKeyId === record.id}
+                  onReissue={() => {
+                    beginAnother()
+                    setName(record.name ?? DEFAULT_KEY_NAME)
+                    setPurpose(AI_CONNECTIONS_CLIENTS.find((id) => id === record.appliedTo) ?? '')
+                    setShowCreate(true)
+                  }}
                   onRequestDestroy={() => setConfirmingKeyId(record.id)}
                   onCancelDestroy={() => setConfirmingKeyId((current) => (current === record.id ? undefined : current))}
                   onDestroy={() => {
@@ -313,39 +480,25 @@ export function AiGatewayKeysSection({
                 />
               ))}
             </ul>
+            </ListSurface>
           )}
-          <details className="text-xs text-muted-foreground">
-            <summary className="w-fit cursor-pointer">接入信息</summary>
-            <div className="mt-2 space-y-3">
-              <section className="space-y-2" aria-labelledby="xpod-access-info">
-                <h4 id="xpod-access-info" className="text-sm font-medium text-foreground">Xpod 接入信息</h4>
-                <p className="text-xs text-muted-foreground">
-                  API Key 是签发给客户端应用的 CSS 客户端凭据；Pod 只记录它绑定到哪个客户端，不保存 Key 明文。
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  同一个 API Key 支持以下兼容协议，按客户端选择并复制对应地址：
-                </p>
-                <AiEndpointList endpoints={xpodProtocolEndpoints(client.apiBase)} copy display="protocol" />
-              </section>
-            </div>
-          </details>
+
         </section>
 
         <AiGatewayModelsSection models={gatewayModels} selection={modelSelection} />
 
-        <Dialog open={showCreate} onOpenChange={(open) => { if (!open && (creating || applying)) return; setShowCreate(open) }}>
-          <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
+        <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
             <DialogHeader>
-              <DialogTitle>{issued ? 'API Key 已签发' : '新建 API Key'}</DialogTitle>
+              <DialogTitle>{issued ? 'Xpod 密钥 已签发' : '新建 Xpod 密钥'}</DialogTitle>
             </DialogHeader>
-            {issued && issuedClient ? (
+            {issued ? (
               <div className="space-y-5">
                 <div className="space-y-1.5">
                   <p className="text-sm">
-                    已签发「{issued.name || '未命名 API Key'}」，用途：{AI_CLIENT_LABELS[issuedClient]}。
+                    已签发「{issued.name || '未命名 Xpod 密钥'}」，用途：{issuedClient ? AI_CLIENT_LABELS[issuedClient] : '只复制'}。
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Xpod 不保存 Key 明文，请立即复制或直接应用到客户端；离开本次会话后无法再次获取。
+                    密钥只显示这一次，请立即复制。范围：整个 Pod。
                   </p>
                 </div>
                 {issued.maskedHint ? (
@@ -353,21 +506,22 @@ export function AiGatewayKeysSection({
                     {issued.maskedHint}
                   </code>
                 ) : null}
-                {!clientConfigurationBridge ? (
+                <AiEndpointList endpoints={xpodProtocolEndpoints(client.apiBase)} copy display="protocol" />
+                {!bridge ? (
                   <p className="text-xs text-muted-foreground">当前 Web 环境无法自动写入客户端配置，请复制后手动粘贴；自动应用需要本机连接。</p>
                 ) : null}
                 {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
                 <div className="flex flex-wrap items-center gap-2">
                   <AiCopyButton
                     value={() => sessionPlaintext(issued, UNPERSISTED_COPY_MESSAGE)}
-                    label="API Key"
-                    text="复制 API Key"
+                    label="Xpod 密钥"
+                    text="复制 Xpod 密钥"
                     disabled={applying}
                     iconClassName="mr-1.5 h-3.5 w-3.5"
                     copiedIconClassName="mr-1.5 h-3.5 w-3.5 text-emerald-600"
                     onError={(cause) => setError(errorMessage(cause))}
                   />
-                  <AiCopyButton
+                  {issuedClient ? <AiCopyButton
                     value={() => manualConfigurationText(
                       issuedClient,
                       client.apiBase,
@@ -379,18 +533,18 @@ export function AiGatewayKeysSection({
                     iconClassName="mr-1.5 h-3.5 w-3.5"
                     copiedIconClassName="mr-1.5 h-3.5 w-3.5 text-emerald-600"
                     onError={(cause) => setError(errorMessage(cause))}
-                  />
-                  {clientConfigurationBridge ? (
+                  /> : null}
+                  {bridge && issuedClient ? (
                     appliedClient ? (
                       <span role="status" className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                         <Check aria-hidden="true" className="h-3.5 w-3.5" />已应用到 {AI_CLIENT_LABELS[appliedClient]}
                       </span>
                     ) : (
-                      <Button type="button" size="sm" disabled={applying}
-                        aria-label={`应用到 ${AI_CLIENT_LABELS[issuedClient]}`}
+                      <Button type="button" size="sm" disabled={applying || clientStatuses[issuedClient]?.status === 'unavailable'}
+                        aria-label={`写入 ${AI_CLIENT_LABELS[issuedClient]}`}
                         onClick={() => void apply()}>
                         {applying ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}
-                        {applying ? '正在应用…' : `应用到 ${AI_CLIENT_LABELS[issuedClient]}`}
+                        {applying ? '正在应用…' : `写入 ${AI_CLIENT_LABELS[issuedClient]}`}
                       </Button>
                     )
                   ) : null}
@@ -404,43 +558,49 @@ export function AiGatewayKeysSection({
               <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); if (!creating) void create() }}>
                 <label className="block space-y-2">
                   <span className="text-sm font-medium">名称</span>
-                  <Input autoFocus aria-label="API Key 名称" value={name} disabled={creating}
+                  <Input autoFocus aria-label="Xpod 密钥 名称" value={name} disabled={creating}
                     onChange={(event) => setName(event.target.value)} />
                 </label>
                 <label className="block space-y-2">
-                  <span className="text-sm font-medium">用途</span>
-                  <select
-                    aria-label="API Key 用途"
-                    className={SELECT_CLASS}
+                  <span className="text-sm font-medium">给哪个客户端用</span>
+                  <NativeSelect
+                    aria-label="Xpod 密钥 用途"
                     value={purpose}
                     disabled={creating}
                     onChange={(event) => setPurpose(event.target.value as AiConnectionsClientId)}
                   >
-                    <option value="" disabled>选择客户端应用</option>
+                    <option value="">不写入，只复制</option>
                     {AI_CONNECTIONS_CLIENTS.map((clientId) => (
-                      <option key={clientId} value={clientId}>{AI_CLIENT_LABELS[clientId]}</option>
+                      <option key={clientId} value={clientId}>{AI_CLIENT_LABELS[clientId]}{bridge ? (clientStatuses[clientId]?.status === 'unavailable' ? ' · 未安装' : clientStatuses[clientId] ? ' · 可配置' : ' · 检测中') : ' · 只复制配置'}</option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </label>
-                <p className="text-xs text-muted-foreground">用途在创建时确定，Key 会绑定到该客户端应用。</p>
+                <p className="text-xs leading-normal text-muted-foreground">客户端默认跟随 Pod 的智能模型。</p>
                 {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
                 <DialogFooter>
                   <Button type="button" variant="outline" disabled={creating} onClick={() => setShowCreate(false)}>取消</Button>
-                  <Button type="submit" aria-label="创建 API Key" disabled={creating || !name.trim() || !purpose}>
+                  <Button type="submit" aria-label="创建 Xpod 密钥" disabled={creating || !name.trim()}>
                     {creating ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}
-                    {creating ? '正在创建…' : '创建 API Key'}
+                    {creating ? '正在创建…' : '创建 Xpod 密钥'}
                   </Button>
                 </DialogFooter>
               </form>
             )}
           </DialogContent>
-        </Dialog>
-      </section>
+        </section>
+      </Dialog>
     </TooltipProvider>
   )
 }
 
+function errorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined
+}
+
 function errorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error && error.code === 'verification_failed_restored') return '写入失败，原配置已恢复'
   const message = error instanceof Error ? error.message.trim() : ''
   if (/failed to fetch|networkerror|load failed/i.test(message)) {
     return '无法连接配置服务，请检查连接后重试。'
@@ -452,7 +612,7 @@ function errorMessage(error: unknown): string {
     return '配置文件写入后的本地检查未通过，请检查文件内容和权限后重试。'
   }
   if (!message || /^(?:AI Connection |AI client configuration )?request failed(?:\. Please try again\.)?$/i.test(message)) {
-    return 'API Key 操作失败，请重试。'
+    return 'Xpod 密钥 操作失败，请重试。'
   }
   return message
 }

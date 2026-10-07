@@ -135,6 +135,8 @@ describe('local runtime delivery contract', () => {
 
     expect(packageJson.files).toContain('qlever');
     expect(packageJson.xpodQleverLocalRuntime).toBe(`./${platformBinaries.QLEVER_LOCAL_RUNTIME_RELATIVE_PATH}`);
+    expect(packageJson.files).toContain('SOURCE');
+    expect(packageJson.xpodEmbeddedSource).toBe('./SOURCE/SOURCE-MANIFEST.json');
     expect(copiedPath).toBe(path.join(stageDir, platformBinaries.QLEVER_LOCAL_RUNTIME_RELATIVE_PATH));
     expect(existsSync(copiedPath)).toBe(true);
   });
@@ -151,5 +153,20 @@ describe('local runtime delivery contract', () => {
     }, {
       [platformBinaries.QLEVER_LOCAL_RUNTIME_ENV]: '/explicit/runtime',
     })[platformBinaries.QLEVER_LOCAL_RUNTIME_ENV]).toBe('/explicit/runtime');
+  });
+
+  it('keeps the consumer smoke embedded-source verifier lazy so the isolated child copy cannot miss a repo helper', () => {
+    const smoke = readFileSync(path.join(repoRoot, 'scripts', 'package-consumer-smoke.cjs'), 'utf8');
+    const helperRequire = "require('./lib/embedded-native-source.cjs')";
+    const functionIndex = smoke.indexOf('function verifyInstalledEmbeddedSource');
+    const requireIndex = smoke.indexOf(helperRequire);
+
+    expect(functionIndex).toBeGreaterThan(-1);
+    expect(requireIndex).toBeGreaterThan(functionIndex);
+    // No repo helper require may sit before the verifier, otherwise the byte
+    // copy placed in the consumer dir would fail before the child can start.
+    expect(smoke.slice(0, functionIndex)).not.toContain(helperRequire);
+    expect(smoke).toContain('verifyInstalledNativeSource');
+    expect(smoke).toContain('xpodEmbeddedSourceSha256');
   });
 });

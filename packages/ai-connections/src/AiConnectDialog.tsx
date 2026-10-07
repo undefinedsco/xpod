@@ -17,11 +17,12 @@ import type {
 import type { AiProviderDefinition } from './controller'
 import type { ProviderConnectionState } from './AiProviderCard'
 import type { AiOfferingActionError } from './AiCredentialPoolSection'
-import { offeringTitle } from './offering-label'
+import { offeringTitle, offeringUnavailableMessage } from './offering-label'
 import {
   authorizationMethodsForOffering,
   connectModeForMethod,
   isApiKeyMethod,
+  isBrowserConnectMethod,
   isOAuthMethod,
   isOAuthMode,
   isPendingAttempt,
@@ -82,6 +83,7 @@ export function AiConnectDialog({
   onSaveApiKey: () => void
   onDisconnect: (credential?: AiProviderCredentialSummary) => void
   onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
+    apiKey?: string
     label?: string
     enabled?: boolean
     priority?: number
@@ -115,7 +117,15 @@ export function AiConnectDialog({
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg" aria-describedby={undefined}>
         <DialogHeader><DialogTitle>{controller.title}</DialogTitle></DialogHeader>
         <div className="space-y-5" aria-label="添加连接">
-          {dialogOfferings.map((offering) => {
+          {controller.choosingConsole ? <>
+            <p className="text-sm text-muted-foreground">打开服务商控制台创建 API Key，再回到 Xpod 填写。此入口不会进行账号授权。</p>
+            {offerings.map((offering) => {
+              const method = authorizationMethodsForOffering(offering).find(isBrowserConnectMethod)
+              return method ? <Button key={offering.id} variant="outline" className="w-full"
+                disabled={busy || disabled || method.lifecycle !== 'active'} title={method.reason}
+                onClick={() => controller.beginBrowser(offering, method)}>{offeringTitle(offering)}</Button> : null
+            })}
+          </> : dialogOfferings.map((offering) => {
             const otherAuthorizationPending = isPendingAttempt(attempt) && isOAuthMode(attempt?.mode)
               && (attemptOfferingId ?? attempt?.offeringId) !== offering.id
             const actionDisabled = disabled || saving || otherAuthorizationPending
@@ -131,9 +141,7 @@ export function AiConnectDialog({
             if (offering.lifecycle === 'unavailable' && activeMethods.length === 0) {
               return <fieldset data-create-offering={offering.id} key={offering.id} className="space-y-2 border-t border-border/50 pt-3 first:border-t-0 first:pt-0">
                 <legend className="px-1 text-sm font-medium">{offeringTitle(offering)}</legend>
-                <p className="text-xs text-muted-foreground">{offering.kind === 'oauth-subscription'
-                  ? '暂不可用：账号订阅需在 Xpod 桌面版中导入本机客户端（如 Codex CLI）的登录态，浏览器中无法完成。'
-                  : '暂不可用：该接入方式尚未提供可用的连接流程。'}</p>
+                <p className="text-xs text-muted-foreground">{offeringUnavailableMessage(offering)}</p>
               </fieldset>
             }
             const failedAuthorizationMode = authorizationError?.mode
@@ -168,18 +176,19 @@ export function AiConnectDialog({
             }
             return <fieldset data-create-offering={offering.id} key={offering.id} disabled={actionDisabled} className="space-y-3 border-t border-border/50 pt-3 first:border-t-0 first:pt-0" aria-label={`${offeringTitle(offering)}接入操作`}>
               <legend className="px-1 text-sm font-medium">{offeringTitle(offering)}</legend>
+              {supportsApiKey && authorizationOfferingId ? <p className="text-sm text-muted-foreground">请在控制台创建 API Key，再返回此处填写；无需等待网页授权。</p> : null}
               {supportsApiKey ? <AiApiKeyPool key={`${offering.id}:${editing?.id ?? ''}`}
                 definition={definition} offering={offering} status={status}
                 createOfferings={[offering]} initialCreate={!editing}
                 credentials={credentials} initialEditing={editing?.offeringId === offering.id ? editing : undefined}
                 onCloseEdit={controller.close} onSavingChange={controller.setSaving}
-                attempt={offeringAttempt ?? (attempt?.mode === 'browserAssistedApiKey' ? attempt : undefined)}
+                attempt={offeringAttempt ?? (!attemptOfferingId && !attempt?.offeringId && attempt?.mode === 'browserAssistedApiKey' ? attempt : undefined)}
                 apiKey={apiKey} baseUrl={baseUrl} busy={busy} disabled={actionDisabled}
                 onApiKeyChange={onApiKeyChange} onBaseUrlChange={onBaseUrlChange}
                 onBeginApiKey={onBeginApiKey} onBeginBrowser={onBeginBrowser} onSaveApiKey={onSaveApiKey}
                 onDisconnect={onDisconnect} onUpdateCredential={onUpdateCredential}
                 onCreateApiKeyCredential={onCreateApiKeyCredential} /> : null}
-              {authorizationOfferingId && !offeringError ? <LoginConnectingView title="正在连接"
+              {authorizationOfferingId && !supportsApiKey && !offeringError ? <LoginConnectingView title="正在连接"
                 detail="正在启动授权，请稍候。" providerLabel={offeringTitle(offering)} providerHost={definition.name} /> : null}
               {offeringError ? <p className="w-full text-sm text-destructive">{offeringError}</p> : null}
             </fieldset>

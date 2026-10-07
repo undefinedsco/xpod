@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
+import { within } from '@testing-library/react';
 import { createSolidSessionRuntime, createPodRuntime, type WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import { NoUsableAccessRouteError } from '@undefineds.co/solid-sdk/access-route';
 import {
@@ -818,14 +819,65 @@ describe('Xpod OIDC callback transaction ordering', () => {
     const root = createRoot(container);
     try {
       await act(async () => { root.render(createElement(XpodOidcCallbackApp, { runtime: value, transactionStore: store, href, location, restartSignIn })); });
-      const button = document.querySelector('button');
-      expect(button?.textContent).toBe('重试连接');
+      const button = within(document.body).getByRole('button', { name: '重试连接' });
       failing = false;
-      await act(async () => { button!.click(); });
+      await act(async () => { button.click(); });
       expect(location.replace).toHaveBeenCalledWith('https://app.example/settings/models');
       expect(value.session.logout).not.toHaveBeenCalled();
       expect(restartSignIn).not.toHaveBeenCalled();
       expect(value.session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('retries profile discovery after Inrupt cleans the callback URL without replaying identity', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })));
+    const id = 'callback-profile-cleaned-url-123456';
+    installDom('https://app.example/auth/callback?code=one-use-code&state=original-state');
+    const webId = 'https://app.example/alice/profile/card#me';
+    const { store, getPending } = mutableStore(transaction(id));
+    let failing = true;
+    const open = vi.fn(async () => ({ webId, podUrl: 'https://app.example/alice/', database: {}, collections: 'ready' as const }));
+    const value = runtime(webId, open);
+    value.session.fetch = vi.fn(async () => failing
+      ? new Response('temporarily offline', { status: 503 })
+      : new Response(`<${webId}> <http://www.w3.org/ns/solid/terms#storage> <https://app.example/alice/>.`, {
+        headers: { 'content-type': 'text/turtle' },
+      }));
+    value.session.handleIncomingRedirect = vi.fn(async () => {
+      // Real Inrupt removes these one-time OIDC parameters before returning.
+      const cleaned = new URL(window.location.href);
+      cleaned.searchParams.delete('code');
+      cleaned.searchParams.delete('state');
+      window.history.replaceState(null, '', cleaned.href);
+      return { status: 'authenticated', webId };
+    });
+    value.session.logout = vi.fn();
+    const restartSignIn = vi.fn();
+    const location = { replace: vi.fn() };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      // DesktopOidcCallback relies on the component's default href.
+      await act(async () => { root.render(createElement(XpodOidcCallbackApp, { runtime: value, transactionStore: store, location, restartSignIn })); });
+      expect(window.location.search).toBe('');
+      expect(within(document.body).getAllByText('暂时无法读取身份资料').length).toBeGreaterThan(0);
+      expect(getPending()?.id).toBe(id);
+      const retry = within(document.body).getByRole('button', { name: '重试连接' });
+      failing = false;
+      await act(async () => { retry.click(); });
+      expect(container.querySelector('details code')?.textContent).not.toBe('oidc-state-invalid');
+      expect(location.replace).toHaveBeenCalledWith('https://app.example/settings/models');
+      expect(getPending()).toBeUndefined();
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(value.session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+      expect(value.session.logout).not.toHaveBeenCalled();
+      expect(restartSignIn).not.toHaveBeenCalled();
     } finally {
       await act(async () => { root.unmount(); });
       container.remove();

@@ -21,13 +21,7 @@ suite('Cloud PG quota regression', () => {
   let pgClient: Client | null = null;
 
   beforeAll(async () => {
-    pgClient = new Client({
-      user: 'xpod',
-      password: 'xpod',
-      host: 'localhost',
-      database: 'xpod',
-      port: 5432,
-    });
+    pgClient = new Client({ connectionString: process.env.XPOD_FULL_PG_URL ?? 'postgres://xpod:xpod@localhost:5432/xpod' });
     await pgClient.connect();
 
     const ready = await waitForService(CLOUD_BASE_URL, SERVICE_READY_RETRIES, SERVICE_READY_DELAY_MS);

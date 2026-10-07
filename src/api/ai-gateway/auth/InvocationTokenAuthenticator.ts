@@ -55,6 +55,7 @@ export class InvocationTokenAuthenticator implements Authenticator {
     const context: SolidAuthContext = {
       type: 'solid',
       webId: claims.webId,
+      ...(claims.podUrl ? { authorizedPodUrl: claims.podUrl } : {}),
       accountId: claims.webId,
       internalInvocation: true,
       scopes: claims.scopes,

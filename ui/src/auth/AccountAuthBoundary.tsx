@@ -7,6 +7,7 @@ import { useAuth } from '../context/AuthContextValue';
 import { AccountEntryLinks, XpodAccountCredentials } from './XpodAccountCredentials';
 import { XpodAccountPageSurface } from './XpodAuthSurface';
 import { WebAccountLayout } from './WebAccountLayout';
+import { XpodDeploymentIdentity } from './XpodDeploymentIdentity';
 import { useXpodSolidRuntimeContext } from '../solid/XpodSolidRuntime';
 
 export function AccountWorkspaceBoundary({ children }: { children: ReactNode }) {
@@ -16,6 +17,29 @@ export function AccountWorkspaceBoundary({ children }: { children: ReactNode }) 
   return runtime.state.status === 'authenticated'
     ? <>{children}</>
     : <AccountAuthBoundary>{children}</AccountAuthBoundary>;
+}
+
+/**
+ * Admission for the local runtime service surfaces (`/status/*`).
+ *
+ * Service status, logs, and index evidence come from loopback-only runtime
+ * endpoints (`/service/status`, `/api/admin/*`), so an anonymous visitor keeps
+ * them: the page must never turn into a login form merely because nobody signed
+ * in. The one Account request here is explicit - the desktop tray's
+ * `?account=open` entry - and it keeps the Account sign-in surface.
+ */
+export function LocalServiceSurfaceBoundary({ children }: { children: ReactNode }) {
+  const runtime = useXpodSolidRuntimeContext();
+  const account = useAuth();
+  const authenticated = runtime.state.status === 'authenticated'
+    || account.accountState.status === 'authenticated';
+  if (authenticated || !isAccountOpenRequested()) return <>{children}</>;
+  return <AccountAuthBoundary />;
+}
+
+function isAccountOpenRequested(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('account') === 'open';
 }
 
 export interface AccountAuthBoundaryProps {
@@ -80,7 +104,7 @@ export function AccountAuthBoundary({
 
 function LoginSurface({ children, surface }: { children: ReactNode; surface: 'page' | 'embedded' }) {
   if (surface === 'embedded') {
-    return <WebAccountLayout title="登录 Xpod" presentation="compact">{children}</WebAccountLayout>;
+    return <WebAccountLayout title="登录 Xpod" presentation="compact" serviceIcon={<XpodDeploymentIdentity />}>{children}</WebAccountLayout>;
   }
   return (
     <XpodAccountPageSurface title="登录 Xpod" presentation="compact">

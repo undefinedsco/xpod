@@ -170,9 +170,12 @@ export function registerLocalServices(
   // The settings page lets an operator pick the DNS provider, so the runtime honours that
   // choice instead of always wiring Cloudflare and ignoring a saved "tencent".
   const dnsProviderId = process.env.XPOD_DNS_PROVIDER?.trim().toLowerCase() || 'cloudflare';
-  const tencentDnsToken = process.env.XPOD_TENCENT_DNS_TOKEN?.trim();
-  const tencentDnsTokenId = process.env.XPOD_TENCENT_DNS_TOKEN_ID?.trim();
-  const dnsCredentialReady = dnsProviderId === 'tencent' ? Boolean(tencentDnsToken) : Boolean(apiToken);
+  const tencentDnsToken = process.env.TENCENT_DNSPOD_TOKEN?.trim();
+  const tencentDnsTokenId = process.env.TENCENT_DNSPOD_ID?.trim();
+  // DNSPod 需要 ID 与 Token 同时具备；只看 token 会注册一个实际禁用的 provider（静默失效）。
+  const dnsCredentialReady = dnsProviderId === 'tencent'
+    ? Boolean(tencentDnsToken && tencentDnsTokenId)
+    : Boolean(apiToken);
 
   if (dnsCredentialReady && baseDomain) {
     console.log(`[Local] Self-hosted DNS mode detected (provider: ${dnsProviderId})`);

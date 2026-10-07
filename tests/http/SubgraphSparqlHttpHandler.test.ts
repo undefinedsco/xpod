@@ -486,6 +486,90 @@ describe('SubgraphSparqlHttpHandler', () => {
       expect(mockAuthorizer.handleSafe).toHaveBeenCalledTimes(3);
     });
 
+    it('should authorize each distinct graph resource once per SELECT', async () => {
+      const request = createMockRequest('/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D');
+      const response = createMockResponse();
+      const resource = 'http://localhost:3000/alice/shared.ttl';
+
+      // The same resource is exposed as its own graph and as a prefixed metadata graph;
+      // one request must not re-run the identical authorization decision for each alias.
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([
+        resource,
+        `meta:${resource}`,
+      ]));
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: [] }),
+      });
+
+      await handler.handle({ request, response });
+
+      const checkedPaths = mockAuthorizer.handleSafe.mock.calls
+        .map((call) => [ ...call[0].requestedModes.keys() ][0].path);
+      expect(checkedPaths.filter((path) => path === resource)).toHaveLength(1);
+      // One base grant plus exactly one decision for the duplicated resource.
+      expect(mockAuthorizer.handleSafe).toHaveBeenCalledTimes(2);
+    });
+
+    it('should re-evaluate graph authorization on every SELECT instead of reusing a prior denial', async () => {
+      const query = '/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D';
+      const privateGraph = 'http://localhost:3000/alice/private.ttl';
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([ privateGraph ]));
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: [] }),
+      });
+
+      // First request: the child graph is denied and must land in the access scope.
+      mockAuthorizer.handleSafe.mockImplementation(async ({ requestedModes }: any) => {
+        if ([ ...requestedModes.keys() ][0].path === privateGraph) {
+          throw new Error('child graph read denied');
+        }
+      });
+      await handler.handle({ request: createMockRequest(query), response: createMockResponse() });
+      const firstScope = mockQueryEngine.queryBindings.mock.calls.at(-1)![2];
+      expect(firstScope.deniedGraphUrls).toEqual([ privateGraph ]);
+
+      // Second request with the same credentials/base but now allowed: the stale denial must not be reused.
+      mockAuthorizer.handleSafe.mockImplementation(async () => undefined);
+      await handler.handle({ request: createMockRequest(query), response: createMockResponse() });
+      const secondScope = mockQueryEngine.queryBindings.mock.calls.at(-1)![2];
+      expect(secondScope.deniedGraphUrls).toBeUndefined();
+    });
+
+    it('should deny both a resource and its metadata alias when the shared resource is denied', async () => {
+      const query = '/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D';
+      const resource = 'http://localhost:3000/alice/private.ttl';
+      const metaAlias = `meta:${resource}`;
+      // Both graphs resolve to the same resource, so one decision must deny the whole group.
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([ resource, metaAlias ]));
+      mockAuthorizer.handleSafe.mockImplementation(async ({ requestedModes }: any) => {
+        if ([ ...requestedModes.keys() ][0].path === resource) {
+          throw new Error('shared resource read denied');
+        }
+      });
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: [] }),
+      });
+
+      await handler.handle({ request: createMockRequest(query), response: createMockResponse() });
+
+      const scope = mockQueryEngine.queryBindings.mock.calls.at(-1)![2];
+      // Every alias of the denied resource must be excluded; denying only the first graph would leak the alias.
+      expect(scope.deniedGraphUrls).toEqual([ metaAlias, resource ].sort());
+      // The base request still asks for Read (mode unchanged by the dedupe).
+      const baseCall = mockAuthorizer.handleSafe.mock.calls.find((call) =>
+        [ ...call[0].requestedModes.keys() ].some((identifier) => identifier.path === 'http://localhost:3000/alice/'));
+      expect([ ...baseCall![0].requestedModes.values() ].flat()).toContain(PERMISSIONS.Read);
+    });
+
     it('should authorize prefixed metadata graphs against their source resource', async () => {
       const request = createMockRequest('/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20GRAPH%20%3Fg%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D%20%7D');
       const response = createMockResponse();
@@ -1319,6 +1403,32 @@ describe('SubgraphSparqlHttpHandler', () => {
       // Without an emitter the pre-update existence lookup is not even attempted.
       expect(updateAuthority.getMetadata).not.toHaveBeenCalled();
     });
+
+    it('prepares and executes sidecar updates within the shared mutation-lock scope', async () => {
+      let locked = false;
+      mockPermissionReader.handleSafe.mockImplementation(async () => {
+        expect(locked).toBe(false);
+        return {};
+      });
+      mockAuthorizer.handleSafe.mockImplementation(async () => { expect(locked).toBe(false); });
+      const updateAuthority = {
+        executeSparqlUpdate: vi.fn(async () => { expect(locked).toBe(true); }),
+        getMetadata: vi.fn(async () => { expect(locked).toBe(true); throw new NotFoundHttpError(); }),
+      };
+      const mutationStore = { withMutationLocks: vi.fn(async (_id: ResourceIdentifier, action: () => Promise<void>) => {
+        locked = true;
+        try { return await action(); }
+        finally { locked = false; }
+      }) };
+      handler = new SubgraphSparqlHttpHandler(
+        mockQueryEngine as any, mockCredentialsExtractor as any, mockPermissionReader as any,
+        mockAuthorizer as any, {}, updateAuthority as any, createMockEmitter(), mutationStore as any,
+      );
+      expect((await postUpdate(`INSERT DATA { GRAPH <${docA}> { <#s> <#p> <#o> } }`)).statusCode).toBe(204);
+      expect(updateAuthority.executeSparqlUpdate).toHaveBeenCalledOnce();
+      expect(mutationStore.withMutationLocks).toHaveBeenCalledOnce();
+      expect(locked).toBe(false);
+    });
   });
 
   describe('custom sidecarPath', () => {
@@ -1346,6 +1456,125 @@ describe('SubgraphSparqlHttpHandler', () => {
 
       const request = createMockRequest('/alice/-/sparql');
       await expect(customHandler.canHandle({ request, response: createMockResponse() })).rejects.toThrow(NotImplementedHttpError);
+    });
+  });
+
+  describe('request-scoped authorization memo', () => {
+    const SELECT_QUERY = '/alice/-/sparql?query=SELECT%20*%20WHERE%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D';
+    const BASE = 'http://localhost:3000/alice/';
+
+    const emptyBindings = () => ({
+      [Symbol.asyncIterator]: () => ({ next: () => Promise.resolve({ done: true }) }),
+      metadata: () => Promise.resolve({ variables: [] }),
+    });
+
+    beforeEach(() => {
+      mockCredentialsExtractor.handleSafe.mockReset();
+      mockCredentialsExtractor.handleSafe.mockResolvedValue({ agent: { webId: 'https://example.org/alice#me' } });
+      mockPermissionReader.handleSafe.mockReset();
+      mockPermissionReader.handleSafe.mockResolvedValue(new IdentifierSetMultiMap());
+      mockAuthorizer.handleSafe.mockReset();
+      mockAuthorizer.handleSafe.mockResolvedValue(undefined);
+      mockQueryEngine.queryBindings.mockReset();
+      mockQueryEngine.queryBindings.mockResolvedValue(emptyBindings());
+    });
+
+    afterEach(() => {
+      mockPermissionReader.handleSafe.mockReset();
+      mockPermissionReader.handleSafe.mockResolvedValue(new IdentifierSetMultiMap());
+      mockAuthorizer.handleSafe.mockReset();
+      mockAuthorizer.handleSafe.mockResolvedValue(undefined);
+      mockCredentialsExtractor.handleSafe.mockReset();
+      mockCredentialsExtractor.handleSafe.mockResolvedValue({ agent: { webId: 'https://example.org/alice#me' } });
+    });
+
+    it('should authorize a base container that is also a listed graph only once per SELECT', async () => {
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([ BASE ]));
+
+      await handler.handle({ request: createMockRequest(SELECT_QUERY), response: createMockResponse() });
+
+      const baseChecks = mockAuthorizer.handleSafe.mock.calls.filter((call) =>
+        [ ...call[0].requestedModes.keys() ][0].path === BASE);
+      // Pre-memo this was two checks: the base grant in resolveReadAccessScope plus the graph loop.
+      expect(baseChecks).toHaveLength(1);
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledTimes(1);
+    });
+
+    it('should still reject the whole SELECT when the base container is denied', async () => {
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([ BASE ]));
+      mockAuthorizer.handleSafe.mockImplementation(async ({ requestedModes }: any) => {
+        if ([ ...requestedModes.keys() ][0].path === BASE) {
+          throw new ForbiddenHttpError('base denied');
+        }
+      });
+
+      const response = createMockResponse();
+      await handler.handle({ request: createMockRequest(SELECT_QUERY), response });
+
+      expect(response.statusCode).toBe(403);
+      expect(mockQueryEngine.queryBindings).not.toHaveBeenCalled();
+    });
+
+    it('should re-authorize on each request (the memo is request-scoped, not instance-wide)', async () => {
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([ BASE ]));
+
+      await handler.handle({ request: createMockRequest(SELECT_QUERY), response: createMockResponse() });
+      await handler.handle({ request: createMockRequest(SELECT_QUERY), response: createMockResponse() });
+
+      const baseChecks = mockAuthorizer.handleSafe.mock.calls.filter((call) =>
+        [ ...call[0].requestedModes.keys() ][0].path === BASE);
+      expect(baseChecks).toHaveLength(2);
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledTimes(2);
+    });
+
+    it('should keep concurrent requests with different credentials isolated', async () => {
+      const webIds = [ 'https://example.org/a#me', 'https://example.org/b#me' ];
+      let credentialIndex = 0;
+      mockCredentialsExtractor.handleSafe.mockImplementation(async () => ({
+        agent: { webId: webIds[credentialIndex++] ?? webIds[0] },
+      }));
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([ BASE ]));
+
+      await Promise.all([
+        handler.handle({ request: createMockRequest(SELECT_QUERY), response: createMockResponse() }),
+        handler.handle({ request: createMockRequest(SELECT_QUERY), response: createMockResponse() }),
+      ]);
+
+      const principals = mockQueryEngine.queryBindings.mock.calls
+        .map((call) => call[2].principal)
+        .sort();
+      expect(principals).toEqual([ ...webIds ].sort());
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledTimes(2);
+    });
+
+    it('should not persist a failed authorization attempt for a later retry', async () => {
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([ BASE ]));
+      mockPermissionReader.handleSafe.mockRejectedValueOnce(new Error('permission backend down'));
+
+      await expect(handler.handle({ request: createMockRequest(SELECT_QUERY), response: createMockResponse() }))
+        .rejects.toThrow('permission backend down');
+      expect(mockQueryEngine.queryBindings).not.toHaveBeenCalled();
+
+      await handler.handle({ request: createMockRequest(SELECT_QUERY), response: createMockResponse() });
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledTimes(1);
+    });
+
+    it('should preserve the original permission backend failure', async () => {
+      const failure = { code: 'PERMISSION_BACKEND_FAILED' };
+      mockPermissionReader.handleSafe.mockRejectedValueOnce(failure);
+      await expect(handler.handle({ request: createMockRequest(SELECT_QUERY), response: createMockResponse() }))
+        .rejects.toBe(failure);
+      expect(mockQueryEngine.queryBindings).not.toHaveBeenCalled();
+    });
+
+    it('should enforce a revoked grant on the next request with the same credentials', async () => {
+      mockQueryEngine.listGraphs.mockResolvedValue(new Set([ BASE ]));
+      await handler.handle({ request: createMockRequest(SELECT_QUERY), response: createMockResponse() });
+      mockAuthorizer.handleSafe.mockRejectedValue(new ForbiddenHttpError('grant revoked'));
+      const response = createMockResponse();
+      await handler.handle({ request: createMockRequest(SELECT_QUERY), response });
+      expect(response.statusCode).toBe(403);
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledTimes(1);
     });
   });
 });

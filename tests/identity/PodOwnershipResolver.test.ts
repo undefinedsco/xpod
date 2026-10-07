@@ -162,6 +162,46 @@ describe('CssPodOwnershipResolver', () => {
     })).resolves.toEqual([]);
   });
 
+  it('retains each registered storage binding for one exact account WebID', async () => {
+    const { resolver, podStore } = createResolver();
+    podStore.findPods = vi.fn().mockResolvedValue([
+      { id: 'pod-a', baseUrl: 'http://localhost:3000/alice-a/' },
+      { id: 'pod-b', baseUrl: 'http://localhost:3000/alice-b/' },
+      { id: 'duplicate-a', baseUrl: 'http://localhost:3000/alice-a' },
+      { id: 'foreign-root', baseUrl: 'https://foreign.example/alice/' },
+      { id: 'foreign-owner', baseUrl: 'http://localhost:3000/bob/' },
+    ]);
+    podStore.getOwners = vi.fn().mockImplementation(async id => [
+      { webId: id === 'foreign-owner' ? bobWebId : aliceWebId, visible: false },
+      { webId: `${aliceWebId}-different`, visible: false },
+    ]);
+    await expect(resolver.resolveOwnedWebIds({ accountId: 'alice-account', candidateWebIds: [aliceWebId, bobWebId],
+      target: { storageUrl: 'http://localhost:3000/' } })).resolves.toEqual([
+      { webId: aliceWebId, storageUrl: 'http://localhost:3000/alice-a/', storageMode: 'local' },
+      { webId: aliceWebId, storageUrl: 'http://localhost:3000/alice-b/', storageMode: 'local' },
+    ]);
+    expect(podStore.getOwners).not.toHaveBeenCalledWith('foreign-root');
+  });
+
+  it('retains remote same-owner bindings after exact candidate and target verification', async () => {
+    const remote = vi.fn(async () => new Response(JSON.stringify({ entries: [
+      { webId: aliceWebId, storageUrl: 'https://node.example/a/' },
+      { webId: aliceWebId, storageUrl: 'https://node.example/b/' },
+      { webId: aliceWebId, storageUrl: 'https://node.example/a' },
+      { webId: bobWebId, storageUrl: 'https://node.example/bob/' },
+      { webId: `${aliceWebId}-different`, storageUrl: 'https://node.example/fragment/' },
+      { webId: aliceWebId, storageUrl: 'https://foreign.example/a/' },
+      { webId: aliceWebId, storageUrl: 'https://node.example/c/', podUrl: 'https://foreign.example/c/' },
+    ] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const { resolver } = createResolver({ fetch: remote });
+    await expect(resolver.resolveOwnedWebIds({ accountId: 'alice-account', candidateWebIds: [aliceWebId],
+      target: { storageUrl: 'https://node.example/', lookupUrl: 'https://node.example/', serviceAccessToken: 'test-only' } }))
+      .resolves.toEqual([
+        { webId: aliceWebId, storageUrl: 'https://node.example/a/', storageMode: 'local' },
+        { webId: aliceWebId, storageUrl: 'https://node.example/b/', storageMode: 'local' },
+      ]);
+  });
+
   it('deduplicates repeated candidate and owner entries', async () => {
     const { resolver, podStore } = createResolver();
     podStore.findPods = vi.fn().mockResolvedValue([

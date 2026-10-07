@@ -31,12 +31,15 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
 type DialogContentProps = React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
   variant?: "center" | "sheet-left" | "sheet-right"
+  closeLabel?: string
+  closeDisabled?: boolean
+  hideCloseButton?: boolean
 }
 
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   DialogContentProps
->(({ className, children, variant = "center", ...props }, ref) => (
+>(({ className, children, variant = "center", closeLabel = "Close", closeDisabled = false, hideCloseButton = false, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
@@ -52,10 +55,10 @@ const DialogContent = React.forwardRef<
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className={cn("absolute right-4 top-4 rounded-xl opacity-70 transition-all hover:opacity-100 hover:bg-muted/50 p-1 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground", interactiveFocusClass)}>
+{!hideCloseButton ? <DialogPrimitive.Close disabled={closeDisabled} className={cn("absolute right-4 top-4 rounded-xl opacity-70 transition-all hover:opacity-100 hover:bg-muted/50 p-1 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground", interactiveFocusClass)}>
         <X className="h-4 w-4" />
-        <span className="sr-only">Close</span>
-      </DialogPrimitive.Close>
+        <span className="sr-only">{closeLabel}</span>
+      </DialogPrimitive.Close> : null}
     </DialogPrimitive.Content>
   </DialogPortal>
 ))

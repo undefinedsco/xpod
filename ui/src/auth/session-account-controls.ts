@@ -46,11 +46,12 @@ export async function readSessionAccountControls(
     return undefined;
   }
 
+  const sessionFetch = createSessionAccountFetch(options);
   let response: Response;
   try {
-    response = await options.fetch(index, {
+    response = await sessionFetch(index, {
       headers: { accept: 'application/json' },
-      credentials: 'include',
+      credentials: 'omit',
     });
   } catch {
     return undefined;
@@ -68,15 +69,52 @@ export async function readSessionAccountControls(
   }
 
   // The control is only trusted when it stays on the authority that advertised it.
-  const collection = await resolveHostedAccountControlUrl(advertised, options.fetch, index);
-  return collection ? { collection, webId: options.webId } : undefined;
+  const collection = await resolveHostedAccountControlUrl(advertised, sessionFetch, index);
+  if (!collection) return undefined;
+  const control = new URL(collection, index);
+  return control.origin === new URL(index).origin && control.pathname.startsWith('/.account/')
+    && !control.username && !control.password && !control.hash
+    ? { collection, webId: options.webId } : undefined;
+}
+
+/** Keep the Account cookie actor separate from the SDK's DPoP actor. */
+export function createSessionAccountFetch(options: {
+  accountIndex: string;
+  fetch: typeof fetch;
+  assertCurrent?: () => void;
+}): typeof fetch {
+  const index = normalizeAccountIndex(options.accountIndex);
+  return async (input, init) => {
+    options.assertCurrent?.();
+    if (!index) throw new Error('Invalid session Account authority');
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+    if (/^CSS-Account-Token(?:\s|$)/iu.test(headers.get('authorization') ?? '')) {
+      headers.delete('authorization');
+    }
+    const effectiveInit = { ...init, headers, credentials: 'omit' as const, redirect: 'error' as const };
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.origin !== new URL(index).origin || !url.pathname.startsWith('/.account/')
+      || url.username || url.password || url.hash) {
+      throw new Error('Session Account request leaves the trusted authority');
+    }
+    const request = new Request(input, effectiveInit);
+    const response = input instanceof Request
+      ? await options.fetch(request)
+      : await options.fetch(request.url, effectiveInit);
+    try { options.assertCurrent?.(); } catch (error) {
+      void response.body?.cancel().catch(() => undefined);
+      throw error;
+    }
+    return response;
+  };
 }
 
 function normalizeAccountIndex(value: string): string | undefined {
   try {
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password
-      || !url.pathname.startsWith('/.account/')) {
+      || url.pathname !== '/.account/' || url.search || url.hash) {
       return undefined;
     }
     return url.href;

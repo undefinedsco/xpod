@@ -29,7 +29,7 @@ Compose 服务名仍是 `minio`，端口仍是 9000，凭据仍是 `minioadmin`�
 - 官方镜像无法再匿名拉取：`quay.io/minio/minio` 对原先固定的 index 返回 401，
   `minio/minio` 已从 Docker Hub 下架，`test:integration:full` 会卡在
   `docker compose ... up -d postgres redis minio`。
-- VersityGW 是单个静态 Rust 二进制（Apache-2.0，Alpine 底座），提供同样的 path-style S3 API
+- VersityGW 是 Apache-2.0 的 Go 语言 S3 网关（静态二进制，Alpine 底座），提供同样的 path-style S3 API
   （含 presign、multipart、`x-amz-meta-*` 往返、SigV4 校验），因此 `MinioDataAccessor`、
   `CSS_MINIO_*`、测试代码与凭据都不需要改。
 - 体积：压缩 ~58 MiB → ~28 MiB，落盘 ~350 MiB → ~93 MiB。

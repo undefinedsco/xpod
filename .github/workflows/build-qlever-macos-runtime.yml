@@ -97,6 +97,21 @@ jobs:
           XPOD_QLEVER_BUILD_JOBS: ${{ steps.parallelism.outputs.jobs }}
         run: qlever/scripts/build-macos-local-runtime.sh
 
+      # Runs only after the real runtime smoke (ready/ABI/RDF/FTS/VEC/shutdown)
+      # succeeded, so the recorded hashes describe a functionally verified build.
+      - name: Bind the qlever-local acceptance evidence
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          RUNTIME_ARCHIVE: ${{ runner.temp }}/xpod-qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+        run: |
+          set -euo pipefail
+          node scripts/release-gate-evidence.cjs create-qlever-local \
+            --source-sha "$SOURCE_SHA" \
+            --archive "$RUNTIME_ARCHIVE" \
+            --abi-platform macos-arm64 \
+            --smoke-command 'qlever/scripts/build-macos-local-runtime.sh (verify-local-runtime-artifacts.py --build-source macos-arm64: ready/ABI/RDF/FTS/VEC/shutdown smoke)' \
+            --out "$(dirname "$RUNTIME_ARCHIVE")/qlever-local-acceptance.json"
+
       - name: Report compiler cache statistics
         if: always()
         env:
@@ -107,7 +122,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}
-          path: ${{ runner.temp }}/xpod-qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+          path: |
+            ${{ runner.temp }}/xpod-qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+            ${{ runner.temp }}/xpod-qlever-runtime/qlever-local-acceptance.json
           if-no-files-found: error
           overwrite: true
           retention-days: 30

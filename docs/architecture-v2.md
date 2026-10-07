@@ -1,6 +1,7 @@
 # XPOD 架构 V2：身份与存储分离
 
 > 本文档描述 XPOD 从"Pod 托管平台"向"去中心化 Pod 管理与身份服务平台"的架构升级。
+> 2026-10-03 归属确认：Cloud 与 managed Local 的独立 `profile/card` 始终由 Cloud 托管，用于身份与 Pod 发现；数据存储位置、公网数据入口状态不改变 card 的归属。当前 provisioning 仍存在 Local-profile 实现偏差，下面是目标架构，不代表该偏差已经修复。正确验收及历史结论限制见 [Local 与 Consent 验收记录](testing/2026-10-02-local-consent-acceptance.md)。
 
 ## 1. 核心目标
 
@@ -74,12 +75,13 @@
 **适用用户**: 普通用户，不想折腾，开箱即用
 
 ```
-WebID:    https://pods.undefineds.co/alice/profile/card#me
-Storage:  https://pods.undefineds.co/alice/
+WebID:    https://id.undefineds.co/alice/profile/card#me   (独立 card，Cloud 身份服务托管)
+Storage:  https://pods.undefineds.co/alice/                (Cloud 数据存储)
 ```
 
 **特点**:
-- WebID 和 Storage 在同一位置
+- Cloud 身份服务托管独立 card，Cloud SP 托管用户数据；两者职责分开
+- card 的 `solid:storage` 指向 Cloud Pod，后续切换数据位置不从新 Pod URL 派生 WebID
 - 数据存储在我们的服务器
 - 用户无需任何技术配置
 - 我们负责备份、可用性、安全
@@ -91,7 +93,7 @@ Storage:  https://pods.undefineds.co/alice/
 
 ### 3.2 Local 自托管模式（推荐）
 
-**适用用户**: 技术用户，关注数据主权，有公网访问能力
+**适用用户**: 关注数据主权、希望把数据存放在自己的设备上；公网数据入口可选，不是本机使用的前提
 
 ```
 WebID:    https://id.undefineds.co/alice/profile/card#me   (永久稳定，Cloud托管)
@@ -112,14 +114,15 @@ Storage:  https://alice.undefineds.xyz/                    (动态，指向 Loca
 ```
 
 **特点**:
-- WebID 永久稳定（托管在 Cloud）
-- 数据存储在用户本地
-- IP 变化时自动更新 DDNS 和 storage 指针
+- WebID 永久稳定，独立 `profile/card` 始终托管在 Cloud，用于发现实际 Pod
+- 数据及其访问控制存储在用户本地，owner 为同一个 Cloud WebID
+- IP 变化时更新 DDNS 或访问路由，不改 WebID 或 canonical Pod URL；只有存储位置实际改变才更新 card 的 storage 指针
+- 未配置或不可用的公网数据入口不影响 Cloud card 读取；本机与局域网通过可用 route 访问 Local Pod
 - 平台不接触用户数据
 
 **合规优势**:
-- Cloud 仅存储几 KB 的 RDF Profile
-- 不存储用户上传的任何文件
+- Cloud 仅为 managed Local 身份托管独立 RDF card 及必要的原生授权资源，不额外创建 Cloud 用户存储 Pod
+- 身份文档授权只覆盖 card，不因此授予上传任意 Cloud 用户文件的权限；既有合法 Cloud 数据 Pod 的权限保持独立
 - 降低内容审核风险
 
 ### 3.3 完全自托管模式
@@ -273,7 +276,8 @@ Body: { "status": "online", "ipv4": "1.2.3.4", "directCandidates": ["https://edg
 ### 8.1 WebID Profile / Pod Storage 关系
 
 Cloud 不再用独立业务表复制 WebID Profile。
-WebID Profile 是 CSS 原生 Pod 资源，`solid:storage` 写在 profile/card 里；SP-scoped lookup 从 CSS account Pod 数据和 WebID Profile 关系解析 storage URL。
+Cloud/managed Local 的 `profile/card` 是 Cloud 托管的独立身份与发现文档，通过 CSS 原生 LDP/ResourceStore 和授权链提供；不要求为它创建一个 Cloud 用户存储 Pod。`solid:oidcIssuer` 声明 Cloud issuer，`solid:storage` 声明实际 Cloud 或 Local Pod 的 canonical URL；SP-scoped lookup 从 CSS account Pod 数据和 card 关系解析 storage URL。WebID 不从 Local storage URL 推导，Local 的 ACL/ACP owner 使用该 Cloud WebID。
+本机数据请求可以切换 loopback/LAN access route，但不能将 Cloud card 请求改到 Local profile，也不能因 Local 公网入口不可达而跳过 card 的 issuer 验证。
 节点归属记录在 `cluster_node.pod_base_urls`，用量和配额由 `identity_usage` 负责。
 
 ### 8.2 cluster_ddns_record 表 (Cloud)

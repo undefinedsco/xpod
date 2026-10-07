@@ -41,12 +41,12 @@ function composition(authenticated: boolean) {
 afterEach(() => { cleanup(); window.xpodDesktop = undefined; });
 
 describe('Xpod desktop identity bridge', () => {
-  test('projects independent Account and WebID state without exposing Account internals', async () => {
+  test('uses the WebID profile without borrowing Account identity', async () => {
     const setIdentity = vi.fn();
     const setWindowMode = vi.fn();
     window.xpodDesktop = { setIdentity, setWindowMode };
     const view = render(composition(true));
-    await waitFor(() => expect(setIdentity).toHaveBeenLastCalledWith({ label: 'Alice Admin', webId: WEB_ID, podUrl: POD_URL }));
+    await waitFor(() => expect(setIdentity).toHaveBeenLastCalledWith({ label: 'alice', webId: WEB_ID, podUrl: POD_URL }));
     expect(setIdentity.mock.lastCall?.[0]).not.toHaveProperty('id');
     view.rerender(composition(false));
     await waitFor(() => expect(setIdentity).toHaveBeenLastCalledWith(null));

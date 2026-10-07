@@ -21,10 +21,10 @@ describe('desktop Dock icon', () => {
       moduleDir: '/Applications/Xpod.app/Contents/Resources/app.asar/dist',
       resourcesPath: '/Applications/Xpod.app/Contents/Resources',
       isPackaged: true,
-      pathExists: (candidate) => candidate.endsWith('/icon.icns'),
+      pathExists: (candidate) => candidate === '/Applications/Xpod.app/Contents/Resources/app.asar/assets/icon.png',
     })
 
-    expect(iconPath).toBe(path.normalize('/Applications/Xpod.app/Contents/Resources/icon.icns'))
+    expect(iconPath).toBe(path.normalize('/Applications/Xpod.app/Contents/Resources/app.asar/assets/icon.png'))
   })
 
   it('sets a non-empty Xpod image on the macOS Dock', () => {

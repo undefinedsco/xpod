@@ -78,7 +78,7 @@ describe('ProviderRegistry provider catalog', () => {
     for (const product of products) {
       for (const offering of product.offerings) {
         expect(offering).toMatchObject({
-          productLabel: product.label,
+          productLabel: expect.any(String),
           kind: expect.any(String),
           authModes: expect.any(Array),
           credentialPrefixHints: expect.any(Array),
@@ -119,14 +119,38 @@ describe('ProviderRegistry provider catalog', () => {
     expect(registry.requireOffering('openai', 'official-subscription')).toMatchObject({
       label: 'OpenAI Subscription',
       lifecycle: 'unavailable',
-      authModes: ['local'],
-      auth: [{ protocol: 'local-none' }],
+      // The capability catalog declares both subscription and import modes;
+      // deployment bindings decide which actual authorization methods are usable.
+      authModes: ['oauth', 'local'],
+      auth: [{ protocol: 'oauth-device-code' }, { protocol: 'local-none' }],
     });
     expect(registry.requireOffering('anthropic', 'official-subscription')).toMatchObject({
       lifecycle: 'unavailable',
       authModes: ['oauth'],
     });
     expect(() => registry.requireOffering('kimi', 'official-subscription')).toThrow();
+  });
+
+  it.each(['local', 'cloud'] as const)('keeps unimplemented subscriptions unavailable while preserving API-key actions in %s', (deployment) => {
+    const registry = createDefaultProviderRegistry({ products: providerProductsForDeployment(deployment) });
+
+    expect(registry.requireProduct('anthropic').label).toBe('Anthropic');
+    expect(registry.requireOffering('anthropic', 'official-subscription')).toMatchObject({
+      label: 'Claude Pro / Max',
+      productLabel: 'Claude Code',
+      lifecycle: 'unavailable',
+      authModes: ['oauth'],
+      endpoints: [],
+      authorizationMethods: [],
+    });
+    expect(registry.requireOffering('anthropic', 'api-platform')).toMatchObject({
+      lifecycle: 'active',
+      authModes: ['apiKey'],
+      authorizationMethods: [
+        { id: 'api-key', authMode: 'apiKey', lifecycle: 'active' },
+        { id: 'browser-login', authMode: 'apiKey', connectMode: 'browserAssistedApiKey', lifecycle: 'active' },
+      ],
+    });
   });
 
   it('exposes web login and session import independently for subscription offerings', () => {

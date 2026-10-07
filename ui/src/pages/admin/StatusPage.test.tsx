@@ -285,8 +285,8 @@ describe('StatusPage overview runtime layout', () => {
       '复制状态 JSON',
     ]);
     expect(buttons.every((button) => button.textContent?.trim() === '')).toBe(true);
-    expect(buttons.every((button) => button.className.includes('h-9'))).toBe(true);
-    expect(buttons.every((button) => button.className.includes('w-9'))).toBe(true);
+    expect(buttons.every((button) => button.className.includes('h-10'))).toBe(true);
+    expect(buttons.every((button) => button.className.includes('w-10'))).toBe(true);
 
     const entryRow = container.querySelector('[data-testid="stable-entry-row"]');
     expect(entryRow?.textContent).toContain('https://pod.example/');

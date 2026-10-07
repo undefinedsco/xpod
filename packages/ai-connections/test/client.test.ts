@@ -1,9 +1,15 @@
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { CodexConfigAdapter } from '../src/contract/client-config'
 import {
   createAiConnectionsClient as createCoreClient,
   AiConnectionsRequestError,
   normalizeProxyUrl,
   resolveAiConnectionsApiBase,
+  PLATFORM_MODEL_ROLES,
+  matchesPlatformModelRole,
 } from '../src/contract/ai-connections-client'
 // The wording lives with the applet now; the client hands over a code.
 import {
@@ -21,6 +27,107 @@ const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_BASE = 'https://pod.example/alice/'
 
 describe('AI Connection management client', () => {
+  it('publishes the Gateway smart and fast wire roles once', () => {
+    expect(PLATFORM_MODEL_ROLES).toEqual({
+      smart: { id: 'linx' }, fast: { id: 'linx-lite' },
+    })
+  })
+
+  it.each([
+    ['linx', 'smart', true], ['LINX', 'smart', true], ['undefineds/linx', 'smart', true],
+    ['UNDEFINEDS/LINX-LITE', 'fast', true], ['linx-lite', 'fast', true],
+    ['other/linx', 'smart', false], ['org/linx-lite', 'fast', false], ['linx-lite', 'smart', false],
+  ] as const)('matches only the published namespace for %s as %s', (id, role, expected) => {
+    expect(matchesPlatformModelRole(id, role)).toBe(expected)
+  })
+
+  it('reads the complete Gateway catalog without weakening attributable model lists', async () => {
+    const authenticatedFetch = vi.fn(async () => jsonResponse({ data: [
+      { id: 'linx', owned_by: 'undefineds', name: 'Gateway smart', apiKey: 'must-not-escape' },
+      { id: 'linx-lite', provider: 'undefineds', display_name: 'Gateway fast' },
+      { id: 'private-model', providerId: 'external-provider', displayName: 'Private' },
+      { id: 'deepseek-v4-pro', owned_by: 'deepseek' },
+      { id: 'unattributed-model' },
+      { id: '' }, { id: 12 }, null,
+    ] }))
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE, authenticatedFetch })
+    await expect(client.listGatewayCatalogModels!()).resolves.toEqual([
+      { id: 'linx', provider: 'undefineds', displayName: 'Gateway smart' },
+      { id: 'linx-lite', provider: 'undefineds', displayName: 'Gateway fast' },
+      { id: 'private-model', provider: 'external-provider', displayName: 'Private' },
+      { id: 'deepseek-v4-pro', provider: 'deepseek' },
+      { id: 'unattributed-model' },
+    ])
+    expect(authenticatedFetch).toHaveBeenCalledWith('https://pod.example/v1/models', expect.objectContaining({
+      method: 'GET', credentials: 'omit', mode: 'cors',
+      // The selected Pod binding travels with every gateway request so multi-Pod owners
+      // select an exact repository-verified storage root (the API base keeps only the origin).
+      headers: { accept: 'application/json', 'X-Xpod-Pod-Url': POD_BASE },
+    }))
+    await expect(client.listModels()).resolves.toEqual([{ id: 'deepseek-v4-pro', provider: 'deepseek' }])
+    await expect(client.listGatewayModels!()).resolves.toEqual([{ id: 'deepseek-v4-pro', provider: 'deepseek' }])
+  })
+
+  it('keeps an HTTP 200 empty Gateway catalog distinct from a read failure', async () => {
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => jsonResponse({ data: [] })),
+    })
+    await expect(client.listGatewayCatalogModels!()).resolves.toEqual([])
+  })
+
+  it.each([{}, { data: null }, { data: 'invalid' }])('rejects a malformed HTTP 200 Gateway catalog', async payload => {
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => jsonResponse(payload)),
+    })
+    await expect(client.listGatewayCatalogModels!()).rejects.toThrow('invalid Gateway model catalog response')
+  })
+
+  it.each([401, 403, 502])('preserves HTTP %s from the Gateway catalog read', async status => {
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => jsonResponse({ error: 'gateway_request_failed', secret: 'must-not-escape' }, status)),
+    })
+    const error = await client.listGatewayCatalogModels!().catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(AiConnectionsRequestError)
+    expect(error).toMatchObject({ status })
+    expect((error as Error).message).not.toContain('must-not-escape')
+  })
+
+  it('does not turn a Gateway transport failure into an empty catalog', async () => {
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => { throw new Error('transport unavailable') }),
+    })
+    await expect(client.listGatewayCatalogModels!()).rejects.toThrow('transport unavailable')
+  })
+
+  it('preserves safe actionable timeout wording through client and display boundaries', async () => {
+    const code = 'provider_request_timeout'
+    const status = 504
+    const expected = '模型服务请求超时。请检查网络或代理设置，稍后重试同步模型。'
+    const client = createAiConnectionsClient({
+      webId: WEB_ID, podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => jsonResponse({
+        error: code,
+        message: 'https://private.example/?token=secret Bearer private-token',
+        providerMessage: 'sk-private-secret-token',
+      }, status)),
+    })
+    const error = await client.discoverModels('openai').catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(AiConnectionsRequestError)
+    expect(error).toMatchObject({ code, status, message: expected })
+    expect(normalizeAiConnectionsThrownError(error)).toBe(expected)
+    expect(normalizeAiConnectionsThrownError(new Error(expected))).toBe(expected)
+    expect(normalizeAiConnectionsThrownError(new Error(`${code}: https://private.example/?token=secret`))).toBe(expected)
+    expect(expected).not.toMatch(/登录|Xpod|private|secret/)
+  })
+
+  it.each([
+    [401, 'Please sign in again to continue.'],
+    [403, 'AI Connection permission was denied.'],
+    [500, 'AI Connection request failed. Please try again.'],
+  ] as const)('preserves unknown failure fallback for HTTP %s', (status, expected) => {
+    expect(normalizeAiConnectionsErrorMessage({ error: 'unrecognized' }, status)).toBe(expected)
+  })
+
   it.each(['oauth_refresh_failed', 'oauth_refresh_unavailable', 'oauth_session_reauth_required', 'oauth_refresh_token_required'])(
     'preserves the actionable %s message', (code) => {
       const message = normalizeAiConnectionsErrorMessage({ error: code }, 409)
@@ -56,126 +163,95 @@ describe('AI Connection management client', () => {
     expect(normalizeAiConnectionsThrownError(new Error(message))).toBe(expected)
   })
 
-  it('manages durable Xpod API Keys through the Gateway management routes', async () => {
-    const requests: Array<{ url: string; method?: string; body?: string }> = []
-    const record = {
-      id: 'ai/gateway/access-keys.ttl#work-laptop',
-      owner: WEB_ID,
-      scopes: ['models:read', 'chat:write'],
-      createdAt: '2026-08-25T00:00:00.000Z',
-      name: 'Work laptop',
-      disabledAt: undefined,
-      maskedHint: '********abcd1234',
-      plaintextAvailable: true,
-      clientCredentialId: 'xpod-work-laptop',
-      appliedTo: 'codex',
-      appliedOn: 'desktop',
-      appliedAt: '2026-08-25T00:05:00.000Z',
-      appliedClients: ['codex'],
-    }
-    const authenticatedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      requests.push({
-        url,
-        method: init?.method,
-        body: typeof init?.body === 'string' ? init.body : undefined,
-      })
-      if (url.endsWith('/api/ai/gateway/keys') && init?.method === 'GET') {
-        return jsonResponse({ data: [record] })
-      }
-      if (url.endsWith('/api/ai/gateway/keys') && init?.method === 'POST') {
-        return jsonResponse({ key: 'xpod-key-plaintext', record }, 201)
-      }
-      if (url.endsWith('/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop') && init?.method === 'PATCH') {
-        return jsonResponse({ record: { ...record, disabledAt: '2026-08-25T01:00:00.000Z' } })
-      }
-      if (url.endsWith('/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop') && init?.method === 'DELETE') {
-        return jsonResponse({ deleted: true })
-      }
-      throw new Error(`unexpected url: ${url}`)
-    }) as unknown as typeof fetch
-    const client = createAiConnectionsClient({
-      webId: WEB_ID,
-      podBaseUrl: POD_BASE,
-      authenticatedFetch,
-    })
-
-    expect(await client.listGatewayKeys()).toEqual([record])
-    expect(await client.createGatewayKey({
-      name: 'Work laptop',
-      appliedTo: 'codex',
-    })).toEqual({ plaintext: 'xpod-key-plaintext', record })
-    expect(await client.updateGatewayKey(record.id, { enabled: false })).toMatchObject({
-      id: record.id,
-      disabledAt: '2026-08-25T01:00:00.000Z',
-    })
-    await expect(client.deleteGatewayKey(record.id)).resolves.toBeUndefined()
-
-    expect(requests.map(({ url, method, body }) => ({
-      path: new URL(url).pathname,
-      method,
-      body,
-    }))).toEqual([
-      { path: '/api/ai/gateway/keys', method: 'GET', body: undefined },
-      {
-        path: '/api/ai/gateway/keys',
-        method: 'POST',
-        body: JSON.stringify({ name: 'Work laptop', appliedTo: 'codex' }),
-      },
-      {
-        path: '/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop',
-        method: 'PATCH',
-        body: JSON.stringify({ enabled: false }),
-      },
-      {
-        path: '/api/ai/gateway/keys/ai%2Fgateway%2Faccess-keys.ttl%23work-laptop',
-        method: 'DELETE',
-        body: undefined,
-      },
-    ])
-  })
-
-  it('takes the API Key wrapper only from the create response and exposes no reveal route', async () => {
+  it('issues and revokes Xpod keys through the Account client-credentials capability, never the removed Gateway key routes', async () => {
     const requests: Array<{ path: string; method?: string }> = []
-    const record = {
-      id: 'ai/gateway/access-keys.ttl#work-laptop',
-      owner: WEB_ID,
-      scopes: ['models:read', 'chat:write'],
-      createdAt: '2026-08-25T00:00:00.000Z',
-      name: 'Work laptop',
-      clientCredentialId: 'xpod-work-laptop',
-    }
     const authenticatedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      requests.push({ path: new URL(url).pathname, method: init?.method })
-      if (!url.endsWith('/api/ai/gateway/keys') || init?.method !== 'POST') {
-        throw new Error(`unexpected url: ${url}`)
-      }
-      const body = JSON.parse(String(init.body)) as { name: string }
-      return body.name === 'missing-wrapper'
-        ? jsonResponse({ record }, 201)
-        : jsonResponse({ key: 'xpod-key-plaintext', record }, 201)
+      requests.push({ path: new URL(String(input)).pathname, method: init?.method })
+      throw new Error(`unexpected Pod request: ${String(input)}`)
     }) as unknown as typeof fetch
+    const create = vi.fn(async () => ({
+      apiKey: 'sk-Y2xpZW50OnNlY3JldA==',
+      clientId: 'client',
+      resource: 'https://id.example/.account/credentials/one/',
+    }))
+    const list = vi.fn(async () => [
+      { clientId: 'client', label: 'client', resource: 'https://id.example/.account/credentials/one/', webId: WEB_ID },
+      { clientId: 'other', label: 'other', resource: 'https://id.example/.account/credentials/two/', webId: WEB_ID },
+    ])
+    const revoke = vi.fn(async () => undefined)
     const client = createAiConnectionsClient({
       webId: WEB_ID,
       podBaseUrl: POD_BASE,
       authenticatedFetch,
+      clientCredentials: { create, list, revoke },
     })
 
-    expect(await client.createGatewayKey({ name: 'Work laptop' })).toEqual({
-      plaintext: 'xpod-key-plaintext',
-      record,
+    // Listing is Account metadata only: identity plus the resource that revokes
+    // it, and never a secret or a durable "applied" claim the Account cannot make.
+    const listed = await client.listGatewayKeys()
+    expect(listed).toHaveLength(2)
+    expect(listed[0]).toMatchObject({
+      id: 'client',
+      kind: 'client-credentials',
+      clientCredentialId: 'client',
+      credentialResource: 'https://id.example/.account/credentials/one/',
+      name: 'client',
+      owner: WEB_ID,
+      plaintextAvailable: false,
     })
-    // Xpod stores no copy of the wrapper: a create response without it must fail
-    // loudly instead of falling back to a reveal route that no longer exists.
-    await expect(client.createGatewayKey({ name: 'missing-wrapper' }))
-      .rejects.toThrow('Xpod did not return the new API Key')
+    expect(listed[0].maskedHint).toBeUndefined()
+
+    const created = await client.createGatewayKey({ name: 'Work laptop' })
+    expect(create).toHaveBeenCalledWith({ name: 'Work laptop', webId: WEB_ID })
+    expect(created.plaintext).toBe('sk-Y2xpZW50OnNlY3JldA==')
+    expect(created.record).toMatchObject({
+      id: 'client',
+      kind: 'client-credentials',
+      clientCredentialId: 'client',
+      credentialResource: 'https://id.example/.account/credentials/one/',
+      name: 'Work laptop',
+      owner: WEB_ID,
+    })
+
+    await client.deleteGatewayKey('client')
+    expect(revoke).toHaveBeenCalledWith({
+      clientId: 'client',
+      resource: 'https://id.example/.account/credentials/one/',
+      webId: WEB_ID,
+    })
+
+    // Not one byte of this flow touches a Pod route: the Gateway key routes are gone.
+    expect(requests).toEqual([])
+    expect('updateGatewayKey' in client).toBe(false)
     expect('revealGatewayKey' in client).toBe(false)
-    expect(requests).toEqual([
-      { path: '/api/ai/gateway/keys', method: 'POST' },
-      { path: '/api/ai/gateway/keys', method: 'POST' },
-    ])
   })
+
+  it('fails closed without an Account capability instead of falling back to a removed Gateway route', async () => {
+    const authenticatedFetch = vi.fn(async () => jsonResponse({ data: [] })) as unknown as typeof fetch
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE, authenticatedFetch })
+
+    await expect(client.listGatewayKeys()).rejects.toThrow(/Account/i)
+    await expect(client.createGatewayKey({ name: 'Work laptop' })).rejects.toThrow(/Account/i)
+    await expect(client.deleteGatewayKey('client')).rejects.toThrow(/Account/i)
+    expect(authenticatedFetch).not.toHaveBeenCalled()
+  })
+
+  it('refuses to destroy a key the Account no longer lists and never fabricates the wrapper back', async () => {
+    const authenticatedFetch = vi.fn(async () => jsonResponse({ data: [] })) as unknown as typeof fetch
+    const revoke = vi.fn(async () => undefined)
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+      clientCredentials: { create: vi.fn(), list: vi.fn(async () => []), revoke },
+    })
+
+    await expect(client.deleteGatewayKey('client'))
+      .rejects.toThrow('账号服务中已找不到该客户端凭据，请刷新后重试。')
+    expect(revoke).not.toHaveBeenCalled()
+    expect(authenticatedFetch).not.toHaveBeenCalled()
+  })
+
 
   it('rejects proxy credentials because proxy auth is not stored in the Pod secret cell', () => {
     expect(() => normalizeProxyUrl('https://user:password@proxy.example:8443'))
@@ -413,6 +489,7 @@ describe('AI Connection management client', () => {
 
     await client.updateProviderCredential('openai', 'openai-key-work', {
       expectedVersion: 7,
+      apiKey: 'replacement-key',
       label: 'Paused key',
       enabled: false,
       priority: 30,
@@ -428,6 +505,7 @@ describe('AI Connection management client', () => {
         method: 'PATCH',
         body: JSON.stringify({
           expectedVersion: 7,
+          apiKey: 'replacement-key',
           label: 'Paused key',
           enabled: false,
           priority: 30,
@@ -1100,6 +1178,98 @@ describe('AI Connection management client', () => {
         body: undefined,
       },
     ])
+  })
+})
+
+describe('Account credential fingerprint and ownership contract', () => {
+  const wrapper = 'sk-Y2xpZW50OnNlY3JldA=='
+  const resourceOne = 'https://id.example/.account/credentials/one/'
+  const resourceTwo = 'https://id.example/.account/credentials/two/'
+  const noFetch = () => { throw new Error('no Pod request is expected for Account credential management') }
+  const capability = (overrides: Record<string, unknown> = {}) => ({
+    create: vi.fn(async () => ({ apiKey: wrapper, clientId: 'client-id-1', resource: resourceOne })),
+    list: vi.fn(async () => [{ clientId: 'client-id-1', label: 'client-id-1', resource: resourceOne, webId: WEB_ID }]),
+    revoke: vi.fn(async () => undefined),
+    ...overrides,
+  })
+
+  it('publishes the wrapper digest the native client-config adapter reports, never the Account client id', async () => {
+    const home = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xpod-key-fingerprint-'))
+    try {
+      const credentials = capability()
+      const client = createAiConnectionsClient({
+        webId: WEB_ID,
+        podBaseUrl: POD_BASE,
+        authenticatedFetch: noFetch as unknown as typeof fetch,
+        clientCredentials: credentials as never,
+      })
+      const created = await client.createGatewayKey({ name: 'Work laptop' })
+      expect(created.record.clientCredentialId).toBe('client-id-1')
+      expect(created.record.fingerprint).not.toBe('client-id-1')
+      expect(created.record.fingerprint).toMatch(/^[a-f0-9]{64}$/u)
+
+      // Cross the real native adapter: what it reports for the applied wrapper
+      // must be exactly the digest the row carries, or the UI comparison lies.
+      const adapter = new CodexConfigAdapter({ homeDir: home })
+      const plan = await adapter.plan({ endpoint: 'https://pod.example', apiKey: created.plaintext, webId: WEB_ID })
+      await adapter.apply(plan)
+      const inspection = await adapter.inspect()
+      expect(inspection.apiKeyFingerprint).toMatch(/^[a-f0-9]{64}$/u)
+      expect(inspection.apiKeyFingerprint).toBe(created.record.fingerprint)
+      await adapter.restore(WEB_ID)
+    } finally {
+      await fs.promises.rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the issued digest testable across a list refresh and never fabricates it on reload', async () => {
+    const credentials = capability()
+    const options = {
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch: noFetch as unknown as typeof fetch,
+      clientCredentials: credentials as never,
+    }
+    const client = createAiConnectionsClient(options)
+    const created = await client.createGatewayKey({ name: 'Work laptop' })
+    const digest = created.record.fingerprint
+    expect(digest).toMatch(/^[a-f0-9]{64}$/u)
+
+    // The Account list owns no wrapper, so the row's digest is a session
+    // observation: refreshing rows must not erase it.
+    const refreshed = await client.listGatewayKeys()
+    expect(refreshed).toHaveLength(1)
+    expect(refreshed[0]).toMatchObject({ id: 'client-id-1', fingerprint: digest, owner: WEB_ID })
+
+    // A reload is a new client with no wrapper: the digest must be absent, not invented.
+    const reloaded = createAiConnectionsClient({ ...options, clientCredentials: capability() as never })
+    const afterReload = await reloaded.listGatewayKeys()
+    expect(afterReload).toHaveLength(1)
+    expect(afterReload[0].fingerprint).toBeUndefined()
+  })
+
+  it('exposes only the selected WebID credentials and never destroys a foreign one', async () => {
+    const list = vi.fn(async () => [
+      { clientId: 'mine', label: 'mine', resource: resourceOne, webId: WEB_ID },
+      { clientId: 'foreign', label: 'foreign', resource: resourceTwo, webId: 'https://pod.example/bob/profile/card#me' },
+      { clientId: 'unknown', label: 'unknown', resource: 'https://id.example/.account/credentials/three/' },
+    ])
+    const revoke = vi.fn(async () => undefined)
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch: noFetch as unknown as typeof fetch,
+      clientCredentials: { create: vi.fn(), list, revoke } as never,
+    })
+    const listed = await client.listGatewayKeys()
+    expect(listed.map((record) => record.id)).toEqual(['mine'])
+    expect(listed[0].owner).toBe(WEB_ID)
+
+    await expect(client.deleteGatewayKey('foreign'))
+      .rejects.toThrow('账号服务中已找不到该客户端凭据，请刷新后重试。')
+    await expect(client.deleteGatewayKey('unknown'))
+      .rejects.toThrow('账号服务中已找不到该客户端凭据，请刷新后重试。')
+    expect(revoke).not.toHaveBeenCalled()
   })
 })
 

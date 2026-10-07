@@ -15,6 +15,11 @@ export interface SharedWakeAgentJob {
   reason: WakeAgentReason;
   status: WakeAgentStatus;
   createdAt: string;
+  attempts?: number;
+  leaseOwner?: string;
+  leaseExpiresAt?: string;
+  fencingToken?: string;
+  lastError?: string;
 }
 
 export interface WakeAgentLeaseFields {
@@ -106,7 +111,7 @@ export function withReconcilerCoordinationMetadata(
 }
 
 export function sharedWakeAgentJobDedupeKey(job: Pick<SharedWakeAgentJob, 'thread' | 'triggerMessage' | 'agent'>): string {
-  return [job.thread, job.triggerMessage, job.agent].join('|');
+  return JSON.stringify([job.thread, job.triggerMessage, job.agent]);
 }
 
 export function isClientReconcilerLeaseActive(lease: ClientReconcilerLease | undefined, now: Date = new Date()): boolean {

@@ -51,7 +51,7 @@ export interface RdfRunContextRetrieverOptions<TContext = StoreContext> {
   vectorProjectionPolicyVersion?: string;
   sourcePrefix?: string | ((input: RunContextRetrievalInput<TContext>) => string | undefined);
   cacheScope?: RdfQueryCacheScope | ((input: RunContextRetrievalInput<TContext>) => RdfQueryCacheScope | undefined);
-  accessScope?: RdfAccessScope | ((input: RunContextRetrievalInput<TContext>) => RdfAccessScope | undefined);
+  accessScope?: RdfAccessScope | ((input: RunContextRetrievalInput<TContext>) => RdfAccessScope | undefined | Promise<RdfAccessScope | undefined>);
   embedding?: (input: RunContextRetrievalInput<TContext>) => Promise<RdfRunContextEmbedding | undefined>;
   buildQuery?: (input: RunContextRetrievalInput<TContext>, embedding?: RdfRunContextEmbedding) => RdfQuery | Promise<RdfQuery>;
 }
@@ -73,14 +73,16 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
     }
 
     try {
+      const accessScope = typeof this.options.accessScope === 'function'
+        ? await this.options.accessScope(input) : this.options.accessScope;
       const embedding = await this.options.embedding?.(input);
       const query = this.options.buildQuery
         ? await this.options.buildQuery(input, embedding)
         : this.buildDefaultQuery(input, embedding);
-      const result = await this.options.rdfEngine.query(this.withAccessScope(query, input));
+      const result = await this.options.rdfEngine.query(this.withAccessScope(query, input, accessScope));
       const rows = result.bindings.length > 0 || !query.vectorSearch?.length
         ? result
-        : await this.options.rdfEngine.query(this.withAccessScope(this.vectorOnlyQuery(query), input));
+        : await this.options.rdfEngine.query(this.withAccessScope(this.vectorOnlyQuery(query), input, accessScope));
       const items = rows.bindings
         .map((row) => this.bindingToContextItem(row))
         .filter((item): item is RunRetrievedContextItem => item !== undefined)
@@ -274,10 +276,7 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
       : this.options.cacheScope;
   }
 
-  private withAccessScope(query: RdfQuery, input: RunContextRetrievalInput<TContext>): RdfQuery {
-    const accessScope = typeof this.options.accessScope === 'function'
-      ? this.options.accessScope(input)
-      : this.options.accessScope;
+  private withAccessScope(query: RdfQuery, input: RunContextRetrievalInput<TContext>, accessScope: RdfAccessScope | undefined): RdfQuery {
     if (!accessScope) {
       this.assertAccessScopeOptional(input);
       return query;

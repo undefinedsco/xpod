@@ -1,4 +1,5 @@
 import './runtime/configure-drizzle-solid';
+export { LocalPodDeletionHttpHandler } from './http/LocalPodDeletionHttpHandler';
 import { RepresentationPartialConvertingStore } from './storage/RepresentationPartialConvertingStore';
 import { MinioDataAccessor } from './storage/accessors/MinioDataAccessor';
 import { SolidRdfDataAccessor } from './storage/accessors/SolidRdfDataAccessor';
@@ -40,9 +41,15 @@ export type { PostgresRdfEngineOptions } from './storage/rdf/PostgresRdfEngine';
 export type { PostgresRdfTextIndexOptions } from './storage/rdf/PostgresRdfTextIndex';
 export type { PostgresRdfVectorIndexOptions } from './storage/rdf/PostgresRdfVectorIndex';
 export * from './document';
+export * from './agent-directory/protocol';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
+import { AgentDirectoryHttpHandler } from './http/agent-directory/AgentDirectoryHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
+import { HierarchyLockingResourceStore } from './storage/HierarchyLockingResourceStore';
+import { StorageETagHandler } from './storage/conditions/StorageETagHandler';
+import { StoragePutOperationHandler } from './http/StoragePutOperationHandler';
+import { HeadSafeResponseWriter } from './http/HeadSafeResponseWriter';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
 import { ClusterWebSocketConfigurator } from './http/ClusterWebSocketConfigurator';
 import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHandler';
@@ -197,8 +204,13 @@ export {
   resolveCurrentLogFile,
   LOG_FILE_PATTERN,
   SparqlUpdateResourceStore,
+  HierarchyLockingResourceStore,
+  StorageETagHandler,
+  StoragePutOperationHandler,
+  HeadSafeResponseWriter,
   SubgraphQueryEngine,
   SubgraphSparqlHttpHandler,
+  AgentDirectoryHttpHandler,
   QuotaAdminHttpHandler,
   ClusterIngressRouter,
   ClusterWebSocketConfigurator,
@@ -319,3 +331,14 @@ export type {
 } from './storage/ObservableResourceStore';
 
 export { RdfHandlebarsTemplateEngine } from './util/templates/RdfHandlebarsTemplateEngine';
+export * from './identity/PodDeletionInteractionHandler';
+export * from './identity/PodDeletionInventoryHandler';
+export * from './service/PodDeletionLifecycleService';
+export * from './service/PodDataDeletionService';
+export * from './http/PodDeletionMutationGuard';
+export * from './http/PodMutationLockingHttpHandler';
+export * from './storage/locking/PodLifecycleLocker';
+export * from './storage/locking/PodLifecycleRedisLocker';
+
+export { CloudProfileCreator } from './provision/CloudProfileCreator';
+export { CloudProfilePreparationHandler } from './identity/CloudProfilePreparationHandler';

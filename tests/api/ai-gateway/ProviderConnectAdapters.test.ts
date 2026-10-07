@@ -4,6 +4,7 @@ import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credential
 import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
 import type { ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 import { aiRuntimeRepository } from '@undefineds.co/models';
+import { PROVIDER_LABELS, PROVIDER_OFFERINGS } from '@undefineds.co/ai-connections/provider-catalog';
 import {
   BrowserAssistedApiKeyConnectAdapter,
   DeepSeekConnectAdapter,
@@ -17,13 +18,24 @@ import {
   type ConnectCredentialRecord,
   type DeviceCodeProtocolDescriptor,
   type PodCredentialRepository,
+  type ProviderConnectServiceOptions,
 } from '../../../src/api/ai-gateway/connect';
 import {
   createDefaultProviderRegistry,
   providerProductsForDeployment,
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import { CodexSubscriptionQuotaAdapter } from '../../../src/api/ai-gateway/quota';
+import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import { OwnerPodAccess } from '../../../src/api/ai-gateway/pod/OwnerPodAccess';
+import {
+  AiGatewayService,
+  type GatewayCredentialStore,
+  type StoredGatewayCredential,
+} from '../../../src/api/ai-gateway/AiGatewayService';
+import { ModelRouter } from '../../../src/api/ai-gateway/routing/ModelRouter';
+import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
+import { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
+import type { AuthContext } from '../../../src/api/auth/AuthContext';
 import { createTestSolidSessions } from '../../helpers/solidSessions';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
@@ -89,11 +101,13 @@ class RecordingCredentialRepository implements PodCredentialRepository {
     provider: string;
     deployment: 'local' | 'cloud';
     reason: string;
+    credentialId?: string;
   }): Promise<ConnectCredentialRecord | undefined> {
     const latest = latestMatchingRow(this.rows, (row) =>
       row.webId === input.webId
       && row.provider === input.provider
-      && row.deployment === input.deployment);
+      && row.deployment === input.deployment
+      && (input.credentialId === undefined || row.id === input.credentialId));
     if (!latest) return undefined;
     latest.reauthRequired = true;
     latest.metadata = { ...latest.metadata, reauthReason: input.reason };
@@ -367,20 +381,16 @@ describe('Provider credential pool management', () => {
       deployment: 'cloud',
     });
 
-    for (const provider of ['openai', 'anthropic']) {
+    for (const provider of ['openai', 'anthropic'] as const) {
       const offering = pools
         .find((pool) => pool.id === provider)
         ?.offerings.find((candidate) => candidate.id === 'official-subscription');
-      expect(offering).toMatchObject(provider === 'openai'
-        ? {
-            label: 'OpenAI Subscription',
-            lifecycle: 'unavailable',
-            authModes: ['local'],
-          }
-        : {
-            lifecycle: 'unavailable',
-            authModes: ['oauth'],
-          });
+      const source = PROVIDER_OFFERINGS[provider]!.find((candidate) => candidate.id === 'official-subscription')!;
+      expect(offering).toMatchObject({
+        label: source.label,
+        lifecycle: 'unavailable',
+        authModes: source.authModes,
+      });
     }
     expect(pools.find((pool) => pool.id === 'kimi')?.offerings.find(
       (offering) => offering.id === 'official-subscription',
@@ -430,7 +440,7 @@ describe('Provider credential pool management', () => {
     })).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'kimi',
-        name: 'Moonshot (Kimi)',
+        name: PROVIDER_LABELS.kimi,
         status: 'available',
         offerings: expect.arrayContaining([
           expect.objectContaining({ id: 'subscription-key', lifecycle: 'active' }),
@@ -853,6 +863,56 @@ describe('Provider credential pool management', () => {
     expect(await vault().open({ webId: WEB_ID }, repository.rows[0].credentialIri, 'kimi', repository.rows[0].encryptedSecret))
       .toMatchObject({ accessToken: 'valid-access', refreshToken: 'rotated-refresh' });
     expect(JSON.stringify(second)).not.toMatch(/expired-access|valid-access|old-refresh|rotated-refresh|importedSessionFingerprint/u);
+  });
+
+  it.each([
+    ['string invalid grant', 'invalid_grant', 'invalid_grant'],
+    ['string invalid token', 'invalid_token', 'invalid_token'],
+    ['nested invalid grant', { code: 'invalid_grant', message: 'fixture-private-token' }, 'invalid_grant'],
+    ['nested invalid token', { code: 'invalid_token', message: 'fixture-private-token' }, 'invalid_token'],
+    ['unknown string', 'fixture-private-token', 'provider_error'],
+    ['unknown nested code', { code: 'fixture-private-token', message: 'invalid_grant' }, 'provider_error'],
+    ['message without code', { message: 'invalid_token fixture-private-token' }, 'provider_error'],
+    ['malformed nested code', { code: { secret: 'fixture-private-token' } }, 'provider_error'],
+    ['array error', [{ code: 'invalid_grant' }], 'provider_error'],
+    ['absent error', null, 'provider_error'],
+  ])('classifies decoded refresh failures without exposing provider secrets (%s)', async (_label, providerError, safeCode) => {
+    const repository = new RecordingCredentialRepository();
+    const sharedVault = vault();
+    const fetchMock = vi.fn(async () => Response.json({
+      error: providerError,
+      error_description: 'fixture-private-description',
+      access_token: 'fixture-private-access',
+    }, { status: 400 }));
+    const adapter = new DeviceCodeConnectAdapter({
+      fetch: fetchMock,
+      attempts: new InMemoryConnectAttemptStore(),
+      credentialRepository: repository,
+      vault: sharedVault,
+      deployment: 'local',
+      integration: kimiOAuthIntegration(),
+      signingSecret: 'connect-signing-secret',
+    });
+    const input = { webId: WEB_ID, deployment: 'local' as const, provider: 'kimi', offeringId: 'subscription-key' };
+    await expect(adapter.refreshCallerOwned({
+      ...input, credentialId: 'fixture-credential', refreshToken: 'fixture-refresh', expectedVersion: 0,
+    })).rejects.toThrow(new Error(`OAuth refresh failed: ${safeCode}`));
+
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry({ products: providerProductsForDeployment('local') }),
+      credentialRepository: repository, vault: sharedVault, adapters: [adapter],
+      localSessionImporters: [{
+        provider: 'kimi', offeringId: 'subscription-key',
+        importSession: async () => ({ secret: {
+          accessToken: 'expired-access', refreshToken: 'fixture-refresh', expiresAt: '2020-01-01T00:00:00.000Z',
+        } }),
+      }],
+    });
+    await expect(service.createLocalCredential(input)).rejects.toThrow(new Error(
+      safeCode === 'provider_error' ? 'local_session_refresh_failed' : 'local_session_reauth_required',
+    ));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(repository.rows).toHaveLength(0);
   });
 
   it.each([
@@ -3143,7 +3203,6 @@ describe('ProviderConnectService', () => {
     ['missing auth', undefined, 'caller_pod_access_unavailable'],
     ['browser Bearer token', { accessToken: 'browser-bearer-token', tokenType: 'Bearer' as const }, 'pod_interface_key_missing'],
     ['Gateway API key principal', { viaGatewayApiKey: true, gatewayKeyId: 'gateway-key-id', scopes: ['models:read'], tokenType: 'Bearer' as const }, 'pod_interface_key_missing'],
-    ['owner-mismatched caller Bearer token', { webId: OTHER_WEB_ID, viaApiKey: true, accessToken: 'caller-bearer-token', tokenType: 'Bearer' as const }, 'caller_owner_mismatch'],
   ])('reports %s when the Pod access provider has no usable credential', async (_label, authPatch, expectedError) => {
     const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
     const getPodFetch = vi.fn(async () => undefined);
@@ -3190,6 +3249,40 @@ describe('ProviderConnectService', () => {
           },
     );
 
+    expect(browserFetch).not.toHaveBeenCalled();
+    browserFetch.mockRestore();
+  });
+
+  it('rejects an owner-mismatched caller before consulting the Pod access provider', async () => {
+    // Authoritative policy (docs/pod-interface-key.md §5, docs/testing/2026-10-05-release-026-local-verification.md):
+    // the shared owner-Pod resolver refuses a credential WebID that differs from the requested owner
+    // before any Pod fetch, DB factory or operation runs. The caller never borrows the owner's access,
+    // and the refusal keeps the same `caller_owner_mismatch` reason.
+    const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
+    const getPodFetch = vi.fn(async () => undefined);
+    const dbFactory = vi.fn(async () => {
+      throw new Error('db factory must not run for an owner-mismatched caller');
+    });
+    const repository = new PodConnectedCredentialRepository({
+      podAccess: { getPodFetch },
+      dbFactory,
+    });
+
+    await expect(repository.getActiveCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      auth: {
+        type: 'solid' as const,
+        webId: OTHER_WEB_ID,
+        viaApiKey: true,
+        accessToken: 'caller-bearer-token',
+        tokenType: 'Bearer' as const,
+      },
+    })).rejects.toThrow('caller_owner_mismatch');
+
+    expect(getPodFetch).not.toHaveBeenCalled();
+    expect(dbFactory).not.toHaveBeenCalled();
     expect(browserFetch).not.toHaveBeenCalled();
     browserFetch.mockRestore();
   });
@@ -4781,3 +4874,660 @@ describe('ProviderConnectService', () => {
 function jsonClone<T>(value: T): T {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
+
+
+describe('owned API key credential replacement', () => {
+  async function replacementFixture() {
+    const repository = new RecordingCredentialRepository();
+    const credentialVault = vault();
+    const service = new ProviderConnectService({ registry: createDefaultProviderRegistry(), credentialRepository: repository, vault: credentialVault, adapters: [] });
+    const created = await service.createApiKeyCredential({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', offeringId: 'api-platform', apiKey: 'old-private-key', label: 'Owned', baseUrl: 'https://api.moonshot.ai/v1', priority: 7 });
+    Object.assign(repository.rows[0], { enabled: false, health: 'reauthRequired', reauthRequired: true, failCount: 3, lastFailureCode: '401', lastFailureAt: new Date('2026-10-01'), rateLimitResetAt: new Date('2026-10-02') });
+    repository.rows[0].metadata = { ...repository.rows[0].metadata, custom: 'user-value', health: 'reauthRequired', enabled: false };
+    const query = { webId: WEB_ID, deployment: 'cloud' as const, provider: 'kimi', credentialId: created.id, expectedVersion: created.version! };
+    const replace = (apiKey: string, changes: Partial<typeof query> = {}) => service.updateCredential({ ...query, ...changes, patch: { apiKey } as Parameters<ProviderConnectService['updateCredential']>[0]['patch'] & { apiKey: string } });
+    return { repository, credentialVault, service, query, replace };
+  }
+  it.each([false, true])('replaces encrypted secret on the same CAS record and preserves enabled=%s without fake recovery', async enabled => {
+    const f = await replacementFixture(); f.repository.rows[0].enabled = enabled; f.repository.rows[0].metadata!.enabled = enabled; const before = structuredClone(f.repository.rows[0]);
+    const result = await f.replace('next-private-key'); const row = f.repository.rows[0];
+    expect(await f.credentialVault.open({ webId: WEB_ID }, row.credentialIri, row.provider, row.encryptedSecret)).toEqual({ type: 'apiKey', apiKey: 'next-private-key' });
+    expect(row).toMatchObject({ id: before.id, offeringId: before.offeringId, provider: before.provider, enabled, health: enabled ? 'unknown' : 'disabled', priority: 7, accountLabel: 'Owned', version: before.version! + 1, reauthRequired: false, failCount: 0 });
+    expect(row.lastFailureCode).toBeUndefined(); expect(row.lastFailureAt).toBeUndefined(); expect(row.rateLimitResetAt).toBeUndefined();
+    expect(row.metadata).toMatchObject({ custom: 'user-value', baseUrl: 'https://api.moonshot.ai/v1', enabled });
+    expect(JSON.stringify(result)).not.toMatch(/old-private-key|next-private-key|encryptedSecret/);
+  });
+  it('does not replace or falsely recover a metadata-only update', async () => {
+    const f = await replacementFixture(); const before = structuredClone(f.repository.rows[0]);
+    await f.service.updateCredential({ ...f.query, patch: { label: 'Renamed' } });
+    expect(f.repository.rows[0]).toMatchObject({ encryptedSecret: before.encryptedSecret, health: before.health, reauthRequired: true, failCount: 3, lastFailureCode: '401' });
+  });
+  it.each(['', '   '])('rejects an explicitly empty key without mutating the record', async key => {
+    const f = await replacementFixture(); const before = structuredClone(f.repository.rows);
+    await expect(f.replace(key)).rejects.toThrow(); expect(f.repository.rows).toEqual(before);
+  });
+  it('rejects replacing a non API-key credential without changing it', async () => {
+    const f = await replacementFixture(); f.repository.rows[0].authMode = 'deviceCodeOAuth'; const before = structuredClone(f.repository.rows);
+    await expect(f.replace('next-private-key')).rejects.toThrow(); expect(f.repository.rows).toEqual(before);
+  });
+  it('preserves the record on CAS conflict or a different owner/provider lookup', async () => {
+    const f = await replacementFixture(); const before = structuredClone(f.repository.rows);
+    await expect(f.replace('next-private-key', { expectedVersion: f.query.expectedVersion + 1 })).rejects.toThrow('credential_version_conflict');
+    expect(await f.replace('next-private-key', { webId: 'https://other.example/profile#me' })).toBeUndefined();
+    expect(await f.replace('next-private-key', { provider: 'openai' })).toBeUndefined();
+    expect(f.repository.rows).toEqual(before);
+  });
+});
+
+describe('ProviderConnectService use-time session renewal', () => {
+  const FUTURE = '2099-01-01T00:00:00.000Z';
+  const PAST = '2020-01-01T00:00:00.000Z';
+  const KIMI_IRI = 'https://id.example/alice/settings/credentials.ttl#kimi-session';
+  // Marks a credential as proven imported by the existing import contract, which is the only
+  // case allowed to adopt a rotated live CLI session.
+  const IMPORTED_FINGERPRINT = 'imported-session-fingerprint';
+
+  function renewalService(
+    repository: RecordingCredentialRepository,
+    options: { localSessionImporters?: ProviderConnectServiceOptions['localSessionImporters'] } = {},
+  ): ProviderConnectService {
+    return new ProviderConnectService({
+      registry: createDefaultProviderRegistry({ products: providerProductsForDeployment('local') }),
+      credentialRepository: repository,
+      vault: vault(),
+      adapters: [],
+      localSessionImporters: options.localSessionImporters ?? [],
+    });
+  }
+
+  function connectResult(oauthCredential: Record<string, unknown>): ConnectBeginResult {
+    return {
+      mode: 'deviceCodeOAuth',
+      status: 'completed',
+      provider: 'kimi',
+      offeringId: 'subscription-key',
+      deployment: 'local',
+      oauthCredential,
+    } as unknown as ConnectBeginResult;
+  }
+
+  async function seedCredential(
+    repository: RecordingCredentialRepository,
+    secret: ProviderSecret,
+    overrides: Partial<ConnectCredentialRecord> = {},
+  ): Promise<ConnectCredentialRecord> {
+    return repository.createCredential({
+      id: 'kimi-session',
+      credentialIri: KIMI_IRI,
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'local',
+      authMode: 'deviceCodeOAuth',
+      encryptedSecret: await encryptedSecret('kimi', KIMI_IRI, secret),
+      status: 'active',
+      accountLabel: 'Kimi Subscription',
+      offeringId: 'subscription-key',
+      priority: 7,
+      enabled: true,
+      health: 'healthy',
+      scopes: ['openid', 'profile'],
+      metadata: { source: 'local-kimi-code-credentials-json', offeringId: 'subscription-key', userSetting: 'keep-me' },
+      ...overrides,
+    });
+  }
+
+  function renewInput(overrides: Record<string, unknown> = {}) {
+    return {
+      webId: WEB_ID,
+      deployment: 'local' as const,
+      provider: 'kimi',
+      credentialId: 'kimi-session',
+      reason: 'expired' as const,
+      ...overrides,
+    };
+  }
+
+  async function storedSecret(repository: RecordingCredentialRepository): Promise<ProviderSecret> {
+    const row = repository.rows[0];
+    return vault().open({ webId: WEB_ID }, row.credentialIri, 'kimi', row.encryptedSecret);
+  }
+
+  it('leaves a session that is still valid untouched', async () => {
+    const repository = new RecordingCredentialRepository();
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'valid-access', refreshToken: 'valid-refresh', expiresAt: FUTURE,
+    });
+    const service = renewalService(repository);
+    const refresh = vi.spyOn(service, 'refreshCallerOwned');
+
+    await expect(service.renewCredential(renewInput())).resolves.toBe(false);
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(repository.rows[0].version).toBe(1);
+  });
+
+  it('refreshes an expired session once on the same row and preserves user settings', async () => {
+    const repository = new RecordingCredentialRepository();
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'expired-access', refreshToken: 'stored-refresh', expiresAt: PAST,
+    });
+    const service = renewalService(repository);
+    const refresh = vi.spyOn(service, 'refreshCallerOwned').mockResolvedValue(connectResult({
+      accessToken: 'renewed-access', refreshToken: 'renewed-refresh', expiresAt: FUTURE,
+    }));
+
+    await expect(service.renewCredential(renewInput({ observedVersion: 1 }))).resolves.toBe(true);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(repository.rows).toHaveLength(1);
+    const row = repository.rows[0];
+    expect(row).toMatchObject({
+      id: 'kimi-session',
+      credentialIri: KIMI_IRI,
+      accountLabel: 'Kimi Subscription',
+      priority: 7,
+      enabled: true,
+      reauthRequired: false,
+      health: 'healthy',
+      metadata: expect.objectContaining({ userSetting: 'keep-me', source: 'local-kimi-code-credentials-json' }),
+    });
+    expect(row.version).toBeGreaterThan(1);
+    await expect(storedSecret(repository)).resolves.toMatchObject({
+      accessToken: 'renewed-access', refreshToken: 'renewed-refresh',
+    });
+    expect(JSON.stringify(row)).not.toMatch(/renewed-access|renewed-refresh/u);
+  });
+
+  it('re-reads a rotated local session source on demand without calling the provider refresh', async () => {
+    const repository = new RecordingCredentialRepository();
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'stale-access', refreshToken: 'stale-refresh',
+      accountId: 'kimi-account', importedSessionFingerprint: IMPORTED_FINGERPRINT, expiresAt: PAST,
+    });
+    const importSession = vi.fn(async () => ({
+      secret: {
+        type: 'deviceCodeOAuth', accessToken: 'rotated-access', refreshToken: 'rotated-refresh',
+        accountId: 'kimi-account', scope: 'openid profile', expiresAt: FUTURE,
+      },
+      credentialAuthMode: 'deviceCodeOAuth' as const,
+    }));
+    const service = renewalService(repository, {
+      localSessionImporters: [{ provider: 'kimi', offeringId: 'subscription-key', importSession }],
+    });
+    const refresh = vi.spyOn(service, 'refreshCallerOwned');
+
+    await expect(service.renewCredential(renewInput())).resolves.toBe(true);
+
+    expect(importSession).toHaveBeenCalledTimes(1);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(repository.rows).toHaveLength(1);
+    await expect(storedSecret(repository)).resolves.toMatchObject({
+      accessToken: 'rotated-access', refreshToken: 'rotated-refresh',
+    });
+  });
+
+  it('never adopts a live session that belongs to a different subscriber', async () => {
+    const repository = new RecordingCredentialRepository();
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'stale-access', refreshToken: 'stale-refresh',
+      accountId: 'kimi-account', importedSessionFingerprint: IMPORTED_FINGERPRINT, expiresAt: PAST,
+    });
+    const importSession = vi.fn(async () => ({
+      secret: {
+        type: 'deviceCodeOAuth', accessToken: 'other-subscriber-access', refreshToken: 'other-subscriber-refresh',
+        accountId: 'other-account', expiresAt: FUTURE,
+      },
+      credentialAuthMode: 'deviceCodeOAuth' as const,
+    }));
+    const service = renewalService(repository, {
+      localSessionImporters: [{ provider: 'kimi', offeringId: 'subscription-key', importSession }],
+    });
+    const refresh = vi.spyOn(service, 'refreshCallerOwned').mockResolvedValue(connectResult({
+      accessToken: 'refreshed-access', refreshToken: 'refreshed-refresh', expiresAt: FUTURE,
+    }));
+
+    await expect(service.renewCredential(renewInput())).resolves.toBe(true);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(repository.rows)).not.toMatch(/other-subscriber-access|other-subscriber-refresh/u);
+    await expect(storedSecret(repository)).resolves.toMatchObject({ accessToken: 'refreshed-access' });
+  });
+
+  it('does not adopt a live session that narrows the granted scopes', async () => {
+    const repository = new RecordingCredentialRepository();
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'stale-access', refreshToken: 'stale-refresh',
+      accountId: 'kimi-account', scope: 'openid profile',
+      importedSessionFingerprint: IMPORTED_FINGERPRINT, expiresAt: PAST,
+    });
+    const importSession = vi.fn(async () => ({
+      secret: {
+        type: 'deviceCodeOAuth', accessToken: 'narrowed-access', refreshToken: 'narrowed-refresh',
+        accountId: 'kimi-account', scope: 'openid', expiresAt: FUTURE,
+      },
+      credentialAuthMode: 'deviceCodeOAuth' as const,
+    }));
+    const service = renewalService(repository, {
+      localSessionImporters: [{ provider: 'kimi', offeringId: 'subscription-key', importSession }],
+    });
+    const refresh = vi.spyOn(service, 'refreshCallerOwned').mockResolvedValue(connectResult({
+      accessToken: 'refreshed-access', refreshToken: 'refreshed-refresh', expiresAt: FUTURE,
+    }));
+
+    await expect(service.renewCredential(renewInput())).resolves.toBe(true);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await expect(storedSecret(repository)).resolves.toMatchObject({ accessToken: 'refreshed-access' });
+  });
+
+  it('coalesces concurrent renewals into a single provider refresh', async () => {
+    const repository = new RecordingCredentialRepository();
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'expired-access', refreshToken: 'stored-refresh', expiresAt: PAST,
+    });
+    const service = renewalService(repository);
+    const refresh = vi.spyOn(service, 'refreshCallerOwned').mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return connectResult({ accessToken: 'renewed-access', refreshToken: 'renewed-refresh', expiresAt: FUTURE });
+    });
+
+    const results = await Promise.all([
+      service.renewCredential(renewInput({ observedVersion: 1 })),
+      service.renewCredential(renewInput({ observedVersion: 1 })),
+    ]);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(repository.rows).toHaveLength(1);
+    // Both callers must be told to reload: the first performed the refresh, the second observes
+    // the version change and must also retry with the freshly stored credential.
+    expect(results).toEqual([true, true]);
+    await expect(storedSecret(repository)).resolves.toMatchObject({ accessToken: 'renewed-access' });
+  });
+
+  it('surfaces a typed reauth requirement when the refresh token is rejected', async () => {
+    const repository = new RecordingCredentialRepository();
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'expired-access', refreshToken: 'revoked-refresh', expiresAt: PAST,
+    });
+    const service = renewalService(repository);
+    vi.spyOn(service, 'refreshCallerOwned').mockRejectedValue(new Error('OAuth refresh failed: invalid_grant'));
+
+    await expect(service.renewCredential(renewInput())).rejects.toMatchObject({
+      code: 'credential_unavailable',
+      status: 401,
+    });
+
+    expect(repository.rows).toHaveLength(1);
+    expect(repository.rows[0].reauthRequired).toBe(true);
+  });
+
+  it('does not renew API-key credentials', async () => {
+    const repository = new RecordingCredentialRepository();
+    const apiKeyIri = 'https://id.example/alice/settings/credentials.ttl#deepseek-key';
+    await repository.createCredential({
+      id: 'deepseek-key',
+      credentialIri: apiKeyIri,
+      webId: WEB_ID,
+      provider: 'deepseek',
+      deployment: 'local',
+      authMode: 'apiKey',
+      encryptedSecret: await encryptedSecret('deepseek', apiKeyIri, { type: 'apiKey', apiKey: 'sk-deepseek' }),
+      status: 'active',
+      enabled: true,
+      health: 'healthy',
+    });
+    const service = renewalService(repository);
+    const refresh = vi.spyOn(service, 'refreshCallerOwned');
+
+    await expect(service.renewCredential({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'deepseek',
+      credentialId: 'deepseek-key',
+      reason: 'authentication_failed',
+    })).resolves.toBe(false);
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(repository.rows[0].version).toBe(1);
+  });
+
+  it('does not renew a deliberately disabled credential', async () => {
+    const repository = new RecordingCredentialRepository();
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'expired-access', refreshToken: 'stored-refresh', expiresAt: PAST,
+    }, { enabled: false, health: 'disabled' });
+    const service = renewalService(repository);
+    const refresh = vi.spyOn(service, 'refreshCallerOwned');
+
+    await expect(service.renewCredential(renewInput())).resolves.toBe(false);
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(repository.rows[0].version).toBe(1);
+  });
+
+  it('never adopts the host CLI session for a separately device-authorized credential', async () => {
+    const repository = new RecordingCredentialRepository();
+    // No importedSessionFingerprint: this grant was authorized by the device flow, not imported
+    // from the host CLI, so it must not silently inherit whatever session the CLI now holds.
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'device-access', refreshToken: 'device-refresh',
+      accountId: 'kimi-account', expiresAt: PAST,
+    });
+    const importSession = vi.fn(async () => ({
+      secret: {
+        type: 'deviceCodeOAuth', accessToken: 'host-file-access', refreshToken: 'host-file-refresh',
+        accountId: 'kimi-account', scope: 'openid profile', expiresAt: FUTURE,
+      },
+      credentialAuthMode: 'deviceCodeOAuth' as const,
+    }));
+    const service = renewalService(repository, {
+      localSessionImporters: [{ provider: 'kimi', offeringId: 'subscription-key', importSession }],
+    });
+    const refresh = vi.spyOn(service, 'refreshCallerOwned').mockResolvedValue(connectResult({
+      accessToken: 'refreshed-access', refreshToken: 'refreshed-refresh', expiresAt: FUTURE,
+    }));
+
+    await expect(service.renewCredential(renewInput())).resolves.toBe(true);
+
+    expect(importSession).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await expect(storedSecret(repository)).resolves.toMatchObject({ accessToken: 'refreshed-access' });
+  });
+
+  it('does not treat an unchanged rejected file token as a renewal and refreshes instead', async () => {
+    const repository = new RecordingCredentialRepository();
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'rejected-access', refreshToken: 'stored-refresh',
+      accountId: 'kimi-account', importedSessionFingerprint: IMPORTED_FINGERPRINT, expiresAt: PAST,
+    });
+    const importSession = vi.fn(async () => ({
+      secret: {
+        type: 'deviceCodeOAuth', accessToken: 'rejected-access', refreshToken: 'stored-refresh',
+        accountId: 'kimi-account', scope: 'openid profile', expiresAt: FUTURE,
+      },
+      credentialAuthMode: 'deviceCodeOAuth' as const,
+    }));
+    const service = renewalService(repository, {
+      localSessionImporters: [{ provider: 'kimi', offeringId: 'subscription-key', importSession }],
+    });
+    const refresh = vi.spyOn(service, 'refreshCallerOwned').mockResolvedValue(connectResult({
+      accessToken: 'refreshed-access', refreshToken: 'refreshed-refresh', expiresAt: FUTURE,
+    }));
+
+    await expect(service.renewCredential(renewInput({ reason: 'authentication_failed' }))).resolves.toBe(true);
+
+    expect(importSession).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await expect(storedSecret(repository)).resolves.toMatchObject({ accessToken: 'refreshed-access' });
+  });
+
+  it('refuses to persist an unchanged token when the refresh returns the rejected session', async () => {
+    const repository = new RecordingCredentialRepository();
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'rejected-access', refreshToken: 'stored-refresh', expiresAt: PAST,
+    });
+    const service = renewalService(repository);
+    vi.spyOn(service, 'refreshCallerOwned').mockResolvedValue(connectResult({
+      accessToken: 'rejected-access', refreshToken: 'stored-refresh', expiresAt: FUTURE,
+    }));
+
+    await expect(service.renewCredential(renewInput({ reason: 'authentication_failed' }))).resolves.toBe(false);
+
+    expect(repository.rows[0].version).toBe(1);
+    await expect(storedSecret(repository)).resolves.toMatchObject({ accessToken: 'rejected-access' });
+  });
+
+  it('marks only the selected credential when its refresh token is rejected', async () => {
+    const repository = new RecordingCredentialRepository();
+    await seedCredential(repository, {
+      type: 'deviceCodeOAuth', accessToken: 'expired-access', refreshToken: 'revoked-refresh', expiresAt: PAST,
+    });
+    const otherIri = 'https://id.example/alice/settings/credentials.ttl#kimi-other';
+    await repository.createCredential({
+      id: 'kimi-other',
+      credentialIri: otherIri,
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'local',
+      authMode: 'deviceCodeOAuth',
+      encryptedSecret: await encryptedSecret('kimi', otherIri, {
+        type: 'deviceCodeOAuth', accessToken: 'other-access', refreshToken: 'other-refresh', expiresAt: FUTURE,
+      }),
+      status: 'active',
+      enabled: true,
+      health: 'healthy',
+      offeringId: 'subscription-key',
+      metadata: { userSetting: 'keep-other' },
+    });
+    const service = renewalService(repository);
+    vi.spyOn(service, 'refreshCallerOwned').mockRejectedValue(new Error('OAuth refresh failed: invalid_grant'));
+
+    await expect(service.renewCredential(renewInput())).rejects.toMatchObject({
+      code: 'credential_unavailable',
+      status: 401,
+    });
+
+    const selected = repository.rows.find((row) => row.id === 'kimi-session');
+    const sibling = repository.rows.find((row) => row.id === 'kimi-other');
+    expect(selected?.reauthRequired).toBe(true);
+    expect(sibling?.reauthRequired).toBeFalsy();
+    expect(sibling?.version).toBe(2);
+  });
+});
+
+describe('ProviderConnectService + AiGatewayService integrated session renewal', () => {
+  const FUTURE = '2099-01-01T00:00:00.000Z';
+  const PAST = '2020-01-01T00:00:00.000Z';
+  const KIMI_IRI = 'https://id.example/alice/settings/credentials.ttl#kimi-session';
+  const OLD_ACCESS = 'kimi-old-access';
+  const NEW_ACCESS = 'kimi-new-access';
+  const GATEWAY_AUTH: AuthContext = {
+    type: 'solid',
+    webId: WEB_ID,
+    viaGatewayApiKey: true,
+    scopes: ['models:read', 'inference:write'],
+  };
+
+  function localRegistry() {
+    return createDefaultProviderRegistry({ products: providerProductsForDeployment('local') });
+  }
+
+  function gatewayBody() {
+    return { model: 'kimi-k2', messages: [{ role: 'user', content: 'hello' }], stream: true };
+  }
+
+  /**
+   * Real vault + real Pod repository + real ProviderConnectService + real AiGatewayService. Only
+   * the upstream OAuth token exchange is stubbed (no billing); `vault.open` genuinely decrypts the
+   * stored secret so the token the runtime receives reflects the stored row, not a constant mock.
+   */
+  async function integratedFixture(options: { expiresAt: string }) {
+    const repository = new RecordingCredentialRepository();
+    const credentialVault = vault();
+    await repository.createCredential({
+      id: 'kimi-session',
+      credentialIri: KIMI_IRI,
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'local',
+      authMode: 'deviceCodeOAuth',
+      encryptedSecret: await credentialVault.seal({ webId: WEB_ID }, KIMI_IRI, 'kimi', {
+        type: 'deviceCodeOAuth',
+        accessToken: OLD_ACCESS,
+        refreshToken: 'kimi-refresh',
+        expiresAt: options.expiresAt,
+      }),
+      status: 'active',
+      enabled: true,
+      health: 'healthy',
+      offeringId: 'subscription-key',
+      scopes: ['openid'],
+      priority: 7,
+      metadata: { userSetting: 'keep-me' },
+      expiresAt: new Date(options.expiresAt),
+    });
+
+    const connect = new ProviderConnectService({
+      registry: localRegistry(),
+      credentialRepository: repository,
+      vault: credentialVault,
+      adapters: [],
+    });
+    const refresh = vi.spyOn(connect, 'refreshCallerOwned').mockResolvedValue({
+      mode: 'deviceCodeOAuth',
+      status: 'completed',
+      provider: 'kimi',
+      offeringId: 'subscription-key',
+      deployment: 'local',
+      oauthCredential: { accessToken: NEW_ACCESS, refreshToken: 'kimi-refresh-2', expiresAt: FUTURE },
+    } as unknown as ConnectBeginResult);
+
+    const store: GatewayCredentialStore = {
+      listCredentials: async ({ webId, deployment }) => repository.rows
+        .filter((row) => row.webId === webId
+          && row.deployment === deployment
+          && row.status === 'active'
+          && row.enabled !== false
+          && row.reauthRequired !== true)
+        .map((row) => ({
+          id: row.id,
+          credentialIri: row.credentialIri,
+          provider: row.provider,
+          authMode: row.authMode,
+          enabled: row.enabled ?? true,
+          priority: row.priority ?? 100,
+          models: ['kimi-k2'],
+          health: 'healthy' as const,
+          quota: { status: 'available' as const },
+          encryptedSecret: row.encryptedSecret,
+          version: row.version,
+          expiresAt: row.expiresAt,
+        } as StoredGatewayCredential)),
+      renewCredential: (input) => connect.renewCredential({
+        webId: input.webId,
+        deployment: input.deployment as 'local' | 'cloud',
+        provider: input.provider,
+        credentialId: input.credentialId,
+        observedVersion: input.observedVersion,
+        reason: input.reason,
+        auth: input.auth,
+      }),
+    };
+
+    const forwarded: string[] = [];
+    const execute = vi.fn((input: { apiKey: string }) => (async function* () {
+      forwarded.push(input.apiKey);
+      if (input.apiKey !== NEW_ACCESS) {
+        throw Object.assign(new Error('upstream rejected the credential'), { status: 401 });
+      }
+      yield { type: 'response.started', id: 'resp_1' };
+      yield { type: 'text.delta', text: 'ok' };
+      yield { type: 'response.completed', finishReason: 'stop' };
+    })());
+
+    const service = new AiGatewayService({
+      deployment: 'local',
+      registry: localRegistry(),
+      router: new ModelRouter({
+        registry: localRegistry(),
+        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+        credentials: store.listCredentials,
+        now: () => new Date('2026-07-23T00:00:00.000Z'),
+      }),
+      credentials: store,
+      vault: credentialVault,
+      runtimes: { get: () => ({ execute }) } as unknown as ProviderRuntimeRegistry,
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    return {
+      repository,
+      service,
+      execute,
+      forwarded,
+      refresh,
+      row: () => repository.rows[0],
+    };
+  }
+
+  async function run(service: AiGatewayService, signal?: AbortSignal): Promise<void> {
+    const execution = await service.execute({
+      auth: GATEWAY_AUTH,
+      protocol: 'chatCompletions',
+      body: gatewayBody(),
+      signal,
+    });
+    for await (const _event of execution.events) {
+      // Drain so the failover loop, renewal and usage accounting actually run.
+    }
+  }
+
+  it('forwards the renewed token, not the stale one, after the upstream rejects the old session', async () => {
+    const fixture = await integratedFixture({ expiresAt: FUTURE });
+
+    await run(fixture.service);
+
+    // The first attempt used the stored token; the retry must carry the token the vault now opens,
+    // which is only true when the route credential was replaced by the renewed row.
+    expect(fixture.forwarded).toEqual([OLD_ACCESS, NEW_ACCESS]);
+    expect(fixture.refresh).toHaveBeenCalledTimes(1);
+    expect(fixture.row().version).toBeGreaterThan(1);
+    const stored = await vault().open({ webId: WEB_ID }, KIMI_IRI, 'kimi', fixture.row().encryptedSecret);
+    expect(stored.accessToken).toBe(NEW_ACCESS);
+  });
+
+  it('serves two concurrent requests from a single shared renewal', async () => {
+    const fixture = await integratedFixture({ expiresAt: PAST });
+
+    await Promise.all([run(fixture.service), run(fixture.service)]);
+
+    expect(fixture.refresh).toHaveBeenCalledTimes(1);
+    expect(fixture.forwarded.filter((token) => token === NEW_ACCESS)).toHaveLength(2);
+    expect(fixture.row().version).toBeGreaterThan(1);
+  });
+
+  it('does not renew or call upstream for a request that is already aborted', async () => {
+    const fixture = await integratedFixture({ expiresAt: PAST });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(run(fixture.service, controller.signal)).rejects.toThrow(/aborted/iu);
+
+    expect(fixture.refresh).not.toHaveBeenCalled();
+    expect(fixture.execute).not.toHaveBeenCalled();
+  });
+
+  it('detaches only the cancelled waiter while another caller keeps the shared renewal', async () => {
+    const fixture = await integratedFixture({ expiresAt: PAST });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    fixture.refresh.mockImplementation(async () => {
+      await gate;
+      return {
+        mode: 'deviceCodeOAuth',
+        status: 'completed',
+        provider: 'kimi',
+        offeringId: 'subscription-key',
+        deployment: 'local',
+        oauthCredential: { accessToken: NEW_ACCESS, refreshToken: 'kimi-refresh-2', expiresAt: FUTURE },
+      } as unknown as ConnectBeginResult;
+    });
+
+    const controller = new AbortController();
+    const cancelled = run(fixture.service, controller.signal).then(() => undefined, (error: unknown) => error);
+    const survivor = run(fixture.service);
+    // Let both callers reach the shared renewal before cancelling one of them.
+    await Promise.resolve();
+    controller.abort();
+    release();
+
+    const error = await cancelled;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/aborted/iu);
+    await survivor;
+
+    // One refresh for two callers; the cancelled waiter emits no upstream request, the other does.
+    expect(fixture.refresh).toHaveBeenCalledTimes(1);
+    expect(fixture.forwarded).toEqual([NEW_ACCESS]);
+  });
+});

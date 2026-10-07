@@ -30,13 +30,15 @@ bun install
 
 `bun run test` 入口先做上述检查。检查失败不会继续测试；工作区缺失构建产物的处理见下一节。
 
-行为守卫仍然是测试：`tests/identity/oidc/SessionBoundIdentityProviderFactory.test.ts` 守 CSS 补丁，`tests/api/ai-gateway/PodGatewayAccessKeyRepository.test.ts` 守模型 schema。
+行为守卫仍然是测试：`tests/identity/oidc/SessionBoundIdentityProviderFactory.test.ts` 守 CSS 补丁。
 
 ### 安装脚本产生的认证补丁
 
 仅验证 `patchedDependencies` 不够。根 `postinstall` 还会应用 jose、Inrupt refresh、transport 和 callback cleanup 补丁。`bun install --ignore-scripts` 会跳过这些步骤；即使类型声明仍可导入，也不代表运行时传输接线完整。
 
 自检同时检查当前声明的安装脚本对应产物：已固定 Inrupt 3.1.1 的 source/CJS/ESM 补丁标记、Session fetch 类型选项、redirect handler 构造器赋值，以及默认和自定义 storage 两条 Session 分支的 fetch 传递；jose 检查 Bun 导出入口。检查失败应运行既有 `bun run postinstall` 链，再做类型与行为回归，不能手工修改 node_modules 或用类型断言绕过。
+
+同类安装脚本产物还包括 `inngest-cli` 的 native 二进制：`bun install` 依赖 `trustedDependencies` 执行其 postinstall，才会在 `node_modules/inngest-cli/bin/inngest` 生成真实可执行文件。`scripts/build-bun-single.js`（经 `scripts/lib/embedded-native-cli.cjs`）在打包时用 `--help` 探针校验该二进制，缺失/占位会显式失败，避免产出没有 durable CLI 的 runtime。`bun install --ignore-scripts` 会产生占位而导致打包失败；此时按上文用 `bun install` 重建，不要手工替换二进制。
 
 这是一组针对已固定版本和已知补丁接线的检查，不是对任意第三方改动的完整正确性证明。更新版本或补丁时，需要同步检查和实际消费者探针。负例覆盖只删除一个运行时赋值或一个 storage 分支的情况，避免“存在一个 marker 就算成功”。
 

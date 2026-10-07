@@ -7,6 +7,32 @@ import {
 } from '../../../src/api/ai-gateway/connect/SessionImportProfiles';
 
 const HOME = '/home/alice';
+const KIMI_CANONICAL = '/home/alice/.kimi-code/credentials/kimi-code.json';
+const KIMI_LEGACY = '/home/alice/.kimi/credentials/kimi-code.json';
+const KIMI_OVERRIDE_DIR = '/opt/kimi-data';
+const KIMI_OVERRIDE = `${KIMI_OVERRIDE_DIR}/credentials/kimi-code.json`;
+
+const KIMI_PAYLOAD = JSON.stringify({
+  access_token: 'kimi-access',
+  refresh_token: 'kimi-refresh',
+  expires_at: 1_786_000_000,
+  scope: 'openid profile',
+  token_type: 'Bearer',
+  expires_in: 3600,
+});
+
+/** File reader that only serves the listed paths and reports ENOENT for the rest. */
+function reader(reads: string[], available: string[], payload = KIMI_PAYLOAD) {
+  return async (filePath: string): Promise<string> => {
+    reads.push(filePath);
+    if (!available.includes(filePath)) {
+      const error = new Error(`ENOENT: no such file or directory, open '${filePath}'`) as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      throw error;
+    }
+    return payload;
+  };
+}
 
 describe('FileSessionImportAdapter', () => {
   it('imports OpenAI Codex auth.json with the generic file reader', async () => {
@@ -49,22 +75,13 @@ describe('FileSessionImportAdapter', () => {
     expect(reads).toEqual(['/home/alice/.codex/auth.json']);
   });
 
-  it('imports Kimi Code credentials with the same file reader mechanism', async () => {
+  it('imports Kimi Code credentials from the canonical CLI data dir', async () => {
     const reads: string[] = [];
     const adapter = new FileSessionImportAdapter({
       profile: KIMI_CODE_SESSION_IMPORT_PROFILE,
       homeDir: HOME,
-      readFile: async (filePath) => {
-        reads.push(filePath);
-        return JSON.stringify({
-          access_token: 'kimi-access',
-          refresh_token: 'kimi-refresh',
-          expires_at: 1_786_000_000,
-          scope: 'openid profile',
-          token_type: 'Bearer',
-          expires_in: 3600,
-        });
-      },
+      env: {},
+      readFile: reader(reads, [KIMI_CANONICAL]),
     });
 
     await expect(adapter.importSession({ deployment: 'local' })).resolves.toEqual({
@@ -81,12 +98,40 @@ describe('FileSessionImportAdapter', () => {
       accountLabel: 'Kimi Subscription',
       metadata: {
         source: 'local-kimi-code-credentials-json',
-        sessionPath: '~/.kimi/credentials/kimi-code.json',
+        sessionPath: '~/.kimi-code/credentials/kimi-code.json',
       },
     });
-    expect(reads).toEqual(['/home/alice/.kimi/credentials/kimi-code.json']);
+    expect(reads).toEqual([KIMI_CANONICAL]);
   });
 
+  it('honours the CLI data-dir override declared by the installed Kimi CLI', async () => {
+    const reads: string[] = [];
+    const adapter = new FileSessionImportAdapter({
+      profile: KIMI_CODE_SESSION_IMPORT_PROFILE,
+      homeDir: HOME,
+      env: { KIMI_CODE_HOME: KIMI_OVERRIDE_DIR },
+      readFile: reader(reads, [KIMI_OVERRIDE, KIMI_CANONICAL, KIMI_LEGACY]),
+    });
+
+    const imported = await adapter.importSession({ deployment: 'local' });
+    expect(reads).toEqual([KIMI_OVERRIDE]);
+    // The override lives outside the home directory, so it has no `~/…` form.
+    expect(imported.metadata).not.toHaveProperty('sessionPath');
+  });
+
+  it('does not fall back to the default dir or the retired ~/.kimi when KIMI_CODE_HOME is set but absent', async () => {
+    const reads: string[] = [];
+    const adapter = new FileSessionImportAdapter({
+      profile: KIMI_CODE_SESSION_IMPORT_PROFILE,
+      homeDir: HOME,
+      env: { KIMI_CODE_HOME: KIMI_OVERRIDE_DIR },
+      readFile: reader(reads, [KIMI_CANONICAL, KIMI_LEGACY]),
+    });
+
+    await expect(adapter.importSession({ deployment: 'local' })).rejects.toThrow('local_session_file_missing');
+    // An explicit override is authoritative: no other account's file is consulted.
+    expect(reads).toEqual([KIMI_OVERRIDE]);
+  });
 
   it('keeps the OpenAI compatibility wrapper on the Codex profile', async () => {
     const { OpenAiSubscriptionSessionImportAdapter } = await import('../../../src/api/ai-gateway/connect/OpenAiSubscriptionSessionImportAdapter');
@@ -116,6 +161,7 @@ describe('FileSessionImportAdapter', () => {
     const adapter = new FileSessionImportAdapter({
       profile: KIMI_CODE_SESSION_IMPORT_PROFILE,
       homeDir: HOME,
+      env: {},
       readFile: async () => {
         throw new Error('should_not_read');
       },
@@ -136,6 +182,18 @@ describe('FileSessionImportAdapter', () => {
     });
     await expect(missing.importSession({ deployment: 'local' })).rejects.toThrow('local_session_file_missing');
 
+    const missingKimi = new FileSessionImportAdapter({
+      profile: KIMI_CODE_SESSION_IMPORT_PROFILE,
+      homeDir: HOME,
+      env: {},
+      readFile: async () => {
+        const error = new Error('ENOENT') as NodeJS.ErrnoException;
+        error.code = 'ENOENT';
+        throw error;
+      },
+    });
+    await expect(missingKimi.importSession({ deployment: 'local' })).rejects.toThrow('local_session_file_missing');
+
     const invalidJson = new FileSessionImportAdapter({
       profile: OPENAI_CODEX_SESSION_IMPORT_PROFILE,
       homeDir: HOME,
@@ -154,6 +212,7 @@ describe('FileSessionImportAdapter', () => {
     const missingTokens = new FileSessionImportAdapter({
       profile: KIMI_CODE_SESSION_IMPORT_PROFILE,
       homeDir: HOME,
+      env: {},
       readFile: async () => JSON.stringify({ access_token: 'kimi-access' }),
     });
     await expect(missingTokens.importSession({ deployment: 'local' })).rejects.toThrow('local_session_missing_tokens');

@@ -86,17 +86,13 @@ describe('contract layer inside the ai-connections package', () => {
   })
 
   /**
-   * What is left is one entry, and it is a product *name* rather than wording:
-   * `productLabel` on two of Zhipu's offerings. That is catalog content - it
-   * names the vendor, it is not reworded per screen, and this package is where
-   * names live.
-   *
-   * The seventeen error sentences that used to sit here are gone: the client now
-   * fails with the facts (code, status, provider, auth mode) and the applet picks
-   * the sentence in `error-wording.ts`. Freezing this one entry keeps the
-   * distinction enforced - nothing new can appear, and the allowance only shrinks.
+   * These Chinese literals are provider/product names, which are catalog
+   * content. Provider labels now have one authority here instead of copies in
+   * the UI and server. Action wording and error sentences remain forbidden;
+   * only these exact brand names are allowed.
    */
   const FROZEN_USER_FACING_TEXT = [
+    'provider-catalog.ts :: \'百炼\'',
     'provider-catalog.ts :: \'智谱 AI\'',
   ]
 
@@ -123,7 +119,7 @@ describe('contract layer inside the ai-connections package', () => {
       exports: Record<string, { import?: string }>
     }
     // The interoperability subpaths are what the gateway and the scripts read.
-    for (const subpath of [ './client', './provider-catalog', './client-config', './endpoint-urls' ]) {
+    for (const subpath of [ './client', './provider-catalog', './client-config', './endpoint-urls', './service-access-resources' ]) {
       expect(manifest.exports[subpath]?.import, `${subpath} must stay exported`).toBeTruthy()
     }
     // The applet entries ship from the same package; nothing is published twice.
@@ -131,7 +127,7 @@ describe('contract layer inside the ai-connections package', () => {
       expect(manifest.exports[subpath]?.import, `${subpath} must stay exported`).toBeTruthy()
     }
     expect(Object.keys(manifest.exports).sort()).toEqual(
-      [ '.', './client', './client-config', './endpoint-urls', './manifest', './provider-catalog' ],
+      [ '.', './client', './client-config', './endpoint-urls', './manifest', './provider-catalog', './service-access-resources' ],
     )
   })
 

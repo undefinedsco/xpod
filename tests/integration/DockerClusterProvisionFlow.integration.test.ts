@@ -57,6 +57,32 @@ async function waitForService(url: string, maxRetries = 30, delayMs = 1000): Pro
   return false;
 }
 
+async function prepareCloudProfile(podName: string, cloudBaseUrl: string) {
+  const accountResponse = await fetch(`${cloudBaseUrl}/.account/account/`, {
+    method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  const account = await accountResponse.json() as { authorization: string };
+  expect(accountResponse.status).toBe(200);
+  const headers = { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `CSS-Account-Token ${account.authorization}` };
+  const indexResponse = await fetch(`${cloudBaseUrl}/.account/`, {
+    headers: { Accept: headers.Accept, Authorization: headers.Authorization },
+  });
+  expect(indexResponse.status).toBe(200);
+  const index = await indexResponse.json() as { controls: { account: { profile: string; pod: string } } };
+  expect(index.controls.account.profile).toBeTypeOf('string');
+  expect(index.controls.account.pod).toBeTypeOf('string');
+  const profileUrl = normalizeAccountControlUrl(index.controls.account.profile, cloudBaseUrl);
+  const podControl = normalizeAccountControlUrl(index.controls.account.pod, cloudBaseUrl);
+  expect(new URL(profileUrl).origin).toBe(new URL(cloudBaseUrl).origin);
+  expect(new URL(podControl).origin).toBe(new URL(cloudBaseUrl).origin);
+  const response = await fetch(profileUrl, { method: 'POST', headers, body: JSON.stringify({ podName }) });
+  const profile = await response.json() as { webId: string };
+  expect(response.status, JSON.stringify(profile)).toBe(200);
+  expect(new URL(profile.webId).origin).toBe(new URL(cloudBaseUrl).origin);
+  return { webId: profile.webId, headers, podControl };
+}
+
 suite('Provision Flow (IdP + SP)', () => {
   beforeAll(async () => {
     const readiness = await Promise.all([
@@ -279,6 +305,7 @@ suite('Provision Flow (IdP + SP)', () => {
   describe('Pod Provisioning on SP (POST /provision/pods)', () => {
     it('should create pod on Local SP with valid service token', async () => {
       const podName = `test-pod-${Date.now().toString(36)}`;
+      const { webId } = await prepareCloudProfile(podName, CLOUD_BASE_URL);
 
       const res = await fetch(`${LOCAL_BASE_URL}/provision/pods`, {
         method: 'POST',
@@ -286,7 +313,7 @@ suite('Provision Flow (IdP + SP)', () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${LOCAL_SERVICE_TOKEN}`,
         },
-        body: JSON.stringify({ podName }),
+        body: JSON.stringify({ podName, webId }),
       });
 
       expect(res.status).toBe(201);
@@ -336,6 +363,7 @@ suite('Provision Flow (IdP + SP)', () => {
 
     it('should return an idempotent 200 with a fresh valid receipt for duplicate provision calls', async () => {
       const podName = `dup-pod-${Date.now().toString(36)}`;
+      const { webId } = await prepareCloudProfile(podName, CLOUD_BASE_URL);
       const headers = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${LOCAL_SERVICE_TOKEN}`,
@@ -345,11 +373,10 @@ suite('Provision Flow (IdP + SP)', () => {
       const res1 = await fetch(`${LOCAL_BASE_URL}/provision/pods`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ podName }),
+        body: JSON.stringify({ podName, webId }),
       });
       expect(res1.status).toBe(201);
       const body1 = await res1.json() as { success: boolean; podUrl: string; webId?: string; provisionReceipt?: string };
-      const webId = `${body1.podUrl}profile/card#me`;
       expect(body1.success).toBe(true);
       expect(body1.webId).toBe(webId);
       expect(verifyProvisionReceipt(body1.provisionReceipt, { secret: deriveProvisionReceiptSecret(LOCAL_SERVICE_TOKEN) })).toMatchObject({
@@ -370,7 +397,7 @@ suite('Provision Flow (IdP + SP)', () => {
       const res2 = await fetch(`${LOCAL_BASE_URL}/provision/pods`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ podName }),
+        body: JSON.stringify({ podName, webId }),
       });
       expect(res2.status).toBe(200);
       const body2 = await res2.json() as { success: boolean; podUrl: string; webId?: string; provisionReceipt?: string };
@@ -436,20 +463,20 @@ suite('Provision Flow (IdP + SP)', () => {
       // 3. 浏览器在进入 Cloud Account Pod 资源锁前，用短期 access token
       // 在 Local SP 创建 Pod，并拿回只可由 Local 长期密钥签发的回执。
       const podName = `e2e-${Date.now().toString(36)}`;
+      const { webId, headers: accountHeaders, podControl } = await prepareCloudProfile(podName, CLOUD_BASE_URL);
       const createRes = await fetch(`${payload!.spUrl}/provision/pods`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${payload!.serviceAccessToken}`,
         },
-        body: JSON.stringify({ podName }),
+        body: JSON.stringify({ podName, webId }),
       });
 
       expect(createRes.status).toBe(201);
       const pod = await createRes.json() as { podUrl: string; webId?: string; provisionReceipt?: string };
       expect(registration.spDomain).toBe(`${LOCAL_NODE_ID}.undefineds.site`);
       expect(pod.podUrl).toBe(`https://${registration.spDomain}/${podName}/`);
-      const webId = `${pod.podUrl}profile/card#me`;
       expect(pod.webId).toBe(webId);
       expect(verifyProvisionReceipt(pod.provisionReceipt, { secret: deriveProvisionReceiptSecret(LOCAL_SERVICE_TOKEN) })).toMatchObject({
         valid: true,
@@ -466,43 +493,15 @@ suite('Provision Flow (IdP + SP)', () => {
 
       console.log(`  3. Pod created: ${pod.podUrl}`);
 
-      // 4. Cloud Account consumes only the signed receipt inside its 6-second
-      // resource lock. The WebID/Profile/Pod use the Cloud-issued SP domain;
-      // only solid:oidcIssuer points at the Cloud IdP.
-      const accountRes = await fetch(`${CLOUD_BASE_URL}/.account/account/`, {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const accountText = await accountRes.text();
-      expect(accountRes.status, accountText).toBe(200);
-      const account = JSON.parse(accountText) as { authorization: string };
-      const controlsRes = await fetch(`${CLOUD_BASE_URL}/.account/`, {
-        headers: {
-          Accept: 'application/json',
-          Authorization: `CSS-Account-Token ${account.authorization}`,
-        },
-      });
-      expect(controlsRes.status).toBe(200);
-      const controls = await controlsRes.json() as {
-        controls?: { account?: { pod?: string } };
-      };
-      expect(controls.controls?.account?.pod).toBeTypeOf('string');
-
+      // Cloud finalize verifies the receipt and the current Account's Cloud identity.
       const lockStartedAt = performance.now();
-      const accountPodRes = await fetch(normalizeAccountControlUrl(
-        controls.controls!.account!.pod!,
-        CLOUD_BASE_URL,
-      ), {
+      const accountPodRes = await fetch(podControl, {
         method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          Authorization: `CSS-Account-Token ${account.authorization}`,
-        },
+        headers: accountHeaders,
         body: JSON.stringify({
           name: podName,
           settings: {
+            webId,
             provisionCode: registration.provisionCode,
             provisionReceipt: pod.provisionReceipt,
           },
@@ -517,7 +516,7 @@ suite('Provision Flow (IdP + SP)', () => {
         webId,
       });
 
-      const profileRes = await fetch(new URL(`/${podName}/profile/card`, payload!.spUrl), {
+      const profileRes = await fetch(webId.split('#')[0], {
         headers: { Accept: 'text/turtle' },
       });
       const profile = await profileRes.text();

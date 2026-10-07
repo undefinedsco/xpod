@@ -7,7 +7,7 @@ export async function verifyOfflinePodRecovery(
   context: BrowserContext,
   resourcePath: string,
   expectedBody: string,
-): Promise<void> {
+): Promise<{ offlineNetworkError: string; cachePolicy: 'no-store' }> {
   const identity = await readBrowserXpodRuntime(page);
   expect(identity.status).toBe('authenticated');
   expect(await fetchBrowserXpodPod(page, resourcePath)).toEqual({ status: 200, body: expectedBody });
@@ -23,13 +23,26 @@ export async function verifyOfflinePodRecovery(
   page.on('request', observe);
   try {
     await context.setOffline(true);
-    await expect(fetchBrowserXpodPod(page, resourcePath)).rejects.toThrow(/fetch|network|internet|offline/iu);
+    expect(await page.evaluate(() => navigator.onLine)).toBe(false);
+    // A previously read GET may legitimately be served by Chromium's HTTP
+    // cache while offline. Require a real network attempt, without clearing
+    // the product's cache or changing its transport/session implementation.
+    const resourceUrl = new URL(resourcePath, identity.podUrl).href;
+    const failedRequest = page.waitForEvent('requestfailed', {
+      predicate: request => request.url() === resourceUrl && request.method() === 'GET', timeout: 10_000,
+    });
+    const [request] = await Promise.all([
+      failedRequest,
+      expect(fetchBrowserXpodPod(page, resourcePath, { cache: 'no-store' })).rejects.toThrow(/fetch|network|internet|offline/iu),
+    ]);
+    expect(request.failure()?.errorText).toBe('net::ERR_INTERNET_DISCONNECTED');
     expect(await readBrowserXpodRuntime(page)).toEqual(identity);
     expect(await page.evaluate(() => localStorage.getItem('solidClientAuthn:currentSession'))).toBe(sessionId);
     await context.setOffline(false);
-    expect(await fetchBrowserXpodPod(page, resourcePath)).toEqual({ status: 200, body: expectedBody });
+    expect(await fetchBrowserXpodPod(page, resourcePath, { cache: 'no-store' })).toEqual({ status: 200, body: expectedBody });
     expect(await readBrowserXpodRuntime(page)).toEqual(identity);
     expect(authorizationCodeRequests).toBe(0);
+    return { offlineNetworkError: request.failure()!.errorText, cachePolicy: 'no-store' };
   } finally {
     await context.setOffline(false);
     page.off('request', observe);
@@ -41,7 +54,7 @@ export async function completeOfflineProductLogout(page: Page, context: BrowserC
   await page.getByTestId('xpod-user-card-trigger').click();
   await context.setOffline(true);
   try {
-    await page.getByRole('button', { name: 'Sign out', exact: true }).evaluate((button) => {
+    await page.getByRole('button', { name: '退出', exact: true }).evaluate((button) => {
       (button as HTMLButtonElement).click();
     });
     await expect(page.getByText('退出未完成', { exact: true })).toBeVisible();

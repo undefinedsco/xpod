@@ -450,7 +450,7 @@ export class PodModelSelectionRepository {
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<PodModelSelectionDb> {
     assertOwnerWebId(owner);
     assertAuthOwner(owner, auth);
-    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver);
+    const podUrl = await resolveOwnerPodBaseUrl(owner, this.podBaseUrlResolver, auth);
     const trustedFetch = await this.podAccess?.getPodFetch(owner, {
       ...(auth ? { auth } : {}),
       podBaseUrl: podUrl,

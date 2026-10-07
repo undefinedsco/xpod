@@ -18,6 +18,7 @@ import type { ServerResponse, IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
+import { registerServiceInfoRoute } from './ServiceInfoHandler';
 import { parseTunnelProvider } from '../../tunnel/TunnelProviderCatalog';
 import type { AccessRoute } from '../../edge/reachability/types';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
@@ -587,6 +588,8 @@ export interface ProvisionStatusOptions {
   serviceToken?: string;
   /** 当前 SP canonical public URL */
   publicUrl?: string;
+  /** Internal provenance: a transport fallback is not an allocated/canonical node address. */
+  publicUrlIsFallback?: boolean;
   /** SP 子域名 */
   spDomain?: string;
   /** 本地端口，供 Cloud 管理 tunnel 元数据 */
@@ -677,12 +680,20 @@ export function registerProvisionStatusRoute(
     nodeToken: options.nodeToken,
     serviceToken: options.serviceToken,
     publicUrl: normalizeUrl(options.publicUrl),
+    publicUrlIsFallback: options.publicUrlIsFallback ?? false,
     spDomain: options.spDomain,
     tunnelToken: undefined,
     tunnelProvider: undefined,
     tunnelEndpoint: undefined,
   };
   let refreshPromise: Promise<void> | undefined;
+
+  registerServiceInfoRoute(server, () => ({
+    edition: 'local',
+    managed: Boolean(options.cloudUrl),
+    publicUrl: state.publicUrlIsFallback ? undefined : state.publicUrl,
+    oidcIssuer: options.cloudBaseUrl ?? options.cloudUrl,
+  }));
 
   server.get('/provision/status', async (_request, response) => {
     const registered = Boolean(options.nodeId && options.nodeToken && options.cloudUrl);
@@ -847,6 +858,7 @@ interface ProvisionStatusState {
   nodeToken?: string;
   serviceToken?: string;
   publicUrl?: string;
+  publicUrlIsFallback: boolean;
   spDomain?: string;
   tunnelToken?: string;
   tunnelProvider?: string;
@@ -957,7 +969,11 @@ async function refreshProvisionStatus(options: {
   state.nodeToken = payload.nodeToken;
   state.serviceToken = payload.serviceToken;
   state.provisionCode = payload.provisionCode;
-  state.publicUrl = normalizeUrl(payload.publicUrl) ?? state.publicUrl;
+  const assignedPublicUrl = normalizeUrl(payload.publicUrl);
+  if (assignedPublicUrl) {
+    state.publicUrl = assignedPublicUrl;
+    state.publicUrlIsFallback = false;
+  }
   state.spDomain = typeof payload.spDomain === 'string' ? payload.spDomain : state.spDomain;
   state.tunnelToken = typeof payload.tunnelToken === 'string' ? payload.tunnelToken : state.tunnelToken;
   state.tunnelProvider = typeof payload.tunnelProvider === 'string' ? payload.tunnelProvider : state.tunnelProvider;

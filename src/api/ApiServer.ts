@@ -4,7 +4,13 @@ import type { Duplex } from 'node:stream';
 import { getLoggerFor } from 'global-logger-factory';
 import type { AuthMiddleware, AuthenticatedRequest } from './middleware/AuthMiddleware';
 import { nodeRuntimeHost } from '../runtime/host/node/NodeRuntimeHost';
+import { sendPodAccessFailure } from './handlers/PodAccessFailureResponse';
 import type { RuntimeHost, RuntimeListenEndpoint } from '../runtime/host/types';
+import {
+  hashTaskModelDiagnosticSession,
+  selectTaskModelDiagnosticReceipt,
+  type TaskGatewayHttpDiagnosticReceipt,
+} from '../util/task-model-diagnostics';
 
 /**
  * Route handler function
@@ -56,6 +62,12 @@ export class ApiServer {
   private readonly upgradeHandlers: UpgradeHandler[] = [];
   private readonly shutdownHandlers: Array<() => void | Promise<void>> = [];
   private responseHeaders: Record<string, string> = {};
+  private readonly activeHandlers = new Map<IncomingMessage, string>();
+  private readonly openResponses = new Map<ServerResponse, string>();
+  private readonly upgradedSockets = new Set<Duplex>();
+  private readonly drainWaiters = new Set<() => void>();
+  private stopping = false;
+  private stopPromise?: Promise<void>;
   private server?: Server;
 
   public constructor(options: ApiServerOptions) {
@@ -127,9 +139,7 @@ export class ApiServer {
 
   public addUpgradeHandler(handler: UpgradeHandler): void {
     this.upgradeHandlers.push(handler);
-    if (this.server) {
-      this.server.on('upgrade', handler);
-    }
+
   }
 
   public addShutdownHandler(handler: () => void | Promise<void>): void {
@@ -146,6 +156,25 @@ export class ApiServer {
   public async start(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = createServer((req, res) => {
+        const requestPath = `${req.method ?? 'GET'} ${(req.url ?? '/').split('?', 1)[0]}`;
+        this.openResponses.set(res, requestPath);
+        const responseDone = (): void => {
+          this.openResponses.delete(res);
+          req.off('aborted', responseDone);
+          req.socket.off('close', responseDone);
+          this.notifyDrained();
+        };
+        res.once('finish', responseDone);
+        res.once('close', responseDone);
+        req.once('aborted', responseDone);
+        req.socket.once('close', responseDone);
+        if (this.stopping) {
+          res.statusCode = 503;
+          res.setHeader('Connection', 'close');
+          res.end('Service is shutting down');
+          return;
+        }
+        this.activeHandlers.set(req, requestPath);
         this.handleRequest(req, res).catch((error) => {
           this.logger.error(`Unhandled error: ${error}`);
           if (!res.headersSent) {
@@ -153,11 +182,20 @@ export class ApiServer {
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({ error: 'Internal Server Error' }));
           }
+        }).finally(() => {
+          // Bun can omit response finish/close after the peer disconnected.
+          // The transport is gone, but its logical write still had to finish.
+          if (req.aborted || req.socket.destroyed || res.destroyed) { responseDone(); }
+          this.activeHandlers.delete(req);
+          this.notifyDrained();
         });
       });
-      for (const handler of this.upgradeHandlers) {
-        this.server.on('upgrade', handler);
-      }
+      this.server.on('upgrade', (request, socket, head) => {
+        this.upgradedSockets.add(socket);
+        socket.once('close', () => { this.upgradedSockets.delete(socket); this.notifyDrained(); });
+        if (this.stopping) { socket.destroy(); return; }
+        for (const handler of this.upgradeHandlers) { handler(request, socket, head); }
+      });
 
       this.runtimeHost.listen(this.server, this.listenEndpoint).then(() => {
         this.logger.info(`API Server listening on ${this.runtimeHost.formatListenEndpoint(this.listenEndpoint)}`);
@@ -170,18 +208,32 @@ export class ApiServer {
    * Stop the server
    */
   public async stop(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.server) {
-        resolve();
-        return;
-      }
+    if (this.stopPromise) { return this.stopPromise; }
+    this.stopping = true;
+    this.stopPromise = this.drainAndClose();
+    return this.stopPromise;
+  }
 
-      Promise.all(this.shutdownHandlers.map(async (handler) => handler())).then(() =>
-        this.runtimeHost.close(this.server!, this.listenEndpoint)).then(() => {
-          this.logger.info('API Server stopped');
-          resolve();
-      }, reject);
-    });
+  private async drainAndClose(): Promise<void> {
+    if (!this.server) { return; }
+    const endpoint = JSON.stringify(this.listenEndpoint);
+    this.logger.info(`Stopping API shutdown handlers at ${endpoint}`);
+    await Promise.all(this.shutdownHandlers.map(async (handler) => handler()));
+    // Upgraded channels no longer accept work. Wait for actual socket close,
+    // not just destroy() returning: Bun's native WebSocket cleanup is asynchronous.
+    // Shutdown handlers own the WebSocket close handshake; wait for its socket close.
+    this.logger.info(`Draining API HTTP server at ${endpoint}`);
+    this.logger.info(`API pending handlers at ${endpoint}: ${JSON.stringify([...this.activeHandlers.values()])}; responses: ${JSON.stringify([...this.openResponses.values()])}`);
+    await new Promise<void>((resolve) => { this.drainWaiters.add(resolve); this.notifyDrained(); });
+    this.server.once('close', () => this.logger.info(`API HTTP close event at ${endpoint}`));
+    await this.runtimeHost.close(this.server, this.listenEndpoint, { connectionsDrained: true });
+    this.logger.info(`API Server stopped at ${endpoint}`);
+  }
+
+  private notifyDrained(): void {
+    if (this.activeHandlers.size || this.openResponses.size || this.upgradedSockets.size) { return; }
+    for (const resolve of this.drainWaiters) { resolve(); }
+    this.drainWaiters.clear();
   }
 
   /**
@@ -199,6 +251,7 @@ export class ApiServer {
     const method = request.method?.toUpperCase() ?? 'GET';
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
     const path = url.pathname;
+    this.observeTaskGatewayResponse(request, response, method, path);
 
     // Handle CORS preflight
     if (method === 'OPTIONS') {
@@ -244,6 +297,7 @@ export class ApiServer {
     try {
       await route.handler(authRequest, response, params);
     } catch (error) {
+      if (!response.headersSent && sendPodAccessFailure(response, error)) return;
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
       const causes: string[] = [];
       let cause: unknown = error instanceof Error ? error.cause : undefined;
@@ -262,6 +316,40 @@ export class ApiServer {
         response.end(JSON.stringify({ error: 'Internal Server Error' }));
       }
     }
+  }
+
+  private observeTaskGatewayResponse(
+    request: IncomingMessage, response: ServerResponse, method: string, path: string,
+  ): void {
+    if (method !== 'POST') return;
+    const route: TaskGatewayHttpDiagnosticReceipt['route'] | undefined =
+      path === '/v1/chat/completions' ? 'chat_completions' :
+      path === '/v1/responses' ? 'responses' :
+      path === '/v1/messages' ? 'anthropic_messages' : undefined;
+    if (!route) return;
+    const correlationHash = hashTaskModelDiagnosticSession(request.headers['x-opencode-session']);
+    if (!correlationHash) return;
+    const startedAt = Date.now();
+    const observe = (statusSource: TaskGatewayHttpDiagnosticReceipt['statusSource']): void => {
+      response.off('finish', onFinish);
+      response.off('close', onClose);
+      // An unsent close has no actual caller HTTP status, regardless of statusCode.
+      if (statusSource === 'response_closed' && !response.headersSent) return;
+      try {
+        const receipt = selectTaskModelDiagnosticReceipt({
+          event: 'xpod.task-gateway-http-diagnostic', schemaVersion: 1, scope: 'session',
+          correlationHash, route, callerHTTPstatus: response.statusCode, statusSource,
+          durationMs: Math.max(0, Math.min(2147483647, Date.now() - startedAt)),
+        } satisfies TaskGatewayHttpDiagnosticReceipt);
+        if (receipt) this.logger.error(JSON.stringify(receipt));
+      } catch {
+        // Diagnostics are observational; a failing sink must not affect HTTP or cleanup.
+      }
+    };
+    const onFinish = (): void => observe('response_finished');
+    const onClose = (): void => observe('response_closed');
+    response.once('finish', onFinish);
+    response.once('close', onClose);
   }
 
   private findRoute(method: string, path: string): { route: Route; params: Record<string, string> } | undefined {
@@ -324,6 +412,7 @@ export class ApiServer {
         'Content-Type',
         'Accept',
         'DPoP',
+        'X-Xpod-Pod-Url',
         'Origin',
         'X-Requested-With',
         'If-Match',

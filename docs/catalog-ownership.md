@@ -97,6 +97,8 @@
 
 ### 测试夹具必须从 catalog 派生
 
+2026-10-03 浏览器入口验收补充：内置 Offering 的 `consoleUrl` 优先取共享能力目录，只有目录未声明时才采用 discovery 字段或 provider 首页。旧 models discovery 曾把 Kimi Code 控制台 `/code/console` 覆盖成产品落地页 `/code`；生产容器注册回归同时验证 Code 与 Moonshot 开放平台的不同目标。此修正只确定控制台内容的权威，不改变 schema 或用户自建 Provider 的 Pod 数据归属。
+
 手写夹具会**反过来固化错误**：夹具可以一边用真实 provider id，一边编造 label / authModes / lifecycle，测试再把这个编造的契约锁死。两处真实缺陷就是这么来的 —— 一个活过 catalog 改名的 `API Key` 标签，一条被判丢失的 OpenAI 桌面导入路径。
 
 因此 `@undefineds.co/ai-connections` 的测试夹具按意图二选一（见 [`packages/ai-connections/test/fixtures.ts`](../packages/ai-connections/test/fixtures.ts)）：

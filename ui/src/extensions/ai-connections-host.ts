@@ -32,7 +32,7 @@ const aiConnectionApplet = discoveredAiConnectionsApplet;
 
 export function createXpodAiConnectionsHost(
   runtime: XpodSolidRuntimeValue,
-  account?: Pick<AuthContextType, 'controls' | 'idpIndex' | 'bindAccountCapability'> | null,
+  account?: Pick<AuthContextType, 'controls' | 'idpIndex' | 'bindAccountCapability' | 'accountFetch'> | null,
 ): WebExtensionHost<SolidDatabase> {
   const loginController = createXpodLoginController({ runtime });
   const clientConfigurationPodUrl = runtime.currentPod?.podUrl
@@ -47,7 +47,7 @@ export function createXpodAiConnectionsHost(
         : runtime.state.status === 'error'
           ? { status: 'error' as const, error: runtime.state.error }
           : { status: 'unavailable' as const };
-  const invocationFetch = window.fetch.bind(window);
+  const invocationFetch = runtime.transportFetch ?? window.fetch.bind(window);
   const session = {
     // Read the live authority even while React still holds this host value.
     getSnapshot: () => runtime.session.getSnapshot(),
@@ -107,7 +107,7 @@ export function createXpodAiConnectionsHost(
           collection: account.controls.account.clientCredentials,
           assertCurrent: account.bindAccountCapability(),
           accountIndex: account.idpIndex,
-          fetch: invocationFetch,
+          fetch: account.accountFetch ?? invocationFetch,
         })
         : undefined,
       aiConnectionsPodStore: runtime.currentPod

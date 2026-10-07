@@ -38,6 +38,15 @@ function stepIndex(job: any, name: string): number {
 }
 
 describe('stable release promotion workflow', () => {
+  it('requires real Task approval evidence from the live Gateway acceptance', async () => {
+    const candidate = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/candidate.yml'), 'utf8')).toJSON() as Workflow;
+    const live = jobRunText(candidate, 'deploy_and_accept');
+    expect(live).toContain('XPOD_LIVE_TASK_APPROVAL=1');
+    expect(live).toContain("['task-approval', 'taskApproval']");
+    expect(live).toContain('layer?.ok !== true');
+    expect(jobRunText(candidate, 'finalize_acceptance')).not.toMatch(/['"]task-approval['"]\s*:\s*['"]passed['"]/);
+  });
+
   it('checks the complete root tarball before publishing any native package', async () => {
     const workflow = await loadWorkflow();
     const job = workflow.jobs.publish_npm_staging;
@@ -50,6 +59,37 @@ describe('stable release promotion workflow', () => {
     expect(step.run).toContain('scripts/check-pack-json.cjs');
     expect(step.run).not.toContain('npm publish');
     expect(step.if).toBeUndefined();
+  });
+
+  it('hands the packaged desktop to the release job and creates the release in exactly one place', async () => {
+    const workflow = await loadWorkflow();
+    const build = workflow.jobs.build_desktop_macos;
+    const publish = workflow.jobs.create_github_release;
+    const artifactName = 'xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}';
+
+    // The desktop job also uploads allowlisted acceptance evidence; bind the assertion
+    // to the packaged payload artifact that the release job downloads.
+    const upload = build.steps.find(
+      (step: any) => step.uses === 'actions/upload-artifact@v4' && step.with?.name === artifactName,
+    );
+    expect(upload?.with?.name).toBe(artifactName);
+    expect(upload?.with?.path).toContain('desktop/release/*.dmg');
+    expect(upload?.with?.path).toContain('desktop/release/*.zip');
+    expect(upload?.with?.path).toContain('desktop/release/*.blockmap');
+    // The desktop reads its update feed from the release assets; a release without this manifest
+    // ships an app that can never find an update.
+    expect(upload?.with?.path).toContain('desktop/release/latest-mac.yml');
+    expect(jobRunText(workflow, 'create_github_release')).toContain("latest-mac.yml");
+    expect(upload?.with?.['if-no-files-found']).toBe('error');
+
+    const download = publish.steps.find((step: any) => step.uses === 'actions/download-artifact@v4');
+    expect(download?.with?.name).toBe(artifactName);
+    expect(download?.with?.path).toBe('${{ runner.temp }}/desktop-release');
+
+    // The builder only produces the bytes; publishing them belongs to the job that runs
+    // after production deploys, so a release is never created twice or from an empty tree.
+    expect(jobRunText(workflow, 'build_desktop_macos')).not.toContain('gh release create');
+    expect(jobRunText(workflow, 'create_github_release')).toContain('gh release upload');
   });
 
   it('checks the same package boundary in the required RC desktop job after the full runtime build', async () => {
@@ -68,7 +108,13 @@ describe('stable release promotion workflow', () => {
     expect(job.steps[consumers].run).toContain('node scripts/check-package-registry-consumer.cjs');
     expect(job.steps[consumers].run).toContain('"${RUNNER_TEMP}/xpod-packed-node" .test-data/npm-consumer-cache');
     expect(job.steps[consumers].run).toContain('"${RUNNER_TEMP}/xpod-packed-bun" .test-data/bun-consumer-cache bun');
-    expect(jobRunText(candidate, 'finalize_acceptance')).toContain("'package-consumers': 'passed'");
+    const finalizeText = jobRunText(candidate, 'finalize_acceptance');
+    // The gate must read verified, downloaded evidence rather than a literal.
+    expect(finalizeText).toContain('scripts/release-gate-evidence.cjs verify-package-consumers');
+    expect(finalizeText).toContain('package-consumer-check.json');
+    expect(finalizeText).toContain("packageConsumerChecks['package-consumers']");
+    expect(finalizeText).not.toMatch(/['"]package-consumers['"]\s*:\s*['"]passed['"]/);
+    expect(finalizeText).not.toMatch(/['"]qlever-local['"]\s*:\s*['"]passed['"]/);
   });
   it('keeps burst headroom for concurrent Gateway, CSS, and API requests', async () => {
     const deployment = parseDocument(await readFile(cloudDeploymentPath, 'utf8')).toJSON() as any;
@@ -152,6 +198,7 @@ describe('stable release promotion workflow', () => {
       'package-consumers',
       'models',
       'chat',
+      'task-approval',
       'qlever-local',
       'desktop',
     ]) {
@@ -189,7 +236,10 @@ describe('stable release promotion workflow', () => {
     expect(publishRunText).toContain('qlever-local-runtime-darwin-arm64-${XPOD_ACCEPTED_SHA}');
     expect(publishRunText).toContain('node -e');
     expect(publishRunText).toContain('packageJson.version !== process.env.RELEASE_VERSION');
-    expect(publishRunText).toContain('publish-platform-packages.cjs --tag=stable-staging --target=darwin-arm64');
+    expect(publishRunText).toContain('build-platform-package.cjs --target=darwin-arm64');
+    expect(publishRunText).toContain('npm publish dist/npm/darwin-arm64 --registry');
+    expect(publishRunText.indexOf('build-platform-package.cjs')).toBeLessThan(publishRunText.indexOf('if npm view'));
+    expect(publishRunText).toContain('--access public --tag stable-staging');
     expect(publishRunText).toContain('registry_url="https://registry.npmjs.org/@undefineds.co%2fxpod/${RELEASE_VERSION}"');
     expect(publishRunText).toContain('npm_status=');
     expect(publishRunText).toContain('exists=false');
@@ -224,6 +274,7 @@ describe('stable release promotion workflow', () => {
     const promote = workflow.jobs.promote_npm_latest;
     const promoteText = jobRunText(workflow, 'promote_npm_latest');
     expect(promote.needs).toEqual([
+      'shared_packages',
       'promotion_guard',
       'verify_npm_consumer_node',
       'verify_npm_consumer_bun',
@@ -234,6 +285,36 @@ describe('stable release promotion workflow', () => {
     expect(promoteText).toContain('packages=(@undefineds.co/xpod @undefineds.co/xpod-darwin-arm64)');
     expect(promoteText).toContain('for package in "${packages[@]}"; do');
     expect(promoteText).toContain('npm dist-tag add "$package@$RELEASE_VERSION" latest');
+  });
+
+  it('gates shared applets on exact accepted SHA before root latest promotion', async () => {
+    const workflow = await loadWorkflow();
+    const shared = workflow.jobs.shared_packages;
+    expect(shared.needs).toBe('promotion_guard');
+    expect(shared.uses).toBe('./.github/workflows/packages-release.yml');
+    expect(shared.with).toEqual({ 'accepted-sha': '${{ github.sha }}' });
+    expect(shared.if).toBeUndefined();
+    expect(shared['continue-on-error']).toBeUndefined();
+    expect(workflow.jobs.promote_npm_latest.needs).toContain('shared_packages');
+    expect(workflow.jobs.promote_npm_latest.if).toBeUndefined();
+
+    const reusable = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/packages-release.yml'), 'utf8')).toJSON() as Workflow;
+    expect(Object.keys(reusable.on)).toEqual([ 'workflow_call' ]);
+    expect(reusable.on.workflow_call.inputs['accepted-sha']).toEqual({ required: true, type: 'string' });
+    const publish = reusable.jobs.publish;
+    const checkout = publish.steps.find((step: any) => step.uses === 'actions/checkout@v4');
+    expect(checkout.with.ref).toBe('${{ inputs.accepted-sha }}');
+    const stageIndex = stepIndex(publish, 'Stage, verify clean consumers, and promote shared packages');
+    const buildIndex = publish.steps.findIndex((step: any) => step.run === 'bun run build:packages');
+    expect(buildIndex).toBeGreaterThanOrEqual(0);
+    expect(stageIndex).toBeGreaterThan(buildIndex);
+    expect(stageIndex).toBeGreaterThan(stepIndex(publish, 'Verify publication contracts'));
+    expect(publish.steps[stageIndex]).toMatchObject({
+      run: 'node scripts/publish-workspace-packages.cjs',
+      env: { XPOD_ACCEPTED_SHA: '${{ inputs.accepted-sha }}' },
+    });
+    expect(publish.steps[stageIndex].if).toBeUndefined();
+    expect(publish['continue-on-error']).toBeUndefined();
   });
 
   it('repackages the accepted desktop without Apple distribution credentials', async () => {

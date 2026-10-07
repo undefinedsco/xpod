@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "bunVersion": "1.3.12",
+  "prefixSha256": "1f16c0a098fc094d4c4d98654a47aac6e90ff4637ec93914f48a1df8baac2403",
+  "prefixBytes": 1639,
+  "provenance": {
+    "bunCommit": "700fc117a2fd01ac0201deaa6fa69c5557acb04f",
+    "revision": "1.3.12+700fc117a",
+    "generatedHelpers": [
+      {
+        "name": "__create",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 7,
+        "preambleLine": 2,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L7"
+      },
+      {
+        "name": "__getProtoOf",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 9,
+        "preambleLine": 3,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L9"
+      },
+      {
+        "name": "__defProp",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 10,
+        "preambleLine": 4,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L10"
+      },
+      {
+        "name": "__getOwnPropNames",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 11,
+        "preambleLine": 5,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L11"
+      },
+      {
+        "name": "__hasOwnProp",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 13,
+        "preambleLine": 6,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L13"
+      },
+      {
+        "name": "__accessProp",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 18,
+        "preambleLine": 7,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L18"
+      },
+      {
+        "name": "__toESMCache_node",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 49,
+        "preambleLine": 10,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L49"
+      },
+      {
+        "name": "__toESMCache_esm",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 51,
+        "preambleLine": 11,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L51"
+      },
+      {
+        "name": "__toESM",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 57,
+        "preambleLine": 12,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L57"
+      },
+      {
+        "name": "__commonJS",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 105,
+        "preambleLine": 32,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L105"
+      },
+      {
+        "name": "__returnValue",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 119,
+        "preambleLine": 33,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L119"
+      },
+      {
+        "name": "__exportSetter",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 120,
+        "preambleLine": 34,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L120"
+      },
+      {
+        "name": "__export",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 124,
+        "preambleLine": 37,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L124"
+      },
+      {
+        "name": "__esm",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 316,
+        "preambleLine": 46,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js#L316"
+      }
+    ],
+    "createRequire": {
+      "sourcePath": "src/bundler/ParseTask.zig",
+      "target": "node",
+      "sourceLines": [
+        150,
+        152
+      ],
+      "assemblyLine": 252,
+      "sourceUrl": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/bundler/ParseTask.zig#L150",
+      "finding": "Node branch emits import { createRequire } from node:module and __require = createRequire(import.meta.url). runtime_code embeds ../runtime.js plus runtime_require plus disposal helpers; only used definitions appear in inspected preamble. The esbuild-copy comment at line 156 belongs to the else proxy fallback at line 167, not the node branch. No Node createRequire implementation is embedded in this preamble."
+    },
+    "license": {
+      "bunSource": "LICENSE.md:1 and :73",
+      "bunFinding": "Original root LICENSE states Bun itself is MIT-licensed and credits esbuild Zig-port ancestry; this file contains no full Bun MIT grant or Bun copyright-holder line to copy. No copyright text has been invented.",
+      "esbuildSupplement": "esbuild-LICENSE.md",
+      "esbuildCopyrightAsWritten": "Copyright (c) 2020 Evan Wallace",
+      "esbuildFixedCommit": "cd832972927f1f67b6d2cc895c06a8759c1cf309",
+      "referenceInCurrentBun": "https://github.com/oven-sh/bun/blob/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/bundler/linker_context/computeChunks.zig#L51",
+      "referenceRole": "Current Bun source itself links this upstream esbuild commit for chunk computation; it gives a deterministic official LICENSE source but does not identify runtime.js port provenance.",
+      "exactEsbuildRuntimePortBaselineKnown": false,
+      "minimumRetention": [
+        "Retain exact Bun 1.3.12 LICENSE.md with original MIT declaration and esbuild credit.",
+        "Retain official fixed esbuild-LICENSE.md as conservative upstream attribution, expressly without claiming its commit is the exact runtime port baseline.",
+        "Retain this independent 1.3.12 mapping, fixed runtime.js and ParseTask.zig, preamble SHA and source hashes."
+      ],
+      "limits": [
+        "No root-level or installed esbuild dependency version used to infer runtime origin.",
+        "No full Bun 1.3.12 source-archive notice scan was performed, so no claim that its entire archive lacks other esbuild license materials.",
+        "Any broader native/Bun-binary license analysis is outside this task."
+      ]
+    },
+    "scope": "Only emitted JavaScript prefix; no Bun/Node/JSC executable is bundled. Original root LICENSE retains binary sections as source context, not evidence those binaries are distributed. Conservative esbuild attribution does not establish an exact port baseline."
+  },
+  "files": [
+    {
+      "sourcePath": "src/runtime.js",
+      "object": "objects/b81af4bc8f571fef3f919623491dafe6599556c14ddcedb74b14cd567733633c.txt",
+      "sha256": "b81af4bc8f571fef3f919623491dafe6599556c14ddcedb74b14cd567733633c",
+      "provenance": {
+        "sourceUrl": "https://raw.githubusercontent.com/oven-sh/bun/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/runtime.js",
+        "kind": "verbatim original fetched from exact Bun 1.3.12 source commit"
+      }
+    },
+    {
+      "sourcePath": "LICENSE.md",
+      "object": "objects/7068a9711ef8196d654e143447ed7976b3678ce21145b9da16e1f786528f15bb.txt",
+      "sha256": "7068a9711ef8196d654e143447ed7976b3678ce21145b9da16e1f786528f15bb",
+      "provenance": {
+        "sourceUrl": "https://raw.githubusercontent.com/oven-sh/bun/700fc117a2fd01ac0201deaa6fa69c5557acb04f/LICENSE.md",
+        "kind": "verbatim original fetched from exact Bun 1.3.12 source commit"
+      }
+    },
+    {
+      "sourcePath": "src/bundler/ParseTask.zig",
+      "object": "objects/024cc0e83bffb572df735ce15fa0ea063889e5df8d7ea0aa291736ca543ab738.txt",
+      "sha256": "024cc0e83bffb572df735ce15fa0ea063889e5df8d7ea0aa291736ca543ab738",
+      "provenance": {
+        "sourceUrl": "https://raw.githubusercontent.com/oven-sh/bun/700fc117a2fd01ac0201deaa6fa69c5557acb04f/src/bundler/ParseTask.zig",
+        "kind": "verbatim original fetched from exact Bun 1.3.12 source commit"
+      }
+    },
+    {
+      "sourcePath": "esbuild-LICENSE.md",
+      "object": "objects/b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681.txt",
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "provenance": {
+        "sourceUrl": "https://raw.githubusercontent.com/evanw/esbuild/cd832972927f1f67b6d2cc895c06a8759c1cf309/LICENSE.md",
+        "kind": "conservative upstream notice, not proven exact runtime port baseline"
+      }
+    },
+    {
+      "sourcePath": "generated-prefix.js",
+      "object": "objects/1f16c0a098fc094d4c4d98654a47aac6e90ff4637ec93914f48a1df8baac2403.txt",
+      "sha256": "1f16c0a098fc094d4c4d98654a47aac6e90ff4637ec93914f48a1df8baac2403",
+      "provenance": {
+        "role": "Actual prefix emitted by the independently hash-verified Bun 1.3.12 compiler used by existing CI."
+      }
+    }
+  ]
+}

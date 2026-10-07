@@ -17,13 +17,13 @@ describe('AI Connections toast ownership', () => {
   it('shows one creation notification when the standalone panel owns its toaster', async () => {
     render(<AiConnectionsPanel client={client()} selectedSection="keys" />)
     await createKey()
-    expect(screen.getAllByText('API Key 已创建，请复制或应用到客户端。')).toHaveLength(1)
+    expect(screen.getAllByText('Xpod 密钥 已创建，请复制或应用到客户端。')).toHaveLength(1)
   })
 
   it('shows one creation notification when the enclosing host owns the toaster', async () => {
     render(<><Toaster /><AiConnectionsPanel client={client()} selectedSection="keys" renderToaster={false} /></>)
     await createKey()
-    expect(screen.getAllByText('API Key 已创建，请复制或应用到客户端。')).toHaveLength(1)
+    expect(screen.getAllByText('Xpod 密钥 已创建，请复制或应用到客户端。')).toHaveLength(1)
   })
 
   it('passes host toaster ownership through the extension main slot', async () => {
@@ -38,17 +38,17 @@ describe('AI Connections toast ownership', () => {
     } as unknown as AiConnectionsController
     render(<><Toaster /><Main controller={controller} /></>)
     await createKey()
-    expect(screen.getAllByText('API Key 已创建，请复制或应用到客户端。')).toHaveLength(1)
+    expect(screen.getAllByText('Xpod 密钥 已创建，请复制或应用到客户端。')).toHaveLength(1)
   })
 })
 
 async function createKey() {
-  await screen.findByText('尚未签发 API Key')
-  fireEvent.click(screen.getByRole('button', { name: '新建 API Key' }))
+  await screen.findByText('尚未签发 Xpod 密钥')
+  fireEvent.click(screen.getByRole('button', { name: '新建 Xpod 密钥' }))
   // A key's purpose is declared at creation, so the flow always picks a client.
-  fireEvent.change(screen.getByLabelText('API Key 用途'), { target: { value: 'codex' } })
-  fireEvent.click(screen.getByRole('button', { name: '创建 API Key' }))
-  await screen.findAllByText('API Key 已创建，请复制或应用到客户端。')
+  fireEvent.change(screen.getByLabelText('Xpod 密钥 用途'), { target: { value: 'codex' } })
+  fireEvent.click(screen.getByRole('button', { name: '创建 Xpod 密钥' }))
+  await screen.findAllByText('Xpod 密钥 已创建，请复制或应用到客户端。')
 }
 
 function client(): AiConnectionsClient {
@@ -60,7 +60,7 @@ function client(): AiConnectionsClient {
     createGatewayKey: vi.fn(async () => ({
       plaintext: 'private-test-key',
       record: {
-        id: 'key-1', name: '我的 API Key', scopes: [],
+        id: 'key-1', name: '我的 Xpod 密钥', scopes: [],
         owner: 'https://pod.example/alice/profile/card#me',
         createdAt: '2026-09-10T00:00:00.000Z',
       },

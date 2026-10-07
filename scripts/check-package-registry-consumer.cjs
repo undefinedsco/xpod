@@ -25,7 +25,12 @@ function readArtifact(input) {
   return { tarball, bytes, manifest, integrity: `sha512-${crypto.createHash('sha512').update(bytes).digest('base64')}` };
 }
 
-function createRegistry(artifact, publishToken) {
+function createRegistry(artifact, publishToken, upstreamRegistry) {
+  // Public program dependencies leave the fixture through the caller's upstream
+  // (a configured mirror), defaulting to npmjs so existing callers do not drift.
+  const upstream = typeof upstreamRegistry === 'string' && upstreamRegistry.trim()
+    ? upstreamRegistry.trim().replace(/\/+$/, '')
+    : 'https://registry.npmjs.org';
   let published;
   let tarballPath;
   let publishing = false;
@@ -81,8 +86,9 @@ function createRegistry(artifact, publishToken) {
       res.end(req.method === 'HEAD' ? undefined : JSON.stringify(published)); return;
     }
     // Only GET/HEAD for public program dependencies may leave the fixture.
-    // No publisher headers or query string are forwarded.
-    res.writeHead(302, { location: `https://registry.npmjs.org${new URL(req.url, 'http://localhost').pathname}` });
+    // Redirect to the caller's upstream using the path only: no publisher
+    // headers, token, query string, hash or credentials are forwarded.
+    res.writeHead(302, { location: `${upstream}${new URL(req.url, 'http://localhost').pathname}` });
     res.end();
   });
   server.publishedMetadata = () => published;
@@ -252,4 +258,4 @@ for (const specifier of ['@undefineds.co/ai-connections', '@undefineds.co/ai-con
   }
 }
 if (require.main === module) main(...process.argv.slice(2)).catch((error) => { console.error(error); process.exitCode = 1; });
-module.exports = { readArtifact, createRegistry, publishArtifact, isolatedEnvironment };
+module.exports = { readArtifact, createRegistry, publishArtifact, isolatedEnvironment, run };

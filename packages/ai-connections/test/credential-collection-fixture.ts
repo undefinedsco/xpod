@@ -1,7 +1,9 @@
-import { credentialDescriptor, credentialResource } from '@undefineds.co/models'
+import { aiProviderResource, credentialDescriptor, credentialResource } from '@undefineds.co/models'
 import { definePodCollection, podCollectionInternals } from '@undefineds.co/pod-collections'
 import type { PodCollection, PodSyncState } from '@undefineds.co/pod-collections'
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid'
+import { drizzle } from '@undefineds.co/drizzle-solid'
+import { UriHandler } from '../../../node_modules/@undefineds.co/drizzle-solid/dist/core/triple/handlers/uri.js'
 import type {
   AiConnectionsPodStore,
   PodCollectionHostRequest,
@@ -147,9 +149,31 @@ export function createCredentialCollectionFixture(
     const hash = resourceId.indexOf('#')
     return hash < 0 ? resourceId : resourceId.slice(hash + 1)
   }
+  const schema = { credential: credentialResource, aiProvider: aiProviderResource }
+  const orm = drizzle({
+    info: { isLoggedIn: true, webId: WEB_ID },
+    fetch: async () => { throw new Error('collection fixture must not perform network I/O') },
+  }, { podUrl: POD_URL, schema })
+  const uriHandler = new UriHandler()
+  const resolver = orm.getDialect().getUriResolver()
+  const roundtripUris = (values: Record<string, unknown>): Record<string, unknown> => {
+    const result = { ...values }
+    const columns = credentialResource.columns as Record<string, Parameters<UriHandler['formatValue']>[1]>
+    for (const [name, column] of Object.entries(columns)) {
+      if (column.dataType !== 'uri' || values[name] === undefined || values[name] === null) continue
+      const term = uriHandler.formatValue(values[name], column, {
+        resolveInlineChildUri: (...args) => resolver.resolveInlineChild(...args),
+        getNamespaceUri: () => credentialDescriptor.namespace,
+        uriResolver: resolver, baseUri: POD_URL, currentTable: credentialResource,
+        tableNameRegistry: new Map([['aiProvider', aiProviderResource]]), record: values,
+      })
+      result[name] = uriHandler.parseValue(term, column)
+    }
+    return result
+  }
   const materialize = (key: string, values: Record<string, unknown>): Record<string, unknown> => {
     const iri = `${CREDENTIALS_DOCUMENT}#${key}`
-    return { id: resourceIdOf(key), '@id': iri, uri: iri, subject: iri, ...values }
+    return { id: resourceIdOf(key), '@id': iri, uri: iri, subject: iri, ...roundtripUris(values) }
   }
   const passGate = async (): Promise<void> => {
     const current = gate
@@ -162,6 +186,11 @@ export function createCredentialCollectionFixture(
   }
 
   const database = {
+    schema,
+    getDialect: () => orm.getDialect(),
+    // `SolidDatabase` declares `getSchema()`; the collection's URI projection uses it to
+    // resolve mapped URI fields in the same space the bound ORM writes them.
+    getSchema: () => schema,
     async init() {},
     select() {
       return {
@@ -185,7 +214,7 @@ export function createCredentialCollectionFixture(
               calls.insert.push({ values: { ...values } })
               await passGate()
               failIfArmed()
-              const stored = { ...values }
+              const stored = roundtripUris(values)
               delete stored.id
               rows.set(keyOfResourceId(String(values.id)), stored)
               return [values]
@@ -199,7 +228,7 @@ export function createCredentialCollectionFixture(
       await passGate()
       failIfArmed()
       const key = keyOfResourceId(id)
-      const next = { ...rows.get(key), ...changes }
+      const next = roundtripUris({ ...rows.get(key), ...changes })
       rows.set(key, next)
       return materialize(key, next)
     },

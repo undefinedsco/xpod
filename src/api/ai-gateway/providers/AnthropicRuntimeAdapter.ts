@@ -1,3 +1,4 @@
+import { gatewayInvocationHeaders } from '../InvocationMetadata';
 import {
   BaseProviderRuntimeAdapter,
   parseAnthropicMessagesSse,
@@ -41,6 +42,7 @@ export class AnthropicRuntimeAdapter extends BaseProviderRuntimeAdapter {
       allowCredentialBaseUrl: this.allowCredentialBaseUrl,
     });
     const headers = new Headers({
+      ...gatewayInvocationHeaders(input.invocationMetadata),
       'x-api-key': input.apiKey,
       'anthropic-version': ANTHROPIC_VERSION,
     });

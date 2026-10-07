@@ -11,6 +11,7 @@ Pod 内数据的读写**第一优先级使用 drizzle-solid** 进行操作：
 4. **临时绕过**：仅在 issue 已记录且确实阻塞开发时，才考虑使用原生 SPARQL 或其他方式绕过
 5. **建模规则**：Pod/RDF schema、URI 字段、日期分桶和 exact id 操作以 `@undefineds.co/models` 仓库为权威；Xpod 只实现 adapter，不在本仓库维护共享建模规则副本。
 6. **id 只表达布局**：资源 id 只表达存储布局，**不表达分类维度**。需要新维度（如 offering）时先在 models 补属性再在 adapter 写值；用文件名/路径段区分类型的写法一律视为建模缺口，先报再动（案例见 [`docs/ai-connections-storage-model.md`](docs/ai-connections-storage-model.md)）。
+7. **业务层不处理存储地址兼容**：业务层使用共享模型的资源标识与关系，不推导 Pod 根地址，也不处理 Cloud / Local / Standalone 的 URL 差异。资源 IRI 与关系写读的解析归 ORM / 共享仓储；Xpod adapter 只提供已验证的存储绑定。出现兼容问题先核对现有 ORM 契约；真实能力缺口按上述流程报告并修复共享层，不把兼容分支散落到业务服务和 Handler。
 
 ## Project Structure & Module Organization
 Core TypeScript modules live in `src/`: `storage/` contains data accessors, `logging/` wraps Winston, and `util/` extends Community Solid Server helpers. CSS configuration templates reside in `config/` with two main entry points: `local.json` for development and `cloud.json` for production. Builds emit generated JavaScript and Components.js manifests into `dist/`; treat it as read-only. Runtime folders like `logs/` and `local/` should stay untracked, while utility scripts in `scripts/` should use Bun by default unless the script documents a Node-only requirement.

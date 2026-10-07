@@ -47,6 +47,7 @@ describe('ApiServer CORS', () => {
     expect(allowedHeaders.split(/\s*,\s*/)).toEqual(expect.arrayContaining([
       'authorization',
       'dpop',
+      'x-xpod-pod-url',
     ]));
   });
 });

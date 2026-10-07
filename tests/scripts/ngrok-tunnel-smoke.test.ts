@@ -75,7 +75,7 @@ describe('ngrok tunnel smoke script', () => {
     await writeFile(fakeNgrok, [
       '#!/usr/bin/env node',
       'console.log(JSON.stringify({ lvl: "eror", err: "authentication failed: ERR_NGROK_4018" }));',
-      'process.exit(1);',
+      'process.exitCode = 1;',
       '',
     ].join('\n'));
     await chmod(fakeNgrok, 0o755);
@@ -83,11 +83,10 @@ describe('ngrok tunnel smoke script', () => {
     try {
       await execFileAsync('bun', [
       'scripts/ngrok-tunnel-smoke.ts',
-      '--test-server',
       '--ngrok-bin', fakeNgrok,
       '--ngrok-agent-api-url', 'http://127.0.0.1:1',
       '--local-port', '35076',
-      '--timeout-ms', '1000',
+      '--timeout-ms', '5000',
     ], {
       cwd: root,
       timeout: 8_000,
@@ -105,11 +104,13 @@ describe('ngrok tunnel smoke script', () => {
         blockedBy?: string;
         nextAction?: string;
         error: string;
+        tunnelStatus?: { error?: string };
       };
-      expect(result.smokeOk).toBe(false);
-      expect(result.blockedBy).toBe('ngrok-auth');
-      expect(result.nextAction).toContain('ngrok config add-authtoken');
-      expect(result.error).toContain('ERR_NGROK_4018');
+      const diagnostic = `ngrok-smoke missing-auth result: ${JSON.stringify(result)}`;
+      expect(result.error, diagnostic).toContain('ERR_NGROK_4018');
+      expect(result.smokeOk, diagnostic).toBe(false);
+      expect(result.blockedBy, diagnostic).toBe('ngrok-auth');
+      expect(result.nextAction, diagnostic).toContain('ngrok config add-authtoken');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

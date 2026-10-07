@@ -156,6 +156,8 @@ function developmentWorkspaceAliases() {
     },
     'shared-ui': { '': 'index.ts', '/theme.css': 'theme.css' },
     'pod-collections': { '': 'index.ts', '/react': 'react.ts' },
+    'pod-settings': { '': 'index.ts' },
+    'tasks': { '': 'index.ts', '/style.css': 'style.css' },
     // One package serves the applet and the interoperability contract it owns;
     // `src/contract` is where the server-facing subpaths live.
     'ai-connections': {
@@ -254,7 +256,20 @@ export default defineConfig(({ command }) => {
           // app 使用固定文件名（auth.html 模板需要），dashboard 使用 hash
           entryFileNames: buildTarget === 'app' ? 'assets/[name].js' : 'assets/[name]-[hash].js',
           chunkFileNames: 'assets/[name]-[hash].js',
-          assetFileNames: buildTarget === 'app' ? 'assets/[name].[ext]' : 'assets/[name]-[hash].[ext]'
+          // The Account document (ui/public/auth.html) links `assets/main.css` by
+          // name. Vite names a stylesheet after its owning chunk or its source
+          // file, depending on how the module graph chunks, so the same tree has
+          // emitted both `main.css` and `global.css` - and a deployment that
+          // shipped the latter served the login page with no styles at all.
+          // Pin the app stylesheet so the template can never drift from it.
+          assetFileNames: buildTarget === 'app'
+            ? (assetInfo: { names?: readonly string[]; name?: string }) => {
+              const names = assetInfo.names ?? (assetInfo.name ? [assetInfo.name] : []);
+              return names.some((name) => name.endsWith('.css'))
+                ? 'assets/main.css'
+                : 'assets/[name].[ext]';
+            }
+            : 'assets/[name]-[hash].[ext]'
         }
       }
     }

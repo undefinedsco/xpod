@@ -1,18 +1,66 @@
 // @vitest-environment jsdom
 //
-// 锁定回归（设计 §8 第 1 步）：授权流程不再自动创建 Pod。
+// 授权页"缺 Pod"入口的回归（设计第二部分 §4.1 / U06，2026-10-01 新流程）。
 //
-// 目标契约（第二部分 §4.1 / U06 / U11）：
-//   授权页只读绑定、选择、批准/拒绝；没有可用 Pod 时必须给出
-//   "前往 Pod 管理"与"取消授权"，**不得**替用户提交创建请求。
-//
-// 当前实现下**预期失败**：`shouldAutoProvisionStorage` 会在无绑定且账号有 pod control
-// 时自动走创建流程。
-import { cleanup, render, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+// 目标契约：
+//   * 缺 Pod 的授权页本身只读：没有可用绑定时说明原因，给出"创建并继续 /
+//     存到边缘设备（打开账号页）/ 拒绝"三个出口，加载时不发生任何写操作；
+//   * 主操作不再在 Consent 内放名字表单、也不直接 POST，而是把"真实 Account id +
+//     精确 UID + 同源原 ConsentURL + TTL"的一次性任务交给同 UID 的轻量快速创建页
+//     （`/.account/interaction/{UID}/create-pod/`）；
+//   * 任务安全绑定真实 Account id（不是服务地址 / WebID / username）；缺任一权威
+//     输入（无 Account id、无 interaction 作用域）都失败退出：不保存可用任务、
+//     也绝不跳进有效创建；
+//   * 读取失败（500 / malformed）保持失败出口，不能因为读失败而误 create；
+//   * 自己部署相关出口只按真实代码能力走（打开同 UID 账号页），不编造 /settings 直跳。
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
+import { xpodConsentErrors, xpodFirstPodErrors } from '../auth/xpod-account-copy';
+import { peekConsentContinuation } from '../utils/safe-continuation';
 import { ConsentPage } from './ConsentPage';
+
+const UID = 'lead-consent-7f3a';
+const INTERACTION = `/.account/interaction/${UID}`;
+const CONSENT_PATH = `${INTERACTION}/oidc/consent/`;
+const PICK_PATH = `${INTERACTION}/oidc/pick-webid/`;
+const CREATE_PATH = `${INTERACTION}/create-pod/`;
+const ACCOUNT_PAGE_PATH = `${INTERACTION}/account/`;
+const ACCOUNT_ID = 'alice';
+const CONTINUATION_KEY = 'xpod.safe-continuation.consent.v2';
+
+/** 真实 Account 权威控制：每个路由都从会话自身的 opaque Account id 构建。 */
+const ACCOUNT_CONTROLS = {
+  account: {
+    id: ACCOUNT_ID,
+    username: 'alice',
+    logout: `/.account/account/${ACCOUNT_ID}/logout/`,
+    pod: `/.account/account/${ACCOUNT_ID}/pod/`,
+    bindings: `/.account/account/${ACCOUNT_ID}/bindings/`,
+  },
+};
+
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-testid="location">{location.pathname}</span>;
+}
+
+/** jsdom 的 location 只读；换成可导航的 facade，页面才能读到真实作用域。 */
+function installLocation(pathname: string) {
+  const browserWindow = window;
+  const navigation = {
+    href: `${browserWindow.location.origin}${pathname}`,
+    origin: browserWindow.location.origin,
+    pathname,
+    search: '',
+    assign: vi.fn(),
+  };
+  const facade = Object.create(browserWindow);
+  Object.defineProperty(facade, 'location', { value: navigation });
+  vi.stubGlobal('window', facade);
+  return navigation;
+}
 
 function reset(): void {
   cleanup();
@@ -43,52 +91,157 @@ function authValue(overrides: Partial<AuthContextType> = {}): AuthContextType {
   };
 }
 
-function requestPath(input: RequestInfo | URL): string {
-  return new URL(String(input), window.location.origin).pathname;
-}
-
-it('授权时没有可用 Pod 不会自动创建，只提供管理与取消', async () => {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const path = requestPath(input);
-    if (init?.method === 'POST') {
-      // 任何写操作都记录在案：本条回归的核心就是"不得发生"。
-      return new Response(JSON.stringify({ location: '/should-not-happen' }), { status: 200 });
-    }
-    if (path === '/.account/oidc/consent/') {
-      return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 });
-    }
-    if (path === '/.account/oidc/pick-webid/') {
-      // 账号已登录但没有任何 storage 绑定。
-      return new Response(JSON.stringify({ entries: [] }), { status: 200 });
-    }
-    if (path === '/.account/account/pod/') {
-      // 权威清单为空 —— 这正是当前实现允许"新账号 bootstrap 建 Pod"的放行条件。
-      // 必须给成功且空的清单，否则自动创建会被 inventory 失败挡在前面，
-      // 测试就会因为错误的原因通过。
-      return new Response(JSON.stringify({ pods: {} }), { status: 200 });
-    }
-    return new Response(JSON.stringify({}), { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-
-  render(
-    <AuthContext.Provider value={authValue({
-      // 账号有 pod control 与 username —— 正是当前触发自动创建的条件。
-      controls: { account: { username: 'alice', pod: '/.account/account/pod/' } },
-    })}>
-      <MemoryRouter initialEntries={['/.account/oidc/consent/']}>
+function renderConsent(overrides: Partial<AuthContextType> = {}, entries: string[] = [CONSENT_PATH]) {
+  return render(
+    <AuthContext.Provider value={authValue(overrides)}>
+      <MemoryRouter initialEntries={entries}>
+        <LocationProbe />
         <ConsentPage />
       </MemoryRouter>
     </AuthContext.Provider>,
   );
+}
 
-  // 先等页面确实读到了绑定（这一步 GET 一定会发），再给自动创建 effect 足够的
-  // 时间发起请求或稳定下来，然后断言"没有发生任何写操作"。
-  await waitFor(() => expect(
-    fetchMock.mock.calls.some(([input]) => requestPath(input) === '/.account/oidc/pick-webid/'),
-  ).toBe(true));
-  await new Promise((resolve) => setTimeout(resolve, 300));
+function requestPath(input: RequestInfo | URL): string {
+  return new URL(String(input), window.location.origin).pathname;
+}
 
-  const writes = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
-  expect(writes.map(([input]) => requestPath(input))).toEqual([]);
+function json(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
+}
+
+function anyPosts(fetchMock: ReturnType<typeof vi.fn>) {
+  return fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
+}
+
+/** 缺 Pod 的最小权威读取：consent 有 client，pick-webid 空绑定，其余 404。 */
+function noPodFetch(overrides: {
+  consent?: () => Response;
+  pick?: () => Response;
+  consentPath?: string;
+  pickPath?: string;
+} = {}) {
+  const consentPath = overrides.consentPath ?? CONSENT_PATH;
+  const pickPath = overrides.pickPath ?? PICK_PATH;
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = requestPath(input);
+    if (init?.method === 'POST') return json({}, 500);
+    if (path === consentPath) {
+      return overrides.consent?.() ?? json({ client: { client_id: 'client', client_name: 'Client' } });
+    }
+    if (path === pickPath) return overrides.pick?.() ?? json({ entries: [] });
+    return json({}, 404);
+  });
+}
+
+describe('ConsentPage no-Pod entry', () => {
+  it('缺 Pod 加载后停在显式出口，不自动创建、不自动批准、不写任务', async () => {
+    installLocation(CONSENT_PATH);
+    const fetchMock = noPodFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderConsent({ controls: ACCOUNT_CONTROLS, identity: { id: ACCOUNT_ID } });
+
+    await screen.findByRole('button', { name: '创建并继续' });
+    // 给防抖/异步结论稳定下来的时间，再断言加载阶段没有任何写操作。
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
+    expect(anyPosts(fetchMock)).toEqual([]);
+    // 三个显式出口：创建并继续 / 存到边缘设备（打开账号页）/ 拒绝。
+    expect(screen.getByRole('button', { name: '存到边缘设备（打开账号页）' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '拒绝', exact: true })).toBeTruthy();
+    // 没有被自动带走，也没有提前写出一次性任务。
+    expect(screen.getByTestId('location').textContent).toBe(CONSENT_PATH);
+    expect(window.sessionStorage.getItem(CONTINUATION_KEY)).toBeNull();
+    // Consent 内不再重复名字表单。
+    expect(screen.queryByLabelText('WebID 名称')).toBeNull();
+  });
+
+  it('点击创建只把一次性任务交给同 UID 轻量创建页，无 prepare/POST，也不重复名字字段', async () => {
+    const navigation = installLocation(CONSENT_PATH);
+    const fetchMock = noPodFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderConsent({ controls: ACCOUNT_CONTROLS, identity: { id: ACCOUNT_ID } });
+
+    expect(screen.queryByLabelText('WebID 名称')).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: '创建并继续' }));
+
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe(CREATE_PATH));
+    // 任务绑定真实 Account id + 精确 UID + 同源原 ConsentURL。
+    const record = peekConsentContinuation({ accountId: ACCOUNT_ID });
+    expect(record?.kind).toBe('consent');
+    expect(record?.interaction).toBe(INTERACTION);
+    expect(record?.returnTo).toBe(CONSENT_PATH);
+    // 只导航：没有 prepare、没有 POST，也没有越过用户的自动批准。
+    expect(anyPosts(fetchMock)).toEqual([]);
+    expect(navigation.assign).not.toHaveBeenCalled();
+  });
+
+  it('"存到边缘设备（打开账号页）"按真实代码能力打开同 UID 账号页，不创建也不跳 /settings', async () => {
+    const navigation = installLocation(CONSENT_PATH);
+    const fetchMock = noPodFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderConsent({ controls: ACCOUNT_CONTROLS, identity: { id: ACCOUNT_ID } });
+
+    fireEvent.click(await screen.findByRole('button', { name: '存到边缘设备（打开账号页）' }));
+
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe(ACCOUNT_PAGE_PATH));
+    expect(navigation.assign).not.toHaveBeenCalled();
+    expect(anyPosts(fetchMock)).toEqual([]);
+    expect(window.sessionStorage.getItem(CONTINUATION_KEY)).toBeNull();
+  });
+
+  it('读不到权威 Account id 时不保存任务、也不跳进有效创建，只给失败出口', async () => {
+    installLocation(CONSENT_PATH);
+    const fetchMock = noPodFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    // 只有可见用户名，没有任何从真实 Account 路由推导出的权威 id。
+    renderConsent({ controls: { account: { username: 'alice' } } });
+
+    fireEvent.click(await screen.findByRole('button', { name: '创建并继续' }));
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.accountIdentityMissing));
+    expect(screen.getByTestId('location').textContent).toBe(CONSENT_PATH);
+    expect(window.sessionStorage.getItem(CONTINUATION_KEY)).toBeNull();
+    expect(anyPosts(fetchMock)).toEqual([]);
+  });
+
+  it('页面不在 interaction 作用域内时不保存任务、不跳进有效创建', async () => {
+    const unscoped = '/.account/oidc/consent/';
+    installLocation(unscoped);
+    const fetchMock = noPodFetch({
+      consentPath: unscoped,
+      pickPath: '/.account/oidc/pick-webid/',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderConsent({ controls: ACCOUNT_CONTROLS, identity: { id: ACCOUNT_ID } }, [unscoped]);
+
+    fireEvent.click(await screen.findByRole('button', { name: '创建并继续' }));
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodFirstPodErrors.accountIdentityMissing));
+    expect(screen.getByTestId('location').textContent).toBe(unscoped);
+    expect(window.sessionStorage.getItem(CONTINUATION_KEY)).toBeNull();
+    expect(anyPosts(fetchMock)).toEqual([]);
+  });
+
+  const readFailures: Array<[string, () => Response]> = [
+    ['pick-webid 读取返回 500', () => json({ message: 'boom' }, 500)],
+    ['pick-webid 返回 malformed entries', () => json({ entries: 'not-an-array' })],
+  ];
+  it.each(readFailures)('%s 时保持失败出口，不误 create', async (_label, respond) => {
+    installLocation(CONSENT_PATH);
+    const fetchMock = noPodFetch({ pick: respond });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderConsent({ controls: ACCOUNT_CONTROLS, identity: { id: ACCOUNT_ID } });
+
+    await screen.findByText(xpodConsentErrors.bindingsFailed);
+    // 读取失败不能伪造出创建入口，也不能写出可用任务。
+    expect(screen.queryByRole('button', { name: '创建并继续' })).toBeNull();
+    expect(window.sessionStorage.getItem(CONTINUATION_KEY)).toBeNull();
+    expect(anyPosts(fetchMock)).toEqual([]);
+  });
 });

@@ -59,6 +59,23 @@ function openAiProduct(selectedModels: AiGatewayModel[]): AiProviderSummary {
 }
 
 describe('AI Connection model selection', () => {
+  it('filters by canonical model class without clearing selected models', async () => {
+    const models: AiGatewayModel[] = [
+      { id: 'chat-test', provider: 'openai', modelType: 'chat' },
+      { id: 'vector-test', provider: 'openai', modelType: 'embedding' },
+    ]
+    const current = client(models)
+    render(<AiConnectionsPanel client={current} selectedProvider="openai" providerProducts={{ openai: openAiProduct(models) }} />)
+    await screen.findByRole('tab', { name: '向量' })
+    expect(screen.getByText('chat-test')).toBeTruthy()
+    expect(screen.queryByText('vector-test')).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: '向量' }))
+    expect(screen.getByRole('button', { name: '停用 vector-test' })).toBeTruthy()
+    expect(screen.queryByText('chat-test')).toBeNull()
+    expect(current.saveModelSelection).not.toHaveBeenCalled()
+    expect(screen.queryByRole('tab', { name: '语音合成' })).toBeNull()
+  })
+
   it('reloads the Gateway projection after a model selection is persisted', async () => {
     const current = client([{ id: 'gpt-5', provider: 'openai', displayName: 'GPT-5' }])
     current.listGatewayModels = vi.fn(async () => [])
@@ -77,7 +94,7 @@ describe('AI Connection model selection', () => {
       providerProducts={{ openai: openAiProduct([]) }}
     />)
 
-    expect(await screen.findByPlaceholderText('搜索模型...')).toBeTruthy()
+    expect(await screen.findByPlaceholderText('搜索模型')).toBeTruthy()
     expect(screen.getByText('暂无可用模型')).toBeTruthy()
   })
 
@@ -147,14 +164,14 @@ describe('AI Connection model selection', () => {
     // offers to switch on in one action.
     expect(screen.queryByText('全选当前结果')).toBeNull()
 
-    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: 'mini' } })
+    fireEvent.change(screen.getByPlaceholderText('搜索模型'), { target: { value: 'mini' } })
     fireEvent.click(screen.getByRole('button', { name: '启用 GPT-5 Mini' }))
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith(
       'openai',
       [{ id: 'gpt-5' }, { id: 'legacy-model' }, { id: 'gpt-5-mini' }],
     ))
 
-    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: '' } })
+    fireEvent.change(screen.getByPlaceholderText('搜索模型'), { target: { value: '' } })
     await waitFor(() => expect(onModelSelectionChange).toHaveBeenLastCalledWith(
       'openai',
       ['gpt-5', 'legacy-model', 'gpt-5-mini'],
@@ -203,7 +220,7 @@ describe('AI Connection model selection', () => {
 
     const header = await screen.findByTestId('provider-models-header')
     const actions = screen.getByTestId('provider-models-actions')
-    const search = screen.getByPlaceholderText('搜索模型...')
+    const search = screen.getByPlaceholderText('搜索模型')
     const panel = screen.getByTestId('ai-connections-panel')
 
     // The header is one wrapped flex row (the same anatomy as the API KEYS
@@ -489,7 +506,7 @@ describe('AI Connection model selection', () => {
       offeringId: 'offering-b',
       credentialId: 'openai-offering-b-credential',
     }))
-    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: 'refreshed' } })
+    fireEvent.change(screen.getByPlaceholderText('搜索模型'), { target: { value: 'refreshed' } })
     expect(await screen.findByText('Offering A Model')).toBeTruthy()
     expect(screen.queryByText('Offering B Refreshed')).toBeNull()
     expect(screen.queryByText('Offering B Model')).toBeNull()
@@ -586,7 +603,7 @@ describe('AI Connection model selection', () => {
     expect(await screen.findAllByRole('button', { name: '启用 Shared Model' })).toHaveLength(1)
     expect(screen.queryByLabelText('模型来源：API 平台')).toBeNull()
     expect(screen.queryByLabelText('模型来源：Token 套餐')).toBeNull()
-    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: 'shared' } })
+    fireEvent.change(screen.getByPlaceholderText('搜索模型'), { target: { value: 'shared' } })
     expect(screen.getAllByRole('button', { name: '启用 Shared Model' })).toHaveLength(1)
 
     fireEvent.click(screen.getByRole('button', { name: '复制 Shared Model ID' }))
@@ -665,6 +682,28 @@ describe('AI Connection model selection', () => {
     expect(screen.getByText('已保存')).toBeTruthy()
     expect(screen.getByRole('button', { name: '停用 GPT-5' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '停用 GPT-5 Mini' })).toBeTruthy()
+  })
+
+  it('adopts the host selection when the provider catalog is refreshed externally', async () => {
+    const current = client([
+      { id: 'gpt-5', provider: 'openai', displayName: 'GPT-5' },
+      { id: 'gpt-5-mini', provider: 'openai', displayName: 'GPT-5 Mini' },
+    ])
+    const view = render(<AiConnectionsPanel client={current} selectedProvider="openai"
+      providerProducts={{ openai: openAiProduct([]) }} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '启用 GPT-5' }))
+    await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith('openai', [{ id: 'gpt-5' }]))
+
+    // A host refresh supersedes the optimistic local selection: the panel shows
+    // the catalog the store now reports, not the one it last wrote.
+    view.rerender(<AiConnectionsPanel client={current} selectedProvider="openai"
+      providerProducts={{ openai: openAiProduct([
+        { id: 'gpt-5-mini', provider: 'openai', displayName: 'GPT-5 Mini', availability: 'available' },
+      ]) }} />)
+
+    expect(await screen.findByRole('button', { name: '停用 GPT-5 Mini' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '启用 GPT-5' })).toBeTruthy()
   })
 
   it.each([

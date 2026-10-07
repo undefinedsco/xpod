@@ -5,6 +5,7 @@ import type { SolidAuthContext } from '../auth/AuthContext';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 import { isGatewayApiKeyPrincipal } from '../ai-gateway/auth/GatewayPrincipal';
+import { sendPodAccessFailure } from './PodAccessFailureResponse';
 import {
   EMBEDDING_MODEL_NOT_ALLOWED,
   EmbeddingModelPolicy,
@@ -59,6 +60,8 @@ export type AiConfigPolicyPatch = {
 };
 
 export interface AiConfigCapabilities {
+  /** Deployment policy, projected from the same authority that validates assignments. */
+  embeddingModels?: { restricted: boolean; allowed: Array<{ provider: string; model: string }> };
   textBackends: Array<'fts5' | 'postgres-fts'>;
   vectorBackends: Array<'vec' | 'pgvector'>;
   rebuildSupported: boolean;
@@ -109,6 +112,7 @@ export interface AiConfigHandlerOptions {
    * Cloud runtimes only accept models the ai-gateway catalog provides.
    */
   embeddingModelPolicy?: EmbeddingModelPolicy;
+  embeddingModels?: () => Array<{ provider: string; model: string }>;
 }
 
 export function registerAiConfigRoutes(server: ApiServer, options: AiConfigHandlerOptions): void {
@@ -122,7 +126,8 @@ export function registerAiConfigRoutes(server: ApiServer, options: AiConfigHandl
         capabilities: resolveCapabilities(options),
         lifecycle: options.lifecycle ? await options.lifecycle.status(owner) : emptyLifecycle(config.updatedAt),
       });
-    } catch {
+    } catch (error) {
+      if (sendPodAccessFailure(response, error)) return;
       sendJson(response, 500, { error: 'Failed to read AI Config' });
     }
   });
@@ -156,7 +161,8 @@ export function registerAiConfigRoutes(server: ApiServer, options: AiConfigHandl
         capabilities: resolveCapabilities(options),
         lifecycle: options.lifecycle ? await options.lifecycle.status(owner) : emptyLifecycle(config.updatedAt),
       });
-    } catch {
+    } catch (error) {
+      if (sendPodAccessFailure(response, error)) return;
       sendJson(response, 500, { error: 'Failed to update AI Config' });
     }
   });
@@ -178,7 +184,8 @@ export function registerAiConfigRoutes(server: ApiServer, options: AiConfigHandl
     }
     try {
       sendJson(response, 202, { job: await options.lifecycle.schedule({ ...owner, target }) });
-    } catch {
+    } catch (error) {
+      if (sendPodAccessFailure(response, error)) return;
       sendJson(response, 500, { error: 'Failed to schedule index rebuild' });
     }
   });
@@ -315,7 +322,10 @@ function defaultCapabilities(): AiConfigCapabilities {
 function resolveCapabilities(options: AiConfigHandlerOptions): AiConfigCapabilities {
   const capabilities = options.capabilities?.() ?? defaultCapabilities();
   const rebuildTargets = options.lifecycle?.supportedTargets() ?? [];
-  return { ...capabilities, rebuildSupported: rebuildTargets.length > 0, rebuildTargets };
+  return { ...capabilities, rebuildSupported: rebuildTargets.length > 0, rebuildTargets, embeddingModels: {
+    restricted: options.embeddingModelPolicy?.isEnforced() ?? false,
+    allowed: (options.embeddingModels?.() ?? []).filter(model => options.embeddingModelPolicy?.isAllowed(model) ?? true),
+  } };
 }
 
 function emptyLifecycle(configurationVersion?: string): AiConfigLifecycleSnapshot { return { configurationVersion, pending: 0, recent: [] }; }

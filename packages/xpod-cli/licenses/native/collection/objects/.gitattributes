@@ -1,0 +1,2 @@
+# Preserve hashed upstream notice bytes, including CRLF and original whitespace.
+*.txt -text -whitespace

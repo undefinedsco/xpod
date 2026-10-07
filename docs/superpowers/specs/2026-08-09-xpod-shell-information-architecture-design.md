@@ -2,13 +2,15 @@
 
 **Date:** 2026-08-09
 
-**Status:** R2 product-experience information architecture; revised 2026-09-27. This is a target design, not a statement that every item is implemented or verified in the current release.
+**Current desktop precedence:** [October 1 desktop shell/applets](2026-10-01-xpod-desktop-shell-and-applets-design.md), especially §9, supersedes this document’s R2 four-entry navigation, geometry and LinX-only task editing. See the [design entry](../../../DESIGN.md) for the integration contract. Tasks, AI Connections and Pod share applet bodies across hosts and require WebID; local Device/settings remain available under host authority without login. R6 object handoff, permission revalidation, model-version evidence and domain ownership remain binding where not explicitly superseded. Undefined long-term Grant, import/export/migration and simultaneous-tunnel capabilities remain pending; this document proves no current runtime acceptance.
+
+**Status:** Historical R2 local-controller information architecture; revised 2026-09-28 for R6 object and task handoff. This is a target design, not a statement that every item is implemented or verified in the current release.
 
 **Historical status:** This document previously carried “Implemented and verified”. That label is retained here as a historical claim, not transferred to later authentication, host-lifecycle, or visual changes. Release verification requires versioned evidence.
 
-**Current application:** Read this baseline with the [product-design charter](../../product-design-charter.md) and [2026-09-27 product-experience spec](2026-09-27-xpod-product-experience-spec.md). The latter supplies the current cross-module interaction, density, theme and acceptance contract. [2026-09-19 login and host canonical](2026-09-19-xpod-login-and-host-design.md) owns login and Pod/host lifecycle; [2026-08-30 authority boundaries](2026-08-30-xpod-auth-authority-boundaries.md) owns non-login authority. R2 replaces the old five-workspace, icon-rail and mandatory list-pane design with four task entries and conditional object navigation. This is the current review’s design judgment, not a claim that the user previously fixed these choices. Domain authority, data and lifecycle contracts remain in force.
+**Current application:** Read this baseline with the [product-design charter](../../product-design-charter.md) and [2026-09-27 product-experience spec](2026-09-27-xpod-product-experience-spec.md). The latter records the R2 interaction, density, theme and acceptance baseline; current desktop overrides are listed above. [2026-09-19 login and host canonical](2026-09-19-xpod-login-and-host-design.md) owns login and Pod/host lifecycle; [2026-08-30 authority boundaries](2026-08-30-xpod-auth-authority-boundaries.md) owns non-login authority. R2 replaces the old five-workspace, icon-rail and mandatory list-pane design with four task entries and conditional object navigation. This is the current review’s design judgment, not a claim that the user previously fixed these choices. Domain authority, data and lifecycle contracts remain in force.
 
-**Scope:** Xpod desktop/web navigation, 概览, 存储空间, AI, 服务与访问, account card and macOS menu-bar tray
+**Scope:** Xpod local-controller navigation, 概览, 存储空间, AI, 服务与访问, account card and macOS menu-bar tray. The four-entry rule is not a cap on the full Xpod product. The [R6 joint experience](../../../../homepage/docs/specs/personal-ai-product-experience-r6.md) owns cross-product tasks: LinX provides daily work, knowledge and My AI; Xpod provides asset/access/coverage/runtime recovery; Foundry retains training and release governance. This shell does not duplicate chat, knowledge editing or training submission forms.
 
 **Out of scope:** Replacing authentication, provider connectors, model semantics, storage authority or runtime lifecycle protocols. Navigation changes reuse these domain owners.
 
@@ -21,22 +23,22 @@ R2 groups navigation by what a person is trying to understand or change:
 | Top-level entry | User task | Reused domain responsibilities |
 | --- | --- | --- |
 | 概览 | Understand what is usable, from where, and what needs attention | Runtime, access-path and space summaries; default landing |
-| 存储空间 | Manage a space, its location, access, usage and search | Account Pod management, Pod authorization, storage and indexing owners |
-| AI | Connect a provider, choose a model for a purpose, and connect a client | AI Connections and AI Config remain separate business/permission boundaries |
-| 服务与访问 | Run the local service, make it reachable, and diagnose problems | Network, runtime configuration, service health and logs |
+| 存储空间 | Manage space assets, location, access, usage, coverage and portability | Account Pod management, Pod authorization, storage and indexing owners |
+| AI | Connect a provider/client, assign a published model to a purpose, inspect its running version | AI Connections, AI Config, Foundry release and runtime facts keep their respective owners |
+| 服务与访问 | Run the service, make it reachable, diagnose and repair a Run dependency | Network, runtime, service health and logs; task continuation remains with the Task owner |
 
 Old route families and technical details remain addressable. They do not dictate primary navigation. R2 does not turn Xpod into a file browser or LinX workspace.
 
 ## 2. Design principles
 
-1. Use one labeled primary navigation with the four entries above. Do not add a second Dashboard/Settings rail.
+1. Use the four labeled entries for this local controller, not as a complete-product capability ceiling. Keep asset/runtime details reachable from their original objects. Do not add a second Dashboard/Settings rail.
 2. Default to navigation plus content. Add an object pane only for a real collection of selectable objects; a table of page headings is not an object collection.
 3. Overview starts with usability and impact. Healthy service internals take one summary line; actionable failures move ahead of routine facts.
 4. Keep user tasks together while preserving business owners. AI connection and assignment share navigation; search state, policy and rebuild share the selected space’s task context.
 5. Observed state, desired configuration and operation results remain visibly distinct even when combined in one task surface.
 6. AI Connections owns provider/client credentials and connection tasks; AI Config owns model assignments and relevant policies. Navigation consolidation never merges these permissions or stores.
 7. Persist user AI and indexing policy in the user’s Pod. Runtime services report capabilities and operational observations.
-8. Derived indexes may be rebuilt or discarded; Pod authority data must never be affected by index lifecycle actions.
+8. Rebuildable indexes may be rebuilt or discarded; authority data and durable model artifacts must not be affected by index lifecycle actions. A published adapter/checkpoint is not disposable cache merely because it is derived.
 9. Use a shared system-following theme across documents, authentication, workspaces and native window chrome.
 10. Apply the authority needed for the requested task. Never compose Account + WebID + Pod into a global admission requirement.
 
@@ -118,7 +120,8 @@ The sketch illustrates content, not a new composite identity contract. Labels id
 - Copy actions name the object and copy its full value; a shortened display must not normalize or rewrite the identity.
 - Optional note and region when profile data exists.
 - A subdued current personal-Pod row when useful, never a service-status block.
-- Switch Account and sign out of Account; describe that scope explicitly. WebID disconnection belongs to its own authority and is not implicitly bundled here.
+- Product-level Switch account follows September 19 X-1: isolate and clear the old WebID/Pod context before presenting a new identity. It must not retain old bindings by applying a single-authority sign-out rule.
+- Product-level Sign out uses the canonical logout coordinator and reports each authority's result. If a single-authority action is offered instead, name it explicitly as “退出管理账号” or “断开 WebID 会话”; it only calls that authority. A generic Sign out label must not silently mean Account-only. D-14/D-18 unresolved concurrency/cancellation remains a dependency, not a Shell invention.
 
 It does not contain storage usage, network diagnostics, service state, AI models, or system settings. Those belong to the corresponding workspace.
 
@@ -143,6 +146,8 @@ Version, uptime and detailed endpoints remain reachable in service or developer 
 A failure with user impact appears before normal summaries. State the affected capability and scope, keep unaffected capabilities usable, and offer the next useful action. For example, external access failure must not be described as all local data unavailable. A missing optional configuration is a neutral setup state; unknown or stale observations cannot be rendered healthy or zero.
 
 An alert links to the relevant task and preserves the target. Overview does not introduce a generic “Needs attention” workspace or recreate the old multi-level Status tree.
+
+Service health does not prove knowledge coverage, a trained model, an enabled release or a completed Run. Keep knowledge accumulation, runtime adaptation and actual training distinct. Optional untrained AI is neutral; an unavailable dependency required by the current task is an actionable, scoped problem.
 
 ### 5.3 Technical detail destinations
 
@@ -186,6 +191,8 @@ Observed state and desired configuration stay visually separate. Saving must not
 ### 6.3 Service and log details
 
 The service detail retains health, PID where available, uptime, restart count, internal endpoint, checks, dependencies, recent errors, related logs and supported scoped actions. A running PID is not proof of service health. Runtime startup and automatic-restart policy, save/restart requirements and supported advanced parameters remain available here. Never expose an unfiltered environment-variable editor.
+
+A failed Run may open its known instance/dependency/log scope here and return to that same Run. Repair fixes the dependency; it does not resubmit training or claim the Run completed. A waiting_input continuation retains the Run under the Task contract. Unknown operation results must be queried before retrying; requested cancellation is not stopped execution. Foundry must define training cancellation/retry before those controls are executable; an existing Run cancel capability does not supply that missing protocol.
 
 Logs allow source (`All`, `Xpod Runtime`, `Gateway`, `Solid Server`, `API Server`), level, time range and text filters. Source and error level remain independent so a user can ask which service failed. Live refresh, known-error hints and sanitized export remain supported design requirements. Diagnostic deep links open the right source/subject under 服务与访问 without restoring the old Status navigation.
 
@@ -265,6 +272,8 @@ Reranker
 
 Each assignment summary shows only the purpose, selected model and availability. Editing expands the necessary provider/credential-readiness evidence, configuration source (system default or Pod override), restore-default action and bounded test. It references provider configuration but does not edit credentials; failures link to their owning connection task.
 
+For personal models, detail distinguishes the Foundry release target, runtime-observed serving version, client-selected version and Run-observed version with source/time. A candidate is not automatically enabled; saving a selection does not prove live serving or actual use. Rollback does not rewrite past Runs. Reuse the existing model/assignment owners, Cloud catalog and endpoint limits; a personal-model label grants no exception.
+
 ### 7.4 Document Processing content
 
 - OCR enabled state.
@@ -292,9 +301,15 @@ This entry reuses `/settings/pod` for Account inventory and explicit creation. A
 
 Location and health use actual evidence. Supported File/MinIO and SQLite/PostgreSQL/Redis/Quadstore settings remain in appropriately scoped storage detail; backend names do not become mandatory navigation entries. Configuration credentials show configured/not-configured state only. Migration appears only when supported, with source, target, impact and recovery described by its lifecycle contract.
 
+Show data location, inference/training execution location, artifact storage and device reachability separately. Local access does not imply local inference. Original knowledge/model resources have stable detail and return locations; editing and feedback stay in LinX, release governance stays in Foundry. Read permission does not grant training use; revocation does not prove trained weights have forgotten the material.
+
 Access details identify Account, WebID, issuer, application grants and their target scope. Revocation, AI Gateway service access and ACP/ACR capability remain distinct operations; provider credentials and Xpod client API Keys stay with AI Connections.
 
 Usage shows measured consumption, limit and scope. Storage/bandwidth retain their Account/Pod usage model; a space view must not relabel Account totals as the selected Pod’s usage. Index storage distinguishes original authority data from rebuildable derivatives. A failed or absent measurement is not zero; detailed reports retain stable links.
+
+Task estimates, actual consumption, provider quota, key usage and space capacity identify their object, period, unit, source and observation time. Do not infer training feasibility from API balance or move execution/switch models without the required choice. Account totals still require Account authority.
+
+Export, backup and migration each disclose their own asset scope: data, knowledge/task records, model bytes and manifests, provenance/authorization records, rebuildable indexes and credentials. Mark included/excluded/unknown; separately identify external artifact stores and whether their bytes are copied. A reference alone is not a complete model backup. Report manifest creation, copy/check and restore verification separately; unverified restore is not “fully recoverable”. Preserve identity and canonical addresses per the host contract; secret transfer follows its original security owner. Undefined portability capability is a dependency, not a success promise.
 
 ### 8.3 Search & indexing task
 
@@ -381,6 +396,7 @@ Service dependencies, per-service restart effects, Account controls and startup 
 - Target lifecycle: quitting the UI does not implicitly stop the independent host agent or Xpod service. Stopping Xpod and exiting the agent are separate, explicitly scoped operations under the 2026-09-19 canonical.
 - These are target semantics, not a claim that the independent agent has shipped. In a transitional deployment, labels and confirmation must describe the actual lifecycle owner and effect according to the product-experience spec. Do not offer a background-service promise when the installed capability cannot keep running.
 - Account sign-out is separate from window, UI, service and host-agent exit. Switching identities must prevent stale results from appearing under the new identity.
+- Before stop/restart/upgrade/exit, explain known effects on local Runs, remote training, future scheduling and observation-only UI; disclose unknown dependencies. UI exit does not pause Tasks, revoke access or cancel remote jobs. Only offer supported controls; after maintenance recheck the original Run and serving version without assuming automatic recovery or repeating unknown-result work.
 
 ## 10. State, loading, and errors
 
@@ -414,6 +430,17 @@ The table maps route responsibilities, not literal wildcard redirects. Exact pat
 
 Migration preserves existing user work and data. It changes navigation/combination, not provider protocols, model assignments or authentication ownership.
 
+### 11.1 R6 object handoff inside the four entries
+
+| Original task | Controller destination | Return contract |
+| --- | --- | --- |
+| LinX knowledge/source access or coverage | Authorized selected-space access/search region under `/settings/pod` | Same resource/version, with permission and scope revalidated |
+| Published personal model use | AI client/purpose, then service runtime detail only if required | Same release, purpose and client; separate publication, serving and verification facts |
+| Failed Run dependency | 服务与访问 with known instance, dependency and diagnostic scope | Same Run; human steering/continuation remains in LinX |
+| Carry space/model assets elsewhere | Supported space export/backup/migration and scope manifest | Original space/model detail; bytes and restore evidence, not only pointers |
+
+Use validated object/version, purpose, client and return context; do not create new APIs or store secrets in URLs. After repair revalidate identity, authority, material scope/version, execution/cost and enablement scope before resuming a consequential choice. Do not automatically submit training, broaden grants, switch models or recreate keys/Pods. Missing mappings are assigned to the existing route/resource owner. Full detail remains reachable without new parallel knowledge/training/task top-level pages.
+
 ## 12. Accessibility
 
 - Every primary navigation entry has visible text and an accessible name. Icons are supplementary; drawer and utility actions are named.
@@ -426,9 +453,9 @@ Migration preserves existing user work and data. It changes navigation/combinati
 
 ## 13. Verification requirements
 
-Implementation verification must cover:
+The following R2 verification list is historical for navigation and geometry. Apply the October 1 overrides before using its remaining authority, safety and evidence checks:
 
-1. Exactly four labeled primary entries in order: 概览、存储空间、AI、服务与访问; 概览 is the default. No restored five-icon rail, permanent Settings entry or second Dashboard shell.
+1. Exactly four labeled primary entries in this local controller: 概览、存储空间、AI、服务与访问; 概览 is the default. This does not cap full-product assets or tasks. Section 11.1 details remain reachable; no restored five-icon rail, permanent Settings entry or duplicate LinX/Foundry editor.
 2. Normal Overview content prioritizes usability, scope/address and space; healthy services occupy one summary line. An unconfigured optional AI connection does not create a failure alarm.
 3. Impacting failures precede normal summaries, identify affected scope and link to the right task while unaffected tasks remain available.
 4. At 1100 px and above, only actual object collections add a 224 px object pane beside the 184 px navigation. Forms and Overview remain navigation + content; zero objects do not leave an empty reserved pane.
@@ -438,12 +465,16 @@ Implementation verification must cover:
 8. `/settings/pod` Account inventory/create regions admit a valid Account with zero Pods. Valid WebID/target-Pod search, purpose and grant regions also work without Account; a missing authority blocks only its dependent region. Search reuses the same AI Config editor/feedback in place, with optional full-detail navigation and preserved object/task return.
 9. Access groups cover 访问与连接、对外访问设置、诊断; only supported methods expose controls. Developer endpoints and advanced diagnostics remain reachable without permanent navigation clutter.
 10. Original-data/index separation and save-only versus save-and-rebuild remain intact. Derived cleanup after source deletion/loss of access cannot be disabled; editable backend changes require a defined safe switch/migration contract. Exact AI Config paths, service, usage, index and diagnostic deep links resolve to the correct R2 task, authority and target.
-11. Account-card switching, anonymous and unavailable-Pod states; protected routes use their required authority while authorized local/Account-only tasks remain available without an unrelated WebID or Pod.
+11. Account-card product switching follows X-1; product logout and explicitly named single-authority actions remain different. Anonymous/unavailable-Pod states use route authority while unrelated authorized local/Account tasks remain available. Unresolved D-14/D-18 actions are not invented.
 12. Delayed restoration shows phase feedback and permitted recovery; presentation timers do not mutate identity or start duplicate restoration. Errors are not anonymous.
 13. Service healthy/starting/degraded/failed/stopped evidence, observed/configured separation, stale-state labeling and capability gating.
 14. Shared light/dark theme, first paint, authentication layouts, focus, selected states, native window background and menu-bar template assets.
 15. Tray remains a short instance summary/open/current-control/detail/exit surface, without four-entry navigation, healthy-service inventory or Account/startup settings. Failures foreground the affected service; opening actions name the real capability. Close window, quit UI, Account sign-out, service stop and agent exit remain separately scoped against the installed lifecycle capability.
 16. Implementation delivery runs the repository’s required type/build/integration checks and records versioned evidence. This document-only revision does not claim those runtime checks have passed.
+17. The four section 11.1 paths retain the original object/version and revalidate before returning. Repair is not automatic task/training submission; unknown results do not repeat side effects. Apply product-experience AC-15/17.
+18. Release, serving, client and Run versions remain distinct; health does not imply model growth or task completion. Candidate enablement and rollback preserve domain ownership and past Run evidence. Apply AC-16.
+19. Lifecycle impact distinguishes known local/remote tasks and future scheduling; assets distinguish rebuildable indexes from durable models. Portability reports bytes, external stores, scope and restore evidence separately. Apply AC-18/19.
+20. Data/execution/artifact location, reachability and scoped usage are separate; reading/comparison detail does not inherit compact-auth or diagnostic-row constraints. Apply AC-20.
 
 ## 14. Implementation handoff and historical decisions
 

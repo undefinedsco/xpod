@@ -14,6 +14,7 @@ vi.mock('inngest/node', () => ({
 }));
 
 import { registerRoutes, resolveLocalStorageProviderBaseUrl } from '../../src/api/container/routes';
+import { createOwnerPodBaseUrlResolver } from '../../src/api/ai-gateway/pod/PodBaseUrlResolver';
 import type { ApiContainerConfig } from '../../src/api/container/types';
 import type { ApiServer } from '../../src/api/ApiServer';
 import { serve } from 'inngest/node';
@@ -153,7 +154,6 @@ describe('registerRoutes mode wiring', () => {
         hasKey: vi.fn(async () => false),
       },
       aiConnectionInvocationKeyIssuer: {},
-      gatewayAccessKeyRepository: {},
       providerConnectService: {},
       serviceTokenRepo: {},
       db: {},
@@ -184,8 +184,18 @@ describe('registerRoutes mode wiring', () => {
       } : undefined,
       subdomainClient: edition === 'local' ? {} : undefined,
       edgeNodeCertificateCapabilityBridge: bridgeId ? getEdgeNodeCertificateCapabilityBridge(bridgeId) : undefined,
+      // Agent-wake routes take the reconciler queue at registration time; wiring only
+      // needs the accessor, not a live reconciler.
+      serverGroupReconcilerService: { getQueue: () => ({}) },
       ...overrides.services,
     };
+
+    // AI gateway management routes resolve the verified-binding Pod base URL resolver at
+    // registration time; mirror the real container wiring (unique-owner selection).
+    services.aiConnectionsPodBaseUrlResolver = createOwnerPodBaseUrlResolver(
+      services.podLookupRepo as Parameters<typeof createOwnerPodBaseUrlResolver>[0],
+      'unique',
+    );
 
     return {
       resolve(name: string, options?: { allowUnregistered?: boolean }) {
@@ -250,12 +260,12 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs/:runId/steps']).toBeTypeOf('function');
     expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
-    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
-    expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
-    // Issued credentials keep no recoverable copy, so the reveal route is gone.
+    // Every Gateway API Key route is gone, including the retired reveal endpoint.
+    expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['GET /api/ai/gateway/keys']).toBeUndefined();
     expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeUndefined();
-    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
-    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
+    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeUndefined();
+    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeUndefined();
     expect(routes['POST /v1/responses']).toBeTypeOf('function');
     expect(routes['POST /v1/messages']).toBeTypeOf('function');
     expect(routes['POST /v1/chat/completions']).toBeTypeOf('function');
@@ -288,6 +298,43 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/linx/capabilities']).toBeUndefined();
   });
 
+  it.each([
+    ['cloud', undefined, false],
+    ['local', undefined, false],
+    ['local', 'https://cloud.example', true],
+  ] as const)('publishes only deployment identity before login (%s, %s)', async (edition, cloudApiEndpoint, managed) => {
+    registerRoutes(createContainer(edition, { config: { cloudApiEndpoint, oidcIssuer: 'https://accounts.example/' } }));
+    const response = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+    await routes['GET /api/service-info']({}, response);
+    expect(JSON.parse(response.end.mock.calls[0][0])).toEqual({
+      edition, managed, publicUrl: null,
+      ...(managed ? { oidcIssuer: 'https://accounts.example/' } : {}),
+    });
+    expect(mockServer.get).toHaveBeenCalledWith('/api/service-info', expect.any(Function), { public: true });
+    expect(response.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+  });
+
+  it('does not advertise CSS transport fallback as an allocated node URL', async () => {
+    const previous = process.env.CSS_BASE_URL;
+    const previousPublicUrl = process.env.XPOD_PUBLIC_URL;
+    process.env.CSS_BASE_URL = 'http://localhost:40991/';
+    delete process.env.XPOD_PUBLIC_URL;
+    try {
+      registerRoutes(createContainer('local', { config: { cloudApiEndpoint: 'https://cloud.example', publicUrl: undefined } }));
+      const response = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+      await routes['GET /api/service-info']({}, response);
+      expect(JSON.parse(response.end.mock.calls[0][0])).toMatchObject({ edition: 'local', managed: true, publicUrl: null });
+      const status = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+      await routes['GET /provision/status']({}, status);
+      expect(JSON.parse(status.end.mock.calls[0][0]).publicUrl).toBe('http://localhost:40991/');
+    } finally {
+      if (previous === undefined) delete process.env.CSS_BASE_URL;
+      else process.env.CSS_BASE_URL = previous;
+      if (previousPublicUrl === undefined) delete process.env.XPOD_PUBLIC_URL;
+      else process.env.XPOD_PUBLIC_URL = previousPublicUrl;
+    }
+  });
+
   it('starts non-AI routes when key-backed AI services are unavailable', () => {
     registerRoutes(createContainer('local', {
       services: {
@@ -303,7 +350,9 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /api/applets/service-access/ai-connections']).toBeTypeOf('function');
     expect(routes['GET /api/ai/connections/providers']).toBeTypeOf('function');
     expect(routes['POST /api/ai/gateway/providers/:provider/models/refresh']).toBeTypeOf('function');
-    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
+    // Gateway API Keys and the locator they were addressed by are removed.
+    expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['GET /api/ai/gateway/keys']).toBeUndefined();
   });
 
   it('registers local-only admin and onboarding routes in local mode', () => {
@@ -316,12 +365,12 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
     expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
-    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
-    expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
-    // Issued credentials keep no recoverable copy, so the reveal route is gone.
+    expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
+    expect(routes['GET /api/ai/gateway/keys']).toBeUndefined();
+    // Every Gateway API Key route is gone, including the retired reveal endpoint.
     expect(routes['POST /api/ai/gateway/keys/:keyId/reveal']).toBeUndefined();
-    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
-    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
+    expect(routes['PATCH /api/ai/gateway/keys/:keyId']).toBeUndefined();
+    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeUndefined();
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['GET /api/_matrix/client/versions']).toBeUndefined();
     expect(routes['GET /matrix/_matrix/client/versions']).toBeUndefined();

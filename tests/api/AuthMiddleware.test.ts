@@ -94,4 +94,52 @@ describe('AuthMiddleware logging', () => {
     });
     expect(unavailableResponse.end.mock.calls[0][0]).not.toContain('pod token endpoint down');
   });
+  it('carries only an untrusted hint without mutating the authenticator context', async () => {
+    const context = { type: 'solid' as const, webId: 'https://identity.example/alice/profile/card#me' };
+    const middleware = new AuthMiddleware({ authenticator: {
+      canAuthenticate: () => true, authenticate: async () => ({ success: true, context }),
+    } });
+    const request = createRequest();
+    request.headers['x-xpod-pod-url'] = 'https://storage.example/alice/';
+    expect(await middleware.process(request, createResponse())).toBe(true);
+    expect(request.auth).toEqual({ ...context, requestedPodUrl: 'https://storage.example/alice/' });
+    expect(context).not.toHaveProperty('requestedPodUrl');
+    expect(request.auth).not.toHaveProperty('authorizedPodUrl');
+  });
+
+  it.each([
+    { selection: ['https://storage.example/alice/', 'https://storage.example/bob/'] },
+    { selection: 'https://storage.example/alice/#me' },
+    { selection: 'https://storage.example/../alice/' },
+    { selection: 'ftp://storage.example/alice/' },
+  ])('rejects invalid selection headers without exposing them', async ({ selection }) => {
+    const middleware = new AuthMiddleware({ authenticator: {
+      canAuthenticate: () => true,
+      authenticate: async () => ({ success: true, context: { type: 'solid', webId: 'https://identity.example/alice/profile/card#me' } }),
+    } });
+    const request = createRequest();
+    request.headers['x-xpod-pod-url'] = selection;
+    const response = createResponse();
+    expect(await middleware.process(request, response)).toBe(false);
+    expect(response.statusCode).toBe(400);
+    expect(response.end.mock.calls[0][0]).not.toContain('storage.example');
+  });
+
+  it('requests a new scoped invocation for legacy constrained credentials when selecting a Pod', async () => {
+    const middleware = new AuthMiddleware({ authenticator: {
+      canAuthenticate: () => true,
+      authenticate: async () => ({ success: true, context: {
+        type: 'solid', webId: 'https://identity.example/alice/profile/card#me', internalInvocation: true,
+      } }),
+    } });
+    const request = createRequest();
+    request.headers['x-xpod-pod-url'] = 'https://storage.example/alice/';
+    const response = createResponse();
+    expect(await middleware.process(request, response)).toBe(false);
+    expect(response.statusCode).toBe(401);
+    expect(request.auth).toBeUndefined();
+    const legacyWithoutHint = createRequest();
+    expect(await middleware.process(legacyWithoutHint, createResponse())).toBe(true);
+  });
+
 });

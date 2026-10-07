@@ -14,6 +14,7 @@ import {
 class FakeWindow implements DesktopWindowModeTarget {
   destroyed = false
   visible = false
+  size: [number, number] | undefined
   contentSize: [number, number] | undefined
   minimumSize: [number, number] | undefined
   resizable: boolean | undefined
@@ -28,6 +29,10 @@ class FakeWindow implements DesktopWindowModeTarget {
 
   isVisible(): boolean {
     return this.visible
+  }
+
+  setSize(width: number, height: number): void {
+    this.size = [width, height]
   }
 
   setContentSize(width: number, height: number): void {
@@ -91,22 +96,31 @@ class FakeTimers implements DesktopWindowModeTimers {
 }
 
 describe('DesktopWindowModeController', () => {
-  it('maps all account authentication steps to compact account mode', () => {
+  it('keeps short authentication compact and opens long Account documents in the workspace', () => {
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/')).toBe('account')
-    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/consent?prompt=consent')).toBe('account')
     expect(desktopWindowModeForUrl('http://127.0.0.1:3000/auth/callback?code=used')).toBe('auth')
-    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/password/register/')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/password/register/')).toBe('workspace')
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/password/forgot/')).toBe('account')
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/login/password/reset/?rid=record')).toBe('account')
-    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/create-pod/')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/create-pod/')).toBe('workspace')
     expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/account/')).toBe('workspace')
+  })
+
+  // §4 / §11.1 / §13.11: the OIDC authorization steps are short authentication
+  // surfaces, not long Account documents, so they stay in the compact window.
+  it('keeps the OIDC consent and pick-webid authorization steps in the compact Account window', () => {
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/consent?prompt=consent')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/consent/')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/pick-webid/')).toBe('account')
+    expect(desktopWindowModeForUrl('https://id.undefineds.co/.account/oidc/pick-webid?select=pod')).toBe('account')
   })
 
   it('preserves Account window modes within a scoped OIDC interaction', () => {
     const base = 'https://id.example/.account/interaction/transaction-A/'
     expect(desktopWindowModeForUrl(`${base}login/password/`)).toBe('account')
     expect(desktopWindowModeForUrl(`${base}oidc/consent/`)).toBe('account')
-    expect(desktopWindowModeForUrl(`${base}login/password/register/`)).toBe('account')
+    expect(desktopWindowModeForUrl(`${base}oidc/pick-webid/`)).toBe('account')
+    expect(desktopWindowModeForUrl(`${base}login/password/register/`)).toBe('workspace')
   })
 
   it('resizes an already shown workspace window after an Account SPA route event', () => {
@@ -119,12 +133,39 @@ describe('DesktopWindowModeController', () => {
     controller.applyMode('workspace')
     expect(window.contentSize).toEqual([WORKSPACE_WINDOW_MODE_SIZE.width, WORKSPACE_WINDOW_MODE_SIZE.height])
 
-    navigation.emit('did-navigate-in-page', 'https://id.undefineds.co/.account/oidc/consent')
+    navigation.emit('did-navigate-in-page', 'https://id.undefineds.co/.account/login/password')
 
     expect(controller.currentMode()).toBe('account')
     // §5.1：Account 文档窗口可缩放
     expect(window.resizable).toBe(true)
-    expect(window.contentSize).toEqual([ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height])
+    expect(window.size).toEqual([ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height])
+  })
+
+  it('expands registration before returning to compact login and keeps consent compact', () => {
+    const window = new FakeWindow()
+    const controller = new DesktopWindowModeController(window, new FakeTimers())
+    const navigation = new FakeNavigationSource()
+    bindDesktopWindowModeNavigation(navigation, controller)
+    const base = 'https://id.example/.account/interaction/transaction-A/'
+
+    navigation.emit('did-navigate', base)
+    expect(controller.currentMode()).toBe('account')
+    expect(window.size).toEqual([440, 620])
+    for (const document of ['login/password/register/', 'create-pod/']) {
+      navigation.emit('did-navigate-in-page', `${base}${document}`)
+      expect(controller.currentMode()).toBe('workspace')
+      expect(window.contentSize).toEqual([1280, 800])
+      expect(window.resizable).toBe(true)
+      navigation.emit('did-navigate-in-page', `${base}login/password/`)
+      expect(controller.currentMode()).toBe('account')
+      expect(window.size).toEqual([440, 620])
+    }
+    // The consent step stays compact inside the same scoped interaction.
+    navigation.emit('did-navigate-in-page', `${base}oidc/consent/`)
+    expect(controller.currentMode()).toBe('account')
+    expect(window.size).toEqual([440, 620])
+    navigation.emit('did-navigate-in-page', `${base}login/password/`)
+    expect(controller.currentMode()).toBe('account')
   })
 
   it('preserves renderer auth mode when cancellation removes only the product query', () => {
@@ -136,7 +177,7 @@ describe('DesktopWindowModeController', () => {
     controller.applyMode('auth')
     navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/ai-connections')
     expect(controller.currentMode()).toBe('auth')
-    expect(window.contentSize).toEqual([AUTH_WINDOW_MODE_SIZE.width, AUTH_WINDOW_MODE_SIZE.height])
+    expect(window.size).toEqual([AUTH_WINDOW_MODE_SIZE.width, AUTH_WINDOW_MODE_SIZE.height])
   })
 
   it('restores workspace mode when a compact route navigates back to a same-origin product page', () => {
@@ -147,7 +188,7 @@ describe('DesktopWindowModeController', () => {
 
     controller.markReadyToShow()
     controller.applyMode('workspace')
-    navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/.account/oidc/consent')
+    navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/.account/login/password')
     expect(controller.currentMode()).toBe('account')
 
     navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/settings/pod')
@@ -166,7 +207,7 @@ describe('DesktopWindowModeController', () => {
     bindDesktopWindowModeNavigation(navigation, controller, 'http://127.0.0.1:3000')
 
     controller.markReadyToShow()
-    navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/.account/oidc/consent')
+    navigation.emit('did-navigate-in-page', 'http://127.0.0.1:3000/.account/login/password')
     expect(controller.currentMode()).toBe('account')
 
     navigation.emit('did-navigate', 'https://id.undefineds.co/.account/account/')
@@ -183,7 +224,7 @@ describe('DesktopWindowModeController', () => {
     controller.markReadyToShow()
     controller.applyMode('workspace')
 
-    navigation.emit('did-navigate-in-page', 'https://id.undefineds.co/.account/oidc/consent', false)
+    navigation.emit('did-navigate-in-page', 'https://id.undefineds.co/.account/login/password', false)
 
     expect(controller.currentMode()).toBe('workspace')
     expect(window.resizable).toBe(true)
@@ -212,27 +253,40 @@ describe('DesktopWindowModeController', () => {
     expect(window.resizable).toBe(false)
     expect(window.maximizable).toBe(false)
     expect(window.minimumSize).toEqual([AUTH_WINDOW_MODE_SIZE.minWidth, AUTH_WINDOW_MODE_SIZE.minHeight])
-    expect(window.contentSize).toEqual([AUTH_WINDOW_MODE_SIZE.width, AUTH_WINDOW_MODE_SIZE.height])
+    expect(window.size).toEqual([AUTH_WINDOW_MODE_SIZE.width, AUTH_WINDOW_MODE_SIZE.height])
     expect(window.title).toBe('Xpod')
 
     controller.markReadyToShow()
     expect(window.showCalls).toBe(1)
   })
 
-  it('keeps WebID compact while the Account document is a 1040x760 window', () => {
-    // §5.1：登录/恢复/回调是 280×400 紧凑对话框；App 承载的 Account 文档是 1040×760 文档窗口
+  it('gives WebID sign-in and the account service pages the same 440 x 620 window', () => {
     expect(AUTH_WINDOW_MODE_SIZE).toEqual({
-      width: 280,
-      height: 400,
-      minWidth: 280,
-      minHeight: 400,
+      width: 440,
+      height: 620,
+      minWidth: 320,
+      minHeight: 480,
     })
     expect(ACCOUNT_WINDOW_MODE_SIZE).toEqual({
-      width: 1040,
-      height: 760,
-      minWidth: 640,
-      minHeight: 560,
+      width: 440,
+      height: 620,
+      minWidth: 320,
+      minHeight: 480,
     })
+  })
+
+  it('keeps the viewport stable across WebID and Account authentication transitions', () => {
+    const window = new FakeWindow()
+    const controller = new DesktopWindowModeController(window, new FakeTimers())
+    controller.applyMode('auth')
+    expect(window.size).toEqual([440, 620])
+    expect(window.contentSize).toBeUndefined()
+    controller.applyModeForUrl('https://id.example/.account/login/password/')
+    expect(window.size).toEqual([440, 620])
+    expect(window.contentSize).toBeUndefined()
+    expect(window.minimumSize).toEqual([320, 480])
+    controller.applyModeForUrl('https://id.example/.account/account/')
+    expect(window.contentSize).toEqual([WORKSPACE_WINDOW_MODE_SIZE.width, WORKSPACE_WINDOW_MODE_SIZE.height])
   })
 
   it('opens the Account document as a resizable window', () => {
@@ -245,8 +299,12 @@ describe('DesktopWindowModeController', () => {
     expect(window.resizable).toBe(true)
     expect(window.maximizable).toBe(true)
     expect(window.minimumSize).toEqual([ACCOUNT_WINDOW_MODE_SIZE.minWidth, ACCOUNT_WINDOW_MODE_SIZE.minHeight])
-    expect(window.contentSize).toEqual([ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height])
+    expect(window.size).toEqual([ACCOUNT_WINDOW_MODE_SIZE.width, ACCOUNT_WINDOW_MODE_SIZE.height])
     expect(window.title).toBe('Xpod')
+  })
+
+  it('uses the October desktop design canvas as the default workspace viewport', () => {
+    expect(WORKSPACE_WINDOW_MODE_SIZE).toEqual({ width: 1280, height: 800, minWidth: 640, minHeight: 560 })
   })
 
   it('restores workspace size and resizability without showing twice', () => {

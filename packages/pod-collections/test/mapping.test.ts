@@ -1,4 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { drizzle, podTable, id, uri, string } from '@undefineds.co/drizzle-solid';
+import { aiProviderResource, credentialDescriptor, credentialResource } from '@undefineds.co/models';
+// Exercise the installed ORM's real RDF boundary; its public entry omits handlers.
+import { UriHandler } from '../../../node_modules/@undefineds.co/drizzle-solid/dist/core/triple/handlers/uri.js';
+import { projectionCovers, projectionHash } from '../src/diff.js';
+import { createPendingWrites, reconcilePendingWrites } from '../src/mutations.js';
 import {
   assertDescriptorTableAlignment,
   coerceFieldValue,
@@ -7,6 +13,7 @@ import {
   fieldBindings,
   isUriArrayField,
   mapSubjectRows,
+  normalizeMutationRow,
   projectionFieldOrder,
   tableColumnPredicates,
   tableColumnsWithoutDescriptorField,
@@ -199,6 +206,108 @@ describe('write payload', () => {
       { resourceId: 'widgets.ttl#w1', includeField: (field) => field !== 'hasModel' },
     );
     expect(values).toEqual({ id: 'widgets.ttl#w1', label: 'x' });
+  });
+});
+
+describe('credential URI confirmation through installed ORM RDF roundtrip', () => {
+  const intent = {
+    id: 'credential-roundtrip',
+    provider: aiProviderResource.buildId({ id: 'openai' }),
+    label: 'Roundtrip fixture',
+  };
+  const database = drizzle({
+    info: { isLoggedIn: true, webId: `${POD_URL}profile/card#me` },
+    fetch: async () => { throw new Error('roundtrip must not perform network I/O'); },
+  }, { podUrl: POD_URL, schema: { credential: credentialResource, aiProvider: aiProviderResource } });
+  const roundtrip = () => {
+    const column = credentialResource.columns.provider;
+    const handler = new UriHandler();
+    const resolver = database.getDialect().getUriResolver();
+    const term = handler.formatValue(intent.provider, column, {
+      resolveInlineChildUri: (...args) => resolver.resolveInlineChild(...args),
+      getNamespaceUri: () => credentialDescriptor.namespace,
+      baseUri: POD_URL,
+      currentTable: credentialResource,
+      tableNameRegistry: new Map([['aiProvider', aiProviderResource]]),
+      uriResolver: resolver,
+    });
+    expect(term.termType).toBe('NamedNode');
+    const values = descriptorRowToColumnValues(credentialDescriptor, credentialResource, intent, {
+      resourceId: credentialResource.buildId({ id: intent.id }),
+    });
+    const [server] = mapSubjectRows(credentialDescriptor, credentialResource, [{
+      ...values,
+      provider: handler.parseValue(term, column),
+    }]);
+    expect(server).toBeDefined();
+    return { server: server!, normalized: normalizeMutationRow(credentialDescriptor, credentialResource, intent, {
+      database, podUrl: POD_URL, document: `${POD_URL}settings/credentials.ttl`, resourceId: credentialResource.buildId({ id: intent.id }),
+    }) };
+  };
+
+  it('confirms the real credential provider relation after URI write/read normalization', () => {
+    const { server, normalized } = roundtrip();
+    // Failure output contains field names/types only, never row values or secrets.
+    const differences = Object.entries(normalized)
+      .filter(([field, value]) => server[field as keyof typeof intent] !== value)
+      .map(([field, value]) => ({ field, intentType: typeof value, readType: typeof server[field as keyof typeof intent] }));
+    expect(differences).toEqual([]);
+    expect(projectionCovers(server, normalized)).toBe(true);
+  });
+
+  it('preserves absolute external IRIs and non-URI fields', () => {
+    const row = { id: 'external', provider: 'https://other.test/providers/custom#this', baseUrl: 'https://api.test/v1', label: 'unchanged' };
+    expect(normalizeMutationRow(credentialDescriptor, credentialResource, row, {
+      database, podUrl: POD_URL, document: `${POD_URL}settings/credentials.ttl`, resourceId: 'credentials.ttl#external',
+    })).toEqual(row);
+  });
+
+  it('normalizes URI arrays with the same document base as the PATCH writer', () => {
+    const table = podTable('widget', {
+      id: id('id'),
+      label: string('label').predicate(widgetDescriptor.fields.label.predicate),
+      hasModel: uri('hasModel').array().predicate(widgetDescriptor.fields.hasModel.predicate),
+    }, { base: '/settings/', type: widgetDescriptor.class });
+    const row = { id: 'array', label: 'https://literal.test/value', hasModel: ['models/a.ttl#a', 'https://other.test/model#this'] };
+    const normalized = normalizeMutationRow(widgetDescriptor, table, row, {
+      database, podUrl: POD_URL, document: `${POD_URL}settings/widgets.ttl`, resourceId: 'widgets.ttl#array',
+    });
+    expect(normalized.hasModel).toEqual([`${POD_URL}settings/models/a.ttl#a`, 'https://other.test/model#this']);
+    expect(normalized.label).toBe(row.label);
+  });
+
+  it('preserves absolute URI lexical identity in arrays while resolving only relative entries', () => {
+    const table = podTable('widget', {
+      id: id('id'),
+      hasModel: uri('hasModel').array().predicate(widgetDescriptor.fields.hasModel.predicate),
+    }, { base: '/settings/', type: widgetDescriptor.class });
+    const external = ['https://external.test', 'https://EXTERNAL.test/model#this', 'https://external.test/a/../model#this'];
+    const normalized = normalizeMutationRow(widgetDescriptor, table, { id: 'lexical-array', hasModel: [...external, 'models/c.ttl#c'] }, {
+      database, podUrl: POD_URL, document: `${POD_URL}settings/widgets.ttl`, resourceId: 'widgets.ttl#lexical-array',
+    });
+    expect(normalized.hasModel).toEqual([...external, `${POD_URL}settings/models/c.ttl#c`]);
+  });
+
+  it('still rejects a genuinely different provider after normalization', () => {
+    const { normalized, server } = roundtrip();
+    const foreign = { ...server, provider: `${POD_URL}settings/providers/other.ttl` };
+    expect(projectionCovers(foreign, normalized)).toBe(false);
+    const pending = createPendingWrites<typeof normalized>();
+    pending.register({ key: intent.id, intent: normalized, localRow: normalized, beforeHash: undefined });
+    reconcilePendingWrites(pending, new Map([[intent.id, foreign]]),
+      row => projectionHash(row, projectionFieldOrder(credentialDescriptor)));
+    expect((pending.entries.get(intent.id)?.error as PodCollectionError)?.code).toBe('write_conflict');
+  });
+
+  it('settles that same URI roundtrip without a spurious insert conflict', () => {
+    const { server, normalized } = roundtrip();
+    const pending = createPendingWrites<typeof normalized>();
+    pending.register({ key: intent.id, intent: normalized, localRow: normalized, beforeHash: undefined });
+    reconcilePendingWrites(pending, new Map([[intent.id, server]]),
+      row => projectionHash(row, projectionFieldOrder(credentialDescriptor)));
+    const entry = pending.entries.get(intent.id)!;
+    expect({ settled: entry.settled, code: entry.error instanceof PodCollectionError ? entry.error.code : undefined })
+      .toEqual({ settled: true, code: undefined });
   });
 });
 

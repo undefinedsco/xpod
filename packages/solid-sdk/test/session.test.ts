@@ -504,6 +504,87 @@ describe('identity-bound authenticated fetch', () => {
 });
 
 describe('pending identity completion lifecycle', () => {
+  it.each(['initialize', 'callback'] as const)('bounds a hanging %s and quarantines its late events before retry', async (operation) => {
+    vi.useFakeTimers();
+    try {
+      const session = createFakeSession();
+      let finish!: (info: FakeSessionInfo) => void;
+      session.handleIncomingRedirect.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      const runtime = createSolidSessionRuntime({ session });
+      const pending = operation === 'initialize' ? runtime.initialize() : runtime.handleIncomingRedirect!('https://app.example/callback');
+      let result: SolidSessionSnapshot | undefined;
+      void pending.then((value) => { result = value; });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(result).toMatchObject({ status: 'error', error: { name: 'SolidSessionPendingError' } });
+      await expect(runtime.initialize()).resolves.toBe(result);
+      expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+      await expect(runtime.login({ oidcIssuer: 'https://id.example' })).rejects.toThrow('Reload before reconnecting');
+      expect(session.login).not.toHaveBeenCalled();
+
+      await runtime.logout();
+      session.events.emit(EVENTS.ERROR, 'late_error', 'Old redirect failed');
+      expect(runtime.getSnapshot()).toEqual({ status: 'anonymous' });
+      session.info.isLoggedIn = true;
+      session.info.webId = 'https://id.example/A#me';
+      session.events.emit(EVENTS.LOGIN);
+      session.events.emit(EVENTS.SESSION_RESTORED);
+      finish(session.info);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runtime.getSnapshot()).toEqual({ status: 'anonymous' });
+
+      session.handleIncomingRedirect.mockResolvedValue({ isLoggedIn: true, webId: 'https://id.example/B#me' });
+      await expect(runtime.initialize()).resolves.toEqual({ status: 'authenticated', webId: 'https://id.example/B#me' });
+      expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(2);
+      runtime.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves a valid login event when redirect bookkeeping never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const session = createFakeSession();
+      session.handleIncomingRedirect.mockReturnValue(new Promise(() => undefined));
+      const runtime = createSolidSessionRuntime({ session });
+      const pending = runtime.initialize();
+      session.info.isLoggedIn = true;
+      session.info.webId = 'https://id.example/B#me';
+      session.events.emit(EVENTS.LOGIN);
+      const authenticated = runtime.getSnapshot();
+      let result: SolidSessionSnapshot | undefined;
+      void pending.then((value) => { result = value; });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(result).toBe(authenticated);
+      expect(runtime.getSnapshot()).toBe(authenticated);
+      session.events.emit(EVENTS.ERROR, 'late_error', 'Old redirect failed');
+      expect(runtime.getSnapshot()).toBe(authenticated);
+      await runtime.createAuthenticatedFetch(session.info.webId)('/current');
+      expect(session.fetch).toHaveBeenCalledTimes(1);
+      runtime.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['initialize', 'callback'] as const)('settles the public %s wait on disposal even if the signer never finishes', async (operation) => {
+    vi.useFakeTimers();
+    try {
+      const session = createFakeSession();
+      session.handleIncomingRedirect.mockReturnValue(new Promise(() => undefined));
+      const runtime = createSolidSessionRuntime({ session });
+      const pending = operation === 'initialize' ? runtime.initialize() : runtime.handleIncomingRedirect!('https://app.example/callback');
+      let result: SolidSessionSnapshot | undefined;
+      void pending.then((value) => { result = value; });
+      runtime.dispose();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(result).toBe(runtime.getSnapshot());
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each(['initialize', 'callback'] as const)('ignores late %s completion after logout, including its LOGIN event', async (operation) => {
     const session = createFakeSession();
     let finish!: (info: FakeSessionInfo) => void;

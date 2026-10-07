@@ -488,7 +488,7 @@ describe('NetworkPage', () => {
     expect(row.textContent).toContain('http://127.0.0.1:5737');
     // The row hands over the Gateway's tunnel entry, not the Gateway port: that listener is
     // the one that never treats a tunnelled caller as local.
-    expect(row.textContent).toContain('not the Gateway port');
+    expect(row.textContent).toContain('在服务商控制台填写此地址');
 
     const copy = Array.from(row.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Copy tunnel origin');
     const jump = Array.from(row.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Open Sakura FRP console');
@@ -528,7 +528,7 @@ describe('NetworkPage', () => {
 
     // A discovered provider reports its own entry: the form must not ask for one.
     expect(container.querySelector('input[name="tunnel-url-discovered"]')).toBeNull();
-    expect(container.textContent).toContain('The provider reports its public endpoint');
+    expect(container.textContent).toContain('地址由隧道自动提供');
     // SakuraFrp never asks the operator for a domain, so its profile has no endpoint field.
     expect(container.querySelector('input[name="tunnel-url-sakura-assigned"]')).toBeNull();
 
@@ -568,7 +568,7 @@ describe('NetworkPage', () => {
     const save = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Save DNS configuration'))!;
     await act(async () => { save.dispatchEvent(new MouseEvent('click', { bubbles: true })); await new Promise((resolve) => setTimeout(resolve, 30)); });
     expect(saved).toBe(true);
-    expect(container.textContent).toContain('Saved · restart required');
+    expect(container.textContent).toContain('已保存，需要重启');
     await unmount(root);
   });
 });

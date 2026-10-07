@@ -76,14 +76,18 @@ VoidLocker
 | `config/cloud.json` | Redis 锁，过期时间 6000ms | 生产环境（单机/集群）；远程 I/O 不允许发生在 Account create-pod 的 CSS 资源锁内 |
 | `config/xpod.json` | CSS 官方内存锁方案，过期时间 6000ms | 单体 Xpod 配置 |
 
-Cloud Account 创建 Local-managed Pod 时采用两阶段 provisioning：
+### Managed Local provisioning 的锁边界与 profile 归属（2026-10-03 纠正，发布验收中）
 
-1. 调用方先在锁外通过 provision code 的 `spUrl` 访问 Local `/provision/pods`。`spUrl` 只负责回调和路由，不参与 RDF identity。
-2. Local 根据 Cloud 分配的 `spDomain` 得到 canonical Pod URL，并在该 SP 上创建 Profile。WebID 固定为 `<canonical Pod URL>profile/card#me`，Profile 同时写入 `solid:storage = canonical Pod URL` 与 `solid:oidcIssuer = Cloud IdP`。
-3. Local 返回包含 Pod 名、canonical WebID 和 canonical Pod URL 的短期 `provisionReceipt`。回执使用长期 service token 的 SHA-256 值签发，浏览器仅持有的短期 `serviceAccessToken` 不能伪造。
-4. Cloud Account create 在 6000ms 锁内只读取本地 identity DB 中登记的 SP `service_token_hash`、核验回执并写入 Account 的 WebID/Pod 绑定；不会访问 Local SP，也不会在 Cloud ResourceStore 中重写远端 Profile。
+`profile/card` 是 Cloud 托管的独立身份与 Pod 发现文档。无论用户数据存储在 Cloud 还是 Local，managed 部署中的 card 都在 Cloud；card 声明 Cloud issuer 与实际 Pod 的 canonical storage URL。Local 保存 Pod 数据和其访问控制，不铸造另一份权威 WebID/profile。Cloud 托管 card 不等于创建 Cloud 用户存储 Pod。
 
-因此 WebID、Profile 和 Pod 始终同属 Cloud 分配给 Local SP 的协议域名，Cloud 只承担 OIDC issuer。托管路由、P2P 和 Local SP 回调等远程 I/O 均不占用 CSS Account 资源锁；在进入锁之前 Profile 已完整创建，锁内只剩本地认证与 Account 元数据写入。
+正确的流程必须同时满足身份归属和锁边界：
+
+1. Cloud Account 控制面先分配或验证属于当前 Account 的 Cloud WebID，并准备独立 card 及其原生访问控制。Cloud 身份的归属必须由 Account 权威确认，不能因 Local 签了 receipt 就自动关联任意 WebID。
+2. 调用方在 Account create-pod 的锁外准备 Local Pod，传入已确认的 Cloud WebID。`spUrl` 仅负责回调和路由；Local 根据已分配的 `spDomain` 确定 canonical Pod URL。没有公网数据入站入口时仍可通过本机可用路径准备，不改变 Cloud card 或 WebID。
+3. Local 返回绑定 Pod 名、Cloud WebID、canonical Pod URL 和 Pod generation 的短期 `provisionReceipt`。回执使用长期 service token 的 SHA-256 值签发，浏览器仅持有的短期 `serviceAccessToken` 不能伪造。
+4. Cloud finalize 验证当前 Account 的 WebID 关联及 receipt 的 SP/Pod/身份绑定，登记远程 Pod 元数据并更新 Cloud card 的 `solid:storage`。所有跨服务网络访问继续放在 CSS Account 资源锁外，锁内不得读取 Local profile，也不得重新创建一个 Cloud 存储 Pod。
+
+`CloudProfileCreator` 提供原生 Account profile 准备与 storage 登记；`LocalPodProvisioningService` 在 managed 模式要求已确定的 Cloud WebID，不创建 Local card。Cloud card 准备与标准 Cloud Pod 创建共用命名空间锁；新资源使用 If-None-Match:*，只有已成功创建的资源进入失败清理。HTTP owner 修改与 storage 增量绑定的并发回归单独验收。原无公网夹具使用错误 Local-profile 拓扑，不能作为新契约证据；修正后的真实栈验收与发布结果另行记录。既有 node-origin WebID 的迁移单独处理，不自动改写已持有身份。
 
 ## 4. 部署场景选择
 

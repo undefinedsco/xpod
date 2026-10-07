@@ -88,18 +88,24 @@ export class ClientCredentialsAuthenticator implements Authenticator {
         return { success: false, error: 'Invalid client credentials wrapper: must start with sk-' };
       }
 
-      // One exchange per credential: the factory keeps the token together with the DPoP key it
-      // is bound to, so outbound Pod access reuses this session instead of exchanging again.
+      // Admission revalidates the wrapper against the issuer that owns it, on every request: a
+      // session cached for a previous request is not proof that this credential is still
+      // registered. The factory publishes the fresh session, so this same request's outbound Pod
+      // access reuses that token and its DPoP key instead of exchanging a second time.
       let session: SolidSession;
       try {
-        session = await this.sessions.session({ clientId, clientSecret });
+        session = await this.sessions.admit({ clientId, clientSecret });
       } catch (error) {
         const status = error instanceof SolidSessionError ? error.status : undefined;
-        const unavailable = status === undefined || status >= 500;
+        // The issuer being unreachable, failing, or rate limiting us is not a statement about the
+        // credential. Only a definitive refusal (the 400/401/403 the factory treats as such) is an
+        // invalid credential; everything else is retryable availability, so it is reported as 503
+        // rather than telling the caller its key is dead.
+        const unavailable = status === undefined || status >= 500 || status === 429;
         this.logger.warn(`Client credentials exchange failed for ${clientId.slice(0, 8)}...: ${String(error)}`);
         return unavailable
           ? { success: false, error: 'Token exchange temporarily unavailable', category: 'service_unavailable', statusCode: 503, cause: error }
-          : { success: false, error: `Token exchange failed: ${status ?? 'unknown'}`, cause: error };
+          : { success: false, error: `Token exchange failed: ${status ?? 'unknown'}`, category: 'invalid_credentials', statusCode: 401, cause: error };
       }
       if (!session.webId) {
         return { success: false, error: 'Could not determine webId from token response' };

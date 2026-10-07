@@ -2,6 +2,32 @@ const { contextBridge, ipcRenderer } = require('electron') as typeof import('ele
 
 contextBridge.exposeInMainWorld('xpodDesktop', {
   platform: process.platform,
+  publishAttention(snapshot: unknown): void {
+    ipcRenderer.send('xpod-desktop:attention', snapshot)
+  },
+  deviceRuntime: {
+    getRuntimeSettings() { return ipcRenderer.invoke('xpod:get-runtime-settings') },
+    setLaunchAtLogin(enabled: boolean) { return ipcRenderer.invoke('xpod:set-launch-at-login', enabled) },
+    setAutoRestart(enabled: boolean) { return ipcRenderer.invoke('xpod:set-auto-restart', enabled) },
+    runtimeAction(action: 'start' | 'stop' | 'restart') { return ipcRenderer.invoke('xpod:runtime-action', action) },
+    showDataDirectory() { return ipcRenderer.invoke('xpod:show-data-directory') },
+    selectDataDirectory() { return ipcRenderer.invoke('xpod:select-data-directory') },
+  },
+  onApprovalDecision(decide: (input: { approvalId: string; decision: 'approved' | 'rejected' }) => void): () => void {
+    const listener = (_event: import('electron').IpcRendererEvent, input: unknown) => {
+      if (!input || typeof input !== 'object') return
+      const value = input as { approvalId?: unknown; decision?: unknown }
+      if (typeof value.approvalId === 'string' && (value.decision === 'approved' || value.decision === 'rejected')) {
+        decide({ approvalId: value.approvalId, decision: value.decision })
+      }
+    }
+    ipcRenderer.on('xpod:approval-decision', listener)
+    ipcRenderer.send('xpod:approval-ready', true)
+    return () => {
+      ipcRenderer.removeListener('xpod:approval-decision', listener)
+      ipcRenderer.send('xpod:approval-ready', false)
+    }
+  },
   /** Local recovery only; does not claim the remote IdP cancelled its interaction. */
   cancelLogin(): Promise<void> {
     return ipcRenderer.invoke('xpod:cancel-login')

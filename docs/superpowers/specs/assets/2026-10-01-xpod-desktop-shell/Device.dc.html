@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>这台设备</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;font-family:'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif;color:#2B2621;background:#F7F4ED}
+a{color:#563E84}a:hover{color:#4B3672}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #563E84;outline-offset:2px}
+label:focus-within{outline:2px solid #563E84;outline-offset:2px}
+</style>
+</helmet>
+<div style="width: 1280px; height: 800px; display: flex; background: #F7F4ED; font-family: 'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif; color: #2B2621">
+<dc-import name="Nav" active="device" device-alert="{{alert}}" h="800" hint-size="64px,800px"></dc-import>
+
+<aside aria-label="这台设备" style="width: 260px; flex-shrink: 0; box-sizing: border-box; background: #F2EDE2; border-right: 1px solid #DFDBD5; display: flex; flex-direction: column">
+<div style="height: 48px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; border-bottom: 1px solid #DFDBD5">
+<label class="sr" for="dev-q">搜索设置</label>
+<input id="dev-q" type="search" placeholder="搜索" style="flex-grow: 1; min-width: 0; height: 32px; box-sizing: border-box; border: 1px solid #DFDBD5; border-radius: 8px; background: #FBFAF7; padding: 0 10px; font-size: 13px; font-family: inherit; color: #2B2621">
+</div>
+<span style="font-size: 12px; color: #655D53; padding: 12px 16px 4px">小林的 MacBook Pro · Xpod 边缘</span>
+<nav style="padding: 2px 6px; display: flex; flex-direction: column; gap: 1px">
+<sc-for list="{{secs}}" as="s" hint-placeholder-count="4">
+<button type="button" aria-current="{{s.current}}" onClick="{{s.pick}}" style="{{s.style}}">
+<span style="flex-grow: 1; text-align: left; font-size: 14px">{{s.label}}</span>
+<span style="font-size: 12px; color: {{s.metaColor}}">{{s.meta}}</span>
+</button>
+</sc-for>
+</nav>
+</aside>
+
+<main style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column">
+<header style="height: 48px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px 0 28px; display: flex; align-items: center; border-bottom: 1px solid #DFDBD5">
+<h1 style="margin: 0; font-size: 15px; font-weight: 600; flex-grow: 1">{{title}}</h1>
+<dc-import name="HostBar" sync="{{syncText}}" tone="{{syncTone}}" notices="{{notices}}" inbox="2" hint-size="220px,48px"></dc-import>
+</header>
+<div style="flex-grow: 1; overflow-y: auto">
+<div style="max-width: 900px; padding: 20px 28px 40px; display: flex; flex-direction: column; gap: 16px">
+
+<sc-if value="{{secNet}}" hint-placeholder-val="{{yes}}">
+<div style="display: flex; flex-direction: column; gap: 14px">
+<span style="font-size: 13px; color: #655D53">这台设备上的所有 Pod 共用；和账号页设备行里的是同一块</span>
+<dc-import name="NetworkPanel" scenario="{{scenario}}" h="{{netH}}" hint-size="880px,{{netH}}px"></dc-import>
+</div>
+</sc-if>
+
+<sc-if value="{{secSvc}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; align-items: center; gap: 8px">
+<span style="font-size: 14px; flex-grow: 1">{{svcLine}}</span>
+<sc-if value="{{running}}" hint-placeholder-val="{{yes}}">
+<button type="button" style="height: 34px; padding: 0 14px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 14px; font-family: inherit; cursor: pointer">重启 Xpod</button>
+<button type="button" style="height: 34px; padding: 0 14px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 14px; font-family: inherit; cursor: pointer">停止 Xpod</button>
+</sc-if>
+<sc-if value="{{stopped}}" hint-placeholder-val="{{no}}">
+<button type="button" style="height: 44px; padding: 0 20px; border: 0; border-radius: 8px; background: #563E84; color: #F7F4ED; font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer">启动 Xpod</button>
+</sc-if>
+</div>
+<sc-for list="{{svcGroups}}" as="g" hint-placeholder-count="2">
+<section style="display: flex; flex-direction: column">
+<span style="font-size: 12px; color: #655D53; padding: 6px 0">{{g.label}}</span>
+<div style="display: flex; flex-direction: column; border: 1px solid #DFDBD5; border-radius: 12px; background: #FBFAF7">
+<sc-for list="{{g.items}}" as="v" hint-placeholder-count="3">
+<div style="{{v.rowStyle}}">
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1; min-width: 0"><span style="font-size: 14px">{{v.name}}</span><span style="font-size: 12px; color: #655D53">{{v.what}}</span></span>
+<span style="display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 96px"><span aria-hidden="true" style="{{v.dot}}"></span>{{v.state}}</span>
+<sc-if value="{{v.hasAction}}" hint-placeholder-val="{{no}}"><a href="#" style="font-size: 13px; text-decoration: none; min-width: 72px; text-align: right">{{v.action}}</a></sc-if>
+<sc-if value="{{v.noAction}}" hint-placeholder-val="{{yes}}"><span style="min-width: 72px"></span></sc-if>
+</div>
+</sc-for>
+</div>
+</section>
+</sc-for>
+<span style="font-size: 12px; color: #655D53">停止只影响这台设备；Xpod 云端和其他设备上的 Pod 不受影响。</span>
+</div>
+</sc-if>
+
+<sc-if value="{{secRun}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column">
+<sc-for list="{{runToggles}}" as="t" hint-placeholder-count="2">
+<label style="display: flex; align-items: center; gap: 12px; min-height: 60px; cursor: pointer; border-bottom: 1px solid #E9E4E4">
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1"><span style="font-size: 14px">{{t.label}}</span><span style="font-size: 12px; color: #655D53">{{t.note}}</span></span>
+<input class="sr" type="checkbox" checked="checked"><span aria-hidden="true" style="width: 40px; height: 24px; border-radius: 12px; box-sizing: border-box; padding: 2px; display: flex; justify-content: flex-end; background: #563E84; flex-shrink: 0"><span style="width: 20px; height: 20px; border-radius: 50%; background: #FBFAF7"></span></span>
+</label>
+</sc-for>
+<div style="display: flex; align-items: center; gap: 12px; min-height: 60px; border-bottom: 1px solid #E9E4E4">
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1; min-width: 0"><span style="font-size: 14px">数据位置</span><span style="font-size: 12px; color: #655D53; font-family: ui-monospace, 'SF Mono', Menlo, monospace">~/Library/Application Support/Xpod</span></span>
+<button type="button" style="height: 34px; padding: 0 12px; border: 0; background: transparent; color: #563E84; font-size: 14px; font-family: inherit; cursor: pointer">在访达中显示</button>
+<button type="button" style="height: 34px; padding: 0 12px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 14px; font-family: inherit; cursor: pointer">更改…</button>
+</div>
+<div style="display: flex; align-items: center; gap: 12px; min-height: 60px; border-bottom: 1px solid #E9E4E4">
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1"><span style="font-size: 14px">运行方式</span><span style="font-size: 12px; color: #655D53">{{modeLine}}</span></span>
+</div>
+<span style="font-size: 12px; color: #655D53; padding-top: 10px">端口、访问地址等其他运行参数在开发者模式里</span>
+</div>
+</sc-if>
+
+<sc-if value="{{secLog}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+<label class="sr" for="lg-src">来源</label><select id="lg-src" style="height: 32px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; padding: 0 10px; font-size: 13px; font-family: inherit"><option>全部来源</option></select>
+<label class="sr" for="lg-lv">级别</label><select id="lg-lv" style="height: 32px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; padding: 0 10px; font-size: 13px; font-family: inherit"><option>警告及以上</option></select>
+<label class="sr" for="lg-t">时间</label><select id="lg-t" style="height: 32px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; padding: 0 10px; font-size: 13px; font-family: inherit"><option>最近 1 小时</option></select>
+<label class="sr" for="lg-q">搜索日志</label><input id="lg-q" type="search" placeholder="搜索日志" style="height: 32px; flex-grow: 1; min-width: 160px; box-sizing: border-box; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; padding: 0 10px; font-size: 13px; font-family: inherit">
+</div>
+<div role="log" style="border: 1px solid #DFDBD5; border-radius: 8px; background: #FBFAF7; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 13px; line-height: 20px">
+<sc-for list="{{logs}}" as="l" hint-placeholder-count="4">
+<span><span style="color: #655D53">{{l.t}}</span>  <span style="{{l.lvStyle}}">{{l.lv}}</span>  {{l.msg}}</span>
+</sc-for>
+</div>
+</div>
+</sc-if>
+
+</div>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"scenario":{"editor":"enum","options":["ok","partial","blocked","stopped"],"default":"ok"},"section":{"editor":"enum","options":["network","service","runtime","logs"],"default":"network"},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const sc = props.scenario ?? 'ok';
+    this.state = { sec: props.section ?? (sc === 'stopped' ? 'service' : 'network') };
+  }
+  renderVals() {
+    const self = this;
+    const sc = this.props.scenario ?? 'ok';
+    const st = this.state;
+    const blocked = sc === 'blocked', stopped = sc === 'stopped', partial = sc === 'partial';
+    const D = [
+      ['network', '网络访问', stopped ? '—' : blocked ? '其他设备访问不到' : partial ? '1 条隧道失败' : '都能访问', blocked || partial],
+      ['service', '服务状态', stopped ? '已停止' : '运行中', stopped],
+      ['runtime', '运行设置', '开机启动', false],
+      ['logs', '查看日志', blocked ? '1 条警告' : '', false]
+    ];
+    const secs = D.map((d) => {
+      const on = d[0] === st.sec;
+      return {
+        label: d[1], meta: d[2], current: on ? 'page' : 'false',
+        metaColor: d[3] ? '#8A6A12' : '#655D53',
+        pick: () => self.setState({ sec: d[0] }),
+        style: 'display: flex; align-items: center; gap: 8px; width: 100%; height: 44px; padding: 0 10px; border: 0; border-radius: 8px; font-family: inherit; color: #2B2621; cursor: pointer; ' + (on ? 'background: #E9E4E4' : 'background: transparent')
+      };
+    });
+    const warnLv = 'color: #8A6A12';
+    return {
+      yes: true, no: false,
+      scenario: sc, alert: blocked || stopped || partial,
+      running: !stopped, stopped,
+      secs,
+      title: D.find((d) => d[0] === st.sec)[1],
+      syncText: stopped ? '已停止' : blocked ? '仅本机可用' : '运行中',
+      syncTone: stopped ? 'off' : blocked ? 'warn' : 'ok',
+      notices: blocked || partial ? 1 : 0,
+      secNet: st.sec === 'network', secSvc: st.sec === 'service', secRun: st.sec === 'runtime', secLog: st.sec === 'logs',
+      netH: blocked ? 400 : 290,
+      svcLine: stopped ? 'Xpod 已停止 · 今天 14:02 由你停止' : '运行中 · 已连续运行 2 天 4 小时',
+      svcGroups: [
+        { label: '核心服务', items: [
+          ['入口网关', '所有访问先经过这里', 'core'],
+          ['Solid 服务', 'Pod 的读写和登录授权', 'core'],
+          ['API 服务', 'AI、索引和后台任务', 'core'],
+          ['查询引擎', 'QLever，检索和数据查询', 'core'],
+          ['任务调度', 'Inngest，按时间和事件触发任务', 'core']
+        ] },
+        { label: '可选组件', items: [
+          ['Cloudflare 隧道', 'cloudflared · 用 Cloudflare 隧道时需要', blocked ? 'missing' : 'on'],
+          ['ngrok', '用 ngrok 隧道时需要', 'off'],
+          ['Sakura FRP', 'frpc · 用 Sakura FRP 时需要', 'off']
+        ] }
+      ].map((g) => ({ label: g.label, items: g.items.map((v, i) => {
+        const st2 = stopped ? 'stopped' : v[2];
+        const M = { core: ['运行中', '#2F6B55', ''], on: ['运行中', '#2F6B55', ''], off: ['未使用', '#87837D', ''], missing: ['未安装', '#8A6A12', '安装方法 ↗'], stopped: ['已停止', '#87837D', ''] }[st2];
+        return { name: v[0], what: v[1], state: M[0], action: M[2], hasAction: !!M[2], noAction: !M[2],
+          dot: 'width: 7px; height: 7px; border-radius: 50%; ' + (st2 === 'off' || st2 === 'stopped' ? 'border: 1.5px solid ' + M[1] + '; box-sizing: border-box' : 'background: ' + M[1]),
+          rowStyle: 'display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 14px; ' + (i ? 'border-top: 1px solid #DFDBD5' : '') };
+      }) })),
+      runToggles: [
+        { label: '开机时启动 Xpod', note: '关掉后，别的设备只有在你打开 Xpod 时才能访问这台设备' },
+        { label: '意外退出时自动重启', note: '你手动停止的不会被重启' }
+      ],
+      modeLine: 'Xpod 边缘 · 登录走 pod.undefineds.co',
+      logs: [
+        { t: '14:31:02', lv: '警告', msg: '其他网络检测失败：没有公网入口', lvStyle: warnLv },
+        { t: '14:30:58', lv: '信息', msg: '局域网 192.168.1.23 可用', lvStyle: 'color: #655D53' },
+        { t: '14:30:57', lv: '信息', msg: '这台电脑 localhost:3000 可用', lvStyle: 'color: #655D53' },
+        { t: '14:02:11', lv: '信息', msg: 'Xpod 已启动', lvStyle: 'color: #655D53' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

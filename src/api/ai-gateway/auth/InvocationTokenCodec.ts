@@ -1,3 +1,4 @@
+import { normalizeVerifiedPodRoot } from '../pod/PodBaseUrlResolver';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
 const PREFIX = 'xpod_inv_v1';
@@ -16,6 +17,8 @@ export interface InvocationTokenClaims {
   audience: string;
   issuer: string;
   webId: string;
+  /** Signed canonical storage binding; absent only on legacy unbound invocations. */
+  podUrl?: string;
   scopes: string[];
   issuedAt: Date;
   expiresAt: Date;
@@ -34,6 +37,8 @@ export interface InvocationTokenInput {
   audience: string;
   issuer: string;
   webId: string;
+  /** Signed canonical storage binding; absent only on legacy unbound invocations. */
+  podUrl?: string;
   scopes: string[];
   issuedAt: Date;
   expiresAt: Date;
@@ -83,6 +88,7 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
       aud: audience,
       iss: issuer,
       webId,
+      ...(input.podUrl !== undefined ? { podUrl: normalizeVerifiedPodRoot(input.podUrl) } : {}),
       scopes,
       iat: issuedAt,
       exp: expiresAt,
@@ -144,7 +150,9 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
       const parsed = JSON.parse(plaintext.toString('utf8')) as Record<string, unknown>;
       const keys = Object.keys(parsed).sort();
       if (
-        keys.join(',') !== 'aud,deployment,exp,iat,iss,jti,kid,scopes,v,webId'
+        keys.join(',') !== (parsed.podUrl === undefined
+          ? 'aud,deployment,exp,iat,iss,jti,kid,scopes,v,webId'
+          : 'aud,deployment,exp,iat,iss,jti,kid,podUrl,scopes,v,webId')
         ||
         parsed.v !== 1
         || parsed.kid !== kid
@@ -152,6 +160,7 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
         || typeof parsed.aud !== 'string'
         || typeof parsed.iss !== 'string'
         || typeof parsed.webId !== 'string'
+        || (parsed.podUrl !== undefined && typeof parsed.podUrl !== 'string')
         || !Array.isArray(parsed.scopes)
         || typeof parsed.iat !== 'number'
         || typeof parsed.exp !== 'number'
@@ -163,6 +172,7 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
       const audience = requireCanonicalOrigin(parsed.aud, 'audience');
       const issuer = requireCanonicalOrigin(parsed.iss, 'issuer');
       const webId = requireCanonicalWebId(parsed.webId);
+      const podUrl = parsed.podUrl === undefined ? undefined : normalizeVerifiedPodRoot(parsed.podUrl as string);
       const scopes = requireScopes(parsed.scopes);
       const issuedAt = requireEpoch(parsed.iat);
       const expiresAt = requireEpoch(parsed.exp);
@@ -176,6 +186,7 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
         audience,
         issuer,
         webId,
+        ...(podUrl ? { podUrl } : {}),
         scopes,
         issuedAt: new Date(issuedAt),
         expiresAt: new Date(expiresAt),

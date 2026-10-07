@@ -1,3 +1,5 @@
+import { approvalResource, sessionResource, deliveryResource, type ApprovalRow, type ApprovalInsert, type SessionInsert } from '@undefineds.co/models';
+import { DEFAULT_TASK_AGENT } from '../tasks/TaskAgentBinding';
 /**
  * Pod-based ChatKit Store
  *
@@ -10,7 +12,7 @@
  *     #{threadId}                     # Thread (sioc:Thread, sioc:has_parent)
  *   {yyyy}/{MM}/{dd}/messages.ttl     # Messages (meeting:Message)
  */
-import { drizzle, eq, and, asc, isNull } from '@undefineds.co/drizzle-solid';
+import { drizzle, eq, and, asc, parsePodResourceRef } from '@undefineds.co/drizzle-solid';
 import { getLoggerFor } from 'global-logger-factory';
 import type {
   ChatKitStore,
@@ -45,6 +47,8 @@ import {
   type RunRecord,
   type RunStepRecord,
 } from '../runs/schema';
+import { updateConditionalResource, resourceLiteral } from '../runs/ConditionalResourceDocument';
+import { mergeRunCancellation, type PersistedRunState } from '../runs/RunStateMerge';
 import {
   buildRunResourceId,
   buildRunStepResourceId,
@@ -76,7 +80,8 @@ import {
 } from '../tasks/TaskAuthBinding';
 import type { AuthContext } from '../auth/AuthContext';
 import { CALLER_POD_ACCESS_UNAVAILABLE } from '../ai-gateway/auth/CallerPodAccess';
-import { podAccessError, type PodAccessFetchProvider } from '../ai-gateway/pod/OwnerPodAccess';
+import { podAccessError, type PodAccessFetchProvider, type PodAccessRequestContext } from '../ai-gateway/pod/OwnerPodAccess';
+import { resolveOwnerPodBaseUrl, type PodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
 import { isSolidAuth } from '../auth/AuthContext';
 import { Provider } from '../../ai/schema/provider';
 import { Model } from '../../ai/schema/model';
@@ -107,6 +112,8 @@ import { withProtocolMetadata, withoutProtocolProjectionKeys } from '../protocol
 import { selectReaderAiConfig, type ReaderAiConfig } from '../../document/ReaderAiConfig';
 
 const schema = {
+  approvalResource,
+  sessionResource,
   chat: Chat,
   thread: Thread,
   message: Message,
@@ -122,6 +129,8 @@ const schema = {
 export interface PodChatKitStoreOptions {
   /** Reaches a Pod as its owner over the Pod's standard interface. */
   podAccess?: PodAccessFetchProvider;
+  /** Resolves an owned storage binding, independently of the WebID document location. */
+  podBaseUrlResolver?: PodBaseUrlResolver;
   serverGroupReconcilerService?: ServerGroupReconcilerService;
   /**
    * Reads a Pod credential secret (AI Connections envelope, `plaintext-v1`
@@ -212,6 +221,9 @@ type ThreadParentResolution = CommandSurface & {
 type RunRecordSource = {
   id: string;
   task?: string | null;
+  delivery?: string | null;
+  trigger?: string | null;
+  input?: string | null;
   thread?: string | null;
   workspace?: string | null;
   status?: string | null;
@@ -233,6 +245,13 @@ type RunRecordSource = {
 type TaskRecordSource = {
   id: string;
   title?: string | null;
+  instruction?: string | null;
+  assignedTo?: string | null;
+  source?: string | null;
+  dueAt?: string | Date | null;
+  completedAt?: string | Date | null;
+  notes?: string | null;
+  priority?: string | null;
   prompt?: string | null;
   thread?: string | null;
   workspace?: string | null;
@@ -273,6 +292,7 @@ type RunStepRecordSource = {
 export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<StoreContext>, TaskStore<StoreContext>, TaskAuthBindingRepository<StoreContext> {
   private readonly logger = getLoggerFor(this);
   private readonly podAccess?: PodAccessFetchProvider;
+  private readonly podBaseUrlResolver?: PodBaseUrlResolver;
   private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
   private readonly credentialSecretDecoder: AiCredentialSecretDecoder;
   private readonly deployment?: string;
@@ -282,6 +302,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   public constructor(options: PodChatKitStoreOptions) {
     this.podAccess = options.podAccess;
+    this.podBaseUrlResolver = options.podBaseUrlResolver;
     this.credentialSecretDecoder = options.credentialSecretDecoder ?? defaultAiCredentialSecretDecoder;
     this.deployment = options.deployment;
     this.serverGroupReconcilerService = options.serverGroupReconcilerService;
@@ -293,7 +314,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       { fetch: input.fetch, info: { webId: input.webId, isLoggedIn: true } } as any,
       { schema },
     );
-    await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential);
+    await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential, approvalResource, sessionResource);
     const context: StoreContext = {
       webId: input.webId,
       podUrl: input.podUrl,
@@ -317,12 +338,58 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
    * for a Pod it could not open reports a state the user cannot act on.
    */
   private async getDb(context: StoreContext): Promise<any> {
-    // Check if we already have a cached db in context
-    if ((context as any)._cachedDb) {
+    // Internal contexts may carry a database opened with an already verified explicit binding
+    // (including Standalone). Never reuse that database after the context selects another root.
+    const cachedDb = (context as any)._cachedDb;
+    if (cachedDb) {
+      const explicitRoot = this.readExplicitPodBaseUrl(context);
+      const boundRoot = this.readPodUrlFromDatabase(cachedDb) ?? this.getCachedPodBaseUrl(context);
+      if (explicitRoot && boundRoot && explicitRoot !== boundRoot) {
+        throw new Error('Authoritative Pod storage binding changed on cached context');
+      }
+      // A cached database/fetch belongs to one credential binding. If the context now selects a
+      // different caller key or task grant, the old connection must not be reused.
+      const expectedAuth = (context as any)._cachedAuth as string | undefined;
+      if (expectedAuth && expectedAuth !== this.podCredentialBinding(context)) {
+        throw new Error('Authoritative Pod credential binding changed on cached context');
+      }
+      const auth = context.auth as AuthContext | undefined;
+      if (auth?.type === 'solid' && (auth.requestedPodUrl || auth.authorizedPodUrl)) {
+        const selectedRoot = await this.requireContextPodBaseUrl(context, auth);
+        if (!boundRoot || selectedRoot !== boundRoot) {
+          throw new Error('Authoritative Pod storage binding changed on cached context');
+        }
+      }
       this.logger.debug('Using cached db from context');
-      return (context as any)._cachedDb;
+      return cachedDb;
     }
 
+    // A single request fans out with Promise.all (for example `GET /api/tasks`); without an
+    // in-flight guard each concurrent caller would resolve the same credential and open its own
+    // Pod database. The promise is bound to this request's context and cleared once settled, so
+    // it never outlives the request or crosses credentials.
+    const inFlight = (context as any)._cachedDbPromise as Promise<any> | undefined;
+    if (inFlight) {
+      if ((context as any)._cachedDbPromiseAuth !== this.podCredentialBinding(context)) {
+        throw new Error('Authoritative Pod credential binding changed while opening database');
+      }
+      return inFlight;
+    }
+
+    (context as any)._cachedDbPromiseAuth = this.podCredentialBinding(context);
+    const opening = this.openDb(context);
+    (context as any)._cachedDbPromise = opening;
+    try {
+      return await opening;
+    } finally {
+      if ((context as any)._cachedDbPromise === opening) {
+        delete (context as any)._cachedDbPromise;
+        delete (context as any)._cachedDbPromiseAuth;
+      }
+    }
+  }
+
+  private async openDb(context: StoreContext): Promise<any> {
     const auth = context.auth as AuthContext | undefined;
 
     if (!auth || !isSolidAuth(auth) || !auth.webId) {
@@ -330,11 +397,23 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       throw new Error(CALLER_POD_ACCESS_UNAVAILABLE);
     }
 
+    const credentialBinding = this.podCredentialBinding(context);
+    // A missing authoritative binding is a storage failure, but it must not decide the diagnosis
+    // for a caller whose credential path is already unusable: resolve it here, then reject only
+    // after Pod access has reported why no usable credential exists.
+    const podBaseUrl = await this.resolveContextPodBaseUrl(context, auth);
+
     // One credential path for every caller: the owner's own Pod key, exchanged for a
-    // token this process can prove, or the caller's reusable token.
+    // token this process can prove, or the caller's reusable token. Unattended work carries a
+    // task-layer grant, which is forwarded so the Pod fetch is bound to that exact grant.
+    const taskCredential = (context as { taskCredential?: PodAccessRequestContext['taskCredential'] }).taskCredential;
     let podFetch: typeof fetch | undefined;
     try {
-      podFetch = await this.podAccess?.getPodFetch(auth.webId, { auth });
+      podFetch = await this.podAccess?.getPodFetch(auth.webId, {
+        auth,
+        podBaseUrl,
+        ...(taskCredential ? { taskCredential } : {}),
+      });
     } catch (error) {
       this.logger.error(`Failed to obtain Pod access for ${auth.webId}: ${error}`);
       throw error;
@@ -345,24 +424,83 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       throw new Error(reason);
     }
 
+    if (!podBaseUrl) {
+      throw new Error('Authoritative Pod storage binding unavailable');
+    }
+
+    if (credentialBinding !== this.podCredentialBinding(context)) {
+      throw new Error('Authoritative Pod credential binding changed while opening database');
+    }
+
     const db: any = drizzle(
       { fetch: podFetch, info: { webId: auth.webId, isLoggedIn: true } } as any,
-      { schema },
+      { schema, podUrl: podBaseUrl },
     );
 
     this.logger.info(`Initializing tables for Pod: ${auth.webId}`);
     try {
-      await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential);
+      await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential, approvalResource, sessionResource);
       this.logger.info('Tables initialized successfully');
     } catch (initError) {
       this.logger.error(`Failed to init tables: ${initError}`);
     }
 
+    if (credentialBinding !== this.podCredentialBinding(context)) {
+      throw new Error('Authoritative Pod credential binding changed while opening database');
+    }
     (context as any)._cachedDb = db;
     (context as any)._cachedFetch = podFetch;
     (context as any)._cachedWebId = auth.webId;
-    this.ensurePodBaseUrlCache(context, db, auth.webId);
+    (context as any)._cachedAuth = credentialBinding;
+    this.ensurePodBaseUrlCache(context, db);
     return db;
+  }
+
+  /**
+   * Resolve the request's authoritative Pod root, or `undefined` when this deployment has no
+   * binding resolver to consult. Reporting a missing binding is left to the caller so the
+   * credential path can be classified first.
+   */
+  private async resolveContextPodBaseUrl(
+    context: StoreContext,
+    auth: Extract<AuthContext, { type: 'solid' }>,
+  ): Promise<string | undefined> {
+    const explicitRoot = this.readExplicitPodBaseUrl(context);
+    // Explicit internal contexts already carry a verified binding. A request selection or
+    // capability must still intersect that binding through the shared ownership resolver.
+    if (explicitRoot && !auth.requestedPodUrl && !auth.authorizedPodUrl) return explicitRoot;
+    if (!this.podBaseUrlResolver) return undefined;
+    const selectedRoot = this.normalizePodBaseUrl(await resolveOwnerPodBaseUrl(auth.webId, this.podBaseUrlResolver, auth))!;
+    if (explicitRoot && selectedRoot !== explicitRoot) {
+      throw new Error('Authoritative Pod storage binding conflicts with request');
+    }
+    return selectedRoot;
+  }
+
+  private async requireContextPodBaseUrl(
+    context: StoreContext,
+    auth: Extract<AuthContext, { type: 'solid' }>,
+  ): Promise<string> {
+    const root = await this.resolveContextPodBaseUrl(context, auth);
+    if (!root) {
+      throw new Error('Authoritative Pod storage binding unavailable');
+    }
+    return root;
+  }
+
+  /** Stable identity of the credential binding behind a cached database, without secrets. */
+  private podCredentialBinding(context: StoreContext): string {
+    const auth = context.auth as AuthContext | undefined;
+    const task = (context as { taskCredential?: PodAccessRequestContext['taskCredential'] }).taskCredential;
+    return JSON.stringify({
+      webId: auth && isSolidAuth(auth) ? auth.webId : null,
+      clientId: auth && isSolidAuth(auth) ? auth.clientId ?? null : null,
+      requestedPodUrl: auth && isSolidAuth(auth) ? auth.requestedPodUrl ?? null : null,
+      authorizedPodUrl: auth && isSolidAuth(auth) ? auth.authorizedPodUrl ?? null : null,
+      taskCredential: task
+        ? { ref: task.credentialRef ?? null, version: task.version ?? null, ownerGrant: task.ownerGrant ?? null }
+        : null,
+    });
   }
 
   /**
@@ -374,44 +512,6 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       return auth.webId;
     }
     return undefined;
-  }
-
-  private derivePodBaseUrl(webId: string | undefined): string | undefined {
-    if (!webId) {
-      return undefined;
-    }
-
-    try {
-      const url = new URL(webId);
-      url.hash = '';
-      url.search = '';
-
-      const normalizedPath = url.pathname.replace(/\/+$/, '');
-      if (!normalizedPath.endsWith('/profile/card')) {
-        return undefined;
-      }
-
-      const podPath = normalizedPath.slice(0, -'/profile/card'.length) || '/';
-      if (podPath === '/') {
-        return url.origin;
-      }
-      url.pathname = podPath;
-      return url.toString().replace(/\/$/, '');
-    } catch {
-      const withoutHash = webId.split('#')[0]?.replace(/\/+$/, '');
-      if (!withoutHash?.endsWith('/profile/card')) {
-        return undefined;
-      }
-      const podBase = withoutHash.slice(0, -'/profile/card'.length) || '/';
-      if (podBase === '/') {
-        try {
-          return new URL(webId).origin;
-        } catch {
-          return undefined;
-        }
-      }
-      return podBase.endsWith('/') ? podBase.slice(0, -1) : podBase;
-    }
   }
 
   private normalizePodBaseUrl(value: unknown): string | undefined {
@@ -461,6 +561,8 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return undefined;
   }
 
+  // Only read databases from trusted internal contexts or openDb, which supplies an owned
+  // explicit podUrl before construction. An unconnected WebID-derived SDK root is not authority.
   private readPodUrlFromDatabase(db: unknown): string | undefined {
     if (!db || typeof db !== 'object') {
       return undefined;
@@ -508,10 +610,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   private ensurePodBaseUrlCache(
     context: StoreContext,
     db?: unknown,
-    fallbackWebId?: string,
   ): string | undefined {
     const authoritativePodBaseUrl = this.readExplicitPodBaseUrl(context)
-      ?? this.readPodUrlFromDatabase(db);
+      ?? this.readPodUrlFromDatabase(db ?? (context as any)._cachedDb);
     if (authoritativePodBaseUrl) {
       (context as any)._cachedPodBaseUrl = authoritativePodBaseUrl;
       return authoritativePodBaseUrl;
@@ -522,12 +623,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       return cached;
     }
 
-    const podBaseUrl = this.derivePodBaseUrl(fallbackWebId ?? this.getWebId(context));
-    if (podBaseUrl) {
-      (context as any)._cachedPodBaseUrl = podBaseUrl;
-    }
-
-    return podBaseUrl;
+    return undefined;
   }
 
   /**
@@ -1038,6 +1134,24 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return resource;
   }
 
+  /**
+   * Report a relation stored in this Pod as the same opaque resource id business code uses.
+   * The ORM's own `parsePodResourceRef` extracts it relative to the relation's resource base
+   * (`/.data/task/`, `/.data/`, ...). Only collapse the reference when that ID resolves
+   * back to the exact original IRI through this context's verified database binding.
+   */
+  private toResourceRelation(resource: Pick<typeof Thread, 'buildIriForDatabase'>, value: string | null | undefined, context: StoreContext): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+    if (!/^https?:\/\//.test(value)) {
+      return value;
+    }
+    const id = parsePodResourceRef(resource as never, value)?.resourceId;
+    const db = context._cachedDb;
+    return id && this.readPodUrlFromDatabase(db) && resource.buildIriForDatabase(db, id) === value ? id : value;
+  }
+
   private baseRelativeIdFromPodPath(resource: string, context: StoreContext, podPath: string): string {
     const normalizedPath = podPath.replace(/^\/+|\/+$/g, '');
     const podBaseUrl = this.ensurePodBaseUrlCache(context);
@@ -1057,12 +1171,15 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     return resource;
   }
 
-  private runRecordToData(record: RunRecordSource): RunRecordData {
+  private runRecordToData(record: RunRecordSource, context: StoreContext): RunRecordData {
     const metadata = this.parseJsonObject(record.metadata);
     return {
       id: record.id || '',
-      task: record.task || undefined,
-      thread: record.thread || '',
+      task: this.toResourceRelation(Task, record.task, context),
+      delivery: this.toResourceRelation(deliveryResource, record.delivery, context),
+      trigger: record.trigger || undefined,
+      input: record.input || undefined,
+      thread: this.toResourceRelation(Thread, record.thread, context) ?? '',
       workspace: record.workspace || '',
       status: (record.status || 'queued') as RunRecordData['status'],
       runner: record.runner || '',
@@ -1083,12 +1200,11 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
   private runStepRecordToData(record: RunStepRecordSource, context: StoreContext): RunStepRecordData {
     const payload = this.parseJsonObject(record.payload) ?? this.parseJsonObject(record.data);
-    const runId = record.runId
-      || (record.run ? this.baseRelativeIdFromResource(record.run, context) : '');
+    const run = this.toResourceRelation(Run, record.run, context);
     return {
       id: record.id || '',
-      runId,
-      run: record.run || '',
+      runId: record.runId || run || '',
+      run: run || '',
       type: record.type || record.stepType || 'runtime.event',
       message: record.message || undefined,
       data: this.withoutXpodMetadata(payload),
@@ -1096,14 +1212,21 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     };
   }
 
-  private taskRecordToData(record: TaskRecordSource): TaskRecordData {
+  private taskRecordToData(record: TaskRecordSource, context: StoreContext): TaskRecordData {
     const metadata = this.parseJsonObject(record.metadata);
     const xpod = this.getXpodMetadata(metadata);
     return {
       id: record.id || '',
       title: record.title || undefined,
-      prompt: record.prompt || '',
-      thread: record.thread || '',
+      prompt: record.instruction || record.prompt || '',
+      // Legacy scheduled tasks predate assignedTo; their binding identifies the default agent.
+      assignedTo: record.assignedTo || (this.parseTaskAuthBinding(metadata?.authBinding) ? DEFAULT_TASK_AGENT.iri : undefined),
+      source: record.source || undefined,
+      dueAt: this.isoToTimestamp(record.dueAt),
+      completedAt: this.isoToTimestamp(record.completedAt),
+      notes: record.notes || undefined,
+      priority: record.priority || undefined,
+      thread: this.toResourceRelation(Thread, record.thread, context) ?? '',
       workspace: record.workspace || '',
       runner: record.runner || (typeof xpod?.runner === 'string' ? xpod.runner : ''),
       status: (record.status || 'active') as TaskRecordData['status'],
@@ -1689,6 +1812,12 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     await db.insert(Message).values(messageRecord);
 
+    // Chat membership is the authoritative wake roster. Task surfaces have no Chat
+    // roster and fail closed; message mentions and request metadata cannot grant it.
+    const chat = this.serverGroupReconcilerService && role === MessageRole.USER && reconcilerOwner === 'server'
+      && resolvedThread.commandKind === 'chat'
+      ? await db.findById(Chat, this.buildChatResourceId(resolvedThread.surfaceId))
+      : undefined;
     await this.reconcileGroupUserMessage({
       thread: resolvedThread.thread,
       triggerMessage: this.resolveDataResource(itemResourceId, context),
@@ -1697,6 +1826,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       content,
       reconcilerOwner,
       mentions,
+      participants: normalizeAgentUris(chat?.participants),
     });
 
     // Track this ID to avoid cache timing issues in saveItem
@@ -1711,6 +1841,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     content: string;
     reconcilerOwner: ReconcilerOwner;
     mentions?: string[];
+    participants?: string[];
   }): Promise<void> {
     if (!this.serverGroupReconcilerService || input.role !== MessageRole.USER) {
       return;
@@ -1724,6 +1855,7 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
         content: input.content,
         reconcilerOwner: input.reconcilerOwner,
         mentions: input.mentions,
+        participants: input.participants,
       });
     } catch (error) {
       this.logger.warn(`Failed to enqueue ChatKit group Reconciler wake: ${error}`);
@@ -1773,13 +1905,17 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
       createdAt: item.created_at,
     });
 
-    // 如果是最近创建的消息，使用直接 PATCH 更新（避免 drizzle-solid UPDATE 的 bug）
+    const values: Record<string, unknown> = { content };
+    if (status !== null) values.status = status;
+    if (metadata !== null) values.metadata = metadata;
+
+    // 如果是最近创建的消息，其 RDF 已由 addThreadItem 写入，直接条件更新即可
     const wasRecentlyCreated = this.recentlyCreatedIds.has(itemResourceId);
     if (wasRecentlyCreated) {
       this.recentlyCreatedIds.delete(itemResourceId);
       item.id = itemResourceId;
       item.thread_id = resolvedThread.threadId;
-      await this.directPatchMessage(context, itemResourceId, content, status, metadata);
+      await this.updateConditionalMessage(context, itemResourceId, values);
       return;
     }
 
@@ -1789,10 +1925,9 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     const existing = existingItems.length > 0 ? existingItems[0] : null;
 
     if (existing) {
-      // 使用直接 PATCH 更新
       item.id = itemResourceId;
       item.thread_id = resolvedThread.threadId;
-      await this.directPatchMessage(context, existing.id, content, status, metadata);
+      await this.updateConditionalMessage(context, existing.id, values);
     } else {
       // Create new record
       await this.addThreadItem(thread, item, context);
@@ -1800,83 +1935,37 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
   }
 
   /**
-   * 直接使用 SPARQL UPDATE PATCH 更新消息内容
-   * 避免 drizzle-solid UPDATE 的 bug
+   * Conditionally update a Message through the shared strong-ETag serializer.
+   *
+   * The previous hand-rolled SPARQL UPDATE wrote `metadata` as a flat literal and
+   * never updated the inline child node, so nested metadata (protocols/arguments/
+   * output with quotes) became invalid JSON on the Pod and was lost on reload. See
+   * docs/issues/chatkit-metadata-roundtrip.md. This reuses the ORM INSERT serializer
+   * (which emits the correct nested child triples) inside the existing
+   * `updateConditionalResource` document boundary.
    */
-  private async directPatchMessage(
+  private async updateConditionalMessage(
     context: StoreContext,
     messageResourceId: string,
-    content: string,
-    status: string | null,
-    metadata: Record<string, unknown> | null = null,
+    values: Record<string, unknown>,
   ): Promise<void> {
-    // 使用缓存的 fetch 和 webId（由 getDb 时创建的 session）
-    const cachedFetch = (context as any)._cachedFetch as typeof fetch | undefined;
-
-    if (!cachedFetch) {
-      throw new Error('No cached session for direct PATCH - call getDb first');
-    }
-
-    const messageResource = this.resolveDataResource(messageResourceId, context);
-    const hashIndex = messageResource.lastIndexOf('#');
-    const resourceUrl = hashIndex >= 0 ? messageResource.slice(0, hashIndex) : messageResource;
-
-    // 构建 SPARQL UPDATE：删除旧值，插入新值
-    const deletePatterns: string[] = [];
-    const insertTriples: string[] = [];
-
-    // 转义特殊字符
-    const escapeForSparql = (value: string): string => {
-      const hasQuotes = value.includes('"');
-      const hasNewlines = value.includes('\n') || value.includes('\r');
-
-      if (hasQuotes || hasNewlines) {
-        // 使用三引号
-        let escaped = value;
-        escaped = escaped.replace(/"""/g, '"\\"\\""');
-        if (escaped.endsWith('"')) {
-          const match = escaped.match(/"*$/);
-          const trailingQuotes = match ? match[0].length : 0;
-          if (trailingQuotes > 0) {
-            escaped = escaped.slice(0, -trailingQuotes) + '\\"'.repeat(trailingQuotes);
-          }
+    const db = await this.getDb(context);
+    const iri = this.resolveDataResource(messageResourceId, context);
+    await updateConditionalResource<void>({
+      iri, fetch: this.runDocumentFetch(context), columns: Message.columns,
+      serialize: insert => db.insert(Message).values({ id: messageResourceId, ...insert }).toSPARQL().query,
+      update: quads => {
+        // The ORM serializer applies column defaults (role/createdAt). Carry the existing
+        // values so they are replaced in place rather than appended as a second value.
+        const stable = { ...values };
+        for (const field of ['role', 'createdAt'] as const) {
+          const predicate = Message.columns[field].options.predicate;
+          const current = predicate ? resourceLiteral(quads, iri, predicate) : undefined;
+          if (current !== undefined) stable[field] = current;
         }
-        return `"""${escaped}"""`;
-      }
-      return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-    };
-
-    // Content 更新
-    deletePatterns.push(`<${messageResource}> <http://rdfs.org/sioc/ns#content> ?oldContent .`);
-    insertTriples.push(`<${messageResource}> <http://rdfs.org/sioc/ns#content> ${escapeForSparql(content)} .`);
-
-    // Status 更新
-    if (status) {
-      deletePatterns.push(`<${messageResource}> <https://undefineds.co/ns#messageStatus> ?oldStatus .`);
-      insertTriples.push(`<${messageResource}> <https://undefineds.co/ns#messageStatus> "${status}" .`);
-    }
-
-    if (metadata) {
-      deletePatterns.push(`<${messageResource}> <https://undefineds.co/ns#metadata> ?oldMetadata .`);
-      insertTriples.push(`<${messageResource}> <https://undefineds.co/ns#metadata> ${escapeForSparql(JSON.stringify(metadata))} .`);
-    }
-
-    const sparql = `
-DELETE { ${deletePatterns.join(' ')} }
-INSERT { ${insertTriples.join(' ')} }
-WHERE { ${deletePatterns.join(' ')} }
-    `.trim();
-
-    const response = await cachedFetch(resourceUrl, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/sparql-update' },
-      body: sparql,
+        return { result: undefined, values: stable };
+      },
     });
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`Direct PATCH failed: ${response.status} ${response.statusText} - ${text}`);
-    }
   }
 
   private async directDeleteMessage(
@@ -1955,8 +2044,55 @@ WHERE { ${deletePatterns.join(' ')} }
     const db = await this.getDb(context);
     run.id = buildRunResourceId(run);
     const existing = await db.findById(Run, run.id) as RunRecord | null;
-    const values = {
+    if (!existing) {
+      await db.insert(Run).values({ id: run.id, ...this.runValues(run) });
+      return;
+    }
+    const merged = await this.updateRunDocument(run, context);
+    Object.assign(run, merged);
+  }
+
+  private async updateRunDocument(run: RunRecordData, context: StoreContext,
+    guard?: (current: PersistedRunState) => boolean): Promise<RunRecordData | undefined> {
+    const db = await this.getDb(context);
+    const iri = this.resolveDataResource(run.id, context);
+    return updateConditionalResource<RunRecordData | undefined>({
+      iri, fetch: this.runDocumentFetch(context), columns: Run.columns,
+      serialize: values => db.insert(Run).values({ id: run.id, ...values }).toSPARQL().query,
+      update: quads => {
+        const scalar = (field: 'status' | 'cancelRequestedAt' | 'completedAt' | 'updatedAt' | 'leaseOwner' | 'leaseExpiresAt') =>
+          resourceLiteral(quads, iri, Run.columns[field].options.predicate!);
+        const status = scalar('status');
+        if (!status || !Object.values(RunStatus).includes(status as RunRecordData['status'])) throw new Error('Run has invalid persisted status');
+        const timestamp = (field: 'cancelRequestedAt' | 'completedAt' | 'updatedAt' | 'leaseExpiresAt') => {
+          const value = scalar(field);
+          if (value === undefined) return undefined;
+          const parsed = Date.parse(value) / 1000;
+          if (!Number.isFinite(parsed)) throw new Error('Run has invalid persisted timestamp');
+          return parsed;
+        };
+        const current: PersistedRunState = { status: status as RunRecordData['status'],
+          cancelRequestedAt: timestamp('cancelRequestedAt'), completedAt: timestamp('completedAt'),
+          updatedAt: timestamp('updatedAt') ?? run.updatedAt, leaseOwner: scalar('leaseOwner'), leaseExpiresAt: timestamp('leaseExpiresAt') };
+        if (guard && !guard(current)) return { result: undefined };
+        const result = mergeRunCancellation(run, current);
+        return { result, values: this.runValues(result) };
+      },
+    });
+  }
+
+  private runDocumentFetch(context: StoreContext): typeof fetch {
+    const authenticatedFetch = context._cachedFetch as typeof fetch | undefined;
+    if (!authenticatedFetch) throw new Error('Run conditional writes require authenticated Pod access');
+    return authenticatedFetch;
+  }
+
+  private runValues(run: RunRecordData): Record<string, unknown> {
+    return {
       task: run.task || null,
+      delivery: run.delivery || null,
+      trigger: run.trigger || null,
+      input: run.input || null,
       thread: run.thread,
       workspace: run.workspace,
       status: run.status,
@@ -1974,16 +2110,6 @@ WHERE { ${deletePatterns.join(' ')} }
       completedAt: this.timestampToIso(run.completedAt),
       updatedAt: this.timestampToIso(run.updatedAt) ?? new Date().toISOString(),
     };
-
-    if (existing) {
-      await db.updateById(Run, run.id, values);
-      return;
-    }
-
-    await db.insert(Run).values({
-      id: run.id,
-      ...values,
-    });
   }
 
   async loadRun(id: string, context: StoreContext): Promise<RunRecordData> {
@@ -1992,7 +2118,7 @@ WHERE { ${deletePatterns.join(' ')} }
     if (!record) {
       throw new Error(`Run not found: ${id}`);
     }
-    return this.runRecordToData(record);
+    return this.runRecordToData(record, context);
   }
 
   async listRuns(options: RunListOptions, context: StoreContext): Promise<RunRecordData[]> {
@@ -2016,11 +2142,18 @@ WHERE { ${deletePatterns.join(' ')} }
       ? await query.where(and(...conditions)) as RunRecord[]
       : await query as RunRecord[];
 
-    const runs = records.map((record) => this.runRecordToData(record));
+    const runs = records.map((record) => this.runRecordToData(record, context));
 
     return runs
       .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
       .slice(0, options.limit ?? runs.length);
+  }
+
+  async getPodBaseUrl(context: StoreContext): Promise<string> {
+    const db = await this.getDb(context);
+    const root = this.ensurePodBaseUrlCache(context, db);
+    if (!root) throw new Error('Authoritative Pod storage binding unavailable');
+    return root;
   }
 
   async appendRunStep(event: RunStepRecordData, context: StoreContext): Promise<void> {
@@ -2029,12 +2162,25 @@ WHERE { ${deletePatterns.join(' ')} }
       throw new Error(`RunStep runId must be a complete Run resource id: ${event.runId}`);
     }
     event.id = buildRunStepResourceId(event);
-    const runResource = event.run || this.resolveDataResource(event.runId, context);
+    // Relations are opaque base-relative ids; the ORM resolves them against this Pod's configured
+    // storage when it serializes. An explicit absolute relation is only acceptable when it is the
+    // current Run in this Pod: a relation that points at another Pod is rejected, never rebound.
+    const expectedRunId = event.runId;
+    if (event.run) {
+      const currentRunIri = this.resolveDataResource(expectedRunId, context);
+      const matches = /^https?:\/\//.test(event.run)
+        ? event.run === currentRunIri
+        : event.run === expectedRunId;
+      if (!matches) {
+        throw new Error('RunStep run relation does not match the current Pod Run');
+      }
+    }
+    const run = event.run || expectedRunId;
 
     await db.insert(RunStep).values({
       id: event.id,
       stepType: event.type,
-      run: runResource,
+      run,
       message: event.message || null,
       payload: this.jsonObjectOrNull(event.data),
       createdAt: this.timestampToIso(event.createdAt) ?? new Date().toISOString(),
@@ -2047,8 +2193,8 @@ WHERE { ${deletePatterns.join(' ')} }
       throw new Error(`loadRunSteps requires a base-relative Run id: ${runId}`);
     }
 
-    const resolvedRun = this.resolveDataResource(runId, context);
-    const records = await db.select().from(RunStep).where(eq(RunStep.run, resolvedRun)) as RunStepRecord[];
+    // Opaque base-relative id; the ORM resolves it against this Pod's configured storage.
+    const records = await db.select().from(RunStep).where(eq(RunStep.run, runId)) as RunStepRecord[];
     return records
       .map((record) => this.runStepRecordToData(record, context))
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
@@ -2068,10 +2214,11 @@ WHERE { ${deletePatterns.join(' ')} }
     run.leaseExpiresAt = input.leaseExpiresAt;
     run.heartbeatAt = input.now;
     run.updatedAt = input.now;
-    await this.saveRun(run, context);
-
-    const claimed = await this.loadRun(input.runId, context);
-    return claimed.leaseOwner === input.leaseOwner ? claimed : undefined;
+    return this.updateRunDocument(run, context, current => {
+      if (!canClaimRun(current, input)) return false;
+      run.status = current.status;
+      return true;
+    });
   }
 
   async claimClientToolContinuation(
@@ -2096,40 +2243,26 @@ WHERE { ${deletePatterns.join(' ')} }
     const waitingTool = run.metadata?.waitingTool;
     if (
       run.status !== RunStatus.WAITING_INPUT
+      || run.cancelRequestedAt !== undefined
       || (run.leaseOwner && run.leaseExpiresAt && run.leaseExpiresAt > input.now)
       || typeof waitingTool !== 'object'
       || (waitingTool as { itemId?: unknown }).itemId !== item.id
     ) {
       return undefined;
     }
-    const db = await this.getDb(context);
-    const updatedAt = this.timestampToIso(input.now)!;
-    const expectedLease = run.leaseOwner
-      ? eq(Run.leaseOwner, run.leaseOwner)
-      : isNull(Run.leaseOwner);
-    const updated = await db.update(Run)
-      .set({
-        leaseOwner: input.claimId,
-        leaseExpiresAt: this.timestampToIso(input.leaseExpiresAt),
-        heartbeatAt: updatedAt,
-        updatedAt,
-      })
-      .where(and(
-        eq(Run.id, run.id),
-        eq(Run.status, RunStatus.WAITING_INPUT),
-        eq(Run.updatedAt, this.timestampToIso(run.updatedAt)!),
-        expectedLease,
-      ))
-      .returning()
-      .execute() as RunRecord[];
-    if (updated.length !== 1) {
+    const updated = await this.updateRunDocument({ ...run,
+      leaseOwner: input.claimId, leaseExpiresAt: input.leaseExpiresAt,
+      heartbeatAt: input.now, updatedAt: input.now,
+    }, context, current => current.cancelRequestedAt === undefined && current.status === RunStatus.WAITING_INPUT
+      && current.updatedAt === run.updatedAt && current.leaseOwner === run.leaseOwner);
+    if (!updated) {
       return undefined;
     }
     return {
       claimId: input.claimId,
       threadRef: input.threadRef,
       item,
-      run: this.runRecordToData(updated[0]),
+      run: updated,
     };
   }
 
@@ -2138,25 +2271,12 @@ WHERE { ${deletePatterns.join(' ')} }
     now: number,
     context: StoreContext,
   ): Promise<boolean> {
-    const db = await this.getDb(context);
-    const released = await db.update(Run)
-      .set({
-        status: RunStatus.WAITING_INPUT,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        heartbeatAt: this.timestampToIso(now),
-        completedAt: null,
-        error: claim.run.error ?? null,
-        metadata: this.jsonObjectOrNull(claim.run.metadata),
-        updatedAt: this.timestampToIso(now),
-      })
-      .where(and(
-        eq(Run.id, claim.run.id),
-        eq(Run.leaseOwner, claim.claimId),
-      ))
-      .returning()
-      .execute() as RunRecord[];
-    if (released.length !== 1) {
+    const released = await this.updateRunDocument({ ...claim.run,
+      status: RunStatus.WAITING_INPUT, leaseOwner: undefined, leaseExpiresAt: undefined,
+      heartbeatAt: now, completedAt: undefined, updatedAt: now,
+    }, context, current => current.cancelRequestedAt === undefined && current.status !== RunStatus.CANCELLED
+      && current.leaseOwner === claim.claimId);
+    if (!released) {
       return false;
     }
     await this.saveItem(claim.threadRef, {
@@ -2171,10 +2291,61 @@ WHERE { ${deletePatterns.join(' ')} }
   // Task Operations
   // =========================================================================
 
+  private sameApprovalThread(db: ReturnType<typeof drizzle>, left: string | null | undefined, right: string | null | undefined): boolean {
+    if (!left || !right) return left === right;
+    // Linked RDF reads contain IRIs; callers retain resource IDs. Resolve both through
+    // the shared resource and this database's verified storage binding, preserving foreign IRIs.
+    return Thread.buildIriForDatabase(db, left) === Thread.buildIriForDatabase(db, right);
+  }
+
+  async writeTaskApproval(approval: ApprovalInsert, context: StoreContext): Promise<string> {
+    const db = await this.getDb(context);
+    const podBase = this.ensurePodBaseUrlCache(context)?.replace(/\/$/, '');
+    if (!podBase || !approval.target.startsWith(`${podBase}/`)) throw new Error('Approval target must belong to the current Pod');
+    const existing = await db.findById(approvalResource, approval.id!);
+    if (existing && (!this.sameApprovalThread(db, existing.thread, approval.thread) || existing.toolCallId !== approval.toolCallId || existing.assignedTo !== approval.assignedTo || existing.session !== approval.session || existing.target !== approval.target || existing.action !== approval.action)) throw new Error('Approval checkpoint identity mismatch');
+    if (!existing) await db.insert(approvalResource).values(approval);
+    return db.resolveRowIri(approvalResource, approval);
+  }
+
+  async saveRunApprovalSession(session: SessionInsert, context: StoreContext): Promise<string> {
+    const db = await this.getDb(context);
+    const existing = await db.findById(sessionResource, session.id!);
+    if (existing) {
+      if (existing.owner !== session.owner || !this.sameApprovalThread(db, existing.thread, session.thread)) throw new Error('Approval session identity mismatch');
+      const iri = db.resolveRowIri(sessionResource, session);
+      await updateConditionalResource({
+        iri, fetch: this.runDocumentFetch(context), columns: sessionResource.columns,
+        serialize: values => db.insert(sessionResource).values({ id: session.id, ...values }).toSPARQL().query,
+        update: quads => {
+          const status = resourceLiteral(quads, iri, sessionResource.columns.status.options.predicate!);
+          // A stale start/pause cannot reopen the Session of a terminal Run.
+          if (status === 'completed' || (status === 'error' && session.status !== 'completed')) return { result: undefined };
+          const { id: _id, ...values } = session;
+          return { result: undefined, values };
+        },
+      });
+    } else {
+      await db.insert(sessionResource).values(session);
+    }
+    return db.resolveRowIri(sessionResource, session);
+  }
+
+  async readTaskApproval(iri: string, context: StoreContext): Promise<ApprovalRow | null> {
+    const db = await this.getDb(context);
+    const podBase = this.ensurePodBaseUrlCache(context);
+    if (!podBase || !iri.startsWith(`${podBase.replace(/\/$/, '')}/.data/approvals/`)) {
+      throw new Error('Approval must belong to the current Pod');
+    }
+    const approval = await db.findByIri(approvalResource, iri) as ApprovalRow | null;
+    return approval ? { ...approval, thread: this.toResourceRelation(Thread, approval.thread, context) ?? approval.thread } : null;
+  }
+
   async saveTask(task: TaskRecordData, context: StoreContext): Promise<void> {
     const db = await this.getDb(context);
     task.id = buildTaskResourceId(task.id);
     const existing = await db.findById(Task, task.id) as TaskRecord | null;
+    // Migration boundary: legacy runtime configuration remains in one Pod metadata adapter.
     const metadata = this.withXpodMetadata(
       this.withTaskAuthBindingMetadata(task.metadata, task.authBinding),
       {
@@ -2189,6 +2360,12 @@ WHERE { ${deletePatterns.join(' ')} }
     );
     const values = {
       title: task.title || null,
+      assignedTo: task.assignedTo || null,
+      source: task.source || null,
+      dueAt: this.timestampToIso(task.dueAt) ?? null,
+      completedAt: this.timestampToIso(task.completedAt) ?? null,
+      notes: task.notes || null,
+      priority: task.priority || null,
       instruction: task.prompt,
       prompt: task.prompt,
       workspace: task.workspace,
@@ -2215,14 +2392,14 @@ WHERE { ${deletePatterns.join(' ')} }
     if (!record) {
       throw new Error(`Task not found: ${taskId}`);
     }
-    return this.taskRecordToData(record);
+    return this.hydrateTaskThread(this.taskRecordToData(record, context), context);
   }
 
   async listTasks(options: TaskListOptions, context: StoreContext): Promise<TaskRecordData[]> {
     const db = await this.getDb(context);
     const records = await db.select().from(Task) as TaskRecord[];
     const dueAt = options.dueAt ?? nowTimestamp();
-    let tasks = records.map((record) => this.taskRecordToData(record));
+    let tasks = records.map((record) => this.taskRecordToData(record, context));
 
     if (options.status) {
       tasks = tasks.filter((task) => task.status === options.status);
@@ -2238,7 +2415,18 @@ WHERE { ${deletePatterns.join(' ')} }
     }
 
     tasks.sort((a, b) => (a.nextRunAt ?? a.createdAt) - (b.nextRunAt ?? b.createdAt) || a.id.localeCompare(b.id));
-    return tasks.slice(0, options.limit ?? tasks.length);
+    return Promise.all(tasks.slice(0, options.limit ?? tasks.length).map(task => this.hydrateTaskThread(task, context)));
+  }
+
+  /** Thread owns its Task parent relation; do not put the shared link in adapter metadata. */
+  private async hydrateTaskThread(task: TaskRecordData, context: StoreContext): Promise<TaskRecordData> {
+    if (task.thread || !task.authBinding) return task;
+    const db = await this.getDb(context);
+    const parent = this.resolveTaskParentResource(task.id, context);
+    const threads = await db.select().from(Thread).where(eq(Thread.parent, parent)) as ThreadRecord[];
+    const latest = threads.sort((left, right) =>
+      (this.isoToTimestamp(right.updatedAt) ?? 0) - (this.isoToTimestamp(left.updatedAt) ?? 0))[0];
+    return { ...task, thread: latest?.id ?? '' };
   }
 
   async saveTaskAuthCredential(input: {

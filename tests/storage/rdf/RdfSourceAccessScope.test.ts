@@ -9,6 +9,8 @@ import {
   RdfQuadIndex,
   SolidRdfEngine,
   rdfVar,
+  rdfAccessGraphAllowed,
+  isRestrictiveRdfAccessScope,
   type RdfEngineLike,
   type RdfQueryResult,
   type RdfSourceInput,
@@ -66,6 +68,58 @@ const engineFactories: EngineFactory[] = [
 ];
 
 describe.each(engineFactories)('RDF source access scope on graph patterns ($name)', ({ create }) => {
+  it('restricts default-container queries to finite allowed graphs and sources', async () => {
+    const engine = await create();
+    try {
+      await seedSourceScopedQuads(engine);
+      await engine.put(quad(namedNode('urn:private'), LABEL, literal('other-graph'),
+        namedNode(`${BASE_SCOPE.basePath}private.ttl`)));
+      await engine.put(quad(namedNode('urn:default'), LABEL, literal('physical-default'), defaultGraph()));
+      const query = { patterns: [{ graph: defaultGraph(), predicate: LABEL, object: rdfVar('label') }],
+        select: ['label'] };
+      const scope = { ...BASE_SCOPE, allowedGraphUrls: [GRAPH.value], allowedSourceUrls: [SOURCES.allowed] };
+      const result = await engine.query(applyRdfAccessScope(query, scope));
+      expect(result.bindings.map(binding => binding.label.value)).toEqual(['allowed']);
+      for (const override of [
+        { allowedGraphUrls: [] },
+        { allowedSourceUrls: [] },
+        { allowedGraphUrls: ['https://other.example/private.ttl'] },
+        { deniedGraphUrls: [GRAPH.value] },
+        { deniedGraphPrefixes: [`${BASE_SCOPE.basePath}shared/`] },
+        { deniedSourceUrls: [SOURCES.allowed] },
+      ]) {
+        expect((await engine.query(applyRdfAccessScope(query, { ...scope, ...override }))).bindings).toEqual([]);
+      }
+    } finally { await closeAndRemove(engine); }
+  });
+  it('distinguishes an absent allow-list from an explicitly empty graph or source grant', async () => {
+    const engine = await create();
+    try {
+      await seedSourceScopedQuads(engine);
+      await engine.put(quad(namedNode('urn:private'), LABEL, literal('sentinel-secret'), namedNode('urn:xpod:rdf-access-denied')));
+      expect(await queryLabels(engine, BASE_SCOPE)).toHaveLength(4);
+      expect(await queryLabels(engine, { ...BASE_SCOPE, allowedSourceUrls: [] })).toEqual([]);
+      expect(await queryLabels(engine, { ...BASE_SCOPE, allowedGraphUrls: [] })).toEqual([]);
+      expect((await engine.query(applyRdfAccessScope({ patterns: [], select: ['label'] }, {
+        ...BASE_SCOPE, allowedGraphUrls: [],
+      }))).bindings).toEqual([]);
+      for (const graph of [rdfVar('graph'), { $startsWith: BASE_SCOPE.basePath }, defaultGraph()]) {
+        const result = await engine.query(applyRdfAccessScope({ patterns: [{ graph,
+          subject: rdfVar('entity'), predicate: LABEL, object: rdfVar('label') }], select: ['label'],
+        }, { ...BASE_SCOPE, allowedGraphUrls: [] }));
+        expect(result.bindings).toEqual([]);
+      }
+      for (const allowedGraphUrls of [undefined, []]) {
+        const result = await engine.query(applyRdfAccessScope({ patterns: [],
+          values: [{ variables: ['seed'], rows: [{ seed: literal('one') }] }],
+          optional: [[{ graph: rdfVar('graph'), subject: rdfVar('entity'), predicate: LABEL, object: rdfVar('label') }]],
+          select: ['label'],
+        }, { ...BASE_SCOPE, basePath: 'https://pod.example/alice/public/', allowedGraphUrls }));
+        expect(result.bindings.every(binding => binding.label === undefined)).toBe(true);
+        expect(result.bindings).toEqual([{}]);
+      }
+    } finally { await closeAndRemove(engine); }
+  });
   it('allows only quads from allowedSourceUrls when graph IRIs are identical', async () => {
     const engine = await create();
     try {
@@ -240,7 +294,7 @@ it('maps deniedGraphPrefixes to physical default graph source prefix denies', ()
   }));
 });
 
-it('fails closed for the physical default graph under an explicit named-graph allow-list', () => {
+it('maps default-container queries to named grants without granting the physical default graph', () => {
   const scoped = applyRdfAccessScope({
     patterns: [{
       graph: defaultGraph(),
@@ -254,7 +308,14 @@ it('fails closed for the physical default graph under an explicit named-graph al
     allowedGraphUrls: [GRAPH.value],
   });
 
-  expect(scoped.patterns?.[0].graph).toEqual(namedNode('urn:xpod:rdf-access-denied'));
+  expect(scoped.patterns?.[0].graph).toEqual({ $startsWith: BASE_SCOPE.basePath, $in: [GRAPH] });
+});
+
+it('treats an empty allow-list as restrictive in the shared permission helpers', () => {
+  expect(rdfAccessGraphAllowed(GRAPH.value, BASE_SCOPE)).toBe(true);
+  expect(rdfAccessGraphAllowed(GRAPH.value, { ...BASE_SCOPE, allowedGraphUrls: [] })).toBe(false);
+  expect(isRestrictiveRdfAccessScope({ ...BASE_SCOPE, allowedGraphUrls: [] })).toBe(true);
+  expect(isRestrictiveRdfAccessScope({ ...BASE_SCOPE, allowedSourceUrls: [] })).toBe(true);
 });
 
 async function seedSourceScopedQuads(engine: RdfEngineLike): Promise<void> {

@@ -1,4 +1,5 @@
 import { createServer, request, type Server } from 'node:http';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LoopbackAuthorizationCallbackReceiver } from '../../../src/api/ai-gateway/connect/LoopbackAuthorizationCallbackReceiver';
 
@@ -44,7 +45,10 @@ describe('LoopbackAuthorizationCallbackReceiver', () => {
     expect((await get(port, '/auth/callback?state=wrong&code=secret')).status).toBe(400);
     const response = await get(port, '/auth/callback?state=first&code=secret');
     expect(response.status).toBe(200);
-    expect(response.body).toBe('授权已返回 Xpod，请切回应用完成连接。');
+    expect(response.body).toContain('<!doctype html>');
+    expect(response.body).toContain('授权结果已送达 Xpod');
+    expect(response.body).toContain('切回应用继续完成连接');
+    expect(response.body).not.toContain('连接成功');
     expect(response.headers['cache-control']).toBe('no-store');
     expect(response.headers.connection).toBe('close');
     expect(first.onCallback).toHaveBeenCalledTimes(1);
@@ -53,8 +57,54 @@ describe('LoopbackAuthorizationCallbackReceiver', () => {
     expect(second.onCallback).not.toHaveBeenCalled();
     const failure = await get(port, '/auth/callback?state=second&error=secret-error&error_description=secret-description');
     expect(failure.body).not.toContain('secret');
+    expect(failure.body).toContain('授权未完成');
     expect(second.onCallback).toHaveBeenCalledTimes(1);
     expect(second.onCallback).toHaveBeenCalledWith({ error: 'secret-error' });
+  });
+
+  it('renders guarded and handler failures as private, self-contained status documents', async() => {
+    const receiver = new LoopbackAuthorizationCallbackReceiver();
+    const port = await freePort();
+    const keepAlive = await register(receiver, port, 'other-pending');
+    const callback = vi.fn(async() => { throw new Error('private-token'); });
+    const registration = await receiver.register({
+      redirectUris: [`http://localhost:${port}/auth/callback`],
+      state: 'private-state', expiresAt: new Date(Date.now() + 60_000), onCallback: callback,
+    });
+    cleanups.push(registration.close);
+    const invalid = await get(port, '/auth/callback?state=unknown-secret&code=private-code');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+    let expired: Awaited<ReturnType<typeof get>>;
+    try {
+      expired = await get(port, '/auth/callback?state=private-state&code=private-code');
+    } finally {
+      clock.mockRestore();
+    }
+    expect(expired.status).toBe(400);
+    expect(expired.body).toContain('授权链接已失效');
+    expect(callback).not.toHaveBeenCalled();
+    const failed = await get(port, '/auth/callback?state=private-state&code=private-code');
+    expect(invalid.status).toBe(400);
+    expect(invalid.body).toContain('授权链接已失效');
+    expect(failed.status).toBe(500);
+    expect(failed.body).toContain('暂时无法接收授权');
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback).toHaveBeenCalledWith({ code: 'private-code' });
+    expect(keepAlive.onCallback).not.toHaveBeenCalled();
+    for (const response of [ invalid, expired, failed ]) {
+      expect(response.body).toContain('<html lang="zh-CN">');
+      expect(response.body).toContain('name="viewport"');
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.headers['referrer-policy']).toBe('no-referrer');
+      expect(response.body).not.toMatch(/<script|<iframe|<link|https?:\/\/localhost|private-|unknown-secret/);
+      const style = response.body.match(/<style>([\s\S]*?)<\/style>/)?.[1];
+      expect(style).toBeDefined();
+      const styleHash = createHash('sha256').update(style!).digest('base64');
+      expect(response.headers['content-security-policy']).toBe(
+        `default-src 'none'; style-src 'sha256-${styleHash}'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+      );
+    }
+    expect((await get(port, '/auth/callback?state=private-state&code=replay')).status).toBe(400);
   });
 
   it('rejects confused host, path, method, and ambiguous parameters without consuming the state', async() => {

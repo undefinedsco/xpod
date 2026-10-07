@@ -25,7 +25,6 @@ describe('API auth authority boundaries', () => {
       databaseUrl: ':memory:',
       corsOrigins: ['*'],
       cssTokenEndpoint: 'https://issuer.example/.oidc/token',
-      gatewayLocatorSecret: 'auth-boundary-test-locator-secret',
     };
     container = createApiContainer(config);
     const productionAuthenticator = container.resolve('authenticator');

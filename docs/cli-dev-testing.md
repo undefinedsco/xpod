@@ -95,16 +95,15 @@ test:integration`、Vitest 临时端口、mock server 和临时数据目录只�
    SDK 最终交给网络层的目标 URL；只有目标被改写为当前 Local Gateway 且返回真实 Pod
    内容，才能证明命中本地最优路径。仅用 localhost Pod、只测 URL helper，或仅证明
    canonical URL 可访问，都不能作为最优路径验收。
-4. **客户端认证**：通过已登录的 CSS Account 控制端点创建绑定当前 WebID 的 client
-   credentials，取得 `{id, secret, resource}`，构造 `sk-` + Base64(`id:secret`)。
-   再用当前 Solid Session 调用 `POST /api/ai/gateway/keys`，提交
-   `{name, apiKey, credentialResource: resource}`，登记已有凭据；服务端必须验证凭据
-   所属 WebID 与当前调用者一致，不能另行生成随机 Key。创建响应只返回一次明文，验收时
-   在内存中确认它与原 wrapper 完全相同；随后通过 list 证明登记元数据已保存到当前 Pod，
-   并确认列表不含 wrapper、client secret 或可恢复明文。当前接口没有 reveal，不能为验收
-   恢复已移除的明文持久化。使用该 `sk-` wrapper 调用 `/v1/models` 与
-   `/v1/chat/completions`。结束时先撤销 CSS credential，
-   再删除 Pod 登记，并验证 wrapper 已无法认证；仅删除 Pod 配置不等于撤销凭据。
+4. **客户端认证**：Xpod 密钥就是 CSS Account 的 client credential，Xpod 不再有独立
+   Key 后端。通过已登录的 CSS Account 控制端点（`controls.account.clientCredentials`）
+   创建绑定当前 WebID 的凭据，取得 `{id, secret, resource}`，构造
+   `sk-` + Base64(`id:secret`)；服务端必须验证凭据所属 WebID 与当前调用者一致。
+   wrapper 只存在于创建它的会话里：验收在内存中确认它就是刚创建的凭据，列表只回
+   标签与 resource 元数据，不含 wrapper、client secret 或可恢复明文，也没有 reveal
+   端点。使用该 `sk-` wrapper 调用 `/v1/models` 与 `/v1/chat/completions`。结束时
+   先按 resource 重读并同时匹配 `id` 与 `webId`，再 `DELETE` 撤销该凭据，并验证
+   wrapper 已无法认证；仅从列表里移掉一项不等于撤销凭据。
 5. **AI Connections**：先确认当前测试 Pod 中存在可用的 Provider credential 与模型。
    新账号的空 Pod 默认没有 AI Connection。
 6. **Models**：实际调用 `/v1/models`。`200` 但 `data: []` 只说明认证和路由已通，
@@ -165,7 +164,7 @@ package 构建会删除再生成 `dist`，并行构建可能造成依赖入口�
 
 Monitor 串行处理源码构建；UI 由 Vite 热更新，服务源码构建成功后重启 Gateway。
 Vite 明确由 Node 运行，因为其 WebSocket 代理在拒绝升级时使用
-`socket.destroySoon()`，Bun 1.3.8 尚未实现该方法；Gateway、CSS、API 仍使用 Bun。
+`socket.destroySoon()`，Bun 1.3.8 尚未实现该方法；Gateway、CSS、API 使用 Bun 1.4.2 或更高版本。旧 Bun 的代理响应流和 WebSocket 关闭存在实际复现的缺陷；服务启动及单文件构建会明确拒绝低于受支持基线的 Bun。
 托管服务异常退出后按 0.5、1、2、5、10 秒最多重试五次，仅恢复退出的服务，
 不重新构建或重启健康服务。端口已有其他进程时会报告占用，不会杀掉该进程。
 
@@ -250,22 +249,19 @@ CLI 使用 Solid Session 读写 Pod，并将同一类 CSS client credentials 包
 
 | 通道 | 用途 | 方式 |
 |------|------|------|
-| Solid Session | Pod 数据读写（drizzle-solid）与 API Key 登记管理 | `@inrupt/solid-client-authn-node` Session.login() |
+| Solid Session | Pod 数据读写（drizzle-solid） | `@inrupt/solid-client-authn-node` Session.login() |
 | Xpod API Key | `/v1/models`、`/v1/chat/completions` 等客户端兼容入口 | `Authorization: Bearer sk-<Base64(client_id:client_secret)>` |
 
-CSS 是凭据创建、验证与撤销的权威。Base64 使用 UTF-8 编码的 `id:secret`，其中 `id`
-是 CSS 创建响应中的客户端标识，不是 credential resource URL 的最后一个路径段。
-`POST /api/ai/gateway/keys` 只登记现有 wrapper，不再发行 `xpod_gw_v1_*`。旧格式记录
-仍可读取和删除，但不作为新 Key 的生成方式。
+CSS 是凭据创建、验证与撤销的唯一权威，Xpod 不再注册、也不再保存一份 Key：
+Account 控制端点的 client credentials 集合就是密钥清单。Base64 使用 UTF-8 编码的
+`id:secret`，其中 `id` 是 CSS 创建响应中的客户端标识，不是 credential resource URL
+的最后一个路径段。wrapper 只在创建它的会话里可见，列表只返回标签与 resource 元数据
+且没有 reveal 端点，因此日志和验收证据里不得出现 wrapper 或 client secret。
 
-登记使用已有 Pod 私有 `.data/ai/gateway/access-key-secrets.json` companion 保存
-wrapper、名称和 CSS credential resource，供列表、复制、重新应用与 reveal 使用；
-不建立额外的 RDF 认证记录。列表只返回非敏感元数据及配置指纹，明文由显式 reveal
-返回。日志和验收证据不得保存 wrapper 或 client secret。Pod companion 写入依赖
-强 ETag 条件请求，冲突时重读重试，避免并发登记互相覆盖。
-
-API Keys 页面“新建”只创建和登记；列表的客户端下拉菜单勾选即应用，取消勾选即撤回，
-Key 列表采用单行布局：名称、掩码、复制完整 Key、已应用客户端图标、最后使用时间、固定“应用”下拉及管理操作；窄窗口优先隐藏最后使用时间。
+页面“新建”只调用 Account 控制端点签发一次凭据并显示/复制/应用该 wrapper；列表的
+销毁即对 resource 执行 `DELETE`（先重读并匹配 `id` 与 `webId`）。Account 没有停用/
+启用的概念，所以界面不再提供该动作。Key 列表采用单行布局：名称、掩码、复制完整 Key、
+已应用客户端图标、最后使用时间、固定“应用”下拉及管理操作；窄窗口优先隐藏最后使用时间。
 每个客户端独立提供复制配置操作。勾选直接应用，不再要求输入确认码；前端仍提交计划返回的 token 和目标哈希，以保留冲突检查。应用只执行本地配置备份、冲突检查、文件写入和本地校验；
 写入成功即完成勾选，不查询模型目录，不触发 Gateway 网络验证，也不因网络异常回滚。
 Codex 的模型选择器还需要本地 `model_catalog_json`。页面在后台单独加载真实 Gateway

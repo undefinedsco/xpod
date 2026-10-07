@@ -26,8 +26,8 @@ export function resolveDockIconPath({
 }): string | undefined {
   const candidates = isPackaged
     ? [
+        path.join(appPath, 'assets', 'icon.png'),
         path.join(resourcesPath, 'icon.png'),
-        path.join(resourcesPath, 'icon.icns'),
       ]
     : [
         path.join(moduleDir, '..', 'assets', 'icon.png'),

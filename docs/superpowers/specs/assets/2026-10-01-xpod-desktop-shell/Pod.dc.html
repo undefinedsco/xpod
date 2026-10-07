@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Pod</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;font-family:'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif;color:#2B2621;background:#F7F4ED}
+a{color:#563E84}a:hover{color:#4B3672}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #563E84;outline-offset:2px}
+label:focus-within{outline:2px solid #563E84;outline-offset:2px}
+</style>
+</helmet>
+<div style="position: relative; width: 1280px; height: {{h}}px; display: flex; background: #F7F4ED; font-family: 'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif; color: #2B2621">
+<sc-if value="{{inXpod}}" hint-placeholder-val="{{yes}}"><dc-import name="Nav" active="pod" h="{{h}}" hint-size="64px,{{h}}px"></dc-import></sc-if>
+<sc-if value="{{inLinx}}" hint-placeholder-val="{{no}}"><dc-import name="LinxRail" active="pod" h="{{h}}" hint-size="64px,{{h}}px"></dc-import></sc-if>
+
+<aside aria-label="Pod 设置列表" style="width: 260px; flex-shrink: 0; box-sizing: border-box; background: #F2EDE2; border-right: 1px solid #DFDBD5; display: flex; flex-direction: column">
+<div style="height: 48px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; display: flex; align-items: center; border-bottom: 1px solid #DFDBD5">
+<label class="sr" for="pod-q">搜索设置</label>
+<input id="pod-q" type="search" placeholder="搜索" style="flex-grow: 1; min-width: 0; height: 32px; box-sizing: border-box; border: 1px solid #DFDBD5; border-radius: 8px; background: #FBFAF7; padding: 0 10px; font-size: 13px; font-family: inherit; color: #2B2621">
+</div>
+<span style="font-size: 12px; color: #655D53; padding: 12px 16px 4px">{{podLine}}</span>
+<nav style="padding: 2px 6px; display: flex; flex-direction: column; gap: 1px">
+<sc-for list="{{secs}}" as="s" hint-placeholder-count="4">
+<button type="button" aria-current="{{s.current}}" onClick="{{s.pick}}" style="{{s.style}}">
+<span style="flex-grow: 1; text-align: left; font-size: 14px">{{s.label}}</span>
+<span style="font-size: 12px; color: {{s.metaColor}}">{{s.meta}}</span>
+</button>
+</sc-for>
+</nav>
+</aside>
+
+<main style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column">
+<header style="height: 48px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px 0 28px; display: flex; align-items: center; border-bottom: 1px solid #DFDBD5">
+<h1 style="margin: 0; font-size: 15px; font-weight: 600; flex-grow: 1">{{title}}</h1>
+<dc-import name="HostBar" sync="{{syncText}}" tone="{{syncTone}}" notices="0" inbox="2" hint-size="220px,48px"></dc-import>
+</header>
+<div style="flex-grow: 1; overflow-y: auto">
+<div style="max-width: 780px; padding: 16px 28px 40px; display: flex; flex-direction: column; gap: 4px">
+
+<sc-if value="{{vModels}}" hint-placeholder-val="{{yes}}">
+<div style="display: flex; flex-direction: column; gap: 18px">
+<section aria-label="默认模型" style="display: flex; flex-direction: column">
+<span style="font-size: 13px; color: #655D53; margin-bottom: 4px">应用没有指定模型时用这里的默认值，随时可以改；分组和 AI 连接里的模型类型一致</span>
+<sc-for list="{{groups}}" as="g" hint-placeholder-count="6">
+<span style="font-size: 12px; color: #655D53; padding: 14px 0 2px">{{g.label}}</span>
+<sc-for list="{{g.rows}}" as="r" hint-placeholder-count="2">
+<div style="display: grid; grid-template-columns: 140px minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: 56px; border-bottom: 1px solid #E9E4E4">
+<label for="{{r.id}}" style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px">{{r.label}}</span><span style="font-size: 12px; color: #655D53">{{r.hint}}</span></label>
+<div style="display: flex; flex-direction: column; gap: 3px; padding: 6px 0">
+<sc-if value="{{r.editable}}" hint-placeholder-val="{{yes}}"><select id="{{r.id}}" disabled="{{r.disabled}}" style="height: 34px; max-width: 360px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; padding: 0 10px; font-size: 14px; font-family: inherit"><option>{{r.model}}</option></select></sc-if>
+<sc-if value="{{r.readonly}}" hint-placeholder-val="{{no}}"><span style="display: flex; align-items: center; height: 34px; font-size: 14px">{{r.model}}</span></sc-if>
+<sc-if value="{{r.hasNote}}" hint-placeholder-val="{{no}}"><span style="font-size: 12px; color: #655D53">{{r.note}}</span></sc-if>
+</div>
+<sc-if value="{{r.testable}}" hint-placeholder-val="{{yes}}"><button type="button" style="height: 30px; padding: 0 10px; border: 0; background: transparent; color: #563E84; font-size: 13px; font-family: inherit; cursor: pointer">{{r.testLabel}}</button></sc-if>
+<sc-if value="{{r.readonly}}" hint-placeholder-val="{{no}}"><a href="PodSearch.dc.html" style="height: 30px; display: flex; align-items: center; padding: 0 10px; font-size: 13px; text-decoration: none; white-space: nowrap">去更换 ›</a></sc-if>
+<sc-if value="{{r.needFree}}" hint-placeholder-val="{{no}}"><a href="AiEmpty.dc.html" style="font-size: 13px; text-decoration: none; white-space: nowrap">领免费额度 ›</a></sc-if>
+<sc-if value="{{r.target}}" hint-placeholder-val="{{no}}"><span style="font-size: 12px; color: #655D53; border: 1px dashed #87837D; border-radius: 6px; padding: 2px 6px">待接入</span></sc-if>
+</div>
+</sc-for>
+</sc-for>
+</section>
+<div style="display: flex; justify-content: flex-end; gap: 8px">
+<button type="button" style="height: 36px; padding: 0 12px; border: 0; background: transparent; color: #563E84; font-size: 14px; font-family: inherit; cursor: pointer">恢复默认</button>
+<button type="button" disabled="disabled" style="height: 36px; padding: 0 16px; border: 0; border-radius: 8px; background: #DFDBD5; color: #655D53; font-size: 14px; font-family: inherit">已保存</button>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{vSearch}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column; gap: 14px">
+<section aria-label="检索" style="display: flex; flex-direction: column">
+<sc-for list="{{searchRows}}" as="t" hint-placeholder-count="3">
+<label style="display: flex; align-items: center; gap: 12px; min-height: 56px; border-bottom: 1px solid #E9E4E4; cursor: pointer">
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1"><span style="font-size: 14px; font-weight: 600">{{t.label}}</span><span style="font-size: 12px; color: #655D53">{{t.note}}</span></span>
+<input class="sr" type="checkbox" checked="{{t.on}}">
+<span aria-hidden="true" style="{{t.sw}}"><span style="width: 20px; height: 20px; border-radius: 50%; background: #FBFAF7"></span></span>
+</label>
+</sc-for>
+<div style="display: flex; align-items: center; gap: 12px; min-height: 60px; border-bottom: 1px solid #E9E4E4">
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1"><span style="font-size: 14px">语义检索用的 Embedding</span><span style="font-size: 12px; color: #655D53">{{embedNow}}</span></span>
+<button type="button" onClick="{{openEmbed}}" style="height: 34px; padding: 0 14px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 14px; font-family: inherit; cursor: pointer">更换</button>
+</div>
+</section>
+<section aria-labelledby="h-idx" style="display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #DFDBD5; padding-top: 14px">
+<div style="display: flex; align-items: center; gap: 10px">
+<h2 id="h-idx" style="margin: 0; font-size: 15px; font-weight: 600; flex-grow: 1">索引</h2>
+<span style="font-size: 12px; color: #655D53">{{pendingLine}}</span>
+<label class="sr" for="rb">重建哪部分</label>
+<select id="rb" style="height: 32px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; padding: 0 8px; font-size: 13px; font-family: inherit"><option>重建全部</option><option>只重建全文</option><option>只重建向量</option></select>
+<button type="button" style="height: 32px; padding: 0 12px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 13px; font-family: inherit; cursor: pointer">重建</button>
+</div>
+<div style="display: flex; flex-direction: column">
+<sc-for list="{{jobs}}" as="j" hint-placeholder-count="3">
+<div style="display: flex; align-items: center; gap: 12px; min-height: 44px; border-bottom: 1px solid #E9E4E4">
+<span style="font-size: 14px; min-width: 110px">{{j.what}}</span>
+<span style="display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 120px"><span aria-hidden="true" style="{{j.dot}}"></span>{{j.state}}</span>
+<span style="flex-grow: 1; display: flex; align-items: center; gap: 8px">
+<sc-if value="{{j.hasBar}}" hint-placeholder-val="{{no}}"><span aria-hidden="true" style="width: 160px; height: 4px; border-radius: 2px; background: #DFDBD5; display: inline-flex; overflow: hidden"><span style="{{j.bar}}"></span></span></sc-if>
+<span style="font-size: 12px; color: #655D53">{{j.detail}}</span>
+</span>
+<span style="font-size: 12px; color: #655D53">{{j.time}}</span>
+</div>
+</sc-for>
+</div>
+<sc-for list="{{lifeRows}}" as="t" hint-placeholder-count="3">
+<label style="display: flex; align-items: center; gap: 12px; min-height: 48px; border-bottom: 1px solid #E9E4E4; cursor: pointer">
+<span style="font-size: 14px; flex-grow: 1">{{t.label}}</span>
+<input class="sr" type="checkbox" checked="checked">
+<span aria-hidden="true" style="width: 40px; height: 24px; border-radius: 12px; box-sizing: border-box; padding: 2px; display: flex; justify-content: flex-end; background: #563E84; flex-shrink: 0"><span style="width: 20px; height: 20px; border-radius: 50%; background: #FBFAF7"></span></span>
+</label>
+</sc-for>
+<span style="font-size: 12px; color: #655D53">重建只重算索引，不改动 Pod 里的原始资料</span>
+</section>
+</div>
+</sc-if>
+
+<sc-if value="{{vApps}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column; gap: 12px">
+<span style="font-size: 13px; color: #655D53">哪些应用和服务能读写这个 Pod；点一行看流量和访问记录</span>
+<div style="display: flex; flex-direction: column; border: 1px solid #DFDBD5; border-radius: 12px; background: #FBFAF7">
+<sc-for list="{{apps}}" as="a" hint-placeholder-count="3">
+<div style="{{a.rowStyle}}">
+<div style="display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 0 12px">
+<span aria-hidden="true" style="{{a.tileStyle}}">{{a.tile}}</span>
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1; min-width: 0"><span style="font-size: 14px; font-weight: 600">{{a.name}}</span><span style="font-size: 12px; color: #655D53">{{a.meta}}</span></span>
+<sc-if value="{{a.ok}}" hint-placeholder-val="{{yes}}"><button type="button" aria-label="{{a.name}} 的更多操作：修改权限、撤销" style="width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: #655D53; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg></button></sc-if>
+<sc-if value="{{a.missing}}" hint-placeholder-val="{{no}}"><button type="button" style="height: 34px; padding: 0 16px; border: 0; border-radius: 8px; background: #563E84; color: #F7F4ED; font-size: 14px; font-weight: 600; font-family: inherit; cursor: pointer">允许</button></sc-if>
+</div>
+<sc-if value="{{a.open}}" hint-placeholder-val="{{no}}">
+<div style="margin: 0 12px 12px 56px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: center; gap: 16px; font-size: 12px; color: #655D53">
+<span>本月读取 <span style="color: #2B2621">[流量]</span></span><span>本月写入 <span style="color: #2B2621">[流量]</span></span><span>上次访问 <span style="color: #2B2621">今天 09:12</span></span>
+<span style="margin-left: auto; border: 1px dashed #87837D; border-radius: 6px; padding: 1px 6px">待接入：按应用计量</span>
+</div>
+<div style="display: flex; flex-direction: column; border-top: 1px solid #E9E4E4; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12px; line-height: 22px">
+<span><span style="color: #655D53">09:12</span>  读取  /xiaolin/书店/维护成本.ttl</span>
+<span><span style="color: #655D53">09:11</span>  写入  /xiaolin/工作/9 月活动.md</span>
+<span><span style="color: #655D53">09:02</span>  读取  /xiaolin/profile/card</span>
+</div>
+<a href="#" style="font-size: 12px; text-decoration: none">查看全部访问记录</a>
+</div>
+</sc-if>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{vData}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column; gap: 16px">
+<section aria-labelledby="h-usage" style="display: flex; flex-direction: column; gap: 8px">
+<h2 id="h-usage" style="margin: 0; font-size: 15px; font-weight: 600">用量 <span style="font-size: 12px; color: #655D53; font-weight: 400">本月 · 5 分钟前更新</span></h2>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px">
+<sc-for list="{{usage}}" as="u" hint-placeholder-count="4">
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid #DFDBD5; border-radius: 10px; background: #FBFAF7">
+<span style="font-size: 12px; color: #655D53">{{u.label}}</span>
+<span style="font-size: 15px">{{u.value}}</span>
+<span aria-hidden="true" style="height: 4px; border-radius: 2px; background: #DFDBD5; display: flex; overflow: hidden"><span style="{{u.bar}}"></span></span>
+<span style="font-size: 12px; color: #655D53">{{u.limit}}</span>
+</div>
+</sc-for>
+</div>
+</section>
+<section aria-labelledby="h-move" style="display: flex; flex-direction: column; border-top: 1px solid #DFDBD5; padding-top: 12px">
+<h2 id="h-move" style="margin: 0 0 4px; font-size: 15px; font-weight: 600">导入、导出与迁移</h2>
+<sc-for list="{{moves}}" as="m" hint-placeholder-count="3">
+<div style="display: flex; align-items: center; gap: 12px; min-height: 56px; border-bottom: 1px solid #E9E4E4">
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1"><span style="font-size: 14px">{{m.label}}</span><span style="font-size: 12px; color: #655D53">{{m.note}}</span></span>
+<sc-if value="{{m.target}}" hint-placeholder-val="{{yes}}"><span style="font-size: 12px; color: #655D53; border: 1px dashed #87837D; border-radius: 6px; padding: 2px 6px">待接入</span></sc-if>
+<button type="button" style="height: 34px; padding: 0 14px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 14px; font-family: inherit; cursor: pointer">{{m.action}}</button>
+</div>
+</sc-for>
+</section>
+</div>
+</sc-if>
+
+</div>
+</div>
+</main>
+<sc-if value="{{embedOpen}}" hint-placeholder-val="{{no}}">
+<div style="position: absolute; left: 0; top: 0; width: 1280px; height: {{h}}px; background: rgba(43, 38, 33, 0.36); display: flex; align-items: center; justify-content: center">
+<div role="dialog" aria-modal="true" aria-labelledby="em-title" style="width: 520px; box-sizing: border-box; background: #FBFAF7; border-radius: 12px; padding: 24px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 12px 40px rgba(43, 38, 33, 0.24)">
+<div style="display: flex; align-items: center">
+<h2 id="em-title" style="margin: 0; font-size: 20px; font-weight: 600; flex-grow: 1">更换 Embedding</h2>
+<button type="button" aria-label="关闭" onClick="{{closeEmbed}}" style="width: 36px; height: 36px; border: 0; border-radius: 8px; background: transparent; color: #655D53; cursor: pointer; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+</div>
+<span style="font-size: 13px; color: #655D53">现在：{{embedNow}}</span>
+<div role="radiogroup" aria-label="Embedding 来源" style="display: flex; flex-direction: column; gap: 6px">
+<sc-for list="{{embedOpts}}" as="o" hint-placeholder-count="2">
+<label style="{{o.style}}">
+<input class="sr" type="radio" name="embed-src" checked="{{o.on}}" onChange="{{o.pick}}">
+<span style="font-size: 14px; font-weight: 600">{{o.title}}</span>
+<span style="font-size: 12px; color: #655D53">{{o.note}}</span>
+</label>
+</sc-for>
+</div>
+<sc-if value="{{embedByok}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<label for="em-model" style="font-size: 13px">模型</label>
+<select id="em-model" style="height: 40px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; padding: 0 10px; font-size: 14px; font-family: inherit"><option>text-embedding-3-large · OpenAI</option></select>
+</div>
+</sc-if>
+<span role="status" style="font-size: 13px; background: #F2EDE2; border-radius: 8px; padding: 10px 12px; line-height: 20px">更换后会重建全部语义索引；重建完成前只能全文检索，原始资料不受影响。</span>
+<div style="display: flex; justify-content: flex-end; gap: 8px">
+<button type="button" onClick="{{closeEmbed}}" style="height: 44px; padding: 0 16px; border: 0; background: transparent; color: #563E84; font-size: 15px; font-family: inherit; cursor: pointer">取消</button>
+<button type="button" style="height: 44px; padding: 0 20px; border: 0; border-radius: 8px; background: #563E84; color: #F7F4ED; font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer">更换并重建索引</button>
+</div>
+</div>
+</div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"scenario":{"editor":"enum","options":["models","search","embed","apps","data","first"],"default":"models"},"host":{"editor":"enum","options":["xpod","linx"],"default":"xpod"},"location":{"editor":"enum","options":["cloud","edge"],"default":"cloud"},"h":{"editor":null},"$preview":{"width":1280,"height":980}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const sc = props.scenario ?? 'models';
+    this.state = { sec: sc === 'first' ? 'apps' : sc === 'embed' ? 'search' : sc, openApp: 'linx', embed: sc === 'embed', embedSrc: 'byok' };
+  }
+  renderVals() {
+    const self = this;
+    const first = (this.props.scenario ?? 'models') === 'first';
+    const inLinx = (this.props.host ?? 'xpod') === 'linx';
+    const cloud = (this.props.location ?? 'cloud') === 'cloud' && !first;
+    const st = this.state;
+    const sw = (on) => 'width: 40px; height: 24px; border-radius: 12px; box-sizing: border-box; padding: 2px; display: flex; flex-shrink: 0; background: ' + (on ? '#563E84' : '#87837D') + '; justify-content: ' + (on ? 'flex-end' : 'flex-start');
+    const tabStyle = (on) => 'height: 32px; padding: 0 12px; border: 0; border-radius: 8px; font-size: 13px; font-family: inherit; cursor: pointer; ' + (on ? 'background: #E9E4E4; color: #563E84; font-weight: 600' : 'background: transparent; color: #2B2621');
+    const D = [
+      ['models', '模型设置', '默认模型', false],
+      ['search', '检索与索引', first ? '未开启' : '待处理 736', false],
+      ['apps', '授权应用', first ? '后台未授权' : '2 个', first],
+      ['data', '数据管理', first ? '12 MB' : '2.3 GB', false]
+    ];
+    const secs = D.map((d) => {
+      const on = d[0] === st.sec;
+      return {
+        label: d[1], meta: d[2], current: on ? 'page' : 'false', metaColor: d[3] ? '#8A6A12' : '#655D53',
+        pick: () => self.setState({ sec: d[0] }),
+        style: 'display: flex; align-items: center; gap: 8px; width: 100%; height: 44px; padding: 0 10px; border: 0; border-radius: 8px; font-family: inherit; color: #2B2621; cursor: pointer; ' + (on ? 'background: #E9E4E4' : 'background: transparent')
+      };
+    });
+    const role = (r) => ({
+      id: 'role-' + r[0], label: r[1], hint: r[2],
+      model: first && r[4] !== 'target' ? '还没有可用的模型' : r[3],
+      note: r[4] === 'target' ? '' : r[4], hasNote: !first && !!r[4] && r[4] !== 'target',
+      disabled: r[4] === 'target' ? 'disabled' : null,
+      target: r[4] === 'target', testable: r[4] !== 'target' && !first, needFree: first && r[4] !== 'target',
+      testLabel: r[0] === 'chat' && !first ? '可用 ✓' : '测试'
+    });
+    // Defaults: smart / fast / parse are provided by Xpod; everything else is off until the user picks their own model.
+    // Groups mirror the model classes in @undefineds.co/models; each class has its default slots here.
+    const R = (id, label, hint, model, o) => Object.assign({ id: 'role-' + id, label, hint, model, note: '', hasNote: false, disabled: null, target: false, needFree: false, testLabel: '测试', editable: true, readonly: false }, o || {});
+    const groups = [
+      { label: '对话', rows: [
+        R('smart', '智能', '复杂任务、需要推理时', 'Xpod 提供 · [智能模型]'),
+        R('fast', '快速', '简单任务、要快的时候', 'Xpod 提供 · [快速模型]'),
+        R('vision', '视觉辅助', '看图、读扫描件；只列有视觉能力的对话模型', '不使用')
+      ] },
+      { label: '文档理解', rows: [R('document', '文档理解', '读出文档的结构和内容', 'PaddleOCR · 百度（Xpod 提供）')] },
+      { label: '向量', rows: [R('embedding', '语义检索', '换了要重建索引', first ? 'Xpod 提供 · [默认 Embedding]' : 'text-embedding-3-small · OpenAI', { editable: false, readonly: true })] },
+      { label: '语音', rows: [
+        R('tts', '语音合成', '把文字读出来', '不使用', { target: true }),
+        R('stt', '语音识别', '把语音转成文字', '不使用', { target: true })
+      ] },
+      { label: '图像与视频', rows: [
+        R('image', '图像生成', '', '不使用', { target: true }),
+        R('video', '视频生成', '', '不使用', { target: true })
+      ] },
+      { label: '决策', rows: [R('decision', '决策', '类 JEPA 的决策模型', '不使用', { target: true, disabled: 'disabled' })] }
+    ].map((g) => Object.assign(g, { rows: g.rows.map((r) => Object.assign(r, { testable: !r.target && !r.readonly && r.model !== '不使用' })) }));
+    const embedOpts = [
+      { id: 'xpod', title: 'Xpod 提供', note: '默认，不用填 Key' },
+      { id: 'byok', title: '用我自己的 Key', note: '从 AI 连接里已加入的 Embedding 模型中选' }
+    ].map((o) => {
+      const on = o.id === st.embedSrc;
+      return Object.assign({}, o, { on, pick: () => self.setState({ embedSrc: o.id }), style: 'position: relative; display: flex; flex-direction: column; gap: 2px; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; cursor: pointer; background: ' + (on ? '#E9E4E4' : '#FBFAF7') + '; border: ' + (on ? '1.5px solid #563E84' : '1px solid #DFDBD5') });
+    });
+    const dot = (c) => 'width: 7px; height: 7px; border-radius: 50%; background: ' + c;
+    const apps = [
+      { id: 'linx', name: 'LinX', tile: 'L', meta: '读写 · 今天 09:12 访问', ok: true, missing: false },
+      first
+        ? { id: 'bg', name: 'Xpod 后台', tile: 'X', meta: '还不能访问 · 解析、检索和索引都需要它', ok: false, missing: true }
+        : { id: 'bg', name: 'Xpod 后台', tile: 'X', meta: '读取 AI 设置、解析文档、建立索引 · 1 分钟前访问', ok: true, missing: false },
+      { id: 'other', name: '[其他应用]', tile: '·', meta: '[授权范围] · [上次访问]', ok: true, missing: false }
+    ].map((a, i) => Object.assign(a, {
+      open: !first && a.id === st.openApp,
+      rowStyle: i ? 'border-top: 1px solid #DFDBD5' : '',
+      tileStyle: 'width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; ' + (a.id === 'bg' ? 'background: #563E84; color: #F7F4ED' : a.id === 'linx' ? 'background: #F7F4ED; color: #563E84; border: 1px solid #DFDBD5; box-sizing: border-box' : 'background: #EBE5D8; color: #655D53')
+    }));
+    const bar = (pct) => 'height: 4px; background: #563E84; width: ' + pct;
+    return {
+      yes: true, no: false,
+      h: Number(this.props.h ?? (st.sec === 'models' ? 980 : 800)),
+      inXpod: !inLinx, inLinx,
+      secs,
+      title: D.find((d) => d[0] === st.sec)[1],
+      podLine: first ? '小林的 Pod · 这台电脑 · 刚创建' : '小林的 Pod · Xpod 云端',
+      vModels: st.sec === 'models', vSearch: st.sec === 'search', vApps: st.sec === 'apps', vData: st.sec === 'data',
+      syncText: first ? '未开始' : '实时',
+      syncTone: first ? 'off' : 'ok',
+      groups, embedOpts,
+      embedNow: first ? 'Xpod 提供 · [默认 Embedding]' : 'text-embedding-3-small · OpenAI（你的 Key）',
+      embedOpen: st.embed, embedByok: st.embedSrc === 'byok',
+      openEmbed: () => self.setState({ embed: true }),
+      closeEmbed: () => self.setState({ embed: false }),
+      searchRows: [
+        { label: '全文检索', note: '按关键词找', on: !first, sw: sw(!first) },
+        { label: '语义检索', note: '按意思找；资料片段会发给向量模型的服务商', on: !first, sw: sw(!first) },
+        { label: '渐进式索引', note: '资料被用到时再扩大语义覆盖，不一次全部向量化', on: !first, sw: sw(!first) }
+      ],
+      pendingLine: first ? '还没有开始' : '待处理 736 · 配置版本 v12',
+      jobs: first ? [] : [
+        { what: '重建向量', state: '进行中', dot: dot('#563E84'), hasBar: true, bar: bar('40%'), detail: '40%', time: '10:02 开始' },
+        { what: '重建全文', state: '成功', dot: dot('#2F6B55'), hasBar: false, bar: '', detail: '', time: '昨天 22:14' },
+        { what: '重建全部', state: '失败', dot: dot('#8A6A12'), hasBar: false, bar: '', detail: '[错误原因] · 查看日志', time: '9 月 27 日' }
+      ],
+      lifeRows: [{ label: '自动索引新增和修改的资料' }, { label: '源资料更新后刷新索引' }, { label: '资料删除后清理索引' }],
+      apps,
+      usage: [
+        { label: '存储', value: first ? '12 MB' : '2.3 GB', limit: first ? '不限（这台电脑剩余 [磁盘空间]）' : '上限 10 GB', bar: bar(first ? '1%' : '23%') },
+        { label: '流量（读取 / 写入）', value: first ? '0 / 12 MB' : '[读取] / [写入]', limit: '限速 10 MiB/s', bar: bar('0%') },
+        { label: 'AI 用量', value: first ? '0 tokens' : '[tokens]', limit: '每月上限 [上限]', bar: bar(first ? '0%' : '30%') },
+        { label: '计算时长', value: first ? '0 秒' : '[时长]', limit: '不限', bar: bar('0%') }
+      ],
+      moves: [
+        { label: '导出', note: '把资料下载成一个文件夹；AI 连接的凭据不导出，索引导入后重建', action: '导出', target: true },
+        { label: '导入', note: '从导出的文件夹或其他 Solid Pod 导入资料', action: '导入', target: true },
+        { label: '迁移到其他设备', note: '换存放位置：WebID 不变，数据搬到另一台设备', action: '去账号页迁移 ↗', target: true }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

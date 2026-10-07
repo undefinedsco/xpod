@@ -612,11 +612,15 @@ function rememberCompletedDestination(
 export function XpodOidcCallbackApp({
   runtime,
   transactionStore,
-  href = typeof window === 'undefined' ? 'http://localhost/auth/callback' : window.location.href,
+  href: requestedHref,
   location = typeof window === 'undefined' ? undefined : window.location,
   restartSignIn,
   renderRedirected,
 }: XpodOidcCallbackAppProps) {
+  // Inrupt strips code/state from the live URL after successful identity completion.
+  // Storage retries still belong to that original response, so capture it once.
+  const [href] = useState(() => requestedHref
+    ?? (typeof window === 'undefined' ? 'http://localhost/auth/callback' : window.location.href));
   const [ownedRuntime] = useState<XpodOidcCallbackRuntime | undefined>(() => runtime ? undefined : createCallbackRuntime());
   const activeRuntime = runtime ?? ownedRuntime!;
   const [result, setResult] = useState<XpodOidcCallbackResult>();

@@ -108,3 +108,30 @@ curl -i https://你的域名/service/status
 - 如果你用 `.env.cloud` 全量生成 `xpod-cloud-secret`，同名环境变量会以 Secret 为准。
 - 境内参考 `deploy/sealos/cloud/secret.cn.example.yaml`，海外参考 `deploy/sealos/cloud/secret.co.example.yaml` 和 `deploy/sealos/cloud/env.co.example`，不建议提交真实密钥。
 - 部署架构和域名规划详见 `docs/deployment.md` 和 `docs/domains.md`。
+
+---
+
+# 共享基础设施（cloud）
+
+这里放**三个环境共用**的东西，以及各环境自己的 overlay：
+
+| 路径 | 内容 | 归属 |
+|---|---|---|
+| `xpod-rdf-postgres.yaml` / `-service.yaml` | 共享 Postgres（`xpod_cn`/`xpod_co`/`xpod_rc`/`litellm` 四个库） | 本目录 |
+| `xpod-redis.yaml` / `-service.yaml` | 共享 Redis（cn=db0、co=db1、rc=db2） | 本目录 |
+| `overlays/cn/`、`overlays/co/` | 各环境自己的 Deployment / Service / kustomization（**线上导出**，记录该环境实际在跑什么） | 各环境 |
+
+## 其它组件的清单在各自的仓库里
+
+| 组件 | 仓库 |
+|---|---|
+| 站点（`homepage-cn` / `homepage-co`）、网关（`gateway`）、`linx-web` | `undefinedsco/homepage` → `deploy/k8s/`、`deploy/nginx/` |
+| `ai-gateway` | `undefinedsco/ai-gateway` → `deploy/k8s/` |
+| LinX Web 源码 | `LinX` 仓库 `apps/web/`（清单仍在 homepage 仓库） |
+| rc 环境（`xpod-rc` + 证书 + Ingress） | `xpod/deploy/sealos/rc/` |
+
+## 资源规格约定
+
+计费按 **requests** 计，因此**要求 requests == limits**（同时得到 Guaranteed QoS）。
+数值取自线上实测，并为启动峰值留余量：应用稳态约 21m CPU / 612Mi 内存，但**启动峰值会超过 1Gi**，
+所以内存不要低于 1536Mi（曾设 1Gi 导致 `xpod-cn` OOMKilled 循环）。

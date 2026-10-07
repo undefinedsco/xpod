@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Xpod rail</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a:focus-visible,button:focus-visible{outline:2px solid #563E84;outline-offset:2px}
+</style>
+</helmet>
+<div style="width: 64px; height: {{h}}px; box-sizing: border-box; background: #EBE5D8; border-right: 1px solid #DFDBD5; display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 6px; font-family: 'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif; color: #2B2621">
+<sc-if value="{{signedIn}}" hint-placeholder-val="{{yes}}">
+<button type="button" title="小林" aria-label="小林，打开个人卡片" aria-haspopup="dialog" onClick="{{avatar}}" style="width: 40px; height: 40px; border-radius: 10px; border: 0; outline: 2px solid {{ring}}; outline-offset: 2px; background: #563E84; color: #F7F4ED; font-size: 16px; font-weight: 600; font-family: inherit; cursor: pointer; padding: 0">林</button>
+</sc-if>
+<sc-if value="{{signedOut}}" hint-placeholder-val="{{no}}">
+<button type="button" title="登录" aria-label="登录" style="width: 40px; height: 40px; border-radius: 10px; border: 1.5px dashed #87837D; background: transparent; color: #655D53; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"></path></svg></button>
+</sc-if>
+<nav aria-label="应用" style="display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 18px">
+<sc-for list="{{apps}}" as="it" hint-placeholder-count="2">
+<a href="{{it.href}}" title="{{it.label}}" aria-label="{{it.label}}" aria-current="{{it.current}}" style="{{it.style}}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="{{it.stroke}}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{it.d}}"></path></svg></a>
+</sc-for>
+</nav>
+<div style="flex-grow: 1"></div>
+<nav aria-label="系统" style="display: flex; flex-direction: column; align-items: center; gap: 6px">
+<sc-for list="{{system}}" as="it" hint-placeholder-count="2">
+<a href="{{it.href}}" title="{{it.label}}" aria-label="{{it.aria}}" aria-current="{{it.current}}" style="{{it.style}}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="{{it.stroke}}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{it.d}}"></path></svg><sc-if value="{{it.alert}}" hint-placeholder-val="{{no}}"><span aria-hidden="true" style="position: absolute; top: 7px; right: 7px; width: 8px; height: 8px; border-radius: 50%; background: #8A6A12; border: 2px solid #EBE5D8"></span></sc-if></a>
+</sc-for>
+</nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"active":{"editor":"enum","options":["task","ai","pod","device","settings"],"default":"ai"},"signedOut":{"editor":"boolean","default":false},"deviceAlert":{"editor":"boolean","default":false},"menuOpen":{"editor":"boolean","default":false},"h":{"editor":null,"default":800},"onAvatar":{"editor":null},"$preview":{"width":64,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const self = this;
+    const active = this.props.active ?? 'ai';
+    const flag = (v) => v === true || v === 'true';
+    const signedOut = flag(this.props.signedOut);
+    const alert = flag(this.props.deviceAlert);
+    const item = (id, label, href, d, extra) => {
+      const on = id === active;
+      return Object.assign({
+        label, aria: label, href, d, alert: false,
+        current: on ? 'page' : 'false',
+        stroke: on ? '#563E84' : '#655D53',
+        style: 'position: relative; width: 44px; height: 44px; box-sizing: border-box; border-radius: 10px; display: flex; align-items: center; justify-content: center; ' + (on ? 'background: #F7F4ED' : 'background: transparent')
+      }, extra || {});
+    };
+    return {
+      h: Number(this.props.h ?? 800),
+      yes: true, no: false,
+      signedIn: !signedOut, signedOut,
+      ring: flag(this.props.menuOpen) ? '#563E84' : 'transparent',
+      avatar: () => { if (typeof self.props.onAvatar === 'function') self.props.onAvatar(); },
+      apps: [
+        item('task', '任务', 'Task.dc.html', 'M9 11l2 2 4-4M5 4h14v16H5zM9 2v4M15 2v4'),
+        item('ai', 'AI 连接', 'Ai.dc.html', 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z'),
+        item('pod', 'Pod', 'Pod.dc.html', 'M3 5c0-1.7 4-3 9-3s9 1.3 9 3-4 3-9 3-9-1.3-9-3zM3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5M3 12c0 1.7 4 3 9 3s9-1.3 9-3')
+      ],
+      system: [
+        item('device', '这台设备', 'Device.dc.html', 'M4 5h16v11H4zM2 20h20', { alert, aria: alert ? '这台设备，需要处理' : '这台设备' }),
+        item('settings', '设置', '#', 'M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4')
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

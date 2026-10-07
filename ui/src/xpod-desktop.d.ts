@@ -1,4 +1,4 @@
-export {};
+import type { DesktopRuntimeBridge, ShellAttentionSnapshot } from '@undefineds.co/extension-sdk';
 
 declare global {
   interface XpodDesktopIdentityPayload {
@@ -10,6 +10,9 @@ declare global {
   var xpodDesktop: undefined | {
     platform?: 'darwin' | 'linux' | 'win32';
     setIdentity(identity: XpodDesktopIdentityPayload | null): void;
+    publishAttention?(snapshot: ShellAttentionSnapshot): void;
+    deviceRuntime?: DesktopRuntimeBridge;
+    onApprovalDecision?(decide: (input: { approvalId: string; decision: 'approved' | 'rejected' }) => void): () => void;
     /** Return to the shell's configured product entry without accepting a page URL. */
     cancelLogin?(): Promise<void>;
     setWindowMode?(mode: 'auth' | 'account' | 'workspace'): void;

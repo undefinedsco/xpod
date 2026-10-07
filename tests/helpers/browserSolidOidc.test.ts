@@ -1,7 +1,185 @@
-import type { Locator } from '@playwright/test';
+import { errors, type Locator, type Page } from '@playwright/test';
 import { JSDOM } from 'jsdom';
-import { expect, it, vi } from 'vitest';
-import { clickNonPasswordOidcAction } from './browserSolidOidc';
+import { describe, expect, it, vi } from 'vitest';
+import { describeFailure, publishedFailures } from '../../scripts/accept-packaged-desktop-permissions';
+import { attributeOidcOperation, chooseConsentBinding, clickNonPasswordOidcAction, completeOidcLogin,
+  consentBindingProven, consentOffersSingleBinding, OIDC_PRIMARY_ACTION_NAME, OidcApprovalError,
+  type BrowserOidcTrace } from './browserSolidOidc';
+
+/** Actual shared driver/evaluate functions, with browser events in their real order. */
+async function callbackScenario(mode = 'current', passwordRequests: Array<{ path: string; method: 'GET' | 'POST' }> = []) {
+  const dom = new JSDOM('<main>Authenticated workspace</main>', { url: 'https://app.example/ai-connections' });
+  vi.stubGlobal('window', dom.window);
+  vi.stubGlobal('fetch', async () => new Response('fixture asset'));
+  const storage = dom.window.sessionStorage;
+  const first = 'abandoned-before-callback', current = 'actual-callback';
+  storage.setItem('xpod.auth.transaction.v1.active', first);
+  const markerKey = `xpod.auth.callback.completed.v1.${current}`;
+  const marker = () => ({ destination: 'https://app.example/ai-connections',
+    callback: `${mode === 'foreign-marker' ? 'https://foreign.example' : 'https://app.example'}/auth/callback?state=${mode === 'wrong-state' ? 'unrelated' : 'current-state'}${mode === 'marker-fragment' ? '#other' : ''}`,
+    completedAt: Date.now() - (mode === 'old-timestamp' ? 10_000 : 0) });
+  if (mode === 'old-marker') storage.setItem(markerKey, JSON.stringify(marker()));
+  const events = new Map<string, Array<(value: unknown) => void>>();
+  const emit = (name: string, value: unknown) => events.get(name)?.forEach(fn => fn(value));
+  const locator = { first() { return this; }, last() { return this; }, isVisible: async () => false, isEnabled: async () => false,
+    count: async () => 0, innerText: async () => 'Authenticated workspace' };
+  const page = { bringToFront: async () => undefined, url: () => dom.window.location.href,
+    on: (name: string, fn: (value: unknown) => void) => { events.set(name, [...events.get(name) ?? [], fn]); },
+    off: () => undefined, locator: () => locator, getByRole: () => locator, getByText: () => locator,
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg), waitForTimeout: async () => undefined,
+  } as unknown as Page;
+  let ready = false;
+  const request = (url: string, body = '') => ({ url: () => url, method: () => body ? 'POST' : 'GET', headers: () => ({}), postData: () => body });
+  try {
+    return await completeOidcLogin(page, { email: 'fixture@example.test', password: 'not-used' }, {
+      baseUrl: 'https://app.example/', timeoutMs: 100, requireCallbackEvidence: true,
+      ready: async () => {
+        if (ready) return true;
+        ready = true;
+        for (const requestInput of passwordRequests) emit('request', request('https://id.example' + requestInput.path, requestInput.method === 'POST' ? 'not-retained' : ''));
+        const redirect = mode === 'invalid-redirect' ? 'invalid' : mode === 'foreign-redirect' ? 'https://foreign.example/auth/callback' : 'https://app.example/auth/callback';
+        const params = new URLSearchParams({ response_type: 'code', client_id: 'fixture', redirect_uri: redirect,
+          state: 'current-state', code_challenge: 'challenge', code_challenge_method: mode === 'wrong-pkce' ? 'plain' : 'S256' });
+        if (mode === 'with-invalid-observation') {
+          const invalid = new URLSearchParams(params); invalid.set('redirect_uri', 'invalid');
+          emit('request', request(`https://id.example/authorize?${invalid}`));
+        }
+        emit('request', request(`https://id.example/authorize?${params}`));
+        const origin = mode === 'foreign-callback' ? 'https://foreign.example' : 'https://app.example';
+        const pathname = mode === 'wrong-path' ? '/other/callback' : '/auth/callback';
+        const callback = new URL(origin + pathname);
+        if (mode !== 'no-code') callback.searchParams.set('code', 'one-time-code');
+        if (mode !== 'no-state') callback.searchParams.set('state', 'current-state');
+        if (mode === 'wrong-explicit') callback.searchParams.set('transaction', first);
+        emit('request', request(callback.href));
+        emit('request', request('https://id.example/token', 'grant_type=authorization_code&code_verifier=verifier'));
+        storage.setItem(`xpod.auth.transaction.v1.consumed.${first}`, 'true');
+        if (mode !== 'unconsumed') storage.setItem(`xpod.auth.transaction.v1.consumed.${current}`, 'true');
+        storage.removeItem('xpod.auth.transaction.v1.active');
+        if (mode === 'still-active') storage.setItem('xpod.auth.transaction.v1.active', current);
+        if (!['old-marker', 'missing-marker'].includes(mode)) storage.setItem(markerKey,
+          mode === 'invalid-marker' ? 'invalid JSON' : JSON.stringify(marker()));
+        if (mode === 'ambiguous') {
+          storage.setItem('xpod.auth.callback.completed.v1.another', JSON.stringify(marker()));
+          storage.setItem('xpod.auth.transaction.v1.consumed.another', 'true');
+        }
+        return false;
+      },
+    });
+  } finally { vi.unstubAllGlobals(); dom.window.close(); }
+}
+
+it.each(['current', 'with-invalid-observation'])('correlates the actual callback state after an earlier active transaction was abandoned: %s', async mode => {
+  const trace = await callbackScenario(mode);
+  expect(trace.callbackTransaction).toBe('actual-callback');
+  expect(trace.callbackHasCode && trace.callbackHasState && trace.authCodeChallengeMethodS256).toBe(true);
+});
+
+it.each(['foreign-redirect', 'foreign-callback', 'wrong-path', 'wrong-state', 'no-code', 'no-state',
+  'old-marker', 'still-active', 'ambiguous', 'wrong-explicit', 'wrong-pkce', 'foreign-marker', 'marker-fragment',
+  'old-timestamp', 'invalid-redirect', 'unconsumed', 'missing-marker', 'invalid-marker'])('rejects uncorrelated callback completion: %s', async mode => {
+  await expect(callbackScenario(mode)).rejects.toThrow('did not finish before timeout');
+});
+
+it.each([
+  { path: '/.account/login/password/', method: 'POST' as const, expected: 1 },
+  { path: '/.account/interaction/current/login/password/', method: 'POST' as const, expected: 1 },
+  { path: '/.account/interaction/current/login/password', method: 'POST' as const, expected: 1 },
+  { path: '/.account/interaction/current/login/password/', method: 'GET' as const, expected: 0 },
+  { path: '/.account/interaction/current/oidc/consent/', method: 'POST' as const, expected: 0 },
+  { path: '/other/.account/login/password/', method: 'POST' as const, expected: 0 },
+  { path: '/.account/interaction/current/nested/login/password/', method: 'POST' as const, expected: 0 },
+])('counts only actual password POSTs on the CSS direct or interaction route: $path $method', async input => {
+  const trace = await callbackScenario('current', [input]);
+  expect(trace.passwordRequestCount ?? 0).toBe(input.expected);
+});
+
+it('selects the requested authoritative Pod instead of retaining another same-owner default', () => {
+  const options = ['https://id.example/card#me|https://a.example/pod/', 'https://id.example/card#me|https://b.example/pod/']
+    .map(value => ({ value, disabled: false }));
+  expect(chooseConsentBinding(options, options[0].value, { webId: 'https://id.example/card#me', podUrl: 'https://b.example/pod/' }))
+    .toBe(options[1].value);
+  expect(chooseConsentBinding(options.slice(0, 1), options[0].value,
+    { webId: 'https://id.example/card#me', podUrl: 'https://b.example/pod/' })).toBeUndefined();
+  expect(chooseConsentBinding([{ ...options[1], disabled: true }], '',
+    { webId: 'https://id.example/card#me', podUrl: 'https://b.example/pod/' })).toBeUndefined();
+  expect(chooseConsentBinding(options, options[0].value, { webId: 'https://id.example/card#other' })).toBeUndefined();
+});
+
+const CONTROL_SELECTOR = 'button, input[type=submit], a[href]';
+
+function consentTrace(overrides: Partial<BrowserOidcTrace> = {}): BrowserOidcTrace {
+  return {
+    authorizationRequestSeen: true,
+    authCodeChallengeSeen: true,
+    authCodeChallengeMethodS256: true,
+    redirectCodeSeen: true,
+    tokenAuthorizationCodeGrantSeen: true,
+    tokenCodeVerifierSeen: true,
+    callbackPathSeen: true,
+    callbackHasCode: true,
+    callbackHasState: true,
+    passwordSubmitted: true,
+    authorizationRedirectUris: [],
+    ...overrides,
+  };
+}
+
+describe('packaged Consent binding proof', () => {
+  const binding = { webId: 'https://id.example/card#me', storageUrl: 'https://a.example/pod/' };
+  const runtime = { status: 'authenticated', webId: binding.webId, podUrl: binding.storageUrl };
+
+  it('reads the product single-binding auto-consent ABI from the rendered surface', () => {
+    expect(consentOffersSingleBinding({ surfaceVisible: true, webIdChooserVisible: false,
+      storageChooserVisible: false, webIdRadioCount: 0 })).toBe(true);
+    expect(consentOffersSingleBinding({ surfaceVisible: true, webIdChooserVisible: true,
+      storageChooserVisible: false, webIdRadioCount: 0 })).toBe(false);
+    expect(consentOffersSingleBinding({ surfaceVisible: true, webIdChooserVisible: false,
+      storageChooserVisible: false, webIdRadioCount: 2 })).toBe(false);
+    expect(consentOffersSingleBinding({ surfaceVisible: false, webIdChooserVisible: false,
+      storageChooserVisible: false, webIdRadioCount: 0 })).toBe(false);
+  });
+
+  it('accepts one exact scoped binding through the live runtime binding, not a fabricated choice', () => {
+    expect(consentBindingProven(consentTrace({ consentSingleBindingOffered: true }), binding, runtime)).toBe(true);
+    expect(consentBindingProven(consentTrace({ consentSingleBindingOffered: true }), binding,
+      { status: 'authenticated', webId: binding.webId, podUrl: 'https://b.example/pod/' })).toBe(false);
+    expect(consentBindingProven(consentTrace({ consentSingleBindingOffered: true }), binding, undefined)).toBe(false);
+    expect(consentBindingProven(consentTrace({ consentSingleBindingOffered: true }), binding,
+      { status: 'anonymous', webId: binding.webId, podUrl: binding.storageUrl })).toBe(false);
+    expect(consentBindingProven(consentTrace({ callbackHasState: false, consentSingleBindingOffered: true }),
+      binding, runtime)).toBe(false);
+  });
+
+  it('still requires the explicit choice whenever the surface offered a chooser', () => {
+    expect(consentBindingProven(consentTrace(), binding, runtime)).toBe(false);
+    expect(consentBindingProven(consentTrace({ storageBindingSelected:
+      { webId: binding.webId, podUrl: binding.storageUrl } }), binding, runtime)).toBe(true);
+    expect(consentBindingProven(consentTrace({ storageBindingSelected:
+      { webId: binding.webId, podUrl: 'https://b.example/pod/' } }), binding, runtime)).toBe(false);
+  });
+});
+
+it('returns to readiness detection when navigation removes a discovered control', async () => {
+  const locator = { evaluate: vi.fn().mockRejectedValue(new errors.TimeoutError('Control disappeared')) } as unknown as Locator;
+  expect(await clickNonPasswordOidcAction(locator)).toBe(false);
+});
+
+it('does not hide an unexpected action evaluation failure', async () => {
+  const failure = new Error('Unexpected evaluation failure');
+  const locator = { evaluate: vi.fn().mockRejectedValue(failure) } as unknown as Locator;
+  await expect(clickNonPasswordOidcAction(locator)).rejects.toBe(failure);
+});
+
+/** JSDOM stub for `Locator.evaluate` that forwards the serialized argument. */
+function stubLocator(element: Element) {
+  const click = vi.spyOn(element as HTMLElement, 'click');
+  const locator = {
+    evaluate: async (fn: (element: Element, arg?: unknown) => unknown, arg?: unknown) => fn(element, arg),
+    click,
+  } as unknown as Locator;
+  return { locator, click };
+}
 
 it.each(['<button>登录</button>', '<input type="submit" value="登录">'])('does not submit a password form mounted after the credential visibility check: %s', async (action) => {
   const dom = new JSDOM('<main></main>');
@@ -10,9 +188,8 @@ it.each(['<button>登录</button>', '<input type="submit" value="登录">'])('do
     // the login action exists by the time generic actions are discovered.
     expect(dom.window.document.querySelector('input[type=password]')).toBeNull();
     dom.window.document.querySelector('main')!.innerHTML = `<form><input type="email"><input type="password">${action}</form>`;
-    const element = dom.window.document.querySelector<HTMLButtonElement | HTMLInputElement>('button, input[type=submit]')!;
-    const click = vi.spyOn(element, 'click');
-    const locator = { evaluate: async (fn: (element: Element) => boolean) => fn(element), click } as unknown as Locator;
+    const element = dom.window.document.querySelector<HTMLElement>(`${CONTROL_SELECTOR}`)!;
+    const { locator, click } = stubLocator(element);
     expect(await clickNonPasswordOidcAction(locator)).toBe(false);
     expect(click).not.toHaveBeenCalled();
   } finally { dom.window.close(); }
@@ -21,25 +198,76 @@ it.each(['<button>登录</button>', '<input type="submit" value="登录">'])('do
 it('also excludes submit controls linked to a password form by form ID', async () => {
   const dom = new JSDOM('<form id="credentials"><input name="password"></form><button form="credentials">登录</button>');
   try {
-    const element = dom.window.document.querySelector('button')!;
-    const click = vi.spyOn(element, 'click');
-    const locator = { evaluate: async (fn: (element: Element) => boolean) => fn(element) } as unknown as Locator;
+    const { locator, click } = stubLocator(dom.window.document.querySelector('button')!);
     expect(await clickNonPasswordOidcAction(locator)).toBe(false);
     expect(click).not.toHaveBeenCalled();
   } finally { dom.window.close(); }
 });
 
-it.each(['<form><button>批准</button></form>', '<button>使用 WebID 登录</button>'])('continues non-password OIDC actions: %s', async (html) => {
+it.each([
+  '<form><button>批准</button></form>',
+  '<button>使用 WebID 登录</button>',
+  '<button>授权</button>',
+  '<button>继续</button>',
+  '<button>允许</button>',
+  '<input type="submit" value="同意">',
+  '<a href="#authorize">授权</a>',
+  '<a href="#webid">使用 WebID 登录</a>',
+])('continues non-password OIDC actions: %s', async (html) => {
   const dom = new JSDOM(html);
   try {
+    const control = dom.window.document.querySelector<HTMLElement>(CONTROL_SELECTOR)!;
     const click = vi.fn((event: Event) => event.preventDefault());
-    dom.window.document.querySelector('button')!.addEventListener('click', click);
-    const locator = { evaluate: async (fn: (element: Element) => boolean) => fn(dom.window.document.querySelector('button')!) } as unknown as Locator;
+    control.addEventListener('click', click);
+    const { locator } = stubLocator(control);
     expect(await clickNonPasswordOidcAction(locator)).toBe(true);
     expect(click).toHaveBeenCalledOnce();
   } finally { dom.window.close(); }
 });
 
+// Safety: the broad primary discovery regex matches label fragments, so logout
+// (退出登录 → 登录) and cancel-authorization (取消授权 → 授权) are discovered as
+// candidates. Every control kind - button, submit input and anchor - must refuse
+// them on the exact node that would be activated.
+it.each([
+  '<button>退出登录</button>',
+  '<button>退出</button>',
+  '<button>取消授权</button>',
+  '<button>取消</button>',
+  '<button>撤销访问</button>',
+  '<button>切换账号</button>',
+  '<button>Log out</button>',
+  '<button>Revoke access</button>',
+  '<button>Reject</button>',
+  '<button>Deny</button>',
+  '<input type="submit" value="取消授权">',
+  '<a href="#logout">退出登录</a>',
+  '<a href="#cancel">取消授权</a>',
+  '<a href="#revoke">Revoke access</a>',
+])('refuses to activate a disruptive OIDC action even when broad discovery matches it: %s', async (html) => {
+  const dom = new JSDOM(html);
+  try {
+    const { locator, click } = stubLocator(dom.window.document.querySelector<HTMLElement>(CONTROL_SELECTOR)!);
+    expect(await clickNonPasswordOidcAction(locator)).toBe(false);
+    expect(click).not.toHaveBeenCalled();
+  } finally { dom.window.close(); }
+});
+
+// The refusal rule is deliberately conservative: any of aria-label / text / value
+// carrying a disruptive token refuses the control, whichever source disagrees.
+it.each([
+  '<button aria-label="退出登录">继续</button>',
+  '<button aria-label="取消授权">授权</button>',
+  '<a href="#x" aria-label="取消授权">继续授权</a>',
+  '<button aria-label="授权">取消</button>',
+])('refuses when aria-label conflicts with the visible label: %s', async (html) => {
+  const dom = new JSDOM(html);
+  try {
+    const { locator, click } = stubLocator(dom.window.document.querySelector<HTMLElement>(CONTROL_SELECTOR)!);
+    expect(await clickNonPasswordOidcAction(locator)).toBe(false);
+    expect(click).not.toHaveBeenCalled();
+  } finally { dom.window.close(); }
+});
 
 it('does not re-resolve an action replaced by a password submit after evaluation', async () => {
   const dom = new JSDOM('<main><button>继续</button></main>');
@@ -48,8 +276,8 @@ it('does not re-resolve an action replaced by a password submit after evaluation
     const passwordSubmit = vi.fn((event: Event) => event.preventDefault());
     dom.window.document.querySelector('button')!.addEventListener('click', originalClick);
     const locator = {
-      evaluate: async (fn: (element: Element) => boolean) => {
-        const result = fn(dom.window.document.querySelector('button')!);
+      evaluate: async (fn: (element: Element, arg?: unknown) => unknown, arg?: unknown) => {
+        const result = fn(dom.window.document.querySelector('button')!, arg);
         dom.window.document.querySelector('main')!.innerHTML = '<form><input type="password"><button>继续</button></form>';
         dom.window.document.querySelector('form')!.addEventListener('submit', passwordSubmit);
         return result;
@@ -62,13 +290,31 @@ it('does not re-resolve an action replaced by a password submit after evaluation
   } finally { dom.window.close(); }
 });
 
+it('activates the discovered anchor rather than a disruptive anchor that replaces it', async () => {
+  const dom = new JSDOM('<main><a href="#authorize">继续</a></main>');
+  try {
+    const originalClick = vi.fn((event: Event) => event.preventDefault());
+    const replacementClick = vi.fn((event: Event) => event.preventDefault());
+    dom.window.document.querySelector('a')!.addEventListener('click', originalClick);
+    const locator = {
+      evaluate: async (fn: (element: Element, arg?: unknown) => unknown, arg?: unknown) => {
+        const result = fn(dom.window.document.querySelector('a')!, arg);
+        dom.window.document.querySelector('main')!.innerHTML = '<a href="#logout">退出登录</a>';
+        dom.window.document.querySelector('a')!.addEventListener('click', replacementClick);
+        return result;
+      },
+      click: async () => dom.window.document.querySelector('a')!.click(),
+    } as unknown as Locator;
+    expect(await clickNonPasswordOidcAction(locator)).toBe(true);
+    expect(originalClick).toHaveBeenCalledOnce();
+    expect(replacementClick).not.toHaveBeenCalled();
+  } finally { dom.window.close(); }
+});
 
 it.each(['disabled', 'aria-disabled="true"'])('does not activate an action disabled after discovery: %s', async (attribute) => {
   const dom = new JSDOM(`<button ${attribute}>继续</button>`);
   try {
-    const element = dom.window.document.querySelector('button')!;
-    const click = vi.spyOn(element, 'click');
-    const locator = { evaluate: async (fn: (element: Element) => boolean) => fn(element) } as unknown as Locator;
+    const { locator, click } = stubLocator(dom.window.document.querySelector('button')!);
     expect(await clickNonPasswordOidcAction(locator)).toBe(false);
     expect(click).not.toHaveBeenCalled();
   } finally { dom.window.close(); }
@@ -79,9 +325,459 @@ it('does not activate a detached action', async () => {
   try {
     const element = dom.window.document.querySelector('button')!;
     element.remove();
-    const click = vi.spyOn(element, 'click');
-    const locator = { evaluate: async (fn: (element: Element) => boolean) => fn(element) } as unknown as Locator;
+    const { locator, click } = stubLocator(element);
     expect(await clickNonPasswordOidcAction(locator)).toBe(false);
     expect(click).not.toHaveBeenCalled();
   } finally { dom.window.close(); }
+});
+
+/**
+ * Consent-page stub exercising the real driver contract for the explicit
+ * remember-client choice: the consent surface marker, the exact checkbox
+ * label, and the folded request-details disclosure.
+ */
+async function consentScenario(
+  choice: boolean | undefined,
+  options: { checkbox?: 'present' | 'absent' | 'disabled' | 'ignored'; summary?: 'present' | 'absent'; folded?: boolean;
+    documents?: string[] } = {},
+) {
+  const checkbox = options.checkbox ?? 'present';
+  const summary = options.summary ?? 'present';
+  // The product renders one approval document per interaction (for example
+  // pick-WebID and Consent); each document keeps its own checkbox state.
+  const documents = options.documents ?? ['/.account/oidc/consent/'];
+  let documentIndex = 0;
+  const perDocument = documents.map(() => ({ checked: false, disclosureOpen: !(options.folded ?? false) }));
+  const current = () => perDocument[Math.min(documentIndex, documents.length - 1)]!;
+  const dom = new JSDOM('<main>Consent</main>', { url: `https://app.example${documents[0]!}` });
+  vi.stubGlobal('window', dom.window);
+  vi.stubGlobal('fetch', async () => new Response('fixture asset'));
+  const events = new Map<string, Array<(value: unknown) => void>>();
+  const emit = (name: string, value: unknown) => events.get(name)?.forEach((fn) => fn(value));
+  const state = { setCheckedCalls: [] as boolean[], summaryClicks: 0, approvedDocuments: [] as string[] };
+  const locator = (overrides: Record<string, unknown> = {}) => ({
+    first() { return this; }, last() { return this; }, nth() { return this; }, locator() { return this; },
+    isVisible: async () => false, isEnabled: async () => false, isChecked: async () => false,
+    setChecked: async () => undefined, check: async () => undefined, click: async () => undefined,
+    count: async () => 0, innerText: async () => '', evaluate: async () => false,
+    evaluateAll: async () => [], selectOption: async () => undefined, inputValue: async () => '',
+    getAttribute: async () => null, fill: async () => undefined, press: async () => undefined,
+    ...overrides,
+  });
+  const rememberLocator = locator({
+    isVisible: async () => checkbox !== 'absent' && current().disclosureOpen,
+    isEnabled: async () => checkbox !== 'disabled',
+    // `ignored` is a live surface that accepts the click but never retains the
+    // value, which is exactly the case the driver must still fail.
+    isChecked: async () => (checkbox === 'ignored' ? !current().checked : current().checked),
+    setChecked: async (value: boolean) => { state.setCheckedCalls.push(value); current().checked = value; },
+    count: async () => (checkbox === 'absent' ? 0 : 1),
+  });
+  const summaryLocator = locator({
+    isVisible: async () => summary === 'present',
+    click: async () => { state.summaryClicks += 1; current().disclosureOpen = true; },
+  });
+  const page = {
+    bringToFront: async () => undefined,
+    url: () => `https://app.example${documents[Math.min(documentIndex, documents.length - 1)]!}`,
+    on: (name: string, fn: (value: unknown) => void) => { events.set(name, [...(events.get(name) ?? []), fn]); },
+    off: () => undefined,
+    locator: (selector: string) => selector === '[data-pod-sign-in-state="consent"]'
+      ? locator({ isVisible: async () => true })
+      : selector === 'summary' ? summaryLocator : locator(),
+    // Only the exact remember-client label resolves to a real checkbox.
+    getByRole: (role: string, query?: { name?: RegExp }) => role === 'checkbox' && query?.name?.test('以后不再询问')
+      ? rememberLocator : locator(),
+    getByText: () => locator(),
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg),
+    waitForTimeout: async () => undefined,
+  } as unknown as Page;
+  let readyCalls = 0;
+  try {
+    const trace = await completeOidcLogin(page, { email: 'fixture@example.test', password: 'not-used' }, {
+      baseUrl: 'https://app.example/', timeoutMs: 2_000,
+      ...(choice === undefined ? {} : { rememberClient: choice }),
+      ready: async () => {
+        readyCalls += 1;
+        if (readyCalls === 1) return false;
+        // Approving the current document posts its own approval and navigates
+        // to the next one; the driver must make an independent explicit choice
+        // on every document it is offered. The approval POST is only real
+        // evidence when that document's checkbox state is what the scenario
+        // requested; the unit observes the same safe boolean.
+        const document = documents[documentIndex]!;
+        emit('request', {
+          url: () => `https://id.example${document}`, method: () => 'POST',
+          headers: () => ({}), postData: () => JSON.stringify({ remember: current().checked }),
+        });
+        state.approvedDocuments.push(document);
+        documentIndex = Math.min(documentIndex + 1, documents.length);
+        return documentIndex >= documents.length;
+      },
+    });
+    return { trace, state };
+  } finally {
+    vi.unstubAllGlobals();
+    dom.window.close();
+  }
+}
+
+it('sets and retains the explicit remember-client choice before approval', async () => {
+  const { trace, state } = await consentScenario(true, { folded: true });
+  expect(state.summaryClicks).toBe(1);
+  expect(state.setCheckedCalls).toEqual([true]);
+  expect(trace.rememberClientRequested).toBe(true);
+  expect(trace.rememberClientObserved).toBe(true);
+  expect(trace.consentRequestCount).toBe(1);
+  expect(trace.consentRememberPosted).toBe(true);
+});
+
+it('re-applies the explicit remember-client choice on every approval document', async () => {
+  // Pick-WebID and Consent are separate documents with independent checkbox
+  // state, so a one-shot application would leave the Consent approval posting
+  // the default `remember:false` while the trace still claimed a choice.
+  const { trace, state } = await consentScenario(true, { folded: true,
+    documents: ['/.account/oidc/pick-webid/', '/.account/oidc/consent/'] });
+  expect(state.approvedDocuments).toEqual(['/.account/oidc/pick-webid/', '/.account/oidc/consent/']);
+  expect(state.setCheckedCalls).toEqual([true, true]);
+  expect(state.summaryClicks).toBe(2);
+  expect(trace.rememberClientRequested).toBe(true);
+  expect(trace.rememberClientObserved).toBe(true);
+  expect(trace.consentRequestCount).toBe(1);
+  expect(trace.consentRememberPosted).toBe(true);
+});
+
+it('records an explicit do-not-remember choice and never treats it as remember', async () => {
+  const { trace, state } = await consentScenario(false);
+  expect(state.summaryClicks).toBe(0);
+  expect(state.setCheckedCalls).toEqual([false]);
+  expect(trace.rememberClientRequested).toBe(false);
+  expect(trace.rememberClientObserved).toBe(false);
+  expect(trace.consentRememberPosted).toBe(false);
+});
+
+it('leaves the consent surface default unchanged when no remember choice is requested', async () => {
+  const { trace, state } = await consentScenario(undefined, { folded: true });
+  expect(state.summaryClicks).toBe(0);
+  expect(state.setCheckedCalls).toEqual([]);
+  expect(trace.rememberClientRequested).toBeUndefined();
+  expect(trace.rememberClientObserved).toBeUndefined();
+});
+
+it('records an unoffered remember-client choice instead of crashing the login', async () => {
+  // A document can render the consent surface without offering the choice. That
+  // is an observation, not an unclassified runner error: the driver's remember
+  // gate still fails the run because no choice was observed and the approval
+  // body cannot carry one.
+  const { trace } = await consentScenario(true, { checkbox: 'absent', folded: true });
+  expect(trace.rememberClientBlocked).toBe('not-offered');
+  expect(trace.rememberClientRequested).toBeUndefined();
+  expect(trace.rememberClientObserved).toBeUndefined();
+  expect(trace.consentRememberPosted).toBe(false);
+});
+
+it('records a disabled remember-client choice instead of crashing the login', async () => {
+  // The product disables the control while it commits that same document, so a
+  // disabled observation must not be fatal; the gate still requires the choice.
+  const { trace } = await consentScenario(true, { checkbox: 'disabled' });
+  expect(trace.rememberClientBlocked).toBe('disabled');
+  expect(trace.rememberClientRequested).toBeUndefined();
+  expect(trace.rememberClientObserved).toBeUndefined();
+  expect(trace.consentRememberPosted).toBe(false);
+});
+
+it('still fails with a reviewed condition when an offered remember-client choice is not retained', async () => {
+  const failure = await consentScenario(true, { checkbox: 'ignored' }).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(OidcApprovalError);
+  expect((failure as OidcApprovalError).condition).toBe('choice-not-retained');
+  expect((failure as Error).message).toBe('Consent did not retain the requested remember-client choice');
+});
+
+it('publishes a reviewed login-timeout condition when the login never finishes', async () => {
+  // The timeout used to be an untyped Error, which degraded every real login
+  // failure to the public `unclassified` code. It must name its operation.
+  const timedOut = await callbackScenario('wrong-state').catch((error: unknown) => error);
+  expect(timedOut).toBeInstanceOf(OidcApprovalError);
+  expect((timedOut as OidcApprovalError).condition).toBe('login-timeout');
+});
+
+/**
+ * Minimal page stub that emits real observed authorize requests, including the
+ * authorization credentials a trace must never retain.
+ */
+async function scopeScenario(scopeSets: string[]): Promise<BrowserOidcTrace> {
+  const dom = new JSDOM('<main>Consent</main>', { url: 'https://app.example/.account/oidc/consent/' });
+  vi.stubGlobal('window', dom.window);
+  vi.stubGlobal('fetch', async () => new Response('fixture asset'));
+  const events = new Map<string, Array<(value: unknown) => void>>();
+  const emit = (name: string, value: unknown) => events.get(name)?.forEach((fn) => fn(value));
+  const locator = (): Locator => ({
+    first() { return this; }, last() { return this; }, nth() { return this; }, locator() { return this; },
+    isVisible: async () => false, isEnabled: async () => false, isChecked: async () => false,
+    setChecked: async () => undefined, check: async () => undefined, click: async () => undefined,
+    count: async () => 0, innerText: async () => '', evaluate: async () => false, evaluateAll: async () => [],
+    selectOption: async () => undefined, inputValue: async () => '', getAttribute: async () => null,
+    fill: async () => undefined, press: async () => undefined,
+  } as unknown as Locator);
+  const page = {
+    bringToFront: async () => undefined,
+    url: () => dom.window.location.href,
+    on: (name: string, fn: (value: unknown) => void) => { events.set(name, [...(events.get(name) ?? []), fn]); },
+    off: () => undefined,
+    locator,
+    getByRole: locator,
+    getByText: locator,
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg),
+    waitForTimeout: async () => undefined,
+  } as unknown as Page;
+  const requests = scopeSets.map((scope, index) => {
+    const url = new URL('https://id.example/.oidc/auth');
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('client_id', 'fixture-client');
+    url.searchParams.set('redirect_uri', 'https://app.example/auth/callback');
+    url.searchParams.set('state', `state-secret-${index}`);
+    url.searchParams.set('code_challenge', `challenge-secret-${index}`);
+    url.searchParams.set('code_challenge_method', 'S256');
+    if (scope !== '<none>') for (const value of scope.split(' ')) url.searchParams.append('scope', value);
+    return { url: () => url.href, method: () => 'GET', headers: () => ({}), postData: () => '' };
+  });
+  let readyCalls = 0;
+  try {
+    return await completeOidcLogin(page, { email: 'fixture@example.test', password: 'not-used' }, {
+      baseUrl: 'https://app.example/', timeoutMs: 2_000,
+      ready: async () => {
+        readyCalls += 1;
+        if (readyCalls <= requests.length) {
+          emit('request', requests[readyCalls - 1]);
+          return false;
+        }
+        return true;
+      },
+    });
+  } finally {
+    vi.unstubAllGlobals();
+    dom.window.close();
+  }
+}
+
+it('records normalized authorization scope sets per authorize request', async () => {
+  const trace = await scopeScenario(['openid webid offline_access openid', 'webid openid']);
+  expect(trace.authorizationScopeSets).toEqual(['offline_access openid webid', 'openid webid']);
+});
+
+it('records a missing authorize scope as <none> and never retains authorization secrets', async () => {
+  const trace = await scopeScenario(['<none>']);
+  expect(trace.authorizationScopeSets).toEqual(['<none>']);
+  const serialized = JSON.stringify(trace);
+  for (const secret of ['state-secret-0', 'challenge-secret-0']) {
+    expect(serialized).not.toContain(secret);
+  }
+});
+
+/**
+ * These scenarios drive the *actual* `completeOidcLogin` caller path with a
+ * locator whose own external operation rejects, instead of throwing a
+ * hand-built error into the wrapper. That is the shape of the real RC failure:
+ * Playwright/renderer raises TimeoutError/detached/strict-mode on its own, with
+ * no manual throw, and the old helper degraded it to the driver's generic
+ * `unclassified` code.
+ */
+const LOCATOR_SECRET = 'oc_sk_live_9f2c1d4b8a7e6f5c6d7e8f90';
+
+function stubLocatorOverrides(overrides: Record<string, unknown> = {}) {
+  return {
+    first() { return this; }, last() { return this; }, nth() { return this; }, locator() { return this; },
+    isVisible: async () => false, isEnabled: async () => false, isChecked: async () => false,
+    setChecked: async () => undefined, check: async () => undefined, click: async () => undefined,
+    count: async () => 0, innerText: async () => '', evaluate: async () => false, evaluateAll: async () => [],
+    selectOption: async () => undefined, inputValue: async () => '', getAttribute: async () => null,
+    fill: async () => undefined, press: async () => undefined,
+    ...overrides,
+  };
+}
+
+/** The real account credential boundary: `input.fill` rejects on its own. */
+async function credentialRejectionScenario(rejection: Error): Promise<BrowserOidcTrace> {
+  const dom = new JSDOM('<main>Login</main>', { url: 'https://app.example/.account/login/' });
+  vi.stubGlobal('window', dom.window);
+  vi.stubGlobal('fetch', async () => new Response('fixture asset'));
+  const email = stubLocatorOverrides({ isVisible: async () => true, fill: async () => { throw rejection; } });
+  const password = stubLocatorOverrides({ isVisible: async () => true });
+  const page = { bringToFront: async () => undefined, url: () => dom.window.location.href,
+    on: () => undefined, off: () => undefined,
+    locator: (selector: string) => selector.includes('email') ? email
+      : selector.includes('password') ? password : stubLocatorOverrides(),
+    getByRole: () => stubLocatorOverrides(), getByText: () => stubLocatorOverrides(),
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg),
+    waitForTimeout: async () => undefined } as unknown as Page;
+  try {
+    return await completeOidcLogin(page, { email: 'fixture@example.test', password: 'not-used' },
+      { baseUrl: 'https://app.example/', timeoutMs: 1_000, ready: async () => false });
+  } finally { vi.unstubAllGlobals(); dom.window.close(); }
+}
+
+/** The real Consent boundaries: the remember checkbox or the binding select
+ * rejects inside the rendered Consent document. */
+async function consentRejectionScenario(operation: 'remember-choice' | 'binding-select',
+  rejection: Error): Promise<BrowserOidcTrace> {
+  const dom = new JSDOM('<main>Consent</main>', { url: 'https://app.example/.account/oidc/consent/' });
+  vi.stubGlobal('window', dom.window);
+  vi.stubGlobal('fetch', async () => new Response('fixture asset'));
+  const remember = operation === 'remember-choice'
+    ? stubLocatorOverrides({ isVisible: async () => true, isEnabled: async () => true, count: async () => 1,
+      setChecked: async () => { throw rejection; } })
+    : stubLocatorOverrides();
+  const optionList = stubLocatorOverrides({ evaluateAll: async () => [
+    { label: 'pair', value: 'pair|https://pod.example/', disabled: false }] });
+  const binding = operation === 'binding-select'
+    ? stubLocatorOverrides({ isVisible: async () => true, isEnabled: async () => true,
+      inputValue: async () => 'pair|https://pod.example/', locator: () => optionList,
+      selectOption: async () => { throw rejection; } })
+    : stubLocatorOverrides();
+  const page = { bringToFront: async () => undefined, url: () => dom.window.location.href,
+    on: () => undefined, off: () => undefined,
+    locator: (selector: string) => selector === '[data-pod-sign-in-state="consent"]'
+      ? stubLocatorOverrides({ isVisible: async () => true })
+      : selector === '#oidc-consent-webid' ? binding : stubLocatorOverrides(),
+    getByRole: (role: string, query?: { name?: RegExp }) => role === 'checkbox' && query?.name?.test('以后不再询问')
+      ? remember : stubLocatorOverrides(),
+    getByText: () => stubLocatorOverrides(),
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg),
+    waitForTimeout: async () => undefined } as unknown as Page;
+  try {
+    return await completeOidcLogin(page, { email: 'fixture@example.test', password: 'not-used' },
+      { baseUrl: 'https://app.example/', timeoutMs: 1_000, rememberClient: true, ready: async () => false });
+  } finally { vi.unstubAllGlobals(); dom.window.close(); }
+}
+
+/** The remaining real Consent binding-read boundaries. The first native
+ * `inputValue()` read and the WebID radio `isChecked()` are awaited outside the
+ * select action, so their own rejection must still carry the fixed
+ * `binding-select` token instead of degrading the run to `unclassified`. */
+async function bindingReadRejectionScenario(row: 'binding-read' | 'binding-radio',
+  rejection: Error): Promise<BrowserOidcTrace> {
+  const dom = new JSDOM('<main>Consent</main>', { url: 'https://app.example/.account/oidc/consent/' });
+  vi.stubGlobal('window', dom.window);
+  vi.stubGlobal('fetch', async () => new Response('fixture asset'));
+  const binding = row === 'binding-read'
+    ? stubLocatorOverrides({ isVisible: async () => true, isEnabled: async () => true,
+      inputValue: async () => { throw rejection; } })
+    : stubLocatorOverrides();
+  const webIdRadios = row === 'binding-radio'
+    ? stubLocatorOverrides({ count: async () => 1, isChecked: async () => { throw rejection; } })
+    : stubLocatorOverrides();
+  const page = { bringToFront: async () => undefined, url: () => dom.window.location.href,
+    on: () => undefined, off: () => undefined,
+    locator: (selector: string) => selector === '[data-pod-sign-in-state="consent"]'
+      ? stubLocatorOverrides({ isVisible: async () => true })
+      : selector === '#oidc-consent-webid' ? binding
+        : selector.includes('name="webId"') ? webIdRadios : stubLocatorOverrides(),
+    getByRole: () => stubLocatorOverrides(), getByText: () => stubLocatorOverrides(),
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg),
+    waitForTimeout: async () => undefined } as unknown as Page;
+  try {
+    return await completeOidcLogin(page, { email: 'fixture@example.test', password: 'not-used' },
+      { baseUrl: 'https://app.example/', timeoutMs: 1_000, ready: async () => false });
+  } finally { vi.unstubAllGlobals(); dom.window.close(); }
+}
+
+/** The real approval candidates on the live consent path. The second readiness
+ * probe before activation and the primary-action enumeration are awaited
+ * outside the click, so their rejections must carry `approval-observation`. */
+async function approvalObservationRejectionScenario(row: 'ready-probe' | 'action-count',
+  rejection: Error): Promise<BrowserOidcTrace> {
+  const dom = new JSDOM('<main>Consent</main>', { url: 'https://app.example/.account/oidc/consent/' });
+  vi.stubGlobal('window', dom.window);
+  vi.stubGlobal('fetch', async () => new Response('fixture asset'));
+  const actionButton = stubLocatorOverrides({ isVisible: async () => true, isEnabled: async () => true,
+    count: row === 'action-count' ? async () => { throw rejection; } : async () => 1 });
+  let readyCalls = 0;
+  const page = { bringToFront: async () => undefined, url: () => dom.window.location.href,
+    on: () => undefined, off: () => undefined,
+    locator: () => stubLocatorOverrides(),
+    // Only the exact primary-action name resolves to the real approval button;
+    // every other button role stays invisible so the helper reaches the action
+    // enumeration rather than the Local/WebID entry shortcuts.
+    getByRole: (role: string, query?: { name?: RegExp }) =>
+      role === 'button' && query?.name === OIDC_PRIMARY_ACTION_NAME ? actionButton : stubLocatorOverrides(),
+    getByText: () => stubLocatorOverrides(),
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg),
+    waitForTimeout: async () => undefined } as unknown as Page;
+  try {
+    return await completeOidcLogin(page, { email: 'fixture@example.test', password: 'not-used' },
+      { baseUrl: 'https://app.example/', timeoutMs: 1_000,
+        ready: async () => { readyCalls += 1; if (row === 'ready-probe' && readyCalls >= 2) throw rejection; return false; } });
+  } finally { vi.unstubAllGlobals(); dom.window.close(); }
+}
+
+function locatorRejection(operation: string): Error {
+  return new errors.TimeoutError(`locator.${operation}: Timeout 2000ms exceeded; apiKey=${LOCATOR_SECRET}; `
+    + `cookie sid=${LOCATOR_SECRET}; bearer ${LOCATOR_SECRET}`);
+}
+
+async function expectAttributedOperation(failure: unknown, operation: string,
+  rejection: Error): Promise<void> {
+  expect(failure).toBeInstanceOf(OidcApprovalError);
+  const attributed = failure as OidcApprovalError;
+  expect(attributed.condition).toBe(operation);
+  expect(attributed.cause).toBe(rejection);
+  // The public projection may name only the fixed operation token and must not
+  // carry the key/cookie/token text the external rejection contained.
+  const published = describeFailure(attributed);
+  expect(published).toEqual({ code: 'oidc-approval',
+    explanation: 'The packaged browser approval step failed; the reviewed sub-condition names the operation',
+    evidence: operation });
+  expect(JSON.stringify(published)).not.toContain(LOCATOR_SECRET);
+  expect(JSON.stringify(publishedFailures([attributed, new Error(`raw dump ${LOCATOR_SECRET}`)])))
+    .not.toContain(LOCATOR_SECRET);
+}
+
+it('attributes a real account-credentials locator rejection to its fixed operation token', async () => {
+  const rejection = locatorRejection('fill');
+  const failure = await credentialRejectionScenario(rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'account-credentials', rejection);
+});
+
+it('attributes a real remember-choice locator rejection to its fixed operation token', async () => {
+  const rejection = locatorRejection('setChecked');
+  const failure = await consentRejectionScenario('remember-choice', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'remember-choice', rejection);
+});
+
+it('attributes a real binding-select locator rejection to its fixed operation token', async () => {
+  const rejection = locatorRejection('selectOption');
+  const failure = await consentRejectionScenario('binding-select', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'binding-select', rejection);
+});
+
+it('attributes the first real binding-value read rejection to binding-select', async () => {
+  const rejection = locatorRejection('inputValue');
+  const failure = await bindingReadRejectionScenario('binding-read', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'binding-select', rejection);
+});
+
+it('attributes a real WebID radio checked-state rejection to binding-select', async () => {
+  const rejection = locatorRejection('isChecked');
+  const failure = await bindingReadRejectionScenario('binding-radio', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'binding-select', rejection);
+});
+
+it('attributes a real second readiness-probe rejection to approval-observation', async () => {
+  const rejection = locatorRejection('ready');
+  const failure = await approvalObservationRejectionScenario('ready-probe', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'approval-observation', rejection);
+});
+
+it('attributes a real primary-action enumeration rejection to approval-observation', async () => {
+  const rejection = locatorRejection('count');
+  const failure = await approvalObservationRejectionScenario('action-count', rejection).catch((error: unknown) => error);
+  await expectAttributedOperation(failure, 'approval-observation', rejection);
+});
+
+it('keeps an already-typed approval condition instead of renaming it to the boundary operation', async () => {
+  const typed = new OidcApprovalError('choice-not-retained', 'private typed detail');
+  const failure = await attributeOidcOperation('remember-choice', async () => { throw typed; })
+    .catch((error: unknown) => error);
+  expect(failure).toBe(typed);
+  expect(describeFailure(failure).evidence).toBe('choice-not-retained');
 });

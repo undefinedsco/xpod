@@ -31,7 +31,6 @@ dist/
 coverage/
 data/
 data.bak.*/
-static/app/assets/
 desktop/dist/
 desktop/release/
 desktop/runtime/
@@ -118,3 +117,6 @@ openspec/
 /undefineds.co-xpod-*.tgz
 .omx/
 .pytest_cache/
+
+# Playwright writes its per-run traces/screenshots here; never source.
+test-results/

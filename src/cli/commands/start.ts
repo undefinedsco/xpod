@@ -316,12 +316,18 @@ export function resolveCliOidcIssuer(
   provisionedIssuer?: string,
   edition?: string,
 ): string | undefined {
-  // A remembered loopback issuer is residue from a run that served it; this one does not, so the
-  // local edition falls back to the Cloud identity instead of a port with no listener.
-  const remembered = isLoopbackIssuer(provisionedIssuer) ? undefined : provisionedIssuer;
-  return resolveExternalOidcIssuer(env)
-    ?? resolveExternalOidcIssuer({ SOLID_OIDC_ISSUER: remembered })
-    ?? (edition === 'local' ? DEFAULT_LOCAL_OIDC_ISSUER : undefined);
+  const explicit = resolveExternalOidcIssuer(env);
+  if (explicit) {
+    return explicit;
+  }
+  // A remembered issuer is residue from an earlier run, so it only counts when the
+  // network can still serve it. Adopting a loopback one points every login at a port
+  // with no listener - and the identity origin must never become this machine's port.
+  const remembered = resolveExternalOidcIssuer({ SOLID_OIDC_ISSUER: provisionedIssuer });
+  if (remembered && !isLoopbackIssuer(remembered)) {
+    return remembered;
+  }
+  return edition === 'local' ? DEFAULT_LOCAL_OIDC_ISSUER : undefined;
 }
 
 export function resolveManagedEdgeAgentConfig(
