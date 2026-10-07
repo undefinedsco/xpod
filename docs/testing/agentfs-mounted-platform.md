@@ -41,6 +41,16 @@ maximum read gap, source end and response finish/close) to the server journal.
 The old `responseBytes` is a declared length, not observed transfer completion.
 No helper, transfer deadline, size or RSS acceptance threshold changes here.
 
+Diagnostic run [37607806527](https://github.com/undefinedsco/xpod/actions/runs/37607806527)
+again failed Linux 512 MiB copy-up. The server read 86114304 bytes in 1314
+chunks, then recorded a 571827 ms maximum read gap; source end and response
+finish were false. The helper received/wrote 86048768 bytes before its
+572001 ms timeout. These counters narrow the stall to an unfinished server
+stream, but do not yet distinguish reader scheduling from socket backpressure.
+The next diagnostic captures bounded Linux thread wait points for only the test
+process/helper plus Node active-resource type counts. No argv or credentials
+are captured; no product or acceptance policy is changed.
+
 Actual mounted (OS-level) acceptance for the frozen product archive, separate
 from the source-bound native unit/install CI. The native compiler workflow
 (`agentfs-native-acceptance.yml`) only runs on `codex/agentfs-native-acceptance`,

@@ -370,13 +370,14 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     const started = performance.now();
     let failure: { observedUTC: string; elapsedMs: number; stage: string; sizeMiB?: number } | undefined;
     const stages: { stage: string; sizeMiB?: number; elapsedMs: number; observedUTC: string }[] = [];
+    const threadWaits: { observedUTC: string; state: ExecResult['state']; exit: number | null; rows: string; resources: Record<string, number> }[] = [];
     const journal = async (): Promise<void> => {
       if (!process.env.XPOD_MOUNTED_EVIDENCE) return;
       const previous = stages[stages.length - 1];
       if (!previous || previous.stage !== stage || previous.sizeMiB !== sizeMiB) stages.push({ stage, sizeMiB, elapsedMs: performance.now() - started, observedUTC: new Date().toISOString() });
       const error = primaryError as NodeJS.ErrnoException | undefined;
       await writeFile(path.join(process.env.XPOD_MOUNTED_EVIDENCE, 'stream-journal.json'), `${JSON.stringify({
-        stage, sizeMiB, baselineVersion, stages, failure, observedUTC: new Date().toISOString(), elapsedMs: performance.now() - started, error: error === undefined ? null : { code: error.code, errno: error.errno, syscall: error.syscall },
+        stage, sizeMiB, baselineVersion, stages, threadWaits, failure, observedUTC: new Date().toISOString(), elapsedMs: performance.now() - started, error: error === undefined ? null : { code: error.code, errno: error.errno, syscall: error.syscall },
         requestCount: server.log.length, requestWindowLimit: 200, requests: server.log.slice(-200).map(({ method, resource, range, status, requestBytes, responseBytes, diskTransfer }) => ({ method, resource, range, status, requestBytes, responseBytes, diskTransfer })),
         kernel: observeKernelMountsDetailed(work), sceneRetainedInHarness: primaryError !== undefined || cleanupError !== undefined, scenePath: work, retentionScope: 'ephemeral runner; no persistence after container or runner removal',
       }, null, 2)}\n`);
@@ -420,6 +421,16 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
         const diskTail = await readSeg(disk, bodySize - seg, seg);
         const editTarget = path.join(mnt, name);
         const rssCopy: number[] = [];
+        let waitSample: Promise<void> | undefined;
+        const sampleWaits = (): void => {
+          if (process.platform !== 'linux' || waitSample || threadWaits.length >= 180) return;
+          const resources: Record<string, number> = {};
+          for (const type of process.getActiveResourcesInfo()) resources[type] = (resources[type] ?? 0) + 1;
+          waitSample = exec('ps', ['-L', '-p', [process.pid, daemon.child.pid].filter(Boolean).join(','), '-o', 'pid=,tid=,wchan:32=,comm='], {}, 5000)
+            .then((result) => { threadWaits.push({ observedUTC: new Date().toISOString(), state: result.state, exit: result.actualExit, rows: result.stdout.slice(0, 8192), resources }); })
+            .finally(() => { waitSample = undefined; });
+        };
+        const waitSampler = setInterval(sampleWaits, 10_000); sampleWaits();
         const preSampler = setInterval(() => { void sampleRss(daemon.child.pid).then((s) => { if (s) rssCopy.push(s.kib); }); }, 200);
         void sampleRss(daemon.child.pid).then((s) => { if (s) rssCopy.push(s.kib); });
         let committed: ExecResult | undefined;
@@ -430,7 +441,7 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
           // Sampled commit: covers the commit CHILD pid AND the mount daemon.
           stage = 'commit'; await journal();
           committed = await execSampled(binary, [ 'commit', '--pod-root', server.podRoot, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN }, 900_000, [ daemon.child.pid ], rssCopy);
-        } finally { clearInterval(preSampler); }
+        } finally { clearInterval(preSampler); clearInterval(waitSampler); await waitSample; }
         expect(committed!.status, committed!.stderr).toBe(0);
         expect(server.version(name), `${mib}MiB ETag/version advanced`).toBeGreaterThan(baselineVersion);
         expect(server.log.some((entry) => entry.method === 'PUT' && entry.resource === name), `${mib}MiB remote PUT observed`).toBe(true);
