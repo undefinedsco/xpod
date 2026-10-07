@@ -14,7 +14,8 @@ test('SDK tarball loads independently in unpatched Bun and Node ESM/CommonJS con
   try {
     const tarball = packWorkspacePackages(root, ['solid-sdk'], path.join(directory, 'packed'))['@undefineds.co/solid-sdk'];
     fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ private: true, type: 'module', dependencies: { '@undefineds.co/solid-sdk': tarball, react: '19.2.0' } }));
-    execFileSync('bun', ['install', '--ignore-scripts'], { cwd: directory, stdio: 'pipe' });
+    // Root postinstall patches must not leak through shared cache hardlinks.
+    execFileSync('bun', ['install', '--ignore-scripts', '--backend=copyfile', '--cache-dir', path.join(directory, 'cache')], { cwd: directory, stdio: 'pipe' });
     const manifest = JSON.parse(fs.readFileSync(path.join(root, 'packages/solid-sdk/package.json'), 'utf8'));
     verifyInstalled(directory, [manifest]);
     verifyRuntimeImports(directory);

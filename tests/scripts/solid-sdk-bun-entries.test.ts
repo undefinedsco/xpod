@@ -22,6 +22,14 @@ function fixture(run: (directory: string) => void): void {
 }
 
 describe('Solid SDK Bun distribution entries', () => {
+  it('quotes external subpath patterns so Bun shell does not expand them as file globs', () => {
+    const manifest = JSON.parse(readFileSync(path.join(root, 'packages/solid-sdk/package.json'), 'utf8'));
+    for (const dependency of ['react', 'zustand']) {
+      expect(manifest.scripts.build).toContain(`--external='${dependency}/*'`);
+      expect(manifest.scripts.build).not.toContain(`--external=${dependency}/*`);
+    }
+  });
+
   it('derives the Bun root from existing reexports without changing the ESM root', () => fixture((directory) => {
     const source = "export * from './session.js';\nexport * from './react.js';\nexport * from './future-entry.js';\n";
     writeFileSync(path.join(directory, 'index.js'), source);
