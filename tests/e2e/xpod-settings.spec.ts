@@ -1,3 +1,4 @@
+import { CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS, chatCompletionBodyMatches } from '../../scripts/helpers/chat-acceptance';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
@@ -444,13 +445,13 @@ test.describe('Xpod settings product acceptance', () => {
           data: {
             model: modelId,
             messages: [{ role: 'user', content: 'Reply only: XPOD_OK' }],
-            max_tokens: 16,
+            max_tokens: CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS,
           },
         },
       );
       expect(chatResponse.status()).toBe(200);
       const chatPayload = await chatResponse.json() as { choices?: Array<{ message?: { content?: unknown } }> };
-      expect(chatPayload.choices?.[0]?.message?.content).toContain('XPOD_OK');
+      expect(chatCompletionBodyMatches(chatPayload, 'XPOD_OK')).toBe(true);
     } finally {
       if (await customApiKeyInput.isVisible({ timeout: 250 }).catch(() => false)) {
         await customApiKeyInput.fill('').catch(() => undefined);
@@ -496,14 +497,13 @@ test.describe('Xpod settings product acceptance', () => {
         data: {
           model: modelId,
           messages: [{ role: 'user', content: 'Reply only: XPOD_DEEPSEEK_OK' }],
-          max_tokens: 128,
+          max_tokens: CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS,
         },
         timeout: 60_000,
       });
       const chatBody = await chatResponse.text();
       expect(chatResponse.status(), chatBody).toBe(200);
-      expect((JSON.parse(chatBody) as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content)
-        .toContain('XPOD_DEEPSEEK_OK');
+      expect(chatCompletionBodyMatches(JSON.parse(chatBody), 'XPOD_DEEPSEEK_OK')).toBe(true);
     } finally {
       await page.context().close();
     }
@@ -1104,7 +1104,7 @@ async function assertAliceGatewayChatAccess(page: Page, gatewayKey: string): Pro
       data: {
         model: fixtureModelId,
         messages: [{ role: 'user', content: 'Reply only: XPOD_OK' }],
-        max_tokens: 16,
+        max_tokens: CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS,
       },
       timeout: 30_000,
     },
@@ -1113,7 +1113,7 @@ async function assertAliceGatewayChatAccess(page: Page, gatewayKey: string): Pro
   const fixtureStatus = await fixtureHarness.status();
   expect(response.status(), `${body}\nRequests: ${fixtureStatus.requests.join(', ')}\n${fixtureHarness.diagnostics()}`).toBe(200);
   const payload = JSON.parse(body) as { choices?: Array<{ message?: { content?: unknown } }> };
-  expect(payload.choices?.[0]?.message?.content).toContain('XPOD_OK');
+  expect(chatCompletionBodyMatches(payload, 'XPOD_OK')).toBe(true);
 }
 
 async function openApiKeysSection(page: Page): Promise<void> {

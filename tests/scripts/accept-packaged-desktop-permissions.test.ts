@@ -260,3 +260,16 @@ it('fails closed for absent or non-canonical packaged invocation credentials', (
     }
   }
 });
+
+
+it('requires two independent Cloud WebIDs for the two-Pod isolation claim', async () => {
+  const { assertIndependentPackagedBindings } = await import('../../scripts/accept-packaged-desktop-permissions');
+  const issuer = 'https://cloud.example/';
+  const a = { webId: issuer + 'a/profile/card#me', storageUrl: 'https://node.example/a/' };
+  const b = { webId: issuer + 'b/profile/card#me', storageUrl: 'https://node.example/b/' };
+  expect(() => assertIndependentPackagedBindings([a, b], issuer)).not.toThrow();
+  for (const pair of [[a, { ...b, webId: a.webId }], [a, { ...b, storageUrl: a.storageUrl }],
+    [a, { ...b, webId: 'https://foreign.example/card#me' }], [a]]) {
+    expect(() => assertIndependentPackagedBindings(pair, issuer)).toThrow('identity/storage');
+  }
+});

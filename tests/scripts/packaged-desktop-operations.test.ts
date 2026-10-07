@@ -238,20 +238,69 @@ it.each(['present', 'unavailable'] as const)('confirms resource ids and waits fo
   } finally { vi.useRealTimers(); }
 });
 
-it.each([403, 200])('retains held invocation status and model observations without retaining its token (%s)', async status => {
-  const { acceptHeldPodInvocation, attributePackagedOperation } = await import('../../scripts/helpers/packaged-desktop-operations');
+it.each([403, 200])('retains held Solid credential status and model observations without retaining its token (%s)', async status => {
+  const { acceptHeldSolidCredential, attributePackagedOperation } = await import('../../scripts/helpers/packaged-desktop-operations');
   const fetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status }));
   vi.stubGlobal('window', { location: { origin: 'http://127.0.0.1:41234' } });
   vi.stubGlobal('fetch', fetch);
   const page = { evaluate: async (fn: Function, input: unknown) => fn(input) } as unknown as Page;
   try {
-    const failure = await attributePackagedOperation('held-invocation', () => acceptHeldPodInvocation(page, {
-      gateway: 'http://127.0.0.1:41234/', podUrl: 'https://pod.example/a/', invocation: 'private-held-token', model: 'selected',
+    const failure = await attributePackagedOperation('held-credential', () => acceptHeldSolidCredential(page, {
+      gateway: 'http://127.0.0.1:41234/', podUrl: 'https://pod.example/a/', key: 'sk-private-held-token', model: 'selected',
     })).catch(error => error);
-    expect(failure.condition).toBe('held-invocation');
+    expect(failure.condition).toBe('held-credential');
     expect(failure.cause.message).toContain('"status":' + status);
     expect(failure.cause.message).toContain('"modelCount":0');
     expect(failure.cause.message).not.toContain('private-held-token');
     expect(fetch).toHaveBeenCalledTimes(2);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+it('rejects an internal invocation before dispatching a Pod models request', async () => {
+  const { acceptHeldSolidCredential } = await import('../../scripts/helpers/packaged-desktop-operations');
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ data: [{ id: 'selected' }] })));
+  vi.stubGlobal('window', { location: { origin: 'http://127.0.0.1:41234' } });
+  vi.stubGlobal('fetch', fetch);
+  const page = { evaluate: async (fn: Function, input: unknown) => fn(input) } as unknown as Page;
+  try {
+    await expect(acceptHeldSolidCredential(page, { gateway: 'http://127.0.0.1:41234/',
+      podUrl: 'https://pod.example/a/', key: 'xpod_inv_v1.fixture', model: 'selected' }))
+      .rejects.toThrow('Solid client credential');
+    expect(fetch).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+it.each(['complete', 'truncated', 'wrong-body', 'rejected'] as const)('checks a single real-protocol Chat response with a reasoning budget (%s)', async outcome => {
+  const { acceptMountedFirstChat } = await import('../../scripts/helpers/packaged-desktop-operations');
+  const endpoint = 'http://127.0.0.1:41234/v1/chat/completions';
+  const marker = 'XPOD_REASONING_BUDGET';
+  let onRequest: (request: unknown) => void;
+  const page = {
+    on: vi.fn((_event: string, handler: typeof onRequest) => { onRequest = handler; }),
+    off: vi.fn(), evaluate: async (fn: Function, input: unknown) => fn(input),
+  } as unknown as Page;
+  const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+    onRequest!({ url: () => endpoint, method: () => 'POST' });
+    const request = JSON.parse(String(init.body));
+    const complete = request.max_tokens >= 512 && outcome !== 'truncated';
+    return new Response(JSON.stringify({ choices: [{ message: {
+      content: complete ? outcome === 'wrong-body' ? 'unrelated' : marker : 'XPOD_',
+      reasoning_content: 'Reasoning consumes the small output budget first.',
+    }, finish_reason: complete ? 'stop' : 'length' }] }), { status: outcome === 'rejected' ? 401 : 200 });
+  });
+  vi.stubGlobal('window', { location: { origin: 'http://127.0.0.1:41234' } });
+  vi.stubGlobal('fetch', fetch);
+  try {
+    const request = acceptMountedFirstChat(page, { gateway: 'http://127.0.0.1:41234/',
+      podUrl: 'https://pod.example/a/', key: 'sk-owned-credential', model: 'reasoning-model', marker });
+    if (outcome === 'complete') await expect(request).resolves.toEqual({ status: 200, bodyMatches: true, dispatches: 1 });
+    else await expect(request).rejects.toThrow('Actual Chat');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetch.mock.calls[0][1].body));
+    expect(body.max_tokens).toBeGreaterThanOrEqual(512);
+    expect(body.max_tokens).toBeLessThanOrEqual(1024);
+    expect(page.off).toHaveBeenCalled();
   } finally { vi.unstubAllGlobals(); }
 });

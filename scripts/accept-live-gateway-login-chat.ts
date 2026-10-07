@@ -1,3 +1,4 @@
+import { CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS, chatCompletionBodyMatches } from './helpers/chat-acceptance';
 /**
  * Live Gateway acceptance: login, write a provider API key into the Pod, then Chat.
  *
@@ -1226,7 +1227,7 @@ async function chatOnce(gatewayKey: string, chatModel: string): Promise<void> {
     body: JSON.stringify({
       model: chatModel,
       messages: [{ role: 'user', content: 'Reply with exactly: XPOD_OK' }],
-      max_tokens: 64,
+      max_tokens: CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS,
       temperature: 0,
     }),
   });
@@ -1244,7 +1245,7 @@ async function chatOnce(gatewayKey: string, chatModel: string): Promise<void> {
     : Array.isArray(content)
       ? content.map((part) => (typeof part === 'object' && part && 'text' in part ? String(part.text) : '')).join('')
       : '';
-  if (chatResponse.status < 200 || chatResponse.status >= 300 || text.trim() !== 'XPOD_OK') {
+  if (chatResponse.status !== 200 || !chatCompletionBodyMatches(chatPayload, 'XPOD_OK')) {
     const observed = text.trim().slice(0, 160);
     const payloadShape = redact(JSON.stringify(chatPayload).slice(0, 500));
     fail('chat', `Chat HTTP ${chatResponse.status} did not return the exact acceptance marker${observed ? `; observed=${redact(observed)}` : '; observed=<empty>'}; payload=${payloadShape}`);

@@ -16,7 +16,7 @@ const expected = {
 
 function pod(hash) {
   return {
-    bindingSha256: hash.repeat(64),
+    bindingSha256: hash.repeat(64), webIdSha256: hash.repeat(64),
     selectedInUi: true,
     first: { resourceIds: ['one', 'two'], fresh: true, granted: 2, readBack: 2, parentUnchanged: true },
     repeat: { readBack: 2, acrWrites: 0, sameSession: true },
@@ -30,7 +30,7 @@ function evidence() {
     sourceSha: expected.sourceSha, version: expected.version, archive: { ...expected.archive },
     runtime: { version: expected.version, edition: 'local', ownership: 'desktop',
       binarySha256: 'c'.repeat(64), bundled: true, installed: true, noExternalOverride: true, freshEndpoint: true },
-    identity: { cloudCard: true, sameWebId: true, independentStorage: true, noPublicRoute: true, browserCallback: true },
+    identity: { cloudCard: true, independentWebIds: true, independentStorage: true, noPublicRoute: true, browserCallback: true },
     pods: [pod('d'), pod('e')],
     operations: { accountActor: true, keyCreate: true, keyList: true, keyRevoke: true,
       collectionConfirmed: true, conflictCount: 0, chatStatus: 200, chatBodyMatches: true, chatDispatches: 1,
@@ -136,5 +136,14 @@ test('mandatory desktop passes only with both complete records for the same actu
 
 test('rejects ZIP extraction without actual installation', () => {
   const record = evidence(); delete record.runtime.installed;
+  assert.equal(verifyEvidence(record, expected).valid, false);
+});
+
+test('rejects a shared WebID even when the two storage bindings differ', () => {
+  const record = evidence(); record.pods[1].webIdSha256 = record.pods[0].webIdSha256;
+  assert.equal(verifyEvidence(record, expected).valid, false);
+});
+test('rejects the superseded same-WebID evidence contract', () => {
+  const record = evidence(); delete record.identity.independentWebIds; record.identity.sameWebId = true;
   assert.equal(verifyEvidence(record, expected).valid, false);
 });

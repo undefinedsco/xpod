@@ -35,7 +35,7 @@ function verifyEvidence(record, expected) {
   const resourceSet = value => Array.isArray(value) && value.length === targetCount
     && new Set(value).size === targetCount && value.every(id => expected.resourceIds.includes(id));
   const podShape = {
-    bindingSha256: hash, selectedInUi: trueValue,
+    bindingSha256: hash, webIdSha256: hash, selectedInUi: trueValue,
     first: { resourceIds: resourceSet, fresh: trueValue, granted: n => n === targetCount,
       readBack: n => n === targetCount, parentUnchanged: trueValue },
     repeat: { readBack: n => n === targetCount, acrWrites: zero, sameSession: trueValue },
@@ -51,12 +51,13 @@ function verifyEvidence(record, expected) {
     runtime: { version: s => s === expected?.version, edition: s => s === 'local',
       ownership: s => s === 'desktop', binarySha256: s => hash(s) && s === expected?.runtimeBinarySha256, bundled: trueValue, installed: trueValue,
       noExternalOverride: trueValue, freshEndpoint: trueValue },
-    identity: { cloudCard: trueValue, sameWebId: trueValue, independentStorage: trueValue,
+    identity: { cloudCard: trueValue, independentWebIds: trueValue, independentStorage: trueValue,
       noPublicRoute: trueValue, browserCallback: trueValue },
     pods: value => {
       if (!Array.isArray(value) || value.length !== 2) return false;
       value.forEach((pod, index) => shape(pod, podShape, `pods.${index}`));
-      return value[0]?.bindingSha256 !== value[1]?.bindingSha256;
+      return value[0]?.bindingSha256 !== value[1]?.bindingSha256
+        && value[0]?.webIdSha256 !== value[1]?.webIdSha256;
     },
     operations: { accountActor: trueValue, keyCreate: trueValue, keyList: trueValue, keyRevoke: trueValue,
       collectionConfirmed: trueValue, conflictCount: zero, chatStatus: n => n === 200,

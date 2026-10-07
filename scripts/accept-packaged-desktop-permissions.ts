@@ -1,5 +1,5 @@
 import type { AIConnectionInvocationConfig } from '../src/agents/types';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -12,7 +12,7 @@ import { createCloudAccountPassword, prepareManagedLocalAcceptancePods, parseKey
 import { launchOwnedPackagedDesktop, type OwnedPackagedDesktop } from './helpers/packaged-desktop-fixture';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError,
   observeOwnedPodTraffic, type MountedPermissionCondition, type MountedPodPermissionPhase } from './helpers/packaged-desktop-permissions';
-import { createConfirmedMountedProvider, createMountedKeyInUi, acceptMountedFirstChat, acceptHeldPodInvocation,
+import { createConfirmedMountedProvider, createMountedKeyInUi, acceptMountedFirstChat, acceptHeldSolidCredential,
   attributePackagedOperation, PackagedOperationError, type PackagedOperationCondition } from './helpers/packaged-desktop-operations';
 import { verifyPackagedSourceCheckout } from './helpers/packaged-desktop-source';
 import { acceptLiveTaskApproval, type LiveTaskEvidence } from './helpers/live-task-approval';
@@ -42,6 +42,14 @@ export async function verifyPublicCloudCard(webId: string, storageUrls: string[]
   if (!getThing(profile, webId)) throw new DesktopAcceptanceError('identity-binding', 'Public Cloud card has no exact WebID Thing');
   const advertised = getPodUrlAllFrom({ webIdProfile: profile, altProfileAll: [] }, webId);
   if (storageUrls.some(url => !advertised.includes(url))) throw new DesktopAcceptanceError('identity-binding', 'Public Cloud card is missing an authoritative storage binding');
+}
+
+/** Check the fixture's actual identity scope before it can claim isolation. */
+export function assertIndependentPackagedBindings(bindings: readonly { webId: string; storageUrl: string }[], issuer: string): void {
+  if (bindings.length !== 2 || bindings[0].webId === bindings[1].webId || bindings[0].storageUrl === bindings[1].storageUrl
+    || bindings.some(binding => new URL(binding.webId).origin !== new URL(issuer).origin)) {
+    throw new DesktopAcceptanceError('identity-binding', 'Managed identity/storage binding proof failed');
+  }
 }
 
 /** Read the canonical credential returned by the mounted service-access route. */
@@ -239,13 +247,17 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     const account = await createCloudAccountPassword(options.issuer, 'desktop-permission');
     await privateJson(options.privateDirectory, 'account-private.json', account);
     const unique = randomUUID().slice(0, 8);
-    const bindings = await prepareManagedLocalAcceptancePods({ baseUrl: options.issuer, localBaseUrl: gateway,
-      canonicalBaseUrl: route.canonicalBaseUrl, authorization: account.authorization, controls: account.controls,
-      usernames: [`desktop-a-${unique}`, `desktop-b-${unique}`], provisionCode: status.provisionCode });
+    const bindings = [];
+    for (const username of [`desktop-a-${unique}`, `desktop-b-${unique}`]) {
+      // Each profile is prepared by Cloud and independently finalized against
+      // the same Local runtime. One WebID with two bindings is a different case.
+      bindings.push(...await prepareManagedLocalAcceptancePods({ baseUrl: options.issuer, localBaseUrl: gateway,
+        canonicalBaseUrl: route.canonicalBaseUrl, authorization: account.authorization, controls: account.controls,
+        usernames: [username], provisionCode: status.provisionCode }));
+    }
     await privateJson(options.privateDirectory, 'bindings-private.json', bindings);
-    if (bindings.length !== 2 || bindings[0].webId !== bindings[1].webId || bindings[0].storageUrl === bindings[1].storageUrl
-      || new URL(bindings[0].webId).origin !== new URL(options.issuer).origin) throw new DesktopAcceptanceError('identity-binding', 'Managed identity/storage binding proof failed');
-    await verifyPublicCloudCard(bindings[0].webId, bindings.map(binding => binding.storageUrl));
+    assertIndependentPackagedBindings(bindings, options.issuer);
+    for (const binding of bindings) await verifyPublicCloudCard(binding.webId, [binding.storageUrl]);
     const podEvidence = [];
     let firstInvocation: string | undefined;
     let originalRun: string | undefined;
@@ -297,11 +309,13 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       }));
       key = await attributePackagedOperation('key-dialog', () => createMountedKeyInUi(page, { ...phase!, handle: keyHandle! }, { name: `desktop-${unique}-${index}`, configurationHome, gateway,
         accountCredentialControl: account.controls.account?.clientCredentials ?? '' }));
-      // Models reuse and the first Chat are independent observations. Await both
+      // Models reuse and the first Chat both use the real Account-issued Solid key.
+      // Internal invocation stays only in the separate negative cross-Pod check.
+      // These are independent observations. Await both
       // before cleanup so one failure cannot hide or interrupt the other request.
       const [heldOutcome, chatOutcome] = await Promise.allSettled([
-        attributePackagedOperation('held-invocation', () =>
-          acceptHeldPodInvocation(page, { gateway, podUrl: binding.storageUrl, invocation, model: provider!.model })),
+        attributePackagedOperation('held-credential', () =>
+          acceptHeldSolidCredential(page, { gateway, podUrl: binding.storageUrl, key: key!.key, model: provider!.model })),
         attributePackagedOperation('first-chat', () => acceptMountedFirstChat(page,
           { gateway, podUrl: binding.storageUrl, key: key!.key, model: provider!.model, marker: `XPOD_${unique}_${index}` })),
       ]);
@@ -356,7 +370,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
           }
         } finally { writes.stop(); }
       }
-      podEvidence.push({ ...phase.evidence, selectedInUi: true,
+      podEvidence.push({ ...phase.evidence, webIdSha256: createHash('sha256').update(binding.webId).digest('hex'), selectedInUi: true,
         management: { configuration: true, models: true, quota: true } });
       await attributePackagedOperation('key-cleanup', () => key!.remove()); key = undefined;
       await keyHandle.dispose(); keyHandle = undefined;
@@ -370,7 +384,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     }
     record = { schemaVersion: 1, kind: 'desktop-permission-acceptance', ok: true,
       sourceSha: options.sourceSha, version: options.version, archive: fixture.archive, runtime: fixture.runtime,
-      identity: { cloudCard: true, sameWebId: true, independentStorage: true, noPublicRoute: true, browserCallback: allCallbacks },
+      identity: { cloudCard: true, independentWebIds: true, independentStorage: true, noPublicRoute: true, browserCallback: allCallbacks },
       pods: podEvidence,
       operations: { accountActor: true, keyCreate: true, keyList: true, keyRevoke: true, collectionConfirmed: true,
         conflictCount: 0, chatStatus: 200, chatBodyMatches: true, chatDispatches: 1,

@@ -3,12 +3,13 @@ import path from 'node:path';
 import { credentialResource } from '@undefineds.co/models';
 import type { Page, Request, Response } from '@playwright/test';
 import type { AiConnectionsProvider, CreateApiKeyCredentialInput } from '@undefineds.co/ai-connections/client';
+import { CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS, chatCompletionBodyMatches } from './chat-acceptance';
 import type { MountedPodPermissionPhase } from './packaged-desktop-permissions';
 
 /** Closed boundary names are the only operation detail published by CI. */
 export type PackagedOperationCondition = 'provider-identity' | 'provider-collection'
   | 'provider-create' | 'provider-confirm' | 'provider-publication' | 'provider-cleanup'
-  | 'key-dialog' | 'key-cleanup' | 'held-invocation' | 'first-chat';
+  | 'key-dialog' | 'key-cleanup' | 'held-credential' | 'first-chat';
 
 export class PackagedOperationError extends Error {
   override readonly cause: unknown;
@@ -299,30 +300,32 @@ export async function acceptMountedFirstChat(page: Page, input: {
       if (new URL(input.endpoint).origin !== window.location.origin) throw new Error('Chat is outside the owned Gateway');
       const response = await fetch(input.endpoint, { method: 'POST', redirect: 'error',
         headers: { Authorization: `Bearer ${input.key}`, 'X-Xpod-Pod-Url': input.podUrl, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: input.model, messages: [{ role: 'user', content: `Reply exactly ${input.marker}` }], temperature: 0, max_tokens: 32 }),
+        body: JSON.stringify({ model: input.model, messages: [{ role: 'user', content: `Reply exactly ${input.marker}` }], temperature: 0, max_tokens: input.maxOutputTokens }),
         signal: AbortSignal.timeout(90_000) });
-      const body = await response.json() as { choices?: Array<{ message?: { content?: unknown } }> };
-      return { status: response.status, bodyMatches: body.choices?.[0]?.message?.content === input.marker };
-    }, { ...input, endpoint });
-    if (result.status !== 200 || result.bodyMatches !== true || dispatches !== 1) throw new Error('Actual Chat status, body or first-dispatch count failed');
+      return { status: response.status, body: await response.json() as unknown };
+    }, { ...input, endpoint, maxOutputTokens: CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS });
+    if (result.status !== 200 || !chatCompletionBodyMatches(result.body, input.marker) || dispatches !== 1) {
+      throw new Error('Actual Chat status, body or first-dispatch count failed');
+    }
     return { status: 200, bodyMatches: true, dispatches: 1 };
   } finally { page.off('request', observe); }
 }
 
-/** Reuse the descriptor's same held invocation twice on its authoritative Pod.
- * This exercises the server scope and session-independent capability without
- * issuing another credential or replaying any mutation.
+/** Reuse the actual Account-issued Solid credential twice on its selected Pod.
+ * A gateway-local invocation proves a principal to Xpod, not to the Pod. Keep
+ * that capability out of the positive client-authentication acceptance lane.
  */
-export async function acceptHeldPodInvocation(page: Page, input: {
-  gateway: string; podUrl: string; invocation: string; model: string;
+export async function acceptHeldSolidCredential(page: Page, input: {
+  gateway: string; podUrl: string; key: string; model: string;
 }): Promise<true> {
+  if (!input.key.startsWith('sk-')) throw new Error('Pod models reuse requires the issued Solid client credential');
   const statuses = await page.evaluate(async input => {
     const endpoint = new URL('v1/models', input.gateway);
-    if (endpoint.origin !== window.location.origin) throw new Error('Held invocation is outside the own Gateway');
+    if (endpoint.origin !== window.location.origin) throw new Error('Held Solid credential is outside the own Gateway');
     const observed: Array<{ status: number; modelCount: number; modelMatches: boolean }> = [];
     for (let index = 0; index < 2; index++) {
       const response = await fetch(endpoint.href, { redirect: 'error', signal: AbortSignal.timeout(20_000),
-        headers: { Authorization: `Bearer ${input.invocation}`, 'X-Xpod-Pod-Url': input.podUrl } });
+        headers: { Authorization: `Bearer ${input.key}`, 'X-Xpod-Pod-Url': input.podUrl } });
       const value = await response.json() as { data?: Array<{ id?: string }> };
       observed.push({ status: response.status, modelCount: Array.isArray(value.data) ? value.data.length : -1,
         modelMatches: value.data?.length === 1 && value.data[0].id === input.model });
@@ -330,7 +333,7 @@ export async function acceptHeldPodInvocation(page: Page, input: {
     return observed;
   }, input);
   if (statuses.length !== 2 || statuses.some(value => value.status !== 200 || value.modelCount !== 1 || !value.modelMatches)) {
-    throw new Error('Same-Pod held invocation reuse failed: ' + JSON.stringify(statuses));
+    throw new Error('Same-Pod held Solid credential reuse failed: ' + JSON.stringify(statuses));
   }
   return true;
 }

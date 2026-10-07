@@ -228,11 +228,11 @@ const runMode = async (browser: Browser, config: ModeConfig) => {
     // while it is "checking" may swallow the click.
     await page.waitForFunction(
       () => !document.body.innerText.includes('正在检查'),
-      { timeout: 15000 },
-    ).catch(() => undefined);
+      undefined, { timeout: 15000 },
+    );
     await record(page, steps, 'register-filled', dir, `account=${account}`);
     const createButton = page.getByRole('button', { name: '创建账号' });
-    await createButton.click({ force: true });
+    await createButton.click();
     // Registration is a chain: create account -> create pod -> pick WebID ->
     // consent -> token. It takes well over a fixed sleep on a cold stack, so
     // wait for the IdP to actually hand back instead of guessing a duration.

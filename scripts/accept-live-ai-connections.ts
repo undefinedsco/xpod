@@ -1,3 +1,4 @@
+import { CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS, streamedChatBodyMatches, type ChatAcceptanceProtocol } from './helpers/chat-acceptance';
 import { drizzle, type SolidAuthSession, type SolidDatabase } from '@undefineds.co/drizzle-solid';
 import { aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
 import {
@@ -206,13 +207,13 @@ try {
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: 'Reply with exactly: XPOD_OK' }],
-        max_tokens: 128,
+        max_tokens: CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS,
         temperature: 0,
         stream: true,
       }),
     });
     const chatText = await readText(chatResponse, `POST /v1/chat/completions (${model})`);
-    assertSemanticSuccess(chatText, `chat/completions ${model}`);
+    assertSemanticSuccess(chatText, 'chatCompletions', `chat/completions ${model}`);
     console.log(JSON.stringify({
       step: 'chat',
       protocol: 'openai-chat-completions',
@@ -227,12 +228,12 @@ try {
       body: JSON.stringify({
         model,
         input: 'Reply with exactly: XPOD_OK',
-        max_output_tokens: 128,
+        max_output_tokens: CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS,
         stream: true,
       }),
     });
     const responsesText = await readText(responsesResponse, `POST /v1/responses (${model})`);
-    assertSemanticSuccess(responsesText, `responses ${model}`);
+    assertSemanticSuccess(responsesText, 'responses', `responses ${model}`);
     console.log(JSON.stringify({ step: 'chat', protocol: 'openai-responses', status: responsesResponse.status, model, ok: true }));
 
     const messagesResponse = await stack.runtimeFetch('/v1/messages', {
@@ -244,13 +245,13 @@ try {
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: 'Reply with exactly: XPOD_OK' }],
-        max_tokens: 128,
+        max_tokens: CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS,
         temperature: 0,
         stream: true,
       }),
     });
     const messagesText = await readText(messagesResponse, `POST /v1/messages (${model})`);
-    assertSemanticSuccess(messagesText, `messages ${model}`);
+    assertSemanticSuccess(messagesText, 'anthropic', `messages ${model}`);
     console.log(JSON.stringify({ step: 'chat', protocol: 'anthropic-messages', status: messagesResponse.status, model, ok: true }));
   }
 
@@ -516,27 +517,8 @@ async function readText(response: Response, operation: string): Promise<string> 
   return text;
 }
 
-function assertSemanticSuccess(text: string, operation: string): void {
-  const semanticText = text
-    .split(/\r?\n/u)
-    .filter((line) => line.startsWith('data: ') && line !== 'data: [DONE]')
-    .flatMap((line) => {
-      try {
-        const event = JSON.parse(line.slice(6)) as Record<string, any>;
-        return [
-          event.choices?.[0]?.delta?.content,
-          event.choices?.[0]?.delta?.reasoning_content,
-          event.delta,
-          event.delta?.text,
-          event.delta?.thinking,
-          event.text,
-        ].filter((value): value is string => typeof value === 'string');
-      } catch {
-        return [];
-      }
-    })
-    .join('');
-  if (!semanticText.includes('XPOD_OK')) {
-    throw new Error(`${operation} did not contain the expected semantic response: ${text.slice(0, 800)}`);
+function assertSemanticSuccess(text: string, protocol: ChatAcceptanceProtocol, operation: string): void {
+  if (!streamedChatBodyMatches(text, protocol, 'XPOD_OK')) {
+    throw new Error(`${operation} did not contain a completed assistant acceptance response`);
   }
 }

@@ -28,8 +28,8 @@ RC 的 macOS job 等本次服务部署验收成功，再使用已授权 provider
 
 ## 实际流程
 
-1. 只从 exact zip 解出新的 App，独有 userData、cache、数据/数据库与配置 apply/backups 目录；不启动或修改原 App/profile。检查 plist、bundled binary 版本与 hash、真实 desktop IPC ownership/PID、实际运行命令及生成的配置位置。
-2. 复用现有 Cloud Account/password、provision receipt、Local route、浏览器 OIDC helper，一个 Cloud WebID/card 对应两份注册 Local 存储绑定。公开 card 使用已安装 Solid client 的 `getSolidDataset`、exact WebID `getThing` 和 `getPodUrlAllFrom` 读取存储关系，支持相对 Turtle/prefix 序列化；只去 HTTP 文档 fragment，主体身份保持完整。实际 Consent 确认目标 Pod 并独立确认 callback/PKCE，不通过写 remembered storage 伪造选择。当前入口为账号卡片“切换账号”后新的 Consent 事务。
+1. 先构建 exact-source DMG 与 ZIP，实际安装 DMG 后启动安装的 App，并独立比较安装内容与 ZIP；使用独有 userData、cache、数据/数据库与配置 apply/backups 目录。检查 plist、bundled binary 版本与 hash、真实 desktop IPC ownership/PID、实际运行命令及生成的配置位置。
+2. 复用现有 Cloud Account/password、provision receipt、Local route、浏览器 OIDC helper，同一 Account 下两个独立 Cloud WebID/card 各对应一份注册 Local 存储绑定；同 WebID 多 Pod 另行验收。公开 card 使用已安装 Solid client 的 `getSolidDataset`、exact WebID `getThing` 和 `getPodUrlAllFrom` 读取存储关系，支持相对 Turtle/prefix 序列化；只去 HTTP 文档 fragment，主体身份保持完整。实际 Consent 确认目标 Pod 并独立确认 callback/PKCE，不通过写 remembered storage 伪造选择。当前入口为账号卡片“切换账号”后新的 Consent 事务。
    绑定的证明分两条互斥路径：surface 出现 WebID/存储选择器或 radio 时，必须实际选中该 exact 绑定；surface 一个选择器都不渲染（`ConsentView` 的 `single = webIds.length === 1`，事务已带 `entryBinding` 时即为此形态）时，取该已渲染的 singleton/no-chooser 呈现形态这一**观察**，加上页面运行态 binding 为 authenticated 且 webId/podUrl 与目标完全一致。no-chooser 形态只是产品渲染事实，**不等于**用户同意；两条路径都要求 callback code/state 与 PKCE 证据，并各自要有实际的批准提交。已提供的选择器不匹配时不得回退到单绑定路径；若事务没有目标选项且 surface 提供了选择器，流程失败。
 
 ### 显式"记住授权"选择按批准文档生效
@@ -44,7 +44,7 @@ driver 以 origin+pathname 识别当前文档（不保留 query，避免把潜�
 这些 token 只由固定枚举推导，不包含原始 trace。runner 的 stdout 投影直接给出真实受审 code（此前统一降级为 `unclassified`）；`describeFailure` 会展开 `AggregateError` 按 primary/cleanup 顺序取第一个受审失败，但只有既非本驱动、也非登录/mounted helper 抛出、且不含任何受审类型的未知错误才降级为固定的 `unclassified` 说明——不依赖正则清洗，因此 provider key、opaque token、assertion/credential dump 不会因为绕过正则而外泄。原始 message、错误名、stack 及被包装的原始 rejection cause 只进 600 权限的私有文件，从不公开。workflow 用 `if: failure()` + `if-no-files-found: ignore` 单独上传该文件。私有目录本身（含账号、Cookie/token、callback URL、输入配置）从不作为 artifact 上传，因此产物缺失不等于通过。
 3. 每个 Pod 都先检查实际 HEAD：404 才记录 absent；已存在目标仍须官方 SDK 独立证明服务权限 missing。首次 authorize 后逐资源 readback，父 ACR 字节不变；再次 authorize 逐资源读取、零 ACR 写且不重新登录。资源集合只从共享声明加载，不复制路径表、不预创建目标绕过首次初始化。
 4. 使用原 mounted controller 的公开 client，等待 collection adoption 后只创建一次 credential；等 pending 清空、无 conflict，独立读回 credential，核对 discovery 与发布模型的 provider/model/credential 关系及真实 quota。集合行键与 client 返回的凭据资源标识是不同表示，创建确认及删除确认均须通过共享 `credentialResource.buildId` 比较，不能直接比较原始字符串。RC.292 的同源码桌面诊断复现了创建确认超时；回归测试证明旧驱动在合法行键/资源标识组合上也会超时，修复后的单元通过仍不代表真实桌面全链路已通过。Account Key 通过真实 dialog 创建、list、配置 apply 与 revoke；验证本次新增 Account credential 唯一、与签发响应 clientId 一致且归属当前 WebID，配置文件实际落在独有目录。HTTP 200/201 成功仍要求合法 readback 与正确 Account actor。
-5. 每个 Pod 的第一笔 Chat 请求只 dispatch 一次，校验 200 和 exact marker；两次 GET 复用 descriptor 签发的同一 held invocation。A 的真实批准/拒绝/Stop、Session 终态和 grant cleanup 复用现有 live Task helper。独立读回 A 的三个 Task，B 的集合须为空，A invocation 配 B hint 拒绝，B 不能 resume A 的 Run。
+5. 每个 Pod 的第一笔 Chat 请求只 dispatch 一次，校验 200 和 exact marker；两次 GET 复用实际 Account 对话框签发的同一 Solid client credential；descriptor invocation 不用于该正向检查。A 的真实批准/拒绝/Stop、Session 终态和 grant cleanup 复用现有 live Task helper。独立读回 A 的三个 Task，B 的集合须为空，A invocation 配 B hint 拒绝，B 不能 resume A 的 Run。
 6. 删除本次 provider 与 Pod/Account Key，恢复该 capability 归属的授权变化。产品已经补偿“Account 已签发、Pod 注册失败”的中间状态；producer 不另造 revoke，独立比较 Account 创建前后集合，仍有新增项即失败。保留已有授权、控制权限和其他 agent 策略。
 
 ## 证据与清理
@@ -66,3 +66,24 @@ Pod 已认证不代表 Account controls 已提交。Account controls 到达后�
 WebID 有效会话应恢复 Account 能力。密钥验收读取当前挂载对象，允许 Account Token 或带 proof 的 DPoP 认证；通过签发响应的准确 clientId、唯一新增记录和 WebID 归属核对及撤销。Account 是密钥索引；服务器会给名称追加 UUID，不能依赖输入名称寻找或清理密钥。
 
 Provider confirmation compares collection descriptor keys and provider resource ids through the authoritative models mapping. Missing collection rows or a non-ready collection cannot prove deletion; both creation and removal require an independently observed, ready collection snapshot. This repairs the reproducible identity mismatch without claiming that RC.292's unclassified operation failure is already attributed.
+
+
+2026-10-07 安装包诊断：内部 invocation 对 `/v1/models` 实际返回 `403 service_access_missing`。这与 caller-owned 设计一致：内部 token 不能当作 Pod 的 Solid 凭据。正向同 Pod 复用与 Chat 必须使用真实 Key 对话框签发并写入 Pi 的 `sk-base64(client_id:client_secret)`；内部 invocation 只保留在独立的跨 Pod 拒绝检查中，不通过借用部署权限使其变成 Pod 凭据。回归要求把内部 token 传入正向复用助手时在发请求前拒绝。
+
+
+同轮真实 Chat 诊断：32 token 预算返回 HTTP 200，但 `finish_reason=length`，推理输出耗尽预算，正文为空或截断；独立的 512 token 诊断返回 `finish_reason=stop` 且正文准确匹配随机 marker。首次 Chat 验收固定使用有界 512 token 预算，并同时要求 200、完整 stop、准确正文和仅一次 POST，不重试写入、不把 reasoning 或 HTTP 200 当作正文成功。
+
+## 2026-10-07 同类错误排查
+
+| 错误类型 | 排查入口与处理 |
+| --- | --- |
+| 把内部 token 当 Pod 凭据 | 打包正向复用改为真实 Account Solid key；内部 token 保留跨 Pod 拒绝检查。`ai-gateway-codex-smoke.ts` 的 issuer 输入已有 `viaApiKey/clientId/clientSecret`，实际返回 Solid wrapper，不属同一错误。UI 的 client-configuration invocation 只服务原生文件能力，不改为普通 Pod 管理认证。 |
+| 输出预算不足 | 打包原 32、live Gateway 原 64、三协议 live/真实浏览器原 128（部分夹具 16）统一引用有界 512 token 验收常量。 |
+| 把推理或截断当回答 | live 流式旧判据包含 reasoning/thinking；现统一按协议读取 assistant 正文，要求完整终态和准确 marker。JSON 同样要求 stop，不仅检查 200。用三种真实 frontend serializer 验证契约，拒绝 reasoning-only、缺终态、length、错误流与混用协议。 |
+| 尚未就绪就操作 | committed host 的等待回归与 collection-ready 门禁保留；注册验收修正 Playwright timeout 参数位置，不吞等待失败，不强制点击尚不可用的按钮。桌面截图采集器的等待超时只用于保留 loading/error 诊断，不能计作功能验收通过。 |
+| 用展示名称清理 | 打包 key 以实际签发 id 定位并独立回读撤销结果；浏览器 key E2E 已用 `data-key-id`。清理不能借同名记录或页面消失证明凭据失效。 |
+| 夹具不足以支持隔离结论 | 原打包夹具是一个 Cloud WebID 的两个 Local storage bindings；改为同一 Account 下两个独立 Cloud profiles/WebIDs，各自独立 finalize Local Pod、验证 Cloud card。一个 WebID 多 Pod 仍是单独场景，不能与两个 WebID 隔离互相替代。 |
+
+本节是源码审计及回归范围，不代表上述入口已全部通过真实实例或安装包验收。`22b614677` 的第一次完整集成通过，第二次在 notification 性能基线失败（5020ms，要求 <5000ms）；保留失败，不提高门槛，下一冻结源码的完整门禁串行运行，避免同时构建安装包。旧安装探测 Account token 在 RC 数据重置后返回 401，只能证明旧清理会话不可用，不能声称已独立确认旧凭据删除。
+
+证据校验器也要求两个不同的 `webIdSha256`，并拒绝旧的 `sameWebId` 字段；仅有两个不同存储绑定不能通过独立身份验收。
