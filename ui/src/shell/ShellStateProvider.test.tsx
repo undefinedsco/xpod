@@ -132,3 +132,45 @@ it('refreshes terminal checkpoint projections out of both the shell and tray wit
   expect(mocks.decide).not.toHaveBeenCalled();
   expect(approvals.map(item => item.status)).toEqual(['pending', 'pending']);
 });
+
+function storageUsage(storageBytes: number, storageLimitBytes: number | null) {
+  return {
+    storage: {
+      status: 'available',
+      usage: { storageBytes, ingressBytes: 0, egressBytes: 0, computeSeconds: 0, tokensUsed: 0 },
+      limits: { storageLimitBytes, bandwidthLimitBps: null, computeLimitSeconds: null, tokenLimitMonthly: null },
+    },
+  };
+}
+function hasStorageQuota() {
+  const snapshot = JSON.parse(screen.getByRole('status').textContent || '{}');
+  return (snapshot.attention ?? []).some((item: { id: string }) => item.id === 'pod:storage');
+}
+
+it('raises the storage quota attention at the 80% threshold and never for below/unlimited/unsupported', async () => {
+  // A fresh object per read: the provider pushes onto the snapshot it receives.
+  mocks.read.mockImplementation(async () => ({ attention: [], activity: [], inbox: [], inProgress: [] }));
+  mocks.network.mockResolvedValue(null);
+  mocks.usage.mockResolvedValue(storageUsage(80, 100));
+  render(<ShellStateProvider><View /></ShellStateProvider>);
+  await waitFor(() => expect(hasStorageQuota()).toBe(true));
+  const raised = JSON.parse(screen.getByRole('status').textContent || '{}')
+    .attention.find((item: { id: string }) => item.id === 'pod:storage');
+  expect(raised.kind).toBe('quota');
+
+  mocks.usage.mockResolvedValue(storageUsage(79, 100));
+  fireEvent(window, new Event('xpod:pod-changed'));
+  await waitFor(() => expect(hasStorageQuota()).toBe(false));
+
+  mocks.usage.mockResolvedValue(storageUsage(100, 100));
+  fireEvent(window, new Event('xpod:pod-changed'));
+  await waitFor(() => expect(hasStorageQuota()).toBe(true));
+
+  mocks.usage.mockResolvedValue(storageUsage(100, null));
+  fireEvent(window, new Event('xpod:pod-changed'));
+  await waitFor(() => expect(hasStorageQuota()).toBe(false));
+
+  mocks.usage.mockResolvedValue({ storage: { status: 'unsupported', reason: 'no usage source' } });
+  fireEvent(window, new Event('xpod:pod-changed'));
+  await waitFor(() => expect(hasStorageQuota()).toBe(false));
+});

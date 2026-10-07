@@ -57,6 +57,8 @@ export interface AiConnectionsPanelProps {
   onAuthorizeService?: () => Promise<void>
   /** Disable when the embedding application already renders shared-ui Toaster. */
   renderToaster?: boolean
+  /** Reveals read-only interface addresses (design §4.1); off by default. */
+  developerMode?: boolean
   openExternal?: (url: string) => void | Promise<void>
   clientConfigurationBridge?: AiClientConfigurationBridge
   selectedSection?: AiConnectionsWorkspaceSection
@@ -94,6 +96,7 @@ export function AiConnectionsPanel({
   client,
   onAuthorizeService,
   renderToaster = true,
+  developerMode = false,
   openExternal = openExternalUrl,
   clientConfigurationBridge,
   selectedSection = 'provider',
@@ -957,6 +960,7 @@ export function AiConnectionsPanel({
               baseUrl={baseUrlInputs[definition.id] ?? providerSummariesInput[definition.id]?.baseUrl ?? ''}
               busy={Boolean(busyProviders[definition.id] || verifyingProviders[definition.id])}
               disabled={providerLoading}
+              developerMode={developerMode}
               error={providerErrors[definition.id]}
               quotas={quotas[definition.id]}
               models={providerModels}

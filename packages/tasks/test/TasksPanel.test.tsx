@@ -88,3 +88,48 @@ describe('shared task body', () => {
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }));
     await waitFor(() => expect(client.create).toHaveBeenCalledWith({ prompt: 'Read news', kind: 'interval', intervalSeconds: 900, workspace: 'https://pod.test/work/' }));
   });
+
+describe('scheduled task behavior', () => {
+  const aiOwner = 'https://pod.test/ai';
+  it('renders the kind glyph and accessible label for cron, interval and event', async () => {
+    const tasks = [
+      { id: 'cron', instruction: 'Cron task', assignedTo: aiOwner, status: 'active', createdAt: 1, updatedAt: 1, schedule: { kind: 'cron' as const, cron: '0 8 * * *' } },
+      { id: 'interval', instruction: 'Interval task', assignedTo: aiOwner, status: 'active', createdAt: 2, updatedAt: 2, schedule: { kind: 'interval' as const, intervalSeconds: 60 } },
+      { id: 'event', instruction: 'Event task', assignedTo: aiOwner, status: 'active', createdAt: 3, updatedAt: 3, schedule: { kind: 'event' as const, eventName: 'deploy' } },
+    ];
+    const { container } = render(<TasksPanel client={clientFor(tasks)} webId={owner} workspace="https://pod.test/work/" />);
+    await screen.findByText('Cron task');
+    expect(container.querySelector('[aria-label="定时"]')?.textContent).toBe('▦');
+    expect(container.querySelector('[aria-label="周期"]')?.textContent).toBe('↻');
+    expect(container.querySelector('[aria-label="事件"]')?.textContent).toBe('ϟ');
+  });
+  it('runs, pauses future runs, and stops the current run through distinct client commands', async () => {
+    const task = { id: 'sched', instruction: 'Scheduled', assignedTo: aiOwner, status: 'active', createdAt: 1, updatedAt: 1, schedule: { kind: 'cron' as const, cron: '0 8 * * *', paused: false } };
+    const runningRun = { id: 'run1', status: 'running', createdAt: 1 };
+    const client = clientFor([task]);
+    vi.mocked(client.run).mockResolvedValue({ run: runningRun } as never);
+    vi.mocked(client.runs).mockResolvedValue({ runs: [runningRun] } as never);
+    vi.mocked(client.stop).mockResolvedValue({ run: { ...runningRun, cancelRequestedAt: 5 } } as never);
+    render(<TasksPanel client={client} webId={owner} workspace="https://pod.test/work/" selectedTaskId="sched" />);
+    await screen.findByRole('heading', { name: 'Scheduled' });
+    fireEvent.click(screen.getByRole('button', { name: '立即运行一次' }));
+    await waitFor(() => expect(client.run).toHaveBeenCalledWith('sched'));
+    fireEvent.click(screen.getByRole('button', { name: '暂停后续运行' }));
+    await waitFor(() => expect(client.pause).toHaveBeenCalledWith('sched', true));
+    fireEvent.click(await screen.findByRole('button', { name: '停止这次运行' }));
+    await waitFor(() => expect(client.stop).toHaveBeenCalledWith('run1'));
+  });
+  it('disables run-once and pause for an ended scheduled task', async () => {
+    const task = { id: 'done', instruction: 'Done task', assignedTo: aiOwner, status: 'completed', createdAt: 1, updatedAt: 1, schedule: { kind: 'cron' as const, cron: '0 8 * * *' } };
+    render(<TasksPanel client={clientFor([task])} webId={owner} workspace="https://pod.test/work/" selectedTaskId="done" />);
+    await screen.findByRole('heading', { name: 'Done task' });
+    expect((screen.getByRole('button', { name: '立即运行一次' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '暂停后续运行' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  it('never renders a supplied runner identity in the list or detail', async () => {
+    const task = { id: 'r1', instruction: 'Agent work', assignedTo: aiOwner, status: 'active', createdAt: 1, updatedAt: 1, runner: 'pi:pi', schedule: { kind: 'cron' as const, cron: '0 8 * * *' } } as unknown as TaskSummary;
+    const { container } = render(<TasksPanel client={clientFor([task])} webId={owner} workspace="https://pod.test/work/" selectedTaskId="r1" />);
+    await screen.findByRole('heading', { name: 'Agent work' });
+    expect(container.textContent).not.toContain('pi:pi');
+  });
+});
