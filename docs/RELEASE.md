@@ -161,6 +161,9 @@ Status 所有管理操作、所有订阅 provider 或原安装 App 已验；不�
 阶段（`pod-permission` + mounted 边界 token），并对 `AggregateError` 按 primary/cleanup 顺序取第一个受审失败；
 stage 时长**不能**证明是哪个内部操作失败——RC `37580705243` 的 `pod-a` 内部操作仍然是
 UNPROVEN，直到下一轮 RC 以该归因复现。
+RC.300 的 `operations-a/task-isolation` 也只证明 Task 验收失败，不证明具体根因。
+桌面失败凭证的 `task` 字段保留受限阶段、HTTP 状态、固定错误分类和清理结果，
+包括尚未创建 case 的 grant 失败；原始错误、资源地址、凭据和响应正文继续只存私有证据。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 

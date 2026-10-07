@@ -15,7 +15,7 @@ import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissi
 import { createConfirmedMountedProvider, createMountedKeyInUi, acceptMountedFirstChat, acceptHeldSolidCredential,
   attributePackagedOperation, PackagedOperationError, type PackagedOperationCondition } from './helpers/packaged-desktop-operations';
 import { verifyPackagedSourceCheckout } from './helpers/packaged-desktop-source';
-import { acceptLiveTaskApproval, type LiveTaskEvidence } from './helpers/live-task-approval';
+import { acceptLiveTaskApproval, summarizeLiveTaskFailure, type LiveTaskEvidence } from './helpers/live-task-approval';
 import { completeOidcLogin, consentBindingProven, OidcApprovalError, type BrowserOidcTrace,
   type OidcApprovalCondition } from '../tests/helpers/browserSolidOidc';
 import { captureBrowserAiConnections, readBrowserXpodRuntime } from '../tests/helpers/browserXpodRuntime';
@@ -410,7 +410,8 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     // reviewed failure codes; the raw errors stay in the 600-mode private file.
     await writeFile(path.join(options.privateDirectory, SAFE_FAILURE_FILE), JSON.stringify({ schemaVersion: 1,
       kind: 'desktop-permission-failure', sourceSha: options.sourceSha, version: options.version, stage: failed,
-      failures: publishedFailures(failures) }, null, 2) + '\n', { mode: 0o644 });
+      failures: publishedFailures(failures),
+      ...(taskSnapshot ? { task: summarizeLiveTaskFailure(taskSnapshot) } : {}) }, null, 2) + '\n', { mode: 0o644 });
     // The stdout projection must name the real reviewed code, so a CI run stays
     // diagnosable without the private evidence upload.
     const published = describeFailure(primaryFailure ?? failures[0]);
