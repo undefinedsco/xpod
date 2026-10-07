@@ -199,9 +199,18 @@ test('candidate workflow binds the desktop check to real source-bound acceptance
   const candidate = fs.readFileSync(path.resolve(__dirname, '../../.github/workflows/candidate.yml'), 'utf8');
   assert.match(candidate, /desktop\/scripts\/packaged-update-acceptance\.mjs/);
   assert.match(candidate, /--source-sha "\$\{\{ github\.sha \}\}"/);
-  assert.match(candidate, /--expected-new-zip/);
+  // The byte-level binding moved from the retired standalone `--expected-new-zip`
+  // verify step into the combined mandatory desktop gate. That gate re-hashes the
+  // uploaded candidate zip through `--expected-archive` (passed to
+  // verifySelfUpdate as newZipSha256/newZipSize) and additionally requires the
+  // permission evidence and the declared resource ids before it can set
+  // `desktop`, so assert the binding that actually exists instead of the old flag.
+  assert.match(candidate, /scripts\/desktop-acceptance\.cjs/);
+  assert.match(candidate, /--self-update-evidence "\$\{\{ runner\.temp \}\}\/desktop-self-update\/desktop-self-update-evidence\.json"/);
+  assert.match(candidate, /--permission-evidence "\$\{\{ runner\.temp \}\}\/desktop-permissions\/desktop-permission-evidence\.json"/);
+  assert.match(candidate, /--expected-archive "\$candidate_zip"/);
   assert.match(candidate, /desktop-self-update-acceptance-\$\{\{ github\.sha \}\}/);
-  assert.match(candidate, /scripts\/desktop-self-update-acceptance\.cjs verify/);
+  assert.match(candidate, /desktop-permission-acceptance-\$\{\{ github\.sha \}\}/);
   assert.doesNotMatch(candidate, /['"]desktop['"]\s*:\s*['"]passed['"]/);
 });
 
