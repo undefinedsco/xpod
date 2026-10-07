@@ -14,6 +14,7 @@ export interface PodAccessLogEntry {
   status: number;
   requestBytes: number;
   responseBytes: number;
+  diskTransfer?: { bytesRead: number; chunks: number; maxReadGapMs: number; elapsedMs: number; sourceEnded: boolean; responseFinished: boolean; responseClosed: boolean };
 }
 
 interface StoredFile {
@@ -121,6 +122,25 @@ export async function startPodContractServer(options: PodContractServerOptions =
       let responseBytes = 0;
       let requestBytes = 0;
       let resource: string | undefined;
+      let diskTransfer: PodAccessLogEntry['diskTransfer'];
+      const pipeDiskBody = (diskPath: string, start?: number, end?: number): void => {
+        const progress = { bytesRead: 0, chunks: 0, maxReadGapMs: 0, elapsedMs: 0, sourceEnded: false, responseFinished: false, responseClosed: false };
+        diskTransfer = progress;
+        const started = performance.now(); let previous = started;
+        const observe = (): void => { progress.elapsedMs = performance.now() - started; };
+        const stream = createReadStream(diskPath, { start, end });
+        stream.on('data', (chunk: Buffer | string) => {
+          const now = performance.now();
+          progress.bytesRead += Buffer.byteLength(chunk); progress.chunks++;
+          progress.maxReadGapMs = Math.max(progress.maxReadGapMs, now - previous);
+          previous = now; observe();
+        });
+        stream.on('end', () => { progress.sourceEnded = true; observe(); });
+        stream.on('error', () => { observe(); response.destroy(); });
+        response.on('finish', () => { progress.responseFinished = true; observe(); });
+        response.on('close', () => { progress.responseClosed = true; observe(); stream.destroy(); });
+        stream.pipe(response);
+      };
 
       const streamBodyToDisk = async (): Promise<{ size: number; diskPath: string }> => {
         const diskPath = path.join(scratch, `put-${randomUUID()}.tmp`);
@@ -297,10 +317,7 @@ export async function startPodContractServer(options: PodContractServerOptions =
                     status = 206; responseBytes = request.method === 'HEAD' ? 0 : length;
                     response.writeHead(206, headers({ 'content-range': `bytes ${start}-${end}/${total}`, 'content-length': length }));
                     if (request.method === 'HEAD') { response.end(); } else {
-                      const stream = createReadStream(stored.diskPath, { start, end });
-                      stream.on('error', () => { try { response.destroy(); } catch { /* closed */ } });
-                      response.on('close', () => stream.destroy());
-                      stream.pipe(response);
+                      pipeDiskBody(stored.diskPath, start, end);
                     }
                   } else {
                     const body = (stored.content as Buffer).subarray(start, end + 1);
@@ -319,10 +336,7 @@ export async function startPodContractServer(options: PodContractServerOptions =
                   status = 200; responseBytes = request.method === 'HEAD' ? 0 : total;
                   response.writeHead(200, headers({ 'content-length': total }));
                   if (request.method === 'HEAD') { response.end(); } else {
-                    const stream = createReadStream(stored.diskPath);
-                    stream.on('error', () => { try { response.destroy(); } catch { /* closed */ } });
-                    response.on('close', () => stream.destroy());
-                    stream.pipe(response);
+                    pipeDiskBody(stored.diskPath);
                   }
                 } else {
                   const body = stored.content as Buffer;
@@ -399,6 +413,7 @@ export async function startPodContractServer(options: PodContractServerOptions =
         status,
         requestBytes,
         responseBytes,
+        diskTransfer,
       };
       log.push(entry);
       history.push(entry);

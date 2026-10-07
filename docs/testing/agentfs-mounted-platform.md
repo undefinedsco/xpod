@@ -27,6 +27,20 @@ only these two equivalent single-capability spellings, with negative regression
 cases still rejecting additional, missing or unrelated capabilities. Product
 archives and security settings remain unchanged; a fresh mounted run is required.
 
+Run [37605718068](https://github.com/undefinedsco/xpod/actions/runs/37605718068)
+used harness `e4d36cd1d0df47d97bb5ddb22f50b92c60464e0c`. Darwin again passed
+12 cases, with all required cases and independently verified raw/report hashes.
+Linux's same-container security binding passed, then the suite reported
+11 passed / 1 failed / 2 skipped. The 64 MiB stream/copy-up/commit passed;
+512 MiB Range reads completed, but in-place copy-up failed with EIO after the
+572-second whole-file budget. The helper recorded 115539968 received and fully
+written bytes, with a chunk-stage HTTP timeout. Producer closure, raw hash and
+owned-container absence were independently checked. This does not admit Linux.
+The next harness adds bounded disk-stream counters (actual bytes/chunks read,
+maximum read gap, source end and response finish/close) to the server journal.
+The old `responseBytes` is a declared length, not observed transfer completion.
+No helper, transfer deadline, size or RSS acceptance threshold changes here.
+
 Actual mounted (OS-level) acceptance for the frozen product archive, separate
 from the source-bound native unit/install CI. The native compiler workflow
 (`agentfs-native-acceptance.yml`) only runs on `codex/agentfs-native-acceptance`,

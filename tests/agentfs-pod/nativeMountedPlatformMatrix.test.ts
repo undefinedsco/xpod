@@ -377,7 +377,7 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       const error = primaryError as NodeJS.ErrnoException | undefined;
       await writeFile(path.join(process.env.XPOD_MOUNTED_EVIDENCE, 'stream-journal.json'), `${JSON.stringify({
         stage, sizeMiB, baselineVersion, stages, failure, observedUTC: new Date().toISOString(), elapsedMs: performance.now() - started, error: error === undefined ? null : { code: error.code, errno: error.errno, syscall: error.syscall },
-        requestCount: server.log.length, requestWindowLimit: 200, requests: server.log.slice(-200).map(({ method, resource, range, status, requestBytes, responseBytes }) => ({ method, resource, range, status, requestBytes, responseBytes })),
+        requestCount: server.log.length, requestWindowLimit: 200, requests: server.log.slice(-200).map(({ method, resource, range, status, requestBytes, responseBytes, diskTransfer }) => ({ method, resource, range, status, requestBytes, responseBytes, diskTransfer })),
         kernel: observeKernelMountsDetailed(work), sceneRetainedInHarness: primaryError !== undefined || cleanupError !== undefined, scenePath: work, retentionScope: 'ephemeral runner; no persistence after container or runner removal',
       }, null, 2)}\n`);
     };
@@ -674,6 +674,30 @@ describe('RSS sampling is non-recursive and bounded', () => {
 });
 
 describe('Pod contract server scratch + streamed PUT cleanup (ungated)', () => {
+  it('records actual disk-stream progress separately from declared body length', async () => {
+    const parent = path.resolve('.test-data/agentdir-stream-progress');
+    await mkdir(parent, { recursive: true });
+    const work = await mkdtemp(path.join(parent, 'owned-'));
+    const disk = path.join(work, 'body.bin');
+    const body = Buffer.alloc(256 * 1024, 0x61);
+    await writeFile(disk, body);
+    const fixture = await startPodContractServer({ token: TOKEN, scratchDir: work });
+    try {
+      fixture.seedDiskFile('body.bin', disk);
+      const response = await fetch(`${fixture.podRoot}body.bin`, { headers: { authorization: `Bearer ${TOKEN}` } });
+      expect(response.status).toBe(200);
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(body);
+      const entry = fixture.log.find((row) => row.resource === 'body.bin' && row.method === 'GET');
+      const deadline = Date.now() + 1000;
+      while (!entry?.diskTransfer?.responseFinished && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(entry?.responseBytes).toBe(body.length);
+      expect(entry?.diskTransfer?.bytesRead).toBe(body.length);
+      expect(entry?.diskTransfer?.chunks).toBeGreaterThan(0);
+      expect(entry?.diskTransfer?.sourceEnded).toBe(true);
+      expect(entry?.diskTransfer?.responseFinished).toBe(true);
+      expect(entry?.diskTransfer?.elapsedMs).toBeGreaterThanOrEqual(0);
+    } finally { await fixture.close(); await rm(work, { recursive: true, force: true }); }
+  });
   const SCRATCH_ROOT = path.resolve('.test-data/agentdir-mounted-matrix/pod-contract-ungated');
 
   it('rejects a 412 PUT, retires its partial scratch, and keeps the external seed', async () => {
