@@ -27,7 +27,7 @@ def validate(binding, cid, image_id, daemon, seccomp):
             or binding['privileged'] is not False or binding['AppArmorProfile'] != 'unconfined'
             or binding['NetworkMode'] != 'none' or binding['SecurityOpt'] != ['apparmor=unconfined']
             or binding['Devices'] != [{'PathOnHost': '/dev/fuse', 'PathInContainer': '/dev/fuse', 'CgroupPermissions': 'rwm'}]
-            or binding['CapAdd'] != ['SYS_ADMIN'] or binding['CapDrop'] not in (None, [])
+            or binding['CapAdd'] not in (['SYS_ADMIN'], ['CAP_SYS_ADMIN']) or binding['CapDrop'] not in (None, [])
             or len(mounts) != len(expected) or {item['destination']: item['RW'] for item in mounts} != expected
             or 'name=seccomp,profile=builtin' not in daemon or seccomp.split() != ['Seccomp:', '2']):
         raise RuntimeError('same live container security binding failed')

@@ -74,6 +74,16 @@ class LinuxContainerBindingTests(unittest.TestCase):
         self.assertNotIn('json .Mounts', b.INSPECT)
         self.assertIn('json .RW', b.INSPECT)
 
+    def test_docker_canonical_capability_name_preserves_exact_permission(self):
+        value = self.fixture()
+        value['CapAdd'] = ['CAP_SYS_ADMIN']
+        b.validate(value, value['cid'], value['imageID'], ['name=seccomp,profile=builtin'], 'Seccomp:\t2\n')
+        for capabilities in [[], ['CAP_NET_ADMIN'], ['CAP_SYS_ADMIN', 'CAP_NET_ADMIN'],
+                             ['SYS_ADMIN', 'CAP_SYS_ADMIN'], ['cap_sys_admin']]:
+            value['CapAdd'] = capabilities
+            with self.subTest(capabilities=capabilities), self.assertRaises(RuntimeError):
+                b.validate(value, value['cid'], value['imageID'], ['name=seccomp,profile=builtin'], 'Seccomp:\t2\n')
+
     def test_existing_release_or_cidfile_refuses_before_any_producer(self):
         for name in ['linux-binding.release', 'container.cid']:
             with self.subTest(name=name), owned_scratch() as directory:

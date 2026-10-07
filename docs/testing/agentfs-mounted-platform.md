@@ -14,6 +14,19 @@ separate mini harness branch is `codex/solidfs-mounted-mini-20261007`, dispatche
 explicitly without moving other development branches. Historical failures and
 earlier product bindings below remain evidence of their own runs.
 
+Mounted run [37605017722](https://github.com/undefinedsco/xpod/actions/runs/37605017722)
+used harness `f407bf815e72c157637659548cc76f7e7191812b`. Darwin completed
+12 cases with 2 skips; all six required mounted cases passed, with closed
+producer/owned-group receipts and independently checked raw/report hashes.
+Linux stopped before releasing the mounted consumer: Docker reported the exact
+requested capability as `CAP_SYS_ADMIN`, while the observer expected only
+`SYS_ADMIN`. Its raw inspect shows network none, unprivileged execution,
+AppArmor unconfined and default seccomp mode 2; owned-container removal and
+absence were verified. This is not a Linux mount pass. The observer now accepts
+only these two equivalent single-capability spellings, with negative regression
+cases still rejecting additional, missing or unrelated capabilities. Product
+archives and security settings remain unchanged; a fresh mounted run is required.
+
 Actual mounted (OS-level) acceptance for the frozen product archive, separate
 from the source-bound native unit/install CI. The native compiler workflow
 (`agentfs-native-acceptance.yml`) only runs on `codex/agentfs-native-acceptance`,
