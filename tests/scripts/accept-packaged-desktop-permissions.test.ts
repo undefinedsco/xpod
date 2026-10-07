@@ -1,12 +1,11 @@
-import { runInNewContext } from 'node:vm';
-import { AiConnectionsInvocationKeyIssuer } from '../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
-import { AesInvocationTokenCodec } from '../../src/api/ai-gateway/auth/InvocationTokenCodec';
 import { errors, type Page } from '@playwright/test';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, it, vi } from 'vitest';
+import { AiConnectionsInvocationKeyIssuer } from '../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
+import { AesInvocationTokenCodec } from '../../src/api/ai-gateway/auth/InvocationTokenCodec';
 import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure,
-  publishedFailures } from '../../scripts/accept-packaged-desktop-permissions';
+  publishedFailures, requirePackagedInvocationKey } from '../../scripts/accept-packaged-desktop-permissions';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError } from '../../scripts/helpers/packaged-desktop-permissions';
 import { attributeOidcOperation, OidcApprovalError } from '../../tests/helpers/browserSolidOidc';
 
@@ -235,18 +234,29 @@ it('preserves mounted attribution through the driver final failure projection', 
   }
 });
 
-it('reads the actual issuer credential from the desktop driver service-access descriptor', async () => {
-  const issuer = new AiConnectionsInvocationKeyIssuer({
-    codec: new AesInvocationTokenCodec({ active: { kid: 'fixture', secret: 'desktop-invocation-contract-fixture' } }),
-    deployment: 'local', baseUrl: 'http://localhost:3000/v1',
-  });
-  const invocation = await issuer.issue({ auth: { type: 'solid',
-    webId: 'https://fixture.example/profile/card#me', authorizedPodUrl: 'https://fixture.example/pod/' } });
-  const source = await readFile(path.resolve('scripts/accept-packaged-desktop-permissions.ts'), 'utf8');
-  // Execute the actual driver's field read against the real issuer, rather than
-  // duplicating the descriptor shape in a fixture that could repeat its typo.
-  const expression = source.match(/const invocation = (descriptor\.invocation\?\.\w+);/)?.[1];
-  expect(expression).toBeDefined();
-  const received = runInNewContext(expression!, { descriptor: { invocation } });
-  expect(received).toBe(invocation.apiKey);
+it('consumes real Pod-bound issuer credentials through the packaged acceptance boundary', async () => {
+  const codec = new AesInvocationTokenCodec({ active: { kid: 'test', secret: 'packaged-invocation-contract' } });
+  const issuer = new AiConnectionsInvocationKeyIssuer({ codec, deployment: 'local', baseUrl: 'https://gateway.example/v1' });
+  const webId = 'https://identity.example/alice/profile/card#me';
+  const bindings = ['https://storage.example/a/', 'https://storage.example/b/'];
+  const keys: string[] = [];
+  for (const podUrl of bindings) {
+    const invocation = await issuer.issue({ auth: { type: 'solid', webId, authorizedPodUrl: podUrl } });
+    const key = requirePackagedInvocationKey({ invocation });
+    expect(key).toBe(invocation.apiKey);
+    expect(codec.decode(key)).toMatchObject({ webId, podUrl, scopes: ['models:read', 'inference:write'] });
+    keys.push(key);
+  }
+  expect(keys[0]).not.toBe(keys[1]);
+});
+
+it('fails closed for absent or non-canonical packaged invocation credentials', () => {
+  for (const descriptor of [null, {}, { invocation: {} }, { invocation: { token: 'legacy-only' } },
+    { invocation: { apiKey: '' } }, { invocation: { apiKey: '   ' } }, { invocation: { apiKey: 42 } }]) {
+    expect(() => requirePackagedInvocationKey(descriptor)).toThrow(DesktopAcceptanceError);
+    try { requirePackagedInvocationKey(descriptor); } catch (error) {
+      expect(describeFailure(error)).toEqual({ code: 'pod-permission',
+        explanation: 'The mounted Pod permission grant or restore proof failed', evidence: 'service-access' });
+    }
+  }
 });
