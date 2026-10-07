@@ -166,8 +166,8 @@ function validateManifest(manifest, expected) {
     addError(errors, 'sourceSha', 'sourceSha must be exactly 40 lowercase hex characters');
   }
 
-  if (targetVersion && manifest.sourceBranch !== `release/${targetVersion}`) {
-    addError(errors, 'sourceBranch', 'sourceBranch must match release/<version>');
+  if (manifest.sourceBranch !== 'rc') {
+    addError(errors, 'sourceBranch', 'sourceBranch must be rc');
   }
 
   if (targetVersion && !new RegExp(`^${escapeRegExp(targetVersion)}-rc\\.[1-9]\\d*(?:\\.[1-9]\\d*)?$`).test(manifest.candidateVersion)) {

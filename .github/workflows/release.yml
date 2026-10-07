@@ -50,9 +50,9 @@ jobs:
             exit 1
           fi
 
-          git fetch --no-tags origin '+refs/heads/release/*:refs/remotes/origin/release/*'
-          if ! git branch --remote --contains "$TAG_SHA" | grep -Fxq "  origin/release/$VERSION"; then
-            echo "::error::tag commit must belong to release/$VERSION"
+          git fetch --no-tags origin '+refs/heads/rc:refs/remotes/origin/rc'
+          if ! git merge-base --is-ancestor "$TAG_SHA" origin/rc; then
+            echo "::error::tag commit must belong to rc"
             exit 1
           fi
 

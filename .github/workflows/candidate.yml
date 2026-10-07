@@ -2,7 +2,7 @@ name: Release Candidate
 
 on:
   push:
-    branches: ['release/**']
+    branches: ['rc']
   workflow_dispatch:
     inputs:
       task_diagnostic_only:
@@ -12,8 +12,8 @@ on:
         default: false
 
 concurrency:
-  group: candidate-${{ github.ref }}${{ inputs.task_diagnostic_only && '-task-diagnostic' || '' }}
-  cancel-in-progress: true
+  group: xpod-rc-candidate
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -39,8 +39,8 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [[ "$REF_NAME" != release/* ]]; then
-            echo "::error::candidate workflow can only run on release/** branches"
+          if [[ "$REF_NAME" != rc ]]; then
+            echo "::error::merge into rc before requesting RC"
             exit 1
           fi
           metadata="$(node scripts/release-candidate.cjs \
@@ -1234,8 +1234,8 @@ jobs:
       - name: Restrict diagnostic branch
         run: |
           case "$GITHUB_REF" in
-            refs/heads/codex/desktop-shell-applets|refs/heads/release/0.4.22) ;;
-            *) echo '::error::Task diagnostic is restricted to the existing desktop feature/release branches'; exit 1 ;;
+            refs/heads/rc) ;;
+            *) echo '::error::RC diagnostics must run from rc'; exit 1 ;;
           esac
 
       - uses: actions/checkout@v4

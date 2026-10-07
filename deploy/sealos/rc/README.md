@@ -1,6 +1,14 @@
 # Xpod RC Sealos overlay
 
-This overlay deploys only RC-owned resources into the Sealos-assigned CO
+RC is released only from `rc` commits. Validate development branches in
+isolated Docker projects, normally merge reviewed changes preserving ancestry, then admit one immutable
+candidate to the shared environment. The workflow never automatically cancels
+an active candidate. CNB and manual operations are outside GitHub's lock and
+must coordinate exclusive ownership before touching RC. See the authoritative
+[release process](../../../docs/RELEASE.md#先合入再发-rc); this overlay is not an
+alternative branch release entry point.
+
+This overlay deploys only RC-owned resources into the Sealos-assigned GZ
 namespace. It never creates a Namespace or a private Inngest instance.
 
 Public entry points mirror production roles:
@@ -27,8 +35,8 @@ database in the shared PostgreSQL instance (`xpod-rdf-postgres`, database
 `vector`, `xpod_rdf` and `xpod_qlever` extensions are installed in that order,
 so stale schemas and candidate data cannot cross runs and no per-run database
 instance has to be provisioned or reclaimed. The shared
-public RC entry points are serialized at the deployment job: release branches may
-build in parallel but cannot mutate the static RC service concurrently. RC reuses
+public RC entry points are serialized: only rc candidates may deploy, and
+development branches must not mutate the static RC service. RC reuses
 Redis and Inngest with an isolated nonzero Redis DB and Event Key. Pod blobs are written to the
 dedicated Cloudflare R2 bucket `xpod-rc`; its endpoint and credentials come only
 from `APP_ENV_FILE`. The historical `CSS_MINIO_*` names remain for compatibility

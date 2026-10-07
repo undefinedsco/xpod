@@ -25,14 +25,15 @@ function validateSha(sha) {
   return text;
 }
 
-function deriveCandidate({ branch, runNumber, runAttempt, sha }) {
+function deriveCandidate({ branch, version, runNumber, runAttempt, sha }) {
   const branchName = String(branch ?? '').trim();
   const match = /^release\/(.+)$/.exec(branchName);
-  if (!match) {
-    throw new Error('branch must use release/<version>');
+  if (!match && branchName !== 'rc') {
+    throw new Error('branch must be rc (legacy metadata: release/<version>)');
   }
 
-  const targetVersion = match[1];
+  // Legacy branch parsing is retained for historical metadata, not RC admission.
+  const targetVersion = branchName === 'rc' ? version : match[1];
   if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(targetVersion)) {
     throw new Error('release branch version must be stable SemVer');
   }
@@ -145,6 +146,9 @@ function applyRootVersion(repoRoot, candidateVersion) {
 
 function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
+  if (args.branch === 'rc') {
+    args.version = readPackageJson(path.join(args.repoRoot, 'package.json')).version;
+  }
   const metadata = deriveCandidate(args);
 
   if (args.applyRootVersion) {
