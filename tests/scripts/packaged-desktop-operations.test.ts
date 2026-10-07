@@ -1,7 +1,47 @@
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { expect, it } from 'vitest';
-import { accountCreationResponseSucceeded, assertAccountCredentialsRestored, assertNewAccountCredential, assertMountedModelBinding, readOwnedPiConfiguration } from '../../scripts/helpers/packaged-desktop-operations';
+import { expect, it, vi } from 'vitest';
+import { credentialResource } from '@undefineds.co/models';
+import type { MountedPodPermissionPhase } from '../../scripts/helpers/packaged-desktop-permissions';
+import { accountCreationResponseSucceeded, assertAccountCredentialsRestored, assertNewAccountCredential, assertMountedModelBinding, createConfirmedMountedProvider, readOwnedPiConfiguration } from '../../scripts/helpers/packaged-desktop-operations';
+
+it('confirms collection row keys against credential resource ids through the shared model', async () => {
+  const rowKey = 'deepseek-fixture';
+  const id = credentialResource.buildId({ id: rowKey });
+  const webId = 'https://id.example/profile/card#me';
+  const model = 'fixture-model';
+  const credential = { id, provider: 'deepseek' };
+  let present = false;
+  const client = {
+    webId,
+    createApiKeyCredential: vi.fn(async () => { present = true; return credential; }),
+    deleteProviderCredential: vi.fn(async () => { present = false; }),
+    listProviders: async () => [{ id: 'deepseek', credentials: present ? [credential] : [] }],
+    discoverModels: async () => ({ provider: 'deepseek', credential: id, models: [{ id: model }] }),
+    saveModelSelection: async () => undefined,
+    listGatewayModels: async () => [{ id: model, provider: 'deepseek', credentialId: id, availability: 'available' }],
+    quota: async () => ({ status: 'available' }),
+  };
+  const controller = {
+    client,
+    credentialsCollection: { isReady: () => true, pendingKeys: new Set(), conflicts: [] },
+    get credentialRows() { return present ? [{ id: rowKey }] : []; },
+  };
+  const host = { solid: { session: { getSnapshot: () => ({ status: 'authenticated', webId }) },
+    pod: { status: 'ready', current: { webId } } } };
+  const phase = { handle: { evaluate: async (fn: Function, input: unknown) => fn({ host, controller }, input) } } as unknown as MountedPodPermissionPhase;
+  let now = 0;
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now += 31_000);
+  try {
+    const result = await createConfirmedMountedProvider(phase, {
+      provider: 'deepseek', credential: { apiKey: 'fixture' }, model,
+    });
+    expect(result.credentialId).toBe(id);
+    expect(client.createApiKeyCredential).toHaveBeenCalledTimes(1);
+    await expect(result.remove()).resolves.toBe(true);
+    expect(present).toBe(false);
+  } finally { clock.mockRestore(); }
+});
 
 it.each([200, 201])('recognizes an Account creation success %s without requiring 201', status => {
   expect(accountCreationResponseSucceeded(status, 'CSS-Account-Token fixture')).toBe(true);

@@ -1,5 +1,6 @@
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { credentialResource } from '@undefineds.co/models';
 import type { Page, Request, Response } from '@playwright/test';
 import type { AiConnectionsProvider, CreateApiKeyCredentialInput } from '@undefineds.co/ai-connections/client';
 import type { MountedPodPermissionPhase } from './packaged-desktop-permissions';
@@ -71,11 +72,15 @@ export async function createConfirmedMountedProvider(phase: MountedPodPermission
   const remove = async (): Promise<true> => {
     await handle.evaluate(({ controller }, input) => controller.client!.deleteProviderCredential(input.provider, input.id),
       { provider: input.provider, id: created.id });
-    await until(async () => handle.evaluate(({ controller }, id) => {
-      const collection = controller.credentialsCollection;
-      if (!collection || collection.conflicts.length) throw new Error('Credential cleanup conflicted');
-      return collection.pendingKeys.size === 0 && !controller.credentialRows?.some(row => row.id === id) ? true : undefined;
-    }, created.id), 'Credential cleanup was not independently confirmed');
+    await until(async () => {
+      const state = await handle.evaluate(({ controller }) => {
+        const collection = controller.credentialsCollection;
+        if (!collection || collection.conflicts.length) throw new Error('Credential cleanup conflicted');
+        return { pending: collection.pendingKeys.size, ids: controller.credentialRows?.map(row => String(row.id)) };
+      });
+      return state.pending === 0 && state.ids !== undefined
+        && !state.ids.some(id => credentialResource.buildId({ id }) === created.id) ? true : undefined;
+    }, 'Credential cleanup was not independently confirmed');
     const absent = await handle.evaluate(async ({ controller }, input) => {
       const rows = await controller.client!.listProviders();
       return !rows.find(row => row.id === input.provider)?.credentials.some(row => row.id === input.id);
@@ -84,11 +89,14 @@ export async function createConfirmedMountedProvider(phase: MountedPodPermission
     return true;
   };
   try {
-    await until(async () => handle.evaluate(({ controller }, id) => {
-      const collection = controller.credentialsCollection;
-      if (!collection || collection.conflicts.length) throw new Error('Credential mutation conflicted');
-      return collection.pendingKeys.size === 0 && controller.credentialRows?.some(row => row.id === id) ? true : undefined;
-    }, created.id), 'Credential mutation was not confirmed');
+    await until(async () => {
+      const state = await handle.evaluate(({ controller }) => {
+        const collection = controller.credentialsCollection;
+        if (!collection || collection.conflicts.length) throw new Error('Credential mutation conflicted');
+        return { pending: collection.pendingKeys.size, ids: controller.credentialRows?.map(row => String(row.id)) };
+      });
+      return state.pending === 0 && state.ids?.some(id => credentialResource.buildId({ id }) === created.id) ? true : undefined;
+    }, 'Credential mutation was not confirmed');
     const result = await handle.evaluate(async ({ controller }, input) => {
       const client = controller.client!;
       const providers = await client.listProviders();
