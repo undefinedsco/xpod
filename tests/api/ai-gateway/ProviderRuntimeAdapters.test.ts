@@ -366,7 +366,7 @@ describe('Provider runtime adapters', () => {
       { type: 'tool.arguments.delta', callId: 'call_1', delta: '"xpod"}' },
       { type: 'tool.completed', callId: 'call_1' },
       { type: 'usage', usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 } },
-      { type: 'response.completed', finishReason: 'completed' },
+      { type: 'response.completed', finishReason: 'tool_calls' },
     ]);
 
     expect(fixture.captured[0].url).toBe('https://api.openai.com/v1/responses');

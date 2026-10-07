@@ -1422,3 +1422,18 @@ describe('AiGatewayService credential failure version guard', () => {
     expect(row.health).toBe('healthy');
   });
 });
+
+it.each([['length', 'max_output_tokens'], ['content_filter', 'content_filter']])(
+  'preserves incomplete outcome %s in non-streaming Responses', async (finishReason, reason) => {
+    const { service } = serviceWith([
+      credential({ id: 'openai', provider: 'openai', models: ['gpt-5'] }),
+    ], undefined, { execute: async function* () {
+      yield { type: 'response.started', id: 'response-partial' };
+      yield { type: 'text.delta', text: 'partial answer' };
+      yield { type: 'response.completed', finishReason };
+    } });
+    const result = await service.complete({ auth: AUTH, protocol: 'responses',
+      body: { model: 'gpt-5', input: 'hello', stream: false } });
+    expect(result).toMatchObject({ id: 'response-partial', status: 'incomplete', incomplete_details: { reason } });
+  },
+);

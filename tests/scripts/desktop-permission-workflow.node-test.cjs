@@ -58,22 +58,23 @@ test('RC scale-down waits for desktop and final acceptance even when upstream jo
   assert.equal(cleanup.if, '${{ always() }}');
   for (const name of ['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']) assert.ok(cleanup.needs.includes(name));
   assert.equal(cleanup.concurrency.group, jobs.deploy_and_accept.concurrency.group);
-  const scale = cleanup.steps.find(step => step.run?.includes('scale "$resource"'));
+  const scale = cleanup.steps.find(step => step.run?.includes('scale deployment/xpod-rc --replicas=0'));
   assert.equal(scale.if, undefined);
   assert.match(scale.run, /rc-cleanup-ownership\.cjs/);
   assert.doesNotMatch(scale.run, /statefulset\//);
   assert.match(scale.run, /scale deployment\/xpod-rc-inngest --replicas=0/);
   assert.match(scale.run, /delete secret "\$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found/);
-  assert.match(scale.run, /resource=deployment\/xpod-rc/);
+  assert.match(scale.run, /rc-cleanup-ownership\.cjs deployment "\$observation" "\$SEALOS_NAMESPACE" "\$XPOD_RC_SEED_SECRET_NAME"/);
   assert.doesNotMatch(scale.run, /deployment\/xpod-cloud|namespace\/|delete deployment|delete statefulset|rollout/);
 });
 
-test('different release branches retain the same workflow RC lock through desktop and cleanup', () => {
+test('staging candidates retain one workflow RC lock through desktop and cleanup', () => {
   const workflow = read('candidate.yml');
   const keyFor = ref => workflow.concurrency.group.replaceAll('${{ github.ref }}', ref);
   assert.equal(keyFor('refs/heads/release/0.4.26'), keyFor('refs/heads/release/0.4.27'));
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
   assert.notEqual(workflow.concurrency.group, workflow.jobs.deploy_and_accept.concurrency.group);
   assert.notEqual(workflow.concurrency.group, workflow.jobs.cleanup_rc.concurrency.group);
-  assert.equal(workflow.concurrency.group, 'xpod-shared-rc-workflow');
+  assert.deepEqual(workflow.on.push.branches, ['staging']);
+  assert.equal(workflow.concurrency.group, 'xpod-rc-candidate');
 });

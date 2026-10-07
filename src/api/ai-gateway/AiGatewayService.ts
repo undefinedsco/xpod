@@ -8,6 +8,7 @@ import type { CredentialVault } from './credentials/CredentialVault';
 import type { EncryptedCredentialSecret } from './credentials/KeyWrapper';
 import { decodePlaintextCredential } from './credentials/PlaintextCredentialPayload';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from './protocol';
+import { responsesCompletion } from './protocol/ResponsesFrontend';
 import { classifyProviderStatus, type ProviderRuntimeCredential } from './providers/ProviderRuntimeAdapter';
 import type { ProviderDescriptor, ProviderOfferingDescriptor, ProviderRegistry } from './providers/ProviderRegistry';
 import { normalizeProviderId } from './providers/ProviderRegistry';
@@ -1079,7 +1080,7 @@ function aggregateEvents(
       id: state.id ?? `resp_${now.getTime()}`,
       object: 'response',
       created_at: Math.floor(now.getTime() / 1000),
-      status: 'completed',
+      ...responsesCompletion(state.finishReason),
       model,
       output: [
         ...(state.reasoning ? [{

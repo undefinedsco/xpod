@@ -434,6 +434,7 @@ export function toChatCompletionsBody(
 export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSseEvent>, secret?: string): AsyncIterable<GatewayEvent> {
   const toolArguments = new ToolArgumentTracker();
   const itemCallIds = new Map<string, string>();
+  let hasFunctionCall = false;
   for await (const event of events) {
     const payload = parseJsonSseData(event.data);
     if (!payload) {
@@ -446,6 +447,7 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
       if (id) {
         toolArguments.reset();
         itemCallIds.clear();
+        hasFunctionCall = false;
         yield { type: 'response.started', id };
       }
     } else if (type === 'response.output_text.delta') {
@@ -465,6 +467,7 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
         const itemId = stringField(item, 'id');
         const name = stringField(item, 'name');
         if (callId && name) {
+          hasFunctionCall = true;
           toolArguments.start(callId);
           if (itemId) {
             itemCallIds.set(itemId, callId);
@@ -500,13 +503,23 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
         toolArguments.complete(callId);
         yield { type: 'tool.completed', callId };
       }
-    } else if (type === 'response.completed') {
+    } else if (type === 'response.completed' || type === 'response.incomplete') {
       const response = objectField(payload, 'response');
       const usage = parseOpenAiUsage(objectField(response, 'usage'));
       if (usage) {
         yield { type: 'usage', usage };
       }
-      yield { type: 'response.completed', finishReason: stringField(response, 'finish_reason') ?? stringField(response, 'status') ?? 'stop' };
+      // Responses status describes lifecycle, not a Chat Completions finish reason.
+      const reason = stringField(objectField(response, 'incomplete_details'), 'reason');
+      if (type === 'response.incomplete' && reason !== 'max_output_tokens' && reason !== 'content_filter') {
+        throw providerStreamError({ message: 'Unsupported incomplete Responses outcome' }, 502, secret);
+      }
+      const finishReason = type === 'response.incomplete'
+        ? reason === 'max_output_tokens' ? 'length' : 'content_filter'
+        : stringField(response, 'finish_reason') ?? (hasFunctionCall ? 'tool_calls' : 'stop');
+      yield { type: 'response.completed', finishReason };
+    } else if (type === 'response.failed') {
+      throw providerStreamError(objectField(payload, 'response') ?? payload, 502, secret);
     } else if (type === 'error') {
       throw providerStreamError(payload, 502, secret);
     }

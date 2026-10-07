@@ -87,3 +87,6 @@ Provider confirmation compares collection descriptor keys and provider resource 
 本节是源码审计及回归范围，不代表上述入口已全部通过真实实例或安装包验收。`22b614677` 的第一次完整集成通过，第二次在 notification 性能基线失败（5020ms，要求 <5000ms）；保留失败，不提高门槛，下一冻结源码的完整门禁串行运行，避免同时构建安装包。旧安装探测 Account token 在 RC 数据重置后返回 401，只能证明旧清理会话不可用，不能声称已独立确认旧凭据删除。
 
 证据校验器也要求两个不同的 `webIdSha256`，并拒绝旧的 `sameWebId` 字段；仅有两个不同存储绑定不能通过独立身份验收。
+
+2026-10-07：Responses 上游的 status=completed 不再透传为 Chat Completions 的 finish_reason；正文正常完成映射 stop，函数调用映射 tool_calls。response.incomplete 保留 length/content_filter 与用量，流式和非流式 Responses 均输出 incomplete；response.failed 走既有脱敏错误通道。协议回归先复现失败，再验证真实 parser/frontend/service 的输出；真实安装包 Chat 仍须通过独立候选验收。
+协议依据：[Responses streaming events](https://developers.openai.com/api/reference/resources/responses/streaming-events)、[Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。

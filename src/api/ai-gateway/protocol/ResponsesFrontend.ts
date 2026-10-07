@@ -27,6 +27,20 @@ const RESPONSES_NORMALIZED_KEYS = [
   'stream',
 ] as const;
 
+/** Shared by streaming and non-streaming Responses projections. */
+export function responsesCompletion(finishReason?: string): {
+  status: 'completed' | 'incomplete';
+  incomplete_details?: { reason: 'max_output_tokens' | 'content_filter' };
+} {
+  if (finishReason === 'length' || finishReason === 'max_tokens') {
+    return { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } };
+  }
+  if (finishReason === 'content_filter') {
+    return { status: 'incomplete', incomplete_details: { reason: 'content_filter' } };
+  }
+  return { status: 'completed' };
+}
+
 export class ResponsesFrontend implements GatewayProtocolFrontend {
   public readonly protocol = 'responses' as const;
 
@@ -234,11 +248,12 @@ class ResponsesEventSerializer implements GatewayEventSerializer {
         this.messageOutputIndex = undefined;
         this.text = '';
         this.textPartOpen = false;
+        const completion = responsesCompletion(event.finishReason);
         return [
           ...closeText,
           {
-            type: 'response.completed',
-            response: { id: this.responseId, status: 'completed', finish_reason: event.finishReason },
+            type: completion.status === 'incomplete' ? 'response.incomplete' : 'response.completed',
+            response: { id: this.responseId, ...completion, finish_reason: event.finishReason },
           },
         ];
       }
