@@ -10,7 +10,7 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
    `release/0.4.0`。
 2. 每个推送到 `release/<version>` 的 commit 都触发
    `.github/workflows/candidate.yml`，生成一个新的 RC。
-3. CI 从同一 source SHA 派生唯一候选版本。首次运行格式为 `0.4.0-rc.<run-number>`；rerun 格式为 `0.4.0-rc.<run-number>.<run-attempt>`。例如 `0.4.0-rc.41`，rerun 示例为 `0.4.0-rc.41.2`。
+3. CI 的 metadata job 从 source SHA、run number 和该 job 的 run attempt 派生候选版本，镜像和桌面构建都使用这份 metadata。首次运行格式为 `0.4.0-rc.<run-number>`；重跑整个 workflow 时 metadata 重新执行，版本为 `0.4.0-rc.<run-number>.<run-attempt>`，例如 `0.4.0-rc.41.2`。只重跑失败 job 时，成功的 metadata 与构建产物被保留，版本也必须沿用（例如 `0.4.0-rc.41`），不能按下游 job 当前的 attempt 重新计算版本。
 4. 同一次 RC workflow 构建一个 GHCR 镜像，打 `sha-<full-sha>` 和 RC
    版本 tag，并记录 canonical digest，例如
    `ghcr.io/undefinedsco/xpod@sha256:<64-hex>`。

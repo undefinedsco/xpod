@@ -29,6 +29,7 @@ jobs:
       candidate: ${{ steps.candidate.outputs.candidate }}
       shaTag: ${{ steps.candidate.outputs.shaTag }}
       sourceSha: ${{ steps.candidate.outputs.sourceSha }}
+      runAttempt: ${{ steps.candidate.outputs.runAttempt }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,6 +59,7 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `candidate=${metadata.candidateVersion}\n`);
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `shaTag=${metadata.shaTag}\n`);
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `sourceSha=${metadata.sourceSha}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `runAttempt=${process.env.RUN_ATTEMPT}\n`);
           ' "$metadata"
 
   rc_prerequisites:
@@ -185,7 +187,7 @@ jobs:
           node scripts/release-candidate.cjs \
             --branch "$REF_NAME" \
             --run-number "${{ github.run_number }}" \
-            --run-attempt "${{ github.run_attempt }}" \
+            --run-attempt "${{ needs.metadata.outputs.runAttempt }}" \
             --sha "${{ github.sha }}" \
             --apply-root-version
 
@@ -931,7 +933,7 @@ jobs:
           node scripts/release-candidate.cjs \
             --branch "$REF_NAME" \
             --run-number "${{ github.run_number }}" \
-            --run-attempt "${{ github.run_attempt }}" \
+            --run-attempt "${{ needs.metadata.outputs.runAttempt }}" \
             --sha "${{ github.sha }}" \
             --apply-root-version
           node -e 'if (require("./desktop/package.json").version !== process.env.CANDIDATE_VERSION) process.exit(1)'

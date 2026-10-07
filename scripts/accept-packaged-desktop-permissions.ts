@@ -1,3 +1,4 @@
+import type { AIConnectionInvocationConfig } from '../src/agents/types';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
@@ -44,7 +45,7 @@ export async function verifyPublicCloudCard(webId: string, storageUrls: string[]
 
 /** Read the canonical credential returned by the mounted service-access route. */
 export function requirePackagedInvocationKey(descriptor: unknown): string {
-  const invocation = (descriptor as { invocation?: { apiKey?: unknown } } | null)?.invocation;
+  const invocation = (descriptor as { invocation?: Partial<AIConnectionInvocationConfig> } | null)?.invocation;
   if (typeof invocation?.apiKey !== 'string' || !invocation.apiKey.trim()) {
     throw new DesktopAcceptanceError('pod-permission', 'Authoritative current-Pod invocation is absent', 'service-access');
   }

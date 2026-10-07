@@ -1,5 +1,7 @@
 # 桌面权限与发行验收契约
 
+2026-10-07：RC [37594862227](https://github.com/undefinedsco/xpod/actions/runs/37594862227)（source `7d3ba5b64`，version `0.4.30-rc.289`）桌面自更新通过，权限验收停在 `pod-a / pod-permission`，公开回执没有更细子条件。随后源码与可执行回归确认驱动契约错误：服务端 `AiConnectionsInvocationKeyIssuer` 返回 `AIConnectionInvocationConfig.apiKey`，驱动却读取不存在的 `invocation.token`，必然误报 invocation 缺失。修正为引用共享类型并读取 `apiKey`；回归直接执行实际驱动的字段读取并使用真实 issuer 返回值，先 RED 再 GREEN。这个修复只纠正验收驱动，不能据此宣称真实桌面权限或后续操作已通过，仍需新 exact-source RC 证明。挂载授权、独立回读、重复授予零写入、恢复与跨 Pod 隔离断言全部保留。
+
 2026-10-05：0.4.26 候选增加本契约。单元/本地协议通过不等于 exact 0.4.26 安装包通过。生产 Cloud 的只读诊断 run [37239166566](https://github.com/undefinedsco/xpod/actions/runs/37239166566) 确认 namespace 工作负载 replica 为 0，managed 登录与权限链尚无恢复证据。0.4.25 已发布事实与此缺项分别保存。
 
 2026-10-06：首个正式 RC run [37425088832](https://github.com/undefinedsco/xpod/actions/runs/37425088832)（source `9d153c3b6`）服务侧 19 项与 `launch`/`provision` 全绿，在 `pod-a` 失败：驱动要求一次显式 Consent 选择，而产品对唯一精确绑定不渲染任何身份/存储选择器。singleton 只表示"没有可挑的身份/存储选项"，**不代表**"自动代替用户同意"：实际的批准提交（POST）与显式"记住授权"选择仍然必须被证明。该阶段失败是验收驱动对呈现形态过严，不是产品缺陷；修复见下节，`pod-a` 失败事实保留。

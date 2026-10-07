@@ -85,8 +85,10 @@ describe('release lifecycle documentation', () => {
     const text = await loadReleaseDoc();
 
     expect(text).toContain('首次运行格式为 `0.4.0-rc.<run-number>`');
-    expect(text).toContain('rerun 格式为 `0.4.0-rc.<run-number>.<run-attempt>`');
-    expect(text).toContain('例如 `0.4.0-rc.41`，rerun 示例为 `0.4.0-rc.41.2`');
+    expect(text).toContain('重跑整个 workflow 时 metadata 重新执行，版本为 `0.4.0-rc.<run-number>.<run-attempt>`');
+    expect(text).toContain('例如 `0.4.0-rc.41.2`');
+    expect(text).toContain('只重跑失败 job 时，成功的 metadata 与构建产物被保留，版本也必须沿用（例如 `0.4.0-rc.41`）');
+    expect(text).toContain('不能按下游 job 当前的 attempt 重新计算版本');
     expect(text).not.toContain('+<sha>');
     expect(text).not.toContain('+abcdef');
     expect(text).not.toMatch(/0\.4\.0-rc\.[^`\s]*\+sha/);
