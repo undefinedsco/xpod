@@ -11,7 +11,11 @@ export interface MountedBrowserAiConnections {
  * This is a read-only handle to React's existing objects, not a second host/session.
  */
 export async function captureBrowserAiConnections(page: Page, binding: { webId: string; podUrl: string }): Promise<JSHandle<MountedBrowserAiConnections>> {
-  return await page.evaluateHandle(inspectCommittedHost, { kind: 'ai-host' as const, ...binding }) as JSHandle<MountedBrowserAiConnections>;
+  // Session authentication and the lazy applet commit are separate transitions.
+  // Poll the committed tree, retaining only the exact current binding; a stale
+  // host, another Pod or an anonymous session can never satisfy this wait.
+  return await page.waitForFunction(inspectCommittedHost,
+    { kind: 'ai-host' as const, ...binding }, { timeout: 30_000 }) as JSHandle<MountedBrowserAiConnections>;
 }
 
 export interface BrowserXpodRuntimeSnapshot {
@@ -87,7 +91,7 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
 }
 
 /** Serialized into the page; all discoveries use the same committed root traversal. */
-async function inspectCommittedHost(operation: HostOperation): Promise<unknown> {
+function inspectCommittedHost(operation: HostOperation): unknown {
     type HostValue = {
       state?: { status: string };
       session?: { getSnapshot(): { status: string; webId?: string; issuer?: string } };
@@ -146,8 +150,7 @@ async function inspectCommittedHost(operation: HostOperation): Promise<unknown> 
       if (operation.kind === 'account' || operation.kind === 'refetch-account') {
         if (typeof value?.refetchControls === 'function') {
           if (operation.kind === 'refetch-account') {
-            await value.refetchControls();
-            return;
+            return Promise.resolve(value.refetchControls()).then(() => undefined);
           }
           return {
             status: value.accountState?.status ?? 'unknown',
@@ -166,9 +169,10 @@ async function inspectCommittedHost(operation: HostOperation): Promise<unknown> 
         const snapshot = value.session.getSnapshot();
         const podUrl = value.selectedStorage?.storageUrl ?? value.currentPod?.podUrl ?? value.podUrl;
         if (operation.kind === 'account-discovery') {
-          const response = await value.fetch(new URL('/.account/', window.location.origin).href, { headers: { Accept: 'application/json' }, redirect: 'error' });
-          const body = await response.json() as { controls?: { account?: { clientCredentials?: string } } };
-          return { status: response.status, keys: Object.keys(body.controls?.account ?? {}), hasClientCredentialsControl: typeof body.controls?.account?.clientCredentials === 'string' };
+          return value.fetch(new URL('/.account/', window.location.origin).href, { headers: { Accept: 'application/json' }, redirect: 'error' }).then(async response => {
+            const body = await response.json() as { controls?: { account?: { clientCredentials?: string } } };
+            return { status: response.status, keys: Object.keys(body.controls?.account ?? {}), hasClientCredentialsControl: typeof body.controls?.account?.clientCredentials === 'string' };
+          });
         }
         if (operation.kind === 'runtime') {
           return {
@@ -196,16 +200,17 @@ async function inspectCommittedHost(operation: HostOperation): Promise<unknown> 
             && url.searchParams.getAll('id').length === 1 && Boolean(url.searchParams.get('id'));
           if (origin !== window.location.origin || url.origin !== origin || url.username || url.password || url.hash
             || !(permitted && !url.search || taskRequest && taskQueryAllowed)) throw new Error('Gateway acceptance request outside boundary');
-          const response = await value.fetch(url.href, { ...operation.init, redirect: 'error', signal: AbortSignal.timeout(30_000) });
-          return { status: response.status, body: await response.text() };
+          return value.fetch(url.href, { ...operation.init, redirect: 'error', signal: AbortSignal.timeout(30_000) })
+            .then(async response => ({ status: response.status, body: await response.text() }));
         }
         if (!podUrl) throw new Error('Missing current Pod');
         const url = new URL(operation.resourcePath, podUrl);
         if (!url.href.startsWith(podUrl)) throw new Error('Test resource must stay inside the current Pod');
-        const response = await value.fetch(url.href, operation.init);
-        return { status: response.status, body: await response.text() };
+        return value.fetch(url.href, operation.init)
+          .then(async response => ({ status: response.status, body: await response.text() }));
       }
       queue.push(fiber.child, fiber.sibling);
     }
+    if (operation.kind === 'ai-host') return false;
     throw new Error(`Missing mounted host capability for ${operation.kind}`);
 }

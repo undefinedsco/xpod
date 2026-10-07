@@ -153,7 +153,7 @@ it('attributes every real mounted-permission boundary and preserves the inner co
 it('attributes the real mounted-permission caller path rather than publishing unclassified', async () => {
   const secret = 'oc_sk_live_9f2c1d4b8a7e6f5c6d7e8f90';
   const binding = { webId: 'https://a.example/#me', podUrl: 'https://a.example/' };
-  const missingTree = { evaluateHandle: async () => { throw new Error(`Missing committed React provider tree ${secret}`); } };
+  const missingTree = { waitForFunction: async () => { throw new Error(`Missing committed React provider tree ${secret}`); } };
   const treeFailure = await acceptMountedPodPermissions(missingTree as unknown as Page, binding)
     .catch((error: unknown) => error);
   expect(treeFailure).toBeInstanceOf(MountedPermissionError);
@@ -162,7 +162,7 @@ it('attributes the real mounted-permission caller path rather than publishing un
     explanation: 'The mounted Pod permission grant or restore proof failed', evidence: 'mounted-runtime' });
   expect(JSON.stringify(describeFailure(treeFailure))).not.toContain(secret);
 
-  const badDescriptor = { evaluateHandle: async () => ({ evaluate: async () => ({ invalid: true }), dispose: async () => undefined }) };
+  const badDescriptor = { waitForFunction: async () => ({ evaluate: async () => ({ invalid: true }), dispose: async () => undefined }) };
   const accessFailure = await acceptMountedPodPermissions(badDescriptor as unknown as Page, binding)
     .catch((error: unknown) => error);
   expect(accessFailure).toBeInstanceOf(MountedPermissionError);
