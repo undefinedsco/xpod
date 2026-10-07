@@ -106,6 +106,10 @@ Electron/preload 与自带 Local runtime，Cloud card 身份、两份权威 Loca
 Models/Quota/单发 Chat、跨 Pod 拒绝与清理。缺任一证据不得写入 `desktop:passed`。
 详见[桌面权限验收契约](testing/desktop-permission-acceptance.md)。这项并不声明 Pod、Network、
 Status 所有管理操作、所有订阅 provider 或原安装 App 已验；不得用普通 Chromium 截图补足。
+失败时的公开归因现在同时覆盖浏览器批准阶段（`oidc-approval` + 操作 token）与 mounted 权限
+阶段（`pod-permission` + mounted 边界 token），并对 `AggregateError` 按 primary/cleanup 顺序取第一个受审失败；
+stage 时长**不能**证明是哪个内部操作失败——RC `37580705243` 的 `pod-a` 内部操作仍然是
+UNPROVEN，直到下一轮 RC 以该归因复现。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 

@@ -1,10 +1,17 @@
-import { errors } from '@playwright/test';
-import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { errors, type Page } from '@playwright/test';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure,
   publishedFailures } from '../../scripts/accept-packaged-desktop-permissions';
+import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError } from '../../scripts/helpers/packaged-desktop-permissions';
 import { attributeOidcOperation, OidcApprovalError } from '../../tests/helpers/browserSolidOidc';
+
+import * as packagedSource from '../../scripts/helpers/packaged-desktop-source';
+import * as packagedFixture from '../../scripts/helpers/packaged-desktop-fixture';
+
+const MOUNTED_CONDITIONS = ['mounted-runtime', 'service-access', 'target-read', 'parent-policy',
+  'grant-apply', 'grant-repeat', 'grant-restore'] as const;
 
 it('publishes only reviewed failure codes and never the underlying error text', () => {
   // An arbitrary upstream error can carry provider keys, opaque tokens or an
@@ -98,6 +105,70 @@ it('attributes every real browser operation boundary and never publishes the raw
   }
 });
 
+it('names the failing mounted-permission operation instead of degrading to unclassified', () => {
+  // RC 37580705243 reached stage pod-a and published only the generic
+  // `unclassified` code: the mounted Pod permission phase threw plain Errors, so
+  // neither the stdout projection nor the artifact could name the operation.
+  // Every real mounted boundary must now publish the reviewed `pod-permission`
+  // code plus one closed-vocabulary token, and never the private detail.
+  const secret = 'oc_sk_live_9f2c1d4b8a7e6f5c6d7e8f90';
+  const mounted = new MountedPermissionError('grant-apply', `private detail with ${secret}`);
+  expect(describeFailure(mounted)).toEqual({ code: 'pod-permission',
+    explanation: 'The mounted Pod permission grant or restore proof failed', evidence: 'grant-apply' });
+  expect(JSON.stringify(describeFailure(mounted))).not.toContain(secret);
+  for (const condition of MOUNTED_CONDITIONS) {
+    expect(describeFailure(new MountedPermissionError(condition, 'private detail'))).toEqual({ code: 'pod-permission',
+      explanation: 'The mounted Pod permission grant or restore proof failed', evidence: condition });
+  }
+  expect(JSON.stringify(publishedFailures([mounted, new Error(`raw ${secret}`)]))).not.toContain(secret);
+  // A phase whose cleanup also failed arrives as AggregateError[primary,
+  // rollback...]; the typed primary must still be named, and an entirely
+  // untyped aggregate still degrades to the generic code.
+  expect(describeFailure(new AggregateError([mounted, new Error('rollback failed')], 'cleanup failed')))
+    .toEqual({ code: 'pod-permission',
+      explanation: 'The mounted Pod permission grant or restore proof failed', evidence: 'grant-apply' });
+  expect(describeFailure(new AggregateError([new Error('a'), new Error('b')], 'x')).code).toBe('unclassified');
+});
+
+it('attributes every real mounted-permission boundary and preserves the inner condition', async () => {
+  const secret = 'oc_sk_live_9f2c1d4b8a7e6f5c6d7e8f90';
+  for (const condition of MOUNTED_CONDITIONS) {
+    const rejection = new Error(`mounted operation rejected; apiKey=${secret}`);
+    const attributed = await attributeMountedOperation(condition, async () => { throw rejection; })
+      .catch((error: unknown) => error);
+    expect(attributed).toBeInstanceOf(MountedPermissionError);
+    expect((attributed as MountedPermissionError).condition).toBe(condition);
+    expect((attributed as MountedPermissionError).cause).toBe(rejection);
+    expect(describeFailure(attributed)).toEqual({ code: 'pod-permission',
+      explanation: 'The mounted Pod permission grant or restore proof failed', evidence: condition });
+    expect(JSON.stringify(describeFailure(attributed))).not.toContain(secret);
+  }
+  // An already-typed inner boundary is never replaced by a coarser outer one.
+  const inner = new MountedPermissionError('target-read', 'private');
+  await expect(attributeMountedOperation('grant-apply', async () => { throw inner; })).rejects.toBe(inner);
+});
+
+it('attributes the real mounted-permission caller path rather than publishing unclassified', async () => {
+  const secret = 'oc_sk_live_9f2c1d4b8a7e6f5c6d7e8f90';
+  const binding = { webId: 'https://a.example/#me', podUrl: 'https://a.example/' };
+  const missingTree = { evaluateHandle: async () => { throw new Error(`Missing committed React provider tree ${secret}`); } };
+  const treeFailure = await acceptMountedPodPermissions(missingTree as unknown as Page, binding)
+    .catch((error: unknown) => error);
+  expect(treeFailure).toBeInstanceOf(MountedPermissionError);
+  expect((treeFailure as MountedPermissionError).condition).toBe('mounted-runtime');
+  expect(describeFailure(treeFailure)).toEqual({ code: 'pod-permission',
+    explanation: 'The mounted Pod permission grant or restore proof failed', evidence: 'mounted-runtime' });
+  expect(JSON.stringify(describeFailure(treeFailure))).not.toContain(secret);
+
+  const badDescriptor = { evaluateHandle: async () => ({ evaluate: async () => ({ invalid: true }), dispose: async () => undefined }) };
+  const accessFailure = await acceptMountedPodPermissions(badDescriptor as unknown as Page, binding)
+    .catch((error: unknown) => error);
+  expect(accessFailure).toBeInstanceOf(MountedPermissionError);
+  expect((accessFailure as MountedPermissionError).condition).toBe('service-access');
+  expect(describeFailure(accessFailure)).toEqual({ code: 'pod-permission',
+    explanation: 'The mounted Pod permission grant or restore proof failed', evidence: 'service-access' });
+});
+
 it('requires actual independent A task rows and refuses any rows in fresh B', () => {
   assertOwnedTaskRows({ tasks: [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }] }, ['a1', 'a2', 'a3']);
   assertOwnedTaskRows({ tasks: [] }, [], true);
@@ -126,4 +197,37 @@ it('retains the original failing stage and cannot emit public evidence from an i
     expect((await stat(safeFile)).mode & 0o777).toBe(0o644);
     await expect(readFile(evidenceFile)).rejects.toHaveProperty('code', 'ENOENT');
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+it('preserves mounted attribution through the driver final failure projection', async () => {
+  const parent = path.join(process.cwd(), '.test-data', 'packaged-desktop-runner');
+  await mkdir(parent, { recursive: true });
+  const directory = await mkdtemp(path.join(parent, 'projection-'));
+  const keyFile = path.join(directory, 'provider.env');
+  const secret = 'synthetic-provider-key-for-regression';
+  const mounted = new MountedPermissionError('mounted-runtime', `private ${secret}`);
+  const verify = vi.spyOn(packagedSource, 'verifyPackagedSourceCheckout').mockResolvedValue(undefined);
+  const launch = vi.spyOn(packagedFixture, 'launchOwnedPackagedDesktop')
+    .mockRejectedValue(new AggregateError([mounted, new Error('private cleanup')], 'private aggregate'));
+  try {
+    await writeFile(keyFile, `DEEPSEEK_API_KEY=${secret}\n`, { mode: 0o600 });
+    const failure = await acceptPackagedDesktopPermissions({ archive: 'synthetic-launch-rejection',
+      version: '0.4.30', sourceSha: 'a'.repeat(40), issuer: 'https://id.example/', keyFile,
+      privateDirectory: directory, evidenceFile: path.join(directory, 'public.json') })
+      .catch((error: unknown) => error);
+    const expected = { code: 'pod-permission',
+      explanation: 'The mounted Pod permission grant or restore proof failed', evidence: 'mounted-runtime' };
+    expect(describeFailure(failure)).toEqual(expected);
+    const safe = JSON.parse(await readFile(path.join(directory, 'failure-safe.json'), 'utf8'));
+    expect(safe).toMatchObject({ stage: 'launch', failures: [expected] });
+    expect(JSON.stringify(safe)).not.toContain(secret);
+    expect(JSON.stringify(describeFailure(failure))).not.toContain(secret);
+    const diagnostic = await readFile(path.join(directory, 'failure-private.json'), 'utf8');
+    expect(diagnostic).toContain(secret);
+    expect((await stat(path.join(directory, 'failure-private.json'))).mode & 0o777).toBe(0o600);
+    await expect(readFile(path.join(directory, 'public.json'))).rejects.toHaveProperty('code', 'ENOENT');
+  } finally {
+    verify.mockRestore(); launch.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
