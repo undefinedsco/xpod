@@ -133,3 +133,11 @@ describe('scheduled task behavior', () => {
     expect(container.textContent).not.toContain('pi:pi');
   });
 });
+
+ it('shows the recorded task workspace without claiming it limits Pod authorization', async () => {
+    const task = { id: 'scope-task', instruction: 'Review documents', assignedTo: 'urn:xpod:agent:pi', workspace: 'https://pod.test/project/', status: 'blocked', createdAt: 1, updatedAt: 1 };
+    render(<TasksPanel client={clientFor([task])} webId={owner} workspace="https://pod.test/other/" selectedTaskId={task.id} />);
+    expect(await screen.findByText('工作空间：https://pod.test/project/')).toBeTruthy();
+    expect(screen.getByText('工作空间不代表授权范围。实际可读写的资料由 Pod 权限决定，逐项授权明细待接入。')).toBeTruthy();
+    expect(screen.queryByText('工作空间：https://pod.test/other/')).toBeNull();
+  });

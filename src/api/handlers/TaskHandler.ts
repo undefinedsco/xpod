@@ -139,7 +139,7 @@ export function registerTaskRoutes(server: ApiServer, options: TaskHandlerOption
 export function projectTask(task: TaskRecordData) {
   return {
     id: task.id, title: task.title, instruction: task.prompt, assignedTo: task.assignedTo,
-    source: task.source, status: task.status, dueAt: task.dueAt, completedAt: task.completedAt,
+    source: task.source, workspace: task.workspace, status: task.status, dueAt: task.dueAt, completedAt: task.completedAt,
     notes: task.notes, priority: task.priority, createdAt: task.createdAt, updatedAt: task.updatedAt,
     schedule: task.authBinding ? {
       kind: task.triggerKind, cron: task.cron, intervalSeconds: task.intervalSeconds,

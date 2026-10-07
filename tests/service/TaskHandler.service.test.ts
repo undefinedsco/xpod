@@ -6,7 +6,7 @@ import type { ApiServer, RouteHandler } from '../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../src/api/middleware/AuthMiddleware';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
 import { TaskService } from '../../src/api/tasks/TaskService';
-import { registerTaskRoutes, type TaskHandlerOptions } from '../../src/api/handlers/TaskHandler';
+import { registerTaskRoutes, projectTask, type TaskHandlerOptions } from '../../src/api/handlers/TaskHandler';
 import { createGrantedTaskAgentResolver } from '../../src/api/tasks/TaskAgentBinding';
 const owner = 'https://pod.test/alice/profile/card#me';
 function setup(extra: Partial<TaskHandlerOptions> = {}) {
@@ -131,3 +131,12 @@ describe('public Pod task routes', () => {
     expect((await app.request('post', '/api/tasks', { kind: 'cron', prompt: 'Execute', workspace: 'https://pod.test/work/', cron: '0 9 * * *' })).status).toBe(400);
   });
 });
+
+ it('projects workspace separately from private execution credentials', () => {
+    const result = projectTask({ id: 'index.ttl#scope', workspace: 'https://pod.test/project/', prompt: 'Review', thread: 'thread', runner: 'pi:pi', status: 'blocked', triggerKind: 'cron', createdAt: 1, updatedAt: 1, authBinding: { id: 'private-ref', kind: 'solid-client-credentials', webId: owner, clientId: 'private-client', status: 'active', createdAt: 1 } });
+    expect(result.workspace).toBe('https://pod.test/project/');
+    expect(JSON.stringify(result)).not.toContain('private-ref');
+    expect(JSON.stringify(result)).not.toContain('private-client');
+    expect(result).not.toHaveProperty('runner');
+    expect(result).not.toHaveProperty('authBinding');
+  });

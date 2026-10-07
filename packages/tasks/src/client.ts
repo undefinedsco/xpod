@@ -1,6 +1,6 @@
 /** HTTP projections of shared Pod resources. Timestamps are Unix seconds. */
 export interface TaskSummary {
-  id: string; iri?: string; title?: string; instruction: string; assignedTo?: string; source?: string;
+  id: string; iri?: string; title?: string; instruction: string; assignedTo?: string; source?: string; workspace?: string;
   status: string; waiting?: boolean; dueAt?: number; completedAt?: number; notes?: string; priority?: string;
   createdAt: number; updatedAt: number;
   schedule?: { kind: 'once' | 'cron' | 'interval' | 'event'; cron?: string; intervalSeconds?: number;
