@@ -4,6 +4,15 @@ This overlay contains only RC-owned ConfigMap, Service and Deployment. It cannot
 create a Namespace or modify shared Gateway, Inngest, Ingress or TLS resources.
 The only admitted server/namespace are https://gzg.sealos.run:6443 / ns-iknkxtc8.
 
+The independently dispatched `solidfs-gz-readonly.yml` workflow uses the existing
+GZ CI credential only after checking that exact server, and issues namespace-scoped
+GETs for Deployment/StatefulSet/Service/Ingress metadata. Its artifact explicitly
+uses `READ-ONLY-METADATA`: images, PVC references and clone-admission locator are
+observations, not backup/restore, ready-Pod identity, registry pull, OAuth or RC
+acceptance. It never reads Secret contents or performs cluster mutations. Its
+offline tests exercise wrong-server refusal and output redaction, not a real GZ
+instance. This entry point does not replace the admission gates below.
+
 The existing canonical hosts are undefineds-gz-rc-id.sealosgzg.site,
 undefineds-gz-rc-pods.sealosgzg.site and undefineds-gz-rc-api.sealosgzg.site.
 Fresh UID/TLS/route admission verifies shared nginx 8082/8083/8081 → xpod-rc:80.

@@ -1,0 +1,60 @@
+name: SolidFS GZ read-only admission facts
+
+on:
+  push:
+    branches: ['codex/solidfs-gz-readonly-mini-20261007']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Observe only the admitted GZ namespace
+        shell: bash
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.GZ_KUBE_CONFIG_DATA }}
+        run: |
+          set -euo pipefail
+          umask 077
+          config="$(mktemp "${RUNNER_TEMP}/gz-readonly.XXXXXX")"
+          trap 'rm -f "$config"' EXIT
+          test -n "$KUBE_CONFIG_DATA"
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 --decode > "$config"
+          unset KUBE_CONFIG_DATA
+          export KUBECONFIG="$config"
+          server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+          test "$server" = 'https://gzg.sealos.run:6443'
+          namespace='ns-iknkxtc8'
+          mkdir -m 700 "${RUNNER_TEMP}/gz-readonly-evidence"
+          # Never collect Config, Env, Secret payloads or arbitrary annotations.
+          kubectl --request-timeout=30s -n "$namespace" get deployment,statefulset,service,ingress -o json |
+            jq --arg server "$server" --arg namespace "$namespace" --arg sha "$GITHUB_SHA" '
+              {schemaVersion:1, evidenceLevel:"READ-ONLY-METADATA", server:$server,
+               namespace:$namespace, harnessSHA:$sha, observedUTC:(now|todate),
+               resources:[.items[] | {
+                 kind, name:.metadata.name, namespace:.metadata.namespace,
+                 uid:.metadata.uid, resourceVersion:.metadata.resourceVersion,
+                 replicas:.spec.replicas, readyReplicas:.status.readyReplicas,
+                 images:[.spec.template.spec.containers[]? | {name,image}],
+                 pvcReferences:[.spec.template.spec.volumes[]? |
+                   select(.persistentVolumeClaim) | .persistentVolumeClaim.claimName],
+                 volumeClaimTemplates:[.spec.volumeClaimTemplates[]? | .metadata.name],
+                 serviceSelector:.spec.selector,
+                 servicePorts:.spec.ports,
+                 ingressRules:.spec.rules,
+                 cloneAdmission:.metadata.annotations["xpod.undefineds.co/rc-clone-restore-admission"]
+               }]}' > "${RUNNER_TEMP}/gz-readonly-evidence/facts.json"
+          jq -e --arg namespace "$namespace" '
+            all(.resources[]; .namespace == $namespace and (.uid|length)>0)
+          ' "${RUNNER_TEMP}/gz-readonly-evidence/facts.json" >/dev/null
+      - name: Upload non-secret observed facts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: solidfs-gz-readonly-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gz-readonly-evidence/facts.json
+          if-no-files-found: error
+          retention-days: 14
