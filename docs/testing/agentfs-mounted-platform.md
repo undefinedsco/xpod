@@ -1,5 +1,19 @@
 # AgentFS mounted platform acceptance
 
+## mini continuation candidate (2026-10-07)
+
+The current product pin is `48a71dceddf4ab40eddc52a5bb04c54474eeb030`, from
+[native run 37592276758](https://github.com/undefinedsco/xpod/actions/runs/37592276758).
+Both downloaded artifact ZIPs passed the independent `verify_reuse_archive`
+gate, including raw hashes, stage closure, source snapshots, packages and helper
+digests. Each helper reports 98 passed / 2 existing ignored / 0 filtered;
+Darwin has 13 closed stages and Linux has 20, including Bookworm Node22/noBun
+loader admission. Their source-kit SHA256 is identical. This does not prove
+actual mounting. The mounted workflow now pins these exact artifacts; the
+separate mini harness branch is `codex/solidfs-mounted-mini-20261007`, dispatched
+explicitly without moving other development branches. Historical failures and
+earlier product bindings below remain evidence of their own runs.
+
 Actual mounted (OS-level) acceptance for the frozen product archive, separate
 from the source-bound native unit/install CI. The native compiler workflow
 (`agentfs-native-acceptance.yml`) only runs on `codex/agentfs-native-acceptance`,

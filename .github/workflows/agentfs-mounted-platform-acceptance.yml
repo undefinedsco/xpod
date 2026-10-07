@@ -4,7 +4,7 @@ name: AgentFS mounted platform acceptance
 # separate development branch so a harness-only push never recompiles the frozen
 # admitted product (the native compiler workflow only runs on
 # codex/agentfs-native-acceptance). Product archive/helper pins come from the
-# accepted native jobs of run 37297913343; the harness SHA is this branch's checkout.
+# accepted native jobs of run 37592276758; the harness SHA is this branch's checkout.
 on:
   push:
     branches: ['codex/agentfs-mounted-platform-acceptance']
@@ -16,17 +16,17 @@ permissions:
   actions: read
 
 env:
-  PRODUCT_RUN: '37310635987'
-  PRODUCT_SHA: '0e260a49ce28cb7b5cf8ee0bc4342d893cb742a8'
-  LINUX_ARTIFACT_ID: '11346917397'
-  LINUX_ZIP_SHA: '988f3444f9b3ad63ac598babbe5e827e5a470a58e57a0e7e753650336bc6f600'
-  LINUX_ARCHIVE_SHA: 'a355ff7a90a2a9ddfffe31e98356be4de5b7cf2e3a8265343d1742ba0d6dedec'
-  LINUX_HELPER_SHA: '0bcc040429cedf7a761e5e35737b67104ffbf2e974210160043de402e8011628'
+  PRODUCT_RUN: '37592276758'
+  PRODUCT_SHA: '48a71dceddf4ab40eddc52a5bb04c54474eeb030'
+  LINUX_ARTIFACT_ID: '11470781946'
+  LINUX_ZIP_SHA: '7ca934792713057afbc1911e99a3431cfa1d509bb20fd4c9d1684fc28c90a703'
+  LINUX_ARCHIVE_SHA: 'bba85186a15895c7b5f32fe58781185db62196e3a53206d057315daa804f389e'
+  LINUX_HELPER_SHA: '28d496fc4ce7c40b82607dd256c1d8e1d171c0463e36d3e4ec6bb99db120da10'
   BOOKWORM_IMAGE: rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e
-  DARWIN_ARTIFACT_ID: '11345703960'
-  DARWIN_ZIP_SHA: '13f660e6f9e6ee7bb014743bbe7407eede1b0bf4187651b08639b3adb4e928ef'
-  DARWIN_ARCHIVE_SHA: '3a076cc410f91f2dd328da2c92e1fb64e2ba1b3b4609694214ae17311cf5ddf4'
-  DARWIN_HELPER_SHA: '9344bcc18f879e6a9a6923e82e1960d944a5496762f481920a5e395c381cc437'
+  DARWIN_ARTIFACT_ID: '11469149971'
+  DARWIN_ZIP_SHA: 'bcf70912f12c3f9657f19b3fb03fcc1d14bfd6b99900ec1e3c1816efc1b0ba45'
+  DARWIN_ARCHIVE_SHA: 'c62a190c17ea5a1755a7d272d0815044a8f5e02c5795e78acfad9d98c7f3411d'
+  DARWIN_HELPER_SHA: 'c4068f00dbe05e1989077de68fecab426cddb27960a041fd12c31b2ceb6b7384'
 
 jobs:
   linux-fuse:
