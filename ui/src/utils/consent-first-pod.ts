@@ -4,7 +4,7 @@ import { xpodRegistrationCopy } from '../auth/xpod-account-copy';
 import { hasInvalidWebIdWhitespace } from '../auth/webid-validation';
 import { resolveHostedAccountControlUrl } from './account-control-url';
 import { buildPodCreatePayload, resolveProvisionCodeForPodCreate } from './pod';
-import { prepareProvisionedPod, resolveProvisionApiBaseUrl, resolveProvisionScope, storageUrlBelongsToRoot } from './provision-scope';
+import { lookupProvisionScopedWebIds, prepareProvisionedPod, resolveProvisionApiBaseUrl, resolveProvisionScope, storageUrlBelongsToRoot } from './provision-scope';
 import { getRegistrationUsernameError, normalizeRegistrationUsername } from './registration';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
 
@@ -94,6 +94,120 @@ async function assertFirstPodCreationIsNew(
  * 不由本 helper 宣称（见 docs/superpowers/audits/2026-09-27-w3-account-pod-self-review.md）。
  */
 export type FirstPodCreationStage = 'submitting' | 'submitted' | 'binding-confirmed';
+
+export type CurrentTargetStorageStatus = 'exists' | 'none' | 'unreadable';
+
+export interface CurrentTargetStorageResult {
+  status: CurrentTargetStorageStatus;
+  /** The bindings that authoritatively prove storage already exists for this target. */
+  bindings: StorageBinding[];
+}
+
+export interface ResolveCurrentTargetStorageOptions {
+  /** Authoritative Account WebID/storage pairs the caller already read. */
+  accountBindings: StorageBinding[];
+  /** Account WebID control advertised by the current session, when there is one. */
+  accountWebIdUrl?: string;
+  fetchImpl?: typeof fetch;
+  idpIndex: string;
+  /** Active Local/edge provision code, when the operation is still live. */
+  provisionCode?: string;
+  /** Canonical storage root of the current target (also known for an expired code). */
+  provisionStorageRoot?: string;
+}
+
+/**
+ * Decide whether the *current* deployment already owns storage for this Account.
+ *
+ * Returning to the original authorization is only correct when storage for the
+ * exact current target root exists: either a durable Account binding on that
+ * root, or — when the Account control recorded no durable pair — an active
+ * Local/edge scope whose own SP reports one of the Account's WebIDs. A binding
+ * on a *different* root (e.g. a Cloud Pod seen from a Local node) never proves
+ * this deployment is ready, so it must not skip the explicit create form.
+ *
+ * Failed reads fail closed: an unreadable Account or SP answer is reported as
+ * `unreadable`, never as "no storage", so a broken read can never unblock a
+ * duplicate create. The Account WebID control being absent is not a failure —
+ * it means this deployment advertises no extra candidates.
+ */
+export async function resolveCurrentTargetStorage(
+  options: ResolveCurrentTargetStorageOptions,
+): Promise<CurrentTargetStorageResult> {
+  const root = options.provisionStorageRoot;
+  const durable = root
+    ? options.accountBindings.filter((binding) => storageUrlBelongsToRoot(binding.storageUrl, root))
+    : options.accountBindings;
+  if (durable.length > 0) {
+    return { status: 'exists', bindings: durable };
+  }
+  // No scoped target to look up: without a Local/edge scope there is no second
+  // deployment whose own SP could hold the storage.
+  if (!root) {
+    return { status: 'none', bindings: [] };
+  }
+
+  const candidates = new Set(options.accountBindings.map((binding) => binding.webId));
+  if (options.accountWebIdUrl) {
+    try {
+      const accountWebIds = await fetchAccountWebIds(options.accountWebIdUrl, options.idpIndex, options.fetchImpl);
+      for (const webId of accountWebIds) candidates.add(webId);
+    } catch {
+      return { status: 'unreadable', bindings: [] };
+    }
+  }
+  // The code is expired or unreachable: the SP cannot be asked, so no lookup.
+  if (!options.provisionCode) {
+    return { status: 'none', bindings: [] };
+  }
+  let scoped;
+  try {
+    scoped = await lookupProvisionScopedWebIds(options.fetchImpl ?? fetch, Array.from(candidates), options.provisionCode);
+  } catch {
+    return { status: 'unreadable', bindings: [] };
+  }
+  if (!scoped) {
+    return { status: 'unreadable', bindings: [] };
+  }
+  if (scoped.length === 0) {
+    return { status: 'none', bindings: [] };
+  }
+  return {
+    status: 'exists',
+    bindings: scoped.map((entry) => ({ webId: entry.webId, storageUrl: entry.storageUrl })),
+  };
+}
+
+/** Read the Account control's native WebIDs as Local lookup candidates. */
+async function fetchAccountWebIds(
+  accountWebIdUrl: string,
+  idpIndex: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  const webIdUrl = await resolveHostedAccountControlUrl(accountWebIdUrl, fetchImpl, idpIndex);
+  if (!webIdUrl) {
+    throw new Error('Account WebID control is unavailable');
+  }
+  const response = await fetchImpl(scopeAccountUrl(webIdUrl), {
+    headers: accountTokenHeaders(getAccountSessionToken(), { Accept: 'application/json' }),
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    throw new Error('Account WebID control read failed');
+  }
+  const body = await response.json().catch(() => undefined) as { webIdLinks?: unknown } | undefined;
+  if (!isRecord(body) || !isRecord(body.webIdLinks)) {
+    throw new Error('Account WebID control response is malformed');
+  }
+  return Object.keys(body.webIdLinks).filter((webId) => {
+    try {
+      const url = new URL(webId);
+      return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  });
+}
 
 export interface ConsentFirstPodOptions {
   assertCurrentAccount?: () => void;
@@ -223,6 +337,9 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
     fetchImpl,
     username,
     provisionCode,
+    createPodUrl,
+    options.trustedAccountIndex,
+    guard.headers,
   );
 
   guard.assertCurrentAccount();
@@ -234,11 +351,20 @@ export async function createFirstPodAndWaitForWebIds(options: ConsentFirstPodOpt
       'Content-Type': 'application/json',
     },
     credentials: 'include',
-    body: JSON.stringify(buildPodCreatePayload(
-      username,
-      preparedProvision?.provisionCode ?? provisionCode,
-      preparedProvision?.provisionReceipt,
-    )),
+    body: JSON.stringify({
+      ...buildPodCreatePayload(
+        username,
+        preparedProvision?.provisionCode ?? provisionCode,
+        preparedProvision?.provisionReceipt,
+      ),
+      ...(preparedProvision?.preparedWebId ? {
+        settings: {
+          provisionCode: preparedProvision.provisionCode,
+          provisionReceipt: preparedProvision.provisionReceipt,
+          webId: preparedProvision.preparedWebId,
+        },
+      } : {}),
+    }),
   } as RequestInit);
 
   guard.assertCurrentAccount();
@@ -294,6 +420,9 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
     fetchImpl,
     username,
     provisionCode,
+    createPodUrl,
+    options.trustedAccountIndex,
+    guard.headers,
   );
 
   guard.assertCurrentAccount();
@@ -306,11 +435,20 @@ export async function createFirstPodAndWaitForBinding(options: ConsentFirstPodOp
       'Content-Type': 'application/json',
     },
     credentials: 'include',
-    body: JSON.stringify(buildPodCreatePayload(
-      username,
-      preparedProvision?.provisionCode ?? provisionCode,
-      preparedProvision?.provisionReceipt,
-    )),
+    body: JSON.stringify({
+      ...buildPodCreatePayload(
+        username,
+        preparedProvision?.provisionCode ?? provisionCode,
+        preparedProvision?.provisionReceipt,
+      ),
+      ...(preparedProvision?.preparedWebId ? {
+        settings: {
+          provisionCode: preparedProvision.provisionCode,
+          provisionReceipt: preparedProvision.provisionReceipt,
+          webId: preparedProvision.preparedWebId,
+        },
+      } : {}),
+    }),
   } as RequestInit);
 
   guard.assertCurrentAccount();
@@ -492,9 +630,25 @@ async function prepareFirstPodProvision(
   fetchImpl: typeof fetch,
   username: string,
   provisionCode: string | undefined,
+  createPodUrl: string,
+  trustedAccountIndex: string | undefined,
+  headers: Record<string, string>,
 ) {
   try {
-    return await prepareProvisionedPod(fetchImpl, username, provisionCode);
+    if (!resolveProvisionScope(provisionCode)) return await prepareProvisionedPod(fetchImpl, username, provisionCode);
+    const index = trustedAccountIndex ?? new URL('/.account/', createPodUrl).href;
+    const response = await fetchImpl(scopeAccountUrl(index), { headers, credentials: 'include' });
+    if (!response.ok) throw new Error('Cloud Account controls unavailable. Retry loading your account.');
+    const body = await response.json() as { controls?: { account?: { profile?: string } } };
+    const profileControl = body.controls?.account?.profile;
+    let profileUrl: string | undefined;
+    if (profileControl) {
+      const candidate = new URL(profileControl, index);
+      if (candidate.origin === new URL(index).origin && candidate.pathname.startsWith('/.account/') && !candidate.username && !candidate.password) {
+        profileUrl = await resolveHostedAccountControlUrl(candidate.href, fetchImpl, index);
+      }
+    }
+    return await prepareProvisionedPod(fetchImpl, username, provisionCode, profileUrl ? { profileUrl, headers } : undefined);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (isPodNameConflict(message)) {

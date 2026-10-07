@@ -3,6 +3,7 @@ export * from './layout';
 export * from './react';
 export * from './testing';
 export * from './web';
+export * from './shell-state';
 export type {
   LoginEndpointDescriptor,
   RememberedWebIdLogin,

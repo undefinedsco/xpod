@@ -15,7 +15,7 @@ export interface ClusterIdentifierStrategyOptions {
   allowedHosts?: string[] | string;
 }
 
-const SERVER_ROOT_SEGMENTS = new Set([
+export const SERVER_ROOT_SEGMENTS = new Set([
   '.account',
   '.oidc',
   '.well-known',

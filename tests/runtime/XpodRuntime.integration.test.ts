@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import dns from 'node:dns';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../../src/runtime/XpodRuntime';
+import { localServiceUrl } from '../../src/runtime/bootstrap';
 import { createGatewayAdminProxyHeaders } from '../../src/runtime/GatewayAdminProxyAuth';
 import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
 import { startTestRuntime } from '../helpers/testRuntime';
@@ -120,6 +122,34 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
     await close(cloudServer);
   });
 
+  it('reaches its bound listener when localhost name resolution stalls', async () => {
+    const originalLookup = dns.lookup;
+    const delayed: Array<ReturnType<typeof setTimeout>> = [];
+    let localLookups = 0;
+    const lookup = vi.spyOn(dns, 'lookup').mockImplementation(((hostname: string, options: unknown, callback: unknown) => {
+      const resolve = () => Reflect.apply(originalLookup, dns, [hostname, options, callback]);
+      if (hostname === 'localhost') {
+        localLookups += 1;
+        delayed.push(setTimeout(resolve, 10_000));
+      } else {
+        resolve();
+      }
+    }) as typeof dns.lookup);
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const response = await runtime.fetch(new Request(new URL('/provision/status', runtime.baseUrl)), { signal: controller.signal });
+      expect(response.status).toBe(200);
+      expect(response.url).toBe(new URL('/provision/status', runtime.baseUrl).href);
+      await expect(response.json()).resolves.toMatchObject({ registered: true });
+      expect(localLookups).toBe(0);
+    } finally {
+      clearTimeout(deadline);
+      delayed.forEach(clearTimeout);
+      lookup.mockRestore();
+    }
+  });
+
   it('persists Cloud-issued credentials and enables Local provision routes in the same process', async () => {
     const registration = cloudRequests.find((entry) => entry.method === 'POST' && entry.url === '/provision/nodes');
     expect(registration).toBeTruthy();
@@ -161,15 +191,23 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
       },
       body: JSON.stringify({
         podName: 'autoalice',
-        webId: 'https://auto-node.undefineds.test/autoalice/profile/card#me',
+        webId: `${cloudOrigin}/autoalice/profile/card#me`,
       }),
     });
     expect(createResponse.status).toBe(201);
+    // Managed Local: the Cloud-issued WebID owns the Pod and this node hosts its storage.
+    await expect(createResponse.json()).resolves.toMatchObject({
+      success: true,
+      webId: `${cloudOrigin}/autoalice/profile/card#me`,
+      // The node keeps hosting security: storage is served under the registered public URL.
+      podUrl: 'https://auto-node.undefineds.test/autoalice/',
+    });
   });
 
-  it('reads a Cloud-canonical Pod through the local Gateway route', async () => {
+  it('reads a Cloud-owned Pod storage through the local Gateway route', async () => {
     const canonicalPod = new URL('https://auto-node.undefineds.test/autoalice/');
-    const localPod = new URL('/autoalice/', runtime.baseUrl);
+    const listenerUrl = localServiceUrl('127.0.0.1', runtime.ports.gateway!);
+    const localPod = new URL('/autoalice/', listenerUrl);
     const networkTargets: string[] = [];
     const routedFetch = createSolidLocalRouteFetch({
       fetch: async(input, init) => {
@@ -181,15 +219,15 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
         localBaseUrl: localPod.href,
       }],
     });
-    const canonicalResource = new URL('profile/card', canonicalPod);
-    const getResponse = await routedFetch(canonicalResource, {
-      headers: { accept: 'text/turtle' },
-    });
+    const getResponse = await routedFetch(canonicalPod, { headers: { accept: 'text/turtle' } });
     expect(getResponse.status).toBe(200);
-    await expect(getResponse.text()).resolves.toContain('https://auto-node.undefineds.test/autoalice/profile/card#me');
-    expect(networkTargets).toEqual([ new URL('profile/card', localPod).href ]);
-    expect(new URL(networkTargets[0]!).origin).toBe(new URL(runtime.baseUrl).origin);
+    // The Cloud owns the profile card, so what this node serves is the Pod storage itself.
+    await expect(getResponse.text()).resolves.toContain('http://www.w3.org/ns/pim/space#Storage');
+    expect(networkTargets).toEqual([ localPod.href ]);
+    expect(new URL(networkTargets[0]!).origin).toBe(listenerUrl);
   });
+
+
 });
 
 describe('XpodRuntime', () => {
@@ -602,8 +640,11 @@ describe('XpodRuntime SP provisioning authorization', () => {
     await close(cloudServer);
   });
 
-  it('serves a provisioned public profile card without authorization headers', async () => {
-    const webId = new URL('/alice/profile/card#me', canonicalBaseUrl).toString();
+  it('serves the provisioned public Pod storage without authorization headers', async () => {
+    // Managed Local: the Cloud-issued WebID owns the Pod; this node hosts the storage and the
+    // Cloud keeps the profile card.
+    const webId = new URL('/alice/profile/card#me', cloudOrigin).toString();
+    const storageUrl = new URL('/alice/', canonicalBaseUrl).toString();
     const createResponse = await runtime.fetch('/provision/pods', {
       method: 'POST',
       headers: {
@@ -617,28 +658,10 @@ describe('XpodRuntime SP provisioning authorization', () => {
     });
 
     expect(createResponse.status).toBe(201);
+    await expect(createResponse.json()).resolves.toMatchObject({ success: true, webId, podUrl: storageUrl });
 
-    const profileResponse = await runtime.fetch('/alice/profile/card', {
-      headers: {
-        accept: 'text/turtle',
-      },
-    });
-
-    expect(profileResponse.status).toBe(200);
-    const body = await profileResponse.text();
-    const storageUrl = new URL('/alice/', canonicalBaseUrl).toString();
-    expect(body).toContain(webId);
-    expect(body).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
-    expect(body).toContain(canonicalBaseUrl);
-    expect(body).toContain('http://www.w3.org/ns/solid/terms#storage');
-    expect(body).toContain(storageUrl);
-
-    const profileContainerResponse = await runtime.fetch('/alice/profile/', {
-      headers: {
-        accept: 'text/turtle',
-      },
-    });
-
-    expect(profileContainerResponse.status).toBe(200);
+    const storageResponse = await runtime.fetch('/alice/', { headers: { accept: 'text/turtle' } });
+    expect(storageResponse.status).toBe(200);
+    await expect(storageResponse.text()).resolves.toContain('http://www.w3.org/ns/pim/space#Storage');
   });
 });

@@ -1,164 +1,173 @@
 import { IncomingMessage } from 'node:http';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { AesInvocationTokenCodec } from '../../../src/api/ai-gateway/auth/InvocationTokenCodec';
+import { resolveOwnerPodBaseUrl } from '../../../src/api/ai-gateway/pod/PodBaseUrlResolver';
+import { GatewayApiKeyAuthenticator } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
 import {
-  createGatewayApiKey,
-  type GatewayDeployment,
-} from '../../../src/api/ai-gateway/auth/GatewayApiKey';
-import {
-  GatewayApiKeyAuthenticator,
-  type GatewayAccessKeyRecord,
-  type GatewayAccessKeyRepository,
-} from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
-import { canManageGatewayKeys } from '../../../src/api/ai-gateway/auth/GatewayPrincipal';
+  canManageGatewayKeys,
+  isInternalGatewayInvocationPrincipal,
+} from '../../../src/api/ai-gateway/auth/GatewayPrincipal';
+
+const WEB_ID = 'https://pod.example/alice/profile/card#me';
+const AUDIENCE = 'https://xpod.example';
+const NOW = new Date('2026-08-25T01:00:00.000Z');
+
+const codec = new AesInvocationTokenCodec({
+  active: { kid: 'active', secret: 'invocation-token-secret' },
+});
+
+function invocationToken(patch: Partial<Parameters<AesInvocationTokenCodec['encode']>[0]> = {}): string {
+  return codec.encode({
+    deployment: 'local',
+    audience: AUDIENCE,
+    issuer: AUDIENCE,
+    webId: WEB_ID,
+    scopes: ['models:read', 'inference:write'],
+    issuedAt: new Date('2026-08-25T00:59:00.000Z'),
+    expiresAt: new Date('2026-08-25T01:04:00.000Z'),
+    jti: 'invocation-jti-0001',
+    ...patch,
+  });
+}
+
+function authenticator(): GatewayApiKeyAuthenticator {
+  return new GatewayApiKeyAuthenticator({
+    deployment: 'local',
+    invocationTokenCodec: codec,
+    invocationTokenAudience: AUDIENCE,
+    now: () => NOW,
+  });
+}
 
 describe('GatewayApiKeyAuthenticator', () => {
-  it('authenticates active Gateway API keys and touches usage', async () => {
-    const issued = await createGatewayApiKey({
-      deployment: 'local',
-      keyId: 'gak_test',
-      secret: 'secret',
-    });
-    const record: GatewayAccessKeyRecord = {
-      id: issued.record.id,
-      owner: 'https://pod.example/alice/profile/card#me',
-      secretHash: issued.record.secretHash,
-      deployment: 'local',
-      scopes: ['models:read', 'inference:write'],
-      createdAt: new Date('2026-08-25T00:00:00.000Z'),
-    };
-    const repository = memoryGatewayRepository(record);
-    const authenticator = new GatewayApiKeyAuthenticator({
-      repository,
-      deployment: 'local',
-      now: () => new Date('2026-08-25T01:00:00.000Z'),
-    });
-
-    const result = await authenticator.authenticate(bearerRequest(issued.plaintext));
+  it('authenticates AI-Connections invocation tokens and marks them internal', async () => {
+    const token = invocationToken();
+    const result = await authenticator().authenticate(bearerRequest(token));
 
     expect(result.success).toBe(true);
     if (!result.context || result.context.type !== 'solid') {
-      throw new Error('Expected Gateway API key authentication to return a Solid auth context.');
+      throw new Error('Expected invocation authentication to return a Solid auth context.');
     }
-    expect(result.context.webId).toBe(record.owner);
+    expect(result.context.webId).toBe(WEB_ID);
     expect(result.context).toMatchObject({
       viaGatewayApiKey: true,
-      gatewayRuntimeAccess: true,
-      gatewayKeyId: record.id,
+      internalInvocation: true,
+      gatewayKeyId: 'invocation-jti-0001',
       scopes: ['models:read', 'inference:write'],
+      tokenType: 'Bearer',
     });
+    expect(result.context.gatewayRuntimeAccess).toBeUndefined();
+    expect(isInternalGatewayInvocationPrincipal(result.context)).toBe(true);
     expect(canManageGatewayKeys(result.context)).toBe(false);
-    expect(repository.touchLastUsed).toHaveBeenCalledWith(
-      record.id,
-      new Date('2026-08-25T01:00:00.000Z'),
-      expect.objectContaining({ gatewayKeyVerification: { reason: 'gateway-key-verifier' } }),
-    );
   });
 
-  it('rejects disabled keys', async () => {
-    const issued = await createGatewayApiKey({
-      deployment: 'local',
-      keyId: 'gak_disabled',
-      secret: 'secret',
-    });
-    const authenticator = new GatewayApiKeyAuthenticator({
-      repository: memoryGatewayRepository({
-        id: issued.record.id,
-        owner: 'https://pod.example/alice/profile/card#me',
-        secretHash: issued.record.secretHash,
-        deployment: 'local',
-        scopes: ['models:read', 'inference:write'],
-        createdAt: new Date('2026-08-25T00:00:00.000Z'),
-        disabledAt: new Date('2026-08-25T00:10:00.000Z'),
-      }),
-      deployment: 'local',
-    });
+  it('carries the signed Pod binding onto the invocation context', async () => {
+    const bound = await authenticator().authenticate(
+      bearerRequest(invocationToken({ podUrl: 'https://storage.example/alice/' })),
+    );
+    expect(bound.success).toBe(true);
+    expect(bound.context).toMatchObject({ authorizedPodUrl: 'https://storage.example/alice/' });
 
-    const result = await authenticator.authenticate(bearerRequest(issued.plaintext));
+    const unbound = await authenticator().authenticate(bearerRequest(invocationToken()));
+    expect(unbound.success).toBe(true);
+    expect(unbound.context).not.toHaveProperty('authorizedPodUrl');
+  });
 
-    expect(result).toMatchObject({
-      success: false,
-      statusCode: 401,
-      category: 'invalid_credentials',
+  it('refuses a requested Pod URL that the invocation binding does not authorize', async () => {
+    const resolver = async () => 'https://storage.example/alice/';
+    const base = {
+      type: 'solid' as const,
+      webId: WEB_ID,
+      viaGatewayApiKey: true as const,
+      gatewayRuntimeAccess: true as const,
+    };
+
+    await expect(resolveOwnerPodBaseUrl(WEB_ID, resolver, {
+      ...base,
+      requestedPodUrl: 'https://foreign.example/alice/',
+    })).rejects.toThrow('service_access_missing');
+
+    await expect(resolveOwnerPodBaseUrl(WEB_ID, resolver, {
+      ...base,
+      requestedPodUrl: 'https://storage.example/alice/',
+      authorizedPodUrl: 'https://storage.example/alice/',
+    })).resolves.toBe('https://storage.example/alice/');
+  });
+
+  it('fingerprints the bearer it accepted', async () => {
+    const token = invocationToken();
+    const result = await authenticator().authenticate(bearerRequest(token));
+
+    expect(result.context).toMatchObject({
+      gatewayKeyFingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
     });
-    expect(result).not.toHaveProperty('context');
+    expect((result.context as { gatewayKeyFingerprint: string }).gatewayKeyFingerprint)
+      .not.toContain(token);
   });
 
   it.each([
-    ['expired', 'gak_expired', { expiresAt: new Date('2026-08-24T23:59:59.000Z') }],
-    ['wrong scope', 'gak_wrong_scope', { scopes: ['models:read'] }],
-    ['revoked', 'gak_revoked', { revokedAt: new Date('2026-08-25T00:10:00.000Z') }],
-    ['wrong deployment', 'gak_wrong_deployment', { deployment: 'cloud' as const }],
-  ])('does not grant gateway runtime access to %s keys', async (_label, keyId, patch) => {
-    const issued = await createGatewayApiKey({
-      deployment: 'local',
-      keyId,
-      secret: 'secret',
-    });
-    const authenticator = new GatewayApiKeyAuthenticator({
-      repository: memoryGatewayRepository({
-        id: issued.record.id,
-        owner: 'https://pod.example/alice/profile/card#me',
-        secretHash: issued.record.secretHash,
-        deployment: 'local',
-        scopes: ['models:read', 'inference:write'],
-        createdAt: new Date('2026-08-25T00:00:00.000Z'),
-        ...patch,
-      }),
-      deployment: 'local',
-      now: () => new Date('2026-08-25T01:00:00.000Z'),
-    });
-
-    const result = await authenticator.authenticate(bearerRequest(issued.plaintext));
+    ['expired', { issuedAt: new Date('2026-08-25T00:40:00.000Z'), expiresAt: new Date('2026-08-25T00:45:00.000Z') }],
+    ['wrong scope', { scopes: ['models:read'] }],
+    ['wrong deployment', { deployment: 'cloud' as const }],
+    ['wrong audience', { audience: 'https://other.example' }],
+  ])('rejects a %s invocation token with the invocation error code', async (_label, patch) => {
+    const result = await authenticator().authenticate(bearerRequest(invocationToken(patch)));
 
     expect(result).toMatchObject({
       success: false,
+      error: 'Invalid gateway API key',
       statusCode: 401,
       category: 'invalid_credentials',
     });
     expect(result).not.toHaveProperty('context');
   });
 
-  it.each(['wrong secret', 'missing key'] as const)(
-    'does not grant runtime access or update usage for a %s',
-    async (failure) => {
-      const issued = await createGatewayApiKey({
-        deployment: 'local',
-        keyId: 'gak_invalid',
-        secret: 'secret',
-      });
-      const repository = memoryGatewayRepository({
-        id: failure === 'missing key' ? 'gak_other' : issued.record.id,
-        owner: 'https://pod.example/alice/profile/card#me',
-        secretHash: issued.record.secretHash,
-        deployment: 'local',
-        scopes: ['models:read', 'inference:write'],
-        createdAt: new Date('2026-08-25T00:00:00.000Z'),
-      });
-      const authenticator = new GatewayApiKeyAuthenticator({ repository, deployment: 'local' });
-      const bearer = failure === 'wrong secret' ? `${issued.plaintext}tampered` : issued.plaintext;
+  it('rejects an invocation token signed with another secret', async () => {
+    const other = new AesInvocationTokenCodec({
+      active: { kid: 'active', secret: 'another-invocation-secret' },
+    });
+    const foreign = other.encode({
+      deployment: 'local',
+      audience: AUDIENCE,
+      issuer: AUDIENCE,
+      webId: WEB_ID,
+      scopes: ['models:read', 'inference:write'],
+      issuedAt: new Date('2026-08-25T00:59:00.000Z'),
+      expiresAt: new Date('2026-08-25T01:04:00.000Z'),
+    });
 
-      const result = await authenticator.authenticate(bearerRequest(bearer));
+    const result = await authenticator().authenticate(bearerRequest(foreign));
 
-      expect(result).toMatchObject({ success: false, statusCode: 401, category: 'invalid_credentials' });
-      expect(result).not.toHaveProperty('context');
-      expect(repository.touchLastUsed).not.toHaveBeenCalled();
-    },
-  );
+    expect(result).toMatchObject({
+      success: false,
+      error: 'Invalid gateway API key',
+      statusCode: 401,
+      category: 'invalid_credentials',
+    });
+  });
+
+  it('no longer claims or accepts retired gateway API keys', async () => {
+    // Nothing issues `xpod_gw_v1_*` any more; the bearer must not be claimed here so that it
+    // falls through to the client-credentials authenticator and fails closed.
+    const gatewayKey = 'xpod_gw_v1_local_gak_locator_secret';
+    const subject = authenticator();
+
+    expect(subject.canAuthenticate(bearerRequest(gatewayKey))).toBe(false);
+    await expect(subject.authenticate(bearerRequest(gatewayKey))).resolves.toMatchObject({
+      success: false,
+      statusCode: 401,
+      category: 'invalid_credentials',
+    });
+  });
+
+  it('only claims the invocation token prefix', () => {
+    const subject = authenticator();
+
+    expect(subject.canAuthenticate(bearerRequest(invocationToken()))).toBe(true);
+    expect(subject.canAuthenticate({ headers: {} } as IncomingMessage)).toBe(false);
+    expect(subject.canAuthenticate(bearerRequest('sk-Y2xpZW50OnNlY3JldA=='))).toBe(false);
+  });
 });
-
-function memoryGatewayRepository(record: GatewayAccessKeyRecord): GatewayAccessKeyRepository {
-  return {
-    createKeyId: vi.fn((_owner: string, _deployment: GatewayDeployment) => record.id),
-    create: vi.fn(async () => record),
-    findById: vi.fn(async (id: string) => id === record.id ? record : undefined),
-    listByOwner: vi.fn(async () => [record]),
-    setEnabled: vi.fn(async () => record),
-    revoke: vi.fn(async () => record),
-    delete: vi.fn(async () => true),
-    revealPlaintext: vi.fn(async () => undefined),
-    touchLastUsed: vi.fn(async () => {}),
-  };
-}
 
 function bearerRequest(token: string): IncomingMessage {
   return {

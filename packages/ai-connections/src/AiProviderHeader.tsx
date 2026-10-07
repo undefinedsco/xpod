@@ -25,6 +25,7 @@ export function AiProviderHeader({
   infoLabel,
   infoLines,
   link,
+  links = [],
   badge,
 }: {
   name: string
@@ -35,11 +36,12 @@ export function AiProviderHeader({
   infoLabel: string
   infoLines: ReactNode[]
   link: AiProviderHeaderLink
+  links?: AiProviderHeaderLink[]
   badge?: ReactNode
 }) {
   return (
-    <header className="flex items-start justify-between gap-4">
-      <div className="flex items-center gap-3">
+    <header className="flex flex-wrap items-start justify-between gap-4">
+      <div className="flex min-w-0 items-center gap-3">
         <Avatar
           className="h-9 w-9 shrink-0 rounded-lg border border-border/50 bg-muted/50 shadow-sm"
           style={avatarBackground ? { backgroundColor: avatarBackground } : undefined}
@@ -49,22 +51,27 @@ export function AiProviderHeader({
             {mark}
           </AvatarFallback>
         </Avatar>
-        <div className="flex flex-col justify-center gap-0.5">
-          <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-col justify-center gap-0.5">
+          <div className="flex min-w-0 items-center gap-2">
             <h2 className="text-base font-semibold leading-none tracking-tight text-foreground">{name}</h2>
             <AiInfoTooltip label={infoLabel} lines={infoLines} />
           </div>
-          <a
-            href={link.href}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-0.5 text-[10px] leading-none text-muted-foreground transition-colors hover:text-primary"
-          >
-            {link.label} <ExternalLink aria-hidden="true" className="h-2.5 w-2.5" />
-          </a>
+          <div role="group" aria-label={`${name}官方链接`} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {[link, ...links].map((item) => (
+              <a
+                key={item.href}
+                href={item.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-0.5 text-[10px] leading-none text-muted-foreground transition-colors hover:text-primary"
+              >
+                {item.label} <ExternalLink aria-hidden="true" className="h-2.5 w-2.5" />
+              </a>
+            ))}
+          </div>
         </div>
       </div>
-      {badge}
+      {badge ? <div className="shrink-0 whitespace-nowrap">{badge}</div> : null}
     </header>
   )
 }

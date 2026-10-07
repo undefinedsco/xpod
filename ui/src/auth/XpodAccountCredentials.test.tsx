@@ -51,7 +51,7 @@ describe('XpodAccountCredentials', () => {
   it('carries the initiating application through account registration and recovery', () => {
     window.history.replaceState({}, '', '/ai-connections?tab=providers');
     renderCredentials({}, { surface: 'page' });
-    const registration = new URL(screen.getByRole('link', { name: '创建账号' }).getAttribute('href')!, window.location.origin);
+    const registration = new URL(screen.getByRole('link', { name: '注册账号' }).getAttribute('href')!, window.location.origin);
     expect(registration.pathname).toBe('/.account/login/password/register/');
     expect(registration.searchParams.get('returnTo')).toBe('/ai-connections?tab=providers');
     const recovery = new URL(screen.getByRole('link', { name: /忘记密码/ }).getAttribute('href')!, window.location.origin);
@@ -61,7 +61,9 @@ describe('XpodAccountCredentials', () => {
   it('uses the CSS Account page in Electron without a shared WebID card', () => {
     window.xpodDesktop = { platform: 'darwin', setIdentity: vi.fn(), setWindowMode: vi.fn() };
     renderCredentials({}, { surface: 'page' });
-    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('compact');
+    // The desktop shell is the native 360x540 auth window, not a compact card.
+    expect(screen.getByTestId('web-account-panel').getAttribute('data-web-account-layout')).toBe('window');
+    expect(screen.queryByTestId('web-account-introduction')).toBeNull();
     expect(screen.queryByTestId('auth-surface-modal')).toBeNull();
     expect(window.xpodDesktop.setWindowMode).toHaveBeenCalledWith('account');
     expect(screen.queryByText('使用 WebID 登录')).toBeNull();
@@ -77,15 +79,20 @@ describe('XpodAccountCredentials', () => {
       events.push('authenticated');
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/service-info') {
+        expect(init?.method ?? 'GET').toBe('GET');
+        return Response.json({ edition: 'local', managed: false });
+      }
       events.push('fetch');
       expect(String(input)).toBe(new URL('/.account/login/password/', window.location.origin).href);
+      expect(init?.method).toBe('POST');
       expect(init?.method).toBe('POST');
       expect(init?.credentials).toBe('include');
       expect(init?.headers).toEqual({ 'Content-Type': 'application/json', Accept: 'application/json' });
       expect(JSON.parse(String(init?.body))).toEqual({
         email: 'person@example.test',
         password: 'correct horse battery staple',
-        remember: true,
+        remember: false,
       });
       return new Response(JSON.stringify({ authorization: 'account-token' }), {
         status: 200,
@@ -106,7 +113,8 @@ describe('XpodAccountCredentials', () => {
     expect(window.localStorage.getItem('xpod.cssAccountToken')).toBeNull();
     expect(window.sessionStorage.getItem('xpod.cssAccountToken')).toBeNull();
     expect(document.cookie).toContain('css-account=account-token');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('authenticates a managed local Xpod through the Cloud Account service', async () => {
@@ -114,8 +122,16 @@ describe('XpodAccountCredentials', () => {
     const refetchControls = vi.fn(async () => ({ status: 'authenticated' as const }));
     const onAuthenticated = vi.fn(async () => undefined);
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/service-info') {
+        expect(init?.method ?? 'GET').toBe('GET');
+        return Response.json({ edition: 'local', managed: true, oidcIssuer: 'https://id.undefineds.co/' });
+      }
       expect(String(input)).toBe('https://id.undefineds.co/.account/login/password/');
+      expect(init?.method).toBe('POST');
       expect(init?.credentials).toBe('include');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        email: 'person@example.test', password: 'correct horse battery staple', remember: false,
+      });
       return new Response(JSON.stringify({ authorization: 'cloud-account-token' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -133,7 +149,8 @@ describe('XpodAccountCredentials', () => {
 
     await waitFor(() => expect(onAuthenticated).toHaveBeenCalledTimes(1));
     expect(refetchControls).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the current Dashboard path after Account login without router, system, or OIDC navigation', async () => {
@@ -146,8 +163,16 @@ describe('XpodAccountCredentials', () => {
     const refetchControls = vi.fn(async () => ({ status: 'authenticated' as const }));
     const onAuthenticated = vi.fn(async () => undefined);
     const retry = vi.fn(async () => undefined);
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/service-info') {
+        expect(init?.method ?? 'GET').toBe('GET');
+        return Response.json({ edition: 'local', managed: false });
+      }
       expect(String(input)).toBe(new URL('/.account/login/password/', window.location.origin).href);
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        email: 'person@example.test', password: 'correct horse battery staple', remember: false,
+      });
       return new Response(JSON.stringify({ authorization: 'account-token' }), { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -174,7 +199,8 @@ describe('XpodAccountCredentials', () => {
       expect(pushState).not.toHaveBeenCalled();
       expect(replaceState).not.toHaveBeenCalled();
       expect(open).not.toHaveBeenCalled();
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/.account/oidc/'))).toBe(false);
       expect(refetchControls).toHaveBeenCalledTimes(1);
       expect(retry).not.toHaveBeenCalled();

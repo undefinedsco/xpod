@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import arrayifyStream from 'arrayify-stream';
@@ -10,6 +11,7 @@ import {
   type DataAccessor,
   RepresentationMetadata,
   guardStream,
+  HH,
   LDP,
   RDF,
   NotFoundHttpError,
@@ -22,6 +24,44 @@ import { SolidRdfEngine, UnsupportedSparqlQueryError } from '../../../src/storag
 import { LocalRdfAuthorityRecoveryInitializer, RootedSolidFsSyncJournal, SqliteSolidFsSyncJournal } from '../../../src/solidfs';
 
 type ResourceIdentifier = { path: string };
+
+describe('RDF container deletion with separate content mirrors', () => {
+  function fixture() {
+    const root = { path: 'https://pod.example/alice/' };
+    const other = 'https://pod.example/bob/';
+    const objects = new Set([root.path, other]);
+    const events: string[] = [];
+    const metadata = new RepresentationMetadata(root);
+    metadata.contentType = 'internal/quads';
+    const structured = {
+      getMetadata: vi.fn(async () => metadata),
+      deleteResource: vi.fn(async () => { events.push('metadata'); }),
+    };
+    const remote = { deleteResource: vi.fn(async (identifier: ResourceIdentifier) => {
+      events.push('object'); objects.delete(identifier.path);
+    }) };
+    const files = { deleteResource: vi.fn(async () => { events.push('file'); }) };
+    const accessor = new MixDataAccessor(structured as unknown as DataAccessor,
+      remote as unknown as DataAccessor, false, true, files as unknown as DataAccessor);
+    return { root, other, objects, events, structured, remote, accessor };
+  }
+
+  it('cleans the object marker even when RDF metadata chooses the file mirror', async () => {
+    const f = fixture();
+    await f.accessor.deleteResource(f.root);
+    expect(f.objects.has(f.root.path)).toBe(false);
+    expect(f.objects.has(f.other)).toBe(true);
+    expect(f.events).toEqual(['file', 'object', 'metadata']);
+  });
+
+  it('preserves metadata if the separate object mirror fails to delete', async () => {
+    const f = fixture();
+    f.remote.deleteResource.mockRejectedValueOnce(new Error('object store unavailable'));
+    await expect(f.accessor.deleteResource(f.root)).rejects.toThrow('object store unavailable');
+    expect(f.structured.deleteResource).not.toHaveBeenCalled();
+    expect(f.objects.has(f.root.path)).toBe(true);
+  });
+});
 
 class SimpleIdentifierStrategy extends BaseIdentifierStrategy {
   public constructor(private baseUrl: string) {
@@ -650,6 +690,153 @@ INSERT DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.
     expect(localText).toContain('generated from graph');
     expect(await fileExists(rdfLink.filePath)).toBe(true);
     await expect(readFile(rdfLink.filePath, 'utf8')).resolves.toContain('generated from graph');
+  });
+
+  it('keeps completed ordinary writes unchanged across authority recovery and still indexes external byte changes', async () => {
+    const resourceId = { path: `${baseUrl}alice/run.ttl` };
+    const files = new FileDataAccessor(mapper);
+    const journal = new RootedSolidFsSyncJournal(dataDir);
+    const mixed = new MixDataAccessor(structuredAccessor, files, false, true, files, false, mapper, journal);
+    const recovery = new LocalRdfAuthorityRecoveryInitializer(journal, mixed, mapper, baseUrl, dataDir);
+    const { quad, namedNode, literal } = DataFactory;
+    const metadata = new RepresentationMetadata(resourceId, 'internal/quads');
+    metadata.add(namedNode('https://example.com/custom'), literal('preserve metadata'));
+    try {
+      await mixed.writeDocument(resourceId, guardStream(Readable.from([
+        quad(namedNode(`${resourceId.path}#run`), namedNode('https://schema.org/name'), literal('original')),
+      ])), metadata);
+      const file = (await mapper.mapUrlToFilePath(resourceId, false, 'text/turtle')).filePath;
+      const originalBytes = await readFile(file, 'utf8');
+      const originalMtime = (await stat(file)).mtimeMs;
+      const originalMetadata = (await structuredAccessor.getMetadata(resourceId)).quads();
+      const originalRevision = (await structuredAccessor.getMetadata(resourceId)).get(HH.terms.etag)?.value;
+      await recovery.handle();
+      await recovery.handle();
+      expect(await readFile(file, 'utf8')).toBe(originalBytes);
+      expect((await stat(file)).mtimeMs).toBe(originalMtime);
+      expect((await structuredAccessor.getMetadata(resourceId)).quads()).toEqual(originalMetadata);
+      expect(journal.listPending()).toEqual([]);
+
+      // A byte-only edit changes the HTTP representation even when its RDF meaning is unchanged.
+      await writeFile(file, `${originalBytes}\n# externally formatted\n`);
+      const editedMtime = (await stat(file)).mtimeMs;
+      await recovery.handle();
+      expect((await stat(file)).mtimeMs).toBe(editedMtime);
+      const edited = await structuredAccessor.getMetadata(resourceId);
+      expect(edited.get(HH.terms.etag)?.value).not.toBe(originalRevision);
+      expect(edited.get(namedNode('https://example.com/custom'))?.value).toBe('preserve metadata');
+      const editedRevision = edited.get(HH.terms.etag)?.value;
+      await recovery.handle();
+      expect((await structuredAccessor.getMetadata(resourceId)).get(HH.terms.etag)?.value).toBe(editedRevision);
+
+      await writeFile(file, '<#run> <https://schema.org/name> "external change" .\n');
+      await recovery.handle();
+      expect((await arrayifyStream(await structuredAccessor.getData(resourceId)))[0].object.value).toBe('external change');
+      expect((await structuredAccessor.getMetadata(resourceId)).get(HH.terms.etag)?.value).not.toBe(editedRevision);
+    } finally {
+      await recovery.finalize();
+    }
+  });
+
+  it('keeps copy/materialized sync writing the destination authority file', async () => {
+    const resourceId = { path: `${baseUrl}alice/copied.ttl` };
+    const text = '<#copy> <https://schema.org/name> "copied" .\n';
+    await accessor.syncLocalRdfDocument(resourceId, guardStream(Readable.from([text])), 'text/turtle');
+    const file = (await mapper.mapUrlToFilePath(resourceId, false, 'text/turtle')).filePath;
+    expect(await readFile(file, 'utf8')).toBe(text);
+    expect((await arrayifyStream(await structuredAccessor.getData(resourceId)))[0].object.value).toBe('copied');
+  });
+
+  it('tracks later authority deletion after root recovery reused a child-workspace write receipt', async () => {
+    const resourceId = { path: `${baseUrl}alice/deleted.ttl` };
+    const files = new FileDataAccessor(mapper);
+    const journal = new RootedSolidFsSyncJournal(dataDir);
+    const mixed = new MixDataAccessor(structuredAccessor, files, false, true, files, false, mapper, journal);
+    const recovery = new LocalRdfAuthorityRecoveryInitializer(journal, mixed, mapper, baseUrl, dataDir);
+    try {
+      await mixed.writeDocument(resourceId, guardStream(Readable.from([
+        DataFactory.quad(DataFactory.namedNode(resourceId.path), DataFactory.namedNode('urn:name'), DataFactory.literal('delete me')),
+      ])), new RepresentationMetadata(resourceId, 'internal/quads'));
+      await recovery.handle();
+      const file = (await mapper.mapUrlToFilePath(resourceId, false, 'text/turtle')).filePath;
+      await rm(file);
+      await recovery.handle();
+      await expect(structuredAccessor.getMetadata(resourceId)).rejects.toBeInstanceOf(NotFoundHttpError);
+      expect(await arrayifyStream(await structuredAccessor.getData(resourceId))).toEqual([]);
+    } finally {
+      await recovery.finalize();
+    }
+  });
+
+  it('does not copy an explicitly mapped direct source over the same authority file', async () => {
+    const resourceId = { path: `${baseUrl}alice/direct.ttl` };
+    const files = new FileDataAccessor(mapper);
+    const mixed = new MixDataAccessor(structuredAccessor, files, false, true, files, false, mapper);
+    const text = '<#direct> <https://schema.org/name> "direct" .\n';
+    await mixed.syncLocalRdfDocument(resourceId, guardStream(Readable.from([text])), 'text/turtle');
+    const file = (await mapper.mapUrlToFilePath(resourceId, false, 'text/turtle')).filePath;
+    const mtime = (await stat(file)).mtimeMs;
+    const write = vi.spyOn(files, 'writeDocument');
+    await mixed.syncLocalRdfDocument(resourceId, guardStream(createReadStream(file)), 'text/turtle', { sourcePath: file });
+    expect(write).not.toHaveBeenCalled();
+    expect((await stat(file)).mtimeMs).toBe(mtime);
+    expect(await readFile(file, 'utf8')).toBe(text);
+  });
+
+  it('rejects a concurrent file replacement before its journal receipt and recovers the actual authority', async () => {
+    const resourceId = { path: `${baseUrl}alice/race.ttl` };
+    const files = new FileDataAccessor(mapper);
+    const journal = new RootedSolidFsSyncJournal(dataDir);
+    const mixed = new MixDataAccessor(structuredAccessor, files, false, true, files, false, mapper, journal);
+    const recovery = new LocalRdfAuthorityRecoveryInitializer(journal, mixed, mapper, baseUrl, dataDir);
+    const file = (await mapper.mapUrlToFilePath(resourceId, false, 'text/turtle')).filePath;
+    const record = journal.recordLocalCommitted.bind(journal);
+    vi.spyOn(journal, 'recordLocalCommitted').mockImplementationOnce(async (...args) => {
+      await writeFile(file, '<#run> <https://schema.org/name> "concurrent authority" .\n');
+      return record(...args);
+    });
+    try {
+      await expect(mixed.writeDocument(resourceId, guardStream(Readable.from([
+        DataFactory.quad(DataFactory.namedNode(`${resourceId.path}#run`), DataFactory.namedNode('https://schema.org/name'), DataFactory.literal('stale payload')),
+      ])), new RepresentationMetadata(resourceId, 'internal/quads'))).rejects.toThrow('authority changed');
+      expect(journal.listOperations(['done'])).toEqual([]);
+      expect(journal.listOperations(['failed_retryable'])).toHaveLength(1);
+      await expect(structuredAccessor.getMetadata(resourceId)).rejects.toBeInstanceOf(NotFoundHttpError);
+      await recovery.handle();
+      expect((await arrayifyStream(await structuredAccessor.getData(resourceId)))[0].object.value).toBe('concurrent authority');
+      expect(await readFile(file, 'utf8')).toContain('concurrent authority');
+      expect(journal.listPending()).toEqual([]);
+    } finally {
+      await recovery.finalize();
+    }
+  });
+
+  it('preserves committed authority when journal insertion fails and recovers it on startup', async () => {
+    const resourceId = { path: `${baseUrl}alice/journal-full.ttl` };
+    const files = new FileDataAccessor(mapper);
+    const journal = new RootedSolidFsSyncJournal(dataDir);
+    const mixed = new MixDataAccessor(structuredAccessor, files, false, true, files, false, mapper, journal);
+    const recovery = new LocalRdfAuthorityRecoveryInitializer(journal, mixed, mapper, baseUrl, dataDir);
+    const file = (await mapper.mapUrlToFilePath(resourceId, false, 'text/turtle')).filePath;
+    const failure = new Error('SQLITE_FULL: journal insertion failed');
+    vi.spyOn(journal, 'recordLocalCommitted').mockRejectedValueOnce(failure);
+    const remove = vi.spyOn(files, 'deleteResource');
+    try {
+      await expect(mixed.writeDocument(resourceId, guardStream(Readable.from([
+        DataFactory.quad(DataFactory.namedNode(`${resourceId.path}#run`), DataFactory.namedNode('https://schema.org/name'), DataFactory.literal('durable authority')),
+      ])), new RepresentationMetadata(resourceId, 'internal/quads'))).rejects.toBe(failure);
+      expect(remove).not.toHaveBeenCalled();
+      const body = await readFile(file, 'utf8');
+      expect(body).toContain('durable authority');
+      expect(journal.listOperations()).toEqual([]);
+      await expect(structuredAccessor.getMetadata(resourceId)).rejects.toBeInstanceOf(NotFoundHttpError);
+      await recovery.handle();
+      expect((await arrayifyStream(await structuredAccessor.getData(resourceId)))[0].object.value).toBe('durable authority');
+      expect(await readFile(file, 'utf8')).toBe(body);
+      expect(journal.listPending()).toEqual([]);
+    } finally {
+      await recovery.finalize();
+    }
   });
 
   it('ignores legacy graph-shaped metadata sidecars when reading local RDF files', async () => {

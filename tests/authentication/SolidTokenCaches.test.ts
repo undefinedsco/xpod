@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { exportJWK, generateKeyPair, jwtVerify, SignJWT, type JWK } from 'jose';
 import { createRoutedSolidTokenCaches } from '../../src/authentication/SolidTokenCaches';
@@ -96,8 +97,9 @@ describe('routed Solid token caches', () => {
     const id = kind === 'WebID' ? WEB_ID : ISSUER;
     const first = await read(caches, kind, id);
     now += TTL_MS;
-    fetchMock.mockRejectedValueOnce(new TypeError('offline'));
-    await expect(read(caches, kind, id)).rejects.toThrow('offline');
+    const failure = new TypeError('offline');
+    fetchMock.mockRejectedValueOnce(failure);
+    await expect(read(caches, kind, id)).rejects.toMatchObject({ cause: failure });
     expect(await read(caches, kind, id)).not.toBe(first);
   });
 
@@ -208,4 +210,52 @@ describe('routed Solid token caches', () => {
     expect(String(fetchMock.mock.calls[0][0])).toBe('https://external.example/.well-known/openid-configuration');
     expect(fetchMock.mock.calls[0][1]?.headers).toEqual({ Accept: 'application/json' });
   });
+
+  it.each([
+    [ 'webid-profile', 0 ],
+    [ 'oidc-discovery', 0 ],
+    [ 'issuer-jwks', 1 ],
+  ] as const)('identifies %s socket failure without exposing document identifiers or upstream text', async(stage, successfulFetches) => {
+    const failure = Object.assign(new Error('socket closed https://user:password@private.example/path?token=secret'), {
+      code: 'BunFetchSocketClosed',
+    });
+    for (let index = 0; index < successfulFetches; index += 1) {
+      fetchMock.mockResolvedValueOnce(Response.json({ jwks_uri: `${ISSUER}jwks?token=secret` }));
+    }
+    fetchMock.mockRejectedValueOnce(failure);
+    const caches = createRoutedSolidTokenCaches();
+    const promise = stage === 'webid-profile'
+      ? caches.webIdIssuersCache.getIssuers(`${WEB_ID}?token=secret`)
+      : caches.issuerKeySetCache.getKeySet(ISSUER);
+    const error = await promise.catch((caught: unknown) => caught) as Error & { cause: unknown };
+    expect(error.message).toContain(`stage=${stage}`);
+    expect(error.message).toContain('phase=headers');
+    expect(error.message).toContain('route=external');
+    expect(error.message).toContain('cause=BunFetchSocketClosed');
+    const origin = stage === 'webid-profile' ? new URL(WEB_ID).origin : new URL(ISSUER).origin;
+    expect(error.message).toContain(`origin=${createHash('sha256').update(origin).digest('hex').slice(0, 16)}`);
+    for (const sensitive of [ 'private.example', 'password', 'profile/card', 'secret', 'token=', ISSUER ]) {
+      expect(error.message).not.toContain(sensitive);
+    }
+    expect(error.cause).toBe(failure);
+    expect(fetchMock).toHaveBeenCalledTimes(successfulFetches + 1);
+  });
+
+  it.each([ 'webid-profile', 'oidc-discovery', 'issuer-jwks' ] as const)(
+    'identifies a %s failure after response headers and permits later recovery', async(stage) => {
+      const failure = Object.assign(new Error('secret response body'), { code: 'ECONNRESET' });
+      const response = new Response('');
+      vi.spyOn(response, stage === 'webid-profile' ? 'text' : 'json').mockRejectedValueOnce(failure);
+      if (stage === 'issuer-jwks') {
+        fetchMock.mockResolvedValueOnce(Response.json({ jwks_uri: `${ISSUER}jwks` }));
+      }
+      fetchMock.mockResolvedValueOnce(response);
+      const caches = createRoutedSolidTokenCaches({ publicBaseUrl: ISSUER, internalBaseUrl: 'http://127.0.0.1:3001/' });
+      const readDocument = (): Promise<unknown> => stage === 'webid-profile'
+        ? caches.webIdIssuersCache.getIssuers(`${ISSUER}profile/card#me`)
+        : caches.issuerKeySetCache.getKeySet(ISSUER);
+      await expect(readDocument()).rejects.toThrow(`stage=${stage}, phase=body, route=internal`);
+      await expect(readDocument()).resolves.toBeDefined();
+    },
+  );
 });

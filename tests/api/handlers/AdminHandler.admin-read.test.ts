@@ -33,6 +33,20 @@ describe('Admin route authorization', () => {
     expect(ddnsResponse.status).toBe(200);
   });
 
+  it('normalizes current API process logs before filtering with an honest source', async() => {
+    process.stdout.write('2026-10-02 12:00:00 [ApiLogger] \u001b[34mdebug\u001b[39m: log-normalization-fixture\n');
+    process.stderr.write('2026-10-02T12:00:00.001Z [Components.js] \u001b[33mwarn\u001b[39m: warning-fixture\n');
+    const debug = await fetch(`${baseUrl}/api/admin/logs?source=api&level=debug`);
+    const body = await debug.json() as { logs: Array<{ source: string; level: string; message: string }> };
+    expect(body.logs).toContainEqual(expect.objectContaining({
+      source: 'api', level: 'debug', message: '2026-10-02 12:00:00 [ApiLogger] debug: log-normalization-fixture',
+    }));
+    const warning = await fetch(`${baseUrl}/api/admin/logs?source=api&level=warn`);
+    expect((await warning.json() as typeof body).logs).toContainEqual(expect.objectContaining({ level: 'warn' }));
+    const other = await fetch(`${baseUrl}/api/admin/logs?source=css&level=debug`);
+    expect((await other.json() as typeof body).logs).toEqual([]);
+  });
+
   it('denies admin reads that arrive through the gateway from a remote client', async() => {
     // 网关转发时一定会带上 proxy marker；远端客户端的 marker 声明 originalClientLoopback=0。
     // 缺少签名的 marker 无效，必须拒绝。

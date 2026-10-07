@@ -2,9 +2,9 @@
 
 AI Connections stores the selected model set as `aiProvider.hasModel`, a URI link array.
 
-With `@undefineds.co/drizzle-solid` 0.3.18, `updateById()` can return an updated row while the generated RDF document does not contain the corresponding URI triples. Xpod therefore keeps the ORM update as its primary operation and immediately applies a narrowly scoped, authenticated Solid SPARQL PATCH for only the `hasModel` predicate.
+With `@undefineds.co/drizzle-solid` 0.3.25, insert/update compilation still collapses URI arrays into literals. Xpod sends scalar model fields through the ORM and uses one narrowly scoped authenticated Solid SPARQL PATCH writer for declared URI-array predicates (`hasModel`, `rdfType`, and `capabilities`). Arrays are excluded from the ORM write; PATCH is their entire write, not a repair after writing a broken literal.
 
-TODO: remove `persistModelSelectionLinks()` from `XpodAiConnectionsPodStore` after the drizzle-solid update builder serializes URI arrays correctly and a real CSS regression proves the persisted triples.
+TODO: remove the URI-array writer and model insert-plan adaptation from `XpodAiConnectionsPodStore` after the drizzle-solid insert/update builders serialize URI arrays correctly and real CSS regressions prove the persisted triples.
 
 ## Upstream reproduction (drizzle-solid 0.3.24, 2026-09-14)
 
@@ -84,3 +84,15 @@ column's cardinality. `insert-query-builder`/`buildInsertTriples()` has the same
 submitted data (`arrayOverrides`), so `updateById()` reports success for a document that does
 not contain the URI triples.
 
+
+## Model class/capability reproduction (0.3.25, 2026-10-03)
+
+The real isolated browser discovered `{ id: "fixture-gpt-acceptance", modelType: "chat" }`, but the loaded model Context had `capabilities: []` and no smart choice. The adapter wrote a nonexistent `modelType` column; the authoritative `aiModelResource` declares `rdfType` (URI array, default base `AIModel`) and `capabilities` (semantic URI array). The API string must map through the models class/capability helpers. Unknown/base classes do not establish chat evidence.
+
+The installed public insert/update compiler also collapses canonical `rdfType: [AIModel, ChatModel]` and `capabilities: [VisionCapability]` into literal objects. Even omitting `rdfType` from the insert values is insufficient: insert defaults add its base-class array before compilation.
+
+Only the model scalar insert uses a public ORM plan adaptation: normal `insert(...).toIR()` supplies defaults/id/layout; remove the two affected URI-array properties from the resulting rows; pass the same filtered rows in both `operation.values` and `operation.plan` to public `database.session.execute`. This preserves ORM initialization/conversion/subject indexing and does not regenerate scalar SPARQL. It bypasses builder returning/afterInsert hooks, so it is restricted to this current hook-free `aiModelResource` non-returning insert, not a general insert helper. An ORM failure still propagates.
+
+The shared adapter PATCH writer takes predicates from the authoritative resource columns. It replaces only the requested array predicate, removes stale literal objects, and inserts named nodes. Model types retain the base `AIModel`; an explicit new class replaces the old known class and retains unrelated classes. Omitted type/capabilities on rediscovery do not clear existing declarations. Independent capabilities remain distinct from runtime endpoint capabilities. Selection writes no longer send an ORM `hasModel` array update before PATCH.
+
+Regression: `ui/src/extensions/XpodAiConnectionsPodStore.test.ts` uses installed INSERT/UPDATE conversion, parses generated SPARQL/RDF terms, reads actual declared columns, and tests canonical class/capability insert/read/update, omission, unknown-class negatives, selection named nodes/clear, and error propagation. It does not echo arbitrary submitted columns as stored RDF. Root real-browser acceptance remains necessary to prove Pod persistence and smart override/clear behavior.

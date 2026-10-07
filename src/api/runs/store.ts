@@ -5,6 +5,10 @@ export interface RunRecordData {
   /** Base-relative Solid resource id, e.g. `chat/default/2026/05/18/runs.ttl#run_x`. */
   id: string;
   task?: string;
+  /** Shared Pod resource URIs linking the Run to its dispatch and input. */
+  delivery?: string;
+  trigger?: string;
+  input?: string;
   thread: string;
   workspace: WorkspaceRef;
   status: RunStatusType;
@@ -21,6 +25,19 @@ export interface RunRecordData {
   startedAt?: number;
   completedAt?: number;
   updatedAt: number;
+}
+
+export function resolveRunAuthBindingId(run: RunRecordData): string | undefined {
+  const authBindingId = run.metadata?.authBindingId;
+  if (typeof authBindingId === 'string' && authBindingId.length > 0) {
+    return authBindingId;
+  }
+  const authBinding = run.metadata?.authBinding;
+  if (authBinding && typeof authBinding === 'object') {
+    const id = (authBinding as { id?: unknown }).id;
+    return typeof id === 'string' && id.length > 0 ? id : undefined;
+  }
+  return undefined;
 }
 
 export interface RunStepRecordData {
@@ -51,6 +68,9 @@ export interface RunCommandProjection {
 }
 
 export interface RunStore<TContext> {
+  /** Resolve owned storage before constructing current-Pod relations. */
+  getPodBaseUrl?(context: TContext): Promise<string | undefined>;
+  /** Atomically preserve cancellation and replace the caller's row with the committed state. */
   saveRun(run: RunRecordData, context: TContext): Promise<void>;
   loadRun(id: string, context: TContext): Promise<RunRecordData>;
   listRuns(options: RunListOptions, context: TContext): Promise<RunRecordData[]>;
@@ -76,13 +96,13 @@ export function hasActiveRunLease(
 }
 
 export function canClaimRun(
-  run: Pick<RunRecordData, 'status' | 'leaseOwner' | 'leaseExpiresAt'>,
+  run: Pick<RunRecordData, 'status' | 'leaseOwner' | 'leaseExpiresAt' | 'cancelRequestedAt'>,
   input: {
     leaseOwner: string;
     now: number;
   },
 ): boolean {
-  if (!isClaimableRunStatus(run.status)) {
+  if (run.cancelRequestedAt !== undefined || !isClaimableRunStatus(run.status)) {
     return false;
   }
   return !hasActiveRunLease(run, input.now) || run.leaseOwner === input.leaseOwner;
@@ -201,6 +221,25 @@ export function buildRunStepResourceId(input: string | {
     throw new Error(`RunStep id must be a complete RunStep resource id: ${id}`);
   }
   return id;
+}
+
+/** Internal stores/contexts carry selected storage bindings; identity URLs are never storage. */
+export async function resolveBoundPodBaseUrl<TContext>(
+  store: Pick<RunStore<TContext>, 'getPodBaseUrl'> | undefined,
+  context: TContext,
+): Promise<string | undefined> {
+  if (store?.getPodBaseUrl) {
+    const root = await store.getPodBaseUrl(context);
+    if (!root) throw new Error('Authoritative Pod storage binding unavailable');
+    return root.replace(/\/+$/u, '');
+  }
+  // Non-Pod stores retain their URN behavior without an explicit internal binding.
+  const record = context as Record<string, unknown>;
+  for (const key of ['podBaseUrl', 'podUrl', 'storageUrl', 'storageProviderUrl', '_cachedPodBaseUrl']) {
+    const root = record?.[key];
+    if (typeof root === 'string' && root.trim()) return root.trim().replace(/\/+$/u, '');
+  }
+  return undefined;
 }
 
 export function resolveRunUrn(runId: string): string {

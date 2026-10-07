@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import './setup-jsdom'
-import { cleanup, fireEvent, render as renderUi, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor, within } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { Toaster } from '@undefineds.co/shared-ui'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AiGatewayKeysSection } from '../src/AiGatewayKeysSection'
 import { AiConnectionsPanel } from '../src/AiConnectionsPanel'
+import { createAiConnectionsClient } from '../src/contract/ai-connections-client'
 import type { AiConnectionsClient, AiGatewayModel, GatewayKeyRecord } from '../src/contract/ai-connections-client'
 import type {
   AiClientConfigurationBridge,
@@ -40,7 +41,7 @@ const GATEWAY_MODELS: AiGatewayModel[] = [
   { id: 'glm-4.6', provider: 'zhipu', displayName: 'GLM 4.6', availability: 'unavailable' },
 ]
 
-describe('Xpod API Keys', () => {
+describe('Xpod Xpod 密钥', () => {
   beforeEach(() => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -55,9 +56,57 @@ describe('Xpod API Keys', () => {
     vi.restoreAllMocks()
   })
 
-  it('presents the API Keys page with the provider page skeleton', async () => {
+  it('reports missing Pod service access next to the keys and repairs it once', async () => {
+    // The keys are Account-owned, so they list without Pod permission; the
+    // notice is about whether the issued key can actually reach the Pod.
+    const listGatewayKeys = vi.fn(async () => [APPLIED])
+    const getServiceAccess = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('missing'), { code: 'service_access_missing' }))
+      .mockResolvedValue({ status: 'granted' })
+    const authorize = vi.fn(async () => undefined)
+    render(<AiGatewayKeysSection client={client({ listGatewayKeys, getServiceAccess })} onAuthorizeService={authorize} />)
+    const allow = await screen.findByRole('button', { name: '允许 Xpod 访问' })
+    await screen.findByText('Work laptop', { exact: true })
+    expect(getServiceAccess).toHaveBeenCalledTimes(1)
+    fireEvent.click(allow)
+    await waitFor(() => expect(screen.queryByRole('button', { name: '允许 Xpod 访问' })).toBeNull())
+    expect(authorize).toHaveBeenCalledTimes(1)
+    expect(listGatewayKeys).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not claim a Pod-permission problem when service access is fine', async () => {
+    render(<AiGatewayKeysSection client={client()} onAuthorizeService={async () => undefined} />)
+    await screen.findByText('Work laptop', { exact: true })
+    expect(screen.queryByText('Xpod 尚未获准访问这个 Pod')).toBeNull()
+  })
+
+  it('creates a copy-only key without a client and copies its endpoint', async () => {
+    const current = client()
+    render(<AiGatewayKeysSection client={current} />)
+    await screen.findByText('Work laptop', { exact: true })
+    fireEvent.click(screen.getByRole('button', { name: '新建 Xpod 密钥' }))
+    expect(screen.getByLabelText('Xpod 密钥 用途')).toHaveProperty('value', '')
+    fireEvent.click(screen.getByRole('button', { name: '创建 Xpod 密钥' }))
+    await screen.findByRole('dialog', { name: 'Xpod 密钥 已签发' })
+    expect(current.createGatewayKey).toHaveBeenCalledWith({ name: '我的 Xpod 密钥' })
+    expect(screen.queryByRole('button', { name: /写入 Codex/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '复制 Xpod 密钥' }))
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plain-key'))
+    expect(screen.getAllByText('范围：整个 Pod').length).toBeGreaterThan(0)
+  })
+
+  it('honors unavailable host write capability', async () => {
+    const bridge = { ...configurationBridge(), available: false }
+    render(<AiGatewayKeysSection client={client()} clientConfigurationBridge={bridge} />)
+    await createKey()
+    expect(screen.queryByRole('button', { name: '写入 Codex' })).toBeNull()
+    expect(screen.getByRole('button', { name: '复制 Codex 配置' })).toBeTruthy()
+    expect(bridge.inspect).not.toHaveBeenCalled()
+  })
+
+  it('presents the Xpod 密钥 page with the provider page skeleton', async () => {
     render(<AiGatewayKeysSection client={client({ listGatewayKeys: vi.fn(async () => []) })} />)
-    await screen.findByText('尚未签发 API Key')
+    await screen.findByText('尚未签发 Xpod 密钥')
 
     // Header row: mark, name, explanation affordance, link line, status badge.
     expect(screen.getByRole('heading', { name: 'Xpod' })).toBeTruthy()
@@ -66,19 +115,19 @@ describe('Xpod API Keys', () => {
     expect(link.getAttribute('href')).toBe('https://pod.example')
     expect(screen.getByText('未配置')).toBeTruthy()
     // The explanation moved into the ⓘ tooltip; no loose paragraph is left behind.
-    expect(screen.queryByText(/把已接入的 Provider 模型统一发布给编码客户端/)).toBeNull()
+    expect(screen.queryByText(/把已接入的模型提供给客户端/)).toBeNull()
     // Xpod is the product name users see; the internal "Gateway" wording is gone.
     expect(document.body.textContent).not.toContain('Gateway')
 
-    // First section: heading with the provider-style ＋ API Key action, empty state, 接入信息.
+    // First section: heading with the provider-style ＋ Xpod 密钥 action, empty state, 接入信息.
     expect(screen.getByRole('heading', { name: '当前连接' })).toBeTruthy()
-    const create = screen.getByRole('button', { name: '新建 API Key' })
-    expect(create.textContent).toBe('API Key')
-    expect(screen.getByText('接入信息')).toBeTruthy()
+    const create = screen.getByRole('button', { name: '新建 Xpod 密钥' })
+    expect(create.textContent).toBe('Xpod 密钥')
+    expect(screen.queryByText('接入信息')).toBeNull()
 
     // Second section: the models the Xpod publishes, in the provider model-list anatomy.
     expect(screen.getByRole('heading', { name: '可用模型' })).toBeTruthy()
-    expect(screen.getByPlaceholderText('搜索模型...')).toBeTruthy()
+    expect(screen.getByPlaceholderText('搜索模型')).toBeTruthy()
     expect(screen.getByText('Xpod 模型目录尚未就绪')).toBeTruthy()
   })
 
@@ -86,7 +135,8 @@ describe('Xpod API Keys', () => {
     render(<AiGatewayKeysSection client={client()} />)
     await screen.findByText('Work laptop', { exact: true })
 
-    const access = screen.getByRole('region', { name: 'Xpod 接入信息' })
+    await createKey()
+    const access = screen.getByRole('dialog')
     // One chip per accepted protocol, named the way the client's own docs name
     // it. The two OpenAI protocols share the /v1 base, so the address says less
     // here than the protocol does and is only carried by the copy affordance.
@@ -107,10 +157,10 @@ describe('Xpod API Keys', () => {
     render(<AiGatewayKeysSection client={client({ listGatewayKeys: vi.fn(async () => []) })} />)
     const explanation = screen.getByRole('button', { name: 'Xpod 说明' })
     fireEvent.focus(explanation)
-    expect(await screen.findByText(/把已接入的 Provider 模型统一发布给编码客户端/)).toBeTruthy()
-    expect(screen.getByText(/Xpod 不保存明文/)).toBeTruthy()
+    expect(await screen.findByText(/把已接入的模型提供给客户端/)).toBeTruthy()
+    expect(screen.getByText(/密钥允许客户端以你的 WebID 访问整个 Pod/)).toBeTruthy()
     // Same line shape as the Provider pages: what it is, then how it is protected.
-    expect(screen.getByText('API Key 保存在当前 Pod，由 Pod 权限保护；Xpod 不保存明文。')).toBeTruthy()
+    expect(screen.getByText('密钥允许客户端以你的 WebID 访问整个 Pod。')).toBeTruthy()
   })
 
   it('still opens the ⓘ on hover after a capability tooltip in the model list went in transit', async () => {
@@ -127,7 +177,7 @@ describe('Xpod API Keys', () => {
     fireEvent.pointerMove(screen.getByRole('button', { name: 'Xpod 说明' }), {
       pointerType: 'mouse', clientX: 10, clientY: 10,
     })
-    expect(await screen.findByText(/把已接入的 Provider 模型统一发布给编码客户端/, {}, { timeout: 2000 })).toBeTruthy()
+    expect(await screen.findByText(/把已接入的模型提供给客户端/, {}, { timeout: 2000 })).toBeTruthy()
   })
 
   it('lists the models the Gateway publishes to clients without offering selection', async () => {
@@ -160,11 +210,11 @@ describe('Xpod API Keys', () => {
     render(<AiGatewayKeysSection client={client()} gatewayModels={GATEWAY_MODELS} />)
     await screen.findByText('Work laptop', { exact: true })
 
-    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: 'glm' } })
+    fireEvent.change(screen.getByPlaceholderText('搜索模型'), { target: { value: 'glm' } })
     expect(screen.getByText('GLM 4.6')).toBeTruthy()
     expect(screen.queryByText('Kimi K2.5')).toBeNull()
 
-    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: '没有这个模型' } })
+    fireEvent.change(screen.getByPlaceholderText('搜索模型'), { target: { value: '没有这个模型' } })
     expect(screen.getByText('未找到匹配的模型')).toBeTruthy()
   })
 
@@ -188,7 +238,7 @@ describe('Xpod API Keys', () => {
     render(<AiGatewayKeysSection client={client()} />)
     const row = (await screen.findByText('Work laptop', { exact: true })).closest('li')!
     expect(row.getAttribute('data-key-binding')).toBe('bound')
-    expect(within(row).getByText('用途')).toBeTruthy()
+    expect(within(row).getByText('名称')).toBeTruthy()
     expect(within(row).getByText('Codex · desktop')).toBeTruthy()
     expect(within(row).getByText(new Date(APPLIED.lastUsedAt!).toLocaleString())).toBeTruthy()
     expect(within(row).getByRole('button', { name: '销毁 Work laptop' })).toBeTruthy()
@@ -198,7 +248,7 @@ describe('Xpod API Keys', () => {
     render(<AiGatewayKeysSection client={client()} />)
     const row = (await screen.findByText('Spare', { exact: true })).closest('li')!
     expect(row.getAttribute('data-key-binding')).toBe('unbound')
-    expect(within(row).getByText('未绑定')).toBeTruthy()
+    expect(within(row).getByText('只复制')).toBeTruthy()
     expect(within(row).getByText('暂无调用记录')).toBeTruthy()
   })
 
@@ -222,8 +272,8 @@ describe('Xpod API Keys', () => {
     // §7.3：第一次点击只说明影响与"未记录关联"的局限，不直接删除
     expect(current.deleteGatewayKey).not.toHaveBeenCalled()
     const notice = screen.getByTestId('gateway-key-destroy-confirm')
-    expect(notice.textContent).toContain('正在使用这个 Key 的客户端会立即失效')
-    expect(notice.textContent).toContain('无法列出受影响的对象')
+    expect(notice.textContent).toContain('正在使用这把密钥的客户端会立即失效')
+    expect(notice.textContent).toContain('已记录的应用：')
 
     fireEvent.click(screen.getByRole('button', { name: '取消删除 Work laptop' }))
     expect(screen.queryByTestId('gateway-key-destroy-confirm')).toBeNull()
@@ -246,7 +296,7 @@ describe('Xpod API Keys', () => {
     })
     render(<AiGatewayKeysSection client={current} />)
     expect(await screen.findByText('Work laptop', { exact: true })).toBeTruthy()
-    expect(screen.getByText('缺少 CSS 凭据标识，无法在此销毁')).toBeTruthy()
+    expect(screen.getByText('缺少密钥标识，无法在此销毁')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '销毁 Work laptop' })).toBeNull()
   })
 
@@ -271,20 +321,20 @@ describe('Xpod API Keys', () => {
     render(<AiGatewayKeysSection client={current} />)
     await screen.findByText('Work laptop', { exact: true })
 
-    fireEvent.click(screen.getByRole('button', { name: '新建 API Key' }))
-    expect(screen.getByRole('dialog', { name: '新建 API Key' })).toBeTruthy()
-    expect(screen.getByLabelText('API Key 名称')).toHaveProperty('value', '我的 API Key')
+    fireEvent.click(screen.getByRole('button', { name: '新建 Xpod 密钥' }))
+    expect(screen.getByRole('dialog', { name: '新建 Xpod 密钥' })).toBeTruthy()
+    expect(screen.getByLabelText('Xpod 密钥 名称')).toHaveProperty('value', '我的 Xpod 密钥')
     expect(screen.queryByLabelText('Client ID')).toBeNull()
     expect(screen.queryByLabelText('Client Secret')).toBeNull()
 
-    const create = screen.getByRole('button', { name: '创建 API Key' })
-    expect(create).toHaveProperty('disabled', true)
-    fireEvent.change(screen.getByLabelText('API Key 名称'), { target: { value: 'Laptop' } })
-    fireEvent.change(screen.getByLabelText('API Key 用途'), { target: { value: 'claude-code' } })
+    const create = screen.getByRole('button', { name: '创建 Xpod 密钥' })
+    expect(create).toHaveProperty('disabled', false)
+    fireEvent.change(screen.getByLabelText('Xpod 密钥 名称'), { target: { value: 'Laptop' } })
+    fireEvent.change(screen.getByLabelText('Xpod 密钥 用途'), { target: { value: 'claude-code' } })
     expect(create).toHaveProperty('disabled', false)
     fireEvent.click(create)
 
-    await screen.findByRole('dialog', { name: 'API Key 已签发' })
+    await screen.findByRole('dialog', { name: 'Xpod 密钥 已签发' })
     expect(current.createGatewayKey).toHaveBeenCalledWith({ name: 'Laptop', appliedTo: 'claude-code' })
     expect(screen.getByText('已签发「Laptop」，用途：Claude Code。')).toBeTruthy()
   })
@@ -296,19 +346,19 @@ describe('Xpod API Keys', () => {
     await createKey()
 
     // No copy affordance exists on the row; the wrapper is only offered while the flow is open.
-    expect(screen.queryByLabelText('API Key 名称')).toBeNull()
-    expect(screen.queryByRole('button', { name: '复制 我的 API Key' })).toBeNull()
-    const row = screen.getByText('我的 API Key', { exact: true }).closest('li')!
+    expect(screen.queryByLabelText('Xpod 密钥 名称')).toBeNull()
+    expect(screen.queryByRole('button', { name: '复制 我的 Xpod 密钥' })).toBeNull()
+    const row = screen.getByText('我的 Xpod 密钥', { exact: true }).closest('li')!
     expect(within(row).getByText('Codex')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: '复制 API Key' }))
+    fireEvent.click(screen.getByRole('button', { name: '复制 Xpod 密钥' }))
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plain-key'))
     expect(document.body.textContent).not.toContain('plain-key')
 
     fireEvent.click(screen.getByRole('button', { name: '复制 Codex 配置' }))
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(expect.stringContaining('model_providers.xpod')))
 
-    fireEvent.click(screen.getByRole('button', { name: '应用到 Codex' }))
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
     await screen.findByText(appliedMessage('Codex'))
     expect(bridge.plan).toHaveBeenCalledWith({ client: 'codex', endpoint: current.apiBase })
     expect(bridge.apply).toHaveBeenCalledWith({ client: 'codex', planId: 'plan', apiKey: 'plain-key' })
@@ -317,10 +367,188 @@ describe('Xpod API Keys', () => {
     expect(current.createGatewayKey).toHaveBeenCalledTimes(1)
   })
 
+  it('tests the applied session plan once and refreshes only a matching verified key', async () => {
+    const fingerprint = 'a'.repeat(64)
+    const current = client()
+    vi.mocked(current.createGatewayKey).mockResolvedValue({ plaintext: 'plain-key', record: { ...APPLIED, id: 'created-key', name: '我的 Xpod 密钥', fingerprint } })
+    const bridge = configurationBridge()
+    let finish!: (status: { status: 'configured'; appliedKeyFingerprint: string }) => void
+    vi.mocked(bridge.verify).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    fireEvent.click(await screen.findByRole('button', { name: '测试一次' }))
+    await waitFor(() => expect(bridge.verify).toHaveBeenCalledWith({ client: 'codex', planId: 'plan' }))
+    expect(screen.getByRole('button', { name: '正在测试…' })).toHaveProperty('disabled', true)
+    finish({ status: 'configured', appliedKeyFingerprint: fingerprint })
+    await waitFor(() => expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull())
+    expect(screen.queryByText('已写入，还没验证')).toBeNull()
+    expect(current.createGatewayKey).toHaveBeenCalledTimes(1)
+    expect(bridge.apply).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent).not.toContain('plain-key')
+  })
+
+  it('keeps an unverifiable test result unknown and retries failures without applying another key', async () => {
+    const fingerprint = 'a'.repeat(64)
+    const current = client()
+    vi.mocked(current.createGatewayKey).mockResolvedValue({ plaintext: 'plain-key', record: { ...APPLIED, id: 'created-key', name: '我的 Xpod 密钥', fingerprint } })
+    const bridge = configurationBridge()
+    vi.mocked(bridge.verify).mockRejectedValueOnce(new Error('plain-key')).mockResolvedValueOnce({ status: 'unverifiable' })
+    render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    fireEvent.click(await screen.findByRole('button', { name: '测试一次' }))
+    await screen.findByText('客户端配置测试失败，请重试。')
+    expect(document.body.textContent).not.toContain('plain-key')
+    fireEvent.click(screen.getByRole('button', { name: '测试一次' }))
+    await waitFor(() => expect(bridge.verify).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('button', { name: '测试一次' })).toHaveProperty('disabled', false))
+    expect(screen.getByText('已写入，还没验证')).toBeTruthy()
+    expect(bridge.inspect).toHaveBeenCalledTimes(4)
+    expect(current.createGatewayKey).toHaveBeenCalledTimes(1)
+    expect(bridge.apply).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['configured', 'drifted'] as const)('keeps the current %s inspection when binding a successful verify result', async (status) => {
+    const fingerprint = 'a'.repeat(64)
+    const current = client()
+    vi.mocked(current.createGatewayKey).mockResolvedValue({ plaintext: 'plain-key', record: { ...APPLIED, id: 'created-key', name: '我的 Xpod 密钥', fingerprint } })
+    const bridge = configurationBridge()
+    render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    vi.mocked(bridge.inspect).mockResolvedValue({ status, appliedKeyFingerprint: fingerprint })
+    fireEvent.click(await screen.findByRole('button', { name: '测试一次' }))
+    await waitFor(() => expect(screen.queryByText('已写入，还没验证')).toBeNull())
+    expect(bridge.verify).toHaveBeenCalledWith({ client: 'codex', planId: 'plan' })
+    expect(bridge.inspect).toHaveBeenCalledTimes(5)
+    if (status === 'drifted') expect(screen.getByText('配置被改动过')).toBeTruthy()
+  })
+
+  it('ignores verification results from a session that changed while the request was pending', async () => {
+    const fingerprint = 'a'.repeat(64)
+    const record = { ...APPLIED, id: 'created-key', name: '我的 Xpod 密钥', fingerprint }
+    const current = client()
+    vi.mocked(current.createGatewayKey).mockResolvedValue({ plaintext: 'plain-key', record })
+    const bridge = configurationBridge()
+    let finish!: (status: { status: 'drifted'; appliedKeyFingerprint: string }) => void
+    vi.mocked(bridge.verify).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    const view = render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    fireEvent.click(await screen.findByRole('button', { name: '测试一次' }))
+    await waitFor(() => expect(bridge.verify).toHaveBeenCalledTimes(1))
+    const nextBridge = configurationBridge()
+    vi.mocked(nextBridge.inspect).mockResolvedValue({ status: 'configured', appliedKeyFingerprint: fingerprint })
+    view.rerender(<><AiGatewayKeysSection client={client({ listGatewayKeys: vi.fn(async () => [record]) })} clientConfigurationBridge={nextBridge} /><Toaster /></>)
+    await waitFor(() => expect(nextBridge.inspect).toHaveBeenCalledTimes(4))
+    await act(async () => { finish({ status: 'drifted', appliedKeyFingerprint: fingerprint }) })
+    expect(screen.queryByText('配置被改动过')).toBeNull()
+    expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull()
+    expect(nextBridge.verify).not.toHaveBeenCalled()
+  })
+
+  it('does not offer testing for a historical unverifiable key without a session plan', async () => {
+    const fingerprint = 'a'.repeat(64)
+    const bridge = configurationBridge()
+    vi.mocked(bridge.inspect).mockResolvedValue({ status: 'unverifiable', appliedKeyFingerprint: fingerprint })
+    render(<AiGatewayKeysSection client={client({ listGatewayKeys: vi.fn(async () => [{ ...APPLIED, fingerprint }]) })} clientConfigurationBridge={bridge} />)
+    await screen.findByText('已写入，还没验证')
+    expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull()
+    expect(bridge.verify).not.toHaveBeenCalled()
+  })
+
+  it.each(['disabled', 'different fingerprint'])('does not test a %s row after an applied key changes', async (change) => {
+    const fingerprint = 'a'.repeat(64)
+    const record = { ...APPLIED, id: 'created-key', name: '我的 Xpod 密钥', fingerprint }
+    const current = client()
+    vi.mocked(current.createGatewayKey).mockResolvedValue({ plaintext: 'plain-key', record })
+    const bridge = configurationBridge()
+    const view = render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    await screen.findByRole('button', { name: '测试一次' })
+    vi.mocked(current.listGatewayKeys).mockResolvedValue([{ ...record, ...(change === 'disabled' ? { disabledAt: '2026-10-04T00:00:00Z' } : { fingerprint: 'b'.repeat(64) }) }])
+    view.rerender(<><AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} liveRevision={1} /><Toaster /></>)
+    await waitFor(() => expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull())
+    expect(bridge.verify).not.toHaveBeenCalled()
+  })
+
+  it('keeps a session-applied key testable after an Account refresh that carries no binding', async () => {
+    const resource = 'https://id.example/.account/credentials/one/'
+    let entries = [{ clientId: 'client-id-1', label: 'Work laptop', resource, webId: WEB_ID }]
+    const credentials = {
+      create: vi.fn(async () => ({ apiKey: 'sk-first-wrapper', clientId: 'client-id-1', resource })),
+      list: vi.fn(async () => entries),
+      revoke: vi.fn(async () => undefined),
+    }
+    const current = realClient(credentials)
+    const bridge = configurationBridge()
+    const view = render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+
+    // The Account list owns no application state, so the refreshed row comes back without
+    // `appliedTo`; the session still knows the plan it wrote and must keep offering its test.
+    view.rerender(<><AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} liveRevision={1} /><Toaster /></>)
+    await waitFor(() => expect(credentials.list).toHaveBeenCalledTimes(2))
+    expect(rowByKey('client-id-1')?.getAttribute('data-key-binding')).toBe('bound')
+    fireEvent.click(await screen.findByRole('button', { name: '测试一次' }))
+    await waitFor(() => expect(bridge.verify).toHaveBeenCalledWith({ client: 'codex', planId: 'plan' }))
+
+    // Once the Account stops listing the key, the observation goes with it: a row that reappears
+    // later is not handed back a binding it no longer has evidence for.
+    entries = []
+    view.rerender(<><AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} liveRevision={2} /><Toaster /></>)
+    await waitFor(() => expect(rowByKey('client-id-1')).toBeNull())
+    entries = [{ clientId: 'client-id-1', label: 'Work laptop', resource, webId: WEB_ID }]
+    view.rerender(<><AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} liveRevision={3} /><Toaster /></>)
+    await waitFor(() => expect(rowByKey('client-id-1')?.getAttribute('data-key-binding')).toBe('unbound'))
+    expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull()
+  })
+
+  it('does not hand a refreshed row a binding when the session digest changed', async () => {
+    const resource = 'https://id.example/.account/credentials/one/'
+    const credentials = {
+      create: vi.fn(async () => ({ apiKey: 'sk-first-wrapper', clientId: 'client-id-1', resource })),
+      list: vi.fn(async () => [{ clientId: 'client-id-1', label: 'Work laptop', resource, webId: WEB_ID }]),
+      revoke: vi.fn(async () => undefined),
+    }
+    const current = realClient(credentials)
+    const bridge = configurationBridge()
+    const view = render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
+    await createKey()
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
+    await screen.findByText(appliedMessage('Codex'))
+    fireEvent.click(screen.getByRole('button', { name: '完成' }))
+    expect(rowByKey('client-id-1')?.getAttribute('data-key-binding')).toBe('bound')
+
+    // A different wrapper is issued for the same credential id, so this session's digest for the
+    // key changes: the old application must not be attributed to the row that now carries it.
+    credentials.create.mockResolvedValueOnce({ apiKey: 'sk-second-wrapper', clientId: 'client-id-1', resource })
+    await current.createGatewayKey({ name: 'Work laptop' })
+
+    view.rerender(<><AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} liveRevision={1} /><Toaster /></>)
+    await waitFor(() => expect(credentials.list).toHaveBeenCalledTimes(2))
+    expect(rowByKey('client-id-1')?.getAttribute('data-key-binding')).toBe('unbound')
+    expect(screen.queryByRole('button', { name: '测试一次' })).toBeNull()
+  })
   it('offers the client configuration copy for the declared purpose', async () => {
     const current = client()
     render(<AiGatewayKeysSection client={current} />)
-    await createKey('我的 API Key', 'claude-code')
+    await createKey('我的 Xpod 密钥', 'claude-code')
     fireEvent.click(screen.getByRole('button', { name: '复制 Claude Code 配置' }))
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('ANTHROPIC_AUTH_TOKEN')))
   })
@@ -335,7 +563,7 @@ describe('Xpod API Keys', () => {
     })
     render(<AiGatewayKeysSection client={client()} clientConfigurationBridge={bridge} />)
     await createKey()
-    fireEvent.click(screen.getByRole('button', { name: '应用到 Codex' }))
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
     await screen.findByText(appliedMessage('Codex'))
     expect(screen.queryByLabelText('输入应用确认码')).toBeNull()
     expect(bridge.apply).toHaveBeenCalledWith({
@@ -353,13 +581,13 @@ describe('Xpod API Keys', () => {
     render(<AiGatewayKeysSection client={current} clientConfigurationBridge={bridge} />)
     await createKey()
 
-    fireEvent.click(screen.getByRole('button', { name: '应用到 Codex' }))
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'application failed')
     expect(screen.queryByText('已应用到 Codex')).toBeNull()
     expect(current.createGatewayKey).toHaveBeenCalledTimes(1)
     expect(current.deleteGatewayKey).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: '应用到 Codex' }))
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
     await screen.findByText(appliedMessage('Codex'))
     expect(bridge.apply).toHaveBeenCalledTimes(2)
   })
@@ -372,10 +600,10 @@ describe('Xpod API Keys', () => {
 
     // A new client object means a new session: the cached wrapper must not survive it.
     view.rerender(<><AiGatewayKeysSection client={client()} clientConfigurationBridge={bridge} /><Toaster /></>)
-    fireEvent.click(screen.getByRole('button', { name: '复制 API Key' }))
+    fireEvent.click(screen.getByRole('button', { name: '复制 Xpod 密钥' }))
     expect(await screen.findByRole('alert')).toHaveProperty(
       'textContent',
-      '这个 API Key 只在创建时可见：请销毁它，然后重新创建并立即复制或应用。',
+      '这个 Xpod 密钥 只在创建时可见：请销毁它，然后重新创建并立即复制或应用。',
     )
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
   })
@@ -387,13 +615,36 @@ describe('Xpod API Keys', () => {
     fireEvent.click(screen.getByRole('button', { name: '完成' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 
-    fireEvent.click(screen.getByRole('button', { name: '新建 API Key' }))
-    expect(screen.getByRole('dialog', { name: 'API Key 已签发' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '新建 Xpod 密钥' }))
+    expect(screen.getByRole('dialog', { name: 'Xpod 密钥 已签发' })).toBeTruthy()
     expect(current.createGatewayKey).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByRole('button', { name: '再建一个' }))
-    expect(screen.getByRole('dialog', { name: '新建 API Key' })).toBeTruthy()
-    expect(screen.getByLabelText('API Key 用途')).toHaveProperty('value', '')
+    expect(screen.getByRole('dialog', { name: '新建 Xpod 密钥' })).toBeTruthy()
+    expect(screen.getByLabelText('Xpod 密钥 用途')).toHaveProperty('value', '')
+  })
+
+  it('returns focus to the create button after the dialog is cancelled or escaped', async () => {
+    // Real shared-ui Dialog primitive: the invoking control must be the Radix
+    // trigger so its focus is restored on close. A mock would not prove this.
+    render(<AiGatewayKeysSection client={client()} />)
+    await screen.findByText('Work laptop', { exact: true })
+    const trigger = screen.getByRole('button', { name: '新建 Xpod 密钥' })
+    expect(trigger.getAttribute('aria-haspopup')).toBe('dialog')
+
+    fireEvent.click(trigger)
+    expect(screen.getByRole('dialog', { name: '新建 Xpod 密钥' })).toBeTruthy()
+    await waitFor(() => expect(trigger.getAttribute('aria-expanded')).toBe('true'))
+
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+
+    fireEvent.click(trigger)
+    expect(screen.getByRole('dialog', { name: '新建 Xpod 密钥' })).toBeTruthy()
+    fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
 
   it('does not substitute Pod models when the Gateway catalog is unavailable', async () => {
@@ -405,7 +656,7 @@ describe('Xpod API Keys', () => {
     renderUi(<AiConnectionsPanel client={current} selectedSection="keys" clientConfigurationBridge={bridge} />)
     await waitFor(() => expect(current.listGatewayModels).toHaveBeenCalledTimes(1))
     await createKey()
-    fireEvent.click(screen.getByRole('button', { name: '应用到 Codex' }))
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
     await screen.findByText(appliedMessage('Codex'))
     expect(bridge.plan).toHaveBeenLastCalledWith({ client: 'codex', endpoint: current.apiBase })
     expect(current.listGatewayModels).toHaveBeenCalledTimes(1)
@@ -425,7 +676,7 @@ describe('Xpod API Keys', () => {
     renderUi(<AiConnectionsPanel client={current} selectedSection="keys" clientConfigurationBridge={bridge} />)
     await waitFor(() => expect(current.listGatewayModels).toHaveBeenCalledTimes(1))
     await createKey()
-    fireEvent.click(screen.getByRole('button', { name: '应用到 Codex' }))
+    fireEvent.click(screen.getByRole('button', { name: '写入 Codex' }))
     await screen.findByText('Codex 配置已应用。')
     expect(bridge.plan).toHaveBeenLastCalledWith({ client: 'codex', endpoint: current.apiBase, activeModels: [
       { id: 'kimi-k2.5', provider: 'kimi', displayName: 'Kimi K2.5' },
@@ -444,13 +695,13 @@ function render(ui: ReactElement) {
   return renderUi(<>{ui}<Toaster /></>)
 }
 
-async function createKey(name = '我的 API Key', purpose: AiConnectionsClientId = 'codex') {
+async function createKey(name = '我的 Xpod 密钥', purpose: AiConnectionsClientId = 'codex') {
   await screen.findByText('Work laptop', { exact: true })
-  fireEvent.click(screen.getByRole('button', { name: '新建 API Key' }))
-  fireEvent.change(screen.getByLabelText('API Key 名称'), { target: { value: name } })
-  fireEvent.change(screen.getByLabelText('API Key 用途'), { target: { value: purpose } })
-  fireEvent.click(screen.getByRole('button', { name: '创建 API Key' }))
-  await screen.findByRole('dialog', { name: 'API Key 已签发' })
+  fireEvent.click(screen.getByRole('button', { name: '新建 Xpod 密钥' }))
+  fireEvent.change(screen.getByLabelText('Xpod 密钥 名称'), { target: { value: name } })
+  fireEvent.change(screen.getByLabelText('Xpod 密钥 用途'), { target: { value: purpose } })
+  fireEvent.click(screen.getByRole('button', { name: '创建 Xpod 密钥' }))
+  await screen.findByRole('dialog', { name: 'Xpod 密钥 已签发' })
 }
 
 function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClient {
@@ -458,7 +709,8 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
     webId: WEB_ID,
     apiBase: 'https://pod.example',
     listGatewayKeys: vi.fn(async () => [APPLIED, UNBOUND]),
-    // The server records the declared purpose with the credential and echoes it.
+    getServiceAccess: vi.fn(async () => ({ status: 'granted' })),
+    // The declared purpose stays a session-local annotation on the new row.
     createGatewayKey: vi.fn(async (input: { name: string; appliedTo?: string }) => ({
       plaintext: 'plain-key',
       record: {
@@ -470,7 +722,6 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
         lastUsedAt: undefined,
       },
     })),
-    updateGatewayKey: vi.fn(),
     deleteGatewayKey: vi.fn(async () => undefined),
     ...overrides,
   } as unknown as AiConnectionsClient
@@ -484,6 +735,26 @@ function configurationBridge(): AiClientConfigurationBridge {
     verify: vi.fn(async () => ({ status: 'configured' as const })),
     restore: vi.fn(async () => ({ status: 'notConfigured' as const })),
   }
+}
+
+/**
+ * The real request client over a fake Account capability. Using it (rather than a fixture that
+ * already carries `appliedTo`) is what makes a refresh genuinely drop the binding, because the
+ * Account list is the only key source and it owns no application state.
+ */
+function realClient(credentials: unknown): AiConnectionsClient {
+  return createAiConnectionsClient({
+    webId: WEB_ID,
+    podBaseUrl: 'https://pod.example',
+    authenticatedFetch: (() => {
+      throw new Error('no Pod request is expected for Account credential management')
+    }) as unknown as typeof fetch,
+    clientCredentials: credentials as never,
+  })
+}
+
+function rowByKey(id: string): HTMLElement | null {
+  return document.querySelector(`li[data-key-id="${id}"]`)
 }
 
 describe('Xpod model list selection', () => {

@@ -422,3 +422,13 @@ Provider 汇总状态：
 - 不在首期提供复杂按模型路由 UI；
 - 不在本设计中解决应用层凭据加密；
 - 不重做 Xpod/LinX Layout。
+
+## 14. 浏览器入口语义修订（2026-10-03）
+
+浏览器操作必须按声明的授权能力呈现：真正的授权码 OAuth 使用“浏览器登录”，设备码使用现有设备码流程；仅打开 API Key 控制台的 `browserAssistedApiKey` 使用“打开控制台”，并说明创建 Key 后返回填写。打开网页不能将连接标为已授权，不得显示等待 OAuth 回调。
+
+同一 Provider 的控制台操作保留 `offeringId` 与 `authorizationMethodId`。有多个 Offering 时先选择控制台；服务端从可信目录解析对应 `consoleUrl`，不接受请求提供的任意跳转 URL。内置控制台内容以共享能力目录为准，旧 models discovery 的展示字段不能覆盖它。
+
+当前能力边界：OpenAI Local 支持真实浏览器 OAuth；Anthropic 和百炼的 API 控制台不提供本系统订阅 OAuth；Kimi 订阅使用设备码或已有登录态导入，另可打开 Code 控制台填写订阅 API Key。Kimi Code 控制台为 `https://www.kimi.com/code/console`，开放平台控制台另属于 API 平台 Offering；不能混用。地址依据 [Kimi Code 官方文档](https://www.kimi.com/code/docs/) 的控制台入口核对。
+
+验收须分别证明入口/落地页、授权回调、凭据保存、模型发现与实际推理。单项测试或网页打开成功不扩大为订阅刷新、Pod 服务权限或 Chat 已通过；本机实际结果见 [Local 验收记录](../../testing/2026-10-02-local-consent-acceptance.md)。

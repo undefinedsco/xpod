@@ -12,10 +12,10 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
 spec:
   tls:
-    - hosts: [id-rc.undefineds.co]
+    - hosts: [id-rc.undefineds.cn]
       secretName: xpod-rc-id-tls
   rules:
-    - host: id-rc.undefineds.co
+    - host: id-rc.undefineds.cn
       http:
         paths:
           - path: /
@@ -40,10 +40,10 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
 spec:
   tls:
-    - hosts: [pods-rc.undefineds.co]
+    - hosts: [pods-rc.undefineds.cn]
       secretName: xpod-rc-pods-tls
   rules:
-    - host: pods-rc.undefineds.co
+    - host: pods-rc.undefineds.cn
       http:
         paths:
           - path: /
@@ -68,10 +68,10 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
 spec:
   tls:
-    - hosts: [api-rc.undefineds.co]
+    - hosts: [api-rc.undefineds.cn]
       secretName: xpod-rc-api-tls
   rules:
-    - host: api-rc.undefineds.co
+    - host: api-rc.undefineds.cn
       http:
         paths:
           - path: /

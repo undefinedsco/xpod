@@ -5,7 +5,6 @@ import { TaskAuthBindingService } from '../../src/api/tasks/TaskAuthBinding';
 import { TaskStatus, TaskTriggerKind } from '../../src/api/tasks/schema';
 import { RunStepType, RunStatus } from '../../src/api/runs/schema';
 import { extractResourceLocalId } from '../../src/api/runs/store';
-import { resolveTaskResource } from '../../src/api/tasks/store';
 import type { RunContextRetrievalInput, RunExecutionBackend, RunExecutionInput } from '../../src/api/runs/RunExecutionBackend';
 import type { AgentRuntimeEvent } from '../../src/api/runs/AgentRuntimeTypes';
 
@@ -79,7 +78,7 @@ describe('Task service Run materialization', () => {
     });
     expect('surfaceId' in result.task).toBe(false);
     expect(result.run).toMatchObject({
-      task: resolveTaskResource('http://localhost/alice', result.task.id),
+      task: result.task.id,
       thread: result.task.thread,
       workspace: workspaceRef,
       status: RunStatus.COMPLETED,
@@ -261,7 +260,7 @@ describe('Task service Run materialization', () => {
 
     expect(materialized).toHaveLength(1);
     expect(materialized[0].run).toMatchObject({
-      task: resolveTaskResource('http://localhost/alice', created.task.id),
+      task: created.task.id,
       status: RunStatus.COMPLETED,
     });
     expect('commandKind' in materialized[0].run).toBe(false);

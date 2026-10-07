@@ -1452,6 +1452,7 @@ describe('ProvisionStatusHandler', () => {
       nodeToken: 'nt-old',
       serviceToken: 'st-old',
       publicUrl: 'https://self-managed.example',
+      publicUrlIsFallback: true,
       localPort: 5737,
       tunnelToken: 'tunnel-token',
       provisionCode: expiredCode,
@@ -1475,6 +1476,13 @@ describe('ProvisionStatusHandler', () => {
     expect(fallbackBody.tunnelToken).toBeUndefined();
     expect(fallbackBody.tunnelMode).toBeUndefined();
     expect(parseResponseBody(response).provisionCode).toBe(freshCode);
+    const identityResponse = createMockResponse();
+    await routes['GET /api/service-info']({}, identityResponse);
+    expect(parseResponseBody(identityResponse)).toEqual({
+      edition: 'local', managed: true,
+      publicUrl: 'https://node.example/', oidcIssuer: 'https://id.undefineds.co/',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('should refresh managed credentials without tunnel metadata when tunnel maintenance fails', async () => {

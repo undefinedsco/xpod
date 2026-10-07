@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import { XpodAccountCredentials } from '../auth/XpodAccountCredentials';
+import { readPendingXpodAccountEmail, readRememberedXpodLogin } from '../auth/xpod-remembered-login';
 import { WelcomePage } from './WelcomePage';
 
 const account: AuthContextType = {
@@ -22,17 +23,17 @@ function renderLogin(surface: typeof surfaces[number]) {
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.localStorage.clear(); window.sessionStorage.clear(); });
 
-it.each(surfaces)('preserves the default remember choice in %s Account login', async (surface) => {
+it.each(surfaces)('defaults to unchecked without a prior choice in %s Account login', async (surface) => {
   const requests: unknown[] = [];
   vi.stubGlobal('fetch', vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
     requests.push(JSON.parse(String(init?.body)));
     return new Response('{}', { status: 401 });
   }));
   renderLogin(surface);
-  expect((screen.getByRole('checkbox', { name: '记住账号' }) as HTMLInputElement).checked).toBe(true);
+  expect((screen.getByRole('checkbox', { name: '记住账号' }) as HTMLInputElement).checked).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: '登录' }));
   await waitFor(() => expect(requests).toHaveLength(1));
-  expect(requests[0]).toMatchObject({ remember: true });
+  expect(requests[0]).toMatchObject({ remember: false });
 });
 
 it.each(surfaces)('keeps remember disabled across failed login and retry in %s', async (surface) => {
@@ -42,6 +43,7 @@ it.each(surfaces)('keeps remember disabled across failed login and retry in %s',
     return new Response('{}', { status: 401 });
   }));
   renderLogin(surface);
+  fireEvent.click(screen.getByRole('checkbox', { name: '记住账号' }));
   fireEvent.click(screen.getByRole('checkbox', { name: '记住账号' }));
   fireEvent.click(screen.getByRole('button', { name: '登录' }));
   await screen.findByRole('alert');
@@ -63,4 +65,29 @@ it.each(surfaces)('locks the remember choice while %s submits credentials', asyn
   finish(new Response('{}', { status: 401 }));
   await screen.findByRole('alert');
   expect((screen.getByRole('checkbox', { name: '记住账号' }) as HTMLInputElement).disabled).toBe(false);
+});
+
+it.each(surfaces)('keeps successful unchecked %s email only for this browser session and clears old hints', async (surface) => {
+  window.localStorage.setItem('xpod.pending-account-email.v1', 'old@example.test');
+  window.localStorage.setItem('xpod.pending-account-issuer.v1', window.location.origin);
+  window.localStorage.setItem('xpod.remembered-login.v1', JSON.stringify({
+    account: { email: 'old@example.test' }, webId: `${window.location.origin}/old/profile/card#me`,
+    storageBinding: { webId: `${window.location.origin}/old/profile/card#me`, storageUrl: `${window.location.origin}/old/` }, routeId: 'xpod-current-origin',
+  }));
+  vi.stubGlobal('fetch', vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'POST') {
+      expect(JSON.parse(String(init.body))).toMatchObject({ remember: false });
+      return Response.json({ authorization: 'account-token' });
+    }
+    return new Response('{}', { status: 404 });
+  }));
+  renderLogin(surface);
+  fireEvent.click(screen.getByRole('checkbox', { name: '记住账号' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: '记住账号' }));
+  fireEvent.click(screen.getByRole('button', { name: '登录' }));
+  await waitFor(() => expect(readPendingXpodAccountEmail(undefined, '/.account/')).toBe('alice@example.test'));
+  expect(window.localStorage.getItem('xpod.pending-account-email.v1')).toBeNull();
+  expect(readRememberedXpodLogin()).toBeUndefined();
+  window.sessionStorage.clear();
+  expect(readPendingXpodAccountEmail(undefined, '/.account/')).toBeUndefined();
 });

@@ -47,6 +47,28 @@ urn:solid-server:default:variable:xxx
 4. **默认值** - 常量值，在EnvExtractor的defaultValue或组件里处理
 5. **推导值** - 从 baseUrl 等已有变量推导，在组件构造函数里处理
 
+### 本机 SecretCell 根密钥（内部推导来源）
+
+Local 模式使用文件型 SQLite identity 数据库时，不必额外设置 SecretCell 环境变量。
+API 容器在运行时确定最终 `databaseUrl` 后，首次使用加密服务时从该数据库目录下的
+`.xpod/secrets/secret-cell-root-key` 读取或生成 32 字节根密钥，key ID 固定为 `local-v1`。
+任务凭据加密和既有 SecretCell 凭据读取共用同一 provider/vault；重启和并发首次启动均复用同一文件。
+文件位置由 identity 数据库决定，不随 `CSS_TASK_DB_URL` 改变，不增加配置键。
+
+显式 `XPOD_SECRET_CELL_KEY_ID`、`XPOD_SECRET_CELL_KEY` 及可选
+`XPOD_SECRET_CELL_PREVIOUS_KEYS` 仍优先，且必须通过原有完整性和编码校验；配置错误不会降级到本机文件。
+Cloud 模式以及非文件型 SQLite 部署仍需显式配置稳定根密钥，所有副本必须一致；不会生成每实例随机密钥。
+
+本机文件以 `0600`、私有目录以 `0700` 创建（Windows 使用平台文件权限机制），通过完整临时文件、
+`fsync` 和原子硬链接发布。拒绝符号链接、非普通文件、过宽权限及损坏密钥，不自动覆盖修复。
+备份和迁移任务数据库时应同时保留根密钥文件；丢失根密钥将无法解密旧凭据。切换为显式根密钥时，
+需保留旧 `local-v1` 解密材料于轮换配置中，完成密文重封装后才能移除旧 key。
+
+本机秘密文件现在只有 `secret-cell-root-key` 一个用途：Gateway locator 及其密钥已随该功能整体移除
+（见 [`docs/issues/2026-10-06-gateway-locator-key-removal.md`](issues/2026-10-06-gateway-locator-key-removal.md)），
+遗留的 `.xpod/secrets/gateway-locator-secret` 文件不再被任何代码读取或写入。这些是部署加密材料，
+用户级 AI key、endpoint 和 proxy 仍属于用户 Pod 配置。
+
 ### 3.1 CSS原生参数（完全不动）
 
 保持CSS原有的cli.json和resolver.json配置：

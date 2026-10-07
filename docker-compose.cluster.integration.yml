@@ -19,8 +19,8 @@ services:
     # Tests only need a small, path-style S3 endpoint, and the official MinIO
     # images are no longer anonymously pullable: quay.io/minio/minio answers 401
     # for the index this file used to pin, and minio/minio is gone from Docker
-    # Hub. The test stacks therefore run VersityGW, one static Apache-2.0 Rust
-    # binary that speaks the same path-style S3 API on the same port with the
+    # Hub. The test stacks therefore run VersityGW, an Apache-2.0 Go S3 gateway
+    # that speaks the same path-style S3 API on the same port with the
     # same root credentials, so MinioDataAccessor, CSS_MINIO_* and the tests stay
     # untouched while the image drops from ~58 MiB to ~28 MiB compressed (and
     # ~350 MiB to ~93 MiB on disk). Pinned to the v1.8.0 multi-arch index so

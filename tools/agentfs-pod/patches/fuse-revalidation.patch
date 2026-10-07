@@ -1,0 +1,12 @@
+diff --git a/cli/src/fuse.rs b/cli/src/fuse.rs
+--- a/cli/src/fuse.rs
++++ b/cli/src/fuse.rs
+@@ -74 +74 @@
+-const TTL: Duration = Duration::MAX;
++const TTL: Duration = Duration::ZERO;
+@@ -676 +676 @@
+-                reply.created(&TTL, &attr, 0, fh, 0);
++                reply.created(&TTL, &attr, 0, fh, crate::fuser::consts::FOPEN_DIRECT_IO);
+@@ -874 +874 @@
+-                reply.opened(fh, 0);
++                reply.opened(fh, crate::fuser::consts::FOPEN_DIRECT_IO);

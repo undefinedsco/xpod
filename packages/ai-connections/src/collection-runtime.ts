@@ -260,7 +260,9 @@ export function collectionCredentialMutations(
       const before = collection.get(key) as CredentialRow | undefined
       if (Object.keys(patch).length > 0) await updateCredentialRow(collection, key, patch)
 
+      // Replacement secrets belong only to store completion, never to projected rows.
       const attributes = {
+        ...(input.apiKey === undefined ? {} : { apiKey: input.apiKey }),
         ...(input.priority === undefined ? {} : { priority: input.priority }),
         ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
         ...(input.proxyUrl === undefined ? {} : { proxyUrl: input.proxyUrl }),

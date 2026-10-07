@@ -29,6 +29,38 @@ Remove the duplicate Xpod Gateway Key/locator design from the active product. Pr
 7. Update configuration and architecture documentation. Explicitly mark locator variables obsolete for AI Connection.
 8. Run focused auth/UI tests, build/typecheck, package tests, full integration, browser acceptance, RC deployment, then production acceptance.
 
+## Implementation status (2026-10-07, `codex/login-acceptance-0.4.30`)
+
+Steps 1–6 are implemented on the successor branch; step 7 is partial and step 8
+has not been run (no RC from this source yet, so nothing here is deployment
+evidence).
+
+- The applet reaches the Account only through `AiClientCredentialsCapability`
+  (`create` → `{apiKey, clientId, resource}`, `list` → `{clientId, label,
+  webId?, resource}`, `revoke` → exact `{clientId, resource, webId}`). The
+  contract fails closed with `account_client_credentials_unavailable` when the
+  capability is absent, and no route under `/api/ai/gateway/keys` is called.
+- `ui/src/auth/account-client-credentials.ts` is the only adapter that knows the
+  Account credential shape. `list()` reads the collection plus each credential
+  detail, drops entries without a matching id or a non-empty `webId`, and never
+  reads the secret.
+- `fingerprint` is the digest of the `sk-` wrapper, computed only where the
+  wrapper is known (the creating session). A restored list row cannot fabricate
+  one, so the UI reports the key as unverifiable instead of "changed". The
+  Account credential id stays the row identity.
+- Inbound admission revalidates the presented client credential with the issuer
+  on **every new** request to `/v1/models` and the inference routes. The session
+  cache is reused only for that one request's outbound Pod access, so a cached
+  access token can no longer keep a deleted credential alive. The Xpod keys page
+  no longer probes the applet service-access descriptor; a missing Pod read is
+  detected from a real refusal, matching step 4.
+- See `docs/ai-connections-product-spec.md` for the ownership and
+  honest-restore-status rules.
+
+Still open: the four baseline script suitem items tracked in the root ledger,
+the Consent two-size contract (awaiting the human decision), the provider
+application-level matrix, and any real deployment/RC acceptance.
+
 ## Non-goals
 
 - Do not change the provider Credential RDF schema.

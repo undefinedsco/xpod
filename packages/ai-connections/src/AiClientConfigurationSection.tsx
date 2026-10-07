@@ -39,6 +39,7 @@ export interface AiClientConfigurationDryRun {
 }
 
 export interface AiClientConfigurationBridge {
+  readonly available?: boolean
   inspect(client: AiConnectionsClientId): Promise<AiClientConfigurationStatus>
   plan(input: {
     client: AiConnectionsClientId

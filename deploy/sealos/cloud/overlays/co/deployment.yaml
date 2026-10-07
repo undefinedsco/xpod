@@ -1,0 +1,131 @@
+# Exported from the live deployment on 2026-10-06; it records what that
+# environment actually runs, including the differences between them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: xpod-co
+    app.kubernetes.io/part-of: xpod
+  name: xpod-co
+  namespace: ns-iknkxtc8
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: xpod-co
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: xpod-co
+    spec:
+      containers:
+      - args:
+        - node
+        - dist/main.js
+        - -c
+        - /app/config/cloud.enterprise.json
+        - -p
+        - '3000'
+        env:
+        - name: CSS_SPARQL_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              key: connection-url
+              name: xpod-co-secret
+        - name: CSS_IDENTITY_DB_URL
+          valueFrom:
+            secretKeyRef:
+              key: connection-url
+              name: xpod-co-secret
+        - name: XPOD_INNGEST_ENABLED
+          value: 'true'
+        - name: XPOD_INNGEST_MODE
+          value: managed
+        - name: XPOD_INNGEST_BASE_URL
+          value: http://xpod-inngest:8288
+        - name: XPOD_API_BASE_URL
+          value: https://api.undefineds.co
+        envFrom:
+        - secretRef:
+            name: xpod-co-secret
+        image: ghcr.io/undefinedsco/xpod@sha256:2dd99a431810ce757b91f7c3ed55017004aadc58d44110ce1734861522b01ddc
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 6
+          httpGet:
+            path: /service/status
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          successThreshold: 1
+          timeoutSeconds: 3
+        name: xpod-co
+        ports:
+        - containerPort: 3000
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 6
+          httpGet:
+            path: /service/status
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 3
+        resources:
+          limits:
+            cpu: 250m
+            memory: 1536Mi
+          requests:
+            cpu: 250m
+            memory: 1536Mi
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /service/status
+            port: http
+            scheme: HTTP
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 3
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /app/logs
+          name: xpod-co-logs
+        - mountPath: /app/data
+          name: xpod-data
+        - mountPath: /app/config/cloud.enterprise.json
+          name: xpod-enterprise-config
+          subPath: cloud.enterprise.json
+      dnsPolicy: ClusterFirst
+      imagePullSecrets:
+      - name: xpod-registry
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: xpod-enterprise-rdf-config
+        name: enterprise-rdf-config
+      - name: xpod-co-logs
+        persistentVolumeClaim:
+          claimName: xpod-co-storage
+      - emptyDir: {}
+        name: xpod-data
+      - configMap:
+          defaultMode: 420
+          name: xpod-enterprise-rdf-config
+        name: xpod-enterprise-config

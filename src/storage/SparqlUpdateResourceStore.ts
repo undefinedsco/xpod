@@ -98,6 +98,12 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
       throw new NotImplementedHttpError('Metadata resources must be patched by the CSS metadata patcher');
     }
 
+    // Decline per-resource authority gaps before consuming the stream: CSS's
+    // patcher needs the original algebra and data, under the same outer lock.
+    if (typeof accessor.supportsSparqlUpdate === 'function' && !await accessor.supportsSparqlUpdate(identifier)) {
+      throw new NotImplementedHttpError('Direct SPARQL UPDATE not supported for this resource');
+    }
+
     const sparqlUpdate = await this.toSparqlUpdate(patch, identifier);
     if (!sparqlUpdate) {
       this.logger.debug(`toSparqlUpdate returned undefined for ${identifier.path}, falling back to CSS handler`);
@@ -423,6 +429,7 @@ export class SparqlUpdateResourceStore extends DataAccessorBasedStore {
 
   private isSparqlCapable(accessor: unknown): accessor is {
     executeSparqlUpdate: (query: string, baseIri?: string) => Promise<void>;
+    supportsSparqlUpdate?: (identifier: ResourceIdentifier) => boolean | Promise<boolean>;
     getMetadata: (identifier: ResourceIdentifier) => Promise<RepresentationMetadata>;
   } {
     return typeof accessor === 'object' &&

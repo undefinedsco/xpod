@@ -12,6 +12,7 @@ import {
 } from '../../src/runtime/ingress-port';
 import { identifyIngressPortOccupants } from '../../src/runtime/ingress-occupant';
 import { isFreePortForWildcard } from '../../src/runtime/port-finder';
+import { reservedPorts } from '../../src/runtime/port-reservations';
 import type { DeclaredOriginReadResult } from '../../src/tunnel/TunnelDeclaredOrigin';
 
 /**
@@ -27,7 +28,7 @@ interface Harness {
   deps: Partial<IngressPortDeps>;
   logger: { info: string[]; warn: string[] };
   occupied: Set<number>;
-  findDefaultPort: Mock<[mainPort: number], Promise<number>>;
+  findDefaultPort: Mock<[mainPort: number, excluded: ReadonlySet<number>], Promise<number>>;
 }
 
 function harness(input: {
@@ -42,7 +43,8 @@ function harness(input: {
     info: (message) => logger.info.push(message),
     warn: (message) => logger.warn.push(message),
   };
-  const findDefaultPort = vi.fn(async(mainPort: number) => input.defaultPort ?? mainPort + 3);
+  const findDefaultPort = vi.fn(async(mainPort: number, _excluded: ReadonlySet<number>) =>
+    input.defaultPort ?? mainPort + 3);
 
   return {
     logger,
@@ -83,6 +85,28 @@ async function freePort(): Promise<number> {
       server.close((error) => (error ? reject(error) : resolve(port)));
     });
   });
+}
+
+/**
+ * A port whose `size` neighbours are all bindable and unreserved, so an offset scan that starts
+ * at the port and walks upward lands on a known number instead of racing the host.
+ */
+async function freePortBlock(size: number): Promise<number> {
+  const reserved = reservedPorts();
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const base = await freePort();
+    if (base + size - 1 > 65_535) {
+      continue;
+    }
+    let usable = true;
+    for (let offset = 0; usable && offset < size; offset += 1) {
+      usable = !reserved.has(base + offset) && await isFreePortForWildcard(base + offset);
+    }
+    if (usable) {
+      return base;
+    }
+  }
+  throw new Error(`no block of ${size} free, unreserved ports`);
 }
 
 function isAlive(pid: number | undefined): boolean {
@@ -230,6 +254,43 @@ describe('tunnel entry port resolution', () => {
       .toThrow(/already serves/u);
   });
 
+  it('tells the dynamic default which ports this run already serves', async() => {
+    const harnessed = harness({ defaultPort: 3304 });
+
+    const resolution = await resolveIngressPort({
+      mainPort: 3300,
+      env: {},
+      profiles: [],
+      reservedPorts: [ 3300, 3301, 3302 ],
+      deps: harnessed.deps,
+    });
+
+    expect(resolution).toMatchObject({ port: 3304, source: 'gateway-default' });
+    expect(harnessed.findDefaultPort).toHaveBeenCalledWith(3300, new Set([ 3300, 3301, 3302 ]));
+  });
+
+  it('never lets the dynamic entry take a port this run serves itself', async() => {
+    // gateway+3 is exactly the API port: it is planned here but not bound until the child starts,
+    // so a scan that only probes liveness reports it free and takes it. The Gateway then proxies
+    // its own API traffic into the tunnel ingress on that port, round after round, until the
+    // request headers overflow and every API/product route answers HTTP 431 - while `/service/*`
+    // and CSS still answer 200, which is what makes the failure look like a broken app.
+    const mainPort = await freePortBlock(5);
+    const servicePorts = [ mainPort + 1, mainPort + 2, mainPort + 3 ];
+
+    const resolution = await resolveIngressPort({
+      mainPort,
+      env: {},
+      profiles: [],
+      reservedPorts: servicePorts,
+      deps: defaultIngressPortDeps(),
+    });
+
+    expect(resolution).toMatchObject({ source: 'gateway-default' });
+    expect(servicePorts).not.toContain(resolution.port);
+    expect(resolution.port).toBe(mainPort + 4);
+  }, 30_000);
+
   it('rejects a malformed explicit pin instead of treating it as absent', async() => {
     const harnessed = harness();
 
@@ -321,7 +382,7 @@ describe('tunnel entry port resolution', () => {
 
   it('defaults to the gateway-derived entry, never the gateway port itself', async() => {
     const deps = defaultIngressPortDeps();
-    const port = await deps.findDefaultPort(5737);
+    const port = await deps.findDefaultPort(5737, new Set());
 
     expect(port).not.toBe(5737);
     expect(port).toBeGreaterThanOrEqual(5740);

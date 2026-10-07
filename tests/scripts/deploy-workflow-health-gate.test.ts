@@ -1,6 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { parseDocument } from 'yaml';
+import { parse, parseDocument } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(__dirname, '../..');
@@ -120,13 +121,14 @@ describe('production deployment workflow', () => {
 
     expect(runText).toContain('docker manifest inspect "$TARGET_IMAGE"');
     expect(workflowText).toContain('TARGET_IMAGE: ghcr.io/undefinedsco/xpod@${{ inputs.image-digest }}');
-    expect(runText).toContain('jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}');
+    expect(runText).toContain('node scripts/lib/production-deployment-container.cjs --target-image "$TARGET_IMAGE"');
+    expect(runText).not.toContain('containers[?(@.name=="xpod")]');
     expect(runText).toContain('previous_image=');
     expect(runText).toContain('PREVIOUS_IMAGE');
-    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$TARGET_IMAGE"');
+    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$TARGET_IMAGE"');
     expect(runText).toContain('kubectl rollout status deployment/xpod-inngest');
-    expect(runText).toContain('kubectl rollout status deployment/xpod-cloud');
-    expect(runText).not.toMatch(/set image deployment\/xpod-cloud xpod=ghcr\.io\/undefinedsco\/xpod:[^\s"]+/);
+    expect(runText).toContain('kubectl rollout status deployment/${XPOD_DEPLOYMENT}');
+    expect(runText).not.toMatch(/set image deployment\/\$\{XPOD_DEPLOYMENT\}\s+["']?xpod=/);
     expect(runText).not.toContain('xpod:replace-me');
     expect(runText).not.toMatch(/kubectl\s+(?:-n\s+"\$SEALOS_NAMESPACE"\s+)?(?:apply|create|patch|delete)\b/);
     expect(runText).not.toContain('deploy/sealos/cloud/');
@@ -156,10 +158,10 @@ describe('production deployment workflow', () => {
     expect(runText).toContain('expected_status "$protected_settings_url" 401');
     expect(runText).not.toContain('expected_status "$settings_url" 401');
     expect(runText).not.toContain('/settings/api/providers');
-    expect(runText).toContain('deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud');
+    expect(runText).toContain('.spec.template.spec.containers[] | select(.name == $name) | .image');
     expect(runText).toContain('imageID');
     expect(runText).toContain('service/status');
-    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" exec "$ready_pod"');
+    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" exec "$ready_pod" -c "$service_container"');
   });
 
   it('rolls back to the captured previous image only on failure and dumps non-secret diagnostics', async () => {
@@ -173,15 +175,46 @@ describe('production deployment workflow', () => {
       expect(diagnostics.if).toBe('failure()');
       expect(rollback.run).toContain('PREVIOUS_IMAGE="$(cat "$RUNNER_TEMP/xpod-previous-image")"');
       expect(rollback.run).toContain('No previous image was captured; skipping rollback');
-      expect(rollback.run).toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-cloud xpod="$PREVIOUS_IMAGE"');
-      expect(rollback.run).toContain('kubectl rollout status deployment/xpod-cloud');
+      expect(rollback.run).toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$PREVIOUS_IMAGE"');
+      expect(rollback.run).toContain('kubectl rollout status deployment/${XPOD_DEPLOYMENT}');
       expect(diagnostics.run).toContain('--previous');
-      expect(diagnostics.run).toContain('get deployment xpod-cloud');
-      expect(diagnostics.run).toContain('describe deployment xpod-cloud');
-      expect(diagnostics.run).toContain('logs -l app=xpod-cloud');
+      expect(diagnostics.run).toContain('get deployment "$XPOD_DEPLOYMENT"');
+      expect(diagnostics.run).toContain('describe deployment "$XPOD_DEPLOYMENT"');
+      expect(diagnostics.run).toContain('logs -l app=$XPOD_DEPLOYMENT');
       expect(diagnostics.run).not.toContain('get secret');
       expect(diagnostics.run).not.toContain('describe secret');
     }
     expect(runText).not.toMatch(/cat\s+["']?\$APP_ENV_FILE/);
+  });
+
+  it('derives the single service container from the deployed manifest instead of a fixed name', async () => {
+    const workflowText = await loadWorkflowText();
+    const runText = allRunText(await loadWorkflow());
+
+    expect(workflowText).toContain('scripts/lib/production-deployment-container.cjs');
+    expect(runText).toContain('--target-image "$TARGET_IMAGE"');
+    expect(runText).not.toContain('containers[?(@.name=="xpod")]');
+    expect(runText).not.toContain('-c xpod ');
+
+    const target = `ghcr.io/undefinedsco/xpod@sha256:${'a'.repeat(64)}`;
+    const helper = path.join(repoRoot, 'scripts/lib/production-deployment-container.cjs');
+    const cases: Array<[ string, string ]> = [
+      [ 'co', 'xpod-co' ],
+      [ 'cn', 'xpod' ],
+    ];
+    for (const [ env, container ] of cases) {
+      const manifest = parse(await readFile(
+        path.join(repoRoot, `deploy/sealos/cloud/overlays/${env}/deployment.yaml`),
+        'utf8',
+      ));
+      expect(manifest.spec.template.spec.containers[0].name).toBe(container);
+      const output = execFileSync(process.execPath, [ helper, '--target-image', target ], {
+        input: JSON.stringify(manifest),
+        encoding: 'utf8',
+      });
+      const selection = JSON.parse(output);
+      expect(selection.serviceContainer).toBe(container);
+      expect(selection.previousImage).toBe(manifest.spec.template.spec.containers[0].image);
+    }
   });
 });

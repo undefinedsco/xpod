@@ -109,6 +109,7 @@ jobs:
             --required-check ai-connections \
             --required-check models \
             --required-check chat \
+            --required-check task-approval \
             --required-check qlever-local \
             --required-check package-consumers \
             --required-check desktop > "$RUNNER_TEMP/acceptance-validation.json"
@@ -125,6 +126,14 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `candidate_version=${manifest.candidateVersion}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `candidate_run_id=${process.env.CANDIDATE_RUN_ID}\n`);
           NODE
+
+  shared_packages:
+    name: Publish verified shared applets
+    needs: promotion_guard
+    uses: ./.github/workflows/packages-release.yml
+    with:
+      accepted-sha: ${{ github.sha }}
+    secrets: inherit
 
   publish_npm_staging:
     name: Publish npm stable staging packages
@@ -150,7 +159,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.12
+          bun-version: 1.4.2
 
       - uses: actions/setup-node@v4
         with:
@@ -205,12 +214,24 @@ jobs:
       - name: Publish stable native package under the staging tag
         run: |
           set -euo pipefail
+          node scripts/build-platform-package.cjs --target=darwin-arm64
           package='@undefineds.co/xpod-darwin-arm64'
           if npm view "$package@$RELEASE_VERSION" version --json --registry "$XPOD_PUBLISH_REGISTRY" >/dev/null 2>&1; then
             [[ "$(npm view "$package@$RELEASE_VERSION" version --json --registry "$XPOD_PUBLISH_REGISTRY" | tr -d '\"')" == "$RELEASE_VERSION" ]]
           else
-            node scripts/publish-platform-packages.cjs --tag=stable-staging --target=darwin-arm64
+            npm publish dist/npm/darwin-arm64 --registry "$XPOD_PUBLISH_REGISTRY" --access public --tag stable-staging
           fi
+
+      - name: Save measured stable native package publication budget
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stable-native-package-budget-${{ github.sha }}
+          path: |
+            dist/npm/darwin-arm64-pack-budget.json
+            dist/npm/darwin-arm64-pack.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Inspect npm stable version state
         id: npm_state
@@ -243,7 +264,7 @@ jobs:
         run: node scripts/publish-release.cjs --skip-build
 
       - name: Test npm tarball readiness checks
-        run: node --test tests/scripts/wait-for-npm-package.node-test.cjs tests/scripts/npm-latest-propagation.node-test.cjs
+        run: node --test tests/scripts/wait-for-npm-package.node-test.cjs tests/scripts/npm-latest-propagation.node-test.cjs tests/scripts/desktop-self-update-acceptance.node-test.cjs tests/scripts/packaged-update-phases.node-test.mjs tests/scripts/desktop-permission-acceptance.node-test.cjs tests/scripts/desktop-permission-workflow.node-test.cjs tests/scripts/rc-cleanup-ownership.node-test.cjs tests/scripts/bun-single-runtime-entry.node-test.cjs tests/scripts/platform-package-budget.node-test.cjs
 
       - name: Wait for verified root and native tarballs to become publicly installable
         run: |
@@ -301,7 +322,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.12
+          bun-version: 1.4.2
 
       - uses: actions/setup-node@v4
         with:
@@ -317,6 +338,7 @@ jobs:
   promote_npm_latest:
     name: Promote verified npm packages to latest
     needs:
+      - shared_packages
       - promotion_guard
       - verify_npm_consumer_node
       - verify_npm_consumer_bun
@@ -440,6 +462,7 @@ jobs:
       - promotion_guard
       - deploy_production_co
     runs-on: macos-15
+    environment: rc
     permissions:
       actions: read
       contents: read
@@ -450,12 +473,14 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
+      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.12
+          bun-version: 1.4.2
 
       - uses: actions/setup-node@v4
         with:
@@ -471,6 +496,9 @@ jobs:
           test -s "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT"
 
       - run: bun install --frozen-lockfile
+
+      - name: Bootstrap the Electron vendor binary
+        run: node node_modules/electron/install.js
 
       - name: Validate desktop version
         run: |
@@ -502,6 +530,66 @@ jobs:
           test -x "$runtime"
           test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
 
+      - name: Accept actual stable packaged desktop permissions and operations
+        run: |
+          set -euo pipefail
+          test -n "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG"
+          provider_file="${RUNNER_TEMP}/desktop-provider-api-key"
+          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$provider_file"
+          chmod 600 "$provider_file"
+          new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          test -n "$new_zip"
+          bun scripts/accept-packaged-desktop-permissions.ts \
+            --archive "$new_zip" \
+            --version "$RELEASE_VERSION" \
+            --source-sha "$XPOD_ACCEPTED_SHA" \
+            --issuer "https://id.undefineds.co/" \
+            --key-file "$provider_file" \
+            --private-directory "${RUNNER_TEMP}/desktop-permission-private" \
+            --evidence "${RUNNER_TEMP}/desktop-permission-evidence.json"
+
+      - name: Accept stable self-update and verify the combined desktop contract
+        run: |
+          set -euo pipefail
+          accepted_evidence="${RUNNER_TEMP}/accepted-desktop-update"
+          gh run download "$CANDIDATE_RUN_ID" \
+            -n "desktop-self-update-acceptance-${XPOD_ACCEPTED_SHA}" -D "$accepted_evidence"
+          old_tag="$(node -e 'const e=require(process.argv[1]); if (!/^v\d+\.\d+\.\d+$/.test(e.oldReleaseTag)) process.exit(1); process.stdout.write(e.oldReleaseTag)' "$accepted_evidence/desktop-self-update-evidence.json")"
+          dest="${RUNNER_TEMP}/stable-old-desktop"
+          mkdir -p "$dest"
+          gh release download "$old_tag" --repo "${{ github.repository }}" \
+            --pattern '*-arm64-mac.zip' --dir "$dest"
+          old_zip="$(find "$dest" -maxdepth 1 -type f -name '*-arm64-mac.zip' -print -quit)"
+          test -n "$old_zip"
+          unzip -q "$old_zip" -d "$dest/unpacked"
+          old_app="$(find "$dest/unpacked" -type d -name 'Xpod.app' -print -quit)"
+          new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          test -n "$old_app"
+          test -n "$new_zip"
+          node desktop/scripts/packaged-update-acceptance.mjs \
+            --old "$old_app" --old-zip "$old_zip" --old-release-tag "$old_tag" \
+            --new-zip "$new_zip" --version "$RELEASE_VERSION" \
+            --source-sha "$XPOD_ACCEPTED_SHA" --timeout 180000 \
+            --evidence-out "${RUNNER_TEMP}/desktop-self-update-evidence.json"
+          node scripts/desktop-acceptance.cjs \
+            --self-update-evidence "${RUNNER_TEMP}/desktop-self-update-evidence.json" \
+            --permission-evidence "${RUNNER_TEMP}/desktop-permission-evidence.json" \
+            --source-sha "$XPOD_ACCEPTED_SHA" --version "$RELEASE_VERSION" \
+            --expected-archive "$new_zip" --checks-out "${RUNNER_TEMP}/desktop-check.json"
+
+      - name: Upload allowlisted stable desktop acceptance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-stable-acceptance-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/desktop-self-update-evidence.json
+            ${{ runner.temp }}/desktop-permission-evidence.json
+            ${{ runner.temp }}/desktop-check.json
+          if-no-files-found: error
+          retention-days: 30
+
+      # The archive ships an ad-hoc (linker) signature; `create_github_release` publishes
+      # these exact bytes after production deploys, so hand them over as one artifact.
       - uses: actions/upload-artifact@v4
         with:
           name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
@@ -512,6 +600,14 @@ jobs:
             desktop/release/latest-mac.yml
           if-no-files-found: error
           retention-days: 14
+      - name: Upload stable desktop permission failure summary
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-permission-failure-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-permission-private/failure-safe.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   create_github_release:
     name: Create GitHub Release

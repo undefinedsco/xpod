@@ -8,9 +8,10 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { parseDocument } from 'yaml';
 import { describe, expect, it } from 'bun:test';
 
 const repoRoot = path.resolve(__dirname, '../..');
@@ -35,6 +36,89 @@ function stageBody(dockerfile: string, stage: string): string {
   );
   expect(match, 'missing Docker stage ' + stage).not.toBeNull();
   return match![1];
+}
+
+const digestImage = 'ghcr.io/acme/xpod-qlever-local-runtime';
+const digestResolvedTag = 'qlever-inputs-251bc732cb01';
+const reusedImageDigest = `sha256:${'a'.repeat(64)}`;
+const publishedPushDigest = `sha256:${'b'.repeat(64)}`;
+
+function publishDigestRun(): string {
+  const workflow = parseDocument(readFileSync(workflowPath, 'utf8')).toJSON() as {
+    jobs: { publish: { steps: Array<{ id?: string; run?: string }> } };
+  };
+  const step = workflow.jobs.publish.steps.find((candidate) => candidate.id === 'publish');
+  expect(step, 'missing workflow step publish').toBeDefined();
+  return step!.run as string;
+}
+
+type DigestStepObservation = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  output: string;
+  dockerCalls: string[][];
+};
+
+function runPublishDigestStep(options: {
+  buildImage: 'true' | 'false';
+  dockerExitCode: number;
+}): DigestStepObservation {
+  const testDataRoot = path.join(repoRoot, '.test-data');
+  mkdirSync(testDataRoot, { recursive: true });
+  const tempRoot = mkdtempSync(path.join(testDataRoot, 'qlever-digest-step-'));
+  const fakeBin = path.join(tempRoot, 'bin');
+  const callsPath = path.join(tempRoot, 'docker-calls.json');
+  const outputPath = path.join(tempRoot, 'github-output');
+  const dockerPath = path.join(fakeBin, 'docker');
+  try {
+    mkdirSync(fakeBin);
+    writeFileSync(dockerPath, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      'const args = process.argv.slice(2);',
+      "const callsPath = process.env.XPOD_DOCKER_CALLS_PATH;",
+      "const calls = fs.existsSync(callsPath) ? JSON.parse(fs.readFileSync(callsPath, 'utf8')) : [];",
+      'calls.push(args);',
+      "fs.writeFileSync(callsPath, JSON.stringify(calls));",
+      'process.stdout.write(JSON.stringify("sha256:" + process.env.XPOD_DOCKER_DIGEST));',
+      'process.exit(Number(process.env.XPOD_DOCKER_EXIT_CODE || 0));',
+      '',
+    ].join('\n'));
+    chmodSync(dockerPath, 0o755);
+
+    const run = publishDigestRun().replace(
+      '${{ steps.resolve.outputs.tag }}',
+      digestResolvedTag,
+    );
+    const result = spawnSync('/bin/bash', [ '-c', run ], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 5000,
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+        BUILD_IMAGE: options.buildImage,
+        GITHUB_OUTPUT: outputPath,
+        IMAGE: digestImage,
+        PUSHED_DIGEST: publishedPushDigest,
+        XPOD_DOCKER_CALLS_PATH: callsPath,
+        XPOD_DOCKER_DIGEST: reusedImageDigest.slice('sha256:'.length),
+        XPOD_DOCKER_EXIT_CODE: String(options.dockerExitCode),
+      },
+    });
+    return {
+      status: result.status,
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? '',
+      output: existsSync(outputPath) ? readFileSync(outputPath, 'utf8') : '',
+      dockerCalls: existsSync(callsPath)
+        ? (JSON.parse(readFileSync(callsPath, 'utf8')) as string[][])
+        : [],
+    };
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 describe('QLever local runtime image contract', () => {
@@ -286,8 +370,13 @@ describe('QLever local runtime image contract', () => {
       'prior_sdk_image must be an immutable @sha256 image reference',
     );
     expect(workflow).toContain('^[a-f0-9]{40}$');
+    // 构建与推送必须打同一组名字：不可变提交标签（source full-SHA tag）
+    // + 以构建输入身份命名的复用别名，后者正是「输入未变」时下一轮复用的依据；
+    // 两步共用多行 tags，且没有 latest 这类可变 tag。
+    expect(workflow).toContain('tags: |');
+    expect(workflow).toContain('${{ env.IMAGE }}:sha-${{ github.sha }}');
     expect(workflow).toContain(
-      'tags: ${{ env.IMAGE }}:sha-${{ github.sha }}',
+      '${{ env.IMAGE }}:${{ steps.inputs.outputs.tag }}',
     );
     expect(workflow).toContain(
       'XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ inputs.prior_sdk_image }}',
@@ -319,6 +408,41 @@ describe('QLever local runtime image contract', () => {
     expect(workflow).toContain('echo "digest=${digest}" >> "${GITHUB_OUTPUT}"');
     expect(workflow).toContain('echo "image=${IMAGE}@${digest}"');
     expect(workflow).toContain('value: ${{ jobs.publish.outputs.digest }}');
+  });
+
+  it('resolves a reused image digest with one immutability inspect, not a split shell command', () => {
+    const observation = runPublishDigestStep({ buildImage: 'false', dockerExitCode: 0 });
+
+    expect(
+      observation.status,
+      `${observation.stdout}\n${observation.stderr}`,
+    ).toBe(0);
+    // One image ref plus --format in a single docker call; a doubled shell
+    // continuation would leak an extra "\" argument and run --format separately.
+    expect(observation.dockerCalls).toEqual([
+      [
+        'buildx',
+        'imagetools',
+        'inspect',
+        `${digestImage}:${digestResolvedTag}`,
+        '--format',
+        '{{json .Manifest.Digest}}',
+      ],
+    ]);
+    expect(observation.output).toContain(`digest=${reusedImageDigest}`);
+    expect(observation.output).toContain(`image=${digestImage}@${reusedImageDigest}`);
+  });
+
+  it('reuses the published push digest on the build path without any docker inspect', () => {
+    const observation = runPublishDigestStep({ buildImage: 'true', dockerExitCode: 42 });
+
+    expect(
+      observation.status,
+      `${observation.stdout}\n${observation.stderr}`,
+    ).toBe(0);
+    expect(observation.dockerCalls).toEqual([]);
+    expect(observation.output).toContain(`digest=${publishedPushDigest}`);
+    expect(observation.output).toContain(`image=${digestImage}@${publishedPushDigest}`);
   });
 
   it('runs semantic and native search conformance through the image wrapper', () => {

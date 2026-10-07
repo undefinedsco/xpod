@@ -89,8 +89,8 @@ function AiConnectionsMainBody({
 
   if (!controller.client) {
     return (
-      <section role="alert" aria-label="AI Connections unavailable">
-        <h2>AI Connections 尚未就绪</h2>
+      <section role="alert" aria-label="AI 连接尚未就绪">
+        <h2>AI 连接尚未就绪</h2>
         <p>宿主需要先提供已登录的 WebID 和可用的 Pod。</p>
       </section>
     )
@@ -100,6 +100,7 @@ function AiConnectionsMainBody({
     <section role="region" aria-label={regionLabel}>
       <AiConnectionsPanel
         client={controller.client}
+        onAuthorizeService={controller.authorizeService}
         renderToaster={renderToaster}
         clientConfigurationBridge={controller.clientConfigurationBridge}
         selectedSection={selectedSection}

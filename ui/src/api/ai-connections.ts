@@ -61,7 +61,9 @@ export function createServiceAccessGatewayFetch({
   let pendingInvocation: Promise<AiConnectionsInvocation> | undefined;
 
   const fetchServiceAccess = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const response = await authenticatedFetch(input, init);
+    const headers = new Headers(init?.headers);
+    headers.set('X-Xpod-Pod-Url', podUrl);
+    const response = await authenticatedFetch(input, { ...init, headers });
     invocation = await invocationFromResponse(response.clone(), invocationSelector);
     return response;
   };
@@ -103,6 +105,7 @@ export function createServiceAccessGatewayFetch({
     if (!token) throw new Error('AI Connection request failed. Please try again.');
     const headers = new Headers(init?.headers);
     headers.set('Authorization', `Bearer ${token}`);
+    headers.set('X-Xpod-Pod-Url', podUrl);
     return invocationFetch(input, {
       ...init,
       credentials: 'omit',
@@ -386,14 +389,6 @@ async function normalizeStructuredGatewayError(response: Response): Promise<Resp
   } catch {
     return response;
   }
-  const legacyCode = legacyGatewayErrorCode(payload);
-  if (legacyCode) {
-    return new Response(JSON.stringify({ code: legacyCode }), {
-      status: response.status,
-      statusText: response.statusText,
-      headers: { 'content-type': 'application/json' },
-    });
-  }
   if (!isStructuredGatewayError(payload)) {
     return response;
   }
@@ -422,18 +417,6 @@ function isStructuredGatewayError(value: unknown): value is {
     && typeof (error as { message?: unknown }).message === 'string'
     && typeof (error as { status?: unknown }).status === 'number',
   );
-}
-
-function legacyGatewayErrorCode(value: unknown): string | undefined {
-  if (!isRecord(value) || typeof value.error !== 'string') {
-    return undefined;
-  }
-  switch (value.error) {
-    case 'Gateway API Key plaintext is not available':
-      return 'gateway_api_key_plaintext_unavailable';
-    default:
-      return undefined;
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

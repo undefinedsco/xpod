@@ -3,7 +3,7 @@ import './setup-jsdom'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockWebExtensionHost } from '@undefineds.co/extension-sdk/testing'
-import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react'
+import { TwoPaneLayout, WorkspaceDrawerContext } from '@undefineds.co/extension-sdk/react'
 import type { WebExtensionSolidCapability } from '@undefineds.co/extension-sdk/web'
 import { mountTwoPaneApplet } from '@undefineds.co/extension-sdk/web'
 import { aiConnectionApplet } from '../src'
@@ -55,12 +55,12 @@ describe('AI Connection two-pane contribution', () => {
 
     render(<>{mounted.listHeader}{mounted.list}<div data-testid="main-header">{mounted.mainHeader}</div>{mounted.main}</>)
 
-    expect(screen.getByRole('searchbox', { name: '搜索 Provider' })).toBeTruthy()
+    expect(screen.getByRole('searchbox', { name: '搜索服务商' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '添加 AI Connection' })).toBeTruthy()
     // §7.3：入口以连接客户端开场，API KEYS 紧随其后
-    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'CONNECT CLIENT' })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: '连接客户端' })).toBeTruthy()
-    expect(screen.getByRole('tablist', { name: '选择客户端' })).toBeTruthy()
+    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'Xpod' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: '连接客户端' })).toBeNull()
+    expect(screen.queryByRole('tablist', { name: '选择客户端' })).toBeNull()
     expect(screen.queryByRole('heading', { name: 'AI Connection' })).toBeNull()
     // 切到 API KEYS 分组后，它仍是唯一的已签发凭据表面
     fireEvent.click(screen.getByRole('option', { name: 'Xpod' }))
@@ -70,7 +70,7 @@ describe('AI Connection two-pane contribution', () => {
     // never loads the image, so the initials fallback is what renders here (the
     // mark itself is asserted in provider-visuals.test.ts).
     expect(within(pinned).getByText('XP')).toBeTruthy()
-    expect(screen.getAllByRole('heading', { name: 'Xpod' })).toHaveLength(1)
+    expect(screen.getAllByRole('heading', { name: 'Xpod' })).toHaveLength(2)
     expect(screen.queryByText('出口')).toBeNull()
     expect(screen.queryByRole('option', { name: '客户端接入' })).toBeNull()
     expect(screen.queryByRole('option', { name: '虚拟密钥' })).toBeNull()
@@ -126,7 +126,7 @@ describe('AI Connection two-pane contribution', () => {
     )
 
     render(<>{mounted.listHeader}{mounted.list}</>)
-    fireEvent.change(screen.getByRole('searchbox', { name: '搜索 Provider' }), {
+    fireEvent.change(screen.getByRole('searchbox', { name: '搜索服务商' }), {
       target: { value: 'kimi' },
     })
 
@@ -208,6 +208,40 @@ describe('AI Connection two-pane contribution', () => {
     expect(document.activeElement).toBe(mainPane)
   })
 
+  it('gates the provider list through the host drawer in stack mode and opens main on selection', () => {
+    const mounted = mountTwoPaneApplet(
+      aiConnectionApplet,
+      createMockWebExtensionHost({ solid: readySolid() }),
+    )
+
+    const tree = (open: boolean) => (
+      <WorkspaceDrawerContext.Provider value={{ open }}>
+        <TwoPaneLayout
+          mode="stack"
+          listHeader={mounted.listHeader}
+          list={mounted.list}
+          mainHeader={mounted.mainHeader}
+          main={mounted.main}
+        />
+      </WorkspaceDrawerContext.Provider>
+    )
+
+    const { rerender } = render(tree(false))
+
+    // A host drawer owns the workspace list: while it is closed the list pane is
+    // hidden and Playwright's role query cannot reach the AI listbox.
+    expect(screen.getByTestId('workspace-list-pane').hidden).toBe(true)
+    expect(screen.queryByRole('listbox', { name: 'AI 服务' })).toBeNull()
+
+    // The RC narrow acceptance opens the drawer first, then selects a Provider.
+    rerender(tree(true))
+    expect(screen.getByTestId('workspace-list-pane').hidden).toBe(false)
+    fireEvent.click(screen.getByRole('option', { name: 'OpenAI', exact: true }))
+
+    expect(document.querySelector('[data-workspace-active-pane]')?.getAttribute('data-workspace-active-pane')).toBe('main')
+    expect(screen.getByRole('region', { name: 'OpenAI 详情' })).toBeTruthy()
+  })
+
   it('uses Add to open the custom Provider form', () => {
     const mounted = mountTwoPaneApplet(
       aiConnectionApplet,
@@ -219,6 +253,6 @@ describe('AI Connection two-pane contribution', () => {
     render(<>{mounted.listHeader}<div data-testid="main-header">{mounted.mainHeader}</div></>)
     fireEvent.click(screen.getByRole('button', { name: '添加 AI Connection' }))
 
-    expect(screen.getByRole('dialog', { name: '添加自定义 Provider' })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: '添加自定义服务商' })).toBeTruthy()
   })
 })

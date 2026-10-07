@@ -5,6 +5,8 @@ import { ProvisionPodStore, XPOD_REMOTE_PROVISIONED } from '../../src/provision/
 describe('ProvisionPodStore', () => {
   it('records remote provisioned Pods by canonical storage URL without creating a Cloud Pod', async () => {
     const storage = {
+      find: vi.fn().mockResolvedValue([]),
+      delete: vi.fn(),
       create: vi.fn()
         .mockResolvedValueOnce({ id: 'pod-id-1' })
         .mockResolvedValueOnce({ id: 'owner-id-1' }),
@@ -71,4 +73,39 @@ describe('ProvisionPodStore', () => {
       false,
     );
   });
+  it('reuses the same Account-owned remote Pod after a failed card-binding retry', async () => {
+    const storage = { find: vi.fn()
+      .mockResolvedValueOnce([{ id: 'existing-pod', accountId: 'account-1', baseUrl: 'https://node.example/alice/' }])
+      .mockResolvedValueOnce([{ webId: 'https://id.example/alice/profile/card#me', visible: true }]), create: vi.fn() };
+    const manager = { createPod: vi.fn() };
+    const store = new ProvisionPodStore(storage as any, manager as any);
+    expect(await store.create('account-1', { base: { path: 'https://id.example/alice/' },
+      webId: 'https://id.example/alice/profile/card#me', storage: 'https://node.example/alice/',
+      [XPOD_REMOTE_PROVISIONED]: true } as any, false)).toBe('existing-pod');
+    expect(storage.create).not.toHaveBeenCalled();
+    expect(manager.createPod).not.toHaveBeenCalled();
+  });
+
+  it.each(['other-account', 'other-owner', 'ambiguous'])('rejects a remote retry with %s', async (reason) => {
+    const record = { id: 'existing-pod', accountId: reason === 'other-account' ? 'account-2' : 'account-1' };
+    const storage = { find: vi.fn().mockResolvedValueOnce(reason === 'ambiguous' ? [record, record] : [record])
+      .mockResolvedValueOnce([{ webId: 'https://id.example/mallory/profile/card#me' }]), create: vi.fn() };
+    const store = new ProvisionPodStore(storage as any, { createPod: vi.fn() } as any);
+    await expect(store.create('account-1', { base: { path: 'https://id.example/alice/' },
+      webId: 'https://id.example/alice/profile/card#me', storage: 'https://node.example/alice/',
+      [XPOD_REMOTE_PROVISIONED]: true } as any, false)).rejects.toThrow('different ownership');
+    expect(storage.create).not.toHaveBeenCalled();
+  });
+
+  it('removes only newly-created metadata when owner registration fails', async () => {
+    const storage = { find: vi.fn().mockResolvedValue([]), create: vi.fn()
+      .mockResolvedValueOnce({ id: 'new-pod' }).mockRejectedValueOnce(new Error('owner write failed')), delete: vi.fn() };
+    const store = new ProvisionPodStore(storage as any, { createPod: vi.fn() } as any);
+    await expect(store.create('account-1', { base: { path: 'https://id.example/alice/' },
+      webId: 'https://id.example/alice/profile/card#me', storage: 'https://node.example/alice/',
+      [XPOD_REMOTE_PROVISIONED]: true } as any, false)).rejects.toThrow('owner write failed');
+    expect(storage.delete).toHaveBeenCalledTimes(1);
+    expect(storage.delete).toHaveBeenCalledWith(POD_STORAGE_TYPE, 'new-pod');
+  });
+
 });

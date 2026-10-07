@@ -1,3 +1,4 @@
+import { gatewayInvocationHeaders } from '../InvocationMetadata';
 import { GatewayProtocolError } from '../errors';
 import type { GatewayEvent } from '../types';
 import {
@@ -57,6 +58,7 @@ export class BailianRuntimeAdapter extends BaseProviderRuntimeAdapter {
       yield* parseCompatibleChatSse(this.transport.postSse({
         url: `${baseUrl}/chat/completions`,
         apiKey: input.apiKey,
+        headers: gatewayInvocationHeaders(input.invocationMetadata),
         body: toChatCompletionsBody(input.request, {
           reasoningEffort: input.request.reasoning?.effort,
         }),
@@ -78,6 +80,7 @@ export class BailianRuntimeAdapter extends BaseProviderRuntimeAdapter {
       yield* parseCompatibleChatSse(this.transport.postSse({
         url: `${baseUrl}/chat/completions`,
         apiKey: input.apiKey,
+        headers: gatewayInvocationHeaders(input.invocationMetadata),
         body: toChatCompletionsBody(input.request, {
           reasoningEffort: input.request.reasoning?.effort,
         }),
@@ -117,6 +120,7 @@ export class BailianRuntimeAdapter extends BaseProviderRuntimeAdapter {
       safeBaseUrls: [BAILIAN_CODING_PLAN_BASE_URL],
     });
     const headers = new Headers({
+      ...gatewayInvocationHeaders(input.invocationMetadata),
       'x-api-key': input.apiKey,
     });
     try {

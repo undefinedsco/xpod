@@ -119,7 +119,7 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
     }
 
     const entries: OwnedWebIdEntry[] = [];
-    const resolvedWebIds = new Set<string>();
+    const resolvedBindings = new Set<string>();
 
     for (const pod of pods ?? []) {
       if (!pod || typeof pod.id !== 'string' || typeof pod.baseUrl !== 'string' || pod.baseUrl.length === 0) {
@@ -139,17 +139,19 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
 
       for (const owner of owners ?? []) {
         const webId = owner?.webId;
-        if (!isWebIdString(webId) || !candidates.has(webId) || resolvedWebIds.has(webId)) {
+        if (!isWebIdString(webId) || !candidates.has(webId)) {
           continue;
         }
 
         const storageUrl = ensureTrailingSlash(pod.baseUrl);
+        const bindingKey = ownedBindingKey(webId, storageUrl);
+        if (resolvedBindings.has(bindingKey)) continue;
         entries.push({
           webId,
           storageUrl,
           storageMode: deriveStorageMode(webId, storageUrl),
         });
-        resolvedWebIds.add(webId);
+        resolvedBindings.add(bindingKey);
       }
     }
 
@@ -223,7 +225,7 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
       }
 
       const allowedWebIds = new Set(candidates);
-      const resolvedWebIds = new Set<string>();
+      const resolvedBindings = new Set<string>();
       const entries: OwnedWebIdEntry[] = [];
       for (const entry of body.entries) {
         if (!isRecord(entry)
@@ -234,7 +236,7 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
           return [];
         }
 
-        if (!allowedWebIds.has(entry.webId) || resolvedWebIds.has(entry.webId)) {
+        if (!allowedWebIds.has(entry.webId)) {
           continue;
         }
 
@@ -245,12 +247,14 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
         }
 
         const storageUrl = ensureTrailingSlash(entry.storageUrl);
+        const bindingKey = ownedBindingKey(entry.webId, storageUrl);
+        if (resolvedBindings.has(bindingKey)) continue;
         entries.push({
           webId: entry.webId,
           storageUrl,
           storageMode: deriveStorageMode(entry.webId, storageUrl),
         });
-        resolvedWebIds.add(entry.webId);
+        resolvedBindings.add(bindingKey);
       }
 
       return entries;
@@ -334,6 +338,11 @@ function hasManagedRoute(target: PodOwnershipTarget): target is PodOwnershipTarg
     && target.routeAccessToken
     && target.routeAccessTokenExp
     && target.nodeId);
+}
+
+/** Exact verified identity/storage pair; URI delimiters never collapse distinct bindings. */
+function ownedBindingKey(webId: string, storageUrl: string): string {
+  return JSON.stringify([webId, storageUrl]);
 }
 
 /**

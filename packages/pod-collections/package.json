@@ -1,6 +1,6 @@
 {
   "name": "@undefineds.co/pod-collections",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "private": false,
   "type": "module",
   "sideEffects": false,
@@ -27,8 +27,8 @@
   "dependencies": {
     "@tanstack/db": "0.9.0",
     "@tanstack/react-db": "0.3.8",
-    "@undefineds.co/drizzle-solid": "0.3.24",
-    "@undefineds.co/models": "0.2.59"
+    "@undefineds.co/drizzle-solid": "0.3.25",
+    "@undefineds.co/models": "0.2.60"
   },
   "peerDependencies": {
     "react": "^19.2.0"

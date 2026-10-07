@@ -1,0 +1,206 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "StatefulSet",
+  "metadata": {
+    "labels": {
+      "app": "xpod-rdf-postgres"
+    },
+    "name": "xpod-rdf-postgres",
+    "namespace": "ns-iknkxtc8"
+  },
+  "spec": {
+    "persistentVolumeClaimRetentionPolicy": {
+      "whenDeleted": "Retain",
+      "whenScaled": "Retain"
+    },
+    "podManagementPolicy": "OrderedReady",
+    "replicas": 1,
+    "revisionHistoryLimit": 10,
+    "selector": {
+      "matchLabels": {
+        "app": "xpod-rdf-postgres"
+      }
+    },
+    "serviceName": "xpod-rdf-postgres",
+    "template": {
+      "metadata": {
+        "labels": {
+          "app": "xpod-rdf-postgres"
+        }
+      },
+      "spec": {
+        "containers": [
+          {
+            "env": [
+              {
+                "name": "POSTGRES_USER",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "username",
+                    "name": "rdf-parity-pg"
+                  }
+                }
+              },
+              {
+                "name": "POSTGRES_PASSWORD",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "password",
+                    "name": "rdf-parity-pg"
+                  }
+                }
+              },
+              {
+                "name": "POSTGRES_DB",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "database",
+                    "name": "rdf-parity-pg"
+                  }
+                }
+              },
+              {
+                "name": "PGDATA",
+                "value": "/var/lib/postgresql/data/pgdata"
+              }
+            ],
+            "image": "ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:635a5eee0ea1461c8cde8425fdf0ca7d0965bc083d8860bb7aa04498c9688986",
+            "imagePullPolicy": "IfNotPresent",
+            "livenessProbe": {
+              "exec": {
+                "command": [
+                  "sh",
+                  "-c",
+                  "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""
+                ]
+              },
+              "failureThreshold": 6,
+              "initialDelaySeconds": 30,
+              "periodSeconds": 20,
+              "successThreshold": 1,
+              "timeoutSeconds": 3
+            },
+            "name": "postgres",
+            "ports": [
+              {
+                "containerPort": 5432,
+                "name": "postgres",
+                "protocol": "TCP"
+              }
+            ],
+            "readinessProbe": {
+              "exec": {
+                "command": [
+                  "sh",
+                  "-c",
+                  "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""
+                ]
+              },
+              "failureThreshold": 12,
+              "initialDelaySeconds": 10,
+              "periodSeconds": 10,
+              "successThreshold": 1,
+              "timeoutSeconds": 3
+            },
+            "resources": {
+              "limits": {
+                "cpu": "300m",
+                "memory": "384Mi"
+              },
+              "requests": {
+                "cpu": "300m",
+                "memory": "384Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "terminationMessagePath": "/dev/termination-log",
+            "terminationMessagePolicy": "File",
+            "volumeMounts": [
+              {
+                "mountPath": "/var/lib/postgresql/data",
+                "name": "postgres-data"
+              },
+              {
+                "mountPath": "/docker-entrypoint-initdb.d",
+                "name": "postgres-init",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/run/secrets/xpod-rc",
+                "name": "xpod-rc-postgres-secret",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "dnsPolicy": "ClusterFirst",
+        "imagePullSecrets": [
+          {
+            "name": "xpod-qlever-rc-registry"
+          }
+        ],
+        "restartPolicy": "Always",
+        "schedulerName": "default-scheduler",
+        "securityContext": {
+          "fsGroup": 999,
+          "runAsGroup": 999,
+          "runAsNonRoot": true,
+          "runAsUser": 999,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "terminationGracePeriodSeconds": 30,
+        "volumes": [
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "postgres-init"
+            },
+            "name": "postgres-init"
+          },
+          {
+            "name": "xpod-rc-postgres-secret",
+            "secret": {
+              "defaultMode": 420,
+              "secretName": "xpod-rc-postgres-secret"
+            }
+          }
+        ]
+      }
+    },
+    "updateStrategy": {
+      "rollingUpdate": {
+        "partition": 0
+      },
+      "type": "RollingUpdate"
+    },
+    "volumeClaimTemplates": [
+      {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+          "name": "postgres-data"
+        },
+        "spec": {
+          "accessModes": [
+            "ReadWriteOnce"
+          ],
+          "resources": {
+            "requests": {
+              "storage": "20Gi"
+            }
+          },
+          "volumeMode": "Filesystem"
+        }
+      }
+    ]
+  }
+}

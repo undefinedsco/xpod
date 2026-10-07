@@ -1,11 +1,12 @@
 import type { AiProviderAuthorizationMethod, AiProviderOffering } from './contract/ai-connections-client'
-import { authMethodLabel, offeringKindLabel, offeringTitle } from './offering-label'
+import { authMethodLabel, offeringKindLabel, offeringTitle, offeringUnavailableMessage } from './offering-label'
 import { authorizationMethodsForOffering } from './authorization-methods'
 import { AiEndpointList } from './AiEndpointList'
 
-export function AiOfferingDetails({ offering, methods }: {
+export function AiOfferingDetails({ offering, methods, developerMode = false }: {
   offering: AiProviderOffering
   methods?: AiProviderAuthorizationMethod[]
+  developerMode?: boolean
 }) {
   const endpoints = offering.endpoints ?? []
   const title = offeringTitle(offering)
@@ -31,11 +32,9 @@ export function AiOfferingDetails({ offering, methods }: {
         </div>
       </div>
       {offering.lifecycle === 'unavailable' && !authorizationMethodsForOffering(offering).some((method) => method.lifecycle === 'active') ? (
-        <p className="text-xs text-muted-foreground">{offering.kind === 'oauth-subscription'
-          ? '暂不可用：账号订阅需在 Xpod 桌面版中导入本机客户端（如 Codex CLI）的登录态，浏览器中无法完成。'
-          : '暂不可用：该接入方式尚未提供可用的连接流程。'}</p>
+        <p className="text-xs text-muted-foreground">{offeringUnavailableMessage(offering)}</p>
       ) : null}
-      {endpoints.length ? <AiEndpointList endpoints={endpoints} /> : null}
+      {developerMode && endpoints.length ? <AiEndpointList endpoints={endpoints} /> : null}
     </section>
   )
 }

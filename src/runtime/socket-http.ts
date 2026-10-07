@@ -112,7 +112,10 @@ function createPatchedRequest(
     }
 
     const rewritten = rewriteRequestOptions(url, requestOptions, socketPath);
-    return cb ? original(rewritten, cb as any) : original(rewritten);
+    // A canonical HTTPS origin is carried over the runtime's plain HTTP Unix listener.
+    rewritten.protocol = 'http:';
+    if (defaultProtocol === 'https:') rewritten.agent = undefined;
+    return cb ? originalHttpRequest(rewritten, cb as any) : originalHttpRequest(rewritten);
   }) as typeof http.request;
 }
 

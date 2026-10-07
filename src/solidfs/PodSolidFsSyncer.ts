@@ -1,20 +1,21 @@
-import { createReadStream } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 
 import type { SolidFsChange, SolidFsManifest, SolidFsSyncer } from './types';
 import { isRdfDocument } from '../storage/rdf/RdfContentTypes';
-import { PodSolidFsHttpClient, resolvePodWorkspaceResourceUrl } from './PodSolidFsHttpClient';
+import { PodSolidFsHttpClient, resolvePodWorkspaceResourceUrl, type PodSolidFsHttpClientOptions } from './PodSolidFsHttpClient';
 
-export interface PodSolidFsSyncerOptions {
-  fetch?: typeof fetch;
-  tokenEndpoint?: string;
-}
+export type PodSolidFsSyncerOptions = PodSolidFsHttpClientOptions;
 
 /**
- * Writes SolidFS RDF file changes back through the Pod HTTP surface.
+ * Writes SolidFS file changes back through the Pod HTTP surface.
  *
- * The CSS/MixDataAccessor path remains responsible for parsing RDF documents
- * into the structured RDF index. This adapter only bridges runtime workspace
- * edits back to the Pod resource URL with the caller's stored auth context.
+ * RDF documents still flow through the CSS/MixDataAccessor path, which parses
+ * them into the structured RDF index. Non-RDF (text/binary) workspace edits are
+ * sent as byte-buffered payloads to the same Pod resource URL with the caller's
+ * stored auth context; otherwise the journal would mark an upload done while the
+ * Pod never received the bytes and the resource stayed missing. (A Node
+ * ReadStream body is rejected with an empty HTTP 400 at this boundary, so the
+ * file bytes are buffered before the PUT.)
  */
 export class PodSolidFsSyncer implements SolidFsSyncer {
   private readonly http: PodSolidFsHttpClient;
@@ -33,36 +34,35 @@ export class PodSolidFsSyncer implements SolidFsSyncer {
   }
 
   public async sync(change: SolidFsChange, workspace: SolidFsManifest, context?: unknown): Promise<void> {
-    if (!isRdfChange(change)) {
-      return;
-    }
-
     const resourceUrl = resolvePodResourceUrl(change, workspace);
     if (!resourceUrl) {
       return;
     }
 
-    const headers = await this.http.createAuthHeaders(context, `sync SolidFS RDF change: ${resourceUrl}`);
+    const headers = new Headers();
     if (change.type === 'deleted') {
       const response = await this.http.request(resourceUrl, {
         method: 'DELETE',
         headers,
-      });
+      }, context);
       if (!response.ok && response.status !== 404) {
-        throw new Error(`SolidFS RDF delete sync failed for ${resourceUrl}: ${response.status} ${await response.text().catch(() => '')}`);
+        throw new Error(`SolidFS delete sync failed for ${resourceUrl}: ${response.status} ${await response.text().catch(() => '')}`);
       }
       return;
     }
 
-    headers.set('Content-Type', change.contentType ?? 'text/turtle');
+    const isRdf = isRdfChange(change);
+    headers.set('Content-Type', change.contentType ?? (isRdf ? 'text/turtle' : 'application/octet-stream'));
+    // The Pod HTTP boundary rejects a Node ReadStream body with an empty 400, which the
+    // journal then records as failed and the resource never lands. Send the file bytes.
+    const body = await readFile(change.sourcePath);
     const response = await this.http.request(resourceUrl, {
       method: 'PUT',
       headers,
-      body: createReadStream(change.sourcePath) as any,
-      duplex: 'half' as any,
-    } as RequestInit);
+      body,
+    } as RequestInit, context);
     if (!response.ok) {
-      throw new Error(`SolidFS RDF write sync failed for ${resourceUrl}: ${response.status} ${await response.text().catch(() => '')}`);
+      throw new Error(`SolidFS write sync failed for ${resourceUrl}: ${response.status} ${await response.text().catch(() => '')}`);
     }
   }
 }

@@ -43,6 +43,9 @@ function normalizeState(state: StorageBootstrapState): { status: StorageBootstra
   return state
 }
 
+/**
+ * @deprecated Use PodSignIn with a `notice` (the Pod is prepared after sign-in, not before) (see `pod-sign-in/`). Kept for one more version; behavior is unchanged.
+ */
 export function StorageBootstrapView({
   state: stateInput,
   copy,

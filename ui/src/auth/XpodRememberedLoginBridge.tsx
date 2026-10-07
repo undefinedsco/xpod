@@ -1,3 +1,4 @@
+import { accountOverviewHref } from '../utils/account-overview-href';
 import { useEffect } from 'react';
 import { useAuth } from '../context/AuthContextValue';
 import { useXpodProfileCardIdentity } from '../profile/useXpodProfileCardIdentity';
@@ -7,6 +8,7 @@ import {
   readRememberedXpodLogin,
   rememberedXpodLoginMatchesActive,
   rememberXpodLogin,
+  readXpodAccountRememberChoice,
 } from './xpod-remembered-login';
 import { XPOD_LOGIN_ROUTE_ID } from './xpod-login-route';
 
@@ -23,10 +25,17 @@ export function XpodRememberedLoginBridge() {
     ? runtime.webId ?? runtime.state.webId
     : undefined;
   const remembered = readRememberedXpodLogin();
-  const pendingEmail = readPendingXpodAccountEmail();
-  const email = pendingEmail ?? remembered?.account.email;
+  const rememberAccount = readXpodAccountRememberChoice(account.idpIndex);
+  const accountHref = !account.isInitializing ? accountOverviewHref(account.idpIndex) : undefined;
+  const issuer = accountHref ? new URL(accountHref).origin : undefined;
+  const pendingEmail = issuer ? readPendingXpodAccountEmail(undefined, account.idpIndex) : undefined;
+  // An independent WebID login has no evidence for an Account email on another origin.
+  const email = rememberAccount === true
+    ? pendingEmail ?? (remembered && remembered.issuer === issuer ? remembered.account.email : undefined)
+    : undefined;
 
   useEffect(() => {
+    if (!issuer || rememberAccount === false) return;
     if (!webId || !selectedStorage || !runtime.currentPod) return;
     if (selectedStorage.webId !== webId) return;
     if (runtime.currentPod.webId !== webId || runtime.currentPod.podUrl !== selectedStorage.storageUrl) return;
@@ -37,6 +46,7 @@ export function XpodRememberedLoginBridge() {
       selectedStorage,
     })) return;
     rememberXpodLogin({
+      issuer,
       account: {
         ...(email ? { email } : {}),
         ...(account.identity ?? {}),
@@ -52,6 +62,8 @@ export function XpodRememberedLoginBridge() {
     });
   }, [
     account.identity,
+    issuer,
+    rememberAccount,
     email,
     pendingEmail,
     profile.displayName,

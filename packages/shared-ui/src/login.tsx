@@ -150,6 +150,9 @@ export function LoginAvatar({
   )
 }
 
+/**
+ * @deprecated Use PodSignIn (state `restoring`) (see `pod-sign-in/`). Kept for one more version; behavior is unchanged.
+ */
 export function LoginRestoringView({
   accountName,
   avatarUrl,
@@ -174,6 +177,9 @@ export function LoginRestoringView({
   )
 }
 
+/**
+ * @deprecated Use PodSignIn (`busy` on the primary action) (see `pod-sign-in/`). Kept for one more version; behavior is unchanged.
+ */
 export function LoginConnectingView({
   title,
   detail,
@@ -227,6 +233,9 @@ export function LoginConnectingView({
   )
 }
 
+/**
+ * @deprecated Use PodSignIn (states `remembered` / `expired`) (see `pod-sign-in/`). Kept for one more version; behavior is unchanged.
+ */
 export function LoginAccountView({
   name,
   avatarUrl,
@@ -348,6 +357,9 @@ export interface RememberedLoginViewCopy {
   cancelLabel: string
 }
 
+/**
+ * @deprecated Use PodSignIn (states `remembered` / `expired`) (see `pod-sign-in/`). Kept for one more version; behavior is unchanged.
+ */
 export function RememberedLoginView({
   state,
   copy,
@@ -410,6 +422,9 @@ export function RememberedLoginView({
   )
 }
 
+/**
+ * @deprecated Use PodSignIn with a `notice` (see `pod-sign-in/`). Kept for one more version; behavior is unchanged.
+ */
 export function LoginFailureView({
   title,
   description,

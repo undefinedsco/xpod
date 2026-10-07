@@ -1,3 +1,6 @@
+import { formatUpdateProgress } from './self-updater.js'
+import type { DesktopUpdateProgress } from './update-manager.js'
+
 export const XPOD_TRAY_SERVICES = ['gateway', 'css', 'api'] as const
 
 export type TrayServiceName = (typeof XPOD_TRAY_SERVICES)[number]
@@ -19,10 +22,15 @@ export interface TrayUpdateState {
   status: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'downloaded' | 'error'
   version?: string
   message?: string
+  progress?: DesktopUpdateProgress
+  downloadPath?: string
 }
 
 export type TrayMenuAction =
   | { type: 'open-xpod' }
+  | { type: 'copy-webid' }
+  | { type: 'decide-approval'; approvalId: string; decision: 'approved' | 'rejected'; route: string }
+  | { type: 'stop' }
   | { type: 'open-pod' }
   | { type: 'open-route'; route: string }
   | { type: 'refresh' }
@@ -31,6 +39,7 @@ export type TrayMenuAction =
   | { type: 'toggle-launch-at-login' }
   | { type: 'check-update' }
   | { type: 'install-update' }
+  | { type: 'reveal-update' }
   | { type: 'open-release-download' }
   | { type: 'about' }
   | { type: 'quit' }
@@ -41,6 +50,7 @@ export interface TrayMenuItemModel {
   enabled?: boolean
   checked?: boolean
   action?: TrayMenuAction
+  submenu?: TrayMenuItemModel[]
 }
 
 export interface TrayMenuModel {
@@ -55,7 +65,7 @@ export interface TrayIdentity {
   podUrl?: string
 }
 
-export function normalizeTrayIdentity(value: unknown, targetOrigin: string): TrayIdentity | undefined {
+export function normalizeTrayIdentity(value: unknown, _targetOrigin?: string): TrayIdentity | undefined {
   if (!value || typeof value !== 'object') return undefined
   const candidate = value as { label?: unknown; webId?: unknown; podUrl?: unknown }
   if (typeof candidate.label !== 'string') return undefined
@@ -72,8 +82,8 @@ export function normalizeTrayIdentity(value: unknown, targetOrigin: string): Tra
   const boundedLabel = Array.from(label).slice(0, 80).join('').trim()
   if (!boundedLabel) return undefined
 
-  const webId = normalizeIdentityUrl(candidate.webId, targetOrigin)
-  const podUrl = normalizeIdentityUrl(candidate.podUrl, targetOrigin)
+  const webId = normalizeIdentityUrl(candidate.webId)
+  const podUrl = normalizeIdentityUrl(candidate.podUrl)
   if ((candidate.webId !== undefined && !webId) || (candidate.podUrl !== undefined && !podUrl)) {
     return undefined
   }
@@ -84,27 +94,20 @@ export function normalizeTrayIdentity(value: unknown, targetOrigin: string): Tra
   }
 }
 
-function normalizeIdentityUrl(value: unknown, targetOrigin: string): string | undefined {
+function normalizeIdentityUrl(value: unknown): string | undefined {
   if (value === undefined) return undefined
-  if (typeof value !== 'string' || value.length > 2_048) return undefined
+  if (typeof value !== 'string' || value.length > 2_048 || /[\x00-\x20\x7f-\x9f]/.test(value)) return undefined
   try {
     const url = new URL(value)
     if (
       (url.protocol !== 'http:' && url.protocol !== 'https:')
       || url.username
       || url.password
-      || url.origin !== targetOrigin
     ) return undefined
     return url.toString()
   } catch {
     return undefined
   }
-}
-
-const servicePresentation: Record<TrayServiceName, { label: string; route: string }> = {
-  gateway: { label: 'Gateway', route: '/status/services/gateway' },
-  css: { label: 'Solid Server', route: '/status/services/solid-server' },
-  api: { label: 'API Server', route: '/status/services/api-server' },
 }
 
 export function aggregateTrayStatus(snapshots: readonly TrayServiceSnapshot[]): TrayAggregateStatus {
@@ -121,78 +124,48 @@ export function aggregateTrayStatus(snapshots: readonly TrayServiceSnapshot[]): 
   return { state: 'degraded', running, total: 3 }
 }
 
-export function buildTrayMenuModel({
-  services,
-  launchAtLogin,
-  identity,
-  update,
-}: {
+export interface TrayAttentionItem { id: string; title: string; href: string; kind?: string; approvalId?: string }
+export interface TrayProgressItem { id: string; title: string; href: string }
+
+export function buildTrayMenuModel({ services, identity, update, attention = [], inProgress = [], localOnly = false }: {
   services: readonly TrayServiceSnapshot[]
-  launchAtLogin: boolean
+  launchAtLogin?: boolean
   identity?: TrayIdentity
   update?: TrayUpdateState
+  attention?: readonly TrayAttentionItem[]
+  inProgress?: readonly TrayProgressItem[]
+  localOnly?: boolean
 }): TrayMenuModel {
-  const normalized = normalizedServices(services)
-  const aggregate = aggregateTrayStatus(normalized)
+  const aggregate = aggregateTrayStatus(services)
+  const status = aggregate.state === 'stopped' ? '已停止' : aggregate.state === 'starting' ? '启动中' : aggregate.state === 'failed' ? '运行异常' : localOnly || aggregate.state === 'degraded' ? '仅本机可用' : '运行中'
   const items: TrayMenuItemModel[] = [
-    { label: aggregateLabel(aggregate.state), enabled: false },
-    { label: `${aggregate.running}/${aggregate.total} 个服务在运行`, enabled: false },
-    separator(),
-    ...normalized.map(serviceMenuItem),
+    identity ? { label: `${identity.label}${identity.webId ? ` · ${identity.webId}` : ''}`, enabled: Boolean(identity.webId), action: identity.webId ? { type: 'copy-webid' } : undefined } : { label: '登录', action: { type: 'open-xpod' } },
+    { label: status, enabled: false },
   ]
+  if (attention.length) items.push(separator(), { label: '需要你处理', enabled: false }, ...attention.slice(0, 3).map((item): TrayMenuItemModel => item.kind === 'approval' && item.approvalId ? { label: item.title, submenu: [
+    { label: '查看申请', action: { type: 'open-route', route: item.href } },
+    { label: '允许', action: { type: 'decide-approval', approvalId: item.approvalId, decision: 'approved', route: item.href } },
+    { label: '拒绝', action: { type: 'decide-approval', approvalId: item.approvalId, decision: 'rejected', route: item.href } },
+  ] } : { label: item.title, action: { type: 'open-route', route: item.href } }), { label: '全部查看 ›', action: { type: 'open-route', route: '/tasks?attention=open' } })
+  if (inProgress.length) items.push(separator(), { label: '进行中', enabled: false }, ...inProgress.slice(0, 3).map((item): TrayMenuItemModel => ({ label: item.title, action: { type: 'open-route', route: item.href } })))
+  items.push(separator(), { label: '打开 Xpod', action: { type: 'open-xpod' } }, separator(),
+    aggregate.state === 'stopped' ? { label: '启动 Xpod', action: { type: 'start' } } : { label: '停止 Xpod', action: { type: 'stop' } },
+    ...updateMenuItems(update), { label: '关于 Xpod', action: { type: 'about' } }, { label: '退出 Xpod', action: { type: 'quit' } })
+  return { aggregate, tooltip: `Xpod · ${status}${attention.length ? ` · ${attention.length} 项需要处理` : ''}`, items }
+}
 
-  const crashed = normalized.find((service) => service.status === 'crashed')
-  if (crashed) {
-    const presentation = servicePresentation[crashed.name]
-    items.push({
-      label: `查看 ${presentation.label} 日志`,
-      action: { type: 'open-route', route: `/status/logs?source=${encodeURIComponent(crashed.name)}` },
-    })
-  }
-
-  items.push(
-    separator(),
-    { label: '打开 Xpod', action: { type: 'open-xpod' } },
-  )
-  if (identity?.podUrl) {
-    items.push({ label: '打开存储空间', action: { type: 'open-pod' } })
-  }
-  items.push(
-    separator(),
-    { label: '概览', action: { type: 'open-route', route: '/status/overview' } },
-    { label: '访问与连接', action: { type: 'open-route', route: '/network' } },
-    { label: 'AI 用途与模型', action: { type: 'open-route', route: '/ai-config/model-assignments' } },
-    { label: '存储空间', action: { type: 'open-route', route: '/settings/pod' } },
-    separator(),
-    { label: '重新检查状态', action: { type: 'refresh' } },
-    {
-      label: aggregate.state === 'stopped' ? '启动 Xpod' : '重启 Xpod…',
-      action: { type: aggregate.state === 'stopped' ? 'start' : 'restart' },
-    },
-  )
-
-  items.push(separator())
-  if (identity) {
-    items.push({ label: `已登录：${identity.label}`, enabled: false })
-  }
-  items.push({ label: '账号…', action: { type: 'open-route', route: '/status/overview?account=open' } })
-
-  items.push(
-    separator(),
-    { label: '开机启动', checked: launchAtLogin, action: { type: 'toggle-launch-at-login' } },
-    ...updateMenuItems(update),
-    { label: '关于 Xpod', action: { type: 'about' } },
-    separator(),
-    // §9.3：把"关闭窗口"与"退出"的真实后果写在动作旁边，不新增第二个退出动作
-    { label: '关闭窗口后服务继续运行；退出 Xpod 才会停止服务', enabled: false },
-    { label: '退出 Xpod', action: { type: 'quit' } },
-  )
-
-  return {
-    aggregate,
-    tooltip: `Xpod · ${aggregate.running}/${aggregate.total} 个服务在运行`,
-    items,
-  }
+/** Only same-product paths and bounded plain labels may enter the native menu. */
+export function normalizeTrayAttention(value: unknown): { attention: TrayAttentionItem[]; inProgress: TrayProgressItem[] } {
+  if (!value || typeof value !== 'object') return { attention: [], inProgress: [] }
+  const snapshot = value as Record<string, unknown>
+  const normalize = (rows: unknown): TrayAttentionItem[] => !Array.isArray(rows) ? [] : rows.slice(0, 100).flatMap((row: unknown) => {
+    if (!row || typeof row !== 'object') return []
+    const item = row as Record<string, unknown>
+    if (typeof item.id !== 'string' || typeof item.title !== 'string' || typeof item.href !== 'string' || !/^\/(?!\/)/.test(item.href) || /[\\\r\n]/.test(item.href)) return []
+    const title = item.title.replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ').trim().slice(0, 160)
+    return title ? [{ id: item.id.slice(0, 200), title, href: item.href.slice(0, 2048), ...(item.kind === 'approval' && typeof item.approvalId === 'string' && item.approvalId.length <= 2048 && !/[\x00-\x1f\x7f]/.test(item.approvalId) ? { kind: 'approval', approvalId: item.approvalId } : {}) }] : []
+  })
+  return { attention: normalize(snapshot.attention), inProgress: normalize(snapshot.inProgress) }
 }
 
 function normalizedServices(snapshots: readonly TrayServiceSnapshot[]): Array<{ name: TrayServiceName; status: TrayServiceStatus }> {
@@ -202,81 +175,44 @@ function normalizedServices(snapshots: readonly TrayServiceSnapshot[]): Array<{ 
   }))
 }
 
-function serviceMenuItem(service: { name: TrayServiceName; status: TrayServiceStatus }): TrayMenuItemModel {
-  const presentation = servicePresentation[service.name]
-  return {
-    label: `${statusMark(service.status)} ${presentation.label} — ${statusLabel(service.status)}`,
-    action: { type: 'open-route', route: presentation.route },
-  }
-}
-
-function aggregateLabel(state: TrayAggregateState): string {
-  switch (state) {
-    case 'healthy': return '● Xpod 运行正常'
-    case 'starting': return '◌ Xpod 正在启动…'
-    case 'degraded': return '▲ Xpod 部分服务未运行'
-    case 'failed': return '▲ Xpod 服务异常'
-    case 'stopped': return '○ Xpod 已停止'
-  }
-}
-
-function statusMark(status: TrayServiceStatus): string {
-  switch (status) {
-    case 'running': return '●'
-    case 'starting': return '◌'
-    case 'crashed': return '▲'
-    case 'stopped': return '○'
-  }
-}
-
-function statusLabel(status: TrayServiceStatus): string {
-  switch (status) {
-    case 'running': return 'Running'
-    case 'starting': return 'Starting'
-    case 'crashed': return 'Crashed'
-    case 'stopped': return 'Stopped'
-  }
-}
-
 function separator(): TrayMenuItemModel {
   return { type: 'separator' }
 }
 
 function updateMenuItems(update: TrayUpdateState | undefined): TrayMenuItemModel[] {
   if (!update || update.status === 'disabled') return []
+  const reveal: TrayMenuItemModel[] = update.downloadPath ? [{ label: '显示更新包…', action: { type: 'reveal-update' } }] : []
   switch (update.status) {
     case 'idle':
-      return [{ label: 'Check for Updates…', action: { type: 'check-update' } }]
+      return [{ label: '检查更新…', action: { type: 'check-update' } }]
     case 'checking':
-      return [{ label: 'Checking for Updates…', enabled: false }]
+      return [{ label: '正在检查更新…', enabled: false }]
     case 'available':
       return [{
-        label: update.version ? `Downloading Xpod ${update.version}…` : 'Downloading Update…',
+        label: update.version ? `正在下载 Xpod ${update.version}…` : '正在下载更新…',
         enabled: false,
       }]
     case 'downloading':
-      return [{
-        label: update.version ? `Downloading Xpod ${update.version}…` : 'Downloading Update…',
-        enabled: false,
-      }]
+      return [{ label: `${update.version ? `正在下载 Xpod ${update.version}…` : '正在下载更新…'} ${update.progress ? formatUpdateProgress(update.progress).replace(' of ', ' / ') : '正在开始…'}`, enabled: false }]
     case 'not-available':
       return [
-        { label: 'Xpod is up to date', enabled: false },
-        { label: 'Check for Updates Again', action: { type: 'check-update' } },
+        { label: '已是最新版本', enabled: false },
+        { label: '重新检查更新', action: { type: 'check-update' } },
       ]
     case 'downloaded':
       return [{
-        label: update.version ? `Restart to Install Xpod ${update.version}` : 'Restart to Install Update',
+        label: update.version ? `重启并安装 Xpod ${update.version}` : '重启并安装更新',
         action: { type: 'install-update' },
-      }]
+      }, ...reveal]
     case 'error':
       return [
         {
-          label: update.message ? `Update Failed: ${update.message}` : 'Update Failed',
+          label: '更新失败',
           enabled: false,
         },
-        { label: 'Download Latest Xpod…', action: { type: 'open-release-download' } },
-        { label: 'Check for Updates Again', action: { type: 'check-update' } },
+        ...reveal,
+        { label: '下载最新版 Xpod…', action: { type: 'open-release-download' } },
+        { label: '重新检查更新', action: { type: 'check-update' } },
       ]
   }
 }

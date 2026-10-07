@@ -156,6 +156,38 @@ describe('probing a route without an injected probe', () => {
 })
 
 describe('createSolidAccessRouteFetch', () => {
+  it('does not probe or retry an unrelated IdP request when node routes are down', async () => {
+    const failure = new TypeError('issuer unavailable')
+    const fetchImpl = vi.fn(async () => { throw failure })
+    const probe = vi.fn(() => true)
+    const refreshRoutes = vi.fn()
+    const routed = createSolidAccessRouteFetch({ fetch: fetchImpl as typeof fetch, probe, refreshRoutes,
+      routes: () => [route({ id: 'public', kind: 'public-direct', targetUrl: CANONICAL, priority: 30, health: 'unknown' }),
+        route({ id: 'tunnel', kind: 'user-tunnel', targetUrl: 'https://tunnel.example/', priority: 50 })] })
+    await expect(routed('https://id.example/.oidc/token', { method: 'POST' })).rejects.toBe(failure)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(probe).not.toHaveBeenCalled()
+    expect(refreshRoutes).not.toHaveBeenCalled()
+  })
+
+  it('does not replay a mutation after a routed request may have been accepted', async () => {
+    const failure = new TypeError('response connection closed')
+    const fetchImpl = vi.fn(async () => { throw failure })
+    const routes = [route({ id: 'lan', kind: 'lan', targetUrl: 'http://192.168.1.20:3000/', priority: 20 }),
+      route({ id: 'tunnel', kind: 'user-tunnel', targetUrl: 'https://tunnel.example/', priority: 50 })]
+    const routed = createSolidAccessRouteFetch({ fetch: fetchImpl as typeof fetch, routes: () => routes })
+    await expect(routed(`${CANONICAL}api/apply`, { method: 'POST', body: 'one mutation' })).rejects.toBe(failure)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows a later explicit request after a transient mutation failure', async () => {
+    const fetchImpl = vi.fn(async () => new Response('ok')).mockRejectedValueOnce(new TypeError('socket closed'))
+    const routed = createSolidAccessRouteFetch({ fetch: fetchImpl as typeof fetch,
+      routes: () => [route({ id: 'lan', kind: 'lan', targetUrl: 'http://192.168.1.20:3000/', priority: 20 })] })
+    await expect(routed(`${CANONICAL}api/apply`, { method: 'POST' })).rejects.toThrow('socket closed')
+    expect((await routed(`${CANONICAL}alice/status`)).status).toBe(200)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
   it('sends a canonical request over the chosen route and keeps canonical identity', async () => {
     const requests: { url: string; canonicalHost: string | null }[] = []
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

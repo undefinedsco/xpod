@@ -289,7 +289,7 @@ describe('PodManagementHandler', () => {
       });
     });
 
-    it('returns a new receipt for an idempotent retry without webId by resource identifier lookup', async () => {
+    it('rejects a retry without an explicit owner even when a resource lookup finds the Pod', async () => {
       routes = {};
       const provisioningService = { createPod: vi.fn() };
       registerPodManagementRoutes(mockServer, {
@@ -310,33 +310,16 @@ describe('PodManagementHandler', () => {
         webId: 'https://id.undefineds.co/alice/profile/card#me',
       });
 
-      const request = createMockRequest({ podName: 'alice' }, 'Bearer retry_token');
+      const sat = createServiceAccessToken({ serviceToken: 'retry_token', scopes: ['network:read', 'network:connect'], ttlSeconds: 300 });
+      const request = createMockRequest({ podName: 'alice' }, `Bearer ${sat}`);
       const response = createMockResponse();
 
       await routes['POST /provision/pods'](request, response, {});
 
-      expect(response.statusCode).toBe(200);
-      expect(podLookupRepository.findByResourceIdentifier).toHaveBeenCalledWith('http://localhost:5737/alice/');
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse((response.end as any).mock.calls[0][0])).toMatchObject({ error: 'Conflict' });
       expect(provisioningService.createPod).not.toHaveBeenCalled();
-      const body = JSON.parse((response.end as any).mock.calls[0][0]);
-      expect(body).toEqual({
-        success: true,
-        podUrl: 'http://localhost:5737/alice/',
-        webId: 'https://id.undefineds.co/alice/profile/card#me',
-        provisionReceipt: body.provisionReceipt,
-        message: 'Pod alice already exists for this WebID',
-      });
-      expect(verifyProvisionReceipt(body.provisionReceipt, {
-        secret: deriveProvisionReceiptSecret('retry_token'),
-        now: () => Date.now(),
-      })).toEqual({
-        valid: true,
-        payload: expect.objectContaining({
-          podName: 'alice',
-          webId: 'https://id.undefineds.co/alice/profile/card#me',
-          podUrl: 'http://localhost:5737/alice/',
-        }),
-      });
+      expect(podLookupRepository.findByResourceIdentifier).not.toHaveBeenCalled();
     });
 
     it('keeps duplicate pod conflicts when existing ownership cannot be proven', async () => {
@@ -380,7 +363,7 @@ describe('PodManagementHandler', () => {
         end: vi.fn(),
       } as unknown as ServerResponse);
 
-    it('should delete existing pod', async () => {
+    it('rejects direct API deletion even with a valid service token', async () => {
       mockVerifyToken.mockResolvedValue(true);
       (stat as any).mockResolvedValue({ isDirectory: () => true } as any);
       (rm as any).mockResolvedValue(undefined);
@@ -390,11 +373,12 @@ describe('PodManagementHandler', () => {
 
       await routes['DELETE /provision/pods/:podName'](request, response, { podName: 'alice' });
 
-      expect(response.statusCode).toBe(200);
-      expect(rm).toHaveBeenCalledWith(`${testDir}/alice`, { recursive: true, force: true });
+      expect(response.statusCode).toBe(405);
+      expect(rm).not.toHaveBeenCalled();
+      expect(response.end).toHaveBeenCalledWith(expect.stringContaining('POD_DELETE_USE_GATEWAY'));
     });
 
-    it('should return 404 for non-existent pod', async () => {
+    it('does not turn unknown Pod deletion into success', async () => {
       mockVerifyToken.mockResolvedValue(true);
       (stat as any).mockRejectedValue(new Error('Not found'));
 
@@ -403,7 +387,8 @@ describe('PodManagementHandler', () => {
 
       await routes['DELETE /provision/pods/:podName'](request, response, { podName: 'nonexistent' });
 
-      expect(response.statusCode).toBe(404);
+      expect(response.statusCode).toBe(405);
+      expect(rm).not.toHaveBeenCalled();
     });
 
     it('should reject invalid token', async () => {
@@ -414,7 +399,8 @@ describe('PodManagementHandler', () => {
 
       await routes['DELETE /provision/pods/:podName'](request, response, { podName: 'alice' });
 
-      expect(response.statusCode).toBe(401);
+      expect(response.statusCode).toBe(405);
+      expect(rm).not.toHaveBeenCalled();
     });
   });
 

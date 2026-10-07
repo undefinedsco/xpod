@@ -1,4 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import {
+  AUTHORIZATION_CALLBACK_PAGE_CSP,
+  renderAuthorizationCallbackPage,
+  type AuthorizationCallbackPageState,
+} from './AuthorizationCallbackPage';
 
 export interface AuthorizationCodeCallbackReceiver {
   register(input: {
@@ -87,15 +92,15 @@ export class LoopbackAuthorizationCallbackReceiver implements AuthorizationCodeC
 
   private async handle(request: IncomingMessage, response: ServerResponse, port: number,
     registrations: Map<string, Registration>): Promise<void> {
-    const reply = (status: number, success = false): void => {
+    const reply = (status: number, state: AuthorizationCallbackPageState = 'invalid'): void => {
       response.writeHead(status, {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
         'Connection': 'close',
-        'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
+        'Content-Security-Policy': AUTHORIZATION_CALLBACK_PAGE_CSP,
         'Referrer-Policy': 'no-referrer',
       });
-      response.end(success ? '授权已返回 Xpod，请切回应用完成连接。' : '授权回调无效或已过期，请返回应用重试。');
+      response.end(renderAuthorizationCallbackPage(state));
     };
     const allowedHosts = ['localhost', '127.0.0.1'].map(host => port === 80 ? host : `${host}:${port}`);
     if (request.method !== 'GET' || !allowedHosts.includes(request.headers.host ?? '') ||
@@ -119,9 +124,9 @@ export class LoopbackAuthorizationCallbackReceiver implements AuthorizationCodeC
     registration.close();
     try {
       await registration.onCallback(query.has('code') ? { code: query.get('code')! } : { error: query.get('error')! });
-      reply(200, !query.has('error'));
+      reply(200, query.has('error') ? 'denied' : 'received');
     } catch {
-      reply(500);
+      reply(500, 'failed');
     }
   }
 }

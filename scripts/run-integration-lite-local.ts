@@ -26,6 +26,19 @@ function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Pr
 }
 
 async function main() {
+  // Stress/shutdown fixtures must finish before the full-stack suites compete
+  // for ports and runtime-start locks. They retain their own per-request guards.
+  const runtimeExitCode = await runCommand('bun', ['run', 'vitest', '--run',
+    'tests/api/ApiServerShutdown.test.ts',
+    'tests/runtime/gateway-asset-transport.test.ts',
+    'tests/runtime/provider-http-transport.test.ts',
+    'tests/runtime/supported-bun.test.ts',
+    'tests/scripts/patch-jose.test.ts',
+    '--no-file-parallelism',
+  ], process.env);
+  if (runtimeExitCode !== 0) {
+    throw new Error(`Runtime compatibility regression failed with exit code ${runtimeExitCode}`);
+  }
   const componentBuildExitCode = await runCommand('bun', [ 'run', 'build:components' ], process.env);
   if (componentBuildExitCode !== 0) {
     throw new Error(`Components.js metadata generation failed with exit code ${componentBuildExitCode}`);
@@ -41,6 +54,8 @@ async function main() {
       ...TEST_GATEWAY_ENV,
       XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeFixture.command,
     };
+    // Suites that verify authentication create their own strict stack. Keep
+    // the shared fixture's established open-mode contract for other suites.
     await stack.start('local', { env: liteRuntimeEnv, transport: 'port' });
     console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);
 
@@ -56,10 +71,13 @@ async function main() {
     exitCode = await runCommand('bun', [ 'run', 'test:setup' ], sharedEnv);
     if (exitCode === 0) {
       exitCode = await runCommand('bun', [ 'run', 'vitest', '--run',
-          'tests/integration',
-          'tests/http/ServerLogin.integration.test.ts',
-          'tests/http/ServerApiAuth.integration.test.ts',
-          '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken,CloudClientCredentialVisibility}*',
+          ...(process.argv.length > 2 ? process.argv.slice(2) : [
+            'tests/integration',
+            'tests/http/ServerLogin.integration.test.ts',
+            'tests/http/ServerApiAuth.integration.test.ts',
+          ]),
+          '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken,CloudClientCredentialVisibility,CloudManagedPodDeletion}*',
+          '--no-file-parallelism',
         ], sharedEnv);
     }
   } finally {

@@ -43,17 +43,17 @@ export interface RdfAccessScope {
 }
 
 interface ApplyState {
-  impossibleGraph: Term;
+  impossibleGraph: RdfQueryTermPattern;
 }
 
 export function isRestrictiveRdfAccessScope(scope?: RdfAccessScope): boolean {
   return Boolean(
     scope
       && (
-        (scope.allowedGraphUrls?.length ?? 0) > 0
+        scope.allowedGraphUrls !== undefined
         || (scope.deniedGraphUrls?.length ?? 0) > 0
         || (scope.deniedGraphPrefixes?.length ?? 0) > 0
-        || (scope.allowedSourceUrls?.length ?? 0) > 0
+        || scope.allowedSourceUrls !== undefined
         || (scope.deniedSourceUrls?.length ?? 0) > 0
         || (scope.deniedSourcePrefixes?.length ?? 0) > 0
       ),
@@ -85,7 +85,7 @@ export function applyRdfAccessScope(query: RdfQuery, scope?: RdfAccessScope): Rd
   }
 
   const state: ApplyState = {
-    impossibleGraph: DataFactory.namedNode('urn:xpod:rdf-access-denied') as unknown as Term,
+    impossibleGraph: { $in: [] },
   };
   const scoped = applyScopeToQuery(query, scope, state);
   return {
@@ -127,7 +127,7 @@ export function rdfAccessGraphAllowed(graph: string, scope: RdfAccessScope): boo
   if (!graph.startsWith(scope.basePath)) {
     return false;
   }
-  if (scope.allowedGraphUrls?.length && !scope.allowedGraphUrls.includes(graph)) {
+  if (scope.allowedGraphUrls !== undefined && !scope.allowedGraphUrls.includes(graph)) {
     return false;
   }
   if (scope.deniedGraphUrls?.includes(graph)) {
@@ -138,7 +138,11 @@ export function rdfAccessGraphAllowed(graph: string, scope: RdfAccessScope): boo
 
 function applyScopeToQuery(query: RdfQuery, scope: RdfAccessScope, state: ApplyState): RdfQuery {
   const rootFilters: RdfQueryFilter[] = [...(query.filters ?? [])];
-  const patterns = (query.patterns ?? []).map((pattern) => scopePattern(pattern, rootFilters, scope, state));
+  const hasOtherSource = Boolean(query.values?.length || query.textSearch?.length || query.vectorSearch?.length || query.unions?.length);
+  // Engines interpret an otherwise empty root as an implicit all-facts pattern.
+  // Make that pattern explicit before applying permissions, never after them.
+  const rootPatterns = query.patterns?.length || hasOtherSource ? query.patterns ?? [] : [{}];
+  const patterns = rootPatterns.map((pattern) => scopePattern(pattern, rootFilters, scope, state));
   return {
     ...query,
     patterns,
@@ -209,8 +213,7 @@ function scopeOptionalGroup(
   state: ApplyState,
 ): RdfQueryPattern[] | RdfOptionalQueryGroup {
   if (Array.isArray(group)) {
-    const ignoredFilters: RdfQueryFilter[] = [];
-    return group.map((pattern) => scopePattern(pattern, ignoredFilters, scope, state));
+    return scopeOptionalGroup({ patterns: group }, scope, state);
   }
 
   const filters: RdfQueryFilter[] = [...(group.filters ?? [])];
@@ -232,6 +235,9 @@ function scopePattern(
   state: ApplyState,
 ): RdfQueryPattern {
   const sourceScope = scopeFactSources(pattern.sourceScope, scope);
+  if (scope.allowedGraphUrls?.length === 0) {
+    return { ...pattern, graph: state.impossibleGraph, ...(sourceScope ? { sourceScope } : {}) };
+  }
   const requested = pattern.graph;
   // A container IRI names a container, not a graph: asking for it asks for that
   // container and its subgraphs (LDP containment). The trailing slash is what
@@ -261,8 +267,11 @@ function scopePattern(
       if (defaultGraphSourceScope === false) {
         return { ...pattern, graph: state.impossibleGraph, ...(sourceScope ? { sourceScope } : {}) };
       }
-      return scope.allowedGraphUrls?.length
-        ? { ...pattern, graph: state.impossibleGraph, ...(sourceScope ? { sourceScope } : {}) }
+      return scope.allowedGraphUrls !== undefined
+        ? { ...pattern,
+          graph: scopeGraphOperators({ $startsWith: scope.basePath }, scope, state.impossibleGraph),
+          ...(defaultGraphSourceScope ? { sourceScope: defaultGraphSourceScope } : {}),
+        }
         : { ...pattern, ...(defaultGraphSourceScope ? { sourceScope: defaultGraphSourceScope } : {}) };
     }
     return rdfAccessGraphAllowed((graph as Term).value, scope)
@@ -298,7 +307,7 @@ function defaultGraphFactSources(
 function scopeGraphOperators(
   graph: RdfQueryTermPattern,
   scope: RdfAccessScope,
-  impossibleGraph: Term,
+  impossibleGraph: RdfQueryTermPattern,
 ): RdfQueryTermPattern {
   const operators = { ...(graph as Record<string, unknown>) };
   const prefix = intersectSourcePrefix(
@@ -311,9 +320,9 @@ function scopeGraphOperators(
   if (prefix) {
     operators.$startsWith = prefix;
   }
-  if (scope.allowedGraphUrls?.length) {
+  if (scope.allowedGraphUrls !== undefined) {
     const allowedTerms = scope.allowedGraphUrls
-      .filter((url) => graphOperatorsMayMatch(operators as RdfQueryTermPattern, url))
+      .filter((url) => rdfAccessGraphAllowed(url, scope) && graphOperatorsMayMatch(operators as RdfQueryTermPattern, url))
       .map((url) => DataFactory.namedNode(url) as unknown as Term);
     if (allowedTerms.length === 0) {
       return impossibleGraph;
@@ -356,7 +365,7 @@ function addGraphAccessFilters(filters: RdfQueryFilter[], variable: string, scop
     operator: '$startsWith',
     value: scope.basePath,
   });
-  if (scope.allowedGraphUrls?.length) {
+  if (scope.allowedGraphUrls !== undefined) {
     filters.push({
       variable,
       operator: '$in',
@@ -448,12 +457,8 @@ function scopeFactSources(existing: RdfSourceScope | undefined, scope: RdfAccess
   const deniedPrefixes = nonEmptyStrings(unionStringArrays(existing?.deniedSourcePrefixes, scope.deniedSourcePrefixes));
   const deniedSources = nonEmptyStrings(unionStringArrays(existing?.deniedSources, scope.deniedSourceUrls));
 
-  // An empty access-scope allow-list means that no source restriction was
-  // resolved. An explicitly empty pattern sourceScope remains fail-closed via
-  // existing?.allowedSources.
-  const allowedFromScope = scope.allowedSourceUrls?.length
-    ? scope.allowedSourceUrls
-    : undefined;
+  // Undefined means no source restriction; an explicitly empty list grants none.
+  const allowedFromScope = scope.allowedSourceUrls;
   const allowedSources = filterStringsByPrefix(
     intersectStringArrays(existing?.allowedSources, allowedFromScope),
     prefix,

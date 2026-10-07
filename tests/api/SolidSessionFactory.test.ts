@@ -168,3 +168,253 @@ describe('SolidSessionFactory', () => {
     expect(request).toHaveBeenCalledTimes(3);
   });
 });
+
+
+describe('SolidSessionFactory exchange lifecycle', () => {
+  const credential = { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET };
+
+  it('shares one pending exchange between concurrent requests', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const request = vi.fn(async () => { await blocked; return tokenResponse(); });
+    const sessions = createFactory({ fetch: request });
+    const waiting = Array.from({ length: 10 }, () => sessions.session(credential));
+    await vi.waitFor(() => expect(request).toHaveBeenCalled());
+    release();
+    const results = await Promise.all(waiting);
+    expect(request).toHaveBeenCalledOnce();
+    expect(results.every((session) => session === results[0])).toBe(true);
+  });
+
+  it.each(['credential', 'client'] as const)('rejects an exchange invalidated by %s before completion', async (kind) => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const request = vi.fn(async () => { await blocked; return tokenResponse(); });
+    const sessions = createFactory({ fetch: request });
+    const waiting = sessions.session(credential);
+    const rejected = expect(waiting).rejects.toThrow('token_exchange_invalidated');
+    await vi.waitFor(() => expect(request).toHaveBeenCalled());
+    if (kind === 'client') sessions.invalidateClientCredential(CLIENT_ID);
+    else sessions.invalidate(credential);
+    release();
+    await rejected;
+    await sessions.session(credential);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not invalidate a newer session because an older request failed late', async () => {
+    const request = vi.fn(async () => tokenResponse());
+    const sessions = createFactory({ fetch: request });
+    const first = await sessions.session(credential);
+    sessions.invalidate(credential);
+    const second = await sessions.session(credential);
+    sessions.invalidate(credential, first);
+    expect(await sessions.session(credential)).toBe(second);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('permits a new exchange after a pending exchange fails', async () => {
+    const request = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(tokenResponse());
+    const sessions = createFactory({ fetch: request });
+    await expect(sessions.session(credential)).rejects.toThrow('offline');
+    await expect(sessions.session(credential)).resolves.toMatchObject({ accessToken: 'solid-token' });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * Admission is the only path that decides whether an inbound request may act as this credential.
+ * It therefore proves the credential to its issuer every time; the session cache exists to keep
+ * the rest of one request from exchanging the same credential twice, not to let a previous
+ * request's success admit a later one.
+ */
+describe('SolidSessionFactory inbound admission', () => {
+  const credential = { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET };
+
+  it('exchanges even with a valid session cached, and hands that session to the same request', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(tokenResponse({ access_token: 'from-an-earlier-request' }))
+      .mockResolvedValueOnce(tokenResponse({ access_token: 'proves-this-request' }));
+    const sessions = createFactory({ fetch: request });
+
+    await sessions.session(credential);
+    const admitted = await sessions.admit(credential);
+
+    expect(admitted).toMatchObject({ accessToken: 'proves-this-request' });
+    expect(request).toHaveBeenCalledTimes(2);
+    // Reaching the Pod during the same request reuses the admitted token and its DPoP key.
+    expect(await sessions.session(credential)).toBe(admitted);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('admits each distinct credential on its own exchange', async () => {
+    const request = vi.fn().mockImplementation(async () => tokenResponse());
+    const sessions = createFactory({ fetch: request });
+
+    await sessions.admit(credential);
+    await sessions.admit({ ...credential, clientSecret: 'rotated-secret' });
+    await sessions.admit({ ...credential, version: 'v2' });
+
+    // A rotation and a version bump are new credentials, never a warm cache hit.
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it('drops the cached session of exactly the credential the issuer refused', async () => {
+    const request = vi.fn().mockImplementation(async () => tokenResponse());
+    const sessions = createFactory({ fetch: request });
+    const untouched = { clientId: 'another-client', clientSecret: CLIENT_SECRET };
+
+    await sessions.session(credential);
+    await sessions.session(untouched);
+    expect(request).toHaveBeenCalledTimes(2);
+
+    request.mockResolvedValueOnce(new Response('invalid_client', { status: 401 }));
+    await expect(sessions.admit(credential)).rejects.toMatchObject({ status: 401 });
+
+    // The refused credential must be re-proved (and would now be refused again); the other
+    // caller's session survives, so one revoked key is not every caller's outage.
+    await sessions.admit(credential);
+    await sessions.session(untouched);
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  it('keeps the cached session when the issuer is merely unavailable', async () => {
+    const request = vi.fn().mockResolvedValueOnce(tokenResponse({ access_token: 'still-the-callers' }));
+    const sessions = createFactory({ fetch: request });
+    const issued = await sessions.session(credential);
+
+    request.mockResolvedValueOnce(new Response('boom', { status: 503 }));
+    await expect(sessions.admit(credential)).rejects.toMatchObject({ status: 503 });
+
+    // An outage is not a revocation, so the session issued before it is left alone.
+    expect(await sessions.session(credential)).toBe(issued);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('never admits on an exchange that began before the credential was destroyed', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const request = vi.fn()
+      // The exchange already in flight when the credential is destroyed still succeeds.
+      .mockImplementationOnce(async () => { await blocked; return tokenResponse({ access_token: 'pre-revocation' }); })
+      .mockResolvedValue(new Response('invalid_client', { status: 401 }));
+    const sessions = createFactory({ fetch: request });
+
+    const inFlight = sessions.session(credential);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+
+    // A request that begins after the revocation must prove the credential itself.
+    await expect(sessions.admit(credential)).rejects.toMatchObject({ status: 401 });
+    expect(request).toHaveBeenCalledTimes(2);
+
+    // The stale exchange is torn down rather than left as a usable session for anyone.
+    release();
+    await expect(inFlight).rejects.toThrow('token_exchange_invalidated');
+  });
+
+  it('does not republish a credential whose exchange resolved after a later request was refused', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const request = vi.fn()
+      // The exchange already in flight when the credential is destroyed still succeeds at the issuer.
+      .mockImplementationOnce(async () => { await blocked; return tokenResponse({ access_token: 'pre-revocation' }); })
+      .mockResolvedValue(new Response('invalid_client', { status: 401 }));
+    const sessions = createFactory({ fetch: request });
+
+    const lateAdmit = sessions.admit(credential);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    // A request that starts after the destruction proves the credential itself, and is refused.
+    await expect(sessions.admit(credential)).rejects.toMatchObject({ status: 401 });
+    expect(request).toHaveBeenCalledTimes(2);
+
+    release();
+    // The exchange already in flight is not torn down: its caller keeps the token it verified.
+    await expect(lateAdmit).resolves.toMatchObject({ accessToken: 'pre-revocation' });
+
+    // But its success must not republish authority the refusal took away: later Pod access has to
+    // exchange again, and the issuer refuses the credential it no longer knows.
+    await expect(sessions.session(credential)).rejects.toMatchObject({ status: 401 });
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not republish an admission that resolves after an explicit client invalidation', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const request = vi.fn()
+      .mockImplementationOnce(async () => { await blocked; return tokenResponse({ access_token: 'pre-revocation' }); })
+      .mockResolvedValue(new Response('invalid_client', { status: 401 }));
+    const sessions = createFactory({ fetch: request });
+
+    const lateAdmit = sessions.admit(credential);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    // The product UI deletes the Account credential and tells the factory; the in-flight exchange
+    // has not resolved yet.
+    sessions.invalidateClientCredential(CLIENT_ID);
+    release();
+    await expect(lateAdmit).resolves.toMatchObject({ accessToken: 'pre-revocation' });
+
+    await expect(sessions.session(credential)).rejects.toMatchObject({ status: 401 });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps an unrelated credential cached while one credential is invalidated mid-admission', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const request = vi.fn()
+      .mockImplementationOnce(async () => { await blocked; return tokenResponse({ access_token: 'pre-revocation' }); })
+      .mockImplementation(async () => tokenResponse({ access_token: 'live' }));
+    const sessions = createFactory({ fetch: request });
+    const untouched = { clientId: 'another-client', clientSecret: CLIENT_SECRET };
+
+    const lateAdmit = sessions.admit(credential);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    const otherSession = await sessions.session(untouched);
+    sessions.invalidateClientCredential(CLIENT_ID);
+    release();
+    await expect(lateAdmit).resolves.toMatchObject({ accessToken: 'pre-revocation' });
+
+    // One revoked key is not every caller's outage.
+    expect(await sessions.session(untouched)).toBe(otherSession);
+    expect(request).toHaveBeenCalledTimes(2);
+    // The invalidated credential is proved again rather than served from the late success.
+    await expect(sessions.session(credential)).resolves.toMatchObject({ accessToken: 'live' });
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it('admits a re-registered credential normally after an invalidation', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const request = vi.fn()
+      .mockImplementationOnce(async () => { await blocked; return tokenResponse({ access_token: 'pre-revocation' }); })
+      .mockResolvedValue(tokenResponse({ access_token: 're-registered' }));
+    const sessions = createFactory({ fetch: request });
+
+    const lateAdmit = sessions.admit(credential);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    sessions.invalidateClientCredential(CLIENT_ID);
+    release();
+    await expect(lateAdmit).resolves.toMatchObject({ accessToken: 'pre-revocation' });
+
+    // The guard is about the one obsolete success, not a permanent ban: admitting the credential
+    // again after the invalidation exchanges and caches a session like any other.
+    const reissued = await sessions.admit(credential);
+    expect(reissued).toMatchObject({ accessToken: 're-registered' });
+    expect(await sessions.session(credential)).toBe(reissued);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not accumulate invalidation state for clients it no longer tracks', () => {
+    const sessions = createFactory({ fetch: vi.fn() });
+    for (let index = 0; index < 500; index += 1) {
+      sessions.invalidateClientCredential(`client-${index}`);
+    }
+    // White-box: the counter exists only while it guards an in-flight admission, so a burst of
+    // revocations leaves nothing behind for the process to carry forever.
+    const state = sessions as unknown as {
+      invalidationSeq: Map<string, number>;
+      admissionsInFlight: Map<string, number>;
+    };
+    expect(state.invalidationSeq.size).toBe(0);
+    expect(state.admissionsInFlight.size).toBe(0);
+  });
+});

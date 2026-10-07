@@ -129,8 +129,8 @@ export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
   },
   {
     id: 'browser-visual',
-    title: 'Models, Pod, Network and Services work at desktop and narrow widths',
-    source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 3',
+    title: 'Lightweight Web Account and desktop entry work at wide and narrow widths',
+    source: 'docs/superpowers/specs/2026-09-29-shared-ui-pod-sign-in-design.md §13.16 (2026-10-03 revision)',
   },
   {
     id: 'connect-quota',
@@ -357,7 +357,7 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
         : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true; the Playwright spec provisions all runtime and account state itself.',
       commands: [browserCommand],
       evidence: [preparedBrowserSession
-        ? 'tests/e2e/xpod-settings-rc.spec.ts restores independently authenticated RC browser states and verifies distinct managed Pod bindings without starting a second Xpod.'
+        ? 'tests/e2e/xpod-settings-rc.spec.ts reuses two Account Cookies through real RC OIDC, verifies exact token/Account/Profile bindings, and checks owner private reads/writes plus cross-owner and anonymous denial without starting a second Xpod.'
         : 'tests/e2e/xpod-settings.spec.ts performs real OIDC login, UI save/reload, A/B isolation, Pod envelope inspection, and teardown without pre-generated browser state.'],
       gate: runRealPod ? browserGate : undefined,
     },
@@ -367,11 +367,11 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
       mandatory: true,
       status: runVisual ? 'skip' : 'not_complete',
       reason: runVisual
-        ? `${preparedBrowserSession ? 'Deployed' : 'Hermetic'} browser gate is enabled and must execute desktop and narrow layout assertions.`
+        ? (preparedBrowserSession ? 'Deployed browser gate must execute wide and narrow lightweight Account/desktop-entry assertions without a desktop bridge.' : 'Hermetic browser gate must execute its isolated renderer assertions; it is not deployed or real desktop evidence.')
         : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true; UI fetch interception with canned product JSON is not allowed.',
       commands: [browserCommand],
       evidence: [preparedBrowserSession
-        ? 'tests/e2e/xpod-settings-rc.spec.ts captures desktop and narrow screenshots against the deployed RC using its prepared authenticated session.'
+        ? 'tests/e2e/xpod-settings-rc.spec.ts captures wide and narrow Account and desktop-entry screenshots against the deployed RC, requires session reuse and confirms heavy workspaces stay absent.'
         : 'tests/e2e/xpod-settings.spec.ts captures desktop and narrow screenshots against its real temporary Xpod and asserts SDK geometry contracts.'],
       gate: runVisual ? browserGate : undefined,
     },

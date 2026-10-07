@@ -1,4 +1,6 @@
 import {
+  createContext,
+  useContext,
   useCallback,
   useLayoutEffect,
   useMemo,
@@ -23,7 +25,18 @@ import {
   type WorkspaceLayoutPane,
 } from './layout-context'
 
+/** Host-owned navigation drawer; other hosts retain list/detail stack navigation. */
+export const WorkspaceDrawerContext = createContext<{ open: boolean; onClose?: () => void; headerLeading?: ReactNode } | undefined>(undefined)
+
 export type TwoPaneLayoutMode = 'auto' | WorkspaceLayoutMode
+
+/** Host-owned labels; omitted entries retain the existing neutral defaults. */
+export interface WorkspaceLayoutCopy {
+  backToList?: string
+  backToMain?: string
+  expandContext?: string
+  collapseContext?: string
+}
 
 export interface WorkspacePageTypeProps {
   /**
@@ -41,6 +54,7 @@ export interface TwoPaneLayoutProps extends WorkspacePageTypeProps {
   main: ReactNode
   mode?: TwoPaneLayoutMode
   history?: WorkspaceLayoutHistoryAdapter
+  copy?: Pick<WorkspaceLayoutCopy, 'backToList'>
   className?: string
 }
 
@@ -63,6 +77,7 @@ export interface ThreePaneLayoutProps extends WorkspacePageTypeProps {
   mode?: TwoPaneLayoutMode
   history?: WorkspaceLayoutHistoryAdapter
   contextConfig?: ThreePaneLayoutContextConfig
+  copy?: WorkspaceLayoutCopy
   className?: string
 }
 
@@ -254,11 +269,15 @@ export function TwoPaneLayout({
   main,
   mode = 'auto',
   history,
+  copy,
   className,
   pageType = 'collection',
   hasObjectCollection = true,
 }: TwoPaneLayoutProps) {
-  const { resolvedMode } = useObjectColumn({ mode, pageType, hasObjectCollection })
+  const drawer = useContext(WorkspaceDrawerContext)
+  const { resolvedMode: objectMode } = useObjectColumn({ mode, pageType, hasObjectCollection })
+  const viewportMode = useResolvedMode(mode)
+  const resolvedMode = drawer ? viewportMode : objectMode
   // §8.3：非集合页不渲染对象列；集合页只有宽断点才显示
   // §8.3：只有集合页才有对象列表；宽度决定它是并排的对象列还是堆叠的第一屏
   const showList = pageType === 'collection' && hasObjectCollection
@@ -266,13 +285,15 @@ export function TwoPaneLayout({
     activePane,
     paneRefs,
     openList,
-    openMain,
+    openMain: navigateMain,
     openContext,
   } = useStackNavigation({
     resolvedMode,
     history,
     resolvePane: mapContextPaneToMain,
   })
+  const closeDrawer = drawer?.onClose
+  const openMain = useCallback(() => { navigateMain(); closeDrawer?.() }, [navigateMain, closeDrawer])
   const navigation = useMemo<WorkspaceLayoutNavigation>(() => ({
     mode: resolvedMode,
     activePane,
@@ -282,8 +303,8 @@ export function TwoPaneLayout({
   }), [activePane, openContext, openList, openMain, resolvedMode])
   const isStack = resolvedMode === 'stack'
   const stacked = showList && isStack
-  const listHidden = !showList || (stacked && activePane !== 'list')
-  const mainHidden = stacked && activePane !== 'main'
+  const listHidden = !showList || (drawer ? resolvedMode === 'stack' && !drawer.open : stacked && activePane !== 'list')
+  const mainHidden = !drawer && stacked && activePane !== 'main'
 
   return (
     <WorkspaceLayoutContext.Provider value={navigation}>
@@ -333,22 +354,24 @@ export function TwoPaneLayout({
             data-testid="workspace-main-pane"
             data-workspace-pane="main"
             hidden={mainHidden}
+            inert={drawer?.open && resolvedMode === 'stack' ? true : undefined}
             tabIndex={stacked ? -1 : undefined}
           >
             <header
-              className="h-12 shrink-0 border-b border-border bg-layout-content"
+              className={cn('h-12 shrink-0 border-b border-border bg-layout-content', drawer?.headerLeading && 'flex min-w-0 items-center')}
               data-workspace-main-header="true"
             >
-              {mainHeader}
+              {drawer?.headerLeading ? <div className="flex h-full shrink-0 items-center md:hidden" data-workspace-header-leading>{drawer.headerLeading}</div> : null}
+              {drawer?.headerLeading ? <div className="h-full min-w-0 flex-1">{mainHeader}</div> : mainHeader}
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {stacked ? (
+              {stacked && !drawer ? (
                 <button
                   type="button"
                   className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
                   onClick={openList}
                 >
-                  返回列表
+                  {copy?.backToList ?? '返回列表'}
                 </button>
               ) : null}
               {main}
@@ -394,6 +417,7 @@ export function ThreePaneLayout({
   mode = 'auto',
   history,
   contextConfig,
+  copy,
   className,
   pageType = 'collection',
   hasObjectCollection = true,
@@ -450,7 +474,7 @@ export function ThreePaneLayout({
               className="inline-flex items-center rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
               onClick={toggleContextCollapsed}
             >
-              {contextCollapsed ? '展开上下文面板' : '折叠上下文面板'}
+              {contextCollapsed ? (copy?.expandContext ?? '展开上下文面板') : (copy?.collapseContext ?? '折叠上下文面板')}
             </button>
           </div>
         ) : null}
@@ -494,7 +518,7 @@ export function ThreePaneLayout({
                 className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
                 onClick={openList}
               >
-                返回列表
+                {copy?.backToList ?? '返回列表'}
               </button>
             ) : null}
             {main}
@@ -517,7 +541,7 @@ export function ThreePaneLayout({
                 className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
                 onClick={openMain}
               >
-                返回主区域
+                {copy?.backToMain ?? '返回主区域'}
               </button>
             ) : null}
             {context}

@@ -1,3 +1,4 @@
+import { PodDeletionOperationRepository } from '../identity/drizzle/PodDeletionOperationRepository';
 /**
  * ProvisionPodCreator
  *
@@ -30,6 +31,7 @@ import { getIdentityDatabase } from '../identity/drizzle/db';
 import { ProvisionCodeCodec } from './ProvisionCodeCodec';
 import { verifyProvisionReceipt } from './ProvisionReceiptCodec';
 import { XPOD_REMOTE_PROVISIONED } from './ProvisionPodStore';
+import type { CloudProfileCreator } from './CloudProfileCreator';
 
 function joinUrlPath(baseUrl: string, relativePath: string): string {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/u, '');
@@ -114,11 +116,12 @@ export interface ProvisionPodCreatorArgs extends BasePodCreatorArgs {
   /** Kept in the component signature for config compatibility; Pod storage facts live in CSS account data. */
   identityDbUrl?: string;
   /**
-   * Server-internal resource store. Used only to reconcile native same-server Pod profiles.
-   * Managed Local profiles are created on the Local SP before the Cloud Account lock is entered.
+   * Server-internal resource store used to reconcile native same-server Pod profiles.
+   * Managed Local discovery cards are independently prepared and hosted in Cloud.
    */
   resourceStore?: ResourceStore;
   edgeNodeRepository?: ProvisionReceiptNodeRepository;
+  cloudProfileCreator?: CloudProfileCreator;
 }
 
 interface StandardPodCreateOptions {
@@ -152,18 +155,22 @@ function remapPodConflict(error: unknown, podName: string): never {
 }
 
 export class ProvisionPodCreator extends BasePodCreator {
+  private readonly deletionOperations?: PodDeletionOperationRepository;
   private readonly provisionLogger = getLoggerFor(this);
   private readonly codec: ProvisionCodeCodec;
   private readonly oidcIssuer?: string;
   private readonly currentNodeId?: string;
   private readonly resourceStore?: ResourceStore;
   private readonly edgeNodeRepository?: ProvisionReceiptNodeRepository;
+  private readonly cloudProfileCreator?: CloudProfileCreator;
 
   public constructor(args: ProvisionPodCreatorArgs) {
     super(args);
+    this.deletionOperations = args.identityDbUrl ? new PodDeletionOperationRepository(args.identityDbUrl) : undefined;
     this.oidcIssuer = normalizeOptionalUrl(args.provisionBaseUrl);
     this.currentNodeId = normalizeOptionalString(args.nodeId);
     this.resourceStore = args.resourceStore;
+    this.cloudProfileCreator = args.cloudProfileCreator;
     this.edgeNodeRepository = args.edgeNodeRepository ?? (args.identityDbUrl
       ? new EdgeNodeRepository(getIdentityDatabase(args.identityDbUrl))
       : undefined);
@@ -173,6 +180,12 @@ export class ProvisionPodCreator extends BasePodCreator {
   public override async handle(input: PodCreatorInput): Promise<PodCreatorOutput> {
     if (input.webId !== undefined && (!input.webId || input.webId !== input.webId.trim() || /[\r\n\t]/u.test(input.webId))) {
       throw new BadRequestHttpError('WebID must not contain surrounding whitespace or control characters.');
+    }
+    // Managed Local is a storage provider, not a second Account identity authority.
+    // Its data-only creation path is the private provisioning endpoint; native CSS
+    // Pod templates here would mint or duplicate a Local profile even for a Cloud owner.
+    if (this.oidcIssuer && !isSameUrlRoot(this.oidcIssuer, this.baseUrl)) {
+      throw new BadRequestHttpError('Create managed Local Pods through the Cloud Account and Local provisioning endpoint.');
     }
     const provisionCode = input.settings?.provisionCode as string | undefined;
 
@@ -193,7 +206,7 @@ export class ProvisionPodCreator extends BasePodCreator {
     }
     const targetStorageRoot = buildStorageRoot(payload);
     const canonicalStorageUrl = buildPodUrl(targetStorageRoot, podName);
-    const canonicalWebId = joinUrlPath(canonicalStorageUrl, this.relativeWebIdPath);
+    const localWebId = joinUrlPath(canonicalStorageUrl, this.relativeWebIdPath);
     const tokenOidcIssuer = normalizeUrlRoot(this.oidcIssuer ?? this.baseUrl) ?? this.oidcIssuer ?? this.baseUrl;
 
     if (this.targetsCurrentStorageProvider(payload, targetStorageRoot)) {
@@ -205,14 +218,14 @@ export class ProvisionPodCreator extends BasePodCreator {
         linkWebId: !input.webId,
         oidcIssuer: tokenOidcIssuer,
         storageUrl: canonicalStorageUrl,
-        webId: input.webId ?? canonicalWebId,
+        webId: input.webId ?? localWebId,
       });
     }
 
     // CSS Account Pod 创建运行在 6 秒资源锁内。任何 Local/Cloud/P2P 网络请求
     // 都必须在进入此处理器前完成。锁内工作明确限定为：读取本地 SP
-    // receipt secret、HMAC 核验，以及 CSS 原生 WebID-link/Pod account-store
-    // 读写。这里不会读取或改写远端 WebID profile；它已由 Local SP 创建。
+    // receipt secret、HMAC 核验、已由 Cloud Account 准备的身份关联，以及
+    // Cloud card 和远程 Pod 元数据读写。不会访问 Local 或读写 Local profile。
     const receiptSecret = await this.resolveRemoteReceiptSecret(payload.nodeId);
     if (!receiptSecret) {
       throw new BadRequestHttpError('Local Pod preparation could not be verified.');
@@ -230,15 +243,28 @@ export class ProvisionPodCreator extends BasePodCreator {
     const webId = input.webId ?? receipt.payload.webId;
     if (
       receipt.payload.podName !== podName
-      || !isSameWebId(receipt.payload.webId, canonicalWebId)
-      || !isSameWebId(webId, canonicalWebId)
+      || !isSameWebId(receipt.payload.webId, webId)
       || !isSameUrlRoot(receipt.payload.podUrl, canonicalStorageUrl)
     ) {
       throw new BadRequestHttpError('Local Pod preparation could not be verified.');
     }
+    let cloudIdentity: boolean;
+    try {
+      const identityUrl = new URL(webId);
+      const cloudBase = new URL(this.baseUrl);
+      cloudIdentity = identityUrl.origin === cloudBase.origin
+        && identityUrl.pathname.startsWith(cloudBase.pathname)
+        && !identityUrl.username && !identityUrl.password;
+    } catch {
+      cloudIdentity = false;
+    }
+    const existingLink = cloudIdentity ? await this.findExistingWebIdLink(webId, input.accountId) : undefined;
+    if (!existingLink || !this.cloudProfileCreator) {
+      throw new BadRequestHttpError('Local Pod preparation could not be verified.');
+    }
     const podUrl = canonicalStorageUrl;
 
-    // 3. Link the WebID and record the remote Pod in account storage.
+    // 3. Record Local storage for the identity already prepared by this Cloud Account.
     // ProvisionPodStore uses the marker below to persist settings.storage
     // instead of creating a phantom Cloud Pod at settings.base.path.
     const localBase = this.identifierGenerator.generate(podName);
@@ -252,11 +278,14 @@ export class ProvisionPodCreator extends BasePodCreator {
       [XPOD_REMOTE_PROVISIONED]: true,
     };
 
-    // The signed Local receipt makes this WebID an Xpod-managed identity, so it
-    // is safe to link automatically even though its document lives on the Local SP.
-    const webIdLink = await this.prepareWebIdLink(true, webId, input.accountId, podSettings);
-    podSettings.oidcIssuer = tokenOidcIssuer;
-    const podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink.cleanupWebIdLink);
+    // Local's signature proves storage preparation, never ownership of an arbitrary WebID.
+    const podId = await this.createPod(input.accountId, podSettings, !input.name, undefined);
+
+    if (receipt.payload.podId && payload.nodeId && this.deletionOperations) {
+      await this.deletionOperations.bindRemoteGeneration(podId, payload.nodeId, canonicalStorageUrl, receipt.payload.podId);
+    }
+
+    await this.cloudProfileCreator.finalizeStorageBinding(input.accountId, webId, canonicalStorageUrl);
 
     this.provisionLogger.info(`Provisioned pod ${podName} on SP ${payload.spUrl}, podUrl: ${podUrl}`);
 
@@ -264,7 +293,7 @@ export class ProvisionPodCreator extends BasePodCreator {
       podUrl,
       webId,
       podId,
-      webIdLink: webIdLink.outputWebIdLink,
+      webIdLink: existingLink.id,
     };
   }
 
@@ -286,6 +315,17 @@ export class ProvisionPodCreator extends BasePodCreator {
   private async handleStandardPodCreate(
     input: PodCreatorInput,
     options: StandardPodCreateOptions = {},
+  ): Promise<PodCreatorOutput> {
+    const baseIdentifier = options.baseIdentifier ?? this.generateBaseIdentifier(input.name);
+    const create = (): Promise<PodCreatorOutput> => this.createStandardPod(input, { ...options, baseIdentifier });
+    return this.cloudProfileCreator
+      ? this.cloudProfileCreator.withNamespaceLock(baseIdentifier, create)
+      : create();
+  }
+
+  private async createStandardPod(
+    input: PodCreatorInput,
+    options: StandardPodCreateOptions,
   ): Promise<PodCreatorOutput> {
     const totalStarted = Date.now();
     const baseIdentifier = options.baseIdentifier ?? this.generateBaseIdentifier(input.name);
@@ -371,8 +411,8 @@ export class ProvisionPodCreator extends BasePodCreator {
    * Reconcile the solid:storage binding in a WebID profile card hosted on this server.
    * CSS remains the sole owner of the native Pod resources and their authorization; Xpod only
    * adds or updates this product-specific relation after CSS has finished creating the Pod.
-   * Standard CSS creation keeps this best-effort. Managed Local-Pod profiles are
-   * created and signed by the Local SP before the Cloud Account resource lock.
+   * Standard CSS creation keeps this best-effort. Managed Local Cloud cards use
+   * CloudProfileCreator and require their discovery binding to succeed.
    */
   private async syncProfileStorageBinding(
     webId: string,

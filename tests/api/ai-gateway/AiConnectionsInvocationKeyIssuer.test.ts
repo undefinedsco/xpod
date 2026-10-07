@@ -30,6 +30,23 @@ describe('AiConnectionsInvocationKeyIssuer', () => {
     expect((await issuer.issue(context)).apiKey).toBe(concurrent[0].apiKey);
   });
 
+  it('binds signed Pod scope and isolates the cache between Pods of the same owner', async () => {
+    const codec = new AesInvocationTokenCodec({ active: { kid: 'active', secret: 'pod-bound-invocation-secret' } });
+    const issuer = new AiConnectionsInvocationKeyIssuer({ codec, deployment: 'local', baseUrl: 'https://gateway.example/v1' });
+    const podA = 'https://storage.example/alice-a/';
+    const podB = 'https://storage.example/alice-b/';
+    const context = (authorizedPodUrl: string) => ({ auth: { type: 'solid' as const, webId: WEB_ID, authorizedPodUrl } });
+    const first = await issuer.issue(context(podA));
+    expect(codec.decode(first.apiKey)?.podUrl).toBe(podA);
+    expect((await issuer.issue(context(podA))).apiKey).toBe(first.apiKey);
+    const other = await issuer.issue(context(podB));
+    expect(other.apiKey).not.toBe(first.apiKey);
+    expect(codec.decode(other.apiKey)?.podUrl).toBe(podB);
+    // The signed fact never comes from the untrusted hint alone.
+    const unbound = await issuer.issue({ auth: { type: 'solid', webId: WEB_ID, requestedPodUrl: podA } });
+    expect(codec.decode(unbound.apiKey)?.podUrl).toBeUndefined();
+  });
+
   it('rotates before expiry and decodes as the current WebID with minimal scopes', async () => {
     let now = new Date('2026-07-24T00:00:00.000Z');
     const codec = new AesInvocationTokenCodec({
@@ -87,6 +104,33 @@ describe('AiConnectionsInvocationKeyIssuer', () => {
     await expect(issuer.issue({
       auth: { type: 'solid', webId: 'HTTPS://pod.example:443/alice/../alice/profile/card#me' },
     })).rejects.toThrow(/canonical/);
+  });
+
+  it('carries the owner active Gateway model into the invocation config', async () => {
+    const codec = new AesInvocationTokenCodec({ active: { kid: 'active', secret: 'invocation-secret' } });
+    const issuer = new AiConnectionsInvocationKeyIssuer({
+      codec,
+      deployment: 'local',
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      audience: 'http://127.0.0.1:3000',
+      resolveModel: async ({ webId }) => webId === WEB_ID ? 'deepseek-v4-pro' : undefined,
+    });
+    const issued = await issuer.issue({ auth: { type: 'solid', webId: WEB_ID } });
+    expect(issued.model).toBe('deepseek-v4-pro');
+  });
+
+  it('still issues the key without a model when model lookup fails', async () => {
+    const codec = new AesInvocationTokenCodec({ active: { kid: 'active', secret: 'invocation-secret' } });
+    const issuer = new AiConnectionsInvocationKeyIssuer({
+      codec,
+      deployment: 'local',
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      audience: 'http://127.0.0.1:3000',
+      resolveModel: async () => { throw new Error('catalog unavailable'); },
+    });
+    const issued = await issuer.issue({ auth: { type: 'solid', webId: WEB_ID } });
+    expect(issued.apiKey).toMatch(/^xpod_inv_v1\./);
+    expect(issued.model).toBeUndefined();
   });
 });
 

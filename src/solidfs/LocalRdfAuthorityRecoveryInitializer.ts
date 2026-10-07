@@ -28,7 +28,7 @@ export class LocalRdfAuthorityRecoveryInitializer extends Initializer implements
 
   public override async handle(): Promise<void> {
     const root = path.resolve(this.rootFilePath);
-    const syncer = new RdfIndexSolidFsSyncer({ index: this.index });
+    const syncer = new RdfIndexSolidFsSyncer({ index: this.index, rdfSourceMode: 'authority' });
 
     await this.journal.bootstrapWorkspace({
       workspace: this.baseUrl,

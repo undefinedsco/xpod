@@ -15,7 +15,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from 'pg';
-import { setupAccount, loginWithClientCredentials } from './helpers/solidAccount';
+import { setupAccount, loginWithClientCredentials, normalizeAccountControlUrl } from './helpers/solidAccount';
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const SERVICE_READY_RETRIES = Number(process.env.XPOD_DOCKER_READY_RETRIES ?? '45');
@@ -28,6 +28,32 @@ const LOCAL_API_PORT = process.env.LOCAL_API_PORT || '5738';
 const STANDALONE_PORT = process.env.STANDALONE_PORT || '5739';
 const STANDALONE_API_PORT = process.env.STANDALONE_API_PORT || '5740';
 const SERVICE_TOKEN = 'svc-testservicetokenforintegration';
+
+async function prepareCloudProfile(podName: string, cloudBaseUrl: string) {
+  const accountResponse = await fetch(`${cloudBaseUrl}/.account/account/`, {
+    method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  const account = await accountResponse.json() as { authorization: string };
+  expect(accountResponse.status).toBe(200);
+  const headers = { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `CSS-Account-Token ${account.authorization}` };
+  const indexResponse = await fetch(`${cloudBaseUrl}/.account/`, {
+    headers: { Accept: headers.Accept, Authorization: headers.Authorization },
+  });
+  expect(indexResponse.status).toBe(200);
+  const index = await indexResponse.json() as { controls: { account: { profile: string; pod: string } } };
+  expect(index.controls.account.profile).toBeTypeOf('string');
+  expect(index.controls.account.pod).toBeTypeOf('string');
+  const profileUrl = normalizeAccountControlUrl(index.controls.account.profile, cloudBaseUrl);
+  const podControl = normalizeAccountControlUrl(index.controls.account.pod, cloudBaseUrl);
+  expect(new URL(profileUrl).origin).toBe(new URL(cloudBaseUrl).origin);
+  expect(new URL(podControl).origin).toBe(new URL(cloudBaseUrl).origin);
+  const response = await fetch(profileUrl, { method: 'POST', headers, body: JSON.stringify({ podName }) });
+  const profile = await response.json() as { webId: string };
+  expect(response.status, JSON.stringify(profile)).toBe(200);
+  expect(new URL(profile.webId).origin).toBe(new URL(cloudBaseUrl).origin);
+  return { webId: profile.webId, headers, podControl };
+}
 
 // 与 docker-compose.cluster.yml 对应的服务配置
 const SERVICES = {
@@ -66,13 +92,7 @@ suite('Docker Cluster Integration', () => {
   beforeAll(async () => {
     // 尝试连接 PostgreSQL (Cloud 使用)
     try {
-      pgClient = new Client({
-        user: 'xpod',
-        password: 'xpod',
-        host: 'localhost',
-        database: 'xpod',
-        port: 5432,
-      });
+      pgClient = new Client({ connectionString: process.env.XPOD_FULL_PG_URL ?? 'postgres://xpod:xpod@localhost:5432/xpod' });
       await pgClient.connect();
     } catch {
       console.warn('PostgreSQL not available');
@@ -178,23 +198,26 @@ suite('Docker Cluster Integration', () => {
       }
     }, 240000);
 
-    it('Local SP should serve provisioned public profile cards anonymously', async () => {
+    it('managed Local Pod should publish its independent Cloud profile anonymously', async () => {
       const podName = `profile-local-${Date.now().toString(36)}`;
+      const owner = await prepareCloudProfile(podName, SERVICES.cloud.baseUrl);
       const createRes = await fetch(`${SERVICES.local.baseUrl}/provision/pods`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${SERVICE_TOKEN}`,
         },
-        body: JSON.stringify({ podName }),
+        body: JSON.stringify({ podName, webId: owner.webId }),
       });
 
       expect(createRes.status).toBe(201);
-      const created = await createRes.json() as { webId: string };
+      const created = await createRes.json() as { webId: string; podUrl: string; provisionReceipt: string };
+      await finalizeManagedPod(podName, owner, created);
       const webId = created.webId;
-      expect(webId).toBe(`https://local-managed-node.undefineds.site/${podName}/profile/card#me`);
+      expect(webId).toBe(owner.webId);
+      expect(created.podUrl).toBe(`https://local-managed-node.undefineds.site/${podName}/`);
 
-      const profileRes = await fetch(`${SERVICES.local.baseUrl}/${podName}/profile/card`, {
+      const profileRes = await fetch(webId.split('#')[0], {
         headers: {
           Accept: 'text/turtle',
         },
@@ -204,6 +227,7 @@ suite('Docker Cluster Integration', () => {
       const profile = await profileRes.text();
       expect(profile).toContain(webId);
       expect(profile).toContain('http://www.w3.org/ns/solid/terms#oidcIssuer');
+      expect(profile).toContain(created.podUrl);
 
       await fetch(`${SERVICES.local.baseUrl}/provision/pods/${podName}`, {
         method: 'DELETE',
@@ -496,6 +520,7 @@ suite('Docker Cluster Integration', () => {
 
     it('should support pod-level quota', async () => {
       const podName = `quota-${Date.now().toString(36)}`;
+      const owner = await prepareCloudProfile(podName, SERVICES.cloud.baseUrl);
 
       const createRes = await fetch(`${SERVICES.local.baseUrl}/provision/pods`, {
         method: 'POST',
@@ -503,11 +528,13 @@ suite('Docker Cluster Integration', () => {
           'Authorization': `Bearer ${SERVICE_TOKEN}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ podName }),
+        body: JSON.stringify({ podName, webId: owner.webId }),
       });
       expect([200, 201]).toContain(createRes.status);
 
-      const created = await createRes.json() as { podUrl?: string };
+      const created = await createRes.json() as { podUrl: string; webId: string; provisionReceipt: string };
+      expect(created.webId).toBe(owner.webId);
+      await finalizeManagedPod(podName, owner, created);
       expect(created.podUrl).toBeTruthy();
       const podId = created.podUrl!;
 
@@ -633,4 +660,21 @@ async function testPodCrud(baseUrl: string, oidcUrl?: string): Promise<PodCrudRe
   } catch (error) {
     return { ...result, error: String(error) };
   }
+}
+
+async function finalizeManagedPod(podName: string, owner: Awaited<ReturnType<typeof prepareCloudProfile>>, prepared: { podUrl: string; webId: string; provisionReceipt: string }) {
+  const statusResponse = await fetch(`${SERVICES.cloud.baseUrl}/provision/nodes`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodeId: 'local-managed-node', publicUrl: SERVICES.local.baseUrl, serviceToken: SERVICE_TOKEN }),
+  });
+  expect(statusResponse.status).toBe(201);
+  const status = await statusResponse.json() as { provisionCode: string };
+  expect(status.provisionCode).toBeTypeOf('string');
+  const response = await fetch(owner.podControl, {
+    method: 'POST', headers: owner.headers,
+    body: JSON.stringify({ name: podName, settings: { webId: owner.webId, provisionCode: status.provisionCode, provisionReceipt: prepared.provisionReceipt } }),
+  });
+  const body = await response.text();
+  expect(response.status, body).toBe(200);
+  expect(JSON.parse(body)).toMatchObject({ pod: prepared.podUrl, webId: owner.webId });
 }

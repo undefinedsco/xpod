@@ -7,6 +7,8 @@ export interface ProvisionReceiptPayload {
   podName: string;
   webId: string;
   podUrl: string;
+  /** Immutable Local storage incarnation; older receipts intentionally lack delete capability. */
+  podId?: string;
   exp: number;
 }
 
@@ -15,6 +17,8 @@ export interface CreateProvisionReceiptOptions {
   podName: string;
   webId: string;
   podUrl: string;
+  /** Immutable Local storage incarnation; older receipts intentionally lack delete capability. */
+  podId?: string;
   expiresAt?: number;
   ttlSeconds?: number;
   now?: () => number;
@@ -45,6 +49,7 @@ export function createProvisionReceipt(options: CreateProvisionReceiptOptions): 
     podName: options.podName,
     webId: options.webId,
     podUrl: options.podUrl,
+    ...(options.podId ? { podId: options.podId } : {}),
     exp,
   };
   const data = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
@@ -111,6 +116,7 @@ function isValidPayload(value: unknown): value is ProvisionReceiptPayload {
     && payload.webId.length > 0
     && typeof payload.podUrl === 'string'
     && payload.podUrl.length > 0
+    && (payload.podId === undefined || typeof payload.podId === 'string' && payload.podId.length > 0)
     && typeof payload.exp === 'number'
     && Number.isFinite(payload.exp);
 }

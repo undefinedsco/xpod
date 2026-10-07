@@ -44,7 +44,8 @@ function withUrl(response: Response, url: string): Response {
 
 function createHarness(options: {
   tokenResponse?: () => Response;
-  podResponse?: () => Response;
+  podResponse?: () => Response | Promise<Response>;
+  now?: () => number;
   route?: { canonicalBaseUrl: string; localBaseUrl: string };
   taskCredentials?: TaskCredentialSource;
 } = {}) {
@@ -75,7 +76,7 @@ function createHarness(options: {
       dpop: headers.get('dpop'),
       headers,
     });
-    return withUrl(podResponse(), url);
+    return withUrl(await podResponse(), url);
   }) as unknown as typeof fetch;
 
   const access = new OwnerPodAccess({
@@ -84,6 +85,7 @@ function createHarness(options: {
       tokenEndpoint: TOKEN_ENDPOINT,
       publicBaseUrl: 'https://pod.example',
       fetch: fetchImpl,
+      now: options.now,
     }),
     ...(options.route ? { route: options.route } : {}),
     fetch: fetchImpl,
@@ -196,7 +198,7 @@ describe('OwnerPodAccess', () => {
     const { access } = createHarness({
       taskCredentials: {
         activeFor: async () => ({ clientId: 'task-client', clientSecret: 'task-secret', credentialRef: 'taskcred_1', version: 1 }),
-        forRef: async () => undefined,
+        forRef: async () => ({ clientId: 'task-client', clientSecret: 'task-secret', credentialRef: 'taskcred_1', version: 1 }),
       },
       tokenResponse: () => new Response('invalid_client', { status: 401 }),
     });
@@ -209,7 +211,7 @@ describe('OwnerPodAccess', () => {
     const { access, podRequests } = createHarness({
       taskCredentials: {
         activeFor: async () => ({ clientId: 'task-client', clientSecret: 'task-secret', credentialRef: 'taskcred_1', version: 1 }),
-        forRef: async () => undefined,
+        forRef: async () => ({ clientId: 'task-client', clientSecret: 'task-secret', credentialRef: 'taskcred_1', version: 1 }),
       },
       tokenResponse: () => Response.json({ access_token: 'bearer-token', token_type: 'Bearer', expires_in: 300 }),
     });
@@ -225,7 +227,7 @@ describe('OwnerPodAccess', () => {
     let tokenCount = 0;
     const source = {
       activeFor: async () => ({ clientId: 'task-client', clientSecret: 'task-secret', credentialRef: 'taskcred_1', version: 1 }),
-      forRef: async () => undefined,
+      forRef: async () => ({ clientId: 'task-client', clientSecret: 'task-secret', credentialRef: 'taskcred_1', version: 1 }),
     };
     const { access, tokenRequests } = createHarness({
       taskCredentials: source,
@@ -261,6 +263,40 @@ describe('OwnerPodAccess', () => {
     expect(tokenRequests).toHaveLength(0);
     expect(podRequests[0].authorization).toBe('Bearer session-token');
   });
+
+  it('treats a different fragment on the same document as a different owner', async () => {
+    const sameDocument = 'https://pod.example/alice/profile/card#alice';
+    const { access, podRequests } = createHarness({
+      // The issuer bound the token to #alice, but the caller asked for #me on the same document.
+      tokenResponse: () => Response.json({
+        access_token: 'access-token-1',
+        token_type: 'DPoP',
+        expires_in: 300,
+        webid: sameDocument,
+      }),
+    });
+
+    const podFetch = access.getPodFetch(OWNER, { auth: callerAuth() });
+    await expect(podFetch).rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:invalid_response`);
+    expect(podRequests).toHaveLength(0);
+  });
+
+  it('rejects a fragmentless token document for the #me principal it must name exactly', async () => {
+    const fragmentless = 'https://pod.example/alice/profile/card';
+    const { access, podRequests } = createHarness({
+      // Identity is the exact URI: a fragmentless document is not the #me principal.
+      tokenResponse: () => Response.json({
+        access_token: 'access-token-1',
+        token_type: 'DPoP',
+        expires_in: 300,
+        webid: fragmentless,
+      }),
+    });
+
+    const podFetch = access.getPodFetch(OWNER, { auth: callerAuth() });
+    await expect(podFetch).rejects.toThrow(`${POD_INTERFACE_KEY_REJECTED}:invalid_response`);
+    expect(podRequests).toHaveLength(0);
+  });
 });
 
 describe('OwnerPodAccess task credentials', () => {
@@ -270,7 +306,7 @@ describe('OwnerPodAccess task credentials', () => {
     const { access, tokenRequests, podRequests } = createHarness({
       taskCredentials: {
         activeFor: async () => ({ ...TASK_KEY, credentialRef: 'taskcred_1', version: 3 }),
-        forRef: async () => undefined,
+        forRef: async () => ({ ...TASK_KEY, credentialRef: 'taskcred_1', version: 3 }),
       },
     });
 
@@ -339,5 +375,90 @@ describe('OwnerPodAccess task credentials', () => {
 
     await expect(access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } })).resolves.toBeUndefined();
     expect(tokenRequests).toHaveLength(0);
+  });
+});
+
+
+describe('OwnerPodAccess held fetch lifecycle', () => {
+  it('renews the original credential before expiry on the same held fetch', async () => {
+    let now = 1_000_000;
+    let exchanged = 0;
+    const { access, tokenRequests, podRequests } = createHarness({
+      now: () => now,
+      tokenResponse: () => Response.json({ access_token: `token-${++exchanged}`, token_type: 'DPoP', expires_in: 60 }),
+    });
+    const held = (await access.getPodFetch(OWNER, { auth: callerAuth() }))!;
+    await held(POD_RESOURCE);
+    now += 45_000;
+    await Promise.all(Array.from({ length: 10 }, () => held(POD_RESOURCE)));
+    expect(tokenRequests).toHaveLength(2);
+    expect(podRequests[0].authorization).toBe('DPoP token-1');
+    expect(podRequests.slice(1).every((request) => request.authorization === 'DPoP token-2')).toBe(true);
+  });
+
+  it('returns a write rejection without replay and re-exchanges only on the next call', async () => {
+    const { access, tokenRequests, podRequests } = createHarness({ podResponse: () => new Response('revoked', { status: 401 }) });
+    const held = (await access.getPodFetch(OWNER, { auth: callerAuth() }))!;
+    expect((await held(POD_RESOURCE, { method: 'POST', body: 'write once' })).status).toBe(401);
+    expect(podRequests).toHaveLength(1);
+    expect(tokenRequests).toHaveLength(1);
+    await held(POD_RESOURCE);
+    expect(tokenRequests).toHaveLength(2);
+    expect(podRequests).toHaveLength(2);
+  });
+
+  it('refuses an exchanged identity that is different from the owner', async () => {
+    const { access, podRequests } = createHarness({ tokenResponse: () => Response.json({
+      access_token: 'wrong-owner-token', token_type: 'DPoP', expires_in: 300, webid: OTHER_OWNER,
+    }) });
+    await expect(access.getPodFetch(OWNER, { auth: callerAuth() })).rejects.toThrow(POD_INTERFACE_KEY_REJECTED);
+    expect(podRequests).toHaveLength(0);
+  });
+
+  it('rechecks the original grant and version and never borrows a replacement grant', async () => {
+    let revoked = false;
+    const original = { ...CALLER_KEY, credentialRef: 'taskcred_original', version: 3 };
+    const forRef = vi.fn(async () => revoked ? undefined : original);
+    const activeFor = vi.fn(async () => original);
+    const { access, podRequests } = createHarness({ taskCredentials: { activeFor, forRef } });
+    const held = (await access.getPodFetch(OWNER, { taskCredential: { ownerGrant: true } }))!;
+    await held(POD_RESOURCE);
+    revoked = true;
+    await expect(held(POD_RESOURCE)).rejects.toThrow(POD_INTERFACE_KEY_REJECTED);
+    expect(forRef).toHaveBeenCalledWith({ credentialRef: original.credentialRef, ownerWebId: OWNER, version: 3 });
+    expect(activeFor).toHaveBeenCalledOnce();
+    expect(podRequests).toHaveLength(1);
+  });
+});
+
+
+describe('OwnerPodAccess concurrent wire rejection', () => {
+  it('does not let a late old 401 evict the renewed session or replay either request', async () => {
+    let now = 1_000_000;
+    let exchanged = 0;
+    let rejectOld: (response: Response) => void = () => {};
+    let markOldDispatched: () => void = () => {};
+    const oldDispatched = new Promise<void>((resolve) => { markOldDispatched = resolve; });
+    let dispatched = 0;
+    const { access, tokenRequests, podRequests } = createHarness({
+      now: () => now,
+      tokenResponse: () => Response.json({ access_token: `token-${++exchanged}`, token_type: 'DPoP', expires_in: 60 }),
+      podResponse: () => {
+        if (++dispatched !== 1) return new Response('new session', { status: 200 });
+        markOldDispatched();
+        return new Promise<Response>((resolve) => { rejectOld = resolve; });
+      },
+    });
+    const held = (await access.getPodFetch(OWNER, { auth: callerAuth() }))!;
+    const old = held(POD_RESOURCE, { method: 'POST', body: 'old write once' });
+    await oldDispatched;
+    now += 45_000;
+    expect((await held(POD_RESOURCE)).status).toBe(200);
+    rejectOld(new Response('old rejection', { status: 401 }));
+    expect((await old).status).toBe(401);
+    expect((await held(POD_RESOURCE)).status).toBe(200);
+    expect(tokenRequests).toHaveLength(2);
+    expect(podRequests).toHaveLength(3);
+    expect(podRequests.map(request => request.authorization)).toEqual(['DPoP token-1', 'DPoP token-2', 'DPoP token-2']);
   });
 });

@@ -1,3 +1,4 @@
+import { gatewayInvocationHeaders, type GatewayInvocationMetadata } from '../InvocationMetadata';
 import { GatewayProtocolError } from '../errors';
 import {
   type GatewayContentPart,
@@ -29,6 +30,7 @@ export interface ProviderRuntimeExecuteInput {
   apiKey: string;
   credential?: ProviderRuntimeCredential;
   signal?: AbortSignal;
+  invocationMetadata?: GatewayInvocationMetadata;
 }
 
 export interface ProviderRuntimeAdapter {
@@ -112,7 +114,7 @@ export abstract class BaseProviderRuntimeAdapter implements ProviderRuntimeAdapt
       details: {
         provider: this.provider,
         providerStatusCode: status,
-        classification: classifyProviderStatus(status),
+        classification: classifyProviderStatus(status, providerErrorCode(body)),
         ...(retryAfter ? { retryAfter } : {}),
         ...(body ? { body } : {}),
       },
@@ -176,6 +178,7 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
       yield* parseCompatibleChatSse(this.transport.postSse({
         url: `${baseUrl}/chat/completions`,
         apiKey: input.apiKey,
+        headers: gatewayInvocationHeaders(input.invocationMetadata),
         body,
         proxy: input.credential?.proxy,
         signal: input.signal,
@@ -594,6 +597,7 @@ export async function* parseCompatibleChatSse(events: AsyncIterable<ProviderSseE
   const toolArguments = new ToolArgumentTracker();
   const callIdsByIndex = new Map<number, string>();
   const openCallIds = new Set<string>();
+  let responseId: string | undefined;
   for await (const event of events) {
     const payload = parseJsonSseData(event.data);
     if (!payload) {
@@ -604,11 +608,14 @@ export async function* parseCompatibleChatSse(events: AsyncIterable<ProviderSseE
     }
     const id = stringField(payload, 'id');
     const choices = Array.isArray(payload.choices) ? payload.choices as Record<string, unknown>[] : [];
-    if (id && choices.some((choice) => {
+    if (id && id !== responseId && choices.some((choice) => {
       const delta = objectField(choice, 'delta');
       const message = objectField(choice, 'message');
       return delta.role === 'assistant' || message.role === 'assistant';
     })) {
+      // Repeated assistant roles belong to the same response. Keep its tool indexes
+      // so subsequent arguments-only chunks can resolve the original call ID.
+      responseId = id;
       toolArguments.reset();
       callIdsByIndex.clear();
       openCallIds.clear();
@@ -725,7 +732,8 @@ export function numberField(record: Record<string, unknown>, key: string): numbe
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-export function classifyProviderStatus(status: number): string {
+export function classifyProviderStatus(status: number, code?: string): string {
+  if (code === 'insufficient_quota' || code === 'billing_hard_limit_reached') return 'quota_exhausted';
   if (status === 401) {
     return 'authentication';
   }
@@ -887,7 +895,7 @@ function providerStreamError(payload: Record<string, unknown>, status: number, s
     status,
     details: {
       providerStatusCode: status,
-      classification: classifyProviderStatus(status),
+      classification: classifyProviderStatus(status, stringField(error, 'code') ?? stringField(error, 'type')),
       providerErrorType: stringField(error, 'type') ?? stringField(payload, 'type'),
     },
   });
@@ -947,4 +955,14 @@ function safeNormalizeRuntimeBaseUrl(value: string): string | undefined {
 }
 function redactSecret(value: string, secret: string): string {
   return secret ? value.split(secret).join('[REDACTED]') : value;
+}
+
+/** Only inspect an upstream error's stable code; never persist its body. */
+function providerErrorCode(body: string | undefined): string | undefined {
+  if (!body) return undefined;
+  try {
+    const value = JSON.parse(body);
+    return typeof value?.error?.code === 'string' ? value.error.code
+      : typeof value?.error?.type === 'string' ? value.error.type : undefined;
+  } catch { return undefined; }
 }

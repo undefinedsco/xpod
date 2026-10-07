@@ -34,6 +34,7 @@ vi.mock('../../src/runtime/bootstrap', () => ({
   createCssRuntimeConfig: mocked.createCssRuntimeConfigMock,
   initRuntimeLogger: mocked.initRuntimeLoggerMock,
   resolveRuntimeBootstrap: mocked.resolveRuntimeBootstrapMock,
+  localServiceUrl: (host: string, port: number) => `http://${host}:${port}`,
 }));
 
 vi.mock('../../src/runtime/environment', () => ({
@@ -199,6 +200,43 @@ describe('startXpodRuntime driver resolution', () => {
       host: overrideHost,
       gatewayRunner,
     }));
+  });
+
+  it('uses the bound address while preserving caller authority, proofs, and existing route metadata', async () => {
+    const platform = createPlatform();
+    const wireFetch = vi.mocked(platform.fetch).mockImplementation(async (input) => {
+      const response = new Response('ok');
+      Object.defineProperty(response, 'url', { value: input instanceof Request ? input.url : String(input), configurable: true });
+      return response;
+    });
+    mocked.resolveRuntimeBootstrapMock.mockResolvedValue({
+      mode: 'local', transport: 'port', logLevel: 'warn', bindHost: '127.0.0.1',
+      baseUrl: 'http://localhost:6100/', cssAuthMode: 'acp', apiOpen: true,
+      ports: { gateway: 6100, css: 6101, api: 6102 }, sockets: {},
+    });
+    const runtime = await startXpodRuntime({ platform });
+    try {
+      const response = await runtime.fetch('/pod/resource', {
+        headers: { authorization: 'DPoP synthetic-token', dpop: 'synthetic-proof' },
+      });
+      expect(String(wireFetch.mock.calls[0]![0])).toBe('http://127.0.0.1:6100/pod/resource');
+      const headers = new Headers(wireFetch.mock.calls[0]![1]?.headers);
+      expect(headers.get('host')).toBe('localhost:6100');
+      expect(headers.get('authorization')).toBe('DPoP synthetic-token');
+      expect(headers.get('dpop')).toBe('synthetic-proof');
+      expect(headers.has('x-xpod-canonical-url')).toBe(false);
+      expect(response.url).toBe('http://localhost:6100/pod/resource');
+
+      await runtime.fetch(new Request('http://localhost:6100/pod/resource', {
+        headers: { 'x-xpod-canonical-url': 'https://pod.example/pod/resource' },
+      }));
+      expect(new Headers(wireFetch.mock.calls[1]![1]?.headers).get('x-xpod-canonical-url'))
+        .toBe('https://pod.example/pod/resource');
+      await runtime.fetch('https://unrelated.example/resource');
+      expect(String(wireFetch.mock.calls[2]![0])).toBe('https://unrelated.example/resource');
+    } finally {
+      await runtime.stop();
+    }
   });
 
   it('finishes Local Cloud registration before starting CSS', async() => {

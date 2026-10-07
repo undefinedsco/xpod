@@ -77,10 +77,11 @@ export class PodLookupRepository {
     let bestLength = 0;
 
     for (const pod of pods) {
-      const candidateBase = pod.storageUrl ?? pod.baseUrl;
-      if (resourcePath.startsWith(candidateBase) && candidateBase.length > bestLength) {
-        bestMatch = pod;
-        bestLength = candidateBase.length;
+      for (const candidateBase of [pod.baseUrl, pod.storageUrl]) {
+        if (candidateBase && resourcePath.startsWith(candidateBase) && candidateBase.length > bestLength) {
+          bestMatch = pod;
+          bestLength = candidateBase.length;
+        }
       }
     }
 

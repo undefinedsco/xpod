@@ -55,7 +55,8 @@ describe('settings launch scripts', () => {
     expect(app).not.toContain('XpodProductAuthGate');
     expect(app.indexOf('<BrowserRouter')).toBeLessThan(app.indexOf('<XpodShellRoutes />'));
     expect(shellRoutes).toContain("path: 'settings'");
-    expect(shellRoutes).toContain('AccountAuthBoundary');
+    expect(shellRoutes).not.toContain('AccountAuthBoundary');
+    expect(shellRoutes).toContain("path: 'device'");
     expect(shellRoutes).toContain('WebIdAuthBoundary');
     expect(routes).toContain('WebIdAuthBoundary');
     expect(routes).toContain('systemSettingsSurfaceRoutes');

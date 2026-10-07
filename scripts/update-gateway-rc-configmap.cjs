@@ -81,11 +81,18 @@ function updateNginxConfig(existing, namespace) {
   const upstream = `http://xpod-rc.${namespace}.svc.cluster.local:80`;
   const managedBlock = [
     BEGIN_MARKER,
-    renderServer('id-rc.undefineds.co', 8082, upstream),
+    renderServer('id-rc.undefineds.cn', 8082, upstream),
     '',
-    renderServer('pods-rc.undefineds.co', 8083, upstream),
+    renderServer('pods-rc.undefineds.cn', 8083, upstream),
     '',
-    renderServer('api-rc.undefineds.co', 8081, upstream),
+    renderServer('api-rc.undefineds.cn', 8081, upstream),
+    // SealOS 自己拥有的域：证书由平台签发，因此 rc 也可以直接用这类入口。
+    '',
+    renderServer('ids.sealosgzg.site', 8082, upstream),
+    '',
+    renderServer('podss.sealosgzg.site', 8083, upstream),
+    '',
+    renderServer('apis.sealosgzg.site', 8081, upstream),
     END_MARKER,
   ].join('\n');
   const markerPattern = new RegExp(`${BEGIN_MARKER}[\\s\\S]*?${END_MARKER}`, 'g');

@@ -312,16 +312,28 @@ function updateEnvFile(clientId: string, clientSecret: string, webId: string, po
 
   for (const [key, value] of Object.entries(updates)) {
     const regex = new RegExp(`^${key}=.*$`, 'm');
+    const line = `${key}=${formatEnvValue(value)}`;
     if (regex.test(envContent)) {
-      envContent = envContent.replace(regex, `${key}=${value}`);
+      envContent = envContent.replace(regex, line);
     } else {
-      envContent += `\n${key}=${value}`;
+      envContent += `\n${line}`;
     }
   }
 
   fs.writeFileSync(envFilePath, envContent.trim() + '\n');
   console.log(`Updated ${envFilePath}`);
   return apiKey;
+}
+
+/**
+ * Quote a dotenv value so special characters survive a round-trip.
+ *
+ * dotenv treats an unquoted `#` as the start of an inline comment, so a WebID like
+ * `.../profile/card#me` is silently truncated to `.../profile/card`. That fragment is part of the
+ * principal identity and must reach the tests intact.
+ */
+function formatEnvValue(value: string): string {
+  return /[\s#"']/u.test(value) ? `"${value.replace(/\\/gu, '\\\\').replace(/"/gu, '\\"')}"` : value;
 }
 
 async function main(): Promise<void> {

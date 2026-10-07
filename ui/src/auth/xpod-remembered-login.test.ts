@@ -11,6 +11,7 @@ import {
   rememberedXpodLoginMatchesActive,
   rememberXpodLogin,
   rememberPendingXpodAccountEmail,
+  readXpodAccountRememberChoice,
 } from './xpod-remembered-login';
 
 const rememberedLogin = {
@@ -39,6 +40,7 @@ const managedLogin = {
 
 afterEach(() => {
   window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 describe('Xpod remembered login storage', () => {
@@ -46,8 +48,8 @@ describe('Xpod remembered login storage', () => {
     rememberPendingXpodAccountEmail('test@dev.local', window.localStorage, 'http://127.0.0.1:3000/');
 
     expect(readPendingXpodAccountEmail(window.localStorage, 'https://id.undefineds.co/')).toBeUndefined();
-    expect(window.localStorage.getItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY)).toBeNull();
-    expect(window.localStorage.getItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY)).toBeNull();
+    expect(readPendingXpodAccountEmail(window.localStorage, 'http://127.0.0.1:3000/')).toBe('test@dev.local');
+    expect(window.localStorage.getItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY)).toBe('http://127.0.0.1:3000');
   });
 
   it('persists only the remembered host identity needed for re-authentication', () => {
@@ -356,4 +358,47 @@ it.each([' https://app.example/alice/profile/card#me', 'https://app.example/alic
   const exact = { ...rememberedLogin, webId, storageBinding: { ...rememberedLogin.storageBinding, webId } };
   expect(rememberXpodLogin(exact)).toBeUndefined();
   expect(rememberedXpodLoginMatchesActive(exact, { webId, selectedStorage: exact.storageBinding })).toBe(false);
+});
+
+describe('issuer-scoped Account remember choice', () => {
+  it('stores unchecked email only in this session and keeps only a boolean preference durable', () => {
+    rememberPendingXpodAccountEmail('alice@example.test', undefined, 'https://id.example/.account/', false);
+    expect(readXpodAccountRememberChoice('https://id.example/.account/')).toBe(false);
+    expect(readPendingXpodAccountEmail(undefined, 'https://id.example/.account/')).toBe('alice@example.test');
+    expect(JSON.stringify(window.localStorage)).not.toContain('alice@example.test');
+    window.sessionStorage.clear();
+    expect(readPendingXpodAccountEmail(undefined, 'https://id.example/.account/')).toBeUndefined();
+  });
+
+  it('keeps another issuer decision and its remembered email independent', () => {
+    rememberPendingXpodAccountEmail('private@example.test', undefined, 'https://private-id.example/.account/', false);
+    rememberPendingXpodAccountEmail('public@example.test', undefined, 'https://public-id.example/.account/', true);
+    expect(readXpodAccountRememberChoice('https://private-id.example/.account/')).toBe(false);
+    expect(readXpodAccountRememberChoice('https://public-id.example/.account/')).toBe(true);
+    expect(readXpodAccountRememberChoice('https://unknown.example/.account/')).toBeUndefined();
+    expect(readPendingXpodAccountEmail(undefined, 'https://public-id.example/.account/')).toBe('public@example.test');
+    expect(readPendingXpodAccountEmail(undefined, 'https://private-id.example/.account/')).toBe('private@example.test');
+  });
+});
+
+it('clears unchecked temporary email when switching accounts', () => {
+  rememberPendingXpodAccountEmail('alice@example.test', undefined, '/.account/', false);
+  expect(readPendingXpodAccountEmail(undefined, '/.account/')).toBe('alice@example.test');
+  clearRememberedXpodLogin();
+  expect(readPendingXpodAccountEmail(undefined, '/.account/')).toBeUndefined();
+});
+
+it('clears ready identity temporary hints only for the same issuer', () => {
+  rememberPendingXpodAccountEmail('temporary@example.test', undefined, 'https://id.example/.account/', false);
+  rememberXpodLogin({ ...managedLogin, issuer: 'https://id.example' });
+  expect(window.sessionStorage.getItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY)).toBeNull();
+  rememberPendingXpodAccountEmail('other@example.test', undefined, 'https://other.example/.account/', false);
+  rememberXpodLogin({ ...managedLogin, issuer: 'https://id.example' });
+  expect(readPendingXpodAccountEmail(undefined, 'https://other.example/.account/')).toBe('other@example.test');
+});
+
+it('does not discard another confirmed issuer email when reading a different authority', () => {
+  rememberPendingXpodAccountEmail('alpha@example.test', undefined, 'https://alpha.example/.account/', true);
+  expect(readPendingXpodAccountEmail(undefined, 'https://beta.example/.account/')).toBeUndefined();
+  expect(readPendingXpodAccountEmail(undefined, 'https://alpha.example/.account/')).toBe('alpha@example.test');
 });

@@ -1,3 +1,4 @@
+import { gatewayInvocationHeaders } from '../InvocationMetadata';
 import {
   BaseProviderRuntimeAdapter,
   parseOpenAiResponsesSse,
@@ -36,7 +37,7 @@ export class OpenAiRuntimeAdapter extends BaseProviderRuntimeAdapter {
     });
 
     try {
-      const headers = new Headers();
+      const headers = new Headers(gatewayInvocationHeaders(input.invocationMetadata));
       if (subscription) {
         const accountId = input.credential?.metadata?.accountId;
         if (typeof accountId === 'string' && accountId) {

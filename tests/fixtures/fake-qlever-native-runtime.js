@@ -11,6 +11,14 @@ const sqlitePath = process.argv.find((value) => value.startsWith('--sqlite-path=
   || (sqlitePathArgIndex >= 0 ? process.argv[sqlitePathArgIndex + 1] : undefined);
 let queryEngine;
 
+// Opt-in, bounded per-call timing to attribute native-call cost. Default off.
+const fs = require('node:fs');
+const fixtureDiagFile = process.env.XPOD_MATRIX_FIXTURE_DIAG_FILE;
+function fixtureDiag(event, fields) {
+  if (!fixtureDiagFile) return;
+  try { fs.appendFileSync(fixtureDiagFile, `${JSON.stringify({ ts: Date.now(), event, ...fields })}\n`); } catch { /* diagnostic only */ }
+}
+
 function send(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
@@ -228,7 +236,9 @@ async function executeFixtureQuery(sparql, options) {
       profile: { pid: process.pid, options, fixtureProtocolOnly: true },
     });
   }
+  const loadStarted = Date.now();
   const store = loadFixtureStore(options);
+  const loadMs = Date.now() - loadStarted;
   const engine = fixtureQueryEngine();
   const result = await engine.query(sparql, fixtureQueryContext(store, options));
   const mediaType = options?.acceptMediaType || defaultResultMediaType(result.resultType);
@@ -240,6 +250,7 @@ async function executeFixtureQuery(sparql, options) {
   for await (const chunk of serialized.data) {
     body += chunk;
   }
+  fixtureDiag('query', { quads: store.size, sparqlLength: sparql.length, loadMs, totalMs: Date.now() - loadStarted });
   return nativeResult({
     mediaType,
     body,
@@ -257,9 +268,12 @@ async function prepareFixtureUpdate(sparql, options) {
   if (!sqlitePath) {
     return prepareUpdateDelta(sparql, options);
   }
+  const loadStarted = Date.now();
   const store = loadFixtureStore(options);
+  const loadMs = Date.now() - loadStarted;
   const before = store.getQuads(null, null, null, null);
   await fixtureQueryEngine().queryVoid(sparql, fixtureQueryContext(store, options));
+  fixtureDiag('prepareUpdate', { quads: store.size, sparqlLength: sparql.length, loadMs, totalMs: Date.now() - loadStarted });
   return diffPreparedUpdate(before, store.getQuads(null, null, null, null), options);
 }
 

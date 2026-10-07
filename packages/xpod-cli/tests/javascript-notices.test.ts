@@ -1,0 +1,134 @@
+import { expect, test } from 'bun:test';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { collectJavascriptNotices } from '../src/javascript-notices';
+import { sha256File } from '../src/manifest';
+
+test('binds generated source notices to the compiler and exact emitted prefix before writing', () => {
+  const parent = path.resolve('.test-data/xpod-cli/generated-notices');
+  mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const stage = path.join(work, 'stage');
+    const repo = path.join(work, 'repo');
+    const generated = path.join(work, 'generated');
+    mkdirSync(stage); mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+    mkdirSync(path.join(generated, 'objects'), { recursive: true });
+    writeFileSync(path.join(stage, 'main.ts'), 'export const value = 1;');
+    const prefix = 'var __fixture = 1;';
+    const cli = path.join(work, 'cli.mjs');
+    writeFileSync(cli, `${prefix}\n// main.ts\nexport const value = 1;`);
+    const original = path.join(work, 'original');
+    writeFileSync(original, prefix);
+    const sha = sha256File(original);
+    const object = `objects/${sha}.txt`;
+    cpSync(original, path.join(generated, object));
+    const record = { schemaVersion: 1, bunVersion: '1.3.8', prefixSha256: sha, prefixBytes: Buffer.byteLength(prefix), provenance: { source: 'fixture' }, files: [{ sourcePath: 'original.js', object, sha256: sha }] };
+    const recordPath = path.join(generated, 'index.json');
+    writeFileSync(recordPath, JSON.stringify(record));
+    const metafile = path.join(work, 'metafile.json');
+    writeFileSync(metafile, JSON.stringify({ inputs: { 'main.ts': { bytes: 23, imports: [] } }, outputs: { 'cli.mjs': { inputs: { 'main.ts': { bytesInOutput: 23 } } } } }));
+    const options = { metafile, stageRoot: stage, repoRoot: repo, destination: path.join(work, 'output'), target: 'darwin-arm64', cli, bunVersion: '1.3.8', generated };
+    expect(collectJavascriptNotices(options)).toEqual(['index.json', object]);
+    const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+    expect(index.generated).toEqual(record);
+    expect(index.cliSha256).toBe(sha256File(cli));
+    expect(readFileSync(path.join(options.destination, object))).toEqual(readFileSync(original));
+    const refused = path.join(work, 'refused');
+    expect(() => collectJavascriptNotices({ ...options, bunVersion: '1.3.9', destination: refused })).toThrow('Unsupported generated');
+    expect(existsSync(refused)).toBe(false);
+    writeFileSync(cli, 'var __different = 1;\n// main.ts\n');
+    expect(() => collectJavascriptNotices({ ...options, destination: refused })).toThrow('prefix differs');
+    writeFileSync(cli, `${prefix}\n// main.ts\n`);
+    writeFileSync(path.join(generated, object), 'changed');
+    expect(() => collectJavascriptNotices({ ...options, destination: refused })).toThrow('notice hash mismatch');
+    cpSync(original, path.join(generated, object));
+    record.files[0].object = '../outside';
+    writeFileSync(recordPath, JSON.stringify(record));
+    expect(() => collectJavascriptNotices({ ...options, destination: refused })).toThrow('Unsafe generated');
+    expect(existsSync(refused)).toBe(false);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+test('inventories scoped/nested versions, skips type-only manifests and preserves originals without granting clearance', () => {
+  const testRoot = path.resolve('.test-data/xpod-cli/javascript-notices');
+  mkdirSync(testRoot, { recursive: true });
+  const work = mkdtempSync(path.join(testRoot, 'collect-'));
+  try {
+    const stage = path.join(work, 'stage');
+    const repo = path.join(work, 'repo');
+    const output = path.join(work, 'output');
+    const files: Record<string, string> = {
+      'stage/main.ts': 'import module;',
+      'repo/node_modules/@scope/module/package.json': JSON.stringify({ name: '@scope/module', version: '2', license: 'MIT' }),
+      'repo/node_modules/@scope/module/dist/package.json': '{"type":"module"}',
+      'repo/node_modules/@scope/module/dist/index.js': 'export const value = 2;',
+      'repo/node_modules/@scope/module/LICENSE': 'Original copyright\r\n',
+      'repo/node_modules/@scope/module/node_modules/other/package.json': JSON.stringify({ name: 'other', version: '1' }),
+      'repo/node_modules/@scope/module/node_modules/other/index.js': 'module.exports=1;',
+      'repo/node_modules/other/package.json': JSON.stringify({ name: 'other', version: '2', license: 'ISC' }),
+      'repo/node_modules/other/index.js': 'module.exports=2;',
+      'cli': 'binary fixture',
+    };
+    for (const [name, content] of Object.entries(files)) {
+      const filename = path.join(work, name);
+      mkdirSync(path.dirname(filename), { recursive: true });
+      writeFileSync(filename, content);
+    }
+    symlinkSync(path.join(repo, 'node_modules'), path.join(stage, 'node_modules'), 'dir');
+    const inputPaths = ['main.ts', 'node_modules/@scope/module/dist/index.js', '../repo/node_modules/@scope/module/node_modules/other/index.js', '../repo/node_modules/other/index.js'];
+    const metadata = { inputs: Object.fromEntries(inputPaths.map((name) => [name, { bytes: 1, imports: [{ path: 'node:fs', external: true }, { path: path.join(stage, 'main.ts'), external: true }] }])), outputs: { 'main.js': { inputs: { 'main.ts': { bytesInOutput: 1 } } } } };
+    const metafile = path.join(work, 'metafile.json');
+    writeFileSync(metafile, JSON.stringify(metadata));
+    const options = { metafile, stageRoot: stage, repoRoot: repo, destination: output, target: 'darwin-arm64', cli: path.join(work, 'cli'), bunVersion: '1.3.8' };
+    expect(collectJavascriptNotices(options).length).toBe(2);
+    const index = JSON.parse(readFileSync(path.join(output, 'index.json'), 'utf8'));
+    expect(index.status).toBe('partial-collection');
+    expect(index.cliSha256).toBe(sha256File(options.cli));
+    expect(index.inputs.length).toBe(4);
+    expect(index.packages.map((entry: { name: string; version: string }) => `${entry.name}@${entry.version}`).sort()).toEqual(['@scope/module@2', 'other@1', 'other@2']);
+    const scoped = index.packages.find((entry: { name: string }) => entry.name === '@scope/module');
+    expect(readFileSync(path.join(output, scoped.files[0].object), 'utf8')).toBe('Original copyright\r\n');
+    const unknown = index.packages.find((entry: { name: string; version: string }) => entry.name === 'other' && entry.version === '1');
+    expect(unknown.declaredLicense).toBeNull();
+    expect(unknown.noticeStatus).toBe('missing-original');
+    expect(index.externalImports).toEqual(['main.ts', 'node:fs']);
+    expect(JSON.stringify(index)).not.toContain(work);
+    const supplementDir = path.join(work, 'supplements');
+    mkdirSync(path.join(supplementDir, 'objects'), { recursive: true });
+    const original = path.join(repo, 'node_modules/@scope/module/LICENSE');
+    const sha = sha256File(original);
+    const object = `objects/${sha}.txt`;
+    cpSync(original, path.join(supplementDir, object));
+    const supplement = { schemaVersion: 1, entries: [{ name: 'other', version: '1', provenance: { gitHead: 'fixed-source' }, files: [{ sourcePath: 'upstream LICENSE', object, sha256: sha }] }] };
+    const supplementIndex = path.join(supplementDir, 'index.json');
+    writeFileSync(supplementIndex, JSON.stringify(supplement));
+    const supplementalOutput = path.join(work, 'supplemental-output');
+    expect(collectJavascriptNotices({ ...options, supplements: supplementDir, destination: supplementalOutput }).length).toBe(2);
+    const augmented = JSON.parse(readFileSync(path.join(supplementalOutput, 'index.json'), 'utf8'));
+    expect(augmented.packages.find((entry: { name: string; version: string }) => entry.name === 'other' && entry.version === '1').noticeStatus).toBe('collected-candidates');
+    expect(augmented.packages.find((entry: { name: string; version: string }) => entry.name === 'other' && entry.version === '2').noticeStatus).toBe('missing-original');
+    writeFileSync(path.join(supplementDir, object), 'changed');
+    const driftOutput = path.join(work, 'drift-refused');
+    expect(() => collectJavascriptNotices({ ...options, supplements: supplementDir, destination: driftOutput })).toThrow('supplement hash mismatch');
+    expect(existsSync(driftOutput)).toBe(false);
+    cpSync(original, path.join(supplementDir, object));
+    supplement.entries[0].files[0].object = '../outside';
+    writeFileSync(supplementIndex, JSON.stringify(supplement));
+    expect(() => collectJavascriptNotices({ ...options, supplements: supplementDir, destination: driftOutput })).toThrow('Unsafe JavaScript supplement');
+    supplement.entries[0].files[0].object = object;
+    supplement.entries.push(supplement.entries[0]);
+    writeFileSync(supplementIndex, JSON.stringify(supplement));
+    expect(() => collectJavascriptNotices({ ...options, supplements: supplementDir, destination: driftOutput })).toThrow('duplicate JavaScript notice');
+    metadata.inputs['main.ts'].imports.push({ path: path.join(work, 'outside-import'), external: true });
+    writeFileSync(metafile, JSON.stringify(metadata));
+    expect(() => collectJavascriptNotices({ ...options, destination: path.join(work, 'outside-import-refused') })).toThrow('absolute external import');
+    expect(existsSync(path.join(work, 'outside-import-refused'))).toBe(false);
+    metadata.inputs['main.ts'].imports.pop();
+    metadata.inputs['../../outside.js'] = { bytes: 1, imports: [] };
+    writeFileSync(metafile, JSON.stringify(metadata));
+    const refused = path.join(work, 'refused');
+    expect(() => collectJavascriptNotices({ ...options, destination: refused })).toThrow('outside staging/dependencies');
+    expect(existsSync(refused)).toBe(false);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});

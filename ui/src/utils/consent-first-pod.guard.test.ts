@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { createFirstPodAndWaitForBinding, createFirstPodAndWaitForWebIds } from './consent-first-pod';
 import { prepareProvisionedPod } from './provision-scope';
 vi.mock('./account-control-url', () => ({ resolveHostedAccountControlUrl: async (url: string) => url }));
-vi.mock('./pod', () => ({ resolveProvisionCodeForPodCreate: async (code?: string) => code, buildPodCreatePayload: (name: string, provisionCode?: string, provisionReceipt?: string) => ({ name, provisionCode, provisionReceipt }), isManagedLocalProvisionHost: () => false }));
+vi.mock('./pod', () => ({ resolveProvisionCodeForPodCreate: async (code?: string) => code, buildPodCreatePayload: (name: string, provisionCode?: string, provisionReceipt?: string) => ({ name, settings: provisionCode ? { provisionCode, provisionReceipt } : undefined }), isManagedLocalProvisionHost: () => false }));
 vi.mock('./provision-scope', async importOriginal => ({ ...await importOriginal<typeof import('./provision-scope')>(), prepareProvisionedPod: vi.fn(async () => undefined) }));
 afterEach(() => { vi.clearAllMocks(); document.cookie = 'css-account=; Max-Age=0; Path=/'; });
 const control = `${window.location.origin}/.account/pod/`;
@@ -11,7 +11,7 @@ const code = `${btoa(JSON.stringify({ spUrl: 'https://local.example/', serviceTo
 function fixture(pods: unknown, status = 200, onRead?: () => void) {
   return vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'POST') return new Response(JSON.stringify({ webId: 'https://local.example/alice/profile/card#me', podUrl: 'https://local.example/alice/' }));
-    onRead?.(); return new Response(JSON.stringify(pods), { status });
+    onRead?.(); return new Response(JSON.stringify(String(_url).endsWith('/.account/') ? { controls: { account: { profile: `${window.location.origin}/.account/account-a/profile/` } } } : pods), { status });
   });
 }
 it.each([createFirstPodAndWaitForBinding, createFirstPodAndWaitForWebIds])('blocks existing target Pod before any prepare or POST (%#)', async create => {
@@ -50,11 +50,12 @@ it('stops before prepare if Account changes while reading inventory', async () =
   expect(prepareProvisionedPod).not.toHaveBeenCalled();
 });
 it('preserves prepared Local receipt recovery while Account inventory is still empty', async () => {
-  vi.mocked(prepareProvisionedPod).mockResolvedValueOnce({ provisionCode: code, provisionReceipt: 'own-receipt' });
+  vi.mocked(prepareProvisionedPod).mockResolvedValueOnce({ provisionCode: code, provisionReceipt: 'own-receipt', preparedWebId: 'https://cloud.example/alice/profile/card#me' });
   const fetchImpl = fixture({ pods: {} });
   await expect(createFirstPodAndWaitForBinding({ createPodUrl: control, username: 'alice', provisionCode: code, fetchImpl })).resolves.toHaveLength(1);
-  expect(prepareProvisionedPod).toHaveBeenCalledWith(expect.any(Function), 'alice', code);
-  expect(JSON.parse(fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST')![1]!.body as string).provisionReceipt).toBe('own-receipt');
+  expect(prepareProvisionedPod).toHaveBeenCalledWith(expect.any(Function), 'alice', code, expect.objectContaining({ profileUrl: `${window.location.origin}/.account/account-a/profile/` }));
+  expect(JSON.parse(fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST')![1]!.body as string).settings.provisionReceipt).toBe('own-receipt');
+  expect(JSON.parse(fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST')![1]!.body as string).settings.webId).toBe('https://cloud.example/alice/profile/card#me');
 });
 it('does not commit to Account after a session switch during Local prepare', async () => {
   document.cookie = 'css-account=account-a; Path=/';

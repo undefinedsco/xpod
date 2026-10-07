@@ -98,6 +98,7 @@ interface SyncOpRow {
 }
 
 interface CheckpointRow {
+  resource: string | null;
   source_version: string | null;
   deleted_at: number | null;
 }
@@ -211,13 +212,13 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
                  last_error, created_at, updated_at, done_at
           FROM sync_ops
           WHERE stage IN (${stages.map(() => '?').join(', ')})
-          ORDER BY created_at ASC, id ASC
+          ORDER BY created_at ASC, rowid ASC
         `).all(...stages)
       : this.db.prepare<SyncOpRow>(`
           SELECT id, tx_id, workspace_json, change_json, stage, after_hash, retry_count,
                  last_error, created_at, updated_at, done_at
           FROM sync_ops
-          ORDER BY created_at ASC, id ASC
+          ORDER BY created_at ASC, rowid ASC
         `).all();
     return rows.map(rowToOperation);
   }
@@ -226,14 +227,49 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
     return this.listOperations(['local_committed', 'failed_retryable']);
   }
 
+  /**
+   * Rebase the operation's expected hash to the file version its own sync produced.
+   *
+   * A direct-projection Pod sync PUTs a resource whose local file is the same
+   * authority file CSS serves, so the write itself moves the file version (mtime,
+   * possibly inode) without changing the bytes. Only that same-bytes timestamp
+   * drift may be rebased. When the content identity (size and digest) differs,
+   * a concurrent writer changed the authority bytes during the sync, so the
+   * original guard must stand and the operation is left for reconciliation.
+   */
+  public async recordSyncedSourceHash(id: string, afterHash: string | undefined): Promise<void> {
+    if (!afterHash) {
+      return;
+    }
+    const op = this.getOperation(id);
+    if (!op || op.stage === 'done' || op.stage === 'failed_permanent') {
+      return;
+    }
+    if (!sameFileContent(op.afterHash, afterHash)) {
+      return;
+    }
+    this.db.prepare(`
+      UPDATE sync_ops
+      SET after_hash = ?, updated_at = ?
+      WHERE id = ? AND stage NOT IN ('done', 'failed_permanent')
+    `).run(afterHash, this.now(), id);
+  }
+
   public async markDone(id: string): Promise<void> {
     const op = this.getOperation(id);
-    if (!op) {
+    if (!op || op.stage === 'done' || op.stage === 'failed_permanent') {
       return;
+    }
+    const validation = await this.validateOperationForReplay(op);
+    if (validation) {
+      await this.markRetryableFailure(id, validation);
+      throw new Error(validation);
     }
 
     const now = this.now();
     this.db.transaction(() => {
+      const current = this.getOperation(id);
+      if (!current || current.stage === 'done' || current.stage === 'failed_permanent') return;
       this.db.prepare(`
         UPDATE sync_ops
         SET stage = 'done',
@@ -244,7 +280,16 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
         WHERE id = ?
       `).run(now, now, now, id);
 
-      this.upsertCheckpoint(op, now);
+      this.upsertCheckpoint(current, now);
+      // A successfully indexed newer version supersedes older failed work for this
+      // same authority. Otherwise a recovered/retried PUT would poison the next startup.
+      this.db.prepare(`
+        UPDATE sync_ops SET stage = 'failed_permanent',
+          last_error = 'Superseded by a newer completed authority version', updated_at = ?
+        WHERE source_path = ? AND resource IS ?
+          AND rowid < (SELECT rowid FROM sync_ops WHERE id = ?)
+          AND stage IN ('local_committed', 'failed_retryable', 'reconcile_required')
+      `).run(now, op.change.sourcePath, op.change.resource ?? null, op.id);
     })();
   }
 
@@ -256,7 +301,7 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
           retry_count = retry_count + 1,
           last_error = ?,
           updated_at = ?
-      WHERE id = ?
+      WHERE id = ? AND stage NOT IN ('done', 'failed_permanent')
     `).run(errorMessage(error), now, id);
   }
 
@@ -267,7 +312,7 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
       SET stage = 'reconcile_required',
           last_error = ?,
           updated_at = ?
-      WHERE id = ?
+      WHERE id = ? AND stage NOT IN ('done', 'failed_permanent')
     `).run(reason, now, id);
   }
 
@@ -278,7 +323,7 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
       SET stage = 'failed_permanent',
           last_error = ?,
           updated_at = ?
-      WHERE id = ?
+      WHERE id = ? AND stage NOT IN ('done', 'failed_permanent')
     `).run(errorMessage(error), now, id);
   }
 
@@ -290,7 +335,10 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
       reconcileRequired: 0,
     };
 
-    for (const op of this.listPending()) {
+    for (const snapshot of this.listPending()) {
+      // Earlier work or a concurrent writer may have completed/superseded this entry.
+      const op = this.getOperation(snapshot.id);
+      if (!op || (op.stage !== 'local_committed' && op.stage !== 'failed_retryable')) continue;
       result.attempted += 1;
       const validation = await this.validateOperationForReplay(op);
       if (validation) {
@@ -299,8 +347,11 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
         continue;
       }
 
+      const current = this.getOperation(op.id);
+      if (!current || (current.stage !== 'local_committed' && current.stage !== 'failed_retryable')) continue;
       try {
         await syncer.sync(op.change, op.workspace, context);
+        await this.recordSyncedSourceHash(op.id, await maybeFileVersion(op.change.sourcePath));
         await this.markDone(op.id);
         result.completed += 1;
       } catch (error) {
@@ -331,17 +382,38 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
     };
 
     for (const snapshot of snapshots) {
+      const resource = input.resolveResource
+        ? await input.resolveResource(path.resolve(snapshot.absolutePath), snapshot.relativePath)
+        : resolveWorkspaceResource(input.workspace, snapshot.relativePath);
       const checkpoint = this.getCheckpoint(input.workspace, snapshot.relativePath);
-      if (checkpoint?.source_version === snapshot.version && !checkpoint.deleted_at) {
+      if (checkpoint?.resource === (resource ?? null) &&
+        checkpoint.source_version === snapshot.version && !checkpoint.deleted_at) {
+        result.skipped += 1;
+        continue;
+      }
+      // CSS writes and tool patches may use a child workspace in this same journal.
+      // Reuse their exact completed authority receipt, bound to both file and resource.
+      const existing = this.db.prepare<{ id: string; stage: SolidFsSyncJournalStage; after_hash: string | null }>(`
+        SELECT id, stage, after_hash FROM sync_ops
+        WHERE source_path = ? AND resource = ?
+        ORDER BY created_at DESC, rowid DESC LIMIT 1
+      `).get(snapshot.absolutePath, resource ?? null);
+      if (existing?.stage === 'done' && existing.after_hash === snapshot.version) {
+        // Preserve root-level deletion detection even when completion was recorded
+        // under a child workspace. This checkpoint references the same completed op.
+        const op = this.getOperation(existing.id)!;
+        this.upsertCheckpoint({
+          ...op,
+          workspace: manifest,
+          change: { ...op.change, path: snapshot.relativePath },
+        }, this.now());
         result.skipped += 1;
         continue;
       }
 
       const op = await this.recordLocalCommitted({
         path: snapshot.relativePath,
-        resource: input.resolveResource
-          ? await input.resolveResource(path.resolve(snapshot.absolutePath), snapshot.relativePath)
-          : resolveWorkspaceResource(input.workspace, snapshot.relativePath),
+        resource,
         source,
         sourcePath: snapshot.absolutePath,
         contentType: contentTypeForPath(snapshot.relativePath),
@@ -448,7 +520,7 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
     if (!currentHash) {
       return `SolidFS journal source is missing: ${op.change.sourcePath}`;
     }
-    if (op.afterHash && currentHash !== op.afterHash) {
+    if (!op.afterHash || currentHash !== op.afterHash) {
       return `SolidFS journal source changed before replay: ${op.change.path}`;
     }
     return undefined;
@@ -456,7 +528,7 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
 
   private getCheckpoint(workspace: string, relativePath: string): CheckpointRow | undefined {
     return this.db.prepare<CheckpointRow>(`
-      SELECT source_version, deleted_at
+      SELECT resource, source_version, deleted_at
       FROM sync_checkpoints
       WHERE workspace = ? AND path = ?
     `).get(workspace, relativePath);
@@ -464,7 +536,7 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
 
   private listCheckpoints(workspace: string): Array<CheckpointRow & { path: string }> {
     return this.db.prepare<CheckpointRow & { path: string }>(`
-      SELECT path, source_version, deleted_at
+      SELECT path, resource, source_version, deleted_at
       FROM sync_checkpoints
       WHERE workspace = ?
       ORDER BY path ASC
@@ -474,26 +546,28 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
   private upsertCheckpoint(op: SolidFsSyncJournalOperation, now: number): void {
     if (op.change.type === 'deleted') {
       this.db.prepare(`
-        INSERT INTO sync_checkpoints (workspace, path, source_version, deleted_at, updated_at, last_op_id)
-        VALUES (?, ?, NULL, ?, ?, ?)
+        INSERT INTO sync_checkpoints (workspace, path, resource, source_version, deleted_at, updated_at, last_op_id)
+        VALUES (?, ?, ?, NULL, ?, ?, ?)
         ON CONFLICT(workspace, path) DO UPDATE SET
+          resource = excluded.resource,
           source_version = NULL,
           deleted_at = excluded.deleted_at,
           updated_at = excluded.updated_at,
           last_op_id = excluded.last_op_id
-      `).run(op.workspace.workspace, op.change.path, now, now, op.id);
+      `).run(op.workspace.workspace, op.change.path, op.change.resource ?? null, now, now, op.id);
       return;
     }
 
     this.db.prepare(`
-      INSERT INTO sync_checkpoints (workspace, path, source_version, deleted_at, updated_at, last_op_id)
-      VALUES (?, ?, ?, NULL, ?, ?)
+      INSERT INTO sync_checkpoints (workspace, path, resource, source_version, deleted_at, updated_at, last_op_id)
+      VALUES (?, ?, ?, ?, NULL, ?, ?)
       ON CONFLICT(workspace, path) DO UPDATE SET
+        resource = excluded.resource,
         source_version = excluded.source_version,
         deleted_at = NULL,
         updated_at = excluded.updated_at,
         last_op_id = excluded.last_op_id
-    `).run(op.workspace.workspace, op.change.path, op.afterHash ?? null, now, op.id);
+    `).run(op.workspace.workspace, op.change.path, op.change.resource ?? null, op.afterHash ?? null, now, op.id);
   }
 
   private initializeSchema(): void {
@@ -530,6 +604,7 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
       CREATE TABLE IF NOT EXISTS sync_checkpoints (
         workspace TEXT NOT NULL,
         path TEXT NOT NULL,
+        resource TEXT,
         source_version TEXT,
         deleted_at INTEGER,
         updated_at INTEGER NOT NULL,
@@ -537,6 +612,19 @@ export class SqliteSolidFsSyncJournal implements LocalRdfAuthorityJournal {
         PRIMARY KEY (workspace, path)
       );
     `);
+    const columns = this.db.prepare<{ name: string }>('PRAGMA table_info(sync_checkpoints)').all();
+    if (!columns.some((column) => column.name === 'resource')) {
+      this.db.transaction(() => {
+        this.db.exec('ALTER TABLE sync_checkpoints ADD COLUMN resource TEXT');
+        // A compacted historical operation cannot prove its resource binding;
+        // leave that checkpoint unbound so bootstrap conservatively replays it.
+        this.db.exec(`
+          UPDATE sync_checkpoints SET resource = (
+            SELECT resource FROM sync_ops WHERE id = sync_checkpoints.last_op_id
+          )
+        `);
+      })();
+    }
   }
 }
 
@@ -586,6 +674,7 @@ export class JournaledSolidFsSyncer implements SolidFsSyncer {
 
     try {
       await this.syncer.sync(change, workspace, context);
+      await this.journal.recordSyncedSourceHash(op.id, await maybeFileVersion(change.sourcePath));
       await this.journal.markDone(op.id);
     } catch (error) {
       await this.journal.markRetryableFailure(op.id, error);
@@ -651,6 +740,7 @@ export class WorkspaceJournaledSolidFsSyncer implements SolidFsSyncer {
 
     try {
       await this.syncer.sync(change, workspace, context);
+      await journal.recordSyncedSourceHash(op.id, await maybeFileVersion(change.sourcePath));
       await journal.markDone(op.id);
     } catch (error) {
       await journal.markRetryableFailure(op.id, error);
@@ -779,4 +869,23 @@ function errorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+/**
+ * Compare two `size:mtimeMs:sha256` file versions by content identity.
+ *
+ * Only the size and digest parts describe the bytes; mtime legitimately moves
+ * when the sync's own write lands on the same authority file. A missing or
+ * malformed version is treated as content-different so the guard is retained.
+ */
+function sameFileContent(expected: string | undefined, current: string | undefined): boolean {
+  if (!expected || !current) {
+    return false;
+  }
+  const expectedParts = expected.split(':');
+  const currentParts = current.split(':');
+  if (expectedParts.length < 3 || currentParts.length < 3) {
+    return false;
+  }
+  return expectedParts[0] === currentParts[0] && expectedParts[2] === currentParts[2];
 }

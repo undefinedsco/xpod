@@ -7,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
+  NativeSelect,
   Label,
 } from '@undefineds.co/shared-ui'
 import type { CreateApiKeyCredentialInput } from './contract/ai-connections-client'
@@ -87,7 +88,7 @@ export function AiCustomProviderDialog({
         aria-describedby="ai-custom-provider-description"
       >
         <DialogHeader>
-          <DialogTitle>添加自定义 Provider</DialogTitle>
+          <DialogTitle>添加自定义服务商</DialogTitle>
         </DialogHeader>
         <p id="ai-custom-provider-description" className="text-sm text-muted-foreground">
           用 OpenAI/Anthropic 兼容协议接入第三方模型服务。Xpod 会把真实 API Key 存进当前 Pod。
@@ -105,18 +106,18 @@ export function AiCustomProviderDialog({
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="ai-custom-provider-compatibility">兼容协议</Label>
-            <select
+            <NativeSelect
               id="ai-custom-provider-compatibility"
               value={compatibility}
               disabled={saving}
               aria-label="兼容协议"
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+              className="h-9"
               onChange={(event) => setCompatibility(event.target.value as CustomProviderCompatibility)}
             >
               <option value="auto">自动探测</option>
               <option value="openai">OpenAI 兼容优先</option>
               <option value="anthropic">Anthropic 兼容优先</option>
-            </select>
+            </NativeSelect>
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="ai-custom-provider-base-url">Base URL</Label>
@@ -160,7 +161,7 @@ export function AiCustomProviderDialog({
             取消
           </Button>
           <Button type="button" disabled={saving} onClick={submit}>
-            保存自定义 Provider
+            保存自定义服务商
           </Button>
         </DialogFooter>
       </DialogContent>

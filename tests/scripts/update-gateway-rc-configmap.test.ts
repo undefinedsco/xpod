@@ -78,14 +78,14 @@ describe('RC gateway ConfigMap updater', () => {
     expect(nginx).toContain('server_name id.undefineds.co;');
     expect(nginx).toContain('# BEGIN XPOD RC ROUTES');
     expect(nginx).toContain('# END XPOD RC ROUTES');
-    expect(nginx).toContain('listen 8082;\n  server_name id-rc.undefineds.co;');
-    expect(nginx).toContain('listen 8083;\n  server_name pods-rc.undefineds.co;');
-    expect(nginx).toContain('listen 8081;\n  server_name api-rc.undefineds.co;');
-    expect(nginx.match(/proxy_pass http:\/\/xpod-rc\.ns-1yl0rye9\.svc\.cluster\.local:80;/g)).toHaveLength(3);
-    expect(nginx.match(/proxy_set_header Host \$host;/g)).toHaveLength(3);
-    expect(nginx.match(/proxy_set_header X-Forwarded-Host \$host;/g)).toHaveLength(3);
-    expect(nginx.match(/proxy_set_header X-Forwarded-Proto https;/g)).toHaveLength(3);
-    expect(nginx.match(/proxy_set_header X-Forwarded-Port 443;/g)).toHaveLength(3);
+    expect(nginx).toContain('listen 8082;\n  server_name id-rc.undefineds.cn;');
+    expect(nginx).toContain('listen 8083;\n  server_name pods-rc.undefineds.cn;');
+    expect(nginx).toContain('listen 8081;\n  server_name api-rc.undefineds.cn;');
+    expect(nginx.match(/proxy_pass http:\/\/xpod-rc\.ns-1yl0rye9\.svc\.cluster\.local:80;/g)).toHaveLength(6);
+    expect(nginx.match(/proxy_set_header Host \$host;/g)).toHaveLength(6);
+    expect(nginx.match(/proxy_set_header X-Forwarded-Host \$host;/g)).toHaveLength(6);
+    expect(nginx.match(/proxy_set_header X-Forwarded-Proto https;/g)).toHaveLength(6);
+    expect(nginx.match(/proxy_set_header X-Forwarded-Port 443;/g)).toHaveLength(6);
   });
 
   it('updates its managed block idempotently without duplicating routes', async () => {
@@ -94,11 +94,11 @@ describe('RC gateway ConfigMap updater', () => {
     const nginx = second.data[configKey] as string;
 
     expect(nginx.match(/# BEGIN XPOD RC ROUTES/g)).toHaveLength(1);
-    expect(nginx.match(/server_name id-rc\.undefineds\.co;/g)).toHaveLength(1);
-    expect(nginx.match(/server_name pods-rc\.undefineds\.co;/g)).toHaveLength(1);
-    expect(nginx.match(/server_name api-rc\.undefineds\.co;/g)).toHaveLength(1);
+    expect(nginx.match(/server_name id-rc\.undefineds\.cn;/g)).toHaveLength(1);
+    expect(nginx.match(/server_name pods-rc\.undefineds\.cn;/g)).toHaveLength(1);
+    expect(nginx.match(/server_name api-rc\.undefineds\.cn;/g)).toHaveLength(1);
     expect(nginx).not.toContain('xpod-rc.first-ns.svc.cluster.local');
-    expect(nginx.match(/xpod-rc\.second-ns\.svc\.cluster\.local/g)).toHaveLength(3);
+    expect(nginx.match(/xpod-rc\.second-ns\.svc\.cluster\.local/g)).toHaveLength(6);
   });
 
   it('rejects Secret input without printing its contents', async () => {

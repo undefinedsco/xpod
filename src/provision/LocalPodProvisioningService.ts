@@ -1,4 +1,5 @@
-import { createHash } from 'node:crypto';
+import { PodDeletionOperationRepository } from '../identity/drizzle/PodDeletionOperationRepository';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DataFactory } from 'n3';
@@ -117,6 +118,7 @@ export class LocalPodProvisioningService {
   private readonly identityDbPath: string;
   private readonly rdfIndexPath?: string;
   private readonly oidcIssuer?: string;
+  private readonly hostsProfile: boolean;
   private readonly authMode?: AuthMode | string;
   private readonly sqliteRuntime = getSqliteRuntime();
 
@@ -127,37 +129,73 @@ export class LocalPodProvisioningService {
     this.identityDbPath = stripSqlitePrefix(options.identityDbUrl, 'identityDbUrl');
     this.rdfIndexPath = options.rdfIndexPath;
     this.oidcIssuer = options.oidcIssuer ? ensureTrailingSlash(options.oidcIssuer) : undefined;
+    this.hostsProfile = !this.oidcIssuer || new URL(this.oidcIssuer).href === new URL(this.baseUrl).href;
     this.authMode = options.authMode;
   }
 
   public async createPod(input: LocalPodProvisioningInput): Promise<LocalPodProvisioningResult> {
     const podUrl = ensureTrailingSlash(new URL(`${encodeURIComponent(input.podName)}/`, this.baseUrl).toString());
-    const canonicalWebId = new URL('profile/card#me', podUrl).toString();
-    if (input.webId && input.webId !== canonicalWebId) {
-      throw new Error(`WebID must use the provisioned Pod profile: ${canonicalWebId}`);
-    }
-    const webId = canonicalWebId;
-    // The WebID document belongs to this storage provider; authentication still
-    // delegates to the Cloud issuer through solid:oidcIssuer.
+    const webId = this.resolveWebId(input.webId, podUrl);
     const oidcIssuer = this.oidcIssuer ?? this.baseUrl;
     const accountId = stableUuid(`account:${podUrl}:${webId}`);
-    const podId = stableUuid(`pod:${podUrl}:${webId}`);
+    // Each creation is a distinct storage incarnation, even when its URL and WebID are reused.
+    const podId = randomUUID();
     const ownerId = stableUuid(`owner:${podId}:${webId}`);
     const webIdLinkId = stableUuid(`webIdLink:${accountId}:${webId}`);
 
-    await this.createPodFiles(input.podName, input.initialResources);
-    const quads = this.buildPodQuads({ podUrl, webId, oidcIssuer });
-    this.writeQuints(quads);
-    this.writeRdfIndex(quads);
-    this.writeIdentityIndexes({ accountId, podId, ownerId, webIdLinkId, podUrl, webId });
+    const operations = new PodDeletionOperationRepository(`sqlite:${this.identityDbPath}`);
+    const reservationId = randomUUID();
+    await operations.reserveStorage(podUrl, reservationId, 'create');
+    try {
+      try {
+        await fs.stat(path.join(this.rootDir, input.podName));
+        throw new Error('Pod already exists');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
+      }
+      await this.createPodFiles(input.podName, input.initialResources);
+      const quads = this.buildPodQuads({ podUrl, webId, oidcIssuer });
+      this.writeQuints(quads);
+      this.writeRdfIndex(quads);
+      this.writeIdentityIndexes({ accountId, podId, ownerId, webIdLinkId, podUrl, webId });
 
-    this.logger.info(`Provisioned local pod ${podUrl} for ${webId}`);
-    return { podUrl, webId, accountId, podId };
+      this.logger.info(`Provisioned local pod ${podUrl} for ${webId}`);
+      return { podUrl, webId, accountId, podId };
+    } finally { await operations.releaseStorage(podUrl, reservationId); }
+  }
+
+  private resolveWebId(webId: string | undefined, podUrl: string): string {
+    if (this.hostsProfile) {
+      const canonicalWebId = new URL('profile/card#me', podUrl).toString();
+      if (webId && webId !== canonicalWebId) {
+        throw new Error(`WebID must use the provisioned Pod profile: ${canonicalWebId}`);
+      }
+      return canonicalWebId;
+    }
+
+    const error = new Error('Managed Local Pod requires a WebID within the Cloud issuer');
+    if (typeof webId !== 'string' || !/^https?:\/\/[^/\\]/iu.test(webId) ||
+      webId.includes('\\') || /[\u0000-\u0020\u007f]/u.test(webId)) {
+      throw error;
+    }
+    let identity: URL;
+    try {
+      identity = new URL(webId);
+    } catch {
+      throw error;
+    }
+    const issuer = new URL(this.oidcIssuer!);
+    if (!['http:', 'https:'].includes(identity.protocol) || identity.username || identity.password ||
+      identity.origin !== issuer.origin || !identity.pathname.startsWith(issuer.pathname)) {
+      throw error;
+    }
+    // Cloud owns this identity. Preserve its exact value for owner indexes and receipts.
+    return webId;
   }
 
   private async createPodFiles(podName: string, initialResources?: Record<string, string>): Promise<void> {
     const podPath = path.join(this.rootDir, podName);
-    await fs.mkdir(path.join(podPath, 'profile'), { recursive: true });
+    await fs.mkdir(this.hostsProfile ? path.join(podPath, 'profile') : podPath, { recursive: true });
 
     if (!initialResources) {
       return;
@@ -261,31 +299,35 @@ export class LocalPodProvisioningService {
 
     out.push(quad(namedNode(root), namedNode(`${LDP}contains`), namedNode(podUrl), rootGraph));
     out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.rootResourceUrl), podGraph));
-    out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(profileUrl), podGraph));
     out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(settingsUrl), podGraph));
-    out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.profileResourceUrl), profileGraph));
-    out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(cardUrl), profileGraph));
-    out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.cardResourceUrl), profileGraph));
 
     addContainerMeta(root);
     addContainerMeta(podUrl, true);
-    addContainerMeta(profileUrl);
     addDocumentMeta(authorizationResources.rootResourceUrl);
-    addDocumentMeta(authorizationResources.profileResourceUrl);
-    addDocumentMeta(cardUrl);
-    addDocumentMeta(authorizationResources.cardResourceUrl);
 
-    out.push(quad(namedNode(cardUrl), namedNode(`${RDF}type`), namedNode(`${FOAF}PersonalProfileDocument`), cardGraph));
-    out.push(quad(namedNode(cardUrl), namedNode(`${FOAF}maker`), namedNode(webId), cardGraph));
-    out.push(quad(namedNode(cardUrl), namedNode(`${FOAF}primaryTopic`), namedNode(webId), cardGraph));
-    out.push(quad(namedNode(webId), namedNode(`${RDF}type`), namedNode(`${FOAF}Person`), cardGraph));
-    out.push(quad(namedNode(webId), namedNode(`${SOLID}oidcIssuer`), namedNode(oidcIssuer), cardGraph));
-    out.push(quad(namedNode(webId), namedNode(`${SOLID}storage`), namedNode(podUrl), cardGraph));
-    out.push(quad(namedNode(webId), namedNode(`${SOLID}privateTypeIndex`), namedNode(privateTypeIndexUrl), cardGraph));
+    if (this.hostsProfile) {
+      out.push(quad(namedNode(podUrl), namedNode(`${LDP}contains`), namedNode(profileUrl), podGraph));
+      out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.profileResourceUrl), profileGraph));
+      out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(cardUrl), profileGraph));
+      out.push(quad(namedNode(profileUrl), namedNode(`${LDP}contains`), namedNode(authorizationResources.cardResourceUrl), profileGraph));
+      addContainerMeta(profileUrl);
+      addDocumentMeta(authorizationResources.profileResourceUrl);
+      addDocumentMeta(cardUrl);
+      addDocumentMeta(authorizationResources.cardResourceUrl);
+
+      out.push(quad(namedNode(cardUrl), namedNode(`${RDF}type`), namedNode(`${FOAF}PersonalProfileDocument`), cardGraph));
+      out.push(quad(namedNode(cardUrl), namedNode(`${FOAF}maker`), namedNode(webId), cardGraph));
+      out.push(quad(namedNode(cardUrl), namedNode(`${FOAF}primaryTopic`), namedNode(webId), cardGraph));
+      out.push(quad(namedNode(webId), namedNode(`${RDF}type`), namedNode(`${FOAF}Person`), cardGraph));
+      out.push(quad(namedNode(webId), namedNode(`${SOLID}oidcIssuer`), namedNode(oidcIssuer), cardGraph));
+      out.push(quad(namedNode(webId), namedNode(`${SOLID}storage`), namedNode(podUrl), cardGraph));
+      out.push(quad(namedNode(webId), namedNode(`${SOLID}privateTypeIndex`), namedNode(privateTypeIndexUrl), cardGraph));
+    }
 
     this.addPrivateTypeIndexQuads(out, privateTypeIndexGraph, privateTypeIndexUrl);
 
-    out.push(...authorizationResources.quads);
+    out.push(...authorizationResources.quads.filter((entry) =>
+      this.hostsProfile || entry.graph.value === authorizationResources.rootResourceUrl));
 
     return out;
   }

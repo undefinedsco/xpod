@@ -100,13 +100,39 @@ async function collect(iterable: AsyncIterable<GatewayEvent>): Promise<GatewayEv
 }
 
 describe('Provider runtime adapters', () => {
+  it.each(['custom', 'openai', 'anthropic', 'bailian'])('preserves session metadata without forwarding credential headers (%s)', async provider => {
+    const fixture = fetchFixture(() => new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const runtimes = new ProviderRuntimeRegistry({
+      registry: createDefaultProviderRegistry(),
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch, resolver: async () => [{ address: '93.184.216.34', family: 4 }] }),
+    });
+    const invocationMetadata = {
+      sessionId: 'stable-conversation-123', userAgent: 'Xpod/0.4.21',
+      authorization: 'Bearer gateway-key', cookie: 'secret-cookie', host: 'evil.test', dpop: 'secret-proof',
+    };
+    await collect(runtimes.get(provider).execute({
+      request: baseRequest({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }], tools: [], reasoning: undefined }),
+      apiKey: 'provider-key', invocationMetadata,
+      credential: { baseUrl: provider === 'custom' ? 'https://endpoint.example/v1' : undefined,
+        metadata: { headers: { authorization: 'Bearer pod-key', host: 'evil.test', 'x-opencode-session': 'pod-session' } } },
+    }));
+    const headers = fixture.captured[0].headers;
+    expect(headers.get('x-opencode-session')).toBe('stable-conversation-123');
+    expect(headers.get('user-agent')).toBe('Xpod/0.4.21');
+    expect(headers.get(provider === 'anthropic' ? 'x-api-key' : 'authorization'))
+      .toBe(provider === 'anthropic' ? 'provider-key' : 'Bearer provider-key');
+    for (const name of ['cookie', 'dpop', 'host', 'x-forwarded-for']) expect(headers.has(name)).toBe(false);
+    expect(JSON.stringify([...headers])).not.toContain('gateway-key');
+    expect(JSON.stringify([...headers])).not.toContain('pod-key');
+  });
+
   it('creates adapters by provider id through a shared runtime registry and fails unknown providers', async () => {
     const fixture = fetchFixture(() => new Response(jsonSse([
       { id: 'chatcmpl_factory', choices: [{ delta: { role: 'assistant' } }] },
       { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
       '[DONE]',
     ]), { status: 200 }));
-    const transport = new ProviderHttpTransport({ fetch: fixture.fetch });
+    const transport = new ProviderHttpTransport({ fetch: fixture.fetch, resolver: async () => [{ address: '93.184.216.34', family: 4 }] });
     const runtimes = new ProviderRuntimeRegistry({
       registry: createDefaultProviderRegistry(),
       transport,
@@ -135,7 +161,10 @@ describe('Provider runtime adapters', () => {
     const fixture = fetchFixture(() => new Response(jsonSse(['[DONE]']), { status: 200 }));
     const runtimes = new ProviderRuntimeRegistry({
       registry,
-      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      transport: new ProviderHttpTransport({
+        fetch: fixture.fetch,
+        resolver: async () => [{ address: '93.184.216.34', family: 4 }],
+      }),
     });
     const adapter = runtimes.get(provider);
     const model = `${provider}-discovered-test`;

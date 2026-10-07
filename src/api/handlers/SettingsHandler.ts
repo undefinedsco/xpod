@@ -10,6 +10,11 @@ export function registerSettingsRoutes(server: ApiServer, options: SettingsHandl
     ['/settings', 'Settings'],
     ['/ai-connections', 'AI Connections'],
     ['/ai-config', 'AI Config'],
+    ['/tasks', 'Tasks'],
+    ['/pod', 'Pod'],
+    ['/device', 'This device'],
+    ['/inbox', 'Inbox'],
+    ['/notifications', 'Notifications'],
   ] as const) {
     registerStaticSpaRoutes(server, {
       prefix,

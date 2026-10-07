@@ -1,3 +1,4 @@
+import { useXpodAccountCredentialValues, useXpodAccountRememberChoice } from './useXpodAccountRememberChoice';
 import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useRef, useState, type ComponentProps } from 'react';
 import { Button } from '@undefineds.co/shared-ui';
@@ -11,7 +12,6 @@ import { clearAccountSessionToken, storeAccountSessionToken } from '../utils/acc
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import { normalizeXpodReturnTo } from './xpod-login-route';
 import {
-  readPendingXpodAccountEmail,
   rememberPendingXpodAccountEmail,
 } from './xpod-remembered-login';
 import { safeXpodLoginMessage, xpodAccountPageCopy, xpodAccountCredentialsCopy } from './xpod-account-copy';
@@ -38,18 +38,15 @@ export function XpodAccountCredentials({
   onAuthenticated,
   initialEmail,
 }: XpodAccountCredentialsProps) {
-  const { controls, idpIndex, refetchControls } = useAuth();
-  const [values, setValues] = useState<AccountCredentialsValues>({
-    email: initialEmail !== undefined ? initialEmail : readPendingXpodAccountEmail(undefined, idpIndex) ?? '',
-    password: '',
-  });
+  const { controls, idpIndex, refetchControls, isInitializing } = useAuth();
+  const [values, setValues, credentialScope] = useXpodAccountCredentialValues(idpIndex, isInitializing, initialEmail);
   const [formError, setFormError] = useState<string>();
   const [pending, setPending] = useState(false);
-  const [rememberAccount, setRememberAccount] = useState(true);
+  const [rememberAccount, setRememberAccount] = useXpodAccountRememberChoice(idpIndex, isInitializing);
   const submittingRef = useRef(false);
 
   const handleSubmit = async (submitted: AccountCredentialsValues) => {
-    if (submittingRef.current) return;
+    if (submittingRef.current || isInitializing) return;
 
     submittingRef.current = true;
     setPending(true);
@@ -71,7 +68,7 @@ export function XpodAccountCredentials({
         },
       });
       storeAccountSessionToken(login.accountToken);
-      rememberPendingXpodAccountEmail(submitted.email?.trim() ?? '', undefined, idpIndex);
+      rememberPendingXpodAccountEmail(submitted.email?.trim() ?? '', undefined, idpIndex, rememberAccount);
       const confirmedState = await refetchControls();
       if (confirmedState?.status !== 'authenticated') {
         if (confirmedState?.status === 'anonymous') clearAccountSessionToken();
@@ -99,12 +96,13 @@ export function XpodAccountCredentials({
     surfaceTitle: '登录 Xpod',
     copy: xpodAccountCredentialsCopy,
     // Registration and password recovery are pages of the account app, so a
-    // gate that owns its own surface links to them the same way the account
+    // gate that owns its own surface reaches them the same way the account
     // sign-in page does. Without them the Dashboard gate offered no way forward
     // for a user who has no account yet or forgot the password. The embedded
     // form is hosted inside a document that owns its layout and navigation, so
     // it stays self-contained.
-    footer: surface === 'embedded' ? undefined : <AccountEntryLinks />,
+    registerHref: surface === 'embedded' ? undefined : accountEntryUrl('register'),
+    forgotHref: surface === 'embedded' ? undefined : accountEntryUrl('forgot'),
     mode: 'login' as const,
     values,
     onChange: updateValues,
@@ -123,8 +121,20 @@ export function XpodAccountCredentials({
       showHeader={false}
     />
   ) : (
-    <XpodBlockingAccountCredentialsSurface {...surfaceProps} />
+    <XpodBlockingAccountCredentialsSurface key={credentialScope ?? 'bootstrap'} {...surfaceProps} />
   );
+}
+
+/** Account-app page for creating an account or recovering a password, keeping the OIDC return address. */
+function accountEntryUrl(page: 'register' | 'forgot'): string {
+  let search = '';
+  try {
+    const returnTo = normalizeXpodReturnTo(`${window.location.pathname}${window.location.search}`);
+    if (returnTo) search = `?${new URLSearchParams({ returnTo })}`;
+  } catch {
+    // Account documents already belong to the server's OIDC interaction.
+  }
+  return scopeAccountUrl(`/.account/login/password/${page}/${search}`);
 }
 
 /**
@@ -133,13 +143,6 @@ export function XpodAccountCredentials({
  * they stay plain links instead of in-surface state changes.
  */
 export function AccountEntryLinks() {
-  let search = '';
-  try {
-    const returnTo = normalizeXpodReturnTo(`${window.location.pathname}${window.location.search}`);
-    if (returnTo) search = `?${new URLSearchParams({ returnTo })}`;
-  } catch {
-    // Account documents already belong to the server's OIDC interaction.
-  }
   return (
     <div className="flex items-center justify-center gap-3 text-xs text-muted-foreground">
       <Button
@@ -147,7 +150,7 @@ export function AccountEntryLinks() {
         variant="ghost"
         className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
       >
-        <a href={scopeAccountUrl(`/.account/login/password/register/${search}`)}>创建账号</a>
+        <a href={accountEntryUrl('register')}>创建账号</a>
       </Button>
       <span aria-hidden="true" className="text-border">·</span>
       <Button
@@ -155,7 +158,7 @@ export function AccountEntryLinks() {
         variant="ghost"
         className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
       >
-        <a href={scopeAccountUrl(`/.account/login/password/forgot/${search}`)}>{xpodAccountPageCopy.forgotPassword}</a>
+        <a href={accountEntryUrl('forgot')}>{xpodAccountPageCopy.forgotPassword}</a>
       </Button>
     </div>
   );

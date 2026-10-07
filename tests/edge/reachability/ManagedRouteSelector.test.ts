@@ -64,6 +64,45 @@ describe('chooseAccessRoute', () => {
 
     expect(selected).toBeNull();
   });
+
+  it('keeps a route whose host answers the probe without implementing the discovery document', async () => {
+    // CSS answers HEAD /.well-known/solid with 405 (GET with 501): the host is
+    // serving this route, it just does not implement that optional document.
+    const network = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, {
+      status: 405,
+      headers: { 'x-powered-by': 'Community Solid Server' },
+    }));
+    try {
+      const selected = await chooseAccessRoute(routeSet([
+        route('loopback', 10, 'http://127.0.0.1:5737/', true),
+      ]), {
+        managedClient: true,
+        timeoutMs: 100,
+      });
+
+      expect(selected?.kind).toBe('loopback');
+      expect(String(network.mock.calls[0]?.[0])).toBe('http://127.0.0.1:5737/.well-known/solid');
+    } finally {
+      network.mockRestore();
+    }
+  });
+
+  it('drops a route whose host fails the probe', async () => {
+    const network = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('socket closed'));
+    try {
+      const selected = await chooseAccessRoute(routeSet([
+        route('loopback', 10, 'http://127.0.0.1:5737/', true),
+        route('public-direct', 30, 'https://node-1.pods.example/', false),
+      ]), {
+        managedClient: true,
+        timeoutMs: 100,
+      });
+
+      expect(selected).toBeNull();
+    } finally {
+      network.mockRestore();
+    }
+  });
 });
 
 /**

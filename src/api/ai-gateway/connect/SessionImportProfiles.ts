@@ -1,11 +1,19 @@
 import path from 'node:path';
 import type { LocalSessionImportResult } from './FileSessionImportAdapter';
 
+/**
+ * Declarative description of one local session file location.
+ *
+ * The profile owns the path because each CLI has its own data-directory contract. The adapter
+ * stays provider-agnostic: it resolves exactly one path and reads it. `env` exists so a profile can
+ * honour an override the installed CLI itself defines; Xpod never adds an environment option of its
+ * own, and an explicitly configured override is authoritative (no stale-account fallback).
+ */
 export interface SessionImportProfile {
   id: string;
   provider: string;
   offeringId: string;
-  resolvePath(homeDir: string): string;
+  resolvePath(homeDir: string, env: NodeJS.ProcessEnv): string;
   importSession(payload: Record<string, unknown>): LocalSessionImportResult;
 }
 
@@ -21,7 +29,14 @@ export const KIMI_CODE_SESSION_IMPORT_PROFILE: SessionImportProfile = {
   id: 'kimi-code-credentials-json',
   provider: 'kimi',
   offeringId: 'subscription-key',
-  resolvePath: (homeDir) => path.join(homeDir, '.kimi', 'credentials', 'kimi-code.json'),
+  // The installed Kimi CLI resolves its data directory as KIMI_CODE_HOME ?? ~/.kimi-code and keeps
+  // credentials at <dataDir>/credentials/<name>.json. A configured KIMI_CODE_HOME is authoritative:
+  // it must not fall back to the default directory or to another subscriber's account.
+  resolvePath: (homeDir, env) => path.join(
+    stringValue(env?.KIMI_CODE_HOME) ?? path.join(homeDir, '.kimi-code'),
+    'credentials',
+    'kimi-code.json',
+  ),
   importSession: importKimiCodeSession,
 };
 
@@ -48,7 +63,6 @@ function importOpenAiCodexSession(payload: Record<string, unknown>): LocalSessio
     accountLabel: accountId ? `OpenAI Subscription ${accountId}` : 'OpenAI Subscription',
     metadata: withoutUndefined({
       source: 'local-codex-auth-json',
-      sessionPath: '~/.codex/auth.json',
       authMode,
       accountId,
     }),
@@ -79,7 +93,6 @@ function importKimiCodeSession(payload: Record<string, unknown>): LocalSessionIm
     accountLabel: 'Kimi Subscription',
     metadata: {
       source: 'local-kimi-code-credentials-json',
-      sessionPath: '~/.kimi/credentials/kimi-code.json',
     },
   };
 }

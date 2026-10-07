@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { chromium, type Browser, type Locator, type Page } from 'playwright';
-
-export const SOLID_OIDC_ACTION_NAME = /authorize|allow|approve|consent|continue|submit|yes|log in|login|授权|允许|继续|确认|批准/i;
+import { chromium, type Browser } from 'playwright';
+import { startBrowserExternalRp } from '../tests/helpers/browserExternalRp';
+import { authorizeRcSession, type RcIdentity, type RcRp } from '../tests/helpers/rcLightWeb';
 
 export interface RcSeedAccount {
   email: string;
@@ -39,12 +39,6 @@ export interface PrepareRcAuthenticatedSmokeResult {
   bobStatePath: string;
 }
 
-export interface SeedProfileStorageBindingInput {
-  baseUrl: string;
-  account: RcSeedAccount;
-  fetchImpl?: typeof fetch;
-}
-
 interface SeedConfigEntry {
   email?: unknown;
   password?: unknown;
@@ -75,7 +69,7 @@ export async function prepareRcAuthenticatedSmoke(
 ): Promise<PrepareRcAuthenticatedSmokeResult> {
   const baseUrl = ensureTrailingSlash(options.baseUrl);
   const accounts = await loadRcSeedAccounts(options.seedConfigPath);
-  await mkdir(options.stateDir, { recursive: true });
+  await mkdir(options.stateDir, { recursive: true, mode: 0o700 });
 
   const aliceStatePath = path.join(options.stateDir, 'alice-state.json');
   const bobStatePath = path.join(options.stateDir, 'bob-state.json');
@@ -92,7 +86,7 @@ export async function prepareRcAuthenticatedSmoke(
     `XPOD_SETTINGS_E2E_ALICE_STATE=${shellQuote(aliceStatePath)}`,
     `XPOD_SETTINGS_E2E_BOB_STATE=${shellQuote(bobStatePath)}`,
     '',
-  ].join('\n'), 'utf8');
+  ].join('\n'), { encoding: 'utf8', mode: 0o600 });
 
   return {
     aliceStatePath,
@@ -102,200 +96,31 @@ export async function prepareRcAuthenticatedSmoke(
 
 export async function writeSolidOidcBrowserStates(input: RcBrowserStateWriterInput): Promise<void> {
   const browser = await chromium.launch({ headless: true });
+  let rp: RcRp | undefined;
   try {
-    await writeSolidOidcBrowserState(browser, input.baseUrl, input.alice, input.aliceStatePath);
-    await writeSolidOidcBrowserState(browser, input.baseUrl, input.bob, input.bobStatePath);
+    rp = await startBrowserExternalRp(input.baseUrl);
+    const alice = await writeSolidOidcBrowserState(browser, rp, input.baseUrl, input.alice, input.aliceStatePath);
+    const bob = await writeSolidOidcBrowserState(browser, rp, input.baseUrl, input.bob, input.bobStatePath);
+    if (alice.accountId === bob.accountId || alice.webId === bob.webId || alice.storageUrl === bob.storageUrl) {
+      throw new Error('RC seeds did not authenticate as two distinct Pod owners');
+    }
   } finally {
-    await browser.close();
+    try { await rp?.close(); } finally { await browser.close(); }
   }
 }
 
-async function writeSolidOidcBrowserState(
-  browser: Browser,
-  baseUrl: string,
-  account: RcSeedAccount,
-  statePath: string,
-): Promise<void> {
+async function writeSolidOidcBrowserState(browser: Browser, rp: RcRp, baseUrl: string,
+  account: RcSeedAccount, statePath: string): Promise<RcIdentity> {
   const context = await browser.newContext();
   try {
-    const page = await context.newPage();
-    await page.goto(new URL('/ai-connections', baseUrl).toString(), {
-      waitUntil: 'domcontentloaded',
-      timeout: 60_000,
-    });
-    const loginButton = page.getByRole('button', { name: /^登录$|^login$/i }).first();
-    await loginButton.click({ timeout: 30_000 });
-    await completeSolidOidcLogin(page, baseUrl, account, 90_000);
-    // The route-level WebIdAuthBoundary renders its unauthenticated surface as
-    // `[data-auth-surface-mode="page"]`; once the session and Pod are ready the
-    // canonical AI Connections panel renders and that surface disappears.
-    await page.waitForFunction(() => (
-      document.querySelector('[data-testid="ai-connections-panel"]') !== null
-      && document.querySelector('[data-auth-surface-mode="page"]') === null
-    ), undefined, { timeout: 30_000 });
-    await waitForSeedProfileStorageBinding({ baseUrl, account });
-    await context.storageState({ path: statePath });
+    const session = await authorizeRcSession(await context.newPage(), rp, baseUrl, account);
+    // Only browser-managed Account Cookies/storage are persisted. RP tokens and
+    // DPoP keys stay in this process; the sidecar is public identity evidence.
+    await writeFile(statePath, JSON.stringify(await context.storageState()), { encoding: 'utf8', mode: 0o600 });
+    await writeFile(`${statePath}.identity.json`, JSON.stringify(session.identity), { encoding: 'utf8', mode: 0o600 });
+    return session.identity;
   } finally {
     await context.close();
-  }
-}
-
-async function waitForSeedProfileStorageBinding(input: SeedProfileStorageBindingInput): Promise<void> {
-  const deadline = Date.now() + 10_000;
-  let lastError: unknown;
-  while (Date.now() < deadline) {
-    try {
-      await verifySeedProfileStorageBinding(input);
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-  }
-  if (lastError instanceof Error) {
-    throw lastError;
-  }
-  throw new Error(`Seed profile ${input.account.podName} did not become publicly readable before timeout`);
-}
-
-export async function verifySeedProfileStorageBinding(input: SeedProfileStorageBindingInput): Promise<void> {
-  const baseUrl = ensureTrailingSlash(input.baseUrl);
-  const webId = new URL(`${encodeURIComponent(input.account.podName)}/profile/card#me`, baseUrl).href;
-  const storageUrl = new URL(`${encodeURIComponent(input.account.podName)}/`, baseUrl).href;
-  const response = await (input.fetchImpl ?? fetch)(webId, {
-    headers: { Accept: 'text/turtle' },
-  });
-  const contentType = response.headers.get('content-type') ?? '';
-  const body = await response.text().catch(() => '');
-  if (!response.ok) {
-    throw new Error([
-      `Seed profile ${webId} is not publicly readable`,
-      `status=${response.status}`,
-      `contentType=${contentType || '<none>'}`,
-      `body=${body.slice(0, 240) || '<empty>'}`,
-    ].join('; '));
-  }
-  if (!body.includes(storageUrl)) {
-    throw new Error([
-      `Seed profile ${webId} does not advertise expected storage`,
-      `expectedStorage=${storageUrl}`,
-      `contentType=${contentType || '<none>'}`,
-      `body=${body.slice(0, 240) || '<empty>'}`,
-    ].join('; '));
-  }
-}
-
-async function completeSolidOidcLogin(
-  page: Page,
-  baseUrl: string,
-  account: RcSeedAccount,
-  timeoutMs: number,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  const targetOrigin = new URL(baseUrl).origin;
-  let submittedPassword = false;
-
-  while (Date.now() < deadline) {
-    const current = new URL(page.url());
-    if (
-      isCanonicalAiConnectionsUrl(current, baseUrl)
-      // Readiness is the panel being mounted, not measured: the applet renders as a
-      // two-pane workspace, so at narrow widths the detail pane is hidden until an
-      // object is selected and the panel has no box even though the page is ready.
-      // The same rule as the post-login wait below, which the acceptance relies on.
-      && await page.locator('[data-testid="ai-connections-panel"]').count() > 0
-      && !await page.locator('[data-auth-surface-mode="page"]').isVisible({ timeout: 300 }).catch(() => false)
-    ) {
-      return;
-    }
-
-    const passwordSubmission = await trySubmitSolidPassword(page, account);
-    if (passwordSubmission !== undefined) {
-      submittedPassword ||= passwordSubmission;
-      await page.waitForTimeout(400);
-      continue;
-    }
-
-    if (canAdvanceSolidOidcAt(current, baseUrl)) {
-      const action = page.getByRole('button', {
-        name: SOLID_OIDC_ACTION_NAME,
-      }).first();
-      if (
-        await action.isVisible({ timeout: 300 }).catch(() => false)
-        && await action.isEnabled({ timeout: 300 }).catch(() => false)
-      ) {
-        await clickSolidOidcAction(action);
-        await page.waitForTimeout(400);
-        continue;
-      }
-    }
-
-    await page.waitForTimeout(300);
-  }
-
-  const current = new URL(page.url());
-  const panelVisible = await page.locator('[data-testid="ai-connections-panel"]').isVisible({ timeout: 300 }).catch(() => false);
-  const authSurfaceVisible = await page.locator('[data-auth-surface-mode="page"]').isVisible({ timeout: 300 }).catch(() => false);
-  throw new Error([
-    'OIDC login did not finish for seeded account',
-    `submittedPassword=${submittedPassword}`,
-    `currentOrigin=${current.origin}`,
-    `currentPath=${current.pathname}`,
-    `panelVisible=${panelVisible}`,
-    `authSurfaceVisible=${authSurfaceVisible}`,
-  ].join('; '));
-}
-
-export function isCanonicalAiConnectionsUrl(current: URL, baseUrl: string): boolean {
-  return current.origin === new URL(baseUrl).origin
-    && (current.pathname === '/ai-connections' || current.pathname.startsWith('/ai-connections/'));
-}
-
-export function canAdvanceSolidOidcAt(current: URL, baseUrl: string): boolean {
-  return !isCanonicalAiConnectionsUrl(current, baseUrl);
-}
-
-export async function clickSolidOidcAction(action: Locator): Promise<void> {
-  try {
-    await action.click({
-      noWaitAfter: true,
-      timeout: 5_000,
-    });
-  } catch (error) {
-    // Consent submission disables the button and immediately replaces the
-    // document. Playwright can keep retrying the old locator after the server
-    // has already accepted the POST, so treat that post-click state as success.
-    const stillVisible = await action.isVisible({ timeout: 300 }).catch(() => false);
-    const stillEnabled = stillVisible
-      ? await action.isEnabled({ timeout: 300 }).catch(() => false)
-      : false;
-    if (!stillVisible || !stillEnabled) {
-      return;
-    }
-    throw error;
-  }
-}
-
-export async function trySubmitSolidPassword(
-  page: Page,
-  account: RcSeedAccount,
-): Promise<boolean | undefined> {
-  const emailInput = page.locator('input[name="email"], input[type="email"], input#email').first();
-  const passwordInput = page.locator('input[name="password"], input[type="password"], input#password').first();
-  if (
-    !await emailInput.isVisible({ timeout: 300 }).catch(() => false)
-    || !await passwordInput.isVisible({ timeout: 300 }).catch(() => false)
-  ) {
-    return undefined;
-  }
-
-  try {
-    await emailInput.fill(account.email, { timeout: 2_000 });
-    await passwordInput.fill(account.password, { timeout: 2_000 });
-    await passwordInput.press('Enter', { timeout: 2_000 });
-    return true;
-  } catch {
-    return false;
   }
 }
 
