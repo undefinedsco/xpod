@@ -703,6 +703,78 @@ def owned_scratch():
 
 
 class WholeCiGateTests(unittest.TestCase):
+    def test_unobservable_docker_storage_records_refusal_before_launch(self):
+        for error in (FileNotFoundError(2, 'missing storage'), PermissionError(13, 'denied storage')):
+            with self.subTest(error=type(error).__name__), owned_scratch() as directory:
+                evidence = Path(directory) / 'evidence'
+                with patch.object(g, 'EVIDENCE', evidence), \
+                        patch.object(g, 'docker_storage_root', return_value='/var/lib/docker'), \
+                        patch.object(g.subprocess, 'check_output', return_value='1.4.2\n'), \
+                        patch.object(g, 'free_bytes', side_effect=error), \
+                        patch.object(g, 'DockerStorageCapacity', side_effect=error), \
+                        patch.object(g.supervise, 'run_stage') as producer:
+                    with self.assertRaisesRegex(SystemExit, 'capacity is not observable'):
+                        g.main()
+                producer.assert_not_called()
+                summary = json.loads((evidence / 'gate-summary.json').read_text())
+                self.assertFalse(summary['ok'])
+                self.assertEqual(summary['runs'], [])
+                self.assertEqual(summary['admissionError']['errorType'], type(error).__name__)
+                self.assertEqual(summary['admissionError']['errno'], error.errno)
+                self.assertFalse((evidence / 'whole1.raw.log').exists())
+
+    def test_daemon_capacity_uses_same_owned_readonly_container_and_cleans_up(self):
+        cid, image = 'a' * 64, 'sha256:' + 'b' * 64
+        commands = []
+        def probe(argv):
+            commands.append(argv)
+            if argv[1:3] == ['image', 'inspect']:
+                return True, image
+            if argv[1] == 'create':
+                return True, cid
+            if argv[1] == 'exec':
+                return True, 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda 900 100 800 12% /data\n'
+            return True, ''
+        with patch.object(g, 'docker_probe', side_effect=probe):
+            with g.DockerStorageCapacity('/var/lib/docker') as observer:
+                self.assertEqual(observer.sample(), 800 * 1024)
+                with patch.object(g.shutil, 'disk_usage', return_value=type('Usage', (), {'free': 100})()):
+                    self.assertEqual(observer.free('/evidence').free, 100)
+        create = next(argv for argv in commands if argv[1] == 'create')
+        self.assertIn('--read-only', create)
+        self.assertIn('/data:ro,noexec,nosuid,size=1m', create)
+        self.assertIn('none', create)
+        self.assertIn('type=bind,src=/var/lib/docker,dst=/docker-storage,readonly', create)
+        self.assertIn(image, create)
+        self.assertTrue(all(argv[2] == cid for argv in commands if argv[1] == 'exec'))
+        self.assertIn(['docker', 'rm', '-f', cid], commands)
+        self.assertEqual(commands[-1][-1], f'id={cid}')
+        self.assertTrue(observer.cleanup_verified)
+
+    def test_daemon_capacity_start_failure_still_removes_owned_container(self):
+        cid, image = 'a' * 64, 'sha256:' + 'b' * 64
+        with patch.object(g, 'docker_probe', side_effect=[
+                (True, image), (True, ''), (True, cid), (False, None),
+                (True, ''), (True, '')]) as probe:
+            observer = g.DockerStorageCapacity('/var/lib/docker')
+            with self.assertRaises(OSError):
+                observer.__enter__()
+        self.assertTrue(observer.cleanup_verified)
+        self.assertIn(unittest.mock.call(['docker', 'rm', '-f', cid]), probe.call_args_list)
+
+    def test_daemon_capacity_rejects_bad_or_failed_samples_and_cleanup(self):
+        observer = g.DockerStorageCapacity('/var/lib/docker')
+        observer.cid = 'a' * 64
+        for result in [(False, None), (True, ''), (True, 'header\n/dev/vda 9 1 bad 1% /docker-storage'),
+                       (True, 'header\n/dev/vda 9 1 8 1% relative'),
+                       (True, 'header\n/dev/vda 9 1 10 1% /data')]:
+            with self.subTest(result=result), patch.object(g, 'docker_probe', return_value=result):
+                with self.assertRaises(OSError):
+                    observer.sample()
+        with patch.object(g, 'docker_probe', side_effect=[(True, ''), (True, observer.cid)]):
+            with self.assertRaisesRegex(OSError, 'absence not proven'):
+                observer.__exit__(None, None, None)
+
     def test_hash_tree_stops_self_symlink_loop(self):
         with owned_scratch() as directory:
             base = Path(directory) / 'base'

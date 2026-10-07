@@ -1,6 +1,18 @@
 # AgentFS 独立 ARM64 原生 CI
 
-此门禁仅监听 `codex/agentfs-native-acceptance` 分支 push，权限为 `contents: read`，不发布、不晋级 release/RC，也不调用真实 Gateway。两平台串行：`native-macos` 使用 `macos-14`，`native-linux` 在 `native-macos` 之后使用 `ubuntu-24.04-arm` 仅托管 Docker，实际 Linux 导出/重编译/测试/打包/安装/加载验收全部在固定 Bookworm 镜像内执行。脚本检查真实 host ARM64，不能通过矩阵标签冒称架构。
+## mini 接续状态（2026-10-07）
+
+接续源码为 `31df9741b6e31acdc598f4080eab11bbed200693`，包含整文件传输预算、Git porcelain 空格保留和 Linux 同容器绑定修复，不是已验收发行版。mini 的生产构建、测试类型检查和依赖状态检查通过；轻量 Vitest 为 29 pass / 4 mounted skip。一轮原始 `bun run test:integration` 实际退出 0，前置 30 pass、Lite 163 pass / 16 既有 skip、Full 63 pass，测试 Compose 资源已清理。这是隔离集成结果，没有完整监督器的输入快照和逐 producer 证据，不替代两轮正式证据门禁、真实 Gateway 或原生挂载验收。
+
+mini 没有 Cargo/rustup；初次接续的 GitHub SSH 读取返回 `Permission denied (publickey)`，随后用户配置认证，公有 Xpod 与私有 Pro 的远端检查点读取均已成功。原生门禁新增监听当前 mini 分支，用远端构建取得新源码证据，不安装本地工具链。挂载 workflow 仍绑定旧冻结产品 `0e260a49ce28cb7b5cf8ee0bc4342d893cb742a8`，`accept.py --verify-native-source` 对当前源码正确拒绝 `tools/agentfs-pod` 差异。必须先得到当前源码的新双平台 native/install 产物，再更新挂载材料绑定。
+
+`whole_ci_gate.py` 最初在 mini Docker Desktop 上因宿主不存在 daemon 的 `/var/lib/docker` 而拒绝；该失败保留，不用宿主容量代替 VM 容量。现在当该路径不在宿主时，使用已安装的 `redis:7-alpine` 的不可变 image ID 启动一个独占容量观察容器：只读挂载 daemon 存储目录、禁用网络、删除全部 capabilities、禁止提权，整轮复用同一容器，通过有界 `docker exec df -Pk` 持续采样。VM 与宿主证据目录容量取最小值；镜像缺失、输出非法、探测超时或失败均拒绝，不自动拉镜像或推断容量。结束后按精确 CID 删除并验证不存在，摘要绑定 image ID、CID 和 `cleanupVerified`；清理失败不能保留成功摘要。mini 已真实执行容量采样和精确清理验证；不代表两轮完整监督门禁或 FUSE 验收通过。初始准入失败仍写入 `admissionError`、退出 1、`ok=false` 和空 `runs`。
+
+容量观察器的首版两轮正式监督门禁均实际退出 0，源码/运行输入快照一致、日志关闭且有哈希、各自 Compose 资源为空；证据在 `.test-data/whole-ci-desktop-20261007/`，不继承到后续源码。实测发现 Redis 镜像的 `/data` 声明会产生匿名卷，最终版以只读 tmpfs 覆盖该位置；已实际核对容器仅有只读存储 bind、无 volume 挂载并完成 CID 清理。最终版 Python 为 52 pass / 1 Linux 专属 skip。成功摘要只在观察器清理后输出；最终源码的完整集成须独立验证。
+
+最终容量观察器的完整监督回归与加入 mini 分支触发后的提交前完整监督回归分别退出 0：每轮 preflight 30 pass、Lite 163 pass / 16 既有 skip、Full 63 pass，源码/运行输入一致、raw 哈希闭合、进程组消失、Compose 资源为空且 `capacityObserver.cleanupVerified=true`。本机证据分别在 `.test-data/whole-ci-desktop-final-20261007/` 与 `.test-data/whole-ci-prepush-20261007/`；仅属隔离集成，不替代远端原生、挂载或 GZ 真实验收。
+
+此门禁监听 `codex/agentfs-native-acceptance` 和 mini 接续分支 `codex/migrate-mini/solidfs-20261007` 的 push，权限为 `contents: read`，不发布、不晋级 release/RC，也不调用真实 Gateway。两平台串行：`native-macos` 使用 `macos-14`，`native-linux` 在 `native-macos` 之后使用 `ubuntu-24.04-arm` 仅托管 Docker，实际 Linux 导出/重编译/测试/打包/安装/加载验收全部在固定 Bookworm 镜像内执行。脚本检查真实 host ARM64，不能通过矩阵标签冒称架构。
 
 ## Linux Bookworm 基线
 

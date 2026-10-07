@@ -2,7 +2,7 @@ name: AgentFS native source-bound acceptance
 
 on:
   push:
-    branches: [codex/agentfs-native-acceptance]
+    branches: [codex/agentfs-native-acceptance, codex/migrate-mini/solidfs-20261007]
   workflow_call:
 
 permissions:

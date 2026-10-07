@@ -13,11 +13,13 @@ zero exit.
 This is a development gate, not a release path.
 """
 import collections
+from contextlib import ExitStack
 import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -244,6 +246,73 @@ def free_bytes(*paths):
         0, 0, min(shutil.disk_usage(path).free for path in paths))
 
 
+class DockerStorageCapacity:
+    """One owned, read-only observer on the daemon's storage filesystem."""
+    def __init__(self, storage):
+        self.storage = storage
+        self.cid = None
+        self.image = None
+        self.cleanup_verified = False
+
+    def checked(self, argv):
+        known, output = docker_probe(argv)
+        if not known:
+            raise OSError('Docker storage observer command failed or timed out')
+        return (output or '').strip()
+
+    def __enter__(self):
+        self.image = self.checked(['docker', 'image', 'inspect', 'redis:7-alpine', '--format', '{{.Id}}'])
+        if not re.fullmatch(r'sha256:[a-f0-9]{64}', self.image):
+            raise OSError('Docker storage observer image identity is invalid')
+        # Use a unique name to recover even an unknown create outcome.
+        self.name = f'xpod-capacity-{NONCE.lower()}-{os.getpid()}'
+        if self.checked(['docker', 'ps', '-aq', '--filter', f'name=^/{self.name}$']):
+            raise OSError('Docker storage observer name already exists')
+        try:
+            self.cid = self.checked(['docker', 'create', '--name', self.name,
+                '--label', f'xpod.capacity-owner={self.name}', '--network', 'none',
+                '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                '--tmpfs', '/data:ro,noexec,nosuid,size=1m',
+                '--mount', f'type=bind,src={self.storage},dst=/docker-storage,readonly',
+                '--entrypoint', 'sleep', self.image, '7200'])
+            if not re.fullmatch(r'[a-f0-9]{64}', self.cid):
+                raise OSError('Docker storage observer container identity is invalid')
+            self.checked(['docker', 'start', self.cid])
+            self.sample()
+            return self
+        except BaseException:
+            # A timed-out create may have succeeded; only recover our labelled name.
+            if not self.cid or not re.fullmatch(r'[a-f0-9]{64}', self.cid):
+                candidate = self.checked(['docker', 'ps', '-aq', '--no-trunc',
+                    '--filter', f'name=^/{self.name}$', '--filter', f'label=xpod.capacity-owner={self.name}'])
+                self.cid = candidate if re.fullmatch(r'[a-f0-9]{64}', candidate) else None
+            self.__exit__(None, None, None)
+            raise
+
+    def sample(self):
+        output = self.checked(['docker', 'exec', self.cid, 'df', '-Pk', '/docker-storage'])
+        lines = output.splitlines()
+        fields = lines[-1].split() if len(lines) == 2 else []
+        # BusyBox may report the VM's backing mount (/data), not the bind target.
+        if (len(fields) != 6 or not fields[-1].startswith('/')
+                or not all(value.isdigit() for value in fields[1:4])
+                or not re.fullmatch(r'\d+%', fields[4])
+                or int(fields[3]) > int(fields[1])):
+            raise OSError('Docker storage observer returned invalid capacity')
+        return int(fields[3]) * 1024
+
+    def free(self, evidence):
+        return collections.namedtuple('Usage', 'total used free')(
+            0, 0, min(shutil.disk_usage(evidence).free, self.sample()))
+
+    def __exit__(self, *_):
+        if self.cid:
+            self.checked(['docker', 'rm', '-f', self.cid])
+            if self.checked(['docker', 'ps', '-aq', '--no-trunc', '--filter', f'id={self.cid}']):
+                raise OSError('Docker storage observer cleanup absence not proven')
+            self.cleanup_verified = True
+
+
 def gate_passed(receipt, source_unchanged, manifest_unchanged, cleanup_known, cleanup_empty):
     return (receipt.get('exit') == 0
             and receipt.get('signal') is None
@@ -276,7 +345,7 @@ def self_test():
     print('whole_ci_gate self-test ok')
 
 
-def main():
+def run_main(stack):
     if '--self-test' in sys.argv:
         self_test()
         return 0
@@ -292,6 +361,31 @@ def main():
         raise SystemExit(f'official Bun 1.4.2 required, got {bun_version}')
     if storage is None:
         raise SystemExit('docker storage root is unknown; refusing to run (no guessed path)')
+    capacity = lambda evidence: free_bytes(evidence, storage)
+    try:
+        if not Path(storage).exists():
+            observer = DockerStorageCapacity(storage)
+            def record_observer_cleanup():
+                final_summary = json.loads((EVIDENCE / 'gate-summary.json').read_text())
+                final_summary.setdefault('capacityObserver', {})['cleanupVerified'] = observer.cleanup_verified
+                if not observer.cleanup_verified:
+                    final_summary['ok'] = False
+                write_json('gate-summary.json', final_summary)
+            stack.callback(record_observer_cleanup)
+            stack.enter_context(observer)
+            capacity = observer.free
+            summary['capacityObserver'] = {'mode': 'daemon-container', 'cid': observer.cid, 'image': observer.image}
+        else:
+            summary['capacityObserver'] = {'mode': 'host-filesystem'}
+        capacity(EVIDENCE)
+    except OSError as error:
+        summary['admissionError'] = {
+            'reason': 'Docker storage capacity is not observable from this host',
+            'errorType': type(error).__name__, 'errno': error.errno,
+        }
+        summary['ok'] = False
+        write_json('gate-summary.json', summary)
+        raise SystemExit('Docker storage capacity is not observable; refusing to run (no guessed path)') from error
     ok = True
     for index in range(1, RUNS + 1):
         tag = f'whole{index}'
@@ -318,7 +412,7 @@ def main():
         environment['XPOD_FULL_RUN_ID'] = run_id
         receipt, _ = supervise.run_stage(
             tag, [BUN, 'run', 'test:integration'], EVIDENCE, ROOT,
-            free=lambda _evidence: free_bytes(EVIDENCE, storage),
+            free=capacity,
             fresh_bytes=FRESH_BYTES, stop_bytes=STOP_BYTES, timeout=TIMEOUT,
             environment=environment)
         source_after = tracked_snapshot()
@@ -357,12 +451,31 @@ def main():
         write_json('gate-summary.json', summary)
     summary['ok'] = ok
     write_json('gate-summary.json', summary)
-    print(json.dumps({'nonce': NONCE, 'ok': ok, 'bunVersion': bun_version, 'dockerRoot': storage,
+    return 0 if ok else 1
+
+
+def print_summary(summary):
+    print(json.dumps({'nonce': summary['nonce'], 'ok': summary['ok'], 'bunVersion': summary['bunVersion'], 'dockerRoot': summary['dockerRoot'],
                       'runs': [{k: run.get(k) for k in ('project', 'exit', 'signal', 'resourceStop',
                                                         'rawClosedBeforeHash', 'actualWait', 'sourceUnchanged',
                                                         'manifestUnchanged', 'missingRequiredAfter', 'cleanupKnown',
                                                         'cleanupEmpty', 'passed')} for run in summary['runs']]}))
-    return 0 if ok else 1
+
+
+def main():
+    try:
+        with ExitStack() as stack:
+            result = run_main(stack)
+    except BaseException:
+        summary_path = EVIDENCE / 'gate-summary.json'
+        if summary_path.exists():
+            summary = json.loads(summary_path.read_text())
+            summary['ok'] = False
+            write_json('gate-summary.json', summary)
+        raise
+    if '--self-test' not in sys.argv:
+        print_summary(json.loads((EVIDENCE / 'gate-summary.json').read_text()))
+    return result
 
 
 if __name__ == '__main__':
