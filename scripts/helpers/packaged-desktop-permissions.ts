@@ -8,6 +8,44 @@ import { captureBrowserAiConnections, type MountedBrowserAiConnections } from '.
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 
+/** Closed vocabulary for the mounted Pod permission phase. The pod-a window of
+ * RC 37580705243 published only the driver's generic `unclassified` code and no inner operation could be identified. Mounted-permission
+ * boundaries could throw plain `Error` without attribution. Each real external
+ * operation below names its own boundary, so a public artifact can attribute it
+ * while the raw diagnostic stays in the private 600-mode evidence. */
+export type MountedPermissionCondition = 'mounted-runtime' | 'service-access'
+  | 'target-read' | 'parent-policy' | 'grant-apply' | 'grant-repeat' | 'grant-restore';
+
+/** A mounted Pod permission failure that keeps its exact diagnostic text private
+ * and publishes only a reviewed closed-vocabulary condition. */
+export class MountedPermissionError extends Error {
+  readonly condition: MountedPermissionCondition;
+  /** The untranslated rejection behind an attributed operation, kept for the
+   * private 600-mode evidence only. */
+  override readonly cause?: unknown;
+  constructor(condition: MountedPermissionCondition, detail: string, cause?: unknown) {
+    super(detail);
+    this.name = 'MountedPermissionError';
+    this.condition = condition;
+    this.cause = cause;
+  }
+}
+
+/** Run one real mounted-permission operation and attribute its own rejection to
+ * a fixed boundary token. A failure that already carries a specific condition
+ * keeps that condition unchanged, so a coarse outer wrap never replaces a
+ * precise inner one, and it is applied per boundary rather than as one catch-all
+ * around the whole phase. */
+export async function attributeMountedOperation<T>(condition: MountedPermissionCondition,
+  action: () => Promise<T>): Promise<T> {
+  try { return await action(); } catch (error) {
+    if (error instanceof MountedPermissionError) throw error;
+    const cause = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    throw new MountedPermissionError(condition,
+      `Mounted permission operation "${condition}" was rejected: ${cause}`, error);
+  }
+}
+
 /** Observe requests; never replace transport or read credential headers/bodies. */
 export function observeOwnedPodTraffic(page: Page, podUrl: string): {
   snapshot(): { writes: number; authorizationRequests: number };
@@ -101,50 +139,52 @@ export async function inspectFreshMountedTargets(handle: JSHandle<MountedBrowser
  * Call restore before switching Pods/navigation, while this capability owns attribution.
  */
 export async function acceptMountedPodPermissions(page: Page, binding: { webId: string; podUrl: string }): Promise<MountedPodPermissionPhase> {
-  const handle = await captureBrowserAiConnections(page, binding);
+  const handle = await attributeMountedOperation('mounted-runtime', () => captureBrowserAiConnections(page, binding));
   let request: SolidServiceAccessRequest | undefined;
   let grantAttempted = false;
   let restored = false;
   const restore = async (): Promise<true> => {
-    if (!request || !grantAttempted) throw new Error('No grant phase to restore');
-    const result = await handle.evaluate(({ host }, request) => {
+    if (!request || !grantAttempted) throw new MountedPermissionError('grant-restore', 'No grant phase to restore');
+    const active = request;
+    const result = await attributeMountedOperation('grant-restore', () => handle.evaluate(({ host }, request) => {
       if (!host.solid.permissions) throw new Error('Missing original mounted permission capability');
       return host.solid.permissions.revokeAgentAccess(request);
-    }, request);
-    if (result.status !== 'missing') throw new Error('This capability did not independently restore its fresh grants');
-    await inspectEach(handle, request, 'missing');
+    }, active));
+    if (result.status !== 'missing') throw new MountedPermissionError('grant-restore', 'This capability did not independently restore its fresh grants');
+    await attributeMountedOperation('grant-restore', () => inspectEach(handle, active, 'missing'));
     restored = true;
     return true;
   };
   try {
-    request = parseAiConnectionsServiceAccess(await handle.evaluate(({ controller }) => {
+    request = await attributeMountedOperation('service-access', async () => parseAiConnectionsServiceAccess(await handle.evaluate(({ controller }) => {
       if (!controller.client) throw new Error('Missing mounted AI client');
       return controller.client.getServiceAccess();
-    }), binding.podUrl);
+    }), binding.podUrl));
     const resourceIds = request.resources.map(resource => resource.id);
     if (resourceIds.length !== AI_CONNECTIONS_SERVICE_RESOURCE_IDS.length || new Set(resourceIds).size !== resourceIds.length
-      || AI_CONNECTIONS_SERVICE_RESOURCE_IDS.some(id => !resourceIds.includes(id))) throw new Error('Incomplete shared target declaration');
+      || AI_CONNECTIONS_SERVICE_RESOURCE_IDS.some(id => !resourceIds.includes(id))) throw new MountedPermissionError('service-access', 'Incomplete shared target declaration');
+    const declared: SolidServiceAccessRequest = request;
     // First means observed missing service grants, not a new username assumption.
     // Normal owner initialization may already have created a target document.
-    await inspectFreshMountedTargets(handle, request, binding.podUrl);
-    const before = await parentAcr(handle, binding.podUrl);
+    await attributeMountedOperation('target-read', () => inspectFreshMountedTargets(handle, declared, binding.podUrl));
+    const before = await attributeMountedOperation('parent-policy', () => parentAcr(handle, binding.podUrl));
     grantAttempted = true;
-    await handle.evaluate(({ controller }) => {
+    await attributeMountedOperation('grant-apply', () => handle.evaluate(({ controller }) => {
       if (!controller.authorizeService) throw new Error('Missing mounted authorization operation');
       return controller.authorizeService();
-    });
-    const readBack = await inspectEach(handle, request, 'granted');
-    const after = await parentAcr(handle, binding.podUrl);
-    if (after.url !== before.url || after.hash !== before.hash) throw new Error('Parent policy changed while granting targets');
+    }));
+    const readBack = await attributeMountedOperation('grant-apply', () => inspectEach(handle, declared, 'granted'));
+    const after = await attributeMountedOperation('parent-policy', () => parentAcr(handle, binding.podUrl));
+    if (after.url !== before.url || after.hash !== before.hash) throw new MountedPermissionError('grant-apply', 'Parent policy changed while granting targets');
     const traffic = observeOwnedPodTraffic(page, binding.podUrl);
     let repeatReads: number;
     let repeat;
     try {
-      await handle.evaluate(({ controller }) => controller.authorizeService!());
-      repeatReads = await inspectEach(handle, request, 'granted');
+      await attributeMountedOperation('grant-repeat', () => handle.evaluate(({ controller }) => controller.authorizeService!()));
+      repeatReads = await attributeMountedOperation('grant-repeat', () => inspectEach(handle, declared, 'granted'));
       repeat = traffic.snapshot();
     } finally { traffic.stop(); }
-    if (repeat.writes !== 0 || repeat.authorizationRequests !== 0) throw new Error('Repeat grant wrote or reauthenticated');
+    if (repeat.writes !== 0 || repeat.authorizationRequests !== 0) throw new MountedPermissionError('grant-repeat', 'Repeat grant wrote or reauthenticated');
     return { handle, request, restore,
       evidence: { bindingSha256: sha256(JSON.stringify(binding)),
         first: { resourceIds, fresh: true, granted: readBack, readBack, parentUnchanged: true },
