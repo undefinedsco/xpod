@@ -4,7 +4,7 @@ name: AgentFS mounted platform acceptance
 # separate development branch so a harness-only push never recompiles the frozen
 # admitted product (the native compiler workflow only runs on
 # codex/agentfs-native-acceptance or the staging integration branch). Product
-# pins come from accepted run 37670475752; the harness SHA is this checkout.
+# pins come from accepted run 37674192049; the harness SHA is this checkout.
 on:
   push:
     branches: ['codex/solidfs-mounted-staging-20261008']
@@ -16,17 +16,17 @@ permissions:
   actions: read
 
 env:
-  PRODUCT_RUN: '37670475752'
-  PRODUCT_SHA: '17572c3b3f8be655c833f3ade80cd84cb01d1b99'
-  LINUX_ARTIFACT_ID: '11507043398'
-  LINUX_ZIP_SHA: 'a6f39d0957d8940375327d716de078ced82b4ae6516b1cbddde958d0b50785f0'
-  LINUX_ARCHIVE_SHA: 'e0c7b3f14306b570f77d0b50d79618898f5e18274dd4239e14a35cd0264bb521'
-  LINUX_HELPER_SHA: '190f2c228f44a217e37c17418acb182cba50d0b159121ed98e02786e2f3aff90'
+  PRODUCT_RUN: '37674192049'
+  PRODUCT_SHA: 'e940b8d26730f22cdbe5abc4b6d08069f9f7ff0f'
+  LINUX_ARTIFACT_ID: '11509195380'
+  LINUX_ZIP_SHA: '090d5b06ab0c1d3f8ba31553ee259ea292be6a821f8002767a790f8af88192b4'
+  LINUX_ARCHIVE_SHA: '75c13352c2ba1448e8219f438adee8a69d0139057b45a2b80d2147c7494227db'
+  LINUX_HELPER_SHA: '8a8b0cd0ee21d89f28e16e961894c85cc62048f30bb56d84d9ba2eb1f707652c'
   BOOKWORM_IMAGE: rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e
-  DARWIN_ARTIFACT_ID: '11505897600'
-  DARWIN_ZIP_SHA: '59093786c13ffb102557b11be287cb37f6acab02975542bd29c43d99d3c38baf'
-  DARWIN_ARCHIVE_SHA: 'c7f7a5a70d132dac399a2ab45795556f81f3d3adf7200dda9521f5cf4e4d1daf'
-  DARWIN_HELPER_SHA: 'eac5ec3f822e2c00d0b8d2f9d1c0c0a59971d58918ec647663bab9b0bf39b8d8'
+  DARWIN_ARTIFACT_ID: '11507762162'
+  DARWIN_ZIP_SHA: '4944d7ebd69983842388c2a24b58f787594f01836638a969c1fabe5e998c34a2'
+  DARWIN_ARCHIVE_SHA: '83f16f455bd608862efbde0cc502037898d26ab034b92deffee5e016414073d0'
+  DARWIN_HELPER_SHA: '73db23e184c09b64be6efc8ac3fbcf61b04d712b4b4c5a717e353754dcd24b9b'
 
 jobs:
   linux-fuse:
