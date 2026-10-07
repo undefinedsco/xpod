@@ -4,6 +4,30 @@ import type { Page, Request, Response } from '@playwright/test';
 import type { AiConnectionsProvider, CreateApiKeyCredentialInput } from '@undefineds.co/ai-connections/client';
 import type { MountedPodPermissionPhase } from './packaged-desktop-permissions';
 
+/** Closed boundary names are the only operation detail published by CI. */
+export type PackagedOperationCondition = 'provider-identity' | 'provider-collection'
+  | 'provider-create' | 'provider-confirm' | 'provider-publication' | 'provider-cleanup'
+  | 'key-dialog' | 'key-cleanup' | 'held-invocation' | 'first-chat';
+
+export class PackagedOperationError extends Error {
+  override readonly cause: unknown;
+  constructor(readonly condition: PackagedOperationCondition, cause: unknown) {
+    super('Packaged operation rejected at ' + condition);
+    this.name = 'PackagedOperationError';
+    this.cause = cause;
+  }
+}
+
+/** Attribute the real operation, retaining its untranslated rejection privately. */
+export async function attributePackagedOperation<T>(condition: PackagedOperationCondition,
+  action: () => Promise<T>): Promise<T> {
+  try { return await action(); } catch (error) {
+    if (error instanceof PackagedOperationError) throw error;
+    if (error instanceof AggregateError && error.errors[0] instanceof PackagedOperationError) throw error;
+    throw new PackagedOperationError(condition, error);
+  }
+}
+
 export function accountCreationResponseSucceeded(status: number, authorization?: string): boolean {
   return status >= 200 && status < 300 && authorization?.startsWith('CSS-Account-Token ') === true;
 }
@@ -36,14 +60,17 @@ export function assertMountedModelBinding(input: { provider: string; credentialI
   }
 }
 
-async function until<T>(probe: () => Promise<T | undefined>, label: string): Promise<T> {
-  const deadline = Date.now() + 30_000;
-  do {
-    const result = await probe();
-    if (result !== undefined) return result;
-    await new Promise(resolve => setTimeout(resolve, 100));
-  } while (Date.now() < deadline);
-  throw new Error(label);
+async function until<T>(probe: () => Promise<T | undefined>, label: string,
+  condition: PackagedOperationCondition): Promise<T> {
+  return attributePackagedOperation(condition, async () => {
+    const deadline = Date.now() + 30_000;
+    do {
+      const result = await probe();
+      if (result !== undefined) return result;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } while (Date.now() < deadline);
+    throw new Error(label);
+  });
 }
 
 /** Require collection adoption before writing, then independently observe its
@@ -53,43 +80,43 @@ export async function createConfirmedMountedProvider(phase: MountedPodPermission
   provider: AiConnectionsProvider; credential: CreateApiKeyCredentialInput; model?: string; expectedModels?: string[];
 }): Promise<{ credentialId: string; model: string; quotaObserved: true; remove(): Promise<true> }> {
   const { handle } = phase;
-  const boundWebId = await handle.evaluate(({ host, controller }) => {
+  const boundWebId = await attributePackagedOperation('provider-identity', () => handle.evaluate(({ host, controller }) => {
     const session = host.solid.session.getSnapshot();
     if (session.status !== 'authenticated' || host.solid.pod?.status !== 'ready'
       || session.webId !== host.solid.pod.current.webId || controller.client?.webId !== session.webId) {
       throw new Error('Mounted provider identity is unavailable');
     }
     return session.webId;
-  });
+  }));
   await until(async () => handle.evaluate(({ controller }) =>
     controller.credentialsCollection?.isReady() && controller.credentialsCollection.pendingKeys.size === 0 ? true : undefined),
-  'Mounted credential collection did not become ready');
-  const created = await handle.evaluate(({ controller }, input) => {
+  'Mounted credential collection did not become ready', 'provider-collection');
+  const created = await attributePackagedOperation('provider-create', () => handle.evaluate(({ controller }, input) => {
     if (!controller.client) throw new Error('Missing mounted AI client');
     return controller.client.createApiKeyCredential(input.provider, input.credential);
-  }, input);
-  const remove = async (): Promise<true> => {
+  }, input));
+  const remove = async (): Promise<true> => attributePackagedOperation<true>('provider-cleanup', async () => {
     await handle.evaluate(({ controller }, input) => controller.client!.deleteProviderCredential(input.provider, input.id),
       { provider: input.provider, id: created.id });
     await until(async () => handle.evaluate(({ controller }, id) => {
       const collection = controller.credentialsCollection;
       if (!collection || collection.conflicts.length) throw new Error('Credential cleanup conflicted');
       return collection.pendingKeys.size === 0 && !controller.credentialRows?.some(row => row.id === id) ? true : undefined;
-    }, created.id), 'Credential cleanup was not independently confirmed');
+    }, created.id), 'Credential cleanup was not independently confirmed', 'provider-cleanup');
     const absent = await handle.evaluate(async ({ controller }, input) => {
       const rows = await controller.client!.listProviders();
       return !rows.find(row => row.id === input.provider)?.credentials.some(row => row.id === input.id);
     }, { provider: input.provider, id: created.id });
     if (!absent) throw new Error('Removed credential persisted in provider readback');
     return true;
-  };
+  });
   try {
     await until(async () => handle.evaluate(({ controller }, id) => {
       const collection = controller.credentialsCollection;
       if (!collection || collection.conflicts.length) throw new Error('Credential mutation conflicted');
       return collection.pendingKeys.size === 0 && controller.credentialRows?.some(row => row.id === id) ? true : undefined;
-    }, created.id), 'Credential mutation was not confirmed');
-    const result = await handle.evaluate(async ({ controller }, input) => {
+    }, created.id), 'Credential mutation was not confirmed', 'provider-confirm');
+    const result = await attributePackagedOperation('provider-publication', () => handle.evaluate(async ({ controller }, input) => {
       const client = controller.client!;
       const providers = await client.listProviders();
       const provider = providers.find(row => row.id === input.provider);
@@ -105,8 +132,9 @@ export async function createConfirmedMountedProvider(phase: MountedPodPermission
       const quota = await client.quota(input.provider, true, { credentialId: input.id });
       if (quota.status !== 'available') throw new Error('Provider quota was not actually available');
       return { credential, credentialCount: provider!.credentials.length, providerId: provider!.id, discovery, models, selectedModel, webId: client.webId };
-    }, { provider: input.provider, id: created.id, model: input.model, expectedModels: input.expectedModels });
-    assertMountedModelBinding({ provider: input.provider, credentialId: created.id, model: result.selectedModel, webId: boundWebId }, result);
+    }, { provider: input.provider, id: created.id, model: input.model, expectedModels: input.expectedModels }));
+    await attributePackagedOperation('provider-publication', async () =>
+      assertMountedModelBinding({ provider: input.provider, credentialId: created.id, model: result.selectedModel, webId: boundWebId }, result));
     return { credentialId: created.id, model: result.models[0].id, quotaObserved: true, remove };
   } catch (error) {
     try { await remove(); } catch (cleanup) { throw new AggregateError([error, cleanup], 'Provider phase and cleanup failed'); }
@@ -190,7 +218,7 @@ export async function createMountedKeyInUi(page: Page, phase: MountedPodPermissi
       await until(async () => phase.handle.evaluate(async ({ controller }, id) => {
         const records = await controller.client!.listGatewayKeys();
         return !records.some(record => record.id === id && !record.revokedAt) ? true : undefined;
-      }, id), 'UI key revoke did not remove the Pod record');
+      }, id), 'UI key revoke did not remove the Pod record', 'key-cleanup');
       const accountAbsent = await phase.handle.evaluate(async ({ host }, clientId) => {
         const capability = host.capabilities.aiClientCredentials;
         if (!capability) throw new Error('Missing original Account actor');

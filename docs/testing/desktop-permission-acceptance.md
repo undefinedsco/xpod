@@ -1,5 +1,7 @@
 # 桌面权限与发行验收契约
 
+2026-10-07：RC [37613561029](https://github.com/undefinedsco/xpod/actions/runs/37613561029)（source `89cee71d7`，version `0.4.30-rc.292`）停在 `operations-a / unclassified`。按驱动执行顺序，已越过当前 Pod 挂载授权与 invocation 字段读取，但该失败回执不能作为完整成功验收。公开记录无法区分凭据集合就绪、凭据创建/确认、模型发布、密钥对话框、复用 invocation 或首次 Chat；新增固定枚举的操作归因，实际边界拒绝及清理失败保留原始 cause 到私有诊断，公开回执只含步骤标识和固定解释。回归直接执行实际 provider 助手的身份、集合、创建和发布失败路径，验证不重试凭据写入、主失败不被清理失败覆盖且不发布原始密钥文本。该改动补足诊断，不代表操作失败根因已修复，仍需新 exact-source 安装包证明。
+
 2026-10-07：RC [37603049900](https://github.com/undefinedsco/xpod/actions/runs/37603049900)（source `2fd900fb7`，version `0.4.30-rc.290`）服务侧 19 项通过，桌面停在 `pod-a / pod-permission / mounted-runtime`，尚未进入 invocation 读取。该固定子条件只定位到当前 React/AI 挂载句柄，不能证明更细根因。源码发现驱动在会话认证完成后立即读取懒加载 applet，未等待其提交；新增回归确认：已认证但 applet 尚未挂载时原驱动立即失败。现改为最多 30 秒等待真实 committed tree 中同一 WebID、同一 Pod、已认证且 ready 的 host/controller；其他 Pod、匿名会话及 stale alternate 仍不能满足条件，权限和业务操作断言保持不变。这是已证明的驱动时序缺口修正；本次 RC 是否仅因该缺口失败仍未证明，需要后续真实安装包验收。
 
 2026-10-07：RC [37594862227](https://github.com/undefinedsco/xpod/actions/runs/37594862227)（source `7d3ba5b64`，version `0.4.30-rc.289`）桌面自更新通过，权限验收停在 `pod-a / pod-permission`，公开回执没有更细子条件。随后源码与可执行回归确认驱动契约错误：服务端 `AiConnectionsInvocationKeyIssuer` 返回 `AIConnectionInvocationConfig.apiKey`，驱动却读取不存在的 `invocation.token`，必然误报 invocation 缺失。修正为引用共享类型并读取 `apiKey`；回归直接执行实际驱动的字段读取并使用真实 issuer 返回值，先 RED 再 GREEN。这个修复只纠正验收驱动，不能据此宣称真实桌面权限或后续操作已通过，仍需新 exact-source RC 证明。挂载授权、独立回读、重复授予零写入、恢复与跨 Pod 隔离断言全部保留。

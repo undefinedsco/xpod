@@ -1,7 +1,7 @@
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { expect, it } from 'vitest';
-import { accountCreationResponseSucceeded, assertAccountCredentialsRestored, assertNewAccountCredential, assertMountedModelBinding, readOwnedPiConfiguration } from '../../scripts/helpers/packaged-desktop-operations';
+import { expect, it, vi } from 'vitest';
+import { accountCreationResponseSucceeded, assertAccountCredentialsRestored, assertNewAccountCredential, assertMountedModelBinding, readOwnedPiConfiguration, createConfirmedMountedProvider } from '../../scripts/helpers/packaged-desktop-operations';
 
 it.each([200, 201])('recognizes an Account creation success %s without requiring 201', status => {
   expect(accountCreationResponseSucceeded(status, 'CSS-Account-Token fixture')).toBe(true);
@@ -66,4 +66,76 @@ it('requires actual Pi files in the owned home and refuses foreign paths or gate
     await rm(models);
     await expect(readOwnedPiConfiguration(home, gateway)).rejects.toThrow();
   } finally { await rm(fixture, { recursive: true, force: true }); }
+});
+
+
+it.each([
+  ['identity', 'provider-identity'], ['collection', 'provider-collection'],
+  ['create', 'provider-create'], ['publication', 'provider-publication'],
+] as const)('attributes the actual provider %s rejection without replaying its credential mutation', async (stage, condition) => {
+  const secret = 'fixture-private-credential-never-publish';
+  const cause = new Error(secret);
+  const webId = 'https://owner.example/card#me';
+  let created = false;
+  let removed = false;
+  const client = {
+    webId,
+    createApiKeyCredential: vi.fn(() => {
+      if (stage === 'create') throw cause;
+      created = true;
+      return { id: 'owned' };
+    }),
+    deleteProviderCredential: vi.fn(() => { removed = true; }),
+    listProviders: vi.fn(() => { throw cause; }),
+  };
+  const mounted = {
+    host: { solid: {
+      session: { getSnapshot: () => ({ status: stage === 'identity' ? 'anonymous' : 'authenticated', webId }) },
+      pod: { status: 'ready', current: { webId } },
+    } },
+    controller: {
+      client,
+      get credentialsCollection() {
+        if (stage === 'collection') throw cause;
+        return { isReady: () => true, pendingKeys: new Set(), conflicts: [] };
+      },
+      get credentialRows() { return created && !removed ? [{ id: 'owned' }] : []; },
+    },
+  };
+  const phase = {
+    handle: { evaluate: async (fn: (value: typeof mounted, arg: unknown) => unknown, arg: unknown) => fn(mounted, arg) },
+  } as unknown as import('../../scripts/helpers/packaged-desktop-permissions').MountedPodPermissionPhase;
+  const failure = await createConfirmedMountedProvider(phase,
+    { provider: 'openai', credential: { apiKey: secret }, model: 'fixture-model' }).catch(error => error);
+  const { describeFailure, publishedFailures } = await import('../../scripts/accept-packaged-desktop-permissions');
+  expect(describeFailure(failure)).toEqual({ code: 'pod-operation',
+    explanation: 'The mounted provider, key or Chat operation failed; the reviewed sub-condition names the operation',
+    evidence: condition });
+  const primary = failure instanceof AggregateError ? failure.errors[0] : failure;
+  expect(primary.cause).toBeInstanceOf(Error);
+  if (stage !== 'identity') expect(primary.cause).toBe(cause);
+  expect(JSON.stringify(publishedFailures([failure, new Error(secret)]))).not.toContain(secret);
+  expect(client.createApiKeyCredential).toHaveBeenCalledTimes(stage === 'identity' || stage === 'collection' ? 0 : 1);
+  expect(client.deleteProviderCredential).toHaveBeenCalledTimes(stage === 'publication' ? 1 : 0);
+  if (stage === 'publication') {
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(describeFailure(failure.errors[1]).evidence).toBe('provider-cleanup');
+  }
+});
+
+it('keeps a generic primary at its real boundary when cleanup already has another condition', async () => {
+  const { attributePackagedOperation, PackagedOperationError } = await import('../../scripts/helpers/packaged-desktop-operations');
+  const { describeFailure } = await import('../../scripts/accept-packaged-desktop-permissions');
+  const primary = new Error('private-primary-credential');
+  const cleanup = new PackagedOperationError('key-cleanup', new Error('private-cleanup'));
+  const combined = new AggregateError([primary, cleanup], 'private combined failure');
+  const failure = await attributePackagedOperation('key-dialog', async () => { throw combined; }).catch(error => error);
+  expect(describeFailure(failure).evidence).toBe('key-dialog');
+  expect(failure.cause).toBe(combined);
+  const typed = new PackagedOperationError('provider-create', primary);
+  const typedCombined = new AggregateError([typed, cleanup], 'private combined failure');
+  const retained = await attributePackagedOperation('key-dialog', async () => { throw typedCombined; }).catch(error => error);
+  expect(retained).toBe(typedCombined);
+  expect(describeFailure(retained).evidence).toBe('provider-create');
+  expect(JSON.stringify(describeFailure(failure))).not.toContain('private-');
 });
