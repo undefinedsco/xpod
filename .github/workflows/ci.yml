@@ -59,6 +59,11 @@ jobs:
           sudo apt-get install -y -qq ripgrep
           rg --version
 
+      # Chromium must be installed before the unit suite: tests/scripts/rc-light-web-browser.test.ts
+      # launches a real Chromium, and the Account layout regression reuses the same install.
+      - name: Install Chromium for browser-backed unit and layout regressions
+        run: bunx playwright install --with-deps chromium
+
       - name: Unit tests
         run: bun run test:run
 
@@ -66,9 +71,6 @@ jobs:
       # are excluded from vitest, so they need their own gate or they silently rot.
       - name: Bun-only tests
         run: bun run test:bun
-
-      - name: Install browser for Account layout regression
-        run: bunx playwright install --with-deps chromium
 
       - name: Account document and App auth-window layout regression
         run: bun run test:account-layout
