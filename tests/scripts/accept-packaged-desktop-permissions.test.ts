@@ -1,3 +1,6 @@
+import { runInNewContext } from 'node:vm';
+import { AiConnectionsInvocationKeyIssuer } from '../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
+import { AesInvocationTokenCodec } from '../../src/api/ai-gateway/auth/InvocationTokenCodec';
 import { errors, type Page } from '@playwright/test';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -230,4 +233,20 @@ it('preserves mounted attribution through the driver final failure projection', 
     verify.mockRestore(); launch.mockRestore();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it('reads the actual issuer credential from the desktop driver service-access descriptor', async () => {
+  const issuer = new AiConnectionsInvocationKeyIssuer({
+    codec: new AesInvocationTokenCodec({ active: { kid: 'fixture', secret: 'desktop-invocation-contract-fixture' } }),
+    deployment: 'local', baseUrl: 'http://localhost:3000/v1',
+  });
+  const invocation = await issuer.issue({ auth: { type: 'solid',
+    webId: 'https://fixture.example/profile/card#me', authorizedPodUrl: 'https://fixture.example/pod/' } });
+  const source = await readFile(path.resolve('scripts/accept-packaged-desktop-permissions.ts'), 'utf8');
+  // Execute the actual driver's field read against the real issuer, rather than
+  // duplicating the descriptor shape in a fixture that could repeat its typo.
+  const expression = source.match(/const invocation = (descriptor\.invocation\?\.\w+);/)?.[1];
+  expect(expression).toBeDefined();
+  const received = runInNewContext(expression!, { descriptor: { invocation } });
+  expect(received).toBe(invocation.apiKey);
 });

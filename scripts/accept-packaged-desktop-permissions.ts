@@ -1,3 +1,4 @@
+import type { AIConnectionInvocationConfig } from '../src/agents/types';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
@@ -267,8 +268,8 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       }
       phase = await acceptMountedPodPermissions(page, { webId: binding.webId, podUrl: binding.storageUrl });
       const descriptor = await attributeMountedOperation('service-access',
-        () => phase!.handle.evaluate(({ controller }) => controller.client!.getServiceAccess())) as { invocation?: { token?: string } };
-      const invocation = descriptor.invocation?.token;
+        () => phase!.handle.evaluate(({ controller }) => controller.client!.getServiceAccess())) as { invocation?: AIConnectionInvocationConfig };
+      const invocation = descriptor.invocation?.apiKey;
       if (!invocation) throw new DesktopAcceptanceError('pod-permission', 'Authoritative current-Pod invocation is absent');
       if (index === 0) firstInvocation = invocation;
       advance(index === 0 ? 'operations-a' : 'operations-b');
