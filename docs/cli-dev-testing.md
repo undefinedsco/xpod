@@ -341,3 +341,16 @@ SPARQL 语义下，FILTER 在 OPTIONAL 内部时，未绑定的变量会导致�
 正确位置应在 OPTIONAL 之外。
 
 状态：待 drizzle-solid 修复 FILTER 放置逻辑。
+
+
+### 设备页的服务状态来源
+
+设备页合并 Gateway `/service/status` 的 Supervisor 状态和受管理端读权限保护的
+`/api/admin/status.services`。相同服务名优先保留 Supervisor 的进程、退出与重启信息。
+Local QLever 状态由持有实际子进程的 native client 提供，经同一个 API RDF engine 转发；
+Inngest 状态由当前 API runtime 持有的 `EmbeddedInngestService` 提供，不额外启动进程。
+
+QLever 只有完成 native ready 协议才报告运行中；Inngest 的运行中表示当前拥有执行器进程，
+不等同于任务投递或 HTTP 健康验收。外部 Inngest 显示“部署管理”，未配置显示“未使用”，
+缺少可用执行文件显示“未安装”，启动失败或意外退出显示“运行异常”。
+未能读取状态、旧实现未提供状态或未知重启次数应保留为未报告，不填入健康或次数默认值。

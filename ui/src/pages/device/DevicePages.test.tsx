@@ -27,6 +27,18 @@ describe('device pages', () => {
     expect(container.textContent).toContain('停止只影响这台设备');
     expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '停止 Xpod')?.disabled).toBe(true);
   });
+  test.each([
+    ['disabled', '未使用'], ['unavailable', '未安装'], ['managed', '部署管理'],
+    ['crashed', '运行异常'], ['given-up', '运行异常'],
+  ] as const)('renders scheduler state %s honestly', async (status, label) => {
+    vi.mocked(fetchServicesStatusSnapshot).mockResolvedValue({
+      adminData: null, servicesData: [{ name: 'inngest', status, restartCount: 0 }],
+      configData: null, ddnsData: null, publicCheck: null, checkedAt: new Date(),
+    });
+    await render(<DeviceServicesPage />);
+    expect(container.textContent).toContain(`任务调度（Inngest）${label}`);
+    expect(container.textContent).toContain('查询引擎（QLever）未报告');
+  });
   test('persists the automatic-restart choice through the desktop host', async () => {
     const setAutoRestart = vi.fn().mockResolvedValue(undefined);
     globalThis.xpodDesktop = {

@@ -1,13 +1,14 @@
 /**
  * Admin API - 管理接口
  */
+import type { RuntimeServiceState } from '../../../src/runtime/RuntimeServiceStatus';
 
 export interface ServiceState {
   name: string;
-  status: 'stopped' | 'starting' | 'running' | 'crashed';
+  status: RuntimeServiceState['status'];
   pid?: number;
   uptime?: number;
-  restartCount: number;
+  restartCount?: number;
 }
 
 export interface LogEntry {
@@ -22,6 +23,7 @@ export interface AdminStatus {
   pid: number;
   ppid: number;
   uptime: number;
+  services?: RuntimeServiceState[];
   env: {
     CSS_BASE_URL?: string;
     XPOD_EDITION?: string;
@@ -755,7 +757,10 @@ export async function fetchServicesStatusSnapshot(options: AdminFetchOptions = {
   const publicCheck = await getPublicIpCheck(resolveAdminAccessBaseUrl(configData?.env ?? {}, ddnsData), options);
 
   return {
-    servicesData,
+    servicesData: servicesData || adminData?.services ? Array.from(new Map([
+      ...(adminData?.services ?? []).map(service => [service.name, service] as const),
+      ...(servicesData ?? []).map(service => [service.name, service] as const),
+    ]).values()) : null,
     adminData,
     configData,
     ddnsData,

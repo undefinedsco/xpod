@@ -8,7 +8,7 @@ import NetworkPage from '../settings/NetworkPage';
 export function DeviceNetworkPage() { return <NetworkPage embedded />; }
 
 const coreServices = [['gateway', '入口网关'], ['css', 'Solid 服务'], ['api', 'API 服务'], ['qlever', '查询引擎（QLever）'], ['inngest', '任务调度（Inngest）']] as const;
-const serviceStates: Record<string, string> = { running: '运行中', stopped: '已停止', starting: '启动中', crashed: '运行异常', failed: '运行异常' };
+const serviceStates: Record<string, string> = { running: '运行中', stopped: '已停止', starting: '启动中', crashed: '运行异常', failed: '运行异常', 'given-up': '运行异常', disabled: '未使用', unavailable: '未安装', managed: '部署管理' };
 
 export function DeviceServicesPage() {
   const [snapshot, setSnapshot] = useState<ServicesStatusSnapshot>();

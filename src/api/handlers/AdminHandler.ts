@@ -4,6 +4,7 @@
  */
 
 import type { ServerResponse } from 'node:http';
+import type { RuntimeServiceState } from '../../runtime/RuntimeServiceStatus';
 import type { ApiServer, RouteHandler } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -444,6 +445,7 @@ export function describeUnservedPublicRoute(ddnsManager?: Pick<DdnsManager, 'get
 }
 
 export interface AdminRoutesOptions extends AdminAuthorizerOptions {
+  runtimeServiceStatuses?: () => RuntimeServiceState[];
   /** Reads the coordinated-public-route state without which reachability is unknowable. */
   ddnsManager?: Pick<DdnsManager, 'getStatus'>;
 }
@@ -469,6 +471,7 @@ export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptio
         pid: process.pid,
         ppid: process.ppid,
         uptime: process.uptime(),
+        services: options.runtimeServiceStatuses?.() ?? [],
         env: {
           CSS_BASE_URL: env.CSS_BASE_URL || process.env.CSS_BASE_URL,
           XPOD_EDITION: env.XPOD_EDITION || process.env.XPOD_EDITION,

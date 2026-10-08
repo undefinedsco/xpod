@@ -623,6 +623,7 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
   const container = createApiContainer({
     ...config,
     inngestRuntimeConfig: embeddedInngest.runtimeConfig,
+    runtimeServiceStatuses: () => embeddedInngest.service.getRuntimeServiceStatuses(),
   });
 
   if (options.open) {

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ApiServer } from '../../../src/api/ApiServer';
 import { AuthMiddleware } from '../../../src/api/middleware/AuthMiddleware';
 import { registerAdminRoutes } from '../../../src/api/handlers/AdminHandler';
@@ -15,8 +15,10 @@ describe('Admin route authorization', () => {
   const baseUrl = 'http://localhost:3195';
   const internalAdminAuthSecret = 'admin-read-fixture-secret';
 
+  const runtimeStatuses = vi.fn(() => [{ name: 'qlever', status: 'running' as const, pid: 123 }]);
+
   beforeAll(async() => {
-    registerAdminRoutes(server, { internalAdminAuthSecret });
+    registerAdminRoutes(server, { internalAdminAuthSecret, runtimeServiceStatuses: runtimeStatuses });
     registerAdminDdnsRoutes(server, { internalAdminAuthSecret });
     await server.start();
   });
@@ -31,6 +33,18 @@ describe('Admin route authorization', () => {
 
     const ddnsResponse = await fetch(`${baseUrl}/api/admin/ddns`);
     expect(ddnsResponse.status).toBe(200);
+  });
+
+  it('returns current owner status only after authorization', async() => {
+    runtimeStatuses.mockClear();
+    const denied = await fetch(`${baseUrl}/api/admin/status`, {
+      headers: { 'x-xpod-admin-proxy-loopback': '0' },
+    });
+    expect(denied.status).toBe(403);
+    expect(runtimeStatuses).not.toHaveBeenCalled();
+    const allowed = await fetch(`${baseUrl}/api/admin/status`);
+    expect((await allowed.json()).services).toEqual([{ name: 'qlever', status: 'running', pid: 123 }]);
+    expect(runtimeStatuses).toHaveBeenCalledTimes(1);
   });
 
   it('normalizes current API process logs before filtering with an honest source', async() => {

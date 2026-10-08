@@ -108,6 +108,26 @@ describe('LocalQleverNativeSparqlClient', () => {
     expect(requiresWindowsCommandShell('/tmp/qlever.cmd', 'linux')).toBe(false);
   });
 
+  it('reports actual process readiness, unexpected exit and explicit shutdown', async () => {
+    const client = createClient();
+    try {
+      expect(client.getRuntimeServiceStatuses()).toEqual([{ name: 'qlever', status: 'stopped' }]);
+      const startup = client.start();
+      expect(client.getRuntimeServiceStatuses()[0].status).toBe('starting');
+      await startup;
+      expect(client.getRuntimeServiceStatuses()[0]).toMatchObject({
+        name: 'qlever', status: 'running', pid: expect.any(Number),
+      });
+      await expect(client.query('SELECT * WHERE { # EXIT\n }', {
+        basePath: 'https://pod.example/',
+      })).rejects.toMatchObject({ code: 'qlever_runtime_unavailable' });
+      expect(client.getRuntimeServiceStatuses()).toEqual([{ name: 'qlever', status: 'crashed' }]);
+    } finally {
+      await client.close();
+    }
+    expect(client.getRuntimeServiceStatuses()).toEqual([{ name: 'qlever', status: 'stopped' }]);
+  });
+
   it('keeps one ready SQLite runtime and correlates native result envelopes', async () => {
     const client = createClient();
     try {

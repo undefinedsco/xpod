@@ -108,6 +108,26 @@ function socketService(socketPath: string): EmbeddedInngestService {
 }
 
 describe('EmbeddedInngestService', () => {
+  it('reports the owned child and invalidates its status on unexpected exit', async () => {
+    const child = Object.assign(fakeChild(), { pid: 4242, exitCode: null, signalCode: null });
+    spawnMock.mockReturnValueOnce(child);
+    const service = new EmbeddedInngestService({
+      edition: 'local', apiBaseUrl: 'http://127.0.0.1:3001',
+      databaseUrl: 'sqlite::memory:', mode: 'spawn', binaryPath: 'node',
+      baseUrl: 'http://127.0.0.1:8288', eventKey: 'test-event', signingKey: 'test-signing',
+    });
+    try {
+      expect(service.getRuntimeServiceStatuses()).toEqual([{ name: 'inngest', status: 'stopped' }]);
+      await service.start();
+      expect(service.getRuntimeServiceStatuses()).toEqual([{ name: 'inngest', status: 'running', pid: 4242 }]);
+      child.emit('exit', 1, null);
+      expect(service.getRuntimeServiceStatuses()).toEqual([{ name: 'inngest', status: 'crashed' }]);
+    } finally {
+      await service.stop();
+    }
+    expect(service.getRuntimeServiceStatuses()).toEqual([{ name: 'inngest', status: 'stopped' }]);
+  });
+
   it('stays disabled when cloud Inngest is not configured', async () => {
     const service = new EmbeddedInngestService({
       edition: 'cloud',
@@ -121,6 +141,7 @@ describe('EmbeddedInngestService', () => {
       enabled: false,
       durableDelivery: false,
     });
+    expect(service.getRuntimeServiceStatuses()).toEqual([{ name: 'inngest', status: 'disabled' }]);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
@@ -137,6 +158,7 @@ describe('EmbeddedInngestService', () => {
       enabled: false,
       durableDelivery: false,
     });
+    expect(service.getRuntimeServiceStatuses()).toEqual([{ name: 'inngest', status: 'disabled' }]);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
@@ -162,6 +184,7 @@ describe('EmbeddedInngestService', () => {
       signingKey: 'cluster-signing-key',
       functionEndpoint: 'https://api.xpod.example/api/inngest',
     });
+    expect(service.getRuntimeServiceStatuses()).toEqual([{ name: 'inngest', status: 'managed' }]);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 

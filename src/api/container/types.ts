@@ -1,4 +1,5 @@
 import type { PodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
+import type { RuntimeServiceState } from '../../runtime/RuntimeServiceStatus';
 /**
  * API Container 依赖类型定义
  *
@@ -127,6 +128,8 @@ export interface ApiContainerConfig {
 
   /** Resolved runtime config passed from API bootstrap after starting/locating Inngest. */
   inngestRuntimeConfig?: EmbeddedInngestRuntimeConfig;
+  /** Live lifecycle projection from runtime-owned services; never configuration-derived health. */
+  runtimeServiceStatuses?: () => RuntimeServiceState[];
 
   /** CORS 允许的源 */
   corsOrigins: string[];

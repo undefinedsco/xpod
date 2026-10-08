@@ -34,6 +34,7 @@ import { RdfQuadIndex } from './RdfQuadIndex';
 import { RdfTextIndex } from './RdfTextIndex';
 import { RdfVectorIndex } from './RdfVectorIndex';
 import { RdfQueryExecutor } from './RdfQueryExecutor';
+import type { RuntimeServiceState } from '../../runtime/RuntimeServiceStatus';
 import { LocalQleverRuntimeError } from './LocalQleverNativeSparqlClient';
 import type { RdfQuery, RdfQueryResult } from './types';
 
@@ -41,6 +42,7 @@ type RdfTextIndexInput = RdfTextIndexSyncLike | RdfTextIndexOptions;
 type RdfVectorIndexInput = RdfVectorIndexSyncLike | RdfVectorIndexOptions;
 
 export interface LocalNativeSparqlClientLike {
+  getRuntimeServiceStatuses?(): RuntimeServiceState[];
   start(): void | Promise<void>;
   query(query: string, options: RdfNativeSparqlQueryOptions): RdfNativeSparqlResult | Promise<RdfNativeSparqlResult>;
   close(): void | Promise<void>;
@@ -117,6 +119,10 @@ export class SolidRdfEngine implements RdfEngineLike {
 
   public put(quads: Quad | Quad[], options?: RdfIndexPutOptions): void {
     this.index.multiPut(Array.isArray(quads) ? quads : [quads], options);
+  }
+
+  public getRuntimeServiceStatuses(): RuntimeServiceState[] {
+    return this.nativeSparqlClient?.getRuntimeServiceStatuses?.() ?? [];
   }
 
   public replaceSource(quads: Quad[], source: RdfSourceInput): void {

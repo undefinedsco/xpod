@@ -1,4 +1,5 @@
 import type { Quad, Term } from '@rdfjs/types';
+import type { RuntimeServiceState } from '../../runtime/RuntimeServiceStatus';
 import type { QueryOptions, QuintPattern, TermMatch, TermName } from '../quint/types';
 
 export type RdfTermKind = 'iri' | 'literal' | 'blank' | 'default_graph';
@@ -1423,6 +1424,7 @@ export interface RdfPreparedUpdateDelta {
   graphs: RdfPreparedUpdateGraphDelta[];
 }
 export interface RdfEngineLike {
+  getRuntimeServiceStatuses?(): RuntimeServiceState[];
   open(): void | Promise<void>;
   close(): void | Promise<void>;
   put(quads: Quad | Quad[], options?: RdfIndexPutOptions): void | Promise<void>;

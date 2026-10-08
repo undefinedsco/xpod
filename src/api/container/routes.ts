@@ -528,6 +528,7 @@ function registerLocalRoutes(
   server: ApiServer,
 ): void {
   const config = container.resolve('config') as ApiContainerConfig;
+  const rdfEngine = container.resolve('rdfEngine', { allowUnregistered: true });
   registerLinxCapabilitiesRoutes(server);
 
   // DDNS state (托管式 Local 模式). One manager answers both the DDNS status
@@ -537,6 +538,10 @@ function registerLocalRoutes(
   registerAdminRoutes(server, {
     internalAdminAuthSecret: config.gatewayAdminProxyAuthSecret,
     ddnsManager,
+    runtimeServiceStatuses: () => [
+      ...(rdfEngine?.getRuntimeServiceStatuses?.() ?? []),
+      ...(config.runtimeServiceStatuses?.() ?? []),
+    ],
   });
   try {
     registerAdminDdnsRoutes(server, {

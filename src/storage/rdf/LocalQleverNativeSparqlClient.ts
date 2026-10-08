@@ -3,6 +3,7 @@ import {
   type ChildProcessWithoutNullStreams,
 } from 'node:child_process';
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
+import type { RuntimeServiceState } from '../../runtime/RuntimeServiceStatus';
 import type {
   RdfNativeSparqlQueryOptions,
   RdfNativeSparqlResult,
@@ -105,6 +106,7 @@ export function requiresWindowsCommandShell(
  * envelope validation. It never parses or evaluates SPARQL.
  */
 export class LocalQleverNativeSparqlClient {
+  private runtimeFailed = false;
   private readonly options: Required<Pick<LocalQleverNativeSparqlClientOptions, 'command'>> &
     Omit<LocalQleverNativeSparqlClientOptions, 'command'>;
   private child?: ChildProcessWithoutNullStreams;
@@ -149,6 +151,7 @@ export class LocalQleverNativeSparqlClient {
     }
 
     this.stderrTail = '';
+    this.runtimeFailed = false;
     this.startPromise = new Promise<void>((resolve, reject) => {
       let child: ChildProcessWithoutNullStreams;
       try {
@@ -160,6 +163,7 @@ export class LocalQleverNativeSparqlClient {
           shell: requiresWindowsCommandShell(this.options.command),
         });
       } catch (error) {
+        this.runtimeFailed = true;
         this.startPromise = undefined;
         reject(this.runtimeUnavailable('Failed to start Local QLever runtime', error));
         return;
@@ -191,6 +195,15 @@ export class LocalQleverNativeSparqlClient {
       });
     });
     return this.startPromise;
+  }
+
+  public getRuntimeServiceStatuses(): RuntimeServiceState[] {
+    const child = this.child;
+    const exited = child && (child.exitCode !== null || child.signalCode !== null);
+    const status = this.closed ? 'stopped' : exited ? 'crashed'
+      : this.ready && child ? 'running' : this.startPromise ? 'starting'
+        : this.runtimeFailed ? 'crashed' : 'stopped';
+    return [{ name: 'qlever', status, ...(child && !exited && !this.closed ? { pid: child.pid } : {}) }];
   }
 
   public async query(
@@ -408,6 +421,7 @@ export class LocalQleverNativeSparqlClient {
     if (child !== this.child) {
       return;
     }
+    this.runtimeFailed = !this.closed;
     this.child = undefined;
     const closed = reapChild(child);
     this.failedProcessCleanup = terminate ? terminateChild(child, closed) : closed;

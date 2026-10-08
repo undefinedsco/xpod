@@ -5,6 +5,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { getLoggerFor } from 'global-logger-factory';
 import { getFreePort, PACKAGE_ROOT } from '../../runtime';
 import { getEphemeralLoopbackPort } from '../../runtime/port-finder';
+import type { RuntimeServiceState } from '../../runtime/RuntimeServiceStatus';
 import { requestViaSocket } from '../../runtime/socket-transport';
 import {
   createGatewayAdminProxyHeaders,
@@ -87,6 +88,8 @@ export interface EmbeddedInngestRuntimeConfig {
  * user-provided SaaS. Xpod Run/RunStep remain the business source of truth.
  */
 export class EmbeddedInngestService {
+  private starting = false;
+  private runtimeFailed = false;
   private readonly logger = getLoggerFor(this);
   private readonly options: EmbeddedInngestServiceOptions;
   private readonly runtimeHost: RuntimeHost;
@@ -111,7 +114,28 @@ export class EmbeddedInngestService {
     if (this.config) {
       return this.config;
     }
+    this.starting = true;
+    this.runtimeFailed = false;
+    try {
+      return await this.startRuntime();
+    } catch (error) {
+      this.runtimeFailed = true;
+      throw error;
+    } finally {
+      this.starting = false;
+    }
+  }
 
+  public getRuntimeServiceStatuses(): RuntimeServiceState[] {
+    const child = this.child;
+    const exited = child && (child.exitCode !== null || child.signalCode !== null);
+    const status = this.runtimeFailed || exited ? 'crashed' : this.starting ? 'starting'
+      : this.config?.enabled === false ? 'disabled' : this.config?.mode === 'managed' ? 'managed'
+        : child?.pid ? 'running' : this.config?.enabled ? 'unavailable' : 'stopped';
+    return [{ name: 'inngest', status, ...(child && !exited ? { pid: child.pid } : {}) }];
+  }
+
+  private async startRuntime(): Promise<EmbeddedInngestRuntimeConfig> {
     if (this.options.enabled === false || !this.isConfigured()) {
       this.config = {
         enabled: false,
@@ -243,6 +267,7 @@ export class EmbeddedInngestService {
     if (this.child !== child) {
       return;
     }
+    this.runtimeFailed = true;
     this.child = undefined;
     this.invalidateResolvedConfig();
     void this.stopCallbackBridge(childGeneration).catch((error: unknown) => {
@@ -267,6 +292,7 @@ export class EmbeddedInngestService {
   }
 
   public async stop(): Promise<void> {
+    this.runtimeFailed = false;
     const child = this.child;
     if (child) {
       this.child = undefined;

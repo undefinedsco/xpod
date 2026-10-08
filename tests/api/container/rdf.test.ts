@@ -50,6 +50,27 @@ function withoutLocalQleverRuntimeOverride<T>(run: () => T): T {
 }
 
 describe('API RDF container services', () => {
+  it('delegates runtime state to the native owner without guessing unconfigured health', async() => {
+    const engine = new SolidRdfEngine({ index: { path: ':memory:' } });
+    try {
+      expect(engine.getRuntimeServiceStatuses()).toEqual([]);
+    } finally {
+      await engine.close();
+    }
+    const owner = {
+      start: vi.fn(), close: vi.fn(), query: vi.fn(),
+      getRuntimeServiceStatuses: vi.fn(() => [{ name: 'qlever', status: 'crashed' as const }]),
+    };
+    const nativeEngine = new SolidRdfEngine({ index: { path: ':memory:' }, nativeSparqlClient: owner });
+    try {
+      expect(nativeEngine.getRuntimeServiceStatuses()).toEqual([{ name: 'qlever', status: 'crashed' }]);
+      expect(owner.start).not.toHaveBeenCalled();
+      expect(owner.query).not.toHaveBeenCalled();
+    } finally {
+      await nativeEngine.close();
+    }
+  });
+
   it('wires one PG-backed Run context retriever into Chat, Task, and durable Run workers', async() => {
     const container = createApiContainer(baseConfig({
       sparqlEndpoint: 'postgres://user:pass@localhost:5432/xpod',
