@@ -164,6 +164,8 @@ UNPROVEN，直到下一轮 RC 以该归因复现。
 RC.300 的 `operations-a/task-isolation` 也只证明 Task 验收失败，不证明具体根因。
 桌面失败凭证的 `task` 字段保留受限阶段、HTTP 状态、固定错误分类和清理结果，
 包括尚未创建 case 的 grant 失败；原始错误、资源地址、凭据和响应正文继续只存私有证据。
+RC.301 已定位为 `approved:checkpoint/assertion`，清理成功，但具体断言仍未证明。
+公开摘要进一步保留白名单子步骤和 producer 状态/错误类，不发布 provider 文本或资源标识。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 

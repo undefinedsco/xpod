@@ -155,6 +155,8 @@ export function summarizeLiveTaskFailure(evidence: LiveTaskEvidence) {
   const category = details?.category;
   const status = details?.httpStatus;
   const taskError = details?.taskError;
+  const substage = details?.substage;
+  const producer = [...evidence.cases].reverse().find(row => row.producerFailure)?.producerFailure;
   return {
     phase: phase && /^(?:grant|(?:approved|rejected|stopped):(?:prepare|queued|checkpoint|decision|terminal|duplicate))$/u.test(phase)
       ? phase : 'other',
@@ -162,6 +164,9 @@ export function summarizeLiveTaskFailure(evidence: LiveTaskEvidence) {
     ...(Number.isInteger(status) && status! >= 100 && status! <= 599 ? { httpStatus: status } : {}),
     ...(taskError && ['other_error', ...Object.values(taskHttpErrors), ...taskDocumentErrors].includes(taskError)
       ? { taskError } : {}),
+    ...(substage && /^(?:queued-(?:request|assert)|checkpoint-(?:run-read|approval-read|match|session-read|session-assert|marker-read|marker-assert)|decision-(?:request|assert|persisted-read|persisted-assert|resume-request|resume-assert))$/u.test(substage) ? { substage } : {}),
+    ...(producer && ['failed', 'cancelled', 'completed'].includes(producer.status) ? { producerStatus: producer.status } : {}),
+    ...(producer && ['none', 'unknown', 'auth_required', 'service_access_missing', 'token_exchange_failed', 'provider_error', 'provider_aborted', 'sandbox_unavailable', 'worker_start_failed', 'worker_exited', 'execution_state_error'].includes(producer.errorClass) ? { producerErrorClass: producer.errorClass } : {}),
     completedCases: evidence.cases.filter(row => row.ok === true).length,
     cleanupOk: evidence.cleanup.ok === true,
   };
