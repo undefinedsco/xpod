@@ -40,7 +40,7 @@ export function ShellDecisionFeedback({ run, recoveryApproval }: { run?: string;
   if (run && recoveryApproval && !failures.some(item => item.approvalId === recoveryApproval)) {
     failures.push({ approvalId: recoveryApproval, run, message: '审批决定已保存，可以继续处理这次运行。' });
   }
-  return <>{failures.map(item => <InlineNotice key={item.approvalId} tone="neutral" role="alert" className="my-2" action={<button disabled={item.busy} className="underline" onClick={() => void retryResume(item.approvalId, item.run)}>{item.busy ? '正在重试…' : '重试处理运行'}</button>}>
+  return <>{failures.map(item => <InlineNotice key={item.approvalId} tone="neutral" role="alert" className="my-2" action={<Button variant="link" size="sm" disabled={item.busy} onClick={() => void retryResume(item.approvalId, item.run)}>{item.busy ? '正在重试…' : '重试处理运行'}</Button>}>
     {item.message}
   </InlineNotice>)}</>;
 }
@@ -61,7 +61,7 @@ export function ShellNotificationsContent({ close = () => {} }: { close?(): void
   const { snapshot, markAllRead } = useShellState();
   return <div className="space-y-5"><ShellDecisionFeedback /><section><h3 className="mb-2 text-sm leading-normal font-medium">需要你处理</h3>
     {snapshot.attention.length ? <ul className="space-y-2">{snapshot.attention.map(item => <li key={item.id}><Link onClick={close} to={item.href} className="block rounded-md border border-border p-3 text-sm leading-normal hover:bg-accent">{item.title} ›</Link></li>)}</ul> : <p className="text-sm leading-normal text-muted-foreground">没有待处理事项</p>}
-  </section><section><div className="mb-2 flex items-center justify-between"><h3 className="text-sm leading-normal font-medium">动态</h3><button className="text-xs leading-normal text-muted-foreground" onClick={markAllRead}>全部已读</button></div>
+  </section><section><div className="mb-2 flex items-center justify-between"><h3 className="text-sm leading-normal font-medium">动态</h3><Button variant="ghost" size="sm" className="text-xs leading-normal text-muted-foreground" onClick={markAllRead}>全部已读</Button></div>
     {snapshot.activity.length ? <ul className="space-y-2">{snapshot.activity.map(item => <li key={item.id}><Link to={item.href} onClick={close} className={`block text-sm leading-normal ${item.read ? 'text-muted-foreground' : 'font-medium'}`}>{item.title}</Link></li>)}</ul> : <p className="text-sm leading-normal text-muted-foreground">暂无动态</p>}
   </section></div>;
 }
@@ -87,7 +87,7 @@ export function ShellHeaderControls() {
     </Button>)}
     {open && <div id="shell-popover" ref={panel} tabIndex={-1} role="region" aria-label={open === 'notifications' ? '通知中心' : '收件箱'} className="absolute right-0 top-full z-50 mt-2 max-h-[70vh] w-[360px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-lg">
       <div className="mb-4 flex items-center justify-between"><h2 className="font-medium">{open === 'notifications' ? '通知中心' : '收件箱'}</h2><Button variant="ghost" size="icon" className="h-9 w-9" aria-label="关闭" onClick={() => { setOpen(null); lastTrigger.current?.focus(); }}><X size={16} /></Button></div>
-      {error && <InlineNotice tone="destructive" role="alert" className="mb-3" action={<button onClick={refresh} className="underline">重试</button>}>{error}</InlineNotice>}
+      {error && <InlineNotice tone="destructive" role="alert" className="mb-3" action={<Button variant="link" size="sm" onClick={refresh}>重试</Button>}>{error}</InlineNotice>}
       {open === 'notifications' ? <ShellNotificationsContent close={() => setOpen(null)} /> : <ShellInboxContent />}
     </div>}
   </div>;
