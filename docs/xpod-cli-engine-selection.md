@@ -1,6 +1,6 @@
 # Xpod CLI 挂载引擎选型与交付计划
 
-## mini 验收接续（2026-10-08）
+## mini 验收接续（2026-10-09）
 
 本节取代下方历史记录中的“当前”口径，不覆盖历史失败。
 
@@ -9,13 +9,13 @@
   [CI 37674200920](https://github.com/undefinedsco/xpod/actions/runs/37674200920)
   全部通过：单元测试 9277 通过、321 跳过、1 todo；修复后两轮本地完整集成均实际退出 0，
   每轮 preflight 30、Lite 163（16 跳过）、Full 63。
-- 原生产物来源为 `17572c3b3f8be655c833f3ade80cd84cb01d1b99` 的
-  [run 37670475752](https://github.com/undefinedsco/xpod/actions/runs/37670475752)。
+- 原生产物来源为最终整合源码 `e940b8d26730f22cdbe5abc4b6d08069f9f7ff0f` 的
+  [run 37674192049](https://github.com/undefinedsco/xpod/actions/runs/37674192049)。
   macOS ARM64 与 Linux ARM64 Bookworm 均为 98 通过、2 忽略、0 过滤。
   双平台归档、helper 哈希、阶段退出和源码收据已独立核验；各 3610 个源码条目与 Git 对应提交一致。
-  完整原生输入树校验确认整合提交 `e940b8d2` 与该产品相同，不只是 helper 局部相同。
-- 真实挂载采用独立 harness `84d9092da835bfc661f031c9a341ec6ee50f7858`，
-  [run 37678573350](https://github.com/undefinedsco/xpod/actions/runs/37678573350)
+  两平台 source kit SHA256 为 `f572f0666de8e6f3baa8a80e9c28561eb5a05041e76c97c02c1ba8f65c94132a`。
+- 真实挂载采用独立 harness `ba943aaf80a3f5d5309caac9dd50826d58f903cb`，
+  [run 37682488775](https://github.com/undefinedsco/xpod/actions/runs/37682488775)
   的 Linux FUSE 与 macOS NFS 均成功。下载后的 raw/report 哈希、实际退出 0、producer 关闭、
   owned process group 消失及 `mountExecuted` 已核验。Linux 为 15 通过、2 跳过；
   macOS 为 14 通过、3 跳过。按逐项 assertion 统计，不采用将 skipped 计入 passed 的顶层计数；
@@ -23,13 +23,20 @@
 - 必需挂载范围包括原始 matrix、shell/PATH rg/Git/worktree 消费、64/512/1024 MiB
   流式正文与 RSS、真实 in-flight SIGKILL copy-up 恢复及 partial GC、dirty 编辑重启与 commit、
   412 冲突保留首次基线。1024 MiB 的 helper RSS 峰值（read/copy-up，KiB）：
-  Linux `59492/48412`，macOS `28464/32336`；不是性能优胜或任意部署的内存保证。
+  Linux `55644/58480`，macOS `27216/28528`；不是性能优胜或任意部署的内存保证。
 - 消费端使用外部 Node 22.21.1，Bun 不在消费端 PATH。上述挂载使用受控 HTTP Pod contract
   server，不是实际 GZ OAuth/DPoP、安装后的服务镜像、desktop permissions 或发行证明。
-  最新整合提交另有原生 run `37674192049`，尚未全部完成，不继承旧任务结果。
+  本节最终源码、原生产物与挂载消费绑定一致；旧源码的成功记录仅保留为历史。
 - PG 只保留一个启用 Pro 扩展的候选，开源功能在同一 PG17 上测试；源码客户端 Public16/Private17
   通过不替代 exact installed-service 验收。共享 RC 未改动，仍只允许合入后的 `staging` 发 RC。
   真实 GZ 账号/Pod、Models/Chat/Tasks、Local、桌面和发行门禁继续保留为未完成。
+- CNB 额度仍可用，认证通过；代码写权限不足已通过官方构建 API 的 `config` 字段解决，
+  不需要把凭据扩大为仓库写权限。控制配置提交 `e5815d0` 固定原生 amd64、Docker `runtime`
+  target 和规范 OCI source/revision 标签，复用已验哈希的 QLever runtime，不重新编译 QLever。
+  首个服务候选构建成功，但 source 标签多了 `.git`，不满足正式准入；保留失败边界，不放宽校验。
+  修正标签后的 [CNB 构建 cnb-vfi-1k4e9abil](https://cnb.cool/undefineds.co/native-builder/-/build/logs/cnb-vfi-1k4e9abil)
+  已受理，尚未取得安装产物验收结果。mini ARM 的 amd64 Bun/QEMU 已实际触发 signal 6，
+  相关自有容器已清理；后续安装产物在 CNB 原生 amd64 验收，不静默切换 Node。
 
 > 历史状态（2026-10-05）：以下仅属于当时源码与产物，其余阶段记录保留各自证据归属。
 > - 选型为 AgentFS，置信度中等；持久 delta、不可变基线及显式 commit 是决定因素。rclone 的成熟测试、范围缓存与平台资产仍是优势，不宣称 AgentFS 性能领先。
