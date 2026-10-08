@@ -303,6 +303,7 @@ export class LocalPodProvisioningService {
 
     addContainerMeta(root);
     addContainerMeta(podUrl, true);
+    addContainerMeta(settingsUrl);
     addDocumentMeta(authorizationResources.rootResourceUrl);
 
     if (this.hostsProfile) {

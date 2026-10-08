@@ -6,6 +6,9 @@ import { getSqliteRuntime } from '../../src/storage/SqliteRuntime';
 import { rowToQuad } from '../../src/storage/quint/serialization';
 import { PodDeletionOperationRepository } from '../../src/identity/drizzle/PodDeletionOperationRepository';
 import { createTestDir } from '../utils/sqlite';
+import { SingleRootIdentifierStrategy, RepresentationMetadata } from '@solid/community-server';
+import { SolidRdfEngine } from '../../src/storage/rdf';
+import { SolidRdfDataAccessor } from '../../src/storage/accessors/SolidRdfDataAccessor';
 
 describe('LocalPodProvisioningService', () => {
   const createdDirs: string[] = [];
@@ -14,6 +17,43 @@ describe('LocalPodProvisioningService', () => {
   afterEach(() => {
     for (const dir of createdDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { managed: false, authMode: 'acp' },
+    { managed: false, authMode: 'acl' },
+    { managed: true, authMode: 'acp' },
+    { managed: true, authMode: 'acl' },
+  ])('keeps advertised containers readable (managed=$managed, auth=$authMode)', async ({ managed, authMode }) => {
+    const rootDir = createTestDir('local-pod-advertised-containers');
+    createdDirs.push(rootDir);
+    const baseUrl = 'https://node-0000.undefineds.co/';
+    const rdfIndexPath = path.join(rootDir, 'rdf-index.sqlite');
+    const service = new LocalPodProvisioningService({
+      baseUrl,
+      rootDir: path.join(rootDir, 'data'),
+      sparqlEndpoint: `sqlite:${path.join(rootDir, 'quadstore.sqlite')}`,
+      identityDbUrl: `sqlite:${path.join(rootDir, 'identity.sqlite')}`,
+      rdfIndexPath,
+      oidcIssuer: managed ? 'https://id.undefineds.co/identity/' : baseUrl,
+      authMode,
+    });
+    const pod = await service.createPod({ podName: 'alice',
+      webId: managed ? 'https://id.undefineds.co/identity/alice/profile/card#me' : `${baseUrl}alice/profile/card#me` });
+    const accessor = new SolidRdfDataAccessor(new SolidRdfEngine({ index: { path: rdfIndexPath } }),
+      new SingleRootIdentifierStrategy(baseUrl));
+    try {
+      const containers = [];
+      for await (const child of accessor.getChildren({ path: pod.podUrl })) {
+        if (child.identifier.value.endsWith('/')) containers.push(child.identifier.value);
+      }
+      expect(containers).toContain(`${pod.podUrl}settings/`);
+      for (const container of containers) {
+        await expect(accessor.getMetadata({ path: container })).resolves.toBeInstanceOf(RepresentationMetadata);
+      }
+    } finally {
+      await accessor.finalize();
     }
   });
 
