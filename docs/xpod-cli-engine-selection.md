@@ -57,6 +57,18 @@
   此前首轮 secret 事件白名单拒绝和两轮内存对象/JSON 报告校验差异导致的失败均保留，
   最终改为读取实际落盘 JSON，未改变产品代码、用例或比较标准。
   这仍不代表真实账号、桌面、备份恢复或 RC/发行验收通过；共享 RC 未改动。
+- 2026-10-09 的 PR 审查发现正式 RC 准入仍采用旧的独立数据库证明：
+  `verifyPrivate17Admission` 与 candidate 汇总都要求 private/public database 名不同，
+  不包含同实例身份与公共表扩展证据。因此上述联合执行通过不能写成正式发布自动化已经对齐。
+  跟踪 [issue #39](https://github.com/undefinedsco/xpod/issues/39)：私有 producer 应在一个
+  自有 PG17 server/database 中运行两套未改夹具，签发带 server/container 身份、表 OID、
+  扩展效果、两套语义/search、实际 producer 关闭与清理的 sanitized 联合证明；公开 RC 在
+  任何共享变更前强制校验，拒绝旧独立证明及身份/表替换、缺项、混配和不确定清理。
+  私有夹具与原始报告继续隔离，不放宽来源、哈希或 registry authority。
+- 同次只读 fetch 核实 `staging` 已到 `58d0f917`，新增 PR #36/#38 的桌面 Task 诊断；
+  `git merge-tree --write-tree` 对当前整合候选预演成功，无文本冲突，未改分支或工作树。
+  现有完整/native/mounted/installed 证据仅绑定 `e940b8d2`，不能继承给合并后的新组合。
+  PR #37 仍为草稿；接续先收口联合准入契约，再对最终 staging 候选重新绑定所需验收。
 
 > 历史状态（2026-10-05）：以下仅属于当时源码与产物，其余阶段记录保留各自证据归属。
 > - 选型为 AgentFS，置信度中等；持久 delta、不可变基线及显式 commit 是决定因素。rclone 的成熟测试、范围缓存与平台资产仍是优势，不宣称 AgentFS 性能领先。
