@@ -25,8 +25,8 @@ export function PodBody(props: PodBodyProps) {
       key={item.id}
       label={item.label}
       description={item.description}
-      control={({ id, 'aria-describedby': describedBy }) => (
-        <Checkbox id={id} aria-describedby={describedBy} checked={item.checked} disabled={busy} onChange={e => void run(() => props.onToggle(item.id, e.target.checked))} />
+      control={(controlProps) => (
+        <Checkbox {...controlProps} checked={item.checked} disabled={busy} onChange={e => void run(() => props.onToggle(item.id, e.target.checked))} />
       )}
     />
   ));

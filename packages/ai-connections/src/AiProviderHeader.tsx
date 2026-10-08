@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import {
+  interactiveFocusClass,
   Avatar,
   AvatarFallback,
   AvatarImage,
@@ -63,7 +64,7 @@ export function AiProviderHeader({
                 href={item.href}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-0.5 text-[10px] leading-none text-muted-foreground transition-colors hover:text-primary"
+                className={`inline-flex min-h-9 min-w-9 items-center gap-0.5 text-xs leading-normal text-muted-foreground transition-colors hover:text-primary ${interactiveFocusClass}`}
               >
                 {item.label} <ExternalLink aria-hidden="true" className="h-2.5 w-2.5" />
               </a>

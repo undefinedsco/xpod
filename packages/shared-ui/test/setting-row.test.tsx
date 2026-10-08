@@ -10,8 +10,8 @@ it('associates the visible label and description with the actual control', () =>
     <SettingRow
       label="意外退出时自动重启"
       description="你手动停止的不会被重启"
-      control={({ id, 'aria-describedby': describedBy }) => (
-        <input id={id} aria-describedby={describedBy} type="checkbox" />
+      control={(controlProps) => (
+        <input {...controlProps} type="checkbox" />
       )}
     />,
   )
@@ -41,5 +41,27 @@ it('keeps the disabled state from reaching the control', () => {
   const toggle = screen.getByRole('switch', { name: '停止 Xpod' })
   expect((toggle as HTMLButtonElement).disabled).toBe(true)
   fireEvent.click(toggle)
+  expect(onCheckedChange).not.toHaveBeenCalled()
+})
+
+
+it('activates the control from the full row while keeping the description separate from its name', () => {
+  const onChange = vi.fn()
+  render(<SettingRow label="语义检索" description="说明文本" control={props => <input {...props} type="checkbox" onChange={onChange} />} />)
+  const control = screen.getByRole('checkbox', { name: '语义检索' })
+  fireEvent.click(control.closest('label')!)
+  expect((control as HTMLInputElement).checked).toBe(true)
+  expect(onChange).toHaveBeenCalledTimes(1)
+})
+
+it('activates a switch from its row and preserves disabled behavior', () => {
+  const onCheckedChange = vi.fn()
+  const { rerender } = render(<SwitchSettingRow label="自动重启" description="仅意外退出" checked={false} onCheckedChange={onCheckedChange} />)
+  const control = screen.getByRole('switch', { name: '自动重启' })
+  fireEvent.click(control.closest('label')!)
+  expect(onCheckedChange).toHaveBeenCalledWith(true)
+  onCheckedChange.mockClear()
+  rerender(<SwitchSettingRow label="自动重启" checked={false} disabled onCheckedChange={onCheckedChange} />)
+  fireEvent.click(control.closest('label')!)
   expect(onCheckedChange).not.toHaveBeenCalled()
 })

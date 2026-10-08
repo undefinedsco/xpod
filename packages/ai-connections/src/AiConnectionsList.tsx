@@ -81,7 +81,7 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
       </section>
       <section data-testid="ai-provider-section">
         <div className="flex items-center justify-between gap-2 px-5 py-1">
-          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             服务商
           </h2>
         </div>
@@ -108,7 +108,7 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
                 style={getProviderAvatarBackground(provider.id) ? { backgroundColor: getProviderAvatarBackground(provider.id) } : undefined}
               >
                 <AvatarImage src={getProviderAvatar(provider.id)} className="object-cover" />
-                <AvatarFallback className="rounded-md bg-muted text-[10px] font-bold uppercase text-muted-foreground">
+                <AvatarFallback className="rounded-md bg-muted text-xs font-bold uppercase text-muted-foreground">
                   {providerMark(provider.id)}
                 </AvatarFallback>
               </Avatar>
@@ -217,7 +217,7 @@ function PinnedMark({ section: _section }: { section: AiConnectionsPinnedSection
   return (
     <Avatar className="h-9 w-9 shrink-0 rounded-md border border-border/20">
       <AvatarImage src={XPOD_AVATAR} className="object-cover" />
-      <AvatarFallback className="rounded-md bg-muted text-[10px] font-bold uppercase text-muted-foreground">
+      <AvatarFallback className="rounded-md bg-muted text-xs font-bold uppercase text-muted-foreground">
         XP
       </AvatarFallback>
     </Avatar>
@@ -235,7 +235,7 @@ function ProviderStateIndicator({
   return (
     <span id={statusId} role="status" aria-live="polite" className="flex shrink-0 items-center gap-1.5">
       {active ? <StatusDot tone="info" /> : null}
-      <span className="text-[11px] font-normal text-muted-foreground">{providerStateLabel(state)}</span>
+      <span className="text-xs font-normal text-muted-foreground">{providerStateLabel(state)}</span>
     </span>
   )
 }

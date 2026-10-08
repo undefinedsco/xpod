@@ -47,7 +47,7 @@ export function AiConnectionsMainHeader({
           data-live-updates={liveUpdates}
           title={liveAffordance.title}
           aria-label={liveAffordance.title}
-          className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10px] font-medium text-muted-foreground"
+          className="ml-auto inline-flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground"
         >
           <span
             aria-hidden="true"

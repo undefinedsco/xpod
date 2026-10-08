@@ -210,7 +210,7 @@ export function LoginConnectingView({
               <p className="truncate text-xs font-medium text-foreground">{providerLabel}</p>
             ) : null}
             {providerHost ? (
-              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{providerHost}</p>
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">{providerHost}</p>
             ) : null}
           </div>
         ) : null}
@@ -274,7 +274,7 @@ export function LoginAccountView({
     <div className="flex h-full flex-1 flex-col">
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-5 py-8">
         {expired ? (
-          <div className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary">
+          <div className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary">
             <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
             {visibleExpiredTitle}
           </div>

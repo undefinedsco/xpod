@@ -2,6 +2,7 @@ import * as React from 'react'
 import { Info } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipPortal, TooltipProvider, TooltipTrigger } from './tooltip'
 import { cn } from './utils'
+import { buttonFocusClass } from './focus'
 
 export interface BrandInfoProps {
   logo: React.ReactNode
@@ -27,7 +28,7 @@ export function BrandInfo({ logo, info, infoLabel = 'Details', className }: Bran
                 type="button"
                 aria-label={infoLabel}
                 aria-expanded={open}
-                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-primary/10 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                className={`inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-primary/10 hover:text-primary focus-visible:bg-primary/10 focus-visible:text-primary ${buttonFocusClass}`}
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={(event) => {
                   // Preserve click/touch toggling instead of Radix's close-on-click default.

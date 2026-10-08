@@ -388,7 +388,7 @@ export function AiApiKeyPool({
                 onChange={(event) => onBaseUrlChange(event.target.value)}
                 className="border-border/60 bg-muted/20 font-mono text-xs transition-colors focus:border-primary/50 focus:bg-background"
               />
-              <p className="break-all font-mono text-[11px] text-muted-foreground opacity-80">
+              <p className="break-all font-mono text-xs text-muted-foreground opacity-80">
                 <span className="mr-1 select-none opacity-50">预览:</span>
                 {(baseUrl.trim() || definition.defaultBaseUrl || '').replace(/\/+$/, '')}/chat/completions
               </p>

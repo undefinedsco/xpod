@@ -102,7 +102,7 @@ function StorageConflictView({
   return (
     <div className="flex-1 flex flex-col h-full">
       <div className="px-5 pt-6 pb-4 shrink-0">
-        <p className="text-[11px] font-medium tracking-wide text-muted-foreground/70 text-center">
+        <p className="text-xs font-medium tracking-wide text-muted-foreground/70 text-center">
           {isCreatePodSetup ? '需要创建空间' : '空间不匹配'}
         </p>
       </div>
@@ -523,7 +523,7 @@ function ConnectingView({
             <p className="truncate text-xs font-medium text-foreground">
               {formatProviderLabelForUser(connectingProvider.storageProviderLabel)}
             </p>
-            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
               {formatProviderHost(connectingProvider.storageProviderUrl)}
             </p>
           </div>
@@ -702,10 +702,10 @@ function RouteInfoCard({
   return (
     <div className="rounded-2xl border border-border/60 bg-muted/25 p-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[11px] font-medium tracking-wide text-muted-foreground/70">{title}</p>
+        <p className="text-xs font-medium tracking-wide text-muted-foreground/70">{title}</p>
         {action}
       </div>
-      <p className="mt-2 break-all font-mono text-[11px] leading-5 text-foreground">
+      <p className="mt-2 break-all font-mono text-xs leading-5 text-foreground">
         {value ?? '正在获取入口'}
       </p>
     </div>
@@ -963,10 +963,10 @@ function formatProviderHost(url: string): string {
 function StorageDetail({ label, value }: { label: string; value: string }) {
   return (
     <div className="space-y-1.5">
-      <p className="text-[11px] font-medium tracking-wide text-muted-foreground/70">
+      <p className="text-xs font-medium tracking-wide text-muted-foreground/70">
         {label}
       </p>
-      <div className="rounded-xl border border-border/50 bg-background/70 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground break-all">
+      <div className="rounded-xl border border-border/50 bg-background/70 px-3 py-2 text-xs leading-relaxed text-muted-foreground break-all">
         {value}
       </div>
     </div>

@@ -342,9 +342,9 @@ export function AiProviderCard({
                     badges={(
                       <>
                         {catalogModelClass(model) === 'embedding' && model.dimension ? <span className="text-xs text-muted-foreground">{model.dimension} 维</span> : null}
-                        {model.custom ? <Badge variant="outline" className="shrink-0 text-[10px] font-normal">手工</Badge> : null}
+                        {model.custom ? <Badge variant="outline" className="shrink-0 text-xs font-normal">手工</Badge> : null}
                         {isUnavailable ? (
-                          <Badge variant="destructive" className="shrink-0 text-[10px] font-normal">
+                          <Badge variant="destructive" className="shrink-0 text-xs font-normal">
                             已失效
                           </Badge>
                         ) : null}

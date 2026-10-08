@@ -36,11 +36,11 @@ export function AiEndpointList({ endpoints, copy = false, display = 'compact' }:
                   label={`${label} 地址`}
                   text={label}
                   variant="outline"
-                  className="h-7 gap-1.5 px-2 text-[11px] font-normal"
+                  className="h-auto min-h-9 gap-1.5 px-2 py-1 text-xs leading-normal font-normal"
                   iconClassName="h-3 w-3"
                 />
               ) : (
-                <span className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[11px] text-muted-foreground">
+                <span className="inline-flex h-7 items-center rounded-md border border-border px-2 text-xs text-muted-foreground">
                   {label}
                 </span>
               )}
@@ -52,7 +52,7 @@ export function AiEndpointList({ endpoints, copy = false, display = 'compact' }:
   }
 
   return (
-    <dl className="space-y-1 text-[11px] text-muted-foreground">
+    <dl className="space-y-1 text-xs text-muted-foreground">
       {endpoints.map((endpoint) => {
         const label = endpointProtocolLabel(endpoint.protocol)
         return (
@@ -67,7 +67,7 @@ export function AiEndpointList({ endpoints, copy = false, display = 'compact' }:
                   value={endpoint.baseUrl}
                   label={`${label} 地址`}
                   variant="ghost"
-                  className="h-6 gap-1 px-1.5 text-[11px]"
+                  className="h-auto min-h-9 gap-1 px-1.5 py-1 text-xs leading-normal"
                   iconClassName="h-3 w-3"
                 />
               </dd>

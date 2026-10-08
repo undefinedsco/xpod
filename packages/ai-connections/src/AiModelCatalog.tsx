@@ -312,7 +312,7 @@ export function AiModelTile({
         </div>
         {modelId && modelId !== label ? (
           <div className="mt-0.5 flex items-center gap-1.5">
-            <code className="max-w-[300px] truncate font-mono text-[10px] text-muted-foreground opacity-70">{modelId}</code>
+            <code className="max-w-[300px] truncate font-mono text-xs text-muted-foreground opacity-70">{modelId}</code>
             <AiCopyButton
               value={modelId}
               label={`${label} ID`}

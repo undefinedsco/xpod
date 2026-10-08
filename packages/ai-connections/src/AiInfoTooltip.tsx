@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import {
+  buttonFocusClass,
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -25,7 +26,7 @@ export function AiInfoTooltip({ label, lines }: { label: string; lines: ReactNod
           <button
             type="button"
             aria-label={label}
-            className="cursor-help rounded-sm text-muted-foreground/50 focus:outline-none focus-visible:text-foreground"
+            className={`inline-flex min-h-9 min-w-9 shrink-0 cursor-help items-center justify-center rounded-md text-muted-foreground/50 hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground ${buttonFocusClass}`}
           >
             <Info aria-hidden="true" className="h-3.5 w-3.5" />
           </button>
