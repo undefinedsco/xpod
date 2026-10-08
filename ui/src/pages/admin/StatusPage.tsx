@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '@undefineds.co/shared-ui'
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Copy, ExternalLink, RefreshCw } from 'lucide-react';
@@ -635,7 +636,7 @@ export function StatusPage() {
               </div>
             </div>
             <details data-testid="overview-details" className="border-t border-border pt-5">
-              <summary className="cursor-pointer text-sm font-medium">专业详情（服务、路径、Cloud 与配置）</summary>
+              <DisclosureSummary className="cursor-pointer text-sm font-medium">专业详情（服务、路径、Cloud 与配置）</DisclosureSummary>
             <div className="pt-5">
               <div className="mb-3">
                 <div className="text-base font-semibold">Services</div>
@@ -671,7 +672,7 @@ export function StatusPage() {
 
       <ActionNeededCard problems={overviewProblems} />
       <details data-testid="overview-access-details">
-        <summary className="cursor-pointer text-sm font-medium">专业详情：访问路径</summary>
+        <DisclosureSummary className="cursor-pointer text-sm font-medium">专业详情：访问路径</DisclosureSummary>
         <div className="mt-4 space-y-6">
           <div data-testid="runtime-access-paths">
             <RouteSummaryList routes={routes} />
@@ -681,7 +682,7 @@ export function StatusPage() {
       </details>
 
       <details data-testid="overview-runtime-details">
-        <summary className="cursor-pointer text-sm font-medium">专业详情：Cloud 与配置</summary>
+        <DisclosureSummary className="cursor-pointer text-sm font-medium">专业详情：Cloud 与配置</DisclosureSummary>
         <div className="mt-4 space-y-6">
       <Card variant="bordered">
         <CardHeader><CardTitle>Cloud 协调</CardTitle></CardHeader>

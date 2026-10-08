@@ -183,6 +183,10 @@
     color: hsl(var(--foreground));
   }
 
+  body {
+    font-size: .875rem;
+  }
+
   /*
    * Shared native-control baseline. The `html` prefix gives these rules more
    * specificity than @tailwindcss/forms' `input:where([type='text'])` base

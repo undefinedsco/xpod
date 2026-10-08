@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '@undefineds.co/shared-ui'
 import { useEffect, useRef, useState } from 'react'
 import { Button, Dialog, DialogContent, DialogTitle, DialogTrigger, Meter } from '@undefineds.co/shared-ui'
 import type { AiQuotaSnapshot } from './contract/ai-connections-client'
@@ -107,7 +108,7 @@ export function AiQuotaCard({
       ) : (
         multiple ? (
           <details className="text-xs text-muted-foreground">
-            <summary className="cursor-pointer" aria-label={`${credentialLabel}额度详情`}>详情</summary>
+            <DisclosureSummary className="cursor-pointer" aria-label={`${credentialLabel}额度详情`}>详情</DisclosureSummary>
             <div className="pt-3"><QuotaDetails quota={quota} hideBalance /></div>
           </details>
         ) : <QuotaDetails quota={quota} />

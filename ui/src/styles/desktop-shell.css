@@ -38,3 +38,11 @@
   .xpod-desktop-shell:has([data-workspace-main-header]) > .xpod-narrow-header { display:none; }
   .xpod-desktop-shell [data-workspace-header-leading] { padding-left:8px; }
 }
+
+/* Keep icon hit areas inside narrow host chrome when text is enlarged. */
+@media (max-width:767px) {
+  .xpod-shell-header-controls > button { width:36px; height:36px; min-height:36px; flex-shrink:0; }
+  .xpod-shell-header-controls { gap:4px; }
+  .xpod-workspace-header { padding-inline:8px; gap:4px; }
+  .xpod-header-parent { max-width:56px; }
+}

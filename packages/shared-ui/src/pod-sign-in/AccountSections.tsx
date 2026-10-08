@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '../disclosure'
 import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { ChevronRight, KeyRound, Server, UserRound } from 'lucide-react'
 import {
@@ -35,7 +36,7 @@ const smallButtonClass = 'h-9 rounded-lg px-3 text-sm font-medium'
 function BindingAddresses({ webId, podUrl, copy }: { webId?: string; podUrl?: string; copy: PodSignInCopy }) {
   return (
     <details className="mt-1 min-w-0 text-xs">
-      <summary className="w-fit cursor-pointer rounded py-1 text-primary underline-offset-4 hover:underline">{copy.showAddresses}</summary>
+      <DisclosureSummary className="w-fit cursor-pointer rounded py-1 text-primary underline-offset-4 hover:underline">{copy.showAddresses}</DisclosureSummary>
       <dl className="mt-1 grid min-w-0 gap-2">
         {[{ label: copy.identityAddress, url: webId }, { label: copy.storageAddress, url: podUrl }]
           .filter((address) => address.url)

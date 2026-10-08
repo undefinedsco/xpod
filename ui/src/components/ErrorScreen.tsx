@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '@undefineds.co/shared-ui'
 import { DesktopLoginReturnAction } from '../auth/DesktopLoginReturnAction';
 import { Button } from '@undefineds.co/shared-ui';
 import { XpodAccountPageSurface } from '../auth/XpodAuthSurface';
@@ -15,7 +16,7 @@ export function ErrorScreen({ message, retry }: ErrorScreenProps) {
           无法读取账号服务信息。请重试当前步骤，无需重新注册或清除登录状态。
         </p>
         <details className="text-xs text-muted-foreground">
-          <summary className="cursor-pointer">技术详情</summary>
+          <DisclosureSummary className="cursor-pointer">技术详情</DisclosureSummary>
           <p className="mt-2 break-words">{message}</p>
         </details>
         <Button type="button" className="w-full" onClick={() => retry ? void retry() : window.location.reload()}>

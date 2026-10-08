@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '@undefineds.co/shared-ui'
 import { Button, Checkbox, InlineNotice, Input, NativeSelect, SearchInput, SegmentedControl, Textarea, interactiveFocusClass } from '@undefineds.co/shared-ui';
 import { TwoPaneLayout, WorkspaceDrawerContext, useWorkspaceLayout } from '@undefineds.co/extension-sdk/react';
 import { useContext, useEffect, useState, type ReactNode, type FormEvent } from 'react';
@@ -131,9 +132,9 @@ export function TasksPanel({ client, webId, workspace, onOpenConnections, select
           {groups.waiting.length > 0 && <section><h3>在等你 <small>{groups.waiting.length}</small></h3>{rows(groups.waiting)}</section>}
           {view === 'list' ? <>
             {filter !== 'ai' && <section><h3>我的待办 <small>{groups.mine.length}</small></h3>{editor}{rows(expandedTodos ? groups.mine : groups.mine.slice(0, 5))}{groups.mine.length > 5 && <Button size="sm" variant="ghost" className="task-more h-auto min-h-9 whitespace-normal py-1" type="button" onClick={() => setExpandedTodos(!expandedTodos)}>{expandedTodos ? '收起' : `还有 ${groups.mine.length - 5} 条`}</Button>}</section>}
-            {filter !== 'mine' && <details><summary className={interactiveFocusClass}>AI 按计划在做 <small>{groups.ai.length}</small></summary>{rows(groups.ai)}</details>}
-            {groups.unassigned.length > 0 && <details><summary className={interactiveFocusClass}>未分配 <small>{groups.unassigned.length}</small></summary>{rows(groups.unassigned)}</details>}
-            <details><summary className={interactiveFocusClass}>已结束 · {allEnded ? '全部' : '最近 7 天'} <small>{(allEnded ? groups.ended : groups.recent).length}</small></summary>{rows(allEnded ? groups.ended : groups.recent)}<Button size="sm" variant="ghost" className="task-more h-auto min-h-9 whitespace-normal py-1" type="button" onClick={() => setAllEnded(!allEnded)}>{allEnded ? '只看最近 7 天' : '查看全部已完成'}</Button></details>
+            {filter !== 'mine' && <details><DisclosureSummary className={interactiveFocusClass}>AI 按计划在做 <small>{groups.ai.length}</small></DisclosureSummary>{rows(groups.ai)}</details>}
+            {groups.unassigned.length > 0 && <details><DisclosureSummary className={interactiveFocusClass}>未分配 <small>{groups.unassigned.length}</small></DisclosureSummary>{rows(groups.unassigned)}</details>}
+            <details><DisclosureSummary className={interactiveFocusClass}>已结束 · {allEnded ? '全部' : '最近 7 天'} <small>{(allEnded ? groups.ended : groups.recent).length}</small></DisclosureSummary>{rows(allEnded ? groups.ended : groups.recent)}<Button size="sm" variant="ghost" className="task-more h-auto min-h-9 whitespace-normal py-1" type="button" onClick={() => setAllEnded(!allEnded)}>{allEnded ? '只看最近 7 天' : '查看全部已完成'}</Button></details>
           </> : Object.entries(agenda).map(([key, items]) => <section key={key}><h3>{({ overdue: '已逾期', today: '今天', tomorrow: '明天', week: '本周', later: '以后' } as Record<string, string>)[key]}</h3>{items.length ? rows(items) : <p className="task-muted">没有安排</p>}</section>)}
         </>}
       </div>

@@ -38,7 +38,7 @@ export function SubjectWorkspace({ subject }: { subject: 'device' | 'pod' | 'set
   />;
 }
 export function WorkspaceHeader({ title, children }: { title: string; children?: ReactNode }) {
-  return <div className="flex h-full min-w-0 items-center justify-between gap-2 px-4"><h1 className="min-w-0 truncate text-sm leading-normal font-semibold">{title}</h1><div className="flex shrink-0 items-center gap-2">{children}<ShellHeaderControls /></div></div>;
+  return <div className="xpod-workspace-header flex h-full min-w-0 items-center justify-between gap-2 px-4"><h1 className="min-w-0 truncate text-sm leading-normal font-semibold">{title}</h1><div className="flex shrink-0 items-center gap-2">{children}<ShellHeaderControls /></div></div>;
 }
 /** A single 48px content header over a scrollable body; no object column and no second title. */
 export function WorkspacePage({ title, children }: { title: string; children: ReactNode }) {

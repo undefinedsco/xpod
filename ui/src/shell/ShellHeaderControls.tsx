@@ -79,7 +79,7 @@ export function ShellHeaderControls() {
     document.addEventListener('keydown', key); document.addEventListener('pointerdown', outside);
     return () => { document.removeEventListener('keydown', key); document.removeEventListener('pointerdown', outside); };
   }, [open]);
-  return <div ref={root} className="relative flex items-center gap-1">
+  return <div ref={root} className="xpod-shell-header-controls relative flex items-center gap-1">
     <Button variant="ghost" size="icon" aria-label={loading ? '正在同步' : error || '刷新同步状态'} title={error || (loading ? '正在同步' : '刷新同步状态')} onClick={refresh} className="h-9 w-9"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></Button>
     {(['notifications', 'inbox'] as const).map(kind => <Button variant="ghost" size="icon" key={kind} aria-label={kind === 'notifications' ? '通知' : '收件箱'} aria-expanded={open === kind} aria-controls="shell-popover" onClick={event => { lastTrigger.current = event.currentTarget; setOpen(open === kind ? null : kind); }} className="relative h-9 w-9">
       {kind === 'notifications' ? <Bell size={16} /> : <Inbox size={16} />}

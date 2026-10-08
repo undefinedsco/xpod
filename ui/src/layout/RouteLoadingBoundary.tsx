@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '@undefineds.co/shared-ui'
 import { Component, Suspense, type ErrorInfo, type ReactNode } from 'react';
 
 export function RouteLoadingBoundary({ children }: { children: ReactNode }) {
@@ -32,7 +33,7 @@ class RouteChunkErrorBoundary extends Component<{ children: ReactNode }, { error
         </div>
         {import.meta.env.DEV && (
           <details className="max-w-full text-sm text-muted-foreground">
-            <summary>开发诊断</summary>
+            <DisclosureSummary>开发诊断</DisclosureSummary>
             <pre className="whitespace-pre-wrap break-words">{this.state.error.message}</pre>
           </details>
         )}

@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '../disclosure'
 import { TriangleAlert } from 'lucide-react'
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { Input } from '../input'
@@ -90,12 +91,12 @@ function NoticeLine({
     <div role={role} data-pod-sign-in="notice" data-tone={notice.tone} className={cn('text-[0.8125rem] leading-5', tone)}>
       {detail ? (
         <details>
-          <summary
+          <DisclosureSummary
             title={copy.noticeDetailsToggle}
             className="cursor-pointer rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
             {line}
-          </summary>
+          </DisclosureSummary>
           <div className="mt-1 rounded-lg bg-muted p-2 text-foreground">
             <pre className="whitespace-pre-wrap break-all font-mono text-xs">{detail}</pre>
             <button

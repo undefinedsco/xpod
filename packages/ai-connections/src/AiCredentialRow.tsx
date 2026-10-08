@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '@undefineds.co/shared-ui'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Button, Tooltip, TooltipContent, TooltipTrigger, cn } from '@undefineds.co/shared-ui'
 import { AiRowAction } from './AiRowAction'
@@ -95,7 +96,7 @@ export function AiCredentialRow({
       ) : null}
       <div className="flex shrink-0 items-center gap-1">
         {offering?.consoleUrl || offering?.subscriptionUrl ? <details className="relative text-sm">
-          <summary aria-label={`${label} 更多操作`} className="cursor-pointer px-2 py-1">⋯</summary>
+          <DisclosureSummary aria-label={`${label} 更多操作`} className="cursor-pointer px-2 py-1">⋯</DisclosureSummary>
           <div className="absolute right-0 z-10 min-w-32 rounded-md border bg-popover p-2 shadow-md">
             {offering.consoleUrl ? <a className="block py-1" href={offering.consoleUrl} target="_blank" rel="noreferrer">控制台 ↗</a> : null}
             {offering.subscriptionUrl ? <a className="block py-1" href={offering.subscriptionUrl} target="_blank" rel="noreferrer">订阅与账单 ↗</a> : null}

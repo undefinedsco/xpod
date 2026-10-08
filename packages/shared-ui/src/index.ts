@@ -105,3 +105,5 @@ export * from './storage-bootstrap'
 export * from './webid-auth'
 export * from './workspace'
 export * from './pod-sign-in/index'
+
+export * from './disclosure'

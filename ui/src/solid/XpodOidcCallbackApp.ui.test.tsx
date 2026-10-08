@@ -141,7 +141,8 @@ describe('Xpod OIDC callback recovery surface', () => {
     expect(view.getByTestId('xpod-login-brand').querySelector('svg')?.getAttribute('class')).toContain('h-7');
     const details = surface.querySelector('details');
     expect(details?.open).toBe(false);
-    expect(details?.querySelector('summary')?.className).toContain('focus-visible:ring-ring');
+    expect(details?.querySelector('summary')?.className).toContain('focus-visible:outline-ring');
+    expect(details?.querySelector('summary')?.className).not.toContain('focus-visible:ring-2');
     expect(details?.querySelector('code')?.className).not.toContain('bg-muted');
     expect(view.getByRole('alert').parentElement?.contains(details)).toBe(true);
     expect(runtime.session.handleIncomingRedirect).not.toHaveBeenCalled();

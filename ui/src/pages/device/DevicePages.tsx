@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '@undefineds.co/shared-ui'
 import { useCallback, useEffect, useState } from 'react';
 import type { DesktopRuntimeSettings } from '@undefineds.co/extension-sdk';
 import { Button, ListRow, ListSurface, NativeSelect, SearchInput, SectionHeader, SwitchSettingRow } from '@undefineds.co/shared-ui';
@@ -45,7 +46,7 @@ export function DeviceServicesPage() {
       const status = snapshot?.servicesData?.find((service) => service.name === id)?.status ?? (id === 'gateway' && snapshot?.adminData ? 'running' : undefined);
       return <ListRow key={id} title={label} trailing={<span className={status === 'running' ? 'text-success' : 'text-muted-foreground'}>{status ? serviceStates[status] : '未报告'}</span>} />;
     })}</ListSurface></section>
-    <section><SectionHeader level={2} title="可选组件" className="mb-2" titleClassName="text-muted-foreground" /><ListSurface>{components.map((client) => <ListRow key={client.binary} title={client.binary} trailing={<span>{client.state === 'missing' ? '未安装' : snapshot?.servicesData?.some((service) => service.name === client.binary && service.status === 'running') ? '运行中' : '未使用'}</span>}>{client.state === 'missing' && <details><summary className="cursor-pointer text-primary">安装方法</summary><p className="mt-2 break-words text-xs leading-normal text-muted-foreground">{client.installHint}</p></details>}</ListRow>)}{!components.length && <p className="p-4 text-sm leading-normal text-muted-foreground">暂未读取到可选组件状态</p>}</ListSurface></section>
+    <section><SectionHeader level={2} title="可选组件" className="mb-2" titleClassName="text-muted-foreground" /><ListSurface>{components.map((client) => <ListRow key={client.binary} title={client.binary} trailing={<span>{client.state === 'missing' ? '未安装' : snapshot?.servicesData?.some((service) => service.name === client.binary && service.status === 'running') ? '运行中' : '未使用'}</span>}>{client.state === 'missing' && <details><DisclosureSummary className="cursor-pointer text-primary">安装方法</DisclosureSummary><p className="mt-2 break-words text-xs leading-normal text-muted-foreground">{client.installHint}</p></details>}</ListRow>)}{!components.length && <p className="p-4 text-sm leading-normal text-muted-foreground">暂未读取到可选组件状态</p>}</ListSurface></section>
     <p className="text-xs leading-normal text-muted-foreground">停止只影响这台设备；Xpod 云端和其他设备上的 Pod 不受影响。</p>
   </section>;
 }
@@ -72,7 +73,7 @@ export function DeviceRuntimePage() {
     <SwitchSettingRow label="意外退出时自动重启" description="你手动停止的不会被重启" checked={settings?.autoRestart ?? false} disabled={!settings || !globalThis.xpodDesktop?.deviceRuntime?.setAutoRestart} onCheckedChange={async (value) => { try { await globalThis.xpodDesktop?.deviceRuntime?.setAutoRestart(value); setSettings((current) => current ? { ...current, autoRestart: value } : current); } catch { setError('无法保存自动重启设置。'); } }} />
     <div className="space-y-2"><div>数据位置</div><p className="break-all text-muted-foreground">{directory || '未报告'}</p><div className="flex flex-wrap gap-2"><Button className="h-auto min-h-9 py-1 leading-normal" variant="outline" disabled={!globalThis.xpodDesktop?.deviceRuntime?.showDataDirectory} onClick={() => void globalThis.xpodDesktop?.deviceRuntime?.showDataDirectory?.().catch(() => setError('无法打开数据位置。'))}>在{globalThis.xpodDesktop?.platform === 'darwin' ? '访达' : '文件管理器'}中显示</Button><Button className="h-auto min-h-9 py-1 leading-normal" variant="outline" disabled={!globalThis.xpodDesktop?.deviceRuntime?.selectDataDirectory} onClick={() => void changeDirectory()}>更改</Button></div></div>
     <div className="flex justify-between border-t border-border pt-4"><span>运行方式</span><span>{edition === 'cloud' ? 'Xpod 云端' : edition === 'local' ? '这台设备' : edition === 'standalone' ? 'Xpod 独立运行' : '未报告'}</span></div>
-    <details><summary className="cursor-pointer text-muted-foreground">开发者模式</summary><dl className="mt-3 space-y-2"><div>访问地址：{window.location.origin}</div><div>端口：{window.location.port || (window.location.protocol === 'https:' ? '443' : '80')}</div></dl></details>
+    <details><DisclosureSummary className="cursor-pointer text-muted-foreground">开发者模式</DisclosureSummary><dl className="mt-3 space-y-2"><div>访问地址：{window.location.origin}</div><div>端口：{window.location.port || (window.location.protocol === 'https:' ? '443' : '80')}</div></dl></details>
   </section>;
 }
 

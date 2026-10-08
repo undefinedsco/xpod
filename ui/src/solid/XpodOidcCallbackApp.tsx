@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '@undefineds.co/shared-ui'
 /* eslint-disable react-refresh/only-export-components */
 
 import type {
@@ -709,10 +710,10 @@ export function XpodOidcCallbackApp({
               {failure.message}
             </p>
             <details className="group mt-3 text-[11px] leading-4 text-muted-foreground">
-              <summary className="-ml-1 inline-flex min-h-8 cursor-pointer list-none items-center gap-1 rounded-md px-1 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+              <DisclosureSummary className="-ml-1 inline-flex min-h-9 cursor-pointer list-none items-center gap-1 rounded-md px-1 outline-none hover:text-foreground [&::-webkit-details-marker]:hidden">
                 <ChevronRight aria-hidden="true" className="h-3 w-3 shrink-0 group-open:rotate-90" />
                 技术详情
-              </summary>
+              </DisclosureSummary>
               <div className="mt-1 max-h-24 overflow-y-auto overscroll-contain">
                 <code className="block break-all text-left">{result.code}</code>
                 {import.meta.env.DEV && result.developerDiagnostic && (

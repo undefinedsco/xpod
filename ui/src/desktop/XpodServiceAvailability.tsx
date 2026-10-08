@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '@undefineds.co/shared-ui'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
 /** One shell-owned connectivity check; authentication remains owned by the Solid runtime. */
@@ -69,7 +70,7 @@ export function XpodServiceAvailability({ children }: { children: ReactNode }) {
       <div className="min-w-0 flex-1">
         <span className="font-medium">Xpod 连接中断</span>
         <span className="ml-2 text-muted-foreground">正在自动重连；你仍可打开这台设备和设置。</span>
-        <details className="text-xs text-muted-foreground"><summary>页面与未完成操作</summary>
+        <details className="text-xs text-muted-foreground"><DisclosureSummary>页面与未完成操作</DisclosureSummary>
           登录状态和当前页面已保留。未完成的操作不会自动重试，请在连接恢复后确认结果。
         </details>
       </div>

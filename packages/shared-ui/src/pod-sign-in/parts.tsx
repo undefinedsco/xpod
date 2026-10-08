@@ -1,3 +1,4 @@
+import { DisclosureSummary } from '../disclosure'
 import { Loader2 } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Avatar, AvatarFallback, AvatarImage } from '../avatar'
@@ -84,9 +85,9 @@ export function Field(props: FormFieldProps) {
 export function Disclosure({ summary, children, className }: { summary: string; children: ReactNode; className?: string }) {
   return (
     <details className={cn('text-[0.8125rem] text-muted-foreground', className)}>
-      <summary className="cursor-pointer select-none rounded py-1 text-[0.8125rem] font-medium text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
+      <DisclosureSummary className="cursor-pointer select-none rounded py-1 text-[0.8125rem] font-medium text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
         {summary}
-      </summary>
+      </DisclosureSummary>
       <div className="pt-1 leading-5">{children}</div>
     </details>
   )
