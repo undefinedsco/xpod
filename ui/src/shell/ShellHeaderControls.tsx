@@ -22,9 +22,9 @@ export function ApprovalCard({ item }: { item: ShellAttentionItem }) {
     <p className="font-medium">{item.title}</p>
     <p className="text-xs leading-normal text-muted-foreground">风险：{({ low: '低', medium: '中', high: '高' } as Record<string, string>)[item.risk || ''] || item.risk || '未说明'}{item.expiresAt ? ` · 有效至 ${new Date(item.expiresAt).toLocaleString('zh-CN')}` : ''}</p>
     <div className="flex flex-wrap gap-2">
-      <button disabled={busy} onClick={() => void resolve('approved')} className="rounded bg-primary px-2 py-1 text-primary-foreground">只这一次</button>
-      <button disabled title="长期授权待接入" className="rounded border px-2 py-1 opacity-50">以后都允许 · 待接入</button>
-      <button disabled={busy} onClick={() => void resolve('rejected')} className="rounded border px-2 py-1">拒绝</button>
+      <Button disabled={busy} onClick={() => void resolve('approved')}>只这一次</Button>
+      <Button variant="outline" disabled title="长期授权待接入">以后都允许 · 待接入</Button>
+      <Button variant="outline" disabled={busy} onClick={() => void resolve('rejected')}>拒绝</Button>
     </div>
     <p className="text-xs leading-normal text-muted-foreground">这次决定只对当前申请有效。</p>
     {message && <p role="status">{message}</p>}
