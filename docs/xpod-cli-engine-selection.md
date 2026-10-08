@@ -35,8 +35,18 @@
   target 和规范 OCI source/revision 标签，复用已验哈希的 QLever runtime，不重新编译 QLever。
   首个服务候选构建成功，但 source 标签多了 `.git`，不满足正式准入；保留失败边界，不放宽校验。
   修正标签后的 [CNB 构建 cnb-vfi-1k4e9abil](https://cnb.cool/undefineds.co/native-builder/-/build/logs/cnb-vfi-1k4e9abil)
-  已受理，尚未取得安装产物验收结果。mini ARM 的 amd64 Bun/QEMU 已实际触发 signal 6，
+  已成功发布服务候选
+  `docker.cnb.cool/undefineds.co/native-builder/xpod-installed@sha256:3293455e7920f471f5b92af64108a16ef1ec4c6f2d5bbd02f81fff6609486e08`。
+  OCI revision 为最终整合源码，source 为规范仓库 URL。mini ARM 的 amd64 Bun/QEMU 已实际触发 signal 6，
   相关自有容器已清理；后续安装产物在 CNB 原生 amd64 验收，不静默切换 Node。
+- [安装态 SQLite cnb-adp-1k4e9vs7n](https://cnb.cool/undefineds.co/native-builder/-/build/logs/cnb-adp-1k4e9vs7n)
+  在上述同一服务 digest 上通过 Public16 与 native search；完整报告经既有
+  `validateInstalledReport` 独立重验，实际退出 0、自有容器清空。
+  runner SHA256 为 `c47673c52101dbc082dc267f6ea7ed9f1b63eea333216d3b05d27459e22f822f`，
+  report SHA256 为 `8a29bff09799848dd74f5046db97ee77c21cb8a48d4abc9659a4d5ac6889a123`。
+  前一次任务 `cnb-t4u-1k4e9s63j` 虽退出 0，但单行报告被日志平台截断，未用作完整报告证据；
+  后一次改为有序分块与完整报告哈希，未改变产品或验收用例。
+  同一服务镜像在既定 Pro-enabled PG17 候选上的安装态 Public/Pro 联合验收仍未完成。
 
 > 历史状态（2026-10-05）：以下仅属于当时源码与产物，其余阶段记录保留各自证据归属。
 > - 选型为 AgentFS，置信度中等；持久 delta、不可变基线及显式 commit 是决定因素。rclone 的成熟测试、范围缓存与平台资产仍是优势，不宣称 AgentFS 性能领先。
