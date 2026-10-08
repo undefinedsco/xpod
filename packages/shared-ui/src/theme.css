@@ -398,6 +398,19 @@
     background-color: hsl(var(--scrim) / 0.45);
   }
 
+  /* Query the notice itself so popovers and enlarged text adapt independently
+     of the window width. Keep the action aligned with the body below the icon. */
+  [data-inline-notice] {
+    container-type: inline-size;
+  }
+
+  @container (max-width: 24em) {
+    [data-inline-notice] > [data-inline-notice-action] {
+      flex-basis: 100%;
+      padding-inline-start: calc(1rem + 0.625rem);
+    }
+  }
+
   .warm-card {
     border: 1px solid hsl(var(--border) / 0.5);
     border-radius: var(--radius-xl);

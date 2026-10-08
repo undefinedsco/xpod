@@ -39,7 +39,7 @@ export interface InlineNoticeProps extends Omit<React.HTMLAttributes<HTMLDivElem
   title?: React.ReactNode
   /** Replaces the neutral default icon; always treated as decorative. */
   icon?: React.ReactNode
-  /** Trailing action slot, e.g. a retry button. */
+  /** Action slot; moves below the copy when the notice has limited inline space. */
   action?: React.ReactNode
   /**
    * Live-region role. The caller owns it: pass `alert` for errors that must
@@ -66,8 +66,9 @@ export function InlineNotice({
   return (
     <div
       role={role}
+      data-inline-notice=""
       className={cn(
-        'flex items-start gap-2.5 rounded-md border px-3 py-2.5 text-sm leading-normal',
+        'flex flex-wrap items-start gap-2.5 rounded-md border px-3 py-2.5 text-sm leading-normal',
         noticeToneClass[tone],
         className,
       )}
@@ -80,7 +81,7 @@ export function InlineNotice({
         {title ? <p className="font-medium">{title}</p> : null}
         {children}
       </div>
-      {action ? <div className="shrink-0">{action}</div> : null}
+      {action ? <div data-inline-notice-action="" className="max-w-full shrink-0">{action}</div> : null}
     </div>
   )
 }
