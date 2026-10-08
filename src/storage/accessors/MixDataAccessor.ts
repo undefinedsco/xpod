@@ -905,6 +905,10 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     metadata: RepresentationMetadata,
     options: LocalRdfSyncOptions & { contentType?: string; modifiedAt?: Date } = {},
   ): Promise<void> {
+    // File recovery may discover a nested document before CSS has created its parents.
+    // HTTP container reads use the structured accessor, so filesystem directories alone
+    // cannot make the recovered document reachable through LDP traversal.
+    await this.ensureParentContainers(identifier, this.structuredDataAccessor);
     const structuredMetadata = new RepresentationMetadata(metadata);
     addResourceMetadata(structuredMetadata, false);
     updateModifiedDate(structuredMetadata, options.modifiedAt);
@@ -1359,6 +1363,7 @@ export class MixDataAccessor implements DataAccessor, LocalRdfIndexAccessor {
     }
 
     await accessor.writeContainer(identifier, new RepresentationMetadata(identifier));
+    if (accessor === this.structuredDataAccessor) this.invalidateMetadataCache(identifier);
   }
 
   private sameIdentifier(left: ResourceIdentifier, right: ResourceIdentifier): boolean {

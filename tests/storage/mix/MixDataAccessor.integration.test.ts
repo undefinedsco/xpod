@@ -738,6 +738,21 @@ INSERT DATA { GRAPH <${resourceId.path}> { <${resourceId.path}> <https://schema.
     }
   });
 
+  it('keeps recovered nested RDF parent containers readable through the structured accessor', async () => {
+    const root = { path: baseUrl };
+    await accessor.writeContainer(root, new RepresentationMetadata(root));
+    const resourceId = { path: `${baseUrl}settings/ai/config.ttl` };
+    await accessor.syncLocalRdfDocument(resourceId,
+      guardStream(Readable.from(['<#config> <https://schema.org/name> "configuration" .\n'])), 'text/turtle');
+
+    for (const container of [`${baseUrl}settings/`, `${baseUrl}settings/ai/`]) {
+      await expect(accessor.getMetadata({ path: container })).resolves.toBeInstanceOf(RepresentationMetadata);
+    }
+    const children = [];
+    for await (const child of accessor.getChildren(root)) children.push(child.identifier.value);
+    expect(children).toContain(`${baseUrl}settings/`);
+  });
+
   it('keeps copy/materialized sync writing the destination authority file', async () => {
     const resourceId = { path: `${baseUrl}alice/copied.ttl` };
     const text = '<#copy> <https://schema.org/name> "copied" .\n';
