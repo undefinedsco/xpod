@@ -2,6 +2,10 @@
 
 This document provides a comprehensive overview of all custom components developed for Xpod, extending the Community Solid Server (CSS) framework.
 
+## Local bootstrap metadata recovery
+
+`LocalPodContainerMetadataInitializer` runs after authority-file recovery and before CSS workers start. Older Local/Standalone provisioning advertised `settings/` without its operational metadata. For a registered, unchanged Pod incarnation whose root still advertises that container, this initializer creates only the missing container metadata through the structured CSS accessor. Existing metadata and resource files are preserved; absent containment, missing roots, other storage origins and pending deletion are not repaired. A durable lifecycle reservation excludes API creation/deletion while each Pod is checked. A conflicting reservation fails startup rather than racing it. The pre-worker ordering is required: this reservation does not replace the CSS resource mutation locks used after startup. This is protocol metadata recovery, not an application schema or an authorization change.
+
 ## 等位替换对照表
 
 Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默认组件，保持接口兼容，不破坏 CSS 调用链。

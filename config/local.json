@@ -10,7 +10,10 @@
       "mutationPodStore": "PodMutationLockingHttpHandler:_podStore",
       "mutationLocker": "PodMutationLockingHttpHandler:_resourceLocker",
       "mutationDb": "PodMutationLockingHttpHandler:_identityDbUrl",
-      "mutationBase": "PodMutationLockingHttpHandler:_baseUrl"
+      "mutationBase": "PodMutationLockingHttpHandler:_baseUrl",
+      "bootstrapContainerAccessor": "LocalPodContainerMetadataInitializer:_dataAccessor",
+      "bootstrapContainerDb": "LocalPodContainerMetadataInitializer:_identityDbUrl",
+      "bootstrapContainerBase": "LocalPodContainerMetadataInitializer:_baseUrl"
     }
   ],
   "import": [
@@ -102,10 +105,19 @@
         { "@id": "urn:solid-server:default:PrimaryParallelInitializer" },
         { "@id": "urn:solid-server:default:ModuleVersionVerifier" },
         { "@id": "urn:undefineds:xpod:LocalRdfAuthorityRecoveryInitializer" },
+        { "@id": "urn:undefineds:xpod:LocalPodContainerMetadataInitializer" },
         { "@id": "urn:solid-server:default:WorkerManager" },
         { "@id": "urn:solid-server:default:SeededAccountInitializer" },
         { "@id": "urn:undefineds:xpod:EdgeNodeAgentInitializer" }
       ]
+    },
+    {
+      "comment": "Repair registered legacy Pod bootstrap metadata before workers accept mutations; do not synthesize unadvertised containers.",
+      "@id": "urn:undefineds:xpod:LocalPodContainerMetadataInitializer",
+      "@type": "LocalPodContainerMetadataInitializer",
+      "bootstrapContainerAccessor": { "@id": "urn:undefineds:xpod:SolidRdfDataAccessor" },
+      "bootstrapContainerDb": { "@id": "urn:solid-server:default:variable:identityDbUrl", "@type": "Variable" },
+      "bootstrapContainerBase": { "@id": "urn:solid-server:default:variable:baseUrl", "@type": "Variable" }
     },
     {
       "comment": "Persistent outbox for Local authority-file writes and startup recovery.",

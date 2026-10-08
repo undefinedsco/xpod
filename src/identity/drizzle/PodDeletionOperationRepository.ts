@@ -99,7 +99,7 @@ export class PodDeletionOperationRepository {
     return result.rows.length === 1;
   }
 
-  public async reserveStorage(storageUrl: string, operationId: string, kind: 'create' | 'delete'): Promise<void> {
+  public async reserveStorage(storageUrl: string, operationId: string, kind: 'create' | 'delete' | 'repair'): Promise<void> {
     await this.ready;
     await executeStatement(this.db, sql`INSERT INTO pod_lifecycle_reservation(storage_url, operation_id, kind)
       VALUES (${storageUrl}, ${operationId}, ${kind}) ON CONFLICT DO NOTHING`);

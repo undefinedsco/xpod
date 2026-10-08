@@ -5,7 +5,7 @@
   ],
   "@graph": [
     {
-      "comment": "Local edge node heartbeat and optional P2P answer-loop agent. Disabled unless edgeNodeAgentEnabled is true.",
+      "comment": "Local edge node heartbeat and optional P2P answer-loop agent. Runs after LocalPodContainerMetadataInitializer and CSS worker startup; disabled unless edgeNodeAgentEnabled is true.",
       "@id": "urn:undefineds:xpod:EdgeNodeAgentInitializer",
       "@type": "EdgeNodeAgentInitializer",
       "enabled": {

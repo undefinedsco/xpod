@@ -148,6 +148,7 @@ import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionPodStore } from './provision/ProvisionPodStore';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
+import { LocalPodContainerMetadataInitializer } from './provision/LocalPodContainerMetadataInitializer';
 import {
   RootedSolidFsSyncJournal,
   SqliteSolidFsSyncJournal,
@@ -316,6 +317,7 @@ export {
   ProvisionPodStore,
   ProvisionCodeCodec,
   LocalPodProvisioningService,
+  LocalPodContainerMetadataInitializer,
   // SolidFS recovery exports
   SqliteSolidFsSyncJournal,
   RootedSolidFsSyncJournal,
