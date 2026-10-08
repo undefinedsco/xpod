@@ -123,7 +123,7 @@ export function SegmentedControl<T extends string>({
           <label
             key={option.value}
             className={cn(
-              'relative inline-flex min-w-0 grow cursor-pointer select-none items-center justify-center gap-1.5 rounded-md transition-colors',
+              'relative inline-flex min-w-9 [@media(pointer:coarse)]:min-w-11 grow cursor-pointer select-none items-center justify-center gap-1.5 rounded-md transition-colors',
               sizeClass[size],
               checked ? selectedClass : idleClass,
               option.disabled && 'cursor-not-allowed opacity-50',

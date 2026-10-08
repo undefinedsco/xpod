@@ -38,8 +38,8 @@ export function AiConnectionsMainHeader({
   const liveAffordance = liveUpdates === 'idle' ? undefined : LIVE_UPDATE_AFFORDANCE[liveUpdates]
 
   return (
-    <div className="flex h-full min-w-0 items-center gap-2 px-4">
-      <h1 className="truncate text-sm font-medium text-foreground">
+    <div className="flex h-full min-w-0 items-center gap-1 px-2 sm:gap-2 sm:px-4">
+      <h1 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
         {title}
       </h1>
       {liveAffordance && (
@@ -53,7 +53,7 @@ export function AiConnectionsMainHeader({
             aria-hidden="true"
             className={`h-1.5 w-1.5 rounded-full ${liveAffordance.dotClass}`}
           />
-          {liveAffordance.label}
+          <span className="sr-only sm:not-sr-only">{liveAffordance.label}</span>
         </span>
       )}
     </div>
