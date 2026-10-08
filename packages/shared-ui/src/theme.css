@@ -310,12 +310,12 @@
    */
   .pod-sign-in {
     font-family: 'PingFang SC', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Helvetica Neue', Arial, sans-serif;
-    font-size: 14px;
-    line-height: 22px;
+    font-size: .875rem;
+    line-height: 1.375rem;
   }
 
   .pod-sign-in h1 {
-    font-size: 22px;
+    font-size: 1.375rem;
     line-height: 1.4;
   }
 

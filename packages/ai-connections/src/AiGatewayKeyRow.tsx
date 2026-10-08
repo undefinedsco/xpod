@@ -94,7 +94,7 @@ export function AiGatewayKeyRow({
             <Button
               variant="secondary"
               size="sm"
-              className="h-8 text-xs"
+              className="h-9 text-xs"
               aria-label={`确认删除 ${label}`}
               disabled={busy}
               onClick={onDestroy}
@@ -104,7 +104,7 @@ export function AiGatewayKeyRow({
             <Button
               variant="ghost"
               size="sm"
-              className="h-8 text-xs"
+              className="h-9 text-xs"
               aria-label={`取消删除 ${label}`}
               disabled={busy}
               onClick={onCancelDestroy}
@@ -117,7 +117,7 @@ export function AiGatewayKeyRow({
         <Button
           variant="ghost"
           size="sm"
-          className="h-8 shrink-0 gap-1.5 text-xs text-muted-foreground hover:text-destructive"
+          className="h-9 shrink-0 gap-1.5 text-xs text-muted-foreground hover:text-destructive"
           aria-label={`销毁 ${label}`}
           title={`销毁 ${label}`}
           disabled={busy}

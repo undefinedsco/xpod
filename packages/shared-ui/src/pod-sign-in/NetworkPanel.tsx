@@ -107,7 +107,7 @@ export function NetworkPanel({
 
       <ul className="grid grid-cols-3 gap-2" aria-busy={checking || undefined}>
         {rows.map(([key, label]) => (
-          <li key={key} data-probe={key} data-state={checks[key]} className="flex flex-col gap-1 rounded-lg border border-border bg-card p-2 text-[13px]">
+          <li key={key} data-probe={key} data-state={checks[key]} className="flex flex-col gap-1 rounded-lg border border-border bg-card p-2 text-[0.8125rem]">
             <span className="text-foreground">{label}</span>
             <span className="flex items-center gap-1 text-muted-foreground">
               <ProbeIcon state={checks[key]} />
@@ -118,12 +118,12 @@ export function NetworkPanel({
       </ul>
 
       {checks.wan === 'ok' && activeTunnelLabel ? (
-        <p role="status" className="text-[13px] text-success">{formatCopy(copy.reachableVia, { tunnel: activeTunnelLabel })}</p>
+        <p role="status" className="text-[0.8125rem] text-success">{formatCopy(copy.reachableVia, { tunnel: activeTunnelLabel })}</p>
       ) : null}
 
       {showTunnels ? (
         <div className="flex flex-col gap-3">
-          <p id={tunnelLabelId} className="text-[13px] font-medium text-foreground">{copy.tunnelTitle}</p>
+          <p id={tunnelLabelId} className="text-[0.8125rem] font-medium text-foreground">{copy.tunnelTitle}</p>
           <div role="radiogroup" aria-labelledby={tunnelLabelId} className="grid grid-cols-2 gap-2">
             {tunnels.map((tunnel) => {
               const isSelected = tunnel.id === selectedTunnelId
@@ -182,7 +182,7 @@ export function NetworkPanel({
         )}
       </div>
 
-      <p className="text-[13px] text-muted-foreground">{copy.networkFootnote}</p>
+      <p className="text-[0.8125rem] text-muted-foreground">{copy.networkFootnote}</p>
     </section>
   )
 }

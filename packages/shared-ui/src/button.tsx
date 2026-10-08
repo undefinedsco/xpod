@@ -24,6 +24,7 @@ export const buttonVariants = cva(
         icon: 'h-10 w-10',
       },
     },
+    compoundVariants: [{ variant: 'default', className: 'min-h-11' }],
     defaultVariants: { variant: 'default', size: 'default' },
   },
 )

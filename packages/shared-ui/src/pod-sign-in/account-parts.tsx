@@ -72,7 +72,7 @@ export function DeviceIdentity({ device, copy, showStatus = true }: { device: De
 
 export const sectionClass = 'pod-sign-in flex flex-col gap-3 text-foreground'
 export const listRowClass = 'flex min-h-14 items-center gap-3 rounded-lg border border-border bg-card px-3 py-2'
-export const sectionTitleClass = 'text-[17px] font-semibold text-foreground'
+export const sectionTitleClass = 'text-[1.0625rem] font-semibold text-foreground'
 
 /** Section title row: an 18px icon, the title, and one sentence saying what the section is for. */
 export function SectionHeader({ id, icon: Icon, title, hint, actions }: {
@@ -88,7 +88,7 @@ export function SectionHeader({ id, icon: Icon, title, hint, actions }: {
         <Icon aria-hidden="true" className="mt-0.5 h-[18px] w-[18px] shrink-0 text-primary" />
         <div className="min-w-0">
           <h2 id={id} className={sectionTitleClass}>{title}</h2>
-          <p className="text-[13px] text-muted-foreground">{hint}</p>
+          <p className="text-[0.8125rem] text-muted-foreground">{hint}</p>
         </div>
       </div>
       {actions}

@@ -38,7 +38,7 @@ export function ActionButton({
 /** One-line source mark: 24px icon and 13px name. It is not a heading. */
 export function SourceMark({ icon, name }: { icon?: ReactNode; name: string }) {
   return (
-    <div data-pod-sign-in="source" className="flex h-6 items-center gap-2 text-[13px] text-muted-foreground">
+    <div data-pod-sign-in="source" className="flex h-6 items-center gap-2 text-[0.8125rem] text-muted-foreground">
       {icon ? <span aria-hidden="true" className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-md">{icon}</span> : null}
       <span className="truncate">{name}</span>
     </div>
@@ -83,8 +83,8 @@ export function Field(props: FormFieldProps) {
 /** Secondary information stays folded until asked for (spec §4). */
 export function Disclosure({ summary, children, className }: { summary: string; children: ReactNode; className?: string }) {
   return (
-    <details className={cn('text-[13px] text-muted-foreground', className)}>
-      <summary className="cursor-pointer select-none rounded py-1 text-[13px] font-medium text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
+    <details className={cn('text-[0.8125rem] text-muted-foreground', className)}>
+      <summary className="cursor-pointer select-none rounded py-1 text-[0.8125rem] font-medium text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
         {summary}
       </summary>
       <div className="pt-1 leading-5">{children}</div>

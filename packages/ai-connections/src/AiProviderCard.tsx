@@ -272,7 +272,7 @@ export function AiProviderCard({
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-8 gap-1.5 text-xs"
+                      className="h-9 gap-1.5 text-xs"
                       disabled={disabled || busy}
                       onClick={onAddModel}
                     >
@@ -284,7 +284,7 @@ export function AiProviderCard({
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-8 gap-1.5 text-xs"
+                      className="h-9 gap-1.5 text-xs"
                       disabled={disabled || busy || verifyPending}
                       onClick={onVerify}
                     >
@@ -297,7 +297,7 @@ export function AiProviderCard({
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-8 gap-1.5 text-xs"
+                      className="h-9 gap-1.5 text-xs"
                       disabled={disabled || busy || verifyPending}
                       onClick={onVerify}
                     >

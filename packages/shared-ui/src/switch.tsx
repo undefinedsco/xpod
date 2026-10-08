@@ -3,7 +3,7 @@
 import * as React from "react"
 import * as SwitchPrimitives from "@radix-ui/react-switch"
 
-import { interactiveFocusClass } from "./focus"
+import { controlFocusClass } from "./focus"
 import { cn } from "./utils"
 
 const Switch = React.forwardRef<
@@ -14,8 +14,8 @@ const Switch = React.forwardRef<
     className={cn(
       "peer inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full",
       "border-2 border-transparent",
-      "transition-all duration-200",
-      interactiveFocusClass,
+      "transition-[background-color,border-color] duration-200",
+      controlFocusClass,
       "disabled:cursor-not-allowed disabled:opacity-50",
       "data-[state=checked]:bg-primary",
       "data-[state=unchecked]:bg-muted/50",

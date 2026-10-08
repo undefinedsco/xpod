@@ -117,7 +117,8 @@ describe('shared theme contract', () => {
     const source = themeSource();
 
     expect(source).toContain('.pod-sign-in {');
-    expect(source).toContain('font-size: 14px;');
+    // 14px at the default 16px root; scales with the user's text setting.
+    expect(source).toContain('font-size: .875rem;');
     expect(source).toContain('.pod-sign-in :focus-visible:not(input):not(textarea):not(select)');
     expect(source).toContain('outline: 2px solid hsl(var(--ring));');
     expect(source).toContain('outline-offset: 3px;');

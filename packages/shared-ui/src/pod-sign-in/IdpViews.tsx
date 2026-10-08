@@ -104,7 +104,7 @@ export function IdpSignInView(props: IdpSignInViewProps) {
       onSubmit={submit}
       actions={(
         <>
-        {error ? <p role="alert" className="text-[13px] text-destructive">{error}</p> : null}
+        {error ? <p role="alert" className="text-[0.8125rem] text-destructive">{error}</p> : null}
         <ActionButton type="submit" className={primaryButtonClass} busy={pending}>{copy.signIn}</ActionButton>
       <div className="flex flex-wrap items-center justify-between gap-2">
         {onRegister || registerHref ? (
@@ -123,7 +123,7 @@ export function IdpSignInView(props: IdpSignInViewProps) {
       )}
     >
       <div className="flex flex-col gap-1">
-        <h1 className="text-[17px] font-semibold text-foreground">{formatCopy(copy.signInTitle, { service: serviceName })}</h1>
+        <h1 className="text-[1.0625rem] font-semibold text-foreground">{formatCopy(copy.signInTitle, { service: serviceName })}</h1>
         {returnToAppName ? (
           <p className="text-sm text-muted-foreground">{formatCopy(copy.returnToApp, { app: returnToAppName })}</p>
         ) : null}
@@ -151,7 +151,7 @@ export function IdpSignInView(props: IdpSignInViewProps) {
           label={copy.password}
           error={fieldErrors?.password}
           labelAside={onForgot || forgotHref ? (
-            <TextAction className="min-h-7 text-[13px]" href={forgotHref} onClick={onForgot}>{copy.forgotPassword}</TextAction>
+            <TextAction className="min-h-9 text-[0.8125rem]" href={forgotHref} onClick={onForgot}>{copy.forgotPassword}</TextAction>
           ) : undefined}
         >
           {(fieldProps) => (
@@ -226,7 +226,7 @@ export function IdpRegisterView(props: IdpRegisterViewProps) {
       onSubmit={submit}
       actions={(
         <>
-        {error ? <p role="alert" className="text-[13px] text-destructive">{error}</p> : null}
+        {error ? <p role="alert" className="text-[0.8125rem] text-destructive">{error}</p> : null}
         <ActionButton type="submit" className={primaryButtonClass} busy={pending}>{copy.registerSubmit}</ActionButton>
       {onSignIn ? (
         <button type="button" className={cn(textButtonClass, 'self-center text-primary hover:underline')} disabled={pending} onClick={onSignIn}>
@@ -237,7 +237,7 @@ export function IdpRegisterView(props: IdpRegisterViewProps) {
       )}
     >
       <div className="flex flex-col gap-1">
-        <h1 className="text-[17px] font-semibold text-foreground">{formatCopy(copy.registerTitle, { service: serviceName })}</h1>
+        <h1 className="text-[1.0625rem] font-semibold text-foreground">{formatCopy(copy.registerTitle, { service: serviceName })}</h1>
         {returnToAppName ? (
           <p className="text-sm text-muted-foreground">{formatCopy(copy.returnToApp, { app: returnToAppName })}</p>
         ) : null}
@@ -348,7 +348,7 @@ export function IdpNoWebIdView(props: IdpNoWebIdViewProps) {
       onSubmit={submit}
       actions={(
         <>
-        {error ? <p role="alert" className="text-[13px] text-destructive">{error}</p> : null}
+        {error ? <p role="alert" className="text-[0.8125rem] text-destructive">{error}</p> : null}
         <ActionButton type="submit" className={primaryButtonClass} busy={pending} disabled={!canSubmit}>
           {copy.createAndContinue}
         </ActionButton>
@@ -361,8 +361,8 @@ export function IdpNoWebIdView(props: IdpNoWebIdViewProps) {
       )}
     >
       <div className="flex flex-col gap-1">
-        <h1 className="text-[17px] font-semibold text-foreground">{copy.noWebIdTitle}</h1>
-        <p className="text-sm leading-[22px] text-muted-foreground">{formatCopy(copy.noWebIdLead, { app: appName })}</p>
+        <h1 className="text-[1.0625rem] font-semibold text-foreground">{copy.noWebIdTitle}</h1>
+        <p className="text-sm leading-[1.375rem] text-muted-foreground">{formatCopy(copy.noWebIdLead, { app: appName })}</p>
       </div>
       <div className="flex flex-col gap-4">
         {hasNameField ? (

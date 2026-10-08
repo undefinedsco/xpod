@@ -15,7 +15,7 @@ export const SearchInput = React.forwardRef<HTMLInputElement, SearchInputProps>(
         ref={ref}
         type="search"
         placeholder={placeholder}
-        className={cn('h-auto min-h-8 rounded-lg border-border bg-card py-1 pl-8 pr-2.5 text-[13px] leading-normal', className)}
+        className={cn('h-auto min-h-9 rounded-lg border-border bg-card py-1 pl-8 pr-2.5 text-[0.8125rem] leading-normal', className)}
       />
     </div>
   ),

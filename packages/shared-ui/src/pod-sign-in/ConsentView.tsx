@@ -94,10 +94,10 @@ export function ConsentView(props: ConsentViewProps) {
         {app.icon ? (
           <span aria-hidden="true" className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl">{app.icon}</span>
         ) : null}
-        <h1 className="text-[17px] font-semibold text-foreground">{formatCopy(copy.consentTitle, { app: app.name })}</h1>
+        <h1 className="text-[1.0625rem] font-semibold text-foreground">{formatCopy(copy.consentTitle, { app: app.name })}</h1>
         {app.host ? <Hostname>{app.host}</Hostname> : null}
         {!app.verified ? (
-          <p role="alert" className="flex items-start gap-1.5 text-left text-[13px] text-warning">
+          <p role="alert" className="flex items-start gap-1.5 text-left text-[0.8125rem] text-warning">
             <TriangleAlert aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             {copy.unverifiedWarning}
           </p>
@@ -105,7 +105,7 @@ export function ConsentView(props: ConsentViewProps) {
       </div>
 
       <div className="flex flex-col gap-2">
-        <p id={labelId} className="text-[13px] font-medium text-foreground">{copy.chooseWebId}</p>
+        <p id={labelId} className="text-[0.8125rem] font-medium text-foreground">{copy.chooseWebId}</p>
         {single ? (
           <div className="rounded-lg border border-border bg-card p-3">
             <WebIdRow webId={webIds[0]!} />
@@ -152,7 +152,7 @@ export function ConsentView(props: ConsentViewProps) {
             {webIds.map((webId) => <option key={webId.id} value={webId.id}>{webId.displayName} {webId.shortName}</option>)}
           </select>
         ) : null}
-        <p className="text-[13px] leading-5 text-muted-foreground">{formatCopy(copy.consentConsequence, { app: app.name })}</p>
+        <p className="text-[0.8125rem] leading-5 text-muted-foreground">{formatCopy(copy.consentConsequence, { app: app.name })}</p>
       </div>
 
       <Disclosure summary={copy.requestDetails}>

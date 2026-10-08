@@ -180,7 +180,7 @@ export function CreateWebIdForm({
       </Field>
 
       <div className="flex flex-col gap-1.5">
-        <p className="text-[13px] font-medium text-foreground">{`2 · ${copy.createStepLocation}`}</p>
+        <p className="text-[0.8125rem] font-medium text-foreground">{`2 · ${copy.createStepLocation}`}</p>
         {selected ? (
           <div className={listRowClass} data-pod-sign-in="selected-device">
             <DeviceIdentity device={selected} copy={copy} />
@@ -194,11 +194,11 @@ export function CreateWebIdForm({
             </button>
           </div>
         ) : null}
-        <p className="text-[13px] text-muted-foreground">{copy.cannotChangeLater}</p>
+        <p className="text-[0.8125rem] text-muted-foreground">{copy.cannotChangeLater}</p>
       </div>
 
       {creating ? (
-        <p role="status" aria-live="polite" className="flex items-center gap-2 text-[13px] text-muted-foreground">
+        <p role="status" aria-live="polite" className="flex items-center gap-2 text-[0.8125rem] text-muted-foreground">
           <Spinner />
           {copy.creatingNote}
         </p>
@@ -591,7 +591,7 @@ export function ConsentResumeBanner({
       ) : null}
       <div className="flex min-w-0 flex-1 flex-col">
         <p id={titleId} className="text-sm font-semibold">{formatCopy(copy.resumeTitle, { app: app.name })}</p>
-        <p role="status" aria-live="polite" className="text-[13px] text-muted-foreground">
+        <p role="status" aria-live="polite" className="text-[0.8125rem] text-muted-foreground">
           {statusText ?? (podReady ? copy.resumeReady : copy.resumeWaiting)}
         </p>
       </div>

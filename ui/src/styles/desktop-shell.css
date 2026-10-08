@@ -18,7 +18,7 @@
 .xpod-desktop-shell [data-workspace-pane="main"] { min-width:0; }
 @media (max-width:767px) {
   .xpod-desktop-shell { grid-template-columns:minmax(0,1fr); grid-template-rows:48px minmax(0,1fr); }
-  .xpod-narrow-header { display:flex; align-items:center; gap:8px; border-bottom:1px solid hsl(var(--border)); min-width:0; padding:0 12px; font-size:14px; }
+  .xpod-narrow-header { display:flex; align-items:center; gap:8px; border-bottom:1px solid hsl(var(--border)); min-width:0; padding:0 12px; font-size:.875rem; }
   .xpod-narrow-header button { display:flex; align-items:center; justify-content:center; width:36px; height:36px; flex-shrink:0; }
   .xpod-narrow-header span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .xpod-rail { display:none; }
@@ -32,7 +32,7 @@
 
 /* A mounted applet owns the one title row; the shell contributes only navigation. */
 .xpod-navigation-toggle { display:flex; align-items:center; justify-content:center; width:36px; height:36px; flex-shrink:0; }
-.xpod-header-parent { max-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; color:hsl(var(--muted-foreground)); }
+.xpod-header-parent { max-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.875rem; color:hsl(var(--muted-foreground)); }
 @media (max-width:767px) {
   .xpod-desktop-shell:has([data-workspace-main-header]) { grid-template-rows:minmax(0,1fr); }
   .xpod-desktop-shell:has([data-workspace-main-header]) > .xpod-narrow-header { display:none; }

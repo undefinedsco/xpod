@@ -45,7 +45,7 @@ export function AiQuotaCard({
           </div>
           <QuotaInfo quota={quota} label={credentialLabel ?? offeringName} />
           <Button
-            className="h-6 w-6 shrink-0 p-0"
+            className="h-9 w-9 shrink-0 p-0"
             variant="ghost"
             size="sm"
             aria-label={`刷新 ${providerName} ${offeringName}${credentialLabel ? ` ${credentialLabel}` : ''}额度`}
@@ -147,7 +147,7 @@ function QuotaInfo({ quota, label }: { quota?: AiQuotaSnapshot; label: string })
   return (
     <Dialog modal={false} open={open} onOpenChange={(next) => { outsideRef.current = false; setOpen(next) }}>
       <DialogTrigger asChild>
-        <Button ref={triggerRef} className="h-6 w-6 shrink-0 p-0" variant="ghost" size="sm"
+        <Button ref={triggerRef} className="h-9 w-9 shrink-0 p-0" variant="ghost" size="sm"
           aria-label={`${label}额度详情`} disabled={!quota || quota.status === 'error'}
           onClick={(event) => {
             const rect = event.currentTarget.getBoundingClientRect()

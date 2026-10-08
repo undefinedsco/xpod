@@ -5,7 +5,7 @@ import { Button, Tooltip, TooltipContent, TooltipTrigger } from '@undefineds.co/
  * One icon action on a list row, carrying its own tooltip.
  *
  * Model rows and credential rows offer the same kind of trailing actions, so
- * the button shape, its 28px hit area and the tooltip that names the action are
+ * the button shape, its 36px hit area and the tooltip that names the action are
  * defined once here instead of being re-built per row type.
  */
 export function AiRowAction({
@@ -26,7 +26,7 @@ export function AiRowAction({
         <Button
           variant="ghost"
           size="icon"
-          className="h-7 w-7"
+          className="h-9 w-9"
           aria-label={label}
           disabled={disabled}
           onClick={onClick}

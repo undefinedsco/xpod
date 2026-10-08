@@ -213,7 +213,7 @@ export function AiCredentialPoolSection({
               )
             }
             return (
-              <Button key={item.key} variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 API Key 连接"
+              <Button key={item.key} variant="outline" size="sm" className="h-9 gap-1.5 text-xs" aria-label="新建 API Key 连接"
                 title={item.apiKeyMethod.lifecycle === 'unavailable' ? item.apiKeyMethod.reason : undefined}
                 disabled={busy || dialog.saving || disabled || authorizationPending
                   || item.apiKeyMethod.lifecycle === 'unavailable'

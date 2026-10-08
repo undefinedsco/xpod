@@ -20,7 +20,7 @@ export function IdpChrome({ serviceName, serviceHost, icon, serviceLabel, locale
   return (
     <div
       data-pod-sign-in="idp-chrome"
-      className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border bg-[hsl(var(--sunken))] px-6 py-2 text-[13px] text-foreground min-[400px]:px-8"
+      className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border bg-[hsl(var(--sunken))] px-6 py-2 text-[0.8125rem] text-foreground min-[400px]:px-8"
     >
       <span className="flex shrink-0 items-center justify-center">
         {icon ?? <XpodMark size={24} />}

@@ -178,7 +178,7 @@ describe('ConsentPage presentation', () => {
     // shared `.pod-sign-in h1` contract (22px/600), asserted from computed styles in
     // tests/e2e/account-web-layout.spec.ts. Do not read this assertion as the
     // computed font size.
-    expect(authorizeHeading.className).toContain('text-[17px]');
+    expect(authorizeHeading.className).toContain('text-[1.0625rem]');
     expect(authorizeHeading.className).toContain('font-semibold');
     expect(screen.getByText('app.example')).toBeTruthy();
     expect(screen.getByRole('alert').textContent).toContain('未能验证这个应用的来源');

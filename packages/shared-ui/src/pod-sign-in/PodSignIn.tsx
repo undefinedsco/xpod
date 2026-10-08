@@ -87,7 +87,7 @@ function NoticeLine({
   const detail = developerMode ? notice.developerDetail : undefined
 
   return (
-    <div role={role} data-pod-sign-in="notice" data-tone={notice.tone} className={cn('text-[13px] leading-5', tone)}>
+    <div role={role} data-pod-sign-in="notice" data-tone={notice.tone} className={cn('text-[0.8125rem] leading-5', tone)}>
       {detail ? (
         <details>
           <summary
@@ -100,7 +100,7 @@ function NoticeLine({
             <pre className="whitespace-pre-wrap break-all font-mono text-xs">{detail}</pre>
             <button
               type="button"
-              className="mt-1 h-9 rounded-lg px-2 text-[13px] font-medium text-primary hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+              className="mt-1 h-9 rounded-lg px-2 text-[0.8125rem] font-medium text-primary hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
               onClick={() => {
                 void navigator.clipboard?.writeText(detail).then(() => setCopied(true), () => undefined)
               }}
@@ -193,14 +193,14 @@ export function PodSignIn({
           {identity ? (
             <>
               <PodAvatar name={identity.displayName} avatarUrl={identity.avatarUrl} storage={identity.storage} />
-              <h1 className="text-[17px] font-semibold text-foreground">{identity.displayName}</h1>
+              <h1 className="text-[1.0625rem] font-semibold text-foreground">{identity.displayName}</h1>
             </>
           ) : (
             <h1 className="sr-only">{app.name}</h1>
           )}
           <div role="status" aria-live="polite">
             {pastRestoreDelay ? (
-              <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
+              <p className="flex items-center gap-2 text-[0.8125rem] text-muted-foreground">
                 <Spinner />
                 {copy.restoring}
               </p>
@@ -241,7 +241,7 @@ export function PodSignIn({
         {source}
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
           <PodAvatar name={state.identity.displayName} avatarUrl={state.identity.avatarUrl} storage={state.identity.storage} />
-          <h1 className="text-[17px] font-semibold text-foreground">{state.identity.displayName}</h1>
+          <h1 className="text-[1.0625rem] font-semibold text-foreground">{state.identity.displayName}</h1>
           {state.kind === 'expired' ? <p className="text-sm text-muted-foreground">{copy.expiredLine}</p> : null}
         </div>
       </ScreenLayout>
@@ -285,7 +285,7 @@ export function PodSignIn({
           </>
         ) : null}
         {allowRegister ? (
-          <p className="text-center text-[13px] text-muted-foreground">
+          <p className="text-center text-[0.8125rem] text-muted-foreground">
             {copy.noAccount}
             <button
               type="button"
@@ -302,8 +302,8 @@ export function PodSignIn({
     >
       {source}
       <div className="flex flex-col gap-2">
-        <h1 className="text-[17px] font-semibold text-foreground">{copy.chooseTitle}</h1>
-        <p className="text-sm leading-[22px] text-muted-foreground">{copy.chooseLead}</p>
+        <h1 className="text-[1.0625rem] font-semibold text-foreground">{copy.chooseTitle}</h1>
+        <p className="text-sm leading-[1.375rem] text-muted-foreground">{copy.chooseLead}</p>
         <div className="flex flex-col">
           <Disclosure summary={copy.whatIsWebId}>{copy.whatIsWebIdBody}</Disclosure>
           <Disclosure summary={copy.whatIsPod}>{copy.whatIsPodBody}</Disclosure>

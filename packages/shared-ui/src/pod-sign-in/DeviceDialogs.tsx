@@ -37,7 +37,7 @@ export function DevicePickerDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className={dialogClass} aria-describedby={undefined}>
-        <DialogTitle className="text-[17px] leading-6">{copy.devicePickerTitle}</DialogTitle>
+        <DialogTitle className="text-[1.0625rem] leading-6">{copy.devicePickerTitle}</DialogTitle>
         <div role="radiogroup" aria-label={copy.devicePickerTitle} className="flex flex-col gap-2">
           {devices.map((device) => {
             const selectable = device.status !== 'offline'
@@ -112,8 +112,8 @@ export function AddDeviceDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className={dialogClass} aria-describedby={undefined}>
-        <DialogTitle className="text-[17px] leading-6">{copy.addDeviceTitle}</DialogTitle>
-        <ol className="flex items-center gap-2 text-[13px]" aria-label={copy.addDeviceTitle}>
+        <DialogTitle className="text-[1.0625rem] leading-6">{copy.addDeviceTitle}</DialogTitle>
+        <ol className="flex items-center gap-2 text-[0.8125rem]" aria-label={copy.addDeviceTitle}>
           {steps.map((label, index) => {
             const number = index + 1
             const state = number === step ? 'current' : number < step ? 'done' : 'todo'
@@ -137,7 +137,7 @@ export function AddDeviceDialog({
               <ActionButton className={primaryButtonClass} busy={joining} onClick={onJoinThisComputer}>{copy.joinThisComputer}</ActionButton>
             ) : null}
             <p className="text-sm text-foreground">{copy.installOnOther}</p>
-            <p role="status" aria-live="polite" className="text-[13px] text-muted-foreground">{copy.waitingForDevice}</p>
+            <p role="status" aria-live="polite" className="text-[0.8125rem] text-muted-foreground">{copy.waitingForDevice}</p>
           </div>
         ) : null}
 
@@ -174,7 +174,7 @@ function DeviceOnlineCard({ device, copy }: { device: DeviceSummary; copy: PodSi
   return (
     <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-3" data-pod-sign-in="new-device">
       <DeviceIdentity device={device} copy={copy} showStatus={false} />
-      <span role="status" className="shrink-0 text-[13px] text-success">{copy.deviceOnline}</span>
+      <span role="status" className="shrink-0 text-[0.8125rem] text-success">{copy.deviceOnline}</span>
     </div>
   )
 }

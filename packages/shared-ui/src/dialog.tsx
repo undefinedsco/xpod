@@ -1,7 +1,7 @@
 import * as React from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { X } from "lucide-react"
-import { interactiveFocusClass } from "./focus"
+import { buttonFocusClass } from "./focus"
 import { cn } from "./utils"
 
 const Dialog = DialogPrimitive.Root
@@ -55,7 +55,7 @@ const DialogContent = React.forwardRef<
       {...props}
     >
       {children}
-{!hideCloseButton ? <DialogPrimitive.Close disabled={closeDisabled} className={cn("absolute right-4 top-4 rounded-xl opacity-70 transition-all hover:opacity-100 hover:bg-muted/50 p-1 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground", interactiveFocusClass)}>
+{!hideCloseButton ? <DialogPrimitive.Close disabled={closeDisabled} className={cn("absolute right-4 top-4 inline-flex min-h-9 min-w-9 items-center justify-center rounded-xl opacity-70 transition-[background-color,opacity] hover:opacity-100 hover:bg-muted/50 focus-visible:opacity-100 focus-visible:bg-muted/50 p-1 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground", buttonFocusClass)}>
         <X className="h-4 w-4" />
         <span className="sr-only">{closeLabel}</span>
       </DialogPrimitive.Close> : null}

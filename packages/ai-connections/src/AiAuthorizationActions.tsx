@@ -47,7 +47,7 @@ export function AiAuthorizationActions({
               key={method.id}
               variant="outline"
               size="sm"
-              className="h-8 gap-1.5 text-xs"
+              className="h-9 gap-1.5 text-xs"
               title={unavailable ? method.reason : undefined}
               disabled={busy || disabled || unavailable || !onBeginOffering}
               onClick={() => onBeginOffering?.(offering, connectMode, method)}
@@ -63,7 +63,7 @@ export function AiAuthorizationActions({
               key={method.id}
               variant="outline"
               size="sm"
-              className="h-8 gap-1.5 text-xs"
+              className="h-9 gap-1.5 text-xs"
               title={unavailable
                 ? method.reason
                 : '导入当前设备已有登录态，不会发起新的浏览器授权。'}

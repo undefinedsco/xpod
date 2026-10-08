@@ -59,7 +59,7 @@ export function AiConnectionsHeader({
           type="button"
           variant="ghost"
           size="icon"
-          className="h-8 w-8 shrink-0"
+          className="h-9 w-9 shrink-0"
           aria-label="添加 AI Connection"
           title="添加 AI Connection"
           onClick={() => setCustomDialogOpen(true)}

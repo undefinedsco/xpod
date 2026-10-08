@@ -147,7 +147,7 @@ export function AiSortableCredentialList({ credentials, disabled, onMove, childr
             <button type="button" disabled={unavailable}
               aria-label={`拖动排序 ${credentialDisplayLabel(credential)}`}
               title={credentials.length < 2 ? '至少添加两条连接后可拖动排序' : '拖动调整优先级，或使用方向键、Home / End 排序'}
-              className={cn('flex h-8 w-6 shrink-0 touch-none select-none items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-40 enabled:cursor-grab active:cursor-grabbing', interactiveFocusClass)}
+              className={cn('flex h-9 w-9 shrink-0 touch-none select-none items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-40 enabled:cursor-grab active:cursor-grabbing', interactiveFocusClass)}
               onKeyDown={(event) => {
                 if (event.key === 'Escape') { finish(false); return }
                 const next = event.key === 'ArrowUp' ? index - 1 : event.key === 'ArrowDown' ? index + 1
