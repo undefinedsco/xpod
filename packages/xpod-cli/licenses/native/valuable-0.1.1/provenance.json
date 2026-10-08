@@ -1,0 +1,10 @@
+{
+  "name": "valuable",
+  "version": "0.1.1",
+  "repository": "https://github.com/tokio-rs/valuable",
+  "commit": "9efc29b6e58cef28f6566a47aa7e142a55fead77",
+  "pathInVcs": "valuable",
+  "noticeUrl": "https://raw.githubusercontent.com/tokio-rs/valuable/9efc29b6e58cef28f6566a47aa7e142a55fead77/LICENSE",
+  "sha256": "ed60d479b8fd1f64e9cbc3de449a16a53ac1b3d1b6aeb9bf9d190a8e93061b44",
+  "scope": "Original notice for the Cargo-vendored source kit; presence in source material does not establish binary linkage."
+}

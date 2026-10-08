@@ -103,11 +103,9 @@
     "desktop": {
       "name": "@undefineds.co/xpod-desktop",
       "version": "0.4.18",
-      "dependencies": {
-        "@undefineds.co/solid-sdk": "workspace:*",
-      },
       "devDependencies": {
         "@types/node": "^22.10.0",
+        "@undefineds.co/solid-sdk": "workspace:*",
         "electron": "33.4.11",
         "electron-builder": "^25.1.8",
         "typescript": "^6.0.3",
@@ -221,6 +219,13 @@
       },
       "peerDependencies": {
         "react": "^19.2.0",
+      },
+    },
+    "packages/xpod-cli": {
+      "name": "@undefineds.co/xpod-cli",
+      "version": "0.1.0-preview.1",
+      "bin": {
+        "xpodcli": "./dist/bin/xpodcli",
       },
     },
     "ui": {
@@ -1958,6 +1963,8 @@
     "@undefineds.co/shared-ui": ["@undefineds.co/shared-ui@workspace:packages/shared-ui"],
 
     "@undefineds.co/solid-sdk": ["@undefineds.co/solid-sdk@workspace:packages/solid-sdk"],
+
+    "@undefineds.co/xpod-cli": ["@undefineds.co/xpod-cli@workspace:packages/xpod-cli"],
 
     "@undefineds.co/xpod-desktop": ["@undefineds.co/xpod-desktop@workspace:desktop"],
 

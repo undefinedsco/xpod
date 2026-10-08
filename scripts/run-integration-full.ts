@@ -42,6 +42,8 @@ const composeArgs = [
 const runtimeRoot = path.resolve('.test-data/full-runtime', process.env.XPOD_FULL_RUN_ID || `${Date.now()}-${process.pid}`);
 const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@localhost:5432/xpod';
 const defaultTargets = [
+  'tests/integration/AgentDirectoryProtocol.integration.test.ts',
+  'tests/integration/RedisLockOwnership.integration.test.ts',
   'tests/integration/CloudClientCredentialVisibility.integration.test.ts',
   'tests/integration/DockerCluster.integration.test.ts',
   'tests/integration/MultiNodeCluster.integration.test.ts',
@@ -398,6 +400,8 @@ async function main(): Promise<void> {
   const testTargets = targets.length > 0 ? targets : defaultTargets;
   const ports = await resolveFullRuntimePorts();
   const sharedEnv = {
+    XPOD_AGENT_DIRECTORY_TEST_CLOUD_URL: `http://localhost:${ports.cloud.gateway}/`,
+    XPOD_AGENT_DIRECTORY_TEST_REDIS_URL: 'redis://localhost:6379',
     CSS_BASE_URL: `http://localhost:${ports.standalone.gateway}`,
     CLOUD_PORT: String(ports.cloud.gateway),
     CLOUD_API_PORT: String(ports.cloud.api),

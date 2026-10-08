@@ -52,6 +52,7 @@ import { getIdentityDatabase } from '../identity/drizzle/db';
 import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
 import { UsageRepository } from '../storage/quota/UsageRepository';
 import { MixDataAccessor } from '../storage/accessors/MixDataAccessor';
+import type { HierarchyLockingResourceStore } from '../storage/HierarchyLockingResourceStore';
 import { createBandwidthThrottleTransform } from '../util/stream/BandwidthThrottleTransform';
 
 const ALLOWED_METHODS = [ 'GET', 'POST', 'OPTIONS' ];
@@ -179,6 +180,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     options: SubgraphSparqlHttpHandlerOptions = {},
     updateAuthority?: MixDataAccessor,
     emitter?: ActivityEmitter,
+    private readonly mutationStore?: HierarchyLockingResourceStore,
   ) {
     super();
     this.engine = queryEngine;
@@ -508,21 +510,25 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const emitActivities = Boolean(this.emitter) && !emptyAuthorityLoad;
     // Existence has to be captured before the write because the activity term depends on it
     // (`Create` for a document the update brings into existence, `Update` otherwise).
-    const pendingActivities = emitActivities ? await this.resolvePendingActivities(accessPlan) : [];
-
-    if (!skippedSilentAuthorityLoad) {
-      if (this.updateAuthority) {
-        await this.updateAuthority.executeSparqlUpdate(
-          rewritten,
-          queryRequest.baseUrl,
-          readAccessScope,
-        );
-      } else {
-        await this.engine.queryVoid(rewritten, queryRequest.baseUrl, readAccessScope, nativeOptions);
+    const write = async (): Promise<void> => {
+      const pendingActivities = emitActivities ? await this.resolvePendingActivities(accessPlan) : [];
+      if (!skippedSilentAuthorityLoad) {
+        if (this.updateAuthority) {
+          await this.updateAuthority.executeSparqlUpdate(
+            rewritten,
+            queryRequest.baseUrl,
+            readAccessScope,
+          );
+        } else {
+          await this.engine.queryVoid(rewritten, queryRequest.baseUrl, readAccessScope, nativeOptions);
+        }
+        // Only a successful write notifies; a throwing write skips this line entirely.
+        this.emitActivities(pendingActivities);
       }
-      // Only a successful write notifies; a throwing write skips this line entirely.
-      this.emitActivities(pendingActivities);
-    }
+    };
+    // ACL authorization can read through ResourceStore; complete it before taking non-reentrant write locks.
+    if (this.mutationStore) await this.mutationStore.withMutationLocks({ path: queryRequest.baseUrl }, write);
+    else await write();
     await this.refreshUsage(queryRequest.baseUrl);
 
     response.statusCode = 204;

@@ -26,6 +26,12 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Install ripgrep differential oracle
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+          rg --version
+
       - name: Build workspace packages
         run: bun run build:packages
 
@@ -39,6 +45,12 @@ jobs:
       # were silently unchecked for a long time (see docs/testing/test-typecheck.md).
       - name: Type check tests
         run: bun run typecheck:test
+
+      - name: Type check standalone Xpod CLI
+        run: bun x tsc --noEmit -p packages/xpod-cli/tsconfig.json
+
+      - name: Standalone Xpod CLI tests
+        run: bun run --filter '@undefineds.co/xpod-cli' test
 
       - name: Build Components artifacts
         run: bun run build:components

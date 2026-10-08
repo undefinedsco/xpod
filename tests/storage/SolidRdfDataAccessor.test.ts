@@ -7,6 +7,7 @@ import arrayifyStream from 'arrayify-stream';
 import {
   BaseIdentifierStrategy,
   guardStream,
+  HH,
   INTERNAL_QUADS,
   LDP,
   NotFoundHttpError,
@@ -80,6 +81,29 @@ describe('SolidRdfDataAccessor', () => {
     }
     expect(rootChildren).toEqual([container.path]);
     expect(engineQuerySpy).not.toHaveBeenCalled();
+  });
+
+  it('persists distinct server-owned revisions with time frozen, including metadata-only writes', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-01T00:00:00Z'));
+    try {
+      const id = { path: `${baseUrl}revision/` };
+      const metadata = containerMetadata(id);
+      metadata.set(HH.terms.etag, DataFactory.literal('caller-controlled'));
+      await accessor.writeContainer(id, metadata);
+      const first = (await accessor.getMetadata(id)).get(HH.terms.etag)!.value;
+      expect(first).toMatch(/^[a-f0-9]{32}$/);
+      await accessor.writeContainer(id, metadata);
+      const second = (await accessor.getMetadata(id)).get(HH.terms.etag)!.value;
+      expect(second).not.toBe(first);
+      await accessor.writeMetadata(id, metadata);
+      const third = (await accessor.getMetadata(id)).get(HH.terms.etag)!.value;
+      expect(third).not.toBe(second);
+      const reopened = new SolidRdfDataAccessor(engine, new SimpleIdentifierStrategy(baseUrl));
+      expect((await reopened.getMetadata(id)).get(HH.terms.etag)!.value).toBe(third);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('stores document data in the resource graph and metadata in meta graph', async () => {
