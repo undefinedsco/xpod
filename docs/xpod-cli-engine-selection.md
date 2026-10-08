@@ -46,7 +46,17 @@
   report SHA256 为 `8a29bff09799848dd74f5046db97ee77c21cb8a48d4abc9659a4d5ac6889a123`。
   前一次任务 `cnb-t4u-1k4e9s63j` 虽退出 0，但单行报告被日志平台截断，未用作完整报告证据；
   后一次改为有序分块与完整报告哈希，未改变产品或验收用例。
-  同一服务镜像在既定 Pro-enabled PG17 候选上的安装态 Public/Pro 联合验收仍未完成。
+- [安装态联合 PG17 cnb-lto-1k4eakcrv](https://cnb.cool/undefineds.co/native-builder/-/build/logs/cnb-lto-1k4eakcrv)
+  使用上述同一服务镜像和既定 PG 候选
+  `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:1199698c789fb65897e4b0bd370f7faa959bcbdd3499784af256ad5bb8f0a5f3`，
+  开源 16/16、Pro 17/17 以及两套 native search 均经既有规范校验器通过，无失败或跳过。
+  单一 PG17.10 实例身份为 `7694358013082710061`；公共表 OID `17238` 在 Pro 扩展与两套用例
+  前后保持一致，扩展增加 2 列、1 触发器，ABI 为 `1|true`。
+  producer/attach 实际退出 0，测试 schema、数据库、自有容器与网络均验证清理。
+  开源报告已取回 mini 独立复验；私有原始报告和夹具未输出到公共日志或产物。
+  此前首轮 secret 事件白名单拒绝和两轮内存对象/JSON 报告校验差异导致的失败均保留，
+  最终改为读取实际落盘 JSON，未改变产品代码、用例或比较标准。
+  这仍不代表真实账号、桌面、备份恢复或 RC/发行验收通过；共享 RC 未改动。
 
 > 历史状态（2026-10-05）：以下仅属于当时源码与产物，其余阶段记录保留各自证据归属。
 > - 选型为 AgentFS，置信度中等；持久 delta、不可变基线及显式 commit 是决定因素。rclone 的成熟测试、范围缓存与平台资产仍是优势，不宣称 AgentFS 性能领先。
