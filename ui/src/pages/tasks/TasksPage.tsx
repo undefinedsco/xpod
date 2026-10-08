@@ -1,8 +1,9 @@
 import { useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { runResource, threadResource } from '@undefineds.co/models';
-import { TasksPanel, createTasksClient } from '@undefineds.co/tasks';
+import { TasksPanel } from '@undefineds.co/tasks';
 import '@undefineds.co/tasks/style.css';
+import { createXpodTasksClient } from '../../api/tasks';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 import { ApprovalCard, ShellDecisionFeedback, ShellHeaderControls } from '../../shell/ShellHeaderControls';
 import { useShellState } from '../../shell/useShellState';
@@ -14,13 +15,13 @@ export default function TasksPage() {
   const [params] = useSearchParams();
   const shell = useShellState();
   const client = useMemo(() => {
-    const tasks = createTasksClient({ fetch: runtime.fetch, baseUrl: window.location.origin });
+    const tasks = createXpodTasksClient({ fetch: runtime.fetch, baseUrl: window.location.origin, database: runtime.currentPod?.database });
     return { ...tasks, stop: async (id: string) => {
       const result = await tasks.stop(id);
       window.dispatchEvent(new Event('xpod:pod-changed'));
       return result;
     } };
-  }, [runtime.fetch]);
+  }, [runtime.fetch, runtime.currentPod?.database]);
   const requestedApprovalId = params.get('approval');
   return <TasksPanel key={`${runtime.webId}:${runtime.currentPod?.podUrl}`} client={client} webId={runtime.webId!}
     workspace={runtime.currentPod!.podUrl} selectedTaskId={params.get('task') ?? undefined} selectedRunId={params.get('run') ?? undefined}

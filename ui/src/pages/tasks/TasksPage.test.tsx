@@ -8,9 +8,9 @@ import TasksPage from './TasksPage';
 
 const mocks = vi.hoisted(() => ({ stop: vi.fn(), client: undefined as TasksClient | undefined, run: undefined as TaskRun | undefined, attention: [] as ShellAttentionItem[], podUrl: 'https://pod.test/' }));
 vi.mock('@undefineds.co/tasks', () => ({
-  createTasksClient: () => ({ stop: mocks.stop }),
   TasksPanel: ({ client, renderApproval }: { client: TasksClient; renderApproval: (run: TaskRun) => ReactNode }) => { mocks.client = client; return mocks.run ? renderApproval(mocks.run) : null; },
 }));
+vi.mock('../../api/tasks', () => ({ createXpodTasksClient: () => ({ stop: mocks.stop }) }));
 vi.mock('../../solid/useXpodSolidRuntime', () => ({ useXpodSolidRuntime: () => ({ fetch, webId: 'https://pod.test/profile/card#me', currentPod: { podUrl: mocks.podUrl, database: { resolveResourceIri: (_resource: unknown, id: string) => /^https?:/.test(id) ? id : new URL(`.data/${id}`, mocks.podUrl).href, resolveRelationIri: (_resource: unknown, id: string) => /^https?:/.test(id) ? id : new URL(`.data/${id}`, mocks.podUrl).href } } }) }));
 vi.mock('../../shell/ShellHeaderControls', () => ({ ApprovalCard: ({ item }: { item: ShellAttentionItem }) => <div data-testid="approval">{item.approvalId}</div>, ShellDecisionFeedback: ({ run }: { run: string }) => <div data-testid="feedback">{run}</div>, ShellHeaderControls: () => null }));
 vi.mock('../../shell/useShellState', () => ({ useShellState: () => ({ snapshot: { attention: mocks.attention } }) }));

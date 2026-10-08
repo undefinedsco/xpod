@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { createTasksClient } from '@undefineds.co/tasks';
+import { createXpodTasksClient } from '../api/tasks';
 import { ShellContext, type ShellResumeFailure } from './useShellState';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { useXpodSolidRuntime } from '../solid/useXpodSolidRuntime';
@@ -12,7 +12,7 @@ export function ShellStateProvider({ children }: { children: ReactNode }) {
   return <IdentityShellStateProvider key={`${runtime.state.status}|${runtime.webId || ''}|${runtime.currentPod?.podUrl || ''}`} runtime={runtime}>{children}</IdentityShellStateProvider>;
 }
 function IdentityShellStateProvider({ children, runtime }: { children: ReactNode; runtime: XpodSolidRuntimeValue }) {
-  const tasksClient = useMemo(() => createTasksClient({ fetch: runtime.fetch, baseUrl: window.location.origin }), [runtime.fetch]);
+  const tasksClient = useMemo(() => createXpodTasksClient({ fetch: runtime.fetch, baseUrl: window.location.origin, database: runtime.currentPod?.database }), [runtime.fetch, runtime.currentPod?.database]);
   const [snapshot, setSnapshot] = useState(emptyShellSnapshot);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();

@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   runtime: { state: { status: 'authenticated' }, webId: 'https://one/profile#me', currentPod: { podUrl: 'https://one/', database: {} }, fetch: vi.fn() },
   resume: vi.fn(), read: vi.fn(), decide: vi.fn(), network: vi.fn(), usage: vi.fn(), publish: vi.fn(),
 }));
-vi.mock('@undefineds.co/tasks', () => ({ createTasksClient: () => ({ resumeRun: mocks.resume }) }));
+vi.mock('../api/tasks', () => ({ createXpodTasksClient: () => ({ resumeRun: mocks.resume }) }));
 vi.mock('../solid/useXpodSolidRuntime', () => ({ useXpodSolidRuntime: () => mocks.runtime }));
 vi.mock('../api/admin', () => ({ getPublicIpCheck: mocks.network }));
 vi.mock('../api/pod-settings', () => ({ fetchPodSettingsStatus: mocks.usage }));
