@@ -1,5 +1,7 @@
 # 发布流程
 
+开发、验收与发布耗时的复盘及后续优化建议见 [2026-10-09 流程优化](testing/2026-10-09-development-release-retrospective.md)。该复盘不替代本文件的现行门禁。
+
 Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个 commit
 和同一个容器 digest。不要用 stable tag 调试发布问题；修复必须继续提交到
 开发分支，通过 PR 普通 merge 合入 `staging` 后，由新的 RC 重新验收。
@@ -564,3 +566,16 @@ bun run test:integration
 ### 本地安装包前置门禁
 
 桌面版本发布前，必须先构建候选 DMG/ZIP，实际安装 DMG，使用安装后的应用完成本地 full 验收；通过后才继续发布。开发启动、仅解压 ZIP、单元或隔离集成测试不能替代安装后的完整登录、Consent、会话复用与业务链路验收。安装隔离、产物一致性和清理规则见 [桌面权限验收](testing/desktop-permission-acceptance.md)。
+
+
+## 开发验证效率与发布前提
+
+日常开发按影响选择 quick，冻结候选完成一次完整集成；提交前校验同一有效回执，不重复执行未变输入。输入/工具链/环境变化、失败或取消失效，细则见 [开发验证与冻结回执](testing/development-validation.md)。开发回执不参与正式 CI/RC/promotion，exact staging SHA 和实际安装产物门禁保持独立。
+
+RC 的 `build_desktop_rc` 等待 metadata 与 exact native artifact，和服务构建部署并行；`accept_desktop_rc` 等待包构建与服务验收，下载本轮唯一 DMG/ZIP 并校验版本、source SHA、run ID、每个归档 hash/size 和 job 输出的 manifest 摘要。包的消费者门禁留在构建 job，真实安装权限与自更新留在验收 job；Finalize 和 `always()` cleanup 等待两者，不提前释放 RC 独占。stable 的 `build_desktop_macos` 在 promotion guard 后启动，`accept_desktop_macos` 等待生产实例；GitHub Release 等待两者和全部既有消费者/部署依赖，发布下载的原构建字节。
+
+所有 stable npm publish/dist-tag/镜像提升前需 `release_preflight` 成功：只读核对实际 GitHub Environment ref 规则、必要 Secret/变量名字、现有 production service container/startup 及 Secret/ConfigMap 键和必要非空状态、基础资源，以及 accepted native archive 的证据摘要和已发行更新基线可获取性。stdout 仅含名字与通过项，失败为固定类别，不输出值，不修改权限、配置或 RBAC。真实 GitHub API/kubectl 无读权限即阻塞，fixture 通过不能替代真实预检。
+
+stable 桌面 Environment 默认 `rc`；若该环境不允许 stable tag，由运维选择并准备 repository variable `XPOD_STABLE_DESKTOP_ENVIRONMENT` 指定的独立环境，设置精确 ref 许可与桌面 provider 凭据。已有输入无法推导组织授权策略，因此该变量是明确部署决策。预检默认使用现有 `GITHUB_TOKEN`，需要能读取 Environment policy 与 Secret metadata；该令牌无法读取时，可由运维显式提供只读的 `XPOD_RELEASE_PREFLIGHT_TOKEN`（Environment metadata/Secret metadata、Actions artifact 和 Release 内容的读取权限）。令牌权限是外部授权，不能从已有输入推导；本改造不创建 Secret 或自动扩大权限，缺少读取能力时失败，不关闭保护绕过。生产配置变更后部署 job 在写镜像前再次核对引用，旧 Pod 公网健康不能替代新 Pod/digest/readiness 门禁。
+
+共享包只在同一工作区以输入和输出摘要复用，记录实际构建/复用次数与耗时；不新增未经实测证明收益的跨 job 缓存。QLever 完整缓存及每轮新 smoke 保留。

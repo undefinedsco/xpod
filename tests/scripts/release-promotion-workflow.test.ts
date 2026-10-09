@@ -220,7 +220,7 @@ describe('stable release promotion workflow', () => {
     const publishRunText = jobRunText(workflow, 'publish_npm_staging');
     const publishStep = publish.steps.find((step: any) => step.name === 'Publish stable root package under the staging tag');
 
-    expect(publish.needs).toBe('promotion_guard');
+    expect(publish.needs).toEqual(['promotion_guard', 'release_preflight']);
     expect(publish['runs-on']).toBe('macos-15');
     expect(publish.permissions).toEqual({ actions: 'read', contents: 'read' });
     expect(publish.env).toMatchObject({
@@ -290,7 +290,7 @@ describe('stable release promotion workflow', () => {
   it('gates shared applets on exact accepted SHA before root latest promotion', async () => {
     const workflow = await loadWorkflow();
     const shared = workflow.jobs.shared_packages;
-    expect(shared.needs).toBe('promotion_guard');
+    expect(shared.needs).toEqual(['promotion_guard', 'release_preflight']);
     expect(shared.uses).toBe('./.github/workflows/packages-release.yml');
     expect(shared.with).toEqual({ 'accepted-sha': '${{ github.sha }}' });
     expect(shared.if).toBeUndefined();

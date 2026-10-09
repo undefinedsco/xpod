@@ -145,6 +145,9 @@ jobs:
           mkdir -p ~/.kube
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
 
+      - name: Read-only production runtime reference preflight
+        run: node scripts/release-readonly-preflight.cjs --deployment-only
+
       - name: Capture previous deployment image
         id: previous
         run: |
@@ -174,7 +177,7 @@ jobs:
           service_container="$(cat "$RUNNER_TEMP/xpod-service-container")"
           kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$TARGET_IMAGE"
           kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
-          kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s
+          node scripts/wait-production-rollout.cjs "$XPOD_DEPLOYMENT" "$SEALOS_NAMESPACE" "$service_container" "$TARGET_IMAGE" 900
 
       - name: Verify production gates
         run: |
@@ -266,8 +269,16 @@ jobs:
           fi
           PREVIOUS_IMAGE="$(cat "$RUNNER_TEMP/xpod-previous-image")"
           service_container="$(cat "$RUNNER_TEMP/xpod-service-container")"
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$PREVIOUS_IMAGE" || exit 0
-          kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s || exit 0
+          if ! kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$PREVIOUS_IMAGE"; then
+            echo '{"rollbackRequest":"failed","rollbackReadiness":"unconfirmed"}'
+            exit 0
+          fi
+          echo '{"rollbackRequest":"applied","rollbackReadiness":"pending"}'
+          if node scripts/wait-production-rollout.cjs "$XPOD_DEPLOYMENT" "$SEALOS_NAMESPACE" "$service_container" "$PREVIOUS_IMAGE" 900; then
+            echo '{"rollbackRequest":"applied","rollbackReadiness":"confirmed"}'
+          else
+            echo '{"rollbackRequest":"applied","rollbackReadiness":"unconfirmed"}'
+          fi
 
       - name: Dump diagnostics on failure
         if: failure()
@@ -357,6 +368,9 @@ jobs:
           mkdir -p ~/.kube
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
 
+      - name: Read-only production runtime reference preflight
+        run: node scripts/release-readonly-preflight.cjs --deployment-only
+
       - name: Capture previous deployment image
         id: previous
         run: |
@@ -386,7 +400,7 @@ jobs:
           service_container="$(cat "$RUNNER_TEMP/xpod-service-container")"
           kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$TARGET_IMAGE"
           kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
-          kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s
+          node scripts/wait-production-rollout.cjs "$XPOD_DEPLOYMENT" "$SEALOS_NAMESPACE" "$service_container" "$TARGET_IMAGE" 900
 
       - name: Verify production gates
         run: |
@@ -478,8 +492,16 @@ jobs:
           fi
           PREVIOUS_IMAGE="$(cat "$RUNNER_TEMP/xpod-previous-image")"
           service_container="$(cat "$RUNNER_TEMP/xpod-service-container")"
-          kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$PREVIOUS_IMAGE" || exit 0
-          kubectl rollout status deployment/${XPOD_DEPLOYMENT} -n "$SEALOS_NAMESPACE" --timeout=900s || exit 0
+          if ! kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$PREVIOUS_IMAGE"; then
+            echo '{"rollbackRequest":"failed","rollbackReadiness":"unconfirmed"}'
+            exit 0
+          fi
+          echo '{"rollbackRequest":"applied","rollbackReadiness":"pending"}'
+          if node scripts/wait-production-rollout.cjs "$XPOD_DEPLOYMENT" "$SEALOS_NAMESPACE" "$service_container" "$PREVIOUS_IMAGE" 900; then
+            echo '{"rollbackRequest":"applied","rollbackReadiness":"confirmed"}'
+          else
+            echo '{"rollbackRequest":"applied","rollbackReadiness":"unconfirmed"}'
+          fi
 
       - name: Dump diagnostics on failure
         if: failure()

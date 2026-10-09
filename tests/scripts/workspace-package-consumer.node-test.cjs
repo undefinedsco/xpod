@@ -81,7 +81,7 @@ test('shared publication is reachable only through accepted stable release and b
   const shared = yaml.load(fs.readFileSync(path.join(__dirname, '../../.github/workflows/packages-release.yml'), 'utf8'));
   const release = yaml.load(fs.readFileSync(path.join(__dirname, '../../.github/workflows/release.yml'), 'utf8'));
   assert.deepEqual(Object.keys(shared.on), ['workflow_call']);
-  assert.equal(release.jobs.shared_packages.needs, 'promotion_guard');
+  assert.deepEqual(release.jobs.shared_packages.needs, ['promotion_guard', 'release_preflight']);
   assert.equal(release.jobs.shared_packages.with['accepted-sha'], '${{ github.sha }}');
   assert.ok(release.jobs.promote_npm_latest.needs.includes('shared_packages'));
   const candidate = yaml.load(fs.readFileSync(path.join(__dirname, '../../.github/workflows/candidate.yml'), 'utf8'));

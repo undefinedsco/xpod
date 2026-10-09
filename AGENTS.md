@@ -137,8 +137,8 @@ Xpod 采用**等位替换**策略扩展 CSS：用自定义组件替换 CSS 同�
 - **依赖状态自检**：补丁依赖必须"版本对齐且恰好应用一次"，工作区包构建产物必须存在；`bun run test` 会先跑 `bun scripts/check-dependency-state.ts`。漂移时用 `bun install` / `bun run build:packages` 修复，不要手改 `node_modules`。详见 [`docs/testing/dependency-state.md`](docs/testing/dependency-state.md)。
 
 ### 必须执行的回归检查
-1. **修复后**：实现修复并通过单元/集成测试后，**必须**运行完整集成测试 `bun run test:integration`，防止局部修复引入全局副作用（如 Auth、Quota、单例状态）。
-2. **提交前**：在完成任务或提交代码前，**必须**再次运行完整集成测试，确保代码库处于全部通过状态。
+1. **开发阶段**：按影响与依赖闭包执行 quick 验证，使用 `bun run validate:dev quick --plan` 审查范围；未知影响、权限/存储/公共契约保守覆盖消费者。普通文档、UI、后端、驱动/workflow 不默认执行无关编译、完整集成、DMG 或 RC。
+2. **冻结与提交前**：冻结源码、测试、驱动、lock/补丁、工具链、夹具与环境后执行一次 `bun run validate:dev frozen --environment <非敏感环境修订标识>`（运行 `bun run test:integration`）。提交前用 `bun run validate:dev check --environment <同一标识>` 核对有效回执，输入未变化时不机械双跑。输入、工具链、环境或产物变化以及失败/取消/未完成使回执失效；环境修订标识必须在外部配置变化时更新。回执只用于本机开发，不能替代正式 exact-SHA CI/RC 或真实安装验收。细则见 [`docs/testing/development-validation.md`](docs/testing/development-validation.md)。
 3. **真实 Xpod 验收不可替代**：用户要求“集成测试”“真实 Xpod”“实际账号/Pod”或桌面端完整链路时，必须连接当前实际运行的 Xpod Gateway，按 [`docs/cli-dev-testing.md`](docs/cli-dev-testing.md) 的“真实 Xpod 集成验收”证据链逐层验证。Vitest、临时端口、mock 或隔离测试栈通过，不得表述为真实实例通过。
 4. **AI 链路分项报告**：Pod 读写、Gateway 客户端认证、`/v1/models` 和 `/v1/chat/completions` 是四个独立验收层级。`/v1/models` 返回空数组不代表 Chat 可用；只有真实 Chat 请求获得并校验有效响应，才可以声称 Chat 已打通。
 

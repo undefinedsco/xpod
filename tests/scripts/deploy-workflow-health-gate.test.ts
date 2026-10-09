@@ -127,7 +127,7 @@ describe('production deployment workflow', () => {
     expect(runText).toContain('PREVIOUS_IMAGE');
     expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$TARGET_IMAGE"');
     expect(runText).toContain('kubectl rollout status deployment/xpod-inngest');
-    expect(runText).toContain('kubectl rollout status deployment/${XPOD_DEPLOYMENT}');
+    expect(runText).toContain('node scripts/wait-production-rollout.cjs "$XPOD_DEPLOYMENT" "$SEALOS_NAMESPACE" "$service_container" "$TARGET_IMAGE" 900');
     expect(runText).not.toMatch(/set image deployment\/\$\{XPOD_DEPLOYMENT\}\s+["']?xpod=/);
     expect(runText).not.toContain('xpod:replace-me');
     expect(runText).not.toMatch(/kubectl\s+(?:-n\s+"\$SEALOS_NAMESPACE"\s+)?(?:apply|create|patch|delete)\b/);
@@ -176,7 +176,9 @@ describe('production deployment workflow', () => {
       expect(rollback.run).toContain('PREVIOUS_IMAGE="$(cat "$RUNNER_TEMP/xpod-previous-image")"');
       expect(rollback.run).toContain('No previous image was captured; skipping rollback');
       expect(rollback.run).toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/${XPOD_DEPLOYMENT} "$service_container=$PREVIOUS_IMAGE"');
-      expect(rollback.run).toContain('kubectl rollout status deployment/${XPOD_DEPLOYMENT}');
+      expect(rollback.run).toContain('node scripts/wait-production-rollout.cjs');
+      expect(rollback.run).toContain('"rollbackRequest":"applied","rollbackReadiness":"confirmed"');
+      expect(rollback.run).toContain('"rollbackRequest":"applied","rollbackReadiness":"unconfirmed"');
       expect(diagnostics.run).toContain('--previous');
       expect(diagnostics.run).toContain('get deployment "$XPOD_DEPLOYMENT"');
       expect(diagnostics.run).toContain('describe deployment "$XPOD_DEPLOYMENT"');

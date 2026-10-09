@@ -890,9 +890,10 @@ jobs:
 
   build_desktop_rc:
     name: Build macOS RC desktop
-    needs: [metadata, build_qlever_macos_runtime, deploy_and_accept]
+    needs: [metadata, build_qlever_macos_runtime]
+    outputs:
+      manifest_digest: ${{ steps.desktop_manifest.outputs.manifest_digest }}
     runs-on: macos-15
-    environment: rc
     permissions:
       contents: read
     env:
@@ -900,8 +901,6 @@ jobs:
       CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
-      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -1030,6 +1029,47 @@ jobs:
       # archive must ship a valid ad-hoc signature (after-pack hook) rather than
       # the linker's unsealed one.
 
+      - name: Bind immutable desktop build archives
+        id: desktop_manifest
+        run: node scripts/desktop-build-artifact.cjs create desktop/release "${{ github.sha }}" "$CANDIDATE_VERSION" "${{ github.run_id }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
+          path: |
+            desktop/release/build-manifest.json
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+          if-no-files-found: error
+          retention-days: 30
+
+  accept_desktop_rc:
+    name: Accept installed macOS RC desktop
+    needs: [metadata, build_desktop_rc, deploy_and_accept]
+    runs-on: macos-15
+    environment: rc
+    permissions:
+      contents: read
+    env:
+      CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
+      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
+      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - run: bun run build:packages
+      - uses: actions/download-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
+          path: desktop/release
+      - name: Verify immutable desktop build archives
+        run: node scripts/desktop-build-artifact.cjs verify desktop/release "${{ github.sha }}" "$CANDIDATE_VERSION" "${{ github.run_id }}" "${{ needs.build_desktop_rc.outputs.manifest_digest }}"
       - name: Download the previously released desktop bundle
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1137,15 +1177,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
-          path: |
-            desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/*.blockmap
-          if-no-files-found: error
-          retention-days: 30
       # Keep the redacted producer failure summary last so the release archive
       # stays the first upload in this job and no gate reads it as the artifact.
       - name: Upload desktop permission failure summary
@@ -1164,6 +1195,7 @@ jobs:
       - build_image
       - deploy_and_accept
       - build_desktop_rc
+      - accept_desktop_rc
     runs-on: ubuntu-latest
     environment: rc
     permissions:
@@ -1528,7 +1560,7 @@ jobs:
 
   cleanup_rc:
     name: Cleanup RC after all acceptance jobs
-    needs: [deploy_and_accept, build_desktop_rc, finalize_acceptance]
+    needs: [deploy_and_accept, build_desktop_rc, accept_desktop_rc, finalize_acceptance]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     environment: rc

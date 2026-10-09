@@ -7,19 +7,19 @@ const read = name => yaml.load(fs.readFileSync(path.resolve(__dirname, '../../.g
 
 test('RC requires real permission producer and source-bound artifact in the combined mandatory desktop gate', () => {
   const { jobs } = read('candidate.yml');
-  assert.ok(jobs.build_desktop_rc.needs.includes('deploy_and_accept'));
-  const producer = jobs.build_desktop_rc.steps.find(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts'));
+  assert.ok(jobs.accept_desktop_rc.needs.includes('deploy_and_accept'));
+  const producer = jobs.accept_desktop_rc.steps.find(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts'));
   assert.ok(producer);
   assert.match(producer.run, /chmod 600/);
   assert.match(producer.run, /--source-sha "\$\{\{ github\.sha \}\}"/);
   assert.match(producer.run, /--archive "\$new_zip"/);
   assert.equal(producer['continue-on-error'], undefined);
-  const upload = jobs.build_desktop_rc.steps.find(step => step.with?.name === 'desktop-permission-acceptance-${{ github.sha }}');
+  const upload = jobs.accept_desktop_rc.steps.find(step => step.with?.name === 'desktop-permission-acceptance-${{ github.sha }}');
   assert.equal(upload.with['if-no-files-found'], 'error');
   assert.equal(upload.with.path, '${{ runner.temp }}/desktop-permission-evidence.json');
   // A failed producer must still leave a redacted stage/error summary in the log
   // and as an artifact; the private directory itself is never uploaded.
-  const failureSummary = jobs.build_desktop_rc.steps.find(step => step.with?.name === 'desktop-permission-failure-${{ github.sha }}');
+  const failureSummary = jobs.accept_desktop_rc.steps.find(step => step.with?.name === 'desktop-permission-failure-${{ github.sha }}');
   assert.ok(failureSummary);
   assert.equal(failureSummary.if, 'failure()');
   assert.equal(failureSummary.with['if-no-files-found'], 'ignore');
@@ -34,7 +34,7 @@ test('RC requires real permission producer and source-bound artifact in the comb
 });
 
 test('stable repeats both actual operations and self-update for its newly built exact archive', () => {
-  const job = read('release.yml').jobs.build_desktop_macos;
+  const job = read('release.yml').jobs.accept_desktop_macos;
   assert.ok(job.steps.some(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts')));
   assert.ok(job.steps.some(step => step.run?.includes('node desktop/scripts/packaged-update-acceptance.mjs')));
   const combined = job.steps.find(step => step.run?.includes('node scripts/desktop-acceptance.cjs'));
@@ -56,7 +56,7 @@ test('RC scale-down waits for desktop and final acceptance even when upstream jo
   assert.ok(!jobs.deploy_and_accept.steps.some(step => step.name === 'Scale RC deployments to zero'));
   const cleanup = jobs.cleanup_rc;
   assert.equal(cleanup.if, '${{ always() }}');
-  for (const name of ['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']) assert.ok(cleanup.needs.includes(name));
+  for (const name of ['deploy_and_accept', 'build_desktop_rc', 'accept_desktop_rc', 'finalize_acceptance']) assert.ok(cleanup.needs.includes(name));
   assert.equal(cleanup.concurrency.group, jobs.deploy_and_accept.concurrency.group);
   const scale = cleanup.steps.find(step => step.name === 'Scale RC deployments to zero');
   assert.ok(scale);
@@ -88,4 +88,29 @@ test('PR CI runs all Node release and tooling suites before the unit suite', () 
   const unitTests = steps.findIndex(step => step.run === 'bun run test:run');
   assert.ok(nodeTests >= 0);
   assert.ok(unitTests > nodeTests);
+});
+test('package builders run before service availability while every acceptance and finalizer waits', () => {
+  const candidate = read('candidate.yml').jobs;
+  assert.deepEqual(candidate.build_desktop_rc.needs, ['metadata', 'build_qlever_macos_runtime']);
+  assert.equal(candidate.build_desktop_rc.environment, undefined);
+  assert.equal(candidate.build_desktop_rc.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG, undefined);
+  assert(candidate.accept_desktop_rc.needs.includes('deploy_and_accept'));
+  assert(candidate.accept_desktop_rc.needs.includes('build_desktop_rc'));
+  assert(candidate.finalize_acceptance.needs.includes('accept_desktop_rc'));
+  assert(candidate.cleanup_rc.needs.includes('accept_desktop_rc'));
+  const stable = read('release.yml').jobs;
+  assert.deepEqual(stable.build_desktop_macos.needs, ['promotion_guard']);
+  assert.equal(stable.build_desktop_macos.environment, undefined);
+  assert.equal(stable.build_desktop_macos.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG, undefined);
+  assert(stable.accept_desktop_macos.needs.includes('build_desktop_macos'));
+  assert(stable.accept_desktop_macos.needs.includes('deploy_production_co'));
+  assert(stable.create_github_release.needs.includes('accept_desktop_macos'));
+  for (const name of ['shared_packages', 'publish_npm_staging']) assert(stable[name].needs.includes('release_preflight'));
+  for (const [jobs, build, accept] of [[candidate, 'build_desktop_rc', 'accept_desktop_rc'], [stable, 'build_desktop_macos', 'accept_desktop_macos']]) {
+    assert(jobs[build].outputs.manifest_digest);
+    const verify = jobs[accept].steps.find(step => step.run?.includes('desktop-build-artifact.cjs verify'));
+    assert(verify && verify.run.includes(`needs.${build}.outputs.manifest_digest`));
+    assert(!jobs[accept].steps.some(step => step.run?.includes('bun run dist')));
+    assert(!jobs[accept].if && !jobs[accept]['continue-on-error']);
+  }
 });

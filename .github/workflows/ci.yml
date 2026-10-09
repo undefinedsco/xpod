@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -26,34 +28,63 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Resolve PR validation requirements
+        id: validation_plan
+        if: github.event_name == 'pull_request'
+        env:
+          VALIDATION_BASE: origin/${{ github.base_ref }}
+        run: bun run validate:dev quick --plan --github-output --base "$VALIDATION_BASE"
+
+      - name: Prepare browser and native CLI test dependencies when selected
+        if: github.event_name == 'pull_request' && steps.validation_plan.outputs.browser == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ripgrep
+          bunx playwright install --with-deps chromium
+
+      - name: Run impact-selected PR validation
+        if: github.event_name == 'pull_request'
+        env:
+          VALIDATION_BASE: origin/${{ github.base_ref }}
+        run: bun run validate:dev quick --base "$VALIDATION_BASE" --environment "ci-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}"
+
       - name: Build workspace packages
+        if: github.event_name != 'pull_request'
         run: bun run build:packages
 
       - name: Check platform package versions
+        if: github.event_name != 'pull_request'
         run: bun run check:platform-package-version
 
       - name: Type check
+        if: github.event_name != 'pull_request'
         run: bun run build:ts
 
       # build:ts covers only bin/ and src/. Without this step the tests are unchecked, and they
       # were silently unchecked for a long time (see docs/testing/test-typecheck.md).
       - name: Type check tests
+        if: github.event_name != 'pull_request'
         run: bun run typecheck:test
 
       - name: Type check standalone Xpod CLI
+        if: github.event_name != 'pull_request'
         run: bun x tsc --noEmit -p packages/xpod-cli/tsconfig.json
 
       - name: Standalone Xpod CLI tests
+        if: github.event_name != 'pull_request'
         run: bun run --filter '@undefineds.co/xpod-cli' test
 
       - name: Build Components artifacts
+        if: github.event_name != 'pull_request'
         run: bun run build:components
 
       - name: Build UI artifacts
+        if: github.event_name != 'pull_request'
         run: bun run build:ui
 
       # Differential CLI tests require the real native ripgrep binary.
       - name: Install native ripgrep for the differential CLI suites
+        if: github.event_name != 'pull_request'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ripgrep
@@ -62,24 +93,29 @@ jobs:
       # Chromium must be installed before the unit suite: tests/scripts/rc-light-web-browser.test.ts
       # launches a real Chromium, and the Account layout regression reuses the same install.
       - name: Install Chromium for browser-backed unit and layout regressions
+        if: github.event_name != 'pull_request'
         run: bunx playwright install --with-deps chromium
 
       - name: Node release and tooling tests
+        if: github.event_name != 'pull_request'
         run: node --test tests/scripts/*.node-test.cjs tests/scripts/*.node-test.mjs
 
       - name: Unit tests
+        if: github.event_name != 'pull_request'
         run: bun run test:run
 
       # The audit's N19: the Bun-only tests (tests/bun/** and every file importing bun:test)
       # are excluded from vitest, so they need their own gate or they silently rot.
       - name: Bun-only tests
+        if: github.event_name != 'pull_request'
         run: bun run test:bun
 
       - name: Account document and App auth-window layout regression
+        if: github.event_name != 'pull_request'
         run: bun run test:account-layout
 
       - name: Upload Account layout screenshots
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: account-layout-${{ github.sha }}
@@ -87,6 +123,7 @@ jobs:
           include-hidden-files: true
 
   integration-lite:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -112,6 +149,7 @@ jobs:
         run: bun run test:integration:lite
 
   bun-runtime:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -134,6 +172,7 @@ jobs:
         run: bun run test:bun:runtime
 
   integration-full:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
