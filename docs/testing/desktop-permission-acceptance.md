@@ -87,3 +87,8 @@ Provider confirmation compares collection descriptor keys and provider resource 
 本节是源码审计及回归范围，不代表上述入口已全部通过真实实例或安装包验收。`22b614677` 的第一次完整集成通过，第二次在 notification 性能基线失败（5020ms，要求 <5000ms）；保留失败，不提高门槛，下一冻结源码的完整门禁串行运行，避免同时构建安装包。旧安装探测 Account token 在 RC 数据重置后返回 401，只能证明旧清理会话不可用，不能声称已独立确认旧凭据删除。
 
 证据校验器也要求两个不同的 `webIdSha256`，并拒绝旧的 `sameWebId` 字段；仅有两个不同存储绑定不能通过独立身份验收。
+
+
+### 2026-10-09：跨 WebID 验收的客户端配置清理
+
+每轮验收写入的 Pi 配置应在该 WebID 的权限仍有效时，通过原 mounted host 的正式 `aiClientConfiguration.restore('pi')` 恢复，并独立回读为 `notConfigured`；随后才撤销本次 Key、回滚 Pod 授权并切换身份。只撤销 Key 会遗留上一 WebID 的配置归属，下一身份的 plan 被正确拒绝，不能算作登录或新 Key 签发失败。回归使用真实 Pi adapter 证明旧状态阻止跨身份覆盖、恢复后新身份可规划，并保留原有用户设置；不绕过归属检查或删除用户配置目录。
