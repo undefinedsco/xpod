@@ -17,6 +17,9 @@ const WORKSPACE_PACKAGES = [
   '@undefineds.co/solid-sdk',
   // Transitional server CLI adapters import the independent client's public API.
   '@undefineds.co/xpod-cli',
+  // Server workcopy/storage adapters consume the AFS public client boundary.
+  // Bundle its JS library; the optional platform helper remains a separate module.
+  '@undefineds.co/xpod-afs',
 ];
 // These runtime patches must survive installation without repository postinstall hooks.
 const PATCHED_RUNTIME_PACKAGES = [

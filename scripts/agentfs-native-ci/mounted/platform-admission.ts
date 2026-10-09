@@ -108,14 +108,14 @@ export function passedCountFromReport(reportJson: string): number | undefined {
  * was actually EXECUTED and PASSED. Missing/skipped/failed required cases are
  * not satisfied; unrelated informational skips are allowed.
  */
-export function evaluateRequiredMountedCases(reportJson: string): {
+export function evaluateRequiredMountedCases(reportJson: string, requiredTitles: readonly string[] = REQUIRED_MOUNTED_CASES): {
   satisfied: boolean;
   missing: string[];
   notPassed: { title: string; status: string }[];
 } {
   let report: VitestJsonReport;
   try { report = JSON.parse(reportJson) as VitestJsonReport; }
-  catch { return { satisfied: false, missing: [ ...REQUIRED_MOUNTED_CASES ], notPassed: [] }; }
+  catch { return { satisfied: false, missing: [ ...requiredTitles ], notPassed: [] }; }
   const statusByTitle = new Map<string, string>();
   for (const file of report.testResults ?? []) {
     for (const assertion of file.assertionResults ?? []) {
@@ -125,7 +125,7 @@ export function evaluateRequiredMountedCases(reportJson: string): {
   }
   const missing: string[] = [];
   const notPassed: { title: string; status: string }[] = [];
-  for (const required of REQUIRED_MOUNTED_CASES) {
+  for (const required of requiredTitles) {
     const status = statusByTitle.get(required);
     if (status === undefined) missing.push(required);
     else if (status !== 'passed') notPassed.push({ title: required, status });
@@ -222,7 +222,17 @@ function writeReceipt(extra: Record<string, unknown>): boolean {
   } catch { return false; }
 }
 
-async function main(): Promise<void> {
+export interface InstalledMountedProduct {
+  helper: string; launcher: string; helperSha256: string; launcherSha256: string;
+  entry: string; entrySha256: string;
+  env: NodeJS.ProcessEnv;
+  binding: Record<string, unknown>;
+  additionalTests: string[]; additionalRequiredCases: string[];
+}
+
+export async function runMountedPlatformAdmission(product?: InstalledMountedProduct): Promise<number> {
+  rawChunks.length = 0; lastSummary = ''; started = false; closedFact = false; rawFinished = false;
+  exitCode = null; exitSignal = null; groupAbsent = true;
   const archive = required('XPOD_MOUNTED_ARCHIVE');
   const archiveSha = required('XPOD_MOUNTED_ARCHIVE_SHA');
   const helperSha = required('XPOD_MOUNTED_HELPER_SHA');
@@ -247,12 +257,16 @@ async function main(): Promise<void> {
   // package is never duplicated into the evidence artifact; only raw/receipts
   // are uploaded and the product identity is carried by SHA references.
   const install = path.join(path.dirname(evidenceDir), `mounted-${os}-install`);
-  mkdirSync(install, { recursive: true, mode: 0o700 });
-  execFileSync('tar', [ '-xzf', archive, '-C', install ]);
-  const helper = path.join(install, 'install', 'helper', 'agentfs-pod');
-  const launcher = path.join(install, 'install', 'bin', 'xpodcli');
+  if (!product) {
+    mkdirSync(install, { recursive: true, mode: 0o700 });
+    execFileSync('tar', [ '-xzf', archive, '-C', install ]);
+  }
+  const helper = product?.helper ?? path.join(install, 'install', 'helper', 'agentfs-pod');
+  const launcher = product?.launcher ?? path.join(install, 'install', 'bin', 'xpodcli');
   if (!existsSync(helper) || !existsSync(launcher)) throw new Error('installed archive lacks helper or launcher');
   if (sha256File(helper) !== helperSha) throw new Error('installed helper digest mismatch');
+  if (product && (helperSha !== product.helperSha256 || sha256File(launcher) !== product.launcherSha256
+    || sha256File(product.entry) !== product.entrySha256)) throw new Error('installed module handoff digest mismatch');
 
   const nativeRg = execFileSync('/bin/sh', [ '-c', 'command -v rg' ], { encoding: 'utf8' }).trim();
   if (!path.isAbsolute(nativeRg) || !existsSync(nativeRg)) throw new Error('actual native rg is unavailable');
@@ -269,7 +283,7 @@ async function main(): Promise<void> {
   if (process.env.XPOD_MOUNTED_REQUIRE_NOBUN === '1' && bunVisible) throw new Error('consumer PATH still resolves bun');
 
   const env: NodeJS.ProcessEnv = {
-    ...process.env, PATH: acceptancePath, XPOD_AGENT_FS_NATIVE_RG: nativeRg,
+    ...(product ? product.env : process.env), PATH: acceptancePath, XPOD_AGENT_FS_NATIVE_RG: nativeRg,
     XPOD_AGENTFS_HELPER: helper, XPOD_AGENTFS_TEST_CLI: launcher,
     XPOD_AGENTFS_RUN_OVERLAY: '1', XPOD_MOUNTED_BACKEND: backend, XPOD_MOUNTED_OS: os,
   };
@@ -286,6 +300,7 @@ async function main(): Promise<void> {
   const child = spawn(node, [ vitest, 'run',
     'tests/agentfs-pod/nativeMountedPlatformMatrix.test.ts',
     'tests/agentfs-pod/nativeOverlayScenario.test.ts',
+    ...(product?.additionalTests ?? []),
     '--no-file-parallelism',
     '--reporter=default',
     '--reporter=json', `--outputFile=${reportPath}` ], { cwd: workspace, env, stdio: [ 'ignore', 'pipe', 'pipe' ], detached: process.platform !== 'win32' });
@@ -327,8 +342,9 @@ async function main(): Promise<void> {
   const groupResolved = groupAbsent === true;
   // Require the SIX named actual mounted cases to be PASSED from the real report.
   let reportSha: string | null = null;
+  const requiredTitles = [...REQUIRED_MOUNTED_CASES, ...(product?.additionalRequiredCases ?? [])];
   let requiredCases: { satisfied: boolean; missing: string[]; notPassed: { title: string; status: string }[] } =
-    { satisfied: false, missing: [ ...REQUIRED_MOUNTED_CASES ], notPassed: [] };
+    { satisfied: false, missing: [ ...requiredTitles ], notPassed: [] };
   // Under --reporter=json the human "Tests N passed" line is suppressed, so the
   // real count MUST come from passed assertions in the SAME report, not summary totals.
   let reportPassed: number | undefined;
@@ -338,7 +354,7 @@ async function main(): Promise<void> {
     const reportBytes = readFileSync(reportPath);
     reportSha = createHash('sha256').update(reportBytes).digest('hex');
     const reportText = reportBytes.toString('utf8');
-    requiredCases = evaluateRequiredMountedCases(reportText);
+    requiredCases = evaluateRequiredMountedCases(reportText, requiredTitles);
     reportPassed = passedCountFromReport(reportText);
     reportFailureText = failureTextFromReport(reportText);
   } catch { /* report absent: required cases unsatisfied */ }
@@ -356,29 +372,33 @@ async function main(): Promise<void> {
   const persisted = writeReceipt({
     backend, nodePath: node, nodeVersion, nodeSha256, nativeRg, nativeRgVersion, nativeRgSha256,
     productArchiveSha256: archiveSha, installedHelperSha256: helperSha, installedLauncherPath: launcher,
+    ...(product ? { moduleBinding: product.binding } : {}),
     harnessRunnerSha256: runnerSha, consumerBunVisible: bunVisible, passedCases: effectivePassed, minPassedCases: minPassed,
     producerState, producerLifecycle: lifecycle.facts(), ownedProcessObservations: processObservations, rawLog: rawPath,
     rawSHA256: sealed ? createHash('sha256').update(raw).digest('hex') : null,
     snapshotSHA256: sealed ? null : createHash('sha256').update(raw).digest('hex'), status: ok ? 'ok' : 'failed', failureReason: reason,
     mountExecuted: ok,
-    vitestReport: reportSha ? { path: reportPath, sha256: reportSha, requiredCases: REQUIRED_MOUNTED_CASES,
+    vitestReport: reportSha ? { path: reportPath, sha256: reportSha, requiredCases: requiredTitles,
       requiredSatisfied: requiredCases.satisfied, missingRequired: requiredCases.missing, notPassed: requiredCases.notPassed,
       failureText: reportFailureText } : null,
   });
   if (!persisted) { process.stderr.write('{"stage":"platform-admission","errorClass":"receipt-persist-failed"}\n'); process.exit(72); }
   if (!ok && lastSummary) process.stderr.write(`mounted-harness-summary:\n${lastSummary}\n`);
   process.stdout.write(`${JSON.stringify({ status: ok ? 'ok' : 'failed', os, backend, nodeVersion, passedCases: effectivePassed, producerState })}\n`);
-  process.exit(ok ? 0 : 1);
+  return ok ? 0 : 1;
 }
 
 // Execute ONLY when run as the entry point. Cross-runtime ESM guard (works under
 // Bun and Node22 --experimental-strip-types, where `require` is not defined).
 export function isEntryPoint(): boolean {
-  try { return fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? ''); }
+  // A bundled module-admission entry also contains this module's import.meta.
+  // Its distinct entry name must not launch the legacy driver a second time.
+  try { return /^platform-admission\.(?:ts|mjs)$/.test(path.basename(process.argv[1] ?? ''))
+    && fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? ''); }
   catch { return false; }
 }
 if (isEntryPoint()) {
-  main().catch((error: unknown) => {
+  runMountedPlatformAdmission().then(code => { process.exitCode = code; }).catch((error: unknown) => {
     const persisted = writeReceipt({ status: 'failed', failureReason: 'preflight', message: String((error as Error).message) });
     if (lastSummary) process.stderr.write(`mounted-harness-summary:\n${lastSummary}\n`);
     process.stderr.write(`${JSON.stringify({ stage: 'platform-admission', errorClass: 'failed', message: String((error as Error).message) })}\n`);

@@ -5,8 +5,8 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { resolveFullIntegrationInfra } from '../tests/helpers/fullIntegrationInfra';
-import { RESERVED_PORTS_ENV } from '../src/runtime/port-reservations';
-import { getFreePortForWildcard, requireFreePortForWildcard } from '../src/runtime/port-finder';
+import { RESERVED_PORTS_ENV, reservedPorts } from '../src/runtime/port-reservations';
+import { getEphemeralLoopbackPort, isFreePortForWildcard, getFreePortForWildcard, requireFreePortForWildcard } from '../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
 import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
 import {
@@ -17,10 +17,6 @@ import {
   probeObjectStore,
 } from '../tests/helpers/dockerObjectStore';
 
-const DEFAULT_CLOUD_PORT = Number(process.env.CLOUD_PORT || '6300');
-const DEFAULT_CLOUD_B_PORT = Number(process.env.CLOUD_B_PORT || '6400');
-const DEFAULT_LOCAL_PORT = Number(process.env.LOCAL_PORT || '5737');
-const DEFAULT_STANDALONE_PORT = Number(process.env.STANDALONE_PORT || '5739');
 const COMPOSE_PROJECT = process.env.XPOD_FULL_PROJECT || 'xpod-full-test';
 const TEST_SECRET_CELL_KEY = Buffer.alloc(32, 3).toString('base64');
 const TEST_GATEWAY_ENV = {
@@ -281,16 +277,6 @@ async function allocatePort(preferredPort: number, reserved: Set<number>, host =
   }
 }
 
-async function allocateRuntimePorts(preferredGatewayPort: number, reserved: Set<number>): Promise<RuntimePorts> {
-  const gateway = await allocatePort(preferredGatewayPort, reserved);
-  const css = await allocatePort(preferredGatewayPort + 10, reserved);
-  const api = await allocatePort(preferredGatewayPort + 11, reserved);
-  // Include ingress in the same plan before allocating another runtime: an
-  // earlier runtime must not choose a later instance's future gateway.
-  const ingress = await allocatePort(gateway + 3, reserved);
-  return { gateway, css, api, ingress };
-}
-
 export async function resolveFullInfrastructurePorts(
   reserved = new Set<number>(),
   preferred: InfrastructurePorts = { postgres: 5432, redis: 6379, minio: OBJECT_STORE_PORT },
@@ -308,13 +294,66 @@ export async function resolveFullInfrastructurePorts(
   return result;
 }
 
-export async function resolveFullRuntimePorts(reserved = new Set<number>()): Promise<FullRuntimePorts> {
-  return {
-    cloud: await allocateRuntimePorts(DEFAULT_CLOUD_PORT, reserved),
-    cloudB: await allocateRuntimePorts(DEFAULT_CLOUD_B_PORT, reserved),
-    local: await allocateRuntimePorts(DEFAULT_LOCAL_PORT, reserved),
-    standalone: await allocateRuntimePorts(DEFAULT_STANDALONE_PORT, reserved),
+export type FullRuntimePortPreferences = Partial<Record<keyof FullRuntimePorts, number>>;
+export interface RuntimePortPlanningDependencies {
+  ephemeral(): Promise<number>;
+  isFree(port: number): Promise<boolean>;
+  preferred(port: number, reserved: Set<number>): Promise<number>;
+}
+const runtimePortPlanning: RuntimePortPlanningDependencies = {
+  ephemeral: getEphemeralLoopbackPort,
+  isFree: isFreePortForWildcard,
+  preferred: allocatePort,
+};
+
+function runtimePortPreferences(): FullRuntimePortPreferences {
+  const preferences: FullRuntimePortPreferences = {};
+  for (const [name, key] of [['cloud', 'CLOUD_PORT'], ['cloudB', 'CLOUD_B_PORT'], ['local', 'LOCAL_PORT'], ['standalone', 'STANDALONE_PORT']] as const) {
+    if (process.env[key]) preferences[name] = Number(process.env[key]);
+  }
+  return preferences;
+}
+
+export async function resolveFullRuntimePorts(
+  reserved = new Set<number>(),
+  preferences = runtimePortPreferences(),
+  dependencies: RuntimePortPlanningDependencies = runtimePortPlanning,
+): Promise<FullRuntimePorts> {
+  const ephemeral = async (): Promise<number> => {
+    while (true) {
+      const port = await dependencies.ephemeral();
+      if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error('Invalid ephemeral runtime port');
+      if (reserved.has(port) || reservedPorts().has(port) || !await dependencies.isFree(port)) continue;
+      reserved.add(port);
+      return port;
+    }
   };
+  const plans = {} as FullRuntimePorts;
+  for (const name of ['cloud', 'cloudB', 'local', 'standalone'] as const) {
+    const preferred = preferences[name];
+    if (preferred !== undefined) {
+      if (!Number.isInteger(preferred) || preferred <= 0 || preferred > 65535) throw new Error(`Invalid preferred runtime port for ${name}`);
+      const gateway = await dependencies.preferred(preferred, reserved);
+      const css = await dependencies.preferred(preferred + 10, reserved);
+      const api = await dependencies.preferred(preferred + 11, reserved);
+      const ingress = await dependencies.preferred(gateway + 3, reserved);
+      plans[name] = { gateway, css, api, ingress };
+    } else {
+      plans[name] = { gateway: await ephemeral(), css: await ephemeral(), api: await ephemeral(), ingress: await ephemeral() };
+    }
+  }
+  return plans;
+}
+
+/** Plan immediately after infrastructure readiness, rather than before Compose startup. */
+export async function resolveReadyFullRuntimePorts(
+  reserved: Set<number>,
+  ready: () => Promise<void>,
+  preferences?: FullRuntimePortPreferences,
+  dependencies?: RuntimePortPlanningDependencies,
+): Promise<FullRuntimePorts> {
+  await ready();
+  return resolveFullRuntimePorts(reserved, preferences, dependencies);
 }
 
 export async function selectFullInfrastructurePorts(reuseRequested: boolean, reserved: Set<number>): Promise<InfrastructurePorts> {
@@ -533,29 +572,10 @@ async function main(): Promise<void> {
   const oldEnv = Object.fromEntries(['XPOD_FULL_POSTGRES_PORT', 'XPOD_FULL_REDIS_PORT', 'XPOD_FULL_OBJECT_STORE_PORT'].map(key => [key, process.env[key]]));
   Object.assign(process.env, { XPOD_FULL_POSTGRES_PORT: String(infrastructurePorts.postgres), XPOD_FULL_REDIS_PORT: String(infrastructurePorts.redis), XPOD_FULL_OBJECT_STORE_PORT: String(infrastructurePorts.minio) });
   try {
-  const ports = await resolveFullRuntimePorts(reserved);
   const overlay = await createFullInfrastructureOverlay(infrastructurePorts);
   composeArgs.push('-f', overlay.path);
   const reuseExistingInfra = !externalInfra && reuseRequested && await hasHealthyComposeInfra();
   const startedInfra = !externalInfra && !reuseExistingInfra;
-  const sharedEnv = {
-    ...resolveFullIntegrationInfra().hostEnv,
-    [RESERVED_PORTS_ENV]: [...(process.env[RESERVED_PORTS_ENV] ? [process.env[RESERVED_PORTS_ENV]] : []), ...Object.values(infrastructurePorts), ...Object.values(ports).flatMap(runtime => Object.values(runtime))].join(','),
-    XPOD_FULL_PG_URL: connections.postgresUrl,
-    XPOD_AGENT_DIRECTORY_TEST_CLOUD_URL: `http://localhost:${ports.cloud.gateway}/`,
-    XPOD_AGENT_DIRECTORY_TEST_REDIS_URL: connections.redisUrl,
-    CSS_BASE_URL: `http://localhost:${ports.standalone.gateway}`,
-    CLOUD_PORT: String(ports.cloud.gateway),
-    CLOUD_API_PORT: String(ports.cloud.api),
-    CLOUD_B_PORT: String(ports.cloudB.gateway),
-    CLOUD_B_API_PORT: String(ports.cloudB.api),
-    LOCAL_PORT: String(ports.local.gateway),
-    LOCAL_API_PORT: String(ports.local.api),
-    STANDALONE_PORT: String(ports.standalone.gateway),
-    STANDALONE_API_PORT: String(ports.standalone.api),
-    SOLID_ENV_FILE: path.resolve('.test-data', 'integration', 'full.env'),
-    ...(externalInfra ? fullIntegrationInfraEnv(externalInfra) : {}),
-  };
   const runtimes: XpodRuntimeHandle[] = [];
 
   let testExitCode = 1;
@@ -572,8 +592,28 @@ async function main(): Promise<void> {
 
     if (startedInfra) {
       await runCommand('docker', [...composeArgs, 'up', '-d', 'postgres', 'redis', 'minio']);
-      await waitForInfraServices();
     }
+    const ports = await resolveReadyFullRuntimePorts(reserved, async () => {
+      if (startedInfra) await waitForInfraServices();
+    });
+    const sharedEnv = {
+      ...resolveFullIntegrationInfra().hostEnv,
+      [RESERVED_PORTS_ENV]: [...(process.env[RESERVED_PORTS_ENV] ? [process.env[RESERVED_PORTS_ENV]] : []), ...Object.values(infrastructurePorts), ...Object.values(ports).flatMap(runtime => Object.values(runtime))].join(','),
+      XPOD_FULL_PG_URL: connections.postgresUrl,
+      XPOD_AGENT_DIRECTORY_TEST_CLOUD_URL: `http://localhost:${ports.cloud.gateway}/`,
+      XPOD_AGENT_DIRECTORY_TEST_REDIS_URL: connections.redisUrl,
+      CSS_BASE_URL: `http://localhost:${ports.standalone.gateway}`,
+      CLOUD_PORT: String(ports.cloud.gateway),
+      CLOUD_API_PORT: String(ports.cloud.api),
+      CLOUD_B_PORT: String(ports.cloudB.gateway),
+      CLOUD_B_API_PORT: String(ports.cloudB.api),
+      LOCAL_PORT: String(ports.local.gateway),
+      LOCAL_API_PORT: String(ports.local.api),
+      STANDALONE_PORT: String(ports.standalone.gateway),
+      STANDALONE_API_PORT: String(ports.standalone.api),
+      SOLID_ENV_FILE: path.resolve('.test-data', 'integration', 'full.env'),
+      ...(externalInfra ? fullIntegrationInfraEnv(externalInfra) : {}),
+    };
     runtimes.push(...await startFullRuntimes(ports, qleverRuntimeFixture.command, infrastructurePorts, externalInfra));
     await waitForFullPorts(ports);
 

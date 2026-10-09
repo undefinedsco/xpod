@@ -3,8 +3,8 @@ import path from 'node:path';
 import { access, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { resolveFullRuntimePorts, resolveFullInfrastructurePorts, fullInfrastructureConnections, createFullInfrastructureOverlay } from '../../scripts/run-integration-full';
-import { isFreePortForWildcard } from '../../src/runtime/port-finder';
+import { resolveFullRuntimePorts, resolveReadyFullRuntimePorts, resolveFullInfrastructurePorts, fullInfrastructureConnections, createFullInfrastructureOverlay } from '../../scripts/run-integration-full';
+import { getEphemeralLoopbackPort, getFreePortForWildcard, isFreePortForWildcard } from '../../src/runtime/port-finder';
 
 describe('full integration port planning', () => {
   it('uses the release PostgreSQL candidate in the resolved Compose stack', () => {
@@ -48,6 +48,85 @@ describe('full integration port planning', () => {
     } finally {
       await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
     }
+  });
+
+  it('uses a real OS-selected port for every dynamic service axis', async () => {
+    const picked: number[] = [];
+    const plans = await resolveFullRuntimePorts(new Set(), {}, {
+      async ephemeral() { const port = await getEphemeralLoopbackPort(); picked.push(port); return port; },
+      isFree: isFreePortForWildcard,
+      async preferred() { throw new Error('Dynamic planning must not scan a preferred range'); },
+    });
+    const selected = Object.values(plans).flatMap(plan => [plan.gateway, plan.css, plan.api, plan.ingress]);
+    expect(selected).toHaveLength(16);
+    expect(new Set(selected).size).toBe(16);
+    expect(selected.every(port => picked.includes(port) && port > 0)).toBe(true);
+  });
+
+  it.each([0, -1, NaN, Infinity, 65536])('rejects invalid explicit runtime preference %s before allocation', async preferred => {
+    await expect(resolveFullRuntimePorts(new Set(), { cloud: preferred })).rejects.toThrow('Invalid preferred runtime port for cloud');
+  });
+
+  it('keeps explicit preferred-and-scan behavior alongside dynamic runtimes', async () => {
+    const preferred = await getFreePortForWildcard(30000);
+    if (preferred > 65524) throw new Error('No room for the occupied preferred-port fixture');
+    const listener = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      listener.once('error', reject);
+      listener.listen(preferred, '127.0.0.1', resolve);
+    });
+    try {
+      const address = listener.address();
+      if (!address || typeof address === 'string') throw new Error('Missing occupied listener');
+      const base = address.port;
+      const reserved = new Set([base + 10, base + 11]);
+      const plans = await resolveFullRuntimePorts(reserved, { cloud: base });
+      expect(plans.cloud.gateway).toBeGreaterThan(base);
+      expect(plans.cloud.css).toBeGreaterThan(base + 11);
+      expect(plans.cloud.api).toBeGreaterThan(base + 11);
+      expect(plans.cloud.ingress).toBeGreaterThanOrEqual(plans.cloud.gateway + 3);
+      const selected = Object.values(plans).flatMap(plan => [plan.gateway, plan.css, plan.api, plan.ingress]);
+      expect(new Set(selected).size).toBe(16);
+      expect(selected).not.toContain(base);
+      expect(selected).not.toContain(base + 10);
+      expect(selected).not.toContain(base + 11);
+    } finally { await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve())); }
+  });
+
+  it('reselects OS candidates already reserved or occupied on a service address', async () => {
+    const listener = net.createServer();
+    await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = listener.address();
+      if (!address || typeof address === 'string') throw new Error('Missing occupied listener');
+      const reservedPort = await getEphemeralLoopbackPort();
+      const candidates = [reservedPort, address.port];
+      const plans = await resolveFullRuntimePorts(new Set([reservedPort]), {}, {
+        async ephemeral() { return candidates.shift() ?? await getEphemeralLoopbackPort(); },
+        isFree: isFreePortForWildcard,
+        async preferred() { throw new Error('Unexpected preferred allocation'); },
+      });
+      const selected = Object.values(plans).flatMap(plan => [plan.gateway, plan.css, plan.api, plan.ingress]);
+      expect(selected).not.toContain(reservedPort);
+      expect(selected).not.toContain(address.port);
+      expect(new Set(selected).size).toBe(16);
+    } finally { await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve())); }
+  });
+
+  it('waits for readiness before selecting real runtime ports and preserves its failure cause', async () => {
+    let ready = false;
+    const plans = await resolveReadyFullRuntimePorts(new Set(), async () => { ready = true; }, {}, {
+      async ephemeral() { expect(ready).toBe(true); return getEphemeralLoopbackPort(); },
+      isFree: isFreePortForWildcard,
+      async preferred() { throw new Error('Unexpected preferred allocation'); },
+    });
+    expect(Object.values(plans).flatMap(plan => [plan.gateway, plan.css, plan.api, plan.ingress])).toHaveLength(16);
+    const cause = new Error('controlled readiness failure');
+    await expect(resolveReadyFullRuntimePorts(new Set(), async () => { throw cause; }, {}, {
+      async ephemeral() { throw new Error('Must not allocate before readiness'); },
+      isFree: isFreePortForWildcard,
+      async preferred() { throw new Error('Must not allocate before readiness'); },
+    })).rejects.toBe(cause);
   });
 
   it('derives all connections from owned ports and rejects a foreign PG connection', () => {

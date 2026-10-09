@@ -9,8 +9,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { AgentDirectoryClient, type AgentDirectoryRequest } from '../src/agent-directory/client/AgentDirectoryClient';
-import { normalizePodRoot } from '../src/cli/agent-fs/roots';
+import { AgentDirectoryClient, type AgentDirectoryRequest } from '../packages/xpod-afs/src/directory/client';
+import { normalizePodRoot } from '../packages/xpod-afs/src/agent-fs/roots';
 
 export interface LiveDirectoryOptions {
   /** Canonical Xpod root that hosts the optional CSS/API/AFS modules. */

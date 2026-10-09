@@ -1,0 +1,100 @@
+import { describe, expect, it } from 'vitest';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { collectModule, exportSafe, nativeFacts, projectReceipt } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
+
+function fixture(run: (root: string) => void): void {
+  const parent = path.resolve('.test-data/module-input-preparation'); mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const root = mkdtempSync(path.join(parent, 'case-')); try { run(root); } finally { rmSync(root, { recursive: true, force: true }); }
+}
+describe('module mounted input preparation', () => {
+  it('fixed nested schemas discard unknown credentials, token, clientSecret and argv at every allowed container', () => {
+    const secret = { credentials: { token: 'private-marker', clientSecret: 'private-marker' }, argv: ['private-marker'], arbitrary: { value: 'private-marker' } };
+    const input = { ...secret, schemaVersion: 1, producerClosed: true, moduleBinding: { ...secret, moduleSourceSHA: '1'.repeat(40), runtime: 'node' },
+      producerLifecycle: { ...secret, pid: 123, closeObserved: true },
+      ownedProcessObservations: [{ ...secret, phase: 'after-owned-reap', known: true, members: [{ ...secret, pid: 123, ppid: 1, pgid: 123, state: 'S' }] }],
+      vitestReport: { ...secret, requiredCases: ['actual required assertion'], requiredSatisfied: true, notPassed: [{ ...secret, title: 'known assertion', status: 'failed' }] } };
+    const projected = projectReceipt('mounted-linux.receipt.json', input) as any;
+    expect(JSON.stringify(projected)).not.toContain('private-marker'); expect(projected.moduleBinding.runtime).toBe('node');
+    expect(projected.producerLifecycle.pid).toBe(123); expect(projected.ownedProcessObservations[0].members[0].pgid).toBe(123);
+    expect(projected.vitestReport.requiredCases).toEqual(['actual required assertion']);
+    const cleanup = projectReceipt('module-chain-cleanup.safe.json', { ...secret, cleanupVerified: false, ownedPids: [123],
+      children: [{ ...secret, code: 1, lifecycle: { ...secret, pid: 123, closeObserved: true }, args: ['private-marker'] }] }) as any;
+    expect(JSON.stringify(cleanup)).not.toContain('private-marker'); expect(cleanup.children[0].code).toBe(1); expect(cleanup.ownedPids).toEqual([123]);
+    const control = projectReceipt('linux-container-binding.json', { ...secret, released: true, container: { ...secret, CapAdd: ['SYS_ADMIN'], Devices: [{ ...secret, PathOnHost: '/dev/fuse' }], Mounts: [{ ...secret, destination: '/evidence', RW: true }] },
+      consumerReceipt: { ...secret, actualWait: true, exit: 0 } }) as any;
+    expect(JSON.stringify(control)).not.toContain('private-marker'); expect(control.container.CapAdd).toEqual(['SYS_ADMIN']); expect(control.consumerReceipt.actualWait).toBe(true);
+    expect(projectReceipt('rss-512.json', { ...secret, phaseRead: [1234], readPeakKib: 1234 })).toEqual({ phaseRead: [1234], readPeakKib: 1234 });
+    expect(projectReceipt('module-install.safe.json', { runtime: secret, ownedPids: secret })).toEqual({});
+  });
+  it('binds both exact original b5 artifacts and rejects unsupported targets', () => {
+    for (const target of ['linux-arm64', 'darwin-arm64']) {
+      const facts = nativeFacts(target); expect(facts.run).toBe('37977251553'); expect(facts.source).toBe('b5a058cffa50026702f7679365e7b17e383115d2');
+      expect(facts.zipSHA256).toMatch(/^[a-f0-9]{64}$/); expect(facts.pins.PRODUCT_SHA).toBe(facts.source);
+    }
+    expect(() => nativeFacts('linux-x64')).toThrow('unsupported');
+  });
+  it.each(['changed-manifest', 'duplicate', 'symlink', 'unlisted'])('rejects actual serialized archive %s before installer or mount', (variant) => fixture(root => {
+    const archive = path.join(root, 'module.tgz');
+    execFileSync('python3', ['-c', `import tarfile,io,json,sys
+variant=sys.argv[2]
+with tarfile.open(sys.argv[1],'w:gz') as t:
+ def add(name,data):
+  m=tarfile.TarInfo(name);m.size=len(data);m.mode=420;t.addfile(m,io.BytesIO(data))
+ manifest={'name':'@undefineds.co/xpod-afs-linux-arm64','version':'0.1.0','xpodModule':{'schemaVersion':1,'id':'afs','platform':'linux','arch':'arm64','entry':'dist/entry.mjs','files':[]}}
+ if variant=='changed-manifest':manifest['name']='unbound-preview'
+ add('package/package.json',json.dumps(manifest).encode())
+ if variant=='duplicate':add('package/package.json',b'{}')
+ if variant=='symlink':
+  m=tarfile.TarInfo('package/secret');m.type=tarfile.SYMTYPE;m.linkname='/private/secret';t.addfile(m)
+ if variant=='unlisted':add('package/dist/entry.mjs',b'unlisted')`, archive, variant]);
+    expect(() => collectModule(archive, 'linux-arm64', '1'.repeat(40), '2'.repeat(64), '3'.repeat(64))).toThrow();
+  }));
+  it('exports a fixed receipt whitelist, excluding credentials, HOME and raw reports', () => fixture(root => {
+    const evidence = path.join(root, 'evidence'); mkdirSync(evidence);
+    for (const name of ['module-admission.safe.json', 'module-chain-cleanup.safe.json']) writeFileSync(path.join(evidence, name), '{"accepted":false,"vitestReport":{"failureText":"private-marker"},"children":[{"args":["private-marker"],"exit":1}]}');
+    for (const name of ['credentials.json', 'session.safe.json', 'native-reuse.raw.log', 'vitest.json']) writeFileSync(path.join(evidence, name), 'private-marker');
+    mkdirSync(path.join(evidence, 'HOME')); writeFileSync(path.join(evidence, 'HOME', 'secret'), 'private-marker');
+    const out = path.join(root, 'export'); exportSafe(evidence, out);
+    expect(readdirSync(out).sort()).toEqual(['export.safe.json', 'module-admission.safe.json', 'module-chain-cleanup.safe.json']);
+    expect(readFileSync(path.join(out, 'export.safe.json'), 'utf8')).not.toContain('private-marker');
+    expect(readFileSync(path.join(out, 'module-admission.safe.json'), 'utf8')).not.toContain('private-marker');
+    expect(() => exportSafe(evidence, out)).toThrow();
+  }));
+  it.each(['source-bytes', 'source-extra'])('rejects actual nested source archive %s mismatch', variant => fixture(root => {
+    const archive = path.join(root, 'module.tgz');
+    execFileSync('python3', ['-c', `import tarfile,io,json,hashlib,sys
+buf=io.BytesIO()
+with tarfile.open(fileobj=buf,mode='w:gz') as t:
+ def add(t,n,b):
+  m=tarfile.TarInfo(n);m.size=len(b);m.mode=420;t.addfile(m,io.BytesIO(b))
+ add(t,'./src/input.ts',b'actual-source')
+ if sys.argv[2]=='source-extra':add(t,'./src/extra.ts',b'extra')
+kit={'files':[{'path':'src/input.ts','bytes':13,'sha256':hashlib.sha256(b'wrong-source' if sys.argv[2]=='source-bytes' else b'actual-source').hexdigest()}]}
+members={'sources/module-source.tar.gz':buf.getvalue(),'provenance/module-source-kit.json':json.dumps(kit).encode()}
+files=[{'path':n,'sha256':hashlib.sha256(b).hexdigest(),'size':len(b),'mode':420} for n,b in members.items()]
+pkg={'name':'@undefineds.co/xpod-afs-linux-arm64','version':'0.1.0','xpodModule':{'schemaVersion':1,'id':'afs','platform':'linux','arch':'arm64','entry':'dist/entry.mjs','files':files}}
+with tarfile.open(sys.argv[1],'w:gz') as t:
+ add(t,'package/package.json',json.dumps(pkg).encode())
+ for n,b in members.items():add(t,'package/'+n,b)`, archive, variant]);
+    expect(() => collectModule(archive, 'linux-arm64', '1'.repeat(40), '2'.repeat(64), '3'.repeat(64))).toThrow('source archive inventory mismatch');
+  }));
+  it('projects actual container closure and hashes its raw receipt without copying private fields', () => fixture(root => {
+    const evidence = path.join(root, 'evidence'); mkdirSync(evidence);
+    writeFileSync(path.join(evidence, 'linux-container-binding.json'), JSON.stringify({ state: 'verified', cid: 'c'.repeat(64), released: true,
+      containerAbsent: true, privateFixtureToken: 'private-marker', consumerReceipt: { exit: 0, signal: null, actualWait: true, rawClosedBeforeHash: true, ownedGroupAbsentAfterWait: true, args: ['private-marker'] } }));
+    const out = path.join(root, 'out'); exportSafe(evidence, out);
+    const bytes = readFileSync(path.join(out, 'linux-container-binding.safe.json'), 'utf8'); expect(bytes).not.toContain('private-marker');
+    const report = JSON.parse(bytes); expect(report.containerAbsent).toBe(true); expect(report.sourceReceiptSHA256).toMatch(/^[a-f0-9]{64}$/); expect(report.consumerReceipt.actualWait).toBe(true);
+  }));
+  it('rejects a whitelisted symlink instead of uploading its target', () => fixture(root => {
+    const evidence = path.join(root, 'evidence'); mkdirSync(evidence); const secret = path.join(root, 'secret'); writeFileSync(secret, '{}');
+    symlinkSync(secret, path.join(evidence, 'module-admission.safe.json'));
+    expect(() => exportSafe(evidence, path.join(root, 'out'))).toThrow('identity mismatch');
+  }));
+  it('actual preparer CLI rejects a contradictory immutable source without leaking input', () => fixture(root => {
+    const result = spawnSync('bun', ['scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts', 'prepare', '--target', 'linux-arm64', '--workspace', process.cwd(), '--source-sha', '0'.repeat(40)], { encoding: 'utf8' });
+    expect(result.status).toBe(1); expect(result.signal).toBeNull(); expect(result.stderr).toContain('module preparation rejected'); expect(result.stdout).toBe('');
+  }));
+});

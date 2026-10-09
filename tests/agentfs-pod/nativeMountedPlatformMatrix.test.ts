@@ -324,7 +324,12 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       expect(wrapper.nativeRg).toBe(nativeRg);
       expect(wrapper.launcher.length).toBeGreaterThan(0);
       const wrapperScript = await readFile(wrapper.wrapperPath, 'utf8');
-      expect(wrapperScript).toContain('agent-fs rg');
+      const installedEntry = process.env.XPOD_AGENTFS_MODULE_ENTRY;
+      if (installedEntry) {
+        expect(wrapper.launcher).toEqual([process.env.XPOD_AGENTFS_MODULE_RUNTIME, installedEntry]);
+        expect(wrapperScript).toContain(installedEntry);
+        expect(wrapperScript).toMatch(/ rg "\$@"/u);
+      } else expect(wrapperScript).toContain('agent-fs rg');
       expect(wrapperScript).toContain(nativeRg);
       expect(wrapperScript).toContain(session);
       const rgOutput = await run('/bin/sh', [ '-c', `set -eu; command -v rg; rg -F SHELL_CONTENT .` ], project,

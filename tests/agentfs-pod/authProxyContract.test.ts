@@ -31,7 +31,7 @@ vi.mock('../../src/cli/lib/auth-context', () => ({
   },
 }));
 
-const { startAuthProxy } = await import('../../src/cli/agent-fs/auth-proxy');
+const { startAuthProxy } = await import('../../packages/xpod-afs/src/agent-fs/auth-proxy');
 
 const POD_ROOT = 'https://pod.example/alice/';
 const CAP = 'test-capability';

@@ -26,7 +26,7 @@ implemented feature. Command display name **Xpod CLI**, binary
 `0.1.0-preview.1`.
 
 Current delivery uses an external runtime: installed **Bun >=1.3.8**, or
-**Node.js >=22** when Bun is absent. It bundles Node-compatible ESM and the
+**Node.js >=22.13** when Bun is absent. It bundles Node-compatible ESM and the
 native AgentFS helper, with no Bun/Node executable or JavaScriptCore libraries.
 The launcher selects once; a failing command is never retried under another
 runtime. Older embedded-runtime previews are historical artifacts.

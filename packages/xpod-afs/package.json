@@ -1,0 +1,338 @@
+{
+  "name": "@undefineds.co/xpod-afs",
+  "version": "0.1.0-preview.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "bun scripts/build-client.ts",
+    "build:module": "bun scripts/build-package.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test ./tests"
+  },
+  "exports": {
+    "./agent-fs/roots": {
+      "types": "./dist/types/agent-fs/roots.d.ts",
+      "import": "./dist/agent-fs/roots.mjs",
+      "require": "./dist/agent-fs/roots.cjs",
+      "default": "./dist/agent-fs/roots.cjs"
+    },
+    "./agent-fs/mount": {
+      "types": "./dist/types/agent-fs/mount.d.ts",
+      "import": "./dist/agent-fs/mount.mjs",
+      "require": "./dist/agent-fs/mount.cjs",
+      "default": "./dist/agent-fs/mount.cjs"
+    },
+    "./agent-fs/install": {
+      "types": "./dist/types/agent-fs/install.d.ts",
+      "import": "./dist/agent-fs/install.mjs",
+      "require": "./dist/agent-fs/install.cjs",
+      "default": "./dist/agent-fs/install.cjs"
+    },
+    "./agent-fs/pending-store": {
+      "types": "./dist/types/agent-fs/pending-store.d.ts",
+      "import": "./dist/agent-fs/pending-store.mjs",
+      "require": "./dist/agent-fs/pending-store.cjs",
+      "default": "./dist/agent-fs/pending-store.cjs"
+    },
+    "./agent-fs/args": {
+      "types": "./dist/types/agent-fs/args.d.ts",
+      "import": "./dist/agent-fs/args.mjs",
+      "require": "./dist/agent-fs/args.cjs",
+      "default": "./dist/agent-fs/args.cjs"
+    },
+    "./agent-fs/session-view": {
+      "types": "./dist/types/agent-fs/session-view.d.ts",
+      "import": "./dist/agent-fs/session-view.mjs",
+      "require": "./dist/agent-fs/session-view.cjs",
+      "default": "./dist/agent-fs/session-view.cjs"
+    },
+    "./agent-fs/native": {
+      "types": "./dist/types/agent-fs/native.d.ts",
+      "import": "./dist/agent-fs/native.mjs",
+      "require": "./dist/agent-fs/native.cjs",
+      "default": "./dist/agent-fs/native.cjs"
+    },
+    "./agent-fs/rg-entry": {
+      "types": "./dist/types/agent-fs/rg-entry.d.ts",
+      "import": "./dist/agent-fs/rg-entry.mjs",
+      "require": "./dist/agent-fs/rg-entry.cjs",
+      "default": "./dist/agent-fs/rg-entry.cjs"
+    },
+    "./agent-fs/pod-lower": {
+      "types": "./dist/types/agent-fs/pod-lower.d.ts",
+      "import": "./dist/agent-fs/pod-lower.mjs",
+      "require": "./dist/agent-fs/pod-lower.cjs",
+      "default": "./dist/agent-fs/pod-lower.cjs"
+    },
+    "./agent-fs/auth-proxy": {
+      "types": "./dist/types/agent-fs/auth-proxy.d.ts",
+      "import": "./dist/agent-fs/auth-proxy.mjs",
+      "require": "./dist/agent-fs/auth-proxy.cjs",
+      "default": "./dist/agent-fs/auth-proxy.cjs"
+    },
+    "./agent-fs/runner": {
+      "types": "./dist/types/agent-fs/runner.d.ts",
+      "import": "./dist/agent-fs/runner.mjs",
+      "require": "./dist/agent-fs/runner.cjs",
+      "default": "./dist/agent-fs/runner.cjs"
+    },
+    "./directory/client": {
+      "types": "./dist/types/directory/client.d.ts",
+      "import": "./dist/directory/client.mjs",
+      "require": "./dist/directory/client.cjs",
+      "default": "./dist/directory/client.cjs"
+    },
+    "./directory/protocol": {
+      "types": "./dist/types/directory/protocol.d.ts",
+      "import": "./dist/directory/protocol.mjs",
+      "require": "./dist/directory/protocol.cjs",
+      "default": "./dist/directory/protocol.cjs"
+    },
+    "./commands": {
+      "types": "./dist/types/commands.d.ts",
+      "import": "./dist/commands.mjs",
+      "require": "./dist/commands.cjs",
+      "default": "./dist/commands.cjs"
+    },
+    "./workcopy/SolidFsPathUtils": {
+      "types": "./dist/types/workcopy/SolidFsPathUtils.d.ts",
+      "import": "./dist/workcopy/SolidFsPathUtils.mjs",
+      "require": "./dist/workcopy/SolidFsPathUtils.cjs",
+      "default": "./dist/workcopy/SolidFsPathUtils.cjs"
+    },
+    "./workcopy/PodSolidFsHttpClient": {
+      "types": "./dist/types/workcopy/PodSolidFsHttpClient.d.ts",
+      "import": "./dist/workcopy/PodSolidFsHttpClient.mjs",
+      "require": "./dist/workcopy/PodSolidFsHttpClient.cjs",
+      "default": "./dist/workcopy/PodSolidFsHttpClient.cjs"
+    },
+    "./workcopy/CompositeSolidFsSyncer": {
+      "types": "./dist/types/workcopy/CompositeSolidFsSyncer.d.ts",
+      "import": "./dist/workcopy/CompositeSolidFsSyncer.mjs",
+      "require": "./dist/workcopy/CompositeSolidFsSyncer.cjs",
+      "default": "./dist/workcopy/CompositeSolidFsSyncer.cjs"
+    },
+    "./workcopy/PodSolidFsSyncer": {
+      "types": "./dist/types/workcopy/PodSolidFsSyncer.d.ts",
+      "import": "./dist/workcopy/PodSolidFsSyncer.mjs",
+      "require": "./dist/workcopy/PodSolidFsSyncer.cjs",
+      "default": "./dist/workcopy/PodSolidFsSyncer.cjs"
+    },
+    "./workcopy/types": {
+      "types": "./dist/types/workcopy/types.d.ts",
+      "import": "./dist/workcopy/types.mjs",
+      "require": "./dist/workcopy/types.cjs",
+      "default": "./dist/workcopy/types.cjs"
+    },
+    "./workcopy/SolidFsSyncJournal": {
+      "types": "./dist/types/workcopy/SolidFsSyncJournal.d.ts",
+      "import": "./dist/workcopy/SolidFsSyncJournal.mjs",
+      "require": "./dist/workcopy/SolidFsSyncJournal.cjs",
+      "default": "./dist/workcopy/SolidFsSyncJournal.cjs"
+    },
+    "./workcopy/index": {
+      "types": "./dist/types/workcopy/index.d.ts",
+      "import": "./dist/workcopy/index.mjs",
+      "require": "./dist/workcopy/index.cjs",
+      "default": "./dist/workcopy/index.cjs"
+    },
+    "./workcopy/LocalSolidFS": {
+      "types": "./dist/types/workcopy/LocalSolidFS.d.ts",
+      "import": "./dist/workcopy/LocalSolidFS.mjs",
+      "require": "./dist/workcopy/LocalSolidFS.cjs",
+      "default": "./dist/workcopy/LocalSolidFS.cjs"
+    },
+    "./workcopy/RdfContentTypes": {
+      "types": "./dist/types/workcopy/RdfContentTypes.d.ts",
+      "import": "./dist/workcopy/RdfContentTypes.mjs",
+      "require": "./dist/workcopy/RdfContentTypes.cjs",
+      "default": "./dist/workcopy/RdfContentTypes.cjs"
+    },
+    "./workcopy/PodSolidFsHydrator": {
+      "types": "./dist/types/workcopy/PodSolidFsHydrator.d.ts",
+      "import": "./dist/workcopy/PodSolidFsHydrator.mjs",
+      "require": "./dist/workcopy/PodSolidFsHydrator.cjs",
+      "default": "./dist/workcopy/PodSolidFsHydrator.cjs"
+    },
+    "./workcopy": {
+      "types": "./dist/types/workcopy/index.d.ts",
+      "import": "./dist/workcopy/index.mjs",
+      "require": "./dist/workcopy/index.cjs",
+      "default": "./dist/workcopy/index.cjs"
+    },
+    "./sqlite/SqliteRuntime": {
+      "types": "./dist/types/sqlite/SqliteRuntime.d.ts",
+      "import": "./dist/sqlite/SqliteRuntime.mjs",
+      "require": "./dist/sqlite/SqliteRuntime.cjs",
+      "default": "./dist/sqlite/SqliteRuntime.cjs"
+    },
+    "./sqlite/types": {
+      "types": "./dist/types/sqlite/types.d.ts",
+      "import": "./dist/sqlite/types.mjs",
+      "require": "./dist/sqlite/types.cjs",
+      "default": "./dist/sqlite/types.cjs"
+    },
+    "./sqlite/NodeSqliteDrizzle": {
+      "types": "./dist/types/sqlite/NodeSqliteDrizzle.d.ts",
+      "import": "./dist/sqlite/NodeSqliteDrizzle.mjs",
+      "require": "./dist/sqlite/NodeSqliteDrizzle.cjs",
+      "default": "./dist/sqlite/NodeSqliteDrizzle.cjs"
+    },
+    "./sqlite/factory": {
+      "types": "./dist/types/sqlite/factory.d.ts",
+      "import": "./dist/sqlite/factory.mjs",
+      "require": "./dist/sqlite/factory.cjs",
+      "default": "./dist/sqlite/factory.cjs"
+    },
+    "./sqlite/shared": {
+      "types": "./dist/types/sqlite/shared.d.ts",
+      "import": "./dist/sqlite/shared.mjs",
+      "require": "./dist/sqlite/shared.cjs",
+      "default": "./dist/sqlite/shared.cjs"
+    },
+    "./sqlite/backends/BunSqliteRuntime": {
+      "types": "./dist/types/sqlite/backends/BunSqliteRuntime.d.ts",
+      "import": "./dist/sqlite/backends/BunSqliteRuntime.mjs",
+      "require": "./dist/sqlite/backends/BunSqliteRuntime.cjs",
+      "default": "./dist/sqlite/backends/BunSqliteRuntime.cjs"
+    },
+    "./sqlite/backends/NodeSqliteRuntime": {
+      "types": "./dist/types/sqlite/backends/NodeSqliteRuntime.d.ts",
+      "import": "./dist/sqlite/backends/NodeSqliteRuntime.mjs",
+      "require": "./dist/sqlite/backends/NodeSqliteRuntime.cjs",
+      "default": "./dist/sqlite/backends/NodeSqliteRuntime.cjs"
+    },
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@undefineds.co/xpod-cli": "workspace:*",
+    "yargs": "^17.7.2",
+    "drizzle-orm": "^0.45.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/yargs": "^17.0.33",
+    "typescript": "5.5"
+  },
+  "typesVersions": {
+    "*": {
+      "agent-fs/roots": [
+        "dist/types/agent-fs/roots.d.ts"
+      ],
+      "agent-fs/mount": [
+        "dist/types/agent-fs/mount.d.ts"
+      ],
+      "agent-fs/install": [
+        "dist/types/agent-fs/install.d.ts"
+      ],
+      "agent-fs/pending-store": [
+        "dist/types/agent-fs/pending-store.d.ts"
+      ],
+      "agent-fs/args": [
+        "dist/types/agent-fs/args.d.ts"
+      ],
+      "agent-fs/session-view": [
+        "dist/types/agent-fs/session-view.d.ts"
+      ],
+      "agent-fs/native": [
+        "dist/types/agent-fs/native.d.ts"
+      ],
+      "agent-fs/rg-entry": [
+        "dist/types/agent-fs/rg-entry.d.ts"
+      ],
+      "agent-fs/pod-lower": [
+        "dist/types/agent-fs/pod-lower.d.ts"
+      ],
+      "agent-fs/auth-proxy": [
+        "dist/types/agent-fs/auth-proxy.d.ts"
+      ],
+      "agent-fs/runner": [
+        "dist/types/agent-fs/runner.d.ts"
+      ],
+      "directory/client": [
+        "dist/types/directory/client.d.ts"
+      ],
+      "directory/protocol": [
+        "dist/types/directory/protocol.d.ts"
+      ],
+      "commands": [
+        "dist/types/commands.d.ts"
+      ],
+      "workcopy/SolidFsPathUtils": [
+        "dist/types/workcopy/SolidFsPathUtils.d.ts"
+      ],
+      "workcopy/PodSolidFsHttpClient": [
+        "dist/types/workcopy/PodSolidFsHttpClient.d.ts"
+      ],
+      "workcopy/CompositeSolidFsSyncer": [
+        "dist/types/workcopy/CompositeSolidFsSyncer.d.ts"
+      ],
+      "workcopy/PodSolidFsSyncer": [
+        "dist/types/workcopy/PodSolidFsSyncer.d.ts"
+      ],
+      "workcopy/types": [
+        "dist/types/workcopy/types.d.ts"
+      ],
+      "workcopy/SolidFsSyncJournal": [
+        "dist/types/workcopy/SolidFsSyncJournal.d.ts"
+      ],
+      "workcopy/index": [
+        "dist/types/workcopy/index.d.ts"
+      ],
+      "workcopy/LocalSolidFS": [
+        "dist/types/workcopy/LocalSolidFS.d.ts"
+      ],
+      "workcopy/RdfContentTypes": [
+        "dist/types/workcopy/RdfContentTypes.d.ts"
+      ],
+      "workcopy/PodSolidFsHydrator": [
+        "dist/types/workcopy/PodSolidFsHydrator.d.ts"
+      ],
+      "workcopy": [
+        "dist/types/workcopy/index.d.ts"
+      ],
+      "sqlite/SqliteRuntime": [
+        "dist/types/sqlite/SqliteRuntime.d.ts"
+      ],
+      "sqlite/types": [
+        "dist/types/sqlite/types.d.ts"
+      ],
+      "sqlite/NodeSqliteDrizzle": [
+        "dist/types/sqlite/NodeSqliteDrizzle.d.ts"
+      ],
+      "sqlite/factory": [
+        "dist/types/sqlite/factory.d.ts"
+      ],
+      "sqlite/shared": [
+        "dist/types/sqlite/shared.d.ts"
+      ],
+      "sqlite/backends/BunSqliteRuntime": [
+        "dist/types/sqlite/backends/BunSqliteRuntime.d.ts"
+      ],
+      "sqlite/backends/NodeSqliteRuntime": [
+        "dist/types/sqlite/backends/NodeSqliteRuntime.d.ts"
+      ],
+      "*": [
+        "dist/types/*"
+      ]
+    }
+  },
+  "main": "./dist/index.cjs",
+  "types": "./dist/types/index.d.ts",
+  "lsd:module": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod-afs",
+  "lsd:components": "dist/components/components.jsonld",
+  "lsd:contexts": {
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod-afs/^0.0.0/components/context.jsonld": "dist/components/context.jsonld"
+  },
+  "lsd:importPaths": {
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod-afs/^0.0.0/components/": "dist/components/",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod-afs/^0.0.0/dist/types/": "dist/types/"
+  }
+}

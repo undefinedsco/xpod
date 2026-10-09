@@ -23,6 +23,7 @@
         "@undefineds.co/drizzle-solid": "0.3.25",
         "@undefineds.co/extensions": "github:undefinedsco/extensions#497942519bc211b6b5bc684f47f41bad189cf632",
         "@undefineds.co/models": "0.2.60",
+        "@undefineds.co/xpod-afs": "workspace:*",
         "@undefineds.co/xpod-cli": "workspace:*",
         "abstract-level": "^1.0.4",
         "acme-client": "^5.1.3",
@@ -247,6 +248,20 @@
       },
       "peerDependencies": {
         "react": "^19.2.0",
+      },
+    },
+    "packages/xpod-afs": {
+      "name": "@undefineds.co/xpod-afs",
+      "version": "0.1.0-preview.1",
+      "dependencies": {
+        "@undefineds.co/xpod-cli": "workspace:*",
+        "drizzle-orm": "^0.45.1",
+        "yargs": "^17.7.2",
+      },
+      "devDependencies": {
+        "@types/node": "^22",
+        "@types/yargs": "^17.0.33",
+        "typescript": "5.5",
       },
     },
     "packages/xpod-cli": {
@@ -2013,6 +2028,8 @@
     "@undefineds.co/solid-sdk": ["@undefineds.co/solid-sdk@workspace:packages/solid-sdk"],
 
     "@undefineds.co/tasks": ["@undefineds.co/tasks@workspace:packages/tasks"],
+
+    "@undefineds.co/xpod-afs": ["@undefineds.co/xpod-afs@workspace:packages/xpod-afs"],
 
     "@undefineds.co/xpod-cli": ["@undefineds.co/xpod-cli@workspace:packages/xpod-cli"],
 

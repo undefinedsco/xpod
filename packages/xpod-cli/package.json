@@ -23,7 +23,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "devDependencies": {
     "@inrupt/solid-client-authn-node": "^3.1.0",

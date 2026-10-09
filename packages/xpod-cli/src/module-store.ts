@@ -7,6 +7,7 @@ import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writ
 import { t as listTar, x as extractTar } from 'tar';
 import { CliCommandError } from './lib/output';
 import { MODULE_API_VERSION, moduleDefinition, type ModuleId } from './module-catalog';
+import { withModuleOwnedLock } from './module-owned-lock';
 
 const REGISTRY = 'https://registry.npmjs.org';
 const VERSION = /^\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/;
@@ -95,9 +96,7 @@ export class ModuleStore {
   private async withLock<T>(id: ModuleId, action: () => Promise<T>): Promise<T> {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     const lock = path.join(this.root, `${id}-${this.platform}-${this.arch}.lock`);
-    try { await mkdir(lock, { mode: 0o700 }); }
-    catch (cause) { if ((cause as NodeJS.ErrnoException).code === 'EEXIST') throw error('module_busy', 'Another module operation is active; retry after it finishes.'); throw cause; }
-    try { return await action(); } finally { await rm(lock, { recursive: true, force: true }); }
+    return withModuleOwnedLock(lock, action);
   }
   public async install(id: string, version = 'latest'): Promise<InstalledModule> {
     const definition = this.definition(id);
@@ -167,8 +166,15 @@ export class ModuleStore {
         const terminate = () => { child.kill('SIGTERM'); };
         process.on('SIGINT', interrupt); process.on('SIGTERM', terminate);
         const cleanup = () => { process.off('SIGINT', interrupt); process.off('SIGTERM', terminate); };
-        child.once('error', cause => { cleanup(); reject(cause); });
-        child.once('exit', (code, signal) => { cleanup(); resolve(code ?? (signal ? 128 + constants.signals[signal] : 1)); });
+        // A spawn error is followed by close too. Keep the operation and its lock
+        // open until the direct child's handles have closed in either case.
+        let spawnError: Error | undefined;
+        child.once('error', cause => { spawnError = cause; });
+        child.once('close', (code, signal) => {
+          cleanup();
+          if (spawnError) reject(spawnError);
+          else resolve(code ?? (signal ? 128 + constants.signals[signal] : 1));
+        });
       });
     });
   }

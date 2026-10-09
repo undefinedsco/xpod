@@ -23,16 +23,16 @@ vi.mock('node:fs', async (original) => {
     return fs.writeFileSync(...args);
   } };
 });
-vi.mock('../../src/cli/agent-fs/mount', () => ({
+vi.mock('../../packages/xpod-afs/src/agent-fs/mount', () => ({
   defaultBackend: () => 'nfs',
   describePrerequisites: () => ({ blockers: [], helperPresent: true, helperPath: fixture.helper }),
   MountUnavailableError: class extends Error {},
 }));
-vi.mock('../../src/cli/lib/launcher', () => ({ cliLauncher: () => [ process.execPath, fixture.proxyScript ] }));
+vi.mock('../../packages/xpod-afs/src/runtime', () => ({ moduleRoot: () => process.cwd(), moduleLauncher: () => [ process.execPath, fixture.proxyScript ] }));
 vi.mock('../../src/cli/lib/auth-context', () => ({ authFetch: vi.fn(), requireAuthContext: vi.fn() }));
-vi.mock('../../src/agent-directory/client/AgentDirectoryClient', () => ({ AgentDirectoryClient: class {} }));
+vi.mock('../../packages/xpod-afs/src/directory/client', () => ({ AgentDirectoryClient: class {} }));
 
-import { agentFsCommand } from '../../src/cli/commands/agent-fs';
+import { agentFsCommand } from '../../packages/xpod-afs/src/commands';
 
 function commandHandler(name: string = 'mount'): (args: Record<string, unknown>) => Promise<void> {
   let handler: ((args: Record<string, unknown>) => Promise<void>) | undefined;
@@ -91,6 +91,30 @@ describe('agent-fs actual mount child lifecycle', () => {
     expect(children[1].exitCode).toBe(code);
     expect(children[1].signalCode).toBeNull();
   }
+
+  it('waits for actual helper ENOENT close before reporting failure and closes the owned proxy', async () => {
+    fixture.helper = path.join(directory, 'absent-helper');
+    await commandHandler()({ 'pod-root': 'https://example.invalid/private-fixture/', 'session-dir': directory, json: true });
+    expect(children).toHaveLength(2);
+    await fixture.closes.get(children[1]);
+    expect(children[1].pid).toBeUndefined();
+    expect(children[0].signalCode).toBe('SIGTERM');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('cancels foreground startup before handshake and waits for actual proxy closure', async () => {
+    writeFileSync(fixture.proxyScript, 'setInterval(()=>{},1000);', { mode: 0o600 });
+    const pending = commandHandler()({ 'pod-root': 'https://example.invalid/private-fixture/', 'session-dir': directory, json: true });
+    while (children.length === 0) { await new Promise(resolve => setTimeout(resolve, 5)); }
+    // Unit signal dispatch; actual installed-process OS signal is a separate test.
+    process.emit('SIGTERM'); await pending;
+    expect(children).toHaveLength(1);
+    expect(children[0].signalCode).toBe('SIGTERM');
+    expect(process.exitCode).toBe(143);
+    let absent = false;
+    try { process.kill(-children[0].pid!, 0); } catch (cause) { absent = (cause as NodeJS.ErrnoException).code === 'ESRCH'; }
+    expect(absent).toBe(true);
+  });
 
   it.each([ 75, 42 ])('ordinary unmount exit%s retains the existing actual proxy and control record', async (code) => {
     await run(75);

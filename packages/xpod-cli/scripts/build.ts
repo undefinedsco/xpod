@@ -371,19 +371,26 @@ function main(): void {
     mkdirSync(path.join(stageDir, 'packages/xpod-cli'), { recursive: true });
     cpSync(path.join(repoRoot, 'src'), path.join(stageDir, 'src'), { recursive: true });
     cpSync(path.join(packageRoot, 'src'), path.join(stageDir, 'packages/xpod-cli/src'), { recursive: true });
-    // Bind transitional adapters to the canonical source inside this audited
-    // preview staging tree, rather than following the workspace's bundle symlink.
+    cpSync(path.join(repoRoot, 'packages/xpod-afs/src'), path.join(stageDir, 'packages/xpod-cli/src/afs-client'), { recursive: true });
+    // Resolve both public workspace APIs to their one canonical staged source,
+    // never to a checkout dist bundle with a different generated runtime.
     const clientSource = path.join(stageDir, 'packages/xpod-cli/src/client');
-    for (const folder of ['commands', 'lib']) {
-      const directory = path.join(stageDir, 'src/cli', folder);
-      for (const name of readdirSync(directory).filter(name => name.endsWith('.ts'))) {
+    // Place the one staged AFS source under the already-exported preview
+    // application material tree; its original canonical source remains AFS.
+    const afsSource = path.join(stageDir, 'packages/xpod-cli/src/afs-client');
+    function bindPublicClients(directory: string): void {
+      for (const name of readdirSync(directory)) {
         const filename = path.join(directory, name);
+        if (statSync(filename).isDirectory()) { bindPublicClients(filename); continue; }
+        if (!name.endsWith('.ts')) { continue; }
         const source = readFileSync(filename, 'utf8');
-        if (source.includes("'@undefineds.co/xpod-cli/client'")) {
-          writeFileSync(filename, source.replaceAll("'@undefineds.co/xpod-cli/client'", `'${path.relative(directory, clientSource).split(path.sep).join('/')}'`));
-        }
+        const rewritten = source.replaceAll("'@undefineds.co/xpod-cli/client'", `'${path.relative(directory, clientSource).split(path.sep).join('/')}'`)
+          .replace(/'@undefineds\.co\/xpod-afs\/([^']+)'/g, (_match, subpath: string) => `'${path.relative(directory, path.join(afsSource, subpath)).split(path.sep).join('/')}'`);
+        if (rewritten !== source) { writeFileSync(filename, rewritten); }
       }
     }
+    bindPublicClients(path.join(stageDir, 'src'));
+    bindPublicClients(afsSource);
     cpSync(path.join(repoRoot, 'package.json'), path.join(stageDir, 'package.json'));
     symlinkSync(path.join(repoRoot, 'node_modules'), path.join(stageDir, 'node_modules'));
 
