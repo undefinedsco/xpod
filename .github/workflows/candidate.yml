@@ -416,7 +416,7 @@ jobs:
           cleanup_native_registry() {
             original_exit=$?
             cleanup_exit=0
-            rm -f "$docker_config_dir/config.json" || cleanup_exit=$?
+            rm -f "$docker_config_dir/config.json" "$docker_config_dir/pg-workload.json" || cleanup_exit=$?
             rmdir "$docker_config_dir" || cleanup_exit=$?
             if [ "$cleanup_exit" -ne 0 ]; then
               printf '%s\n' '{"stage":"registry-cleanup","errorClass":"owned-cleanup-failed"}' >&2
