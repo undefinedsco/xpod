@@ -110,6 +110,10 @@ jobs:
             --required-check models \
             --required-check chat \
             --required-check task-approval \
+            --required-check native-sparql \
+            --required-check native-public16 \
+            --required-check native-private17 \
+            --required-check native-namespace-pull \
             --required-check qlever-local \
             --required-check package-consumers \
             --required-check desktop > "$RUNNER_TEMP/acceptance-validation.json"

@@ -15,6 +15,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from 'pg';
+import { resolveFullIntegrationInfra } from '../helpers/fullIntegrationInfra';
 import { setupAccount, loginWithClientCredentials, normalizeAccountControlUrl } from './helpers/solidAccount';
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
@@ -90,9 +91,13 @@ suite('Docker Cluster Integration', () => {
   let pgClient: Client | null = null;
 
   beforeAll(async () => {
+    // Resolve outside the optional connection catch: invalid infra must fail closed.
+    const postgresUrl = resolveFullIntegrationInfra().postgresUrl;
     // 尝试连接 PostgreSQL (Cloud 使用)
     try {
-      pgClient = new Client({ connectionString: process.env.XPOD_FULL_PG_URL ?? 'postgres://xpod:xpod@localhost:5432/xpod' });
+      pgClient = new Client({
+        connectionString: postgresUrl,
+      });
       await pgClient.connect();
     } catch {
       console.warn('PostgreSQL not available');

@@ -90,10 +90,16 @@ describe('PodMatrixStore owner Pod access', () => {
     const store = new PodMatrixStore({ serverName: 'example.test', podAccess: { getPodFetch } });
     await store.createRoom({ name: 'Delegated room' }, context);
     expect(getPodFetch).toHaveBeenCalledWith(context.webId, { auth: context.auth, podBaseUrl: context.podUrl });
+    const options = vi.mocked(drizzle).mock.calls[0][0] as { fetch: typeof fetch };
+    expect(options).toMatchObject({ info: expect.objectContaining({ webId: context.webId, podUrl: context.podUrl, isLoggedIn: true }) });
     expect(drizzle).toHaveBeenCalledWith(
-      expect.objectContaining({ fetch: podFetch, info: expect.objectContaining({ webId: context.webId, podUrl: context.podUrl, isLoggedIn: true }) }),
+      expect.anything(),
       expect.objectContaining({ podUrl: context.podUrl, schema: expect.objectContaining({ chat: chatResource, thread: threadResource, message: messageResource }) }),
     );
+    // drizzle receives the traced wrapper; it must still delegate to the delegated Pod fetch.
+    expect(options.fetch).not.toBe(podFetch);
+    await options.fetch('https://pod.example/alice/chat/room');
+    expect(podFetch).toHaveBeenCalledTimes(1);
   });
 
   it('denies storage access without an owner Pod grant', async () => {

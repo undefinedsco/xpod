@@ -305,20 +305,34 @@ async function obtainEmbedDocs(pin, options = {}) {
 
 async function downloadEmbedDocs(pin, destination) {
   const treeUrl = pin.embedDocs.treeApiUrlTemplate.replace('<commit>', pin.embedDocs.commit);
-  const headers = githubApiRequestHeaders(treeUrl);
-  const authenticated = Boolean(headers?.authorization);
+  const pinnedDocs = EMBEDDED_NATIVE_SOURCE_PINS['inngest-cli'].embedDocs;
+  const pinnedTreeUrl = pinnedDocs.treeApiUrlTemplate.replace('<commit>', pinnedDocs.commit);
+  // Compare the complete fixed HTTPS identity before exposing the CI token.
+  // Reject redirects outright: even another GitHub URL is outside this pin.
+  if (treeUrl !== pinnedTreeUrl || pin.embedDocs.commit !== pinnedDocs.commit) {
+    throw new Error('Embedded docs tree URL does not match the pinned HTTPS API identity');
+  }
   const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(DOCS_TREE_FETCH_TIMEOUT_MS) : undefined;
-  // An authenticated tree read must never follow a redirect (the credential
-  // would leave the trusted origin); anonymous reads keep the original follow.
-  const response = await globalThis.fetch(treeUrl, {
-    redirect: authenticated ? 'error' : 'follow',
-    headers,
-    signal,
-  });
+  const headers = githubApiRequestHeaders(treeUrl);
+  let response;
+  try {
+    response = await globalThis.fetch(treeUrl, { redirect: 'manual', signal, headers });
+  } catch {
+    // Fetch errors can carry request details; do not relay authenticated errors.
+    throw new Error('Failed to read embedded docs tree: request failed');
+  }
+  if (response.status >= 300 && response.status < 400) {
+    throw new Error('Embedded docs tree redirect refused');
+  }
   if (!response.ok) {
     throw new Error(`Failed to read embedded docs tree: HTTP ${response.status}`);
   }
-  const tree = await response.json();
+  let tree;
+  try {
+    tree = await response.json();
+  } catch {
+    throw new Error('Embedded docs tree response is not valid JSON');
+  }
   if (tree.truncated === true) {
     throw new Error('Embedded docs tree response is truncated; refusing to stage a partial source');
   }

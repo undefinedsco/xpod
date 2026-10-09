@@ -1,3 +1,4 @@
+import { projectTaskRunFailureDiagnostic, type TaskRunFailureDiagnostic } from '../../src/api/tasks/TaskRunFailureDiagnostic';
 import type { TaskCredentialSummary } from '../../src/api/tasks/TaskCredentialStore';
 import { TASK_RESUME_STAGES, TASK_RESUME_ERROR_TYPES, selectTaskResumeFailure, type TaskResumeFailure, type TaskResumeStage, type TaskResumeErrorType } from '../../src/api/tasks/TaskResumeDiagnostics';
 import { randomUUID } from 'node:crypto';
@@ -10,6 +11,7 @@ export interface LiveTaskRun {
   status: string;
   waitingToolCallId?: string;
   error?: unknown;
+  failureDiagnostic?: TaskRunFailureDiagnostic;
 }
 export interface LiveTaskFailureDetails {
   substage: 'queued-request' | 'queued-assert' | 'checkpoint-run-read' | 'checkpoint-approval-read'
@@ -30,6 +32,7 @@ export interface LiveTaskFailureDetails {
 }
 
 export interface LiveTaskCaseEvidence {
+  failureDiagnostic?: TaskRunFailureDiagnostic;
   kind: 'approved' | 'rejected' | 'stopped';
   taskId?: string;
   runId?: string;
@@ -158,7 +161,9 @@ export function summarizeLiveTaskFailure(evidence: LiveTaskEvidence) {
   const status = details?.httpStatus;
   const taskError = details?.taskError;
   const substage = details?.substage;
-  const producer = [...evidence.cases].reverse().find(row => row.producerFailure)?.producerFailure;
+  const failedCase = [...evidence.cases].reverse().find(row => row.producerFailure);
+  const producer = failedCase?.producerFailure;
+  const failureDiagnostic = projectTaskRunFailureDiagnostic(failedCase?.failureDiagnostic, producer?.status ?? '');
   return {
     phase: phase && /^(?:grant|(?:approved|rejected|stopped):(?:prepare|queued|checkpoint|decision|terminal|duplicate))$/u.test(phase)
       ? phase : 'other',
@@ -169,6 +174,7 @@ export function summarizeLiveTaskFailure(evidence: LiveTaskEvidence) {
     ...(substage && /^(?:queued-(?:request|assert)|checkpoint-(?:run-read|approval-read|match|session-read|session-assert|marker-read|marker-assert)|decision-(?:request|assert|persisted-read|persisted-assert|resume-request|resume-assert))$/u.test(substage) ? { substage } : {}),
     ...(producer && ['failed', 'cancelled', 'completed'].includes(producer.status) ? { producerStatus: producer.status } : {}),
     ...(producer && ['none', 'unknown', 'auth_required', 'service_access_missing', 'token_exchange_failed', 'provider_error', 'provider_aborted', 'sandbox_unavailable', 'worker_start_failed', 'worker_exited', 'execution_state_error'].includes(producer.errorClass) ? { producerErrorClass: producer.errorClass } : {}),
+    ...(failureDiagnostic ? { failureDiagnostic } : {}),
     completedCases: evidence.cases.filter(row => row.ok === true).length,
     cleanupOk: evidence.cleanup.ok === true,
   };
@@ -421,6 +427,11 @@ export async function acceptLiveTaskApproval(options: {
       const approval = await pollLiveTask(async () => {
         failureSubstage = 'checkpoint-run-read';
         const run = await readRun(created.task.id, acknowledged.run.id);
+        if (run.status === 'failed') {
+          row.failureDiagnostic = projectTaskRunFailureDiagnostic(run.failureDiagnostic, run.status)
+            ?? { code: 'TASK_DIAGNOSTIC_UNAVAILABLE', stage: 'unknown', status: 'failed' };
+          return requireLiveCheckpoint(run, [], target, options.webId, row, db);
+        }
         failureSubstage = 'checkpoint-approval-read';
         const approvals = await db.select().from(approvalResource).execute();
         failureSubstage = 'checkpoint-match';

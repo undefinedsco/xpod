@@ -89,10 +89,54 @@ libsqlfs 的 [c_perf 测试](https://github.com/guardianproject/libsqlfs/blob/4d
 
 [官方测试](https://www.sqlite.org/fasterthanfs.html) 实测于 2017 年，主要是平均约 10KB 的小 BLOB、预热缓存和直接 SQLite API；复用 DB 句柄可减少逐文件 open/close。文章也说明冷缓存或不同硬件可能相反。它支持小 BLOB 的存储选择，不能直接证明 DB-as-FS 挂载速度。
 
+## Matrix 接口长等待不是文件系统基准（2026-10-03）
+
+服务整合曾出现一次消息接口 PUT 等待 273675.797 ms 后返回 HTTP 500，同批
+另外三条约 1175–1448 ms 完成。此接口包含权限检查、读取已有事件和写入；不能
+把它当成一次裸文件上传，更不能据此判断 AgentFS、rclone 或原生文件系统性能。
+该失败的首个内部阻塞 await 尚未确认，后续完整测试通过只表示未复现。
+
+当前 `ab583de` 整合的完整测试又出现不同请求失败：pagination-sync 的第 84 条
+GET 等待约 262874 ms 后返回 500；同一 sync 操作的 `events.select` 在约
+262107 ms 后抛出 TimeoutError。该记录只定位到 drizzle-solid 的消息查询，尚未
+确认 SDK 内具体 await；不得用它补写旧 PUT 的因果链。当前完整测试退出 1。
+
+固定 Bun 1.3.8 源码表明，其 fetch socket 的五分钟期限随发送和读取进展重置，
+采用分钟桶；根据桶推进逻辑推导，及时调度时可能在重置后约 240–300 秒触发。
+这是计时实现的推导，不是本次错误的根因证明。
+[发送/读取源码](https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/src/http.zig#L1173-L1194)、
+[桶推进源码](https://github.com/oven-sh/bun/blob/b64edcb490b486fb8af90cb2cb2dc51590453064/packages/bun-usockets/src/loop.c#L125-L163)。
+原生 fetch 和 AbortSignal 都可能产生 TimeoutError/code 23，该错误码不能识别
+超时来源；首请求至失败约 300 秒也不能证明会话总期限。具体记录和发布条件见
+[RC 验收](acceptance/rc-qlever.md)。
+
 ## 对 Xpod 的判断与下一次验证
 
-- Local 的现有文件继续直接访问，避免额外目录层；DB 负责目录索引/FTS/VEC 或数据投影，不因小 BLOB API 测试就迁移全部正文。
+2026-10-03 的 native 客户端增量通过 37 项源码单测：Range 被服务端忽略并返回
+200 时，仅保留所请求窗口的正文，继续排空响应以保留尾部传输失败；206 实际
+正文超过请求上限时拒绝。这减少整文件内存缓冲，但 200 路径仍传输整个响应，
+不等于网络按需读取已经生效。首次编辑的 seed 改为持有文件句柄，取消和重开
+回归通过。新 source-bound Mac 安装 helper 随后实际完成64MiB／512MiB／1GiB
+synthetic HTTP/NFS 测试：200 全正文排空、完整 copy-up SHA、重挂 pending 与
+原始 If-Match 412 保留 dirty 均通过。三档200读取的 sampled RSS 增长最高
+0.90625MiB，首次 copy-up 最高8.078125MiB，helper sampled peak 最高21.125MiB；
+512→1024MiB 的 copy-up 增长差0.9375MiB、200读取差0。预先固定的增长32MiB、
+peak128MiB、scale增量16MiB政策全部通过，采样错误为空。50ms 是名义间隔加
+`ps` 执行时间，结果不构成瞬时峰值硬上界；fixture/runner RSS 单独记录。
+
+这是 Mac 直连 synthetic fixture 的 helper 数据，不代表真实 Pod、loopback auth
+proxy、WAN、Linux/NAS 或原生 FS 的性能比例。1GiB200读取约2.476秒、copy-up
+约5.951秒只描述该样本，不与先前 SQLite/原生 FS 微基准作速度排名。
+
+同轮 kill helper 在实际64KiB HTTP barrier后以 SIGKILL 关闭，但整体 fixture
+receipt 失败于死 NFS 的 mountpoint stat/卸载；恢复 GC 和旧 dirty 再验收尚未
+完成。之后运维恢复释放了等待，outer记录原Node实际退出1/null，夹具／安装字节稳定；负责人单独校验owned挂载后强制分离实际0/null并确认最新挂载表无该项。不能把三档性能通过或运维收尾写成完整崩溃恢复通过。
+receipt SHA256 为 `212187e8a55f7f61236ea8c3c62bebb64adbf232e41548fdb4da05ba6dd1a330`。
+用户随后授权清理已验数据，三档 synthetic blob 经重新校验SHA后删除，保留
+manifest、结果与失败kill现场；旧已退休测试session不能直接重开，正文需再生成。
+
+- 这些性能研究建议不改变后来确定的目录 MVP：Local / Cloud 统一使用授权 HTTP。未来同机优化可让现有文件直接访问；DB 负责目录索引/FTS/VEC 或数据投影，不因小 BLOB API 测试就迁移全部正文。
 - Cloud 优先降低 metadata 的串行远端往返，利用批量目录查询、缓存和按需正文读取；DB 客户端应位于可信服务边界，授权接口不等同于直接向 Agent 开放数据库。
 - 缓存读取、本地 delta 写入、远端写回成功和可靠持久化分别计时。FTS/VEC 检索与原生全目录 grep 有不同语义，分开报告。
 - 下一次原型需在同一数据集对比真实目录与挂载目录，分别覆盖 Linux FUSE / macOS NFS、冷/热 cache、真实 Gateway 认证/权限、远端修改失效、小文件批量、原子保存、fsync、断网恢复及实际 Agent 工具流程。
-- 本轮只有直接 API 基线及文档/源码证据，不声称候选挂载、Pod 兼容性或真实 Xpod 集成验收通过。
+- 本文 2026-09-30 的性能研究只有直接 API 基线及文档/源码证据。后来旧预览的真实挂载验证见[目录验收](agent-directory-mvp-acceptance.md)，它仍不提供本机与挂载性能对照，也不替代当前版本验收。

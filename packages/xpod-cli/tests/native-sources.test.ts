@@ -1,6 +1,8 @@
 import { expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { checkNativePatch, nativeGitEnvironment, nativeWorkingLock, nativeWorkingManifest, runSourceCommand, validateNativeBuildReceipt, verifyNativeSourceArchive, verifyNativeSources, type NativeSourceKit } from '../src/native-sources';
 import { sha256File } from '../src/manifest';
 
@@ -135,5 +137,69 @@ test('native receipts bind binary, kit, compiler and target independently', () =
     for (const change of [{ target: 'linux-arm64' }, { sourceKitSha256: '0'.repeat(64) }, { helperSha256: '0'.repeat(64) }, { stagedVerifiedFilesOnly: false }, { buildArguments: ['build'] }]) {
       expect(() => verify({ ...receipt, ...change })).toThrow('receipt differs');
     }
+  });
+});
+
+
+test('native rebuild fixes compiler parallelism after clearing inherited build overrides', () => {
+  fixture((root, _kit, refresh) => {
+    for (const relative of ['scripts/rebuild-native.ts', 'src/native-sources.ts', 'src/source-materials.ts', 'src/manifest.ts', 'src/native-target.ts']) {
+      copyFileSync(fileURLToPath(new URL(`../${relative}`, import.meta.url)), path.join(root, 'packages/xpod-cli', relative));
+    }
+    refresh();
+    const work = path.dirname(root);
+    const tools = path.join(work, 'fake-tools');
+    mkdirSync(tools);
+    const cargo = path.join(tools, 'cargo');
+    const rustc = path.join(tools, 'rustc');
+    const capture = path.join(work, 'cargo-invocations.jsonl');
+    writeFileSync(path.join(tools, 'rustup'), `#!${process.execPath}
+process.stdout.write(process.argv.at(-1) === 'cargo' ? ${JSON.stringify(cargo)} : ${JSON.stringify(rustc)});
+`, { mode: 0o700 });
+    writeFileSync(rustc, `#!${process.execPath}
+process.stdout.write('fake rustc fixture\\n');
+`, { mode: 0o700 });
+    writeFileSync(cargo, `#!${process.execPath}
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+const env = Object.fromEntries(['CARGO_BUILD_JOBS', 'CARGO_HOME', 'CARGO_TARGET_DIR', 'CARGO_ENCODED_RUSTFLAGS', 'CARGO_BUILD_TARGET', 'RUSTC', 'RUSTFLAGS', 'RUSTC_WRAPPER', 'GIT_DIR'].map(key => [key, process.env[key] ?? null]));
+appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ pid: process.pid, args: process.argv.slice(2), env }) + '\\n');
+if (process.argv[2] === 'build') {
+  const destination = path.join(process.env.CARGO_TARGET_DIR, 'release/agentfs-pod');
+  mkdirSync(path.dirname(destination), { recursive: true });
+  const bytes = Buffer.alloc(32);
+  if (process.platform === 'darwin') { bytes.writeUInt32LE(0xfeedfacf, 0); bytes.writeUInt32LE(process.arch === 'arm64' ? 0x0100000c : 0x01000007, 4); }
+  else { Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1]).copy(bytes); bytes.writeUInt16LE(process.arch === 'arm64' ? 183 : 62, 18); }
+  writeFileSync(destination, bytes);
+}
+`, { mode: 0o700 });
+    const output = path.join(work, 'rebuild-output');
+    const result = spawnSync(process.execPath, [path.join(root, 'packages/xpod-cli/scripts/rebuild-native.ts'), '--out', output, '--test'], {
+      env: { ...process.env, PATH: `${tools}${path.delimiter}${process.env.PATH ?? ''}`,
+        CARGO_BUILD_JOBS: '97', CARGO_HOME: '/untrusted/cargo-home', CARGO_TARGET_DIR: '/untrusted/target',
+        CARGO_ENCODED_RUSTFLAGS: 'untrusted', CARGO_BUILD_TARGET: 'untrusted-target',
+        RUSTC: '/untrusted/rustc', RUSTFLAGS: 'untrusted', RUSTC_WRAPPER: '/untrusted/wrapper', GIT_DIR: '/untrusted/git' },
+      encoding: 'utf8',
+    });
+    if (result.status !== 0) { throw new Error(`Native fixture rebuild failed: ${result.stderr}`); }
+    expect(result.status).toBe(0);
+    const invocations = readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(invocations.map(invocation => invocation.args)).toEqual([['build', '--release', '--frozen'], ['test', '--release', '--frozen']]);
+    for (const invocation of invocations) {
+      expect(invocation.env.CARGO_BUILD_JOBS).toBe('2');
+      expect(invocation.env.CARGO_HOME).not.toBe('/untrusted/cargo-home');
+      expect(invocation.env.CARGO_TARGET_DIR).toBe(path.join(output, 'target'));
+      expect(invocation.env.RUSTC).toBe(rustc);
+      for (const key of ['CARGO_ENCODED_RUSTFLAGS', 'CARGO_BUILD_TARGET', 'RUSTFLAGS', 'RUSTC_WRAPPER', 'GIT_DIR']) {
+        expect(invocation.env[key]).toBeNull();
+      }
+    }
+    const receipt = JSON.parse(readFileSync(path.join(output, 'receipt.json'), 'utf8'));
+    expect(receipt.compilerParallelism).toBe(2);
+    expect(receipt.buildArguments).toEqual(invocations[0].args);
+    expect(receipt.testsPassed).toBe(true);
+    expect(receipt.helperSha256).toBe(sha256File(path.join(output, 'agentfs-pod')));
+    expect(receipt.sourceKitSha256).toBe(sha256File(path.join(root, 'source-kit.json')));
+    console.log(JSON.stringify({ fixture: 'fake cargo, no native compilation', childInvocations: invocations.map(invocation => ({ pid: invocation.pid, args: invocation.args, jobs: invocation.env.CARGO_BUILD_JOBS })), receiptCompilerParallelism: receipt.compilerParallelism }));
   });
 });
