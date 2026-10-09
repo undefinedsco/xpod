@@ -63,6 +63,12 @@ CLI：`bun run --cwd packages/xpod-cli typecheck`、`test`、`build`，之后在
 
 CLI 使用独立版本和 `cli-v<version>` release 标识；不得因此改服务版本、占共享 RC、触发服务镜像构建或生产部署。发布仍必须从 staging 的不可变源码构建，完整通知/源码与既有 release 审核要求继续有效，不能用“CLI 没有 native”消除 JS 分发审核。服务发布的 accepted SHA/digest 和安装包验收保持原规则。模块发布各自执行接口、平台/native、通知与真实功能验收，并在正式产物可获取后开放使用；缺模块时返回 unavailable，不借用服务整包冒充拆分完成。
 
+## Tag 与版本边界
+
+CLI、AFS、API、CSS 独立版本与独立发布，分别使用 `cli-v<version>`、`afs-v<version>`、`api-v<version>`、`css-v<version>`。同一模块的各平台产物共用一个 tag，并绑定各自的不可变摘要。整体服务/桌面发行保留既有 `v<version>` 与服务 RC 规则。需要联合交付时可协调一次触发多个模块发布，但仍分别打 tag，不要求模块版本号一致；兼容关系由模块接口版本与经过验收的依赖约束表达。
+
+开发任务名称不自动等于分发包。Matrix、Fabric 等业务能力先明确 API 路由、共享服务、CSS adapter 与客户端的职责；只有独立安装/更新需求与接口边界成立后，才在同一目录和宿主接口中登记独立能力包。不得把整个服务换一个包名作为业务模块交付。当前开发任务的落实责任见 [拆包交接清单](module-distribution-handoff.md)。
+
 ## 本轮迁移范围
 
 已执行的第一步是 CLI 核心源码归属、独立 npm 构建与通用按需模块下载/校验入口。默认 test/verify 同样只覆盖 CLI 核心；test:preview/verify:preview 显式保留旧预览兼容门禁。既有 `build:preview`/`build:cli-only` 保存旧客户端+helper 预览的证据链，不是新的默认发行路径；其 `src/main.ts`/`src/entry.ts` 为显式迁移期入口，公共 npm 包只运行 `npm-entry.ts`，切换点是 package.json 的 build/bin。
