@@ -1,5 +1,7 @@
 # 发布流程
 
+开发、验收与发布耗时的复盘及后续优化建议见 [2026-10-09 流程优化](testing/2026-10-09-development-release-retrospective.md)。该复盘不替代本文件的现行门禁。
+
 Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个 commit
 和同一个容器 digest。不要用 stable tag 调试发布问题；修复必须继续提交到
 开发分支，通过 PR 普通 merge 合入 `staging` 后，由新的 RC 重新验收。
