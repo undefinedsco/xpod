@@ -1,12 +1,18 @@
 import { errors, type Page } from '@playwright/test';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { createServer } from 'node:http';
+import { createServer, type ServerResponse } from 'node:http';
+import { Readable } from 'node:stream';
+import type { ApiServer, RouteHandler } from '../../src/api/ApiServer';
+import type { AuthenticatedRequest } from '../../src/api/middleware/AuthMiddleware';
+import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
+import { TaskService } from '../../src/api/tasks/TaskService';
+import { registerTaskRoutes } from '../../src/api/handlers/TaskHandler';
 import { expect, it, vi } from 'vitest';
 import { AiConnectionsInvocationKeyIssuer } from '../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../../src/api/ai-gateway/auth/InvocationTokenCodec';
 import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure,
-  publishedFailures, requirePackagedInvocationKey, rendererOwnerFetch } from '../../scripts/accept-packaged-desktop-permissions';
+  publishedFailures, requirePackagedInvocationKey, rendererOwnerFetch, requestPackagedForeignRun } from '../../scripts/accept-packaged-desktop-permissions';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError } from '../../scripts/helpers/packaged-desktop-permissions';
 import { attributeOidcOperation, OidcApprovalError } from '../../tests/helpers/browserSolidOidc';
 
@@ -178,6 +184,30 @@ it('requires actual independent A task rows and refuses any rows in fresh B', ()
   expect(() => assertOwnedTaskRows({ tasks: [] }, ['a1', 'a2', 'a3'])).toThrow('isolation');
   expect(() => assertOwnedTaskRows({ tasks: [{ id: 'a1' }] }, [], true)).toThrow('isolation');
   expect(() => assertOwnedTaskRows({}, [], true)).toThrow('isolation');
+});
+
+it('reaches the real Run lookup when checking a foreign Run rather than failing approval validation', async () => {
+  const store = new InMemoryStore<StoreContext>();
+  const routes = new Map<string, RouteHandler>();
+  const server = Object.fromEntries(['get', 'post', 'patch'].map(method => [method,
+    (route: string, handler: RouteHandler) => routes.set(`${method} ${route}`, handler)])) as unknown as ApiServer;
+  registerTaskRoutes(server, { taskService: new TaskService({ store, executeRuns: false }), runStore: store });
+  const ownerFetch = (async (input, init) => {
+    const url = new URL(String(input));
+    const request = Readable.from([Buffer.from(String(init?.body))]) as AuthenticatedRequest;
+    request.url = url.pathname + url.search;
+    request.auth = { type: 'solid', webId: 'https://cloud.example/b/profile/card#me' };
+    let status = 0;
+    let body = '';
+    const response = { set statusCode(code: number) { status = code; }, setHeader: vi.fn(),
+      writeHead: (code: number) => { status = code; }, end: (value: string) => { body = value; } } as unknown as ServerResponse;
+    await routes.get(`${init?.method?.toLowerCase()} ${url.pathname}`)!(request, response, {});
+    return new Response(body, { status });
+  }) as typeof fetch;
+  const result = await requestPackagedForeignRun(ownerFetch, 'https://local.example/',
+    'https://pod.example/a/run#old', 'https://pod.example/a/approval#original');
+  expect(result.status).toBe(400);
+  expect(await result.json()).toMatchObject({ error: 'Run not found', taskResumeStage: 'route_run_read' });
 });
 
 it('retains the original failing stage and cannot emit public evidence from an invalid source', async () => {

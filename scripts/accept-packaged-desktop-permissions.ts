@@ -225,6 +225,11 @@ export function rendererOwnerFetch(page: Page, gateway: string, podUrl: string, 
   }) as typeof fetch;
 }
 
+export function requestPackagedForeignRun(ownerFetch: typeof fetch, gateway: string, runId: string, approval: string): Promise<Response> {
+  return ownerFetch(new URL(`/api/tasks/resume?id=${encodeURIComponent(runId)}`, gateway),
+    { method: 'POST', body: JSON.stringify({ approval }) });
+}
+
 export async function acceptPackagedDesktopPermissions(options: PackagedPermissionOptions): Promise<void> {
   let stage: Stage = 'input';
   let failedStage: Stage | undefined;
@@ -275,6 +280,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     const podEvidence = [];
     let firstInvocation: string | undefined;
     let originalRun: string | undefined;
+    let originalApproval: string | undefined;
     let originalTaskIds: string[] = [];
     let allCallbacks = true;
     const configurationHome = path.join(fixture.directory, 'profile', 'client-config-home');
@@ -356,13 +362,14 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
           onEvidence: evidence => { taskSnapshot = evidence; } });
         if (!task.ok || !task.cleanup.ok || task.cases.length !== 3) throw new DesktopAcceptanceError('task-isolation', 'Actual packaged task approval/Stop cleanup failed');
         originalRun = task.cases[0].runId;
+        originalApproval = task.cases[0].approval;
         originalTaskIds = task.cases.flatMap(row => row.taskId ? [row.taskId] : []);
         if (new Set(originalTaskIds).size !== 3) throw new DesktopAcceptanceError('task-isolation', 'Actual first-Pod task IDs are incomplete');
         const rows = await rendererOwnerFetch(page, gateway, binding.storageUrl, key.key)(new URL('/api/tasks', gateway));
         if (rows.status !== 200) throw new DesktopAcceptanceError('task-isolation', 'Cannot independently read first-Pod task rows');
         assertOwnedTaskRows(await rows.json(), originalTaskIds);
       } else {
-        if (!firstInvocation || !originalRun) throw new DesktopAcceptanceError('task-isolation', 'Missing actual first-Pod capability/Run');
+        if (!firstInvocation || !originalRun || !originalApproval) throw new DesktopAcceptanceError('task-isolation', 'Missing actual first-Pod capability/Run/approval');
         const rows = await rendererOwnerFetch(page, gateway, binding.storageUrl, key.key)(new URL('/api/tasks', gateway));
         if (rows.status !== 200 || originalTaskIds.length !== 3) throw new DesktopAcceptanceError('task-isolation', 'Cannot independently read second-Pod task rows');
         assertOwnedTaskRows(await rows.json(), [], true);
@@ -374,12 +381,14 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
               redirect: 'error', signal: AbortSignal.timeout(20_000) });
             await response.arrayBuffer(); return response.status;
           }, { token: firstInvocation, podUrl: binding.storageUrl });
-          const resumed = await rendererOwnerFetch(page, gateway, binding.storageUrl, key.key)(
-            new URL(`/api/tasks/resume?id=${encodeURIComponent(originalRun)}`, gateway), { method: 'POST', body: '{}' });
+          const resumed = await requestPackagedForeignRun(rendererOwnerFetch(page, gateway, binding.storageUrl, key.key),
+            gateway, originalRun, originalApproval);
           const resumeBody = await resumed.text();
+          const resumeResult = JSON.parse(resumeBody) as { taskResumeStage?: string };
           await privateJson(options.privateDirectory, 'cross-pod-private.json', { foreign, status: resumed.status, body: resumeBody });
           const traffic = writes.snapshot();
-          if (foreign !== 403 || resumed.status !== 400 || traffic.writes !== 0 || !/not found|找不到|不存在/iu.test(resumeBody)) {
+          if (foreign !== 403 || resumed.status !== 400 || resumeResult.taskResumeStage !== 'route_run_read'
+            || traffic.writes !== 0 || !/not found|找不到|不存在/iu.test(resumeBody)) {
             throw new DesktopAcceptanceError('task-isolation', 'Actual cross-Pod capability or old Run rejection failed');
           }
         } finally { writes.stop(); }

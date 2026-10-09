@@ -97,3 +97,6 @@ Provider confirmation compares collection descriptor keys and provider resource 
 ### 2026-10-09：Task 的调用预算须贯穿 renderer 传输
 
 真实 Task 批准后的 resume 本已使用 180 秒预算，renderer owner transport 不得另设 20 秒而截断它。转发层以原调用方 `AbortSignal` 驱动本机浏览器的原生 `AbortController`，保留取消原因，结束后释放监听器和句柄；没有调用方 signal 时仍默认 20 秒。回归使用真实 HTTP 请求证明取消可以跨该边界中止，预先取消不会启动请求。CLI owner credential transport 已保留原 signal；Pod CRUD 与匿名 profile 的独立 20 秒预算不代替 Task resume 的预算。本规则不增加原验收门槛的超时值，不重试写请求，也不绕过真实 Gateway 或权限检查。
+
+旧 Run 的跨 Pod 续跑检查必须携带首个真实审批的 IRI，先通过请求验证，再确认 `route_run_read` 返回 Run 不存在。
+空审批体得到的 `route_validation` 错误不能作为跨 Pod 隔离证据；审批 IRI 仅保留在私有验收记录，不进入公开摘要。

@@ -33,6 +33,8 @@ export interface LiveTaskCaseEvidence {
   kind: 'approved' | 'rejected' | 'stopped';
   taskId?: string;
   runId?: string;
+  /** Private acceptance input; public summaries must not copy resource IRIs. */
+  approval?: string;
   queuedAck?: boolean;
   approvalPending?: boolean;
   sessionPaused?: boolean;
@@ -439,6 +441,7 @@ export async function acceptLiveTaskApproval(options: {
       failureSubstage = 'checkpoint-marker-assert';
       requireEvidence(beforeDecisionMarker.status === 404, 'Producer wrote before approval');
       const approvalIri = approvalResource.buildIri(options.podUrl, { id: approval.id });
+      row.approval = approvalIri;
       const resumeRoute = `/api/tasks/resume?id=${encodeURIComponent(acknowledged.run.id)}`;
       phase = `${kind}:decision`;
       failureSubstage = 'other';
