@@ -861,7 +861,9 @@ jobs:
           if (nativePair.status !== 'ok' || nativePair.nativeAbiVersion !== 1 || nativePair.ownedCleanup !== 'verified-absent' ||
             private17.status !== 'ok' || private17.installedImage !== nativePair.installedImage || private17.pgImage !== nativePair.pgImage ||
             private17.sourceSha !== nativePair.sourceSha || private17.runnerSha256 !== nativePair.runnerSha256 ||
-            private17.database === nativePair.database || namespacePull.status !== 'ok' || !namespacePull.jobUID || !namespacePull.podUID) {
+            private17.evidenceBoundary !== 'immutable-installed-joint' || private17.publicCases !== 16 || private17.proCases !== 17 ||
+            !private17.serverIdentifier || !private17.pgContainerId || !private17.baseTableOID ||
+            namespacePull.status !== 'ok' || !namespacePull.jobUID || !namespacePull.podUID) {
             throw new Error('independent source-bound native admission did not complete');
           }
           const nativeChecks = { 'native-sparql': 'passed', 'native-public16': 'passed', 'native-private17': 'passed', 'native-namespace-pull': 'passed' };

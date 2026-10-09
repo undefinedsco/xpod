@@ -1115,7 +1115,10 @@ describe('native RC predeployment admission', () => {
     const run = jobRunText(workflow, 'deploy_and_accept');
     expect(run).toContain('private17-admission-check.json');
     expect(run).toContain("nativePair.ownedCleanup !== 'verified-absent'");
-    expect(run).toContain("private17.database === nativePair.database");
+    expect(run).not.toContain('private17.database === nativePair.database');
+    expect(run).toContain("private17.evidenceBoundary !== 'immutable-installed-joint'");
+    expect(run).toContain('private17.publicCases !== 16 || private17.proCases !== 17');
+    expect(run).toContain('!private17.serverIdentifier || !private17.pgContainerId || !private17.baseTableOID');
   });
 });
 

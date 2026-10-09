@@ -13,6 +13,7 @@ import {
   type SemanticConformanceReport,
 } from '../src/acceptance/RdfSemanticConformance';
 import type { NativeSearchConformanceReport } from '../src/acceptance/QleverSearchConformance';
+import { validateJointInstalledAdmission } from './lib/joint-installed-admission';
 
 // This CLI runs in Bun; the repository's test compiler has no ambient Bun types.
 declare const Bun: { sleep(milliseconds: number): Promise<void> };
@@ -288,7 +289,7 @@ export function validatePullJob(job: PullJob, pods: PullPod[], expected: {
 
 const PRIVATE_FIXTURE_SHA256 = '09e389146adc51a10a26785a34ef471c66d8bbf00f61b0b69d536d29874120b8';
 const PRIVATE17_CASE_SET_SHA256 = '348777fe09a4e4baba4287e579cb7b665e5d83aeab144819beb16cb34e12d24e';
-const PRIVATE17_VALIDATOR_SHA256 = '3436b584435f2ea25f28d14cede7721444d333da4ca2305919b4e7cbdc726034';
+const PRIVATE17_VALIDATOR_SHA256 = 'e962c8b94e771f753661810179b8ad982e9dfd4158e6620518b5dbf56cc73374';
 const PRIVATE17_CONTRACT_SHA256 = '6f1346e598f11959b1e696639fd151f498bd8901ef658c5613435a44d5c46ca1';
 // Fail closed until the private producer's final frozen source is admitted by ROOT.
 const PRIVATE17_PRODUCER_SHA256 = '0fe0ca179fd4544188dc5a5d60ea7ee1ebe24f8ac4acb7f56471c3294271aa34';
@@ -296,14 +297,6 @@ const PRIVATE17_MAX_BYTES = 64 * 1024;
 const PRIVATE17_ASSET = 'private17-admission.json';
 const SHA256 = /^[a-f0-9]{64}$/;
 const byteDigest = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
-
-function strictObject(value: unknown, keys: readonly string[]): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).length !== keys.length || keys.some(key => !Object.prototype.hasOwnProperty.call(value, key))) {
-    throw new Error('private17 JSON fields mismatch');
-  }
-  return value as Record<string, unknown>;
-}
 
 export function private17ProofTag(sourceSha: string, installedImage: string): string {
   if (!/^[a-f0-9]{40}$/.test(sourceSha)
@@ -363,36 +356,18 @@ export function verifyPrivate17Admission(file: string, expected: {
   if (byteDigest(bytes) !== expected.admissionSha256) throw new Error('private17 artifact authority mismatch');
   let parsed: unknown;
   try { parsed = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('private17 JSON rejected'); }
-  const proof = strictObject(parsed, ['schemaVersion', 'kind', 'status', 'sourceSha', 'serviceImage', 'postgresImage',
-    'runnerSHA256', 'fixtureSHA256', 'database', 'semantic', 'search', 'abi', 'producer', 'cleanup']);
-  const semantic = strictObject(proof.semantic, ['completeCaseCount', 'expectedCaseSetSHA256', 'validatorVersion',
-    'validatorSourceSHA256', 'contractSourceSHA256', 'canonicalDigest', 'failed', 'skipped', 'deniedRowsObserved']);
-  const producer = strictObject(proof.producer, ['actualExit', 'signal', 'childCount', 'closedRawSHA256',
-    'producerSourceSHA256', 'closedReceiptSHA256']);
-  const cleanup = strictObject(proof.cleanup, ['databaseAbsent', 'ownedResourcesAbsent']);
-  if (proof.schemaVersion !== 1 || proof.kind !== 'immutable-installed-component-admission' || proof.status !== 'ok'
-    || proof.sourceSha !== expected.sourceSha || proof.serviceImage !== expected.installedImage
-    || proof.postgresImage !== expected.pgImage || proof.runnerSHA256 !== expected.runnerSha256
-    || proof.fixtureSHA256 !== PRIVATE_FIXTURE_SHA256 || proof.search !== 'verified' || proof.abi !== '1|true'
-    || typeof proof.database !== 'string' || !/^xpod_private17_[a-z0-9_]{1,48}$/.test(proof.database)
-    || proof.database === expected.publicDatabase || cleanup.databaseAbsent !== true || cleanup.ownedResourcesAbsent !== true
-    || semantic.completeCaseCount !== 17 || semantic.expectedCaseSetSHA256 !== PRIVATE17_CASE_SET_SHA256
-    || semantic.validatorVersion !== 'private17-canonical-digest-search-v1'
-    || semantic.validatorSourceSHA256 !== PRIVATE17_VALIDATOR_SHA256 || semantic.contractSourceSHA256 !== PRIVATE17_CONTRACT_SHA256
-    || typeof semantic.canonicalDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(semantic.canonicalDigest)
-    || semantic.failed !== 0 || semantic.skipped !== 0 || semantic.deniedRowsObserved !== 0
-    || producer.actualExit !== 0 || producer.signal !== null || typeof producer.childCount !== 'number'
-    || !Number.isInteger(producer.childCount) || producer.childCount < 1 || producer.childCount > 64
-    || !Array.isArray(producer.closedRawSHA256) || producer.closedRawSHA256.length !== producer.childCount
-    || producer.closedRawSHA256.some(hash => typeof hash !== 'string' || !SHA256.test(hash))
-    || producer.producerSourceSHA256 !== PRIVATE17_PRODUCER_SHA256
-    || typeof producer.closedReceiptSHA256 !== 'string' || !SHA256.test(producer.closedReceiptSHA256)) {
-    throw new Error('private17 closed exact-pair admission mismatch');
-  }
-  return { status: 'ok', evidenceBoundary: 'immutable-installed-component', fixtureSHA256: PRIVATE_FIXTURE_SHA256,
-    sourceSha: expected.sourceSha, installedImage: expected.installedImage, pgImage: expected.pgImage,
-    runnerSha256: expected.runnerSha256, database: proof.database, canonicalDigest: semantic.canonicalDigest,
-    admissionSha256: expected.admissionSha256 };
+  const admitted = validateJointInstalledAdmission(parsed, {
+    sourceSha: expected.sourceSha, serviceImage: expected.installedImage, postgresImage: expected.pgImage,
+    runnerSHA256: expected.runnerSha256, producerSHA256: PRIVATE17_PRODUCER_SHA256,
+    contractSHA256: byteDigest(readFileSync(new URL('./lib/joint-installed-admission.ts', import.meta.url))),
+    privateContractSHA256: PRIVATE17_CONTRACT_SHA256,
+    public: { fixtureSHA256: PUBLIC_FIXTURE_SHA256,
+      caseSetSHA256: '2ce68e4cc93952d123c133baf0cbd92497d73e8d246ea81d48906fd9792bcd99',
+      validatorSHA256: byteDigest(readFileSync(new URL(import.meta.url))) },
+    pro: { fixtureSHA256: PRIVATE_FIXTURE_SHA256, caseSetSHA256: PRIVATE17_CASE_SET_SHA256,
+      validatorSHA256: PRIVATE17_VALIDATOR_SHA256 },
+  });
+  return { ...admitted, admissionSha256: expected.admissionSha256 };
 }
 
 async function waitForPg17(container: string, database: string): Promise<void> {
