@@ -17,6 +17,15 @@ the existing byte-authority boundary and then invokes this validator; a valid
 byte receipt does not excuse mixed servers, substituted tables or incomplete
 semantics. Old v1 proofs are rejected.
 
+The `--verify-private17-admission` CLI consumes the byte-authorized v2 joint
+proof directly. Its public and private sections already bind both suites to
+the same PG17 server, database and unchanged base table. The candidate workflow
+does not supply a separate Public16 envelope. The old `--public16-report` flag
+is explicitly rejected, because a separate-database envelope cannot prove
+this joint contract. The preceding public installed-image conformance gate
+remains required independently. Changing the CLI changes its validator digest;
+the final source, installed image and joint proof require fresh validation.
+
 The private producer's joint mode receives `--public-root`, verifies the exact
 Git HEAD and blob bytes of its five allowlisted public dependencies, runs both
 canonical validators on the actual serialized reports, and issues the proof
@@ -51,10 +60,16 @@ Focused public regression:
 
 ```sh
 bun run test -- tests/scripts/joint-installed-admission.test.ts tests/scripts/check-qlever-installed-image-conformance.test.ts tests/scripts/candidate-workflow.test.ts
-bun run build:ts
+bun run build
 bun run typecheck:test
 bun run test:integration
 ```
+
+In a fresh worktree, generate Components artifacts before freezing the physical
+build and dependency manifest for the two integration runs. TypeScript alone
+does not generate those artifacts; generating them during a run invalidates
+the before/after binding even when the tests themselves pass. Wait for all
+build and typecheck processes to exit before starting the frozen gate.
 
 Keep actual Gateway identity/Pod, client authentication, models, Chat, Tasks,
 desktop permissions, backup/restore and release evidence as separate gates.

@@ -4,10 +4,10 @@ name: AgentFS mounted platform acceptance
 # separate development branch so a harness-only push never recompiles the frozen
 # admitted product (the native compiler workflow only runs on
 # codex/agentfs-native-acceptance or the staging integration branch). Product
-# pins come from accepted run 37868594976; the harness SHA is this checkout.
+# pins come from accepted run 37977251553; the harness SHA is this checkout.
 on:
   push:
-    branches: ['codex/solidfs-mounted-staging-20261008']
+    branches: ['codex/solidfs-mounted-b5-20261010']
   workflow_dispatch:
 
 permissions:
@@ -16,17 +16,17 @@ permissions:
   actions: read
 
 env:
-  PRODUCT_RUN: '37868594976'
-  PRODUCT_SHA: '5cb959b761571b3062eb3fc634165ebc17536676'
-  LINUX_ARTIFACT_ID: '11590142261'
-  LINUX_ZIP_SHA: 'eabefa3c0bbc8c5717552d9a0cd4168b514fcfa817f1363574b524613ed9a96c'
-  LINUX_ARCHIVE_SHA: '13ec656d3ad61f49e53d5fede45010d064a1f69bbfdee8b3122d9c6214725f3e'
-  LINUX_HELPER_SHA: '0b0f7754aea889b5ddb55e5cd06d74a7f1e867784fbc0086d395ef332089131a'
+  PRODUCT_RUN: '37977251553'
+  PRODUCT_SHA: 'b5a058cffa50026702f7679365e7b17e383115d2'
+  LINUX_ARTIFACT_ID: '11640947333'
+  LINUX_ZIP_SHA: 'a8856c145dd3afc363b812affd6286c2f154f888dfe0a22b050de0e2fced0e86'
+  LINUX_ARCHIVE_SHA: '8caff51560422becda67dc46e59e8fefaf77e7297fe558ac1c36698734311358'
+  LINUX_HELPER_SHA: 'ece07a199caa2d12493e8a5648b770395922bdcb31001e7eb50599bd960d6e7b'
   BOOKWORM_IMAGE: rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e
-  DARWIN_ARTIFACT_ID: '11589594451'
-  DARWIN_ZIP_SHA: 'd42926e11bc8b1da442d1c6ba0012a47082a47cb547149bca7a562ea81afbef0'
-  DARWIN_ARCHIVE_SHA: 'ed5c52c594e4b3d7e7da9ec192b18219418edcae79735ed58f302c1642465afb'
-  DARWIN_HELPER_SHA: '24e9fbb10027e6d4772e883c67bfe3d27923e1e5819612f4a3b8ea7d43ec9e34'
+  DARWIN_ARTIFACT_ID: '11640530802'
+  DARWIN_ZIP_SHA: 'e275f3eb04f9a8bc023149353891f42597d3d8cbae5459510031b8c18750dd34'
+  DARWIN_ARCHIVE_SHA: '391ad4b1ecedf0a90be1a2b03661a85e64e426aab7579f64026e15887cce74d8'
+  DARWIN_HELPER_SHA: '608c7e22702049841c1063bea12920fb371b73a3da96a8a917488567ec6de75e'
 
 jobs:
   linux-fuse:

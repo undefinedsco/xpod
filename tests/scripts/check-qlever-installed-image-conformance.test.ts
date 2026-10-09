@@ -90,6 +90,7 @@ describe('installed native image report admission', () => {
 
 describe('authorized namespace pull admission', () => {
   it('normalizes exact legacy HTTPS CCR authority and consistent kubectl credentials', () => {
+    mkdirSync(path.join(root, '.test-data'), { recursive: true, mode: 0o700 });
     const dir = mkdtempSync(path.join(root, '.test-data/registry-normalize-'));
     try {
       const auth = Buffer.from('fixture-user:fixture-password').toString('base64');
@@ -392,6 +393,39 @@ describe('private17 sanitized single JSON boundary', () => {
       installedImage: expected.installedImage, pgImage: expected.pgImage, database: `xpod_joint_${'2'.repeat(32)}`,
       evidenceBoundary: 'immutable-installed-joint' });
   });
+  it.each(['accepted', 'wrong-authority', 'cross-server', 'private-field'])
+  ('checks %s joint evidence through the actual CLI without a separate Public16 envelope', scenario => {
+    const base = path.join(root, '.test-data/private17-admission-test'); mkdirSync(base, { recursive: true, mode: 0o700 });
+    const dir = mkdtempSync(path.join(base, 'joint-cli-'));
+    const file = path.join(dir, 'private17-admission.json');
+    const receipt = path.join(dir, 'receipt.json');
+    const value = proof();
+    if (scenario === 'cross-server') value.pro.systemIdentifier = '7694358013082710062';
+    if (scenario === 'private-field') value.fixture = 'PRIVATE_SENTINEL';
+    const bytes = JSON.stringify(value);
+    const authority = scenario === 'wrong-authority' ? '0'.repeat(64) : createHash('sha256').update(bytes).digest('hex');
+    writeFileSync(file, bytes, { mode: 0o600 });
+    try {
+      const result = spawnSync('bun', [path.join(root, 'scripts/check-qlever-installed-image-conformance.ts'),
+        '--verify-private17-admission', file, '--private17-receipt', receipt,
+        '--source-sha', expected.sourceSha, '--installed-image', expected.installedImage,
+        '--pg-image', expected.pgImage, '--runner-sha256', expected.runnerSha256, '--admission-sha256', authority],
+      { cwd: root, encoding: 'utf8', timeout: 20_000 });
+      expect(result.error).toBeUndefined(); expect(result.signal).toBeNull();
+      expect(result.status).toBe(scenario === 'accepted' ? 0 : 1);
+      expect(result.stdout).not.toContain('PRIVATE_SENTINEL');
+      expect(result.stderr).not.toContain('PRIVATE_SENTINEL');
+      if (scenario === 'accepted') {
+        expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({
+          status: 'ok', evidenceBoundary: 'immutable-installed-joint',
+          database: value.server.database, admissionSha256: authority,
+        });
+      } else {
+        expect(() => readFileSync(receipt)).toThrow();
+        if (scenario === 'wrong-authority') expect(result.stderr).toContain('contract-failed');
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('accepts byte-authorized CNB evidence without changing GHCR release transport', () => {
     const image = `docker.cnb.cool/undefineds.co/native-builder/xpod-installed@sha256:${'a'.repeat(64)}`;
     const value = proof(); value.serviceImage = image;
@@ -448,19 +482,20 @@ describe('private17 sanitized single JSON boundary', () => {
     const count = proof(); count.producer.childCount = 2;
     for (const value of [missing, nested, business, cleanup, count]) expect(() => check(JSON.stringify(value))).toThrow();
   });
-  it('refuses a Public16 report from another build before admitting Private17', () => {
+  it.each(['separate', 'equals'])('rejects the %s legacy Public16 report flag before admitting Private17', form => {
     const base = path.join(root, '.test-data/private17-admission-test'); mkdirSync(base, { recursive: true, mode: 0o700 });
     const dir = mkdtempSync(path.join(base, 'public-binding-'));
     const report = path.join(dir, 'public16.json'); const receipt = path.join(dir, 'receipt.json');
     writeFileSync(report, JSON.stringify({ database: 'xpod_public16_unique', sourceSha: 'PRIVATE_SENTINEL' }), { mode: 0o600 });
     try {
       const result = spawnSync('bun', [path.join(root, 'scripts/check-qlever-installed-image-conformance.ts'),
-        '--verify-private17-admission', path.join(dir, 'private17-admission.json'), '--public16-report', report,
+        '--verify-private17-admission', path.join(dir, 'private17-admission.json'),
+        ...(form === 'separate' ? ['--public16-report', report] : [`--public16-report=${report}`]),
         '--private17-receipt', receipt, '--source-sha', expected.sourceSha, '--installed-image', expected.installedImage,
         '--pg-image', expected.pgImage, '--runner-sha256', expected.runnerSha256, '--admission-sha256', 'a'.repeat(64)],
       { cwd: root, encoding: 'utf8', timeout: 20_000 });
       expect(result.error).toBeUndefined(); expect(result.signal).toBeNull(); expect(result.status).toBe(1);
-      expect(result.stderr).toContain('public16-binding-mismatch'); expect(result.stderr).not.toContain('PRIVATE_SENTINEL');
+      expect(result.stderr).toContain('legacy-public16-report-rejected'); expect(result.stderr).not.toContain('PRIVATE_SENTINEL');
       expect(() => readFileSync(receipt)).toThrow();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });

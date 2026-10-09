@@ -497,7 +497,6 @@ jobs:
             --admission-sha256 "$PRIVATE17_ADMISSION_SHA256" \
             --installed-image "$NATIVE_SERVICE_IMAGE" --pg-image "$NATIVE_PG_IMAGE" \
             --source-sha "$NATIVE_SOURCE_SHA" --runner-sha256 "$runner_sha" \
-            --public16-report "${RUNNER_TEMP}/immutable-native-conformance/installed-image-conformance.json" \
             --private17-receipt "${RUNNER_TEMP}/private17-admission-check.json"
 
       - name: Preflight exact PostgreSQL image pull in the assigned namespace

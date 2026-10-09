@@ -542,16 +542,8 @@ async function cli(): Promise<void> {
       admissionSha256: required('private17-artifact-authority', argValue('--admission-sha256')),
     });
   } else if (argValue('--verify-private17-admission')) {
-    const publicEvidence = JSON.parse(readFileSync(required('public16-report', argValue('--public16-report')), 'utf8'));
-    if (publicEvidence.schemaVersion !== 1 || publicEvidence.status !== 'ok'
-      || !/^xpod_public16_[a-z0-9_]+$/.test(publicEvidence.database)
-      || publicEvidence.admissionScope !== 'public16-only' || publicEvidence.ownedCleanup !== 'verified-absent'
-      || publicEvidence.sourceSha !== argValue('--source-sha')
-      || publicEvidence.installedImage !== argValue('--installed-image')
-      || publicEvidence.pgImage !== argValue('--pg-image')
-      || publicEvidence.runnerSha256 !== argValue('--runner-sha256')
-      || publicEvidence.fixtureSHA256 !== PUBLIC_FIXTURE_SHA256 || publicEvidence.nativeAbiVersion !== 1) {
-      throw new StepError('private17-public-binding', 1, 'public16-binding-mismatch');
+    if (process.argv.some((arg) => arg === '--public16-report' || arg.startsWith('--public16-report='))) {
+      throw new StepError('private17-public-binding', 1, 'legacy-public16-report-rejected');
     }
     const result = verifyPrivate17Admission(required('private17-file', argValue('--verify-private17-admission')), {
       admissionSha256: required('private17-artifact-authority', argValue('--admission-sha256')),
