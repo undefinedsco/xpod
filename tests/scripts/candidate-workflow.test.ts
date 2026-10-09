@@ -421,7 +421,10 @@ esac
     const desktopManifest = JSON.parse(await readFile(path.join(repoRoot, 'desktop/package.json'), 'utf8'));
 
     expect(desktop.name).toBe('Build macOS RC desktop');
-    expect(desktop.needs).toEqual([ 'metadata', 'build_qlever_macos_runtime', 'deploy_and_accept' ]);
+    expect(desktop.needs).toEqual([ 'metadata', 'build_qlever_macos_runtime' ]);
+    expect(desktop.environment).toBeUndefined();
+    expect(desktop.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG).toBeUndefined();
+    expect(workflow.jobs.accept_desktop_rc.needs).toEqual(['metadata', 'build_desktop_rc', 'deploy_and_accept']);
     expect(desktop.env.CSC_IDENTITY_AUTO_DISCOVERY).toBe('false');
     for (const key of [ 'CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID' ]) {
       expect(desktop.env[key]).toBeUndefined();
@@ -899,6 +902,7 @@ esac
       'build_image',
       'deploy_and_accept',
       'build_desktop_rc',
+      'accept_desktop_rc',
     ]);
     expect(finalizeText).toContain('node scripts/release-acceptance-manifest.cjs create');
     for (const check of [
@@ -962,7 +966,7 @@ esac
     expect(diagnostics.run).toContain('docker inspect "$local_name"');
     expect(diagnostics.run).toContain('docker logs "$local_name"');
     expect(workflow.jobs.deploy_and_accept.steps.some((step: any) => step.name === 'Scale RC deployments to zero')).toBe(false);
-    expect(workflow.jobs.cleanup_rc.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']);
+    expect(workflow.jobs.cleanup_rc.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'accept_desktop_rc', 'finalize_acceptance']);
     expect(workflow.jobs.cleanup_rc.if).toContain('always()');
     const cleanup = workflow.jobs.cleanup_rc.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
     expect(cleanup.run).toContain('scripts/rc-cleanup-ownership.cjs');
@@ -1006,7 +1010,7 @@ esac
 
   it('resolves the desktop self-update baseline by version order, not by recency alone', async () => {
     const workflow = await loadWorkflow();
-    const step = workflow.jobs.build_desktop_rc.steps.find(
+    const step = workflow.jobs.accept_desktop_rc.steps.find(
       (candidate: any) => candidate.name === 'Download the previously released desktop bundle',
     );
     expect(step).toBeDefined();

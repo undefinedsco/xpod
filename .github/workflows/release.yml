@@ -127,9 +127,58 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `candidate_run_id=${process.env.CANDIDATE_RUN_ID}\n`);
           NODE
 
+  release_preflight:
+    name: Read-only release prerequisites
+    needs: promotion_guard
+    runs-on: ubuntu-latest
+    environment: co
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.XPOD_RELEASE_PREFLIGHT_TOKEN || github.token }}
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+      XPOD_STABLE_DESKTOP_ENVIRONMENT: ${{ vars.XPOD_STABLE_DESKTOP_ENVIRONMENT || 'rc' }}
+      ACCEPTED_IMAGE_DIGEST: ${{ needs.promotion_guard.outputs.image_digest }}
+      CANDIDATE_RUN_ID: ${{ needs.promotion_guard.outputs.candidate_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect actual environment policies and production references
+        run: |
+          set -euo pipefail
+          trap 'printf "%s\n" "{\"status\":\"blocked\",\"code\":\"preflight_runtime_or_environment_failed\"}" > "$RUNNER_TEMP/release-preflight-stage-failure.json"' ERR
+          test -n "$KUBE_CONFIG_DATA"
+          mkdir -p ~/.kube
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          node scripts/release-readonly-preflight.cjs > "$RUNNER_TEMP/release-preflight.json" 2> "$RUNNER_TEMP/release-preflight-failure.json"
+      - name: Verify accepted native archive and released update baseline
+        run: |
+          set -euo pipefail
+          trap 'printf "%s\n" "{\"status\":\"blocked\",\"code\":\"preflight_artifact_unavailable_or_invalid\"}" > "$RUNNER_TEMP/release-preflight-stage-failure.json"' ERR
+          native="$RUNNER_TEMP/accepted-native"
+          mkdir -p "$native"
+          gh run download "$CANDIDATE_RUN_ID" -n "qlever-local-runtime-darwin-arm64-${GITHUB_SHA}" -D "$native"
+          node scripts/release-gate-evidence.cjs verify-qlever-local --source-sha "$GITHUB_SHA" --evidence "$native/qlever-local-acceptance.json" --expected-archive "$native/qlever-local-runtime-darwin-arm64.tar.gz"
+          update="$RUNNER_TEMP/accepted-update"
+          gh run download "$CANDIDATE_RUN_ID" -n "desktop-self-update-acceptance-${GITHUB_SHA}" -D "$update"
+          old_tag="$(node -e 'const e=require(process.argv[1]);if(!/^v[0-9]+[.][0-9]+[.][0-9]+$/.test(e.oldReleaseTag))process.exit(1);process.stdout.write(e.oldReleaseTag)' "$update/desktop-self-update-evidence.json")"
+          gh release download "$old_tag" --pattern '*-arm64-mac.zip' --dir "$update"
+      - name: Upload safe read-only preflight summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-readonly-preflight-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/release-preflight.json
+            ${{ runner.temp }}/release-preflight-failure.json
+            ${{ runner.temp }}/release-preflight-stage-failure.json
+          if-no-files-found: ignore
+
   shared_packages:
     name: Publish verified shared applets
-    needs: promotion_guard
+    needs: [promotion_guard, release_preflight]
     uses: ./.github/workflows/packages-release.yml
     with:
       accepted-sha: ${{ github.sha }}
@@ -137,7 +186,7 @@ jobs:
 
   publish_npm_staging:
     name: Publish npm stable staging packages
-    needs: promotion_guard
+    needs: [promotion_guard, release_preflight]
     runs-on: macos-15
     permissions:
       actions: read
@@ -460,9 +509,9 @@ jobs:
     name: Build macOS desktop release
     needs:
       - promotion_guard
-      - deploy_production_co
+    outputs:
+      manifest_digest: ${{ steps.desktop_manifest.outputs.manifest_digest }}
     runs-on: macos-15
-    environment: rc
     permissions:
       actions: read
       contents: read
@@ -473,8 +522,6 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
-      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -530,6 +577,54 @@ jobs:
           test -x "$runtime"
           test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
 
+      - name: Bind immutable desktop build archives
+        id: desktop_manifest
+        run: node scripts/desktop-build-artifact.cjs create desktop/release "$XPOD_ACCEPTED_SHA" "$RELEASE_VERSION" "${{ github.run_id }}"
+      # The archive ships an ad-hoc (linker) signature; `create_github_release` publishes
+      # these exact bytes after production deploys, so hand them over as one artifact.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
+          path: |
+            desktop/release/build-manifest.json
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+            desktop/release/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  accept_desktop_macos:
+    name: Accept installed macOS stable desktop
+    needs: [promotion_guard, build_desktop_macos, deploy_production_co]
+    runs-on: macos-15
+    environment: ${{ vars.XPOD_STABLE_DESKTOP_ENVIRONMENT || 'rc' }}
+    permissions:
+      actions: read
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
+      CANDIDATE_RUN_ID: ${{ needs.promotion_guard.outputs.candidate_run_id }}
+      XPOD_ACCEPTED_SHA: ${{ github.sha }}
+      GH_TOKEN: ${{ github.token }}
+      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
+      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - run: bun run build:packages
+      - uses: actions/download-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
+          path: desktop/release
+      - name: Verify immutable desktop build archives
+        run: node scripts/desktop-build-artifact.cjs verify desktop/release "$XPOD_ACCEPTED_SHA" "$RELEASE_VERSION" "${{ github.run_id }}" "${{ needs.build_desktop_macos.outputs.manifest_digest }}"
       - name: Accept actual stable packaged desktop permissions and operations
         run: |
           set -euo pipefail
@@ -588,18 +683,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # The archive ships an ad-hoc (linker) signature; `create_github_release` publishes
-      # these exact bytes after production deploys, so hand them over as one artifact.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
-          path: |
-            desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/*.blockmap
-            desktop/release/latest-mac.yml
-          if-no-files-found: error
-          retention-days: 14
       - name: Upload stable desktop permission failure summary
         if: failure()
         uses: actions/upload-artifact@v4
@@ -615,6 +698,7 @@ jobs:
       - promotion_guard
       - deploy_production_co
       - build_desktop_macos
+      - accept_desktop_macos
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -625,11 +709,18 @@ jobs:
       RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
       ACCEPTED_IMAGE_DIGEST: ${{ needs.promotion_guard.outputs.image_digest }}
       CANDIDATE_VERSION: ${{ needs.promotion_guard.outputs.candidate_version }}
+      RELEASE_SOURCE_SHA: ${{ github.sha }}
+      RELEASE_RUN_ID: ${{ github.run_id }}
+      DESKTOP_MANIFEST_DIGEST: ${{ needs.build_desktop_macos.outputs.manifest_digest }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
           path: ${{ runner.temp }}/desktop-release
+
+      - name: Verify release archive bytes before publishing
+        run: node scripts/desktop-build-artifact.cjs verify "$RUNNER_TEMP/desktop-release" "$RELEASE_SOURCE_SHA" "$RELEASE_VERSION" "$RELEASE_RUN_ID" "$DESKTOP_MANIFEST_DIGEST"
 
       - name: Create release after production deploy
         run: |
